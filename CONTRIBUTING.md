@@ -72,6 +72,7 @@ Rules live in `alkahest-core/src/simplify/`. Each rule is a `RewriteRule` with a
 - Tier-1 CI (< 10 min) must be green before review: unit tests, lightweight proptest/hypothesis, clippy, ruff, ASan on FFI tests.
 - Semver is enforced automatically — `cargo semver-checks` runs on every PR and will fail if a stable API breaks.
 - New stable API additions go into `alkahest_core::stable` and `alkahest.__all__`; experimental additions go into `alkahest_core::experimental` and `alkahest.experimental`.
+- Add `[skip ci]` at the end of commit messages if changes cannot possibly effect CI.
 
 ## Rust vs Python
 
