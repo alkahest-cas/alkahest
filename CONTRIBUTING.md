@@ -1,6 +1,10 @@
 # Contributing to Alkahest
 
-Work is tracked in [`ROADMAP.md`](ROADMAP.md) and GitHub issues.
+Open work is tracked in [`ROADMAP.md`](ROADMAP.md) and GitHub issues. Changes are added to [`CHANGELOG`](CHANGELOG.md) after implementation.
+
+## Using AI for development
+
+AI agents must follow [`AGENTS.md`](AGENTS.md) instructions.
 
 ## Setup
 
