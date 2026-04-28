@@ -485,6 +485,16 @@ impl PyExpr {
         }
     }
 
+    fn pow_expr(&self, exp: &PyExpr, py: Python<'_>) -> PyExpr {
+        let pool = self.pool.borrow(py);
+        let id = pool.inner.pow(self.id, exp.id);
+        drop(pool);
+        PyExpr {
+            id,
+            pool: self.pool.clone_ref(py),
+        }
+    }
+
     fn node_tag(&self, py: Python<'_>) -> String {
         let data = self.pool.borrow(py).inner.get(self.id);
         match data {

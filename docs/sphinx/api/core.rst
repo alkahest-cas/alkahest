@@ -166,3 +166,56 @@ Context manager
 .. function:: simplify_enabled() -> bool
 
    Return whether auto-simplification is enabled in the current context.
+
+Parsing
+-------
+
+.. function:: parse(source: str, pool: ExprPool, symbols: dict[str, Expr] | None = None) -> Expr
+
+   Parse a mathematical expression string into an :class:`Expr` using a
+   Pratt recursive-descent parser.
+
+   :param source: Expression string, e.g. ``"sin(x)^2 + cos(x)^2"``.
+   :param pool: Pool used to intern new symbols and constants.
+   :param symbols: Optional pre-bound symbol map.  Identifiers not present
+      are created via ``pool.symbol(name)`` and added to the map for reuse
+      within the same call.
+   :raises ParseError: On any lexical or syntax error. ``.span`` holds the
+      ``(start, end)`` byte range of the offending token; ``.remediation``
+      holds a hint.
+   :returns: The parsed :class:`Expr`.
+
+   **Supported syntax**
+
+   - Integer and float literals: ``42``, ``3.14``, ``1e-5``
+   - Identifiers (symbols): ``x``, ``alpha``, ``x_1``
+   - Operators: ``+`` ``-`` ``*`` ``/`` ``^`` ``**`` and unary ``-`` ``+``
+   - Grouping: ``(expr)``
+   - Function calls: ``sin(x)``, ``atan2(y, x)`` — all 20 registered
+     primitives are supported
+
+   Operator precedence (lowest to highest): ``+`` ``-`` → ``*`` ``/`` →
+   unary ``-`` → ``^`` ``**`` (right-associative).
+
+   Example::
+
+      pool = ExprPool()
+      x = pool.symbol("x")
+
+      # Parse and differentiate
+      e = parse("x^3 - 2*x + 1", pool, {"x": x})
+      dr = diff(e, x)
+      print(dr.value)   # 3*x^2 - 2
+
+      # Auto-create symbols
+      sym_map = {}
+      e2 = parse("a*x + b", pool, sym_map)
+      print(sorted(sym_map))   # ['a', 'b', 'x']
+
+      # Error handling
+      from alkahest import ParseError
+      try:
+          parse("x @ y", pool, {"x": x})
+      except ParseError as err:
+          print(err.span)          # (2, 3)
+          print(err.remediation)   # only ASCII arithmetic expressions ...

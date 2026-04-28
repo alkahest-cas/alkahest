@@ -4,6 +4,7 @@
 - [Getting started](./getting-started.md)
 - [Kernel design](./kernel.md)
 - [Expression representations](./representations.md)
+- [Parsing from strings](./parsing.md)
 - [Simplification](./simplification.md)
   - [Rule engine](./rules.md)
   - [E-graph saturation](./egraph.md)

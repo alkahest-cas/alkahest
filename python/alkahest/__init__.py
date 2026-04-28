@@ -1,4 +1,5 @@
 from ._pretty import latex, unicode_str  # noqa: F401
+from ._parse import parse  # noqa: F401
 from ._context import (  # noqa: F401
     active_domain,
     active_pool,
@@ -172,7 +173,7 @@ except ImportError:
         OdeError,
         PoolError,
     )
-from .exceptions import SolverError  # noqa: F401  (pure-Python only for now)
+from .exceptions import SolverError, ParseError  # noqa: F401  (pure-Python only for now)
 
 
 def numpy_eval(compiled_fn, *arrays):
@@ -371,4 +372,7 @@ __all__ = [
     # V2-20
     "latex",
     "unicode_str",
+    # V2-21
+    "parse",
+    "ParseError",
 ]

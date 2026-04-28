@@ -61,6 +61,21 @@ Math functions accept expressions:
 f = sin(x**2) + exp(x * y)
 ```
 
+### Parsing expressions from strings
+
+Use `parse` when the expression comes from user input or a config file:
+
+```python
+from alkahest import parse
+
+e = parse("x^2 + 2*x + 1", pool, {"x": x})
+print(e)   # x^2 + 2*x + 1
+```
+
+Identifiers not in the `symbols` dict are auto-created as symbols in `pool`.
+Both `^` and `**` denote exponentiation. See [Parsing from strings](./parsing.md)
+for the full syntax reference.
+
 ### Simplification
 
 ```python

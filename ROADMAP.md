@@ -34,7 +34,7 @@ Items deferred from v1.0 due to algorithmic complexity or hardware availability,
 | **V1-15** E-graph default rule completeness | ✅ Complete | Trig (sin²+cos²→1, Pow form) and log/exp (exp(log)→x) load by default; `EgraphConfig.include_trig_rules/include_log_exp_rules` opt-out flags; `simplify_egraph_with` Python API |
 | **V1-16** Python API completeness | ✅ Complete | `ExprPool.save_to/load_from`, `GroebnerBasis.compute()`, `solve()` returns `Expr` by default (`numeric=True` for floats) |
 | **V2-20** LaTeX / Unicode pretty-printing | ✅ Complete | Pure-Python tree walk; `Expr.node()` kernel hook; `latex()` + `unicode_str()` API; 74 tests |
-| **V2-21** String / expression parsing (`parse(str)`) | 📋 Planned | Pratt recursive-descent parser; complements the PyPI release |
+| **V2-21** String / expression parsing (`parse(str)`) | ✅ Complete | Pratt recursive-descent parser; `parse(str, pool)` public API; 54-test suite |
 
 ---
 
@@ -135,6 +135,32 @@ Three gaps found in the post-launch API audit — all involve exposing already-s
 **Implementation:** All three in `alkahest-py/src/lib.rs`; exports added to `python/alkahest/__init__.py`.
 
 **Tests:** `tests/test_v16.py` (15 tests) and updated `tests/test_v10.py` (symbolic + numeric solver tests). Full suite: 468 passed, 51 skipped.
+
+---
+
+### V2-21. String / expression parsing (`parse(str)`) ✅
+
+**What:** A Pratt (top-down operator precedence) recursive-descent parser that
+converts a human-readable math string into an `Expr` node in a given
+`ExprPool`.
+
+**Delivered:**
+- `python/alkahest/_parse.py` — pure-Python tokenizer + Pratt parser.
+- Supports: integer and float literals, identifiers (auto-interned symbols),
+  `+` `-` `*` `/` `^` `**`, unary `+`/`-`, parenthesised sub-expressions, and
+  all 20 registered single- and two-argument primitives (`sin`, `cos`, `exp`,
+  `log`, `sqrt`, `atan2`, …).
+- `parse(source, pool, symbols=None) -> Expr` public API; optional `symbols`
+  map for pre-binding names to existing `Expr` objects.
+- `ParseError` (E-PARSE-001) raised on lexical and syntax errors, with `.span`
+  set to the byte range of the offending token and `.remediation` hint.
+- `Expr.pow_expr(exp: Expr)` PyO3 binding added to `alkahest-py/src/lib.rs`
+  to support symbolic exponents (the existing `__pow__` only accepts Python
+  `int`).
+- `parse` and `ParseError` exported from `alkahest.__all__`.
+- 54 tests in `tests/test_parse.py` covering atoms, unary operators, binary
+  arithmetic, precedence, right-associative `^`, function calls, whitespace,
+  symbol-map reuse, round-trip equivalence, and error paths.
 
 ---
 

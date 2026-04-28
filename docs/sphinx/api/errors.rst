@@ -99,6 +99,26 @@ Exception subclasses
    Code prefix ``E-CUDA-*``. CUDA device, compilation, or kernel launch
    error.
 
+.. exception:: ParseError
+
+   Code prefix ``E-PARSE-*``. A lexical or syntax error was encountered
+   while parsing an expression string via :func:`~alkahest.parse`.
+
+   The ``.span`` attribute holds the ``(start, end)`` byte range of the
+   offending token in the source string; ``.remediation`` holds a
+   human-readable hint (e.g. a list of known function names when an
+   unknown identifier is used as a function)::
+
+      from alkahest import parse, ParseError, ExprPool
+
+      pool = ExprPool()
+      try:
+          parse("zeta(x)", pool)
+      except ParseError as e:
+          print(e.code)          # E-PARSE-001
+          print(e.span)          # (0, 4)
+          print(e.remediation)   # known functions: abs, acos, asin, ...
+
 .. exception:: PoolError
 
    Code prefix ``E-POOL-*``. ``ExprPool`` misuse: closed pool, cross-pool
