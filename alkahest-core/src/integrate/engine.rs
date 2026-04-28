@@ -26,6 +26,10 @@ pub enum IntegrationError {
     NotImplemented(String),
     /// Division by zero would occur (e.g. power-rule with n=-1 on a non-x base).
     DivisionByZero,
+    /// The algebraic extension has degree > 2 (v1.1 supports only sqrt / degree-2).
+    UnsupportedExtensionDegree(u32),
+    /// The integrand provably has no elementary antiderivative (e.g. elliptic integrals).
+    NonElementary(String),
 }
 
 impl fmt::Display for IntegrationError {
@@ -33,6 +37,14 @@ impl fmt::Display for IntegrationError {
         match self {
             IntegrationError::NotImplemented(msg) => write!(f, "integrate: not implemented: {msg}"),
             IntegrationError::DivisionByZero => write!(f, "integrate: division by zero"),
+            IntegrationError::UnsupportedExtensionDegree(q) => write!(
+                f,
+                "integrate: algebraic extension of degree {q} is not supported \
+                 (v1.1 supports only degree-2 / sqrt extensions)"
+            ),
+            IntegrationError::NonElementary(msg) => {
+                write!(f, "integrate: no elementary antiderivative exists: {msg}")
+            }
         }
     }
 }
@@ -44,10 +56,18 @@ impl IntegrationError {
     pub fn remediation(&self) -> Option<&'static str> {
         match self {
             IntegrationError::NotImplemented(_) => Some(
-                "only power, linearity, sin/cos/exp rules are implemented; \
-                 use a numeric integrator for arbitrary functions",
+                "only power, linearity, sin/cos/exp rules and algebraic (sqrt) rules \
+                 are implemented; use a numeric integrator for arbitrary functions",
             ),
             IntegrationError::DivisionByZero => None,
+            IntegrationError::UnsupportedExtensionDegree(_) => Some(
+                "v1.1 supports sqrt(P(x)) only; higher-degree radicals (cbrt, nth-root) \
+                 are planned for v2.0",
+            ),
+            IntegrationError::NonElementary(_) => Some(
+                "this integrand has no closed-form antiderivative in terms of elementary \
+                 functions; use a numeric integrator or elliptic-integral library",
+            ),
         }
     }
 
@@ -62,6 +82,8 @@ impl crate::errors::AlkahestError for IntegrationError {
         match self {
             IntegrationError::NotImplemented(_) => "E-INT-001",
             IntegrationError::DivisionByZero => "E-INT-002",
+            IntegrationError::UnsupportedExtensionDegree(_) => "E-INT-003",
+            IntegrationError::NonElementary(_) => "E-INT-004",
         }
     }
 
@@ -226,7 +248,9 @@ fn try_x_times_func(
 // Core integration (no simplification yet)
 // ---------------------------------------------------------------------------
 
-fn integrate_raw(
+/// Crate-internal entry to the rule-based integrator (no algebraic dispatch).
+/// Used by the algebraic engine to integrate the rational part A(x).
+pub(crate) fn integrate_raw(
     expr: ExprId,
     var: ExprId,
     pool: &ExprPool,
@@ -484,6 +508,11 @@ pub fn integrate(
     var: ExprId,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, IntegrationError> {
+    // V1-2: Route algebraic integrands to the Trager/Risch algebraic engine.
+    if super::algebraic::contains_algebraic_subterm(expr, pool) {
+        return super::algebraic::integrate_algebraic(expr, var, pool);
+    }
+
     let mut log = DerivationLog::new();
     let raw = integrate_raw(expr, var, pool, &mut log)?;
     let simplified = simplify(raw, pool);
@@ -627,8 +656,9 @@ mod tests {
     fn integrate_not_implemented() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
-        // ∫ sqrt(x) dx is not in the supported subset
-        let err = integrate(pool.func("sqrt", vec![x]), x, &pool);
+        // ∫ sin(x²) dx has no elementary antiderivative and is outside the supported subset
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let err = integrate(pool.func("sin", vec![x2]), x, &pool);
         assert!(matches!(err, Err(IntegrationError::NotImplemented(_))));
     }
 
@@ -755,5 +785,49 @@ mod tests {
             "integration should produce a derivation log"
         );
         assert!(r.log.steps().iter().any(|s| s.rule_name == "power_rule"));
+    }
+
+    #[test]
+    fn integrate_sqrt_x() {
+        // ∫ sqrt(x) dx  should succeed (linear P)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt_x = pool.func("sqrt", vec![x]);
+        let result = integrate(sqrt_x, x, &pool);
+        match &result {
+            Ok(r) => println!("sqrt(x) integral = {}", pool.display(r.value)),
+            Err(e) => println!("ERROR: {e}"),
+        }
+        assert!(result.is_ok(), "∫ sqrt(x) dx failed: {:?}", result);
+    }
+
+    #[test]
+    fn integrate_inv_sqrt_x() {
+        // ∫ 1/sqrt(x) dx = 2·sqrt(x)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt_x = pool.func("sqrt", vec![x]);
+        let inv_sqrt_x = pool.pow(sqrt_x, pool.integer(-1_i32));
+        let result = integrate(inv_sqrt_x, x, &pool);
+        match &result {
+            Ok(r) => println!("1/sqrt(x) integral = {}", pool.display(r.value)),
+            Err(e) => println!("ERROR: {e}"),
+        }
+        assert!(result.is_ok(), "∫ 1/sqrt(x) dx failed: {:?}", result);
+    }
+
+    #[test]
+    fn integrate_sqrt_x2_plus_1() {
+        // ∫ sqrt(x²+1) dx  should succeed (quadratic P)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let p_expr = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(1_i32)]);
+        let sqrt_p = pool.func("sqrt", vec![p_expr]);
+        let result = integrate(sqrt_p, x, &pool);
+        match &result {
+            Ok(r) => println!("sqrt(x^2+1) integral = {}", pool.display(r.value)),
+            Err(e) => println!("ERROR: {e}"),
+        }
+        assert!(result.is_ok(), "∫ sqrt(x²+1) dx failed: {:?}", result);
     }
 }

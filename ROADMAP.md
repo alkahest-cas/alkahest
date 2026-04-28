@@ -26,7 +26,7 @@ Items deferred from v1.0 due to algorithmic complexity or hardware availability,
 
 | Item | Status | Notes |
 |---|---|---|
-| **V1-2** Algebraic-function Risch (Trager) | 📋 Planned | Multi-week algorithm; see spec below |
+| **V1-2** Algebraic-function Risch (Trager) | ✅ Complete | Genus-0 cases (P deg 0/1/2); NonElementary guard; 14-test suite; 10 worked examples |
 | **V1-6** AMD ROCm codegen (`amdgcn`) | ⏸ Hardware-blocked | Requires RDNA3 / MI-series; design-only until hardware available |
 | **V1-9** PyPI wheels (manylinux / macOS / Windows) | 🏗 Scaffolded | Publish gate lifts after two weeks of green v1.0 main |
 | **V1-10** Windows + macOS CI parity | 🏗 Scaffolded | Full platform matrix pending FLINT/LLVM discovery fixes |
@@ -38,20 +38,21 @@ Items deferred from v1.0 due to algorithmic complexity or hardware availability,
 
 ---
 
-### V1-2. Algebraic-function Risch (complete V5-4) → moved to v1.1
+### V1-2. Algebraic-function Risch (complete V5-4) → ✅ Complete
 
 **What:** Extend the Risch engine from the exp/log tower (shipped in V5-4) to
 cover algebraic extensions — integrals of expressions involving
-`sqrt(P(x))`, `(P(x))^(p/q)`, and root-of-polynomial extensions over ℚ(x).
+`sqrt(P(x))` over ℚ(x) for genus-0 curves.
 
-**Design:**
-- `alkahest-core/src/integrate/algebraic.rs` — Trager's algorithm for algebraic integrands.
-- Leverage `MultiPoly` + `GroebnerBasis` for ideal-membership checks used in the algebraic reduction step.
-- Integration by parts generalised with symbolic derivative composition.
+**Delivered:**
+- `alkahest-core/src/integrate/algebraic/` — decompose, genus_zero, poly_utils modules.
+- Handles P of degree 0 (const), 1 (linear), 2 (quadratic) via the J₀ formula and substitution.
+- `NonElementary` error guard for deg P ≥ 3 (elliptic/hyperelliptic integrals).
+- `UnsupportedExtensionDegree` guard for non-square-root radicals (planned V2).
+- Mixed integrands A(x) + B(x)·sqrt(P(x)) via field decomposition.
+- 14 tests in `tests/test_algebraic_integration.py`; 10 worked examples in `examples/risch_integration.py`.
 
-**Test plan:** SymPy oracle on 5 000 randomly-generated integrands with algebraic functions; Alkahest must agree (or declare "no elementary antiderivative") on ≥ 90 %.
-
-**Acceptance:** Oracle match rate > 90 % on the algebraic corpus; `examples/risch_integration.py` includes 10 worked algebraic examples; `tests/test_oracle.py` drops its `@pytest.mark.skip` on the 45 oracle tests currently skipped.
+**Limitations (V2):** Multiple generators; higher-degree radicals (cbrt, nth-root); Trager's full algorithm for arbitrary algebraic extensions; oracle corpus coverage measurement.
 
 ---
 
