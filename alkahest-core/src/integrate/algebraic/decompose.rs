@@ -10,8 +10,8 @@
 //!   - Inversion:      (a,b)⁻¹       = (a/(a²−b²P), −b/(a²−b²P))
 //!   - Integer power:  (a,b)^n via squaring
 
+use super::poly_utils::{as_integer, is_free_of_subexpr};
 use crate::kernel::{ExprData, ExprId, ExprPool};
-use super::poly_utils::{is_free_of_subexpr, as_integer};
 
 // ---------------------------------------------------------------------------
 // Field element: a + b*sqrt(P)
@@ -25,16 +25,28 @@ pub struct FieldElem {
 
 impl FieldElem {
     pub fn pure_rational(a: ExprId, pool: &ExprPool) -> Self {
-        FieldElem { a, b: pool.integer(0_i32) }
+        FieldElem {
+            a,
+            b: pool.integer(0_i32),
+        }
     }
     pub fn pure_sqrt(b: ExprId, pool: &ExprPool) -> Self {
-        FieldElem { a: pool.integer(0_i32), b }
+        FieldElem {
+            a: pool.integer(0_i32),
+            b,
+        }
     }
     pub fn one(pool: &ExprPool) -> Self {
-        FieldElem { a: pool.integer(1_i32), b: pool.integer(0_i32) }
+        FieldElem {
+            a: pool.integer(1_i32),
+            b: pool.integer(0_i32),
+        }
     }
     pub fn zero(pool: &ExprPool) -> Self {
-        FieldElem { a: pool.integer(0_i32), b: pool.integer(0_i32) }
+        FieldElem {
+            a: pool.integer(0_i32),
+            b: pool.integer(0_i32),
+        }
     }
 
     pub fn add(self, other: FieldElem, pool: &ExprPool) -> FieldElem {

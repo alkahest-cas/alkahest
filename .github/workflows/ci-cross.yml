@@ -6,6 +6,10 @@ name: ci-cross
 # windows-2022 (GNU toolchain via MSYS2): parallel + egraph.
 #   jit excluded on Windows: inkwell pins LLVM 15; MSYS2 currently ships LLVM 17+.
 #   Revisit when inkwell adds an LLVM 17 feature flag.
+#
+# Windows cargo steps use `shell: msys2 {0}` so that gmp-mpfr-sys (which
+# always builds GMP from source on Windows) has access to sh, m4, make, and
+# the rest of the POSIX build toolchain without PATH translation issues.
 
 on:
   pull_request:
@@ -30,9 +34,7 @@ jobs:
             python: true
           - os: windows-2022
             # GNU toolchain required: gmp-mpfr-sys (used by rug) does not
-            # support the MSVC target.  stable-x86_64-pc-windows-gnu gives a
-            # native MinGW64 host so MSYS2 libraries are found without
-            # cross-compilation configuration.
+            # support the MSVC target.
             rust_toolchain: stable-x86_64-pc-windows-gnu
             features: "parallel egraph"
             python: false
@@ -63,23 +65,15 @@ jobs:
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
-          update: false
+          update: true
+          path-type: inherit
           # flint pulls in gmp, mpfr, mpc as dependencies.
-          # m4 + autoconf are required by gmp-mpfr-sys, which always builds
-          # GMP from source on Windows (even with MinGW).
+          # m4 + make are required by gmp-mpfr-sys, which always builds GMP
+          # from bundled source on Windows.
           install: >-
             mingw-w64-x86_64-flint
             m4
-            autoconf
-
-      - name: Configure MinGW64 environment (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          echo "C:/msys64/mingw64/bin" >> $GITHUB_PATH
-          echo "C:/msys64/usr/bin" >> $GITHUB_PATH
-          echo "PKG_CONFIG_PATH=C:/msys64/mingw64/lib/pkgconfig" >> $GITHUB_ENV
-          echo "PKG_CONFIG_SYSROOT_DIR=C:/msys64/mingw64" >> $GITHUB_ENV
+            make
 
       # ── Cargo cache ──────────────────────────────────────────────────────────
       - name: Cache Cargo registry
@@ -92,14 +86,35 @@ jobs:
           key: ${{ runner.os }}-cargo-cross-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-cross-
 
-      # ── Rust build + test ────────────────────────────────────────────────────
+      # ── Rust build + test (macOS) ────────────────────────────────────────────
       - name: cargo build (no-default-features baseline)
+        if: runner.os == 'macOS'
         run: cargo build -p alkahest-core --no-default-features
 
       - name: cargo build (${{ matrix.features }})
+        if: runner.os == 'macOS'
         run: cargo build -p alkahest-core --features "${{ matrix.features }}"
 
       - name: cargo test (${{ matrix.features }})
+        if: runner.os == 'macOS'
+        run: cargo test -p alkahest-core --features "${{ matrix.features }}"
+
+      # ── Rust build + test (Windows, inside MSYS2 shell) ─────────────────────
+      # Running inside msys2 {0} gives gmp-mpfr-sys access to sh, m4, make
+      # without Windows PATH translation issues.
+      - name: cargo build (no-default-features baseline) [Windows]
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: cargo build -p alkahest-core --no-default-features
+
+      - name: cargo build (${{ matrix.features }}) [Windows]
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: cargo build -p alkahest-core --features "${{ matrix.features }}"
+
+      - name: cargo test (${{ matrix.features }}) [Windows]
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
         run: cargo test -p alkahest-core --features "${{ matrix.features }}"
 
       # ── Python tests (macOS only) ────────────────────────────────────────────

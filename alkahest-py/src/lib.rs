@@ -2804,7 +2804,11 @@ impl PyGroebnerBasis {
         }
         drop(pool);
         let inner = GroebnerBasis::compute(gb_polys, MonomialOrder::Lex);
-        Ok(PyGroebnerBasis { inner, pool: Some(pool_py), var_ids })
+        Ok(PyGroebnerBasis {
+            inner,
+            pool: Some(pool_py),
+            var_ids,
+        })
     }
 
     fn reduce(&self, p: PyRef<PyGbPoly>) -> PyGbPoly {
