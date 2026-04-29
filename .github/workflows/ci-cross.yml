@@ -1,11 +1,11 @@
 name: ci-cross
 
-# V1-10 scaffold: Windows + macOS CI parity check.
+# V1-10: Windows + macOS CI parity.
 #
-# Runs a small subset of the test suite on non-Linux runners so the
-# `#[cfg(unix)]` / hard-coded `/tmp` / path-separator audit has live
-# signal.  Full parity is a follow-up once FLINT/LLVM discovery is
-# proven on all three platforms.
+# macOS-14 (Apple Silicon): full feature set (parallel, egraph, jit) + Python tests.
+# windows-2022 (GNU toolchain via MSYS2): parallel + egraph.
+#   jit excluded on Windows: inkwell pins LLVM 15; MSYS2 currently ships LLVM 17+.
+#   Revisit when inkwell adds an LLVM 17 feature flag.
 
 on:
   pull_request:
@@ -18,26 +18,102 @@ env:
 
 jobs:
   cross:
-    name: cross ${{ matrix.os }}
+    name: cross / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    # Windows is excluded: gmp-mpfr-sys explicitly refuses to build on MSVC
-    # ("Windows MSVC target is not supported") even for cargo check, because
-    # build scripts always run.  Windows parity requires switching to the GNU
-    # toolchain + MSYS2; tracked as a future milestone.
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14]
+        include:
+          - os: macos-14
+            rust_toolchain: stable
+            features: "parallel egraph jit"
+            python: true
+          - os: windows-2022
+            # GNU toolchain required: gmp-mpfr-sys (used by rug) does not
+            # support the MSVC target.  stable-x86_64-pc-windows-gnu gives a
+            # native MinGW64 host so MSYS2 libraries are found without
+            # cross-compilation configuration.
+            rust_toolchain: stable-x86_64-pc-windows-gnu
+            features: "parallel egraph"
+            python: false
+
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # ── Rust toolchain ───────────────────────────────────────────────────────
+      - name: Install Rust (${{ matrix.rust_toolchain }})
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ matrix.rust_toolchain }}
 
+      # ── Platform dependencies ────────────────────────────────────────────────
       - name: Install FLINT (macOS)
+        if: runner.os == 'macOS'
         run: brew install flint
 
-      - name: cargo build (core, no extras)
+      - name: Install LLVM 15 (macOS, for jit feature)
+        if: runner.os == 'macOS'
+        run: |
+          brew install llvm@15
+          echo "LLVM_SYS_150_PREFIX=$(brew --prefix llvm@15)" >> $GITHUB_ENV
+          echo "DYLD_LIBRARY_PATH=$(brew --prefix llvm@15)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" >> $GITHUB_ENV
+
+      - name: Set up MSYS2 + FLINT (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: false
+          # flint pulls in gmp, mpfr, mpc as dependencies.
+          install: >-
+            mingw-w64-x86_64-flint
+
+      - name: Configure MinGW64 environment (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          echo "C:/msys64/mingw64/bin" >> $GITHUB_PATH
+          echo "PKG_CONFIG_PATH=C:/msys64/mingw64/lib/pkgconfig" >> $GITHUB_ENV
+          echo "PKG_CONFIG_SYSROOT_DIR=C:/msys64/mingw64" >> $GITHUB_ENV
+
+      # ── Cargo cache ──────────────────────────────────────────────────────────
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-cross-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-cross-
+
+      # ── Rust build + test ────────────────────────────────────────────────────
+      - name: cargo build (no-default-features baseline)
         run: cargo build -p alkahest-core --no-default-features
 
-      - name: cargo test (pool + kernel)
-        run: cargo test -p alkahest-core --lib kernel::pool_persist --no-default-features
+      - name: cargo build (${{ matrix.features }})
+        run: cargo build -p alkahest-core --features "${{ matrix.features }}"
+
+      - name: cargo test (${{ matrix.features }})
+        run: cargo test -p alkahest-core --features "${{ matrix.features }}"
+
+      # ── Python tests (macOS only) ────────────────────────────────────────────
+      - name: Install Python
+        if: matrix.python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python tooling
+        if: matrix.python
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install maturin pytest hypothesis ruff
+
+      - name: maturin develop
+        if: matrix.python
+        run: .venv/bin/maturin develop --manifest-path alkahest-py/Cargo.toml
+
+      - name: pytest
+        if: matrix.python
+        run: .venv/bin/pytest tests/ -x -q

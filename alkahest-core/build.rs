@@ -16,5 +16,14 @@ fn main() {
         }
     }
 
+    // On Windows with the MinGW64 toolchain (MSYS2), FLINT lives under the
+    // MSYS2 MinGW64 prefix.  Override with MSYS2_PREFIX if your installation
+    // differs from the GitHub Actions default (C:/msys64/mingw64).
+    if cfg!(target_os = "windows") {
+        let prefix = std::env::var("MSYS2_PREFIX")
+            .unwrap_or_else(|_| "C:/msys64/mingw64".to_string());
+        println!("cargo:rustc-link-search=native={prefix}/lib");
+    }
+
     println!("cargo:rustc-link-lib=flint");
 }
