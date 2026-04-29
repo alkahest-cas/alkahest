@@ -120,6 +120,7 @@ fn integrate_b_sqrt_linear(
 }
 
 /// Integrate when B is a polynomial (possibly with constant coefficients) and P is linear.
+#[allow(clippy::too_many_arguments)]
 fn try_poly_b_linear(
     b_expr: ExprId,
     p: ExprId,
@@ -227,7 +228,7 @@ fn try_poly_b_linear(
             // (-c)^(k-j)
             let neg_c_pow = neg_c_power(&c_int, k - j);
             // 2 / (a^(k+1) * (2j+3))
-            let denom = a_pow.clone() * rug::Integer::from(2 * j + 3);
+            let denom = a_pow * rug::Integer::from(2 * j + 3);
             // coefficient = b_k * C(k,j) * (-c)^(k-j) * 2 / (a^(k+1)*(2j+3))
             let numer = b_k.clone() * binom * neg_c_pow * 2;
             if numer == 0 {
@@ -262,6 +263,7 @@ fn try_poly_b_linear(
 }
 
 /// Integrate when B involves `1/P^k` times a polynomial and P is linear.
+#[allow(clippy::too_many_arguments)]
 fn try_rational_b_linear(
     b_expr: ExprId,
     p: ExprId,
@@ -408,6 +410,7 @@ fn j0_quadratic(
 }
 
 /// Integrate polynomial B(x) times sqrt(quadratic P).
+#[allow(clippy::too_many_arguments)]
 fn try_poly_b_quadratic(
     b_expr: ExprId,
     p: ExprId,
@@ -444,7 +447,7 @@ fn try_poly_b_quadratic(
             IntegrationError::NotImplemented("degree-1 B coefficients not extractable".to_string())
         })?;
         let e_int = b_coeffs
-            .get(0)
+            .first()
             .cloned()
             .unwrap_or_else(|| rug::Integer::from(0));
         let d_int = b_coeffs
@@ -525,6 +528,7 @@ fn integrate_sqrt_quadratic_base(
 /// - B = P^(-1/2) (stored as Pow(P, Rational(-1,2))) → should be caught by decomposition
 ///
 /// The key cases here: B contains negative powers of P.
+#[allow(clippy::too_many_arguments)]
 fn try_rational_b_quadratic(
     b_expr: ExprId,
     p: ExprId,
@@ -577,6 +581,7 @@ fn try_rational_b_quadratic(
 }
 
 /// Integrate P^n · sqrt(P) dx = ∫ P^(n + 1/2) dx for quadratic P.
+#[allow(clippy::too_many_arguments)]
 fn integrate_p_power_sqrt_quad(
     n: i64,
     p: ExprId,
