@@ -748,8 +748,13 @@ mod tests {
         let sin2 = pool.pow(sin_x, pool.integer(2_i32));
         let cos2 = pool.pow(cos_x, pool.integer(2_i32));
         let expr = pool.add(vec![sin2, cos2]);
-        let result = simplify_egraph(expr, &pool);
-        assert_eq!(result.value, pool.integer(1_i32));
+        #[cfg(feature = "egraph")]
+        {
+            let result = simplify_egraph(expr, &pool);
+            assert_eq!(result.value, pool.integer(1_i32));
+        }
+        #[cfg(not(feature = "egraph"))]
+        let _ = expr;
     }
 
     // V1-15: exp(log(x)) → x
@@ -758,8 +763,13 @@ mod tests {
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
         let expr = pool.func("exp", vec![pool.func("log", vec![x])]);
-        let result = simplify_egraph(expr, &pool);
-        assert_eq!(result.value, x);
+        #[cfg(feature = "egraph")]
+        {
+            let result = simplify_egraph(expr, &pool);
+            assert_eq!(result.value, x);
+        }
+        #[cfg(not(feature = "egraph"))]
+        let _ = expr;
     }
 
     // V1-15: log(exp(x)) → x
@@ -768,8 +778,13 @@ mod tests {
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
         let expr = pool.func("log", vec![pool.func("exp", vec![x])]);
-        let result = simplify_egraph(expr, &pool);
-        assert_eq!(result.value, x);
+        #[cfg(feature = "egraph")]
+        {
+            let result = simplify_egraph(expr, &pool);
+            assert_eq!(result.value, x);
+        }
+        #[cfg(not(feature = "egraph"))]
+        let _ = expr;
     }
 
     // V1-15: opt-out trig rules via config
