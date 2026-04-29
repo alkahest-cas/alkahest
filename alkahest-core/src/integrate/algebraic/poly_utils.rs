@@ -70,15 +70,13 @@ pub fn poly_degree_in(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<u32>
             }
             Some(total)
         }
-        ExprData::Pow { base, exp } if base == var => {
-            match pool.get(exp) {
-                ExprData::Integer(n) => {
-                    let k: Option<u32> = n.0.to_u32();
-                    k
-                }
-                _ => None,
+        ExprData::Pow { base, exp } if base == var => match pool.get(exp) {
+            ExprData::Integer(n) => {
+                let k: Option<u32> = n.0.to_u32();
+                k
             }
-        }
+            _ => None,
+        },
         ExprData::Pow { base, exp } if is_free_of(base, var, pool) => {
             if is_free_of(exp, var, pool) {
                 Some(0)
@@ -195,7 +193,11 @@ fn fill_coeffs(expr: ExprId, var: ExprId, coeffs: &mut Vec<ExprId>, pool: &ExprP
                         coeffs.push(pool.integer(0_i32));
                     }
                     if !is_zero_expr(*sc, pool) {
-                        let term = if is_one_expr(c_factor, pool) { *sc } else { pool.mul(vec![c_factor, *sc]) };
+                        let term = if is_one_expr(c_factor, pool) {
+                            *sc
+                        } else {
+                            pool.mul(vec![c_factor, *sc])
+                        };
                         add_to_slot(&mut coeffs[i], term, pool);
                     }
                 }
@@ -221,11 +223,7 @@ fn fill_coeffs(expr: ExprId, var: ExprId, coeffs: &mut Vec<ExprId>, pool: &ExprP
 /// Extract (a, b) from a linear polynomial `a*var + b`.
 /// Returns ExprIds for integer coefficients via UniPoly, so they're always
 /// canonical Integer nodes (no unsimplified `Add([0,n])` artefacts).
-pub fn as_linear(
-    expr: ExprId,
-    var: ExprId,
-    pool: &ExprPool,
-) -> Option<(ExprId, ExprId)> {
+pub fn as_linear(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
     use crate::poly::UniPoly;
     let up = UniPoly::from_symbolic(expr, var, pool).ok()?;
     let cs = up.coefficients();
@@ -265,11 +263,7 @@ pub fn as_quadratic(
 
 /// Get (numerator, denominator) integer coefficients from a UniPoly.
 /// Used to extract rational coefficients from the radicand.
-pub fn poly_int_coeffs(
-    expr: ExprId,
-    var: ExprId,
-    pool: &ExprPool,
-) -> Option<Vec<Integer>> {
+pub fn poly_int_coeffs(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<Vec<Integer>> {
     use crate::poly::UniPoly;
     let up = UniPoly::from_symbolic(expr, var, pool).ok()?;
     Some(up.coefficients())

@@ -135,8 +135,8 @@ pub mod experimental {
     #[cfg(feature = "parallel")]
     pub use crate::simplify::parallel::{simplify_par, simplify_par_with_config};
 
-    #[cfg(feature = "groebner")]
-    pub use crate::poly::groebner::{GbPoly, GroebnerBasis, MonomialOrder};
     #[cfg(feature = "groebner-cuda")]
     pub use crate::poly::groebner::GpuGroebnerError;
+    #[cfg(feature = "groebner")]
+    pub use crate::poly::groebner::{GbPoly, GroebnerBasis, MonomialOrder};
 }

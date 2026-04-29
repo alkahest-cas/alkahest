@@ -43,15 +43,14 @@ use alkahest_core::{
 
 #[cfg(feature = "cuda")]
 use alkahest_core::compile_cuda as core_compile_cuda;
-use alkahest_core::{
-    diff as core_diff, diff_forward as core_diff_forward, integrate as core_integrate,
-    load_from, log_exp_rules, match_pattern as core_match_pattern, simplify as core_simplify,
-    simplify_egraph as core_simplify_egraph,
-    simplify_egraph_with as core_simplify_egraph_with, simplify_with as core_simplify_with,
-    trig_rules, AlkahestError as AlkahestErrorTrait, DiffError, EgraphConfig, IntegrationError,
-    IoError, PatternRule, SimplifyConfig, SizeCost,
-};
 use alkahest_core::kernel::expr::PredicateKind;
+use alkahest_core::{
+    diff as core_diff, diff_forward as core_diff_forward, integrate as core_integrate, load_from,
+    log_exp_rules, match_pattern as core_match_pattern, simplify as core_simplify,
+    simplify_egraph as core_simplify_egraph, simplify_egraph_with as core_simplify_egraph_with,
+    simplify_with as core_simplify_with, trig_rules, AlkahestError as AlkahestErrorTrait,
+    DiffError, EgraphConfig, IntegrationError, IoError, PatternRule, SimplifyConfig, SizeCost,
+};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 use std::collections::HashMap;
@@ -525,7 +524,11 @@ impl PyExpr {
 
         macro_rules! wrap {
             ($id:expr) => {
-                PyExpr { id: $id, pool: self.pool.clone_ref(py) }.into_py(py)
+                PyExpr {
+                    id: $id,
+                    pool: self.pool.clone_ref(py),
+                }
+                .into_py(py)
             };
         }
 
@@ -541,18 +544,23 @@ impl PyExpr {
                 PyList::new_bound(py, vec!["symbol".into_py(py), name.into_py(py)]).into_py(py)
             }
             alkahest_core::ExprData::Integer(n) => {
-                PyList::new_bound(py, vec!["integer".into_py(py), n.0.to_string().into_py(py)]).into_py(py)
+                PyList::new_bound(py, vec!["integer".into_py(py), n.0.to_string().into_py(py)])
+                    .into_py(py)
             }
-            alkahest_core::ExprData::Rational(r) => {
-                PyList::new_bound(py, vec![
+            alkahest_core::ExprData::Rational(r) => PyList::new_bound(
+                py,
+                vec![
                     "rational".into_py(py),
                     r.0.numer().to_string().into_py(py),
                     r.0.denom().to_string().into_py(py),
-                ]).into_py(py)
-            }
-            alkahest_core::ExprData::Float(f) => {
-                PyList::new_bound(py, vec!["float".into_py(py), f.inner.to_string().into_py(py)]).into_py(py)
-            }
+                ],
+            )
+            .into_py(py),
+            alkahest_core::ExprData::Float(f) => PyList::new_bound(
+                py,
+                vec!["float".into_py(py), f.inner.to_string().into_py(py)],
+            )
+            .into_py(py),
             alkahest_core::ExprData::Add(args) => {
                 PyList::new_bound(py, vec!["add".into_py(py), ids_to_pylist!(args)]).into_py(py)
             }
@@ -562,13 +570,11 @@ impl PyExpr {
             alkahest_core::ExprData::Pow { base, exp } => {
                 PyList::new_bound(py, vec!["pow".into_py(py), wrap!(base), wrap!(exp)]).into_py(py)
             }
-            alkahest_core::ExprData::Func { name, args } => {
-                PyList::new_bound(py, vec![
-                    "func".into_py(py),
-                    name.into_py(py),
-                    ids_to_pylist!(args),
-                ]).into_py(py)
-            }
+            alkahest_core::ExprData::Func { name, args } => PyList::new_bound(
+                py,
+                vec!["func".into_py(py), name.into_py(py), ids_to_pylist!(args)],
+            )
+            .into_py(py),
             alkahest_core::ExprData::Piecewise { branches, default } => {
                 let br_items: Vec<PyObject> = branches
                     .iter()
@@ -576,11 +582,15 @@ impl PyExpr {
                         PyTuple::new_bound(py, vec![wrap!(cond), wrap!(val)]).into_py(py)
                     })
                     .collect();
-                PyList::new_bound(py, vec![
-                    "piecewise".into_py(py),
-                    PyList::new_bound(py, br_items).into_py(py),
-                    wrap!(default),
-                ]).into_py(py)
+                PyList::new_bound(
+                    py,
+                    vec![
+                        "piecewise".into_py(py),
+                        PyList::new_bound(py, br_items).into_py(py),
+                        wrap!(default),
+                    ],
+                )
+                .into_py(py)
             }
             alkahest_core::ExprData::Predicate { kind, args } => {
                 let kind_str = match kind {
@@ -596,11 +606,15 @@ impl PyExpr {
                     PredicateKind::True => "true",
                     PredicateKind::False => "false",
                 };
-                PyList::new_bound(py, vec![
-                    "predicate".into_py(py),
-                    kind_str.into_py(py),
-                    ids_to_pylist!(args),
-                ]).into_py(py)
+                PyList::new_bound(
+                    py,
+                    vec![
+                        "predicate".into_py(py),
+                        kind_str.into_py(py),
+                        ids_to_pylist!(args),
+                    ],
+                )
+                .into_py(py)
             }
         }
     }
@@ -900,13 +914,19 @@ impl PyEgraphConfig {
     }
 
     #[getter]
-    fn shrink_iters(&self) -> usize { self.inner.shrink_iters }
+    fn shrink_iters(&self) -> usize {
+        self.inner.shrink_iters
+    }
 
     #[getter]
-    fn explore_iters(&self) -> usize { self.inner.explore_iters }
+    fn explore_iters(&self) -> usize {
+        self.inner.explore_iters
+    }
 
     #[getter]
-    fn const_fold_iters(&self) -> usize { self.inner.const_fold_iters }
+    fn const_fold_iters(&self) -> usize {
+        self.inner.const_fold_iters
+    }
 
     #[getter]
     fn node_limit(&self) -> Option<usize> {

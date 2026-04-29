@@ -5,12 +5,12 @@
 //!
 //! Reference: Bronstein (2005) §6.3–6.5; standard CAS table integrals.
 
-use crate::deriv::log::{DerivationLog, RewriteStep};
-use crate::integrate::engine::IntegrationError;
-use crate::kernel::{ExprData, ExprId, ExprPool};
 use super::poly_utils::{
     as_integer, as_linear, as_quadratic, is_free_of, poly_degree_in, poly_int_coeffs,
 };
+use crate::deriv::log::{DerivationLog, RewriteStep};
+use crate::integrate::engine::IntegrationError;
+use crate::kernel::{ExprData, ExprId, ExprPool};
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -191,7 +191,10 @@ fn try_poly_b_linear(
     let p_coeffs_int = poly_int_coeffs(p, var, pool).ok_or_else(|| {
         IntegrationError::NotImplemented("P coefficients not extractable".to_string())
     })?;
-    let c_int = p_coeffs_int.first().cloned().unwrap_or_else(|| rug::Integer::from(0));
+    let c_int = p_coeffs_int
+        .first()
+        .cloned()
+        .unwrap_or_else(|| rug::Integer::from(0));
 
     if a_int == 0 {
         return Err(IntegrationError::NotImplemented(
@@ -314,7 +317,13 @@ fn try_rational_b_linear(
                         let denom = pool.mul(vec![a, pool.integer(two_n3)]);
                         let denom_inv = pool.pow(denom, pool.integer(-1_i32));
                         let p_n1 = p_integer_power(p, n + 1, pool);
-                        let result = pool.mul(vec![pool.integer(2_i32), const_factor, denom_inv, p_n1, sqrt_id]);
+                        let result = pool.mul(vec![
+                            pool.integer(2_i32),
+                            const_factor,
+                            denom_inv,
+                            p_n1,
+                            sqrt_id,
+                        ]);
                         log.push(RewriteStep::simple("alg_rational_linear", b_expr, result));
                         return Ok(result);
                     }
@@ -355,15 +364,12 @@ fn integrate_b_sqrt_quadratic(
 
     // Dispatch based on the form of B
     // Try B = polynomial first
-    if let Ok(result) =
-        try_poly_b_quadratic(b_expr, p, sqrt_id, var, a, b_coeff, c, pool, log)
-    {
+    if let Ok(result) = try_poly_b_quadratic(b_expr, p, sqrt_id, var, a, b_coeff, c, pool, log) {
         return Ok(result);
     }
 
     // Try B = 1/(something) patterns (rational)
-    if let Ok(result) =
-        try_rational_b_quadratic(b_expr, p, sqrt_id, var, a, b_coeff, c, pool, log)
+    if let Ok(result) = try_rational_b_quadratic(b_expr, p, sqrt_id, var, a, b_coeff, c, pool, log)
     {
         return Ok(result);
     }
@@ -435,12 +441,16 @@ fn try_poly_b_quadratic(
     //                 (derived from integration by parts)
     if deg == 1 {
         let b_coeffs = poly_int_coeffs(b_expr, var, pool).ok_or_else(|| {
-            IntegrationError::NotImplemented(
-                "degree-1 B coefficients not extractable".to_string(),
-            )
+            IntegrationError::NotImplemented("degree-1 B coefficients not extractable".to_string())
         })?;
-        let e_int = b_coeffs.get(0).cloned().unwrap_or_else(|| rug::Integer::from(0));
-        let d_int = b_coeffs.get(1).cloned().unwrap_or_else(|| rug::Integer::from(0));
+        let e_int = b_coeffs
+            .get(0)
+            .cloned()
+            .unwrap_or_else(|| rug::Integer::from(0));
+        let d_int = b_coeffs
+            .get(1)
+            .cloned()
+            .unwrap_or_else(|| rug::Integer::from(0));
 
         let e_expr = pool.integer(e_int);
         let d_expr = pool.integer(d_int);
@@ -530,9 +540,7 @@ fn try_rational_b_quadratic(
     if let ExprData::Pow { base, exp } = pool.get(b_expr) {
         if base == p {
             if let Some(n) = as_integer(exp, pool) {
-                return integrate_p_power_sqrt_quad(
-                    n, p, sqrt_id, var, a, b_coeff, c, pool, log,
-                );
+                return integrate_p_power_sqrt_quad(n, p, sqrt_id, var, a, b_coeff, c, pool, log);
             }
         }
     }
@@ -550,8 +558,9 @@ fn try_rational_b_quadratic(
                             1 => const_parts[0],
                             _ => pool.mul(const_parts),
                         };
-                        let int_pn_sqrt =
-                            integrate_p_power_sqrt_quad(n, p, sqrt_id, var, a, b_coeff, c, pool, log)?;
+                        let int_pn_sqrt = integrate_p_power_sqrt_quad(
+                            n, p, sqrt_id, var, a, b_coeff, c, pool, log,
+                        )?;
                         let result = pool.mul(vec![const_factor, int_pn_sqrt]);
                         return Ok(result);
                     }

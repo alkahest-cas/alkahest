@@ -95,9 +95,7 @@ fn collect_generators(expr: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>) {
 /// Extract the radicand from a `sqrt(P)` or `P^(1/2)` expression.
 fn get_radicand(expr: ExprId, pool: &ExprPool) -> Option<ExprId> {
     match pool.get(expr) {
-        ExprData::Func { ref name, ref args } if name == "sqrt" && args.len() == 1 => {
-            Some(args[0])
-        }
+        ExprData::Func { ref name, ref args } if name == "sqrt" && args.len() == 1 => Some(args[0]),
         ExprData::Pow { base, exp } => {
             // Check for Rational(1/2)
             match pool.get(exp) {
@@ -200,7 +198,11 @@ pub fn integrate_algebraic(
     // Step 7: Simplify and record derivation
     let simplified = simplify(raw, pool);
     log = log.merge(simplified.log);
-    log.push(RewriteStep::simple("algebraic_risch", expr, simplified.value));
+    log.push(RewriteStep::simple(
+        "algebraic_risch",
+        expr,
+        simplified.value,
+    ));
 
     Ok(DerivedExpr::with_log(simplified.value, log))
 }
