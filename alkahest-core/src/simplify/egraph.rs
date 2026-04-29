@@ -101,10 +101,9 @@ mod backend {
     // -----------------------------------------------------------------------
 
     fn egglog_program(expr_str: &str, config: &super::EgraphConfig) -> String {
-        let node_limit_line = config
-            .node_limit
-            .map(|n| format!("(set-option node_limit {n})\n"))
-            .unwrap_or_default();
+        // egglog 0.4 does not expose a node_limit option; the field is
+        // reserved for when a future version adds support.
+        let node_limit_line = String::new();
         let iter_limit_line = config
             .iter_limit
             .map(|n| format!("(set-option iteration_limit {n})\n"))

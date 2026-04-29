@@ -14,6 +14,7 @@ egraph = ["alkahest-core/egraph"]
 numpy = ["dep:numpy"]
 parallel = ["alkahest-core/parallel"]
 groebner = ["alkahest-core/groebner"]
+groebner-cuda = ["alkahest-core/groebner-cuda"]
 cuda = ["alkahest-core/cuda"]
 
 [dependencies]

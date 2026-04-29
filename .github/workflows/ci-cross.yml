@@ -65,14 +65,19 @@ jobs:
           msystem: MINGW64
           update: false
           # flint pulls in gmp, mpfr, mpc as dependencies.
+          # m4 + autoconf are required by gmp-mpfr-sys, which always builds
+          # GMP from source on Windows (even with MinGW).
           install: >-
             mingw-w64-x86_64-flint
+            m4
+            autoconf
 
       - name: Configure MinGW64 environment (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
           echo "C:/msys64/mingw64/bin" >> $GITHUB_PATH
+          echo "C:/msys64/usr/bin" >> $GITHUB_PATH
           echo "PKG_CONFIG_PATH=C:/msys64/mingw64/lib/pkgconfig" >> $GITHUB_ENV
           echo "PKG_CONFIG_SYSROOT_DIR=C:/msys64/mingw64" >> $GITHUB_ENV
 
