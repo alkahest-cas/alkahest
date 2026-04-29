@@ -4,7 +4,7 @@
 //! algebraic subterms: `sqrt(P(x))`, `P(x)^(p/q)`, and rational combinations
 //! thereof over Q(x).
 //!
-//! Supports degree-2 algebraic extensions K = Q(x)[y]/(y² - P(x)):
+//! Supports degree-2 algebraic extensions K = Q(x)\[y\]/(y² - P(x)):
 //! - P of degree 0 (constant): trivial
 //! - P of degree 1 (linear): complete elementary integration via substitution
 //! - P of degree 2 (quadratic): genus-0 curve, always elementary

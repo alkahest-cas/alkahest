@@ -4,7 +4,7 @@
 //! and the expression to decompose, this module returns `(A, B)` such that
 //! `expr == A + B * sqrt_id` where A and B are free of the sqrt generator.
 //!
-//! Arithmetic in the algebraic field K = Q(x)[y]/(y² - P):
+//! Arithmetic in the algebraic field K = Q(x)\[y\]/(y² - P):
 //!   - Addition:       (a,b) + (c,d) = (a+c, b+d)
 //!   - Multiplication: (a,b)·(c,d)   = (a·c + b·d·P, a·d + b·c)
 //!   - Inversion:      (a,b)⁻¹       = (a/(a²−b²P), −b/(a²−b²P))
