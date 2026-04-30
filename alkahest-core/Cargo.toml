@@ -27,6 +27,7 @@ groebner-cuda = ["groebner", "dep:cudarc"]
 
 [dependencies]
 rug = { version = "1", features = ["integer", "rational", "float"] }
+gmp-mpfr-sys = { version = "1", features = ["force-cross"] }
 egglog  = { version = "0.4", optional = true }
 inkwell = { version = "0.9", features = ["llvm15-0-prefer-dynamic"], optional = true }
 rayon   = { version = "1",   optional = true }

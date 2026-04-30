@@ -15,6 +15,9 @@ jobs:
       matrix:
         os: [ubuntu-22.04, macos-14, windows-2022]
         python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    env:
+      # PyO3 0.21 supports up to 3.12; this allows 3.13 via the stable ABI.
+      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
     steps:
       - uses: actions/checkout@v4
 
@@ -24,24 +27,30 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install system deps (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get install -y libflint-dev llvm-15-dev
-
       - name: Install system deps (macOS)
         if: runner.os == 'macOS'
-        run: brew install flint llvm@15
-
-      - name: Install system deps (Windows)
-        if: runner.os == 'Windows'
-        run: choco install llvm --version=15.0.7 -y
+        run: brew install flint
 
       - name: Install maturin
+        if: runner.os != 'Linux'
         run: pip install maturin
 
       - name: Build wheel (Linux manylinux)
         if: runner.os == 'Linux'
-        run: maturin build --release --strip --manylinux 2_28 --out dist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          args: --release --strip --out dist
+          manylinux: "2_28"
+          before-script-linux: |
+            yum install -y epel-release || dnf install -y epel-release || true
+            if ! yum install -y flint-devel 2>/dev/null && ! dnf install -y flint-devel 2>/dev/null; then
+              yum install -y gmp-devel mpfr-devel curl make gcc gcc-c++
+              curl -LO https://github.com/flintlib/flint/releases/download/v2.9.0/flint-2.9.0.tar.gz
+              tar xf flint-2.9.0.tar.gz
+              ( cd flint-2.9.0 && ./configure && make -j"$(nproc)" && make install )
+              ldconfig
+            fi
 
       - name: Build wheel (macOS universal2)
         if: runner.os == 'macOS'
