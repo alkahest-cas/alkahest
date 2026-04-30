@@ -6,13 +6,6 @@ on:
       - "v*"
   workflow_dispatch:
 
-# V1-9 scaffold: wheel build matrix for PyPI publication.
-#
-# Skeleton only — actual PyPI publish is disabled until the release
-# cadence and API freeze (V1-8) are in place.  Trigger manually via
-# workflow_dispatch on a tagged commit to exercise the build matrix
-# without publishing.
-
 jobs:
   build-wheels:
     name: wheel ${{ matrix.os }} / py${{ matrix.python }}
@@ -73,8 +66,9 @@ jobs:
     needs: build-wheels
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
-    # Disabled until V1-8 semver checks are green on main for 2+ weeks.
-    if-disabled: true
+    environment: release
+    permissions:
+      id-token: write
     steps:
       - uses: actions/download-artifact@v4
         with:
