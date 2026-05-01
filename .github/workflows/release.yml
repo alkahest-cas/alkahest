@@ -98,7 +98,13 @@ jobs:
           # path-type: inherit lets the MSYS2 shell see Windows PATH so cargo,
           # rustup, and Python (installed by setup-python) are reachable.
           path-type: inherit
-          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-flint mingw-w64-x86_64-pkg-config
+          # base-devel pulls in m4, autoconf, automake, libtool, make — all
+          # required by gmp-mpfr-sys's bundled GMP/MPFR configure scripts.
+          install: >-
+            base-devel
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-flint
+            mingw-w64-x86_64-pkg-config
 
       - name: Add GNU target and configure linker (Windows)
         if: runner.os == 'Windows'
