@@ -57,6 +57,13 @@ jobs:
       - name: Build wheel (Linux manylinux)
         if: runner.os == 'Linux'
         uses: PyO3/maturin-action@v1
+        env:
+          # maturin-action passes all runner env vars into the manylinux Docker
+          # container via -e flags, so these reach cargo unconditionally.
+          # Covers both the dnf-installed path (/usr/lib64) and the source-built
+          # path (/usr/local/lib) without relying on before-script exports.
+          RUSTFLAGS: "-L/usr/local/lib -L/usr/lib -L/usr/lib64"
+          PKG_CONFIG_PATH: "/usr/local/lib/pkgconfig:/usr/lib64/pkgconfig"
         with:
           command: build
           args: --release --strip --out dist
@@ -72,13 +79,6 @@ jobs:
               ( cd /tmp/flint-2.9.0 && ./configure --prefix=/usr/local && make -j"$(nproc)" && make install )
               ldconfig /usr/local/lib
             fi
-            # rust-lld in the manylinux sysroot doesn't search /usr/lib or
-            # /usr/local/lib by default; write a Cargo config so the flags are
-            # picked up regardless of how maturin invokes cargo.
-            mkdir -p "$GITHUB_WORKSPACE/.cargo"
-            printf '[target.x86_64-unknown-linux-gnu]\nrustflags = ["-L/usr/local/lib", "-L/usr/lib", "-L/usr/lib64"]\n' \
-              > "$GITHUB_WORKSPACE/.cargo/config.toml"
-            export PKG_CONFIG_PATH="/usr/local/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
       - name: Build wheel (macOS)
         if: runner.os == 'macOS'
