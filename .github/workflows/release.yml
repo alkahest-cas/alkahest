@@ -7,11 +7,12 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Linux: one job builds all Python versions at once via --find-interpreter.
-  # maturin-action runs inside a manylinux_2_28 Docker container that ships
-  # Python 3.9–3.13; the matrix python version lives on the host runner and
-  # is NOT visible inside Docker, so per-version Linux jobs always produced
-  # the same cp311 wheel regardless of the matrix entry.
+  # Linux: one job builds all Python versions at once. maturin-action runs
+  # inside a manylinux_2_28 Docker container that ships Python 3.9–3.13; the
+  # matrix python on the host runner is NOT visible inside Docker, so a
+  # per-version matrix all produces the same wheel. We pass each interpreter
+  # explicitly because --find-interpreter also matches PyPy and Python 3.14,
+  # which PyO3 0.21 cannot target.
   build-linux:
     name: wheels / ubuntu-22.04
     runs-on: ubuntu-22.04
@@ -37,7 +38,9 @@ jobs:
           PKG_CONFIG_PATH: "/usr/local/lib/pkgconfig:/usr/lib64/pkgconfig"
         with:
           command: build
-          args: --release --strip --out dist --find-interpreter
+          # Explicit CPython list — --find-interpreter also picks up PyPy and
+          # Python 3.14, which PyO3 0.21 cannot target.
+          args: --release --strip --out dist --interpreter python3.9 python3.10 python3.11 python3.12 python3.13
           manylinux: "2_28"
           before-script-linux: |
             dnf install -y epel-release || true
@@ -92,7 +95,10 @@ jobs:
         with:
           msystem: MINGW64
           update: false
-          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-flint
+          # path-type: inherit lets the MSYS2 shell see Windows PATH so cargo,
+          # rustup, and Python (installed by setup-python) are reachable.
+          path-type: inherit
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-flint mingw-w64-x86_64-pkg-config
 
       - name: Add GNU target and configure linker (Windows)
         if: runner.os == 'Windows'
@@ -112,13 +118,12 @@ jobs:
 
       - name: Build wheel (Windows)
         if: runner.os == 'Windows'
-        shell: bash
-        env:
-          PKG_CONFIG_PATH: "C:/msys64/mingw64/lib/pkgconfig"
-          CC: "C:/msys64/mingw64/bin/gcc.exe"
-          CXX: "C:/msys64/mingw64/bin/g++.exe"
+        # msys2 {0} runs inside the MINGW64 shell where gcc, sh, and the
+        # gmp-mpfr-sys configure script's ${host}-gcc are all on PATH. The
+        # previous Git-bash approach only set PATH in the outer shell, so the
+        # build script's `sh -c "configure ..."` couldn't find the compiler.
+        shell: msys2 {0}
         run: |
-          export PATH="C:/msys64/mingw64/bin:$PATH"
           maturin build --release --strip --target x86_64-pc-windows-gnu --out dist
 
       - name: Smoke test
