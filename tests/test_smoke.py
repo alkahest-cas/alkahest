@@ -2,11 +2,15 @@
 
 import warnings
 
-import pytest
 import alkahest
+import pytest
 from alkahest import (
+    HAS_EGRAPH,
     ArbBall,
     ExprPool,
+    MultiPoly,
+    RationalFunction,
+    UniPoly,
     compile_expr,
     cos,
     diff,
@@ -15,20 +19,13 @@ from alkahest import (
     integrate,
     interval_eval,
     jit_is_available,
-    log,
+    latex,
     parse,
     simplify,
     sin,
-    sqrt,
     to_lean,
-    UniPoly,
-    MultiPoly,
-    RationalFunction,
-    latex,
     unicode_str,
-    HAS_EGRAPH,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
