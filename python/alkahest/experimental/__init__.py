@@ -14,6 +14,7 @@ Current experimental surface:
 - :func:`solve` — polynomial system solver (V1-4, requires ``groebner`` feature)
 - :func:`compile_cuda` — NVPTX / CUDA JIT backend stub (V5-3, requires ``cuda`` feature)
 """
+
 from __future__ import annotations
 
 # Re-export everything from the stable module for convenience

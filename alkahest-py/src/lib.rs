@@ -6,9 +6,12 @@ use alkahest_core::{
     emit_stablehlo as core_emit_stablehlo,
     eval_interp as core_eval_interp,
     grad as core_grad,
+    guess_integer_relation as core_guess_integer_relation,
     // Phase 24 — Horner form
     horner as core_horner,
     jacobian as core_jacobian,
+    lattice_reduce_rows as core_lattice_reduce_rows,
+    lattice_reduce_rows_with_delta as core_lattice_reduce_rows_with_delta,
     lower_to_first_order as core_lower_to_first_order,
     pantelides as core_pantelides,
     // Phase 27 — poly_normal
@@ -34,6 +37,7 @@ use alkahest_core::{
     ExprPool,
     HybridODE,
     IntervalEval as CoreIntervalEval,
+    LatticeError,
     Matrix,
     MatrixError,
     MultiPoly,
@@ -41,6 +45,7 @@ use alkahest_core::{
     Pattern,
     Port,
     PrimitiveRegistry,
+    PslqError,
     RationalFunction,
     RealRootError,
     RewriteRule,
@@ -69,6 +74,7 @@ use alkahest_core::{
     DiffError, EgraphConfig, IntegrationError, IoError, PatternRule, ResultantError,
     SimplifyConfig, SizeCost, SparseInterpError,
 };
+use pyo3::exceptions::{PyOverflowError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 use std::collections::HashMap;
@@ -101,6 +107,9 @@ pyo3::create_exception!(alkahest, PyResultantError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PySparseInterpError, PyAlkahestError);
 // V2-4 — Real root isolation
 pyo3::create_exception!(alkahest, PyRealRootError, PyAlkahestError);
+// V2-6 — LLL + integer relations
+pyo3::create_exception!(alkahest, PyLatticeError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PyPslqError, PyAlkahestError);
 
 /// Build a structured exception with `.code`, `.remediation`, `.span` attributes.
 fn make_structured_err<E: AlkahestErrorTrait>(
@@ -198,6 +207,20 @@ fn real_root_error_to_py(e: RealRootError) -> PyErr {
 fn modular_error_to_py(e: ModularError) -> PyErr {
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyModularError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn lattice_error_to_py(e: LatticeError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyLatticeError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn pslq_error_to_py(e: PslqError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyPslqError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -3518,6 +3541,94 @@ fn py_modular_select_lucky_prime(avoid_divisor_str: &str, used: Vec<u64>) -> PyR
     Ok(core_select_lucky_prime(&avoid, &used))
 }
 
+/// LLL‑reduce rows of integers (same ambient dimension across rows).
+#[pyfunction]
+#[pyo3(name = "lat_lll_reduce_rows", signature=(rows, delta_num=None, delta_den=None))]
+fn py_lat_lll_reduce_rows(
+    rows: Vec<Vec<i64>>,
+    delta_num: Option<i64>,
+    delta_den: Option<i64>,
+) -> PyResult<Vec<Vec<i64>>> {
+    use rug::Integer;
+    let basis: Vec<Vec<Integer>> = rows
+        .into_iter()
+        .map(|r| r.into_iter().map(Integer::from).collect())
+        .collect();
+    let reduced = match (delta_num, delta_den) {
+        (Some(n), Some(d)) if d != 0 => {
+            let delta = rug::Rational::from((n, d));
+            core_lattice_reduce_rows_with_delta(&basis, delta).map_err(lattice_error_to_py)?
+        }
+        _ => core_lattice_reduce_rows(&basis).map_err(lattice_error_to_py)?,
+    };
+    reduced
+        .into_iter()
+        .map(|r| {
+            r.into_iter()
+                .map(|z| {
+                    z.to_i64()
+                        .ok_or_else(|| PyOverflowError::new_err("LLL matrix entry overflows i64"))
+                })
+                .collect::<PyResult<Vec<_>>>()
+        })
+        .collect::<PyResult<Vec<_>>>()
+}
+
+/// Search for `[aᵢ]` such that Σ aᵢ constantsᵢ ≈ 0 (mixed `float` / decimal strings).
+///
+/// Typical high‑precision literals: `"1.644934066848226436472415166646025189219…"` matched with
+/// `precision_bits≈664` for ~200 decimals.
+#[pyfunction]
+#[pyo3(name = "guess_relation", signature=(constants, precision_bits=664, max_abs_coeff=None))]
+fn py_guess_relation(
+    constants: Bound<'_, PyAny>,
+    precision_bits: u32,
+    max_abs_coeff: Option<u128>,
+) -> PyResult<Option<Vec<i64>>> {
+    use rug::ops::CompleteRound;
+    use rug::Float;
+    let list = constants
+        .downcast::<PyList>()
+        .map_err(|_| PyTypeError::new_err("constants must be a list"))?;
+    let n = list.len();
+    let mut xs: Vec<Float> = Vec::with_capacity(n);
+    for i in 0..n {
+        let item = list.get_item(i)?;
+        if let Ok(v) = item.extract::<f64>() {
+            xs.push(Float::with_val(precision_bits, v));
+        } else if let Ok(s) = item.extract::<String>() {
+            xs.push(
+                Float::parse(s.trim())
+                    .map_err(|_| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "could not parse decimal string as floating constant",
+                        )
+                    })?
+                    .complete(precision_bits),
+            );
+        } else {
+            return Err(PyTypeError::new_err(
+                "each constant must be a float or decimal string",
+            ));
+        }
+    }
+    let rel = core_guess_integer_relation(&xs, precision_bits, max_abs_coeff)
+        .map_err(pslq_error_to_py)?;
+    Ok(match rel {
+        None => None,
+        Some(coeffs) => {
+            let mut out = Vec::with_capacity(coeffs.len());
+            for z in coeffs {
+                let v = z.to_i64().ok_or_else(|| {
+                    PyOverflowError::new_err("coefficient overflows i64; report for bigint output")
+                })?;
+                out.push(v);
+            }
+            Some(out)
+        }
+    })
+}
+
 #[pymodule]
 fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
@@ -3635,6 +3746,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRootInterval>()?;
     m.add_function(wrap_pyfunction!(py_real_roots, m)?)?;
     m.add_function(wrap_pyfunction!(py_refine_root, m)?)?;
+    // V2-6 — Lattice / integer relations
+    m.add_function(wrap_pyfunction!(py_lat_lll_reduce_rows, m)?)?;
+    m.add_function(wrap_pyfunction!(py_guess_relation, m)?)?;
     // V2-1 — Modular / CRT framework
     m.add_class::<PyMultiPolyFp>()?;
     m.add_function(wrap_pyfunction!(py_modular_reduce, m)?)?;
@@ -3673,6 +3787,8 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.py().get_type_bound::<PySparseInterpError>(),
     )?;
     m.add("RealRootError", m.py().get_type_bound::<PyRealRootError>())?;
+    m.add("LatticeError", m.py().get_type_bound::<PyLatticeError>())?;
+    m.add("PslqError", m.py().get_type_bound::<PyPslqError>())?;
     // V1-15: compile-time flag so Python tests can skip egraph-dependent assertions.
     m.add("HAS_EGRAPH", cfg!(feature = "egraph"))?;
     Ok(())

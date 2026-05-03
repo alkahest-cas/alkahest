@@ -100,6 +100,20 @@ print(alkahest.latex(expr))        # \sin\!\left(x\right)^2 + \cos\!\left(x\righ
 print(alkahest.unicode_str(expr))  # sin(x)² + cos(x)²
 ```
 
+### Lattice reduction and approximate integer relations
+
+Exact LLL reduction on integer bases lives under `alkahest.lattice`; for floating constants (as `float` or decimal strings) `guess_relation` searches for small integer coefficient vectors whose dot product has tiny residual relative to the working precision:
+
+```python
+from alkahest import guess_relation
+from alkahest import lattice
+
+basis = lattice.lll_reduce_rows([[2, 15], [1, 21]])
+rel = guess_relation(["1", "2", "3"], precision_bits=256)
+```
+
+The relation finder is an augmented-lattice + LLL heuristic, not Ferguson–Bailey PSLQ; treat results as exploratory unless verified independently.
+
 ### Composable transformations
 
 ```python

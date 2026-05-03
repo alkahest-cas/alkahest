@@ -32,6 +32,7 @@ try:
     from jax import core as jax_core  # noqa: F401
     from jax.interpreters import ad as jax_ad  # noqa: F401
     from jax.interpreters import batching as jax_batching  # noqa: F401
+
     _JAX_AVAILABLE = True
 except ImportError:
     _JAX_AVAILABLE = False
@@ -43,9 +44,7 @@ import alkahest
 
 def _require_jax() -> None:
     if not _JAX_AVAILABLE:
-        raise ImportError(
-            "JAX is not installed. Run: pip install jax[cuda12] or pip install jax"
-        )
+        raise ImportError("JAX is not installed. Run: pip install jax[cuda12] or pip install jax")
 
 
 def as_jax_primitive(expr, inputs: list) -> Callable:
@@ -94,15 +93,11 @@ def as_jax_primitive(expr, inputs: list) -> Callable:
         n_pts = flat_arrays[0].size if flat_arrays else 1
         if compiled_fn is not None:
             inputs_flat = np.concatenate(flat_arrays)
-            out = np.array(
-                compiled_fn.call_batch_raw(inputs_flat.tolist(), len(inputs), n_pts)
-            )
+            out = np.array(compiled_fn.call_batch_raw(inputs_flat.tolist(), len(inputs), n_pts))
         else:
             out = np.zeros(n_pts)
             for i in range(n_pts):
-                bindings = {
-                    inp: float(arr[i]) for inp, arr in zip(inputs, flat_arrays)
-                }
+                bindings = {inp: float(arr[i]) for inp, arr in zip(inputs, flat_arrays)}
                 out[i] = alkahest.eval_expr(expr, bindings)
         shape = arrays[0].shape if arrays else ()
         return jnp.array(out.reshape(shape))
@@ -118,14 +113,8 @@ def as_jax_primitive(expr, inputs: list) -> Callable:
     # JVP (tangent propagation)
     def _jvp(primals, tangents):
         out = prim.bind(*primals)
-        grad_vals = [
-            as_jax_primitive(g, inputs)(*primals) for g in grad_exprs
-        ]
-        out_dot = sum(
-            g * t
-            for g, t in zip(grad_vals, tangents)
-            if not isinstance(t, jax_ad.Zero)
-        )
+        grad_vals = [as_jax_primitive(g, inputs)(*primals) for g in grad_exprs]
+        out_dot = sum(g * t for g, t in zip(grad_vals, tangents) if not isinstance(t, jax_ad.Zero))
         if isinstance(out_dot, int) and out_dot == 0:
             out_dot = jnp.zeros_like(out)
         return out, out_dot

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 class Expr:
     """A symbolic expression node (Phase 1)."""
+
     ...
 
 class Pool:
@@ -13,6 +14,7 @@ class Pool:
 
 class DerivedResult:
     """Result of a symbolic transformation with a derivation log (Phase 4+)."""
+
     value: Expr
     derivation: str
     steps: list[dict[str, object]]

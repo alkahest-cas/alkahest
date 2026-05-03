@@ -46,6 +46,7 @@ def get_context_value(key: str, default: Any = None) -> Any:
 # Public context manager
 # ---------------------------------------------------------------------------
 
+
 @contextmanager
 def context(
     *,
@@ -119,6 +120,7 @@ def context(
 # ---------------------------------------------------------------------------
 # Context-aware convenience helpers
 # ---------------------------------------------------------------------------
+
 
 def symbol(name: str, *, pool: Any = None, domain: Any = None) -> Any:
     """Create a symbol, inferring *pool* and *domain* from the active context.

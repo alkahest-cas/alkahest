@@ -2,6 +2,7 @@
 
 Pure-Python tree walk over the structure exposed by ``Expr.node()``.
 """
+
 from __future__ import annotations
 
 # ---------------------------------------------------------------------------
@@ -17,66 +18,130 @@ _PREC_ATOM = 100
 # ---------------------------------------------------------------------------
 
 _LATEX_FUNCS: dict[str, str] = {
-    "sin":   r"\sin",
-    "cos":   r"\cos",
-    "tan":   r"\tan",
-    "sinh":  r"\sinh",
-    "cosh":  r"\cosh",
-    "tanh":  r"\tanh",
-    "asin":  r"\arcsin",
-    "acos":  r"\arccos",
-    "atan":  r"\arctan",
-    "log":   r"\ln",
-    "sign":  r"\operatorname{sign}",
+    "sin": r"\sin",
+    "cos": r"\cos",
+    "tan": r"\tan",
+    "sinh": r"\sinh",
+    "cosh": r"\cosh",
+    "tanh": r"\tanh",
+    "asin": r"\arcsin",
+    "acos": r"\arccos",
+    "atan": r"\arctan",
+    "log": r"\ln",
+    "sign": r"\operatorname{sign}",
     "round": r"\operatorname{round}",
-    "erf":   r"\operatorname{erf}",
-    "erfc":  r"\operatorname{erfc}",
+    "erf": r"\operatorname{erf}",
+    "erfc": r"\operatorname{erfc}",
     "gamma": r"\Gamma",
 }
 
 _UNICODE_FUNCS: dict[str, str] = {
     "gamma": "Γ",
-    "asin":  "arcsin",
-    "acos":  "arccos",
-    "atan":  "arctan",
-    "log":   "ln",
+    "asin": "arcsin",
+    "acos": "arccos",
+    "atan": "arctan",
+    "log": "ln",
 }
 
 _GREEK: dict[str, str] = {
-    "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ",
-    "epsilon": "ε", "zeta": "ζ", "eta": "η", "theta": "θ",
-    "iota": "ι", "kappa": "κ", "lamda": "λ", "lambda": "λ", "mu": "μ",
-    "nu": "ν", "xi": "ξ", "pi": "π", "rho": "ρ",
-    "sigma": "σ", "tau": "τ", "upsilon": "υ", "phi": "φ",
-    "chi": "χ", "psi": "ψ", "omega": "ω",
-    "Alpha": "Α", "Beta": "Β", "Gamma": "Γ", "Delta": "Δ",
-    "Epsilon": "Ε", "Zeta": "Ζ", "Eta": "Η", "Theta": "Θ",
-    "Iota": "Ι", "Kappa": "Κ", "Lambda": "Λ", "Mu": "Μ",
-    "Nu": "Ν", "Xi": "Ξ", "Pi": "Π", "Rho": "Ρ",
-    "Sigma": "Σ", "Tau": "Τ", "Upsilon": "Υ", "Phi": "Φ",
-    "Chi": "Χ", "Psi": "Ψ", "Omega": "Ω",
-    "inf": "∞", "oo": "∞",
+    "alpha": "α",
+    "beta": "β",
+    "gamma": "γ",
+    "delta": "δ",
+    "epsilon": "ε",
+    "zeta": "ζ",
+    "eta": "η",
+    "theta": "θ",
+    "iota": "ι",
+    "kappa": "κ",
+    "lamda": "λ",
+    "lambda": "λ",
+    "mu": "μ",
+    "nu": "ν",
+    "xi": "ξ",
+    "pi": "π",
+    "rho": "ρ",
+    "sigma": "σ",
+    "tau": "τ",
+    "upsilon": "υ",
+    "phi": "φ",
+    "chi": "χ",
+    "psi": "ψ",
+    "omega": "ω",
+    "Alpha": "Α",
+    "Beta": "Β",
+    "Gamma": "Γ",
+    "Delta": "Δ",
+    "Epsilon": "Ε",
+    "Zeta": "Ζ",
+    "Eta": "Η",
+    "Theta": "Θ",
+    "Iota": "Ι",
+    "Kappa": "Κ",
+    "Lambda": "Λ",
+    "Mu": "Μ",
+    "Nu": "Ν",
+    "Xi": "Ξ",
+    "Pi": "Π",
+    "Rho": "Ρ",
+    "Sigma": "Σ",
+    "Tau": "Τ",
+    "Upsilon": "Υ",
+    "Phi": "Φ",
+    "Chi": "Χ",
+    "Psi": "Ψ",
+    "Omega": "Ω",
+    "inf": "∞",
+    "oo": "∞",
 }
 
 _PREDICATE_LATEX: dict[str, str] = {
-    "lt": "<",    "le": r"\le",  "gt": ">",      "ge": r"\ge",
-    "eq": "=",    "ne": r"\ne",  "and": r"\land", "or": r"\lor",
-    "not": r"\lnot", "true": r"\top", "false": r"\bot",
+    "lt": "<",
+    "le": r"\le",
+    "gt": ">",
+    "ge": r"\ge",
+    "eq": "=",
+    "ne": r"\ne",
+    "and": r"\land",
+    "or": r"\lor",
+    "not": r"\lnot",
+    "true": r"\top",
+    "false": r"\bot",
 }
 
 _PREDICATE_UNICODE: dict[str, str] = {
-    "lt": "<", "le": "≤", "gt": ">", "ge": "≥",
-    "eq": "=", "ne": "≠", "and": "∧", "or": "∨",
-    "not": "¬", "true": "⊤", "false": "⊥",
+    "lt": "<",
+    "le": "≤",
+    "gt": ">",
+    "ge": "≥",
+    "eq": "=",
+    "ne": "≠",
+    "and": "∧",
+    "or": "∨",
+    "not": "¬",
+    "true": "⊤",
+    "false": "⊥",
 }
 
 _UNICODE_FRACS: dict[tuple[int, int], str] = {
-    (1, 2): "½", (1, 3): "⅓", (2, 3): "⅔",
-    (1, 4): "¼", (3, 4): "¾",
-    (1, 5): "⅕", (2, 5): "⅖", (3, 5): "⅗", (4, 5): "⅘",
-    (1, 6): "⅙", (5, 6): "⅚", (1, 7): "⅐",
-    (1, 8): "⅛", (3, 8): "⅜", (5, 8): "⅝", (7, 8): "⅞",
-    (1, 9): "⅑",  (1, 10): "⅒",
+    (1, 2): "½",
+    (1, 3): "⅓",
+    (2, 3): "⅔",
+    (1, 4): "¼",
+    (3, 4): "¾",
+    (1, 5): "⅕",
+    (2, 5): "⅖",
+    (3, 5): "⅗",
+    (4, 5): "⅘",
+    (1, 6): "⅙",
+    (5, 6): "⅚",
+    (1, 7): "⅐",
+    (1, 8): "⅛",
+    (3, 8): "⅜",
+    (5, 8): "⅝",
+    (7, 8): "⅞",
+    (1, 9): "⅑",
+    (1, 10): "⅒",
 }
 
 _SUP_TABLE = str.maketrans("0123456789+-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻")
@@ -86,11 +151,14 @@ _SUP_TABLE = str.maketrans("0123456789+-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻")
 # Tiny helpers
 # ---------------------------------------------------------------------------
 
+
 def _to_superscript(s: str) -> str | None:
     """Convert an integer string to Unicode superscript, or None if unsupported."""
     translated = s.translate(_SUP_TABLE)
-    return translated if translated != s or s in ("0",) else (
-        translated if all(c in "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻" for c in translated) else None
+    return (
+        translated
+        if translated != s or s in ("0",)
+        else (translated if all(c in "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻" for c in translated) else None)
     )
 
 
@@ -114,8 +182,8 @@ def _unicode_frac(num: int, den: int) -> str:
 # LaTeX renderer
 # ---------------------------------------------------------------------------
 
-class _LatexRenderer:
 
+class _LatexRenderer:
     def render(self, expr) -> str:
         s, _ = self._r(expr)
         return s
@@ -258,11 +326,7 @@ class _LatexRenderer:
 
         # Prepend coefficient
         if numer_int != 1 or denom_int != 1:
-            coeff = (
-                self._frac(str(numer_int), str(denom_int))
-                if denom_int != 1
-                else str(numer_int)
-            )
+            coeff = self._frac(str(numer_int), str(denom_int)) if denom_int != 1 else str(numer_int)
             num_parts.insert(0, coeff)
 
         if not num_parts and not den_parts:
@@ -353,8 +417,8 @@ class _LatexRenderer:
 # Unicode renderer
 # ---------------------------------------------------------------------------
 
-class _UnicodeRenderer:
 
+class _UnicodeRenderer:
     def render(self, expr) -> str:
         s, _ = self._r(expr)
         return s
@@ -468,11 +532,7 @@ class _UnicodeRenderer:
             num_parts.append(tex)
 
         if numer_int != 1 or denom_int != 1:
-            coeff = (
-                _unicode_frac(numer_int, denom_int)
-                if denom_int != 1
-                else str(numer_int)
-            )
+            coeff = _unicode_frac(numer_int, denom_int) if denom_int != 1 else str(numer_int)
             num_parts.insert(0, coeff)
 
         if not num_parts and not den_parts:

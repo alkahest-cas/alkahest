@@ -10,10 +10,13 @@ pub mod hybrid;
 pub mod integrate;
 pub mod jit;
 pub mod kernel;
+// V2-6 — LLL + PSLQ (PSLQ in `numeric`)
+pub mod lattice;
 pub mod lean;
 pub mod matrix;
 // V2-1 — Modular / CRT framework
 pub mod modular;
+pub mod numeric;
 pub mod ode;
 pub mod pattern;
 pub mod poly;
@@ -36,7 +39,12 @@ pub use kernel::{
     load_from, open_persistent, save_to, subs, Domain, ExprData, ExprDisplay, ExprId, ExprPool,
     IoError, PoolPersistError,
 };
+// V2-6 — LLL + integer relations (augmented lattice heuristic)
+pub use lattice::{
+    lattice_reduce_rows, lattice_reduce_rows_with_delta, validate_lll_rows, LatticeError,
+};
 pub use matrix::{jacobian, Matrix, MatrixError};
+pub use numeric::{guess_integer_relation, PslqError};
 pub use ode::{
     lower_to_first_order,
     sensitivity::{adjoint_system, sensitivity_system, AdjointSystem, SensitivitySystem},
@@ -115,10 +123,14 @@ pub mod stable {
     pub use crate::kernel::pool_persist::PoolPersistError;
     pub use crate::kernel::pool_persist::{load_from, open_persistent, save_to, IoError};
     pub use crate::kernel::{subs, Domain, ExprData, ExprDisplay, ExprId, ExprPool};
+    pub use crate::lattice::{
+        lattice_reduce_rows, lattice_reduce_rows_with_delta, validate_lll_rows, LatticeError,
+    };
     pub use crate::matrix::{
         hermite_form, hermite_form_poly, jacobian, smith_form, smith_form_poly, IntegerMatrix,
         Matrix, MatrixError, NormalFormError, PolyMatrixQ, RatUniPoly,
     };
+    pub use crate::numeric::{guess_integer_relation, PslqError};
     pub use crate::ode::{lower_to_first_order, OdeError, ScalarODE, ODE};
     pub use crate::pattern::{match_pattern, Pattern, Substitution};
     pub use crate::poly::{
@@ -148,7 +160,7 @@ pub mod experimental {
         is_prime, lift_crt, mignotte_bound, rational_reconstruction, reduce_mod,
         select_lucky_prime, ModularError, ModularValue, MultiPolyFp,
     };
-    // V2-3 — Sparse interpolation
+    pub use crate::numeric::{guess_integer_relation, PslqError};
     pub use crate::ode::sensitivity::{
         adjoint_system, sensitivity_system, AdjointSystem, SensitivitySystem,
     };

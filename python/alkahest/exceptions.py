@@ -18,6 +18,8 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-SOLVE-001 … E-SOLVE-003  SolverError  (polynomial system)
     E-SOLVE-010 … E-SOLVE-011  SolverError  (GPU Gröbner)
     E-JIT-001   … E-JIT-003    JitError
+    E-LAT-001 … E-LAT-004      LatticeError
+    E-PSLQ-001 … E-PSLQ-003    PslqError
     E-CUDA-001  … E-CUDA-006   CudaError
     E-IO-001    … E-IO-009     IoError  (formerly PoolPersistError / E-POOL-*)
     E-PARSE-*                  ParseError  (reserved; parser not yet integrated)
@@ -123,6 +125,30 @@ class MatrixError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code="E-MAT-001", remediation=remediation, span=span)
+
+
+class LatticeError(AlkahestError):
+    """LLL lattice reduction failed (structure, Lovász parameter, or iteration limit)."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-LAT-001", remediation=remediation, span=span)
+
+
+class PslqError(AlkahestError):
+    """Integer-relation heuristic failed (input, coefficient bound, or lattice step)."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-PSLQ-001", remediation=remediation, span=span)
 
 
 class OdeError(AlkahestError):

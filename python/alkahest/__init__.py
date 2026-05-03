@@ -1,4 +1,7 @@
-from . import modular  # noqa: F401 — V2-1: expose alkahest.modular submodule
+from . import (
+    lattice,  # noqa: F401 — V2-6: expose alkahest.lattice submodule
+    modular,  # noqa: F401 — V2-1: expose alkahest.modular submodule
+)
 from ._context import (  # noqa: F401
     active_domain,
     active_pool,
@@ -86,6 +89,8 @@ from .alkahest import (  # noqa: F401
     exp,
     floor,
     gamma,
+    # V2-6: Approximate integer relations (LLL-backed heuristic — not Ferguson–Bailey PSLQ)
+    guess_relation,
     # Phase 24: Horner-form code emission
     horner,
     integrate,
@@ -169,9 +174,11 @@ try:
         DomainError,
         IntegrationError,
         JitError,
+        LatticeError,
         MatrixError,
         OdeError,
         PoolError,
+        PslqError,
         RealRootError,
         ResultantError,
         SparseInterpError,
@@ -185,9 +192,11 @@ except ImportError:
         DomainError,
         IntegrationError,
         JitError,
+        LatticeError,
         MatrixError,
         OdeError,
         PoolError,
+        PslqError,
     )
 from .exceptions import ParseError, SolverError  # noqa: F401  (pure-Python only for now)
 
@@ -225,9 +234,7 @@ def numpy_eval(compiled_fn, *arrays):
     try:
         import numpy as np
     except ImportError as exc:
-        raise ImportError(
-            "numpy_eval requires NumPy.  Install it with: pip install numpy"
-        ) from exc
+        raise ImportError("numpy_eval requires NumPy.  Install it with: pip install numpy") from exc
 
     n_vars = compiled_fn.n_inputs
     if len(arrays) != n_vars:
@@ -361,6 +368,11 @@ __all__ = [
     "sparse_interp",
     "sparse_interp_univariate",
     "SparseInterpError",
+    # V2-6
+    "guess_relation",
+    "lattice",
+    "LatticeError",
+    "PslqError",
     # V2-4
     "real_roots",
     "refine_root",

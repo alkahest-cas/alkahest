@@ -24,8 +24,6 @@ select_lucky_prime(avoid_divisor, used)
 
 from __future__ import annotations
 
-from typing import Optional
-
 from .alkahest import (  # noqa: F401 – re-export the Rust class
     ModularError,
     MultiPolyFp,
@@ -87,7 +85,7 @@ def lift_crt(images: list[tuple[MultiPolyFp, int]]) -> object:
     return modular_lift_crt(polys, primes)
 
 
-def rational_reconstruction(n: int, m: int) -> Optional[tuple[int, int]]:
+def rational_reconstruction(n: int, m: int) -> tuple[int, int] | None:
     """Find a/b with b·n ≡ a (mod m) and |a|, b ≤ ⌊√(m/2)⌋.
 
     Parameters
