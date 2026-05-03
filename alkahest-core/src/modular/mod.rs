@@ -377,11 +377,11 @@ pub fn rational_reconstruction(n: &Integer, m: &Integer) -> Option<(Integer, Int
         return None;
     }
 
-    let b_abs = Integer::from(s_curr.clone().abs());
+    let b_abs = s_curr.clone().abs();
     if b_abs == 0 || b_abs > t {
         return None;
     }
-    if Integer::from(r_curr.clone().abs()) > t {
+    if r_curr.clone().abs() > t {
         return None;
     }
 

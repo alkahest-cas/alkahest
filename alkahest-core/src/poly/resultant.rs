@@ -610,10 +610,9 @@ mod tests {
         map_off.insert(y, two);
         let at_1_2 = subs(res_expr, &map_off, &pool);
         let simplified_nz = crate::simplify::simplify(at_1_2, &pool);
-        match pool.get(simplified_nz.value) {
-            ExprData::Integer(n) => assert_ne!(n.0, 0, "res at (1,2) should be non-zero"),
-            _ => {} // non-integer result is also non-zero
-        }
+        if let ExprData::Integer(n) = pool.get(simplified_nz.value) {
+            assert_ne!(n.0, 0, "res at (1,2) should be non-zero");
+        } // non-integer result is also non-zero
     }
 
     // --- subresultant_prs ---

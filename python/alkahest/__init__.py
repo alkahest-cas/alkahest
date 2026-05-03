@@ -104,6 +104,9 @@ from .alkahest import (  # noqa: F401
     # V2-2: Resultants and subresultant PRS
     resultant,
     round,  # symbolic round — use alkahest.round(expr)
+    # V2-3: Sparse interpolation
+    sparse_interp,
+    sparse_interp_univariate,
     sensitivity_system,
     sign,
     simplify,
@@ -166,6 +169,7 @@ try:
         OdeError,
         PoolError,
         ResultantError,
+        SparseInterpError,
     )
 except ImportError:
     from .exceptions import (  # noqa: F401
@@ -348,6 +352,10 @@ __all__ = [
     "resultant",
     "subresultant_prs",
     "ResultantError",
+    # V2-3
+    "sparse_interp",
+    "sparse_interp_univariate",
+    "SparseInterpError",
     # PA-5
     "PrimitiveRegistry",
     # PA-7

@@ -17,6 +17,9 @@ use alkahest_core::{
     // V2-2 — Resultants and subresultant PRS
     resultant as core_resultant,
     sensitivity_system as core_sensitivity_system,
+    // V2-3 — Sparse interpolation
+    sparse_interpolate as core_sparse_interpolate,
+    sparse_interpolate_univariate as core_sparse_interpolate_univariate,
     subresultant_prs as core_subresultant_prs,
     subs as core_subs,
     // Phase 22 — Ball arithmetic
@@ -59,7 +62,7 @@ use alkahest_core::{
     simplify_egraph as core_simplify_egraph, simplify_egraph_with as core_simplify_egraph_with,
     simplify_with as core_simplify_with, trig_rules, AlkahestError as AlkahestErrorTrait,
     DiffError, EgraphConfig, IntegrationError, IoError, PatternRule, ResultantError,
-    SimplifyConfig, SizeCost,
+    SimplifyConfig, SizeCost, SparseInterpError,
 };
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
@@ -89,6 +92,8 @@ pyo3::create_exception!(alkahest, PyIoError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyParseError, PyAlkahestError);
 // V2-2 — Resultants
 pyo3::create_exception!(alkahest, PyResultantError, PyAlkahestError);
+// V2-3 — Sparse interpolation
+pyo3::create_exception!(alkahest, PySparseInterpError, PyAlkahestError);
 
 /// Build a structured exception with `.code`, `.remediation`, `.span` attributes.
 fn make_structured_err<E: AlkahestErrorTrait>(
@@ -165,6 +170,13 @@ fn conv_error_to_py(e: alkahest_core::ConversionError) -> PyErr {
 fn resultant_error_to_py(e: ResultantError) -> PyErr {
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyResultantError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn sparse_interp_error_to_py(e: SparseInterpError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PySparseInterpError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -2636,6 +2648,132 @@ fn py_subresultant_prs(
 }
 
 // ---------------------------------------------------------------------------
+// V2-3 — Sparse interpolation Python bindings
+// ---------------------------------------------------------------------------
+
+/// Recover a sparse univariate polynomial over ``F_p`` from black-box
+/// evaluations using the Ben-Or/Tiwari (Prony-style) algorithm.
+///
+/// Parameters
+/// ----------
+/// eval : callable
+///     Black-box oracle ``x ↦ f(x) mod p``.  Called with a single
+///     ``int`` argument and must return an ``int``.
+/// term_bound : int
+///     Upper bound ``T`` on the number of nonzero terms.  Exactly
+///     ``2·T`` oracle calls are made.
+/// prime : int
+///     Field characteristic ``p``.  Must satisfy ``p > 2·T`` and
+///     ``p > max_degree(f)``.
+///
+/// Returns
+/// -------
+/// list[tuple[int, int]]
+///     List of ``(coefficient, exponent)`` pairs.
+///
+/// Raises
+/// ------
+/// SparseInterpError
+///     On invalid prime, prime too small, or inconsistent oracle.
+///
+/// Example::
+///
+///     # Recover x^100 + 3·x^17 + 5 from 6 evaluations.
+///     p = 997
+///     def f(x): return (x**100 + 3*x**17 + 5) % p
+///     terms = sparse_interp_univariate(f, 3, p)
+///     # terms ≈ [(1, 100), (3, 17), (5, 0)]
+#[pyfunction]
+#[pyo3(name = "sparse_interp_univariate")]
+fn py_sparse_interp_univariate(
+    py: Python<'_>,
+    eval: Bound<'_, pyo3::types::PyAny>,
+    term_bound: usize,
+    prime: u64,
+) -> PyResult<Vec<(u64, u32)>> {
+    let rust_eval = |x: u64| -> u64 {
+        let result = eval.call1((x,)).expect("sparse_interp_univariate: oracle call failed");
+        result.extract::<u64>().expect("sparse_interp_univariate: oracle must return int")
+    };
+    let terms = core_sparse_interpolate_univariate(&rust_eval, term_bound, prime)
+        .map_err(sparse_interp_error_to_py)?;
+    let _ = py; // suppress unused warning
+    Ok(terms)
+}
+
+/// Recover a sparse multivariate polynomial over ``F_p`` from black-box
+/// evaluations using Zippel's variable-by-variable algorithm.
+///
+/// Parameters
+/// ----------
+/// eval : callable
+///     Black-box oracle ``(x₁, …, xₙ) ↦ f(x₁, …, xₙ) mod p``.
+///     Called with a Python ``list[int]`` (one int per variable) and
+///     must return an ``int``.
+/// vars : list[Expr]
+///     Symbolic variable expressions in the same order as the
+///     coordinates passed to ``eval``.
+/// term_bound : int
+///     Upper bound ``T`` on the number of nonzero terms.
+/// degree_bound : int
+///     Upper bound ``D`` on the degree of each individual variable.
+///     For the dense fallback, set ``D ≤ T``.
+/// prime : int
+///     Field characteristic ``p``.  Must satisfy ``p > 2·T`` and
+///     ``p > D``.
+/// seed : int, optional
+///     PRNG seed for random evaluation points (default 0).  Change
+///     the seed to recover from occasional Vandermonde singularities.
+///
+/// Returns
+/// -------
+/// MultiPolyFp
+///     Recovered polynomial with coefficients in ``[0, p)``.
+///     On 20-variable inputs this is typically ≥ 5× faster in oracle
+///     calls than dense interpolation.
+///
+/// Raises
+/// ------
+/// SparseInterpError
+///     On invalid prime, prime too small, or inconsistent oracle.
+///
+/// Example::
+///
+///     pool = ExprPool()
+///     x, y = pool.symbol("x"), pool.symbol("y")
+///     p = 1009
+///     def f(pt):
+///         x_, y_ = pt
+///         return (x_ * y_ + 3) % p
+///     result = sparse_interp(f, [x, y], term_bound=4, degree_bound=3, prime=p)
+#[pyfunction]
+#[pyo3(name = "sparse_interp")]
+#[pyo3(signature = (eval, vars, term_bound, degree_bound, prime, seed=0))]
+fn py_sparse_interp(
+    py: Python<'_>,
+    eval: Bound<'_, pyo3::types::PyAny>,
+    vars: Vec<PyRef<PyExpr>>,
+    term_bound: usize,
+    degree_bound: u32,
+    prime: u64,
+    seed: u64,
+) -> PyResult<PyMultiPolyFp> {
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+
+    let rust_eval = |pt: &[u64]| -> u64 {
+        let py_list = pyo3::types::PyList::new_bound(py, pt.iter().copied());
+        let result = eval
+            .call1((py_list,))
+            .expect("sparse_interp: oracle call failed");
+        result.extract::<u64>().expect("sparse_interp: oracle must return int")
+    };
+
+    let fp = core_sparse_interpolate(&rust_eval, var_ids, term_bound, degree_bound, prime, seed)
+        .map_err(sparse_interp_error_to_py)?;
+    Ok(PyMultiPolyFp { inner: fp })
+}
+
+// ---------------------------------------------------------------------------
 // PA-9 — Piecewise Python bindings
 // ---------------------------------------------------------------------------
 
@@ -3113,6 +3251,24 @@ impl PyMultiPolyFp {
         self.inner.modulus
     }
 
+    /// Return the polynomial's terms as a ``dict`` mapping exponent tuples
+    /// to coefficients.  Exponent tuples have trailing zeros removed.
+    ///
+    /// Example::
+    ///
+    ///     fp = modular_reduce(poly, 101)
+    ///     for exp_tuple, coeff in fp.terms.items():
+    ///         print(exp_tuple, coeff)
+    #[getter]
+    fn terms<'py>(&self, py: Python<'py>) -> pyo3::Bound<'py, pyo3::types::PyDict> {
+        let dict = pyo3::types::PyDict::new_bound(py);
+        for (exp, &coeff) in &self.inner.terms {
+            let key = pyo3::types::PyTuple::new_bound(py, exp.iter().copied());
+            dict.set_item(key, coeff).unwrap();
+        }
+        dict
+    }
+
     fn __repr__(&self) -> String {
         format!("MultiPolyFp({})", self.inner)
     }
@@ -3312,6 +3468,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // V2-2 — Resultants and subresultant PRS
     m.add_function(wrap_pyfunction!(py_resultant, m)?)?;
     m.add_function(wrap_pyfunction!(py_subresultant_prs, m)?)?;
+    // V2-3 — Sparse interpolation
+    m.add_function(wrap_pyfunction!(py_sparse_interp_univariate, m)?)?;
+    m.add_function(wrap_pyfunction!(py_sparse_interp, m)?)?;
     // V2-1 — Modular / CRT framework
     m.add_class::<PyMultiPolyFp>()?;
     m.add_function(wrap_pyfunction!(py_modular_reduce, m)?)?;
@@ -3344,6 +3503,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "ResultantError",
         m.py().get_type_bound::<PyResultantError>(),
+    )?;
+    m.add(
+        "SparseInterpError",
+        m.py().get_type_bound::<PySparseInterpError>(),
     )?;
     // V1-15: compile-time flag so Python tests can skip egraph-dependent assertions.
     m.add("HAS_EGRAPH", cfg!(feature = "egraph"))?;

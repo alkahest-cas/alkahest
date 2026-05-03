@@ -1,4 +1,6 @@
 pub mod error;
+// V2-3 — Sparse interpolation
+pub mod interp;
 pub mod multipoly;
 pub mod rational;
 // V2-2 — Resultants and subresultant PRS
@@ -12,6 +14,8 @@ pub mod groebner;
 mod proptests;
 
 pub use error::ConversionError;
+// V2-3 — Sparse interpolation
+pub use interp::{sparse_interpolate, sparse_interpolate_univariate, SparseInterpError};
 pub use multipoly::MultiPoly;
 pub use rational::RationalFunction;
 // V2-2 — Resultants and subresultant PRS
