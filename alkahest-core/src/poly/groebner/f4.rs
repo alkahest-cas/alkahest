@@ -105,7 +105,7 @@ pub fn compute_groebner_basis(generators: Vec<GbPoly>, order: MonomialOrder) -> 
 
 /// Interreduce a Gröbner basis: reduce each element by all others and remove
 /// elements whose leading term is divisible by another's.
-fn interreduce(mut basis: Vec<GbPoly>, order: MonomialOrder) -> Vec<GbPoly> {
+pub(crate) fn interreduce(mut basis: Vec<GbPoly>, order: MonomialOrder) -> Vec<GbPoly> {
     let mut i = 0;
     while i < basis.len() {
         let others: Vec<GbPoly> = basis

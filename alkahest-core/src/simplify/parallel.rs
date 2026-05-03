@@ -179,6 +179,40 @@ fn simplify_children_par(
                 .collect();
             (pool.func(&name, new_args), log)
         }
+        ExprData::Piecewise { branches, default } => {
+            let mut log = DerivationLog::new();
+            let new_branches: Vec<(ExprId, ExprId)> = branches
+                .into_iter()
+                .map(|(cond, val)| {
+                    let rv = simplify_node_par(val, pool, rules);
+                    log = std::mem::take(&mut log).merge(rv.log);
+                    (cond, rv.value)
+                })
+                .collect();
+            let rd = simplify_node_par(default, pool, rules);
+            log = log.merge(rd.log);
+            (pool.piecewise(new_branches, rd.value), log)
+        }
+        ExprData::Predicate { kind, args } => {
+            let mut log = DerivationLog::new();
+            let new_args: Vec<ExprId> = args
+                .into_iter()
+                .map(|a| {
+                    let r = simplify_node_par(a, pool, rules);
+                    log = std::mem::take(&mut log).merge(r.log);
+                    r.value
+                })
+                .collect();
+            (pool.predicate(kind, new_args), log)
+        }
+        ExprData::Forall { var, body } => {
+            let rb = simplify_node_par(body, pool, rules);
+            (pool.forall(var, rb.value), rb.log)
+        }
+        ExprData::Exists { var, body } => {
+            let rb = simplify_node_par(body, pool, rules);
+            (pool.exists(var, rb.value), rb.log)
+        }
         leaf => (pool.intern(leaf), DerivationLog::new()),
     }
 }

@@ -29,6 +29,9 @@ use alkahest_core::{
     subresultant_prs as core_subresultant_prs,
     subs as core_subs,
     factor_univariate_mod_p as core_factor_univariate_mod_p,
+    // V3-3 — FOFormula / satisfiability
+    satisfiable as core_satisfiable,
+    Satisfiability as CoreSatisfiability,
     // Phase 22 — Ball arithmetic
     ArbBall as CoreArbBall,
     Capabilities,
@@ -359,6 +362,20 @@ impl PyExprPool {
     }
     fn pred_false(slf: PyRef<'_, Self>) -> PyExpr {
         let id = slf.inner.pred_false();
+        let pool: Py<PyExprPool> = slf.into();
+        PyExpr { id, pool }
+    }
+
+    /// Universal quantifier: ``∀ var . body`` (first-order logic).
+    fn forall(slf: PyRef<'_, Self>, var: PyExpr, body: PyExpr) -> PyExpr {
+        let id = slf.inner.forall(var.id, body.id);
+        let pool: Py<PyExprPool> = slf.into();
+        PyExpr { id, pool }
+    }
+
+    /// Existential quantifier: ``∃ var . body``.
+    fn exists(slf: PyRef<'_, Self>, var: PyExpr, body: PyExpr) -> PyExpr {
+        let id = slf.inner.exists(var.id, body.id);
         let pool: Py<PyExprPool> = slf.into();
         PyExpr { id, pool }
     }
@@ -706,6 +723,16 @@ impl PyExpr {
                 )
                 .into_py(py)
             }
+            alkahest_core::ExprData::Forall { var, body } => PyList::new_bound(
+                py,
+                vec!["forall".into_py(py), wrap!(var), wrap!(body)],
+            )
+            .into_py(py),
+            alkahest_core::ExprData::Exists { var, body } => PyList::new_bound(
+                py,
+                vec!["exists".into_py(py), wrap!(var), wrap!(body)],
+            )
+            .into_py(py),
         }
     }
 }
@@ -3088,6 +3115,88 @@ fn py_piecewise(
 }
 
 // ---------------------------------------------------------------------------
+// V3-3 — First-order logic (FOFormula)
+// ---------------------------------------------------------------------------
+
+fn require_same_pool(py: Python<'_>, a: &PyExpr, b: &PyExpr) -> PyResult<()> {
+    if !a.pool.is(&b.pool) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "expressions must belong to the same ExprPool",
+        ));
+    }
+    let _ = py;
+    Ok(())
+}
+
+/// Return ``False`` if unsatisfiable, ``True`` if satisfiable with no witness
+/// variables, a ``dict`` of symbol → rational string if a witness is found, or
+/// ``None`` if the fragment is unsupported.
+#[pyfunction(name = "satisfiable")]
+fn py_satisfiable(py: Python<'_>, formula: PyRef<PyExpr>) -> PyResult<PyObject> {
+    let pool = formula.pool.borrow(py);
+    let out: PyObject = match core_satisfiable(formula.id, &pool.inner) {
+        CoreSatisfiability::Unsat => false.to_object(py),
+        CoreSatisfiability::Unknown => py.None(),
+        CoreSatisfiability::Sat(m) => {
+            if m.is_empty() {
+                true.to_object(py)
+            } else {
+                let d = PyDict::new_bound(py);
+                for (k, v) in m {
+                    d.set_item(k, v)?;
+                }
+                d.into_py(py)
+            }
+        }
+    };
+    Ok(out)
+}
+
+/// Logical conjunction of two predicate expressions (same pool).
+#[pyfunction(name = "And")]
+fn py_logic_and(py: Python<'_>, a: PyRef<PyExpr>, b: PyRef<PyExpr>) -> PyResult<PyExpr> {
+    require_same_pool(py, &a, &b)?;
+    let pool_py = a.pool.clone_ref(py);
+    let id = pool_py.borrow(py).inner.pred_and(vec![a.id, b.id]);
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// Logical disjunction (same pool).
+#[pyfunction(name = "Or")]
+fn py_logic_or(py: Python<'_>, a: PyRef<PyExpr>, b: PyRef<PyExpr>) -> PyResult<PyExpr> {
+    require_same_pool(py, &a, &b)?;
+    let pool_py = a.pool.clone_ref(py);
+    let id = pool_py.borrow(py).inner.pred_or(vec![a.id, b.id]);
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// Logical negation.
+#[pyfunction(name = "Not")]
+fn py_logic_not(_py: Python<'_>, a: PyRef<PyExpr>) -> PyExpr {
+    let pool_py = a.pool.clone_ref(_py);
+    let id = pool_py.borrow(_py).inner.pred_not(a.id);
+    PyExpr { id, pool: pool_py }
+}
+
+/// ``∀ var . body`` (same pool).
+#[pyfunction(name = "Forall")]
+fn py_forall(py: Python<'_>, var: PyRef<PyExpr>, body: PyRef<PyExpr>) -> PyResult<PyExpr> {
+    require_same_pool(py, &var, &body)?;
+    let pool_py = var.pool.clone_ref(py);
+    let id = pool_py.borrow(py).inner.forall(var.id, body.id);
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// ``∃ var . body`` (same pool).
+#[pyfunction(name = "Exists")]
+fn py_exists(py: Python<'_>, var: PyRef<PyExpr>, body: PyRef<PyExpr>) -> PyResult<PyExpr> {
+    require_same_pool(py, &var, &body)?;
+    let pool_py = var.pool.clone_ref(py);
+    let id = pool_py.borrow(py).inner.exists(var.id, body.id);
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+// ---------------------------------------------------------------------------
 // PA-5 — Primitive registry Python bindings
 // ---------------------------------------------------------------------------
 
@@ -3375,6 +3484,39 @@ impl PyGroebnerBasis {
         }
         drop(pool);
         let inner = GroebnerBasis::compute(gb_polys, MonomialOrder::Lex);
+        Ok(PyGroebnerBasis {
+            inner,
+            pool: Some(pool_py),
+            var_ids,
+        })
+    }
+
+    /// Gröbner basis via Faugère's F5 (signature-based reduction, V2-8).
+    ///
+    /// Same calling convention as :meth:`compute`; polynomial term order is lex.
+    /// Module signatures use lex on the monomial part × generator index.
+    #[staticmethod]
+    fn compute_f5(
+        py: Python<'_>,
+        polys: Vec<PyRef<PyExpr>>,
+        vars: Vec<PyRef<PyExpr>>,
+    ) -> PyResult<PyGroebnerBasis> {
+        if polys.is_empty() || vars.is_empty() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "GroebnerBasis.compute_f5 requires at least one polynomial and one variable",
+            ));
+        }
+        let pool_py = polys[0].pool.clone_ref(py);
+        let pool = pool_py.borrow(py);
+        let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+        let mut gb_polys = Vec::with_capacity(polys.len());
+        for p in &polys {
+            let gbp = expr_to_gbpoly(p.id, &var_ids, &pool.inner)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+            gb_polys.push(gbp);
+        }
+        drop(pool);
+        let inner = GroebnerBasis::compute_f5(gb_polys, MonomialOrder::Lex);
         Ok(PyGroebnerBasis {
             inner,
             pool: Some(pool_py),
@@ -3829,6 +3971,12 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPrimitiveRegistry>()?;
     // PA-9 — Piecewise
     m.add_function(wrap_pyfunction!(py_piecewise, m)?)?;
+    m.add_function(wrap_pyfunction!(py_satisfiable, m)?)?;
+    m.add_function(wrap_pyfunction!(py_logic_and, m)?)?;
+    m.add_function(wrap_pyfunction!(py_logic_or, m)?)?;
+    m.add_function(wrap_pyfunction!(py_logic_not, m)?)?;
+    m.add_function(wrap_pyfunction!(py_forall, m)?)?;
+    m.add_function(wrap_pyfunction!(py_exists, m)?)?;
     // V5-1 — Lean 4 certificate exporter
     m.add_function(wrap_pyfunction!(py_to_lean, m)?)?;
     // V5-2 — StableHLO/XLA bridge

@@ -107,6 +107,7 @@ fn collect_vars_rec(expr: ExprId, pool: &ExprPool, out: &mut BTreeSet<ExprId>) {
             ids
         }
         ExprData::Predicate { args, .. } => args.clone(),
+        ExprData::Forall { var, body } | ExprData::Exists { var, body } => vec![*var, *body],
     });
     for child in children {
         collect_vars_rec(child, pool, out);

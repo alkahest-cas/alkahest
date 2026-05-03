@@ -138,6 +138,16 @@ class TestGroebnerBasisComputeBinding:
         gb = alkahest.GroebnerBasis.compute([x**2 + p.integer(-4)], [x])
         assert len(gb) >= 1
 
+    def test_compute_f5_same_ideal_as_compute(self):
+        """V2-8: F5 should agree with default compute on a small ideal."""
+        x, p = self.x, self.pool
+        poly = x**2 + p.integer(-1)
+        gb5 = alkahest.GroebnerBasis.compute_f5([poly], [x])
+        gb0 = alkahest.GroebnerBasis.compute([poly], [x])
+        assert gb5.contains(poly)
+        assert gb0.contains(poly)
+        assert len(gb5) == len(gb0)
+
     def test_empty_inputs_raise(self):
         x = self.x
         with pytest.raises(ValueError):

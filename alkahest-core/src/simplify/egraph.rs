@@ -53,7 +53,10 @@ mod backend {
             ExprData::Pow { base, exp } => Node::Pow(*base, *exp),
             ExprData::Func { name, args } if args.len() == 1 => Node::Func(name.clone(), args[0]),
             ExprData::Func { .. } => Node::Unsupported,
-            ExprData::Piecewise { .. } | ExprData::Predicate { .. } => Node::Unsupported,
+            ExprData::Piecewise { .. }
+            | ExprData::Predicate { .. }
+            | ExprData::Forall { .. }
+            | ExprData::Exists { .. } => Node::Unsupported,
         });
 
         match node {

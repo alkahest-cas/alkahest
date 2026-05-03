@@ -110,6 +110,13 @@ from .alkahest import (  # noqa: F401
     pantelides,
     # PA-9: Piecewise
     piecewise,
+    # V3-3: First-order logic
+    And,
+    Exists,
+    Forall,
+    Not,
+    Or,
+    satisfiable,
     # Phase 27: poly_normal
     poly_normal,
     real_roots,
@@ -407,6 +414,13 @@ __all__ = [
     "map_exprs",
     # PA-9
     "piecewise",
+    # V3-3 — FOFormula
+    "satisfiable",
+    "And",
+    "Or",
+    "Not",
+    "Forall",
+    "Exists",
     # V5-2
     "to_stablehlo",
     # V1-4 / V1-16: Polynomial system solver + Gröbner basis (requires groebner feature)

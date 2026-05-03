@@ -10,6 +10,8 @@ pub mod hybrid;
 pub mod integrate;
 pub mod jit;
 pub mod kernel;
+// V3-3 — First-order logic / FOFormula
+pub mod logic;
 // V2-6 — LLL + PSLQ (PSLQ in `numeric`)
 pub mod lattice;
 pub mod lean;
@@ -34,6 +36,10 @@ pub use diff::{diff, diff_forward, grad, DiffError, DualValue, ForwardDiffError}
 pub use flint::{FlintInteger, FlintPoly};
 pub use hybrid::{Event, GuardStructure, HybridODE};
 pub use integrate::{integrate, IntegrationError};
+pub use logic::{
+    dpll_sat, formula_from_expr, satisfiable, BoolClause, BoolLit, Formula, LogicError,
+    Satisfiability,
+};
 #[allow(deprecated)]
 pub use kernel::{
     load_from, open_persistent, save_to, subs, Domain, ExprData, ExprDisplay, ExprId, ExprPool,
@@ -87,7 +93,7 @@ pub use simplify::parallel::{simplify_par, simplify_par_with_config};
 
 // V5-11 — Gröbner basis
 #[cfg(feature = "groebner")]
-pub use poly::groebner::{GbPoly, GroebnerBasis, MonomialOrder};
+pub use poly::groebner::{compute_groebner_basis_f5, GbPoly, GroebnerBasis, MonomialOrder};
 
 pub use errors::AlkahestError;
 pub use lean::emit_lean_expr as emit_lean;
@@ -127,6 +133,10 @@ pub mod stable {
     pub use crate::kernel::{subs, Domain, ExprData, ExprDisplay, ExprId, ExprPool};
     pub use crate::lattice::{
         lattice_reduce_rows, lattice_reduce_rows_with_delta, validate_lll_rows, LatticeError,
+    };
+    pub use crate::logic::{
+        dpll_sat, formula_from_expr, satisfiable, BoolClause, BoolLit, Formula, LogicError,
+        Satisfiability,
     };
     pub use crate::matrix::{
         hermite_form, hermite_form_poly, jacobian, smith_form, smith_form_poly, IntegerMatrix,
@@ -178,5 +188,7 @@ pub mod experimental {
     #[cfg(feature = "groebner-cuda")]
     pub use crate::poly::groebner::GpuGroebnerError;
     #[cfg(feature = "groebner")]
-    pub use crate::poly::groebner::{GbPoly, GroebnerBasis, MonomialOrder};
+    pub use crate::poly::groebner::{
+        compute_groebner_basis_f5, GbPoly, GroebnerBasis, MonomialOrder,
+    };
 }

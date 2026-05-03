@@ -129,6 +129,7 @@ fn diff_raw(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DerivedExpr<Ex
         },
         // Predicates have no algebraic derivative.
         ExprData::Predicate { .. } => Node::Const,
+        ExprData::Forall { .. } | ExprData::Exists { .. } => Node::Const,
     });
 
     match node {

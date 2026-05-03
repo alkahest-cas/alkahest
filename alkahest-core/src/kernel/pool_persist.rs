@@ -21,7 +21,7 @@
 //!
 //! ```text
 //!   Magic     = "ALKP"             (4 bytes)
-//!   Version   = u32 (= 1)
+//!   Version   = u32 (1 = original tags 0–9; **2** adds quantifier tags 10–11)
 //!   Flags     = u32                 (reserved; always 0 in v1)
 //!   NodeCount = u64
 //!   Nodes     = NodeCount × TaggedNode
@@ -40,7 +40,13 @@
 //!     7 Func       -> len:u32, name, arity:u32, ExprId.0 × arity
 //!     8 Piecewise  -> n_branches:u32, (cond:u32, val:u32) × n, default:u32
 //!     9 Predicate  -> kind:u8, arity:u32, ExprId.0 × arity
+//!     10 Forall   -> var:u32, body:u32
+//!     11 Exists   -> var:u32, body:u32
 //! ```
+//!
+//! File version (`Version` u32 field): **1** is the original v1.0 layout (tags 0–9 only).
+//! **2** adds tags 10–11 for quantifiers.  Current writers emit version **2**; readers accept
+//! **1** or **2**.
 //!
 //! All integers are little-endian.
 
@@ -52,7 +58,11 @@ use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 const MAGIC: &[u8; 4] = b"ALKP";
-const VERSION: u32 = 1;
+/// Oldest readable format (predicate / piecewise only).
+const POOL_FORMAT_V1: u32 = 1;
+/// Adds `Forall` / `Exists` node tags 10–11.
+const POOL_FORMAT_V2: u32 = 2;
+const POOL_FORMAT_WRITE: u32 = POOL_FORMAT_V2;
 
 // ---------------------------------------------------------------------------
 // Error
@@ -321,10 +331,20 @@ fn write_node(w: &mut impl Write, node: &ExprData) -> io::Result<()> {
             write_u8(w, pred_to_u8(kind))?;
             write_ids(w, args)
         }
+        ExprData::Forall { var, body } => {
+            write_u8(w, 10)?;
+            write_u32(w, var.0)?;
+            write_u32(w, body.0)
+        }
+        ExprData::Exists { var, body } => {
+            write_u8(w, 11)?;
+            write_u32(w, var.0)?;
+            write_u32(w, body.0)
+        }
     }
 }
 
-fn read_node(r: &mut impl Read) -> Result<ExprData, IoError> {
+fn read_node(r: &mut impl Read, format_version: u32) -> Result<ExprData, IoError> {
     let tag = read_u8(r)?;
     match tag {
         0 => {
@@ -386,6 +406,22 @@ fn read_node(r: &mut impl Read) -> Result<ExprData, IoError> {
             let args = read_ids(r)?;
             Ok(ExprData::Predicate { kind, args })
         }
+        10 => {
+            if format_version < POOL_FORMAT_V2 {
+                return Err(IoError::BadTag(10));
+            }
+            let var = ExprId(read_u32(r)?);
+            let body = ExprId(read_u32(r)?);
+            Ok(ExprData::Forall { var, body })
+        }
+        11 => {
+            if format_version < POOL_FORMAT_V2 {
+                return Err(IoError::BadTag(11));
+            }
+            let var = ExprId(read_u32(r)?);
+            let body = ExprId(read_u32(r)?);
+            Ok(ExprData::Exists { var, body })
+        }
         b => Err(IoError::BadTag(b)),
     }
 }
@@ -413,7 +449,7 @@ pub fn save_to(pool: &ExprPool, path: impl AsRef<Path>) -> Result<(), IoError> {
         let mut w = BufWriter::new(f);
 
         w.write_all(MAGIC)?;
-        write_u32(&mut w, VERSION)?;
+        write_u32(&mut w, POOL_FORMAT_WRITE)?;
         write_u32(&mut w, 0u32)?; // flags
 
         let count = pool.len();
@@ -449,7 +485,7 @@ pub fn load_from(path: impl AsRef<Path>) -> Result<Option<ExprPool>, IoError> {
     }
 
     let version = read_u32(&mut r)?;
-    if version != VERSION {
+    if version != POOL_FORMAT_V1 && version != POOL_FORMAT_V2 {
         return Err(IoError::UnsupportedVersion(version));
     }
     let _flags = read_u32(&mut r)?;
@@ -457,7 +493,7 @@ pub fn load_from(path: impl AsRef<Path>) -> Result<Option<ExprPool>, IoError> {
     let pool = ExprPool::new();
     let count = read_u64(&mut r)? as usize;
     for expected in 0..count {
-        let data = read_node(&mut r)?;
+        let data = read_node(&mut r, version)?;
         let got = pool.intern(data);
         debug_assert_eq!(got.0 as usize, expected, "pool id drift during load");
     }

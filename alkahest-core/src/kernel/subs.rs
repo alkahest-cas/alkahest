@@ -52,6 +52,30 @@ pub fn subs(expr: ExprId, mapping: &HashMap<ExprId, ExprId>, pool: &ExprPool) ->
             let new_args: Vec<ExprId> = args.iter().map(|&a| subs(a, mapping, pool)).collect();
             pool.func(name, new_args)
         }
+        ExprData::Piecewise { branches, default } => {
+            let new_branches: Vec<(ExprId, ExprId)> = branches
+                .iter()
+                .map(|(c, v)| (subs(*c, mapping, pool), subs(*v, mapping, pool)))
+                .collect();
+            let nd = subs(default, mapping, pool);
+            pool.piecewise(new_branches, nd)
+        }
+        ExprData::Predicate { kind, args } => {
+            let new_args: Vec<ExprId> = args.iter().map(|&a| subs(a, mapping, pool)).collect();
+            pool.predicate(kind.clone(), new_args)
+        }
+        ExprData::Forall { var, body } => {
+            let mut m2 = mapping.clone();
+            m2.remove(&var);
+            let nb = subs(body, &m2, pool);
+            pool.forall(var, nb)
+        }
+        ExprData::Exists { var, body } => {
+            let mut m2 = mapping.clone();
+            m2.remove(&var);
+            let nb = subs(body, &m2, pool);
+            pool.exists(var, nb)
+        }
         // Atoms have no children — if not in mapping, return as-is
         _ => expr,
     }

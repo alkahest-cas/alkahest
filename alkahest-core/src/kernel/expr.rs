@@ -203,4 +203,14 @@ pub enum ExprData {
         kind: PredicateKind,
         args: Vec<ExprId>,
     },
+    /// Universal quantification (`∀ var . body`).  Used by first-order logic (V3-3).
+    Forall {
+        var: ExprId,
+        body: ExprId,
+    },
+    /// Existential quantification (`∃ var . body`).
+    Exists {
+        var: ExprId,
+        body: ExprId,
+    },
 }

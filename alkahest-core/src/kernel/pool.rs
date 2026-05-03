@@ -269,6 +269,17 @@ impl ExprPool {
         self.predicate(crate::kernel::expr::PredicateKind::False, vec![])
     }
 
+    // V3-3 — first-order quantifiers (first-class `Formula` / FOFormula).
+    /// `∀ var . body`
+    pub fn forall(&self, var: ExprId, body: ExprId) -> ExprId {
+        self.intern(ExprData::Forall { var, body })
+    }
+
+    /// `∃ var . body`
+    pub fn exists(&self, var: ExprId, body: ExprId) -> ExprId {
+        self.intern(ExprData::Exists { var, body })
+    }
+
     // -----------------------------------------------------------------------
     // Display helper
     // -----------------------------------------------------------------------
@@ -384,6 +395,18 @@ fn fmt_data(data: &ExprData, pool: &ExprPool, f: &mut fmt::Formatter<'_>) -> fmt
                 )
             }
         },
+        ExprData::Forall { var, body } => write!(
+            f,
+            "∀ {} . {}",
+            pool.display(*var),
+            pool.display(*body)
+        ),
+        ExprData::Exists { var, body } => write!(
+            f,
+            "∃ {} . {}",
+            pool.display(*var),
+            pool.display(*body)
+        ),
     }
 }
 

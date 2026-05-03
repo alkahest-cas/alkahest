@@ -130,6 +130,9 @@ fn expr_to_univariate_coeffs(
         ExprData::Predicate { .. } => Err(ConversionError::NonPolynomialFunction(
             "Predicate".to_string(),
         )),
+        ExprData::Forall { .. } | ExprData::Exists { .. } => Err(
+            ConversionError::NonPolynomialFunction("quantifier".to_string()),
+        ),
     }
 }
 
