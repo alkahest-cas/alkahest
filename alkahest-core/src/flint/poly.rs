@@ -177,6 +177,53 @@ impl FlintPoly {
         }
         p
     }
+
+    /// Complete factorization over ℤ via FLINT (`fmpz_poly_factor` — modular
+    /// Berlekamp, Zassenhaus combination, van Hoeij LLL, etc.).
+    ///
+    /// Returns `(unit, factors)` with `self = unit · ∏ fᵢ^eᵢ`.  The zero
+    /// polynomial yields `Err(())`.
+    #[allow(clippy::result_unit_err)]
+    pub fn factor_over_z(&self) -> Result<(super::integer::FlintInteger, Vec<(FlintPoly, u32)>), ()> {
+        if self.is_zero() {
+            return Err(());
+        }
+        unsafe {
+            let mut fac = std::mem::MaybeUninit::<ffi::FmpzPolyFactorStruct>::uninit();
+            ffi::fmpz_poly_factor_init(fac.as_mut_ptr());
+            let mut fac = fac.assume_init();
+            ffi::fmpz_poly_factor(&mut fac, &self.inner);
+            let mut unit = super::integer::FlintInteger::new();
+            ffi::fmpz_poly_factor_get_fmpz(unit.inner_mut_ptr(), &fac);
+            let mut factors = Vec::with_capacity(fac.num as usize);
+            for i in 0..fac.num {
+                let mut fp = FlintPoly::new();
+                ffi::fmpz_poly_factor_get_fmpz_poly(&mut fp.inner, &fac, i);
+                let exp = *fac.exp.add(i as usize) as u32;
+                factors.push((fp, exp));
+            }
+            ffi::fmpz_poly_factor_clear(&mut fac);
+            Ok((unit, factors))
+        }
+    }
+
+    /// Swinnerton–Dyer polynomial `S_n` (irreducible over ℚ for prime `n`).
+    pub fn swinnerton_dyer(n: u64) -> Self {
+        let mut p = Self::new();
+        unsafe {
+            ffi::fmpz_poly_swinnerton_dyer(&mut p.inner, n as ffi::ulong);
+        }
+        p
+    }
+
+    /// Cyclotomic polynomial `Φ_n`.
+    pub fn cyclotomic(n: u64) -> Self {
+        let mut p = Self::new();
+        unsafe {
+            ffi::fmpz_poly_cyclotomic(&mut p.inner, n as ffi::ulong);
+        }
+        p
+    }
 }
 
 impl Default for FlintPoly {

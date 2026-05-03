@@ -9,7 +9,7 @@ from pure-Python code.
 
 Canonical code ranges — authoritative source is ``alkahest_core::errors::codes::REGISTRY``:
 
-    E-POLY-001 … E-POLY-007    ConversionError
+    E-POLY-001 … E-POLY-010    ConversionError (001–007), FactorError (008–010)
     E-DIFF-001 … E-DIFF-004    DiffError  (003-004 = forward-mode variants)
     E-INT-001  … E-INT-002     IntegrationError
     E-MAT-001  … E-MAT-003     MatrixError
@@ -65,6 +65,18 @@ class ConversionError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code="E-POLY-001", remediation=remediation, span=span)
+
+
+class FactorError(AlkahestError):
+    """Polynomial factorization failed."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-POLY-008", remediation=remediation, span=span)
 
 
 class DomainError(AlkahestError):

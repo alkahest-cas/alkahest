@@ -55,6 +55,54 @@ pub struct FmpzPolyStruct {
     pub length: slong,
 }
 
+/// `fmpz_poly_factor_struct` — FLINT factorization container (`fmpz_poly_factor_t`).
+#[repr(C)]
+pub struct FmpzPolyFactorStruct {
+    pub c: fmpz,
+    pub p: *mut FmpzPolyStruct,
+    pub exp: *mut slong,
+    pub num: slong,
+    pub alloc: slong,
+}
+
+/// FLINT `nmod_t` — modulus data for `nmod_poly`.
+#[repr(C)]
+pub struct NmodStruct {
+    pub n: ulong,
+    pub ninv: ulong,
+    pub norm: ulong,
+}
+
+/// `nmod_poly_struct` / `nmod_poly_t[0]` view for FFI.
+#[repr(C)]
+pub struct NmodPolyStruct {
+    pub coeffs: *mut ulong,
+    pub alloc: slong,
+    pub length: slong,
+    pub mod_: NmodStruct,
+}
+
+/// `nmod_poly_factor_struct` / `nmod_poly_factor_t`.
+#[repr(C)]
+pub struct NmodPolyFactorStruct {
+    pub p: *mut NmodPolyStruct,
+    pub exp: *mut slong,
+    pub num: slong,
+    pub alloc: slong,
+}
+
+/// Multivariate factorization container (`fmpz_mpoly_factor_struct`).
+/// Exponent entries are `fmpz` (FLINT stores multiplicities as small integers).
+#[repr(C)]
+pub struct FmpzMPolyFactorStruct {
+    pub constant: fmpz,
+    pub constant_den: fmpz,
+    pub poly: *mut FmpzMPolyBuf,
+    pub exp: *mut fmpz,
+    pub num: slong,
+    pub alloc: slong,
+}
+
 // SAFETY: FLINT integers and polynomials are safe to send across threads
 // (they own their memory and have no thread-local state).
 unsafe impl Send for FmpzPolyStruct {}
@@ -87,6 +135,7 @@ extern "C" {
     /// Parse a string into an fmpz. Returns 0 on success, -1 on failure.
     pub fn fmpz_set_str(f: *mut fmpz, str_: *const c_char, b: c_int) -> c_int;
     pub fn fmpz_equal(f: *const fmpz, g: *const fmpz) -> c_int;
+    pub fn fmpz_cmp_ui(f: *const fmpz, x: ulong) -> c_int;
     pub fn fmpz_add(f: *mut fmpz, g: *const fmpz, h: *const fmpz);
     pub fn fmpz_sub(f: *mut fmpz, g: *const fmpz, h: *const fmpz);
     pub fn fmpz_mul(f: *mut fmpz, g: *const fmpz, h: *const fmpz);
@@ -140,6 +189,20 @@ extern "C" {
     pub fn fmpz_poly_equal(a: *const FmpzPolyStruct, b: *const FmpzPolyStruct) -> c_int;
     /// Allocates and returns a human-readable string. Caller must free with `flint_free`.
     pub fn fmpz_poly_get_str_pretty(poly: *const FmpzPolyStruct, x: *const c_char) -> *mut c_char;
+
+    /// Complete factorization over `ℤ` (Zassenhaus / van Hoeij inside FLINT).
+    pub fn fmpz_poly_factor_init(fac: *mut FmpzPolyFactorStruct);
+    pub fn fmpz_poly_factor_clear(fac: *mut FmpzPolyFactorStruct);
+    pub fn fmpz_poly_factor(fac: *mut FmpzPolyFactorStruct, poly: *const FmpzPolyStruct);
+    pub fn fmpz_poly_factor_get_fmpz_poly(
+        z: *mut FmpzPolyStruct,
+        fac: *const FmpzPolyFactorStruct,
+        i: slong,
+    );
+    pub fn fmpz_poly_factor_get_fmpz(z: *mut fmpz, fac: *const FmpzPolyFactorStruct);
+    /// Swinnerton–Dyer polynomial `S_n` (test oracle / irreducibility checks).
+    pub fn fmpz_poly_swinnerton_dyer(poly: *mut FmpzPolyStruct, n: ulong);
+    pub fn fmpz_poly_cyclotomic(poly: *mut FmpzPolyStruct, n: ulong);
 
     // -----------------------------------------------------------------------
     // fmpz_mpoly — sparse multivariate polynomials over Z
@@ -216,6 +279,32 @@ extern "C" {
         ctx: *const FmpzMPolyCtxBuf,
     ) -> c_int;
 
+    // fmpz_mpoly — full factorization over `ℤ[x₁,…,xₙ]` (Bernardin–Monagan, etc.)
+    pub fn fmpz_mpoly_factor_init(f: *mut FmpzMPolyFactorStruct, ctx: *const FmpzMPolyCtxBuf);
+    pub fn fmpz_mpoly_factor_clear(f: *mut FmpzMPolyFactorStruct, ctx: *const FmpzMPolyCtxBuf);
+    pub fn fmpz_mpoly_factor(
+        f: *mut FmpzMPolyFactorStruct,
+        A: *const FmpzMPolyBuf,
+        ctx: *const FmpzMPolyCtxBuf,
+    ) -> c_int;
+    pub fn fmpz_mpoly_factor_length(f: *const FmpzMPolyFactorStruct, ctx: *const FmpzMPolyCtxBuf) -> slong;
+    pub fn fmpz_mpoly_factor_get_base(
+        p: *mut FmpzMPolyBuf,
+        fac: *const FmpzMPolyFactorStruct,
+        i: slong,
+        ctx: *const FmpzMPolyCtxBuf,
+    );
+    pub fn fmpz_mpoly_factor_get_constant_fmpz(
+        c: *mut fmpz,
+        f: *const FmpzMPolyFactorStruct,
+        ctx: *const FmpzMPolyCtxBuf,
+    );
+    pub fn fmpz_mpoly_factor_get_exp_si(
+        f: *mut FmpzMPolyFactorStruct,
+        i: slong,
+        ctx: *const FmpzMPolyCtxBuf,
+    ) -> slong;
+
     // -----------------------------------------------------------------------
     // fmpz_poly — resultant and pseudo-division (for subresultant PRS)
     // -----------------------------------------------------------------------
@@ -248,6 +337,22 @@ extern "C" {
         poly: *const FmpzPolyStruct,
         x: *const fmpz,
     );
+
+    // nmod_poly — univariate polynomials over ℤ/pℤ (Berlekamp, Cantor–Zassenhaus, …)
+    pub fn nmod_init(mod_: *mut NmodStruct, n: ulong);
+    pub fn nmod_poly_init(poly: *mut NmodPolyStruct, n: ulong);
+    pub fn nmod_poly_clear(poly: *mut NmodPolyStruct);
+    pub fn nmod_poly_set_coeff_ui(poly: *mut NmodPolyStruct, n: slong, c: ulong);
+    pub fn nmod_poly_factor_init(fac: *mut NmodPolyFactorStruct);
+    pub fn nmod_poly_factor_clear(fac: *mut NmodPolyFactorStruct);
+    pub fn nmod_poly_factor(result: *mut NmodPolyFactorStruct, input: *const NmodPolyStruct) -> ulong;
+    pub fn nmod_poly_factor_get_nmod_poly(
+        z: *mut NmodPolyStruct,
+        fac: *mut NmodPolyFactorStruct,
+        i: slong,
+    );
+    pub fn nmod_poly_degree(poly: *const NmodPolyStruct) -> slong;
+    pub fn nmod_poly_get_coeff_ui(poly: *const NmodPolyStruct, j: slong) -> ulong;
 
     // -----------------------------------------------------------------------
     // fmpz_mat — dense integer matrices (Hermite / Smith normal forms)

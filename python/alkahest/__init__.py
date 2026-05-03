@@ -53,6 +53,7 @@ from .alkahest import (  # noqa: F401
     Matrix,
     # Polynomial types
     MultiPoly,
+    MultiPolyFactorization,
     # V2-1: Modular / CRT framework
     MultiPolyFp,
     Port,
@@ -65,6 +66,10 @@ from .alkahest import (  # noqa: F401
     RootInterval,
     # Phase 19: Sensitivity analysis
     SensitivitySystem,
+    # V2-7: Polynomial factorization
+    UniPolyFactorModP,
+    UniPolyFactorization,
+    factor_univariate_mod_p,
     UniPoly,
     abs,  # symbolic abs — use alkahest.abs(expr); shadows Python builtin within this module
     acos,
@@ -172,6 +177,7 @@ try:
         DaeError,
         DiffError,
         DomainError,
+        FactorError,
         IntegrationError,
         JitError,
         LatticeError,
@@ -190,6 +196,7 @@ except ImportError:
         DaeError,
         DiffError,
         DomainError,
+        FactorError,
         IntegrationError,
         JitError,
         LatticeError,
@@ -262,6 +269,7 @@ __all__ = [
     "AlkahestError",
     "AlkahestError",
     "ConversionError",
+    "FactorError",
     "DomainError",
     "DiffError",
     "PoolError",
@@ -279,6 +287,10 @@ __all__ = [
     # Polynomials
     "UniPoly",
     "MultiPoly",
+    "UniPolyFactorization",
+    "UniPolyFactorModP",
+    "MultiPolyFactorization",
+    "factor_univariate_mod_p",
     "RationalFunction",
     # Rules
     "RewriteRule",

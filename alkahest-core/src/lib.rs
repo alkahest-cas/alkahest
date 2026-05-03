@@ -52,9 +52,11 @@ pub use ode::{
 };
 pub use pattern::{match_pattern, Pattern, Substitution};
 pub use poly::{
-    poly_normal, real_roots, real_roots_symbolic, refine_root, resultant, sparse_interpolate,
-    sparse_interpolate_univariate, subresultant_prs, ConversionError, MultiPoly, RationalFunction,
-    RealRootError, ResultantError, RootInterval, SparseInterpError, UniPoly,
+    factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z, poly_normal, real_roots,
+    real_roots_symbolic, refine_root, resultant, sparse_interpolate, sparse_interpolate_univariate,
+    subresultant_prs, ConversionError, FactorError, MultiPoly, MultiPolyFactorization,
+    RationalFunction, RealRootError, ResultantError, RootInterval, SparseInterpError, UniPoly,
+    UniPolyFactorModP, UniPolyFactorization,
 };
 
 // Phase 24 — Horner form
@@ -134,9 +136,11 @@ pub mod stable {
     pub use crate::ode::{lower_to_first_order, OdeError, ScalarODE, ODE};
     pub use crate::pattern::{match_pattern, Pattern, Substitution};
     pub use crate::poly::{
-        poly_normal, real_roots, real_roots_symbolic, refine_root, resultant, sparse_interpolate,
-        sparse_interpolate_univariate, subresultant_prs, ConversionError, MultiPoly,
-        RationalFunction, RealRootError, ResultantError, RootInterval, SparseInterpError, UniPoly,
+        factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z, poly_normal, real_roots,
+        real_roots_symbolic, refine_root, resultant, sparse_interpolate,
+        sparse_interpolate_univariate, subresultant_prs, ConversionError, FactorError, MultiPoly,
+        MultiPolyFactorization, RationalFunction, RealRootError, ResultantError, RootInterval,
+        SparseInterpError, UniPoly, UniPolyFactorModP, UniPolyFactorization,
     };
     pub use crate::primitive::{Primitive, PrimitiveRegistry};
     pub use crate::simplify::{simplify, simplify_with, SimplifyConfig};

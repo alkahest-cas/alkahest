@@ -61,6 +61,14 @@ a = UniPoly.from_symbolic(x ** 2 + pool.integer(-1), x)
 b = UniPoly.from_symbolic(x + pool.integer(-1), x)
 print(a.gcd(b))          # x - 1
 
+# Factorization over ℤ (FLINT — Zassenhaus / van Hoeij)
+fac = a.factor_z()
+print(int(fac.unit), fac.factor_list())  # unit and list of (UniPoly, exponent)
+
+# Dense univariate mod p (Berlekamp / Cantor–Zassenhaus via FLINT nmod)
+fp = alkahest.factor_univariate_mod_p([1, 0, 1], 2)  # x^2+1 over GF(2)
+print(fp.factor_list())
+
 # Rational function with automatic GCD normalization
 rf = RationalFunction.from_symbolic(x ** 2 + pool.integer(-1), x + pool.integer(-1), [x])
 print(rf)                # x + 1

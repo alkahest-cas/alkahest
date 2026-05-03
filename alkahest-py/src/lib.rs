@@ -28,6 +28,7 @@ use alkahest_core::{
     sparse_interpolate_univariate as core_sparse_interpolate_univariate,
     subresultant_prs as core_subresultant_prs,
     subs as core_subs,
+    factor_univariate_mod_p as core_factor_univariate_mod_p,
     // Phase 22 — Ball arithmetic
     ArbBall as CoreArbBall,
     Capabilities,
@@ -35,12 +36,14 @@ use alkahest_core::{
     Event,
     ExprId,
     ExprPool,
+    FactorError,
     HybridODE,
     IntervalEval as CoreIntervalEval,
     LatticeError,
     Matrix,
     MatrixError,
     MultiPoly,
+    MultiPolyFactorization,
     OdeError,
     Pattern,
     Port,
@@ -53,6 +56,8 @@ use alkahest_core::{
     ScalarODE,
     System as AcausalSystem,
     UniPoly,
+    UniPolyFactorModP,
+    UniPolyFactorization,
     DAE,
     ODE,
 };
@@ -101,6 +106,8 @@ pyo3::create_exception!(alkahest, PySolverError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyCudaError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyIoError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyParseError, PyAlkahestError);
+// V2-7 — Polynomial factorization
+pyo3::create_exception!(alkahest, PyFactorError, PyAlkahestError);
 // V2-2 — Resultants
 pyo3::create_exception!(alkahest, PyResultantError, PyAlkahestError);
 // V2-3 — Sparse interpolation
@@ -179,6 +186,13 @@ fn integrate_error_to_py(e: IntegrationError) -> PyErr {
 fn conv_error_to_py(e: alkahest_core::ConversionError) -> PyErr {
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyConversionError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn factor_error_to_py(e: FactorError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyFactorError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -1082,13 +1096,85 @@ fn py_diff_forward(
 }
 
 // ---------------------------------------------------------------------------
-// PyUniPoly
+// V2-7 — Forward declarations (factorization result types reference these)
 // ---------------------------------------------------------------------------
 
 #[pyclass(name = "UniPoly")]
 struct PyUniPoly {
     inner: UniPoly,
 }
+
+#[pyclass(name = "MultiPoly")]
+struct PyMultiPoly {
+    inner: MultiPoly,
+}
+
+// ---------------------------------------------------------------------------
+// V2-7 — Factorization result types
+// ---------------------------------------------------------------------------
+
+#[pyclass(name = "UniPolyFactorization")]
+struct PyUniPolyFactorization {
+    inner: UniPolyFactorization,
+}
+
+#[pymethods]
+impl PyUniPolyFactorization {
+    #[getter]
+    fn unit(&self) -> String {
+        self.inner.unit.to_string()
+    }
+
+    fn factor_list(&self) -> Vec<(PyUniPoly, u32)> {
+        self.inner
+            .factors
+            .iter()
+            .map(|(p, e)| (PyUniPoly { inner: p.clone() }, *e))
+            .collect()
+    }
+}
+
+#[pyclass(name = "MultiPolyFactorization")]
+struct PyMultiPolyFactorization {
+    inner: MultiPolyFactorization,
+}
+
+#[pymethods]
+impl PyMultiPolyFactorization {
+    #[getter]
+    fn unit(&self) -> String {
+        self.inner.unit.to_string()
+    }
+
+    fn factor_list(&self) -> Vec<(PyMultiPoly, u32)> {
+        self.inner
+            .factors
+            .iter()
+            .map(|(p, e)| (PyMultiPoly { inner: p.clone() }, *e))
+            .collect()
+    }
+}
+
+#[pyclass(name = "UniPolyFactorModP")]
+struct PyUniPolyFactorModP {
+    inner: UniPolyFactorModP,
+}
+
+#[pymethods]
+impl PyUniPolyFactorModP {
+    #[getter]
+    fn modulus(&self) -> u64 {
+        self.inner.modulus
+    }
+
+    fn factor_list(&self) -> Vec<(Vec<u64>, u32)> {
+        self.inner.factors.clone()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PyUniPoly
+// ---------------------------------------------------------------------------
 
 #[pymethods]
 impl PyUniPoly {
@@ -1143,6 +1229,14 @@ impl PyUniPoly {
             .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("gcd: variable mismatch"))
     }
 
+    /// Factor over ℤ (FLINT).
+    fn factor_z(&self) -> PyResult<PyUniPolyFactorization> {
+        self.inner
+            .factor_z()
+            .map(|inner| PyUniPolyFactorization { inner })
+            .map_err(factor_error_to_py)
+    }
+
     fn __repr__(&self) -> String {
         format!("UniPoly({})", self.inner)
     }
@@ -1155,11 +1249,6 @@ impl PyUniPoly {
 // ---------------------------------------------------------------------------
 // PyMultiPoly
 // ---------------------------------------------------------------------------
-
-#[pyclass(name = "MultiPoly")]
-struct PyMultiPoly {
-    inner: MultiPoly,
-}
 
 #[pymethods]
 impl PyMultiPoly {
@@ -1219,6 +1308,14 @@ impl PyMultiPoly {
         Ok(PyMultiPoly {
             inner: self.inner.clone() * other.inner.clone(),
         })
+    }
+
+    /// Factor over ℤ (multivariate FLINT).
+    fn factor_z(&self) -> PyResult<PyMultiPolyFactorization> {
+        self.inner
+            .factor_z()
+            .map(|inner| PyMultiPolyFactorization { inner })
+            .map_err(factor_error_to_py)
     }
 
     fn __repr__(&self) -> String {
@@ -2824,6 +2921,16 @@ fn py_refine_root(
     Ok(PyArbBall { inner: ball })
 }
 
+/// Factor a dense univariate polynomial over :math:`\mathbb{F}_p` from ascending
+/// integer coefficients (reduced mod ``p``).
+#[pyfunction]
+#[pyo3(name = "factor_univariate_mod_p")]
+fn py_factor_univariate_mod_p(coeffs: Vec<i64>, modulus: u64) -> PyResult<PyUniPolyFactorModP> {
+    core_factor_univariate_mod_p(&coeffs, modulus)
+        .map(|inner| PyUniPolyFactorModP { inner })
+        .map_err(factor_error_to_py)
+}
+
 // ---------------------------------------------------------------------------
 // V2-3 — Sparse interpolation Python bindings
 // ---------------------------------------------------------------------------
@@ -3675,6 +3782,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDerivedResult>()?;
     m.add_class::<PyUniPoly>()?;
     m.add_class::<PyMultiPoly>()?;
+    m.add_class::<PyUniPolyFactorization>()?;
+    m.add_class::<PyMultiPolyFactorization>()?;
+    m.add_class::<PyUniPolyFactorModP>()?;
     m.add_class::<PyRationalFunction>()?;
     m.add_class::<PyRewriteRule>()?;
     // Phase 14
@@ -3746,6 +3856,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRootInterval>()?;
     m.add_function(wrap_pyfunction!(py_real_roots, m)?)?;
     m.add_function(wrap_pyfunction!(py_refine_root, m)?)?;
+    m.add_function(wrap_pyfunction!(py_factor_univariate_mod_p, m)?)?;
     // V2-6 — Lattice / integer relations
     m.add_function(wrap_pyfunction!(py_lat_lll_reduce_rows, m)?)?;
     m.add_function(wrap_pyfunction!(py_guess_relation, m)?)?;
@@ -3778,6 +3889,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("CudaError", m.py().get_type_bound::<PyCudaError>())?;
     m.add("IoError", m.py().get_type_bound::<PyIoError>())?;
     m.add("ParseError", m.py().get_type_bound::<PyParseError>())?;
+    m.add("FactorError", m.py().get_type_bound::<PyFactorError>())?;
     m.add(
         "ResultantError",
         m.py().get_type_bound::<PyResultantError>(),

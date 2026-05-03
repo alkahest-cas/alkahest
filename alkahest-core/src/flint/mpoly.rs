@@ -106,6 +106,13 @@ impl FlintMPoly {
         }
     }
 
+    /// Release FLINT buffers.  Call when dropping is not enough (this type’s
+    /// `Drop` cannot invoke `fmpz_mpoly_clear` without a context).
+    pub unsafe fn clear_with_ctx(&mut self, ctx: &FlintMPolyCtx) {
+        super::ffi::fmpz_mpoly_clear(self.as_mut_ptr(), ctx.as_ptr());
+        self.buf.0.fill(0);
+    }
+
     /// Compute the resultant of `self` and `other` with respect to variable
     /// at index `var_idx` in the context.  Returns `None` if FLINT fails.
     pub fn resultant(
