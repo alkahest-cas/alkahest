@@ -312,17 +312,18 @@ See also **v2.1 — SymPy Parity** (V2-15 … V2-22) below.
 
 ---
 
-### V2-9. Cylindrical Algebraic Decomposition (real QE)
+### V2-9. Cylindrical Algebraic Decomposition (real QE) → 🏗 In progress / partial
 
 **What:** Decide first-order sentences over ℝ via CAD. Requires V2-2 (resultants), V2-4 (real root isolation), V2-7 (squarefree factorization), V3-3 (FOFormula).
 
 **Design:**
-- `alkahest-core/src/real/cad.rs` — `cad_project`, `cad_lift`, `decide(sentence: &FOFormula) -> QeResult`.
-- Brown's projection operator; NLSAT-style incremental decomposition.
+- `alkahest-core/src/real/cad.rs` — `cad_project`, `cad_lift`, `decide` / `decide_expr` (`QeResult`), `CadError`.
+- Brown's projection (`resultant(f, ∂f)`, pairwise resultants); lift via squarefree lcm + [`real_roots`].
+- Univariate QE: one outer `\forall`/`\exists` over a purely polynomial ℤ-body; algebraic `\exists` roots handled via gcd–interval checks after rational-cell sampling.
 
-**Test plan:** `∀x. x² + 1 > 0` → `True`; `∃x. x² - 2 = 0` → `True` with witness; match QEPCAD on 30-problem corpus.
+**Test plan:** `∀x. x² + 1 > 0` → `True`; `∃x. x² - 2 = 0` → `True` with witness (`rust` + `tests/test_cad_decide.py`).
 
-**Acceptance:** `alkahest.decide(formula)` on 30-problem corpus; Lean export via `polyrith` on Mathlib-covered subset.
+**Acceptance:** `alkahest.decide(formula)`, `cad_project`, `cad_lift` on stable surface; Lean export / full 30-problem corpus still open.
 
 ---
 

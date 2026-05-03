@@ -1,10 +1,14 @@
 use alkahest_core::{
     adjoint_system as core_adjoint_system,
+    cad_lift as core_cad_lift,
+    cad_project as core_cad_project,
     // Phase 21 — JIT
     compile as core_compile,
+    decide_expr as core_decide_expr,
     emit_horner_c as core_emit_horner_c,
     emit_stablehlo as core_emit_stablehlo,
     eval_interp as core_eval_interp,
+    factor_univariate_mod_p as core_factor_univariate_mod_p,
     grad as core_grad,
     guess_integer_relation as core_guess_integer_relation,
     // Phase 24 — Horner form
@@ -22,18 +26,18 @@ use alkahest_core::{
     resistor as core_resistor,
     // V2-2 — Resultants and subresultant PRS
     resultant as core_resultant,
+    // V3-3 — FOFormula / satisfiability
+    satisfiable as core_satisfiable,
     sensitivity_system as core_sensitivity_system,
     // V2-3 — Sparse interpolation
     sparse_interpolate as core_sparse_interpolate,
     sparse_interpolate_univariate as core_sparse_interpolate_univariate,
     subresultant_prs as core_subresultant_prs,
     subs as core_subs,
-    factor_univariate_mod_p as core_factor_univariate_mod_p,
-    // V3-3 — FOFormula / satisfiability
-    satisfiable as core_satisfiable,
-    Satisfiability as CoreSatisfiability,
     // Phase 22 — Ball arithmetic
     ArbBall as CoreArbBall,
+    // V2-9 — CAD / real QE
+    CadError,
     Capabilities,
     Domain,
     Event,
@@ -56,6 +60,7 @@ use alkahest_core::{
     RealRootError,
     RewriteRule,
     RootInterval as CoreRootInterval,
+    Satisfiability as CoreSatisfiability,
     ScalarODE,
     System as AcausalSystem,
     UniPoly,
@@ -120,6 +125,7 @@ pyo3::create_exception!(alkahest, PyRealRootError, PyAlkahestError);
 // V2-6 — LLL + integer relations
 pyo3::create_exception!(alkahest, PyLatticeError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyPslqError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PyCadError, PyAlkahestError);
 
 /// Build a structured exception with `.code`, `.remediation`, `.span` attributes.
 fn make_structured_err<E: AlkahestErrorTrait>(
@@ -217,6 +223,13 @@ fn sparse_interp_error_to_py(e: SparseInterpError) -> PyErr {
 fn real_root_error_to_py(e: RealRootError) -> PyErr {
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyRealRootError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn cad_error_to_py(e: CadError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyCadError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -723,16 +736,14 @@ impl PyExpr {
                 )
                 .into_py(py)
             }
-            alkahest_core::ExprData::Forall { var, body } => PyList::new_bound(
-                py,
-                vec!["forall".into_py(py), wrap!(var), wrap!(body)],
-            )
-            .into_py(py),
-            alkahest_core::ExprData::Exists { var, body } => PyList::new_bound(
-                py,
-                vec!["exists".into_py(py), wrap!(var), wrap!(body)],
-            )
-            .into_py(py),
+            alkahest_core::ExprData::Forall { var, body } => {
+                PyList::new_bound(py, vec!["forall".into_py(py), wrap!(var), wrap!(body)])
+                    .into_py(py)
+            }
+            alkahest_core::ExprData::Exists { var, body } => {
+                PyList::new_bound(py, vec!["exists".into_py(py), wrap!(var), wrap!(body)])
+                    .into_py(py)
+            }
         }
     }
 }
@@ -3196,6 +3207,88 @@ fn py_exists(py: Python<'_>, var: PyRef<PyExpr>, body: PyRef<PyExpr>) -> PyResul
     Ok(PyExpr { id, pool: pool_py })
 }
 
+fn cad_witness_symbol_name(pool: &ExprPool, sym: ExprId) -> PyResult<String> {
+    match pool.get(sym) {
+        alkahest_core::ExprData::Symbol { name, .. } => Ok(name.clone()),
+        _ => Err(PyTypeError::new_err(
+            "CAD witness uses non-symbol ExprId (internal error)",
+        )),
+    }
+}
+
+/// Decide a closed polynomial sentence over ℝ (one outer `\forall`/`\exists`; purely
+/// polynomial body in the bound symbol with integer coefficients).
+///
+/// Returns ``(truth, witness_or_none)`` where ``witness`` maps symbol names to
+/// rational decimal strings when an existential sentence is deduced satisfied.
+#[pyfunction(name = "decide")]
+fn py_decide(py: Python<'_>, formula: PyRef<PyExpr>) -> PyResult<(bool, PyObject)> {
+    let pool_py = formula.pool.clone_ref(py);
+    let bor = pool_py.borrow(py);
+    let inner = &bor.inner;
+    let r = core_decide_expr(formula.id, inner).map_err(cad_error_to_py)?;
+    let wit: PyObject = match r.witness {
+        None => py.None(),
+        Some(m) => {
+            let d = PyDict::new_bound(py);
+            for (sym, rat) in m {
+                let name = cad_witness_symbol_name(inner, sym)?;
+                d.set_item(name, rat.to_string())?;
+            }
+            d.into_py(py)
+        }
+    };
+    Ok((r.truth, wit))
+}
+
+/// Brown-style CAD projection polynomials after eliminating ``elim_var``.
+#[pyfunction(name = "cad_project")]
+fn py_cad_project(
+    py: Python<'_>,
+    polys: Vec<PyRef<PyExpr>>,
+    elim_var: PyRef<PyExpr>,
+) -> PyResult<Vec<PyExpr>> {
+    let pool_py = elim_var.pool.clone_ref(py);
+    for p in &polys {
+        if !p.pool.is(&pool_py) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "cad_project expects all Expr in the same ExprPool",
+            ));
+        }
+    }
+    let ids: Vec<ExprId> = polys.iter().map(|e| e.id).collect();
+    let bor = pool_py.borrow(py);
+    let out = core_cad_project(ids.as_slice(), elim_var.id, &bor.inner).map_err(cad_error_to_py)?;
+    Ok(out
+        .into_iter()
+        .map(|id| PyExpr {
+            id,
+            pool: pool_py.clone_ref(py),
+        })
+        .collect())
+}
+
+#[pyfunction(name = "cad_lift")]
+fn py_cad_lift(
+    py: Python<'_>,
+    polys: Vec<PyRef<PyExpr>>,
+    main_var: PyRef<PyExpr>,
+) -> PyResult<Vec<PyRootInterval>> {
+    let pool_py = main_var.pool.clone_ref(py);
+    for p in &polys {
+        if !p.pool.is(&pool_py) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "cad_lift expects all Expr in the same ExprPool",
+            ));
+        }
+    }
+    let ids: Vec<ExprId> = polys.iter().map(|e| e.id).collect();
+    let bor = pool_py.borrow(py);
+    let intervals =
+        core_cad_lift(ids.as_slice(), main_var.id, &bor.inner).map_err(cad_error_to_py)?;
+    Ok(intervals.into_iter().map(core_interval_to_py).collect())
+}
+
 // ---------------------------------------------------------------------------
 // PA-5 — Primitive registry Python bindings
 // ---------------------------------------------------------------------------
@@ -3977,6 +4070,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_logic_not, m)?)?;
     m.add_function(wrap_pyfunction!(py_forall, m)?)?;
     m.add_function(wrap_pyfunction!(py_exists, m)?)?;
+    m.add_function(wrap_pyfunction!(py_decide, m)?)?;
+    m.add_function(wrap_pyfunction!(py_cad_project, m)?)?;
+    m.add_function(wrap_pyfunction!(py_cad_lift, m)?)?;
     // V5-1 — Lean 4 certificate exporter
     m.add_function(wrap_pyfunction!(py_to_lean, m)?)?;
     // V5-2 — StableHLO/XLA bridge
@@ -4049,6 +4145,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("RealRootError", m.py().get_type_bound::<PyRealRootError>())?;
     m.add("LatticeError", m.py().get_type_bound::<PyLatticeError>())?;
     m.add("PslqError", m.py().get_type_bound::<PyPslqError>())?;
+    m.add("CadError", m.py().get_type_bound::<PyCadError>())?;
     // V1-15: compile-time flag so Python tests can skip egraph-dependent assertions.
     m.add("HAS_EGRAPH", cfg!(feature = "egraph"))?;
     Ok(())

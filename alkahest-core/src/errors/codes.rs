@@ -65,6 +65,15 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-JIT-001", class: "JitError", cause: Cause::Unsupported, remediation: Some("use eval_expr or simplify the expression before JIT") },
     ErrorSpec { code: "E-JIT-002", class: "JitError", cause: Cause::Resource,    remediation: Some("check LLVM 15 installation; run with RUST_LOG=debug for details") },
     ErrorSpec { code: "E-JIT-003", class: "JitError", cause: Cause::Resource,    remediation: Some("ensure LLVM_SYS_150_PREFIX is set correctly") },
+    // E-CAD — CadError (V2-9 QE / cylindrical decomposition)
+    ErrorSpec {
+        code: "E-CAD-001",
+        class: "CadError",
+        cause: Cause::Unsupported,
+        remediation: Some(
+            "use a purely polynomial constraint in one real variable without nested quantifiers; multivariate QE is incremental",
+        ),
+    },
     // E-CUDA — CudaError
     ErrorSpec { code: "E-CUDA-001", class: "CudaError", cause: Cause::Resource,    remediation: Some("rebuild LLVM with nvptx64 in LLVM_TARGETS_TO_BUILD") },
     ErrorSpec { code: "E-CUDA-002", class: "CudaError", cause: Cause::Unsupported, remediation: Some("inspect PTX; verify every primitive has CUDA lowering") },

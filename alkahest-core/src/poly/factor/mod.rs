@@ -9,9 +9,7 @@
 use super::error::FactorError;
 use super::multipoly::{multi_to_flint_pub, MultiPoly};
 use super::unipoly::UniPoly;
-use crate::flint::ffi::{
-    self, FmpzMPolyFactorStruct, NmodPolyFactorStruct, NmodPolyStruct,
-};
+use crate::flint::ffi::{self, FmpzMPolyFactorStruct, NmodPolyFactorStruct, NmodPolyStruct};
 use crate::flint::integer::FlintInteger;
 use crate::flint::mpoly::{FlintMPoly, FlintMPolyCtx};
 use crate::flint::FlintPoly;
@@ -136,11 +134,7 @@ impl MultiPoly {
                 return Err(FactorError::FlintFailure);
             }
             let mut unit = FlintInteger::new();
-            ffi::fmpz_mpoly_factor_get_constant_fmpz(
-                unit.inner_mut_ptr(),
-                &fac,
-                ctx.as_ptr(),
-            );
+            ffi::fmpz_mpoly_factor_get_constant_fmpz(unit.inner_mut_ptr(), &fac, ctx.as_ptr());
             let n = ffi::fmpz_mpoly_factor_length(&fac, ctx.as_ptr());
             let mut factors = Vec::with_capacity(n as usize);
             for i in 0..n {
@@ -152,8 +146,7 @@ impl MultiPoly {
                     vars: self.vars.clone(),
                     terms,
                 };
-                let exp =
-                    ffi::fmpz_mpoly_factor_get_exp_si(&mut fac, i, ctx.as_ptr()) as u32;
+                let exp = ffi::fmpz_mpoly_factor_get_exp_si(&mut fac, i, ctx.as_ptr()) as u32;
                 factors.push((mp, exp));
             }
             ffi::fmpz_mpoly_factor_clear(&mut fac, ctx.as_ptr());
@@ -167,7 +160,10 @@ impl MultiPoly {
 }
 
 /// Reduce coefficients mod `p` (must satisfy 2 ≤ p ≤ 2⁶³) and factor over 𝔽_p.
-pub fn factor_univariate_mod_p(coeffs: &[i64], modulus: u64) -> Result<UniPolyFactorModP, FactorError> {
+pub fn factor_univariate_mod_p(
+    coeffs: &[i64],
+    modulus: u64,
+) -> Result<UniPolyFactorModP, FactorError> {
     if modulus < 2 {
         return Err(FactorError::InvalidModulus);
     }
@@ -201,10 +197,7 @@ pub fn factor_univariate_mod_p(coeffs: &[i64], modulus: u64) -> Result<UniPolyFa
         ffi::nmod_poly_clear(&mut poly);
         factors
     };
-    Ok(UniPolyFactorModP {
-        modulus,
-        factors,
-    })
+    Ok(UniPolyFactorModP { modulus, factors })
 }
 
 #[cfg(test)]
@@ -216,10 +209,7 @@ mod tests {
     fn univariate_x_squared_minus_one() {
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
-        let e = pool.add(vec![
-            pool.pow(x, pool.integer(2_i32)),
-            pool.integer(-1_i32),
-        ]);
+        let e = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(-1_i32)]);
         let p = UniPoly::from_symbolic(e, x, &pool).unwrap();
         let fac = p.factor_z().unwrap();
         assert_eq!(fac.factors.len(), 2);

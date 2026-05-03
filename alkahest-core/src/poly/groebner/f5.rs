@@ -52,18 +52,12 @@ fn cmp_signature(a: &Signature, b: &Signature) -> Ordering {
 }
 
 fn lcm_exp(a: &[u32], b: &[u32]) -> Vec<u32> {
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| (*x).max(*y))
-        .collect()
+    a.iter().zip(b.iter()).map(|(x, y)| (*x).max(*y)).collect()
 }
 
 /// `a - b` when `a_i >= b_i` for all `i`.
 fn exp_sub(a: &[u32], b: &[u32]) -> Vec<u32> {
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| x - y)
-        .collect()
+    a.iter().zip(b.iter()).map(|(x, y)| x - y).collect()
 }
 
 fn divides_exp(u: &[u32], v: &[u32]) -> bool {
@@ -87,9 +81,7 @@ fn product_criterion(f: &GbPoly, g: &GbPoly, poly_order: MonomialOrder) -> bool 
         Some(e) => e,
         None => return true,
     };
-    lf.iter()
-        .zip(lg.iter())
-        .all(|(&a, &b)| a == 0 || b == 0)
+    lf.iter().zip(lg.iter()).all(|(&a, &b)| a == 0 || b == 0)
 }
 
 /// F5-style normal form: reduce `p` w.r.t. `basis`, only using reducers whose
@@ -165,7 +157,13 @@ struct Pair {
 }
 
 impl Pair {
-    fn new(f: &Labelled, g: &Labelled, i: usize, j: usize, poly_order: MonomialOrder) -> Option<Self> {
+    fn new(
+        f: &Labelled,
+        g: &Labelled,
+        i: usize,
+        j: usize,
+        poly_order: MonomialOrder,
+    ) -> Option<Self> {
         let sig_s = s_pair_signature(f, g, poly_order)?;
         Some(Pair { sig_s, i, j })
     }
@@ -195,7 +193,10 @@ impl PartialOrd for Pair {
 /// Compute a Gröbner basis with the F5 labeled-polynomial strategy (signature
 /// filtering during reduction). The output is interreduced and monic in the same
 /// sense as [`super::f4::compute_groebner_basis`].
-pub fn compute_groebner_basis_f5(generators: Vec<GbPoly>, poly_order: MonomialOrder) -> Vec<GbPoly> {
+pub fn compute_groebner_basis_f5(
+    generators: Vec<GbPoly>,
+    poly_order: MonomialOrder,
+) -> Vec<GbPoly> {
     let mut basis: Vec<Labelled> = generators
         .into_iter()
         .enumerate()

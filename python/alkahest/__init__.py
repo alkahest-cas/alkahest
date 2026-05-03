@@ -110,8 +110,11 @@ from .alkahest import (  # noqa: F401
     pantelides,
     # PA-9: Piecewise
     piecewise,
-    # V3-3: First-order logic
+    # V3-3: First-order logic + V2-9 CAD/QE
     And,
+    cad_lift,
+    cad_project,
+    decide,
     Exists,
     Forall,
     Not,
@@ -180,6 +183,7 @@ except ImportError:
 try:
     from .alkahest import (  # noqa: F401
         AlkahestError,
+        CadError,
         ConversionError,
         DaeError,
         DiffError,
@@ -387,6 +391,7 @@ __all__ = [
     "sparse_interp",
     "sparse_interp_univariate",
     "SparseInterpError",
+    "CadError",
     # V2-6
     "guess_relation",
     "lattice",
@@ -414,7 +419,10 @@ __all__ = [
     "map_exprs",
     # PA-9
     "piecewise",
-    # V3-3 — FOFormula
+    # V3-3 — FOFormula / V2-9 CAD
+    "decide",
+    "cad_project",
+    "cad_lift",
     "satisfiable",
     "And",
     "Or",

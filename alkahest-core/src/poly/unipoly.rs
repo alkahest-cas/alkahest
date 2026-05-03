@@ -222,6 +222,71 @@ impl UniPoly {
             coeffs: self.coeffs.gcd(&other.coeffs),
         })
     }
+
+    /// Formal derivative with respect to the tracked degree variable ([`UniPoly::var`]).
+    pub fn derivative(&self) -> Self {
+        UniPoly {
+            var: self.var,
+            coeffs: self.coeffs.derivative(),
+        }
+    }
+
+    /// Squarefree kernel: divides out `gcd(p, p')` repeatedly until trivial.
+    /// Constant and zero polynomials return a clone unchanged.
+    pub fn squarefree_part(&self) -> Self {
+        if self.is_zero() || self.degree() <= 0 {
+            return self.clone();
+        }
+        let mut p = self.clone();
+        loop {
+            let d = p.derivative();
+            if d.is_zero() {
+                break;
+            }
+            let Some(g) = p.gcd(&d) else {
+                break;
+            };
+            if g.degree() <= 0 {
+                break;
+            }
+            p = UniPoly {
+                var: p.var,
+                coeffs: p.coeffs.div_exact(&g.coeffs),
+            };
+        }
+        p
+    }
+
+    /// Multiply then divide by `\gcd(u, v)` (least common multiple over ℤ\[x\] up to a unit).
+    pub fn lcm_poly(&self, other: &Self) -> Self {
+        same_var(self, other);
+        let prod = self * other;
+        let g = self.gcd(other).unwrap();
+        UniPoly {
+            var: self.var,
+            coeffs: prod.coeffs.div_exact(&g.coeffs),
+        }
+    }
+
+    /// Evaluate at a rational point using Horner's method.
+    pub fn eval_rational(&self, x: &rug::Rational) -> rug::Rational {
+        let n = self.coeffs.length();
+        if n == 0 {
+            return rug::Rational::from(0);
+        }
+        let mut acc = rug::Rational::from((
+            self.coeffs.get_coeff_flint(n - 1).to_rug(),
+            rug::Integer::from(1),
+        ));
+        for idx in (0..n.saturating_sub(1)).rev() {
+            acc = acc * x.clone()
+                + rug::Rational::from((
+                    self.coeffs.get_coeff_flint(idx).to_rug(),
+                    rug::Integer::from(1),
+                ));
+        }
+        acc
+    }
 }
 
 impl PartialEq for UniPoly {

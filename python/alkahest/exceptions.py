@@ -20,6 +20,7 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-JIT-001   … E-JIT-003    JitError
     E-LAT-001 … E-LAT-004      LatticeError
     E-PSLQ-001 … E-PSLQ-003    PslqError
+    E-CAD-001                  CadError
     E-CUDA-001  … E-CUDA-006   CudaError
     E-IO-001    … E-IO-009     IoError  (formerly PoolPersistError / E-POOL-*)
     E-PARSE-*                  ParseError  (reserved; parser not yet integrated)

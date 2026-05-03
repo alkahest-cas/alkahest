@@ -395,18 +395,12 @@ fn fmt_data(data: &ExprData, pool: &ExprPool, f: &mut fmt::Formatter<'_>) -> fmt
                 )
             }
         },
-        ExprData::Forall { var, body } => write!(
-            f,
-            "∀ {} . {}",
-            pool.display(*var),
-            pool.display(*body)
-        ),
-        ExprData::Exists { var, body } => write!(
-            f,
-            "∃ {} . {}",
-            pool.display(*var),
-            pool.display(*body)
-        ),
+        ExprData::Forall { var, body } => {
+            write!(f, "∀ {} . {}", pool.display(*var), pool.display(*body))
+        }
+        ExprData::Exists { var, body } => {
+            write!(f, "∃ {} . {}", pool.display(*var), pool.display(*body))
+        }
     }
 }
 

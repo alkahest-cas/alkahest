@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **V2-9 CAD / real QE:** `alkahest_core::real::cad` with `cad_project`, `cad_lift`, `decide`, and `CadError`; Python `decide`, `cad_project`, `cad_lift`, and structured `CadError` (`E-CAD-001` for unsupported QE shapes). Covers single `\forall`/`\exists` over one variable with purely polynomial literals (integer coeffs); `\exists x\, (x^2=2)`, `\forall x\, (x^2+1>0)` regressions included.
+
 ## 1.0.0
 
 ### Features

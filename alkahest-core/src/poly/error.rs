@@ -146,9 +146,7 @@ impl crate::errors::AlkahestError for FactorError {
             FactorError::InvalidModulus => {
                 "use a modulus ≥ 2 that fits in a machine word (FLINT `nmod`)"
             }
-            FactorError::FlintFailure => {
-                "report the polynomial as a minimal failing example"
-            }
+            FactorError::FlintFailure => "report the polynomial as a minimal failing example",
         })
     }
 }

@@ -184,7 +184,9 @@ impl FlintPoly {
     /// Returns `(unit, factors)` with `self = unit · ∏ fᵢ^eᵢ`.  The zero
     /// polynomial yields `Err(())`.
     #[allow(clippy::result_unit_err)]
-    pub fn factor_over_z(&self) -> Result<(super::integer::FlintInteger, Vec<(FlintPoly, u32)>), ()> {
+    pub fn factor_over_z(
+        &self,
+    ) -> Result<(super::integer::FlintInteger, Vec<(FlintPoly, u32)>), ()> {
         if self.is_zero() {
             return Err(());
         }

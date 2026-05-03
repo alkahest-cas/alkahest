@@ -103,7 +103,9 @@ pub fn formula_from_expr(expr: ExprId, pool: &ExprPool) -> Result<Formula, Logic
                 } else {
                     let mut it = args.into_iter();
                     let first = formula_from_expr(it.next().unwrap(), pool)?;
-                    it.try_fold(first, |acc, e| Ok(Formula::and(acc, formula_from_expr(e, pool)?)))
+                    it.try_fold(first, |acc, e| {
+                        Ok(Formula::and(acc, formula_from_expr(e, pool)?))
+                    })
                 }
             }
             PredicateKind::Or => {
@@ -112,7 +114,9 @@ pub fn formula_from_expr(expr: ExprId, pool: &ExprPool) -> Result<Formula, Logic
                 } else {
                     let mut it = args.into_iter();
                     let first = formula_from_expr(it.next().unwrap(), pool)?;
-                    it.try_fold(first, |acc, e| Ok(Formula::or(acc, formula_from_expr(e, pool)?)))
+                    it.try_fold(first, |acc, e| {
+                        Ok(Formula::or(acc, formula_from_expr(e, pool)?))
+                    })
                 }
             }
             PredicateKind::Not => {
@@ -166,7 +170,16 @@ struct VarInterval {
 impl VarInterval {
     fn is_empty(&self) -> bool {
         match (&self.lower, &self.upper) {
-            (Some(Bound::Lower { val: lo, strict: ls }), Some(Bound::Upper { val: hi, strict: us })) => {
+            (
+                Some(Bound::Lower {
+                    val: lo,
+                    strict: ls,
+                }),
+                Some(Bound::Upper {
+                    val: hi,
+                    strict: us,
+                }),
+            ) => {
                 if lo > hi {
                     return true;
                 }
@@ -233,7 +246,11 @@ impl VarInterval {
             _ => return None,
         };
         let r = VarInterval { lower, upper };
-        if r.is_empty() { None } else { Some(r) }
+        if r.is_empty() {
+            None
+        } else {
+            Some(r)
+        }
     }
 }
 
@@ -303,7 +320,10 @@ fn atom_to_interval(
                 val: c.clone(),
                 strict: false,
             }),
-            upper: Some(Bound::Upper { val: c, strict: false }),
+            upper: Some(Bound::Upper {
+                val: c,
+                strict: false,
+            }),
         },
         (PredicateKind::Lt, true) => VarInterval {
             lower: Some(Bound::Lower {
@@ -369,12 +389,8 @@ fn nnf(f: Formula) -> Formula {
             Formula::True => Formula::False,
             Formula::False => Formula::True,
             Formula::Not(g) => nnf(*g),
-            Formula::And(a, b) => {
-                nnf(Formula::or(Formula::not(*a), Formula::not(*b)))
-            }
-            Formula::Or(a, b) => {
-                nnf(Formula::and(Formula::not(*a), Formula::not(*b)))
-            }
+            Formula::And(a, b) => nnf(Formula::or(Formula::not(*a), Formula::not(*b))),
+            Formula::Or(a, b) => nnf(Formula::and(Formula::not(*a), Formula::not(*b))),
             Formula::Forall { var, body } => nnf(Formula::Exists {
                 var,
                 body: Box::new(Formula::not(*body)),
@@ -423,7 +439,16 @@ fn witness_rational(iv: &VarInterval) -> Option<rug::Rational> {
             let e = eps();
             Some(if *s { hi.clone() - &e } else { hi.clone() })
         }
-        (Some(Bound::Lower { val: lo, strict: sl }), Some(Bound::Upper { val: hi, strict: su })) => {
+        (
+            Some(Bound::Lower {
+                val: lo,
+                strict: sl,
+            }),
+            Some(Bound::Upper {
+                val: hi,
+                strict: su,
+            }),
+        ) => {
             if lo > hi {
                 return None;
             }
@@ -612,10 +637,7 @@ pub fn dpll_sat(clauses: Vec<BoolClause>, n_vars: u32) -> Option<Vec<bool>> {
         })
     }
 
-    fn unit_prop(
-        clauses: &[BoolClause],
-        a: &mut [Option<bool>],
-    ) -> Result<(), ()> {
+    fn unit_prop(clauses: &[BoolClause], a: &mut [Option<bool>]) -> Result<(), ()> {
         loop {
             let mut progressed = false;
             for cl in clauses {
@@ -651,10 +673,7 @@ pub fn dpll_sat(clauses: Vec<BoolClause>, n_vars: u32) -> Option<Vec<bool>> {
         Ok(())
     }
 
-    fn dfs(
-        clauses: &[BoolClause],
-        a: &mut [Option<bool>],
-    ) -> Result<(), ()> {
+    fn dfs(clauses: &[BoolClause], a: &mut [Option<bool>]) -> Result<(), ()> {
         unit_prop(clauses, a)?;
         for cl in clauses {
             if is_conflict(cl, a) {

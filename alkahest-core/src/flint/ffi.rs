@@ -287,7 +287,10 @@ extern "C" {
         A: *const FmpzMPolyBuf,
         ctx: *const FmpzMPolyCtxBuf,
     ) -> c_int;
-    pub fn fmpz_mpoly_factor_length(f: *const FmpzMPolyFactorStruct, ctx: *const FmpzMPolyCtxBuf) -> slong;
+    pub fn fmpz_mpoly_factor_length(
+        f: *const FmpzMPolyFactorStruct,
+        ctx: *const FmpzMPolyCtxBuf,
+    ) -> slong;
     pub fn fmpz_mpoly_factor_get_base(
         p: *mut FmpzMPolyBuf,
         fac: *const FmpzMPolyFactorStruct,
@@ -345,7 +348,10 @@ extern "C" {
     pub fn nmod_poly_set_coeff_ui(poly: *mut NmodPolyStruct, n: slong, c: ulong);
     pub fn nmod_poly_factor_init(fac: *mut NmodPolyFactorStruct);
     pub fn nmod_poly_factor_clear(fac: *mut NmodPolyFactorStruct);
-    pub fn nmod_poly_factor(result: *mut NmodPolyFactorStruct, input: *const NmodPolyStruct) -> ulong;
+    pub fn nmod_poly_factor(
+        result: *mut NmodPolyFactorStruct,
+        input: *const NmodPolyStruct,
+    ) -> ulong;
     pub fn nmod_poly_factor_get_nmod_poly(
         z: *mut NmodPolyStruct,
         fac: *mut NmodPolyFactorStruct,

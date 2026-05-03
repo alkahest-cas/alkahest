@@ -22,7 +22,9 @@ pub mod numeric;
 pub mod ode;
 pub mod pattern;
 pub mod poly;
+// V2-9 — CAD / real QE
 pub mod primitive;
+pub mod real;
 pub mod simplify;
 #[cfg(feature = "groebner")]
 pub mod solver;
@@ -36,15 +38,16 @@ pub use diff::{diff, diff_forward, grad, DiffError, DualValue, ForwardDiffError}
 pub use flint::{FlintInteger, FlintPoly};
 pub use hybrid::{Event, GuardStructure, HybridODE};
 pub use integrate::{integrate, IntegrationError};
-pub use logic::{
-    dpll_sat, formula_from_expr, satisfiable, BoolClause, BoolLit, Formula, LogicError,
-    Satisfiability,
-};
 #[allow(deprecated)]
 pub use kernel::{
     load_from, open_persistent, save_to, subs, Domain, ExprData, ExprDisplay, ExprId, ExprPool,
     IoError, PoolPersistError,
 };
+pub use logic::{
+    dpll_sat, formula_from_expr, satisfiable, BoolClause, BoolLit, Formula, LogicError,
+    Satisfiability,
+};
+pub use real::{cad_lift, cad_project, decide, decide_expr, CadError, QeResult};
 // V2-6 — LLL + integer relations (augmented lattice heuristic)
 pub use lattice::{
     lattice_reduce_rows, lattice_reduce_rows_with_delta, validate_lll_rows, LatticeError,
@@ -146,13 +149,14 @@ pub mod stable {
     pub use crate::ode::{lower_to_first_order, OdeError, ScalarODE, ODE};
     pub use crate::pattern::{match_pattern, Pattern, Substitution};
     pub use crate::poly::{
-        factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z, poly_normal, real_roots,
-        real_roots_symbolic, refine_root, resultant, sparse_interpolate,
+        factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z, poly_normal,
+        real_roots, real_roots_symbolic, refine_root, resultant, sparse_interpolate,
         sparse_interpolate_univariate, subresultant_prs, ConversionError, FactorError, MultiPoly,
         MultiPolyFactorization, RationalFunction, RealRootError, ResultantError, RootInterval,
         SparseInterpError, UniPoly, UniPolyFactorModP, UniPolyFactorization,
     };
     pub use crate::primitive::{Primitive, PrimitiveRegistry};
+    pub use crate::real::{cad_lift, cad_project, decide, decide_expr, CadError, QeResult};
     pub use crate::simplify::{simplify, simplify_with, SimplifyConfig};
     #[cfg(feature = "groebner")]
     pub use crate::solver::{solve_polynomial_system, Solution, SolutionSet, SolverError};
