@@ -27,8 +27,8 @@ from __future__ import annotations
 from typing import Optional
 
 from .alkahest import (  # noqa: F401 – re-export the Rust class
-    MultiPolyFp,
     ModularError,
+    MultiPolyFp,
     modular_lift_crt,
     modular_mignotte_bound,
     modular_rational_reconstruction,
@@ -47,7 +47,7 @@ __all__ = [
 ]
 
 
-def reduce_mod(poly, p: int) -> "MultiPolyFp":
+def reduce_mod(poly, p: int) -> MultiPolyFp:
     """Reduce *poly* (a :class:`~alkahest.MultiPoly` over ℤ) to F_p = ℤ/pℤ.
 
     Parameters
@@ -65,7 +65,7 @@ def reduce_mod(poly, p: int) -> "MultiPolyFp":
     return modular_reduce(poly, p)
 
 
-def lift_crt(images: list[tuple["MultiPolyFp", int]]) -> object:
+def lift_crt(images: list[tuple[MultiPolyFp, int]]) -> object:
     """Reconstruct a polynomial over ℤ from modular images via CRT.
 
     Parameters

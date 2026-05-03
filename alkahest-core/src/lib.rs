@@ -43,7 +43,10 @@ pub use ode::{
     OdeError, ScalarODE, ODE,
 };
 pub use pattern::{match_pattern, Pattern, Substitution};
-pub use poly::{poly_normal, ConversionError, MultiPoly, RationalFunction, UniPoly};
+pub use poly::{
+    poly_normal, resultant, subresultant_prs, ConversionError, MultiPoly, RationalFunction,
+    ResultantError, UniPoly,
+};
 
 // Phase 24 — Horner form
 pub use horner::{emit_horner_c, horner};
@@ -114,7 +117,10 @@ pub mod stable {
     pub use crate::matrix::{jacobian, Matrix, MatrixError};
     pub use crate::ode::{lower_to_first_order, OdeError, ScalarODE, ODE};
     pub use crate::pattern::{match_pattern, Pattern, Substitution};
-    pub use crate::poly::{poly_normal, ConversionError, MultiPoly, RationalFunction, UniPoly};
+    pub use crate::poly::{
+        poly_normal, resultant, subresultant_prs, ConversionError, MultiPoly, RationalFunction,
+        ResultantError, UniPoly,
+    };
     pub use crate::primitive::{Primitive, PrimitiveRegistry};
     pub use crate::simplify::{simplify, simplify_with, SimplifyConfig};
     #[cfg(feature = "groebner")]
@@ -133,12 +139,12 @@ pub mod experimental {
     pub use crate::horner::{emit_horner_c, horner};
     pub use crate::hybrid::{Event, GuardStructure, HybridODE};
     pub use crate::lean::emit_lean_expr as emit_lean;
-    pub use crate::ode::sensitivity::{
-        adjoint_system, sensitivity_system, AdjointSystem, SensitivitySystem,
-    };
     pub use crate::modular::{
         is_prime, lift_crt, mignotte_bound, rational_reconstruction, reduce_mod,
         select_lucky_prime, ModularError, ModularValue, MultiPolyFp,
+    };
+    pub use crate::ode::sensitivity::{
+        adjoint_system, sensitivity_system, AdjointSystem, SensitivitySystem,
     };
     pub use crate::simplify::{simplify_egraph, simplify_expanded};
     pub use crate::stablehlo::emit_stablehlo;

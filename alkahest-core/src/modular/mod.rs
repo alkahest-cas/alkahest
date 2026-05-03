@@ -107,7 +107,10 @@ pub struct ModularValue {
 
 impl ModularValue {
     pub fn new(value: u64, modulus: u64) -> Self {
-        debug_assert!(value < modulus, "ModularValue: value must be in [0, modulus)");
+        debug_assert!(
+            value < modulus,
+            "ModularValue: value must be in [0, modulus)"
+        );
         ModularValue { value, modulus }
     }
 
@@ -123,19 +126,28 @@ impl ModularValue {
     }
 
     pub fn add(&self, other: &Self) -> Self {
-        debug_assert_eq!(self.modulus, other.modulus, "ModularValue: mismatched moduli");
+        debug_assert_eq!(
+            self.modulus, other.modulus,
+            "ModularValue: mismatched moduli"
+        );
         let v = ((self.value as u128 + other.value as u128) % self.modulus as u128) as u64;
         ModularValue::new(v, self.modulus)
     }
 
     pub fn sub(&self, other: &Self) -> Self {
-        debug_assert_eq!(self.modulus, other.modulus, "ModularValue: mismatched moduli");
+        debug_assert_eq!(
+            self.modulus, other.modulus,
+            "ModularValue: mismatched moduli"
+        );
         let v = (self.value + self.modulus - other.value % self.modulus) % self.modulus;
         ModularValue::new(v, self.modulus)
     }
 
     pub fn mul(&self, other: &Self) -> Self {
-        debug_assert_eq!(self.modulus, other.modulus, "ModularValue: mismatched moduli");
+        debug_assert_eq!(
+            self.modulus, other.modulus,
+            "ModularValue: mismatched moduli"
+        );
         let v = ((self.value as u128 * other.value as u128) % self.modulus as u128) as u64;
         ModularValue::new(v, self.modulus)
     }
@@ -217,12 +229,10 @@ impl AlkahestError for ModularError {
             ModularError::IncompatiblePolynomials => {
                 Some("ensure all images share the same variable ordering and modulus")
             }
-            ModularError::EmptyImageList => {
-                Some("provide at least one (MultiPolyFp, prime) pair")
+            ModularError::EmptyImageList => Some("provide at least one (MultiPolyFp, prime) pair"),
+            ModularError::ReconstructionFailed => {
+                Some("provide more modular images so the prime product M exceeds 2 * max_coeff²")
             }
-            ModularError::ReconstructionFailed => Some(
-                "provide more modular images so the prime product M exceeds 2 * max_coeff²",
-            ),
         }
     }
 }

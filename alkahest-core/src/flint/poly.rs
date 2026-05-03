@@ -82,6 +82,63 @@ impl FlintPoly {
         res
     }
 
+    /// Negate all coefficients: `-self`.
+    pub fn neg(&self) -> Self {
+        let mut res = Self::new();
+        unsafe { ffi::fmpz_poly_neg(&mut res.inner, &self.inner) };
+        res
+    }
+
+    /// Multiply every coefficient by the integer `c`.
+    pub fn scalar_mul_fmpz(&self, c: &super::integer::FlintInteger) -> Self {
+        let mut res = Self::new();
+        unsafe { ffi::fmpz_poly_scalar_mul_fmpz(&mut res.inner, &self.inner, c.inner_ptr()) };
+        res
+    }
+
+    /// Divide every coefficient by `c` (exact — caller ensures divisibility).
+    pub fn scalar_divexact_fmpz(&self, c: &super::integer::FlintInteger) -> Self {
+        let mut res = Self::new();
+        unsafe { ffi::fmpz_poly_scalar_divexact_fmpz(&mut res.inner, &self.inner, c.inner_ptr()) };
+        res
+    }
+
+    /// Leading coefficient as a `FlintInteger` (0 for the zero polynomial).
+    pub fn leading_coeff_fmpz(&self) -> super::integer::FlintInteger {
+        let deg = self.degree();
+        if deg < 0 {
+            return super::integer::FlintInteger::from_i64(0);
+        }
+        self.get_coeff_flint(deg as usize)
+    }
+
+    /// Compute the resultant of `self` and `other` as a `FlintInteger`.
+    ///
+    /// Returns the integer `res(self, other)`.  For the zero polynomial the
+    /// resultant is defined to be 0.
+    pub fn resultant(&self, other: &Self) -> super::integer::FlintInteger {
+        let mut res = super::integer::FlintInteger::new();
+        unsafe { ffi::fmpz_poly_resultant(res.inner_mut_ptr(), &self.inner, &other.inner) };
+        res
+    }
+
+    /// Pseudo-division: returns `(Q, R, d)` such that `lc(other)^d * self = Q * other + R`.
+    pub fn pseudo_divrem(&self, other: &Self) -> (Self, Self, u64) {
+        let mut q = Self::new();
+        let mut r = Self::new();
+        let mut d: ffi::ulong = 0;
+        unsafe {
+            ffi::fmpz_poly_pseudo_divrem(
+                &mut q.inner,
+                &mut r.inner,
+                &mut d,
+                &self.inner,
+                &other.inner,
+            )
+        };
+        (q, r, d)
+    }
+
     /// Set coefficient of x^n from a `FlintInteger` (supports values beyond i64 range).
     pub fn set_coeff_flint(&mut self, n: usize, c: &super::integer::FlintInteger) {
         unsafe { ffi::fmpz_poly_set_coeff_fmpz(&mut self.inner, n as ffi::slong, c.inner_ptr()) };

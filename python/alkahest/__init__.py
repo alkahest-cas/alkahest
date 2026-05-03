@@ -26,8 +26,6 @@ from ._transform import (  # noqa: F401
     trace_fn,
 )
 from .alkahest import (  # noqa: F401
-    # V2-1: Modular / CRT framework
-    MultiPolyFp,
     # Phase 17: DAE
     DAE,
     HAS_EGRAPH,
@@ -52,6 +50,8 @@ from .alkahest import (  # noqa: F401
     Matrix,
     # Polynomial types
     MultiPoly,
+    # V2-1: Modular / CRT framework
+    MultiPolyFp,
     Port,
     # PA-5: Primitive registry
     PrimitiveRegistry,
@@ -101,6 +101,8 @@ from .alkahest import (  # noqa: F401
     # Phase 27: poly_normal
     poly_normal,
     resistor,
+    # V2-2: Resultants and subresultant PRS
+    resultant,
     round,  # symbolic round — use alkahest.round(expr)
     sensitivity_system,
     sign,
@@ -116,6 +118,7 @@ from .alkahest import (  # noqa: F401
     sin,
     sinh,
     sqrt,
+    subresultant_prs,
     subs,
     # V1-12: expanded primitive registry
     tan,
@@ -162,6 +165,7 @@ try:
         MatrixError,
         OdeError,
         PoolError,
+        ResultantError,
     )
 except ImportError:
     from .exceptions import (  # noqa: F401
@@ -340,6 +344,10 @@ __all__ = [
     "collect_like_terms",
     # Phase 27
     "poly_normal",
+    # V2-2
+    "resultant",
+    "subresultant_prs",
+    "ResultantError",
     # PA-5
     "PrimitiveRegistry",
     # PA-7

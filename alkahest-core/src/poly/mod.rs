@@ -1,6 +1,8 @@
 pub mod error;
 pub mod multipoly;
 pub mod rational;
+// V2-2 — Resultants and subresultant PRS
+pub mod resultant;
 pub mod unipoly;
 
 #[cfg(feature = "groebner")]
@@ -12,6 +14,8 @@ mod proptests;
 pub use error::ConversionError;
 pub use multipoly::MultiPoly;
 pub use rational::RationalFunction;
+// V2-2 — Resultants and subresultant PRS
+pub use resultant::{resultant, subresultant_prs, ResultantError};
 pub use unipoly::UniPoly;
 
 use crate::kernel::{ExprId, ExprPool};

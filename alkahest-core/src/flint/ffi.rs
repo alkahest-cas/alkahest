@@ -193,4 +193,51 @@ extern "C" {
         B: *const FmpzMPolyBuf,
         ctx: *const FmpzMPolyCtxBuf,
     ) -> c_int;
+
+    // -----------------------------------------------------------------------
+    // fmpz_mpoly — resultant
+    // -----------------------------------------------------------------------
+
+    /// Compute the resultant of A and B with respect to variable `var`.
+    /// Returns 1 on success, 0 on failure.
+    pub fn fmpz_mpoly_resultant(
+        R: *mut FmpzMPolyBuf,
+        A: *const FmpzMPolyBuf,
+        B: *const FmpzMPolyBuf,
+        var: slong,
+        ctx: *const FmpzMPolyCtxBuf,
+    ) -> c_int;
+
+    // -----------------------------------------------------------------------
+    // fmpz_poly — resultant and pseudo-division (for subresultant PRS)
+    // -----------------------------------------------------------------------
+
+    /// Compute the resultant of `a` and `b`, stored as an `fmpz`.
+    pub fn fmpz_poly_resultant(res: *mut fmpz, a: *const FmpzPolyStruct, b: *const FmpzPolyStruct);
+
+    /// Pseudo-division: sets Q, R, and d such that lc(B)^d * A = Q*B + R.
+    pub fn fmpz_poly_pseudo_divrem(
+        Q: *mut FmpzPolyStruct,
+        R: *mut FmpzPolyStruct,
+        d: *mut ulong,
+        A: *const FmpzPolyStruct,
+        B: *const FmpzPolyStruct,
+    );
+
+    /// Negate: res = -poly.
+    pub fn fmpz_poly_neg(res: *mut FmpzPolyStruct, poly: *const FmpzPolyStruct);
+
+    /// Scalar multiply: res = poly * x.
+    pub fn fmpz_poly_scalar_mul_fmpz(
+        res: *mut FmpzPolyStruct,
+        poly: *const FmpzPolyStruct,
+        x: *const fmpz,
+    );
+
+    /// Exact scalar divide: res = poly / x (assumes x divides all coefficients).
+    pub fn fmpz_poly_scalar_divexact_fmpz(
+        res: *mut FmpzPolyStruct,
+        poly: *const FmpzPolyStruct,
+        x: *const fmpz,
+    );
 }

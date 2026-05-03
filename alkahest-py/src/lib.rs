@@ -14,7 +14,10 @@ use alkahest_core::{
     // Phase 27 — poly_normal
     poly_normal as core_poly_normal,
     resistor as core_resistor,
+    // V2-2 — Resultants and subresultant PRS
+    resultant as core_resultant,
     sensitivity_system as core_sensitivity_system,
+    subresultant_prs as core_subresultant_prs,
     subs as core_subs,
     // Phase 22 — Ball arithmetic
     ArbBall as CoreArbBall,
@@ -55,7 +58,8 @@ use alkahest_core::{
     log_exp_rules, match_pattern as core_match_pattern, simplify as core_simplify,
     simplify_egraph as core_simplify_egraph, simplify_egraph_with as core_simplify_egraph_with,
     simplify_with as core_simplify_with, trig_rules, AlkahestError as AlkahestErrorTrait,
-    DiffError, EgraphConfig, IntegrationError, IoError, PatternRule, SimplifyConfig, SizeCost,
+    DiffError, EgraphConfig, IntegrationError, IoError, PatternRule, ResultantError,
+    SimplifyConfig, SizeCost,
 };
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
@@ -83,6 +87,8 @@ pyo3::create_exception!(alkahest, PySolverError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyCudaError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyIoError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyParseError, PyAlkahestError);
+// V2-2 — Resultants
+pyo3::create_exception!(alkahest, PyResultantError, PyAlkahestError);
 
 /// Build a structured exception with `.code`, `.remediation`, `.span` attributes.
 fn make_structured_err<E: AlkahestErrorTrait>(
@@ -152,6 +158,13 @@ fn integrate_error_to_py(e: IntegrationError) -> PyErr {
 fn conv_error_to_py(e: alkahest_core::ConversionError) -> PyErr {
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyConversionError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn resultant_error_to_py(e: ResultantError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyResultantError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -2535,6 +2548,94 @@ fn py_poly_normal(
 }
 
 // ---------------------------------------------------------------------------
+// V2-2 — Resultants and subresultant PRS
+// ---------------------------------------------------------------------------
+
+/// Compute the resultant of two polynomial expressions with respect to a
+/// variable.
+///
+/// Both ``p`` and ``q`` must be polynomial expressions with integer
+/// coefficients.  The returned expression is:
+///
+/// - An integer constant in the **univariate** case (only ``var`` appears).
+/// - A polynomial in the remaining variables in the **multivariate** case
+///   (``var`` has been eliminated).
+///
+/// The returned :class:`DerivedResult` carries a ``"Resultant"`` derivation
+/// step tagged with the Lean 4 theorem
+/// ``Polynomial.resultant_eq_zero_iff_common_root``.
+///
+/// Raises :class:`ResultantError` if either input is not a polynomial with
+/// integer coefficients.
+///
+/// Example::
+///
+///     pool = ExprPool()
+///     x = pool.symbol("x")
+///     y = pool.symbol("y")
+///     p = x**2 + y**2 - pool.integer(1)
+///     q = y - x
+///     r = resultant(p, q, y)
+///     # r.value == 2*x^2 - 1
+#[pyfunction]
+#[pyo3(name = "resultant")]
+fn py_resultant(
+    py: Python<'_>,
+    p: PyRef<PyExpr>,
+    q: PyRef<PyExpr>,
+    var: PyRef<PyExpr>,
+) -> PyResult<PyDerivedResult> {
+    let pool_py = p.pool.clone_ref(py);
+    let derived = {
+        let pool = pool_py.borrow(py);
+        core_resultant(p.id, q.id, var.id, &pool.inner).map_err(resultant_error_to_py)?
+    };
+    Ok(make_derived_result(py, derived, pool_py))
+}
+
+/// Compute the subresultant polynomial remainder sequence of two univariate
+/// polynomials with integer coefficients.
+///
+/// Returns a Python ``list`` of :class:`Expr` objects ordered
+/// ``[p, q, S₂, S₃, …, Sₖ]``.
+///
+/// Both polynomials must be **univariate** in ``var`` with integer
+/// coefficients.  Multivariate inputs raise :class:`ResultantError`.
+///
+/// Example::
+///
+///     pool = ExprPool()
+///     x = pool.symbol("x")
+///     p = x**2 - pool.integer(1)
+///     q = x - pool.integer(1)
+///     prs = subresultant_prs(p, q, x)
+///     # prs == [p, q, last_element]
+#[pyfunction]
+#[pyo3(name = "subresultant_prs")]
+fn py_subresultant_prs(
+    py: Python<'_>,
+    p: PyRef<PyExpr>,
+    q: PyRef<PyExpr>,
+    var: PyRef<PyExpr>,
+) -> PyResult<Vec<PyExpr>> {
+    let pool_py = p.pool.clone_ref(py);
+    let derived = {
+        let pool = pool_py.borrow(py);
+        core_subresultant_prs(p.id, q.id, var.id, &pool.inner).map_err(resultant_error_to_py)?
+    };
+
+    let py_exprs: Vec<PyExpr> = derived
+        .value
+        .into_iter()
+        .map(|id| PyExpr {
+            id,
+            pool: pool_py.clone_ref(py),
+        })
+        .collect();
+    Ok(py_exprs)
+}
+
+// ---------------------------------------------------------------------------
 // PA-9 — Piecewise Python bindings
 // ---------------------------------------------------------------------------
 
@@ -3096,9 +3197,7 @@ fn py_modular_mignotte_bound(poly: PyRef<PyMultiPoly>) -> String {
 fn py_modular_select_lucky_prime(avoid_divisor_str: &str, used: Vec<u64>) -> PyResult<u64> {
     use rug::{Complete, Integer};
     let avoid = Integer::parse(avoid_divisor_str)
-        .map_err(|_| {
-            pyo3::exceptions::PyValueError::new_err("invalid integer for avoid_divisor")
-        })?
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid integer for avoid_divisor"))?
         .complete();
     Ok(core_select_lucky_prime(&avoid, &used))
 }
@@ -3210,6 +3309,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add_class::<PyGroebnerBasis>()?;
         m.add_function(wrap_pyfunction!(py_solve, m)?)?;
     }
+    // V2-2 — Resultants and subresultant PRS
+    m.add_function(wrap_pyfunction!(py_resultant, m)?)?;
+    m.add_function(wrap_pyfunction!(py_subresultant_prs, m)?)?;
     // V2-1 — Modular / CRT framework
     m.add_class::<PyMultiPolyFp>()?;
     m.add_function(wrap_pyfunction!(py_modular_reduce, m)?)?;
@@ -3239,6 +3341,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("CudaError", m.py().get_type_bound::<PyCudaError>())?;
     m.add("IoError", m.py().get_type_bound::<PyIoError>())?;
     m.add("ParseError", m.py().get_type_bound::<PyParseError>())?;
+    m.add(
+        "ResultantError",
+        m.py().get_type_bound::<PyResultantError>(),
+    )?;
     // V1-15: compile-time flag so Python tests can skip egraph-dependent assertions.
     m.add("HAS_EGRAPH", cfg!(feature = "egraph"))?;
     Ok(())
