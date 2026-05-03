@@ -70,9 +70,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-14 = arm64 (Apple Silicon), macos-13 = x86_64 (Intel) — built
-        # natively on each to avoid cross-compiling gmp-mpfr-sys assembly.
-        os: [macos-14, macos-13, windows-2022]
+        # macos-14 = arm64 (Apple Silicon, native).
+        # macos-15 = arm64 runner cross-compiling to x86_64 (Intel); macos-13
+        # Intel runners were fully deprecated by GitHub and no longer allocated.
+        os: [macos-14, macos-15, windows-2022]
         python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     env:
       PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
@@ -85,9 +86,15 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install system deps (macOS)
-        if: runner.os == 'macOS'
+      - name: Install system deps (macOS arm64)
+        if: matrix.os == 'macos-14'
         run: brew install flint
+
+      - name: Install x86_64 flint and add cross target (macos-15)
+        if: matrix.os == 'macos-15'
+        run: |
+          rustup target add x86_64-apple-darwin
+          arch -x86_64 /usr/local/bin/brew install flint
 
       - name: Set up MSYS2 (Windows)
         if: runner.os == 'Windows'
@@ -114,9 +121,13 @@ jobs:
       - name: Install maturin
         run: pip install maturin
 
-      - name: Build wheel (macOS)
-        if: runner.os == 'macOS'
+      - name: Build wheel (macOS arm64)
+        if: matrix.os == 'macos-14'
         run: maturin build --release --strip --out dist
+
+      - name: Build wheel (macOS x86_64 cross-compiled)
+        if: matrix.os == 'macos-15'
+        run: maturin build --release --strip --target x86_64-apple-darwin --out dist
 
       - name: Build wheel (Windows)
         if: runner.os == 'Windows'
@@ -147,6 +158,7 @@ jobs:
           mv dist-repaired/*.whl dist/
 
       - name: Smoke test
+        if: matrix.os != 'macos-15'
         run: |
           pip install --find-links dist alkahest
           python -c "import alkahest; p = alkahest.ExprPool(); x = p.symbol('x'); print(alkahest.simplify(x + 0))"
