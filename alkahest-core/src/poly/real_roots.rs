@@ -252,10 +252,7 @@ fn remove_content(coeffs: &[Integer]) -> Vec<Integer> {
     if g == 0 || g == 1 {
         return coeffs.to_vec();
     }
-    coeffs
-        .iter()
-        .map(|c| c.clone() / g.clone())
-        .collect()
+    coeffs.iter().map(|c| c.clone() / g.clone()).collect()
 }
 
 /// Formal derivative: `[c₀,c₁,…,cₙ] → [c₁, 2c₂, …, ncₙ]`.

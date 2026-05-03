@@ -115,7 +115,10 @@ pub mod stable {
     pub use crate::kernel::pool_persist::PoolPersistError;
     pub use crate::kernel::pool_persist::{load_from, open_persistent, save_to, IoError};
     pub use crate::kernel::{subs, Domain, ExprData, ExprDisplay, ExprId, ExprPool};
-    pub use crate::matrix::{jacobian, Matrix, MatrixError};
+    pub use crate::matrix::{
+        hermite_form, hermite_form_poly, jacobian, smith_form, smith_form_poly, IntegerMatrix,
+        Matrix, MatrixError, NormalFormError, PolyMatrixQ, RatUniPoly,
+    };
     pub use crate::ode::{lower_to_first_order, OdeError, ScalarODE, ODE};
     pub use crate::pattern::{match_pattern, Pattern, Substitution};
     pub use crate::poly::{

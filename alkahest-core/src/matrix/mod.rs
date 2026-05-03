@@ -11,6 +11,15 @@ use crate::kernel::{ExprId, ExprPool};
 use crate::simplify::engine::simplify;
 use std::fmt;
 
+pub mod normal_form;
+mod smith;
+mod smith_poly;
+
+pub use normal_form::{
+    hermite_form, hermite_form_poly, smith_form, smith_form_poly, IntegerMatrix, NormalFormError,
+    PolyMatrixQ, RatUniPoly,
+};
+
 // ---------------------------------------------------------------------------
 // Matrix type
 // ---------------------------------------------------------------------------

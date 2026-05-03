@@ -60,6 +60,14 @@ pub struct FmpzPolyStruct {
 unsafe impl Send for FmpzPolyStruct {}
 unsafe impl Sync for FmpzPolyStruct {}
 
+#[repr(C)]
+pub struct FmpzMatStruct {
+    pub entries: *mut fmpz,
+    pub r: slong,
+    pub c: slong,
+    pub rows: *mut *mut fmpz,
+}
+
 #[link(name = "flint")]
 extern "C" {
     // -----------------------------------------------------------------------
@@ -240,4 +248,26 @@ extern "C" {
         poly: *const FmpzPolyStruct,
         x: *const fmpz,
     );
+
+    // -----------------------------------------------------------------------
+    // fmpz_mat — dense integer matrices (Hermite / Smith normal forms)
+    // -----------------------------------------------------------------------
+
+    pub fn fmpz_mat_init(mat: *mut FmpzMatStruct, rows: slong, cols: slong);
+    pub fn fmpz_mat_clear(mat: *mut FmpzMatStruct);
+    pub fn fmpz_mat_swap(mat1: *mut FmpzMatStruct, mat2: *mut FmpzMatStruct);
+    pub fn fmpz_mat_zero(mat: *mut FmpzMatStruct);
+    pub fn fmpz_mat_one(mat: *mut FmpzMatStruct);
+    pub fn fmpz_mat_set(dst: *mut FmpzMatStruct, src: *const FmpzMatStruct);
+    pub fn fmpz_mat_equal(a: *const FmpzMatStruct, b: *const FmpzMatStruct) -> c_int;
+    pub fn fmpz_mat_mul(c: *mut FmpzMatStruct, a: *const FmpzMatStruct, b: *const FmpzMatStruct);
+    pub fn fmpz_mat_transpose(dst: *mut FmpzMatStruct, src: *const FmpzMatStruct);
+    pub fn fmpz_mat_hnf_transform(
+        h: *mut FmpzMatStruct,
+        u: *mut FmpzMatStruct,
+        a: *const FmpzMatStruct,
+    );
+    pub fn fmpz_mat_snf(s: *mut FmpzMatStruct, a: *const FmpzMatStruct);
+    pub fn fmpz_mat_is_in_hnf(a: *const FmpzMatStruct) -> c_int;
+    pub fn fmpz_mat_is_in_snf(a: *const FmpzMatStruct) -> c_int;
 }
