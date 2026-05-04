@@ -23,6 +23,34 @@ use crate::simplify::engine::simplify;
 use std::collections::HashSet;
 use std::fmt;
 
+/// Extend `(variables, derivatives)` when an equation references a derivative
+/// symbol that has not yet been promoted to the *state* vector — same rule as
+/// the Pantelides inner loop (for higher-order derivative algebra).
+pub fn extend_derivative_state_vectors(
+    variables: &mut Vec<ExprId>,
+    derivatives: &mut Vec<ExprId>,
+    new_eq: ExprId,
+    pool: &ExprPool,
+) {
+    for (j, _) in variables.clone().iter().enumerate() {
+        let deriv = derivatives[j];
+        if structurally_depends(new_eq, deriv, pool) && !variables.contains(&deriv) {
+            let d2_name = pool.with(deriv, |d| match d {
+                ExprData::Symbol { name, .. } => format!("d{name}/dt"),
+                _ => "d?/dt".to_string(),
+            });
+            let d2 = pool.symbol(&d2_name, Domain::Real);
+            variables.push(deriv);
+            derivatives.push(d2);
+        }
+    }
+}
+
+/// [`extend_derivative_state_vectors`] on [`DAE::variables`] / [`DAE::derivatives`].
+pub fn extend_dae_for_derivative_symbols(dae: &mut DAE, new_eq: ExprId, pool: &ExprPool) {
+    extend_derivative_state_vectors(&mut dae.variables, &mut dae.derivatives, new_eq, pool);
+}
+
 // ---------------------------------------------------------------------------
 // DAE type
 // ---------------------------------------------------------------------------
@@ -216,20 +244,7 @@ pub fn pantelides(dae: &DAE, pool: &ExprPool) -> Result<PantelidesResult, DaeErr
             sigma.push(sigma[eq_idx] + 1);
             total_steps += 1;
 
-            // Introduce new derivative variables if needed
-            for (j, _) in variables.clone().iter().enumerate() {
-                let deriv = derivatives[j];
-                if structurally_depends(new_eq, deriv, pool) && !variables.contains(&deriv) {
-                    // The derivative is now a new variable
-                    let d2_name = pool.with(deriv, |d| match d {
-                        ExprData::Symbol { name, .. } => format!("d{name}/dt"),
-                        _ => "d?/dt".to_string(),
-                    });
-                    let d2 = pool.symbol(&d2_name, Domain::Real);
-                    variables.push(deriv);
-                    derivatives.push(d2);
-                }
-            }
+            extend_derivative_state_vectors(&mut variables, &mut derivatives, new_eq, pool);
         }
     }
 
@@ -308,7 +323,7 @@ fn maximum_matching(adj: &[Vec<usize>], n_eq: usize, n_var: usize) -> Matching {
 }
 
 /// Differentiate `equation` with respect to time, using `d(var)/dt = deriv`.
-fn differentiate_equation(
+pub(crate) fn differentiate_equation(
     equation: ExprId,
     variables: &[ExprId],
     derivatives: &[ExprId],

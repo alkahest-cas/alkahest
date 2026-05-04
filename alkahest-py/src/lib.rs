@@ -3602,8 +3602,8 @@ fn py_compile_cuda(
 
 #[cfg(feature = "groebner")]
 use alkahest_core::{
-    expr_to_gbpoly, primary_decomposition, radical as core_ideal_radical, GbPoly, GroebnerBasis,
-    MonomialOrder,
+    dae_index_reduce, expr_to_gbpoly, primary_decomposition, radical as core_ideal_radical,
+    rosenfeld_groebner_with_options, DaeIndexReduction, GbPoly, GroebnerBasis, MonomialOrder,
 };
 
 #[cfg(feature = "groebner")]
@@ -3749,6 +3749,162 @@ impl PyGroebnerBasis {
     fn __repr__(&self) -> String {
         format!("GroebnerBasis(n_generators={})", self.inner.len())
     }
+}
+
+#[cfg(feature = "groebner")]
+fn py_monomial_order_for_dae(order: Option<&str>) -> MonomialOrder {
+    order
+        .and_then(MonomialOrder::from_str)
+        .unwrap_or(MonomialOrder::GRevLex)
+}
+
+/// V2-13 — Rosenfeld–Gröbner-style differential elimination result.
+#[cfg(feature = "groebner")]
+#[pyclass(name = "RosenfeldGroebnerResult")]
+struct PyRosenfeldGroebnerResult {
+    #[pyo3(get)]
+    consistent: bool,
+    #[pyo3(get)]
+    truncated: bool,
+    #[pyo3(get)]
+    prolongation_rounds: usize,
+    working_dae: DAE,
+    final_basis: Option<GroebnerBasis>,
+    pool: Py<PyExprPool>,
+}
+
+#[cfg(feature = "groebner")]
+#[pymethods]
+impl PyRosenfeldGroebnerResult {
+    fn working_dae(&self, py: Python<'_>) -> PyDAE {
+        PyDAE {
+            inner: self.working_dae.clone(),
+            pool: self.pool.clone_ref(py),
+        }
+    }
+
+    fn final_basis(&self, py: Python<'_>) -> PyResult<Option<Py<PyGroebnerBasis>>> {
+        match &self.final_basis {
+            None => Ok(None),
+            Some(gb) => Ok(Some(Py::new(
+                py,
+                PyGroebnerBasis {
+                    inner: gb.clone(),
+                    pool: Some(self.pool.clone_ref(py)),
+                    var_ids: vec![],
+                },
+            )?)),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RosenfeldGroebnerResult(consistent={}, truncated={})",
+            self.consistent, self.truncated
+        )
+    }
+}
+
+#[cfg(feature = "groebner")]
+#[pyclass(name = "DaeIndexReduction")]
+struct PyDaeIndexReduction {
+    inner: DaeIndexReduction,
+    pool: Py<PyExprPool>,
+}
+
+#[cfg(feature = "groebner")]
+#[pymethods]
+impl PyDaeIndexReduction {
+    #[getter]
+    fn used_pantelides(&self) -> bool {
+        matches!(self.inner, DaeIndexReduction::Pantelides(_))
+    }
+
+    #[getter]
+    fn used_rosenfeld_groebner(&self) -> bool {
+        matches!(self.inner, DaeIndexReduction::Rosenfeld(_))
+    }
+
+    /// Pantelides-reduced DAE if Pantelides succeeded; else Rosenfeld working DAE.
+    fn dae(&self, py: Python<'_>) -> PyDAE {
+        let dae = match &self.inner {
+            DaeIndexReduction::Pantelides(p) => p.reduced_dae.clone(),
+            DaeIndexReduction::Rosenfeld(r) => r.working_dae.clone(),
+        };
+        PyDAE {
+            inner: dae,
+            pool: self.pool.clone_ref(py),
+        }
+    }
+
+    fn rosenfeld_groebner_result(&self, py: Python<'_>) -> Option<Py<PyRosenfeldGroebnerResult>> {
+        match &self.inner {
+            DaeIndexReduction::Rosenfeld(r) => Py::new(
+                py,
+                PyRosenfeldGroebnerResult {
+                    consistent: r.consistent,
+                    truncated: r.truncated,
+                    prolongation_rounds: r.prolongation_rounds,
+                    working_dae: r.working_dae.clone(),
+                    final_basis: r.final_basis.clone(),
+                    pool: self.pool.clone_ref(py),
+                },
+            )
+            .ok(),
+            _ => None,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        match &self.inner {
+            DaeIndexReduction::Pantelides(p) => format!(
+                "DaeIndexReduction(pantelides, differentiation_steps={})",
+                p.differentiation_steps
+            ),
+            DaeIndexReduction::Rosenfeld(_) => "DaeIndexReduction(rosenfeld_groebner)".to_string(),
+        }
+    }
+}
+
+#[cfg(feature = "groebner")]
+#[pyfunction]
+#[pyo3(name = "rosenfeld_groebner", signature = (dae, order=None, max_prolong_rounds=None))]
+fn py_rosenfeld_groebner(
+    py: Python<'_>,
+    dae: PyRef<PyDAE>,
+    order: Option<&str>,
+    max_prolong_rounds: Option<usize>,
+) -> PyResult<PyRosenfeldGroebnerResult> {
+    let pool_py = dae.pool.clone_ref(py);
+    let r = {
+        let pool = pool_py.borrow(py);
+        rosenfeld_groebner_with_options(&dae.inner, &pool.inner, py_monomial_order_for_dae(order), max_prolong_rounds.unwrap_or(8))
+    };
+    let r = r.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(PyRosenfeldGroebnerResult {
+        consistent: r.consistent,
+        truncated: r.truncated,
+        prolongation_rounds: r.prolongation_rounds,
+        working_dae: r.working_dae,
+        final_basis: r.final_basis,
+        pool: pool_py,
+    })
+}
+
+#[cfg(feature = "groebner")]
+#[pyfunction]
+#[pyo3(name = "dae_index_reduce", signature = (dae, order=None))]
+fn py_dae_index_reduce(py: Python<'_>, dae: PyRef<PyDAE>, order: Option<&str>) -> PyResult<PyDaeIndexReduction> {
+    let pool_py = dae.pool.clone_ref(py);
+    let inner = {
+        let pool = pool_py.borrow(py);
+        dae_index_reduce(&dae.inner, &pool.inner, py_monomial_order_for_dae(order))
+    };
+    let inner = inner.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(PyDaeIndexReduction {
+        inner,
+        pool: pool_py,
+    })
 }
 
 #[cfg(feature = "groebner")]
@@ -4393,12 +4549,16 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     {
         m.add_class::<PyGbPoly>()?;
         m.add_class::<PyGroebnerBasis>()?;
+        m.add_class::<PyRosenfeldGroebnerResult>()?;
+        m.add_class::<PyDaeIndexReduction>()?;
         m.add_class::<PyPrimaryComponent>()?;
         m.add_class::<PyRegularChain>()?;
         m.add_function(wrap_pyfunction!(py_solve, m)?)?;
         m.add_function(wrap_pyfunction!(py_triangularize, m)?)?;
         m.add_function(wrap_pyfunction!(py_primary_decomposition, m)?)?;
         m.add_function(wrap_pyfunction!(py_ideal_radical, m)?)?;
+        m.add_function(wrap_pyfunction!(py_rosenfeld_groebner, m)?)?;
+        m.add_function(wrap_pyfunction!(py_dae_index_reduce, m)?)?;
     }
     // V2-2 — Resultants and subresultant PRS
     m.add_function(wrap_pyfunction!(py_resultant, m)?)?;

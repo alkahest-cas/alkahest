@@ -172,12 +172,16 @@ except ImportError:
 # V1-4 / V1-16: Polynomial system solver + Gröbner basis (optional — requires groebner feature)
 try:
     from .alkahest import (
+        DaeIndexReduction,
         GbPoly,
         GroebnerBasis,
         PrimaryComponent,
         RegularChain,
+        RosenfeldGroebnerResult,
+        dae_index_reduce,
         primary_decomposition,
         radical,
+        rosenfeld_groebner,
         solve,
         triangularize,
     )  # noqa: F401
@@ -461,10 +465,11 @@ __all__ = [
     # V2-11 — Regular chains / triangular decomposition
     "triangularize",
     "RegularChain",
-    # V2-12 — Primary decomposition (requires groebner)
-    "primary_decomposition",
-    "PrimaryComponent",
-    "radical",
+    # V2-13 — Differential algebra / Rosenfeld–Gröbner (requires groebner)
+    "rosenfeld_groebner",
+    "dae_index_reduce",
+    "RosenfeldGroebnerResult",
+    "DaeIndexReduction",
     # V1-16: IoError
     "IoError",
     # RW-7

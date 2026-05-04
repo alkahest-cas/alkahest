@@ -369,19 +369,19 @@ See also **v2.1 — SymPy Parity** (V2-15 … V2-22) below.
 
 **Acceptance:** `alkahest.primary_decomposition` and `alkahest.radical` on stable surface; complements `solve` / Gröbner tooling.
 
-### V2-13. Differential algebra / Rosenfeld–Gröbner
+### V2-13. Differential algebra / Rosenfeld–Gröbner → ✅ Complete
 
-**What:** Gröbner-basis theory for differential polynomial rings. Complements V0.3 Pantelides with an ideal-theoretic approach for non-square systems.
+**What:** Gröbner-style elimination for polynomial DAE jets — prolongation of generators plus ordinary ℚ Gröbner bases; complements Pantelides when the structural index is out of reach.
 
-**Design:**
-- `alkahest-core/src/diffalg/` — `DifferentialRing`, `DifferentialIdeal`, `rosenfeld_groebner(sys, ranking) -> Vec<RegularDifferentialChain>`.
-- `DAE::rosenfeld_reduce()` as alternative to `pantelides()` when the latter returns "structurally singular".
+**Delivered:**
+- `alkahest-core/src/diffalg/mod.rs` — `rosenfeld_groebner`, `rosenfeld_groebner_with_options`, `rosenfeld_groebner_algebraic`, `dae_index_reduce`, `DifferentialRing`, `DifferentialRanking`, `DifferentialIdeal`, `RegularDifferentialChain`, `RosenfeldGroebnerResult`, `DiffAlgError`.
+- `DAE::` / Pantelides alignment via `extend_dae_for_derivative_symbols` (shared derivative-state extension).
+- Python (`groebner`): `rosenfeld_groebner`, `dae_index_reduce`, `RosenfeldGroebnerResult`, `DaeIndexReduction`.
+- Tests: Rust `diffalg::tests`; Python `tests/test_diffalg_v213.py`.
 
-**Test plan:** Lotka–Volterra DAE matches Pantelides; overdetermined `{y' - y, y'' - 2y}` detected inconsistent; Maple `DifferentialAlgebra[RosenfeldGroebner]` parity on 10 textbook systems.
+**Limitations:** Single-branch coherent component (no full multi-case Rosenfeld–Gröbner over initials); nonlinear jets often **truncate** after a bounded prolongation budget rather than saturating the full differential ideal.
 
-**Acceptance:** `alkahest.rosenfeld_groebner` public; DAE auto-fallback to it on "structurally singular".
-
----
+**Acceptance:** `rosenfeld_groebner` / `dae_index_reduce` on stable surface behind `groebner`.
 
 ### V2-14. Numerical algebraic geometry (homotopy continuation)
 

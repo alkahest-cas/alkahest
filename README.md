@@ -172,6 +172,22 @@ r = alkahest.radical([x**2, x * y], [x, y])
 assert r.contains(x)
 ```
 
+### Differential algebra / Rosenfeld–Gröbner (V2-13)
+
+Polynomial DAEs in implicit form `g_i(t, y, y') = 0` can be analysed by **prolongation** (formal time derivatives of each equation, with the same derivative-state extension rule as Pantelides) and **ordinary Gröbner bases** over the jet variables. Inconsistent systems yield the unit ideal. Use `rosenfeld_groebner(dae, order=..., max_prolong_rounds=...)`; when Pantelides exhausts its index cap, `dae_index_reduce(dae)` falls back to this pass.
+
+```python
+import alkahest
+
+pool = alkahest.ExprPool()
+t = pool.symbol("t")
+y = pool.symbol("y")
+dy = pool.symbol("dy/dt")
+dae = alkahest.DAE.new([dy - y, dy - y - pool.integer(1)], [y], [dy], t)
+r = alkahest.rosenfeld_groebner(dae, max_prolong_rounds=2)
+assert r.consistent is False
+```
+
 ### Composable transformations
 
 ```python
@@ -202,6 +218,7 @@ alkahest/
 │   │   ├── ball/          # Arb ball arithmetic
 │   │   ├── ode/           # ODE analysis
 │   │   ├── dae/           # DAE analysis and index reduction
+│   │   ├── diffalg/       # Rosenfeld–Gröbner / differential elimination (groebner)
 │   │   ├── lean/          # Lean 4 proof certificate export
 │   │   └── primitive/     # primitive registration system
 │   └── benches/           # criterion benchmarks

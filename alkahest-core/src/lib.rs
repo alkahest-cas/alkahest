@@ -30,6 +30,9 @@ pub mod simplify;
 pub mod solver;
 #[cfg(feature = "groebner")]
 pub mod ideal;
+// V2-13 — Differential algebra / Rosenfeld–Gröbner
+#[cfg(feature = "groebner")]
+pub mod diffalg;
 // V2-10 — Gosper / creative telescoping (WZ certificates)
 pub mod sum;
 pub mod stablehlo;
@@ -124,6 +127,12 @@ pub use solver::{
 pub use ideal::{
     primary_decomposition, radical, PrimaryComponent, PrimaryDecompositionError,
 };
+#[cfg(feature = "groebner")]
+pub use diffalg::{
+    dae_index_reduce, rosenfeld_groebner, rosenfeld_groebner_algebraic,
+    rosenfeld_groebner_with_options, DaeIndexReduction, DiffAlgError, DifferentialIdeal,
+    DifferentialRanking, DifferentialRing, RegularDifferentialChain, RosenfeldGroebnerResult,
+};
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -187,6 +196,12 @@ pub mod stable {
     #[cfg(feature = "groebner")]
     pub use crate::ideal::{
         primary_decomposition, radical, PrimaryComponent, PrimaryDecompositionError,
+    };
+    #[cfg(feature = "groebner")]
+    pub use crate::diffalg::{
+        dae_index_reduce, rosenfeld_groebner, rosenfeld_groebner_algebraic,
+        rosenfeld_groebner_with_options, DaeIndexReduction, DiffAlgError, DifferentialIdeal,
+        DifferentialRanking, DifferentialRing, RegularDifferentialChain, RosenfeldGroebnerResult,
     };
     pub use crate::version;
 }
