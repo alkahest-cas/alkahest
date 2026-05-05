@@ -44,6 +44,7 @@ use alkahest_core::{
     CadError,
     Capabilities,
     Domain,
+    EigenError,
     Event,
     ExprId,
     ExprPool,
@@ -85,13 +86,12 @@ use alkahest_core::modular::{
     select_lucky_prime as core_select_lucky_prime, ModularError, MultiPolyFp,
 };
 use alkahest_core::{
-    diff as core_diff, diff_forward as core_diff_forward,
-    limit as core_limit, integrate as core_integrate, series as core_series, load_from,
-    log_exp_rules, match_pattern as core_match_pattern, simplify as core_simplify,
-    simplify_egraph as core_simplify_egraph, simplify_egraph_with as core_simplify_egraph_with,
-    simplify_with as core_simplify_with, trig_rules, AlkahestError as AlkahestErrorTrait,
-    DiffError, EgraphConfig, IntegrationError, IoError, LimitDirection as CoreLimitDirection,
-    LimitError, LinearRecurrenceError, PatternRule,
+    diff as core_diff, diff_forward as core_diff_forward, integrate as core_integrate,
+    limit as core_limit, load_from, log_exp_rules, match_pattern as core_match_pattern,
+    series as core_series, simplify as core_simplify, simplify_egraph as core_simplify_egraph,
+    simplify_egraph_with as core_simplify_egraph_with, simplify_with as core_simplify_with,
+    trig_rules, AlkahestError as AlkahestErrorTrait, DiffError, EgraphConfig, IntegrationError,
+    IoError, LimitDirection as CoreLimitDirection, LimitError, LinearRecurrenceError, PatternRule,
     ResultantError, SeriesError, SimplifyConfig, SizeCost, SparseInterpError, SumError,
 };
 use pyo3::exceptions::{PyOverflowError, PyTypeError};
@@ -116,6 +116,7 @@ pyo3::create_exception!(alkahest, PyIntegrationError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PySeriesError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyLimitError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyMatrixError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PyEigenError, PyMatrixError);
 pyo3::create_exception!(alkahest, PyModularError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyOdeError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyDaeError, PyAlkahestError);
@@ -308,6 +309,13 @@ fn pslq_error_to_py(e: PslqError) -> PyErr {
 fn matrix_error_to_py(e: MatrixError) -> PyErr {
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyMatrixError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn eigen_error_to_py(e: EigenError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyEigenError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -1571,7 +1579,8 @@ fn py_series(
     let pool_py = expr.pool.clone_ref(py);
     let id = {
         let pool = pool_py.borrow(py);
-        core_series(expr.id, var.id, point.id, order, &pool.inner).map_err(series_error_to_py)?
+        core_series(expr.id, var.id, point.id, order, &pool.inner)
+            .map_err(series_error_to_py)?
             .expr()
     };
     Ok(PySeries {
@@ -2020,6 +2029,93 @@ impl PyMatrix {
             id: d,
             pool: self.pool.clone_ref(py),
         })
+    }
+
+    /// `det(λI − M)` and the fresh λ symbol (`Expr`) used in that polynomial.
+    fn characteristic_polynomial_lambda_minus_m(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<(PyExpr, PyExpr)> {
+        let pool = self.pool.borrow(py);
+        let (poly, lam) = self
+            .inner
+            .characteristic_polynomial_lambda_minus_m(&pool.inner)
+            .map_err(eigen_error_to_py)?;
+        drop(pool);
+        let pq = self.pool.clone_ref(py);
+        Ok((
+            PyExpr {
+                id: poly,
+                pool: pq.clone_ref(py),
+            },
+            PyExpr { id: lam, pool: pq },
+        ))
+    }
+
+    /// Dictionary mapping each eigenvalue expression to its algebraic multiplicity.
+    fn eigenvals(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let pool = self.pool.borrow(py);
+        let pairs = self
+            .inner
+            .eigenvalues(&pool.inner)
+            .map_err(eigen_error_to_py)?;
+        drop(pool);
+        let out = PyDict::new_bound(py);
+        for (e, mult) in pairs {
+            let key = PyExpr {
+                id: e,
+                pool: self.pool.clone_ref(py),
+            }
+            .into_py(py);
+            out.set_item(key, mult)?;
+        }
+        Ok(out.into())
+    }
+
+    /// SymPy-style triples `(eigenvalue, multiplicity, [column eigenvectors …])`.
+    fn eigenvects(&self, py: Python<'_>) -> PyResult<Vec<(PyExpr, usize, Vec<PyMatrix>)>> {
+        let pool = self.pool.borrow(py);
+        let triples = self
+            .inner
+            .eigenvectors(&pool.inner)
+            .map_err(eigen_error_to_py)?;
+        drop(pool);
+        Ok(triples
+            .into_iter()
+            .map(|(e, mult, vecs)| {
+                (
+                    PyExpr {
+                        id: e,
+                        pool: self.pool.clone_ref(py),
+                    },
+                    mult,
+                    vecs.into_iter()
+                        .map(|m| PyMatrix {
+                            inner: m,
+                            pool: self.pool.clone_ref(py),
+                        })
+                        .collect(),
+                )
+            })
+            .collect())
+    }
+
+    /// `(P, D)` with `M @ P == P @ D` when the matrix is diagonalizable.
+    fn diagonalize(&self, py: Python<'_>) -> PyResult<(PyMatrix, PyMatrix)> {
+        let pool = self.pool.borrow(py);
+        let (p, d) = self
+            .inner
+            .diagonalize(&pool.inner)
+            .map_err(eigen_error_to_py)?;
+        drop(pool);
+        let pq = self.pool.clone_ref(py);
+        Ok((
+            PyMatrix {
+                inner: p,
+                pool: pq.clone_ref(py),
+            },
+            PyMatrix { inner: d, pool: pq },
+        ))
     }
 
     fn simplify(&self, py: Python<'_>) -> PyMatrix {
@@ -4874,15 +4970,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "IntegrationError",
         m.py().get_type_bound::<PyIntegrationError>(),
     )?;
-    m.add(
-        "SeriesError",
-        m.py().get_type_bound::<PySeriesError>(),
-    )?;
-    m.add(
-        "LimitError",
-        m.py().get_type_bound::<PyLimitError>(),
-    )?;
+    m.add("SeriesError", m.py().get_type_bound::<PySeriesError>())?;
+    m.add("LimitError", m.py().get_type_bound::<PyLimitError>())?;
     m.add("MatrixError", m.py().get_type_bound::<PyMatrixError>())?;
+    m.add("EigenError", m.py().get_type_bound::<PyEigenError>())?;
     m.add("ModularError", m.py().get_type_bound::<PyModularError>())?;
     m.add("OdeError", m.py().get_type_bound::<PyOdeError>())?;
     m.add("DaeError", m.py().get_type_bound::<PyDaeError>())?;

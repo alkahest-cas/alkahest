@@ -39,6 +39,7 @@ pub mod stablehlo;
 pub mod sum;
 
 pub use acausal::{capacitor, resistor, voltage_source, Component, Port, System};
+pub use calculus::{limit, series, LimitDirection, LimitError, Series, SeriesError};
 pub use dae::{pantelides, DaeError, PantelidesResult, DAE};
 pub use deriv::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
 #[allow(deprecated)]
@@ -46,9 +47,6 @@ pub use diff::{diff, diff_forward, grad, DiffError, DualValue, ForwardDiffError}
 pub use flint::{FlintInteger, FlintPoly};
 pub use hybrid::{Event, GuardStructure, HybridODE};
 pub use integrate::{integrate, IntegrationError};
-pub use calculus::{
-    limit, series, LimitDirection, LimitError, Series, SeriesError,
-};
 #[allow(deprecated)]
 pub use kernel::{
     load_from, open_persistent, save_to, subs, Domain, ExprData, ExprDisplay, ExprId, ExprPool,
@@ -63,7 +61,11 @@ pub use real::{cad_lift, cad_project, decide, decide_expr, CadError, QeResult};
 pub use lattice::{
     lattice_reduce_rows, lattice_reduce_rows_with_delta, validate_lll_rows, LatticeError,
 };
-pub use matrix::{jacobian, Matrix, MatrixError};
+pub use matrix::{
+    characteristic_polynomial_lambda_minus_m, diagonalize, eigenvalues, eigenvectors, hermite_form,
+    hermite_form_poly, jacobian, smith_form, smith_form_poly, EigenError, IntegerMatrix, Matrix,
+    MatrixError, NormalFormError, PolyMatrixQ, RatUniPoly,
+};
 pub use numeric::{guess_integer_relation, PslqError};
 pub use ode::{
     lower_to_first_order,
@@ -151,9 +153,7 @@ pub fn version() -> &'static str {
 ///
 /// See `README.md` ("Stability") for the full policy.
 pub mod stable {
-    pub use crate::calculus::{
-        limit, series, LimitDirection, LimitError, Series, SeriesError,
-    };
+    pub use crate::calculus::{limit, series, LimitDirection, LimitError, Series, SeriesError};
     pub use crate::dae::{pantelides, DaeError, DAE};
     pub use crate::diff::{diff, diff_forward, DiffError};
     #[cfg(feature = "groebner")]
@@ -183,8 +183,9 @@ pub mod stable {
         Satisfiability,
     };
     pub use crate::matrix::{
-        hermite_form, hermite_form_poly, jacobian, smith_form, smith_form_poly, IntegerMatrix,
-        Matrix, MatrixError, NormalFormError, PolyMatrixQ, RatUniPoly,
+        characteristic_polynomial_lambda_minus_m, diagonalize, eigenvalues, eigenvectors,
+        hermite_form, hermite_form_poly, jacobian, smith_form, smith_form_poly, EigenError,
+        IntegerMatrix, Matrix, MatrixError, NormalFormError, PolyMatrixQ, RatUniPoly,
     };
     pub use crate::numeric::{guess_integer_relation, PslqError};
     pub use crate::ode::{lower_to_first_order, OdeError, ScalarODE, ODE};

@@ -58,9 +58,9 @@ impl crate::errors::AlkahestError for SeriesError {
 
     fn remediation(&self) -> Option<&'static str> {
         match self {
-            SeriesError::Diff(_) => Some(
-                "ensure all functions are registered primitives with differentiation rules",
-            ),
+            SeriesError::Diff(_) => {
+                Some("ensure all functions are registered primitives with differentiation rules")
+            }
             SeriesError::InvalidOrder => Some("pass order >= 1 (exclusive truncation degree in x)"),
         }
     }
@@ -182,7 +182,10 @@ fn collect_atom_factors(expr: ExprId, pool: &ExprPool) -> Option<(Vec<ExprId>, V
                 Some((vec![pool.integer(1_i32)], vec![]))
             }
         }
-        ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) | ExprData::Symbol { .. }
+        ExprData::Integer(_)
+        | ExprData::Rational(_)
+        | ExprData::Float(_)
+        | ExprData::Symbol { .. }
         | ExprData::Func { .. } => Some((vec![expr], vec![])),
         ExprData::Add(_)
         | ExprData::Mul(_)
@@ -228,11 +231,7 @@ fn unipoly_valuation(p: &UniPoly) -> Option<u32> {
 }
 
 fn unipoly_strip_low(p: &UniPoly, k: u32) -> UniPoly {
-    let coeffs: Vec<rug::Integer> = p
-        .coefficients()
-        .into_iter()
-        .skip(k as usize)
-        .collect();
+    let coeffs: Vec<rug::Integer> = p.coefficients().into_iter().skip(k as usize).collect();
     UniPoly {
         var: p.var,
         coeffs: FlintPoly::from_rug_coefficients(&coeffs),
@@ -254,11 +253,7 @@ fn unipoly_to_expr(poly: &UniPoly, var: ExprId, pool: &ExprPool) -> ExprId {
                 c_id
             } else {
                 let exp_id = pool.integer(deg as i64);
-                let x_pow = if deg == 1 {
-                    var
-                } else {
-                    pool.pow(var, exp_id)
-                };
+                let x_pow = if deg == 1 { var } else { pool.pow(var, exp_id) };
                 if *coeff == 1 {
                     x_pow
                 } else {

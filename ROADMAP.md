@@ -453,7 +453,7 @@ Seven gaps from the SymPy gap analysis, plus integer number theory (thin FLINT b
 
 **Test plan:** `[[2,1],[0,2]]` → eigenvalue `2`, multiplicity 2, defective; `[[0,-1],[1,0]]` → `±i`; SymPy oracle on 50 random 3×3 rational matrices.
 
-**Acceptance:** `Matrix.eigenvals`, `Matrix.eigenvects`, `Matrix.diagonalize` in stable API; oracle ≥ 95 %.
+**Acceptance:** `Matrix.eigenvals`, `Matrix.eigenvects`, `Matrix.diagonalize` in stable API; oracle ≥ 95 %. — ✅
 
 ---
 

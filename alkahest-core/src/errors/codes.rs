@@ -50,6 +50,14 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-MAT-001", class: "MatrixError", cause: Cause::UserInput, remediation: Some("check that row/column counts agree") },
     ErrorSpec { code: "E-MAT-002", class: "MatrixError", cause: Cause::UserInput, remediation: Some("use pseudo-inverse for rectangular matrices") },
     ErrorSpec { code: "E-MAT-003", class: "MatrixError", cause: Cause::Domain,    remediation: Some("check for linear dependence in the rows/columns") },
+    // V2-17 — EigenError
+    ErrorSpec { code: "E-EIGEN-001", class: "EigenError", cause: Cause::UserInput,   remediation: Some("pass a square n×n matrix") },
+    ErrorSpec { code: "E-EIGEN-002", class: "EigenError", cause: Cause::UserInput,   remediation: Some("ensure det(λI−M) is a ℤ-polynomial in the fresh λ variable") },
+    ErrorSpec { code: "E-EIGEN-003", class: "EigenError", cause: Cause::Internal,    remediation: Some("report the polynomial as a minimal failing example") },
+    ErrorSpec { code: "E-EIGEN-004", class: "EigenError", cause: Cause::Unsupported, remediation: Some("irreducible characteristic factors of degree > 2 require a future algebraic-number extension") },
+    ErrorSpec { code: "E-EIGEN-005", class: "EigenError", cause: Cause::Domain,    remediation: Some("the matrix is defective or the eigenbasis is incomplete") },
+    ErrorSpec { code: "E-EIGEN-006", class: "EigenError", cause: Cause::Unsupported, remediation: Some("nullspace elimination failed; try a purely rational or ℚ(i) spectrum") },
+    ErrorSpec { code: "E-EIGEN-007", class: "EigenError", cause: Cause::Domain,    remediation: Some("eigenvector matrix is singular; check multiplicities") },
     // E-ODE — OdeError
     ErrorSpec { code: "E-ODE-001", class: "OdeError", cause: Cause::UserInput,   remediation: Some("number of state variables must equal number of RHS expressions") },
     ErrorSpec { code: "E-ODE-002", class: "OdeError", cause: Cause::UserInput,   remediation: Some("use lower_to_first_order() before passing to a solver") },

@@ -42,7 +42,10 @@ impl fmt::Display for LimitError {
             LimitError::Series(e) => write!(f, "{e}"),
             LimitError::Diff(e) => write!(f, "{e}"),
             LimitError::NeedsOneSided => {
-                write!(f, "two-sided limit undefined at this pole; pass direction Plus or Minus")
+                write!(
+                    f,
+                    "two-sided limit undefined at this pole; pass direction Plus or Minus"
+                )
             }
             LimitError::DepthExceeded => write!(f, "limit refinement depth exceeded"),
             LimitError::Unsupported => write!(f, "limit could not be computed with current rules"),
@@ -125,17 +128,17 @@ fn flatten_nested_integer_pow(expr: ExprId, pool: &ExprPool) -> ExprId {
         ExprData::Pow { base, exp } => {
             let base = flatten_nested_integer_pow(base, pool);
             let exp_fl = flatten_nested_integer_pow(exp, pool);
-            if let (ExprData::Pow {
-                base: b2,
-                exp: inner_exp,
-            }, ExprData::Integer(outer_e)) = (pool.get(base), pool.get(exp_fl))
+            if let (
+                ExprData::Pow {
+                    base: b2,
+                    exp: inner_exp,
+                },
+                ExprData::Integer(outer_e),
+            ) = (pool.get(base), pool.get(exp_fl))
             {
                 if let ExprData::Integer(inner_e) = pool.get(inner_exp) {
                     let prod = (&inner_e.0).clone() * (&outer_e.0).clone();
-                    return pool.pow(
-                        flatten_nested_integer_pow(b2, pool),
-                        pool.integer(prod),
-                    );
+                    return pool.pow(flatten_nested_integer_pow(b2, pool), pool.integer(prod));
                 }
             }
             pool.pow(base, exp_fl)
@@ -237,7 +240,10 @@ fn limit_inner(
 
     if is_neg_infinity(point, pool) {
         let t = pool.symbol("__lt_ninf", crate::kernel::Domain::Real);
-        let rep = pool.mul(vec![pool.integer(-1_i32), pool.pow(t, pool.integer(-1_i32))]);
+        let rep = pool.mul(vec![
+            pool.integer(-1_i32),
+            pool.pow(t, pool.integer(-1_i32)),
+        ]);
         let mut m = HashMap::new();
         m.insert(var, rep);
         let e2 = simplify(
@@ -404,13 +410,15 @@ fn depends_on(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
         ExprData::Pow { base, exp } => depends_on(base, var, pool) || depends_on(exp, var, pool),
         ExprData::Func { args, .. } => args.iter().any(|a| depends_on(*a, var, pool)),
         ExprData::Piecewise { branches, default } => {
-            branches.iter().any(|(c, v)| {
-                depends_on(*c, var, pool) || depends_on(*v, var, pool)
-            }) || depends_on(default, var, pool)
+            branches
+                .iter()
+                .any(|(c, v)| depends_on(*c, var, pool) || depends_on(*v, var, pool))
+                || depends_on(default, var, pool)
         }
         ExprData::Predicate { args, .. } => args.iter().any(|a| depends_on(*a, var, pool)),
-        ExprData::Forall { var: bv, body }
-        | ExprData::Exists { var: bv, body } => bv != var && depends_on(body, var, pool),
+        ExprData::Forall { var: bv, body } | ExprData::Exists { var: bv, body } => {
+            bv != var && depends_on(body, var, pool)
+        }
         ExprData::BigO(a) => depends_on(a, var, pool),
         ExprData::Integer(_)
         | ExprData::Rational(_)
@@ -419,7 +427,12 @@ fn depends_on(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
     }
 }
 
-fn try_direct_substitution(expr: ExprId, var: ExprId, point: ExprId, pool: &ExprPool) -> Option<ExprId> {
+fn try_direct_substitution(
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
     if quotient_is_zero_over_zero(expr, var, point, pool) {
         return None;
     }
@@ -491,7 +504,9 @@ fn substitution_is_singular(expr: ExprId, pool: &ExprPool) -> bool {
             }
             substitution_is_singular(base, pool) || substitution_is_singular(exp, pool)
         }
-        ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().any(|a| substitution_is_singular(*a, pool)),
+        ExprData::Add(xs) | ExprData::Mul(xs) => {
+            xs.iter().any(|a| substitution_is_singular(*a, pool))
+        }
         ExprData::Func { args, .. } => args.iter().any(|a| substitution_is_singular(*a, pool)),
         _ => false,
     }
@@ -777,9 +792,7 @@ fn structural_sign(e: ExprId, pool: &ExprPool) -> Option<i8> {
             }
             Some(s)
         }
-        ExprData::Pow { base: _, exp }
-            if matches!(pool.get(exp), ExprData::Integer(n) if n.0.clone() % 2 == 0) =>
-        {
+        ExprData::Pow { base: _, exp } if matches!(pool.get(exp), ExprData::Integer(n) if n.0.clone() % 2 == 0) => {
             Some(1)
         }
         _ => None,
@@ -818,14 +831,7 @@ mod tests {
         let p = ExprPool::new();
         let x = p.symbol("x", Domain::Real);
         let ex = p.func("exp", vec![x]);
-        let r = limit(
-            ex,
-            x,
-            p.pos_infinity(),
-            LimitDirection::Bidirectional,
-            &p,
-        )
-        .unwrap();
+        let r = limit(ex, x, p.pos_infinity(), LimitDirection::Bidirectional, &p).unwrap();
         assert_eq!(r, p.pos_infinity());
     }
 
@@ -834,14 +840,7 @@ mod tests {
         let p = ExprPool::new();
         let x = p.symbol("x", Domain::Real);
         let ex = simplify(p.pow(x, p.integer(2_i32)), &p).value;
-        let r = limit(
-            ex,
-            x,
-            p.pos_infinity(),
-            LimitDirection::Bidirectional,
-            &p,
-        )
-        .unwrap();
+        let r = limit(ex, x, p.pos_infinity(), LimitDirection::Bidirectional, &p).unwrap();
         assert_eq!(r, p.pos_infinity(), "{}", p.display(r));
     }
 

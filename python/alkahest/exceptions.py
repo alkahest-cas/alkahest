@@ -192,6 +192,18 @@ class MatrixError(AlkahestError):
         super().__init__(message, code="E-MAT-001", remediation=remediation, span=span)
 
 
+class EigenError(AlkahestError):
+    """Eigen-decomposition failed (unsplit characteristic polynomial, defective matrix, etc.)."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-EIGEN-001", remediation=remediation, span=span)
+
+
 class LatticeError(AlkahestError):
     """LLL lattice reduction failed (structure, Lovász parameter, or iteration limit)."""
 
