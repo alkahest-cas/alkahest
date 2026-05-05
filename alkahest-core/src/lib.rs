@@ -1,4 +1,5 @@
 pub mod acausal;
+pub mod algebra;
 pub mod ball;
 pub mod calculus;
 pub mod dae;
@@ -52,7 +53,7 @@ pub use integrate::{integrate, IntegrationError};
 #[allow(deprecated)]
 pub use kernel::{
     load_from, open_persistent, save_to, subs, Domain, ExprData, ExprDisplay, ExprId, ExprPool,
-    IoError, PoolPersistError,
+    IoError, PoolPersistError, expr_contains_noncommutative_symbol, mult_tree_is_commutative,
 };
 pub use logic::{
     dpll_sat, formula_from_expr, satisfiable, BoolClause, BoolLit, Formula, LogicError,
@@ -88,8 +89,8 @@ pub use horner::{emit_horner_c, horner};
 pub use simplify::rulesets::{log_exp_rules, log_exp_rules_safe, trig_rules};
 pub use simplify::{
     rules_for_config, simplify, simplify_egraph, simplify_egraph_with, simplify_expanded,
-    simplify_with, DepthCost, EgraphConfig, EgraphCost, OpCost, PatternRule, RewriteRule,
-    SimplifyConfig, SizeCost, StabilityCost,
+    simplify_with, DepthCost, EgraphConfig, EgraphCost, NoncommutativeCost, OpCost, PatternRule,
+    RewriteRule, SimplifyConfig, SizeCost, StabilityCost,
 };
 pub use sum::{
     gosper_certificate, gosper_normal_form, hypergeom_ratio, product_definite, product_indefinite,
@@ -182,7 +183,13 @@ pub mod stable {
     #[allow(deprecated)]
     pub use crate::kernel::pool_persist::PoolPersistError;
     pub use crate::kernel::pool_persist::{load_from, open_persistent, save_to, IoError};
-    pub use crate::kernel::{subs, Domain, ExprData, ExprDisplay, ExprId, ExprPool};
+    pub use crate::kernel::{
+        expr_contains_noncommutative_symbol, mult_tree_is_commutative, subs, Domain, ExprData,
+        ExprDisplay, ExprId, ExprPool,
+    };
+    pub use crate::algebra::{
+        clifford_orthogonal_rules, imag_unit_atom, pauli_product_rules, PauliSpinAlgebraRule,
+    };
     pub use crate::lattice::{
         lattice_reduce_rows, lattice_reduce_rows_with_delta, validate_lll_rows, LatticeError,
     };
@@ -211,7 +218,10 @@ pub mod stable {
     };
     pub use crate::primitive::{Primitive, PrimitiveRegistry};
     pub use crate::real::{cad_lift, cad_project, decide, decide_expr, CadError, QeResult};
-    pub use crate::simplify::{simplify, simplify_with, SimplifyConfig};
+    pub use crate::simplify::{
+        simplify, simplify_egraph, simplify_egraph_with, simplify_with, DepthCost, EgraphConfig,
+        EgraphCost, NoncommutativeCost, OpCost, SimplifyConfig, SizeCost, StabilityCost,
+    };
     #[cfg(feature = "groebner")]
     pub use crate::solver::{
         diophantine, expr_to_gbpoly, extract_regular_chain_from_basis, main_variable_recursive,

@@ -21,7 +21,7 @@
 //!
 //! ```text
 //!   Magic     = "ALKP"             (4 bytes)
-//!   Version   = u32 (**3** = BigO tag 12; **2** = quantifiers 10–11; **1** = original 0–9)
+//!   Version   = u32 (**4** = symbol `commutative` flag on `(tag 0)`; **3** = BigO tag 12; **2** = quantifiers 10–11; **1** = original 0–9)
 //!   Flags     = u32                 (reserved; always 0 in v1)
 //!   NodeCount = u64
 //!   Nodes     = NodeCount × TaggedNode
@@ -30,7 +30,7 @@
 //! Each `TaggedNode`:
 //! ```text
 //!   tag : u8
-//!     0 Symbol     -> domain:u8, len:u32, name
+//!     0 Symbol     -> domain:u8, [commutative:u8 if format≥4], len:u32, name
 //!     1 Integer    -> len:u32, base-10 digits (ASCII, optionally '-' prefix)
 //!     2 Rational   -> numer_len:u32, numer, denom_len:u32, denom
 //!     3 Float      -> prec:u32, len:u32, base-16 mantissa (rug to_string_radix)
@@ -46,8 +46,9 @@
 //! ```
 //!
 //! File version (`Version` u32 field): **1** is the original v1.0 layout (tags 0–9 only).
-//! **2** adds tags 10–11 for quantifiers. **3** adds tag 12 for `BigO`.
-//! Current writers emit version **3**; readers accept **1**, **2**, or **3**.
+//! **2** adds tags 10–11 for quantifiers. **3** adds tag 12 for `BigO`. **4** adds
+//! `commutative: u8` after `domain` on symbol nodes (V3-2).
+//! Current writers emit version **4**; readers accept **1** … **4**.
 //!
 //! All integers are little-endian.
 
@@ -65,7 +66,9 @@ const POOL_FORMAT_V1: u32 = 1;
 const POOL_FORMAT_V2: u32 = 2;
 /// Adds `BigO` tag 12 (V2-15 series API).
 const POOL_FORMAT_V3: u32 = 3;
-const POOL_FORMAT_WRITE: u32 = POOL_FORMAT_V3;
+/// Symbol nodes carry `commutative: u8` after `domain` (V3-2).
+const POOL_FORMAT_V4: u32 = 4;
+const POOL_FORMAT_WRITE: u32 = POOL_FORMAT_V4;
 
 // ---------------------------------------------------------------------------
 // Error
@@ -282,9 +285,14 @@ fn u8_to_pred(b: u8) -> Result<PredicateKind, IoError> {
 
 fn write_node(w: &mut impl Write, node: &ExprData) -> io::Result<()> {
     match node {
-        ExprData::Symbol { name, domain } => {
+        ExprData::Symbol {
+            name,
+            domain,
+            commutative,
+        } => {
             write_u8(w, 0)?;
             write_u8(w, domain_to_u8(domain))?;
+            write_u8(w, u8::from(*commutative))?;
             write_str(w, name)
         }
         ExprData::Integer(BigInt(n)) => {
@@ -356,8 +364,17 @@ fn read_node(r: &mut impl Read, format_version: u32) -> Result<ExprData, IoError
     match tag {
         0 => {
             let domain = u8_to_domain(read_u8(r)?)?;
+            let commutative = if format_version >= POOL_FORMAT_V4 {
+                read_u8(r)? != 0
+            } else {
+                true
+            };
             let name = read_str(r)?;
-            Ok(ExprData::Symbol { name, domain })
+            Ok(ExprData::Symbol {
+                name,
+                domain,
+                commutative,
+            })
         }
         1 => {
             let s = read_str(r)?;
@@ -499,7 +516,11 @@ pub fn load_from(path: impl AsRef<Path>) -> Result<Option<ExprPool>, IoError> {
     }
 
     let version = read_u32(&mut r)?;
-    if version != POOL_FORMAT_V1 && version != POOL_FORMAT_V2 && version != POOL_FORMAT_V3 {
+    if version != POOL_FORMAT_V1
+        && version != POOL_FORMAT_V2
+        && version != POOL_FORMAT_V3
+        && version != POOL_FORMAT_V4
+    {
         return Err(IoError::UnsupportedVersion(version));
     }
     let _flags = read_u32(&mut r)?;

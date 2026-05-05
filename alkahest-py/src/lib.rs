@@ -402,9 +402,16 @@ impl PyExprPool {
         false
     }
 
-    fn symbol(slf: PyRef<'_, Self>, name: &str, domain: Option<&str>) -> PyExpr {
+    #[pyo3(signature = (name, domain=None, commutative=None))]
+    fn symbol(
+        slf: PyRef<'_, Self>,
+        name: &str,
+        domain: Option<&str>,
+        commutative: Option<bool>,
+    ) -> PyExpr {
+        let commutative = commutative.unwrap_or(true);
         let dom = parse_domain(domain.unwrap_or("real"));
-        let id = slf.inner.symbol(name, dom);
+        let id = slf.inner.symbol_commutative(name, dom, commutative);
         let pool: Py<PyExprPool> = slf.into();
         PyExpr { id, pool }
     }
@@ -3131,6 +3138,42 @@ fn py_collect_like_terms(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDerivedResult
 }
 
 // ---------------------------------------------------------------------------
+// V3-2 — Non-commutative Pauli / Clifford simplification helpers
+// ---------------------------------------------------------------------------
+
+/// Simplify with default arithmetic rules plus the Pauli product table on ``sx``, ``sy``, ``sz``.
+#[pyfunction]
+#[pyo3(name = "simplify_pauli")]
+fn py_simplify_pauli(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDerivedResult {
+    use alkahest_core::algebra::noncommutative::pauli_product_rules;
+    use alkahest_core::{rules_for_config, simplify_with};
+    let pool_py = expr.pool.clone_ref(py);
+    let derived = {
+        let pool = pool_py.borrow(py);
+        let mut rules = rules_for_config(&SimplifyConfig::default());
+        rules.extend(pauli_product_rules());
+        simplify_with(expr.id, &pool.inner, &rules, SimplifyConfig::default())
+    };
+    make_derived_result(py, derived, pool_py)
+}
+
+/// Simplify with default rules plus orthogonal Clifford anticommutation on ``cliff_e1``, ``cliff_e2``.
+#[pyfunction]
+#[pyo3(name = "simplify_clifford_orthogonal")]
+fn py_simplify_clifford_orthogonal(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDerivedResult {
+    use alkahest_core::algebra::noncommutative::clifford_orthogonal_rules;
+    use alkahest_core::{rules_for_config, simplify_with};
+    let pool_py = expr.pool.clone_ref(py);
+    let derived = {
+        let pool = pool_py.borrow(py);
+        let mut rules = rules_for_config(&SimplifyConfig::default());
+        rules.extend(clifford_orthogonal_rules());
+        simplify_with(expr.id, &pool.inner, &rules, SimplifyConfig::default())
+    };
+    make_derived_result(py, derived, pool_py)
+}
+
+// ---------------------------------------------------------------------------
 // Phase 27 — poly_normal
 // ---------------------------------------------------------------------------
 
@@ -5291,6 +5334,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_emit_c, m)?)?;
     // Phase 26 — collect_like_terms
     m.add_function(wrap_pyfunction!(py_collect_like_terms, m)?)?;
+    // V3-2 — Pauli / Clifford (non-commutative helpers)
+    m.add_function(wrap_pyfunction!(py_simplify_pauli, m)?)?;
+    m.add_function(wrap_pyfunction!(py_simplify_clifford_orthogonal, m)?)?;
     // Phase 27 — poly_normal
     m.add_function(wrap_pyfunction!(py_poly_normal, m)?)?;
     // PA-5 — Primitive registry

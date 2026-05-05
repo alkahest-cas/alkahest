@@ -164,10 +164,23 @@ impl ExprPool {
     // Atom constructors
     // -----------------------------------------------------------------------
 
+    /// Free symbol; multiplication treats it as commuting with every other factor (default).
     pub fn symbol(&self, name: impl Into<String>, domain: Domain) -> ExprId {
+        self.symbol_commutative(name, domain, true)
+    }
+
+    /// Free symbol with explicit commutative flag (V3-2). `commutative: false` is for
+    /// matrix or operator generators where `A*B` and `B*A` must remain distinct.
+    pub fn symbol_commutative(
+        &self,
+        name: impl Into<String>,
+        domain: Domain,
+        commutative: bool,
+    ) -> ExprId {
         self.intern(ExprData::Symbol {
             name: name.into(),
             domain,
+            commutative,
         })
     }
 
@@ -203,8 +216,13 @@ impl ExprPool {
     }
 
     pub fn mul(&self, mut args: Vec<ExprId>) -> ExprId {
-        // Same canonical-order trick as `add`.
-        args.sort_unstable();
+        // Canonical sort only when every subtree is multiplicatively commutative (V3-2).
+        let sort_ok = args
+            .iter()
+            .all(|&a| crate::kernel::expr_props::mult_tree_is_commutative(self, a));
+        if sort_ok {
+            args.sort_unstable();
+        }
         self.intern(ExprData::Mul(args))
     }
 
@@ -431,6 +449,26 @@ mod tests {
 
     fn pool() -> ExprPool {
         ExprPool::new()
+    }
+
+    #[test]
+    fn noncommutative_mul_orders_distinct() {
+        let p = pool();
+        let a = p.symbol_commutative("A", Domain::Real, false);
+        let b = p.symbol_commutative("B", Domain::Real, false);
+        assert_ne!(
+            p.mul(vec![a, b]),
+            p.mul(vec![b, a]),
+            "A*B and B*A must not hash-cons together for NC symbols"
+        );
+    }
+
+    #[test]
+    fn symbol_commutative_is_structural() {
+        let p = pool();
+        let xc = p.symbol_commutative("x", Domain::Real, true);
+        let xnc = p.symbol_commutative("x", Domain::Real, false);
+        assert_ne!(xc, xnc);
     }
 
     // --- construction and equality ---

@@ -147,7 +147,8 @@ from .alkahest import (  # noqa: F401
     simplify_egraph_with,
     simplify_expanded,
     simplify_log_exp,
-    # Phase 23: Parallel simplification
+    simplify_pauli,
+    simplify_clifford_orthogonal,
     simplify_par,
     simplify_trig,
     simplify_with,
@@ -382,6 +383,8 @@ __all__ = [
     "simplify_expanded",
     "simplify_trig",
     "simplify_log_exp",
+    "simplify_pauli",
+    "simplify_clifford_orthogonal",
     "simplify_with",
     # Calculus
     "diff",

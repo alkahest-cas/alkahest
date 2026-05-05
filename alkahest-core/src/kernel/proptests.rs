@@ -35,7 +35,11 @@ mod tests {
     fn atom_data_strategy() -> impl Strategy<Value = ExprData> {
         prop_oneof![
             (name_strategy(), domain_strategy())
-                .prop_map(|(n, d)| ExprData::Symbol { name: n, domain: d }),
+                .prop_map(|(n, d)| ExprData::Symbol {
+                    name: n,
+                    domain: d,
+                    commutative: true,
+                }),
             (i64::MIN..=i64::MAX).prop_map(|n| ExprData::Integer(crate::kernel::expr::BigInt(
                 rug::Integer::from(n)
             ))),

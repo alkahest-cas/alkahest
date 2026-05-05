@@ -14,7 +14,7 @@
 | **v1.1 — Post-launch** | 📋 Planned | Algebraic-function Risch (Trager), AMD ROCm codegen (hardware-blocked), PyPI wheel publishing, Win+macOS CI parity, docs site, LaTeX/Unicode printing, string parsing |
 | **v2.0 — Mathematical Coverage** | 📋 Planned (15 items) | Modular/CRT framework, resultants, sparse interpolation, real root isolation, HNF/SNF, LLL+PSLQ, polynomial factorization, F5 signature-based Gröbner, logic/FOFormula (CAD prerequisite), CAD (real QE), Zeilberger/creative telescoping, regular chains, primary decomposition, differential algebra, homotopy continuation |
 | **v2.1 — SymPy Parity** | 📋 Planned | Limits (V2-16), `rsolve` scope (V2-18); **symbolic `∏` (V2-22) ✅**; **integer number theory (V3-1) ✅**; **V2-19 `diophantine` ✅**; eigenpairs ✅ (V2-17); `series` / `parse` / LaTeX ✅ (V2-15, V2-20, V2-21) |
-| **v3.0 — Domain Expansions** | 📋 Planned (1 item) | Noncommutative algebra (kernel extension) |
+| **v3.0 — Domain Expansions** | ✅ Complete (V3-2) | Noncommutative algebra (kernel extension) |
 
 **Test coverage:** 362 Rust unit/proptest/doctest cases + 438 Python tests (+ 52 skipped feature-gated/oracle tests) = 800 tests passing, zero errors.
 
@@ -523,16 +523,16 @@ Gaps from the SymPy gap analysis (and integer number theory promoted as V3-1).
 
 ---
 
-### V3-2. Noncommutative algebra
+### V3-2. Noncommutative algebra → ✅ Complete
 
 **What:** `Symbol('A', commutative=False)`; support for matrix Lie algebras, Pauli algebra, and Clifford algebras. Significant kernel change — the AC sorter and e-graph rules both assume commutativity.
 
-**Design:**
-- `ExprData` gains a `commutative: bool` flag per symbol; `Mul` becomes order-sensitive when any child is non-commutative.
-- AC sorter disabled for non-commutative `Mul`; e-graph rewrite rules guarded by commutativity check.
-- `alkahest-core/src/algebra/noncommutative.rs` — Clifford/Pauli product tables as registered rewrite rule sets.
-- New cost function `NoncommutativeCost` preferring normal-ordered forms.
+**Delivered:**
+- `ExprData::Symbol { commutative: bool }`; `ExprPool::symbol_commutative`; `ExprPool::mul` skips canonical sorting when any multiplicative subtree is non-commutative; `canonical_order` / `collect_mul_factors` aligned; e-graph path delegates to rule-based simplify when NC symbols appear; pool format **v4**.
+- `alkahest-core/src/algebra/noncommutative.rs` — `PauliSpinAlgebraRule`, `CliffordOrthogonalRule`, `imag_unit_atom`, `pauli_product_rules`, `clifford_orthogonal_rules`.
+- `NoncommutativeCost` in `simplify/egraph.rs`.
+- Python: `ExprPool.symbol(..., commutative=False)`, `simplify_pauli`, `simplify_clifford_orthogonal`; `examples/noncommutative.py`; `tests/test_noncommutative_v32.py`.
 
-**Test plan:** `A * B ≠ B * A` when both non-commutative; Pauli algebra `σx * σy = i·σz` via registered rules; all existing commutative tests still pass.
+**Test plan:** `A * B ≠ B * A` when both non-commutative; Pauli `σx * σy = i·σz` via registered rules; all existing commutative tests still pass.
 
-**Acceptance:** `alkahest.Symbol('A', commutative=False)` works; Pauli and Clifford demonstrated in `examples/noncommutative.py`; zero regressions on commutative test suite.
+**Acceptance:** — ✅

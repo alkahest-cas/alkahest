@@ -380,12 +380,18 @@ fn neg_infinity(pool: &ExprPool) -> ExprId {
 fn is_pos_infinity(e: ExprId, pool: &ExprPool) -> bool {
     matches!(
         pool.get(e),
-        ExprData::Symbol { name, domain: crate::kernel::Domain::Positive }
-            if name == POS_INFINITY_SYMBOL
+        ExprData::Symbol {
+            name,
+            domain: crate::kernel::Domain::Positive,
+            ..
+        } if name == POS_INFINITY_SYMBOL
     ) || matches!(
         pool.get(e),
-        ExprData::Symbol { name, domain: crate::kernel::Domain::Real }
-            if name == POS_INFINITY_SYMBOL
+        ExprData::Symbol {
+            name,
+            domain: crate::kernel::Domain::Real,
+            ..
+        } if name == POS_INFINITY_SYMBOL
     )
 }
 

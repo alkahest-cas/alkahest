@@ -173,6 +173,8 @@ pub enum ExprData {
     Symbol {
         name: String,
         domain: Domain,
+        /// When `false`, this generator does not commute under multiplication; see V3-2.
+        commutative: bool,
     },
     Integer(BigInt),
     Rational(BigRat),

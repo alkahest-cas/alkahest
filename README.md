@@ -172,6 +172,12 @@ assert discrete_log(13, 3, 17) == 4
 assert pow(nthroot_mod(144, 2, 401), 2, 401) == 144 % 401
 ```
 
+### Noncommutative algebra (V3-2)
+
+Symbols can opt out of multiplicative commutativity: ``pool.symbol("A", "real", commutative=False)``. Then ``A * B`` and ``B * A`` are distinct expressions, and sorting of ``Mul`` factors is disabled. The egglog backend automatically falls back to the rule-based simplifier when such symbols appear.
+
+Pauli matrices (names ``sx``, ``sy``, ``sz``) and a minimal orthogonal Clifford pair (``cliff_e1``, ``cliff_e2``) have built-in rewrite tables; combine default rules with ``alkahest.simplify_pauli`` or ``alkahest.simplify_clifford_orthogonal``. See ``examples/noncommutative.py``.
+
 ### Truncated series / Laurent tail (V2-15)
 
 `series(expr, var, point, order)` builds a symbolic truncation about `(var − point)` and appends a `BigO(⋯)` remainder. Smooth functions use repeated differentiation; simple poles such as `1/x` at zero take the rational Laurent path. `Series.expr` is the pooled sum-plus-order expression; `ExprPool.big_o(inner)` constructs standalone order bounds.
@@ -316,6 +322,7 @@ alkahest/
 ├── alkahest-core/         # Rust kernel
 │   ├── src/
 │   │   ├── kernel/        # hash-consed expression DAG, ExprPool
+│   │   ├── algebra/       # noncommutative Pauli / Clifford rules (V3-2)
 │   │   ├── poly/          # UniPoly, MultiPoly, RationalFunction
 │   │   ├── simplify/      # e-graph simplification (egglog)
 │   │   ├── diff/          # symbolic differentiation
