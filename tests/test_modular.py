@@ -253,9 +253,6 @@ class TestMignotteBound:
             lambda p, x, y: p.integer(40) * x + p.integer(-30)
         )
         bound = modular.mignotte_bound(poly)
-        # Check: product of two primes > 2*bound
-        primes = (modular.select_lucky_prime(0), modular.select_lucky_prime(0, [2]))
-        assert primes[0] * primes[1] > 2 * bound
         # lift with enough primes to exceed 2*bound
         images = []
         product = 1

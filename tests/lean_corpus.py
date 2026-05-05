@@ -20,23 +20,19 @@ import alkahest
 
 IDENTITIES = [
     # (description, expr_builder)
-    ("add_zero", lambda pool: pool.add([pool.symbol("x"), pool.integer(0)])),
-    ("mul_one", lambda pool: pool.mul([pool.symbol("x"), pool.integer(1)])),
-    ("mul_zero", lambda pool: pool.mul([pool.symbol("x"), pool.integer(0)])),
-    ("const_fold_2_plus_3", lambda pool: pool.add([pool.integer(2), pool.integer(3)])),
-    ("const_fold_3_times_4", lambda pool: pool.mul([pool.integer(3), pool.integer(4)])),
-    ("pow_one", lambda pool: pool.pow(pool.symbol("x"), pool.integer(1))),
+    ("add_zero", lambda pool: pool.symbol("x") + pool.integer(0)),
+    ("mul_one", lambda pool: pool.symbol("x") * pool.integer(1)),
+    ("mul_zero", lambda pool: pool.symbol("x") * pool.integer(0)),
+    ("const_fold_2_plus_3", lambda pool: pool.integer(2) + pool.integer(3)),
+    ("const_fold_3_times_4", lambda pool: pool.integer(3) * pool.integer(4)),
+    ("pow_one", lambda pool: pool.symbol("x") ** 1),
     (
         "sin_neg_x",
-        lambda pool: pool.func(
-            "sin", [pool.mul([pool.integer(-1), pool.symbol("x")])]
-        ),
+        lambda pool: pool.func("sin", [pool.integer(-1) * pool.symbol("x")]),
     ),
     (
         "cos_neg_x",
-        lambda pool: pool.func(
-            "cos", [pool.mul([pool.integer(-1), pool.symbol("x")])]
-        ),
+        lambda pool: pool.func("cos", [pool.integer(-1) * pool.symbol("x")]),
     ),
 ]
 

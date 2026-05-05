@@ -73,8 +73,19 @@ fn brew_prefix(formula: &str) -> Option<String> {
 }
 
 fn flint_version_string() -> Option<String> {
-    if let Some(v) = pkg_config_modversion(None) {
-        return Some(v);
+    // Linux: read the system `flint.pc` first.  GitHub Actions often sets
+    // `PKG_CONFIG_PATH` to Python’s pkgconfig only; `pkg-config --modversion`
+    // can then fail or miss the distro FLINT, and we would fall back to the
+    // FLINT 2 `fmpz_mat` layout while linking FLINT 3 — SIGSEGV in matrix code.
+    if cfg!(target_os = "linux") {
+        for pc in [
+            "/usr/lib/x86_64-linux-gnu/pkgconfig/flint.pc",
+            "/usr/lib/pkgconfig/flint.pc",
+        ] {
+            if let Some(v) = read_version_from_pc(pc) {
+                return Some(v);
+            }
+        }
     }
 
     if cfg!(target_os = "macos") {
@@ -90,28 +101,17 @@ fn flint_version_string() -> Option<String> {
         }
     }
 
+    if let Some(v) = pkg_config_modversion(None) {
+        return Some(v);
+    }
+
     let msys = std::env::var("MSYS2_PREFIX").unwrap_or_else(|_| "C:/msys64/mingw64".to_string());
     let pcp = format!("{msys}/lib/pkgconfig");
     if let Some(v) = pkg_config_modversion(Some(&pcp)) {
         return Some(v);
     }
     let pc_path = format!("{msys}/lib/pkgconfig/flint.pc");
-    if let Some(v) = read_version_from_pc(&pc_path) {
-        return Some(v);
-    }
-
-    if cfg!(target_os = "linux") {
-        for pc in [
-            "/usr/lib/x86_64-linux-gnu/pkgconfig/flint.pc",
-            "/usr/lib/pkgconfig/flint.pc",
-        ] {
-            if let Some(v) = read_version_from_pc(pc) {
-                return Some(v);
-            }
-        }
-    }
-
-    None
+    read_version_from_pc(&pc_path)
 }
 
 fn flint_major_at_least_3(version: &str) -> bool {
