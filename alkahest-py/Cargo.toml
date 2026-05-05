@@ -21,5 +21,6 @@ cuda = ["alkahest-core/cuda"]
 alkahest-core = { path = "../alkahest-core" }
 pyo3.workspace = true
 numpy = { version = "0.21", optional = true }
+rug = { version = "1", features = ["integer", "rational"] }
 
 [dev-dependencies]

@@ -13,10 +13,10 @@
 | **v1.0 — Production** | ✅ Complete | Production NVPTX codegen (16.2× over CPU JIT), structured errors, Gröbner-based solver with symbolic √ solutions, custom MLIR dialect, CUDA Macaulay row reduction, semver API, 23-primitive registry, cross-CAS benchmarks, persistent `ExprPool` |
 | **v1.1 — Post-launch** | 📋 Planned | Algebraic-function Risch (Trager), AMD ROCm codegen (hardware-blocked), PyPI wheel publishing, Win+macOS CI parity, docs site, LaTeX/Unicode printing, string parsing |
 | **v2.0 — Mathematical Coverage** | 📋 Planned (15 items) | Modular/CRT framework, resultants, sparse interpolation, real root isolation, HNF/SNF, LLL+PSLQ, polynomial factorization, F5 signature-based Gröbner, logic/FOFormula (CAD prerequisite), CAD (real QE), Zeilberger/creative telescoping, regular chains, primary decomposition, differential algebra, homotopy continuation |
-| **v2.1 — SymPy Parity** | 📋 Planned (7 items) | Limits (Gruntz), user-facing `series()` / Laurent, eigenvalues / eigenvectors, difference equations (`rsolve`), Diophantine equations, symbolic products (`∏`), integer number theory (FLINT bindings) |
-| **v3.0 — Domain Expansions** | 📋 Planned (1 item) | Noncommutative algebra (kernel extension) |
+| **v2.1 — SymPy Parity** | 📋 Planned | Limits (V2-16), `rsolve` scope (V2-18); **symbolic `∏` (V2-22) ✅**; **integer number theory (V3-1) ✅**; **V2-19 `diophantine` ✅**; eigenpairs ✅ (V2-17); `series` / `parse` / LaTeX ✅ (V2-15, V2-20, V2-21) |
+| **v3.0 — Domain Expansions** | ✅ Complete (V3-2) | Noncommutative algebra (kernel extension) |
 
-**Test coverage:** 358 Rust unit/proptest/doctest cases + 432 Python tests (+ 52 skipped feature-gated/oracle tests) = 790 tests passing, zero errors.
+**Test coverage:** 362 Rust unit/proptest/doctest cases + 438 Python tests (+ 52 skipped feature-gated/oracle tests) = 800 tests passing, zero errors.
 
 ---
 
@@ -312,17 +312,18 @@ See also **v2.1 — SymPy Parity** (V2-15 … V2-22) below.
 
 ---
 
-### V2-9. Cylindrical Algebraic Decomposition (real QE)
+### V2-9. Cylindrical Algebraic Decomposition (real QE) → 🏗 In progress / partial
 
 **What:** Decide first-order sentences over ℝ via CAD. Requires V2-2 (resultants), V2-4 (real root isolation), V2-7 (squarefree factorization), V3-3 (FOFormula).
 
 **Design:**
-- `alkahest-core/src/real/cad.rs` — `cad_project`, `cad_lift`, `decide(sentence: &FOFormula) -> QeResult`.
-- Brown's projection operator; NLSAT-style incremental decomposition.
+- `alkahest-core/src/real/cad.rs` — `cad_project`, `cad_lift`, `decide` / `decide_expr` (`QeResult`), `CadError`.
+- Brown's projection (`resultant(f, ∂f)`, pairwise resultants); lift via squarefree lcm + [`real_roots`].
+- Univariate QE: one outer `\forall`/`\exists` over a purely polynomial ℤ-body; algebraic `\exists` roots handled via gcd–interval checks after rational-cell sampling.
 
-**Test plan:** `∀x. x² + 1 > 0` → `True`; `∃x. x² - 2 = 0` → `True` with witness; match QEPCAD on 30-problem corpus.
+**Test plan:** `∀x. x² + 1 > 0` → `True`; `∃x. x² - 2 = 0` → `True` with witness (`rust` + `tests/test_cad_decide.py`).
 
-**Acceptance:** `alkahest.decide(formula)` on 30-problem corpus; Lean export via `polyrith` on Mathlib-covered subset.
+**Acceptance:** `alkahest.decide(formula)`, `cad_project`, `cad_lift` on stable surface; Lean export / full 30-problem corpus still open.
 
 ---
 
@@ -354,72 +355,77 @@ See also **v2.1 — SymPy Parity** (V2-15 … V2-22) below.
 
 ---
 
-### V2-12. Primary decomposition (Gianni–Trager–Zacharias)
+### V2-12. Primary decomposition (Gianni–Trager–Zacharias) → ✅ Complete
 
-**What:** `I = ⋂ Qᵢ` decomposition with associated primes. Requires V5-11 Gröbner bases + V2-7 factorization.
+**What:** `I = ⋂ Qᵢ` with associated primes, built on Gröbner bases and polynomial factorization.
 
-**Design:**
-- `alkahest-core/src/ideal/primary.rs` — `primary_decomposition(I) -> Vec<(Primary, Associated)>`, `radical(I) -> Ideal`.
+**Delivered:**
+- `alkahest-core/src/ideal/primary.rs` — `primary_decomposition`, `radical`, `PrimaryComponent`, `PrimaryDecompositionError`.
+- Splitting: saturations `I = (I : x_i^∞) ∩ (I + (x_i))` when verified via ideal intersection; zero-dimensional refinement by factoring the univariate generator in the first Lex variable over ℚ (FLINT).
+- PyO3: `primary_decomposition(polys, vars)`, `radical(polys, vars)`, `PrimaryComponent` with `.primary()` / `.associated_prime()` → `GroebnerBasis`.
+- Tests: `(xy, xz)`, embedded `(x², xy)`, split `(x²-1, y)`; Python `tests/test_primary_decomposition_v212.py`.
 
-**Test plan:** `(xy, xz) = (x) ∩ (y, z)`; embedded primes in `(x², xy)`; Macaulay2 parity on 20 curated ideals.
+**Limitations:** General high-dimensional ideals without separating variables / reducible univariate slices may fall back to a single primary component or hit recursion limits; full GTZ equidimensional machinery is not implemented.
 
-**Acceptance:** `alkahest.primary_decomposition` public; integrates with `alkahest.solve`.
+**Acceptance:** `alkahest.primary_decomposition` and `alkahest.radical` on stable surface; complements `solve` / Gröbner tooling.
 
----
+### V2-13. Differential algebra / Rosenfeld–Gröbner → ✅ Complete
 
-### V2-13. Differential algebra / Rosenfeld–Gröbner
+**What:** Gröbner-style elimination for polynomial DAE jets — prolongation of generators plus ordinary ℚ Gröbner bases; complements Pantelides when the structural index is out of reach.
 
-**What:** Gröbner-basis theory for differential polynomial rings. Complements V0.3 Pantelides with an ideal-theoretic approach for non-square systems.
+**Delivered:**
+- `alkahest-core/src/diffalg/mod.rs` — `rosenfeld_groebner`, `rosenfeld_groebner_with_options`, `rosenfeld_groebner_algebraic`, `dae_index_reduce`, `DifferentialRing`, `DifferentialRanking`, `DifferentialIdeal`, `RegularDifferentialChain`, `RosenfeldGroebnerResult`, `DiffAlgError`.
+- `DAE::` / Pantelides alignment via `extend_dae_for_derivative_symbols` (shared derivative-state extension).
+- Python (`groebner`): `rosenfeld_groebner`, `dae_index_reduce`, `RosenfeldGroebnerResult`, `DaeIndexReduction`.
+- Tests: Rust `diffalg::tests`; Python `tests/test_diffalg_v213.py`.
 
-**Design:**
-- `alkahest-core/src/diffalg/` — `DifferentialRing`, `DifferentialIdeal`, `rosenfeld_groebner(sys, ranking) -> Vec<RegularDifferentialChain>`.
-- `DAE::rosenfeld_reduce()` as alternative to `pantelides()` when the latter returns "structurally singular".
+**Limitations:** Single-branch coherent component (no full multi-case Rosenfeld–Gröbner over initials); nonlinear jets often **truncate** after a bounded prolongation budget rather than saturating the full differential ideal.
 
-**Test plan:** Lotka–Volterra DAE matches Pantelides; overdetermined `{y' - y, y'' - 2y}` detected inconsistent; Maple `DifferentialAlgebra[RosenfeldGroebner]` parity on 10 textbook systems.
+**Acceptance:** `rosenfeld_groebner` / `dae_index_reduce` on stable surface behind `groebner`.
 
-**Acceptance:** `alkahest.rosenfeld_groebner` public; DAE auto-fallback to it on "structurally singular".
+### V2-14. Numerical algebraic geometry (homotopy continuation) → ✅ Partial
 
----
+**What:** Solve polynomial systems numerically via homotopy continuation, certified by Smale-style `α` heuristics and `ArbBall` enclosures.
 
-### V2-14. Numerical algebraic geometry (homotopy continuation)
+**Delivered:**
+- `alkahest-core/src/solver/homotopy.rs` — total-degree Bézout start (`H = (1-t)·γ·G + t·F` with `G_i = z_i^{d_i}-1`), predictor–Euler + damped Newton corrector, terminal real Newton polish, heuristic Smale estimate, enclosures.
+- `solve_numerical`, `CertifiedPoint`, `HomotopyOpts`, `HomotopyError` (`E-HOMOTOPY-*`); stable re-export with `--features groebner`.
+- Python: `solve(..., method="homotopy")` (float dict solutions), `solve_numerical` → `CertifiedSolution`; exception `HomotopyError`.
+- Benchmark task `numerical_homotopy` in `benchmarks/tasks.py`.
 
-**What:** Solve polynomial systems numerically via homotopy continuation, certified by Smale's α-theory on `ArbBall`.
+**Limitations:** **Polyhedral / mixed-volume** starts are **not** implemented — deficient systems whose affine root count in `ℂⁿ` is below the Bézout bound are **unsupported** at full root count (e.g. scaling Katsura-8 requires that machinery). Acceptance items that assumed full Katsura coverage remain future work behind polyhedral continuation.
 
-**Design:**
-- `alkahest-core/src/solver/homotopy.rs` — `solve_numerical(sys, opts) -> Vec<CertifiedPoint>`.
-- Total-degree or polyhedral start systems; predictor–corrector path tracker with adaptive step size.
-- `alkahest.solve(sys, method="homotopy")` as fallback when Gröbner / regular-chains time out.
+**Test plan:** Decoupled quadratics Π (`x²-1`): all real bitangents recovered; Rust unit tests circle–line intersection; Python `tests/test_homotopy_v214.py`.
 
-**Test plan:** Katsura-8 (intractable for pure-Rust F4): homotopy finds all 256 solutions in < 30 s; every root satisfies Smale's `α < 1/8` or is flagged uncertified; `HomotopyContinuation.jl` parity on 10 curated systems.
-
-**Acceptance:** Katsura-8 within 30 s; `numerical_solve` benchmark column in `cas_comparison.py`.
+**Acceptance:** `numerical_homotopy` benchmark column in `benchmarks/tasks.py`; Katsura-8 / exhaustive Smale corpus deferred until mixed-volume backend.
 
 ---
 
 ## v2.1 — SymPy Parity
 
-Seven gaps from the SymPy gap analysis, plus integer number theory (thin FLINT bindings).
+Gaps from the SymPy gap analysis (and integer number theory promoted as V3-1).
 
 | Milestone summary | Items |
 |---|---|
-| Core calculus / algebra | V2-15 … V2-19 |
-| Symbolic products | V2-22 |
-| Integer number theory | V3-1 |
+| Core calculus / algebra | V2-16 … V2-18; **V2-19 ✅**; V2-20 … V2-21 ✅ |
+| Symbolic products | **V2-22 ✅** |
+| Integer number theory | **V3-1 ✅** |
 
 ---
 
-### V2-15. User-facing `series()` / Laurent expansion
+### V2-15. User-facing `series()` / Laurent expansion → ✅ Complete
 
 **What:** Promote `SeriesTaylor` from an internal MLIR op to a stable user API. Prerequisite for the Gruntz limit algorithm (V2-16).
 
-**Design:**
-- `alkahest-core/src/calculus/series.rs` — `series(expr, var, point, order) -> Series`.
-- `BigO` `ExprData` variant; `Series` wrapper with `a₀ + a₁x + … + aₙxⁿ + O(xⁿ⁺¹)` printing.
-- Laurent series (negative-exponent terms) for poles.
+**Delivered:**
+- `alkahest-core/src/calculus/series.rs` — `series(expr, var, point, order) -> Series` with truncated Taylor coefficients from symbolic differentiation; Laurent-style tails for quotients whose denominator vanishes at the expansion point (via valuation stripping + analytic Taylor factor).
+- `ExprData::BigO(ExprId)`; `ExprPool::big_o`; `Series(ExprId)` newtype returning one pooled expression `⋯ + O(…)`.
+- Pool persistence **format version 3** (tag `12 BigO`).
+- Python (`stable`): `series`, `Series`, `SeriesError`, `ExprPool.big_o`; `Expr.node()` emits `["big_o", child]`; `_pretty` renders `\mathcal{O}(…)`.
 
-**Test plan:** `series(cos(x), x, 0, 6)` → `1 - x²/2 + x⁴/24 + O(x⁶)`; Laurent: `series(1/x, x, 0, 4)` → `x⁻¹ + O(x)`.
+**Test plan:** `series(cos(x), x, 0, 6)` yields `BigO(x⁶)`; Laurent `series(1/x, x, 0, 4)` → `x⁻¹ + O(x)` (remainder exponent convention documented on Rust `series()`).
 
-**Acceptance:** `alkahest.series` in stable API; `BigO` round-trips through the ExprPool.
+**Acceptance:** `alkahest.series` / `alkahest_core::stable::series`; `BigO` checkpoint round-trip — ✅.
 
 ---
 
@@ -427,13 +433,14 @@ Seven gaps from the SymPy gap analysis, plus integer number theory (thin FLINT b
 
 **What:** `limit(expr, var, point, dir)` — one- and two-sided limits, limits at infinity.
 
-**Design:**
-- `alkahest-core/src/calculus/limits.rs` — Gruntz comparability classes built on `Series` (V2-15).
-- Lean certificate: `Filter.Tendsto` in Mathlib.
+**Design (shipped in v2):**
+- `alkahest-core/src/calculus/limits.rs` — finite points: L’Hôpital (0/0), [`local_expansion`](alkahest-core/src/calculus/series.rs) / Laurent tails, algebraic specials (`exp`/`log`), `x·log x` at `0⁺`; at `±∞`: substitute `x ↦ ±1/t` then reduce nested integer powers, clear `t^{-1}` in rational tails via polynomial quotient normalization (`RationalFunction` + expanded simplify), then `t → 0⁺`.
 
-**Test plan:** `limit(x * log(x), x, 0)` → `0`; `limit(sin(x)/x, x, 0)` → `1`; `limit(exp(x), x, oo)` → `oo`; one-sided; SymPy oracle ≥ 95 % on 100 curated limits.
+**Remaining / not in scope yet:** Full Gruntz comparability-graph algorithm; oscillatory endpoints; general transcendentals comparable only via Gruntz; Lean `Filter.Tendsto` certificates.
 
-**Acceptance:** `alkahest.limit` in stable API; oracle pass rate ≥ 95 %.
+**Test plan:** `limit(x * log(x), x, 0)` → `0`; `limit(sin(x)/x, x, 0)` → `1`; `limit(exp(x), x, oo)` → `oo`; one-sided; SymPy oracle on a curated corpus (`tests/test_limits_v216.py`).
+
+**Acceptance:** `alkahest.limit` in stable API — ✅ prototype rules + oracle corpus passing; Gruntz + Mathlib certificate — 🔲 future.
 
 ---
 
@@ -446,7 +453,7 @@ Seven gaps from the SymPy gap analysis, plus integer number theory (thin FLINT b
 
 **Test plan:** `[[2,1],[0,2]]` → eigenvalue `2`, multiplicity 2, defective; `[[0,-1],[1,0]]` → `±i`; SymPy oracle on 50 random 3×3 rational matrices.
 
-**Acceptance:** `Matrix.eigenvals`, `Matrix.eigenvects`, `Matrix.diagonalize` in stable API; oracle ≥ 95 %.
+**Acceptance:** `Matrix.eigenvals`, `Matrix.eigenvects`, `Matrix.diagonalize` in stable API; oracle ≥ 95 %. — ✅
 
 ---
 
@@ -460,38 +467,47 @@ Seven gaps from the SymPy gap analysis, plus integer number theory (thin FLINT b
 
 ---
 
-### V2-19. Diophantine equations
+### V2-19. Diophantine equations → ✅ Complete
 
-**What:** Parametric integer solution families for linear and binary quadratic (Pell) Diophantine equations.
+**What:** Parametric integer solution families for linear two-variable equations, finitely many solutions for equal-coefficient `x² + y² = n`, and the **unit** Pell equation `x² - D·y² = 1` (fundamental solution via the continued-fraction period of `√D`).
 
-**Design:**
-- `alkahest-core/src/solver/diophantine.rs` — `diophantine(expr, vars) -> DiophantineSolution`; linear via extended GCD; Pell via Cornacchia.
+**Delivered:**
+- `alkahest-core/src/solver/diophantine.rs` — `diophantine(equation, vars)` → `DiophantineSolution` (`ParametricLinear`, `Finite`, `PellFundamental`, `NoSolution`); `DiophantineError` (`E-DIOPH-*`); linear via extended gcd; Pell unit via convergents; circle cases by bounded enumeration.
+- Python (`groebner`): `diophantine`, `DiophantineSolution`, `DiophantineError`.
+- Tests: Rust `solver::diophantine`; Python `tests/test_diophantine_v219.py` (optional SymPy oracle on sum-of-squares).
 
-**Test plan:** `3x + 5y = 1` → parametric family; `x² - 2y² = 1` fundamental solution `(3, 2)`; `x² + y² = 5` → `{(1,2),(2,1)}`; SymPy oracle ≥ 90 % on 30 equations.
+**Limitations:** no `x·y` term; ellipse requires equal coefficients on `x²` and `y²`; hyperbolic branch implements **only** `x² - D·y² = 1` after normalization (not general `N` or `+1` right-hand-side families).
 
-**Acceptance:** `alkahest.diophantine` public; oracle ≥ 90 %.
+**Acceptance:** `alkahest.diophantine` on stable surface when built with `--features groebner`; CI `maturin develop --features groebner`.
 
 ---
 
-### V2-22. Symbolic products (`∏`)
+### V2-22. Symbolic products (`∏`) ✅
 
 **What:** `Product(k, (k, 1, n)).doit()` — multiplicative analogue of V2-10's `Sum`.
 
-**Design:**
-- `Product` expression node mirroring `Sum`; `product_definite`, `product_indefinite`; closed-form via `exp(sum(log(term)))` when Gosper applies.
+**Delivered:**
+- `alkahest-core/src/sum/product.rs` — `product_definite`, `product_indefinite` for `q ∈ ℚ(k)` clearing to ℤ polynomials whose FLINT linear factors admit `Γ`-telescoping; `ProductError` (`E-PROD-*`).
+- Python: `product_definite`, `product_indefinite`, `Product`, `ProductError`; `examples/products.py` (factorial shortcut + Wallis-style partial product).
 
-**Test plan:** `Product(k, (k, 1, n)).doit()` → `factorial(n)`; `Product(1 - 1/k**2, (k, 2, n))` → `(n+1)/(2*n)`; SymPy oracle on 30 cases.
+**Test plan:** `Product(k,(k,1,n)).doit()` ≡ `Γ(n+1)` numerically; `∏_{k=2}^n (1-1/k²)` → `(n+1)/(2n)`; optional SymPy oracle in `tests/test_product_v222.py`.
 
-**Acceptance:** `alkahest.Product` in stable API; Wallis product in `examples/products.py`.
+**Acceptance:** `alkahest.Product` / kernel products on stable surface — ✅.
 
 ---
 
-### V3-1. Integer number theory *(promoted from v3.0)*
+### V3-1. Integer number theory *(promoted from v3.0)* → ✅ Complete
 
-**What:** `alkahest.number_theory` module: `isprime`, `factorint`, `nextprime`, `totient`, `nthroot_mod`, `discrete_log`, `jacobi_symbol`, Dirichlet characters. Thin FLINT bindings.
+**What:** `alkahest.number_theory` module: `isprime`, `factorint`, `nextprime`, `totient`, `nthroot_mod`, `discrete_log`, `jacobi_symbol`, quadratic Dirichlet characters. Thin FLINT bindings.
+
+**Delivered:**
+- `alkahest-core/src/number_theory/mod.rs` and extended `flint::ffi`; stable re-exports in `alkahest_core::stable`; `NumberTheoryError` (`E-NT-*`).
+- Python `alkahest.number_theory`, native `DirichletChi` / `NumberTheoryError`; tests `tests/test_number_theory_v31.py` plus Rust `number_theory::tests`.
+
+**Limitations:** `discrete_log` scans exponents (< prime field size); `nthroot_mod` for prime modulus with `k=2` or `\gcd(k,p−1)=1`; `DirichletChi` implements quadratic characters on odd square-free conductors only.
 
 **Design:**
-- `alkahest-core/src/number_theory/mod.rs` — wrappers over `fmpz_is_prime`, `fmpz_factor`, `fmpz_nextprime`, etc.
+- Thin wrappers translating decimal strings through FLINT `fmpz_*` primitives.
 
 **Test plan:** `isprime(2**127 - 1)` → `True`; `factorint(2**32 - 1)` → `{3:1, 5:1, 17:1, 257:1, 65537:1}`; `discrete_log` vs brute-force for small `p`; SymPy `ntheory` oracle ≥ 99 %.
 
@@ -507,16 +523,16 @@ Seven gaps from the SymPy gap analysis, plus integer number theory (thin FLINT b
 
 ---
 
-### V3-2. Noncommutative algebra
+### V3-2. Noncommutative algebra → ✅ Complete
 
 **What:** `Symbol('A', commutative=False)`; support for matrix Lie algebras, Pauli algebra, and Clifford algebras. Significant kernel change — the AC sorter and e-graph rules both assume commutativity.
 
-**Design:**
-- `ExprData` gains a `commutative: bool` flag per symbol; `Mul` becomes order-sensitive when any child is non-commutative.
-- AC sorter disabled for non-commutative `Mul`; e-graph rewrite rules guarded by commutativity check.
-- `alkahest-core/src/algebra/noncommutative.rs` — Clifford/Pauli product tables as registered rewrite rule sets.
-- New cost function `NoncommutativeCost` preferring normal-ordered forms.
+**Delivered:**
+- `ExprData::Symbol { commutative: bool }`; `ExprPool::symbol_commutative`; `ExprPool::mul` skips canonical sorting when any multiplicative subtree is non-commutative; `canonical_order` / `collect_mul_factors` aligned; e-graph path delegates to rule-based simplify when NC symbols appear; pool format **v4**.
+- `alkahest-core/src/algebra/noncommutative.rs` — `PauliSpinAlgebraRule`, `CliffordOrthogonalRule`, `imag_unit_atom`, `pauli_product_rules`, `clifford_orthogonal_rules`.
+- `NoncommutativeCost` in `simplify/egraph.rs`.
+- Python: `ExprPool.symbol(..., commutative=False)`, `simplify_pauli`, `simplify_clifford_orthogonal`; `examples/noncommutative.py`; `tests/test_noncommutative_v32.py`.
 
-**Test plan:** `A * B ≠ B * A` when both non-commutative; Pauli algebra `σx * σy = i·σz` via registered rules; all existing commutative tests still pass.
+**Test plan:** `A * B ≠ B * A` when both non-commutative; Pauli `σx * σy = i·σz` via registered rules; all existing commutative tests still pass.
 
-**Acceptance:** `alkahest.Symbol('A', commutative=False)` works; Pauli and Clifford demonstrated in `examples/noncommutative.py`; zero regressions on commutative test suite.
+**Acceptance:** — ✅

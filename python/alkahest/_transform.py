@@ -79,9 +79,7 @@ class TracedFn:
         via the batch path (same as :func:`~alkahest.numpy_eval`).
         """
         if len(values) != len(self.symbols):
-            raise ValueError(
-                f"expected {len(self.symbols)} argument(s), got {len(values)}"
-            )
+            raise ValueError(f"expected {len(self.symbols)} argument(s), got {len(values)}")
         # Array-path: delegate to numpy_eval
         try:
             import numpy as np
@@ -138,9 +136,7 @@ class CompiledTracedFn:
     def __call__(self, *values):
         """Evaluate; routes to the batch path for array inputs."""
         if len(values) != len(self.symbols):
-            raise ValueError(
-                f"expected {len(self.symbols)} argument(s), got {len(values)}"
-            )
+            raise ValueError(f"expected {len(self.symbols)} argument(s), got {len(values)}")
         try:
             import numpy as np
 
@@ -188,9 +184,7 @@ class GradTracedFn:
     def __call__(self, *values) -> list:
         """Return the gradient as a list, one value per ``wrt`` variable."""
         if len(values) != len(self._traced.symbols):
-            raise ValueError(
-                f"expected {len(self._traced.symbols)} argument(s), got {len(values)}"
-            )
+            raise ValueError(f"expected {len(self._traced.symbols)} argument(s), got {len(values)}")
         try:
             import numpy as np
 
@@ -207,10 +201,7 @@ class GradTracedFn:
             pass
         from .alkahest import eval_expr  # noqa: PLC0415
 
-        env = {
-            sym: float(val)
-            for sym, val in zip(self._traced.symbols, values)
-        }
+        env = {sym: float(val) for sym, val in zip(self._traced.symbols, values)}
         return [eval_expr(g_expr, env) for g_expr in self._grad_exprs]
 
     def __repr__(self) -> str:
@@ -261,8 +252,7 @@ def trace(
 
         if len(sym_names) != len(params):
             raise ValueError(
-                f"trace: {len(sym_names)} names supplied but function has "
-                f"{len(params)} parameters"
+                f"trace: {len(sym_names)} names supplied but function has {len(params)} parameters"
             )
 
         syms = [pool.symbol(n, domain) for n in sym_names]
@@ -295,8 +285,7 @@ def grad(
     """
     if not isinstance(fn, TracedFn):
         raise TypeError(
-            f"grad() expects a TracedFn (decorated with @alkahest.trace), "
-            f"got {type(fn).__name__}"
+            f"grad() expects a TracedFn (decorated with @alkahest.trace), got {type(fn).__name__}"
         )
     return GradTracedFn(fn, list(wrt) if wrt is not None else None)
 
@@ -317,8 +306,7 @@ def jit(fn: TracedFn | Callable) -> CompiledTracedFn:
     """
     if not isinstance(fn, TracedFn):
         raise TypeError(
-            f"jit() expects a TracedFn (decorated with @alkahest.trace), "
-            f"got {type(fn).__name__}"
+            f"jit() expects a TracedFn (decorated with @alkahest.trace), got {type(fn).__name__}"
         )
     return CompiledTracedFn(fn)
 

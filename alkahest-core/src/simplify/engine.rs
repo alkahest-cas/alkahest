@@ -178,6 +178,21 @@ fn simplify_children(
                 .collect();
             (pool.predicate(kind, new_args), log)
         }
+        ExprData::Forall { var, body } => {
+            let rb = simplify_node(body, pool, rules);
+            log = log.merge(rb.log);
+            (pool.forall(var, rb.value), log)
+        }
+        ExprData::Exists { var, body } => {
+            let rb = simplify_node(body, pool, rules);
+            log = log.merge(rb.log);
+            (pool.exists(var, rb.value), log)
+        }
+        ExprData::BigO(arg) => {
+            let r = simplify_node(arg, pool, rules);
+            log = log.merge(r.log);
+            (pool.big_o(r.value), log)
+        }
         // Atoms have no children
         atom => (pool.intern(atom), log),
     }

@@ -223,7 +223,10 @@ fn latex_signed(id: ExprId, pool: &ExprPool) -> (i32, String) {
         ExprData::Rational(r) => {
             let num = r.0.numer();
             let den = r.0.denom();
-            let s = latex_frac(&num.to_string().trim_start_matches('-').to_string(), &den.to_string());
+            let s = latex_frac(
+                num.to_string().trim_start_matches('-'),
+                &den.to_string(),
+            );
             if *num < 0 {
                 (-1, s)
             } else {
@@ -256,8 +259,18 @@ fn latex_signed_mul(args: &[ExprId], pool: &ExprPool) -> (i32, String) {
         });
     }
 
-    let sign = if numer_i < 0 { numer_i = -numer_i; -1i32 } else { 1i32 };
-    let sign = if denom_i < 0 { denom_i = -denom_i; -sign } else { sign };
+    let sign = if numer_i < 0 {
+        numer_i = -numer_i;
+        -1i32
+    } else {
+        1i32
+    };
+    let sign = if denom_i < 0 {
+        denom_i = -denom_i;
+        -sign
+    } else {
+        sign
+    };
 
     let mut num_parts: Vec<String> = Vec::new();
     let mut den_parts: Vec<String> = Vec::new();
@@ -382,7 +395,11 @@ fn latex_func(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
         }
         "exp" => {
             let (inner, _) = latex_r(args[0], pool);
-            let exp_braced = if inner.len() == 1 { inner } else { format!("{{{inner}}}") };
+            let exp_braced = if inner.len() == 1 {
+                inner
+            } else {
+                format!("{{{inner}}}")
+            };
             format!(r"e^{exp_braced}")
         }
         _ => {
@@ -460,7 +477,7 @@ fn latex_r(id: ExprId, pool: &ExprPool) -> (String, i32) {
             let num = r.0.numer();
             let den = r.0.denom();
             let s = latex_frac(
-                &num.to_string().trim_start_matches('-').to_string(),
+                num.to_string().trim_start_matches('-'),
                 &den.to_string(),
             );
             if *num < 0 {
@@ -482,6 +499,20 @@ fn latex_r(id: ExprId, pool: &ExprPool) -> (String, i32) {
             (latex_piecewise(branches, *default, pool), PREC_ATOM)
         }
         ExprData::Predicate { kind, args } => (latex_predicate(kind, args, pool), PREC_ADD),
+        ExprData::Forall { var, body } => {
+            let (v, _) = latex_r(*var, pool);
+            let (b, _) = latex_r(*body, pool);
+            (format!(r"\forall {v} \, . \, {b}"), PREC_ATOM)
+        }
+        ExprData::Exists { var, body } => {
+            let (v, _) = latex_r(*var, pool);
+            let (b, _) = latex_r(*body, pool);
+            (format!(r"\exists {v} \, . \, {b}"), PREC_ATOM)
+        }
+        ExprData::BigO(arg) => {
+            let (a, _) = latex_r(*arg, pool);
+            (format!(r"\mathcal{{O}}\!\left({a}\right)"), PREC_ATOM)
+        }
     })
 }
 
@@ -550,8 +581,18 @@ fn unicode_signed_mul(args: &[ExprId], pool: &ExprPool) -> (i32, String) {
         });
     }
 
-    let sign = if numer_i < 0 { numer_i = -numer_i; -1i32 } else { 1i32 };
-    let sign = if denom_i < 0 { denom_i = -denom_i; -sign } else { sign };
+    let sign = if numer_i < 0 {
+        numer_i = -numer_i;
+        -1i32
+    } else {
+        1i32
+    };
+    let sign = if denom_i < 0 {
+        denom_i = -denom_i;
+        -sign
+    } else {
+        sign
+    };
 
     let mut num_parts: Vec<String> = Vec::new();
     let mut den_parts: Vec<String> = Vec::new();
@@ -767,5 +808,19 @@ fn unicode_r(id: ExprId, pool: &ExprPool) -> (String, i32) {
             (unicode_piecewise(branches, *default, pool), PREC_ATOM)
         }
         ExprData::Predicate { kind, args } => (unicode_predicate(kind, args, pool), PREC_ADD),
+        ExprData::Forall { var, body } => {
+            let (v, _) = unicode_r(*var, pool);
+            let (b, _) = unicode_r(*body, pool);
+            (format!("∀{v}.{b}"), PREC_ATOM)
+        }
+        ExprData::Exists { var, body } => {
+            let (v, _) = unicode_r(*var, pool);
+            let (b, _) = unicode_r(*body, pool);
+            (format!("∃{v}.{b}"), PREC_ATOM)
+        }
+        ExprData::BigO(arg) => {
+            let (a, _) = unicode_r(*arg, pool);
+            (format!("O({a})"), PREC_ATOM)
+        }
     })
 }

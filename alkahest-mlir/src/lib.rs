@@ -119,6 +119,9 @@ pub fn free_symbols(id: ExprId, pool: &ExprPool) -> Vec<ExprId> {
                 walk(base, pool, seen, out);
                 walk(exp, pool, seen, out);
             }
+            ExprData::BigO(inner) => {
+                walk(inner, pool, seen, out);
+            }
             _ => {}
         }
     }

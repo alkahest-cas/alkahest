@@ -82,6 +82,63 @@ impl FlintPoly {
         res
     }
 
+    /// Negate all coefficients: `-self`.
+    pub fn neg(&self) -> Self {
+        let mut res = Self::new();
+        unsafe { ffi::fmpz_poly_neg(&mut res.inner, &self.inner) };
+        res
+    }
+
+    /// Multiply every coefficient by the integer `c`.
+    pub fn scalar_mul_fmpz(&self, c: &super::integer::FlintInteger) -> Self {
+        let mut res = Self::new();
+        unsafe { ffi::fmpz_poly_scalar_mul_fmpz(&mut res.inner, &self.inner, c.inner_ptr()) };
+        res
+    }
+
+    /// Divide every coefficient by `c` (exact — caller ensures divisibility).
+    pub fn scalar_divexact_fmpz(&self, c: &super::integer::FlintInteger) -> Self {
+        let mut res = Self::new();
+        unsafe { ffi::fmpz_poly_scalar_divexact_fmpz(&mut res.inner, &self.inner, c.inner_ptr()) };
+        res
+    }
+
+    /// Leading coefficient as a `FlintInteger` (0 for the zero polynomial).
+    pub fn leading_coeff_fmpz(&self) -> super::integer::FlintInteger {
+        let deg = self.degree();
+        if deg < 0 {
+            return super::integer::FlintInteger::from_i64(0);
+        }
+        self.get_coeff_flint(deg as usize)
+    }
+
+    /// Compute the resultant of `self` and `other` as a `FlintInteger`.
+    ///
+    /// Returns the integer `res(self, other)`.  For the zero polynomial the
+    /// resultant is defined to be 0.
+    pub fn resultant(&self, other: &Self) -> super::integer::FlintInteger {
+        let mut res = super::integer::FlintInteger::new();
+        unsafe { ffi::fmpz_poly_resultant(res.inner_mut_ptr(), &self.inner, &other.inner) };
+        res
+    }
+
+    /// Pseudo-division: returns `(Q, R, d)` such that `lc(other)^d * self = Q * other + R`.
+    pub fn pseudo_divrem(&self, other: &Self) -> (Self, Self, u64) {
+        let mut q = Self::new();
+        let mut r = Self::new();
+        let mut d: ffi::ulong = 0;
+        unsafe {
+            ffi::fmpz_poly_pseudo_divrem(
+                &mut q.inner,
+                &mut r.inner,
+                &mut d,
+                &self.inner,
+                &other.inner,
+            )
+        };
+        (q, r, d)
+    }
+
     /// Set coefficient of x^n from a `FlintInteger` (supports values beyond i64 range).
     pub fn set_coeff_flint(&mut self, n: usize, c: &super::integer::FlintInteger) {
         unsafe { ffi::fmpz_poly_set_coeff_fmpz(&mut self.inner, n as ffi::slong, c.inner_ptr()) };
@@ -92,6 +149,82 @@ impl FlintPoly {
         let mut c = super::integer::FlintInteger::new();
         unsafe { ffi::fmpz_poly_get_coeff_fmpz(c.inner_mut_ptr(), &self.inner, n as ffi::slong) };
         c
+    }
+
+    /// Formal derivative: `d/dx [c₀ + c₁x + … + cₙxⁿ] = c₁ + 2c₂x + … + ncₙxⁿ⁻¹`.
+    pub fn derivative(&self) -> Self {
+        let deg = self.degree();
+        if deg <= 0 {
+            return Self::new();
+        }
+        let mut result = Self::new();
+        for i in 1..=deg as usize {
+            let fi = self.get_coeff_flint(i);
+            let c = fi.to_rug() * i as i64;
+            let fc = super::integer::FlintInteger::from_rug(&c);
+            result.set_coeff_flint(i - 1, &fc);
+        }
+        result
+    }
+
+    /// Construct a polynomial from a slice of [`rug::Integer`] coefficients
+    /// in ascending degree order.
+    pub fn from_rug_coefficients(coeffs: &[rug::Integer]) -> Self {
+        let mut p = Self::new();
+        for (i, c) in coeffs.iter().enumerate() {
+            let fi = super::integer::FlintInteger::from_rug(c);
+            p.set_coeff_flint(i, &fi);
+        }
+        p
+    }
+
+    /// Complete factorization over ℤ via FLINT (`fmpz_poly_factor` — modular
+    /// Berlekamp, Zassenhaus combination, van Hoeij LLL, etc.).
+    ///
+    /// Returns `(unit, factors)` with `self = unit · ∏ fᵢ^eᵢ`.  The zero
+    /// polynomial yields `Err(())`.
+    #[allow(clippy::result_unit_err)]
+    pub fn factor_over_z(
+        &self,
+    ) -> Result<(super::integer::FlintInteger, Vec<(FlintPoly, u32)>), ()> {
+        if self.is_zero() {
+            return Err(());
+        }
+        unsafe {
+            let mut fac = std::mem::MaybeUninit::<ffi::FmpzPolyFactorStruct>::uninit();
+            ffi::fmpz_poly_factor_init(fac.as_mut_ptr());
+            let mut fac = fac.assume_init();
+            ffi::fmpz_poly_factor(&mut fac, &self.inner);
+            let mut unit = super::integer::FlintInteger::new();
+            ffi::fmpz_poly_factor_get_fmpz(unit.inner_mut_ptr(), &fac);
+            let mut factors = Vec::with_capacity(fac.num as usize);
+            for i in 0..fac.num {
+                let mut fp = FlintPoly::new();
+                ffi::fmpz_poly_factor_get_fmpz_poly(&mut fp.inner, &fac, i);
+                let exp = *fac.exp.add(i as usize) as u32;
+                factors.push((fp, exp));
+            }
+            ffi::fmpz_poly_factor_clear(&mut fac);
+            Ok((unit, factors))
+        }
+    }
+
+    /// Swinnerton–Dyer polynomial `S_n` (irreducible over ℚ for prime `n`).
+    pub fn swinnerton_dyer(n: u64) -> Self {
+        let mut p = Self::new();
+        unsafe {
+            ffi::fmpz_poly_swinnerton_dyer(&mut p.inner, n as ffi::ulong);
+        }
+        p
+    }
+
+    /// Cyclotomic polynomial `Φ_n`.
+    pub fn cyclotomic(n: u64) -> Self {
+        let mut p = Self::new();
+        unsafe {
+            ffi::fmpz_poly_cyclotomic(&mut p.inner, n as ffi::ulong);
+        }
+        p
     }
 }
 

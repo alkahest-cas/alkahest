@@ -104,6 +104,8 @@ fn propagate(node: ExprId, adj: ExprId, adjoints: &mut HashMap<ExprId, ExprId>, 
         ExprData::Func { .. } => Op::UnknownFunc,
         // PA-9: Piecewise and Predicate are treated as atomic in reverse-mode AD.
         ExprData::Piecewise { .. } | ExprData::Predicate { .. } => Op::Atom,
+        ExprData::Forall { .. } | ExprData::Exists { .. } => Op::Atom,
+        ExprData::BigO(_) => Op::Atom,
     });
 
     match op {

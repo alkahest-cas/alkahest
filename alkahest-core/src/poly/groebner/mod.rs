@@ -1,4 +1,5 @@
-//! Gröbner basis computation — F4-style over ℚ.
+//! Gröbner basis computation over ℚ — Buchberger / F4-labelled parallel reduction
+//! ([`f4::compute_groebner_basis`]) and Faugère F5 ([`compute_groebner_basis_f5`]).
 //!
 //! # Quick start
 //!
@@ -22,6 +23,7 @@
 #[cfg(feature = "groebner-cuda")]
 pub mod cuda;
 pub mod f4;
+pub mod f5;
 pub mod ideal;
 pub mod monomial_order;
 pub mod reduce;
@@ -29,11 +31,13 @@ pub mod reduce;
 #[cfg(feature = "groebner-cuda")]
 pub use cuda::{compute_groebner_basis_gpu, GpuGroebnerError, MacaulayMatrix};
 pub use f4::compute_groebner_basis;
+pub use f5::compute_groebner_basis_f5;
 pub use ideal::GbPoly;
 pub use monomial_order::MonomialOrder;
 pub use reduce::reduce;
 
 /// A computed Gröbner basis.
+#[derive(Clone, Debug)]
 pub struct GroebnerBasis {
     generators: Vec<GbPoly>,
     order: MonomialOrder,
@@ -43,6 +47,15 @@ impl GroebnerBasis {
     /// Compute a Gröbner basis for the given generators under the given order.
     pub fn compute(gens: Vec<GbPoly>, order: MonomialOrder) -> Self {
         let generators = compute_groebner_basis(gens, order);
+        GroebnerBasis { generators, order }
+    }
+
+    /// Compute a Gröbner basis using Faugère's F5 signature-based algorithm (V2-8).
+    ///
+    /// Signatures use **lexicographic** order on the monomial part and then
+    /// original-generator index; polynomial leading terms still use `order`.
+    pub fn compute_f5(gens: Vec<GbPoly>, order: MonomialOrder) -> Self {
+        let generators = compute_groebner_basis_f5(gens, order);
         GroebnerBasis { generators, order }
     }
 

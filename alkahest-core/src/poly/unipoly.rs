@@ -1,6 +1,7 @@
 use super::error::ConversionError;
 use crate::flint::{integer::FlintInteger, FlintPoly};
 use crate::kernel::{ExprData, ExprId, ExprPool};
+use rug::{Integer, Rational};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::{Add, Mul, Sub};
@@ -10,7 +11,10 @@ use std::ops::{Add, Mul, Sub};
 // Maps degree → integer coefficient.  Zero entries are always removed.
 // ---------------------------------------------------------------------------
 
-type CoeffMap = BTreeMap<u32, rug::Integer>;
+type CoeffMap = BTreeMap<u32, Integer>;
+
+/// Coefficient map for parsing univariate polynomials with ℚ coefficients.
+type CoeffRatMap = BTreeMap<u32, Rational>;
 
 fn coeffmap_add(mut a: CoeffMap, b: CoeffMap) -> CoeffMap {
     for (deg, coeff) in b {
@@ -67,6 +71,149 @@ fn coeffmap_to_flintpoly(map: &CoeffMap) -> FlintPoly {
         poly.set_coeff_flint(deg as usize, &fi);
     }
     poly
+}
+
+fn coeffmap_rat_add(mut a: CoeffRatMap, b: CoeffRatMap) -> CoeffRatMap {
+    for (deg, coeff) in b {
+        let entry = a.entry(deg).or_insert_with(|| Rational::from(0));
+        *entry += coeff;
+        if *entry == 0 {
+            a.remove(&deg);
+        }
+    }
+    a
+}
+
+fn coeffmap_rat_mul(a: &CoeffRatMap, b: &CoeffRatMap) -> CoeffRatMap {
+    let mut result = CoeffRatMap::new();
+    for (&da, ca) in a {
+        for (&db, cb) in b {
+            let prod = ca.clone() * cb.clone();
+            if prod == 0 {
+                continue;
+            }
+            let entry = result.entry(da + db).or_insert_with(|| Rational::from(0));
+            *entry += prod;
+            if *entry == 0 {
+                result.remove(&(da + db));
+            }
+        }
+    }
+    result
+}
+
+fn coeffmap_rat_pow(base: &CoeffRatMap, n: u32) -> CoeffRatMap {
+    if n == 0 {
+        let mut one = CoeffRatMap::new();
+        one.insert(0, Rational::from(1));
+        return one;
+    }
+    if n == 1 {
+        return base.clone();
+    }
+    let half = coeffmap_rat_pow(base, n / 2);
+    let mut result = coeffmap_rat_mul(&half, &half);
+    if n % 2 == 1 {
+        result = coeffmap_rat_mul(&result, base);
+    }
+    result
+}
+
+/// Scale each ℚ coefficient so all become integers after multiplying by `lcm`; returns ℤ coeff map.
+fn rat_coeffmap_to_integer(map: &CoeffRatMap) -> Result<CoeffMap, ConversionError> {
+    let mut den_lcm = Integer::from(1);
+    for r in map.values() {
+        if r == &Rational::from(0) {
+            continue;
+        }
+        den_lcm = den_lcm.lcm(&r.denom().clone());
+    }
+    let mut out = CoeffMap::new();
+    let lcm_rat = Rational::from(&den_lcm);
+    for (deg, r) in map {
+        if r == &Rational::from(0) {
+            continue;
+        }
+        let scaled = r.clone() * lcm_rat.clone();
+        if *scaled.denom() != 1 {
+            return Err(ConversionError::NonIntegerCoefficient);
+        }
+        let n = scaled.numer().clone();
+        if n != 0 {
+            out.insert(*deg, n);
+        }
+    }
+    Ok(out)
+}
+
+fn expr_to_univariate_rat_coeffs(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Result<CoeffRatMap, ConversionError> {
+    match pool.get(expr) {
+        ExprData::Symbol { .. } if expr == var => {
+            let mut map = CoeffRatMap::new();
+            map.insert(1, Rational::from(1));
+            Ok(map)
+        }
+        ExprData::Symbol { name, .. } => Err(ConversionError::UnexpectedSymbol(name.clone())),
+        ExprData::Integer(n) => {
+            let mut map = CoeffRatMap::new();
+            if n.0 != 0 {
+                map.insert(0, Rational::from(&n.0));
+            }
+            Ok(map)
+        }
+        ExprData::Rational(br) => {
+            let mut map = CoeffRatMap::new();
+            let r = br.0.clone();
+            if r != 0 {
+                map.insert(0, r);
+            }
+            Ok(map)
+        }
+        ExprData::Float(_) => Err(ConversionError::NonIntegerCoefficient),
+        ExprData::Add(args) => {
+            let mut acc = CoeffRatMap::new();
+            for &arg in &args {
+                let sub = expr_to_univariate_rat_coeffs(arg, var, pool)?;
+                acc = coeffmap_rat_add(acc, sub);
+            }
+            Ok(acc)
+        }
+        ExprData::Mul(args) => {
+            let mut acc = CoeffRatMap::new();
+            acc.insert(0, Rational::from(1));
+            for &arg in &args {
+                let sub = expr_to_univariate_rat_coeffs(arg, var, pool)?;
+                acc = coeffmap_rat_mul(&acc, &sub);
+            }
+            Ok(acc)
+        }
+        ExprData::Pow { base, exp } => match pool.get(exp) {
+            ExprData::Integer(n) => {
+                if n.0 < 0 {
+                    return Err(ConversionError::NegativeExponent);
+                }
+                let n_u32 = n.0.to_u32().ok_or(ConversionError::ExponentTooLarge)?;
+                let base_coeffs = expr_to_univariate_rat_coeffs(base, var, pool)?;
+                Ok(coeffmap_rat_pow(&base_coeffs, n_u32))
+            }
+            _ => Err(ConversionError::NonConstantExponent),
+        },
+        ExprData::Func { name, .. } => Err(ConversionError::NonPolynomialFunction(name.clone())),
+        ExprData::Piecewise { .. } => Err(ConversionError::NonPolynomialFunction(
+            "Piecewise".to_string(),
+        )),
+        ExprData::Predicate { .. } => Err(ConversionError::NonPolynomialFunction(
+            "Predicate".to_string(),
+        )),
+        ExprData::Forall { .. } | ExprData::Exists { .. } => Err(
+            ConversionError::NonPolynomialFunction("quantifier".to_string()),
+        ),
+        ExprData::BigO(_) => Err(ConversionError::NonPolynomialFunction("BigO".to_string())),
+    }
 }
 
 fn expr_to_univariate_coeffs(
@@ -130,6 +277,10 @@ fn expr_to_univariate_coeffs(
         ExprData::Predicate { .. } => Err(ConversionError::NonPolynomialFunction(
             "Predicate".to_string(),
         )),
+        ExprData::Forall { .. } | ExprData::Exists { .. } => Err(
+            ConversionError::NonPolynomialFunction("quantifier".to_string()),
+        ),
+        ExprData::BigO(_) => Err(ConversionError::NonPolynomialFunction("BigO".to_string())),
     }
 }
 
@@ -180,6 +331,26 @@ impl UniPoly {
         Ok(UniPoly { var, coeffs })
     }
 
+    /// Like [`Self::from_symbolic`], but after integer parsing fails, interprets
+    /// coefficients as rationals, multiplies through by the least common denominator,
+    /// and returns the resulting primitive ℤ polynomial (same roots in ℚ as the input).
+    pub fn from_symbolic_clear_denoms(
+        expr: ExprId,
+        var: ExprId,
+        pool: &ExprPool,
+    ) -> Result<Self, ConversionError> {
+        match Self::from_symbolic(expr, var, pool) {
+            Ok(p) => Ok(p),
+            Err(ConversionError::NonIntegerCoefficient) => {
+                let map = expr_to_univariate_rat_coeffs(expr, var, pool)?;
+                let intmap = rat_coeffmap_to_integer(&map)?;
+                let coeffs = coeffmap_to_flintpoly(&intmap);
+                Ok(UniPoly { var, coeffs })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Coefficient vector in ascending degree order (constant term first).
     pub fn coefficients(&self) -> Vec<rug::Integer> {
         (0..self.coeffs.length())
@@ -218,6 +389,71 @@ impl UniPoly {
             var: self.var,
             coeffs: self.coeffs.gcd(&other.coeffs),
         })
+    }
+
+    /// Formal derivative with respect to the tracked degree variable ([`UniPoly::var`]).
+    pub fn derivative(&self) -> Self {
+        UniPoly {
+            var: self.var,
+            coeffs: self.coeffs.derivative(),
+        }
+    }
+
+    /// Squarefree kernel: divides out `gcd(p, p')` repeatedly until trivial.
+    /// Constant and zero polynomials return a clone unchanged.
+    pub fn squarefree_part(&self) -> Self {
+        if self.is_zero() || self.degree() <= 0 {
+            return self.clone();
+        }
+        let mut p = self.clone();
+        loop {
+            let d = p.derivative();
+            if d.is_zero() {
+                break;
+            }
+            let Some(g) = p.gcd(&d) else {
+                break;
+            };
+            if g.degree() <= 0 {
+                break;
+            }
+            p = UniPoly {
+                var: p.var,
+                coeffs: p.coeffs.div_exact(&g.coeffs),
+            };
+        }
+        p
+    }
+
+    /// Multiply then divide by `\gcd(u, v)` (least common multiple over ℤ\[x\] up to a unit).
+    pub fn lcm_poly(&self, other: &Self) -> Self {
+        same_var(self, other);
+        let prod = self * other;
+        let g = self.gcd(other).unwrap();
+        UniPoly {
+            var: self.var,
+            coeffs: prod.coeffs.div_exact(&g.coeffs),
+        }
+    }
+
+    /// Evaluate at a rational point using Horner's method.
+    pub fn eval_rational(&self, x: &rug::Rational) -> rug::Rational {
+        let n = self.coeffs.length();
+        if n == 0 {
+            return rug::Rational::from(0);
+        }
+        let mut acc = rug::Rational::from((
+            self.coeffs.get_coeff_flint(n - 1).to_rug(),
+            rug::Integer::from(1),
+        ));
+        for idx in (0..n.saturating_sub(1)).rev() {
+            acc = acc * x.clone()
+                + rug::Rational::from((
+                    self.coeffs.get_coeff_flint(idx).to_rug(),
+                    rug::Integer::from(1),
+                ));
+        }
+        acc
     }
 }
 
@@ -381,6 +617,17 @@ mod tests {
             UniPoly::from_symbolic(expr, x, &p),
             Err(ConversionError::NegativeExponent)
         ));
+    }
+
+    #[test]
+    fn from_symbolic_clear_denoms_rational_linear() {
+        // λ/2 + 1  →  clears to λ + 2
+        let (p, x) = pool_and_var();
+        let half = p.rational(1, 2);
+        let term = p.mul(vec![half, x]);
+        let expr = p.add(vec![term, p.integer(1_i32)]);
+        let poly = UniPoly::from_symbolic_clear_denoms(expr, x, &p).unwrap();
+        assert_eq!(poly.coefficients_i64(), vec![2, 1]);
     }
 
     #[test]

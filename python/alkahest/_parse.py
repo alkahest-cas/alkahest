@@ -1,4 +1,5 @@
 """V2-21: Pratt recursive-descent expression parser."""
+
 from __future__ import annotations
 
 import re
@@ -19,9 +20,9 @@ _TK_EOF = "eof"
 # Binding powers (Pratt precedence)
 # ---------------------------------------------------------------------------
 
-_BP_ADD = 10    # +  -  (infix, left-associative)
-_BP_MUL = 20    # *  /  (infix, left-associative)
-_BP_POW = 30    # ^  ** (infix, right-associative — led calls expr(BP_POW - 1))
+_BP_ADD = 10  # +  -  (infix, left-associative)
+_BP_MUL = 20  # *  /  (infix, left-associative)
+_BP_POW = 30  # ^  ** (infix, right-associative — led calls expr(BP_POW - 1))
 _BP_UNARY = 25  # unary -/+  (between MUL and POW so that -x^2 = -(x^2))
 
 _INFIX_BP: dict[str, int] = {
@@ -37,14 +38,31 @@ _INFIX_BP: dict[str, int] = {
 # Known math functions (one or two arguments)
 # ---------------------------------------------------------------------------
 
-_FUNC_NAMES = frozenset({
-    "sin", "cos", "tan",
-    "sinh", "cosh", "tanh",
-    "asin", "acos", "atan", "atan2",
-    "exp", "log", "sqrt",
-    "abs", "sign", "floor", "ceil", "round",
-    "erf", "erfc", "gamma",
-})
+_FUNC_NAMES = frozenset(
+    {
+        "sin",
+        "cos",
+        "tan",
+        "sinh",
+        "cosh",
+        "tanh",
+        "asin",
+        "acos",
+        "atan",
+        "atan2",
+        "exp",
+        "log",
+        "sqrt",
+        "abs",
+        "sign",
+        "floor",
+        "ceil",
+        "round",
+        "erf",
+        "erfc",
+        "gamma",
+    }
+)
 
 # ---------------------------------------------------------------------------
 # Lexer
@@ -99,6 +117,7 @@ def _tokenize(source: str) -> list[_Token]:
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
+
 
 class _Parser:
     __slots__ = ("_source", "_pool", "_symbols", "_tokens", "_pos")
@@ -258,26 +277,26 @@ def _apply_func(name: str, args: list, offset: int):
     import alkahest as _ak
 
     _funcs = {
-        "sin":   _ak.sin,
-        "cos":   _ak.cos,
-        "tan":   _ak.tan,
-        "sinh":  _ak.sinh,
-        "cosh":  _ak.cosh,
-        "tanh":  _ak.tanh,
-        "asin":  _ak.asin,
-        "acos":  _ak.acos,
-        "atan":  _ak.atan,
+        "sin": _ak.sin,
+        "cos": _ak.cos,
+        "tan": _ak.tan,
+        "sinh": _ak.sinh,
+        "cosh": _ak.cosh,
+        "tanh": _ak.tanh,
+        "asin": _ak.asin,
+        "acos": _ak.acos,
+        "atan": _ak.atan,
         "atan2": _ak.atan2,
-        "exp":   _ak.exp,
-        "log":   _ak.log,
-        "sqrt":  _ak.sqrt,
-        "abs":   _ak.abs,
-        "sign":  _ak.sign,
+        "exp": _ak.exp,
+        "log": _ak.log,
+        "sqrt": _ak.sqrt,
+        "abs": _ak.abs,
+        "sign": _ak.sign,
         "floor": _ak.floor,
-        "ceil":  _ak.ceil,
+        "ceil": _ak.ceil,
         "round": _ak.round,
-        "erf":   _ak.erf,
-        "erfc":  _ak.erfc,
+        "erf": _ak.erf,
+        "erfc": _ak.erfc,
         "gamma": _ak.gamma,
     }
     fn = _funcs.get(name)
@@ -293,6 +312,7 @@ def _apply_func(name: str, args: list, offset: int):
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def parse(source: str, pool, symbols: dict[str, object] | None = None):
     """Parse a mathematical expression string into an :class:`~alkahest.Expr`.

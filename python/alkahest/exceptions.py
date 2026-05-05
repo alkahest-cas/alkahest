@@ -9,15 +9,29 @@ from pure-Python code.
 
 Canonical code ranges — authoritative source is ``alkahest_core::errors::codes::REGISTRY``:
 
-    E-POLY-001 … E-POLY-007    ConversionError
+    E-POLY-001 … E-POLY-010    ConversionError (001–007), FactorError (008–010)
     E-DIFF-001 … E-DIFF-004    DiffError  (003-004 = forward-mode variants)
     E-INT-001  … E-INT-002     IntegrationError
     E-MAT-001  … E-MAT-003     MatrixError
     E-ODE-001  … E-ODE-003     OdeError
     E-DAE-001  … E-DAE-003     DaeError
-    E-SOLVE-001 … E-SOLVE-003  SolverError  (polynomial system)
+    E-HOMOTOPY-002 … E-HOMOTOPY-004 HomotopyError (numerical continuation — V2-14)
     E-SOLVE-010 … E-SOLVE-011  SolverError  (GPU Gröbner)
     E-JIT-001   … E-JIT-003    JitError
+    E-LAT-001 … E-LAT-004      LatticeError
+    E-PSLQ-001 … E-PSLQ-003    PslqError
+    E-CAD-001                  CadError
+    E-ROOT-001 … E-ROOT-002    RealRootError (V2-4 VAS real root isolation)
+    E-RES-001 … E-RES-003      ResultantError (V2-2)
+    E-INTERP-001 … E-INTERP-004 SparseInterpError (V2-3)
+    E-SUM-001 … E-SUM-003      SumError
+    E-PROD-001 … E-PROD-004    ProductError (V2-22)
+    E-REC-001 … E-REC-002      LinearRecurrenceError
+    E-RSOLVE-001 … E-RSOLVE-005 RsolveError (V2-18 difference equations)
+    E-DIOPH-001 … E-DIOPH-004 DiophantineError (V2-19)
+    E-NT-001 … E-NT-005    NumberTheoryError (V3-1 integer number theory)
+    E-SERIES-001 … E-SERIES-002 SeriesError
+    E-LIMIT-001 … E-LIMIT-005 LimitError
     E-CUDA-001  … E-CUDA-006   CudaError
     E-IO-001    … E-IO-009     IoError  (formerly PoolPersistError / E-POOL-*)
     E-PARSE-*                  ParseError  (reserved; parser not yet integrated)
@@ -63,6 +77,18 @@ class ConversionError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code="E-POLY-001", remediation=remediation, span=span)
+
+
+class FactorError(AlkahestError):
+    """Polynomial factorization failed."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-POLY-008", remediation=remediation, span=span)
 
 
 class DomainError(AlkahestError):
@@ -113,6 +139,90 @@ class IntegrationError(AlkahestError):
         super().__init__(message, code="E-INT-001", remediation=remediation, span=span)
 
 
+class SeriesError(AlkahestError):
+    """Symbolic series expansion failed."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-SERIES-001", remediation=remediation, span=span)
+
+
+class LimitError(AlkahestError):
+    """Symbolic limit computation failed."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-LIMIT-005", remediation=remediation, span=span)
+
+
+class SumError(AlkahestError):
+    """Symbolic summation failed (not hypergeometric or not Gosper-summable)."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-SUM-001", remediation=remediation, span=span)
+
+
+class ProductError(AlkahestError):
+    """Symbolic discrete product failed (unsupported term or factorisation)."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-PROD-001", remediation=remediation, span=span)
+
+
+class LinearRecurrenceError(AlkahestError):
+    """Linear recurrence solving failed."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-REC-001", remediation=remediation, span=span)
+
+
+class RsolveError(AlkahestError):
+    """Difference equation / rsolve failed."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-RSOLVE-001", remediation=remediation, span=span)
+
+
+class DiophantineError(AlkahestError):
+    """Integer Diophantine solving failed (linear / quadratic patterns)."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-DIOPH-001", remediation=remediation, span=span)
+
+
 class MatrixError(AlkahestError):
     """Matrix operation failed (dimension mismatch, singular, etc.)."""
 
@@ -123,6 +233,90 @@ class MatrixError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code="E-MAT-001", remediation=remediation, span=span)
+
+
+class EigenError(AlkahestError):
+    """Eigen-decomposition failed (unsplit characteristic polynomial, defective matrix, etc.)."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-EIGEN-001", remediation=remediation, span=span)
+
+
+class LatticeError(AlkahestError):
+    """LLL lattice reduction failed (structure, Lovász parameter, or iteration limit)."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-LAT-001", remediation=remediation, span=span)
+
+
+class PslqError(AlkahestError):
+    """Integer-relation heuristic failed (input, coefficient bound, or lattice step)."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-PSLQ-001", remediation=remediation, span=span)
+
+
+class CadError(AlkahestError):
+    """Cylindrical algebraic decomposition / real QE failed."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-CAD-001", remediation=remediation, span=span)
+
+
+class RealRootError(AlkahestError):
+    """Real root isolation failed (conversion to univariate polynomial, etc.)."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-ROOT-001", remediation=remediation, span=span)
+
+
+class ResultantError(AlkahestError):
+    """Polynomial resultant or subresultant PRS computation failed."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-RES-001", remediation=remediation, span=span)
+
+
+class SparseInterpError(AlkahestError):
+    """Sparse modular polynomial interpolation failed."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-INTERP-001", remediation=remediation, span=span)
 
 
 class OdeError(AlkahestError):
@@ -195,6 +389,18 @@ class IoError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code="E-IO-001", remediation=remediation, span=span)
+
+
+class NumberTheoryError(AlkahestError):
+    """Integer number-theory primitive failed (parity, modulus, or unsolvable congruence)."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-NT-001", remediation=remediation, span=span)
 
 
 class ParseError(AlkahestError):

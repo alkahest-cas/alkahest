@@ -11,6 +11,19 @@ use crate::kernel::{ExprId, ExprPool};
 use crate::simplify::engine::simplify;
 use std::fmt;
 
+pub mod eigen;
+pub mod normal_form;
+mod smith;
+mod smith_poly;
+
+pub use eigen::{
+    characteristic_polynomial_lambda_minus_m, diagonalize, eigenvalues, eigenvectors, EigenError,
+};
+pub use normal_form::{
+    hermite_form, hermite_form_poly, smith_form, smith_form_poly, IntegerMatrix, NormalFormError,
+    PolyMatrixQ, RatUniPoly,
+};
+
 // ---------------------------------------------------------------------------
 // Matrix type
 // ---------------------------------------------------------------------------
@@ -327,6 +340,33 @@ impl Matrix {
     /// Return entries as a nested `Vec<Vec<ExprId>>`.
     pub fn to_nested(&self) -> Vec<Vec<ExprId>> {
         (0..self.rows).map(|r| self.row(r)).collect()
+    }
+
+    /// V2-17 — `det(λI − M)` as a pooled expression plus the fresh λ symbol used.
+    pub fn characteristic_polynomial_lambda_minus_m(
+        &self,
+        pool: &ExprPool,
+    ) -> Result<(ExprId, ExprId), EigenError> {
+        eigen::characteristic_polynomial_lambda_minus_m(self, pool)
+    }
+
+    /// V2-17 — Algebraic eigenvalues `(value, multiplicity)` for matrices whose characteristic
+    /// polynomial factors over ℚ into linear and quadratic terms.
+    pub fn eigenvalues(&self, pool: &ExprPool) -> Result<Vec<(ExprId, usize)>, EigenError> {
+        eigen::eigenvalues(self, pool)
+    }
+
+    /// V2-17 — Eigenvalue tuples `(λ, multiplicity, column eigenvectors)`.
+    pub fn eigenvectors(
+        &self,
+        pool: &ExprPool,
+    ) -> Result<Vec<(ExprId, usize, Vec<Matrix>)>, EigenError> {
+        eigen::eigenvectors(self, pool)
+    }
+
+    /// V2-17 — `(P, D)` with `M·P == P·D` when diagonalizable in the ℚ-splitting-field sense.
+    pub fn diagonalize(&self, pool: &ExprPool) -> Result<(Matrix, Matrix), EigenError> {
+        eigen::diagonalize(self, pool)
     }
 }
 

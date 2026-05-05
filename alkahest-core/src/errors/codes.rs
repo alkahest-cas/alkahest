@@ -30,11 +30,17 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-POLY-005", class: "ConversionError", cause: Cause::UserInput,   remediation: Some("substitute a concrete integer for the exponent before calling poly_normal") },
     ErrorSpec { code: "E-POLY-006", class: "ConversionError", cause: Cause::Unsupported, remediation: Some("only polynomial expressions are supported; remove transcendental functions") },
     ErrorSpec { code: "E-POLY-007", class: "ConversionError", cause: Cause::Domain,      remediation: Some("ensure the denominator is non-zero before converting") },
+    ErrorSpec { code: "E-POLY-008", class: "FactorError", cause: Cause::UserInput,   remediation: Some("factorization is only defined for non-zero polynomials") },
+    ErrorSpec { code: "E-POLY-009", class: "FactorError", cause: Cause::UserInput,   remediation: Some("use a modulus ≥ 2 that fits in a machine word (FLINT nmod)") },
+    ErrorSpec { code: "E-POLY-010", class: "FactorError", cause: Cause::Internal,    remediation: Some("report the polynomial as a minimal failing example") },
     // E-DIFF — DiffError (symbolic + forward-mode)
     ErrorSpec { code: "E-DIFF-001", class: "DiffError", cause: Cause::Unsupported, remediation: Some("register the function in PrimitiveRegistry, or use diff_forward with a custom rule") },
     ErrorSpec { code: "E-DIFF-002", class: "DiffError", cause: Cause::UserInput,   remediation: Some("symbolic exponents require the chain rule; use diff_forward for non-integer powers") },
     ErrorSpec { code: "E-DIFF-003", class: "DiffError", cause: Cause::Unsupported, remediation: Some("register the function in PrimitiveRegistry with diff_forward implemented") },
     ErrorSpec { code: "E-DIFF-004", class: "DiffError", cause: Cause::UserInput,   remediation: Some("substitute concrete values first; diff_forward requires integer exponents") },
+    // E-SERIES — SeriesError (V2-15 truncated expansions)
+    ErrorSpec { code: "E-SERIES-001", class: "SeriesError", cause: Cause::Unsupported, remediation: Some("ensure all functions are registered primitives with differentiation rules") },
+    ErrorSpec { code: "E-SERIES-002", class: "SeriesError", cause: Cause::UserInput,   remediation: Some("pass order >= 1 (exclusive truncation degree in x)") },
     // E-INT — IntegrationError
     ErrorSpec { code: "E-INT-001", class: "IntegrationError", cause: Cause::Unsupported, remediation: Some("use a numeric integrator for arbitrary functions") },
     ErrorSpec { code: "E-INT-002", class: "IntegrationError", cause: Cause::Domain,      remediation: None },
@@ -44,6 +50,14 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-MAT-001", class: "MatrixError", cause: Cause::UserInput, remediation: Some("check that row/column counts agree") },
     ErrorSpec { code: "E-MAT-002", class: "MatrixError", cause: Cause::UserInput, remediation: Some("use pseudo-inverse for rectangular matrices") },
     ErrorSpec { code: "E-MAT-003", class: "MatrixError", cause: Cause::Domain,    remediation: Some("check for linear dependence in the rows/columns") },
+    // V2-17 — EigenError
+    ErrorSpec { code: "E-EIGEN-001", class: "EigenError", cause: Cause::UserInput,   remediation: Some("pass a square n×n matrix") },
+    ErrorSpec { code: "E-EIGEN-002", class: "EigenError", cause: Cause::UserInput,   remediation: Some("ensure det(λI−M) is a ℤ-polynomial in the fresh λ variable") },
+    ErrorSpec { code: "E-EIGEN-003", class: "EigenError", cause: Cause::Internal,    remediation: Some("report the polynomial as a minimal failing example") },
+    ErrorSpec { code: "E-EIGEN-004", class: "EigenError", cause: Cause::Unsupported, remediation: Some("irreducible characteristic factors of degree > 2 require a future algebraic-number extension") },
+    ErrorSpec { code: "E-EIGEN-005", class: "EigenError", cause: Cause::Domain,    remediation: Some("the matrix is defective or the eigenbasis is incomplete") },
+    ErrorSpec { code: "E-EIGEN-006", class: "EigenError", cause: Cause::Unsupported, remediation: Some("nullspace elimination failed; try a purely rational or ℚ(i) spectrum") },
+    ErrorSpec { code: "E-EIGEN-007", class: "EigenError", cause: Cause::Domain,    remediation: Some("eigenvector matrix is singular; check multiplicities") },
     // E-ODE — OdeError
     ErrorSpec { code: "E-ODE-001", class: "OdeError", cause: Cause::UserInput,   remediation: Some("number of state variables must equal number of RHS expressions") },
     ErrorSpec { code: "E-ODE-002", class: "OdeError", cause: Cause::UserInput,   remediation: Some("use lower_to_first_order() before passing to a solver") },
@@ -52,16 +66,31 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-DAE-001", class: "DaeError", cause: Cause::Unsupported, remediation: Some("ensure all functions are differentiable before calling pantelides()") },
     ErrorSpec { code: "E-DAE-002", class: "DaeError", cause: Cause::UserInput,   remediation: Some("DAE index exceeds depth-10 limit; reformulate the model") },
     ErrorSpec { code: "E-DAE-003", class: "DaeError", cause: Cause::UserInput,   remediation: Some("check constraint count against variable count") },
-    // E-SOLVE — SolverError (polynomial system solver + GPU Gröbner folded in)
+    // E-DIFFALG — DiffAlgError (V2-13 differential algebra / Rosenfeld–Gröbner)
+    ErrorSpec { code: "E-DIFFALG-001", class: "DiffAlgError", cause: Cause::Unsupported, remediation: Some("ensure the DAE is polynomial in its state and derivative symbols") },
+    ErrorSpec { code: "E-DIFFALG-002", class: "DiffAlgError", cause: Cause::UserInput,   remediation: Some("declare all jet variables; remove transcendental functions") },
     ErrorSpec { code: "E-SOLVE-001", class: "SolverError", cause: Cause::UserInput,   remediation: Some("ensure all equations are polynomial in the declared variables") },
     ErrorSpec { code: "E-SOLVE-002", class: "SolverError", cause: Cause::Unsupported, remediation: Some("only degree ≤ 2 univariate solving is implemented; Gröbner basis is still returned") },
     ErrorSpec { code: "E-SOLVE-003", class: "SolverError", cause: Cause::UserInput,   remediation: Some("provide one equation per variable") },
     ErrorSpec { code: "E-SOLVE-010", class: "SolverError", cause: Cause::Resource,    remediation: Some("check GPU availability; pass device_id=None to fall back to CPU") },
     ErrorSpec { code: "E-SOLVE-011", class: "SolverError", cause: Cause::Resource,    remediation: Some("CRT reconstruction failed; try adding more equations or use CPU path") },
+    // E-HOMOTOPY — HomotopyError (V2-14 numerical algebraic geometry)
+    ErrorSpec { code: "E-HOMOTOPY-002", class: "HomotopyError", cause: Cause::Unsupported, remediation: Some("raise HomotopyOpts.max_bezout_paths or use mixed-volume continuation for deficient systems") },
+    ErrorSpec { code: "E-HOMOTOPY-003", class: "HomotopyError", cause: Cause::Resource,    remediation: Some("try HomotopyOpts.gamma_angle_seed or rescale equations") },
+    ErrorSpec { code: "E-HOMOTOPY-004", class: "HomotopyError", cause: Cause::Resource,    remediation: Some("adjust predictor step or increase max_tracker_steps") },
     // E-JIT — JitError
     ErrorSpec { code: "E-JIT-001", class: "JitError", cause: Cause::Unsupported, remediation: Some("use eval_expr or simplify the expression before JIT") },
     ErrorSpec { code: "E-JIT-002", class: "JitError", cause: Cause::Resource,    remediation: Some("check LLVM 15 installation; run with RUST_LOG=debug for details") },
     ErrorSpec { code: "E-JIT-003", class: "JitError", cause: Cause::Resource,    remediation: Some("ensure LLVM_SYS_150_PREFIX is set correctly") },
+    // E-CAD — CadError (V2-9 QE / cylindrical decomposition)
+    ErrorSpec {
+        code: "E-CAD-001",
+        class: "CadError",
+        cause: Cause::Unsupported,
+        remediation: Some(
+            "use a purely polynomial constraint in one real variable without nested quantifiers; multivariate QE is incremental",
+        ),
+    },
     // E-CUDA — CudaError
     ErrorSpec { code: "E-CUDA-001", class: "CudaError", cause: Cause::Resource,    remediation: Some("rebuild LLVM with nvptx64 in LLVM_TARGETS_TO_BUILD") },
     ErrorSpec { code: "E-CUDA-002", class: "CudaError", cause: Cause::Unsupported, remediation: Some("inspect PTX; verify every primitive has CUDA lowering") },
@@ -79,6 +108,44 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-IO-007", class: "IoError", cause: Cause::UserInput, remediation: None },
     ErrorSpec { code: "E-IO-008", class: "IoError", cause: Cause::UserInput, remediation: None },
     ErrorSpec { code: "E-IO-009", class: "IoError", cause: Cause::UserInput, remediation: None },
+    // E-MOD — ModularError (V2-1 Modular/CRT framework)
+    ErrorSpec { code: "E-MOD-001", class: "ModularError", cause: Cause::UserInput,   remediation: Some("use a prime modulus p ≥ 2, e.g. 101, 1009, 32749") },
+    ErrorSpec { code: "E-MOD-002", class: "ModularError", cause: Cause::UserInput,   remediation: Some("ensure all images share the same variable ordering and modulus") },
+    ErrorSpec { code: "E-MOD-003", class: "ModularError", cause: Cause::UserInput,   remediation: Some("provide at least one (MultiPolyFp, prime) pair") },
+    ErrorSpec { code: "E-MOD-004", class: "ModularError", cause: Cause::Unsupported, remediation: Some("provide more modular images so the prime product M exceeds 2 * max_coeff²") },
+    // E-LAT — LatticeError (V2-6 LLL)
+    ErrorSpec { code: "E-LAT-001", class: "LatticeError", cause: Cause::UserInput,   remediation: Some("pass a non-empty matrix of integer rows, all of equal length") },
+    ErrorSpec { code: "E-LAT-002", class: "LatticeError", cause: Cause::UserInput,   remediation: Some("every row must lie in ℤ^m for fixed ambient dimension m") },
+    ErrorSpec { code: "E-LAT-003", class: "LatticeError", cause: Cause::UserInput,   remediation: Some("pick δ strictly between ¼ and 1; the default δ = ¾ is standard") },
+    ErrorSpec { code: "E-LAT-004", class: "LatticeError", cause: Cause::Unsupported, remediation: Some("check for rank deficiency; try a smaller basis or report a minimal reproducer") },
+    // E-LOGIC — first-order formulas (V3-3)
+    ErrorSpec { code: "E-LOGIC-001", class: "LogicError", cause: Cause::UserInput, remediation: Some("pass a predicate or quantified Expr; use pool.gt/… or And/Or/Not") },
+    // E-PSLQ — PslqError (V2-6 augmented-lattice relation heuristic)
+    ErrorSpec { code: "E-PSLQ-001", class: "PslqError", cause: Cause::UserInput,   remediation: Some("pass at least two constants that might admit a linear dependence") },
+    ErrorSpec { code: "E-PSLQ-002", class: "PslqError", cause: Cause::UserInput,   remediation: Some("literals must not truncate to zero — use higher precision or decimal strings") },
+    ErrorSpec { code: "E-PSLQ-003", class: "PslqError", cause: Cause::UserInput,   remediation: Some("allocate at least 64 MPFR bits; ≈664 bits ≈ 200 decimal digits") },
+    // E-RSOLVE — RsolveError (V2-18 difference equations / rsolve)
+    ErrorSpec { code: "E-RSOLVE-001", class: "RsolveError", cause: Cause::UserInput,   remediation: Some("write the recurrence as a sum of pool.func(seq, [n ± integer]) shifts plus a polynomial in n, then call rsolve(equation, n, seq_name)") },
+    ErrorSpec { code: "E-RSOLVE-002", class: "RsolveError", cause: Cause::UserInput,   remediation: Some("each addend may contain at most one sequence application; avoid products like n*f(n)") },
+    ErrorSpec { code: "E-RSOLVE-003", class: "RsolveError", cause: Cause::UserInput,   remediation: Some("clear denominators; the rhs must be a polynomial in the recurrence index") },
+    ErrorSpec { code: "E-RSOLVE-004", class: "RsolveError", cause: Cause::Unsupported, remediation: Some("order > 2 non-homogeneous systems and some characteristic factorizations are not implemented yet") },
+    ErrorSpec { code: "E-RSOLVE-005", class: "RsolveError", cause: Cause::UserInput,   remediation: Some("pass exactly order-many initial samples as a dict n → Expr value") },
+    // E-DIOPH — DiophantineError (V2-19 linear / Pell / sum-of-squares)
+    ErrorSpec { code: "E-DIOPH-001", class: "DiophantineError", cause: Cause::UserInput,   remediation: Some("pass one polynomial equation = 0 in two integer symbols") },
+    ErrorSpec { code: "E-DIOPH-002", class: "DiophantineError", cause: Cause::UserInput,   remediation: Some("clear denominators; coefficients must be rational integers") },
+    ErrorSpec { code: "E-DIOPH-003", class: "DiophantineError", cause: Cause::Unsupported, remediation: Some("supported: linear 2-variable, x²+y²=n, x²−D·y²=N including unit Pell (no xy term); very large integers may be unsupported") },
+    ErrorSpec { code: "E-DIOPH-004", class: "DiophantineError", cause: Cause::Domain,      remediation: Some("check gcd divisibility (linear) or solvability over ℤ (quadratic)") },
+    // E-PROD — ProductError (V2-22 symbolic discrete products)
+    ErrorSpec { code: "E-PROD-001", class: "ProductError", cause: Cause::Unsupported, remediation: Some("reduce the term to ℚ(k) with only ℤ-linear factors in k (no extra symbols in k)") },
+    ErrorSpec { code: "E-PROD-002", class: "ProductError", cause: Cause::Internal,    remediation: Some("report the polynomial as a minimal failing example") },
+    ErrorSpec { code: "E-PROD-003", class: "ProductError", cause: Cause::Unsupported, remediation: Some("ℤ-irreducible factors of degree ≥ 2 in k require a Gamma extension beyond this path") },
+    ErrorSpec { code: "E-PROD-004", class: "ProductError", cause: Cause::UserInput,   remediation: Some("check that lo/hi share the ExprPool with the summation index symbol") },
+    // E-NT — NumberTheoryError (V3-1)
+    ErrorSpec { code: "E-NT-001", class: "NumberTheoryError", cause: Cause::UserInput, remediation: Some("pass decimal strings parsable into fmpz") },
+    ErrorSpec { code: "E-NT-002", class: "NumberTheoryError", cause: Cause::Domain, remediation: Some("check positivity / parity constraints on arguments") },
+    ErrorSpec { code: "E-NT-003", class: "NumberTheoryError", cause: Cause::Domain, remediation: Some("adjust residue, base, or root degree until a modular solution exists") },
+    ErrorSpec { code: "E-NT-004", class: "NumberTheoryError", cause: Cause::Domain, remediation: Some("use prime moduli for discrete_log/nthroot_mod as documented") },
+    ErrorSpec { code: "E-NT-005", class: "NumberTheoryError", cause: Cause::Unsupported, remediation: Some("use quadratic roots or gcd(k,p−1)=1; general radicals require more machinery") },
     // E-PARSE — reserved for parser integration
     // E-DOMAIN — reserved; DomainError is Python-only pending Rust implementation
 ];

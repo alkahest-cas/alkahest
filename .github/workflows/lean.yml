@@ -48,7 +48,7 @@ jobs:
       - name: Install maturin and build alkahest
         run: |
           pip install maturin
-          maturin develop -m alkahest-py/Cargo.toml
+          maturin develop -m alkahest-py/Cargo.toml --features groebner
 
       - name: Generate Lean proofs
         run: |

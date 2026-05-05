@@ -1,6 +1,7 @@
 pub mod display;
 pub mod domain;
 pub mod expr;
+pub mod expr_props;
 pub mod pool;
 pub mod pool_persist;
 mod proptests;
@@ -9,6 +10,7 @@ pub mod subs;
 pub use display::{render_latex, render_unicode};
 pub use domain::Domain;
 pub use expr::{BigFloat, BigInt, BigRat, ExprData, ExprId};
+pub use expr_props::{expr_contains_noncommutative_symbol, mult_tree_is_commutative};
 pub use pool::{ExprDisplay, ExprPool};
 #[allow(deprecated)]
 pub use pool_persist::PoolPersistError;

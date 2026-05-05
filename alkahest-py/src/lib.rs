@@ -1,43 +1,80 @@
 use alkahest_core::{
     adjoint_system as core_adjoint_system,
+    cad_lift as core_cad_lift,
+    cad_project as core_cad_project,
     // Phase 21 — JIT
     compile as core_compile,
+    decide_expr as core_decide_expr,
     emit_horner_c as core_emit_horner_c,
     emit_stablehlo as core_emit_stablehlo,
     eval_interp as core_eval_interp,
+    factor_univariate_mod_p as core_factor_univariate_mod_p,
     grad as core_grad,
+    guess_integer_relation as core_guess_integer_relation,
     // Phase 24 — Horner form
     horner as core_horner,
     jacobian as core_jacobian,
     jit_available as core_jit_available,
+    lattice_reduce_rows as core_lattice_reduce_rows,
+    lattice_reduce_rows_with_delta as core_lattice_reduce_rows_with_delta,
     lower_to_first_order as core_lower_to_first_order,
     pantelides as core_pantelides,
     // Phase 27 — poly_normal
     poly_normal as core_poly_normal,
+    product_definite as core_product_definite,
+    product_indefinite as core_product_indefinite,
+    // V2-4 — Real root isolation
+    real_roots_symbolic as core_real_roots_symbolic,
+    refine_root as core_refine_root,
     resistor as core_resistor,
+    // V2-2 — Resultants and subresultant PRS
+    resultant as core_resultant,
+    // V3-3 — FOFormula / satisfiability
+    satisfiable as core_satisfiable,
     sensitivity_system as core_sensitivity_system,
+    solve_linear_recurrence_homogeneous as core_solve_linear_recurrence_homogeneous,
+    // V2-3 — Sparse interpolation
+    sparse_interpolate as core_sparse_interpolate,
+    sparse_interpolate_univariate as core_sparse_interpolate_univariate,
+    subresultant_prs as core_subresultant_prs,
     subs as core_subs,
+    sum_definite as core_sum_definite,
+    sum_indefinite as core_sum_indefinite,
+    verify_wz_pair as core_verify_wz_pair,
     // Phase 22 — Ball arithmetic
     ArbBall as CoreArbBall,
+    // V2-9 — CAD / real QE
+    CadError,
     Capabilities,
     Domain,
+    EigenError,
     Event,
     ExprId,
     ExprPool,
+    FactorError,
     HybridODE,
     IntervalEval as CoreIntervalEval,
+    LatticeError,
     Matrix,
     MatrixError,
     MultiPoly,
+    MultiPolyFactorization,
     OdeError,
     Pattern,
     Port,
     PrimitiveRegistry,
+    PslqError,
     RationalFunction,
+    RealRootError,
     RewriteRule,
+    RootInterval as CoreRootInterval,
+    Satisfiability as CoreSatisfiability,
     ScalarODE,
     System as AcausalSystem,
     UniPoly,
+    UniPolyFactorModP,
+    UniPolyFactorization,
+    WzPair,
     DAE,
     ODE,
 };
@@ -45,15 +82,34 @@ use alkahest_core::{
 #[cfg(feature = "cuda")]
 use alkahest_core::compile_cuda as core_compile_cuda;
 use alkahest_core::kernel::expr::PredicateKind;
+// V2-1 — Modular / CRT framework
+use alkahest_core::modular::{
+    lift_crt as core_lift_crt, mignotte_bound as core_mignotte_bound,
+    rational_reconstruction as core_rational_reconstruction, reduce_mod as core_reduce_mod,
+    select_lucky_prime as core_select_lucky_prime, ModularError, MultiPolyFp,
+};
 use alkahest_core::{
-    diff as core_diff, diff_forward as core_diff_forward, integrate as core_integrate, load_from,
-    log_exp_rules, match_pattern as core_match_pattern, simplify as core_simplify,
+    diff as core_diff, diff_forward as core_diff_forward, integrate as core_integrate,
+    limit as core_limit, load_from, log_exp_rules, match_pattern as core_match_pattern,
+    rsolve as core_rsolve, series as core_series, simplify as core_simplify,
     simplify_egraph as core_simplify_egraph, simplify_egraph_with as core_simplify_egraph_with,
     simplify_with as core_simplify_with, trig_rules, AlkahestError as AlkahestErrorTrait,
-    DiffError, EgraphConfig, IntegrationError, IoError, PatternRule, SimplifyConfig, SizeCost,
+    DiffError, EgraphConfig, IntegrationError, IoError, LimitDirection as CoreLimitDirection,
+    LimitError, LinearRecurrenceError, PatternRule, ProductError, ResultantError, RsolveError,
+    SeriesError, SimplifyConfig, SizeCost, SparseInterpError, SumError,
 };
+// V3-1 — Integer number theory
+use alkahest_core::number_theory::{
+    discrete_log as nt_discrete_log, factorint as nt_factorint, isprime as nt_isprime,
+    jacobi_symbol as nt_jacobi_symbol, nextprime as nt_nextprime, nthroot_mod as nt_nthroot_mod,
+    totient as nt_totient, NumberTheoryError as CoreNumberTheoryError,
+    QuadraticDirichlet as CoreQuadraticDirichlet,
+};
+use pyo3::exceptions::{PyOverflowError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
+use rug::{Integer, Rational};
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
@@ -69,14 +125,38 @@ pyo3::create_exception!(alkahest, PyDomainError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyDiffError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyPoolError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyIntegrationError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PySeriesError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PyLimitError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyMatrixError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PyEigenError, PyMatrixError);
+pyo3::create_exception!(alkahest, PyModularError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyOdeError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyDaeError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyJitError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PySolverError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PyHomotopyError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyCudaError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyIoError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyParseError, PyAlkahestError);
+// V2-7 — Polynomial factorization
+pyo3::create_exception!(alkahest, PyFactorError, PyAlkahestError);
+// V2-2 — Resultants
+pyo3::create_exception!(alkahest, PyResultantError, PyAlkahestError);
+// V2-3 — Sparse interpolation
+pyo3::create_exception!(alkahest, PySparseInterpError, PyAlkahestError);
+// V2-4 — Real root isolation
+pyo3::create_exception!(alkahest, PyRealRootError, PyAlkahestError);
+// V2-6 — LLL + integer relations
+pyo3::create_exception!(alkahest, PyLatticeError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PyPslqError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PyCadError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PySumError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PyProductError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PyNumberTheoryError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PyLinearRecurrenceError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PyRsolveError, PyAlkahestError);
+#[cfg(feature = "groebner")]
+pyo3::create_exception!(alkahest, PyDiophantineError, PyAlkahestError);
 
 /// Build a structured exception with `.code`, `.remediation`, `.span` attributes.
 fn make_structured_err<E: AlkahestErrorTrait>(
@@ -113,6 +193,10 @@ fn parse_domain(s: &str) -> Domain {
     }
 }
 
+fn py_int_decimal(v: &Bound<'_, PyAny>) -> PyResult<String> {
+    v.str()?.extract::<String>()
+}
+
 fn diff_error_to_py(e: DiffError) -> PyErr {
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyDiffError>();
@@ -143,6 +227,29 @@ fn integrate_error_to_py(e: IntegrationError) -> PyErr {
     })
 }
 
+fn series_error_to_py(e: SeriesError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PySeriesError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn limit_error_to_py(e: LimitError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyLimitError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn parse_limit_direction(dir: Option<&str>) -> CoreLimitDirection {
+    match dir.unwrap_or("+-").trim() {
+        "+" => CoreLimitDirection::Plus,
+        "-" => CoreLimitDirection::Minus,
+        "+-" | "" => CoreLimitDirection::Bidirectional,
+        _ => CoreLimitDirection::Bidirectional,
+    }
+}
+
 fn conv_error_to_py(e: alkahest_core::ConversionError) -> PyErr {
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyConversionError>();
@@ -150,9 +257,115 @@ fn conv_error_to_py(e: alkahest_core::ConversionError) -> PyErr {
     })
 }
 
+fn factor_error_to_py(e: FactorError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyFactorError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn resultant_error_to_py(e: ResultantError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyResultantError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn sparse_interp_error_to_py(e: SparseInterpError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PySparseInterpError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn real_root_error_to_py(e: RealRootError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyRealRootError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn cad_error_to_py(e: CadError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyCadError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn sum_error_to_py(e: SumError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PySumError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn product_error_to_py(e: ProductError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyProductError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn number_theory_error_to_py(e: CoreNumberTheoryError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyNumberTheoryError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn linear_recurrence_error_to_py(e: LinearRecurrenceError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyLinearRecurrenceError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn rsolve_error_to_py(e: RsolveError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyRsolveError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+#[cfg(feature = "groebner")]
+fn diophantine_error_to_py(e: DiophantineError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyDiophantineError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn modular_error_to_py(e: ModularError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyModularError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn lattice_error_to_py(e: LatticeError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyLatticeError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn pslq_error_to_py(e: PslqError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyPslqError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
 fn matrix_error_to_py(e: MatrixError) -> PyErr {
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyMatrixError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn eigen_error_to_py(e: EigenError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyEigenError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -190,9 +403,16 @@ impl PyExprPool {
         false
     }
 
-    fn symbol(slf: PyRef<'_, Self>, name: &str, domain: Option<&str>) -> PyExpr {
+    #[pyo3(signature = (name, domain=None, commutative=None))]
+    fn symbol(
+        slf: PyRef<'_, Self>,
+        name: &str,
+        domain: Option<&str>,
+        commutative: Option<bool>,
+    ) -> PyExpr {
+        let commutative = commutative.unwrap_or(true);
         let dom = parse_domain(domain.unwrap_or("real"));
-        let id = slf.inner.symbol(name, dom);
+        let id = slf.inner.symbol_commutative(name, dom, commutative);
         let pool: Py<PyExprPool> = slf.into();
         PyExpr { id, pool }
     }
@@ -209,8 +429,31 @@ impl PyExprPool {
         PyExpr { id, pool }
     }
 
+    /// Apply a named primitive or symbolic function: ``pool.func("sin", [x])``, ``pool.func("f", [n])``.
+    #[pyo3(name = "func")]
+    fn apply_named(slf: PyRef<'_, Self>, name: &str, args: Vec<PyExpr>) -> PyExpr {
+        let ids: Vec<ExprId> = args.iter().map(|e| e.id).collect();
+        let id = slf.inner.func(name, ids);
+        let pool: Py<PyExprPool> = slf.into();
+        PyExpr { id, pool }
+    }
+
     fn float(slf: PyRef<'_, Self>, value: f64, prec: Option<u32>) -> PyExpr {
         let id = slf.inner.float(value, prec.unwrap_or(53));
+        let pool: Py<PyExprPool> = slf.into();
+        PyExpr { id, pool }
+    }
+
+    /// `O(arg)` — Landau remainder bound (V2-15 series API).
+    fn big_o(slf: PyRef<'_, Self>, arg: PyExpr) -> PyExpr {
+        let id = slf.inner.big_o(arg.id);
+        let pool: Py<PyExprPool> = slf.into();
+        PyExpr { id, pool }
+    }
+
+    /// Canonical `+∞` for ``limit(..., oo)`` (Unicode ∞, V2-16).
+    fn pos_infinity(slf: PyRef<'_, Self>) -> PyExpr {
+        let id = slf.inner.pos_infinity();
         let pool: Py<PyExprPool> = slf.into();
         PyExpr { id, pool }
     }
@@ -270,6 +513,20 @@ impl PyExprPool {
     }
     fn pred_false(slf: PyRef<'_, Self>) -> PyExpr {
         let id = slf.inner.pred_false();
+        let pool: Py<PyExprPool> = slf.into();
+        PyExpr { id, pool }
+    }
+
+    /// Universal quantifier: ``∀ var . body`` (first-order logic).
+    fn forall(slf: PyRef<'_, Self>, var: PyExpr, body: PyExpr) -> PyExpr {
+        let id = slf.inner.forall(var.id, body.id);
+        let pool: Py<PyExprPool> = slf.into();
+        PyExpr { id, pool }
+    }
+
+    /// Existential quantifier: ``∃ var . body``.
+    fn exists(slf: PyRef<'_, Self>, var: PyExpr, body: PyExpr) -> PyExpr {
+        let id = slf.inner.exists(var.id, body.id);
         let pool: Py<PyExprPool> = slf.into();
         PyExpr { id, pool }
     }
@@ -625,6 +882,17 @@ impl PyExpr {
                 )
                 .into_py(py)
             }
+            alkahest_core::ExprData::Forall { var, body } => {
+                PyList::new_bound(py, vec!["forall".into_py(py), wrap!(var), wrap!(body)])
+                    .into_py(py)
+            }
+            alkahest_core::ExprData::Exists { var, body } => {
+                PyList::new_bound(py, vec!["exists".into_py(py), wrap!(var), wrap!(body)])
+                    .into_py(py)
+            }
+            alkahest_core::ExprData::BigO(inner) => {
+                PyList::new_bound(py, vec!["big_o".into_py(py), wrap!(inner)]).into_py(py)
+            }
         }
     }
 }
@@ -645,6 +913,34 @@ impl PyExpr {
             return Some(pool.inner.float(f, 53));
         }
         None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// V2-15 — Truncated series / Laurent + BigO
+// ---------------------------------------------------------------------------
+
+#[pyclass(name = "Series")]
+#[derive(Clone)]
+struct PySeries {
+    expr: PyExpr,
+}
+
+#[pymethods]
+impl PySeries {
+    #[getter]
+    fn expr(&self) -> PyExpr {
+        self.expr.clone()
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> String {
+        let pool = self.expr.pool.borrow(py);
+        format!("Series({})", pool.inner.display(self.expr.id))
+    }
+
+    fn __str__(&self, py: Python<'_>) -> String {
+        let pool = self.expr.pool.borrow(py);
+        pool.inner.display(self.expr.id).to_string()
     }
 }
 
@@ -1015,13 +1311,85 @@ fn py_diff_forward(
 }
 
 // ---------------------------------------------------------------------------
-// PyUniPoly
+// V2-7 — Forward declarations (factorization result types reference these)
 // ---------------------------------------------------------------------------
 
 #[pyclass(name = "UniPoly")]
 struct PyUniPoly {
     inner: UniPoly,
 }
+
+#[pyclass(name = "MultiPoly")]
+struct PyMultiPoly {
+    inner: MultiPoly,
+}
+
+// ---------------------------------------------------------------------------
+// V2-7 — Factorization result types
+// ---------------------------------------------------------------------------
+
+#[pyclass(name = "UniPolyFactorization")]
+struct PyUniPolyFactorization {
+    inner: UniPolyFactorization,
+}
+
+#[pymethods]
+impl PyUniPolyFactorization {
+    #[getter]
+    fn unit(&self) -> String {
+        self.inner.unit.to_string()
+    }
+
+    fn factor_list(&self) -> Vec<(PyUniPoly, u32)> {
+        self.inner
+            .factors
+            .iter()
+            .map(|(p, e)| (PyUniPoly { inner: p.clone() }, *e))
+            .collect()
+    }
+}
+
+#[pyclass(name = "MultiPolyFactorization")]
+struct PyMultiPolyFactorization {
+    inner: MultiPolyFactorization,
+}
+
+#[pymethods]
+impl PyMultiPolyFactorization {
+    #[getter]
+    fn unit(&self) -> String {
+        self.inner.unit.to_string()
+    }
+
+    fn factor_list(&self) -> Vec<(PyMultiPoly, u32)> {
+        self.inner
+            .factors
+            .iter()
+            .map(|(p, e)| (PyMultiPoly { inner: p.clone() }, *e))
+            .collect()
+    }
+}
+
+#[pyclass(name = "UniPolyFactorModP")]
+struct PyUniPolyFactorModP {
+    inner: UniPolyFactorModP,
+}
+
+#[pymethods]
+impl PyUniPolyFactorModP {
+    #[getter]
+    fn modulus(&self) -> u64 {
+        self.inner.modulus
+    }
+
+    fn factor_list(&self) -> Vec<(Vec<u64>, u32)> {
+        self.inner.factors.clone()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PyUniPoly
+// ---------------------------------------------------------------------------
 
 #[pymethods]
 impl PyUniPoly {
@@ -1076,6 +1444,14 @@ impl PyUniPoly {
             .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("gcd: variable mismatch"))
     }
 
+    /// Factor over ℤ (FLINT).
+    fn factor_z(&self) -> PyResult<PyUniPolyFactorization> {
+        self.inner
+            .factor_z()
+            .map(|inner| PyUniPolyFactorization { inner })
+            .map_err(factor_error_to_py)
+    }
+
     fn __repr__(&self) -> String {
         format!("UniPoly({})", self.inner)
     }
@@ -1088,11 +1464,6 @@ impl PyUniPoly {
 // ---------------------------------------------------------------------------
 // PyMultiPoly
 // ---------------------------------------------------------------------------
-
-#[pyclass(name = "MultiPoly")]
-struct PyMultiPoly {
-    inner: MultiPoly,
-}
 
 #[pymethods]
 impl PyMultiPoly {
@@ -1152,6 +1523,14 @@ impl PyMultiPoly {
         Ok(PyMultiPoly {
             inner: self.inner.clone() * other.inner.clone(),
         })
+    }
+
+    /// Factor over ℤ (multivariate FLINT).
+    fn factor_z(&self) -> PyResult<PyMultiPolyFactorization> {
+        self.inner
+            .factor_z()
+            .map(|inner| PyMultiPolyFactorization { inner })
+            .map_err(factor_error_to_py)
     }
 
     fn __repr__(&self) -> String {
@@ -1260,6 +1639,191 @@ fn py_integrate(
     };
     let pool_py = expr.pool.clone_ref(py);
     Ok(make_derived_result(py, derived, pool_py))
+}
+
+#[pyfunction]
+#[pyo3(name = "series")]
+fn py_series(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    var: PyRef<PyExpr>,
+    point: PyRef<PyExpr>,
+    order: u32,
+) -> PyResult<PySeries> {
+    let pool_py = expr.pool.clone_ref(py);
+    let id = {
+        let pool = pool_py.borrow(py);
+        core_series(expr.id, var.id, point.id, order, &pool.inner)
+            .map_err(series_error_to_py)?
+            .expr()
+    };
+    Ok(PySeries {
+        expr: PyExpr { id, pool: pool_py },
+    })
+}
+
+#[pyfunction]
+#[pyo3(name = "limit", signature = (expr, var, point, dir=None))]
+fn py_limit(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    var: PyRef<PyExpr>,
+    point: PyRef<PyExpr>,
+    dir: Option<&str>,
+) -> PyResult<PyExpr> {
+    let pool_py = expr.pool.clone_ref(py);
+    let d = parse_limit_direction(dir);
+    let id = {
+        let pool = pool_py.borrow(py);
+        core_limit(expr.id, var.id, point.id, d, &pool.inner).map_err(limit_error_to_py)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+#[pyfunction]
+#[pyo3(name = "sum_indefinite")]
+fn py_sum_indefinite(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    k: PyRef<PyExpr>,
+) -> PyResult<PyDerivedResult> {
+    let derived = {
+        let pool = expr.pool.borrow(py);
+        core_sum_indefinite(expr.id, k.id, &pool.inner).map_err(sum_error_to_py)?
+    };
+    Ok(make_derived_result(py, derived, expr.pool.clone_ref(py)))
+}
+
+#[pyfunction]
+#[pyo3(name = "sum_definite")]
+fn py_sum_definite(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    k: PyRef<PyExpr>,
+    lo: PyRef<PyExpr>,
+    hi: PyRef<PyExpr>,
+) -> PyResult<PyDerivedResult> {
+    let derived = {
+        let pool = expr.pool.borrow(py);
+        core_sum_definite(expr.id, k.id, lo.id, hi.id, &pool.inner).map_err(sum_error_to_py)?
+    };
+    Ok(make_derived_result(py, derived, expr.pool.clone_ref(py)))
+}
+
+#[pyfunction]
+#[pyo3(name = "product_indefinite")]
+fn py_product_indefinite(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    k: PyRef<PyExpr>,
+) -> PyResult<PyDerivedResult> {
+    let derived = {
+        let pool = expr.pool.borrow(py);
+        core_product_indefinite(expr.id, k.id, &pool.inner).map_err(product_error_to_py)?
+    };
+    Ok(make_derived_result(py, derived, expr.pool.clone_ref(py)))
+}
+
+#[pyfunction]
+#[pyo3(name = "product_definite")]
+fn py_product_definite(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    k: PyRef<PyExpr>,
+    lo: PyRef<PyExpr>,
+    hi: PyRef<PyExpr>,
+) -> PyResult<PyDerivedResult> {
+    let derived = {
+        let pool = expr.pool.borrow(py);
+        core_product_definite(expr.id, k.id, lo.id, hi.id, &pool.inner)
+            .map_err(product_error_to_py)?
+    };
+    Ok(make_derived_result(py, derived, expr.pool.clone_ref(py)))
+}
+
+#[pyfunction]
+#[pyo3(name = "solve_linear_recurrence_homogeneous")]
+fn py_solve_linear_recurrence_homogeneous(
+    py: Python<'_>,
+    n: PyRef<PyExpr>,
+    coeffs: Vec<(i64, i64)>,
+    initials: Vec<PyRef<PyExpr>>,
+) -> PyResult<PyExpr> {
+    let rat_coeffs: Vec<Rational> = coeffs
+        .into_iter()
+        .map(|(a, b)| Rational::from((Integer::from(a), Integer::from(b))))
+        .collect();
+    let init_ids: Vec<ExprId> = initials.iter().map(|e| e.id).collect();
+    let pool_py = n.pool.clone_ref(py);
+    let closed = {
+        let pool = pool_py.borrow(py);
+        core_solve_linear_recurrence_homogeneous(&pool.inner, n.id, &rat_coeffs, &init_ids)
+            .map_err(linear_recurrence_error_to_py)?
+            .closed_form
+    };
+    Ok(PyExpr {
+        id: closed,
+        pool: pool_py,
+    })
+}
+
+#[pyfunction]
+#[pyo3(name = "rsolve", signature = (equation, n, seq_name, initials=None))]
+fn py_rsolve(
+    py: Python<'_>,
+    equation: PyRef<PyExpr>,
+    n: PyRef<PyExpr>,
+    seq_name: &str,
+    initials: Option<PyObject>,
+) -> PyResult<PyExpr> {
+    let init_storage: Option<BTreeMap<i64, ExprId>> = match initials {
+        None => None,
+        Some(obj) => {
+            let b = obj.bind(py);
+            if b.is_none() {
+                None
+            } else {
+                let d = b.downcast::<PyDict>().map_err(|_| {
+                    PyTypeError::new_err("initials must be dict[int, Expr] or None")
+                })?;
+                let mut m = BTreeMap::new();
+                for (k, v) in d.iter() {
+                    let ki: i64 = k.extract()?;
+                    let ve: PyRef<PyExpr> = v.extract()?;
+                    m.insert(ki, ve.id);
+                }
+                Some(m)
+            }
+        }
+    };
+    let pool_py = equation.pool.clone_ref(py);
+    let id = {
+        let pool = pool_py.borrow(py);
+        core_rsolve(
+            &pool.inner,
+            equation.id,
+            n.id,
+            seq_name,
+            init_storage.as_ref(),
+        )
+        .map_err(rsolve_error_to_py)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+#[pyfunction]
+#[pyo3(name = "verify_wz_pair")]
+fn py_verify_wz_pair(
+    py: Python<'_>,
+    f: PyRef<PyExpr>,
+    g: PyRef<PyExpr>,
+    n: PyRef<PyExpr>,
+    k: PyRef<PyExpr>,
+) -> PyResult<bool> {
+    let _ = py;
+    let pool = f.pool.borrow(py);
+    let pair = WzPair { f: f.id, g: g.id };
+    Ok(core_verify_wz_pair(&pair, n.id, k.id, &pool.inner))
 }
 
 /// `alkahest.match_pattern(pattern_expr, expr) -> list[dict[str, Expr]]`
@@ -1614,6 +2178,93 @@ impl PyMatrix {
             id: d,
             pool: self.pool.clone_ref(py),
         })
+    }
+
+    /// `det(λI − M)` and the fresh λ symbol (`Expr`) used in that polynomial.
+    fn characteristic_polynomial_lambda_minus_m(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<(PyExpr, PyExpr)> {
+        let pool = self.pool.borrow(py);
+        let (poly, lam) = self
+            .inner
+            .characteristic_polynomial_lambda_minus_m(&pool.inner)
+            .map_err(eigen_error_to_py)?;
+        drop(pool);
+        let pq = self.pool.clone_ref(py);
+        Ok((
+            PyExpr {
+                id: poly,
+                pool: pq.clone_ref(py),
+            },
+            PyExpr { id: lam, pool: pq },
+        ))
+    }
+
+    /// Dictionary mapping each eigenvalue expression to its algebraic multiplicity.
+    fn eigenvals(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let pool = self.pool.borrow(py);
+        let pairs = self
+            .inner
+            .eigenvalues(&pool.inner)
+            .map_err(eigen_error_to_py)?;
+        drop(pool);
+        let out = PyDict::new_bound(py);
+        for (e, mult) in pairs {
+            let key = PyExpr {
+                id: e,
+                pool: self.pool.clone_ref(py),
+            }
+            .into_py(py);
+            out.set_item(key, mult)?;
+        }
+        Ok(out.into())
+    }
+
+    /// SymPy-style triples `(eigenvalue, multiplicity, [column eigenvectors …])`.
+    fn eigenvects(&self, py: Python<'_>) -> PyResult<Vec<(PyExpr, usize, Vec<PyMatrix>)>> {
+        let pool = self.pool.borrow(py);
+        let triples = self
+            .inner
+            .eigenvectors(&pool.inner)
+            .map_err(eigen_error_to_py)?;
+        drop(pool);
+        Ok(triples
+            .into_iter()
+            .map(|(e, mult, vecs)| {
+                (
+                    PyExpr {
+                        id: e,
+                        pool: self.pool.clone_ref(py),
+                    },
+                    mult,
+                    vecs.into_iter()
+                        .map(|m| PyMatrix {
+                            inner: m,
+                            pool: self.pool.clone_ref(py),
+                        })
+                        .collect(),
+                )
+            })
+            .collect())
+    }
+
+    /// `(P, D)` with `M @ P == P @ D` when the matrix is diagonalizable.
+    fn diagonalize(&self, py: Python<'_>) -> PyResult<(PyMatrix, PyMatrix)> {
+        let pool = self.pool.borrow(py);
+        let (p, d) = self
+            .inner
+            .diagonalize(&pool.inner)
+            .map_err(eigen_error_to_py)?;
+        drop(pool);
+        let pq = self.pool.clone_ref(py);
+        Ok((
+            PyMatrix {
+                inner: p,
+                pool: pq.clone_ref(py),
+            },
+            PyMatrix { inner: d, pool: pq },
+        ))
     }
 
     fn simplify(&self, py: Python<'_>) -> PyMatrix {
@@ -2522,6 +3173,42 @@ fn py_collect_like_terms(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDerivedResult
 }
 
 // ---------------------------------------------------------------------------
+// V3-2 — Non-commutative Pauli / Clifford simplification helpers
+// ---------------------------------------------------------------------------
+
+/// Simplify with default arithmetic rules plus the Pauli product table on ``sx``, ``sy``, ``sz``.
+#[pyfunction]
+#[pyo3(name = "simplify_pauli")]
+fn py_simplify_pauli(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDerivedResult {
+    use alkahest_core::algebra::noncommutative::pauli_product_rules;
+    use alkahest_core::{rules_for_config, simplify_with};
+    let pool_py = expr.pool.clone_ref(py);
+    let derived = {
+        let pool = pool_py.borrow(py);
+        let mut rules = rules_for_config(&SimplifyConfig::default());
+        rules.extend(pauli_product_rules());
+        simplify_with(expr.id, &pool.inner, &rules, SimplifyConfig::default())
+    };
+    make_derived_result(py, derived, pool_py)
+}
+
+/// Simplify with default rules plus orthogonal Clifford anticommutation on ``cliff_e1``, ``cliff_e2``.
+#[pyfunction]
+#[pyo3(name = "simplify_clifford_orthogonal")]
+fn py_simplify_clifford_orthogonal(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDerivedResult {
+    use alkahest_core::algebra::noncommutative::clifford_orthogonal_rules;
+    use alkahest_core::{rules_for_config, simplify_with};
+    let pool_py = expr.pool.clone_ref(py);
+    let derived = {
+        let pool = pool_py.borrow(py);
+        let mut rules = rules_for_config(&SimplifyConfig::default());
+        rules.extend(clifford_orthogonal_rules());
+        simplify_with(expr.id, &pool.inner, &rules, SimplifyConfig::default())
+    };
+    make_derived_result(py, derived, pool_py)
+}
+
+// ---------------------------------------------------------------------------
 // Phase 27 — poly_normal
 // ---------------------------------------------------------------------------
 
@@ -2556,6 +3243,376 @@ fn py_poly_normal(
 }
 
 // ---------------------------------------------------------------------------
+// V2-2 — Resultants and subresultant PRS
+// ---------------------------------------------------------------------------
+
+/// Compute the resultant of two polynomial expressions with respect to a
+/// variable.
+///
+/// Both ``p`` and ``q`` must be polynomial expressions with integer
+/// coefficients.  The returned expression is:
+///
+/// - An integer constant in the **univariate** case (only ``var`` appears).
+/// - A polynomial in the remaining variables in the **multivariate** case
+///   (``var`` has been eliminated).
+///
+/// The returned :class:`DerivedResult` carries a ``"Resultant"`` derivation
+/// step tagged with the Lean 4 theorem
+/// ``Polynomial.resultant_eq_zero_iff_common_root``.
+///
+/// Raises :class:`ResultantError` if either input is not a polynomial with
+/// integer coefficients.
+///
+/// Example::
+///
+///     pool = ExprPool()
+///     x = pool.symbol("x")
+///     y = pool.symbol("y")
+///     p = x**2 + y**2 - pool.integer(1)
+///     q = y - x
+///     r = resultant(p, q, y)
+///     # r.value == 2*x^2 - 1
+#[pyfunction]
+#[pyo3(name = "resultant")]
+fn py_resultant(
+    py: Python<'_>,
+    p: PyRef<PyExpr>,
+    q: PyRef<PyExpr>,
+    var: PyRef<PyExpr>,
+) -> PyResult<PyDerivedResult> {
+    let pool_py = p.pool.clone_ref(py);
+    let derived = {
+        let pool = pool_py.borrow(py);
+        core_resultant(p.id, q.id, var.id, &pool.inner).map_err(resultant_error_to_py)?
+    };
+    Ok(make_derived_result(py, derived, pool_py))
+}
+
+/// Compute the subresultant polynomial remainder sequence of two univariate
+/// polynomials with integer coefficients.
+///
+/// Returns a Python ``list`` of :class:`Expr` objects ordered
+/// ``[p, q, S₂, S₃, …, Sₖ]``.
+///
+/// Both polynomials must be **univariate** in ``var`` with integer
+/// coefficients.  Multivariate inputs raise :class:`ResultantError`.
+///
+/// Example::
+///
+///     pool = ExprPool()
+///     x = pool.symbol("x")
+///     p = x**2 - pool.integer(1)
+///     q = x - pool.integer(1)
+///     prs = subresultant_prs(p, q, x)
+///     # prs == [p, q, last_element]
+#[pyfunction]
+#[pyo3(name = "subresultant_prs")]
+fn py_subresultant_prs(
+    py: Python<'_>,
+    p: PyRef<PyExpr>,
+    q: PyRef<PyExpr>,
+    var: PyRef<PyExpr>,
+) -> PyResult<Vec<PyExpr>> {
+    let pool_py = p.pool.clone_ref(py);
+    let derived = {
+        let pool = pool_py.borrow(py);
+        core_subresultant_prs(p.id, q.id, var.id, &pool.inner).map_err(resultant_error_to_py)?
+    };
+
+    let py_exprs: Vec<PyExpr> = derived
+        .value
+        .into_iter()
+        .map(|id| PyExpr {
+            id,
+            pool: pool_py.clone_ref(py),
+        })
+        .collect();
+    Ok(py_exprs)
+}
+
+// ---------------------------------------------------------------------------
+// V2-4 — Real root isolation Python bindings
+// ---------------------------------------------------------------------------
+
+/// A closed rational interval `[lo, hi]` isolating exactly one real root.
+///
+/// For an exact rational root `r`, ``lo == hi == r``.
+#[pyclass(name = "RootInterval", module = "alkahest")]
+struct PyRootInterval {
+    inner: CoreRootInterval,
+}
+
+#[pymethods]
+impl PyRootInterval {
+    /// Lower bound as a float (may be slightly inexact).
+    #[getter]
+    fn lo(&self) -> f64 {
+        self.inner.lo_f64()
+    }
+
+    /// Upper bound as a float (may be slightly inexact).
+    #[getter]
+    fn hi(&self) -> f64 {
+        self.inner.hi_f64()
+    }
+
+    /// Exact lower bound as ``(numerator_str, denominator_str)``.
+    fn lo_exact(&self) -> (String, String) {
+        self.inner.lo_exact()
+    }
+
+    /// Exact upper bound as ``(numerator_str, denominator_str)``.
+    fn hi_exact(&self) -> (String, String) {
+        self.inner.hi_exact()
+    }
+
+    fn __repr__(&self) -> String {
+        let lo = self.inner.lo_f64();
+        let hi = self.inner.hi_f64();
+        if lo == hi {
+            format!("RootInterval({lo})")
+        } else {
+            format!("RootInterval({lo}, {hi})")
+        }
+    }
+
+    fn __str__(&self) -> String {
+        self.__repr__()
+    }
+}
+
+fn core_interval_to_py(iv: CoreRootInterval) -> PyRootInterval {
+    PyRootInterval { inner: iv }
+}
+
+/// Isolate all real roots of a polynomial expression.
+///
+/// Returns a list of :class:`RootInterval` objects sorted by lower endpoint.
+/// Each interval contains exactly one real root of the squarefree part of
+/// ``poly``.  Repeated roots appear once each.
+///
+/// Parameters
+/// ----------
+/// poly : Expr
+///     A univariate polynomial expression with integer coefficients.
+/// var : Expr
+///     The polynomial variable.
+///
+/// Returns
+/// -------
+/// list[RootInterval]
+///
+/// Raises
+/// ------
+/// RealRootError
+///     If ``poly`` is not a polynomial with integer coefficients, or is the
+///     zero polynomial.
+///
+/// Example::
+///
+///     pool = ExprPool()
+///     x = pool.symbol("x")
+///     roots = real_roots(x**2 - pool.integer(4), x)
+///     # roots ≈ [RootInterval(-2.0, -2.0), RootInterval(2.0, 2.0)]
+#[pyfunction]
+#[pyo3(name = "real_roots")]
+fn py_real_roots(
+    py: Python<'_>,
+    poly: PyRef<PyExpr>,
+    var: PyRef<PyExpr>,
+) -> PyResult<Vec<PyRootInterval>> {
+    let pool = poly.pool.borrow(py);
+    let intervals =
+        core_real_roots_symbolic(poly.id, var.id, &pool.inner).map_err(real_root_error_to_py)?;
+    Ok(intervals.into_iter().map(core_interval_to_py).collect())
+}
+
+/// Refine a :class:`RootInterval` to at least ``prec`` bits of precision.
+///
+/// Uses bisection with floating-point Horner evaluation.  For exact rational
+/// roots (``lo == hi``), returns a zero-radius ball.
+///
+/// Parameters
+/// ----------
+/// poly : Expr
+///     The same polynomial passed to :func:`real_roots`.
+/// interval : RootInterval
+///     One element of the list returned by :func:`real_roots`.
+/// var : Expr
+///     The polynomial variable.
+/// prec : int
+///     Desired precision in bits (minimum 53, clamped to ``max(53, prec)``).
+///
+/// Returns
+/// -------
+/// ArbBall
+///     Rigorous floating-point ball containing the root.
+///
+/// Example::
+///
+///     pool = ExprPool()
+///     x = pool.symbol("x")
+///     ivs = real_roots(x**2 - pool.integer(2), x)
+///     ball = refine_root(x**2 - pool.integer(2), ivs[1], x, 53)
+///     # ball.mid ≈ 1.4142135623730951
+#[pyfunction]
+#[pyo3(name = "refine_root")]
+fn py_refine_root(
+    py: Python<'_>,
+    poly: PyRef<PyExpr>,
+    interval: PyRef<PyRootInterval>,
+    var: PyRef<PyExpr>,
+) -> PyResult<PyArbBall> {
+    let pool = poly.pool.borrow(py);
+    let uni = UniPoly::from_symbolic(poly.id, var.id, &pool.inner)
+        .map_err(|e| real_root_error_to_py(RealRootError::NotAPolynomial(e)))?;
+    let ball = core_refine_root(&uni, &interval.inner, 53);
+    Ok(PyArbBall { inner: ball })
+}
+
+/// Factor a dense univariate polynomial over :math:`\mathbb{F}_p` from ascending
+/// integer coefficients (reduced mod ``p``).
+#[pyfunction]
+#[pyo3(name = "factor_univariate_mod_p")]
+fn py_factor_univariate_mod_p(coeffs: Vec<i64>, modulus: u64) -> PyResult<PyUniPolyFactorModP> {
+    core_factor_univariate_mod_p(&coeffs, modulus)
+        .map(|inner| PyUniPolyFactorModP { inner })
+        .map_err(factor_error_to_py)
+}
+
+// ---------------------------------------------------------------------------
+// V2-3 — Sparse interpolation Python bindings
+// ---------------------------------------------------------------------------
+
+/// Recover a sparse univariate polynomial over ``F_p`` from black-box
+/// evaluations using the Ben-Or/Tiwari (Prony-style) algorithm.
+///
+/// Parameters
+/// ----------
+/// eval : callable
+///     Black-box oracle ``x ↦ f(x) mod p``.  Called with a single
+///     ``int`` argument and must return an ``int``.
+/// term_bound : int
+///     Upper bound ``T`` on the number of nonzero terms.  Exactly
+///     ``2·T`` oracle calls are made.
+/// prime : int
+///     Field characteristic ``p``.  Must satisfy ``p > 2·T`` and
+///     ``p > max_degree(f)``.
+///
+/// Returns
+/// -------
+/// list[tuple[int, int]]
+///     List of ``(coefficient, exponent)`` pairs.
+///
+/// Raises
+/// ------
+/// SparseInterpError
+///     On invalid prime, prime too small, or inconsistent oracle.
+///
+/// Example::
+///
+///     # Recover x^100 + 3·x^17 + 5 from 6 evaluations.
+///     p = 997
+///     def f(x): return (x**100 + 3*x**17 + 5) % p
+///     terms = sparse_interp_univariate(f, 3, p)
+///     # terms ≈ [(1, 100), (3, 17), (5, 0)]
+#[pyfunction]
+#[pyo3(name = "sparse_interp_univariate")]
+fn py_sparse_interp_univariate(
+    py: Python<'_>,
+    eval: Bound<'_, pyo3::types::PyAny>,
+    term_bound: usize,
+    prime: u64,
+) -> PyResult<Vec<(u64, u32)>> {
+    let rust_eval = |x: u64| -> u64 {
+        let result = eval
+            .call1((x,))
+            .expect("sparse_interp_univariate: oracle call failed");
+        result
+            .extract::<u64>()
+            .expect("sparse_interp_univariate: oracle must return int")
+    };
+    let terms = core_sparse_interpolate_univariate(&rust_eval, term_bound, prime)
+        .map_err(sparse_interp_error_to_py)?;
+    let _ = py; // suppress unused warning
+    Ok(terms)
+}
+
+/// Recover a sparse multivariate polynomial over ``F_p`` from black-box
+/// evaluations using Zippel's variable-by-variable algorithm.
+///
+/// Parameters
+/// ----------
+/// eval : callable
+///     Black-box oracle ``(x₁, …, xₙ) ↦ f(x₁, …, xₙ) mod p``.
+///     Called with a Python ``list[int]`` (one int per variable) and
+///     must return an ``int``.
+/// vars : list[Expr]
+///     Symbolic variable expressions in the same order as the
+///     coordinates passed to ``eval``.
+/// term_bound : int
+///     Upper bound ``T`` on the number of nonzero terms.
+/// degree_bound : int
+///     Upper bound ``D`` on the degree of each individual variable.
+///     For the dense fallback, set ``D ≤ T``.
+/// prime : int
+///     Field characteristic ``p``.  Must satisfy ``p > 2·T`` and
+///     ``p > D``.
+/// seed : int, optional
+///     PRNG seed for random evaluation points (default 0).  Change
+///     the seed to recover from occasional Vandermonde singularities.
+///
+/// Returns
+/// -------
+/// MultiPolyFp
+///     Recovered polynomial with coefficients in ``[0, p)``.
+///     On 20-variable inputs this is typically ≥ 5× faster in oracle
+///     calls than dense interpolation.
+///
+/// Raises
+/// ------
+/// SparseInterpError
+///     On invalid prime, prime too small, or inconsistent oracle.
+///
+/// Example::
+///
+///     pool = ExprPool()
+///     x, y = pool.symbol("x"), pool.symbol("y")
+///     p = 1009
+///     def f(pt):
+///         x_, y_ = pt
+///         return (x_ * y_ + 3) % p
+///     result = sparse_interp(f, [x, y], term_bound=4, degree_bound=3, prime=p)
+#[pyfunction]
+#[pyo3(name = "sparse_interp")]
+#[pyo3(signature = (eval, vars, term_bound, degree_bound, prime, seed=0))]
+fn py_sparse_interp(
+    py: Python<'_>,
+    eval: Bound<'_, pyo3::types::PyAny>,
+    vars: Vec<PyRef<PyExpr>>,
+    term_bound: usize,
+    degree_bound: u32,
+    prime: u64,
+    seed: u64,
+) -> PyResult<PyMultiPolyFp> {
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+
+    let rust_eval = |pt: &[u64]| -> u64 {
+        let py_list = pyo3::types::PyList::new_bound(py, pt.iter().copied());
+        let result = eval
+            .call1((py_list,))
+            .expect("sparse_interp: oracle call failed");
+        result
+            .extract::<u64>()
+            .expect("sparse_interp: oracle must return int")
+    };
+
+    let fp = core_sparse_interpolate(&rust_eval, var_ids, term_bound, degree_bound, prime, seed)
+        .map_err(sparse_interp_error_to_py)?;
+    Ok(PyMultiPolyFp { inner: fp })
+}
+
+// ---------------------------------------------------------------------------
 // PA-9 — Piecewise Python bindings
 // ---------------------------------------------------------------------------
 
@@ -2577,6 +3634,170 @@ fn py_piecewise(
         pool.inner.piecewise(rust_branches, default.id)
     };
     PyExpr { id, pool: pool_py }
+}
+
+// ---------------------------------------------------------------------------
+// V3-3 — First-order logic (FOFormula)
+// ---------------------------------------------------------------------------
+
+fn require_same_pool(py: Python<'_>, a: &PyExpr, b: &PyExpr) -> PyResult<()> {
+    if !a.pool.is(&b.pool) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "expressions must belong to the same ExprPool",
+        ));
+    }
+    let _ = py;
+    Ok(())
+}
+
+/// Return ``False`` if unsatisfiable, ``True`` if satisfiable with no witness
+/// variables, a ``dict`` of symbol → rational string if a witness is found, or
+/// ``None`` if the fragment is unsupported.
+#[pyfunction(name = "satisfiable")]
+fn py_satisfiable(py: Python<'_>, formula: PyRef<PyExpr>) -> PyResult<PyObject> {
+    let pool = formula.pool.borrow(py);
+    let out: PyObject = match core_satisfiable(formula.id, &pool.inner) {
+        CoreSatisfiability::Unsat => false.to_object(py),
+        CoreSatisfiability::Unknown => py.None(),
+        CoreSatisfiability::Sat(m) => {
+            if m.is_empty() {
+                true.to_object(py)
+            } else {
+                let d = PyDict::new_bound(py);
+                for (k, v) in m {
+                    d.set_item(k, v)?;
+                }
+                d.into_py(py)
+            }
+        }
+    };
+    Ok(out)
+}
+
+/// Logical conjunction of two predicate expressions (same pool).
+#[pyfunction(name = "And")]
+fn py_logic_and(py: Python<'_>, a: PyRef<PyExpr>, b: PyRef<PyExpr>) -> PyResult<PyExpr> {
+    require_same_pool(py, &a, &b)?;
+    let pool_py = a.pool.clone_ref(py);
+    let id = pool_py.borrow(py).inner.pred_and(vec![a.id, b.id]);
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// Logical disjunction (same pool).
+#[pyfunction(name = "Or")]
+fn py_logic_or(py: Python<'_>, a: PyRef<PyExpr>, b: PyRef<PyExpr>) -> PyResult<PyExpr> {
+    require_same_pool(py, &a, &b)?;
+    let pool_py = a.pool.clone_ref(py);
+    let id = pool_py.borrow(py).inner.pred_or(vec![a.id, b.id]);
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// Logical negation.
+#[pyfunction(name = "Not")]
+fn py_logic_not(_py: Python<'_>, a: PyRef<PyExpr>) -> PyExpr {
+    let pool_py = a.pool.clone_ref(_py);
+    let id = pool_py.borrow(_py).inner.pred_not(a.id);
+    PyExpr { id, pool: pool_py }
+}
+
+/// ``∀ var . body`` (same pool).
+#[pyfunction(name = "Forall")]
+fn py_forall(py: Python<'_>, var: PyRef<PyExpr>, body: PyRef<PyExpr>) -> PyResult<PyExpr> {
+    require_same_pool(py, &var, &body)?;
+    let pool_py = var.pool.clone_ref(py);
+    let id = pool_py.borrow(py).inner.forall(var.id, body.id);
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// ``∃ var . body`` (same pool).
+#[pyfunction(name = "Exists")]
+fn py_exists(py: Python<'_>, var: PyRef<PyExpr>, body: PyRef<PyExpr>) -> PyResult<PyExpr> {
+    require_same_pool(py, &var, &body)?;
+    let pool_py = var.pool.clone_ref(py);
+    let id = pool_py.borrow(py).inner.exists(var.id, body.id);
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+fn cad_witness_symbol_name(pool: &ExprPool, sym: ExprId) -> PyResult<String> {
+    match pool.get(sym) {
+        alkahest_core::ExprData::Symbol { name, .. } => Ok(name.clone()),
+        _ => Err(PyTypeError::new_err(
+            "CAD witness uses non-symbol ExprId (internal error)",
+        )),
+    }
+}
+
+/// Decide a closed polynomial sentence over ℝ (one outer `\forall`/`\exists`; purely
+/// polynomial body in the bound symbol with integer coefficients).
+///
+/// Returns ``(truth, witness_or_none)`` where ``witness`` maps symbol names to
+/// rational decimal strings when an existential sentence is deduced satisfied.
+#[pyfunction(name = "decide")]
+fn py_decide(py: Python<'_>, formula: PyRef<PyExpr>) -> PyResult<(bool, PyObject)> {
+    let pool_py = formula.pool.clone_ref(py);
+    let bor = pool_py.borrow(py);
+    let inner = &bor.inner;
+    let r = core_decide_expr(formula.id, inner).map_err(cad_error_to_py)?;
+    let wit: PyObject = match r.witness {
+        None => py.None(),
+        Some(m) => {
+            let d = PyDict::new_bound(py);
+            for (sym, rat) in m {
+                let name = cad_witness_symbol_name(inner, sym)?;
+                d.set_item(name, rat.to_string())?;
+            }
+            d.into_py(py)
+        }
+    };
+    Ok((r.truth, wit))
+}
+
+/// Brown-style CAD projection polynomials after eliminating ``elim_var``.
+#[pyfunction(name = "cad_project")]
+fn py_cad_project(
+    py: Python<'_>,
+    polys: Vec<PyRef<PyExpr>>,
+    elim_var: PyRef<PyExpr>,
+) -> PyResult<Vec<PyExpr>> {
+    let pool_py = elim_var.pool.clone_ref(py);
+    for p in &polys {
+        if !p.pool.is(&pool_py) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "cad_project expects all Expr in the same ExprPool",
+            ));
+        }
+    }
+    let ids: Vec<ExprId> = polys.iter().map(|e| e.id).collect();
+    let bor = pool_py.borrow(py);
+    let out = core_cad_project(ids.as_slice(), elim_var.id, &bor.inner).map_err(cad_error_to_py)?;
+    Ok(out
+        .into_iter()
+        .map(|id| PyExpr {
+            id,
+            pool: pool_py.clone_ref(py),
+        })
+        .collect())
+}
+
+#[pyfunction(name = "cad_lift")]
+fn py_cad_lift(
+    py: Python<'_>,
+    polys: Vec<PyRef<PyExpr>>,
+    main_var: PyRef<PyExpr>,
+) -> PyResult<Vec<PyRootInterval>> {
+    let pool_py = main_var.pool.clone_ref(py);
+    for p in &polys {
+        if !p.pool.is(&pool_py) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "cad_lift expects all Expr in the same ExprPool",
+            ));
+        }
+    }
+    let ids: Vec<ExprId> = polys.iter().map(|e| e.id).collect();
+    let bor = pool_py.borrow(py);
+    let intervals =
+        core_cad_lift(ids.as_slice(), main_var.id, &bor.inner).map_err(cad_error_to_py)?;
+    Ok(intervals.into_iter().map(core_interval_to_py).collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -2798,7 +4019,10 @@ fn py_compile_cuda(
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "groebner")]
-use alkahest_core::{expr_to_gbpoly, GbPoly, GroebnerBasis, MonomialOrder};
+use alkahest_core::{
+    dae_index_reduce, expr_to_gbpoly, primary_decomposition, radical as core_ideal_radical,
+    rosenfeld_groebner_with_options, DaeIndexReduction, GbPoly, GroebnerBasis, MonomialOrder,
+};
 
 #[cfg(feature = "groebner")]
 #[pyclass(name = "GbPoly")]
@@ -2874,6 +4098,39 @@ impl PyGroebnerBasis {
         })
     }
 
+    /// Gröbner basis via Faugère's F5 (signature-based reduction, V2-8).
+    ///
+    /// Same calling convention as :meth:`compute`; polynomial term order is lex.
+    /// Module signatures use lex on the monomial part × generator index.
+    #[staticmethod]
+    fn compute_f5(
+        py: Python<'_>,
+        polys: Vec<PyRef<PyExpr>>,
+        vars: Vec<PyRef<PyExpr>>,
+    ) -> PyResult<PyGroebnerBasis> {
+        if polys.is_empty() || vars.is_empty() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "GroebnerBasis.compute_f5 requires at least one polynomial and one variable",
+            ));
+        }
+        let pool_py = polys[0].pool.clone_ref(py);
+        let pool = pool_py.borrow(py);
+        let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+        let mut gb_polys = Vec::with_capacity(polys.len());
+        for p in &polys {
+            let gbp = expr_to_gbpoly(p.id, &var_ids, &pool.inner)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+            gb_polys.push(gbp);
+        }
+        drop(pool);
+        let inner = GroebnerBasis::compute_f5(gb_polys, MonomialOrder::Lex);
+        Ok(PyGroebnerBasis {
+            inner,
+            pool: Some(pool_py),
+            var_ids,
+        })
+    }
+
     fn reduce(&self, p: PyRef<PyGbPoly>) -> PyGbPoly {
         PyGbPoly {
             inner: self.inner.reduce(&p.inner),
@@ -2912,14 +4169,588 @@ impl PyGroebnerBasis {
     }
 }
 
+#[cfg(feature = "groebner")]
+fn py_monomial_order_for_dae(order: Option<&str>) -> MonomialOrder {
+    order
+        .and_then(MonomialOrder::from_str)
+        .unwrap_or(MonomialOrder::GRevLex)
+}
+
+/// V2-13 — Rosenfeld–Gröbner-style differential elimination result.
+#[cfg(feature = "groebner")]
+#[pyclass(name = "RosenfeldGroebnerResult")]
+struct PyRosenfeldGroebnerResult {
+    #[pyo3(get)]
+    consistent: bool,
+    #[pyo3(get)]
+    truncated: bool,
+    #[pyo3(get)]
+    prolongation_rounds: usize,
+    working_dae: DAE,
+    final_basis: Option<GroebnerBasis>,
+    pool: Py<PyExprPool>,
+}
+
+#[cfg(feature = "groebner")]
+#[pymethods]
+impl PyRosenfeldGroebnerResult {
+    fn working_dae(&self, py: Python<'_>) -> PyDAE {
+        PyDAE {
+            inner: self.working_dae.clone(),
+            pool: self.pool.clone_ref(py),
+        }
+    }
+
+    fn final_basis(&self, py: Python<'_>) -> PyResult<Option<Py<PyGroebnerBasis>>> {
+        match &self.final_basis {
+            None => Ok(None),
+            Some(gb) => Ok(Some(Py::new(
+                py,
+                PyGroebnerBasis {
+                    inner: gb.clone(),
+                    pool: Some(self.pool.clone_ref(py)),
+                    var_ids: vec![],
+                },
+            )?)),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RosenfeldGroebnerResult(consistent={}, truncated={})",
+            self.consistent, self.truncated
+        )
+    }
+}
+
+#[cfg(feature = "groebner")]
+#[pyclass(name = "DaeIndexReduction")]
+struct PyDaeIndexReduction {
+    inner: DaeIndexReduction,
+    pool: Py<PyExprPool>,
+}
+
+#[cfg(feature = "groebner")]
+#[pymethods]
+impl PyDaeIndexReduction {
+    #[getter]
+    fn used_pantelides(&self) -> bool {
+        matches!(self.inner, DaeIndexReduction::Pantelides(_))
+    }
+
+    #[getter]
+    fn used_rosenfeld_groebner(&self) -> bool {
+        matches!(self.inner, DaeIndexReduction::Rosenfeld(_))
+    }
+
+    /// Pantelides-reduced DAE if Pantelides succeeded; else Rosenfeld working DAE.
+    fn dae(&self, py: Python<'_>) -> PyDAE {
+        let dae = match &self.inner {
+            DaeIndexReduction::Pantelides(p) => p.reduced_dae.clone(),
+            DaeIndexReduction::Rosenfeld(r) => r.working_dae.clone(),
+        };
+        PyDAE {
+            inner: dae,
+            pool: self.pool.clone_ref(py),
+        }
+    }
+
+    fn rosenfeld_groebner_result(&self, py: Python<'_>) -> Option<Py<PyRosenfeldGroebnerResult>> {
+        match &self.inner {
+            DaeIndexReduction::Rosenfeld(r) => Py::new(
+                py,
+                PyRosenfeldGroebnerResult {
+                    consistent: r.consistent,
+                    truncated: r.truncated,
+                    prolongation_rounds: r.prolongation_rounds,
+                    working_dae: r.working_dae.clone(),
+                    final_basis: r.final_basis.clone(),
+                    pool: self.pool.clone_ref(py),
+                },
+            )
+            .ok(),
+            _ => None,
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        match &self.inner {
+            DaeIndexReduction::Pantelides(p) => format!(
+                "DaeIndexReduction(pantelides, differentiation_steps={})",
+                p.differentiation_steps
+            ),
+            DaeIndexReduction::Rosenfeld(_) => "DaeIndexReduction(rosenfeld_groebner)".to_string(),
+        }
+    }
+}
+
+#[cfg(feature = "groebner")]
+#[pyfunction]
+#[pyo3(name = "rosenfeld_groebner", signature = (dae, order=None, max_prolong_rounds=None))]
+fn py_rosenfeld_groebner(
+    py: Python<'_>,
+    dae: PyRef<PyDAE>,
+    order: Option<&str>,
+    max_prolong_rounds: Option<usize>,
+) -> PyResult<PyRosenfeldGroebnerResult> {
+    let pool_py = dae.pool.clone_ref(py);
+    let r = {
+        let pool = pool_py.borrow(py);
+        rosenfeld_groebner_with_options(
+            &dae.inner,
+            &pool.inner,
+            py_monomial_order_for_dae(order),
+            max_prolong_rounds.unwrap_or(8),
+        )
+    };
+    let r = r.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(PyRosenfeldGroebnerResult {
+        consistent: r.consistent,
+        truncated: r.truncated,
+        prolongation_rounds: r.prolongation_rounds,
+        working_dae: r.working_dae,
+        final_basis: r.final_basis,
+        pool: pool_py,
+    })
+}
+
+#[cfg(feature = "groebner")]
+#[pyfunction]
+#[pyo3(name = "dae_index_reduce", signature = (dae, order=None))]
+fn py_dae_index_reduce(
+    py: Python<'_>,
+    dae: PyRef<PyDAE>,
+    order: Option<&str>,
+) -> PyResult<PyDaeIndexReduction> {
+    let pool_py = dae.pool.clone_ref(py);
+    let inner = {
+        let pool = pool_py.borrow(py);
+        dae_index_reduce(&dae.inner, &pool.inner, py_monomial_order_for_dae(order))
+    };
+    let inner = inner.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(PyDaeIndexReduction {
+        inner,
+        pool: pool_py,
+    })
+}
+
+#[cfg(feature = "groebner")]
+#[pyclass(name = "PrimaryComponent")]
+struct PyPrimaryComponent {
+    primary: GroebnerBasis,
+    associated_prime: GroebnerBasis,
+    pool: Py<PyExprPool>,
+    var_ids: Vec<ExprId>,
+}
+
+#[cfg(feature = "groebner")]
+#[pymethods]
+impl PyPrimaryComponent {
+    /// Gröbner basis of the primary component.
+    #[pyo3(name = "primary")]
+    fn py_primary(&self, py: Python<'_>) -> PyResult<Py<PyGroebnerBasis>> {
+        Py::new(
+            py,
+            PyGroebnerBasis {
+                inner: self.primary.clone(),
+                pool: Some(self.pool.clone_ref(py)),
+                var_ids: self.var_ids.clone(),
+            },
+        )
+    }
+
+    /// Gröbner basis of the associated prime (√Q).
+    #[pyo3(name = "associated_prime")]
+    fn py_associated_prime(&self, py: Python<'_>) -> PyResult<Py<PyGroebnerBasis>> {
+        Py::new(
+            py,
+            PyGroebnerBasis {
+                inner: self.associated_prime.clone(),
+                pool: Some(self.pool.clone_ref(py)),
+                var_ids: self.var_ids.clone(),
+            },
+        )
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PrimaryComponent(primary_generators={}, associated_generators={})",
+            self.primary.len(),
+            self.associated_prime.len()
+        )
+    }
+}
+
+#[cfg(feature = "groebner")]
+#[pyfunction]
+#[pyo3(name = "primary_decomposition", signature = (polys, vars))]
+fn py_primary_decomposition(
+    py: Python<'_>,
+    polys: Vec<PyRef<PyExpr>>,
+    vars: Vec<PyRef<PyExpr>>,
+) -> PyResult<Vec<Py<PyPrimaryComponent>>> {
+    if polys.is_empty() || vars.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "primary_decomposition requires at least one polynomial and one variable",
+        ));
+    }
+    let pool_py = polys[0].pool.clone_ref(py);
+    let pool = pool_py.borrow(py);
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+    let mut gb_polys = Vec::with_capacity(polys.len());
+    for p in &polys {
+        let gbp = expr_to_gbpoly(p.id, &var_ids, &pool.inner)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        gb_polys.push(gbp);
+    }
+    drop(pool);
+    let comps = primary_decomposition(gb_polys, MonomialOrder::Lex)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let mut out = Vec::with_capacity(comps.len());
+    for c in comps {
+        out.push(Py::new(
+            py,
+            PyPrimaryComponent {
+                primary: c.primary,
+                associated_prime: c.associated_prime,
+                pool: pool_py.clone_ref(py),
+                var_ids: var_ids.clone(),
+            },
+        )?);
+    }
+    Ok(out)
+}
+
+/// Radical √I of the ideal generated by `polys` (same variable order as `vars`).
+#[cfg(feature = "groebner")]
+#[pyfunction]
+#[pyo3(name = "radical", signature = (polys, vars))]
+fn py_ideal_radical(
+    py: Python<'_>,
+    polys: Vec<PyRef<PyExpr>>,
+    vars: Vec<PyRef<PyExpr>>,
+) -> PyResult<Py<PyGroebnerBasis>> {
+    if polys.is_empty() || vars.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "radical requires at least one polynomial and one variable",
+        ));
+    }
+    let pool_py = polys[0].pool.clone_ref(py);
+    let pool = pool_py.borrow(py);
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+    let mut gb_polys = Vec::with_capacity(polys.len());
+    for p in &polys {
+        let gbp = expr_to_gbpoly(p.id, &var_ids, &pool.inner)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        gb_polys.push(gbp);
+    }
+    drop(pool);
+    let gb = core_ideal_radical(gb_polys, MonomialOrder::Lex)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Py::new(
+        py,
+        PyGroebnerBasis {
+            inner: gb,
+            pool: Some(pool_py),
+            var_ids,
+        },
+    )
+}
+
 // ---------------------------------------------------------------------------
 // V1-4 — Polynomial system solver
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "groebner")]
-use alkahest_core::{solve_polynomial_system, SolutionSet};
+use alkahest_core::{
+    diophantine as core_diophantine, solve_numerical, solve_polynomial_system, triangularize,
+    CertifiedPoint, DiophantineError, DiophantineSolution as CoreDiophantineSolution,
+    HomotopyError, HomotopyOpts, RegularChain, SolutionSet,
+};
 
-/// `alkahest.solve(equations, vars, *, numeric=False) -> list[dict] | GroebnerBasis | list`
+#[cfg(feature = "groebner")]
+fn homotopy_err_to_py(e: HomotopyError) -> PyErr {
+    Python::with_gil(|py| match &e {
+        HomotopyError::Algebraic(se) => {
+            let exc = py.get_type_bound::<PySolverError>();
+            make_structured_err(py, &exc, se)
+        }
+        _ => {
+            let exc = py.get_type_bound::<PyHomotopyError>();
+            make_structured_err(py, &exc, &e)
+        }
+    })
+}
+
+/// One homotopy endpoint with optional Smale diagnostics.
+#[cfg(feature = "groebner")]
+#[pyclass(name = "CertifiedSolution")]
+struct PyCertifiedSolution {
+    inner: CertifiedPoint,
+    var_ids: Vec<ExprId>,
+    pool: Py<PyExprPool>,
+}
+
+#[cfg(feature = "groebner")]
+#[pymethods]
+impl PyCertifiedSolution {
+    #[getter]
+    fn coordinates(&self) -> Vec<f64> {
+        self.inner.coordinates.clone()
+    }
+
+    #[getter]
+    fn max_residual(&self) -> f64 {
+        self.inner.max_residual_f64
+    }
+
+    #[getter]
+    fn smale_alpha(&self) -> Option<f64> {
+        self.inner.smale_alpha
+    }
+
+    #[getter]
+    fn smale_certified(&self) -> bool {
+        self.inner.smale_certified
+    }
+
+    /// Map each variable ``Expr`` to its coordinate ``float`` (same ``vars`` order as ``solve``).
+    fn to_dict(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let d = pyo3::types::PyDict::new_bound(py);
+        for (i, &c) in self.inner.coordinates.iter().enumerate() {
+            let vx = PyExpr {
+                id: self.var_ids[i],
+                pool: self.pool.clone_ref(py),
+            };
+            d.set_item(vx.into_py(py), c)?;
+        }
+        Ok(d.into())
+    }
+
+    fn enclosures(&self) -> Vec<PyArbBall> {
+        self.inner
+            .enclosure
+            .iter()
+            .map(|b| PyArbBall { inner: b.clone() })
+            .collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "CertifiedSolution(residual={:?}, certified={})",
+            self.inner.max_residual_f64, self.inner.smale_certified,
+        )
+    }
+}
+
+/// Integer Diophantine solver (linear parametric families, sum of two squares, Pell-type).
+#[cfg(feature = "groebner")]
+#[pyclass(name = "DiophantineSolution")]
+struct PyDiophantineSolution {
+    #[pyo3(get)]
+    kind: String,
+    #[pyo3(get)]
+    parameter: Option<Py<PyExpr>>,
+    /// ``x(t), y(t), …`` when ``kind == "parametric_linear"``.
+    #[pyo3(get)]
+    parametric: Option<Vec<Py<PyExpr>>>,
+    /// List of coordinate tuples when ``kind == "finite"``.
+    #[pyo3(get)]
+    points: Option<Vec<Vec<Py<PyExpr>>>>,
+    /// Coefficient ``D`` in ``x² - D·y² = 1`` or ``x² - D·y² = N``.
+    #[pyo3(get)]
+    pell_d: Option<Py<PyExpr>>,
+    /// Fundamental unit ``(x0, y0)`` when ``kind == "pell_fundamental"``.
+    #[pyo3(get)]
+    fundamental: Option<(Py<PyExpr>, Py<PyExpr>)>,
+    /// Right-hand ``N`` in ``x² - D·y² = N`` when ``kind == "pell_generalized"``.
+    #[pyo3(get)]
+    pell_n: Option<Py<PyExpr>>,
+    /// A particular solution ``(x0, y0)`` when ``kind == "pell_generalized"``.
+    #[pyo3(get)]
+    pell_particular: Option<(Py<PyExpr>, Py<PyExpr>)>,
+    /// Unit ``(ux, uy)`` with ``ux² - D·uy² = 1`` when ``kind == "pell_generalized"``.
+    #[pyo3(get)]
+    pell_unit: Option<(Py<PyExpr>, Py<PyExpr>)>,
+}
+
+#[cfg(feature = "groebner")]
+#[pymethods]
+impl PyDiophantineSolution {
+    fn __repr__(&self) -> String {
+        format!("DiophantineSolution(kind={:?})", self.kind)
+    }
+}
+
+#[cfg(feature = "groebner")]
+fn diophantine_core_to_py(
+    py: Python<'_>,
+    sol: CoreDiophantineSolution,
+    pool_py: Py<PyExprPool>,
+) -> PyResult<PyDiophantineSolution> {
+    let wrap = |id: ExprId| {
+        Py::new(
+            py,
+            PyExpr {
+                id,
+                pool: pool_py.clone_ref(py),
+            },
+        )
+    };
+    match sol {
+        CoreDiophantineSolution::ParametricLinear { parameter, values } => {
+            let mut parametric = Vec::with_capacity(values.len());
+            for id in values {
+                parametric.push(wrap(id)?);
+            }
+            Ok(PyDiophantineSolution {
+                kind: "parametric_linear".into(),
+                parameter: Some(wrap(parameter)?),
+                parametric: Some(parametric),
+                points: None,
+                pell_d: None,
+                fundamental: None,
+                pell_n: None,
+                pell_particular: None,
+                pell_unit: None,
+            })
+        }
+        CoreDiophantineSolution::Finite(rows) => {
+            let mut pts = Vec::with_capacity(rows.len());
+            for row in rows {
+                let mut pyrow = Vec::with_capacity(row.len());
+                for id in row {
+                    pyrow.push(wrap(id)?);
+                }
+                pts.push(pyrow);
+            }
+            Ok(PyDiophantineSolution {
+                kind: "finite".into(),
+                parameter: None,
+                parametric: None,
+                points: Some(pts),
+                pell_d: None,
+                fundamental: None,
+                pell_n: None,
+                pell_particular: None,
+                pell_unit: None,
+            })
+        }
+        CoreDiophantineSolution::PellFundamental { d, x0, y0 } => Ok(PyDiophantineSolution {
+            kind: "pell_fundamental".into(),
+            parameter: None,
+            parametric: None,
+            points: None,
+            pell_d: Some(wrap(d)?),
+            fundamental: Some((wrap(x0)?, wrap(y0)?)),
+            pell_n: None,
+            pell_particular: None,
+            pell_unit: None,
+        }),
+        CoreDiophantineSolution::PellGeneralized {
+            d,
+            n,
+            x0,
+            y0,
+            unit_x,
+            unit_y,
+        } => Ok(PyDiophantineSolution {
+            kind: "pell_generalized".into(),
+            parameter: None,
+            parametric: None,
+            points: None,
+            pell_d: Some(wrap(d)?),
+            fundamental: None,
+            pell_n: Some(wrap(n)?),
+            pell_particular: Some((wrap(x0)?, wrap(y0)?)),
+            pell_unit: Some((wrap(unit_x)?, wrap(unit_y)?)),
+        }),
+        CoreDiophantineSolution::NoSolution => Ok(PyDiophantineSolution {
+            kind: "no_solution".into(),
+            parameter: None,
+            parametric: None,
+            points: None,
+            pell_d: None,
+            fundamental: None,
+            pell_n: None,
+            pell_particular: None,
+            pell_unit: None,
+        }),
+    }
+}
+
+#[cfg(feature = "groebner")]
+#[pyfunction]
+#[pyo3(name = "diophantine", signature = (equation, vars))]
+fn py_diophantine(
+    py: Python<'_>,
+    equation: PyRef<PyExpr>,
+    vars: Vec<PyRef<PyExpr>>,
+) -> PyResult<PyDiophantineSolution> {
+    if vars.len() != 2 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "diophantine requires exactly two Expr variables",
+        ));
+    }
+    let pool_py = equation.pool.clone_ref(py);
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+    let sol = {
+        let pool = pool_py.borrow(py);
+        core_diophantine(&pool.inner, equation.id, &var_ids)
+    }
+    .map_err(diophantine_error_to_py)?;
+    diophantine_core_to_py(py, sol, pool_py)
+}
+
+#[cfg(feature = "groebner")]
+#[pyfunction]
+#[pyo3(name = "solve_numerical", signature = (
+    equations,
+    vars,
+    *,
+    max_bezout_paths=None,
+    certify_prec_bits=None,
+))]
+fn py_solve_numerical(
+    py: Python<'_>,
+    equations: Vec<PyRef<PyExpr>>,
+    vars: Vec<PyRef<PyExpr>>,
+    max_bezout_paths: Option<usize>,
+    certify_prec_bits: Option<u32>,
+) -> PyResult<Vec<PyCertifiedSolution>> {
+    if equations.is_empty() || vars.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "solve_numerical requires at least one equation and one variable",
+        ));
+    }
+    let pool_py = equations[0].pool.clone_ref(py);
+    let eq_ids: Vec<ExprId> = equations.iter().map(|e| e.id).collect();
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+    let mut opts = HomotopyOpts::default();
+    if let Some(m) = max_bezout_paths {
+        opts.max_bezout_paths = m;
+    }
+    if let Some(b) = certify_prec_bits {
+        opts.certify_prec_bits = b;
+    }
+    let pts = {
+        let pool = pool_py.borrow(py);
+        solve_numerical(&eq_ids, &var_ids, &pool.inner, &opts)
+    };
+    match pts {
+        Err(e) => Err(homotopy_err_to_py(e)),
+        Ok(v) => Ok(v
+            .into_iter()
+            .map(|inner| PyCertifiedSolution {
+                inner,
+                var_ids: var_ids.clone(),
+                pool: pool_py.clone_ref(py),
+            })
+            .collect()),
+    }
+}
+
+/// `alkahest.solve(equations, vars, *, numeric=False, method="groebner")`
 ///
 /// Solve a zero-dimensional polynomial system.
 ///
@@ -2928,27 +4759,30 @@ use alkahest_core::{solve_polynomial_system, SolutionSet};
 /// equations : list[Expr]
 ///     Each expression represents `p(vars) = 0`.
 /// vars : list[Expr]
-///     The symbolic variables to solve for (must be symbols).
+///     Variables to solve for (symbols).
 /// numeric : bool, default False
-///     When ``False`` (default), each solution dict maps ``Expr → Expr``
-///     (symbolic).  When ``True``, values are cast to ``float`` (legacy
-///     behaviour; useful for quick numerical checks).
+///     Used when ``method="groebner"``: symbolic ``Expr`` values vs ``float``.
+/// method : str, default ``"groebner"``
+///     ``"groebner"`` — Lex basis + triangular back-substitution.
+///     ``"homotopy"`` — total-degree homotopy continuation in ``ℂⁿ`` followed
+///     by Newton projection to real tuples (always ``float`` dict values).
 ///
 /// Returns
 /// -------
 /// list[dict]
-///     Each dict maps a variable ``Expr`` to a solution value.
-///     Returns an empty list when no solution exists.
+///     Each dict maps a variable ``Expr`` to ``Expr`` (symbolic Groebner) or
+///     ``float`` (Groebner with ``numeric=True``, or ``method="homotopy"``).
 /// GroebnerBasis
-///     When the system has infinitely many solutions (parametric ideal).
+///     When ``method="groebner"`` and the ideal is parametric / not zero-dim finite.
 #[cfg(feature = "groebner")]
 #[pyfunction]
-#[pyo3(name = "solve", signature = (equations, vars, numeric = false))]
+#[pyo3(name = "solve", signature = (equations, vars, *, numeric = false, method = "groebner"))]
 fn py_solve(
     py: Python<'_>,
     equations: Vec<PyRef<PyExpr>>,
     vars: Vec<PyRef<PyExpr>>,
     numeric: bool,
+    method: &str,
 ) -> PyResult<PyObject> {
     if equations.is_empty() || vars.is_empty() {
         return Err(pyo3::exceptions::PyValueError::new_err(
@@ -2958,6 +4792,38 @@ fn py_solve(
     let pool_py = equations[0].pool.clone_ref(py);
     let eq_ids: Vec<ExprId> = equations.iter().map(|e| e.id).collect();
     let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+
+    if method == "homotopy" {
+        let opts = HomotopyOpts::default();
+        let pts = {
+            let pool = pool_py.borrow(py);
+            solve_numerical(&eq_ids, &var_ids, &pool.inner, &opts)
+        };
+        return match pts {
+            Err(e) => Err(homotopy_err_to_py(e)),
+            Ok(points) => {
+                let list = pyo3::types::PyList::empty_bound(py);
+                for p in points {
+                    let d = pyo3::types::PyDict::new_bound(py);
+                    for (i, &val) in p.coordinates.iter().enumerate() {
+                        let var_expr = PyExpr {
+                            id: var_ids[i],
+                            pool: pool_py.clone_ref(py),
+                        };
+                        d.set_item(var_expr.into_py(py), val)?;
+                    }
+                    list.append(d)?;
+                }
+                Ok(list.into())
+            }
+        };
+    }
+
+    if method != "groebner" {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown solve method: {method:?} (expected 'groebner' or 'homotopy')"
+        )));
+    }
 
     let result = {
         let pool = pool_py.borrow(py);
@@ -2987,14 +4853,12 @@ fn py_solve(
                         pool: pool_py.clone_ref(py),
                     };
                     if numeric {
-                        // Legacy numeric path: cast solution ExprId to f64.
                         let env: std::collections::HashMap<ExprId, f64> =
                             std::collections::HashMap::new();
                         let f = alkahest_core::jit::eval_interp(*val, &env, &pool.inner)
                             .unwrap_or(f64::NAN);
                         d.set_item(var_expr.into_py(py), f)?;
                     } else {
-                        // Symbolic path: wrap the solution ExprId as a PyExpr.
                         let val_expr = PyExpr {
                             id: *val,
                             pool: pool_py.clone_ref(py),
@@ -3007,6 +4871,405 @@ fn py_solve(
             Ok(list.into())
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// V2-11 — Regular chains / triangular decomposition
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "groebner")]
+#[pyclass(name = "RegularChain")]
+struct PyRegularChain {
+    inner: RegularChain,
+}
+
+#[cfg(feature = "groebner")]
+#[pymethods]
+impl PyRegularChain {
+    #[getter]
+    fn n_vars(&self) -> usize {
+        self.inner.n_vars
+    }
+
+    /// Gröbner-style polynomial tiles (``GbPoly``), ascending by main variable.
+    fn polys(&self) -> Vec<PyGbPoly> {
+        self.inner
+            .polys
+            .iter()
+            .map(|p| PyGbPoly { inner: p.clone() })
+            .collect()
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "RegularChain(n_vars={}, n_polys={})",
+            self.inner.n_vars,
+            self.inner.len()
+        )
+    }
+}
+
+/// Lex-basis triangular decomposition (possibly split on factored univariates).
+#[cfg(feature = "groebner")]
+#[pyfunction]
+#[pyo3(name = "triangularize", signature = (equations, vars))]
+fn py_triangularize(
+    py: Python<'_>,
+    equations: Vec<PyRef<PyExpr>>,
+    vars: Vec<PyRef<PyExpr>>,
+) -> PyResult<PyObject> {
+    if equations.is_empty() || vars.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "triangularize requires at least one equation and one variable",
+        ));
+    }
+    let pool_py = equations[0].pool.clone_ref(py);
+    let eq_ids: Vec<ExprId> = equations.iter().map(|e| e.id).collect();
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+
+    let result = {
+        let pool = pool_py.borrow(py);
+        triangularize(eq_ids, var_ids, &pool.inner)
+    };
+
+    match result {
+        Err(e) => Python::with_gil(|py2| {
+            let exc_type = py2.get_type_bound::<PySolverError>();
+            Err(make_structured_err(py2, &exc_type, &e))
+        }),
+        Ok(chains) => {
+            let list = pyo3::types::PyList::empty_bound(py);
+            for chain in chains {
+                list.append(PyRegularChain { inner: chain }.into_py(py))?;
+            }
+            Ok(list.into())
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// V2-1 — Modular / CRT framework
+// ---------------------------------------------------------------------------
+
+#[pyclass(name = "MultiPolyFp")]
+struct PyMultiPolyFp {
+    inner: MultiPolyFp,
+}
+
+#[pymethods]
+impl PyMultiPolyFp {
+    fn is_zero(&self) -> bool {
+        self.inner.is_zero()
+    }
+
+    fn total_degree(&self) -> u32 {
+        self.inner.total_degree()
+    }
+
+    #[getter]
+    fn modulus(&self) -> u64 {
+        self.inner.modulus
+    }
+
+    /// Return the polynomial's terms as a ``dict`` mapping exponent tuples
+    /// to coefficients.  Exponent tuples have trailing zeros removed.
+    ///
+    /// Example::
+    ///
+    ///     fp = modular_reduce(poly, 101)
+    ///     for exp_tuple, coeff in fp.terms.items():
+    ///         print(exp_tuple, coeff)
+    #[getter]
+    fn terms<'py>(&self, py: Python<'py>) -> pyo3::Bound<'py, pyo3::types::PyDict> {
+        let dict = pyo3::types::PyDict::new_bound(py);
+        for (exp, &coeff) in &self.inner.terms {
+            let key = pyo3::types::PyTuple::new_bound(py, exp.iter().copied());
+            dict.set_item(key, coeff).unwrap();
+        }
+        dict
+    }
+
+    fn __repr__(&self) -> String {
+        format!("MultiPolyFp({})", self.inner)
+    }
+
+    fn __str__(&self) -> String {
+        self.inner.to_string()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// V3-1 — Integer number theory
+// ---------------------------------------------------------------------------
+
+/// Quadratic Dirichlet character modulo an odd square-free conductor \(q \ge 3\).
+///
+/// Matches the Jacobi symbol \((\\cdot \\mid q)\) on residues coprime to \(q\) (otherwise `0`).
+#[pyclass(name = "DirichletChi", module = "alkahest")]
+struct PyDirichletChi {
+    inner: CoreQuadraticDirichlet,
+}
+
+#[pymethods]
+impl PyDirichletChi {
+    #[new]
+    #[pyo3(text_signature = "(conductor:int)")]
+    fn py_new(conductor: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let c = py_int_decimal(conductor)?;
+        CoreQuadraticDirichlet::new(&c)
+            .map(|inner| PyDirichletChi { inner })
+            .map_err(number_theory_error_to_py)
+    }
+
+    #[getter]
+    fn conductor(&self) -> String {
+        self.inner.conductor()
+    }
+
+    fn eval(&self, n: &Bound<'_, PyAny>) -> PyResult<i32> {
+        let ns = py_int_decimal(n)?;
+        self.inner.eval(&ns).map_err(number_theory_error_to_py)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("DirichletChi({})", self.inner.conductor())
+    }
+}
+
+/// Provable/prime-tested `bool` (`fmpz_is_prime`).
+#[pyfunction]
+#[pyo3(name = "nt_isprime", signature = (n))]
+fn py_nt_isprime(n: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let s = py_int_decimal(n)?;
+    nt_isprime(&s).map_err(number_theory_error_to_py)
+}
+
+/// Factorisation payload: `(sign, [(prime_decimal, exponent), ...])`.
+#[pyfunction]
+#[pyo3(name = "nt_factorint", signature = (n))]
+fn py_nt_factorint(n: &Bound<'_, PyAny>) -> PyResult<(i32, Vec<(String, u64)>)> {
+    let s = py_int_decimal(n)?;
+    nt_factorint(&s).map_err(number_theory_error_to_py)
+}
+
+/// Next prime strictly after `n` (full proof when `proved` is `True`).
+#[pyfunction]
+#[pyo3(name = "nt_nextprime", signature = (n, proved = true))]
+fn py_nt_nextprime(n: &Bound<'_, PyAny>, proved: bool) -> PyResult<String> {
+    let s = py_int_decimal(n)?;
+    nt_nextprime(&s, proved).map_err(number_theory_error_to_py)
+}
+
+/// Euler φ(`n`).
+#[pyfunction]
+#[pyo3(name = "nt_totient", signature = (n))]
+fn py_nt_totient(n: &Bound<'_, PyAny>) -> PyResult<String> {
+    let s = py_int_decimal(n)?;
+    nt_totient(&s).map_err(number_theory_error_to_py)
+}
+
+/// Jacobi symbol (`a`|`n`).
+#[pyfunction]
+#[pyo3(name = "nt_jacobi", signature = (a, n))]
+fn py_nt_jacobi(a: &Bound<'_, PyAny>, n: &Bound<'_, PyAny>) -> PyResult<i32> {
+    let sa = py_int_decimal(a)?;
+    let sn = py_int_decimal(n)?;
+    nt_jacobi_symbol(&sa, &sn).map_err(number_theory_error_to_py)
+}
+
+/// Modular `k`th root modulo prime `p` (sqrt path or inversion when `\gcd(k,p-1)=1`).
+#[pyfunction]
+#[pyo3(name = "nt_nthroot_mod", signature = (a, k, p))]
+fn py_nt_nthroot_mod(a: &Bound<'_, PyAny>, k: u64, p: &Bound<'_, PyAny>) -> PyResult<String> {
+    let sa = py_int_decimal(a)?;
+    let sp = py_int_decimal(p)?;
+    nt_nthroot_mod(&sa, k, &sp).map_err(number_theory_error_to_py)
+}
+
+/// Smallest nonnegative `e` with `base**e ≡ residue \pmod modulus` (`modulus` prime).
+#[pyfunction]
+#[pyo3(name = "nt_discrete_log", signature = (residue, base, modulus))]
+fn py_nt_discrete_log(
+    residue: &Bound<'_, PyAny>,
+    base: &Bound<'_, PyAny>,
+    modulus: &Bound<'_, PyAny>,
+) -> PyResult<String> {
+    let sr = py_int_decimal(residue)?;
+    let sb = py_int_decimal(base)?;
+    let sm = py_int_decimal(modulus)?;
+    nt_discrete_log(&sr, &sb, &sm).map_err(number_theory_error_to_py)
+}
+
+/// Reduce a polynomial over ℤ to F_p = ℤ/pℤ.
+///
+/// Returns a `MultiPolyFp` with coefficients in [0, p).
+/// Raises `ModularError` if `p` is not prime.
+#[pyfunction]
+#[pyo3(name = "modular_reduce")]
+fn py_modular_reduce(poly: PyRef<PyMultiPoly>, p: u64) -> PyResult<PyMultiPolyFp> {
+    core_reduce_mod(&poly.inner, p)
+        .map(|fp| PyMultiPolyFp { inner: fp })
+        .map_err(modular_error_to_py)
+}
+
+/// Reconstruct a polynomial over ℤ from modular images via CRT.
+///
+/// `polys` and `primes` must have the same length.
+/// All images must share the same variable list.
+#[pyfunction]
+#[pyo3(name = "modular_lift_crt")]
+fn py_modular_lift_crt(
+    polys: Vec<PyRef<PyMultiPolyFp>>,
+    primes: Vec<u64>,
+) -> PyResult<PyMultiPoly> {
+    if polys.len() != primes.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "polys and primes must have the same length",
+        ));
+    }
+    let images: Vec<(MultiPolyFp, u64)> = polys
+        .iter()
+        .zip(primes.iter())
+        .map(|(p, &prime)| (p.inner.clone(), prime))
+        .collect();
+    core_lift_crt(&images)
+        .map(|mp| PyMultiPoly { inner: mp })
+        .map_err(modular_error_to_py)
+}
+
+/// Rational reconstruction: find a/b ≡ n (mod m) with small |a| and b.
+///
+/// Returns `(a_str, b_str)` as decimal strings (convert with `int()`),
+/// or `None` if no rational with norm ≤ ⌊√(m/2)⌋ exists.
+/// Both `n_str` and `m_str` are decimal integer strings.
+#[pyfunction]
+#[pyo3(name = "modular_rational_reconstruction")]
+fn py_modular_rational_reconstruction(
+    n_str: &str,
+    m_str: &str,
+) -> PyResult<Option<(String, String)>> {
+    use rug::{Complete, Integer};
+    let n = Integer::parse(n_str)
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid integer for n"))?
+        .complete();
+    let m = Integer::parse(m_str)
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid integer for m"))?
+        .complete();
+    Ok(core_rational_reconstruction(&n, &m).map(|(a, b)| (a.to_string(), b.to_string())))
+}
+
+/// Compute the Mignotte coefficient bound for a polynomial.
+///
+/// Returns the bound as a decimal integer string (use `int()` to convert).
+#[pyfunction]
+#[pyo3(name = "modular_mignotte_bound")]
+fn py_modular_mignotte_bound(poly: PyRef<PyMultiPoly>) -> String {
+    core_mignotte_bound(&poly.inner).to_string()
+}
+
+/// Select the smallest lucky prime not in `used` that does not divide `avoid_divisor_str`.
+///
+/// `avoid_divisor_str` is a decimal integer string. Pass `"0"` for no constraint.
+#[pyfunction]
+#[pyo3(name = "modular_select_lucky_prime")]
+fn py_modular_select_lucky_prime(avoid_divisor_str: &str, used: Vec<u64>) -> PyResult<u64> {
+    use rug::{Complete, Integer};
+    let avoid = Integer::parse(avoid_divisor_str)
+        .map_err(|_| pyo3::exceptions::PyValueError::new_err("invalid integer for avoid_divisor"))?
+        .complete();
+    Ok(core_select_lucky_prime(&avoid, &used))
+}
+
+/// LLL‑reduce rows of integers (same ambient dimension across rows).
+#[pyfunction]
+#[pyo3(name = "lat_lll_reduce_rows", signature=(rows, delta_num=None, delta_den=None))]
+fn py_lat_lll_reduce_rows(
+    rows: Vec<Vec<i64>>,
+    delta_num: Option<i64>,
+    delta_den: Option<i64>,
+) -> PyResult<Vec<Vec<i64>>> {
+    use rug::Integer;
+    let basis: Vec<Vec<Integer>> = rows
+        .into_iter()
+        .map(|r| r.into_iter().map(Integer::from).collect())
+        .collect();
+    let reduced = match (delta_num, delta_den) {
+        (Some(n), Some(d)) if d != 0 => {
+            let delta = rug::Rational::from((n, d));
+            core_lattice_reduce_rows_with_delta(&basis, delta).map_err(lattice_error_to_py)?
+        }
+        _ => core_lattice_reduce_rows(&basis).map_err(lattice_error_to_py)?,
+    };
+    reduced
+        .into_iter()
+        .map(|r| {
+            r.into_iter()
+                .map(|z| {
+                    z.to_i64()
+                        .ok_or_else(|| PyOverflowError::new_err("LLL matrix entry overflows i64"))
+                })
+                .collect::<PyResult<Vec<_>>>()
+        })
+        .collect::<PyResult<Vec<_>>>()
+}
+
+/// Search for `[aᵢ]` such that Σ aᵢ constantsᵢ ≈ 0 (mixed `float` / decimal strings).
+///
+/// Typical high‑precision literals: `"1.644934066848226436472415166646025189219…"` matched with
+/// `precision_bits≈664` for ~200 decimals.
+#[pyfunction]
+#[pyo3(name = "guess_relation", signature=(constants, precision_bits=664, max_abs_coeff=None))]
+fn py_guess_relation(
+    constants: Bound<'_, PyAny>,
+    precision_bits: u32,
+    max_abs_coeff: Option<u128>,
+) -> PyResult<Option<Vec<i64>>> {
+    use rug::ops::CompleteRound;
+    use rug::Float;
+    let list = constants
+        .downcast::<PyList>()
+        .map_err(|_| PyTypeError::new_err("constants must be a list"))?;
+    let n = list.len();
+    let mut xs: Vec<Float> = Vec::with_capacity(n);
+    for i in 0..n {
+        let item = list.get_item(i)?;
+        if let Ok(v) = item.extract::<f64>() {
+            xs.push(Float::with_val(precision_bits, v));
+        } else if let Ok(s) = item.extract::<String>() {
+            xs.push(
+                Float::parse(s.trim())
+                    .map_err(|_| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "could not parse decimal string as floating constant",
+                        )
+                    })?
+                    .complete(precision_bits),
+            );
+        } else {
+            return Err(PyTypeError::new_err(
+                "each constant must be a float or decimal string",
+            ));
+        }
+    }
+    let rel = core_guess_integer_relation(&xs, precision_bits, max_abs_coeff)
+        .map_err(pslq_error_to_py)?;
+    Ok(match rel {
+        None => None,
+        Some(coeffs) => {
+            let mut out = Vec::with_capacity(coeffs.len());
+            for z in coeffs {
+                let v = z.to_i64().ok_or_else(|| {
+                    PyOverflowError::new_err("coefficient overflows i64; report for bigint output")
+                })?;
+                out.push(v);
+            }
+            Some(out)
+        }
+    })
 }
 
 #[pymodule]
@@ -3023,6 +5286,15 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_diff, m)?)?;
     m.add_function(wrap_pyfunction!(py_diff_forward, m)?)?;
     m.add_function(wrap_pyfunction!(py_integrate, m)?)?;
+    m.add_function(wrap_pyfunction!(py_series, m)?)?;
+    m.add_function(wrap_pyfunction!(py_limit, m)?)?;
+    m.add_function(wrap_pyfunction!(py_sum_indefinite, m)?)?;
+    m.add_function(wrap_pyfunction!(py_sum_definite, m)?)?;
+    m.add_function(wrap_pyfunction!(py_product_indefinite, m)?)?;
+    m.add_function(wrap_pyfunction!(py_product_definite, m)?)?;
+    m.add_function(wrap_pyfunction!(py_solve_linear_recurrence_homogeneous, m)?)?;
+    m.add_function(wrap_pyfunction!(py_rsolve, m)?)?;
+    m.add_function(wrap_pyfunction!(py_verify_wz_pair, m)?)?;
     m.add_function(wrap_pyfunction!(match_pattern, m)?)?;
     m.add_function(wrap_pyfunction!(make_rule, m)?)?;
     m.add_function(wrap_pyfunction!(py_subs, m)?)?;
@@ -3053,8 +5325,12 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyExprPool>()?;
     m.add_class::<PyExpr>()?;
     m.add_class::<PyDerivedResult>()?;
+    m.add_class::<PySeries>()?;
     m.add_class::<PyUniPoly>()?;
     m.add_class::<PyMultiPoly>()?;
+    m.add_class::<PyUniPolyFactorization>()?;
+    m.add_class::<PyMultiPolyFactorization>()?;
+    m.add_class::<PyUniPolyFactorModP>()?;
     m.add_class::<PyRationalFunction>()?;
     m.add_class::<PyRewriteRule>()?;
     // Phase 14
@@ -3094,12 +5370,24 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_emit_c, m)?)?;
     // Phase 26 — collect_like_terms
     m.add_function(wrap_pyfunction!(py_collect_like_terms, m)?)?;
+    // V3-2 — Pauli / Clifford (non-commutative helpers)
+    m.add_function(wrap_pyfunction!(py_simplify_pauli, m)?)?;
+    m.add_function(wrap_pyfunction!(py_simplify_clifford_orthogonal, m)?)?;
     // Phase 27 — poly_normal
     m.add_function(wrap_pyfunction!(py_poly_normal, m)?)?;
     // PA-5 — Primitive registry
     m.add_class::<PyPrimitiveRegistry>()?;
     // PA-9 — Piecewise
     m.add_function(wrap_pyfunction!(py_piecewise, m)?)?;
+    m.add_function(wrap_pyfunction!(py_satisfiable, m)?)?;
+    m.add_function(wrap_pyfunction!(py_logic_and, m)?)?;
+    m.add_function(wrap_pyfunction!(py_logic_or, m)?)?;
+    m.add_function(wrap_pyfunction!(py_logic_not, m)?)?;
+    m.add_function(wrap_pyfunction!(py_forall, m)?)?;
+    m.add_function(wrap_pyfunction!(py_exists, m)?)?;
+    m.add_function(wrap_pyfunction!(py_decide, m)?)?;
+    m.add_function(wrap_pyfunction!(py_cad_project, m)?)?;
+    m.add_function(wrap_pyfunction!(py_cad_lift, m)?)?;
     // V5-1 — Lean 4 certificate exporter
     m.add_function(wrap_pyfunction!(py_to_lean, m)?)?;
     // V5-2 — StableHLO/XLA bridge
@@ -3115,8 +5403,51 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     {
         m.add_class::<PyGbPoly>()?;
         m.add_class::<PyGroebnerBasis>()?;
+        m.add_class::<PyRosenfeldGroebnerResult>()?;
+        m.add_class::<PyDaeIndexReduction>()?;
+        m.add_class::<PyPrimaryComponent>()?;
+        m.add_class::<PyRegularChain>()?;
+        m.add_class::<PyCertifiedSolution>()?;
+        m.add_class::<PyDiophantineSolution>()?;
+        m.add_function(wrap_pyfunction!(py_solve_numerical, m)?)?;
+        m.add_function(wrap_pyfunction!(py_diophantine, m)?)?;
         m.add_function(wrap_pyfunction!(py_solve, m)?)?;
+        m.add_function(wrap_pyfunction!(py_triangularize, m)?)?;
+        m.add_function(wrap_pyfunction!(py_primary_decomposition, m)?)?;
+        m.add_function(wrap_pyfunction!(py_ideal_radical, m)?)?;
+        m.add_function(wrap_pyfunction!(py_rosenfeld_groebner, m)?)?;
+        m.add_function(wrap_pyfunction!(py_dae_index_reduce, m)?)?;
     }
+    // V2-2 — Resultants and subresultant PRS
+    m.add_function(wrap_pyfunction!(py_resultant, m)?)?;
+    m.add_function(wrap_pyfunction!(py_subresultant_prs, m)?)?;
+    // V2-3 — Sparse interpolation
+    m.add_function(wrap_pyfunction!(py_sparse_interp_univariate, m)?)?;
+    m.add_function(wrap_pyfunction!(py_sparse_interp, m)?)?;
+    // V2-4 — Real root isolation
+    m.add_class::<PyRootInterval>()?;
+    m.add_function(wrap_pyfunction!(py_real_roots, m)?)?;
+    m.add_function(wrap_pyfunction!(py_refine_root, m)?)?;
+    m.add_function(wrap_pyfunction!(py_factor_univariate_mod_p, m)?)?;
+    // V2-6 — Lattice / integer relations
+    m.add_function(wrap_pyfunction!(py_lat_lll_reduce_rows, m)?)?;
+    m.add_function(wrap_pyfunction!(py_guess_relation, m)?)?;
+    // V2-1 — Modular / CRT framework
+    m.add_class::<PyMultiPolyFp>()?;
+    m.add_function(wrap_pyfunction!(py_modular_reduce, m)?)?;
+    m.add_function(wrap_pyfunction!(py_modular_lift_crt, m)?)?;
+    m.add_function(wrap_pyfunction!(py_modular_rational_reconstruction, m)?)?;
+    m.add_function(wrap_pyfunction!(py_modular_mignotte_bound, m)?)?;
+    m.add_function(wrap_pyfunction!(py_modular_select_lucky_prime, m)?)?;
+    // V3-1 — Integer number theory
+    m.add_class::<PyDirichletChi>()?;
+    m.add_function(wrap_pyfunction!(py_nt_isprime, m)?)?;
+    m.add_function(wrap_pyfunction!(py_nt_factorint, m)?)?;
+    m.add_function(wrap_pyfunction!(py_nt_nextprime, m)?)?;
+    m.add_function(wrap_pyfunction!(py_nt_totient, m)?)?;
+    m.add_function(wrap_pyfunction!(py_nt_jacobi, m)?)?;
+    m.add_function(wrap_pyfunction!(py_nt_nthroot_mod, m)?)?;
+    m.add_function(wrap_pyfunction!(py_nt_discrete_log, m)?)?;
     // V1-3 — Structured exception hierarchy
     m.add("AlkahestError", m.py().get_type_bound::<PyAlkahestError>())?;
     m.add(
@@ -3130,14 +5461,48 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "IntegrationError",
         m.py().get_type_bound::<PyIntegrationError>(),
     )?;
+    m.add("SeriesError", m.py().get_type_bound::<PySeriesError>())?;
+    m.add("LimitError", m.py().get_type_bound::<PyLimitError>())?;
     m.add("MatrixError", m.py().get_type_bound::<PyMatrixError>())?;
+    m.add("EigenError", m.py().get_type_bound::<PyEigenError>())?;
+    m.add("ModularError", m.py().get_type_bound::<PyModularError>())?;
     m.add("OdeError", m.py().get_type_bound::<PyOdeError>())?;
     m.add("DaeError", m.py().get_type_bound::<PyDaeError>())?;
     m.add("JitError", m.py().get_type_bound::<PyJitError>())?;
     m.add("SolverError", m.py().get_type_bound::<PySolverError>())?;
+    m.add("HomotopyError", m.py().get_type_bound::<PyHomotopyError>())?;
     m.add("CudaError", m.py().get_type_bound::<PyCudaError>())?;
     m.add("IoError", m.py().get_type_bound::<PyIoError>())?;
     m.add("ParseError", m.py().get_type_bound::<PyParseError>())?;
+    m.add("FactorError", m.py().get_type_bound::<PyFactorError>())?;
+    m.add(
+        "ResultantError",
+        m.py().get_type_bound::<PyResultantError>(),
+    )?;
+    m.add(
+        "SparseInterpError",
+        m.py().get_type_bound::<PySparseInterpError>(),
+    )?;
+    m.add("RealRootError", m.py().get_type_bound::<PyRealRootError>())?;
+    m.add("LatticeError", m.py().get_type_bound::<PyLatticeError>())?;
+    m.add("PslqError", m.py().get_type_bound::<PyPslqError>())?;
+    m.add("CadError", m.py().get_type_bound::<PyCadError>())?;
+    m.add("SumError", m.py().get_type_bound::<PySumError>())?;
+    m.add("ProductError", m.py().get_type_bound::<PyProductError>())?;
+    m.add(
+        "NumberTheoryError",
+        m.py().get_type_bound::<PyNumberTheoryError>(),
+    )?;
+    m.add(
+        "LinearRecurrenceError",
+        m.py().get_type_bound::<PyLinearRecurrenceError>(),
+    )?;
+    m.add("RsolveError", m.py().get_type_bound::<PyRsolveError>())?;
+    #[cfg(feature = "groebner")]
+    m.add(
+        "DiophantineError",
+        m.py().get_type_bound::<PyDiophantineError>(),
+    )?;
     // V1-15: compile-time flag so Python tests can skip egraph-dependent assertions.
     m.add("HAS_EGRAPH", cfg!(feature = "egraph"))?;
     Ok(())

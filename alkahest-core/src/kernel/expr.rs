@@ -173,6 +173,8 @@ pub enum ExprData {
     Symbol {
         name: String,
         domain: Domain,
+        /// When `false`, this generator does not commute under multiplication; see V3-2.
+        commutative: bool,
     },
     Integer(BigInt),
     Rational(BigRat),
@@ -203,4 +205,16 @@ pub enum ExprData {
         kind: PredicateKind,
         args: Vec<ExprId>,
     },
+    /// Universal quantification (`∀ var . body`).  Used by first-order logic (V3-3).
+    Forall {
+        var: ExprId,
+        body: ExprId,
+    },
+    /// Existential quantification (`∃ var . body`).
+    Exists {
+        var: ExprId,
+        body: ExprId,
+    },
+    /// Landau big-O remainder: `O(arg)` as a symbolic order bound (V2-15 series API).
+    BigO(ExprId),
 }

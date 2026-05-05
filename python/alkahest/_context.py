@@ -46,6 +46,7 @@ def get_context_value(key: str, default: Any = None) -> Any:
 # Public context manager
 # ---------------------------------------------------------------------------
 
+
 @contextmanager
 def context(
     *,
@@ -120,7 +121,10 @@ def context(
 # Context-aware convenience helpers
 # ---------------------------------------------------------------------------
 
-def symbol(name: str, *, pool: Any = None, domain: Any = None) -> Any:
+
+def symbol(
+    name: str, *, pool: Any = None, domain: Any = None, commutative: bool = True
+) -> Any:
     """Create a symbol, inferring *pool* and *domain* from the active context.
 
     Parameters
@@ -131,6 +135,8 @@ def symbol(name: str, *, pool: Any = None, domain: Any = None) -> Any:
         Explicit pool; overrides the context pool.
     domain : Domain, optional
         Explicit domain; overrides the context domain.
+    commutative : bool
+        When ``False``, the symbol does not commute under multiplication (V3-2).
 
     Returns
     -------
@@ -151,7 +157,7 @@ def symbol(name: str, *, pool: Any = None, domain: Any = None) -> Any:
             "alkahest.symbol() requires a pool.  Either pass pool= or enter a "
             "alkahest.context(pool=...) block."
         )
-    return resolved_pool.symbol(name, resolved_domain)
+    return resolved_pool.symbol(name, resolved_domain, commutative=commutative)
 
 
 def active_pool() -> Any | None:

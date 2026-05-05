@@ -1,3 +1,4 @@
+use alkahest_core::matrix::{hermite_form, IntegerMatrix};
 #[cfg(feature = "egraph")]
 use alkahest_core::simplify_egraph;
 use alkahest_core::{
@@ -723,6 +724,23 @@ fn bench_nvptx(c: &mut Criterion) {
 #[cfg(not(feature = "cuda"))]
 fn bench_nvptx(_c: &mut Criterion) {}
 
+fn bench_hnf(c: &mut Criterion) {
+    let n = 50;
+    let rows: Vec<Vec<i64>> = (0..n)
+        .map(|i| {
+            (0..n)
+                .map(|j| (((i * 17 + j * 31) % 97) as i64).saturating_sub(48))
+                .collect()
+        })
+        .collect();
+    let m = IntegerMatrix::from_nested(rows).unwrap();
+    c.bench_function("hnf_50x50", |b| {
+        b.iter(|| {
+            let _ = hermite_form(std::hint::black_box(&m));
+        });
+    });
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -741,5 +759,6 @@ criterion_group!(
     bench_ball,
     bench_par,
     bench_nvptx,
+    bench_hnf,
 );
 criterion_main!(benches);

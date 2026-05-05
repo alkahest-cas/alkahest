@@ -4,6 +4,9 @@ use crate::kernel::{
 };
 use std::fmt;
 
+/// Canonical ∞ symbol name for [`ExprPool::pos_infinity`] / limits (V2-16).
+pub const POS_INFINITY_SYMBOL: &str = "\u{221e}";
+
 // ---------------------------------------------------------------------------
 // Lock-free arena for ExprPool nodes.
 //
@@ -115,9 +118,8 @@ impl ExprPool {
             // Slow path: DashMap shard write-lock ensures at most one push
             // per unique key.  `boxcar::push` is lock-free so it can be
             // called safely while the shard lock is held.
-            self.index.or_insert_with(data.clone(), || {
-                ExprId(self.nodes.push(data) as u32)
-            })
+            self.index
+                .or_insert_with(data.clone(), || ExprId(self.nodes.push(data) as u32))
         }
 
         #[cfg(not(feature = "parallel"))]
@@ -158,10 +160,23 @@ impl ExprPool {
     // Atom constructors
     // -----------------------------------------------------------------------
 
+    /// Free symbol; multiplication treats it as commuting with every other factor (default).
     pub fn symbol(&self, name: impl Into<String>, domain: Domain) -> ExprId {
+        self.symbol_commutative(name, domain, true)
+    }
+
+    /// Free symbol with explicit commutative flag (V3-2). `commutative: false` is for
+    /// matrix or operator generators where `A*B` and `B*A` must remain distinct.
+    pub fn symbol_commutative(
+        &self,
+        name: impl Into<String>,
+        domain: Domain,
+        commutative: bool,
+    ) -> ExprId {
         self.intern(ExprData::Symbol {
             name: name.into(),
             domain,
+            commutative,
         })
     }
 
@@ -197,8 +212,13 @@ impl ExprPool {
     }
 
     pub fn mul(&self, mut args: Vec<ExprId>) -> ExprId {
-        // Same canonical-order trick as `add`.
-        args.sort_unstable();
+        // Canonical sort only when every subtree is multiplicatively commutative (V3-2).
+        let sort_ok = args
+            .iter()
+            .all(|&a| crate::kernel::expr_props::mult_tree_is_commutative(self, a));
+        if sort_ok {
+            args.sort_unstable();
+        }
         self.intern(ExprData::Mul(args))
     }
 
@@ -264,6 +284,27 @@ impl ExprPool {
     }
     pub fn pred_false(&self) -> ExprId {
         self.predicate(crate::kernel::expr::PredicateKind::False, vec![])
+    }
+
+    // V3-3 — first-order quantifiers (first-class `Formula` / FOFormula).
+    /// `∀ var . body`
+    pub fn forall(&self, var: ExprId, body: ExprId) -> ExprId {
+        self.intern(ExprData::Forall { var, body })
+    }
+
+    /// `∃ var . body`
+    pub fn exists(&self, var: ExprId, body: ExprId) -> ExprId {
+        self.intern(ExprData::Exists { var, body })
+    }
+
+    /// `O(arg)` — symbolic big-O bound used in truncated series (V2-15).
+    pub fn big_o(&self, arg: ExprId) -> ExprId {
+        self.intern(ExprData::BigO(arg))
+    }
+
+    /// Canonical `+∞` symbol for limits at infinity (V2-16).
+    pub fn pos_infinity(&self) -> ExprId {
+        self.symbol(POS_INFINITY_SYMBOL, Domain::Positive)
     }
 
     // -----------------------------------------------------------------------
@@ -379,6 +420,15 @@ fn fmt_data(data: &ExprData, pool: &ExprPool, f: &mut fmt::Formatter<'_>) -> fmt
                 )
             }
         },
+        ExprData::Forall { var, body } => {
+            write!(f, "∀ {} . {}", pool.display(*var), pool.display(*body))
+        }
+        ExprData::Exists { var, body } => {
+            write!(f, "∃ {} . {}", pool.display(*var), pool.display(*body))
+        }
+        ExprData::BigO(arg) => {
+            write!(f, "O({})", pool.display(*arg))
+        }
     }
 }
 
@@ -393,6 +443,26 @@ mod tests {
 
     fn pool() -> ExprPool {
         ExprPool::new()
+    }
+
+    #[test]
+    fn noncommutative_mul_orders_distinct() {
+        let p = pool();
+        let a = p.symbol_commutative("A", Domain::Real, false);
+        let b = p.symbol_commutative("B", Domain::Real, false);
+        assert_ne!(
+            p.mul(vec![a, b]),
+            p.mul(vec![b, a]),
+            "A*B and B*A must not hash-cons together for NC symbols"
+        );
+    }
+
+    #[test]
+    fn symbol_commutative_is_structural() {
+        let p = pool();
+        let xc = p.symbol_commutative("x", Domain::Real, true);
+        let xnc = p.symbol_commutative("x", Domain::Real, false);
+        assert_ne!(xc, xnc);
     }
 
     // --- construction and equality ---

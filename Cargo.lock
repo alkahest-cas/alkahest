@@ -23,6 +23,7 @@ dependencies = [
  "egglog",
  "gmp-mpfr-sys",
  "inkwell",
+ "num-integer",
  "proptest",
  "rayon",
  "rug",
@@ -43,6 +44,7 @@ dependencies = [
  "alkahest-core",
  "numpy",
  "pyo3",
+ "rug",
 ]
 
 [[package]]

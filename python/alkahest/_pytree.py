@@ -162,13 +162,9 @@ def _unflatten(nodes: list, pos: list, leaves: list, leaf_pos: list) -> Any:
     elif isinstance(node, _ListNode):
         return [_unflatten(nodes, pos, leaves, leaf_pos) for _ in range(node.length)]
     elif isinstance(node, _TupleNode):
-        return tuple(
-            _unflatten(nodes, pos, leaves, leaf_pos) for _ in range(node.length)
-        )
+        return tuple(_unflatten(nodes, pos, leaves, leaf_pos) for _ in range(node.length))
     elif isinstance(node, _DictNode):
-        return {
-            k: _unflatten(nodes, pos, leaves, leaf_pos) for k in node.keys
-        }
+        return {k: _unflatten(nodes, pos, leaves, leaf_pos) for k in node.keys}
     else:
         raise ValueError(f"Unknown node type: {type(node)}")
 

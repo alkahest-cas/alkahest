@@ -192,6 +192,8 @@ fn eval_dual(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DualValue, Di
         // PA-9: Piecewise and Predicate are treated as constants w.r.t. the
         // variable being differentiated (predicates don't depend on x algebraically).
         ExprData::Piecewise { .. } | ExprData::Predicate { .. } => Node::IsConst,
+        ExprData::Forall { .. } | ExprData::Exists { .. } => Node::IsConst,
+        ExprData::BigO(_) => Node::IsConst,
     });
 
     match node {

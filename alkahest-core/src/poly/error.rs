@@ -105,3 +105,48 @@ impl ConversionError {
         None
     }
 }
+
+/// Failure modes for polynomial factorization (V2-7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FactorError {
+    /// The zero polynomial has no multiplicative factorization.
+    ZeroPolynomial,
+    /// Modulus must be an integer ≥ 2 for 𝔽_p factoring.
+    InvalidModulus,
+    /// FLINT returned an error (rare for well-formed input).
+    FlintFailure,
+}
+
+impl fmt::Display for FactorError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            FactorError::ZeroPolynomial => write!(f, "cannot factor the zero polynomial"),
+            FactorError::InvalidModulus => write!(f, "modulus must be at least 2"),
+            FactorError::FlintFailure => {
+                write!(f, "polynomial factorization failed internally (FLINT)")
+            }
+        }
+    }
+}
+
+impl std::error::Error for FactorError {}
+
+impl crate::errors::AlkahestError for FactorError {
+    fn code(&self) -> &'static str {
+        match self {
+            FactorError::ZeroPolynomial => "E-POLY-008",
+            FactorError::InvalidModulus => "E-POLY-009",
+            FactorError::FlintFailure => "E-POLY-010",
+        }
+    }
+
+    fn remediation(&self) -> Option<&'static str> {
+        Some(match self {
+            FactorError::ZeroPolynomial => "factorization is only defined for non-zero polynomials",
+            FactorError::InvalidModulus => {
+                "use a modulus ≥ 2 that fits in a machine word (FLINT `nmod`)"
+            }
+            FactorError::FlintFailure => "report the polynomial as a minimal failing example",
+        })
+    }
+}

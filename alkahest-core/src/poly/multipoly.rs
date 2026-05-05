@@ -110,9 +110,11 @@ fn expr_to_multivariate_coeffs(
             exp: *exp,
         },
         ExprData::Func { name, .. } => NodeInfo::Func(name.clone()),
-        ExprData::Piecewise { .. } | ExprData::Predicate { .. } => {
-            NodeInfo::Func("piecewise_or_predicate".to_string())
-        }
+        ExprData::Piecewise { .. }
+        | ExprData::Predicate { .. }
+        | ExprData::Forall { .. }
+        | ExprData::Exists { .. }
+        | ExprData::BigO(_) => NodeInfo::Func("piecewise_or_predicate".to_string()),
     });
 
     match info {

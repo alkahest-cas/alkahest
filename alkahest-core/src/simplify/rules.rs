@@ -44,7 +44,7 @@ fn is_one(expr: ExprId, pool: &ExprPool) -> bool {
     as_integer(expr, pool).is_some_and(|n| n == 1)
 }
 
-fn one_step(name: &'static str, before: ExprId, after: ExprId) -> DerivationLog {
+pub(crate) fn one_step(name: &'static str, before: ExprId, after: ExprId) -> DerivationLog {
     let mut log = DerivationLog::new();
     log.push(RewriteStep::simple(name, before, after));
     log
@@ -459,7 +459,11 @@ impl RewriteRule for DivSelf {
             return None;
         }
 
-        // Collect exponents by base (all args including integer constants)
+        let globally_comm = args
+            .iter()
+            .all(|&a| crate::kernel::expr_props::mult_tree_is_commutative(pool, a));
+
+        // Collect (integer exponent, base) for each factor.
         let mut exp_pairs: Vec<(rug::Integer, ExprId)> = vec![];
         for &a in &args {
             if let Some(pair) = extract_int_exp(a, pool) {
@@ -470,37 +474,62 @@ impl RewriteRule for DivSelf {
             return None;
         }
 
-        // Sum exponents by base
-        let mut exp_map: HashMap<ExprId, rug::Integer> = HashMap::new();
-        let mut base_order: Vec<ExprId> = vec![];
-        for (exp, base) in &exp_pairs {
-            if !exp_map.contains_key(base) {
-                base_order.push(*base);
-                exp_map.insert(*base, rug::Integer::from(0));
+        let new_args: Vec<ExprId> = if globally_comm {
+            // Commutative: sum exponents for each base anywhere in the product.
+            let mut exp_map: HashMap<ExprId, rug::Integer> = HashMap::new();
+            let mut base_order: Vec<ExprId> = vec![];
+            for (exp, base) in &exp_pairs {
+                if !exp_map.contains_key(base) {
+                    base_order.push(*base);
+                    exp_map.insert(*base, rug::Integer::from(0));
+                }
+                *exp_map.get_mut(base).unwrap() += exp.clone();
             }
-            *exp_map.get_mut(base).unwrap() += exp.clone();
-        }
 
-        let any_zero = exp_map.values().any(|e| *e == 0);
-        let any_merged = exp_map.len() < exp_pairs.len();
-        if !any_zero && !any_merged {
-            return None;
-        }
+            let any_zero = exp_map.values().any(|e| *e == 0);
+            let any_merged = exp_map.len() < exp_pairs.len();
+            if !any_zero && !any_merged {
+                return None;
+            }
 
-        // Build new args
-        let mut new_args: Vec<ExprId> = vec![];
-        let mut seen: HashSet<ExprId> = HashSet::new();
-        for base in &base_order {
-            if seen.contains(base) {
-                continue;
+            let mut seen: HashSet<ExprId> = HashSet::new();
+            let mut new_args: Vec<ExprId> = vec![];
+            for base in &base_order {
+                if seen.contains(base) {
+                    continue;
+                }
+                seen.insert(*base);
+                let exp = &exp_map[base];
+                if *exp == 0 {
+                    continue;
+                }
+                new_args.push(rebuild_exp_term(exp, *base, pool));
             }
-            seen.insert(*base);
-            let exp = &exp_map[base];
-            if *exp == 0 {
-                continue;
+            new_args
+        } else {
+            // Non-commutative: only merge **consecutive** identical bases (V3-2).
+            let mut merged: Vec<(rug::Integer, ExprId)> = vec![];
+            let mut changed = false;
+            for (e, b) in exp_pairs {
+                if let Some((last_e, last_b)) = merged.last_mut() {
+                    if *last_b == b {
+                        *last_e += e;
+                        changed = true;
+                        continue;
+                    }
+                }
+                merged.push((e, b));
             }
-            new_args.push(rebuild_exp_term(exp, *base, pool));
-        }
+            let any_zero = merged.iter().any(|(e, _)| *e == 0);
+            if !changed && !any_zero {
+                return None;
+            }
+            merged
+                .into_iter()
+                .filter(|(e, _)| *e != 0)
+                .map(|(e, b)| rebuild_exp_term(&e, b, pool))
+                .collect()
+        };
 
         let after = match new_args.len() {
             0 => pool.integer(1_i32),
@@ -605,6 +634,12 @@ impl RewriteRule for CanonicalOrder {
                 Some((after, one_step(self.name(), expr, after)))
             }
             ExprData::Mul(args) => {
+                if !args
+                    .iter()
+                    .all(|&a| crate::kernel::expr_props::mult_tree_is_commutative(pool, a))
+                {
+                    return None;
+                }
                 let mut sorted = args.clone();
                 sorted.sort_unstable();
                 if sorted == args {

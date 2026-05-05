@@ -19,6 +19,7 @@
 
 pub(crate) mod ffi;
 pub mod integer;
+pub(crate) mod mat;
 pub(crate) mod mpoly;
 pub mod poly;
 

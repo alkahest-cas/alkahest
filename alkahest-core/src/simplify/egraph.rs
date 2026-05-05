@@ -53,7 +53,11 @@ mod backend {
             ExprData::Pow { base, exp } => Node::Pow(*base, *exp),
             ExprData::Func { name, args } if args.len() == 1 => Node::Func(name.clone(), args[0]),
             ExprData::Func { .. } => Node::Unsupported,
-            ExprData::Piecewise { .. } | ExprData::Predicate { .. } => Node::Unsupported,
+            ExprData::Piecewise { .. }
+            | ExprData::Predicate { .. }
+            | ExprData::Forall { .. }
+            | ExprData::Exists { .. }
+            | ExprData::BigO(_) => Node::Unsupported,
         });
 
         match node {
@@ -148,6 +152,14 @@ mod backend {
                 for a in args {
                     count_dag_nodes_rec(a, pool, visited);
                 }
+            }
+            ExprData::Forall { var, body }
+            | ExprData::Exists { var, body } => {
+                count_dag_nodes_rec(var, pool, visited);
+                count_dag_nodes_rec(body, pool, visited);
+            }
+            ExprData::BigO(arg) => {
+                count_dag_nodes_rec(arg, pool, visited);
             }
             // Leaf nodes
             ExprData::Integer(_)
@@ -476,6 +488,11 @@ mod backend {
         config: &super::EgraphConfig,
     ) -> crate::deriv::log::DerivedExpr<ExprId> {
         use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
+        use crate::kernel::expr_props::expr_contains_noncommutative_symbol;
+
+        if expr_contains_noncommutative_symbol(pool, expr) {
+            return super::super::engine::simplify(expr, pool);
+        }
 
         // Enforce the node limit before handing the expression to egglog.
         // Saturation can materialise exponentially many equivalent forms, so a
@@ -535,6 +552,7 @@ use crate::kernel::{ExprId, ExprPool};
 /// | [`OpCost`]   | Operators weighted by evaluation cost. |
 /// | [`DepthCost`]| Cost = max child depth + 1. |
 /// | [`StabilityCost`] | Penalises catastrophic cancellation. |
+/// | [`NoncommutativeCost`] | Tie-break for non-commutative `Mul` chains (V3-2). |
 pub trait EgraphCost: Send + Sync {
     /// Compute the cost of a node given its operator name and its children's costs.
     fn cost(&self, op: &str, child_costs: &[f64]) -> f64;
@@ -593,6 +611,23 @@ impl EgraphCost for StabilityCost {
                 base * 3.0
             }
             "Pow" => base * 2.0,
+            _ => base,
+        }
+    }
+}
+
+/// Extraction cost biased toward **left-to-right** (`Mul`) products (V3-2).
+///
+/// When egglog gains a fully pluggable extractor, this can rank
+/// normal-ordered operator strings (Pauli / Clifford) lower than scrambled
+/// permutations. Today it adds a small tie-break on `Mul` so experiments
+/// with non-commuting `Var` encodings stay deterministic.
+pub struct NoncommutativeCost;
+impl EgraphCost for NoncommutativeCost {
+    fn cost(&self, op: &str, child_costs: &[f64]) -> f64 {
+        let base = SizeCost.cost(op, child_costs);
+        match op {
+            "Mul" => base + 1.0e-6 * child_costs.len() as f64,
             _ => base,
         }
     }
@@ -800,6 +835,23 @@ mod tests {
         };
         let result = simplify_egraph_with(expr, &pool, &config, &SizeCost);
         assert_eq!(result.value, x);
+    }
+
+    #[test]
+    fn egraph_noncommutative_falls_back_to_rules() {
+        let pool = ExprPool::new();
+        let a = pool.symbol_commutative("A", Domain::Real, false);
+        let expr = pool.add(vec![a, pool.integer(0_i32)]);
+        let result = simplify_egraph(expr, &pool);
+        assert_eq!(result.value, a);
+    }
+
+    // V3-2: NoncommutativeCost is callable
+    #[test]
+    fn noncommutative_cost_is_callable() {
+        let nc = NoncommutativeCost;
+        let v = nc.cost("Mul", &[1.0, 1.0]);
+        assert!(v.is_finite());
     }
 
     // RW-4: StabilityCost is callable

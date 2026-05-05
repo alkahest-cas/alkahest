@@ -1,3 +1,8 @@
+from . import (
+    lattice,  # noqa: F401 — V2-6: expose alkahest.lattice submodule
+    modular,  # noqa: F401 — V2-1: expose alkahest.modular submodule
+    number_theory,  # noqa: F401 — V3-1: integer number theory
+)
 from ._context import (  # noqa: F401
     active_domain,
     active_pool,
@@ -9,6 +14,7 @@ from ._context import (  # noqa: F401
 from ._dlpack import _to_numpy  # noqa: F401
 from ._parse import parse  # noqa: F401
 from ._pretty import latex, unicode_str  # noqa: F401
+from ._product import Product  # noqa: F401 — V2-22
 from ._pytree import (  # noqa: F401
     TreeDef,
     flatten_exprs,
@@ -49,14 +55,23 @@ from .alkahest import (  # noqa: F401
     Matrix,
     # Polynomial types
     MultiPoly,
+    MultiPolyFactorization,
+    # V2-1: Modular / CRT framework
+    MultiPolyFp,
     Port,
     # PA-5: Primitive registry
     PrimitiveRegistry,
     RationalFunction,
     # Rewrite rules
     RewriteRule,
+    # V2-4: Real root isolation (VAS)
+    RootInterval,
     # Phase 19: Sensitivity analysis
     SensitivitySystem,
+    # V2-7: Polynomial factorization
+    UniPolyFactorModP,
+    UniPolyFactorization,
+    factor_univariate_mod_p,
     UniPoly,
     abs,  # symbolic abs — use alkahest.abs(expr); shadows Python builtin within this module
     acos,
@@ -81,9 +96,21 @@ from .alkahest import (  # noqa: F401
     exp,
     floor,
     gamma,
+    # V2-6: Approximate integer relations (LLL-backed heuristic — not Ferguson–Bailey PSLQ)
+    guess_relation,
     # Phase 24: Horner-form code emission
     horner,
     integrate,
+    limit,
+    series,
+    Series,
+    solve_linear_recurrence_homogeneous,
+    rsolve,
+    product_definite,
+    product_indefinite,
+    sum_definite,
+    sum_indefinite,
+    verify_wz_pair,
     interval_eval,
     jacobian,
     jit_is_available,
@@ -96,9 +123,23 @@ from .alkahest import (  # noqa: F401
     pantelides,
     # PA-9: Piecewise
     piecewise,
+    # V3-3: First-order logic + V2-9 CAD/QE
+    And,
+    cad_lift,
+    cad_project,
+    decide,
+    Exists,
+    Forall,
+    Not,
+    Or,
+    satisfiable,
     # Phase 27: poly_normal
     poly_normal,
+    real_roots,
+    refine_root,
     resistor,
+    # V2-2: Resultants and subresultant PRS
+    resultant,
     round,  # symbolic round — use alkahest.round(expr)
     sensitivity_system,
     sign,
@@ -107,13 +148,18 @@ from .alkahest import (  # noqa: F401
     simplify_egraph_with,
     simplify_expanded,
     simplify_log_exp,
-    # Phase 23: Parallel simplification
+    simplify_pauli,
+    simplify_clifford_orthogonal,
     simplify_par,
     simplify_trig,
     simplify_with,
     sin,
     sinh,
+    # V2-3: Sparse interpolation
+    sparse_interp,
+    sparse_interp_univariate,
     sqrt,
+    subresultant_prs,
     subs,
     # V1-12: expanded primitive registry
     tan,
@@ -137,50 +183,108 @@ except ImportError:
 
 # V1-4 / V1-16: Polynomial system solver + Gröbner basis (optional — requires groebner feature)
 try:
-    from .alkahest import GbPoly, GroebnerBasis, solve  # noqa: F401
+    from .alkahest import (
+        CertifiedSolution,
+        DaeIndexReduction,
+        DiophantineSolution,
+        GbPoly,
+        GroebnerBasis,
+        PrimaryComponent,
+        RegularChain,
+        RosenfeldGroebnerResult,
+        dae_index_reduce,
+        diophantine,
+        primary_decomposition,
+        radical,
+        rosenfeld_groebner,
+        solve,
+        solve_numerical,
+        triangularize,
+    )  # noqa: F401
 except ImportError:
     pass
 
-# V1-16: IoError (always present in the native module)
+# V1-3 — Structured exception hierarchy: bind pure-Python stubs first, then replace
+# each name with the compiled class when ``alkahest.alkahest`` exports it.  A bulk
+# ``from .alkahest import (..., DiophantineError, ...)`` fails entirely when optional
+# features omit a symbol (``DiophantineError`` is registered only with the groebner
+# feature); that used to downgrade *every* error class to stubs and drop names that
+# have no stub (CadError, …).
+from .exceptions import (  # noqa: F401, I001
+    AlkahestError,
+    CadError,
+    ConversionError,
+    DaeError,
+    DiffError,
+    DiophantineError,
+    DomainError,
+    EigenError,
+    FactorError,
+    IntegrationError,
+    IoError,
+    JitError,
+    LatticeError,
+    LimitError,
+    LinearRecurrenceError,
+    MatrixError,
+    NumberTheoryError,
+    OdeError,
+    ParseError,
+    PoolError,
+    ProductError,
+    PslqError,
+    RealRootError,
+    ResultantError,
+    RsolveError,
+    SeriesError,
+    SolverError,
+    SparseInterpError,
+    SumError,
+)
+
+_NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
+    "AlkahestError",
+    "CadError",
+    "ConversionError",
+    "DaeError",
+    "DiffError",
+    "DiophantineError",
+    "DomainError",
+    "EigenError",
+    "FactorError",
+    "IntegrationError",
+    "IoError",
+    "JitError",
+    "LatticeError",
+    "LimitError",
+    "LinearRecurrenceError",
+    "MatrixError",
+    "NumberTheoryError",
+    "OdeError",
+    "PoolError",
+    "ProductError",
+    "PslqError",
+    "RealRootError",
+    "ResultantError",
+    "RsolveError",
+    "SeriesError",
+    "SolverError",
+    "SparseInterpError",
+)
+
 try:
-    from .alkahest import IoError  # noqa: F401
+    from . import alkahest as _alkahest_native
 except ImportError:
     pass
-# Import exception classes from the native module (V1-3).
-# The native module registers proper PyO3 exception classes with .code/.remediation/.span.
-# Fall back to the pure-Python stubs in exceptions.py only if the native module
-# doesn't export them (e.g. when running with a stale .so).
-try:
-    from .alkahest import (  # noqa: F401
-        AlkahestError,
-        ConversionError,
-        DaeError,
-        DiffError,
-        DomainError,
-        IntegrationError,
-        JitError,
-        MatrixError,
-        OdeError,
-        PoolError,
-    )
-except ImportError:
-    from .exceptions import (  # noqa: F401
-        AlkahestError,
-        ConversionError,
-        DaeError,
-        DiffError,
-        DomainError,
-        IntegrationError,
-        JitError,
-        MatrixError,
-        OdeError,
-        PoolError,
-    )
+else:
+    _globals = globals()
+    for _overlay_name in _NATIVE_EXCEPTION_OVERLAY:
+        _native_cls = getattr(_alkahest_native, _overlay_name, None)
+        if _native_cls is not None:
+            _globals[_overlay_name] = _native_cls
 
 from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from importlib.metadata import version as _meta_version
-
-from .exceptions import ParseError, SolverError  # noqa: F401  (pure-Python only for now)
 
 try:
     __version__ = _meta_version("alkahest")
@@ -221,9 +325,7 @@ def numpy_eval(compiled_fn, *arrays):
     try:
         import numpy as np
     except ImportError as exc:
-        raise ImportError(
-            "numpy_eval requires NumPy.  Install it with: pip install numpy"
-        ) from exc
+        raise ImportError("numpy_eval requires NumPy.  Install it with: pip install numpy") from exc
 
     n_vars = compiled_fn.n_inputs
     if len(arrays) != n_vars:
@@ -252,11 +354,19 @@ __all__ = [
     "AlkahestError",
     "AlkahestError",
     "ConversionError",
+    "FactorError",
     "DomainError",
     "DiffError",
     "PoolError",
     "IntegrationError",
+    "LimitError",
+    "SeriesError",
+    "LinearRecurrenceError",
+    "RsolveError",
+    "DiophantineError",
     "MatrixError",
+    "NumberTheoryError",
+    "EigenError",
     "OdeError",
     "DaeError",
     "JitError",
@@ -269,6 +379,10 @@ __all__ = [
     # Polynomials
     "UniPoly",
     "MultiPoly",
+    "UniPolyFactorization",
+    "UniPolyFactorModP",
+    "MultiPolyFactorization",
+    "factor_univariate_mod_p",
     "RationalFunction",
     # Rules
     "RewriteRule",
@@ -281,11 +395,24 @@ __all__ = [
     "simplify_expanded",
     "simplify_trig",
     "simplify_log_exp",
+    "simplify_pauli",
+    "simplify_clifford_orthogonal",
     "simplify_with",
     # Calculus
     "diff",
     "diff_forward",
     "integrate",
+    "limit",
+    "series",
+    "Series",
+    "solve_linear_recurrence_homogeneous",
+    "rsolve",
+    "sum_definite",
+    "sum_indefinite",
+    "product_definite",
+    "product_indefinite",
+    "Product",
+    "verify_wz_pair",
     "symbolic_grad",
     # Pattern matching & substitution
     "match_pattern",
@@ -351,6 +478,28 @@ __all__ = [
     "collect_like_terms",
     # Phase 27
     "poly_normal",
+    # V2-2
+    "resultant",
+    "subresultant_prs",
+    "ResultantError",
+    # V2-3
+    "sparse_interp",
+    "sparse_interp_univariate",
+    "SparseInterpError",
+    "SumError",
+    "ProductError",
+    "CadError",
+    # V2-6
+    "guess_relation",
+    "lattice",
+    "number_theory",
+    "LatticeError",
+    "PslqError",
+    # V2-4
+    "real_roots",
+    "refine_root",
+    "RootInterval",
+    "RealRootError",
     # PA-5
     "PrimitiveRegistry",
     # PA-7
@@ -368,14 +517,36 @@ __all__ = [
     "map_exprs",
     # PA-9
     "piecewise",
+    # V3-3 — FOFormula / V2-9 CAD
+    "decide",
+    "cad_project",
+    "cad_lift",
+    "satisfiable",
+    "And",
+    "Or",
+    "Not",
+    "Forall",
+    "Exists",
     # V5-1
     "to_lean",
     # V5-2
     "to_stablehlo",
     # V1-4 / V1-16: Polynomial system solver + Gröbner basis (requires groebner feature)
     "solve",
+    "solve_numerical",
+    "diophantine",
+    "DiophantineSolution",
+    "CertifiedSolution",
     "GroebnerBasis",
     "GbPoly",
+    # V2-11 — Regular chains / triangular decomposition
+    "triangularize",
+    "RegularChain",
+    # V2-13 — Differential algebra / Rosenfeld–Gröbner (requires groebner)
+    "rosenfeld_groebner",
+    "dae_index_reduce",
+    "RosenfeldGroebnerResult",
+    "DaeIndexReduction",
     # V1-16: IoError
     "IoError",
     # RW-7
