@@ -133,7 +133,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // E-DIOPH — DiophantineError (V2-19 linear / Pell / sum-of-squares)
     ErrorSpec { code: "E-DIOPH-001", class: "DiophantineError", cause: Cause::UserInput,   remediation: Some("pass one polynomial equation = 0 in two integer symbols") },
     ErrorSpec { code: "E-DIOPH-002", class: "DiophantineError", cause: Cause::UserInput,   remediation: Some("clear denominators; coefficients must be rational integers") },
-    ErrorSpec { code: "E-DIOPH-003", class: "DiophantineError", cause: Cause::Unsupported, remediation: Some("supported: linear 2-variable, x²+y²=n, unit Pell x²−D·y²=1 (no xy term)") },
+    ErrorSpec { code: "E-DIOPH-003", class: "DiophantineError", cause: Cause::Unsupported, remediation: Some("supported: linear 2-variable, x²+y²=n, x²−D·y²=N including unit Pell (no xy term); very large integers may be unsupported") },
     ErrorSpec { code: "E-DIOPH-004", class: "DiophantineError", cause: Cause::Domain,      remediation: Some("check gcd divisibility (linear) or solvability over ℤ (quadratic)") },
     // E-PARSE — reserved for parser integration
     // E-DOMAIN — reserved; DomainError is Python-only pending Rust implementation

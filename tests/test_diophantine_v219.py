@@ -42,6 +42,30 @@ def test_diophantine_sum_two_squares():
     assert pairs == {(1, 2), (2, 1)}
 
 
+def test_diophantine_sum_two_squares_65_two_orbits():
+    """65 = 1² + 8² = 4² + 7² (distinct representations)."""
+    p = alkahest.ExprPool()
+    x, y = p.symbol("x"), p.symbol("y")
+    sol = alkahest.diophantine(x**2 + y**2 - p.integer(65), [x, y])
+    assert sol.kind == "finite"
+    pairs = {(int(str(a)), int(str(b))) for a, b in sol.points}
+    assert {(1, 8), (8, 1), (4, 7), (7, 4)}.issubset(pairs)
+
+
+def test_diophantine_pell_generalized_x2_minus_2y2_eq_minus1():
+    p = alkahest.ExprPool()
+    x, y = p.symbol("x"), p.symbol("y")
+    eq = x**2 - p.integer(2) * y**2 + p.integer(1)
+    sol = alkahest.diophantine(eq, [x, y])
+    assert sol.kind in ("pell_generalized", "pell_fundamental")
+    if sol.kind == "pell_generalized":
+        assert sol.pell_n is not None and int(str(sol.pell_n)) == -1
+        assert sol.pell_particular is not None
+        assert sol.pell_unit is not None
+        x0, y0 = sol.pell_particular
+        assert int(str(x0)) ** 2 - 2 * int(str(y0)) ** 2 == -1
+
+
 def test_diophantine_no_solution_linear():
     p = alkahest.ExprPool()
     x, y = p.symbol("x"), p.symbol("y")

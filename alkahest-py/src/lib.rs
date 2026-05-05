@@ -4408,7 +4408,7 @@ impl PyCertifiedSolution {
     }
 }
 
-/// Integer Diophantine solver (linear parametric families, sum of two squares, unit Pell).
+/// Integer Diophantine solver (linear parametric families, sum of two squares, Pell-type).
 #[cfg(feature = "groebner")]
 #[pyclass(name = "DiophantineSolution")]
 struct PyDiophantineSolution {
@@ -4422,12 +4422,21 @@ struct PyDiophantineSolution {
     /// List of coordinate tuples when ``kind == "finite"``.
     #[pyo3(get)]
     points: Option<Vec<Vec<Py<PyExpr>>>>,
-    /// Coefficient ``D`` in ``x² - D·y² = 1`` when ``kind == "pell_fundamental"``.
+    /// Coefficient ``D`` in ``x² - D·y² = 1`` or ``x² - D·y² = N``.
     #[pyo3(get)]
     pell_d: Option<Py<PyExpr>>,
     /// Fundamental unit ``(x0, y0)`` when ``kind == "pell_fundamental"``.
     #[pyo3(get)]
     fundamental: Option<(Py<PyExpr>, Py<PyExpr>)>,
+    /// Right-hand ``N`` in ``x² - D·y² = N`` when ``kind == "pell_generalized"``.
+    #[pyo3(get)]
+    pell_n: Option<Py<PyExpr>>,
+    /// A particular solution ``(x0, y0)`` when ``kind == "pell_generalized"``.
+    #[pyo3(get)]
+    pell_particular: Option<(Py<PyExpr>, Py<PyExpr>)>,
+    /// Unit ``(ux, uy)`` with ``ux² - D·uy² = 1`` when ``kind == "pell_generalized"``.
+    #[pyo3(get)]
+    pell_unit: Option<(Py<PyExpr>, Py<PyExpr>)>,
 }
 
 #[cfg(feature = "groebner")]
@@ -4466,6 +4475,9 @@ fn diophantine_core_to_py(
                 points: None,
                 pell_d: None,
                 fundamental: None,
+                pell_n: None,
+                pell_particular: None,
+                pell_unit: None,
             })
         }
         CoreDiophantineSolution::Finite(rows) => {
@@ -4484,6 +4496,9 @@ fn diophantine_core_to_py(
                 points: Some(pts),
                 pell_d: None,
                 fundamental: None,
+                pell_n: None,
+                pell_particular: None,
+                pell_unit: None,
             })
         }
         CoreDiophantineSolution::PellFundamental { d, x0, y0 } => Ok(PyDiophantineSolution {
@@ -4493,6 +4508,27 @@ fn diophantine_core_to_py(
             points: None,
             pell_d: Some(wrap(d)?),
             fundamental: Some((wrap(x0)?, wrap(y0)?)),
+            pell_n: None,
+            pell_particular: None,
+            pell_unit: None,
+        }),
+        CoreDiophantineSolution::PellGeneralized {
+            d,
+            n,
+            x0,
+            y0,
+            unit_x,
+            unit_y,
+        } => Ok(PyDiophantineSolution {
+            kind: "pell_generalized".into(),
+            parameter: None,
+            parametric: None,
+            points: None,
+            pell_d: Some(wrap(d)?),
+            fundamental: None,
+            pell_n: Some(wrap(n)?),
+            pell_particular: Some((wrap(x0)?, wrap(y0)?)),
+            pell_unit: Some((wrap(unit_x)?, wrap(unit_y)?)),
         }),
         CoreDiophantineSolution::NoSolution => Ok(PyDiophantineSolution {
             kind: "no_solution".into(),
@@ -4501,6 +4537,9 @@ fn diophantine_core_to_py(
             points: None,
             pell_d: None,
             fundamental: None,
+            pell_n: None,
+            pell_particular: None,
+            pell_unit: None,
         }),
     }
 }
