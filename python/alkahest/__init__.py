@@ -200,70 +200,84 @@ try:
 except ImportError:
     pass
 
-# V1-16: IoError (always present in the native module)
+# V1-3 — Structured exception hierarchy: bind pure-Python stubs first, then replace
+# each name with the compiled class when ``alkahest.alkahest`` exports it.  A bulk
+# ``from .alkahest import (..., DiophantineError, ...)`` fails entirely when optional
+# features omit a symbol (``DiophantineError`` is registered only with the groebner
+# feature); that used to downgrade *every* error class to stubs and drop names that
+# have no stub (CadError, …).
+from .exceptions import (  # noqa: F401, I001
+    AlkahestError,
+    CadError,
+    ConversionError,
+    DaeError,
+    DiffError,
+    DiophantineError,
+    DomainError,
+    EigenError,
+    FactorError,
+    IntegrationError,
+    IoError,
+    JitError,
+    LatticeError,
+    LimitError,
+    LinearRecurrenceError,
+    MatrixError,
+    NumberTheoryError,
+    OdeError,
+    ParseError,
+    PoolError,
+    ProductError,
+    PslqError,
+    RealRootError,
+    ResultantError,
+    RsolveError,
+    SeriesError,
+    SolverError,
+    SparseInterpError,
+    SumError,
+)
+
+_NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
+    "AlkahestError",
+    "CadError",
+    "ConversionError",
+    "DaeError",
+    "DiffError",
+    "DiophantineError",
+    "DomainError",
+    "EigenError",
+    "FactorError",
+    "IntegrationError",
+    "IoError",
+    "JitError",
+    "LatticeError",
+    "LimitError",
+    "LinearRecurrenceError",
+    "MatrixError",
+    "NumberTheoryError",
+    "OdeError",
+    "PoolError",
+    "ProductError",
+    "PslqError",
+    "RealRootError",
+    "ResultantError",
+    "RsolveError",
+    "SeriesError",
+    "SolverError",
+    "SparseInterpError",
+)
+
 try:
-    from .alkahest import IoError  # noqa: F401
+    from . import alkahest as _alkahest_native
 except ImportError:
     pass
-# Import exception classes from the native module (V1-3).
-# The native module registers proper PyO3 exception classes with .code/.remediation/.span.
-# Fall back to the pure-Python stubs in exceptions.py only if the native module
-# doesn't export them (e.g. when running with a stale .so).
-try:
-    from .alkahest import (  # noqa: F401
-        AlkahestError,
-        CadError,
-        ConversionError,
-        DaeError,
-        DiffError,
-        DiophantineError,
-        DomainError,
-        EigenError,
-        FactorError,
-        IntegrationError,
-        JitError,
-        LatticeError,
-        LimitError,
-        LinearRecurrenceError,
-        MatrixError,
-        NumberTheoryError,
-        OdeError,
-        PoolError,
-        ProductError,
-        PslqError,
-        RealRootError,
-        ResultantError,
-        RsolveError,
-        SeriesError,
-        SparseInterpError,
-        SumError,
-    )
-except ImportError:
-    from .exceptions import (  # noqa: F401
-        AlkahestError,
-        ConversionError,
-        DaeError,
-        DiffError,
-        DiophantineError,
-        DomainError,
-        EigenError,
-        FactorError,
-        IntegrationError,
-        JitError,
-        LatticeError,
-        LimitError,
-        LinearRecurrenceError,
-        MatrixError,
-        NumberTheoryError,
-        OdeError,
-        PoolError,
-        ProductError,
-        PslqError,
-        RsolveError,
-        SeriesError,
-        SumError,
-    )
-from .exceptions import ParseError, SolverError  # noqa: F401  (pure-Python only for now)
+else:
+    _globals = globals()
+    for _overlay_name in _NATIVE_EXCEPTION_OVERLAY:
+        _native_cls = getattr(_alkahest_native, _overlay_name, None)
+        if _native_cls is not None:
+            _globals[_overlay_name] = _native_cls
 
 
 def numpy_eval(compiled_fn, *arrays):

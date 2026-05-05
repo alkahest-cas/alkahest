@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import pytest
-
+from alkahest import NumberTheoryError
 from alkahest.number_theory import (
     DirichletChi,
-    NumberTheoryError,
     discrete_log,
     factorint,
     isprime,
@@ -71,4 +70,3 @@ def test_nthroot_unsupported_raises() -> None:
     with pytest.raises(NumberTheoryError) as ei:
         nthroot_mod(42, 5, 3011)
     assert "E-NT-" in ei.value.code
-
