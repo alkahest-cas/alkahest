@@ -385,9 +385,18 @@ extern "C" {
         result: *mut NmodPolyFactorStruct,
         input: *const NmodPolyStruct,
     ) -> ulong;
+    /// FLINT 2.x
+    #[cfg(not(flint3))]
     pub fn nmod_poly_factor_get_nmod_poly(
         z: *mut NmodPolyStruct,
         fac: *mut NmodPolyFactorStruct,
+        i: slong,
+    );
+    /// FLINT 3.x — same role as `nmod_poly_factor_get_nmod_poly` (renamed upstream).
+    #[cfg(flint3)]
+    pub fn nmod_poly_factor_get_poly(
+        z: *mut NmodPolyStruct,
+        fac: *const NmodPolyFactorStruct,
         i: slong,
     );
     pub fn nmod_poly_degree(poly: *const NmodPolyStruct) -> slong;

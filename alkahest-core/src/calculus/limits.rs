@@ -24,7 +24,7 @@ pub enum LimitDirection {
 
 #[derive(Debug)]
 pub enum LimitError {
-    /// Sub-problem rejected by [`crate::calculus::series`].
+    /// Sub-problem rejected by [`mod@crate::calculus::series`].
     Series(SeriesError),
     /// Derivative unavailable for L'Hôpital.
     Diff(DiffError),
@@ -484,10 +484,12 @@ fn is_zero_times_pole_indeterminate(expr: ExprId, pool: &ExprPool) -> bool {
             any_zero_factor = true;
         }
         if let ExprData::Func { name, args } = pool.get(f) {
-            if args.len() == 1 && matches!(name.as_str(), "sin" | "sinh" | "tan")
-                && matches!(pool.get(args[0]), ExprData::Integer(z) if z.0 == 0) {
-                    any_zero_factor = true;
-                }
+            if args.len() == 1
+                && matches!(name.as_str(), "sin" | "sinh" | "tan")
+                && matches!(pool.get(args[0]), ExprData::Integer(z) if z.0 == 0)
+            {
+                any_zero_factor = true;
+            }
         }
     }
     any_zero_factor && any_pole

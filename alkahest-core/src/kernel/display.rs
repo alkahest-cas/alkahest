@@ -223,10 +223,7 @@ fn latex_signed(id: ExprId, pool: &ExprPool) -> (i32, String) {
         ExprData::Rational(r) => {
             let num = r.0.numer();
             let den = r.0.denom();
-            let s = latex_frac(
-                num.to_string().trim_start_matches('-'),
-                &den.to_string(),
-            );
+            let s = latex_frac(num.to_string().trim_start_matches('-'), &den.to_string());
             if *num < 0 {
                 (-1, s)
             } else {
@@ -476,10 +473,7 @@ fn latex_r(id: ExprId, pool: &ExprPool) -> (String, i32) {
         ExprData::Rational(r) => {
             let num = r.0.numer();
             let den = r.0.denom();
-            let s = latex_frac(
-                num.to_string().trim_start_matches('-'),
-                &den.to_string(),
-            );
+            let s = latex_frac(num.to_string().trim_start_matches('-'), &den.to_string());
             if *num < 0 {
                 (format!("-{s}"), PREC_ATOM)
             } else {

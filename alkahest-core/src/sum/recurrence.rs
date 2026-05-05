@@ -153,10 +153,7 @@ fn solve_order2(
     let r1 = simp(pool, pool.mul(vec![half, inner1]));
     let inner2 = simp(
         pool,
-        pool.add(vec![
-            neg_b,
-            pool.mul(vec![sqrt_e, pool.integer(-1_i32)]),
-        ]),
+        pool.add(vec![neg_b, pool.mul(vec![sqrt_e, pool.integer(-1_i32)])]),
     );
     let r2 = simp(pool, pool.mul(vec![half, inner2]));
 

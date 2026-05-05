@@ -47,8 +47,10 @@ jobs:
 
       - name: Install maturin and build alkahest
         run: |
-          pip install maturin
-          maturin develop -m alkahest-py/Cargo.toml --features groebner
+          python -m venv .venv
+          .venv/bin/pip install maturin
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          .venv/bin/maturin develop -m alkahest-py/Cargo.toml --features groebner
 
       - name: Generate Lean proofs
         run: |

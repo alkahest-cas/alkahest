@@ -247,14 +247,8 @@ fn definite_side_from_factorization(
                 let hi_shift = rational_to_expr(pool, &(one.clone() + c_rat.clone()));
                 let lo_shift = rational_to_expr(pool, &c_rat);
                 let lead_exp = simp(pool, pool.mul(vec![delta_n, pool.integer(expo)]));
-                let gh = pool.func(
-                    "gamma",
-                    vec![simp(pool, pool.add(vec![hi, hi_shift]))],
-                );
-                let gl = pool.func(
-                    "gamma",
-                    vec![simp(pool, pool.add(vec![lo, lo_shift]))],
-                );
+                let gh = pool.func("gamma", vec![simp(pool, pool.add(vec![hi, hi_shift]))]);
+                let gl = pool.func("gamma", vec![simp(pool, pool.add(vec![lo, lo_shift]))]);
                 let ratio = simp(pool, pool.mul(vec![gh, pool.pow(gl, pool.integer(-1_i32))]));
                 parts.push(pool.pow(pool.integer(aa.clone()), lead_exp));
                 if expo != 0 {
@@ -319,10 +313,7 @@ fn indefinite_side_from_factorization(
                 }
                 let c_rat = Rational::from((bb, aa.clone()));
                 let lo_shift = rational_to_expr(pool, &c_rat);
-                let gamma_k = pool.func(
-                    "gamma",
-                    vec![simp(pool, pool.add(vec![k, lo_shift]))],
-                );
+                let gamma_k = pool.func("gamma", vec![simp(pool, pool.add(vec![k, lo_shift]))]);
                 let lead_exp_k = simp(pool, pool.mul(vec![k, pool.integer(expo)]));
                 parts.push(pool.pow(pool.integer(aa), lead_exp_k));
                 parts.push(pool.pow(gamma_k, pool.integer(expo)));
@@ -362,17 +353,11 @@ pub fn product_definite(
     let one = pool.integer(1_i32);
     let delta_n = simp(
         pool,
-        pool.add(vec![
-            hi,
-            pool.mul(vec![lo, pool.integer(-1)]),
-            one,
-        ]),
+        pool.add(vec![hi, pool.mul(vec![lo, pool.integer(-1)]), one]),
     );
 
-    let top =
-        definite_side_from_factorization(pool, &fac_n, lo, hi, delta_n)?;
-    let bot =
-        definite_side_from_factorization(pool, &fac_d, lo, hi, delta_n)?;
+    let top = definite_side_from_factorization(pool, &fac_n, lo, hi, delta_n)?;
+    let bot = definite_side_from_factorization(pool, &fac_d, lo, hi, delta_n)?;
     let q = simp(
         pool,
         pool.mul(vec![top, pool.pow(bot, pool.integer(-1_i32))]),

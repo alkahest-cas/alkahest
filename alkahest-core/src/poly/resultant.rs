@@ -244,7 +244,7 @@ pub fn resultant(
 /// # Algorithm
 ///
 /// Classical Brown–Collins subresultant algorithm (1971/1967).  Computations
-/// stay in ℤ[x]; all coefficient scalings are exact integer divisions
+/// stay in ℤ\[x\]; all coefficient scalings are exact integer divisions
 /// guaranteed by the subresultant theory.
 ///
 /// # Derivation log

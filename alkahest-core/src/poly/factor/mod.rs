@@ -1,6 +1,6 @@
 //! V2-7 — Polynomial factorization over ℤ, 𝔽_p, and multivariate ℤ[𝑥₁,…].
 //!
-//! Univariate ℤ[x] uses FLINT `fmpz_poly_factor` (modular Berlekamp, Zassenhaus
+//! Univariate ℤ\[x\] uses FLINT `fmpz_poly_factor` (modular Berlekamp, Zassenhaus
 //! recombination, van Hoeij’s knapsack–LLL).  Multivariate ℤ[x₁,…] uses
 //! `fmpz_mpoly_factor` (Bernardin–Monagan EEZ pipeline).  Word-sized primes
 //! use `nmod_poly_factor` (Berlekamp / Cantor–Zassenhaus / Kaltofen–Shoup per
@@ -14,6 +14,24 @@ use crate::flint::integer::FlintInteger;
 use crate::flint::mpoly::{FlintMPoly, FlintMPolyCtx};
 use crate::flint::FlintPoly;
 use crate::kernel::ExprId;
+
+#[cfg(not(flint3))]
+unsafe fn nmod_poly_factor_get_nth(
+    z: *mut NmodPolyStruct,
+    fac: *mut NmodPolyFactorStruct,
+    i: ffi::slong,
+) {
+    ffi::nmod_poly_factor_get_nmod_poly(z, fac, i);
+}
+
+#[cfg(flint3)]
+unsafe fn nmod_poly_factor_get_nth(
+    z: *mut NmodPolyStruct,
+    fac: *mut NmodPolyFactorStruct,
+    i: ffi::slong,
+) {
+    ffi::nmod_poly_factor_get_poly(z, fac as *const NmodPolyFactorStruct, i);
+}
 
 /// Factors of a non-zero `UniPoly`: `polynomial = unit · ∏ baseᵢ^expᵢ`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -183,7 +201,7 @@ pub fn factor_univariate_mod_p(
         for i in 0..fac.num {
             let mut z: NmodPolyStruct = std::mem::zeroed();
             ffi::nmod_poly_init(&mut z, modulus);
-            ffi::nmod_poly_factor_get_nmod_poly(&mut z, &mut fac, i);
+            nmod_poly_factor_get_nth(&mut z, &mut fac, i);
             let deg = ffi::nmod_poly_degree(&z);
             let mut vc = Vec::with_capacity(deg as usize + 1);
             for j in 0..=deg {

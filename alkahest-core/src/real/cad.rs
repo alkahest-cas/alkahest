@@ -719,7 +719,7 @@ pub fn decide_expr(expr: ExprId, pool: &ExprPool) -> Result<QeResult, CadError> 
     decide(&fm, pool)
 }
 
-/// Brown-style projection polynomials for elimination of [`elim_var`].
+/// Brown-style projection polynomials for elimination of `elim_var`.
 ///
 /// The returned polynomials are canonically rewritten with [`poly_normal`] in the
 /// union of remaining variables (+ constants only).

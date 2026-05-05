@@ -153,8 +153,7 @@ mod backend {
                     count_dag_nodes_rec(a, pool, visited);
                 }
             }
-            ExprData::Forall { var, body }
-            | ExprData::Exists { var, body } => {
+            ExprData::Forall { var, body } | ExprData::Exists { var, body } => {
                 count_dag_nodes_rec(var, pool, visited);
                 count_dag_nodes_rec(body, pool, visited);
             }

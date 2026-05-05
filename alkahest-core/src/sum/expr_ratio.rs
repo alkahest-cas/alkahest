@@ -9,11 +9,7 @@ use crate::poly::UniPoly;
 use rug::Rational;
 
 fn rat_poly_from_unipoly(p: &UniPoly) -> RatUniPoly {
-    let coeffs: Vec<Rational> = p
-        .coefficients()
-        .into_iter()
-        .map(Rational::from)
-        .collect();
+    let coeffs: Vec<Rational> = p.coefficients().into_iter().map(Rational::from).collect();
     RatUniPoly { coeffs }.trim()
 }
 
