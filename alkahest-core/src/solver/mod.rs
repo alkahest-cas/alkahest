@@ -7,38 +7,27 @@
 //! stall, [`solve_polynomial_system`] retries using an extracted regular chain
 //! from the same Gröbner basis.
 //!
-//! # V1-4
+//! # V2-14 — Homotopy continuation (numerical algebraic geometry)
 //!
-//! `solve_polynomial_system(eqs, vars)` takes a list of polynomial equations
-//! (given as `ExprId` representing `lhs - rhs = 0`) and a list of variables,
-//! and returns exact symbolic solutions as `ExprId` trees.
+//! [`homotopy::solve_numerical`] runs a total-degree homotopy in `ℂⁿ` (Bézout
+//! start system) and yields real roots with Smale-style checks and `ArbBall`
+//! enclosures — see module documentation for limitations on **deficient**
+//! systems.
 //!
-//! ## Strategy
+//! # V1-4 — Symbolic triangular solving (`solve_polynomial_system`)
 //!
-//! 1. Convert each equation to `GbPoly` (rational coefficients) under the Lex order.
-//! 2. Compute a Gröbner basis under `Lex`.  Lex-order Gröbner bases are
-//!    "elimination ideals": the basis is triangular and the last generator
-//!    is univariate in the Lex-minimal variable.
-//! 3. Walk the triangular structure: find a generator solvable in exactly
-//!    one unsolved variable (given the current partial assignment),
-//!    extract its per-degree coefficients as `ExprId`s, solve with the
-//!    symbolic linear / quadratic formula, and branch on multiple roots.
-//!    Continue until every variable is pinned.
-//!
-//! The returned solutions are symbolic: `(-b ± √(b²-4ac)) / (2a)` stays as
-//! a `sqrt`-containing `ExprId` rather than collapsing to a float.  Callers
-//! that want a numeric value can feed the result through `eval_interp`.
-//!
-//! Returns `SolutionSet::Finite(solutions)` for zero-dimensional systems,
-//! `SolutionSet::Parametric(basis)` if the Gröbner basis is not triangular
-//! enough to back-substitute (infinite families), or `SolutionSet::NoSolution`
-//! when the ideal is trivial (= ⟨1⟩).
+//! Inputs are polynomial equations (`lhs - rhs = 0`), variables, and an
+//! `ExprPool`; outputs are symbolic `ExprId` values (may include `sqrt`),
+//! or `SolutionSet::Parametric` / `SolutionSet::NoSolution`.
 
+pub mod homotopy;
 pub mod regular_chains;
 
 pub use regular_chains::{
-    extract_regular_chain_from_basis, main_variable_recursive, RegularChain, triangularize,
+    extract_regular_chain_from_basis, main_variable_recursive, triangularize, RegularChain,
 };
+
+pub use homotopy::{solve_numerical, CertifiedPoint, HomotopyError, HomotopyOpts};
 
 use crate::errors::AlkahestError;
 use crate::kernel::{ExprData, ExprId, ExprPool};

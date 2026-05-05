@@ -383,18 +383,21 @@ See also **v2.1 — SymPy Parity** (V2-15 … V2-22) below.
 
 **Acceptance:** `rosenfeld_groebner` / `dae_index_reduce` on stable surface behind `groebner`.
 
-### V2-14. Numerical algebraic geometry (homotopy continuation)
+### V2-14. Numerical algebraic geometry (homotopy continuation) → ✅ Partial
 
-**What:** Solve polynomial systems numerically via homotopy continuation, certified by Smale's α-theory on `ArbBall`.
+**What:** Solve polynomial systems numerically via homotopy continuation, certified by Smale-style `α` heuristics and `ArbBall` enclosures.
 
-**Design:**
-- `alkahest-core/src/solver/homotopy.rs` — `solve_numerical(sys, opts) -> Vec<CertifiedPoint>`.
-- Total-degree or polyhedral start systems; predictor–corrector path tracker with adaptive step size.
-- `alkahest.solve(sys, method="homotopy")` as fallback when Gröbner / regular-chains time out.
+**Delivered:**
+- `alkahest-core/src/solver/homotopy.rs` — total-degree Bézout start (`H = (1-t)·γ·G + t·F` with `G_i = z_i^{d_i}-1`), predictor–Euler + damped Newton corrector, terminal real Newton polish, heuristic Smale estimate, enclosures.
+- `solve_numerical`, `CertifiedPoint`, `HomotopyOpts`, `HomotopyError` (`E-HOMOTOPY-*`); stable re-export with `--features groebner`.
+- Python: `solve(..., method="homotopy")` (float dict solutions), `solve_numerical` → `CertifiedSolution`; exception `HomotopyError`.
+- Benchmark task `numerical_homotopy` in `benchmarks/tasks.py`.
 
-**Test plan:** Katsura-8 (intractable for pure-Rust F4): homotopy finds all 256 solutions in < 30 s; every root satisfies Smale's `α < 1/8` or is flagged uncertified; `HomotopyContinuation.jl` parity on 10 curated systems.
+**Limitations:** **Polyhedral / mixed-volume** starts are **not** implemented — deficient systems whose affine root count in `ℂⁿ` is below the Bézout bound are **unsupported** at full root count (e.g. scaling Katsura-8 requires that machinery). Acceptance items that assumed full Katsura coverage remain future work behind polyhedral continuation.
 
-**Acceptance:** Katsura-8 within 30 s; `numerical_solve` benchmark column in `cas_comparison.py`.
+**Test plan:** Decoupled quadratics Π (`x²-1`): all real bitangents recovered; Rust unit tests circle–line intersection; Python `tests/test_homotopy_v214.py`.
+
+**Acceptance:** `numerical_homotopy` benchmark column in `benchmarks/tasks.py`; Katsura-8 / exhaustive Smale corpus deferred until mixed-volume backend.
 
 ---
 

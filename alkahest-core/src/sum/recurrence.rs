@@ -22,10 +22,9 @@ impl fmt::Display for LinearRecurrenceError {
             LinearRecurrenceError::OrderUnsupported(o) => {
                 write!(f, "recurrence order {o} is not supported (max 2)")
             }
-            LinearRecurrenceError::InitialLength { expected, got } => write!(
-                f,
-                "expected {expected} initial value(s), got {got}"
-            ),
+            LinearRecurrenceError::InitialLength { expected, got } => {
+                write!(f, "expected {expected} initial value(s), got {got}")
+            }
         }
     }
 }
@@ -111,7 +110,10 @@ fn solve_order1(
     let r = (Rational::from(0) - coeffs[0].clone()) / coeffs[1].clone();
     let r_expr = rational_atom(pool, &r);
     let closed = simp(pool, pool.mul(vec![initials[0], pool.pow(r_expr, n)]));
-    Ok(RecurrenceSolution { n, closed_form: closed })
+    Ok(RecurrenceSolution {
+        n,
+        closed_form: closed,
+    })
 }
 
 fn solve_order2(
@@ -148,10 +150,7 @@ fn solve_order2(
     let half = rational_atom(pool, &Rational::from((1, 2)));
 
     let inner1 = simp(pool, pool.add(vec![neg_b.clone(), sqrt_e.clone()]));
-    let r1 = simp(
-        pool,
-        pool.mul(vec![half.clone(), inner1]),
-    );
+    let r1 = simp(pool, pool.mul(vec![half.clone(), inner1]));
     let inner2 = simp(
         pool,
         pool.add(vec![
@@ -212,11 +211,7 @@ mod tests {
     fn fibonacci_numeric_check() {
         let pool = ExprPool::new();
         let n_sym = pool.symbol("n", Domain::Real);
-        let coeffs = vec![
-            Rational::from(-1),
-            Rational::from(-1),
-            Rational::from(1),
-        ];
+        let coeffs = vec![Rational::from(-1), Rational::from(-1), Rational::from(1)];
         let initials = vec![pool.integer(0_i32), pool.integer(1_i32)];
         let sol =
             solve_linear_recurrence_homogeneous(&pool, n_sym, &coeffs, &initials).expect("solve");

@@ -188,6 +188,23 @@ r = alkahest.rosenfeld_groebner(dae, max_prolong_rounds=2)
 assert r.consistent is False
 ```
 
+### Numerical algebraic geometry / homotopy continuation (V2-14)
+
+Square polynomial systems can be solved numerically with a **total-degree** homotopy in `ℂⁿ` (`(1-t)·γ·G + t·F`), Newton polish on real projections, a conservative **Smale-style** `α` heuristic, and **`ArbBall` enclosures** attached to each coordinate. Use `solve(eqs, vars, method="homotopy")` for a list of `dict` solutions (`Expr` keys → `float`). For residuals, certification flags, and enclosures, call `solve_numerical(...)`, which returns `CertifiedSolution` objects (`.coordinates`, `.smale_certified`, `.to_dict()`, `.enclosures()`, …).
+
+Ideals whose finite root count in `ℂⁿ` is **strictly below** the Bézout bound (often called *deficient* — e.g. the Katsura family) typically need a **polyhedral / mixed-volume** start system; only the Bézout start (`∏ deg F_i` paths) is implemented here.
+
+```python
+import alkahest
+
+p = alkahest.ExprPool()
+x, y = p.symbol("x"), p.symbol("y")
+neg1 = p.integer(-1)
+sols = alkahest.solve([x**2 + neg1, y**2 + neg1], [x, y], method="homotopy")
+cs = alkahest.solve_numerical([x**2 + neg1], [x])[0]
+print(cs.coordinates, cs.smale_certified, cs.enclosures())
+```
+
 ### Composable transformations
 
 ```python
@@ -219,6 +236,7 @@ alkahest/
 │   │   ├── ode/           # ODE analysis
 │   │   ├── dae/           # DAE analysis and index reduction
 │   │   ├── diffalg/       # Rosenfeld–Gröbner / differential elimination (groebner)
+│   │   ├── solver/        # polynomial solving: Gröbner triangular, regular chains, homotopy
 │   │   ├── lean/          # Lean 4 proof certificate export
 │   │   └── primitive/     # primitive registration system
 │   └── benches/           # criterion benchmarks

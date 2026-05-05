@@ -6,7 +6,10 @@ use crate::matrix::normal_form::RatUniPoly;
 use rug::Rational;
 
 /// `(Z·A, B, C)` with `p/q = Z · A(k)·C(k+1) / (B(k)·C(k))` matching SymPy `gosper_normal`.
-pub fn gosper_normal_form(mut p: RatUniPoly, mut q: RatUniPoly) -> (RatUniPoly, RatUniPoly, RatUniPoly) {
+pub fn gosper_normal_form(
+    mut p: RatUniPoly,
+    mut q: RatUniPoly,
+) -> (RatUniPoly, RatUniPoly, RatUniPoly) {
     if p.is_zero() {
         return (RatUniPoly::zero(), RatUniPoly::one(), RatUniPoly::one());
     }
@@ -49,12 +52,7 @@ pub fn gosper_normal_form(mut p: RatUniPoly, mut q: RatUniPoly) -> (RatUniPoly, 
             b = bn;
             let mut prod = RatUniPoly::one();
             for j in 1..=i {
-                prod = prod
-                    * compose_affine(
-                        &d,
-                        &Rational::from(1),
-                        &Rational::from(-(j as i64)),
-                    );
+                prod = prod * compose_affine(&d, &Rational::from(1), &Rational::from(-(j as i64)));
             }
             c = c * prod;
             found = true;
@@ -282,7 +280,13 @@ pub fn gosper_certificate(r: &RatFunc) -> Option<RatFunc> {
     let x = solve_gosper_poly(&a, &b_eq, &c, max_scan)?;
 
     let num = &b_eq * &x;
-    Some(RatFunc { num, den: c.clone() }.normalize())
+    Some(
+        RatFunc {
+            num,
+            den: c.clone(),
+        }
+        .normalize(),
+    )
 }
 
 #[cfg(test)]
@@ -291,11 +295,7 @@ mod tests {
 
     #[test]
     fn gosper_k_factorial_ratio() {
-        let num = compose_affine(
-            &RatUniPoly::x(),
-            &Rational::from(1),
-            &Rational::from(1),
-        );
+        let num = compose_affine(&RatUniPoly::x(), &Rational::from(1), &Rational::from(1));
         let num = &num * &num;
         let den = RatUniPoly::x();
         let r = RatFunc { num, den }.normalize();

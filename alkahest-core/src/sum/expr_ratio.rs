@@ -41,8 +41,7 @@ fn gamma_linear_ratio(a_step: i64, b: Rational) -> Result<RatFunc, SumError> {
     for t in 0..a_step {
         let coeff_k = Rational::from(a_step);
         let const_term = b.clone() + Rational::from(t);
-        let lin =
-            &(&RatUniPoly::constant(coeff_k) * &z) + &RatUniPoly::constant(const_term);
+        let lin = &(&RatUniPoly::constant(coeff_k) * &z) + &RatUniPoly::constant(const_term);
         num = num * lin;
     }
     Ok(RatFunc {
@@ -72,21 +71,18 @@ fn ratio_product(term: ExprId, k: ExprId, pool: &ExprPool) -> Result<RatFunc, Su
 fn ratio_factor(f: ExprId, k: ExprId, pool: &ExprPool) -> Result<RatFunc, SumError> {
     if f == k {
         let num = compose_affine(&RatUniPoly::x(), &Rational::from(1), &Rational::from(1));
-        return Ok(
-            RatFunc {
-                num,
-                den: RatUniPoly::x(),
-            }
-            .normalize(),
-        );
+        return Ok(RatFunc {
+            num,
+            den: RatUniPoly::x(),
+        }
+        .normalize());
     }
 
     match pool.get(f) {
         ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => Ok(RatFunc::one()),
         ExprData::Symbol { .. } => {
             if f == k {
-                let num =
-                    compose_affine(&RatUniPoly::x(), &Rational::from(1), &Rational::from(1));
+                let num = compose_affine(&RatUniPoly::x(), &Rational::from(1), &Rational::from(1));
                 Ok(RatFunc {
                     num,
                     den: RatUniPoly::x(),
@@ -102,11 +98,7 @@ fn ratio_factor(f: ExprId, k: ExprId, pool: &ExprPool) -> Result<RatFunc, SumErr
                     n.0.to_i32()
                         .ok_or_else(|| SumError::NotHypergeometric("exponent too large".into()))?
                 }
-                _ => {
-                    return Err(SumError::NotHypergeometric(
-                        "non-integer exponent".into(),
-                    ))
-                }
+                _ => return Err(SumError::NotHypergeometric("non-integer exponent".into())),
             };
             if e == 0 {
                 return Ok(RatFunc::one());

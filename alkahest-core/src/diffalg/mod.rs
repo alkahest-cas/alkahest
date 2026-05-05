@@ -17,8 +17,8 @@
 //! - Hubert, *Differential algebra for comptroller generation*.
 
 use crate::dae::{
-    differentiate_equation, extend_dae_for_derivative_symbols, pantelides, DAE, DaeError,
-    PantelidesResult,
+    differentiate_equation, extend_dae_for_derivative_symbols, pantelides, DaeError,
+    PantelidesResult, DAE,
 };
 use crate::errors::AlkahestError;
 use crate::kernel::{ExprData, ExprId, ExprPool};
@@ -116,12 +116,12 @@ impl AlkahestError for DiffAlgError {
 
     fn remediation(&self) -> Option<&'static str> {
         match self {
-            DiffAlgError::DiffError(_) => Some(
-                "ensure the DAE is polynomial in its state and derivative symbols",
-            ),
-            DiffAlgError::NotPolynomial(_) => Some(
-                "declare all jet variables and parameters; remove transcendental functions",
-            ),
+            DiffAlgError::DiffError(_) => {
+                Some("ensure the DAE is polynomial in its state and derivative symbols")
+            }
+            DiffAlgError::NotPolynomial(_) => {
+                Some("declare all jet variables and parameters; remove transcendental functions")
+            }
             DiffAlgError::EmptySystem => Some("pass at least one implicit equation"),
         }
     }
@@ -134,7 +134,10 @@ fn solver_err_to_diffalg(e: SolverError) -> DiffAlgError {
 fn is_unit_ideal_gb(gb: &GroebnerBasis) -> bool {
     gb.generators().iter().any(|g| {
         g.terms.len() == 1
-            && g.terms.keys().next().is_some_and(|e| e.iter().all(|&x| x == 0))
+            && g.terms
+                .keys()
+                .next()
+                .is_some_and(|e| e.iter().all(|&x| x == 0))
             && g.terms.values().next().is_some_and(|c| *c != 0)
     })
 }
@@ -165,7 +168,12 @@ fn children(expr: ExprId, pool: &ExprPool) -> Vec<ExprId> {
     })
 }
 
-fn collect_symbols(expr: ExprId, pool: &ExprPool, seen: &mut HashSet<ExprId>, out: &mut Vec<ExprId>) {
+fn collect_symbols(
+    expr: ExprId,
+    pool: &ExprPool,
+    seen: &mut HashSet<ExprId>,
+    out: &mut Vec<ExprId>,
+) {
     let is_sym = pool.with(expr, |d| matches!(d, ExprData::Symbol { .. }));
     if is_sym && seen.insert(expr) {
         out.push(expr);
@@ -199,8 +207,7 @@ fn polys_from_equations(
     vars: &[ExprId],
     pool: &ExprPool,
 ) -> Result<Vec<GbPoly>, DiffAlgError> {
-    eqs
-        .iter()
+    eqs.iter()
         .map(|&eq| expr_to_gbpoly(eq, vars, pool).map_err(solver_err_to_diffalg))
         .collect()
 }
@@ -240,8 +247,7 @@ pub fn rosenfeld_groebner_with_options(
     let mut work = dae.clone();
     let mut scratch: Vec<ExprId> = source_eqs.clone();
     let mut vars = vars_for_dae(&work, &scratch, pool);
-    let mut active =
-        polys_from_equations(&work.equations, &vars, pool)?;
+    let mut active = polys_from_equations(&work.equations, &vars, pool)?;
 
     let mut prolong_exprs = source_eqs.clone();
     let mut prolongation_rounds: usize = 0;
@@ -261,14 +267,9 @@ pub fn rosenfeld_groebner_with_options(
 
         let mut next_prolong = Vec::with_capacity(prolong_exprs.len());
         for &eq in &prolong_exprs {
-            let d_eq = differentiate_equation(
-                eq,
-                &work.variables,
-                &work.derivatives,
-                work.time_var,
-                pool,
-            )
-            .map_err(|e| DiffAlgError::DiffError(e.to_string()))?;
+            let d_eq =
+                differentiate_equation(eq, &work.variables, &work.derivatives, work.time_var, pool)
+                    .map_err(|e| DiffAlgError::DiffError(e.to_string()))?;
             extend_dae_for_derivative_symbols(&mut work, d_eq, pool);
             next_prolong.push(d_eq);
         }
@@ -307,11 +308,7 @@ pub fn rosenfeld_groebner_with_options(
                 consistent,
                 chains,
                 working_dae: work,
-                final_basis: if consistent {
-                    Some(final_basis)
-                } else {
-                    None
-                },
+                final_basis: if consistent { Some(final_basis) } else { None },
                 prolongation_rounds,
                 truncated: false,
             });
@@ -334,11 +331,7 @@ pub fn rosenfeld_groebner_with_options(
                 consistent,
                 chains,
                 working_dae: work,
-                final_basis: if consistent {
-                    Some(final_basis)
-                } else {
-                    None
-                },
+                final_basis: if consistent { Some(final_basis) } else { None },
                 prolongation_rounds,
                 truncated: true,
             });
@@ -357,11 +350,7 @@ pub fn rosenfeld_groebner_with_options(
             vec![]
         },
         working_dae: work,
-        final_basis: if consistent {
-            Some(final_basis)
-        } else {
-            None
-        },
+        final_basis: if consistent { Some(final_basis) } else { None },
         prolongation_rounds,
         truncated: true,
     })
@@ -477,11 +466,7 @@ mod tests {
                 }
                 _ => {
                     let e1 = p.add(vec![dx, p.mul(vec![p.integer(-1), x])]);
-                    let e2 = p.add(vec![
-                        dx,
-                        p.mul(vec![p.integer(-1), x]),
-                        p.integer(-1),
-                    ]);
+                    let e2 = p.add(vec![dx, p.mul(vec![p.integer(-1), x]), p.integer(-1)]);
                     (vec![e1, e2], vec![x], vec![dx], false)
                 }
             };

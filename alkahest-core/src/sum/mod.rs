@@ -88,10 +88,7 @@ fn rat_poly_to_expr(pool: &ExprPool, k: ExprId, p: &RatUniPoly) -> ExprId {
         } else if deg == 1 {
             pool.mul(vec![coeff_expr, k])
         } else {
-            pool.mul(vec![
-                coeff_expr,
-                pool.pow(k, pool.integer(deg as i64)),
-            ])
+            pool.mul(vec![coeff_expr, pool.pow(k, pool.integer(deg as i64))])
         };
         terms.push(pow_id);
     }
@@ -112,17 +109,17 @@ fn ratfunc_to_expr(pool: &ExprPool, k: ExprId, r: &RatFunc) -> ExprId {
 }
 
 /// Indefinite Gosper sum: find `G(k)` with `G(k+1)-G(k)=term` when `term` is hypergeometric in `k`.
-pub fn sum_indefinite(term: ExprId, k: ExprId, pool: &ExprPool) -> Result<DerivedExpr<ExprId>, SumError> {
+pub fn sum_indefinite(
+    term: ExprId,
+    k: ExprId,
+    pool: &ExprPool,
+) -> Result<DerivedExpr<ExprId>, SumError> {
     let ratio = hypergeom_ratio(term, k, pool)?;
     let cert = gosper_certificate(&ratio).ok_or(SumError::NotGosperSummable)?;
     let cert_e = ratfunc_to_expr(pool, k, &cert);
     let g = simp(pool, pool.mul(vec![term, cert_e]));
     let mut log = DerivationLog::new();
-    log.push(RewriteStep::simple(
-        "gosper_indefinite",
-        term,
-        g,
-    ));
+    log.push(RewriteStep::simple("gosper_indefinite", term, g));
     Ok(DerivedExpr::with_log(g, log))
 }
 
@@ -152,11 +149,7 @@ pub fn sum_definite(
         pool.add(vec![upper, pool.mul(vec![lower, pool.integer(-1_i32)])]),
     );
     let mut log = DerivationLog::new();
-    log.push(RewriteStep::simple(
-        "gosper_definite_telescope",
-        term,
-        diff,
-    ));
+    log.push(RewriteStep::simple("gosper_definite_telescope", term, diff));
     Ok(DerivedExpr::with_log(diff, log))
 }
 
@@ -171,12 +164,7 @@ pub struct WzPair {
     pub g: ExprId,
 }
 
-pub fn verify_wz_pair(
-    pair: &WzPair,
-    n: ExprId,
-    k: ExprId,
-    pool: &ExprPool,
-) -> bool {
+pub fn verify_wz_pair(pair: &WzPair, n: ExprId, k: ExprId, pool: &ExprPool) -> bool {
     let k1 = simp(pool, pool.add(vec![k, pool.integer(1_i32)]));
     let n1 = simp(pool, pool.add(vec![n, pool.integer(1_i32)]));
 
@@ -186,10 +174,7 @@ pub fn verify_wz_pair(
 
     let lhs = simp(
         pool,
-        pool.add(vec![
-            f_n1_k,
-            pool.mul(vec![pair.f, pool.integer(-1_i32)]),
-        ]),
+        pool.add(vec![f_n1_k, pool.mul(vec![pair.f, pool.integer(-1_i32)])]),
     );
 
     let mut mk = HashMap::new();
@@ -198,10 +183,7 @@ pub fn verify_wz_pair(
 
     let rhs = simp(
         pool,
-        pool.add(vec![
-            g_n_k1,
-            pool.mul(vec![pair.g, pool.integer(-1_i32)]),
-        ]),
+        pool.add(vec![g_n_k1, pool.mul(vec![pair.g, pool.integer(-1_i32)])]),
     );
 
     lhs == rhs
@@ -211,15 +193,11 @@ pub fn verify_wz_pair(
 mod tests {
     use super::*;
     use crate::jit::eval_interp;
-    use crate::kernel::{Domain, ExprData};
     use crate::kernel::ExprId;
+    use crate::kernel::{Domain, ExprData};
     use std::collections::HashMap;
 
-    fn eval_with_gamma(
-        expr: ExprId,
-        env: &HashMap<ExprId, f64>,
-        pool: &ExprPool,
-    ) -> Option<f64> {
+    fn eval_with_gamma(expr: ExprId, env: &HashMap<ExprId, f64>, pool: &ExprPool) -> Option<f64> {
         match pool.get(expr) {
             ExprData::Func { name, args } if name == "gamma" && args.len() == 1 => {
                 let x = eval_with_gamma(args[0], env, pool)?;
@@ -239,9 +217,9 @@ mod tests {
                 }
                 Some(prod)
             }
-            ExprData::Pow { base, exp } => Some(
-                eval_with_gamma(base, env, pool)?.powf(eval_with_gamma(exp, env, pool)?),
-            ),
+            ExprData::Pow { base, exp } => {
+                Some(eval_with_gamma(base, env, pool)?.powf(eval_with_gamma(exp, env, pool)?))
+            }
             _ => eval_interp(expr, env, pool),
         }
     }
@@ -253,7 +231,10 @@ mod tests {
         let gkp1 = pool.func("gamma", vec![pool.add(vec![k, pool.integer(1_i32)])]);
         let term = simp(&pool, pool.mul(vec![k, gkp1]));
         let r = sum_indefinite(term, k, &pool).expect("gosper");
-        assert!(pool.with(r.value, |d| matches!(d, ExprData::Func { .. } | ExprData::Mul(_))));
+        assert!(pool.with(r.value, |d| matches!(
+            d,
+            ExprData::Func { .. } | ExprData::Mul(_)
+        )));
     }
 
     #[test]
@@ -268,10 +249,7 @@ mod tests {
         let expected = simp(
             &pool,
             pool.add(vec![
-                pool.func(
-                    "gamma",
-                    vec![pool.add(vec![n, pool.integer(2_i32)])],
-                ),
+                pool.func("gamma", vec![pool.add(vec![n, pool.integer(2_i32)])]),
                 pool.integer(-1_i32),
             ]),
         );

@@ -172,6 +172,7 @@ except ImportError:
 # V1-4 / V1-16: Polynomial system solver + Gröbner basis (optional — requires groebner feature)
 try:
     from .alkahest import (
+        CertifiedSolution,
         DaeIndexReduction,
         GbPoly,
         GroebnerBasis,
@@ -183,6 +184,7 @@ try:
         radical,
         rosenfeld_groebner,
         solve,
+        solve_numerical,
         triangularize,
     )  # noqa: F401
 except ImportError:
@@ -460,6 +462,8 @@ __all__ = [
     "to_stablehlo",
     # V1-4 / V1-16: Polynomial system solver + Gröbner basis (requires groebner feature)
     "solve",
+    "solve_numerical",
+    "CertifiedSolution",
     "GroebnerBasis",
     "GbPoly",
     # V2-11 — Regular chains / triangular decomposition

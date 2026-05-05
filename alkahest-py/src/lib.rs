@@ -29,16 +29,15 @@ use alkahest_core::{
     // V3-3 — FOFormula / satisfiability
     satisfiable as core_satisfiable,
     sensitivity_system as core_sensitivity_system,
+    solve_linear_recurrence_homogeneous as core_solve_linear_recurrence_homogeneous,
     // V2-3 — Sparse interpolation
     sparse_interpolate as core_sparse_interpolate,
     sparse_interpolate_univariate as core_sparse_interpolate_univariate,
     subresultant_prs as core_subresultant_prs,
-    solve_linear_recurrence_homogeneous as core_solve_linear_recurrence_homogeneous,
     subs as core_subs,
     sum_definite as core_sum_definite,
     sum_indefinite as core_sum_indefinite,
     verify_wz_pair as core_verify_wz_pair,
-    WzPair,
     // Phase 22 — Ball arithmetic
     ArbBall as CoreArbBall,
     // V2-9 — CAD / real QE
@@ -71,6 +70,7 @@ use alkahest_core::{
     UniPoly,
     UniPolyFactorModP,
     UniPolyFactorization,
+    WzPair,
     DAE,
     ODE,
 };
@@ -92,10 +92,10 @@ use alkahest_core::{
     DiffError, EgraphConfig, IntegrationError, IoError, LinearRecurrenceError, PatternRule,
     ResultantError, SimplifyConfig, SizeCost, SparseInterpError, SumError,
 };
-use rug::{Integer, Rational};
 use pyo3::exceptions::{PyOverflowError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
+use rug::{Integer, Rational};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
@@ -117,6 +117,7 @@ pyo3::create_exception!(alkahest, PyOdeError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyDaeError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyJitError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PySolverError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PyHomotopyError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyCudaError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyIoError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyParseError, PyAlkahestError);
@@ -3878,7 +3879,12 @@ fn py_rosenfeld_groebner(
     let pool_py = dae.pool.clone_ref(py);
     let r = {
         let pool = pool_py.borrow(py);
-        rosenfeld_groebner_with_options(&dae.inner, &pool.inner, py_monomial_order_for_dae(order), max_prolong_rounds.unwrap_or(8))
+        rosenfeld_groebner_with_options(
+            &dae.inner,
+            &pool.inner,
+            py_monomial_order_for_dae(order),
+            max_prolong_rounds.unwrap_or(8),
+        )
     };
     let r = r.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
     Ok(PyRosenfeldGroebnerResult {
@@ -3894,7 +3900,11 @@ fn py_rosenfeld_groebner(
 #[cfg(feature = "groebner")]
 #[pyfunction]
 #[pyo3(name = "dae_index_reduce", signature = (dae, order=None))]
-fn py_dae_index_reduce(py: Python<'_>, dae: PyRef<PyDAE>, order: Option<&str>) -> PyResult<PyDaeIndexReduction> {
+fn py_dae_index_reduce(
+    py: Python<'_>,
+    dae: PyRef<PyDAE>,
+    order: Option<&str>,
+) -> PyResult<PyDaeIndexReduction> {
     let pool_py = dae.pool.clone_ref(py);
     let inner = {
         let pool = pool_py.borrow(py);
@@ -3977,9 +3987,8 @@ fn py_primary_decomposition(
         gb_polys.push(gbp);
     }
     drop(pool);
-    let comps = primary_decomposition(gb_polys, MonomialOrder::Lex).map_err(|e| {
-        pyo3::exceptions::PyValueError::new_err(e.to_string())
-    })?;
+    let comps = primary_decomposition(gb_polys, MonomialOrder::Lex)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
     let mut out = Vec::with_capacity(comps.len());
     for c in comps {
         out.push(Py::new(
@@ -4019,9 +4028,8 @@ fn py_ideal_radical(
         gb_polys.push(gbp);
     }
     drop(pool);
-    let gb = core_ideal_radical(gb_polys, MonomialOrder::Lex).map_err(|e| {
-        pyo3::exceptions::PyValueError::new_err(e.to_string())
-    })?;
+    let gb = core_ideal_radical(gb_polys, MonomialOrder::Lex)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
     Py::new(
         py,
         PyGroebnerBasis {
@@ -4037,9 +4045,135 @@ fn py_ideal_radical(
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "groebner")]
-use alkahest_core::{solve_polynomial_system, SolutionSet, RegularChain, triangularize};
+use alkahest_core::{
+    solve_numerical, solve_polynomial_system, triangularize, CertifiedPoint, HomotopyError,
+    HomotopyOpts, RegularChain, SolutionSet,
+};
 
-/// `alkahest.solve(equations, vars, *, numeric=False) -> list[dict] | GroebnerBasis | list`
+#[cfg(feature = "groebner")]
+fn homotopy_err_to_py(e: HomotopyError) -> PyErr {
+    Python::with_gil(|py| match &e {
+        HomotopyError::Algebraic(se) => {
+            let exc = py.get_type_bound::<PySolverError>();
+            make_structured_err(py, &exc, se)
+        }
+        _ => {
+            let exc = py.get_type_bound::<PyHomotopyError>();
+            make_structured_err(py, &exc, &e)
+        }
+    })
+}
+
+/// One homotopy endpoint with optional Smale diagnostics.
+#[cfg(feature = "groebner")]
+#[pyclass(name = "CertifiedSolution")]
+struct PyCertifiedSolution {
+    inner: CertifiedPoint,
+    var_ids: Vec<ExprId>,
+    pool: Py<PyExprPool>,
+}
+
+#[cfg(feature = "groebner")]
+#[pymethods]
+impl PyCertifiedSolution {
+    #[getter]
+    fn coordinates(&self) -> Vec<f64> {
+        self.inner.coordinates.clone()
+    }
+
+    #[getter]
+    fn max_residual(&self) -> f64 {
+        self.inner.max_residual_f64
+    }
+
+    #[getter]
+    fn smale_alpha(&self) -> Option<f64> {
+        self.inner.smale_alpha
+    }
+
+    #[getter]
+    fn smale_certified(&self) -> bool {
+        self.inner.smale_certified
+    }
+
+    /// Map each variable ``Expr`` to its coordinate ``float`` (same ``vars`` order as ``solve``).
+    fn to_dict(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let d = pyo3::types::PyDict::new_bound(py);
+        for (i, &c) in self.inner.coordinates.iter().enumerate() {
+            let vx = PyExpr {
+                id: self.var_ids[i],
+                pool: self.pool.clone_ref(py),
+            };
+            d.set_item(vx.into_py(py), c)?;
+        }
+        Ok(d.into())
+    }
+
+    fn enclosures(&self) -> Vec<PyArbBall> {
+        self.inner
+            .enclosure
+            .iter()
+            .map(|b| PyArbBall { inner: b.clone() })
+            .collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "CertifiedSolution(residual={:?}, certified={})",
+            self.inner.max_residual_f64, self.inner.smale_certified,
+        )
+    }
+}
+
+#[cfg(feature = "groebner")]
+#[pyfunction]
+#[pyo3(name = "solve_numerical", signature = (
+    equations,
+    vars,
+    *,
+    max_bezout_paths=None,
+    certify_prec_bits=None,
+))]
+fn py_solve_numerical(
+    py: Python<'_>,
+    equations: Vec<PyRef<PyExpr>>,
+    vars: Vec<PyRef<PyExpr>>,
+    max_bezout_paths: Option<usize>,
+    certify_prec_bits: Option<u32>,
+) -> PyResult<Vec<PyCertifiedSolution>> {
+    if equations.is_empty() || vars.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "solve_numerical requires at least one equation and one variable",
+        ));
+    }
+    let pool_py = equations[0].pool.clone_ref(py);
+    let eq_ids: Vec<ExprId> = equations.iter().map(|e| e.id).collect();
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+    let mut opts = HomotopyOpts::default();
+    if let Some(m) = max_bezout_paths {
+        opts.max_bezout_paths = m;
+    }
+    if let Some(b) = certify_prec_bits {
+        opts.certify_prec_bits = b;
+    }
+    let pts = {
+        let pool = pool_py.borrow(py);
+        solve_numerical(&eq_ids, &var_ids, &pool.inner, &opts)
+    };
+    match pts {
+        Err(e) => Err(homotopy_err_to_py(e)),
+        Ok(v) => Ok(v
+            .into_iter()
+            .map(|inner| PyCertifiedSolution {
+                inner,
+                var_ids: var_ids.clone(),
+                pool: pool_py.clone_ref(py),
+            })
+            .collect()),
+    }
+}
+
+/// `alkahest.solve(equations, vars, *, numeric=False, method="groebner")`
 ///
 /// Solve a zero-dimensional polynomial system.
 ///
@@ -4048,27 +4182,30 @@ use alkahest_core::{solve_polynomial_system, SolutionSet, RegularChain, triangul
 /// equations : list[Expr]
 ///     Each expression represents `p(vars) = 0`.
 /// vars : list[Expr]
-///     The symbolic variables to solve for (must be symbols).
+///     Variables to solve for (symbols).
 /// numeric : bool, default False
-///     When ``False`` (default), each solution dict maps ``Expr → Expr``
-///     (symbolic).  When ``True``, values are cast to ``float`` (legacy
-///     behaviour; useful for quick numerical checks).
+///     Used when ``method="groebner"``: symbolic ``Expr`` values vs ``float``.
+/// method : str, default ``"groebner"``
+///     ``"groebner"`` — Lex basis + triangular back-substitution.
+///     ``"homotopy"`` — total-degree homotopy continuation in ``ℂⁿ`` followed
+///     by Newton projection to real tuples (always ``float`` dict values).
 ///
 /// Returns
 /// -------
 /// list[dict]
-///     Each dict maps a variable ``Expr`` to a solution value.
-///     Returns an empty list when no solution exists.
+///     Each dict maps a variable ``Expr`` to ``Expr`` (symbolic Groebner) or
+///     ``float`` (Groebner with ``numeric=True``, or ``method="homotopy"``).
 /// GroebnerBasis
-///     When the system has infinitely many solutions (parametric ideal).
+///     When ``method="groebner"`` and the ideal is parametric / not zero-dim finite.
 #[cfg(feature = "groebner")]
 #[pyfunction]
-#[pyo3(name = "solve", signature = (equations, vars, numeric = false))]
+#[pyo3(name = "solve", signature = (equations, vars, *, numeric = false, method = "groebner"))]
 fn py_solve(
     py: Python<'_>,
     equations: Vec<PyRef<PyExpr>>,
     vars: Vec<PyRef<PyExpr>>,
     numeric: bool,
+    method: &str,
 ) -> PyResult<PyObject> {
     if equations.is_empty() || vars.is_empty() {
         return Err(pyo3::exceptions::PyValueError::new_err(
@@ -4078,6 +4215,38 @@ fn py_solve(
     let pool_py = equations[0].pool.clone_ref(py);
     let eq_ids: Vec<ExprId> = equations.iter().map(|e| e.id).collect();
     let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+
+    if method == "homotopy" {
+        let opts = HomotopyOpts::default();
+        let pts = {
+            let pool = pool_py.borrow(py);
+            solve_numerical(&eq_ids, &var_ids, &pool.inner, &opts)
+        };
+        return match pts {
+            Err(e) => Err(homotopy_err_to_py(e)),
+            Ok(points) => {
+                let list = pyo3::types::PyList::empty_bound(py);
+                for p in points {
+                    let d = pyo3::types::PyDict::new_bound(py);
+                    for (i, &val) in p.coordinates.iter().enumerate() {
+                        let var_expr = PyExpr {
+                            id: var_ids[i],
+                            pool: pool_py.clone_ref(py),
+                        };
+                        d.set_item(var_expr.into_py(py), val)?;
+                    }
+                    list.append(d)?;
+                }
+                Ok(list.into())
+            }
+        };
+    }
+
+    if method != "groebner" {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown solve method: {method:?} (expected 'groebner' or 'homotopy')"
+        )));
+    }
 
     let result = {
         let pool = pool_py.borrow(py);
@@ -4107,14 +4276,12 @@ fn py_solve(
                         pool: pool_py.clone_ref(py),
                     };
                     if numeric {
-                        // Legacy numeric path: cast solution ExprId to f64.
                         let env: std::collections::HashMap<ExprId, f64> =
                             std::collections::HashMap::new();
                         let f = alkahest_core::jit::eval_interp(*val, &env, &pool.inner)
                             .unwrap_or(f64::NAN);
                         d.set_item(var_expr.into_py(py), f)?;
                     } else {
-                        // Symbolic path: wrap the solution ExprId as a PyExpr.
                         let val_expr = PyExpr {
                             id: *val,
                             pool: pool_py.clone_ref(py),
@@ -4200,9 +4367,7 @@ fn py_triangularize(
         Ok(chains) => {
             let list = pyo3::types::PyList::empty_bound(py);
             for chain in chains {
-                list.append(
-                    PyRegularChain { inner: chain }.into_py(py),
-                )?;
+                list.append(PyRegularChain { inner: chain }.into_py(py))?;
             }
             Ok(list.into())
         }
@@ -4553,6 +4718,8 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add_class::<PyDaeIndexReduction>()?;
         m.add_class::<PyPrimaryComponent>()?;
         m.add_class::<PyRegularChain>()?;
+        m.add_class::<PyCertifiedSolution>()?;
+        m.add_function(wrap_pyfunction!(py_solve_numerical, m)?)?;
         m.add_function(wrap_pyfunction!(py_solve, m)?)?;
         m.add_function(wrap_pyfunction!(py_triangularize, m)?)?;
         m.add_function(wrap_pyfunction!(py_primary_decomposition, m)?)?;
@@ -4600,6 +4767,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("DaeError", m.py().get_type_bound::<PyDaeError>())?;
     m.add("JitError", m.py().get_type_bound::<PyJitError>())?;
     m.add("SolverError", m.py().get_type_bound::<PySolverError>())?;
+    m.add("HomotopyError", m.py().get_type_bound::<PyHomotopyError>())?;
     m.add("CudaError", m.py().get_type_bound::<PyCudaError>())?;
     m.add("IoError", m.py().get_type_bound::<PyIoError>())?;
     m.add("ParseError", m.py().get_type_bound::<PyParseError>())?;

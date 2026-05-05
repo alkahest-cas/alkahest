@@ -59,11 +59,10 @@ fn degree_in_var(poly: &GbPoly, var: usize) -> u32 {
 /// True iff every monomial is constant except possibly in `var`.
 fn is_univariate_in(poly: &GbPoly, var: usize) -> bool {
     !poly.is_zero()
-        && poly.terms.keys().all(|e| {
-            e.iter()
-                .enumerate()
-                .all(|(i, &exp)| i == var || exp == 0)
-        })
+        && poly
+            .terms
+            .keys()
+            .all(|e| e.iter().enumerate().all(|(i, &exp)| i == var || exp == 0))
 }
 
 fn is_unit_ideal(gens: &[GbPoly], n_vars: usize) -> bool {
@@ -121,7 +120,12 @@ fn gbpoly_to_unipoly_z(
         coeffs_map.insert(e, c.clone());
     }
     let coeffs_rat: Vec<Rational> = (0..=*coeffs_map.keys().max().unwrap_or(&0))
-        .map(|d| coeffs_map.get(&d).cloned().unwrap_or_else(|| Rational::from(0)))
+        .map(|d| {
+            coeffs_map
+                .get(&d)
+                .cloned()
+                .unwrap_or_else(|| Rational::from(0))
+        })
         .collect();
     let lcm = lcm_rational_denoms(&coeffs_rat);
     let mut coeff_ints = Vec::new();
@@ -187,9 +191,8 @@ fn split_chain_at_bottom_univariate(
         return Ok(vec![chain]);
     }
 
-    let fac = factor_univariate_z(&sqf).map_err(|e| {
-        SolverError::NotPolynomial(format!("triangularize factorization: {e}"))
-    })?;
+    let fac = factor_univariate_z(&sqf)
+        .map_err(|e| SolverError::NotPolynomial(format!("triangularize factorization: {e}")))?;
 
     let nontrivial = fac.factors.iter().filter(|(f, _)| f.degree() >= 1).count();
     if nontrivial <= 1 {

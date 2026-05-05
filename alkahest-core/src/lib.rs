@@ -23,19 +23,19 @@ pub mod ode;
 pub mod pattern;
 pub mod poly;
 // V2-9 — CAD / real QE
+#[cfg(feature = "groebner")]
+pub mod ideal;
 pub mod primitive;
 pub mod real;
 pub mod simplify;
 #[cfg(feature = "groebner")]
 pub mod solver;
-#[cfg(feature = "groebner")]
-pub mod ideal;
 // V2-13 — Differential algebra / Rosenfeld–Gröbner
 #[cfg(feature = "groebner")]
 pub mod diffalg;
 // V2-10 — Gosper / creative telescoping (WZ certificates)
-pub mod sum;
 pub mod stablehlo;
+pub mod sum;
 
 pub use acausal::{capacitor, resistor, voltage_source, Component, Port, System};
 pub use dae::{pantelides, DaeError, PantelidesResult, DAE};
@@ -113,6 +113,14 @@ pub use poly::groebner::{compute_groebner_basis_f5, GbPoly, GroebnerBasis, Monom
 pub use errors::AlkahestError;
 pub use lean::emit_lean_expr as emit_lean;
 // V2-1 — Modular / CRT framework
+#[cfg(feature = "groebner")]
+pub use diffalg::{
+    dae_index_reduce, rosenfeld_groebner, rosenfeld_groebner_algebraic,
+    rosenfeld_groebner_with_options, DaeIndexReduction, DiffAlgError, DifferentialIdeal,
+    DifferentialRanking, DifferentialRing, RegularDifferentialChain, RosenfeldGroebnerResult,
+};
+#[cfg(feature = "groebner")]
+pub use ideal::{primary_decomposition, radical, PrimaryComponent, PrimaryDecompositionError};
 pub use modular::{
     is_prime, lift_crt, mignotte_bound, rational_reconstruction, reduce_mod, select_lucky_prime,
     ModularError, ModularValue, MultiPolyFp,
@@ -120,18 +128,9 @@ pub use modular::{
 pub use primitive::{Capabilities, CoverageReport, CoverageRow, Primitive, PrimitiveRegistry};
 #[cfg(feature = "groebner")]
 pub use solver::{
-    expr_to_gbpoly, extract_regular_chain_from_basis, main_variable_recursive,
-    solve_polynomial_system, triangularize, RegularChain, Solution, SolutionSet, SolverError,
-};
-#[cfg(feature = "groebner")]
-pub use ideal::{
-    primary_decomposition, radical, PrimaryComponent, PrimaryDecompositionError,
-};
-#[cfg(feature = "groebner")]
-pub use diffalg::{
-    dae_index_reduce, rosenfeld_groebner, rosenfeld_groebner_algebraic,
-    rosenfeld_groebner_with_options, DaeIndexReduction, DiffAlgError, DifferentialIdeal,
-    DifferentialRanking, DifferentialRing, RegularDifferentialChain, RosenfeldGroebnerResult,
+    expr_to_gbpoly, extract_regular_chain_from_basis, main_variable_recursive, solve_numerical,
+    solve_polynomial_system, triangularize, CertifiedPoint, HomotopyError, HomotopyOpts,
+    RegularChain, Solution, SolutionSet, SolverError,
 };
 
 pub fn version() -> &'static str {
@@ -150,7 +149,17 @@ pub fn version() -> &'static str {
 pub mod stable {
     pub use crate::dae::{pantelides, DaeError, DAE};
     pub use crate::diff::{diff, diff_forward, DiffError};
+    #[cfg(feature = "groebner")]
+    pub use crate::diffalg::{
+        dae_index_reduce, rosenfeld_groebner, rosenfeld_groebner_algebraic,
+        rosenfeld_groebner_with_options, DaeIndexReduction, DiffAlgError, DifferentialIdeal,
+        DifferentialRanking, DifferentialRing, RegularDifferentialChain, RosenfeldGroebnerResult,
+    };
     pub use crate::errors::AlkahestError;
+    #[cfg(feature = "groebner")]
+    pub use crate::ideal::{
+        primary_decomposition, radical, PrimaryComponent, PrimaryDecompositionError,
+    };
     pub use crate::integrate::{integrate, IntegrationError};
     pub use crate::jit::{compile, CompiledFn, JitError};
     #[cfg(feature = "cuda")]
@@ -183,25 +192,16 @@ pub mod stable {
     pub use crate::primitive::{Primitive, PrimitiveRegistry};
     pub use crate::real::{cad_lift, cad_project, decide, decide_expr, CadError, QeResult};
     pub use crate::simplify::{simplify, simplify_with, SimplifyConfig};
-    pub use crate::sum::{
-        gosper_certificate, gosper_normal_form, hypergeom_ratio, solve_linear_recurrence_homogeneous,
-        sum_definite, sum_indefinite, verify_wz_pair, LinearRecurrenceError, RatFunc,
-        RecurrenceSolution, SumError, WzPair,
-    };
     #[cfg(feature = "groebner")]
     pub use crate::solver::{
-        expr_to_gbpoly, extract_regular_chain_from_basis, main_variable_recursive,
-        solve_polynomial_system, triangularize, RegularChain, Solution, SolutionSet, SolverError,
+        expr_to_gbpoly, extract_regular_chain_from_basis, main_variable_recursive, solve_numerical,
+        solve_polynomial_system, triangularize, CertifiedPoint, HomotopyError, HomotopyOpts,
+        RegularChain, Solution, SolutionSet, SolverError,
     };
-    #[cfg(feature = "groebner")]
-    pub use crate::ideal::{
-        primary_decomposition, radical, PrimaryComponent, PrimaryDecompositionError,
-    };
-    #[cfg(feature = "groebner")]
-    pub use crate::diffalg::{
-        dae_index_reduce, rosenfeld_groebner, rosenfeld_groebner_algebraic,
-        rosenfeld_groebner_with_options, DaeIndexReduction, DiffAlgError, DifferentialIdeal,
-        DifferentialRanking, DifferentialRing, RegularDifferentialChain, RosenfeldGroebnerResult,
+    pub use crate::sum::{
+        gosper_certificate, gosper_normal_form, hypergeom_ratio,
+        solve_linear_recurrence_homogeneous, sum_definite, sum_indefinite, verify_wz_pair,
+        LinearRecurrenceError, RatFunc, RecurrenceSolution, SumError, WzPair,
     };
     pub use crate::version;
 }

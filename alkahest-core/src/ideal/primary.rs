@@ -141,8 +141,7 @@ fn validate_gens(gens: &[GbPoly]) -> Result<(), PrimaryDecompositionError> {
 fn is_unit_ideal(gb: &GroebnerBasis) -> bool {
     gb.generators().iter().any(|g| {
         g.terms.len() == 1
-            && g
-                .terms
+            && g.terms
                 .keys()
                 .next()
                 .is_some_and(|e| e.iter().all(|&x| x == 0))
@@ -440,9 +439,9 @@ fn factor_univariate_q_monic(
 }
 
 fn is_univariate_in_var(p: &GbPoly, var: usize) -> bool {
-    p.terms.keys().all(|e| {
-        e.len() == p.n_vars && e.iter().enumerate().all(|(i, &v)| i == var || v == 0)
-    })
+    p.terms
+        .keys()
+        .all(|e| e.len() == p.n_vars && e.iter().enumerate().all(|(i, &v)| i == var || v == 0))
 }
 
 fn radical_from_basis(gb: &GroebnerBasis, order: MonomialOrder) -> GroebnerBasis {
@@ -600,12 +599,9 @@ mod tests {
     fn factor_split_x2_minus_one() {
         let n = 2usize;
         let xm1 = GbPoly {
-            terms: [
-                (vec![2, 0], rat(1, 1)),
-                (vec![0, 0], rat(-1, 1)),
-            ]
-            .into_iter()
-            .collect(),
+            terms: [(vec![2, 0], rat(1, 1)), (vec![0, 0], rat(-1, 1))]
+                .into_iter()
+                .collect(),
             n_vars: n,
         };
         let y = GbPoly {

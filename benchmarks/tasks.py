@@ -491,6 +491,37 @@ class SparseInterpMultivar(BenchTask):
 
 
 # ---------------------------------------------------------------------------
+# V2-14 — Homotopy continuation (numerical algebraic geometry)
+# ---------------------------------------------------------------------------
+
+
+class HomotopySeparateQuadratics(BenchTask):
+    """Separate quadratics Π (x_i^2 − 1) — classic Bézout-total-degree case.
+
+    ``size`` controls the dimension ``n``.  Path count equals ``2^n``.
+    """
+
+    name = "numerical_homotopy"
+    size_params = [2, 3]
+
+    def run_alkahest(self, size: int) -> Any:
+        import alkahest
+
+        p = alkahest.ExprPool()
+        neg1 = p.integer(-1)
+        xs = [p.symbol(f"x{i}") for i in range(size)]
+        eqs = [x_i**2 + neg1 for x_i in xs]
+        return alkahest.solve(eqs, xs, method="homotopy")
+
+    def run_sympy(self, size: int) -> Any:
+        import sympy as sp  # type: ignore[import]
+
+        xs = sp.symbols(" ".join(f"x{i}" for i in range(size)))
+        eqs = [xs[i] ** 2 - 1 for i in range(size)]
+        return sp.solve(eqs, xs)
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -502,6 +533,7 @@ ALL_TASKS: list[BenchTask] = [
     ODEJITCompile(),
     SolveCircleLine(),
     Solve6rIk(),
+    HomotopySeparateQuadratics(),
     SparseInterpVsDense(),
     SparseInterpMultivar(),
 ]

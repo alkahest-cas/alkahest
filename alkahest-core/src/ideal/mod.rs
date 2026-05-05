@@ -9,6 +9,4 @@
 pub mod primary;
 
 #[cfg(feature = "groebner")]
-pub use primary::{
-    primary_decomposition, radical, PrimaryComponent, PrimaryDecompositionError,
-};
+pub use primary::{primary_decomposition, radical, PrimaryComponent, PrimaryDecompositionError};

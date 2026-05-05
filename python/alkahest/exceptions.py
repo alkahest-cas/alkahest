@@ -15,7 +15,7 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-MAT-001  … E-MAT-003     MatrixError
     E-ODE-001  … E-ODE-003     OdeError
     E-DAE-001  … E-DAE-003     DaeError
-    E-SOLVE-001 … E-SOLVE-003  SolverError  (polynomial system)
+    E-HOMOTOPY-002 … E-HOMOTOPY-004 HomotopyError (numerical continuation — V2-14)
     E-SOLVE-010 … E-SOLVE-011  SolverError  (GPU Gröbner)
     E-JIT-001   … E-JIT-003    JitError
     E-LAT-001 … E-LAT-004      LatticeError

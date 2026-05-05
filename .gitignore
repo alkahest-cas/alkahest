@@ -48,4 +48,5 @@ tmp/
 .DS_Store
 .idea/
 .vscode/
-*.swp
+*.deb
+*.rpm
