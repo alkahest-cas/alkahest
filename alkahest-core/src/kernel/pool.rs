@@ -4,6 +4,9 @@ use crate::kernel::{
 };
 use std::fmt;
 
+/// Canonical ∞ symbol name for [`ExprPool::pos_infinity`] / limits (V2-16).
+pub const POS_INFINITY_SYMBOL: &str = "\u{221e}";
+
 // ---------------------------------------------------------------------------
 // Phase 30 — Sharded ExprPool for parallel workloads.
 //
@@ -283,6 +286,11 @@ impl ExprPool {
     /// `O(arg)` — symbolic big-O bound used in truncated series (V2-15).
     pub fn big_o(&self, arg: ExprId) -> ExprId {
         self.intern(ExprData::BigO(arg))
+    }
+
+    /// Canonical `+∞` symbol for limits at infinity (V2-16).
+    pub fn pos_infinity(&self) -> ExprId {
+        self.symbol(POS_INFINITY_SYMBOL, Domain::Positive)
     }
 
     // -----------------------------------------------------------------------

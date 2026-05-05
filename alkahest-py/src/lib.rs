@@ -85,12 +85,13 @@ use alkahest_core::modular::{
     select_lucky_prime as core_select_lucky_prime, ModularError, MultiPolyFp,
 };
 use alkahest_core::{
-    diff as core_diff, diff_forward as core_diff_forward, integrate as core_integrate,
-    series as core_series, load_from,
+    diff as core_diff, diff_forward as core_diff_forward,
+    limit as core_limit, integrate as core_integrate, series as core_series, load_from,
     log_exp_rules, match_pattern as core_match_pattern, simplify as core_simplify,
     simplify_egraph as core_simplify_egraph, simplify_egraph_with as core_simplify_egraph_with,
     simplify_with as core_simplify_with, trig_rules, AlkahestError as AlkahestErrorTrait,
-    DiffError, EgraphConfig, IntegrationError, IoError, LinearRecurrenceError, PatternRule,
+    DiffError, EgraphConfig, IntegrationError, IoError, LimitDirection as CoreLimitDirection,
+    LimitError, LinearRecurrenceError, PatternRule,
     ResultantError, SeriesError, SimplifyConfig, SizeCost, SparseInterpError, SumError,
 };
 use pyo3::exceptions::{PyOverflowError, PyTypeError};
@@ -113,6 +114,7 @@ pyo3::create_exception!(alkahest, PyDiffError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyPoolError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyIntegrationError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PySeriesError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PyLimitError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyMatrixError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyModularError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyOdeError, PyAlkahestError);
@@ -208,6 +210,22 @@ fn series_error_to_py(e: SeriesError) -> PyErr {
         let exc_type = py.get_type_bound::<PySeriesError>();
         make_structured_err(py, &exc_type, &e)
     })
+}
+
+fn limit_error_to_py(e: LimitError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyLimitError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn parse_limit_direction(dir: Option<&str>) -> CoreLimitDirection {
+    match dir.unwrap_or("+-").trim() {
+        "+" => CoreLimitDirection::Plus,
+        "-" => CoreLimitDirection::Minus,
+        "+-" | "" => CoreLimitDirection::Bidirectional,
+        _ => CoreLimitDirection::Bidirectional,
+    }
 }
 
 fn conv_error_to_py(e: alkahest_core::ConversionError) -> PyErr {
@@ -355,6 +373,13 @@ impl PyExprPool {
     /// `O(arg)` — Landau remainder bound (V2-15 series API).
     fn big_o(slf: PyRef<'_, Self>, arg: PyExpr) -> PyExpr {
         let id = slf.inner.big_o(arg.id);
+        let pool: Py<PyExprPool> = slf.into();
+        PyExpr { id, pool }
+    }
+
+    /// Canonical `+∞` for ``limit(..., oo)`` (Unicode ∞, V2-16).
+    fn pos_infinity(slf: PyRef<'_, Self>) -> PyExpr {
+        let id = slf.inner.pos_infinity();
         let pool: Py<PyExprPool> = slf.into();
         PyExpr { id, pool }
     }
@@ -1552,6 +1577,24 @@ fn py_series(
     Ok(PySeries {
         expr: PyExpr { id, pool: pool_py },
     })
+}
+
+#[pyfunction]
+#[pyo3(name = "limit", signature = (expr, var, point, dir=None))]
+fn py_limit(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    var: PyRef<PyExpr>,
+    point: PyRef<PyExpr>,
+    dir: Option<&str>,
+) -> PyResult<PyExpr> {
+    let pool_py = expr.pool.clone_ref(py);
+    let d = parse_limit_direction(dir);
+    let id = {
+        let pool = pool_py.borrow(py);
+        core_limit(expr.id, var.id, point.id, d, &pool.inner).map_err(limit_error_to_py)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
 }
 
 #[pyfunction]
@@ -4675,6 +4718,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_diff_forward, m)?)?;
     m.add_function(wrap_pyfunction!(py_integrate, m)?)?;
     m.add_function(wrap_pyfunction!(py_series, m)?)?;
+    m.add_function(wrap_pyfunction!(py_limit, m)?)?;
     m.add_function(wrap_pyfunction!(py_sum_indefinite, m)?)?;
     m.add_function(wrap_pyfunction!(py_sum_definite, m)?)?;
     m.add_function(wrap_pyfunction!(py_solve_linear_recurrence_homogeneous, m)?)?;
@@ -4833,6 +4877,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "SeriesError",
         m.py().get_type_bound::<PySeriesError>(),
+    )?;
+    m.add(
+        "LimitError",
+        m.py().get_type_bound::<PyLimitError>(),
     )?;
     m.add("MatrixError", m.py().get_type_bound::<PyMatrixError>())?;
     m.add("ModularError", m.py().get_type_bound::<PyModularError>())?;

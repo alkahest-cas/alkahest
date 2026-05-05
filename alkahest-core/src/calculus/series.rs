@@ -94,6 +94,36 @@ pub fn series(
     order: u32,
     pool: &ExprPool,
 ) -> Result<Series, SeriesError> {
+    let LocalExpansion {
+        valuation,
+        coeffs,
+        h_expr,
+    } = local_expansion(expr, var, point, order, pool)?;
+
+    Ok(assemble_series(&coeffs, valuation, h_expr, order, pool))
+}
+
+// ---------------------------------------------------------------------------
+// Internals
+// ---------------------------------------------------------------------------
+
+/// Local Laurent / Taylor data about `point`: `expr = ∑ᵢ coeffᵢ · h^{valuation+i}` up to truncation.
+///
+/// `h` is `var - point`, or bare `var` when `point` is the integer zero (matching [`series`]).
+#[derive(Clone, Debug)]
+pub(crate) struct LocalExpansion {
+    pub valuation: i32,
+    pub coeffs: Vec<ExprId>,
+    pub h_expr: ExprId,
+}
+
+pub(crate) fn local_expansion(
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    order: u32,
+    pool: &ExprPool,
+) -> Result<LocalExpansion, SeriesError> {
     if order == 0 {
         return Err(SeriesError::InvalidOrder);
     }
@@ -105,12 +135,8 @@ pub fn series(
 
     let h_expr = expansion_increment(pool, var, point);
 
-    series_matched_laurent(shifted, xi, h_expr, order, pool)
+    expansion_matched_laurent(shifted, xi, h_expr, order, pool)
 }
-
-// ---------------------------------------------------------------------------
-// Internals
-// ---------------------------------------------------------------------------
 
 fn factorial_u32(n: u32) -> rug::Integer {
     let mut r = rug::Integer::from(1);
@@ -300,18 +326,22 @@ fn assemble_series(
     Series(pool.add(terms))
 }
 
-fn series_matched_laurent(
+fn expansion_matched_laurent(
     shifted: ExprId,
     xi: ExprId,
     h_expr: ExprId,
     order: u32,
     pool: &ExprPool,
-) -> Result<Series, SeriesError> {
+) -> Result<LocalExpansion, SeriesError> {
     let (nums, dens) = match collect_term_factors(shifted, pool) {
         Some(p) => p,
         None => {
             let coeffs = taylor_coefficients(shifted, xi, order, pool)?;
-            return Ok(assemble_series(&coeffs, 0, h_expr, order, pool));
+            return Ok(LocalExpansion {
+                valuation: 0,
+                coeffs,
+                h_expr,
+            });
         }
     };
 
@@ -322,42 +352,64 @@ fn series_matched_laurent(
         Ok(r) => r,
         Err(_) => {
             let coeffs = taylor_coefficients(shifted, xi, order, pool)?;
-            return Ok(assemble_series(&coeffs, 0, h_expr, order, pool));
+            return Ok(LocalExpansion {
+                valuation: 0,
+                coeffs,
+                h_expr,
+            });
         }
     };
 
     if rf.numer.is_zero() {
-        let o = pool.big_o(pool.pow(h_expr, pool.integer(laurent_big_o_pow(0, order))));
-        return Ok(Series(pool.add(vec![pool.integer(0_i32), o])));
+        return Ok(LocalExpansion {
+            valuation: 0,
+            coeffs: vec![pool.integer(0_i32)],
+            h_expr,
+        });
     }
 
     let n_uni = match UniPoly::from_symbolic(rf.numer.to_expr(pool), xi, pool) {
         Ok(u) => u,
         Err(_) => {
             let coeffs = taylor_coefficients(shifted, xi, order, pool)?;
-            return Ok(assemble_series(&coeffs, 0, h_expr, order, pool));
+            return Ok(LocalExpansion {
+                valuation: 0,
+                coeffs,
+                h_expr,
+            });
         }
     };
     let d_uni = match UniPoly::from_symbolic(rf.denom.to_expr(pool), xi, pool) {
         Ok(u) => u,
         Err(_) => {
             let coeffs = taylor_coefficients(shifted, xi, order, pool)?;
-            return Ok(assemble_series(&coeffs, 0, h_expr, order, pool));
+            return Ok(LocalExpansion {
+                valuation: 0,
+                coeffs,
+                h_expr,
+            });
         }
     };
 
     let vn = match unipoly_valuation(&n_uni) {
         Some(v) => v,
         None => {
-            let o = pool.big_o(pool.pow(h_expr, pool.integer(laurent_big_o_pow(0, order))));
-            return Ok(Series(pool.add(vec![pool.integer(0_i32), o])));
+            return Ok(LocalExpansion {
+                valuation: 0,
+                coeffs: vec![pool.integer(0_i32)],
+                h_expr,
+            });
         }
     };
     let vd = match unipoly_valuation(&d_uni) {
         Some(v) => v,
         None => {
             let coeffs = taylor_coefficients(shifted, xi, order, pool)?;
-            return Ok(assemble_series(&coeffs, 0, h_expr, order, pool));
+            return Ok(LocalExpansion {
+                valuation: 0,
+                coeffs,
+                h_expr,
+            });
         }
     };
 
@@ -368,7 +420,11 @@ fn series_matched_laurent(
     let d0c = d0.coefficients();
     if d0c.is_empty() || d0c[0] == 0 {
         let coeffs = taylor_coefficients(shifted, xi, order, pool)?;
-        return Ok(assemble_series(&coeffs, 0, h_expr, order, pool));
+        return Ok(LocalExpansion {
+            valuation: 0,
+            coeffs,
+            h_expr,
+        });
     }
 
     let n0_e = unipoly_to_expr(&n0, xi, pool);
@@ -383,12 +439,19 @@ fn series_matched_laurent(
     };
 
     if num_taylor == 0 {
-        let o = pool.big_o(pool.pow(h_expr, pool.integer(laurent_big_o_pow(valuation, order))));
-        return Ok(Series(o));
+        return Ok(LocalExpansion {
+            valuation,
+            coeffs: Vec::new(),
+            h_expr,
+        });
     }
 
     let coeffs = taylor_coefficients(g, xi, num_taylor, pool)?;
-    Ok(assemble_series(&coeffs, valuation, h_expr, order, pool))
+    Ok(LocalExpansion {
+        valuation,
+        coeffs,
+        h_expr,
+    })
 }
 
 #[cfg(test)]

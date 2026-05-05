@@ -433,13 +433,14 @@ Seven gaps from the SymPy gap analysis, plus integer number theory (thin FLINT b
 
 **What:** `limit(expr, var, point, dir)` — one- and two-sided limits, limits at infinity.
 
-**Design:**
-- `alkahest-core/src/calculus/limits.rs` — Gruntz comparability classes built on `Series` (V2-15).
-- Lean certificate: `Filter.Tendsto` in Mathlib.
+**Design (shipped in v2):**
+- `alkahest-core/src/calculus/limits.rs` — finite points: L’Hôpital (0/0), [`local_expansion`](alkahest-core/src/calculus/series.rs) / Laurent tails, algebraic specials (`exp`/`log`), `x·log x` at `0⁺`; at `±∞`: substitute `x ↦ ±1/t` then reduce nested integer powers, clear `t^{-1}` in rational tails via polynomial quotient normalization (`RationalFunction` + expanded simplify), then `t → 0⁺`.
 
-**Test plan:** `limit(x * log(x), x, 0)` → `0`; `limit(sin(x)/x, x, 0)` → `1`; `limit(exp(x), x, oo)` → `oo`; one-sided; SymPy oracle ≥ 95 % on 100 curated limits.
+**Remaining / not in scope yet:** Full Gruntz comparability-graph algorithm; oscillatory endpoints; general transcendentals comparable only via Gruntz; Lean `Filter.Tendsto` certificates.
 
-**Acceptance:** `alkahest.limit` in stable API; oracle pass rate ≥ 95 %.
+**Test plan:** `limit(x * log(x), x, 0)` → `0`; `limit(sin(x)/x, x, 0)` → `1`; `limit(exp(x), x, oo)` → `oo`; one-sided; SymPy oracle on a curated corpus (`tests/test_limits_v216.py`).
+
+**Acceptance:** `alkahest.limit` in stable API — ✅ prototype rules + oracle corpus passing; Gruntz + Mathlib certificate — 🔲 future.
 
 ---
 
