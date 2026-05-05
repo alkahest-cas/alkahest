@@ -130,6 +130,11 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-RSOLVE-003", class: "RsolveError", cause: Cause::UserInput,   remediation: Some("clear denominators; the rhs must be a polynomial in the recurrence index") },
     ErrorSpec { code: "E-RSOLVE-004", class: "RsolveError", cause: Cause::Unsupported, remediation: Some("order > 2 non-homogeneous systems and some characteristic factorizations are not implemented yet") },
     ErrorSpec { code: "E-RSOLVE-005", class: "RsolveError", cause: Cause::UserInput,   remediation: Some("pass exactly order-many initial samples as a dict n → Expr value") },
+    // E-DIOPH — DiophantineError (V2-19 linear / Pell / sum-of-squares)
+    ErrorSpec { code: "E-DIOPH-001", class: "DiophantineError", cause: Cause::UserInput,   remediation: Some("pass one polynomial equation = 0 in two integer symbols") },
+    ErrorSpec { code: "E-DIOPH-002", class: "DiophantineError", cause: Cause::UserInput,   remediation: Some("clear denominators; coefficients must be rational integers") },
+    ErrorSpec { code: "E-DIOPH-003", class: "DiophantineError", cause: Cause::Unsupported, remediation: Some("supported: linear 2-variable, x²+y²=n, unit Pell x²−D·y²=1 (no xy term)") },
+    ErrorSpec { code: "E-DIOPH-004", class: "DiophantineError", cause: Cause::Domain,      remediation: Some("check gcd divisibility (linear) or solvability over ℤ (quadratic)") },
     // E-PARSE — reserved for parser integration
     // E-DOMAIN — reserved; DomainError is Python-only pending Rust implementation
 ];

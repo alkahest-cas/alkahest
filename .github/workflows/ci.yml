@@ -73,7 +73,7 @@ jobs:
         run: ruff check python/ tests/
 
       - name: maturin develop
-        run: maturin develop --manifest-path alkahest-py/Cargo.toml
+        run: maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
 
       - name: pytest
         run: pytest
@@ -146,7 +146,7 @@ jobs:
         env:
           HYPOTHESIS_MAX_EXAMPLES: "10000"
         run: |
-          maturin develop --manifest-path alkahest-py/Cargo.toml
+          maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
           pytest tests/
 
       - name: ThreadSanitizer
@@ -224,7 +224,7 @@ jobs:
         env:
           RUN_COMMERCIAL_CAS: "1"
         run: |
-          maturin develop --manifest-path alkahest-py/Cargo.toml
+          maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
           python benchmarks/cas_comparison.py --competitors --output results.jsonl || true
 
       - name: Upload benchmark artifacts

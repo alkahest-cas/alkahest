@@ -134,9 +134,10 @@ pub use modular::{
 pub use primitive::{Capabilities, CoverageReport, CoverageRow, Primitive, PrimitiveRegistry};
 #[cfg(feature = "groebner")]
 pub use solver::{
-    expr_to_gbpoly, extract_regular_chain_from_basis, main_variable_recursive, solve_numerical,
-    solve_polynomial_system, triangularize, CertifiedPoint, HomotopyError, HomotopyOpts,
-    RegularChain, Solution, SolutionSet, SolverError,
+    diophantine, expr_to_gbpoly, extract_regular_chain_from_basis, main_variable_recursive,
+    solve_numerical, solve_polynomial_system, triangularize, CertifiedPoint, DiophantineError,
+    DiophantineSolution, HomotopyError, HomotopyOpts, RegularChain, Solution, SolutionSet,
+    SolverError,
 };
 
 pub fn version() -> &'static str {
@@ -202,9 +203,10 @@ pub mod stable {
     pub use crate::simplify::{simplify, simplify_with, SimplifyConfig};
     #[cfg(feature = "groebner")]
     pub use crate::solver::{
-        expr_to_gbpoly, extract_regular_chain_from_basis, main_variable_recursive, solve_numerical,
-        solve_polynomial_system, triangularize, CertifiedPoint, HomotopyError, HomotopyOpts,
-        RegularChain, Solution, SolutionSet, SolverError,
+        diophantine, expr_to_gbpoly, extract_regular_chain_from_basis, main_variable_recursive,
+        solve_numerical, solve_polynomial_system, triangularize, CertifiedPoint, DiophantineError,
+        DiophantineSolution, HomotopyError, HomotopyOpts, RegularChain, Solution, SolutionSet,
+        SolverError,
     };
     pub use crate::sum::{
         gosper_certificate, gosper_normal_form, hypergeom_ratio, rsolve,

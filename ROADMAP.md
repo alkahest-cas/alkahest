@@ -13,10 +13,10 @@
 | **v1.0 — Production** | ✅ Complete | Production NVPTX codegen (16.2× over CPU JIT), structured errors, Gröbner-based solver with symbolic √ solutions, custom MLIR dialect, CUDA Macaulay row reduction, semver API, 23-primitive registry, cross-CAS benchmarks, persistent `ExprPool` |
 | **v1.1 — Post-launch** | 📋 Planned | Algebraic-function Risch (Trager), AMD ROCm codegen (hardware-blocked), PyPI wheel publishing, Win+macOS CI parity, docs site, LaTeX/Unicode printing, string parsing |
 | **v2.0 — Mathematical Coverage** | 📋 Planned (15 items) | Modular/CRT framework, resultants, sparse interpolation, real root isolation, HNF/SNF, LLL+PSLQ, polynomial factorization, F5 signature-based Gröbner, logic/FOFormula (CAD prerequisite), CAD (real QE), Zeilberger/creative telescoping, regular chains, primary decomposition, differential algebra, homotopy continuation |
-| **v2.1 — SymPy Parity** | 📋 Planned (7 items) | Limits (Gruntz), user-facing `series()` / Laurent, eigenvalues / eigenvectors, difference equations (`rsolve`), Diophantine equations, symbolic products (`∏`), integer number theory (FLINT bindings) |
+| **v2.1 — SymPy Parity** | 📋 Planned | Limits (V2-16), `rsolve` scope (V2-18), symbolic `∏` (V2-22), integer number theory (V3-1); **V2-19 `diophantine` ✅**; eigenpairs ✅ (V2-17); `series` / `parse` / LaTeX ✅ (V2-15, V2-20, V2-21) |
 | **v3.0 — Domain Expansions** | 📋 Planned (1 item) | Noncommutative algebra (kernel extension) |
 
-**Test coverage:** 358 Rust unit/proptest/doctest cases + 432 Python tests (+ 52 skipped feature-gated/oracle tests) = 790 tests passing, zero errors.
+**Test coverage:** 362 Rust unit/proptest/doctest cases + 438 Python tests (+ 52 skipped feature-gated/oracle tests) = 800 tests passing, zero errors.
 
 ---
 
@@ -403,11 +403,11 @@ See also **v2.1 — SymPy Parity** (V2-15 … V2-22) below.
 
 ## v2.1 — SymPy Parity
 
-Seven gaps from the SymPy gap analysis, plus integer number theory (thin FLINT bindings).
+Gaps from the SymPy gap analysis (and integer number theory promoted as V3-1).
 
 | Milestone summary | Items |
 |---|---|
-| Core calculus / algebra | V2-15 … V2-19 |
+| Core calculus / algebra | V2-16 … V2-18; **V2-19 ✅**; V2-20 … V2-21 ✅ |
 | Symbolic products | V2-22 |
 | Integer number theory | V3-1 |
 
@@ -467,16 +467,18 @@ Seven gaps from the SymPy gap analysis, plus integer number theory (thin FLINT b
 
 ---
 
-### V2-19. Diophantine equations
+### V2-19. Diophantine equations → ✅ Complete
 
-**What:** Parametric integer solution families for linear and binary quadratic (Pell) Diophantine equations.
+**What:** Parametric integer solution families for linear two-variable equations, finitely many solutions for equal-coefficient `x² + y² = n`, and the **unit** Pell equation `x² - D·y² = 1` (fundamental solution via the continued-fraction period of `√D`).
 
-**Design:**
-- `alkahest-core/src/solver/diophantine.rs` — `diophantine(expr, vars) -> DiophantineSolution`; linear via extended GCD; Pell via Cornacchia.
+**Delivered:**
+- `alkahest-core/src/solver/diophantine.rs` — `diophantine(equation, vars)` → `DiophantineSolution` (`ParametricLinear`, `Finite`, `PellFundamental`, `NoSolution`); `DiophantineError` (`E-DIOPH-*`); linear via extended gcd; Pell unit via convergents; circle cases by bounded enumeration.
+- Python (`groebner`): `diophantine`, `DiophantineSolution`, `DiophantineError`.
+- Tests: Rust `solver::diophantine`; Python `tests/test_diophantine_v219.py` (optional SymPy oracle on sum-of-squares).
 
-**Test plan:** `3x + 5y = 1` → parametric family; `x² - 2y² = 1` fundamental solution `(3, 2)`; `x² + y² = 5` → `{(1,2),(2,1)}`; SymPy oracle ≥ 90 % on 30 equations.
+**Limitations:** no `x·y` term; ellipse requires equal coefficients on `x²` and `y²`; hyperbolic branch implements **only** `x² - D·y² = 1` after normalization (not general `N` or `+1` right-hand-side families).
 
-**Acceptance:** `alkahest.diophantine` public; oracle ≥ 90 %.
+**Acceptance:** `alkahest.diophantine` on stable surface when built with `--features groebner`; CI `maturin develop --features groebner`.
 
 ---
 

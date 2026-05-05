@@ -139,7 +139,7 @@ jobs:
 
       - name: maturin develop
         if: matrix.python
-        run: .venv/bin/maturin develop --manifest-path alkahest-py/Cargo.toml
+        run: .venv/bin/maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
 
       - name: pytest
         if: matrix.python

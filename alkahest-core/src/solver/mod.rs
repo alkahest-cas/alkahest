@@ -22,12 +22,15 @@
 
 pub mod homotopy;
 pub mod regular_chains;
+pub mod diophantine;
 
 pub use regular_chains::{
     extract_regular_chain_from_basis, main_variable_recursive, triangularize, RegularChain,
 };
 
 pub use homotopy::{solve_numerical, CertifiedPoint, HomotopyError, HomotopyOpts};
+
+pub use diophantine::{diophantine, DiophantineError, DiophantineSolution};
 
 use crate::errors::AlkahestError;
 use crate::kernel::{ExprData, ExprId, ExprPool};

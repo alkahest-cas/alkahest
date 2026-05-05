@@ -143,6 +143,8 @@ pyo3::create_exception!(alkahest, PyCadError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PySumError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyLinearRecurrenceError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyRsolveError, PyAlkahestError);
+#[cfg(feature = "groebner")]
+pyo3::create_exception!(alkahest, PyDiophantineError, PyAlkahestError);
 
 /// Build a structured exception with `.code`, `.remediation`, `.span` attributes.
 fn make_structured_err<E: AlkahestErrorTrait>(
@@ -291,6 +293,14 @@ fn linear_recurrence_error_to_py(e: LinearRecurrenceError) -> PyErr {
 fn rsolve_error_to_py(e: RsolveError) -> PyErr {
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyRsolveError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+#[cfg(feature = "groebner")]
+fn diophantine_error_to_py(e: DiophantineError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyDiophantineError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -4318,7 +4328,8 @@ fn py_ideal_radical(
 
 #[cfg(feature = "groebner")]
 use alkahest_core::{
-    solve_numerical, solve_polynomial_system, triangularize, CertifiedPoint, HomotopyError,
+    diophantine as core_diophantine, solve_numerical, solve_polynomial_system, triangularize,
+    CertifiedPoint, DiophantineError, DiophantineSolution as CoreDiophantineSolution, HomotopyError,
     HomotopyOpts, RegularChain, SolutionSet,
 };
 
@@ -4395,6 +4406,126 @@ impl PyCertifiedSolution {
             self.inner.max_residual_f64, self.inner.smale_certified,
         )
     }
+}
+
+/// Integer Diophantine solver (linear parametric families, sum of two squares, unit Pell).
+#[cfg(feature = "groebner")]
+#[pyclass(name = "DiophantineSolution")]
+struct PyDiophantineSolution {
+    #[pyo3(get)]
+    kind: String,
+    #[pyo3(get)]
+    parameter: Option<Py<PyExpr>>,
+    /// ``x(t), y(t), …`` when ``kind == "parametric_linear"``.
+    #[pyo3(get)]
+    parametric: Option<Vec<Py<PyExpr>>>,
+    /// List of coordinate tuples when ``kind == "finite"``.
+    #[pyo3(get)]
+    points: Option<Vec<Vec<Py<PyExpr>>>>,
+    /// Coefficient ``D`` in ``x² - D·y² = 1`` when ``kind == "pell_fundamental"``.
+    #[pyo3(get)]
+    pell_d: Option<Py<PyExpr>>,
+    /// Fundamental unit ``(x0, y0)`` when ``kind == "pell_fundamental"``.
+    #[pyo3(get)]
+    fundamental: Option<(Py<PyExpr>, Py<PyExpr>)>,
+}
+
+#[cfg(feature = "groebner")]
+#[pymethods]
+impl PyDiophantineSolution {
+    fn __repr__(&self) -> String {
+        format!("DiophantineSolution(kind={:?})", self.kind)
+    }
+}
+
+#[cfg(feature = "groebner")]
+fn diophantine_core_to_py(
+    py: Python<'_>,
+    sol: CoreDiophantineSolution,
+    pool_py: Py<PyExprPool>,
+) -> PyResult<PyDiophantineSolution> {
+    let wrap = |id: ExprId| {
+        Py::new(
+            py,
+            PyExpr {
+                id,
+                pool: pool_py.clone_ref(py),
+            },
+        )
+    };
+    match sol {
+        CoreDiophantineSolution::ParametricLinear { parameter, values } => {
+            let mut parametric = Vec::with_capacity(values.len());
+            for id in values {
+                parametric.push(wrap(id)?);
+            }
+            Ok(PyDiophantineSolution {
+                kind: "parametric_linear".into(),
+                parameter: Some(wrap(parameter)?),
+                parametric: Some(parametric),
+                points: None,
+                pell_d: None,
+                fundamental: None,
+            })
+        }
+        CoreDiophantineSolution::Finite(rows) => {
+            let mut pts = Vec::with_capacity(rows.len());
+            for row in rows {
+                let mut pyrow = Vec::with_capacity(row.len());
+                for id in row {
+                    pyrow.push(wrap(id)?);
+                }
+                pts.push(pyrow);
+            }
+            Ok(PyDiophantineSolution {
+                kind: "finite".into(),
+                parameter: None,
+                parametric: None,
+                points: Some(pts),
+                pell_d: None,
+                fundamental: None,
+            })
+        }
+        CoreDiophantineSolution::PellFundamental { d, x0, y0 } => Ok(PyDiophantineSolution {
+            kind: "pell_fundamental".into(),
+            parameter: None,
+            parametric: None,
+            points: None,
+            pell_d: Some(wrap(d)?),
+            fundamental: Some((wrap(x0)?, wrap(y0)?)),
+        }),
+        CoreDiophantineSolution::NoSolution => Ok(PyDiophantineSolution {
+            kind: "no_solution".into(),
+            parameter: None,
+            parametric: None,
+            points: None,
+            pell_d: None,
+            fundamental: None,
+        }),
+    }
+}
+
+#[cfg(feature = "groebner")]
+#[pyfunction]
+#[pyo3(name = "diophantine", signature = (equation, vars))]
+fn py_diophantine(
+    py: Python<'_>,
+    equation: PyRef<PyExpr>,
+    vars: Vec<PyRef<PyExpr>>,
+) -> PyResult<PyDiophantineSolution> {
+    if vars.len() != 2 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "diophantine requires exactly two Expr variables",
+        ));
+    }
+    let pool_py = equation.pool.clone_ref(py);
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+    let sol = {
+        let pool = pool_py.borrow(py);
+        core_diophantine(&pool.inner, equation.id, &var_ids)
+    }
+    .map_err(diophantine_error_to_py)?;
+    diophantine_core_to_py(py, sol, pool_py)
 }
 
 #[cfg(feature = "groebner")]
@@ -4995,7 +5126,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add_class::<PyPrimaryComponent>()?;
         m.add_class::<PyRegularChain>()?;
         m.add_class::<PyCertifiedSolution>()?;
+        m.add_class::<PyDiophantineSolution>()?;
         m.add_function(wrap_pyfunction!(py_solve_numerical, m)?)?;
+        m.add_function(wrap_pyfunction!(py_diophantine, m)?)?;
         m.add_function(wrap_pyfunction!(py_solve, m)?)?;
         m.add_function(wrap_pyfunction!(py_triangularize, m)?)?;
         m.add_function(wrap_pyfunction!(py_primary_decomposition, m)?)?;
@@ -5069,6 +5202,11 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.py().get_type_bound::<PyLinearRecurrenceError>(),
     )?;
     m.add("RsolveError", m.py().get_type_bound::<PyRsolveError>())?;
+    #[cfg(feature = "groebner")]
+    m.add(
+        "DiophantineError",
+        m.py().get_type_bound::<PyDiophantineError>(),
+    )?;
     // V1-15: compile-time flag so Python tests can skip egraph-dependent assertions.
     m.add("HAS_EGRAPH", cfg!(feature = "egraph"))?;
     Ok(())

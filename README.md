@@ -119,6 +119,23 @@ print(alkahest.rsolve(fib_eq, n, "f", {0: pool.integer(0), 1: pool.integer(1)}))
 
 Non-homogeneous **order > 2** and sequences with **polynomial coefficients** in `n` are not implemented yet (see `RsolveError` / `E-RSOLVE-*`).
 
+### Diophantine equations (V2-19)
+
+Two integer unknowns, equation as a single polynomial `= 0`: **linear** families `a·x + b·y + c = 0`, **sum of two squares** `x² + y² = n` (finitely many tuples), and **unit Pell** `x² - D·y² = 1` (fundamental solution `(x₀, y₀)` via the continued-fraction period of `√D`). Requires the `groebner` feature in the native build. API: `diophantine(equation, [x, y])` → `DiophantineSolution` with `.kind` (`parametric_linear`, `finite`, `pell_fundamental`, `no_solution`) and typed fields.
+
+```python
+import alkahest
+
+pool = alkahest.ExprPool()
+x, y = pool.symbol("x"), pool.symbol("y")
+sol = alkahest.diophantine(pool.integer(3) * x + pool.integer(5) * y - pool.integer(1), [x, y])
+assert sol.kind == "parametric_linear"
+pell = alkahest.diophantine(x**2 - pool.integer(2) * y**2 - pool.integer(1), [x, y])
+assert pell.kind == "pell_fundamental" and int(str(pell.fundamental[0])) == 3
+```
+
+Quadratics with an **`x·y` cross-term**, unequal ellipse coefficients, or **generalized Pell** right-hand sides `≠ 1` are not implemented yet (`DiophantineError` / `E-DIOPH-*`).
+
 ### Truncated series / Laurent tail (V2-15)
 
 `series(expr, var, point, order)` builds a symbolic truncation about `(var − point)` and appends a `BigO(⋯)` remainder. Smooth functions use repeated differentiation; simple poles such as `1/x` at zero take the rational Laurent path. `Series.expr` is the pooled sum-plus-order expression; `ExprPool.big_o(inner)` constructs standalone order bounds.
