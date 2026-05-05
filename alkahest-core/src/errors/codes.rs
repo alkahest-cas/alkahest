@@ -140,6 +140,12 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-PROD-002", class: "ProductError", cause: Cause::Internal,    remediation: Some("report the polynomial as a minimal failing example") },
     ErrorSpec { code: "E-PROD-003", class: "ProductError", cause: Cause::Unsupported, remediation: Some("ℤ-irreducible factors of degree ≥ 2 in k require a Gamma extension beyond this path") },
     ErrorSpec { code: "E-PROD-004", class: "ProductError", cause: Cause::UserInput,   remediation: Some("check that lo/hi share the ExprPool with the summation index symbol") },
+    // E-NT — NumberTheoryError (V3-1)
+    ErrorSpec { code: "E-NT-001", class: "NumberTheoryError", cause: Cause::UserInput, remediation: Some("pass decimal strings parsable into fmpz") },
+    ErrorSpec { code: "E-NT-002", class: "NumberTheoryError", cause: Cause::Domain, remediation: Some("check positivity / parity constraints on arguments") },
+    ErrorSpec { code: "E-NT-003", class: "NumberTheoryError", cause: Cause::Domain, remediation: Some("adjust residue, base, or root degree until a modular solution exists") },
+    ErrorSpec { code: "E-NT-004", class: "NumberTheoryError", cause: Cause::Domain, remediation: Some("use prime moduli for discrete_log/nthroot_mod as documented") },
+    ErrorSpec { code: "E-NT-005", class: "NumberTheoryError", cause: Cause::Unsupported, remediation: Some("use quadratic roots or gcd(k,p−1)=1; general radicals require more machinery") },
     // E-PARSE — reserved for parser integration
     // E-DOMAIN — reserved; DomainError is Python-only pending Rust implementation
 ];

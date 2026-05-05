@@ -13,7 +13,7 @@
 | **v1.0 — Production** | ✅ Complete | Production NVPTX codegen (16.2× over CPU JIT), structured errors, Gröbner-based solver with symbolic √ solutions, custom MLIR dialect, CUDA Macaulay row reduction, semver API, 23-primitive registry, cross-CAS benchmarks, persistent `ExprPool` |
 | **v1.1 — Post-launch** | 📋 Planned | Algebraic-function Risch (Trager), AMD ROCm codegen (hardware-blocked), PyPI wheel publishing, Win+macOS CI parity, docs site, LaTeX/Unicode printing, string parsing |
 | **v2.0 — Mathematical Coverage** | 📋 Planned (15 items) | Modular/CRT framework, resultants, sparse interpolation, real root isolation, HNF/SNF, LLL+PSLQ, polynomial factorization, F5 signature-based Gröbner, logic/FOFormula (CAD prerequisite), CAD (real QE), Zeilberger/creative telescoping, regular chains, primary decomposition, differential algebra, homotopy continuation |
-| **v2.1 — SymPy Parity** | 📋 Planned | Limits (V2-16), `rsolve` scope (V2-18); **symbolic `∏` (V2-22) ✅**; integer number theory (V3-1); **V2-19 `diophantine` ✅**; eigenpairs ✅ (V2-17); `series` / `parse` / LaTeX ✅ (V2-15, V2-20, V2-21) |
+| **v2.1 — SymPy Parity** | 📋 Planned | Limits (V2-16), `rsolve` scope (V2-18); **symbolic `∏` (V2-22) ✅**; **integer number theory (V3-1) ✅**; **V2-19 `diophantine` ✅**; eigenpairs ✅ (V2-17); `series` / `parse` / LaTeX ✅ (V2-15, V2-20, V2-21) |
 | **v3.0 — Domain Expansions** | 📋 Planned (1 item) | Noncommutative algebra (kernel extension) |
 
 **Test coverage:** 362 Rust unit/proptest/doctest cases + 438 Python tests (+ 52 skipped feature-gated/oracle tests) = 800 tests passing, zero errors.
@@ -409,7 +409,7 @@ Gaps from the SymPy gap analysis (and integer number theory promoted as V3-1).
 |---|---|
 | Core calculus / algebra | V2-16 … V2-18; **V2-19 ✅**; V2-20 … V2-21 ✅ |
 | Symbolic products | **V2-22 ✅** |
-| Integer number theory | V3-1 |
+| Integer number theory | **V3-1 ✅** |
 
 ---
 
@@ -496,12 +496,18 @@ Gaps from the SymPy gap analysis (and integer number theory promoted as V3-1).
 
 ---
 
-### V3-1. Integer number theory *(promoted from v3.0)*
+### V3-1. Integer number theory *(promoted from v3.0)* → ✅ Complete
 
-**What:** `alkahest.number_theory` module: `isprime`, `factorint`, `nextprime`, `totient`, `nthroot_mod`, `discrete_log`, `jacobi_symbol`, Dirichlet characters. Thin FLINT bindings.
+**What:** `alkahest.number_theory` module: `isprime`, `factorint`, `nextprime`, `totient`, `nthroot_mod`, `discrete_log`, `jacobi_symbol`, quadratic Dirichlet characters. Thin FLINT bindings.
+
+**Delivered:**
+- `alkahest-core/src/number_theory/mod.rs` and extended `flint::ffi`; stable re-exports in `alkahest_core::stable`; `NumberTheoryError` (`E-NT-*`).
+- Python `alkahest.number_theory`, native `DirichletChi` / `NumberTheoryError`; tests `tests/test_number_theory_v31.py` plus Rust `number_theory::tests`.
+
+**Limitations:** `discrete_log` scans exponents (< prime field size); `nthroot_mod` for prime modulus with `k=2` or `\gcd(k,p−1)=1`; `DirichletChi` implements quadratic characters on odd square-free conductors only.
 
 **Design:**
-- `alkahest-core/src/number_theory/mod.rs` — wrappers over `fmpz_is_prime`, `fmpz_factor`, `fmpz_nextprime`, etc.
+- Thin wrappers translating decimal strings through FLINT `fmpz_*` primitives.
 
 **Test plan:** `isprime(2**127 - 1)` → `True`; `factorint(2**32 - 1)` → `{3:1, 5:1, 17:1, 257:1, 65537:1}`; `discrete_log` vs brute-force for small `p`; SymPy `ntheory` oracle ≥ 99 %.
 

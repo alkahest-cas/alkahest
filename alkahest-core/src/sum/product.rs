@@ -38,7 +38,10 @@ impl fmt::Display for ProductError {
             ProductError::NotRationalTerm(s) => write!(f, "product: unsupported term shape: {s}"),
             ProductError::Factorization => write!(f, "product: polynomial factorisation failed"),
             ProductError::NonLinearFactor => {
-                write!(f, "product: term has a non-linear irreducible factor over ℤ")
+                write!(
+                    f,
+                    "product: term has a non-linear irreducible factor over ℤ"
+                )
             }
             ProductError::BoundSubstitution(s) => write!(f, "product: bound substitution: {s}"),
         }
@@ -112,13 +115,11 @@ fn ratuni_poly_to_univ(p: &RatUniPoly, var: ExprId) -> Result<UniPoly, ProductEr
 fn expr_to_ratfunc(term: ExprId, k: ExprId, pool: &ExprPool) -> Result<RatFunc, ProductError> {
     let term = simp(pool, term);
     if term == k {
-        return Ok(
-            RatFunc {
-                num: RatUniPoly::x(),
-                den: RatUniPoly::one(),
-            }
-            .normalize(),
-        );
+        return Ok(RatFunc {
+            num: RatUniPoly::x(),
+            den: RatUniPoly::one(),
+        }
+        .normalize());
     }
     match pool.get(term).clone() {
         ExprData::Integer(n) => Ok(RatFunc::scalar(Rational::from(&n.0))),
@@ -140,19 +141,20 @@ fn expr_to_ratfunc(term: ExprId, k: ExprId, pool: &ExprPool) -> Result<RatFunc, 
             let p = UniPoly::from_symbolic_clear_denoms(term, k, pool).map_err(|e| {
                 ProductError::NotRationalTerm(format!("polynomial expected in k: {e}"))
             })?;
-            let coeffs: Vec<Rational> = p
-                .coefficients()
-                .into_iter()
-                .map(Rational::from)
-                .collect();
+            let coeffs: Vec<Rational> = p.coefficients().into_iter().map(Rational::from).collect();
             Ok(RatFunc::from_poly(RatUniPoly { coeffs }.trim()).normalize())
         }
         ExprData::Pow { base, exp } => {
             let e_i = match pool.get(exp) {
-                ExprData::Integer(n) => n.0.to_i32().ok_or_else(|| {
-                    ProductError::NotRationalTerm("exponent out of range".into())
-                })?,
-                _ => return Err(ProductError::NotRationalTerm("non-constant exponent".into())),
+                ExprData::Integer(n) => n
+                    .0
+                    .to_i32()
+                    .ok_or_else(|| ProductError::NotRationalTerm("exponent out of range".into()))?,
+                _ => {
+                    return Err(ProductError::NotRationalTerm(
+                        "non-constant exponent".into(),
+                    ))
+                }
             };
             let base_rf = expr_to_ratfunc(base, k, pool)?;
             if e_i >= 0 {
@@ -167,7 +169,8 @@ fn expr_to_ratfunc(term: ExprId, k: ExprId, pool: &ExprPool) -> Result<RatFunc, 
                 let inv = base_rf
                     .inv()
                     .ok_or_else(|| ProductError::NotRationalTerm("invert zero".into()))?;
-                let ee = u32::try_from(-e_i).map_err(|_| ProductError::NotRationalTerm("exp".into()))?;
+                let ee =
+                    u32::try_from(-e_i).map_err(|_| ProductError::NotRationalTerm("exp".into()))?;
                 let mut acc = RatFunc::one();
                 for _ in 0..ee {
                     acc = acc.mul_ratfunc(&inv);
@@ -234,14 +237,8 @@ fn definite_side_from_factorization(
             }
             1 => {
                 let coeffs = fact.coefficients();
-                let aa = coeffs
-                    .get(1)
-                    .cloned()
-                    .unwrap_or_else(|| Integer::from(0));
-                let bb = coeffs
-                    .get(0)
-                    .cloned()
-                    .unwrap_or_else(|| Integer::from(0));
+                let aa = coeffs.get(1).cloned().unwrap_or_else(|| Integer::from(0));
+                let bb = coeffs.get(0).cloned().unwrap_or_else(|| Integer::from(0));
                 if aa == Integer::from(0) {
                     return Err(ProductError::NotRationalTerm("degenerate linear".into()));
                 }
@@ -249,10 +246,7 @@ fn definite_side_from_factorization(
                 let one = Rational::from(1);
                 let hi_shift = rational_to_expr(pool, &(one.clone() + c_rat.clone()));
                 let lo_shift = rational_to_expr(pool, &c_rat);
-                let lead_exp = simp(
-                    pool,
-                    pool.mul(vec![delta_n.clone(), pool.integer(expo)]),
-                );
+                let lead_exp = simp(pool, pool.mul(vec![delta_n.clone(), pool.integer(expo)]));
                 let gh = pool.func(
                     "gamma",
                     vec![simp(pool, pool.add(vec![hi.clone(), hi_shift]))],
@@ -261,10 +255,7 @@ fn definite_side_from_factorization(
                     "gamma",
                     vec![simp(pool, pool.add(vec![lo.clone(), lo_shift]))],
                 );
-                let ratio = simp(
-                    pool,
-                    pool.mul(vec![gh, pool.pow(gl, pool.integer(-1_i32))]),
-                );
+                let ratio = simp(pool, pool.mul(vec![gh, pool.pow(gl, pool.integer(-1_i32))]));
                 parts.push(pool.pow(pool.integer(aa.clone()), lead_exp));
                 if expo != 0 {
                     parts.push(pool.pow(ratio, pool.integer(expo)));
@@ -321,14 +312,8 @@ fn indefinite_side_from_factorization(
             }
             1 => {
                 let coeffs = fact.coefficients();
-                let aa = coeffs
-                    .get(1)
-                    .cloned()
-                    .unwrap_or_else(|| Integer::from(0));
-                let bb = coeffs
-                    .get(0)
-                    .cloned()
-                    .unwrap_or_else(|| Integer::from(0));
+                let aa = coeffs.get(1).cloned().unwrap_or_else(|| Integer::from(0));
+                let bb = coeffs.get(0).cloned().unwrap_or_else(|| Integer::from(0));
                 if aa == Integer::from(0) {
                     return Err(ProductError::NotRationalTerm("degenerate linear".into()));
                 }
@@ -377,11 +362,17 @@ pub fn product_definite(
     let one = pool.integer(1_i32);
     let delta_n = simp(
         pool,
-        pool.add(vec![hi.clone(), pool.mul(vec![lo.clone(), pool.integer(-1)]), one]),
+        pool.add(vec![
+            hi.clone(),
+            pool.mul(vec![lo.clone(), pool.integer(-1)]),
+            one,
+        ]),
     );
 
-    let top = definite_side_from_factorization(pool, &fac_n, lo.clone(), hi.clone(), delta_n.clone())?;
-    let bot = definite_side_from_factorization(pool, &fac_d, lo.clone(), hi.clone(), delta_n.clone())?;
+    let top =
+        definite_side_from_factorization(pool, &fac_n, lo.clone(), hi.clone(), delta_n.clone())?;
+    let bot =
+        definite_side_from_factorization(pool, &fac_d, lo.clone(), hi.clone(), delta_n.clone())?;
     let q = simp(
         pool,
         pool.mul(vec![top.clone(), pool.pow(bot, pool.integer(-1_i32))]),
@@ -393,7 +384,11 @@ pub fn product_definite(
 }
 
 /// Witness `Z(k)` with \(Z(k+1)/Z(k)=term(k)\) (after canonical simplification).
-pub fn product_indefinite(term: ExprId, k: ExprId, pool: &ExprPool) -> Result<DerivedExpr<ExprId>, ProductError> {
+pub fn product_indefinite(
+    term: ExprId,
+    k: ExprId,
+    pool: &ExprPool,
+) -> Result<DerivedExpr<ExprId>, ProductError> {
     let rf = expr_to_ratfunc(term, k, pool)?;
     if rf.num.is_zero() {
         return Err(ProductError::NotRationalTerm(
@@ -408,10 +403,7 @@ pub fn product_indefinite(term: ExprId, k: ExprId, pool: &ExprPool) -> Result<De
 
     let q = simp(
         pool,
-        pool.mul(vec![
-            top,
-            pool.pow(bot, pool.integer(-1_i32)),
-        ]),
+        pool.mul(vec![top, pool.pow(bot, pool.integer(-1_i32))]),
     );
 
     let mut log = DerivationLog::new();
@@ -450,9 +442,9 @@ mod tests {
                 }
                 Some(p)
             }
-            ExprData::Pow { base, exp } => Some(
-                eval_g(base, env, pool)?.powf(eval_interp(exp, env, pool)?),
-            ),
+            ExprData::Pow { base, exp } => {
+                Some(eval_g(base, env, pool)?.powf(eval_interp(exp, env, pool)?))
+            }
             _ => eval_interp(expr, env, pool),
         }
     }
@@ -466,7 +458,10 @@ mod tests {
         let p = product_definite(k, k, lo, n.clone(), &pool).expect("prod");
         let want = simp(
             &pool,
-            pool.func("gamma", vec![simp(&pool, pool.add(vec![n.clone(), pool.integer(1)]))]),
+            pool.func(
+                "gamma",
+                vec![simp(&pool, pool.add(vec![n.clone(), pool.integer(1)]))],
+            ),
         );
         for ni in 2..14 {
             let mut env = HashMap::new();
@@ -489,8 +484,13 @@ mod tests {
         let km1 = simp(&pool, pool.add(vec![k.clone(), pool.integer(-1)]));
         let kp1 = simp(&pool, pool.add(vec![k.clone(), pool.integer(1)]));
         let k2 = simp(&pool, pool.pow(k.clone(), pool.integer(2)));
-        let term =
-            simp(&pool, pool.mul(vec![simp(&pool, pool.mul(vec![km1, kp1])), pool.pow(k2, pool.integer(-1))]));
+        let term = simp(
+            &pool,
+            pool.mul(vec![
+                simp(&pool, pool.mul(vec![km1, kp1])),
+                pool.pow(k2, pool.integer(-1)),
+            ]),
+        );
 
         let p = product_definite(term, k, two.clone(), n.clone(), &pool).expect("wallis");
         for ni in 3..36 {

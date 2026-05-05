@@ -19,6 +19,8 @@ pub mod lean;
 pub mod matrix;
 // V2-1 — Modular / CRT framework
 pub mod modular;
+// V3-1 — Integer number theory (`fmpz` helpers)
+pub mod number_theory;
 pub mod numeric;
 pub mod ode;
 pub mod pattern;
@@ -90,12 +92,10 @@ pub use simplify::{
     SimplifyConfig, SizeCost, StabilityCost,
 };
 pub use sum::{
-    gosper_certificate, gosper_normal_form, hypergeom_ratio,
-    product_definite, product_indefinite,
+    gosper_certificate, gosper_normal_form, hypergeom_ratio, product_definite, product_indefinite,
     rsolve, solve_linear_recurrence_homogeneous, sum_definite, sum_indefinite, verify_wz_pair,
-    LinearRecurrenceError, RatFunc,
-    ProductError,
-    RecurrenceSolution, RsolveError, SumError, WzPair,
+    LinearRecurrenceError, ProductError, RatFunc, RecurrenceSolution, RsolveError, SumError,
+    WzPair,
 };
 
 // Phase 21 — JIT
@@ -133,6 +133,10 @@ pub use ideal::{primary_decomposition, radical, PrimaryComponent, PrimaryDecompo
 pub use modular::{
     is_prime, lift_crt, mignotte_bound, rational_reconstruction, reduce_mod, select_lucky_prime,
     ModularError, ModularValue, MultiPolyFp,
+};
+pub use number_theory::{
+    discrete_log, factorint, isprime, jacobi_symbol, nextprime, nthroot_mod, totient,
+    NumberTheoryError, QuadraticDirichlet,
 };
 pub use primitive::{Capabilities, CoverageReport, CoverageRow, Primitive, PrimitiveRegistry};
 #[cfg(feature = "groebner")]
@@ -191,6 +195,10 @@ pub mod stable {
         hermite_form, hermite_form_poly, jacobian, smith_form, smith_form_poly, EigenError,
         IntegerMatrix, Matrix, MatrixError, NormalFormError, PolyMatrixQ, RatUniPoly,
     };
+    pub use crate::number_theory::{
+        discrete_log, factorint, isprime, jacobi_symbol, nextprime, nthroot_mod, totient,
+        NumberTheoryError, QuadraticDirichlet,
+    };
     pub use crate::numeric::{guess_integer_relation, PslqError};
     pub use crate::ode::{lower_to_first_order, OdeError, ScalarODE, ODE};
     pub use crate::pattern::{match_pattern, Pattern, Substitution};
@@ -212,11 +220,9 @@ pub mod stable {
         SolverError,
     };
     pub use crate::sum::{
-        gosper_certificate, gosper_normal_form, hypergeom_ratio,
-        product_definite, product_indefinite,
-        rsolve, solve_linear_recurrence_homogeneous, sum_definite, sum_indefinite, verify_wz_pair,
-        LinearRecurrenceError, RatFunc,
-        ProductError,
+        gosper_certificate, gosper_normal_form, hypergeom_ratio, product_definite,
+        product_indefinite, rsolve, solve_linear_recurrence_homogeneous, sum_definite,
+        sum_indefinite, verify_wz_pair, LinearRecurrenceError, ProductError, RatFunc,
         RecurrenceSolution, RsolveError, SumError, WzPair,
     };
     pub use crate::version;

@@ -116,6 +116,16 @@ pub struct FmpzMatStruct {
     pub rows: *mut *mut fmpz,
 }
 
+/// `fmpz_factor_struct` / `fmpz_factor_t` — integer factorisation container.
+#[repr(C)]
+pub struct FmpzFactorStruct {
+    pub sign: c_int,
+    pub p: *mut fmpz,
+    pub exp: *mut ulong,
+    pub alloc: slong,
+    pub num: slong,
+}
+
 #[link(name = "flint")]
 extern "C" {
     // -----------------------------------------------------------------------
@@ -146,6 +156,29 @@ extern "C" {
     pub fn fmpz_neg(f: *mut fmpz, g: *const fmpz);
     pub fn fmpz_gcd(f: *mut fmpz, g: *const fmpz, h: *const fmpz);
     pub fn fmpz_pow_ui(f: *mut fmpz, g: *const fmpz, x: ulong);
+    pub fn fmpz_set_ui(f: *mut fmpz, val: ulong);
+    pub fn fmpz_cmp(f: *const fmpz, g: *const fmpz) -> c_int;
+    pub fn fmpz_cmp_si(f: *const fmpz, s: slong) -> c_int;
+    pub fn fmpz_abs(f: *mut fmpz, g: *const fmpz);
+    pub fn fmpz_sub_ui(f: *mut fmpz, g: *const fmpz, h: ulong);
+    pub fn fmpz_mul_ui(f: *mut fmpz, g: *const fmpz, h: ulong);
+    pub fn fmpz_mod(f: *mut fmpz, x: *const fmpz, m: *const fmpz);
+    pub fn fmpz_powm(r: *mut fmpz, b: *const fmpz, e: *const fmpz, m: *const fmpz);
+    pub fn fmpz_invmod(res: *mut fmpz, x: *const fmpz, m: *const fmpz) -> c_int;
+    pub fn fmpz_sqrtmod(x: *mut fmpz, a: *const fmpz, p: *const fmpz) -> c_int;
+    pub fn fmpz_jacobi(a: *const fmpz, n: *const fmpz) -> c_int;
+
+    /// Returns `1` if \(n\) is proved prime, `0` if composite (FLINT `fmpz_is_prime`).
+    pub fn fmpz_is_prime(n: *const fmpz) -> c_int;
+    pub fn fmpz_nextprime(res: *mut fmpz, n: *const fmpz, proved: c_int);
+    pub fn fmpz_euler_phi(res: *mut fmpz, n: *const fmpz);
+
+    pub fn fmpz_factor_init(fac: *mut FmpzFactorStruct);
+    pub fn fmpz_factor_clear(fac: *mut FmpzFactorStruct);
+    pub fn fmpz_factor(fac: *mut FmpzFactorStruct, n: *const fmpz);
+
+    pub fn fmpz_fdiv_ui(g: *const fmpz, h: ulong) -> ulong;
+    pub fn fmpz_get_ui(f: *const fmpz) -> ulong;
 
     // -----------------------------------------------------------------------
     // fmpz_poly — dense univariate polynomials over Z

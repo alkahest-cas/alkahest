@@ -20,6 +20,8 @@ use alkahest_core::{
     pantelides as core_pantelides,
     // Phase 27 — poly_normal
     poly_normal as core_poly_normal,
+    product_definite as core_product_definite,
+    product_indefinite as core_product_indefinite,
     // V2-4 — Real root isolation
     real_roots_symbolic as core_real_roots_symbolic,
     refine_root as core_refine_root,
@@ -35,8 +37,6 @@ use alkahest_core::{
     sparse_interpolate_univariate as core_sparse_interpolate_univariate,
     subresultant_prs as core_subresultant_prs,
     subs as core_subs,
-    product_definite as core_product_definite,
-    product_indefinite as core_product_indefinite,
     sum_definite as core_sum_definite,
     sum_indefinite as core_sum_indefinite,
     verify_wz_pair as core_verify_wz_pair,
@@ -90,13 +90,19 @@ use alkahest_core::modular::{
 use alkahest_core::{
     diff as core_diff, diff_forward as core_diff_forward, integrate as core_integrate,
     limit as core_limit, load_from, log_exp_rules, match_pattern as core_match_pattern,
-    rsolve as core_rsolve,
-    series as core_series, simplify as core_simplify, simplify_egraph as core_simplify_egraph,
-    simplify_egraph_with as core_simplify_egraph_with, simplify_with as core_simplify_with,
-    trig_rules, AlkahestError as AlkahestErrorTrait, DiffError, EgraphConfig, IntegrationError,
-    IoError, LimitDirection as CoreLimitDirection, LimitError, LinearRecurrenceError, PatternRule,
-    ProductError,
-    ResultantError,     SeriesError, SimplifyConfig, SizeCost, SparseInterpError, SumError, RsolveError,
+    rsolve as core_rsolve, series as core_series, simplify as core_simplify,
+    simplify_egraph as core_simplify_egraph, simplify_egraph_with as core_simplify_egraph_with,
+    simplify_with as core_simplify_with, trig_rules, AlkahestError as AlkahestErrorTrait,
+    DiffError, EgraphConfig, IntegrationError, IoError, LimitDirection as CoreLimitDirection,
+    LimitError, LinearRecurrenceError, PatternRule, ProductError, ResultantError, RsolveError,
+    SeriesError, SimplifyConfig, SizeCost, SparseInterpError, SumError,
+};
+// V3-1 — Integer number theory
+use alkahest_core::number_theory::{
+    discrete_log as nt_discrete_log, factorint as nt_factorint, isprime as nt_isprime,
+    jacobi_symbol as nt_jacobi_symbol, nextprime as nt_nextprime, nthroot_mod as nt_nthroot_mod,
+    totient as nt_totient, NumberTheoryError as CoreNumberTheoryError,
+    QuadraticDirichlet as CoreQuadraticDirichlet,
 };
 use pyo3::exceptions::{PyOverflowError, PyTypeError};
 use pyo3::prelude::*;
@@ -145,6 +151,7 @@ pyo3::create_exception!(alkahest, PyPslqError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyCadError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PySumError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyProductError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PyNumberTheoryError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyLinearRecurrenceError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyRsolveError, PyAlkahestError);
 #[cfg(feature = "groebner")]
@@ -183,6 +190,10 @@ fn parse_domain(s: &str) -> Domain {
         "nonzero" => Domain::NonZero,
         _ => Domain::Real,
     }
+}
+
+fn py_int_decimal(v: &Bound<'_, PyAny>) -> PyResult<String> {
+    Ok(v.str()?.extract::<String>()?)
 }
 
 fn diff_error_to_py(e: DiffError) -> PyErr {
@@ -290,6 +301,13 @@ fn sum_error_to_py(e: SumError) -> PyErr {
 fn product_error_to_py(e: ProductError) -> PyErr {
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyProductError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn number_theory_error_to_py(e: CoreNumberTheoryError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyNumberTheoryError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -1749,9 +1767,9 @@ fn py_rsolve(
             if b.is_none() {
                 None
             } else {
-                let d = b
-                    .downcast::<PyDict>()
-                    .map_err(|_| PyTypeError::new_err("initials must be dict[int, Expr] or None"))?;
+                let d = b.downcast::<PyDict>().map_err(|_| {
+                    PyTypeError::new_err("initials must be dict[int, Expr] or None")
+                })?;
                 let mut m = BTreeMap::new();
                 for (k, v) in d.iter() {
                     let ki: i64 = k.extract()?;
@@ -1774,10 +1792,7 @@ fn py_rsolve(
         )
         .map_err(rsolve_error_to_py)?
     };
-    Ok(PyExpr {
-        id,
-        pool: pool_py,
-    })
+    Ok(PyExpr { id, pool: pool_py })
 }
 
 #[pyfunction]
@@ -4371,8 +4386,8 @@ fn py_ideal_radical(
 #[cfg(feature = "groebner")]
 use alkahest_core::{
     diophantine as core_diophantine, solve_numerical, solve_polynomial_system, triangularize,
-    CertifiedPoint, DiophantineError, DiophantineSolution as CoreDiophantineSolution, HomotopyError,
-    HomotopyOpts, RegularChain, SolutionSet,
+    CertifiedPoint, DiophantineError, DiophantineSolution as CoreDiophantineSolution,
+    HomotopyError, HomotopyOpts, RegularChain, SolutionSet,
 };
 
 #[cfg(feature = "groebner")]
@@ -4909,6 +4924,108 @@ impl PyMultiPolyFp {
     }
 }
 
+// ---------------------------------------------------------------------------
+// V3-1 — Integer number theory
+// ---------------------------------------------------------------------------
+
+/// Quadratic Dirichlet character modulo an odd square-free conductor \(q \ge 3\).
+///
+/// Matches the Jacobi symbol \((\\cdot \\mid q)\) on residues coprime to \(q\) (otherwise `0`).
+#[pyclass(name = "DirichletChi", module = "alkahest")]
+struct PyDirichletChi {
+    inner: CoreQuadraticDirichlet,
+}
+
+#[pymethods]
+impl PyDirichletChi {
+    #[new]
+    #[pyo3(text_signature = "(conductor:int)")]
+    fn py_new(conductor: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let c = py_int_decimal(conductor)?;
+        CoreQuadraticDirichlet::new(&c)
+            .map(|inner| PyDirichletChi { inner })
+            .map_err(number_theory_error_to_py)
+    }
+
+    #[getter]
+    fn conductor(&self) -> String {
+        self.inner.conductor()
+    }
+
+    fn eval(&self, n: &Bound<'_, PyAny>) -> PyResult<i32> {
+        let ns = py_int_decimal(n)?;
+        self.inner.eval(&ns).map_err(number_theory_error_to_py)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("DirichletChi({})", self.inner.conductor())
+    }
+}
+
+/// Provable/prime-tested `bool` (`fmpz_is_prime`).
+#[pyfunction]
+#[pyo3(name = "nt_isprime", signature = (n))]
+fn py_nt_isprime(n: &Bound<'_, PyAny>) -> PyResult<bool> {
+    let s = py_int_decimal(n)?;
+    nt_isprime(&s).map_err(number_theory_error_to_py)
+}
+
+/// Factorisation payload: `(sign, [(prime_decimal, exponent), ...])`.
+#[pyfunction]
+#[pyo3(name = "nt_factorint", signature = (n))]
+fn py_nt_factorint(n: &Bound<'_, PyAny>) -> PyResult<(i32, Vec<(String, u64)>)> {
+    let s = py_int_decimal(n)?;
+    nt_factorint(&s).map_err(number_theory_error_to_py)
+}
+
+/// Next prime strictly after `n` (full proof when `proved` is `True`).
+#[pyfunction]
+#[pyo3(name = "nt_nextprime", signature = (n, proved = true))]
+fn py_nt_nextprime(n: &Bound<'_, PyAny>, proved: bool) -> PyResult<String> {
+    let s = py_int_decimal(n)?;
+    nt_nextprime(&s, proved).map_err(number_theory_error_to_py)
+}
+
+/// Euler φ(`n`).
+#[pyfunction]
+#[pyo3(name = "nt_totient", signature = (n))]
+fn py_nt_totient(n: &Bound<'_, PyAny>) -> PyResult<String> {
+    let s = py_int_decimal(n)?;
+    nt_totient(&s).map_err(number_theory_error_to_py)
+}
+
+/// Jacobi symbol (`a`|`n`).
+#[pyfunction]
+#[pyo3(name = "nt_jacobi", signature = (a, n))]
+fn py_nt_jacobi(a: &Bound<'_, PyAny>, n: &Bound<'_, PyAny>) -> PyResult<i32> {
+    let sa = py_int_decimal(a)?;
+    let sn = py_int_decimal(n)?;
+    nt_jacobi_symbol(&sa, &sn).map_err(number_theory_error_to_py)
+}
+
+/// Modular `k`th root modulo prime `p` (sqrt path or inversion when `\gcd(k,p-1)=1`).
+#[pyfunction]
+#[pyo3(name = "nt_nthroot_mod", signature = (a, k, p))]
+fn py_nt_nthroot_mod(a: &Bound<'_, PyAny>, k: u64, p: &Bound<'_, PyAny>) -> PyResult<String> {
+    let sa = py_int_decimal(a)?;
+    let sp = py_int_decimal(p)?;
+    nt_nthroot_mod(&sa, k, &sp).map_err(number_theory_error_to_py)
+}
+
+/// Smallest nonnegative `e` with `base**e ≡ residue \pmod modulus` (`modulus` prime).
+#[pyfunction]
+#[pyo3(name = "nt_discrete_log", signature = (residue, base, modulus))]
+fn py_nt_discrete_log(
+    residue: &Bound<'_, PyAny>,
+    base: &Bound<'_, PyAny>,
+    modulus: &Bound<'_, PyAny>,
+) -> PyResult<String> {
+    let sr = py_int_decimal(residue)?;
+    let sb = py_int_decimal(base)?;
+    let sm = py_int_decimal(modulus)?;
+    nt_discrete_log(&sr, &sb, &sm).map_err(number_theory_error_to_py)
+}
+
 /// Reduce a polynomial over ℤ to F_p = ℤ/pℤ.
 ///
 /// Returns a `MultiPolyFp` with coefficients in [0, p).
@@ -5240,6 +5357,15 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_modular_rational_reconstruction, m)?)?;
     m.add_function(wrap_pyfunction!(py_modular_mignotte_bound, m)?)?;
     m.add_function(wrap_pyfunction!(py_modular_select_lucky_prime, m)?)?;
+    // V3-1 — Integer number theory
+    m.add_class::<PyDirichletChi>()?;
+    m.add_function(wrap_pyfunction!(py_nt_isprime, m)?)?;
+    m.add_function(wrap_pyfunction!(py_nt_factorint, m)?)?;
+    m.add_function(wrap_pyfunction!(py_nt_nextprime, m)?)?;
+    m.add_function(wrap_pyfunction!(py_nt_totient, m)?)?;
+    m.add_function(wrap_pyfunction!(py_nt_jacobi, m)?)?;
+    m.add_function(wrap_pyfunction!(py_nt_nthroot_mod, m)?)?;
+    m.add_function(wrap_pyfunction!(py_nt_discrete_log, m)?)?;
     // V1-3 — Structured exception hierarchy
     m.add("AlkahestError", m.py().get_type_bound::<PyAlkahestError>())?;
     m.add(
@@ -5281,6 +5407,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("CadError", m.py().get_type_bound::<PyCadError>())?;
     m.add("SumError", m.py().get_type_bound::<PySumError>())?;
     m.add("ProductError", m.py().get_type_bound::<PyProductError>())?;
+    m.add(
+        "NumberTheoryError",
+        m.py().get_type_bound::<PyNumberTheoryError>(),
+    )?;
     m.add(
         "LinearRecurrenceError",
         m.py().get_type_bound::<PyLinearRecurrenceError>(),

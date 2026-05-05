@@ -20,9 +20,9 @@
 //! `ExprPool`; outputs are symbolic `ExprId` values (may include `sqrt`),
 //! or `SolutionSet::Parametric` / `SolutionSet::NoSolution`.
 
+pub mod diophantine;
 pub mod homotopy;
 pub mod regular_chains;
-pub mod diophantine;
 
 pub use regular_chains::{
     extract_regular_chain_from_basis, main_variable_recursive, triangularize, RegularChain,

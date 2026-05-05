@@ -134,7 +134,9 @@ fn linear_in_sym(expr: ExprId, sym: ExprId, pool: &ExprPool) -> Option<(Rational
         ExprData::Pow { base, exp } => {
             if base == sym {
                 match pool.get(exp) {
-                    ExprData::Integer(n) if n.0 == 1 => Some((Rational::from(1), Rational::from(0))),
+                    ExprData::Integer(n) if n.0 == 1 => {
+                        Some((Rational::from(1), Rational::from(0)))
+                    }
                     _ => None,
                 }
             } else {
@@ -190,7 +192,12 @@ enum Peeled {
     Other(ExprId),
 }
 
-fn peel_addend(term: ExprId, seq_name: &str, n: ExprId, pool: &ExprPool) -> Result<Peeled, RsolveError> {
+fn peel_addend(
+    term: ExprId,
+    seq_name: &str,
+    n: ExprId,
+    pool: &ExprPool,
+) -> Result<Peeled, RsolveError> {
     let factors = flatten_mul(term, pool);
     let mut rat = Rational::from(1);
     let mut seq_off: Option<i64> = None;
@@ -220,7 +227,10 @@ fn peel_addend(term: ExprId, seq_name: &str, n: ExprId, pool: &ExprPool) -> Resu
     }
 
     match (seq_off, rest.is_empty()) {
-        (Some(o), true) => Ok(Peeled::Seq { coeff: rat, offset: o }),
+        (Some(o), true) => Ok(Peeled::Seq {
+            coeff: rat,
+            offset: o,
+        }),
         (None, _) => {
             let rhs = if rest.is_empty() {
                 rational_atom(pool, &rat)
@@ -304,11 +314,7 @@ fn extract_recurrence(
 
     let rhs_poly = match UniPoly::from_symbolic_clear_denoms(rhs_expr, n, pool) {
         Ok(p) => {
-            let cs: Vec<Rational> = p
-                .coefficients()
-                .into_iter()
-                .map(Rational::from)
-                .collect();
+            let cs: Vec<Rational> = p.coefficients().into_iter().map(Rational::from).collect();
             RatUniPoly { coeffs: cs }.trim()
         }
         Err(e) => {
@@ -694,7 +700,9 @@ fn factor_char_polynomial(mut p: RatUniPoly) -> Result<Vec<(Rational, usize)>, R
             let c1 = p.coeffs[1].clone();
             let c2 = p.coeffs[2].clone();
             if c2 == Rational::from(0) {
-                return Err(RsolveError::Unsupported("characteristic degree mismatch".into()));
+                return Err(RsolveError::Unsupported(
+                    "characteristic degree mismatch".into(),
+                ));
             }
             let disc = c1.clone() * c1.clone() - Rational::from(4) * c2.clone() * c0.clone();
             if disc == Rational::from(0) {
@@ -750,10 +758,7 @@ fn hom_solution_from_roots(
                 let np = pool.pow(n_sym, pool.integer(p as i64));
                 simp(pool, pool.mul(vec![np, pool.pow(re.clone(), n_sym)]))
             };
-            terms.push(simp(
-                pool,
-                pool.mul(vec![c_syms[idx], basis]),
-            ));
+            terms.push(simp(pool, pool.mul(vec![c_syms[idx], basis])));
             idx += 1;
         }
     }
@@ -769,13 +774,12 @@ fn hom_solution_from_roots(
     }
 }
 
-fn order2_r_exprs(
-    pool: &ExprPool,
-    a_rec: &[Rational],
-) -> Result<(ExprId, ExprId), RsolveError> {
+fn order2_r_exprs(pool: &ExprPool, a_rec: &[Rational]) -> Result<(ExprId, ExprId), RsolveError> {
     let p = char_poly_asc(a_rec);
     if p.degree() != 2 {
-        return Err(RsolveError::Unsupported("expected order-2 characteristic".into()));
+        return Err(RsolveError::Unsupported(
+            "expected order-2 characteristic".into(),
+        ));
     }
     let p0 = p.coeffs[0].clone();
     let p1 = p.coeffs[1].clone();
@@ -796,10 +800,7 @@ fn order2_r_exprs(
     let r1 = simp(pool, pool.mul(vec![half.clone(), inner1]));
     let inner2 = simp(
         pool,
-        pool.add(vec![
-            neg_b,
-            pool.mul(vec![sqrt_e, pool.integer(-1_i32)]),
-        ]),
+        pool.add(vec![neg_b, pool.mul(vec![sqrt_e, pool.integer(-1_i32)])]),
     );
     let r2 = simp(pool, pool.mul(vec![half, inner2]));
     Ok((r1, r2))
@@ -839,10 +840,7 @@ fn apply_init(
         let r = (-a[1].clone()) / a[0].clone();
         let r_e = rational_atom(pool, &r);
         let p0 = subs_n_int(pool, particular, n_sym, n0);
-        let rpow = simp(
-            pool,
-            pool.pow(r_e, pool.integer(n0)),
-        );
+        let rpow = simp(pool, pool.pow(r_e, pool.integer(n0)));
         let rhs = simp(
             pool,
             pool.add(vec![*v0, pool.mul(vec![p0, pool.integer(-1_i32)])]),
@@ -864,8 +862,14 @@ fn apply_init(
         let v1 = *initials.get(&n1).unwrap();
         let p0 = subs_n_int(pool, particular, n_sym, n0);
         let p1 = subs_n_int(pool, particular, n_sym, n1);
-        let v0p = simp(pool, pool.add(vec![v0, pool.mul(vec![p0, pool.integer(-1_i32)])]));
-        let v1p = simp(pool, pool.add(vec![v1, pool.mul(vec![p1, pool.integer(-1_i32)])]));
+        let v0p = simp(
+            pool,
+            pool.add(vec![v0, pool.mul(vec![p0, pool.integer(-1_i32)])]),
+        );
+        let v1p = simp(
+            pool,
+            pool.add(vec![v1, pool.mul(vec![p1, pool.integer(-1_i32)])]),
+        );
         let a00 = simp(pool, pool.pow(r1_e.clone(), pool.integer(n0)));
         let b00 = simp(pool, pool.pow(r2_e.clone(), pool.integer(n0)));
         let a10 = simp(pool, pool.pow(r1_e, pool.integer(n1)));
@@ -940,15 +944,9 @@ pub fn rsolve(
             RsolveError::Unsupported("particular solution (order 1) failed".into())
         })?
     } else if d == 2 {
-        undetermined_order2(
-            &hom_norm[0],
-            &hom_norm[1],
-            &hom_norm[2],
-            &rhs_norm,
-        )
-        .ok_or_else(|| {
-            RsolveError::Unsupported("particular solution (order 2) failed".into())
-        })?
+        undetermined_order2(&hom_norm[0], &hom_norm[1], &hom_norm[2], &rhs_norm).ok_or_else(
+            || RsolveError::Unsupported("particular solution (order 2) failed".into()),
+        )?
     } else {
         if !rhs_norm.is_zero() {
             return Err(RsolveError::Unsupported(
@@ -969,10 +967,7 @@ pub fn rsolve(
             let r = -hom_norm[1].clone();
             let re = rational_atom(pool, &r);
             let c0 = pool.symbol("C0", crate::kernel::Domain::Real);
-            let h = simp(
-                pool,
-                pool.mul(vec![c0, pool.pow(re, n)]),
-            );
+            let h = simp(pool, pool.mul(vec![c0, pool.pow(re, n)]));
             (h, vec![c0])
         }
         2 => {
@@ -1000,16 +995,7 @@ pub fn rsolve(
     let general = simp(pool, pool.add(vec![hom_e, particular_e]));
 
     if let Some(init) = initials {
-        apply_init(
-            pool,
-            general,
-            n,
-            &c_syms,
-            init,
-            d,
-            &a,
-            particular_e,
-        )
+        apply_init(pool, general, n, &c_syms, init, d, &a, particular_e)
     } else {
         Ok(general)
     }
@@ -1043,7 +1029,10 @@ mod tests {
             &pool,
             pool.add(vec![
                 f(vec![n]),
-                pool.mul(vec![f(vec![pool.add(vec![n, pool.integer(-1_i32)])]), pool.integer(-1_i32)]),
+                pool.mul(vec![
+                    f(vec![pool.add(vec![n, pool.integer(-1_i32)])]),
+                    pool.integer(-1_i32),
+                ]),
                 pool.integer(-1_i32),
             ]),
         );
@@ -1061,8 +1050,14 @@ mod tests {
             &pool,
             pool.add(vec![
                 f(vec![n]),
-                pool.mul(vec![f(vec![pool.add(vec![n, pool.integer(-1_i32)])]), pool.integer(-1_i32)]),
-                pool.mul(vec![f(vec![pool.add(vec![n, pool.integer(-2_i32)])]), pool.integer(-1_i32)]),
+                pool.mul(vec![
+                    f(vec![pool.add(vec![n, pool.integer(-1_i32)])]),
+                    pool.integer(-1_i32),
+                ]),
+                pool.mul(vec![
+                    f(vec![pool.add(vec![n, pool.integer(-2_i32)])]),
+                    pool.integer(-1_i32),
+                ]),
             ]),
         );
         let mut init = BTreeMap::new();
@@ -1073,11 +1068,7 @@ mod tests {
         let ref_sol = solve_linear_recurrence_homogeneous(
             &pool,
             n,
-            &[
-                Rational::from(-1),
-                Rational::from(-1),
-                Rational::from(1),
-            ],
+            &[Rational::from(-1), Rational::from(-1), Rational::from(1)],
             &[pool.integer(0), pool.integer(1)],
         )
         .expect("ref");
@@ -1087,10 +1078,7 @@ mod tests {
             env.insert(n, ni as f64);
             let v = eval_interp(sol, &env, &pool).expect("eval");
             let vr = eval_interp(ref_sol.closed_form, &env, &pool).expect("eref");
-            assert!(
-                (v - vr).abs() < 1e-4,
-                "n={ni} rsolve={v} ref={vr}",
-            );
+            assert!((v - vr).abs() < 1e-4, "n={ni} rsolve={v} ref={vr}",);
         }
     }
 }

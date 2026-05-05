@@ -158,6 +158,20 @@ assert pell.kind == "pell_fundamental" and int(str(pell.fundamental[0])) == 3
 
 Quadratics with an **`x·y` cross-term**, unequal ellipse coefficients, or **generalized Pell** right-hand sides `≠ 1` are not implemented yet (`DiophantineError` / `E-DIOPH-*`).
 
+### Integer number theory (V3-1)
+
+Submodule `alkahest.number_theory`: `isprime`, `factorint`, `nextprime`, `totient`, `jacobi_symbol`, `nthroot_mod` (prime modulus; `k=2` or `\gcd(k,p−1)=1`), `discrete_log` (linear scan for moderate primes), plus quadratic `DirichletChi` on odd square-free conductors. Implemented via FLINT `fmpz` in the Rust kernel; raises `NumberTheoryError` (`E-NT-*`) on invalid input.
+
+```python
+from alkahest import NumberTheoryError
+from alkahest.number_theory import discrete_log, factorint, isprime, nthroot_mod
+
+assert isprime(2**127 - 1)
+assert factorint(2**32 - 1)[65537] == 1
+assert discrete_log(13, 3, 17) == 4
+assert pow(nthroot_mod(144, 2, 401), 2, 401) == 144 % 401
+```
+
 ### Truncated series / Laurent tail (V2-15)
 
 `series(expr, var, point, order)` builds a symbolic truncation about `(var − point)` and appends a `BigO(⋯)` remainder. Smooth functions use repeated differentiation; simple poles such as `1/x` at zero take the rational Laurent path. `Series.expr` is the pooled sum-plus-order expression; `ExprPool.big_o(inner)` constructs standalone order bounds.

@@ -26,6 +26,7 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-REC-001 … E-REC-002      LinearRecurrenceError
     E-RSOLVE-001 … E-RSOLVE-005 RsolveError (V2-18 difference equations)
     E-DIOPH-001 … E-DIOPH-004 DiophantineError (V2-19)
+    E-NT-001 … E-NT-005    NumberTheoryError (V3-1 integer number theory)
     E-SERIES-001 … E-SERIES-002 SeriesError
     E-LIMIT-001 … E-LIMIT-005 LimitError
     E-CUDA-001  … E-CUDA-006   CudaError
@@ -337,6 +338,18 @@ class IoError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code="E-IO-001", remediation=remediation, span=span)
+
+
+class NumberTheoryError(AlkahestError):
+    """Integer number-theory primitive failed (parity, modulus, or unsolvable congruence)."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-NT-001", remediation=remediation, span=span)
 
 
 class ParseError(AlkahestError):

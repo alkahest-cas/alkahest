@@ -1,6 +1,7 @@
 from . import (
     lattice,  # noqa: F401 — V2-6: expose alkahest.lattice submodule
     modular,  # noqa: F401 — V2-1: expose alkahest.modular submodule
+    number_theory,  # noqa: F401 — V3-1: integer number theory
 )
 from ._context import (  # noqa: F401
     active_domain,
@@ -225,6 +226,7 @@ try:
         LimitError,
         LinearRecurrenceError,
         MatrixError,
+        NumberTheoryError,
         OdeError,
         PoolError,
         ProductError,
@@ -252,6 +254,7 @@ except ImportError:
         LimitError,
         LinearRecurrenceError,
         MatrixError,
+        NumberTheoryError,
         OdeError,
         PoolError,
         ProductError,
@@ -335,6 +338,7 @@ __all__ = [
     "RsolveError",
     "DiophantineError",
     "MatrixError",
+    "NumberTheoryError",
     "EigenError",
     "OdeError",
     "DaeError",
@@ -458,6 +462,7 @@ __all__ = [
     # V2-6
     "guess_relation",
     "lattice",
+    "number_theory",
     "LatticeError",
     "PslqError",
     # V2-4

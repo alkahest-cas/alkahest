@@ -97,11 +97,7 @@ pub enum DiophantineSolution {
     Finite(Vec<Vec<ExprId>>),
     /// `x² - D·y² = 1`: fundamental unit `(x0, y0)`; all solutions via
     /// `(x0 + y0√D)^k`, `k ∈ ℤ`.
-    PellFundamental {
-        d: ExprId,
-        x0: ExprId,
-        y0: ExprId,
-    },
+    PellFundamental { d: ExprId, x0: ExprId, y0: ExprId },
     /// `x² - D·y² = N` with `N ≠ 1`: minimal found pair `(x0, y0)` and unit `(ux, uy)` with
     /// `ux² - D·uy² = 1`.  All solutions satisfy
     /// `x + y√D = (x0 + y0√D)·(ux + uy√D)^k`, `k ∈ ℤ`.
@@ -199,7 +195,10 @@ fn is_perfect_square(n: &Integer) -> bool {
 /// Legendre symbol (a / p) for odd prime p, a not divisible by p → ±1.
 fn legendre(a: &Integer, p: &Integer) -> i32 {
     let exp = (p.clone() - 1) / 2;
-    let ls = a.clone().pow_mod(&exp, p).unwrap_or_else(|_| Integer::from(0));
+    let ls = a
+        .clone()
+        .pow_mod(&exp, p)
+        .unwrap_or_else(|_| Integer::from(0));
     if ls == 1 {
         1
     } else if ls == p.clone() - 1 {
@@ -451,10 +450,7 @@ fn scan_sum_two_squares_pairs(n: &Integer) -> Vec<(Integer, Integer)> {
 
 fn merge_distinct_pairs(acc: &mut Vec<(Integer, Integer)>, more: Vec<(Integer, Integer)>) {
     use std::collections::BTreeSet;
-    let mut seen: BTreeSet<String> = acc
-        .iter()
-        .map(|(a, b)| format!("{a},{b}"))
-        .collect();
+    let mut seen: BTreeSet<String> = acc.iter().map(|(a, b)| format!("{a},{b}")).collect();
     for (x, y) in more {
         let k = format!("{x},{y}");
         if seen.insert(k) {
@@ -691,7 +687,17 @@ fn pell_convergent_solution(d: &Integer, target: &Integer) -> Option<(Integer, I
         if lhs == *target {
             return Some((h, k));
         }
-        sqrt_cf_step(&d, &a0, &mut m, &mut d_cf, &mut a, &mut h_prev, &mut k_prev, &mut h, &mut k)?;
+        sqrt_cf_step(
+            &d,
+            &a0,
+            &mut m,
+            &mut d_cf,
+            &mut a,
+            &mut h_prev,
+            &mut k_prev,
+            &mut h,
+            &mut k,
+        )?;
     }
     None
 }
@@ -720,9 +726,7 @@ fn solve_pell_like(
     rhs: &Integer,
 ) -> Result<DiophantineSolution, DiophantineError> {
     if *pos == 0 || *neg == 0 {
-        return Err(DiophantineError::Unsupported(
-            "degenerate quadratic".into(),
-        ));
+        return Err(DiophantineError::Unsupported("degenerate quadratic".into()));
     }
     let g = pos.clone().gcd(neg).gcd(&rhs.clone().abs());
     let p = div_exact(pos, &g).unwrap();
@@ -769,7 +773,8 @@ fn solve_pell_like(
 
     if p2 != 1 {
         return Err(DiophantineError::Unsupported(
-            "Pell-type equation must reduce to x² - D·y² = N (leading x² coefficient 1 after gcd)".into(),
+            "Pell-type equation must reduce to x² - D·y² = N (leading x² coefficient 1 after gcd)"
+                .into(),
         ));
     }
 
@@ -777,7 +782,7 @@ fn solve_pell_like(
         Some(u) => u,
         None => {
             return Err(DiophantineError::Unsupported(
-                "no fundamental unit (D may be a perfect square)" .into(),
+                "no fundamental unit (D may be a perfect square)".into(),
             ));
         }
     };
@@ -867,9 +872,18 @@ fn classify_and_solve(
     }
 
     if max_deg <= 1 {
-        let c00 = terms.get(&vec![0, 0]).cloned().unwrap_or_else(|| Integer::from(0));
-        let c10 = terms.get(&vec![1, 0]).cloned().unwrap_or_else(|| Integer::from(0));
-        let c01 = terms.get(&vec![0, 1]).cloned().unwrap_or_else(|| Integer::from(0));
+        let c00 = terms
+            .get(&vec![0, 0])
+            .cloned()
+            .unwrap_or_else(|| Integer::from(0));
+        let c10 = terms
+            .get(&vec![1, 0])
+            .cloned()
+            .unwrap_or_else(|| Integer::from(0));
+        let c01 = terms
+            .get(&vec![0, 1])
+            .cloned()
+            .unwrap_or_else(|| Integer::from(0));
         if terms.len() > 3 {
             return Err(DiophantineError::Unsupported(
                 "linear equation with unexpected monomials".into(),
@@ -886,12 +900,30 @@ fn classify_and_solve(
         return solve_linear_two_var(pool, &c10, &c01, &c00, vx, vy);
     }
 
-    let c20 = terms.get(&vec![2, 0]).cloned().unwrap_or_else(|| Integer::from(0));
-    let c11 = terms.get(&vec![1, 1]).cloned().unwrap_or_else(|| Integer::from(0));
-    let c02 = terms.get(&vec![0, 2]).cloned().unwrap_or_else(|| Integer::from(0));
-    let c10 = terms.get(&vec![1, 0]).cloned().unwrap_or_else(|| Integer::from(0));
-    let c01 = terms.get(&vec![0, 1]).cloned().unwrap_or_else(|| Integer::from(0));
-    let c00 = terms.get(&vec![0, 0]).cloned().unwrap_or_else(|| Integer::from(0));
+    let c20 = terms
+        .get(&vec![2, 0])
+        .cloned()
+        .unwrap_or_else(|| Integer::from(0));
+    let c11 = terms
+        .get(&vec![1, 1])
+        .cloned()
+        .unwrap_or_else(|| Integer::from(0));
+    let c02 = terms
+        .get(&vec![0, 2])
+        .cloned()
+        .unwrap_or_else(|| Integer::from(0));
+    let c10 = terms
+        .get(&vec![1, 0])
+        .cloned()
+        .unwrap_or_else(|| Integer::from(0));
+    let c01 = terms
+        .get(&vec![0, 1])
+        .cloned()
+        .unwrap_or_else(|| Integer::from(0));
+    let c00 = terms
+        .get(&vec![0, 0])
+        .cloned()
+        .unwrap_or_else(|| Integer::from(0));
 
     if c10 != 0 || c01 != 0 || c11 != 0 {
         return Err(DiophantineError::Unsupported(
@@ -923,18 +955,16 @@ fn classify_and_solve(
             return Ok(DiophantineSolution::NoSolution);
         }
         let n = -cc / &a_abs;
-        return Ok(solve_sum_two_squares(
-            pool,
-            &a_abs,
-            &n,
-            vx,
-            vy,
-        ));
+        return Ok(solve_sum_two_squares(pool, &a_abs, &n, vx, vy));
     }
 
     if (a2 > 0 && b2 < 0) || (a2 < 0 && b2 > 0) {
         let pos = if a2 > 0 { a2.clone() } else { b2.clone().abs() };
-        let neg = if a2 > 0 { b2.clone().abs() } else { a2.clone().abs() };
+        let neg = if a2 > 0 {
+            b2.clone().abs()
+        } else {
+            a2.clone().abs()
+        };
         let rhs = -cc;
 
         if rhs == 0 {
@@ -1010,7 +1040,11 @@ mod tests {
         let y = pool.symbol("y", Domain::Integer);
         let x2 = pool.pow(x, pool.integer(2));
         let y2 = pool.pow(y, pool.integer(2));
-        let eq = pool.add(vec![x2, pool.mul(vec![pool.integer(-2), y2]), pool.integer(-1)]);
+        let eq = pool.add(vec![
+            x2,
+            pool.mul(vec![pool.integer(-2), y2]),
+            pool.integer(-1),
+        ]);
         let r = diophantine(&pool, eq, &[x, y]).unwrap();
         match r {
             DiophantineSolution::PellFundamental { x0, y0, .. } => {
