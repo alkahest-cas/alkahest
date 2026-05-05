@@ -488,6 +488,7 @@ mod llvm_backend {
         let children = pool.with(node, |d| match d {
             ExprData::Add(a) | ExprData::Mul(a) | ExprData::Func { args: a, .. } => a.clone(),
             ExprData::Pow { base, exp } => vec![*base, *exp],
+            ExprData::BigO(inner) => vec![inner],
             _ => vec![],
         });
         for c in children {

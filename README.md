@@ -97,6 +97,20 @@ fib = alkahest.solve_linear_recurrence_homogeneous(
 )
 ```
 
+### Truncated series / Laurent tail (V2-15)
+
+`series(expr, var, point, order)` builds a symbolic truncation about `(var − point)` and appends a `BigO(⋯)` remainder. Smooth functions use repeated differentiation; simple poles such as `1/x` at zero take the rational Laurent path. `Series.expr` is the pooled sum-plus-order expression; `ExprPool.big_o(inner)` constructs standalone order bounds.
+
+```python
+import alkahest
+
+pool = alkahest.ExprPool()
+x = pool.symbol("x")
+s_cos = alkahest.series(alkahest.cos(x), x, pool.integer(0), 6)
+s_inv = alkahest.series(x ** (-1), x, pool.integer(0), 4)
+print(s_cos.expr)
+```
+
 ### Rigorous interval arithmetic
 
 ```python
@@ -231,6 +245,7 @@ alkahest/
 │   │   ├── simplify/      # e-graph simplification (egglog)
 │   │   ├── diff/          # symbolic differentiation
 │   │   ├── integrate/     # symbolic integration
+│   │   ├── calculus/      # series / limits (V2-15+)
 │   │   ├── jit/           # LLVM JIT and interpreter
 │   │   ├── ball/          # Arb ball arithmetic
 │   │   ├── ode/           # ODE analysis

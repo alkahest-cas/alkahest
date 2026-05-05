@@ -76,6 +76,10 @@ pub fn subs(expr: ExprId, mapping: &HashMap<ExprId, ExprId>, pool: &ExprPool) ->
             let nb = subs(body, &m2, pool);
             pool.exists(var, nb)
         }
+        ExprData::BigO(arg) => {
+            let a = subs(arg, mapping, pool);
+            pool.big_o(a)
+        }
         // Atoms have no children — if not in mapping, return as-is
         _ => expr,
     }

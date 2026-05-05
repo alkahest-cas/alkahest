@@ -377,6 +377,7 @@ pub fn structurally_depends(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool 
     let children = pool.with(expr, |data| match data {
         ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => args.clone(),
         ExprData::Pow { base, exp } => vec![*base, *exp],
+        ExprData::BigO(inner) => vec![*inner],
         _ => vec![],
     });
     children

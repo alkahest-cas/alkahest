@@ -1,5 +1,6 @@
 pub mod acausal;
 pub mod ball;
+pub mod calculus;
 pub mod dae;
 pub mod deriv;
 pub mod diff;
@@ -45,6 +46,7 @@ pub use diff::{diff, diff_forward, grad, DiffError, DualValue, ForwardDiffError}
 pub use flint::{FlintInteger, FlintPoly};
 pub use hybrid::{Event, GuardStructure, HybridODE};
 pub use integrate::{integrate, IntegrationError};
+pub use calculus::{series, Series, SeriesError};
 #[allow(deprecated)]
 pub use kernel::{
     load_from, open_persistent, save_to, subs, Domain, ExprData, ExprDisplay, ExprId, ExprPool,
@@ -147,6 +149,7 @@ pub fn version() -> &'static str {
 ///
 /// See `README.md` ("Stability") for the full policy.
 pub mod stable {
+    pub use crate::calculus::{series, Series, SeriesError};
     pub use crate::dae::{pantelides, DaeError, DAE};
     pub use crate::diff::{diff, diff_forward, DiffError};
     #[cfg(feature = "groebner")]

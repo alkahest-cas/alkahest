@@ -23,6 +23,7 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-CAD-001                  CadError
     E-SUM-001 … E-SUM-003      SumError
     E-REC-001 … E-REC-002      LinearRecurrenceError
+    E-SERIES-001 … E-SERIES-002 SeriesError
     E-CUDA-001  … E-CUDA-006   CudaError
     E-IO-001    … E-IO-009     IoError  (formerly PoolPersistError / E-POOL-*)
     E-PARSE-*                  ParseError  (reserved; parser not yet integrated)
@@ -128,6 +129,18 @@ class IntegrationError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code="E-INT-001", remediation=remediation, span=span)
+
+
+class SeriesError(AlkahestError):
+    """Symbolic series expansion failed."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-SERIES-001", remediation=remediation, span=span)
 
 
 class SumError(AlkahestError):

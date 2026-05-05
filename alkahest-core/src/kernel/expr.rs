@@ -213,4 +213,6 @@ pub enum ExprData {
         var: ExprId,
         body: ExprId,
     },
+    /// Landau big-O remainder: `O(arg)` as a symbolic order bound (V2-15 series API).
+    BigO(ExprId),
 }

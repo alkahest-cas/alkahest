@@ -220,6 +220,9 @@ class _LatexRenderer:
             return self._piecewise(n[1], n[2]), _PREC_ATOM
         if t == "predicate":
             return self._predicate(n[1], n[2]), _PREC_ADD
+        if t == "big_o":
+            inner, _ = self._r(n[1])
+            return rf"\mathcal{{O}}\!\left({inner}\right)", _PREC_ATOM
         return str(expr), _PREC_ATOM
 
     # ---- atoms ----
@@ -450,6 +453,9 @@ class _UnicodeRenderer:
             return self._piecewise(n[1], n[2]), _PREC_ATOM
         if t == "predicate":
             return self._predicate(n[1], n[2]), _PREC_ADD
+        if t == "big_o":
+            inner, _ = self._r(n[1])
+            return f"O({inner})", _PREC_ATOM
         return str(expr), _PREC_ATOM
 
     def _symbol(self, name: str) -> str:

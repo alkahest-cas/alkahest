@@ -113,7 +113,8 @@ fn expr_to_multivariate_coeffs(
         ExprData::Piecewise { .. }
         | ExprData::Predicate { .. }
         | ExprData::Forall { .. }
-        | ExprData::Exists { .. } => NodeInfo::Func("piecewise_or_predicate".to_string()),
+        | ExprData::Exists { .. }
+        | ExprData::BigO(_) => NodeInfo::Func("piecewise_or_predicate".to_string()),
     });
 
     match info {

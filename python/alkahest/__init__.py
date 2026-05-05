@@ -99,6 +99,8 @@ from .alkahest import (  # noqa: F401
     # Phase 24: Horner-form code emission
     horner,
     integrate,
+    series,
+    Series,
     solve_linear_recurrence_homogeneous,
     sum_definite,
     sum_indefinite,
@@ -218,6 +220,7 @@ try:
         PslqError,
         RealRootError,
         ResultantError,
+        SeriesError,
         SparseInterpError,
         SumError,
     )
@@ -237,6 +240,7 @@ except ImportError:
         OdeError,
         PoolError,
         PslqError,
+        SeriesError,
         SumError,
     )
 from .exceptions import ParseError, SolverError  # noqa: F401  (pure-Python only for now)
@@ -308,6 +312,7 @@ __all__ = [
     "DiffError",
     "PoolError",
     "IntegrationError",
+    "SeriesError",
     "LinearRecurrenceError",
     "MatrixError",
     "OdeError",
@@ -343,6 +348,8 @@ __all__ = [
     "diff",
     "diff_forward",
     "integrate",
+    "series",
+    "Series",
     "solve_linear_recurrence_homogeneous",
     "sum_definite",
     "sum_indefinite",

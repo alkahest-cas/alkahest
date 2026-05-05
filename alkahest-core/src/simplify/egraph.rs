@@ -56,7 +56,8 @@ mod backend {
             ExprData::Piecewise { .. }
             | ExprData::Predicate { .. }
             | ExprData::Forall { .. }
-            | ExprData::Exists { .. } => Node::Unsupported,
+            | ExprData::Exists { .. }
+            | ExprData::BigO(_) => Node::Unsupported,
         });
 
         match node {

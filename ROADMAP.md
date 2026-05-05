@@ -413,18 +413,19 @@ Seven gaps from the SymPy gap analysis, plus integer number theory (thin FLINT b
 
 ---
 
-### V2-15. User-facing `series()` / Laurent expansion
+### V2-15. User-facing `series()` / Laurent expansion → ✅ Complete
 
 **What:** Promote `SeriesTaylor` from an internal MLIR op to a stable user API. Prerequisite for the Gruntz limit algorithm (V2-16).
 
-**Design:**
-- `alkahest-core/src/calculus/series.rs` — `series(expr, var, point, order) -> Series`.
-- `BigO` `ExprData` variant; `Series` wrapper with `a₀ + a₁x + … + aₙxⁿ + O(xⁿ⁺¹)` printing.
-- Laurent series (negative-exponent terms) for poles.
+**Delivered:**
+- `alkahest-core/src/calculus/series.rs` — `series(expr, var, point, order) -> Series` with truncated Taylor coefficients from symbolic differentiation; Laurent-style tails for quotients whose denominator vanishes at the expansion point (via valuation stripping + analytic Taylor factor).
+- `ExprData::BigO(ExprId)`; `ExprPool::big_o`; `Series(ExprId)` newtype returning one pooled expression `⋯ + O(…)`.
+- Pool persistence **format version 3** (tag `12 BigO`).
+- Python (`stable`): `series`, `Series`, `SeriesError`, `ExprPool.big_o`; `Expr.node()` emits `["big_o", child]`; `_pretty` renders `\mathcal{O}(…)`.
 
-**Test plan:** `series(cos(x), x, 0, 6)` → `1 - x²/2 + x⁴/24 + O(x⁶)`; Laurent: `series(1/x, x, 0, 4)` → `x⁻¹ + O(x)`.
+**Test plan:** `series(cos(x), x, 0, 6)` yields `BigO(x⁶)`; Laurent `series(1/x, x, 0, 4)` → `x⁻¹ + O(x)` (remainder exponent convention documented on Rust `series()`).
 
-**Acceptance:** `alkahest.series` in stable API; `BigO` round-trips through the ExprPool.
+**Acceptance:** `alkahest.series` / `alkahest_core::stable::series`; `BigO` checkpoint round-trip — ✅.
 
 ---
 

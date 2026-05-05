@@ -280,6 +280,11 @@ impl ExprPool {
         self.intern(ExprData::Exists { var, body })
     }
 
+    /// `O(arg)` — symbolic big-O bound used in truncated series (V2-15).
+    pub fn big_o(&self, arg: ExprId) -> ExprId {
+        self.intern(ExprData::BigO(arg))
+    }
+
     // -----------------------------------------------------------------------
     // Display helper
     // -----------------------------------------------------------------------
@@ -400,6 +405,9 @@ fn fmt_data(data: &ExprData, pool: &ExprPool, f: &mut fmt::Formatter<'_>) -> fmt
         }
         ExprData::Exists { var, body } => {
             write!(f, "∃ {} . {}", pool.display(*var), pool.display(*body))
+        }
+        ExprData::BigO(arg) => {
+            write!(f, "O({})", pool.display(*arg))
         }
     }
 }

@@ -213,6 +213,10 @@ fn simplify_children_par(
             let rb = simplify_node_par(body, pool, rules);
             (pool.exists(var, rb.value), rb.log)
         }
+        ExprData::BigO(arg) => {
+            let r = simplify_node_par(arg, pool, rules);
+            (pool.big_o(r.value), r.log)
+        }
         leaf => (pool.intern(leaf), DerivationLog::new()),
     }
 }

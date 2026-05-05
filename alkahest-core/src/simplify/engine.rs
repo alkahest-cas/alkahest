@@ -188,6 +188,11 @@ fn simplify_children(
             log = log.merge(rb.log);
             (pool.exists(var, rb.value), log)
         }
+        ExprData::BigO(arg) => {
+            let r = simplify_node(arg, pool, rules);
+            log = log.merge(r.log);
+            (pool.big_o(r.value), log)
+        }
         // Atoms have no children
         atom => (pool.intern(atom), log),
     }

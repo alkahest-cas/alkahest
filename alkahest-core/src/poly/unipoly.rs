@@ -133,6 +133,7 @@ fn expr_to_univariate_coeffs(
         ExprData::Forall { .. } | ExprData::Exists { .. } => Err(
             ConversionError::NonPolynomialFunction("quantifier".to_string()),
         ),
+        ExprData::BigO(_) => Err(ConversionError::NonPolynomialFunction("BigO".to_string())),
     }
 }
 

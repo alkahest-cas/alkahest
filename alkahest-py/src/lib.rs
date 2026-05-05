@@ -85,12 +85,13 @@ use alkahest_core::modular::{
     select_lucky_prime as core_select_lucky_prime, ModularError, MultiPolyFp,
 };
 use alkahest_core::{
-    diff as core_diff, diff_forward as core_diff_forward, integrate as core_integrate, load_from,
+    diff as core_diff, diff_forward as core_diff_forward, integrate as core_integrate,
+    series as core_series, load_from,
     log_exp_rules, match_pattern as core_match_pattern, simplify as core_simplify,
     simplify_egraph as core_simplify_egraph, simplify_egraph_with as core_simplify_egraph_with,
     simplify_with as core_simplify_with, trig_rules, AlkahestError as AlkahestErrorTrait,
     DiffError, EgraphConfig, IntegrationError, IoError, LinearRecurrenceError, PatternRule,
-    ResultantError, SimplifyConfig, SizeCost, SparseInterpError, SumError,
+    ResultantError, SeriesError, SimplifyConfig, SizeCost, SparseInterpError, SumError,
 };
 use pyo3::exceptions::{PyOverflowError, PyTypeError};
 use pyo3::prelude::*;
@@ -111,6 +112,7 @@ pyo3::create_exception!(alkahest, PyDomainError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyDiffError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyPoolError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyIntegrationError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PySeriesError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyMatrixError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyModularError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyOdeError, PyAlkahestError);
@@ -197,6 +199,13 @@ fn gpu_groebner_error_to_py(e: alkahest_core::experimental::GpuGroebnerError) ->
 fn integrate_error_to_py(e: IntegrationError) -> PyErr {
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyIntegrationError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn series_error_to_py(e: SeriesError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PySeriesError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -339,6 +348,13 @@ impl PyExprPool {
 
     fn float(slf: PyRef<'_, Self>, value: f64, prec: Option<u32>) -> PyExpr {
         let id = slf.inner.float(value, prec.unwrap_or(53));
+        let pool: Py<PyExprPool> = slf.into();
+        PyExpr { id, pool }
+    }
+
+    /// `O(arg)` — Landau remainder bound (V2-15 series API).
+    fn big_o(slf: PyRef<'_, Self>, arg: PyExpr) -> PyExpr {
+        let id = slf.inner.big_o(arg.id);
         let pool: Py<PyExprPool> = slf.into();
         PyExpr { id, pool }
     }
@@ -767,6 +783,9 @@ impl PyExpr {
                 PyList::new_bound(py, vec!["exists".into_py(py), wrap!(var), wrap!(body)])
                     .into_py(py)
             }
+            alkahest_core::ExprData::BigO(inner) => {
+                PyList::new_bound(py, vec!["big_o".into_py(py), wrap!(inner)]).into_py(py)
+            }
         }
     }
 }
@@ -787,6 +806,34 @@ impl PyExpr {
             return Some(pool.inner.float(f, 53));
         }
         None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// V2-15 — Truncated series / Laurent + BigO
+// ---------------------------------------------------------------------------
+
+#[pyclass(name = "Series")]
+#[derive(Clone)]
+struct PySeries {
+    expr: PyExpr,
+}
+
+#[pymethods]
+impl PySeries {
+    #[getter]
+    fn expr(&self) -> PyExpr {
+        self.expr.clone()
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> String {
+        let pool = self.expr.pool.borrow(py);
+        format!("Series({})", pool.inner.display(self.expr.id))
+    }
+
+    fn __str__(&self, py: Python<'_>) -> String {
+        let pool = self.expr.pool.borrow(py);
+        pool.inner.display(self.expr.id).to_string()
     }
 }
 
@@ -1485,6 +1532,26 @@ fn py_integrate(
     };
     let pool_py = expr.pool.clone_ref(py);
     Ok(make_derived_result(py, derived, pool_py))
+}
+
+#[pyfunction]
+#[pyo3(name = "series")]
+fn py_series(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    var: PyRef<PyExpr>,
+    point: PyRef<PyExpr>,
+    order: u32,
+) -> PyResult<PySeries> {
+    let pool_py = expr.pool.clone_ref(py);
+    let id = {
+        let pool = pool_py.borrow(py);
+        core_series(expr.id, var.id, point.id, order, &pool.inner).map_err(series_error_to_py)?
+            .expr()
+    };
+    Ok(PySeries {
+        expr: PyExpr { id, pool: pool_py },
+    })
 }
 
 #[pyfunction]
@@ -4607,6 +4674,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_diff, m)?)?;
     m.add_function(wrap_pyfunction!(py_diff_forward, m)?)?;
     m.add_function(wrap_pyfunction!(py_integrate, m)?)?;
+    m.add_function(wrap_pyfunction!(py_series, m)?)?;
     m.add_function(wrap_pyfunction!(py_sum_indefinite, m)?)?;
     m.add_function(wrap_pyfunction!(py_sum_definite, m)?)?;
     m.add_function(wrap_pyfunction!(py_solve_linear_recurrence_homogeneous, m)?)?;
@@ -4641,6 +4709,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyExprPool>()?;
     m.add_class::<PyExpr>()?;
     m.add_class::<PyDerivedResult>()?;
+    m.add_class::<PySeries>()?;
     m.add_class::<PyUniPoly>()?;
     m.add_class::<PyMultiPoly>()?;
     m.add_class::<PyUniPolyFactorization>()?;
@@ -4760,6 +4829,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "IntegrationError",
         m.py().get_type_bound::<PyIntegrationError>(),
+    )?;
+    m.add(
+        "SeriesError",
+        m.py().get_type_bound::<PySeriesError>(),
     )?;
     m.add("MatrixError", m.py().get_type_bound::<PyMatrixError>())?;
     m.add("ModularError", m.py().get_type_bound::<PyModularError>())?;

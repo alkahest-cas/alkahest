@@ -21,7 +21,7 @@
 //!
 //! ```text
 //!   Magic     = "ALKP"             (4 bytes)
-//!   Version   = u32 (1 = original tags 0–9; **2** adds quantifier tags 10–11)
+//!   Version   = u32 (**3** = BigO tag 12; **2** = quantifiers 10–11; **1** = original 0–9)
 //!   Flags     = u32                 (reserved; always 0 in v1)
 //!   NodeCount = u64
 //!   Nodes     = NodeCount × TaggedNode
@@ -42,11 +42,12 @@
 //!     9 Predicate  -> kind:u8, arity:u32, ExprId.0 × arity
 //!     10 Forall   -> var:u32, body:u32
 //!     11 Exists   -> var:u32, body:u32
+//!     12 BigO    -> inner:u32
 //! ```
 //!
 //! File version (`Version` u32 field): **1** is the original v1.0 layout (tags 0–9 only).
-//! **2** adds tags 10–11 for quantifiers.  Current writers emit version **2**; readers accept
-//! **1** or **2**.
+//! **2** adds tags 10–11 for quantifiers. **3** adds tag 12 for `BigO`.
+//! Current writers emit version **3**; readers accept **1**, **2**, or **3**.
 //!
 //! All integers are little-endian.
 
@@ -62,7 +63,9 @@ const MAGIC: &[u8; 4] = b"ALKP";
 const POOL_FORMAT_V1: u32 = 1;
 /// Adds `Forall` / `Exists` node tags 10–11.
 const POOL_FORMAT_V2: u32 = 2;
-const POOL_FORMAT_WRITE: u32 = POOL_FORMAT_V2;
+/// Adds `BigO` tag 12 (V2-15 series API).
+const POOL_FORMAT_V3: u32 = 3;
+const POOL_FORMAT_WRITE: u32 = POOL_FORMAT_V3;
 
 // ---------------------------------------------------------------------------
 // Error
@@ -341,6 +344,10 @@ fn write_node(w: &mut impl Write, node: &ExprData) -> io::Result<()> {
             write_u32(w, var.0)?;
             write_u32(w, body.0)
         }
+        ExprData::BigO(inner) => {
+            write_u8(w, 12)?;
+            write_u32(w, inner.0)
+        }
     }
 }
 
@@ -422,6 +429,13 @@ fn read_node(r: &mut impl Read, format_version: u32) -> Result<ExprData, IoError
             let body = ExprId(read_u32(r)?);
             Ok(ExprData::Exists { var, body })
         }
+        12 => {
+            if format_version < POOL_FORMAT_V3 {
+                return Err(IoError::BadTag(12));
+            }
+            let inner = ExprId(read_u32(r)?);
+            Ok(ExprData::BigO(inner))
+        }
         b => Err(IoError::BadTag(b)),
     }
 }
@@ -485,7 +499,7 @@ pub fn load_from(path: impl AsRef<Path>) -> Result<Option<ExprPool>, IoError> {
     }
 
     let version = read_u32(&mut r)?;
-    if version != POOL_FORMAT_V1 && version != POOL_FORMAT_V2 {
+    if version != POOL_FORMAT_V1 && version != POOL_FORMAT_V2 && version != POOL_FORMAT_V3 {
         return Err(IoError::UnsupportedVersion(version));
     }
     let _flags = read_u32(&mut r)?;
@@ -620,6 +634,18 @@ mod tests {
         p.checkpoint(&path).unwrap();
         let q = ExprPool::open_persistent(&path).unwrap();
         assert_eq!(p.get(pc), q.get(pc));
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn big_o_round_trip() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let o = p.big_o(p.pow(x, p.integer(6)));
+        let path = tempfile();
+        p.checkpoint(&path).unwrap();
+        let q = ExprPool::open_persistent(&path).unwrap();
+        assert_eq!(q.get(o), p.get(o));
         let _ = fs::remove_file(&path);
     }
 }
