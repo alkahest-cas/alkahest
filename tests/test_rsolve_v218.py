@@ -6,7 +6,10 @@ import alkahest
 def test_rsolve_arithmetic_progression_general():
     pool = alkahest.ExprPool()
     n = pool.symbol("n")
-    f = lambda *args: pool.func("f", list(args))
+
+    def f(*args):
+        return pool.func("f", list(args))
+
     eq = alkahest.simplify(
         f(n) - f(n + pool.integer(-1)) - pool.integer(1)
     ).value
@@ -17,7 +20,10 @@ def test_rsolve_arithmetic_progression_general():
 def test_rsolve_geometric_with_init():
     pool = alkahest.ExprPool()
     n = pool.symbol("n")
-    f = lambda *args: pool.func("f", list(args))
+
+    def f(*args):
+        return pool.func("f", list(args))
+
     eq = alkahest.simplify(
         f(n) - pool.integer(2) * f(n + pool.integer(-1))
     ).value
@@ -30,7 +36,10 @@ def test_rsolve_geometric_with_init():
 def test_rsolve_fibonacci_with_init():
     pool = alkahest.ExprPool()
     n = pool.symbol("n")
-    f = lambda *args: pool.func("f", list(args))
+
+    def f(*args):
+        return pool.func("f", list(args))
+
     eq = alkahest.simplify(
         f(n)
         - f(n + pool.integer(-1))

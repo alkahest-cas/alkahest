@@ -1,9 +1,8 @@
 """Tests for V2-1 — Modular / CRT framework (alkahest.modular)."""
 
-import pytest
 import alkahest
-from alkahest import modular, MultiPoly, MultiPolyFp
-
+import pytest
+from alkahest import MultiPoly, MultiPolyFp, modular
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -256,7 +255,7 @@ class TestMignotteBound:
         bound = modular.mignotte_bound(poly)
         # Check: product of two primes > 2*bound
         primes = (modular.select_lucky_prime(0), modular.select_lucky_prime(0, [2]))
-        M = primes[0] * primes[1]
+        assert primes[0] * primes[1] > 2 * bound
         # lift with enough primes to exceed 2*bound
         images = []
         product = 1

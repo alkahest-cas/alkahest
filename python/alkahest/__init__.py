@@ -1,3 +1,6 @@
+from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
+from importlib.metadata import version as _meta_version
+
 from . import (
     lattice,  # noqa: F401 — V2-6: expose alkahest.lattice submodule
     modular,  # noqa: F401 — V2-1: expose alkahest.modular submodule
@@ -38,6 +41,8 @@ from .alkahest import (  # noqa: F401
     ODE,
     # Phase 18: Acausal modelling
     AcausalSystem,
+    # V3-3: First-order logic + V2-9 CAD/QE
+    And,
     # Phase 22: Ball arithmetic
     ArbBall,
     # Phase 21: JIT compiled evaluation
@@ -48,8 +53,10 @@ from .alkahest import (  # noqa: F401
     EgraphConfig,
     # Phase 20: Hybrid systems
     Event,
+    Exists,
     Expr,
     ExprPool,
+    Forall,
     HybridODE,
     # Phase 15: Symbolic matrices
     Matrix,
@@ -58,6 +65,8 @@ from .alkahest import (  # noqa: F401
     MultiPolyFactorization,
     # V2-1: Modular / CRT framework
     MultiPolyFp,
+    Not,
+    Or,
     Port,
     # PA-5: Primitive registry
     PrimitiveRegistry,
@@ -68,17 +77,19 @@ from .alkahest import (  # noqa: F401
     RootInterval,
     # Phase 19: Sensitivity analysis
     SensitivitySystem,
+    Series,
+    UniPoly,
+    UniPolyFactorization,
     # V2-7: Polynomial factorization
     UniPolyFactorModP,
-    UniPolyFactorization,
-    factor_univariate_mod_p,
-    UniPoly,
     abs,  # symbolic abs — use alkahest.abs(expr); shadows Python builtin within this module
     acos,
     adjoint_system,
     asin,
     atan,
     atan2,
+    cad_lift,
+    cad_project,
     ceil,
     # Phase 26: collect_like_terms
     collect_like_terms,
@@ -86,6 +97,7 @@ from .alkahest import (  # noqa: F401
     # Math functions
     cos,
     cosh,
+    decide,
     # Core operations
     diff,
     diff_forward,
@@ -94,6 +106,7 @@ from .alkahest import (  # noqa: F401
     erfc,
     eval_expr,
     exp,
+    factor_univariate_mod_p,
     floor,
     gamma,
     # V2-6: Approximate integer relations (LLL-backed heuristic — not Ferguson–Bailey PSLQ)
@@ -101,19 +114,10 @@ from .alkahest import (  # noqa: F401
     # Phase 24: Horner-form code emission
     horner,
     integrate,
-    limit,
-    series,
-    Series,
-    solve_linear_recurrence_homogeneous,
-    rsolve,
-    product_definite,
-    product_indefinite,
-    sum_definite,
-    sum_indefinite,
-    verify_wz_pair,
     interval_eval,
     jacobian,
     jit_is_available,
+    limit,
     log,
     lower_to_first_order,
     make_rule,
@@ -123,44 +127,42 @@ from .alkahest import (  # noqa: F401
     pantelides,
     # PA-9: Piecewise
     piecewise,
-    # V3-3: First-order logic + V2-9 CAD/QE
-    And,
-    cad_lift,
-    cad_project,
-    decide,
-    Exists,
-    Forall,
-    Not,
-    Or,
-    satisfiable,
     # Phase 27: poly_normal
     poly_normal,
+    product_definite,
+    product_indefinite,
     real_roots,
     refine_root,
     resistor,
     # V2-2: Resultants and subresultant PRS
     resultant,
     round,  # symbolic round — use alkahest.round(expr)
+    rsolve,
+    satisfiable,
     sensitivity_system,
+    series,
     sign,
     simplify,
+    simplify_clifford_orthogonal,
     simplify_egraph,
     simplify_egraph_with,
     simplify_expanded,
     simplify_log_exp,
-    simplify_pauli,
-    simplify_clifford_orthogonal,
     simplify_par,
+    simplify_pauli,
     simplify_trig,
     simplify_with,
     sin,
     sinh,
+    solve_linear_recurrence_homogeneous,
     # V2-3: Sparse interpolation
     sparse_interp,
     sparse_interp_univariate,
     sqrt,
     subresultant_prs,
     subs,
+    sum_definite,
+    sum_indefinite,
     # V1-12: expanded primitive registry
     tan,
     tanh,
@@ -168,6 +170,7 @@ from .alkahest import (  # noqa: F401
     to_lean,
     # V5-2: StableHLO/XLA bridge
     to_stablehlo,
+    verify_wz_pair,
     version,
 )
 from .alkahest import (  # noqa: F401
@@ -189,13 +192,10 @@ try:
         DiophantineSolution,
         GbPoly,
         GroebnerBasis,
-        PrimaryComponent,
         RegularChain,
         RosenfeldGroebnerResult,
         dae_index_reduce,
         diophantine,
-        primary_decomposition,
-        radical,
         rosenfeld_groebner,
         solve,
         solve_numerical,
@@ -282,9 +282,6 @@ else:
         _native_cls = getattr(_alkahest_native, _overlay_name, None)
         if _native_cls is not None:
             _globals[_overlay_name] = _native_cls
-
-from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
-from importlib.metadata import version as _meta_version
 
 try:
     __version__ = _meta_version("alkahest")

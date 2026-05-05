@@ -1,9 +1,7 @@
 """V2-12 — primary decomposition (Gianni–Trager–Zacharias fragment)."""
 
-import pytest
-
 import alkahest
-
+import pytest
 
 pytestmark = pytest.mark.skipif(
     not hasattr(alkahest, "primary_decomposition"),

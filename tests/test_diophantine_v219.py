@@ -1,8 +1,7 @@
 """V2-19 — Diophantine equations (`diophantine`)."""
 
-import pytest
-
 import alkahest
+import pytest
 
 pytestmark = pytest.mark.skipif(
     not hasattr(alkahest, "diophantine"),

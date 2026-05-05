@@ -1,8 +1,7 @@
 """V2-15 — user-facing series() with BigO remainder."""
 
-import pytest
-
 import alkahest
+import pytest
 
 
 def _has_big_o(expr: alkahest.Expr) -> bool:

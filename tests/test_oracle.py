@@ -14,8 +14,8 @@ sympy = pytest.importorskip("sympy")
 
 import random  # noqa: E402
 
-from alkahest.alkahest import ExprPool, UniPoly, diff, integrate, simplify  # noqa: E402
 from alkahest import cos, eval_expr, exp, sin  # noqa: E402
+from alkahest.alkahest import ExprPool, UniPoly, diff, integrate, simplify  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers

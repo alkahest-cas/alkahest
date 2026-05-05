@@ -10,11 +10,9 @@ Covers:
 
 from __future__ import annotations
 
-import pytest
-
 import alkahest
-from alkahest import ExprPool, sparse_interp, sparse_interp_univariate, SparseInterpError
-
+import pytest
+from alkahest import ExprPool, SparseInterpError, sparse_interp, sparse_interp_univariate
 
 # ---------------------------------------------------------------------------
 # Helpers

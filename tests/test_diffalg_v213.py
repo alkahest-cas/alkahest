@@ -1,8 +1,7 @@
 """V2-13 — Differential algebra / Rosenfeld–Gröbner (groebner feature)."""
 
-import pytest
-
 import alkahest
+import pytest
 
 pytestmark = pytest.mark.skipif(
     not hasattr(alkahest, "rosenfeld_groebner"),

@@ -108,12 +108,24 @@ pub struct FmpzMPolyFactorStruct {
 unsafe impl Send for FmpzPolyStruct {}
 unsafe impl Sync for FmpzPolyStruct {}
 
+/// `fmpz_mat_struct` — FLINT 2.x uses a row pointer table.
 #[repr(C)]
+#[cfg(not(flint3))]
 pub struct FmpzMatStruct {
     pub entries: *mut fmpz,
     pub r: slong,
     pub c: slong,
     pub rows: *mut *mut fmpz,
+}
+
+/// `fmpz_mat_struct` — FLINT 3.x drops `rows` in favour of a row stride.
+#[repr(C)]
+#[cfg(flint3)]
+pub struct FmpzMatStruct {
+    pub entries: *mut fmpz,
+    pub r: slong,
+    pub c: slong,
+    pub stride: slong,
 }
 
 /// `fmpz_factor_struct` / `fmpz_factor_t` — integer factorisation container.

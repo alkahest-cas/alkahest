@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
 import alkahest
+import pytest
 from alkahest import parse
 
 sympy = pytest.importorskip("sympy")

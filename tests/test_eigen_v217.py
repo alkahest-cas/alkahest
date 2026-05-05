@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from collections import Counter
 
-import pytest
-
 import alkahest
+import pytest
 
 sympy = pytest.importorskip("sympy")
 
@@ -121,4 +120,5 @@ def test_rotation_diagonalizes():
     lists_p = pd.to_list()
     for r in range(2):
         for c in range(2):
-            assert sympy.simplify(_expr_to_sympy(lists_m[r][c]) - _expr_to_sympy(lists_p[r][c])) == 0
+            diff = _expr_to_sympy(lists_m[r][c]) - _expr_to_sympy(lists_p[r][c])
+            assert sympy.simplify(diff) == 0
