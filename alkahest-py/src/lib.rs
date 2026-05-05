@@ -88,16 +88,18 @@ use alkahest_core::modular::{
 use alkahest_core::{
     diff as core_diff, diff_forward as core_diff_forward, integrate as core_integrate,
     limit as core_limit, load_from, log_exp_rules, match_pattern as core_match_pattern,
+    rsolve as core_rsolve,
     series as core_series, simplify as core_simplify, simplify_egraph as core_simplify_egraph,
     simplify_egraph_with as core_simplify_egraph_with, simplify_with as core_simplify_with,
     trig_rules, AlkahestError as AlkahestErrorTrait, DiffError, EgraphConfig, IntegrationError,
     IoError, LimitDirection as CoreLimitDirection, LimitError, LinearRecurrenceError, PatternRule,
-    ResultantError, SeriesError, SimplifyConfig, SizeCost, SparseInterpError, SumError,
+    ResultantError,     SeriesError, SimplifyConfig, SizeCost, SparseInterpError, SumError, RsolveError,
 };
 use pyo3::exceptions::{PyOverflowError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList, PyTuple};
 use rug::{Integer, Rational};
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
@@ -140,6 +142,7 @@ pyo3::create_exception!(alkahest, PyPslqError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyCadError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PySumError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyLinearRecurrenceError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PyRsolveError, PyAlkahestError);
 
 /// Build a structured exception with `.code`, `.remediation`, `.span` attributes.
 fn make_structured_err<E: AlkahestErrorTrait>(
@@ -285,6 +288,13 @@ fn linear_recurrence_error_to_py(e: LinearRecurrenceError) -> PyErr {
     })
 }
 
+fn rsolve_error_to_py(e: RsolveError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyRsolveError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
 fn modular_error_to_py(e: ModularError) -> PyErr {
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyModularError>();
@@ -368,6 +378,15 @@ impl PyExprPool {
 
     fn rational(slf: PyRef<'_, Self>, p: i64, q: i64) -> PyExpr {
         let id = slf.inner.rational(p, q);
+        let pool: Py<PyExprPool> = slf.into();
+        PyExpr { id, pool }
+    }
+
+    /// Apply a named primitive or symbolic function: ``pool.func("sin", [x])``, ``pool.func("f", [n])``.
+    #[pyo3(name = "func")]
+    fn apply_named(slf: PyRef<'_, Self>, name: &str, args: Vec<PyExpr>) -> PyExpr {
+        let ids: Vec<ExprId> = args.iter().map(|e| e.id).collect();
+        let id = slf.inner.func(name, ids);
         let pool: Py<PyExprPool> = slf.into();
         PyExpr { id, pool }
     }
@@ -1658,6 +1677,53 @@ fn py_solve_linear_recurrence_homogeneous(
     };
     Ok(PyExpr {
         id: closed,
+        pool: pool_py,
+    })
+}
+
+#[pyfunction]
+#[pyo3(name = "rsolve", signature = (equation, n, seq_name, initials=None))]
+fn py_rsolve(
+    py: Python<'_>,
+    equation: PyRef<PyExpr>,
+    n: PyRef<PyExpr>,
+    seq_name: &str,
+    initials: Option<PyObject>,
+) -> PyResult<PyExpr> {
+    let init_storage: Option<BTreeMap<i64, ExprId>> = match initials {
+        None => None,
+        Some(obj) => {
+            let b = obj.bind(py);
+            if b.is_none() {
+                None
+            } else {
+                let d = b
+                    .downcast::<PyDict>()
+                    .map_err(|_| PyTypeError::new_err("initials must be dict[int, Expr] or None"))?;
+                let mut m = BTreeMap::new();
+                for (k, v) in d.iter() {
+                    let ki: i64 = k.extract()?;
+                    let ve: PyRef<PyExpr> = v.extract()?;
+                    m.insert(ki, ve.id);
+                }
+                Some(m)
+            }
+        }
+    };
+    let pool_py = equation.pool.clone_ref(py);
+    let id = {
+        let pool = pool_py.borrow(py);
+        core_rsolve(
+            &pool.inner,
+            equation.id,
+            n.id,
+            seq_name,
+            init_storage.as_ref(),
+        )
+        .map_err(rsolve_error_to_py)?
+    };
+    Ok(PyExpr {
+        id,
         pool: pool_py,
     })
 }
@@ -4818,6 +4884,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_sum_indefinite, m)?)?;
     m.add_function(wrap_pyfunction!(py_sum_definite, m)?)?;
     m.add_function(wrap_pyfunction!(py_solve_linear_recurrence_homogeneous, m)?)?;
+    m.add_function(wrap_pyfunction!(py_rsolve, m)?)?;
     m.add_function(wrap_pyfunction!(py_verify_wz_pair, m)?)?;
     m.add_function(wrap_pyfunction!(match_pattern, m)?)?;
     m.add_function(wrap_pyfunction!(make_rule, m)?)?;
@@ -5001,6 +5068,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "LinearRecurrenceError",
         m.py().get_type_bound::<PyLinearRecurrenceError>(),
     )?;
+    m.add("RsolveError", m.py().get_type_bound::<PyRsolveError>())?;
     // V1-15: compile-time flag so Python tests can skip egraph-dependent assertions.
     m.add("HAS_EGRAPH", cfg!(feature = "egraph"))?;
     Ok(())

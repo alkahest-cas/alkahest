@@ -90,9 +90,9 @@ pub use simplify::{
     SimplifyConfig, SizeCost, StabilityCost,
 };
 pub use sum::{
-    gosper_certificate, gosper_normal_form, hypergeom_ratio, solve_linear_recurrence_homogeneous,
+    gosper_certificate, gosper_normal_form, hypergeom_ratio, rsolve, solve_linear_recurrence_homogeneous,
     sum_definite, sum_indefinite, verify_wz_pair, LinearRecurrenceError, RatFunc,
-    RecurrenceSolution, SumError, WzPair,
+    RecurrenceSolution, RsolveError, SumError, WzPair,
 };
 
 // Phase 21 — JIT
@@ -207,9 +207,9 @@ pub mod stable {
         RegularChain, Solution, SolutionSet, SolverError,
     };
     pub use crate::sum::{
-        gosper_certificate, gosper_normal_form, hypergeom_ratio,
+        gosper_certificate, gosper_normal_form, hypergeom_ratio, rsolve,
         solve_linear_recurrence_homogeneous, sum_definite, sum_indefinite, verify_wz_pair,
-        LinearRecurrenceError, RatFunc, RecurrenceSolution, SumError, WzPair,
+        LinearRecurrenceError, RatFunc, RecurrenceSolution, RsolveError, SumError, WzPair,
     };
     pub use crate::version;
 }

@@ -97,6 +97,28 @@ fib = alkahest.solve_linear_recurrence_homogeneous(
 )
 ```
 
+### Difference equations / `rsolve` (V2-18)
+
+Linear recurrences in one sequence with **constant coefficients** and a **polynomial** right-hand side (in the recurrence index `n`). Write shifts as `pool.func("f", [n + integer])`, pass the equation as a single expression that simplifies to zero, and optional `initials` as `{n: value}` to fix the `C0`, `C1`, … symbols.
+
+```python
+import alkahest
+
+pool = alkahest.ExprPool()
+n = pool.symbol("n")
+f = lambda *a: pool.func("f", list(a))
+# f(n) - f(n-1) - 1 == 0  →  general solution n + C0
+eq = alkahest.simplify(f(n) - f(n + pool.integer(-1)) - pool.integer(1)).value
+print(alkahest.rsolve(eq, n, "f", None))
+# Fibonacci with f(0)=0, f(1)=1
+fib_eq = alkahest.simplify(
+    f(n) - f(n + pool.integer(-1)) - f(n + pool.integer(-2))
+).value
+print(alkahest.rsolve(fib_eq, n, "f", {0: pool.integer(0), 1: pool.integer(1)}))
+```
+
+Non-homogeneous **order > 2** and sequences with **polynomial coefficients** in `n` are not implemented yet (see `RsolveError` / `E-RSOLVE-*`).
+
 ### Truncated series / Laurent tail (V2-15)
 
 `series(expr, var, point, order)` builds a symbolic truncation about `(var − point)` and appends a `BigO(⋯)` remainder. Smooth functions use repeated differentiation; simple poles such as `1/x` at zero take the rational Laurent path. `Series.expr` is the pooled sum-plus-order expression; `ExprPool.big_o(inner)` constructs standalone order bounds.

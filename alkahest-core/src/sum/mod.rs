@@ -2,13 +2,15 @@
 //!
 //! Gosper indefinite summation for hypergeometric terms — ratios `F(k+1)/F(k)`
 //! that reduce to rational functions of `k`.  Includes constant-coefficient
-//! homogeneous recurrence solving (order ≤ 2) and optional WZ pair verification.
+//! homogeneous recurrence solving (order ≤ 2), explicit [`rsolve`] for linear
+//! difference equations (V2-18), and optional WZ pair verification.
 
 mod expr_ratio;
 mod gosper;
 mod poly_aux;
 mod ratfunc;
 mod recurrence;
+mod rsolve;
 
 pub use expr_ratio::hypergeom_ratio;
 pub use gosper::{gosper_certificate, gosper_normal_form};
@@ -16,6 +18,7 @@ pub use ratfunc::RatFunc;
 pub use recurrence::{
     solve_linear_recurrence_homogeneous, LinearRecurrenceError, RecurrenceSolution,
 };
+pub use rsolve::{rsolve, RsolveError};
 
 use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
 use crate::kernel::subs::subs;

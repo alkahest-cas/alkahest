@@ -124,6 +124,12 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-PSLQ-001", class: "PslqError", cause: Cause::UserInput,   remediation: Some("pass at least two constants that might admit a linear dependence") },
     ErrorSpec { code: "E-PSLQ-002", class: "PslqError", cause: Cause::UserInput,   remediation: Some("literals must not truncate to zero — use higher precision or decimal strings") },
     ErrorSpec { code: "E-PSLQ-003", class: "PslqError", cause: Cause::UserInput,   remediation: Some("allocate at least 64 MPFR bits; ≈664 bits ≈ 200 decimal digits") },
+    // E-RSOLVE — RsolveError (V2-18 difference equations / rsolve)
+    ErrorSpec { code: "E-RSOLVE-001", class: "RsolveError", cause: Cause::UserInput,   remediation: Some("write the recurrence as a sum of pool.func(seq, [n ± integer]) shifts plus a polynomial in n, then call rsolve(equation, n, seq_name)") },
+    ErrorSpec { code: "E-RSOLVE-002", class: "RsolveError", cause: Cause::UserInput,   remediation: Some("each addend may contain at most one sequence application; avoid products like n*f(n)") },
+    ErrorSpec { code: "E-RSOLVE-003", class: "RsolveError", cause: Cause::UserInput,   remediation: Some("clear denominators; the rhs must be a polynomial in the recurrence index") },
+    ErrorSpec { code: "E-RSOLVE-004", class: "RsolveError", cause: Cause::Unsupported, remediation: Some("order > 2 non-homogeneous systems and some characteristic factorizations are not implemented yet") },
+    ErrorSpec { code: "E-RSOLVE-005", class: "RsolveError", cause: Cause::UserInput,   remediation: Some("pass exactly order-many initial samples as a dict n → Expr value") },
     // E-PARSE — reserved for parser integration
     // E-DOMAIN — reserved; DomainError is Python-only pending Rust implementation
 ];
