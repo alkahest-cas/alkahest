@@ -8,11 +8,13 @@
 mod expr_ratio;
 mod gosper;
 mod poly_aux;
+mod product;
 mod ratfunc;
 mod recurrence;
 mod rsolve;
 
 pub use expr_ratio::hypergeom_ratio;
+pub use product::{product_definite, product_indefinite, ProductError};
 pub use gosper::{gosper_certificate, gosper_normal_form};
 pub use ratfunc::RatFunc;
 pub use recurrence::{

@@ -119,6 +119,28 @@ print(alkahest.rsolve(fib_eq, n, "f", {0: pool.integer(0), 1: pool.integer(1)}))
 
 Non-homogeneous **order > 2** and sequences with **polynomial coefficients** in `n` are not implemented yet (see `RsolveError` / `E-RSOLVE-*`).
 
+### Symbolic products (`∏`, V2-22)
+
+`product_definite(term, k, lo, hi)` closes \(\prod_{i=\texttt{lo}}^{\texttt{hi}} \texttt{term}(i)\) (inclusive) when `term` simplifies to **ℚ(`k`)** whose numerator/denominator **factor into ℤ-linear** polynomials — the implementation expands each linear factor \(\alpha k+\beta\) with \(\Gamma\) shifts \(\Gamma(\texttt{hi}+\beta/\alpha+1)/\Gamma(\texttt{lo}+\beta/\alpha)\) and collects \(\alpha^{(\texttt{hi}-\texttt{lo}+1)\cdot e}\). `product_indefinite` returns a `Γ`/power witness `Z(k)` with `simplify`-stable ratio `Z(k+1)/Z(k)=term`. `Product(term, (k, lo, hi)).doit()` matches SymPy ergonomics (`DerivedResult`; use `.value`). Irreducible quadratics in `k`, extra symbols besides `k`, and non-integer powers are rejected (`ProductError` / `E-PROD-*`).
+
+```python
+import alkahest
+
+pool = alkahest.ExprPool()
+k, n = pool.symbol("k"), pool.symbol("n")
+P = alkahest.Product(k, (k, pool.integer(1), n))
+print(alkahest.simplify(P.doit().value).value)
+
+kp2 = k ** 2
+term = alkahest.simplify(
+    ((k + pool.integer(-1)) * (k + pool.integer(1))) / kp2
+).value  # (k²-1)/k²
+
+print(alkahest.simplify(
+    alkahest.product_definite(term, k, pool.integer(2), n).value
+).value)
+```
+
 ### Diophantine equations (V2-19)
 
 Two integer unknowns, equation as a single polynomial `= 0`: **linear** families `a·x + b·y + c = 0`, **sum of two squares** `x² + y² = n` (finitely many tuples), and **unit Pell** `x² - D·y² = 1` (fundamental solution `(x₀, y₀)` via the continued-fraction period of `√D`). Requires the `groebner` feature in the native build. API: `diophantine(equation, [x, y])` → `DiophantineSolution` with `.kind` (`parametric_linear`, `finite`, `pell_fundamental`, `no_solution`) and typed fields.

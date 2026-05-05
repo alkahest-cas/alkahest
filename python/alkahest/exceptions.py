@@ -22,6 +22,7 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-PSLQ-001 … E-PSLQ-003    PslqError
     E-CAD-001                  CadError
     E-SUM-001 … E-SUM-003      SumError
+    E-PROD-001 … E-PROD-004    ProductError (V2-22)
     E-REC-001 … E-REC-002      LinearRecurrenceError
     E-RSOLVE-001 … E-RSOLVE-005 RsolveError (V2-18 difference equations)
     E-DIOPH-001 … E-DIOPH-004 DiophantineError (V2-19)
@@ -168,6 +169,18 @@ class SumError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code="E-SUM-001", remediation=remediation, span=span)
+
+
+class ProductError(AlkahestError):
+    """Symbolic discrete product failed (unsupported term or factorisation)."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-PROD-001", remediation=remediation, span=span)
 
 
 class LinearRecurrenceError(AlkahestError):

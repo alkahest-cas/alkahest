@@ -35,6 +35,8 @@ use alkahest_core::{
     sparse_interpolate_univariate as core_sparse_interpolate_univariate,
     subresultant_prs as core_subresultant_prs,
     subs as core_subs,
+    product_definite as core_product_definite,
+    product_indefinite as core_product_indefinite,
     sum_definite as core_sum_definite,
     sum_indefinite as core_sum_indefinite,
     verify_wz_pair as core_verify_wz_pair,
@@ -93,6 +95,7 @@ use alkahest_core::{
     simplify_egraph_with as core_simplify_egraph_with, simplify_with as core_simplify_with,
     trig_rules, AlkahestError as AlkahestErrorTrait, DiffError, EgraphConfig, IntegrationError,
     IoError, LimitDirection as CoreLimitDirection, LimitError, LinearRecurrenceError, PatternRule,
+    ProductError,
     ResultantError,     SeriesError, SimplifyConfig, SizeCost, SparseInterpError, SumError, RsolveError,
 };
 use pyo3::exceptions::{PyOverflowError, PyTypeError};
@@ -141,6 +144,7 @@ pyo3::create_exception!(alkahest, PyLatticeError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyPslqError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyCadError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PySumError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PyProductError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyLinearRecurrenceError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyRsolveError, PyAlkahestError);
 #[cfg(feature = "groebner")]
@@ -279,6 +283,13 @@ fn cad_error_to_py(e: CadError) -> PyErr {
 fn sum_error_to_py(e: SumError) -> PyErr {
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PySumError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn product_error_to_py(e: ProductError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyProductError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -1661,6 +1672,37 @@ fn py_sum_definite(
     let derived = {
         let pool = expr.pool.borrow(py);
         core_sum_definite(expr.id, k.id, lo.id, hi.id, &pool.inner).map_err(sum_error_to_py)?
+    };
+    Ok(make_derived_result(py, derived, expr.pool.clone_ref(py)))
+}
+
+#[pyfunction]
+#[pyo3(name = "product_indefinite")]
+fn py_product_indefinite(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    k: PyRef<PyExpr>,
+) -> PyResult<PyDerivedResult> {
+    let derived = {
+        let pool = expr.pool.borrow(py);
+        core_product_indefinite(expr.id, k.id, &pool.inner).map_err(product_error_to_py)?
+    };
+    Ok(make_derived_result(py, derived, expr.pool.clone_ref(py)))
+}
+
+#[pyfunction]
+#[pyo3(name = "product_definite")]
+fn py_product_definite(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    k: PyRef<PyExpr>,
+    lo: PyRef<PyExpr>,
+    hi: PyRef<PyExpr>,
+) -> PyResult<PyDerivedResult> {
+    let derived = {
+        let pool = expr.pool.borrow(py);
+        core_product_definite(expr.id, k.id, lo.id, hi.id, &pool.inner)
+            .map_err(product_error_to_py)?
     };
     Ok(make_derived_result(py, derived, expr.pool.clone_ref(py)))
 }
@@ -5053,6 +5095,8 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_limit, m)?)?;
     m.add_function(wrap_pyfunction!(py_sum_indefinite, m)?)?;
     m.add_function(wrap_pyfunction!(py_sum_definite, m)?)?;
+    m.add_function(wrap_pyfunction!(py_product_indefinite, m)?)?;
+    m.add_function(wrap_pyfunction!(py_product_definite, m)?)?;
     m.add_function(wrap_pyfunction!(py_solve_linear_recurrence_homogeneous, m)?)?;
     m.add_function(wrap_pyfunction!(py_rsolve, m)?)?;
     m.add_function(wrap_pyfunction!(py_verify_wz_pair, m)?)?;
@@ -5236,6 +5280,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("PslqError", m.py().get_type_bound::<PyPslqError>())?;
     m.add("CadError", m.py().get_type_bound::<PyCadError>())?;
     m.add("SumError", m.py().get_type_bound::<PySumError>())?;
+    m.add("ProductError", m.py().get_type_bound::<PyProductError>())?;
     m.add(
         "LinearRecurrenceError",
         m.py().get_type_bound::<PyLinearRecurrenceError>(),

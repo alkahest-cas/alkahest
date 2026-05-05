@@ -90,8 +90,11 @@ pub use simplify::{
     SimplifyConfig, SizeCost, StabilityCost,
 };
 pub use sum::{
-    gosper_certificate, gosper_normal_form, hypergeom_ratio, rsolve, solve_linear_recurrence_homogeneous,
-    sum_definite, sum_indefinite, verify_wz_pair, LinearRecurrenceError, RatFunc,
+    gosper_certificate, gosper_normal_form, hypergeom_ratio,
+    product_definite, product_indefinite,
+    rsolve, solve_linear_recurrence_homogeneous, sum_definite, sum_indefinite, verify_wz_pair,
+    LinearRecurrenceError, RatFunc,
+    ProductError,
     RecurrenceSolution, RsolveError, SumError, WzPair,
 };
 
@@ -209,9 +212,12 @@ pub mod stable {
         SolverError,
     };
     pub use crate::sum::{
-        gosper_certificate, gosper_normal_form, hypergeom_ratio, rsolve,
-        solve_linear_recurrence_homogeneous, sum_definite, sum_indefinite, verify_wz_pair,
-        LinearRecurrenceError, RatFunc, RecurrenceSolution, RsolveError, SumError, WzPair,
+        gosper_certificate, gosper_normal_form, hypergeom_ratio,
+        product_definite, product_indefinite,
+        rsolve, solve_linear_recurrence_homogeneous, sum_definite, sum_indefinite, verify_wz_pair,
+        LinearRecurrenceError, RatFunc,
+        ProductError,
+        RecurrenceSolution, RsolveError, SumError, WzPair,
     };
     pub use crate::version;
 }

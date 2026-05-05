@@ -13,6 +13,7 @@ from ._context import (  # noqa: F401
 from ._dlpack import _to_numpy  # noqa: F401
 from ._parse import parse  # noqa: F401
 from ._pretty import latex, unicode_str  # noqa: F401
+from ._product import Product  # noqa: F401 — V2-22
 from ._pytree import (  # noqa: F401
     TreeDef,
     flatten_exprs,
@@ -104,6 +105,8 @@ from .alkahest import (  # noqa: F401
     Series,
     solve_linear_recurrence_homogeneous,
     rsolve,
+    product_definite,
+    product_indefinite,
     sum_definite,
     sum_indefinite,
     verify_wz_pair,
@@ -224,6 +227,7 @@ try:
         MatrixError,
         OdeError,
         PoolError,
+        ProductError,
         PslqError,
         RealRootError,
         ResultantError,
@@ -250,6 +254,7 @@ except ImportError:
         MatrixError,
         OdeError,
         PoolError,
+        ProductError,
         PslqError,
         RsolveError,
         SeriesError,
@@ -371,6 +376,9 @@ __all__ = [
     "rsolve",
     "sum_definite",
     "sum_indefinite",
+    "product_definite",
+    "product_indefinite",
+    "Product",
     "verify_wz_pair",
     "symbolic_grad",
     # Pattern matching & substitution
@@ -445,6 +453,7 @@ __all__ = [
     "sparse_interp_univariate",
     "SparseInterpError",
     "SumError",
+    "ProductError",
     "CadError",
     # V2-6
     "guess_relation",

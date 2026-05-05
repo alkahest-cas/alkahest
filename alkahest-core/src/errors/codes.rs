@@ -135,6 +135,11 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-DIOPH-002", class: "DiophantineError", cause: Cause::UserInput,   remediation: Some("clear denominators; coefficients must be rational integers") },
     ErrorSpec { code: "E-DIOPH-003", class: "DiophantineError", cause: Cause::Unsupported, remediation: Some("supported: linear 2-variable, x²+y²=n, x²−D·y²=N including unit Pell (no xy term); very large integers may be unsupported") },
     ErrorSpec { code: "E-DIOPH-004", class: "DiophantineError", cause: Cause::Domain,      remediation: Some("check gcd divisibility (linear) or solvability over ℤ (quadratic)") },
+    // E-PROD — ProductError (V2-22 symbolic discrete products)
+    ErrorSpec { code: "E-PROD-001", class: "ProductError", cause: Cause::Unsupported, remediation: Some("reduce the term to ℚ(k) with only ℤ-linear factors in k (no extra symbols in k)") },
+    ErrorSpec { code: "E-PROD-002", class: "ProductError", cause: Cause::Internal,    remediation: Some("report the polynomial as a minimal failing example") },
+    ErrorSpec { code: "E-PROD-003", class: "ProductError", cause: Cause::Unsupported, remediation: Some("ℤ-irreducible factors of degree ≥ 2 in k require a Gamma extension beyond this path") },
+    ErrorSpec { code: "E-PROD-004", class: "ProductError", cause: Cause::UserInput,   remediation: Some("check that lo/hi share the ExprPool with the summation index symbol") },
     // E-PARSE — reserved for parser integration
     // E-DOMAIN — reserved; DomainError is Python-only pending Rust implementation
 ];

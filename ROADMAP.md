@@ -13,7 +13,7 @@
 | **v1.0 — Production** | ✅ Complete | Production NVPTX codegen (16.2× over CPU JIT), structured errors, Gröbner-based solver with symbolic √ solutions, custom MLIR dialect, CUDA Macaulay row reduction, semver API, 23-primitive registry, cross-CAS benchmarks, persistent `ExprPool` |
 | **v1.1 — Post-launch** | 📋 Planned | Algebraic-function Risch (Trager), AMD ROCm codegen (hardware-blocked), PyPI wheel publishing, Win+macOS CI parity, docs site, LaTeX/Unicode printing, string parsing |
 | **v2.0 — Mathematical Coverage** | 📋 Planned (15 items) | Modular/CRT framework, resultants, sparse interpolation, real root isolation, HNF/SNF, LLL+PSLQ, polynomial factorization, F5 signature-based Gröbner, logic/FOFormula (CAD prerequisite), CAD (real QE), Zeilberger/creative telescoping, regular chains, primary decomposition, differential algebra, homotopy continuation |
-| **v2.1 — SymPy Parity** | 📋 Planned | Limits (V2-16), `rsolve` scope (V2-18), symbolic `∏` (V2-22), integer number theory (V3-1); **V2-19 `diophantine` ✅**; eigenpairs ✅ (V2-17); `series` / `parse` / LaTeX ✅ (V2-15, V2-20, V2-21) |
+| **v2.1 — SymPy Parity** | 📋 Planned | Limits (V2-16), `rsolve` scope (V2-18); **symbolic `∏` (V2-22) ✅**; integer number theory (V3-1); **V2-19 `diophantine` ✅**; eigenpairs ✅ (V2-17); `series` / `parse` / LaTeX ✅ (V2-15, V2-20, V2-21) |
 | **v3.0 — Domain Expansions** | 📋 Planned (1 item) | Noncommutative algebra (kernel extension) |
 
 **Test coverage:** 362 Rust unit/proptest/doctest cases + 438 Python tests (+ 52 skipped feature-gated/oracle tests) = 800 tests passing, zero errors.
@@ -408,7 +408,7 @@ Gaps from the SymPy gap analysis (and integer number theory promoted as V3-1).
 | Milestone summary | Items |
 |---|---|
 | Core calculus / algebra | V2-16 … V2-18; **V2-19 ✅**; V2-20 … V2-21 ✅ |
-| Symbolic products | V2-22 |
+| Symbolic products | **V2-22 ✅** |
 | Integer number theory | V3-1 |
 
 ---
@@ -482,16 +482,17 @@ Gaps from the SymPy gap analysis (and integer number theory promoted as V3-1).
 
 ---
 
-### V2-22. Symbolic products (`∏`)
+### V2-22. Symbolic products (`∏`) ✅
 
 **What:** `Product(k, (k, 1, n)).doit()` — multiplicative analogue of V2-10's `Sum`.
 
-**Design:**
-- `Product` expression node mirroring `Sum`; `product_definite`, `product_indefinite`; closed-form via `exp(sum(log(term)))` when Gosper applies.
+**Delivered:**
+- `alkahest-core/src/sum/product.rs` — `product_definite`, `product_indefinite` for `q ∈ ℚ(k)` clearing to ℤ polynomials whose FLINT linear factors admit `Γ`-telescoping; `ProductError` (`E-PROD-*`).
+- Python: `product_definite`, `product_indefinite`, `Product`, `ProductError`; `examples/products.py` (factorial shortcut + Wallis-style partial product).
 
-**Test plan:** `Product(k, (k, 1, n)).doit()` → `factorial(n)`; `Product(1 - 1/k**2, (k, 2, n))` → `(n+1)/(2*n)`; SymPy oracle on 30 cases.
+**Test plan:** `Product(k,(k,1,n)).doit()` ≡ `Γ(n+1)` numerically; `∏_{k=2}^n (1-1/k²)` → `(n+1)/(2n)`; optional SymPy oracle in `tests/test_product_v222.py`.
 
-**Acceptance:** `alkahest.Product` in stable API; Wallis product in `examples/products.py`.
+**Acceptance:** `alkahest.Product` / kernel products on stable surface — ✅.
 
 ---
 
