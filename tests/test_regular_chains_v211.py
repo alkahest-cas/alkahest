@@ -1,7 +1,13 @@
 """V2-11 — Regular chains / triangular decomposition."""
 
 import alkahest
+import pytest
 from alkahest import ExprPool
+
+pytestmark = pytest.mark.skipif(
+    not hasattr(alkahest, "triangularize"),
+    reason="native module built without groebner feature",
+)
 
 
 def test_triangularize_linear():

@@ -1,5 +1,13 @@
 """V2-14 — Numerical homotopy (`solve(..., method="homotopy")`, `solve_numerical`)."""
 
+import alkahest
+import pytest
+
+pytestmark = pytest.mark.skipif(
+    not hasattr(alkahest, "solve_numerical"),
+    reason="native module built without groebner feature",
+)
+
 
 def test_solve_homotopy_product_quadratics():
     import alkahest
