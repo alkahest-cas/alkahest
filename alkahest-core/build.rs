@@ -34,6 +34,31 @@ fn main() {
     println!("cargo:rustc-link-lib=flint");
 }
 
+/// Parse `__FLINT_VERSION`, `__FLINT_VERSION_MINOR`, `__FLINT_VERSION_PATCHLEVEL`
+/// from a FLINT header file.  Debian/Ubuntu's `libflint-dev` does not always
+/// ship a `flint.pc`, so the header is more reliable than pkg-config.
+fn read_version_from_flint_header(path: &str) -> Option<String> {
+    let data = std::fs::read_to_string(path).ok()?;
+    let mut major: Option<u32> = None;
+    let mut minor: Option<u32> = None;
+    let mut patch: Option<u32> = None;
+    for raw in data.lines() {
+        let line = raw.trim();
+        if let Some(v) = line.strip_prefix("#define __FLINT_VERSION ") {
+            major = v.trim().parse().ok();
+        } else if let Some(v) = line.strip_prefix("#define __FLINT_VERSION_MINOR ") {
+            minor = v.trim().parse().ok();
+        } else if let Some(v) = line.strip_prefix("#define __FLINT_VERSION_PATCHLEVEL ") {
+            patch = v.trim().parse().ok();
+        }
+    }
+    match (major, minor, patch) {
+        (Some(ma), Some(mi), Some(p)) => Some(format!("{ma}.{mi}.{p}")),
+        (Some(ma), Some(mi), None) => Some(format!("{ma}.{mi}")),
+        _ => None,
+    }
+}
+
 fn read_version_from_pc(path: &str) -> Option<String> {
     let data = std::fs::read_to_string(path).ok()?;
     for raw in data.lines() {
@@ -73,10 +98,30 @@ fn brew_prefix(formula: &str) -> Option<String> {
 }
 
 fn flint_version_string() -> Option<String> {
-    // Linux: read the system `flint.pc` first.  GitHub Actions often sets
-    // `PKG_CONFIG_PATH` to Python’s pkgconfig only; `pkg-config --modversion`
-    // can then fail or miss the distro FLINT, and we would fall back to the
-    // FLINT 2 `fmpz_mat` layout while linking FLINT 3 — SIGSEGV in matrix code.
+    // Probe FLINT header first — `libflint-dev` on Debian/Ubuntu does not always
+    // ship `flint.pc`, so the header is the most reliable source on Linux.
+    if cfg!(target_os = "linux") {
+        for dir in ["/usr/include", "/usr/local/include"] {
+            if let Some(v) = read_version_from_flint_header(&format!("{dir}/flint/flint.h")) {
+                return Some(v);
+            }
+        }
+    }
+
+    if cfg!(target_os = "macos") {
+        if let Some(prefix) = brew_prefix("flint") {
+            if let Some(v) =
+                read_version_from_flint_header(&format!("{prefix}/include/flint/flint.h"))
+            {
+                return Some(v);
+            }
+        }
+    }
+
+    // Fallback: try pkg-config (.pc files may or may not be present).
+    // Linux: read known .pc paths before calling pkg-config, so that
+    // Actions’ PKG_CONFIG_PATH (pointing to Python’s pkgconfig) cannot
+    // shadow the distro FLINT.
     if cfg!(target_os = "linux") {
         for pc in [
             "/usr/lib/x86_64-linux-gnu/pkgconfig/flint.pc",

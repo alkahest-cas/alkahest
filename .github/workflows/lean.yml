@@ -14,6 +14,7 @@ on:
     paths:
       - 'alkahest-core/src/lean/**'
       - 'tests/lean_corpus.py'
+      - 'lean/**'
 
 jobs:
   lean-verify:
@@ -30,15 +31,15 @@ jobs:
             | sh -s -- --default-toolchain leanprover/lean4:v4.9.0 -y
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
-      - name: Cache Mathlib
+      - name: Cache Lean toolchain and Mathlib oleans
         uses: actions/cache@v4
         with:
           path: |
             ~/.elan
-            ~/.mathlib4
-          key: mathlib-${{ hashFiles('**/lean-toolchain') }}-v1
+            lean/.lake
+          key: lean-${{ runner.os }}-${{ hashFiles('lean/lean-toolchain', 'lean/lakefile.lean') }}-v1
           restore-keys: |
-            mathlib-
+            lean-${{ runner.os }}-
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -59,11 +60,18 @@ jobs:
         run: |
           python tests/lean_corpus.py --output /tmp/lean_proofs/
 
+      - name: Set up Mathlib (lake update + cache get)
+        run: |
+          cd lean
+          lake update
+          lake exe cache get
+
       - name: Verify proofs with Lean
         run: |
-          cd /tmp/lean_proofs
-          for f in *.lean; do
-            echo "Verifying $f..."
-            lean --make "$f" || { echo "FAILED: $f"; exit 1; }
+          cd lean
+          for f in /tmp/lean_proofs/*.lean; do
+            fname=$(basename "$f")
+            echo "Verifying $fname..."
+            lake env lean "$f" || { echo "FAILED: $fname"; exit 1; }
           done
           echo "All Lean proofs verified."
