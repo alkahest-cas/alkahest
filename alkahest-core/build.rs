@@ -115,10 +115,7 @@ fn flint_include_dirs() -> Vec<String> {
             std::env::var("MSYS2_PREFIX").unwrap_or_else(|_| "C:/msys64/mingw64".to_string());
         return vec![format!("{msys}/include")];
     }
-    vec![
-        "/usr/include".to_string(),
-        "/usr/local/include".to_string(),
-    ]
+    vec!["/usr/include".to_string(), "/usr/local/include".to_string()]
 }
 
 fn flint_version_string() -> Option<String> {
