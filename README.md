@@ -1,5 +1,11 @@
 # Alkahest
 
+[![CI](https://github.com/AregGevorgyan/alkahest/actions/workflows/ci.yml/badge.svg)](https://github.com/AregGevorgyan/alkahest/actions/workflows/ci.yml)
+[![cross-platform CI](https://github.com/AregGevorgyan/alkahest/actions/workflows/ci-cross.yml/badge.svg)](https://github.com/AregGevorgyan/alkahest/actions/workflows/ci-cross.yml)
+[![Docs](https://img.shields.io/badge/docs-online-blue)](https://areggevorgyan.github.io/alkahest/)
+[![version](https://img.shields.io/badge/version-2.0.0-green.svg)](CHANGELOG.md)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 A high-performance computer algebra system for Python built for both humans and agents. Symbolic operations run orders of magnitude faster than SymPy and can run on modern accelerated hardware. Every computation produces a derivation log; a meaningful subset can export Lean 4 proofs for independent verification.
 
 **Stack:** Rust kernel → FLINT/Arb (polynomials, ball arithmetic) → egglog (e-graph simplification) → MLIR/LLVM (native and GPU codegen) → PyO3 → Python
@@ -8,10 +14,24 @@ A high-performance computer algebra system for Python built for both humans and 
 
 ## Install
 
+### Prerequisites
+
+- **Rust** stable ≥ 1.76 and nightly (for sanitizer/bench builds):
+  ```bash
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  rustup toolchain install nightly
+  ```
+- **LLVM 15**: `apt install llvm-15 libllvm15 llvm-15-dev` / `brew install llvm@15`
+- **FLINT ≥ 2.9** (includes GMP and MPFR): `apt install libflint-dev` / `brew install flint`
+
+### Build
+
 ```bash
 pip install maturin
 maturin develop --release
 ```
+
+Optional Cargo features: `parallel` (sharded pool + parallel F4), `egraph` (egglog backend), `jit` (LLVM JIT), `groebner` (Gröbner solver + Diophantine + homotopy), `cuda` (NVPTX codegen).
 
 ---
 
