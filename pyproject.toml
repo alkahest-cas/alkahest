@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "alkahest"
-version = "1.0.0"
+version = "2.0.0"
 description = "A high-performance computer algebra system for Python"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -26,6 +26,7 @@ classifiers = [
 
 [project.urls]
 Homepage = "https://github.com/AregGevorgyan/alkahest"
+Documentation = "https://areggevorgyan.github.io/alkahest/"
 Repository = "https://github.com/AregGevorgyan/alkahest"
 Issues = "https://github.com/AregGevorgyan/alkahest/issues"
 

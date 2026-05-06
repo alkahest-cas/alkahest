@@ -1,6 +1,6 @@
 # Feature surface
 
-Current stable feature surface as of v1.0.
+Current stable feature surface.
 
 ## Core expression kernel
 
@@ -8,7 +8,8 @@ Current stable feature surface as of v1.0.
 - N-ary `Add` / `Mul` with AC normalization at construction
 - Arbitrary-precision integers and rationals (FLINT/GMP)
 - Symbol domains: `real`, `positive`, `nonnegative`, `integer`, `complex`
-- Persistent pool: serialize to disk and reload across sessions (V1-14)
+- Non-commutative symbols: `pool.symbol("A", commutative=False)`
+- Persistent pool: serialize to disk and reload across sessions
 - Sharded pool for concurrent insertion (`--features parallel`)
 
 ## Simplification
@@ -22,6 +23,7 @@ Current stable feature surface as of v1.0.
 - `collect_like_terms`, `poly_normal`
 - Branch-cut-aware log/exp rewrites with `SideCondition` tracking
 - Parallel simplification (`simplify_par`, `--features parallel`)
+- Pauli and Clifford algebra rewrite tables (`simplify_pauli`, `simplify_clifford_orthogonal`)
 
 ## Polynomial algebra (FLINT-backed)
 
@@ -30,6 +32,12 @@ Current stable feature surface as of v1.0.
 - `RationalFunction`: quotient with automatic GCD normalization
 - Horner-form rewriting (`horner`)
 - C code emission (`emit_c`)
+- Polynomial factorization over ℤ, ℤ[x₁,...,xₙ], and 𝔽ₚ (Zassenhaus, van Hoeij, Berlekamp, Cantor–Zassenhaus via FLINT)
+- Hermite and Smith normal forms for integer matrices and polynomial matrices over ℚ[x]
+- LLL lattice reduction over ℤ (`alkahest.lattice`)
+- Approximate integer-relation finding (`guess_relation`)
+- Modular/CRT arithmetic (`alkahest.modular`)
+- Resultants and subresultant PRS
 
 ## Calculus
 
@@ -37,7 +45,36 @@ Current stable feature surface as of v1.0.
 - Forward-mode automatic differentiation
 - Reverse-mode automatic differentiation (`symbolic_grad`)
 - Symbolic integration: power rule, log, exp tower, linear substitution, trig (Risch subset)
-- **Upcoming (v1.1):** Algebraic-function Risch (Trager's algorithm)
+- Algebraic-function Risch integration (Trager's algorithm)
+- Truncated Taylor and Laurent series (`series`, `Series`)
+- Limits (`limit`, `LimitDirection`): L'Hôpital, local expansions, limits at ±∞
+
+## Discrete mathematics
+
+- Symbolic summation: indefinite and definite via Gosper's algorithm (`sum_indefinite`, `sum_definite`)
+- Linear recurrence solving (`solve_linear_recurrence_homogeneous`)
+- Difference equations / `rsolve`: constant-coefficient recurrences with polynomial RHS
+- Symbolic products: definite and indefinite via Γ-ratio telescoping (`product_definite`, `product_indefinite`, `Product`)
+
+## Number theory
+
+- `alkahest.number_theory`: `isprime`, `factorint`, `nextprime`, `totient`, `jacobi_symbol`
+- `nthroot_mod` (prime modulus), `discrete_log` (moderate primes)
+- Quadratic Dirichlet characters (`DirichletChi`) on odd square-free conductors
+- Diophantine equations: linear families, sum of two squares, unit Pell equation (`diophantine`)
+
+## Polynomial system solving (requires `--features groebner`)
+
+- Gröbner basis: Buchberger F4 with product-criterion pruning
+- Parallel F4 S-polynomial reduction via Rayon (`--features parallel`)
+- CUDA Macaulay-matrix row reduction (`--features groebner-cuda`)
+- Monomial orders: Lex, GrLex, GRevLex
+- `solve` — symbolic solution of polynomial systems (exact symbolic output)
+- Regular chains / triangular decomposition (`triangularize`, `RegularChain`)
+- Primary decomposition and radical (`primary_decomposition`, `radical`)
+- Differential algebra / Rosenfeld–Gröbner for polynomial DAEs (`rosenfeld_groebner`)
+- Numerical algebraic geometry: total-degree homotopy continuation with Smale certification (`solve_numerical`, `CertifiedSolution`)
+- Eigenvalues, eigenvectors, diagonalization for symbolic matrices (`eigenvals`, `eigenvects`, `diagonalize`)
 
 ## Transformations
 
@@ -55,7 +92,6 @@ Current stable feature surface as of v1.0.
 - Custom `alkahest` MLIR dialect with three lowering targets: ArithMath, StableHLO, LLVM
 - `to_stablehlo` — emit textual StableHLO MLIR for XLA/JAX
 - Compilation result caching keyed by expression hash
-- **Upcoming (v1.1):** AMD ROCm / `amdgcn` target
 
 ## Ball arithmetic
 
@@ -64,7 +100,7 @@ Current stable feature surface as of v1.0.
 - `interval_eval`: rigorously evaluate a symbolic expression with ball inputs
 - Guaranteed enclosures for all arithmetic and transcendental operations
 
-## Numerical integration
+## Numerical interop
 
 - `compile_expr` + `eval_expr` for scalar evaluation
 - `numpy_eval` for vectorised batch evaluation (NumPy, PyTorch, JAX arrays)
@@ -73,8 +109,7 @@ Current stable feature surface as of v1.0.
 
 ## Mathematical operations
 
-- Symbolic matrices (`Matrix`), determinant, inverse, transpose
-- Jacobian computation (`jacobian`)
+- Symbolic matrices (`Matrix`), determinant, inverse, transpose, Jacobian
 - ODE representation and first-order lowering (`ODE`, `lower_to_first_order`)
 - DAE structural analysis: Pantelides index reduction (`DAE`, `pantelides`)
 - Acausal component modeling (`AcausalSystem`, `Port`, `resistor`)
@@ -82,14 +117,11 @@ Current stable feature surface as of v1.0.
 - Hybrid systems with events (`HybridODE`, `Event`)
 - Piecewise expressions and predicates
 
-## Polynomial system solving (requires `--features groebner`)
+## Output and parsing
 
-- Gröbner basis: Buchberger F4 with product-criterion pruning
-- Parallel F4 S-polynomial reduction via Rayon (`--features parallel`)
-- CUDA Macaulay-matrix row reduction (`--features groebner-cuda`)
-- Monomial orders: Lex, GrLex, GRevLex
-- `solve` — symbolic solution of polynomial systems (linear + quadratic, exact symbolic output)
-- Elimination ideals (`GroebnerBasis.eliminate`)
+- LaTeX pretty-printing (`latex(expr)`)
+- Unicode pretty-printing (`unicode_str(expr)`)
+- String expression parsing (`parse(string, pool, bindings)`)
 
 ## Lean certificates (proof export)
 
@@ -108,42 +140,21 @@ Current stable feature surface as of v1.0.
 
 - Structured exception hierarchy with stable codes (`E-POLY-*`, `E-DIFF-*`, etc.)
 - Every exception: `.code`, `.message`, `.remediation`, `.span`
-- 9 error subsystems: ConversionError, DomainError, DiffError, IntegrationError, MatrixError, OdeError, DaeError, JitError, CudaError, PoolError, SolverError
+- Subsystems: ConversionError, DomainError, DiffError, IntegrationError, MatrixError, OdeError, DaeError, JitError, CudaError, PoolError, SolverError, LimitError, SeriesError, ProductError, DiophantineError, NumberTheoryError, EigenError, HomotopyError, DiffAlgError
 
 ## Cross-CAS benchmarks
 
 - Benchmark driver against SymPy, SymEngine, WolframEngine, Maple, SageMath
 - HTML + JSONL reports via Criterion dashboard
 - Nightly CI runs with `--competitors` flag
+- Agent benchmark suite: 17 tasks across 6 categories comparing alkahest, SymPy, and Mathematica skill guides
 
-## Upcoming (v1.1)
+## Planned
 
-- Algebraic-function Risch integration (Trager)
-- AMD ROCm codegen
-- PyPI wheel publishing
-- E-graph default rule completeness (trig + log/exp out of the box)
-- Python bindings: `ExprPool.save_to/load_from`, `GroebnerBasis.compute`, symbolic `solve` output
-- LaTeX / Unicode pretty-printing
-- String expression parsing
-
-## Planned (v2.0+)
-
-- Modular / CRT framework
-- Resultants and subresultant PRS
-- Sparse interpolation
-- Real root isolation
-- Hermite and Smith normal forms
-- LLL lattice reduction and PSLQ
-- Polynomial factorization (CZ, Berlekamp, Zassenhaus, van Hoeij)
+- AMD ROCm / `amdgcn` GPU codegen (hardware-blocked)
+- Full Gruntz algorithm for limits (currently prototype rules)
+- Generalized Pell equations and quadratic Diophantines with cross-term
+- Sparse multivariate interpolation
 - F5 / signature-based Gröbner
-- Cylindrical algebraic decomposition (real QE)
-- Creative telescoping / Zeilberger summation
-- Primary decomposition
-- Homotopy continuation solver
-- Limits (Gruntz algorithm)
-- Series expansion
-- Eigenvalues and eigenvectors
-- Difference equations (rsolve)
-- Diophantine equations
-- Integer number theory (FLINT bindings)
-- Noncommutative algebra
+- Cylindrical algebraic decomposition (full real QE)
+- PyPI wheel publishing
