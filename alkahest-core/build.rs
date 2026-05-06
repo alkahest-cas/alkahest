@@ -171,8 +171,44 @@ fn flint_major_at_least_3(version: &str) -> bool {
 
 /// FLINT 3 renamed `nmod_poly_factor_get_nmod_poly` → `nmod_poly_factor_get_poly`.
 fn detect_flint3() -> bool {
-    let Some(ver) = flint_version_string() else {
-        return false;
-    };
-    flint_major_at_least_3(&ver)
+    if let Some(ver) = flint_version_string() {
+        println!("cargo:warning=FLINT version (header/pkg-config): {ver}");
+        return flint_major_at_least_3(&ver);
+    }
+    // Header and pkg-config both failed (e.g., libflint-dev ships no .pc on
+    // Debian/Ubuntu and the header path differs).  Fall back to symbol
+    // inspection: FLINT 3 exports `nmod_poly_factor_get_poly` while FLINT 2
+    // exported `nmod_poly_factor_get_nmod_poly`.
+    println!("cargo:warning=FLINT header/pkg-config detection failed; trying nm");
+    let r = detect_flint3_by_nm();
+    println!("cargo:warning=FLINT nm symbol detection → flint3={r}");
+    r
+}
+
+fn detect_flint3_by_nm() -> bool {
+    detect_flint3_by_nm_inner().unwrap_or(false)
+}
+
+fn detect_flint3_by_nm_inner() -> Option<bool> {
+    // ldconfig -p lists cached shared libraries with their full paths.
+    let ldconfig = std::process::Command::new("ldconfig")
+        .arg("-p")
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&ldconfig.stdout);
+    let lib_path = text
+        .lines()
+        .filter(|l| l.contains("libflint"))
+        .filter_map(|l| l.split("=>").nth(1).map(|s| s.trim().to_string()))
+        .find(|p| !p.is_empty())?;
+    println!("cargo:warning=FLINT library found by ldconfig: {lib_path}");
+    let nm = std::process::Command::new("nm")
+        .args(["-D", "--defined-only", &lib_path])
+        .output()
+        .ok()?;
+    let syms = String::from_utf8_lossy(&nm.stdout);
+    Some(
+        syms.lines()
+            .any(|l| l.split_whitespace().last() == Some("nmod_poly_factor_get_poly")),
+    )
 }
