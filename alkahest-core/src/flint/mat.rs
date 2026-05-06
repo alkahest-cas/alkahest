@@ -11,11 +11,19 @@ pub(crate) struct FlintMat {
 impl FlintMat {
     pub(crate) fn new(rows: usize, cols: usize) -> Self {
         assert!(rows <= i64::MAX as usize && cols <= i64::MAX as usize);
+        #[cfg(not(flint3_stride))]
         let mut inner = ffi::FmpzMatStruct {
             entries: std::ptr::null_mut(),
             r: 0,
             c: 0,
             rows: std::ptr::null_mut(),
+        };
+        #[cfg(flint3_stride)]
+        let mut inner = ffi::FmpzMatStruct {
+            entries: std::ptr::null_mut(),
+            r: 0,
+            c: 0,
+            stride: 0,
         };
         unsafe { ffi::fmpz_mat_init(&mut inner, rows as ffi::slong, cols as ffi::slong) };
         Self { inner }
@@ -31,14 +39,30 @@ impl FlintMat {
 
     unsafe fn entry_ptr(&mut self, i: usize, j: usize) -> *mut ffi::fmpz {
         debug_assert!(i < self.rows() && j < self.cols());
-        let row_start = *self.inner.rows.add(i);
-        row_start.add(j)
+        #[cfg(not(flint3_stride))]
+        {
+            let row_start = *self.inner.rows.add(i);
+            row_start.add(j)
+        }
+        #[cfg(flint3_stride)]
+        {
+            let stride = self.inner.stride as usize;
+            self.inner.entries.add(i * stride + j)
+        }
     }
 
     pub(crate) unsafe fn entry_const(&self, i: usize, j: usize) -> *const ffi::fmpz {
         debug_assert!(i < self.rows() && j < self.cols());
-        let row_start = *self.inner.rows.add(i);
-        row_start.add(j)
+        #[cfg(not(flint3_stride))]
+        {
+            let row_start = *self.inner.rows.add(i);
+            row_start.add(j)
+        }
+        #[cfg(flint3_stride)]
+        {
+            let stride = self.inner.stride as usize;
+            self.inner.entries.add(i * stride + j)
+        }
     }
 
     pub(crate) fn set_entry(&mut self, i: usize, j: usize, v: &FlintInteger) {

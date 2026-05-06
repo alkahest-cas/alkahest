@@ -1,6 +1,9 @@
 fn main() {
-    // Custom cfg from this build script (FLINT 2 vs 3 API); keeps `unexpected_cfgs` quiet.
+    // Custom cfgs from this build script; keeps `unexpected_cfgs` quiet.
     println!("cargo::rustc-check-cfg=cfg(flint3)");
+    // flint3_stride: fmpz_mat_struct uses `stride: slong` instead of `rows: **fmpz`.
+    // Introduced sometime between FLINT 3.0.1 and 3.5.0; detected from the header.
+    println!("cargo::rustc-check-cfg=cfg(flint3_stride)");
     println!("cargo:rerun-if-changed=build.rs");
 
     // On macOS with Homebrew (especially Apple Silicon / M1), libraries live
@@ -29,6 +32,10 @@ fn main() {
 
     if detect_flint3() {
         println!("cargo:rustc-cfg=flint3");
+    }
+
+    if detect_flint3_stride() {
+        println!("cargo:rustc-cfg=flint3_stride");
     }
 
     println!("cargo:rustc-link-lib=flint");
@@ -97,30 +104,35 @@ fn brew_prefix(formula: &str) -> Option<String> {
     Some(p)
 }
 
+fn flint_include_dirs() -> Vec<String> {
+    if cfg!(target_os = "macos") {
+        if let Some(prefix) = brew_prefix("flint") {
+            return vec![format!("{prefix}/include")];
+        }
+    }
+    if cfg!(target_os = "windows") {
+        let msys =
+            std::env::var("MSYS2_PREFIX").unwrap_or_else(|_| "C:/msys64/mingw64".to_string());
+        return vec![format!("{msys}/include")];
+    }
+    vec![
+        "/usr/include".to_string(),
+        "/usr/local/include".to_string(),
+    ]
+}
+
 fn flint_version_string() -> Option<String> {
     // Probe FLINT header first — `libflint-dev` on Debian/Ubuntu does not always
     // ship `flint.pc`, so the header is the most reliable source on Linux.
-    if cfg!(target_os = "linux") {
-        for dir in ["/usr/include", "/usr/local/include"] {
-            if let Some(v) = read_version_from_flint_header(&format!("{dir}/flint/flint.h")) {
-                return Some(v);
-            }
-        }
-    }
-
-    if cfg!(target_os = "macos") {
-        if let Some(prefix) = brew_prefix("flint") {
-            if let Some(v) =
-                read_version_from_flint_header(&format!("{prefix}/include/flint/flint.h"))
-            {
-                return Some(v);
-            }
+    for dir in flint_include_dirs() {
+        if let Some(v) = read_version_from_flint_header(&format!("{dir}/flint/flint.h")) {
+            return Some(v);
         }
     }
 
     // Fallback: try pkg-config (.pc files may or may not be present).
     // Linux: read known .pc paths before calling pkg-config, so that
-    // Actions’ PKG_CONFIG_PATH (pointing to Python’s pkgconfig) cannot
+    // Actions' PKG_CONFIG_PATH (pointing to Python's pkgconfig) cannot
     // shadow the distro FLINT.
     if cfg!(target_os = "linux") {
         for pc in [
@@ -183,6 +195,42 @@ fn detect_flint3() -> bool {
     let r = detect_flint3_by_nm();
     println!("cargo:warning=FLINT nm symbol detection → flint3={r}");
     r
+}
+
+/// FLINT 3.0.x still used `rows: **fmpz` in fmpz_mat_struct (same as FLINT 2).
+/// The stride-based layout was introduced later (visible in FLINT 3.5.0).
+/// Detect by looking for a `stride` field declaration in fmpz_mat.h.
+fn detect_flint3_stride() -> bool {
+    for dir in flint_include_dirs() {
+        let path = format!("{dir}/flint/fmpz_mat.h");
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            // Match a line like "    slong stride;" inside the struct.
+            let found = content.lines().any(|raw| {
+                let l = raw.trim();
+                l.ends_with("stride;")
+                    && !l.starts_with("//")
+                    && !l.starts_with('*')
+                    && !l.starts_with('#')
+            });
+            if found {
+                println!("cargo:warning=FLINT fmpz_mat_struct uses stride layout (from {path})");
+                return true;
+            } else {
+                println!("cargo:warning=FLINT fmpz_mat_struct uses rows layout (from {path})");
+                return false;
+            }
+        }
+    }
+    // Could not find the header — fall back to version-based heuristic.
+    // FLINT 3.0.x uses rows; anything 3.1+ may use stride.
+    if let Some(ver) = flint_version_string() {
+        let parts: Vec<u32> = ver.split('.').filter_map(|s| s.parse().ok()).collect();
+        if parts.len() >= 2 && parts[0] >= 3 && parts[1] >= 1 {
+            println!("cargo:warning=FLINT stride layout assumed from version {ver}");
+            return true;
+        }
+    }
+    false
 }
 
 fn detect_flint3_by_nm() -> bool {

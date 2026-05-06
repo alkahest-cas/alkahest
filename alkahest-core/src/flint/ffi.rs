@@ -108,14 +108,24 @@ pub struct FmpzMPolyFactorStruct {
 unsafe impl Send for FmpzPolyStruct {}
 unsafe impl Sync for FmpzPolyStruct {}
 
-/// `fmpz_mat_struct` — row-pointer layout used by FLINT 2.x and 3.0.x.
-/// (The stride-based layout was not introduced until a later FLINT 3 release.)
+/// `fmpz_mat_struct` — row-pointer layout (FLINT 2.x and FLINT 3.0.x).
 #[repr(C)]
+#[cfg(not(flint3_stride))]
 pub struct FmpzMatStruct {
     pub entries: *mut fmpz,
     pub r: slong,
     pub c: slong,
     pub rows: *mut *mut fmpz,
+}
+
+/// `fmpz_mat_struct` — stride layout (FLINT 3.1+, detected via fmpz_mat.h).
+#[repr(C)]
+#[cfg(flint3_stride)]
+pub struct FmpzMatStruct {
+    pub entries: *mut fmpz,
+    pub r: slong,
+    pub c: slong,
+    pub stride: slong,
 }
 
 /// `fmpz_factor_struct` / `fmpz_factor_t` — integer factorisation container.
