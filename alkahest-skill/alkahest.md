@@ -5,8 +5,13 @@ Use this skill whenever you are writing Python code that uses the `alkahest` lib
 ## Install
 
 ```bash
-pip install maturin
-maturin develop --release   # builds the Rust kernel in-place
+pip install alkahest
+```
+
+Source build (for optional features like JIT, Gröbner, CUDA — see README):
+
+```bash
+pip install maturin && maturin develop --release --features "parallel egraph jit groebner"
 ```
 
 ---
@@ -16,10 +21,10 @@ maturin develop --release   # builds the Rust kernel in-place
 Every expression lives in an **`ExprPool`** (a hash-consed DAG). You must create a pool before making any symbolic expression. Integer and rational constants must be interned through the pool — raw Python ints cannot appear directly in expressions.
 
 ```python
-import alkahest
-from alkahest import ExprPool, sin, cos, exp, log, sqrt, diff, integrate, simplify
+import alkahest as ak
+from alkahest import sin, cos, exp, log, sqrt, diff, integrate, simplify
 
-pool = ExprPool()
+pool = ak.ExprPool()
 x = pool.symbol("x")
 y = pool.symbol("y")
 
@@ -211,13 +216,13 @@ ys = numpy_eval(f, xs)   # → ndarray; uses DLPack, ≥100× faster than a loop
 ## trace / grad / jit (JAX-style transforms)
 
 ```python
-import alkahest
+import alkahest as ak
 
-pool = alkahest.ExprPool()
+pool = ak.ExprPool()
 
-@alkahest.trace(pool)
+@ak.trace(pool)
 def energy(x, y):
-    return x**2 + alkahest.sin(y) * alkahest.exp(x)
+    return x**2 + ak.sin(y) * ak.exp(x)
 
 # energy is a TracedFn
 print(energy.expr)          # symbolic expression
@@ -225,16 +230,16 @@ print(energy(1.0, 0.0))     # numeric float
 print(energy.symbols)       # [x, y]
 
 # Gradient
-grad_energy = alkahest.grad(energy)   # GradTracedFn
-gs = grad_energy(1.0, 0.0)           # [∂/∂x, ∂/∂y] as floats
+grad_energy = ak.grad(energy)   # GradTracedFn
+gs = grad_energy(1.0, 0.0)     # [∂/∂x, ∂/∂y] as floats
 
 # JIT compilation
-fast = alkahest.jit(energy)    # CompiledTracedFn
+fast = ak.jit(energy)          # CompiledTracedFn
 fast(1.0, 0.0)                 # same result, LLVM-backed
 fast(np.linspace(0,1,100), np.zeros(100))  # auto-vectorised
 ```
 
-Non-decorator variant: `alkahest.trace_fn(fn, pool)`.
+Non-decorator variant: `ak.trace_fn(fn, pool)`.
 
 ---
 
@@ -283,9 +288,10 @@ R.to_list()       # list[list[Expr]]
 ## ODE / DAE modeling
 
 ```python
+import alkahest as ak
 from alkahest import ODE, DAE, lower_to_first_order, pantelides
 
-pool = alkahest.ExprPool()
+pool = ak.ExprPool()
 t = pool.symbol("t")
 y = pool.symbol("y")
 k = pool.symbol("k")
@@ -326,18 +332,18 @@ adj = adjoint_system(ode, obj_grad_exprs)  # ODE run backward
 ## Context manager (thread-local defaults)
 
 ```python
-import alkahest
+import alkahest as ak
 
-pool = alkahest.ExprPool()
-with alkahest.context(pool=pool, domain="real", simplify=True):
-    x = alkahest.symbol("x")   # pool and domain inferred
-    y = alkahest.symbol("y")
+pool = ak.ExprPool()
+with ak.context(pool=pool, domain="real", simplify=True):
+    x = ak.symbol("x")   # pool and domain inferred
+    y = ak.symbol("y")
 
 # Inspect active context
-alkahest.active_pool()
-alkahest.active_domain()
-alkahest.simplify_enabled()
-alkahest.get_context_value("any_key")
+ak.active_pool()
+ak.active_domain()
+ak.simplify_enabled()
+ak.get_context_value("any_key")
 ```
 
 ---

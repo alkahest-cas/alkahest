@@ -9,7 +9,7 @@ differs for large expressions.
 """
 
 import time
-import alkahest
+import alkahest as ak
 from alkahest import ExprPool, simplify, simplify_par
 
 pool = ExprPool()

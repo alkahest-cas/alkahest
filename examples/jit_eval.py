@@ -1,7 +1,7 @@
 """Phase 21 — JIT / Interpreter-based compiled evaluation.
 
 This example demonstrates how to compile symbolic expressions to fast
-callable objects using `alkahest.compile_expr` and `alkahest.eval_expr`.
+callable objects using `ak.compile_expr` and `ak.eval_expr`.
 
 When built with `--features jit`, `compile_expr` emits LLVM IR and
 JIT-compiles it to native machine code.  Without the feature, a fast
@@ -9,7 +9,7 @@ tree-walking interpreter is used (same API, same results).
 """
 
 import math
-import alkahest
+import alkahest as ak
 from alkahest import ExprPool, compile_expr, eval_expr, sin, cos, exp, sqrt
 
 pool = ExprPool()

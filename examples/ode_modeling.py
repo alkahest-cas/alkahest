@@ -8,7 +8,7 @@ Run with:
     python examples/ode_modeling.py
 """
 
-import alkahest
+import alkahest as ak
 from alkahest import (
     ExprPool,
     ODE,

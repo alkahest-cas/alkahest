@@ -12,7 +12,7 @@ for any input in the given input balls.
 """
 
 import math
-import alkahest
+import alkahest as ak
 from alkahest import ExprPool, ArbBall, interval_eval, sin, cos, exp, sqrt
 
 pool = ExprPool()

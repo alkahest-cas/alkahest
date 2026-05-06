@@ -9,7 +9,7 @@ Run with:
 """
 
 import math
-import alkahest
+import alkahest as ak
 from alkahest import (
     ExprPool,
     trace, grad, jit,
@@ -196,9 +196,9 @@ print("\n" + "=" * 62)
 print("7. trace / grad / jit")
 print("=" * 62)
 
-@alkahest.trace(pool)
+@ak.trace(pool)
 def energy(x, y):
-    return x**2 + alkahest.sin(y) * alkahest.exp(x)
+    return x**2 + ak.sin(y) * ak.exp(x)
 
 print(f"energy expr   : {energy.expr}")
 print(f"energy(1, 0)  : {energy(1.0, 0.0):.6f}")

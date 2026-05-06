@@ -34,9 +34,9 @@ The pool hash-conses nodes so structurally identical sub-expressions share
 the same `ExprId`.
 
 ```python
-import alkahest
+import alkahest as ak
 
-pool = alkahest.ExprPool()
+pool = ak.ExprPool()
 x = pool.symbol("x")
 two = pool.integer(2)
 
@@ -56,11 +56,11 @@ ascending degree order (constant term first).
 ### Construction
 
 ```python
-pool = alkahest.ExprPool()
+pool = ak.ExprPool()
 x    = pool.symbol("x")
 
 # x^2 + 2x + 1
-p = alkahest.UniPoly.from_symbolic(
+p = ak.UniPoly.from_symbolic(
     pool.add([pool.pow(x, pool.integer(2)),
               pool.mul([pool.integer(2), x]),
               pool.integer(1)]),
@@ -78,8 +78,8 @@ print(p.coefficients()) # [1, 2, 1]
 All four operations are implemented via FLINT:
 
 ```python
-xp1 = alkahest.UniPoly.from_symbolic(pool.add([x, pool.integer(1)]), x, pool)
-xm1 = alkahest.UniPoly.from_symbolic(pool.add([x, pool.integer(-1)]), x, pool)
+xp1 = ak.UniPoly.from_symbolic(pool.add([x, pool.integer(1)]), x, pool)
+xm1 = ak.UniPoly.from_symbolic(pool.add([x, pool.integer(-1)]), x, pool)
 
 print(xp1 + xm1)   # 2*x
 print(xp1 - xm1)   # 2
@@ -90,7 +90,7 @@ print(xp1.pow(3))  # x^3+3*x^2+3*x+1
 ### GCD
 
 ```python
-x2m1 = alkahest.UniPoly.from_symbolic(
+x2m1 = ak.UniPoly.from_symbolic(
     pool.add([pool.pow(x, pool.integer(2)), pool.integer(-1)]), x, pool
 )
 g = x2m1.gcd(xm1)
@@ -115,12 +115,12 @@ time by the `vars` list.
 ### Construction
 
 ```python
-pool = alkahest.ExprPool()
+pool = ak.ExprPool()
 x    = pool.symbol("x")
 y    = pool.symbol("y")
 
 # x^2 + xy + y^2
-a = alkahest.MultiPoly.from_symbolic(
+a = ak.MultiPoly.from_symbolic(
     pool.add([pool.pow(x, pool.integer(2)),
               pool.mul([x, y]),
               pool.pow(y, pool.integer(2))]),
@@ -138,7 +138,7 @@ the *primitive part*.
 
 ```python
 # 6x + 4  →  content = 2,  primitive part = 3x + 2
-b = alkahest.MultiPoly.from_symbolic(
+b = ak.MultiPoly.from_symbolic(
     pool.add([pool.mul([pool.integer(6), x]), pool.integer(4)]),
     [x, y], pool,
 )
@@ -148,8 +148,8 @@ print(b.integer_content())  # 2
 ### Arithmetic
 
 ```python
-c = alkahest.MultiPoly.from_symbolic(pool.add([x, y]), [x, y], pool)
-d = alkahest.MultiPoly.from_symbolic(pool.add([x, pool.integer(-1)]), [x, y], pool)
+c = ak.MultiPoly.from_symbolic(pool.add([x, y]), [x, y], pool)
+d = ak.MultiPoly.from_symbolic(pool.add([x, pool.integer(-1)]), [x, y], pool)
 
 print(c + d)  # 2x + y - 1
 print(c * d)  # x^2 + xy - x - y
@@ -169,12 +169,12 @@ enforces two normalisation invariants at construction:
    needed).
 
 ```python
-pool = alkahest.ExprPool()
+pool = ak.ExprPool()
 x    = pool.symbol("x")
 y    = pool.symbol("y")
 
 # (6x) / 4  →  normalises to (3x) / 2
-rf = alkahest.RationalFunction.from_symbolic(
+rf = ak.RationalFunction.from_symbolic(
     pool.mul([pool.integer(6), x]),   # numerator
     pool.integer(4),                   # denominator
     [x, y],
@@ -185,11 +185,11 @@ print(rf.numer())  # 3x0
 print(rf.denom())  # 2
 
 # Denominator 1 is elided
-rf2 = alkahest.RationalFunction.from_symbolic(x, pool.integer(1), [x, y], pool)
+rf2 = ak.RationalFunction.from_symbolic(x, pool.integer(1), [x, y], pool)
 print(rf2)   # x0
 
 # Sign normalisation: denom leading coefficient is always positive
-rf3 = alkahest.RationalFunction.from_symbolic(x, pool.integer(-2), [x, y], pool)
+rf3 = ak.RationalFunction.from_symbolic(x, pool.integer(-2), [x, y], pool)
 print(rf3)   # (-x0) / (2)
 ```
 
@@ -208,12 +208,12 @@ Conversion raises `ValueError` for non-polynomial expressions:
 | Zero denominator | `denominator is zero` |
 
 ```python
-pool = alkahest.ExprPool()
+pool = ak.ExprPool()
 x    = pool.symbol("x")
 y    = pool.symbol("y")
 
 try:
-    alkahest.UniPoly.from_symbolic(pool.add([x, y]), x, pool)
+    ak.UniPoly.from_symbolic(pool.add([x, y]), x, pool)
 except ValueError as e:
     print(e)   # unexpected free symbol 'y' ...
 ```
