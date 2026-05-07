@@ -3,7 +3,7 @@
 [![CI](https://github.com/AregGevorgyan/alkahest/actions/workflows/ci.yml/badge.svg)](https://github.com/AregGevorgyan/alkahest/actions/workflows/ci.yml)
 [![cross-platform CI](https://github.com/AregGevorgyan/alkahest/actions/workflows/ci-cross.yml/badge.svg)](https://github.com/AregGevorgyan/alkahest/actions/workflows/ci-cross.yml)
 [![PyPI](https://img.shields.io/pypi/v/alkahest.svg)](https://pypi.org/project/alkahest/)
-[![Docs](https://img.shields.io/badge/docs-online-blue)](https://areggevorgyan.github.io/alkahest/)
+[![Docs](https://img.shields.io/badge/docs-online-blue)](https://alkahest-cas.github.io/alkahest/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 A high-performance computer algebra system for Python built for both humans and agents. Symbolic operations run orders of magnitude faster than SymPy and can run on modern accelerated hardware. Every computation produces a derivation log; a meaningful subset can export Lean 4 proofs for independent verification.
@@ -403,7 +403,7 @@ Every top-level operation returns a `DerivedResult` with:
 
 ## Documentation and further reading
 
-- [**Documentation site**](https://areggevorgyan.github.io/alkahest/) — full API reference and user guide
+- [**Documentation site**](https://alkahest-cas.github.io/alkahest/) — full API reference and user guide
 - [`ROADMAP.md`](ROADMAP.md) — planned milestones
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — Rust vs Python layer guide
 - [`TESTING.md`](TESTING.md) — property-based testing, fuzzing, sanitizers, CI tiers
