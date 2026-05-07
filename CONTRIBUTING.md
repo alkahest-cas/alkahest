@@ -11,7 +11,7 @@ AI agents must follow [`AGENTS.md`](AGENTS.md) instructions.
 ```bash
 # Prerequisites: Rust (stable + nightly), Python ≥ 3.9, maturin, LLVM 15
 pip install maturin pytest hypothesis ruff
-maturin develop --release --features "jit egraph parallel groebner"
+maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "jit egraph parallel groebner"
 ```
 
 ## Running tests

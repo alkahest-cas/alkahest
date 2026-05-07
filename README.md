@@ -18,6 +18,28 @@ A high-performance computer algebra system for Python built for both humans and 
 pip install alkahest
 ```
 
+Wheels on PyPI are built **without** the LLVM JIT feature so installs stay small and avoid a runtime dependency on LLVM. Numeric APIs still work via the interpreter fallback; for native LLVM CPU JIT, use a **PyTorch-style** opt-in build (separate artifact / index), not the default resolver path.
+
+### LLVM JIT wheels (PyTorch-style, opt-in)
+
+**Why a separate index or direct wheel URL:** JIT-enabled wheels use a PEP 440 local version (for example `2.0.0+jit`). Those builds **must not** be mixed into the main PyPI upload for the same reason PyTorch publishes CUDA wheels on `download.pytorch.org`: otherwise `pip install alkahest` can resolve the `+jit` build as “newer” than `2.0.0` and pull LLVM when you wanted the default wheel.
+
+**Until a dedicated PEP 503 simple index is published**, tagged releases attach Linux **manylinux** `+jit` wheels on [GitHub Releases](https://github.com/AregGevorgyan/alkahest/releases). Pick the `.whl` whose tags match your Python (`cp311`, etc.) and platform (`manylinux_2_28_x86_64`, …). Example (adjust tag and filename after checking the release assets):
+
+```bash
+pip install "https://github.com/AregGevorgyan/alkahest/releases/download/v2.0.0/alkahest-2.0.0+jit-cp311-cp311-manylinux_2_28_x86_64.whl"
+```
+
+If your client chokes on `+` in the URL, use percent-encoding (`2.0.0%2Bjit` in the filename segment).
+
+After installation, `alkahest.jit_is_available()` should be `True`. *macOS and Windows JIT wheels are not produced in CI yet (LLVM/MSYS2 constraints); use [building from source](#from-source) there.*
+
+**Target layout (roadmap):** a small **extra index** URL (PEP 503) hosting only `+jit` wheels, mirroring PyTorch’s `--extra-index-url` workflow:
+
+```bash
+pip install 'alkahest==2.0.0+jit' --extra-index-url https://EXAMPLE/jit/simple
+```
+
 ### From source
 
 Required to enable optional features (`jit`, `groebner`, `cuda`) or for development. Prerequisites:
@@ -32,7 +54,7 @@ Required to enable optional features (`jit`, `groebner`, `cuda`) or for developm
 
 ```bash
 pip install maturin
-maturin develop --release --features "parallel egraph jit groebner"
+maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel egraph jit groebner"
 ```
 
 Optional Cargo features: `parallel` (sharded pool + parallel F4), `egraph` (egglog backend), `jit` (LLVM JIT), `groebner` (Gröbner solver + Diophantine + homotopy), `cuda` (NVPTX codegen).

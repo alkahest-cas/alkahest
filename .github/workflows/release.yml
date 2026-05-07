@@ -64,6 +64,87 @@ jobs:
           name: wheels-ubuntu-22.04
           path: dist/*.whl
 
+  # LLVM JIT: separate wheels with PEP 440 local version X.Y.Z+jit (PyTorch-style).
+  # Not uploaded to main PyPI — avoids pip preferring +jit over the default release.
+  build-linux-jit:
+    name: wheels (JIT) / ubuntu-22.04
+    runs-on: ubuntu-22.04
+    env:
+      PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
+      LLVM_SYS_150_PREFIX: /usr
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Use JIT local version in pyproject.toml
+        run: |
+          python - <<'PY'
+          import pathlib, re
+          p = pathlib.Path("pyproject.toml")
+          text = p.read_text()
+          m = re.search(r'^version = "([^"]+)"', text, re.M)
+          if not m:
+              raise SystemExit("no project.version in pyproject.toml")
+          base = m.group(1)
+          text = re.sub(
+              r'^version = "[^"]+"',
+              f'version = "{base}+jit"',
+              text,
+              count=1,
+              flags=re.M,
+          )
+          p.write_text(text)
+          print(f"wheel metadata version -> {base}+jit")
+          PY
+
+      - name: Build JIT wheels (manylinux, all Python versions)
+        uses: PyO3/maturin-action@v1
+        env:
+          RUSTFLAGS: "-L/usr/local/lib -L/usr/lib -L/usr/lib64"
+          PKG_CONFIG_PATH: "/usr/local/lib/pkgconfig:/usr/lib64/pkgconfig"
+          LLVM_SYS_150_PREFIX: /usr
+        with:
+          command: build
+          args: >-
+            --release
+            --strip
+            --features jit
+            --out dist
+            --interpreter python3.9 python3.10 python3.11 python3.12 python3.13
+          manylinux: "2_28"
+          before-script-linux: |
+            dnf install -y epel-release || true
+            dnf config-manager --set-enabled crb 2>/dev/null || dnf config-manager --set-enabled powertools 2>/dev/null || true
+            if ! dnf install -y llvm15-devel 2>/dev/null; then
+              echo "llvm15-devel not available in this image; JIT manylinux wheel build skipped"
+              exit 1
+            fi
+            if ! dnf install -y flint-devel 2>/dev/null; then
+              dnf install -y gmp-devel mpfr-devel make gcc
+              curl -fsSL \
+                https://github.com/flintlib/flint/archive/refs/tags/v2.9.0.tar.gz \
+                | tar xz -C /tmp
+              ( cd /tmp/flint-2.9.0 && ./configure --prefix=/usr/local && make -j"$(nproc)" && make install )
+              ldconfig /usr/local/lib
+            fi
+
+      - name: Smoke test (JIT available)
+        run: |
+          py_tag="$(python -c 'import sys; print(f"cp{sys.version_info.major}{sys.version_info.minor}")')"
+          whl="$(ls dist/alkahest-*+jit-*-"${py_tag}"-"${py_tag}"*.whl | head -1)"
+          pip install "$whl"
+          python -c "import alkahest as ak; assert ak.jit_is_available(), 'expected LLVM JIT in +jit wheel'"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-ubuntu-22.04-jit
+          path: dist/*.whl
+
   build-wheels:
     name: wheel ${{ matrix.os }} / py${{ matrix.python }}
     runs-on: ${{ matrix.os }}
@@ -172,6 +253,19 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Exclude +jit wheels from TestPyPI upload
+        run: |
+          mkdir -p dist-pypi
+          shopt -s nullglob
+          for whl in dist/*.whl; do
+            b=$(basename "$whl")
+            case "$b" in
+              *+jit*) ;;
+              *) cp "$whl" dist-pypi/ ;;
+            esac
+          done
+          rm -rf dist
+          mv dist-pypi dist
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
@@ -191,6 +285,35 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Exclude +jit wheels from PyPI upload
+        run: |
+          mkdir -p dist-pypi
+          shopt -s nullglob
+          for whl in dist/*.whl; do
+            b=$(basename "$whl")
+            case "$b" in
+              *+jit*) ;;
+              *) cp "$whl" dist-pypi/ ;;
+            esac
+          done
+          rm -rf dist
+          mv dist-pypi dist
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
+
+  attach-jit-wheels:
+    name: attach +jit wheels to GitHub Release
+    needs: [build-linux-jit]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-ubuntu-22.04-jit
+          path: dist-jit
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist-jit/*.whl

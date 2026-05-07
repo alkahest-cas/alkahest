@@ -11,6 +11,7 @@ crate-type = ["cdylib"]
 
 [features]
 egraph = ["alkahest-core/egraph"]
+jit = ["alkahest-core/jit"]
 numpy = ["dep:numpy"]
 parallel = ["alkahest-core/parallel"]
 groebner = ["alkahest-core/groebner"]
