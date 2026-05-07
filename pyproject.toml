@@ -25,10 +25,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/AregGevorgyan/alkahest"
-Documentation = "https://areggevorgyan.github.io/alkahest/"
-Repository = "https://github.com/AregGevorgyan/alkahest"
-Issues = "https://github.com/AregGevorgyan/alkahest/issues"
+Homepage = "https://github.com/alkahest-cas/alkahest"
+Documentation = "https://alkahest-cas.github.io/alkahest/"
+Repository = "https://github.com/alkahest-cas/alkahest"
+Issues = "https://github.com/alkahest-cas/alkahest/issues"
 
 [tool.maturin]
 python-source = "python"
