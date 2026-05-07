@@ -67,3 +67,25 @@ class SymEngineAdapter(CASAdapter):
 
     def bench_solve_circle_line(self, size: int) -> Any:
         raise NotImplementedError("symengine has no general solve")
+
+    # ── New comprehensive task methods ────────────────────────────────────────
+
+    def bench_integrate_poly(self, size: int) -> Any:
+        import symengine as se
+        x = se.Symbol("x")
+        poly = sum(x ** k for k in range(size + 1))
+        return se.integrate(poly, x)
+
+    def bench_gradient_nvar(self, size: int) -> Any:
+        import symengine as se
+        xs = [se.Symbol(f"x{i}") for i in range(size)]
+        f = sum(xi ** 2 for xi in xs)
+        return [se.diff(f, xi) for xi in xs]
+
+    def bench_series_expansion(self, size: int) -> Any:
+        import symengine as se
+        x = se.Symbol("x")
+        try:
+            return se.series(se.sin(x), x, 0, size)
+        except AttributeError:
+            raise NotImplementedError("symengine.series not available in this version")

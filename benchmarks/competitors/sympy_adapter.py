@@ -65,6 +65,71 @@ class SymPyAdapter(CASAdapter):
             [x ** 2 + y ** 2 - size ** 2, y - x], [x, y], dict=True
         )]
 
+    # ── New comprehensive task methods ───────────────────────────────────────
+
+    def bench_integrate_poly(self, size: int) -> Any:
+        import sympy as sp
+        x = sp.Symbol("x")
+        poly = sum(x ** k for k in range(size + 1))
+        return str(sp.integrate(poly, x))
+
+    def bench_series_expansion(self, size: int) -> Any:
+        import sympy as sp
+        x = sp.Symbol("x")
+        return str(sp.series(sp.sin(x), x, 0, size))
+
+    def bench_limit_computation(self, size: int) -> Any:
+        import sympy as sp
+        x = sp.Symbol("x")
+        return str(sp.limit((x ** size - 1) / (x - 1), x, 1))
+
+    def bench_gradient_nvar(self, size: int) -> Any:
+        import sympy as sp
+        xs = [sp.Symbol(f"x{i}") for i in range(size)]
+        f = sum(xi ** 2 for xi in xs)
+        return [str(sp.diff(f, xi)) for xi in xs]
+
+    def bench_matrix_det_nxn(self, size: int) -> Any:
+        import sympy as sp
+        rows = [[sp.Symbol(f"a{i}{j}") for j in range(size)] for i in range(size)]
+        return str(sp.Matrix(rows).det())
+
+    def bench_real_roots_poly(self, size: int) -> Any:
+        import sympy as sp
+        x = sp.Symbol("x")
+        return len(sp.Poly(x ** size - x - 1, x).real_roots())
+
+    def bench_horner_form_poly(self, size: int) -> Any:
+        import sympy as sp
+        from sympy.polys.polyfuncs import horner
+        x = sp.Symbol("x")
+        poly = sum(x ** k for k in range(size + 1))
+        return str(horner(poly))
+
+    def bench_log_exp_simplify(self, size: int) -> Any:
+        import sympy as sp
+        x = sp.Symbol("x", real=True, positive=True)
+        expr = x
+        for _ in range(size):
+            expr = sp.log(sp.exp(expr))
+        return str(sp.simplify(expr))
+
+    def bench_resultant_poly(self, size: int) -> Any:
+        import sympy as sp
+        x = sp.Symbol("x")
+        return str(sp.resultant(x ** size + x + 1, x ** size - x - 1, x))
+
+    def bench_recurrence_solve(self, size: int) -> Any:
+        import sympy as sp
+        n_sym = sp.Symbol("n", integer=True)
+        a = sp.Function("a")
+        if size == 1:
+            eq = a(n_sym + 1) - 2 * a(n_sym)
+            return str(sp.rsolve(eq, a(n_sym), {a(0): 1}))
+        else:
+            eq = a(n_sym + 2) - a(n_sym + 1) - a(n_sym)
+            return str(sp.rsolve(eq, a(n_sym), {a(0): 1, a(1): 1}))
+
     # ── Legacy names ─────────────────────────────────────────────────────────
 
     def bench_integrate(self, size: int) -> Any:

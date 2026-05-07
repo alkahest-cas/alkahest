@@ -19,6 +19,7 @@ from dataclasses import dataclass
 # Ensure the package is importable from the repo root.
 sys.path.insert(0, "python")
 
+import alkahest as _alkahest  # noqa: E402
 from alkahest.alkahest import (  # noqa: E402
     ExprPool,
     MultiPoly,
@@ -110,6 +111,21 @@ def print_table(results: list[Result]) -> None:
     print("-" * len(header))
     for r in results:
         print(f"{r.name:<{w_name}}  {r.mean_us:>12.2f}  {r.peak_kb:>12.2f}  {r.extra}")
+
+
+def write_markdown(results: list[Result], path) -> None:
+    import datetime
+    lines = [
+        "# Alkahest Python microbenchmark results\n",
+        f"*Generated: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}*\n",
+        "| Benchmark | Mean (µs) | Peak (KiB) | Notes |",
+        "|-----------|-----------|------------|-------|",
+    ]
+    for r in results:
+        lines.append(f"| {r.name} | {r.mean_us:.2f} | {r.peak_kb:.2f} | {r.extra} |")
+    from pathlib import Path as _Path
+    _Path(path).write_text("\n".join(lines) + "\n")
+    print(f"Markdown results written to {path}")
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +261,137 @@ def run(n: int) -> list[Result]:
 
     results.append(bench_fn("intern/hash_consing_verify", sharing_test, n=n))
 
+    # -- Integration ---------------------------------------------------------
+
+    def integrate_poly_deg4():
+        p = ExprPool()
+        x = p.symbol("x")
+        expr = build_poly(p, x, [1, 2, 3, 4, 5])
+        return _alkahest.integrate(expr, x)
+
+    results.append(bench_fn("integrate/poly_deg4", integrate_poly_deg4, n=n))
+
+    # -- Series --------------------------------------------------------------
+
+    def series_sin_order8():
+        p = ExprPool()
+        x = p.symbol("x")
+        return _alkahest.series(_alkahest.sin(x), x, p.integer(0), 8)
+
+    results.append(bench_fn("series/sin_order8", series_sin_order8, n=n))
+
+    # -- Limit ---------------------------------------------------------------
+
+    def limit_sin_over_x():
+        p = ExprPool()
+        x = p.symbol("x")
+        expr = _alkahest.sin(x) / x
+        return _alkahest.limit(expr, x, p.integer(0))
+
+    results.append(bench_fn("limit/sin_over_x", limit_sin_over_x, n=n))
+
+    # -- Gradient ------------------------------------------------------------
+
+    def grad_nvar_5():
+        p = ExprPool()
+        xs = [p.symbol(f"x{i}") for i in range(5)]
+        f = xs[0] ** 2 + xs[1] ** 2 + xs[2] ** 2 + xs[3] ** 2 + xs[4] ** 2
+        return _alkahest.symbolic_grad(f, xs)
+
+    results.append(bench_fn("grad/nvar_5", grad_nvar_5, n=n))
+
+    # -- Matrix determinant --------------------------------------------------
+
+    def matrix_det_4x4():
+        p = ExprPool()
+        rows = [[p.symbol(f"a{i}{j}") for j in range(4)] for i in range(4)]
+        return _alkahest.Matrix(rows).det()
+
+    results.append(bench_fn("matrix/det_4x4", matrix_det_4x4, n=n))
+
+    # -- Real roots ----------------------------------------------------------
+
+    def real_roots_deg8():
+        p = ExprPool()
+        x = p.symbol("x")
+        poly = x ** 8 - x - p.integer(1)
+        return _alkahest.real_roots(poly, x)
+
+    results.append(bench_fn("real_roots/deg8", real_roots_deg8, n=n))
+
+    # -- Horner form ---------------------------------------------------------
+
+    def horner_deg20():
+        p = ExprPool()
+        x = p.symbol("x")
+        terms = [p.integer(1)] + [x ** k for k in range(1, 21)]
+        poly = terms[0]
+        for t in terms[1:]:
+            poly = poly + t
+        return _alkahest.horner(poly, x)
+
+    results.append(bench_fn("horner/deg20", horner_deg20, n=n))
+
+    # -- Log-exp simplify ----------------------------------------------------
+
+    def log_exp_simplify_depth4():
+        p = ExprPool()
+        x = p.symbol("x")
+        expr = x
+        for _ in range(4):
+            expr = _alkahest.log(_alkahest.exp(expr))
+        return _alkahest.simplify_log_exp(expr)
+
+    results.append(bench_fn("log_exp/simplify_depth4", log_exp_simplify_depth4, n=n))
+
+    # -- Collect like terms --------------------------------------------------
+
+    def collect_terms_50():
+        p = ExprPool()
+        x = p.symbol("x")
+        terms = [x] * 50 + [x ** 2] * 50
+        expr = terms[0]
+        for t in terms[1:]:
+            expr = expr + t
+        return _alkahest.collect_like_terms(expr)
+
+    results.append(bench_fn("collect/terms_50", collect_terms_50, n=n))
+
+    # -- Resultant -----------------------------------------------------------
+
+    def resultant_deg8():
+        p = ExprPool()
+        x = p.symbol("x")
+        one = p.integer(1)
+        f = x ** 8 + x + one
+        g = x ** 8 - x - one
+        return _alkahest.resultant(f, g, x)
+
+    results.append(bench_fn("resultant/deg8", resultant_deg8, n=n))
+
+    # -- Recurrence solve (Fibonacci) ----------------------------------------
+
+    def rsolve_fibonacci():
+        p = ExprPool()
+        n_sym = p.symbol("n")
+        a_n = p.func("a", [n_sym])
+        a_n1 = p.func("a", [n_sym + p.integer(1)])
+        a_n2 = p.func("a", [n_sym + p.integer(2)])
+        eq = a_n2 - a_n1 - a_n
+        return _alkahest.rsolve(eq, n_sym, "a", {0: p.integer(1), 1: p.integer(1)})
+
+    results.append(bench_fn("rsolve/fibonacci", rsolve_fibonacci, n=n))
+
+    # -- Emit C --------------------------------------------------------------
+
+    def emit_c_deg20():
+        p = ExprPool()
+        x = p.symbol("x")
+        poly = build_poly(p, x, list(range(1, 22)))
+        return _alkahest.emit_c(poly, x)
+
+    results.append(bench_fn("emit_c/deg20", emit_c_deg20, n=n))
+
     return results
 
 
@@ -256,6 +403,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--quick", action="store_true",
                         help="Reduce iterations for a fast smoke pass")
+    parser.add_argument("--output", default=None,
+                        help="Write results to a Markdown file at this path")
     args = parser.parse_args()
 
     n = 200 if args.quick else 2_000
@@ -263,3 +412,5 @@ if __name__ == "__main__":
     results = run(n)
     print_table(results)
     print()
+    if args.output:
+        write_markdown(results, args.output)

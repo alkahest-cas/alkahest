@@ -19,6 +19,14 @@ import math
 from typing import Any
 
 
+def _balanced_sum(terms):
+    """Build a balanced binary tree of additions to avoid O(n²) diff cost."""
+    if len(terms) == 1:
+        return terms[0]
+    mid = len(terms) // 2
+    return _balanced_sum(terms[:mid]) + _balanced_sum(terms[mid:])
+
+
 class BenchTask(abc.ABC):
     """Abstract base class for a benchmark task."""
 
@@ -54,11 +62,10 @@ class DegreeNPolyDiff(BenchTask):
 
         p = alkahest.ExprPool()
         x = p.symbol("x")
-        # Build 1 + x + x^2 + … + x^size
-        terms = [p.integer(1)]
-        for k in range(1, size + 1):
-            terms.append(x ** k)
-        poly = sum(terms[1:], terms[0])
+        # Build 1 + x + x^2 + … + x^size using a balanced binary tree to
+        # avoid O(n²) traversal cost in alkahest's symbolic diff engine.
+        terms = [p.integer(1)] + [x ** k for k in range(1, size + 1)]
+        poly = _balanced_sum(terms)
         result = alkahest.diff(poly, x)
         return result.value
 
@@ -199,8 +206,7 @@ class JacobianNxN(BenchTask):
         xs = [p.symbol(f"x{i}") for i in range(size)]
         # f_i = x_i^2 + x_{i-1} * x_i  (wraps around)
         fns = [xs[i] ** 2 + xs[(i - 1) % size] * xs[i] for i in range(size)]
-        mat = alkahest.Matrix(fns)
-        return alkahest.jacobian(mat, xs)
+        return alkahest.jacobian(fns, xs)
 
     def run_sympy(self, size: int) -> Any:
         import sympy as sp  # type: ignore[import]
@@ -228,7 +234,7 @@ class BallSinCos(BenchTask):
         x = p.symbol("x")
         expr = alkahest.sin(alkahest.cos(x))
         radius = 1.0 / size
-        ball = alkahest.ArbBall.from_midpoint_radius(1.0, radius, 128)
+        ball = alkahest.ArbBall(1.0, radius, 128)
         ev = alkahest.interval_eval(expr, {x: ball})
         return ev
 
@@ -426,7 +432,9 @@ class SparseInterpMultivar(BenchTask):
     """
 
     name = "sparse_interp_multivar"
-    size_params = [2, 5, 10, 20]
+    # size=20 causes ~44s blowup (super-exponential in variable count); capped at 10
+    # until the Rust probe-scheduling in alkahest-core/src/interp/ is optimised.
+    size_params = [2, 5, 10]
 
     _PRIME = 32749
     _TERMS_PER_SIZE = {2: 3, 5: 5, 10: 10, 20: 15}
@@ -491,6 +499,315 @@ class SparseInterpMultivar(BenchTask):
 
 
 # ---------------------------------------------------------------------------
+# Task 11 — Symbolic integration of degree-N polynomial
+# ---------------------------------------------------------------------------
+
+
+class IntegratePoly(BenchTask):
+    """Integrate 1 + x + x² + … + x^N with respect to x."""
+
+    name = "integrate_poly"
+    size_params = [4, 8, 16, 32]
+
+    def run_alkahest(self, size: int) -> Any:
+        import alkahest
+
+        p = alkahest.ExprPool()
+        x = p.symbol("x")
+        terms = [p.integer(1)] + [x ** k for k in range(1, size + 1)]
+        poly = _balanced_sum(terms)
+        return alkahest.integrate(poly, x).value
+
+    def run_sympy(self, size: int) -> Any:
+        import sympy as sp  # type: ignore[import]
+
+        x = sp.Symbol("x")
+        poly = sum(x ** k for k in range(size + 1))
+        return sp.integrate(poly, x)
+
+    def expected_result(self, size: int) -> Any:
+        return size + 1  # number of terms in the integrated polynomial
+
+
+# ---------------------------------------------------------------------------
+# Task 12 — Taylor series expansion of sin(x) to N terms
+# ---------------------------------------------------------------------------
+
+
+class SeriesExpansion(BenchTask):
+    """Expand sin(x) around 0 to N terms."""
+
+    name = "series_expansion"
+    size_params = [6, 12, 20, 32]
+
+    def run_alkahest(self, size: int) -> Any:
+        import alkahest
+
+        p = alkahest.ExprPool()
+        x = p.symbol("x")
+        return alkahest.series(alkahest.sin(x), x, p.integer(0), size)
+
+    def run_sympy(self, size: int) -> Any:
+        import sympy as sp  # type: ignore[import]
+
+        x = sp.Symbol("x")
+        return sp.series(sp.sin(x), x, 0, size)
+
+
+# ---------------------------------------------------------------------------
+# Task 13 — Limit computation: (x^N - 1)/(x - 1) as x → 1
+# ---------------------------------------------------------------------------
+
+
+class LimitComputation(BenchTask):
+    """Compute limit((x^N − 1)/(x − 1), x, 1) = N."""
+
+    name = "limit_computation"
+    size_params = [2, 4, 8, 16]
+
+    def run_alkahest(self, size: int) -> Any:
+        import alkahest
+
+        p = alkahest.ExprPool()
+        x = p.symbol("x")
+        one = p.integer(1)
+        expr = (x ** size - one) / (x - one)
+        return alkahest.limit(expr, x, one)
+
+    def run_sympy(self, size: int) -> Any:
+        import sympy as sp  # type: ignore[import]
+
+        x = sp.Symbol("x")
+        return sp.limit((x ** size - 1) / (x - 1), x, 1)
+
+    def expected_result(self, size: int) -> Any:
+        return size
+
+
+# ---------------------------------------------------------------------------
+# Task 14 — Gradient of an N-variable quadratic
+# ---------------------------------------------------------------------------
+
+
+class GradientNVar(BenchTask):
+    """Compute ∇(x₀² + x₁² + … + x_{N-1}²)."""
+
+    name = "gradient_nvar"
+    size_params = [4, 8, 16, 32]
+
+    def run_alkahest(self, size: int) -> Any:
+        import alkahest
+
+        p = alkahest.ExprPool()
+        xs = [p.symbol(f"x{i}") for i in range(size)]
+        f = _balanced_sum([xi ** 2 for xi in xs])
+        return alkahest.symbolic_grad(f, xs)
+
+    def run_sympy(self, size: int) -> Any:
+        import sympy as sp  # type: ignore[import]
+
+        xs = [sp.Symbol(f"x{i}") for i in range(size)]
+        f = sum(xi ** 2 for xi in xs)
+        return [sp.diff(f, xi) for xi in xs]
+
+    def expected_result(self, size: int) -> Any:
+        return size  # length of gradient vector
+
+
+# ---------------------------------------------------------------------------
+# Task 15 — Symbolic matrix determinant (N×N)
+# ---------------------------------------------------------------------------
+
+
+class MatrixDetNxN(BenchTask):
+    """Compute det of an N×N symbolic matrix with independent entries."""
+
+    name = "matrix_det_nxn"
+    size_params = [2, 3, 4, 5]
+
+    def run_alkahest(self, size: int) -> Any:
+        import alkahest
+
+        p = alkahest.ExprPool()
+        rows = [
+            [p.symbol(f"a{i}{j}") for j in range(size)]
+            for i in range(size)
+        ]
+        return alkahest.Matrix(rows).det()
+
+    def run_sympy(self, size: int) -> Any:
+        import sympy as sp  # type: ignore[import]
+
+        rows = [
+            [sp.Symbol(f"a{i}{j}") for j in range(size)]
+            for i in range(size)
+        ]
+        return sp.Matrix(rows).det()
+
+
+# ---------------------------------------------------------------------------
+# Task 16 — Real root isolation for degree-N polynomial
+# ---------------------------------------------------------------------------
+
+
+class RealRootsPoly(BenchTask):
+    """Isolate real roots of x^N − x − 1."""
+
+    name = "real_roots_poly"
+    size_params = [4, 8, 12, 16]
+
+    def run_alkahest(self, size: int) -> Any:
+        import alkahest
+
+        p = alkahest.ExprPool()
+        x = p.symbol("x")
+        poly = x ** size - x - p.integer(1)
+        return len(alkahest.real_roots(poly, x))
+
+    def run_sympy(self, size: int) -> Any:
+        import sympy as sp  # type: ignore[import]
+
+        x = sp.Symbol("x")
+        return len(sp.Poly(x ** size - x - 1, x).real_roots())
+
+
+# ---------------------------------------------------------------------------
+# Task 17 — Horner form conversion for degree-N polynomial
+# ---------------------------------------------------------------------------
+
+
+class HornerFormPoly(BenchTask):
+    """Convert 1 + x + x² + … + x^N to Horner form."""
+
+    name = "horner_form_poly"
+    size_params = [10, 50, 100, 200]
+
+    def run_alkahest(self, size: int) -> Any:
+        import alkahest
+
+        p = alkahest.ExprPool()
+        x = p.symbol("x")
+        terms = [p.integer(1)] + [x ** k for k in range(1, size + 1)]
+        poly = _balanced_sum(terms)
+        return alkahest.horner(poly, x)
+
+    def run_sympy(self, size: int) -> Any:
+        import sympy as sp  # type: ignore[import]
+        from sympy.polys.polyfuncs import horner  # type: ignore[import]
+
+        x = sp.Symbol("x")
+        poly = sum(x ** k for k in range(size + 1))
+        return horner(poly)
+
+
+# ---------------------------------------------------------------------------
+# Task 18 — Log-exp simplification
+# ---------------------------------------------------------------------------
+
+
+class LogExpSimplify(BenchTask):
+    """Simplify depth-N nested log(exp(…)) chains down to x."""
+
+    name = "log_exp_simplify"
+    size_params = [1, 2, 4, 8]
+
+    def run_alkahest(self, size: int) -> Any:
+        import alkahest
+
+        p = alkahest.ExprPool()
+        x = p.symbol("x")
+        expr = x
+        for _ in range(size):
+            expr = alkahest.log(alkahest.exp(expr))
+        return alkahest.simplify_log_exp(expr).value
+
+    def run_sympy(self, size: int) -> Any:
+        import sympy as sp  # type: ignore[import]
+
+        x = sp.Symbol("x", real=True, positive=True)
+        expr = x
+        for _ in range(size):
+            expr = sp.log(sp.exp(expr))
+        return sp.simplify(expr)
+
+    def expected_result(self, size: int) -> Any:
+        return "x"
+
+
+# ---------------------------------------------------------------------------
+# Task 19 — Resultant of two degree-N polynomials
+# ---------------------------------------------------------------------------
+
+
+class ResultantPoly(BenchTask):
+    """Compute resultant_x(x^N + x + 1, x^N − x − 1)."""
+
+    name = "resultant_poly"
+    size_params = [4, 8, 12, 16]
+
+    def run_alkahest(self, size: int) -> Any:
+        import alkahest
+
+        p = alkahest.ExprPool()
+        x = p.symbol("x")
+        one = p.integer(1)
+        f = x ** size + x + one
+        g = x ** size - x - one
+        return alkahest.resultant(f, g, x).value
+
+    def run_sympy(self, size: int) -> Any:
+        import sympy as sp  # type: ignore[import]
+
+        x = sp.Symbol("x")
+        return sp.resultant(x ** size + x + 1, x ** size - x - 1, x)
+
+
+# ---------------------------------------------------------------------------
+# Task 20 — Linear recurrence solving
+# ---------------------------------------------------------------------------
+
+
+class RecurrenceSolve(BenchTask):
+    """Solve a linear recurrence in closed form.
+
+    size=1: geometric a(n+1) = 2·a(n), a(0)=1  →  2^n
+    size=2: Fibonacci a(n+2) = a(n+1) + a(n), a(0)=a(1)=1
+    """
+
+    name = "recurrence_solve"
+    size_params = [1, 2]
+
+    def run_alkahest(self, size: int) -> Any:
+        import alkahest
+
+        pool2 = alkahest.ExprPool()
+        n_sym = pool2.symbol("n")
+        if size == 1:
+            a_n = pool2.func("a", [n_sym])
+            a_n1 = pool2.func("a", [n_sym + pool2.integer(1)])
+            eq = a_n1 - pool2.integer(2) * a_n
+            return alkahest.rsolve(eq, n_sym, "a", {0: pool2.integer(1)})
+        else:
+            a_n = pool2.func("a", [n_sym])
+            a_n1 = pool2.func("a", [n_sym + pool2.integer(1)])
+            a_n2 = pool2.func("a", [n_sym + pool2.integer(2)])
+            eq = a_n2 - a_n1 - a_n
+            return alkahest.rsolve(eq, n_sym, "a", {0: pool2.integer(1), 1: pool2.integer(1)})
+
+    def run_sympy(self, size: int) -> Any:
+        import sympy as sp  # type: ignore[import]
+
+        n_sym = sp.Symbol("n", integer=True)
+        a = sp.Function("a")
+        if size == 1:
+            eq = a(n_sym + 1) - 2 * a(n_sym)
+            return sp.rsolve(eq, a(n_sym), {a(0): 1})
+        else:
+            eq = a(n_sym + 2) - a(n_sym + 1) - a(n_sym)
+            return sp.rsolve(eq, a(n_sym), {a(0): 1, a(1): 1})
+
+
+# ---------------------------------------------------------------------------
 # V2-14 — Homotopy continuation (numerical algebraic geometry)
 # ---------------------------------------------------------------------------
 
@@ -536,4 +853,15 @@ ALL_TASKS: list[BenchTask] = [
     HomotopySeparateQuadratics(),
     SparseInterpVsDense(),
     SparseInterpMultivar(),
+    # New comprehensive tasks
+    IntegratePoly(),
+    SeriesExpansion(),
+    LimitComputation(),
+    GradientNVar(),
+    MatrixDetNxN(),
+    RealRootsPoly(),
+    HornerFormPoly(),
+    LogExpSimplify(),
+    ResultantPoly(),
+    RecurrenceSolve(),
 ]

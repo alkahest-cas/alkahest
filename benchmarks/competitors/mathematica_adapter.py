@@ -121,20 +121,76 @@ class MathematicaAdapter(CASAdapter):
 
     def bench_poly_jit_eval(self, size: int) -> Any:
         # Build polynomial without x^0 to avoid 0.^0 in Compile.
-        # Poly = 1 + x*(1 + x*(1 + ...)) via Horner; here we just write
-        # the sum with the constant term explicit (no Power for the constant).
         terms = ["1"] + [f"x^{k}" for k in range(1, size + 1)]
         poly_wl = " + ".join(terms)
-        compile_expr = f"Compile[{{{{x, _Real}}}}, {poly_wl}]"
-        # Evaluate at 10 000 pts in (0, 1], avoiding x=0
+        # RuntimeAttributes -> {Listable} lets Mathematica vectorise over a
+        # packed Real array — matching the 1 000 000-point alkahest task.
+        compile_expr = (
+            f"Compile[{{{{x, _Real}}}}, {poly_wl}, "
+            f"RuntimeAttributes -> {{Listable}}, Parallelization -> False]"
+        )
         return self._wl(
-            f"With[{{f = {compile_expr}}}, Length[Table[f[i/10000.], {{i, 1, 10000}}]]]"
+            f"With[{{f = {compile_expr}}}, Length[f[N[Range[1, 1000000]/1000000]]]]"
         )
 
     def bench_solve_circle_line(self, size: int) -> Any:
         return self._wl(
             f"Solve[x^2 + y^2 == {size}^2 && y == x, {{x, y}}, Reals]"
         )
+
+    # ── New comprehensive task methods ───────────────────────────────────────
+
+    def bench_integrate_poly(self, size: int) -> Any:
+        terms = " + ".join(f"x^{k}" for k in range(1, size + 1))
+        return self._wl(f"Integrate[{terms}, x]")
+
+    def bench_series_expansion(self, size: int) -> Any:
+        return self._wl(f"Series[Sin[x], {{x, 0, {size}}}]")
+
+    def bench_limit_computation(self, size: int) -> Any:
+        return self._wl(f"Limit[(x^{size} - 1)/(x - 1), x -> 1]")
+
+    def bench_gradient_nvar(self, size: int) -> Any:
+        vars_list = "{" + ", ".join(f"x{i}" for i in range(size)) + "}"
+        f = " + ".join(f"x{i}^2" for i in range(size))
+        return self._wl(f"Grad[{f}, {vars_list}]")
+
+    def bench_matrix_det_nxn(self, size: int) -> Any:
+        rows = "{" + ", ".join(
+            "{" + ", ".join(f"a{i}{j}" for j in range(size)) + "}"
+            for i in range(size)
+        ) + "}"
+        return self._wl(f"Det[{rows}]")
+
+    def bench_real_roots_poly(self, size: int) -> Any:
+        return self._wl(
+            f"Length[NSolve[x^{size} - x - 1 == 0, x, Reals]]"
+        )
+
+    def bench_horner_form_poly(self, size: int) -> Any:
+        terms = " + ".join(f"x^{k}" for k in range(1, size + 1))
+        return self._wl(f"HornerForm[1 + {terms}]")
+
+    def bench_log_exp_simplify(self, size: int) -> Any:
+        expr = "x"
+        for _ in range(size):
+            expr = f"Log[Exp[{expr}]]"
+        return self._wl(f"FullSimplify[{expr}, Assumptions -> x \\[Element] Reals]")
+
+    def bench_resultant_poly(self, size: int) -> Any:
+        return self._wl(
+            f"Resultant[x^{size} + x + 1, x^{size} - x - 1, x]"
+        )
+
+    def bench_recurrence_solve(self, size: int) -> Any:
+        if size == 1:
+            return self._wl(
+                "RSolve[{a[n] == 2*a[n-1], a[0] == 1}, a[n], n]"
+            )
+        else:
+            return self._wl(
+                "RSolve[{a[n] == a[n-1] + a[n-2], a[0] == 1, a[1] == 1}, a[n], n]"
+            )
 
     # ── Legacy names ─────────────────────────────────────────────────────────
 

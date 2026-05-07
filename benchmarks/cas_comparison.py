@@ -1,13 +1,13 @@
 """Cross-CAS benchmark driver.
 
-PA-4 — Cross-CAS benchmark driver + HTML report.
+PA-4 — Cross-CAS benchmark driver + Markdown report.
 
 Runs the task catalogue from ``tasks.py`` against Alkahest and (optionally)
-SymPy, records timings in JSONL, and emits an HTML plotly report.
+SymPy, records timings in JSONL, and emits a Markdown report.
 
 Usage
 -----
-    python benchmarks/cas_comparison.py [--sizes 5,10,20] [--output results.jsonl] [--report report.html]
+    python benchmarks/cas_comparison.py [--sizes 5,10,20] [--output results.jsonl] [--report report.md]
 
 The script is self-contained and imports ``alkahest`` from the installed
 package (run ``maturin develop`` first).
@@ -20,14 +20,15 @@ Output
         {"task": "poly_diff", "system": "alkahest", "size": 10,
          "wall_ms": 1.23, "ok": true}
 
-``report.html``
-    Plotly bar-chart report (requires ``plotly`` — installed automatically if
-    missing; falls back to a markdown table if plotly is unavailable).
+``report.md``
+    Markdown report with summary table and per-task breakdowns including
+    speedup ratios vs Alkahest.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import math
 import sys
@@ -153,131 +154,111 @@ def write_jsonl(results: list[dict], path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# HTML report (plotly)
+# Markdown report
 # ---------------------------------------------------------------------------
 
 
-def _build_html_report(results: list[dict]) -> str:
-    """Build a plotly HTML report from the results list."""
-    try:
-        import plotly.graph_objects as go  # type: ignore[import]
-        from plotly.subplots import make_subplots  # type: ignore[import]
-    except ImportError:
-        return _build_markdown_report(results)
+def _ratio_str(competitor_ms: float, alkahest_ms: float) -> str:
+    """Format speedup ratio from alkahest's perspective.
 
-    # Group by task
-    tasks = list({r["task"] for r in results})
-    systems = list({r["system"] for r in results})
-    colors = {
-        "alkahest": "#1f77b4",
-        "sympy": "#ff7f0e",
-        "symengine": "#2ca02c",
-        "mathematica": "#d62728",
-        "maple": "#9467bd",
-        "sagemath": "#8c564b",
-        "symbolics_jl": "#e377c2",
-    }
-
-    figs = []
-    for task_name in sorted(tasks):
-        task_results = [r for r in results if r["task"] == task_name and r["ok"]]
-        if not task_results:
-            continue
-
-        sizes = sorted({r["size"] for r in task_results})
-        fig = go.Figure()
-        for system in systems:
-            sys_results = {r["size"]: r["wall_ms"] for r in task_results if r["system"] == system}
-            y = [sys_results.get(s) for s in sizes]
-            if any(v is not None for v in y):
-                fig.add_trace(
-                    go.Bar(
-                        name=system,
-                        x=[str(s) for s in sizes],
-                        y=y,
-                        marker_color=colors.get(system, "#333"),
-                    )
-                )
-        fig.update_layout(
-            title=f"Task: {task_name}",
-            xaxis_title="Size",
-            yaxis_title="Wall time (ms)",
-            barmode="group",
-            height=350,
-        )
-        figs.append(fig.to_html(full_html=False, include_plotlyjs="cdn"))
-
-    # Summary table: Alkahest vs all systems
-    competitor_systems = [s for s in systems if s != "alkahest"]
-    rows = []
-    for task_name in sorted(tasks):
-        for r_alkahest in results:
-            if r_alkahest["task"] != task_name or r_alkahest["system"] != "alkahest" or not r_alkahest["ok"]:
-                continue
-            size = r_alkahest["size"]
-            cells = [f"<td>{task_name}</td><td>{size}</td><td>{r_alkahest['wall_ms']:.2f}</td>"]
-            for sys_name in competitor_systems:
-                r_comp = next(
-                    (r for r in results if r["task"] == task_name and r["system"] == sys_name and r["size"] == size and r["ok"]),
-                    None,
-                )
-                if r_comp and r_comp["wall_ms"] and r_alkahest["wall_ms"]:
-                    ratio = r_comp["wall_ms"] / r_alkahest["wall_ms"]
-                    ratio_str = f"{ratio:.2f}×"
-                    color = "green" if ratio >= 1.0 else "red"
-                    cells.append(
-                        f"<td>{r_comp['wall_ms']:.2f} "
-                        f"<span style='color:{color}'>({ratio_str})</span></td>"
-                    )
-                else:
-                    cells.append(f"<td>{'—' if r_comp is None else r_comp.get('error', '—')}</td>")
-            rows.append(f"<tr>{''.join(cells)}</tr>")
-
-    comp_headers = "".join(f"<th>{s.title()}</th>" for s in competitor_systems)
-    table_html = f"""
-<h2>Alkahest vs competitors — wall time (ms) — (ratio vs Alkahest, green = Alkahest wins)</h2>
-<table border='1' style='border-collapse:collapse;font-family:monospace;font-size:13px'>
-<tr><th>Task</th><th>Size</th><th>Alkahest</th>{comp_headers}</tr>
-{''.join(rows)}
-</table>
-"""
-
-    body = "\n".join(figs) + table_html
-    return f"""<!DOCTYPE html>
-<html>
-<head><meta charset='utf-8'><title>Alkahest benchmark report</title></head>
-<body>
-<h1>Alkahest cross-CAS benchmark report</h1>
-{body}
-</body>
-</html>"""
+    Returns e.g. "**✓ 4.3× faster**" when alkahest wins (competitor slower),
+    or "✗ 2.1× slower" when alkahest loses.
+    """
+    if alkahest_ms == 0 or alkahest_ms is None:
+        return "—"
+    ratio = competitor_ms / alkahest_ms
+    if ratio >= 1.0:
+        return f"**✓ {ratio:.1f}× faster**"
+    else:
+        return f"✗ {1/ratio:.1f}× slower"
 
 
 def _build_markdown_report(results: list[dict]) -> str:
-    """Fallback: build a Markdown report (no plotly required)."""
-    lines = ["# Alkahest cross-CAS benchmark report\n"]
-    tasks = sorted({r["task"] for r in results})
-    for task_name in tasks:
+    """Build a rich Markdown benchmark report with summary and per-task tables."""
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    all_systems = sorted({r["system"] for r in results})
+    competitors = [s for s in all_systems if s != "alkahest"]
+    task_names = sorted({r["task"] for r in results})
+
+    lines: list[str] = []
+    lines.append("# Alkahest cross-CAS benchmark report\n")
+    lines.append(f"*Generated: {timestamp}*  ")
+    lines.append(f"*Systems: {', '.join(all_systems)}*\n")
+    lines.append("---\n")
+
+    # --- Summary table (best time across all sizes per task) ---
+    lines.append("## Summary\n")
+    lines.append("> **✓ N× faster** = alkahest wins by N× | **✗ N× slower** = competitor wins by N×\n")
+
+    comp_headers = "".join(f" {s.title()} (ms) | Ratio |" for s in competitors)
+    lines.append(f"| Task | Alkahest (ms) |{comp_headers}")
+    sep = "|------|---------------|" + "---|---|" * len(competitors)
+    lines.append(sep)
+
+    for task_name in task_names:
+        task_results = [r for r in results if r["task"] == task_name]
+        alk_times = [r["wall_ms"] for r in task_results if r["system"] == "alkahest" and r["ok"] and r["wall_ms"] is not None]
+        if not alk_times:
+            alk_cell = "—"
+            alk_best = None
+        else:
+            alk_best = min(alk_times)
+            alk_cell = f"{alk_best:.2f}"
+
+        row = f"| {task_name} | {alk_cell} |"
+        for sys_name in competitors:
+            comp_times = [r["wall_ms"] for r in task_results if r["system"] == sys_name and r["ok"] and r["wall_ms"] is not None]
+            if not comp_times:
+                row += " — | — |"
+            else:
+                comp_best = min(comp_times)
+                ratio_cell = _ratio_str(comp_best, alk_best) if alk_best else "—"
+                row += f" {comp_best:.2f} | {ratio_cell} |"
+        lines.append(row)
+
+    lines.append("")
+    lines.append("---\n")
+
+    # --- Per-task detailed tables ---
+    for task_name in task_names:
         lines.append(f"## {task_name}\n")
-        lines.append("| size | system | wall_ms | ok |")
-        lines.append("|---|---|---|---|")
-        task_results = sorted(
-            [r for r in results if r["task"] == task_name],
-            key=lambda r: (r["size"], r["system"]),
-        )
-        for r in task_results:
-            ms = f"{r['wall_ms']:.2f}" if r["wall_ms"] is not None else "—"
-            lines.append(f"| {r['size']} | {r['system']} | {ms} | {r['ok']} |")
+        task_results = [r for r in results if r["task"] == task_name]
+        sizes = sorted({r["size"] for r in task_results})
+
+        comp_headers_detail = "".join(f" {s.title()} (ms) | Ratio |" for s in competitors)
+        lines.append(f"| Size | Alkahest (ms) |{comp_headers_detail}")
+        lines.append("|------|---------------|" + "---|---|" * len(competitors))
+
+        for size in sizes:
+            alk = next((r for r in task_results if r["system"] == "alkahest" and r["size"] == size), None)
+            if alk and alk["ok"] and alk["wall_ms"] is not None:
+                alk_ms = alk["wall_ms"]
+                alk_cell = f"{alk_ms:.2f}"
+            else:
+                alk_ms = None
+                alk_cell = "—" if alk is None else alk.get("error", "FAIL")[:12]
+
+            row = f"| {size} | {alk_cell} |"
+            for sys_name in competitors:
+                comp = next((r for r in task_results if r["system"] == sys_name and r["size"] == size), None)
+                if comp is None:
+                    row += " — | — |"
+                elif not comp["ok"] or comp["wall_ms"] is None:
+                    err = comp.get("error", "FAIL")
+                    row += f" {err[:10]} | — |"
+                else:
+                    comp_ms = comp["wall_ms"]
+                    ratio_cell = _ratio_str(comp_ms, alk_ms) if alk_ms else "—"
+                    row += f" {comp_ms:.2f} | {ratio_cell} |"
+            lines.append(row)
+
         lines.append("")
+
     return "\n".join(lines)
 
 
 def write_report(results: list[dict], path: Path) -> None:
-    html = _build_html_report(results)
-    if path.suffix == ".html":
-        path.write_text(html)
-    else:
-        path.write_text(_build_markdown_report(results))
+    path.write_text(_build_markdown_report(results))
     print(f"Report written to {path}")
 
 
@@ -308,8 +289,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--report",
         type=Path,
-        default=Path("benchmarks/results/report.html"),
-        help="HTML report output file (default: benchmarks/results/report.html)",
+        default=Path("benchmarks/results/report.md"),
+        help="Markdown report output file (default: benchmarks/results/report.md)",
     )
     parser.add_argument(
         "--tasks",
