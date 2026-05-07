@@ -687,6 +687,9 @@ fn unicode_pow(base: ExprId, exp: ExprId, pool: &ExprPool) -> String {
     let base_tex = unicode_wrap(base, pool, PREC_POW);
     if let ExprData::Integer(n) = pool.get(exp) {
         if let Some(v) = n.0.to_i64() {
+            if v == 1 {
+                return base_tex;
+            }
             if let Some(sup) = to_superscript(&v.to_string()) {
                 return format!("{base_tex}{sup}");
             }

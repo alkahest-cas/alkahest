@@ -94,9 +94,10 @@ use alkahest_core::{
     rsolve as core_rsolve, series as core_series, simplify as core_simplify,
     simplify_egraph as core_simplify_egraph, simplify_egraph_with as core_simplify_egraph_with,
     simplify_with as core_simplify_with, trig_rules, AlkahestError as AlkahestErrorTrait,
-    DiffError, EgraphConfig, IntegrationError, IoError, LimitDirection as CoreLimitDirection,
-    LimitError, LinearRecurrenceError, PatternRule, ProductError, ResultantError, RsolveError,
-    SeriesError, SimplifyConfig, SizeCost, SparseInterpError, SumError,
+    DerivedExpr, DiffError, EgraphConfig, IntegrationError, IoError,
+    LimitDirection as CoreLimitDirection, LimitError, LinearRecurrenceError, PatternRule,
+    ProductError, ResultantError, RsolveError, SeriesError, SimplifyConfig, SizeCost,
+    SparseInterpError, SumError,
 };
 // V3-1 — Integer number theory
 use alkahest_core::number_theory::{
@@ -953,6 +954,7 @@ struct PyDerivedResult {
     value: PyExpr,
     derivation: String,
     steps_raw: Vec<(String, String, String, Vec<String>)>,
+    raw: DerivedExpr<ExprId>,
 }
 
 #[pymethods]
@@ -1021,6 +1023,7 @@ fn make_derived_result(
         value,
         derivation,
         steps_raw,
+        raw: derived,
     }
 }
 
@@ -1435,6 +1438,24 @@ impl PyUniPoly {
         PyUniPoly {
             inner: self.inner.pow(exp),
         }
+    }
+
+    fn __floordiv__(&self, other: PyRef<PyUniPoly>) -> PyResult<PyUniPoly> {
+        self.inner
+            .pseudo_divrem(&other.inner)
+            .map(|(q, _)| PyUniPoly { inner: q })
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("//: variable mismatch")
+            })
+    }
+
+    fn __mod__(&self, other: PyRef<PyUniPoly>) -> PyResult<PyUniPoly> {
+        self.inner
+            .pseudo_divrem(&other.inner)
+            .map(|(_, r)| PyUniPoly { inner: r })
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err("%: variable mismatch")
+            })
     }
 
     fn gcd(&self, other: PyRef<PyUniPoly>) -> PyResult<PyUniPoly> {
@@ -1965,21 +1986,49 @@ fn py_simplify_log_exp(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDerivedResult {
 // V5-1 — Lean 4 certificate exporter
 // ---------------------------------------------------------------------------
 
-/// `alkahest.to_lean(expr) -> str`
+/// `alkahest.to_lean(expr_or_result) -> str`
 ///
-/// Simplify `expr` and generate a Lean 4 proof certificate from the
-/// resulting derivation log.  Returns a string containing the complete
-/// `.lean` source file (Mathlib imports + one example per rewrite step).
+/// Generate a Lean 4 proof certificate from a derivation.
+///
+/// Accepts either:
+///
+/// - An :class:`Expr` — the default simplifier runs first, then the
+///   derivation log is certified.  Equivalent to
+///   ``to_lean(simplify(expr))``.
+/// - A :class:`DerivedResult` returned by any simplifier (e.g.
+///   ``simplify_trig``, ``simplify_log_exp``, ``simplify_with``) — the
+///   log already recorded in that result is certified directly, so the
+///   choice of simplifier is fully under caller control.
+///
+/// Returns a string containing the complete ``.lean`` source file
+/// (Mathlib imports + one ``example`` per rewrite step).
+///
+/// Example::
+///
+///     result = alkahest.simplify_trig(sin(x)**2 + cos(x)**2)
+///     print(alkahest.to_lean(result))  # certifies via trig identities
 #[pyfunction]
 #[pyo3(name = "to_lean")]
-fn py_to_lean(py: Python<'_>, expr: PyRef<PyExpr>) -> String {
-    let pool_py = expr.pool.clone_ref(py);
-    let derived = {
+fn py_to_lean(py: Python<'_>, arg: &Bound<'_, PyAny>) -> PyResult<String> {
+    if let Ok(derived_bound) = arg.downcast::<PyDerivedResult>() {
+        let d = derived_bound.borrow();
+        let pool_py = d.value.pool.clone_ref(py);
         let pool = pool_py.borrow(py);
-        core_simplify(expr.id, &pool.inner)
-    };
-    let pool = pool_py.borrow(py);
-    alkahest_core::emit_lean(&derived, &pool.inner)
+        return Ok(alkahest_core::emit_lean(&d.raw, &pool.inner));
+    }
+    if let Ok(expr_bound) = arg.downcast::<PyExpr>() {
+        let expr = expr_bound.borrow();
+        let pool_py = expr.pool.clone_ref(py);
+        let derived = {
+            let pool = pool_py.borrow(py);
+            core_simplify(expr.id, &pool.inner)
+        };
+        let pool = pool_py.borrow(py);
+        return Ok(alkahest_core::emit_lean(&derived, &pool.inner));
+    }
+    Err(PyTypeError::new_err(
+        "to_lean() expects an Expr or DerivedResult",
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -2327,6 +2376,24 @@ fn py_jacobian(
 // Phase 16: ODE
 // ---------------------------------------------------------------------------
 
+/// Symbolic system of first-order ordinary differential equations.
+///
+/// Represents the system ``d(state_vars)/dt = rhs`` driven by ``time_var``.
+///
+/// Parameters
+/// ----------
+/// state_vars : list[Expr]
+///     Symbolic state variables (e.g. ``[x, y]``).
+/// rhs : list[Expr]
+///     Right-hand side expressions, one per state variable.
+/// time_var : Expr
+///     The independent time variable.
+///
+/// Example::
+///
+///     p = alkahest.ExprPool()
+///     t, x = p.symbol("t"), p.symbol("x")
+///     ode = alkahest.ODE([x], [-x], t)   # dx/dt = -x
 #[pyclass(name = "ODE")]
 struct PyODE {
     inner: ODE,
@@ -2546,6 +2613,23 @@ fn py_adjoint_system(
 // Phase 17: DAE
 // ---------------------------------------------------------------------------
 
+/// Symbolic differential-algebraic equation system.
+///
+/// A DAE is a system of implicit equations mixing differential and algebraic
+/// constraints: ``F(t, variables, derivatives) = 0``.
+///
+/// Parameters (via :meth:`DAE.new`)
+/// ---------------------------------
+/// equations : list[Expr]
+///     Implicit equations (each equals zero).
+/// variables : list[Expr]
+///     Algebraic and state variables.
+/// derivatives : list[Expr]
+///     Derivative expressions corresponding to ``variables``.
+/// time_var : Expr
+///     The independent time variable.
+///
+/// Use :func:`pantelides` to reduce the differential index before simulation.
 #[pyclass(name = "DAE")]
 struct PyDAE {
     inner: DAE,
@@ -2642,6 +2726,21 @@ impl PyEvent {
     }
 }
 
+/// Ordinary differential equation system with discrete events.
+///
+/// A :class:`HybridODE` wraps a continuous :class:`ODE` and a list of
+/// :class:`Event` objects.  Each event specifies a guard condition and a
+/// reset map that is applied when the guard crosses zero.
+///
+/// Construction::
+///
+///     hybrid = alkahest.HybridODE.new(ode)
+///     hybrid = hybrid.add_event(event)
+///
+/// Attributes
+/// ----------
+/// n_events : int
+///     Number of discrete events attached to this system.
 #[pyclass(name = "HybridODE")]
 struct PyHybridODE {
     inner: HybridODE,
@@ -2723,6 +2822,20 @@ impl PyPort {
     }
 }
 
+/// Acausal component-based modelling system.
+///
+/// An :class:`AcausalSystem` aggregates components connected through
+/// :class:`Port` objects (potential/flow pairs).  Call :meth:`flatten` to
+/// convert the component network into an equivalent :class:`DAE` suitable
+/// for simulation or index reduction.
+///
+/// Example::
+///
+///     p = alkahest.ExprPool()
+///     sys = alkahest.AcausalSystem(p)
+///     r = alkahest.resistor("R1", p.rational(100, 1))
+///     t = p.symbol("t")
+///     dae = sys.flatten(t)
 #[pyclass(name = "AcausalSystem")]
 struct PyAcausalSystem {
     inner: AcausalSystem,

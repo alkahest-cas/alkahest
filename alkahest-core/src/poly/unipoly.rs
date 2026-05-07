@@ -379,6 +379,20 @@ impl UniPoly {
         }
     }
 
+    /// Pseudo-division: returns `(quotient, remainder)` satisfying
+    /// `lc(other)^d * self = quotient * other + remainder`.
+    /// Returns `None` if the variables differ.
+    pub fn pseudo_divrem(&self, other: &Self) -> Option<(Self, Self)> {
+        if self.var != other.var {
+            return None;
+        }
+        let (q_coeffs, r_coeffs, _) = self.coeffs.pseudo_divrem(&other.coeffs);
+        Some((
+            UniPoly { var: self.var, coeffs: q_coeffs },
+            UniPoly { var: self.var, coeffs: r_coeffs },
+        ))
+    }
+
     /// GCD of two polynomials over the same variable (up to scalar units).
     /// Returns `None` if the variables differ.
     pub fn gcd(&self, other: &Self) -> Option<Self> {
