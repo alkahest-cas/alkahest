@@ -388,8 +388,14 @@ impl UniPoly {
         }
         let (q_coeffs, r_coeffs, _) = self.coeffs.pseudo_divrem(&other.coeffs);
         Some((
-            UniPoly { var: self.var, coeffs: q_coeffs },
-            UniPoly { var: self.var, coeffs: r_coeffs },
+            UniPoly {
+                var: self.var,
+                coeffs: q_coeffs,
+            },
+            UniPoly {
+                var: self.var,
+                coeffs: r_coeffs,
+            },
         ))
     }
 

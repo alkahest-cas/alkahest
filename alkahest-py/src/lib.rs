@@ -1444,18 +1444,14 @@ impl PyUniPoly {
         self.inner
             .pseudo_divrem(&other.inner)
             .map(|(q, _)| PyUniPoly { inner: q })
-            .ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err("//: variable mismatch")
-            })
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("//: variable mismatch"))
     }
 
     fn __mod__(&self, other: PyRef<PyUniPoly>) -> PyResult<PyUniPoly> {
         self.inner
             .pseudo_divrem(&other.inner)
             .map(|(_, r)| PyUniPoly { inner: r })
-            .ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err("%: variable mismatch")
-            })
+            .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("%: variable mismatch"))
     }
 
     fn gcd(&self, other: PyRef<PyUniPoly>) -> PyResult<PyUniPoly> {

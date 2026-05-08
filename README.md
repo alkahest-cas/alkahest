@@ -1,7 +1,7 @@
 # Alkahest
 
-[![CI](https://github.com/AregGevorgyan/alkahest/actions/workflows/ci.yml/badge.svg)](https://github.com/AregGevorgyan/alkahest/actions/workflows/ci.yml)
-[![cross-platform CI](https://github.com/AregGevorgyan/alkahest/actions/workflows/ci-cross.yml/badge.svg)](https://github.com/AregGevorgyan/alkahest/actions/workflows/ci-cross.yml)
+[![CI](https://github.com/alkahest-cas/alkahest/actions/workflows/ci.yml/badge.svg)](https://github.com/alkahest-cas/alkahest/actions/workflows/ci.yml)
+[![cross-platform CI](https://github.com/alkahest-cas/alkahest/actions/workflows/ci-cross.yml/badge.svg)](https://github.com/alkahest-cas/alkahest/actions/workflows/ci-cross.yml)
 [![PyPI](https://img.shields.io/pypi/v/alkahest.svg)](https://pypi.org/project/alkahest/)
 [![Docs](https://img.shields.io/badge/docs-online-blue)](https://alkahest-cas.github.io/alkahest/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -24,10 +24,10 @@ Wheels on PyPI are built **without** the LLVM JIT feature so installs stay small
 
 **Why a separate index or direct wheel URL:** JIT-enabled wheels use a PEP 440 local version (for example `2.0.0+jit`). Those builds **must not** be mixed into the main PyPI upload for the same reason PyTorch publishes CUDA wheels on `download.pytorch.org`: otherwise `pip install alkahest` can resolve the `+jit` build as “newer” than `2.0.0` and pull LLVM when you wanted the default wheel.
 
-**Until a dedicated PEP 503 simple index is published**, tagged releases attach Linux **manylinux** `+jit` wheels on [GitHub Releases](https://github.com/AregGevorgyan/alkahest/releases). Pick the `.whl` whose tags match your Python (`cp311`, etc.) and platform (`manylinux_2_28_x86_64`, …). Example (adjust tag and filename after checking the release assets):
+**Until a dedicated PEP 503 simple index is published**, tagged releases attach Linux **manylinux** `+jit` wheels on [GitHub Releases](https://github.com/alkahest-cas/alkahest/releases). Pick the `.whl` whose tags match your Python (`cp311`, etc.) and platform (`manylinux_2_28_x86_64`, …). Example (adjust tag and filename after checking the release assets):
 
 ```bash
-pip install "https://github.com/AregGevorgyan/alkahest/releases/download/v2.0.0/alkahest-2.0.0+jit-cp311-cp311-manylinux_2_28_x86_64.whl"
+pip install "https://github.com/alkahest-cas/alkahest/releases/download/v2.0.0/alkahest-2.0.0+jit-cp311-cp311-manylinux_2_28_x86_64.whl"
 ```
 
 If your client chokes on `+` in the URL, use percent-encoding (`2.0.0%2Bjit` in the filename segment).

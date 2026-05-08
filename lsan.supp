@@ -11,3 +11,8 @@ leak:mpfr_free_cache
 leak:flint_malloc
 leak:flint_realloc
 leak:flint_calloc
+# FLINT 3 on newer Ubuntu often reports frames as `libflint.so.*+0x…` only (no resolved
+# `flint_malloc` / `flint_realloc` symbol in the LeakSanitizer stack text), so the lines
+# above fail to match.  Debian-style sonames use `libflint-<ver>.so`.
+leak:libflint.so
+leak:libflint-
