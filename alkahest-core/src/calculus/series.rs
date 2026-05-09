@@ -238,38 +238,6 @@ fn unipoly_strip_low(p: &UniPoly, k: u32) -> UniPoly {
     }
 }
 
-fn unipoly_to_expr(poly: &UniPoly, var: ExprId, pool: &ExprPool) -> ExprId {
-    let coeffs = poly.coefficients();
-    if coeffs.is_empty() {
-        return pool.integer(0_i32);
-    }
-    let summands: Vec<ExprId> = coeffs
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| **c != 0)
-        .map(|(deg, coeff)| {
-            let c_id = pool.integer(coeff.clone());
-            if deg == 0 {
-                c_id
-            } else {
-                let exp_id = pool.integer(deg as i64);
-                let x_pow = if deg == 1 { var } else { pool.pow(var, exp_id) };
-                if *coeff == 1 {
-                    x_pow
-                } else {
-                    pool.mul(vec![c_id, x_pow])
-                }
-            }
-        })
-        .collect();
-
-    match summands.len() {
-        0 => pool.integer(0_i32),
-        1 => summands[0],
-        _ => pool.add(summands),
-    }
-}
-
 fn taylor_coefficients(
     mut cur: ExprId,
     xi: ExprId,
@@ -422,8 +390,8 @@ fn expansion_matched_laurent(
         });
     }
 
-    let n0_e = unipoly_to_expr(&n0, xi, pool);
-    let d0_e = unipoly_to_expr(&d0, xi, pool);
+    let n0_e = n0.to_symbolic_expr(pool);
+    let d0_e = d0.to_symbolic_expr(pool);
     let inv_d = pool.pow(d0_e, pool.integer(-1_i32));
     let g = simplify(pool.mul(vec![n0_e, inv_d]), pool).value;
 

@@ -270,7 +270,7 @@ pub fn subresultant_prs(
     // Convert each polynomial in the sequence back to a symbolic expression.
     let exprs: Vec<ExprId> = prs_polys
         .into_iter()
-        .map(|poly| unipoly_to_expr(&poly, var, pool))
+        .map(|poly| poly.to_symbolic_expr(pool))
         .collect();
 
     let mut log = DerivationLog::new();
@@ -378,44 +378,6 @@ fn rug_pow(base: &rug::Integer, exp: u32) -> rug::Integer {
         r *= base;
     }
     r
-}
-
-// ---------------------------------------------------------------------------
-// Helper: UniPoly → symbolic ExprId
-// ---------------------------------------------------------------------------
-
-/// Convert a `UniPoly` back to a symbolic expression in `pool`.
-fn unipoly_to_expr(poly: &UniPoly, var: ExprId, pool: &ExprPool) -> ExprId {
-    let coeffs = poly.coefficients(); // rug::Integer in ascending degree order
-    if coeffs.is_empty() {
-        return pool.integer(0_i32);
-    }
-
-    let summands: Vec<ExprId> = coeffs
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| **c != 0)
-        .map(|(deg, coeff)| {
-            let c_id = pool.integer(coeff.clone());
-            if deg == 0 {
-                c_id
-            } else {
-                let exp_id = pool.integer(deg as i64);
-                let x_pow = if deg == 1 { var } else { pool.pow(var, exp_id) };
-                if *coeff == 1 {
-                    x_pow
-                } else {
-                    pool.mul(vec![c_id, x_pow])
-                }
-            }
-        })
-        .collect();
-
-    match summands.len() {
-        0 => pool.integer(0_i32),
-        1 => summands[0],
-        _ => pool.add(summands),
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -419,6 +419,46 @@ impl UniPoly {
         }
     }
 
+    /// Rebuild a symbolic sum of nonzero monomial terms in [`Self::var`] (`c·x^k` with `ℤ` coeffs).
+    pub fn to_symbolic_expr(&self, pool: &ExprPool) -> ExprId {
+        let coeffs = self.coefficients(); // ascending degree
+        let var = self.var;
+        if coeffs.is_empty() {
+            return pool.integer(0_i32);
+        }
+        let summands: Vec<ExprId> = coeffs
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| **c != 0)
+            .map(|(deg, coeff)| {
+                let c_id = pool.integer(coeff.clone());
+                if deg == 0 {
+                    c_id
+                } else {
+                    let exp_id = pool.integer(deg as i64);
+                    let x_pow = if deg == 1 {
+                        var
+                    } else {
+                        pool.pow(var, exp_id)
+                    };
+                    if *coeff == 1 {
+                        x_pow
+                    } else if *coeff == -1 {
+                        pool.mul(vec![pool.integer(-1_i32), x_pow])
+                    } else {
+                        pool.mul(vec![c_id, x_pow])
+                    }
+                }
+            })
+            .collect();
+
+        match summands.len() {
+            0 => pool.integer(0_i32),
+            1 => summands[0],
+            _ => pool.add(summands),
+        }
+    }
+
     /// Squarefree kernel: divides out `gcd(p, p')` repeatedly until trivial.
     /// Constant and zero polynomials return a clone unchanged.
     pub fn squarefree_part(&self) -> Self {

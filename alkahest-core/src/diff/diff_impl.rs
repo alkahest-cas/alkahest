@@ -1,5 +1,6 @@
 use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
 use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::poly::UniPoly;
 use crate::simplify::engine::simplify;
 use std::fmt;
 
@@ -85,7 +86,35 @@ pub fn diff(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DerivedExpr<Ex
 // Core recursive differentiation (no simplification)
 // ---------------------------------------------------------------------------
 
+#[inline]
+fn diff_poly_try_univariate_fastpath(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<DerivedExpr<ExprId>> {
+    // Skip atoms so simple cases keep their dedicated log rules (`diff_identity`, `diff_const`, …).
+    if matches!(
+        pool.get(expr),
+        ExprData::Symbol { .. }
+            | ExprData::Integer(_)
+            | ExprData::Rational(_)
+            | ExprData::Float(_)
+    ) {
+        return None;
+    }
+    let poly = UniPoly::from_symbolic(expr, var, pool).ok()?;
+    let der = poly.derivative();
+    let result = der.to_symbolic_expr(pool);
+    let mut log = DerivationLog::new();
+    log.push(RewriteStep::simple("diff_univariate_poly", expr, result));
+    Some(DerivedExpr::with_log(result, log))
+}
+
 fn diff_raw(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DerivedExpr<ExprId>, DiffError> {
+    if let Some(hit) = diff_poly_try_univariate_fastpath(expr, var, pool) {
+        return Ok(hit);
+    }
+
     // Extract only what we need from the pool in a single lock acquisition,
     // then release the lock before any recursive diff_raw calls.
     enum Node {
@@ -410,9 +439,9 @@ mod tests {
     fn diff_product_rule_logged() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
-        let r = diff(pool.mul(vec![x, x]), x, &pool).unwrap();
-        let poly = UniPoly::from_symbolic(r.value, x, &pool).unwrap();
-        assert_eq!(poly.coefficients_i64(), vec![0, 2]);
+        let y = pool.symbol("y", Domain::Real);
+        let r = diff(pool.mul(vec![x, y]), x, &pool).unwrap();
+        assert_eq!(r.value, y);
         assert!(r.log.steps().iter().any(|s| s.rule_name == "product_rule"));
     }
 
@@ -465,7 +494,7 @@ mod tests {
 
     #[test]
     fn diff_chain_rule_sin() {
-        // d/dx sin(x²): should involve cos and power_rule
+        // d/dx sin(x²): cos inner uses ℤ-polynomial fast-path for x² → 2x (not the granular power_rule).
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let r = diff(
@@ -476,29 +505,41 @@ mod tests {
         .unwrap();
         assert_ne!(r.value, pool.integer(0_i32));
         assert!(r.log.steps().iter().any(|s| s.rule_name == "diff_sin"));
-        assert!(r.log.steps().iter().any(|s| s.rule_name == "power_rule"));
+        assert!(r
+            .log
+            .steps()
+            .iter()
+            .any(|s| s.rule_name == "diff_univariate_poly"));
     }
 
     #[test]
     fn diff_pow_n0() {
-        // d/dx f^0 = 0 (regardless of f)
+        // d/dx f^0 = 0 — x^0 ≅ 1 is read as a ℤ-poly constant, so the dense derivative path applies.
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let expr = pool.pow(x, pool.integer(0_i32));
         let r = diff(expr, x, &pool).unwrap();
         assert_eq!(r.value, pool.integer(0_i32));
-        assert!(r.log.steps().iter().any(|s| s.rule_name == "power_rule_n0"));
+        assert!(r
+            .log
+            .steps()
+            .iter()
+            .any(|s| s.rule_name == "diff_univariate_poly"));
     }
 
     #[test]
     fn diff_pow_n1() {
-        // d/dx f^1 = f' = 1 for f=x
+        // d/dx x^1 — same fast-path as other pure ℤ-polynomials.
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let expr = pool.pow(x, pool.integer(1_i32));
         let r = diff(expr, x, &pool).unwrap();
         assert_eq!(r.value, pool.integer(1_i32));
-        assert!(r.log.steps().iter().any(|s| s.rule_name == "power_rule_n1"));
+        assert!(r
+            .log
+            .steps()
+            .iter()
+            .any(|s| s.rule_name == "diff_univariate_poly"));
     }
 
     #[test]
@@ -519,15 +560,62 @@ mod tests {
     }
 
     #[test]
+    fn diff_balanced_geom_series_univariate_fastpath() {
+        fn balanced_sum(pool: &ExprPool, terms: &[ExprId]) -> ExprId {
+            match terms.len() {
+                0 => pool.integer(0_i32),
+                1 => terms[0],
+                _ => {
+                    let mid = terms.len() / 2;
+                    pool.add(vec![
+                        balanced_sum(pool, &terms[..mid]),
+                        balanced_sum(pool, &terms[mid..]),
+                    ])
+                }
+            }
+        }
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let n = 80i32;
+        let mut terms = vec![pool.integer(1_i32)];
+        for k in 1..=n {
+            terms.push(pool.pow(x, pool.integer(k)));
+        }
+        let expr = balanced_sum(&pool, &terms);
+        let r = diff(expr, x, &pool).unwrap();
+        assert!(
+            r.log
+                .steps()
+                .iter()
+                .any(|s| s.rule_name == "diff_univariate_poly"),
+            "expected dense ℤ-poly fast-path for balanced sum"
+        );
+        let poly = UniPoly::from_symbolic(r.value, x, &pool).unwrap();
+        assert_eq!(poly.degree(), i64::from(n) - 1);
+        let coeffs = poly.coefficients_i64();
+        assert_eq!(coeffs.first().copied(), Some(1));
+        assert_eq!(coeffs.last().copied(), Some(n as i64));
+    }
+
+    #[test]
     fn diff_log_has_both_diff_and_simplify_steps() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
-        let expr = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(0_i32)]);
+        let y = pool.symbol("y", Domain::Real);
+        let expr = pool.add(vec![
+            pool.pow(x, pool.integer(2_i32)),
+            y,
+            pool.integer(0_i32),
+        ]);
         let r = diff(expr, x, &pool).unwrap();
         let rules: Vec<&str> = r.log.steps().iter().map(|s| s.rule_name).collect();
         assert!(
-            rules.contains(&"power_rule"),
-            "should have power_rule: {rules:?}"
+            rules.contains(&"sum_rule"),
+            "should have sum_rule: {rules:?}"
+        );
+        assert!(
+            rules.contains(&"diff_univariate_poly"),
+            "x² term differentiates via ℤ-polynomial fast-path: {rules:?}"
         );
         assert!(rules.len() > 1, "log should have multiple steps: {rules:?}");
     }

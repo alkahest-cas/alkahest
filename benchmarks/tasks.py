@@ -420,7 +420,7 @@ class SparseInterpVsDense(BenchTask):
 
 
 # ---------------------------------------------------------------------------
-# Task 10 — V2-3: Multivariate sparse interpolation (20 variables)
+# Task 10 — V2-3: Multivariate sparse interpolation (up to 10 variables in benchmarks)
 # ---------------------------------------------------------------------------
 
 
@@ -432,8 +432,8 @@ class SparseInterpMultivar(BenchTask):
     """
 
     name = "sparse_interp_multivar"
-    # size=20 causes ~44s blowup (super-exponential in variable count); capped at 10
-    # until the Rust probe-scheduling in alkahest-core/src/interp/ is optimised.
+    # size=20 took ~44_800 ms (super-exponential in n_vars with current Zippel/Ben–Or–Tiwari scheduling);
+    # keep benchmarks/CI bounded at 10 until alkahest-core/src/poly/interp.rs is reworked.
     size_params = [2, 5, 10]
 
     _PRIME = 32749
