@@ -184,7 +184,9 @@ impl<'a> Walker<'a> {
         for &var in &self.input_set.clone() {
             if let Ok(poly) = UniPoly::from_symbolic(expr, var, pool) {
                 if poly.degree() >= 2 {
-                    let coeffs = poly.coefficients_i64();
+                    let Some(coeffs) = poly.coefficients_i64_checked() else {
+                        continue;
+                    };
                     let x = self.arg_map.get(&var).cloned()?;
                     return Some(self.emit_horner_fma(&coeffs, &x));
                 }

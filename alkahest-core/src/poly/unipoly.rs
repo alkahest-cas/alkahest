@@ -364,6 +364,14 @@ impl UniPoly {
         self.coeffs.coefficients()
     }
 
+    /// Coefficient vector as `i64`, or `None` if any coefficient overflows i64.
+    pub fn coefficients_i64_checked(&self) -> Option<Vec<i64>> {
+        self.coefficients()
+            .into_iter()
+            .map(|c| c.to_i64())
+            .collect()
+    }
+
     pub fn degree(&self) -> i64 {
         self.coeffs.degree()
     }

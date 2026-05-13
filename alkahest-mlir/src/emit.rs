@@ -134,7 +134,9 @@ impl<'a> DialectEmitter<'a> {
                 // Only lift non-trivial polys (degree ≥ 2) — otherwise plain
                 // arith ops are already optimal.
                 if poly.degree() >= 2 {
-                    let coeffs = poly.coefficients_i64();
+                    let Some(coeffs) = poly.coefficients_i64_checked() else {
+                        continue;
+                    };
                     let x = self.arg_map.get(&var).cloned().unwrap_or_else(|| {
                         // fallback (shouldn't trigger for inputs)
                         let v = self.fresh();
