@@ -5,6 +5,7 @@ PA-4 — Cross-CAS benchmark driver.
 Each task class exposes:
   - ``name: str``
   - ``size_params: list[int]``  (the "size" axis — degree, dimension, …)
+  - ``stress_size_params: tuple[int, ...]``  (optional; used when ``cas_comparison.py`` runs with ``--depth stress``)
   - ``run_alkahest(size) -> object``
   - ``run_sympy(size) -> object``   (optional; skipped if SymPy not installed)
   - ``expected_result(size) -> object | None``  (for correctness cross-checks)
@@ -32,6 +33,8 @@ class BenchTask(abc.ABC):
 
     name: str = ""
     size_params: list[int] = [5, 10, 20]
+    # Optional larger inputs appended when ``depth=stress`` (see ``bench_depth.py``).
+    stress_size_params: tuple[int, ...] = ()
 
     @abc.abstractmethod
     def run_alkahest(self, size: int) -> Any:
@@ -56,6 +59,7 @@ class DegreeNPolyDiff(BenchTask):
 
     name = "poly_diff"
     size_params = [10, 50, 100, 200]
+    stress_size_params = (350, 500)
 
     def run_alkahest(self, size: int) -> Any:
         import alkahest
@@ -91,6 +95,7 @@ class DegreeNPolyGCD(BenchTask):
 
     name = "poly_gcd"
     size_params = [5, 10, 20, 40]
+    stress_size_params = (60, 96)
 
     def run_alkahest(self, size: int) -> Any:
         import alkahest
@@ -198,6 +203,7 @@ class JacobianNxN(BenchTask):
 
     name = "jacobian_nxn"
     size_params = [3, 5, 8, 10]
+    stress_size_params = (12,)
 
     def run_alkahest(self, size: int) -> Any:
         import alkahest
@@ -644,6 +650,7 @@ class MatrixDetNxN(BenchTask):
 
     name = "matrix_det_nxn"
     size_params = [2, 3, 4, 5]
+    stress_size_params = (6,)
 
     def run_alkahest(self, size: int) -> Any:
         import alkahest
@@ -865,29 +872,148 @@ class HomotopySeparateQuadratics(BenchTask):
 
 
 # ---------------------------------------------------------------------------
+# Extra tasks — collect / PRS / modular factor / expand
+# ---------------------------------------------------------------------------
+
+
+class CollectLikeTermsMixed(BenchTask):
+    """``collect_like_terms`` on a sum of ``size`` linear terms in ``x``."""
+
+    name = "collect_like_terms_mixed"
+    size_params = [8, 32, 64, 128]
+    stress_size_params = (192, 256)
+
+    def run_alkahest(self, size: int) -> Any:
+        import alkahest
+
+        p = alkahest.ExprPool()
+        x = p.symbol("x")
+        acc = p.integer(0)
+        for i in range(size):
+            c = p.integer((i % 7) + 1)
+            acc = acc + c * x
+        return alkahest.collect_like_terms(acc).value
+
+    def run_sympy(self, size: int) -> Any:
+        import sympy as sp  # type: ignore[import]
+
+        x = sp.Symbol("x")
+        expr = sum(((i % 7) + 1) * x for i in range(size))
+        return sp.collect(expr, x)
+
+
+class SubresultantChain(BenchTask):
+    """Length of the subresultant PRS for two degree-``size`` polynomials."""
+
+    name = "subresultant_chain"
+    size_params = [4, 8, 12, 16]
+    stress_size_params = (24,)
+
+    def run_alkahest(self, size: int) -> Any:
+        import alkahest
+
+        p = alkahest.ExprPool()
+        x = p.symbol("x")
+        one = p.integer(1)
+        f = x**size + x + one
+        g = x**size - x - one
+        seq = alkahest.subresultant_prs(f, g, x)
+        return len(seq)
+
+    def run_sympy(self, size: int) -> Any:
+        import sympy as sp  # type: ignore[import]
+        from sympy.polys.subresultants_qq_zz import subresultants_rem  # type: ignore[import]
+
+        x = sp.Symbol("x")
+        f = x**size + x + 1
+        g = x**size - x - 1
+        return len(subresultants_rem(f, g, x))
+
+
+class FactorUniModP(BenchTask):
+    """Factor ``1 + x^size`` over ``GF(101)`` via FLINT / dense SymPy."""
+
+    name = "factor_univariate_mod_p"
+    size_params = [4, 8, 16, 32]
+    stress_size_params = (48, 64)
+    _P = 101
+
+    def run_alkahest(self, size: int) -> Any:
+        import alkahest
+
+        coeffs = [1] + [0] * (size - 1) + [1] if size > 0 else [2]
+        return alkahest.factor_univariate_mod_p(coeffs, self._P)
+
+    def run_sympy(self, size: int) -> Any:
+        import sympy as sp  # type: ignore[import]
+
+        x = sp.Symbol("x")
+        poly = x**size + 1
+        return sp.factor(poly, modulus=self._P)
+
+
+class ExpandPowerSimplify(BenchTask):
+    """Build the fully expanded ``(x+1)^size`` via binomial coefficients, then collect."""
+
+    name = "expand_power_simplify"
+    size_params = [6, 10, 14, 18]
+    stress_size_params = (22, 26)
+
+    def run_alkahest(self, size: int) -> Any:
+        import math
+
+        import alkahest
+
+        p = alkahest.ExprPool()
+        x = p.symbol("x")
+        terms = [p.integer(math.comb(size, k)) * (x ** k) for k in range(size + 1)]
+        poly = _balanced_sum(terms)
+        return alkahest.collect_like_terms(poly).value
+
+    def run_sympy(self, size: int) -> Any:
+        import sympy as sp  # type: ignore[import]
+
+        x = sp.Symbol("x")
+        return sp.expand((x + 1) ** size)
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
 ALL_TASKS: list[BenchTask] = [
+    # Differentiation / series / limits / integration
     DegreeNPolyDiff(),
-    TrigIdentitySimplify(),
-    JacobianNxN(),
-    BallSinCos(),
-    ODEJITCompile(),
-    SolveCircleLine(),
-    Solve6rIk(),
-    HomotopySeparateQuadratics(),
-    SparseInterpVsDense(),
-    SparseInterpMultivar(),
-    # New comprehensive tasks
     IntegratePoly(),
     SeriesExpansion(),
     LimitComputation(),
-    GradientNVar(),
-    MatrixDetNxN(),
+    # Polynomials & rational functions
+    DegreeNPolyGCD(),
+    RationalSimplification(),
+    ResultantPoly(),
+    SubresultantChain(),
+    FactorUniModP(),
     RealRootsPoly(),
     HornerFormPoly(),
+    ExpandPowerSimplify(),
+    # Linear algebra & AD-style
+    JacobianNxN(),
+    GradientNVar(),
+    MatrixDetNxN(),
+    # Simplification families
+    TrigIdentitySimplify(),
     LogExpSimplify(),
-    ResultantPoly(),
+    CollectLikeTermsMixed(),
+    # Solvers & decomposition
+    SolveCircleLine(),
+    Solve6rIk(),
+    HomotopySeparateQuadratics(),
+    # Rigorous & numeric paths
+    BallSinCos(),
+    ODEJITCompile(),
+    # Interpolation
+    SparseInterpVsDense(),
+    SparseInterpMultivar(),
+    # Recurrences
     RecurrenceSolve(),
 ]

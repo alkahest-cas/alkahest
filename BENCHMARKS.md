@@ -120,6 +120,93 @@ for derivation-log overhead.
 
 ---
 
+## Cross-CAS benchmarks (`benchmarks/cas_comparison.py`)
+
+This driver times the **same symbolic workloads** from `benchmarks/tasks.py`
+against **Alkahest** (Rust core + PyO3), **SymPy** (always available if
+installed), and — when backends are present — **SageMath**, **Wolfram Engine /
+Mathematica** (via `wolframclient`), **SymEngine**, and **Maple**.  Optional
+adapters are discovered at runtime; missing systems are skipped and show up as
+gaps in the Markdown report.
+
+Each task implements `run_alkahest` and usually `run_sympy`.  Competitor-only
+code paths live under `benchmarks/competitors/` as `bench_<task_name>` methods
+on `CASAdapter` subclasses.
+
+### Install notes (competitors)
+
+| System | Typical install / env |
+|--------|----------------------|
+| SymPy | `pip install sympy` (also pulled in by dev deps) |
+| SageMath | `pip install sagemath-standard` or system `sage` |
+| Mathematica / Wolfram Engine | Install Wolfram Engine; `pip install wolframclient`; optional `WOLFRAM_KERNEL` |
+| SymEngine | `pip install symengine` |
+| Maple | `maple` on `PATH` |
+
+### Depth / workload controls
+
+Use **`--depth`** to choose how hard each run is: which **problem sizes** are
+taken from each task’s `size_params`, optional **extra stress sizes**
+(`stress_size_params` on a task, used only for `depth=stress`), and the
+**`timeit.repeat` / `timeit.number`** settings.
+
+| Profile | Sizes per task | repeat × number (defaults) |
+|---------|----------------|---------------------------|
+| `smoke` | smallest only | 1 × 1 |
+| `quick` | smallest + largest | 2 × 1 |
+| `standard` | full `size_params` | 3 × 1 |
+| `deep` | full `size_params` | 5 × 2 |
+| `stress` | `size_params` ∪ `stress_size_params` | 7 × 3 |
+
+Override timing only:
+
+```bash
+python benchmarks/cas_comparison.py --depth standard --repeat 5 --number 2
+```
+
+Override **every** task’s sizes (ignores `--depth` size selection, but keeps timing from `--depth` unless `--repeat` / `--number` are set):
+
+```bash
+python benchmarks/cas_comparison.py --sizes 8,16,32
+```
+
+### Run
+
+```bash
+# After `maturin develop --release` (and `--features groebner` for solve / homotopy tasks)
+python benchmarks/cas_comparison.py --depth standard
+
+# SymPy + Alkahest only, one task, smoke depth
+python benchmarks/cas_comparison.py --depth smoke --tasks poly_diff --systems alkahest,sympy
+
+# Add Sage, Mathematica, SymEngine, Maple when available (see competitors package)
+python benchmarks/cas_comparison.py --depth deep --competitors --systems alkahest,sympy
+```
+
+JSONL rows include `depth`, `timeit_repeat`, and `timeit_number` so archived
+results stay self-describing.
+
+### Task catalogue (`ALL_TASKS`)
+
+Rough coverage (see `benchmarks/tasks.py` for exact `size_params`):
+
+| Area | Tasks |
+|------|--------|
+| Calculus | `poly_diff`, `integrate_poly`, `series_expansion`, `limit_computation`, `gradient_nvar` |
+| Polynomials | `poly_gcd`, `rational_simplify`, `resultant_poly`, `subresultant_chain`, `factor_univariate_mod_p`, `real_roots_poly`, `horner_form_poly`, `expand_power_simplify` |
+| Linear algebra | `jacobian_nxn`, `matrix_det_nxn` |
+| Simplification | `trig_identity`, `log_exp_simplify`, `collect_like_terms_mixed` |
+| Solvers / decomposition | `solve_circle_line`, `solve_6r_ik`, `numerical_homotopy` |
+| Rigorous / fast eval | `ball_sin_cos`, `poly_jit_eval` |
+| Interpolation | `sparse_interp_univariate`, `sparse_interp_multivar` |
+| Recurrences | `recurrence_solve` |
+
+Some tasks need **optional** Alkahest features (`groebner`, `jit`, …); they
+surface as `not_implemented` in the JSONL when the wheel was built without
+them.
+
+---
+
 ## Profiling beyond benchmarks
 
 ### Flame graph (Linux)

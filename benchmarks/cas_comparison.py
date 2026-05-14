@@ -7,7 +7,8 @@ SymPy, records timings in JSONL, and emits a Markdown report.
 
 Usage
 -----
-    python benchmarks/cas_comparison.py [--sizes 5,10,20] [--output results.jsonl] [--report report.md]
+    python benchmarks/cas_comparison.py [--depth standard|smoke|quick|deep|stress] \\
+        [--repeat N] [--number N] [--sizes 5,10,20] [--output results.jsonl] [--report report.md]
 
 The script is self-contained and imports ``alkahest`` from the installed
 package (run ``maturin develop`` first).
@@ -38,8 +39,10 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from bench_depth import get_profile, sizes_for_task
     from tasks import ALL_TASKS, BenchTask
 except ImportError:
+    from benchmarks.bench_depth import get_profile, sizes_for_task
     from benchmarks.tasks import ALL_TASKS, BenchTask
 
 # ---------------------------------------------------------------------------
@@ -47,8 +50,11 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 _SYSTEMS = ["alkahest", "sympy"]
-_DEFAULT_REPEAT = 3
-_DEFAULT_NUMBER = 1
+
+# Updated per-run from CLI via :func:`_timing_state`
+_TIMING_REPEAT = 3
+_TIMING_NUMBER = 1
+_DEPTH_KEY = "standard"
 
 # V1-13: competitor adapters (available only if RUN_COMMERCIAL_CAS env var is set
 # or --competitors flag is passed)
@@ -74,6 +80,9 @@ def _run_once(task: BenchTask, system: str, size: int) -> dict[str, Any]:
             "task": task.name,
             "system": system,
             "size": size,
+            "depth": _DEPTH_KEY,
+            "timeit_repeat": _TIMING_REPEAT,
+            "timeit_number": _TIMING_NUMBER,
             "wall_ms": None,
             "ok": False,
             "error": "not_implemented",
@@ -85,14 +94,17 @@ def _run_once(task: BenchTask, system: str, size: int) -> dict[str, Any]:
         # Time
         times = timeit.repeat(
             lambda: run_fn(size),
-            repeat=_DEFAULT_REPEAT,
-            number=_DEFAULT_NUMBER,
+            repeat=_TIMING_REPEAT,
+            number=_TIMING_NUMBER,
         )
         wall_ms = min(times) * 1000.0
         return {
             "task": task.name,
             "system": system,
             "size": size,
+            "depth": _DEPTH_KEY,
+            "timeit_repeat": _TIMING_REPEAT,
+            "timeit_number": _TIMING_NUMBER,
             "wall_ms": round(wall_ms, 4),
             "ok": True,
         }
@@ -101,6 +113,9 @@ def _run_once(task: BenchTask, system: str, size: int) -> dict[str, Any]:
             "task": task.name,
             "system": system,
             "size": size,
+            "depth": _DEPTH_KEY,
+            "timeit_repeat": _TIMING_REPEAT,
+            "timeit_number": _TIMING_NUMBER,
             "wall_ms": None,
             "ok": False,
             "error": "not_implemented",
@@ -110,6 +125,9 @@ def _run_once(task: BenchTask, system: str, size: int) -> dict[str, Any]:
             "task": task.name,
             "system": system,
             "size": size,
+            "depth": _DEPTH_KEY,
+            "timeit_repeat": _TIMING_REPEAT,
+            "timeit_number": _TIMING_NUMBER,
             "wall_ms": None,
             "ok": False,
             "error": traceback.format_exception_only(type(exc), exc)[0].strip(),
@@ -120,11 +138,16 @@ def run_all(
     tasks: list[BenchTask],
     systems: list[str] = _SYSTEMS,
     sizes: list[int] | None = None,
+    depth_key: str | None = None,
 ) -> list[dict[str, Any]]:
     """Run all (task, system, size) combinations and return result dicts."""
     results = []
+    dkey = depth_key or _DEPTH_KEY
     for task in tasks:
-        task_sizes = sizes if sizes is not None else task.size_params
+        if sizes is not None:
+            task_sizes = sizes
+        else:
+            task_sizes = sizes_for_task(task, dkey)
         for size in task_sizes:
             for system in systems:
                 print(
@@ -272,13 +295,41 @@ def _parse_sizes(s: str) -> list[int]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    global _TIMING_REPEAT, _TIMING_NUMBER, _DEPTH_KEY
+
     parser = argparse.ArgumentParser(description="Alkahest cross-CAS benchmark driver")
+    parser.add_argument(
+        "--depth",
+        type=str,
+        default="standard",
+        choices=["smoke", "quick", "standard", "deep", "stress"],
+        help=(
+            "Workload profile: sizes per task + timeit.repeat/number — "
+            "smoke (minimal), quick (min+max size), standard (default), "
+            "deep (more repeats), stress (adds stress_size_params on tasks). "
+            "Ignored for sizes when --sizes is set."
+        ),
+    )
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Override timeit.repeat count (default comes from --depth)",
+    )
+    parser.add_argument(
+        "--number",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Override timeit.number (loops inside each repeat; default from --depth)",
+    )
     parser.add_argument(
         "--sizes",
         type=_parse_sizes,
         default=None,
         metavar="N,M,…",
-        help="Comma-separated list of sizes to run (overrides per-task defaults)",
+        help="Comma-separated list of sizes to run for every task (overrides --depth size selection)",
     )
     parser.add_argument(
         "--output",
@@ -320,6 +371,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    prof = get_profile(args.depth)
+    _DEPTH_KEY = prof.key
+    _TIMING_REPEAT = prof.repeat if args.repeat is None else max(1, args.repeat)
+    _TIMING_NUMBER = prof.number if args.number is None else max(1, args.number)
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     if args.gpu:
@@ -355,8 +411,16 @@ def main(argv: list[str] | None = None) -> int:
         except ImportError as e:
             print(f"Warning: could not load competitor adapters: {e}", file=sys.stderr)
 
-    print(f"Running {len(tasks)} task(s) × {len(systems)} system(s)")
-    results = run_all(tasks, systems=systems, sizes=args.sizes)
+    print(
+        f"Running {len(tasks)} task(s) × {len(systems)} system(s) "
+        f"(depth={_DEPTH_KEY}, timeit repeat={_TIMING_REPEAT}, number={_TIMING_NUMBER})"
+    )
+    results = run_all(
+        tasks,
+        systems=systems,
+        sizes=args.sizes,
+        depth_key=None if args.sizes is not None else _DEPTH_KEY,
+    )
 
     write_jsonl(results, args.output)
     write_report(results, args.report)
