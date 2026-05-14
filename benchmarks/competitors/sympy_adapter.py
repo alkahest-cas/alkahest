@@ -130,6 +130,69 @@ class SymPyAdapter(CASAdapter):
             eq = a(n_sym + 2) - a(n_sym + 1) - a(n_sym)
             return str(sp.rsolve(eq, a(n_sym), {a(0): 1, a(1): 1}))
 
+    def bench_poly_gcd(self, size: int) -> Any:
+        import sympy as sp
+        x = sp.Symbol("x")
+        return str(sp.gcd(x**size - 1, x ** (size // 2) - 1))
+
+    def bench_rational_simplify(self, size: int) -> Any:
+        import sympy as sp
+        x = sp.Symbol("x")
+        return str(sp.simplify((x**size - 1) / (x - 1)))
+
+    def bench_solve_6r_ik(self, size: int) -> Any:
+        import sympy as sp
+        x, y = sp.symbols("x y")
+        g = sp.groebner([x**2 + y**2 - size**2, y - x], y, x, order="lex")
+        return [str(p) for p in g.polys]
+
+    def bench_sparse_interp_univariate(self, size: int) -> Any:
+        """Dense evaluation baseline (mirrors :meth:`SparseInterpVsDense.run_sympy`)."""
+        p = 32749
+        step = 500 // max(size, 1)
+        terms = [(i + 1, (i + 1) * step) for i in range(size)]
+
+        def f(x: int) -> int:
+            return sum(c * pow(x, e, p) for c, e in terms) % p
+
+        d = 500
+        pts = list(range(1, d + 2))
+        return [f(x) for x in pts]
+
+    def bench_sparse_interp_multivar(self, size: int) -> Any:
+        degree = 3
+        return (degree + 1) ** size
+
+    def bench_numerical_homotopy(self, size: int) -> Any:
+        import sympy as sp
+        xs = sp.symbols(" ".join(f"x{i}" for i in range(size)))
+        eqs = [xs[i] ** 2 - 1 for i in range(size)]
+        return sp.solve(eqs, xs)
+
+    def bench_collect_like_terms_mixed(self, size: int) -> Any:
+        import sympy as sp
+        x = sp.Symbol("x")
+        expr = sum(((i % 7) + 1) * x for i in range(size))
+        return str(sp.collect(expr, x))
+
+    def bench_subresultant_chain(self, size: int) -> Any:
+        import sympy as sp
+        from sympy.polys.subresultants_qq_zz import subresultants_rem
+        x = sp.Symbol("x")
+        f = x**size + x + 1
+        g = x**size - x - 1
+        return len(subresultants_rem(f, g, x))
+
+    def bench_factor_univariate_mod_p(self, size: int) -> Any:
+        import sympy as sp
+        x = sp.Symbol("x")
+        return str(sp.factor(x**size + 1, modulus=101))
+
+    def bench_expand_power_simplify(self, size: int) -> Any:
+        import sympy as sp
+        x = sp.Symbol("x")
+        return str(sp.expand((x + 1) ** size))
+
     # ── Legacy names ─────────────────────────────────────────────────────────
 
     def bench_integrate(self, size: int) -> Any:

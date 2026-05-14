@@ -89,3 +89,71 @@ class SymEngineAdapter(CASAdapter):
             return se.series(se.sin(x), x, 0, size)
         except AttributeError:
             raise NotImplementedError("symengine.series not available in this version")
+
+    def bench_limit_computation(self, size: int) -> Any:
+        raise NotImplementedError("symengine limit")
+
+    def bench_matrix_det_nxn(self, size: int) -> Any:
+        import symengine as se
+        rows = [[se.Symbol(f"a{i}{j}") for j in range(size)] for i in range(size)]
+        m = se.DenseMatrix(size, size, [rows[i][j] for i in range(size) for j in range(size)])
+        return m.det()
+
+    def bench_poly_gcd(self, size: int) -> Any:
+        raise NotImplementedError("symengine gcd")
+
+    def bench_real_roots_poly(self, size: int) -> Any:
+        raise NotImplementedError("symengine real root isolation")
+
+    def bench_horner_form_poly(self, size: int) -> Any:
+        raise NotImplementedError("symengine horner")
+
+    def bench_log_exp_simplify(self, size: int) -> Any:
+        raise NotImplementedError("symengine log-exp simplification")
+
+    def bench_resultant_poly(self, size: int) -> Any:
+        raise NotImplementedError("symengine resultant")
+
+    def bench_recurrence_solve(self, size: int) -> Any:
+        raise NotImplementedError("symengine recurrence")
+
+    def bench_solve_6r_ik(self, size: int) -> Any:
+        raise NotImplementedError("symengine groebner")
+
+    def bench_sparse_interp_univariate(self, size: int) -> Any:
+        p = 32749
+        step = 500 // max(size, 1)
+        terms = [(i + 1, (i + 1) * step) for i in range(size)]
+
+        def f(x: int) -> int:
+            return sum(c * pow(x, e, p) for c, e in terms) % p
+
+        return [f(x) for x in range(1, 503)]
+
+    def bench_sparse_interp_multivar(self, size: int) -> Any:
+        return (3 + 1) ** size
+
+    def bench_numerical_homotopy(self, size: int) -> Any:
+        raise NotImplementedError("symengine solve")
+
+    def bench_rational_simplify(self, size: int) -> Any:
+        raise NotImplementedError("symengine rational simplify")
+
+    def bench_collect_like_terms_mixed(self, size: int) -> Any:
+        import symengine as se
+        x = se.Symbol("x")
+        expr = sum(((i % 7) + 1) * x for i in range(size))
+        return se.expand(expr)
+
+    def bench_subresultant_chain(self, size: int) -> Any:
+        raise NotImplementedError("symengine subresultant PRS length")
+
+    def bench_factor_univariate_mod_p(self, size: int) -> Any:
+        raise NotImplementedError("symengine factor mod p")
+
+    def bench_expand_power_simplify(self, size: int) -> Any:
+        import symengine as se
+        import math
+        x = se.Symbol("x")
+        poly = sum(math.comb(size, k) * x**k for k in range(size + 1))
+        return se.expand(poly)

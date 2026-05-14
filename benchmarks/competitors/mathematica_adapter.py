@@ -192,6 +192,48 @@ class MathematicaAdapter(CASAdapter):
                 "RSolve[{a[n] == a[n-1] + a[n-2], a[0] == 1, a[1] == 1}, a[n], n]"
             )
 
+    def bench_poly_gcd(self, size: int) -> Any:
+        return self._wl(f"PolynomialGCD[x^{size} - 1, x^{size // 2} - 1]")
+
+    def bench_rational_simplify(self, size: int) -> Any:
+        return self._wl(f"Simplify[(x^{size} - 1)/(x - 1)]")
+
+    def bench_solve_6r_ik(self, size: int) -> Any:
+        return self._wl(
+            f"GroebnerBasis[{{x^2 + y^2 - {size}^2, y - x}}, {{y, x}}, "
+            "MonomialOrder -> Lexicographic]"
+        )
+
+    def bench_sparse_interp_univariate(self, size: int) -> Any:
+        p = 32749
+        step = 500 // max(size, 1)
+        sum_part = "+".join(f"({i + 1})*x^{(i + 1) * step}" for i in range(size))
+        return self._wl(f"Length[Table[Mod[{sum_part}, {p}], {{x, 1, 502}}]]")
+
+    def bench_sparse_interp_multivar(self, size: int) -> Any:
+        return self._wl(f"{4**size}")
+
+    def bench_numerical_homotopy(self, size: int) -> Any:
+        vars_list = ", ".join(f"x{i}" for i in range(size))
+        eqs = ", ".join(f"x{i}^2 - 1" for i in range(size))
+        return self._wl(f"NSolve[{{{eqs}}}, {{{vars_list}}}]")
+
+    def bench_collect_like_terms_mixed(self, size: int) -> Any:
+        parts = " + ".join(f"{(i % 7) + 1}*x" for i in range(size))
+        return self._wl(f"Collect[{parts}, x]")
+
+    def bench_subresultant_chain(self, size: int) -> Any:
+        return self._wl(
+            f"Length[SubresultantPolynomialRemainders[x^{size} + x + 1, "
+            f"x^{size} - x - 1, x]]"
+        )
+
+    def bench_factor_univariate_mod_p(self, size: int) -> Any:
+        return self._wl(f"Factor[x^{size} + 1, Modulus -> 101]")
+
+    def bench_expand_power_simplify(self, size: int) -> Any:
+        return self._wl(f"Expand[(x + 1)^{size}]")
+
     # ── Legacy names ─────────────────────────────────────────────────────────
 
     def bench_integrate(self, size: int) -> Any:
@@ -207,9 +249,6 @@ class MathematicaAdapter(CASAdapter):
         return self._wl(
             "GroebnerBasis[{x^2 + y^2 - 1, x - y}, {x, y}, MonomialOrder -> Lexicographic]"
         )
-
-    def bench_poly_gcd(self, size: int) -> Any:
-        return self._wl(f"PolynomialGCD[x^{size} - 1, x^{size // 2} - 1]")
 
     def bench_jacobian(self, size: int) -> Any:
         return self._wl("D[{Sin[x*y], Cos[x+y], Exp[x-y]}, {{x, y}}]")
