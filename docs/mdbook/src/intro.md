@@ -34,4 +34,4 @@ A general-purpose symbolic math library designed around three axes:
 
 ## This guide
 
-The guide covers the Rust-level design concepts. For the Python API reference see the Sphinx docs alongside this guide.
+The guide covers the Rust-level design concepts. For the generated **Python API reference** (Sphinx), see the [API documentation](https://alkahest-cas.github.io/alkahest/api/).

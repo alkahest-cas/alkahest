@@ -8,6 +8,8 @@ Testing a Computer Algebra System (CAS) with a Rust core, Python API, C math bac
 
 This document outlines the tools we use, the invariants we test, and how our Continuous Integration (CI) pipeline is structured.
 
+**Correctness vs performance.** The SymPy-backed oracle suite below checks that answers agree mathematically. It does **not** assert anything about runtime. Basic **wall-clock comparisons** against SymPy (and optional other CAS backends when installed) live in [`benchmarks/cas_comparison.py`](benchmarks/cas_comparison.py); see [`BENCHMARKS.md`](BENCHMARKS.md) for how to run them and interpret depth/size flags. CI’s benchmark job records those timings as artifacts for regression triage; they are informational and do not replace correctness tests.
+
 ---
 
 ## 1. Property-Based Testing (PBT)
@@ -75,7 +77,9 @@ Valgrind is used exclusively on the Rust/C FFI layer (bypassing Python/PyO3 to a
 To guarantee our symbolic engine is structurally sound against industry standards, we run an Integration Oracle Suite. 
 
 * **The Process**: We generate thousands of complex algebraic expressions and run them through our system, then run the exact same operations through `SymPy` (our oracle).
-* **Verification**: We compute `simplify(OurAnswer - SymPyAnswer)`. The result must be exactly `0`. 
+* **Verification**: We compute `simplify(OurAnswer - SymPyAnswer)`. The result must be exactly `0`.
+
+SymPy is reused in a different role in **`benchmarks/cas_comparison.py`**: the same task is timed in Alkahest and SymPy so regressions in **performance** (not truth) are visible when someone inspects benchmark output or artifacts. That is complementary to this oracle, not a substitute for it.
 
 ---
 
@@ -100,6 +104,7 @@ Given the computational expense of fuzzing and PBT, our GitHub Actions / CI pipe
   * **Deep PBT**: `proptest` and `hypothesis` configured to run millions of iterations.
   * **Valgrind Analysis**: Full memory profile of the Rust/C boundary.
   * **Oracle Testing**: Comparison of 10,000+ complex AST derivations against SymPy.
+  * **Benchmark artifacts**: Criterion HTML + `cas_comparison.py` JSONL/Markdown (Alkahest vs SymPy and any available competitor adapters) for performance tracking; see `BENCHMARKS.md`.
   * **Lean 4 Proof Verification**: Generates output theorems and formally verifies them via the `lean` compiler.
 
 ---

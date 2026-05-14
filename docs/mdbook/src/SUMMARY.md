@@ -2,6 +2,7 @@
 
 - [Introduction](./intro.md)
 - [Getting started](./getting-started.md)
+- [Python API reference](https://alkahest-cas.github.io/alkahest/api/)
 - [Kernel design](./kernel.md)
 - [Expression representations](./representations.md)
 - [Parsing from strings](./parsing.md)
