@@ -254,13 +254,12 @@ class TestDiff:
         with pytest.raises(ValueError, match="cannot differentiate"):
             raise ValueError("cannot differentiate unknown function 'zeta'")
 
-    def test_diff_log_has_power_and_simplify_steps(self):
+    def test_diff_log_has_univariate_poly_step(self):
+        # sin(x^2): chain rule emits diff_sin + diff_univariate_poly (fast-path for ℤ-polys).
         x = self.x
-        pool = self.pool
-        f = x**2 + pool.integer(0)
-        r = diff(f, x)
+        r = diff(sin(x**2), x)
         rules = [s["rule"] for s in r.steps]
-        assert "power_rule" in rules
+        assert "diff_univariate_poly" in rules
         assert len(rules) > 1
 
     def test_derived_result_repr(self):

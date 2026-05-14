@@ -95,10 +95,7 @@ fn diff_poly_try_univariate_fastpath(
     // Skip atoms so simple cases keep their dedicated log rules (`diff_identity`, `diff_const`, …).
     if matches!(
         pool.get(expr),
-        ExprData::Symbol { .. }
-            | ExprData::Integer(_)
-            | ExprData::Rational(_)
-            | ExprData::Float(_)
+        ExprData::Symbol { .. } | ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_)
     ) {
         return None;
     }

@@ -444,11 +444,7 @@ impl UniPoly {
                     c_id
                 } else {
                     let exp_id = pool.integer(deg as i64);
-                    let x_pow = if deg == 1 {
-                        var
-                    } else {
-                        pool.pow(var, exp_id)
-                    };
+                    let x_pow = if deg == 1 { var } else { pool.pow(var, exp_id) };
                     if *coeff == 1 {
                         x_pow
                     } else if *coeff == -1 {
