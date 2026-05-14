@@ -452,9 +452,7 @@ class SparseInterpMultivar(BenchTask):
     """
 
     name = "sparse_interp_multivar"
-    # size=20 took ~44_800 ms (super-exponential in n_vars with current Zippel/Ben–Or–Tiwari scheduling);
-    # keep benchmarks/CI bounded at 10 until alkahest-core/src/poly/interp.rs is reworked.
-    size_params = [2, 5, 10]
+    size_params = [2, 5, 10, 20]
 
     _PRIME = 32749
     _TERMS_PER_SIZE = {2: 3, 5: 5, 10: 10, 20: 15}
