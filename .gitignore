@@ -26,9 +26,13 @@ fuzz/artifacts/
 # Docs builds
 docs/sphinx/_build/
 docs/mdbook/book/
+# GitHub Pages bundle (built in CI; sphinx-build / mdbook output)
+_site/
+
 
 # Benchmark results (generated output — not source)
 benchmarks/results/
+agent-benchmark/results/
 
 # Criterion benchmark output (written into target/ which is already ignored)
 **/criterion/
