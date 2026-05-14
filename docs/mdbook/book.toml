@@ -7,4 +7,4 @@ title = "Alkahest — User Guide"
 [output.html]
 default-theme = "light"
 preferred-dark-theme = "navy"
-git-repository-url = "https://github.com/alkahest/alkahest"
+git-repository-url = "https://github.com/alkahest-cas/alkahest"

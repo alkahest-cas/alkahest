@@ -2,35 +2,51 @@
 
 ## Install
 
-Alkahest is built with [maturin](https://github.com/PyO3/maturin).
+### PyPI (recommended)
+
+Alkahest is on the [Python Package Index](https://pypi.org/project/alkahest/):
+
+```bash
+pip install alkahest
+```
+
+Default wheels omit the LLVM JIT feature so installs stay small and avoid a runtime dependency on LLVM. Numeric APIs still work through the interpreter; for native LLVM CPU JIT, use an opt-in JIT-enabled wheel or [build from source](#from-source) (see also the project `README` on GitHub).
+
+**JIT-enabled wheels (optional):** tagged releases attach Linux manylinux `+jit` wheels on [GitHub Releases](https://github.com/alkahest-cas/alkahest/releases). Install the `.whl` whose tags match your Python and platform, or build from source on macOS and Windows where JIT wheels are not built in CI yet.
+
+### From source
+
+For optional Cargo features (`jit`, `groebner`, `cuda`, …), GPU/NVPTX, or development, build the PyO3 extension with [maturin](https://github.com/PyO3/maturin).
+
+Prerequisites (typical): **Rust** stable (≥ 1.76) and nightly, **LLVM 15**, **FLINT** (≥ 2.9, pulls in GMP/MPFR). See the repository `README` for distro-specific package names.
 
 ```bash
 pip install maturin
-git clone https://github.com/alkahest/alkahest
+git clone https://github.com/alkahest-cas/alkahest.git
 cd alkahest
-maturin develop --release
+maturin develop --manifest-path alkahest-py/Cargo.toml --release
 ```
 
-To enable optional features:
+Optional features (combine as needed):
 
 ```bash
 # LLVM JIT for native compiled evaluation
-maturin develop --release --features jit
+maturin develop --manifest-path alkahest-py/Cargo.toml --release --features jit
 
 # E-graph simplification (egglog)
-maturin develop --release --features egraph
+maturin develop --manifest-path alkahest-py/Cargo.toml --release --features egraph
 
 # Parallel simplification (sharded ExprPool)
-maturin develop --release --features parallel
+maturin develop --manifest-path alkahest-py/Cargo.toml --release --features parallel
 
-# Gröbner basis solver
-maturin develop --release --features groebner
+# Gröbner basis solver (+ Diophantine / homotopy-related paths)
+maturin develop --manifest-path alkahest-py/Cargo.toml --release --features groebner
 
 # CUDA / NVPTX codegen (requires CUDA toolkit and LLVM with NVPTX target)
-maturin develop --release --features cuda
+maturin develop --manifest-path alkahest-py/Cargo.toml --release --features cuda
 
-# Full build (all optional features except cuda/rocm)
-maturin develop --release --features "jit egraph parallel groebner"
+# Full native build (all optional features above; add cuda separately if needed)
+maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel egraph jit groebner"
 ```
 
 ## First steps
@@ -148,12 +164,14 @@ with alkahest.context(pool=pool, simplify=True):
 
 ## Running the examples
 
-The `examples/` directory has runnable end-to-end scripts:
+The `examples/` directory in the Git repository has runnable end-to-end scripts. With `alkahest` installed (`pip install alkahest` or `maturin develop` as above), from the repository root run:
 
 ```bash
-PYTHONPATH=python python examples/calculus.py
-PYTHONPATH=python python examples/polynomials.py
-PYTHONPATH=python python examples/jit_eval.py
-PYTHONPATH=python python examples/ball_arithmetic.py
-PYTHONPATH=python python examples/ode_modeling.py
+python examples/calculus.py
+python examples/polynomials.py
+python examples/jit_eval.py
+python examples/ball_arithmetic.py
+python examples/ode_modeling.py
 ```
+
+If you are developing without installing the extension into the active environment, set `PYTHONPATH=python` so the pure-Python package is importable alongside your build.

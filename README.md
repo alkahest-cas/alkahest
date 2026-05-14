@@ -8,6 +8,8 @@
 
 A high-performance computer algebra system for Python built for both humans and agents. Symbolic operations run orders of magnitude faster than SymPy and can run on modern accelerated hardware. Every computation produces a derivation log; a meaningful subset can export Lean 4 proofs for independent verification.
 
+**Install:** the package is published on [PyPI](https://pypi.org/project/alkahest/); use `pip install alkahest` (Python ≥ 3.9). See [Install](#install) below for optional LLVM JIT wheels and building from source.
+
 **Stack:** Rust kernel → FLINT/Arb (polynomials, ball arithmetic) → egglog (e-graph simplification) → MLIR/LLVM (native and GPU codegen) → PyO3 → Python
 
 ---

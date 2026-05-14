@@ -2,6 +2,8 @@
 
 Alkahest is a high-performance computer algebra system with a Rust core and Python API.
 
+**Install from PyPI:** `pip install alkahest` (Python ≥ 3.9). The [Getting started](./getting-started.md) chapter covers release wheels, optional JIT-enabled builds, and compiling from source for development.
+
 ## What it is
 
 A general-purpose symbolic math library designed around three axes:
