@@ -21,6 +21,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Built in docs.yml for Pages; committing it bloats the repo and drifts from sources.
+      - name: No committed _site/ (generated docs bundle)
+        run: |
+          tracked=$(git ls-files _site || true)
+          if [ -n "$tracked" ]; then
+            echo "::error title=Committed generated site::_site/ must not be tracked. Remove with: git rm -r --cached _site && ensure _site/ is in .gitignore"
+            echo "$tracked"
+            exit 1
+          fi
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
