@@ -155,10 +155,12 @@ jobs:
       - name: maturin develop
         run: maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
 
+      # Scan only sparse_interp tests — full `pytest -m slow` imports every module under
+      # `tests/` during collection (needs hypothesis, sympy, …).
       - name: pytest (slow only)
         env:
           PYTHONUNBUFFERED: "1"
-        run: pytest -m slow --timeout=0 -v
+        run: pytest tests/test_sparse_interp.py -m slow --timeout=0 -v
 
   # ── Tier 2: Nightly integration (cron on main) ─────────────────────────────
   # Split into parallel shards so each GitHub-hosted job stays under the 6 h cap.
