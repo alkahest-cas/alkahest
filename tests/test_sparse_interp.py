@@ -209,6 +209,7 @@ class TestMultivariate:
             assert got_c == ref, f"extra term at exp {exp}: got {got_c}, expected {ref}"
 
     @pytest.mark.slow
+    @pytest.mark.timeout(0)  # many oracle callbacks — exceeds tier1 `--timeout` budget
     def test_roadmap_10var_15term(self):
         """ROADMAP: 10-variable 15-term polynomial, ≥ 95% success over trials."""
         p = 32749
