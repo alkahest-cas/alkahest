@@ -493,7 +493,9 @@ fn poly_squarefree(mut f: Vec<u64>, p: u64) -> Vec<u64> {
 
 fn poly_mul_mod(a: &[u64], b: &[u64], modulo: &[u64], p: u64) -> Vec<u64> {
     let prod = poly_mul(a, b, p);
-    poly_divmod(&prod, modulo, p).map(|(_, r)| r).unwrap_or(vec![0])
+    poly_divmod(&prod, modulo, p)
+        .map(|(_, r)| r)
+        .unwrap_or(vec![0])
 }
 
 /// `base^exp (mod m)` in `F_p[X]`.
@@ -1037,7 +1039,17 @@ fn zippel_helper_multi(
 
     let dim_next = dim * m_count;
     let sub = zippel_helper_multi(
-        &|x_suffix: &[u64]| lifted_eval_union(&x_pts, &joint_exps, eval_multi, prime, dim, m_count, x_suffix),
+        &|x_suffix: &[u64]| {
+            lifted_eval_union(
+                &x_pts,
+                &joint_exps,
+                eval_multi,
+                prime,
+                dim,
+                m_count,
+                x_suffix,
+            )
+        },
         n_vars - 1,
         dim_next,
         term_bound,
@@ -1144,19 +1156,26 @@ fn zippel_helper(
     }
 
     // Step 3: batched Vandermonde lift → single recursion (shared oracle).
-    let eval_multi =
-        |x_rest: &[u64]| -> Vec<u64> {
-            let mut f_vals: Vec<u64> = Vec::with_capacity(t);
-            for &xk in &x1_pts {
-                let mut args = vec![xk];
-                args.extend_from_slice(x_rest);
-                f_vals.push(eval(&args));
-            }
-            vandermonde_solve(&x1_pts, &x1_exps, &f_vals, prime).unwrap_or_else(|| vec![0u64; t])
-        };
+    let eval_multi = |x_rest: &[u64]| -> Vec<u64> {
+        let mut f_vals: Vec<u64> = Vec::with_capacity(t);
+        for &xk in &x1_pts {
+            let mut args = vec![xk];
+            args.extend_from_slice(x_rest);
+            f_vals.push(eval(&args));
+        }
+        vandermonde_solve(&x1_pts, &x1_exps, &f_vals, prime).unwrap_or_else(|| vec![0u64; t])
+    };
 
-    let sub_maps =
-        zippel_helper_multi(&eval_multi, n_vars - 1, t, term_bound, degree_bound, prime, g, rng)?;
+    let sub_maps = zippel_helper_multi(
+        &eval_multi,
+        n_vars - 1,
+        t,
+        term_bound,
+        degree_bound,
+        prime,
+        g,
+        rng,
+    )?;
 
     let mut result: BTreeMap<Vec<u32>, u64> = BTreeMap::new();
     for j in 0..t {
@@ -1659,15 +1678,8 @@ mod tests {
 
         let mut successes = 0usize;
         for seed in [0_u64, 1, 2, 41] {
-            let result = sparse_interpolate(
-                &eval_fn,
-                vs.clone(),
-                n_terms + 5,
-                4,
-                p,
-                seed,
-            )
-            .expect("smoke interpolate should succeed");
+            let result = sparse_interpolate(&eval_fn, vs.clone(), n_terms + 5, 4, p, seed)
+                .expect("smoke interpolate should succeed");
             let mut ok = result.terms.len() == expected.len();
             for (exp, &ec) in &expected {
                 if result.terms.get(exp).copied().unwrap_or(0) != ec {
