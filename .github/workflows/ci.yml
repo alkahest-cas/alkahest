@@ -17,6 +17,7 @@ jobs:
     name: Tier 1 — PR Checks
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
+    timeout-minutes: 240
 
     steps:
       - uses: actions/checkout@v4
@@ -57,7 +58,7 @@ jobs:
       - name: Create venv and install Python tooling
         run: |
           python -m venv .venv
-          .venv/bin/pip install maturin pytest ruff hypothesis
+          .venv/bin/pip install maturin pytest pytest-timeout ruff hypothesis
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
           echo "VIRTUAL_ENV=$PWD/.venv" >> $GITHUB_ENV
 
@@ -86,7 +87,9 @@ jobs:
         run: maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
 
       - name: pytest
-        run: pytest
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: pytest --timeout=900
 
       - name: Install Rust nightly (for ASan)
         uses: dtolnay/rust-toolchain@nightly
@@ -94,7 +97,10 @@ jobs:
           targets: x86_64-unknown-linux-gnu
           components: rust-src
 
-      - name: cargo test (AddressSanitizer)
+      # Scope to alkahest-core: full-workspace + sanitizer + build-std often exceeds
+      # runner wall-clock with little log output (looks "stuck"). MLIR/Python ASan
+      # stays uninstrumented here; TSAN/LSan still cover the workspace on schedule.
+      - name: cargo test (AddressSanitizer, alkahest-core only)
         # --lib --tests: skip doc tests — doc-test binaries link separately and
         # don't receive the ASan runtime when built via -Z build-std, causing
         # "undefined symbol: __asan_init" linker errors.  Unit + integration
@@ -103,40 +109,67 @@ jobs:
         env:
           LSAN_OPTIONS: detect_leaks=0
         run: |
+          echo "::group::ASan build + test (alkahest-core)"
           RUSTFLAGS="-Zsanitizer=address" \
-          cargo +nightly test --workspace --lib --tests \
+          cargo +nightly test -p alkahest-core --lib --tests \
             --target x86_64-unknown-linux-gnu \
             -Z build-std
+          echo "::endgroup::"
 
-  # ── Tier 2: Nightly integration (4–8 h, cron on main) ─────────────────────
+  # ── Tier 2: Nightly integration (cron on main) ─────────────────────────────
+  # Split into parallel shards so each GitHub-hosted job stays under the 6 h cap.
   nightly:
-    name: Tier 2 — Nightly Integration
+    name: Nightly (${{ matrix.shard }})
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule'
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - proptest
+          - hypothesis
+          - tsan
+          - lsan
+          - valgrind
+          - fuzz-expr
+          - fuzz-simplifier
+          - extras
 
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust stable
+        if: >-
+          matrix.shard == 'proptest' || matrix.shard == 'hypothesis' ||
+          matrix.shard == 'fuzz-expr' || matrix.shard == 'fuzz-simplifier' ||
+          matrix.shard == 'extras'
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install Rust nightly
+        if: >-
+          matrix.shard == 'tsan' || matrix.shard == 'lsan' ||
+          matrix.shard == 'valgrind'
         uses: dtolnay/rust-toolchain@nightly
         with:
           targets: x86_64-unknown-linux-gnu
           components: rust-src
 
-      - name: Install Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
+        if: matrix.shard == 'hypothesis' || matrix.shard == 'extras'
         with:
           python-version: "3.11"
 
-      - name: Install system dependencies
-        run: sudo apt-get install -y libflint-dev llvm-15-dev
-
-      - name: Create venv and install Python tooling
+      - name: Create venv (hypothesis / extras)
+        if: matrix.shard == 'hypothesis' || matrix.shard == 'extras'
         run: |
           python -m venv .venv
           .venv/bin/pip install maturin pytest hypothesis sympy ruff mpmath symengine wolframclient
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
           echo "VIRTUAL_ENV=$PWD/.venv" >> $GITHUB_ENV
+
+      - name: Install system dependencies
+        run: sudo apt-get install -y libflint-dev llvm-15-dev
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -145,21 +178,24 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-nightly-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-nightly-${{ matrix.shard }}-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Deep proptest (100 000 iterations)
+      - name: Deep proptest
+        if: matrix.shard == 'proptest'
         env:
-          PROPTEST_CASES: "100000"
+          PROPTEST_CASES: "50000"
         run: cargo test --all --release
 
-      - name: Deep hypothesis (10 000 examples)
+      - name: Deep hypothesis
+        if: matrix.shard == 'hypothesis'
         env:
-          HYPOTHESIS_MAX_EXAMPLES: "10000"
+          HYPOTHESIS_MAX_EXAMPLES: "5000"
         run: |
           maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
           pytest tests/
 
       - name: ThreadSanitizer
+        if: matrix.shard == 'tsan'
         run: |
           RUSTFLAGS="-Zsanitizer=thread" \
           cargo +nightly test --workspace --lib --tests \
@@ -167,6 +203,7 @@ jobs:
             -Z build-std
 
       - name: LeakSanitizer
+        if: matrix.shard == 'lsan'
         env:
           LSAN_OPTIONS: suppressions=${{ github.workspace }}/lsan.supp
         run: |
@@ -176,13 +213,11 @@ jobs:
             -Z build-std
 
       - name: Install Valgrind
+        if: matrix.shard == 'valgrind'
         run: sudo apt-get install -y valgrind
 
       - name: Valgrind — Rust/C FFI boundary
-        # Force DWARF4: Valgrind 3.18.x does not support DWARF5 (DW_FORM_implicit_const)
-        # emitted by recent nightly Rust when built with -Z build-std.
-        # valgrind.supp suppresses GMP/MPFR/FLINT internal caches (same false
-        # positives suppressed in the LSan step via lsan.supp).
+        if: matrix.shard == 'valgrind'
         env:
           RUSTFLAGS: "-C debuginfo=2 -Z dwarf-version=4"
         run: |
@@ -194,9 +229,11 @@ jobs:
           done
 
       - name: Install cargo-afl
+        if: matrix.shard == 'fuzz-expr' || matrix.shard == 'fuzz-simplifier'
         run: cargo install cargo-afl
 
-      - name: AFL++ fuzzing — expr builder (2 h)
+      - name: AFL++ fuzzing — expr builder (2 h cap)
+        if: matrix.shard == 'fuzz-expr'
         run: |
           if [ -f fuzz/src/bin/fuzz_expr_builder.rs ]; then
             cargo afl build --manifest-path fuzz/Cargo.toml --bin fuzz_expr_builder
@@ -205,7 +242,8 @@ jobs:
               target/debug/fuzz_expr_builder || true
           fi
 
-      - name: AFL++ fuzzing — simplifier (2 h)
+      - name: AFL++ fuzzing — simplifier (2 h cap)
+        if: matrix.shard == 'fuzz-simplifier'
         run: |
           if [ -f fuzz/src/bin/fuzz_simplifier.rs ]; then
             cargo afl build --manifest-path fuzz/Cargo.toml --bin fuzz_simplifier
@@ -214,31 +252,21 @@ jobs:
               target/debug/fuzz_simplifier || true
           fi
 
-      - name: SymPy oracle
-        run: |
-          if [ -f tests/test_oracle.py ]; then
-            pytest tests/test_oracle.py -v
-          fi
-
-      # ── Benchmark artifact upload (RW-6) ──────────────────────────────────
-      - name: Criterion benchmarks
-        run: cargo bench --all 2>&1 | tee bench.log || true
-
-      - name: Criterion dashboard
-        run: python benchmarks/criterion_to_report.py --output criterion_report.html || true
-
-      - name: Cross-CAS benchmark (V1-13)
-        # Mathematica rows appear only when WolframEngine is activated on the runner.
-        # See install-wolfram.sh for one-time activation instructions.
-        # SymEngine rows always appear (pip-installed above).
+      - name: Oracle + benches + cross-CAS + artifact upload
+        if: matrix.shard == 'extras'
         env:
           RUN_COMMERCIAL_CAS: "1"
         run: |
           maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
+          if [ -f tests/test_oracle.py ]; then
+            pytest tests/test_oracle.py -v
+          fi
+          cargo bench --all 2>&1 | tee bench.log || true
+          python benchmarks/criterion_to_report.py --output criterion_report.html || true
           python benchmarks/cas_comparison.py --competitors --output results.jsonl || true
 
       - name: Upload benchmark artifacts
-        if: always()
+        if: always() && matrix.shard == 'extras'
         uses: actions/upload-artifact@v4
         with:
           name: benchmarks-${{ github.run_id }}

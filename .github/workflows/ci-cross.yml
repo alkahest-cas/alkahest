@@ -23,6 +23,7 @@ jobs:
   cross:
     name: cross / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     continue-on-error: ${{ matrix.continue-on-error || false }}
     strategy:
       fail-fast: false
@@ -132,12 +133,16 @@ jobs:
         if: matrix.python
         run: |
           python -m venv .venv
-          .venv/bin/pip install maturin pytest hypothesis ruff
+          .venv/bin/pip install maturin pytest pytest-timeout hypothesis ruff
 
       - name: maturin develop
         if: matrix.python
         run: .venv/bin/maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
 
+      # Skip `slow` roadmap stress tests here — they still run on Linux tier1. Keeps macOS
+      # runners within budget (10-var Zippel × 20 seeds is very CPU-heavy on ARM VMs).
       - name: pytest
         if: matrix.python
-        run: .venv/bin/pytest tests/ -x -q
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: .venv/bin/pytest tests/ -m "not slow" -x -q --timeout=600
