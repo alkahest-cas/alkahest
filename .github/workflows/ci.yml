@@ -12,12 +12,12 @@ env:
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  # ── Tier 1: PR checks (< 10 min, every commit) ──────────────────────────────
+  # ── Tier 1a: PR checks (Rust + fast Python; stays well under the 6 h runner cap)
   tier1:
-    name: Tier 1 — PR Checks
+    name: Tier 1a — Rust + fast Python
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
-    timeout-minutes: 240
+    timeout-minutes: 360
 
     steps:
       - uses: actions/checkout@v4
@@ -86,10 +86,10 @@ jobs:
       - name: maturin develop
         run: maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
 
-      - name: pytest
+      - name: pytest (exclude slow sparse-interp roadmap)
         env:
           PYTHONUNBUFFERED: "1"
-        run: pytest --timeout=900
+        run: pytest -m "not slow" --timeout=900
 
       - name: Install Rust nightly (for ASan)
         uses: dtolnay/rust-toolchain@nightly
@@ -115,6 +115,50 @@ jobs:
             --target x86_64-unknown-linux-gnu \
             -Z build-std
           echo "::endgroup::"
+
+  # ── Tier 1b: slow Python integration (roadmap-level sparse_interp); parallel with 1a
+  tier1-python-slow:
+    name: Tier 1b — Python slow tests
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install system dependencies
+        run: sudo apt-get install -y libflint-dev llvm-15-dev
+
+      - name: Create venv and install Python tooling
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install maturin pytest pytest-timeout
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+
+      - name: maturin develop
+        run: maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
+
+      - name: pytest (slow only)
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: pytest -m slow --timeout=0 -v
 
   # ── Tier 2: Nightly integration (cron on main) ─────────────────────────────
   # Split into parallel shards so each GitHub-hosted job stays under the 6 h cap.
