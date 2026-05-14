@@ -17,7 +17,7 @@
 //!     1. Evaluate `f(x₁, a₂, …, aₙ)` at random `aᵢ` and run Ben-Or/Tiwari
 //!        to find the `x₁`-exponent skeleton.
 //!     2. Lift all sibling coefficients simultaneously with one Vandermonde solve
-//!        per oracle call ([`zippel_helper_multi`]) when the stacked vector stays
+//!        per oracle call (`zippel_helper_multi`) when the stacked vector stays
 //!        small (`O(term_bound²)` budget); otherwise recurse per skeleton term like
 //!        classic Zippel.
 //!
@@ -454,8 +454,7 @@ fn poly_derivative(f: &[u64], p: u64) -> Vec<u64> {
         return vec![0];
     }
     let mut out = Vec::with_capacity(f.len() - 1);
-    for k in 1..f.len() {
-        let coeff = f[k];
+    for (k, &coeff) in f.iter().enumerate().skip(1) {
         let d = mul_mod(coeff, k as u64, p);
         out.push(d);
     }
@@ -868,6 +867,7 @@ fn lifted_eval_union(
 
 /// Batched lifting: recover `dim` sibling coefficient polynomials simultaneously.
 /// Each map entry is `sparse exponents → coeff` in the remaining variables only.
+#[allow(clippy::too_many_arguments)] // recursion driver: shared oracle plus dimension bounds
 fn zippel_helper_multi(
     eval_multi: &dyn Fn(&[u64]) -> Vec<u64>,
     n_vars: usize,
@@ -969,10 +969,9 @@ fn zippel_helper_multi(
     // Allow large batched lifts for realistic `term_bound` (~20–50); tighter caps
     // force the scalar fallback whose constant factor dominates on large `n_vars`.
     let vec_budget = term_bound.saturating_mul(512).clamp(8192usize, 131072usize);
-    if dim.checked_mul(m_count).unwrap_or(usize::MAX) > vec_budget {
+    if dim.saturating_mul(m_count) > vec_budget {
         let mut stacked: Vec<BTreeMap<Vec<u32>, u64>> = Vec::with_capacity(dim);
-        for j in 0..dim {
-            let sk = &per_comp_skeletons[j];
+        for (j, sk) in per_comp_skeletons.iter().enumerate().take(dim) {
             if sk.is_empty() {
                 stacked.push(BTreeMap::new());
                 continue;
@@ -1060,15 +1059,14 @@ fn zippel_helper_multi(
     )?;
 
     let mut result: Vec<BTreeMap<Vec<u32>, u64>> = empty_maps();
-    for j in 0..dim {
-        for r in 0..m_count {
+    for (j, res_j) in result.iter_mut().enumerate().take(dim) {
+        for (r, &e1) in joint_exps.iter().enumerate().take(m_count) {
             let slot = j * m_count + r;
-            let e1 = joint_exps[r];
             for (sub_exp, coeff) in &sub[slot] {
                 if *coeff != 0 {
                     let mut full_exp = vec![e1];
                     full_exp.extend_from_slice(sub_exp);
-                    result[j].insert(full_exp, *coeff);
+                    res_j.insert(full_exp, *coeff);
                 }
             }
         }
