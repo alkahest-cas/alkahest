@@ -259,6 +259,14 @@ class ODEJITCompile(BenchTask):
         import numpy as np
         import alkahest
 
+        if not alkahest.jit_is_available():
+            raise NotImplementedError(
+                "LLVM JIT is not available in this build; interpreter-fallback "
+                "results are ~300× slower and not comparable to native code. "
+                "Rebuild with --features jit or install the +jit wheel from "
+                "GitHub Releases."
+            )
+
         p = alkahest.ExprPool()
         x = p.symbol("x")
         terms = [x**k for k in range(size + 1)]
@@ -300,6 +308,12 @@ class SolveCircleLine(BenchTask):
     def run_alkahest(self, size: int) -> Any:
         import alkahest
 
+        if not hasattr(alkahest, "solve"):
+            raise NotImplementedError(
+                "alkahest.solve requires the 'groebner' feature; "
+                "rebuild with: maturin develop --release --features groebner"
+            )
+
         p = alkahest.ExprPool()
         x = p.symbol("x")
         y = p.symbol("y")
@@ -340,6 +354,12 @@ class Solve6rIk(BenchTask):
 
     def run_alkahest(self, size: int) -> Any:
         import alkahest
+
+        if not hasattr(alkahest, "triangularize"):
+            raise NotImplementedError(
+                "alkahest.triangularize requires the 'groebner' feature; "
+                "rebuild with: maturin develop --release --features groebner"
+            )
 
         p = alkahest.ExprPool()
         x = p.symbol("x")
@@ -823,6 +843,12 @@ class HomotopySeparateQuadratics(BenchTask):
 
     def run_alkahest(self, size: int) -> Any:
         import alkahest
+
+        if not hasattr(alkahest, "solve"):
+            raise NotImplementedError(
+                "alkahest.solve requires the 'groebner' feature; "
+                "rebuild with: maturin develop --release --features groebner"
+            )
 
         p = alkahest.ExprPool()
         neg1 = p.integer(-1)

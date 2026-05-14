@@ -5,63 +5,11 @@
 | Version | Status | Highlights |
 |---------|--------|-----------|
 | **0.1 – 0.5** | ✅ Complete | Foundations through Lean certificates and GPU (see [CHANGELOG](CHANGELOG.md)) |
-| **1.0.0** | ✅ Complete | Production NVPTX, MLIR dialect, Gröbner solver, semver API, persistent pool |
-| **2.0.0** | ✅ Complete | Full mathematical coverage: summation, series, limits, eigenvalues, number theory, noncommutative algebra, regular chains, primary decomposition, differential algebra, homotopy continuation, Diophantine equations, symbolic products, rsolve, algebraic Risch, LaTeX/Unicode output, string parsing |
+| **1.0.0** | ✅ Complete | Production NVPTX, MLIR dialect, Gröbner solver, semver API, persistent pool (see [CHANGELOG](CHANGELOG.md#100)) |
+| **2.0.0** | ✅ Complete | Full mathematical coverage: summation, series, limits, eigenvalues, number theory, noncommutative algebra, regular chains, primary decomposition, differential algebra, homotopy continuation, Diophantine equations, symbolic products, rsolve, algebraic Risch, LaTeX/Unicode output, string parsing (see [CHANGELOG](CHANGELOG.md#200--2026-05-06)) |
 | **Next** | 📋 Planned | See below |
 
 **Test coverage:** 362 Rust unit/proptest/doctest + 438 Python tests = 800 passing, zero errors.
-
----
-
-## 2.0.0 — Complete
-
-All items below shipped in the 2.0.0 release. See [CHANGELOG](CHANGELOG.md) for full details.
-
-### Calculus and series
-- `series(expr, var, point, order)` — truncated Taylor and Laurent expansions; `BigO` kernel node
-- `limit(expr, var, point)` — finite-point L'Hôpital + local expansions; limits at ±∞ via `x ↦ 1/t`; `LimitDirection`
-- Algebraic-function Risch integration (Trager genus-0): integrals of `A(x) + B(x)·sqrt(P(x))` over ℚ(x)
-
-### Discrete mathematics
-- Symbolic summation: `sum_indefinite`, `sum_definite` (Gosper's algorithm); `verify_wz_pair`
-- Linear recurrence solving: `solve_linear_recurrence_homogeneous`
-- Difference equations: `rsolve` for constant-coefficient recurrences with polynomial RHS
-- Symbolic products: `product_definite`, `product_indefinite`, `Product` (Γ-ratio telescoping)
-
-### Algebra and number theory
-- Matrix eigenvalues, eigenvectors, diagonalization (`eigenvals`, `eigenvects`, `diagonalize`)
-- Integer number theory module: `isprime`, `factorint`, `nextprime`, `totient`, `jacobi_symbol`, `nthroot_mod`, `discrete_log`, `DirichletChi`
-- Diophantine equations: linear families, sum of two squares, unit Pell equation
-- Noncommutative algebra: `commutative=False` symbols; Pauli and Clifford algebra rewrite tables; pool format v4
-
-### Advanced polynomial solvers
-- Regular chains / triangular decomposition: `triangularize`, `RegularChain`
-- Primary decomposition and radical: `primary_decomposition`, `radical`, `PrimaryComponent`
-- Differential algebra / Rosenfeld–Gröbner for polynomial DAEs: `rosenfeld_groebner`, `dae_index_reduce`
-- Numerical algebraic geometry: total-degree homotopy continuation with Smale certification (`solve_numerical`, `CertifiedSolution`)
-
-### Developer experience
-- LaTeX and Unicode pretty-printing: `latex(expr)`, `unicode_str(expr)`
-- String expression parsing: `parse(source, pool)`, `ParseError`
-- E-graph default rules: trig and log/exp identities on by default; `EgraphConfig` opt-out
-- Python API completeness: `ExprPool.save_to/load_from`, `GroebnerBasis.compute`, symbolic `solve` output
-- Windows + macOS CI parity (`ci-cross.yml`)
-
----
-
-## 1.0.0 — Complete
-
-- Production NVPTX codegen for `sm_86` (Ampere): 16.2× speedup over CPU JIT on RTX 3090
-- Custom `alkahest` MLIR dialect: 11 ops, three lowering targets (ArithMath, StableHLO, LLVM)
-- CUDA Macaulay-matrix row reduction (`--features groebner-cuda`)
-- Gröbner-based polynomial system solver: Lex basis → triangular backsolve → exact symbolic solutions
-- Polynomial factorization over ℤ, ℤ[x₁…xₙ], and 𝔽ₚ (Zassenhaus, van Hoeij, Berlekamp, Cantor–Zassenhaus)
-- Integer Hermite and Smith normal forms; polynomial-matrix HNF/Smith over ℚ[x]
-- Exact LLL lattice reduction; approximate integer-relation finding (`guess_relation`)
-- Semver-stable API: `alkahest_core::stable` / `alkahest_core::experimental` split; `alkahest.__all__` freeze
-- 23-primitive registry with full diff/MLIR/Lean bundles
-- Persistent `ExprPool`: versioned binary format, atomic crash-safe writes
-- Cross-CAS benchmark driver: SymPy, SymEngine, WolframEngine, Maple, SageMath adapters
 
 ---
 

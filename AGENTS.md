@@ -1,5 +1,7 @@
 * If any significant changes are made to code run CI and tests
 * Follow instructions in [`CONTRIBUTING.md`](CONTRIBUTING.md)
+* If asked to fix CI: check CI status using `gh` CLI if available, otherwise check https://github.com/alkahest-cas/alkahest/
+* If asked to generate a report: write it to `tmp/`, include at the top — the date, the agent and model writing it (e.g. "Claude Code claude-sonnet-4-6"), and the full git commit hash being reviewed
 
 ## Build
 
