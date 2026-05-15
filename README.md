@@ -27,11 +27,15 @@ Wheels on PyPI are built **without** the LLVM JIT feature so installs stay small
 
 **Why a separate index or direct wheel URL:** JIT-enabled wheels use a PEP 440 local version (for example `2.0.0+jit`). Those builds **must not** be mixed into the main PyPI upload for the same reason PyTorch publishes CUDA wheels on `download.pytorch.org`: otherwise `pip install alkahest` can resolve the `+jit` build as “newer” than `2.0.0` and pull LLVM when you wanted the default wheel.
 
+There is **no** `pip install alkahest[jit]` (or similar) on PyPI: default wheels omit JIT so resolution stays predictable.
+
 **Until a dedicated PEP 503 simple index is published**, tagged releases attach Linux **manylinux** `+jit` wheels on [GitHub Releases](https://github.com/alkahest-cas/alkahest/releases). Pick the `.whl` whose tags match your Python (`cp311`, etc.) and platform (`manylinux_2_28_x86_64`, …). Example (adjust tag and filename after checking the release assets):
 
 ```bash
 pip install "https://github.com/alkahest-cas/alkahest/releases/download/v2.0.0/alkahest-2.0.0+jit-cp311-cp311-manylinux_2_28_x86_64.whl"
 ```
+
+Some manylinux `+jit` builds vendor LLVM and related `.so` files under `site-packages/alkahest.libs/`. If `import alkahest` fails with a missing `libffi-*.so` or `libLLVM-*.so`, prepend that directory to `LD_LIBRARY_PATH` (or install matching system packages). Release CI uses the same `LD_LIBRARY_PATH` step when smoke-testing wheels.
 
 If your client chokes on `+` in the URL, use percent-encoding (`2.0.0%2Bjit` in the filename segment).
 

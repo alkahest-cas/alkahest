@@ -121,9 +121,16 @@ jobs:
       - name: Build JIT wheel
         run: maturin build --release --strip --features jit --out dist
 
+      # Maturin/auditwheel vendors deps under site-packages/alkahest.libs/. Transitive
+      # loads (e.g. libLLVM → libffi with hashed soname) need that dir on LD_LIBRARY_PATH
+      # on some glibc setups until every .so in the wheel has a consistent $ORIGIN RPATH.
       - name: Smoke test (JIT available)
         run: |
           pip install --find-links dist alkahest
+          SITE_LIBS="$(python -c "import os, site; roots=site.getsitepackages(); hits=[os.path.join(r, 'alkahest.libs') for r in roots if os.path.isdir(os.path.join(r, 'alkahest.libs'))]; print(os.pathsep.join(hits))")"
+          if [ -n "$SITE_LIBS" ]; then
+            export LD_LIBRARY_PATH="${SITE_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+          fi
           python -c "import alkahest as ak; assert ak.jit_is_available(), 'expected LLVM JIT in +jit wheel'"
 
       - uses: actions/upload-artifact@v4

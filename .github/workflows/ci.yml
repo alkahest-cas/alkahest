@@ -116,11 +116,13 @@ jobs:
             -Z build-std
           echo "::endgroup::"
 
-  # ── Tier 1b: slow Python integration (roadmap-level sparse_interp); parallel with 1a
+  # ── Tier 1b: slow Python integration (roadmap-level sparse_interp)
+  # Runs on the nightly schedule only so push/PR CI stays fast; run locally with:
+  #   pytest tests/test_sparse_interp.py -m slow --timeout=0 -v
   tier1-python-slow:
     name: Tier 1b — Python slow tests
     runs-on: ubuntu-latest
-    if: github.event_name != 'schedule'
+    if: github.event_name == 'schedule'
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
