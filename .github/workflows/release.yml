@@ -66,9 +66,19 @@ jobs:
 
   # LLVM JIT: separate wheels with PEP 440 local version X.Y.Z+jit (PyTorch-style).
   # Not uploaded to main PyPI — avoids pip preferring +jit over the default release.
+  #
+  # Built natively on ubuntu-22.04 (not manylinux Docker) because llvm-15-dev is
+  # available via apt there, whereas the AlmaLinux 8 manylinux_2_28 image has no
+  # pre-packaged LLVM 15 and building from source takes 30+ min on a 2-core runner.
+  # JIT wheels are only attached to GitHub Releases (never PyPI), so the linux_x86_64
+  # tag (vs manylinux) is acceptable for this advanced use-case wheel.
   build-linux-jit:
-    name: wheels (JIT) / ubuntu-22.04
+    name: wheels (JIT) / ubuntu-22.04 / py${{ matrix.python }}
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     env:
       PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
       LLVM_SYS_150_PREFIX: /usr
@@ -77,9 +87,12 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install system deps
+        run: sudo apt-get install -y libflint-dev llvm-15-dev
 
       - name: Use JIT local version in pyproject.toml
         run: |
@@ -102,47 +115,20 @@ jobs:
           print(f"wheel metadata version -> {base}+jit")
           PY
 
-      - name: Build JIT wheels (manylinux, all Python versions)
-        uses: PyO3/maturin-action@v1
-        env:
-          RUSTFLAGS: "-L/usr/local/lib -L/usr/lib -L/usr/lib64"
-          PKG_CONFIG_PATH: "/usr/local/lib/pkgconfig:/usr/lib64/pkgconfig"
-          LLVM_SYS_150_PREFIX: /usr
-        with:
-          command: build
-          args: >-
-            --release
-            --strip
-            --features jit
-            --out dist
-            --interpreter python3.9 python3.10 python3.11 python3.12 python3.13
-          manylinux: "2_28"
-          before-script-linux: |
-            dnf install -y epel-release || true
-            dnf config-manager --set-enabled crb 2>/dev/null || dnf config-manager --set-enabled powertools 2>/dev/null || true
-            if ! dnf install -y llvm15-devel 2>/dev/null; then
-              echo "llvm15-devel not available in this image; JIT manylinux wheel build skipped"
-              exit 1
-            fi
-            if ! dnf install -y flint-devel 2>/dev/null; then
-              dnf install -y gmp-devel mpfr-devel make gcc
-              curl -fsSL \
-                https://github.com/flintlib/flint/archive/refs/tags/v2.9.0.tar.gz \
-                | tar xz -C /tmp
-              ( cd /tmp/flint-2.9.0 && ./configure --prefix=/usr/local && make -j"$(nproc)" && make install )
-              ldconfig /usr/local/lib
-            fi
+      - name: Install maturin
+        run: pip install maturin
+
+      - name: Build JIT wheel
+        run: maturin build --release --strip --features jit --out dist
 
       - name: Smoke test (JIT available)
         run: |
-          py_tag="$(python -c 'import sys; print(f"cp{sys.version_info.major}{sys.version_info.minor}")')"
-          whl="$(ls dist/alkahest-*+jit-*-"${py_tag}"-"${py_tag}"*.whl | head -1)"
-          pip install "$whl"
+          pip install --find-links dist alkahest
           python -c "import alkahest as ak; assert ak.jit_is_available(), 'expected LLVM JIT in +jit wheel'"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-ubuntu-22.04-jit
+          name: wheels-ubuntu-22.04-jit-py${{ matrix.python }}
           path: dist/*.whl
 
   build-wheels:
@@ -312,8 +298,9 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: wheels-ubuntu-22.04-jit
+          pattern: wheels-ubuntu-22.04-jit-py*
           path: dist-jit
+          merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
           files: dist-jit/*.whl

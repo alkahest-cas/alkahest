@@ -54,3 +54,4 @@ tmp/
 .vscode/
 *.deb
 *.rpm
+**/.nfs*

@@ -80,7 +80,7 @@ use alkahest_core::{
 };
 
 #[cfg(feature = "cuda")]
-use alkahest_core::compile_cuda as core_compile_cuda;
+use alkahest_core::{compile_cuda as core_compile_cuda, CudaCompiledFn as CoreCudaCompiledFn};
 use alkahest_core::kernel::expr::PredicateKind;
 // V2-1 — Modular / CRT framework
 use alkahest_core::modular::{
@@ -4062,8 +4062,7 @@ fn py_to_stablehlo(
 #[cfg(feature = "cuda")]
 #[pyclass(name = "CudaCompiledFn")]
 struct PyCudaCompiledFn {
-    ptx: String,
-    n_inputs: usize,
+    inner: CoreCudaCompiledFn,
 }
 
 #[cfg(feature = "cuda")]
@@ -4071,20 +4070,60 @@ struct PyCudaCompiledFn {
 impl PyCudaCompiledFn {
     #[getter]
     fn ptx(&self) -> &str {
-        &self.ptx
+        self.inner.ptx_source()
     }
 
     #[getter]
     fn n_inputs(&self) -> usize {
-        self.n_inputs
+        self.inner.n_inputs
     }
 
     fn __repr__(&self) -> String {
         format!(
             "<CudaCompiledFn n_inputs={} ptx_len={}>",
-            self.n_inputs,
-            self.ptx.len()
+            self.inner.n_inputs,
+            self.inner.ptx.len()
         )
+    }
+
+    /// Evaluate the compiled kernel on CUDA device 0 for ``N`` independent points.
+    ///
+    /// ``inputs`` is a list of length ``n_inputs``.  Each entry is a 1-D sequence
+    /// of ``N`` values for that variable (column-major / SoA: one array per
+    /// symbolic input).  Returns a Python ``list`` of ``N`` outputs.
+    #[pyo3(name = "call_batch")]
+    fn call_batch_py(&self, inputs: &Bound<'_, PyList>) -> PyResult<Vec<f64>> {
+        if inputs.len() != self.inner.n_inputs {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "expected {} input columns, got {}",
+                self.inner.n_inputs,
+                inputs.len()
+            )));
+        }
+        let mut cols: Vec<Vec<f64>> = Vec::with_capacity(self.inner.n_inputs);
+        for item in inputs.iter() {
+            let col: Vec<f64> = item.extract()?;
+            cols.push(col);
+        }
+        let n_pts = if cols.is_empty() {
+            0
+        } else {
+            cols[0].len()
+        };
+        if cols.iter().any(|c| c.len() != n_pts) {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "all input columns must have the same length",
+            ));
+        }
+        let col_refs: Vec<&[f64]> = cols.iter().map(|c| c.as_slice()).collect();
+        let mut out = vec![0.0f64; n_pts];
+        self.inner.call_batch(&col_refs, &mut out).map_err(|e| {
+            Python::with_gil(|py2| {
+                let exc_type = py2.get_type_bound::<PyCudaError>();
+                make_structured_err(py2, &exc_type, &e)
+            })
+        })?;
+        Ok(out)
     }
 }
 
@@ -4118,10 +4157,7 @@ fn py_compile_cuda(
     })?;
     drop(pool_ref);
 
-    Ok(PyCudaCompiledFn {
-        ptx: compiled.ptx,
-        n_inputs: compiled.n_inputs,
-    })
+    Ok(PyCudaCompiledFn { inner: compiled })
 }
 
 // ---------------------------------------------------------------------------

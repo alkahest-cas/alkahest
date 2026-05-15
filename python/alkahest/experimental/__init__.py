@@ -12,7 +12,7 @@ Current experimental surface:
 - :class:`GroebnerBasis`, :class:`GbPoly` — parallel F4 Gröbner basis (V5-11,
   requires ``groebner`` feature)
 - :func:`solve` — polynomial system solver (V1-4, requires ``groebner`` feature)
-- :func:`compile_cuda` — NVPTX / CUDA JIT backend stub (V5-3, requires ``cuda`` feature)
+- :func:`compile_cuda` — NVPTX codegen + GPU batch evaluation via :class:`CudaCompiledFn` (requires ``cuda`` + ``jit`` features)
 """
 
 from __future__ import annotations
