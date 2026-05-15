@@ -53,7 +53,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install system dependencies
-        run: sudo apt-get install -y libflint-dev llvm-15-dev
+        run: sudo apt-get install -y libflint-dev llvm-15-dev llvm-15
 
       - name: Create venv and install Python tooling
         run: |
@@ -144,7 +144,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install system dependencies
-        run: sudo apt-get install -y libflint-dev llvm-15-dev
+        run: sudo apt-get install -y libflint-dev llvm-15-dev llvm-15
 
       - name: Create venv and install Python tooling
         run: |
@@ -215,7 +215,7 @@ jobs:
           echo "VIRTUAL_ENV=$PWD/.venv" >> $GITHUB_ENV
 
       - name: Install system dependencies
-        run: sudo apt-get install -y libflint-dev llvm-15-dev
+        run: sudo apt-get install -y libflint-dev llvm-15-dev llvm-15
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -252,6 +252,7 @@ jobs:
         if: matrix.shard == 'lsan'
         env:
           LSAN_OPTIONS: suppressions=${{ github.workspace }}/lsan.supp
+          LLVM_SYMBOLIZER_PATH: /usr/bin/llvm-symbolizer-15
         run: |
           RUSTFLAGS="-Zsanitizer=leak" \
           cargo +nightly test --workspace --lib --tests \

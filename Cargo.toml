@@ -1,5 +1,6 @@
 [workspace]
 members = ["alkahest-core", "alkahest-mlir", "alkahest-py"]
+exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]

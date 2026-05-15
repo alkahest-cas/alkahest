@@ -22,6 +22,7 @@ wheels/
 fuzz/out/
 fuzz/corpus/
 fuzz/artifacts/
+fuzz/target/
 
 # Docs builds
 docs/sphinx/_build/

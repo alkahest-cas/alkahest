@@ -16,3 +16,9 @@ leak:flint_calloc
 # above fail to match.  Debian-style sonames use `libflint-<ver>.so`.
 leak:libflint.so
 leak:libflint-
+# MPFR/GMP code linked via rug/gmp-mpfr-sys can land in alkahest_core's text segment.
+# When stacks are symbolized (llvm-symbolizer), these frames match intentional MPFR caches.
+leak:mpfr_log
+leak:mpfr_asin
+leak:__gmpf_out_str
+leak:mpn_pow_1_highpart
