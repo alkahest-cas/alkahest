@@ -79,9 +79,9 @@ use alkahest_core::{
     ODE,
 };
 
+use alkahest_core::kernel::expr::PredicateKind;
 #[cfg(feature = "cuda")]
 use alkahest_core::{compile_cuda as core_compile_cuda, CudaCompiledFn as CoreCudaCompiledFn};
-use alkahest_core::kernel::expr::PredicateKind;
 // V2-1 — Modular / CRT framework
 use alkahest_core::modular::{
     lift_crt as core_lift_crt, mignotte_bound as core_mignotte_bound,
@@ -4105,11 +4105,7 @@ impl PyCudaCompiledFn {
             let col: Vec<f64> = item.extract()?;
             cols.push(col);
         }
-        let n_pts = if cols.is_empty() {
-            0
-        } else {
-            cols[0].len()
-        };
+        let n_pts = if cols.is_empty() { 0 } else { cols[0].len() };
         if cols.iter().any(|c| c.len() != n_pts) {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "all input columns must have the same length",
