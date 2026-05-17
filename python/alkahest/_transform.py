@@ -14,8 +14,9 @@ Example
 ... def f(x, y):
 ...     return x**2 + alkahest.sin(y)
 >>>
->>> grad_f = alkahest.grad(f)              # TracedFn computing ∂f/∂x, ∂f/∂y
+>>> grad_f = alkahest.grad(f)              # ∂f/∂x, ∂f/∂y
 >>> fast_f = alkahest.jit(f)              # CompiledTracedFn backed by LLVM JIT
+>>> fast_grad = alkahest.jit(grad_f)      # compiled Jacobian rows
 >>>
 >>> import numpy as np
 >>> xs = np.linspace(0, 1, 1_000_000)
@@ -209,6 +210,49 @@ class GradTracedFn:
         return f"GradTracedFn(wrt=[{', '.join(wrt_names)}]) of {self._traced!r}"
 
 
+class CompiledGradTracedFn:
+    """A :class:`GradTracedFn` with one :class:`~alkahest.alkahest.CompiledFn` per partial derivative.
+
+    Created via :func:`jit` applied to a :class:`GradTracedFn` (for example
+    ``jit(grad(f))``).  Reuses the same LLVM / interpreter backends as
+    :class:`CompiledTracedFn`.
+    """
+
+    def __init__(self, grad: GradTracedFn):
+        self._grad = grad
+        traced = grad._traced
+        self._compiled = [
+            compile_expr(g_expr, traced.symbols) for g_expr in grad._grad_exprs
+        ]
+
+    @property
+    def symbols(self) -> list[Expr]:
+        return self._grad._traced.symbols
+
+    def __call__(self, *values):
+        if len(values) != len(self._grad._traced.symbols):
+            raise ValueError(
+                f"expected {len(self._grad._traced.symbols)} argument(s), got {len(values)}"
+            )
+        try:
+            import numpy as np
+
+            arr_inputs = [np.asarray(v) for v in values]
+            if any(a.ndim > 0 for a in arr_inputs):
+                from . import numpy_eval
+
+                return [numpy_eval(c, *values) for c in self._compiled]
+        except ImportError:
+            pass
+        from .alkahest import eval_expr  # noqa: PLC0415
+
+        env = {sym: float(val) for sym, val in zip(self._grad._traced.symbols, values)}
+        return [eval_expr(g_expr, env) for g_expr in self._grad._grad_exprs]
+
+    def __repr__(self) -> str:
+        return f"CompiledGradTracedFn({self._grad!r})"
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -290,23 +334,28 @@ def grad(
     return GradTracedFn(fn, list(wrt) if wrt is not None else None)
 
 
-def jit(fn: TracedFn | Callable) -> CompiledTracedFn:
-    """JIT-compile a :class:`TracedFn` using the LLVM backend.
+def jit(
+    fn: TracedFn | GradTracedFn | Callable,
+) -> CompiledTracedFn | CompiledGradTracedFn:
+    """JIT-compile a :class:`TracedFn` or :class:`GradTracedFn` using the LLVM backend.
 
     Parameters
     ----------
-    fn : TracedFn or callable decorated with :func:`trace`
-        The function to compile.
+    fn : TracedFn, GradTracedFn, or callable decorated with :func:`trace`
+        The forward function or its symbolic gradient to compile.
 
     Returns
     -------
-    CompiledTracedFn
-        A callable backed by LLVM JIT (or the Rust interpreter if ``--features
+    CompiledTracedFn or CompiledGradTracedFn
+        Callables backed by LLVM JIT (or the Rust interpreter if ``--features
         jit`` was not enabled at build time).
     """
+    if isinstance(fn, GradTracedFn):
+        return CompiledGradTracedFn(fn)
     if not isinstance(fn, TracedFn):
         raise TypeError(
-            f"jit() expects a TracedFn (decorated with @alkahest.trace), got {type(fn).__name__}"
+            "jit() expects a TracedFn or GradTracedFn (e.g. from @alkahest.trace or grad()), "
+            f"got {type(fn).__name__}"
         )
     return CompiledTracedFn(fn)
 
@@ -333,6 +382,7 @@ def trace_fn(
 __all__ = [
     "TracedFn",
     "CompiledTracedFn",
+    "CompiledGradTracedFn",
     "GradTracedFn",
     "trace",
     "grad",

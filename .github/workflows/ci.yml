@@ -86,10 +86,10 @@ jobs:
       - name: maturin develop
         run: maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
 
-      - name: pytest (exclude slow sparse-interp roadmap)
+      - name: pytest (default excludes @pytest.mark.slow sparse roadmap; see pytest.ini)
         env:
           PYTHONUNBUFFERED: "1"
-        run: pytest -m "not slow" --timeout=900
+        run: pytest --timeout=900
 
       - name: Install Rust nightly (for ASan)
         uses: dtolnay/rust-toolchain@nightly
@@ -118,7 +118,7 @@ jobs:
 
   # ── Tier 1b: slow Python integration (roadmap-level sparse_interp)
   # Runs on the nightly schedule only so push/PR CI stays fast; run locally with:
-  #   pytest tests/test_sparse_interp.py -m slow --timeout=0 -v
+  #   pytest tests/test_sparse_interp.py -m slow --timeout=0 -v --override-ini="addopts=-v"
   tier1-python-slow:
     name: Tier 1b — Python slow tests
     runs-on: ubuntu-latest
@@ -162,7 +162,8 @@ jobs:
       - name: pytest (slow only)
         env:
           PYTHONUNBUFFERED: "1"
-        run: pytest tests/test_sparse_interp.py -m slow --timeout=0 -v
+        # Undo pytest.ini addopts (-m "not slow") so -m slow can match the roadmap test.
+        run: pytest tests/test_sparse_interp.py -m slow --timeout=0 -v --override-ini="addopts=-v"
 
   # ── Tier 2: Nightly integration (cron on main) ─────────────────────────────
   # Split into parallel shards so each GitHub-hosted job stays under the 6 h cap.

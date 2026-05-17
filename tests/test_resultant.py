@@ -8,6 +8,8 @@ Test plan (from ROADMAP.md):
 - Error handling for non-polynomial inputs.
 """
 
+from collections import Counter
+
 import alkahest
 import pytest
 from alkahest import (
@@ -116,8 +118,7 @@ class TestResultantUnivariate:
         q = x + pool.integer(-2)
         dr = resultant(p, q, x)
         steps = dr.steps
-        assert len(steps) == 1
-        assert steps[0]["rule"] == "Resultant"
+        assert Counter(s["rule"] for s in steps) == Counter({"Resultant": 1})
 
 
 # ---------------------------------------------------------------------------

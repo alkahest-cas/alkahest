@@ -145,4 +145,4 @@ jobs:
         if: matrix.python
         env:
           PYTHONUNBUFFERED: "1"
-        run: .venv/bin/pytest tests/ -m "not slow" -x -q --timeout=600
+        run: .venv/bin/pytest tests/ -x -q --timeout=600

@@ -20,6 +20,8 @@ wheels/
 
 # cargo-fuzz
 fuzz/out/
+# AFL++/cargo-afl local -o paths (e.g. smoke runs: fuzz/out-smoke-*)
+fuzz/out-*/
 fuzz/corpus/
 fuzz/artifacts/
 fuzz/target/

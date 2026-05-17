@@ -25,6 +25,7 @@ from ._pytree import (  # noqa: F401
     unflatten_exprs,
 )
 from ._transform import (  # noqa: F401
+    CompiledGradTracedFn,
     CompiledTracedFn,
     GradTracedFn,
     TracedFn,
@@ -501,6 +502,7 @@ __all__ = [
     "PrimitiveRegistry",
     # PA-7
     "TracedFn",
+    "CompiledGradTracedFn",
     "CompiledTracedFn",
     "GradTracedFn",
     "trace",

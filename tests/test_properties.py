@@ -2,7 +2,7 @@
 
 import hypothesis.strategies as st
 from alkahest.alkahest import ExprPool, UniPoly, diff, simplify
-from hypothesis import given, settings
+from hypothesis import given
 
 
 def build_poly_expr(pool, x, coeffs):
@@ -32,7 +32,6 @@ small_coeff = st.integers(min_value=-5, max_value=5)
 coeffs_strategy = st.lists(small_coeff, min_size=1, max_size=4)
 
 
-@settings(max_examples=100)
 @given(coeffs=coeffs_strategy)
 def test_simplify_idempotent(coeffs):
     """simplify(simplify(e)) == simplify(e) for any polynomial expression."""
@@ -44,7 +43,6 @@ def test_simplify_idempotent(coeffs):
     assert r1.value == r2.value, f"Idempotence failed for coeffs={coeffs}"
 
 
-@settings(max_examples=100)
 @given(coeffs=coeffs_strategy)
 def test_diff_constant_is_zero(coeffs):
     """d/dx c = 0 for any constant expression."""
@@ -55,7 +53,6 @@ def test_diff_constant_is_zero(coeffs):
     assert r.value == pool.integer(0)
 
 
-@settings(max_examples=80)
 @given(
     fa=coeffs_strategy,
     fb=coeffs_strategy,
@@ -89,7 +86,6 @@ def test_diff_linearity(fa, fb, a, b):
         )
 
 
-@settings(max_examples=80)
 @given(fa=coeffs_strategy, fb=coeffs_strategy)
 def test_diff_product_rule(fa, fb):
     """d/dx(f*g) == f*g' + g*f' as polynomials."""
@@ -115,7 +111,6 @@ def test_diff_product_rule(fa, fb):
         )
 
 
-@settings(max_examples=100)
 @given(
     a=st.integers(min_value=-20, max_value=20),
     b=st.integers(min_value=-20, max_value=20),
@@ -128,7 +123,6 @@ def test_simplify_integer_const_fold(a, b):
     assert r.value == pool.integer(a + b)
 
 
-@settings(max_examples=100)
 @given(coeffs=coeffs_strategy)
 def test_hash_stability(coeffs):
     """Same expression built twice has the same hash."""
@@ -140,7 +134,6 @@ def test_hash_stability(coeffs):
     assert hash(e1) == hash(e2)
 
 
-@settings(max_examples=50)
 @given(coeffs=coeffs_strategy)
 def test_expr_usable_as_dict_key(coeffs):
     """Expressions can be used as dict keys and set members."""
@@ -169,7 +162,6 @@ def _try_to_poly(expr, x):
 from alkahest.alkahest import diff_forward, integrate  # noqa: E402
 
 
-@settings(max_examples=100)
 @given(fa=coeffs_strategy, fb=coeffs_strategy)
 def test_diff_sum_rule(fa, fb):
     """diff(f + g, x) == diff(f, x) + diff(g, x) as polynomials."""
@@ -189,7 +181,6 @@ def test_diff_sum_rule(fa, fb):
         assert lp == rp, f"Sum rule failed: fa={fa}, fb={fb}"
 
 
-@settings(max_examples=80)
 @given(fa=coeffs_strategy, fb=coeffs_strategy)
 def test_diff_forward_agrees_symbolic(fa, fb):
     """diff_forward(f+g) == diff(f+g) for random polynomials."""
@@ -212,7 +203,6 @@ def test_diff_forward_agrees_symbolic(fa, fb):
         assert lp == rp, f"forward/symbolic disagreement: fa={fa}, fb={fb}"
 
 
-@settings(max_examples=80)
 @given(coeffs=coeffs_strategy)
 def test_integrate_diff_inverse(coeffs):
     """diff(integrate(f, x), x) == f for polynomial f (no constant term)."""
@@ -236,7 +226,6 @@ def test_integrate_diff_inverse(coeffs):
         assert fp == rp, f"integrate/diff not inverse: coeffs={non_const}"
 
 
-@settings(max_examples=100)
 @given(coeffs=coeffs_strategy)
 def test_simplify_idempotent_twice(coeffs):
     """simplify(simplify(e)) == simplify(e) (idempotence)."""

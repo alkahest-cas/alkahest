@@ -20,8 +20,14 @@ maturin develop --release --features "parallel egraph jit groebner"
 # Rust unit + proptest + doctest
 cargo test --workspace
 
-# Python suite
+# Python suite (default excludes @pytest.mark.slow — the long sparse_interp roadmap test)
 pytest tests/
+
+# Sparse roadmap stress test (Tier 1b style; needs groebner build — see TESTING.md)
+# pytest -m slow tests/test_sparse_interp.py --timeout=0 -v --override-ini="addopts=-v"
+#
+# Full Python run *including* slow markers (unset pytest.ini filter):
+# pytest tests/ --override-ini="addopts=-v"
 
 # Run both
 cargo test --workspace && pytest tests/

@@ -20,7 +20,7 @@ maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "jit
 # Rust unit + property tests
 cargo test --all
 
-# Python tests
+# Python tests (slow sparse_interp roadmap excluded by default; see pytest.ini)
 pytest
 
 # With sanitizers (catches FFI memory bugs)

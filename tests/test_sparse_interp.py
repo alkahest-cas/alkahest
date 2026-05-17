@@ -6,6 +6,11 @@ Covers:
   - Round-trip agreement with MultiPolyFp produced by reduce_mod
   - ROADMAP acceptance criteria: 10-variable 15-term, ≥95% success
   - Error paths
+
+The multivariate roadmap stress test is marked ``@pytest.mark.slow`` and is **not**
+collected by default (see ``pytest.ini``). Run it explicitly, e.g.::
+
+    pytest -m slow tests/test_sparse_interp.py --timeout=0 -v --override-ini="addopts=-v"
 """
 
 from __future__ import annotations

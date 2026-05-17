@@ -9,6 +9,9 @@ Covers:
 import math
 
 import pytest
+
+from _step_logs import assert_same_step_rules
+
 from alkahest import (
     ArbBall,
     ExprPool,
@@ -366,13 +369,23 @@ class TestSimplifyPar:
         p = pool()
         x = p.symbol("x")
         expr = x + p.integer(0)
-        assert str(simplify_par(expr).value) == str(simplify(expr).value)
+        par_result = simplify_par(expr)
+        seq_result = simplify(expr)
+        assert str(par_result.value) == str(seq_result.value)
+        assert_same_step_rules(
+            seq_result.steps, par_result.steps, context="add zero"
+        )
 
     def test_simplify_par_matches_simplify_mul_one(self):
         p = pool()
         x = p.symbol("x")
         expr = x * p.integer(1)
-        assert str(simplify_par(expr).value) == str(simplify(expr).value)
+        par_result = simplify_par(expr)
+        seq_result = simplify(expr)
+        assert str(par_result.value) == str(seq_result.value)
+        assert_same_step_rules(
+            seq_result.steps, par_result.steps, context="mul one"
+        )
 
     def test_simplify_par_constant_fold(self):
         p = pool()
@@ -383,6 +396,9 @@ class TestSimplifyPar:
         par_result = simplify_par(expr)
         seq_result = simplify(expr)
         assert str(par_result.value) == str(seq_result.value)
+        assert_same_step_rules(
+            seq_result.steps, par_result.steps, context="constant fold sum"
+        )
 
     def test_simplify_par_large_mul_ones(self):
         p = pool()
@@ -395,13 +411,20 @@ class TestSimplifyPar:
         par_result = simplify_par(expr)
         seq_result = simplify(expr)
         assert str(par_result.value) == str(seq_result.value)
+        assert_same_step_rules(
+            seq_result.steps, par_result.steps, context="large mul ones"
+        )
 
     def test_simplify_par_mul_zero(self):
         p = pool()
         x = p.symbol("x")
         expr = p.integer(0) * x
         par_result = simplify_par(expr)
+        seq_result = simplify(expr)
         assert str(par_result.value) == str(p.integer(0))
+        assert_same_step_rules(
+            seq_result.steps, par_result.steps, context="mul zero"
+        )
 
     def test_simplify_par_returns_derived_result(self):
         p = pool()
@@ -419,6 +442,9 @@ class TestSimplifyPar:
         par_result = simplify_par(expr)
         seq_result = simplify(expr)
         assert str(par_result.value) == str(seq_result.value)
+        assert_same_step_rules(
+            seq_result.steps, par_result.steps, context="polynomial fold"
+        )
 
     def test_simplify_par_nested_cancellation(self):
         p = pool()
@@ -430,3 +456,6 @@ class TestSimplifyPar:
         par_result = simplify_par(expr)
         seq_result = simplify(expr)
         assert str(par_result.value) == str(seq_result.value)
+        assert_same_step_rules(
+            seq_result.steps, par_result.steps, context="nested cancel"
+        )

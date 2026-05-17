@@ -40,6 +40,8 @@ We use PBT extensively to verify mathematical invariants across a vast state spa
   pytest tests/
   ```
 
+  Default ``pytest tests/`` applies ``-m "not slow"`` (see ``pytest.ini``), so the long sparse_interp roadmap test is **not** part of this run; execute it via Tier 1b / ``pytest -m slow tests/test_sparse_interp.py`` as in §6.
+
 ---
 
 ## 2. Fuzzing (`AFL++`)
@@ -145,11 +147,11 @@ Given the computational expense of fuzzing and PBT, our GitHub Actions / CI pipe
 
 ### Tier 1: Push / PR Checks (fast path)
 * **Triggers**: Push or PR to `main` (not the scheduled cron).
-* **Typical contents**: `cargo fmt`, `clippy`, `cargo test --workspace`, `ruff`, `pytest -m "not slow"`, ASan on `alkahest-core`, etc. (see `.github/workflows/ci.yml`).
+* **Typical contents**: `cargo fmt`, `clippy`, `cargo test --workspace`, `ruff`, `pytest` (defaults in `pytest.ini` exclude `@pytest.mark.slow`), ASan on `alkahest-core`, etc. (see `.github/workflows/ci.yml`).
 
 ### Tier 1b: Slow Python (sparse interpolation roadmap)
 * **Triggers**: Same nightly **schedule** as Tier 2 (not on every push — keeps default CI fast).
-* **Suite**: `pytest tests/test_sparse_interp.py -m slow --timeout=0 -v` after `maturin develop --features groebner`.
+* **Suite**: `pytest tests/test_sparse_interp.py -m slow --timeout=0 -v --override-ini="addopts=-v"` after `maturin develop --features groebner`.
 
 ### Tier 2: Nightly integration (heavy matrix)
 * **Triggers**: Cron on `main` (02:00 UTC); shards run in parallel.
@@ -164,7 +166,7 @@ Use this checklist when you want **more than** `cargo test --workspace` on a bee
 
 | CI job | What to run locally |
 |--------|---------------------|
-| **Tier 1b** | After `maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner`: `pytest tests/test_sparse_interp.py -m slow --timeout=0 -v` |
+| **Tier 1b** | After `maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner`: `pytest tests/test_sparse_interp.py -m slow --timeout=0 -v --override-ini="addopts=-v"` |
 | **proptest** | `export PROPTEST_CASES=50000` then `cargo test --workspace --release` |
 | **hypothesis** | See §1 Python (`HYPOTHESIS_MAX_EXAMPLES=5000`, `pytest tests/`) |
 | **tsan** | See §3 ThreadSanitizer block |
