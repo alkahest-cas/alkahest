@@ -1,8 +1,8 @@
 //! Lean 4 certificate exporter.
 //!
 //! Converts a [`DerivedExpr`] (expression + derivation log) into a `.lean`
-//! source file that imports Mathlib and proves the top-level equation via
-//! the recorded chain of rewrites.
+//! source file that imports Mathlib and proves each step in the recorded
+//! rewrite chain as its own `example`.
 //!
 //! # Scope (MVP)
 //! Only the rewrites produced by the rule-based simplifier and integrator:
@@ -118,8 +118,7 @@ pub fn emit_step(step: &RewriteStep, pool: &ExprPool) -> String {
 ///
 /// The file contains:
 /// 1. A Mathlib import header.
-/// 2. One `example` per rewrite step.
-/// 3. A top-level `example` asserting `original = final`.
+/// 2. One `example` per rewrite step (each step is checked independently).
 ///
 /// Returns the Lean source as a `String`.
 pub fn emit_lean_expr(derived: &DerivedExpr<ExprId>, pool: &ExprPool) -> String {
@@ -140,14 +139,6 @@ pub fn emit_lean_expr(derived: &DerivedExpr<ExprId>, pool: &ExprPool) -> String 
         out.push_str(&format!("-- Step {}: {}\n", i + 1, step.rule_name));
         out.push_str(&emit_step(step, pool));
         out.push_str("\n\n");
-    }
-
-    let first_before = steps[0].before;
-    let last_after = steps[steps.len() - 1].after;
-    if first_before != last_after {
-        out.push_str("-- Top-level goal\n");
-        out.push_str(&emit_goal(first_before, last_after, pool));
-        out.push_str(" :=\n  by simp_all [*]\n");
     }
 
     out
@@ -255,6 +246,10 @@ mod tests {
         assert!(
             lean.contains("add_zero") || lean.contains("simp"),
             "missing add_zero tactic: {lean}"
+        );
+        assert!(
+            !lean.contains("simp_all [*]"),
+            "Lean 4 does not parse `simp_all [*]`; emit only per-step examples ({lean})"
         );
     }
 
