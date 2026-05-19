@@ -3,6 +3,7 @@
 [![CI](https://github.com/alkahest-cas/alkahest/actions/workflows/ci.yml/badge.svg)](https://github.com/alkahest-cas/alkahest/actions/workflows/ci.yml)
 [![cross-platform CI](https://github.com/alkahest-cas/alkahest/actions/workflows/ci-cross.yml/badge.svg)](https://github.com/alkahest-cas/alkahest/actions/workflows/ci-cross.yml)
 [![PyPI](https://img.shields.io/pypi/v/alkahest.svg)](https://pypi.org/project/alkahest/)
+[![Crates.io](https://img.shields.io/crates/v/alkahest-cas.svg)](https://crates.io/crates/alkahest-cas)
 [![Docs](https://img.shields.io/badge/docs-online-blue)](https://alkahest-cas.github.io/alkahest/)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg?url=https%3A%2F%2Fdeepwiki.com%2Falkahest-cas%2Falkahest)](https://deepwiki.com/alkahest-cas/alkahest)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
