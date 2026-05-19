@@ -30,7 +30,7 @@
 //!
 //! let pool = ExprPool::new();
 //! let x = pool.symbol("x", Domain::Real);
-//! let mut syms = HashMap::from([("x", x)]);
+//! let mut syms = HashMap::from([("x".to_owned(), x)]);
 //! let e = parse("x^2 + 2*x + 1", &pool, &mut syms).unwrap();
 //! ```
 
@@ -202,7 +202,10 @@ fn tokenize(src: &str) -> Result<Vec<Token>, ParseError> {
 
         // `**` must come before `*`
         if b == b'*' && pos + 1 < n && bytes[pos + 1] == b'*' {
-            tokens.push(Token { tok: Tok::StarStar, offset: pos });
+            tokens.push(Token {
+                tok: Tok::StarStar,
+                offset: pos,
+            });
             pos += 2;
             continue;
         }
@@ -227,7 +230,10 @@ fn tokenize(src: &str) -> Result<Vec<Token>, ParseError> {
         pos += 1;
     }
 
-    tokens.push(Token { tok: Tok::Eof, offset: n });
+    tokens.push(Token {
+        tok: Tok::Eof,
+        offset: n,
+    });
     Ok(tokens)
 }
 
@@ -279,7 +285,12 @@ impl<'a> Parser<'a> {
         pool: &'a ExprPool,
         symbols: &'a mut HashMap<String, ExprId>,
     ) -> Self {
-        Parser { tokens, pos: 0, pool, symbols }
+        Parser {
+            tokens,
+            pos: 0,
+            pool,
+            symbols,
+        }
     }
 
     fn peek(&self) -> &Token {

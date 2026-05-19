@@ -190,15 +190,13 @@ pub mod stable {
     pub use crate::kernel::pool_persist::PoolPersistError;
     pub use crate::kernel::pool_persist::{load_from, open_persistent, save_to, IoError};
     pub use crate::kernel::{
-        expr_contains_noncommutative_symbol, mult_tree_is_commutative, render_latex, render_unicode,
-        subs, Domain, ExprData, ExprDisplay, ExprId, ExprPool,
+        expr_contains_noncommutative_symbol, mult_tree_is_commutative, render_latex,
+        render_unicode, subs, Domain, ExprData, ExprDisplay, ExprId, ExprPool,
     };
-    pub use crate::lean::emit_lean_expr as emit_lean;
-    pub use crate::parse::{parse, ParseError};
-    pub use crate::stablehlo::emit_stablehlo;
     pub use crate::lattice::{
         lattice_reduce_rows, lattice_reduce_rows_with_delta, validate_lll_rows, LatticeError,
     };
+    pub use crate::lean::emit_lean_expr as emit_lean;
     pub use crate::logic::{
         dpll_sat, formula_from_expr, satisfiable, BoolClause, BoolLit, Formula, LogicError,
         Satisfiability,
@@ -214,6 +212,7 @@ pub mod stable {
     };
     pub use crate::numeric::{guess_integer_relation, PslqError};
     pub use crate::ode::{lower_to_first_order, OdeError, ScalarODE, ODE};
+    pub use crate::parse::{parse, ParseError};
     pub use crate::pattern::{match_pattern, Pattern, Substitution};
     pub use crate::poly::{
         factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z, poly_normal,
@@ -235,6 +234,7 @@ pub mod stable {
         DiophantineSolution, HomotopyError, HomotopyOpts, RegularChain, Solution, SolutionSet,
         SolverError,
     };
+    pub use crate::stablehlo::emit_stablehlo;
     pub use crate::sum::{
         gosper_certificate, gosper_normal_form, hypergeom_ratio, product_definite,
         product_indefinite, rsolve, solve_linear_recurrence_homogeneous, sum_definite,
