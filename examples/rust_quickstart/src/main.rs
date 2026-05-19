@@ -6,13 +6,10 @@
 //! Once the crate is on crates.io, swap the path dep for:
 //!   alkahest-core = "2"
 
-use alkahest_core::{
-    diff, integrate, parse, render_latex, render_unicode, simplify,
-    ExprPool,
-};
 use alkahest_core::kernel::Domain;
-use alkahest_core::poly::UniPoly;
 use alkahest_core::number_theory;
+use alkahest_core::poly::UniPoly;
+use alkahest_core::{diff, integrate, parse, render_latex, render_unicode, simplify, ExprPool};
 use std::collections::HashMap;
 
 fn main() {
@@ -31,7 +28,11 @@ fn main() {
     // -----------------------------------------------------------------------
     let zero = pool.integer(0i64);
     let r = simplify(pool.add(vec![x, zero]), &pool);
-    println!("simplify:  {}  ({} step(s))", render_unicode(r.value, &pool), r.log.len());
+    println!(
+        "simplify:  {}  ({} step(s))",
+        render_unicode(r.value, &pool),
+        r.log.len()
+    );
 
     // -----------------------------------------------------------------------
     // 3. Symbolic differentiation
@@ -52,7 +53,7 @@ fn main() {
     // x^2 - 1 = (x-1)(x+1); gcd with (x-1) should give (x-1)
     let m1 = pool.integer(-1i64);
     let p_expr = pool.add(vec![pool.pow(x, pool.integer(2i64)), m1]); // x^2 - 1
-    let q_expr = pool.add(vec![x, m1]);                                // x - 1
+    let q_expr = pool.add(vec![x, m1]); // x - 1
     let p = UniPoly::from_symbolic(p_expr, x, &pool).unwrap();
     let q = UniPoly::from_symbolic(q_expr, x, &pool).unwrap();
     if let Some(g) = p.gcd(&q) {
@@ -63,5 +64,8 @@ fn main() {
     // 6. Number theory
     // -----------------------------------------------------------------------
     let mersenne = "170141183460469231731687303715884105727"; // 2^127 - 1
-    println!("isprime(2^127-1): {}", number_theory::isprime(mersenne).unwrap());
+    println!(
+        "isprime(2^127-1): {}",
+        number_theory::isprime(mersenne).unwrap()
+    );
 }
