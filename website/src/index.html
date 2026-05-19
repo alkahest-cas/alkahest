@@ -6,7 +6,7 @@
     <title>Alkahest</title>
     <meta
       name="description"
-      content="Computer algebra for Python 3.9–3.13 and Rust. pip install alkahest or alkahest-core = &quot;2&quot; in Cargo.toml."
+      content="Computer algebra for Python 3.9–3.13 and Rust. pip install alkahest or alkahest-cas = &quot;2&quot; in Cargo.toml."
     />
     <link rel="stylesheet" href="styles.css" />
     <style>
@@ -69,14 +69,14 @@
 
         <div id="panel-rs" role="tabpanel" aria-labelledby="tab-rs" hidden>
           <div class="install-row">
-            <code id="cargo-cmd">alkahest-core = "2"</code>
+            <code id="cargo-cmd">alkahest-cas = "2"</code>
             <button type="button" class="copy" id="copy-cargo-btn" aria-label="Copy Cargo dependency">Copy</button>
           </div>
           <p id="copy-cargo-hint" class="hint" role="status" aria-live="polite" hidden></p>
           <p class="install-meta">
             Rust (stable ≥ 1.76) ·
-            <a href="https://crates.io/crates/alkahest-core">crates.io</a> ·
-            <a href="https://docs.rs/alkahest-core">docs.rs</a>
+            <a href="https://crates.io/crates/alkahest-cas">crates.io</a> ·
+            <a href="https://docs.rs/alkahest-cas">docs.rs</a>
           </p>
           <p class="install-detail">
             Requires <code>libflint-dev</code> / <code>libgmp-dev</code> / <code>libmpfr-dev</code>
@@ -130,12 +130,12 @@ print(p // q)     # x^2 + x + 1</code></pre>
         <article class="example">
           <h3 class="example-title">Use the Rust kernel directly</h3>
           <p class="example-desc">
-            <code>alkahest-core</code> is a native Rust crate — embed the CAS in
+            <code>alkahest-cas</code> is a native Rust crate — embed the CAS in
             your own library or CLI without a Python runtime.
           </p>
-          <pre class="code-block" tabindex="0"><code>// Cargo.toml: alkahest-core = "2"
-use alkahest_core::{ExprPool, diff, simplify, render_latex, parse};
-use alkahest_core::kernel::Domain;
+          <pre class="code-block" tabindex="0"><code>// Cargo.toml: alkahest-cas = "2"
+use alkahest_cas::{ExprPool, diff, simplify, render_latex, parse};
+use alkahest_cas::kernel::Domain;
 use std::collections::HashMap;
 
 fn main() {

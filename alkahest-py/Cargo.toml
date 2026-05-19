@@ -19,7 +19,7 @@ groebner-cuda = ["alkahest-core/groebner-cuda"]
 cuda = ["alkahest-core/cuda"]
 
 [dependencies]
-alkahest-core = { path = "../alkahest-core" }
+alkahest-core = { path = "../alkahest-core", package = "alkahest-cas" }
 pyo3.workspace = true
 numpy = { version = "0.21", optional = true }
 rug = { version = "1", features = ["integer", "rational"] }

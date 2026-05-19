@@ -90,14 +90,14 @@ Optional Cargo features: `parallel` (sharded pool + parallel F4), `egraph` (eggl
 
 ### Rust crate
 
-`alkahest-core` is also published on [crates.io](https://crates.io/crates/alkahest-core) ([docs.rs](https://docs.rs/alkahest-core)) for use directly from Rust without a Python runtime:
+`alkahest-cas` is also published on [crates.io](https://crates.io/crates/alkahest-cas) ([docs.rs](https://docs.rs/alkahest-cas)) for use directly from Rust without a Python runtime:
 
 ```toml
 [dependencies]
-alkahest-core = "2"
+alkahest-cas = "2"
 
 # With optional features:
-# alkahest-core = { version = "2", features = ["groebner", "parallel", "egraph"] }
+# alkahest-cas = { version = "2", features = ["groebner", "parallel", "egraph"] }
 ```
 
 **System prerequisites** (same libraries as the Python build — must be present before `cargo build`):
@@ -417,7 +417,7 @@ df_fast = ak.jit(df)     # compiled gradient
 
 ```
 alkahest/
-├── alkahest-core/         # Rust kernel (also published as the alkahest-core crate)
+├── alkahest-core/         # Rust kernel (published as the alkahest-cas crate)
 │   ├── src/
 │   │   ├── kernel/        # hash-consed expression DAG, ExprPool
 │   │   ├── algebra/       # noncommutative Pauli / Clifford rules
@@ -444,7 +444,7 @@ alkahest/
 │   ├── _context.py        # context manager and defaults
 │   └── experimental/      # unstable API surface
 ├── examples/              # runnable end-to-end examples
-│   └── rust_quickstart/   # self-contained Cargo project for alkahest-core
+│   └── rust_quickstart/   # self-contained Cargo project for alkahest-cas
 ├── tests/                 # Python test suite (pytest + hypothesis)
 ├── benchmarks/            # Python benchmarks and competitor comparisons
 ├── fuzz/                  # AFL++ fuzz targets
@@ -496,4 +496,4 @@ Every top-level operation returns a `DerivedResult` with:
 
 ## Stability
 
-Alkahest follows semantic versioning from `1.0`. The stable surface is everything re-exported from `alkahest_core::stable` (Rust) and `alkahest.__all__` (Python). Experimental APIs live under `alkahest_core::experimental` and `alkahest.experimental` and may change in minor releases.
+Alkahest follows semantic versioning from `1.0`. The stable surface is everything re-exported from `alkahest_cas::stable` (Rust) and `alkahest.__all__` (Python). Experimental APIs live under `alkahest_cas::experimental` and `alkahest.experimental` and may change in minor releases.

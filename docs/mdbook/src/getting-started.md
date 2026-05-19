@@ -88,14 +88,14 @@ maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "par
 
 ### Rust crate
 
-`alkahest-core` is also published on [crates.io](https://crates.io/crates/alkahest-core) ([docs.rs](https://docs.rs/alkahest-core)) for use directly from Rust:
+`alkahest-cas` is also published on [crates.io](https://crates.io/crates/alkahest-cas) ([docs.rs](https://docs.rs/alkahest-cas)) for use directly from Rust:
 
 ```toml
 [dependencies]
-alkahest-core = "2"
+alkahest-cas = "2"
 
 # Optional features (combine as needed):
-# alkahest-core = { version = "2", features = ["groebner", "parallel", "egraph"] }
+# alkahest-cas = { version = "2", features = ["groebner", "parallel", "egraph"] }
 ```
 
 **System prerequisites** (same libraries as the Python build — must be installed before `cargo build`):

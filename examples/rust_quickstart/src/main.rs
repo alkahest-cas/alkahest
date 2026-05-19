@@ -1,15 +1,15 @@
-//! Alkahest-core quickstart — demonstrates the core Rust API.
+//! Alkahest-cas quickstart — demonstrates the core Rust API.
 //!
 //! Run from the repo root:
 //!   cargo run --manifest-path examples/rust_quickstart/Cargo.toml
 //!
 //! Once the crate is on crates.io, swap the path dep for:
-//!   alkahest-core = "2"
+//!   alkahest-cas = "2"
 
-use alkahest_core::kernel::Domain;
-use alkahest_core::number_theory;
-use alkahest_core::poly::UniPoly;
-use alkahest_core::{diff, integrate, parse, render_latex, render_unicode, simplify, ExprPool};
+use alkahest_cas::kernel::Domain;
+use alkahest_cas::number_theory;
+use alkahest_cas::poly::UniPoly;
+use alkahest_cas::{diff, integrate, parse, render_latex, render_unicode, simplify, ExprPool};
 use std::collections::HashMap;
 
 fn main() {

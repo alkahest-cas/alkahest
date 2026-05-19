@@ -19,7 +19,7 @@ default = []
 mlir-native = []
 
 [dependencies]
-alkahest-core = { path = "../alkahest-core" }
+alkahest-core = { path = "../alkahest-core", package = "alkahest-cas" }
 
 [dev-dependencies]
 proptest = "1"

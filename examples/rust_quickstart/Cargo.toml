@@ -8,4 +8,4 @@ name = "quickstart"
 path = "src/main.rs"
 
 [dependencies]
-alkahest-core = { path = "../../alkahest-core" }
+alkahest-cas = { path = "../../alkahest-core" }

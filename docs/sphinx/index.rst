@@ -19,16 +19,16 @@ For **Linux x86_64** opt-in wheels with local versions ``+jit`` or ``+full``, us
 `GitHub Releases <https://github.com/alkahest-cas/alkahest/releases>`_. Other platforms: build from
 source with ``maturin``.
 
-**Rust** — add ``alkahest-core`` to your ``Cargo.toml``:
+**Rust** — add ``alkahest-cas`` to your ``Cargo.toml``:
 
 .. code-block:: toml
 
    [dependencies]
-   alkahest-core = "2"
-   # alkahest-core = { version = "2", features = ["groebner", "parallel", "egraph"] }
+   alkahest-cas = "2"
+   # alkahest-cas = { version = "2", features = ["groebner", "parallel", "egraph"] }
 
 Requires ``libflint-dev`` / ``libgmp-dev`` / ``libmpfr-dev`` at build time (``apt-get`` or
-``brew install flint``). See `docs.rs/alkahest-core <https://docs.rs/alkahest-core>`_ for the
+``brew install flint``). See `docs.rs/alkahest-cas <https://docs.rs/alkahest-cas>`_ for the
 full Rust API reference.
 
 For optional Cargo features (``jit``, ``groebner``, ``cuda``, …) and full developer setup, see the

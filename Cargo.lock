@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "alkahest-core"
+name = "alkahest-cas"
 version = "2.0.3"
 dependencies = [
  "bitflags",
@@ -33,7 +33,7 @@ dependencies = [
 name = "alkahest-mlir"
 version = "2.0.3"
 dependencies = [
- "alkahest-core",
+ "alkahest-cas",
  "proptest",
 ]
 
@@ -41,7 +41,7 @@ dependencies = [
 name = "alkahest-py"
 version = "2.0.3"
 dependencies = [
- "alkahest-core",
+ "alkahest-cas",
  "numpy",
  "pyo3",
  "rug",
@@ -51,7 +51,7 @@ dependencies = [
 name = "alkahest-quickstart"
 version = "0.1.0"
 dependencies = [
- "alkahest-core",
+ "alkahest-cas",
 ]
 
 [[package]]
