@@ -2,6 +2,36 @@
 
 ## Install
 
+### Rust crate
+
+`alkahest-core` is published on [crates.io](https://crates.io/crates/alkahest-core).
+Add it to your `Cargo.toml`:
+
+```toml
+[dependencies]
+alkahest-core = "2"
+
+# Optional features (combine as needed):
+# alkahest-core = { version = "2", features = ["groebner", "parallel", "egraph"] }
+```
+
+**System prerequisites:** `alkahest-core` links against GMP, MPFR, and FLINT.
+Install them before running `cargo build`:
+
+```bash
+# Debian / Ubuntu
+sudo apt-get install -y libflint-dev libgmp-dev libmpfr-dev
+
+# macOS (Homebrew)
+brew install flint
+```
+
+The `jit` feature additionally requires **LLVM 15 dev headers** (`llvm-15-dev` / `brew install llvm@15`).
+See the main [README](https://github.com/alkahest-cas/alkahest/blob/main/README.md) for the full
+feature table.
+
+A runnable quickstart lives in [`examples/rust_quickstart/`](https://github.com/alkahest-cas/alkahest/tree/main/examples/rust_quickstart).
+
 ### PyPI (default)
 
 Alkahest is on the [Python Package Index](https://pypi.org/project/alkahest/). Supported interpreters are **Python 3.9 through 3.13** (`requires-python` on PyPI).

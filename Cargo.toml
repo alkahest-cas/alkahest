@@ -1,5 +1,5 @@
 [workspace]
-members = ["alkahest-core", "alkahest-mlir", "alkahest-py"]
+members = ["alkahest-core", "alkahest-mlir", "alkahest-py", "examples/rust_quickstart"]
 exclude = ["fuzz"]
 resolver = "2"
 

@@ -1,0 +1,11 @@
+[package]
+name = "alkahest-quickstart"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "quickstart"
+path = "src/main.rs"
+
+[dependencies]
+alkahest-core = { path = "../../alkahest-core" }

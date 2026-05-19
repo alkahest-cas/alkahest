@@ -1,3 +1,4 @@
 node_modules/
-index.html
-styles.css
+# Built artifacts copied to website/ root by bun run build — not source
+/index.html
+/styles.css

@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Alkahest</title>
+    <meta
+      name="description"
+      content="Computer algebra for Python 3.9–3.13 and Rust. pip install alkahest or alkahest-core = &quot;2&quot; in Cargo.toml."
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <style>
+      .lang-tabs {
+        display: flex;
+        gap: 0;
+        margin-bottom: 0.625rem;
+        border-bottom: 1px solid var(--border);
+      }
+      .lang-tab {
+        padding: 0.35rem 0.85rem;
+        font: inherit;
+        font-size: 0.875rem;
+        font-weight: 500;
+        color: var(--muted);
+        background: none;
+        border: none;
+        border-bottom: 2px solid transparent;
+        margin-bottom: -1px;
+        cursor: pointer;
+      }
+      .lang-tab[aria-selected="true"] {
+        color: var(--fg);
+        border-bottom-color: var(--brand);
+      }
+      .lang-panel[hidden] { display: none; }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <p class="kicker">alkahest</p>
+      <h1 class="tagline">
+        A high-performance computer algebra system for Python and Rust
+      </h1>
+
+      <section class="install" aria-label="Install">
+        <div class="lang-tabs" role="tablist" aria-label="Language">
+          <button class="lang-tab" role="tab" id="tab-py" aria-selected="true" aria-controls="panel-py">Python</button>
+          <button class="lang-tab" role="tab" id="tab-rs" aria-selected="false" aria-controls="panel-rs">Rust</button>
+        </div>
+
+        <div id="panel-py" role="tabpanel" aria-labelledby="tab-py">
+          <div class="install-row">
+            <code id="pip-cmd">pip install alkahest</code>
+            <button type="button" class="copy" id="copy-pip-btn" aria-label="Copy pip install command">Copy</button>
+          </div>
+          <p id="copy-pip-hint" class="hint" role="status" aria-live="polite" hidden></p>
+          <p class="install-meta">
+            Python 3.9–3.13 ·
+            <a href="https://pypi.org/project/alkahest/">PyPI</a>
+          </p>
+          <p class="install-detail">
+            Default wheels omit LLVM JIT (small install). On Linux x86_64, optional
+            <code>+jit</code> / <code>+full</code> wheels are on
+            <a href="https://github.com/alkahest-cas/alkahest/releases">GitHub Releases</a>.
+            See <a href="https://alkahest-cas.github.io/alkahest/getting-started.html">Getting started</a>
+            for URLs, <code>LD_LIBRARY_PATH</code>, and building from source.
+          </p>
+        </div>
+
+        <div id="panel-rs" role="tabpanel" aria-labelledby="tab-rs" hidden>
+          <div class="install-row">
+            <code id="cargo-cmd">alkahest-core = "2"</code>
+            <button type="button" class="copy" id="copy-cargo-btn" aria-label="Copy Cargo dependency">Copy</button>
+          </div>
+          <p id="copy-cargo-hint" class="hint" role="status" aria-live="polite" hidden></p>
+          <p class="install-meta">
+            Rust (stable ≥ 1.76) ·
+            <a href="https://crates.io/crates/alkahest-core">crates.io</a> ·
+            <a href="https://docs.rs/alkahest-core">docs.rs</a>
+          </p>
+          <p class="install-detail">
+            Requires <code>libflint-dev</code> / <code>libgmp-dev</code> / <code>libmpfr-dev</code>
+            (system packages) at build time. Optional features: <code>groebner</code>,
+            <code>egraph</code>, <code>parallel</code>, <code>jit</code> (LLVM 15).
+            See the <a href="https://alkahest-cas.github.io/alkahest/getting-started.html">Getting started</a>
+            guide for full details.
+          </p>
+        </div>
+
+        <nav class="links" aria-label="Project links" style="margin-top:0.875rem">
+          <a href="https://alkahest-cas.github.io/alkahest/">Documentation</a>
+          <span class="dot" aria-hidden="true"></span>
+          <a href="https://alkahest-cas.github.io/playground/">Playground</a>
+          <span class="dot" aria-hidden="true"></span>
+          <a href="https://github.com/alkahest-cas/alkahest">GitHub</a>
+        </nav>
+      </section>
+
+      <section class="examples" aria-label="Code examples">
+        <article class="example">
+          <h3 class="example-title">Simplification you can audit</h3>
+          <p class="example-desc">
+            Every rewrite records the rule applied — not just the final expression.
+          </p>
+          <pre class="code-block" tabindex="0"><code>from alkahest import ExprPool, simplify
+
+pool = ExprPool()
+x = pool.symbol("x")
+r = simplify(x + pool.integer(0))
+print(r.value)   # x
+print(r.steps)   # e.g. [RewriteStep(rule='add_zero', ...)]</code></pre>
+        </article>
+
+        <article class="example">
+          <h3 class="example-title">Dense univariate polynomials (FLINT)</h3>
+          <p class="example-desc">
+            GCD and exact division stay in a FLINT-backed representation for heavy
+            polynomial work.
+          </p>
+          <pre class="code-block" tabindex="0"><code>from alkahest import ExprPool, UniPoly
+
+pool = ExprPool()
+x = pool.symbol("x")
+p = UniPoly.from_symbolic(x**3 + pool.integer(-1), x)
+q = UniPoly.from_symbolic(x + pool.integer(-1), x)
+print(p.gcd(q))   # x - 1
+print(p // q)     # x^2 + x + 1</code></pre>
+        </article>
+
+        <article class="example">
+          <h3 class="example-title">Use the Rust kernel directly</h3>
+          <p class="example-desc">
+            <code>alkahest-core</code> is a native Rust crate — embed the CAS in
+            your own library or CLI without a Python runtime.
+          </p>
+          <pre class="code-block" tabindex="0"><code>// Cargo.toml: alkahest-core = "2"
+use alkahest_core::{ExprPool, diff, simplify, render_latex, parse};
+use alkahest_core::kernel::Domain;
+use std::collections::HashMap;
+
+fn main() {
+    let pool = ExprPool::new();
+    let x = pool.symbol("x", Domain::Real);
+    let mut syms = HashMap::from([("x".to_owned(), x)]);
+
+    // parse from a string
+    let expr = parse("sin(x)^2 + cos(x)^2", &pool, &mut syms).unwrap();
+
+    // differentiate
+    let d = diff(expr, x, &pool).unwrap();
+    println!("{}", render_latex(d.value, &pool));
+}</code></pre>
+        </article>
+      </section>
+    </main>
+    <footer class="site-footer shell">
+      <p>
+        built by
+        <a href="https://areggevorgyan.github.io/">Areg</a>
+      </p>
+    </footer>
+    <script>
+      // Copy buttons
+      function makeCopy(btnId, hintId, textFn) {
+        const btn = document.getElementById(btnId);
+        const hint = document.getElementById(hintId);
+        if (!btn) return;
+        btn.addEventListener("click", async () => {
+          try {
+            await navigator.clipboard.writeText(textFn());
+            hint.hidden = false;
+            hint.textContent = "Copied to clipboard.";
+          } catch {
+            hint.hidden = false;
+            hint.textContent = "Copy failed — select and copy manually.";
+          }
+        });
+      }
+      makeCopy("copy-pip-btn", "copy-pip-hint", () => document.getElementById("pip-cmd").textContent);
+      makeCopy("copy-cargo-btn", "copy-cargo-hint", () => document.getElementById("cargo-cmd").textContent);
+
+      // Language tabs
+      const tabs = document.querySelectorAll(".lang-tab");
+      tabs.forEach(tab => {
+        tab.addEventListener("click", () => {
+          tabs.forEach(t => {
+            t.setAttribute("aria-selected", "false");
+            document.getElementById(t.getAttribute("aria-controls")).hidden = true;
+          });
+          tab.setAttribute("aria-selected", "true");
+          document.getElementById(tab.getAttribute("aria-controls")).hidden = false;
+        });
+      });
+    </script>
+  </body>
+</html>
