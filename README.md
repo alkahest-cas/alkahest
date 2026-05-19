@@ -417,10 +417,11 @@ df_fast = ak.jit(df)     # compiled gradient
 
 ```
 alkahest/
-├── alkahest-core/         # Rust kernel
+├── alkahest-core/         # Rust kernel (also published as the alkahest-core crate)
 │   ├── src/
 │   │   ├── kernel/        # hash-consed expression DAG, ExprPool
 │   │   ├── algebra/       # noncommutative Pauli / Clifford rules
+│   │   ├── parse.rs       # Pratt expression parser (parse / ParseError)
 │   │   ├── poly/          # UniPoly, MultiPoly, RationalFunction
 │   │   ├── simplify/      # e-graph simplification (egglog)
 │   │   ├── diff/          # symbolic differentiation
@@ -442,11 +443,14 @@ alkahest/
 │   ├── _pytree.py         # JAX-style pytree flattening
 │   ├── _context.py        # context manager and defaults
 │   └── experimental/      # unstable API surface
-├── examples/              # runnable Python examples
+├── examples/              # runnable end-to-end examples
+│   └── rust_quickstart/   # self-contained Cargo project for alkahest-core
 ├── tests/                 # Python test suite (pytest + hypothesis)
 ├── benchmarks/            # Python benchmarks and competitor comparisons
 ├── fuzz/                  # AFL++ fuzz targets
 ├── docs/                  # mdBook and Sphinx documentation
+├── website/               # landing page (alkahest-cas.github.io)
+│   └── src/               # index.html + styles.css source (deployed via CI)
 ├── alkahest-skill/        # Skill for AI to use alkahest
 ├── agent-benchmark/       # benchmark for comparing AI use of alkahest vs other CAS
 └── scripts/               # CI helpers (API freeze check, error codes)
