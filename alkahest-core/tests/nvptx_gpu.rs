@@ -5,8 +5,8 @@
 
 #![cfg(feature = "cuda")]
 
-use alkahest_core::jit::nvptx::compile_cuda;
-use alkahest_core::kernel::{Domain, ExprPool};
+use alkahest_cas::jit::nvptx::compile_cuda;
+use alkahest_cas::kernel::{Domain, ExprPool};
 
 /// Number of points used for the 1M-point smoke test. Power-of-two friendly.
 const N_SMOKE: usize = 1 << 20;

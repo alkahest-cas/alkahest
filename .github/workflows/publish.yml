@@ -8,7 +8,7 @@ on:
 
 jobs:
   publish:
-    name: cargo publish alkahest-core
+    name: cargo publish alkahest-cas
     runs-on: ubuntu-latest
 
     steps:

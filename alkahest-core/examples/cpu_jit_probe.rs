@@ -1,5 +1,5 @@
-use alkahest_core::jit::compile;
-use alkahest_core::kernel::{Domain, ExprPool};
+use alkahest_cas::jit::compile;
+use alkahest_cas::kernel::{Domain, ExprPool};
 use std::time::Instant;
 
 fn main() {

@@ -23,7 +23,7 @@
 //! # Example
 //!
 //! ```rust
-//! use alkahest_core::primitive::{PrimitiveRegistry, Capabilities};
+//! use alkahest_cas::primitive::{PrimitiveRegistry, Capabilities};
 //!
 //! let reg = PrimitiveRegistry::default_registry();
 //! let caps = reg.capabilities("sin");

@@ -1,7 +1,7 @@
-use alkahest_core::matrix::{hermite_form, IntegerMatrix};
+use alkahest_cas::matrix::{hermite_form, IntegerMatrix};
 #[cfg(feature = "egraph")]
-use alkahest_core::simplify_egraph;
-use alkahest_core::{
+use alkahest_cas::simplify_egraph;
+use alkahest_cas::{
     compile, diff, eval_interp, simplify, ArbBall, Domain, ExprId, ExprPool, IntervalEval,
     MultiPoly, UniPoly,
 };
@@ -69,7 +69,7 @@ fn fresh_pool() -> ExprPool {
 }
 
 /// Build `coeffs[0] + coeffs[1]*x + … ` in the given pool.
-fn poly_expr(p: &ExprPool, x: alkahest_core::ExprId, coeffs: &[i64]) -> alkahest_core::ExprId {
+fn poly_expr(p: &ExprPool, x: alkahest_cas::ExprId, coeffs: &[i64]) -> alkahest_cas::ExprId {
     let mut terms = vec![];
     for (i, &c) in coeffs.iter().enumerate() {
         if c == 0 {
@@ -628,7 +628,7 @@ fn bench_ball(c: &mut Criterion) {
 
 #[cfg(feature = "parallel")]
 fn bench_par(c: &mut Criterion) {
-    use alkahest_core::simplify_par;
+    use alkahest_cas::simplify_par;
     let mut g = c.benchmark_group("par_simplify");
     g.throughput(Throughput::Elements(1));
 
@@ -686,7 +686,7 @@ fn bench_par(_c: &mut Criterion) {}
 
 #[cfg(feature = "cuda")]
 fn bench_nvptx(c: &mut Criterion) {
-    use alkahest_core::jit::nvptx::compile_cuda;
+    use alkahest_cas::jit::nvptx::compile_cuda;
 
     if cudarc::driver::CudaContext::new(0).is_err() {
         eprintln!("nvptx bench: no CUDA device, skipping");

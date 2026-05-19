@@ -9,8 +9,8 @@
 //!
 //! # Example
 //! ```
-//! use alkahest_core::kernel::{Domain, ExprPool};
-//! use alkahest_core::stablehlo::emit_stablehlo;
+//! use alkahest_cas::kernel::{Domain, ExprPool};
+//! use alkahest_cas::stablehlo::emit_stablehlo;
 //!
 //! let pool = ExprPool::new();
 //! let x = pool.symbol("x", Domain::Real);

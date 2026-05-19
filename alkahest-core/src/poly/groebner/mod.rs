@@ -4,8 +4,8 @@
 //! # Quick start
 //!
 //! ```rust,ignore
-//! use alkahest_core::poly::groebner::{GroebnerBasis, MonomialOrder};
-//! use alkahest_core::poly::groebner::ideal::GbPoly;
+//! use alkahest_cas::poly::groebner::{GroebnerBasis, MonomialOrder};
+//! use alkahest_cas::poly::groebner::ideal::GbPoly;
 //!
 //! // Ideal: (x^2 - 1, x - 1) in 1 variable
 //! let f = GbPoly {

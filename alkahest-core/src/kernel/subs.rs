@@ -8,8 +8,8 @@
 /// # Example
 ///
 /// ```
-/// # use alkahest_core::kernel::{Domain, ExprPool};
-/// # use alkahest_core::kernel::subs::subs;
+/// # use alkahest_cas::kernel::{Domain, ExprPool};
+/// # use alkahest_cas::kernel::subs::subs;
 /// # use std::collections::HashMap;
 /// let pool = ExprPool::new();
 /// let x = pool.symbol("x", Domain::Real);

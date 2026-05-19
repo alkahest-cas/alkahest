@@ -7,11 +7,11 @@
 
 #![cfg(feature = "groebner-cuda")]
 
-use alkahest_core::poly::groebner::cuda::{compute_groebner_basis_gpu, MacaulayMatrix};
-use alkahest_core::poly::groebner::f4::compute_groebner_basis;
-use alkahest_core::poly::groebner::ideal::GbPoly;
-use alkahest_core::poly::groebner::monomial_order::MonomialOrder;
-use alkahest_core::poly::groebner::reduce::reduce as cpu_reduce;
+use alkahest_cas::poly::groebner::cuda::{compute_groebner_basis_gpu, MacaulayMatrix};
+use alkahest_cas::poly::groebner::f4::compute_groebner_basis;
+use alkahest_cas::poly::groebner::ideal::GbPoly;
+use alkahest_cas::poly::groebner::monomial_order::MonomialOrder;
+use alkahest_cas::poly::groebner::reduce::reduce as cpu_reduce;
 use rug::Rational;
 
 // ---------------------------------------------------------------------------

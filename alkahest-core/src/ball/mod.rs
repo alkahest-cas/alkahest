@@ -27,8 +27,8 @@
 //! # Example
 //!
 //! ```
-//! use alkahest_core::ball::{ArbBall, IntervalEval};
-//! use alkahest_core::kernel::{Domain, ExprPool};
+//! use alkahest_cas::ball::{ArbBall, IntervalEval};
+//! use alkahest_cas::kernel::{Domain, ExprPool};
 //!
 //! let pool = ExprPool::new();
 //! let x = pool.symbol("x", Domain::Real);

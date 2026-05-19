@@ -29,8 +29,8 @@ use std::collections::{HashMap, HashSet};
 /// # Example
 ///
 /// ```
-/// use alkahest_core::kernel::{Domain, ExprPool};
-/// use alkahest_core::diff::grad;
+/// use alkahest_cas::kernel::{Domain, ExprPool};
+/// use alkahest_cas::diff::grad;
 ///
 /// let pool = ExprPool::new();
 /// let x = pool.symbol("x", Domain::Real);

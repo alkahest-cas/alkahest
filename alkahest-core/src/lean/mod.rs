@@ -11,9 +11,9 @@
 //!
 //! # Example
 //! ```
-//! use alkahest_core::kernel::{Domain, ExprPool};
-//! use alkahest_core::simplify::simplify;
-//! use alkahest_core::lean::emit_lean_expr;
+//! use alkahest_cas::kernel::{Domain, ExprPool};
+//! use alkahest_cas::simplify::simplify;
+//! use alkahest_cas::lean::emit_lean_expr;
 //!
 //! let pool = ExprPool::new();
 //! let x = pool.symbol("x", Domain::Real);

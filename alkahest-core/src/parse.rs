@@ -24,8 +24,8 @@
 //! # Example
 //!
 //! ```
-//! use alkahest_core::{ExprPool, parse};
-//! use alkahest_core::kernel::Domain;
+//! use alkahest_cas::{ExprPool, parse};
+//! use alkahest_cas::kernel::Domain;
 //! use std::collections::HashMap;
 //!
 //! let pool = ExprPool::new();
@@ -488,8 +488,8 @@ impl<'a> Parser<'a> {
 /// # Example
 ///
 /// ```
-/// use alkahest_core::{ExprPool, parse};
-/// use alkahest_core::kernel::Domain;
+/// use alkahest_cas::{ExprPool, parse};
+/// use alkahest_cas::kernel::Domain;
 /// use std::collections::HashMap;
 ///
 /// let pool = ExprPool::new();

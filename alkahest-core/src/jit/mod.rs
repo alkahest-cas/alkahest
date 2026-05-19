@@ -27,8 +27,8 @@
 //! ```no_run
 //! # #[cfg(feature = "jit")]
 //! # {
-//! use alkahest_core::kernel::{Domain, ExprPool};
-//! use alkahest_core::jit::compile;
+//! use alkahest_cas::kernel::{Domain, ExprPool};
+//! use alkahest_cas::jit::compile;
 //!
 //! let pool = ExprPool::new();
 //! let x = pool.symbol("x", Domain::Real);

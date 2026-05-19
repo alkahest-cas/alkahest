@@ -97,10 +97,10 @@ jobs:
           targets: x86_64-unknown-linux-gnu
           components: rust-src
 
-      # Scope to alkahest-core: full-workspace + sanitizer + build-std often exceeds
+      # Scope to alkahest-cas: full-workspace + sanitizer + build-std often exceeds
       # runner wall-clock with little log output (looks "stuck"). MLIR/Python ASan
       # stays uninstrumented here; TSAN/LSan still cover the workspace on schedule.
-      - name: cargo test (AddressSanitizer, alkahest-core only)
+      - name: cargo test (AddressSanitizer, alkahest-cas only)
         # --lib --tests: skip doc tests — doc-test binaries link separately and
         # don't receive the ASan runtime when built via -Z build-std, causing
         # "undefined symbol: __asan_init" linker errors.  Unit + integration
@@ -109,9 +109,9 @@ jobs:
         env:
           LSAN_OPTIONS: detect_leaks=0
         run: |
-          echo "::group::ASan build + test (alkahest-core)"
+          echo "::group::ASan build + test (alkahest-cas)"
           RUSTFLAGS="-Zsanitizer=address" \
-          cargo +nightly test -p alkahest-core --lib --tests \
+          cargo +nightly test -p alkahest-cas --lib --tests \
             --target x86_64-unknown-linux-gnu \
             -Z build-std
           echo "::endgroup::"
@@ -272,7 +272,7 @@ jobs:
           RUSTFLAGS: "-C debuginfo=2 -Z dwarf-version=4"
         run: |
           cargo +nightly build --all --target x86_64-unknown-linux-gnu -Z build-std
-          for bin in target/x86_64-unknown-linux-gnu/debug/deps/alkahest_core-*; do
+          for bin in target/x86_64-unknown-linux-gnu/debug/deps/alkahest_cas-*; do
             [ -x "$bin" ] || continue
             valgrind --leak-check=full --error-exitcode=1 \
               --suppressions=valgrind.supp "$bin" 2>&1

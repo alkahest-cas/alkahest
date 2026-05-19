@@ -96,31 +96,31 @@ jobs:
       # ── Rust build + test (macOS) ────────────────────────────────────────────
       - name: cargo build (no-default-features baseline)
         if: runner.os == 'macOS'
-        run: cargo build -p alkahest-core --no-default-features
+        run: cargo build -p alkahest-cas --no-default-features
 
       - name: cargo build (${{ matrix.features }})
         if: runner.os == 'macOS'
-        run: cargo build -p alkahest-core --features "${{ matrix.features }}"
+        run: cargo build -p alkahest-cas --features "${{ matrix.features }}"
 
       - name: cargo test (${{ matrix.features }})
         if: runner.os == 'macOS'
-        run: cargo test -p alkahest-core --features "${{ matrix.features }}"
+        run: cargo test -p alkahest-cas --features "${{ matrix.features }}"
 
       # ── Rust build + test (Windows, inside MSYS2 shell) ─────────────────────
       - name: cargo build (no-default-features baseline) [Windows]
         if: runner.os == 'Windows'
         shell: msys2 {0}
-        run: cargo build -p alkahest-core --no-default-features --target x86_64-pc-windows-gnu
+        run: cargo build -p alkahest-cas --no-default-features --target x86_64-pc-windows-gnu
 
       - name: cargo build (${{ matrix.features }}) [Windows]
         if: runner.os == 'Windows'
         shell: msys2 {0}
-        run: cargo build -p alkahest-core --features "${{ matrix.features }}" --target x86_64-pc-windows-gnu
+        run: cargo build -p alkahest-cas --features "${{ matrix.features }}" --target x86_64-pc-windows-gnu
 
       - name: cargo test (${{ matrix.features }}) [Windows]
         if: runner.os == 'Windows'
         shell: msys2 {0}
-        run: cargo test -p alkahest-core --features "${{ matrix.features }}" --target x86_64-pc-windows-gnu
+        run: cargo test -p alkahest-cas --features "${{ matrix.features }}" --target x86_64-pc-windows-gnu
 
       # ── Python tests (macOS only) ────────────────────────────────────────────
       - name: Install Python

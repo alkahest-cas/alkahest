@@ -11,7 +11,7 @@ env:
 
 jobs:
   cargo-semver-checks:
-    name: cargo semver-checks (alkahest-core::stable)
+    name: cargo semver-checks (alkahest-cas::stable)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -28,11 +28,11 @@ jobs:
         with:
           tool: cargo-semver-checks
 
-      - name: Check alkahest-core public API
+      - name: Check alkahest-cas public API
         # cargo-semver-checks enables all features by default. Removing
         # cuda-version-from-build-system from the cudarc dep (Cargo.toml) is
         # what keeps the cuda feature from panicking when nvcc is absent.
-        run: cargo semver-checks check-release -p alkahest-core --baseline-rev origin/main
+        run: cargo semver-checks check-release -p alkahest-cas --baseline-rev origin/main
 
   python-api-freeze:
     name: python alkahest.__all__ freeze check

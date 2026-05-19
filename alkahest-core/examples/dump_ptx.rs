@@ -1,5 +1,5 @@
-use alkahest_core::jit::nvptx::compile_cuda;
-use alkahest_core::kernel::{Domain, ExprPool};
+use alkahest_cas::jit::nvptx::compile_cuda;
+use alkahest_cas::kernel::{Domain, ExprPool};
 fn main() {
     let pool = ExprPool::new();
     let x = pool.symbol("x", Domain::Real);

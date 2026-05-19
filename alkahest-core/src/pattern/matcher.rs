@@ -507,8 +507,8 @@ fn try_subsets(
 ///
 /// # Example
 /// ```
-/// # use alkahest_core::kernel::{ExprPool, Domain};
-/// # use alkahest_core::pattern::{Pattern, match_pattern};
+/// # use alkahest_cas::kernel::{ExprPool, Domain};
+/// # use alkahest_cas::pattern::{Pattern, match_pattern};
 /// let pool = ExprPool::new();
 /// let x = pool.symbol("x", Domain::Real);
 /// let y = pool.symbol("y", Domain::Real);

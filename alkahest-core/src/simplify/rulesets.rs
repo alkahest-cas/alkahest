@@ -6,8 +6,8 @@
 /// # Example
 ///
 /// ```
-/// # use alkahest_core::kernel::{Domain, ExprPool};
-/// # use alkahest_core::simplify::{simplify_with, SimplifyConfig, rulesets};
+/// # use alkahest_cas::kernel::{Domain, ExprPool};
+/// # use alkahest_cas::simplify::{simplify_with, SimplifyConfig, rulesets};
 /// let pool = ExprPool::new();
 /// let x = pool.symbol("x", Domain::Real);
 /// let rules = rulesets::trig_rules();
@@ -266,11 +266,11 @@ pub fn log_exp_rules_safe() -> Vec<Box<dyn RewriteRule>> {
 /// # Example
 ///
 /// ```
-/// # use alkahest_core::kernel::{Domain, ExprPool};
-/// # use alkahest_core::simplify::{simplify_with, SimplifyConfig};
-/// # use alkahest_core::simplify::rulesets::PatternRule;
-/// # use alkahest_core::pattern::Pattern;
-/// # use alkahest_core::simplify::rules::RewriteRule;
+/// # use alkahest_cas::kernel::{Domain, ExprPool};
+/// # use alkahest_cas::simplify::{simplify_with, SimplifyConfig};
+/// # use alkahest_cas::simplify::rulesets::PatternRule;
+/// # use alkahest_cas::pattern::Pattern;
+/// # use alkahest_cas::simplify::rules::RewriteRule;
 /// let pool = ExprPool::new();
 /// let a = pool.symbol("a", Domain::Real);  // wildcard
 /// let b = pool.symbol("b", Domain::Real);  // wildcard
