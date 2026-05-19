@@ -1,0 +1,231 @@
+:root {
+  --bg: #f6f5f2;
+  --fg: #111;
+  --muted: #525252;
+  --border: #e0ded6;
+  --code-bg: #eeede7;
+  --brand: #c41e3a;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto,
+    Helvetica, Arial, sans-serif;
+  font-size: 1rem;
+  line-height: 1.6;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.shell {
+  max-width: 42rem;
+  margin: 0 auto;
+  padding: clamp(3rem, 10vh, 5rem) 1.5rem 4rem;
+}
+
+.site-footer.shell {
+  padding-top: 0;
+  padding-bottom: 2.75rem;
+  margin-top: 0;
+}
+
+.site-footer p {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.site-footer a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.site-footer a:hover {
+  opacity: 0.85;
+}
+
+.kicker {
+  margin: 0 0 0.65rem;
+  font-size: clamp(2.25rem, 9vw, 3.25rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+  color: var(--brand);
+}
+
+.tagline {
+  margin: 0 0 2.25rem;
+  font-size: clamp(1.45rem, 4vw, 1.875rem);
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.install {
+  margin-bottom: 2rem;
+}
+
+.install-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0.5rem;
+  padding: 0.75rem 0.875rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--code-bg);
+}
+
+.install-row code {
+  flex: 1 1 12rem;
+  padding: 0.35rem 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", monospace;
+  font-size: 0.9375rem;
+  white-space: nowrap;
+  overflow-x: auto;
+}
+
+.copy {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0.35rem 0.75rem;
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.copy:hover {
+  opacity: 0.9;
+}
+
+.copy:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 2px;
+}
+
+.hint {
+  margin: 0.5rem 0 0;
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
+.install-meta {
+  margin: 0.65rem 0 0;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.install-meta a {
+  color: inherit;
+}
+
+.install-detail {
+  margin: 0.5rem 0 0;
+  font-size: 0.875rem;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.install-detail code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", monospace;
+  font-size: 0.8125rem;
+  background: var(--code-bg);
+  padding: 0.08em 0.35em;
+  border-radius: 4px;
+}
+
+.install-detail a {
+  color: inherit;
+}
+
+.install .links {
+  margin-top: 0.875rem;
+}
+
+.examples {
+  margin: 0 0 2.5rem;
+  padding-top: 1.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.example {
+  margin: 0 0 1.75rem;
+}
+
+.example:last-child {
+  margin-bottom: 0;
+}
+
+.example-title {
+  margin: 0 0 0.35rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.example-desc {
+  margin: 0 0 0.6rem;
+  font-size: 0.875rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.code-block {
+  margin: 0;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--code-bg);
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", monospace;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.code-block code {
+  font-family: inherit;
+  font-size: inherit;
+  white-space: pre;
+}
+
+.links {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  flex-wrap: wrap;
+  font-size: 1rem;
+}
+
+.links a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.links a:hover {
+  opacity: 0.85;
+}
+
+.dot {
+  display: inline-block;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--muted);
+  opacity: 0.65;
+}

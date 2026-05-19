@@ -86,6 +86,32 @@ maturin develop --manifest-path alkahest-py/Cargo.toml --release --features cuda
 maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel egraph jit groebner"
 ```
 
+### Rust crate
+
+`alkahest-core` is also published on [crates.io](https://crates.io/crates/alkahest-core) ([docs.rs](https://docs.rs/alkahest-core)) for use directly from Rust:
+
+```toml
+[dependencies]
+alkahest-core = "2"
+
+# Optional features (combine as needed):
+# alkahest-core = { version = "2", features = ["groebner", "parallel", "egraph"] }
+```
+
+**System prerequisites** (same libraries as the Python build — must be installed before `cargo build`):
+
+```bash
+# Debian / Ubuntu
+sudo apt-get install -y libflint-dev libgmp-dev libmpfr-dev
+
+# macOS (Homebrew)
+brew install flint
+```
+
+The `jit` feature additionally requires **LLVM 15 dev headers** (`llvm-15-dev` / `brew install llvm@15`).
+
+A self-contained runnable example is in [`examples/rust_quickstart/`](https://github.com/alkahest-cas/alkahest/tree/main/examples/rust_quickstart).
+
 ## First steps
 
 Every computation starts with an `ExprPool`. It owns all expressions; you create symbols and integers from it.

@@ -24,6 +24,7 @@ pub mod modular;
 pub mod number_theory;
 pub mod numeric;
 pub mod ode;
+pub mod parse;
 pub mod pattern;
 pub mod poly;
 // V2-9 — CAD / real QE
@@ -76,6 +77,7 @@ pub use ode::{
     sensitivity::{adjoint_system, sensitivity_system, AdjointSystem, SensitivitySystem},
     OdeError, ScalarODE, ODE,
 };
+pub use parse::{parse, ParseError};
 pub use pattern::{match_pattern, Pattern, Substitution};
 pub use poly::{
     factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z, poly_normal, real_roots,
@@ -168,7 +170,7 @@ pub mod stable {
     };
     pub use crate::calculus::{limit, series, LimitDirection, LimitError, Series, SeriesError};
     pub use crate::dae::{pantelides, DaeError, DAE};
-    pub use crate::diff::{diff, diff_forward, DiffError};
+    pub use crate::diff::{diff, diff_forward, grad, DiffError};
     #[cfg(feature = "groebner")]
     pub use crate::diffalg::{
         dae_index_reduce, rosenfeld_groebner, rosenfeld_groebner_algebraic,
@@ -188,9 +190,12 @@ pub mod stable {
     pub use crate::kernel::pool_persist::PoolPersistError;
     pub use crate::kernel::pool_persist::{load_from, open_persistent, save_to, IoError};
     pub use crate::kernel::{
-        expr_contains_noncommutative_symbol, mult_tree_is_commutative, subs, Domain, ExprData,
-        ExprDisplay, ExprId, ExprPool,
+        expr_contains_noncommutative_symbol, mult_tree_is_commutative, render_latex, render_unicode,
+        subs, Domain, ExprData, ExprDisplay, ExprId, ExprPool,
     };
+    pub use crate::lean::emit_lean_expr as emit_lean;
+    pub use crate::parse::{parse, ParseError};
+    pub use crate::stablehlo::emit_stablehlo;
     pub use crate::lattice::{
         lattice_reduce_rows, lattice_reduce_rows_with_delta, validate_lll_rows, LatticeError,
     };

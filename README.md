@@ -88,6 +88,30 @@ maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "par
 
 Optional Cargo features: `parallel` (sharded pool + parallel F4), `egraph` (egglog backend), `jit` (LLVM JIT), `groebner` (Gröbner solver + Diophantine + homotopy), `cuda` (NVPTX codegen).
 
+### Rust crate
+
+`alkahest-core` is also published on [crates.io](https://crates.io/crates/alkahest-core) ([docs.rs](https://docs.rs/alkahest-core)) for use directly from Rust without a Python runtime:
+
+```toml
+[dependencies]
+alkahest-core = "2"
+
+# With optional features:
+# alkahest-core = { version = "2", features = ["groebner", "parallel", "egraph"] }
+```
+
+**System prerequisites** (same libraries as the Python build — must be present before `cargo build`):
+
+```bash
+# Debian / Ubuntu
+sudo apt-get install -y libflint-dev libgmp-dev libmpfr-dev
+
+# macOS
+brew install flint
+```
+
+The `jit` feature additionally requires LLVM 15 dev headers (`apt install llvm-15-dev` / `brew install llvm@15`). A self-contained runnable example is in [`examples/rust_quickstart/`](examples/rust_quickstart/).
+
 ---
 
 ## Quick start

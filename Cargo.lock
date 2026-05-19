@@ -48,6 +48,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "alkahest-quickstart"
+version = "0.1.0"
+dependencies = [
+ "alkahest-core",
+]
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"

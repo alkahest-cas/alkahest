@@ -4,9 +4,23 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
+description   = "High-performance computer algebra kernel: symbolic expressions, polynomials, Gröbner bases, JIT, and Arb ball arithmetic."
+repository    = "https://github.com/alkahest-cas/alkahest"
+homepage      = "https://alkahest-cas.github.io/alkahest/"
+documentation = "https://docs.rs/alkahest-core"
+keywords      = ["computer-algebra", "symbolic-math", "polynomial", "groebner", "jit"]
+categories    = ["mathematics", "science"]
+readme        = "../README.md"
+
+[package.metadata.docs.rs]
+# Build docs with feature-gated APIs visible; jit omitted because
+# docs.rs does not have LLVM 15 headers available.
+features      = ["egraph", "groebner", "parallel"]
+rustdoc-args  = ["--cfg", "docsrs"]
 
 [features]
 egraph = ["dep:egglog"]
+# Requires LLVM 15 dev headers (llvm-15-dev / llvm@15) at compile time.
 jit   = ["dep:inkwell"]
 parallel = ["dep:rayon", "dep:dashmap"]
 # Phase 29: use libflint3-dev (FLINT ≥ 3.0) for ArbBall when available.

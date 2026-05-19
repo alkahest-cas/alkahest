@@ -1,0 +1,35 @@
+name: Publish to crates.io
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    name: cargo publish alkahest-core
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies (GMP, MPFR, FLINT)
+        run: sudo apt-get update && sudo apt-get install -y libflint-dev libgmp-dev libmpfr-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-publish-${{ hashFiles('Cargo.lock') }}
+
+      - name: Dry-run check
+        run: cargo publish --dry-run -p alkahest-core
+
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p alkahest-core

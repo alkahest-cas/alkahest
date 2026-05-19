@@ -4,7 +4,7 @@ Alkahest — Python API reference
 Installation
 ------------
 
-Install the default wheel from PyPI. Supported Python versions are **3.9 through 3.13**:
+**Python** — install from PyPI. Supported versions: **3.9 through 3.13**:
 
 ::
 
@@ -16,9 +16,20 @@ That wheel omits LLVM JIT and the optional Rust features ``groebner``, ``egraph`
 native binary.
 
 For **Linux x86_64** opt-in wheels with local versions ``+jit`` or ``+full``, use assets attached to
-`GitHub Releases <https://github.com/alkahest-cas/alkahest/releases>`_ (see the ``README`` and the
-`Getting started <../getting-started.html>`_ chapter). Other platforms: build from source with
-``maturin``.
+`GitHub Releases <https://github.com/alkahest-cas/alkahest/releases>`_. Other platforms: build from
+source with ``maturin``.
+
+**Rust** — add ``alkahest-core`` to your ``Cargo.toml``:
+
+.. code-block:: toml
+
+   [dependencies]
+   alkahest-core = "2"
+   # alkahest-core = { version = "2", features = ["groebner", "parallel", "egraph"] }
+
+Requires ``libflint-dev`` / ``libgmp-dev`` / ``libmpfr-dev`` at build time (``apt-get`` or
+``brew install flint``). See `docs.rs/alkahest-core <https://docs.rs/alkahest-core>`_ for the
+full Rust API reference.
 
 For optional Cargo features (``jit``, ``groebner``, ``cuda``, …) and full developer setup, see the
 `Getting started <../getting-started.html>`_ chapter of the user guide.
