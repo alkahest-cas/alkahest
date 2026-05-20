@@ -7,7 +7,7 @@
 | **0.1 – 0.5** | ✅ Complete | Foundations through Lean certificates and GPU (see [CHANGELOG](CHANGELOG.md)) |
 | **1.0.0** | ✅ Complete | Production NVPTX, MLIR dialect, Gröbner solver, semver API, persistent pool (see [CHANGELOG](CHANGELOG.md#100)) |
 | **2.0.0** | ✅ Complete | Full mathematical coverage: summation, series, limits, eigenvalues, number theory, noncommutative algebra, regular chains, primary decomposition, differential algebra, homotopy continuation, Diophantine equations, symbolic products, rsolve, algebraic Risch, LaTeX/Unicode output, string parsing (see [CHANGELOG](CHANGELOG.md#200--2026-05-06)) |
-| **Next** | 📋 Planned | See below |
+| **Next** | 🚧 In progress | Gruntz comparability-graph limits (V2-17), see below |
 
 **Test coverage:** 362 Rust unit/proptest/doctest + 438 Python tests = 800 passing, zero errors.
 
@@ -18,7 +18,7 @@
 Items in rough priority order. None are committed to a specific release date.
 
 ### Near-term
-- **Full Gruntz limits** — comparability-graph algorithm for general transcendental sequences; Lean `Filter.Tendsto` certificates (current implementation uses prototype L'Hôpital rules)
+- **Full Gruntz limits** ✅ implemented in `feature/gruntz-limits` — comparability-graph MRV algorithm for exp-log sequences (`alkahest-core/src/calculus/gruntz.rs`). **Remaining:** Lean `Filter.Tendsto` certificate export; polyhedral/mixed-volume homotopy start systems for Katsura-family systems
 - **Polyhedral / mixed-volume homotopy** — needed for deficient systems whose affine root count is below the Bézout bound (e.g. Katsura family)
 
 ### Mathematical coverage

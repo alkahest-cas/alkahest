@@ -1,6 +1,8 @@
 //! Symbolic limits towards finite points or ±∞ via local expansions (`Series`),
-//! L'Hôpital iterations, and algebraic transforms (V2-16).
+//! L'Hôpital iterations, algebraic transforms, and the Gruntz comparability-graph
+//! algorithm for exp-log combinations (V2-16/V2-17).
 
+use crate::calculus::gruntz::try_gruntz;
 use crate::calculus::series::{local_expansion, LocalExpansion};
 use crate::diff::{diff, DiffError};
 use crate::kernel::pool::POS_INFINITY_SYMBOL;
@@ -87,7 +89,7 @@ impl crate::errors::AlkahestError for LimitError {
                 "try manual algebra (quotient form, cancellations) or split into simpler sub-expressions"
             }
             LimitError::Unsupported => {
-                "unsupported indeterminate — Gruntz-style comparability beyond this prototype is future work"
+                "limit could not be computed — try manual algebra, or the expression may involve oscillation or non-comparable growth not yet handled"
             }
         })
     }
@@ -212,6 +214,14 @@ fn limit_inner(
 
     if let Some(r) = try_special_function_limits(expr, var, point, direction, pool)? {
         return Ok(r);
+    }
+
+    // Gruntz algorithm — best for exp/log expressions at +∞ (runs before the 1/t substitution
+    // so the exp structure is still visible in the original variable).
+    if is_pos_infinity(point, pool) {
+        if let Some(r) = try_gruntz(expr, var, pool)? {
+            return Ok(r);
+        }
     }
 
     if is_pos_infinity(point, pool) {

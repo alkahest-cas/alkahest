@@ -1,5 +1,6 @@
 //! Symbolic calculus utilities — truncated expansions, limits, …
 
+pub mod gruntz;
 pub mod limits;
 pub mod series;
 
