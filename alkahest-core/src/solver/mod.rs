@@ -22,6 +22,7 @@
 
 pub mod diophantine;
 pub mod homotopy;
+pub mod polyhedral;
 pub mod regular_chains;
 
 pub use regular_chains::{

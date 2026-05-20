@@ -18,8 +18,9 @@
 Items in rough priority order. None are committed to a specific release date.
 
 ### Near-term
-- **Full Gruntz limits** ✅ implemented in `feature/gruntz-limits` — comparability-graph MRV algorithm for exp-log sequences (`alkahest-core/src/calculus/gruntz.rs`). **Remaining:** Lean `Filter.Tendsto` certificate export; polyhedral/mixed-volume homotopy start systems for Katsura-family systems
-- **Polyhedral / mixed-volume homotopy** — needed for deficient systems whose affine root count is below the Bézout bound (e.g. Katsura family)
+- **Full Gruntz limits** ✅ implemented in `feature/gruntz-limits` — comparability-graph MRV algorithm for exp-log sequences (`alkahest-core/src/calculus/gruntz.rs`)
+- **Lean `Filter.Tendsto` certificate export** ✅ implemented — `lean::emit_tendsto_cert` generates Lean 4 `Filter.Tendsto` proof obligations; pattern-dispatches to Mathlib theorems (`tendsto_exp_neg_atTop_nhds_zero`, `tendsto_exp_atTop`, etc.) and falls back to `sorry` for complex cases
+- **Polyhedral / mixed-volume homotopy** ✅ implemented — BKK mixed-volume start systems for 2-variable sparse polynomial systems (`alkahest-core/src/solver/polyhedral.rs`); `solve_numerical` automatically selects polyhedral homotopy when MV < Bézout bound
 
 ### Mathematical coverage
 - **F5 / signature-based Gröbner** — eliminate zero reductions; ≥ 2× speedup over F4 on Cyclic-7 and larger

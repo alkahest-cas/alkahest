@@ -1,11 +1,13 @@
-//! Numerical algebraic geometry — total-degree homotopy continuation (V2-14).
+//! Numerical algebraic geometry — total-degree and polyhedral homotopy continuation (V2-14, V2-17).
 //!
-//! We track `(1−t)·γ·G(z) + t·F(z) = 0` from `t=0→1`, with decoupled start
-//! `G_i(z) = z_i^{d_i} − 1` and `d_i` the total degree of `F_i`.  The Bézout
-//! start count ∏ d_i reaches the affine root count only for sufficiently generic
-//! **dense** systems; **deficient** families (fewer finite roots than the
-//! Bézout bound — e.g. Katsura) need a polyhedral / mixed-volume start; that
-//! is out of scope here.
+//! **Total-degree (Bézout):** tracks `(1−t)·γ·G(z) + t·F(z) = 0` from `t=0→1`, with
+//! decoupled start `G_i(z) = z_i^{d_i} − 1`.  The Bézout count ∏ d_i is tight only
+//! for generic dense systems.
+//!
+//! **Polyhedral (BKK):** for 2-variable systems where the mixed volume is below the
+//! Bézout bound (e.g. Katsura family), [`polyhedral`] supplies binomial start systems
+//! and exact start points.  The homotopy `H = (1−t)·G_cell(z) + t·F(z)` is then
+//! tracked with the same Euler-Newton predictor-corrector.
 //!
 //! Endpoints are Newton-polished in ℝⁿ and checked with a conservative Smale
 //! heuristic plus `ArbBall` enclosures.
@@ -15,14 +17,14 @@
 use crate::ball::ArbBall;
 use crate::kernel::{ExprId, ExprPool};
 use crate::poly::groebner::GbPoly;
-use crate::solver::{expr_to_gbpoly, SolverError};
+use crate::solver::{expr_to_gbpoly, polyhedral, SolverError};
 use rug::Rational;
 use std::f64::consts::PI;
 
 #[derive(Clone, Copy, Debug)]
-struct C64 {
-    re: f64,
-    im: f64,
+pub(crate) struct C64 {
+    pub(crate) re: f64,
+    pub(crate) im: f64,
 }
 
 impl C64 {
@@ -484,6 +486,146 @@ fn damped_correct(
         .then_some(z)
 }
 
+// ---------------------------------------------------------------------------
+// Polyhedral homotopy helpers (V2-17)
+//
+// These mirror hv / dh_dt / jh / damped_correct / track_path but use a
+// GbPoly start system G instead of the degree-based Bézout start.
+// The homotopy is H(z,t) = (1−t)·G(z) + t·F(z).
+// ---------------------------------------------------------------------------
+
+fn hv_sys(target: &[GbPoly], start: &[GbPoly], z: &[C64], t: f64) -> Vec<C64> {
+    let mt = C64::new(1.0 - t, 0.0);
+    let tt = C64::new(t, 0.0);
+    (0..z.len())
+        .map(|i| {
+            let f = gbpoly_eval_c(&target[i], z);
+            let g = gbpoly_eval_c(&start[i], z);
+            C64::add(C64::mul(mt, g), C64::mul(tt, f))
+        })
+        .collect()
+}
+
+fn dh_dt_sys(target: &[GbPoly], start: &[GbPoly], z: &[C64]) -> Vec<C64> {
+    (0..z.len())
+        .map(|i| {
+            let f = gbpoly_eval_c(&target[i], z);
+            let g = gbpoly_eval_c(&start[i], z);
+            C64::sub(f, g)
+        })
+        .collect()
+}
+
+fn jh_sys(target: &[GbPoly], start: &[GbPoly], z: &[C64], t: f64) -> Vec<Vec<C64>> {
+    let n = z.len();
+    let j_f = jacobian_c(target, z);
+    let j_g = jacobian_c(start, z);
+    let mt = C64::new(1.0 - t, 0.0);
+    let tt = C64::new(t, 0.0);
+    let mut jac = vec![vec![C64::ZERO; n]; n];
+    for i in 0..n {
+        for k in 0..n {
+            jac[i][k] = C64::add(C64::mul(tt, j_f[i][k]), C64::mul(mt, j_g[i][k]));
+        }
+    }
+    jac
+}
+
+fn damped_correct_sys(
+    target: &[GbPoly],
+    start: &[GbPoly],
+    z0: &[C64],
+    t_tgt: f64,
+    opts: &HomotopyOpts,
+) -> Option<Vec<C64>> {
+    let mut z = z0.to_vec();
+    for _ in 0..opts.newton_cap {
+        let fv = hv_sys(target, start, &z, t_tgt);
+        let res = fv_linf(&fv);
+        if res < opts.homotopy_tol {
+            return Some(z);
+        }
+        let jac = jh_sys(target, start, &z, t_tgt);
+        let neg_f: Vec<C64> = fv.iter().map(|c| C64::neg(*c)).collect();
+        let step = complex_linsolve(jac, neg_f)?;
+        let mut lm = 1.0_f64;
+        loop {
+            let trial: Vec<C64> = z
+                .iter()
+                .zip(step.iter())
+                .map(|(zi, s)| C64::add(*zi, C64::scale(lm, *s)))
+                .collect();
+            let new_res = fv_linf(&hv_sys(target, start, &trial, t_tgt));
+            if new_res < res || new_res < opts.homotopy_tol {
+                z = trial;
+                break;
+            }
+            lm *= 0.5;
+            if lm < 1e-12 {
+                return None;
+            }
+        }
+    }
+    fv_linf(&hv_sys(target, start, &z, t_tgt))
+        .le(&(opts.homotopy_tol * 8.0))
+        .then_some(z)
+}
+
+fn track_path_sys(
+    target: &[GbPoly],
+    start: &[GbPoly],
+    z_start: Vec<C64>,
+    opts: &HomotopyOpts,
+) -> Result<Vec<C64>, HomotopyError> {
+    let mut z = z_start;
+    let mut t = 0.0_f64;
+    let mut dt = opts.dt_initial;
+    let mut steps_total = 0usize;
+    while t < 1.0 - 1e-15 {
+        if steps_total > opts.max_tracker_steps {
+            return Err(HomotopyError::TrackerFailed("max_tracker_steps"));
+        }
+        let t_next = (t + dt).min(1.0);
+        let jac = jh_sys(target, start, &z, t);
+        let htd = dh_dt_sys(target, start, &z);
+        let dt_c = C64::new(t_next - t, 0.0);
+        let rhs: Vec<C64> = htd
+            .into_iter()
+            .map(|h| C64::neg(C64::mul(dt_c, h)))
+            .collect();
+        let step = match complex_linsolve(jac, rhs) {
+            Some(s) => s,
+            None => {
+                dt *= 0.5;
+                if dt < opts.dt_min {
+                    return Err(HomotopyError::SingularJacobian);
+                }
+                continue;
+            }
+        };
+        steps_total += 1;
+        let zp: Vec<C64> = z
+            .iter()
+            .zip(step.iter())
+            .map(|(zi, dsi)| C64::add(*zi, *dsi))
+            .collect();
+        match damped_correct_sys(target, start, &zp, t_next, opts) {
+            Some(zn) => {
+                z = zn;
+                t = t_next;
+                dt = (dt * 1.15_f64).min(opts.dt_initial);
+            }
+            None => {
+                dt *= 0.5_f64;
+                if dt < opts.dt_min {
+                    return Err(HomotopyError::TrackerFailed("corrector"));
+                }
+            }
+        }
+    }
+    Ok(z)
+}
+
 fn newton_terminal(target: &[GbPoly], mut x: Vec<f64>, opts: &HomotopyOpts) -> Option<Vec<f64>> {
     for _ in 0..opts.newton_cap {
         let f = fv_real(target, &x);
@@ -635,7 +777,12 @@ fn dedup(points: &[Vec<f64>], tol: f64) -> Vec<Vec<f64>> {
     uniq
 }
 
-/// Total-degree continuation + polishing + Smale / ArbBall packaging.
+/// Total-degree or polyhedral-BKK continuation + polishing + Smale / ArbBall packaging.
+///
+/// For 2-variable systems where the BKK mixed volume is strictly below the Bézout bound
+/// (e.g. Katsura family), polyhedral homotopy is used automatically.  The path budget
+/// is checked against the mixed volume in that case.  For all other systems, the standard
+/// total-degree (Bézout) start is used.
 ///
 /// Returns **real projections** whose imaginary tails were negligible; complex
 /// roots with large imaginary part are discarded.
@@ -664,23 +811,47 @@ pub fn solve_numerical(
             .checked_mul(d as usize)
             .ok_or(HomotopyError::BezoutTooLarge(usize::MAX))?;
     }
-    if bez > opts.max_bezout_paths {
-        return Err(HomotopyError::BezoutTooLarge(bez));
-    }
-    let starts = start_system_roots(&degs);
-    let gamma = random_gamma(opts.gamma_angle_seed);
+
     let prec = opts.certify_prec_bits;
     const SMALE_THRESH: f64 = 0.125;
     let mut raw: Vec<Vec<f64>> = Vec::new();
-    for z0 in starts {
-        let z_end = match track_path(gamma, &sys, &degs, z0, opts) {
-            Ok(z) => z,
-            Err(_) => continue,
-        };
-        if z_end.iter().all(|c| c.im.abs() < 1e-6) {
-            let xr: Vec<f64> = z_end.iter().map(|c| c.re).collect();
-            if let Some(xp) = newton_terminal(&sys, xr, opts) {
-                raw.push(xp);
+
+    if polyhedral::should_use_polyhedral(&sys) {
+        // BKK bound is strictly below Bézout — use polyhedral mixed-cell starts.
+        let mv = polyhedral::mixed_volume(&sys).unwrap_or(bez);
+        if mv > opts.max_bezout_paths {
+            return Err(HomotopyError::BezoutTooLarge(mv));
+        }
+        for (start_sys, cell_starts) in polyhedral::polyhedral_cell_iter(&sys[0], &sys[1]) {
+            for z0 in cell_starts {
+                let z_end = match track_path_sys(&sys, &start_sys, z0, opts) {
+                    Ok(z) => z,
+                    Err(_) => continue,
+                };
+                if z_end.iter().all(|c| c.im.abs() < 1e-6) {
+                    let xr: Vec<f64> = z_end.iter().map(|c| c.re).collect();
+                    if let Some(xp) = newton_terminal(&sys, xr, opts) {
+                        raw.push(xp);
+                    }
+                }
+            }
+        }
+    } else {
+        if bez > opts.max_bezout_paths {
+            return Err(HomotopyError::BezoutTooLarge(bez));
+        }
+        let starts = start_system_roots(&degs);
+        let gamma = random_gamma(opts.gamma_angle_seed);
+        for z0 in starts {
+            let z_end = match track_path(gamma, &sys, &degs, z0, opts) {
+                Ok(z) => z,
+                Err(_) => continue,
+            };
+            if z_end.iter().all(|c| c.im.abs() < 1e-6) {
+                let xr: Vec<f64> = z_end.iter().map(|c| c.re).collect();
+                if let Some(xp) = newton_terminal(&sys, xr, opts) {
+                    raw.push(xp);
+                }
             }
         }
     }
