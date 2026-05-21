@@ -354,6 +354,18 @@ impl RewriteRule for ConstFold {
             ExprData::Pow { base, exp } => {
                 let b = as_integer(base, pool)?;
                 let e = as_integer(exp, pool)?;
+                // 1^e = 1 and (-1)^e = ±1 for any integer e (including negative)
+                if b == 1 {
+                    let after = pool.integer(1_i32);
+                    if after == expr { return None; }
+                    return Some((after, one_step(self.name(), expr, after)));
+                }
+                if b == -1 {
+                    let sign: i64 = if e.is_even() { 1 } else { -1 };
+                    let after = pool.integer(sign);
+                    if after == expr { return None; }
+                    return Some((after, one_step(self.name(), expr, after)));
+                }
                 if e < 0 {
                     return None; // negative integer pow → rational; skip
                 }
@@ -710,6 +722,88 @@ impl RewriteRule for ExpandMul {
             0 => pool.integer(0_i32),
             1 => new_summands[0],
             _ => pool.add(new_summands),
+        };
+
+        if after == expr {
+            return None;
+        }
+        Some((after, one_step(self.name(), expr, after)))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ExpPow: exp(h)^n → exp(n·h)  for integer n
+// ---------------------------------------------------------------------------
+
+pub struct ExpPow;
+
+impl RewriteRule for ExpPow {
+    fn name(&self) -> &'static str {
+        "exp_pow"
+    }
+
+    fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
+        let (base, exp) = match pool.get(expr) {
+            ExprData::Pow { base, exp } => (base, exp),
+            _ => return None,
+        };
+        // base must be exp(h)
+        let h = match pool.get(base) {
+            ExprData::Func { name, args } if name == "exp" && args.len() == 1 => args[0],
+            _ => return None,
+        };
+        // exp must be an integer
+        let n = as_integer(exp, pool)?;
+        let n_id = pool.integer(n.clone());
+        let new_arg = pool.mul(vec![n_id, h]);
+        let after = pool.func("exp".to_string(), vec![new_arg]);
+        if after == expr {
+            return None;
+        }
+        Some((after, one_step(self.name(), expr, after)))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CollectExp: exp(a) · exp(b) · … → exp(a+b+…)  inside a Mul
+// ---------------------------------------------------------------------------
+
+pub struct CollectExp;
+
+impl RewriteRule for CollectExp {
+    fn name(&self) -> &'static str {
+        "collect_exp"
+    }
+
+    fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
+        let args = match pool.get(expr) {
+            ExprData::Mul(v) => v,
+            _ => return None,
+        };
+
+        let mut exp_args: Vec<ExprId> = Vec::new();
+        let mut other: Vec<ExprId> = Vec::new();
+        for &a in &args {
+            match pool.get(a) {
+                ExprData::Func { name, args: fargs } if name == "exp" && fargs.len() == 1 => {
+                    exp_args.push(fargs[0]);
+                }
+                _ => other.push(a),
+            }
+        }
+
+        if exp_args.len() < 2 {
+            return None;
+        }
+
+        let sum = pool.add(exp_args);
+        let merged_exp = pool.func("exp".to_string(), vec![sum]);
+
+        let after = if other.is_empty() {
+            merged_exp
+        } else {
+            other.push(merged_exp);
+            pool.mul(other)
         };
 
         if after == expr {

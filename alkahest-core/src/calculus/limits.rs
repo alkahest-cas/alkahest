@@ -121,7 +121,10 @@ pub fn limit(
     pool: &ExprPool,
 ) -> Result<ExprId, LimitError> {
     let r = limit_inner(expr, var, point, direction, pool, 0)?;
-    Ok(simplify(fold_known_reals(simplify(r, pool).value, pool), pool).value)
+    let r_simp = simplify(r, pool).value;
+    let r_fold = fold_known_reals(r_simp, pool);
+    let result = simplify(r_fold, pool).value;
+    Ok(result)
 }
 
 /// `(g^m)^n ↦ g^{m n}` when `m,n ∈ ℤ`, so substitutions like `(1/t)^k` become `t^{-k}` Laurent heads.
@@ -171,10 +174,13 @@ fn flatten_nested_integer_pow(expr: ExprId, pool: &ExprPool) -> ExprId {
 /// numerator and denominator describe an honest polynomial quotient in ``t``.
 fn canonical_polynomial_quotient_in_var(expr: ExprId, t: ExprId, pool: &ExprPool) -> ExprId {
     let (n_raw, d_raw) = numerator_denominator(expr, pool);
-    if d_raw == pool.integer(1_i32) {
-        return expr;
-    }
+    let has_trivial_denom = d_raw == pool.integer(1_i32);
+    // When d_raw == 1 the expr might still have negative powers of t in a sum (e.g. 1 + t^{-1}).
+    // Skip k=0 in that case to avoid an infinite loop, but still try higher k values.
     for k in 0_i64..=40 {
+        if has_trivial_denom && k == 0 {
+            continue;
+        }
         let tk = pool.pow(t, pool.integer(k));
         let n = simplify_expanded(pool.mul(vec![tk, n_raw]), pool).value;
         let d = simplify_expanded(pool.mul(vec![tk, d_raw]), pool).value;
@@ -229,23 +235,11 @@ fn limit_inner(
         let inv_t = pool.pow(t, pool.integer(-1_i32));
         let mut m = HashMap::new();
         m.insert(var, inv_t);
-        let e2 = simplify(
-            canonical_polynomial_quotient_in_var(
-                flatten_nested_integer_pow(subs(expr, &m, pool), pool),
-                t,
-                pool,
-            ),
-            pool,
-        )
-        .value;
-        return limit_inner(
-            e2,
-            t,
-            pool.integer(0_i32),
-            LimitDirection::Plus,
-            pool,
-            depth + 1,
-        );
+        let after_subs = subs(expr, &m, pool);
+        let after_flatten = flatten_nested_integer_pow(after_subs, pool);
+        let after_canon = canonical_polynomial_quotient_in_var(after_flatten, t, pool);
+        let e2 = simplify(after_canon, pool).value;
+        return limit_inner(e2, t, pool.integer(0_i32), LimitDirection::Plus, pool, depth + 1);
     }
 
     if is_neg_infinity(point, pool) {
@@ -459,7 +453,9 @@ fn try_direct_substitution(
         return None;
     }
     let sub = fold_known_reals(simplify(raw, pool).value, pool);
-    if depends_on(sub, var, pool) || substitution_is_singular(sub, pool) {
+    let dep = depends_on(sub, var, pool);
+    let sing = substitution_is_singular(sub, pool);
+    if dep || sing {
         None
     } else {
         Some(sub)

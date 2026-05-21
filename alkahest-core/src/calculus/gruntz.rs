@@ -15,7 +15,8 @@
 use crate::calculus::limits::{limit, LimitDirection, LimitError};
 use crate::calculus::series::local_expansion;
 use crate::kernel::{ExprData, ExprId, ExprPool};
-use crate::simplify::simplify;
+use crate::simplify::rules::{CollectExp, ExpPow};
+use crate::simplify::{rules_for_config, simplify, simplify_with, SimplifyConfig};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -51,14 +52,42 @@ pub(crate) fn try_gruntz(
     result
 }
 
+/// Collapse exp(h)^n → exp(n·h) and exp(a)·exp(b) → exp(a+b) before analysis.
+/// These rules must NOT be in the default simplifier (they undo omega-power rewrites),
+/// so we apply them here only as an input preprocessing step, combined with the full
+/// default rule set so that exponent arithmetic is fully simplified.
+fn preprocess_exp(expr: ExprId, pool: &ExprPool) -> ExprId {
+    let cfg = SimplifyConfig::default();
+    let mut rules = rules_for_config(&cfg);
+    rules.push(Box::new(ExpPow));
+    rules.push(Box::new(CollectExp));
+    simplify_with(expr, pool, &rules, cfg).value
+}
+
 fn gruntz_inner(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<Option<ExprId>, LimitError> {
+    // Collapse exp(h)^n → exp(n·h) and merge exp factors before analysis.
+    let preprocessed = preprocess_exp(expr, pool);
+
     // Collect exp(h) subexpressions where h diverges
     let mut candidates: Vec<(ExprId, ExprId)> = Vec::new();
-    collect_exp_subexprs(expr, var, pool, &mut candidates)?;
+    collect_exp_subexprs(preprocessed, var, pool, &mut candidates)?;
 
     if candidates.is_empty() {
+        // If preprocessing changed the expression (e.g. exp(x+1)/exp(x) → exp(1)),
+        // delegate to limit() on the simplified form so it can use direct substitution.
+        if preprocessed != expr {
+            let lim = limit(
+                preprocessed,
+                var,
+                pool.pos_infinity(),
+                LimitDirection::Bidirectional,
+                pool,
+            )?;
+            return Ok(Some(lim));
+        }
         return Ok(None);
     }
+    let expr = preprocessed;
 
     // Build MRV set: keep only the maximally-growing elements
     let mrv = build_mrv_set(candidates, var, pool)?;
@@ -338,6 +367,11 @@ fn rewrite_node(expr: ExprId, subst: &HashMap<ExprId, ExprId>, pool: &ExprPool) 
         ExprData::Pow { base, exp } => {
             let b = rewrite_node(base, subst, pool);
             let e = rewrite_node(exp, subst, pool);
+            // Flatten (x^a)^b → x^(a·b) so rational omega powers compose correctly.
+            if let ExprData::Pow { base: inner_base, exp: inner_e } = pool.get(b) {
+                let combined = simplify(pool.mul(vec![inner_e, e]), pool).value;
+                return simplify(pool.pow(inner_base, combined), pool).value;
+            }
             simplify(pool.pow(b, e), pool).value
         }
         ExprData::Func { name, args } => {
@@ -357,6 +391,19 @@ fn leading_term_at_zero(
     omega: ExprId,
     pool: &ExprPool,
 ) -> Result<Option<(ExprId, i32)>, LimitError> {
+    // Fast path: symbolically factor out the omega power.
+    // This handles rational exponents and avoids Taylor-fallback singularity issues.
+    if let Some((coeff, rat_power)) = factor_omega_power(expr, omega, pool) {
+        let sentinel: i32 = if rat_power > rug::Rational::from(0) {
+            1
+        } else if rat_power < rug::Rational::from(0) {
+            -1
+        } else {
+            0
+        };
+        return Ok(Some((coeff, sentinel)));
+    }
+    // Fallback: full Laurent series expansion (for expressions without a pure omega factor).
     let zero = pool.integer(0_i32);
     let expansion = match local_expansion(expr, omega, zero, SERIES_TERMS, pool) {
         Ok(e) => e,
@@ -370,6 +417,66 @@ fn leading_term_at_zero(
         }
     }
     Ok(None)
+}
+
+/// Factor `expr` as `(coeff, power)` where `expr = coeff · omega^power`
+/// and `coeff` is omega-free.  Returns `None` if `expr` contains no omega.
+fn factor_omega_power(
+    expr: ExprId,
+    omega: ExprId,
+    pool: &ExprPool,
+) -> Option<(ExprId, rug::Rational)> {
+    if expr == omega {
+        return Some((pool.integer(1_i32), rug::Rational::from(1)));
+    }
+    match pool.get(expr) {
+        ExprData::Pow { base, exp } => {
+            if base == omega {
+                let e_rat = expr_as_rational(exp, pool)?;
+                return Some((pool.integer(1_i32), e_rat));
+            }
+            // (base^a)^b → base^(a·b)
+            let (inner_coeff, inner_p) = factor_omega_power(base, omega, pool)?;
+            let b_rat = expr_as_rational(exp, pool)?;
+            let combined = inner_p * b_rat.clone();
+            let new_coeff = simplify(pool.pow(inner_coeff, exp), pool).value;
+            Some((new_coeff, combined))
+        }
+        ExprData::Mul(xs) => {
+            let mut total_p = rug::Rational::from(0);
+            let mut coeff_factors: Vec<ExprId> = Vec::new();
+            let mut found = false;
+            for &x in &xs {
+                if let Some((c, p)) = factor_omega_power(x, omega, pool) {
+                    found = true;
+                    total_p += p;
+                    if !matches!(pool.get(c), ExprData::Integer(n) if n.0 == 1) {
+                        coeff_factors.push(c);
+                    }
+                } else {
+                    coeff_factors.push(x);
+                }
+            }
+            if !found {
+                return None;
+            }
+            let coeff = match coeff_factors.len() {
+                0 => pool.integer(1_i32),
+                1 => coeff_factors[0],
+                _ => simplify(pool.mul(coeff_factors), pool).value,
+            };
+            Some((coeff, total_p))
+        }
+        _ => None,
+    }
+}
+
+fn expr_as_rational(e: ExprId, pool: &ExprPool) -> Option<rug::Rational> {
+    match pool.get(e) {
+        ExprData::Integer(n) => Some(rug::Rational::from(n.0.clone())),
+        ExprData::Rational(r) => Some(r.0.clone()),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -458,7 +565,7 @@ fn structural_sign(e: ExprId, pool: &ExprPool) -> Option<i8> {
         ExprData::Mul(xs) => {
             let mut s = 1i8;
             for x in xs {
-                s *= structural_sign(*x, pool)?;
+                s *= structural_sign(x, pool)?;
             }
             Some(s)
         }
