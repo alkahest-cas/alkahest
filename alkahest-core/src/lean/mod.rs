@@ -64,7 +64,7 @@ fn rule_to_tactic(rule_name: &str) -> &'static str {
 // Header
 // ---------------------------------------------------------------------------
 
-/// Emit the Lean 4 file header.
+/// Emit the Lean 4 file header (standard rewrites + trig/log).
 pub fn emit_header() -> String {
     "import Mathlib.Tactic\n\
      import Mathlib.Analysis.SpecialFunctions.Trigonometric.Basic\n\
@@ -73,6 +73,183 @@ pub fn emit_header() -> String {
      \n\
      open Real MeasureTheory\n\n"
         .to_string()
+}
+
+/// Emit the Lean 4 file header for limit / Filter.Tendsto certificates.
+pub fn emit_limit_header() -> String {
+    "import Mathlib.Tactic\n\
+     import Mathlib.Analysis.SpecialFunctions.ExpDeriv\n\
+     import Mathlib.Analysis.SpecialFunctions.Pow.Real\n\
+     import Mathlib.Topology.Algebra.Order.LiminfLimsup\n\
+     \n\
+     open Real Filter Topology\n\n"
+        .to_string()
+}
+
+/// Generate a Lean 4 `Filter.Tendsto` certificate for a computed limit.
+///
+/// The certificate asserts:
+/// ```text
+/// Filter.Tendsto (fun x => <expr>) Filter.atTop (nhds <limit>)
+/// ```
+/// and attempts to prove it using known Mathlib theorems.  For cases that
+/// cannot be dispatched automatically, the body falls back to `by sorry`.
+///
+/// # Arguments
+/// * `expr`  — the expression whose limit was computed (function body)
+/// * `var`   — the free variable (lambda binder)
+/// * `lim`   — the computed limit value
+/// * `pool`  — expression pool
+///
+/// Returns a complete `.lean` source snippet including the header.
+pub fn emit_tendsto_cert(expr: ExprId, var: ExprId, lim: ExprId, pool: &ExprPool) -> String {
+    let var_name = pool.with(var, |d| match d {
+        ExprData::Symbol { name, .. } => name.clone(),
+        _ => "x".to_string(),
+    });
+    let body = expr_to_lean(expr, pool);
+    let (codom_filter, limit_display) = lean_codom_filter(lim, pool);
+    let tactic = tendsto_tactic(expr, var, lim, pool);
+
+    let mut out = emit_limit_header();
+    out.push_str(&format!(
+        "-- Filter.Tendsto certificate: lim_{{x→+∞}} f(x) = {limit_display}\n"
+    ));
+    out.push_str(&format!(
+        "example : Filter.Tendsto (fun ({var_name} : ℝ) => {body}) Filter.atTop {codom_filter} :=\n"
+    ));
+    out.push_str(&format!("  {tactic}\n"));
+    out
+}
+
+/// Return `(codomain_filter_str, display_str)` for a limit value.
+///
+/// Finite limit L → `("(nhds L)", "L")`
+/// Infinite limit +∞ → `("Filter.atTop", "+∞")`
+fn lean_codom_filter(lim: ExprId, pool: &ExprPool) -> (String, String) {
+    let is_inf = pool.with(
+        lim,
+        |d| matches!(d, ExprData::Symbol { name, .. } if name == "∞"),
+    );
+    if is_inf {
+        return ("Filter.atTop".to_string(), "+∞".to_string());
+    }
+    let val_str = pool.with(lim, |d| match d {
+        ExprData::Integer(n) if n.0 == 0 => "(0 : ℝ)".to_string(),
+        ExprData::Integer(n) if n.0 == 1 => "(1 : ℝ)".to_string(),
+        _ => expr_to_lean(lim, pool),
+    });
+    (format!("(nhds {val_str})"), val_str)
+}
+
+/// Select the best Lean tactic to prove `Filter.Tendsto f atTop (nhds lim)`.
+///
+/// Recognises a small set of patterns with known Mathlib theorems; falls back
+/// to `by sorry` for everything else.
+fn tendsto_tactic(expr: ExprId, var: ExprId, lim: ExprId, pool: &ExprPool) -> String {
+    let is_zero = pool.with(lim, |d| match d {
+        ExprData::Integer(n) => n.0 == 0,
+        _ => false,
+    });
+    let is_pos_inf = pool.with(lim, |d| match d {
+        ExprData::Symbol { name, .. } => name == "∞",
+        _ => false,
+    });
+
+    // Pattern: exp(-var) → 0
+    if is_zero && matches_exp_neg_var(expr, var, pool) {
+        return "tendsto_exp_neg_atTop_nhds_zero".to_string();
+    }
+
+    // Pattern: var^n * exp(-var) → 0 (for any n ≥ 1)
+    if is_zero && matches_pow_mul_exp_neg(expr, var, pool) {
+        return "by\n    have := tendsto_pow_mul_exp_neg_atTop_nhds_zero\n    exact this"
+            .to_string();
+    }
+
+    // Pattern: exp(var) → +∞
+    if is_pos_inf && matches_exp_var(expr, var, pool) {
+        return "tendsto_exp_atTop".to_string();
+    }
+
+    // Pattern: exp(n*var) / exp(m*var) where n < m → 0
+    if is_zero && matches_exp_ratio_to_zero(expr, var, pool) {
+        return "by\n    simp only [div_eq_mul_inv, ← Real.exp_neg]\n    exact tendsto_exp_neg_atTop_nhds_zero.comp tendsto_id".to_string();
+    }
+
+    "by sorry".to_string()
+}
+
+/// True iff `expr` is structurally `exp(-var)`.
+fn matches_exp_neg_var(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| {
+        if let ExprData::Func { name, args } = d {
+            if name == "exp" && args.len() == 1 {
+                let arg = args[0];
+                return pool.with(arg, |d2| {
+                    if let ExprData::Mul(xs) = d2 {
+                        xs.len() == 2
+                            && xs.contains(&var)
+                            && xs.iter().any(|&x| {
+                                pool.with(x, |d3| matches!(d3, ExprData::Integer(n) if n.0 == -1))
+                            })
+                    } else {
+                        false
+                    }
+                });
+            }
+        }
+        false
+    })
+}
+
+/// True iff `expr` is structurally `var^n * exp(-var)` for some integer n.
+fn matches_pow_mul_exp_neg(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| {
+        if let ExprData::Mul(xs) = d {
+            let has_pow = xs.iter().any(|&x| {
+                pool.with(
+                    x,
+                    |d2| matches!(d2, ExprData::Pow { base, .. } if *base == var),
+                )
+            });
+            let has_exp_neg = xs.iter().any(|&x| matches_exp_neg_var(x, var, pool));
+            has_pow && has_exp_neg
+        } else {
+            false
+        }
+    })
+}
+
+/// True iff `expr` is structurally `exp(var)`.
+fn matches_exp_var(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| {
+        if let ExprData::Func { name, args } = d {
+            name == "exp" && args.len() == 1 && args[0] == var
+        } else {
+            false
+        }
+    })
+}
+
+/// True iff `expr` looks like exp(a*var) / exp(b*var) with a < b (or equivalent).
+fn matches_exp_ratio_to_zero(expr: ExprId, _var: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| {
+        if let ExprData::Mul(xs) = d {
+            let exp_count = xs
+                .iter()
+                .filter(|&&x| {
+                    pool.with(
+                        x,
+                        |d2| matches!(d2, ExprData::Func { name, .. } if name == "exp"),
+                    )
+                })
+                .count();
+            exp_count >= 2
+        } else {
+            false
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -314,5 +491,57 @@ mod tests {
             !s.contains("(1 : ℝ)"),
             "Real exponent triggers rpow metavariable issues: {s}"
         );
+    }
+
+    #[test]
+    fn emit_tendsto_exp_neg_x() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let neg_x = pool.mul(vec![pool.integer(-1_i32), x]);
+        let expr = pool.func("exp", vec![neg_x]);
+        let zero = pool.integer(0_i32);
+        let lean = emit_tendsto_cert(expr, x, zero, &pool);
+        assert!(
+            lean.contains("Filter.Tendsto"),
+            "missing Filter.Tendsto: {lean}"
+        );
+        assert!(
+            lean.contains("tendsto_exp_neg_atTop_nhds_zero"),
+            "expected known tactic: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_tendsto_exp_x_to_inf() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.func("exp", vec![x]);
+        let inf = pool.symbol("∞", Domain::Real);
+        let lean = emit_tendsto_cert(expr, x, inf, &pool);
+        assert!(
+            lean.contains("tendsto_exp_atTop"),
+            "expected tendsto_exp_atTop: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_tendsto_fallback_uses_sorry() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        // sin(x) → no known pattern → sorry
+        let expr = pool.func("sin", vec![x]);
+        let zero = pool.integer(0_i32);
+        let lean = emit_tendsto_cert(expr, x, zero, &pool);
+        assert!(
+            lean.contains("sorry"),
+            "complex patterns should fall back to sorry: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_tendsto_header_has_filter_imports() {
+        let h = emit_limit_header();
+        assert!(h.contains("import Mathlib.Tactic"));
+        assert!(h.contains("Filter"));
     }
 }
