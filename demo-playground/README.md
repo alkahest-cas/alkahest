@@ -8,7 +8,8 @@ An interactive web application for demoing, testing, and recording the [Alkahest
 |---------|-------------|
 | **Notebook mode** | Jupyter-style code cells with CodeMirror editor |
 | **Dual execution** | WASM (Pyodide) for SymPy/pure Python; server kernel for alkahest |
-| **Rich outputs** | LaTeX (KaTeX), matplotlib figures, HTML, JSON |
+| **Rich outputs** | LaTeX (KaTeX), matplotlib figures, HTML, JSON, **Lean 4 certificates** |
+| **Lean verification** | Export `.lean` proofs from alkahest; typecheck via server (`lake env lean`) |
 | **Local wheel** | Upload a `.whl` to test a dev build of alkahest |
 | **Agent chat** | Provider-agnostic AI agent (Vercel AI SDK) with `run_python` tool |
 | **Recording** | In-browser `MediaRecorder` or headless Playwright from the CLI |
@@ -103,6 +104,36 @@ The output renderer detects `$$...$$` and renders it with KaTeX.
 
 SymPy expressions use `IPython.display.Math` which the Jupyter kernel surfaces as `text/latex` — rendered automatically.
 
+### Lean 4 certificates
+
+Alkahest records every rewrite in a derivation log and can export a Mathlib proof file via `to_lean()` or `DerivedResult.certificate`.
+
+In a **server** cell (requires `pnpm start` and a built alkahest wheel):
+
+```python
+import alkahest as ak
+from alkahest import latex
+from playground_helpers import display_lean_cert
+
+pool = ak.ExprPool()
+x = pool.symbol("x")
+result = ak.simplify(pool, x + pool.integer(0))
+print(f"$${latex(result.value)}$$")
+display_lean_cert(result, operation="simplify")  # renders a certificate panel
+```
+
+The output area shows a **Lean 4 certificate** panel with Copy, Download, and **Verify in Lean** (runs `lake env lean` on the demo server).
+
+**Server setup for verification** (one-time per machine):
+
+```bash
+# From the alkahest repo root
+curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y
+cd lean && lake update && lake exe cache get
+```
+
+Set `ALKAHEST_LEAN_PROJECT` if the repo is not at the default path relative to the server.
+
 ---
 
 ## Agent chat mode
@@ -113,8 +144,9 @@ The agent:
 1. Receives your natural-language request
 2. Writes Python code using alkahest (and/or SymPy for comparison)
 3. Runs it via the `run_python` tool on the shared Jupyter kernel
-4. Shows reasoning text, code, and outputs inline
-5. Accepts follow-up messages (stateful kernel — variables persist)
+4. Can emit Lean certificates (`display_lean_cert`) and typecheck them with `verify_lean`
+5. Shows reasoning text, code, and outputs inline
+6. Accepts follow-up messages (stateful kernel — variables persist)
 
 The agent is primed with the full `alkahest-skill/alkahest.md` document from the repo.
 

@@ -8,7 +8,7 @@ import { ALKAHEST_SYSTEM_PROMPT } from '@/lib/alkahest-skill';
 import type { OutputItem } from '@/lib/execution';
 
 export const runtime = 'nodejs';
-export const maxDuration = 120;
+export const maxDuration = 180;
 
 function getLanguageModel(provider: string, model: string) {
   switch (provider) {
@@ -38,13 +38,18 @@ export async function POST(req: Request) {
     provider?: string;
     model?: string;
     serverHttpUrl?: string;
+    serverToken?: string;
     sessionId?: string;
   };
 
   const provider = body.provider ?? process.env.AI_PROVIDER ?? 'anthropic';
   const model = body.model ?? process.env.AI_MODEL ?? 'claude-sonnet-4-6';
   const serverHttpUrl = body.serverHttpUrl ?? process.env.PYTHON_SERVER_URL ?? 'http://localhost:8000';
+  const serverToken = body.serverToken ?? '';
   const sessionId = body.sessionId;
+
+  const serverHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (serverToken) serverHeaders.Authorization = `Bearer ${serverToken}`;
 
   const languageModel = getLanguageModel(provider, model);
 
@@ -52,11 +57,12 @@ export async function POST(req: Request) {
     model: languageModel,
     system: ALKAHEST_SYSTEM_PROMPT,
     messages: body.messages as Parameters<typeof streamText>[0]['messages'],
-    maxSteps: 12,
+    maxSteps: 15,
     tools: {
       run_python: tool({
         description:
-          'Execute Python code on the alkahest server kernel. Use this to run alkahest, SymPy, numpy, matplotlib, or any Python computation. The kernel is stateful — variables persist between calls.',
+          'Execute Python code on the alkahest server kernel. Use this to run alkahest, SymPy, numpy, matplotlib, or any Python computation. The kernel is stateful — variables persist between calls. ' +
+          'For alkahest DerivedResult values, call display_lean_cert(result, operation=...) or print ak.to_lean(result) to surface Lean 4 certificates in the UI.',
         parameters: z.object({
           code: z.string().describe('Python code to execute'),
         }),
@@ -68,7 +74,7 @@ export async function POST(req: Request) {
           try {
             const res = await fetch(`${serverHttpUrl}/sessions/${sessionId}/run`, {
               method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
+              headers: serverHeaders,
               body: JSON.stringify({ code }),
               signal: AbortSignal.timeout(60_000),
             });
@@ -86,6 +92,30 @@ export async function POST(req: Request) {
             return {
               outputs: [{ type: 'error', ename: 'NetworkError', evalue: String(e), traceback: [] }] as OutputItem[],
             };
+          }
+        },
+      }),
+      verify_lean: tool({
+        description:
+          'Typecheck a Lean 4 certificate (.lean source) using the server Mathlib project. Returns ok, stdout, stderr, and duration_ms.',
+        parameters: z.object({
+          source: z.string().describe('Complete .lean file contents from alkahest.to_lean or display_lean_cert'),
+        }),
+        execute: async ({ source }) => {
+          try {
+            const res = await fetch(`${serverHttpUrl}/verify-lean`, {
+              method: 'POST',
+              headers: serverHeaders,
+              body: JSON.stringify({ source, timeout_sec: 120 }),
+              signal: AbortSignal.timeout(135_000),
+            });
+            if (!res.ok) {
+              const text = await res.text();
+              return { ok: false, stdout: '', stderr: text, duration_ms: 0 };
+            }
+            return await res.json();
+          } catch (e) {
+            return { ok: false, stdout: '', stderr: String(e), duration_ms: 0 };
           }
         },
       }),

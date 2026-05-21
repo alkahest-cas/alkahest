@@ -58,7 +58,8 @@ export default function AgentChat() {
   }, [messages]);
 
   const examples = [
-    'Differentiate x³·sin(x) with alkahest and show the steps',
+    'Simplify x + 0 with alkahest and show the Lean certificate',
+    'Differentiate x³·sin(x) with alkahest and verify the proof in Lean',
     'Compare alkahest vs SymPy: integrate e^x·cos(x)',
     'Solve the system x + y = 5, x - y = 1 using alkahest',
     'Plot the derivatives of sin(x) up to order 4 with matplotlib',
@@ -144,7 +145,9 @@ export default function AgentChat() {
                     {/* Code the agent wrote */}
                     <div className="rounded-lg border border-ak-border overflow-hidden">
                       <div className="flex items-center gap-2 px-3 py-1.5 bg-ak-bg border-b border-ak-border">
-                        <span className="text-xs font-mono text-ak-muted">run_python</span>
+                        <span className="text-xs font-mono text-ak-muted">
+                          {inv.toolName === 'verify_lean' ? 'verify_lean' : 'run_python'}
+                        </span>
                         <span
                           className={`ml-auto text-xs px-1.5 py-0.5 rounded font-mono ${
                             inv.state === 'result'
@@ -155,13 +158,31 @@ export default function AgentChat() {
                           {inv.state === 'result' ? 'done' : 'running…'}
                         </span>
                       </div>
-                      <pre className="bg-ak-code-bg px-4 py-3 text-xs font-mono overflow-x-auto whitespace-pre text-ak-fg">
-                        {(inv.args as { code?: string }).code ?? ''}
+                      <pre className="bg-ak-code-bg px-4 py-3 text-xs font-mono overflow-x-auto whitespace-pre text-ak-fg max-h-48">
+                        {inv.toolName === 'verify_lean'
+                          ? ((inv.args as { source?: string }).source ?? '').slice(0, 2000) +
+                            (((inv.args as { source?: string }).source?.length ?? 0) > 2000 ? '\n…' : '')
+                          : (inv.args as { code?: string }).code ?? ''}
                       </pre>
                     </div>
 
                     {/* Output */}
-                    {inv.state === 'result' && (
+                    {inv.state === 'result' && inv.toolName === 'verify_lean' && (
+                      <div className="rounded-lg border border-ak-border px-4 py-3 text-xs font-mono space-y-1">
+                        {(() => {
+                          const r = inv.result as { ok?: boolean; stderr?: string; duration_ms?: number };
+                          return (
+                            <>
+                              <p className={r.ok ? 'text-green-700' : 'text-red-700'}>
+                                {r.ok ? `Lean verification passed (${r.duration_ms ?? 0}ms)` : 'Lean verification failed'}
+                              </p>
+                              {r.stderr && <pre className="text-red-600 whitespace-pre-wrap">{r.stderr}</pre>}
+                            </>
+                          );
+                        })()}
+                      </div>
+                    )}
+                    {inv.state === 'result' && inv.toolName !== 'verify_lean' && (
                       <div className="rounded-lg border border-ak-border overflow-hidden">
                         <Output items={(inv.result as { outputs: OutputItem[] }).outputs ?? []} />
                       </div>

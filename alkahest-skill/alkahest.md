@@ -56,12 +56,14 @@ Every top-level operation returns a `DerivedResult`:
 |-----------|------|-------------|
 | `.value` | `Expr` | The result expression |
 | `.steps` | `list[dict]` | Rewrite log; each step has `"rule"`, `"before"`, `"after"` keys |
-| `.certificate` | `str \| None` | Lean 4 proof term, when available |
+| `.certificate` | `str \| None` | Lean 4 `.lean` source (Mathlib proof file), when steps are certifiable |
+| `to_lean(result)` | `str` | Same as `.certificate`; also accepts `Expr` (runs `simplify` first) |
 
 ```python
 result = diff(sin(x**2), x)
 print(result.value)   # 2*x*cos(x^2)
 print(result.steps)   # list of rewrite-rule dicts
+print(result.certificate)  # or: to_lean(result)
 ```
 
 ---

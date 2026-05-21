@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from kernel_manager import KernelSession
+from lean_verify import lean_status, verify_lean_source
 
 app = FastAPI(title="alkahest-demo-server")
 
@@ -52,7 +53,26 @@ def _require_token(request: Request) -> None:
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "sessions": len(sessions)}
+    return {"status": "ok", "sessions": len(sessions), "lean": lean_status()}
+
+
+@app.get("/lean/status")
+async def lean_status_endpoint(request: Request):
+    _require_token(request)
+    return lean_status()
+
+
+class VerifyLeanRequest(BaseModel):
+    source: str
+    timeout_sec: int = 120
+
+
+@app.post("/verify-lean")
+async def verify_lean(req: VerifyLeanRequest, request: Request):
+    _require_token(request)
+    if not req.source.strip():
+        raise HTTPException(status_code=400, detail="Empty Lean source")
+    return verify_lean_source(req.source, timeout_sec=req.timeout_sec)
 
 
 # ── Sessions ───────────────────────────────────────────────────────────────

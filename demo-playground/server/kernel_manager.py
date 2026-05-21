@@ -3,12 +3,26 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import json
 import uuid
+from pathlib import Path
 from typing import Any
 
 import jupyter_client
+
+from output_parse import classify_rich, postprocess_outputs
+
+SERVER_DIR = Path(__file__).resolve().parent
+_KERNEL_INIT_CODE = f"""
+import sys
+_p = {repr(str(SERVER_DIR))}
+if _p not in sys.path:
+    sys.path.insert(0, _p)
+try:
+    from playground_helpers import display_lean_cert, emit_lean_marker
+except ImportError:
+    pass
+del _p
+"""
 
 
 class KernelSession:
@@ -19,6 +33,7 @@ class KernelSession:
         self.kc = self.km.client()
         self.kc.start_channels()
         self.kc.wait_for_ready(timeout=30)
+        self._helpers_loaded = False
 
     def shutdown(self) -> None:
         try:
@@ -27,14 +42,21 @@ class KernelSession:
         except Exception:
             pass
 
+    def _ensure_helpers(self) -> None:
+        if self._helpers_loaded:
+            return
+        self._execute_sync(_KERNEL_INIT_CODE)
+        self._helpers_loaded = True
+
     async def execute(self, code: str) -> list[dict[str, Any]]:
         """Execute code synchronously and return all outputs."""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self._execute_sync, code)
 
     def _execute_sync(self, code: str) -> list[dict[str, Any]]:
+        self._ensure_helpers()
         outputs: list[dict[str, Any]] = []
-        msg_id = self.kc.execute(code)
+        self.kc.execute(code)
 
         while True:
             try:
@@ -52,7 +74,7 @@ class KernelSession:
 
             elif msg_type in ("display_data", "execute_result"):
                 data: dict[str, str] = content.get("data", {})
-                out = _classify_rich(data)
+                out = classify_rich(data)
                 if out:
                     outputs.append(out)
 
@@ -70,16 +92,17 @@ class KernelSession:
                 if content.get("execution_state") == "idle":
                     break
 
-        return outputs
+        return postprocess_outputs(outputs)
 
     async def execute_streaming(self, code: str):
         """Async generator that yields output dicts as they arrive."""
+        self._ensure_helpers()
         loop = asyncio.get_event_loop()
         queue: asyncio.Queue[dict | None] = asyncio.Queue()
 
         def _run():
-            msg_id = self.kc.execute(code)
             exec_count = 0
+            self.kc.execute(code)
             while True:
                 try:
                     msg = self.kc.get_iopub_msg(timeout=60)
@@ -97,7 +120,7 @@ class KernelSession:
 
                 elif msg_type in ("display_data", "execute_result"):
                     data = content.get("data", {})
-                    out = _classify_rich(data)
+                    out = classify_rich(data)
                     if out:
                         if msg_type == "execute_result":
                             exec_count = content.get("execution_count", 0)
@@ -126,26 +149,32 @@ class KernelSession:
 
         loop.run_in_executor(None, _run)
 
+        pending_text: list[str] = []
+
         while True:
             item = await queue.get()
             if item is None:
+                if pending_text:
+                    combined = "".join(pending_text)
+                    for out in postprocess_outputs(
+                        [{"type": "text", "stream": "stdout", "text": combined}]
+                    ):
+                        yield out
                 break
-            yield item
 
+            if item.get("type") == "stream":
+                pending_text.append(item.get("text") or "")
+                continue
 
-def _classify_rich(data: dict[str, str]) -> dict | None:
-    """Pick the best MIME type from a rich display data dict."""
-    if "text/latex" in data:
-        return {"type": "latex", "latex": data["text/latex"]}
-    if "image/png" in data:
-        return {"type": "image", "format": "png", "data": data["image/png"]}
-    if "image/svg+xml" in data:
-        return {"type": "image", "format": "svg", "data": data["image/svg+xml"]}
-    if "text/html" in data:
-        return {"type": "html", "html": data["text/html"]}
-    if "application/json" in data:
-        raw = data["application/json"]
-        return {"type": "json", "data": json.loads(raw) if isinstance(raw, str) else raw}
-    if "text/plain" in data:
-        return {"type": "text", "stream": "stdout", "text": data["text/plain"]}
-    return None
+            if pending_text:
+                combined = "".join(pending_text)
+                pending_text.clear()
+                for out in postprocess_outputs(
+                    [{"type": "text", "stream": "stdout", "text": combined}]
+                ):
+                    yield out
+
+            if item.get("type") == "done":
+                yield item
+            else:
+                yield item

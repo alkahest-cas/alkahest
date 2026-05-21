@@ -983,6 +983,17 @@ impl PyDerivedResult {
         list
     }
 
+    /// Lean 4 proof certificate (``.lean`` source), when the derivation log is certifiable.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> Option<String> {
+        if self.raw.log.is_empty() {
+            return None;
+        }
+        let pool_py = self.value.pool.clone_ref(py);
+        let pool = pool_py.borrow(py);
+        Some(alkahest_core::emit_lean(&self.raw, &pool.inner))
+    }
+
     fn __repr__(&self, py: Python<'_>) -> String {
         format!("DerivedResult(value={})", self.value.__repr__(py))
     }

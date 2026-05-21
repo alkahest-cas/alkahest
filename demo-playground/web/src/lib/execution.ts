@@ -1,5 +1,6 @@
 import type { ServerConnection } from '@/lib/server-connection';
 import { alkahestAuthHeaders } from '@/lib/server-connection';
+import { classifyRichMime, postprocessOutputItems } from '@/lib/lean';
 import { publicAssetPath } from '@/lib/hosting';
 import {
   createJupyterKernel,
@@ -14,6 +15,14 @@ export type OutputItem =
   | { type: 'latex'; latex: string }
   | { type: 'image'; format: 'png' | 'svg'; data: string }
   | { type: 'json'; data: unknown }
+  | {
+      type: 'lean';
+      source: string;
+      operation?: string;
+      steps?: number;
+      verified?: 'ok' | 'fail';
+      verifyLog?: string;
+    }
   | { type: 'error'; ename: string; evalue: string; traceback: string[] };
 
 export type ExecutionMode = 'auto' | 'wasm' | 'server';
@@ -86,23 +95,21 @@ export function executeOnServer(
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data as string) as ServerMessage;
 
-    if (msg.type === 'stream') {
+    if (
+      msg.type === 'text' ||
+      msg.type === 'latex' ||
+      msg.type === 'html' ||
+      msg.type === 'image' ||
+      msg.type === 'json' ||
+      msg.type === 'lean'
+    ) {
+      onOutput(msg as OutputItem);
+    } else if (msg.type === 'stream') {
       onOutput({ type: 'text', stream: (msg.name as 'stdout' | 'stderr') ?? 'stdout', text: msg.text ?? '' });
     } else if (msg.type === 'display_data' || msg.type === 'execute_result') {
       const d = msg.data as Record<string, string>;
-      if (d['text/latex']) {
-        onOutput({ type: 'latex', latex: d['text/latex'] });
-      } else if (d['image/png']) {
-        onOutput({ type: 'image', format: 'png', data: d['image/png'] });
-      } else if (d['image/svg+xml']) {
-        onOutput({ type: 'image', format: 'svg', data: d['image/svg+xml'] });
-      } else if (d['text/html']) {
-        onOutput({ type: 'html', html: d['text/html'] });
-      } else if (d['application/json']) {
-        onOutput({ type: 'json', data: JSON.parse(d['application/json']) });
-      } else if (d['text/plain']) {
-        onOutput({ type: 'text', stream: 'stdout', text: d['text/plain'] });
-      }
+      const rich = classifyRichMime(d);
+      if (rich) onOutput(rich);
     } else if (msg.type === 'error') {
       onOutput({
         type: 'error',
@@ -143,8 +150,10 @@ export async function runOnServerSync(
   });
   if (!res.ok) throw new Error(`Execution failed: ${res.statusText}`);
   const data = await res.json();
-  return data.outputs as OutputItem[];
+  return postprocessOutputItems(data.outputs as OutputItem[]);
 }
+
+export { verifyLeanCertificate, fetchLeanStatus, applyVerifyResult } from '@/lib/lean';
 
 // ── WASM execution (Pyodide web worker) ──────────────────────────────────────
 let pyodideWorker: Worker | null = null;
@@ -163,7 +172,7 @@ function getPyodideWorker(): Worker {
       const cb = pendingCallbacks.get(msg.id);
       if (!cb) return;
       pendingCallbacks.delete(msg.id);
-      if (msg.type === 'result') cb.resolve(msg.outputs ?? []);
+      if (msg.type === 'result') cb.resolve(postprocessOutputItems(msg.outputs ?? []));
       else cb.reject(new Error(msg.error ?? 'Worker error'));
     };
   }

@@ -31,6 +31,7 @@ interface CellProps {
   onMoveDown: (id: string) => void;
   onAddBelow: (id: string) => void;
   onToggleCellType: (id: string) => void;
+  onOutputsChange?: (id: string, outputs: OutputItem[]) => void;
   zenMode?: boolean;
 }
 
@@ -83,7 +84,7 @@ function formatMs(ms: number): string {
 }
 
 export default function Cell({
-  cell, index, onCodeChange, onRun, onDelete, onMoveUp, onMoveDown, onAddBelow, onToggleCellType, zenMode,
+  cell, index, onCodeChange, onRun, onDelete, onMoveUp, onMoveDown, onAddBelow, onToggleCellType, onOutputsChange, zenMode,
 }: CellProps) {
   const editorRef = useRef<{ view?: { focus: () => void } }>(null);
   const elapsed = useElapsedTimer(cell.status);
@@ -244,7 +245,10 @@ export default function Cell({
               className="overflow-hidden"
             />
           </div>
-          <Output items={cell.outputs} />
+          <Output
+            items={cell.outputs}
+            onItemsChange={(outputs) => onOutputsChange?.(cell.id, outputs)}
+          />
         </>
       )}
     </div>

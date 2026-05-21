@@ -12,6 +12,7 @@ import {
   executeOnServer,
   executeInWasm,
 } from '@/lib/execution';
+import { postprocessOutputItems } from '@/lib/lean';
 import { loadConfig } from '@/components/ui/Settings';
 import { connectionFromConfig } from '@/lib/server-connection';
 import { isStaticHosting } from '@/lib/hosting';
@@ -26,6 +27,8 @@ type Action =
   | { type: 'SET_BACKEND'; id: string; backend: CellData['backend'] }
   | { type: 'APPEND_OUTPUT'; id: string; item: OutputItem }
   | { type: 'CLEAR_OUTPUTS'; id: string }
+  | { type: 'SET_OUTPUTS'; id: string; outputs: OutputItem[] }
+  | { type: 'POSTPROCESS_OUTPUTS'; id: string }
   | { type: 'SET_EXEC_COUNT'; id: string; count: number }
   | { type: 'MOVE_UP'; id: string }
   | { type: 'MOVE_DOWN'; id: string }
@@ -57,6 +60,12 @@ function reducer(state: CellData[], action: Action): CellData[] {
       );
     case 'CLEAR_OUTPUTS':
       return state.map((c) => (c.id === action.id ? { ...c, outputs: [] } : c));
+    case 'SET_OUTPUTS':
+      return state.map((c) => (c.id === action.id ? { ...c, outputs: action.outputs } : c));
+    case 'POSTPROCESS_OUTPUTS':
+      return state.map((c) =>
+        c.id === action.id ? { ...c, outputs: postprocessOutputItems(c.outputs) } : c,
+      );
     case 'SET_EXEC_COUNT':
       return state.map((c) => (c.id === action.id ? { ...c, executionCount: action.count } : c));
     case 'MOVE_UP': {
@@ -88,13 +97,16 @@ function reducer(state: CellData[], action: Action): CellData[] {
 const INITIAL_CELLS: CellData[] = [
   newCell(
     'import alkahest as ak\n' +
-    'from alkahest import latex\n\n' +
+    'from alkahest import latex\n' +
+    'from playground_helpers import display_lean_cert\n\n' +
     'pool = ak.ExprPool()\n' +
-    'x = pool.symbol("x")\n\n' +
-    'expr = x ** 2\n' +
-    'result = ak.diff(expr, x)\n' +
-    'lx = latex(result.value)\n' +
-    'print("d/dx x^2 = $$" + lx + "$$")\n',
+    'x = pool.symbol("x")\n' +
+    'zero = pool.integer(0)\n\n' +
+    'expr = x + zero\n' +
+    'result = ak.simplify(pool, expr)\n' +
+    'print("simplify(x + 0) = $$" + latex(result.value) + "$$")\n' +
+    'print(result.derivation)\n' +
+    'display_lean_cert(result, operation="simplify")\n',
   ),
   newCell(
     '# Compare with SymPy\n' +
@@ -240,6 +252,7 @@ export default function Notebook({ zenMode, onServerStatusChange }: NotebookProp
           cell.code,
           (item) => dispatch({ type: 'APPEND_OUTPUT', id, item }),
           (n) => {
+            dispatch({ type: 'POSTPROCESS_OUTPUTS', id });
             dispatch({ type: 'SET_EXEC_COUNT', id, count: n });
             dispatch({ type: 'SET_STATUS', id, status: 'done' });
             cleanupFns.current.delete(id);
@@ -356,6 +369,7 @@ export default function Notebook({ zenMode, onServerStatusChange }: NotebookProp
           onMoveDown={(id) => dispatch({ type: 'MOVE_DOWN', id })}
           onAddBelow={(id) => dispatch({ type: 'ADD_CELL', afterId: id })}
           onToggleCellType={(id) => dispatch({ type: 'TOGGLE_CELL_TYPE', id })}
+          onOutputsChange={(id, outputs) => dispatch({ type: 'SET_OUTPUTS', id, outputs })}
           zenMode={zenMode}
         />
       ))}

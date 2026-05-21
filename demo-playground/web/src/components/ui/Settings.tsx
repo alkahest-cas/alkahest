@@ -74,6 +74,7 @@ interface SettingsProps {
 export default function Settings({ onClose }: SettingsProps) {
   const [cfg, setCfg] = useState<PlaygroundConfig>(DEFAULT_CONFIG);
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle');
+  const [leanStatus, setLeanStatus] = useState<string | null>(null);
   const isCustomEndpoint = cfg.aiProvider === 'openai-compatible';
 
   useEffect(() => {
@@ -123,8 +124,31 @@ export default function Settings({ onClose }: SettingsProps) {
         });
       }
       setTestStatus(res.ok ? 'ok' : 'fail');
+      if (cfg.serverBackend === 'alkahest' && res.ok) {
+        try {
+          const leanRes = await fetch(`${cfg.serverHttpUrl}/lean/status`, {
+            headers: alkahestAuthHeaders(cfg.serverToken),
+            signal: AbortSignal.timeout(5000),
+          });
+          if (leanRes.ok) {
+            const s = (await leanRes.json()) as { available: boolean; project_dir: string };
+            setLeanStatus(
+              s.available
+                ? 'Lean verifier ready'
+                : `Lean verifier unavailable (project: ${s.project_dir})`,
+            );
+          } else {
+            setLeanStatus(null);
+          }
+        } catch {
+          setLeanStatus(null);
+        }
+      } else {
+        setLeanStatus(null);
+      }
     } catch {
       setTestStatus('fail');
+      setLeanStatus(null);
     }
   }
 
@@ -196,6 +220,9 @@ export default function Settings({ onClose }: SettingsProps) {
               autoComplete="off"
               className="w-full rounded border border-ak-border bg-ak-code-bg px-3 py-1.5 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-ak-brand"
             />
+            {leanStatus && (
+              <p className="mt-2 text-xs text-ak-muted">{leanStatus}</p>
+            )}
           </section>
 
           <section>

@@ -1,25 +1,50 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { OutputItem } from '@/lib/execution';
+import LeanCertificate from './LeanCertificate';
 
 interface OutputProps {
   items: OutputItem[];
+  /** When set, Lean verify state updates propagate back (notebook cells). */
+  onItemsChange?: (items: OutputItem[]) => void;
 }
 
-export default function Output({ items }: OutputProps) {
-  if (items.length === 0) return null;
+export default function Output({ items, onItemsChange }: OutputProps) {
+  const [localItems, setLocalItems] = useState(items);
+
+  useEffect(() => {
+    setLocalItems(items);
+  }, [items]);
+
+  if (localItems.length === 0) return null;
+
+  const handleLeanUpdate = (index: number, updated: OutputItem) => {
+    const next = localItems.map((it, i) => (i === index ? updated : it));
+    setLocalItems(next);
+    onItemsChange?.(next);
+  };
 
   return (
     <div className="border-t border-ak-border bg-ak-code-bg px-4 py-2 space-y-1">
-      {items.map((item, i) => (
-        <OutputItemView key={i} item={item} />
+      {localItems.map((item, i) => (
+        <OutputItemView
+          key={i}
+          item={item}
+          onLeanUpdate={item.type === 'lean' ? (u) => handleLeanUpdate(i, u) : undefined}
+        />
       ))}
     </div>
   );
 }
 
-function OutputItemView({ item }: { item: OutputItem }) {
+function OutputItemView({
+  item,
+  onLeanUpdate,
+}: {
+  item: OutputItem;
+  onLeanUpdate?: (item: OutputItem) => void;
+}) {
   if (item.type === 'text') {
     return (
       <pre
@@ -59,6 +84,10 @@ function OutputItemView({ item }: { item: OutputItem }) {
         />
       );
     }
+  }
+
+  if (item.type === 'lean') {
+    return <LeanCertificate item={item} onUpdate={onLeanUpdate} />;
   }
 
   if (item.type === 'json') {

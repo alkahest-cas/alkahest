@@ -43,8 +43,20 @@ const FALLBACK_SKILL = [
   '## Return type: DerivedResult',
   'Every operation returns a DerivedResult with:',
   '- `.value` — the result Expr',
-  '- `.steps` — list of rewrite steps',
-  '- `.certificate` — optional Lean 4 proof term',
+  '- `.derivation` — human-readable step log',
+  '- `.steps` — list of rewrite steps (rule, before, after)',
+  '- `.certificate` — Lean 4 `.lean` source when steps are certifiable',
+  '- `alkahest.to_lean(result)` — same as `.certificate` (also accepts Expr)',
+  '',
+  '## Lean 4 certificates (demo playground)',
+  'After simplify/diff/integrate, emit a certificate for the UI:',
+  '```python',
+  'from playground_helpers import display_lean_cert',
+  'result = ak.simplify(pool, expr)',
+  'display_lean_cert(result, operation="simplify")',
+  '# or: print(ak.to_lean(result))',
+  '```',
+  'Use the verify_lean tool to typecheck the generated source when the user asks to verify.',
   '',
   '## Displaying results',
   '```python',
@@ -65,6 +77,7 @@ ${loadSkill()}
 - Always create an ExprPool before making expressions
 - Always intern integer/rational constants through the pool
 - After computing a result, print it as LaTeX using the latex() helper and $$ delimiters
+- When the user asks for proof, verification, or certificates: call display_lean_cert(result) then verify_lean on the source if they want checking
 - Show your reasoning in natural language before writing code
 - If comparing with SymPy, run both in separate cells and compare
 `.trim();

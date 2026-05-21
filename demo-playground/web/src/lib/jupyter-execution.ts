@@ -1,5 +1,6 @@
 import { v4 as uuid } from 'uuid';
 import type { OutputItem } from '@/lib/execution';
+import { classifyRichMime, postprocessOutputItems } from '@/lib/lean';
 import type { ServerConnection } from '@/lib/server-connection';
 import { jupyterUrlWithToken } from '@/lib/server-connection';
 
@@ -49,22 +50,6 @@ export async function destroyJupyterKernel(conn: ServerConnection, kernelId: str
   await jupyterProxyFetch(conn, `/api/kernels/${kernelId}`, 'DELETE');
 }
 
-function classifyRichData(data: Record<string, string>): OutputItem | null {
-  if (data['text/latex']) return { type: 'latex', latex: data['text/latex'] };
-  if (data['image/png']) return { type: 'image', format: 'png', data: data['image/png'] };
-  if (data['image/svg+xml']) return { type: 'image', format: 'svg', data: data['image/svg+xml'] };
-  if (data['text/html']) return { type: 'html', html: data['text/html'] };
-  if (data['application/json']) {
-    try {
-      return { type: 'json', data: JSON.parse(data['application/json']) };
-    } catch {
-      return { type: 'json', data: data['application/json'] };
-    }
-  }
-  if (data['text/plain']) return { type: 'text', stream: 'stdout', text: data['text/plain'] };
-  return null;
-}
-
 function parseJupyterMessage(raw: string, pendingExecuteId: string | null): {
   item?: OutputItem;
   done?: boolean;
@@ -110,7 +95,7 @@ function parseJupyterMessage(raw: string, pendingExecuteId: string | null): {
     if (msgType === 'display_data' || msgType === 'execute_result') {
       const data = content.data as Record<string, string> | undefined;
       if (!data) return { pendingExecuteId };
-      const item = classifyRichData(data);
+      const item = classifyRichMime(data);
       if (!item) return { pendingExecuteId };
       const executionCount =
         msgType === 'execute_result' ? (content.execution_count as number | undefined) : undefined;
@@ -216,7 +201,7 @@ export function runOnJupyterSync(
       (item) => outputs.push(item),
       () => {
         cancel();
-        resolve(outputs);
+        resolve(postprocessOutputItems(outputs));
       },
       (err) => {
         cancel();

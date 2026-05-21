@@ -1,6 +1,8 @@
 use alkahest_cas::matrix::{hermite_form, IntegerMatrix};
 #[cfg(feature = "egraph")]
 use alkahest_cas::simplify_egraph;
+#[cfg(feature = "groebner")]
+use alkahest_cas::poly::groebner::{compute_groebner_basis, compute_groebner_basis_f5, MonomialOrder};
 use alkahest_cas::{
     compile, diff, eval_interp, simplify, ArbBall, Domain, ExprId, ExprPool, IntervalEval,
     MultiPoly, UniPoly,
@@ -724,6 +726,80 @@ fn bench_nvptx(c: &mut Criterion) {
 #[cfg(not(feature = "cuda"))]
 fn bench_nvptx(_c: &mut Criterion) {}
 
+// ---------------------------------------------------------------------------
+// Group 9 — Gröbner basis: F4 (Buchberger) vs F5 (signature-based)
+//
+// Uses the Cyclic-n benchmark family (standard from Faugère's F5 paper).
+// Gated on `--features groebner` (not compiled into default/PyPI wheels).
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "groebner")]
+fn cyclic_system_bench(n: usize) -> Vec<alkahest_cas::poly::groebner::GbPoly> {
+    use alkahest_cas::poly::groebner::GbPoly;
+    use std::collections::BTreeMap;
+
+    let mut polys = Vec::with_capacity(n);
+    for k in 1..=n {
+        let mut terms: BTreeMap<Vec<u32>, rug::Rational> = BTreeMap::new();
+        for start in 0..n {
+            let mut exp = vec![0u32; n];
+            for d in 0..k {
+                exp[(start + d) % n] += 1;
+            }
+            let c = terms
+                .entry(exp)
+                .or_insert_with(|| rug::Rational::from(0));
+            *c += rug::Rational::from(1);
+        }
+        if k == n {
+            let zero_exp = vec![0u32; n];
+            let c = terms
+                .entry(zero_exp)
+                .or_insert_with(|| rug::Rational::from(0));
+            *c -= rug::Rational::from(1);
+        }
+        terms.retain(|_, v| *v != rug::Rational::from(0));
+        polys.push(GbPoly { terms, n_vars: n });
+    }
+    polys
+}
+
+#[cfg(feature = "groebner")]
+fn bench_groebner(c: &mut Criterion) {
+    let mut g = c.benchmark_group("groebner_f4_vs_f5");
+    // Cyclic-4 is trivially fast; it verifies warm-path overhead is sane.
+    g.bench_function("cyclic4_f4", |b| {
+        b.iter(|| {
+            let sys = cyclic_system_bench(4);
+            criterion::black_box(compute_groebner_basis(sys, MonomialOrder::GRevLex))
+        });
+    });
+    g.bench_function("cyclic4_f5", |b| {
+        b.iter(|| {
+            let sys = cyclic_system_bench(4);
+            criterion::black_box(compute_groebner_basis_f5(sys, MonomialOrder::GRevLex))
+        });
+    });
+    // Cyclic-5: meaningful benchmark, F5 criteria start showing significant wins.
+    g.sample_size(10);
+    g.bench_function("cyclic5_f4", |b| {
+        b.iter(|| {
+            let sys = cyclic_system_bench(5);
+            criterion::black_box(compute_groebner_basis(sys, MonomialOrder::GRevLex))
+        });
+    });
+    g.bench_function("cyclic5_f5", |b| {
+        b.iter(|| {
+            let sys = cyclic_system_bench(5);
+            criterion::black_box(compute_groebner_basis_f5(sys, MonomialOrder::GRevLex))
+        });
+    });
+    g.finish();
+}
+
+#[cfg(not(feature = "groebner"))]
+fn bench_groebner(_c: &mut Criterion) {}
+
 fn bench_hnf(c: &mut Criterion) {
     let n = 50;
     let rows: Vec<Vec<i64>> = (0..n)
@@ -760,5 +836,6 @@ criterion_group!(
     bench_par,
     bench_nvptx,
     bench_hnf,
+    bench_groebner,
 );
 criterion_main!(benches);
