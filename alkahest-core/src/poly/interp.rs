@@ -2094,11 +2094,7 @@ mod tests {
         let (pool, vs) = vars_n(1);
         let x = vs[0];
         let f = mp(x, vec![x], &pool);
-        let g = mp(
-            pool.add(vec![x, pool.integer(1i32)]),
-            vec![x],
-            &pool,
-        );
+        let g = mp(pool.add(vec![x, pool.integer(1i32)]), vec![x], &pool);
         let h = gcd_sparse_modular(&f, &g, 2, 2, 0).expect("gcd should succeed");
         // gcd(x, x+1) = 1 — a constant polynomial with one term {[]: 1}
         let empty: Vec<u32> = vec![];
@@ -2129,11 +2125,7 @@ mod tests {
             &pool,
         );
         // g = (x+y)(x+1) = x^2 + x + xy + y
-        let g = mp(
-            pool.mul(vec![xpy, xp1]),
-            vec![x, y],
-            &pool,
-        );
+        let g = mp(pool.mul(vec![xpy, xp1]), vec![x, y], &pool);
         let h = gcd_sparse_modular(&f, &g, 3, 2, 0).expect("gcd should succeed");
         // h = x + y  (primitive)
         assert_eq!(h.terms.len(), 2, "GCD = x+y should have 2 terms, got {h:?}");
@@ -2141,7 +2133,15 @@ mod tests {
         // Actually for x+y: x has exp [1], y has exp [0,1]
         let coeff_x = h.terms.get(&vec![1u32]).cloned();
         let coeff_y = h.terms.get(&vec![0u32, 1u32]).cloned();
-        assert_eq!(coeff_x, Some(rug::Integer::from(1)), "coeff of x should be 1");
-        assert_eq!(coeff_y, Some(rug::Integer::from(1)), "coeff of y should be 1");
+        assert_eq!(
+            coeff_x,
+            Some(rug::Integer::from(1)),
+            "coeff of x should be 1"
+        );
+        assert_eq!(
+            coeff_y,
+            Some(rug::Integer::from(1)),
+            "coeff of y should be 1"
+        );
     }
 }

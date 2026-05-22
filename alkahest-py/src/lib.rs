@@ -9,6 +9,8 @@ use alkahest_core::{
     emit_stablehlo as core_emit_stablehlo,
     eval_interp as core_eval_interp,
     factor_univariate_mod_p as core_factor_univariate_mod_p,
+    // V2-3 — Sparse interpolation and sparse modular GCD
+    gcd_sparse_modular as core_gcd_sparse_modular,
     grad as core_grad,
     guess_integer_relation as core_guess_integer_relation,
     // Phase 24 — Horner form
@@ -33,8 +35,6 @@ use alkahest_core::{
     satisfiable as core_satisfiable,
     sensitivity_system as core_sensitivity_system,
     solve_linear_recurrence_homogeneous as core_solve_linear_recurrence_homogeneous,
-    // V2-3 — Sparse interpolation and sparse modular GCD
-    gcd_sparse_modular as core_gcd_sparse_modular,
     sparse_interpolate as core_sparse_interpolate,
     sparse_interpolate_univariate as core_sparse_interpolate_univariate,
     subresultant_prs as core_subresultant_prs,

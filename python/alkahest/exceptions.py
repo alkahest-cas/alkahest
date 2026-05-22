@@ -24,6 +24,7 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-ROOT-001 … E-ROOT-002    RealRootError (V2-4 VAS real root isolation)
     E-RES-001 … E-RES-003      ResultantError (V2-2)
     E-INTERP-001 … E-INTERP-004 SparseInterpError (V2-3)
+    E-INTERP-010 … E-INTERP-012 SparseGcdError (V2-3 sparse modular GCD)
     E-SUM-001 … E-SUM-003      SumError
     E-PROD-001 … E-PROD-004    ProductError (V2-22)
     E-REC-001 … E-REC-002      LinearRecurrenceError
@@ -317,6 +318,18 @@ class SparseInterpError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code="E-INTERP-001", remediation=remediation, span=span)
+
+
+class SparseGcdError(AlkahestError):
+    """Sparse modular GCD computation failed."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-INTERP-010", remediation=remediation, span=span)
 
 
 class OdeError(AlkahestError):
