@@ -1562,6 +1562,12 @@ impl PyMultiPoly {
         })
     }
 
+    fn primitive_part(&self) -> PyMultiPoly {
+        PyMultiPoly {
+            inner: self.inner.primitive_part(),
+        }
+    }
+
     /// GCD over ℤ (multivariate FLINT).
     fn gcd(&self, other: PyRef<PyMultiPoly>) -> PyResult<PyMultiPoly> {
         self.inner

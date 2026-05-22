@@ -338,7 +338,7 @@ class TestSparseGcd:
         # 2x^2 - 2
         f = _mp(pool.integer(2) * x**2 + pool.integer(-2), [x])
         h = gcd_sparse(f, f, term_bound=2, degree_bound=3)
-        ref = f.gcd(f)
+        ref = f.primitive_part()
         assert str(h) == str(ref), f"gcd(f,f) mismatch: {h} vs {ref}"
 
     def test_bivariate_common_factor(self):

@@ -110,6 +110,8 @@ from .alkahest import (  # noqa: F401
     factor_univariate_mod_p,
     floor,
     gamma,
+    # V2-3: Sparse interpolation and sparse modular GCD
+    gcd_sparse,
     # V2-6: Approximate integer relations (LLL-backed heuristic — not Ferguson–Bailey PSLQ)
     guess_relation,
     # Phase 24: Horner-form code emission
@@ -156,8 +158,6 @@ from .alkahest import (  # noqa: F401
     sin,
     sinh,
     solve_linear_recurrence_homogeneous,
-    # V2-3: Sparse interpolation and sparse modular GCD
-    gcd_sparse,
     sparse_interp,
     sparse_interp_univariate,
     sqrt,
