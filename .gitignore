@@ -2,6 +2,7 @@
 /target/
 **/*.rs.bk
 *.orig
+libnull.rlib
 
 # Python
 /.venv/
