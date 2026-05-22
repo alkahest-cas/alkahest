@@ -8,10 +8,9 @@ SymPy as the oracle where available.
 
 from __future__ import annotations
 
-import pytest
 import alkahest
+import pytest
 from alkahest import ExprPool, limit
-
 
 sympy = pytest.importorskip("sympy")
 
@@ -160,11 +159,8 @@ def test_exp_x_plus_one_over_exp_x():
     p, x = pool_with_x()
     expr = alkahest.exp(x + p.integer(1)) / alkahest.exp(x)
     r = alk_limit(expr, x, oo(p))
-    expected = alkahest.exp(p.integer(1))
-    # Compare symbolically
     r_sp = to_sympy(r)
-    ex_sp = sympy.E
-    assert equiv(r_sp, ex_sp), f"got {r} (sympy: {r_sp}), expected e"
+    assert equiv(r_sp, sympy.E), f"got {r} (sympy: {r_sp}), expected e"
 
 
 def test_exp_x_minus_one_over_exp_x():

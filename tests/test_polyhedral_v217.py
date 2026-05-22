@@ -11,9 +11,8 @@ in Rust when MV < Bézout bound.
 
 from __future__ import annotations
 
-import math
-import pytest
 import alkahest
+import pytest
 from alkahest import ExprPool
 
 pytestmark = pytest.mark.skipif(
