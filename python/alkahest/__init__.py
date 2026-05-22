@@ -156,7 +156,8 @@ from .alkahest import (  # noqa: F401
     sin,
     sinh,
     solve_linear_recurrence_homogeneous,
-    # V2-3: Sparse interpolation
+    # V2-3: Sparse interpolation and sparse modular GCD
+    gcd_sparse,
     sparse_interp,
     sparse_interp_univariate,
     sqrt,
@@ -239,6 +240,7 @@ from .exceptions import (  # noqa: F401, I001
     RsolveError,
     SeriesError,
     SolverError,
+    SparseGcdError,
     SparseInterpError,
     SumError,
 )
@@ -270,6 +272,7 @@ _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     "RsolveError",
     "SeriesError",
     "SolverError",
+    "SparseGcdError",
     "SparseInterpError",
 )
 
@@ -481,8 +484,10 @@ __all__ = [
     "subresultant_prs",
     "ResultantError",
     # V2-3
+    "gcd_sparse",
     "sparse_interp",
     "sparse_interp_univariate",
+    "SparseGcdError",
     "SparseInterpError",
     "SumError",
     "ProductError",

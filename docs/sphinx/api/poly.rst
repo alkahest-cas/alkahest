@@ -94,6 +94,61 @@ MultiPoly
 
       Compute the GCD via multivariate FLINT algorithms.
 
+Sparse interpolation
+--------------------
+
+.. function:: sparse_interp_univariate(eval_fn, T: int, prime: int) -> MultiPolyFp
+
+   Recover a sparse univariate polynomial in 𝔽ₚ[x] from exactly ``2T``
+   black-box evaluations using the Ben-Or/Tiwari algorithm
+   (Berlekamp–Massey + BSGS discrete-log + Vandermonde solve).
+
+   :param eval_fn: Callable ``f(v: int) -> int`` evaluated at points mod *prime*.
+   :param T: Upper bound on the number of non-zero terms.
+   :param prime: Field characteristic (prime).
+   :raises SparseInterpError: If the oracle is inconsistent or the term bound is exceeded.
+
+   Example::
+
+      p = 32749
+      f = sparse_interp_univariate(lambda v: (v**5 + 3*v**3 + 7) % p, T=3, prime=p)
+
+.. function:: sparse_interp(eval_fn, vars: list[Expr], T: int, D: int, prime: int, seed: int = 0) -> MultiPolyFp
+
+   Recover a sparse multivariate polynomial in 𝔽ₚ[x₁,…,xₙ] using
+   Zippel's variable-by-variable algorithm with batched Vandermonde lifting.
+
+   :param eval_fn: Callable ``f(vals: list[int]) -> int``.
+   :param vars: Variables (determines variable order).
+   :param T: Upper bound on the number of terms.
+   :param D: Upper bound on the total degree.
+   :param prime: Field characteristic.
+   :param seed: RNG seed for random evaluation points.
+   :raises SparseInterpError: On oracle inconsistency.
+
+.. function:: gcd_sparse(f: MultiPoly, g: MultiPoly, term_bound: int, degree_bound: int, seed: int = 0) -> MultiPoly
+
+   Compute the GCD of two sparse multivariate polynomials over ℤ[x₁,…,xₙ]
+   using Zippel's evaluation–interpolation GCD algorithm.
+
+   For each lucky prime *p*, specializes all variables except x₁, probes the
+   GCD degree, and runs :func:`sparse_interp` to recover each coefficient
+   polynomial in x₂,…,xₙ. Repeats until the CRT product exceeds the
+   Mignotte bound, then lifts to ℤ and normalises to primitive part.
+
+   :param f: First polynomial.
+   :param g: Second polynomial (must have the same variable list as *f*).
+   :param term_bound: Upper bound on the number of terms in the GCD.
+   :param degree_bound: Upper bound on the total degree of the GCD.
+   :param seed: RNG seed.
+   :raises SparseGcdError: If the variable lists are incompatible or interpolation fails.
+
+   Example::
+
+      a = MultiPoly.from_symbolic((x + y) * (x - y), [x, y])
+      b = MultiPoly.from_symbolic((x + y) * (x + pool.integer(1)), [x, y])
+      print(gcd_sparse(a, b, term_bound=4, degree_bound=4))  # x + y
+
 RationalFunction
 ----------------
 

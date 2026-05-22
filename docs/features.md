@@ -38,6 +38,8 @@ Current stable feature surface.
 - Approximate integer-relation finding (`guess_relation`)
 - Modular/CRT arithmetic (`alkahest.modular`)
 - Resultants and subresultant PRS
+- Sparse multivariate interpolation: Ben-Or/Tiwari univariate recovery (`sparse_interp_univariate`) and Zippel multivariate recovery (`sparse_interp`); `MultiPolyFp` sparse polynomial over 𝔽ₚ; rational reconstruction, CRT lifting, Mignotte bound
+- Sparse modular GCD: Zippel evaluation–interpolation GCD over ℤ[x₁,…,xₙ] using `sparse_interp` as oracle, CRT lifting over lucky primes (`gcd_sparse`, `SparseGcdError`)
 
 ## Calculus
 
@@ -152,9 +154,7 @@ Current stable feature surface.
 ## Planned
 
 - AMD ROCm / `amdgcn` GPU codegen (hardware-blocked)
-- Full Gruntz algorithm for limits (currently prototype rules)
 - Generalized Pell equations and quadratic Diophantines with cross-term
-- Sparse multivariate interpolation
-- F5 / signature-based Gröbner
+- Higher-degree algebraic Risch (multiple generators, cbrt/nth-root extensions)
 - Cylindrical algebraic decomposition (full real QE)
 - PyPI wheel publishing

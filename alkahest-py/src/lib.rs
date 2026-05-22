@@ -33,7 +33,8 @@ use alkahest_core::{
     satisfiable as core_satisfiable,
     sensitivity_system as core_sensitivity_system,
     solve_linear_recurrence_homogeneous as core_solve_linear_recurrence_homogeneous,
-    // V2-3 — Sparse interpolation
+    // V2-3 — Sparse interpolation and sparse modular GCD
+    gcd_sparse_modular as core_gcd_sparse_modular,
     sparse_interpolate as core_sparse_interpolate,
     sparse_interpolate_univariate as core_sparse_interpolate_univariate,
     subresultant_prs as core_subresultant_prs,
@@ -97,7 +98,7 @@ use alkahest_core::{
     DerivedExpr, DiffError, EgraphConfig, IntegrationError, IoError,
     LimitDirection as CoreLimitDirection, LimitError, LinearRecurrenceError, PatternRule,
     ProductError, ResultantError, RsolveError, SeriesError, SimplifyConfig, SizeCost,
-    SparseInterpError, SumError,
+    SparseGcdError, SparseInterpError, SumError,
 };
 // V3-1 — Integer number theory
 use alkahest_core::number_theory::{
@@ -145,6 +146,7 @@ pyo3::create_exception!(alkahest, PyFactorError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyResultantError, PyAlkahestError);
 // V2-3 — Sparse interpolation
 pyo3::create_exception!(alkahest, PySparseInterpError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PySparseGcdError, PyAlkahestError);
 // V2-4 — Real root isolation
 pyo3::create_exception!(alkahest, PyRealRootError, PyAlkahestError);
 // V2-6 — LLL + integer relations
@@ -275,6 +277,13 @@ fn resultant_error_to_py(e: ResultantError) -> PyErr {
 fn sparse_interp_error_to_py(e: SparseInterpError) -> PyErr {
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PySparseInterpError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn sparse_gcd_error_to_py(e: SparseGcdError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PySparseGcdError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -3733,6 +3742,59 @@ fn py_sparse_interp(
     Ok(PyMultiPolyFp { inner: fp })
 }
 
+/// Compute the primitive GCD of two multivariate polynomials over ℤ using
+/// sparse interpolation and the Chinese Remainder Theorem (Zippel method).
+///
+/// Both polynomials must have the same variable list.  The result is the
+/// primitive part of ``gcd(f, g)`` with positive leading coefficient.
+///
+/// Parameters
+/// ----------
+/// f, g : MultiPoly
+///     Input polynomials with the same variable list.
+/// term_bound : int
+///     Upper bound on the number of nonzero terms in the GCD.
+/// degree_bound : int
+///     Upper bound on the per-variable degree of the GCD in ``x₂,…,xₙ``.
+///     The degree in ``x₁`` is probed automatically.
+/// seed : int, optional
+///     PRNG seed.  Change on failure (default 0).
+///
+/// Returns
+/// -------
+/// MultiPoly
+///     The primitive GCD with positive leading coefficient.
+///
+/// Raises
+/// ------
+/// SparseGcdError
+///     If the interpolation fails or the variable lists are incompatible.
+///
+/// Examples
+/// --------
+/// ::
+///
+///     pool = ExprPool()
+///     x, y = pool.symbol("x"), pool.symbol("y")
+///     f = MultiPoly.from_symbolic((x - pool.integer(1)) * (x + y), [x, y])
+///     g = MultiPoly.from_symbolic((x + pool.integer(1)) * (x + y), [x, y])
+///     h = gcd_sparse(f, g, term_bound=4, degree_bound=3)
+///     # h represents x + y
+#[pyfunction]
+#[pyo3(name = "gcd_sparse")]
+#[pyo3(signature = (f, g, term_bound, degree_bound, seed=0))]
+fn py_gcd_sparse(
+    f: PyRef<PyMultiPoly>,
+    g: PyRef<PyMultiPoly>,
+    term_bound: usize,
+    degree_bound: u32,
+    seed: u64,
+) -> PyResult<PyMultiPoly> {
+    let result = core_gcd_sparse_modular(&f.inner, &g.inner, term_bound, degree_bound, seed)
+        .map_err(sparse_gcd_error_to_py)?;
+    Ok(PyMultiPoly { inner: result })
+}
+
 // ---------------------------------------------------------------------------
 // PA-9 — Piecewise Python bindings
 // ---------------------------------------------------------------------------
@@ -5574,9 +5636,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // V2-2 — Resultants and subresultant PRS
     m.add_function(wrap_pyfunction!(py_resultant, m)?)?;
     m.add_function(wrap_pyfunction!(py_subresultant_prs, m)?)?;
-    // V2-3 — Sparse interpolation
+    // V2-3 — Sparse interpolation and sparse modular GCD
     m.add_function(wrap_pyfunction!(py_sparse_interp_univariate, m)?)?;
     m.add_function(wrap_pyfunction!(py_sparse_interp, m)?)?;
+    m.add_function(wrap_pyfunction!(py_gcd_sparse, m)?)?;
     // V2-4 — Real root isolation
     m.add_class::<PyRootInterval>()?;
     m.add_function(wrap_pyfunction!(py_real_roots, m)?)?;
@@ -5635,6 +5698,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "SparseInterpError",
         m.py().get_type_bound::<PySparseInterpError>(),
+    )?;
+    m.add(
+        "SparseGcdError",
+        m.py().get_type_bound::<PySparseGcdError>(),
     )?;
     m.add("RealRootError", m.py().get_type_bound::<PyRealRootError>())?;
     m.add("LatticeError", m.py().get_type_bound::<PyLatticeError>())?;

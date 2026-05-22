@@ -80,11 +80,11 @@ pub use ode::{
 pub use parse::{parse, ParseError};
 pub use pattern::{match_pattern, Pattern, Substitution};
 pub use poly::{
-    factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z, poly_normal, real_roots,
-    real_roots_symbolic, refine_root, resultant, sparse_interpolate, sparse_interpolate_univariate,
-    subresultant_prs, ConversionError, FactorError, MultiPoly, MultiPolyFactorization,
-    RationalFunction, RealRootError, ResultantError, RootInterval, SparseInterpError, UniPoly,
-    UniPolyFactorModP, UniPolyFactorization,
+    factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z, gcd_sparse_modular,
+    poly_normal, real_roots, real_roots_symbolic, refine_root, resultant, sparse_interpolate,
+    sparse_interpolate_univariate, subresultant_prs, ConversionError, FactorError, MultiPoly,
+    MultiPolyFactorization, RationalFunction, RealRootError, ResultantError, RootInterval,
+    SparseGcdError, SparseInterpError, UniPoly, UniPolyFactorModP, UniPolyFactorization,
 };
 
 // Phase 24 — Horner form
@@ -215,11 +215,11 @@ pub mod stable {
     pub use crate::parse::{parse, ParseError};
     pub use crate::pattern::{match_pattern, Pattern, Substitution};
     pub use crate::poly::{
-        factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z, poly_normal,
-        real_roots, real_roots_symbolic, refine_root, resultant, sparse_interpolate,
+        factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z, gcd_sparse_modular,
+        poly_normal, real_roots, real_roots_symbolic, refine_root, resultant, sparse_interpolate,
         sparse_interpolate_univariate, subresultant_prs, ConversionError, FactorError, MultiPoly,
         MultiPolyFactorization, RationalFunction, RealRootError, ResultantError, RootInterval,
-        SparseInterpError, UniPoly, UniPolyFactorModP, UniPolyFactorization,
+        SparseGcdError, SparseInterpError, UniPoly, UniPolyFactorModP, UniPolyFactorization,
     };
     pub use crate::primitive::{Primitive, PrimitiveRegistry};
     pub use crate::real::{cad_lift, cad_project, decide, decide_expr, CadError, QeResult};
@@ -263,7 +263,10 @@ pub mod experimental {
     pub use crate::ode::sensitivity::{
         adjoint_system, sensitivity_system, AdjointSystem, SensitivitySystem,
     };
-    pub use crate::poly::{sparse_interpolate, sparse_interpolate_univariate, SparseInterpError};
+    pub use crate::poly::{
+        gcd_sparse_modular, sparse_interpolate, sparse_interpolate_univariate, SparseGcdError,
+        SparseInterpError,
+    };
     pub use crate::simplify::{simplify_egraph, simplify_expanded};
     pub use crate::stablehlo::emit_stablehlo;
 

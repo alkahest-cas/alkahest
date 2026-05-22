@@ -99,6 +99,21 @@ Exception subclasses
    Code prefix ``E-CUDA-*``. CUDA device, compilation, or kernel launch
    error.
 
+.. exception:: SparseInterpError
+
+   Code prefix ``E-INTERP-00*``. Sparse interpolation failed: oracle
+   inconsistency, term bound exceeded, or discrete-log resolution failure.
+
+.. exception:: SparseGcdError
+
+   Code prefix ``E-INTERP-01*``. Sparse modular GCD failed.
+
+   Common codes:
+
+   - ``E-INTERP-010`` — incompatible polynomials (different variable lists)
+   - ``E-INTERP-011`` — underlying sparse interpolation step failed
+   - ``E-INTERP-012`` — CRT lifting arithmetic error
+
 .. exception:: ParseError
 
    Code prefix ``E-PARSE-*``. A lexical or syntax error was encountered

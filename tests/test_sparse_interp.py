@@ -1,10 +1,11 @@
-"""Tests for V2-3 — Sparse interpolation (Ben-Or/Tiwari, Zippel).
+"""Tests for V2-3 — Sparse interpolation (Ben-Or/Tiwari, Zippel) and sparse modular GCD.
 
 Covers:
   - Univariate Ben-Or/Tiwari recovery
   - Multivariate Zippel recovery
   - Round-trip agreement with MultiPolyFp produced by reduce_mod
   - ROADMAP acceptance criteria: 10-variable 15-term, ≥95% success
+  - Sparse modular GCD (gcd_sparse) — substrate for faster modular algorithms
   - Error paths
 
 The multivariate roadmap stress test is marked ``@pytest.mark.slow`` and is **not**
@@ -17,7 +18,21 @@ from __future__ import annotations
 
 import alkahest
 import pytest
-from alkahest import ExprPool, SparseInterpError, sparse_interp, sparse_interp_univariate
+from alkahest import (
+    ExprPool,
+    MultiPoly,
+    SparseInterpError,
+    sparse_interp,
+    sparse_interp_univariate,
+)
+
+try:
+    from alkahest import SparseGcdError, gcd_sparse
+    _HAS_GCD_SPARSE = True
+except ImportError:
+    _HAS_GCD_SPARSE = False
+    gcd_sparse = None  # type: ignore[assignment]
+    SparseGcdError = Exception  # type: ignore[misc,assignment]
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -279,3 +294,85 @@ class TestMultivariate:
         r1 = sparse_interp(f, vs1, term_bound=4, degree_bound=4, prime=p, seed=99)
         r2 = sparse_interp(f, vs2, term_bound=4, degree_bound=4, prime=p, seed=99)
         assert r1.terms == r2.terms, f"different results for same seed: {r1.terms} vs {r2.terms}"
+
+
+# ---------------------------------------------------------------------------
+# Sparse modular GCD  (substrate for faster modular algorithms)
+# ---------------------------------------------------------------------------
+
+def _mp(expr, vars_):
+    """Helper: symbolic expr → MultiPoly."""
+    return MultiPoly.from_symbolic(expr, vars_)
+
+
+@pytest.mark.skipif(not _HAS_GCD_SPARSE, reason="gcd_sparse not available in this build")
+class TestSparseGcd:
+    """gcd_sparse — sparse interpolation-based modular GCD."""
+
+    def test_univariate_linear_common_factor(self):
+        """gcd((x-1)(x+1), (x+1)(x-2)) = x+1."""
+        pool = ExprPool()
+        x = pool.symbol("x")
+        # f = x^2 - 1, g = x^2 - x - 2
+        f = _mp(x**2 + pool.integer(-1), [x])
+        g = _mp(x**2 + pool.integer(-1) * x + pool.integer(-2), [x])
+        h = gcd_sparse(f, g, term_bound=3, degree_bound=3)
+        ref = f.gcd(g)
+        assert str(h) == str(ref), f"sparse GCD {h} != FLINT GCD {ref}"
+
+    def test_univariate_coprime(self):
+        """gcd(x, x+1) = 1 (trivial coprime case)."""
+        pool = ExprPool()
+        x = pool.symbol("x")
+        f = _mp(x, [x])
+        g = _mp(x + pool.integer(1), [x])
+        h = gcd_sparse(f, g, term_bound=2, degree_bound=2)
+        # Primitive 1 has total_degree 0
+        assert h.total_degree() == 0, f"GCD of coprime polys should be constant, got {h}"
+        assert not h.is_zero(), "GCD should be 1 (non-zero constant)"
+
+    def test_univariate_identical_primitive_part(self):
+        """gcd(2f, 2f) = primitive_part(f)."""
+        pool = ExprPool()
+        x = pool.symbol("x")
+        # 2x^2 - 2
+        f = _mp(pool.integer(2) * x**2 + pool.integer(-2), [x])
+        h = gcd_sparse(f, f, term_bound=2, degree_bound=3)
+        ref = f.gcd(f)
+        assert str(h) == str(ref), f"gcd(f,f) mismatch: {h} vs {ref}"
+
+    def test_bivariate_common_factor(self):
+        """gcd(x^2-y^2, (x+y)(x+1)) agrees with FLINT GCD."""
+        pool = ExprPool()
+        x = pool.symbol("x")
+        y = pool.symbol("y")
+        f = _mp(x**2 + pool.integer(-1) * y**2, [x, y])
+        g = _mp((x + y) * (x + pool.integer(1)), [x, y])
+        h = gcd_sparse(f, g, term_bound=3, degree_bound=2)
+        ref = f.gcd(g)
+        assert h.total_degree() == ref.total_degree(), (
+            f"sparse GCD total_degree {h.total_degree()} != FLINT {ref.total_degree()}"
+        )
+        assert str(h) == str(ref), f"bivariate sparse GCD {h} != FLINT {ref}"
+
+    def test_bivariate_coprime(self):
+        """gcd(x, y) = 1."""
+        pool = ExprPool()
+        x = pool.symbol("x")
+        y = pool.symbol("y")
+        f = _mp(x, [x, y])
+        g = _mp(y, [x, y])
+        h = gcd_sparse(f, g, term_bound=2, degree_bound=2)
+        assert h.total_degree() == 0, f"gcd(x,y) should be constant, got {h}"
+        assert not h.is_zero(), "GCD should be 1 (non-zero)"
+
+    def test_incompatible_vars_raises(self):
+        """Different variable lists must raise SparseGcdError."""
+        from alkahest import SparseGcdError
+        pool = ExprPool()
+        x = pool.symbol("x")
+        y = pool.symbol("y")
+        f = _mp(x, [x])
+        g = _mp(y, [y])
+        with pytest.raises(SparseGcdError):
+            gcd_sparse(f, g, term_bound=2, degree_bound=2)

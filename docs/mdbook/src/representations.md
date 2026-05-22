@@ -9,6 +9,7 @@ Alkahest exposes multiple representation types rather than hiding everything beh
 | General symbolic computation | `Expr` |
 | Fast univariate polynomial arithmetic | `UniPoly` |
 | Sparse multivariate polynomial algebra | `MultiPoly` |
+| Sparse polynomial over 𝔽ₚ (modular / interpolation) | `MultiPolyFp` |
 | Rational functions with automatic cancellation | `RationalFunction` |
 | Rigorous enclosures with error bounds | `ArbBall` |
 
@@ -80,6 +81,35 @@ print(mp * mp2)              # x^3*y^2 + x^2*y^3 - x*y
 ```
 
 Variable order matters for the exponent-vector key. Pass variables in a consistent order when constructing `MultiPoly` objects that will be combined.
+
+## MultiPolyFp
+
+Sparse multivariate polynomial over 𝔽ₚ = ℤ/pℤ. Used as the working type for black-box sparse interpolation and sparse modular GCD.
+
+```python
+from alkahest import sparse_interp_univariate, sparse_interp, gcd_sparse, MultiPoly
+
+p = 32749  # prime
+
+# Recover a sparse univariate from 2T black-box evaluations (Ben-Or/Tiwari)
+f = sparse_interp_univariate(lambda v: (v**5 + 3*v**3 + 7) % p, T=3, prime=p)
+print(f)   # x^5 + 3*x^3 + 7 (as MultiPolyFp)
+
+# Recover a sparse multivariate via Zippel's algorithm
+f2 = sparse_interp(
+    lambda vals: (vals[0]**3 * vals[1]**2 + vals[0] * vals[1]**4) % p,
+    vars=[x, y], T=2, D=5, prime=p,
+)
+print(f2)  # x^3*y^2 + x*y^4
+
+# Sparse modular GCD over ℤ[x₁,...,xₙ] — substrate for exact GCD algorithms
+a = MultiPoly.from_symbolic((x + y) * (x - y), [x, y])
+b = MultiPoly.from_symbolic((x + y) * (x + pool.integer(1)), [x, y])
+h = gcd_sparse(a, b, term_bound=4, degree_bound=4)
+print(h)   # x + y
+```
+
+`sparse_interp_univariate` uses Berlekamp–Massey + BSGS discrete-log + Vandermonde solve and requires exactly `2T` oracle calls. `sparse_interp` uses Zippel's variable-by-variable algorithm with batched Vandermonde lifting.
 
 ## RationalFunction
 

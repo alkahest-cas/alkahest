@@ -1310,6 +1310,299 @@ pub fn sparse_interpolate(
 }
 
 // ---------------------------------------------------------------------------
+// Sparse modular GCD — "substrate for faster modular algorithms"
+// ---------------------------------------------------------------------------
+
+/// Error returned by [`gcd_sparse_modular`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum SparseGcdError {
+    /// The two polynomials have incompatible variable lists.
+    IncompatiblePolynomials,
+    /// Sparse interpolation failed during a modular GCD step.
+    InterpFailed(SparseInterpError),
+    /// CRT lifting failed.
+    CrtFailed(crate::modular::ModularError),
+}
+
+impl std::fmt::Display for SparseGcdError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SparseGcdError::IncompatiblePolynomials => {
+                write!(f, "polynomials have incompatible variable lists")
+            }
+            SparseGcdError::InterpFailed(e) => write!(f, "interpolation step failed: {e}"),
+            SparseGcdError::CrtFailed(e) => write!(f, "CRT lifting failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for SparseGcdError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            SparseGcdError::InterpFailed(e) => Some(e),
+            SparseGcdError::CrtFailed(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+impl AlkahestError for SparseGcdError {
+    fn code(&self) -> &'static str {
+        match self {
+            SparseGcdError::IncompatiblePolynomials => "E-INTERP-010",
+            SparseGcdError::InterpFailed(_) => "E-INTERP-011",
+            SparseGcdError::CrtFailed(_) => "E-INTERP-012",
+        }
+    }
+
+    fn remediation(&self) -> Option<&'static str> {
+        match self {
+            SparseGcdError::IncompatiblePolynomials => {
+                Some("ensure both polynomials share the same variable list in the same order")
+            }
+            SparseGcdError::InterpFailed(_) => {
+                Some("retry with a larger term_bound, degree_bound, or a different seed")
+            }
+            SparseGcdError::CrtFailed(_) => {
+                Some("provide more primes or use a larger prime product threshold")
+            }
+        }
+    }
+}
+
+/// Evaluate all variables except `x₁` at `vals = [a₂, …, aₙ]`, returning a
+/// dense coefficient vector `[c₀, c₁, …]` where `cₖ` is the coefficient of `x₁^k`.
+fn specialize_except_first(fp: &MultiPolyFp, vals: &[u64]) -> Vec<u64> {
+    let p = fp.modulus;
+    let max_x1 = fp
+        .terms
+        .keys()
+        .map(|e| e.first().copied().unwrap_or(0))
+        .max()
+        .unwrap_or(0) as usize;
+    let mut result = vec![0u64; max_x1 + 1];
+    for (exp, &coeff) in &fp.terms {
+        let k = exp.first().copied().unwrap_or(0) as usize;
+        let mut factor = coeff;
+        for (i, &e) in exp.iter().skip(1).enumerate() {
+            if e > 0 {
+                let ai = *vals.get(i).unwrap_or(&0);
+                factor = mul_mod(factor, pow_mod(ai, e as u64, p), p);
+            }
+        }
+        result[k] = add_mod(result[k], factor, p);
+    }
+    poly_trim(result)
+}
+
+/// Compute the monic GCD image over `Fₚ[x₁,…,xₙ]` via evaluation/interpolation.
+/// Uses [`sparse_interpolate`] to recover each `x₁^k`-coefficient polynomial.
+fn gcd_sparse_mod_p(
+    f_p: &MultiPolyFp,
+    g_p: &MultiPolyFp,
+    sub_vars: Vec<ExprId>,
+    term_bound: usize,
+    degree_bound: u32,
+    prime: u64,
+    seed: u64,
+) -> Result<MultiPolyFp, SparseInterpError> {
+    let p = prime;
+    let vars_full = f_p.vars.clone();
+
+    // Probe one random specialization to find the GCD degree in x₁.
+    let n_sub = sub_vars.len();
+    let mut rng = Xorshift64::new(seed ^ p.wrapping_mul(0x9e37_79b9_7f4a_7c15));
+    let probe_vals: Vec<u64> = (0..n_sub).map(|_| rng.nonzero(p)).collect();
+    let f1 = specialize_except_first(f_p, &probe_vals);
+    let g1 = specialize_except_first(g_p, &probe_vals);
+    let h1 = polygcd(&f1, &g1, p);
+    let gcd_deg_x1 = poly_deg(&h1).max(0) as usize;
+
+    let mut h_terms: BTreeMap<Vec<u32>, u64> = BTreeMap::new();
+
+    if sub_vars.is_empty() {
+        // Univariate: GCD is already determined from the probe.
+        for (k, &c) in h1.iter().enumerate() {
+            if c != 0 {
+                let mut exp = vec![k as u32];
+                while exp.last() == Some(&0) {
+                    exp.pop();
+                }
+                h_terms.insert(exp, c);
+            }
+        }
+    } else {
+        // Multivariate: for each x₁-degree k, interpolate the coefficient polynomial.
+        for k in 0..=gcd_deg_x1 {
+            let oracle = |vals: &[u64]| -> u64 {
+                let fa = specialize_except_first(f_p, vals);
+                let ga = specialize_except_first(g_p, vals);
+                let hk = polygcd(&fa, &ga, p);
+                hk.get(k).copied().unwrap_or(0)
+            };
+            let ck = sparse_interpolate(
+                &oracle,
+                sub_vars.clone(),
+                term_bound,
+                degree_bound,
+                p,
+                seed.wrapping_add(k as u64 + 1),
+            )?;
+            for (sub_exp, &c) in &ck.terms {
+                if c == 0 {
+                    continue;
+                }
+                let mut full_exp = vec![k as u32];
+                full_exp.extend_from_slice(sub_exp);
+                while full_exp.last() == Some(&0) {
+                    full_exp.pop();
+                }
+                h_terms.insert(full_exp, c);
+            }
+        }
+    }
+
+    Ok(MultiPolyFp {
+        vars: vars_full,
+        modulus: prime,
+        terms: h_terms,
+    })
+}
+
+/// Compute the primitive GCD of `f` and `g` in `ℤ[x₁,…,xₙ]` using sparse
+/// interpolation and the Chinese Remainder Theorem.
+///
+/// # Algorithm (Zippel evaluation–interpolation GCD)
+///
+/// For each lucky prime `p` (skipping primes that collapse either polynomial's
+/// integer content):
+///  1. Reduce `f` and `g` modulo `p`.
+///  2. For each degree `k` in `x₁`, build the oracle
+///     `(a₂,…,aₙ) ↦ [x₁^k] gcd(f(x₁,a₂,…), g(x₁,a₂,…))`.
+///  3. Call [`sparse_interpolate`] to recover the coefficient polynomial
+///     `c_k(x₂,…,xₙ)`.
+///  4. Assemble the modular GCD image `h mod p = Σ c_k · x₁^k`.
+///
+/// Once the product of chosen primes exceeds `2 · Mignotte(min(f, g))`, apply
+/// CRT lifting ([`crate::modular::lift_crt`]) to recover the integer GCD, then
+/// return the primitive part.
+///
+/// # Parameters
+///
+/// - `term_bound` — upper bound on the number of nonzero terms in the GCD.
+///   Should be at most `min(terms(f), terms(g))` for efficiency.
+/// - `degree_bound` — upper bound on the per-variable degree of the GCD (for
+///   variables `x₂,…,xₙ`; degree in `x₁` is probed automatically).
+/// - `seed` — PRNG seed for [`sparse_interpolate`]; change on failure.
+///
+/// # Errors
+///
+/// - [`SparseGcdError::IncompatiblePolynomials`] — different variable lists.
+/// - [`SparseGcdError::InterpFailed`] — interpolation failure.
+/// - [`SparseGcdError::CrtFailed`] — CRT reconstruction failure.
+pub fn gcd_sparse_modular(
+    f: &super::multipoly::MultiPoly,
+    g: &super::multipoly::MultiPoly,
+    term_bound: usize,
+    degree_bound: u32,
+    seed: u64,
+) -> Result<super::multipoly::MultiPoly, SparseGcdError> {
+    use crate::modular::{lift_crt, mignotte_bound, reduce_mod};
+    use rug::Integer;
+
+    if f.vars != g.vars {
+        return Err(SparseGcdError::IncompatiblePolynomials);
+    }
+    if f.is_zero() {
+        return Ok(g.clone());
+    }
+    if g.is_zero() {
+        return Ok(f.clone());
+    }
+
+    let vars = f.vars.clone();
+    let sub_vars = if vars.len() > 1 {
+        vars[1..].to_vec()
+    } else {
+        vec![]
+    };
+
+    let b_f = mignotte_bound(f);
+    let b_g = mignotte_bound(g);
+    let bound = b_f.min(b_g);
+    let two_bound = bound.clone() << 1u32;
+
+    // Minimum prime: p > 2·T (for Ben-Or/Tiwari) and p > D (for discrete-log exponent map).
+    let min_p = ((2 * term_bound + 2) as u64).max(degree_bound as u64 + 2);
+
+    // Content for divisibility avoidance.
+    let content = f.integer_content() * g.integer_content();
+
+    let mut images: Vec<(MultiPolyFp, u64)> = Vec::new();
+    let mut used: Vec<u64> = Vec::new();
+    let mut m = Integer::from(1u64);
+    let mut candidate = min_p.max(3);
+
+    while m <= two_bound {
+        // Find next prime ≥ candidate that doesn't divide content.
+        loop {
+            if is_prime(candidate) && !used.contains(&candidate) {
+                if content == 0 {
+                    break;
+                }
+                let p_int = Integer::from(candidate);
+                let r = content.clone() % p_int.clone();
+                let r = if r < 0 { r + p_int } else { r };
+                if r != 0 {
+                    break;
+                }
+            }
+            candidate += 1;
+            if candidate > 1_000_003 {
+                break;
+            }
+        }
+        let p = candidate;
+        candidate += 1;
+
+        let f_p = match reduce_mod(f, p) {
+            Ok(x) if !x.is_zero() => x,
+            _ => continue,
+        };
+        let g_p = match reduce_mod(g, p) {
+            Ok(x) if !x.is_zero() => x,
+            _ => continue,
+        };
+
+        used.push(p);
+
+        let h_p = gcd_sparse_mod_p(
+            &f_p,
+            &g_p,
+            sub_vars.clone(),
+            term_bound,
+            degree_bound,
+            p,
+            seed.wrapping_add(p),
+        )
+        .map_err(SparseGcdError::InterpFailed)?;
+
+        images.push((h_p, p));
+        m *= Integer::from(p);
+    }
+
+    let mut result = lift_crt(&images).map_err(SparseGcdError::CrtFailed)?;
+
+    // Normalise: positive leading coefficient, then take primitive part.
+    if let Some((_, lc)) = result.terms.iter().next_back() {
+        if *lc < rug::Integer::from(0) {
+            result = -result;
+        }
+    }
+    Ok(result.primitive_part())
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 
@@ -1734,5 +2027,121 @@ mod tests {
         for (exp, &ec) in &expected {
             assert_eq!(result.terms.get(exp).copied().unwrap_or(0), ec);
         }
+    }
+
+    // ---- gcd_sparse_modular tests -------------------------------------------
+
+    fn vars_n(n: usize) -> (ExprPool, Vec<crate::kernel::ExprId>) {
+        let pool = ExprPool::new();
+        let vs: Vec<_> = (0..n)
+            .map(|i| pool.symbol(format!("x{i}"), Domain::Real))
+            .collect();
+        (pool, vs)
+    }
+
+    fn mp(
+        expr: crate::kernel::ExprId,
+        vids: Vec<crate::kernel::ExprId>,
+        pool: &ExprPool,
+    ) -> crate::poly::multipoly::MultiPoly {
+        crate::poly::multipoly::MultiPoly::from_symbolic(expr, vids, pool)
+            .expect("valid polynomial")
+    }
+
+    #[test]
+    fn gcd_sparse_univariate_linear_factor() {
+        // gcd((x-1)(x+1), (x+1)(x-2)) = x+1
+        let (pool, vs) = vars_n(1);
+        let x = vs[0];
+        let neg1 = pool.integer(-1i32);
+        let neg2 = pool.integer(-2i32);
+        let _one = pool.integer(1i32);
+        // f = x^2 - 1 = (x-1)(x+1)
+        let f = mp(
+            pool.add(vec![pool.pow(x, pool.integer(2i32)), neg1]),
+            vec![x],
+            &pool,
+        );
+        // g = x^2 - x - 2 = (x+1)(x-2)
+        let g = mp(
+            pool.add(vec![
+                pool.pow(x, pool.integer(2i32)),
+                pool.mul(vec![neg1, x]),
+                neg2,
+            ]),
+            vec![x],
+            &pool,
+        );
+        let h = gcd_sparse_modular(&f, &g, 3, 3, 0).expect("gcd should succeed");
+        // h = x + 1 (primitive, positive leading coeff)
+        assert_eq!(h.terms.len(), 2, "GCD should have 2 terms: {h:?}");
+        assert_eq!(
+            h.terms.get(&vec![1u32]).cloned(),
+            Some(rug::Integer::from(1)),
+            "leading coeff of x should be 1"
+        );
+        let empty: Vec<u32> = vec![];
+        assert_eq!(
+            h.terms.get(&empty).cloned(),
+            Some(rug::Integer::from(1)),
+            "constant should be 1"
+        );
+    }
+
+    #[test]
+    fn gcd_sparse_univariate_coprime() {
+        // gcd(x, x+1) = 1
+        let (pool, vs) = vars_n(1);
+        let x = vs[0];
+        let f = mp(x, vec![x], &pool);
+        let g = mp(
+            pool.add(vec![x, pool.integer(1i32)]),
+            vec![x],
+            &pool,
+        );
+        let h = gcd_sparse_modular(&f, &g, 2, 2, 0).expect("gcd should succeed");
+        // gcd(x, x+1) = 1 — a constant polynomial with one term {[]: 1}
+        let empty: Vec<u32> = vec![];
+        let constant = h.terms.get(&empty).cloned().unwrap_or_default();
+        assert_eq!(
+            constant,
+            rug::Integer::from(1),
+            "GCD of coprime polys should be 1, got {h:?}"
+        );
+    }
+
+    #[test]
+    fn gcd_sparse_bivariate_common_factor() {
+        // gcd((x+y)(x-y), (x+y)*(x+1)) = x+y
+        let (pool, vs) = vars_n(2);
+        let x = vs[0];
+        let y = vs[1];
+        let xpy = pool.add(vec![x, y]);
+        let _xmy = pool.add(vec![x, pool.mul(vec![pool.integer(-1i32), y])]);
+        let xp1 = pool.add(vec![x, pool.integer(1i32)]);
+        // f = (x+y)(x-y) = x^2 - y^2
+        let f = mp(
+            pool.add(vec![
+                pool.pow(x, pool.integer(2i32)),
+                pool.mul(vec![pool.integer(-1i32), pool.pow(y, pool.integer(2i32))]),
+            ]),
+            vec![x, y],
+            &pool,
+        );
+        // g = (x+y)(x+1) = x^2 + x + xy + y
+        let g = mp(
+            pool.mul(vec![xpy, xp1]),
+            vec![x, y],
+            &pool,
+        );
+        let h = gcd_sparse_modular(&f, &g, 3, 2, 0).expect("gcd should succeed");
+        // h = x + y  (primitive)
+        assert_eq!(h.terms.len(), 2, "GCD = x+y should have 2 terms, got {h:?}");
+        // Leading monomial in BTreeMap order is (1, 1) for xy or (1,) for x
+        // Actually for x+y: x has exp [1], y has exp [0,1]
+        let coeff_x = h.terms.get(&vec![1u32]).cloned();
+        let coeff_y = h.terms.get(&vec![0u32, 1u32]).cloned();
+        assert_eq!(coeff_x, Some(rug::Integer::from(1)), "coeff of x should be 1");
+        assert_eq!(coeff_y, Some(rug::Integer::from(1)), "coeff of y should be 1");
     }
 }

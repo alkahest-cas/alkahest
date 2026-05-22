@@ -22,8 +22,11 @@ pub use factor::{
     factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z, MultiPolyFactorization,
     UniPolyFactorModP, UniPolyFactorization,
 };
-// V2-3 — Sparse interpolation
-pub use interp::{sparse_interpolate, sparse_interpolate_univariate, SparseInterpError};
+// V2-3 — Sparse interpolation and sparse modular GCD
+pub use interp::{
+    gcd_sparse_modular, sparse_interpolate, sparse_interpolate_univariate, SparseGcdError,
+    SparseInterpError,
+};
 pub use multipoly::MultiPoly;
 pub use rational::RationalFunction;
 // V2-2 — Resultants and subresultant PRS

@@ -8,7 +8,8 @@
 | **1.0.0** | ✅ Complete | Production NVPTX, MLIR dialect, Gröbner solver, semver API, persistent pool (see [CHANGELOG](CHANGELOG.md#100)) |
 | **2.0.0** | ✅ Complete | Full mathematical coverage: summation, series, limits, eigenvalues, number theory, noncommutative algebra, regular chains, primary decomposition, differential algebra, homotopy continuation, Diophantine equations, symbolic products, rsolve, algebraic Risch, LaTeX/Unicode output, string parsing (see [CHANGELOG](CHANGELOG.md#200--2026-05-06)) |
 | **2.0.3** | ✅ Complete | Full Gruntz MRV limits, polyhedral BKK homotopy, Lean Filter.Tendsto certificates, F5 Gröbner, demo playground Lean panel (see [CHANGELOG](CHANGELOG.md#203--2026-05-21)) |
-| **Next** | 🚧 In progress | Sparse multivariate interpolation, CAD, generalized Pell — see below |
+| **2.0.4** | ✅ Complete | Sparse multivariate interpolation (Ben-Or/Tiwari, Zippel) + sparse modular GCD substrate (see [CHANGELOG](CHANGELOG.md#204--2026-05-22)) |
+| **Next** | 🚧 In progress | CAD, generalized Pell — see below |
 
 **Test coverage:** ~400 Rust unit/proptest/doctest + 1045 Python tests, zero errors.
 
@@ -19,7 +20,6 @@
 Items in rough priority order. None are committed to a specific release date.
 
 ### Mathematical coverage
-- **Sparse multivariate interpolation** (Ben-Or/Tiwari, Zippel) — black-box recovery; substrate for faster modular algorithms
 - **Full cylindrical algebraic decomposition** (real quantifier elimination) — Brown projection + lift; `decide(formula)` for first-order sentences over ℝ
 - **Generalized Pell and higher-degree Diophantine** — `x² - D·y² = N` for arbitrary N; quadratics with cross-term
 - **Higher-degree algebraic Risch** — multiple generators; cbrt and nth-root extensions; full Trager algorithm

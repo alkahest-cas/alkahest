@@ -177,6 +177,34 @@ mp = ak.MultiPoly.from_symbolic(x ** 2 * y + x * y ** 2, [x, y])
 print(mp.total_degree()) # 3
 ```
 
+### Sparse multivariate interpolation (Ben-Or/Tiwari, Zippel)
+
+Black-box recovery of sparse polynomials from evaluations, and sparse modular GCD as a substrate for faster exact GCD algorithms.
+
+```python
+import alkahest as ak
+
+pool = ak.ExprPool()
+x, y = pool.symbol("x"), pool.symbol("y")
+
+# Recover a sparse univariate f ∈ 𝔽ₚ[x] from 2T black-box evaluations
+p = 32749  # prime
+target = lambda v: (v**5 + 3*v**3 + 7) % p  # hidden: x^5 + 3x^3 + 7
+f = ak.sparse_interp_univariate(target, T=3, prime=p)
+print(f)   # recovered polynomial
+
+# Recover a sparse multivariate f ∈ 𝔽ₚ[x, y] via Zippel's algorithm
+target2 = lambda vals: (vals[0]**3 * vals[1]**2 + vals[0] * vals[1]**4) % p
+g = ak.sparse_interp(target2, vars=[x, y], T=2, D=5, prime=p)
+print(g)   # recovered MultiPolyFp
+
+# Sparse modular GCD over ℤ[x₁,...,xₙ]
+f2 = ak.MultiPoly.from_symbolic((x + y) * (x - y), [x, y])
+g2 = ak.MultiPoly.from_symbolic((x + y) * (x + pool.integer(1)), [x, y])
+h = ak.gcd_sparse(f2, g2, term_bound=4, degree_bound=4)
+print(h)   # x + y
+```
+
 ### Symbolic summation (Gosper / recurrences)
 
 Indefinite and definite sums for terms whose shift ratio `F(k+1)/F(k)` is rational in `k`—typically polynomials multiplied by `gamma` of a **linear** expression in `k`. General multivariate Zeilberger automation is partial; use `verify_wz_pair(F, G, n, k)` to check a discrete telescoping certificate after simplification.
@@ -466,6 +494,7 @@ alkahest/
 | `Expr` | Generic hash-consed symbolic expression |
 | `UniPoly` | Dense univariate polynomial (FLINT-backed) |
 | `MultiPoly` | Sparse multivariate polynomial over ℤ |
+| `MultiPolyFp` | Sparse multivariate polynomial over 𝔽ₚ (modular arithmetic) |
 | `RationalFunction` | Quotient of polynomials with GCD normalization |
 | `ArbBall` | Real interval with rigorous error bounds (Arb) |
 
