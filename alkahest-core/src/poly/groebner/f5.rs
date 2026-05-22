@@ -31,12 +31,20 @@ struct Signature {
 
 impl Signature {
     fn new(n_vars: usize, index: usize) -> Self {
-        Signature { exp: vec![0u32; n_vars], index }
+        Signature {
+            exp: vec![0u32; n_vars],
+            index,
+        }
     }
 
     fn mul_monomial(&self, shift: &[u32]) -> Signature {
         Signature {
-            exp: self.exp.iter().zip(shift.iter()).map(|(a, b)| a + b).collect(),
+            exp: self
+                .exp
+                .iter()
+                .zip(shift.iter())
+                .map(|(a, b)| a + b)
+                .collect(),
             index: self.index,
         }
     }
@@ -75,8 +83,14 @@ struct Labelled {
 
 /// Buchberger product criterion on the polynomial parts.
 fn product_criterion(f: &GbPoly, g: &GbPoly, order: MonomialOrder) -> bool {
-    let lf = match f.leading_exp(order) { Some(e) => e, None => return true };
-    let lg = match g.leading_exp(order) { Some(e) => e, None => return true };
+    let lf = match f.leading_exp(order) {
+        Some(e) => e,
+        None => return true,
+    };
+    let lg = match g.leading_exp(order) {
+        Some(e) => e,
+        None => return true,
+    };
     lf.iter().zip(lg.iter()).all(|(&a, &b)| a == 0 || b == 0)
 }
 
@@ -89,7 +103,11 @@ fn s_pair_signature(f: &Labelled, g: &Labelled, order: MonomialOrder) -> Option<
     let t_g = exp_sub(&lcm, &lg);
     let sf = f.sig.mul_monomial(&t_f);
     let sg = g.sig.mul_monomial(&t_g);
-    Some(if cmp_signature(&sf, &sg) >= Ordering::Equal { sf } else { sg })
+    Some(if cmp_signature(&sf, &sg) >= Ordering::Equal {
+        sf
+    } else {
+        sg
+    })
 }
 
 /// Signature-bounded polynomial reduction (F5 style).
@@ -105,15 +123,27 @@ fn reduce_f5(
 ) -> GbPoly {
     let mut h = poly.clone();
     'outer: loop {
-        if h.is_zero() { break; }
-        let lt_exp = match h.leading_exp(order) { Some(e) => e, None => break };
+        if h.is_zero() {
+            break;
+        }
+        let lt_exp = match h.leading_exp(order) {
+            Some(e) => e,
+            None => break,
+        };
         let lt_coeff = h.leading_coeff(order).unwrap();
         for lb in basis {
-            let lb_lm = match lb.poly.leading_exp(order) { Some(e) => e, None => continue };
-            if !divides_exp(&lb_lm, &lt_exp) { continue; }
+            let lb_lm = match lb.poly.leading_exp(order) {
+                Some(e) => e,
+                None => continue,
+            };
+            if !divides_exp(&lb_lm, &lt_exp) {
+                continue;
+            }
             let shift = exp_sub(&lt_exp, &lb_lm);
             let scaled_sig = lb.sig.mul_monomial(&shift);
-            if cmp_signature(&scaled_sig, sig_bound) != Ordering::Less { continue; }
+            if cmp_signature(&scaled_sig, sig_bound) != Ordering::Less {
+                continue;
+            }
             let lb_lc = lb.poly.leading_coeff(order).unwrap();
             let factor = rug::Rational::from(&lt_coeff / &lb_lc);
             let subtrahend = lb.poly.mul_monomial(&shift, &factor);
@@ -141,30 +171,44 @@ impl Pair {
     fn new(f: &Labelled, g: &Labelled, i: usize, j: usize, order: MonomialOrder) -> Option<Self> {
         let sig_s = s_pair_signature(f, g, order)?;
         let sig_deg = total_deg(&sig_s.exp);
-        Some(Pair { sig_s, sig_deg, i, j })
+        Some(Pair {
+            sig_s,
+            sig_deg,
+            i,
+            j,
+        })
     }
 }
 
 impl Eq for Pair {}
 impl PartialEq for Pair {
-    fn eq(&self, other: &Self) -> bool { self.i == other.i && self.j == other.j }
+    fn eq(&self, other: &Self) -> bool {
+        self.i == other.i && self.j == other.j
+    }
 }
 
 impl Ord for Pair {
     fn cmp(&self, other: &Self) -> Ordering {
-        other.sig_deg.cmp(&self.sig_deg)
+        other
+            .sig_deg
+            .cmp(&self.sig_deg)
             .then_with(|| cmp_signature(&other.sig_s, &self.sig_s))
     }
 }
 impl PartialOrd for Pair {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> { Some(self.cmp(other)) }
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// Compute a Gröbner basis using Faugère F5 with signature-bounded reduction.
 ///
 /// The output is interreduced and monic in the same sense as
 /// [`super::f4::compute_groebner_basis`].
-pub fn compute_groebner_basis_f5(generators: Vec<GbPoly>, poly_order: MonomialOrder) -> Vec<GbPoly> {
+pub fn compute_groebner_basis_f5(
+    generators: Vec<GbPoly>,
+    poly_order: MonomialOrder,
+) -> Vec<GbPoly> {
     let mut basis: Vec<Labelled> = generators
         .into_iter()
         .enumerate()
@@ -172,7 +216,10 @@ pub fn compute_groebner_basis_f5(generators: Vec<GbPoly>, poly_order: MonomialOr
         .map(|(idx, g)| {
             let p = g.make_monic(poly_order);
             let n_vars = p.n_vars;
-            Labelled { sig: Signature::new(n_vars, idx), poly: p }
+            Labelled {
+                sig: Signature::new(n_vars, idx),
+                poly: p,
+            }
         })
         .collect();
 
@@ -184,7 +231,9 @@ pub fn compute_groebner_basis_f5(generators: Vec<GbPoly>, poly_order: MonomialOr
 
     for i in 0..basis.len() {
         for j in (i + 1)..basis.len() {
-            if product_criterion(&basis[i].poly, &basis[j].poly, poly_order) { continue; }
+            if product_criterion(&basis[i].poly, &basis[j].poly, poly_order) {
+                continue;
+            }
             if let Some(pair) = Pair::new(&basis[i], &basis[j], i, j, poly_order) {
                 heap.push(pair);
             }
@@ -197,20 +246,31 @@ pub fn compute_groebner_basis_f5(generators: Vec<GbPoly>, poly_order: MonomialOr
             Some(s) => s,
             None => continue,
         };
-        if cmp_signature(&sig_s, &pair.sig_s) != Ordering::Equal { continue; }
+        if cmp_signature(&sig_s, &pair.sig_s) != Ordering::Equal {
+            continue;
+        }
 
-        if product_criterion(&basis[pair.i].poly, &basis[pair.j].poly, poly_order) { continue; }
+        if product_criterion(&basis[pair.i].poly, &basis[pair.j].poly, poly_order) {
+            continue;
+        }
 
         let s = s_polynomial(&basis[pair.i].poly, &basis[pair.j].poly, poly_order);
         let h = reduce_f5(&s, &sig_s, &basis, poly_order);
-        if h.is_zero() { continue; }
+        if h.is_zero() {
+            continue;
+        }
 
-        let new_entry = Labelled { sig: sig_s, poly: h.make_monic(poly_order) };
+        let new_entry = Labelled {
+            sig: sig_s,
+            poly: h.make_monic(poly_order),
+        };
         let new_idx = basis.len();
         basis.push(new_entry);
 
         for k in 0..new_idx {
-            if product_criterion(&basis[k].poly, &basis[new_idx].poly, poly_order) { continue; }
+            if product_criterion(&basis[k].poly, &basis[new_idx].poly, poly_order) {
+                continue;
+            }
             if let Some(p) = Pair::new(&basis[k], &basis[new_idx], k, new_idx, poly_order) {
                 heap.push(p);
             }
@@ -275,7 +335,9 @@ mod tests {
             }
             if k == n {
                 let zero_exp = vec![0u32; n];
-                let c = terms.entry(zero_exp).or_insert_with(|| rug::Rational::from(0));
+                let c = terms
+                    .entry(zero_exp)
+                    .or_insert_with(|| rug::Rational::from(0));
                 *c -= rug::Rational::from(1);
             }
             terms.retain(|_, v| *v != rug::Rational::from(0));
@@ -331,9 +393,13 @@ mod tests {
         let b5 = compute_groebner_basis_f5(sys, order);
         if !bases_equivalent(&b4, &b5, order) {
             eprintln!("Buchberger basis ({} elements):", b4.len());
-            for p in &b4 { eprintln!("  LM={:?}", p.leading_exp(order)); }
+            for p in &b4 {
+                eprintln!("  LM={:?}", p.leading_exp(order));
+            }
             eprintln!("F5 basis ({} elements):", b5.len());
-            for p in &b5 { eprintln!("  LM={:?}", p.leading_exp(order)); }
+            for p in &b5 {
+                eprintln!("  LM={:?}", p.leading_exp(order));
+            }
             panic!("F5 vs Buchberger mismatch on Cyclic-4");
         }
     }

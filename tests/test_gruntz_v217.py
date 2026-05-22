@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 import alkahest
-from alkahest import ExprPool, limit, pos_infinity
+from alkahest import ExprPool, limit
 
 
 sympy = pytest.importorskip("sympy")

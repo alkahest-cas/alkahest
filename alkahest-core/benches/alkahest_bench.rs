@@ -1,8 +1,10 @@
 use alkahest_cas::matrix::{hermite_form, IntegerMatrix};
+#[cfg(feature = "groebner")]
+use alkahest_cas::poly::groebner::{
+    compute_groebner_basis, compute_groebner_basis_f5, MonomialOrder,
+};
 #[cfg(feature = "egraph")]
 use alkahest_cas::simplify_egraph;
-#[cfg(feature = "groebner")]
-use alkahest_cas::poly::groebner::{compute_groebner_basis, compute_groebner_basis_f5, MonomialOrder};
 use alkahest_cas::{
     compile, diff, eval_interp, simplify, ArbBall, Domain, ExprId, ExprPool, IntervalEval,
     MultiPoly, UniPoly,
@@ -746,9 +748,7 @@ fn cyclic_system_bench(n: usize) -> Vec<alkahest_cas::poly::groebner::GbPoly> {
             for d in 0..k {
                 exp[(start + d) % n] += 1;
             }
-            let c = terms
-                .entry(exp)
-                .or_insert_with(|| rug::Rational::from(0));
+            let c = terms.entry(exp).or_insert_with(|| rug::Rational::from(0));
             *c += rug::Rational::from(1);
         }
         if k == n {

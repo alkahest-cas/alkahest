@@ -368,7 +368,11 @@ fn rewrite_node(expr: ExprId, subst: &HashMap<ExprId, ExprId>, pool: &ExprPool) 
             let b = rewrite_node(base, subst, pool);
             let e = rewrite_node(exp, subst, pool);
             // Flatten (x^a)^b → x^(a·b) so rational omega powers compose correctly.
-            if let ExprData::Pow { base: inner_base, exp: inner_e } = pool.get(b) {
+            if let ExprData::Pow {
+                base: inner_base,
+                exp: inner_e,
+            } = pool.get(b)
+            {
                 let combined = simplify(pool.mul(vec![inner_e, e]), pool).value;
                 return simplify(pool.pow(inner_base, combined), pool).value;
             }

@@ -239,7 +239,14 @@ fn limit_inner(
         let after_flatten = flatten_nested_integer_pow(after_subs, pool);
         let after_canon = canonical_polynomial_quotient_in_var(after_flatten, t, pool);
         let e2 = simplify(after_canon, pool).value;
-        return limit_inner(e2, t, pool.integer(0_i32), LimitDirection::Plus, pool, depth + 1);
+        return limit_inner(
+            e2,
+            t,
+            pool.integer(0_i32),
+            LimitDirection::Plus,
+            pool,
+            depth + 1,
+        );
     }
 
     if is_neg_infinity(point, pool) {

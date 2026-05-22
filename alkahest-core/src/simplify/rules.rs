@@ -357,13 +357,17 @@ impl RewriteRule for ConstFold {
                 // 1^e = 1 and (-1)^e = ±1 for any integer e (including negative)
                 if b == 1 {
                     let after = pool.integer(1_i32);
-                    if after == expr { return None; }
+                    if after == expr {
+                        return None;
+                    }
                     return Some((after, one_step(self.name(), expr, after)));
                 }
                 if b == -1 {
                     let sign: i64 = if e.is_even() { 1 } else { -1 };
                     let after = pool.integer(sign);
-                    if after == expr { return None; }
+                    if after == expr {
+                        return None;
+                    }
                     return Some((after, one_step(self.name(), expr, after)));
                 }
                 if e < 0 {
