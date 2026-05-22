@@ -1562,6 +1562,18 @@ impl PyMultiPoly {
         })
     }
 
+    /// GCD over ℤ (multivariate FLINT).
+    fn gcd(&self, other: PyRef<PyMultiPoly>) -> PyResult<PyMultiPoly> {
+        self.inner
+            .gcd(&other.inner)
+            .map(|inner| PyMultiPoly { inner })
+            .ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "gcd: incompatible variable lists or zero polynomial",
+                )
+            })
+    }
+
     /// Factor over ℤ (multivariate FLINT).
     fn factor_z(&self) -> PyResult<PyMultiPolyFactorization> {
         self.inner

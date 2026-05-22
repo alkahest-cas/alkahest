@@ -1595,7 +1595,7 @@ pub fn gcd_sparse_modular(
 
     // Normalise: positive leading coefficient, then take primitive part.
     if let Some((_, lc)) = result.terms.iter().next_back() {
-        if *lc < rug::Integer::from(0) {
+        if lc.cmp0() == std::cmp::Ordering::Less {
             result = -result;
         }
     }
