@@ -818,7 +818,7 @@ pub fn reduce_batch(
 
 /// Compute a Gröbner basis using GPU-accelerated Macaulay-matrix row reduction.
 ///
-/// The Buchberger loop structure mirrors `compute_groebner_basis` in `f4.rs`;
+/// The Buchberger loop structure mirrors `compute_buchberger_basis` in `buchberger.rs`;
 /// the S-polynomial reduction step is replaced by batched GPU row reduction
 /// with CRT rational reconstruction.
 ///
@@ -1070,15 +1070,15 @@ mod tests {
 
     #[test]
     fn groebner_gpu_matches_cpu_f4() {
-        use crate::poly::groebner::f4::compute_groebner_basis;
-        // (x + y - 1, x - y) — compare GPU (CPU-fallback) vs pure-Rust F4
+        use crate::poly::groebner::buchberger::compute_buchberger_basis;
+        // (x + y - 1, x - y) — compare GPU (CPU-fallback) vs pure-Rust Buchberger
         let f = poly1(&[(&[1, 0], 1), (&[0, 1], 1), (&[0, 0], -1)]);
         let g = poly1(&[(&[1, 0], 1), (&[0, 1], -1)]);
         let order = MonomialOrder::Lex;
 
         let basis_gpu =
             compute_groebner_basis_gpu(vec![f.clone(), g.clone()], order, None).unwrap();
-        let basis_cpu = compute_groebner_basis(vec![f.clone(), g.clone()], order);
+        let basis_cpu = compute_buchberger_basis(vec![f.clone(), g.clone()], order);
 
         // Both bases are Gröbner — each element of one should reduce to 0 mod the other
         for p in &basis_cpu {

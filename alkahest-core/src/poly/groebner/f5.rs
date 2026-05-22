@@ -16,7 +16,7 @@
 //! omitted; the sig-bounded reduction alone eliminates the bulk of redundant
 //! zero reductions.
 
-use crate::poly::groebner::f4::interreduce;
+use crate::poly::groebner::buchberger::interreduce;
 use crate::poly::groebner::ideal::GbPoly;
 use crate::poly::groebner::monomial_order::MonomialOrder;
 use crate::poly::groebner::reduce::s_polynomial;
@@ -204,7 +204,7 @@ impl PartialOrd for Pair {
 /// Compute a Gröbner basis using Faugère F5 with signature-bounded reduction.
 ///
 /// The output is interreduced and monic in the same sense as
-/// [`super::f4::compute_groebner_basis`].
+/// [`super::buchberger::compute_buchberger_basis`].
 pub fn compute_groebner_basis_f5(
     generators: Vec<GbPoly>,
     poly_order: MonomialOrder,
@@ -250,10 +250,6 @@ pub fn compute_groebner_basis_f5(
             continue;
         }
 
-        if product_criterion(&basis[pair.i].poly, &basis[pair.j].poly, poly_order) {
-            continue;
-        }
-
         let s = s_polynomial(&basis[pair.i].poly, &basis[pair.j].poly, poly_order);
         let h = reduce_f5(&s, &sig_s, &basis, poly_order);
         if h.is_zero() {
@@ -288,7 +284,7 @@ pub fn compute_groebner_basis_f5(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::poly::groebner::f4::compute_groebner_basis;
+    use crate::poly::groebner::buchberger::compute_buchberger_basis;
     use crate::poly::groebner::reduce::reduce;
     use std::collections::BTreeMap;
 
@@ -362,7 +358,7 @@ mod tests {
 
         for order in [MonomialOrder::Lex, MonomialOrder::GRevLex] {
             for sys in &systems {
-                let b1 = compute_groebner_basis(sys.clone(), order);
+                let b1 = compute_buchberger_basis(sys.clone(), order);
                 let b2 = compute_groebner_basis_f5(sys.clone(), order);
                 assert!(
                     bases_equivalent(&b1, &b2, order),
@@ -389,7 +385,7 @@ mod tests {
     fn f5_agrees_cyclic4() {
         let order = MonomialOrder::GRevLex;
         let sys = cyclic_system(4);
-        let b4 = compute_groebner_basis(sys.clone(), order);
+        let b4 = compute_buchberger_basis(sys.clone(), order);
         let b5 = compute_groebner_basis_f5(sys, order);
         if !bases_equivalent(&b4, &b5, order) {
             eprintln!("Buchberger basis ({} elements):", b4.len());

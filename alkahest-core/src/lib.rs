@@ -121,7 +121,10 @@ pub use simplify::parallel::{simplify_par, simplify_par_with_config};
 
 // V5-11 — Gröbner basis
 #[cfg(feature = "groebner")]
-pub use poly::groebner::{compute_groebner_basis_f5, GbPoly, GroebnerBasis, MonomialOrder};
+pub use poly::groebner::{
+    compute_groebner_basis_f5, fglm, grevlex_staircase, is_zero_dimensional, GbPoly,
+    GroebnerBasis, MonomialOrder,
+};
 
 pub use errors::AlkahestError;
 pub use lean::emit_lean_expr as emit_lean;
@@ -277,6 +280,7 @@ pub mod experimental {
     pub use crate::poly::groebner::GpuGroebnerError;
     #[cfg(feature = "groebner")]
     pub use crate::poly::groebner::{
-        compute_groebner_basis_f5, GbPoly, GroebnerBasis, MonomialOrder,
+        compute_groebner_basis_f5, fglm, grevlex_staircase, is_zero_dimensional, GbPoly,
+        GroebnerBasis, MonomialOrder,
     };
 }

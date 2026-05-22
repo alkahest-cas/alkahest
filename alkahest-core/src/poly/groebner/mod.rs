@@ -1,5 +1,7 @@
-//! Gröbner basis computation over ℚ — Buchberger / F4-labelled parallel reduction
-//! ([`f4::compute_groebner_basis`]) and Faugère F5 ([`compute_groebner_basis_f5`]).
+//! Gröbner basis computation over ℚ — Buchberger algorithm
+//! ([`buchberger::compute_buchberger_basis`]), Faugère F5
+//! ([`compute_groebner_basis_f5`]), and the grevlex-then-FGLM strategy
+//! ([`GroebnerBasis::compute_lex`]).
 //!
 //! # Quick start
 //!
@@ -22,16 +24,24 @@
 
 #[cfg(feature = "groebner-cuda")]
 pub mod cuda;
-pub mod f4;
+pub mod buchberger;
 pub mod f5;
+pub mod fglm;
 pub mod ideal;
 pub mod monomial_order;
 pub mod reduce;
 
+// Keep f4 as a thin re-export so any external crate that depended on the old
+// module path still compiles (semver-minor compat shim).
+pub mod f4 {
+    pub use super::buchberger::compute_buchberger_basis as compute_groebner_basis;
+}
+
 #[cfg(feature = "groebner-cuda")]
 pub use cuda::{compute_groebner_basis_gpu, GpuGroebnerError, MacaulayMatrix};
-pub use f4::compute_groebner_basis;
+pub use buchberger::compute_buchberger_basis;
 pub use f5::compute_groebner_basis_f5;
+pub use fglm::{fglm, grevlex_staircase, is_zero_dimensional};
 pub use ideal::GbPoly;
 pub use monomial_order::MonomialOrder;
 pub use reduce::reduce;
@@ -46,8 +56,37 @@ pub struct GroebnerBasis {
 impl GroebnerBasis {
     /// Compute a Gröbner basis for the given generators under the given order.
     pub fn compute(gens: Vec<GbPoly>, order: MonomialOrder) -> Self {
-        let generators = compute_groebner_basis(gens, order);
+        let generators = compute_buchberger_basis(gens, order);
         GroebnerBasis { generators, order }
+    }
+
+    /// Compute a lex Gröbner basis using the grevlex-then-FGLM strategy.
+    ///
+    /// For 0-dimensional ideals this is typically orders of magnitude faster
+    /// than direct lex Buchberger. Falls back to direct lex Buchberger when
+    /// the ideal is positive-dimensional or FGLM fails.
+    pub fn compute_lex(gens: Vec<GbPoly>) -> Self {
+        let n_vars = gens.first().map(|g| g.n_vars).unwrap_or(0);
+
+        if n_vars <= 1 {
+            return Self::compute(gens, MonomialOrder::Lex);
+        }
+
+        // Step 1: GRevLex basis (fast).
+        let grb = compute_buchberger_basis(gens.clone(), MonomialOrder::GRevLex);
+
+        // Step 2: Try FGLM.
+        if is_zero_dimensional(&grb, n_vars) {
+            if let Some(generators) = fglm(&grb, n_vars) {
+                return GroebnerBasis {
+                    generators,
+                    order: MonomialOrder::Lex,
+                };
+            }
+        }
+
+        // Fallback: direct lex Buchberger.
+        Self::compute(gens, MonomialOrder::Lex)
     }
 
     /// Compute a Gröbner basis using Faugère's F5 signature-based algorithm (V2-8).
@@ -118,7 +157,6 @@ mod tests {
 
     #[test]
     fn eliminate_drops_generators() {
-        // Lex basis of {x - y, 2y² - 1}: eliminating x should leave {2y² - 1}.
         let xm_y = GbPoly {
             terms: [
                 (vec![1u32, 0], rug::Rational::from(1)),
@@ -140,9 +178,40 @@ mod tests {
         let gb = GroebnerBasis::compute(vec![xm_y, two_y2_m1], MonomialOrder::Lex);
         let elim = gb.eliminate(&[0]);
         assert_eq!(elim.generators().len(), 1);
-        // The surviving generator must not depend on x (var index 0).
         for term in elim.generators()[0].terms.keys() {
             assert_eq!(term[0], 0, "eliminated variable x must not appear");
+        }
+    }
+
+    #[test]
+    fn compute_lex_circle_parabola() {
+        // Same system as fglm.rs test — verify the public API path.
+        let f = GbPoly {
+            terms: [
+                (vec![2u32, 0], rug::Rational::from(1)),
+                (vec![0, 2], rug::Rational::from(1)),
+                (vec![0, 0], rug::Rational::from(-1)),
+            ]
+            .into_iter()
+            .collect(),
+            n_vars: 2,
+        };
+        let g = GbPoly {
+            terms: [
+                (vec![0u32, 1], rug::Rational::from(1)),
+                (vec![2, 0], rug::Rational::from(-1)),
+            ]
+            .into_iter()
+            .collect(),
+            n_vars: 2,
+        };
+        let gb_lex = GroebnerBasis::compute_lex(vec![f.clone(), g.clone()]);
+        let gb_direct = GroebnerBasis::compute(vec![f, g], MonomialOrder::Lex);
+        for p in gb_direct.generators() {
+            assert!(gb_lex.contains(p), "FGLM basis missing generator");
+        }
+        for p in gb_lex.generators() {
+            assert!(gb_direct.contains(p), "direct basis missing FGLM generator");
         }
     }
 }

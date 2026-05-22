@@ -4293,20 +4293,27 @@ struct PyGroebnerBasis {
 #[cfg(feature = "groebner")]
 #[pymethods]
 impl PyGroebnerBasis {
-    /// Compute a Gröbner basis (lex order) for the polynomial system
-    /// `polys = 0` in the given variables.
+    /// Compute a Gröbner basis for the polynomial system `polys = 0` in
+    /// the given variables.
     ///
     /// Parameters
     /// ----------
     /// polys : list[Expr]
-    ///     Polynomial expressions, each representing `p(vars) = 0`.
+    ///     Polynomial expressions, each representing ``p(vars) = 0``.
     /// vars : list[Expr]
     ///     Symbolic variables (must be ``Symbol``).
+    /// order : str, optional
+    ///     Monomial order: ``"lex"`` (default), ``"grevlex"``, or ``"grlex"``.
+    ///     When ``"lex"`` is requested and the ideal is 0-dimensional, the
+    ///     grevlex-then-FGLM strategy is used automatically (much faster than
+    ///     direct lex Buchberger for 3+ variable systems).
     #[staticmethod]
+    #[pyo3(signature = (polys, vars, order=None))]
     fn compute(
         py: Python<'_>,
         polys: Vec<PyRef<PyExpr>>,
         vars: Vec<PyRef<PyExpr>>,
+        order: Option<&str>,
     ) -> PyResult<PyGroebnerBasis> {
         if polys.is_empty() || vars.is_empty() {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -4323,7 +4330,13 @@ impl PyGroebnerBasis {
             gb_polys.push(gbp);
         }
         drop(pool);
-        let inner = GroebnerBasis::compute(gb_polys, MonomialOrder::Lex);
+        let parsed_order = order
+            .and_then(MonomialOrder::from_str)
+            .unwrap_or(MonomialOrder::Lex);
+        let inner = match parsed_order {
+            MonomialOrder::Lex => GroebnerBasis::compute_lex(gb_polys),
+            other => GroebnerBasis::compute(gb_polys, other),
+        };
         Ok(PyGroebnerBasis {
             inner,
             pool: Some(pool_py),
@@ -4333,13 +4346,19 @@ impl PyGroebnerBasis {
 
     /// Gröbner basis via Faugère's F5 (signature-based reduction, V2-8).
     ///
-    /// Same calling convention as :meth:`compute`; polynomial term order is lex.
-    /// Module signatures use lex on the monomial part × generator index.
+    /// Parameters
+    /// ----------
+    /// polys, vars
+    ///     Same as :meth:`compute`.
+    /// order : str, optional
+    ///     Monomial order: ``"lex"`` (default), ``"grevlex"``, or ``"grlex"``.
     #[staticmethod]
+    #[pyo3(signature = (polys, vars, order=None))]
     fn compute_f5(
         py: Python<'_>,
         polys: Vec<PyRef<PyExpr>>,
         vars: Vec<PyRef<PyExpr>>,
+        order: Option<&str>,
     ) -> PyResult<PyGroebnerBasis> {
         if polys.is_empty() || vars.is_empty() {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -4356,11 +4375,51 @@ impl PyGroebnerBasis {
             gb_polys.push(gbp);
         }
         drop(pool);
-        let inner = GroebnerBasis::compute_f5(gb_polys, MonomialOrder::Lex);
+        let parsed_order = order
+            .and_then(MonomialOrder::from_str)
+            .unwrap_or(MonomialOrder::Lex);
+        let inner = GroebnerBasis::compute_f5(gb_polys, parsed_order);
         Ok(PyGroebnerBasis {
             inner,
             pool: Some(pool_py),
             var_ids,
+        })
+    }
+
+    /// Low-level entry point that accepts already-converted ``GbPoly`` objects,
+    /// bypassing the ``expr_to_gbpoly`` conversion. Useful when the polynomial
+    /// representation is already known (e.g., from ``MultiPoly`` reconstruction).
+    ///
+    /// Parameters
+    /// ----------
+    /// gb_polys : list[GbPoly]
+    ///     Already-converted polynomial objects.
+    /// order : str, optional
+    ///     Monomial order: ``"lex"`` (default), ``"grevlex"``, or ``"grlex"``.
+    ///     The same grevlex-then-FGLM strategy is applied for ``"lex"``.
+    #[staticmethod]
+    #[pyo3(signature = (gb_polys, order=None))]
+    fn compute_raw(
+        gb_polys: Vec<PyRef<PyGbPoly>>,
+        order: Option<&str>,
+    ) -> PyResult<PyGroebnerBasis> {
+        if gb_polys.is_empty() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "GroebnerBasis.compute_raw requires at least one GbPoly",
+            ));
+        }
+        let raw: Vec<GbPoly> = gb_polys.iter().map(|p| p.inner.clone()).collect();
+        let parsed_order = order
+            .and_then(MonomialOrder::from_str)
+            .unwrap_or(MonomialOrder::Lex);
+        let inner = match parsed_order {
+            MonomialOrder::Lex => GroebnerBasis::compute_lex(raw),
+            other => GroebnerBasis::compute(raw, other),
+        };
+        Ok(PyGroebnerBasis {
+            inner,
+            pool: None,
+            var_ids: vec![],
         })
     }
 
