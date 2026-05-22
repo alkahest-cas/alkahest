@@ -25,7 +25,7 @@ use std::collections::HashMap;
 // ---------------------------------------------------------------------------
 
 thread_local! {
-    static GRUNTZ_DEPTH: std::cell::Cell<u32> = std::cell::Cell::new(0);
+    static GRUNTZ_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 const GRUNTZ_MAX_DEPTH: u32 = 8;
@@ -398,9 +398,9 @@ fn leading_term_at_zero(
     // Fast path: symbolically factor out the omega power.
     // This handles rational exponents and avoids Taylor-fallback singularity issues.
     if let Some((coeff, rat_power)) = factor_omega_power(expr, omega, pool) {
-        let sentinel: i32 = if rat_power > rug::Rational::from(0) {
+        let sentinel: i32 = if rat_power > 0 {
             1
-        } else if rat_power < rug::Rational::from(0) {
+        } else if rat_power < 0 {
             -1
         } else {
             0
