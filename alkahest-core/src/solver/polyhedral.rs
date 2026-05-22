@@ -360,7 +360,7 @@ fn binomial_polys_for_cell(
 /// Compute all polyhedral start points for a 2-variable system.
 ///
 /// Returns `(starts, mixed_volume)` where each start is `[C64; 2]` in ℂ².
-pub fn polyhedral_starts_2d(poly1: &GbPoly, poly2: &GbPoly) -> (Vec<[C64; 2]>, usize) {
+pub(crate) fn polyhedral_starts_2d(poly1: &GbPoly, poly2: &GbPoly) -> (Vec<[C64; 2]>, usize) {
     let np1 = NewtonPolytope::from_poly(poly1);
     let np2 = NewtonPolytope::from_poly(poly2);
 
