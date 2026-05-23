@@ -2,11 +2,12 @@
 //!
 //! Implements the sequential Buchberger algorithm with:
 //! - Gebauer-Möller criteria M and F to prune S-pairs
-//! - Normal selection strategy: process pair with minimum lcm degree first
+//! - Sugar selection strategy: process pair with minimum sugar degree first, break ties by lcm degree
 //! - Incremental basis update: each new element is added before selecting the next pair
 //!
 //! Reference: Becker & Weispfenning (1993) "Gröbner Bases", Algorithm 6.5 (GROEBNERNEWS2),
-//! and Gebauer & Möller (1988) "On an Installation of Buchberger's Algorithm".
+//! Gebauer & Möller (1988) "On an Installation of Buchberger's Algorithm",
+//! and Giovini et al. (1991) "One Sugar Cube, Please" for the sugar selection strategy.
 
 use std::collections::BinaryHeap;
 
@@ -36,12 +37,17 @@ fn total_deg(e: &[u32]) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// Critical pair with degree-ordered comparison (min-heap)
+// Critical pair with sugar-ordered comparison (min-heap)
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct CriticalPair {
-    /// Total degree of lcm(LM(basis[i]), LM(basis[j])) — primary sort key.
+    /// Sugar degree of the pair: lcm_deg + max(ecart_i, ecart_j).
+    /// Primary sort key — the "sugar" selection strategy (Giovini et al. 1991).
+    /// For homogeneous systems this equals lcm_deg; for inhomogeneous ones it
+    /// avoids the late-sugar blowup that the normal strategy suffers.
+    sugar_deg: u32,
+    /// Total degree of lcm(LM(basis[i]), LM(basis[j])) — secondary sort key.
     lcm_deg: u32,
     lcm_exp: Vec<u32>,
     i: usize,
@@ -50,10 +56,11 @@ struct CriticalPair {
 
 impl Ord for CriticalPair {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Reverse ordering so BinaryHeap (max-heap) acts as a min-heap by lcm_deg.
+        // Reverse ordering so BinaryHeap (max-heap) acts as a min-heap.
         other
-            .lcm_deg
-            .cmp(&self.lcm_deg)
+            .sugar_deg
+            .cmp(&self.sugar_deg)
+            .then_with(|| other.lcm_deg.cmp(&self.lcm_deg))
             .then_with(|| self.i.cmp(&other.i))
             .then_with(|| self.j.cmp(&other.j))
     }
@@ -75,8 +82,11 @@ impl PartialOrd for CriticalPair {
 ///   not strictly divisible by the lcm of another candidate pair.
 /// - **Criterion F**: Discard old pairs (g1, g2) where lm(h) | lcm(lm(g1), lm(g2))
 ///   and the pair is truly covered (the two equality conditions from B&W §6.5).
+///
+/// `basis_sugar[k]` = max total degree of any term in `basis[k]` (the sugar).
 fn update_pairs(
     basis: &[GbPoly],
+    basis_sugar: &[u32],
     pairs: &mut Vec<CriticalPair>,
     new_idx: usize,
     order: MonomialOrder,
@@ -85,6 +95,8 @@ fn update_pairs(
         Some(e) => e,
         None => return,
     };
+    let lh_deg = total_deg(&lh);
+    let ecart_h = basis_sugar[new_idx].saturating_sub(lh_deg);
 
     // -----------------------------------------------------------------------
     // Step 1: build candidate pairs (g, h), filtered by product criterion.
@@ -92,6 +104,7 @@ fn update_pairs(
     struct Cand {
         g_idx: usize,
         lcm: Vec<u32>,
+        ecart_g: u32,
     }
 
     let candidates: Vec<Cand> = (0..new_idx)
@@ -101,9 +114,11 @@ fn update_pairs(
             if lh.iter().zip(lg.iter()).all(|(&a, &b)| a == 0 || b == 0) {
                 return None;
             }
+            let ecart_g = basis_sugar[g_idx].saturating_sub(total_deg(&lg));
             Some(Cand {
                 g_idx,
                 lcm: lcm_exp(&lh, &lg),
+                ecart_g,
             })
         })
         .collect();
@@ -157,11 +172,15 @@ fn update_pairs(
     });
 
     // -----------------------------------------------------------------------
-    // Step 4: add minimal candidates to the pair list.
+    // Step 4: add minimal candidates to the pair list with sugar degrees.
+    // Sugar of pair (g, h) with lcm L = deg(L) + max(ecart(g), ecart(h)).
     // -----------------------------------------------------------------------
     for c in c_min {
+        let lcm_deg = total_deg(&c.lcm);
+        let sugar_deg = lcm_deg + c.ecart_g.max(ecart_h);
         pairs.push(CriticalPair {
-            lcm_deg: total_deg(&c.lcm),
+            sugar_deg,
+            lcm_deg,
             lcm_exp: c.lcm.clone(),
             i: c.g_idx,
             j: new_idx,
@@ -189,13 +208,16 @@ pub fn compute_buchberger_basis(generators: Vec<GbPoly>, order: MonomialOrder) -
     }
 
     let mut basis: Vec<GbPoly> = Vec::with_capacity(initial.len() * 2);
+    let mut basis_sugar: Vec<u32> = Vec::with_capacity(initial.len() * 2);
     let mut pair_vec: Vec<CriticalPair> = Vec::new();
 
     // Add initial generators one by one, applying GM update after each.
     for gen in initial {
+        let sugar = gen.sugar();
         let new_idx = basis.len();
         basis.push(gen);
-        update_pairs(&basis, &mut pair_vec, new_idx, order);
+        basis_sugar.push(sugar);
+        update_pairs(&basis, &basis_sugar, &mut pair_vec, new_idx, order);
     }
 
     // Build min-heap (CriticalPair::Ord is reversed for min-heap behaviour).
@@ -207,12 +229,14 @@ pub fn compute_buchberger_basis(generators: Vec<GbPoly>, order: MonomialOrder) -
 
         if !r.is_zero() {
             let r = r.make_monic(order);
+            let sugar = r.sugar();
             let new_idx = basis.len();
             basis.push(r);
+            basis_sugar.push(sugar);
 
             // Flatten heap → apply GM update → rebuild heap.
             let mut pv: Vec<CriticalPair> = heap.into_vec();
-            update_pairs(&basis, &mut pv, new_idx, order);
+            update_pairs(&basis, &basis_sugar, &mut pv, new_idx, order);
             heap = BinaryHeap::from(pv);
         }
     }

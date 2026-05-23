@@ -150,6 +150,19 @@ impl GbPoly {
         }
     }
 
+    /// Sugar of the polynomial: max total degree over all terms.
+    ///
+    /// Used for the sugar selection strategy in Buchberger's algorithm.
+    /// For a zero polynomial returns 0.
+    #[inline]
+    pub fn sugar(&self) -> u32 {
+        self.terms
+            .keys()
+            .map(|e| e.iter().sum::<u32>())
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Make monic under the given order (leading coeff → 1).
     pub fn make_monic(&self, order: MonomialOrder) -> Self {
         if let Some(lc) = self.leading_coeff(order) {

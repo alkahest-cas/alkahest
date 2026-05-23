@@ -17,17 +17,27 @@ pub fn reduce(f: &GbPoly, gs: &[GbPoly], order: MonomialOrder) -> GbPoly {
     // from the start of `gs` on every step.
     let mut last_divisor: usize = 0;
 
+    let is_graded = order.is_graded();
+
     'outer: while !p.is_zero() {
         let (lt_exp, lt_coeff) = match p.leading_term(order) {
             Some((e, c)) => (e.clone(), c.clone()),
             None => break,
         };
+        // For graded orders, precompute the total degree of the current leading term.
+        // Any basis element whose LM has higher total degree cannot divide it.
+        let lt_deg: u32 = if is_graded { lt_exp.iter().sum() } else { 0 };
 
         // Try gs[last_divisor], then wrap around through all of gs.
         for offset in 0..gs.len() {
             let idx = (last_divisor + offset) % gs.len();
             let g = &gs[idx];
             if let Some((lg_exp, lg_coeff)) = g.leading_term(order) {
+                // Degree-skip: for graded orders, LM(g) with total degree > lt_deg
+                // cannot divide lt, so skip without checking all exponents.
+                if is_graded && lg_exp.iter().sum::<u32>() > lt_deg {
+                    continue;
+                }
                 if lt_exp.len() == lg_exp.len()
                     && lt_exp.iter().zip(lg_exp.iter()).all(|(a, b)| a >= b)
                 {

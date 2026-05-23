@@ -54,6 +54,15 @@ impl MonomialOrder {
         }
     }
 
+    /// True for graded orders (GrLex, GRevLex) where total degree is the primary key.
+    ///
+    /// For graded orders, LM(g) cannot divide a term of lower total degree, so the
+    /// degree-skip optimization in reduction is sound.
+    #[inline]
+    pub fn is_graded(self) -> bool {
+        matches!(self, MonomialOrder::GrLex | MonomialOrder::GRevLex)
+    }
+
     /// Parse from a string: "lex", "grlex", "grevlex".
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
