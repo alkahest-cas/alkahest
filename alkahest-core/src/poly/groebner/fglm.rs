@@ -218,7 +218,11 @@ fn gen_degree(exp: &mut Vec<u32>, vi: usize, n: usize, rem: u32, out: &mut Vec<V
 
 /// Express `p` (already reduced under GRevLex) as a coordinate vector in Q^D,
 /// coordinates indexed by the staircase via `staircase_idx`.
-fn coord_vector(p: &GbPoly, staircase_idx: &HashMap<Vec<u32>, usize>, d: usize) -> Vec<rug::Rational> {
+fn coord_vector(
+    p: &GbPoly,
+    staircase_idx: &HashMap<Vec<u32>, usize>,
+    d: usize,
+) -> Vec<rug::Rational> {
     let mut v = vec![rug::Rational::from(0); d];
     for (exp, coeff) in &p.terms {
         if let Some(&idx) = staircase_idx.get(exp) {
@@ -439,24 +443,36 @@ mod tests {
     fn fglm_katsura3() {
         // Katsura-3 in 3 variables (D = 4 solutions).
         // u0 + 2*u1 + 2*u2 - 1, u1^2 + 2*u0*u2 - u2, u0^2 + 2*u1^2 + 2*u2^2 - u0
-        let mut f1 = GbPoly { terms: std::collections::BTreeMap::new(), n_vars: 3 };
-        f1.terms.insert(vec![1,0,0], rug::Rational::from(1));
-        f1.terms.insert(vec![0,1,0], rug::Rational::from(2));
-        f1.terms.insert(vec![0,0,1], rug::Rational::from(2));
-        f1.terms.insert(vec![0,0,0], rug::Rational::from(-1));
+        let mut f1 = GbPoly {
+            terms: std::collections::BTreeMap::new(),
+            n_vars: 3,
+        };
+        f1.terms.insert(vec![1, 0, 0], rug::Rational::from(1));
+        f1.terms.insert(vec![0, 1, 0], rug::Rational::from(2));
+        f1.terms.insert(vec![0, 0, 1], rug::Rational::from(2));
+        f1.terms.insert(vec![0, 0, 0], rug::Rational::from(-1));
 
-        let mut f2 = GbPoly { terms: std::collections::BTreeMap::new(), n_vars: 3 };
-        f2.terms.insert(vec![0,2,0], rug::Rational::from(1));
-        f2.terms.insert(vec![1,0,1], rug::Rational::from(2));
-        f2.terms.insert(vec![0,0,1], rug::Rational::from(-1));
+        let mut f2 = GbPoly {
+            terms: std::collections::BTreeMap::new(),
+            n_vars: 3,
+        };
+        f2.terms.insert(vec![0, 2, 0], rug::Rational::from(1));
+        f2.terms.insert(vec![1, 0, 1], rug::Rational::from(2));
+        f2.terms.insert(vec![0, 0, 1], rug::Rational::from(-1));
 
-        let mut f3 = GbPoly { terms: std::collections::BTreeMap::new(), n_vars: 3 };
-        f3.terms.insert(vec![2,0,0], rug::Rational::from(1));
-        f3.terms.insert(vec![0,2,0], rug::Rational::from(2));
-        f3.terms.insert(vec![0,0,2], rug::Rational::from(2));
-        f3.terms.insert(vec![1,0,0], rug::Rational::from(-1));
+        let mut f3 = GbPoly {
+            terms: std::collections::BTreeMap::new(),
+            n_vars: 3,
+        };
+        f3.terms.insert(vec![2, 0, 0], rug::Rational::from(1));
+        f3.terms.insert(vec![0, 2, 0], rug::Rational::from(2));
+        f3.terms.insert(vec![0, 0, 2], rug::Rational::from(2));
+        f3.terms.insert(vec![1, 0, 0], rug::Rational::from(-1));
 
-        let grb = compute_buchberger_basis(vec![f1.clone(), f2.clone(), f3.clone()], MonomialOrder::GRevLex);
+        let grb = compute_buchberger_basis(
+            vec![f1.clone(), f2.clone(), f3.clone()],
+            MonomialOrder::GRevLex,
+        );
         let lex_fglm = fglm(&grb, 3).expect("Katsura-3 should be 0-dim");
         let lex_direct = compute_buchberger_basis(vec![f1, f2, f3], MonomialOrder::Lex);
         assert!(
@@ -469,11 +485,21 @@ mod tests {
     fn is_zero_dim_check() {
         // (x - 1, y - 2): 0-dimensional
         let f = GbPoly {
-            terms: [(vec![1u32,0], rug::Rational::from(1)), (vec![0,0], rug::Rational::from(-1))].into_iter().collect(),
+            terms: [
+                (vec![1u32, 0], rug::Rational::from(1)),
+                (vec![0, 0], rug::Rational::from(-1)),
+            ]
+            .into_iter()
+            .collect(),
             n_vars: 2,
         };
         let g = GbPoly {
-            terms: [(vec![0u32,1], rug::Rational::from(1)), (vec![0,0], rug::Rational::from(-2))].into_iter().collect(),
+            terms: [
+                (vec![0u32, 1], rug::Rational::from(1)),
+                (vec![0, 0], rug::Rational::from(-2)),
+            ]
+            .into_iter()
+            .collect(),
             n_vars: 2,
         };
         let gb = compute_buchberger_basis(vec![f, g], MonomialOrder::GRevLex);

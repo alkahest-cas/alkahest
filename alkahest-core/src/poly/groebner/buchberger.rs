@@ -132,9 +132,7 @@ fn update_pairs(
         .iter()
         .filter(|ci| {
             !candidates.iter().any(|cj| {
-                cj.g_idx != ci.g_idx
-                    && monomial_divides(&cj.lcm, &ci.lcm)
-                    && cj.lcm != ci.lcm
+                cj.g_idx != ci.g_idx && monomial_divides(&cj.lcm, &ci.lcm) && cj.lcm != ci.lcm
             })
         })
         .collect();
@@ -338,10 +336,8 @@ mod tests {
         // x^2 + y^2 - 4, y - x^2 + 1
         let x2_y2_m4 = poly(&[(&[2, 0], 1), (&[0, 2], 1), (&[0, 0], -4)]);
         let y_mx2_p1 = poly(&[(&[0, 1], 1), (&[2, 0], -1), (&[0, 0], 1)]);
-        let basis = compute_buchberger_basis(
-            vec![x2_y2_m4, y_mx2_p1.clone()],
-            MonomialOrder::GRevLex,
-        );
+        let basis =
+            compute_buchberger_basis(vec![x2_y2_m4, y_mx2_p1.clone()], MonomialOrder::GRevLex);
         // Verify generators reduce to 0
         assert!(!basis.is_empty());
         let r = reduce(&y_mx2_p1, &basis, MonomialOrder::GRevLex);
