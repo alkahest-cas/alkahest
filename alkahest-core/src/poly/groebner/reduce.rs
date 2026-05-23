@@ -12,13 +12,21 @@ pub fn reduce(f: &GbPoly, gs: &[GbPoly], order: MonomialOrder) -> GbPoly {
     let mut p = f.clone();
     let mut r = GbPoly::zero(f.n_vars);
 
+    // Cache the index of the last successful divisor.  When consecutive leading
+    // terms of `p` are divisible by the same basis element, this avoids scanning
+    // from the start of `gs` on every step.
+    let mut last_divisor: usize = 0;
+
     'outer: while !p.is_zero() {
         let (lt_exp, lt_coeff) = match p.leading_term(order) {
             Some((e, c)) => (e.clone(), c.clone()),
             None => break,
         };
 
-        for g in gs {
+        // Try gs[last_divisor], then wrap around through all of gs.
+        for offset in 0..gs.len() {
+            let idx = (last_divisor + offset) % gs.len();
+            let g = &gs[idx];
             if let Some((lg_exp, lg_coeff)) = g.leading_term(order) {
                 if lt_exp.len() == lg_exp.len()
                     && lt_exp.iter().zip(lg_exp.iter()).all(|(a, b)| a >= b)
@@ -31,12 +39,13 @@ pub fn reduce(f: &GbPoly, gs: &[GbPoly], order: MonomialOrder) -> GbPoly {
                     let coeff = rug::Rational::from(&lt_coeff / lg_coeff);
                     let subtrahend = g.mul_monomial(&shift, &coeff);
                     p = p.sub(&subtrahend);
+                    last_divisor = idx;
                     continue 'outer;
                 }
             }
         }
 
-        // No divisor found — move leading term to remainder
+        // No divisor found — move leading term to remainder.
         let lt = GbPoly::monomial(lt_exp.clone(), lt_coeff.clone());
         r = r.add(&lt);
         let mut p_terms = p.terms.clone();

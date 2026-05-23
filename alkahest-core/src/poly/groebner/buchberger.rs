@@ -1,107 +1,228 @@
 //! Buchberger's algorithm for Gröbner basis computation over ℚ.
 //!
-//! Implements Buchberger's algorithm with:
-//! - Parallel S-polynomial reduction via Rayon (when `parallel` feature is enabled)
-//! - Buchberger's product criterion to prune S-pairs
-//! - Interreduction of the final basis
+//! Implements the sequential Buchberger algorithm with:
+//! - Gebauer-Möller criteria M and F to prune S-pairs
+//! - Normal selection strategy: process pair with minimum lcm degree first
+//! - Incremental basis update: each new element is added before selecting the next pair
+//!
+//! Reference: Becker & Weispfenning (1993) "Gröbner Bases", Algorithm 6.5 (GROEBNERNEWS2),
+//! and Gebauer & Möller (1988) "On an Installation of Buchberger's Algorithm".
+
+use std::collections::BinaryHeap;
 
 use crate::poly::groebner::ideal::GbPoly;
 use crate::poly::groebner::monomial_order::MonomialOrder;
 use crate::poly::groebner::reduce::{reduce, s_polynomial};
 
-/// Check Buchberger's product criterion: if lcm(lm(f), lm(g)) = lm(f)*lm(g),
-/// i.e., leading monomials are coprime, the S-polynomial reduces to 0.
-fn product_criterion(f: &GbPoly, g: &GbPoly, order: MonomialOrder) -> bool {
-    let lf = match f.leading_exp(order) {
-        Some(e) => e,
-        None => return true,
-    };
-    let lg = match g.leading_exp(order) {
-        Some(e) => e,
-        None => return true,
-    };
-    lf.iter().zip(lg.iter()).all(|(&a, &b)| a == 0 || b == 0)
+// ---------------------------------------------------------------------------
+// Monomial helpers
+// ---------------------------------------------------------------------------
+
+#[inline]
+fn lcm_exp(a: &[u32], b: &[u32]) -> Vec<u32> {
+    a.iter().zip(b.iter()).map(|(&x, &y)| x.max(y)).collect()
 }
+
+/// True if every component of `a` ≤ corresponding component of `b`.
+#[inline]
+fn monomial_divides(a: &[u32], b: &[u32]) -> bool {
+    a.iter().zip(b.iter()).all(|(ai, bi)| ai <= bi)
+}
+
+/// Total degree of an exponent vector.
+#[inline]
+fn total_deg(e: &[u32]) -> u32 {
+    e.iter().sum()
+}
+
+// ---------------------------------------------------------------------------
+// Critical pair with degree-ordered comparison (min-heap)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CriticalPair {
+    /// Total degree of lcm(LM(basis[i]), LM(basis[j])) — primary sort key.
+    lcm_deg: u32,
+    lcm_exp: Vec<u32>,
+    i: usize,
+    j: usize,
+}
+
+impl Ord for CriticalPair {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // Reverse ordering so BinaryHeap (max-heap) acts as a min-heap by lcm_deg.
+        other
+            .lcm_deg
+            .cmp(&self.lcm_deg)
+            .then_with(|| self.i.cmp(&other.i))
+            .then_with(|| self.j.cmp(&other.j))
+    }
+}
+impl PartialOrd for CriticalPair {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Gebauer-Möller pair update
+// ---------------------------------------------------------------------------
+
+/// Update the critical pair list when `basis[new_idx]` is added to the basis.
+///
+/// Applies:
+/// - **Criterion M**: Among new pairs (g, h), keep only those whose lcm is
+///   not strictly divisible by the lcm of another candidate pair.
+/// - **Criterion F**: Discard old pairs (g1, g2) where lm(h) | lcm(lm(g1), lm(g2))
+///   and the pair is truly covered (the two equality conditions from B&W §6.5).
+fn update_pairs(
+    basis: &[GbPoly],
+    pairs: &mut Vec<CriticalPair>,
+    new_idx: usize,
+    order: MonomialOrder,
+) {
+    let lh = match basis[new_idx].leading_exp(order) {
+        Some(e) => e,
+        None => return,
+    };
+
+    // -----------------------------------------------------------------------
+    // Step 1: build candidate pairs (g, h), filtered by product criterion.
+    // -----------------------------------------------------------------------
+    struct Cand {
+        g_idx: usize,
+        lcm: Vec<u32>,
+    }
+
+    let candidates: Vec<Cand> = (0..new_idx)
+        .filter_map(|g_idx| {
+            let lg = basis[g_idx].leading_exp(order)?;
+            // Product criterion: coprime LMs ⟹ S-poly = 0, skip.
+            if lh.iter().zip(lg.iter()).all(|(&a, &b)| a == 0 || b == 0) {
+                return None;
+            }
+            Some(Cand {
+                g_idx,
+                lcm: lcm_exp(&lh, &lg),
+            })
+        })
+        .collect();
+
+    // -----------------------------------------------------------------------
+    // Step 2: Criterion M — keep only minimal candidates.
+    // Discard (g, h) if ∃ (g', h) ∈ candidates with g' ≠ g and
+    //   lcm(g', h) strictly divides lcm(g, h).
+    // -----------------------------------------------------------------------
+    let c_min: Vec<&Cand> = candidates
+        .iter()
+        .filter(|ci| {
+            !candidates.iter().any(|cj| {
+                cj.g_idx != ci.g_idx
+                    && monomial_divides(&cj.lcm, &ci.lcm)
+                    && cj.lcm != ci.lcm
+            })
+        })
+        .collect();
+
+    // -----------------------------------------------------------------------
+    // Step 3: Criterion F — remove old pairs subsumed by h.
+    // Discard (g1, g2) ∈ pairs if:
+    //   lm(h) | lcm(g1, g2)
+    //   AND lcm(g1, h) ≠ lcm(g1, g2)    [g1 is not the "cover witness"]
+    //   AND lcm(g2, h) ≠ lcm(g1, g2)    [g2 is not the "cover witness"]
+    // The equality conditions prevent incorrectly discarding pairs whose
+    // chain-criterion witness is itself degenerate (B&W §6.5).
+    // -----------------------------------------------------------------------
+    pairs.retain(|p| {
+        let lg1 = match basis[p.i].leading_exp(order) {
+            Some(e) => e,
+            None => return false,
+        };
+        let lg2 = match basis[p.j].leading_exp(order) {
+            Some(e) => e,
+            None => return false,
+        };
+        let lcm_12 = lcm_exp(&lg1, &lg2);
+
+        if !monomial_divides(&lh, &lcm_12) {
+            return true; // lm(h) doesn't divide — keep
+        }
+        if lcm_exp(&lg1, &lh) == lcm_12 {
+            return true; // g1 is the witness — keep (pair is not truly covered)
+        }
+        if lcm_exp(&lg2, &lh) == lcm_12 {
+            return true; // g2 is the witness — keep
+        }
+        false // discard: h truly subverts this pair
+    });
+
+    // -----------------------------------------------------------------------
+    // Step 4: add minimal candidates to the pair list.
+    // -----------------------------------------------------------------------
+    for c in c_min {
+        pairs.push(CriticalPair {
+            lcm_deg: total_deg(&c.lcm),
+            lcm_exp: c.lcm.clone(),
+            i: c.g_idx,
+            j: new_idx,
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Main algorithm
+// ---------------------------------------------------------------------------
 
 /// Compute a Gröbner basis for the ideal generated by `generators` under `order`.
 ///
-/// Uses Buchberger's algorithm with the product criterion for pruning.
-/// S-polynomial reductions are parallelized when the `parallel` feature is enabled.
+/// Uses sequential Buchberger with Gebauer-Möller pair management and
+/// normal selection (process the pair with minimum lcm degree first).
 pub fn compute_buchberger_basis(generators: Vec<GbPoly>, order: MonomialOrder) -> Vec<GbPoly> {
-    let mut basis: Vec<GbPoly> = generators
+    let initial: Vec<GbPoly> = generators
         .into_iter()
         .filter(|g| !g.is_zero())
         .map(|g| g.make_monic(order))
         .collect();
 
-    if basis.is_empty() {
-        return basis;
+    if initial.is_empty() {
+        return initial;
     }
 
-    let mut pairs: Vec<(usize, usize)> = vec![];
-    for i in 0..basis.len() {
-        for j in (i + 1)..basis.len() {
-            if !product_criterion(&basis[i], &basis[j], order) {
-                pairs.push((i, j));
-            }
-        }
+    let mut basis: Vec<GbPoly> = Vec::with_capacity(initial.len() * 2);
+    let mut pair_vec: Vec<CriticalPair> = Vec::new();
+
+    // Add initial generators one by one, applying GM update after each.
+    for gen in initial {
+        let new_idx = basis.len();
+        basis.push(gen);
+        update_pairs(&basis, &mut pair_vec, new_idx, order);
     }
 
-    while !pairs.is_empty() {
-        let s_polys: Vec<GbPoly> = {
-            #[cfg(feature = "parallel")]
-            {
-                use rayon::prelude::*;
-                pairs
-                    .par_iter()
-                    .map(|&(i, j)| s_polynomial(&basis[i], &basis[j], order))
-                    .collect()
-            }
-            #[cfg(not(feature = "parallel"))]
-            {
-                pairs
-                    .iter()
-                    .map(|&(i, j)| s_polynomial(&basis[i], &basis[j], order))
-                    .collect()
-            }
-        };
+    // Build min-heap (CriticalPair::Ord is reversed for min-heap behaviour).
+    let mut heap: BinaryHeap<CriticalPair> = BinaryHeap::from(pair_vec);
 
-        let reduced: Vec<GbPoly> = {
-            #[cfg(feature = "parallel")]
-            {
-                use rayon::prelude::*;
-                s_polys
-                    .par_iter()
-                    .map(|sp| reduce(sp, &basis, order))
-                    .collect()
-            }
-            #[cfg(not(feature = "parallel"))]
-            {
-                s_polys.iter().map(|sp| reduce(sp, &basis, order)).collect()
-            }
-        };
+    while let Some(pair) = heap.pop() {
+        let sp = s_polynomial(&basis[pair.i], &basis[pair.j], order);
+        let r = reduce(&sp, &basis, order);
 
-        let new_start = basis.len();
-        for r in reduced {
-            if !r.is_zero() {
-                basis.push(r.make_monic(order));
-            }
-        }
+        if !r.is_zero() {
+            let r = r.make_monic(order);
+            let new_idx = basis.len();
+            basis.push(r);
 
-        pairs.clear();
-        for i in 0..basis.len() {
-            for j in (i + 1)..basis.len() {
-                if !product_criterion(&basis[i], &basis[j], order) {
-                    if i >= new_start || j >= new_start {
-                        pairs.push((i, j));
-                    }
-                }
-            }
+            // Flatten heap → apply GM update → rebuild heap.
+            let mut pv: Vec<CriticalPair> = heap.into_vec();
+            update_pairs(&basis, &mut pv, new_idx, order);
+            heap = BinaryHeap::from(pv);
         }
     }
 
     interreduce(basis, order)
 }
+
+// ---------------------------------------------------------------------------
+// Interreduction
+// ---------------------------------------------------------------------------
 
 /// Interreduce a Gröbner basis: reduce each element by all others and remove
 /// elements whose leading term is divisible by another's.
@@ -124,6 +245,10 @@ pub(crate) fn interreduce(mut basis: Vec<GbPoly>, order: MonomialOrder) -> Vec<G
     }
     basis
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -181,6 +306,21 @@ mod tests {
         let basis = compute_buchberger_basis(vec![f], MonomialOrder::Lex);
         let zero = GbPoly::zero(2);
         let r = reduce(&zero, &basis, MonomialOrder::Lex);
+        assert!(r.is_zero());
+    }
+
+    #[test]
+    fn circle_parabola_grevlex() {
+        // x^2 + y^2 - 4, y - x^2 + 1
+        let x2_y2_m4 = poly(&[(&[2, 0], 1), (&[0, 2], 1), (&[0, 0], -4)]);
+        let y_mx2_p1 = poly(&[(&[0, 1], 1), (&[2, 0], -1), (&[0, 0], 1)]);
+        let basis = compute_buchberger_basis(
+            vec![x2_y2_m4, y_mx2_p1.clone()],
+            MonomialOrder::GRevLex,
+        );
+        // Verify generators reduce to 0
+        assert!(!basis.is_empty());
+        let r = reduce(&y_mx2_p1, &basis, MonomialOrder::GRevLex);
         assert!(r.is_zero());
     }
 }
