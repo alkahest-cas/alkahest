@@ -1,26 +1,127 @@
 """Mathematica / Wolfram Engine adapter for cross-CAS benchmarks (V1-13).
 
-Requires:
-1. Wolfram Engine (free for non-commercial use) installed and activated:
-   https://www.wolfram.com/engine/
+Requires Wolfram Engine (free for non-commercial use) installed:
+    https://www.wolfram.com/engine/
 
-2. ``wolframclient`` Python package:
-   pip install wolframclient
+Evaluation backend — tried in order:
+1. ``wolframscript`` CLI (persistent subprocess, ~3 s startup, then <5 ms/call).
+   Works out of the box as long as ``wolframscript`` is on PATH and the engine
+   is activated (``wolframscript -activate`` once after registration).
+2. ``WolframLanguageSession`` (socket protocol) — kept as fallback but often
+   fails on machines where the socket handshake times out.
 
-Usage:
-    from benchmarks.competitors import MathematicaAdapter
-    adapter = MathematicaAdapter()
-    if adapter.is_available():
-        print(adapter.bench_integrate(10))
+No extra pip package is needed for the primary backend; ``pip install
+wolframclient`` is still used if the primary backend is unavailable.
 """
 
 from __future__ import annotations
 
+import re
+import subprocess
+import threading
 from typing import Any
 
 from .base import CASAdapter
 
-_session = None  # module-level cached WolframLanguageSession
+# ---------------------------------------------------------------------------
+# Persistent wolframscript subprocess session
+# ---------------------------------------------------------------------------
+
+_SENTINEL = "<<<_WL_DONE_>>>"
+
+_wls_proc: subprocess.Popen | None = None   # long-lived subprocess
+_wls_lock = threading.Lock()                 # serialise concurrent calls
+
+
+def _find_wolframscript() -> str | None:
+    """Return path to ``wolframscript`` if it is on PATH, else None."""
+    import shutil
+    ws = shutil.which("wolframscript")
+    if ws:
+        return ws
+    # Fallback: check well-known paths directly
+    candidates = [
+        "/usr/bin/wolframscript",
+        "/usr/local/bin/wolframscript",
+        "/usr/local/Wolfram/WolframEngine/14.3/Executables/wolframscript",
+    ]
+    import os
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
+def _start_wls() -> subprocess.Popen:
+    """Launch a persistent ``wolframscript`` interactive session."""
+    ws = _find_wolframscript()
+    if ws is None:
+        raise RuntimeError("wolframscript not found on PATH")
+    proc = subprocess.Popen(
+        [ws],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        bufsize=1,
+    )
+    # Drain the startup banner — wait for the first In[1]:= prompt.
+    # We send a no-op expression first so the sentinel marks the end of init.
+    proc.stdin.write(f'Print["{_SENTINEL}"]\n')
+    proc.stdin.flush()
+    _drain_until_sentinel(proc)
+    return proc
+
+
+def _drain_until_sentinel(proc: subprocess.Popen) -> list[str]:
+    """Read stdout lines until the sentinel appears; return the others."""
+    lines: list[str] = []
+    while True:
+        line = proc.stdout.readline()
+        if not line:
+            break
+        stripped = line.rstrip("\n")
+        # Strip interactive prompt prefix (In[N]:= or Out[N]:= )
+        cleaned = re.sub(r"^(?:In|Out)\[\d+\]:?=\s*", "", stripped)
+        if cleaned == _SENTINEL:
+            break
+        if cleaned:  # skip empty lines and prompts that became empty
+            lines.append(cleaned)
+    return lines
+
+
+def _wls_eval(code: str) -> str:
+    """Evaluate *code* in the persistent wolframscript session.
+
+    Wraps the expression in ``ToString[...]`` so the result is always a string.
+    Returns the string representation of the result.
+    """
+    global _wls_proc
+    with _wls_lock:
+        if _wls_proc is None or _wls_proc.poll() is not None:
+            _wls_proc = _start_wls()
+        _wls_proc.stdin.write(
+            f'Print[ToString[{code}, OutputForm]]; Print["{_SENTINEL}"]\n'
+        )
+        _wls_proc.stdin.flush()
+        result_lines = _drain_until_sentinel(_wls_proc)
+    return " ".join(result_lines).strip()
+
+
+def _wls_available() -> bool:
+    """Return True if a wolframscript session can be started and responds."""
+    try:
+        result = _wls_eval("1 + 1")
+        return result.strip() == "2"
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Fallback: WolframLanguageSession (socket-based, often fails)
+# ---------------------------------------------------------------------------
+
+_session = None
 
 
 _KERNEL_CANDIDATES = [
@@ -32,9 +133,7 @@ _KERNEL_CANDIDATES = [
 
 
 def _find_kernel() -> str | None:
-    """Return the first existing WolframKernel executable path, or None."""
     import os
-    # Honour explicit override
     env = os.environ.get("WOLFRAM_KERNEL")
     if env and os.path.isfile(env):
         return env
@@ -45,11 +144,6 @@ def _find_kernel() -> str | None:
 
 
 def _get_session():
-    """Return (or create) a cached Wolfram Language session.
-
-    Tries an explicit kernel path first (auto-discovery) so the session works
-    even when WolframClient cannot locate the kernel on its own.
-    """
     global _session
     if _session is not None:
         return _session
@@ -57,52 +151,71 @@ def _get_session():
 
     kernel = _find_kernel()
     sess = WolframLanguageSession(kernel) if kernel else WolframLanguageSession()
-    try:
-        sess.start()
-    except Exception:
-        _session = None
-        raise
+    sess.start()
     _session = sess
     return _session
 
 
-class MathematicaAdapter(CASAdapter):
-    """Adapter wrapping the Wolfram Engine via ``wolframclient``.
+# ---------------------------------------------------------------------------
+# Adapter class
+# ---------------------------------------------------------------------------
 
-    Requires Wolfram Engine for Developers (free, https://www.wolfram.com/engine/)
-    to be installed **and activated** (run ``wolframscript -activate`` once
-    after registration).  Degrades gracefully when unavailable.
+
+class MathematicaAdapter(CASAdapter):
+    """Adapter for Wolfram Engine / Mathematica.
+
+    Primary backend: persistent ``wolframscript`` subprocess (no extra pip
+    package; ~3 s startup, then < 5 ms per call).
+
+    Fallback backend: ``WolframLanguageSession`` (socket-based, requires
+    ``pip install wolframclient``).
+
+    The engine must be activated: run ``wolframscript -activate`` once.
     """
 
     name = "Mathematica"
 
+    # Cache which backend is live so is_available() is only probed once.
+    _backend: str | None = None   # "wls" | "session" | "none"
+
     def is_available(self) -> bool:
+        if self._backend is not None:
+            return self._backend != "none"
+        # Try wolframscript first
+        if _find_wolframscript() and _wls_available():
+            MathematicaAdapter._backend = "wls"
+            return True
+        # Try socket session fallback
         try:
-            import wolframclient  # noqa: F401
             from wolframclient.language import wlexpr
             s = _get_session()
-            # Probe: evaluate a trivial expression to confirm the kernel is live.
-            result = s.evaluate(wlexpr("1 + 1"))
-            return result == 2
+            if s.evaluate(wlexpr("1 + 1")) == 2:
+                MathematicaAdapter._backend = "session"
+                return True
         except Exception:
-            return False
+            pass
+        MathematicaAdapter._backend = "none"
+        return False
 
     def _wl(self, code: str) -> str:
-        """Evaluate a Wolfram Language expression and return its string form."""
+        """Evaluate *code* and return the string result."""
+        if self._backend == "wls" or self._backend is None:
+            try:
+                return _wls_eval(code)
+            except Exception:
+                pass
+        # Fallback to socket session
         from wolframclient.language import wlexpr
-
-        session = _get_session()
-        result = session.evaluate(wlexpr(f"ToString[{code}]"))
+        result = _get_session().evaluate(wlexpr(f"ToString[{code}]"))
         return str(result)
 
-    # ── Task-named benchmark methods (match tasks.py task names) ─────────────
+    # ── Task-named benchmark methods ──────────────────────────────────────────
 
     def bench_poly_diff(self, size: int) -> Any:
         poly = " + ".join(f"x^{k}" for k in range(size + 1))
         return self._wl(f"D[{poly}, x]")
 
     def bench_trig_identity(self, size: int) -> Any:
-        # FullSimplify[N * (Sin[x]^2 + Cos[x]^2)] → N
         inner = " + ".join(["Sin[x]^2 + Cos[x]^2"] * size)
         return self._wl(f"FullSimplify[{inner}]")
 
@@ -120,11 +233,8 @@ class MathematicaAdapter(CASAdapter):
         return self._wl(f"Sin[Cos[Interval[{{{lo}, {hi}}}]]]")
 
     def bench_poly_jit_eval(self, size: int) -> Any:
-        # Build polynomial without x^0 to avoid 0.^0 in Compile.
         terms = ["1"] + [f"x^{k}" for k in range(1, size + 1)]
         poly_wl = " + ".join(terms)
-        # RuntimeAttributes -> {Listable} lets Mathematica vectorise over a
-        # packed Real array — matching the 1 000 000-point alkahest task.
         compile_expr = (
             f"Compile[{{{{x, _Real}}}}, {poly_wl}, "
             f"RuntimeAttributes -> {{Listable}}, Parallelization -> False]"
@@ -137,8 +247,6 @@ class MathematicaAdapter(CASAdapter):
         return self._wl(
             f"Solve[x^2 + y^2 == {size}^2 && y == x, {{x, y}}, Reals]"
         )
-
-    # ── New comprehensive task methods ───────────────────────────────────────
 
     def bench_integrate_poly(self, size: int) -> Any:
         terms = " + ".join(f"x^{k}" for k in range(1, size + 1))
@@ -163,9 +271,7 @@ class MathematicaAdapter(CASAdapter):
         return self._wl(f"Det[{rows}]")
 
     def bench_real_roots_poly(self, size: int) -> Any:
-        return self._wl(
-            f"Length[NSolve[x^{size} - x - 1 == 0, x, Reals]]"
-        )
+        return self._wl(f"Length[NSolve[x^{size} - x - 1 == 0, x, Reals]]")
 
     def bench_horner_form_poly(self, size: int) -> Any:
         terms = " + ".join(f"x^{k}" for k in range(1, size + 1))
@@ -175,7 +281,9 @@ class MathematicaAdapter(CASAdapter):
         expr = "x"
         for _ in range(size):
             expr = f"Log[Exp[{expr}]]"
-        return self._wl(f"FullSimplify[{expr}, Assumptions -> x \\[Element] Reals]")
+        return self._wl(
+            f"FullSimplify[{expr}, Assumptions -> x \\[Element] Reals]"
+        )
 
     def bench_resultant_poly(self, size: int) -> Any:
         return self._wl(
@@ -187,10 +295,9 @@ class MathematicaAdapter(CASAdapter):
             return self._wl(
                 "RSolve[{a[n] == 2*a[n-1], a[0] == 1}, a[n], n]"
             )
-        else:
-            return self._wl(
-                "RSolve[{a[n] == a[n-1] + a[n-2], a[0] == 1, a[1] == 1}, a[n], n]"
-            )
+        return self._wl(
+            "RSolve[{a[n] == a[n-1] + a[n-2], a[0] == 1, a[1] == 1}, a[n], n]"
+        )
 
     def bench_poly_gcd(self, size: int) -> Any:
         return self._wl(f"PolynomialGCD[x^{size} - 1, x^{size // 2} - 1]")
@@ -234,7 +341,7 @@ class MathematicaAdapter(CASAdapter):
     def bench_expand_power_simplify(self, size: int) -> Any:
         return self._wl(f"Expand[(x + 1)^{size}]")
 
-    # ── Legacy names ─────────────────────────────────────────────────────────
+    # ── Legacy aliases ────────────────────────────────────────────────────────
 
     def bench_integrate(self, size: int) -> Any:
         return self._wl(f"Integrate[x^{size}, x]")
@@ -247,7 +354,8 @@ class MathematicaAdapter(CASAdapter):
 
     def bench_groebner(self, size: int) -> Any:
         return self._wl(
-            "GroebnerBasis[{x^2 + y^2 - 1, x - y}, {x, y}, MonomialOrder -> Lexicographic]"
+            "GroebnerBasis[{x^2 + y^2 - 1, x - y}, {x, y}, "
+            "MonomialOrder -> Lexicographic]"
         )
 
     def bench_jacobian(self, size: int) -> Any:
@@ -256,7 +364,7 @@ class MathematicaAdapter(CASAdapter):
     def bench_polynomial_solve(self, size: int) -> Any:
         return self._wl(f"Solve[x^2 == {size}, x, Reals]")
 
-    def __del__(self):
+    def __del__(self) -> None:
         global _session
         if _session is not None:
             try:

@@ -108,13 +108,13 @@ class DegreeNPolyGCD(BenchTask):
         xm1 = p.add([x, p.mul([p.integer(-1), one])])  # x - 1
         # use poly conversion
         poly_a = alkahest.UniPoly.from_symbolic(
-            alkahest.poly_normal(x ** size - one, [x]).value
+            alkahest.poly_normal(x ** size - one, [x])
             if hasattr(alkahest, "poly_normal")
             else x ** size,
             x,
         )
         poly_b = alkahest.UniPoly.from_symbolic(
-            alkahest.poly_normal(x ** (size // 2) - one, [x]).value
+            alkahest.poly_normal(x ** (size // 2) - one, [x])
             if hasattr(alkahest, "poly_normal")
             else x ** (size // 2),
             x,
@@ -265,14 +265,9 @@ class ODEJITCompile(BenchTask):
         import numpy as np
         import alkahest
 
-        if not alkahest.jit_is_available():
-            raise NotImplementedError(
-                "LLVM JIT is not available in this build; interpreter-fallback "
-                "results are ~300× slower and not comparable to native code. "
-                "Rebuild with --features jit or install the +jit wheel from "
-                "GitHub Releases."
-            )
-
+        # compile_expr falls back to a tree-walking interpreter when LLVM is
+        # unavailable — results are correct but ~300× slower than native JIT.
+        # The benchmark annotates this in the Notes column via jit_is_available().
         p = alkahest.ExprPool()
         x = p.symbol("x")
         terms = [x**k for k in range(size + 1)]
@@ -323,12 +318,10 @@ class SolveCircleLine(BenchTask):
         p = alkahest.ExprPool()
         x = p.symbol("x")
         y = p.symbol("y")
-        neg_one = p.integer(-1)
         r2 = p.integer(size * size)
-        # x² + y² - r²
-        eq1 = x ** 2 + y ** 2 + neg_one * r2
-        # y - x
-        eq2 = y + neg_one * x
+        # x² + y² - r²  and  y - x
+        eq1 = x ** 2 + y ** 2 - r2
+        eq2 = y - x
         return alkahest.solve([eq1, eq2], [x, y])
 
     def run_sympy(self, size: int) -> Any:
@@ -370,10 +363,9 @@ class Solve6rIk(BenchTask):
         p = alkahest.ExprPool()
         x = p.symbol("x")
         y = p.symbol("y")
-        neg_one = p.integer(-1)
         r2 = p.integer(size * size)
-        eq1 = x**2 + y**2 + neg_one * r2
-        eq2 = y + neg_one * x
+        eq1 = x**2 + y**2 - r2
+        eq2 = y - x
         return alkahest.triangularize([eq1, eq2], [x, y])
 
     def run_sympy(self, size: int) -> Any:
@@ -856,9 +848,8 @@ class HomotopySeparateQuadratics(BenchTask):
             )
 
         p = alkahest.ExprPool()
-        neg1 = p.integer(-1)
         xs = [p.symbol(f"x{i}") for i in range(size)]
-        eqs = [x_i**2 + neg1 for x_i in xs]
+        eqs = [x_i**2 - p.integer(1) for x_i in xs]
         return alkahest.solve(eqs, xs, method="homotopy")
 
     def run_sympy(self, size: int) -> Any:
@@ -958,15 +949,14 @@ class ExpandPowerSimplify(BenchTask):
     stress_size_params = (22, 26)
 
     def run_alkahest(self, size: int) -> Any:
-        import math
-
         import alkahest
 
         p = alkahest.ExprPool()
         x = p.symbol("x")
-        terms = [p.integer(math.comb(size, k)) * (x ** k) for k in range(size + 1)]
-        poly = _balanced_sum(terms)
-        return alkahest.collect_like_terms(poly).value
+        # Let collect_like_terms expand the power directly — same algorithmic
+        # path as SymPy's expand(), avoids O(n) Python-level term construction.
+        expr = (x + p.integer(1)) ** size
+        return alkahest.collect_like_terms(expr).value
 
     def run_sympy(self, size: int) -> Any:
         import sympy as sp  # type: ignore[import]

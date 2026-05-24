@@ -11,20 +11,35 @@ overhead and `tracemalloc` peak-heap measurements.
 Located at `alkahest-core/benches/alkahest_bench.rs`. Uses
 [criterion 0.5](https://docs.rs/criterion) with `html_reports`.
 
+> **Note:** the Cargo package name is `alkahest-cas` (the `-p` flag takes the
+> package *name*, not the directory name).
+
+> **Note (Linux):** the bundled `libflint` shared library is embedded in the
+> Python wheel.  Running the Rust bench binary directly requires:
+> ```bash
+> export LD_LIBRARY_PATH="$(python -c \
+>   "import alkahest, pathlib; print(next(pathlib.Path(alkahest.__file__).parent.glob('../alkahest.libs')).resolve())"
+> ):$LD_LIBRARY_PATH"
+> ```
+> Or more directly:
+> ```bash
+> export LD_LIBRARY_PATH=/home/agevorgyan/.local/lib/python3.10/site-packages/alkahest.libs:$LD_LIBRARY_PATH
+> ```
+
 ### Run
 
 ```bash
 # Full suite — all groups, HTML report in target/criterion/
-cargo bench -p alkahest-core
+cargo bench -p alkahest-cas
 
 # One group only
-cargo bench -p alkahest-core -- simplify
+cargo bench -p alkahest-cas -- simplify
 
 # Smoke pass (correctness check, no timing)
-cargo bench -p alkahest-core -- --test
+cargo bench -p alkahest-cas -- --test
 
 # Quick pass (3 s per bench instead of 5 s)
-cargo bench -p alkahest-core -- --measurement-time 3
+cargo bench -p alkahest-cas -- --measurement-time 3
 ```
 
 The HTML report is written to `target/criterion/report/index.html`.
@@ -58,10 +73,10 @@ for the intern table's structural-sharing guarantee.
 
 ```bash
 # Save a baseline
-cargo bench -p alkahest-core -- --save-baseline before_change
+cargo bench -p alkahest-cas -- --save-baseline before_change
 
 # Make your change, then compare
-cargo bench -p alkahest-core -- --baseline before_change
+cargo bench -p alkahest-cas -- --baseline before_change
 ```
 
 Criterion will print `Performance has regressed` / `improved` for each benchmark.
@@ -139,7 +154,7 @@ on `CASAdapter` subclasses.
 |--------|----------------------|
 | SymPy | `pip install sympy` (also pulled in by dev deps) |
 | SageMath | `pip install sagemath-standard` or system `sage` |
-| Mathematica / Wolfram Engine | Install Wolfram Engine; `pip install wolframclient`; optional `WOLFRAM_KERNEL` |
+| Mathematica / Wolfram Engine | Install [Wolfram Engine](https://www.wolfram.com/engine/) (free, non-commercial); activate once with `wolframscript -activate`; no extra pip package needed for the primary backend (`wolframscript` subprocess). Optional: `pip install wolframclient` for the socket-session fallback; optional `WOLFRAM_KERNEL` env var. |
 | SymEngine | `pip install symengine` |
 | Maple | `maple` on `PATH` |
 
@@ -214,14 +229,14 @@ them.
 ```bash
 cargo install flamegraph
 # Record a 10-second profile of the full bench suite
-sudo cargo flamegraph -p alkahest-core --bench alkahest_bench -- --bench
+sudo cargo flamegraph -p alkahest-cas --bench alkahest_bench -- --bench
 # Open flamegraph.svg in a browser
 ```
 
 ### Valgrind Massif (heap profile)
 
 ```bash
-cargo build -p alkahest-core --profile bench
+cargo build -p alkahest-cas --profile bench
 valgrind --tool=massif --pages-as-heap=yes \
   ./target/release/deps/alkahest_bench-* --bench simplify
 ms_print massif.out.* | head -60
@@ -231,7 +246,7 @@ ms_print massif.out.* | head -60
 
 ```bash
 perf stat -e cache-misses,cache-references,instructions \
-  cargo bench -p alkahest-core -- simplify 2>&1
+  cargo bench -p alkahest-cas -- simplify 2>&1
 ```
 
 ---

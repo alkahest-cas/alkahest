@@ -448,6 +448,24 @@ impl PyExprPool {
         PyExpr { id, pool }
     }
 
+    /// Build an addition node: ``pool.add([x, y, z])`` → `x + y + z`.
+    ///
+    /// Children are sorted canonically so ``pool.add([b, a]) == pool.add([a, b])``.
+    fn add(slf: PyRef<'_, Self>, args: Vec<PyExpr>) -> PyExpr {
+        let ids: Vec<ExprId> = args.iter().map(|e| e.id).collect();
+        let id = slf.inner.add(ids);
+        let pool: Py<PyExprPool> = slf.into();
+        PyExpr { id, pool }
+    }
+
+    /// Build a multiplication node: ``pool.mul([x, y, z])`` → `x * y * z`.
+    fn mul(slf: PyRef<'_, Self>, args: Vec<PyExpr>) -> PyExpr {
+        let ids: Vec<ExprId> = args.iter().map(|e| e.id).collect();
+        let id = slf.inner.mul(ids);
+        let pool: Py<PyExprPool> = slf.into();
+        PyExpr { id, pool }
+    }
+
     fn float(slf: PyRef<'_, Self>, value: f64, prec: Option<u32>) -> PyExpr {
         let id = slf.inner.float(value, prec.unwrap_or(53));
         let pool: Py<PyExprPool> = slf.into();
@@ -1424,6 +1442,51 @@ impl PyUniPoly {
             .map_err(conv_error_to_py)
     }
 
+    /// Construct a `UniPoly` from a list of symbolic integer expressions (constant term first).
+    ///
+    /// ```python
+    /// p = ExprPool()
+    /// x = p.symbol("x")
+    /// # -1 + x^2  (coefficients in ascending degree order)
+    /// poly = UniPoly.from_coefficients([p.integer(-1), p.integer(0), p.integer(1)], x)
+    /// ```
+    ///
+    /// Raises `TypeError` if any coefficient is not an integer expression.
+    /// Raises `OverflowError` if any coefficient overflows `i64`.
+    #[staticmethod]
+    fn from_coefficients(
+        py: Python<'_>,
+        coefficients: Vec<PyRef<'_, PyExpr>>,
+        var: PyRef<'_, PyExpr>,
+    ) -> PyResult<Self> {
+        let pool = var.pool.borrow(py);
+        let mut i64_coeffs: Vec<i64> = Vec::with_capacity(coefficients.len());
+        for (idx, coeff) in coefficients.iter().enumerate() {
+            match pool.inner.get(coeff.id) {
+                alkahest_core::ExprData::Integer(bi) => {
+                    let n = bi.0.to_i64().ok_or_else(|| {
+                        PyOverflowError::new_err(format!(
+                            "UniPoly.from_coefficients: coefficient at index {idx} overflows i64"
+                        ))
+                    })?;
+                    i64_coeffs.push(n);
+                }
+                _ => {
+                    return Err(PyTypeError::new_err(format!(
+                        "UniPoly.from_coefficients: coefficient at index {idx} is not an integer expression"
+                    )));
+                }
+            }
+        }
+        let coeffs = alkahest_core::FlintPoly::from_coefficients(&i64_coeffs);
+        Ok(PyUniPoly {
+            inner: UniPoly {
+                var: var.id,
+                coeffs,
+            },
+        })
+    }
+
     fn coefficients(&self) -> Vec<i64> {
         self.inner.coefficients_i64()
     }
@@ -1601,6 +1664,24 @@ impl PyMultiPoly {
 // PyRationalFunction
 // ---------------------------------------------------------------------------
 
+/// Convert a `UniPoly` into a univariate `MultiPoly` over the same variable.
+///
+/// `MultiPoly` stores terms as `BTreeMap<Vec<u32>, rug::Integer>` where the
+/// key is the exponent vector (one entry per variable, trailing zeros omitted).
+/// The constant term has key `vec![]`.
+fn unipoly_to_multipoly(p: &UniPoly) -> MultiPoly {
+    let vars = vec![p.var];
+    let coeffs = p.coefficients(); // Vec<rug::Integer>, ascending degree
+    let mut terms = std::collections::BTreeMap::new();
+    for (i, coeff) in coeffs.into_iter().enumerate() {
+        if coeff != 0 {
+            let exp: Vec<u32> = if i == 0 { vec![] } else { vec![i as u32] };
+            terms.insert(exp, coeff);
+        }
+    }
+    MultiPoly { vars, terms }
+}
+
 #[pyclass(name = "RationalFunction")]
 struct PyRationalFunction {
     inner: RationalFunction,
@@ -1608,6 +1689,26 @@ struct PyRationalFunction {
 
 #[pymethods]
 impl PyRationalFunction {
+    /// Construct a `RationalFunction` from two `UniPoly` numerator / denominator.
+    ///
+    /// ```python
+    /// p = ExprPool()
+    /// x = p.symbol("x")
+    /// numer = UniPoly.from_coefficients([p.integer(-1), p.integer(0), p.integer(1)], x)  # x²-1
+    /// denom = UniPoly.from_coefficients([p.integer(-1), p.integer(1)], x)                # x-1
+    /// rf = RationalFunction(numer, denom)  # → (x+1)  after GCD reduction
+    /// ```
+    ///
+    /// Raises `ValueError` if `denom` is the zero polynomial.
+    #[new]
+    fn from_unipolys(numer: PyRef<'_, PyUniPoly>, denom: PyRef<'_, PyUniPoly>) -> PyResult<Self> {
+        let n = unipoly_to_multipoly(&numer.inner);
+        let d = unipoly_to_multipoly(&denom.inner);
+        RationalFunction::new(n, d)
+            .map(|r| PyRationalFunction { inner: r })
+            .map_err(conv_error_to_py)
+    }
+
     #[staticmethod]
     fn from_symbolic(
         py: Python<'_>,
