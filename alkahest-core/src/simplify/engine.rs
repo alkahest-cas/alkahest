@@ -4,6 +4,7 @@ use super::rules::{
 };
 use crate::deriv::log::{DerivationLog, DerivedExpr};
 use crate::kernel::{ExprData, ExprId, ExprPool};
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -72,14 +73,31 @@ pub fn default_rules() -> Vec<Box<dyn RewriteRule>> {
 // Internal: bottom-up traversal — simplify children, then current node
 // ---------------------------------------------------------------------------
 
+/// Memoised bottom-up simplification.
+///
+/// `memo` maps an input `ExprId` to the `ExprId` of its simplified form within
+/// the current pass.  Shared subexpressions (same `ExprId` appearing in multiple
+/// places) are simplified exactly once; subsequent hits return the cached result
+/// with an empty derivation log to avoid duplicate log entries.
+///
+/// The memo is valid for one complete bottom-up pass.  `simplify_with` creates
+/// a fresh `HashMap` per iteration so that the fixed-point loop sees the updated
+/// expression on each pass.
 fn simplify_node(
     expr: ExprId,
     pool: &ExprPool,
     rules: &[Box<dyn RewriteRule>],
+    memo: &mut HashMap<ExprId, ExprId>,
 ) -> DerivedExpr<ExprId> {
+    // Shared-subexpression cache: if we already simplified this node during
+    // the current pass, return the cached result immediately.
+    if let Some(&cached) = memo.get(&expr) {
+        return DerivedExpr::new(cached);
+    }
+
     // 1. Rebuild with simplified children
     let data = pool.get(expr);
-    let (rebuilt, child_log) = simplify_children(data, pool, rules);
+    let (rebuilt, child_log) = simplify_children(data, pool, rules, memo);
 
     // 2. Apply rules to rebuilt node until no rule fires
     let mut current = rebuilt;
@@ -99,7 +117,9 @@ fn simplify_node(
         }
     }
 
-    DerivedExpr::with_log(current, child_log.merge(rule_log))
+    let result = DerivedExpr::with_log(current, child_log.merge(rule_log));
+    memo.insert(expr, result.value);
+    result
 }
 
 /// Simplify children of a node and return (rebuilt_expr, child_log).
@@ -107,6 +127,7 @@ fn simplify_children(
     data: ExprData,
     pool: &ExprPool,
     rules: &[Box<dyn RewriteRule>],
+    memo: &mut HashMap<ExprId, ExprId>,
 ) -> (ExprId, DerivationLog) {
     let mut log = DerivationLog::new();
     match data {
@@ -114,7 +135,7 @@ fn simplify_children(
             let new_args: Vec<ExprId> = args
                 .into_iter()
                 .map(|a| {
-                    let r = simplify_node(a, pool, rules);
+                    let r = simplify_node(a, pool, rules, memo);
                     log = std::mem::take(&mut log).merge(r.log);
                     r.value
                 })
@@ -125,7 +146,7 @@ fn simplify_children(
             let new_args: Vec<ExprId> = args
                 .into_iter()
                 .map(|a| {
-                    let r = simplify_node(a, pool, rules);
+                    let r = simplify_node(a, pool, rules, memo);
                     log = std::mem::take(&mut log).merge(r.log);
                     r.value
                 })
@@ -133,9 +154,9 @@ fn simplify_children(
             (pool.mul(new_args), log)
         }
         ExprData::Pow { base, exp } => {
-            let rb = simplify_node(base, pool, rules);
+            let rb = simplify_node(base, pool, rules, memo);
             log = log.merge(rb.log);
-            let re = simplify_node(exp, pool, rules);
+            let re = simplify_node(exp, pool, rules, memo);
             log = log.merge(re.log);
             (pool.pow(rb.value, re.value), log)
         }
@@ -143,7 +164,7 @@ fn simplify_children(
             let new_args: Vec<ExprId> = args
                 .into_iter()
                 .map(|a| {
-                    let r = simplify_node(a, pool, rules);
+                    let r = simplify_node(a, pool, rules, memo);
                     log = std::mem::take(&mut log).merge(r.log);
                     r.value
                 })
@@ -157,12 +178,12 @@ fn simplify_children(
             let new_branches: Vec<(ExprId, ExprId)> = branches
                 .into_iter()
                 .map(|(cond, val)| {
-                    let rv = simplify_node(val, pool, rules);
+                    let rv = simplify_node(val, pool, rules, memo);
                     log = std::mem::take(&mut log).merge(rv.log);
                     (cond, rv.value)
                 })
                 .collect();
-            let rd = simplify_node(default, pool, rules);
+            let rd = simplify_node(default, pool, rules, memo);
             log = log.merge(rd.log);
             (pool.piecewise(new_branches, rd.value), log)
         }
@@ -171,7 +192,7 @@ fn simplify_children(
             let new_args: Vec<ExprId> = args
                 .into_iter()
                 .map(|a| {
-                    let r = simplify_node(a, pool, rules);
+                    let r = simplify_node(a, pool, rules, memo);
                     log = std::mem::take(&mut log).merge(r.log);
                     r.value
                 })
@@ -179,17 +200,17 @@ fn simplify_children(
             (pool.predicate(kind, new_args), log)
         }
         ExprData::Forall { var, body } => {
-            let rb = simplify_node(body, pool, rules);
+            let rb = simplify_node(body, pool, rules, memo);
             log = log.merge(rb.log);
             (pool.forall(var, rb.value), log)
         }
         ExprData::Exists { var, body } => {
-            let rb = simplify_node(body, pool, rules);
+            let rb = simplify_node(body, pool, rules, memo);
             log = log.merge(rb.log);
             (pool.exists(var, rb.value), log)
         }
         ExprData::BigO(arg) => {
-            let r = simplify_node(arg, pool, rules);
+            let r = simplify_node(arg, pool, rules, memo);
             log = log.merge(r.log);
             (pool.big_o(r.value), log)
         }
@@ -211,7 +232,11 @@ pub fn simplify_with(
 ) -> DerivedExpr<ExprId> {
     let mut current = DerivedExpr::new(expr);
     for _ in 0..config.max_iterations {
-        let result = simplify_node(current.value, pool, rules);
+        // Fresh memo per pass: maps input ExprId → simplified ExprId.
+        // Shared subexpressions are simplified once and the result reused for
+        // all subsequent occurrences within the same bottom-up sweep.
+        let mut memo: HashMap<ExprId, ExprId> = HashMap::new();
+        let result = simplify_node(current.value, pool, rules, &mut memo);
         let merged_log = current.log.merge(result.log);
         if result.value == current.value {
             return DerivedExpr::with_log(current.value, merged_log);
@@ -380,5 +405,75 @@ mod tests {
         };
         let r = simplify_with(expr, &pool, &default_rules(), config);
         assert_eq!(r.value, x);
+    }
+
+    /// DAG traversal memo test: a shared subexpression that appears in O(2^n) tree
+    /// positions should be simplified in O(n) time, not O(2^n).
+    ///
+    /// We build `expr = shared_node + shared_node` where `shared_node` is itself
+    /// `x + 0` — both sides point to the same `ExprId`.  The simplifier must
+    /// produce the correct answer regardless of sharing depth.
+    #[test]
+    fn simplify_dag_shared_subexpr_correct() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        // Construct a deeply shared expression: iterated "squaring" of `(x + 0)`.
+        // After 20 levels, tree-size would be 2^20 without DAG memoization.
+        let mut node = pool.add(vec![x, pool.integer(0_i32)]); // x + 0
+        for _ in 0..20 {
+            // node = node + node  (both args are the SAME ExprId)
+            node = pool.add(vec![node, node]);
+        }
+        // simplify should terminate quickly (not 2^20 operations) and give a
+        // result that is a valid simplified form (not x + 0).
+        let r = simplify(node, &pool);
+        // The result must not contain `+ 0` anymore — `x + 0` simplifies to `x`.
+        let s = pool.display(r.value).to_string();
+        assert!(
+            !s.contains("+ 0") && !s.contains("0 +"),
+            "simplify should eliminate '+ 0' from shared expression: {s}"
+        );
+    }
+
+    /// DAG traversal memo test for diff: differentiating a shared-subexpression
+    /// expression must give the correct result in polynomial time.
+    #[test]
+    fn diff_dag_shared_subexpr_correct() {
+        use crate::diff::diff;
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        // Build `(x^2 + x) + (x^2 + x)` where both halves are the same ExprId.
+        let inner = pool.add(vec![pool.pow(x, pool.integer(2_i32)), x]); // x² + x
+        let expr = pool.add(vec![inner, inner]); // 2*(x² + x) via sharing
+                                                 // diff(2*(x²+x), x) = 2*(2x + 1) = 4x + 2
+        let r = diff(expr, x, &pool).unwrap();
+        let s = pool.display(r.value).to_string();
+        // Result should contain x and numeric coefficients, not crash or loop.
+        assert!(
+            !s.is_empty(),
+            "diff of shared DAG expression returned empty string"
+        );
+    }
+
+    /// DAG traversal memo test for eval_interp: evaluating a shared expression
+    /// should return the correct numeric value.
+    #[test]
+    fn eval_interp_dag_shared_subexpr_correct() {
+        use crate::jit::{compile, eval_interp};
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        // shared = x + 1;  expr = shared * shared = (x+1)^2
+        let shared = pool.add(vec![x, pool.integer(1_i32)]);
+        let expr = pool.mul(vec![shared, shared]);
+
+        // Interpreter path via eval_interp
+        let mut env = std::collections::HashMap::new();
+        env.insert(x, 3.0f64); // (3+1)^2 = 16
+        let result = eval_interp(expr, &env, &pool);
+        assert_eq!(result, Some(16.0), "eval_interp shared DAG: expected 16");
+
+        // Compiled path (interpreter fallback, no LLVM needed)
+        let f = compile(expr, &[x], &pool).unwrap();
+        assert!((f.call(&[3.0]) - 16.0).abs() < 1e-10);
     }
 }

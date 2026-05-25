@@ -2,6 +2,7 @@ use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::poly::UniPoly;
 use crate::simplify::engine::simplify;
+use std::collections::HashMap;
 use std::fmt;
 
 // ---------------------------------------------------------------------------
@@ -78,7 +79,10 @@ impl crate::errors::AlkahestError for DiffError {
 /// The returned log records every rule applied, including post-differentiation
 /// simplification steps appended at the end.
 pub fn diff(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DerivedExpr<ExprId>, DiffError> {
-    let result = diff_raw(expr, var, pool)?;
+    // One memo table per top-level diff call.  Maps ExprId → derivative ExprId
+    // so shared subexpressions are differentiated at most once.
+    let mut memo: HashMap<ExprId, ExprId> = HashMap::new();
+    let result = diff_raw(expr, var, pool, &mut memo)?;
     Ok(result.and_then(|v| simplify(v, pool)))
 }
 
@@ -107,8 +111,24 @@ fn diff_poly_try_univariate_fastpath(
     Some(DerivedExpr::with_log(result, log))
 }
 
-fn diff_raw(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DerivedExpr<ExprId>, DiffError> {
+/// Memoised differentiation worker.
+///
+/// `memo` maps `ExprId → ExprId` (derivative value).  Shared subexpressions
+/// are differentiated once; subsequent occurrences return the cached result
+/// with an empty derivation log to avoid duplicate log entries.
+fn diff_raw(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    memo: &mut HashMap<ExprId, ExprId>,
+) -> Result<DerivedExpr<ExprId>, DiffError> {
+    // Return cached derivative for shared subexpressions.
+    if let Some(&cached) = memo.get(&expr) {
+        return Ok(DerivedExpr::new(cached));
+    }
+
     if let Some(hit) = diff_poly_try_univariate_fastpath(expr, var, pool) {
+        memo.insert(expr, hit.value);
         return Ok(hit);
     }
 
@@ -163,6 +183,7 @@ fn diff_raw(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DerivedExpr<Ex
         // d/dx x = 1
         Node::IdentVar => {
             let one = pool.integer(1_i32);
+            memo.insert(expr, one);
             Ok(DerivedExpr::with_step(
                 one,
                 RewriteStep::simple("diff_identity", expr, one),
@@ -171,6 +192,7 @@ fn diff_raw(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DerivedExpr<Ex
         // d/dx c = 0  (any atom that is not the target variable)
         Node::Const => {
             let zero = pool.integer(0_i32);
+            memo.insert(expr, zero);
             Ok(DerivedExpr::with_step(
                 zero,
                 RewriteStep::simple("diff_const", expr, zero),
@@ -181,20 +203,22 @@ fn diff_raw(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DerivedExpr<Ex
             let mut log = DerivationLog::new();
             let mut dargs: Vec<ExprId> = Vec::with_capacity(args.len());
             for a in args {
-                let da = diff_raw(a, var, pool)?;
+                let da = diff_raw(a, var, pool, memo)?;
                 log = log.merge(da.log);
                 dargs.push(da.value);
             }
             let sum = pool.add(dargs);
             log.push(RewriteStep::simple("sum_rule", expr, sum));
-            Ok(DerivedExpr::with_log(sum, log))
+            let result = DerivedExpr::with_log(sum, log);
+            memo.insert(expr, result.value);
+            Ok(result)
         }
         // Product rule (n-ary Leibniz): d/dx (∏ᵢ fᵢ) = Σᵢ (fᵢ' · ∏_{j≠i} fⱼ)
         Node::Mul(args) => {
             let mut log = DerivationLog::new();
             let dargs: Vec<DerivedExpr<ExprId>> = args
                 .iter()
-                .map(|&a| diff_raw(a, var, pool))
+                .map(|&a| diff_raw(a, var, pool, memo))
                 .collect::<Result<_, _>>()?;
             for da in &dargs {
                 log = log.merge(da.log.clone());
@@ -218,13 +242,15 @@ fn diff_raw(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DerivedExpr<Ex
                 };
                 terms.push(term);
             }
-            let result = match terms.len() {
+            let result_id = match terms.len() {
                 0 => pool.integer(0_i32),
                 1 => terms[0],
                 _ => pool.add(terms),
             };
-            log.push(RewriteStep::simple("product_rule", expr, result));
-            Ok(DerivedExpr::with_log(result, log))
+            log.push(RewriteStep::simple("product_rule", expr, result_id));
+            let result = DerivedExpr::with_log(result_id, log);
+            memo.insert(expr, result.value);
+            Ok(result)
         }
         // Power rule (integer exponent): d/dx f^n = n · f^(n-1) · f'
         Node::Pow { base, exp } => {
@@ -241,32 +267,35 @@ fn diff_raw(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DerivedExpr<Ex
                 let zero = pool.integer(0_i32);
                 let mut log = DerivationLog::new();
                 log.push(RewriteStep::simple("power_rule_n0", expr, zero));
+                memo.insert(expr, zero);
                 return Ok(DerivedExpr::with_log(zero, log));
             }
             // Special case n=1: d/dx f^1 = f'
             if n == 1 {
-                let mut result = diff_raw(base, var, pool)?;
+                let mut result = diff_raw(base, var, pool, memo)?;
                 result
                     .log
                     .push(RewriteStep::simple("power_rule_n1", expr, result.value));
+                memo.insert(expr, result.value);
                 return Ok(result);
             }
 
             let mut log = DerivationLog::new();
-            let df = diff_raw(base, var, pool)?;
+            let df = diff_raw(base, var, pool, memo)?;
             log = log.merge(df.log);
             let n_id = pool.integer(n.clone());
             let n_minus_1 = pool.integer(n - 1);
             let base_pow = pool.pow(base, n_minus_1);
-            let result = pool.mul(vec![n_id, base_pow, df.value]);
-            log.push(RewriteStep::simple("power_rule", expr, result));
-            Ok(DerivedExpr::with_log(result, log))
+            let result_id = pool.mul(vec![n_id, base_pow, df.value]);
+            log.push(RewriteStep::simple("power_rule", expr, result_id));
+            memo.insert(expr, result_id);
+            Ok(DerivedExpr::with_log(result_id, log))
         }
         // Chain rules for single-argument named functions
         Node::Func { name, args } if args.len() == 1 => {
             let f = args[0];
             let mut log = DerivationLog::new();
-            let df = diff_raw(f, var, pool)?;
+            let df = diff_raw(f, var, pool, memo)?;
             log = log.merge(df.log);
             let result = match name.as_str() {
                 "sin" => {
@@ -313,6 +342,7 @@ fn diff_raw(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DerivedExpr<Ex
                     }
                 }
             };
+            memo.insert(expr, result);
             Ok(DerivedExpr::with_log(result, log))
         }
         Node::Func { name, .. } => Err(DiffError::UnknownFunction(name)),
@@ -322,14 +352,15 @@ fn diff_raw(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DerivedExpr<Ex
             let mut log = DerivationLog::new();
             let mut new_branches = Vec::with_capacity(branches.len());
             for (cond, val) in branches {
-                let dval = diff_raw(val, var, pool)?;
+                let dval = diff_raw(val, var, pool, memo)?;
                 log = log.merge(dval.log);
                 new_branches.push((cond, dval.value));
             }
-            let ddefault = diff_raw(default, var, pool)?;
+            let ddefault = diff_raw(default, var, pool, memo)?;
             log = log.merge(ddefault.log);
             let result = pool.piecewise(new_branches, ddefault.value);
             log.push(RewriteStep::simple("diff_piecewise", expr, result));
+            memo.insert(expr, result);
             Ok(DerivedExpr::with_log(result, log))
         }
     }

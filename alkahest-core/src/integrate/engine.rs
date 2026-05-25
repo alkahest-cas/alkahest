@@ -14,6 +14,7 @@
 use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::simplify::engine::simplify;
+use std::collections::HashMap;
 use std::fmt;
 
 // ---------------------------------------------------------------------------
@@ -105,9 +106,25 @@ fn as_integer(expr: ExprId, pool: &ExprPool) -> Option<i64> {
 }
 
 /// Return `true` if `expr` does not involve `var` (is a constant w.r.t. `var`).
+///
+/// Internally memoises into `cache` (keyed by `ExprId`, valid for a fixed `var`).
+/// Use [`is_free_of`] from call sites; [`is_free_of_inner`] is the recursive worker.
 fn is_free_of(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    let mut cache: HashMap<ExprId, bool> = HashMap::new();
+    is_free_of_inner(expr, var, pool, &mut cache)
+}
+
+fn is_free_of_inner(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    cache: &mut HashMap<ExprId, bool>,
+) -> bool {
     if expr == var {
         return false;
+    }
+    if let Some(&cached) = cache.get(&expr) {
+        return cached;
     }
     let children: Vec<ExprId> = pool.with(expr, |data| match data {
         ExprData::Add(args) | ExprData::Mul(args) => args.clone(),
@@ -115,7 +132,11 @@ fn is_free_of(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
         ExprData::Func { args, .. } => args.clone(),
         _ => vec![],
     });
-    children.into_iter().all(|c| is_free_of(c, var, pool))
+    let result = children
+        .into_iter()
+        .all(|c| is_free_of_inner(c, var, pool, cache));
+    cache.insert(expr, result);
+    result
 }
 
 /// If `expr = a*var + b` where `a`, `b` are free of `var`, return `Some((a, b))`.

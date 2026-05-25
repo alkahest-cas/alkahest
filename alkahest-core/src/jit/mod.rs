@@ -254,8 +254,25 @@ pub fn compile_jit_only(
 /// This is always compiled (no `jit` feature needed) and serves as the
 /// fallback when LLVM is unavailable.  For production workloads, prefer the
 /// LLVM-JIT path via `compile` with `--features jit`.
+///
+/// Shared subexpressions (same `ExprId`) are evaluated once per call via an
+/// internal memo table — the common case where `ExprId` equality implies value
+/// equality within a fixed `env`.
 pub fn eval_interp(expr: ExprId, env: &HashMap<ExprId, f64>, pool: &ExprPool) -> Option<f64> {
-    match pool.get(expr) {
+    let mut memo: HashMap<ExprId, f64> = HashMap::new();
+    eval_interp_inner(expr, env, pool, &mut memo)
+}
+
+fn eval_interp_inner(
+    expr: ExprId,
+    env: &HashMap<ExprId, f64>,
+    pool: &ExprPool,
+    memo: &mut HashMap<ExprId, f64>,
+) -> Option<f64> {
+    if let Some(&cached) = memo.get(&expr) {
+        return Some(cached);
+    }
+    let val = match pool.get(expr) {
         ExprData::Integer(n) => Some(n.0.to_f64()),
         ExprData::Rational(r) => {
             let (n, d) = r.0.clone().into_numer_denom();
@@ -266,24 +283,24 @@ pub fn eval_interp(expr: ExprId, env: &HashMap<ExprId, f64>, pool: &ExprPool) ->
         ExprData::Add(args) => {
             let mut sum = 0.0f64;
             for &a in &args {
-                sum += eval_interp(a, env, pool)?;
+                sum += eval_interp_inner(a, env, pool, memo)?;
             }
             Some(sum)
         }
         ExprData::Mul(args) => {
             let mut prod = 1.0f64;
             for &a in &args {
-                prod *= eval_interp(a, env, pool)?;
+                prod *= eval_interp_inner(a, env, pool, memo)?;
             }
             Some(prod)
         }
         ExprData::Pow { base, exp } => {
-            let b = eval_interp(base, env, pool)?;
-            let e = eval_interp(exp, env, pool)?;
+            let b = eval_interp_inner(base, env, pool, memo)?;
+            let e = eval_interp_inner(exp, env, pool, memo)?;
             Some(b.powf(e))
         }
         ExprData::Func { name, args } if args.len() == 1 => {
-            let x = eval_interp(args[0], env, pool)?;
+            let x = eval_interp_inner(args[0], env, pool, memo)?;
             Some(match name.as_str() {
                 "sin" => x.sin(),
                 "cos" => x.cos(),
@@ -297,7 +314,11 @@ pub fn eval_interp(expr: ExprId, env: &HashMap<ExprId, f64>, pool: &ExprPool) ->
             })
         }
         _ => None,
+    };
+    if let Some(v) = val {
+        memo.insert(expr, v);
     }
+    val
 }
 
 #[cfg(not(feature = "jit"))]
@@ -316,7 +337,8 @@ fn compile_interpreter(
         for (&var, &val) in inputs_vec.iter().zip(vals.iter()) {
             env.insert(var, val);
         }
-        eval_interp_snap(expr, &env, &snapshot).unwrap_or(f64::NAN)
+        let mut memo: HashMap<ExprId, f64> = HashMap::new();
+        eval_interp_snap(expr, &env, &snapshot, &mut memo).unwrap_or(f64::NAN)
     };
 
     Ok(CompiledFn {
@@ -362,8 +384,16 @@ fn snapshot_expr(root: ExprId, pool: &ExprPool) -> ExprSnapshot {
 }
 
 #[cfg(not(feature = "jit"))]
-fn eval_interp_snap(expr: ExprId, env: &HashMap<ExprId, f64>, snap: &ExprSnapshot) -> Option<f64> {
-    match snap.nodes.get(&expr)? {
+fn eval_interp_snap(
+    expr: ExprId,
+    env: &HashMap<ExprId, f64>,
+    snap: &ExprSnapshot,
+    memo: &mut HashMap<ExprId, f64>,
+) -> Option<f64> {
+    if let Some(&cached) = memo.get(&expr) {
+        return Some(cached);
+    }
+    let val = match snap.nodes.get(&expr)? {
         ExprData::Integer(n) => Some(n.0.to_f64()),
         ExprData::Rational(r) => {
             let (n, d) = r.0.clone().into_numer_denom();
@@ -372,24 +402,28 @@ fn eval_interp_snap(expr: ExprId, env: &HashMap<ExprId, f64>, snap: &ExprSnapsho
         ExprData::Float(f) => Some(f.inner.to_f64()),
         ExprData::Symbol { .. } => env.get(&expr).copied(),
         ExprData::Add(args) => {
+            let args = args.clone();
             let mut s = 0.0f64;
-            for &a in args {
-                s += eval_interp_snap(a, env, snap)?;
+            for a in args {
+                s += eval_interp_snap(a, env, snap, memo)?;
             }
             Some(s)
         }
         ExprData::Mul(args) => {
+            let args = args.clone();
             let mut p = 1.0f64;
-            for &a in args {
-                p *= eval_interp_snap(a, env, snap)?;
+            for a in args {
+                p *= eval_interp_snap(a, env, snap, memo)?;
             }
             Some(p)
         }
         ExprData::Pow { base, exp } => {
-            Some(eval_interp_snap(*base, env, snap)?.powf(eval_interp_snap(*exp, env, snap)?))
+            let (b, e) = (*base, *exp);
+            Some(eval_interp_snap(b, env, snap, memo)?.powf(eval_interp_snap(e, env, snap, memo)?))
         }
         ExprData::Func { name, args } if args.len() == 1 => {
-            let x = eval_interp_snap(args[0], env, snap)?;
+            let a = args[0];
+            let x = eval_interp_snap(a, env, snap, memo)?;
             Some(match name.as_str() {
                 "sin" => x.sin(),
                 "cos" => x.cos(),
@@ -403,7 +437,11 @@ fn eval_interp_snap(expr: ExprId, env: &HashMap<ExprId, f64>, snap: &ExprSnapsho
             })
         }
         _ => None,
+    };
+    if let Some(v) = val {
+        memo.insert(expr, v);
     }
+    val
 }
 
 // ---------------------------------------------------------------------------

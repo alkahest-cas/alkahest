@@ -12,6 +12,7 @@ use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
 use crate::diff::diff_impl::DiffError;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::simplify::engine::simplify;
+use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Deprecated type alias — `ForwardDiffError` is now folded into `DiffError`
@@ -159,7 +160,22 @@ impl DualValue {
 // Core evaluation
 // ---------------------------------------------------------------------------
 
-fn eval_dual(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DualValue, DiffError> {
+/// Memoised dual-number evaluator.
+///
+/// `memo` maps `ExprId → DualValue` so that shared subexpressions are
+/// evaluated only once per `diff_forward` call.  `DualValue` holds two
+/// `ExprId` values and is cheap to clone.
+fn eval_dual(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    memo: &mut HashMap<ExprId, DualValue>,
+) -> Result<DualValue, DiffError> {
+    // Return cached dual for shared subexpressions.
+    if let Some(cached) = memo.get(&expr) {
+        return Ok(cached.clone());
+    }
+
     enum Node {
         IsVar,
         IsConst,
@@ -196,20 +212,20 @@ fn eval_dual(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DualValue, Di
         ExprData::BigO(_) => Node::IsConst,
     });
 
-    match node {
+    let result = match node {
         Node::IsVar => Ok(DualValue::seed(expr, pool)),
         Node::IsConst => Ok(DualValue::constant(expr, pool)),
         Node::Add(args) => {
             let mut acc = DualValue::constant(pool.integer(0_i32), pool);
             for a in args {
-                acc = acc.add(eval_dual(a, var, pool)?, pool);
+                acc = acc.add(eval_dual(a, var, pool, memo)?, pool);
             }
             Ok(acc)
         }
         Node::Mul(args) => {
             let mut acc = DualValue::constant(pool.integer(1_i32), pool);
             for a in args {
-                acc = acc.mul(eval_dual(a, var, pool)?, pool);
+                acc = acc.mul(eval_dual(a, var, pool, memo)?, pool);
             }
             Ok(acc)
         }
@@ -220,7 +236,7 @@ fn eval_dual(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DualValue, Di
                     _ => None,
                 })
                 .ok_or(DiffError::ForwardNonIntegerExponent)?;
-            let b = eval_dual(base, var, pool)?;
+            let b = eval_dual(base, var, pool, memo)?;
             Ok(b.pow_int(n, pool))
         }
         Node::Func { name, arg } => {
@@ -228,7 +244,7 @@ fn eval_dual(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DualValue, Di
             if arg == expr {
                 return Err(DiffError::ForwardUnknownFunction(name));
             }
-            let inner = eval_dual(arg, var, pool)?;
+            let inner = eval_dual(arg, var, pool, memo)?;
             match name.as_str() {
                 "sin" => Ok(inner.sin(pool)),
                 "cos" => Ok(inner.cos(pool)),
@@ -238,7 +254,10 @@ fn eval_dual(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DualValue, Di
                 other => Err(DiffError::ForwardUnknownFunction(other.to_string())),
             }
         }
-    }
+    }?;
+
+    memo.insert(expr, result.clone());
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -261,7 +280,8 @@ pub fn diff_forward(
     var: ExprId,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, DiffError> {
-    let dual = eval_dual(expr, var, pool)?;
+    let mut memo: HashMap<ExprId, DualValue> = HashMap::new();
+    let dual = eval_dual(expr, var, pool, &mut memo)?;
     let tangent_raw = dual.tangent;
 
     // Simplify the raw tangent
