@@ -47,6 +47,7 @@ use alkahest_core::{
     // V2-9 — CAD / real QE
     CadError,
     Capabilities,
+    CompileCache as CoreCompileCache,
     Domain,
     EigenError,
     Event,
@@ -83,6 +84,7 @@ use alkahest_core::{
 use alkahest_core::kernel::expr::PredicateKind;
 #[cfg(feature = "cuda")]
 use alkahest_core::{compile_cuda as core_compile_cuda, CudaCompiledFn as CoreCudaCompiledFn};
+use std::sync::Arc;
 // V2-1 — Modular / CRT framework
 use alkahest_core::modular::{
     lift_crt as core_lift_crt, mignotte_bound as core_mignotte_bound,
@@ -3062,8 +3064,7 @@ fn py_compile_expr(
     drop(pool_ref);
 
     Ok(PyCompiledFn {
-        snapshot: compiled,
-        n_inputs: input_ids.len(),
+        inner: Arc::new(compiled),
     })
 }
 
@@ -3104,31 +3105,32 @@ fn py_eval_expr(
 
 #[pyclass(name = "CompiledFn", unsendable)]
 struct PyCompiledFn {
-    snapshot: alkahest_core::CompiledFn,
-    n_inputs: usize,
+    /// Shared ownership — multiple `PyCompiledFn` objects from a `CompileCache`
+    /// reference the same compiled code without recompilation.
+    inner: Arc<alkahest_core::CompiledFn>,
 }
 
 #[pymethods]
 impl PyCompiledFn {
     /// Call the compiled function with a list of float inputs.
     fn __call__(&self, inputs: Vec<f64>) -> PyResult<f64> {
-        if inputs.len() != self.n_inputs {
+        if inputs.len() != self.inner.n_inputs {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "expected {} inputs, got {}",
-                self.n_inputs,
+                self.inner.n_inputs,
                 inputs.len()
             )));
         }
-        Ok(self.snapshot.call(&inputs))
+        Ok(self.inner.call(&inputs))
     }
 
     #[getter]
     fn n_inputs(&self) -> usize {
-        self.n_inputs
+        self.inner.n_inputs
     }
 
     fn __repr__(&self) -> String {
-        format!("<CompiledFn n_inputs={}>", self.n_inputs)
+        format!("<CompiledFn n_inputs={}>", self.inner.n_inputs)
     }
 
     /// Batch-evaluate over N points (Phase 25 — NumPy/JAX array evaluation).
@@ -3152,18 +3154,156 @@ impl PyCompiledFn {
                 n_points
             )));
         }
-        if n_vars != self.n_inputs {
+        if n_vars != self.inner.n_inputs {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "expected {} variables, got {}",
-                self.n_inputs, n_vars
+                self.inner.n_inputs, n_vars
             )));
         }
         let cols: Vec<&[f64]> = (0..n_vars)
             .map(|i| &inputs_flat[i * n_points..(i + 1) * n_points])
             .collect();
         let mut output = vec![0.0f64; n_points];
-        self.snapshot.call_batch(&cols, &mut output);
+        self.inner.call_batch(&cols, &mut output);
         Ok(output)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Compiled expression cache
+// ---------------------------------------------------------------------------
+
+/// Content-addressed cache of JIT-compiled functions.
+///
+/// Because Alkahest hash-conses expressions, the same expression tree always
+/// produces the same ``ExprId``.  ``CompileCache`` exploits this to skip
+/// recompilation: the first ``compile()`` call JIT-compiles the expression;
+/// subsequent calls with the same ``(expr, inputs)`` pair return the cached
+/// result in O(1) time.
+///
+/// Example::
+///
+///     cache = alkahest.CompileCache()
+///     x = alkahest.symbol("x")
+///     expr = x ** 2
+///
+///     f = cache.compile(expr, [x])   # compiles
+///     g = cache.compile(expr, [x])   # cache hit — same CompiledFn
+///
+///     assert f(3.0) == 9.0
+///     print(cache.stats())           # {'len': 1, 'compiles': 1, 'hits': 1, 'hit_rate': 0.5}
+#[pyclass(name = "CompileCache", unsendable)]
+struct PyCompileCache {
+    inner: CoreCompileCache,
+}
+
+#[pymethods]
+impl PyCompileCache {
+    /// Create a new, empty compile cache.
+    #[new]
+    fn new() -> Self {
+        PyCompileCache {
+            inner: CoreCompileCache::new(),
+        }
+    }
+
+    /// Compile `expr` with the given `inputs`, returning a cached :class:`CompiledFn`.
+    ///
+    /// The first call for a given ``(expr, inputs)`` pair JIT-compiles the
+    /// expression.  Subsequent calls return the same :class:`CompiledFn`
+    /// without recompilation.
+    ///
+    /// Parameters
+    /// ----------
+    /// expr : Expr
+    ///     The expression to compile.
+    /// inputs : list[Expr]
+    ///     Ordered list of symbolic input variables.
+    ///
+    /// Returns
+    /// -------
+    /// CompiledFn
+    fn compile(
+        &mut self,
+        py: Python<'_>,
+        expr: PyRef<PyExpr>,
+        inputs: &Bound<'_, PyList>,
+    ) -> PyResult<PyCompiledFn> {
+        let input_ids: Vec<ExprId> = inputs
+            .iter()
+            .map(|item| {
+                let e: PyRef<PyExpr> = item.extract()?;
+                Ok(e.id)
+            })
+            .collect::<PyResult<_>>()?;
+
+        let pool_ref = expr.pool.borrow(py);
+        let arc = self
+            .inner
+            .compile(expr.id, &input_ids, &pool_ref.inner)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
+        drop(pool_ref);
+
+        Ok(PyCompiledFn { inner: arc })
+    }
+
+    /// Number of ``(expr, inputs)`` pairs currently cached.
+    #[getter]
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// ``True`` if the cache contains no entries.
+    #[getter]
+    fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    /// Remove all cached entries.
+    ///
+    /// Live :class:`CompiledFn` objects already returned to Python callers
+    /// remain valid — they hold an independent reference to the compiled code.
+    fn clear(&mut self) {
+        self.inner.clear();
+    }
+
+    /// ``True`` if a compiled function for ``(expr, inputs)`` is in the cache.
+    fn contains(
+        &self,
+        py: Python<'_>,
+        expr: PyRef<PyExpr>,
+        inputs: &Bound<'_, PyList>,
+    ) -> PyResult<bool> {
+        let input_ids: Vec<ExprId> = inputs
+            .iter()
+            .map(|item| {
+                let e: PyRef<PyExpr> = item.extract()?;
+                Ok(e.id)
+            })
+            .collect::<PyResult<_>>()?;
+        let _ = py;
+        Ok(self.inner.contains(expr.id, &input_ids))
+    }
+
+    /// Return a dict with cache statistics.
+    ///
+    /// Keys: ``len``, ``compiles``, ``hits``, ``hit_rate``.
+    fn stats(&self) -> std::collections::HashMap<&'static str, f64> {
+        let mut m = std::collections::HashMap::new();
+        m.insert("len", self.inner.len() as f64);
+        m.insert("compiles", self.inner.compile_count() as f64);
+        m.insert("hits", self.inner.hit_count() as f64);
+        m.insert("hit_rate", self.inner.hit_rate());
+        m
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "<CompileCache len={} hits={} compiles={}>",
+            self.inner.len(),
+            self.inner.hit_count(),
+            self.inner.compile_count(),
+        )
     }
 }
 
@@ -5753,6 +5893,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_eval_expr, m)?)?;
     m.add_function(wrap_pyfunction!(py_jit_is_available, m)?)?;
     m.add_class::<PyCompiledFn>()?;
+    m.add_class::<PyCompileCache>()?;
     // Phase 22 — Ball arithmetic
     m.add_class::<PyArbBall>()?;
     m.add_function(wrap_pyfunction!(py_interval_eval, m)?)?;

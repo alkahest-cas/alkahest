@@ -47,6 +47,9 @@ pub use nvptx::{compile_cuda, CudaCompiledFn, CudaError};
 #[cfg(feature = "cranelift")]
 mod cranelift_backend;
 
+pub mod cache;
+pub use cache::CompileCache;
+
 // ---------------------------------------------------------------------------
 // Error type (always compiled)
 // ---------------------------------------------------------------------------
@@ -191,6 +194,23 @@ impl CompiledFn {
         }
     }
 }
+
+// SAFETY: `CompiledFn` holds one of:
+// - An interpreter closure that is already `Send + Sync`.
+// - A Cranelift `JITModule` (its code pages are read-only after
+//   `finalize_definitions`) plus an immutable function pointer.
+// - An LLVM `ExecutionEngine` and `Context` whose code pages are similarly
+//   read-only after JIT finalization.
+//
+// All three variants are safe to move across threads (`Send`) and to call
+// concurrently from multiple threads (`Sync`) because:
+//   1. The function pointer targets immutable executable pages.
+//   2. `call()` / `call_batch()` take `&self` (no mutation) and only read
+//      through the pointer.
+//   3. The backing objects (JITModule, ExecutionEngine) are used solely to
+//      keep the code pages alive and are never accessed after construction.
+unsafe impl Send for CompiledFn {}
+unsafe impl Sync for CompiledFn {}
 
 // ---------------------------------------------------------------------------
 // compile — main entry point (tiered dispatch)
@@ -468,6 +488,9 @@ fn eval_interp_snap(
 
 /// Returns nodes of the subgraph rooted at `root` in topological (post) order:
 /// every node appears after all of its children.
+// Used by cranelift_backend and llvm_backend; appears "unused" when both
+// optional features are disabled.
+#[cfg_attr(not(any(feature = "jit", feature = "cranelift")), allow(dead_code))]
 pub(super) fn topo_sort(root: ExprId, pool: &ExprPool) -> Vec<ExprId> {
     let mut visited = std::collections::HashSet::new();
     let mut order = Vec::new();
@@ -475,6 +498,7 @@ pub(super) fn topo_sort(root: ExprId, pool: &ExprPool) -> Vec<ExprId> {
     order
 }
 
+#[cfg_attr(not(any(feature = "jit", feature = "cranelift")), allow(dead_code))]
 fn topo_dfs(
     node: ExprId,
     pool: &ExprPool,

@@ -48,6 +48,7 @@ from .alkahest import (  # noqa: F401
     ArbBall,
     # Phase 21: JIT compiled evaluation
     CompiledFn,
+    CompileCache,
     # Core expression types
     DerivedResult,
     # V1-15: EgraphConfig and simplify_egraph_with
@@ -462,6 +463,7 @@ __all__ = [
     "HybridODE",
     # Phase 21
     "CompiledFn",
+    "CompileCache",
     "compile_expr",
     "eval_expr",
     "jit_is_available",

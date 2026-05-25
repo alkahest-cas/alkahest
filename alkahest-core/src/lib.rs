@@ -103,7 +103,9 @@ pub use sum::{
 };
 
 // Phase 21 — JIT
-pub use jit::{compile, compile_jit_only, eval_interp, jit_available, CompiledFn, JitError};
+pub use jit::{
+    compile, compile_jit_only, eval_interp, jit_available, CompileCache, CompiledFn, JitError,
+};
 
 // V5-2 — StableHLO/XLA bridge
 pub use stablehlo::emit_stablehlo;
@@ -186,7 +188,7 @@ pub mod stable {
         primary_decomposition, radical, PrimaryComponent, PrimaryDecompositionError,
     };
     pub use crate::integrate::{integrate, IntegrationError};
-    pub use crate::jit::{compile, CompiledFn, JitError};
+    pub use crate::jit::{compile, CompileCache, CompiledFn, JitError};
     #[cfg(feature = "cuda")]
     pub use crate::jit::{compile_cuda, CudaCompiledFn, CudaError};
     #[allow(deprecated)]
