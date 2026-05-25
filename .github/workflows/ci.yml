@@ -42,6 +42,8 @@ jobs:
         with:
           python-version: "3.11"
 
+      - uses: astral-sh/setup-uv@v6
+
       - name: Cache Cargo registry
         uses: actions/cache@v5
         with:
@@ -57,8 +59,7 @@ jobs:
 
       - name: Create venv and install Python tooling
         run: |
-          python -m venv .venv
-          .venv/bin/pip install maturin pytest pytest-timeout ruff hypothesis
+          uv sync --no-install-project --group dev
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
           echo "VIRTUAL_ENV=$PWD/.venv" >> $GITHUB_ENV
 
@@ -83,8 +84,14 @@ jobs:
       - name: ruff check
         run: ruff check python/ tests/
 
+      - name: ruff format --check
+        run: ruff format --check python/ tests/
+
       - name: maturin develop
         run: maturin develop --manifest-path alkahest-py/Cargo.toml --features "groebner egraph"
+
+      - name: ty check
+        run: ty check python/alkahest/
 
       - name: pytest (default excludes @pytest.mark.slow sparse roadmap; see pytest.ini)
         env:
@@ -135,6 +142,8 @@ jobs:
         with:
           python-version: "3.11"
 
+      - uses: astral-sh/setup-uv@v6
+
       - name: Cache Cargo registry
         uses: actions/cache@v5
         with:
@@ -150,8 +159,7 @@ jobs:
 
       - name: Create venv and install Python tooling
         run: |
-          python -m venv .venv
-          .venv/bin/pip install maturin pytest pytest-timeout hypothesis
+          uv sync --no-install-project --group dev
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
       - name: maturin develop
@@ -209,11 +217,13 @@ jobs:
         with:
           python-version: "3.11"
 
+      - uses: astral-sh/setup-uv@v6
+        if: matrix.shard == 'hypothesis' || matrix.shard == 'extras'
+
       - name: Create venv (hypothesis / extras)
         if: matrix.shard == 'hypothesis' || matrix.shard == 'extras'
         run: |
-          python -m venv .venv
-          .venv/bin/pip install maturin pytest hypothesis sympy ruff mpmath symengine wolframclient
+          uv sync --no-install-project --group dev --group ci-extras
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
           echo "VIRTUAL_ENV=$PWD/.venv" >> $GITHUB_ENV
 

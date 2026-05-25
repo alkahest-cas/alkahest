@@ -11,10 +11,13 @@ AI agents must follow [`AGENTS.md`](AGENTS.md) instructions.
 End-user install commands (PyPI vs optional `+jit` / `+full` wheels, from source) are in [`README.md`](README.md) and the [**Getting started**](https://alkahest-cas.github.io/alkahest/getting-started.html) chapter of the docs.
 
 ```bash
-# Prerequisites: Rust (stable + nightly), Python 3.9–3.13, maturin, LLVM 15, FLINT (see README § Install)
-pip install maturin pytest hypothesis ruff
-maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "jit egraph parallel groebner"
+# Prerequisites: Rust (stable + nightly), Python 3.9–3.13, uv, LLVM 15, FLINT (see README § Install)
+# Install uv: https://docs.astral.sh/uv/getting-started/installation/
+uv sync --no-install-project --group dev
+uv run maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "jit egraph parallel groebner"
 ```
+
+`--no-install-project` skips building the Rust extension during `uv sync`; `maturin develop` handles that with the right feature flags. After this, `uv run pytest`, `uv run ruff check python/`, etc. all resolve from the project venv.
 
 ## Running tests
 
@@ -36,8 +39,9 @@ See [`TESTING.md`](TESTING.md) for the full testing strategy (fuzzing, oracle cr
 ```bash
 cargo fmt --all
 cargo clippy --all --all-features -- -D warnings
-ruff check python/ --fix
-ruff format python/
+uv run ruff check python/ tests/ --fix
+uv run ruff format python/ tests/
+uv run ty check python/alkahest/
 ```
 
 CI enforces all of the above on every PR.

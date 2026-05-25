@@ -129,11 +129,12 @@ jobs:
         with:
           python-version: "3.11"
 
+      - uses: astral-sh/setup-uv@v6
+        if: matrix.python
+
       - name: Install Python tooling
         if: matrix.python
-        run: |
-          python -m venv .venv
-          .venv/bin/pip install maturin pytest pytest-timeout hypothesis ruff
+        run: uv sync --no-install-project --group dev
 
       - name: maturin develop
         if: matrix.python

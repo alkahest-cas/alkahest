@@ -80,8 +80,18 @@ Required to enable optional features (`jit`, `groebner`, `cuda`) or for developm
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
   rustup toolchain install nightly
   ```
+- **uv** (recommended Python tool manager): `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - **LLVM 15**: `apt install llvm-15 libllvm15 llvm-15-dev` / `brew install llvm@15`
 - **FLINT ≥ 2.9** (includes GMP and MPFR): `apt install libflint-dev` / `brew install flint`
+
+```bash
+# Install dev tools (maturin, pytest, ruff, ty, …) without building the Rust extension:
+uv sync --no-install-project --group dev
+# Build and install the extension into the project venv:
+uv run maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel egraph jit groebner"
+```
+
+Without `uv`, install maturin directly and run the same develop command:
 
 ```bash
 pip install maturin

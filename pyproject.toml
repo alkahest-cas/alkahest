@@ -36,10 +36,40 @@ manifest-path = "alkahest-py/Cargo.toml"
 module-name = "alkahest"
 features = ["pyo3/extension-module"]
 
+# ── Dev / CI dependencies ────────────────────────────────────────────────────
+# Use `uv sync --no-install-project --group dev` to install.
+# (--no-install-project skips building the Rust extension; use `maturin develop` for that.)
+[dependency-groups]
+dev = [
+    "maturin>=1.5,<2.0",
+    "pytest>=7",
+    "pytest-timeout",
+    "hypothesis",
+    "ruff>=0.15",
+    "ty>=0.0.1",
+]
+# Extra oracle / comparison deps — pulled in CI nightly extras shard only.
+ci-extras = [
+    "sympy",
+    "mpmath",
+    "symengine",
+    "wolframclient",
+]
+
+# ── Ruff ─────────────────────────────────────────────────────────────────────
 [tool.ruff]
 line-length = 100
 target-version = "py39"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "PT", "TCH", "C4"]
 ignore = []
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ── ty (type checker) ────────────────────────────────────────────────────────
+[tool.ty]
+src = ["python"]
+python-version = "3.9"
