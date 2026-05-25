@@ -84,7 +84,7 @@ jobs:
         run: ruff check python/ tests/
 
       - name: maturin develop
-        run: maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
+        run: maturin develop --manifest-path alkahest-py/Cargo.toml --features "groebner egraph"
 
       - name: pytest (default excludes @pytest.mark.slow sparse roadmap; see pytest.ini)
         env:
@@ -155,7 +155,7 @@ jobs:
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
 
       - name: maturin develop
-        run: maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
+        run: maturin develop --manifest-path alkahest-py/Cargo.toml --features "groebner egraph"
 
       # Scan only sparse_interp tests — full `pytest -m slow` imports every module under
       # `tests/` during collection (needs hypothesis, sympy, …).
@@ -240,7 +240,7 @@ jobs:
         env:
           HYPOTHESIS_MAX_EXAMPLES: "5000"
         run: |
-          maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
+          maturin develop --manifest-path alkahest-py/Cargo.toml --features "groebner egraph"
           pytest tests/
 
       - name: ThreadSanitizer
@@ -307,7 +307,7 @@ jobs:
         env:
           RUN_COMMERCIAL_CAS: "1"
         run: |
-          maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
+          maturin develop --manifest-path alkahest-py/Cargo.toml --features "groebner egraph"
           if [ -f tests/test_oracle.py ]; then
             pytest tests/test_oracle.py -v
           fi
