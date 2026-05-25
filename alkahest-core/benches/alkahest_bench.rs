@@ -591,13 +591,19 @@ fn bench_ball(c: &mut Criterion) {
     g.bench_function("arb_add_128bit", |b| {
         let a = ArbBall::from_midpoint_radius(1.5, 0.1, 128);
         let bv = ArbBall::from_midpoint_radius(2.5, 0.2, 128);
-        b.iter(|| codspeed_criterion_compat::black_box(a.clone()) + codspeed_criterion_compat::black_box(bv.clone()));
+        b.iter(|| {
+            codspeed_criterion_compat::black_box(a.clone())
+                + codspeed_criterion_compat::black_box(bv.clone())
+        });
     });
 
     g.bench_function("arb_mul_128bit", |b| {
         let a = ArbBall::from_midpoint_radius(1.5, 0.1, 128);
         let bv = ArbBall::from_midpoint_radius(2.5, 0.2, 128);
-        b.iter(|| codspeed_criterion_compat::black_box(a.clone()) * codspeed_criterion_compat::black_box(bv.clone()));
+        b.iter(|| {
+            codspeed_criterion_compat::black_box(a.clone())
+                * codspeed_criterion_compat::black_box(bv.clone())
+        });
     });
 
     g.bench_function("arb_sin_128bit", |b| {
@@ -771,13 +777,19 @@ fn bench_groebner(c: &mut Criterion) {
     g.bench_function("cyclic4_f4", |b| {
         b.iter(|| {
             let sys = cyclic_system_bench(4);
-            codspeed_criterion_compat::black_box(compute_groebner_basis(sys, MonomialOrder::GRevLex))
+            codspeed_criterion_compat::black_box(compute_groebner_basis(
+                sys,
+                MonomialOrder::GRevLex,
+            ))
         });
     });
     g.bench_function("cyclic4_f5", |b| {
         b.iter(|| {
             let sys = cyclic_system_bench(4);
-            codspeed_criterion_compat::black_box(compute_groebner_basis_f5(sys, MonomialOrder::GRevLex))
+            codspeed_criterion_compat::black_box(compute_groebner_basis_f5(
+                sys,
+                MonomialOrder::GRevLex,
+            ))
         });
     });
     // Cyclic-5: meaningful benchmark, F5 criteria start showing significant wins.
@@ -785,13 +797,19 @@ fn bench_groebner(c: &mut Criterion) {
     g.bench_function("cyclic5_f4", |b| {
         b.iter(|| {
             let sys = cyclic_system_bench(5);
-            codspeed_criterion_compat::black_box(compute_groebner_basis(sys, MonomialOrder::GRevLex))
+            codspeed_criterion_compat::black_box(compute_groebner_basis(
+                sys,
+                MonomialOrder::GRevLex,
+            ))
         });
     });
     g.bench_function("cyclic5_f5", |b| {
         b.iter(|| {
             let sys = cyclic_system_bench(5);
-            codspeed_criterion_compat::black_box(compute_groebner_basis_f5(sys, MonomialOrder::GRevLex))
+            codspeed_criterion_compat::black_box(compute_groebner_basis_f5(
+                sys,
+                MonomialOrder::GRevLex,
+            ))
         });
     });
     g.finish();

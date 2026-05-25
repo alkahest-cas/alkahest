@@ -48,7 +48,9 @@ jobs:
           .venv/bin/pip install maturin pytest-codspeed sympy
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
           echo "VIRTUAL_ENV=$PWD/.venv" >> $GITHUB_ENV
-          maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
+          # Use the venv-local maturin directly — $GITHUB_PATH changes only take
+          # effect in the *next* step, so `maturin` is not yet on PATH here.
+          .venv/bin/maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
 
       # ---------------------------------------------------------------------------
       # Rust: wrap cargo bench with CodSpeed instrumentation.
