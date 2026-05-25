@@ -1,7 +1,7 @@
 use alkahest_cas::matrix::{hermite_form, IntegerMatrix};
 #[cfg(feature = "groebner")]
 use alkahest_cas::poly::groebner::{
-    compute_groebner_basis, compute_groebner_basis_f5, MonomialOrder,
+    compute_buchberger_basis as compute_groebner_basis, compute_groebner_basis_f5, MonomialOrder,
 };
 #[cfg(feature = "egraph")]
 use alkahest_cas::simplify_egraph;
