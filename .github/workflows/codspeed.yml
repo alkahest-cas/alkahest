@@ -53,15 +53,22 @@ jobs:
           .venv/bin/maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
 
       # ---------------------------------------------------------------------------
-      # Rust: wrap cargo bench with CodSpeed instrumentation.
-      # codspeed-criterion-compat detects the CODSPEED_ENV var set by the action
-      # and switches from wall-clock to Valgrind instruction counting.
+      # Rust: use cargo-codspeed so CODSPEED_CARGO_WORKSPACE_ROOT is set.
+      # codspeed-criterion-compat panics at startup if that variable is absent;
+      # bare `cargo bench` inside the action does NOT set it — only the
+      # cargo-codspeed runner does.  Pattern: build first, then run via action.
       # ---------------------------------------------------------------------------
+      - name: Install cargo-codspeed
+        run: cargo install cargo-codspeed --locked
+
+      - name: Build Rust benchmarks for CodSpeed
+        run: cargo codspeed build --package alkahest-cas --bench alkahest_bench --features groebner
+
       - name: Rust benchmarks (CodSpeed)
         uses: CodSpeedHQ/action@v3
         with:
           token: ${{ secrets.CODSPEED_TOKEN }}
-          run: cargo bench --package alkahest-cas --bench alkahest_bench --features groebner
+          run: cargo codspeed run
 
       # ---------------------------------------------------------------------------
       # Python: pytest-codspeed provides the `benchmark` fixture used in
