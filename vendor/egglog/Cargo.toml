@@ -1,0 +1,75 @@
+[package]
+edition = "2021"
+name = "egglog"
+version = "0.4.0"
+description = "egglog is a language that combines the benefits of equality saturation and datalog. It can be used for analysis, optimization, and synthesis of programs. It is the successor to the popular rust library egg."
+repository = "https://github.com/egraphs-good/egglog"
+keywords = ["e-graphs", "egglog", "datalog", "compiler", "equality"]
+license = "MIT"
+readme = "README.md"
+
+[[bench]]
+name = "example_benchmarks"
+harness = false
+
+[[test]]
+name = "files"
+harness = false
+required-features = ["bin"]
+
+[[bin]]
+name = "egglog"
+path = "src/main.rs"
+required-features = ["bin"]
+
+[features]
+default = ["bin"]
+
+bin = [
+  "serde",
+  "graphviz",
+  "dep:clap",
+  "dep:env_logger",
+  "dep:chrono",
+]
+serde = ["egraph-serialize/serde"]
+graphviz = ["egraph-serialize/graphviz"]
+wasm-bindgen = ["instant/wasm-bindgen", "dep:getrandom"]
+nondeterministic = []
+
+[dependencies]
+clap = { version = "4", features = ["derive"], optional = true }
+egraph-serialize = { version = "0.2.0", default-features = false }
+env_logger = { version = "0.10", optional = true }
+hashbrown = { version = "0.15" }
+im-rc = "15.1.0"
+im = "15.1.0"
+indexmap = "2.0"
+instant = "0.1"
+lazy_static = "1.4"
+log = "0.4"
+num = "0.4.3"
+ordered-float = { version = "3.7" }
+rustc-hash = "1.1"
+smallvec = "1.11"
+symbol_table = { version = "0.4.0", features = ["global"] }
+thiserror = "1"
+
+# Need to add "js" feature for "graphviz-rust" to work in wasm
+getrandom = { version = "0.2.10", optional = true, features = ["js"] }
+
+[build-dependencies]
+chrono = { version = "0.4", default-features = false, features = ["now"], optional = true }
+
+[dev-dependencies]
+codspeed-criterion-compat = "2.7.2"
+glob = "0.3.1"
+libtest-mimic = "0.6.1"
+
+[profile.release]
+incremental = true
+
+# https://github.com/mstange/samply/?tab=readme-ov-file#turn-on-debug-info-for-full-stacks
+[profile.profiling]
+inherits = "release"
+debug = true

@@ -11,3 +11,11 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 pyo3 = { version = "0.21", features = ["extension-module"] }
+
+# Redirect egglog to the vendored source tree (vendor/egglog, tag v0.4.0).
+# Pure-Rust, no system-library dependency — this makes the `egraph` feature
+# self-contained so it can be included in the default PyPI wheel without any
+# extra install step.  Update by bumping the tag in scripts/vendor-egglog.sh
+# and re-running `cargo update -p egglog`.
+[patch.crates-io]
+egglog = { path = "vendor/egglog" }

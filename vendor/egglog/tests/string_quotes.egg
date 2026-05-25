@@ -1,0 +1,3 @@
+(function f () String :no-merge)
+(input f "tests/string_quotes.csv")
+(check (= (f) "abc"))
