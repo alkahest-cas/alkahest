@@ -40,8 +40,11 @@ export async function recordCommand(
   const headless = opts.headless ?? !process.env.DISPLAY;
   console.log(chalk.dim(`  Headless: ${headless}`));
 
-  // Encode cells into ?demo= URL param so the Notebook pre-populates them
-  // Also inject ?zen=1 (hides toolbar/nav) and ?mode=server (force server execution)
+  // Encode cells into ?demo= URL param so the Notebook pre-populates them.
+  // ?zen=1  — hides toolbar/nav for a clean recording
+  // ?mode=server — forces server execution (alkahest + sympy available)
+  // ?autorun=1 — auto-runs cells without needing the "Run all" button
+  //   (needed because ?zen=1 hides the toolbar that contains "Run all")
   let targetUrl = opts.url;
   let numCells = 0;
   if (opts.code) {
@@ -49,7 +52,7 @@ export async function recordCommand(
     const cellCodes = raw.split(/\n# ---\n/).map((c) => c.trim()).filter(Boolean);
     numCells = cellCodes.length;
     const encoded = Buffer.from(JSON.stringify(cellCodes)).toString('base64');
-    targetUrl = `${opts.url}?demo=${encoded}&mode=server&zen=1`;
+    targetUrl = `${opts.url}?demo=${encoded}&mode=server&zen=1&autorun=1`;
     console.log(chalk.dim(`  Cells:    ${numCells}\n`));
   } else {
     targetUrl = `${opts.url}?zen=1`;
@@ -72,8 +75,12 @@ export async function recordCommand(
   // Brief pause so the first frame shows the loaded cells
   await delay(1500);
 
-  // Click "Run all" to execute all cells with the notebook's natural stagger
-  await page.click('button:has-text("Run all")');
+  // ?autorun=1 triggers execution automatically (used with ?zen=1 since the toolbar is hidden).
+  // For sessions without autorun, fall back to clicking "Run all" in the visible toolbar.
+  const hasAutoRun = targetUrl.includes('autorun=1');
+  if (!hasAutoRun) {
+    await page.click('button:has-text("Run all")');
+  }
   console.log(chalk.cyan('  Running cells…'));
 
   // Poll server health while waiting; abort if it goes offline
@@ -88,10 +95,11 @@ export async function recordCommand(
     }
   }, 3000);
 
-  // Wait until every cell spinner is gone (all cells done) or server dies
+  // Wait until every cell spinner is gone (all cells done) or server dies.
+  // Use a generous timeout (120s) to accommodate slow computations like SymPy.
   await page.waitForFunction(() => {
     return document.querySelectorAll('.animate-spin').length === 0;
-  }, { timeout: 60_000, polling: 500 }).catch(() => {
+  }, { timeout: 120_000, polling: 500 }).catch(() => {
     if (!serverDied) console.log(chalk.yellow('  Warning: timed out waiting for cells to finish'));
   });
 

@@ -25,10 +25,22 @@ del _p
 """
 
 
+_PREFERRED_KERNEL = "alkahest-dev"
+
+
 class KernelSession:
     def __init__(self) -> None:
         self.id = str(uuid.uuid4())
-        self.km = jupyter_client.KernelManager()
+        # Prefer the alkahest-dev kernelspec (main venv with 2.2.x + LD_LIBRARY_PATH).
+        # Fall back to the default kernel if not registered.
+        try:
+            ks = jupyter_client.kernelspec.KernelSpecManager()
+            available = list(ks.get_all_specs().keys())
+            kernel_name = _PREFERRED_KERNEL if _PREFERRED_KERNEL in available else None
+        except Exception:
+            kernel_name = None
+        km_kwargs = {"kernel_name": kernel_name} if kernel_name else {}
+        self.km = jupyter_client.KernelManager(**km_kwargs)
         self.km.start_kernel()
         self.kc = self.km.client()
         self.kc.start_channels()
@@ -45,8 +57,9 @@ class KernelSession:
     def _ensure_helpers(self) -> None:
         if self._helpers_loaded:
             return
-        self._execute_sync(_KERNEL_INIT_CODE)
+        # Set flag first to prevent recursion if _raw_execute calls back here.
         self._helpers_loaded = True
+        self._raw_execute(_KERNEL_INIT_CODE)
 
     async def execute(self, code: str) -> list[dict[str, Any]]:
         """Execute code synchronously and return all outputs."""
@@ -55,6 +68,9 @@ class KernelSession:
 
     def _execute_sync(self, code: str) -> list[dict[str, Any]]:
         self._ensure_helpers()
+        return self._raw_execute(code)
+
+    def _raw_execute(self, code: str) -> list[dict[str, Any]]:
         outputs: list[dict[str, Any]] = []
         self.kc.execute(code)
 
