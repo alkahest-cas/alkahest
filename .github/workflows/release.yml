@@ -376,6 +376,6 @@ jobs:
           pattern: wheels-ubuntu-22.04-*-py*
           path: dist-extras
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: dist-extras/*.whl
