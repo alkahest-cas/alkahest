@@ -9,7 +9,7 @@ use alkahest_cas::{
     compile, diff, eval_interp, simplify, ArbBall, Domain, ExprId, ExprPool, IntervalEval,
     MultiPoly, UniPoly,
 };
-use criterion::{
+use codspeed_criterion_compat::{
     criterion_group, criterion_main, measurement::WallTime, BenchmarkGroup, BenchmarkId, Criterion,
     Throughput,
 };
@@ -357,7 +357,7 @@ fn bench_memory(c: &mut Criterion) {
                 let (bytes, calls) = delta(snap);
                 // Emit as criterion-visible custom measurement — reported in
                 // the HTML report under "memory" section.
-                criterion::black_box((bytes, calls));
+                codspeed_criterion_compat::black_box((bytes, calls));
             }
             total
         });
@@ -376,7 +376,7 @@ fn bench_memory(c: &mut Criterion) {
                 let _ = diff(expr, x, &p).unwrap();
                 total += start.elapsed();
                 let (bytes, calls) = delta(snap);
-                criterion::black_box((bytes, calls));
+                codspeed_criterion_compat::black_box((bytes, calls));
             }
             total
         });
@@ -422,7 +422,7 @@ fn bench_log_overhead(c: &mut Criterion) {
         let expr = poly_expr(&p, x, &[1, 2, 3, 4, 5]);
         b.iter(|| {
             let result = diff(expr, x, &p).unwrap();
-            criterion::black_box(result.log.len())
+            codspeed_criterion_compat::black_box(result.log.len())
         });
     });
 
@@ -432,7 +432,7 @@ fn bench_log_overhead(c: &mut Criterion) {
         let expr = poly_expr(&p, x, &[1, 2, 3, 4, 5]);
         b.iter(|| {
             let result = simplify(expr, &p);
-            criterion::black_box(result.log.len())
+            codspeed_criterion_compat::black_box(result.log.len())
         });
     });
 
@@ -545,7 +545,7 @@ fn bench_jit(c: &mut Criterion) {
         let expr = poly_expr(&p, x, &[1, 2, 3, 4, 5]);
         let mut env = HashMap::new();
         env.insert(x, 1.5f64);
-        b.iter(|| eval_interp(criterion::black_box(expr), &env, &p));
+        b.iter(|| eval_interp(codspeed_criterion_compat::black_box(expr), &env, &p));
     });
 
     // Benchmark compiled interpreter via CompiledFn
@@ -554,7 +554,7 @@ fn bench_jit(c: &mut Criterion) {
         let x = p.symbol("x", Domain::Real);
         let expr = poly_expr(&p, x, &[1, 2, 3, 4, 5]);
         let f = compile(expr, &[x], &p).expect("compile failed");
-        b.iter(|| f.call(criterion::black_box(&[1.5f64])));
+        b.iter(|| f.call(codspeed_criterion_compat::black_box(&[1.5f64])));
     });
 
     // Large polynomial: degree 19
@@ -566,7 +566,7 @@ fn bench_jit(c: &mut Criterion) {
         let expr = p.add(args);
         let mut env = HashMap::new();
         env.insert(x, 1.1f64);
-        b.iter(|| eval_interp(criterion::black_box(expr), &env, &p));
+        b.iter(|| eval_interp(codspeed_criterion_compat::black_box(expr), &env, &p));
     });
 
     g.bench_function("compiled_poly_deg19", |b| {
@@ -575,7 +575,7 @@ fn bench_jit(c: &mut Criterion) {
         let args: Vec<ExprId> = (0_i32..20).map(|k| p.pow(x, p.integer(k))).collect();
         let expr = p.add(args);
         let f = compile(expr, &[x], &p).expect("compile failed");
-        b.iter(|| f.call(criterion::black_box(&[1.1f64])));
+        b.iter(|| f.call(codspeed_criterion_compat::black_box(&[1.1f64])));
     });
 
     g.finish();
@@ -591,23 +591,23 @@ fn bench_ball(c: &mut Criterion) {
     g.bench_function("arb_add_128bit", |b| {
         let a = ArbBall::from_midpoint_radius(1.5, 0.1, 128);
         let bv = ArbBall::from_midpoint_radius(2.5, 0.2, 128);
-        b.iter(|| criterion::black_box(a.clone()) + criterion::black_box(bv.clone()));
+        b.iter(|| codspeed_criterion_compat::black_box(a.clone()) + codspeed_criterion_compat::black_box(bv.clone()));
     });
 
     g.bench_function("arb_mul_128bit", |b| {
         let a = ArbBall::from_midpoint_radius(1.5, 0.1, 128);
         let bv = ArbBall::from_midpoint_radius(2.5, 0.2, 128);
-        b.iter(|| criterion::black_box(a.clone()) * criterion::black_box(bv.clone()));
+        b.iter(|| codspeed_criterion_compat::black_box(a.clone()) * codspeed_criterion_compat::black_box(bv.clone()));
     });
 
     g.bench_function("arb_sin_128bit", |b| {
         let a = ArbBall::from_midpoint_radius(1.0, 0.01, 128);
-        b.iter(|| criterion::black_box(a.clone()).sin());
+        b.iter(|| codspeed_criterion_compat::black_box(a.clone()).sin());
     });
 
     g.bench_function("arb_powi_128bit", |b| {
         let a = ArbBall::from_midpoint_radius(2.0, 0.1, 128);
-        b.iter(|| criterion::black_box(a.clone()).powi(10));
+        b.iter(|| codspeed_criterion_compat::black_box(a.clone()).powi(10));
     });
 
     // interval_eval for a polynomial
@@ -618,8 +618,8 @@ fn bench_ball(c: &mut Criterion) {
         let x_ball = ArbBall::from_midpoint_radius(1.0, 0.1, 128);
         b.iter(|| {
             let mut ev = IntervalEval::new(128);
-            ev.bind(x, criterion::black_box(x_ball.clone()));
-            ev.eval(criterion::black_box(expr), &p)
+            ev.bind(x, codspeed_criterion_compat::black_box(x_ball.clone()));
+            ev.eval(codspeed_criterion_compat::black_box(expr), &p)
         });
     });
 
@@ -644,7 +644,7 @@ fn bench_par(c: &mut Criterion) {
         let mut args = vec![x];
         args.extend(std::iter::repeat(zero).take(63));
         let expr = p.add(args);
-        b.iter(|| simplify(criterion::black_box(expr), &p));
+        b.iter(|| simplify(codspeed_criterion_compat::black_box(expr), &p));
     });
 
     g.bench_function("large_add_par", |b| {
@@ -654,7 +654,7 @@ fn bench_par(c: &mut Criterion) {
         let mut args = vec![x];
         args.extend(std::iter::repeat(zero).take(63));
         let expr = p.add(args);
-        b.iter(|| simplify_par(criterion::black_box(expr), &p));
+        b.iter(|| simplify_par(codspeed_criterion_compat::black_box(expr), &p));
     });
 
     g.bench_function("large_mul_seq", |b| {
@@ -664,7 +664,7 @@ fn bench_par(c: &mut Criterion) {
         let mut args = vec![x];
         args.extend(std::iter::repeat(one).take(63));
         let expr = p.mul(args);
-        b.iter(|| simplify(criterion::black_box(expr), &p));
+        b.iter(|| simplify(codspeed_criterion_compat::black_box(expr), &p));
     });
 
     g.bench_function("large_mul_par", |b| {
@@ -674,7 +674,7 @@ fn bench_par(c: &mut Criterion) {
         let mut args = vec![x];
         args.extend(std::iter::repeat(one).take(63));
         let expr = p.mul(args);
-        b.iter(|| simplify_par(criterion::black_box(expr), &p));
+        b.iter(|| simplify_par(codspeed_criterion_compat::black_box(expr), &p));
     });
 
     g.finish();
@@ -712,7 +712,7 @@ fn bench_nvptx(c: &mut Criterion) {
         // Warm up: first launch pays module-load + libdevice-link cost.
         f.call_batch(&[&xs[..]], &mut out).unwrap();
         b.iter(|| {
-            f.call_batch(criterion::black_box(&[&xs[..]]), &mut out)
+            f.call_batch(codspeed_criterion_compat::black_box(&[&xs[..]]), &mut out)
                 .unwrap();
         });
     });
@@ -771,13 +771,13 @@ fn bench_groebner(c: &mut Criterion) {
     g.bench_function("cyclic4_f4", |b| {
         b.iter(|| {
             let sys = cyclic_system_bench(4);
-            criterion::black_box(compute_groebner_basis(sys, MonomialOrder::GRevLex))
+            codspeed_criterion_compat::black_box(compute_groebner_basis(sys, MonomialOrder::GRevLex))
         });
     });
     g.bench_function("cyclic4_f5", |b| {
         b.iter(|| {
             let sys = cyclic_system_bench(4);
-            criterion::black_box(compute_groebner_basis_f5(sys, MonomialOrder::GRevLex))
+            codspeed_criterion_compat::black_box(compute_groebner_basis_f5(sys, MonomialOrder::GRevLex))
         });
     });
     // Cyclic-5: meaningful benchmark, F5 criteria start showing significant wins.
@@ -785,13 +785,13 @@ fn bench_groebner(c: &mut Criterion) {
     g.bench_function("cyclic5_f4", |b| {
         b.iter(|| {
             let sys = cyclic_system_bench(5);
-            criterion::black_box(compute_groebner_basis(sys, MonomialOrder::GRevLex))
+            codspeed_criterion_compat::black_box(compute_groebner_basis(sys, MonomialOrder::GRevLex))
         });
     });
     g.bench_function("cyclic5_f5", |b| {
         b.iter(|| {
             let sys = cyclic_system_bench(5);
-            criterion::black_box(compute_groebner_basis_f5(sys, MonomialOrder::GRevLex))
+            codspeed_criterion_compat::black_box(compute_groebner_basis_f5(sys, MonomialOrder::GRevLex))
         });
     });
     g.finish();

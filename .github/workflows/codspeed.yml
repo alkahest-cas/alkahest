@@ -1,0 +1,73 @@
+name: CodSpeed
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Benchmarks must be reproducible — no parallel jobs touching the same runner.
+concurrency:
+  group: codspeed-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmarks:
+    name: Performance benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-codspeed-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install system dependencies
+        run: sudo apt-get install -y libflint-dev llvm-15-dev llvm-15
+
+      # Build the Rust extension with groebner so all Python tasks are available.
+      # The groebner bench groups in alkahest_bench.rs are also enabled this way.
+      - name: Build Python extension (maturin + groebner)
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install maturin pytest-codspeed sympy
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+          echo "VIRTUAL_ENV=$PWD/.venv" >> $GITHUB_ENV
+          maturin develop --manifest-path alkahest-py/Cargo.toml --features groebner
+
+      # ---------------------------------------------------------------------------
+      # Rust: wrap cargo bench with CodSpeed instrumentation.
+      # codspeed-criterion-compat detects the CODSPEED_ENV var set by the action
+      # and switches from wall-clock to Valgrind instruction counting.
+      # ---------------------------------------------------------------------------
+      - name: Rust benchmarks (CodSpeed)
+        uses: CodSpeedHQ/action@v3
+        with:
+          token: ${{ secrets.CODSPEED_TOKEN }}
+          run: cargo bench --package alkahest-cas --bench alkahest_bench --features groebner
+
+      # ---------------------------------------------------------------------------
+      # Python: pytest-codspeed provides the `benchmark` fixture used in
+      # bench_codspeed.py.  The --codspeed flag enables instruction-count mode;
+      # without it the same tests run as normal pytest with wall-clock timing.
+      # ---------------------------------------------------------------------------
+      - name: Python benchmarks (CodSpeed)
+        uses: CodSpeedHQ/action@v3
+        with:
+          token: ${{ secrets.CODSPEED_TOKEN }}
+          run: pytest benchmarks/bench_codspeed.py --codspeed
