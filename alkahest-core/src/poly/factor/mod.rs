@@ -9,29 +9,11 @@
 use super::error::FactorError;
 use super::multipoly::{multi_to_flint_pub, MultiPoly};
 use super::unipoly::UniPoly;
-use crate::flint::ffi::{self, FmpzMPolyFactorStruct, NmodPolyFactorStruct, NmodPolyStruct};
-use crate::flint::integer::FlintInteger;
-use crate::flint::mpoly::{FlintMPoly, FlintMPolyCtx};
+use crate::flint::mpoly::{FlintMPolyCtx, FlintMPolyFactor};
+use crate::flint::nmod::{FlintNmodPoly, FlintNmodPolyFactor};
 use crate::flint::FlintPoly;
 use crate::kernel::ExprId;
-
-#[cfg(not(flint3))]
-unsafe fn nmod_poly_factor_get_nth(
-    z: *mut NmodPolyStruct,
-    fac: *mut NmodPolyFactorStruct,
-    i: ffi::slong,
-) {
-    ffi::nmod_poly_factor_get_nmod_poly(z, fac, i);
-}
-
-#[cfg(flint3)]
-unsafe fn nmod_poly_factor_get_nth(
-    z: *mut NmodPolyStruct,
-    fac: *mut NmodPolyFactorStruct,
-    i: ffi::slong,
-) {
-    ffi::nmod_poly_factor_get_poly(z, fac as *const NmodPolyFactorStruct, i);
-}
+use std::sync::Arc;
 
 /// Factors of a non-zero `UniPoly`: `polynomial = unit · ∏ baseᵢ^expᵢ`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,46 +116,32 @@ impl MultiPoly {
             return Err(FactorError::ZeroPolynomial);
         }
         let nvars = self.vars.len().max(1);
+        // Arc-shared context: FlintMPoly and FlintMPolyFactor both clone it,
+        // so their Drop impls can call the matching FLINT clear functions.
         let ctx = FlintMPolyCtx::new(nvars);
-        let mut a = multi_to_flint_pub(self, &ctx);
-        unsafe {
-            let mut fac = std::mem::MaybeUninit::<FmpzMPolyFactorStruct>::uninit();
-            ffi::fmpz_mpoly_factor_init(fac.as_mut_ptr(), ctx.as_ptr());
-            let mut fac = fac.assume_init();
-            let ok = ffi::fmpz_mpoly_factor(&mut fac, a.as_ptr(), ctx.as_ptr());
-            if ok == 0 {
-                ffi::fmpz_mpoly_factor_clear(&mut fac, ctx.as_ptr());
-                a.clear_with_ctx(&ctx);
-                return Err(FactorError::FlintFailure);
-            }
-            if ffi::fmpz_cmp_ui(std::ptr::addr_of!(fac.constant_den), 1) != 0 {
-                ffi::fmpz_mpoly_factor_clear(&mut fac, ctx.as_ptr());
-                a.clear_with_ctx(&ctx);
-                return Err(FactorError::FlintFailure);
-            }
-            let mut unit = FlintInteger::new();
-            ffi::fmpz_mpoly_factor_get_constant_fmpz(unit.inner_mut_ptr(), &fac, ctx.as_ptr());
-            let n = ffi::fmpz_mpoly_factor_length(&fac, ctx.as_ptr());
-            let mut factors = Vec::with_capacity(n as usize);
-            for i in 0..n {
-                let mut base = FlintMPoly::new(&ctx);
-                ffi::fmpz_mpoly_factor_get_base(base.as_mut_ptr(), &fac, i, ctx.as_ptr());
-                let terms = base.terms(nvars, &ctx);
-                base.clear_with_ctx(&ctx);
-                let mp = MultiPoly {
-                    vars: self.vars.clone(),
-                    terms,
-                };
-                let exp = ffi::fmpz_mpoly_factor_get_exp_si(&mut fac, i, ctx.as_ptr()) as u32;
-                factors.push((mp, exp));
-            }
-            ffi::fmpz_mpoly_factor_clear(&mut fac, ctx.as_ptr());
-            a.clear_with_ctx(&ctx);
-            Ok(MultiPolyFactorization {
-                unit: unit.to_rug(),
-                factors,
-            })
+        let a = multi_to_flint_pub(self, Arc::clone(&ctx));
+
+        let mut fac = FlintMPolyFactor::new(Arc::clone(&ctx));
+        if !fac.factor(&a) {
+            return Err(FactorError::FlintFailure);
         }
+        if !fac.constant_den_is_one() {
+            return Err(FactorError::FlintFailure);
+        }
+
+        let unit = fac.unit().to_rug();
+        let mut factors = Vec::with_capacity(fac.len());
+        for i in 0..fac.len() {
+            let base = fac.base_at(i);
+            let terms = base.terms();
+            let mp = MultiPoly {
+                vars: self.vars.clone(),
+                terms,
+            };
+            let exp = fac.exp_at(i);
+            factors.push((mp, exp));
+        }
+        Ok(MultiPolyFactorization { unit, factors })
     }
 }
 
@@ -186,35 +154,27 @@ pub fn factor_univariate_mod_p(
         return Err(FactorError::InvalidModulus);
     }
     let p = modulus as i128;
-    let mut poly: NmodPolyStruct = unsafe { std::mem::zeroed() };
-    let factors = unsafe {
-        ffi::nmod_poly_init(&mut poly, modulus);
-        for (i, &c) in coeffs.iter().enumerate() {
-            let r = (c as i128 % p + p) % p;
-            ffi::nmod_poly_set_coeff_ui(&mut poly, i as ffi::slong, r as ffi::ulong);
-        }
-        let mut fac = std::mem::MaybeUninit::<NmodPolyFactorStruct>::uninit();
-        ffi::nmod_poly_factor_init(fac.as_mut_ptr());
-        let mut fac = fac.assume_init();
-        ffi::nmod_poly_factor(&mut fac, &poly);
-        let mut factors = Vec::with_capacity(fac.num as usize);
-        for i in 0..fac.num {
-            let mut z: NmodPolyStruct = std::mem::zeroed();
-            ffi::nmod_poly_init(&mut z, modulus);
-            nmod_poly_factor_get_nth(&mut z, &mut fac, i);
-            let deg = ffi::nmod_poly_degree(&z);
-            let mut vc = Vec::with_capacity(deg as usize + 1);
-            for j in 0..=deg {
-                vc.push(ffi::nmod_poly_get_coeff_ui(&z, j));
-            }
-            ffi::nmod_poly_clear(&mut z);
-            let exp = *fac.exp.add(i as usize) as u32;
-            factors.push((vc, exp));
-        }
-        ffi::nmod_poly_factor_clear(&mut fac);
-        ffi::nmod_poly_clear(&mut poly);
-        factors
-    };
+
+    // FlintNmodPoly and FlintNmodPolyFactor are drop-safe: no manual
+    // nmod_poly_clear / nmod_poly_factor_clear needed.
+    let mut poly = FlintNmodPoly::new(modulus);
+    for (i, &c) in coeffs.iter().enumerate() {
+        let r = ((c as i128 % p) + p) % p;
+        poly.set_coeff(i, r as u64);
+    }
+
+    let mut fac = FlintNmodPolyFactor::new();
+    fac.factor(&poly);
+
+    let factors = (0..fac.len())
+        .map(|i| {
+            let z = fac.poly_at(modulus, i);
+            let deg = z.degree();
+            let vc = (0..=deg).map(|j| z.get_coeff(j)).collect::<Vec<_>>();
+            (vc, fac.exp_at(i))
+        })
+        .collect();
+
     Ok(UniPolyFactorModP { modulus, factors })
 }
 

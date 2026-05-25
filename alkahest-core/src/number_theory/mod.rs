@@ -5,7 +5,8 @@
 //! brute-force discrete logs, and quadratic Dirichlet characters (odd square-free conductor).
 
 use crate::errors::AlkahestError;
-use crate::flint::ffi::{self as ffi, FmpzFactorStruct};
+use crate::flint::ffi;
+use crate::flint::integer::FlintIntFactor;
 use crate::flint::FlintInteger;
 use rug::Complete;
 use rug::Integer;
@@ -146,22 +147,13 @@ pub fn isprime(n: &str) -> Result<bool, NumberTheoryError> {
 pub fn factorint(n: &str) -> Result<(i32, Vec<(String, u64)>), NumberTheoryError> {
     let z = parse_int(n)?;
     let fz = FlintInteger::from_rug(&z);
-    unsafe {
-        let mut fac = std::mem::MaybeUninit::<FmpzFactorStruct>::uninit();
-        ffi::fmpz_factor_init(fac.as_mut_ptr());
-        let mut fac = fac.assume_init();
-        ffi::fmpz_factor(&mut fac, fz.inner_ptr());
-        let mut out = Vec::with_capacity(fac.num.max(0) as usize);
-        for i in 0..fac.num {
-            let mut base = FlintInteger::new();
-            ffi::fmpz_set(base.inner_mut_ptr(), fac.p.add(i as usize));
-            let exp = *fac.exp.add(i as usize);
-            out.push((base.to_string(), exp));
-        }
-        let sign = fac.sign;
-        ffi::fmpz_factor_clear(&mut fac);
-        Ok((sign, out))
-    }
+    // FlintIntFactor is drop-safe — no manual fmpz_factor_clear needed.
+    let mut fac = FlintIntFactor::new();
+    fac.factor(&fz);
+    let out = (0..fac.len())
+        .map(|i| (fac.base_at(i).to_string(), fac.exp_at(i)))
+        .collect();
+    Ok((fac.sign(), out))
 }
 
 /// Next prime strictly after `n` (`fmpz_nextprime`).

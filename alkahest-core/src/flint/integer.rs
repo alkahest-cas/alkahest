@@ -230,6 +230,63 @@ impl fmt::Debug for FlintInteger {
 }
 
 // ---------------------------------------------------------------------------
+// FlintIntFactor — drop-safe factorisation container for fmpz integers
+// ---------------------------------------------------------------------------
+
+/// Owned `fmpz_factor_t`.  `Drop` calls `fmpz_factor_clear`.
+pub(crate) struct FlintIntFactor {
+    inner: ffi::FmpzFactorStruct,
+}
+
+impl FlintIntFactor {
+    pub fn new() -> Self {
+        let mut inner = std::mem::MaybeUninit::<ffi::FmpzFactorStruct>::uninit();
+        unsafe { ffi::fmpz_factor_init(inner.as_mut_ptr()) };
+        // SAFETY: `fmpz_factor_init` fully initialises the struct.
+        Self {
+            inner: unsafe { inner.assume_init() },
+        }
+    }
+
+    /// Factor `n` into this container.
+    pub fn factor(&mut self, n: &FlintInteger) {
+        unsafe { ffi::fmpz_factor(&mut self.inner, n.inner_ptr()) };
+    }
+
+    /// Sign of the factored integer (`1` or `-1`).
+    pub fn sign(&self) -> i32 {
+        self.inner.sign
+    }
+
+    /// Number of distinct prime factors.
+    pub fn len(&self) -> usize {
+        self.inner.num.max(0) as usize
+    }
+
+    /// The `i`-th prime base as a [`FlintInteger`].
+    pub fn base_at(&self, i: usize) -> FlintInteger {
+        debug_assert!(i < self.len());
+        let mut f = FlintInteger::new();
+        // SAFETY: `i < num` so the pointer is in bounds.
+        unsafe { ffi::fmpz_set(f.inner_mut_ptr(), self.inner.p.add(i)) };
+        f
+    }
+
+    /// Exponent of the `i`-th prime factor.
+    pub fn exp_at(&self, i: usize) -> u64 {
+        debug_assert!(i < self.len());
+        unsafe { *self.inner.exp.add(i) }
+    }
+}
+
+impl Drop for FlintIntFactor {
+    fn drop(&mut self) {
+        // SAFETY: `self.inner` was initialised by `fmpz_factor_init` in `new`.
+        unsafe { ffi::fmpz_factor_clear(&mut self.inner) };
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 

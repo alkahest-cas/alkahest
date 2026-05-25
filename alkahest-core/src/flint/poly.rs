@@ -3,6 +3,64 @@ use std::ffi::CString;
 use std::fmt;
 use std::ops::{Add, Mul, Sub};
 
+// ---------------------------------------------------------------------------
+// FlintPolyFactor — drop-safe factorisation container for fmpz_poly
+// ---------------------------------------------------------------------------
+
+/// Owned `fmpz_poly_factor_t`.  `Drop` calls `fmpz_poly_factor_clear`.
+pub(crate) struct FlintPolyFactor {
+    inner: ffi::FmpzPolyFactorStruct,
+}
+
+impl FlintPolyFactor {
+    pub fn new() -> Self {
+        let mut inner = std::mem::MaybeUninit::<ffi::FmpzPolyFactorStruct>::uninit();
+        unsafe { ffi::fmpz_poly_factor_init(inner.as_mut_ptr()) };
+        // SAFETY: `fmpz_poly_factor_init` fully initialises the struct.
+        Self {
+            inner: unsafe { inner.assume_init() },
+        }
+    }
+
+    pub fn factor(&mut self, poly: &FlintPoly) {
+        unsafe { ffi::fmpz_poly_factor(&mut self.inner, &poly.inner) };
+    }
+
+    /// Number of distinct irreducible factors.
+    pub fn len(&self) -> usize {
+        self.inner.num.max(0) as usize
+    }
+
+    /// The unit (leading-coefficient sign) as a [`super::integer::FlintInteger`].
+    pub fn unit(&self) -> super::integer::FlintInteger {
+        let mut u = super::integer::FlintInteger::new();
+        unsafe { ffi::fmpz_poly_factor_get_fmpz(u.inner_mut_ptr(), &self.inner) };
+        u
+    }
+
+    /// Copy the `i`-th irreducible factor into a new [`FlintPoly`].
+    pub fn poly_at(&self, i: usize) -> FlintPoly {
+        debug_assert!(i < self.len());
+        let mut p = FlintPoly::new();
+        unsafe { ffi::fmpz_poly_factor_get_fmpz_poly(&mut p.inner, &self.inner, i as ffi::slong) };
+        p
+    }
+
+    /// Exponent of the `i`-th factor.
+    pub fn exp_at(&self, i: usize) -> u32 {
+        debug_assert!(i < self.len());
+        // SAFETY: `i < num` so the pointer arithmetic is in bounds.
+        unsafe { *self.inner.exp.add(i) as u32 }
+    }
+}
+
+impl Drop for FlintPolyFactor {
+    fn drop(&mut self) {
+        // SAFETY: `self.inner` was initialised by `fmpz_poly_factor_init` in `new`.
+        unsafe { ffi::fmpz_poly_factor_clear(&mut self.inner) };
+    }
+}
+
 /// Safe wrapper over FLINT's `fmpz_poly_t` — dense univariate polynomial
 /// over the integers (`ℤ[x]`).
 ///
@@ -190,23 +248,14 @@ impl FlintPoly {
         if self.is_zero() {
             return Err(());
         }
-        unsafe {
-            let mut fac = std::mem::MaybeUninit::<ffi::FmpzPolyFactorStruct>::uninit();
-            ffi::fmpz_poly_factor_init(fac.as_mut_ptr());
-            let mut fac = fac.assume_init();
-            ffi::fmpz_poly_factor(&mut fac, &self.inner);
-            let mut unit = super::integer::FlintInteger::new();
-            ffi::fmpz_poly_factor_get_fmpz(unit.inner_mut_ptr(), &fac);
-            let mut factors = Vec::with_capacity(fac.num as usize);
-            for i in 0..fac.num {
-                let mut fp = FlintPoly::new();
-                ffi::fmpz_poly_factor_get_fmpz_poly(&mut fp.inner, &fac, i);
-                let exp = *fac.exp.add(i as usize) as u32;
-                factors.push((fp, exp));
-            }
-            ffi::fmpz_poly_factor_clear(&mut fac);
-            Ok((unit, factors))
-        }
+        // FlintPolyFactor is drop-safe: no manual fmpz_poly_factor_clear needed.
+        let mut fac = FlintPolyFactor::new();
+        fac.factor(self);
+        let unit = fac.unit();
+        let factors = (0..fac.len())
+            .map(|i| (fac.poly_at(i), fac.exp_at(i)))
+            .collect();
+        Ok((unit, factors))
     }
 
     /// Swinnerton–Dyer polynomial `S_n` (irreducible over ℚ for prime `n`).

@@ -14,13 +14,31 @@
 //! `ffi.rs` for any renamed symbols, and add `arb.rs` / `acb.rs` wrapper
 //! modules.  Safe wrapper APIs above `ffi.rs` are unaffected.
 //!
-//! All raw C pointers are confined to `ffi.rs`; `integer.rs` and `poly.rs`
-//! expose only safe Rust APIs.
+//! # Memory safety design
+//!
+//! Every FLINT type requires a paired `*_init` / `*_clear` call.  This module
+//! provides drop-safe Rust wrappers for all types used in the codebase:
+//!
+//! | FLINT C type            | Rust wrapper              | `Drop` calls              |
+//! |-------------------------|---------------------------|---------------------------|
+//! | `fmpz_t`                | [`FlintInteger`]          | `fmpz_clear`              |
+//! | `fmpz_factor_t`         | [`integer::FlintIntFactor`]| `fmpz_factor_clear`      |
+//! | `fmpz_poly_t`           | [`FlintPoly`]             | `fmpz_poly_clear`         |
+//! | `fmpz_poly_factor_t`    | [`poly::FlintPolyFactor`] | `fmpz_poly_factor_clear`  |
+//! | `fmpz_mpoly_ctx_t`      | [`mpoly::FlintMPolyCtx`]  | `fmpz_mpoly_ctx_clear`    |
+//! | `fmpz_mpoly_t`          | [`mpoly::FlintMPoly`]     | `fmpz_mpoly_clear`        |
+//! | `fmpz_mpoly_factor_t`   | [`mpoly::FlintMPolyFactor`]| `fmpz_mpoly_factor_clear`|
+//! | `nmod_poly_t`           | [`nmod::FlintNmodPoly`]   | `nmod_poly_clear`         |
+//! | `nmod_poly_factor_t`    | [`nmod::FlintNmodPolyFactor`]| `nmod_poly_factor_clear`|
+//! | `fmpz_mat_t`            | [`mat::FlintMat`]         | `fmpz_mat_clear`          |
+//!
+//! All raw C pointers are confined to `ffi.rs`; everything above is safe Rust.
 
 pub(crate) mod ffi;
 pub mod integer;
 pub(crate) mod mat;
 pub(crate) mod mpoly;
+pub(crate) mod nmod;
 pub mod poly;
 
 pub use integer::FlintInteger;

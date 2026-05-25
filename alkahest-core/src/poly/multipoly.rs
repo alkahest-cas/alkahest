@@ -4,6 +4,7 @@ use crate::kernel::{ExprData, ExprId, ExprPool};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::{Add, Mul, Neg, Sub};
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Exponent vector: ascending by variable index.
@@ -265,13 +266,13 @@ impl MultiPoly {
         // Build a FLINT context and convert both polynomials.
         let ctx = FlintMPolyCtx::new(nvars.max(1));
 
-        let a = multi_to_flint(self, &ctx);
-        let b = multi_to_flint(other, &ctx);
+        let a = multi_to_flint(self, Arc::clone(&ctx));
+        let b = multi_to_flint(other, Arc::clone(&ctx));
 
-        let g = a.gcd(&b, &ctx)?;
+        let g = a.gcd(&b)?;
 
         // Convert the GCD back to MultiPoly
-        let terms = g.terms(nvars.max(1), &ctx);
+        let terms = g.terms();
         let mut gcd = MultiPoly {
             vars: self.vars.clone(),
             terms,
@@ -343,11 +344,11 @@ impl MultiPoly {
 }
 
 /// Convert a `MultiPoly` to a `FlintMPoly` in the given context.
-pub(crate) fn multi_to_flint_pub(p: &MultiPoly, ctx: &FlintMPolyCtx) -> FlintMPoly {
+pub(crate) fn multi_to_flint_pub(p: &MultiPoly, ctx: Arc<FlintMPolyCtx>) -> FlintMPoly {
     multi_to_flint(p, ctx)
 }
 
-fn multi_to_flint(p: &MultiPoly, ctx: &FlintMPolyCtx) -> FlintMPoly {
+fn multi_to_flint(p: &MultiPoly, ctx: Arc<FlintMPolyCtx>) -> FlintMPoly {
     let nvars = p.vars.len().max(1);
     let mut fp = FlintMPoly::new(ctx);
     for (exp, coeff) in &p.terms {
@@ -357,9 +358,9 @@ fn multi_to_flint(p: &MultiPoly, ctx: &FlintMPolyCtx) -> FlintMPoly {
                 exp_u64[i] = e as u64;
             }
         }
-        fp.push_term(coeff, &exp_u64, ctx);
+        fp.push_term(coeff, &exp_u64);
     }
-    fp.finish(ctx);
+    fp.finish();
     fp
 }
 

@@ -24,6 +24,7 @@ use crate::poly::multipoly::MultiPoly;
 use crate::poly::unipoly::UniPoly;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -176,16 +177,16 @@ pub fn resultant(
 
     // Build FLINT multivariate context and polynomials.
     let ctx = FlintMPolyCtx::new(nvars.max(1));
-    let fp = multi_to_flint_pub(&mp, &ctx);
-    let fq = multi_to_flint_pub(&mq, &ctx);
+    let fp = multi_to_flint_pub(&mp, Arc::clone(&ctx));
+    let fq = multi_to_flint_pub(&mq, Arc::clone(&ctx));
 
     // Call FLINT's resultant.
     let fr = fp
-        .resultant(&fq, var_idx, &ctx)
+        .resultant(&fq, var_idx)
         .ok_or(ResultantError::FlintError)?;
 
     // Extract terms from the FLINT result (all in the same nvars-dim context).
-    let res_raw = fr.terms(nvars.max(1), &ctx);
+    let res_raw = fr.terms();
 
     // Build a MultiPoly for the result, dropping the eliminated variable
     // dimension (its exponent should be 0 in every term).

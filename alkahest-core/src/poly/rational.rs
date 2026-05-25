@@ -198,28 +198,17 @@ fn to_flintpoly(p: &MultiPoly) -> Option<FlintPoly> {
 /// Exact division of multivariate polynomials: `a / b` assuming `b | a`.
 /// Returns `None` if the division is not exact or if FLINT fails.
 fn mpoly_exact_div(a: &MultiPoly, b: &MultiPoly) -> Option<MultiPoly> {
-    use crate::flint::mpoly::{FlintMPoly, FlintMPolyCtx};
+    use crate::flint::mpoly::FlintMPolyCtx;
+    use std::sync::Arc;
     let nvars = a.vars.len().max(1);
     let ctx = FlintMPolyCtx::new(nvars);
 
-    let fa = super::multipoly::multi_to_flint_pub(a, &ctx);
-    let fb = super::multipoly::multi_to_flint_pub(b, &ctx);
+    let fa = super::multipoly::multi_to_flint_pub(a, Arc::clone(&ctx));
+    let fb = super::multipoly::multi_to_flint_pub(b, Arc::clone(&ctx));
 
-    // Use fmpz_mpoly_divides: Q = a / b if b | a, returns 1; else 0.
-    let mut q = FlintMPoly::new(&ctx);
-    let ok = unsafe {
-        crate::flint::ffi::fmpz_mpoly_divides(
-            q.as_mut_ptr(),
-            fa.as_ptr(),
-            fb.as_ptr(),
-            ctx.as_ptr(),
-        )
-    };
-    if ok == 0 {
-        return None;
-    }
-
-    let terms = q.terms(nvars, &ctx);
+    // FlintMPoly::divides calls fmpz_mpoly_divides internally where ctx.as_ptr() is accessible.
+    let q = fa.divides(&fb)?;
+    let terms = q.terms();
     Some(MultiPoly {
         vars: a.vars.clone(),
         terms,
