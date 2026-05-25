@@ -350,6 +350,78 @@ def numpy_eval(compiled_fn, *arrays):
     return result
 
 
+def numpy_eval_par(compiled_fn, *arrays):
+    """Parallel vectorised evaluation of a :class:`CompiledFn` over arrays.
+
+    Identical to :func:`numpy_eval` but distributes the N evaluation points
+    across all available CPU cores using Rayon.  The Python GIL is released
+    during evaluation so other threads are not blocked.
+
+    Requires the ``parallel`` build feature
+    (``maturin develop --features parallel``).  Falls back silently to the
+    sequential :func:`numpy_eval` when the feature is not compiled in.
+
+    Parameters
+    ----------
+    compiled_fn : CompiledFn
+        A compiled function returned by :func:`compile_expr` or
+        :class:`CompileCache`.
+    *arrays : array-like
+        One array per input variable.  All arrays must have the same number
+        of elements.  Accepts NumPy arrays, PyTorch CPU tensors, JAX arrays,
+        or anything with ``__dlpack__`` or ``__array__``.
+
+    Returns
+    -------
+    numpy.ndarray
+        Output values with the same shape as the first input array.
+
+    Notes
+    -----
+    For small N (< ~1 000 points) thread-scheduling overhead may exceed the
+    computation time; :func:`numpy_eval` is faster in that regime.
+
+    Example
+    -------
+    >>> import numpy as np
+    >>> import alkahest
+    >>> p = alkahest.ExprPool()
+    >>> x = p.symbol("x")
+    >>> f = alkahest.compile_expr(x ** 2, [x])
+    >>> xs = np.linspace(0, 1, 10_000_000)
+    >>> ys = alkahest.numpy_eval_par(f, xs)   # multi-core evaluation
+    """
+    # Use the parallel path if call_batch_raw_par is available (parallel feature).
+    if not hasattr(compiled_fn, "call_batch_raw_par"):
+        return numpy_eval(compiled_fn, *arrays)
+
+    try:
+        import numpy as np
+    except ImportError as exc:
+        raise ImportError(
+            "numpy_eval_par requires NumPy.  Install it with: pip install numpy"
+        ) from exc
+
+    n_vars = compiled_fn.n_inputs
+    if len(arrays) != n_vars:
+        raise ValueError(f"expected {n_vars} input array(s), got {len(arrays)}")
+
+    first_raw = np.asarray(arrays[0])
+    out_shape = first_raw.shape if first_raw.ndim > 0 else ()
+
+    flat_arrays = [_to_numpy(a).ravel() for a in arrays]
+    n_points = flat_arrays[0].size
+    if any(a.size != n_points for a in flat_arrays):
+        raise ValueError("all input arrays must have the same number of elements")
+
+    inputs_flat = [v for arr in flat_arrays for v in arr.tolist()]
+    result_flat = compiled_fn.call_batch_raw_par(inputs_flat, n_vars, n_points)
+    result = np.array(result_flat, dtype=np.float64)
+    if out_shape:
+        result = result.reshape(out_shape)
+    return result
+
+
 __all__ = [
     "__version__",
     # Exceptions (V1-3 — stable diagnostic codes)
@@ -477,6 +549,7 @@ __all__ = [
     "emit_c",
     # Phase 25
     "numpy_eval",
+    "numpy_eval_par",
     # Phase 26
     "collect_like_terms",
     # Phase 27

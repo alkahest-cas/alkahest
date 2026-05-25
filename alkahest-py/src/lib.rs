@@ -3167,6 +3167,47 @@ impl PyCompiledFn {
         self.inner.call_batch(&cols, &mut output);
         Ok(output)
     }
+
+    /// Parallel batch evaluation using Rayon (requires `--features parallel`).
+    ///
+    /// Identical to :meth:`call_batch_raw` but distributes the N points across
+    /// all available CPU cores.  The GIL is released during evaluation so other
+    /// Python threads are not blocked.
+    ///
+    /// Use :func:`alkahest.numpy_eval_par` for a NumPy-friendly wrapper.
+    #[cfg(feature = "parallel")]
+    fn call_batch_raw_par(
+        &self,
+        py: Python<'_>,
+        inputs_flat: Vec<f64>,
+        n_vars: usize,
+        n_points: usize,
+    ) -> PyResult<Vec<f64>> {
+        if inputs_flat.len() != n_vars * n_points {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "inputs_flat length {} != n_vars({}) * n_points({})",
+                inputs_flat.len(),
+                n_vars,
+                n_points
+            )));
+        }
+        if n_vars != self.inner.n_inputs {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "expected {} variables, got {}",
+                self.inner.n_inputs, n_vars
+            )));
+        }
+        let cols: Vec<&[f64]> = (0..n_vars)
+            .map(|i| &inputs_flat[i * n_points..(i + 1) * n_points])
+            .collect();
+        let mut output = vec![0.0f64; n_points];
+        // Release the GIL for the duration of parallel evaluation so other
+        // Python threads can run while Rayon works on the native side.
+        py.allow_threads(|| {
+            self.inner.call_batch_par(&cols, &mut output);
+        });
+        Ok(output)
+    }
 }
 
 // ---------------------------------------------------------------------------

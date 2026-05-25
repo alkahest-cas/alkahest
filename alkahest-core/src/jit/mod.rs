@@ -170,12 +170,13 @@ impl CompiledFn {
         }
     }
 
-    /// Batch-evaluate over N points.
+    /// Batch-evaluate over N points (sequential).
     ///
     /// `inputs[i]` contains the values of variable `i` for all N points.
     /// All slices must have the same length N.  `output` must also have length N.
     ///
     /// This is the hot path for NumPy/JAX array evaluation.
+    /// For multi-core throughput see [`call_batch_par`](Self::call_batch_par).
     pub fn call_batch(&self, inputs: &[&[f64]], output: &mut [f64]) {
         let n = output.len();
         assert_eq!(
@@ -192,6 +193,44 @@ impl CompiledFn {
             let point: Vec<f64> = inputs.iter().map(|col| col[i]).collect();
             output[i] = self.call(&point);
         }
+    }
+
+    /// Batch-evaluate over N points **in parallel** using Rayon.
+    ///
+    /// Identical semantics to [`call_batch`](Self::call_batch) but distributes
+    /// points across all available CPU cores.  Each point is independent — no
+    /// synchronisation required — so the speedup scales linearly with core count.
+    ///
+    /// Available only when compiled with `--features parallel`.
+    ///
+    /// # Performance notes
+    ///
+    /// - For very small N (< ~1 000 points) the thread-scheduling overhead may
+    ///   exceed the computation time; `call_batch` is faster in that regime.
+    /// - The function pointer is shared (`&self`) across threads safely via
+    ///   `CompiledFn: Sync`.
+    #[cfg(feature = "parallel")]
+    pub fn call_batch_par(&self, inputs: &[&[f64]], output: &mut [f64]) {
+        use rayon::prelude::*;
+
+        let n = output.len();
+        assert_eq!(
+            inputs.len(),
+            self.n_inputs,
+            "expected {} input arrays, got {}",
+            self.n_inputs,
+            inputs.len()
+        );
+        for col in inputs {
+            assert_eq!(col.len(), n, "all input arrays must have the same length");
+        }
+
+        // Each point `j` is independent: gather column-major inputs[i][j] for
+        // all variables i, evaluate, write output[j].
+        output.par_iter_mut().enumerate().for_each(|(j, out)| {
+            let point: Vec<f64> = inputs.iter().map(|col| col[j]).collect();
+            *out = self.call(&point);
+        });
     }
 }
 
@@ -876,5 +915,64 @@ mod tests {
         env.insert(x, 0.0); // (0+1)^(2^20) = 1
         let val = eval_interp(cur, &env, &pool).unwrap();
         assert!((val - 1.0).abs() < 1e-10);
+    }
+
+    /// `call_batch_par` produces the same results as `call_batch` on N points.
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn par_batch_matches_sequential() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        // f(x, y) = x² + y²
+        let expr = pool.add(vec![
+            pool.pow(x, pool.integer(2_i32)),
+            pool.pow(y, pool.integer(2_i32)),
+        ]);
+        let f = compile(expr, &[x, y], &pool).unwrap();
+
+        const N: usize = 10_000;
+        let xs: Vec<f64> = (0..N).map(|i| i as f64 * 0.01).collect();
+        let ys: Vec<f64> = (0..N).map(|i| i as f64 * 0.02).collect();
+        let cols: Vec<&[f64]> = vec![&xs, &ys];
+
+        let mut out_seq = vec![0.0f64; N];
+        let mut out_par = vec![0.0f64; N];
+
+        f.call_batch(&cols, &mut out_seq);
+        f.call_batch_par(&cols, &mut out_par);
+
+        for (a, b) in out_seq.iter().zip(out_par.iter()) {
+            assert!(
+                (a - b).abs() < 1e-12,
+                "sequential {a} != parallel {b} at some point"
+            );
+        }
+    }
+
+    /// `call_batch_par` on a single-variable polynomial: f(x) = x³ − 2x + 1.
+    #[cfg(feature = "parallel")]
+    #[test]
+    fn par_batch_polynomial() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        // x³ − 2x + 1
+        let x3 = pool.pow(x, pool.integer(3_i32));
+        let two_x = pool.mul(vec![pool.integer(2_i32), x]);
+        let neg_two_x = pool.mul(vec![pool.integer(-1_i32), two_x]);
+        let expr = pool.add(vec![x3, neg_two_x, pool.integer(1_i32)]);
+        let f = compile(expr, &[x], &pool).unwrap();
+
+        let xs: Vec<f64> = vec![-2.0, -1.0, 0.0, 1.0, 2.0];
+        let cols: Vec<&[f64]> = vec![&xs];
+
+        let mut out = vec![0.0f64; xs.len()];
+        f.call_batch_par(&cols, &mut out);
+
+        // f(x) = x³ − 2x + 1
+        let expected: Vec<f64> = xs.iter().map(|&x| x * x * x - 2.0 * x + 1.0).collect();
+        for (got, exp) in out.iter().zip(expected.iter()) {
+            assert!((got - exp).abs() < 1e-10, "got {got}, expected {exp}");
+        }
     }
 }
