@@ -22,6 +22,15 @@ rustdoc-args  = ["--cfg", "docsrs"]
 egraph = ["dep:egglog"]
 # Requires LLVM 15 dev headers (llvm-15-dev / llvm@15) at compile time.
 jit   = ["dep:inkwell"]
+# Pure-Rust Tier-1 JIT: ~10× faster compile than LLVM, ~10–20% slower code.
+# Enables JIT in the default PyPI wheel without a system LLVM install.
+cranelift = [
+    "dep:cranelift-jit",
+    "dep:cranelift-codegen",
+    "dep:cranelift-frontend",
+    "dep:cranelift-module",
+    "dep:cranelift-native",
+]
 parallel = ["dep:rayon", "dep:dashmap"]
 # Phase 29: use libflint3-dev (FLINT ≥ 3.0) for ArbBall when available.
 # Falls back to MPFR by default; flip this on Ubuntu 24.04 where libflint3-dev ships.
@@ -47,6 +56,11 @@ num-integer = "0.1"
 gmp-mpfr-sys = { version = "1", features = ["force-cross"] }
 egglog  = { version = "0.4", optional = true }
 inkwell = { version = "0.9", features = ["llvm15-0-prefer-dynamic"], optional = true }
+cranelift-jit      = { version = "0.132", optional = true }
+cranelift-codegen  = { version = "0.132", optional = true }
+cranelift-frontend = { version = "0.132", optional = true }
+cranelift-module   = { version = "0.132", optional = true }
+cranelift-native   = { version = "0.132", optional = true }
 rayon   = { version = "1",   optional = true }
 dashmap = { version = "6",   optional = true }
 cudarc  = { version = "0.19", default-features = false, features = ["driver", "nvrtc", "fallback-dynamic-loading", "cuda-12060"], optional = true }

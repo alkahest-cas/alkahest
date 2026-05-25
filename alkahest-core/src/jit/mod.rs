@@ -1,32 +1,25 @@
-//! Phase 21 — LLVM JIT for compiled evaluation of symbolic expressions.
+//! Tiered JIT compilation for symbolic expressions.
 //!
-//! Feature-gated behind `--features jit`.  Without the feature this module
-//! still compiles but provides only the interpreter-based fallback.
-//!
-//! # Architecture
+//! Three compilation tiers, tried in order from fastest-to-compile to
+//! highest-throughput:
 //!
 //! ```text
-//! ExprId  ──► codegen ──► LLVM IR ──► MCJIT ──► fn(*const f64, usize) -> f64
+//! ExprId
+//!   │
+//!   ├─ cranelift (--features cranelift) — pure Rust, ~10× faster compile than
+//!   │   LLVM, ~10–20% slower code. Ships in the default PyPI wheel.
+//!   │
+//!   ├─ LLVM (--features jit) — requires LLVM 15. Best throughput for hot loops.
+//!   │
+//!   └─ interpreter fallback — always available; zero-compile, tree-walking.
 //! ```
 //!
-//! Supported primitives
-//! ────────────────────
-//! | Expr node      | LLVM lowering                              |
-//! |----------------|--------------------------------------------|
-//! | Integer(n)     | `arith.constant f64 n`                     |
-//! | Rational(p/q)  | `arith.constant f64 p/q`                   |
-//! | Float(x)       | `arith.constant f64 x`                     |
-//! | Symbol         | load from input array by position          |
-//! | Add([…])       | chain of `fadd`                            |
-//! | Mul([…])       | chain of `fmul`                            |
-//! | Pow(b, n)      | unrolled `fmul` for integer n, else `pow`  |
-//! | sin/cos/…      | `llvm.sin`, `llvm.cos`, `llvm.exp`, …      |
+//! The public API (`compile`, `eval_interp`, `CompiledFn`) is the same
+//! regardless of which features are compiled in.
 //!
 //! # Example
 //!
 //! ```no_run
-//! # #[cfg(feature = "jit")]
-//! # {
 //! use alkahest_cas::kernel::{Domain, ExprPool};
 //! use alkahest_cas::jit::compile;
 //!
@@ -34,13 +27,12 @@
 //! let x = pool.symbol("x", Domain::Real);
 //! let y = pool.symbol("y", Domain::Real);
 //! let expr = pool.add(vec![
-//!     pool.mul(vec![x, x]),       // x²
-//!     pool.mul(vec![y, y]),       // y²
+//!     pool.mul(vec![x, x]),
+//!     pool.mul(vec![y, y]),
 //! ]);
 //! let f = compile(expr, &[x, y], &pool).unwrap();
-//! let result = f.call(&[3.0, 4.0]);   // 9 + 16 = 25
+//! let result = f.call(&[3.0, 4.0]); // 9 + 16 = 25
 //! assert!((result - 25.0).abs() < 1e-10);
-//! # }
 //! ```
 
 use crate::kernel::{ExprData, ExprId, ExprPool};
@@ -51,6 +43,9 @@ use std::fmt;
 pub mod nvptx;
 #[cfg(feature = "cuda")]
 pub use nvptx::{compile_cuda, CudaCompiledFn, CudaError};
+
+#[cfg(feature = "cranelift")]
+mod cranelift_backend;
 
 // ---------------------------------------------------------------------------
 // Error type (always compiled)
@@ -74,7 +69,7 @@ impl fmt::Display for JitError {
         match self {
             JitError::UnsupportedNode(s) => write!(f, "unsupported expression node: {s}"),
             JitError::CompilationFailed(s) => write!(f, "JIT compilation failed: {s}"),
-            JitError::LlvmInitError(s) => write!(f, "LLVM init error: {s}"),
+            JitError::LlvmInitError(s) => write!(f, "LLVM/Cranelift init error: {s}"),
             JitError::NotAvailable(s) => write!(f, "JIT not available: {s}"),
         }
     }
@@ -98,50 +93,59 @@ impl crate::errors::AlkahestError for JitError {
                 "use eval_expr (interpreted) or simplify the expression to remove unsupported nodes",
             ),
             JitError::CompilationFailed(_) => Some(
-                "check LLVM installation; run with RUST_LOG=debug for details",
+                "check LLVM/Cranelift installation; run with RUST_LOG=debug for details",
             ),
             JitError::LlvmInitError(_) => Some(
-                "ensure LLVM 15 is installed and LLVM_SYS_150_PREFIX is set correctly",
+                "rebuild with --features cranelift (pure Rust) or ensure LLVM 15 is installed and \
+                 LLVM_SYS_150_PREFIX is set correctly",
             ),
             JitError::NotAvailable(_) => Some(
-                "rebuild with --features jit and LLVM 15 installed, or use eval_expr() for the interpreter path",
+                "rebuild with --features cranelift (no system deps) or --features jit (LLVM 15), \
+                 or use eval_expr() for the interpreter path",
             ),
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-// CompiledFn — wraps a callable function pointer
+// CompiledFn — wraps a callable function from any backend
 // ---------------------------------------------------------------------------
 
-/// A JIT-compiled function that evaluates a symbolic expression numerically.
+/// Inner representation covering all three compilation tiers.
+enum CompiledFnInner {
+    #[cfg(feature = "jit")]
+    Llvm {
+        fn_ptr: unsafe extern "C" fn(*const f64, u64) -> f64,
+        // execution_engine must be declared before _context so it drops first;
+        // the context must outlive the execution engine.
+        #[allow(dead_code)]
+        execution_engine: inkwell::execution_engine::ExecutionEngine<'static>,
+        _context: Box<inkwell::context::Context>,
+    },
+
+    #[cfg(feature = "cranelift")]
+    Cranelift {
+        fn_ptr: unsafe extern "C" fn(*const f64, u64) -> f64,
+        /// JITModule owns the code pages; must outlive `fn_ptr`.
+        _module: Box<cranelift_jit::JITModule>,
+    },
+
+    Interpreter(Box<dyn Fn(&[f64]) -> f64 + Send + Sync>),
+}
+
+/// A compiled function that evaluates a symbolic expression numerically.
 ///
 /// The function accepts a slice of `f64` inputs corresponding to the variables
-/// given to `compile`.
+/// given to `compile`.  It may be backed by Cranelift JIT, LLVM JIT, or the
+/// tree-walking interpreter, depending on which features are compiled in.
 pub struct CompiledFn {
-    #[cfg(feature = "jit")]
-    fn_ptr: unsafe extern "C" fn(*const f64, u64) -> f64,
-    // execution_engine must be declared before _context so it drops first;
-    // the context must outlive the execution engine.
-    #[cfg(feature = "jit")]
-    #[allow(dead_code)]
-    execution_engine: inkwell::execution_engine::ExecutionEngine<'static>,
-    #[cfg(feature = "jit")]
-    _context: Box<inkwell::context::Context>,
-
-    /// Fallback interpreter for when the `jit` feature is disabled.
-    #[cfg(not(feature = "jit"))]
-    #[allow(clippy::type_complexity)]
-    interpreter: Box<dyn Fn(&[f64]) -> f64 + Send + Sync>,
-
-    /// Number of inputs expected.
+    inner: CompiledFnInner,
+    /// Number of inputs expected by [`call`](CompiledFn::call).
     pub n_inputs: usize,
 }
 
 impl CompiledFn {
-    /// Evaluate the compiled function with the given inputs.
-    ///
-    /// `inputs.len()` must equal `n_inputs`.
+    /// Evaluate with the given inputs.  Panics if `inputs.len() != n_inputs`.
     pub fn call(&self, inputs: &[f64]) -> f64 {
         assert_eq!(
             inputs.len(),
@@ -150,25 +154,25 @@ impl CompiledFn {
             self.n_inputs,
             inputs.len()
         );
-
-        #[cfg(feature = "jit")]
-        {
-            unsafe { (self.fn_ptr)(inputs.as_ptr(), inputs.len() as u64) }
-        }
-
-        #[cfg(not(feature = "jit"))]
-        {
-            (self.interpreter)(inputs)
+        match &self.inner {
+            #[cfg(feature = "jit")]
+            CompiledFnInner::Llvm { fn_ptr, .. } => unsafe {
+                fn_ptr(inputs.as_ptr(), inputs.len() as u64)
+            },
+            #[cfg(feature = "cranelift")]
+            CompiledFnInner::Cranelift { fn_ptr, .. } => unsafe {
+                fn_ptr(inputs.as_ptr(), inputs.len() as u64)
+            },
+            CompiledFnInner::Interpreter(f) => f(inputs),
         }
     }
 
     /// Batch-evaluate over N points.
     ///
-    /// `inputs` is a slice of per-variable slices: `inputs[i]` contains the
-    /// values of variable `i` for all N points.  All slices must have the same
-    /// length N.  `output` must also have length N.
+    /// `inputs[i]` contains the values of variable `i` for all N points.
+    /// All slices must have the same length N.  `output` must also have length N.
     ///
-    /// This is the hot path for NumPy/JAX array evaluation (Phase 25).
+    /// This is the hot path for NumPy/JAX array evaluation.
     pub fn call_batch(&self, inputs: &[&[f64]], output: &mut [f64]) {
         let n = output.len();
         assert_eq!(
@@ -189,75 +193,90 @@ impl CompiledFn {
 }
 
 // ---------------------------------------------------------------------------
-// compile — main entry point
+// compile — main entry point (tiered dispatch)
 // ---------------------------------------------------------------------------
 
-/// Compile `expr` to a native function.
+/// Compile `expr` to a native or interpreted function.
 ///
-/// `inputs` defines the ordered list of symbolic variables; their values must
-/// be supplied in the same order when calling the returned `CompiledFn`.
+/// Dispatch priority (first available backend wins):
+/// 1. **Cranelift** (`--features cranelift`) — pure Rust, fast compile
+/// 2. **LLVM** (`--features jit`) — best throughput
+/// 3. **Interpreter** — always available, zero compile latency
+///
+/// `inputs` defines the ordered list of symbolic variables; supply their
+/// values in the same order when calling the returned [`CompiledFn`].
 pub fn compile(expr: ExprId, inputs: &[ExprId], pool: &ExprPool) -> Result<CompiledFn, JitError> {
-    #[cfg(feature = "jit")]
-    {
-        compile_llvm(expr, inputs, pool)
+    // Tier 1: Cranelift (fast compile, good code, pure Rust)
+    #[cfg(feature = "cranelift")]
+    match cranelift_backend::compile_cranelift(expr, inputs, pool) {
+        Ok(f) => return Ok(f),
+        Err(_) => {} // fall through to LLVM / interpreter
     }
 
-    #[cfg(not(feature = "jit"))]
-    {
-        compile_interpreter(expr, inputs, pool)
+    // Tier 2: LLVM (slow compile, best code)
+    #[cfg(feature = "jit")]
+    match compile_llvm(expr, inputs, pool) {
+        Ok(f) => return Ok(f),
+        Err(_) => {} // fall through to interpreter
     }
+
+    // Tier 3: interpreter fallback
+    compile_interpreter(expr, inputs, pool)
 }
 
-/// Returns `true` if LLVM JIT compilation is available in this build.
-///
-/// When `false`, `compile` falls back to the tree-walking interpreter.
-/// Callers that require native performance should check this at startup and
-/// warn users accordingly — or fail fast via `compile_jit_only`.
+/// Returns `true` if any native JIT backend (Cranelift or LLVM) is available.
 pub const fn jit_available() -> bool {
+    cfg!(feature = "cranelift") || cfg!(feature = "jit")
+}
+
+/// Returns `true` if the LLVM JIT backend is available.
+pub const fn llvm_jit_available() -> bool {
     cfg!(feature = "jit")
 }
 
-/// Compile `expr` to a native LLVM function, refusing to fall back to the
-/// interpreter.
+/// Returns `true` if the Cranelift JIT backend is available.
+pub const fn cranelift_jit_available() -> bool {
+    cfg!(feature = "cranelift")
+}
+
+/// Compile `expr` refusing to fall back to the interpreter.
 ///
-/// Returns `Err(JitError::NotAvailable)` when the build was not compiled with
-/// `--features jit`.  Use `compile` for the version that silently falls back to
-/// the interpreter.
+/// Returns `Err(JitError::NotAvailable)` when no native JIT backend is
+/// compiled in.  Use `compile` for the version that silently falls back.
 pub fn compile_jit_only(
     expr: ExprId,
     inputs: &[ExprId],
     pool: &ExprPool,
 ) -> Result<CompiledFn, JitError> {
-    #[cfg(feature = "jit")]
-    {
-        compile_llvm(expr, inputs, pool)
+    #[cfg(feature = "cranelift")]
+    match cranelift_backend::compile_cranelift(expr, inputs, pool) {
+        Ok(f) => return Ok(f),
+        Err(e) => return Err(e),
     }
 
-    #[cfg(not(feature = "jit"))]
+    #[cfg(all(feature = "jit", not(feature = "cranelift")))]
+    return compile_llvm(expr, inputs, pool);
+
+    #[cfg(not(any(feature = "jit", feature = "cranelift")))]
     {
         let _ = (expr, inputs, pool);
         Err(JitError::NotAvailable(
-            "this build was not compiled with --features jit; \
-             LLVM 15 is required for native code generation. \
-             Use eval_expr() for interpreted evaluation."
+            "this build was compiled without --features cranelift or --features jit; \
+             use eval_expr() for interpreted evaluation, or rebuild with a JIT feature."
                 .to_string(),
         ))
     }
 }
 
 // ---------------------------------------------------------------------------
-// Interpreter fallback (always available)
+// Interpreter fast path — always available
 // ---------------------------------------------------------------------------
 
 /// Tree-walking interpreter for evaluating symbolic expressions numerically.
 ///
-/// This is always compiled (no `jit` feature needed) and serves as the
-/// fallback when LLVM is unavailable.  For production workloads, prefer the
-/// LLVM-JIT path via `compile` with `--features jit`.
-///
+/// `env` maps symbolic variable `ExprId`s to their `f64` values.
 /// Shared subexpressions (same `ExprId`) are evaluated once per call via an
-/// internal memo table — the common case where `ExprId` equality implies value
-/// equality within a fixed `env`.
+/// internal memo table.
 pub fn eval_interp(expr: ExprId, env: &HashMap<ExprId, f64>, pool: &ExprPool) -> Option<f64> {
     let mut memo: HashMap<ExprId, f64> = HashMap::new();
     eval_interp_inner(expr, env, pool, &mut memo)
@@ -321,7 +340,10 @@ fn eval_interp_inner(
     val
 }
 
-#[cfg(not(feature = "jit"))]
+// ---------------------------------------------------------------------------
+// Interpreter compile path — always available (used as fallback by `compile`)
+// ---------------------------------------------------------------------------
+
 fn compile_interpreter(
     expr: ExprId,
     inputs: &[ExprId],
@@ -329,7 +351,6 @@ fn compile_interpreter(
 ) -> Result<CompiledFn, JitError> {
     let inputs_vec = inputs.to_vec();
     let n = inputs_vec.len();
-    // We need to capture the pool data — snapshot the relevant nodes
     let snapshot = snapshot_expr(expr, pool);
 
     let interp = move |vals: &[f64]| -> f64 {
@@ -342,23 +363,21 @@ fn compile_interpreter(
     };
 
     Ok(CompiledFn {
-        interpreter: Box::new(interp),
+        inner: CompiledFnInner::Interpreter(Box::new(interp)),
         n_inputs: n,
     })
 }
 
 // ---------------------------------------------------------------------------
-// Snapshot-based interpreter (captures expression tree without pool reference)
+// Snapshot-based interpreter (captures expression DAG without pool reference)
 // ---------------------------------------------------------------------------
 
 /// A self-contained snapshot of an expression subgraph.
-#[cfg(not(feature = "jit"))]
 #[derive(Clone)]
 pub struct ExprSnapshot {
     nodes: HashMap<ExprId, ExprData>,
 }
 
-#[cfg(not(feature = "jit"))]
 fn snapshot_expr(root: ExprId, pool: &ExprPool) -> ExprSnapshot {
     let mut visited: std::collections::HashSet<ExprId> = std::collections::HashSet::new();
     let mut stack = vec![root];
@@ -383,7 +402,6 @@ fn snapshot_expr(root: ExprId, pool: &ExprPool) -> ExprSnapshot {
     ExprSnapshot { nodes }
 }
 
-#[cfg(not(feature = "jit"))]
 fn eval_interp_snap(
     expr: ExprId,
     env: &HashMap<ExprId, f64>,
@@ -445,6 +463,40 @@ fn eval_interp_snap(
 }
 
 // ---------------------------------------------------------------------------
+// Shared topological sort — used by both Cranelift and LLVM backends
+// ---------------------------------------------------------------------------
+
+/// Returns nodes of the subgraph rooted at `root` in topological (post) order:
+/// every node appears after all of its children.
+pub(super) fn topo_sort(root: ExprId, pool: &ExprPool) -> Vec<ExprId> {
+    let mut visited = std::collections::HashSet::new();
+    let mut order = Vec::new();
+    topo_dfs(root, pool, &mut visited, &mut order);
+    order
+}
+
+fn topo_dfs(
+    node: ExprId,
+    pool: &ExprPool,
+    visited: &mut std::collections::HashSet<ExprId>,
+    order: &mut Vec<ExprId>,
+) {
+    if !visited.insert(node) {
+        return;
+    }
+    let children = pool.with(node, |d| match d {
+        ExprData::Add(a) | ExprData::Mul(a) | ExprData::Func { args: a, .. } => a.clone(),
+        ExprData::Pow { base, exp } => vec![*base, *exp],
+        ExprData::BigO(inner) => vec![*inner],
+        _ => vec![],
+    });
+    for c in children {
+        topo_dfs(c, pool, visited, order);
+    }
+    order.push(node);
+}
+
+// ---------------------------------------------------------------------------
 // LLVM JIT path (only when `--features jit`)
 // ---------------------------------------------------------------------------
 
@@ -472,9 +524,6 @@ mod llvm_backend {
             .map_err(|e| JitError::LlvmInitError(e.to_string()))?;
 
         // Leak the context to obtain a 'static reference for the execution engine.
-        // The Box is reconstructed below and stored in CompiledFn._context so it is
-        // freed only after the execution engine drops (field drop order: fn_ptr →
-        // execution_engine → _context).
         let context = Box::new(Context::create());
         let ctx: &'static Context = Box::leak(context);
 
@@ -483,17 +532,15 @@ mod llvm_backend {
 
         // Function signature: f64 alkahest_eval(f64* inputs, u64 n)
         let f64_type = ctx.f64_type();
-        let ptr_type = ctx.ptr_type(AddressSpace::default()); // opaque pointer (LLVM 15+)
+        let ptr_type = ctx.ptr_type(AddressSpace::default());
         let i64_type = ctx.i64_type();
         let fn_type = f64_type.fn_type(&[ptr_type.into(), i64_type.into()], false);
         let function = module.add_function("alkahest_eval", fn_type, None);
         let entry = ctx.append_basic_block(function, "entry");
         builder.position_at_end(entry);
 
-        // Map from ExprId to computed LLVM values
         let mut values: HashMap<ExprId, FloatValue<'_>> = HashMap::new();
 
-        // Load input values from array
         let inputs_ptr = function
             .get_nth_param(0)
             .ok_or_else(|| {
@@ -514,8 +561,7 @@ mod llvm_backend {
             values.insert(var, val);
         }
 
-        // Topological sort and codegen
-        let topo = topo_sort_jit(expr, pool);
+        let topo = topo_sort(expr, pool);
         for &node in &topo {
             if values.contains_key(&node) {
                 continue;
@@ -531,14 +577,12 @@ mod llvm_backend {
             .build_return(Some(&result))
             .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
 
-        // Verify
         if module.verify().is_err() {
             return Err(JitError::CompilationFailed(
                 "LLVM module verification failed".to_string(),
             ));
         }
 
-        // Create execution engine
         let ee = module
             .create_jit_execution_engine(OptimizationLevel::Default)
             .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
@@ -549,43 +593,14 @@ mod llvm_backend {
                 .as_raw()
         };
 
-        // SAFETY: fn_ptr is valid as long as execution_engine (and the context it
-        // references) are alive.  Both are stored in CompiledFn and drop in the
-        // order fn_ptr → execution_engine → _context, satisfying the constraint.
         Ok(CompiledFn {
-            fn_ptr,
-            execution_engine: ee,
-            _context: unsafe { Box::from_raw(ctx as *const Context as *mut Context) },
+            inner: CompiledFnInner::Llvm {
+                fn_ptr,
+                execution_engine: ee,
+                _context: unsafe { Box::from_raw(ctx as *const Context as *mut Context) },
+            },
             n_inputs: inputs.len(),
         })
-    }
-
-    fn topo_sort_jit(root: ExprId, pool: &ExprPool) -> Vec<ExprId> {
-        let mut visited = std::collections::HashSet::new();
-        let mut order = Vec::new();
-        dfs_jit(root, pool, &mut visited, &mut order);
-        order
-    }
-
-    fn dfs_jit(
-        node: ExprId,
-        pool: &ExprPool,
-        visited: &mut std::collections::HashSet<ExprId>,
-        order: &mut Vec<ExprId>,
-    ) {
-        if !visited.insert(node) {
-            return;
-        }
-        let children = pool.with(node, |d| match d {
-            ExprData::Add(a) | ExprData::Mul(a) | ExprData::Func { args: a, .. } => a.clone(),
-            ExprData::Pow { base, exp } => vec![*base, *exp],
-            ExprData::BigO(inner) => vec![*inner],
-            _ => vec![],
-        });
-        for c in children {
-            dfs_jit(c, pool, visited, order);
-        }
-        order.push(node);
     }
 
     fn codegen_node<'ctx>(
@@ -665,7 +680,9 @@ mod llvm_backend {
                     "log" => "llvm.log.f64",
                     "sqrt" => "llvm.sqrt.f64",
                     "abs" => "llvm.fabs.f64",
-                    other => return Err(JitError::UnsupportedNode(format!("function '{other}'"))),
+                    other => {
+                        return Err(JitError::UnsupportedNode(format!("function '{other}'")));
+                    }
                 };
                 let f = get_intrinsic(module, ctx, intrinsic_name, &[f64_type.into()], f64_type);
                 let result = builder
@@ -801,5 +818,39 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let f = compile(x, &[x], &pool).unwrap();
         f.call(&[]);
+    }
+
+    /// Regression: shared DAG node (same ExprId used twice) should evaluate
+    /// correctly via the interpreter and not double-count.
+    #[test]
+    fn eval_interp_dag_shared_subexpr_correct() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        // node = x + 1
+        let node = pool.add(vec![x, pool.integer(1_i32)]);
+        // expr = node * node  (same ExprId, shared)
+        let expr = pool.mul(vec![node, node]);
+
+        let mut env = HashMap::new();
+        env.insert(x, 4.0);
+        // (4+1) * (4+1) = 25
+        let val = eval_interp(expr, &env, &pool).unwrap();
+        assert!((val - 25.0).abs() < 1e-10);
+    }
+
+    /// Deeply shared DAG: 20 levels of squaring produces 21 nodes but
+    /// 2^20 tree references — must terminate in O(n) time.
+    #[test]
+    fn eval_interp_deep_dag_terminates() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let mut cur = pool.add(vec![x, pool.integer(1_i32)]);
+        for _ in 0..20 {
+            cur = pool.mul(vec![cur, cur]); // each step shares `cur`
+        }
+        let mut env = HashMap::new();
+        env.insert(x, 0.0); // (0+1)^(2^20) = 1
+        let val = eval_interp(cur, &env, &pool).unwrap();
+        assert!((val - 1.0).abs() < 1e-10);
     }
 }
