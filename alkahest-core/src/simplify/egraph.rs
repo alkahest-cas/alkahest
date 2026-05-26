@@ -182,38 +182,109 @@ mod backend {
         let ci = config.const_fold_iters;
 
         // Conditionally include trig / log-exp rules based on config flags.
+        let trig_rs = if config.disjoint_schedule {
+            "explore-trig"
+        } else {
+            "explore"
+        };
+        let log_rs = if config.disjoint_schedule {
+            "explore-log"
+        } else {
+            "explore"
+        };
         let trig_rules = if config.include_trig_rules {
             // Both Mul form (sin(x)*sin(x)) and Pow form (sin(x)^2) are matched
             // so the identity fires regardless of how the square is represented.
-            "(rewrite (Add (Mul (Sin ?x) (Sin ?x)) (Mul (Cos ?x) (Cos ?x))) (Num 1) :ruleset explore)\n\
-             (rewrite (Add (Mul (Cos ?x) (Cos ?x)) (Mul (Sin ?x) (Sin ?x))) (Num 1) :ruleset explore)\n\
-             (rewrite (Add (Pow (Sin ?x) (Num 2)) (Pow (Cos ?x) (Num 2))) (Num 1) :ruleset explore)\n\
-             (rewrite (Add (Pow (Cos ?x) (Num 2)) (Pow (Sin ?x) (Num 2))) (Num 1) :ruleset explore)"
+            format!(
+                "(rewrite (Add (Mul (Sin ?x) (Sin ?x)) (Mul (Cos ?x) (Cos ?x))) (Num 1) :ruleset {trig_rs})\n\
+                 (rewrite (Add (Mul (Cos ?x) (Cos ?x)) (Mul (Sin ?x) (Sin ?x))) (Num 1) :ruleset {trig_rs})\n\
+                 (rewrite (Add (Pow (Sin ?x) (Num 2)) (Pow (Cos ?x) (Num 2))) (Num 1) :ruleset {trig_rs})\n\
+                 (rewrite (Add (Pow (Cos ?x) (Num 2)) (Pow (Sin ?x) (Num 2))) (Num 1) :ruleset {trig_rs})",
+                trig_rs = trig_rs,
+            )
         } else {
-            ""
+            String::new()
         };
 
         let log_exp_rules = if config.include_log_exp_rules {
-            "(rewrite (Exp (Log ?x)) ?x :ruleset explore)\n\
-             (rewrite (Log (Exp ?x)) ?x :ruleset explore)"
+            format!(
+                "(rewrite (Exp (Log ?x)) ?x :ruleset {log_rs})\n\
+                 (rewrite (Log (Exp ?x)) ?x :ruleset {log_rs})",
+                log_rs = log_rs,
+            )
         } else {
-            ""
+            String::new()
         };
 
-        format!(
-            r#"
-{node_limit_line}{iter_limit_line}(datatype Expr
-  (Num i64)
-  (Var String)
-  (Add Expr Expr)
-  (Mul Expr Expr)
-  (Pow Expr Expr)
-  (Sin Expr)
-  (Cos Expr)
-  (Exp Expr)
-  (Log Expr)
-  (Sqrt Expr))
+        let (rules_block, schedule) = if config.disjoint_schedule {
+            let shrink = format!(
+                r#"
+; ── match-disjoint shrink groups (distinct LHS root symbols) ────────────────
+(ruleset shrink-add)
+(rewrite (Add ?x (Num 0)) ?x :ruleset shrink-add)
+(rewrite (Add (Num 0) ?x) ?x :ruleset shrink-add)
+(rewrite (Add ?x (Mul (Num -1) ?x)) (Num 0) :ruleset shrink-add)
+(rewrite (Add (Mul (Num -1) ?x) ?x) (Num 0) :ruleset shrink-add)
 
+(ruleset shrink-mul)
+(rewrite (Mul ?x (Num 1)) ?x :ruleset shrink-mul)
+(rewrite (Mul (Num 1) ?x) ?x :ruleset shrink-mul)
+(rewrite (Mul ?x (Num 0)) (Num 0) :ruleset shrink-mul)
+(rewrite (Mul (Num 0) ?x) (Num 0) :ruleset shrink-mul)
+(rewrite (Mul ?x (Pow ?x (Num -1))) (Num 1) :ruleset shrink-mul)
+(rewrite (Mul (Pow ?x (Num -1)) ?x) (Num 1) :ruleset shrink-mul)
+
+(ruleset shrink-pow)
+(rewrite (Pow ?x (Num 1)) ?x :ruleset shrink-pow)
+(rewrite (Pow ?x (Num 0)) (Num 1) :ruleset shrink-pow)
+
+(ruleset explore-trig)
+{trig_rules}
+
+(ruleset explore-log)
+{log_exp_rules}
+
+(ruleset explore-mul)
+(rewrite (Mul (Num -1) (Mul (Num -1) ?x)) ?x :ruleset explore-mul)
+"#,
+                trig_rules = trig_rules,
+                log_exp_rules = log_exp_rules,
+            );
+            let explore_runs = format!(
+                "{}{}{}",
+                if config.include_trig_rules {
+                    format!("(run explore-trig {ei})\n")
+                } else {
+                    String::new()
+                },
+                if config.include_log_exp_rules {
+                    format!("(run explore-log {ei})\n")
+                } else {
+                    String::new()
+                },
+                format!("(run explore-mul {ei})\n"),
+            );
+            let schedule = format!(
+                r#"(let __expr {expr})
+(run shrink-add {si})
+(run shrink-mul {si})
+(run shrink-pow {si})
+(run const-fold {ci})
+{explore_runs}(run shrink-add {si})
+(run shrink-mul {si})
+(run shrink-pow {si})
+(run const-fold {ci})
+(extract __expr)
+"#,
+                explore_runs = explore_runs,
+                expr = expr_str,
+                si = si,
+                ci = ci,
+            );
+            (shrink, schedule)
+        } else {
+            let shrink = format!(
+                r#"
 ; ── shrink ruleset: identity / absorption / cancellation ─────────────────────
 (ruleset shrink)
 (rewrite (Add ?x (Num 0)) ?x :ruleset shrink)
@@ -234,7 +305,41 @@ mod backend {
 {trig_rules}
 {log_exp_rules}
 (rewrite (Mul (Num -1) (Mul (Num -1) ?x)) ?x :ruleset explore)
+"#,
+                trig_rules = trig_rules,
+                log_exp_rules = log_exp_rules,
+            );
+            let schedule = format!(
+                r#"(let __expr {expr})
+(run shrink {si})
+(run const-fold {ci})
+(run explore {ei})
+(run shrink {si})
+(run const-fold {ci})
+(extract __expr)
+"#,
+                expr = expr_str,
+                si = si,
+                ei = ei,
+                ci = ci,
+            );
+            (shrink, schedule)
+        };
 
+        format!(
+            r#"
+{node_limit_line}{iter_limit_line}(datatype Expr
+  (Num i64)
+  (Var String)
+  (Add Expr Expr)
+  (Mul Expr Expr)
+  (Pow Expr Expr)
+  (Sin Expr)
+  (Cos Expr)
+  (Exp Expr)
+  (Log Expr)
+  (Sqrt Expr))
+{rules_block}
 ; ── constant folding ──────────────────────────────────────────────────────────
 (ruleset const-fold)
 (rule ((= e (Add (Num ?a) (Num ?b))))
@@ -247,23 +352,13 @@ mod backend {
       ((union e (Num (^ ?a ?b))))
       :ruleset const-fold)
 
-; ── phased schedule: shrink → const-fold → explore → shrink → const-fold ─────
-(let __expr {expr})
-(run shrink {si})
-(run const-fold {ci})
-(run explore {ei})
-(run shrink {si})
-(run const-fold {ci})
-(extract __expr)
+; ── phased schedule ───────────────────────────────────────────────────────────
+{schedule}
 "#,
             node_limit_line = node_limit_line,
             iter_limit_line = iter_limit_line,
-            trig_rules = trig_rules,
-            log_exp_rules = log_exp_rules,
-            expr = expr_str,
-            si = si,
-            ei = ei,
-            ci = ci,
+            rules_block = rules_block,
+            schedule = schedule,
         )
     }
 
@@ -666,6 +761,9 @@ pub struct EgraphConfig {
     /// Include exp/log cancellation (`exp(log(x))→x`, `log(exp(x))→x`) in the
     /// explore phase. Default `true`.
     pub include_log_exp_rules: bool,
+    /// Schedule match-disjoint egglog rule groups (Add / Mul / Pow / trig / log)
+    /// as separate `(run …)` steps within each phase. Default `true`.
+    pub disjoint_schedule: bool,
 }
 
 impl Default for EgraphConfig {
@@ -678,6 +776,7 @@ impl Default for EgraphConfig {
             iter_limit: None,
             include_trig_rules: true,
             include_log_exp_rules: true,
+            disjoint_schedule: true,
         }
     }
 }
