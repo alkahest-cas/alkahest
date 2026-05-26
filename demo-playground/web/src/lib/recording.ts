@@ -1,0 +1,23 @@
+/** URL/query helpers shared by notebook and compare recording views. */
+
+export function readZenFromUrl(): boolean {
+  if (typeof window === 'undefined') return false;
+  return new URLSearchParams(window.location.search).get('zen') === '1';
+}
+
+export function readAutoRunFromUrl(): boolean {
+  if (typeof window === 'undefined') return false;
+  return new URLSearchParams(window.location.search).get('autorun') === '1';
+}
+
+export function cellsFromDemoParam(param = 'demo'): string[] | null {
+  if (typeof window === 'undefined') return null;
+  const encoded = new URLSearchParams(window.location.search).get(param);
+  if (!encoded) return null;
+  try {
+    const codes: string[] = JSON.parse(atob(encoded));
+    return codes.filter(Boolean);
+  } catch {
+    return null;
+  }
+}

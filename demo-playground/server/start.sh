@@ -26,5 +26,11 @@ else
   pip install -q alkahest
 fi
 
+# Bundled wheels ship native libs under site-packages/alkahest.libs/
+LIBS_DIR="$(python -c "import pathlib; import site; roots=[pathlib.Path(p) for p in site.getsitepackages()+[site.getusersitepackages()]]; found=[d for r in roots for d in [r/'alkahest.libs'] if d.is_dir()]; print(found[0] if found else '')" 2>/dev/null || true)"
+if [ -n "$LIBS_DIR" ]; then
+  export LD_LIBRARY_PATH="${LIBS_DIR}:${LD_LIBRARY_PATH:-}"
+fi
+
 echo "Starting alkahest demo server on port ${PORT:-8000}..."
 exec uvicorn main:app --host 0.0.0.0 --port "${PORT:-8000}" --reload
