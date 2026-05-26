@@ -1,3 +1,4 @@
+pub mod colored_egraph;
 pub mod egraph;
 pub mod engine;
 #[cfg(feature = "parallel")]
@@ -8,6 +9,9 @@ pub mod rulesets;
 #[cfg(test)]
 mod proptests;
 
+pub use colored_egraph::{
+    assumptions_satisfy, simplify_colored, ColorId, ColoredEgraph, CONTEXT_COLOR, ROOT_COLOR,
+};
 pub use egraph::{
     simplify_egraph, simplify_egraph_with, DepthCost, EgraphConfig, EgraphCost, NoncommutativeCost,
     OpCost, SizeCost, StabilityCost,

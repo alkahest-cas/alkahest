@@ -91,9 +91,10 @@ pub use poly::{
 pub use horner::{emit_horner_c, horner};
 pub use simplify::rulesets::{log_exp_rules, log_exp_rules_safe, trig_rules};
 pub use simplify::{
-    rules_for_config, simplify, simplify_egraph, simplify_egraph_with, simplify_expanded,
-    simplify_with, DepthCost, EgraphConfig, EgraphCost, NoncommutativeCost, OpCost, PatternRule,
-    RewriteRule, SimplifyConfig, SizeCost, StabilityCost,
+    assumptions_satisfy, rules_for_config, simplify, simplify_colored, simplify_egraph,
+    simplify_egraph_with, simplify_expanded, simplify_with, ColorId, ColoredEgraph, DepthCost,
+    EgraphConfig, EgraphCost, NoncommutativeCost, OpCost, PatternRule, RewriteRule, SimplifyConfig,
+    SizeCost, StabilityCost, CONTEXT_COLOR, ROOT_COLOR,
 };
 pub use sum::{
     gosper_certificate, gosper_normal_form, hypergeom_ratio, product_definite, product_indefinite,
@@ -272,7 +273,10 @@ pub mod experimental {
         gcd_sparse_modular, sparse_interpolate, sparse_interpolate_univariate, SparseGcdError,
         SparseInterpError,
     };
-    pub use crate::simplify::{simplify_egraph, simplify_expanded};
+    pub use crate::simplify::{
+        simplify_colored, simplify_egraph, simplify_expanded, ColorId, ColoredEgraph,
+        CONTEXT_COLOR, ROOT_COLOR,
+    };
     pub use crate::stablehlo::emit_stablehlo;
 
     #[cfg(feature = "parallel")]

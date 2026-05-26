@@ -28,6 +28,11 @@ pub struct SimplifyConfig {
     /// full log/exp rule set; leave it `false` (the default) for safe behaviour
     /// over complex numbers or when sign information is unavailable.
     pub allow_branch_cut_rewrites: bool,
+    /// Assumptions for colored e-graph simplification (e.g. `x > 0`).
+    ///
+    /// When non-empty, [`simplify_with`] runs a colored equality-saturation pass
+    /// after the rule engine so conditional rewrites like `sqrt(x²) → x` can fire.
+    pub assumptions: Vec<crate::deriv::log::SideCondition>,
 }
 
 impl Default for SimplifyConfig {
@@ -36,6 +41,7 @@ impl Default for SimplifyConfig {
             max_iterations: 100,
             expand: false,
             allow_branch_cut_rewrites: false,
+            assumptions: vec![],
         }
     }
 }
@@ -239,9 +245,16 @@ pub fn simplify_with(
         let result = simplify_node(current.value, pool, rules, &mut memo);
         let merged_log = current.log.merge(result.log);
         if result.value == current.value {
-            return DerivedExpr::with_log(current.value, merged_log);
+            current = DerivedExpr::with_log(current.value, merged_log);
+            break;
         }
         current = DerivedExpr::with_log(result.value, merged_log);
+    }
+
+    if !config.assumptions.is_empty() {
+        let colored =
+            super::colored_egraph::apply_colored_if_needed(current.value, pool, &config.assumptions);
+        return DerivedExpr::with_log(colored.value, current.log.merge(colored.log));
     }
     current
 }
@@ -401,6 +414,20 @@ mod tests {
         let expr = pool.add(vec![x, pool.integer(0_i32)]);
         let config = SimplifyConfig {
             max_iterations: 1,
+            ..SimplifyConfig::default()
+        };
+        let r = simplify_with(expr, &pool, &default_rules(), config);
+        assert_eq!(r.value, x);
+    }
+
+    #[test]
+    fn simplify_with_assumptions_sqrt_square() {
+        use crate::deriv::log::SideCondition;
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.func("sqrt", vec![pool.pow(x, pool.integer(2_i32))]);
+        let config = SimplifyConfig {
+            assumptions: vec![SideCondition::Positive(x)],
             ..SimplifyConfig::default()
         };
         let r = simplify_with(expr, &pool, &default_rules(), config);
