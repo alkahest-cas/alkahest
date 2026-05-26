@@ -16,13 +16,12 @@
 //! `extern "C"` trampolines and registered with the `JITBuilder` so Cranelift
 //! can call them as imported symbols.
 
-use super::{topo_sort, CompiledFn, CompiledFnInner, JitError};
-use crate::kernel::{ExprData, ExprId, ExprPool};
-use cranelift_codegen::{
-    ir::{types, AbiParam, InstBuilder, MemFlags},
-    settings,
-    settings::Configurable,
+use super::{
+    topo_sort, CompileTier, CompiledFn, CompiledFnInner, JitBulkFn, JitError, JitScalarFn,
 };
+use crate::kernel::{ExprData, ExprId, ExprPool};
+use cranelift_codegen::ir::{condcodes::IntCC, types, AbiParam, BlockArg, InstBuilder, MemFlags};
+use cranelift_codegen::{settings, settings::Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{default_libcall_names, FuncId, Linkage, Module};
@@ -150,6 +149,70 @@ fn codegen_node(
 }
 
 // ---------------------------------------------------------------------------
+// Load input variables into the values map (scalar or batch layout)
+// ---------------------------------------------------------------------------
+
+fn load_input_vars(
+    builder: &mut FunctionBuilder,
+    inputs_ptr: cranelift_codegen::ir::Value,
+    inputs: &[ExprId],
+    values: &mut HashMap<ExprId, cranelift_codegen::ir::Value>,
+    point_idx: Option<cranelift_codegen::ir::Value>,
+    n_points: Option<cranelift_codegen::ir::Value>,
+) {
+    for (i, &var) in inputs.iter().enumerate() {
+        let val = if let (Some(idx), Some(n_pts)) = (point_idx, n_points) {
+            let var_i = builder.ins().iconst(types::I64, i as i64);
+            let stride = builder.ins().imul(var_i, n_pts);
+            let elem = builder.ins().iadd(stride, idx);
+            let byte_off = builder.ins().imul_imm(elem, 8);
+            let addr = builder.ins().iadd(inputs_ptr, byte_off);
+            builder.ins().load(types::F64, MemFlags::trusted(), addr, 0)
+        } else {
+            let byte_offset = (i * std::mem::size_of::<f64>()) as i32;
+            builder
+                .ins()
+                .load(types::F64, MemFlags::trusted(), inputs_ptr, byte_offset)
+        };
+        values.insert(var, val);
+    }
+}
+
+fn emit_eval_body(
+    expr: ExprId,
+    inputs: &[ExprId],
+    pool: &ExprPool,
+    builder: &mut FunctionBuilder,
+    module: &mut JITModule,
+    math: &MathFuncIds,
+    inputs_ptr: cranelift_codegen::ir::Value,
+    point_idx: Option<cranelift_codegen::ir::Value>,
+    n_points: Option<cranelift_codegen::ir::Value>,
+) -> Result<cranelift_codegen::ir::Value, JitError> {
+    let mut values: HashMap<ExprId, cranelift_codegen::ir::Value> = HashMap::new();
+    load_input_vars(
+        builder,
+        inputs_ptr,
+        inputs,
+        &mut values,
+        point_idx,
+        n_points,
+    );
+    let topo = topo_sort(expr, pool);
+    for &node in &topo {
+        if values.contains_key(&node) {
+            continue;
+        }
+        let val = codegen_node(node, pool, &values, builder, module, math)?;
+        values.insert(node, val);
+    }
+    values
+        .get(&expr)
+        .copied()
+        .ok_or_else(|| JitError::CompilationFailed("root node not emitted".to_string()))
+}
+
+// ---------------------------------------------------------------------------
 // compile_cranelift — public entry point
 // ---------------------------------------------------------------------------
 
@@ -224,90 +287,142 @@ pub fn compile_cranelift(
     };
 
     // ------------------------------------------------------------------
-    // 4. Declare the exported eval function: fn(*const f64, i64) -> f64
+    // 4–5. Scalar eval: fn(*const f64, i64) -> f64
     // ------------------------------------------------------------------
     let ptr_type = module.target_config().pointer_type();
 
     let mut eval_sig = module.make_signature();
-    eval_sig.params.push(AbiParam::new(ptr_type)); // inputs pointer
-    eval_sig.params.push(AbiParam::new(types::I64)); // count (for ABI compat with LLVM path)
+    eval_sig.params.push(AbiParam::new(ptr_type));
+    eval_sig.params.push(AbiParam::new(types::I64));
     eval_sig.returns.push(AbiParam::new(types::F64));
 
-    let func_id = module
+    let scalar_id = module
         .declare_function("alkahest_eval", Linkage::Export, &eval_sig)
         .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
 
-    // ------------------------------------------------------------------
-    // 5. Build the function body
-    // ------------------------------------------------------------------
-    let mut ctx = module.make_context();
-    ctx.func.signature = eval_sig;
-
+    let mut scalar_ctx = module.make_context();
+    scalar_ctx.func.signature = eval_sig;
     {
         let mut func_ctx = FunctionBuilderContext::new();
-        let mut builder = FunctionBuilder::new(&mut ctx.func, &mut func_ctx);
-
+        let mut builder = FunctionBuilder::new(&mut scalar_ctx.func, &mut func_ctx);
         let block = builder.create_block();
         builder.append_block_params_for_function_params(block);
         builder.switch_to_block(block);
         builder.seal_block(block);
-
-        // params[0] = inputs ptr; params[1] = count (unused in codegen)
         let inputs_ptr = builder.block_params(block)[0];
-
-        let mut values: HashMap<ExprId, cranelift_codegen::ir::Value> = HashMap::new();
-
-        // Load each input variable from inputs[i]
-        for (i, &var) in inputs.iter().enumerate() {
-            let byte_offset = (i * std::mem::size_of::<f64>()) as i32;
-            let val = builder
-                .ins()
-                .load(types::F64, MemFlags::trusted(), inputs_ptr, byte_offset);
-            values.insert(var, val);
-        }
-
-        // Topological order so every child is ready before its parent
-        let topo = topo_sort(expr, pool);
-        for &node in &topo {
-            if values.contains_key(&node) {
-                continue; // already computed (input var or shared subexpr)
-            }
-            let val = codegen_node(node, pool, &values, &mut builder, &mut module, &math)?;
-            values.insert(node, val);
-        }
-
-        let result = values
-            .get(&expr)
-            .copied()
-            .ok_or_else(|| JitError::CompilationFailed("root node not emitted".to_string()))?;
+        let result = emit_eval_body(
+            expr,
+            inputs,
+            pool,
+            &mut builder,
+            &mut module,
+            &math,
+            inputs_ptr,
+            None,
+            None,
+        )?;
         builder.ins().return_(&[result]);
         builder.finalize();
     }
+    module
+        .define_function(scalar_id, &mut scalar_ctx)
+        .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
+    module.clear_context(&mut scalar_ctx);
 
     // ------------------------------------------------------------------
-    // 6. Compile and finalise
+    // 6. Bulk eval: fn(*const f64, n_vars, *mut f64, n_points) -> ()
     // ------------------------------------------------------------------
-    module
-        .define_function(func_id, &mut ctx)
+    let mut bulk_sig = module.make_signature();
+    bulk_sig.params.push(AbiParam::new(ptr_type));
+    bulk_sig.params.push(AbiParam::new(types::I64));
+    bulk_sig.params.push(AbiParam::new(ptr_type));
+    bulk_sig.params.push(AbiParam::new(types::I64));
+
+    let bulk_id = module
+        .declare_function("alkahest_eval_bulk", Linkage::Export, &bulk_sig)
         .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
-    module.clear_context(&mut ctx);
+
+    let mut bulk_ctx = module.make_context();
+    bulk_ctx.func.signature = bulk_sig;
+    {
+        let mut func_ctx = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut bulk_ctx.func, &mut func_ctx);
+        let entry = builder.create_block();
+        let loop_hdr = builder.create_block();
+        let loop_body = builder.create_block();
+        let exit = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.append_block_param(loop_hdr, types::I64);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+        let bulk_inputs_ptr = builder.block_params(entry)[0];
+        let bulk_outputs_ptr = builder.block_params(entry)[2];
+        let bulk_n_points = builder.block_params(entry)[3];
+        let zero = builder.ins().iconst(types::I64, 0);
+        let zero_arg = BlockArg::from(zero);
+        builder
+            .ins()
+            .jump(loop_hdr, std::slice::from_ref(&zero_arg));
+
+        builder.switch_to_block(loop_hdr);
+        let loop_idx = builder.block_params(loop_hdr)[0];
+        let done = builder
+            .ins()
+            .icmp(IntCC::SignedGreaterThanOrEqual, loop_idx, bulk_n_points);
+        builder.ins().brif(done, exit, &[], loop_body, &[]);
+
+        builder.switch_to_block(loop_body);
+        let result = emit_eval_body(
+            expr,
+            inputs,
+            pool,
+            &mut builder,
+            &mut module,
+            &math,
+            bulk_inputs_ptr,
+            Some(loop_idx),
+            Some(bulk_n_points),
+        )?;
+        let out_byte_off = builder.ins().imul_imm(loop_idx, 8);
+        let out_addr = builder.ins().iadd(bulk_outputs_ptr, out_byte_off);
+        builder
+            .ins()
+            .store(MemFlags::trusted(), result, out_addr, 0);
+        let next = builder.ins().iadd_imm(loop_idx, 1);
+        let next_arg = BlockArg::from(next);
+        builder
+            .ins()
+            .jump(loop_hdr, std::slice::from_ref(&next_arg));
+        builder.seal_block(loop_body);
+
+        builder.switch_to_block(exit);
+        builder.seal_block(loop_hdr);
+        builder.seal_block(exit);
+        builder.ins().return_(&[]);
+        builder.finalize();
+    }
+    module
+        .define_function(bulk_id, &mut bulk_ctx)
+        .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
+    module.clear_context(&mut bulk_ctx);
+
     module
         .finalize_definitions()
         .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
 
-    let code_ptr = module.get_finalized_function(func_id);
-    // SAFETY: `code_ptr` is a valid executable code page produced by
-    // Cranelift. The `JITModule` stored in `_module` owns the allocation
-    // and must outlive this function pointer.
-    let fn_ptr: unsafe extern "C" fn(*const f64, u64) -> f64 =
-        unsafe { std::mem::transmute(code_ptr) };
+    let scalar_ptr = module.get_finalized_function(scalar_id);
+    let bulk_ptr = module.get_finalized_function(bulk_id);
+    let fn_ptr: JitScalarFn = unsafe { std::mem::transmute(scalar_ptr) };
+    let bulk_fn: JitBulkFn = unsafe { std::mem::transmute(bulk_ptr) };
 
     Ok(CompiledFn {
         inner: CompiledFnInner::Cranelift {
             fn_ptr,
+            bulk_fn: Some(bulk_fn),
             _module: Box::new(module),
         },
         n_inputs: inputs.len(),
+        tier: CompileTier::Cranelift,
     })
 }
 
