@@ -792,26 +792,9 @@ fn bench_groebner(c: &mut Criterion) {
             ))
         });
     });
-    // Cyclic-5: meaningful benchmark, F5 criteria start showing significant wins.
-    g.sample_size(10);
-    g.bench_function("cyclic5_f4", |b| {
-        b.iter(|| {
-            let sys = cyclic_system_bench(5);
-            codspeed_criterion_compat::black_box(compute_groebner_basis(
-                sys,
-                MonomialOrder::GRevLex,
-            ))
-        });
-    });
-    g.bench_function("cyclic5_f5", |b| {
-        b.iter(|| {
-            let sys = cyclic_system_bench(5);
-            codspeed_criterion_compat::black_box(compute_groebner_basis_f5(
-                sys,
-                MonomialOrder::GRevLex,
-            ))
-        });
-    });
+    // Cyclic-5 is omitted here: under CodSpeed's Valgrind-based instruction
+    // counting it takes 50+ minutes and trips the 60-minute job timeout.
+    // It is tracked in the nightly slow-test shard instead.
     g.finish();
 }
 
