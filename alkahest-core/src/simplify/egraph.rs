@@ -250,20 +250,17 @@ mod backend {
                 trig_rules = trig_rules,
                 log_exp_rules = log_exp_rules,
             );
-            let explore_runs = format!(
-                "{}{}{}",
+            let explore_runs = {
+                let mut s = String::new();
                 if config.include_trig_rules {
-                    format!("(run explore-trig {ei})\n")
-                } else {
-                    String::new()
-                },
+                    s.push_str(&format!("(run explore-trig {ei})\n"));
+                }
                 if config.include_log_exp_rules {
-                    format!("(run explore-log {ei})\n")
-                } else {
-                    String::new()
-                },
-                format!("(run explore-mul {ei})\n"),
-            );
+                    s.push_str(&format!("(run explore-log {ei})\n"));
+                }
+                s.push_str(&format!("(run explore-mul {ei})\n"));
+                s
+            };
             let schedule = format!(
                 r#"(let __expr {expr})
 (run shrink-add {si})

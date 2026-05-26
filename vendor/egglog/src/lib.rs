@@ -1,3 +1,6 @@
+// Suppress the mismatched_lifetime_syntaxes lint (new in Rust/Clippy 1.87)
+// which fires on pre-existing elided lifetimes in gj.rs that are valid Rust.
+#![allow(mismatched_lifetime_syntaxes)]
 //! # egglog
 //! egglog is a language specialized for writing equality saturation
 //! applications. It is the successor to the rust library [egg](https://github.com/egraphs-good/egg).
