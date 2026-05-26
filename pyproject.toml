@@ -75,4 +75,6 @@ indent-style = "space"
 # ── ty (type checker) ────────────────────────────────────────────────────────
 [tool.ty]
 src = ["python"]
+
+[tool.ty.environment]
 python-version = "3.9"
