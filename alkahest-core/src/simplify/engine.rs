@@ -2,6 +2,7 @@ use super::rules::{
     AddZero, CanonicalOrder, ConstFold, DivSelf, ExpandMul, FlattenAdd, FlattenMul, MulOne,
     MulZero, PowOne, PowZero, RewriteRule, SubSelf,
 };
+use super::rulesets::PatternRuleSet;
 use crate::deriv::log::{DerivationLog, DerivedExpr};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use std::collections::HashMap;
@@ -116,6 +117,42 @@ fn simplify_node(
                 current = new_expr;
                 fired = true;
                 break; // restart from first rule after any change
+            }
+        }
+        if !fired {
+            break;
+        }
+    }
+
+    let result = DerivedExpr::with_log(current, child_log.merge(rule_log));
+    memo.insert(expr, result.value);
+    result
+}
+
+fn simplify_node_indexed(
+    expr: ExprId,
+    pool: &ExprPool,
+    rule_set: &PatternRuleSet,
+    child_rules: &[Box<dyn RewriteRule>],
+    memo: &mut HashMap<ExprId, ExprId>,
+) -> DerivedExpr<ExprId> {
+    if let Some(&cached) = memo.get(&expr) {
+        return DerivedExpr::new(cached);
+    }
+
+    let data = pool.get(expr);
+    let (rebuilt, child_log) = simplify_children(data, pool, child_rules, memo);
+
+    let mut current = rebuilt;
+    let mut rule_log = DerivationLog::new();
+    loop {
+        let mut fired = false;
+        for idx in rule_set.index().candidates(current, pool) {
+            if let Some((new_expr, step_log)) = rule_set.rules()[idx].apply(current, pool) {
+                rule_log = rule_log.merge(step_log);
+                current = new_expr;
+                fired = true;
+                break;
             }
         }
         if !fired {
@@ -252,8 +289,42 @@ pub fn simplify_with(
     }
 
     if !config.assumptions.is_empty() {
-        let colored =
-            super::colored_egraph::apply_colored_if_needed(current.value, pool, &config.assumptions);
+        let colored = super::colored_egraph::apply_colored_if_needed(
+            current.value,
+            pool,
+            &config.assumptions,
+        );
+        return DerivedExpr::with_log(colored.value, current.log.merge(colored.log));
+    }
+    current
+}
+
+/// Simplify `expr` using a [`PatternRuleSet`] (discrimination-net indexed).
+pub fn simplify_with_pattern_rules(
+    expr: ExprId,
+    pool: &ExprPool,
+    rule_set: &PatternRuleSet,
+    config: SimplifyConfig,
+) -> DerivedExpr<ExprId> {
+    let child_rules = rule_set.as_dyn_rules();
+    let mut current = DerivedExpr::new(expr);
+    for _ in 0..config.max_iterations {
+        let mut memo: HashMap<ExprId, ExprId> = HashMap::new();
+        let result = simplify_node_indexed(current.value, pool, rule_set, &child_rules, &mut memo);
+        let merged_log = current.log.merge(result.log);
+        if result.value == current.value {
+            current = DerivedExpr::with_log(current.value, merged_log);
+            break;
+        }
+        current = DerivedExpr::with_log(result.value, merged_log);
+    }
+
+    if !config.assumptions.is_empty() {
+        let colored = super::colored_egraph::apply_colored_if_needed(
+            current.value,
+            pool,
+            &config.assumptions,
+        );
         return DerivedExpr::with_log(colored.value, current.log.merge(colored.log));
     }
     current
