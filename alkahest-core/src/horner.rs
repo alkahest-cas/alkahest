@@ -91,6 +91,53 @@ pub fn emit_horner_c(
 }
 
 /// Build a C expression string for the Horner evaluation.
+// ---------------------------------------------------------------------------
+// f64 Horner evaluation (scalar + SIMD batch)
+// ---------------------------------------------------------------------------
+
+/// Evaluate `a₀ + x·(a₁ + x·(a₂ + …))` for coefficients `[a₀, a₁, …, aₙ]`.
+#[inline]
+pub fn eval_horner_f64(coeffs: &[f64], x: f64) -> f64 {
+    if coeffs.is_empty() {
+        return 0.0;
+    }
+    let mut acc = coeffs[coeffs.len() - 1];
+    for &c in coeffs[..coeffs.len() - 1].iter().rev() {
+        acc = c + x * acc;
+    }
+    acc
+}
+
+/// Evaluate the same polynomial at many points, writing into `out`.
+///
+/// Uses 4-wide SIMD via the `wide` crate when `xs.len() == out.len()`; falls
+/// back to scalar [`eval_horner_f64`] for tail elements.
+pub fn eval_horner_f64_batch(coeffs: &[f64], xs: &[f64], out: &mut [f64]) {
+    assert_eq!(xs.len(), out.len());
+    let mut i = 0;
+    while i + 4 <= xs.len() {
+        let chunk = wide::f64x4::new([xs[i], xs[i + 1], xs[i + 2], xs[i + 3]]);
+        let vals = eval_horner_f64x4(coeffs, chunk).to_array();
+        out[i..i + 4].copy_from_slice(&vals);
+        i += 4;
+    }
+    for (x, o) in xs[i..].iter().zip(out[i..].iter_mut()) {
+        *o = eval_horner_f64(coeffs, *x);
+    }
+}
+
+#[inline]
+fn eval_horner_f64x4(coeffs: &[f64], x: wide::f64x4) -> wide::f64x4 {
+    if coeffs.is_empty() {
+        return wide::f64x4::splat(0.0);
+    }
+    let mut acc = wide::f64x4::splat(coeffs[coeffs.len() - 1]);
+    for &c in coeffs[..coeffs.len() - 1].iter().rev() {
+        acc = wide::f64x4::splat(c) + x * acc;
+    }
+    acc
+}
+
 fn build_c_horner(coeffs: &[i64], var: &str) -> String {
     if coeffs.is_empty() {
         return "0.0".to_string();
@@ -211,5 +258,27 @@ mod tests {
         let env = HashMap::new();
         let val = eval_interp(h, &env, &pool).unwrap();
         assert!((val - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn eval_horner_f64_matches_interp() {
+        let coeffs = [1.0, 2.0, 3.0]; // 1 + 2x + 3x²
+        let xs = [-1.0, 0.0, 0.5, 2.0, 10.0];
+        for &x in &xs {
+            let scalar = eval_horner_f64(&coeffs, x);
+            let expected = 1.0 + x * (2.0 + x * 3.0);
+            assert!((scalar - expected).abs() < 1e-12, "x={x}");
+        }
+    }
+
+    #[test]
+    fn eval_horner_f64_batch_matches_scalar() {
+        let coeffs = [1.0, 2.0, 3.0];
+        let xs = [-1.0, 0.0, 0.5, 2.0, 10.0, 3.0, 7.0];
+        let mut out = vec![0.0; xs.len()];
+        eval_horner_f64_batch(&coeffs, &xs, &mut out);
+        for (i, &x) in xs.iter().enumerate() {
+            assert!((out[i] - eval_horner_f64(&coeffs, x)).abs() < 1e-12);
+        }
     }
 }
