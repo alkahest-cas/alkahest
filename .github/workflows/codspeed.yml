@@ -45,6 +45,8 @@ jobs:
       - name: Build Python extension (maturin + groebner)
         run: |
           python -m venv .venv
+          # maturin ≥1.13 uses `pip install --group` (PEP 735) which requires pip ≥25.
+          .venv/bin/pip install --upgrade pip
           .venv/bin/pip install maturin pytest-codspeed sympy
           echo "$PWD/.venv/bin" >> $GITHUB_PATH
           echo "VIRTUAL_ENV=$PWD/.venv" >> $GITHUB_ENV
