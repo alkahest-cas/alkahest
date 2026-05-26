@@ -73,8 +73,6 @@ quote-style = "double"
 indent-style = "space"
 
 # ── ty (type checker) ────────────────────────────────────────────────────────
-[tool.ty]
-src = ["python"]
-
+# src is passed explicitly on the CLI: `ty check python/alkahest/`
 [tool.ty.environment]
 python-version = "3.9"
