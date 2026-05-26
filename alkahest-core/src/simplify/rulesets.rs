@@ -18,6 +18,7 @@
 use crate::deriv::log::{DerivationLog, RewriteStep, SideCondition};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::pattern::{Pattern, Substitution};
+use crate::simplify::discrimination_net::{pattern_head, DiscriminationIndex};
 use crate::simplify::rules::RewriteRule;
 
 fn one_step(name: &'static str, before: ExprId, after: ExprId) -> DerivationLog {
@@ -285,10 +286,40 @@ pub fn log_exp_rules_safe() -> Vec<Box<dyn RewriteRule>> {
 /// let r = simplify_with(expr, &pool, &[Box::new(rule)], SimplifyConfig::default());
 /// // x + x → 2*x
 /// ```
+#[derive(Clone)]
 pub struct PatternRule {
     pub lhs: Pattern,
     pub rhs: ExprId,
     name: &'static str,
+}
+
+/// Pattern rules plus a discrimination-net index for O(1) head lookup.
+pub struct PatternRuleSet {
+    rules: Vec<PatternRule>,
+    index: DiscriminationIndex,
+}
+
+impl PatternRuleSet {
+    pub fn new(rules: Vec<PatternRule>, pool: &ExprPool) -> Self {
+        let heads = rules.iter().map(|r| pattern_head(r.lhs.root, pool));
+        let index = DiscriminationIndex::build(heads);
+        PatternRuleSet { rules, index }
+    }
+
+    pub fn rules(&self) -> &[PatternRule] {
+        &self.rules
+    }
+
+    pub fn index(&self) -> &DiscriminationIndex {
+        &self.index
+    }
+
+    pub fn as_dyn_rules(&self) -> Vec<Box<dyn RewriteRule>> {
+        self.rules
+            .iter()
+            .map(|r| Box::new(r.clone()) as Box<dyn RewriteRule>)
+            .collect()
+    }
 }
 
 impl PatternRule {
@@ -527,7 +558,7 @@ mod tests {
     use super::*;
     use crate::kernel::{Domain, ExprPool};
     use crate::pattern::Pattern;
-    use crate::simplify::engine::{simplify_with, SimplifyConfig};
+    use crate::simplify::engine::{simplify_with, simplify_with_pattern_rules, SimplifyConfig};
 
     fn p() -> ExprPool {
         ExprPool::new()
@@ -678,7 +709,8 @@ mod tests {
         let rule = PatternRule::new(Pattern::from_expr(lhs), rhs);
         let x = pool.symbol("x", Domain::Real);
         let expr = pool.add(vec![x, x]);
-        let r = simplify_with(expr, &pool, &[Box::new(rule)], SimplifyConfig::default());
+        let rule_set = PatternRuleSet::new(vec![rule], &pool);
+        let r = simplify_with_pattern_rules(expr, &pool, &rule_set, SimplifyConfig::default());
         let expected = pool.mul(vec![pool.integer(2_i32), x]);
         assert_eq!(r.value, expected);
     }
