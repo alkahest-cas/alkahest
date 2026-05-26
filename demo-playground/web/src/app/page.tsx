@@ -46,13 +46,6 @@ export default function NotebookPage() {
     }
   }
 
-  useEffect(() => {
-    if (!zenMode) return;
-    const markReady = () => document.documentElement.setAttribute('data-recording-ready', 'true');
-    const editors = document.querySelectorAll('.cm-editor');
-    if (editors.length > 0) markReady();
-  }, [zenMode]);
-
   return (
     <>
       {!zenMode && (
