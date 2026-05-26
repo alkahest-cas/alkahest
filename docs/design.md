@@ -98,7 +98,7 @@ Expressions are lowered through multiple IR levels:
 
 The custom dialect is where math-aware optimizations happen. Standard MLIR passes handle the remainder. Multiple hardware targets are supported through MLIR's existing target infrastructure: CPU (default, with autovectorization), NVIDIA GPU (via PTX), and XLA/TPU targets (via StableHLO).
 
-CPU evaluation uses three tiers: Cranelift JIT (fast compile, pure Rust), LLVM JIT (best code, requires LLVM 15), and a tree-walking interpreter fallback. `CompileCache` memoizes `(ExprId, inputs) → CompiledFn` within a session. When no JIT feature is enabled, the interpreter is used automatically.
+CPU evaluation uses three tiers selected by `CompileConfig`: tree-walking interpreter (small DAGs / few evals), Cranelift JIT (fast compile, pure Rust), and LLVM JIT (best batch throughput, requires LLVM 15). `CompileCache` memoizes `(ExprId, inputs) → CompiledFn` within a session. Native JIT backends expose a bulk column-major entry point for batch sweeps. When no JIT feature is enabled, the interpreter is used automatically.
 
 ### Proof Certificates
 
@@ -156,7 +156,7 @@ Integration with the numerical ecosystem happens at the boundary:
 |---|---|
 | Core language | Rust (edition 2021) |
 | Number libraries | FLINT (polynomials, Arb ball arithmetic, number theory), GMP, MPFR |
-| Simplification | Vendored `egglog` (e-graph equality saturation); native colored e-graphs for conditional rewrites; rule-based fixpoint |
+| Simplification | Vendored `egglog` (e-graph equality saturation, match-disjoint scheduling); native colored e-graphs for conditional rewrites; discrimination-net indexing for user `PatternRule` sets; rule-based fixpoint |
 | Code generation | MLIR via `melior`; Cranelift JIT (`--features cranelift`); LLVM JIT (`--features jit`); NVPTX/CUDA |
 | Continuous benchmarking | CodSpeed (Rust + Python) |
 | GPU codegen | NVPTX via inkwell + `libdevice`; `cudarc` runtime |

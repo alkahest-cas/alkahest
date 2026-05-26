@@ -1238,6 +1238,7 @@ impl PyEgraphConfig {
         iter_limit = None,
         include_trig_rules = true,
         include_log_exp_rules = true,
+        disjoint_schedule = true,
     ))]
     fn new(
         shrink_iters: usize,
@@ -1247,6 +1248,7 @@ impl PyEgraphConfig {
         iter_limit: Option<usize>,
         include_trig_rules: bool,
         include_log_exp_rules: bool,
+        disjoint_schedule: bool,
     ) -> Self {
         PyEgraphConfig {
             inner: EgraphConfig {
@@ -1257,6 +1259,7 @@ impl PyEgraphConfig {
                 iter_limit,
                 include_trig_rules,
                 include_log_exp_rules,
+                disjoint_schedule,
             },
         }
     }
@@ -1294,6 +1297,11 @@ impl PyEgraphConfig {
     #[getter]
     fn include_log_exp_rules(&self) -> bool {
         self.inner.include_log_exp_rules
+    }
+
+    #[getter]
+    fn disjoint_schedule(&self) -> bool {
+        self.inner.disjoint_schedule
     }
 }
 

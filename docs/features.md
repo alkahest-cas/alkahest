@@ -19,6 +19,8 @@ Current stable feature surface.
 - Custom rule sets via `make_rule` / `simplify_with`
 - Colored e-graphs for conditional simplification (`SimplifyConfig::assumptions`; e.g. `x > 0` enables `sqrt(x²) → x`)
 - E-graph equality saturation via vendored egglog (`simplify_egraph`, `--features egraph`; included in default PyPI wheels)
+- Match-disjoint egglog rule scheduling (`EgraphConfig::disjoint_schedule`, default on)
+- Discrimination-net indexing for user `PatternRule` sets (Rust `PatternRuleSet` / `simplify_with_pattern_rules`)
 - Pluggable cost functions: `SizeCost`, `DepthCost`, `OpCost`, `StabilityCost`
 - Phased saturation with `node_limit` / `iter_limit` config
 - `collect_like_terms`, `poly_normal`
@@ -31,7 +33,7 @@ Current stable feature surface.
 - `UniPoly`: dense univariate polynomial arithmetic, GCD, degree, coefficients
 - `MultiPoly`: sparse multivariate polynomial arithmetic, GCD, total degree
 - `RationalFunction`: quotient with automatic GCD normalization
-- Horner-form rewriting (`horner`)
+- Horner-form rewriting (`horner`); SIMD batch f64 Horner eval (`eval_horner_f64_batch`, Rust)
 - C code emission (`emit_c`)
 - Polynomial factorization over ℤ, ℤ[x₁,...,xₙ], and 𝔽ₚ (Zassenhaus, van Hoeij, Berlekamp, Cantor–Zassenhaus via FLINT)
 - Hermite and Smith normal forms for integer matrices and polynomial matrices over ℚ[x]
@@ -90,8 +92,9 @@ Current stable feature surface.
 
 ## Code generation
 
-- Three-tier CPU evaluation: Cranelift JIT (`--features cranelift`, pure Rust) → LLVM JIT (`--features jit`) → tree-walking interpreter (always available)
+- Three-tier CPU evaluation: interpreter → Cranelift JIT (`--features cranelift`) → LLVM JIT (`--features jit`), selected by `CompileConfig` (DAG size + `expected_evals`)
 - `CompileCache` — memoize compiled functions keyed by `(ExprId, input variables)`; Python `CompileCache` class
+- Bulk column-major batch evaluation (`CompiledFn::call_bulk` / `call_batch`; native `alkahest_eval_bulk` when JIT backends are enabled)
 - LLVM JIT for native CPU code (`--features jit`; `+jit` / `+full` release wheels)
 - NVPTX (CUDA GPU) codegen for `sm_86` (`--features cuda`, 16.2× over CPU on RTX 3090)
 - Custom `alkahest` MLIR dialect with three lowering targets: ArithMath, StableHLO, LLVM

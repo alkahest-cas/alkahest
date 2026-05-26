@@ -2,7 +2,7 @@
 
 Alkahest is a high-performance computer algebra system with a Rust core and Python API.
 
-**Install:** `pip install alkahest` from [PyPI](https://pypi.org/project/alkahest/) (**Python 3.9–3.13**). Default wheels omit LLVM JIT and optional `groebner` / `egraph` / `parallel` features; Linux **`linux_x86_64`** **`+jit`** / **`+full`** wheels ship on [GitHub Releases](https://github.com/alkahest-cas/alkahest/releases). The [Getting started](./getting-started.md) chapter has full install notes (venv, `LD_LIBRARY_PATH`, building from source).
+**Install:** `pip install alkahest` from [PyPI](https://pypi.org/project/alkahest/) (**Python 3.9–3.13**). Default wheels include vendored egglog (`egraph`) but omit LLVM JIT, Cranelift, `groebner`, and `parallel`; Linux **`linux_x86_64`** **`+jit`** / **`+full`** wheels ship on [GitHub Releases](https://github.com/alkahest-cas/alkahest/releases). The [Getting started](./getting-started.md) chapter has full install notes (venv, `LD_LIBRARY_PATH`, building from source).
 
 ## What it is
 

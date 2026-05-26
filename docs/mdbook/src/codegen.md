@@ -39,13 +39,15 @@ print(f([3.0, 0.0]))   # 9.0
 
 The callable takes a list of floats (one per variable) and returns a float. For batch evaluation see `numpy_eval` below.
 
-CPU compilation uses a **three-tier dispatch** (tried in order):
+CPU compilation uses a **three-tier dispatch** chosen by `CompileConfig` (expression size and `expected_evals`, not feature-flag order):
 
-1. **Cranelift** (`--features cranelift`) — pure Rust, ~10× faster compile than LLVM; no system LLVM required
-2. **LLVM** (`--features jit`) — inkwell / LLVM 15 MCJIT; best generated code for hot loops
-3. **Interpreter** — always available; zero compile latency, tree-walking over the DAG
+1. **Interpreter** — small DAGs and few planned evaluations (zero compile latency)
+2. **Cranelift** (`--features cranelift`) — pure Rust, ~10× faster compile than LLVM; no system LLVM required
+3. **LLVM** (`--features jit`) — inkwell / LLVM 15 MCJIT; best throughput for large batch sweeps
 
 Default PyPI wheels use the interpreter only. `+jit` / `+full` release wheels enable LLVM. Add `cranelift` to a from-source build for the fast-compile tier without LLVM.
+
+Native JIT backends also emit a **bulk** entry point (`alkahest_eval_bulk`) for column-major batch evaluation; `CompiledFn.call_batch` / `call_bulk` use the same layout as `numpy_eval`.
 
 ## CompileCache
 

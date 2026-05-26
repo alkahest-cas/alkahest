@@ -17,8 +17,10 @@ from alkahest import simplify_egraph, simplify_egraph_with
 r = simplify_egraph(expr)
 
 # With explicit config
-from alkahest import EgraphConfig  # (Rust API; Python config dict in future)
-r = simplify_egraph_with(expr, {"node_limit": 10_000, "iter_limit": 20})
+from alkahest import EgraphConfig, simplify_egraph_with
+
+cfg = EgraphConfig(node_limit=10_000, iter_limit=20)
+r = simplify_egraph_with(expr, cfg)
 ```
 
 ## Cost functions
@@ -47,7 +49,11 @@ For large or complex expressions, saturation can be expensive. The rule-based `s
 
 The e-graph uses the same `RewriteRule` objects as the rule-based engine. By default it loads the arithmetic rules. Domain-specific rules (trig, log/exp) are kept separate to avoid e-class explosions on expressions that do not involve those operations.
 
-**Upcoming (v1.1):** The default e-graph rule set will include trig identities (`sin²+cos²→1`) and safe log/exp cancellation out of the box, configurable via `SimplifyConfig { include_trig_rules, include_log_exp_rules }`.
+The default e-graph rule set includes trig identities (`sin²+cos²→1`) and safe log/exp cancellation. Disable per domain via `EgraphConfig(include_trig_rules=False)` or `include_log_exp_rules=False`.
+
+### Match-disjoint scheduling
+
+By default (`disjoint_schedule=True`), shrink and explore rules are split into match-disjoint egglog rulesets (`shrink-add`, `shrink-mul`, `shrink-pow`, `explore-trig`, `explore-log`, `explore-mul`) and run as separate `(run …)` steps within each phase. This reduces cross-rule interference during saturation. Set `disjoint_schedule=False` to use the legacy single-ruleset schedule.
 
 ## When e-graphs help
 

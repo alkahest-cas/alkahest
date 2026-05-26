@@ -81,7 +81,9 @@ from alkahest import simplify_egraph
 r = simplify_egraph(x * x - pool.integer(1))  # may factor or simplify
 ```
 
-E-graph saturation is more powerful than rule-based simplification for some inputs but slower and has non-deterministic performance for complex expressions. See [E-graph saturation](./egraph.md) for configuration options.
+E-graph saturation is more powerful than rule-based simplification for some inputs but slower and has non-deterministic performance for complex expressions. See [E-graph saturation](./egraph.md) for configuration options (`EgraphConfig`, including `disjoint_schedule` for match-disjoint rule groups).
+
+User-defined `PatternRule` sets can use discrimination-net indexing on the Rust side (`PatternRuleSet`, `simplify_with_pattern_rules`); the built-in `RewriteRule` engine still scans rules linearly.
 
 ## Choosing between the two
 

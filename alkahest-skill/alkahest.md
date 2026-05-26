@@ -17,13 +17,13 @@ Use this skill whenever you are writing Python code that uses the `alkahest` lib
 pip install alkahest
 ```
 
-Default PyPI wheels omit the LLVM JIT and the `groebner` / `egraph` / `parallel` Cargo features (smaller binaries, no LLVM runtime dependency). Numeric paths still work via the interpreter; use `jit_is_available()` to see whether native JIT is present, or install a `+jit` / `+full` Linux wheel or build from source (see repo `README.md`).
+Default PyPI wheels include the **vendored egglog** e-graph backend (`egraph`) but omit LLVM JIT, Cranelift, `groebner`, and `parallel`. Numeric paths use the tree-walking interpreter; use `jit_is_available()` to see whether native JIT is present, or install a `+jit` / `+full` Linux wheel or build from source (see repo `README.md`).
 
 Source build from the repository root (JIT, Gröbner, egglog, parallel — optional `cuda`):
 
 ```bash
 pip install maturin
-maturin develop --release --manifest-path alkahest-py/Cargo.toml --features "parallel egraph jit groebner"
+maturin develop --release --manifest-path alkahest-py/Cargo.toml --features "parallel egraph cranelift jit groebner"
 ```
 
 ---
@@ -96,7 +96,7 @@ r = collect_like_terms(x + x + two*x + y) # → 4*x + y
 from alkahest import EgraphConfig, HAS_EGRAPH
 
 if HAS_EGRAPH:
-    cfg = EgraphConfig(iterations=10, node_limit=50_000)
+    cfg = EgraphConfig(node_limit=50_000, iter_limit=20)
     r = simplify_egraph_with(expr, cfg)
 ```
 
@@ -213,24 +213,30 @@ for s in solutions:
 ## JIT compilation and numeric evaluation
 
 ```python
-from alkahest import compile_expr, eval_expr, CompiledFn, jit_is_available
+from alkahest import compile_expr, eval_expr, CompiledFn, CompileCache, jit_is_available
 
 jit_is_available()   # False on default PyPI wheel; True with JIT-enabled build
 
-# Compile expression to LLVM JIT (falls back to interpreter if JIT unavailable)
+# Compile (interpreter on default wheel; Cranelift/LLVM when built with those features)
 f = compile_expr(x**2 + pool.integer(1), [x])   # CompiledFn
 f([3.0])          # → [10.0]  (list in, list out)
 f.n_inputs        # 1
+
+# Memoize repeated compilations within a session
+cache = CompileCache()
+f = cache.compile(x**2, [x], pool)
+print(cache.stats())   # hits, compiles, hit_rate
 
 # Interpreter (no JIT)
 val = eval_expr(x**2 + y, {x: 3.0, y: 1.0})  # float
 
 # Vectorised evaluation (DLPack): NumPy, JAX, PyTorch CPU tensors, etc.
 import numpy as np
-from alkahest import numpy_eval
+from alkahest import numpy_eval, numpy_eval_par
 
 xs = np.linspace(0, 1, 1_000_000)
-ys = numpy_eval(f, xs)   # ndarray; much faster than a Python loop
+ys = numpy_eval(f, xs)        # ndarray; much faster than a Python loop
+ys = numpy_eval_par(f, xs)    # multi-core when built with --features parallel
 ```
 
 ---
@@ -468,7 +474,7 @@ reg = PrimitiveRegistry()
 3. **Read `.value` for the expression.** Top-level operations return `DerivedResult`, not `Expr`.
 4. **Use specific simplifiers.** Prefer `simplify_trig`, `simplify_log_exp`, `collect_like_terms` over the catch-all `simplify` when the structure is known — it is faster.
 5. **Polynomial conversions raise.** `UniPoly.from_symbolic` and `poly_normal` raise `ConversionError` for non-polynomial input — catch it.
-6. **`solve` / Gröbner-side APIs require the groebner feature.** Import-guard or catch `ImportError`. Egglog simplifiers need a build with `egraph` (`HAS_EGRAPH`).
+6. **`solve` / Gröbner-side APIs require the groebner feature.** Import-guard or catch `ImportError`. Default PyPI wheels include egglog (`HAS_EGRAPH` is typically `True`); use `simplify_egraph` when rule-based simplification is insufficient.
 7. **`trace` requires a pool argument.** Use `@alkahest.trace(pool)` (or `trace_fn(fn, pool)`). `@alkahest.trace` alone is invalid.
 8. **`grad` expects a `TracedFn`.** `jit` accepts a `TracedFn` or `GradTracedFn`; both raise `TypeError` on undecorated callables.
 9. **`numpy_eval` expects a `CompiledFn`** (from `compile_expr`), not a `TracedFn`.
