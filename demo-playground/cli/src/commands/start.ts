@@ -51,7 +51,7 @@ export async function startCommand(opts: {
   const fs = await import('fs');
   fs.writeFileSync(path.join(ROOT, 'web/.env.local'), envContent);
 
-  const webProc = spawn('pnpm', ['--filter', 'web', 'dev', '--', '-p', opts.webPort], {
+  const webProc = spawn('pnpm', ['--filter', 'web', 'dev', '-p', opts.webPort], {
     cwd: ROOT,
     env: { ...process.env },
     stdio: ['ignore', 'pipe', 'pipe'],

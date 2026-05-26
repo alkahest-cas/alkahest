@@ -38,15 +38,14 @@ export default function Nav({ isRecording, onToggleRecording, serverStatus = 'un
     serverStatus === 'offline' ? 'bg-red-400' :
     'bg-ak-border';
 
-  const navHidden = zenMode && !zenVisible;
+  // In zen mode, omit the nav entirely until the user moves the mouse (avoids a blank
+  // strip at the top in headless recordings before React applies opacity-0).
+  if (zenMode && !zenVisible) return null;
 
   return (
     <>
       <nav
-        className={clsx(
-          'sticky top-0 z-40 border-b border-ak-border bg-ak-bg/95 backdrop-blur-sm transition-opacity duration-300',
-          navHidden && 'opacity-0 pointer-events-none',
-        )}
+        className="sticky top-0 z-40 border-b border-ak-border bg-ak-bg/95 backdrop-blur-sm transition-opacity duration-300"
       >
         <div className="mx-auto flex max-w-6xl items-center gap-6 px-4 py-3">
           {/* Logo */}

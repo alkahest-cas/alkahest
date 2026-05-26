@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
 import Nav from '@/components/ui/Nav';
 import HostedBanner from '@/components/ui/HostedBanner';
+import { readZenFromUrl } from '@/lib/recording';
 
 // Load Notebook client-side only (uses Web Worker + CodeMirror)
 const Notebook = dynamic(() => import('@/components/notebook/Notebook'), { ssr: false });
@@ -12,12 +13,7 @@ export default function NotebookPage() {
   const [isRecording, setIsRecording] = useState(false);
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
   const [serverStatus, setServerStatus] = useState<'unknown' | 'online' | 'offline'>('unknown');
-  const [zenMode, setZenMode] = useState(false);
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('zen') === '1') setZenMode(true);
-  }, []);
+  const [zenMode] = useState(readZenFromUrl);
 
   async function toggleRecording() {
     if (isRecording) {
@@ -52,17 +48,20 @@ export default function NotebookPage() {
 
   return (
     <>
-      <Nav
-        isRecording={isRecording}
-        onToggleRecording={toggleRecording}
-        serverStatus={serverStatus}
-        zenMode={zenMode}
-      />
+      {!zenMode && (
+        <Nav
+          isRecording={isRecording}
+          onToggleRecording={toggleRecording}
+          serverStatus={serverStatus}
+          zenMode={zenMode}
+        />
+      )}
       <main>
-        <HostedBanner />
+        {!zenMode && <HostedBanner />}
         <Notebook
           zenMode={zenMode}
           onServerStatusChange={setServerStatus}
+          onReady={() => document.documentElement.setAttribute('data-recording-ready', 'true')}
         />
       </main>
     </>

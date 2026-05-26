@@ -35,9 +35,12 @@ program
   .option('-c, --code <file>', 'Python file to inject into cells')
   .option('-o, --output <file>', 'Output video file', path.join(VIDEOS_DIR, `alkahest-demo-${Date.now()}.webm`))
   .option('--url <url>', 'Playground URL', 'http://localhost:3000')
-  .option('--server-url <url>', 'Python execution server URL (for health checks)', 'http://localhost:8787')
-  .option('--width <px>', 'Viewport width', '1280')
-  .option('--height <px>', 'Viewport height', '720')
+  .option('--server-url <url>', 'Python execution server URL (for health checks)', 'http://localhost:8000')
+  .option('--layout <mode>', 'Recording layout: single or split (side-by-side compare)', 'single')
+  .option('--code-left <file>', 'Left panel cells (split layout); split on "# ---"')
+  .option('--code-right <file>', 'Right panel cells (split layout); split on "# ---"')
+  .option('--width <px>', 'Viewport width (default 1920 for split, 1280 for single)', '')
+  .option('--height <px>', 'Viewport height (default 1080 for split, 720 for single)', '')
   .option('--delay <ms>', 'Delay between typing characters (ms)', '40')
   .action(recordCommand);
 

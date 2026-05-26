@@ -16,6 +16,7 @@ import { postprocessOutputItems } from '@/lib/lean';
 import { loadConfig } from '@/components/ui/Settings';
 import { connectionFromConfig } from '@/lib/server-connection';
 import { isStaticHosting } from '@/lib/hosting';
+import { cellsFromDemoParam, readAutoRunFromUrl } from '@/lib/recording';
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -117,19 +118,18 @@ const INITIAL_CELLS: CellData[] = [
   ),
 ];
 
-// ── URL-param cell injection (for CLI-driven demos) ───────────────────────
-
-function cellsFromUrlParam(): CellData[] | null {
-  if (typeof window === 'undefined') return null;
-  const params = new URLSearchParams(window.location.search);
-  const encoded = params.get('demo');
-  if (!encoded) return null;
-  try {
-    const codes: string[] = JSON.parse(atob(encoded));
-    return codes.filter(Boolean).map((code) => newCell(code));
-  } catch {
-    return null;
+function cellFromDemoSource(code: string): CellData {
+  const trimmed = code.trimStart();
+  if (trimmed.startsWith('##') || trimmed.startsWith('# Groebner')) {
+    return newCell(code, 'markdown');
   }
+  return newCell(code, 'code');
+}
+
+function initialCells(demoParam: string): CellData[] {
+  const codes = cellsFromDemoParam(demoParam);
+  if (codes) return codes.map(cellFromDemoSource);
+  return INITIAL_CELLS;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────
@@ -137,10 +137,21 @@ function cellsFromUrlParam(): CellData[] | null {
 interface NotebookProps {
   zenMode?: boolean;
   onServerStatusChange?: (status: 'unknown' | 'online' | 'offline') => void;
+  /** URL query param for base64 cell injection (default `demo`; compare view uses `left` / `right`). */
+  demoParam?: string;
+  /** Drop the max-width constraint for side-by-side compare layout. */
+  compact?: boolean;
+  onReady?: () => void;
 }
 
-export default function Notebook({ zenMode, onServerStatusChange }: NotebookProps = {}) {
-  const [cells, dispatch] = useReducer(reducer, null, () => cellsFromUrlParam() ?? INITIAL_CELLS);
+export default function Notebook({
+  zenMode,
+  onServerStatusChange,
+  demoParam = 'demo',
+  compact = false,
+  onReady,
+}: NotebookProps = {}) {
+  const [cells, dispatch] = useReducer(reducer, demoParam, initialCells);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [serverStatus, setServerStatus] = useState<'unknown' | 'online' | 'offline'>('unknown');
   const [execCount, setExecCount] = useState(0);
@@ -148,8 +159,7 @@ export default function Notebook({ zenMode, onServerStatusChange }: NotebookProp
   const cfg = useRef(loadConfig());
   const cleanupFns = useRef<Map<string, () => void>>(new Map());
 
-  const autoRun = typeof window !== 'undefined' &&
-    new URLSearchParams(window.location.search).get('autorun') === '1';
+  const autoRun = readAutoRunFromUrl();
 
   // ?mode=server|wasm|auto overrides the saved config for this page load
   if (typeof window !== 'undefined') {
@@ -191,6 +201,15 @@ export default function Notebook({ zenMode, onServerStatusChange }: NotebookProp
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Signal headless recorders once CodeMirror has rendered demo cells.
+  useEffect(() => {
+    if (!onReady) return;
+    const editors = document.querySelectorAll('.cm-editor');
+    if (editors.length >= cells.filter((c) => c.cellType === 'code').length) {
+      onReady();
+    }
+  }, [cells, onReady]);
+
   // Auto-run all cells sequentially when triggered by ?autorun=1
   useEffect(() => {
     if (!autoRunPending || !sessionId) return;
@@ -198,17 +217,9 @@ export default function Notebook({ zenMode, onServerStatusChange }: NotebookProp
     let cancelled = false;
     (async () => {
       for (const cell of cells) {
-        if (cancelled) break;
+        if (cancelled || cell.cellType === 'markdown') continue;
         runCell(cell.id);
-        // Wait for this cell to finish before running the next
-        await new Promise<void>((resolve) => {
-          const interval = setInterval(() => {
-            // We poll — cells state captured here may be stale but runCell updates it
-            resolve();
-          }, 2500);
-          // eslint-disable-next-line @typescript-eslint/no-unused-vars
-          void interval;
-        });
+        await waitForCellDone(cell.id, () => cancelled);
       }
     })();
     return () => { cancelled = true; };
@@ -302,7 +313,7 @@ export default function Notebook({ zenMode, onServerStatusChange }: NotebookProp
   }
 
   return (
-    <div className="mx-auto max-w-4xl px-4 py-6 space-y-3">
+    <div className={compact ? 'px-2 py-3 space-y-2' : 'mx-auto max-w-4xl px-4 py-6 space-y-3'}>
       {/* Toolbar — hidden in zen mode */}
       {!zenMode && <div className="flex items-center gap-2 flex-wrap">
         <button
@@ -385,4 +396,19 @@ export default function Notebook({ zenMode, onServerStatusChange }: NotebookProp
       )}
     </div>
   );
+}
+
+function waitForCellDone(cellId: string, cancelled: () => boolean): Promise<void> {
+  return new Promise((resolve) => {
+    const deadline = Date.now() + 120_000;
+    const tick = () => {
+      if (cancelled()) return resolve();
+      const el = document.querySelector(`[data-cell-id="${cellId}"]`);
+      const running = el?.querySelector('.animate-spin');
+      if (!running) return resolve();
+      if (Date.now() > deadline) return resolve();
+      setTimeout(tick, 200);
+    };
+    setTimeout(tick, 400);
+  });
 }
