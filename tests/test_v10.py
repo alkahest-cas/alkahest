@@ -153,8 +153,15 @@ class TestStructuredErrors:
         assert alkahest.AlkahestError is alkahest.AlkahestError
 
     def test_all_exception_classes_have_code_attr(self):
-        for cls_name in ["ConversionError", "DiffError", "IntegrationError",
-                         "MatrixError", "OdeError", "DaeError", "JitError"]:
+        for cls_name in [
+            "ConversionError",
+            "DiffError",
+            "IntegrationError",
+            "MatrixError",
+            "OdeError",
+            "DaeError",
+            "JitError",
+        ]:
             cls = getattr(alkahest, cls_name)
             # All should be subclasses of AlkahestError
             assert issubclass(cls, alkahest.AlkahestError), (
@@ -189,7 +196,7 @@ class TestPolynomialSolver:
         x, y = self.x, self.y
         one = p.integer(1)
         eq1 = x + y + p.integer(-1) * one  # x + y - 1
-        eq2 = x + p.integer(-1) * y        # x - y
+        eq2 = x + p.integer(-1) * y  # x - y
         solutions = alkahest.solve([eq1, eq2], [x, y], numeric=True)
         assert isinstance(solutions, list), "expected list of solutions"
         assert len(solutions) > 0, "expected at least one solution"
@@ -239,8 +246,7 @@ class TestPolynomialSolver:
         roots_str = {str(sol[x]) for sol in solutions}
         # Integer solutions: displayed as "2" and "-2".
         assert "2" in roots_str or any(
-            abs(alkahest.eval_expr(sol[x], {}) - 2.0) < 1e-10
-            for sol in solutions
+            abs(alkahest.eval_expr(sol[x], {}) - 2.0) < 1e-10 for sol in solutions
         )
 
 
@@ -295,6 +301,7 @@ class TestStableAPI:
 
     def test_experimental_has_to_stablehlo(self):
         import alkahest.experimental as exp
+
         assert hasattr(exp, "to_stablehlo")
 
     def test_version(self):

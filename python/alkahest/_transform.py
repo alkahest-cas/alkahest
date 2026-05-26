@@ -26,14 +26,16 @@ Example
 from __future__ import annotations
 
 import inspect
-from collections.abc import Sequence
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from .alkahest import (
     Expr,
     ExprPool,
     compile_expr,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 # ---------------------------------------------------------------------------
 # TracedFn — a symbolic function built by tracing a Python callable
@@ -94,7 +96,7 @@ class TracedFn:
         except ImportError:
             pass
         # Scalar path: build env dict and call eval_interp
-        from .alkahest import eval_expr  # noqa: PLC0415
+        from .alkahest import eval_expr
 
         env = {sym: float(val) for sym, val in zip(self.symbols, values)}
         return eval_expr(self.expr, env)
@@ -172,7 +174,7 @@ class GradTracedFn:
         traced: TracedFn,
         wrt: list[Expr] | None,
     ):
-        from .alkahest import diff as _diff  # noqa: PLC0415
+        from .alkahest import diff as _diff
 
         self._traced = traced
         self._wrt = wrt or traced.symbols
@@ -200,7 +202,7 @@ class GradTracedFn:
                 return results
         except ImportError:
             pass
-        from .alkahest import eval_expr  # noqa: PLC0415
+        from .alkahest import eval_expr
 
         env = {sym: float(val) for sym, val in zip(self._traced.symbols, values)}
         return [eval_expr(g_expr, env) for g_expr in self._grad_exprs]
@@ -222,9 +224,7 @@ class CompiledGradTracedFn:
     def __init__(self, grad: GradTracedFn):
         self._grad = grad
         traced = grad._traced
-        self._compiled = [
-            compile_expr(g_expr, traced.symbols) for g_expr in grad._grad_exprs
-        ]
+        self._compiled = [compile_expr(g_expr, traced.symbols) for g_expr in grad._grad_exprs]
 
     @property
     def symbols(self) -> list[Expr]:
@@ -245,7 +245,7 @@ class CompiledGradTracedFn:
                 return [numpy_eval(c, *values) for c in self._compiled]
         except ImportError:
             pass
-        from .alkahest import eval_expr  # noqa: PLC0415
+        from .alkahest import eval_expr
 
         env = {sym: float(val) for sym, val in zip(self._grad._traced.symbols, values)}
         return [eval_expr(g_expr, env) for g_expr in self._grad._grad_exprs]
@@ -381,12 +381,12 @@ def trace_fn(
 
 
 __all__ = [
-    "TracedFn",
-    "CompiledTracedFn",
     "CompiledGradTracedFn",
+    "CompiledTracedFn",
     "GradTracedFn",
-    "trace",
+    "TracedFn",
     "grad",
     "jit",
+    "trace",
     "trace_fn",
 ]

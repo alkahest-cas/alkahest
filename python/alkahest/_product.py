@@ -21,7 +21,7 @@ class Product:
         out = ah.simplify(prod.doit().value)
     """
 
-    __slots__ = ("term", "_k", "_lo", "_hi")
+    __slots__ = ("_hi", "_k", "_lo", "term")
 
     def __init__(self, term, bounds: tuple) -> None:
         if not isinstance(bounds, tuple) or len(bounds) != 3:

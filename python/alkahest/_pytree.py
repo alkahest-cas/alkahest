@@ -88,7 +88,7 @@ class TreeDef:
 def _is_expr(obj: Any) -> bool:
     """Return True if *obj* is a Alkahest ``Expr`` node."""
     try:
-        from .alkahest import Expr  # noqa: PLC0415
+        from .alkahest import Expr
 
         return isinstance(obj, Expr)
     except ImportError:
@@ -225,6 +225,6 @@ def map_exprs(fn: Callable, obj: Any) -> Any:
 __all__ = [
     "TreeDef",
     "flatten_exprs",
-    "unflatten_exprs",
     "map_exprs",
+    "unflatten_exprs",
 ]

@@ -9,6 +9,7 @@ Usage::
 
     python tests/lean_corpus.py --output /tmp/lean_proofs/
 """
+
 import argparse
 import os
 import sys
@@ -44,12 +45,8 @@ def generate_proof(name: str, expr_builder, pool) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Generate Lean proofs for Alkahest identities"
-    )
-    parser.add_argument(
-        "--output", default=".", help="Output directory for .lean files"
-    )
+    parser = argparse.ArgumentParser(description="Generate Lean proofs for Alkahest identities")
+    parser.add_argument("--output", default=".", help="Output directory for .lean files")
     args = parser.parse_args()
 
     os.makedirs(args.output, exist_ok=True)

@@ -16,7 +16,8 @@ def test_diophantine_linear_parametric():
     sol = alkahest.diophantine(eq, [x, y])
     assert sol.kind == "parametric_linear"
     assert sol.parameter is not None
-    assert sol.parametric is not None and len(sol.parametric) == 2
+    assert sol.parametric is not None
+    assert len(sol.parametric) == 2
 
 
 def test_diophantine_pell_unit():
@@ -58,7 +59,8 @@ def test_diophantine_pell_generalized_x2_minus_2y2_eq_minus1():
     sol = alkahest.diophantine(eq, [x, y])
     assert sol.kind in ("pell_generalized", "pell_fundamental")
     if sol.kind == "pell_generalized":
-        assert sol.pell_n is not None and int(str(sol.pell_n)) == -1
+        assert sol.pell_n is not None
+        assert int(str(sol.pell_n)) == -1
         assert sol.pell_particular is not None
         assert sol.pell_unit is not None
         x0, y0 = sol.pell_particular
@@ -95,4 +97,3 @@ def test_diophantine_sympy_finite_subset():
     ap = {tuple(sorted((int(str(a)), int(str(b))))) for a, b in sol.points}
     assert ap == {(1, 2)}
     assert ap <= sp_abs
-

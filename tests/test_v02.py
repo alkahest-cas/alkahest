@@ -150,6 +150,7 @@ class TestACPatternMatching:
         pat = self.a + self.b
         inner = self.x + self.y
         from alkahest.alkahest import sin
+
         expr = sin(inner)
         matches = match_pattern(pat, expr)
         assert len(matches) > 0
@@ -190,7 +191,7 @@ class TestForwardModeAD:
 
     def test_diff_forward_quadratic(self):
         # d/dx x² = 2x
-        expr = self.x ** 2
+        expr = self.x**2
         r = diff_forward(expr, self.x)
         r_sym = diff(expr, self.x)
         # Both should give the same representation (as strings)
@@ -199,7 +200,7 @@ class TestForwardModeAD:
     def test_diff_forward_agrees_with_symbolic(self):
         # d/dx (x³ + 2x) forward vs symbolic
         two = self.pool.integer(2)
-        expr = (self.x ** 3) + (two * self.x)
+        expr = (self.x**3) + (two * self.x)
         fwd = diff_forward(expr, self.x)
         sym = diff(expr, self.x)
         assert str(fwd.value) == str(sym.value)
@@ -211,6 +212,7 @@ class TestForwardModeAD:
 
     def test_diff_forward_unknown_function_raises(self):
         from alkahest.alkahest import sin
+
         # sin is known, should work
         r = diff_forward(sin(self.x), self.x)
         assert str(r.value) == str(self.pool.symbol("cos") if False else "cos(x)")
@@ -252,43 +254,47 @@ class TestIntegration:
         self._verify(self.x)
 
     def test_integrate_x_squared(self):
-        self._verify(self.x ** 2)
+        self._verify(self.x**2)
 
     def test_integrate_polynomial(self):
         # ∫ (x² + 2x) dx
         two = self.pool.integer(2)
-        expr = (self.x ** 2) + (two * self.x)
+        expr = (self.x**2) + (two * self.x)
         self._verify(expr)
 
     def test_integrate_sin(self):
         from alkahest.alkahest import sin
+
         r = integrate(sin(self.x), self.x)
         # Result should be -cos(x)
         assert "cos" in str(r.value)
 
     def test_integrate_cos(self):
         from alkahest.alkahest import cos
+
         r = integrate(cos(self.x), self.x)
         assert str(r.value) == "sin(x)"
 
     def test_integrate_exp(self):
         from alkahest.alkahest import exp
+
         r = integrate(exp(self.x), self.x)
         assert str(r.value) == "exp(x)"
 
     def test_integrate_one_over_x(self):
-        x_inv = self.x ** -1
+        x_inv = self.x**-1
         r = integrate(x_inv, self.x)
         assert str(r.value) == "log(x)"
 
     def test_integrate_sqrt_is_implemented(self):
         # V1-2: algebraic-function Risch now handles sqrt(P(x)) for genus-0 curves.
         from alkahest.alkahest import sqrt
+
         r = integrate(sqrt(self.x), self.x)
         assert r.value is not None
 
     def test_integrate_has_log(self):
-        r = integrate(self.x ** 2, self.x)
+        r = integrate(self.x**2, self.x)
         assert r.steps  # non-empty steps
         assert r.derivation  # non-empty derivation string
 

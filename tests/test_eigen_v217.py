@@ -69,10 +69,13 @@ def test_jordan_block_eigenvals_and_diagonalize_error():
     d = m.eigenvals()
     assert len(d) == 1
     ev, mult = next(iter(d.items()))
-    assert _expr_to_sympy(ev) == 2 and mult == 2
+    assert _expr_to_sympy(ev) == 2
+    assert mult == 2
 
     triples = m.eigenvects()
-    assert len(triples) == 1 and triples[0][1] == 2 and len(triples[0][2]) == 1
+    assert len(triples) == 1
+    assert triples[0][1] == 2
+    assert len(triples[0][2]) == 1
 
     with pytest.raises(alkahest.EigenError):
         m.diagonalize()

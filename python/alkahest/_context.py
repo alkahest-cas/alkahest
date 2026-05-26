@@ -18,10 +18,12 @@ Example
 
 from __future__ import annotations
 
-from collections.abc import Generator
 from contextlib import contextmanager
 from threading import local
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 # ---------------------------------------------------------------------------
 # Thread-local state
@@ -122,9 +124,7 @@ def context(
 # ---------------------------------------------------------------------------
 
 
-def symbol(
-    name: str, *, pool: Any = None, domain: Any = None, commutative: bool = True
-) -> Any:
+def symbol(name: str, *, pool: Any = None, domain: Any = None, commutative: bool = True) -> Any:
     """Create a symbol, inferring *pool* and *domain* from the active context.
 
     Parameters

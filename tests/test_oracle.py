@@ -21,6 +21,7 @@ from alkahest.alkahest import ExprPool, UniPoly, diff, integrate, simplify  # no
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def alkahest_poly(pool, x, coeffs: list[int]):
     """Build sum(c * x^i) in a alkahest ExprPool."""
     terms = []
@@ -31,7 +32,7 @@ def alkahest_poly(pool, x, coeffs: list[int]):
         if i == 0:
             terms.append(c_id)
         else:
-            xpow = x ** i
+            xpow = x**i
             terms.append(c_id * xpow if c != 1 else xpow)
     if not terms:
         return pool.integer(0)
@@ -86,7 +87,7 @@ CASES = [
 ]
 
 
-@pytest.mark.parametrize("desc,coeffs,expected", CASES)
+@pytest.mark.parametrize(("desc", "coeffs", "expected"), CASES)
 def test_diff_matches_known(desc, coeffs, expected):
     """Alkahest diff matches hand-computed derivative for fixed cases."""
     pool = ExprPool()
@@ -100,7 +101,7 @@ def test_diff_matches_known(desc, coeffs, expected):
     def norm(cs):
         while len(cs) > 1 and cs[-1] == 0:
             cs = cs[:-1]
-        return cs or [0] or [0]
+        return cs or [0]
 
     assert norm(got) == norm(expected), (
         f"[{desc}] coeffs={coeffs}: alkahest={got}, expected={expected}"
@@ -187,7 +188,7 @@ _INTEGRATE_CASES = [
 ]
 
 
-@pytest.mark.parametrize("desc,coeffs", _INTEGRATE_CASES)
+@pytest.mark.parametrize(("desc", "coeffs"), _INTEGRATE_CASES)
 def test_integrate_matches_sympy(desc, coeffs):
     """alkahest integrate(p, x) == SymPy integrate(p, x) for fixed polynomial cases."""
     sx = sympy.Symbol("x")
@@ -308,6 +309,7 @@ def _approx_equal(a: float, b: float) -> bool:
 
 # --- Expression grammar ---
 
+
 def _random_atom(pool, x, sx, rng):
     """Return (alk_expr, sympy_expr) for a simple integrable atom.
 
@@ -321,7 +323,7 @@ def _random_atom(pool, x, sx, rng):
     choice = rng.randint(0, 4)
     if choice == 0:
         n = rng.randint(0, 4)
-        return x ** n, sx ** n
+        return x**n, sx**n
     elif choice == 1:
         return sin(x), sympy.sin(sx)
     elif choice == 2:

@@ -31,9 +31,7 @@ def poly_str(poly) -> str:
 class TestReduceMod:
     def test_basic(self):
         # 6x + 4 mod 5 → x + 4
-        poly, pool, x, y = make_poly(
-            lambda p, x, y: p.integer(6) * x + p.integer(4)
-        )
+        poly, _pool, _x, _y = make_poly(lambda p, x, y: p.integer(6) * x + p.integer(4))
         fp = modular.reduce_mod(poly, 5)
         assert isinstance(fp, MultiPolyFp)
         assert fp.modulus == 5
@@ -41,16 +39,14 @@ class TestReduceMod:
 
     def test_negative_coeff(self):
         # -3x mod 7 → 4x
-        poly, pool, x, y = make_poly(lambda p, x, y: p.integer(-3) * x)
+        poly, _pool, _x, _y = make_poly(lambda p, x, y: p.integer(-3) * x)
         fp = modular.reduce_mod(poly, 7)
         assert fp.modulus == 7
         assert not fp.is_zero()
 
     def test_vanishing_term(self):
         # 5x + 7 mod 5 → 2 (x term vanishes)
-        poly, pool, x, y = make_poly(
-            lambda p, x, y: p.integer(5) * x + p.integer(7)
-        )
+        poly, _pool, _x, _y = make_poly(lambda p, x, y: p.integer(5) * x + p.integer(7))
         fp = modular.reduce_mod(poly, 5)
         # degree falls (x^1 term is gone) — the result is just the constant 2
         assert fp.total_degree() == 0
@@ -90,7 +86,7 @@ class TestReduceMod:
         pool = alkahest.ExprPool()
         x = pool.symbol("x")
         y = pool.symbol("y")
-        x2 = x ** 2
+        x2 = x**2
         poly = MultiPoly.from_symbolic(x2 + x + pool.integer(1), [x, y])
         fp = modular.reduce_mod(poly, 5)
         assert fp.total_degree() == 2
@@ -108,19 +104,19 @@ class TestLiftCrt:
 
     def test_roundtrip_positive_coeffs(self):
         # 3x + 2; coeffs ≤ 3 < 101/2
-        poly, pool, x, y = make_poly(lambda p, x, y: p.integer(3) * x + p.integer(2))
+        poly, _pool, _x, _y = make_poly(lambda p, x, y: p.integer(3) * x + p.integer(2))
         lifted = self._roundtrip(poly)
         assert str(lifted) == str(poly)
 
     def test_roundtrip_negative_coeff(self):
         # x - 50; need M > 100; 101*103=10403 > 100
-        poly, pool, x, y = make_poly(lambda p, x, y: x + p.integer(-50))
+        poly, _pool, _x, _y = make_poly(lambda p, x, y: x + p.integer(-50))
         lifted = self._roundtrip(poly)
         assert str(lifted) == str(poly)
 
     def test_roundtrip_bivariate(self):
         # x*y + 3
-        poly, pool, x, y = make_poly(lambda p, x, y: x * y + p.integer(3))
+        poly, _pool, _x, _y = make_poly(lambda p, x, y: x * y + p.integer(3))
         lifted = self._roundtrip(poly, primes=(7, 11))
         assert str(lifted) == str(poly)
 
@@ -128,13 +124,11 @@ class TestLiftCrt:
         pool = alkahest.ExprPool()
         x = pool.symbol("x")
         y = pool.symbol("y")
-        x2 = x ** 2
+        x2 = x**2
         expr = p = pool
         expr = p.integer(3) * x2 + p.integer(2) * x + p.integer(1)
         poly = MultiPoly.from_symbolic(expr, [x, y])
-        lifted = modular.lift_crt(
-            [(modular.reduce_mod(poly, p), p) for p in (101, 103)]
-        )
+        lifted = modular.lift_crt([(modular.reduce_mod(poly, p), p) for p in (101, 103)])
         assert str(lifted) == str(poly)
 
     def test_empty_list_raises(self):
@@ -143,7 +137,7 @@ class TestLiftCrt:
 
     def test_single_image(self):
         # Trivial single-prime lift — works for small coefficients
-        poly, pool, x, y = make_poly(lambda p, x, y: x + p.integer(2))
+        poly, _pool, _x, _y = make_poly(lambda p, x, y: x + p.integer(2))
         lifted = modular.lift_crt([(modular.reduce_mod(poly, 101), 101)])
         assert str(lifted) == str(poly)
 
@@ -231,7 +225,7 @@ class TestMignotteBound:
 
     def test_linear(self):
         # 3x + 2: L1=5, d=1 → bound=10
-        poly, pool, x, y = make_poly(lambda p, x, y: p.integer(3) * x + p.integer(2))
+        poly, _pool, _x, _y = make_poly(lambda p, x, y: p.integer(3) * x + p.integer(2))
         assert modular.mignotte_bound(poly) == 10
 
     def test_zero_poly(self):
@@ -249,9 +243,7 @@ class TestMignotteBound:
 
     def test_sufficient_for_crt(self):
         # For poly = 40x - 30, mignotte bound = 70; need M > 140
-        poly, pool, x, y = make_poly(
-            lambda p, x, y: p.integer(40) * x + p.integer(-30)
-        )
+        poly, _pool, _x, _y = make_poly(lambda p, x, y: p.integer(40) * x + p.integer(-30))
         bound = modular.mignotte_bound(poly)
         # lift with enough primes to exceed 2*bound
         images = []
@@ -299,10 +291,7 @@ class TestSelectLuckyPrime:
         def is_prime(n):
             if n < 2:
                 return False
-            for i in range(2, isqrt(n) + 1):
-                if n % i == 0:
-                    return False
-            return True
+            return all(n % i != 0 for i in range(2, isqrt(n) + 1))
 
         p = modular.select_lucky_prime(12, [2, 3])
         assert is_prime(p)
@@ -335,7 +324,7 @@ class TestIntegration:
             b = rng.randint(-20, 20)
             c = rng.randint(-20, 20)
             # a*x^2 + b*x + c
-            x2 = x ** 2
+            x2 = x**2
             expr = pool.integer(a) * x2 + pool.integer(b) * x + pool.integer(c)
             poly = MultiPoly.from_symbolic(expr, [x, y])
 
@@ -351,18 +340,14 @@ class TestIntegration:
                 product *= p
 
             lifted = modular.lift_crt(images)
-            assert str(lifted) == str(poly), (
-                f"round-trip failed for {a}x^2+{b}x+{c}: "
-                f"got {lifted}"
-            )
+            assert str(lifted) == str(poly), f"round-trip failed for {a}x^2+{b}x+{c}: got {lifted}"
 
     def test_error_code_on_bad_modulus(self):
         poly, *_ = make_poly(lambda p, x, y: x)
-        try:
+        with pytest.raises(Exception) as exc_info:
             modular.reduce_mod(poly, 9)
-            assert False, "should have raised"
-        except Exception as e:
-            assert hasattr(e, "code") and e.code == "E-MOD-001"
+        assert hasattr(exc_info.value, "code")
+        assert exc_info.value.code == "E-MOD-001"
 
     def test_modular_multipolyFp_type(self):
         poly, *_ = make_poly(lambda p, x, y: x)

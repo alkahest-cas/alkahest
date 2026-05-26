@@ -8,6 +8,7 @@ enum rather than string-tagged Python lists.
 The public ``latex()`` and ``unicode_str()`` functions below are thin Python
 wrappers that call through to those Rust methods.
 """
+
 from __future__ import annotations
 
 

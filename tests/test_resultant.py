@@ -24,6 +24,7 @@ from alkahest import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def make_pool():
     return ExprPool()
 
@@ -39,6 +40,7 @@ def expr_to_int(expr):
 # ---------------------------------------------------------------------------
 # resultant — univariate (integer result)
 # ---------------------------------------------------------------------------
+
 
 class TestResultantUnivariate:
     def test_common_root_gives_zero(self):
@@ -125,6 +127,7 @@ class TestResultantUnivariate:
 # resultant — bivariate (polynomial result)
 # ---------------------------------------------------------------------------
 
+
 class TestResultantBivariate:
     def test_bivariate_sanity(self):
         """res(x^2 + y^2 - 1, y - x, y) == 2*x^2 - 1.
@@ -170,9 +173,7 @@ class TestResultantBivariate:
         # Substitute (x=4, y=8): 4=2^2, 8=2^3 → on the curve → should give 0.
         at_on_curve = alkahest.subs(res_expr, {x: pool.integer(4), y: pool.integer(8)})
         simplified_on = alkahest.simplify(at_on_curve).value
-        assert str(simplified_on) == "0", (
-            f"resultant at (4,8) should be 0, got {simplified_on}"
-        )
+        assert str(simplified_on) == "0", f"resultant at (4,8) should be 0, got {simplified_on}"
 
         # Substitute (x=1, y=2): 2 ≠ 1^(3/2) → off the curve → should be non-zero.
         at_off_curve = alkahest.subs(res_expr, {x: pool.integer(1), y: pool.integer(2)})
@@ -196,6 +197,7 @@ class TestResultantBivariate:
 # ---------------------------------------------------------------------------
 # subresultant_prs
 # ---------------------------------------------------------------------------
+
 
 class TestSubresultantPRS:
     def test_prs_starts_with_inputs(self):
@@ -268,12 +270,14 @@ class TestSubresultantPRS:
 # Sylvester matrix agreement (proptest-style, 5 hand-crafted cases)
 # ---------------------------------------------------------------------------
 
+
 class TestSylvesterAgreement:
     """Verify that resultant() matches the Sylvester determinant formula."""
 
     def _sylvester_det(self, a_coeffs, b_coeffs):
         """Compute det(Sylvester(a, b)) using Python integers."""
         import numpy as np
+
         n = len(a_coeffs) - 1  # deg(a)
         m = len(b_coeffs) - 1  # deg(b)
         size = n + m
@@ -288,13 +292,16 @@ class TestSylvesterAgreement:
         for i in range(n):
             for j, c in enumerate(b_coeffs):
                 mat[m + i][i + j] = c
-        return int(round(np.linalg.det(np.array(mat, dtype=float))))
+        return round(np.linalg.det(np.array(mat, dtype=float)))
 
-    @pytest.mark.parametrize("a,b,expected", [
-        ([1, 0, 1], [-1, 1], 2),           # res(x^2+1, x-1): f(1)=2, lc(f)^1=1 → 2
-        ([6, -5, 1], [-2, 1], 0),          # x^2-5x+6=(x-2)(x-3), x-2: common root x=2 → 0
-        ([-1, 0, 1], [-1, 1], 0),          # res(x^2-1, x-1) = 0 (common root x=1)
-    ])
+    @pytest.mark.parametrize(
+        ("a", "b", "expected"),
+        [
+            ([1, 0, 1], [-1, 1], 2),  # res(x^2+1, x-1): f(1)=2, lc(f)^1=1 → 2
+            ([6, -5, 1], [-2, 1], 0),  # x^2-5x+6=(x-2)(x-3), x-2: common root x=2 → 0
+            ([-1, 0, 1], [-1, 1], 0),  # res(x^2-1, x-1) = 0 (common root x=1)
+        ],
+    )
     def test_sylvester_spot_checks(self, a, b, expected):
         """Resultant matches Sylvester determinant for hand-coded cases."""
         if expected is None:
@@ -331,6 +338,7 @@ class TestSylvesterAgreement:
 # ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------
+
 
 class TestResultantErrors:
     def test_non_polynomial_raises(self):

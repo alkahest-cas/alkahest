@@ -53,8 +53,6 @@ settings.register_profile(
 _profile = os.environ.get("HYPOTHESIS_PROFILE")
 if _profile is None:
     _ci_markers = ("true", "1", "yes")
-    _profile = (
-        "ci" if os.environ.get("CI", "").lower() in _ci_markers else "dev"
-    )
+    _profile = "ci" if os.environ.get("CI", "").lower() in _ci_markers else "dev"
 
 settings.load_profile(_profile)

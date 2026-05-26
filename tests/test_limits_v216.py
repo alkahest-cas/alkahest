@@ -106,12 +106,14 @@ def test_limit_neg_infinity_exp():
 )
 def test_limit_sympy_oracle(formula, point, direction):
     if direction == "+":
-        alk, sp_ref = _alk_lim(formula, pt=point, direction="+"), _sp_lim(
-            formula, pt=point, direction="+"
+        alk, sp_ref = (
+            _alk_lim(formula, pt=point, direction="+"),
+            _sp_lim(formula, pt=point, direction="+"),
         )
     elif direction == "-":
-        alk, sp_ref = _alk_lim(formula, pt=point, direction="-"), _sp_lim(
-            formula, pt=point, direction="-"
+        alk, sp_ref = (
+            _alk_lim(formula, pt=point, direction="-"),
+            _sp_lim(formula, pt=point, direction="-"),
         )
     else:
         alk, sp_ref = _alk_lim(formula, pt=point), _sp_lim(formula, pt=point)

@@ -1,4 +1,5 @@
 """V2-21: Pratt expression parser tests."""
+
 from __future__ import annotations
 
 import alkahest
@@ -35,6 +36,7 @@ def y(pool):
 # Atoms
 # ---------------------------------------------------------------------------
 
+
 class TestAtoms:
     def test_integer(self, pool):
         assert parse("0", pool) == pool.integer(0)
@@ -67,6 +69,7 @@ class TestAtoms:
 # Unary operators
 # ---------------------------------------------------------------------------
 
+
 class TestUnary:
     def test_unary_minus_integer(self, pool):
         e = parse("-1", pool)
@@ -88,6 +91,7 @@ class TestUnary:
 # ---------------------------------------------------------------------------
 # Binary arithmetic
 # ---------------------------------------------------------------------------
+
 
 class TestArithmetic:
     def test_add(self, pool, x):
@@ -121,6 +125,7 @@ class TestArithmetic:
 # Precedence and associativity
 # ---------------------------------------------------------------------------
 
+
 class TestPrecedence:
     def test_add_mul_precedence(self, pool, x):
         # x + 2 * x  →  add at top level
@@ -138,7 +143,7 @@ class TestPrecedence:
         x_sq = parse("x^2", pool, {"x": x})
         neg_x = parse("-x", pool, {"x": x})
         # neg_x_sq should not equal (-x)^2
-        assert neg_x_sq != neg_x ** 2
+        assert neg_x_sq != neg_x**2
         # It should equal -(x^2)
         assert simplify(neg_x_sq).value == simplify(-x_sq).value
 
@@ -168,6 +173,7 @@ class TestPrecedence:
 # Function calls
 # ---------------------------------------------------------------------------
 
+
 class TestFunctions:
     def test_sin(self, pool, x):
         e = parse("sin(x)", pool, {"x": x})
@@ -192,28 +198,33 @@ class TestFunctions:
     def test_abs(self, pool, x):
         e = parse("abs(x)", pool, {"x": x})
         n = e.node()
-        assert n[0] == "func" and n[1] == "abs"
+        assert n[0] == "func"
+        assert n[1] == "abs"
 
     def test_floor(self, pool, x):
         e = parse("floor(x)", pool, {"x": x})
         n = e.node()
-        assert n[0] == "func" and n[1] == "floor"
+        assert n[0] == "func"
+        assert n[1] == "floor"
 
     def test_ceil(self, pool, x):
         e = parse("ceil(x)", pool, {"x": x})
         n = e.node()
-        assert n[0] == "func" and n[1] == "ceil"
+        assert n[0] == "func"
+        assert n[1] == "ceil"
 
     def test_two_arg_atan2(self, pool, x, y):
         e = parse("atan2(x, y)", pool, {"x": x, "y": y})
         n = e.node()
-        assert n[0] == "func" and n[1] == "atan2"
+        assert n[0] == "func"
+        assert n[1] == "atan2"
         assert len(n[2]) == 2
 
     def test_nested_function(self, pool, x):
         e = parse("sin(x^2)", pool, {"x": x})
         n = e.node()
-        assert n[0] == "func" and n[1] == "sin"
+        assert n[0] == "func"
+        assert n[1] == "sin"
         arg_node = n[2][0].node()
         assert arg_node[0] == "pow"
 
@@ -225,6 +236,7 @@ class TestFunctions:
 # ---------------------------------------------------------------------------
 # Whitespace handling
 # ---------------------------------------------------------------------------
+
 
 class TestWhitespace:
     def test_spaces_around_ops(self, pool, x):
@@ -240,6 +252,7 @@ class TestWhitespace:
 # ---------------------------------------------------------------------------
 # Symbol map reuse within a call
 # ---------------------------------------------------------------------------
+
 
 class TestSymbolMap:
     def test_same_name_reused(self, pool):
@@ -267,23 +280,27 @@ class TestSymbolMap:
 # Round-trip equivalence
 # ---------------------------------------------------------------------------
 
+
 class TestRoundTrip:
     def test_quadratic(self, pool, x):
-        built = x ** 2 + pool.integer(2) * x + pool.integer(1)
+        built = x**2 + pool.integer(2) * x + pool.integer(1)
         parsed = parse("x^2 + 2*x + 1", pool, {"x": x})
         assert simplify(built).value == simplify(parsed).value
 
     def test_diff_after_parse(self, pool, x):
         from alkahest import diff
+
         e = parse("x^3 + x", pool, {"x": x})
         r = diff(e, x)
         # d/dx (x^3 + x) = 3x^2 + 1
         from alkahest import UniPoly
+
         poly = UniPoly.from_symbolic(r.value, x)
         assert poly.coefficients() == [1, 0, 3]
 
     def test_integrate_after_parse(self, pool, x):
         from alkahest import integrate
+
         e = parse("exp(x)", pool, {"x": x})
         r = integrate(e, x)
         assert r.value == exp(x)
@@ -292,6 +309,7 @@ class TestRoundTrip:
 # ---------------------------------------------------------------------------
 # Error cases
 # ---------------------------------------------------------------------------
+
 
 class TestErrors:
     def test_empty_string(self, pool):
@@ -331,17 +349,17 @@ class TestErrors:
             parse("x **", pool)
 
     def test_parse_error_has_span(self, pool):
-        try:
+        with pytest.raises(ParseError) as exc_info:
             parse("x @ y", pool)
-        except ParseError as e:
-            assert e.span is not None
-            start, end = e.span
-            assert end > start
+        assert exc_info.value.span is not None
+        start, end = exc_info.value.span
+        assert end > start
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 class TestPublicAPI:
     def test_parse_in_module(self):

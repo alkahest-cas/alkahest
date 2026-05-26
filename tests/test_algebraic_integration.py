@@ -9,7 +9,7 @@ Run after `maturin develop`:
 """
 
 import pytest
-from alkahest.alkahest import ArbBall, ExprPool, diff, integrate, interval_eval, sqrt  # noqa: E402
+from alkahest.alkahest import ArbBall, ExprPool, diff, integrate, interval_eval, sqrt
 
 # ---------------------------------------------------------------------------
 # Helper
@@ -26,15 +26,14 @@ def check_antiderivative(pool, x, f, F, label=""):
         lhs = interval_eval(dF, bindings).mid
         rhs = interval_eval(f, bindings).mid
         assert abs(lhs - rhs) < 1e-9, (
-            f"{label}: d/dx F({pt}) = {lhs}, f({pt}) = {rhs} — mismatch\n"
-            f"  F = {F}\n"
-            f"  f = {f}"
+            f"{label}: d/dx F({pt}) = {lhs}, f({pt}) = {rhs} — mismatch\n  F = {F}\n  f = {f}"
         )
 
 
 # ---------------------------------------------------------------------------
 # P = constant
 # ---------------------------------------------------------------------------
+
 
 def test_sqrt_const_times_one():
     """∫ sqrt(5) dx = sqrt(5)·x"""
@@ -49,7 +48,7 @@ def test_sqrt_const_times_poly():
     """∫ sqrt(3)·x² dx"""
     pool = ExprPool()
     x = pool.symbol("x")
-    f = sqrt(pool.integer(3)) * x ** 2
+    f = sqrt(pool.integer(3)) * x**2
     r = integrate(f, x)
     check_antiderivative(pool, x, f, r.value, "sqrt(3)*x^2")
 
@@ -57,6 +56,7 @@ def test_sqrt_const_times_poly():
 # ---------------------------------------------------------------------------
 # P = linear
 # ---------------------------------------------------------------------------
+
 
 def test_integral_sqrt_x():
     """∫ sqrt(x) dx = (2/3) x^(3/2)"""
@@ -91,7 +91,7 @@ def test_integral_1_over_sqrt_x():
     pool = ExprPool()
     x = pool.symbol("x")
     sx = sqrt(x)
-    f = sx ** -1
+    f = sx**-1
     r = integrate(f, x)
     check_antiderivative(pool, x, f, r.value, "1/sqrt(x)")
 
@@ -101,7 +101,7 @@ def test_integral_1_over_sqrt_x_plus_1():
     pool = ExprPool()
     x = pool.symbol("x")
     p = x + pool.integer(1)
-    f = (p ** -1) * sqrt(p)
+    f = (p**-1) * sqrt(p)
     r = integrate(f, x)
     check_antiderivative(pool, x, f, r.value, "1/sqrt(x+1)")
 
@@ -120,11 +120,12 @@ def test_integral_x_sqrt_x_plus_1():
 # P = quadratic
 # ---------------------------------------------------------------------------
 
+
 def test_integral_sqrt_x2_plus_1():
     """∫ sqrt(x²+1) dx"""
     pool = ExprPool()
     x = pool.symbol("x")
-    p = x ** 2 + pool.integer(1)
+    p = x**2 + pool.integer(1)
     f = sqrt(p)
     r = integrate(f, x)
     check_antiderivative(pool, x, f, r.value, "sqrt(x^2+1)")
@@ -134,9 +135,9 @@ def test_integral_1_over_sqrt_x2_plus_1():
     """∫ 1/sqrt(x²+1) dx = log(x + sqrt(x²+1))"""
     pool = ExprPool()
     x = pool.symbol("x")
-    p = x ** 2 + pool.integer(1)
+    p = x**2 + pool.integer(1)
     s_p = sqrt(p)
-    f = (p ** -1) * s_p
+    f = (p**-1) * s_p
     r = integrate(f, x)
     check_antiderivative(pool, x, f, r.value, "1/sqrt(x^2+1)")
 
@@ -145,11 +146,12 @@ def test_integral_sqrt_x2_minus_1():
     """∫ sqrt(x²-1) dx  (evaluated at x > 1 to stay on the real branch)"""
     pool = ExprPool()
     x = pool.symbol("x")
-    p = x ** 2 + pool.integer(-1)
+    p = x**2 + pool.integer(-1)
     f = sqrt(p)
     r = integrate(f, x)
     # Use points where x²-1 > 0
     from alkahest.alkahest import ArbBall, diff, interval_eval
+
     dF = diff(r.value, x).value
     for pt in (1.5, 2.0, 3.7):
         bindings = {x: ArbBall(pt)}
@@ -162,7 +164,7 @@ def test_integral_const_times_sqrt_quadratic():
     """∫ 3·sqrt(x²+1) dx"""
     pool = ExprPool()
     x = pool.symbol("x")
-    p = x ** 2 + pool.integer(1)
+    p = x**2 + pool.integer(1)
     f = pool.integer(3) * sqrt(p)
     r = integrate(f, x)
     check_antiderivative(pool, x, f, r.value, "3*sqrt(x^2+1)")
@@ -172,12 +174,13 @@ def test_integral_const_times_sqrt_quadratic():
 # Mixed integrand A(x) + B(x)·sqrt(P)
 # ---------------------------------------------------------------------------
 
+
 def test_integral_poly_plus_sqrt():
     """∫ (x² + sqrt(x+1)) dx"""
     pool = ExprPool()
     x = pool.symbol("x")
     p = x + pool.integer(1)
-    f = x ** 2 + sqrt(p)
+    f = x**2 + sqrt(p)
     r = integrate(f, x)
     check_antiderivative(pool, x, f, r.value, "x^2 + sqrt(x+1)")
 
@@ -186,11 +189,12 @@ def test_integral_poly_plus_sqrt():
 # Error cases
 # ---------------------------------------------------------------------------
 
+
 def test_elliptic_raises():
     """∫ sqrt(x³+1) dx should raise (elliptic, non-elementary)."""
     pool = ExprPool()
     x = pool.symbol("x")
-    p = x ** 3 + pool.integer(1)
+    p = x**3 + pool.integer(1)
     with pytest.raises(Exception) as exc_info:
         integrate(sqrt(p), x)
     msg = str(exc_info.value)

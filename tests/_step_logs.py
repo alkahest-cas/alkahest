@@ -7,8 +7,10 @@ compare multisets of rule names (or sorted projections), not raw list equality.
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 def rule_counter(steps: list[Mapping[str, Any]]) -> Counter[str]:
@@ -25,7 +27,6 @@ def assert_same_step_rules(
     """Assert parallel and sequential simplification recorded the same rules."""
     a = rule_counter(sequential_steps)
     b = rule_counter(parallel_steps)
-    assert a == b, (
-        f"derivation rule multiset mismatch {a!r} vs {b!r}"
-        + (f" ({context})" if context else "")
+    assert a == b, f"derivation rule multiset mismatch {a!r} vs {b!r}" + (
+        f" ({context})" if context else ""
     )

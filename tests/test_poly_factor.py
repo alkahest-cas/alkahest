@@ -1,6 +1,7 @@
 """V2-7 — polynomial factorization (Python surface)."""
 
 import alkahest
+import pytest
 
 
 def test_unipoly_factor_quadratic():
@@ -43,9 +44,6 @@ def test_factor_zero_raises():
     pool = alkahest.ExprPool()
     x = pool.symbol("x")
     z = alkahest.UniPoly.from_symbolic(pool.integer(0), x)
-    try:
+    with pytest.raises(alkahest.FactorError) as exc_info:
         z.factor_z()
-    except alkahest.FactorError as exc:
-        assert exc.code == "E-POLY-008"
-    else:
-        raise AssertionError("expected FactorError")
+    assert exc_info.value.code == "E-POLY-008"

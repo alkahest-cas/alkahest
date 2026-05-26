@@ -58,11 +58,12 @@ class TestGrad:
         assert str(gs[0]) == "0"
 
     def test_grad_x_squared(self):
-        x2 = self.x ** 2
+        x2 = self.x**2
         gs = grad(x2, [self.x])
         # ∂x²/∂x = 2x
         s = str(gs[0])
-        assert "x" in s and "2" in s
+        assert "x" in s
+        assert "2" in s
 
     def test_grad_multivariate_xy(self):
         # f = x*y → [∂/∂x = y, ∂/∂y = x]
@@ -74,7 +75,7 @@ class TestGrad:
     def test_grad_agrees_with_diff(self):
         # f = x³ + 2x  → diff and grad must agree
         two = self.pool.integer(2)
-        x3 = self.x ** 3
+        x3 = self.x**3
         f = x3 + two * self.x
         sym = diff(f, self.x)
         rev = grad(f, [self.x])
@@ -94,12 +95,14 @@ class TestGrad:
 
     def test_grad_two_vars_independent(self):
         # f = x² + y², ∂/∂x = 2x, ∂/∂y = 2y
-        f = self.x ** 2 + self.y ** 2
+        f = self.x**2 + self.y**2
         gs = grad(f, [self.x, self.y])
         dx_s = str(gs[0])
         dy_s = str(gs[1])
-        assert "x" in dx_s and "2" in dx_s
-        assert "y" in dy_s and "2" in dy_s
+        assert "x" in dx_s
+        assert "2" in dx_s
+        assert "y" in dy_s
+        assert "2" in dy_s
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -166,16 +169,19 @@ class TestMatrix:
         m = self._m([[a, b], [c, d]])
         det = m.det()
         s = str(det)
-        assert "a" in s and "d" in s
+        assert "a" in s
+        assert "d" in s
 
     def test_det_identity_3x3(self):
         one = self.pool.integer(1)
         zero = self.pool.integer(0)
-        id3 = self._m([
-            [one, zero, zero],
-            [zero, one, zero],
-            [zero, zero, one],
-        ])
+        id3 = self._m(
+            [
+                [one, zero, zero],
+                [zero, one, zero],
+                [zero, zero, one],
+            ]
+        )
         assert str(id3.det()) == "1"
 
     def test_to_list(self):
@@ -188,8 +194,8 @@ class TestMatrix:
 
     def test_dimension_mismatch_raises(self):
         one = self.pool.integer(1)
-        a = self._m([[one, one]])      # 1×2
-        b = self._m([[one], [one]])    # 2×1
+        a = self._m([[one, one]])  # 1×2
+        b = self._m([[one], [one]])  # 2×1
         with pytest.raises(Exception):
             a + b
 
@@ -214,8 +220,8 @@ class TestJacobian:
 
     def test_jacobian_quadratic(self):
         # f=[x², y²], J=[[2x,0],[0,2y]]
-        f1 = self.x ** 2
-        f2 = self.y ** 2
+        f1 = self.x**2
+        f2 = self.y**2
         j = jacobian([f1, f2], [self.x, self.y])
         assert str(j.get(0, 1)) == "0"
         assert str(j.get(1, 0)) == "0"
@@ -312,7 +318,7 @@ class TestDAE:
 
     def test_create_dae(self):
         neg_x = self.pool.integer(-1) * self.x
-        eq = self.dx + neg_x   # dx/dt - x = 0
+        eq = self.dx + neg_x  # dx/dt - x = 0
         dae = DAE.new([eq], [self.x], [self.dx], self.t)
         assert dae.n_equations() == 1
         assert dae.n_variables() == 1

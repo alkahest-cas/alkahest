@@ -24,7 +24,7 @@ select_lucky_prime(avoid_divisor, used)
 
 from __future__ import annotations
 
-from .alkahest import (  # noqa: F401 – re-export the Rust class
+from .alkahest import (
     ModularError,
     MultiPolyFp,
     modular_lift_crt,
@@ -35,12 +35,12 @@ from .alkahest import (  # noqa: F401 – re-export the Rust class
 )
 
 __all__ = [
-    "MultiPolyFp",
     "ModularError",
-    "reduce_mod",
+    "MultiPolyFp",
     "lift_crt",
-    "rational_reconstruction",
     "mignotte_bound",
+    "rational_reconstruction",
+    "reduce_mod",
     "select_lucky_prime",
 ]
 

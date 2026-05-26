@@ -120,7 +120,7 @@ def _tokenize(source: str) -> list[_Token]:
 
 
 class _Parser:
-    __slots__ = ("_source", "_pool", "_symbols", "_tokens", "_pos")
+    __slots__ = ("_pool", "_pos", "_source", "_symbols", "_tokens")
 
     def __init__(self, source: str, pool, symbols: dict[str, object]) -> None:
         self._source = source

@@ -10,9 +10,7 @@ def test_rsolve_arithmetic_progression_general():
     def f(*args):
         return pool.func("f", list(args))
 
-    eq = alkahest.simplify(
-        f(n) - f(n + pool.integer(-1)) - pool.integer(1)
-    ).value
+    eq = alkahest.simplify(f(n) - f(n + pool.integer(-1)) - pool.integer(1)).value
     sol = alkahest.rsolve(eq, n, "f", None)
     assert "C0" in str(sol)
 
@@ -24,9 +22,7 @@ def test_rsolve_geometric_with_init():
     def f(*args):
         return pool.func("f", list(args))
 
-    eq = alkahest.simplify(
-        f(n) - pool.integer(2) * f(n + pool.integer(-1))
-    ).value
+    eq = alkahest.simplify(f(n) - pool.integer(2) * f(n + pool.integer(-1))).value
     sol = alkahest.rsolve(eq, n, "f", {0: pool.integer(1)})
     env = {n: 5.0}
     v = alkahest.eval_expr(sol, env)
@@ -40,11 +36,7 @@ def test_rsolve_fibonacci_with_init():
     def f(*args):
         return pool.func("f", list(args))
 
-    eq = alkahest.simplify(
-        f(n)
-        - f(n + pool.integer(-1))
-        - f(n + pool.integer(-2))
-    ).value
+    eq = alkahest.simplify(f(n) - f(n + pool.integer(-1)) - f(n + pool.integer(-2))).value
     initials = {0: pool.integer(0), 1: pool.integer(1)}
     sol = alkahest.rsolve(eq, n, "f", initials)
     fib = [0, 1]

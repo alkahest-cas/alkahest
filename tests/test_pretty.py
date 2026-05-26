@@ -1,4 +1,5 @@
 """V2-20: LaTeX and Unicode pretty-printing tests."""
+
 import alkahest
 import pytest
 from alkahest import (
@@ -35,6 +36,7 @@ def y(pool):
 # node() — tree structure
 # ---------------------------------------------------------------------------
 
+
 class TestNode:
     def test_symbol(self, pool, x):
         n = x.node()
@@ -69,7 +71,7 @@ class TestNode:
         assert n[0] == "mul"
 
     def test_pow(self, pool, x):
-        n = (x ** 2).node()
+        n = (x**2).node()
         assert n[0] == "pow"
         assert n[1].node()[0] == "symbol"
         assert n[2].node()[0] == "integer"
@@ -100,6 +102,7 @@ class TestNode:
 # LaTeX — atoms
 # ---------------------------------------------------------------------------
 
+
 class TestLatexAtoms:
     def test_symbol(self, pool, x):
         assert latex(x) == "x"
@@ -115,7 +118,9 @@ class TestLatexAtoms:
 
     def test_rational_negative(self, pool):
         s = latex(pool.rational(-3, 4))
-        assert "3" in s and "4" in s and "-" in s
+        assert "3" in s
+        assert "4" in s
+        assert "-" in s
 
     def test_greek_alpha(self, pool):
         assert latex(pool.symbol("alpha")) == r"\alpha"
@@ -128,19 +133,22 @@ class TestLatexAtoms:
 
     def test_subscript(self, pool):
         s = latex(pool.symbol("x_1"))
-        assert "{x}" in s and "{1}" in s and "_" in s
+        assert "{x}" in s
+        assert "{1}" in s
+        assert "_" in s
 
 
 # ---------------------------------------------------------------------------
 # LaTeX — arithmetic
 # ---------------------------------------------------------------------------
 
+
 class TestLatexArithmetic:
     def test_pow_integer(self, pool, x):
-        assert latex(x ** 2) == "x^2"
+        assert latex(x**2) == "x^2"
 
     def test_pow_large(self, pool, x):
-        assert latex(x ** 10) == "x^{10}"
+        assert latex(x**10) == "x^{10}"
 
     def test_sqrt_func(self, pool, x):
         assert latex(sqrt(x)) == r"\sqrt{x}"
@@ -165,24 +173,30 @@ class TestLatexArithmetic:
 
     def test_add_simple(self, pool, x):
         s = latex(x + pool.integer(1))
-        assert "x" in s and "1" in s and "+" in s
+        assert "x" in s
+        assert "1" in s
+        assert "+" in s
 
     def test_add_subtraction(self, pool, x):
         # x + (-1) should render as x - 1
         s = latex(x + pool.integer(-1))
-        assert "-" in s and "+" not in s
+        assert "-" in s
+        assert "+" not in s
 
     def test_mul_coeff(self, pool, x):
         s = latex(pool.integer(3) * x)
-        assert "3" in s and "x" in s
+        assert "3" in s
+        assert "x" in s
 
     def test_mul_rational_coeff(self, pool, x):
         s = latex(pool.rational(1, 2) * x)
-        assert r"\frac{1}{2}" in s and "x" in s
+        assert r"\frac{1}{2}" in s
+        assert "x" in s
 
     def test_mul_negative_coeff(self, pool, x):
         s = latex(pool.integer(-1) * x)
-        assert s.startswith("-") and "x" in s
+        assert s.startswith("-")
+        assert "x" in s
 
     def test_fraction_from_mul(self, pool, x, y):
         # x * y^(-1) → \frac{x}{y}
@@ -193,6 +207,7 @@ class TestLatexArithmetic:
 # ---------------------------------------------------------------------------
 # LaTeX — functions
 # ---------------------------------------------------------------------------
+
 
 class TestLatexFunctions:
     def test_sin(self, pool, x):
@@ -213,24 +228,28 @@ class TestLatexFunctions:
 
     def test_sqrt(self, pool, x):
         s = latex(sqrt(x))
-        assert r"\sqrt{x}" == s
+        assert s == r"\sqrt{x}"
 
     def test_abs(self, pool, x):
         s = latex(abs(x))
-        assert r"\left|" in s and r"\right|" in s
+        assert r"\left|" in s
+        assert r"\right|" in s
 
     def test_floor(self, pool, x):
         s = latex(floor(x))
-        assert r"\lfloor" in s and r"\rfloor" in s
+        assert r"\lfloor" in s
+        assert r"\rfloor" in s
 
     def test_ceil(self, pool, x):
         s = latex(ceil(x))
-        assert r"\lceil" in s and r"\rceil" in s
+        assert r"\lceil" in s
+        assert r"\rceil" in s
 
 
 # ---------------------------------------------------------------------------
 # LaTeX — predicates and piecewise
 # ---------------------------------------------------------------------------
+
 
 class TestLatexPredicates:
     def test_gt(self, pool, x):
@@ -249,13 +268,15 @@ class TestLatexPredicates:
         cond = pool.gt(x, pool.integer(0))
         pw = alkahest.piecewise([(cond, x)], pool.integer(-1) * x)
         s = latex(pw)
-        assert r"\begin{cases}" in s and r"\end{cases}" in s
+        assert r"\begin{cases}" in s
+        assert r"\end{cases}" in s
         assert r"\text{if }" in s
 
 
 # ---------------------------------------------------------------------------
 # Unicode — atoms
 # ---------------------------------------------------------------------------
+
 
 class TestUnicodeAtoms:
     def test_symbol(self, pool, x):
@@ -272,7 +293,8 @@ class TestUnicodeAtoms:
 
     def test_rational_generic(self, pool):
         s = unicode_str(pool.rational(5, 11))
-        assert "5" in s and "11" in s
+        assert "5" in s
+        assert "11" in s
 
     def test_greek_alpha(self, pool):
         assert unicode_str(pool.symbol("alpha")) == "α"
@@ -285,44 +307,53 @@ class TestUnicodeAtoms:
 # Unicode — arithmetic
 # ---------------------------------------------------------------------------
 
+
 class TestUnicodeArithmetic:
     def test_pow_squared(self, pool, x):
-        assert unicode_str(x ** 2) == "x²"
+        assert unicode_str(x**2) == "x²"
 
     def test_pow_cubed(self, pool, x):
-        assert unicode_str(x ** 3) == "x³"
+        assert unicode_str(x**3) == "x³"
 
     def test_pow_negative(self, pool, x):
-        s = unicode_str(x ** -1)
-        assert "x" in s and ("-1" in s or "⁻¹" in s or "/" in s)
+        s = unicode_str(x**-1)
+        assert "x" in s
+        assert "-1" in s or "⁻¹" in s or "/" in s
 
     def test_sqrt(self, pool, x):
         assert unicode_str(sqrt(x)) == "√x"
 
     def test_add_simple(self, pool, x):
         s = unicode_str(x + pool.integer(1))
-        assert "x" in s and "1" in s and "+" in s
+        assert "x" in s
+        assert "1" in s
+        assert "+" in s
 
     def test_add_subtraction(self, pool, x):
         s = unicode_str(x + pool.integer(-1))
-        assert "-" in s and "+" not in s
+        assert "-" in s
+        assert "+" not in s
 
     def test_mul_coeff(self, pool, x):
         s = unicode_str(pool.integer(3) * x)
-        assert "3" in s and "x" in s
+        assert "3" in s
+        assert "x" in s
 
     def test_mul_rational_coeff(self, pool, x):
         s = unicode_str(pool.rational(1, 2) * x)
-        assert "½" in s and "x" in s
+        assert "½" in s
+        assert "x" in s
 
     def test_negative_product(self, pool, x):
         s = unicode_str(pool.integer(-1) * x)
-        assert s.startswith("-") and "x" in s
+        assert s.startswith("-")
+        assert "x" in s
 
 
 # ---------------------------------------------------------------------------
 # Unicode — functions
 # ---------------------------------------------------------------------------
+
 
 class TestUnicodeFunctions:
     def test_sin(self, pool, x):
@@ -346,16 +377,19 @@ class TestUnicodeFunctions:
 
     def test_floor(self, pool, x):
         s = unicode_str(floor(x))
-        assert "⌊" in s and "⌋" in s
+        assert "⌊" in s
+        assert "⌋" in s
 
     def test_ceil(self, pool, x):
         s = unicode_str(ceil(x))
-        assert "⌈" in s and "⌉" in s
+        assert "⌈" in s
+        assert "⌉" in s
 
 
 # ---------------------------------------------------------------------------
 # Unicode — predicates
 # ---------------------------------------------------------------------------
+
 
 class TestUnicodePredicates:
     def test_gt(self, pool, x):
@@ -370,12 +404,14 @@ class TestUnicodePredicates:
         cond = pool.gt(x, pool.integer(0))
         pw = alkahest.piecewise([(cond, x)], pool.integer(-1) * x)
         s = unicode_str(pw)
-        assert "if" in s and "otherwise" in s
+        assert "if" in s
+        assert "otherwise" in s
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 class TestPublicAPI:
     def test_latex_in_module(self):

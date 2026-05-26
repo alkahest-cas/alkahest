@@ -95,17 +95,17 @@ def _k(b: _EqBuilder, n: int):
 
 def _sys_univar_linear(b: _EqBuilder):
     x = b.var("x")
-    return [b.sub(b.mul(_k(b, 2), x), _k(b, 6))]          # 2x - 6
+    return [b.sub(b.mul(_k(b, 2), x), _k(b, 6))]  # 2x - 6
 
 
 def _sys_univar_quadratic_real(b: _EqBuilder):
     x = b.var("x")
-    return [b.sub(b.pow(x, 2), _k(b, 4))]                 # x² - 4
+    return [b.sub(b.pow(x, 2), _k(b, 4))]  # x² - 4
 
 
 def _sys_univar_quadratic_irr(b: _EqBuilder):
     x = b.var("x")
-    return [b.sub(b.pow(x, 2), _k(b, 2))]                 # x² - 2
+    return [b.sub(b.pow(x, 2), _k(b, 2))]  # x² - 2
 
 
 def _sys_univar_quadratic_sum(b: _EqBuilder):
@@ -123,8 +123,8 @@ def _sys_linear_2d_basic(b: _EqBuilder):
     x = b.var("x")
     y = b.var("y")
     return [
-        b.sub(b.add(x, y), _k(b, 1)),   # x + y - 1
-        b.sub(x, y),                    # x - y
+        b.sub(b.add(x, y), _k(b, 1)),  # x + y - 1
+        b.sub(x, y),  # x - y
     ]
 
 
@@ -133,7 +133,7 @@ def _sys_linear_2d_scaled(b: _EqBuilder):
     y = b.var("y")
     return [
         b.sub(b.add(b.mul(_k(b, 2), x), b.mul(_k(b, 3), y)), _k(b, 5)),  # 2x + 3y - 5
-        b.sub(b.sub(x, y), _k(b, 1)),                                    # x - y - 1
+        b.sub(b.sub(x, y), _k(b, 1)),  # x - y - 1
     ]
 
 
@@ -141,8 +141,8 @@ def _sys_linear_2d_negative(b: _EqBuilder):
     x = b.var("x")
     y = b.var("y")
     return [
-        b.add(x, y, _k(b, 2)),                 # x + y + 2
-        b.sub(b.sub(x, y), _k(b, 4)),          # x - y - 4
+        b.add(x, y, _k(b, 2)),  # x + y + 2
+        b.sub(b.sub(x, y), _k(b, 4)),  # x - y - 4
     ]
 
 
@@ -151,7 +151,7 @@ def _sys_circle_line(b: _EqBuilder):
     y = b.var("y")
     return [
         b.sub(b.add(b.pow(x, 2), b.pow(y, 2)), _k(b, 1)),  # x² + y² - 1
-        b.sub(y, x),                                       # y - x
+        b.sub(y, x),  # y - x
     ]
 
 
@@ -160,7 +160,7 @@ def _sys_circle_line_shifted(b: _EqBuilder):
     y = b.var("y")
     return [
         b.sub(b.add(b.pow(x, 2), b.pow(y, 2)), _k(b, 2)),  # x² + y² - 2
-        b.sub(y, x),                                       # y - x
+        b.sub(y, x),  # y - x
     ]
 
 
@@ -168,8 +168,8 @@ def _sys_parabola_line(b: _EqBuilder):
     x = b.var("x")
     y = b.var("y")
     return [
-        b.sub(y, b.pow(x, 2)),   # y - x²
-        b.sub(y, x),             # y - x
+        b.sub(y, b.pow(x, 2)),  # y - x²
+        b.sub(y, x),  # y - x
     ]
 
 
@@ -177,8 +177,8 @@ def _sys_hyperbola_line(b: _EqBuilder):
     x = b.var("x")
     y = b.var("y")
     return [
-        b.sub(b.mul(x, y), _k(b, 1)),   # xy - 1
-        b.sub(y, x),                    # y - x
+        b.sub(b.mul(x, y), _k(b, 1)),  # xy - 1
+        b.sub(y, x),  # y - x
     ]
 
 
@@ -186,8 +186,8 @@ def _sys_parabola_horizontal(b: _EqBuilder):
     x = b.var("x")
     y = b.var("y")
     return [
-        b.sub(y, b.pow(x, 2)),    # y - x²
-        b.sub(y, _k(b, 4)),       # y - 4
+        b.sub(y, b.pow(x, 2)),  # y - x²
+        b.sub(y, _k(b, 4)),  # y - 4
     ]
 
 
@@ -195,8 +195,8 @@ def _sys_two_parabolas(b: _EqBuilder):
     x = b.var("x")
     y = b.var("y")
     return [
-        b.sub(y, b.pow(x, 2)),                                   # y - x²
-        b.add(b.sub(y, b.mul(_k(b, 2), b.pow(x, 2))), _k(b, 1)), # y - 2x² + 1
+        b.sub(y, b.pow(x, 2)),  # y - x²
+        b.add(b.sub(y, b.mul(_k(b, 2), b.pow(x, 2))), _k(b, 1)),  # y - 2x² + 1
     ]
 
 
@@ -263,26 +263,26 @@ def _sys_two_circles_tangent(b: _EqBuilder):
 
 
 CORPUS = [
-    ("univar_linear",           ["x"],         _sys_univar_linear,           1),
-    ("univar_quadratic_real",   ["x"],         _sys_univar_quadratic_real,   2),
-    ("univar_quadratic_irr",    ["x"],         _sys_univar_quadratic_irr,    2),
-    ("univar_quadratic_sum",    ["x"],         _sys_univar_quadratic_sum,    2),
-    ("univar_double_root",      ["x"],         _sys_univar_double_root,      1),
-    ("linear_2d_basic",         ["x", "y"],    _sys_linear_2d_basic,         1),
-    ("linear_2d_scaled",        ["x", "y"],    _sys_linear_2d_scaled,        1),
-    ("linear_2d_negative",      ["x", "y"],    _sys_linear_2d_negative,      1),
-    ("circle_line",             ["x", "y"],    _sys_circle_line,             2),
-    ("circle_line_shifted",     ["x", "y"],    _sys_circle_line_shifted,     2),
-    ("parabola_line",           ["x", "y"],    _sys_parabola_line,           2),
-    ("hyperbola_line",          ["x", "y"],    _sys_hyperbola_line,          2),
-    ("parabola_horizontal",     ["x", "y"],    _sys_parabola_horizontal,     2),
-    ("two_parabolas",           ["x", "y"],    _sys_two_parabolas,           2),
-    ("ellipse_line",            ["x", "y"],    _sys_ellipse_line,            2),
-    ("linear_3d_identity",      ["x", "y", "z"], _sys_linear_3d_identity,    1),
-    ("linear_3d_standard",      ["x", "y", "z"], _sys_linear_3d_standard,    1),
-    ("linear_3d_dependent",     ["x", "y", "z"], _sys_linear_3d_dependent,   1),
-    ("quadric_plane",           ["x", "y", "z"], _sys_quadric_plane,         2),
-    ("two_circles_tangent",     ["x", "y"],    _sys_two_circles_tangent,     2),
+    ("univar_linear", ["x"], _sys_univar_linear, 1),
+    ("univar_quadratic_real", ["x"], _sys_univar_quadratic_real, 2),
+    ("univar_quadratic_irr", ["x"], _sys_univar_quadratic_irr, 2),
+    ("univar_quadratic_sum", ["x"], _sys_univar_quadratic_sum, 2),
+    ("univar_double_root", ["x"], _sys_univar_double_root, 1),
+    ("linear_2d_basic", ["x", "y"], _sys_linear_2d_basic, 1),
+    ("linear_2d_scaled", ["x", "y"], _sys_linear_2d_scaled, 1),
+    ("linear_2d_negative", ["x", "y"], _sys_linear_2d_negative, 1),
+    ("circle_line", ["x", "y"], _sys_circle_line, 2),
+    ("circle_line_shifted", ["x", "y"], _sys_circle_line_shifted, 2),
+    ("parabola_line", ["x", "y"], _sys_parabola_line, 2),
+    ("hyperbola_line", ["x", "y"], _sys_hyperbola_line, 2),
+    ("parabola_horizontal", ["x", "y"], _sys_parabola_horizontal, 2),
+    ("two_parabolas", ["x", "y"], _sys_two_parabolas, 2),
+    ("ellipse_line", ["x", "y"], _sys_ellipse_line, 2),
+    ("linear_3d_identity", ["x", "y", "z"], _sys_linear_3d_identity, 1),
+    ("linear_3d_standard", ["x", "y", "z"], _sys_linear_3d_standard, 1),
+    ("linear_3d_dependent", ["x", "y", "z"], _sys_linear_3d_dependent, 1),
+    ("quadric_plane", ["x", "y", "z"], _sys_quadric_plane, 2),
+    ("two_circles_tangent", ["x", "y"], _sys_two_circles_tangent, 2),
 ]
 
 
@@ -291,7 +291,7 @@ def test_corpus_has_20_entries():
 
 
 @pytest.mark.parametrize(
-    "case_id, symbols, builder_fn, expected_count",
+    ("case_id", "symbols", "builder_fn", "expected_count"),
     CORPUS,
     ids=[c[0] for c in CORPUS],
 )
@@ -310,15 +310,11 @@ def test_solver_vs_sympy(case_id, symbols, builder_fn, expected_count):
     assert len(result) >= 1, f"[{case_id}] expected ≥1 solution, got 0"
 
     for sol in result:
-        subs = {
-            sp: float(sol[ak])
-            for ak, sp in zip(b.ak_vars, b.sp_vars)
-        }
+        subs = {sp: float(sol[ak]) for ak, sp in zip(b.ak_vars, b.sp_vars)}
         for sp_eq in sp_eqs:
             residual = float(sp_eq.subs(subs).evalf())
             assert abs(residual) < 1e-7, (
-                f"[{case_id}] solution {subs} doesn't satisfy {sp_eq} "
-                f"(residual {residual:.3e})"
+                f"[{case_id}] solution {subs} doesn't satisfy {sp_eq} (residual {residual:.3e})"
             )
 
     # SymPy cross-check: ensure the oracle agrees that at least one real
@@ -332,9 +328,7 @@ def test_solver_vs_sympy(case_id, symbols, builder_fn, expected_count):
                     real_sols.append(s)
             except (TypeError, AttributeError):
                 pass
-        assert len(real_sols) >= 1, (
-            f"[{case_id}] SymPy found no real solutions — corpus bug"
-        )
+        assert len(real_sols) >= 1, f"[{case_id}] SymPy found no real solutions — corpus bug"
     except (NotImplementedError, Exception):
         # If SymPy can't solve it, trust the Alkahest numerical check.
         pass

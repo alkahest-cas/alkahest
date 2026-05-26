@@ -24,6 +24,7 @@ from alkahest import (
 # Helpers
 # ===========================================================================
 
+
 def pool():
     return ExprPool()
 
@@ -31,6 +32,7 @@ def pool():
 # ===========================================================================
 # P-24 — Horner-form code emission
 # ===========================================================================
+
 
 class TestHorner:
     def test_linear(self):
@@ -48,11 +50,11 @@ class TestHorner:
         # (x+1)² = x² + 2x + 1
         p = pool()
         x = p.symbol("x")
-        expr = x**2 + p.integer(2)*x + p.integer(1)
+        expr = x**2 + p.integer(2) * x + p.integer(1)
         h = horner(expr, x)
         f = compile_expr(h, [x])
         for v in [-2.0, -1.0, 0.0, 1.0, 2.0, 3.0]:
-            assert abs(f([v]) - (v + 1)**2) < 1e-9, f"v={v}"
+            assert abs(f([v]) - (v + 1) ** 2) < 1e-9, f"v={v}"
 
     def test_degree_10_evaluates_correctly(self):
         # Build x^10 + x^9 + … + x + 1
@@ -79,7 +81,7 @@ class TestHorner:
     def test_emit_c_quadratic(self):
         p = pool()
         x = p.symbol("x")
-        expr = x**2 + p.integer(2)*x + p.integer(1)
+        expr = x**2 + p.integer(2) * x + p.integer(1)
         code = emit_c(expr, x, "x", "eval_quad")
         assert "eval_quad" in code
         assert "double" in code
@@ -97,7 +99,7 @@ class TestHorner:
         # 3x + 2 should emit as  "2.0 + x * 3.0"  (Horner notation)
         p = pool()
         x = p.symbol("x")
-        expr = p.integer(3)*x + p.integer(2)
+        expr = p.integer(3) * x + p.integer(2)
         code = emit_c(expr, x, "x", "f")
         # The emitted body must contain "+" and "x *" or "* x"
         assert "+" in code
@@ -122,6 +124,7 @@ class TestHorner:
 # ===========================================================================
 # P-25 — NumPy / batch evaluation
 # ===========================================================================
+
 
 class TestBatchEval:
     """Tests for CompiledFn.call_batch_raw and the numpy_eval helper."""
@@ -176,6 +179,7 @@ class TestBatchEval:
     def test_numpy_eval_identity(self):
         pytest.importorskip("numpy")
         import numpy as np
+
         p = pool()
         x = p.symbol("x")
         f = compile_expr(x, [x])
@@ -187,19 +191,21 @@ class TestBatchEval:
     def test_numpy_eval_polynomial(self):
         pytest.importorskip("numpy")
         import numpy as np
+
         p = pool()
         x = p.symbol("x")
         # f(x) = (x+1)^2
-        expr = x**2 + p.integer(2)*x + p.integer(1)
+        expr = x**2 + p.integer(2) * x + p.integer(1)
         f = compile_expr(expr, [x])
         xs = np.linspace(-2.0, 2.0, 1000)
         ys = numpy_eval(f, xs)
-        expected = (xs + 1)**2
+        expected = (xs + 1) ** 2
         assert np.allclose(ys, expected, atol=1e-8)
 
     def test_numpy_eval_two_vars(self):
         pytest.importorskip("numpy")
         import numpy as np
+
         p = pool()
         x = p.symbol("x")
         y = p.symbol("y")
@@ -212,6 +218,7 @@ class TestBatchEval:
     def test_numpy_eval_wrong_n_vars_raises(self):
         pytest.importorskip("numpy")
         import numpy as np
+
         p = pool()
         x = p.symbol("x")
         f = compile_expr(x, [x])
@@ -221,13 +228,14 @@ class TestBatchEval:
     def test_numpy_eval_large_array(self):
         pytest.importorskip("numpy")
         import numpy as np
+
         p = pool()
         x = p.symbol("x")
-        expr = x**2 + p.integer(2)*x + p.integer(1)
+        expr = x**2 + p.integer(2) * x + p.integer(1)
         f = compile_expr(expr, [x])
         xs = np.linspace(0.0, 1.0, 100_000)
         ys = numpy_eval(f, xs)
-        expected = (xs + 1)**2
+        expected = (xs + 1) ** 2
         assert np.allclose(ys, expected, atol=1e-8)
 
 
@@ -235,12 +243,13 @@ class TestBatchEval:
 # P-26 — collect_like_terms
 # ===========================================================================
 
+
 class TestCollectLikeTerms:
     def test_simple_merge_2x_3x(self):
         # 2x + 3x → 5x
         p = pool()
         x = p.symbol("x")
-        expr = p.integer(2)*x + p.integer(3)*x
+        expr = p.integer(2) * x + p.integer(3) * x
         result = collect_like_terms(expr)
         f = compile_expr(result.value, [x])
         for v in [0.0, 1.0, 2.0, -3.0]:
@@ -249,7 +258,7 @@ class TestCollectLikeTerms:
     def test_simple_merge_str(self):
         p = pool()
         x = p.symbol("x")
-        expr = p.integer(2)*x + p.integer(3)*x
+        expr = p.integer(2) * x + p.integer(3) * x
         result = collect_like_terms(expr)
         assert "5" in str(result.value)
 
@@ -257,7 +266,7 @@ class TestCollectLikeTerms:
         # x + (-1)*x → 0
         p = pool()
         x = p.symbol("x")
-        expr = x + p.integer(-1)*x
+        expr = x + p.integer(-1) * x
         result = collect_like_terms(expr)
         assert str(result.value) == "0"
 
@@ -266,7 +275,7 @@ class TestCollectLikeTerms:
         p = pool()
         x = p.symbol("x")
         y = p.symbol("y")
-        expr = p.integer(2)*x + p.integer(3)*y
+        expr = p.integer(2) * x + p.integer(3) * y
         result = collect_like_terms(expr)
         # Result should evaluate correctly
         f = compile_expr(result.value, [x, y])
@@ -284,7 +293,7 @@ class TestCollectLikeTerms:
         p = pool()
         x = p.symbol("x")
         y = p.symbol("y")
-        expr = p.integer(3)*x + p.integer(4)*x + p.integer(2)*y
+        expr = p.integer(3) * x + p.integer(4) * x + p.integer(2) * y
         result = collect_like_terms(expr)
         f = compile_expr(result.value, [x, y])
         # 7x + 2y at x=2, y=3 → 14 + 6 = 20
@@ -302,6 +311,7 @@ class TestCollectLikeTerms:
 # P-27 — poly_normal
 # ===========================================================================
 
+
 class TestPolyNormal:
     def test_difference_of_squares(self):
         # (x+1)*(x-1) should normalize to x² - 1 (or -1 + x²)
@@ -313,6 +323,7 @@ class TestPolyNormal:
         # poly_normal needs the expression to already be polynomial form
         # First expand, then normalize
         from alkahest import simplify_expanded
+
         expanded = simplify_expanded(expr)
         result = poly_normal(expanded.value, [x])
         # Evaluate at x=3: 9-1=8, x=0: -1
@@ -324,7 +335,7 @@ class TestPolyNormal:
         # 2x + 3x should give 5x
         p = pool()
         x = p.symbol("x")
-        expr = p.integer(2)*x + p.integer(3)*x
+        expr = p.integer(2) * x + p.integer(3) * x
         result = poly_normal(expr, [x])
         f = compile_expr(result, [x])
         for v in [0.0, 1.0, 2.0, -1.0]:
@@ -335,7 +346,7 @@ class TestPolyNormal:
         p = pool()
         x = p.symbol("x")
         y = p.symbol("y")
-        expr = x**2 + y**2 + p.integer(2)*x*y
+        expr = x**2 + y**2 + p.integer(2) * x * y
         result = poly_normal(expr, [x, y])
         f = compile_expr(result, [x, y])
         # At (1,2): (1+2)² = 9
@@ -367,18 +378,19 @@ class TestPolyNormal:
         p = pool()
         x = p.symbol("x")
         # Build 3x² + 2x + 1
-        expr = p.integer(3)*x**2 + p.integer(2)*x + p.integer(1)
+        expr = p.integer(3) * x**2 + p.integer(2) * x + p.integer(1)
         result = poly_normal(expr, [x])
         f = compile_expr(result, [x])
         # Agree with naive evaluation
         for v in [-2.0, -1.0, 0.0, 1.0, 2.0]:
-            expected = 3*v**2 + 2*v + 1
+            expected = 3 * v**2 + 2 * v + 1
             assert abs(f([v]) - expected) < 1e-10
 
 
 # ===========================================================================
 # P-30 — Sharded ExprPool (parallel feature)
 # ===========================================================================
+
 
 class TestShardedExprPool:
     """Ensure the sharded pool (P-30) behaves identically to the single-Mutex pool."""
@@ -400,7 +412,7 @@ class TestShardedExprPool:
     def test_expression_evaluation_consistent(self):
         p = pool()
         x = p.symbol("x")
-        expr = x**2 + p.integer(2)*x + p.integer(1)
+        expr = x**2 + p.integer(2) * x + p.integer(1)
         f = compile_expr(expr, [x])
         for v in [0.0, 1.0, 2.0, -1.0]:
-            assert abs(f([v]) - (v + 1)**2) < 1e-9
+            assert abs(f([v]) - (v + 1) ** 2) < 1e-9

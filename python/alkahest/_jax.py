@@ -28,10 +28,10 @@ from typing import Callable
 
 try:
     import jax  # noqa: F401
-    import jax.numpy as jnp  # noqa: F401
-    from jax import core as jax_core  # noqa: F401
-    from jax.interpreters import ad as jax_ad  # noqa: F401
-    from jax.interpreters import batching as jax_batching  # noqa: F401
+    import jax.numpy as jnp
+    from jax import core as jax_core
+    from jax.interpreters import ad as jax_ad
+    from jax.interpreters import batching as jax_batching
 
     _JAX_AVAILABLE = True
 except ImportError:

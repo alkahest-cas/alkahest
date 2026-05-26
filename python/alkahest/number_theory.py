@@ -6,7 +6,7 @@ arguments are accepted as Python ``int`` objects.
 
 from __future__ import annotations
 
-from .alkahest import (  # noqa: F401
+from .alkahest import (
     DirichletChi,
     NumberTheoryError,
     nt_discrete_log,

@@ -45,7 +45,7 @@ from __future__ import annotations
 from typing import Any
 
 
-def _to_numpy(x: Any):  # noqa: ANN401
+def _to_numpy(x: Any):
     """Convert any array-like to a contiguous ``float64`` NumPy array.
 
     Conversion priority
@@ -79,7 +79,7 @@ def _to_numpy(x: Any):  # noqa: ANN401
         try:
             arr = np.from_dlpack(x)
             return np.ascontiguousarray(arr, dtype=np.float64)
-        except Exception:  # noqa: BLE001
+        except Exception:
             # Gracefully fall through if DLPack conversion fails (e.g. CUDA).
             pass
 

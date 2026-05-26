@@ -40,9 +40,7 @@ def near(a: float, b: float, tol: float = 1e-4) -> bool:
 def solutions_contain(sols, *expected_pairs, tol: float = 1e-3) -> bool:
     """Return True iff every expected (x,y) pair is present in sols."""
     for ex, ey in expected_pairs:
-        found = any(
-            near(s[0], ex, tol) and near(s[1], ey, tol) for s in sols
-        )
+        found = any(near(s[0], ex, tol) and near(s[1], ey, tol) for s in sols)
         if not found:
             return False
     return True

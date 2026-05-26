@@ -39,7 +39,7 @@ def test_wallis_rational_piece():
     pool = ah.ExprPool()
     k = pool.symbol("k")
     n = pool.symbol("n")
-    kp2 = k ** 2
+    kp2 = k**2
     numer = ah.simplify((k + pool.integer(-1)) * (k + pool.integer(1))).value
     term = ah.simplify(numer / kp2).value
     prod = ah.product_definite(term, k, pool.integer(2), n).value
@@ -62,7 +62,7 @@ def test_sympy_wallis_piece():
     pool = ah.ExprPool()
     ka = pool.symbol("k")
     na = pool.symbol("n")
-    kp2 = ka ** 2
+    kp2 = ka**2
     term = ah.simplify(
         (ka + pool.integer(-1)) * (ka + pool.integer(1)) / kp2,
     ).value

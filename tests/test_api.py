@@ -8,6 +8,7 @@ from alkahest.alkahest import ExprPool, MultiPoly, UniPoly, cos, diff, exp, log,
 # ExprPool construction and context manager
 # ---------------------------------------------------------------------------
 
+
 class TestExprPool:
     def test_context_manager(self):
         with ExprPool() as pool:
@@ -67,6 +68,7 @@ class TestExprPool:
 # Operator overloading
 # ---------------------------------------------------------------------------
 
+
 class TestOperators:
     def setup_method(self):
         self.pool = ExprPool()
@@ -97,7 +99,7 @@ class TestOperators:
         assert r is not None
 
     def test_pow_int(self):
-        r = self.x ** 2
+        r = self.x**2
         assert r is not None
 
     def test_radd(self):
@@ -113,7 +115,7 @@ class TestOperators:
         x = self.x
         one = pool.integer(1)
         # x^3 + 2*x^2 + x + 1
-        f = x**3 + 2*(x**2) + x + one
+        f = x**3 + 2 * (x**2) + x + one
         poly = UniPoly.from_symbolic(f, x)
         assert poly.coefficients() == [1, 1, 2, 1]
 
@@ -121,6 +123,7 @@ class TestOperators:
 # ---------------------------------------------------------------------------
 # Named math functions
 # ---------------------------------------------------------------------------
+
 
 class TestMathFunctions:
     def setup_method(self):
@@ -151,6 +154,7 @@ class TestMathFunctions:
 # ---------------------------------------------------------------------------
 # simplify
 # ---------------------------------------------------------------------------
+
 
 class TestSimplify:
     def setup_method(self):
@@ -208,6 +212,7 @@ class TestSimplify:
 # diff
 # ---------------------------------------------------------------------------
 
+
 class TestDiff:
     def setup_method(self):
         self.pool = ExprPool()
@@ -230,7 +235,7 @@ class TestDiff:
         x = self.x
         pool = self.pool
         # d/dx (x^3 + 2x^2 + x + 1) = 3x^2 + 4x + 1
-        f = x**3 + 2*(x**2) + x + pool.integer(1)
+        f = x**3 + 2 * (x**2) + x + pool.integer(1)
         r = diff(f, x)
         poly = UniPoly.from_symbolic(r.value, x)
         assert poly.coefficients() == [1, 4, 3]
@@ -247,7 +252,7 @@ class TestDiff:
 
     def test_diff_log(self):
         r = diff(log(self.x), self.x)
-        assert r.value == self.x ** -1
+        assert r.value == self.x**-1
 
     def test_diff_unknown_function_error(self):
         # Verify error type and message propagate from Rust through PyO3.
@@ -271,6 +276,7 @@ class TestDiff:
 # UniPoly
 # ---------------------------------------------------------------------------
 
+
 class TestUniPoly:
     def setup_method(self):
         self.pool = ExprPool()
@@ -286,7 +292,7 @@ class TestUniPoly:
             if i == 0:
                 terms.append(pool.integer(c))
             else:
-                xpow = x ** i
+                xpow = x**i
                 if c == 1:
                     terms.append(xpow)
                 else:
@@ -325,7 +331,7 @@ class TestUniPoly:
 
     def test_pow(self):
         p = self._make([1, 1])  # 1 + x
-        r = p ** 2
+        r = p**2
         assert r.coefficients() == [1, 2, 1]
 
     def test_repr_str(self):
@@ -345,6 +351,7 @@ class TestUniPoly:
 # ---------------------------------------------------------------------------
 # MultiPoly
 # ---------------------------------------------------------------------------
+
 
 class TestMultiPoly:
     def setup_method(self):

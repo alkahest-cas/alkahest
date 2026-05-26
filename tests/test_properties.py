@@ -15,7 +15,7 @@ def build_poly_expr(pool, x, coeffs):
         if i == 0:
             terms.append(c_id)
         else:
-            xpow = x ** i
+            xpow = x**i
             if c == 1:
                 terms.append(xpow)
             else:
@@ -81,9 +81,7 @@ def test_diff_linearity(fa, fb, a, b):
     rhs_poly = _try_to_poly(rhs.value, x)
 
     if lhs_poly is not None and rhs_poly is not None:
-        assert lhs_poly == rhs_poly, (
-            f"Linearity failed: fa={fa}, fb={fb}, a={a}, b={b}"
-        )
+        assert lhs_poly == rhs_poly, f"Linearity failed: fa={fa}, fb={fb}, a={a}, b={b}"
 
 
 @given(fa=coeffs_strategy, fb=coeffs_strategy)
@@ -106,9 +104,7 @@ def test_diff_product_rule(fa, fb):
     rhs_poly = _try_to_poly(rhs.value, x)
 
     if lhs_poly is not None and rhs_poly is not None:
-        assert lhs_poly == rhs_poly, (
-            f"Product rule failed: fa={fa}, fb={fb}"
-        )
+        assert lhs_poly == rhs_poly, f"Product rule failed: fa={fa}, fb={fb}"
 
 
 @given(
@@ -209,7 +205,7 @@ def test_integrate_diff_inverse(coeffs):
     pool = ExprPool()
     x = pool.symbol("x")
     # Drop constant term to avoid antiderivative ambiguity
-    non_const = [0] + list(coeffs[1:]) if len(coeffs) > 1 else [0, coeffs[0]]
+    non_const = [0, *list(coeffs[1:])] if len(coeffs) > 1 else [0, coeffs[0]]
     f = build_poly_expr(pool, x, non_const)
 
     try:

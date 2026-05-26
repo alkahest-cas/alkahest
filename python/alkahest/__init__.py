@@ -1,12 +1,13 @@
+import contextlib
 from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from importlib.metadata import version as _meta_version
 
 from . import (
-    lattice,  # noqa: F401 — V2-6: expose alkahest.lattice submodule
+    lattice,
     modular,  # noqa: F401 — V2-1: expose alkahest.modular submodule
-    number_theory,  # noqa: F401 — V3-1: integer number theory
+    number_theory,
 )
-from ._context import (  # noqa: F401
+from ._context import (
     active_domain,
     active_pool,
     context,
@@ -14,17 +15,17 @@ from ._context import (  # noqa: F401
     simplify_enabled,
     symbol,
 )
-from ._dlpack import _to_numpy  # noqa: F401
-from ._parse import parse  # noqa: F401
-from ._pretty import latex, unicode_str  # noqa: F401
-from ._product import Product  # noqa: F401 — V2-22
-from ._pytree import (  # noqa: F401
+from ._dlpack import _to_numpy
+from ._parse import parse
+from ._pretty import latex, unicode_str
+from ._product import Product
+from ._pytree import (
     TreeDef,
     flatten_exprs,
     map_exprs,
     unflatten_exprs,
 )
-from ._transform import (  # noqa: F401
+from ._transform import (
     CompiledGradTracedFn,
     CompiledTracedFn,
     GradTracedFn,
@@ -46,9 +47,9 @@ from .alkahest import (  # noqa: F401
     And,
     # Phase 22: Ball arithmetic
     ArbBall,
+    CompileCache,
     # Phase 21: JIT compiled evaluation
     CompiledFn,
-    CompileCache,
     # Core expression types
     DerivedResult,
     # V1-15: EgraphConfig and simplify_egraph_with
@@ -176,19 +177,17 @@ from .alkahest import (  # noqa: F401
     verify_wz_pair,
     version,
 )
-from .alkahest import (  # noqa: F401
+from .alkahest import (
     # Phase 14: Reverse-mode AD (symbolic gradient; for traced-fn gradient use alkahest.grad)
     grad as symbolic_grad,
 )
 
 # V5-7: JAX primitive integration (optional — requires JAX)
-try:
+with contextlib.suppress(ImportError):
     from ._jax import to_jax  # noqa: F401
-except ImportError:
-    pass
 
 # V1-4 / V1-16: Polynomial system solver + Gröbner basis (optional — requires groebner feature)
-try:
+with contextlib.suppress(ImportError):
     from .alkahest import (
         CertifiedSolution,
         DaeIndexReduction,
@@ -203,9 +202,7 @@ try:
         solve,
         solve_numerical,
         triangularize,
-    )  # noqa: F401
-except ImportError:
-    pass
+    )
 
 # V1-3 — Structured exception hierarchy: bind pure-Python stubs first, then replace
 # each name with the compiled class when ``alkahest.alkahest`` exports it.  A bulk
@@ -213,7 +210,7 @@ except ImportError:
 # features omit a symbol (``DiophantineError`` is registered only with the groebner
 # feature); that used to downgrade *every* error class to stubs and drop names that
 # have no stub (CadError, …).
-from .exceptions import (  # noqa: F401, I001
+from .exceptions import (
     AlkahestError,
     CadError,
     ConversionError,
@@ -423,222 +420,222 @@ def numpy_eval_par(compiled_fn, *arrays):
 
 
 __all__ = [
-    "__version__",
+    # Phase 17
+    "DAE",
+    "HAS_EGRAPH",
+    # Phase 16
+    "ODE",
+    # Phase 18
+    "AcausalSystem",
     # Exceptions (V1-3 — stable diagnostic codes)
     "AlkahestError",
     "AlkahestError",
-    "ConversionError",
-    "FactorError",
-    "DomainError",
-    "DiffError",
-    "PoolError",
-    "IntegrationError",
-    "LimitError",
-    "SeriesError",
-    "LinearRecurrenceError",
-    "RsolveError",
-    "DiophantineError",
-    "MatrixError",
-    "NumberTheoryError",
-    "EigenError",
-    "OdeError",
-    "DaeError",
-    "JitError",
-    "SolverError",
-    "version",
-    # Core
-    "ExprPool",
-    "Expr",
-    "DerivedResult",
-    # Polynomials
-    "UniPoly",
-    "MultiPoly",
-    "UniPolyFactorization",
-    "UniPolyFactorModP",
-    "MultiPolyFactorization",
-    "factor_univariate_mod_p",
-    "RationalFunction",
-    # Rules
-    "RewriteRule",
-    # Simplification
-    "simplify",
-    "simplify_egraph",
-    "simplify_egraph_with",
-    "EgraphConfig",
-    "HAS_EGRAPH",
-    "simplify_expanded",
-    "simplify_trig",
-    "simplify_log_exp",
-    "simplify_pauli",
-    "simplify_clifford_orthogonal",
-    "simplify_with",
-    # Calculus
-    "diff",
-    "diff_forward",
-    "integrate",
-    "limit",
-    "series",
-    "Series",
-    "solve_linear_recurrence_homogeneous",
-    "rsolve",
-    "sum_definite",
-    "sum_indefinite",
-    "product_definite",
-    "product_indefinite",
-    "Product",
-    "verify_wz_pair",
-    "symbolic_grad",
-    # Pattern matching & substitution
-    "match_pattern",
-    "make_rule",
-    "subs",
-    # Math functions (core 5)
-    "sin",
-    "cos",
-    "exp",
-    "log",
-    "sqrt",
-    # V1-12: expanded primitives
-    "tan",
-    "sinh",
-    "cosh",
-    "tanh",
-    "asin",
-    "acos",
-    "atan",
-    "erf",
-    "erfc",
-    "abs",
-    "sign",
-    "floor",
-    "ceil",
-    "round",
-    # Phase 15
-    "Matrix",
-    "jacobian",
-    # Phase 16
-    "ODE",
-    "lower_to_first_order",
-    # Phase 17
-    "DAE",
-    "pantelides",
-    # Phase 18
-    "AcausalSystem",
-    "Port",
-    "resistor",
-    # Phase 19
-    "SensitivitySystem",
-    "sensitivity_system",
-    "adjoint_system",
-    # Phase 20
-    "Event",
-    "HybridODE",
-    # Phase 21
-    "CompiledFn",
-    "CompileCache",
-    "compile_expr",
-    "eval_expr",
-    "jit_is_available",
+    "And",
     # Phase 22
     "ArbBall",
-    "interval_eval",
-    # Phase 23
-    "simplify_par",
-    # Phase 24
-    "horner",
-    "emit_c",
-    # Phase 25
-    "numpy_eval",
-    "numpy_eval_par",
-    # Phase 26
-    "collect_like_terms",
-    # Phase 27
-    "poly_normal",
-    # V2-2
-    "resultant",
-    "subresultant_prs",
+    "CadError",
+    "CertifiedSolution",
+    "CompileCache",
+    # Phase 21
+    "CompiledFn",
+    "CompiledGradTracedFn",
+    "CompiledTracedFn",
+    "ConversionError",
+    "DaeError",
+    "DaeIndexReduction",
+    "DerivedResult",
+    "DiffError",
+    "DiophantineError",
+    "DiophantineSolution",
+    "DomainError",
+    "EgraphConfig",
+    "EigenError",
+    # Phase 20
+    "Event",
+    "Exists",
+    "Expr",
+    # Core
+    "ExprPool",
+    "FactorError",
+    "Forall",
+    "GbPoly",
+    "GradTracedFn",
+    "GroebnerBasis",
+    "HybridODE",
+    "IntegrationError",
+    # V1-16: IoError
+    "IoError",
+    "JitError",
+    "LatticeError",
+    "LimitError",
+    "LinearRecurrenceError",
+    # Phase 15
+    "Matrix",
+    "MatrixError",
+    "MultiPoly",
+    "MultiPolyFactorization",
+    "Not",
+    "NumberTheoryError",
+    "OdeError",
+    "Or",
+    "ParseError",
+    "PoolError",
+    "Port",
+    # PA-5
+    "PrimitiveRegistry",
+    "Product",
+    "ProductError",
+    "PslqError",
+    "RationalFunction",
+    "RealRootError",
+    "RegularChain",
     "ResultantError",
-    # V2-3
-    "gcd_sparse",
-    "sparse_interp",
-    "sparse_interp_univariate",
+    # Rules
+    "RewriteRule",
+    "RootInterval",
+    "RosenfeldGroebnerResult",
+    "RsolveError",
+    # Phase 19
+    "SensitivitySystem",
+    "Series",
+    "SeriesError",
+    "SolverError",
     "SparseGcdError",
     "SparseInterpError",
     "SumError",
-    "ProductError",
-    "CadError",
+    # PA-7
+    "TracedFn",
+    # PA-10
+    "TreeDef",
+    # Polynomials
+    "UniPoly",
+    "UniPolyFactorModP",
+    "UniPolyFactorization",
+    "__version__",
+    "abs",
+    "acos",
+    "active_domain",
+    "active_pool",
+    "adjoint_system",
+    "asin",
+    "atan",
+    "cad_lift",
+    "cad_project",
+    "ceil",
+    # Phase 26
+    "collect_like_terms",
+    "compile_expr",
+    # RW-7
+    "context",
+    "cos",
+    "cosh",
+    "dae_index_reduce",
+    # V3-3 — FOFormula / V2-9 CAD
+    "decide",
+    # Calculus
+    "diff",
+    "diff_forward",
+    "diophantine",
+    "emit_c",
+    "erf",
+    "erfc",
+    "eval_expr",
+    "exp",
+    "factor_univariate_mod_p",
+    "flatten_exprs",
+    "floor",
+    # V2-3
+    "gcd_sparse",
+    "get_context_value",
+    "grad",
     # V2-6
     "guess_relation",
+    # Phase 24
+    "horner",
+    "integrate",
+    "interval_eval",
+    "jacobian",
+    "jit",
+    "jit_is_available",
+    # V2-20
+    "latex",
     "lattice",
+    "limit",
+    "log",
+    "lower_to_first_order",
+    "make_rule",
+    "map_exprs",
+    # Pattern matching & substitution
+    "match_pattern",
     "number_theory",
-    "LatticeError",
-    "PslqError",
+    # Phase 25
+    "numpy_eval",
+    "numpy_eval_par",
+    "pantelides",
+    # V2-21
+    "parse",
+    # PA-9
+    "piecewise",
+    # Phase 27
+    "poly_normal",
+    "product_definite",
+    "product_indefinite",
     # V2-4
     "real_roots",
     "refine_root",
-    "RootInterval",
-    "RealRootError",
-    # PA-5
-    "PrimitiveRegistry",
-    # PA-7
-    "TracedFn",
-    "CompiledGradTracedFn",
-    "CompiledTracedFn",
-    "GradTracedFn",
-    "trace",
-    "grad",
-    "jit",
-    "trace_fn",
-    # PA-10
-    "TreeDef",
-    "flatten_exprs",
-    "unflatten_exprs",
-    "map_exprs",
-    # PA-9
-    "piecewise",
-    # V3-3 — FOFormula / V2-9 CAD
-    "decide",
-    "cad_project",
-    "cad_lift",
+    "resistor",
+    # V2-2
+    "resultant",
+    # V2-13 — Differential algebra / Rosenfeld–Gröbner (requires groebner)
+    "rosenfeld_groebner",
+    "round",
+    "rsolve",
     "satisfiable",
-    "And",
-    "Or",
-    "Not",
-    "Forall",
-    "Exists",
+    "sensitivity_system",
+    "series",
+    "sign",
+    # Simplification
+    "simplify",
+    "simplify_clifford_orthogonal",
+    "simplify_egraph",
+    "simplify_egraph_with",
+    "simplify_enabled",
+    "simplify_expanded",
+    "simplify_log_exp",
+    # Phase 23
+    "simplify_par",
+    "simplify_pauli",
+    "simplify_trig",
+    "simplify_with",
+    # Math functions (core 5)
+    "sin",
+    "sinh",
+    # V1-4 / V1-16: Polynomial system solver + Gröbner basis (requires groebner feature)
+    "solve",
+    "solve_linear_recurrence_homogeneous",
+    "solve_numerical",
+    "sparse_interp",
+    "sparse_interp_univariate",
+    "sqrt",
+    "subresultant_prs",
+    "subs",
+    "sum_definite",
+    "sum_indefinite",
+    "symbol",
+    "symbolic_grad",
+    # V1-12: expanded primitives
+    "tan",
+    "tanh",
     # V5-1
     "to_lean",
     # V5-2
     "to_stablehlo",
-    # V1-4 / V1-16: Polynomial system solver + Gröbner basis (requires groebner feature)
-    "solve",
-    "solve_numerical",
-    "diophantine",
-    "DiophantineSolution",
-    "CertifiedSolution",
-    "GroebnerBasis",
-    "GbPoly",
+    "trace",
+    "trace_fn",
     # V2-11 — Regular chains / triangular decomposition
     "triangularize",
-    "RegularChain",
-    # V2-13 — Differential algebra / Rosenfeld–Gröbner (requires groebner)
-    "rosenfeld_groebner",
-    "dae_index_reduce",
-    "RosenfeldGroebnerResult",
-    "DaeIndexReduction",
-    # V1-16: IoError
-    "IoError",
-    # RW-7
-    "context",
-    "symbol",
-    "active_pool",
-    "active_domain",
-    "simplify_enabled",
-    "get_context_value",
-    # V2-20
-    "latex",
+    "unflatten_exprs",
     "unicode_str",
-    # V2-21
-    "parse",
-    "ParseError",
+    "verify_wz_pair",
+    "version",
 ]

@@ -20,9 +20,7 @@ def test_sum_definite_k_factorial_numeric():
     zero = pool.integer(0)
     term = alkahest.simplify(k * alkahest.gamma(k + pool.integer(1))).value
     s = alkahest.sum_definite(term, k, zero, n).value
-    expected = alkahest.simplify(
-        alkahest.gamma(n + pool.integer(2)) + pool.integer(-1)
-    ).value
+    expected = alkahest.simplify(alkahest.gamma(n + pool.integer(2)) + pool.integer(-1)).value
     for ni in range(0, 9):
         env = {n: float(ni)}
         sv = alkahest.eval_expr(s, env)

@@ -208,10 +208,9 @@ class TestSolveSymbolicOutput:
     def test_multivariate_symbolic(self):
         """x - 1 = 0, y - 2 = 0 → x=1, y=2 as Expr."""
         x, y, p = self.x, self.y, self.pool
-        solutions = alkahest.solve(
-            [x + p.integer(-1), y + p.integer(-2)], [x, y]
-        )
-        assert isinstance(solutions, list) and len(solutions) >= 1
+        solutions = alkahest.solve([x + p.integer(-1), y + p.integer(-2)], [x, y])
+        assert isinstance(solutions, list)
+        assert len(solutions) >= 1
         sol = solutions[0]
         assert isinstance(sol[x], Expr)
         assert isinstance(sol[y], Expr)

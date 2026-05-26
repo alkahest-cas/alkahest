@@ -28,6 +28,7 @@ from alkahest import (
 
 try:
     from alkahest import SparseGcdError, gcd_sparse
+
     _HAS_GCD_SPARSE = True
 except ImportError:
     _HAS_GCD_SPARSE = False
@@ -38,11 +39,13 @@ except ImportError:
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _poly_eval(terms, prime):
     """Return a black-box evaluator for a multivariate polynomial over F_p.
 
     terms: list of (coeff: int, exps: list[int])
     """
+
     def _eval(pt):
         acc = 0
         for coeff, exps in terms:
@@ -52,6 +55,7 @@ def _poly_eval(terms, prime):
                 term = term * pow(xi, e, prime) % prime
             acc = (acc + term) % prime
         return acc
+
     return _eval
 
 
@@ -64,6 +68,7 @@ def _pool_vars(n):
 # ---------------------------------------------------------------------------
 # Univariate Ben-Or/Tiwari
 # ---------------------------------------------------------------------------
+
 
 class TestUnivariate:
     def test_zero_polynomial(self):
@@ -85,8 +90,10 @@ class TestUnivariate:
 
     def test_two_terms(self):
         p = 101
+
         def f(x):
             return (pow(x, 10, p) + 2 * pow(x, 3, p)) % p
+
         terms = sparse_interp_univariate(f, 3, p)
         d = {e: c for c, e in terms}
         assert d.get(10) == 1
@@ -95,8 +102,10 @@ class TestUnivariate:
     def test_roadmap_x100_3x17_5(self):
         """ROADMAP: recover x^100 + 3·x^17 + 5 (T=3, 6 evaluations)."""
         p = 997  # prime > 100 and > 2*3=6
+
         def f(x):
             return (pow(x, 100, p) + 3 * pow(x, 17, p) + 5) % p
+
         terms = sparse_interp_univariate(f, 4, p)
         d = {e: c for c, e in terms}
         assert d.get(100) == 1, f"missing x^100: got {d}"
@@ -106,8 +115,10 @@ class TestUnivariate:
 
     def test_single_high_degree(self):
         p = 997
+
         def f(x):
             return pow(x, 500, p)
+
         terms = sparse_interp_univariate(f, 2, p)
         d = {e: c for c, e in terms}
         assert d.get(500) == 1
@@ -116,8 +127,10 @@ class TestUnivariate:
         # 5-term polynomial
         p = 1009
         exps_coeffs = [(7, 1), (11, 2), (20, 3), (50, 4), (99, 5)]
+
         def f(x):
             return sum(c * pow(x, e, p) for e, c in exps_coeffs) % p
+
         terms = sparse_interp_univariate(f, 6, p)
         d = {e: c for c, e in terms}
         for e, c in exps_coeffs:
@@ -136,6 +149,7 @@ class TestUnivariate:
 # Multivariate Zippel
 # ---------------------------------------------------------------------------
 
+
 class TestMultivariate:
     def test_constant(self):
         _, vs = _pool_vars(2)
@@ -146,9 +160,11 @@ class TestMultivariate:
     def test_univariate_via_multi(self):
         p = 101
         _, vs = _pool_vars(1)
+
         def f(pt):
             x = pt[0]
             return (pow(x, 2, p) + 3 * x + 1) % p
+
         result = sparse_interp(f, vs, term_bound=5, degree_bound=5, prime=p)
         t = result.terms
         assert t.get((2,), 0) == 1, f"x^2 coeff wrong: {t}"
@@ -158,8 +174,10 @@ class TestMultivariate:
     def test_bivariate_xy_plus_3(self):
         p = 101
         _, vs = _pool_vars(2)
+
         def f(pt):
             return (pt[0] * pt[1] + 3) % p
+
         result = sparse_interp(f, vs, term_bound=4, degree_bound=4, prime=p, seed=1)
         t = result.terms
         assert t.get((1, 1), 0) == 1, f"x*y coeff wrong: {t}"
@@ -169,9 +187,11 @@ class TestMultivariate:
         # f = x^2·y + 5·y + 2·x over F_101
         p = 101
         _, vs = _pool_vars(2)
+
         def f(pt):
             x, y = pt[0], pt[1]
             return (pow(x, 2, p) * y + 5 * y + 2 * x) % p
+
         result = sparse_interp(f, vs, term_bound=5, degree_bound=5, prime=p, seed=42)
         t = result.terms
         assert t.get((2, 1), 0) == 1, f"x^2*y coeff wrong: {t}"
@@ -182,9 +202,11 @@ class TestMultivariate:
         # f = x·y·z + x^2 + z over F_1009
         p = 1009
         _, vs = _pool_vars(3)
+
         def f(pt):
             x, y, z = pt[0], pt[1], pt[2]
             return (x * y * z % p + pow(x, 2, p) + z) % p
+
         result = sparse_interp(f, vs, term_bound=5, degree_bound=4, prime=p, seed=7)
         t = result.terms
         assert t.get((1, 1, 1), 0) == 1, f"xyz coeff wrong: {t}"
@@ -204,6 +226,7 @@ class TestMultivariate:
     def test_roundtrip_reduce_mod(self):
         """Round-trip: MultiPoly → reduce_mod → sparse_interp must agree."""
         from alkahest import MultiPoly
+
         p = 1009
         pool = ExprPool()
         x = pool.symbol("x")
@@ -234,10 +257,10 @@ class TestMultivariate:
         """ROADMAP: 10-variable 15-term polynomial, ≥ 95% success over trials."""
         p = 32749
         terms = [
-            (1,  [2, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-            (3,  [0, 1, 0, 0, 0, 0, 0, 0, 0, 0]),
-            (5,  [0, 0, 3, 0, 0, 0, 0, 0, 0, 0]),
-            (7,  [1, 1, 0, 0, 0, 0, 0, 0, 0, 0]),
+            (1, [2, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            (3, [0, 1, 0, 0, 0, 0, 0, 0, 0, 0]),
+            (5, [0, 0, 3, 0, 0, 0, 0, 0, 0, 0]),
+            (7, [1, 1, 0, 0, 0, 0, 0, 0, 0, 0]),
             (11, [0, 0, 0, 2, 0, 0, 0, 0, 0, 0]),
             (13, [0, 0, 0, 0, 1, 0, 0, 0, 0, 0]),
             (17, [0, 0, 0, 0, 0, 1, 0, 0, 0, 0]),
@@ -267,8 +290,7 @@ class TestMultivariate:
         for seed in range(n_trials):
             try:
                 result = sparse_interp(
-                    oracle, vs[:],
-                    term_bound=20, degree_bound=6, prime=p, seed=seed
+                    oracle, vs[:], term_bound=20, degree_bound=6, prime=p, seed=seed
                 )
                 rt = result.terms  # dict: tuple→int
                 ok = len(rt) == 15
@@ -289,8 +311,10 @@ class TestMultivariate:
         p = 101
         _, vs1 = _pool_vars(2)
         _, vs2 = _pool_vars(2)
+
         def f(pt):
             return (pt[0] * pt[1] + 7) % p
+
         r1 = sparse_interp(f, vs1, term_bound=4, degree_bound=4, prime=p, seed=99)
         r2 = sparse_interp(f, vs2, term_bound=4, degree_bound=4, prime=p, seed=99)
         assert r1.terms == r2.terms, f"different results for same seed: {r1.terms} vs {r2.terms}"
@@ -299,6 +323,7 @@ class TestMultivariate:
 # ---------------------------------------------------------------------------
 # Sparse modular GCD  (substrate for faster modular algorithms)
 # ---------------------------------------------------------------------------
+
 
 def _mp(expr, vars_):
     """Helper: symbolic expr → MultiPoly."""
@@ -369,6 +394,7 @@ class TestSparseGcd:
     def test_incompatible_vars_raises(self):
         """Different variable lists must raise SparseGcdError."""
         from alkahest import SparseGcdError
+
         pool = ExprPool()
         x = pool.symbol("x")
         y = pool.symbol("y")

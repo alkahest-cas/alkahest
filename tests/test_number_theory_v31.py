@@ -27,7 +27,11 @@ def test_isprime_mersenne_and_small() -> None:
 
 def test_factorint_f5_matches_sympy_shape() -> None:
     fac = factorint(F5)
-    assert fac[3] == 1 and fac[5] == 1 and fac[17] == 1 and fac[257] == 1 and fac[65537] == 1
+    assert fac[3] == 1
+    assert fac[5] == 1
+    assert fac[17] == 1
+    assert fac[257] == 1
+    assert fac[65537] == 1
     prod = 1
     for p, e in fac.items():
         prod *= pow(p, e)

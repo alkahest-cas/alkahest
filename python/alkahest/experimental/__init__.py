@@ -18,36 +18,30 @@ Current experimental surface:
 
 from __future__ import annotations
 
+import contextlib
+
 # Re-export everything from the stable module for convenience
-from alkahest import to_stablehlo  # noqa: F401
+from alkahest import to_stablehlo
 
-try:
-    from alkahest.alkahest import to_lean  # noqa: F401
-except ImportError:
-    pass
+with contextlib.suppress(ImportError):
+    from alkahest.alkahest import to_lean
 
-try:
-    from alkahest._jax import to_jax  # noqa: F401
-except ImportError:
-    pass
+with contextlib.suppress(ImportError):
+    from alkahest._jax import to_jax
 
-try:
-    from alkahest.alkahest import GbPoly, GroebnerBasis, solve  # noqa: F401
-except ImportError:
-    pass
+with contextlib.suppress(ImportError):
+    from alkahest.alkahest import GbPoly, GroebnerBasis, solve
 
-try:
-    from alkahest.alkahest import CudaCompiledFn, compile_cuda  # noqa: F401
-except ImportError:
-    pass
+with contextlib.suppress(ImportError):
+    from alkahest.alkahest import CudaCompiledFn, compile_cuda
 
 __all__ = [
-    "to_stablehlo",
-    "to_lean",
-    "to_jax",
+    "CudaCompiledFn",
     "GbPoly",
     "GroebnerBasis",
-    "solve",
     "compile_cuda",
-    "CudaCompiledFn",
+    "solve",
+    "to_jax",
+    "to_lean",
+    "to_stablehlo",
 ]

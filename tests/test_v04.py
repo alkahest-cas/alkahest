@@ -28,6 +28,7 @@ from alkahest import (
 # Helpers
 # ===========================================================================
 
+
 def pool():
     return ExprPool()
 
@@ -35,6 +36,7 @@ def pool():
 # ===========================================================================
 # Phase 21 — JIT / compiled evaluation
 # ===========================================================================
+
 
 class TestCompiledFn:
     def test_constant_integer(self):
@@ -66,10 +68,10 @@ class TestCompiledFn:
         # f(x) = x² + 2x + 1 = (x+1)²
         p = pool()
         x = p.symbol("x")
-        expr = x**2 + p.integer(2)*x + p.integer(1)
+        expr = x**2 + p.integer(2) * x + p.integer(1)
         f = compile_expr(expr, [x])
         for v in [-2.0, -1.0, 0.0, 1.0, 2.0, 3.0]:
-            assert abs(f([v]) - (v+1)**2) < 1e-9, f"v={v}"
+            assert abs(f([v]) - (v + 1) ** 2) < 1e-9, f"v={v}"
 
     def test_sin(self):
         p = pool()
@@ -100,7 +102,7 @@ class TestCompiledFn:
     def test_pow_integer(self):
         p = pool()
         x = p.symbol("x")
-        f = compile_expr(x ** 3, [x])
+        f = compile_expr(x**3, [x])
         assert abs(f([2.0]) - 8.0) < 1e-10
 
     def test_pythagorean_triple(self):
@@ -159,7 +161,7 @@ class TestEvalExpr:
     def test_sin_cos_identity(self):
         p = pool()
         x = p.symbol("x")
-        pythagorean = sin(x)**2 + cos(x)**2
+        pythagorean = sin(x) ** 2 + cos(x) ** 2
         for angle in [0.0, 0.5, 1.0, math.pi / 4, math.pi]:
             v = eval_expr(pythagorean, {x: angle})
             assert abs(v - 1.0) < 1e-10, f"angle={angle}"
@@ -173,6 +175,7 @@ class TestEvalExpr:
 # ===========================================================================
 # Phase 22 — Ball arithmetic
 # ===========================================================================
+
 
 class TestArbBall:
     def test_construction(self):
@@ -215,15 +218,15 @@ class TestArbBall:
     def test_sub_enclosure(self):
         a = ArbBall(3.0, 0.1)  # [2.9, 3.1]
         b = ArbBall(1.0, 0.1)  # [0.9, 1.1]
-        c = a - b              # [1.8, 2.2]
-        assert c.contains(1.82)   # safely inside lower bound
+        c = a - b  # [1.8, 2.2]
+        assert c.contains(1.82)  # safely inside lower bound
         assert c.contains(2.0)
-        assert c.contains(2.18)   # safely inside upper bound
+        assert c.contains(2.18)  # safely inside upper bound
 
     def test_mul_enclosure(self):
         a = ArbBall(2.0, 0.5)  # [1.5, 2.5]
         b = ArbBall(3.0, 0.5)  # [2.5, 3.5]
-        c = a * b              # [3.75, 8.75]
+        c = a * b  # [3.75, 8.75]
         assert c.contains(4.0)
         assert c.contains(6.0)
         assert c.contains(8.0)
@@ -325,7 +328,7 @@ class TestIntervalEval:
         assert r.contains(9.5)
         assert r.contains(10.0)
         assert r.contains(10.5)
-        assert not r.contains(9.0)   # 9.0 < 9.41
+        assert not r.contains(9.0)  # 9.0 < 9.41
 
     def test_multivariate(self):
         p = pool()
@@ -339,7 +342,7 @@ class TestIntervalEval:
         # sin²(x) + cos²(x) = 1 for x ∈ [0.5, 0.6]
         p = pool()
         x = p.symbol("x")
-        expr = sin(x)**2 + cos(x)**2
+        expr = sin(x) ** 2 + cos(x) ** 2
         r = interval_eval(expr, {x: ArbBall(0.55, 0.05)})
         assert r.contains(1.0)
 
@@ -354,13 +357,14 @@ class TestIntervalEval:
         third = p.rational(1, 3)
         r = interval_eval(third, {})
         # mid should be close to 1/3
-        assert abs(r.mid - 1.0/3.0) < 1e-10
+        assert abs(r.mid - 1.0 / 3.0) < 1e-10
         assert r.rad < 1e-30
 
 
 # ===========================================================================
 # Phase 23 — Parallel simplification
 # ===========================================================================
+
 
 class TestSimplifyPar:
     def test_simplify_par_matches_simplify_add_zero(self):
@@ -370,9 +374,7 @@ class TestSimplifyPar:
         par_result = simplify_par(expr)
         seq_result = simplify(expr)
         assert str(par_result.value) == str(seq_result.value)
-        assert_same_step_rules(
-            seq_result.steps, par_result.steps, context="add zero"
-        )
+        assert_same_step_rules(seq_result.steps, par_result.steps, context="add zero")
 
     def test_simplify_par_matches_simplify_mul_one(self):
         p = pool()
@@ -381,9 +383,7 @@ class TestSimplifyPar:
         par_result = simplify_par(expr)
         seq_result = simplify(expr)
         assert str(par_result.value) == str(seq_result.value)
-        assert_same_step_rules(
-            seq_result.steps, par_result.steps, context="mul one"
-        )
+        assert_same_step_rules(seq_result.steps, par_result.steps, context="mul one")
 
     def test_simplify_par_constant_fold(self):
         p = pool()
@@ -394,24 +394,20 @@ class TestSimplifyPar:
         par_result = simplify_par(expr)
         seq_result = simplify(expr)
         assert str(par_result.value) == str(seq_result.value)
-        assert_same_step_rules(
-            seq_result.steps, par_result.steps, context="constant fold sum"
-        )
+        assert_same_step_rules(seq_result.steps, par_result.steps, context="constant fold sum")
 
     def test_simplify_par_large_mul_ones(self):
         p = pool()
         x = p.symbol("x")
         ones = [p.integer(1)] * 15
-        factors = [x] + ones
+        factors = [x, *ones]
         expr = factors[0]
         for f in factors[1:]:
             expr = expr * f
         par_result = simplify_par(expr)
         seq_result = simplify(expr)
         assert str(par_result.value) == str(seq_result.value)
-        assert_same_step_rules(
-            seq_result.steps, par_result.steps, context="large mul ones"
-        )
+        assert_same_step_rules(seq_result.steps, par_result.steps, context="large mul ones")
 
     def test_simplify_par_mul_zero(self):
         p = pool()
@@ -420,9 +416,7 @@ class TestSimplifyPar:
         par_result = simplify_par(expr)
         seq_result = simplify(expr)
         assert str(par_result.value) == str(p.integer(0))
-        assert_same_step_rules(
-            seq_result.steps, par_result.steps, context="mul zero"
-        )
+        assert_same_step_rules(seq_result.steps, par_result.steps, context="mul zero")
 
     def test_simplify_par_returns_derived_result(self):
         p = pool()
@@ -440,9 +434,7 @@ class TestSimplifyPar:
         par_result = simplify_par(expr)
         seq_result = simplify(expr)
         assert str(par_result.value) == str(seq_result.value)
-        assert_same_step_rules(
-            seq_result.steps, par_result.steps, context="polynomial fold"
-        )
+        assert_same_step_rules(seq_result.steps, par_result.steps, context="polynomial fold")
 
     def test_simplify_par_nested_cancellation(self):
         p = pool()
@@ -454,6 +446,4 @@ class TestSimplifyPar:
         par_result = simplify_par(expr)
         seq_result = simplify(expr)
         assert str(par_result.value) == str(seq_result.value)
-        assert_same_step_rules(
-            seq_result.steps, par_result.steps, context="nested cancel"
-        )
+        assert_same_step_rules(seq_result.steps, par_result.steps, context="nested cancel")

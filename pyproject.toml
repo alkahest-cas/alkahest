@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "alkahest"
-version = "2.2.1"
+version = "2.3.0"
 description = "A high-performance computer algebra system for Python"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -63,7 +63,10 @@ target-version = "py39"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "PT", "TCH", "C4"]
-ignore = []
+# RUF001/002/003: math library intentionally uses unicode symbols (ℤ, ℚ, ×, –)
+# PT011/B017: pytest.raises without match= is acceptable while test suite matures;
+#             tests that care about message content already use exc_info.value checks.
+ignore = ["RUF001", "RUF002", "RUF003", "PT011", "B017"]
 
 [tool.ruff.format]
 quote-style = "double"

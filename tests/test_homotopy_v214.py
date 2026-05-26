@@ -45,4 +45,4 @@ def test_solve_numerical_certified_solution_api():
     assert hasattr(pts[0], "smale_certified")
     d = pts[0].to_dict()
     assert len(d) == 1
-    assert abs(list(d.values())[0] ** 2 - 1.0) < 1e-10
+    assert abs(next(iter(d.values())) ** 2 - 1.0) < 1e-10
