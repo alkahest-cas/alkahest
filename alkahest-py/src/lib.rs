@@ -1230,6 +1230,7 @@ struct PyEgraphConfig {
 #[pymethods]
 impl PyEgraphConfig {
     #[new]
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (
         shrink_iters = 5,
         explore_iters = 3,

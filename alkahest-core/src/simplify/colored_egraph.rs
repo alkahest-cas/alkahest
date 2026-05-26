@@ -6,7 +6,7 @@
 //! valid under declared side conditions (e.g. `x > 0 ⊢ sqrt(x²) → x`).
 //!
 //! This module implements a native colored e-graph used by [`simplify_colored`] and
-//! [`super::engine::simplify_with`] when [`SimplifyConfig::assumptions`] is non-empty.
+//! [`super::engine::simplify_with`] when [`super::engine::SimplifyConfig`]`::assumptions` is non-empty.
 //! It does not require the optional `egraph` / egglog feature.
 
 use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
@@ -400,9 +400,11 @@ fn domain_implies(have: crate::kernel::Domain, need: crate::kernel::Domain) -> b
 // Conditional rewrite rules
 // ---------------------------------------------------------------------------
 
+type ConditionalApplyFn = fn(ExprId, &ExprPool) -> Option<(ExprId, Vec<SideCondition>)>;
+
 struct ConditionalRule {
     name: &'static str,
-    apply: fn(ExprId, &ExprPool) -> Option<(ExprId, Vec<SideCondition>)>,
+    apply: ConditionalApplyFn,
 }
 
 fn is_int_n(expr: ExprId, n: i64, pool: &ExprPool) -> bool {
@@ -509,12 +511,13 @@ pub fn simplify_colored(
                         log.push(RewriteStep::simple(rule.name, node, after));
                         fired = true;
                     }
-                } else if has_context && assumptions_satisfy(&conds, assumptions) {
-                    if !eg.same(CONTEXT_COLOR, node, after) {
-                        eg.union_context(after, node);
-                        log.push(RewriteStep::with_conditions(rule.name, node, after, conds));
-                        fired = true;
-                    }
+                } else if has_context
+                    && assumptions_satisfy(&conds, assumptions)
+                    && !eg.same(CONTEXT_COLOR, node, after)
+                {
+                    eg.union_context(after, node);
+                    log.push(RewriteStep::with_conditions(rule.name, node, after, conds));
+                    fired = true;
                 }
             }
         }

@@ -22,15 +22,15 @@
 //! | FLINT C type            | Rust wrapper              | `Drop` calls              |
 //! |-------------------------|---------------------------|---------------------------|
 //! | `fmpz_t`                | [`FlintInteger`]          | `fmpz_clear`              |
-//! | `fmpz_factor_t`         | [`integer::FlintIntFactor`]| `fmpz_factor_clear`      |
+//! | `fmpz_factor_t`         | `integer::FlintIntFactor`  | `fmpz_factor_clear`      |
 //! | `fmpz_poly_t`           | [`FlintPoly`]             | `fmpz_poly_clear`         |
-//! | `fmpz_poly_factor_t`    | [`poly::FlintPolyFactor`] | `fmpz_poly_factor_clear`  |
-//! | `fmpz_mpoly_ctx_t`      | [`mpoly::FlintMPolyCtx`]  | `fmpz_mpoly_ctx_clear`    |
-//! | `fmpz_mpoly_t`          | [`mpoly::FlintMPoly`]     | `fmpz_mpoly_clear`        |
-//! | `fmpz_mpoly_factor_t`   | [`mpoly::FlintMPolyFactor`]| `fmpz_mpoly_factor_clear`|
-//! | `nmod_poly_t`           | [`nmod::FlintNmodPoly`]   | `nmod_poly_clear`         |
-//! | `nmod_poly_factor_t`    | [`nmod::FlintNmodPolyFactor`]| `nmod_poly_factor_clear`|
-//! | `fmpz_mat_t`            | [`mat::FlintMat`]         | `fmpz_mat_clear`          |
+//! | `fmpz_poly_factor_t`    | `poly::FlintPolyFactor`    | `fmpz_poly_factor_clear`  |
+//! | `fmpz_mpoly_ctx_t`      | `mpoly::FlintMPolyCtx`     | `fmpz_mpoly_ctx_clear`    |
+//! | `fmpz_mpoly_t`          | `mpoly::FlintMPoly`        | `fmpz_mpoly_clear`        |
+//! | `fmpz_mpoly_factor_t`   | `mpoly::FlintMPolyFactor`  | `fmpz_mpoly_factor_clear` |
+//! | `nmod_poly_t`           | `nmod::FlintNmodPoly`      | `nmod_poly_clear`         |
+//! | `nmod_poly_factor_t`    | `nmod::FlintNmodPolyFactor`| `nmod_poly_factor_clear`  |
+//! | `fmpz_mat_t`            | `mat::FlintMat`            | `fmpz_mat_clear`          |
 //!
 //! All raw C pointers are confined to `ffi.rs`; everything above is safe Rust.
 

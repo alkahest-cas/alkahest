@@ -1,7 +1,7 @@
 //! Content-addressed cache for JIT-compiled functions.
 //!
 //! [`CompileCache`] maps `(ExprId, Vec<ExprId>)` → `Arc<CompiledFn>`.
-//! Because [`ExprPool`](crate::kernel::ExprPool) already hash-conses
+//! Because [`ExprPool`] already hash-conses
 //! expressions, `ExprId` is a stable content key: the same expression tree
 //! always produces the same `ExprId`.  This means **the cache key _is_ the
 //! content hash** — no separate hashing of the expression tree is required.

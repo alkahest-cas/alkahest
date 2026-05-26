@@ -90,7 +90,7 @@ pub fn emit_horner_c(
     ))
 }
 
-/// Build a C expression string for the Horner evaluation.
+// Build a C expression string for the Horner evaluation.
 // ---------------------------------------------------------------------------
 // f64 Horner evaluation (scalar + SIMD batch)
 // ---------------------------------------------------------------------------

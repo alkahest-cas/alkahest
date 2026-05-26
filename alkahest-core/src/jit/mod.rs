@@ -60,10 +60,15 @@ pub use cache::CompileCache;
 // ---------------------------------------------------------------------------
 
 /// Scalar JIT entry: `inputs` points to `n_inputs` consecutive `f64` values.
+#[cfg(any(feature = "jit", feature = "cranelift"))]
 pub(super) type JitScalarFn = unsafe extern "C" fn(*const f64, u64) -> f64;
 
 /// Bulk JIT entry: column-major `inputs` (`n_vars * n_points` values), `outputs` length `n_points`.
+#[cfg(any(feature = "jit", feature = "cranelift"))]
 pub(super) type JitBulkFn = unsafe extern "C" fn(*const f64, u64, *mut f64, u64);
+
+/// Interpreter closure type for the Rust fallback backend.
+pub(super) type InterpreterFn = Box<dyn Fn(&[f64]) -> f64 + Send + Sync>;
 
 /// Which backend to use for a compilation request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -187,7 +192,7 @@ enum CompiledFnInner {
         _module: Box<cranelift_jit::JITModule>,
     },
 
-    Interpreter(Box<dyn Fn(&[f64]) -> f64 + Send + Sync>),
+    Interpreter(InterpreterFn),
 }
 
 /// A compiled function that evaluates a symbolic expression numerically.
@@ -286,7 +291,7 @@ impl CompiledFn {
     /// All slices must have the same length N.  `output` must also have length N.
     ///
     /// This is the hot path for NumPy/JAX array evaluation.
-    /// For multi-core throughput see [`call_batch_par`](Self::call_batch_par).
+    /// For multi-core throughput see `call_batch_par` (requires the `parallel` feature).
     pub fn call_batch(&self, inputs: &[&[f64]], output: &mut [f64]) {
         let n = output.len();
         assert_eq!(
@@ -451,9 +456,9 @@ fn compile_with_fallbacks(
     pool: &ExprPool,
 ) -> Result<CompiledFn, JitError> {
     match compile_for_tier(tier, expr, inputs, pool) {
-        Ok(f) => return Ok(f),
+        Ok(f) => Ok(f),
         Err(e) => match tier {
-            CompileTier::Interpreter => return Err(e),
+            CompileTier::Interpreter => Err(e),
             #[cfg(feature = "jit")]
             CompileTier::Llvm => {
                 #[cfg(feature = "cranelift")]
