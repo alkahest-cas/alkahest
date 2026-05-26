@@ -1,18 +1,23 @@
 //! Tiered JIT compilation for symbolic expressions.
 //!
-//! Three compilation tiers, tried in order from fastest-to-compile to
-//! highest-throughput:
+//! Compilation tier is chosen from expression size and an optional
+//! [`CompileConfig::expected_evals`] hint (interp → Cranelift → LLVM):
 //!
 //! ```text
-//! ExprId
+//! ExprId + CompileConfig
 //!   │
-//!   ├─ cranelift (--features cranelift) — pure Rust, ~10× faster compile than
-//!   │   LLVM, ~10–20% slower code. Ships in the default PyPI wheel.
+//!   ├─ interpreter — small DAG + few planned evals (zero compile latency)
 //!   │
-//!   ├─ LLVM (--features jit) — requires LLVM 15. Best throughput for hot loops.
+//!   ├─ cranelift (--features cranelift) — pure Rust, fast compile
 //!   │
-//!   └─ interpreter fallback — always available; zero-compile, tree-walking.
+//!   ├─ LLVM (--features jit) — best throughput for large batches
+//!   │
+//!   └─ interpreter fallback — when native JIT is unavailable or fails
 //! ```
+//!
+//! Native backends also emit a **bulk** entry point
+//! `fn(*const f64, n_vars, *mut f64, n_points)` for column-major batch evaluation
+//! (see [`CompiledFn::call_bulk`]).
 //!
 //! The public API (`compile`, `eval_interp`, `CompiledFn`) is the same
 //! regardless of which features are compiled in.
@@ -49,6 +54,53 @@ mod cranelift_backend;
 
 pub mod cache;
 pub use cache::CompileCache;
+
+// ---------------------------------------------------------------------------
+// JIT function signatures and compile configuration
+// ---------------------------------------------------------------------------
+
+/// Scalar JIT entry: `inputs` points to `n_inputs` consecutive `f64` values.
+pub(super) type JitScalarFn = unsafe extern "C" fn(*const f64, u64) -> f64;
+
+/// Bulk JIT entry: column-major `inputs` (`n_vars * n_points` values), `outputs` length `n_points`.
+pub(super) type JitBulkFn = unsafe extern "C" fn(*const f64, u64, *mut f64, u64);
+
+/// Which backend to use for a compilation request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CompileTier {
+    Interpreter,
+    #[cfg(feature = "cranelift")]
+    Cranelift,
+    #[cfg(feature = "jit")]
+    Llvm,
+}
+
+/// Hints for [`compile_with`] tier selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct CompileConfig {
+    /// Planned number of evaluations (e.g. batch length). When `None`, only
+    /// expression size is used and LLVM is not preferred unless forced.
+    pub expected_evals: Option<u64>,
+    /// Override automatic tier selection.
+    pub force_tier: Option<CompileTier>,
+}
+
+impl CompileConfig {
+    /// Config for a batch of `n_points` evaluations (enables LLVM on large N).
+    pub const fn for_batch(n_points: u64) -> Self {
+        Self {
+            expected_evals: Some(n_points),
+            force_tier: None,
+        }
+    }
+}
+
+/// Max DAG nodes for the interpreter fast path (with few planned evals).
+pub const INTERP_MAX_NODES: usize = 64;
+/// Max planned evaluations for the interpreter fast path (with a small DAG).
+pub const INTERP_MAX_EXPECTED_EVALS: u64 = 16;
+/// At or above this many planned evaluations, prefer LLVM over Cranelift.
+pub const LLVM_MIN_EXPECTED_EVALS: u64 = 4096;
 
 // ---------------------------------------------------------------------------
 // Error type (always compiled)
@@ -118,7 +170,8 @@ impl crate::errors::AlkahestError for JitError {
 enum CompiledFnInner {
     #[cfg(feature = "jit")]
     Llvm {
-        fn_ptr: unsafe extern "C" fn(*const f64, u64) -> f64,
+        fn_ptr: JitScalarFn,
+        bulk_fn: Option<JitBulkFn>,
         // execution_engine must be declared before _context so it drops first;
         // the context must outlive the execution engine.
         #[allow(dead_code)]
@@ -128,7 +181,8 @@ enum CompiledFnInner {
 
     #[cfg(feature = "cranelift")]
     Cranelift {
-        fn_ptr: unsafe extern "C" fn(*const f64, u64) -> f64,
+        fn_ptr: JitScalarFn,
+        bulk_fn: Option<JitBulkFn>,
         /// JITModule owns the code pages; must outlive `fn_ptr`.
         _module: Box<cranelift_jit::JITModule>,
     },
@@ -145,6 +199,8 @@ pub struct CompiledFn {
     inner: CompiledFnInner,
     /// Number of inputs expected by [`call`](CompiledFn::call).
     pub n_inputs: usize,
+    /// Backend used for this function (for diagnostics).
+    pub tier: CompileTier,
 }
 
 impl CompiledFn {
@@ -170,6 +226,60 @@ impl CompiledFn {
         }
     }
 
+    /// Bulk-evaluate over N points using the native bulk JIT entry when available.
+    ///
+    /// `inputs_flat` is **column-major** (var-major), length `n_inputs * n_points`:
+    /// variable `i` occupies `inputs_flat[i * n_points .. (i + 1) * n_points]`.
+    /// `output` has length `n_points`.
+    pub fn call_bulk(&self, inputs_flat: &[f64], output: &mut [f64]) {
+        let n_points = output.len();
+        assert_eq!(
+            inputs_flat.len(),
+            self.n_inputs * n_points,
+            "inputs_flat length {} != n_inputs({}) * n_points({})",
+            inputs_flat.len(),
+            self.n_inputs,
+            n_points
+        );
+        #[cfg(feature = "jit")]
+        if let CompiledFnInner::Llvm {
+            bulk_fn: Some(bulk_fn),
+            ..
+        } = &self.inner
+        {
+            return unsafe {
+                bulk_fn(
+                    inputs_flat.as_ptr(),
+                    self.n_inputs as u64,
+                    output.as_mut_ptr(),
+                    n_points as u64,
+                )
+            };
+        }
+        #[cfg(feature = "cranelift")]
+        if let CompiledFnInner::Cranelift {
+            bulk_fn: Some(bulk_fn),
+            ..
+        } = &self.inner
+        {
+            return unsafe {
+                bulk_fn(
+                    inputs_flat.as_ptr(),
+                    self.n_inputs as u64,
+                    output.as_mut_ptr(),
+                    n_points as u64,
+                )
+            };
+        }
+        let mut point = vec![0.0f64; self.n_inputs];
+        for j in 0..n_points {
+            for (i, slot) in point.iter_mut().enumerate() {
+                *slot = inputs_flat[i * n_points + j];
+            }
+            output[j] = self.call(&point);
+        }
+    }
+
     /// Batch-evaluate over N points (sequential).
     ///
     /// `inputs[i]` contains the values of variable `i` for all N points.
@@ -189,10 +299,15 @@ impl CompiledFn {
         for col in inputs {
             assert_eq!(col.len(), n, "all input arrays must have the same length");
         }
-        for i in 0..n {
-            let point: Vec<f64> = inputs.iter().map(|col| col[i]).collect();
-            output[i] = self.call(&point);
+        if self.n_inputs == 0 {
+            return;
         }
+        // Column-major flat layout matches `call_bulk` / Python `call_batch_raw`.
+        let mut flat = Vec::with_capacity(self.n_inputs * n);
+        for col in inputs {
+            flat.extend_from_slice(col);
+        }
+        self.call_bulk(&flat, output);
     }
 
     /// Batch-evaluate over N points **in parallel** using Rayon.
@@ -225,12 +340,16 @@ impl CompiledFn {
             assert_eq!(col.len(), n, "all input arrays must have the same length");
         }
 
-        // Each point `j` is independent: gather column-major inputs[i][j] for
-        // all variables i, evaluate, write output[j].
+        // Each point `j` is independent — reuse scalar `call` (bulk JIT is sequential).
         output.par_iter_mut().enumerate().for_each(|(j, out)| {
             let point: Vec<f64> = inputs.iter().map(|col| col[j]).collect();
             *out = self.call(&point);
         });
+    }
+
+    /// Backend tier used to implement this function.
+    pub fn compile_tier(&self) -> CompileTier {
+        self.tier
     }
 }
 
@@ -255,32 +374,124 @@ unsafe impl Sync for CompiledFn {}
 // compile — main entry point (tiered dispatch)
 // ---------------------------------------------------------------------------
 
-/// Compile `expr` to a native or interpreted function.
-///
-/// Dispatch priority (first available backend wins):
-/// 1. **Cranelift** (`--features cranelift`) — pure Rust, fast compile
-/// 2. **LLVM** (`--features jit`) — best throughput
-/// 3. **Interpreter** — always available, zero compile latency
-///
-/// `inputs` defines the ordered list of symbolic variables; supply their
-/// values in the same order when calling the returned [`CompiledFn`].
-pub fn compile(expr: ExprId, inputs: &[ExprId], pool: &ExprPool) -> Result<CompiledFn, JitError> {
-    // Tier 1: Cranelift (fast compile, good code, pure Rust)
-    #[cfg(feature = "cranelift")]
-    match cranelift_backend::compile_cranelift(expr, inputs, pool) {
-        Ok(f) => return Ok(f),
-        Err(_) => {} // fall through to LLVM / interpreter
+/// Count distinct nodes in the subgraph rooted at `root`.
+pub fn expr_subgraph_size(root: ExprId, pool: &ExprPool) -> usize {
+    let mut visited = std::collections::HashSet::new();
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        if !visited.insert(id) {
+            continue;
+        }
+        let data = pool.get(id);
+        match &data {
+            ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
+                stack.extend_from_slice(args);
+            }
+            ExprData::Pow { base, exp } => {
+                stack.push(*base);
+                stack.push(*exp);
+            }
+            ExprData::BigO(inner) => stack.push(*inner),
+            _ => {}
+        }
+    }
+    visited.len()
+}
+
+/// Select compilation tier from expression size and [`CompileConfig`].
+pub fn select_compile_tier(expr: ExprId, pool: &ExprPool, config: &CompileConfig) -> CompileTier {
+    if let Some(tier) = config.force_tier {
+        return tier;
+    }
+    let nodes = expr_subgraph_size(expr, pool);
+    let evals = config.expected_evals.unwrap_or(0);
+
+    if nodes <= INTERP_MAX_NODES && evals <= INTERP_MAX_EXPECTED_EVALS {
+        return CompileTier::Interpreter;
     }
 
-    // Tier 2: LLVM (slow compile, best code)
     #[cfg(feature = "jit")]
-    match compile_llvm(expr, inputs, pool) {
-        Ok(f) => return Ok(f),
-        Err(_) => {} // fall through to interpreter
+    if evals >= LLVM_MIN_EXPECTED_EVALS {
+        return CompileTier::Llvm;
     }
 
-    // Tier 3: interpreter fallback
-    compile_interpreter(expr, inputs, pool)
+    #[cfg(feature = "cranelift")]
+    {
+        return CompileTier::Cranelift;
+    }
+
+    #[cfg(feature = "jit")]
+    {
+        return CompileTier::Llvm;
+    }
+
+    #[allow(unreachable_code)]
+    CompileTier::Interpreter
+}
+
+fn compile_for_tier(
+    tier: CompileTier,
+    expr: ExprId,
+    inputs: &[ExprId],
+    pool: &ExprPool,
+) -> Result<CompiledFn, JitError> {
+    match tier {
+        CompileTier::Interpreter => compile_interpreter(expr, inputs, pool),
+        #[cfg(feature = "cranelift")]
+        CompileTier::Cranelift => cranelift_backend::compile_cranelift(expr, inputs, pool),
+        #[cfg(feature = "jit")]
+        CompileTier::Llvm => compile_llvm(expr, inputs, pool),
+    }
+}
+
+fn compile_with_fallbacks(
+    tier: CompileTier,
+    expr: ExprId,
+    inputs: &[ExprId],
+    pool: &ExprPool,
+) -> Result<CompiledFn, JitError> {
+    match compile_for_tier(tier, expr, inputs, pool) {
+        Ok(f) => return Ok(f),
+        Err(e) => match tier {
+            CompileTier::Interpreter => return Err(e),
+            #[cfg(feature = "jit")]
+            CompileTier::Llvm => {
+                #[cfg(feature = "cranelift")]
+                if let Ok(f) = cranelift_backend::compile_cranelift(expr, inputs, pool) {
+                    return Ok(f);
+                }
+                return compile_interpreter(expr, inputs, pool);
+            }
+            #[cfg(feature = "cranelift")]
+            CompileTier::Cranelift => {
+                #[cfg(feature = "jit")]
+                if let Ok(f) = compile_llvm(expr, inputs, pool) {
+                    return Ok(f);
+                }
+                return compile_interpreter(expr, inputs, pool);
+            }
+        },
+    }
+}
+
+/// Compile `expr` with tier selection driven by [`CompileConfig`].
+pub fn compile_with(
+    expr: ExprId,
+    inputs: &[ExprId],
+    pool: &ExprPool,
+    config: CompileConfig,
+) -> Result<CompiledFn, JitError> {
+    let tier = select_compile_tier(expr, pool, &config);
+    compile_with_fallbacks(tier, expr, inputs, pool)
+}
+
+/// Compile `expr` to a native or interpreted function (default [`CompileConfig`]).
+///
+/// Small expressions with no large batch hint use the interpreter even when JIT
+/// features are enabled.  Use [`compile_with`] with [`CompileConfig::for_batch`]
+/// before large numerical sweeps.
+pub fn compile(expr: ExprId, inputs: &[ExprId], pool: &ExprPool) -> Result<CompiledFn, JitError> {
+    compile_with(expr, inputs, pool, CompileConfig::default())
 }
 
 /// Returns `true` if any native JIT backend (Cranelift or LLVM) is available.
@@ -424,6 +635,7 @@ fn compile_interpreter(
     Ok(CompiledFn {
         inner: CompiledFnInner::Interpreter(Box::new(interp)),
         n_inputs: n,
+        tier: CompileTier::Interpreter,
     })
 }
 
@@ -576,40 +788,17 @@ mod llvm_backend {
         AddressSpace, OptimizationLevel,
     };
 
-    type AlkahestJitFn = unsafe extern "C" fn(*const f64, u64) -> f64;
+    use inkwell::values::IntValue;
+    use inkwell::IntPredicate;
 
-    pub fn compile_llvm_inner(
-        expr: ExprId,
+    fn load_scalar_inputs<'ctx>(
+        builder: &Builder<'ctx>,
+        f64_type: inkwell::types::FloatType<'ctx>,
+        i64_type: inkwell::types::IntType<'ctx>,
+        inputs_ptr: inkwell::values::PointerValue<'ctx>,
         inputs: &[ExprId],
-        pool: &ExprPool,
-    ) -> Result<CompiledFn, JitError> {
-        Target::initialize_native(&InitializationConfig::default())
-            .map_err(|e| JitError::LlvmInitError(e.to_string()))?;
-
-        // Leak the context to obtain a 'static reference for the execution engine.
-        let context = Box::new(Context::create());
-        let ctx: &'static Context = Box::leak(context);
-
-        let module = ctx.create_module("alkahest_jit");
-        let builder = ctx.create_builder();
-
-        // Function signature: f64 alkahest_eval(f64* inputs, u64 n)
-        let f64_type = ctx.f64_type();
-        let ptr_type = ctx.ptr_type(AddressSpace::default());
-        let i64_type = ctx.i64_type();
-        let fn_type = f64_type.fn_type(&[ptr_type.into(), i64_type.into()], false);
-        let function = module.add_function("alkahest_eval", fn_type, None);
-        let entry = ctx.append_basic_block(function, "entry");
-        builder.position_at_end(entry);
-
-        let mut values: HashMap<ExprId, FloatValue<'_>> = HashMap::new();
-
-        let inputs_ptr = function
-            .get_nth_param(0)
-            .ok_or_else(|| {
-                JitError::CompilationFailed("failed to get JIT inputs parameter".to_string())
-            })?
-            .into_pointer_value();
+        values: &mut HashMap<ExprId, FloatValue<'ctx>>,
+    ) -> Result<(), JitError> {
         for (i, &var) in inputs.iter().enumerate() {
             let idx = i64_type.const_int(i as u64, false);
             let gep = unsafe {
@@ -623,21 +812,210 @@ mod llvm_backend {
                 .into_float_value();
             values.insert(var, val);
         }
+        Ok(())
+    }
 
+    fn load_batch_inputs<'ctx>(
+        builder: &Builder<'ctx>,
+        f64_type: inkwell::types::FloatType<'ctx>,
+        i64_type: inkwell::types::IntType<'ctx>,
+        inputs_ptr: inkwell::values::PointerValue<'ctx>,
+        inputs: &[ExprId],
+        point_idx: IntValue<'ctx>,
+        n_points: IntValue<'ctx>,
+        values: &mut HashMap<ExprId, FloatValue<'ctx>>,
+    ) -> Result<(), JitError> {
+        let n_vars = i64_type.const_int(inputs.len() as u64, false);
+        for (i, &var) in inputs.iter().enumerate() {
+            let var_i = i64_type.const_int(i as u64, false);
+            let elem_idx = builder
+                .build_int_add(
+                    builder
+                        .build_int_mul(var_i, n_points, "var_stride")
+                        .map_err(|e| JitError::CompilationFailed(e.to_string()))?,
+                    point_idx,
+                    "elem_idx",
+                )
+                .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
+            let gep = unsafe {
+                builder
+                    .build_gep(f64_type, inputs_ptr, &[elem_idx], &format!("bulk_in_{i}"))
+                    .map_err(|e| JitError::CompilationFailed(e.to_string()))?
+            };
+            let val = builder
+                .build_load(f64_type, gep, &format!("bulk_x_{i}"))
+                .map_err(|e| JitError::CompilationFailed(e.to_string()))?
+                .into_float_value();
+            values.insert(var, val);
+        }
+        Ok(())
+    }
+
+    fn emit_expr_values<'ctx>(
+        expr: ExprId,
+        pool: &ExprPool,
+        inputs: &[ExprId],
+        builder: &Builder<'ctx>,
+        module: &Module<'ctx>,
+        ctx: &'ctx Context,
+        function: FunctionValue<'ctx>,
+        f64_type: inkwell::types::FloatType<'ctx>,
+        i64_type: inkwell::types::IntType<'ctx>,
+        inputs_ptr: inkwell::values::PointerValue<'ctx>,
+        batch_point: Option<IntValue<'ctx>>,
+        n_points: Option<IntValue<'ctx>>,
+    ) -> Result<FloatValue<'ctx>, JitError> {
+        let mut values: HashMap<ExprId, FloatValue<'ctx>> = HashMap::new();
+        match batch_point {
+            None => {
+                load_scalar_inputs(builder, f64_type, i64_type, inputs_ptr, inputs, &mut values)?
+            }
+            Some(idx) => load_batch_inputs(
+                builder,
+                f64_type,
+                i64_type,
+                inputs_ptr,
+                inputs,
+                idx,
+                n_points.expect("n_points required for batch load"),
+                &mut values,
+            )?,
+        }
         let topo = topo_sort(expr, pool);
         for &node in &topo {
             if values.contains_key(&node) {
                 continue;
             }
-            let val = codegen_node(node, pool, &values, &builder, &module, ctx, function)?;
+            let val = codegen_node(node, pool, &values, builder, module, ctx, function)?;
             values.insert(node, val);
         }
-
-        let result = *values
+        values
             .get(&expr)
-            .ok_or_else(|| JitError::CompilationFailed("root node not computed".to_string()))?;
+            .copied()
+            .ok_or_else(|| JitError::CompilationFailed("root node not computed".to_string()))
+    }
+
+    pub fn compile_llvm_inner(
+        expr: ExprId,
+        inputs: &[ExprId],
+        pool: &ExprPool,
+    ) -> Result<CompiledFn, JitError> {
+        Target::initialize_native(&InitializationConfig::default())
+            .map_err(|e| JitError::LlvmInitError(e.to_string()))?;
+
+        let context = Box::new(Context::create());
+        let ctx: &'static Context = Box::leak(context);
+
+        let module = ctx.create_module("alkahest_jit");
+        let builder = ctx.create_builder();
+
+        let f64_type = ctx.f64_type();
+        let ptr_type = ctx.ptr_type(AddressSpace::default());
+        let i64_type = ctx.i64_type();
+
+        // Scalar: f64 alkahest_eval(f64* inputs, u64 n)
+        let scalar_fn_type = f64_type.fn_type(&[ptr_type.into(), i64_type.into()], false);
+        let scalar_fn = module.add_function("alkahest_eval", scalar_fn_type, None);
+        let scalar_entry = ctx.append_basic_block(scalar_fn, "entry");
+        builder.position_at_end(scalar_entry);
+        let scalar_inputs_ptr = scalar_fn
+            .get_nth_param(0)
+            .ok_or_else(|| {
+                JitError::CompilationFailed("failed to get JIT inputs parameter".to_string())
+            })?
+            .into_pointer_value();
+        let scalar_result = emit_expr_values(
+            expr,
+            pool,
+            inputs,
+            &builder,
+            &module,
+            ctx,
+            scalar_fn,
+            f64_type,
+            i64_type,
+            scalar_inputs_ptr,
+            None,
+            None,
+        )?;
         builder
-            .build_return(Some(&result))
+            .build_return(Some(&scalar_result))
+            .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
+
+        // Bulk: void alkahest_eval_bulk(f64* inputs, u64 n_vars, f64* outputs, u64 n_points)
+        let void_type = ctx.void_type();
+        let bulk_fn_type = void_type.fn_type(
+            &[
+                ptr_type.into(),
+                i64_type.into(),
+                ptr_type.into(),
+                i64_type.into(),
+            ],
+            false,
+        );
+        let bulk_fn = module.add_function("alkahest_eval_bulk", bulk_fn_type, None);
+        let bulk_entry = ctx.append_basic_block(bulk_fn, "entry");
+        let bulk_loop_hdr = ctx.append_basic_block(bulk_fn, "loop_hdr");
+        let bulk_loop_body = ctx.append_basic_block(bulk_fn, "loop_body");
+        let bulk_exit = ctx.append_basic_block(bulk_fn, "loop_exit");
+
+        builder.position_at_end(bulk_entry);
+        let bulk_inputs_ptr = bulk_fn.get_nth_param(0).unwrap().into_pointer_value();
+        let bulk_n_points = bulk_fn.get_nth_param(3).unwrap().into_int_value();
+        let bulk_outputs_ptr = bulk_fn.get_nth_param(2).unwrap().into_pointer_value();
+        let zero = i64_type.const_int(0, false);
+        builder
+            .build_unconditional_branch(bulk_loop_hdr)
+            .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
+
+        builder.position_at_end(bulk_loop_hdr);
+        let loop_idx = builder
+            .build_phi(i64_type, "i")
+            .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
+        loop_idx.add_incoming(&[(&zero, bulk_entry)]);
+        let cur_idx = loop_idx.as_basic_value().into_int_value();
+        let done = builder
+            .build_int_compare(IntPredicate::UGE, cur_idx, bulk_n_points, "done")
+            .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
+        builder
+            .build_conditional_branch(done, bulk_exit, bulk_loop_body)
+            .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
+
+        builder.position_at_end(bulk_loop_body);
+        let body_result = emit_expr_values(
+            expr,
+            pool,
+            inputs,
+            &builder,
+            &module,
+            ctx,
+            bulk_fn,
+            f64_type,
+            i64_type,
+            bulk_inputs_ptr,
+            Some(cur_idx),
+            Some(bulk_n_points),
+        )?;
+        let out_gep = unsafe {
+            builder
+                .build_gep(f64_type, bulk_outputs_ptr, &[cur_idx], "out_gep")
+                .map_err(|e| JitError::CompilationFailed(e.to_string()))?
+        };
+        builder
+            .build_store(out_gep, body_result)
+            .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
+        let one = i64_type.const_int(1, false);
+        let next_idx = builder
+            .build_int_add(cur_idx, one, "next_i")
+            .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
+        loop_idx.add_incoming(&[(&next_idx, bulk_loop_body)]);
+        builder
+            .build_unconditional_branch(bulk_loop_hdr)
+            .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
+
+        builder.position_at_end(bulk_exit);
+        builder
+            .build_return(None)
             .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
 
         if module.verify().is_err() {
@@ -650,8 +1028,13 @@ mod llvm_backend {
             .create_jit_execution_engine(OptimizationLevel::Default)
             .map_err(|e| JitError::CompilationFailed(e.to_string()))?;
 
-        let fn_ptr: AlkahestJitFn = unsafe {
+        let fn_ptr: super::JitScalarFn = unsafe {
             ee.get_function("alkahest_eval")
+                .map_err(|e| JitError::CompilationFailed(e.to_string()))?
+                .as_raw()
+        };
+        let bulk_fn_ptr: super::JitBulkFn = unsafe {
+            ee.get_function("alkahest_eval_bulk")
                 .map_err(|e| JitError::CompilationFailed(e.to_string()))?
                 .as_raw()
         };
@@ -659,10 +1042,12 @@ mod llvm_backend {
         Ok(CompiledFn {
             inner: CompiledFnInner::Llvm {
                 fn_ptr,
+                bulk_fn: Some(bulk_fn_ptr),
                 execution_engine: ee,
                 _context: unsafe { Box::from_raw(ctx as *const Context as *mut Context) },
             },
             n_inputs: inputs.len(),
+            tier: super::CompileTier::Llvm,
         })
     }
 
@@ -948,6 +1333,63 @@ mod tests {
                 "sequential {a} != parallel {b} at some point"
             );
         }
+    }
+
+    #[test]
+    fn call_bulk_matches_call_batch() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let expr = pool.add(vec![
+            pool.pow(x, pool.integer(2_i32)),
+            pool.pow(y, pool.integer(2_i32)),
+        ]);
+        let f = compile(expr, &[x, y], &pool).unwrap();
+        const N: usize = 128;
+        let xs: Vec<f64> = (0..N).map(|i| i as f64 * 0.01).collect();
+        let ys: Vec<f64> = (0..N).map(|i| i as f64 * 0.02).collect();
+        let cols: Vec<&[f64]> = vec![&xs, &ys];
+        let mut out_batch = vec![0.0f64; N];
+        let mut out_bulk = vec![0.0f64; N];
+        f.call_batch(&cols, &mut out_batch);
+        let mut flat = Vec::with_capacity(2 * N);
+        for col in &cols {
+            flat.extend_from_slice(col);
+        }
+        f.call_bulk(&flat, &mut out_bulk);
+        for (a, b) in out_batch.iter().zip(out_bulk.iter()) {
+            assert!((a - b).abs() < 1e-12, "call_batch {a} != call_bulk {b}");
+        }
+    }
+
+    #[test]
+    fn small_expr_defaults_to_interpreter() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.add(vec![x, pool.integer(1_i32)]);
+        let f = compile(expr, &[x], &pool).unwrap();
+        assert_eq!(f.compile_tier(), CompileTier::Interpreter);
+    }
+
+    #[test]
+    fn select_tier_respects_batch_hint() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.pow(x, pool.integer(2_i32));
+        assert_eq!(
+            select_compile_tier(expr, &pool, &CompileConfig::default()),
+            CompileTier::Interpreter
+        );
+        #[cfg(feature = "jit")]
+        assert_eq!(
+            select_compile_tier(expr, &pool, &CompileConfig::for_batch(10_000)),
+            CompileTier::Llvm
+        );
+        #[cfg(all(feature = "cranelift", not(feature = "jit")))]
+        assert_eq!(
+            select_compile_tier(expr, &pool, &CompileConfig::for_batch(10_000)),
+            CompileTier::Cranelift
+        );
     }
 
     /// `call_batch_par` on a single-variable polynomial: f(x) = x³ − 2x + 1.

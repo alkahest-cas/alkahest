@@ -48,7 +48,7 @@
 //! assert!((f1.call(&[3.0]) - 9.0).abs() < 1e-10);
 //! ```
 
-use super::{compile, CompiledFn, JitError};
+use super::{compile_with, CompileConfig, CompiledFn, JitError};
 use crate::kernel::{ExprId, ExprPool};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -61,7 +61,7 @@ use std::sync::Arc;
 ///
 /// The `Vec<ExprId>` captures variable order — two compilations of the same
 /// expression with different orderings produce separate entries.
-type CacheKey = (ExprId, Vec<ExprId>);
+type CacheKey = (ExprId, Vec<ExprId>, CompileConfig);
 
 // ---------------------------------------------------------------------------
 // CompileCache
@@ -108,13 +108,27 @@ impl CompileCache {
         inputs: &[ExprId],
         pool: &ExprPool,
     ) -> Result<Arc<CompiledFn>, JitError> {
-        let key: CacheKey = (expr, inputs.to_vec());
+        self.compile_with(expr, inputs, pool, CompileConfig::default())
+    }
+
+    /// Like [`compile`](Self::compile) but passes [`CompileConfig`] to tier selection.
+    ///
+    /// Use [`CompileConfig::for_batch`] when the cached function will drive a large
+    /// `call_bulk` / `call_batch` sweep so LLVM is selected when available.
+    pub fn compile_with(
+        &mut self,
+        expr: ExprId,
+        inputs: &[ExprId],
+        pool: &ExprPool,
+        config: CompileConfig,
+    ) -> Result<Arc<CompiledFn>, JitError> {
+        let key: CacheKey = (expr, inputs.to_vec(), config);
         if let Some(cached) = self.store.get(&key) {
             self.hits += 1;
             return Ok(Arc::clone(cached));
         }
         self.compiles += 1;
-        let compiled = Arc::new(compile(expr, inputs, pool)?);
+        let compiled = Arc::new(compile_with(expr, inputs, pool, config)?);
         self.store.insert(key, Arc::clone(&compiled));
         Ok(compiled)
     }
@@ -131,7 +145,12 @@ impl CompileCache {
 
     /// Returns `true` if a compiled function for `(expr, inputs)` is cached.
     pub fn contains(&self, expr: ExprId, inputs: &[ExprId]) -> bool {
-        self.store.contains_key(&(expr, inputs.to_vec()))
+        self.contains_with(expr, inputs, CompileConfig::default())
+    }
+
+    /// Returns `true` if `(expr, inputs, config)` is cached.
+    pub fn contains_with(&self, expr: ExprId, inputs: &[ExprId], config: CompileConfig) -> bool {
+        self.store.contains_key(&(expr, inputs.to_vec(), config))
     }
 
     /// Total number of compilations performed (cache misses that succeeded).
@@ -164,7 +183,17 @@ impl CompileCache {
 
     /// Evict a single entry.  Returns the cached function if it was present.
     pub fn evict(&mut self, expr: ExprId, inputs: &[ExprId]) -> Option<Arc<CompiledFn>> {
-        self.store.remove(&(expr, inputs.to_vec()))
+        self.evict_with(expr, inputs, CompileConfig::default())
+    }
+
+    /// Evict a single entry for the given compile configuration.
+    pub fn evict_with(
+        &mut self,
+        expr: ExprId,
+        inputs: &[ExprId],
+        config: CompileConfig,
+    ) -> Option<Arc<CompiledFn>> {
+        self.store.remove(&(expr, inputs.to_vec(), config))
     }
 }
 

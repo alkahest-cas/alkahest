@@ -105,7 +105,9 @@ pub use sum::{
 
 // Phase 21 — JIT
 pub use jit::{
-    compile, compile_jit_only, eval_interp, jit_available, CompileCache, CompiledFn, JitError,
+    compile, compile_jit_only, compile_with, eval_interp, expr_subgraph_size, jit_available,
+    select_compile_tier, CompileCache, CompileConfig, CompileTier, CompiledFn, JitError,
+    INTERP_MAX_EXPECTED_EVALS, INTERP_MAX_NODES, LLVM_MIN_EXPECTED_EVALS,
 };
 
 // V5-2 — StableHLO/XLA bridge
