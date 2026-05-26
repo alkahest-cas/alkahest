@@ -465,7 +465,7 @@ fn compile_with_fallbacks(
                 if let Ok(f) = cranelift_backend::compile_cranelift(expr, inputs, pool) {
                     return Ok(f);
                 }
-                return compile_interpreter(expr, inputs, pool);
+                compile_interpreter(expr, inputs, pool)
             }
             #[cfg(feature = "cranelift")]
             CompileTier::Cranelift => {
@@ -473,7 +473,7 @@ fn compile_with_fallbacks(
                 if let Ok(f) = compile_llvm(expr, inputs, pool) {
                     return Ok(f);
                 }
-                return compile_interpreter(expr, inputs, pool);
+                compile_interpreter(expr, inputs, pool)
             }
         },
     }
@@ -820,6 +820,7 @@ mod llvm_backend {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn load_batch_inputs<'ctx>(
         builder: &Builder<'ctx>,
         f64_type: inkwell::types::FloatType<'ctx>,
@@ -830,7 +831,6 @@ mod llvm_backend {
         n_points: IntValue<'ctx>,
         values: &mut HashMap<ExprId, FloatValue<'ctx>>,
     ) -> Result<(), JitError> {
-        let n_vars = i64_type.const_int(inputs.len() as u64, false);
         for (i, &var) in inputs.iter().enumerate() {
             let var_i = i64_type.const_int(i as u64, false);
             let elem_idx = builder
@@ -856,6 +856,7 @@ mod llvm_backend {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn emit_expr_values<'ctx>(
         expr: ExprId,
         pool: &ExprPool,
