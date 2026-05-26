@@ -200,6 +200,23 @@ result = ak.diff(pool, x**pool.integer(3), x)
 print(f"$${ak.latex(result.value)}$$")
 ```
 
+### CLI — side-by-side compare (1080p)
+
+Record Alkahest vs SymPy in two columns (e.g. Groebner basis benchmark):
+
+```bash
+npx tsx cli/src/index.ts record \
+  --layout split \
+  --code-left groebner-comparison/demos/alkahest_panel.py \
+  --code-right groebner-comparison/demos/sympy_panel.py \
+  --output groebner-comparison/recordings/out.webm \
+  --width 1920 --height 1080
+```
+
+Or use `bash groebner-comparison/record.sh`. See [`groebner-comparison/README.md`](groebner-comparison/README.md).
+
+Use `?zen=1` automatically in CLI mode; the recorder waits until cells are rendered before capturing.
+
 ### CLI — agent demo recording
 
 Give the agent a prompt and capture the full interaction:

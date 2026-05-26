@@ -3,20 +3,12 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-PLAYGROUND="$(cd "$ROOT/../../demo-playground" 2>/dev/null || cd "$ROOT/../../../demo-playground" && pwd)"
-# Worktree layout: groebner-comparison-demo-v2 is under tmp/temp-alkahest/
-if [[ -d "$ROOT/../demo-playground" ]]; then
-  PLAYGROUND="$(cd "$ROOT/../demo-playground" && pwd)"
-fi
-if [[ -d "$ROOT/demo-playground" ]]; then
-  PLAYGROUND="$(cd "$ROOT/demo-playground" && pwd)"
-fi
-
+PLAYGROUND="$(cd "$ROOT/.." && pwd)"
 OUT="${1:-$ROOT/recordings/groebner-cyclic5-1080p.webm}"
 mkdir -p "$(dirname "$OUT")"
 
-WEB_PORT="${WEB_PORT:-3001}"
-SERVER_PORT="${SERVER_PORT:-8001}"
+WEB_PORT="${WEB_PORT:-3000}"
+SERVER_PORT="${SERVER_PORT:-8000}"
 
 cd "$PLAYGROUND"
 npx tsx cli/src/index.ts record \
