@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased (2.2.x)
+
+### Infrastructure (JIT and evaluation)
+
+- **Cranelift Tier-1 JIT** (`--features cranelift`): pure-Rust backend in `jit/cranelift_backend.rs`; three-tier dispatch Cranelift → LLVM → interpreter in `compile()`.
+- **`CompileCache`**: memoize `ExprId + inputs → Arc<CompiledFn>`; Python `CompileCache` class with hit/miss stats.
+- **Parallel batch evaluation**: `CompiledFn::call_batch_par`, `numpy_eval_par` (Rayon, `--features parallel`, GIL released).
+- **DAG traversal memo tables**: per-call `HashMap<ExprId, T>` on simplify, diff, forward diff, integrate `is_free_of`, and JIT interpreter paths.
+
+### Infrastructure (simplification and FFI)
+
+- **Colored e-graphs**: native layered union-find (`simplify/colored_egraph.rs`); `SimplifyConfig::assumptions` wired through `simplify_with`.
+- **FLINT drop-safe wrappers**: RAII `Drop` on all FLINT factor types; `FlintMPolyCtx` ref-counted via `Arc`.
+- **Vendored egglog v0.4.0** (`vendor/egglog`): default PyPI wheels now ship with `egraph` feature.
+
+### Tooling and CI
+
+- **CodSpeed** continuous benchmarking (Rust + Python).
+- **uv / ruff / ty** integrated for Python dev workflow (`pyproject.toml` dependency groups).
+
 ## 2.0.4 — 2026-05-22
 
 ### Polynomial algorithms

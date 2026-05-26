@@ -15,7 +15,7 @@ A high-performance computer algebra system for Python built for both humans and 
 
 **Demo:** try the hosted **[playground](https://alkahest-cas.github.io/playground/)** (WASM in-browser, or bring your own server/Jupyter URL + token), or run [`demo-playground/`](demo-playground/) locally for the full agent and recording stack. See [`demo-playground/README.md`](demo-playground/README.md).
 
-**Stack:** Rust kernel → FLINT/Arb (polynomials, ball arithmetic) → egglog (e-graph simplification) → MLIR/LLVM (native and GPU codegen) → PyO3 → Python
+**Stack:** Rust kernel → FLINT/Arb (polynomials, ball arithmetic) → vendored egglog + colored e-graphs (simplification) → Cranelift/LLVM JIT + MLIR (native and GPU codegen) → PyO3 → Python
 
 ---
 
@@ -35,7 +35,7 @@ python -m pip install -U pip
 pip install alkahest
 ```
 
-Wheels on PyPI are built **without** the LLVM JIT and **without** the optional `groebner` / `egraph` / `parallel` Rust features so installs stay small and avoid a runtime dependency on LLVM. Numeric APIs still work via the interpreter fallback; for native LLVM CPU JIT—or the full Gröbner/JIT stack—use a **PyTorch-style** opt-in wheel (separate artifact / index), not the default PyPI resolver path.
+Default PyPI wheels include the **vendored egglog** e-graph backend (`egraph` feature) but **not** LLVM JIT, Cranelift, `groebner`, or `parallel`. Numeric APIs use the tree-walking interpreter fallback. For native LLVM CPU JIT—or the full Gröbner/JIT/parallel stack—use a **PyTorch-style** opt-in wheel (separate artifact / index), not the default PyPI resolver path. From source, add `--features cranelift` for a pure-Rust fast-compile JIT tier without system LLVM.
 
 ### Opt-in Linux wheels: `+jit` and `+full` (PyTorch-style)
 
@@ -98,7 +98,7 @@ pip install maturin
 maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel egraph jit groebner"
 ```
 
-Optional Cargo features: `parallel` (sharded pool + parallel F4), `egraph` (egglog backend), `jit` (LLVM JIT), `groebner` (Gröbner solver + Diophantine + homotopy), `cuda` (NVPTX codegen).
+Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_par`), `egraph` (vendored egglog backend; default in PyPI wheels), `cranelift` (pure-Rust Tier-1 JIT), `jit` (LLVM JIT), `groebner` (Gröbner solver + Diophantine + homotopy), `cuda` (NVPTX codegen).
 
 ### Rust crate
 

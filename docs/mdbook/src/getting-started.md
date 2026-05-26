@@ -19,11 +19,11 @@ python -m pip install -U pip
 pip install alkahest
 ```
 
-Wheels on PyPI are built **without** LLVM JIT and **without** the optional Rust features `groebner`, `egraph`, and `parallel`, so installs stay small and avoid an LLVM runtime dependency. Numeric APIs still work through the interpreter fallback.
+Default PyPI wheels include the **vendored egglog** e-graph backend (`egraph`) but **not** LLVM JIT, Cranelift, `groebner`, or `parallel`. Numeric APIs use the tree-walking interpreter fallback.
 
 There is **no** `pip install alkahest[jit]` / `alkahest[full]` that swaps the native extension: **pip extras only add Python dependencies**, not alternate binaries.
 
-For native LLVM CPU JIT—or JIT plus Gröbner / parallel F4 / egglog—use an opt-in **`+jit`** or **`+full`** Linux wheel from GitHub Releases (below), or [build from source](#from-source). See the repository [`README.md`](https://github.com/alkahest-cas/alkahest/blob/main/README.md) for the same policy in short form.
+For native LLVM CPU JIT—or JIT plus Gröbner / parallel F4—use an opt-in **`+jit`** or **`+full`** Linux wheel from GitHub Releases (below), or [build from source](#from-source) (add `--features cranelift` for a pure-Rust fast-compile JIT without system LLVM). See the repository [`README.md`](https://github.com/alkahest-cas/alkahest/blob/main/README.md) for the same policy in short form.
 
 ### Optional Linux wheels (`+jit` / `+full`)
 
@@ -32,7 +32,7 @@ Tagged releases attach **`linux_x86_64`** wheels on [GitHub Releases](https://gi
 | Local version | Cargo features | When to use |
 |---|---|---|
 | `+jit` | `jit` | Native LLVM CPU JIT only (smaller than `+full`). |
-| `+full` | `jit groebner parallel egraph` | JIT plus Gröbner-backed solvers, parallel F4, egglog e-graph backend (typical maximal from-source dev stack). |
+| `+full` | `jit groebner parallel egraph` | LLVM JIT plus Gröbner-backed solvers and parallel F4 (egglog is already in default wheels). |
 
 Example direct installs (replace **version**, tag, and wheel name using the release asset list):
 
@@ -83,7 +83,7 @@ maturin develop --manifest-path alkahest-py/Cargo.toml --release --features groe
 maturin develop --manifest-path alkahest-py/Cargo.toml --release --features cuda
 
 # Full native build (all optional features above; add cuda separately if needed)
-maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel egraph jit groebner"
+maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel egraph cranelift jit groebner"
 ```
 
 ### Rust crate

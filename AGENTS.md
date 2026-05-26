@@ -27,7 +27,7 @@ pip install maturin
 maturin develop --release
 
 # With optional features (groebner required for solve/diophantine/homotopy)
-maturin develop --release --features "parallel egraph jit groebner"
+maturin develop --release --features "parallel egraph cranelift jit groebner"
 ```
 
 ## Testing

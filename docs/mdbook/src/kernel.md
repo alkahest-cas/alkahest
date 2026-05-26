@@ -10,7 +10,7 @@ This gives three properties:
 
 1. **Structural equality is a pointer comparison.** `id_a == id_b` iff the expressions are structurally identical. No tree traversal required.
 2. **Automatic subexpression sharing.** If `sin(x²)` appears in ten different expressions, there is only one `sin(x²)` node in memory.
-3. **Hash-based memoization is cheap.** Caching the result of a transformation keyed by `ExprId` is O(1) and correct.
+3. **Hash-based memoization is cheap.** Caching the result of a transformation keyed by `ExprId` is O(1) and correct. Hot recursive paths (simplify, differentiation, integration guards, JIT interpreter) use per-call `HashMap<ExprId, T>` memo tables so shared DAG nodes are processed once, not once per tree occurrence.
 
 ### ExprPool
 

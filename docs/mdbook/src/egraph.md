@@ -63,6 +63,10 @@ It is less useful when:
 - You need predictable performance on a hot path.
 - The expression is large and associative-commutative, where the e-graph can grow combinatorially.
 
+## Colored e-graphs (conditional rewrites)
+
+Separate from the egglog saturation backend, Alkahest implements a **native colored e-graph** (`simplify/colored_egraph.rs`) for conditional simplification under explicit assumptions (e.g. `x > 0 ⊢ sqrt(x²) → x`). When `SimplifyConfig::assumptions` is non-empty, `simplify_with` runs this pass before the rule engine. See [Simplification — conditional simplification](./simplification.md#conditional-simplification-colored-e-graphs).
+
 ## AC matching in the e-graph
 
 The egglog backend handles associativity and commutativity structurally: `Add` and `Mul` children are sorted at pool-insertion time, so there is a single canonical ordering. The e-graph does not need to enumerate permutations.

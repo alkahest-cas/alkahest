@@ -39,7 +39,28 @@ print(f([3.0, 0.0]))   # 9.0
 
 The callable takes a list of floats (one per variable) and returns a float. For batch evaluation see `numpy_eval` below.
 
-Without `--features jit`, a fast Rust tree-walking interpreter is used instead of LLVM. The API is identical.
+CPU compilation uses a **three-tier dispatch** (tried in order):
+
+1. **Cranelift** (`--features cranelift`) — pure Rust, ~10× faster compile than LLVM; no system LLVM required
+2. **LLVM** (`--features jit`) — inkwell / LLVM 15 MCJIT; best generated code for hot loops
+3. **Interpreter** — always available; zero compile latency, tree-walking over the DAG
+
+Default PyPI wheels use the interpreter only. `+jit` / `+full` release wheels enable LLVM. Add `cranelift` to a from-source build for the fast-compile tier without LLVM.
+
+## CompileCache
+
+Repeated compilation of the same expression is expensive. `CompileCache` memoizes by `(ExprId, input variables)` — hash-consing makes `ExprId` a stable content key:
+
+```python
+from alkahest import ExprPool, compile_expr, CompileCache
+
+pool = ExprPool()
+x = pool.symbol("x")
+cache = CompileCache()
+f = cache.compile(x**2, [x], pool)   # JIT compiles on first call
+g = cache.compile(x**2, [x], pool)   # cache hit — O(1)
+print(cache.stats())                 # hits, compiles, hit_rate
+```
 
 ## eval_expr
 
@@ -68,6 +89,18 @@ ys = numpy_eval(f, xs)   # vectorised, zero-copy
 ```
 
 Also accepts PyTorch CPU tensors and JAX arrays via DLPack.
+
+### Parallel batch evaluation
+
+With `--features parallel`, `numpy_eval_par` distributes evaluation across CPU cores (Rayon), releasing the GIL during computation:
+
+```python
+from alkahest import numpy_eval_par
+
+ys = numpy_eval_par(f, xs)   # same API as numpy_eval; multi-core
+```
+
+If the extension was built without `parallel`, `numpy_eval_par` transparently falls back to `numpy_eval`.
 
 ## Horner-form emission
 
@@ -142,6 +175,6 @@ The benchmark `nvptx/nvptx_polynomial_1M` shows **16.2× speedup** over the CPU 
 
 ## Caching
 
-Compilation results are cached keyed by the canonical hash of the expression DAG. Compiling the same expression twice returns the cached result. The persistent `ExprPool` (V1-14) extends this cache across sessions.
+Use `CompileCache` for explicit per-session memoization of compiled functions (see above). The persistent `ExprPool` (V1-14) can serialize expression DAGs across sessions; combine with `CompileCache` to avoid recompilation after reload.
 
-Small expressions below a complexity threshold skip LLVM entirely and run through the Rust interpreter, which has lower overhead for trivial expressions.
+Tier dispatch always falls back to the interpreter when native JIT features are unavailable or compilation fails.

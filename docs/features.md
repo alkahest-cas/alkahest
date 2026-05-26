@@ -17,7 +17,8 @@ Current stable feature surface.
 - Rule-based fixpoint simplification (`simplify`)
 - Domain-specific rule sets: trig (`simplify_trig`), log/exp (`simplify_log_exp`), expanded (`simplify_expanded`)
 - Custom rule sets via `make_rule` / `simplify_with`
-- E-graph equality saturation via egglog (`simplify_egraph`, `--features egraph`)
+- Colored e-graphs for conditional simplification (`SimplifyConfig::assumptions`; e.g. `x > 0` enables `sqrt(x²) → x`)
+- E-graph equality saturation via vendored egglog (`simplify_egraph`, `--features egraph`; included in default PyPI wheels)
 - Pluggable cost functions: `SizeCost`, `DepthCost`, `OpCost`, `StabilityCost`
 - Phased saturation with `node_limit` / `iter_limit` config
 - `collect_like_terms`, `poly_normal`
@@ -89,11 +90,13 @@ Current stable feature surface.
 
 ## Code generation
 
-- LLVM JIT for native CPU code (`--features jit`)
+- Three-tier CPU evaluation: Cranelift JIT (`--features cranelift`, pure Rust) → LLVM JIT (`--features jit`) → tree-walking interpreter (always available)
+- `CompileCache` — memoize compiled functions keyed by `(ExprId, input variables)`; Python `CompileCache` class
+- LLVM JIT for native CPU code (`--features jit`; `+jit` / `+full` release wheels)
 - NVPTX (CUDA GPU) codegen for `sm_86` (`--features cuda`, 16.2× over CPU on RTX 3090)
 - Custom `alkahest` MLIR dialect with three lowering targets: ArithMath, StableHLO, LLVM
 - `to_stablehlo` — emit textual StableHLO MLIR for XLA/JAX
-- Compilation result caching keyed by expression hash
+- DAG-aware memoization on hot recursive paths (simplify, diff, integrate, interpreter eval)
 
 ## Ball arithmetic
 
@@ -106,6 +109,7 @@ Current stable feature surface.
 
 - `compile_expr` + `eval_expr` for scalar evaluation
 - `numpy_eval` for vectorised batch evaluation (NumPy, PyTorch, JAX arrays)
+- `numpy_eval_par` for multi-core batch evaluation (`--features parallel`; falls back to `numpy_eval`)
 - DLPack support for zero-copy interop
 - `to_jax` — register a symbolic expression as a JAX primitive with JVP and vmap rules
 
@@ -148,6 +152,7 @@ Current stable feature surface.
 
 - Benchmark driver against SymPy, SymEngine, WolframEngine, Maple, SageMath
 - HTML + JSONL reports via Criterion dashboard
+- CodSpeed continuous benchmarking (Rust + Python) in CI
 - Nightly CI runs with `--competitors` flag
 - Agent benchmark suite: 17 tasks across 6 categories comparing alkahest, SymPy, and Mathematica skill guides
 

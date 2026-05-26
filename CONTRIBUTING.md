@@ -14,7 +14,7 @@ End-user install commands (PyPI vs optional `+jit` / `+full` wheels, from source
 # Prerequisites: Rust (stable + nightly), Python 3.9–3.13, uv, LLVM 15, FLINT (see README § Install)
 # Install uv: https://docs.astral.sh/uv/getting-started/installation/
 uv sync --no-install-project --group dev
-uv run maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "jit egraph parallel groebner"
+uv run maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "cranelift jit egraph parallel groebner"
 ```
 
 `--no-install-project` skips building the Rust extension during `uv sync`; `maturin develop` handles that with the right feature flags. After this, `uv run pytest`, `uv run ruff check python/`, etc. all resolve from the project venv.

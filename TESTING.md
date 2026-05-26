@@ -147,7 +147,7 @@ Given the computational expense of fuzzing and PBT, our GitHub Actions / CI pipe
 
 ### Tier 1: Push / PR Checks (fast path)
 * **Triggers**: Push or PR to `main` (not the scheduled cron).
-* **Typical contents**: `cargo fmt`, `clippy`, `cargo test --workspace`, `ruff`, `pytest` (defaults in `pytest.ini` exclude `@pytest.mark.slow`), ASan on `alkahest-core`, etc. (see `.github/workflows/ci.yml`).
+* **Typical contents**: `cargo fmt`, `clippy`, `cargo test --workspace`, `ruff`, `pytest` (defaults in `pytest.ini` exclude `@pytest.mark.slow`), ASan on `alkahest-core`, CodSpeed micro-benchmarks (`.github/workflows/codspeed.yml`), etc. (see `.github/workflows/ci.yml`).
 
 ### Tier 1b: Slow Python (sparse interpolation roadmap)
 * **Triggers**: Same nightly **schedule** as Tier 2 (not on every push — keeps default CI fast).

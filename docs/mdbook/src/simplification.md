@@ -45,6 +45,21 @@ my_rule = make_rule("sin_sq_to_cos", lhs=sin(x)**2, rhs=pool.integer(1) - cos(x)
 r = simplify_with(expr, rules=[my_rule])
 ```
 
+### Conditional simplification (colored e-graphs)
+
+When domain assumptions are known, pass them via `SimplifyConfig` (Rust) so conditional rewrites apply — e.g. `x > 0` enables `sqrt(x²) → x` instead of `|x|`:
+
+```rust
+// Rust API (experimental re-export)
+use alkahest_cas::{simplify_with, SimplifyConfig, Predicate};
+
+let mut config = SimplifyConfig::default();
+config.assumptions = vec![Predicate::Gt(x, pool.integer(0))];
+let r = simplify_with(expr, &pool, &rules, config);
+```
+
+The colored pass (`simplify/colored_egraph.rs`) runs a native layered union-find e-graph before the rule engine when assumptions are non-empty. The egglog backend is unchanged.
+
 ### Parallel simplification
 
 ```python
