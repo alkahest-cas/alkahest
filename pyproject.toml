@@ -76,3 +76,9 @@ indent-style = "space"
 # src is passed explicitly on the CLI: `ty check python/alkahest/`
 [tool.ty.environment]
 python-version = "3.9"
+
+[tool.ty.rules]
+# numpy and jax are optional runtime deps not present in the lean dev venv;
+# the compiled Rust extension (.alkahest) is resolved via the alkahest.pyi stub.
+# Downgrade to "warn" so CI is not blocked by missing optional third-party packages.
+unresolved-import = "warn"
