@@ -248,8 +248,33 @@ def test_ball_sin_cos_eps1e2(benchmark):
 
 
 def test_poly_jit_eval_deg10(benchmark):
-    """JIT-compile and evaluate degree-10 polynomial at 10^6 points."""
-    benchmark(_JIT.run_alkahest, 10)
+    """JIT-compile a degree-10 polynomial and evaluate at 1 000 points.
+
+    The original tasks.py variant uses 10^6 points — fine for wall-clock runs
+    but far too slow under Valgrind instruction-counting.  This wrapper caps
+    the evaluation at 1 000 points so the benchmark stays within CodSpeed's
+    time budget while still exercising both the compilation path and the
+    vectorised eval kernel.  numpy is an optional dep in CI; skip gracefully
+    when absent.
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        pytest.skip("numpy not installed — skipping JIT eval benchmark")
+
+    def _jit_small():
+        import alkahest
+        p = alkahest.ExprPool()
+        x = p.symbol("x")
+        terms = [x ** k for k in range(11)]
+        poly = terms[0]
+        for t in terms[1:]:
+            poly = poly + t
+        compiled = alkahest.compile_expr(poly, [x])
+        xs = np.linspace(0.0, 1.0, 1_000)
+        return alkahest.numpy_eval(compiled, xs)
+
+    benchmark(_jit_small)
 
 
 # ===========================================================================
@@ -262,9 +287,15 @@ def test_sparse_interp_univariate_10terms(benchmark):
     benchmark(_SPARSE_UNI.run_alkahest, 10)
 
 
-def test_sparse_interp_multivar_10vars(benchmark):
-    """Recover a sparse polynomial in 10 variables."""
-    benchmark(_SPARSE_MV.run_alkahest, 10)
+def test_sparse_interp_multivar_2vars(benchmark):
+    """Recover a sparse polynomial in 2 variables (CodSpeed-safe size).
+
+    The 10-variable variant runs for hours under Valgrind instruction-counting
+    and has never completed within CI's 2-hour timeout.  2 variables (3 terms)
+    gives a meaningful correctness + performance signal at a fraction of the
+    cost; wall-clock runs via cas_comparison.py can still use larger sizes.
+    """
+    benchmark(_SPARSE_MV.run_alkahest, 2)
 
 
 # ===========================================================================
