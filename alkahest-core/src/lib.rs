@@ -88,7 +88,7 @@ pub use poly::{
 };
 
 // Phase 24 — Horner form
-pub use horner::{emit_horner_c, horner};
+pub use horner::{emit_horner_c, eval_horner_f64, eval_horner_f64_batch, horner};
 pub use simplify::rulesets::{log_exp_rules, log_exp_rules_safe, trig_rules};
 pub use simplify::{
     assumptions_satisfy, rules_for_config, simplify, simplify_colored, simplify_egraph,
