@@ -58,14 +58,12 @@ jobs:
         run: |
           pip install --find-links dist alkahest
           python -c "
-import alkahest as ak
-p = ak.ExprPool()
-x = p.symbol('x')
-# basic simplify
-print(ak.simplify(x + 0).value)
-# egraph backend — vendored egglog, no external dep
-print(ak.simplify_egraph(x + 0).value)
-"
+          import alkahest as ak
+          p = ak.ExprPool()
+          x = p.symbol('x')
+          print(ak.simplify(x + 0).value)
+          print(ak.simplify_egraph(x + 0).value)
+          "
 
       - uses: actions/upload-artifact@v7
         with:
