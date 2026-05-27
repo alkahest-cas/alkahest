@@ -423,6 +423,7 @@ def numpy_eval_par(compiled_fn, *arrays):
 # DerivedResult coercion — fix P1: subs/diff/etc. with DerivedResult first arg
 # ---------------------------------------------------------------------------
 
+
 def _coerce_expr(x):
     """Return ``x.value`` if *x* is a :class:`DerivedResult`, else *x* unchanged.
 
