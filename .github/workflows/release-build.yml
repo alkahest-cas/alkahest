@@ -40,7 +40,7 @@ jobs:
           command: build
           # Explicit CPython list — --find-interpreter also picks up PyPy and
           # Python 3.14, which PyO3 0.21 cannot target.
-          args: --release --strip --out dist --features "egraph groebner" --interpreter python3.9 python3.10 python3.11 python3.12 python3.13
+          args: --release --strip --out dist --features egraph,groebner --interpreter python3.9 python3.10 python3.11 python3.12 python3.13
           manylinux: "2_28"
           before-script-linux: |
             dnf install -y epel-release || true
