@@ -419,6 +419,345 @@ def numpy_eval_par(compiled_fn, *arrays):
     return result
 
 
+# ---------------------------------------------------------------------------
+# DerivedResult coercion — fix P1: subs/diff/etc. with DerivedResult first arg
+# ---------------------------------------------------------------------------
+
+def _coerce_expr(x):
+    """Return ``x.value`` if *x* is a :class:`DerivedResult`, else *x* unchanged.
+
+    Internal helper used by the wrappers below so agents can write::
+
+        r = diff(x**2, x)
+        subs(r, {x: pool.integer(1)})   # r is a DerivedResult; auto-coerced
+
+    rather than having to remember ``.value`` everywhere.
+    """
+    if isinstance(x, DerivedResult):
+        return x.value
+    return x
+
+
+# Wrap key calculus/simplification functions so they accept DerivedResult or
+# Expr as their first argument.  The native Rust functions only accept Expr.
+
+_native_diff = diff
+
+
+def diff(expr, var):  # noqa: F811
+    """Differentiate *expr* with respect to *var*.
+
+    Parameters
+    ----------
+    expr : Expr or DerivedResult
+        Expression to differentiate.  If a :class:`DerivedResult` is passed
+        (e.g. the output of a previous :func:`diff` call) its ``.value`` is
+        used automatically.
+    var : Expr
+        The differentiation variable.
+
+    Returns
+    -------
+    DerivedResult
+        Contains the derivative in ``.value`` and a step log in ``.steps``.
+
+    Example
+    -------
+    >>> p = ExprPool(); x = p.symbol("x")
+    >>> d = diff(x**3, x)   # DerivedResult; d.value == 3*x^2
+    >>> diff(d, x).value    # second derivative — passes DerivedResult directly
+    """
+    return _native_diff(_coerce_expr(expr), _coerce_expr(var))
+
+
+_native_integrate = integrate
+
+
+def integrate(expr, var):  # noqa: F811
+    """Indefinite integral of *expr* with respect to *var*.
+
+    Parameters
+    ----------
+    expr : Expr or DerivedResult
+        Integrand.  :class:`DerivedResult` is auto-coerced to ``.value``.
+    var : Expr
+        Integration variable.
+
+    Returns
+    -------
+    DerivedResult
+
+    Example
+    -------
+    >>> p = ExprPool(); x = p.symbol("x")
+    >>> integrate(x**2, x).value   # x^3/3
+    """
+    return _native_integrate(_coerce_expr(expr), _coerce_expr(var))
+
+
+_native_subs = subs
+
+
+def subs(expr, mapping):  # noqa: F811
+    """Substitute variables in *expr* according to *mapping*.
+
+    Parameters
+    ----------
+    expr : Expr or DerivedResult
+        Source expression.  :class:`DerivedResult` is auto-coerced to ``.value``.
+    mapping : dict[Expr, Expr]
+        Substitution map.
+
+    Returns
+    -------
+    Expr
+
+    Example
+    -------
+    >>> p = ExprPool(); x = p.symbol("x")
+    >>> r = diff(x**2, x)          # DerivedResult
+    >>> subs(r, {x: p.integer(1)}) # passes DerivedResult directly — OK
+    """
+    return _native_subs(_coerce_expr(expr), mapping)
+
+
+_native_simplify = simplify
+
+
+def simplify(expr):  # noqa: F811
+    """Apply the algebraic rewrite-rule simplifier.
+
+    Parameters
+    ----------
+    expr : Expr or DerivedResult
+
+    Returns
+    -------
+    DerivedResult
+
+    Example
+    -------
+    >>> p = ExprPool(); x = p.symbol("x")
+    >>> simplify(x + 0).value   # x
+    """
+    return _native_simplify(_coerce_expr(expr))
+
+
+_native_simplify_egraph = simplify_egraph
+
+
+def simplify_egraph(expr):  # noqa: F811
+    """E-graph equality-saturation simplifier.
+
+    Parameters
+    ----------
+    expr : Expr or DerivedResult
+
+    Returns
+    -------
+    DerivedResult
+    """
+    return _native_simplify_egraph(_coerce_expr(expr))
+
+
+_native_simplify_trig = simplify_trig
+
+
+def simplify_trig(expr):  # noqa: F811
+    """Trigonometric identity simplifier.
+
+    Parameters
+    ----------
+    expr : Expr or DerivedResult
+
+    Returns
+    -------
+    DerivedResult
+    """
+    return _native_simplify_trig(_coerce_expr(expr))
+
+
+_native_simplify_log_exp = simplify_log_exp
+
+
+def simplify_log_exp(expr):  # noqa: F811
+    """Logarithm / exponential simplifier.
+
+    Parameters
+    ----------
+    expr : Expr or DerivedResult
+
+    Returns
+    -------
+    DerivedResult
+    """
+    return _native_simplify_log_exp(_coerce_expr(expr))
+
+
+_native_simplify_expanded = simplify_expanded
+
+
+def simplify_expanded(expr):  # noqa: F811
+    """Expand-then-simplify.
+
+    Parameters
+    ----------
+    expr : Expr or DerivedResult
+
+    Returns
+    -------
+    DerivedResult
+    """
+    return _native_simplify_expanded(_coerce_expr(expr))
+
+
+_native_collect_like_terms = collect_like_terms
+
+
+def collect_like_terms(expr):  # noqa: F811
+    """Collect like terms in a sum.
+
+    Parameters
+    ----------
+    expr : Expr or DerivedResult
+
+    Returns
+    -------
+    DerivedResult
+    """
+    return _native_collect_like_terms(_coerce_expr(expr))
+
+
+_native_series = series
+
+
+def series(expr, var, point, order):  # noqa: F811
+    """Truncated Taylor/Laurent series expansion.
+
+    Parameters
+    ----------
+    expr : Expr or DerivedResult
+    var : Expr
+        Expansion variable.
+    point : Expr
+        Expansion point.
+    order : int
+        Truncation order.
+
+    Returns
+    -------
+    Series
+    """
+    return _native_series(_coerce_expr(expr), _coerce_expr(var), _coerce_expr(point), order)
+
+
+_native_limit = limit
+
+
+def limit(expr, var, point, dir=None):  # noqa: F811
+    """Compute the limit of *expr* as *var* → *point*.
+
+    Parameters
+    ----------
+    expr : Expr or DerivedResult
+    var : Expr
+    point : Expr
+    dir : str or None
+        ``"+"`` for right limit, ``"-"`` for left limit.
+
+    Returns
+    -------
+    Expr
+    """
+    return _native_limit(_coerce_expr(expr), _coerce_expr(var), _coerce_expr(point), dir)
+
+
+# ---------------------------------------------------------------------------
+# Groebner stubs — shown when the wheel is built without groebner feature.
+# Agents that read __all__ see these names; they get a clear ImportError with
+# install instructions rather than an AttributeError.
+# ---------------------------------------------------------------------------
+
+if "solve" not in dir():
+
+    def solve(*_args, **_kwargs):  # noqa: F811
+        """Polynomial system solver (requires the groebner feature).
+
+        Install the full wheel::
+
+            pip install "alkahest[full]"
+
+        or build locally::
+
+            maturin develop --features groebner
+        """
+        raise ImportError(
+            "alkahest.solve requires the groebner feature. "
+            "Install with: pip install 'alkahest+full' or rebuild with "
+            "--features groebner. See https://alkahest-cas.github.io/alkahest/ "
+            "for prebuilt wheels."
+        )
+
+    def solve_numerical(*_args, **_kwargs):  # noqa: F811
+        """Numerical solver (requires the groebner feature)."""
+        raise ImportError(
+            "alkahest.solve_numerical requires the groebner feature. "
+            "See alkahest.solve.__doc__ for install instructions."
+        )
+
+    class GroebnerBasis:  # noqa: F811
+        """Gröbner basis type (requires the groebner feature).
+
+        Raises ImportError on instantiation.
+        """
+
+        def __init__(self, *_args, **_kwargs):
+            raise ImportError(
+                "alkahest.GroebnerBasis requires the groebner feature. "
+                "See alkahest.solve.__doc__ for install instructions."
+            )
+
+
+# ---------------------------------------------------------------------------
+# capabilities() — single probe function for agent session start
+# ---------------------------------------------------------------------------
+
+
+def capabilities() -> dict:
+    """Return a dict of feature capability flags for this alkahest build.
+
+    Agents should call this once at session start to know which APIs are
+    available before attempting to use them.
+
+    Returns
+    -------
+    dict
+        Keys: ``"groebner"``, ``"jit"``, ``"egraph"``, ``"parallel"``.
+        Each value is a :class:`bool`.
+
+    Example
+    -------
+    >>> import alkahest as ak
+    >>> caps = ak.capabilities()
+    >>> if caps["groebner"]:
+    ...     result = ak.solve([x**2 - 1], [x])
+    >>> if not caps["jit"]:
+    ...     print("JIT unavailable; compile_expr will run in interpreter mode")
+    """
+    import sys as _sys
+
+    _mod = _sys.modules[__name__]
+    # groebner: solve must be the real Rust binding, not our stub above
+    _solve = getattr(_mod, "solve", None)
+    _groebner_real = _solve is not None and getattr(_solve, "__module__", None) != __name__
+    return {
+        "groebner": _groebner_real,
+        "jit": bool(jit_is_available()),
+        "egraph": bool(HAS_EGRAPH),
+        "parallel": hasattr(_mod, "simplify_par") and callable(_mod.simplify_par),
+    }
+
+
 __all__ = [
     # Phase 17
     "DAE",
@@ -517,6 +856,7 @@ __all__ = [
     "active_domain",
     "active_pool",
     "adjoint_system",
+    "capabilities",
     "asin",
     "atan",
     "cad_lift",
