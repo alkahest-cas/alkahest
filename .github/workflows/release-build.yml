@@ -56,7 +56,7 @@ jobs:
 
       - name: Smoke test
         run: |
-          pip install --find-links dist alkahest
+          pip install --no-index --find-links dist alkahest
           python -c "
           import alkahest as ak
           p = ak.ExprPool()
@@ -134,7 +134,7 @@ jobs:
       # on some glibc setups until every .so in the wheel has a consistent $ORIGIN RPATH.
       - name: Smoke test (JIT available)
         run: |
-          pip install --find-links dist alkahest
+          pip install --no-index --find-links dist alkahest
           SITE_LIBS="$(python -c "import os, site; roots=site.getsitepackages(); hits=[os.path.join(r, 'alkahest.libs') for r in roots if os.path.isdir(os.path.join(r, 'alkahest.libs'))]; print(os.pathsep.join(hits))")"
           if [ -n "$SITE_LIBS" ]; then
             export LD_LIBRARY_PATH="${SITE_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -202,7 +202,7 @@ jobs:
 
       - name: Smoke test (+full)
         run: |
-          pip install --find-links dist alkahest
+          pip install --no-index --find-links dist alkahest
           SITE_LIBS="$(python -c "import os, site; roots=site.getsitepackages(); hits=[os.path.join(r, 'alkahest.libs') for r in roots if os.path.isdir(os.path.join(r, 'alkahest.libs'))]; print(os.pathsep.join(hits))")"
           if [ -n "$SITE_LIBS" ]; then
             export LD_LIBRARY_PATH="${SITE_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
@@ -301,7 +301,7 @@ jobs:
 
       - name: Smoke test
         run: |
-          pip install --find-links dist alkahest
+          pip install --no-index --find-links dist alkahest
           python -c "import alkahest; p = alkahest.ExprPool(); x = p.symbol('x'); print(alkahest.simplify(x + 0))"
 
       - uses: actions/upload-artifact@v7
