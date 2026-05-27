@@ -444,7 +444,7 @@ def _coerce_expr(x):
 _native_diff = diff
 
 
-def diff(expr, var):  # noqa: F811
+def diff(expr, var):
     """Differentiate *expr* with respect to *var*.
 
     Parameters
@@ -473,7 +473,7 @@ def diff(expr, var):  # noqa: F811
 _native_integrate = integrate
 
 
-def integrate(expr, var):  # noqa: F811
+def integrate(expr, var):
     """Indefinite integral of *expr* with respect to *var*.
 
     Parameters
@@ -498,7 +498,7 @@ def integrate(expr, var):  # noqa: F811
 _native_subs = subs
 
 
-def subs(expr, mapping):  # noqa: F811
+def subs(expr, mapping):
     """Substitute variables in *expr* according to *mapping*.
 
     Parameters
@@ -524,7 +524,7 @@ def subs(expr, mapping):  # noqa: F811
 _native_simplify = simplify
 
 
-def simplify(expr):  # noqa: F811
+def simplify(expr):
     """Apply the algebraic rewrite-rule simplifier.
 
     Parameters
@@ -546,7 +546,7 @@ def simplify(expr):  # noqa: F811
 _native_simplify_egraph = simplify_egraph
 
 
-def simplify_egraph(expr):  # noqa: F811
+def simplify_egraph(expr):
     """E-graph equality-saturation simplifier.
 
     Parameters
@@ -563,7 +563,7 @@ def simplify_egraph(expr):  # noqa: F811
 _native_simplify_trig = simplify_trig
 
 
-def simplify_trig(expr):  # noqa: F811
+def simplify_trig(expr):
     """Trigonometric identity simplifier.
 
     Parameters
@@ -580,7 +580,7 @@ def simplify_trig(expr):  # noqa: F811
 _native_simplify_log_exp = simplify_log_exp
 
 
-def simplify_log_exp(expr):  # noqa: F811
+def simplify_log_exp(expr):
     """Logarithm / exponential simplifier.
 
     Parameters
@@ -597,7 +597,7 @@ def simplify_log_exp(expr):  # noqa: F811
 _native_simplify_expanded = simplify_expanded
 
 
-def simplify_expanded(expr):  # noqa: F811
+def simplify_expanded(expr):
     """Expand-then-simplify.
 
     Parameters
@@ -614,7 +614,7 @@ def simplify_expanded(expr):  # noqa: F811
 _native_collect_like_terms = collect_like_terms
 
 
-def collect_like_terms(expr):  # noqa: F811
+def collect_like_terms(expr):
     """Collect like terms in a sum.
 
     Parameters
@@ -631,7 +631,7 @@ def collect_like_terms(expr):  # noqa: F811
 _native_series = series
 
 
-def series(expr, var, point, order):  # noqa: F811
+def series(expr, var, point, order):
     """Truncated Taylor/Laurent series expansion.
 
     Parameters
@@ -654,7 +654,7 @@ def series(expr, var, point, order):  # noqa: F811
 _native_limit = limit
 
 
-def limit(expr, var, point, dir=None):  # noqa: F811
+def limit(expr, var, point, dir=None):
     """Compute the limit of *expr* as *var* → *point*.
 
     Parameters
@@ -680,7 +680,7 @@ def limit(expr, var, point, dir=None):  # noqa: F811
 
 if "solve" not in dir():
 
-    def solve(*_args, **_kwargs):  # noqa: F811
+    def solve(*_args, **_kwargs):
         """Polynomial system solver (requires the groebner feature).
 
         Install the full wheel::
@@ -698,14 +698,14 @@ if "solve" not in dir():
             "for prebuilt wheels."
         )
 
-    def solve_numerical(*_args, **_kwargs):  # noqa: F811
+    def solve_numerical(*_args, **_kwargs):
         """Numerical solver (requires the groebner feature)."""
         raise ImportError(
             "alkahest.solve_numerical requires the groebner feature. "
             "See alkahest.solve.__doc__ for install instructions."
         )
 
-    class GroebnerBasis:  # noqa: F811
+    class GroebnerBasis:
         """Gröbner basis type (requires the groebner feature).
 
         Raises ImportError on instantiation.
@@ -856,11 +856,11 @@ __all__ = [
     "active_domain",
     "active_pool",
     "adjoint_system",
-    "capabilities",
     "asin",
     "atan",
     "cad_lift",
     "cad_project",
+    "capabilities",
     "ceil",
     # Phase 26
     "collect_like_terms",
