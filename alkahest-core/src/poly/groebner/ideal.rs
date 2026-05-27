@@ -166,7 +166,7 @@ impl GbPoly {
     /// Make monic under the given order (leading coeff → 1).
     pub fn make_monic(&self, order: MonomialOrder) -> Self {
         if let Some(lc) = self.leading_coeff(order) {
-            let inv_lc = rug::Rational::from(rug::Rational::from(1) / lc);
+            let inv_lc = rug::Rational::from(1) / lc;
             self.scale(&inv_lc)
         } else {
             self.clone()
@@ -217,6 +217,6 @@ mod tests {
         let r = p.mul(&q);
         assert_eq!(r.terms.get(&vec![2, 0]), Some(&rat(1, 1)));
         assert_eq!(r.terms.get(&vec![0, 0]), Some(&rat(-1, 1)));
-        assert!(r.terms.get(&vec![1, 0]).is_none());
+        assert!(!r.terms.contains_key(&vec![1, 0]));
     }
 }

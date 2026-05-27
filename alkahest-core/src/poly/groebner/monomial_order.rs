@@ -3,13 +3,14 @@
 use std::cmp::Ordering;
 
 /// A monomial ordering for multivariate polynomials.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MonomialOrder {
     /// Lexicographic order (Lex): x > y > z, compare exponents left-to-right.
     Lex,
     /// Graded lexicographic order (GrLex): total degree first, then Lex.
     GrLex,
     /// Graded reverse lexicographic order (GRevLex): total degree first, then reverse Lex.
+    #[default]
     GRevLex,
 }
 
@@ -64,6 +65,7 @@ impl MonomialOrder {
     }
 
     /// Parse from a string: "lex", "grlex", "grevlex".
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "lex" => Some(MonomialOrder::Lex),
@@ -71,12 +73,6 @@ impl MonomialOrder {
             "grevlex" | "degrevlex" => Some(MonomialOrder::GRevLex),
             _ => None,
         }
-    }
-}
-
-impl Default for MonomialOrder {
-    fn default() -> Self {
-        MonomialOrder::GRevLex
     }
 }
 

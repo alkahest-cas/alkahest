@@ -769,15 +769,30 @@ impl PyExpr {
         }
     }
 
-    fn __pow__(&self, exp: i64, _modulo: Option<PyObject>, py: Python<'_>) -> PyExpr {
+    fn __pow__(
+        &self,
+        exp: &Bound<'_, PyAny>,
+        _modulo: Option<PyObject>,
+        py: Python<'_>,
+    ) -> PyObject {
+        // Accept both Python int literals (x**2) and pool.integer(n) Expr objects
+        // (x**pool.integer(2)) so either style works without raising TypeError.
         let pool = self.pool.borrow(py);
-        let exp_id = pool.inner.integer(exp);
+        let exp_id = if let Ok(n) = exp.extract::<i64>() {
+            pool.inner.integer(n)
+        } else if let Ok(expr_ref) = exp.extract::<PyRef<PyExpr>>() {
+            expr_ref.id
+        } else {
+            drop(pool);
+            return py.NotImplemented();
+        };
         let id = pool.inner.pow(self.id, exp_id);
         drop(pool);
         PyExpr {
             id,
             pool: self.pool.clone_ref(py),
         }
+        .into_py(py)
     }
 
     fn pow_expr(&self, exp: &PyExpr, py: Python<'_>) -> PyExpr {

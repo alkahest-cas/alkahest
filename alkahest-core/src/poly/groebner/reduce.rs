@@ -98,8 +98,8 @@ pub fn s_polynomial(f: &GbPoly, g: &GbPoly, order: MonomialOrder) -> GbPoly {
         .collect();
 
     // S(f, g) = (1/lc(f)) * x^shift_f * f - (1/lc(g)) * x^shift_g * g
-    let coeff_f = rug::Rational::from(rug::Rational::from(1) / &lf_coeff);
-    let coeff_g = rug::Rational::from(rug::Rational::from(1) / &lg_coeff);
+    let coeff_f = rug::Rational::from(1) / &lf_coeff;
+    let coeff_g = rug::Rational::from(1) / &lg_coeff;
 
     let term_f = f.mul_monomial(&shift_f, &coeff_f);
     let term_g = g.mul_monomial(&shift_g, &coeff_g);

@@ -368,11 +368,7 @@ fn solve_univariate_symbolic(
             // satisfied (0 = 0) — shouldn't happen for a proper generator.
             // Otherwise it's 0 = nonzero → no solution, but we signal that
             // by returning empty (the caller treats this as contradiction).
-            if coeffs.is_empty() || is_syntactic_zero(coeffs[0], pool) {
-                Ok(vec![])
-            } else {
-                Ok(vec![])
-            }
+            Ok(vec![])
         }
         1 => {
             let a = coeffs[1];
@@ -423,15 +419,15 @@ fn try_solve_univariate_rational(p: &GbPoly, var_idx: usize) -> Option<Vec<Ratio
             let b = coeffs.get(&0).cloned().unwrap_or_else(|| Rational::from(0));
             let mut neg_b = b;
             neg_b.neg_assign();
-            Some(vec![Rational::from(neg_b / a)])
+            Some(vec![neg_b / a])
         }
         2 => {
             let a = coeffs.get(&2).cloned().unwrap_or_else(|| Rational::from(0));
             let b = coeffs.get(&1).cloned().unwrap_or_else(|| Rational::from(0));
             let c = coeffs.get(&0).cloned().unwrap_or_else(|| Rational::from(0));
             let b2 = Rational::from(&b * &b);
-            let four_ac = Rational::from(Rational::from(4) * &a * &c);
-            let disc = Rational::from(b2 - four_ac);
+            let four_ac = Rational::from(4) * &a * &c;
+            let disc = b2 - four_ac;
             if disc < 0 {
                 return Some(vec![]);
             }
@@ -441,11 +437,11 @@ fn try_solve_univariate_rational(p: &GbPoly, var_idx: usize) -> Option<Vec<Ratio
             let (sd, rem_d) = disc_denom.sqrt_rem(rug::Integer::new());
             if rem_n == 0 && rem_d == 0 {
                 let sqrt_disc = Rational::from((sn, sd));
-                let two_a = Rational::from(Rational::from(2) * &a);
+                let two_a = Rational::from(2) * &a;
                 let mut neg_b = b;
                 neg_b.neg_assign();
-                let root1 = Rational::from((Rational::from(&neg_b + &sqrt_disc)) / &two_a);
-                let root2 = Rational::from((Rational::from(neg_b - sqrt_disc)) / &two_a);
+                let root1 = Rational::from(&neg_b + &sqrt_disc) / &two_a;
+                let root2 = (neg_b - sqrt_disc) / &two_a;
                 if root1 == root2 {
                     Some(vec![root1])
                 } else {

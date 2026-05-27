@@ -40,7 +40,7 @@ jobs:
           command: build
           # Explicit CPython list — --find-interpreter also picks up PyPy and
           # Python 3.14, which PyO3 0.21 cannot target.
-          args: --release --strip --out dist --features egraph --interpreter python3.9 python3.10 python3.11 python3.12 python3.13
+          args: --release --strip --out dist --features "egraph groebner" --interpreter python3.9 python3.10 python3.11 python3.12 python3.13
           manylinux: "2_28"
           before-script-linux: |
             dnf install -y epel-release || true
@@ -63,6 +63,8 @@ jobs:
           x = p.symbol('x')
           print(ak.simplify(x + 0).value)
           print(ak.simplify_egraph(x + 0).value)
+          assert hasattr(ak, 'solve'), 'expected groebner APIs in default wheel'
+          print('groebner ok')
           "
 
       - uses: actions/upload-artifact@v7
@@ -267,7 +269,7 @@ jobs:
 
       - name: Build wheel (macOS)
         if: runner.os == 'macOS'
-        run: maturin build --release --strip --features egraph --out dist
+        run: maturin build --release --strip --features "egraph groebner" --out dist
 
       - name: Build wheel (Windows)
         if: runner.os == 'Windows'
@@ -277,7 +279,7 @@ jobs:
         # build script's `sh -c "configure ..."` couldn't find the compiler.
         shell: msys2 {0}
         run: |
-          maturin build --release --strip --features egraph --target x86_64-pc-windows-gnu --out dist
+          maturin build --release --strip --features "egraph groebner" --target x86_64-pc-windows-gnu --out dist
 
       - name: Repair wheel with delvewheel (Windows)
         if: runner.os == 'Windows'
