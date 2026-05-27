@@ -769,7 +769,12 @@ impl PyExpr {
         }
     }
 
-    fn __pow__(&self, exp: &Bound<'_, PyAny>, _modulo: Option<PyObject>, py: Python<'_>) -> PyObject {
+    fn __pow__(
+        &self,
+        exp: &Bound<'_, PyAny>,
+        _modulo: Option<PyObject>,
+        py: Python<'_>,
+    ) -> PyObject {
         // Accept both Python int literals (x**2) and pool.integer(n) Expr objects
         // (x**pool.integer(2)) so either style works without raising TypeError.
         let pool = self.pool.borrow(py);

@@ -5,7 +5,7 @@
 //!
 //! For 0-dimensional ideals, this is typically orders of magnitude faster than
 //! computing a lex basis directly via Buchberger, because GRevLex Buchberger is
-//! cheap and the FGLM conversion is O(n * D^3) where D = dim(k[x]/I).
+//! cheap and the FGLM conversion is O(n * D^3) where D = dim(k\[x\]/I).
 
 use crate::poly::groebner::buchberger::interreduce;
 use crate::poly::groebner::ideal::GbPoly;

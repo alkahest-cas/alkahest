@@ -357,7 +357,7 @@ pub fn rosenfeld_groebner_with_options(
     })
 }
 
-/// [`rosenfeld_groebner_with_options`] with [`DEFAULT_MAX_PROLONG_ROUNDS`].
+/// Calls [`rosenfeld_groebner_with_options`] with the default maximum prolongation rounds.
 pub fn rosenfeld_groebner(
     dae: &DAE,
     pool: &ExprPool,
