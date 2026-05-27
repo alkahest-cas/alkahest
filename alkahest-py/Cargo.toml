@@ -10,6 +10,7 @@ name = "alkahest"
 crate-type = ["cdylib"]
 
 [features]
+default = ["egraph", "groebner"]
 egraph = ["alkahest-core/egraph"]
 jit = ["alkahest-core/jit"]
 cranelift = ["alkahest-core/cranelift"]
