@@ -317,14 +317,14 @@ impl GaussState {
         let k = self.k;
         let mut new_tr = vec![rug::Rational::from(0); k + 1];
         new_tr[k] = rug::Rational::from(1) / pivot_val.clone(); // contribution from orig_k
-        for j in 0..k {
+        for (j, entry) in new_tr.iter_mut().enumerate().take(k) {
             let mut s = rug::Rational::from(0);
             for (i, c) in combo.iter().enumerate() {
                 if *c != 0 && j < self.transform[i].len() {
                     s += rug::Rational::from(c * &self.transform[i][j]);
                 }
             }
-            new_tr[j] = rug::Rational::from(&(-s) / &pivot_val);
+            *entry = rug::Rational::from(&(-s) / &pivot_val);
         }
 
         let row_idx = self.rref.len();

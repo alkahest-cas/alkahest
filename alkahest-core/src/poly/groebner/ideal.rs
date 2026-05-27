@@ -166,7 +166,7 @@ impl GbPoly {
     /// Make monic under the given order (leading coeff → 1).
     pub fn make_monic(&self, order: MonomialOrder) -> Self {
         if let Some(lc) = self.leading_coeff(order) {
-            let inv_lc = rug::Rational::from(rug::Rational::from(1) / lc);
+            let inv_lc = rug::Rational::from(1) / lc;
             self.scale(&inv_lc)
         } else {
             self.clone()
