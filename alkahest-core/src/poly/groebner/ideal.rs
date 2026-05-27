@@ -217,6 +217,6 @@ mod tests {
         let r = p.mul(&q);
         assert_eq!(r.terms.get(&vec![2, 0]), Some(&rat(1, 1)));
         assert_eq!(r.terms.get(&vec![0, 0]), Some(&rat(-1, 1)));
-        assert!(r.terms.get(&vec![1, 0]).is_none());
+        assert!(!r.terms.contains_key(&vec![1, 0]));
     }
 }

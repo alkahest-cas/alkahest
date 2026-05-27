@@ -336,7 +336,7 @@ mod tests {
                     .or_insert_with(|| rug::Rational::from(0));
                 *c -= rug::Rational::from(1);
             }
-            terms.retain(|_, v| *v != rug::Rational::from(0));
+            terms.retain(|_, v| *v != 0);
             polys.push(GbPoly { terms, n_vars: n });
         }
         polys

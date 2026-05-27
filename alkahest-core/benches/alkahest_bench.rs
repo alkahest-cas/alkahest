@@ -764,7 +764,7 @@ fn cyclic_system_bench(n: usize) -> Vec<alkahest_cas::poly::groebner::GbPoly> {
                 .or_insert_with(|| rug::Rational::from(0));
             *c -= rug::Rational::from(1);
         }
-        terms.retain(|_, v| *v != rug::Rational::from(0));
+        terms.retain(|_, v| *v != 0);
         polys.push(GbPoly { terms, n_vars: n });
     }
     polys
