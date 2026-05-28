@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Breaking / default-feature change
+
+- **`groebner` is now a default Cargo feature in `alkahest-cas`**, matching the Python wheel defaults. `alkahest-cas = "2"` now includes Gröbner-backed APIs (`solve`, `diophantine`, homotopy) without explicitly listing the feature. To opt out: `alkahest-cas = { version = "2", default-features = false }`.
+
 ## Unreleased (2.2.x)
 
 ### Calculus

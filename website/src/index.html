@@ -59,7 +59,8 @@
             <a href="https://pypi.org/project/alkahest/">PyPI</a>
           </p>
           <p class="install-detail">
-            Default wheels omit LLVM JIT (small install). On Linux x86_64, optional
+            Default wheels include <code>egraph</code> and <code>groebner</code>;
+            LLVM JIT and <code>parallel</code> are opt-in. On Linux x86_64, optional
             <code>+jit</code> / <code>+full</code> wheels are on
             <a href="https://github.com/alkahest-cas/alkahest/releases">GitHub Releases</a>.
             See <a href="https://alkahest-cas.github.io/alkahest/getting-started.html">Getting started</a>
@@ -80,8 +81,8 @@
           </p>
           <p class="install-detail">
             Requires <code>libflint-dev</code> / <code>libgmp-dev</code> / <code>libmpfr-dev</code>
-            (system packages) at build time. Optional features: <code>groebner</code>,
-            <code>egraph</code>, <code>parallel</code>, <code>jit</code> (LLVM 15).
+            (system packages) at build time. <code>groebner</code> is included by default;
+            <code>egraph</code>, <code>parallel</code>, and <code>jit</code> (LLVM 15) are opt-in.
             See the <a href="https://alkahest-cas.github.io/alkahest/getting-started.html">Getting started</a>
             guide for full details.
           </p>

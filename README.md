@@ -98,7 +98,7 @@ pip install maturin
 maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel egraph jit groebner"
 ```
 
-Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_par`), `egraph` (vendored egglog backend; **default** in PyPI wheels), `groebner` (Gröbner solver + Diophantine + homotopy; **default** in PyPI wheels), `cranelift` (pure-Rust Tier-1 JIT), `jit` (LLVM JIT), `cuda` (NVPTX codegen).
+Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_par`), `egraph` (vendored egglog backend; **default** in PyPI wheels), `groebner` (Gröbner solver + Diophantine + homotopy; **default** in both the Rust crate and PyPI wheels), `cranelift` (pure-Rust Tier-1 JIT), `jit` (LLVM JIT), `cuda` (NVPTX codegen).
 
 ### Rust crate
 
@@ -108,8 +108,8 @@ Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_pa
 [dependencies]
 alkahest-cas = "2"
 
-# With optional features:
-# alkahest-cas = { version = "2", features = ["groebner", "parallel", "egraph"] }
+# groebner is included by default; add other optional features as needed:
+# alkahest-cas = { version = "2", features = ["parallel", "egraph"] }
 ```
 
 **System prerequisites** (same libraries as the Python build — must be present before `cargo build`):

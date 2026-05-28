@@ -91,8 +91,8 @@ maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "par
 [dependencies]
 alkahest-cas = "2"
 
-# Optional features (combine as needed):
-# alkahest-cas = { version = "2", features = ["groebner", "parallel", "egraph"] }
+# groebner is included by default; add other optional features as needed:
+# alkahest-cas = { version = "2", features = ["parallel", "egraph"] }
 ```
 
 **System prerequisites** (same libraries as the Python build — must be installed before `cargo build`):

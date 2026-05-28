@@ -19,6 +19,7 @@ features      = ["egraph", "groebner", "parallel"]
 rustdoc-args  = ["--cfg", "docsrs"]
 
 [features]
+default = ["groebner"]
 egraph = ["dep:egglog"]
 # Requires LLVM 15 dev headers (llvm-15-dev / llvm@15) at compile time.
 jit   = ["dep:inkwell"]
