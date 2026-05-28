@@ -15,6 +15,7 @@ interface SettingsContextValue {
   openSettings: () => void;
   closeSettings: () => void;
   toggleSettings: () => void;
+  registerExport: (fn: (() => void) | null) => void;
 }
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);
@@ -29,10 +30,14 @@ function isEditableTarget(target: EventTarget | null): boolean {
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [isOpen, setIsOpen] = useState(false);
+  const [exportFn, setExportFnState] = useState<(() => void) | null>(null);
 
   const openSettings = useCallback(() => setIsOpen(true), []);
   const closeSettings = useCallback(() => setIsOpen(false), []);
   const toggleSettings = useCallback(() => setIsOpen((v) => !v), []);
+  const registerExport = useCallback((fn: (() => void) | null) => {
+    setExportFnState(() => fn);
+  }, []);
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -51,9 +56,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   }, [toggleSettings, isOpen, closeSettings]);
 
   return (
-    <SettingsContext.Provider value={{ isOpen, openSettings, closeSettings, toggleSettings }}>
+    <SettingsContext.Provider value={{ isOpen, openSettings, closeSettings, toggleSettings, registerExport }}>
       {children}
-      {isOpen && <Settings onClose={closeSettings} />}
+      {isOpen && <Settings onClose={closeSettings} onExportNotebook={exportFn ?? undefined} />}
     </SettingsContext.Provider>
   );
 }

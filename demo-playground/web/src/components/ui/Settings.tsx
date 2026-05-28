@@ -69,9 +69,10 @@ export function saveConfig(cfg: PlaygroundConfig) {
 
 interface SettingsProps {
   onClose: () => void;
+  onExportNotebook?: () => void;
 }
 
-export default function Settings({ onClose }: SettingsProps) {
+export default function Settings({ onClose, onExportNotebook }: SettingsProps) {
   const [cfg, setCfg] = useState<PlaygroundConfig>(DEFAULT_CONFIG);
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle');
   const [leanStatus, setLeanStatus] = useState<string | null>(null);
@@ -297,6 +298,21 @@ export default function Settings({ onClose }: SettingsProps) {
               placeholder={isCustomEndpoint ? 'e.g. gpt-4o or your-model-id' : 'e.g. claude-sonnet-4-6'}
             />
           </section>
+
+          {onExportNotebook && (
+            <section>
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ak-muted">
+                Export
+              </h3>
+              <button
+                type="button"
+                onClick={() => { onExportNotebook(); onClose(); }}
+                className="w-full rounded border border-ak-border px-3 py-2 text-sm text-left hover:bg-ak-code-bg transition-colors"
+              >
+                Download as Jupyter notebook (.ipynb)
+              </button>
+            </section>
+          )}
         </div>
 
         <div className="mt-6 flex justify-end gap-2">

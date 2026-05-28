@@ -14,6 +14,7 @@ import {
 } from '@/lib/execution';
 import { postprocessOutputItems } from '@/lib/lean';
 import { loadConfig } from '@/components/ui/Settings';
+import { useSettings } from '@/components/ui/SettingsContext';
 import { connectionFromConfig } from '@/lib/server-connection';
 import { isStaticHosting } from '@/lib/hosting';
 import { cellsFromDemoParam, readAutoRunFromUrl } from '@/lib/recording';
@@ -137,6 +138,39 @@ function saveNotebook(cells: CellData[]) {
   ));
 }
 
+function toJupyterSource(code: string): string[] {
+  if (!code) return [];
+  const lines = code.split('\n');
+  return lines.map((line, i) => (i < lines.length - 1 ? `${line}\n` : line));
+}
+
+function exportAsIpynb(cells: CellData[]) {
+  const notebook = {
+    nbformat: 4,
+    nbformat_minor: 5,
+    metadata: {
+      kernelspec: { display_name: 'Python 3', language: 'python', name: 'python3' },
+      language_info: { name: 'python', version: '3.11.0' },
+    },
+    cells: cells.map((cell) => {
+      const source = toJupyterSource(cell.code);
+      if (cell.cellType === 'markdown') {
+        return { cell_type: 'markdown', metadata: {}, source };
+      }
+      return { cell_type: 'code', execution_count: null, metadata: {}, outputs: [], source };
+    }),
+  };
+  const blob = new Blob([JSON.stringify(notebook, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'alkahest-notebook.ipynb';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 function initialCells(demoParam: string): CellData[] {
   const codes = cellsFromDemoParam(demoParam);
   if (codes) return codes.map(cellFromDemoSource);
@@ -176,9 +210,15 @@ export default function Notebook({
   const isDirtyRef = useRef(false);
   const cellsRef = useRef(cells);
   const onDirtyChangeRef = useRef(onDirtyChange);
+  const { registerExport } = useSettings();
 
   useEffect(() => { cellsRef.current = cells; }, [cells]);
   useEffect(() => { onDirtyChangeRef.current = onDirtyChange; }, [onDirtyChange]);
+
+  useEffect(() => {
+    registerExport(() => exportAsIpynb(cellsRef.current));
+    return () => registerExport(null);
+  }, [registerExport]);
 
   function userDispatch(action: Action) {
     dispatch(action);
