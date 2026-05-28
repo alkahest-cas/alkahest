@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "alkahest"
-version = "2.4.0"
+version = "2.4.1"
 description = "A high-performance computer algebra system for Python"
 readme = "README.md"
 license = { text = "Apache-2.0" }
