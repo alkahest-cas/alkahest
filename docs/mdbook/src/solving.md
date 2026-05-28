@@ -4,7 +4,7 @@ Alkahest solves systems of polynomial equations symbolically using Gröbner base
 
 ## solve
 
-`solve` finds the solutions of a system of polynomial equations in a list of variables. It requires the `groebner` feature.
+`solve` finds the solutions of a system of polynomial equations in a list of variables. It uses the `groebner` Cargo feature, which is **included in all PyPI wheels** (default feature since 2.3.1) and in all source builds.
 
 ```python
 from alkahest import ExprPool, solve, sqrt

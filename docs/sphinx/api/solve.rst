@@ -3,7 +3,7 @@ Solver API
 
 .. currentmodule:: alkahest
 
-Polynomial system solving via Gröbner bases. Requires ``--features groebner``.
+Polynomial system solving via Gröbner bases. The ``groebner`` Cargo feature is **included in all PyPI wheels** by default since 2.3.1 — no special build flag needed.
 
 .. function:: solve(equations: list[Expr], variables: list[Expr]) -> list[dict] or GroebnerBasis
 

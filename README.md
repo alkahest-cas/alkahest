@@ -35,7 +35,7 @@ python -m pip install -U pip
 pip install alkahest
 ```
 
-Default PyPI wheels include the **vendored egglog** e-graph backend (`egraph` feature) but **not** LLVM JIT, Cranelift, `groebner`, or `parallel`. Numeric APIs use the tree-walking interpreter fallback. For native LLVM CPU JIT—or the full Gröbner/JIT/parallel stack—use a **PyTorch-style** opt-in wheel (separate artifact / index), not the default PyPI resolver path. From source, add `--features cranelift` for a pure-Rust fast-compile JIT tier without system LLVM.
+Default PyPI wheels include the **vendored egglog** e-graph backend (`egraph` feature) and the **Gröbner solver** (`groebner` feature — so `alkahest.solve`, Diophantine, homotopy, and related APIs are available out of the box) but **not** LLVM JIT, Cranelift, or `parallel`. Numeric APIs use the tree-walking interpreter fallback. For native LLVM CPU JIT—or JIT plus parallel F4—use a **PyTorch-style** opt-in wheel (separate artifact / index), not the default PyPI resolver path. From source, add `--features cranelift` for a pure-Rust fast-compile JIT tier without system LLVM.
 
 ### Opt-in Linux wheels: `+jit` and `+full` (PyTorch-style)
 
@@ -47,21 +47,21 @@ There is **no** `pip install alkahest[jit]` / `alkahest[full]` that swaps the na
 
 | Local version | Cargo features | When to use |
 |---------------|----------------|-------------|
-| `+jit` | `jit` | Native LLVM CPU JIT only (smaller than `+full`). |
-| `+full` | `jit groebner parallel egraph` | JIT plus Gröbner-backed solvers, parallel F4, egglog e-graph backend (matches a typical maximal **from-source** dev build). |
+| `+jit` | `egraph groebner jit` | LLVM CPU JIT (smaller than `+full`; groebner/egraph are already in default wheels). |
+| `+full` | `egraph groebner jit parallel` | JIT plus parallel F4 S-polynomial reduction (largest wheel; groebner already in default). |
 
 Direct-install examples (adjust tag and filename after checking the release assets):
 
 ```bash
-pip install "https://github.com/alkahest-cas/alkahest/releases/download/v2.0.3/alkahest-2.0.3+full-cp311-cp311-linux_x86_64.whl"
-pip install "https://github.com/alkahest-cas/alkahest/releases/download/v2.0.3/alkahest-2.0.3+jit-cp311-cp311-linux_x86_64.whl"
+pip install "https://github.com/alkahest-cas/alkahest/releases/download/v2.3.1/alkahest-2.3.1+full-cp311-cp311-linux_x86_64.whl"
+pip install "https://github.com/alkahest-cas/alkahest/releases/download/v2.3.1/alkahest-2.3.1+jit-cp311-cp311-linux_x86_64.whl"
 ```
 
 These wheels vendor LLVM (for JIT) and related `.so` files under `site-packages/alkahest.libs/`. If `import alkahest` fails with a missing `libffi-*.so` or `libLLVM-*.so`, prepend that directory to `LD_LIBRARY_PATH` (or install matching system packages). Release CI uses the same `LD_LIBRARY_PATH` step when smoke-testing wheels.
 
-If your client chokes on `+` in the URL, use percent-encoding (`2.0.3%2Bfull` in the filename segment).
+If your client chokes on `+` in the URL, use percent-encoding (`2.3.1%2Bfull` in the filename segment).
 
-After installing `+jit`, `alkahest.jit_is_available()` should be `True`. After `+full`, expect that **and** Gröbner-backed APIs such as `alkahest.solve`.
+After installing `+jit` or `+full`, `alkahest.jit_is_available()` should be `True`. Gröbner-backed APIs such as `alkahest.solve` are available in **all** wheels (including the default PyPI wheel) since `groebner` became a default feature.
 
 *macOS and Windows `+jit` / `+full` wheels are not produced in CI yet (LLVM / MSYS2 constraints); use [building from source](#from-source) there.*
 
@@ -73,7 +73,7 @@ pip install 'alkahest==2.0.3+full' --extra-index-url https://EXAMPLE/alkahest-ex
 
 ### From source
 
-Required to enable optional features (`jit`, `groebner`, `cuda`) or for development. Prerequisites:
+Required to enable optional features (`jit`, `cuda`, `parallel`) or for development. The `groebner` and `egraph` features are already built into default wheels; a source build inherits them automatically. Prerequisites:
 
 - **Rust** stable ≥ 1.76 and nightly:
   ```bash
@@ -98,7 +98,7 @@ pip install maturin
 maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel egraph jit groebner"
 ```
 
-Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_par`), `egraph` (vendored egglog backend; default in PyPI wheels), `cranelift` (pure-Rust Tier-1 JIT), `jit` (LLVM JIT), `groebner` (Gröbner solver + Diophantine + homotopy), `cuda` (NVPTX codegen).
+Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_par`), `egraph` (vendored egglog backend; **default** in PyPI wheels), `groebner` (Gröbner solver + Diophantine + homotopy; **default** in PyPI wheels), `cranelift` (pure-Rust Tier-1 JIT), `jit` (LLVM JIT), `cuda` (NVPTX codegen).
 
 ### Rust crate
 
@@ -281,7 +281,7 @@ print(ak.simplify(
 
 ### Diophantine equations
 
-Two integer unknowns, equation as a single polynomial `= 0`: **linear** families `a·x + b·y + c = 0`, **sum of two squares** `x² + y² = n` (finitely many tuples), and **unit Pell** `x² - D·y² = 1` (fundamental solution `(x₀, y₀)` via the continued-fraction period of `√D`). Requires the `groebner` feature in the native build. API: `diophantine(equation, [x, y])` → `DiophantineSolution` with `.kind` (`parametric_linear`, `finite`, `pell_fundamental`, `no_solution`) and typed fields.
+Two integer unknowns, equation as a single polynomial `= 0`: **linear** families `a·x + b·y + c = 0`, **sum of two squares** `x² + y² = n` (finitely many tuples), and **unit Pell** `x² - D·y² = 1` (fundamental solution `(x₀, y₀)` via the continued-fraction period of `√D`). The `groebner` feature is required and is **included in all PyPI wheels** since 2.3.1. API: `diophantine(equation, [x, y])` → `DiophantineSolution` with `.kind` (`parametric_linear`, `finite`, `pell_fundamental`, `no_solution`) and typed fields.
 
 ```python
 import alkahest as ak

@@ -11,9 +11,10 @@ Installation
    python -m pip install -U pip
    pip install alkahest
 
-That wheel omits LLVM JIT and the optional Rust features ``groebner``, ``egraph``, and ``parallel``
-(the interpreter still handles numeric APIs). There is **no** pip extra that swaps in a different
-native binary.
+That wheel includes the Gröbner solver (``groebner``) and egglog (``egraph``) by default, so
+``alkahest.solve`` and related APIs work out of the box. It omits LLVM JIT, Cranelift, and
+``parallel`` (numeric APIs fall back to the interpreter). There is **no** pip extra that swaps
+in a different native binary.
 
 For **Linux x86_64** opt-in wheels with local versions ``+jit`` or ``+full``, use assets attached to
 `GitHub Releases <https://github.com/alkahest-cas/alkahest/releases>`_. Other platforms: build from
@@ -31,8 +32,9 @@ Requires ``libflint-dev`` / ``libgmp-dev`` / ``libmpfr-dev`` at build time (``ap
 ``brew install flint``). See `docs.rs/alkahest-cas <https://docs.rs/alkahest-cas>`_ for the
 full Rust API reference.
 
-For optional Cargo features (``jit``, ``groebner``, ``cuda``, …) and full developer setup, see the
-`Getting started <../getting-started.html>`_ chapter of the user guide.
+For optional Cargo features (``jit``, ``parallel``, ``cuda``, …) and full developer setup, see the
+`Getting started <../getting-started.html>`_ chapter of the user guide. The ``groebner`` and
+``egraph`` features are defaults and do not need to be specified explicitly.
 
 .. toctree::
    :maxdepth: 2

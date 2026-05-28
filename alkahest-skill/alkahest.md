@@ -17,13 +17,13 @@ Use this skill whenever you are writing Python code that uses the `alkahest` lib
 pip install alkahest
 ```
 
-Default PyPI wheels include the **vendored egglog** e-graph backend (`egraph`) but omit LLVM JIT, Cranelift, `groebner`, and `parallel`. Numeric paths use the tree-walking interpreter; use `jit_is_available()` to see whether native JIT is present, or install a `+jit` / `+full` Linux wheel or build from source (see repo `README.md`).
+Default PyPI wheels include the **vendored egglog** e-graph backend (`egraph`) and the **Gröbner solver** (`groebner`) — so `alkahest.solve`, Diophantine, and homotopy APIs work out of the box. They omit LLVM JIT, Cranelift, and `parallel`. Numeric paths use the tree-walking interpreter; use `jit_is_available()` to see whether native JIT is present, or install a `+jit` / `+full` Linux wheel or build from source for JIT/parallel (see repo `README.md`).
 
-Source build from the repository root (JIT, Gröbner, egglog, parallel — optional `cuda`):
+Source build from the repository root (adds JIT and parallel on top of the defaults `egraph groebner`):
 
 ```bash
 pip install maturin
-maturin develop --release --manifest-path alkahest-py/Cargo.toml --features "parallel egraph cranelift jit groebner"
+maturin develop --release --manifest-path alkahest-py/Cargo.toml --features "parallel cranelift jit"
 ```
 
 ---
@@ -187,7 +187,7 @@ rf = RationalFunction.from_symbolic(x**2 + pool.integer(-1), x + pool.integer(-1
 
 ## Polynomial system solver / Gröbner basis
 
-Available when the native extension is built with `--features groebner` (otherwise `ImportError` for `solve` / `GroebnerBasis` / …).
+The `groebner` Cargo feature is **included in all PyPI wheels** since 2.3.1 (it is a default feature). No special build flag or `ImportError` guard needed — `solve`, `GroebnerBasis`, and related APIs are available after a plain `pip install alkahest`.
 
 ```python
 from alkahest import solve, solve_numerical, GroebnerBasis, GbPoly
@@ -474,7 +474,7 @@ reg = PrimitiveRegistry()
 3. **Read `.value` for the expression.** Top-level operations return `DerivedResult`, not `Expr`.
 4. **Use specific simplifiers.** Prefer `simplify_trig`, `simplify_log_exp`, `collect_like_terms` over the catch-all `simplify` when the structure is known — it is faster.
 5. **Polynomial conversions raise.** `UniPoly.from_symbolic` and `poly_normal` raise `ConversionError` for non-polynomial input — catch it.
-6. **`solve` / Gröbner-side APIs require the groebner feature.** Import-guard or catch `ImportError`. Default PyPI wheels include egglog (`HAS_EGRAPH` is typically `True`); use `simplify_egraph` when rule-based simplification is insufficient.
+6. **`solve` / Gröbner-side APIs are available in all PyPI wheels.** The `groebner` Cargo feature is a default since 2.3.1 — no feature flag or `ImportError` guard needed. Default PyPI wheels also include egglog (`HAS_EGRAPH` is typically `True`); use `simplify_egraph` when rule-based simplification is insufficient.
 7. **`trace` requires a pool argument.** Use `@alkahest.trace(pool)` (or `trace_fn(fn, pool)`). `@alkahest.trace` alone is invalid.
 8. **`grad` expects a `TracedFn`.** `jit` accepts a `TracedFn` or `GradTracedFn`; both raise `TypeError` on undecorated callables.
 9. **`numpy_eval` expects a `CompiledFn`** (from `compile_expr`), not a `TracedFn`.

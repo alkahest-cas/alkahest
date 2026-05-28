@@ -186,7 +186,9 @@ from .alkahest import (
 with contextlib.suppress(ImportError):
     from ._jax import to_jax  # noqa: F401
 
-# V1-4 / V1-16: Polynomial system solver + Gröbner basis (optional — requires groebner feature)
+# V1-4 / V1-16: Polynomial system solver + Gröbner basis
+# groebner is a default Cargo feature since 2.3.1 — present in all PyPI wheels.
+# contextlib.suppress is kept as a safety net for custom builds with --no-default-features.
 with contextlib.suppress(ImportError):
     from .alkahest import (
         CertifiedSolution,
@@ -674,48 +676,49 @@ def limit(expr, var, point, dir=None):
 
 
 # ---------------------------------------------------------------------------
-# Groebner stubs — shown when the wheel is built without groebner feature.
-# Agents that read __all__ see these names; they get a clear ImportError with
-# install instructions rather than an AttributeError.
+# Groebner stubs — fallback for custom builds using --no-default-features.
+# Since 2.3.1, groebner is a default Cargo feature and all standard PyPI
+# wheels include it; these stubs should never fire in a normal install.
+# Agents that read __all__ see these names; they get a clear error message
+# rather than an AttributeError if somehow the feature is missing.
 # ---------------------------------------------------------------------------
 
 if "solve" not in dir():
 
     def solve(*_args, **_kwargs):
-        """Polynomial system solver (requires the groebner feature).
+        """Polynomial system solver.
 
-        Install the full wheel::
-
-            pip install "alkahest[full]"
-
-        or build locally::
+        This symbol is not available because the native extension was built
+        without the ``groebner`` Cargo feature (e.g. via
+        ``--no-default-features``). Standard ``pip install alkahest`` wheels
+        always include it. To fix a custom build::
 
             maturin develop --features groebner
         """
         raise ImportError(
-            "alkahest.solve requires the groebner feature. "
-            "Install with: pip install 'alkahest+full' or rebuild with "
-            "--features groebner. See https://alkahest-cas.github.io/alkahest/ "
-            "for prebuilt wheels."
+            "alkahest.solve is unavailable — the native extension was built "
+            "without the groebner feature (--no-default-features). "
+            "Standard PyPI wheels include groebner by default. "
+            "See https://alkahest-cas.github.io/alkahest/ for details."
         )
 
     def solve_numerical(*_args, **_kwargs):
-        """Numerical solver (requires the groebner feature)."""
+        """Numerical solver (groebner feature missing from this build)."""
         raise ImportError(
-            "alkahest.solve_numerical requires the groebner feature. "
-            "See alkahest.solve.__doc__ for install instructions."
+            "alkahest.solve_numerical is unavailable — groebner feature missing. "
+            "See alkahest.solve.__doc__ for details."
         )
 
     class GroebnerBasis:
-        """Gröbner basis type (requires the groebner feature).
+        """Gröbner basis type (groebner feature missing from this build).
 
         Raises ImportError on instantiation.
         """
 
         def __init__(self, *_args, **_kwargs):
             raise ImportError(
-                "alkahest.GroebnerBasis requires the groebner feature. "
-                "See alkahest.solve.__doc__ for install instructions."
+                "alkahest.GroebnerBasis is unavailable — groebner feature missing. "
+                "See alkahest.solve.__doc__ for details."
             )
 
 
@@ -927,7 +930,7 @@ __all__ = [
     "resistor",
     # V2-2
     "resultant",
-    # V2-13 — Differential algebra / Rosenfeld–Gröbner (requires groebner)
+    # V2-13 — Differential algebra / Rosenfeld–Gröbner (groebner default feature)
     "rosenfeld_groebner",
     "round",
     "rsolve",
@@ -951,7 +954,7 @@ __all__ = [
     # Math functions (core 5)
     "sin",
     "sinh",
-    # V1-4 / V1-16: Polynomial system solver + Gröbner basis (requires groebner feature)
+    # V1-4 / V1-16: Polynomial system solver + Gröbner basis (default since 2.3.1)
     "solve",
     "solve_linear_recurrence_homogeneous",
     "solve_numerical",

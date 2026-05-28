@@ -19,11 +19,11 @@ python -m pip install -U pip
 pip install alkahest
 ```
 
-Default PyPI wheels include the **vendored egglog** e-graph backend (`egraph`) but **not** LLVM JIT, Cranelift, `groebner`, or `parallel`. Numeric APIs use the tree-walking interpreter fallback.
+Default PyPI wheels include the **vendored egglog** e-graph backend (`egraph`) and the **Gröbner solver** (`groebner`) — so `alkahest.solve`, Diophantine, and homotopy APIs are available out of the box. They do **not** include LLVM JIT, Cranelift, or `parallel`. Numeric APIs use the tree-walking interpreter fallback.
 
 There is **no** `pip install alkahest[jit]` / `alkahest[full]` that swaps the native extension: **pip extras only add Python dependencies**, not alternate binaries.
 
-For native LLVM CPU JIT—or JIT plus Gröbner / parallel F4—use an opt-in **`+jit`** or **`+full`** Linux wheel from GitHub Releases (below), or [build from source](#from-source) (add `--features cranelift` for a pure-Rust fast-compile JIT without system LLVM). See the repository [`README.md`](https://github.com/alkahest-cas/alkahest/blob/main/README.md) for the same policy in short form.
+For native LLVM CPU JIT—or JIT plus parallel F4—use an opt-in **`+jit`** or **`+full`** Linux wheel from GitHub Releases (below), or [build from source](#from-source) (add `--features cranelift` for a pure-Rust fast-compile JIT without system LLVM). See the repository [`README.md`](https://github.com/alkahest-cas/alkahest/blob/main/README.md) for the same policy in short form.
 
 ### Optional Linux wheels (`+jit` / `+full`)
 
@@ -31,8 +31,8 @@ Tagged releases attach **`linux_x86_64`** wheels on [GitHub Releases](https://gi
 
 | Local version | Cargo features | When to use |
 |---|---|---|
-| `+jit` | `jit` | Native LLVM CPU JIT only (smaller than `+full`). |
-| `+full` | `jit groebner parallel egraph` | LLVM JIT plus Gröbner-backed solvers and parallel F4 (egglog is already in default wheels). |
+| `+jit` | `egraph groebner jit` | LLVM CPU JIT (smaller than `+full`; groebner and egraph are already in the default PyPI wheel). |
+| `+full` | `egraph groebner jit parallel` | JIT plus parallel F4 S-polynomial reduction (largest wheel). |
 
 Example direct installs (replace **version**, tag, and wheel name using the release asset list):
 
@@ -45,7 +45,7 @@ These wheels vendor LLVM and related `.so` files under `site-packages/alkahest.l
 
 If your downloader rejects `+` in the URL, percent-encode it in the filename segment (e.g. `2.0.2%2Bfull`).
 
-After `+jit`, `alkahest.jit_is_available()` should be `True`. After `+full`, expect that **and** Gröbner-backed APIs such as `alkahest.solve`.
+After `+jit` or `+full`, `alkahest.jit_is_available()` should be `True`. Gröbner-backed APIs such as `alkahest.solve` are available in **all** wheels (including the default PyPI wheel) since `groebner` became a default Cargo feature in 2.3.1.
 
 macOS and Windows `+jit` / `+full` wheels are **not** produced in CI yet; use [building from source](#from-source) there.
 
@@ -53,7 +53,7 @@ macOS and Windows `+jit` / `+full` wheels are **not** produced in CI yet; use [b
 
 ### From source
 
-For optional Cargo features (`jit`, `groebner`, `cuda`, …), GPU/NVPTX, or development, build the PyO3 extension with [maturin](https://github.com/PyO3/maturin).
+For optional Cargo features (`jit`, `parallel`, `cuda`, …), GPU/NVPTX, or development, build the PyO3 extension with [maturin](https://github.com/PyO3/maturin). The `groebner` and `egraph` features are default and included automatically.
 
 Prerequisites (typical): **Rust** stable (≥ 1.76) and nightly, **LLVM 15**, **FLINT** (≥ 2.9, pulls in GMP/MPFR). See the repository `README` for distro-specific package names.
 
@@ -64,26 +64,23 @@ cd alkahest
 maturin develop --manifest-path alkahest-py/Cargo.toml --release
 ```
 
-Optional features (combine as needed):
+The default build already includes `egraph` and `groebner`. Additional optional features:
 
 ```bash
 # LLVM JIT for native compiled evaluation
 maturin develop --manifest-path alkahest-py/Cargo.toml --release --features jit
 
-# E-graph simplification (egglog)
-maturin develop --manifest-path alkahest-py/Cargo.toml --release --features egraph
+# Pure-Rust Cranelift JIT (fast compile, no system LLVM required)
+maturin develop --manifest-path alkahest-py/Cargo.toml --release --features cranelift
 
-# Parallel simplification (sharded ExprPool)
+# Parallel simplification and parallel F4 (sharded ExprPool + numpy_eval_par)
 maturin develop --manifest-path alkahest-py/Cargo.toml --release --features parallel
-
-# Gröbner basis solver (+ Diophantine / homotopy-related paths)
-maturin develop --manifest-path alkahest-py/Cargo.toml --release --features groebner
 
 # CUDA / NVPTX codegen (requires CUDA toolkit and LLVM with NVPTX target)
 maturin develop --manifest-path alkahest-py/Cargo.toml --release --features cuda
 
-# Full native build (all optional features above; add cuda separately if needed)
-maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel egraph cranelift jit groebner"
+# Full native build (JIT + parallel; egraph and groebner are already default)
+maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel cranelift jit"
 ```
 
 ### Rust crate

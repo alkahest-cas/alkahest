@@ -68,7 +68,7 @@ Current stable feature surface.
 - Quadratic Dirichlet characters (`DirichletChi`) on odd square-free conductors
 - Diophantine equations: linear families, sum of two squares, unit Pell equation (`diophantine`)
 
-## Polynomial system solving (requires `--features groebner`)
+## Polynomial system solving (default feature: `groebner`)
 
 - Gröbner basis: Buchberger F4 with product-criterion pruning
 - Parallel F4 S-polynomial reduction via Rayon (`--features parallel`)
