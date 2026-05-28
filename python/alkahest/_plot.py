@@ -21,8 +21,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
-
 # ---------------------------------------------------------------------------
 # Backend selection
 # ---------------------------------------------------------------------------
@@ -64,6 +62,7 @@ def _require_backend(name: str | None) -> str:
 
 def _eval_1d(expr, var, lo: float, hi: float, n: int = 300):
     """Return (xs, ys) as float64 arrays, skipping non-finite samples."""
+    import numpy as np
     from .alkahest import compile_expr  # type: ignore[import]
     from ._dlpack import numpy_eval_dlpack
 
@@ -76,6 +75,7 @@ def _eval_1d(expr, var, lo: float, hi: float, n: int = 300):
 
 def _eval_2d(expr, var_x, var_y, x_range, y_range, n: int = 80):
     """Return (X, Y, Z) meshgrid arrays."""
+    import numpy as np
     from .alkahest import compile_expr  # type: ignore[import]
     from ._dlpack import numpy_eval_dlpack
 
@@ -236,6 +236,7 @@ def plot_parametric(
     _, xs_vals = _eval_1d(expr_x, param, lo, hi, n)
     _, ys_vals = _eval_1d(expr_y, param, lo, hi, n)
     # Re-evaluate on a common grid (no filtering) for a connected curve.
+    import numpy as np
     from .alkahest import compile_expr  # type: ignore[import]
     from ._dlpack import numpy_eval_dlpack
     ts = np.linspace(lo, hi, n)

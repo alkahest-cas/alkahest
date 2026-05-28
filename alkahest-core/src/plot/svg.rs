@@ -32,6 +32,7 @@ pub fn render_svg(
 }
 
 /// Like [`render_svg`] but exposes sampling density and padding.
+#[allow(clippy::too_many_arguments)]
 pub fn render_svg_opts(
     pool: &ExprPool,
     expr: ExprId,
