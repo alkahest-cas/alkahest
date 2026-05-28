@@ -133,8 +133,8 @@ def test_4x3_times_exp_x2():
     """∫ 4x³·exp(x²) dx = (2x²-1)·exp(x²) + C  (via RDE)."""
     pool = ExprPool()
     x = pool.symbol("x")
-    # (2x² - 1)' = 4x, and (2x² - 1)·(2x) = 4x³-2x, so we actually integrate 4x³:
-    # d/dx[(2x²-1)·exp(x²)] = 4x·exp(x²) + (2x²-1)·2x·exp(x²) = (4x + 4x³ - 2x)·exp(x²) = (4x³+2x)·exp(x²)
+    # d/dx[(2x²-1)·exp(x²)] = 4x·exp(x²) + (2x²-1)·2x·exp(x²)
+    #                        = (4x + 4x³ - 2x)·exp(x²) = (4x³+2x)·exp(x²)
     # So ∫ (4x³+2x)·exp(x²) dx = (2x²-1)·exp(x²)
     p = pool.integer(4) * x**3 + pool.integer(2) * x
     f = p * pool.func("exp", [x**2])
@@ -315,7 +315,11 @@ def test_exp_x2_derivation_log_nonempty():
     result = integrate(f, x)
     steps = result.steps  # .steps is a property (list) not a method
     assert len(steps) > 0, "Risch integration should produce a non-empty derivation log"
-    rule_names = [s.get("rule", s.get("rule_name", "")) if isinstance(s, dict) else getattr(s, "rule_name", getattr(s, "rule", "")) for s in steps]
+    rule_names = [
+        s.get("rule", s.get("rule_name", "")) if isinstance(s, dict)
+        else getattr(s, "rule_name", getattr(s, "rule", ""))
+        for s in steps
+    ]
     assert any("risch" in r.lower() for r in rule_names), (
         f"Risch integration should produce a 'risch_*' log step; got: {rule_names}"
     )
