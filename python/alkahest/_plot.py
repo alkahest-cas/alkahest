@@ -31,11 +31,13 @@ _KNOWN_BACKENDS = {"matplotlib", "plotly"}
 def _default_backend() -> str:
     try:
         import matplotlib  # noqa: F401
+
         return "matplotlib"
     except ImportError:
         pass
     try:
         import plotly  # noqa: F401
+
         return "plotly"
     except ImportError:
         pass
@@ -50,9 +52,7 @@ def _require_backend(name: str | None) -> str:
     if name is None:
         return _default_backend()
     if name not in _KNOWN_BACKENDS:
-        raise ValueError(
-            f"Unknown backend {name!r}. Choose from: {sorted(_KNOWN_BACKENDS)}"
-        )
+        raise ValueError(f"Unknown backend {name!r}. Choose from: {sorted(_KNOWN_BACKENDS)}")
     return name
 
 
@@ -60,11 +60,13 @@ def _require_backend(name: str | None) -> str:
 # Internal: evaluate expr numerically over a 1-D grid
 # ---------------------------------------------------------------------------
 
+
 def _eval_1d(expr, var, lo: float, hi: float, n: int = 300):
     """Return (xs, ys) as float64 arrays, skipping non-finite samples."""
     import numpy as np
-    from .alkahest import compile_expr  # type: ignore[import]
+
     from ._dlpack import numpy_eval_dlpack
+    from .alkahest import compile_expr  # type: ignore[import]
 
     xs = np.linspace(lo, hi, n)
     fn = compile_expr(expr, [var])
@@ -76,8 +78,9 @@ def _eval_1d(expr, var, lo: float, hi: float, n: int = 300):
 def _eval_2d(expr, var_x, var_y, x_range, y_range, n: int = 80):
     """Return (X, Y, Z) meshgrid arrays."""
     import numpy as np
-    from .alkahest import compile_expr  # type: ignore[import]
+
     from ._dlpack import numpy_eval_dlpack
+    from .alkahest import compile_expr  # type: ignore[import]
 
     xs = np.linspace(x_range[0], x_range[1], n)
     ys = np.linspace(y_range[0], y_range[1], n)
@@ -90,6 +93,7 @@ def _eval_2d(expr, var_x, var_y, x_range, y_range, n: int = 80):
 # ---------------------------------------------------------------------------
 # plot — 1-D curve
 # ---------------------------------------------------------------------------
+
 
 def plot(
     expr,
@@ -125,6 +129,7 @@ def plot(
 
     if b == "matplotlib":
         import matplotlib.pyplot as plt
+
         ax = kw.pop("ax", None)
         if ax is None:
             _, ax = plt.subplots()
@@ -138,6 +143,7 @@ def plot(
 
     if b == "plotly":
         import plotly.graph_objects as go
+
         fig = kw.pop("fig", None) or go.Figure()
         fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", name=label or str(expr)))
         if title:
@@ -151,6 +157,7 @@ def plot(
 # ---------------------------------------------------------------------------
 # plot3d — 2-D surface
 # ---------------------------------------------------------------------------
+
 
 def plot3d(
     expr,
@@ -186,6 +193,7 @@ def plot3d(
     if b == "matplotlib":
         import matplotlib.pyplot as plt
         from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+
         fig = kw.pop("fig", None) or plt.figure()
         ax = fig.add_subplot(111, projection="3d")
         ax.plot_surface(X, Y, Z, **kw)
@@ -197,6 +205,7 @@ def plot3d(
 
     if b == "plotly":
         import plotly.graph_objects as go
+
         fig = kw.pop("fig", None) or go.Figure()
         fig.add_trace(go.Surface(x=X, y=Y, z=Z, **kw))
         if title:
@@ -209,6 +218,7 @@ def plot3d(
 # ---------------------------------------------------------------------------
 # plot_parametric — parametric curve (x(t), y(t))
 # ---------------------------------------------------------------------------
+
 
 def plot_parametric(
     expr_x,
@@ -237,8 +247,10 @@ def plot_parametric(
     _, ys_vals = _eval_1d(expr_y, param, lo, hi, n)
     # Re-evaluate on a common grid (no filtering) for a connected curve.
     import numpy as np
-    from .alkahest import compile_expr  # type: ignore[import]
+
     from ._dlpack import numpy_eval_dlpack
+    from .alkahest import compile_expr  # type: ignore[import]
+
     ts = np.linspace(lo, hi, n)
     fn_x = compile_expr(expr_x, [param])
     fn_y = compile_expr(expr_y, [param])
@@ -247,6 +259,7 @@ def plot_parametric(
 
     if b == "matplotlib":
         import matplotlib.pyplot as plt
+
         ax = kw.pop("ax", None)
         if ax is None:
             _, ax = plt.subplots()
@@ -259,6 +272,7 @@ def plot_parametric(
 
     if b == "plotly":
         import plotly.graph_objects as go
+
         fig = kw.pop("fig", None) or go.Figure()
         fig.add_trace(go.Scatter(x=xs_vals, y=ys_vals, mode="lines", name=label or ""))
         if title:
@@ -271,6 +285,7 @@ def plot_parametric(
 # ---------------------------------------------------------------------------
 # plot_implicit — implicit curve f(x,y) = 0
 # ---------------------------------------------------------------------------
+
 
 def plot_implicit(
     expr,
@@ -295,6 +310,7 @@ def plot_implicit(
 
     if b == "matplotlib":
         import matplotlib.pyplot as plt
+
         ax = kw.pop("ax", None)
         if ax is None:
             _, ax = plt.subplots()
@@ -307,9 +323,10 @@ def plot_implicit(
 
     if b == "plotly":
         import plotly.graph_objects as go
+
         fig = kw.pop("fig", None) or go.Figure()
         fig.add_trace(
-            go.Contour(x=X[0], y=Y[:, 0], z=Z, contours=dict(value=0, type="constraint"), **kw)
+            go.Contour(x=X[0], y=Y[:, 0], z=Z, contours={"value": 0, "type": "constraint"}, **kw)
         )
         if title:
             fig.update_layout(title=title)
@@ -321,6 +338,7 @@ def plot_implicit(
 # ---------------------------------------------------------------------------
 # plot_roots — real root markers
 # ---------------------------------------------------------------------------
+
 
 def plot_roots(
     unipoly,
@@ -354,6 +372,7 @@ def plot_roots(
 
     if b == "matplotlib":
         import matplotlib.pyplot as plt
+
         ax = kw.pop("ax", None)
         if ax is None:
             _, ax = plt.subplots()
@@ -367,6 +386,7 @@ def plot_roots(
 
     if b == "plotly":
         import plotly.graph_objects as go
+
         fig = kw.pop("fig", None) or go.Figure()
         for m in mids:
             fig.add_vline(x=m, line_color="red", line_dash="dash")
@@ -380,6 +400,7 @@ def plot_roots(
 # ---------------------------------------------------------------------------
 # plot_series — series truncation vs original
 # ---------------------------------------------------------------------------
+
 
 def plot_series(
     series_result,
@@ -404,14 +425,13 @@ def plot_series(
     b = _require_backend(backend)
     lo, hi = float(range_[0]), float(range_[1])
 
-    series_expr = (
-        series_result.expr if hasattr(series_result, "expr") else series_result.value
-    )
+    series_expr = series_result.expr if hasattr(series_result, "expr") else series_result.value
     xs_o, ys_o = _eval_1d(original_expr, var, lo, hi, n)
     xs_s, ys_s = _eval_1d(series_expr, var, lo, hi, n)
 
     if b == "matplotlib":
         import matplotlib.pyplot as plt
+
         ax = kw.pop("ax", None)
         if ax is None:
             _, ax = plt.subplots()
@@ -425,9 +445,12 @@ def plot_series(
 
     if b == "plotly":
         import plotly.graph_objects as go
+
         fig = kw.pop("fig", None) or go.Figure()
         fig.add_trace(go.Scatter(x=xs_o, y=ys_o, mode="lines", name="exact"))
-        fig.add_trace(go.Scatter(x=xs_s, y=ys_s, mode="lines", name="series", line=dict(dash="dash")))
+        fig.add_trace(
+            go.Scatter(x=xs_s, y=ys_s, mode="lines", name="series", line={"dash": "dash"})
+        )
         if title:
             fig.update_layout(title=title)
         return fig
@@ -438,6 +461,7 @@ def plot_series(
 # ---------------------------------------------------------------------------
 # plot_dag — expression tree / DAG
 # ---------------------------------------------------------------------------
+
 
 def plot_dag(expr, *, title: str | None = None, **kw: Any):
     """Visualise the expression DAG.
@@ -456,10 +480,12 @@ def plot_dag(expr, *, title: str | None = None, **kw: Any):
     str              — raw DOT string otherwise.
     """
     from .alkahest import plot_dot as _plot_dot  # type: ignore[import]
+
     dot_src = _plot_dot(expr)
 
     try:
         import graphviz
+
         src = graphviz.Source(dot_src)
         if title:
             src.comment = title
@@ -473,6 +499,7 @@ def plot_dag(expr, *, title: str | None = None, **kw: Any):
 # ---------------------------------------------------------------------------
 # plot_svg — Rust SVG renderer (no Python plotting dep required)
 # ---------------------------------------------------------------------------
+
 
 def plot_svg(
     expr,
@@ -492,6 +519,7 @@ def plot_svg(
     - Displayed in Jupyter: ``IPython.display.SVG(alkahest.plot_svg(...))``.
     """
     from .alkahest import plot_svg as _rust_plot_svg  # type: ignore[import]
+
     lo, hi = float(range_[0]), float(range_[1])
     return _rust_plot_svg(expr, var, lo, hi, width, height, n)
 
