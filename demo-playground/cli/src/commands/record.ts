@@ -147,27 +147,30 @@ export async function recordCommand(
 
   await delay(1500);
 
-  if (!isSplit) {
-    console.log(chalk.cyan('  Scrolling to show all content…'));
-    const pageHeight = await page.evaluate(() => document.body.scrollHeight);
-    const viewportHeight = height;
-    if (pageHeight > viewportHeight) {
-      const scrollSteps = Math.ceil((pageHeight - viewportHeight) / 60);
-      for (let i = 0; i < scrollSteps; i++) {
-        await page.evaluate(() => window.scrollBy(0, 60));
-        await delay(40);
-      }
-      await delay(1200);
+  console.log(chalk.cyan('  Scrolling to show all content…'));
+  const pageHeight = await page.evaluate(() => document.body.scrollHeight);
+  const viewportHeight = height;
+  if (pageHeight > viewportHeight) {
+    const scrollSteps = Math.ceil((pageHeight - viewportHeight) / 50);
+    for (let i = 0; i < scrollSteps; i++) {
+      await page.evaluate(() => window.scrollBy(0, 50));
+      await delay(50);
+    }
+    if (isSplit) {
+      // For split layout: hold at bottom showing outputs, then end
+      await delay(4000);
+    } else {
+      await delay(1500);
       for (let i = scrollSteps; i > 0; i--) {
-        await page.evaluate(() => window.scrollBy(0, -60));
-        await delay(30);
+        await page.evaluate(() => window.scrollBy(0, -50));
+        await delay(35);
       }
       await delay(500);
     }
   }
 
   console.log(chalk.green('  All cells done — holding final frame'));
-  await delay(2500);
+  await delay(isSplit ? 500 : 2500);
 
   await context.close();
   await browser.close();

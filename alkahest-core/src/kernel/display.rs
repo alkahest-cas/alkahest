@@ -191,11 +191,26 @@ fn latex_frac(num: &str, den: &str) -> String {
 }
 
 fn latex_symbol(name: &str) -> String {
+    // Exact Greek name: "alpha" -> "\alpha"
     if let Some(g) = greek_latex(name) {
         return g.to_string();
     }
+    // Explicit underscore subscript: "u_0" -> "{u}_{0}", "alpha_1" -> "{\alpha}_{1}"
     if let Some((base, sub)) = name.split_once('_') {
-        return format!("{{{base}}}_{{{sub}}}");
+        let base_tex = greek_latex(base).map(str::to_string).unwrap_or_else(|| base.to_string());
+        return format!("{{{base_tex}}}_{{{sub}}}");
+    }
+    // Implicit subscript: trailing digits on a pure-letter base.
+    // "u0" -> "{u}_{0}", "x12" -> "{x}_{12}", "alpha1" -> "{\alpha}_{1}"
+    if let Some(i) = name.find(|c: char| c.is_ascii_digit()).filter(|&i| {
+        i > 0
+            && name[..i].chars().all(|c| c.is_ascii_alphabetic())
+            && name[i..].chars().all(|c| c.is_ascii_digit())
+    }) {
+        let base = &name[..i];
+        let sub = &name[i..];
+        let base_tex = greek_latex(base).map(str::to_string).unwrap_or_else(|| base.to_string());
+        return format!("{{{base_tex}}}_{{{sub}}}");
     }
     name.to_string()
 }

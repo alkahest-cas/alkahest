@@ -46,15 +46,7 @@ function OutputItemView({
   onLeanUpdate?: (item: OutputItem) => void;
 }) {
   if (item.type === 'text') {
-    return (
-      <pre
-        className={`whitespace-pre-wrap font-mono text-sm leading-relaxed ${
-          item.stream === 'stderr' ? 'text-red-600' : 'text-ak-fg'
-        }`}
-      >
-        {item.text}
-      </pre>
-    );
+    return <MixedTextOutput text={item.text} stream={item.stream} />;
   }
 
   if (item.type === 'latex') {
@@ -114,6 +106,59 @@ function OutputItemView({
   }
 
   return null;
+}
+
+type TextSegment = { kind: 'text'; content: string } | { kind: 'latex'; content: string };
+
+function splitMixedText(text: string): TextSegment[] {
+  const lines = text.split('\n');
+  const segments: TextSegment[] = [];
+  let buf: string[] = [];
+
+  const flushBuf = () => {
+    if (buf.length > 0) {
+      segments.push({ kind: 'text', content: buf.join('\n') });
+      buf = [];
+    }
+  };
+
+  for (const line of lines) {
+    const t = line.trim();
+    // Match a line that is entirely a $$...$$ block (display math)
+    if (t.startsWith('$$') && t.endsWith('$$') && t.length > 4) {
+      flushBuf();
+      segments.push({ kind: 'latex', content: t.slice(2, -2).trim() });
+    } else {
+      buf.push(line);
+    }
+  }
+  flushBuf();
+  return segments;
+}
+
+function MixedTextOutput({ text, stream }: { text: string; stream: 'stdout' | 'stderr' }) {
+  const preClass = `whitespace-pre-wrap font-mono text-sm leading-relaxed ${
+    stream === 'stderr' ? 'text-red-600' : 'text-ak-fg'
+  }`;
+
+  const segments = splitMixedText(text);
+
+  // No LaTeX found — render original <pre> unchanged
+  if (segments.length === 1 && segments[0].kind === 'text') {
+    return <pre className={preClass}>{text}</pre>;
+  }
+
+  return (
+    <div>
+      {segments.map((seg, i) =>
+        seg.kind === 'latex' ? (
+          <LatexBlock key={i} latex={seg.content} />
+        ) : seg.content !== '' ? (
+          <pre key={i} className={preClass}>{seg.content}</pre>
+        ) : null,
+      )}
+    </div>
+  );
 }
 
 function LatexBlock({ latex }: { latex: string }) {
