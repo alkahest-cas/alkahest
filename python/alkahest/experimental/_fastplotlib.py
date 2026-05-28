@@ -28,24 +28,26 @@ from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
-
 
 def _require_fpl():
     try:
-        import fastplotlib as fpl  # noqa: F401
+        import fastplotlib as fpl
+
         return fpl
     except ImportError:
         raise ImportError(
             "fastplotlib is not installed.\n"
             "Install it with:  pip install fastplotlib\n"
             "Note: fastplotlib requires a GPU context (WGPU / WebGPU)."
-        )
+        ) from None
 
 
 def _eval_1d(expr, var, lo: float, hi: float, n: int):
-    from alkahest.alkahest import compile_expr  # type: ignore[import]
+    import numpy as np
+
     from alkahest._dlpack import numpy_eval_dlpack
+    from alkahest.alkahest import compile_expr  # type: ignore[import]
+
     xs = np.linspace(lo, hi, n, dtype=np.float32)
     fn = compile_expr(expr, [var])
     ys = numpy_eval_dlpack(fn, xs.astype(np.float64)).astype(np.float32)
@@ -53,8 +55,11 @@ def _eval_1d(expr, var, lo: float, hi: float, n: int):
 
 
 def _eval_2d(expr, var_x, var_y, x_range, y_range, n: int):
-    from alkahest.alkahest import compile_expr  # type: ignore[import]
+    import numpy as np
+
     from alkahest._dlpack import numpy_eval_dlpack
+    from alkahest.alkahest import compile_expr  # type: ignore[import]
+
     xs = np.linspace(x_range[0], x_range[1], n, dtype=np.float64)
     ys = np.linspace(y_range[0], y_range[1], n, dtype=np.float64)
     X, Y = np.meshgrid(xs, ys)
@@ -89,6 +94,8 @@ def fplot(
     -------
     fastplotlib.Figure
     """
+    import numpy as np
+
     fpl = _require_fpl()
     lo, hi = float(range_[0]), float(range_[1])
     xs, ys = _eval_1d(expr, var, lo, hi, n)
