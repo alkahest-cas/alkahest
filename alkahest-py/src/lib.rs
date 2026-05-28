@@ -5876,6 +5876,7 @@ fn py_guess_relation(
 
 #[pyfunction]
 #[pyo3(name = "plot_svg", signature = (expr, var, lo, hi, width=640, height=400, n_pts=300, padding=10))]
+#[allow(clippy::too_many_arguments)]
 fn py_plot_svg(
     py: Python<'_>,
     expr: PyRef<PyExpr>,
