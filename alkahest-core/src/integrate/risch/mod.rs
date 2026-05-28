@@ -170,7 +170,7 @@ fn try_decompose_by_sum(
         let int_term = if contains_risch_form(term, var, pool) {
             match integrate_risch(term, var, pool) {
                 Ok(d) => {
-                    *log = log.clone().merge(d.log);
+                    *log = std::mem::take(log).merge(d.log);
                     d.value
                 }
                 Err(_) => return None,
@@ -179,7 +179,7 @@ fn try_decompose_by_sum(
             let mut inner_log = DerivationLog::new();
             match crate::integrate::engine::integrate_raw(term, var, pool, &mut inner_log) {
                 Ok(r) => {
-                    *log = log.clone().merge(inner_log);
+                    *log = std::mem::take(log).merge(inner_log);
                     r
                 }
                 Err(_) => return None,

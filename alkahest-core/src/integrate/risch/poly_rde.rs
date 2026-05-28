@@ -167,7 +167,7 @@ pub fn solve_poly_rde(k: i64, deta: &[Rational], h: &[Rational]) -> Option<QPoly
     }
 
     // k must be nonzero (the exp tower monomial degree).
-    debug_assert!(k != 0, "solve_poly_rde called with k=0");
+    assert!(k != 0, "solve_poly_rde called with k=0: caller bug");
 
     let deg_h = degree(&h);
 
@@ -299,7 +299,9 @@ fn collect_qpoly(
 
     match pool.get(expr) {
         ExprData::Integer(n) => {
-            let val = n.0.to_i64().unwrap_or(0);
+            let Some(val) = n.0.to_i64() else {
+                return false; // integer too large to fit in i64 — not representable
+            };
             ensure_len(coeffs, 1);
             coeffs[0] += Rational::from(factor * val);
             true
@@ -342,15 +344,11 @@ fn collect_qpoly(
             // Exactly one var-part: extract it.
             if var_parts.len() == 1 {
                 // Recurse on the single var part with the rational factor.
-                let numer = rat_factor.numer().to_i64().unwrap_or(0);
-                let denom = rat_factor.denom().to_i64().unwrap_or(1);
-                // We need to scale by rat_factor = numer/denom.
-                // Use a temporary vector and scale.
                 let mut sub = Vec::new();
                 if !collect_qpoly(var_parts[0], var, pool, &mut sub, 1) {
                     return false;
                 }
-                let scale = Rational::from((numer, denom));
+                let scale = rat_factor;
                 ensure_len(coeffs, sub.len());
                 for (i, c) in sub.iter().enumerate() {
                     if i >= coeffs.len() {
