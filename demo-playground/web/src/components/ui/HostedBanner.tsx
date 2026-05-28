@@ -14,7 +14,7 @@ export default function HostedBanner({ variant = 'notebook' }: { variant?: 'note
             The AI agent calls a server API that is not available on GitHub Pages. Run the playground locally
             with <code className="rounded bg-white/80 px-1">pnpm start</code>, or self-host the full app.
             You can still use the{' '}
-            <a href="../" className="underline font-medium">notebook</a> in WASM mode (SymPy / pure Python).
+            <a href="../" className="underline font-medium">notebook</a> in WASM mode (pure Python).
           </p>
         </div>
       </div>
@@ -26,7 +26,7 @@ export default function HostedBanner({ variant = 'notebook' }: { variant?: 'note
       <div className="rounded-lg border border-ak-border bg-ak-code-bg/60 px-4 py-3 text-sm">
         <p className="font-medium">Try Alkahest in your browser</p>
         <p className="mt-1 text-ak-muted">
-          Cells run in <strong>WASM</strong> (SymPy &amp; pure Python). For{' '}
+          Pure Python cells run in <strong>WASM</strong>. For{' '}
           <code className="rounded bg-ak-bg px-1">import alkahest</code>, open settings (
           <kbd className="rounded border border-ak-border px-1 text-xs">Ctrl+/</kbd>) and add your execution
           server or Jupyter URL + token.

@@ -31,7 +31,7 @@ const DEFAULT_CONFIG: PlaygroundConfig = isStaticHosting
       serverHttpUrl: '',
       serverWsUrl: '',
       serverToken: '',
-      executionMode: 'wasm',
+      executionMode: 'auto',
       aiProvider: 'anthropic',
       aiModel: 'claude-sonnet-4-6',
       aiCustomBaseUrl: '',

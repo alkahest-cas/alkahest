@@ -109,13 +109,6 @@ const INITIAL_CELLS: CellData[] = [
     'print(result.derivation)\n' +
     'display_lean_cert(result, operation="simplify")\n',
   ),
-  newCell(
-    '# Compare with SymPy\n' +
-    'from sympy import symbols, diff, latex as sp_latex\n\n' +
-    'x = symbols("x")\n' +
-    'result = diff(x**2, x)\n' +
-    'print("SymPy: $$" + sp_latex(result) + "$$")\n',
-  ),
 ];
 
 function cellFromDemoSource(code: string): CellData {
@@ -363,7 +356,7 @@ export default function Notebook({
               serverStatus === 'online' ? 'bg-green-500' : serverStatus === 'offline' ? 'bg-red-400' : 'bg-ak-border'
             }`}
           />
-          {serverStatus === 'online' ? 'server ready' : serverStatus === 'offline' ? 'server offline' : 'connecting…'}
+          {serverStatus === 'online' ? 'server ready' : serverStatus === 'offline' ? 'server offline' : 'no server'}
         </div>
       </div>}
 
