@@ -32,6 +32,7 @@ jobs:
           publish_branch: main
           # GitHub Pages serves index.html + styles.css from the repo root.
           publish_dir: ./website/src
+          keep_files: true
           user_name: 'github-actions[bot]'
           user_email: 'github-actions[bot]@users.noreply.github.com'
           commit_message: 'deploy website: ${{ github.sha }}'
