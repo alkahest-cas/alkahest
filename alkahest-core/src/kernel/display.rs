@@ -197,7 +197,9 @@ fn latex_symbol(name: &str) -> String {
     }
     // Explicit underscore subscript: "u_0" -> "{u}_{0}", "alpha_1" -> "{\alpha}_{1}"
     if let Some((base, sub)) = name.split_once('_') {
-        let base_tex = greek_latex(base).map(str::to_string).unwrap_or_else(|| base.to_string());
+        let base_tex = greek_latex(base)
+            .map(str::to_string)
+            .unwrap_or_else(|| base.to_string());
         return format!("{{{base_tex}}}_{{{sub}}}");
     }
     // Implicit subscript: trailing digits on a pure-letter base.
@@ -209,7 +211,9 @@ fn latex_symbol(name: &str) -> String {
     }) {
         let base = &name[..i];
         let sub = &name[i..];
-        let base_tex = greek_latex(base).map(str::to_string).unwrap_or_else(|| base.to_string());
+        let base_tex = greek_latex(base)
+            .map(str::to_string)
+            .unwrap_or_else(|| base.to_string());
         return format!("{{{base_tex}}}_{{{sub}}}");
     }
     name.to_string()
