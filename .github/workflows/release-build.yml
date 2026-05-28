@@ -2,11 +2,17 @@ name: Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*"
+  pull_request:
+    types: [closed]
+    branches:
+      - main
   workflow_dispatch:
+
+env:
+  # On merged PRs, build/publish the merge commit on main (not the PR head).
+  RELEASE_REF: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
 
 jobs:
   # Linux: one job builds all Python versions at once. maturin-action runs
@@ -18,11 +24,14 @@ jobs:
   build-linux:
     name: wheels / ubuntu-22.04
     runs-on: ubuntu-22.04
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged
     env:
       # PyO3 0.21 supports up to 3.12; this allows 3.13 via the stable ABI.
       PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_REF }}
 
       - uses: actions/setup-python@v6
         with:
@@ -85,6 +94,7 @@ jobs:
   build-linux-jit:
     name: wheels (JIT) / ubuntu-22.04 / py${{ matrix.python }}
     runs-on: ubuntu-22.04
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged
     strategy:
       fail-fast: false
       matrix:
@@ -94,6 +104,8 @@ jobs:
       LLVM_SYS_150_PREFIX: /usr
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_REF }}
 
       - uses: actions/setup-python@v6
         with:
@@ -153,6 +165,7 @@ jobs:
   build-linux-full:
     name: wheels (+full) / ubuntu-22.04 / py${{ matrix.python }}
     runs-on: ubuntu-22.04
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged
     strategy:
       fail-fast: false
       matrix:
@@ -162,6 +175,8 @@ jobs:
       LLVM_SYS_150_PREFIX: /usr
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_REF }}
 
       - uses: actions/setup-python@v6
         with:
@@ -219,6 +234,7 @@ jobs:
   build-wheels:
     name: wheel ${{ matrix.os }} / py${{ matrix.python }}
     runs-on: ${{ matrix.os }}
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged
     strategy:
       fail-fast: false
       matrix:
@@ -233,6 +249,8 @@ jobs:
       PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_REF }}
 
       - uses: actions/setup-python@v6
         with:
@@ -317,7 +335,7 @@ jobs:
     runs-on: ubuntu-latest
     if: >-
       github.event_name == 'workflow_dispatch'
-      || github.ref == 'refs/heads/main'
+      || (github.event_name == 'pull_request' && github.event.pull_request.merged)
     environment: release
     permissions:
       id-token: write
