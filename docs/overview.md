@@ -28,6 +28,7 @@ Chapters:
 - ODE and DAE modeling
 - Polynomial system solving
 - Interoperability (NumPy, JAX, PyTorch, StableHLO)
+- Plotting (backend dispatch, Matplotlib/Plotly/fastplotlib, SVG renderer)
 - Derivation logs
 - Lean certificates
 - Error handling
@@ -42,7 +43,7 @@ sphinx-build -b html docs/sphinx/ docs/sphinx/_build/
 ```
 
 Covers: core types, simplification, calculus, polynomials, numerics,
-transformations, matrices, ODE/DAE, solver, code generation, errors.
+transformations, matrices, ODE/DAE, solver, code generation, plotting, errors.
 
 ## Other reference
 

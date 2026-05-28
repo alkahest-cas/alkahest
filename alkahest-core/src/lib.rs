@@ -41,6 +41,8 @@ pub mod diffalg;
 // V2-10 — Gosper / creative telescoping (WZ certificates)
 pub mod stablehlo;
 pub mod sum;
+// Plot — dependency-free SVG / DOT renderers
+pub mod plot;
 
 pub use acausal::{capacitor, resistor, voltage_source, Component, Port, System};
 pub use calculus::{limit, series, LimitDirection, LimitError, Series, SeriesError};
@@ -109,6 +111,9 @@ pub use jit::{
     select_compile_tier, CompileCache, CompileConfig, CompileTier, CompiledFn, JitError,
     INTERP_MAX_EXPECTED_EVALS, INTERP_MAX_NODES, LLVM_MIN_EXPECTED_EVALS,
 };
+
+// Plot — SVG polyline and Graphviz DOT renderers (dependency-free)
+pub use plot::{render_dot, render_svg, render_svg_opts};
 
 // V5-2 — StableHLO/XLA bridge
 pub use stablehlo::emit_stablehlo;
@@ -271,6 +276,7 @@ pub mod experimental {
     pub use crate::ode::sensitivity::{
         adjoint_system, sensitivity_system, AdjointSystem, SensitivitySystem,
     };
+    pub use crate::plot::{render_dot, render_svg, render_svg_opts};
     pub use crate::poly::{
         gcd_sparse_modular, sparse_interpolate, sparse_interpolate_univariate, SparseGcdError,
         SparseInterpError,

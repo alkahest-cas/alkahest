@@ -451,6 +451,63 @@ df = ak.grad(f)          # symbolic gradient
 df_fast = ak.jit(df)     # compiled gradient
 ```
 
+### Plotting
+
+Alkahest never bundles a plotting library — it detects what is installed and calls into it. The default backend is **Matplotlib** (static PNG/SVG); **Plotly** is also supported for interactive figures (and renders natively in the demo-playground notebook). A dependency-free **SVG renderer** is built into the Rust kernel and works without any plotting library installed.
+
+```python
+import alkahest as ak
+
+pool = ak.ExprPool()
+x = pool.symbol("x")
+
+# Curve (matplotlib by default, or backend="plotly")
+ax = ak.plot(ak.sin(x), x, (-3 * 3.14159, 3 * 3.14159))
+
+# 3-D surface
+y = pool.symbol("y")
+fig = ak.plot3d(ak.sin(x) * ak.cos(y), x, y, (-5, 5), (-5, 5))
+
+# Parametric curve
+t = pool.symbol("t")
+ax2 = ak.plot_parametric(ak.cos(t), ak.sin(t), t, (0, 6.28318))
+
+# Implicit curve: x² + y² = 1
+ax3 = ak.plot_implicit(x**2 + y**2 - pool.integer(1), x, y, (-2, 2), (-2, 2))
+
+# Real roots of a polynomial on the x-axis
+p = ak.UniPoly.from_symbolic(x**3 - x, x)
+ax4 = ak.plot_roots(p, x)
+
+# Series truncation vs exact function
+s = ak.series(ak.cos(x), x, pool.integer(0), 6)
+ax5 = ak.plot_series(s, ak.cos(x), x, (-4, 4))
+
+# Expression DAG (requires graphviz package, falls back to DOT string)
+dot = ak.plot_dag(ak.sin(x**2 + pool.integer(1)))
+
+# Dependency-free SVG (no matplotlib/plotly needed)
+svg_str = ak.plot_svg(ak.sin(x), x, (-6, 6))
+```
+
+Install a backend once — alkahest uses whichever is available:
+
+```bash
+pip install matplotlib   # default; static PNG/SVG
+pip install plotly       # interactive; also renders in demo-playground
+```
+
+For GPU-accelerated plots on dense grids (pairs well with the `+full` JIT wheel):
+
+```bash
+pip install fastplotlib
+```
+
+```python
+from alkahest.experimental._fastplotlib import fplot, fplot3d
+fplot(ak.sin(x), x, (-10, 10), n=100_000)
+```
+
 ---
 
 ## Directory layout
@@ -474,15 +531,18 @@ alkahest/
 │   │   ├── diffalg/       # Rosenfeld–Gröbner / differential elimination (groebner)
 │   │   ├── solver/        # polynomial solving: Gröbner triangular, regular chains, homotopy
 │   │   ├── lean/          # Lean 4 proof certificate export
+│   │   ├── plot/          # SVG polyline + Graphviz DOT renderers (dependency-free)
 │   │   └── primitive/     # primitive registration system
 │   └── benches/           # criterion benchmarks
 ├── alkahest-mlir/         # MLIR dialect and lowering passes
 ├── alkahest-py/           # PyO3 bindings (Rust side)
 ├── python/alkahest/       # Python package
+│   ├── _plot.py           # plotting: plot, plot3d, plot_parametric, plot_implicit, …
 │   ├── _transform.py      # trace, grad, jit decorators
 │   ├── _pytree.py         # JAX-style pytree flattening
 │   ├── _context.py        # context manager and defaults
 │   └── experimental/      # unstable API surface
+│       └── _fastplotlib.py# GPU-accelerated plotting adapter
 ├── examples/              # runnable end-to-end examples
 │   └── rust_quickstart/   # self-contained Cargo project for alkahest-cas
 ├── tests/                 # Python test suite (pytest + hypothesis)
