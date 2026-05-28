@@ -126,6 +126,19 @@ Current stable feature surface.
 - Hybrid systems with events (`HybridODE`, `Event`)
 - Piecewise expressions and predicates
 
+## Plotting
+
+- **No bundled dependency** — detects and uses whatever the user has installed (Matplotlib or Plotly).
+- `plot(expr, var, range_)` — 1-D curve (Matplotlib or Plotly backend).
+- `plot3d(expr, var_x, var_y, x_range, y_range)` — 3-D surface.
+- `plot_parametric(expr_x, expr_y, param, range_)` — parametric curve.
+- `plot_implicit(expr, var_x, var_y, x_range, y_range)` — zero-set of a 2-variable expression (contour at 0).
+- `plot_roots(unipoly, var)` — real root markers on the x-axis (rug plot via `real_roots`).
+- `plot_series(series_result, original_expr, var, range_)` — Taylor/Laurent truncation vs exact.
+- `plot_dag(expr)` — expression DAG via Graphviz Python package (falls back to raw DOT string).
+- `plot_svg(expr, var, range_)` — standalone SVG polyline rendered entirely in Rust; no Python plotting dep required; suitable for embedding in HTML or Jupyter.
+- `alkahest.experimental._fastplotlib` — GPU-accelerated `fplot` / `fplot3d` via fastplotlib (WGPU); recommended for dense grids with the `+full` JIT wheel.
+
 ## Output and parsing
 
 - LaTeX pretty-printing (`latex(expr)`)

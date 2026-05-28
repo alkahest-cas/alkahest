@@ -450,6 +450,58 @@ unicode_str(e)
 
 ---
 
+## Plotting
+
+Alkahest never bundles a plotting library. All plot functions detect what is installed and call into it. The default backend is **Matplotlib**; **Plotly** is the interactive alternative (`backend="plotly"`).
+
+```python
+import alkahest as ak
+
+pool = ak.ExprPool()
+x = pool.symbol("x")
+y = pool.symbol("y")
+
+# 1-D curve — uses matplotlib by default, or plotly if specified
+ax  = ak.plot(ak.sin(x), x, (-6.28, 6.28))
+fig = ak.plot(ak.sin(x), x, (-6.28, 6.28), backend="plotly")
+
+# 2-D surface
+ak.plot3d(ak.sin(x) * ak.cos(y), x, y, (-5, 5), (-5, 5))
+
+# Parametric curve
+t = pool.symbol("t")
+ak.plot_parametric(ak.cos(t), ak.sin(t), t, (0, 6.28318))
+
+# Implicit curve f(x, y) = 0
+ak.plot_implicit(x**2 + y**2 - pool.integer(1), x, y, (-2, 2), (-2, 2))
+
+# Root markers on x-axis
+p = ak.UniPoly.from_symbolic(x**3 - x, x)
+ak.plot_roots(p, x)
+
+# Series truncation vs exact
+s = ak.series(ak.cos(x), x, pool.integer(0), 6)
+ak.plot_series(s, ak.cos(x), x, (-4, 4))
+
+# Expression DAG (graphviz package → rendered figure; else DOT string)
+dot_or_src = ak.plot_dag(ak.sin(x**2))
+
+# Dependency-free SVG — no matplotlib/plotly needed
+svg_str = ak.plot_svg(ak.sin(x), x, (-6, 6))
+# Use in Jupyter: from IPython.display import SVG; SVG(svg_str)
+```
+
+All `plot*` functions accept `**kw` forwarded to the backend. `plot` / `plot_parametric` also accept `ax=` (matplotlib) or `fig=` (plotly) to draw onto an existing figure.
+
+GPU-accelerated plotting for dense grids (experimental; requires `pip install fastplotlib`):
+
+```python
+from alkahest.experimental._fastplotlib import fplot, fplot3d
+fplot(ak.sin(x), x, (-10, 10), n=100_000)   # 100k-point GPU line
+```
+
+---
+
 ## Stable vs experimental API
 
 Semantics-stable symbols are those in `alkahest.__all__` (and Rust `alkahest_core::stable`). New or unstable Python APIs live under `alkahest.experimental` and may change in minor releases—prefer top-level exports for agent-written code unless the user asks for experimental features.
@@ -479,3 +531,5 @@ reg = PrimitiveRegistry()
 8. **`grad` expects a `TracedFn`.** `jit` accepts a `TracedFn` or `GradTracedFn`; both raise `TypeError` on undecorated callables.
 9. **`numpy_eval` expects a `CompiledFn`** (from `compile_expr`), not a `TracedFn`.
 10. **Symbols from different pools are incompatible.** Keep one pool per computation graph.
+11. **`plot*` functions detect the backend automatically.** Never import matplotlib/plotly in user code just to call `ak.plot` — let alkahest dispatch. Use `backend="plotly"` or `backend="matplotlib"` to force one. Use `plot_svg` when no plotting library is available.
+12. **`plot_dag` returns a `graphviz.Source` if the `graphviz` package is installed, otherwise a raw DOT string.** Call `.render()` or `.view()` on the returned object, or pipe the string to `dot -Tpng`.

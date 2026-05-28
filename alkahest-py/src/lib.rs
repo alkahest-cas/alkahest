@@ -5870,6 +5870,45 @@ fn py_guess_relation(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Plot — SVG polyline and Graphviz DOT renderers
+// ---------------------------------------------------------------------------
+
+#[pyfunction]
+#[pyo3(name = "plot_svg", signature = (expr, var, lo, hi, width=640, height=400, n_pts=300, padding=10))]
+#[allow(clippy::too_many_arguments)]
+fn py_plot_svg(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    var: PyRef<PyExpr>,
+    lo: f64,
+    hi: f64,
+    width: u32,
+    height: u32,
+    n_pts: usize,
+    padding: u32,
+) -> String {
+    let pool_ref = expr.pool.borrow(py);
+    alkahest_core::render_svg_opts(
+        &pool_ref.inner,
+        expr.id,
+        var.id,
+        lo,
+        hi,
+        width,
+        height,
+        n_pts,
+        padding,
+    )
+}
+
+#[pyfunction]
+#[pyo3(name = "plot_dot")]
+fn py_plot_dot(py: Python<'_>, expr: PyRef<PyExpr>) -> String {
+    let pool_ref = expr.pool.borrow(py);
+    alkahest_core::render_dot(&pool_ref.inner, expr.id)
+}
+
 #[pymodule]
 fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
@@ -6048,6 +6087,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_nt_jacobi, m)?)?;
     m.add_function(wrap_pyfunction!(py_nt_nthroot_mod, m)?)?;
     m.add_function(wrap_pyfunction!(py_nt_discrete_log, m)?)?;
+    // Plot — SVG and DOT renderers
+    m.add_function(wrap_pyfunction!(py_plot_svg, m)?)?;
+    m.add_function(wrap_pyfunction!(py_plot_dot, m)?)?;
     // V1-3 — Structured exception hierarchy
     m.add("AlkahestError", m.py().get_type_bound::<PyAlkahestError>())?;
     m.add(

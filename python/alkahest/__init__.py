@@ -17,6 +17,16 @@ from ._context import (
 )
 from ._dlpack import _to_numpy
 from ._parse import parse
+from ._plot import (
+    plot,
+    plot3d,
+    plot_dag,
+    plot_implicit,
+    plot_parametric,
+    plot_roots,
+    plot_series,
+    plot_svg,
+)
 from ._pretty import latex, unicode_str
 from ._product import Product
 from ._pytree import (
@@ -920,6 +930,14 @@ __all__ = [
     "parse",
     # PA-9
     "piecewise",
+    "plot",
+    "plot3d",
+    "plot_dag",
+    "plot_implicit",
+    "plot_parametric",
+    "plot_roots",
+    "plot_series",
+    "plot_svg",
     # Phase 27
     "poly_normal",
     "product_definite",

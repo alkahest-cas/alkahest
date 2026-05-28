@@ -129,6 +129,30 @@ print(p // q)     # x^2 + x + 1</code></pre>
         </article>
 
         <article class="example">
+          <h3 class="example-title">Plotting — no bundled dependency</h3>
+          <p class="example-desc">
+            alkahest detects what you have installed (Matplotlib or Plotly) and
+            calls into it. A dependency-free SVG renderer is built into the
+            Rust kernel for zero-install use.
+          </p>
+          <pre class="code-block" tabindex="0"><code>import alkahest as ak
+
+pool = ak.ExprPool()
+x = pool.symbol("x")
+
+# Curve — uses matplotlib by default, or plotly if specified
+ak.plot(ak.sin(x), x, (-6.28, 6.28))
+ak.plot(ak.sin(x), x, (-6.28, 6.28), backend="plotly")
+
+# 2-D surface
+y = pool.symbol("y")
+ak.plot3d(ak.sin(x) * ak.cos(y), x, y, (-5, 5), (-5, 5))
+
+# Standalone SVG — no plotting library needed
+svg = ak.plot_svg(ak.sin(x), x, (-6, 6))</code></pre>
+        </article>
+
+        <article class="example">
           <h3 class="example-title">Use the Rust kernel directly</h3>
           <p class="example-desc">
             <code>alkahest-cas</code> is a native Rust crate — embed the CAS in
