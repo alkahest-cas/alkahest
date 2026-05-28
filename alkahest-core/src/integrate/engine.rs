@@ -502,7 +502,16 @@ pub(crate) fn integrate_raw(
 /// applying the rule-based simplifier.  The derivation log records every
 /// rule applied.
 ///
-/// # Supported operations
+/// # Routing
+///
+/// Integrands are dispatched in this order:
+///
+/// 1. **Algebraic** (contains `sqrt` or fractional powers) → `algebraic` engine.
+/// 2. **Transcendental Risch** (contains `exp(g)` with `deg(g) ≥ 2`, `poly·exp`,
+///    `log^n` for `n ≥ 2`, or `poly·log`) → `risch` engine.
+/// 3. **Rule-based** fallback for simpler cases already in the table.
+///
+/// # Supported operations (rule-based)
 ///
 /// | Input              | Result                      | Rule                    |
 /// |--------------------|-----------------------------|-------------------------|
@@ -519,6 +528,16 @@ pub(crate) fn integrate_raw(
 /// | `x * exp(x)`       | `exp(x)*(x-1)`              | `int_x_exp`             |
 /// | `1/(a*x + b)`      | `log(a*x+b) / a`            | `int_linear_inv`        |
 ///
+/// # Transcendental Risch (Risch engine)
+///
+/// | Input                      | Result                      | Condition              |
+/// |----------------------------|-----------------------------|------------------------|
+/// | `exp(g)`, deg(g) ≥ 2      | `v·exp(g)` (if elementary)  | Risch DE solvable      |
+/// | `exp(g)`, deg(g) ≥ 2      | `NonElementary`             | Risch DE unsolvable    |
+/// | `p(x)·exp(a·x)`, deg≥2    | polynomial · exp            | undetermined coeff.    |
+/// | `log(h)^n`, n ≥ 2         | polynomial in log           | IBP reduction          |
+/// | `p(x)·log(h)`              | polynomial · log            | IBP reduction          |
+///
 /// # Verification
 ///
 /// For all supported inputs, `diff(integrate(f, x), x)` should simplify to
@@ -532,6 +551,11 @@ pub fn integrate(
     // V1-2: Route algebraic integrands to the Trager/Risch algebraic engine.
     if super::algebraic::contains_algebraic_subterm(expr, pool) {
         return super::algebraic::integrate_algebraic(expr, var, pool);
+    }
+
+    // V2+: Route transcendental Risch cases (exp polynomial, log powers, etc.)
+    if super::risch::contains_risch_form(expr, var, pool) {
+        return super::risch::integrate_risch(expr, var, pool);
     }
 
     let mut log = DerivationLog::new();
