@@ -316,7 +316,8 @@ def test_exp_x2_derivation_log_nonempty():
     steps = result.steps  # .steps is a property (list) not a method
     assert len(steps) > 0, "Risch integration should produce a non-empty derivation log"
     rule_names = [
-        s.get("rule", s.get("rule_name", "")) if isinstance(s, dict)
+        s.get("rule", s.get("rule_name", ""))
+        if isinstance(s, dict)
         else getattr(s, "rule_name", getattr(s, "rule", ""))
         for s in steps
     ]
