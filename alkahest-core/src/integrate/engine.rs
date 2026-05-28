@@ -506,9 +506,9 @@ pub(crate) fn integrate_raw(
 ///
 /// Integrands are dispatched in this order:
 ///
-/// 1. **Algebraic** (contains `sqrt` or fractional powers) → [`algebraic`] engine.
+/// 1. **Algebraic** (contains `sqrt` or fractional powers) → `algebraic` engine.
 /// 2. **Transcendental Risch** (contains `exp(g)` with `deg(g) ≥ 2`, `poly·exp`,
-///    `log^n` for `n ≥ 2`, or `poly·log`) → [`risch`] engine.
+///    `log^n` for `n ≥ 2`, or `poly·log`) → `risch` engine.
 /// 3. **Rule-based** fallback for simpler cases already in the table.
 ///
 /// # Supported operations (rule-based)

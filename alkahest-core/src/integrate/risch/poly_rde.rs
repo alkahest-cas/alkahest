@@ -1,11 +1,11 @@
-//! Polynomial Risch Differential Equation (RDE) solver over ℚ[x].
+//! Polynomial Risch Differential Equation (RDE) solver over ℚ\[x\].
 //!
 //! Solves `y' + k·Dη·y = h` where:
 //!   - k is a nonzero integer (the monomial degree in the exp tower)
-//!   - Dη ∈ ℚ[x] is the derivative of the tower exponent η
-//!   - h ∈ ℚ[x] is the integrand coefficient
+//!   - Dη ∈ ℚ\[x\] is the derivative of the tower exponent η
+//!   - h ∈ ℚ\[x\] is the integrand coefficient
 //!
-//! Returns `Some(y)` if a polynomial solution y ∈ ℚ[x] exists, `None` otherwise.
+//! Returns `Some(y)` if a polynomial solution y ∈ ℚ\[x\] exists, `None` otherwise.
 //!
 //! **Key decision criterion** (Bronstein 2005, Thm 5.1):
 //! When `Dη` has degree `d ≥ 1`, a polynomial solution exists iff `deg(h) ≥ d`.
@@ -28,7 +28,7 @@ pub type QPoly = Vec<Rational>;
 
 /// Trim trailing zero coefficients.
 pub fn trim(mut p: QPoly) -> QPoly {
-    while p.last().map_or(false, |c| *c == 0) {
+    while p.last().is_some_and(|c| *c == 0) {
         p.pop();
     }
     p
@@ -120,7 +120,7 @@ pub fn poly_integrate(p: &QPoly) -> QPoly {
 // Polynomial RDE solver
 // ---------------------------------------------------------------------------
 
-/// Solve the polynomial Risch Differential Equation over ℚ[x]:
+/// Solve the polynomial Risch Differential Equation over ℚ\[x\]:
 /// ```text
 ///   y'(x) + k · Dη(x) · y(x) = h(x)
 /// ```
@@ -216,11 +216,11 @@ pub fn solve_poly_rde(k: i64, deta: &[Rational], h: &[Rational]) -> Option<QPoly
 
         // Subtract k · Dη[i] · y[l] for i < deg_deta (the "cross-terms" involving
         // already-known y[l] with l = j + deg_deta − i > j).
-        for i in 0..deg_deta as usize {
+        for (i, deta_i) in deta.iter().enumerate().take(deg_deta as usize) {
             let l = (target_deg - i as i64) as usize;
             if l <= m && l != j {
                 // y[l] is already known (l > j since i < deg_deta and target_deg = j+deg_deta).
-                rhs -= k_rat.clone() * deta[i].clone() * y[l].clone();
+                rhs -= k_rat.clone() * deta_i.clone() * y[l].clone();
             }
         }
 
@@ -262,7 +262,7 @@ fn polys_equal(a: &QPoly, b: &QPoly) -> bool {
 
 use crate::kernel::{ExprData, ExprId, ExprPool};
 
-/// Convert a symbolic expression to a ℚ[x] polynomial.
+/// Convert a symbolic expression to a ℚ\[x\] polynomial.
 ///
 /// Returns `None` if the expression is not a polynomial in `var` with
 /// rational (or integer) coefficients.

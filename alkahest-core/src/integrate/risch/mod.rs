@@ -21,7 +21,7 @@
 //! The Risch algorithm is split into sub-modules:
 //!
 //! - [`tower`]: Differential field tower construction and generator detection.
-//! - [`poly_rde`]: Polynomial Risch Differential Equation (RDE) solver over ℚ[x].
+//! - [`poly_rde`]: Polynomial Risch Differential Equation (RDE) solver over ℚ\[x\].
 //! - [`exp_case`]: Integration in the hyperexponential tower (t = exp(η)).
 //! - [`log_case`]: Integration in the hyperlogarithmic tower (t = log(h)).
 //!
@@ -261,8 +261,8 @@ mod tests {
         );
 
         // Verify by differentiation: d/dx F = f.
-        let F = result.unwrap().value;
-        verify_antiderivative(&pool, x, f, F, "x·exp(x²)");
+        let antideriv = result.unwrap().value;
+        verify_antiderivative(&pool, x, f, antideriv, "x·exp(x²)");
     }
 
     #[test]
@@ -280,8 +280,8 @@ mod tests {
             "∫ 2x·exp(x²) dx should be elementary; got: {result:?}"
         );
 
-        let F = result.unwrap().value;
-        verify_antiderivative(&pool, x, f, F, "2x·exp(x²)");
+        let antideriv = result.unwrap().value;
+        verify_antiderivative(&pool, x, f, antideriv, "2x·exp(x²)");
     }
 
     #[test]
@@ -303,8 +303,8 @@ mod tests {
             "∫ (2x²+1)·exp(x²) dx should be elementary; got: {result:?}"
         );
 
-        let F = result.unwrap().value;
-        verify_antiderivative(&pool, x, f, F, "(2x²+1)·exp(x²)");
+        let antideriv = result.unwrap().value;
+        verify_antiderivative(&pool, x, f, antideriv, "(2x²+1)·exp(x²)");
     }
 
     #[test]
@@ -322,8 +322,8 @@ mod tests {
             "∫ x²·exp(x) dx should be elementary; got: {result:?}"
         );
 
-        let F = result.unwrap().value;
-        verify_antiderivative(&pool, x, f, F, "x²·exp(x)");
+        let antideriv = result.unwrap().value;
+        verify_antiderivative(&pool, x, f, antideriv, "x²·exp(x)");
     }
 
     #[test]
@@ -341,8 +341,8 @@ mod tests {
             "∫ x³·exp(x) dx should be elementary; got: {result:?}"
         );
 
-        let F = result.unwrap().value;
-        verify_antiderivative(&pool, x, f, F, "x³·exp(x)");
+        let antideriv = result.unwrap().value;
+        verify_antiderivative(&pool, x, f, antideriv, "x³·exp(x)");
     }
 
     // -----------------------------------------------------------------------
@@ -363,8 +363,8 @@ mod tests {
             "∫ log(x)² dx should be elementary; got: {result:?}"
         );
 
-        let F = result.unwrap().value;
-        verify_antiderivative(&pool, x, f, F, "log(x)²");
+        let antideriv = result.unwrap().value;
+        verify_antiderivative(&pool, x, f, antideriv, "log(x)²");
     }
 
     #[test]
@@ -381,8 +381,8 @@ mod tests {
             "∫ x·log(x) dx should be elementary; got: {result:?}"
         );
 
-        let F = result.unwrap().value;
-        verify_antiderivative(&pool, x, f, F, "x·log(x)");
+        let antideriv = result.unwrap().value;
+        verify_antiderivative(&pool, x, f, antideriv, "x·log(x)");
     }
 
     #[test]
@@ -399,8 +399,8 @@ mod tests {
             "∫ log(x)³ dx should be elementary; got: {result:?}"
         );
 
-        let F = result.unwrap().value;
-        verify_antiderivative(&pool, x, f, F, "log(x)³");
+        let antideriv = result.unwrap().value;
+        verify_antiderivative(&pool, x, f, antideriv, "log(x)³");
     }
 
     // -----------------------------------------------------------------------
@@ -461,28 +461,34 @@ mod tests {
     // Verification helper
     // -----------------------------------------------------------------------
 
-    /// Verify `d/dx F = f` symbolically (using the symbolic diff engine).
-    fn verify_antiderivative(pool: &ExprPool, x: ExprId, f: ExprId, F: ExprId, label: &str) {
+    /// Verify `d/dx antideriv = f` symbolically (using the symbolic diff engine).
+    fn verify_antiderivative(
+        pool: &ExprPool,
+        x: ExprId,
+        f: ExprId,
+        antideriv: ExprId,
+        label: &str,
+    ) {
         use crate::diff::diff;
         use crate::poly::UniPoly;
 
-        let dF = diff(F, x, pool).unwrap();
+        let d_antideriv = diff(antideriv, x, pool).unwrap();
         // Compare as polynomials if possible; otherwise just check ExprId equality.
         match (
-            UniPoly::from_symbolic(dF.value, x, pool),
+            UniPoly::from_symbolic(d_antideriv.value, x, pool),
             UniPoly::from_symbolic(f, x, pool),
         ) {
             (Ok(a), Ok(b)) => {
                 assert_eq!(
                     a.coefficients_i64(),
                     b.coefficients_i64(),
-                    "{label}: d/dx F ≠ f (polynomial check)"
+                    "{label}: d/dx antideriv ≠ f (polynomial check)"
                 );
             }
             _ => {
                 // Non-polynomial: just check that the diff is structurally equivalent
                 // (this is a best-effort check for complex expressions).
-                let _ = dF.value; // At least the differentiation didn't crash.
+                let _ = d_antideriv.value; // At least the differentiation didn't crash.
             }
         }
     }

@@ -295,7 +295,7 @@ fn find_top_degree(coeffs: &[ExprId], pool: &ExprPool) -> usize {
 
 /// Trim trailing zero coefficients from the log polynomial.
 fn trim_zero_coeffs(mut coeffs: Vec<ExprId>, pool: &ExprPool) -> Vec<ExprId> {
-    while coeffs.last().map_or(false, |&c| is_zero(c, pool)) {
+    while coeffs.last().is_some_and(|&c| is_zero(c, pool)) {
         coeffs.pop();
     }
     if coeffs.is_empty() {
@@ -373,7 +373,7 @@ mod tests {
         let log_x = pool.func("log", vec![x]);
         let integrand = pool.pow(log_x, pool.integer(2_i32));
 
-        use super::super::tower::{find_generators, ExtensionKind};
+        use super::super::tower::find_generators;
         let gens = find_generators(integrand, x, &pool);
         assert_eq!(gens.len(), 1, "should find exactly one log generator");
         let level = &gens[0];

@@ -337,17 +337,6 @@ mod tests {
         ExprPool::new()
     }
 
-    /// Numerically verify that d/dx F = f at a test point.
-    fn numeric_check(pool: &ExprPool, f: ExprId, result: ExprId, var: ExprId, x_val: f64) {
-        use crate::kernel::ExprData;
-        // Simple finite-difference check: (F(x+h) - F(x-h)) / (2h) ≈ f(x)
-        // We'll just check using symbolic diff.
-        use crate::diff::diff;
-        let d = diff(result, var, pool).unwrap();
-        // At least the derivative should not crash.
-        let _ = d.value;
-    }
-
     #[test]
     fn exp_x2_is_nonelementary() {
         let pool = pool();
@@ -355,7 +344,7 @@ mod tests {
         let x2 = pool.pow(x, pool.integer(2_i32));
         let exp_x2 = pool.func("exp", vec![x2]);
 
-        use super::super::tower::{find_generators, ExtensionKind};
+        use super::super::tower::find_generators;
         let gens = find_generators(exp_x2, x, &pool);
         assert_eq!(gens.len(), 1);
         let level = &gens[0];
@@ -377,7 +366,7 @@ mod tests {
         let exp_x2 = pool.func("exp", vec![x2]);
         let integrand = pool.mul(vec![x, exp_x2]);
 
-        use super::super::tower::{find_generators, ExtensionKind};
+        use super::super::tower::find_generators;
         let gens = find_generators(integrand, x, &pool);
         assert_eq!(gens.len(), 1);
         let level = &gens[0];
