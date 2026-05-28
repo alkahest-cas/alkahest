@@ -119,9 +119,29 @@ function cellFromDemoSource(code: string): CellData {
   return newCell(code, 'code');
 }
 
+const NOTEBOOK_STORAGE_KEY = 'alkahest-playground-notebook';
+
+function loadSavedNotebook(): CellData[] | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(NOTEBOOK_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { code: string; cellType: string }[];
+    return parsed.map(({ code, cellType }) => newCell(code, cellType as CellData['cellType']));
+  } catch { return null; }
+}
+
+function saveNotebook(cells: CellData[]) {
+  localStorage.setItem(NOTEBOOK_STORAGE_KEY, JSON.stringify(
+    cells.map(({ code, cellType }) => ({ code, cellType })),
+  ));
+}
+
 function initialCells(demoParam: string): CellData[] {
   const codes = cellsFromDemoParam(demoParam);
   if (codes) return codes.map(cellFromDemoSource);
+  const saved = loadSavedNotebook();
+  if (saved) return saved;
   return INITIAL_CELLS;
 }
 
@@ -135,6 +155,7 @@ interface NotebookProps {
   /** Drop the max-width constraint for side-by-side compare layout. */
   compact?: boolean;
   onReady?: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 export default function Notebook({
@@ -143,6 +164,7 @@ export default function Notebook({
   demoParam = 'demo',
   compact = false,
   onReady,
+  onDirtyChange,
 }: NotebookProps = {}) {
   const [cells, dispatch] = useReducer(reducer, demoParam, initialCells);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -151,6 +173,33 @@ export default function Notebook({
   const [autoRunPending, setAutoRunPending] = useState(false);
   const cfg = useRef(loadConfig());
   const cleanupFns = useRef<Map<string, () => void>>(new Map());
+  const isDirtyRef = useRef(false);
+  const cellsRef = useRef(cells);
+  const onDirtyChangeRef = useRef(onDirtyChange);
+
+  useEffect(() => { cellsRef.current = cells; }, [cells]);
+  useEffect(() => { onDirtyChangeRef.current = onDirtyChange; }, [onDirtyChange]);
+
+  function userDispatch(action: Action) {
+    dispatch(action);
+    if (!isDirtyRef.current) {
+      isDirtyRef.current = true;
+      onDirtyChangeRef.current?.(true);
+    }
+  }
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        saveNotebook(cellsRef.current);
+        isDirtyRef.current = false;
+        onDirtyChangeRef.current?.(false);
+      }
+    }
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   const autoRun = readAutoRunFromUrl();
 
@@ -310,7 +359,7 @@ export default function Notebook({
       {/* Toolbar — hidden in zen mode */}
       {!zenMode && <div className="flex items-center gap-2 flex-wrap">
         <button
-          onClick={() => dispatch({ type: 'ADD_CELL' })}
+          onClick={() => userDispatch({ type: 'ADD_CELL' })}
           className="flex items-center gap-1.5 rounded border border-ak-border px-3 py-1.5 text-xs hover:bg-ak-code-bg transition-colors"
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg>
@@ -318,7 +367,7 @@ export default function Notebook({
         </button>
 
         <button
-          onClick={() => dispatch({ type: 'ADD_CELL', cellType: 'markdown' })}
+          onClick={() => userDispatch({ type: 'ADD_CELL', cellType: 'markdown' })}
           className="flex items-center gap-1.5 rounded border border-ak-border px-3 py-1.5 text-xs hover:bg-ak-code-bg transition-colors"
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 6h16M4 12h8M4 18h16"/></svg>
@@ -366,13 +415,13 @@ export default function Notebook({
           key={cell.id}
           cell={cell}
           index={i}
-          onCodeChange={(id, code) => dispatch({ type: 'SET_CODE', id, code })}
+          onCodeChange={(id, code) => userDispatch({ type: 'SET_CODE', id, code })}
           onRun={runCell}
-          onDelete={(id) => dispatch({ type: 'REMOVE_CELL', id })}
-          onMoveUp={(id) => dispatch({ type: 'MOVE_UP', id })}
-          onMoveDown={(id) => dispatch({ type: 'MOVE_DOWN', id })}
-          onAddBelow={(id) => dispatch({ type: 'ADD_CELL', afterId: id })}
-          onToggleCellType={(id) => dispatch({ type: 'TOGGLE_CELL_TYPE', id })}
+          onDelete={(id) => userDispatch({ type: 'REMOVE_CELL', id })}
+          onMoveUp={(id) => userDispatch({ type: 'MOVE_UP', id })}
+          onMoveDown={(id) => userDispatch({ type: 'MOVE_DOWN', id })}
+          onAddBelow={(id) => userDispatch({ type: 'ADD_CELL', afterId: id })}
+          onToggleCellType={(id) => userDispatch({ type: 'TOGGLE_CELL_TYPE', id })}
           onOutputsChange={(id, outputs) => dispatch({ type: 'SET_OUTPUTS', id, outputs })}
           zenMode={zenMode}
         />
@@ -381,7 +430,7 @@ export default function Notebook({
       {/* Add cell footer — hidden in zen mode */}
       {!zenMode && (
         <button
-          onClick={() => dispatch({ type: 'ADD_CELL' })}
+          onClick={() => userDispatch({ type: 'ADD_CELL' })}
           className="w-full rounded border border-dashed border-ak-border py-2 text-xs text-ak-muted hover:border-ak-muted hover:text-ak-fg transition-colors"
         >
           + add cell

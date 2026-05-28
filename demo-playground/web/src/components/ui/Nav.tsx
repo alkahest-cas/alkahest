@@ -11,9 +11,10 @@ interface NavProps {
   onToggleRecording?: () => void;
   serverStatus?: 'unknown' | 'online' | 'offline';
   zenMode?: boolean;
+  isDirty?: boolean;
 }
 
-export default function Nav({ isRecording, onToggleRecording, serverStatus = 'unknown', zenMode }: NavProps) {
+export default function Nav({ isRecording, onToggleRecording, serverStatus = 'unknown', zenMode, isDirty }: NavProps) {
   const pathname = usePathname();
   const { toggleSettings } = useSettings();
   const [zenVisible, setZenVisible] = useState(false);
@@ -49,10 +50,18 @@ export default function Nav({ isRecording, onToggleRecording, serverStatus = 'un
       >
         <div className="mx-auto flex max-w-6xl items-center gap-6 px-4 py-3">
           {/* Logo */}
-          <Link href="/" className="flex items-center gap-2 font-semibold text-ak-fg no-underline">
+          <a
+            href="https://alkahest-cas.github.io"
+            className="flex items-center gap-2 font-semibold text-ak-fg no-underline"
+            onClick={(e) => {
+              if (isDirty && !window.confirm('Leave the playground? Unsaved changes will be lost.\n\nTip: press Ctrl+S (or ⌘S) to save first.')) {
+                e.preventDefault();
+              }
+            }}
+          >
             <span className="text-ak-brand font-bold">alkahest</span>
             <span className="text-ak-muted font-normal text-sm">playground</span>
-          </Link>
+          </a>
 
           {/* Separator */}
           <div className="h-4 w-px bg-ak-border" />

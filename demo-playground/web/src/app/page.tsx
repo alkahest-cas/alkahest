@@ -13,6 +13,7 @@ export default function NotebookPage() {
   const [isRecording, setIsRecording] = useState(false);
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
   const [serverStatus, setServerStatus] = useState<'unknown' | 'online' | 'offline'>('unknown');
+  const [isDirty, setIsDirty] = useState(false);
   const [zenMode] = useState(readZenFromUrl);
 
   async function toggleRecording() {
@@ -54,6 +55,7 @@ export default function NotebookPage() {
           onToggleRecording={toggleRecording}
           serverStatus={serverStatus}
           zenMode={zenMode}
+          isDirty={isDirty}
         />
       )}
       <main>
@@ -61,6 +63,7 @@ export default function NotebookPage() {
         <Notebook
           zenMode={zenMode}
           onServerStatusChange={setServerStatus}
+          onDirtyChange={setIsDirty}
           onReady={() => document.documentElement.setAttribute('data-recording-ready', 'true')}
         />
       </main>
