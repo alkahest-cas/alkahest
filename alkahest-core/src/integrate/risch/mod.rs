@@ -34,6 +34,7 @@
 pub mod exp_case;
 pub mod log_case;
 pub mod poly_rde;
+pub mod rational_rde;
 pub mod tower;
 
 use crate::deriv::log::{DerivationLog, DerivedExpr};
@@ -401,6 +402,81 @@ mod tests {
 
         let antideriv = result.unwrap().value;
         verify_antiderivative(&pool, x, f, antideriv, "log(x)³");
+    }
+
+    // -----------------------------------------------------------------------
+    // Rational coefficients in the exp tower (Gap 1: rational Risch DE)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rational_coeff_exp_elementary() {
+        // ∫ (x−1)/x² · exp(x) dx = exp(x)/x.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let num = pool.add(vec![x, pool.integer(-1_i32)]); // x − 1
+        let inv_x2 = pool.pow(x, pool.integer(-2_i32)); // x⁻²
+        let f = pool.mul(vec![num, inv_x2, exp_x]);
+
+        // Must be routed to Risch and solved as elementary.
+        assert!(contains_risch_form(f, x, &pool), "should route to Risch");
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ (x−1)/x²·exp(x) dx should be elementary; got {result:?}"
+        );
+
+        // Verify d/dx F = f numerically at several points (the simplifier does not
+        // fully normalise rational sums, so a symbolic-zero check is too strict).
+        let antideriv = result.unwrap().value;
+        let d = crate::diff::diff(antideriv, x, &pool).unwrap();
+        for &xv in &[1.3_f64, 2.7, 4.1] {
+            let lhs = eval_f64(d.value, x, xv, &pool);
+            let rhs = eval_f64(f, x, xv, &pool);
+            assert!(
+                (lhs - rhs).abs() < 1e-9,
+                "d/dx F ≠ f at x={xv}: {lhs} vs {rhs}"
+            );
+        }
+    }
+
+    /// Minimal numeric evaluator for verification (Integer/Rational/Add/Mul/Pow/exp).
+    fn eval_f64(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> f64 {
+        use crate::kernel::ExprData;
+        if expr == x {
+            return xv;
+        }
+        match pool.get(expr) {
+            ExprData::Integer(n) => n.0.to_f64(),
+            ExprData::Rational(r) => r.0.to_f64(),
+            ExprData::Add(args) => args.iter().map(|&a| eval_f64(a, x, xv, pool)).sum(),
+            ExprData::Mul(args) => args.iter().map(|&a| eval_f64(a, x, xv, pool)).product(),
+            ExprData::Pow { base, exp } => {
+                eval_f64(base, x, xv, pool).powf(eval_f64(exp, x, xv, pool))
+            }
+            ExprData::Func { ref name, ref args } if name == "exp" && args.len() == 1 => {
+                eval_f64(args[0], x, xv, pool).exp()
+            }
+            other => panic!("eval_f64: unsupported node {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rational_coeff_exp_nonelementary() {
+        // ∫ x²/(x+1) · exp(x) dx leaves an Ei term — non-elementary.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let inv_xp1 = pool.pow(pool.add(vec![x, pool.integer(1_i32)]), pool.integer(-1_i32));
+        let f = pool.mul(vec![x2, inv_xp1, exp_x]);
+
+        assert!(contains_risch_form(f, x, &pool), "should route to Risch");
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ x²/(x+1)·exp(x) dx should be NonElementary; got {result:?}"
+        );
     }
 
     // -----------------------------------------------------------------------
