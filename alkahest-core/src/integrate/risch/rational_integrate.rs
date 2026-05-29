@@ -790,7 +790,7 @@ mod tests {
                     .iter()
                     .map(|&a| eval_env(a, x, xv, env, pool))
                     .collect();
-                if factors.iter().any(|&v| v == 0.0) {
+                if factors.contains(&0.0) {
                     0.0
                 } else {
                     factors.iter().product()
