@@ -13,6 +13,7 @@
 //! | `log(h)^n`, n ≥ 2 | `log(x)²`, `log(x)³` | ✓ |
 //! | `poly(x)·log(h)` | `x·log(x)`, `x²·log(x)` | ✓ |
 //! | Mixed exp + rational base | `x·exp(x²) + x²` | ✓ |
+//! | `ratfn(x)·exp(η)`, η polynomial | `(x−1)/x²·exp(x)` | ✓ (rational RDE) |
 //! | `sin(x)/x`, `exp(x)/x` | Ei, Si functions | ✗ (NonElementary) |
 //! | `exp(x²)/sqrt(x)` | Mixed algebraic+transcendental | ✗ (NotImplemented) |
 //!
@@ -22,8 +23,29 @@
 //!
 //! - [`tower`]: Differential field tower construction and generator detection.
 //! - [`poly_rde`]: Polynomial Risch Differential Equation (RDE) solver over ℚ\[x\].
+//! - [`rational_rde`]: Rational RDE solver over ℚ(x) (exp tower; Bronstein §6.1).
 //! - [`exp_case`]: Integration in the hyperexponential tower (t = exp(η)).
 //! - [`log_case`]: Integration in the hyperlogarithmic tower (t = log(h)).
+//!
+//! ## Current limitations
+//!
+//! This is a complete decision procedure only within the subset above; the
+//! known gaps (tracked against the project's Risch gap analysis) are:
+//!
+//! - **Rational RDE is exp-tower only** ([`rational_rde`]). The denominator bound
+//!   `E = gcd(B, B')` relies on the coefficient `f = k·η'` being a *polynomial*
+//!   (no poles), which holds in the exp tower for polynomial η. The **log tower**
+//!   ([`log_case`]) still handles polynomial coefficients only; rational
+//!   coefficients there fall through to `NotImplemented`. Coefficients are
+//!   restricted to ℚ (no algebraic-number coefficients), and η must be a
+//!   polynomial.
+//! - **No logarithmic-part output (Rothstein–Trager).** Integrals whose
+//!   antiderivative requires *new* `log` terms (the rational-function logarithmic
+//!   part) are not yet produced; such cases are reported `NonElementary` /
+//!   `NotImplemented` rather than completed.
+//! - **Single generator only.** Multiple interacting generators (e.g.
+//!   `exp(x)·log(x)`) and mixed algebraic+transcendental towers are unsupported;
+//!   independent sums are handled term-by-term.
 //!
 //! ## References
 //!
