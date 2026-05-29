@@ -217,10 +217,18 @@ fn integrate_log_poly_recursive(
 // Base-field integration (no log)
 // ---------------------------------------------------------------------------
 
-/// Integrate `expr` with respect to `var` using the full integration engine.
+/// Integrate `expr` with respect to `var` in the base differential field ℚ(x).
 ///
-/// First simplifies `expr`, then tries the rule-based engine.  For expressions
-/// that are zero, short-circuits and returns 0.
+/// First simplifies `expr`, then tries the rule-based engine, then falls back
+/// to the rational-function integrator (Hermite + Rothstein–Trager) for
+/// coefficients that arise from the IBP reduction and are not simple enough for
+/// the rule engine alone (e.g. `x²/(x+1)`, `1/(x+1)²`).
+///
+/// **Correctness note:** when called at IBP level k ≥ 1 the result may contain
+/// log terms (e.g. `∫ 1/(x+1) dx = log(x+1)`).  If those log terms involve the
+/// current log-tower generator `h`, the IBP correction `P·h'/h` becomes
+/// transcendental and the recursion will return `NotImplemented` at the next
+/// level — this is correct behaviour (the integral is likely non-elementary).
 fn integrate_base(
     expr: ExprId,
     var: ExprId,
@@ -235,7 +243,28 @@ fn integrate_base(
     }
 
     let mut inner_log = DerivationLog::new();
-    let result = crate::integrate::engine::integrate_raw(expr, var, pool, &mut inner_log)?;
+    let result = match crate::integrate::engine::integrate_raw(expr, var, pool, &mut inner_log) {
+        Ok(r) => r,
+        Err(crate::integrate::engine::IntegrationError::NotImplemented(_)) => {
+            // Fallback: rational-function integration via Hermite reduction +
+            // Rothstein–Trager.  This handles coefficients like x²/(x+1) or
+            // 1/(x+1)² that arise in the IBP loop but are beyond the power rule.
+            match crate::integrate::risch::rational_integrate::try_integrate_rational(
+                expr, var, pool,
+            ) {
+                Some(r) => r,
+                None => {
+                    return Err(crate::integrate::engine::IntegrationError::NotImplemented(
+                        format!(
+                            "integrate_base: {} is not integrable in ℚ(x)",
+                            pool.display(expr)
+                        ),
+                    ))
+                }
+            }
+        }
+        Err(other) => return Err(other),
+    };
     let result = crate::simplify::engine::simplify(result, pool).value;
     *log = log.clone().merge(inner_log);
     Ok(result)
@@ -451,5 +480,164 @@ mod tests {
         // x·log(x): needs Risch (non-constant coefficient)
         let x_log_x = pool.mul(vec![x, log_x]);
         assert!(needs_log_risch(x_log_x, x, &pool));
+    }
+
+    // -----------------------------------------------------------------------
+    // Rational-coefficient log tower (Gap A: RT fallback in integrate_base)
+    // -----------------------------------------------------------------------
+
+    /// Numeric evaluator for IBP verification: supports Integer, Rational,
+    /// Add, Mul, Pow, log, atan.
+    fn eval_f64(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> f64 {
+        use crate::kernel::ExprData;
+        if expr == x {
+            return xv;
+        }
+        match pool.get(expr) {
+            ExprData::Integer(n) => n.0.to_f64(),
+            ExprData::Rational(r) => r.0.to_f64(),
+            ExprData::Add(args) => args.iter().map(|&a| eval_f64(a, x, xv, pool)).sum(),
+            ExprData::Mul(args) => args.iter().map(|&a| eval_f64(a, x, xv, pool)).product(),
+            ExprData::Pow { base, exp } => {
+                eval_f64(base, x, xv, pool).powf(eval_f64(exp, x, xv, pool))
+            }
+            ExprData::Func { ref name, ref args } if args.len() == 1 => {
+                let a = eval_f64(args[0], x, xv, pool);
+                match name.as_str() {
+                    "log" => a.ln(),
+                    "atan" => a.atan(),
+                    "sqrt" => a.sqrt(),
+                    other => panic!("eval_f64: unsupported func {other}"),
+                }
+            }
+            other => panic!("eval_f64: unsupported node {other:?}"),
+        }
+    }
+
+    /// Verify d/dx antideriv ≈ integrand numerically at a few points.
+    fn verify_numeric(integrand: ExprId, antideriv: ExprId, x: ExprId, pool: &ExprPool) {
+        let d = crate::diff::diff(antideriv, x, pool).unwrap();
+        let ds = crate::simplify::engine::simplify(d.value, pool).value;
+        for &xv in &[0.3_f64, 1.7, 3.1] {
+            let lhs = eval_f64(ds, x, xv, pool);
+            let rhs = eval_f64(integrand, x, xv, pool);
+            assert!(
+                (lhs - rhs).abs() < 1e-8,
+                "d/dx F ≠ f at x={xv}: got {lhs}, expected {rhs}\n  F = {}",
+                pool.display(antideriv)
+            );
+        }
+    }
+
+    #[test]
+    fn x_times_log_x_plus_1() {
+        // ∫ x·log(x+1) dx = (x²/2 − 1/2)·log(x+1) − x²/4 + x/2
+        // Polynomial c_1=x → P_1=x²/2 → c_0 = −x²/(2(x+1)) (rational).
+        // The rational base-case integral uses the RT fallback.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let log_xp1 = pool.func("log", vec![pool.add(vec![x, pool.integer(1_i32)])]);
+        let integrand = pool.mul(vec![x, log_xp1]);
+
+        use super::super::tower::find_generators;
+        let gens = find_generators(integrand, x, &pool);
+        assert_eq!(gens.len(), 1, "should find exactly one log generator");
+        let level = &gens[0];
+
+        let mut inner_log = DerivationLog::new();
+        let result = integrate_log_tower(integrand, level, x, &pool, &mut inner_log);
+        assert!(
+            result.is_ok(),
+            "∫ x·log(x+1) dx should be elementary: {:?}",
+            result
+        );
+        verify_numeric(integrand, result.unwrap(), x, &pool);
+    }
+
+    #[test]
+    fn log_xp1_over_xp1_squared() {
+        // ∫ log(x+1)/(x+1)² dx = −log(x+1)/(x+1) − 1/(x+1)
+        // Rational c_1 = 1/(x+1)² → Hermite gives P_1 = −1/(x+1) (purely rational)
+        // → c_0 = 1/(x+1)² → Hermite again for the base case.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let xp1 = pool.add(vec![x, pool.integer(1_i32)]);
+        let log_xp1 = pool.func("log", vec![xp1]);
+        let integrand = pool.mul(vec![log_xp1, pool.pow(xp1, pool.integer(-2_i32))]);
+
+        use super::super::tower::find_generators;
+        let gens = find_generators(integrand, x, &pool);
+        assert_eq!(gens.len(), 1);
+        let level = &gens[0];
+
+        let mut inner_log = DerivationLog::new();
+        let result = integrate_log_tower(integrand, level, x, &pool, &mut inner_log);
+        assert!(
+            result.is_ok(),
+            "∫ log(x+1)/(x+1)² dx should be elementary: {:?}",
+            result
+        );
+        verify_numeric(integrand, result.unwrap(), x, &pool);
+    }
+
+    #[test]
+    fn log_x_over_xp1_squared() {
+        // ∫ log(x)/(x+1)² dx: rational c_1 = 1/(x+1)² with h=x.
+        // Hermite → P_1 = −1/(x+1) (rational), correction = 1/(x(x+1)) (rational).
+        // Base case: ∫ 1/(x(x+1)) dx = log(x) − log(x+1) via partial fractions.
+        // Full result: −log(x)/(x+1) + log(x) − log(x+1).
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let xp1 = pool.add(vec![x, pool.integer(1_i32)]);
+        let log_x = pool.func("log", vec![x]);
+        let integrand = pool.mul(vec![log_x, pool.pow(xp1, pool.integer(-2_i32))]);
+
+        use super::super::tower::find_generators;
+        let gens = find_generators(integrand, x, &pool);
+        assert_eq!(gens.len(), 1);
+        let level = &gens[0];
+
+        let mut inner_log = DerivationLog::new();
+        let result = integrate_log_tower(integrand, level, x, &pool, &mut inner_log);
+        assert!(
+            result.is_ok(),
+            "∫ log(x)/(x+1)² dx should be elementary: {:?}",
+            result
+        );
+        // The test points must avoid the singularity at x=0 and x=-1.
+        let d = crate::diff::diff(result.unwrap(), x, &pool).unwrap();
+        let ds = crate::simplify::engine::simplify(d.value, &pool).value;
+        for &xv in &[0.5_f64, 1.5, 2.5] {
+            let lhs = eval_f64(ds, x, xv, &pool);
+            let rhs = eval_f64(integrand, x, xv, &pool);
+            assert!(
+                (lhs - rhs).abs() < 1e-7,
+                "d/dx F ≠ f at x={xv}: {lhs} vs {rhs}"
+            );
+        }
+    }
+
+    #[test]
+    fn x2_times_log_x_plus_1() {
+        // ∫ x²·log(x+1) dx: polynomial c_1=x² → P_1=x³/3 → c_0=−x³/(3(x+1))
+        // (rational, needs RT + polynomial division).
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let log_xp1 = pool.func("log", vec![pool.add(vec![x, pool.integer(1_i32)])]);
+        let integrand = pool.mul(vec![pool.pow(x, pool.integer(2_i32)), log_xp1]);
+
+        use super::super::tower::find_generators;
+        let gens = find_generators(integrand, x, &pool);
+        assert_eq!(gens.len(), 1);
+        let level = &gens[0];
+
+        let mut inner_log = DerivationLog::new();
+        let result = integrate_log_tower(integrand, level, x, &pool, &mut inner_log);
+        assert!(
+            result.is_ok(),
+            "∫ x²·log(x+1) dx should be elementary: {:?}",
+            result
+        );
+        verify_numeric(integrand, result.unwrap(), x, &pool);
     }
 }

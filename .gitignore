@@ -53,6 +53,8 @@ tarpaulin-report.*
 
 # Misc
 tmp/
+.tmp-stale-nfs-pending-delete/
+temp-alkahest/
 .DS_Store
 LOCAL-AGENTS.md
 .idea/

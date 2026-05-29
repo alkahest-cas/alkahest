@@ -39,9 +39,11 @@ from pathlib import Path
 from typing import Any
 
 try:
+    from autogen_dir import autogen_path
     from bench_depth import get_profile, sizes_for_task
     from tasks import ALL_TASKS, BenchTask
 except ImportError:
+    from benchmarks.autogen_dir import autogen_path
     from benchmarks.bench_depth import get_profile, sizes_for_task
     from benchmarks.tasks import ALL_TASKS, BenchTask
 
@@ -334,14 +336,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("benchmarks/results/results.jsonl"),
-        help="JSONL output file (default: benchmarks/results/results.jsonl)",
+        default=autogen_path("cas_comparison_results.jsonl"),
+        help="JSONL output file (default: temp-alkahest/testing/autogen/cas_comparison_results.jsonl)",
     )
     parser.add_argument(
         "--report",
         type=Path,
-        default=Path("benchmarks/results/report.md"),
-        help="Markdown report output file (default: benchmarks/results/report.md)",
+        default=autogen_path("cas_comparison_report.md"),
+        help="Markdown report output file (default: temp-alkahest/testing/autogen/cas_comparison_report.md)",
     )
     parser.add_argument(
         "--tasks",

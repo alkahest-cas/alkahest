@@ -43,6 +43,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
+try:
+    from autogen_dir import autogen_path
+except ImportError:
+    from benchmarks.autogen_dir import autogen_path
+
 
 # ---------------------------------------------------------------------------
 # Data loading
@@ -251,8 +256,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--output",
-        default="benchmarks/results/criterion_report.html",
-        help="Output HTML file (default: benchmarks/results/criterion_report.html)",
+        default=str(autogen_path("criterion_report.html")),
+        help="Output HTML file (default: temp-alkahest/testing/autogen/criterion_report.html)",
     )
     parser.add_argument(
         "--threshold",
