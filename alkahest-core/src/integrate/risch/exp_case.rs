@@ -31,7 +31,8 @@ use crate::integrate::engine::IntegrationError;
 use crate::kernel::{ExprId, ExprPool};
 use crate::simplify::engine::simplify;
 
-use super::poly_rde::{expr_to_qpoly, is_free_of_var, qpoly_to_expr, solve_poly_rde};
+use super::poly_rde::{expr_to_qpoly, is_free_of_var, poly_scale, qpoly_to_expr, solve_poly_rde};
+use super::rational_rde::{expr_to_qrational, solve_rational_rde};
 use super::tower::{decompose_wrt_exp, poly_degree, TowerLevel};
 
 // ---------------------------------------------------------------------------
@@ -145,49 +146,90 @@ fn integrate_single_exp_term(
     // The antiderivative (if elementary) is v(x) · exp(kη)
     // where v satisfies: v' + k · η'(x) · v = c(x).
 
-    // Try to convert c(x) to a polynomial.
-    let c_poly = expr_to_qpoly(c_expr, var, pool).ok_or_else(|| {
-        IntegrationError::NotImplemented(format!(
-            "coefficient {} of exp(η)^{} is not a polynomial in the integration variable; \
-             only polynomial coefficients are supported",
+    // Build exp(kη) once: for k=1 use exp_gen directly; for k>1 use exp(kη).
+    let exp_k_eta = build_exp_k_eta(k, eta, exp_gen, pool);
+
+    // Non-elementary error shared by the polynomial and rational paths.
+    let non_elementary = || {
+        IntegrationError::NonElementary(format!(
+            "the Risch DE v'(x) + {}·({}(x))·v(x) = {}(x) has no rational solution;\n\
+             the integrand ∫ {} · exp(η)^{} dx is not an elementary function\n\
+             (η = {})",
+            k,
+            pool.display(deta_expr),
             pool.display(c_expr),
-            k
+            pool.display(c_expr),
+            k,
+            pool.display(eta),
         ))
-    })?;
+    };
 
-    // Solve the Risch DE: v' + k·η'·v = c.
-    match solve_poly_rde(k, deta, &c_poly) {
-        Some(v_poly) => {
-            // Elementary: result is v(x) · exp(kη).
-            let v_expr = qpoly_to_expr(&v_poly, var, pool);
-
-            // Build exp(kη): for k=1 use exp_gen directly; for k>1 use exp(kη).
-            let exp_k_eta = build_exp_k_eta(k, eta, exp_gen, pool);
-
-            let result = if is_one(v_expr, pool) {
-                exp_k_eta
-            } else {
-                pool.mul(vec![v_expr, exp_k_eta])
-            };
-
-            log.push(RewriteStep::simple("risch_exp_rde", c_expr, result));
-            Ok(result)
-        }
-        None => {
-            // The Risch DE has no polynomial solution → non-elementary.
-            Err(IntegrationError::NonElementary(format!(
-                "the Risch DE v'(x) + {}·({}(x))·v(x) = {}(x) has no polynomial solution;\n\
-                 the integrand ∫ {} · exp(η)^{} dx is not an elementary function\n\
-                 (η = {})",
-                k,
-                pool.display(deta_expr),
-                pool.display(c_expr),
-                pool.display(c_expr),
-                k,
-                pool.display(eta),
-            )))
-        }
+    // Fast path: polynomial coefficient → polynomial Risch DE (Bronstein §5.2).
+    if let Some(c_poly) = expr_to_qpoly(c_expr, var, pool) {
+        return match solve_poly_rde(k, deta, &c_poly) {
+            Some(v_poly) => {
+                let v_expr = qpoly_to_expr(&v_poly, var, pool);
+                let result = build_v_times_exp(v_expr, exp_k_eta, pool);
+                log.push(RewriteStep::simple("risch_exp_rde", c_expr, result));
+                Ok(result)
+            }
+            None => Err(non_elementary()),
+        };
     }
+
+    // Rational coefficient → rational Risch DE over ℚ(x) (Bronstein §6.1, Gap 1).
+    if let Some((c_num, c_den)) = expr_to_qrational(c_expr, var, pool) {
+        // f = k·η' is a polynomial in the exp tower.
+        let f = poly_scale(&deta.to_vec(), &rug::Rational::from(k));
+        return match solve_rational_rde(&f, &c_num, &c_den) {
+            Some((v_num, v_den)) => {
+                let v_expr = build_rational(&v_num, &v_den, var, pool);
+                let result = build_v_times_exp(v_expr, exp_k_eta, pool);
+                log.push(RewriteStep::simple(
+                    "risch_exp_rde_rational",
+                    c_expr,
+                    result,
+                ));
+                Ok(result)
+            }
+            None => Err(non_elementary()),
+        };
+    }
+
+    // c is neither a polynomial nor a rational function in `var` (e.g. it carries
+    // another transcendental generator) — outside the single-generator subset.
+    Err(IntegrationError::NotImplemented(format!(
+        "coefficient {} of exp(η)^{} is not a rational function in the integration \
+         variable; mixed/multiple generators are not yet supported",
+        pool.display(c_expr),
+        k
+    )))
+}
+
+/// Build `v · exp(kη)`, collapsing the `v = 1` case.
+fn build_v_times_exp(v_expr: ExprId, exp_k_eta: ExprId, pool: &ExprPool) -> ExprId {
+    if is_one(v_expr, pool) {
+        exp_k_eta
+    } else {
+        pool.mul(vec![v_expr, exp_k_eta])
+    }
+}
+
+/// Build the symbolic rational function `num(x) / den(x)`.
+fn build_rational(
+    num: &[rug::Rational],
+    den: &[rug::Rational],
+    var: ExprId,
+    pool: &ExprPool,
+) -> ExprId {
+    let num_expr = qpoly_to_expr(&num.to_vec(), var, pool);
+    // Denominator 1 → just the numerator.
+    if super::poly_rde::degree(&den.to_vec()) <= 0 && den.first().map(|c| *c == 1).unwrap_or(true) {
+        return num_expr;
+    }
+    let den_expr = qpoly_to_expr(&den.to_vec(), var, pool);
+    let den_inv = pool.pow(den_expr, pool.integer(-1_i32));
+    pool.mul(vec![num_expr, den_inv])
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +296,21 @@ pub fn needs_exp_risch(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
     needs_exp_risch_inner(expr, var, pool)
 }
 
+/// Returns `true` if `expr` is a negative integer power of a `var`-dependent
+/// base — i.e. a denominator that makes the surrounding coefficient a rational
+/// function in `var`.
+fn is_var_dependent_denominator(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    use crate::kernel::ExprData;
+    if let ExprData::Pow { base, exp } = pool.get(expr) {
+        if let ExprData::Integer(n) = pool.get(exp) {
+            if n.0.to_i64().is_some_and(|v| v < 0) {
+                return !is_free_of_var(base, var, pool);
+            }
+        }
+    }
+    false
+}
+
 fn needs_exp_risch_inner(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
     use crate::kernel::ExprData;
 
@@ -280,6 +337,10 @@ fn needs_exp_risch_inner(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
             let mut has_linear_exp = false;
             let mut max_poly_deg: u32 = 0;
             let mut has_nonlinear_exp = false;
+            // A var-dependent denominator (negative power) makes the exp coefficient
+            // a rational function — handled by the rational Risch DE (Gap 1), not the
+            // basic engine.
+            let mut has_rational_coeff = false;
 
             for &a in &args {
                 match pool.get(a) {
@@ -301,6 +362,8 @@ fn needs_exp_risch_inner(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
                         // Track degree of non-exp factors.
                         if let Some(d) = poly_degree(a, var, pool) {
                             max_poly_deg = max_poly_deg.max(d);
+                        } else if is_var_dependent_denominator(a, var, pool) {
+                            has_rational_coeff = true;
                         }
                     }
                 }
@@ -311,6 +374,11 @@ fn needs_exp_risch_inner(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
             }
             // Linear exp + polynomial factor of degree ≥ 2: Risch needed.
             if has_linear_exp && max_poly_deg >= 2 {
+                return true;
+            }
+            // Any exp generator with a rational (denominator-bearing) coefficient:
+            // route to the rational Risch DE.
+            if (has_linear_exp || has_nonlinear_exp) && has_rational_coeff {
                 return true;
             }
             // Check sub-expressions for nested cases.

@@ -13,7 +13,11 @@
 //! | `log(h)^n`, n ≥ 2 | `log(x)²`, `log(x)³` | ✓ |
 //! | `poly(x)·log(h)` | `x·log(x)`, `x²·log(x)` | ✓ |
 //! | Mixed exp + rational base | `x·exp(x²) + x²` | ✓ |
+//! | `ratfn(x)·exp(η)`, η polynomial | `(x−1)/x²·exp(x)` | ✓ (rational RDE) |
+//! | `A(x)/D(x)`, D splits over ℚ | `1/(x²−1)`, `x/(x−1)³` | ✓ (Hermite + Rothstein–Trager) |
+//! | `A(x)/D(x)`, irreducible quadratics | `1/(x²+1)`, `1/(x²−2)` | ✓ (log + arctan / √-log) |
 //! | `sin(x)/x`, `exp(x)/x` | Ei, Si functions | ✗ (NonElementary) |
+//! | `1/(x³+x+1)` | degree-≥3 algebraic residues (RootSum) | ✗ (NotImplemented) |
 //! | `exp(x²)/sqrt(x)` | Mixed algebraic+transcendental | ✗ (NotImplemented) |
 //!
 //! ## Architecture
@@ -22,8 +26,37 @@
 //!
 //! - [`tower`]: Differential field tower construction and generator detection.
 //! - [`poly_rde`]: Polynomial Risch Differential Equation (RDE) solver over ℚ\[x\].
+//! - [`rational_rde`]: Rational RDE solver over ℚ(x) (exp tower; Bronstein §6.1).
+//! - [`rational_integrate`]: Rational-function integration via Rothstein–Trager
+//!   (logarithmic part; Bronstein §2.5).
 //! - [`exp_case`]: Integration in the hyperexponential tower (t = exp(η)).
 //! - [`log_case`]: Integration in the hyperlogarithmic tower (t = log(h)).
+//!
+//! ## Current limitations
+//!
+//! This is a complete decision procedure only within the subset above; the
+//! known gaps (tracked against the project's Risch gap analysis) are:
+//!
+//! - **Rational RDE is exp-tower only** ([`rational_rde`]). The denominator bound
+//!   `E = gcd(B, B')` relies on the coefficient `f = k·η'` being a *polynomial*
+//!   (no poles), which holds in the exp tower for polynomial η. The **log tower**
+//!   ([`log_case`]) still handles polynomial coefficients only; rational
+//!   coefficients there fall through to `NotImplemented`. Coefficients are
+//!   restricted to ℚ (no algebraic-number coefficients), and η must be a
+//!   polynomial.
+//! - **Rational-function integration** ([`rational_integrate`]) is complete for
+//!   any denominator that factors over ℚ into **linear and quadratic** factors:
+//!   Hermite reduction (repeated factors), the Rothstein–Trager logarithmic part
+//!   (rational residues → `log`), and irreducible quadratics (negative
+//!   discriminant → `log` + `arctan`; positive discriminant → `log` with `√Δ`
+//!   coefficients). The one remaining gap is irreducible factors of **degree ≥ 3**,
+//!   whose antiderivative is a `Σ` over degree-≥3 algebraic residues; expressing
+//!   it needs a symbolic **`RootSum`** node in the kernel (with its own diff/eval/
+//!   simplify support), which is not yet implemented — those cases fall back and
+//!   surface as `NotImplemented`.
+//! - **Single generator only.** Multiple interacting generators (e.g.
+//!   `exp(x)·log(x)`) and mixed algebraic+transcendental towers are unsupported;
+//!   independent sums are handled term-by-term.
 //!
 //! ## References
 //!
@@ -34,6 +67,8 @@
 pub mod exp_case;
 pub mod log_case;
 pub mod poly_rde;
+pub mod rational_integrate;
+pub mod rational_rde;
 pub mod tower;
 
 use crate::deriv::log::{DerivationLog, DerivedExpr};
@@ -401,6 +436,81 @@ mod tests {
 
         let antideriv = result.unwrap().value;
         verify_antiderivative(&pool, x, f, antideriv, "log(x)³");
+    }
+
+    // -----------------------------------------------------------------------
+    // Rational coefficients in the exp tower (Gap 1: rational Risch DE)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rational_coeff_exp_elementary() {
+        // ∫ (x−1)/x² · exp(x) dx = exp(x)/x.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let num = pool.add(vec![x, pool.integer(-1_i32)]); // x − 1
+        let inv_x2 = pool.pow(x, pool.integer(-2_i32)); // x⁻²
+        let f = pool.mul(vec![num, inv_x2, exp_x]);
+
+        // Must be routed to Risch and solved as elementary.
+        assert!(contains_risch_form(f, x, &pool), "should route to Risch");
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ (x−1)/x²·exp(x) dx should be elementary; got {result:?}"
+        );
+
+        // Verify d/dx F = f numerically at several points (the simplifier does not
+        // fully normalise rational sums, so a symbolic-zero check is too strict).
+        let antideriv = result.unwrap().value;
+        let d = crate::diff::diff(antideriv, x, &pool).unwrap();
+        for &xv in &[1.3_f64, 2.7, 4.1] {
+            let lhs = eval_f64(d.value, x, xv, &pool);
+            let rhs = eval_f64(f, x, xv, &pool);
+            assert!(
+                (lhs - rhs).abs() < 1e-9,
+                "d/dx F ≠ f at x={xv}: {lhs} vs {rhs}"
+            );
+        }
+    }
+
+    /// Minimal numeric evaluator for verification (Integer/Rational/Add/Mul/Pow/exp).
+    fn eval_f64(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> f64 {
+        use crate::kernel::ExprData;
+        if expr == x {
+            return xv;
+        }
+        match pool.get(expr) {
+            ExprData::Integer(n) => n.0.to_f64(),
+            ExprData::Rational(r) => r.0.to_f64(),
+            ExprData::Add(args) => args.iter().map(|&a| eval_f64(a, x, xv, pool)).sum(),
+            ExprData::Mul(args) => args.iter().map(|&a| eval_f64(a, x, xv, pool)).product(),
+            ExprData::Pow { base, exp } => {
+                eval_f64(base, x, xv, pool).powf(eval_f64(exp, x, xv, pool))
+            }
+            ExprData::Func { ref name, ref args } if name == "exp" && args.len() == 1 => {
+                eval_f64(args[0], x, xv, pool).exp()
+            }
+            other => panic!("eval_f64: unsupported node {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rational_coeff_exp_nonelementary() {
+        // ∫ x²/(x+1) · exp(x) dx leaves an Ei term — non-elementary.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let inv_xp1 = pool.pow(pool.add(vec![x, pool.integer(1_i32)]), pool.integer(-1_i32));
+        let f = pool.mul(vec![x2, inv_xp1, exp_x]);
+
+        assert!(contains_risch_form(f, x, &pool), "should route to Risch");
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ x²/(x+1)·exp(x) dx should be NonElementary; got {result:?}"
+        );
     }
 
     // -----------------------------------------------------------------------

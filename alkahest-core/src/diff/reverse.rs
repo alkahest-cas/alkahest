@@ -206,6 +206,14 @@ fn func_local_deriv(name: &str, arg: ExprId, pool: &ExprPool) -> Option<ExprId> 
             let cos_x = pool.func("cos", vec![arg]);
             Some(pool.pow(cos_x, pool.integer(-2_i32)))
         }
+        "atan" => {
+            // d/dx atan(x) = 1/(1 + x²)
+            let one_plus_x2 = pool.add(vec![
+                pool.integer(1_i32),
+                pool.pow(arg, pool.integer(2_i32)),
+            ]);
+            Some(pool.pow(one_plus_x2, pool.integer(-1_i32)))
+        }
         _ => None,
     }
 }
@@ -353,6 +361,18 @@ mod tests {
         let exp_x = pool.func("exp", vec![x]);
         let gs = grad(exp_x, &[x], &pool);
         assert_eq!(gs[0], exp_x);
+    }
+
+    #[test]
+    fn grad_atan() {
+        // ∂atan(x)/∂x = 1/(1+x²)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let atan_x = pool.func("atan", vec![x]);
+        let gs = grad(atan_x, &[x], &pool);
+        let one_plus_x2 = pool.add(vec![pool.integer(1_i32), pool.pow(x, pool.integer(2_i32))]);
+        let expected = pool.pow(one_plus_x2, pool.integer(-1_i32));
+        assert_eq!(gs[0], expected, "d/dx atan(x) should be 1/(1+x²)");
     }
 
     #[test]

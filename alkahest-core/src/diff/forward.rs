@@ -154,6 +154,20 @@ impl DualValue {
         let tangent = pool.mul(vec![self.tangent, pool.pow(two_sqrt, pool.integer(-1_i32))]);
         DualValue::new(value, tangent)
     }
+
+    fn atan(self, pool: &ExprPool) -> Self {
+        // d/dx atan(f) = f' / (1 + f²)
+        let value = pool.func("atan", vec![self.value]);
+        let one_plus_f2 = pool.add(vec![
+            pool.integer(1_i32),
+            pool.pow(self.value, pool.integer(2_i32)),
+        ]);
+        let tangent = pool.mul(vec![
+            self.tangent,
+            pool.pow(one_plus_f2, pool.integer(-1_i32)),
+        ]);
+        DualValue::new(value, tangent)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -251,6 +265,7 @@ fn eval_dual(
                 "exp" => Ok(inner.exp(pool)),
                 "log" => Ok(inner.log(pool)),
                 "sqrt" => Ok(inner.sqrt(pool)),
+                "atan" => Ok(inner.atan(pool)),
                 other => Err(DiffError::ForwardUnknownFunction(other.to_string())),
             }
         }
