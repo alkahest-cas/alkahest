@@ -526,6 +526,12 @@ fn latex_r(id: ExprId, pool: &ExprPool) -> (String, i32) {
             let (a, _) = latex_r(*arg, pool);
             (format!(r"\mathcal{{O}}\!\left({a}\right)"), PREC_ATOM)
         }
+        ExprData::RootSum { poly, var, body } => {
+            let (p, _) = latex_r(*poly, pool);
+            let (v, _) = latex_r(*var, pool);
+            let (b, _) = latex_r(*body, pool);
+            (format!(r"\sum_{{{v} \, : \, {p} = 0}} {b}"), PREC_ATOM)
+        }
     })
 }
 
@@ -837,6 +843,12 @@ fn unicode_r(id: ExprId, pool: &ExprPool) -> (String, i32) {
         ExprData::BigO(arg) => {
             let (a, _) = unicode_r(*arg, pool);
             (format!("O({a})"), PREC_ATOM)
+        }
+        ExprData::RootSum { poly, var, body } => {
+            let (p, _) = unicode_r(*poly, pool);
+            let (v, _) = unicode_r(*var, pool);
+            let (b, _) = unicode_r(*body, pool);
+            (format!("∑_{{{v}:{p}=0}} {b}"), PREC_ATOM)
         }
     })
 }

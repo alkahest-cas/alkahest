@@ -184,7 +184,10 @@ fn match_one(
         ExprData::Func { name, args } => PatNode::Func(name.clone(), args.clone()),
         ExprData::Rational(_) | ExprData::Float(_) => PatNode::Literal,
         ExprData::Piecewise { .. } | ExprData::Predicate { .. } => PatNode::Literal,
-        ExprData::Forall { .. } | ExprData::Exists { .. } | ExprData::BigO(_) => PatNode::Literal,
+        ExprData::Forall { .. }
+        | ExprData::Exists { .. }
+        | ExprData::BigO(_)
+        | ExprData::RootSum { .. } => PatNode::Literal,
     });
 
     let expr_node = pool.with(expr, |data| match data {

@@ -193,6 +193,7 @@ fn collect_atom_factors(expr: ExprId, pool: &ExprPool) -> Option<(Vec<ExprId>, V
         | ExprData::Predicate { .. }
         | ExprData::Forall { .. }
         | ExprData::Exists { .. }
+        | ExprData::RootSum { .. }
         | ExprData::BigO(_) => None,
     }
 }

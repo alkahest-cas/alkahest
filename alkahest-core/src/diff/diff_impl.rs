@@ -151,6 +151,11 @@ fn diff_raw(
             branches: Vec<(ExprId, ExprId)>,
             default: ExprId,
         },
+        RootSum {
+            poly: ExprId,
+            rvar: ExprId,
+            body: ExprId,
+        },
     }
 
     let node = pool.with(expr, |data| match data {
@@ -177,6 +182,11 @@ fn diff_raw(
         ExprData::Predicate { .. } => Node::Const,
         ExprData::Forall { .. } | ExprData::Exists { .. } => Node::Const,
         ExprData::BigO(_) => Node::Const,
+        ExprData::RootSum { poly, var, body } => Node::RootSum {
+            poly: *poly,
+            rvar: *var,
+            body: *body,
+        },
     });
 
     match node {
@@ -360,6 +370,16 @@ fn diff_raw(
             log = log.merge(ddefault.log);
             let result = pool.piecewise(new_branches, ddefault.value);
             log.push(RewriteStep::simple("diff_piecewise", expr, result));
+            memo.insert(expr, result);
+            Ok(DerivedExpr::with_log(result, log))
+        }
+        // d/dx Σ_{c:P(c)=0} body(c,x) = Σ_{c:P(c)=0} ∂body/∂x.
+        // The root `c` (rvar) is constant in `x`; `poly` is free of `x`.
+        Node::RootSum { poly, rvar, body } => {
+            let dbody = diff_raw(body, var, pool, memo)?;
+            let result = pool.root_sum(poly, rvar, dbody.value);
+            let mut log = dbody.log;
+            log.push(RewriteStep::simple("diff_root_sum", expr, result));
             memo.insert(expr, result);
             Ok(DerivedExpr::with_log(result, log))
         }
