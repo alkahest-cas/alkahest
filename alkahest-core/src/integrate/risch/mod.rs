@@ -14,9 +14,10 @@
 //! | `poly(x)·log(h)` | `x·log(x)`, `x²·log(x)` | ✓ |
 //! | Mixed exp + rational base | `x·exp(x²) + x²` | ✓ |
 //! | `ratfn(x)·exp(η)`, η polynomial | `(x−1)/x²·exp(x)` | ✓ (rational RDE) |
-//! | `A(x)/D(x)`, D squarefree, ℚ residues | `1/(x²−1)`, `2x/(x²+1)` | ✓ (Rothstein–Trager) |
+//! | `A(x)/D(x)`, D splits over ℚ | `1/(x²−1)`, `x/(x−1)³` | ✓ (Hermite + Rothstein–Trager) |
+//! | `A(x)/D(x)`, irreducible quadratics | `1/(x²+1)`, `(x+1)/(x²+1)` | ✓ (log + arctan) |
 //! | `sin(x)/x`, `exp(x)/x` | Ei, Si functions | ✗ (NonElementary) |
-//! | `1/(x²+1)` | arctan (complex residues) | ✗ (NotImplemented) |
+//! | `1/(x²−2)` | algebraic-number logs | ✗ (NotImplemented) |
 //! | `exp(x²)/sqrt(x)` | Mixed algebraic+transcendental | ✗ (NotImplemented) |
 //!
 //! ## Architecture
@@ -43,13 +44,13 @@
 //!   coefficients there fall through to `NotImplemented`. Coefficients are
 //!   restricted to ℚ (no algebraic-number coefficients), and η must be a
 //!   polynomial.
-//! - **Rational-function integration is partial** ([`rational_integrate`]).
-//!   Hermite reduction (repeated factors) and the Rothstein–Trager logarithmic
-//!   part (rational residues) are implemented, so `∫ A/D` with `D` factoring into
-//!   ℚ-linear factors is complete. Still missing: **non-rational residues** —
-//!   irreducible factors of degree ≥ 2 (e.g. `1/(x²+1)`, whose answer needs
-//!   `arctan`/algebraic-number logs). Those fall back and surface as
-//!   `NotImplemented`.
+//! - **Rational-function integration** ([`rational_integrate`]) covers Hermite
+//!   reduction (repeated factors), the Rothstein–Trager logarithmic part
+//!   (rational residues → `log`), and irreducible **quadratic** factors with
+//!   negative discriminant (→ `log` + `arctan`). Still missing: irreducible
+//!   factors of **degree ≥ 3**, and quadratics with **positive discriminant**
+//!   (real irrational roots → algebraic-number `log`s); these fall back and
+//!   surface as `NotImplemented`.
 //! - **Single generator only.** Multiple interacting generators (e.g.
 //!   `exp(x)·log(x)`) and mixed algebraic+transcendental towers are unsupported;
 //!   independent sums are handled term-by-term.

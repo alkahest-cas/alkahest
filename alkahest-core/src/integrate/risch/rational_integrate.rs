@@ -95,7 +95,13 @@ pub fn try_integrate_rational(expr: ExprId, var: ExprId, pool: &ExprPool) -> Opt
             let drad = poly_monic(&poly_div_exact(&drad, &g));
             if degree(&drad) >= 1 {
                 let dprime = poly_deriv(&drad);
-                let logs = rothstein_trager(&h, &drad, &dprime, var, pool)?;
+                // Rothstein–Trager for rational residues; otherwise fall back to a
+                // partial-fraction pass that emits log + arctan for irreducible
+                // quadratic factors.
+                let logs = match rothstein_trager(&h, &drad, &dprime, var, pool) {
+                    Some(logs) => logs,
+                    None => partial_fraction_log_arctan(&h, &drad, var, pool)?,
+                };
                 terms.extend(logs);
             }
         }
@@ -383,6 +389,118 @@ fn lcm_denoms(polys: &[&QPoly]) -> Integer {
 }
 
 // ---------------------------------------------------------------------------
+// Non-rational residues: irreducible-quadratic → log + arctan
+// ---------------------------------------------------------------------------
+
+/// Factor a monic polynomial over ℚ into its monic irreducible factors
+/// (multiplicities expanded), via FLINT integer factorization.
+fn factor_monic_q(d: &QPoly, var: ExprId, pool: &ExprPool) -> Option<Vec<QPoly>> {
+    let m = lcm_denoms(&[d]);
+    let d_int = poly_scale(d, &Rational::from(m));
+    let d_expr = qpoly_to_expr(&d_int, var, pool);
+    let up = UniPoly::from_symbolic(d_expr, var, pool).ok()?;
+    let fac = up.factor_z().ok()?;
+    let mut factors = Vec::new();
+    for (f, mult) in fac.factors {
+        let qp: QPoly = f
+            .coefficients()
+            .iter()
+            .map(|c| Rational::from(c.clone()))
+            .collect();
+        let qp = poly_monic(&qp);
+        for _ in 0..mult {
+            factors.push(qp.clone());
+        }
+    }
+    Some(factors)
+}
+
+/// Coefficient of `x^i`, or 0.
+fn at(p: &QPoly, i: usize) -> Rational {
+    p.get(i).cloned().unwrap_or_else(|| Rational::from(0))
+}
+
+/// `c · e`, collapsing `c = 1`.
+fn scaled(c: &Rational, e: ExprId, pool: &ExprPool) -> ExprId {
+    if *c == 1 {
+        e
+    } else {
+        pool.mul(vec![rational_to_expr(c, pool), e])
+    }
+}
+
+/// Integrate a proper fraction `h/d` (`d` squarefree, monic, `gcd(h,d)=1`) by
+/// partial fractions over the ℚ-irreducible factorization, emitting `log` for
+/// linear factors and `log + arctan` for irreducible quadratics with negative
+/// discriminant.  Returns `None` for any factor of degree ≥ 3, or a quadratic
+/// with non-negative discriminant (real irrational roots — algebraic logs).
+fn partial_fraction_log_arctan(
+    h: &QPoly,
+    d: &QPoly,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<Vec<ExprId>> {
+    let factors = factor_monic_q(d, var, pool)?;
+    if factors.is_empty() {
+        return None;
+    }
+    let nums = partial_fractions(h, &factors)?;
+    let mut terms: Vec<ExprId> = Vec::new();
+
+    for (p, n) in factors.iter().zip(nums.iter()) {
+        let n = trim(n.clone());
+        if n.is_empty() {
+            continue;
+        }
+        match degree(p) {
+            1 => {
+                // p = x + a (monic); n is a constant c → c·log(p).
+                let p_expr = qpoly_to_expr(p, var, pool);
+                let logp = pool.func("log", vec![p_expr]);
+                terms.push(scaled(&at(&n, 0), logp, pool));
+            }
+            2 => {
+                // p = x² + b·x + c0;  n = M·x + N.
+                let b = at(p, 1);
+                let c0 = at(p, 0);
+                let big_m = at(&n, 1);
+                let big_n = at(&n, 0);
+                // Discriminant b² − 4c0; require < 0 (complex conjugate roots).
+                let disc = b.clone() * b.clone() - Rational::from(4) * c0.clone();
+                if disc >= 0 {
+                    return None; // real roots → algebraic logs, not handled
+                }
+                let d2 = Rational::from(4) * c0.clone() - b.clone() * b.clone(); // = −disc > 0
+
+                // Log part: (M/2)·log(x² + b·x + c0).
+                if big_m != 0 {
+                    let p_expr = qpoly_to_expr(p, var, pool);
+                    let logp = pool.func("log", vec![p_expr]);
+                    terms.push(scaled(&(big_m.clone() / Rational::from(2)), logp, pool));
+                }
+
+                // Arctan part: (2N − M·b)/√d2 · atan((2x + b)/√d2).
+                let coeff_num = Rational::from(2) * big_n.clone() - big_m.clone() * b.clone();
+                if coeff_num != 0 {
+                    let sqrt_d2 = pool.func("sqrt", vec![rational_to_expr(&d2, pool)]);
+                    let sqrt_inv = pool.pow(sqrt_d2, pool.integer(-1_i32));
+                    let two_x_plus_b = pool.add(vec![
+                        pool.mul(vec![pool.integer(2_i32), var]),
+                        rational_to_expr(&b, pool),
+                    ]);
+                    let arg = pool.mul(vec![two_x_plus_b, sqrt_inv]);
+                    let atan = pool.func("atan", vec![arg]);
+                    let coeff = pool.mul(vec![rational_to_expr(&coeff_num, pool), sqrt_inv]);
+                    terms.push(pool.mul(vec![coeff, atan]));
+                }
+            }
+            _ => return None, // irreducible factor of degree ≥ 3
+        }
+    }
+    Some(terms)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -406,8 +524,14 @@ mod tests {
             ExprData::Add(args) => args.iter().map(|&a| eval(a, x, xv, pool)).sum(),
             ExprData::Mul(args) => args.iter().map(|&a| eval(a, x, xv, pool)).product(),
             ExprData::Pow { base, exp } => eval(base, x, xv, pool).powf(eval(exp, x, xv, pool)),
-            ExprData::Func { ref name, ref args } if name == "log" && args.len() == 1 => {
-                eval(args[0], x, xv, pool).ln()
+            ExprData::Func { ref name, ref args } if args.len() == 1 => {
+                let a = eval(args[0], x, xv, pool);
+                match name.as_str() {
+                    "log" => a.ln(),
+                    "atan" => a.atan(),
+                    "sqrt" => a.sqrt(),
+                    other => panic!("eval: unsupported func {other}"),
+                }
             }
             other => panic!("eval: unsupported {other:?}"),
         }
@@ -495,12 +619,69 @@ mod tests {
     }
 
     #[test]
-    fn complex_residues_unsupported() {
-        // ∫ 1/(x²+1) dx needs arctan (residues ±i/2) — not handled here → None.
+    fn arctan_one_over_x2_plus_1() {
+        // ∫ 1/(x²+1) dx = atan(x).
         let pool = pool();
         let x = pool.symbol("x", Domain::Real);
         let den = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(1_i32)]);
         let f = pool.pow(den, pool.integer(-1_i32));
+        let result = try_integrate_rational(f, x, &pool).expect("arctan path");
+        verify(f, result, x, &pool);
+        assert!(pool.display(result).to_string().contains("atan"));
+    }
+
+    #[test]
+    fn arctan_one_over_x2_plus_4() {
+        // ∫ 1/(x²+4) dx = ½·atan(x/2).
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let den = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(4_i32)]);
+        let f = pool.pow(den, pool.integer(-1_i32));
+        let result = try_integrate_rational(f, x, &pool).expect("arctan path");
+        verify(f, result, x, &pool);
+    }
+
+    #[test]
+    fn log_plus_arctan_mixed_numerator() {
+        // ∫ (x+1)/(x²+1) dx = ½·log(x²+1) + atan(x): both a log and an arctan term.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let den = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(1_i32)]);
+        let num = pool.add(vec![x, pool.integer(1_i32)]);
+        let f = pool.mul(vec![num, pool.pow(den, pool.integer(-1_i32))]);
+        let result = try_integrate_rational(f, x, &pool).expect("log + arctan");
+        verify(f, result, x, &pool);
+        let s = pool.display(result).to_string();
+        assert!(
+            s.contains("atan") && s.contains("log"),
+            "expected log and atan: {s}"
+        );
+    }
+
+    #[test]
+    fn linear_and_quadratic_factors() {
+        // ∫ 1/((x−1)(x²+1)) dx — a linear (log) and an irreducible quadratic
+        // (log + arctan) factor together.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let xm1 = pool.add(vec![x, pool.integer(-1_i32)]);
+        let x2p1 = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(1_i32)]);
+        let den = pool.mul(vec![xm1, x2p1]);
+        let f = pool.pow(den, pool.integer(-1_i32));
+        let result = try_integrate_rational(f, x, &pool).expect("mixed factors");
+        verify(f, result, x, &pool);
+    }
+
+    #[test]
+    fn real_irrational_roots_decline() {
+        // ∫ 1/(x²−2) dx has real irrational residues (±1/(2√2)) — algebraic logs,
+        // not emitted by this path → None.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let den = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(-2_i32)]);
+        let f = pool.pow(den, pool.integer(-1_i32));
+        // x²−2 = (x−√2)(x+√2): rational residues? No — RT resultant roots ±1/(2√2)
+        // are irrational, and the quadratic has positive discriminant → declines.
         assert!(try_integrate_rational(f, x, &pool).is_none());
     }
 

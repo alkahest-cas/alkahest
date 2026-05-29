@@ -1222,16 +1222,15 @@ mod tests {
     }
 
     #[test]
-    fn arctan_case_still_declines() {
-        // ∫ 1/(x²+1) dx needs arctan — unsupported; must surface NotImplemented.
+    fn arctan_case_via_fallback() {
+        // ∫ 1/(x²+1) dx = atan(x), via the Rothstein–Trager / arctan fallback.
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let den = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(1_i32)]);
         let f = pool.pow(den, pool.integer(-1_i32));
-        assert!(matches!(
-            integrate(f, x, &pool),
-            Err(IntegrationError::NotImplemented(_))
-        ));
+        let r = integrate(f, x, &pool);
+        assert!(r.is_ok(), "∫ 1/(x²+1) dx should integrate; got {r:?}");
+        assert!(pool.display(r.unwrap().value).to_string().contains("atan"));
     }
 
     fn eval_simple(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> f64 {
