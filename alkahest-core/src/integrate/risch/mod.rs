@@ -43,13 +43,13 @@
 //!   coefficients there fall through to `NotImplemented`. Coefficients are
 //!   restricted to ℚ (no algebraic-number coefficients), and η must be a
 //!   polynomial.
-//! - **Rothstein–Trager is partial** ([`rational_integrate`]). The logarithmic
-//!   part is produced for a **squarefree** denominator whose resultant roots are
-//!   **rational** (ℚ-linear combinations of `log`s of ℚ-polynomials). Still
-//!   missing: **Hermite reduction** for repeated factors (non-squarefree
-//!   denominators), and **non-rational residues** (e.g. `1/(x²+1)`, whose answer
-//!   needs `arctan`/algebraic-number logs). Those cases fall back to the rule
-//!   engine and surface as `NotImplemented`.
+//! - **Rational-function integration is partial** ([`rational_integrate`]).
+//!   Hermite reduction (repeated factors) and the Rothstein–Trager logarithmic
+//!   part (rational residues) are implemented, so `∫ A/D` with `D` factoring into
+//!   ℚ-linear factors is complete. Still missing: **non-rational residues** —
+//!   irreducible factors of degree ≥ 2 (e.g. `1/(x²+1)`, whose answer needs
+//!   `arctan`/algebraic-number logs). Those fall back and surface as
+//!   `NotImplemented`.
 //! - **Single generator only.** Multiple interacting generators (e.g.
 //!   `exp(x)·log(x)`) and mixed algebraic+transcendental towers are unsupported;
 //!   independent sums are handled term-by-term.
