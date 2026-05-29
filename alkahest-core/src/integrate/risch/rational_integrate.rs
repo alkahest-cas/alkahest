@@ -22,8 +22,8 @@
 //! - **Rothstein–Trager** then produces the logs for the squarefree remainder
 //!   when its resultant roots are **rational** (a ℚ-linear combination of `log`s
 //!   of ℚ-polynomials).
-//! - Otherwise, [`partial_fraction_log_arctan`] factors the squarefree
-//!   denominator over ℚ and integrates each irreducible factor: linear → `log`,
+//! - Otherwise, a partial-fraction pass factors the squarefree denominator over
+//!   ℚ and integrates each irreducible factor: linear → `log`,
 //!   irreducible quadratic → `log` + `arctan` (negative discriminant) or `log`
 //!   with `√Δ` coefficients (positive discriminant).
 //! - Returns `None` (so the caller falls back) only for irreducible factors of
