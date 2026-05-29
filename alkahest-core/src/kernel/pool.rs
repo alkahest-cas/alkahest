@@ -297,6 +297,11 @@ impl ExprPool {
         self.intern(ExprData::Exists { var, body })
     }
 
+    /// `Σ_{c : poly(c)=0} body[var := c]` — a sum over the roots of `poly`.
+    pub fn root_sum(&self, poly: ExprId, var: ExprId, body: ExprId) -> ExprId {
+        self.intern(ExprData::RootSum { poly, var, body })
+    }
+
     /// `O(arg)` — symbolic big-O bound used in truncated series (V2-15).
     pub fn big_o(&self, arg: ExprId) -> ExprId {
         self.intern(ExprData::BigO(arg))
@@ -428,6 +433,15 @@ fn fmt_data(data: &ExprData, pool: &ExprPool, f: &mut fmt::Formatter<'_>) -> fmt
         }
         ExprData::BigO(arg) => {
             write!(f, "O({})", pool.display(*arg))
+        }
+        ExprData::RootSum { poly, var, body } => {
+            write!(
+                f,
+                "RootSum({}, {} . {})",
+                pool.display(*poly),
+                pool.display(*var),
+                pool.display(*body)
+            )
         }
     }
 }

@@ -57,6 +57,7 @@ mod backend {
             | ExprData::Predicate { .. }
             | ExprData::Forall { .. }
             | ExprData::Exists { .. }
+            | ExprData::RootSum { .. }
             | ExprData::BigO(_) => Node::Unsupported,
         });
 
@@ -159,6 +160,11 @@ mod backend {
             }
             ExprData::BigO(arg) => {
                 count_dag_nodes_rec(arg, pool, visited);
+            }
+            ExprData::RootSum { poly, var, body } => {
+                count_dag_nodes_rec(poly, pool, visited);
+                count_dag_nodes_rec(var, pool, visited);
+                count_dag_nodes_rec(body, pool, visited);
             }
             // Leaf nodes
             ExprData::Integer(_)

@@ -106,6 +106,9 @@ fn propagate(node: ExprId, adj: ExprId, adjoints: &mut HashMap<ExprId, ExprId>, 
         ExprData::Piecewise { .. } | ExprData::Predicate { .. } => Op::Atom,
         ExprData::Forall { .. } | ExprData::Exists { .. } => Op::Atom,
         ExprData::BigO(_) => Op::Atom,
+        // RootSum is a binder; reverse-mode AD treats it as atomic (use the
+        // symbolic differentiator `diff` for correct RootSum derivatives).
+        ExprData::RootSum { .. } => Op::Atom,
     });
 
     match op {

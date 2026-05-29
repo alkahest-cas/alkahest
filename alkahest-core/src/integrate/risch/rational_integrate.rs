@@ -23,15 +23,21 @@
 //!   when its resultant roots are **rational** (a ℚ-linear combination of `log`s
 //!   of ℚ-polynomials).
 //! - Otherwise, a partial-fraction pass factors the squarefree denominator over
-//!   ℚ and integrates each irreducible factor: linear → `log`,
-//!   irreducible quadratic → `log` + `arctan` (negative discriminant) or `log`
-//!   with `√Δ` coefficients (positive discriminant).
-//! - Returns `None` (so the caller falls back) only for irreducible factors of
-//!   **degree ≥ 3**, whose antiderivative is a sum over degree-≥3 algebraic
-//!   residues and needs a symbolic `RootSum` representation not yet available.
+//!   ℚ and integrates each irreducible factor:
+//!   * linear → `log`;
+//!   * irreducible quadratic → `log` + `arctan` (negative discriminant) or `log`
+//!     with `√Δ` coefficients (positive discriminant);
+//!   * irreducible factor of **degree ≥ 3** → a [`crate::kernel::ExprData::RootSum`]
+//!     over the degree-≥3 algebraic residues (Lazard–Rioboo–Trager): the residue
+//!     minimal polynomial is an irreducible factor of `R(t) = res_x(N − t·P', P)`,
+//!     and the log argument `gcd_x(N − t·P', P)` is computed in the number field
+//!     `ℚ[t]/Q(t)`.
 //!
-//! References: Rothstein (1976); Trager (1976); Bronstein (2005) §2.2–2.5;
-//! SymPy `sympy/integrals/risch.py` (`residue_reduce`, `log_part`).
+//! Thus `∫ A/D` is complete for every denominator that factors over ℚ — the only
+//! `None` results are non-rational integrands handled elsewhere.
+//!
+//! References: Rothstein (1976); Trager (1976); Lazard & Rioboo (1990);
+//! Bronstein (2005) §2.2–2.5; SymPy `sympy/integrals/risch.py`.
 
 use rug::{Integer, Rational};
 
@@ -392,6 +398,191 @@ fn lcm_denoms(polys: &[&QPoly]) -> Integer {
 }
 
 // ---------------------------------------------------------------------------
+// Degree-≥3 algebraic residues: RootSum via Rothstein–Trager over ℚ[t]/Q
+// ---------------------------------------------------------------------------
+
+/// Build the Rothstein–Trager resultant `R(t) = res_x(num − t·dprime, d)` as a
+/// ℚ-polynomial in the parameter symbol `param`.
+fn resultant_param_poly(
+    num: &QPoly,
+    dprime: &QPoly,
+    d: &QPoly,
+    var: ExprId,
+    param: ExprId,
+    pool: &ExprPool,
+) -> Option<QPoly> {
+    // Clear denominators of num and dprime by one common factor so the parameter
+    // roots are exactly the residues; d by its own factor (constant in t).
+    let l = lcm_denoms(&[num, dprime]);
+    let num_int = poly_scale(num, &Rational::from(l.clone()));
+    let dp_int = poly_scale(dprime, &Rational::from(l));
+    let m = lcm_denoms(&[d]);
+    let d_int = poly_scale(d, &Rational::from(m));
+
+    let num_expr = qpoly_to_expr(&num_int, var, pool);
+    let dp_expr = qpoly_to_expr(&dp_int, var, pool);
+    let p_expr = pool.add(vec![
+        num_expr,
+        pool.mul(vec![pool.integer(-1_i32), param, dp_expr]),
+    ]);
+    let d_expr = qpoly_to_expr(&d_int, var, pool);
+    let res = crate::poly::resultant(p_expr, d_expr, var, pool).ok()?;
+    let up = UniPoly::from_symbolic(res.value, param, pool).ok()?;
+    if up.degree() < 1 {
+        return None;
+    }
+    Some(
+        up.coefficients()
+            .iter()
+            .map(|c| Rational::from(c.clone()))
+            .collect(),
+    )
+}
+
+// --- Number-field K = ℚ[t]/Q arithmetic (elements are QPolys reduced mod Q) ---
+
+fn k_mul(a: &QPoly, b: &QPoly, q: &QPoly) -> QPoly {
+    poly_mod(&poly_mul(a, b), q)
+}
+fn k_sub(a: &QPoly, b: &QPoly, q: &QPoly) -> QPoly {
+    poly_mod(&poly_sub(a, b), q)
+}
+fn k_is_zero(a: &QPoly) -> bool {
+    trim(a.clone()).is_empty()
+}
+
+/// Degree (in x) of a K-polynomial (coefficients are K-elements).
+fn kdeg(p: &[QPoly]) -> i64 {
+    let mut d = p.len() as i64 - 1;
+    while d >= 0 && k_is_zero(&p[d as usize]) {
+        d -= 1;
+    }
+    d
+}
+
+fn kpoly_trim(mut p: Vec<QPoly>) -> Vec<QPoly> {
+    while p.last().is_some_and(k_is_zero) {
+        p.pop();
+    }
+    p
+}
+
+/// Euclidean division of K-polynomials in `x`; returns `(quot, rem)`.
+fn kpoly_divrem(a: &[QPoly], b: &[QPoly], q: &QPoly) -> Option<(Vec<QPoly>, Vec<QPoly>)> {
+    let bd = kdeg(b);
+    if bd < 0 {
+        return None; // division by zero
+    }
+    let lead_inv = mod_inverse(&b[bd as usize], q)?;
+    let mut r = kpoly_trim(a.to_vec());
+    let ad = kdeg(&r);
+    if ad < bd {
+        return Some((vec![], r));
+    }
+    let mut quot = vec![poly_zero(); (ad - bd + 1) as usize];
+    loop {
+        let rd = kdeg(&r);
+        if rd < bd {
+            break;
+        }
+        let coeff = k_mul(&r[rd as usize], &lead_inv, q);
+        let shift = (rd - bd) as usize;
+        for (i, bi) in b.iter().enumerate() {
+            if shift + i < r.len() {
+                r[shift + i] = k_sub(&r[shift + i], &k_mul(&coeff, bi, q), q);
+            }
+        }
+        quot[shift] = coeff;
+        r = kpoly_trim(r);
+        if r.is_empty() {
+            break;
+        }
+    }
+    Some((kpoly_trim(quot), r))
+}
+
+/// Monic GCD (in `x`) of two K-polynomials over `K = ℚ[t]/Q`.
+fn kpoly_gcd(a: &[QPoly], b: &[QPoly], q: &QPoly) -> Option<Vec<QPoly>> {
+    let mut a = kpoly_trim(a.to_vec());
+    let mut b = kpoly_trim(b.to_vec());
+    while kdeg(&b) >= 0 {
+        let (_, rem) = kpoly_divrem(&a, &b, q)?;
+        a = b;
+        b = rem;
+    }
+    let ad = kdeg(&a);
+    if ad < 0 {
+        return None;
+    }
+    // Make monic in x.
+    let lead_inv = mod_inverse(&a[ad as usize], q)?;
+    Some(a.iter().map(|c| k_mul(c, &lead_inv, q)).collect())
+}
+
+/// The Lazard–Rioboo–Trager log argument `S(t, x) = gcd_x(num − t·dprime, d)`
+/// computed over `K = ℚ[t]/Q`, returned as a symbolic polynomial in `x` whose
+/// coefficients are expressions in the root symbol `rvar`.
+fn alg_log_argument(
+    num: &QPoly,
+    dprime: &QPoly,
+    d: &QPoly,
+    q: &QPoly,
+    var: ExprId,
+    rvar: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    let width = (degree(num).max(degree(dprime)) + 1).max(0) as usize;
+    // A = num − t·dprime  (K-poly in x): A[i] = num[i] − dprime[i]·t.
+    let a: Vec<QPoly> = (0..width)
+        .map(|i| {
+            let ni = coeff_at(num, i);
+            let ppi = coeff_at(dprime, i);
+            poly_mod(&vec![ni, -ppi], q)
+        })
+        .collect();
+    // B = d  (K-poly in x): each coefficient is a K-constant.
+    let b: Vec<QPoly> = d
+        .iter()
+        .map(|c| {
+            if *c == 0 {
+                poly_zero()
+            } else {
+                vec![c.clone()]
+            }
+        })
+        .collect();
+
+    let s = kpoly_gcd(&a, &b, q)?;
+    if kdeg(&s) < 1 {
+        return None; // no nontrivial common factor — not a valid residue
+    }
+    // Build Σ_i coeff_i(rvar) · x^i.
+    let mut terms: Vec<ExprId> = Vec::new();
+    for (i, c) in s.iter().enumerate() {
+        if k_is_zero(c) {
+            continue;
+        }
+        let c_expr = qpoly_to_expr(c, rvar, pool);
+        let term = match i {
+            0 => c_expr,
+            1 => pool.mul(vec![c_expr, var]),
+            _ => pool.mul(vec![c_expr, pool.pow(var, pool.integer(i as i32))]),
+        };
+        terms.push(term);
+    }
+    Some(match terms.len() {
+        0 => return None,
+        1 => terms[0],
+        _ => pool.add(terms),
+    })
+}
+
+/// Coefficient of `x^i` in a QPoly, or 0.
+fn coeff_at(p: &QPoly, i: usize) -> Rational {
+    p.get(i).cloned().unwrap_or_else(|| Rational::from(0))
+}
+
+// ---------------------------------------------------------------------------
 // Non-rational residues: irreducible-quadratic → log + arctan
 // ---------------------------------------------------------------------------
 
@@ -522,7 +713,38 @@ fn partial_fraction_log_arctan(
                     }
                 }
             }
-            _ => return None, // irreducible factor of degree ≥ 3 → RootSum needed
+            _ => {
+                // Irreducible factor of degree ≥ 3: residues are algebraic numbers
+                // of degree ≥ 2 → emit a RootSum (Lazard–Rioboo–Trager).
+                let pp = poly_deriv(p);
+                let rvar = pool.symbol("$root$", Domain::Complex);
+                let rt = resultant_param_poly(&n, &pp, p, var, rvar, pool)?;
+                // Radical of R(t): distinct residues only.
+                let rad = poly_monic(&poly_div_exact(&rt, &poly_gcd(&rt, &poly_deriv(&rt))));
+                let factors_t = factor_monic_q(&rad, rvar, pool)?;
+                for qf in &factors_t {
+                    match degree(qf) {
+                        d if d <= 0 => {}
+                        1 => {
+                            // Rational residue c (monic linear factor t + a₀ ⇒ c = −a₀).
+                            let c = -coeff_at(qf, 0);
+                            let shifted = poly_sub(&n, &poly_scale(&pp, &c));
+                            let gc = poly_monic(&poly_gcd(&shifted, p));
+                            if degree(&gc) >= 1 {
+                                let logp = pool.func("log", vec![qpoly_to_expr(&gc, var, pool)]);
+                                terms.push(scaled(&c, logp, pool));
+                            }
+                        }
+                        _ => {
+                            // RootSum(Q, t, t·log(S(t,x))).
+                            let s_expr = alg_log_argument(&n, &pp, p, qf, var, rvar, pool)?;
+                            let body = pool.mul(vec![rvar, pool.func("log", vec![s_expr])]);
+                            let q_expr = qpoly_to_expr(qf, rvar, pool);
+                            terms.push(pool.root_sum(q_expr, rvar, body));
+                        }
+                    }
+                }
+            }
         }
     }
     Some(terms)
@@ -541,19 +763,52 @@ mod tests {
         ExprPool::new()
     }
 
-    /// Numeric evaluator for verification (Integer/Rational/Add/Mul/Pow/log).
+    /// Numeric evaluator for verification (Integer/Rational/Add/Mul/Pow/log/…),
+    /// including `RootSum` via a real-root environment binding `env`.
     fn eval(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> f64 {
+        eval_env(expr, x, xv, &[], pool)
+    }
+
+    fn eval_env(expr: ExprId, x: ExprId, xv: f64, env: &[(ExprId, f64)], pool: &ExprPool) -> f64 {
         if expr == x {
             return xv;
+        }
+        for &(sym, val) in env {
+            if expr == sym {
+                return val;
+            }
         }
         match pool.get(expr) {
             ExprData::Integer(n) => n.0.to_f64(),
             ExprData::Rational(r) => r.0.to_f64(),
-            ExprData::Add(args) => args.iter().map(|&a| eval(a, x, xv, pool)).sum(),
-            ExprData::Mul(args) => args.iter().map(|&a| eval(a, x, xv, pool)).product(),
-            ExprData::Pow { base, exp } => eval(base, x, xv, pool).powf(eval(exp, x, xv, pool)),
+            ExprData::Add(args) => args.iter().map(|&a| eval_env(a, x, xv, env, pool)).sum(),
+            ExprData::Mul(args) => {
+                // Short-circuit on an exact-zero factor: `0 · log(negative)` must be
+                // 0, not `0 · NaN`.  (Unsimplified `0·…` terms can appear inside a
+                // differentiated RootSum body, which `simplify` leaves opaque.)
+                let factors: Vec<f64> = args
+                    .iter()
+                    .map(|&a| eval_env(a, x, xv, env, pool))
+                    .collect();
+                if factors.contains(&0.0) {
+                    0.0
+                } else {
+                    factors.iter().product()
+                }
+            }
+            ExprData::Pow { base, exp } => {
+                let b = eval_env(base, x, xv, env, pool);
+                // Use integer power when possible — `powf` returns NaN for a
+                // negative base with a (float-typed) integer exponent.
+                if let ExprData::Integer(n) = pool.get(exp) {
+                    if let Some(k) = n.0.to_i32() {
+                        return b.powi(k);
+                    }
+                }
+                b.powf(eval_env(exp, x, xv, env, pool))
+            }
             ExprData::Func { ref name, ref args } if args.len() == 1 => {
-                let a = eval(args[0], x, xv, pool);
+                let a = eval_env(args[0], x, xv, env, pool);
                 match name.as_str() {
                     "log" => a.ln(),
                     "atan" => a.atan(),
@@ -561,8 +816,109 @@ mod tests {
                     other => panic!("eval: unsupported func {other}"),
                 }
             }
+            ExprData::RootSum { poly, var, body } => {
+                // Σ over the real roots of `poly` of body[var := root].
+                let coeffs = real_coeffs(poly, var, pool);
+                real_roots_f64(&coeffs)
+                    .into_iter()
+                    .map(|r| {
+                        let mut e = env.to_vec();
+                        e.push((var, r));
+                        eval_env(body, x, xv, &e, pool)
+                    })
+                    .sum()
+            }
             other => panic!("eval: unsupported {other:?}"),
         }
+    }
+
+    /// Real coefficient vector (ascending) of a polynomial in `var`.
+    fn real_coeffs(expr: ExprId, var: ExprId, pool: &ExprPool) -> Vec<f64> {
+        if expr == var {
+            return vec![0.0, 1.0];
+        }
+        match pool.get(expr) {
+            ExprData::Integer(n) => vec![n.0.to_f64()],
+            ExprData::Rational(r) => vec![r.0.to_f64()],
+            ExprData::Add(args) => {
+                let mut acc = vec![0.0];
+                for a in &args {
+                    let c = real_coeffs(*a, var, pool);
+                    if c.len() > acc.len() {
+                        acc.resize(c.len(), 0.0);
+                    }
+                    for (i, v) in c.iter().enumerate() {
+                        acc[i] += v;
+                    }
+                }
+                acc
+            }
+            ExprData::Mul(args) => {
+                let mut acc = vec![1.0];
+                for a in &args {
+                    let c = real_coeffs(*a, var, pool);
+                    let mut prod = vec![0.0; acc.len() + c.len() - 1];
+                    for (i, ai) in acc.iter().enumerate() {
+                        for (j, cj) in c.iter().enumerate() {
+                            prod[i + j] += ai * cj;
+                        }
+                    }
+                    acc = prod;
+                }
+                acc
+            }
+            ExprData::Pow { base, exp } => {
+                let k = match pool.get(exp) {
+                    ExprData::Integer(n) => n.0.to_i64().unwrap(),
+                    _ => panic!("real_coeffs: non-integer exponent"),
+                };
+                assert!(k >= 0, "real_coeffs: negative exponent");
+                let c = real_coeffs(base, var, pool);
+                let mut acc = vec![1.0];
+                for _ in 0..k {
+                    let mut prod = vec![0.0; acc.len() + c.len() - 1];
+                    for (i, ai) in acc.iter().enumerate() {
+                        for (j, cj) in c.iter().enumerate() {
+                            prod[i + j] += ai * cj;
+                        }
+                    }
+                    acc = prod;
+                }
+                acc
+            }
+            other => panic!("real_coeffs: unsupported {other:?}"),
+        }
+    }
+
+    /// Real roots (bracket + bisection) of a polynomial with ascending `coeffs`.
+    fn real_roots_f64(coeffs: &[f64]) -> Vec<f64> {
+        let horner = |t: f64| coeffs.iter().rev().fold(0.0, |acc, c| acc * t + c);
+        let (lo, hi, n) = (-60.0_f64, 60.0_f64, 240_000);
+        let mut roots = Vec::new();
+        let step = (hi - lo) / n as f64;
+        let mut prev_t = lo;
+        let mut prev_v = horner(lo);
+        for i in 1..=n {
+            let t = lo + step * i as f64;
+            let v = horner(t);
+            if prev_v == 0.0 {
+                roots.push(prev_t);
+            } else if prev_v * v < 0.0 {
+                let (mut a, mut b) = (prev_t, t);
+                for _ in 0..80 {
+                    let m = 0.5 * (a + b);
+                    if horner(a) * horner(m) <= 0.0 {
+                        b = m;
+                    } else {
+                        a = m;
+                    }
+                }
+                roots.push(0.5 * (a + b));
+            }
+            prev_t = t;
+            prev_v = v;
+        }
+        roots
     }
 
     /// Verify d/dx F = integrand numerically at several points.
@@ -726,10 +1082,42 @@ mod tests {
     }
 
     #[test]
-    fn degree_three_irreducible_declines() {
-        // ∫ 1/(x³+x+1) dx — x³+x+1 is irreducible over ℚ with a degree-3 algebraic
-        // root; expressing the antiderivative needs a symbolic RootSum (not yet
-        // implemented) → declines.
+    fn degree_three_real_roots_root_sum() {
+        // ∫ 1/(x³−3x+1) dx — irreducible over ℚ with three real roots, so the
+        // residues are real algebraic numbers of degree 3 → a RootSum.  Verified
+        // by differentiation (the derivative is real-valued for real residues).
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let den = pool.add(vec![
+            pool.pow(x, pool.integer(3_i32)),
+            pool.mul(vec![pool.integer(-3_i32), x]),
+            pool.integer(1_i32),
+        ]);
+        let f = pool.pow(den, pool.integer(-1_i32));
+        let result = try_integrate_rational(f, x, &pool).expect("RootSum path");
+        assert!(
+            pool.display(result).to_string().contains("RootSum"),
+            "expected a RootSum: {}",
+            pool.display(result)
+        );
+        // Avoid the denominator's real roots (≈ −1.88, 0.35, 1.53) as test points.
+        let d = crate::diff::diff(result, x, &pool).unwrap();
+        let ds = crate::simplify::engine::simplify(d.value, &pool).value;
+        for &xv in &[3.0_f64, 5.0, -4.0] {
+            let lhs = eval(ds, x, xv, &pool);
+            let rhs = eval(f, x, xv, &pool);
+            assert!(
+                (lhs - rhs).abs() < 1e-6,
+                "d/dx F ≠ f at x={xv}: {lhs} vs {rhs}"
+            );
+        }
+    }
+
+    #[test]
+    fn degree_three_with_one_real_root_via_root_sum() {
+        // ∫ 1/(x³+x+1) dx — irreducible, one real + two complex roots.  Still
+        // produces a RootSum; check it integrates (full numeric check would need
+        // complex roots, covered structurally here).
         let pool = pool();
         let x = pool.symbol("x", Domain::Real);
         let den = pool.add(vec![
@@ -738,7 +1126,11 @@ mod tests {
             pool.integer(1_i32),
         ]);
         let f = pool.pow(den, pool.integer(-1_i32));
-        assert!(try_integrate_rational(f, x, &pool).is_none());
+        let result = try_integrate_rational(f, x, &pool).expect("RootSum path");
+        assert!(pool.display(result).to_string().contains("RootSum"));
+        // The derivative must differentiate cleanly (diff support for RootSum).
+        let d = crate::diff::diff(result, x, &pool);
+        assert!(d.is_ok());
     }
 
     #[test]

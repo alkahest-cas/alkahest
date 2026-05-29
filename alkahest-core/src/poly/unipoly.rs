@@ -213,6 +213,9 @@ fn expr_to_univariate_rat_coeffs(
             ConversionError::NonPolynomialFunction("quantifier".to_string()),
         ),
         ExprData::BigO(_) => Err(ConversionError::NonPolynomialFunction("BigO".to_string())),
+        ExprData::RootSum { .. } => Err(ConversionError::NonPolynomialFunction(
+            "RootSum".to_string(),
+        )),
     }
 }
 
@@ -281,6 +284,9 @@ fn expr_to_univariate_coeffs(
             ConversionError::NonPolynomialFunction("quantifier".to_string()),
         ),
         ExprData::BigO(_) => Err(ConversionError::NonPolynomialFunction("BigO".to_string())),
+        ExprData::RootSum { .. } => Err(ConversionError::NonPolynomialFunction(
+            "RootSum".to_string(),
+        )),
     }
 }
 

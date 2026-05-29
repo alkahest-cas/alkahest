@@ -29,6 +29,9 @@ pub fn mult_tree_is_commutative(pool: &ExprPool, expr: ExprId) -> bool {
             mult_tree_is_commutative(pool, *var) && mult_tree_is_commutative(pool, *body)
         }
         ExprData::BigO(inner) => mult_tree_is_commutative(pool, *inner),
+        ExprData::RootSum { poly, body, .. } => {
+            mult_tree_is_commutative(pool, *poly) && mult_tree_is_commutative(pool, *body)
+        }
     })
 }
 
@@ -64,5 +67,9 @@ pub fn expr_contains_noncommutative_symbol(pool: &ExprPool, expr: ExprId) -> boo
                 || expr_contains_noncommutative_symbol(pool, *body)
         }
         ExprData::BigO(inner) => expr_contains_noncommutative_symbol(pool, *inner),
+        ExprData::RootSum { poly, body, .. } => {
+            expr_contains_noncommutative_symbol(pool, *poly)
+                || expr_contains_noncommutative_symbol(pool, *body)
+        }
     })
 }

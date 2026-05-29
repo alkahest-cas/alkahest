@@ -16,8 +16,8 @@
 //! | `ratfn(x)·exp(η)`, η polynomial | `(x−1)/x²·exp(x)` | ✓ (rational RDE) |
 //! | `A(x)/D(x)`, D splits over ℚ | `1/(x²−1)`, `x/(x−1)³` | ✓ (Hermite + Rothstein–Trager) |
 //! | `A(x)/D(x)`, irreducible quadratics | `1/(x²+1)`, `1/(x²−2)` | ✓ (log + arctan / √-log) |
+//! | `A(x)/D(x)`, irreducible deg ≥ 3 | `1/(x³−3x+1)` | ✓ (`RootSum`, Lazard–Rioboo–Trager) |
 //! | `sin(x)/x`, `exp(x)/x` | Ei, Si functions | ✗ (NonElementary) |
-//! | `1/(x³+x+1)` | degree-≥3 algebraic residues (RootSum) | ✗ (NotImplemented) |
 //! | `exp(x²)/sqrt(x)` | Mixed algebraic+transcendental | ✗ (NotImplemented) |
 //!
 //! ## Architecture
@@ -45,15 +45,13 @@
 //!   restricted to ℚ (no algebraic-number coefficients), and η must be a
 //!   polynomial.
 //! - **Rational-function integration** ([`rational_integrate`]) is complete for
-//!   any denominator that factors over ℚ into **linear and quadratic** factors:
-//!   Hermite reduction (repeated factors), the Rothstein–Trager logarithmic part
-//!   (rational residues → `log`), and irreducible quadratics (negative
-//!   discriminant → `log` + `arctan`; positive discriminant → `log` with `√Δ`
-//!   coefficients). The one remaining gap is irreducible factors of **degree ≥ 3**,
-//!   whose antiderivative is a `Σ` over degree-≥3 algebraic residues; expressing
-//!   it needs a symbolic **`RootSum`** node in the kernel (with its own diff/eval/
-//!   simplify support), which is not yet implemented — those cases fall back and
-//!   surface as `NotImplemented`.
+//!   any denominator that factors over ℚ: Hermite reduction (repeated factors),
+//!   the Rothstein–Trager logarithmic part (rational residues → `log`),
+//!   irreducible quadratics (negative discriminant → `log` + `arctan`; positive
+//!   discriminant → `log` with `√Δ`), and irreducible factors of **degree ≥ 3**
+//!   via a [`crate::kernel::ExprData::RootSum`] over the algebraic residues
+//!   (Lazard–Rioboo–Trager; the log argument is computed in the number field
+//!   `ℚ[t]/Q(t)`).
 //! - **Single generator only.** Multiple interacting generators (e.g.
 //!   `exp(x)·log(x)`) and mixed algebraic+transcendental towers are unsupported;
 //!   independent sums are handled term-by-term.
