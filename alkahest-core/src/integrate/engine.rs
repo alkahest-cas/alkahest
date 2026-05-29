@@ -266,6 +266,163 @@ fn try_x_times_func(
 }
 
 // ---------------------------------------------------------------------------
+// Known non-elementary pre-check (Risch Gap 6)
+// ---------------------------------------------------------------------------
+
+/// Transcendental functions `f` for which `∫ f(linear)/poly dx` is a classic
+/// non-elementary special function (Liouville's theorem):
+///   - `exp` → exponential integral `Ei`
+///   - `sin` → sine integral `Si`
+///   - `cos` → cosine integral `Ci`
+///   - `sinh` → hyperbolic sine integral `Shi`
+///   - `cosh` → hyperbolic cosine integral `Chi`
+fn special_integral_name(func: &str) -> Option<&'static str> {
+    match func {
+        "exp" => Some("Ei"),
+        "sin" => Some("Si"),
+        "cos" => Some("Ci"),
+        "sinh" => Some("Shi"),
+        "cosh" => Some("Chi"),
+        _ => None,
+    }
+}
+
+/// Return `true` if `exp` is a negative integer literal.
+fn is_negative_integer(exp: ExprId, pool: &ExprPool) -> bool {
+    as_integer(exp, pool).is_some_and(|n| n < 0)
+}
+
+/// Return `true` if `expr` is a polynomial in `var` (integer powers only).
+fn is_polynomial_in(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    if expr == var || is_free_of(expr, var, pool) {
+        return true;
+    }
+    match pool.get(expr) {
+        ExprData::Add(args) | ExprData::Mul(args) => {
+            args.iter().all(|&a| is_polynomial_in(a, var, pool))
+        }
+        ExprData::Pow { base, exp } => {
+            is_polynomial_in(base, var, pool) && as_integer(exp, pool).is_some_and(|n| n >= 0)
+        }
+        _ => false,
+    }
+}
+
+/// Return `true` if `base` is a non-constant polynomial in `var` that can appear
+/// as a denominator in a known non-elementary form.  Dividing a special
+/// transcendental `f(linear)` by *any* non-constant polynomial yields an
+/// Ei/Si/Ci/Shi/Chi-family integral, so this is a sound `NonElementary`
+/// certificate (Liouville's theorem), not a guess.
+fn is_simple_denominator_base(base: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    !is_free_of(base, var, pool) && is_polynomial_in(base, var, pool)
+}
+
+/// Structural pre-check certifying that `expr` is a provably non-elementary
+/// integrand of one of the classic special-function families.  Returns a
+/// human-readable description (used in the `NonElementary` message) on a match.
+///
+/// Recognised forms (with `g`, `D` linear and non-constant in `var`, and every
+/// other factor free of `var`):
+///   - `c · f(g) · D^(-n)` with `f ∈ {exp, sin, cos, sinh, cosh}` → `Ei/Si/Ci/Shi/Chi`
+///   - `c · log(g)^(-n)` → logarithmic integral `li`
+///
+/// These are non-elementary by Liouville's theorem (Bronstein 2005, §1.2).  The
+/// matcher is intentionally narrow: the *only* `var`-dependent factors allowed
+/// are the transcendental numerator and the polynomial denominator, so it never
+/// fires on cancelling cases such as `x²·sin(x)/x = x·sin(x)` (elementary).
+fn known_nonelementary(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<String> {
+    // A single `log(g)^(-n)` factor (not wrapped in a Mul) is the bare `li` case.
+    if let Some(msg) = match_log_denominator(expr, var, pool) {
+        return Some(msg);
+    }
+
+    let args = match pool.get(expr) {
+        ExprData::Mul(args) => args,
+        _ => return None,
+    };
+
+    let mut special: Option<String> = None; // f(g) with f a special transcendental
+    let mut has_poly_denom = false; // a D^(-n) factor
+    let mut log_denom: Option<String> = None; // a log(g)^(-n) factor (li)
+
+    for &a in &args {
+        // Constant factor — always allowed.
+        if is_free_of(a, var, pool) {
+            continue;
+        }
+
+        // Transcendental numerator f(g), f special, g linear non-constant.
+        if let ExprData::Func { ref name, ref args } = pool.get(a) {
+            if args.len() == 1
+                && special_integral_name(name).is_some()
+                && is_linear_in(args[0], var, pool).is_some()
+            {
+                if special.is_some() {
+                    return None; // two interacting specials — out of scope
+                }
+                special = Some(pool.display(a).to_string());
+                continue;
+            }
+        }
+
+        // Denominator factor D^(-n).
+        if let ExprData::Pow { base, exp } = pool.get(a) {
+            if is_negative_integer(exp, pool) {
+                if let Some(msg) = match_log_denominator(a, var, pool) {
+                    if log_denom.is_some() {
+                        return None;
+                    }
+                    log_denom = Some(msg);
+                    continue;
+                }
+                if is_simple_denominator_base(base, var, pool) {
+                    has_poly_denom = true;
+                    continue;
+                }
+            }
+        }
+
+        // Any other factor involving `var` breaks the recognised shape.
+        return None;
+    }
+
+    if let (Some(f), true) = (&special, has_poly_denom) {
+        return Some(format!(
+            "{f} divided by a polynomial gives a special-function integral \
+             (Ei/Si/Ci/Shi/Chi), which is not elementary (Liouville's theorem)"
+        ));
+    }
+
+    if let Some(msg) = log_denom {
+        return Some(msg);
+    }
+
+    None
+}
+
+/// Match a `log(linear)^(-n)` factor (`1/log` family → logarithmic integral `li`).
+fn match_log_denominator(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<String> {
+    let ExprData::Pow { base, exp } = pool.get(expr) else {
+        return None;
+    };
+    if !is_negative_integer(exp, pool) {
+        return None;
+    }
+    let ExprData::Func { ref name, ref args } = pool.get(base) else {
+        return None;
+    };
+    if name == "log" && args.len() == 1 && is_linear_in(args[0], var, pool).is_some() {
+        Some(format!(
+            "1/{} is the logarithmic integral li, which is not elementary \
+             (Liouville's theorem)",
+            pool.display(base)
+        ))
+    } else {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Core integration (no simplification yet)
 // ---------------------------------------------------------------------------
 
@@ -366,6 +523,17 @@ pub(crate) fn integrate_raw(
                 1 => Some(consts[0]),
                 _ => Some(pool.mul(consts.clone())),
             };
+
+            // Guard against self-recursion: if no constant factor was split off,
+            // `inner` is the same product we started with, and recursing would loop
+            // forever (this previously crashed the process with a stack overflow on
+            // inputs like `sin(x)/x` or `exp(x)/x`).  Bail out cleanly instead.
+            if inner == expr {
+                return Err(IntegrationError::NotImplemented(format!(
+                    "∫ {} — irreducible product of var-dependent factors",
+                    pool.display(expr)
+                )));
+            }
 
             // Integrate the non-constant part
             let int_inner = integrate_raw(inner, var, pool, log)?;
@@ -556,6 +724,13 @@ pub fn integrate(
     // V2+: Route transcendental Risch cases (exp polynomial, log powers, etc.)
     if super::risch::contains_risch_form(expr, var, pool) {
         return super::risch::integrate_risch(expr, var, pool);
+    }
+
+    // Risch Gap 6: certify classic non-elementary special-function integrands
+    // (Ei/Si/Ci/Shi/Chi/li) before the rule-based engine, which would otherwise
+    // return the weaker `NotImplemented` verdict.
+    if let Some(reason) = known_nonelementary(expr, var, pool) {
+        return Err(IntegrationError::NonElementary(reason));
     }
 
     let mut log = DerivationLog::new();
@@ -874,5 +1049,125 @@ mod tests {
             Err(e) => println!("ERROR: {e}"),
         }
         assert!(result.is_ok(), "∫ sqrt(x²+1) dx failed: {:?}", result);
+    }
+
+    // -----------------------------------------------------------------------
+    // Risch Gap 6: crash fix + known-non-elementary certification
+    // -----------------------------------------------------------------------
+
+    /// Build `f(arg) / denom` as `Mul([f(arg), denom^(-1)])`.
+    fn over(pool: &ExprPool, num: ExprId, denom: ExprId) -> ExprId {
+        let inv = pool.pow(denom, pool.integer(-1_i32));
+        pool.mul(vec![num, inv])
+    }
+
+    #[test]
+    fn sin_over_x_is_nonelementary_not_crash() {
+        // ∫ sin(x)/x dx = Si(x): previously stack-overflowed; must now certify NE.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = over(&pool, pool.func("sin", vec![x]), x);
+        let r = integrate(f, x, &pool);
+        assert!(
+            matches!(r, Err(IntegrationError::NonElementary(_))),
+            "∫ sin(x)/x dx should be NonElementary; got {r:?}"
+        );
+    }
+
+    #[test]
+    fn exp_over_x_is_nonelementary() {
+        // ∫ exp(x)/x dx = Ei(x).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = over(&pool, pool.func("exp", vec![x]), x);
+        let r = integrate(f, x, &pool);
+        assert!(
+            matches!(r, Err(IntegrationError::NonElementary(_))),
+            "∫ exp(x)/x dx should be NonElementary; got {r:?}"
+        );
+    }
+
+    #[test]
+    fn cos_over_linear_is_nonelementary() {
+        // ∫ cos(x)/(2x+1) dx is a shifted Ci — non-elementary.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let denom = pool.add(vec![
+            pool.mul(vec![pool.integer(2_i32), x]),
+            pool.integer(1_i32),
+        ]);
+        let f = over(&pool, pool.func("cos", vec![x]), denom);
+        let r = integrate(f, x, &pool);
+        assert!(
+            matches!(r, Err(IntegrationError::NonElementary(_))),
+            "∫ cos(x)/(2x+1) dx should be NonElementary; got {r:?}"
+        );
+    }
+
+    #[test]
+    fn one_over_log_is_nonelementary() {
+        // ∫ 1/log(x) dx = li(x).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(pool.func("log", vec![x]), pool.integer(-1_i32));
+        let r = integrate(f, x, &pool);
+        assert!(
+            matches!(r, Err(IntegrationError::NonElementary(_))),
+            "∫ 1/log(x) dx should be NonElementary; got {r:?}"
+        );
+    }
+
+    #[test]
+    fn exp_over_x_squared_is_nonelementary() {
+        // ∫ exp(x)/x² dx — still an Ei-family non-elementary integral.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let f = over(&pool, pool.func("exp", vec![x]), x2);
+        let r = integrate(f, x, &pool);
+        assert!(
+            matches!(r, Err(IntegrationError::NonElementary(_))),
+            "∫ exp(x)/x² dx should be NonElementary; got {r:?}"
+        );
+    }
+
+    #[test]
+    fn log_over_x_is_elementary_not_misclassified() {
+        // ∫ log(x)/x dx = log(x)²/2 is ELEMENTARY — the pre-check must NOT fire
+        // (log is not in the special set; only 1/log triggers the li case).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = over(&pool, pool.func("log", vec![x]), x);
+        let r = integrate(f, x, &pool);
+        assert!(
+            !matches!(r, Err(IntegrationError::NonElementary(_))),
+            "∫ log(x)/x dx must not be flagged NonElementary; got {r:?}"
+        );
+    }
+
+    #[test]
+    fn x_times_sin_over_x_not_flagged() {
+        // x·sin(x)/x = sin(x) is elementary; the extra `var` factor must block
+        // the (otherwise tempting) Si pattern match.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let num = pool.mul(vec![x, pool.func("sin", vec![x])]);
+        let f = over(&pool, num, x);
+        // After construction this may auto-simplify, but the matcher itself must
+        // not certify NonElementary on the raw structural form.
+        assert!(
+            known_nonelementary(f, x, &pool).is_none(),
+            "x·sin(x)/x must not be certified NonElementary"
+        );
+    }
+
+    #[test]
+    fn plain_sin_not_flagged() {
+        // ∫ sin(x) dx = -cos(x): a bare special function (no denominator) is fine.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.func("sin", vec![x]);
+        assert!(integrate(f, x, &pool).is_ok());
+        assert!(known_nonelementary(f, x, &pool).is_none());
     }
 }
