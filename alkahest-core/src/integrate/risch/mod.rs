@@ -14,7 +14,9 @@
 //! | `poly(x)·log(h)` | `x·log(x)`, `x²·log(x)` | ✓ |
 //! | Mixed exp + rational base | `x·exp(x²) + x²` | ✓ |
 //! | `ratfn(x)·exp(η)`, η polynomial | `(x−1)/x²·exp(x)` | ✓ (rational RDE) |
+//! | `A(x)/D(x)`, D squarefree, ℚ residues | `1/(x²−1)`, `2x/(x²+1)` | ✓ (Rothstein–Trager) |
 //! | `sin(x)/x`, `exp(x)/x` | Ei, Si functions | ✗ (NonElementary) |
+//! | `1/(x²+1)` | arctan (complex residues) | ✗ (NotImplemented) |
 //! | `exp(x²)/sqrt(x)` | Mixed algebraic+transcendental | ✗ (NotImplemented) |
 //!
 //! ## Architecture
@@ -24,6 +26,8 @@
 //! - [`tower`]: Differential field tower construction and generator detection.
 //! - [`poly_rde`]: Polynomial Risch Differential Equation (RDE) solver over ℚ\[x\].
 //! - [`rational_rde`]: Rational RDE solver over ℚ(x) (exp tower; Bronstein §6.1).
+//! - [`rational_integrate`]: Rational-function integration via Rothstein–Trager
+//!   (logarithmic part; Bronstein §2.5).
 //! - [`exp_case`]: Integration in the hyperexponential tower (t = exp(η)).
 //! - [`log_case`]: Integration in the hyperlogarithmic tower (t = log(h)).
 //!
@@ -39,10 +43,13 @@
 //!   coefficients there fall through to `NotImplemented`. Coefficients are
 //!   restricted to ℚ (no algebraic-number coefficients), and η must be a
 //!   polynomial.
-//! - **No logarithmic-part output (Rothstein–Trager).** Integrals whose
-//!   antiderivative requires *new* `log` terms (the rational-function logarithmic
-//!   part) are not yet produced; such cases are reported `NonElementary` /
-//!   `NotImplemented` rather than completed.
+//! - **Rothstein–Trager is partial** ([`rational_integrate`]). The logarithmic
+//!   part is produced for a **squarefree** denominator whose resultant roots are
+//!   **rational** (ℚ-linear combinations of `log`s of ℚ-polynomials). Still
+//!   missing: **Hermite reduction** for repeated factors (non-squarefree
+//!   denominators), and **non-rational residues** (e.g. `1/(x²+1)`, whose answer
+//!   needs `arctan`/algebraic-number logs). Those cases fall back to the rule
+//!   engine and surface as `NotImplemented`.
 //! - **Single generator only.** Multiple interacting generators (e.g.
 //!   `exp(x)·log(x)`) and mixed algebraic+transcendental towers are unsupported;
 //!   independent sums are handled term-by-term.
@@ -56,6 +63,7 @@
 pub mod exp_case;
 pub mod log_case;
 pub mod poly_rde;
+pub mod rational_integrate;
 pub mod rational_rde;
 pub mod tower;
 

@@ -49,7 +49,7 @@ use super::poly_rde::{
 // ---------------------------------------------------------------------------
 
 /// Subtract `b` from `a`.
-fn poly_sub(a: &QPoly, b: &QPoly) -> QPoly {
+pub fn poly_sub(a: &QPoly, b: &QPoly) -> QPoly {
     poly_add(a, &poly_scale(b, &Rational::from(-1)))
 }
 
@@ -65,7 +65,7 @@ fn coeff(p: &QPoly, i: i64) -> Rational {
 
 /// Long division over ℚ: returns `(q, r)` with `a = q·b + r`, `deg r < deg b`.
 /// `b` must be nonzero.
-fn poly_divrem(a: &QPoly, b: &QPoly) -> (QPoly, QPoly) {
+pub fn poly_divrem(a: &QPoly, b: &QPoly) -> (QPoly, QPoly) {
     let b = trim(b.clone());
     let bd = degree(&b);
     debug_assert!(bd >= 0, "poly_divrem: division by zero polynomial");
@@ -99,7 +99,7 @@ fn poly_divrem(a: &QPoly, b: &QPoly) -> (QPoly, QPoly) {
 
 /// Make a polynomial monic (leading coefficient 1).  The zero polynomial is
 /// returned unchanged.
-fn poly_monic(p: &QPoly) -> QPoly {
+pub fn poly_monic(p: &QPoly) -> QPoly {
     let p = trim(p.clone());
     let d = degree(&p);
     if d < 0 {
@@ -110,7 +110,7 @@ fn poly_monic(p: &QPoly) -> QPoly {
 }
 
 /// Monic GCD of `a` and `b` over ℚ (Euclidean algorithm).
-fn poly_gcd(a: &QPoly, b: &QPoly) -> QPoly {
+pub fn poly_gcd(a: &QPoly, b: &QPoly) -> QPoly {
     let mut a = trim(a.clone());
     let mut b = trim(b.clone());
     while !b.is_empty() {
@@ -122,7 +122,7 @@ fn poly_gcd(a: &QPoly, b: &QPoly) -> QPoly {
 }
 
 /// Exact division `a / b` (panics in debug if the remainder is nonzero).
-fn poly_div_exact(a: &QPoly, b: &QPoly) -> QPoly {
+pub fn poly_div_exact(a: &QPoly, b: &QPoly) -> QPoly {
     let (q, r) = poly_divrem(a, b);
     debug_assert!(trim(r).is_empty(), "poly_div_exact: nonzero remainder");
     q

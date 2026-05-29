@@ -734,10 +734,32 @@ pub fn integrate(
     }
 
     let mut log = DerivationLog::new();
-    let raw = integrate_raw(expr, var, pool, &mut log)?;
-    let simplified = simplify(raw, pool);
-    let final_log = log.merge(simplified.log);
-    Ok(DerivedExpr::with_log(simplified.value, final_log))
+    match integrate_raw(expr, var, pool, &mut log) {
+        Ok(raw) => {
+            let simplified = simplify(raw, pool);
+            let final_log = log.merge(simplified.log);
+            Ok(DerivedExpr::with_log(simplified.value, final_log))
+        }
+        Err(IntegrationError::NotImplemented(msg)) => {
+            // Risch Gap 3: rational-function integration via Rothstein–Trager.
+            // Tried as a fallback so simple cases keep their existing rules.
+            if let Some(result) =
+                super::risch::rational_integrate::try_integrate_rational(expr, var, pool)
+            {
+                let simplified = simplify(result, pool);
+                let mut rlog = DerivationLog::new();
+                rlog.push(RewriteStep::simple(
+                    "rothstein_trager",
+                    expr,
+                    simplified.value,
+                ));
+                let final_log = rlog.merge(simplified.log);
+                return Ok(DerivedExpr::with_log(simplified.value, final_log));
+            }
+            Err(IntegrationError::NotImplemented(msg))
+        }
+        Err(other) => Err(other),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1159,6 +1181,73 @@ mod tests {
             known_nonelementary(f, x, &pool).is_none(),
             "x·sin(x)/x must not be certified NonElementary"
         );
+    }
+
+    #[test]
+    fn rational_integration_via_fallback() {
+        // ∫ 1/(x²−1) dx is solved by the Rothstein–Trager fallback (rule engine
+        // returns NotImplemented first).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let den = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(-1_i32)]);
+        let f = pool.pow(den, pool.integer(-1_i32));
+        let r = integrate(f, x, &pool);
+        assert!(
+            r.is_ok(),
+            "∫ 1/(x²−1) dx should integrate via fallback; got {r:?}"
+        );
+        // Result should contain logarithms.
+        assert!(
+            pool.display(r.unwrap().value).to_string().contains("log"),
+            "expected log terms in the antiderivative"
+        );
+    }
+
+    #[test]
+    fn power_rule_not_regressed_by_fallback() {
+        // ∫ x⁻² dx = −x⁻¹ must still come from the power rule, not the fallback.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(x, pool.integer(-2_i32));
+        let r = integrate(f, x, &pool).unwrap();
+        // d/dx result == x⁻².
+        let d = diff(r.value, x, &pool).unwrap();
+        for &xv in &[1.5_f64, 2.5] {
+            let lhs = eval_simple(d.value, x, xv, &pool);
+            assert!(
+                (lhs - xv.powi(-2)).abs() < 1e-9,
+                "power rule regressed at {xv}"
+            );
+        }
+    }
+
+    #[test]
+    fn arctan_case_still_declines() {
+        // ∫ 1/(x²+1) dx needs arctan — unsupported; must surface NotImplemented.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let den = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(1_i32)]);
+        let f = pool.pow(den, pool.integer(-1_i32));
+        assert!(matches!(
+            integrate(f, x, &pool),
+            Err(IntegrationError::NotImplemented(_))
+        ));
+    }
+
+    fn eval_simple(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> f64 {
+        if expr == x {
+            return xv;
+        }
+        match pool.get(expr) {
+            ExprData::Integer(n) => n.0.to_f64(),
+            ExprData::Rational(r) => r.0.to_f64(),
+            ExprData::Add(args) => args.iter().map(|&a| eval_simple(a, x, xv, pool)).sum(),
+            ExprData::Mul(args) => args.iter().map(|&a| eval_simple(a, x, xv, pool)).product(),
+            ExprData::Pow { base, exp } => {
+                eval_simple(base, x, xv, pool).powf(eval_simple(exp, x, xv, pool))
+            }
+            other => panic!("eval_simple: unsupported {other:?}"),
+        }
     }
 
     #[test]
