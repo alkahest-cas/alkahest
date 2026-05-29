@@ -22,10 +22,13 @@
 //! - **Rothstein–Trager** then produces the logs for the squarefree remainder
 //!   when its resultant roots are **rational** (a ℚ-linear combination of `log`s
 //!   of ℚ-polynomials).
-//! - Returns `None` (so the caller falls back) when the resultant has
-//!   **non-rational roots** — e.g. `1/(x²+1)` (residues `±i/2`), whose
-//!   antiderivative needs `arctan`/algebraic-number logs. (Handled separately in
-//!   the arctan path once `atan` differentiation is available.)
+//! - Otherwise, [`partial_fraction_log_arctan`] factors the squarefree
+//!   denominator over ℚ and integrates each irreducible factor: linear → `log`,
+//!   irreducible quadratic → `log` + `arctan` (negative discriminant) or `log`
+//!   with `√Δ` coefficients (positive discriminant).
+//! - Returns `None` (so the caller falls back) only for irreducible factors of
+//!   **degree ≥ 3**, whose antiderivative is a sum over degree-≥3 algebraic
+//!   residues and needs a symbolic `RootSum` representation not yet available.
 //!
 //! References: Rothstein (1976); Trager (1976); Bronstein (2005) §2.2–2.5;
 //! SymPy `sympy/integrals/risch.py` (`residue_reduce`, `log_part`).
@@ -430,10 +433,15 @@ fn scaled(c: &Rational, e: ExprId, pool: &ExprPool) -> ExprId {
 }
 
 /// Integrate a proper fraction `h/d` (`d` squarefree, monic, `gcd(h,d)=1`) by
-/// partial fractions over the ℚ-irreducible factorization, emitting `log` for
-/// linear factors and `log + arctan` for irreducible quadratics with negative
-/// discriminant.  Returns `None` for any factor of degree ≥ 3, or a quadratic
-/// with non-negative discriminant (real irrational roots — algebraic logs).
+/// partial fractions over the ℚ-irreducible factorization:
+///   - **linear** factor `x+a` → `c·log(x+a)`;
+///   - **irreducible quadratic** `x²+bx+c0` with discriminant `Δ = b²−4c0`:
+///     * `Δ < 0` → `(M/2)·log(x²+bx+c0) + ((2N−Mb)/√(−Δ))·atan((2x+b)/√(−Δ))`;
+///     * `Δ > 0` → `(M/2)·log(x²+bx+c0) + ((2N−Mb)/(2√Δ))·[log(2x+b−√Δ) − log(2x+b+√Δ)]`
+///       (real irrational roots; the antiderivative carries `√Δ` coefficients).
+///
+/// Returns `None` for any irreducible factor of degree ≥ 3, which would require a
+/// symbolic `RootSum` over the (degree ≥ 3) algebraic residues — see module docs.
 fn partial_fraction_log_arctan(
     h: &QPoly,
     d: &QPoly,
@@ -465,12 +473,6 @@ fn partial_fraction_log_arctan(
                 let c0 = at(p, 0);
                 let big_m = at(&n, 1);
                 let big_n = at(&n, 0);
-                // Discriminant b² − 4c0; require < 0 (complex conjugate roots).
-                let disc = b.clone() * b.clone() - Rational::from(4) * c0.clone();
-                if disc >= 0 {
-                    return None; // real roots → algebraic logs, not handled
-                }
-                let d2 = Rational::from(4) * c0.clone() - b.clone() * b.clone(); // = −disc > 0
 
                 // Log part: (M/2)·log(x² + b·x + c0).
                 if big_m != 0 {
@@ -479,22 +481,48 @@ fn partial_fraction_log_arctan(
                     terms.push(scaled(&(big_m.clone() / Rational::from(2)), logp, pool));
                 }
 
-                // Arctan part: (2N − M·b)/√d2 · atan((2x + b)/√d2).
                 let coeff_num = Rational::from(2) * big_n.clone() - big_m.clone() * b.clone();
-                if coeff_num != 0 {
-                    let sqrt_d2 = pool.func("sqrt", vec![rational_to_expr(&d2, pool)]);
-                    let sqrt_inv = pool.pow(sqrt_d2, pool.integer(-1_i32));
-                    let two_x_plus_b = pool.add(vec![
-                        pool.mul(vec![pool.integer(2_i32), var]),
-                        rational_to_expr(&b, pool),
-                    ]);
-                    let arg = pool.mul(vec![two_x_plus_b, sqrt_inv]);
-                    let atan = pool.func("atan", vec![arg]);
-                    let coeff = pool.mul(vec![rational_to_expr(&coeff_num, pool), sqrt_inv]);
-                    terms.push(pool.mul(vec![coeff, atan]));
+                let disc = b.clone() * b.clone() - Rational::from(4) * c0.clone();
+                let two_x_plus_b = pool.add(vec![
+                    pool.mul(vec![pool.integer(2_i32), var]),
+                    rational_to_expr(&b, pool),
+                ]);
+
+                if disc < 0 {
+                    // Complex conjugate roots → arctan.
+                    // (2N − Mb)/√(−Δ) · atan((2x + b)/√(−Δ)).
+                    if coeff_num != 0 {
+                        let neg_disc = Rational::from(-1) * disc.clone();
+                        let sqrt = pool.func("sqrt", vec![rational_to_expr(&neg_disc, pool)]);
+                        let sqrt_inv = pool.pow(sqrt, pool.integer(-1_i32));
+                        let arg = pool.mul(vec![two_x_plus_b, sqrt_inv]);
+                        let atan = pool.func("atan", vec![arg]);
+                        let coeff = pool.mul(vec![rational_to_expr(&coeff_num, pool), sqrt_inv]);
+                        terms.push(pool.mul(vec![coeff, atan]));
+                    }
+                } else {
+                    // disc > 0 (irreducible ⇒ Δ not a perfect square): real irrational
+                    // roots → log with √Δ.
+                    // (2N − Mb)/(2√Δ) · [log(2x+b−√Δ) − log(2x+b+√Δ)].
+                    if coeff_num != 0 {
+                        let sqrt = pool.func("sqrt", vec![rational_to_expr(&disc, pool)]);
+                        let sqrt_inv = pool.pow(sqrt, pool.integer(-1_i32));
+                        let neg_sqrt = pool.mul(vec![pool.integer(-1_i32), sqrt]);
+                        let arg_minus = pool.add(vec![two_x_plus_b, neg_sqrt]);
+                        let arg_plus = pool.add(vec![two_x_plus_b, sqrt]);
+                        let log_diff = pool.add(vec![
+                            pool.func("log", vec![arg_minus]),
+                            pool.mul(vec![pool.integer(-1_i32), pool.func("log", vec![arg_plus])]),
+                        ]);
+                        // coeff = (2N − Mb) / (2√Δ)
+                        let half = Rational::from((1, 2));
+                        let coeff =
+                            pool.mul(vec![rational_to_expr(&(coeff_num * half), pool), sqrt_inv]);
+                        terms.push(pool.mul(vec![coeff, log_diff]));
+                    }
                 }
             }
-            _ => return None, // irreducible factor of degree ≥ 3
+            _ => return None, // irreducible factor of degree ≥ 3 → RootSum needed
         }
     }
     Some(terms)
@@ -673,15 +701,43 @@ mod tests {
     }
 
     #[test]
-    fn real_irrational_roots_decline() {
-        // ∫ 1/(x²−2) dx has real irrational residues (±1/(2√2)) — algebraic logs,
-        // not emitted by this path → None.
+    fn real_irrational_roots_via_sqrt_log() {
+        // ∫ 1/(x²−2) dx = (1/(2√2))·[log(2x−2√2) − log(2x+2√2)]: irreducible
+        // quadratic with positive discriminant → log with √Δ.
         let pool = pool();
         let x = pool.symbol("x", Domain::Real);
         let den = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(-2_i32)]);
         let f = pool.pow(den, pool.integer(-1_i32));
-        // x²−2 = (x−√2)(x+√2): rational residues? No — RT resultant roots ±1/(2√2)
-        // are irrational, and the quadratic has positive discriminant → declines.
+        let result = try_integrate_rational(f, x, &pool).expect("sqrt-log path");
+        verify(f, result, x, &pool);
+        assert!(pool.display(result).to_string().contains("sqrt"));
+    }
+
+    #[test]
+    fn mixed_numerator_real_quadratic() {
+        // ∫ (x+3)/(x²−2) dx = ½·log(x²−2) + (3/(2√2))·[log(2x−2√2) − log(2x+2√2)].
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let den = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(-2_i32)]);
+        let num = pool.add(vec![x, pool.integer(3_i32)]);
+        let f = pool.mul(vec![num, pool.pow(den, pool.integer(-1_i32))]);
+        let result = try_integrate_rational(f, x, &pool).expect("log + sqrt-log");
+        verify(f, result, x, &pool);
+    }
+
+    #[test]
+    fn degree_three_irreducible_declines() {
+        // ∫ 1/(x³+x+1) dx — x³+x+1 is irreducible over ℚ with a degree-3 algebraic
+        // root; expressing the antiderivative needs a symbolic RootSum (not yet
+        // implemented) → declines.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let den = pool.add(vec![
+            pool.pow(x, pool.integer(3_i32)),
+            x,
+            pool.integer(1_i32),
+        ]);
+        let f = pool.pow(den, pool.integer(-1_i32));
         assert!(try_integrate_rational(f, x, &pool).is_none());
     }
 
