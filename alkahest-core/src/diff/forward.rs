@@ -195,8 +195,19 @@ fn eval_dual(
         IsConst,
         Add(Vec<ExprId>),
         Mul(Vec<ExprId>),
-        Pow { base: ExprId, exp: ExprId },
-        Func { name: String, arg: ExprId },
+        Pow {
+            base: ExprId,
+            exp: ExprId,
+        },
+        Func {
+            name: String,
+            arg: ExprId,
+        },
+        RootSum {
+            poly: ExprId,
+            rvar: ExprId,
+            body: ExprId,
+        },
     }
 
     let node = pool.with(expr, |data| match data {
@@ -224,6 +235,11 @@ fn eval_dual(
         ExprData::Piecewise { .. } | ExprData::Predicate { .. } => Node::IsConst,
         ExprData::Forall { .. } | ExprData::Exists { .. } => Node::IsConst,
         ExprData::BigO(_) => Node::IsConst,
+        ExprData::RootSum { poly, var, body } => Node::RootSum {
+            poly: *poly,
+            rvar: *var,
+            body: *body,
+        },
     });
 
     let result = match node {
@@ -268,6 +284,15 @@ fn eval_dual(
                 "atan" => Ok(inner.atan(pool)),
                 other => Err(DiffError::ForwardUnknownFunction(other.to_string())),
             }
+        }
+        Node::RootSum { poly, rvar, body } => {
+            // d/dx Σ_{c:P(c)=0} body = Σ_{c:P(c)=0} ∂body/∂x; the root `rvar` is
+            // constant in `x` (tangent 0), so threading the dual through `body`
+            // gives the per-root derivative directly.
+            let inner = eval_dual(body, var, pool, memo)?;
+            let value = pool.root_sum(poly, rvar, inner.value);
+            let tangent = pool.root_sum(poly, rvar, inner.tangent);
+            Ok(DualValue::new(value, tangent))
         }
     }?;
 

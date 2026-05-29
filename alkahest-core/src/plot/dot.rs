@@ -39,6 +39,7 @@ fn node_label(pool: &ExprPool, id: ExprId) -> String {
         ExprData::Forall { .. } => "Forall".to_string(),
         ExprData::Exists { .. } => "Exists".to_string(),
         ExprData::BigO(_) => "BigO".to_string(),
+        ExprData::RootSum { .. } => "RootSum".to_string(),
     }
 }
 

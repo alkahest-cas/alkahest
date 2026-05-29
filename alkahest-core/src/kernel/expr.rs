@@ -217,4 +217,16 @@ pub enum ExprData {
     },
     /// Landau big-O remainder: `O(arg)` as a symbolic order bound (V2-15 series API).
     BigO(ExprId),
+    /// Sum over the roots of a polynomial: `Σ_{c : poly(c)=0} body[var := c]`.
+    ///
+    /// A binder (like [`ExprData::Exists`]): `var` is the bound root placeholder,
+    /// `poly` is a univariate polynomial in `var`, and `body` is the summand
+    /// (an expression in `var` and the free variables).  Used to represent the
+    /// logarithmic part of a rational-function integral whose residues are
+    /// algebraic numbers of degree ≥ 2 (Rothstein–Trager / Lazard–Rioboo–Trager).
+    RootSum {
+        poly: ExprId,
+        var: ExprId,
+        body: ExprId,
+    },
 }

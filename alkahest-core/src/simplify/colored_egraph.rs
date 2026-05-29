@@ -230,6 +230,11 @@ impl ColoredEgraph {
                 self.rebuild_rec(body, pool, color, visiting),
             ),
             ExprData::BigO(arg) => pool.big_o(self.rebuild_rec(arg, pool, color, visiting)),
+            ExprData::RootSum { poly, var, body } => pool.root_sum(
+                self.rebuild_rec(poly, pool, color, visiting),
+                self.rebuild_rec(var, pool, color, visiting),
+                self.rebuild_rec(body, pool, color, visiting),
+            ),
         };
         visiting.remove(&canon);
         out

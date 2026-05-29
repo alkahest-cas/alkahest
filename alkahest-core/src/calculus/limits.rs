@@ -436,6 +436,11 @@ fn depends_on(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
         ExprData::Forall { var: bv, body } | ExprData::Exists { var: bv, body } => {
             bv != var && depends_on(body, var, pool)
         }
+        ExprData::RootSum {
+            poly,
+            var: bv,
+            body,
+        } => depends_on(poly, var, pool) || (bv != var && depends_on(body, var, pool)),
         ExprData::BigO(a) => depends_on(a, var, pool),
         ExprData::Integer(_)
         | ExprData::Rational(_)

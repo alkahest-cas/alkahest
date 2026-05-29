@@ -938,6 +938,11 @@ impl PyExpr {
             alkahest_core::ExprData::BigO(inner) => {
                 PyList::new_bound(py, vec!["big_o".into_py(py), wrap!(inner)]).into_py(py)
             }
+            alkahest_core::ExprData::RootSum { poly, var, body } => PyList::new_bound(
+                py,
+                vec!["root_sum".into_py(py), wrap!(poly), wrap!(var), wrap!(body)],
+            )
+            .into_py(py),
         }
     }
 }

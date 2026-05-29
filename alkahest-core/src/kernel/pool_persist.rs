@@ -68,7 +68,9 @@ const POOL_FORMAT_V2: u32 = 2;
 const POOL_FORMAT_V3: u32 = 3;
 /// Symbol nodes carry `commutative: u8` after `domain` (V3-2).
 const POOL_FORMAT_V4: u32 = 4;
-const POOL_FORMAT_WRITE: u32 = POOL_FORMAT_V4;
+/// Adds `RootSum` tag 13 (algebraic-residue logarithmic part).
+const POOL_FORMAT_V5: u32 = 5;
+const POOL_FORMAT_WRITE: u32 = POOL_FORMAT_V5;
 
 // ---------------------------------------------------------------------------
 // Error
@@ -356,6 +358,12 @@ fn write_node(w: &mut impl Write, node: &ExprData) -> io::Result<()> {
             write_u8(w, 12)?;
             write_u32(w, inner.0)
         }
+        ExprData::RootSum { poly, var, body } => {
+            write_u8(w, 13)?;
+            write_u32(w, poly.0)?;
+            write_u32(w, var.0)?;
+            write_u32(w, body.0)
+        }
     }
 }
 
@@ -453,6 +461,15 @@ fn read_node(r: &mut impl Read, format_version: u32) -> Result<ExprData, IoError
             let inner = ExprId(read_u32(r)?);
             Ok(ExprData::BigO(inner))
         }
+        13 => {
+            if format_version < POOL_FORMAT_V5 {
+                return Err(IoError::BadTag(13));
+            }
+            let poly = ExprId(read_u32(r)?);
+            let var = ExprId(read_u32(r)?);
+            let body = ExprId(read_u32(r)?);
+            Ok(ExprData::RootSum { poly, var, body })
+        }
         b => Err(IoError::BadTag(b)),
     }
 }
@@ -520,6 +537,7 @@ pub fn load_from(path: impl AsRef<Path>) -> Result<Option<ExprPool>, IoError> {
         && version != POOL_FORMAT_V2
         && version != POOL_FORMAT_V3
         && version != POOL_FORMAT_V4
+        && version != POOL_FORMAT_V5
     {
         return Err(IoError::UnsupportedVersion(version));
     }
@@ -613,6 +631,28 @@ mod tests {
         let q_two = q.integer(2_i32);
         assert_eq!(q_two, two);
 
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn round_trip_root_sum() {
+        // RootSum nodes (format V5) must round-trip through checkpoint/restore.
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let t = p.symbol("t", Domain::Complex);
+        let poly = p.add(vec![p.pow(t, p.integer(2_i32)), p.integer(1_i32)]);
+        let body = p.mul(vec![t, p.func("log", vec![p.add(vec![x, t])])]);
+        let rs = p.root_sum(poly, t, body);
+        assert!(matches!(p.get(rs), ExprData::RootSum { .. }));
+
+        let path = tempfile();
+        p.checkpoint(&path).unwrap();
+        let q = ExprPool::open_persistent(&path).unwrap();
+        assert_eq!(q.len(), p.len());
+        for i in 0..p.len() {
+            let id = ExprId(i as u32);
+            assert_eq!(p.get(id), q.get(id), "node {i} mismatch after round-trip");
+        }
         let _ = fs::remove_file(&path);
     }
 
