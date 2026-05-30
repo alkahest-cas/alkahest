@@ -128,15 +128,41 @@ entry = J.get(row, col)  # Expr
 ```python
 from alkahest import integrate, IntegrationError
 
+# Basic rules
 r = integrate(x**2, x)    # DerivedResult; r.value = x^3/3
 r = integrate(sin(x), x)  # → -cos(x)
 r = integrate(exp(x), x)  # → exp(x)
 r = integrate(x**-1, x)   # → log(x)
 
+# Rational functions — full Risch: Hermite + Rothstein–Trager + arctan + RootSum
+r = integrate(pool.integer(1) / (x**2 - pool.integer(1)), x)
+# → ½·(log(x−1) − log(x+1))
+
+r = integrate(pool.integer(1) / (x**2 + pool.integer(1)), x)
+# → arctan(x)
+
+r = integrate(pool.integer(1) / (x + pool.integer(1))**2, x)
+# → −1/(x+1)   (Hermite reduction for repeated factor)
+
+# Degree-≥3 denominator → RootSum (Lazard–Rioboo–Trager)
+r = integrate(pool.integer(1) / (x**3 - pool.integer(3)*x + pool.integer(1)), x)
+# r.value is a RootSum node: Σ_{P(c)=0} c·log(gcd_x(numer − c·denom', denom))
+
+# Rational coefficient × exp (rational Risch DE)
+r = integrate((x - pool.integer(1)) / x**2 * exp(x), x)
+# → exp(x)/x
+
+# Non-elementary integrals raise IntegrationError with code E-INT-004
 try:
-    r = integrate(exp(x**2), x)   # no elementary antiderivative
+    integrate(exp(x) / x, x)          # Ei function — non-elementary
 except IntegrationError as e:
-    print(e.code, e.remediation)
+    print(e.code)         # E-INT-004
+    print(e.remediation)  # "no elementary antiderivative (NonElementary)"
+
+try:
+    integrate(exp(x**2), x)            # Gaussian — non-elementary
+except IntegrationError as e:
+    print(e.code)         # E-INT-004
 ```
 
 ---

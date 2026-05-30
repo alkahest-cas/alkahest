@@ -68,17 +68,26 @@ Integration
 
    Compute the symbolic antiderivative of *expr* with respect to *var*.
 
-   Applies a table of known integration rules (Risch subset):
+   Applies a rule table for common forms, then escalates to the full
+   transcendental Risch algorithm:
 
    - Power rule (integer exponents)
    - Logarithm: ``∫ 1/x dx = log(x)``
-   - Exponential tower: ``∫ exp(a*x + b) dx``, ``∫ x * exp(x) dx``
+   - Exponential tower: ``∫ exp(a*x + b) dx``, ``∫ xⁿ·exp(x) dx``
    - Linear substitution: ``∫ f(a*x + b) dx``
    - Trigonometric: sin, cos, and standard compositions
+   - **Rational functions** ``A(x)/D(x)``: Hermite reduction (repeated factors),
+     Rothstein–Trager (rational residues → log), irreducible quadratics
+     (negative discriminant → arctan; positive discriminant → log with √Δ
+     coefficients), degree-≥3 irreducible factors → ``RootSum`` node
+     (Lazard–Rioboo–Trager).
+   - **Rational coefficient × exp**: ``∫ f(x)·exp(η) dx`` for ``f ∈ ℚ(x)``
+     via the rational Risch DE (Bronstein §6.1).
 
-   Raises :exc:`IntegrationError` (``E-INT-001``) if no rule matches.
-   Raises :exc:`IntegrationError` (``E-INT-002``) for algebraic extensions
-   (planned for v1.1).
+   Raises :exc:`IntegrationError` (``E-INT-001``) for integrands outside
+   the supported classes (e.g. mixed algebraic+transcendental).
+   Raises :exc:`IntegrationError` (``E-INT-004``) when the integrand is
+   provably non-elementary (``sin(x)/x``, ``exp(x)/x``, ``exp(x²)``, etc.).
 
    :param expr: The integrand.
    :param var: The variable of integration.

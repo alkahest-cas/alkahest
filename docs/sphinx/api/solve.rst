@@ -47,8 +47,8 @@ Polynomial system solving via Gröbner bases. The ``groebner`` Cargo feature is 
              for var, val in sol.items():
                  print(f"{var} ≈ {eval_expr(val, {}):.6f}")
 
-   **Upcoming (v1.1):** A ``numeric=True`` keyword argument will return
-   float values directly.
+   Pass ``numeric=True`` to return float values directly instead of
+   symbolic ``Expr`` solutions.
 
 GroebnerBasis
 -------------
@@ -64,7 +64,7 @@ GroebnerBasis
       :param order: Monomial order — ``"Lex"``, ``"GrLex"``, or ``"GRevLex"``.
          Use ``"Lex"`` for elimination; ``"GRevLex"`` is generally fastest.
 
-      **Upcoming (v1.1):** The Python binding for this method is being added.
+      Computes the basis using the F4 algorithm with product-criterion pruning.
 
    .. method:: reduce(expr: Expr) -> Expr
 

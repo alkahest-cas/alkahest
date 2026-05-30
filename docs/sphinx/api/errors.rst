@@ -63,8 +63,10 @@ Exception subclasses
 
    Common codes:
 
-   - ``E-INT-001`` — no matching integration rule
-   - ``E-INT-002`` — algebraic extension required (v1.1)
+   - ``E-INT-001`` — integrand outside supported classes (NotImplemented)
+   - ``E-INT-002`` — division by zero during integration
+   - ``E-INT-003`` — unsupported extension degree
+   - ``E-INT-004`` — provably non-elementary antiderivative (Liouville's theorem)
 
 .. exception:: MatrixError
 

@@ -42,7 +42,7 @@ for sol in solutions:
 
 `solve` returns an empty list for inconsistent systems and a `GroebnerBasis` handle for parametric families (infinite solution sets).
 
-**Upcoming (v1.1):** `solve` will return `dict[Expr, Expr]` (fully symbolic) by default. A `numeric=True` keyword argument will convert to float as in the current behavior.
+Pass `numeric=True` to return float values directly: `solve(eqs, vars, numeric=True)`.
 
 ## GroebnerBasis
 
@@ -62,7 +62,6 @@ print(gb.contains(x - pool.rational(1, 2)))  # False
 reduced = gb.reduce(x**3 + y**3)
 ```
 
-**Upcoming (v1.1):** The Python `GroebnerBasis.compute()` binding will be added (the Rust implementation is already shipped).
 
 ### Monomial orders
 

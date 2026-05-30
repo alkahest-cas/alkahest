@@ -102,18 +102,48 @@ print(r.value)    # log(x)
 
 ### Integration rules
 
-The integration engine applies rules from a table of known forms (Risch subset):
+The integration engine applies a rule table for common forms, then escalates to the Risch decision procedure for harder cases:
 
+**Rule table (fast path)**
 - Power rule: `∫ xⁿ dx = xⁿ⁺¹/(n+1)` for integer `n ≠ -1`
 - Logarithm: `∫ 1/x dx = log(x)`
-- Exponential tower: `∫ exp(a*x + b) dx`, `∫ x * exp(x) dx`
+- Exponential tower: `∫ exp(a*x + b) dx`, `∫ xⁿ·exp(x) dx` (poly × exp)
 - Linear substitution: `∫ f(a*x + b) dx`
-- Trigonometric: `∫ sin(x) dx`, `∫ cos(x) dx`
+- Trigonometric: `∫ sin(x) dx`, `∫ cos(x) dx`, etc.
 - Standard table entries for `erf`, inverse trig, etc.
 
-If no rule applies, `integrate` raises an `IntegrationError` with a remediation hint indicating what class of integrand would be needed (e.g. "algebraic extension required — see v1.1 algebraic Risch").
+**Risch algorithm (escalation)**
+- **Rational functions** `A(x)/D(x)`: Hermite reduction (repeated factors → rational part), then Rothstein–Trager (rational residues → `log`), irreducible quadratics (negative discriminant → `arctan`; positive discriminant → `log` with `√Δ` coefficients), and irreducible factors of degree ≥ 3 via a `RootSum` node (Lazard–Rioboo–Trager over the number field `ℚ[t]/Q(t)`).
+- **Exp tower with rational coefficient**: `∫ f(x)·exp(η) dx` where `f ∈ ℚ(x)` — solved via the rational Risch DE (Bronstein §6.1).
+- **Polynomial × exp / log towers**: poly-RDE and known-table rules.
 
-**Upcoming (v1.1):** Algebraic-function Risch (Trager's algorithm) will handle integrands involving `sqrt(P(x))` and other algebraic extensions.
+```python
+# Rational functions
+r = integrate(pool.integer(1) / (x**2 - pool.integer(1)), x)  # → ½·log((x-1)/(x+1))
+
+r = integrate(pool.integer(1) / (x**2 + pool.integer(1)), x)  # → arctan(x)
+
+# Rational coefficient × exp
+r = integrate((x - pool.integer(1)) / x**2 * exp(x), x)       # → exp(x)/x
+
+# Degree-≥3 denominator → RootSum
+r = integrate(pool.integer(1) / (x**3 - pool.integer(3)*x + pool.integer(1)), x)
+# r.value contains a RootSum node (sum over algebraic residues)
+```
+
+**Non-elementary certification**: when the integrand is provably non-elementary (Liouville's theorem — e.g. `sin(x)/x`, `exp(x)/x`, `exp(x²)`), `integrate` raises `IntegrationError` with code `E-INT-004` (NonElementary) rather than a generic "not implemented":
+
+```python
+from alkahest import IntegrationError
+
+try:
+    integrate(exp(x) / x, x)
+except IntegrationError as e:
+    print(e.code)         # E-INT-004
+    print(e.remediation)  # "no elementary antiderivative (NonElementary)"
+```
+
+For integrands outside the supported classes (e.g. `sqrt(P(x))`, mixed algebraic+transcendental), `integrate` raises `IntegrationError` with code `E-INT-001` (NotImplemented).
 
 ### Verification
 
