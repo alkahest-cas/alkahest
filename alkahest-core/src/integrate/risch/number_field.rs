@@ -221,6 +221,110 @@ impl NumberField {
 }
 
 // ---------------------------------------------------------------------------
+// K-element constructors and K-polynomial-in-x arithmetic
+// (used by the polynomial Risch DE over ℚ(α); see `poly_rde::solve_poly_rde_k`)
+// ---------------------------------------------------------------------------
+
+impl NumberField {
+    /// The zero `K`-element.
+    pub fn k_zero() -> KElem {
+        Vec::new()
+    }
+
+    /// Embed an integer into `K`.
+    pub fn from_int(&self, n: i64) -> KElem {
+        self.reduce(&vec![Rational::from(n)])
+    }
+
+    /// Embed a rational into `K`.
+    pub fn from_rational(&self, r: &Rational) -> KElem {
+        self.reduce(&vec![r.clone()])
+    }
+
+    /// `a + b` of two `K`-polynomials in `x`.
+    pub fn kpoly_add(&self, a: &[KElem], b: &[KElem]) -> KPoly {
+        let n = a.len().max(b.len());
+        let mut r = vec![Self::k_zero(); n];
+        for (i, c) in a.iter().enumerate() {
+            r[i] = self.add(&r[i], c);
+        }
+        for (i, c) in b.iter().enumerate() {
+            r[i] = self.add(&r[i], c);
+        }
+        Self::kpoly_trim(r)
+    }
+
+    /// `a − b` of two `K`-polynomials in `x`.
+    pub fn kpoly_sub(&self, a: &[KElem], b: &[KElem]) -> KPoly {
+        let n = a.len().max(b.len());
+        let mut r = vec![Self::k_zero(); n];
+        for (i, c) in a.iter().enumerate() {
+            r[i] = self.add(&r[i], c);
+        }
+        for (i, c) in b.iter().enumerate() {
+            r[i] = self.sub(&r[i], c);
+        }
+        Self::kpoly_trim(r)
+    }
+
+    /// Scale a `K`-polynomial in `x` by a `K`-element.
+    pub fn kpoly_scale(&self, p: &[KElem], s: &KElem) -> KPoly {
+        if Self::is_zero(s) {
+            return Vec::new();
+        }
+        Self::kpoly_trim(p.iter().map(|c| self.mul(c, s)).collect())
+    }
+
+    /// `a · b` of two `K`-polynomials in `x`.
+    pub fn kpoly_mul(&self, a: &[KElem], b: &[KElem]) -> KPoly {
+        if Self::kdeg(a) < 0 || Self::kdeg(b) < 0 {
+            return Vec::new();
+        }
+        let mut r = vec![Self::k_zero(); a.len() + b.len() - 1];
+        for (i, ca) in a.iter().enumerate() {
+            if Self::is_zero(ca) {
+                continue;
+            }
+            for (j, cb) in b.iter().enumerate() {
+                let p = self.mul(ca, cb);
+                r[i + j] = self.add(&r[i + j], &p);
+            }
+        }
+        Self::kpoly_trim(r)
+    }
+
+    /// `d/dx` of a `K`-polynomial in `x`.
+    pub fn kpoly_deriv(&self, p: &[KElem]) -> KPoly {
+        if p.len() <= 1 {
+            return Vec::new();
+        }
+        Self::kpoly_trim(
+            p[1..]
+                .iter()
+                .enumerate()
+                .map(|(i, c)| self.mul(&self.from_int(i as i64 + 1), c))
+                .collect(),
+        )
+    }
+
+    /// `∫ dx` of a `K`-polynomial in `x` (constant of integration 0).
+    pub fn kpoly_integrate(&self, p: &[KElem]) -> KPoly {
+        let p = Self::kpoly_trim(p.to_vec());
+        if p.is_empty() {
+            return Vec::new();
+        }
+        let mut r = vec![Self::k_zero()]; // constant term 0
+        for (i, c) in p.iter().enumerate() {
+            let inv = self
+                .inv(&self.from_int(i as i64 + 1))
+                .expect("nonzero integer is invertible in a number field");
+            r.push(self.mul(c, &inv));
+        }
+        Self::kpoly_trim(r)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -285,5 +389,36 @@ mod tests {
         // In ℚ[t]/(t²−1) (not a field), t−1 is a zero divisor → no inverse.
         let k = NumberField::new(vec![rat(-1), rat(0), rat(1)]);
         assert!(k.inv(&vec![rat(-1), rat(1)]).is_none());
+    }
+
+    #[test]
+    fn kpoly_mul_over_sqrt2() {
+        // (x + √2)·(x − √2) = x² − 2  over ℚ(√2).
+        let k = q_sqrt2();
+        let t = vec![rat(0), rat(1)]; // √2
+        let a = vec![t.clone(), vec![rat(1)]]; // √2 + x
+        let b = vec![k.neg(&t), vec![rat(1)]]; // −√2 + x
+        let p = k.kpoly_mul(&a, &b);
+        assert_eq!(NumberField::kdeg(&p), 2);
+        assert_eq!(trim(p[0].clone()), vec![rat(-2)]); // constant −2 (√2·−√2)
+        assert!(NumberField::is_zero(&p[1])); // x coefficient cancels
+        assert_eq!(trim(p[2].clone()), vec![rat(1)]); // x²
+    }
+
+    #[test]
+    fn kpoly_deriv_integrate_roundtrip() {
+        // d/dx ∫ (√2·x² + x) dx == √2·x² + x.
+        let k = q_sqrt2();
+        let t = vec![rat(0), rat(1)];
+        let p = vec![NumberField::k_zero(), vec![rat(1)], t.clone()]; // x + √2·x²
+        let integ = k.kpoly_integrate(&p);
+        let back = k.kpoly_deriv(&integ);
+        // Compare coefficient-wise (trimmed).
+        let p_t = NumberField::kpoly_trim(p);
+        let back_t = NumberField::kpoly_trim(back);
+        assert_eq!(p_t.len(), back_t.len());
+        for (a, b) in p_t.iter().zip(back_t.iter()) {
+            assert_eq!(trim(a.clone()), trim(b.clone()));
+        }
     }
 }
