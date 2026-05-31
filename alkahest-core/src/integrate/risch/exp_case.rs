@@ -34,9 +34,9 @@ use crate::simplify::engine::simplify;
 use super::number_field::{KElem, KPoly, NumberField};
 use super::poly_rde::{
     expr_to_qpoly, is_free_of_var, poly_scale, qpoly_to_expr, rational_to_expr, solve_poly_rde,
-    solve_poly_rde_k,
+    solve_poly_rde_k, trim,
 };
-use super::rational_rde::{expr_to_qrational, solve_rational_rde};
+use super::rational_rde::{expr_to_qrational, solve_rational_rde, solve_rational_rde_k};
 use super::tower::{decompose_wrt_exp, poly_degree, TowerLevel};
 
 // ---------------------------------------------------------------------------
@@ -209,20 +209,21 @@ fn integrate_single_exp_term(
         };
     }
 
-    // Algebraic-number coefficient → polynomial Risch DE over ℚ(α) (Risch Gap E).
-    // Handles a coefficient that is a polynomial in `var` whose coefficients lie
-    // in a single quadratic field ℚ(√d) and cannot be split off as a constant
-    // factor (e.g. `(x + √2)`).  The rational-coefficient case over ℚ(α) is not
-    // yet handled (it needs the denominator-bound + linear algebra over ℚ(α)).
+    // Algebraic-number coefficient → Risch DE over ℚ(α) (Risch Gap E).  Handles a
+    // coefficient whose constants lie in a single quadratic field ℚ(√d) and that
+    // cannot be split off as a constant factor — both the *polynomial* case
+    // (e.g. `x + √2`) and the *rational* case (e.g. `(x−√2−1)/(x−√2)²`).
     if let Some((d, sqrt_expr)) = detect_sqrt_field(c_rest, pool) {
         let field = NumberField::new(vec![
             rug::Rational::from(-d),
             rug::Rational::from(0),
             rug::Rational::from(1),
         ]);
+        // Embed the (ℚ-polynomial) η' into K once.
+        let deta_k: KPoly = deta.iter().map(|r| field.from_rational(r)).collect();
+
+        // Polynomial coefficient over ℚ(√d).
         if let Some(c_kpoly) = expr_to_kpoly(c_rest, var, sqrt_expr, &field, pool) {
-            // Embed the (ℚ-polynomial) η' into K.
-            let deta_k: KPoly = deta.iter().map(|r| field.from_rational(r)).collect();
             return match solve_poly_rde_k(&field, k, &deta_k, &c_kpoly) {
                 Some(v) => {
                     let v_expr = kpoly_to_expr_alg(&v, var, sqrt_expr, pool);
@@ -230,6 +231,26 @@ fn integrate_single_exp_term(
                     let result = apply_const(k_const, core, pool);
                     log.push(RewriteStep::simple(
                         "risch_exp_rde_algebraic",
+                        c_expr,
+                        result,
+                    ));
+                    Ok(result)
+                }
+                None => Err(non_elementary()),
+            };
+        }
+
+        // Rational coefficient over ℚ(√d): rational RDE over the number field.
+        if let Some((c_num, c_den)) = expr_to_krational(c_rest, var, sqrt_expr, &field, pool) {
+            // f = k·η' embedded in K.
+            let f_k = field.kpoly_scale(&deta_k, &field.from_int(k));
+            return match solve_rational_rde_k(&field, &f_k, &c_num, &c_den) {
+                Some((v_num, v_den)) => {
+                    let v_expr = build_krational(&v_num, &v_den, var, sqrt_expr, pool);
+                    let core = build_v_times_exp(v_expr, exp_k_eta, pool);
+                    let result = apply_const(k_const, core, pool);
+                    log.push(RewriteStep::simple(
+                        "risch_exp_rde_algebraic_rational",
                         c_expr,
                         result,
                     ));
@@ -500,6 +521,108 @@ fn kpoly_to_expr_alg(p: &KPoly, var: ExprId, sqrt_expr: ExprId, pool: &ExprPool)
         1 => terms[0],
         _ => pool.add(terms),
     }
+}
+
+/// Parse `expr` as a rational function in `var` over `K = ℚ(√d)` (where `√d` is
+/// the symbol `sqrt_expr`), returning `(numerator, denominator)` as `KPoly`s, or
+/// `None` if it is not such a rational function.
+fn expr_to_krational(
+    expr: ExprId,
+    var: ExprId,
+    sqrt_expr: ExprId,
+    field: &NumberField,
+    pool: &ExprPool,
+) -> Option<(KPoly, KPoly)> {
+    use crate::kernel::ExprData;
+    let one: KPoly = vec![field.from_int(1)];
+    if expr == var {
+        return Some((vec![NumberField::k_zero(), field.from_int(1)], one));
+    }
+    if expr == sqrt_expr {
+        return Some((
+            vec![vec![rug::Rational::from(0), rug::Rational::from(1)]],
+            one,
+        ));
+    }
+    match pool.get(expr) {
+        ExprData::Integer(n) => Some((
+            vec![field.from_rational(&rug::Rational::from(n.0.to_i64()?))],
+            one,
+        )),
+        ExprData::Rational(r) => Some((vec![field.from_rational(&r.0)], one)),
+        ExprData::Add(args) => {
+            let mut acc: (KPoly, KPoly) = (Vec::new(), one);
+            for a in &args {
+                let term = expr_to_krational(*a, var, sqrt_expr, field, pool)?;
+                acc = krat_add(field, &acc, &term);
+            }
+            Some(acc)
+        }
+        ExprData::Mul(args) => {
+            let mut acc: (KPoly, KPoly) = (one.clone(), one);
+            for a in &args {
+                let factor = expr_to_krational(*a, var, sqrt_expr, field, pool)?;
+                acc = krat_mul(field, &acc, &factor);
+            }
+            Some(acc)
+        }
+        ExprData::Pow { base, exp } => {
+            let n = match pool.get(exp) {
+                ExprData::Integer(n) => n.0.to_i64()?,
+                _ => return None,
+            };
+            let (bn, bd) = expr_to_krational(base, var, sqrt_expr, field, pool)?;
+            if n >= 0 {
+                Some((
+                    field.kpoly_pow(&bn, n as u32),
+                    field.kpoly_pow(&bd, n as u32),
+                ))
+            } else {
+                let m = (-n) as u32;
+                if NumberField::kdeg(&bn) < 0 {
+                    return None; // 1 / 0
+                }
+                Some((field.kpoly_pow(&bd, m), field.kpoly_pow(&bn, m)))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// `a/b + c/d = (a·d + c·b)/(b·d)` over `K`.
+fn krat_add(field: &NumberField, a: &(KPoly, KPoly), b: &(KPoly, KPoly)) -> (KPoly, KPoly) {
+    let num = field.kpoly_add(&field.kpoly_mul(&a.0, &b.1), &field.kpoly_mul(&b.0, &a.1));
+    let den = field.kpoly_mul(&a.1, &b.1);
+    (num, den)
+}
+
+/// `(a/b)·(c/d) = (a·c)/(b·d)` over `K`.
+fn krat_mul(field: &NumberField, a: &(KPoly, KPoly), b: &(KPoly, KPoly)) -> (KPoly, KPoly) {
+    (field.kpoly_mul(&a.0, &b.0), field.kpoly_mul(&a.1, &b.1))
+}
+
+/// Reconstruct a `K = ℚ(√d)` rational function `num(x)/den(x)` as a symbolic
+/// expression, collapsing a denominator of 1.
+fn build_krational(
+    num: &KPoly,
+    den: &KPoly,
+    var: ExprId,
+    sqrt_expr: ExprId,
+    pool: &ExprPool,
+) -> ExprId {
+    let num_expr = kpoly_to_expr_alg(num, var, sqrt_expr, pool);
+    // den == 1 (a single K-element equal to 1)?
+    let den_is_one = NumberField::kdeg(den) <= 0
+        && den
+            .first()
+            .map(|c| trim(c.clone()) == vec![rug::Rational::from(1)])
+            .unwrap_or(true);
+    if den_is_one {
+        return num_expr;
+    }
+    let den_expr = kpoly_to_expr_alg(den, var, sqrt_expr, pool);
+    let den_inv = pool.pow(den_expr, pool.integer(-1_i32));
+    pool.mul(vec![num_expr, den_inv])
 }
 
 /// Build the symbolic rational function `num(x) / den(x)`.
@@ -988,6 +1111,67 @@ mod tests {
         assert!(
             matches!(result, Err(IntegrationError::NonElementary(_))),
             "∫ (x+√2)·exp(x²) dx must be NonElementary; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn algebraic_rational_coeff_exp_x() {
+        // ∫ (x − √2 − 1)/(x − √2)² · exp(x) dx = exp(x)/(x − √2).
+        // The coefficient is a rational function over ℚ(√2) (RDE v'+v = c → v =
+        // 1/(x−√2)); exercises the rational RDE over the number field.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let neg_sqrt2 = pool.mul(vec![pool.integer(-1_i32), sqrt2]);
+        let base = pool.add(vec![x, neg_sqrt2]); // x − √2
+        let num = pool.add(vec![x, neg_sqrt2, pool.integer(-1_i32)]); // x − √2 − 1
+        let exp_x = pool.func("exp", vec![x]);
+        let integrand = pool.mul(vec![num, pool.pow(base, pool.integer(-2_i32)), exp_x]);
+
+        use super::super::tower::find_generators;
+        let gens = find_generators(integrand, x, &pool);
+        let level = gens.iter().find(|g| g.is_exp()).expect("exp generator");
+        let mut log = DerivationLog::new();
+        let f = integrate_exp_tower(integrand, level, x, &pool, &mut log)
+            .expect("∫ (x−√2−1)/(x−√2)²·exp(x) dx should be elementary");
+        // Verify d/dx F = integrand at points away from the singularity x = √2.
+        let d = crate::diff::diff(f, x, &pool).unwrap();
+        let ds = crate::simplify::engine::simplify(d.value, &pool).value;
+        for &xv in &[2.5_f64, 3.3, 4.1] {
+            let lhs = eval_f64(ds, x, xv, &pool);
+            let rhs = eval_f64(integrand, x, xv, &pool);
+            assert!(
+                (lhs - rhs).abs() < 1e-7,
+                "d/dx F ≠ f at x={xv}: {lhs} vs {rhs}\n  F = {}",
+                pool.display(f)
+            );
+        }
+    }
+
+    #[test]
+    fn algebraic_rational_coeff_nonelementary() {
+        // ∫ x²/(x − √2) · exp(x) dx leaves an Ei term (simple pole at √2 with
+        // nonzero residue) — non-elementary over ℚ(√2).
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let neg_sqrt2 = pool.mul(vec![pool.integer(-1_i32), sqrt2]);
+        let base = pool.add(vec![x, neg_sqrt2]); // x − √2
+        let exp_x = pool.func("exp", vec![x]);
+        let integrand = pool.mul(vec![
+            pool.pow(x, pool.integer(2_i32)),
+            pool.pow(base, pool.integer(-1_i32)),
+            exp_x,
+        ]);
+
+        use super::super::tower::find_generators;
+        let gens = find_generators(integrand, x, &pool);
+        let level = gens.iter().find(|g| g.is_exp()).unwrap();
+        let mut log = DerivationLog::new();
+        let result = integrate_exp_tower(integrand, level, x, &pool, &mut log);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ x²/(x−√2)·exp(x) dx must be NonElementary; got {result:?}"
         );
     }
 
