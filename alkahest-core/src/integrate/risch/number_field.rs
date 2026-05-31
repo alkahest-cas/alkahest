@@ -322,6 +322,60 @@ impl NumberField {
         }
         Self::kpoly_trim(r)
     }
+
+    /// `p^n` of a `K`-polynomial in `x` (`n ≥ 0`; `p^0 = 1`).
+    pub fn kpoly_pow(&self, p: &[KElem], n: u32) -> KPoly {
+        let mut acc = vec![self.from_int(1)];
+        for _ in 0..n {
+            acc = self.kpoly_mul(&acc, p);
+        }
+        acc
+    }
+
+    /// Make a `K`-polynomial monic in `x` (divide by its leading coefficient).
+    /// The zero polynomial is returned unchanged; `None` if the leading
+    /// coefficient is not invertible in `K`.
+    pub fn kpoly_monic(&self, p: &[KElem]) -> Option<KPoly> {
+        let d = Self::kdeg(p);
+        if d < 0 {
+            return Some(Vec::new());
+        }
+        let inv = self.inv(&p[d as usize])?;
+        Some(Self::kpoly_trim(
+            p.iter().map(|c| self.mul(c, &inv)).collect(),
+        ))
+    }
+
+    /// Exact division `a / b` of `K`-polynomials in `x`; `None` if `b` does not
+    /// divide `a` evenly (or `b` is zero / has a non-invertible leading term).
+    pub fn kpoly_div_exact(&self, a: &[KElem], b: &[KElem]) -> Option<KPoly> {
+        let (q, r) = self.kpoly_divrem(a, b)?;
+        if Self::kdeg(&r) >= 0 {
+            return None; // nonzero remainder
+        }
+        Some(q)
+    }
+
+    /// Coefficient of `x^i` in a `K`-polynomial; the zero element for `i < 0` or
+    /// out of range.
+    pub fn kcoeff(p: &[KElem], i: i64) -> KElem {
+        if i < 0 {
+            return Self::k_zero();
+        }
+        p.get(i as usize).cloned().unwrap_or_else(Self::k_zero)
+    }
+
+    /// Equality of two `K`-polynomials in `x` (coefficient-wise after trimming).
+    pub fn kpoly_eq(a: &[KElem], b: &[KElem]) -> bool {
+        let a = Self::kpoly_trim(a.to_vec());
+        let b = Self::kpoly_trim(b.to_vec());
+        if a.len() != b.len() {
+            return false;
+        }
+        a.iter()
+            .zip(b.iter())
+            .all(|(x, y)| trim(x.clone()) == trim(y.clone()))
+    }
 }
 
 // ---------------------------------------------------------------------------

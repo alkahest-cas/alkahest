@@ -40,6 +40,7 @@
 
 use rug::Rational;
 
+use super::number_field::{KElem, KPoly, NumberField};
 use super::poly_rde::{
     degree, poly_add, poly_deriv, poly_mul, poly_one, poly_scale, poly_zero, trim, QPoly,
 };
@@ -317,6 +318,191 @@ pub fn solve_rational_rde(f: &QPoly, c_num: &QPoly, c_den: &QPoly) -> Option<(QP
 }
 
 // ---------------------------------------------------------------------------
+// Rational RDE over a number field K = ℚ(α)  (Risch Gap E, rational case)
+// ---------------------------------------------------------------------------
+
+/// Solve `v' + f·v = c_num/c_den` for `v ∈ K(x)`, `K = ℚ(α)`.
+///
+/// This is the number-field analogue of [`solve_rational_rde`]: identical
+/// algorithm — denominator bound `E = gcd(B, B')`, ansatz `v = N/E`, the linear
+/// identity `Σ_j n_j·P_j = C·E`, and the final substitution check — with every
+/// coefficient operation routed through `field` instead of ℚ.  `f`, `c_num`,
+/// `c_den` are `K`-polynomials in `x`.
+///
+/// In the exp tower `f = k·η'` is a polynomial (no poles), so the `E = gcd(B,B')`
+/// bound is exact and an inconsistent/over-determined system correctly certifies
+/// a non-elementary integral over `K` (the residual simple poles are the Ei/Li
+/// part the exp tower cannot express).
+pub fn solve_rational_rde_k(
+    field: &NumberField,
+    f: &KPoly,
+    c_num: &KPoly,
+    c_den: &KPoly,
+) -> Option<(KPoly, KPoly)> {
+    let c_num = NumberField::kpoly_trim(c_num.clone());
+    let c_den = NumberField::kpoly_trim(c_den.clone());
+    let one: KPoly = vec![field.from_int(1)];
+
+    // c = 0 → v = 0.
+    if c_num.is_empty() {
+        return Some((Vec::new(), one));
+    }
+    if c_den.is_empty() {
+        return None; // division by zero — malformed input
+    }
+
+    // Reduce c = C/B to lowest terms with B monic.
+    let g = field.kpoly_gcd(&c_num, &c_den)?;
+    let big_c = field.kpoly_div_exact(&c_num, &g)?;
+    let b_raw = field.kpoly_div_exact(&c_den, &g)?;
+    let bd = NumberField::kdeg(&b_raw);
+    let lead_inv = field.inv(&b_raw[bd as usize])?;
+    let big_b = field.kpoly_scale(&b_raw, &lead_inv);
+    let big_c = field.kpoly_scale(&big_c, &lead_inv);
+
+    // Denominator bound for v: E = gcd(B, B'). G = B / E.
+    let bprime = field.kpoly_deriv(&big_b);
+    let e_poly = field.kpoly_gcd(&big_b, &bprime)?;
+    let g_poly = field.kpoly_div_exact(&big_b, &e_poly)?;
+    let eprime = field.kpoly_deriv(&e_poly);
+
+    // Polynomial multipliers of the identity  Σ_j n_j·P_j = C·E,
+    //   P_j = G·E·(j x^{j-1}) − G·E'·x^j + G·E·f·x^j.
+    let ge = field.kpoly_mul(&g_poly, &e_poly);
+    let gep = field.kpoly_mul(&g_poly, &eprime);
+    let gef = field.kpoly_mul(&ge, f);
+    let target = field.kpoly_mul(&big_c, &e_poly);
+
+    // Degree bound for N (= numerator of v = N/E).
+    let deg_b = NumberField::kdeg(&big_b);
+    let deg_c = NumberField::kdeg(&big_c);
+    let deg_e = NumberField::kdeg(&e_poly).max(0);
+    let deg_f = NumberField::kdeg(f).max(0);
+    let poly_part = (deg_c - deg_b).max(0);
+    let dbound = (deg_e + poly_part.max(deg_f) + 2).max(0) as usize;
+    let cols = dbound + 1;
+
+    let max_deg = (NumberField::kdeg(&gef) + dbound as i64)
+        .max(NumberField::kdeg(&ge) + dbound as i64)
+        .max(NumberField::kdeg(&gep) + dbound as i64)
+        .max(NumberField::kdeg(&target))
+        .max(0) as usize;
+    let n_rows = max_deg + 1;
+
+    // Assemble M·n = target over K.
+    let mut mat = vec![vec![NumberField::k_zero(); cols]; n_rows];
+    for (d, row) in mat.iter_mut().enumerate() {
+        let d = d as i64;
+        for (j, cell) in row.iter_mut().enumerate() {
+            let jj = j as i64;
+            // [G·E·(j x^{j-1})]_d = j · (G·E)[d-j+1]
+            let mut v = field.mul(&field.from_int(jj), &NumberField::kcoeff(&ge, d - jj + 1));
+            // − [G·E'·x^j]_d = −(G·E')[d-j]
+            v = field.sub(&v, &NumberField::kcoeff(&gep, d - jj));
+            // + [G·E·f·x^j]_d = (G·E·f)[d-j]
+            v = field.add(&v, &NumberField::kcoeff(&gef, d - jj));
+            *cell = v;
+        }
+    }
+    let rhs: Vec<KElem> = (0..n_rows)
+        .map(|d| NumberField::kcoeff(&target, d as i64))
+        .collect();
+
+    let solution = solve_linear_system_k(field, mat, rhs, cols)?;
+    let n_poly = NumberField::kpoly_trim(solution);
+
+    // Verify (N'E − N E' + f N E)·B == C·E².
+    let np = field.kpoly_deriv(&n_poly);
+    let lhs = field.kpoly_mul(
+        &field.kpoly_add(
+            &field.kpoly_sub(
+                &field.kpoly_mul(&np, &e_poly),
+                &field.kpoly_mul(&n_poly, &eprime),
+            ),
+            &field.kpoly_mul(&field.kpoly_mul(f, &n_poly), &e_poly),
+        ),
+        &big_b,
+    );
+    let rhs_check = field.kpoly_mul(&big_c, &field.kpoly_mul(&e_poly, &e_poly));
+    if !NumberField::kpoly_eq(&lhs, &rhs_check) {
+        return None;
+    }
+
+    // Reduce v = N/E to lowest terms.
+    if n_poly.is_empty() {
+        return Some((Vec::new(), one));
+    }
+    let gve = field.kpoly_gcd(&n_poly, &e_poly)?;
+    let num = field.kpoly_div_exact(&n_poly, &gve)?;
+    let den = field.kpoly_monic(&field.kpoly_div_exact(&e_poly, &gve)?)?;
+    Some((num, den))
+}
+
+/// Solve `mat · x = rhs` over a number field `K` by Gauss–Jordan elimination.
+/// Returns a particular solution (free variables 0), or `None` if inconsistent.
+fn solve_linear_system_k(
+    field: &NumberField,
+    mut mat: Vec<Vec<KElem>>,
+    mut rhs: Vec<KElem>,
+    cols: usize,
+) -> Option<Vec<KElem>> {
+    let rows = mat.len();
+    let mut pivot_row_of_col: Vec<Option<usize>> = vec![None; cols];
+    let mut row = 0usize;
+
+    for col in 0..cols {
+        if row >= rows {
+            break;
+        }
+        let Some(sel) = (row..rows).find(|&r| !NumberField::is_zero(&mat[r][col])) else {
+            continue;
+        };
+        mat.swap(row, sel);
+        rhs.swap(row, sel);
+
+        // Normalise the pivot row.
+        let piv_inv = field.inv(&mat[row][col])?;
+        for cell in mat[row][col..cols].iter_mut() {
+            *cell = field.mul(cell, &piv_inv);
+        }
+        rhs[row] = field.mul(&rhs[row], &piv_inv);
+
+        // Eliminate the column from every other row.
+        let pivot_row = mat[row].clone();
+        let pivot_rhs = rhs[row].clone();
+        for r in 0..rows {
+            if r != row && !NumberField::is_zero(&mat[r][col]) {
+                let factor = mat[r][col].clone();
+                for (cell, pv) in mat[r][col..cols]
+                    .iter_mut()
+                    .zip(pivot_row[col..cols].iter())
+                {
+                    *cell = field.sub(cell, &field.mul(&factor, pv));
+                }
+                rhs[r] = field.sub(&rhs[r], &field.mul(&factor, &pivot_rhs));
+            }
+        }
+        pivot_row_of_col[col] = Some(row);
+        row += 1;
+    }
+
+    // Consistency: an all-zero row with nonzero rhs has no solution.
+    for r in 0..rows {
+        if mat[r].iter().all(NumberField::is_zero) && !NumberField::is_zero(&rhs[r]) {
+            return None;
+        }
+    }
+
+    let mut x = vec![NumberField::k_zero(); cols];
+    for (col, pr) in pivot_row_of_col.iter().enumerate() {
+        if let Some(pr) = pr {
+            x[col] = rhs[*pr].clone();
+        }
+    }
+    Some(x)
+}
+
+// ---------------------------------------------------------------------------
 // Conversion: ExprId → rational function (numerator, denominator) over ℚ
 // ---------------------------------------------------------------------------
 
@@ -476,5 +662,64 @@ mod tests {
         let lhs = poly_mul(&n, &vec![rat(0), rat(0), rat(1)]);
         let rhs = poly_mul(&d, &vec![rat(-1), rat(1)]);
         assert!(polys_equal(&lhs, &rhs), "n={n:?} d={d:?}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Rational RDE over a number field K = ℚ(√d)  (Gap E, rational case)
+    // -----------------------------------------------------------------------
+
+    /// ℚ(√2) = ℚ[t]/(t²−2).
+    fn field_sqrt2() -> NumberField {
+        NumberField::new(vec![rat(-2), rat(0), rat(1)])
+    }
+
+    /// A K-constant from a rational.
+    fn kc(field: &NumberField, n: i64) -> KElem {
+        field.from_int(n)
+    }
+
+    // ∫ (x − √2 − 1)/(x − √2)² · exp(x) dx = exp(x)/(x − √2).
+    // RDE: v' + v = (x−√2−1)/(x−√2)²  →  v = 1/(x − √2).
+    #[test]
+    fn rational_rde_k_elementary_sqrt2() {
+        let field = field_sqrt2();
+        let f: KPoly = vec![kc(&field, 1)]; // f = 1 (η = x, k = 1)
+        let sqrt2 = vec![rat(0), rat(1)]; // √2 as a K-element
+                                          // c_num = x − √2 − 1: x^0 = −√2 − 1, x^1 = 1.
+        let c0 = field.sub(&field.neg(&sqrt2), &kc(&field, 1));
+        let c_num: KPoly = vec![c0, kc(&field, 1)];
+        // c_den = (x − √2)² = x² − 2√2·x + 2.
+        let base: KPoly = vec![field.neg(&sqrt2), kc(&field, 1)]; // x − √2
+        let c_den = field.kpoly_mul(&base, &base);
+
+        let (vn, vd) = solve_rational_rde_k(&field, &f, &c_num, &c_den).expect("elementary");
+        // v = 1/(x − √2): num = 1, den = x − √2 (monic).
+        assert_eq!(NumberField::kdeg(&vn), 0);
+        assert_eq!(trim(vn[0].clone()), vec![rat(1)]);
+        assert!(NumberField::kpoly_eq(&vd, &base));
+    }
+
+    // ∫ x²/(x − √2) · exp(x) dx is non-elementary (Ei term: simple pole, residue 2).
+    #[test]
+    fn rational_rde_k_nonelementary_sqrt2() {
+        let field = field_sqrt2();
+        let f: KPoly = vec![kc(&field, 1)];
+        let sqrt2 = vec![rat(0), rat(1)];
+        let c_num: KPoly = vec![NumberField::k_zero(), NumberField::k_zero(), kc(&field, 1)]; // x²
+        let c_den: KPoly = vec![field.neg(&sqrt2), kc(&field, 1)]; // x − √2
+        assert!(solve_rational_rde_k(&field, &f, &c_num, &c_den).is_none());
+    }
+
+    // A polynomial RHS still works through the K rational solver (E = 1).
+    // ∫ x·exp(x²) dx: f = 2x, c = x  →  v = 1/2 (a K-constant).
+    #[test]
+    fn rational_rde_k_reduces_to_polynomial() {
+        let field = field_sqrt2();
+        let f: KPoly = vec![NumberField::k_zero(), kc(&field, 2)]; // 2x
+        let c_num: KPoly = vec![NumberField::k_zero(), kc(&field, 1)]; // x
+        let c_den: KPoly = vec![kc(&field, 1)]; // 1
+        let (vn, vd) = solve_rational_rde_k(&field, &f, &c_num, &c_den).expect("elementary");
+        assert_eq!(trim(vn[0].clone()), vec![Rational::from((1, 2))]);
+        assert_eq!(trim(vd[0].clone()), vec![rat(1)]);
     }
 }
