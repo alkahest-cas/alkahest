@@ -149,6 +149,13 @@ fn integrate_single_exp_term(
     // Build exp(kη) once: for k=1 use exp_gen directly; for k>1 use exp(kη).
     let exp_k_eta = build_exp_k_eta(k, eta, exp_gen, pool);
 
+    // Split off any var-free (constant) factor of the coefficient:
+    //   ∫ K·g(x)·exp(kη) dx = K · ∫ g(x)·exp(kη) dx,   K free of `var`.
+    // This lets the RDE work on the purely var-dependent remainder `g` over ℚ,
+    // while `K` may be an arbitrary symbolic/algebraic constant (e.g. √2, π) that
+    // the ℚ-coefficient RDE solver cannot represent (Gap E).
+    let (k_const, c_rest) = split_const_factor(c_expr, var, pool);
+
     // Non-elementary error shared by the polynomial and rational paths.
     let non_elementary = || {
         IntegrationError::NonElementary(format!(
@@ -165,11 +172,12 @@ fn integrate_single_exp_term(
     };
 
     // Fast path: polynomial coefficient → polynomial Risch DE (Bronstein §5.2).
-    if let Some(c_poly) = expr_to_qpoly(c_expr, var, pool) {
+    if let Some(c_poly) = expr_to_qpoly(c_rest, var, pool) {
         return match solve_poly_rde(k, deta, &c_poly) {
             Some(v_poly) => {
                 let v_expr = qpoly_to_expr(&v_poly, var, pool);
-                let result = build_v_times_exp(v_expr, exp_k_eta, pool);
+                let core = build_v_times_exp(v_expr, exp_k_eta, pool);
+                let result = apply_const(k_const, core, pool);
                 log.push(RewriteStep::simple("risch_exp_rde", c_expr, result));
                 Ok(result)
             }
@@ -178,13 +186,14 @@ fn integrate_single_exp_term(
     }
 
     // Rational coefficient → rational Risch DE over ℚ(x) (Bronstein §6.1, Gap 1).
-    if let Some((c_num, c_den)) = expr_to_qrational(c_expr, var, pool) {
+    if let Some((c_num, c_den)) = expr_to_qrational(c_rest, var, pool) {
         // f = k·η' is a polynomial in the exp tower.
         let f = poly_scale(&deta.to_vec(), &rug::Rational::from(k));
         return match solve_rational_rde(&f, &c_num, &c_den) {
             Some((v_num, v_den)) => {
                 let v_expr = build_rational(&v_num, &v_den, var, pool);
-                let result = build_v_times_exp(v_expr, exp_k_eta, pool);
+                let core = build_v_times_exp(v_expr, exp_k_eta, pool);
+                let result = apply_const(k_const, core, pool);
                 log.push(RewriteStep::simple(
                     "risch_exp_rde_rational",
                     c_expr,
@@ -196,8 +205,9 @@ fn integrate_single_exp_term(
         };
     }
 
-    // c is neither a polynomial nor a rational function in `var` (e.g. it carries
-    // another transcendental generator) — outside the single-generator subset.
+    // The var-dependent remainder is neither a polynomial nor a rational function
+    // in `var` (e.g. it carries another transcendental generator) — outside the
+    // single-generator subset.
     Err(IntegrationError::NotImplemented(format!(
         "coefficient {} of exp(η)^{} is not a rational function in the integration \
          variable; mixed/multiple generators are not yet supported",
@@ -212,6 +222,57 @@ fn build_v_times_exp(v_expr: ExprId, exp_k_eta: ExprId, pool: &ExprPool) -> Expr
         exp_k_eta
     } else {
         pool.mul(vec![v_expr, exp_k_eta])
+    }
+}
+
+/// Split a coefficient `c` into `(K, g)` with `c = K · g`, where `K` collects all
+/// factors free of `var` (an arbitrary symbolic/algebraic constant) and `g`
+/// carries the var-dependent part.  Returns `(1, c)` when there is no constant
+/// factor and `(c, 1)` when `c` itself is constant.
+fn split_const_factor(c: ExprId, var: ExprId, pool: &ExprPool) -> (ExprId, ExprId) {
+    use crate::kernel::ExprData;
+    let one = pool.integer(1_i32);
+    match pool.get(c) {
+        ExprData::Mul(args) => {
+            let mut consts: Vec<ExprId> = Vec::new();
+            let mut vars: Vec<ExprId> = Vec::new();
+            for &a in &args {
+                if is_free_of_var(a, var, pool) {
+                    consts.push(a);
+                } else {
+                    vars.push(a);
+                }
+            }
+            if consts.is_empty() {
+                return (one, c);
+            }
+            let k_const = match consts.len() {
+                1 => consts[0],
+                _ => pool.mul(consts),
+            };
+            let rest = match vars.len() {
+                0 => one,
+                1 => vars[0],
+                _ => pool.mul(vars),
+            };
+            (k_const, rest)
+        }
+        _ => {
+            if is_free_of_var(c, var, pool) {
+                (c, one)
+            } else {
+                (one, c)
+            }
+        }
+    }
+}
+
+/// Multiply `core` by the constant `k_const`, collapsing the `k_const = 1` case.
+fn apply_const(k_const: ExprId, core: ExprId, pool: &ExprPool) -> ExprId {
+    if is_one(k_const, pool) {
+        core
+    } else {
+        pool.mul(vec![k_const, core])
     }
 }
 
@@ -523,5 +584,153 @@ mod tests {
         // x * exp(x^2): needs Risch
         let x_times_exp_x2 = pool.mul(vec![x, exp_x2]);
         assert!(needs_exp_risch(x_times_exp_x2, x, &pool));
+    }
+
+    // -----------------------------------------------------------------------
+    // Constant (symbolic / algebraic) coefficient factor (Gap E, exp tower)
+    // -----------------------------------------------------------------------
+
+    /// Numeric evaluator supporting the nodes that appear in these antiderivatives
+    /// (Integer/Rational/Add/Mul/Pow/exp/sqrt).
+    fn eval_f64(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> f64 {
+        use crate::kernel::ExprData;
+        if expr == x {
+            return xv;
+        }
+        match pool.get(expr) {
+            // Opaque symbolic constant used in the symbolic-factor test: assign it
+            // a fixed value so `d/dx F = f` can be checked numerically.
+            ExprData::Symbol { ref name, .. } if name == "pi" => std::f64::consts::PI,
+            ExprData::Integer(n) => n.0.to_f64(),
+            ExprData::Rational(r) => r.0.to_f64(),
+            ExprData::Add(args) => args.iter().map(|&a| eval_f64(a, x, xv, pool)).sum(),
+            ExprData::Mul(args) => args.iter().map(|&a| eval_f64(a, x, xv, pool)).product(),
+            ExprData::Pow { base, exp } => {
+                eval_f64(base, x, xv, pool).powf(eval_f64(exp, x, xv, pool))
+            }
+            ExprData::Func { ref name, ref args } if args.len() == 1 => {
+                let a = eval_f64(args[0], x, xv, pool);
+                match name.as_str() {
+                    "exp" => a.exp(),
+                    "log" => a.ln(),
+                    "sqrt" => a.sqrt(),
+                    other => panic!("eval_f64: unsupported func {other}"),
+                }
+            }
+            other => panic!("eval_f64: unsupported node {other:?}"),
+        }
+    }
+
+    /// Integrate via the exp tower and assert `d/dx F = integrand` numerically.
+    fn verify_exp_tower(integrand: ExprId, x: ExprId, pool: &ExprPool) {
+        use super::super::tower::find_generators;
+        let gens = find_generators(integrand, x, pool);
+        let level = gens.iter().find(|g| g.is_exp()).expect("an exp generator");
+        let mut log = DerivationLog::new();
+        let f =
+            integrate_exp_tower(integrand, level, x, pool, &mut log).expect("should be elementary");
+        let d = crate::diff::diff(f, x, pool).unwrap();
+        let ds = crate::simplify::engine::simplify(d.value, pool).value;
+        for &xv in &[0.7_f64, 1.3, 2.1] {
+            let lhs = eval_f64(ds, x, xv, pool);
+            let rhs = eval_f64(integrand, x, xv, pool);
+            assert!(
+                (lhs - rhs).abs() < 1e-7,
+                "d/dx F ≠ f at x={xv}: {lhs} vs {rhs}\n  F = {}",
+                pool.display(f)
+            );
+        }
+    }
+
+    #[test]
+    fn rational_const_factor_exp_x2() {
+        // ∫ (1/2)·x·exp(x²) dx = (1/4)·exp(x²).  Before the constant-factor split
+        // the ℚ-constant rode along in the coefficient and the conversion failed.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x2 = pool.func("exp", vec![pool.pow(x, pool.integer(2_i32))]);
+        let half = pool.rational(1_i32, 2_i32);
+        let integrand = pool.mul(vec![half, x, exp_x2]);
+        verify_exp_tower(integrand, x, &pool);
+    }
+
+    #[test]
+    fn algebraic_const_factor_exp_x2() {
+        // ∫ √2·x·exp(x²) dx = (√2/2)·exp(x²).  √2 is an algebraic constant the
+        // ℚ-coefficient RDE cannot represent; the split pulls it out (Gap E).
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x2 = pool.func("exp", vec![pool.pow(x, pool.integer(2_i32))]);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let integrand = pool.mul(vec![sqrt2, x, exp_x2]);
+        verify_exp_tower(integrand, x, &pool);
+    }
+
+    #[test]
+    fn symbolic_const_factor_poly_exp_x() {
+        // ∫ π·x²·exp(x) dx = π·(x²−2x+2)·exp(x).  π is an opaque symbolic constant.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let pi = pool.symbol("pi", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let integrand = pool.mul(vec![pi, pool.pow(x, pool.integer(2_i32)), exp_x]);
+        verify_exp_tower(integrand, x, &pool);
+    }
+
+    #[test]
+    fn algebraic_const_factor_rational_coeff() {
+        // ∫ √2·(x−1)/x²·exp(x) dx = √2·exp(x)/x.  Constant factor on top of a
+        // *rational* coefficient (exercises the rational-RDE branch after the split).
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let num = pool.add(vec![x, pool.integer(-1_i32)]);
+        let inv_x2 = pool.pow(x, pool.integer(-2_i32));
+        let integrand = pool.mul(vec![sqrt2, num, inv_x2, exp_x]);
+        verify_exp_tower(integrand, x, &pool);
+    }
+
+    #[test]
+    fn algebraic_const_factor_nonelementary_preserved() {
+        // ∫ √2·exp(x²) dx is still non-elementary: pulling out √2 leaves ∫exp(x²).
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x2 = pool.func("exp", vec![pool.pow(x, pool.integer(2_i32))]);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let integrand = pool.mul(vec![sqrt2, exp_x2]);
+
+        use super::super::tower::find_generators;
+        let gens = find_generators(integrand, x, &pool);
+        let level = gens.iter().find(|g| g.is_exp()).unwrap();
+        let mut log = DerivationLog::new();
+        let result = integrate_exp_tower(integrand, level, x, &pool, &mut log);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ √2·exp(x²) dx must remain NonElementary; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn split_const_factor_cases() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+
+        // √2·x → (√2, x)
+        let c = pool.mul(vec![sqrt2, x]);
+        let (k, rest) = split_const_factor(c, x, &pool);
+        assert_eq!(k, sqrt2);
+        assert_eq!(rest, x);
+
+        // pure constant √2 → (√2, 1)
+        let (k, rest) = split_const_factor(sqrt2, x, &pool);
+        assert_eq!(k, sqrt2);
+        assert_eq!(rest, pool.integer(1_i32));
+
+        // pure variable x → (1, x)
+        let (k, rest) = split_const_factor(x, x, &pool);
+        assert_eq!(k, pool.integer(1_i32));
+        assert_eq!(rest, x);
     }
 }
