@@ -17,6 +17,8 @@
 
 use rug::Rational;
 
+use super::number_field::{KPoly, NumberField};
+
 /// A polynomial over ℚ, stored as coefficient vector in ascending degree order.
 /// `poly[i]` is the coefficient of `x^i`.  The zero polynomial is represented
 /// as the empty vector.
@@ -244,6 +246,109 @@ pub fn solve_poly_rde(k: i64, deta: &[Rational], h: &[Rational]) -> Option<QPoly
     } else {
         None
     }
+}
+
+// ---------------------------------------------------------------------------
+// Polynomial RDE over a number field K = ℚ(α)  (Risch Gap E)
+// ---------------------------------------------------------------------------
+
+/// Solve the polynomial Risch Differential Equation `y' + k·Dη·y = h` with
+/// coefficients in a number field `K = ℚ(α)` (represented by `field`).
+///
+/// This mirrors [`solve_poly_rde`] exactly — same degree analysis and downward
+/// coefficient sweep — but every coefficient operation goes through `field`
+/// instead of ℚ.  It handles exp-tower integrands whose coefficient is a
+/// polynomial in `x` with algebraic-number coefficients that cannot be split off
+/// as a constant factor (e.g. `∫ (x + √2)·exp(x) dx`).
+///
+/// `deta` and `h` are `K`-polynomials in `x` (ascending degree).  Returns the
+/// unique `K`-polynomial solution, or `None` when none exists (which certifies a
+/// non-elementary integral over `K`, just as in the ℚ case).
+pub fn solve_poly_rde_k(field: &NumberField, k: i64, deta: &KPoly, h: &KPoly) -> Option<KPoly> {
+    let deta = NumberField::kpoly_trim(deta.clone());
+    let h = NumberField::kpoly_trim(h.clone());
+
+    // h = 0 → y = 0.
+    if h.is_empty() {
+        return Some(Vec::new());
+    }
+
+    let deg_deta = NumberField::kdeg(&deta);
+
+    // Dη = 0: equation is y' = h; solution is ∫ h dx.
+    if deg_deta < 0 {
+        return Some(field.kpoly_integrate(&h));
+    }
+
+    assert!(k != 0, "solve_poly_rde_k called with k=0: caller bug");
+
+    let deg_h = NumberField::kdeg(&h);
+    let m_signed = deg_h - deg_deta;
+    if m_signed < 0 {
+        return None; // degree equation has no solution
+    }
+    let m = m_signed as usize;
+
+    let kk = field.from_int(k);
+    let lc = deta[deg_deta as usize].clone(); // leading coeff of Dη
+    let divisor_inv = field.inv(&field.mul(&kk, &lc))?;
+
+    let mut y: KPoly = vec![NumberField::k_zero(); m + 1];
+    for j in (0..=m).rev() {
+        let target_deg = j as i64 + deg_deta;
+
+        // RHS: h coefficient at target_deg.
+        let mut rhs = if (target_deg as usize) < h.len() {
+            h[target_deg as usize].clone()
+        } else {
+            NumberField::k_zero()
+        };
+
+        // Subtract y' contribution: (target_deg+1)·y[target_deg+1].
+        let deriv_idx = target_deg as usize + 1;
+        if deriv_idx <= m {
+            let coef = field.from_int(target_deg + 1);
+            rhs = field.sub(&rhs, &field.mul(&coef, &y[deriv_idx]));
+        }
+
+        // Subtract k·Dη[i]·y[l] for i < deg_deta (already-known y[l], l > j).
+        for i in 0..deg_deta as usize {
+            let deta_i = deta.get(i).cloned().unwrap_or_else(NumberField::k_zero);
+            let l = (target_deg - i as i64) as usize;
+            if l <= m && l != j {
+                let term = field.mul(&field.mul(&kk, &deta_i), &y[l]);
+                rhs = field.sub(&rhs, &term);
+            }
+        }
+
+        // Solve k·lc(Dη)·y[j] = rhs.
+        y[j] = field.mul(&rhs, &divisor_inv);
+    }
+
+    let y = NumberField::kpoly_trim(y);
+
+    // Verify y' + k·Dη·y == h (guards against an under-sized degree bound and the
+    // over-determined lower-degree equations).
+    let yp = field.kpoly_deriv(&y);
+    let kdeta_y = field.kpoly_scale(&field.kpoly_mul(&deta, &y), &kk);
+    let lhs = field.kpoly_add(&yp, &kdeta_y);
+    if kpoly_eq(&lhs, &h) {
+        Some(y)
+    } else {
+        None
+    }
+}
+
+/// Equality of two `K`-polynomials in `x` (coefficient-wise after trimming).
+fn kpoly_eq(a: &KPoly, b: &KPoly) -> bool {
+    let a = NumberField::kpoly_trim(a.clone());
+    let b = NumberField::kpoly_trim(b.clone());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter()
+        .zip(b.iter())
+        .all(|(x, y)| trim(x.clone()) == trim(y.clone()))
 }
 
 /// Compare two polynomials (after trimming) for equality.
@@ -603,5 +708,68 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Polynomial RDE over a number field K = ℚ(α)  (Gap E)
+    // -----------------------------------------------------------------------
+
+    /// ℚ(√2) = ℚ[t]/(t²−2).
+    fn field_sqrt2() -> NumberField {
+        NumberField::new(vec![rat(-2), rat(0), rat(1)])
+    }
+
+    // ∫ (x + √2)·exp(x) dx = (x + √2 − 1)·exp(x):  y' + y = x + √2  →  y = x + √2 − 1.
+    #[test]
+    fn rde_k_linear_sqrt2() {
+        let field = field_sqrt2();
+        let deta: KPoly = vec![vec![rat(1)]]; // Dη = 1 (constant)
+        let h: KPoly = vec![vec![rat(0), rat(1)], vec![rat(1)]]; // √2 + x
+        let y = solve_poly_rde_k(&field, 1, &deta, &h).expect("elementary");
+        // y = x + (√2 − 1): y[0] = −1 + √2, y[1] = 1.
+        assert_eq!(trim(y[0].clone()), vec![rat(-1), rat(1)]);
+        assert_eq!(trim(y[1].clone()), vec![rat(1)]);
+    }
+
+    // ∫ (√3·x² + x)·exp(x) dx: y' + y = √3·x² + x, solvable over ℚ(√3).
+    #[test]
+    fn rde_k_quadratic_sqrt3() {
+        let field = NumberField::new(vec![rat(-3), rat(0), rat(1)]);
+        let deta: KPoly = vec![vec![rat(1)]]; // Dη = 1
+                                              // h = √3·x² + x: x^0=0, x^1=1, x^2=√3.
+        let h: KPoly = vec![NumberField::k_zero(), vec![rat(1)], vec![rat(0), rat(1)]];
+        let y = solve_poly_rde_k(&field, 1, &deta, &h).expect("elementary");
+        // Check y' + y == h by re-deriving.
+        let yp = field.kpoly_deriv(&y);
+        let lhs = field.kpoly_add(&yp, &y);
+        let lhs = NumberField::kpoly_trim(lhs);
+        let h = NumberField::kpoly_trim(h);
+        assert_eq!(lhs.len(), h.len());
+        for (a, b) in lhs.iter().zip(h.iter()) {
+            assert_eq!(trim(a.clone()), trim(b.clone()));
+        }
+    }
+
+    // ∫ (x + √2)·exp(x²) dx: y' + 2x·y = x + √2 has no polynomial solution
+    // (the √2·exp(x²) part is non-elementary) → None.
+    #[test]
+    fn rde_k_nonelementary_sqrt2_gaussian() {
+        let field = field_sqrt2();
+        let deta: KPoly = vec![NumberField::k_zero(), vec![rat(2)]]; // 2x
+        let h: KPoly = vec![vec![rat(0), rat(1)], vec![rat(1)]]; // √2 + x
+        assert!(solve_poly_rde_k(&field, 1, &deta, &h).is_none());
+    }
+
+    // Sanity: a ℚ-only RDE solved through the K solver matches the ℚ solver.
+    // ∫ x²·exp(x) dx: y' + y = x² → y = x² − 2x + 2.
+    #[test]
+    fn rde_k_reduces_to_rational_case() {
+        let field = field_sqrt2();
+        let deta: KPoly = vec![vec![rat(1)]];
+        let h: KPoly = vec![NumberField::k_zero(), NumberField::k_zero(), vec![rat(1)]]; // x²
+        let y = solve_poly_rde_k(&field, 1, &deta, &h).expect("elementary");
+        assert_eq!(trim(y[0].clone()), vec![rat(2)]);
+        assert_eq!(trim(y[1].clone()), vec![rat(-2)]);
+        assert_eq!(trim(y[2].clone()), vec![rat(1)]);
     }
 }
