@@ -44,6 +44,7 @@ use rug::{Integer, Rational};
 use crate::kernel::{Domain, ExprId, ExprPool};
 use crate::poly::UniPoly;
 
+use super::number_field::{ext_gcd, mod_inverse, poly_mod, NumberField};
 use super::poly_rde::{
     degree, poly_add, poly_deriv, poly_integrate, poly_mul, poly_one, poly_scale, poly_zero,
     qpoly_to_expr, rational_to_expr, trim, QPoly,
@@ -127,47 +128,8 @@ pub fn try_integrate_rational(expr: ExprId, var: ExprId, pool: &ExprPool) -> Opt
 // Hermite reduction (Bronstein §2.2)
 // ---------------------------------------------------------------------------
 
-/// Remainder of `a mod m`.
-fn poly_mod(a: &QPoly, m: &QPoly) -> QPoly {
-    poly_divrem(a, m).1
-}
-
-/// Extended GCD over ℚ[x]: returns `(g, s, t)` with `s·a + t·b = g`, `g` monic.
-fn ext_gcd(a: &QPoly, b: &QPoly) -> (QPoly, QPoly, QPoly) {
-    let (mut old_r, mut r) = (trim(a.clone()), trim(b.clone()));
-    let (mut old_s, mut s) = (poly_one(), poly_zero());
-    let (mut old_t, mut t) = (poly_zero(), poly_one());
-    while !r.is_empty() {
-        let (q, rem) = poly_divrem(&old_r, &r);
-        old_r = r;
-        r = rem;
-        let ns = poly_sub(&old_s, &poly_mul(&q, &s));
-        old_s = s;
-        s = ns;
-        let nt = poly_sub(&old_t, &poly_mul(&q, &t));
-        old_t = t;
-        t = nt;
-    }
-    let dg = degree(&old_r);
-    if dg < 0 {
-        return (poly_zero(), old_s, old_t);
-    }
-    let inv = Rational::from(1) / old_r[dg as usize].clone();
-    (
-        poly_scale(&old_r, &inv),
-        poly_scale(&old_s, &inv),
-        poly_scale(&old_t, &inv),
-    )
-}
-
-/// Inverse of `w` modulo `v` (requires `gcd(w, v) = 1`), else `None`.
-fn mod_inverse(w: &QPoly, v: &QPoly) -> Option<QPoly> {
-    let (g, s, _t) = ext_gcd(w, v);
-    if degree(&g) != 0 {
-        return None; // not coprime
-    }
-    Some(poly_mod(&s, v))
-}
+// The ℚ[x] modular helpers `poly_mod`, `ext_gcd`, and `mod_inverse` live in
+// [`super::number_field`] (shared with the number-field arithmetic below).
 
 /// Yun squarefree factorization of a monic polynomial: returns `(Vᵢ, i)` for
 /// each non-constant `Vᵢ`, with `f = ∏ Vᵢ^i` and the `Vᵢ` squarefree & coprime.
@@ -439,89 +401,10 @@ fn resultant_param_poly(
     )
 }
 
-// --- Number-field K = ℚ[t]/Q arithmetic (elements are QPolys reduced mod Q) ---
-
-fn k_mul(a: &QPoly, b: &QPoly, q: &QPoly) -> QPoly {
-    poly_mod(&poly_mul(a, b), q)
-}
-fn k_sub(a: &QPoly, b: &QPoly, q: &QPoly) -> QPoly {
-    poly_mod(&poly_sub(a, b), q)
-}
-fn k_is_zero(a: &QPoly) -> bool {
-    trim(a.clone()).is_empty()
-}
-
-/// Degree (in x) of a K-polynomial (coefficients are K-elements).
-fn kdeg(p: &[QPoly]) -> i64 {
-    let mut d = p.len() as i64 - 1;
-    while d >= 0 && k_is_zero(&p[d as usize]) {
-        d -= 1;
-    }
-    d
-}
-
-fn kpoly_trim(mut p: Vec<QPoly>) -> Vec<QPoly> {
-    while p.last().is_some_and(k_is_zero) {
-        p.pop();
-    }
-    p
-}
-
-/// Euclidean division of K-polynomials in `x`; returns `(quot, rem)`.
-fn kpoly_divrem(a: &[QPoly], b: &[QPoly], q: &QPoly) -> Option<(Vec<QPoly>, Vec<QPoly>)> {
-    let bd = kdeg(b);
-    if bd < 0 {
-        return None; // division by zero
-    }
-    let lead_inv = mod_inverse(&b[bd as usize], q)?;
-    let mut r = kpoly_trim(a.to_vec());
-    let ad = kdeg(&r);
-    if ad < bd {
-        return Some((vec![], r));
-    }
-    let mut quot = vec![poly_zero(); (ad - bd + 1) as usize];
-    loop {
-        let rd = kdeg(&r);
-        if rd < bd {
-            break;
-        }
-        let coeff = k_mul(&r[rd as usize], &lead_inv, q);
-        let shift = (rd - bd) as usize;
-        for (i, bi) in b.iter().enumerate() {
-            if shift + i < r.len() {
-                r[shift + i] = k_sub(&r[shift + i], &k_mul(&coeff, bi, q), q);
-            }
-        }
-        quot[shift] = coeff;
-        r = kpoly_trim(r);
-        if r.is_empty() {
-            break;
-        }
-    }
-    Some((kpoly_trim(quot), r))
-}
-
-/// Monic GCD (in `x`) of two K-polynomials over `K = ℚ[t]/Q`.
-fn kpoly_gcd(a: &[QPoly], b: &[QPoly], q: &QPoly) -> Option<Vec<QPoly>> {
-    let mut a = kpoly_trim(a.to_vec());
-    let mut b = kpoly_trim(b.to_vec());
-    while kdeg(&b) >= 0 {
-        let (_, rem) = kpoly_divrem(&a, &b, q)?;
-        a = b;
-        b = rem;
-    }
-    let ad = kdeg(&a);
-    if ad < 0 {
-        return None;
-    }
-    // Make monic in x.
-    let lead_inv = mod_inverse(&a[ad as usize], q)?;
-    Some(a.iter().map(|c| k_mul(c, &lead_inv, q)).collect())
-}
-
 /// The Lazard–Rioboo–Trager log argument `S(t, x) = gcd_x(num − t·dprime, d)`
-/// computed over `K = ℚ[t]/Q`, returned as a symbolic polynomial in `x` whose
-/// coefficients are expressions in the root symbol `rvar`.
+/// computed over the number field `K = ℚ[t]/Q` (see [`super::number_field`]),
+/// returned as a symbolic polynomial in `x` whose coefficients are expressions
+/// in the root symbol `rvar`.
 fn alg_log_argument(
     num: &QPoly,
     dprime: &QPoly,
@@ -531,13 +414,14 @@ fn alg_log_argument(
     rvar: ExprId,
     pool: &ExprPool,
 ) -> Option<ExprId> {
+    let k = NumberField::new(q.clone());
     let width = (degree(num).max(degree(dprime)) + 1).max(0) as usize;
     // A = num − t·dprime  (K-poly in x): A[i] = num[i] − dprime[i]·t.
     let a: Vec<QPoly> = (0..width)
         .map(|i| {
             let ni = coeff_at(num, i);
             let ppi = coeff_at(dprime, i);
-            poly_mod(&vec![ni, -ppi], q)
+            k.reduce(&vec![ni, -ppi])
         })
         .collect();
     // B = d  (K-poly in x): each coefficient is a K-constant.
@@ -552,14 +436,14 @@ fn alg_log_argument(
         })
         .collect();
 
-    let s = kpoly_gcd(&a, &b, q)?;
-    if kdeg(&s) < 1 {
+    let s = k.kpoly_gcd(&a, &b)?;
+    if NumberField::kdeg(&s) < 1 {
         return None; // no nontrivial common factor — not a valid residue
     }
     // Build Σ_i coeff_i(rvar) · x^i.
     let mut terms: Vec<ExprId> = Vec::new();
     for (i, c) in s.iter().enumerate() {
-        if k_is_zero(c) {
+        if NumberField::is_zero(c) {
             continue;
         }
         let c_expr = qpoly_to_expr(c, rvar, pool);
