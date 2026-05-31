@@ -94,6 +94,112 @@ impl crate::errors::AlkahestError for IntegrationError {
 }
 
 // ---------------------------------------------------------------------------
+// Logarithmic-derivative rule:  ∫ (h'/h)·log(h)^n dx
+// ---------------------------------------------------------------------------
+
+/// Integrate `∫ (h'/h)·log(h)^n dx` for an integer `n`.
+///
+/// With `θ = log(h)` the derivation gives `Dθ = h'/h`, so the integrand
+/// `(h'/h)·θ^n = Dθ·θ^n` has antiderivative `θ^{n+1}/(n+1)` for `n ≠ −1` and
+/// `log(θ) = log(log(h))` for `n = −1`.  This is the single-generator
+/// logarithmic case of the Risch algorithm; it covers elementary integrands the
+/// rule engine cannot reduce, e.g. `∫ 1/(x·log x) dx = log(log x)` and
+/// `∫ 1/(x·log(x)^2) dx = −1/log(x)`.
+///
+/// Returns `Some(F)` only when the integrand matches the template exactly (the
+/// coefficient equals `h'/h` as a rational function), so the result is always a
+/// sound, differentiation-verifiable antiderivative; otherwise `None`.
+fn try_log_derivative(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    use super::risch::poly_rde::{poly_mul, rational_to_expr, trim};
+    use super::risch::rational_rde::expr_to_qrational;
+    use super::risch::tower::find_generators;
+
+    // The integrand must involve exactly one transcendental generator, log(h).
+    let gens = find_generators(expr, var, pool);
+    if gens.len() != 1 || !gens[0].is_log() {
+        return None;
+    }
+    let theta = gens[0].generator; // log(h)
+    let h = gens[0].argument(); // h
+
+    // Write expr = coeff · θ^n with a nonzero integer n.
+    let (coeff, n) = extract_log_power(expr, theta, pool)?;
+    if n == 0 {
+        return None;
+    }
+
+    // coeff must be a rational function of `var` (no θ inside).
+    let (cn, cd) = expr_to_qrational(coeff, var, pool)?;
+
+    // Require coeff == h'/h as rational functions.
+    let hp = crate::diff::diff(h, var, pool).ok()?.value;
+    let (hpn, hpd) = expr_to_qrational(hp, var, pool)?;
+    let (hn, hd) = expr_to_qrational(h, var, pool)?;
+    // h'/h = (hpn·hd) / (hpd·hn);  coeff == h'/h  ⇔  cn·(hpd·hn) == (hpn·hd)·cd.
+    let rn = poly_mul(&hpn, &hd);
+    let rd = poly_mul(&hpd, &hn);
+    if trim(poly_mul(&cn, &rd)) != trim(poly_mul(&rn, &cd)) {
+        return None;
+    }
+
+    // Antiderivative.
+    if n == -1 {
+        Some(pool.func("log", vec![theta])) // log(log(h))
+    } else {
+        let np1 = n + 1;
+        let pow = pool.pow(theta, pool.integer(np1));
+        let coeff_expr = rational_to_expr(&rug::Rational::from((1_i64, np1)), pool);
+        Some(pool.mul(vec![coeff_expr, pow]))
+    }
+}
+
+/// Decompose `expr` as `coeff · theta^n` for an integer `n`, returning
+/// `(coeff, n)`.  `coeff` collects every factor other than integer powers of
+/// `theta`.  Returns `None` if `theta` does not appear (or appears only with a
+/// non-integer exponent).
+fn extract_log_power(expr: ExprId, theta: ExprId, pool: &ExprPool) -> Option<(ExprId, i64)> {
+    if expr == theta {
+        return Some((pool.integer(1_i32), 1));
+    }
+    match pool.get(expr) {
+        ExprData::Pow { base, exp } if base == theta => match pool.get(exp) {
+            ExprData::Integer(m) => Some((pool.integer(1_i32), m.0.to_i64()?)),
+            _ => None,
+        },
+        ExprData::Mul(args) => {
+            let mut n: i64 = 0;
+            let mut rest: Vec<ExprId> = Vec::new();
+            for &a in &args {
+                if a == theta {
+                    n += 1;
+                } else if let ExprData::Pow { base, exp } = pool.get(a) {
+                    if base == theta {
+                        match pool.get(exp) {
+                            ExprData::Integer(m) => n += m.0.to_i64()?,
+                            _ => rest.push(a),
+                        }
+                    } else {
+                        rest.push(a);
+                    }
+                } else {
+                    rest.push(a);
+                }
+            }
+            if n == 0 {
+                return None;
+            }
+            let coeff = match rest.len() {
+                0 => pool.integer(1_i32),
+                1 => rest[0],
+                _ => pool.mul(rest),
+            };
+            Some((coeff, n))
+        }
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -726,6 +832,26 @@ pub fn integrate(
         return super::risch::integrate_risch(expr, var, pool);
     }
 
+    // Logarithmic-derivative rule: ∫ (h'/h)·log(h)^n dx (single-generator log
+    // case, e.g. ∫ 1/(x·log x) dx = log(log x)).  This must precede the
+    // `known_nonelementary` li pre-check below, which would otherwise mis-certify
+    // ∫ 1/(x·log x) dx as the (non-elementary) logarithmic integral li — it is in
+    // fact elementary because 1/x = (log x)'.  The rule fires only when the
+    // coefficient equals h'/h exactly, so a match is always a correct, verifiable
+    // antiderivative; genuinely non-elementary forms (1/log x, 1/((x+1)·log x))
+    // do not match and fall through to the certification below.
+    if let Some(result) = try_log_derivative(expr, var, pool) {
+        let simplified = simplify(result, pool);
+        let mut rlog = DerivationLog::new();
+        rlog.push(RewriteStep::simple(
+            "log_derivative_rule",
+            expr,
+            simplified.value,
+        ));
+        let final_log = rlog.merge(simplified.log);
+        return Ok(DerivedExpr::with_log(simplified.value, final_log));
+    }
+
     // Risch Gap 6: certify classic non-elementary special-function integrands
     // (Ei/Si/Ci/Shi/Chi/li) before the rule-based engine, which would otherwise
     // return the weaker `NotImplemented` verdict.
@@ -1257,5 +1383,122 @@ mod tests {
         let f = pool.func("sin", vec![x]);
         assert!(integrate(f, x, &pool).is_ok());
         assert!(known_nonelementary(f, x, &pool).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Logarithmic-derivative rule: ∫ (h'/h)·log(h)^n dx
+    // -----------------------------------------------------------------------
+
+    /// Numeric evaluator supporting log (the rule emits log/log-of-log terms).
+    fn eval_log(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> f64 {
+        if expr == x {
+            return xv;
+        }
+        match pool.get(expr) {
+            ExprData::Integer(n) => n.0.to_f64(),
+            ExprData::Rational(r) => r.0.to_f64(),
+            ExprData::Add(args) => args.iter().map(|&a| eval_log(a, x, xv, pool)).sum(),
+            ExprData::Mul(args) => args.iter().map(|&a| eval_log(a, x, xv, pool)).product(),
+            ExprData::Pow { base, exp } => {
+                eval_log(base, x, xv, pool).powf(eval_log(exp, x, xv, pool))
+            }
+            ExprData::Func { ref name, ref args } if args.len() == 1 => {
+                let a = eval_log(args[0], x, xv, pool);
+                match name.as_str() {
+                    "log" => a.ln(),
+                    other => panic!("eval_log: unsupported func {other}"),
+                }
+            }
+            other => panic!("eval_log: unsupported node {other:?}"),
+        }
+    }
+
+    /// Integrate and assert `d/dx F = integrand` numerically at a few points > 1
+    /// (so all logs are positive).
+    fn verify_log(f: ExprId, x: ExprId, pool: &ExprPool) {
+        let r = integrate(f, x, pool).unwrap_or_else(|e| panic!("expected elementary: {e:?}"));
+        let d = diff(r.value, x, pool).unwrap();
+        let ds = simplify(d.value, pool).value;
+        for &xv in &[1.3_f64, 2.1, 3.4] {
+            let lhs = eval_log(ds, x, xv, pool);
+            let rhs = eval_log(f, x, xv, pool);
+            assert!(
+                (lhs - rhs).abs() < 1e-7,
+                "d/dx F ≠ f at x={xv}: {lhs} vs {rhs}\n  F = {}",
+                pool.display(r.value)
+            );
+        }
+    }
+
+    #[test]
+    fn log_derivative_one_over_x_log_x() {
+        // ∫ 1/(x·log x) dx = log(log x)   (n = −1)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let logx = pool.func("log", vec![x]);
+        let f = pool.mul(vec![
+            pool.pow(x, pool.integer(-1)),
+            pool.pow(logx, pool.integer(-1)),
+        ]);
+        verify_log(f, x, &pool);
+        let r = integrate(f, x, &pool).unwrap();
+        assert!(
+            pool.display(r.value).to_string().contains("log(log"),
+            "expected log(log(x)); got {}",
+            pool.display(r.value)
+        );
+    }
+
+    #[test]
+    fn log_derivative_negative_powers() {
+        // ∫ 1/(x·log(x)^2) dx = −1/log(x)   (n = −2)
+        // ∫ 1/(x·log(x)^3) dx = −1/(2·log(x)^2)   (n = −3)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let logx = pool.func("log", vec![x]);
+        for m in [2_i32, 3] {
+            let f = pool.mul(vec![
+                pool.pow(x, pool.integer(-1)),
+                pool.pow(logx, pool.integer(-m)),
+            ]);
+            verify_log(f, x, &pool);
+        }
+    }
+
+    #[test]
+    fn log_derivative_polynomial_argument() {
+        // ∫ (2x/(x²+1))·1/log(x²+1) dx = log(log(x²+1))   (h = x²+1, n = −1)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let h = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(1_i32)]);
+        let logh = pool.func("log", vec![h]);
+        let dh_over_h = pool.mul(vec![pool.integer(2_i32), x, pool.pow(h, pool.integer(-1))]);
+        let f = pool.mul(vec![dh_over_h, pool.pow(logh, pool.integer(-1))]);
+        verify_log(f, x, &pool);
+    }
+
+    #[test]
+    fn log_derivative_does_not_misfire() {
+        // The rule must fire ONLY when the coefficient is exactly h'/h.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let logx = pool.func("log", vec![x]);
+
+        // ∫ 1/log(x) dx = li(x): coefficient 1 ≠ 1/x → must stay NonElementary.
+        let f = pool.pow(logx, pool.integer(-1));
+        assert!(
+            matches!(
+                integrate(f, x, &pool),
+                Err(IntegrationError::NonElementary(_))
+            ),
+            "∫ 1/log(x) dx must remain NonElementary"
+        );
+
+        // ∫ x/log(x) dx: coefficient x ≠ 1/x → the rule must not produce a result.
+        let f = pool.mul(vec![x, pool.pow(logx, pool.integer(-1))]);
+        assert!(
+            integrate(f, x, &pool).is_err(),
+            "∫ x/log(x) dx must not be (mis)integrated by the log-derivative rule"
+        );
     }
 }
