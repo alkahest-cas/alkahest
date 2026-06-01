@@ -97,3 +97,12 @@ body {
 .rec-indicator {
   animation: rec-pulse 1.5s ease-in-out infinite;
 }
+
+/* Cell execution running indicator (used by headless recorders) */
+@keyframes cell-run-ring {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.92); }
+}
+.cell-run-pulse {
+  animation: cell-run-ring 1.2s ease-in-out infinite;
+}

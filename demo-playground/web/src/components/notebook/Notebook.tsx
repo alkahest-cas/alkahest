@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { v4 as uuid } from 'uuid';
 import Cell, { type CellData } from './Cell';
+import RunMenu, { type RunMenuAction } from './RunMenu';
 import type { OutputItem, ExecutionMode } from '@/lib/execution';
 import {
   needsServer,
@@ -29,6 +30,7 @@ type Action =
   | { type: 'SET_BACKEND'; id: string; backend: CellData['backend'] }
   | { type: 'APPEND_OUTPUT'; id: string; item: OutputItem }
   | { type: 'CLEAR_OUTPUTS'; id: string }
+  | { type: 'CLEAR_ALL_OUTPUTS' }
   | { type: 'SET_OUTPUTS'; id: string; outputs: OutputItem[] }
   | { type: 'POSTPROCESS_OUTPUTS'; id: string }
   | { type: 'SET_EXEC_COUNT'; id: string; count: number }
@@ -62,6 +64,8 @@ function reducer(state: CellData[], action: Action): CellData[] {
       );
     case 'CLEAR_OUTPUTS':
       return state.map((c) => (c.id === action.id ? { ...c, outputs: [] } : c));
+    case 'CLEAR_ALL_OUTPUTS':
+      return state.map((c) => ({ ...c, outputs: [] }));
     case 'SET_OUTPUTS':
       return state.map((c) => (c.id === action.id ? { ...c, outputs: action.outputs } : c));
     case 'POSTPROCESS_OUTPUTS':
@@ -205,8 +209,10 @@ export default function Notebook({
   const [serverStatus, setServerStatus] = useState<'unknown' | 'online' | 'offline'>('unknown');
   const [execCount, setExecCount] = useState(0);
   const [autoRunPending, setAutoRunPending] = useState(false);
+  const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
   const cfg = useRef(loadConfig());
   const cleanupFns = useRef<Map<string, () => void>>(new Map());
+  const wasmExecGen = useRef<Map<string, number>>(new Map());
   const isDirtyRef = useRef(false);
   const cellsRef = useRef(cells);
   const onDirtyChangeRef = useRef(onDirtyChange);
@@ -308,14 +314,32 @@ export default function Notebook({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRunPending, sessionId]);
 
+  const stopCell = useCallback((id: string) => {
+    cleanupFns.current.get(id)?.();
+    cleanupFns.current.delete(id);
+    wasmExecGen.current.set(id, (wasmExecGen.current.get(id) ?? 0) + 1);
+    dispatch({ type: 'SET_STATUS', id, status: 'idle' });
+  }, []);
+
+  const interruptAll = useCallback(() => {
+    for (const id of [...cleanupFns.current.keys()]) {
+      stopCell(id);
+    }
+    cellsRef.current
+      .filter((c) => c.status === 'running')
+      .forEach((c) => stopCell(c.id));
+  }, [stopCell]);
+
   const runCell = useCallback(
     (id: string) => {
       const cell = cells.find((c) => c.id === id);
       if (!cell || cell.status === 'running' || cell.cellType === 'markdown') return;
 
-      // Cancel any existing execution for this cell
       cleanupFns.current.get(id)?.();
       cleanupFns.current.delete(id);
+
+      const gen = (wasmExecGen.current.get(id) ?? 0) + 1;
+      wasmExecGen.current.set(id, gen);
 
       dispatch({ type: 'CLEAR_OUTPUTS', id });
       dispatch({ type: 'SET_STATUS', id, status: 'running' });
@@ -345,12 +369,14 @@ export default function Notebook({
           cell.code,
           (item) => dispatch({ type: 'APPEND_OUTPUT', id, item }),
           (n) => {
+            if (wasmExecGen.current.get(id) !== gen) return;
             dispatch({ type: 'POSTPROCESS_OUTPUTS', id });
             dispatch({ type: 'SET_EXEC_COUNT', id, count: n });
             dispatch({ type: 'SET_STATUS', id, status: 'done' });
             cleanupFns.current.delete(id);
           },
           (err) => {
+            if (wasmExecGen.current.get(id) !== gen) return;
             dispatch({
               type: 'APPEND_OUTPUT',
               id,
@@ -365,6 +391,7 @@ export default function Notebook({
 
         executeInWasm(cell.code)
           .then((outputs) => {
+            if (wasmExecGen.current.get(id) !== gen) return;
             outputs.forEach((item) => dispatch({ type: 'APPEND_OUTPUT', id, item }));
             const n = execCount + 1;
             setExecCount(n);
@@ -372,6 +399,7 @@ export default function Notebook({
             dispatch({ type: 'SET_STATUS', id, status: 'done' });
           })
           .catch((err: Error) => {
+            if (wasmExecGen.current.get(id) !== gen) return;
             dispatch({
               type: 'APPEND_OUTPUT',
               id,
@@ -383,6 +411,78 @@ export default function Notebook({
     },
     [cells, sessionId, execCount],
   );
+
+  const runCellsSequential = useCallback(
+    async (cellIds: string[]) => {
+      for (const id of cellIds) {
+        const cell = cellsRef.current.find((c) => c.id === id);
+        if (!cell || cell.cellType === 'markdown') continue;
+        runCell(id);
+        await waitForCellDone(id, () => false);
+      }
+    },
+    [runCell],
+  );
+
+  const restartSession = useCallback(async () => {
+    interruptAll();
+    const conn = connectionFromConfig(cfg.current);
+    if (sessionId) {
+      await destroySession(conn, sessionId).catch(() => {});
+      setSessionId(null);
+    }
+    if (!conn.httpUrl) {
+      setExecCount(0);
+      return;
+    }
+    try {
+      const id = await createSession(conn);
+      setSessionId(id);
+      setServerStatus('online');
+      onServerStatusChange?.('online');
+    } catch {
+      setServerStatus('offline');
+      onServerStatusChange?.('offline');
+    }
+  }, [interruptAll, sessionId, onServerStatusChange]);
+
+  const handleRunMenuAction = useCallback(
+    (action: RunMenuAction) => {
+      const codeCells = cellsRef.current.filter((c) => c.cellType === 'code');
+      switch (action) {
+        case 'run-all':
+          void runCellsSequential(codeCells.map((c) => c.id));
+          break;
+        case 'restart':
+          void restartSession();
+          break;
+        case 'restart-run-all':
+          void (async () => {
+            await restartSession();
+            await runCellsSequential(codeCells.map((c) => c.id));
+          })();
+          break;
+        case 'run-below': {
+          const focusId = focusedCellId ?? cellsRef.current[0]?.id;
+          if (!focusId) break;
+          const start = cellsRef.current.findIndex((c) => c.id === focusId);
+          if (start < 0) break;
+          const below = cellsRef.current.slice(start).filter((c) => c.cellType === 'code');
+          void runCellsSequential(below.map((c) => c.id));
+          break;
+        }
+        case 'interrupt':
+          interruptAll();
+          break;
+        case 'clear-outputs':
+          dispatch({ type: 'CLEAR_ALL_OUTPUTS' });
+          break;
+      }
+    },
+    [focusedCellId, interruptAll, restartSession, runCellsSequential],
+  );
+
+  const anyRunning = cells.some((c) => c.status === 'running');
 
   async function handleWheelUpload(file: File) {
     if (!sessionId) return alert('Server not connected');
@@ -414,22 +514,7 @@ export default function Notebook({
           Add markdown
         </button>
 
-        <button
-          onClick={() => {
-            const promise = cells.reduce((p, c) => p.then(() => {
-              return new Promise<void>((res) => {
-                runCell(c.id);
-                // Small delay between cells
-                setTimeout(res, 300);
-              });
-            }), Promise.resolve());
-            void promise;
-          }}
-          className="flex items-center gap-1.5 rounded border border-ak-border px-3 py-1.5 text-xs hover:bg-ak-code-bg transition-colors"
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-          Run all
-        </button>
+        <RunMenu onAction={handleRunMenuAction} anyRunning={anyRunning} />
 
         <label className="flex items-center gap-1.5 rounded border border-ak-border px-3 py-1.5 text-xs cursor-pointer hover:bg-ak-code-bg transition-colors">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
@@ -450,32 +535,23 @@ export default function Notebook({
       </div>}
 
       {/* Cells */}
-      {cells.map((cell, i) => (
+      {cells.map((cell) => (
         <Cell
           key={cell.id}
           cell={cell}
-          index={i}
           onCodeChange={(id, code) => userDispatch({ type: 'SET_CODE', id, code })}
           onRun={runCell}
+          onStop={stopCell}
           onDelete={(id) => userDispatch({ type: 'REMOVE_CELL', id })}
           onMoveUp={(id) => userDispatch({ type: 'MOVE_UP', id })}
           onMoveDown={(id) => userDispatch({ type: 'MOVE_DOWN', id })}
-          onAddBelow={(id) => userDispatch({ type: 'ADD_CELL', afterId: id })}
+          onAddBelow={(id, cellType) => userDispatch({ type: 'ADD_CELL', afterId: id, cellType })}
           onToggleCellType={(id) => userDispatch({ type: 'TOGGLE_CELL_TYPE', id })}
           onOutputsChange={(id, outputs) => dispatch({ type: 'SET_OUTPUTS', id, outputs })}
+          onFocus={setFocusedCellId}
           zenMode={zenMode}
         />
       ))}
-
-      {/* Add cell footer — hidden in zen mode */}
-      {!zenMode && (
-        <button
-          onClick={() => userDispatch({ type: 'ADD_CELL' })}
-          className="w-full rounded border border-dashed border-ak-border py-2 text-xs text-ak-muted hover:border-ak-muted hover:text-ak-fg transition-colors"
-        >
-          + add cell
-        </button>
-      )}
     </div>
   );
 }
@@ -486,7 +562,7 @@ function waitForCellDone(cellId: string, cancelled: () => boolean): Promise<void
     const tick = () => {
       if (cancelled()) return resolve();
       const el = document.querySelector(`[data-cell-id="${cellId}"]`);
-      const running = el?.querySelector('.animate-spin');
+      const running = el?.getAttribute('data-cell-status') === 'running';
       if (!running) return resolve();
       if (Date.now() > deadline) return resolve();
       setTimeout(tick, 200);

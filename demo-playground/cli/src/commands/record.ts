@@ -132,7 +132,7 @@ export async function recordCommand(
   }, 3000);
 
   await page.waitForFunction(() => {
-    return document.querySelectorAll('.animate-spin').length === 0;
+    return document.querySelectorAll('[data-cell-status="running"]').length === 0;
   }, { timeout: 180_000, polling: 500 }).catch(() => {
     if (!serverDied) console.log(chalk.yellow('  Warning: timed out waiting for cells to finish'));
   });
