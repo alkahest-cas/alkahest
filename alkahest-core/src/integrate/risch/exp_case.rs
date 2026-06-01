@@ -533,10 +533,7 @@ fn try_poly_in_log_rde(
         let raw = pool.mul(vec![h_prime, pool.pow(h, pool.integer(-1_i32))]);
         crate::simplify::engine::simplify(raw, pool).value
     };
-    let (hp_num, hp_den) = match expr_to_qrational(h_prime_over_h, var, pool) {
-        Some(p) => p,
-        None => return None, // h'/h not rational — outside scope.
-    };
+    let (hp_num, hp_den) = expr_to_qrational(h_prime_over_h, var, pool)?; // h'/h not rational — outside scope.
 
     // f = k·η' as a polynomial (already verified polynomial before reaching here).
     let f: Vec<rug::Rational> = deta

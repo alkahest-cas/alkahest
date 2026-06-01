@@ -45,7 +45,7 @@
 //! The implementation is substantially complete for single-variable transcendental
 //! integration.  Known remaining gaps:
 //!
-//! - **Algebraic × exp: degree ≥ 3 only.** [`exp_case::try_sqrt_poly_rde`]
+//! - **Algebraic × exp: degree ≥ 3 only.** `try_sqrt_poly_rde` (in `exp_case`)
 //!   handles quadratic algebraic coefficients (`√p(x)·exp(η)`).  Higher-degree
 //!   algebraic extensions (e.g. `∛(p(x))·exp(η)`) are not yet supported.
 //! - **Nested exp towers.** `exp(exp(x))` — where the exponent derivative is
