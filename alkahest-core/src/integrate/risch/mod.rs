@@ -27,6 +27,8 @@
 //! - [`tower`]: Differential field tower construction and generator detection.
 //! - [`poly_rde`]: Polynomial Risch Differential Equation (RDE) solver over ℚ\[x\].
 //! - [`rational_rde`]: Rational RDE solver over ℚ(x) (exp tower; Bronstein §6.1).
+//! - [`number_field`]: Algebraic number field `ℚ[t]/(q)` arithmetic (used for
+//!   degree-≥3 algebraic residues and, prospectively, ℚ(α) coefficients).
 //! - [`rational_integrate`]: Rational-function integration via Rothstein–Trager
 //!   (logarithmic part; Bronstein §2.5).
 //! - [`exp_case`]: Integration in the hyperexponential tower (t = exp(η)).
@@ -64,6 +66,7 @@
 
 pub mod exp_case;
 pub mod log_case;
+pub mod number_field;
 pub mod poly_rde;
 pub mod rational_integrate;
 pub mod rational_rde;
