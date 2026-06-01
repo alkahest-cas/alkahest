@@ -17,7 +17,9 @@
 //! | `A(x)/D(x)`, D splits over ℚ | `1/(x²−1)`, `x/(x−1)³` | ✓ (Hermite + Rothstein–Trager) |
 //! | `A(x)/D(x)`, irreducible quadratics | `1/(x²+1)`, `1/(x²−2)` | ✓ (log + arctan / √-log) |
 //! | `A(x)/D(x)`, irreducible deg ≥ 3 | `1/(x³−3x+1)` | ✓ (`RootSum`, Lazard–Rioboo–Trager) |
+//! | `ratfn(x)·exp(η)`, η rational | `(1/x²)·exp(1/x)` | ✓ (generalised RDE, Gap F) |
 //! | `sin(x)/x`, `exp(x)/x` | Ei, Si functions | ✗ (NonElementary) |
+//! | `exp(1/x)` alone | essential singularity | ✗ (NonElementary) |
 //! | `exp(x²)/sqrt(x)` | Mixed algebraic+transcendental | ✗ (NotImplemented) |
 //!
 //! ## Architecture
@@ -27,11 +29,14 @@
 //! - [`tower`]: Differential field tower construction and generator detection.
 //! - [`poly_rde`]: Polynomial Risch Differential Equation (RDE) solver over ℚ\[x\].
 //! - [`rational_rde`]: Rational RDE solver over ℚ(x) (exp tower; Bronstein §6.1).
+//!   Also contains [`rational_rde::solve_rational_rde_generalized`] for the
+//!   rational-exponent case `f = k·η' ∈ ℚ(x)` (Gap F, Bronstein §5.4).
 //! - [`number_field`]: Algebraic number field `ℚ[t]/(q)` arithmetic (used for
-//!   degree-≥3 algebraic residues and, prospectively, ℚ(α) coefficients).
+//!   degree-≥3 algebraic residues and ℚ(√d) coefficients in the exp tower).
 //! - [`rational_integrate`]: Rational-function integration via Rothstein–Trager
 //!   (logarithmic part; Bronstein §2.5).
-//! - [`exp_case`]: Integration in the hyperexponential tower (t = exp(η)).
+//! - [`exp_case`]: Integration in the hyperexponential tower (t = exp(η)), both
+//!   polynomial η (Bronstein §5.2–5.3) and rational η (Gap F, §5.4).
 //! - [`log_case`]: Integration in the hyperlogarithmic tower (t = log(h)).
 //!
 //! ## Current limitations
@@ -39,13 +44,10 @@
 //! This is a complete decision procedure only within the subset above; the
 //! known gaps (tracked against the project's Risch gap analysis) are:
 //!
-//! - **Rational RDE is exp-tower only** ([`rational_rde`]). The denominator bound
-//!   `E = gcd(B, B')` relies on the coefficient `f = k·η'` being a *polynomial*
-//!   (no poles), which holds in the exp tower for polynomial η. The **log tower**
-//!   ([`log_case`]) still handles polynomial coefficients only; rational
-//!   coefficients there fall through to `NotImplemented`. Coefficients are
-//!   restricted to ℚ (no algebraic-number coefficients), and η must be a
-//!   polynomial.
+//! - **Log tower: polynomial coefficients only.** The log-tower IBP
+//!   ([`log_case`]) handles polynomial and rational coefficients in the base
+//!   field via Hermite + Rothstein–Trager.  Algebraic-number coefficients in
+//!   the log tower are not yet supported (exp tower: ℚ(√d) is handled).
 //! - **Rational-function integration** ([`rational_integrate`]) is complete for
 //!   any denominator that factors over ℚ: Hermite reduction (repeated factors),
 //!   the Rothstein–Trager logarithmic part (rational residues → `log`),
