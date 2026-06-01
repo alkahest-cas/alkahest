@@ -51,6 +51,10 @@ tarpaulin-report.*
 *.ll
 *.bc
 
+# Claude Code local state (worktrees are full checkouts; lock is machine-local)
+.claude/worktrees/
+.claude/scheduled_tasks.lock
+
 # Misc
 tmp/
 .tmp-stale-nfs-pending-delete/
