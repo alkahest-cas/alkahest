@@ -130,7 +130,7 @@ pub fn poly_div_exact(a: &QPoly, b: &QPoly) -> QPoly {
 }
 
 /// `p^n` for `n ≥ 0`.
-fn poly_pow(p: &QPoly, n: u32) -> QPoly {
+pub fn poly_pow(p: &QPoly, n: u32) -> QPoly {
     let mut acc = poly_one();
     for _ in 0..n {
         acc = poly_mul(&acc, p);
@@ -308,6 +308,154 @@ pub fn solve_rational_rde(f: &QPoly, c_num: &QPoly, c_den: &QPoly) -> Option<(QP
     }
 
     // Reduce v = N/E to lowest terms.
+    if n_poly.is_empty() {
+        return Some((poly_zero(), poly_one()));
+    }
+    let gve = poly_gcd(&n_poly, &e_poly);
+    let num = poly_div_exact(&n_poly, &gve);
+    let den = poly_monic(&poly_div_exact(&e_poly, &gve));
+    Some((num, den))
+}
+
+// ---------------------------------------------------------------------------
+// Generalized rational RDE: f ∈ ℚ(x)  (Risch Gap F — rational exponents)
+// ---------------------------------------------------------------------------
+
+/// Solve `v' + f·v = c_num/c_den` for `v ∈ ℚ(x)` where `f = f_num/f_den` is
+/// a **rational** function (not necessarily a polynomial).
+///
+/// When `f_den` is a constant this delegates to [`solve_rational_rde`].
+/// Otherwise it uses the generalized identity
+/// ```text
+///   B_f · G · (N'·E − N·E') + A · G · E · N = B_f · C · E
+/// ```
+/// where `f = A/B_f` (lowest terms, `B_f` monic), `c = C/D` (lowest terms,
+/// `D` monic), `E = gcd(D, D')`, `G = D/E`.  Substituting `v = N/E` and
+/// clearing denominators yields this polynomial identity, which is linear in
+/// the coefficients of `N`.  The degree bound for `N` is
+/// `deg(B_f) + deg(E) + deg(C) + 2` (generous).
+///
+/// Returns the reduced `(numerator, denominator)` of `v`, or `None` when no
+/// rational solution exists (certifying a non-elementary integral).
+///
+/// References: Bronstein (2005) §5.4, §6.1.
+pub fn solve_rational_rde_generalized(
+    f_num: &QPoly,
+    f_den: &QPoly,
+    c_num: &QPoly,
+    c_den: &QPoly,
+) -> Option<(QPoly, QPoly)> {
+    let f_den_t = trim(f_den.clone());
+    let f_num_t = trim(f_num.clone());
+
+    // Degenerate: f_den = 0 is undefined input.
+    if f_den_t.is_empty() {
+        return None;
+    }
+
+    // When f_den is a constant, f is a polynomial: scale and use the fast path.
+    if degree(&f_den_t) == 0 {
+        let scale = Rational::from(1) / f_den_t[0].clone();
+        let f_poly = poly_scale(&f_num_t, &scale);
+        return solve_rational_rde(&f_poly, c_num, c_den);
+    }
+
+    // Reduce f = A / B_f (lowest terms, B_f monic).
+    let gf = poly_gcd(&f_num_t, &f_den_t);
+    let a_raw = poly_div_exact(&f_num_t, &gf);
+    let bf_raw = poly_div_exact(&f_den_t, &gf);
+    let bf_d = degree(&bf_raw);
+    debug_assert!(bf_d > 0, "f_den should have positive degree here");
+    let bf_lc_inv = Rational::from(1) / bf_raw[bf_d as usize].clone();
+    let big_a = poly_scale(&a_raw, &bf_lc_inv);
+    let big_bf = poly_scale(&bf_raw, &bf_lc_inv);
+
+    // Reduce c = C / D (lowest terms, D monic).
+    let c_num_t = trim(c_num.clone());
+    let c_den_t = trim(c_den.clone());
+    if c_num_t.is_empty() {
+        return Some((poly_zero(), poly_one()));
+    }
+    if c_den_t.is_empty() {
+        return None; // c_den = 0: malformed
+    }
+    let gc = poly_gcd(&c_num_t, &c_den_t);
+    let big_c_raw = poly_div_exact(&c_num_t, &gc);
+    let d_raw = poly_div_exact(&c_den_t, &gc);
+    let d_d = degree(&d_raw);
+    let d_lc_inv = if d_d >= 0 {
+        Rational::from(1) / d_raw[d_d as usize].clone()
+    } else {
+        Rational::from(1)
+    };
+    let big_d = poly_scale(&d_raw, &d_lc_inv);
+    let big_c = poly_scale(&big_c_raw, &d_lc_inv);
+
+    // Denominator bound: E = gcd(D, D'),  G = D / E.
+    let dprime = poly_deriv(&big_d);
+    let e_poly = poly_gcd(&big_d, &dprime);
+    let g_poly = poly_div_exact(&big_d, &e_poly);
+    let eprime = poly_deriv(&e_poly);
+
+    // Precompute the polynomial combinations that appear in the identity
+    //   B_f·G·(N'·E − N·E') + A·G·E·N = B_f·C·E.
+    let ge = poly_mul(&g_poly, &e_poly); // G · E
+    let bfg = poly_mul(&big_bf, &g_poly); // B_f · G
+    let bfge = poly_mul(&bfg, &e_poly); // B_f · G · E  (for the N' term)
+    let bfgep = poly_mul(&bfg, &eprime); // B_f · G · E' (for the −N term)
+    let age = poly_mul(&big_a, &ge); // A · G · E      (for the +N term)
+    let target = poly_mul(&poly_mul(&big_bf, &big_c), &e_poly); // B_f · C · E
+
+    // Degree bound for N (generous: accounts for cancellation in leading terms).
+    let deg_bf = degree(&big_bf).max(0) as usize;
+    let deg_e = degree(&e_poly).max(0) as usize;
+    let deg_c = degree(&big_c).max(0) as usize;
+    let deg_target = degree(&target).max(0) as usize;
+    let dbound = (deg_bf + deg_e + deg_c + 2).max(deg_target + 1);
+    let cols = dbound + 1;
+
+    // Maximum degree of any term in the identity.
+    let max_deg = (degree(&bfge) + dbound as i64)
+        .max(degree(&bfgep) + dbound as i64)
+        .max(degree(&age) + dbound as i64)
+        .max(degree(&target))
+        .max(0) as usize;
+    let n_rows = max_deg + 1;
+
+    // Assemble the linear system M · n = rhs, one equation per degree.
+    let mut mat = vec![vec![Rational::from(0); cols]; n_rows];
+    for (d, row) in mat.iter_mut().enumerate() {
+        let d = d as i64;
+        for (j, cell) in row.iter_mut().enumerate() {
+            let jj = j as i64;
+            // [B_f·G·E · N']_d  = j · (B_f·G·E)[d−j+1]
+            let mut v = Rational::from(jj) * coeff(&bfge, d - jj + 1);
+            // −[B_f·G·E' · N]_d = −(B_f·G·E')[d−j]
+            v -= coeff(&bfgep, d - jj);
+            // +[A·G·E · N]_d    = (A·G·E)[d−j]
+            v += coeff(&age, d - jj);
+            *cell = v;
+        }
+    }
+    let rhs: Vec<Rational> = (0..n_rows).map(|d| coeff(&target, d as i64)).collect();
+
+    let solution = solve_linear_system(mat, rhs, cols)?;
+    let n_poly = trim(solution);
+
+    // Verify: B_f·G·(N'·E − N·E') + A·G·E·N == B_f·C·E.
+    let np = poly_deriv(&n_poly);
+    let lhs = poly_add(
+        &poly_mul(
+            &bfg,
+            &poly_sub(&poly_mul(&np, &e_poly), &poly_mul(&n_poly, &eprime)),
+        ),
+        &poly_mul(&age, &n_poly),
+    );
+    if !polys_equal(&lhs, &target) {
+        return None;
+    }
+
+    // Reduce v = N / E to lowest terms.
     if n_poly.is_empty() {
         return Some((poly_zero(), poly_one()));
     }
@@ -721,5 +869,84 @@ mod tests {
         let (vn, vd) = solve_rational_rde_k(&field, &f, &c_num, &c_den).expect("elementary");
         assert_eq!(trim(vn[0].clone()), vec![Rational::from((1, 2))]);
         assert_eq!(trim(vd[0].clone()), vec![rat(1)]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Generalized rational RDE: f ∈ ℚ(x)  (Gap F — rational exponents)
+    // -----------------------------------------------------------------------
+
+    // ∫ exp(1/x) dx: RDE v' − (1/x²)·v = 1, no rational solution.
+    // f = −1/x² (f_num = −1, f_den = x²), c = 1.
+    #[test]
+    fn gen_rde_exp_inv_x_nonelementary() {
+        let f_num = vec![rat(-1)];
+        let f_den = vec![rat(0), rat(0), rat(1)]; // x²
+        let c_num = poly_one();
+        let c_den = poly_one();
+        assert!(
+            solve_rational_rde_generalized(&f_num, &f_den, &c_num, &c_den).is_none(),
+            "∫ exp(1/x) dx must be certified non-elementary"
+        );
+    }
+
+    // ∫ (1/x²)·exp(1/x) dx = −exp(1/x).
+    // f = −1/x², c = 1/x².  Solution v = −1 = N/E with N = −x, E = x.
+    #[test]
+    fn gen_rde_inv_x2_exp_inv_x_elementary() {
+        let f_num = vec![rat(-1)];
+        let f_den = vec![rat(0), rat(0), rat(1)]; // x²
+        let c_num = poly_one(); // 1
+        let c_den = vec![rat(0), rat(0), rat(1)]; // x²
+        let (vn, vd) = solve_rational_rde_generalized(&f_num, &f_den, &c_num, &c_den)
+            .expect("∫ (1/x²)·exp(1/x) dx must be elementary");
+        // v = −1: num = −1, den = 1.
+        assert_eq!(
+            trim(vn.clone()),
+            vec![rat(-1)],
+            "numerator should be −1, got {vn:?}"
+        );
+        assert_eq!(
+            trim(vd.clone()),
+            poly_one(),
+            "denominator should be 1, got {vd:?}"
+        );
+    }
+
+    // ∫ (2/x³)·exp(−1/x²) dx = exp(−1/x²).
+    // η = −1/x², η' = 2/x³.  f = 2/x³, c = 2/x³.  Solution v = 1.
+    #[test]
+    fn gen_rde_exp_neg_inv_x2_elementary() {
+        let f_num = vec![rat(2)];
+        let f_den = vec![rat(0), rat(0), rat(0), rat(1)]; // x³
+        let c_num = vec![rat(2)];
+        let c_den = vec![rat(0), rat(0), rat(0), rat(1)]; // x³
+        let (vn, vd) = solve_rational_rde_generalized(&f_num, &f_den, &c_num, &c_den)
+            .expect("∫ (2/x³)·exp(−1/x²) dx must be elementary");
+        // v = 1: num = 1, den = 1.
+        assert_eq!(
+            trim(vn.clone()),
+            poly_one(),
+            "numerator should be 1, got {vn:?}"
+        );
+        assert_eq!(
+            trim(vd.clone()),
+            poly_one(),
+            "denominator should be 1, got {vd:?}"
+        );
+    }
+
+    // Polynomial f falls back to the existing solver correctly.
+    // ∫ (x−1)/x²·exp(x) dx = exp(x)/x.  f = 1 (constant den), c = (x−1)/x².
+    #[test]
+    fn gen_rde_falls_back_to_polynomial_f() {
+        let f_num = vec![rat(1)];
+        let f_den = poly_one(); // constant denominator → delegate to solve_rational_rde
+        let c_num = vec![rat(-1), rat(1)]; // x − 1
+        let c_den = vec![rat(0), rat(0), rat(1)]; // x²
+        let (vn, vd) = solve_rational_rde_generalized(&f_num, &f_den, &c_num, &c_den)
+            .expect("fallback must succeed");
+        // v = 1/x.
+        assert_eq!(trim(vn), vec![rat(1)]);
+        assert_eq!(trim(vd), vec![rat(0), rat(1)]);
     }
 }

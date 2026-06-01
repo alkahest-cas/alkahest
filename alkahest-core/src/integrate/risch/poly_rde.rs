@@ -601,12 +601,86 @@ pub fn qpoly_to_expr(poly: &QPoly, var: ExprId, pool: &ExprPool) -> ExprId {
     }
 }
 
+/// Returns `true` if `target` appears as a sub-expression anywhere inside `expr`.
+///
+/// Used as a safety guard in multi-level integration: after computing P_n =
+/// ∫ c_n dx, we verify that P_n does not contain the current log generator,
+/// because the IBP recursion would diverge if it did.
+pub fn contains_subexpr(expr: ExprId, target: ExprId, pool: &ExprPool) -> bool {
+    if expr == target {
+        return true;
+    }
+    match pool.get(expr) {
+        ExprData::Add(args) | ExprData::Mul(args) => {
+            args.iter().any(|&a| contains_subexpr(a, target, pool))
+        }
+        ExprData::Pow { base, exp } => {
+            contains_subexpr(base, target, pool) || contains_subexpr(exp, target, pool)
+        }
+        ExprData::Func { ref args, .. } => args.iter().any(|&a| contains_subexpr(a, target, pool)),
+        _ => false,
+    }
+}
+
 /// Build a symbolic ExprId from a rug::Rational.
 pub fn rational_to_expr(r: &Rational, pool: &ExprPool) -> ExprId {
     if *r.denom() == 1 {
         pool.integer(r.numer().clone())
     } else {
         pool.rational(r.numer().clone(), r.denom().clone())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Constant-factor splitting (shared by exp and log tower paths)
+// ---------------------------------------------------------------------------
+
+/// Split `c` into `(K, g)` with `c = K · g`, where `K` collects all factors
+/// free of `var` and `g` carries the var-dependent part.  Returns `(1, c)` when
+/// there is no constant factor and `(c, 1)` when `c` itself is constant.
+pub fn split_const_factor(c: ExprId, var: ExprId, pool: &ExprPool) -> (ExprId, ExprId) {
+    let one = pool.integer(1_i32);
+    match pool.get(c) {
+        ExprData::Mul(args) => {
+            let mut consts: Vec<ExprId> = Vec::new();
+            let mut vars: Vec<ExprId> = Vec::new();
+            for &a in &args {
+                if is_free_of_var(a, var, pool) {
+                    consts.push(a);
+                } else {
+                    vars.push(a);
+                }
+            }
+            if consts.is_empty() {
+                return (one, c);
+            }
+            let k = match consts.len() {
+                1 => consts[0],
+                _ => pool.mul(consts),
+            };
+            let rest = match vars.len() {
+                0 => one,
+                1 => vars[0],
+                _ => pool.mul(vars),
+            };
+            (k, rest)
+        }
+        _ => {
+            if is_free_of_var(c, var, pool) {
+                (c, one)
+            } else {
+                (one, c)
+            }
+        }
+    }
+}
+
+/// Multiply `core` by the constant `k_const`, collapsing `k_const = 1`.
+pub fn apply_const(k_const: ExprId, core: ExprId, pool: &ExprPool) -> ExprId {
+    if matches!(pool.get(k_const), ExprData::Integer(n) if n.0 == 1) {
+        core
+    } else {
+        pool.mul(vec![k_const, core])
     }
 }
 

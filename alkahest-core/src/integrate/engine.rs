@@ -823,12 +823,19 @@ pub fn integrate(
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, IntegrationError> {
     // V1-2: Route algebraic integrands to the Trager/Risch algebraic engine.
-    if super::algebraic::contains_algebraic_subterm(expr, pool) {
+    // For *mixed* algebraic+transcendental (e.g. exp(x)/sqrt(x²+1)) the Risch
+    // engine handles the transcendental level and delegates base-field integrals
+    // back to the algebraic engine, so only route to algebraic when there are NO
+    // transcendental (exp/log) generators.
+    let has_algebraic = super::algebraic::contains_algebraic_subterm(expr, pool);
+    let has_transcendental = super::risch::contains_risch_form(expr, var, pool);
+    if has_algebraic && !has_transcendental {
         return super::algebraic::integrate_algebraic(expr, var, pool);
     }
 
     // V2+: Route transcendental Risch cases (exp polynomial, log powers, etc.)
-    if super::risch::contains_risch_form(expr, var, pool) {
+    // Also covers mixed algebraic+transcendental (has_algebraic && has_transcendental).
+    if has_transcendental {
         return super::risch::integrate_risch(expr, var, pool);
     }
 
