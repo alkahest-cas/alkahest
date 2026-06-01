@@ -118,8 +118,11 @@ pub fn contains_risch_form(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
 /// 1. Detect all transcendental generators (exp/log) in `expr`.
 /// 2. If there is exactly one exp generator: apply the exp-tower Risch algorithm.
 /// 3. If there is exactly one log generator: apply the log-tower IBP reduction.
-/// 4. If there are multiple generators or the expression is not decomposable:
-///    fall through to `NotImplemented`.
+/// 4. Multiple generators of the same kind: take the outermost (first in
+///    depth-first order) and recurse; the base-field integration handles the
+///    inner generators.
+/// 5. Mixed exp+log: route to exp tower; the log generator lives in the base
+///    field and is handled by the poly-in-log RDE or lower-tower recursion.
 pub fn integrate_risch(
     expr: ExprId,
     var: ExprId,
@@ -156,11 +159,69 @@ pub fn integrate_risch(
     }
 
     // -----------------------------------------------------------------------
-    // Case 3: Multiple generators or mixed exp+log.
+    // Case 3: Multiple log generators, no exp generators.
+    //
+    // `find_generators` visits in depth-first order, so the *outermost*
+    // generator (highest tower level) appears first.  For example, for
+    // log(log(x))/x the list is [log(log(x)), log(x)] and we integrate at
+    // the log(log(x)) level; log(x) is handled recursively by integrate_base.
     // -----------------------------------------------------------------------
+    if !log_gens.is_empty() && exp_gens.is_empty() {
+        let level = log_gens[0]; // outermost log generator
+        let result = integrate_log_tower(expr, level, var, pool, &mut log)?;
+        let final_simplified = simplify(result, pool);
+        let merged = log.merge(final_simplified.log);
+        return Ok(DerivedExpr::with_log(final_simplified.value, merged));
+    }
 
-    // Try to handle expressions with multiple generators that are independent:
-    // e.g., exp(x^2) + log(x)^2 = treat each part separately (sum rule).
+    // -----------------------------------------------------------------------
+    // Case 4: Multiple exp generators, no log generators.
+    //
+    // Similarly take the outermost exp generator.
+    // -----------------------------------------------------------------------
+    if !exp_gens.is_empty() && log_gens.is_empty() {
+        let level = exp_gens[0]; // outermost exp generator
+        let result = integrate_exp_tower(expr, level, var, pool, &mut log)?;
+        let final_simplified = simplify(result, pool);
+        let merged = log.merge(final_simplified.log);
+        return Ok(DerivedExpr::with_log(final_simplified.value, merged));
+    }
+
+    // -----------------------------------------------------------------------
+    // Case 5: Mixed exp + log generators.
+    //
+    // Route to the exp tower: the log generator lives in the base field k and
+    // is handled by the poly-in-log RDE (Bronstein §5.9 / IntegrateHyperexp).
+    // If the exp tower returns NotImplemented (e.g. exp has a transcendental
+    // exponent), fall through to sum decomposition.
+    // -----------------------------------------------------------------------
+    if !exp_gens.is_empty() && !log_gens.is_empty() {
+        let level = exp_gens[0];
+        match integrate_exp_tower(expr, level, var, pool, &mut log) {
+            Ok(result) => {
+                let final_simplified = simplify(result, pool);
+                let merged = log.merge(final_simplified.log);
+                return Ok(DerivedExpr::with_log(final_simplified.value, merged));
+            }
+            Err(IntegrationError::NonElementary(msg)) => {
+                return Err(IntegrationError::NonElementary(msg));
+            }
+            Err(IntegrationError::DivisionByZero) => {
+                return Err(IntegrationError::DivisionByZero);
+            }
+            Err(IntegrationError::UnsupportedExtensionDegree(d)) => {
+                return Err(IntegrationError::UnsupportedExtensionDegree(d));
+            }
+            Err(IntegrationError::NotImplemented(_)) => {
+                // Fall through to sum decomposition below.
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Case 6: Try sum decomposition for independent generators.
+    // e.g., exp(x²) + log(x)² — each term has only one generator.
+    // -----------------------------------------------------------------------
     if !generators.is_empty() {
         if let Some(result) = try_decompose_by_sum(expr, var, pool, &mut log) {
             let final_simplified = simplify(result, pool);
@@ -169,14 +230,14 @@ pub fn integrate_risch(
         }
     }
 
-    // Fall through: not implemented for this configuration.
+    // Fall through: outside the supported tower subsets.
     let gen_names: Vec<String> = generators
         .iter()
         .map(|g| pool.display(g.generator).to_string())
         .collect();
     Err(IntegrationError::NotImplemented(format!(
-        "Risch: multiple interacting generators {:?} not yet supported; \
-         implement the mixed-tower algorithm (Bronstein 2005, §9)",
+        "Risch: generators {:?} involve interactions not yet supported \
+         (Bronstein 2005, §5.8–5.9, §8)",
         gen_names
     )))
 }
@@ -712,5 +773,130 @@ mod tests {
                 let _ = d_antideriv.value; // At least the differentiation didn't crash.
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap B: multi-generator tower composition
+    // -----------------------------------------------------------------------
+
+    /// Numeric evaluator supporting exp, log.
+    fn eval_f64_gapb(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> f64 {
+        use crate::kernel::ExprData;
+        if expr == x {
+            return xv;
+        }
+        match pool.get(expr) {
+            ExprData::Integer(n) => n.0.to_f64(),
+            ExprData::Rational(r) => r.0.to_f64(),
+            ExprData::Add(args) => args.iter().map(|&a| eval_f64_gapb(a, x, xv, pool)).sum(),
+            ExprData::Mul(args) => args
+                .iter()
+                .map(|&a| eval_f64_gapb(a, x, xv, pool))
+                .product(),
+            ExprData::Pow { base, exp } => {
+                eval_f64_gapb(base, x, xv, pool).powf(eval_f64_gapb(exp, x, xv, pool))
+            }
+            ExprData::Func { ref name, ref args } if args.len() == 1 => {
+                let a = eval_f64_gapb(args[0], x, xv, pool);
+                match name.as_str() {
+                    "exp" => a.exp(),
+                    "log" => a.ln(),
+                    other => panic!("eval_f64_gapb: {other}"),
+                }
+            }
+            other => panic!("eval_f64_gapb: {other:?}"),
+        }
+    }
+
+    fn verify_gapb(integrand: ExprId, antideriv: ExprId, x: ExprId, pool: &ExprPool) {
+        let d = crate::diff::diff(antideriv, x, pool).unwrap();
+        let ds = crate::simplify::engine::simplify(d.value, pool).value;
+        // Use x > e so that log(log(x)) is real.
+        for &xv in &[3.0_f64, 7.5, 15.0] {
+            let lhs = eval_f64_gapb(ds, x, xv, pool);
+            let rhs = eval_f64_gapb(integrand, x, xv, pool);
+            assert!(
+                (lhs - rhs).abs() < 1e-8,
+                "d/dx F ≠ f at x={xv}: {lhs} vs {rhs}\nF={}",
+                pool.display(antideriv)
+            );
+        }
+    }
+
+    #[test]
+    fn gapb_log_log_x_over_x_elementary() {
+        // ∫ log(log(x))/x dx = log(x)·log(log(x)) − log(x)
+        // Two log generators: log(log(x)) and log(x).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let log_x = pool.func("log", vec![x]);
+        let log_log_x = pool.func("log", vec![log_x]);
+        let inv_x = pool.pow(x, pool.integer(-1_i32));
+        let f = pool.mul(vec![log_log_x, inv_x]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ log(log(x))/x dx must be elementary; got {result:?}"
+        );
+        verify_gapb(f, result.unwrap().value, x, &pool);
+    }
+
+    #[test]
+    fn gapb_exp_x_times_log_x_nonelementary() {
+        // ∫ exp(x)·log(x) dx is non-elementary (involves Ei).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let log_x = pool.func("log", vec![x]);
+        let f = pool.mul(vec![exp_x, log_x]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ exp(x)·log(x) dx must be NonElementary; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn gapb_log_x_plus_x_plus_inv_x_times_exp_x_elementary() {
+        // ∫ (log(x) + x + 1/x)·exp(x) dx = (log(x) + x − 1)·exp(x).
+        // Poly-in-log RDE: c₁=1, c₀=x+1/x.
+        //   a₁' + a₁ = 1 → a₁ = 1.
+        //   a₀' + a₀ = (x+1/x) − 1/x = x → a₀ = x−1.
+        //   v = 1·log(x) + (x−1) = log(x)+x−1.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let log_x = pool.func("log", vec![x]);
+        let exp_x = pool.func("exp", vec![x]);
+        let inv_x = pool.pow(x, pool.integer(-1_i32));
+        // integrand = (log(x) + x + 1/x)·exp(x)
+        let coeff = pool.add(vec![log_x, x, inv_x]);
+        let f = pool.mul(vec![coeff, exp_x]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ (log(x)+x+1/x)·exp(x) dx must be elementary; got {result:?}"
+        );
+        verify_gapb(f, result.unwrap().value, x, &pool);
+    }
+
+    #[test]
+    fn gapb_sum_exp_and_log_independent() {
+        // ∫ (x·exp(x²) + log(x)²) dx — two independent generators, sum rule.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let exp_x2 = pool.func("exp", vec![x2]);
+        let log_x = pool.func("log", vec![x]);
+        let log2 = pool.pow(log_x, pool.integer(2_i32));
+        let f = pool.add(vec![pool.mul(vec![x, exp_x2]), log2]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ (x·exp(x²)+log(x)²) dx must be elementary; got {result:?}"
+        );
     }
 }

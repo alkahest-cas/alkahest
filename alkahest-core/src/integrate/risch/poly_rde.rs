@@ -601,6 +601,27 @@ pub fn qpoly_to_expr(poly: &QPoly, var: ExprId, pool: &ExprPool) -> ExprId {
     }
 }
 
+/// Returns `true` if `target` appears as a sub-expression anywhere inside `expr`.
+///
+/// Used as a safety guard in multi-level integration: after computing P_n =
+/// ∫ c_n dx, we verify that P_n does not contain the current log generator,
+/// because the IBP recursion would diverge if it did.
+pub fn contains_subexpr(expr: ExprId, target: ExprId, pool: &ExprPool) -> bool {
+    if expr == target {
+        return true;
+    }
+    match pool.get(expr) {
+        ExprData::Add(args) | ExprData::Mul(args) => {
+            args.iter().any(|&a| contains_subexpr(a, target, pool))
+        }
+        ExprData::Pow { base, exp } => {
+            contains_subexpr(base, target, pool) || contains_subexpr(exp, target, pool)
+        }
+        ExprData::Func { ref args, .. } => args.iter().any(|&a| contains_subexpr(a, target, pool)),
+        _ => false,
+    }
+}
+
 /// Build a symbolic ExprId from a rug::Rational.
 pub fn rational_to_expr(r: &Rational, pool: &ExprPool) -> ExprId {
     if *r.denom() == 1 {

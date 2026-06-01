@@ -444,13 +444,183 @@ fn integrate_single_exp_term(
         }
     }
 
-    // The var-dependent remainder is outside the supported algebraic subsets.
+    // Gap B: coefficient lives in the lower tower k = ℚ(x, log(h), …).
+    // Handle the case where c_rest is a polynomial in a single log generator
+    // with rational-in-x coefficients.  Write v = Σ aⱼ·θʲ and match each
+    // degree separately:
+    //   [θʲ]: aⱼ' + k·η'·aⱼ = cⱼ − (j+1)·(h'/h)·aⱼ₊₁
+    // Each sub-problem is a rational-coefficient RDE in ℚ(x).
+    if let Some(result) =
+        try_poly_in_log_rde(c_rest, k, deta, exp_k_eta, k_const, c_expr, var, pool, log)
+    {
+        return result;
+    }
+
+    // Outside all supported subsets.
     Err(IntegrationError::NotImplemented(format!(
         "coefficient {} of exp(η)^{} is not a polynomial or rational function over \
          a supported algebraic extension; mixed/nested generators are not yet supported",
         pool.display(c_expr),
         k
     )))
+}
+
+// ---------------------------------------------------------------------------
+// Gap B — poly-in-log RDE for the hyperexponential case (Bronstein §5.9)
+// ---------------------------------------------------------------------------
+
+/// Try to integrate `c_rest · exp(kη)^1` when `c_rest` is a polynomial in
+/// a single log generator `θ = log(h)` with rational-in-x coefficients.
+///
+/// **Algorithm** (level-by-level Risch DE):
+///
+/// Write `c_rest = Σ cⱼ·θʲ` and ansatz `v = Σ aⱼ·θʲ`.  Differentiating and
+/// collecting coefficients of `θʲ` in `v' + k·η'·v = c` gives:
+/// ```text
+///   aⱼ' + k·η'·aⱼ = cⱼ − (j+1)·(h'/h)·aⱼ₊₁     (j = n, n−1, …, 0)
+/// ```
+/// Each sub-equation is a rational-coefficient Risch DE in ℚ(x) solved by
+/// the existing `solve_rational_rde`.  Returns `None` when `c_rest` is not
+/// of the poly-in-log form; returns `Some(Err(NonElementary))` when any
+/// level has no rational solution; returns `Some(Ok(result))` on success.
+///
+/// `(c_expr, k_const, exp_k_eta)` are needed to reconstruct the final
+/// antiderivative and for log messages.
+#[allow(clippy::too_many_arguments)]
+fn try_poly_in_log_rde(
+    c_rest: ExprId,
+    k: i64,
+    deta: &[rug::Rational], // η'(x) as ℚ-polynomial
+    exp_k_eta: ExprId,
+    k_const: ExprId,
+    c_expr: ExprId, // for error messages
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Option<Result<ExprId, IntegrationError>> {
+    use super::rational_rde::{expr_to_qrational, solve_rational_rde};
+    use super::tower::{decompose_as_log_poly, find_generators};
+
+    // Check that c_rest has exactly one log generator.
+    let gens = find_generators(c_rest, var, pool);
+    let log_gens: Vec<_> = gens.iter().filter(|g| g.is_log()).collect();
+    if log_gens.len() != 1 || gens.iter().any(|g| g.is_exp()) {
+        return None; // Not the poly-in-log form or has exp generators too.
+    }
+    let log_level = log_gens[0];
+    let theta = log_level.generator; // ExprId of log(h)
+    let h = log_level.argument(); // h
+
+    // Decompose c_rest = Σ cⱼ·θʲ.
+    let c_coeffs = decompose_as_log_poly(c_rest, theta, pool)?;
+    let n = c_coeffs.len().saturating_sub(1);
+
+    // Compute h'/h as a rational function for the correction term.
+    let h_prime = match crate::diff::diff(h, var, pool) {
+        Ok(d) => crate::simplify::engine::simplify(d.value, pool).value,
+        Err(_) => return None,
+    };
+    let h_prime_over_h = {
+        let raw = pool.mul(vec![h_prime, pool.pow(h, pool.integer(-1_i32))]);
+        crate::simplify::engine::simplify(raw, pool).value
+    };
+    let (hp_num, hp_den) = match expr_to_qrational(h_prime_over_h, var, pool) {
+        Some(p) => p,
+        None => return None, // h'/h not rational — outside scope.
+    };
+
+    // f = k·η' as a polynomial (already verified polynomial before reaching here).
+    let f: Vec<rug::Rational> = deta
+        .iter()
+        .map(|r| r.clone() * rug::Rational::from(k))
+        .collect();
+
+    // Solve from degree n down to 0, accumulating the aⱼ terms.
+    let mut a: Vec<Option<(Vec<rug::Rational>, Vec<rug::Rational>)>> = vec![None; n + 1];
+    let mut rhs_coeffs: Vec<ExprId> = c_coeffs; // will be updated with corrections
+
+    for j in (0..=n).rev() {
+        let cj_expr = crate::simplify::engine::simplify(rhs_coeffs[j], pool).value;
+        let (cj_num, cj_den) = match expr_to_qrational(cj_expr, var, pool) {
+            Some(p) => p,
+            None => {
+                return Some(Err(IntegrationError::NotImplemented(format!(
+                    "poly-in-log RDE: coefficient of θ^{j} is not rational in {}",
+                    pool.display(var)
+                ))))
+            }
+        };
+
+        match solve_rational_rde(&f, &cj_num, &cj_den) {
+            Some(sol) => {
+                a[j] = Some(sol);
+                // Compute the correction for the next lower degree:
+                // rhs[j−1] -= j·(h'/h)·aⱼ
+                if j > 0 {
+                    if let Some((aj_num, aj_den)) = &a[j] {
+                        // correction = j · (h'/h) · aⱼ = j · (hp_num/hp_den) · (aj_num/aj_den)
+                        // = (j · hp_num · aj_num) / (hp_den · aj_den)
+                        use super::poly_rde::{poly_mul, poly_scale};
+                        let j_rat = rug::Rational::from(j as i64);
+                        let corr_num = poly_scale(&poly_mul(&hp_num, aj_num), &j_rat);
+                        let corr_den = poly_mul(&hp_den, aj_den);
+                        // rhs[j-1] = rhs[j-1] - correction (as symbolic expr)
+                        let corr_expr = {
+                            let cn_expr = qpoly_to_expr(&corr_num, var, pool);
+                            let cd_expr = qpoly_to_expr(&corr_den, var, pool);
+                            pool.mul(vec![cn_expr, pool.pow(cd_expr, pool.integer(-1_i32))])
+                        };
+                        let old = rhs_coeffs[j - 1];
+                        let neg_corr = pool.mul(vec![pool.integer(-1_i32), corr_expr]);
+                        rhs_coeffs[j - 1] = pool.add(vec![old, neg_corr]);
+                    }
+                }
+            }
+            None => {
+                // No rational solution at this level → NonElementary.
+                return Some(Err(IntegrationError::NonElementary(format!(
+                    "poly-in-log RDE: no rational solution at degree {j} for \
+                     ∫ {} · exp(η)^{k} dx",
+                    pool.display(c_expr)
+                ))));
+            }
+        }
+    }
+
+    // Reconstruct v = Σ aⱼ·θʲ.
+    let mut v_terms: Vec<ExprId> = Vec::new();
+    for (j, sol) in a.iter().enumerate() {
+        if let Some((vn, vd)) = sol {
+            let vn_t = trim(vn.clone());
+            let vd_t = trim(vd.clone());
+            if vn_t.is_empty() {
+                continue; // aⱼ = 0
+            }
+            let vn_expr = qpoly_to_expr(&vn_t, var, pool);
+            let coeff_expr = if vd_t == poly_one() {
+                vn_expr
+            } else {
+                let vd_expr = qpoly_to_expr(&vd_t, var, pool);
+                pool.mul(vec![vn_expr, pool.pow(vd_expr, pool.integer(-1_i32))])
+            };
+            let theta_j = match j {
+                0 => coeff_expr,
+                1 => pool.mul(vec![coeff_expr, theta]),
+                _ => pool.mul(vec![coeff_expr, pool.pow(theta, pool.integer(j as i32))]),
+            };
+            v_terms.push(theta_j);
+        }
+    }
+
+    let v_expr = match v_terms.len() {
+        0 => pool.integer(0_i32),
+        1 => v_terms[0],
+        _ => pool.add(v_terms),
+    };
+    let core = build_v_times_exp(v_expr, exp_k_eta, pool);
+    let result = apply_const(k_const, core, pool);
+    log.push(RewriteStep::simple("risch_exp_poly_in_log", c_expr, result));
+    Some(Ok(result))
 }
 
 /// Build `v · exp(kη)`, collapsing the `v = 1` case.

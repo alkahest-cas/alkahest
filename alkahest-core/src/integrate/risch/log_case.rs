@@ -41,7 +41,7 @@ use crate::integrate::engine::IntegrationError;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::simplify::engine::simplify;
 
-use super::poly_rde::{apply_const, is_free_of_var, split_const_factor};
+use super::poly_rde::{apply_const, contains_subexpr, is_free_of_var, split_const_factor};
 use super::tower::{decompose_as_log_poly, ExtensionKind, TowerLevel};
 
 // ---------------------------------------------------------------------------
@@ -83,6 +83,7 @@ pub fn integrate_log_tower(
     let coeffs = trim_zero_coeffs(coeffs, pool);
 
     // Integrate the polynomial in log_gen using the IBP recursion.
+    // Pass log_gen so integrate_base can guard against re-introducing it.
     integrate_log_poly(&coeffs, log_gen, h, var, pool, log)
 }
 
@@ -110,10 +111,11 @@ fn integrate_log_poly(
     // n = highest degree present.
     let n = coeffs.len() - 1;
 
-    // Base case: n = 0, just integrate c_0(x).
+    // Base case: n = 0, just integrate c_0(x).  The result may contain
+    // log_gen — it's the final "rest" term and is combined with term_top.
     if n == 0 {
         let c0 = coeffs[0];
-        return integrate_base(c0, var, pool, log);
+        return integrate_base_unchecked(c0, var, pool, log);
     }
 
     // General step: work from degree n down to 0.
@@ -142,10 +144,10 @@ fn integrate_log_poly_recursive(
     // Find the highest nonzero degree.
     let n = find_top_degree(coeffs, pool);
     if n == 0 {
-        // Only a constant (in log) term.  Split algebraic constants as above.
+        // Only a constant (in log) term.  Result may contain log_gen — safe here.
         let c0 = simplify(coeffs[0], pool).value;
         let (k_alg0, c0_rest) = split_const_factor(c0, var, pool);
-        let integral0 = integrate_base(c0_rest, var, pool, log)?;
+        let integral0 = integrate_base_unchecked(c0_rest, var, pool, log)?;
         return Ok(apply_const(k_alg0, integral0, pool));
     }
 
@@ -162,7 +164,7 @@ fn integrate_log_poly_recursive(
     // ∫ K·g(x) dx = K · ∫ g(x) dx when K is free of x; the base integrator
     // handles only ℚ(x), so we must factor out symbolic/algebraic constants.
     let (k_alg, c_n_rest) = split_const_factor(c_n, var, pool);
-    let p_rest_raw = integrate_base(c_n_rest, var, pool, log)?;
+    let p_rest_raw = integrate_base(c_n_rest, log_gen, var, pool, log)?;
     let p_n_raw = apply_const(k_alg, p_rest_raw, pool);
     // Simplify P_n to avoid propagating complex unsimplified forms.
     let p_n = simplify(p_n_raw, pool).value;
@@ -232,17 +234,71 @@ fn integrate_log_poly_recursive(
 /// coefficients that arise from the IBP reduction and are not simple enough for
 /// the rule engine alone (e.g. `x²/(x+1)`, `1/(x+1)²`).
 ///
-/// **Correctness note:** when called at IBP level k ≥ 1 the result may contain
-/// log terms (e.g. `∫ 1/(x+1) dx = log(x+1)`).  If those log terms involve the
-/// current log-tower generator `h`, the IBP correction `P·h'/h` becomes
-/// transcendental and the recursion will return `NotImplemented` at the next
-/// level — this is correct behaviour (the integral is likely non-elementary).
-fn integrate_base(
+/// **Correctness note (multi-level tower, Gap B):** `excluded_gen` is the
+/// ExprId of the current log generator (e.g. `log(log(x))` when integrating
+/// at the outer level).  The IBP recursion requires P_n ∉ k(excluded_gen);
+/// if any integration path returns a result *containing* excluded_gen the
+/// recursion would diverge.  The safety check below catches this: if the
+/// fast paths introduce excluded_gen we fall back to the full engine only
+/// when excluded_gen is NOT in the lower tower.
+///
+/// When `expr` itself has lower-tower transcendental generators (e.g. `1/x`
+/// in the context of `∫ log(log(x))/x dx`), we fall through to
+/// `engine::integrate` so the lower-level Risch algorithm handles it.
+/// Like [`integrate_base`] but without the safety guard.  Used for the
+/// degree-0 base case and the corrected lower-degree terms, where the result
+/// is allowed to contain the current log generator (it is combined with other
+/// terms in the running sum and the degree cannot increase).
+fn integrate_base_unchecked(
     expr: ExprId,
     var: ExprId,
     pool: &ExprPool,
     log: &mut DerivationLog,
 ) -> Result<ExprId, IntegrationError> {
+    use crate::integrate::engine::{integrate_raw, IntegrationError as IE};
+    use crate::integrate::risch::rational_integrate::try_integrate_rational;
+
+    let expr = crate::simplify::engine::simplify(expr, pool).value;
+    if is_zero(expr, pool) {
+        return Ok(pool.integer(0_i32));
+    }
+
+    let mut inner_log = DerivationLog::new();
+    match integrate_raw(expr, var, pool, &mut inner_log) {
+        Ok(r) => {
+            let r = crate::simplify::engine::simplify(r, pool).value;
+            *log = log.clone().merge(inner_log);
+            return Ok(r);
+        }
+        Err(IE::NotImplemented(_)) => {}
+        Err(other) => return Err(other),
+    }
+
+    if let Some(r) = try_integrate_rational(expr, var, pool) {
+        return Ok(crate::simplify::engine::simplify(r, pool).value);
+    }
+
+    // Full engine for lower-tower generators (Gap B).
+    match crate::integrate::engine::integrate(expr, var, pool) {
+        Ok(d) => Ok(crate::simplify::engine::simplify(d.value, pool).value),
+        Err(IE::NonElementary(msg)) => Err(IE::NonElementary(msg)),
+        Err(_) => Err(IE::NotImplemented(format!(
+            "integrate_base: {} is not integrable in the base field",
+            pool.display(expr)
+        ))),
+    }
+}
+
+fn integrate_base(
+    expr: ExprId,
+    excluded_gen: ExprId, // current log generator — must not appear in the result
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Result<ExprId, IntegrationError> {
+    use crate::integrate::engine::{integrate_raw, IntegrationError as IE};
+    use crate::integrate::risch::rational_integrate::try_integrate_rational;
+
     // Simplify first to canonicalize expressions like `(-1) * x * (x^-1) = -1`.
     let expr = crate::simplify::engine::simplify(expr, pool).value;
 
@@ -250,32 +306,59 @@ fn integrate_base(
         return Ok(pool.integer(0_i32));
     }
 
+    // Helper: check whether a candidate result is safe to use (doesn't
+    // re-introduce the current log generator into the IBP recursion).
+    let is_safe = |r: ExprId| -> bool { !contains_subexpr(r, excluded_gen, pool) };
+
     let mut inner_log = DerivationLog::new();
-    let result = match crate::integrate::engine::integrate_raw(expr, var, pool, &mut inner_log) {
-        Ok(r) => r,
-        Err(crate::integrate::engine::IntegrationError::NotImplemented(_)) => {
-            // Fallback: rational-function integration via Hermite reduction +
-            // Rothstein–Trager.  This handles coefficients like x²/(x+1) or
-            // 1/(x+1)² that arise in the IBP loop but are beyond the power rule.
-            match crate::integrate::risch::rational_integrate::try_integrate_rational(
-                expr, var, pool,
-            ) {
-                Some(r) => r,
-                None => {
-                    return Err(crate::integrate::engine::IntegrationError::NotImplemented(
-                        format!(
-                            "integrate_base: {} is not integrable in ℚ(x)",
-                            pool.display(expr)
-                        ),
-                    ))
-                }
+
+    // Fast path 1: rule-based engine (handles polynomials, exp(linear), 1/x, etc.)
+    match integrate_raw(expr, var, pool, &mut inner_log) {
+        Ok(r) => {
+            let r = crate::simplify::engine::simplify(r, pool).value;
+            if is_safe(r) {
+                *log = log.clone().merge(inner_log);
+                return Ok(r);
             }
+            // Rule engine introduced the current generator — fall through.
         }
+        Err(IE::NotImplemented(_)) => {}
         Err(other) => return Err(other),
-    };
-    let result = crate::simplify::engine::simplify(result, pool).value;
-    *log = log.clone().merge(inner_log);
-    Ok(result)
+    }
+
+    // Fast path 2: rational-function integration (Hermite + Rothstein–Trager).
+    if let Some(r) = try_integrate_rational(expr, var, pool) {
+        let r = crate::simplify::engine::simplify(r, pool).value;
+        if is_safe(r) {
+            return Ok(r);
+        }
+        // RT introduced the current generator — fall through.
+    }
+
+    // Slower path (Gap B): use the full integration engine for coefficients
+    // that live in the lower tower (e.g. log(x) coefficients when integrating
+    // at the log(log(x)) level).  Guard: the result must not contain
+    // excluded_gen, otherwise the IBP recursion would diverge.
+    match crate::integrate::engine::integrate(expr, var, pool) {
+        Ok(d) => {
+            let r = crate::simplify::engine::simplify(d.value, pool).value;
+            if is_safe(r) {
+                return Ok(r);
+            }
+            // Full engine also introduced excluded_gen: the integral of this
+            // coefficient re-introduces the current generator.  Return
+            // NotImplemented so the caller can diagnose non-elementariness.
+            Err(IE::NotImplemented(format!(
+                "integrate_base: integral of {} introduces the current log generator",
+                pool.display(expr)
+            )))
+        }
+        Err(IE::NonElementary(msg)) => Err(IE::NonElementary(msg)),
+        Err(_) => Err(IE::NotImplemented(format!(
+            "integrate_base: {} is not integrable in the base field",
+            pool.display(expr)
+        ))),
+    }
 }
 
 // ---------------------------------------------------------------------------
