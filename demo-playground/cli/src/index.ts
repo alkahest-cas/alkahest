@@ -42,6 +42,7 @@ program
   .option('--width <px>', 'Viewport width (default 1920 for split, 1280 for single)', '')
   .option('--height <px>', 'Viewport height (default 1080 for split, 720 for single)', '')
   .option('--delay <ms>', 'Delay between typing characters (ms)', '40')
+  .option('--hide-line-numbers', 'Hide code cell line numbers in the recording (?hideLineNumbers=1)')
   .action(recordCommand);
 
 program

@@ -23,6 +23,8 @@ export interface PlaygroundConfig {
   aiModel: string;
   aiCustomBaseUrl: string;
   aiCustomApiKey: string;
+  /** When true, code cells hide CodeMirror gutter line numbers. */
+  hideLineNumbers: boolean;
 }
 
 const DEFAULT_CONFIG: PlaygroundConfig = isStaticHosting
@@ -36,6 +38,7 @@ const DEFAULT_CONFIG: PlaygroundConfig = isStaticHosting
       aiModel: 'claude-sonnet-4-6',
       aiCustomBaseUrl: '',
       aiCustomApiKey: '',
+      hideLineNumbers: false,
     }
   : {
       serverBackend: 'alkahest',
@@ -47,6 +50,7 @@ const DEFAULT_CONFIG: PlaygroundConfig = isStaticHosting
       aiModel: 'claude-sonnet-4-6',
       aiCustomBaseUrl: '',
       aiCustomApiKey: '',
+      hideLineNumbers: false,
     };
 
 const STORAGE_KEY = 'alkahest-playground-config';
@@ -70,9 +74,17 @@ export function saveConfig(cfg: PlaygroundConfig) {
 interface SettingsProps {
   onClose: () => void;
   onExportNotebook?: () => void;
+  onImportNotebook?: (file: File) => void | Promise<void>;
+  /** Show notebook display options even when UI is in zen/recording layout */
+  showNotebookOptions?: boolean;
 }
 
-export default function Settings({ onClose, onExportNotebook }: SettingsProps) {
+export default function Settings({
+  onClose,
+  onExportNotebook,
+  onImportNotebook,
+  showNotebookOptions = true,
+}: SettingsProps) {
   const [cfg, setCfg] = useState<PlaygroundConfig>(DEFAULT_CONFIG);
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle');
   const [leanStatus, setLeanStatus] = useState<string | null>(null);
@@ -299,18 +311,66 @@ export default function Settings({ onClose, onExportNotebook }: SettingsProps) {
             />
           </section>
 
-          {onExportNotebook && (
+          {showNotebookOptions && (
             <section>
               <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ak-muted">
-                Export
+                Notebook display
               </h3>
-              <button
-                type="button"
-                onClick={() => { onExportNotebook(); onClose(); }}
-                className="w-full rounded border border-ak-border px-3 py-2 text-sm text-left hover:bg-ak-code-bg transition-colors"
-              >
-                Download as Jupyter notebook (.ipynb)
-              </button>
+              <label className="flex cursor-pointer items-start gap-2 rounded border border-ak-border px-3 py-2 text-sm hover:bg-ak-code-bg">
+                <input
+                  type="checkbox"
+                  checked={cfg.hideLineNumbers}
+                  onChange={(e) => update('hideLineNumbers', e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="font-medium">Hide code line numbers</span>
+                  <span className="mt-0.5 block text-xs text-ak-muted">
+                    Cleaner layout for demos and recordings. Also available via{' '}
+                    <code className="rounded bg-ak-code-bg px-1">?hideLineNumbers=1</code> in the URL.
+                  </span>
+                </span>
+              </label>
+            </section>
+          )}
+
+          {(onExportNotebook || onImportNotebook) && (
+            <section>
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ak-muted">
+                Import &amp; export
+              </h3>
+              <div className="space-y-2">
+                {onImportNotebook && (
+                  <label className="flex w-full cursor-pointer items-center gap-2 rounded border border-ak-border px-3 py-2 text-sm hover:bg-ak-code-bg transition-colors">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5-5 5 5M12 15V3" />
+                    </svg>
+                    Upload notebook (.ipynb or .json)
+                    <input
+                      type="file"
+                      accept=".ipynb,.json,application/json"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = '';
+                        if (file) void onImportNotebook(file);
+                      }}
+                    />
+                  </label>
+                )}
+                {onExportNotebook && (
+                  <button
+                    type="button"
+                    onClick={() => { onExportNotebook(); onClose(); }}
+                    className="flex w-full items-center gap-2 rounded border border-ak-border px-3 py-2 text-sm text-left hover:bg-ak-code-bg transition-colors"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
+                    </svg>
+                    Download as Jupyter notebook (.ipynb)
+                  </button>
+                )}
+              </div>
             </section>
           )}
         </div>

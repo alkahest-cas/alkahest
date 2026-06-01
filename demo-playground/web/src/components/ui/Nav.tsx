@@ -77,11 +77,14 @@ export default function Nav({ isRecording, onToggleRecording, serverStatus = 'un
 
           {/* Server status */}
           <div className="flex items-center gap-1.5 text-xs text-ak-muted">
-            <span
-              className={clsx('h-2 w-2 rounded-full', statusColor)}
-              title={`Server: ${serverStatus}`}
-            />
-            <span className="hidden sm:inline">server</span>
+            <span className={clsx('h-2 w-2 rounded-full', statusColor)} title={`Server: ${serverStatus}`} />
+            <span>
+              {serverStatus === 'online'
+                ? 'server ready'
+                : serverStatus === 'offline'
+                  ? 'server offline'
+                  : 'no server'}
+            </span>
           </div>
 
           {/* Record button */}

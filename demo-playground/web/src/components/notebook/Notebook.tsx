@@ -1,9 +1,13 @@
 'use client';
 
-import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { v4 as uuid } from 'uuid';
 import Cell, { type CellData } from './Cell';
+import CommandPalette, { type PaletteCommand } from './CommandPalette';
 import RunMenu, { type RunMenuAction } from './RunMenu';
+import { writeCellToClipboard } from '@/lib/cell-clipboard';
+import { handleNotebookChordKey } from '@/lib/notebook-chords';
+import { ADD_CODE_CELL_SHORTCUT_HINT, NOTEBOOK_COMMAND_DEFS, type NotebookCommandId } from '@/lib/notebook-commands';
 import type { OutputItem, ExecutionMode } from '@/lib/execution';
 import {
   needsServer,
@@ -18,13 +22,15 @@ import { loadConfig } from '@/components/ui/Settings';
 import { useSettings } from '@/components/ui/SettingsContext';
 import { connectionFromConfig } from '@/lib/server-connection';
 import { isStaticHosting } from '@/lib/hosting';
-import { cellsFromDemoParam, readAutoRunFromUrl } from '@/lib/recording';
+import { parseNotebookFile } from '@/lib/notebook-import';
+import { cellsFromDemoParam, readAutoRunFromUrl, readHideLineNumbersFromUrl } from '@/lib/recording';
 
 // ── State ──────────────────────────────────────────────────────────────────
 
 type Action =
   | { type: 'ADD_CELL'; afterId?: string; cellType?: CellData['cellType'] }
   | { type: 'REMOVE_CELL'; id: string }
+  | { type: 'RESTORE_CELL'; cell: CellData; index: number }
   | { type: 'SET_CODE'; id: string; code: string }
   | { type: 'SET_STATUS'; id: string; status: CellData['status'] }
   | { type: 'SET_BACKEND'; id: string; backend: CellData['backend'] }
@@ -36,7 +42,8 @@ type Action =
   | { type: 'SET_EXEC_COUNT'; id: string; count: number }
   | { type: 'MOVE_UP'; id: string }
   | { type: 'MOVE_DOWN'; id: string }
-  | { type: 'TOGGLE_CELL_TYPE'; id: string };
+  | { type: 'TOGGLE_CELL_TYPE'; id: string }
+  | { type: 'SET_CELLS'; cells: CellData[] };
 
 function newCell(code = '', cellType: CellData['cellType'] = 'code'): CellData {
   return { id: uuid(), code, outputs: [], status: 'idle', executionCount: null, backend: null, cellType };
@@ -52,6 +59,18 @@ function reducer(state: CellData[], action: Action): CellData[] {
     }
     case 'REMOVE_CELL':
       return state.length === 1 ? [newCell()] : state.filter((c) => c.id !== action.id);
+    case 'RESTORE_CELL': {
+      const placeholder =
+        state.length === 1 &&
+        !state[0].code.trim() &&
+        state[0].outputs.length === 0 &&
+        state[0].status === 'idle';
+      if (placeholder) return [{ ...action.cell, id: action.cell.id }];
+      const next = [...state];
+      const at = Math.min(Math.max(action.index, 0), next.length);
+      next.splice(at, 0, { ...action.cell });
+      return next;
+    }
     case 'SET_CODE':
       return state.map((c) => (c.id === action.id ? { ...c, code: action.code } : c));
     case 'SET_STATUS':
@@ -94,6 +113,8 @@ function reducer(state: CellData[], action: Action): CellData[] {
           ? { ...c, cellType: c.cellType === 'markdown' ? 'code' : 'markdown', outputs: [], status: 'idle', executionCount: null, backend: null }
           : c,
       );
+    case 'SET_CELLS':
+      return action.cells.length > 0 ? action.cells : [newCell()];
     default:
       return state;
   }
@@ -210,13 +231,20 @@ export default function Notebook({
   const [execCount, setExecCount] = useState(0);
   const [autoRunPending, setAutoRunPending] = useState(false);
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [canUndoDelete, setCanUndoDelete] = useState(false);
   const cfg = useRef(loadConfig());
   const cleanupFns = useRef<Map<string, () => void>>(new Map());
   const wasmExecGen = useRef<Map<string, number>>(new Map());
+  const deletedStack = useRef<{ cell: CellData; index: number }[]>([]);
+  const chordActive = useRef(false);
+  const chordTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isDirtyRef = useRef(false);
   const cellsRef = useRef(cells);
   const onDirtyChangeRef = useRef(onDirtyChange);
-  const { registerExport } = useSettings();
+  const { registerExport, registerImport, closeSettings, openSettings } = useSettings();
+  const hideLineNumbers =
+    loadConfig().hideLineNumbers || (typeof window !== 'undefined' && readHideLineNumbersFromUrl());
 
   useEffect(() => { cellsRef.current = cells; }, [cells]);
   useEffect(() => { onDirtyChangeRef.current = onDirtyChange; }, [onDirtyChange]);
@@ -226,6 +254,31 @@ export default function Notebook({
     return () => registerExport(null);
   }, [registerExport]);
 
+  const handleImportNotebook = useCallback(
+    async (file: File) => {
+      try {
+        const text = await file.text();
+        const imported = parseNotebookFile(text, file.name);
+        const next = imported.map((c) => newCell(c.code, c.cellType));
+        dispatch({ type: 'SET_CELLS', cells: next });
+        saveNotebook(next);
+        isDirtyRef.current = false;
+        onDirtyChangeRef.current?.(false);
+        deletedStack.current = [];
+        setCanUndoDelete(false);
+        closeSettings();
+      } catch (err) {
+        alert(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
+    [closeSettings],
+  );
+
+  useEffect(() => {
+    registerImport(handleImportNotebook);
+    return () => registerImport(null);
+  }, [registerImport, handleImportNotebook]);
+
   function userDispatch(action: Action) {
     dispatch(action);
     if (!isDirtyRef.current) {
@@ -234,18 +287,45 @@ export default function Notebook({
     }
   }
 
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-        e.preventDefault();
-        saveNotebook(cellsRef.current);
-        isDirtyRef.current = false;
-        onDirtyChangeRef.current?.(false);
-      }
-    }
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
+  const addCodeCellBelow = useCallback(() => {
+    const list = cellsRef.current;
+    const afterId = focusedCellId ?? list[list.length - 1]?.id;
+    userDispatch({ type: 'ADD_CELL', afterId, cellType: 'code' });
+  }, [focusedCellId]);
+
+  const undoDeleteCell = useCallback(() => {
+    const entry = deletedStack.current.pop();
+    if (!entry) return;
+    userDispatch({ type: 'RESTORE_CELL', cell: entry.cell, index: entry.index });
+    setCanUndoDelete(deletedStack.current.length > 0);
   }, []);
+
+  const handleDeleteCell = useCallback((id: string) => {
+    const list = cellsRef.current;
+    const index = list.findIndex((c) => c.id === id);
+    if (index < 0) return;
+    deletedStack.current.push({ cell: { ...list[index] }, index });
+    setCanUndoDelete(true);
+    userDispatch({ type: 'REMOVE_CELL', id });
+  }, []);
+
+  const handleCopyCell = useCallback(async (id: string) => {
+    const cell = cellsRef.current.find((c) => c.id === id);
+    if (!cell) return;
+    try {
+      await writeCellToClipboard(cell);
+    } catch {
+      alert('Could not copy to clipboard.');
+    }
+  }, []);
+
+  const handleCutCell = useCallback(
+    async (id: string) => {
+      await handleCopyCell(id);
+      handleDeleteCell(id);
+    },
+    [handleCopyCell, handleDeleteCell],
+  );
 
   const autoRun = readAutoRunFromUrl();
 
@@ -484,6 +564,107 @@ export default function Notebook({
 
   const anyRunning = cells.some((c) => c.status === 'running');
 
+  const executeCommand = useCallback(
+    (id: NotebookCommandId) => {
+      const focusId = focusedCellId ?? cellsRef.current[0]?.id;
+      switch (id) {
+        case 'command-palette':
+          setPaletteOpen(true);
+          break;
+        case 'run-cell':
+          if (focusId) runCell(focusId);
+          break;
+        case 'add-code-cell':
+          addCodeCellBelow();
+          break;
+        case 'add-markdown-cell': {
+          const afterId = focusedCellId ?? cellsRef.current[cellsRef.current.length - 1]?.id;
+          userDispatch({ type: 'ADD_CELL', afterId, cellType: 'markdown' });
+          break;
+        }
+        case 'undo-delete-cell':
+          undoDeleteCell();
+          break;
+        case 'save-notebook':
+          saveNotebook(cellsRef.current);
+          isDirtyRef.current = false;
+          onDirtyChangeRef.current?.(false);
+          break;
+        case 'open-settings':
+          openSettings();
+          break;
+        case 'delete-focused-cell':
+          if (focusId) handleDeleteCell(focusId);
+          break;
+        case 'move-cell-up':
+          if (focusId) userDispatch({ type: 'MOVE_UP', id: focusId });
+          break;
+        case 'move-cell-down':
+          if (focusId) userDispatch({ type: 'MOVE_DOWN', id: focusId });
+          break;
+        case 'toggle-cell-type':
+          if (focusId) userDispatch({ type: 'TOGGLE_CELL_TYPE', id: focusId });
+          break;
+        default:
+          handleRunMenuAction(id);
+      }
+    },
+    [
+      focusedCellId,
+      addCodeCellBelow,
+      undoDeleteCell,
+      handleDeleteCell,
+      openSettings,
+      runCell,
+      handleRunMenuAction,
+    ],
+  );
+
+  const paletteCommands: PaletteCommand[] = useMemo(() => {
+    const focusId = focusedCellId;
+    const focusCell = focusId ? cells.find((c) => c.id === focusId) : null;
+    return NOTEBOOK_COMMAND_DEFS.map((def) => {
+      let disabled = false;
+      if (def.id === 'undo-delete-cell') disabled = !canUndoDelete;
+      if (def.id === 'interrupt') disabled = !anyRunning;
+      if (def.id === 'run-cell') disabled = !focusId || focusCell?.cellType === 'markdown';
+      if (def.id === 'delete-focused-cell' || def.id === 'move-cell-up' || def.id === 'move-cell-down' || def.id === 'toggle-cell-type') {
+        disabled = !focusId;
+      }
+      return {
+        ...def,
+        disabled,
+        run: () => executeCommand(def.id),
+      };
+    });
+  }, [cells, focusedCellId, anyRunning, canUndoDelete, executeCommand]);
+
+  useEffect(() => {
+    if (zenMode) return;
+    function onKeyDown(e: KeyboardEvent) {
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.shiftKey && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        setPaletteOpen(true);
+        return;
+      }
+      if (handleNotebookChordKey(e, chordActive, chordTimer, {
+        onAddCodeCell: addCodeCellBelow,
+        onUndoDeleteCell: undoDeleteCell,
+      })) {
+        return;
+      }
+      if (mod && e.key === 's') {
+        e.preventDefault();
+        saveNotebook(cellsRef.current);
+        isDirtyRef.current = false;
+        onDirtyChangeRef.current?.(false);
+      }
+    }
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [zenMode, addCodeCellBelow, undoDeleteCell]);
+
   async function handleWheelUpload(file: File) {
     if (!sessionId) return alert('Server not connected');
     try {
@@ -499,7 +680,8 @@ export default function Notebook({
       {/* Toolbar — hidden in zen mode */}
       {!zenMode && <div className="flex items-center gap-2 flex-wrap">
         <button
-          onClick={() => userDispatch({ type: 'ADD_CELL' })}
+          onClick={() => addCodeCellBelow()}
+          title={ADD_CODE_CELL_SHORTCUT_HINT}
           className="flex items-center gap-1.5 rounded border border-ak-border px-3 py-1.5 text-xs hover:bg-ak-code-bg transition-colors"
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg>
@@ -523,15 +705,6 @@ export default function Notebook({
         </label>
 
         <div className="flex-1" />
-
-        <div className="flex items-center gap-1.5 text-xs text-ak-muted">
-          <span
-            className={`h-2 w-2 rounded-full ${
-              serverStatus === 'online' ? 'bg-green-500' : serverStatus === 'offline' ? 'bg-red-400' : 'bg-ak-border'
-            }`}
-          />
-          {serverStatus === 'online' ? 'server ready' : serverStatus === 'offline' ? 'server offline' : 'no server'}
-        </div>
       </div>}
 
       {/* Cells */}
@@ -542,16 +715,27 @@ export default function Notebook({
           onCodeChange={(id, code) => userDispatch({ type: 'SET_CODE', id, code })}
           onRun={runCell}
           onStop={stopCell}
-          onDelete={(id) => userDispatch({ type: 'REMOVE_CELL', id })}
+          onDelete={handleDeleteCell}
           onMoveUp={(id) => userDispatch({ type: 'MOVE_UP', id })}
           onMoveDown={(id) => userDispatch({ type: 'MOVE_DOWN', id })}
           onAddBelow={(id, cellType) => userDispatch({ type: 'ADD_CELL', afterId: id, cellType })}
           onToggleCellType={(id) => userDispatch({ type: 'TOGGLE_CELL_TYPE', id })}
+          onCopyCell={(id) => void handleCopyCell(id)}
+          onCutCell={(id) => void handleCutCell(id)}
           onOutputsChange={(id, outputs) => dispatch({ type: 'SET_OUTPUTS', id, outputs })}
           onFocus={setFocusedCellId}
           zenMode={zenMode}
+          showLineNumbers={!hideLineNumbers}
         />
       ))}
+
+      {!zenMode && (
+        <CommandPalette
+          open={paletteOpen}
+          onClose={() => setPaletteOpen(false)}
+          commands={paletteCommands}
+        />
+      )}
     </div>
   );
 }

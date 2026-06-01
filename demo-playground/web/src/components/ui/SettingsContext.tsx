@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import Settings from './Settings';
+import { readZenFromUrl } from '@/lib/recording';
 
 interface SettingsContextValue {
   isOpen: boolean;
@@ -16,6 +17,7 @@ interface SettingsContextValue {
   closeSettings: () => void;
   toggleSettings: () => void;
   registerExport: (fn: (() => void) | null) => void;
+  registerImport: (fn: ((file: File) => void | Promise<void>) | null) => void;
 }
 
 const SettingsContext = createContext<SettingsContextValue | null>(null);
@@ -31,12 +33,16 @@ function isEditableTarget(target: EventTarget | null): boolean {
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [isOpen, setIsOpen] = useState(false);
   const [exportFn, setExportFnState] = useState<(() => void) | null>(null);
+  const [importFn, setImportFnState] = useState<((file: File) => void | Promise<void>) | null>(null);
 
   const openSettings = useCallback(() => setIsOpen(true), []);
   const closeSettings = useCallback(() => setIsOpen(false), []);
   const toggleSettings = useCallback(() => setIsOpen((v) => !v), []);
   const registerExport = useCallback((fn: (() => void) | null) => {
     setExportFnState(() => fn);
+  }, []);
+  const registerImport = useCallback((fn: ((file: File) => void | Promise<void>) | null) => {
+    setImportFnState(() => fn);
   }, []);
 
   useEffect(() => {
@@ -47,7 +53,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       }
       const mod = e.ctrlKey || e.metaKey;
       if (!mod || e.key !== '/') return;
-      if (isEditableTarget(e.target)) return;
+      // Allow opening settings from the editor during zen/recording (Ctrl+/).
+      if (!readZenFromUrl() && isEditableTarget(e.target)) return;
       e.preventDefault();
       toggleSettings();
     }
@@ -56,9 +63,18 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
   }, [toggleSettings, isOpen, closeSettings]);
 
   return (
-    <SettingsContext.Provider value={{ isOpen, openSettings, closeSettings, toggleSettings, registerExport }}>
+    <SettingsContext.Provider
+      value={{ isOpen, openSettings, closeSettings, toggleSettings, registerExport, registerImport }}
+    >
       {children}
-      {isOpen && <Settings onClose={closeSettings} onExportNotebook={exportFn ?? undefined} />}
+      {isOpen && (
+        <Settings
+          onClose={closeSettings}
+          onExportNotebook={exportFn ?? undefined}
+          onImportNotebook={importFn ?? undefined}
+          showNotebookOptions
+        />
+      )}
     </SettingsContext.Provider>
   );
 }

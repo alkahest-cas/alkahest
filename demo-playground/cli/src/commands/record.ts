@@ -25,6 +25,7 @@ export async function recordCommand(
     delay: string;
     layout?: string;
     headless?: boolean;
+    hideLineNumbers?: boolean;
   },
 ) {
   const outputPath = path.resolve(opts.output);
@@ -60,6 +61,10 @@ export async function recordCommand(
 
   let targetUrl = opts.url;
   let numCells = 0;
+  const recordingQs = new URLSearchParams();
+  recordingQs.set('zen', '1');
+  if (opts.hideLineNumbers) recordingQs.set('hideLineNumbers', '1');
+  const recordingSuffix = `?${recordingQs.toString()}`;
 
   if (isSplit) {
     const leftFile = opts.codeLeft ?? opts.code;
@@ -74,17 +79,26 @@ export async function recordCommand(
     const leftEnc = encodeCells(leftCells);
     const rightEnc = encodeCells(rightCells);
     const base = opts.url.replace(/\/$/, '');
-    targetUrl = `${base}/compare?left=${leftEnc}&right=${rightEnc}&mode=server&zen=1&autorun=1`;
+    const compareQs = new URLSearchParams(recordingQs);
+    compareQs.set('left', leftEnc);
+    compareQs.set('right', rightEnc);
+    compareQs.set('mode', 'server');
+    compareQs.set('autorun', '1');
+    targetUrl = `${base}/compare?${compareQs.toString()}`;
     console.log(chalk.dim(`  Left cells:  ${leftCells.length}`));
     console.log(chalk.dim(`  Right cells: ${rightCells.length}\n`));
   } else if (opts.code) {
     const cellCodes = parseCellFile(opts.code);
     numCells = cellCodes.length;
     const encoded = encodeCells(cellCodes);
-    targetUrl = `${opts.url}?demo=${encoded}&mode=server&zen=1&autorun=1`;
+    const demoQs = new URLSearchParams(recordingQs);
+    demoQs.set('demo', encoded);
+    demoQs.set('mode', 'server');
+    demoQs.set('autorun', '1');
+    targetUrl = `${opts.url}?${demoQs.toString()}`;
     console.log(chalk.dim(`  Cells:    ${numCells}\n`));
   } else {
-    targetUrl = `${opts.url}?zen=1`;
+    targetUrl = `${opts.url}${recordingSuffix}`;
   }
 
   const browser = await chromium.launch({ headless });

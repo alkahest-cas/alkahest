@@ -21,6 +21,7 @@
     "@ai-sdk/togetherai": "^1.0.42",
     "@ai-sdk/xai": "^1.2.18",
     "@codemirror/lang-python": "^6.1.6",
+    "@codemirror/state": "^6.5.4",
     "@codemirror/theme-one-dark": "^6.1.2",
     "@codemirror/view": "^6.43.0",
     "@tailwindcss/typography": "^0.5.19",

@@ -3,12 +3,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { python } from '@codemirror/lang-python';
-import { EditorView } from '@codemirror/view';
+import { EditorView, keymap } from '@codemirror/view';
+import { Prec } from '@codemirror/state';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import type { OutputItem } from '@/lib/execution';
+import { ADD_CODE_CELL_SHORTCUT_HINT } from '@/lib/notebook-commands';
+import CellActionsMenu from './CellActionsMenu';
 import Output from './Output';
 
 export interface CellData {
@@ -31,10 +34,13 @@ interface CellProps {
   onMoveDown: (id: string) => void;
   onAddBelow: (id: string, cellType?: CellData['cellType']) => void;
   onToggleCellType: (id: string) => void;
+  onCopyCell: (id: string) => void;
+  onCutCell: (id: string) => void;
   onOutputsChange?: (id: string, outputs: OutputItem[]) => void;
   onFocus?: (id: string) => void;
   zenMode?: boolean;
   showInsertBar?: boolean;
+  showLineNumbers?: boolean;
 }
 
 const warmLightTheme = EditorView.theme({
@@ -94,34 +100,46 @@ export default function Cell({
   onMoveDown,
   onAddBelow,
   onToggleCellType,
+  onCopyCell,
+  onCutCell,
   onOutputsChange,
   onFocus,
   zenMode,
   showInsertBar = true,
+  showLineNumbers = true,
 }: CellProps) {
   const editorRef = useRef<{ view?: { focus: () => void } }>(null);
   const elapsed = useElapsedTimer(cell.status);
+  const onRunRef = useRef(onRun);
+  const onFocusRef = useRef(onFocus);
+  const cellIdRef = useRef(cell.id);
+  onRunRef.current = onRun;
+  onFocusRef.current = onFocus;
+  cellIdRef.current = cell.id;
 
   const editorExtensions = useMemo(
     () => [
       python(),
       warmLightTheme,
+      Prec.highest(
+        keymap.of([
+          {
+            key: 'Mod-Enter',
+            run: () => {
+              onRunRef.current(cellIdRef.current);
+              return true;
+            },
+          },
+        ]),
+      ),
       EditorView.domEventHandlers({
-        keydown(event) {
-          if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
-            event.preventDefault();
-            onRun(cell.id);
-            return true;
-          }
-          return false;
-        },
         focus: () => {
-          onFocus?.(cell.id);
+          onFocusRef.current?.(cellIdRef.current);
           return false;
         },
       }),
     ],
-    [cell.id, onRun, onFocus],
+    [],
   );
 
   const isMarkdown = cell.cellType === 'markdown';
@@ -189,17 +207,17 @@ export default function Cell({
           <div className="flex-1" />
 
           {!zenMode && (
-            <div className="flex items-center gap-1 opacity-0 group-hover/cell:opacity-100 transition-opacity">
-              <CellBtn
-                title={isMarkdown ? 'Switch to code' : 'Switch to markdown'}
-                onClick={() => onToggleCellType(cell.id)}
-              >
-                {isMarkdown ? (
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-                ) : (
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 6h16M4 12h8M4 18h16"/></svg>
-                )}
-              </CellBtn>
+            <div
+              className={`flex items-center gap-1 transition-opacity ${
+                isRunning ? 'opacity-100' : 'opacity-0 group-hover/cell:opacity-100'
+              }`}
+            >
+              <CellActionsMenu
+                isMarkdown={isMarkdown}
+                onToggleType={() => onToggleCellType(cell.id)}
+                onCopy={() => onCopyCell(cell.id)}
+                onCut={() => onCutCell(cell.id)}
+              />
               <CellBtn title="Move up" onClick={() => onMoveUp(cell.id)}>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m18 15-6-6-6 6"/></svg>
               </CellBtn>
@@ -209,34 +227,33 @@ export default function Cell({
               <CellBtn title="Delete cell" onClick={() => onDelete(cell.id)} danger>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
               </CellBtn>
+              {!isMarkdown && (
+                isRunning ? (
+                  <button
+                    type="button"
+                    onClick={() => onStop(cell.id)}
+                    title="Stop execution"
+                    className="flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium bg-ak-brand/15 text-ak-brand hover:bg-ak-brand/25 transition-colors"
+                  >
+                    <span className="relative flex h-3 w-3 items-center justify-center">
+                      <span className="cell-run-pulse absolute inset-0 rounded-sm border border-ak-brand/60" />
+                      <span className="relative h-2 w-2 rounded-sm bg-ak-brand" />
+                    </span>
+                    Stop
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => onRun(cell.id)}
+                    title="Run cell (Ctrl+Enter)"
+                    className="flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium bg-ak-brand text-white hover:bg-ak-brand-dark transition-colors"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                    Run
+                  </button>
+                )
+              )}
             </div>
-          )}
-
-          {!isMarkdown && !zenMode && (
-            isRunning ? (
-              <button
-                type="button"
-                onClick={() => onStop(cell.id)}
-                title="Stop execution"
-                className="flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium bg-red-600 text-white hover:bg-red-700 transition-colors"
-              >
-                <span className="relative flex h-3 w-3 items-center justify-center">
-                  <span className="cell-run-pulse absolute inset-0 rounded-sm border border-white/70" />
-                  <span className="relative h-2 w-2 rounded-sm bg-white" />
-                </span>
-                Stop
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => onRun(cell.id)}
-                title="Run cell (Ctrl+Enter)"
-                className="flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium bg-ak-brand text-white hover:bg-ak-brand-dark transition-colors"
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                Run
-              </button>
-            )
           )}
 
           {!isMarkdown && zenMode && isRunning && (
@@ -257,9 +274,9 @@ export default function Cell({
               onChange={(code) => onCodeChange(cell.id, code)}
               extensions={editorExtensions}
               basicSetup={{
-                lineNumbers: true,
-                highlightActiveLine: true,
-                highlightActiveLineGutter: true,
+                lineNumbers: showLineNumbers,
+                highlightActiveLine: showLineNumbers,
+                highlightActiveLineGutter: showLineNumbers,
                 autocompletion: true,
                 indentOnInput: true,
                 bracketMatching: true,
@@ -294,14 +311,23 @@ function CellInsertBar({
 }) {
   return (
     <div className="flex h-7 items-center justify-center gap-2 opacity-0 transition-opacity group-hover/cell:opacity-100">
-      <button
-        type="button"
-        onClick={onAddCode}
-        className="flex items-center gap-1 rounded border border-transparent px-2 py-0.5 text-xs text-ak-muted transition-colors hover:border-ak-border hover:bg-ak-code-bg hover:text-ak-fg"
-      >
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg>
-        Add code
-      </button>
+      <div className="group/addcode relative">
+        <button
+          type="button"
+          onClick={onAddCode}
+          title={ADD_CODE_CELL_SHORTCUT_HINT}
+          className="flex items-center gap-1 rounded border border-transparent px-2 py-0.5 text-xs text-ak-muted transition-colors hover:border-ak-border hover:bg-ak-code-bg hover:text-ak-fg"
+        >
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg>
+          Add code
+        </button>
+        <span
+          role="tooltip"
+          className="pointer-events-none absolute left-1/2 top-full z-10 mt-1 -translate-x-1/2 whitespace-nowrap rounded border border-ak-border bg-ak-bg px-2 py-1 text-[10px] text-ak-muted opacity-0 shadow-sm transition-opacity group-hover/addcode:opacity-100"
+        >
+          {ADD_CODE_CELL_SHORTCUT_HINT}
+        </span>
+      </div>
       <button
         type="button"
         onClick={onAddMarkdown}
