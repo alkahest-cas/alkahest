@@ -130,7 +130,7 @@ pub fn poly_div_exact(a: &QPoly, b: &QPoly) -> QPoly {
 }
 
 /// `p^n` for `n ≥ 0`.
-fn poly_pow(p: &QPoly, n: u32) -> QPoly {
+pub fn poly_pow(p: &QPoly, n: u32) -> QPoly {
     let mut acc = poly_one();
     for _ in 0..n {
         acc = poly_mul(&acc, p);

@@ -33,11 +33,13 @@ use crate::simplify::engine::simplify;
 
 use super::number_field::{KElem, KPoly, NumberField};
 use super::poly_rde::{
-    apply_const, expr_to_qpoly, is_free_of_var, poly_one, poly_scale, qpoly_to_expr,
-    rational_to_expr, solve_poly_rde, solve_poly_rde_k, split_const_factor, trim, QPoly,
+    apply_const, contains_subexpr, degree, expr_to_qpoly, is_free_of_var, poly_add, poly_deriv,
+    poly_mul, poly_one, poly_scale, poly_zero, qpoly_to_expr, rational_to_expr, solve_poly_rde,
+    solve_poly_rde_k, split_const_factor, trim, QPoly,
 };
 use super::rational_rde::{
-    expr_to_qrational, solve_rational_rde, solve_rational_rde_generalized, solve_rational_rde_k,
+    expr_to_qrational, poly_sub, solve_rational_rde, solve_rational_rde_generalized,
+    solve_rational_rde_k,
 };
 use super::tower::{decompose_wrt_exp, poly_degree, TowerLevel};
 
@@ -452,6 +454,13 @@ fn integrate_single_exp_term(
     // Each sub-problem is a rational-coefficient RDE in ℚ(x).
     if let Some(result) =
         try_poly_in_log_rde(c_rest, k, deta, exp_k_eta, k_const, c_expr, var, pool, log)
+    {
+        return result;
+    }
+
+    // Gap C: x-dependent algebraic coefficient of the form c₀(x) + c₁(x)·√p(x).
+    if let Some(result) =
+        try_sqrt_poly_rde(c_rest, k, deta, exp_k_eta, k_const, c_expr, var, pool, log)
     {
         return result;
     }
@@ -1503,6 +1512,352 @@ fn is_one(expr: ExprId, pool: &ExprPool) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Gap C — mixed algebraic × exp tower:  sqrt(p(x)) coefficients (Bronstein §5.9)
+// ---------------------------------------------------------------------------
+//
+// For an integrand c(x, √p(x))·exp(kη) with c = c₀ + c₁·α (α = √p, p ∈ ℚ[x]),
+// the antiderivative has the form (a + b·α)·exp(kη) iff both rational Risch DEs
+//
+//   a' + f·a = c₀                          (over ℚ(x))
+//   b' + (f + p'/(2p))·b = c₁              (over ℚ(x), rational f_eff)
+//
+// have rational solutions, where f = k·η'.  Each is solved by the existing
+// `solve_rational_rde` / `solve_rational_rde_generalized`.  This identity follows
+// from the twisted derivation D(a + bα) = a' + (b' + b·p'/(2p))·α.
+
+/// Returns `true` if `expr` has an x-dependent algebraic sub-expression
+/// (e.g. `sqrt(x²+1)`, `x^{1/2}`) — as opposed to *constant* algebraic factors
+/// like `sqrt(2)` (Gap E) which are free of the integration variable.
+fn contains_var_algebraic(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    use crate::kernel::ExprData;
+    match pool.get(expr) {
+        ExprData::Func { ref name, ref args } if name == "sqrt" && args.len() == 1 => {
+            !is_free_of_var(args[0], var, pool)
+        }
+        ExprData::Pow { base, exp } => {
+            if matches!(pool.get(exp), ExprData::Rational(_)) {
+                !is_free_of_var(base, var, pool)
+            } else {
+                contains_var_algebraic(base, var, pool)
+            }
+        }
+        ExprData::Add(args) | ExprData::Mul(args) => {
+            args.iter().any(|&a| contains_var_algebraic(a, var, pool))
+        }
+        _ => false,
+    }
+}
+
+/// Returns `Some((p_poly, sqrt_expr))` if `expr` contains exactly one
+/// x-dependent `sqrt(p(x))` generator (degree(p) ≥ 1).  Returns `None` if
+/// there is none or more than one distinct such generator.
+fn detect_sqrt_of_poly(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<(QPoly, ExprId)> {
+    let mut found: Vec<(QPoly, ExprId)> = Vec::new();
+    scan_sqrt_of_poly(expr, var, pool, &mut found);
+    // Deduplicate by polynomial content.
+    let mut distinct: Vec<(QPoly, ExprId)> = Vec::new();
+    for (p, e) in found {
+        if !distinct
+            .iter()
+            .any(|(q, _)| trim(q.clone()) == trim(p.clone()))
+        {
+            distinct.push((p, e));
+        }
+    }
+    if distinct.len() == 1 {
+        Some(distinct.remove(0))
+    } else {
+        None
+    }
+}
+
+fn scan_sqrt_of_poly(expr: ExprId, var: ExprId, pool: &ExprPool, out: &mut Vec<(QPoly, ExprId)>) {
+    use crate::kernel::ExprData;
+    match pool.get(expr) {
+        ExprData::Func { ref name, ref args } if name == "sqrt" && args.len() == 1 => {
+            if let Some(p) = expr_to_qpoly(args[0], var, pool) {
+                if degree(&p) >= 1 {
+                    out.push((p, expr));
+                }
+            }
+            // Don't recurse into the sqrt argument.
+        }
+        ExprData::Pow { base, exp } => {
+            if let ExprData::Rational(r) = pool.get(exp) {
+                // base^{m/2}: the radicand is base.
+                if *r.0.denom() == 2 {
+                    if let Some(p) = expr_to_qpoly(base, var, pool) {
+                        if degree(&p) >= 1 {
+                            out.push((p, expr));
+                            return; // Don't recurse into base or exp.
+                        }
+                    }
+                }
+            }
+            scan_sqrt_of_poly(base, var, pool, out);
+        }
+        ExprData::Add(args) | ExprData::Mul(args) => {
+            for &a in &args {
+                scan_sqrt_of_poly(a, var, pool, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Return the polynomial radicand of an alpha generator:
+///   `sqrt(p)` → `p`,   `p^{1/2}` → `p`.
+fn get_radicand_expr(alpha: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    use crate::kernel::ExprData;
+    match pool.get(alpha) {
+        ExprData::Func { ref name, ref args } if name == "sqrt" && args.len() == 1 => Some(args[0]),
+        ExprData::Pow { base, exp } => {
+            if let ExprData::Rational(r) = pool.get(exp) {
+                if *r.0.numer() == 1 && *r.0.denom() == 2 {
+                    return Some(base);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+// --- Minimal rational-function (QRat) arithmetic -------------------------
+
+type QRat = (QPoly, QPoly); // (numerator, denominator) of a ℚ(x) element
+
+fn qr_zero() -> QRat {
+    (poly_zero(), poly_one())
+}
+fn qr_one() -> QRat {
+    (poly_one(), poly_one())
+}
+
+fn qr_add(a: &QRat, b: &QRat) -> QRat {
+    (
+        poly_add(&poly_mul(&a.0, &b.1), &poly_mul(&b.0, &a.1)),
+        poly_mul(&a.1, &b.1),
+    )
+}
+
+fn qr_mul(a: &QRat, b: &QRat) -> QRat {
+    (poly_mul(&a.0, &b.0), poly_mul(&a.1, &b.1))
+}
+
+/// Multiply a rational function by a polynomial: (n/d) · p = (n·p)/d.
+fn qr_scale_poly(a: &QRat, p: &QPoly) -> QRat {
+    (poly_mul(&a.0, p), a.1.clone())
+}
+
+// --- KPair: elements c₀ + c₁·α of ℚ(x)(α) with α² = p(x) --------------
+
+type KPair = (QRat, QRat); // (c0, c1) representing c0 + c1·α
+
+fn kp_zero() -> KPair {
+    (qr_zero(), qr_zero())
+}
+fn kp_one() -> KPair {
+    (qr_one(), qr_zero())
+}
+fn kp_alpha() -> KPair {
+    (qr_zero(), qr_one())
+}
+fn kp_from_qr(r: QRat) -> KPair {
+    (r, qr_zero())
+}
+
+fn kp_add(a: &KPair, b: &KPair) -> KPair {
+    (qr_add(&a.0, &b.0), qr_add(&a.1, &b.1))
+}
+
+/// Multiply in ℚ(x)(α) with α² = p(x).
+/// (a₀ + a₁α)(b₀ + b₁α) = (a₀b₀ + a₁b₁p) + (a₀b₁ + a₁b₀)α
+fn kp_mul(a: &KPair, b: &KPair, p: &QPoly) -> KPair {
+    let c0 = qr_add(&qr_mul(&a.0, &b.0), &qr_scale_poly(&qr_mul(&a.1, &b.1), p));
+    let c1 = qr_add(&qr_mul(&a.0, &b.1), &qr_mul(&a.1, &b.0));
+    (c0, c1)
+}
+
+/// Invert in ℚ(x)(α): 1/(a₀+a₁α) = (a₀−a₁α)/(a₀²−a₁²p).
+fn kp_inv(a: &KPair, p: &QPoly) -> Option<KPair> {
+    // norm = a₀² − a₁²·p  (as a rational function)
+    let a0sq = qr_mul(&a.0, &a.0);
+    let a1sq_p = qr_scale_poly(&qr_mul(&a.1, &a.1), p);
+    // norm_num/norm_den = a0sq − a1sq_p
+    let norm_num = poly_sub(&poly_mul(&a0sq.0, &a1sq_p.1), &poly_mul(&a1sq_p.0, &a0sq.1));
+    let norm_den = poly_mul(&a0sq.1, &a1sq_p.1);
+    if trim(norm_num.clone()).is_empty() {
+        return None; // zero norm → not invertible
+    }
+    // 1/norm = norm_den / norm_num
+    // c0 = a0 / norm = (a0.0 · norm_den) / (a0.1 · norm_num)
+    let inv_c0 = (poly_mul(&a.0 .0, &norm_den), poly_mul(&a.0 .1, &norm_num));
+    // c1 = −a1 / norm = (−a1.0 · norm_den) / (a1.1 · norm_num)
+    let neg_a1_num = poly_scale(&a.1 .0, &rug::Rational::from(-1));
+    let inv_c1 = (
+        poly_mul(&neg_a1_num, &norm_den),
+        poly_mul(&a.1 .1, &norm_num),
+    );
+    Some((inv_c0, inv_c1))
+}
+
+fn kp_pow(a: &KPair, n: i64, p: &QPoly) -> Option<KPair> {
+    if n == 0 {
+        return Some(kp_one());
+    }
+    if n < 0 {
+        let inv = kp_inv(a, p)?;
+        return kp_pow(&inv, -n, p);
+    }
+    let mut acc = kp_one();
+    for _ in 0..n {
+        acc = kp_mul(&acc, a, p);
+    }
+    Some(acc)
+}
+
+/// Decompose `expr` as c₀(x) + c₁(x)·α where α = `alpha` (a sqrt(p(x)) node)
+/// and p = `p_poly`.  Returns `None` if the expression cannot be so written.
+fn decompose_over_alpha(
+    expr: ExprId,
+    alpha: ExprId,
+    p_poly: &QPoly,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<KPair> {
+    use crate::kernel::ExprData;
+
+    // Free of alpha → pure rational c₀.
+    if !contains_subexpr(expr, alpha, pool) {
+        let r = expr_to_qrational(expr, var, pool)?;
+        return Some(kp_from_qr(r));
+    }
+    // expr IS alpha.
+    if expr == alpha {
+        return Some(kp_alpha());
+    }
+
+    match pool.get(expr) {
+        ExprData::Add(args) => {
+            let mut acc = kp_zero();
+            for &a in &args {
+                let t = decompose_over_alpha(a, alpha, p_poly, var, pool)?;
+                acc = kp_add(&acc, &t);
+            }
+            Some(acc)
+        }
+        ExprData::Mul(args) => {
+            let mut acc = kp_one();
+            for &a in &args {
+                let t = decompose_over_alpha(a, alpha, p_poly, var, pool)?;
+                acc = kp_mul(&acc, &t, p_poly);
+            }
+            Some(acc)
+        }
+        ExprData::Pow { base, exp } => {
+            match pool.get(exp) {
+                ExprData::Integer(n) => {
+                    let n = n.0.to_i64()?;
+                    let b = decompose_over_alpha(base, alpha, p_poly, var, pool)?;
+                    kp_pow(&b, n, p_poly)
+                }
+                ExprData::Rational(r) => {
+                    // base^{m/2} where base is the radicand of alpha → alpha^m.
+                    if get_radicand_expr(alpha, pool) == Some(base) && *r.0.denom() == 2 {
+                        let m = r.0.numer().to_i64()?;
+                        return kp_pow(&kp_alpha(), m, p_poly);
+                    }
+                    None
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Try to integrate `c_rest · exp(kη)` when `c_rest` contains a single
+/// x-dependent `sqrt(p(x))` algebraic generator (Gap C).
+///
+/// Uses the twisted-derivation decomposition:  for v = a + b·α (α = √p),
+///   D(v) + f·v = c  ⟺  a' + f·a = c₀   ∧   b' + (f + p'/(2p))·b = c₁
+/// where c = c₀ + c₁·α and f = k·η' is a polynomial.  Returns `None` when
+/// `c_rest` is not of this form; `Some(Err(NonElementary))` if either RDE
+/// has no rational solution; `Some(Ok(result))` on success.
+#[allow(clippy::too_many_arguments)]
+fn try_sqrt_poly_rde(
+    c_rest: ExprId,
+    k: i64,
+    deta: &[rug::Rational],
+    exp_k_eta: ExprId,
+    k_const: ExprId,
+    c_expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Option<Result<ExprId, IntegrationError>> {
+    // Must have exactly one x-dependent sqrt generator.
+    let (p_poly, alpha) = detect_sqrt_of_poly(c_rest, var, pool)?;
+
+    // Decompose c_rest = c0 + c1·alpha.
+    let (c0, c1) = decompose_over_alpha(c_rest, alpha, &p_poly, var, pool)?;
+
+    // f = k·η' (polynomial).
+    let f: QPoly = deta
+        .iter()
+        .map(|r| r.clone() * rug::Rational::from(k))
+        .collect();
+
+    let ne = || {
+        IntegrationError::NonElementary(format!(
+            "the Risch DE over ℚ(x)(√({})) for ∫ {} · exp(η)^{k} dx \
+             has no rational solution",
+            pool.display(pool.func("placeholder", vec![])), // not shown
+            pool.display(c_expr),
+        ))
+    };
+
+    // Equation 1: a' + f·a = c₀.
+    let a_sol = match solve_rational_rde(&f, &c0.0, &c0.1) {
+        Some(s) => s,
+        None => return Some(Err(ne())),
+    };
+
+    // Equation 2: b' + (f + p'/(2p))·b = c₁.
+    // f_eff = f + p'/(2p) = (2f·p + p') / (2p).
+    let p_prime = poly_deriv(&p_poly);
+    let f_eff_num = poly_add(
+        &poly_scale(&poly_mul(&f, &p_poly), &rug::Rational::from(2)),
+        &p_prime,
+    );
+    let f_eff_den = poly_scale(&p_poly, &rug::Rational::from(2));
+    let b_sol = match solve_rational_rde_generalized(&f_eff_num, &f_eff_den, &c1.0, &c1.1) {
+        Some(s) => s,
+        None => return Some(Err(ne())),
+    };
+
+    // Reconstruct v = a + b·alpha.
+    let a_expr = build_rational(&a_sol.0, &a_sol.1, var, pool);
+    let b_expr = build_rational(&b_sol.0, &b_sol.1, var, pool);
+
+    let a_zero = trim(a_sol.0.clone()).is_empty();
+    let b_zero = trim(b_sol.0.clone()).is_empty();
+
+    let v_expr = match (a_zero, b_zero) {
+        (true, true) => pool.integer(0_i32),
+        (true, false) => pool.mul(vec![b_expr, alpha]),
+        (false, true) => a_expr,
+        (false, false) => pool.add(vec![a_expr, pool.mul(vec![b_expr, alpha])]),
+    };
+
+    let core = build_v_times_exp(v_expr, exp_k_eta, pool);
+    let result = apply_const(k_const, core, pool);
+    log.push(RewriteStep::simple("risch_exp_sqrt_poly", c_expr, result));
+    Some(Ok(result))
+}
+
+// ---------------------------------------------------------------------------
 // Detection: does an integrand require the exp-tower path?
 // ---------------------------------------------------------------------------
 
@@ -1607,6 +1962,12 @@ fn needs_exp_risch_inner(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
             // Any exp generator with a rational (denominator-bearing) coefficient:
             // route to the rational Risch DE.
             if (has_linear_exp || has_nonlinear_exp) && has_rational_coeff {
+                return true;
+            }
+            // Gap C: any exp generator with an x-dependent algebraic factor
+            // (e.g. sqrt(x²+1) or x^{1/2}) — route to the Risch exp-tower path.
+            let has_var_alg = args.iter().any(|&a| contains_var_algebraic(a, var, pool));
+            if (has_linear_exp || has_nonlinear_exp) && has_var_alg {
                 return true;
             }
             // Check sub-expressions for nested cases.

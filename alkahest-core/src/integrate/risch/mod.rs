@@ -18,9 +18,10 @@
 //! | `A(x)/D(x)`, irreducible quadratics | `1/(x²+1)`, `1/(x²−2)` | ✓ (log + arctan / √-log) |
 //! | `A(x)/D(x)`, irreducible deg ≥ 3 | `1/(x³−3x+1)` | ✓ (`RootSum`, Lazard–Rioboo–Trager) |
 //! | `ratfn(x)·exp(η)`, η rational | `(1/x²)·exp(1/x)` | ✓ (generalised RDE, Gap F) |
+//! | `(c₀(x)+c₁(x)√p(x))·exp(η)`, η polynomial | `√x·exp(x)` | ✗ NonElementary / ✓ elementary |
+//! | `log(h)/√p(x)` via log tower | `log(x)/√x` | ✓ (lower-tower delegation, Gap C) |
 //! | `sin(x)/x`, `exp(x)/x` | Ei, Si functions | ✗ (NonElementary) |
 //! | `exp(1/x)` alone | essential singularity | ✗ (NonElementary) |
-//! | `exp(x²)/sqrt(x)` | Mixed algebraic+transcendental | ✗ (NotImplemented) |
 //!
 //! ## Architecture
 //!
@@ -898,5 +899,119 @@ mod tests {
             result.is_ok(),
             "∫ (x·exp(x²)+log(x)²) dx must be elementary; got {result:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap C: mixed algebraic + transcendental
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn gapc_exp_over_sqrt_xsq_plus_1_nonelementary() {
+        // ∫ exp(x) / sqrt(x²+1) dx  — non-elementary.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let xsq1 = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(1_i32)]);
+        let sqrt_xsq1 = pool.func("sqrt", vec![xsq1]);
+        let exp_x = pool.func("exp", vec![x]);
+        let f = pool.mul(vec![exp_x, pool.pow(sqrt_xsq1, pool.integer(-1_i32))]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ exp(x)/sqrt(x²+1) dx must be NonElementary; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn gapc_1_plus_sqrt_x_times_exp_x_nonelementary() {
+        // ∫ (1 + sqrt(x))·exp(x) dx — non-elementary (√x·exp(x) has no elementary antiderivative).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt_x = pool.func("sqrt", vec![x]);
+        let exp_x = pool.func("exp", vec![x]);
+        let f = pool.mul(vec![pool.add(vec![pool.integer(1_i32), sqrt_x]), exp_x]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ (1+√x)·exp(x) dx must be NonElementary; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn gapc_sqrt_x_coefficient_exp_x_elementary() {
+        // ∫ (2x+1)/(2x) · sqrt(x) · exp(x) dx = sqrt(x)·exp(x).
+        //
+        // Derivation: d/dx(sqrt(x)·exp(x)) = (1/(2√x)+√x)·exp(x) = (1+2x)/(2√x)·exp(x).
+        // Coefficient c = (1+2x)/(2x)·sqrt(x) = (1+2x)/(2√x).
+        // After decompose: c₀=0, c₁=(1+2x)/(2x).
+        // Eq 1: a'+a=0 → a=0.
+        // Eq 2: b'+(1+1/(2x))·b=(1+2x)/(2x) → b=1. Antiderivative: sqrt(x)·exp(x).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt_x = pool.func("sqrt", vec![x]);
+        let exp_x = pool.func("exp", vec![x]);
+        // (2x+1)/(2x) · sqrt(x) · exp(x)
+        let two_x_p1 = pool.add(vec![
+            pool.mul(vec![pool.integer(2_i32), x]),
+            pool.integer(1_i32),
+        ]);
+        let two_x = pool.mul(vec![pool.integer(2_i32), x]);
+        let coeff = pool.mul(vec![
+            two_x_p1,
+            pool.pow(two_x, pool.integer(-1_i32)),
+            sqrt_x,
+        ]);
+        let f = pool.mul(vec![coeff, exp_x]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ (2x+1)/(2x)·sqrt(x)·exp(x) dx must be elementary; got {result:?}"
+        );
+        // Numerically verify d/dx F = f at x > 0.
+        let antideriv = result.unwrap().value;
+        let d = crate::diff::diff(antideriv, x, &pool).unwrap();
+        let ds = crate::simplify::engine::simplify(d.value, &pool).value;
+        for &xv in &[0.5_f64, 1.5, 3.0] {
+            let lhs = eval_f64_gapf(ds, x, xv, &pool);
+            let rhs = eval_f64_gapf(f, x, xv, &pool);
+            assert!(
+                (lhs - rhs).abs() < 1e-7,
+                "d/dx F ≠ f at x={xv}: {lhs} vs {rhs}"
+            );
+        }
+    }
+
+    #[test]
+    fn gapc_log_over_sqrt_x_elementary_via_log_tower() {
+        // ∫ log(x)/sqrt(x) dx = 2·sqrt(x)·log(x) − 4·sqrt(x).
+        // This goes through the log tower (θ = log(x)):
+        //   c₁ = 1/sqrt(x) → integrate_base_unchecked → 2·sqrt(x)
+        //   correction → base integral -2/sqrt(x) → -4·sqrt(x)
+        // Routing: has_alg=true (sqrt), has_trans=true (log) → Risch → log tower.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let log_x = pool.func("log", vec![x]);
+        let sqrt_x = pool.func("sqrt", vec![x]);
+        let f = pool.mul(vec![log_x, pool.pow(sqrt_x, pool.integer(-1_i32))]);
+
+        let result = crate::integrate::engine::integrate(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ log(x)/sqrt(x) dx must be elementary; got {result:?}"
+        );
+        // Verify numerically.
+        let antideriv = result.unwrap().value;
+        let d = crate::diff::diff(antideriv, x, &pool).unwrap();
+        let ds = crate::simplify::engine::simplify(d.value, &pool).value;
+        for &xv in &[0.5_f64, 1.5, 4.0] {
+            let lhs = eval_f64_gapf(ds, x, xv, &pool);
+            let rhs = eval_f64_gapf(f, x, xv, &pool);
+            assert!(
+                (lhs - rhs).abs() < 1e-7,
+                "∫ log(x)/sqrt(x): d/dx F ≠ f at x={xv}: {lhs} vs {rhs}"
+            );
+        }
     }
 }
