@@ -33,10 +33,12 @@ use crate::simplify::engine::simplify;
 
 use super::number_field::{KElem, KPoly, NumberField};
 use super::poly_rde::{
-    expr_to_qpoly, is_free_of_var, poly_scale, qpoly_to_expr, rational_to_expr, solve_poly_rde,
-    solve_poly_rde_k, trim,
+    expr_to_qpoly, is_free_of_var, poly_one, poly_scale, qpoly_to_expr, rational_to_expr,
+    solve_poly_rde, solve_poly_rde_k, trim, QPoly,
 };
-use super::rational_rde::{expr_to_qrational, solve_rational_rde, solve_rational_rde_k};
+use super::rational_rde::{
+    expr_to_qrational, solve_rational_rde, solve_rational_rde_generalized, solve_rational_rde_k,
+};
 use super::tower::{decompose_wrt_exp, poly_degree, TowerLevel};
 
 // ---------------------------------------------------------------------------
@@ -93,13 +95,35 @@ pub fn integrate_exp_tower(
 
     // Compute η'(x) = dη/dx once.
     let deta_expr = differentiate_poly(eta, var, pool)?;
-    let deta = expr_to_qpoly(deta_expr, var, pool).ok_or_else(|| {
-        IntegrationError::NotImplemented(format!(
-            "exponent derivative η'(x) = {} is not a polynomial in the integration variable; \
-             only polynomial exponents are supported",
-            pool.display(deta_expr)
-        ))
-    })?;
+
+    // Fast path: polynomial η' → existing polynomial/rational RDE solvers.
+    let deta = match expr_to_qpoly(deta_expr, var, pool) {
+        Some(p) => p,
+        None => {
+            // Gap F: η' is not a polynomial.  Try rational η' → use the
+            // generalised RDE solver, or fall back to NotImplemented for
+            // genuinely transcendental exponents.
+            if let Some((deta_num, deta_den)) = expr_to_qrational(deta_expr, var, pool) {
+                return integrate_exp_tower_rational_eta(
+                    int_rational,
+                    &exp_terms,
+                    eta,
+                    exp_gen,
+                    deta_num,
+                    deta_den,
+                    var,
+                    pool,
+                    log,
+                );
+            }
+            return Err(IntegrationError::NotImplemented(format!(
+                "exponent derivative η'(x) = {} is not a rational function in {}; \
+                 only polynomial and rational exponents are supported",
+                pool.display(deta_expr),
+                pool.display(var),
+            )));
+        }
+    };
 
     // Integrate each term c_k · exp(η)^k.
     let mut result_terms: Vec<ExprId> = Vec::new();
@@ -124,6 +148,120 @@ pub fn integrate_exp_tower(
     *log = log.clone().merge(simplified.log);
     log.push(RewriteStep::simple("risch_exp", expr, simplified.value));
 
+    Ok(simplified.value)
+}
+
+// ---------------------------------------------------------------------------
+// Rational-exponent path: η ∈ ℚ(x) \ ℚ[x]  (Risch Gap F)
+// ---------------------------------------------------------------------------
+
+/// Integrate each `c_k(x) · exp(η)^k` term using the generalised rational
+/// RDE `v' + k·η'·v = c` when `η'(x)` is a rational function (not a
+/// polynomial).  The pre-integrated rational part `int_rational` is passed
+/// in directly (it was already computed in [`integrate_exp_tower`]).
+///
+/// Returns `Err(NonElementary)` when the generalised RDE certifies that no
+/// rational solution exists.
+#[allow(clippy::too_many_arguments)]
+fn integrate_exp_tower_rational_eta(
+    int_rational: ExprId,
+    exp_terms: &[(ExprId, i64)],
+    eta: ExprId,
+    exp_gen: ExprId,
+    deta_num: QPoly, // numerator of η'(x)
+    deta_den: QPoly, // denominator of η'(x)
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Result<ExprId, IntegrationError> {
+    let zero = pool.integer(0_i32);
+    let mut result_terms: Vec<ExprId> = Vec::new();
+    if !is_zero(int_rational, pool) {
+        result_terms.push(int_rational);
+    }
+
+    for (c_expr, k) in exp_terms {
+        let k = *k;
+        let exp_k_eta = build_exp_k_eta(k, eta, exp_gen, pool);
+
+        // Split off any var-free constant factor K so the RDE works on the
+        // purely var-dependent remainder (same trick as in integrate_single_exp_term).
+        let (k_const, c_rest) = split_const_factor(*c_expr, var, pool);
+
+        // f = k · η' = k · (deta_num / deta_den).
+        let k_rat = rug::Rational::from(k);
+        let f_num = poly_scale(&deta_num, &k_rat);
+        let f_den = deta_den.clone();
+
+        let non_elementary = || {
+            IntegrationError::NonElementary(format!(
+                "the Risch DE v'(x) + {k}·η'(x)·v(x) = {}(x) has no rational solution; \
+                 the integrand ∫ {} · exp(η)^{k} dx is not an elementary function \
+                 (η = {})",
+                pool.display(*c_expr),
+                pool.display(*c_expr),
+                pool.display(eta),
+            ))
+        };
+
+        // Polynomial coefficient → polynomial-ansatz generalised RDE.
+        if let Some(c_poly) = expr_to_qpoly(c_rest, var, pool) {
+            match solve_rational_rde_generalized(&f_num, &f_den, &c_poly, &poly_one()) {
+                Some((v_num, v_den)) => {
+                    let v_expr = build_rational(&v_num, &v_den, var, pool);
+                    let core = build_v_times_exp(v_expr, exp_k_eta, pool);
+                    let result = apply_const(k_const, core, pool);
+                    log.push(RewriteStep::simple(
+                        "risch_exp_rde_rational_eta",
+                        *c_expr,
+                        result,
+                    ));
+                    result_terms.push(result);
+                    continue;
+                }
+                None => return Err(non_elementary()),
+            }
+        }
+
+        // Rational coefficient → rational-ansatz generalised RDE.
+        if let Some((c_num, c_den)) = expr_to_qrational(c_rest, var, pool) {
+            match solve_rational_rde_generalized(&f_num, &f_den, &c_num, &c_den) {
+                Some((v_num, v_den)) => {
+                    let v_expr = build_rational(&v_num, &v_den, var, pool);
+                    let core = build_v_times_exp(v_expr, exp_k_eta, pool);
+                    let result = apply_const(k_const, core, pool);
+                    log.push(RewriteStep::simple(
+                        "risch_exp_rde_rational_eta_rational_coeff",
+                        *c_expr,
+                        result,
+                    ));
+                    result_terms.push(result);
+                    continue;
+                }
+                None => return Err(non_elementary()),
+            }
+        }
+
+        return Err(IntegrationError::NotImplemented(format!(
+            "coefficient {} of exp(η)^{k} is not a rational function in {}; \
+             algebraic/mixed coefficients with rational exponents are not yet supported",
+            pool.display(*c_expr),
+            pool.display(var),
+        )));
+    }
+
+    let raw = match result_terms.len() {
+        0 => zero,
+        1 => result_terms[0],
+        _ => pool.add(result_terms),
+    };
+    let simplified = simplify(raw, pool);
+    *log = log.clone().merge(simplified.log);
+    log.push(RewriteStep::simple(
+        "risch_exp_rational_eta",
+        pool.integer(0_i32),
+        simplified.value,
+    ));
     Ok(simplified.value)
 }
 
@@ -736,10 +874,14 @@ fn needs_exp_risch_inner(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
                 if d >= 2 {
                     return true;
                 }
+                // Linear η (degree 1): basic engine handles exp(a·x+b) alone.
+                return false;
             }
-            // Linear η: the basic engine handles exp(a*x+b) alone.
-            // But a product like p(x)*exp(a*x) with deg(p) ≥ 2 needs Risch.
-            false
+            // Non-polynomial η that depends on var (e.g. 1/x, 1/(x²+1)):
+            // route to the Risch exp-tower path (Gap F).  For rational η the
+            // generalised RDE solver handles it or certifies NonElementary; for
+            // genuinely transcendental η it falls through to NotImplemented.
+            true
         }
         ExprData::Mul(args) => {
             // Check if there's an exp factor with linear η AND the remaining product
@@ -765,7 +907,10 @@ fn needs_exp_risch_inner(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
                                 has_linear_exp = true;
                             }
                         } else {
-                            has_linear_exp = true;
+                            // Non-polynomial η (e.g. 1/x): treat as nonlinear
+                            // so the Risch path is taken regardless of the
+                            // polynomial degree of the surrounding coefficient.
+                            has_nonlinear_exp = true;
                         }
                     }
                     _ => {
@@ -1221,5 +1366,160 @@ mod tests {
         let (k, rest) = split_const_factor(x, x, &pool);
         assert_eq!(k, pool.integer(1_i32));
         assert_eq!(rest, x);
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap F: rational exponents  exp(η),  η ∈ ℚ(x) \ ℚ[x]
+    // -----------------------------------------------------------------------
+
+    /// Numeric evaluator for Gap-F verification (supports exp).
+    fn eval_f64_gapf(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> f64 {
+        use crate::kernel::ExprData;
+        if expr == x {
+            return xv;
+        }
+        match pool.get(expr) {
+            ExprData::Integer(n) => n.0.to_f64(),
+            ExprData::Rational(r) => r.0.to_f64(),
+            ExprData::Add(args) => args.iter().map(|&a| eval_f64_gapf(a, x, xv, pool)).sum(),
+            ExprData::Mul(args) => args
+                .iter()
+                .map(|&a| eval_f64_gapf(a, x, xv, pool))
+                .product(),
+            ExprData::Pow { base, exp } => {
+                eval_f64_gapf(base, x, xv, pool).powf(eval_f64_gapf(exp, x, xv, pool))
+            }
+            ExprData::Func { ref name, ref args } if args.len() == 1 => {
+                let a = eval_f64_gapf(args[0], x, xv, pool);
+                match name.as_str() {
+                    "exp" => a.exp(),
+                    "log" => a.ln(),
+                    "sqrt" => a.sqrt(),
+                    other => panic!("eval_f64_gapf: unsupported func {other}"),
+                }
+            }
+            other => panic!("eval_f64_gapf: unsupported {other:?}"),
+        }
+    }
+
+    fn verify_numeric_gapf(integrand: ExprId, antideriv: ExprId, x: ExprId, pool: &ExprPool) {
+        let d = crate::diff::diff(antideriv, x, pool).unwrap();
+        let ds = crate::simplify::engine::simplify(d.value, pool).value;
+        for &xv in &[0.5_f64, 1.0, 2.0] {
+            let lhs = eval_f64_gapf(ds, x, xv, pool);
+            let rhs = eval_f64_gapf(integrand, x, xv, pool);
+            assert!(
+                (lhs - rhs).abs() < 1e-8,
+                "d/dx F ≠ f at x={xv}: got {lhs}, expected {rhs}\n  F = {}",
+                pool.display(antideriv)
+            );
+        }
+    }
+
+    #[test]
+    fn exp_inv_x_nonelementary() {
+        // ∫ exp(1/x) dx is non-elementary.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let inv_x = pool.pow(x, pool.integer(-1_i32)); // 1/x
+        let f = pool.func("exp", vec![inv_x]);
+
+        assert!(
+            needs_exp_risch(f, x, &pool),
+            "exp(1/x) should be routed to Risch"
+        );
+
+        use super::super::tower::find_generators;
+        let gens = find_generators(f, x, &pool);
+        assert_eq!(gens.len(), 1);
+        let level = &gens[0];
+
+        let mut log = DerivationLog::new();
+        let result = integrate_exp_tower(f, level, x, &pool, &mut log);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ exp(1/x) dx must be NonElementary; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn inv_x2_times_exp_inv_x_elementary() {
+        // ∫ (1/x²)·exp(1/x) dx = −exp(1/x).
+        // d/dx(−exp(1/x)) = exp(1/x)·(1/x²)  ✓
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let inv_x = pool.pow(x, pool.integer(-1_i32));
+        let exp_inv_x = pool.func("exp", vec![inv_x]);
+        let inv_x2 = pool.pow(x, pool.integer(-2_i32));
+        let integrand = pool.mul(vec![inv_x2, exp_inv_x]);
+
+        use super::super::tower::find_generators;
+        let gens = find_generators(integrand, x, &pool);
+        assert_eq!(gens.len(), 1);
+        let level = &gens[0];
+
+        let mut log = DerivationLog::new();
+        let result = integrate_exp_tower(integrand, level, x, &pool, &mut log);
+        assert!(
+            result.is_ok(),
+            "∫ (1/x²)·exp(1/x) dx must be elementary; got {result:?}"
+        );
+        verify_numeric_gapf(integrand, result.unwrap(), x, &pool);
+    }
+
+    #[test]
+    fn two_inv_x3_times_exp_neg_inv_x2_elementary() {
+        // ∫ (2/x³)·exp(−1/x²) dx = exp(−1/x²).
+        // d/dx(exp(−1/x²)) = exp(−1/x²)·(2/x³)  ✓
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let neg_inv_x2 = pool.mul(vec![
+            pool.integer(-1_i32),
+            pool.pow(x, pool.integer(-2_i32)),
+        ]);
+        let exp_neg_inv_x2 = pool.func("exp", vec![neg_inv_x2]);
+        let two_inv_x3 = pool.mul(vec![pool.integer(2_i32), pool.pow(x, pool.integer(-3_i32))]);
+        let integrand = pool.mul(vec![two_inv_x3, exp_neg_inv_x2]);
+
+        use super::super::tower::find_generators;
+        let gens = find_generators(integrand, x, &pool);
+        assert_eq!(gens.len(), 1);
+        let level = &gens[0];
+
+        let mut log = DerivationLog::new();
+        let result = integrate_exp_tower(integrand, level, x, &pool, &mut log);
+        assert!(
+            result.is_ok(),
+            "∫ (2/x³)·exp(−1/x²) dx must be elementary; got {result:?}"
+        );
+        verify_numeric_gapf(integrand, result.unwrap(), x, &pool);
+    }
+
+    #[test]
+    fn detection_rational_eta() {
+        // needs_exp_risch should detect exp(1/x), exp(1/(x²+1)), etc.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+
+        let inv_x = pool.pow(x, pool.integer(-1_i32));
+        let exp_inv_x = pool.func("exp", vec![inv_x]);
+        assert!(
+            needs_exp_risch(exp_inv_x, x, &pool),
+            "exp(1/x) should need Risch"
+        );
+
+        // exp(x) alone: still handled by basic engine (not Risch).
+        let exp_x = pool.func("exp", vec![x]);
+        assert!(
+            !needs_exp_risch(exp_x, x, &pool),
+            "exp(x) alone should NOT route to Risch"
+        );
+
+        // x·exp(1/x): coefficient times rational-exp needs Risch.
+        let x_exp_inv_x = pool.mul(vec![x, exp_inv_x]);
+        assert!(
+            needs_exp_risch(x_exp_inv_x, x, &pool),
+            "x·exp(1/x) should need Risch"
+        );
     }
 }

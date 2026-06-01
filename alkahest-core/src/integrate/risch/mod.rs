@@ -566,6 +566,114 @@ mod tests {
         // x·log(x) needs Risch
         let x_log_x = pool.mul(vec![x, log_x]);
         assert!(contains_risch_form(x_log_x, x, &pool));
+
+        // exp(1/x) needs Risch (Gap F)
+        let inv_x = pool.pow(x, pool.integer(-1_i32));
+        let exp_inv_x = pool.func("exp", vec![inv_x]);
+        assert!(contains_risch_form(exp_inv_x, x, &pool));
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap F: rational exponents  exp(η),  η ∈ ℚ(x) \ ℚ[x]
+    // -----------------------------------------------------------------------
+
+    fn eval_f64_gapf(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> f64 {
+        use crate::kernel::ExprData;
+        if expr == x {
+            return xv;
+        }
+        match pool.get(expr) {
+            ExprData::Integer(n) => n.0.to_f64(),
+            ExprData::Rational(r) => r.0.to_f64(),
+            ExprData::Add(args) => args.iter().map(|&a| eval_f64_gapf(a, x, xv, pool)).sum(),
+            ExprData::Mul(args) => args
+                .iter()
+                .map(|&a| eval_f64_gapf(a, x, xv, pool))
+                .product(),
+            ExprData::Pow { base, exp } => {
+                eval_f64_gapf(base, x, xv, pool).powf(eval_f64_gapf(exp, x, xv, pool))
+            }
+            ExprData::Func { ref name, ref args } if args.len() == 1 => {
+                let a = eval_f64_gapf(args[0], x, xv, pool);
+                match name.as_str() {
+                    "exp" => a.exp(),
+                    "log" => a.ln(),
+                    "sqrt" => a.sqrt(),
+                    other => panic!("eval_f64_gapf: unsupported func {other}"),
+                }
+            }
+            other => panic!("eval_f64_gapf: unsupported {other:?}"),
+        }
+    }
+
+    fn verify_numeric_gapf(integrand: ExprId, antideriv: ExprId, x: ExprId, pool: &ExprPool) {
+        let d = crate::diff::diff(antideriv, x, pool).unwrap();
+        let ds = crate::simplify::engine::simplify(d.value, pool).value;
+        for &xv in &[0.5_f64, 1.0, 2.0] {
+            let lhs = eval_f64_gapf(ds, x, xv, pool);
+            let rhs = eval_f64_gapf(integrand, x, xv, pool);
+            assert!(
+                (lhs - rhs).abs() < 1e-8,
+                "d/dx F ≠ f at x={xv}: {lhs} vs {rhs}\n  F = {}",
+                pool.display(antideriv)
+            );
+        }
+    }
+
+    #[test]
+    fn gapf_exp_inv_x_nonelementary() {
+        // ∫ exp(1/x) dx is non-elementary (Ei(−1/x) type).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let inv_x = pool.pow(x, pool.integer(-1_i32));
+        let f = pool.func("exp", vec![inv_x]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ exp(1/x) dx must be NonElementary; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn gapf_inv_x2_exp_inv_x_elementary() {
+        // ∫ (1/x²)·exp(1/x) dx = −exp(1/x).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let inv_x = pool.pow(x, pool.integer(-1_i32));
+        let exp_inv_x = pool.func("exp", vec![inv_x]);
+        let f = pool.mul(vec![pool.pow(x, pool.integer(-2_i32)), exp_inv_x]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ (1/x²)·exp(1/x) dx must be elementary; got {result:?}"
+        );
+        verify_numeric_gapf(f, result.unwrap().value, x, &pool);
+    }
+
+    #[test]
+    fn gapf_two_inv_x3_exp_neg_inv_x2_elementary() {
+        // ∫ (2/x³)·exp(−1/x²) dx = exp(−1/x²).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let neg_inv_x2 = pool.mul(vec![
+            pool.integer(-1_i32),
+            pool.pow(x, pool.integer(-2_i32)),
+        ]);
+        let exp_e = pool.func("exp", vec![neg_inv_x2]);
+        let f = pool.mul(vec![
+            pool.integer(2_i32),
+            pool.pow(x, pool.integer(-3_i32)),
+            exp_e,
+        ]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ (2/x³)·exp(−1/x²) dx must be elementary; got {result:?}"
+        );
+        verify_numeric_gapf(f, result.unwrap().value, x, &pool);
     }
 
     // -----------------------------------------------------------------------
