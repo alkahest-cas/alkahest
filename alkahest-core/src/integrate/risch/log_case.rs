@@ -41,7 +41,7 @@ use crate::integrate::engine::IntegrationError;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::simplify::engine::simplify;
 
-use super::poly_rde::is_free_of_var;
+use super::poly_rde::{apply_const, is_free_of_var, split_const_factor};
 use super::tower::{decompose_as_log_poly, ExtensionKind, TowerLevel};
 
 // ---------------------------------------------------------------------------
@@ -142,8 +142,11 @@ fn integrate_log_poly_recursive(
     // Find the highest nonzero degree.
     let n = find_top_degree(coeffs, pool);
     if n == 0 {
-        // Only a constant (in log) term.
-        return integrate_base(coeffs[0], var, pool, log);
+        // Only a constant (in log) term.  Split algebraic constants as above.
+        let c0 = simplify(coeffs[0], pool).value;
+        let (k_alg0, c0_rest) = split_const_factor(c0, var, pool);
+        let integral0 = integrate_base(c0_rest, var, pool, log)?;
+        return Ok(apply_const(k_alg0, integral0, pool));
     }
 
     // Simplify c_n before using it (avoids passing unsimplified expressions to integrate_base).
@@ -155,7 +158,12 @@ fn integrate_log_poly_recursive(
     }
 
     // Step 1: compute P_n = ∫ c_n(x) dx (in the base field).
-    let p_n_raw = integrate_base(c_n, var, pool, log)?;
+    // Split off any algebraic constant factor K first (Gap E: log tower).
+    // ∫ K·g(x) dx = K · ∫ g(x) dx when K is free of x; the base integrator
+    // handles only ℚ(x), so we must factor out symbolic/algebraic constants.
+    let (k_alg, c_n_rest) = split_const_factor(c_n, var, pool);
+    let p_rest_raw = integrate_base(c_n_rest, var, pool, log)?;
+    let p_n_raw = apply_const(k_alg, p_rest_raw, pool);
     // Simplify P_n to avoid propagating complex unsimplified forms.
     let p_n = simplify(p_n_raw, pool).value;
 
@@ -639,5 +647,60 @@ mod tests {
             result
         );
         verify_numeric(integrand, result.unwrap(), x, &pool);
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap E: algebraic constant coefficients in the log tower (const-factor split)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sqrt2_times_x_log_x_elementary() {
+        // ∫ √2·x·log(x) dx = √2·(x²/2·log(x) − x²/4)
+        // IBP: P_1 = ∫ √2·x dx = √2·x²/2; correction = −√2·x²/2·(1/x) = −√2·x/2
+        // Base: ∫ −√2·x/2 dx = −√2·x²/4.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let log_x = pool.func("log", vec![x]);
+        let integrand = pool.mul(vec![sqrt2, x, log_x]);
+
+        use super::super::tower::find_generators;
+        let gens = find_generators(integrand, x, &pool);
+        assert_eq!(gens.len(), 1);
+        let level = &gens[0];
+
+        let mut inner_log = DerivationLog::new();
+        let result = integrate_log_tower(integrand, level, x, &pool, &mut inner_log);
+        assert!(
+            result.is_ok(),
+            "∫ √2·x·log(x) dx must be elementary; got {result:?}"
+        );
+        verify_numeric(integrand, result.unwrap(), x, &pool);
+    }
+
+    #[test]
+    fn pi_times_log_x_squared_elementary() {
+        // ∫ π·log(x)² dx = π·(x·log(x)² − 2x·log(x) + 2x)
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let pi = pool.symbol("pi", crate::kernel::Domain::Real);
+        let log_x = pool.func("log", vec![x]);
+        let log2 = pool.pow(log_x, pool.integer(2_i32));
+        let integrand = pool.mul(vec![pi, log2]);
+
+        use super::super::tower::find_generators;
+        let gens = find_generators(integrand, x, &pool);
+        assert_eq!(gens.len(), 1);
+        let level = &gens[0];
+
+        let mut inner_log = DerivationLog::new();
+        let result = integrate_log_tower(integrand, level, x, &pool, &mut inner_log);
+        assert!(
+            result.is_ok(),
+            "∫ π·log(x)² dx must be elementary; got {result:?}"
+        );
+        // π is symbolic — just verify the result contains log.
+        let s = pool.display(result.unwrap()).to_string();
+        assert!(s.contains("log"), "result should contain log: {s}");
     }
 }
