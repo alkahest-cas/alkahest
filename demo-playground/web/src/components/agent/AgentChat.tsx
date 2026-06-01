@@ -11,15 +11,22 @@ import type { OutputItem } from '@/lib/execution';
 import { loadConfig } from '@/components/ui/Settings';
 import { createSession } from '@/lib/execution';
 import { connectionFromConfig } from '@/lib/server-connection';
+import { agentApiKeyHelp } from '@/lib/agent-config';
+import { isStaticHosting } from '@/lib/hosting';
+import { useSettings } from '@/components/ui/SettingsContext';
 
 export default function AgentChat() {
   const cfg = useRef(loadConfig());
+  const { openSettings } = useSettings();
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [serverStatus, setServerStatus] = useState<'unknown' | 'online' | 'offline'>('unknown');
+  const [apiKeyStatus, setApiKeyStatus] = useState<'unknown' | 'configured' | 'missing'>('unknown');
+  const [apiKeyMessage, setApiKeyMessage] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   // Bootstrap a kernel session for the agent to use
   useEffect(() => {
+    if (isStaticHosting) return;
     const conn = connectionFromConfig(cfg.current);
     if (!conn.httpUrl) {
       setServerStatus('offline');
@@ -35,6 +42,44 @@ export default function AgentChat() {
       }
     })();
   }, []);
+
+  useEffect(() => {
+    if (isStaticHosting) {
+      setApiKeyStatus('missing');
+      setApiKeyMessage(
+        'The agent needs a self-hosted playground. Run pnpm start locally and add an API key in web/.env.local or Settings (Ctrl+/).',
+      );
+      return;
+    }
+
+    (async () => {
+      try {
+        const res = await fetch('/api/agent/status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            provider: cfg.current.aiProvider,
+            customBaseUrl: cfg.current.aiCustomBaseUrl || undefined,
+            customApiKey: cfg.current.aiCustomApiKey || undefined,
+          }),
+        });
+        if (!res.ok) {
+          setApiKeyStatus('missing');
+          setApiKeyMessage(agentApiKeyHelp(cfg.current.aiProvider));
+          return;
+        }
+        const data = (await res.json()) as { configured: boolean; message?: string | null };
+        setApiKeyStatus(data.configured ? 'configured' : 'missing');
+        setApiKeyMessage(data.configured ? null : (data.message ?? agentApiKeyHelp(cfg.current.aiProvider)));
+      } catch {
+        setApiKeyStatus('missing');
+        setApiKeyMessage(agentApiKeyHelp(cfg.current.aiProvider));
+      }
+    })();
+  }, []);
+
+  const agentBlocked = isStaticHosting || apiKeyStatus === 'missing';
+  const canSend = !agentBlocked && Boolean(sessionId);
 
   const { messages, input, handleInputChange, handleSubmit, isLoading, stop } = useChat({
     api: '/api/agent',
@@ -218,6 +263,20 @@ export default function AgentChat() {
 
       {/* Input bar */}
       <div className="border-t border-ak-border bg-ak-bg px-4 py-3">
+        {agentBlocked && apiKeyMessage && (
+          <div className="mx-auto max-w-3xl mb-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+            <p>{apiKeyMessage}</p>
+            {!isStaticHosting && (
+              <button
+                type="button"
+                onClick={openSettings}
+                className="mt-2 text-xs font-medium underline hover:no-underline"
+              >
+                Open Settings (Ctrl+/)
+              </button>
+            )}
+          </div>
+        )}
         <form
           onSubmit={handleSubmit}
           className="mx-auto max-w-3xl flex gap-2"
@@ -225,8 +284,12 @@ export default function AgentChat() {
           <input
             value={input}
             onChange={handleInputChange}
-            placeholder="Ask the agent to compute something with Alkahest…"
-            disabled={isLoading || !sessionId}
+            placeholder={
+              agentBlocked
+                ? 'Add an API key to use the agent…'
+                : 'Ask the agent to compute something with Alkahest…'
+            }
+            disabled={isLoading || !canSend}
             className="flex-1 rounded-lg border border-ak-border bg-ak-code-bg px-4 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-ak-brand disabled:opacity-50"
           />
           {isLoading ? (
@@ -240,7 +303,7 @@ export default function AgentChat() {
           ) : (
             <button
               type="submit"
-              disabled={!input.trim() || !sessionId}
+              disabled={!input.trim() || !canSend}
               className="rounded-lg bg-ak-brand px-4 py-2.5 text-sm font-medium text-white hover:bg-ak-brand-dark disabled:opacity-40 transition-colors"
             >
               Send
@@ -256,6 +319,12 @@ export default function AgentChat() {
               : ''}
           </span>
           {' · '}Kernel: <span className="font-mono">{sessionId ? sessionId.slice(0, 8) + '…' : 'none'}</span>
+          {apiKeyStatus === 'missing' && !isStaticHosting && (
+            <>
+              {' · '}
+              <span className="text-amber-700">API key required</span>
+            </>
+          )}
         </p>
       </div>
     </div>

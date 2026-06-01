@@ -1,43 +1,22 @@
-import { streamText, tool } from 'ai';
-import { createAnthropic } from '@ai-sdk/anthropic';
-import { createOpenAI } from '@ai-sdk/openai';
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
-import { createMistral } from '@ai-sdk/mistral';
+import { streamText, tool, type LanguageModel } from 'ai';
 import { z } from 'zod';
 import { ALKAHEST_SYSTEM_PROMPT } from '@/lib/alkahest-skill';
 import type { OutputItem } from '@/lib/execution';
+import { getLanguageModel } from '@/lib/get-language-model';
 
 export const runtime = 'nodejs';
 export const maxDuration = 180;
-
-function getLanguageModel(provider: string, model: string) {
-  switch (provider) {
-    case 'openai': {
-      const client = createOpenAI({ apiKey: process.env.OPENAI_API_KEY });
-      return client(model);
-    }
-    case 'google': {
-      const client = createGoogleGenerativeAI({ apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY });
-      return client(model);
-    }
-    case 'mistral': {
-      const client = createMistral({ apiKey: process.env.MISTRAL_API_KEY });
-      return client(model as Parameters<ReturnType<typeof createMistral>>[0]);
-    }
-    case 'anthropic':
-    default: {
-      const client = createAnthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-      return client(model as Parameters<ReturnType<typeof createAnthropic>>[0]);
-    }
-  }
-}
 
 export async function POST(req: Request) {
   const body = await req.json() as {
     messages: unknown[];
     provider?: string;
     model?: string;
+    customBaseUrl?: string;
+    customApiKey?: string;
     serverHttpUrl?: string;
+    serverWsUrl?: string;
+    serverBackend?: string;
     serverToken?: string;
     sessionId?: string;
   };
@@ -51,10 +30,13 @@ export async function POST(req: Request) {
   const serverHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
   if (serverToken) serverHeaders.Authorization = `Bearer ${serverToken}`;
 
-  const languageModel = getLanguageModel(provider, model);
+  const languageModel = getLanguageModel(provider, model, {
+    customBaseUrl: body.customBaseUrl,
+    customApiKey: body.customApiKey,
+  });
 
   const result = streamText({
-    model: languageModel,
+    model: languageModel as LanguageModel,
     system: ALKAHEST_SYSTEM_PROMPT,
     messages: body.messages as Parameters<typeof streamText>[0]['messages'],
     maxSteps: 15,
