@@ -40,26 +40,22 @@
 //!   polynomial η (Bronstein §5.2–5.3) and rational η (Gap F, §5.4).
 //! - [`log_case`]: Integration in the hyperlogarithmic tower (t = log(h)).
 //!
-//! ## Current limitations
+//! ## Remaining limitations
 //!
-//! This is a complete decision procedure only within the subset above; the
-//! known gaps (tracked against the project's Risch gap analysis) are:
+//! The implementation is substantially complete for single-variable transcendental
+//! integration.  Known remaining gaps:
 //!
-//! - **Log tower: polynomial coefficients only.** The log-tower IBP
-//!   ([`log_case`]) handles polynomial and rational coefficients in the base
-//!   field via Hermite + Rothstein–Trager.  Algebraic-number coefficients in
-//!   the log tower are not yet supported (exp tower: ℚ(√d) is handled).
-//! - **Rational-function integration** ([`rational_integrate`]) is complete for
-//!   any denominator that factors over ℚ: Hermite reduction (repeated factors),
-//!   the Rothstein–Trager logarithmic part (rational residues → `log`),
-//!   irreducible quadratics (negative discriminant → `log` + `arctan`; positive
-//!   discriminant → `log` with `√Δ`), and irreducible factors of **degree ≥ 3**
-//!   via a [`crate::kernel::ExprData::RootSum`] over the algebraic residues
-//!   (Lazard–Rioboo–Trager; the log argument is computed in the number field
-//!   `ℚ[t]/Q(t)`).
-//! - **Single generator only.** Multiple interacting generators (e.g.
-//!   `exp(x)·log(x)`) and mixed algebraic+transcendental towers are unsupported;
-//!   independent sums are handled term-by-term.
+//! - **Algebraic × exp: degree ≥ 3 only.** [`exp_case::try_sqrt_poly_rde`]
+//!   handles quadratic algebraic coefficients (`√p(x)·exp(η)`).  Higher-degree
+//!   algebraic extensions (e.g. `∛(p(x))·exp(η)`) are not yet supported.
+//! - **Nested exp towers.** `exp(exp(x))` — where the exponent derivative is
+//!   itself transcendental — currently returns `NotImplemented`.  The special
+//!   case v = 1 (when the coefficient equals η') is not yet detected.
+//! - **Log tower: entangled algebraic coefficients.** The log-tower IBP delegates
+//!   base-field integrals to `engine::integrate`, which handles simple algebraic
+//!   coefficients (constant factors, √p(x) via the algebraic engine).  A fully
+//!   entangled form like `(x+√2)/(x−√2)·log(x)` would require the K-rational
+//!   RDE in the log IBP (not yet implemented).
 //!
 //! ## References
 //!
