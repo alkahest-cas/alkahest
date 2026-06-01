@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import dynamic from 'next/dynamic';
 import Nav from '@/components/ui/Nav';
 import HostedBanner from '@/components/ui/HostedBanner';
@@ -25,11 +26,13 @@ const AgentChat = dynamic(() => import('@/components/agent/AgentChat'), {
 });
 
 export default function AgentPage() {
+  const [serverStatus, setServerStatus] = useState<'unknown' | 'online' | 'offline'>('unknown');
+
   return (
     <>
-      <Nav />
+      <Nav serverStatus={serverStatus} statusVariant="agent" />
       <HostedBanner variant="agent" />
-      <AgentChat />
+      <AgentChat onServerStatusChange={setServerStatus} />
     </>
   );
 }

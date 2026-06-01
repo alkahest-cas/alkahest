@@ -38,6 +38,7 @@ interface CellProps {
   onCutCell: (id: string) => void;
   onOutputsChange?: (id: string, outputs: OutputItem[]) => void;
   onFocus?: (id: string) => void;
+  shouldFocus?: boolean;
   zenMode?: boolean;
   showInsertBar?: boolean;
   showLineNumbers?: boolean;
@@ -104,6 +105,7 @@ export default function Cell({
   onCutCell,
   onOutputsChange,
   onFocus,
+  shouldFocus,
   zenMode,
   showInsertBar = true,
   showLineNumbers = true,
@@ -143,6 +145,12 @@ export default function Cell({
   );
 
   const isMarkdown = cell.cellType === 'markdown';
+
+  useEffect(() => {
+    if (!shouldFocus || isMarkdown) return;
+    const t = setTimeout(() => editorRef.current?.view?.focus(), 0);
+    return () => clearTimeout(t);
+  }, [shouldFocus, isMarkdown, cell.id]);
   const gutter = isMarkdown
     ? '[M]'
     : cell.executionCount !== null
@@ -310,7 +318,7 @@ function CellInsertBar({
   onAddMarkdown: () => void;
 }) {
   return (
-    <div className="flex h-7 items-center justify-center gap-2 opacity-0 transition-opacity group-hover/cell:opacity-100">
+    <div className="flex h-5 items-center justify-center gap-2 opacity-0 transition-opacity group-hover/cell:opacity-100">
       <div className="group/addcode relative">
         <button
           type="button"

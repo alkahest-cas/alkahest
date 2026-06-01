@@ -16,14 +16,16 @@ source .venv/bin/activate
 pip install -q --upgrade pip
 pip install -q -r requirements.txt
 
-# Install alkahest if a wheel is available in the repo's dist/ folder
+# Install alkahest (+full: JIT + parallel) unless a newer local wheel exists in dist/
 WHEEL=$(ls ../dist/*.whl 2>/dev/null | sort -V | tail -n1)
 if [ -n "$WHEEL" ]; then
   echo "Installing alkahest wheel: $WHEEL"
   pip install -q "$WHEEL"
 else
-  echo "No local wheel found in dist/ — installing from PyPI"
-  pip install -q alkahest
+  PY_TAG=$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
+  FULL_WHEEL="https://github.com/alkahest-cas/alkahest/releases/download/v3.0.0/alkahest-3.0.0+full-${PY_TAG}-${PY_TAG}-manylinux_2_35_x86_64.whl"
+  echo "Installing alkahest +full wheel: $FULL_WHEEL"
+  pip install -q "$FULL_WHEEL"
 fi
 
 # Bundled wheels ship native libs under site-packages/alkahest.libs/

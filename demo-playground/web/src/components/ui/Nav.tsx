@@ -10,12 +10,26 @@ interface NavProps {
   isRecording?: boolean;
   onToggleRecording?: () => void;
   serverStatus?: 'unknown' | 'online' | 'offline';
+  /** Agent page uses kernel-oriented status copy. */
+  statusVariant?: 'notebook' | 'agent';
   zenMode?: boolean;
   isDirty?: boolean;
 }
 
-export default function Nav({ isRecording, onToggleRecording, serverStatus = 'unknown', zenMode, isDirty }: NavProps) {
-  const pathname = usePathname();
+function normalizePathname(pathname: string): string {
+  if (pathname.length > 1 && pathname.endsWith('/')) return pathname.slice(0, -1);
+  return pathname;
+}
+
+export default function Nav({
+  isRecording,
+  onToggleRecording,
+  serverStatus = 'unknown',
+  statusVariant = 'notebook',
+  zenMode,
+  isDirty,
+}: NavProps) {
+  const pathname = normalizePathname(usePathname());
   const { toggleSettings } = useSettings();
   const [zenVisible, setZenVisible] = useState(false);
   const zenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -38,6 +52,19 @@ export default function Nav({ isRecording, onToggleRecording, serverStatus = 'un
     serverStatus === 'online' ? 'bg-green-500' :
     serverStatus === 'offline' ? 'bg-red-400' :
     'bg-ak-border';
+
+  const statusText =
+    statusVariant === 'agent'
+      ? serverStatus === 'online'
+        ? 'Python kernel ready'
+        : serverStatus === 'offline'
+          ? 'kernel offline — start the server'
+          : 'connecting…'
+      : serverStatus === 'online'
+        ? 'server ready'
+        : serverStatus === 'offline'
+          ? 'server offline'
+          : 'no server';
 
   // In zen mode, omit the nav entirely until the user moves the mouse (avoids a blank
   // strip at the top in headless recordings before React applies opacity-0).
@@ -78,13 +105,7 @@ export default function Nav({ isRecording, onToggleRecording, serverStatus = 'un
           {/* Server status */}
           <div className="flex items-center gap-1.5 text-xs text-ak-muted">
             <span className={clsx('h-2 w-2 rounded-full', statusColor)} title={`Server: ${serverStatus}`} />
-            <span>
-              {serverStatus === 'online'
-                ? 'server ready'
-                : serverStatus === 'offline'
-                  ? 'server offline'
-                  : 'no server'}
-            </span>
+            <span>{statusText}</span>
           </div>
 
           {/* Record button */}

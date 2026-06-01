@@ -28,7 +28,7 @@ import { cellsFromDemoParam, readAutoRunFromUrl, readHideLineNumbersFromUrl } fr
 // ── State ──────────────────────────────────────────────────────────────────
 
 type Action =
-  | { type: 'ADD_CELL'; afterId?: string; cellType?: CellData['cellType'] }
+  | { type: 'ADD_CELL'; afterId?: string; cellType?: CellData['cellType']; cellId?: string }
   | { type: 'REMOVE_CELL'; id: string }
   | { type: 'RESTORE_CELL'; cell: CellData; index: number }
   | { type: 'SET_CODE'; id: string; code: string }
@@ -45,8 +45,8 @@ type Action =
   | { type: 'TOGGLE_CELL_TYPE'; id: string }
   | { type: 'SET_CELLS'; cells: CellData[] };
 
-function newCell(code = '', cellType: CellData['cellType'] = 'code'): CellData {
-  return { id: uuid(), code, outputs: [], status: 'idle', executionCount: null, backend: null, cellType };
+function newCell(code = '', cellType: CellData['cellType'] = 'code', id?: string): CellData {
+  return { id: id ?? uuid(), code, outputs: [], status: 'idle', executionCount: null, backend: null, cellType };
 }
 
 function reducer(state: CellData[], action: Action): CellData[] {
@@ -54,7 +54,7 @@ function reducer(state: CellData[], action: Action): CellData[] {
     case 'ADD_CELL': {
       const idx = action.afterId ? state.findIndex((c) => c.id === action.afterId) : state.length - 1;
       const next = [...state];
-      next.splice(idx + 1, 0, newCell('', action.cellType ?? 'code'));
+      next.splice(idx + 1, 0, newCell('', action.cellType ?? 'code', action.cellId));
       return next;
     }
     case 'REMOVE_CELL':
@@ -231,6 +231,7 @@ export default function Notebook({
   const [execCount, setExecCount] = useState(0);
   const [autoRunPending, setAutoRunPending] = useState(false);
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
+  const [focusTargetId, setFocusTargetId] = useState<string | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [canUndoDelete, setCanUndoDelete] = useState(false);
   const cfg = useRef(loadConfig());
@@ -248,6 +249,12 @@ export default function Notebook({
 
   useEffect(() => { cellsRef.current = cells; }, [cells]);
   useEffect(() => { onDirtyChangeRef.current = onDirtyChange; }, [onDirtyChange]);
+
+  useEffect(() => {
+    if (!focusTargetId) return;
+    const t = setTimeout(() => setFocusTargetId(null), 50);
+    return () => clearTimeout(t);
+  }, [focusTargetId]);
 
   useEffect(() => {
     registerExport(() => exportAsIpynb(cellsRef.current));
@@ -290,7 +297,10 @@ export default function Notebook({
   const addCodeCellBelow = useCallback(() => {
     const list = cellsRef.current;
     const afterId = focusedCellId ?? list[list.length - 1]?.id;
-    userDispatch({ type: 'ADD_CELL', afterId, cellType: 'code' });
+    const newId = uuid();
+    userDispatch({ type: 'ADD_CELL', afterId, cellType: 'code', cellId: newId });
+    setFocusedCellId(newId);
+    setFocusTargetId(newId);
   }, [focusedCellId]);
 
   const undoDeleteCell = useCallback(() => {
@@ -304,9 +314,15 @@ export default function Notebook({
     const list = cellsRef.current;
     const index = list.findIndex((c) => c.id === id);
     if (index < 0) return;
+    const focusAfterDelete =
+      index > 0 ? list[index - 1].id : list.length > 1 ? list[index + 1].id : null;
     deletedStack.current.push({ cell: { ...list[index] }, index });
     setCanUndoDelete(true);
     userDispatch({ type: 'REMOVE_CELL', id });
+    if (focusAfterDelete) {
+      setFocusedCellId(focusAfterDelete);
+      setFocusTargetId(focusAfterDelete);
+    }
   }, []);
 
   const handleCopyCell = useCallback(async (id: string) => {
@@ -676,7 +692,7 @@ export default function Notebook({
   }
 
   return (
-    <div className={compact ? 'px-2 py-3 space-y-2' : 'mx-auto max-w-4xl px-4 py-6 space-y-3'}>
+    <div className={compact ? 'px-2 py-3 space-y-1.5' : 'mx-auto max-w-4xl px-4 py-6 space-y-2'}>
       {/* Toolbar — hidden in zen mode */}
       {!zenMode && <div className="flex items-center gap-2 flex-wrap">
         <button
@@ -724,6 +740,7 @@ export default function Notebook({
           onCutCell={(id) => void handleCutCell(id)}
           onOutputsChange={(id, outputs) => dispatch({ type: 'SET_OUTPUTS', id, outputs })}
           onFocus={setFocusedCellId}
+          shouldFocus={focusTargetId === cell.id}
           zenMode={zenMode}
           showLineNumbers={!hideLineNumbers}
         />

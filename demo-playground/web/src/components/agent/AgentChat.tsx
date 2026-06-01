@@ -15,7 +15,11 @@ import { agentApiKeyHelp } from '@/lib/agent-config';
 import { isStaticHosting } from '@/lib/hosting';
 import { useSettings } from '@/components/ui/SettingsContext';
 
-export default function AgentChat() {
+interface AgentChatProps {
+  onServerStatusChange?: (status: 'unknown' | 'online' | 'offline') => void;
+}
+
+export default function AgentChat({ onServerStatusChange }: AgentChatProps) {
   const cfg = useRef(loadConfig());
   const { openSettings } = useSettings();
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -30,6 +34,7 @@ export default function AgentChat() {
     const conn = connectionFromConfig(cfg.current);
     if (!conn.httpUrl) {
       setServerStatus('offline');
+      onServerStatusChange?.('offline');
       return;
     }
     (async () => {
@@ -37,11 +42,13 @@ export default function AgentChat() {
         const id = await createSession(conn);
         setSessionId(id);
         setServerStatus('online');
+        onServerStatusChange?.('online');
       } catch {
         setServerStatus('offline');
+        onServerStatusChange?.('offline');
       }
     })();
-  }, []);
+  }, [onServerStatusChange]);
 
   useEffect(() => {
     if (isStaticHosting) {
@@ -123,16 +130,6 @@ export default function AgentChat() {
                   Ask me to compute symbolic math, compare libraries, or demonstrate Alkahest features.
                   I have access to a live Python kernel.
                 </p>
-                <div className="flex items-center gap-1.5 justify-center text-xs">
-                  <span
-                    className={`h-2 w-2 rounded-full ${
-                      serverStatus === 'online' ? 'bg-green-500' : serverStatus === 'offline' ? 'bg-red-400' : 'bg-ak-border'
-                    }`}
-                  />
-                  <span className="text-ak-muted">
-                    {serverStatus === 'online' ? 'Python kernel ready' : serverStatus === 'offline' ? 'kernel offline — start the server' : 'connecting…'}
-                  </span>
-                </div>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">

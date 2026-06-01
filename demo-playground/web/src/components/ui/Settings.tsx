@@ -198,6 +198,15 @@ export default function Settings({
             <p className="mb-3 text-xs text-ak-muted">
               Alkahest server or remote Jupyter (URL + token from jupyter server list). Token stays in this browser.
             </p>
+            {isStaticHosting &&
+              cfg.serverBackend === 'alkahest' &&
+              /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?\/?$/i.test(cfg.serverHttpUrl.trim()) && (
+                <p className="mb-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
+                  This hosted playground is HTTPS and cannot call <code className="rounded bg-white/80 px-1">http://localhost</code>{' '}
+                  (mixed content), even with an SSH tunnel. Use an <strong>https://</strong> backend URL, or run the playground
+                  locally at <code className="rounded bg-white/80 px-1">http://localhost:3000</code> with the tunnel.
+                </p>
+              )}
             <label className="block text-sm mb-1">Backend type</label>
             <select
               value={cfg.serverBackend}
