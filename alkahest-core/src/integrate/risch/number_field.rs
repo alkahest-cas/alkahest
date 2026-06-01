@@ -15,7 +15,7 @@
 //! algebraic-number *coefficients* (as opposed to constant factors) be handled.
 //!
 //! The three free functions [`poly_mod`], [`ext_gcd`], and [`mod_inverse`] are
-//! generic ℚ[x]-modulo-a-polynomial operations (the modulus need not be
+//! generic `ℚ[x]`-modulo-a-polynomial operations (the modulus need not be
 //! irreducible); they underpin both [`NumberField`] and the Hermite-reduction
 //! step in [`super::rational_integrate`].
 
@@ -28,12 +28,12 @@ use super::rational_rde::{poly_divrem, poly_sub};
 // Base field: ℚ[x] modular arithmetic (modulus need not be irreducible)
 // ---------------------------------------------------------------------------
 
-/// Remainder of `a mod m` in ℚ[x].
+/// Remainder of `a mod m` in `ℚ[x]`.
 pub fn poly_mod(a: &QPoly, m: &QPoly) -> QPoly {
     poly_divrem(a, m).1
 }
 
-/// Extended GCD over ℚ[x]: returns `(g, s, t)` with `s·a + t·b = g`, `g` monic.
+/// Extended GCD over `ℚ[x]`: returns `(g, s, t)` with `s·a + t·b = g`, `g` monic.
 pub fn ext_gcd(a: &QPoly, b: &QPoly) -> (QPoly, QPoly, QPoly) {
     let (mut old_r, mut r) = (trim(a.clone()), trim(b.clone()));
     let (mut old_s, mut s) = (poly_one(), poly_zero());
