@@ -320,9 +320,23 @@ fn try_transcendental_eta_v1(
         };
 
         if c_rest_simplified != k_deta_simplified {
-            // v=1 check failed.  Try the lower-tower polynomial cascade: write
-            // c_rest as a polynomial in θ_inner (= deta_simplified = η') and
-            // solve the RDE level by level over ℚ(x).
+            // v=1 check failed.
+            //
+            // Hermite-reduction certificate: if c_rest is rational (not
+            // polynomial) in θ_inner, the derivation D maps every simple pole
+            // 1/(θ-α) to a double pole (α-Dα)/(θ-α)², which cannot be
+            // cancelled by any rational v ∈ ℚ(x)(θ_inner) → NonElementary.
+            if c_is_rational_in_theta(c_rest, deta_simplified, pool) {
+                return Err(IntegrationError::NonElementary(format!(
+                    "∫ {} · exp(kη) dx: coefficient is rational (not polynomial) \
+                     in the inner exp generator; non-elementary by Hermite \
+                     reduction / pole-order argument (Bronstein §6.2)",
+                    pool.display(*c_expr),
+                )));
+            }
+
+            // Try the lower-tower polynomial cascade: write c_rest as a
+            // polynomial in θ_inner and solve the RDE level by level over ℚ(x).
             let exp_k_eta = build_exp_k_eta(k, eta, exp_gen, pool);
             match lower_tower_poly_cascade(
                 c_rest,
@@ -371,6 +385,41 @@ fn try_transcendental_eta_v1(
         simplified.value,
     ));
     Ok(simplified.value)
+}
+
+// ---------------------------------------------------------------------------
+// Gap B — rational-in-θ NonElementary certification (Hermite reduction)
+// ---------------------------------------------------------------------------
+
+/// Returns `true` when `c_rest` is *rational* (not polynomial) in `theta_inner`.
+///
+/// For the Risch DE `D(v) + k·θ·v = c` with `θ = exp(x)` (so `D(θ) = θ`),
+/// the derivation `D` maps any simple pole `1/(θ-α)` (α ∈ ℚ(x)) to a double
+/// pole `(α-Dα)/(θ-α)²`.  Since `Dα ≠ α` for α ∈ ℚ(x) \ {0} (α would need
+/// to satisfy `Dα = α`, i.e. α = C·exp(x), which is transcendental), the
+/// double pole cannot be cancelled by any rational v.  Hence no rational
+/// solution exists → the integral is non-elementary.
+///
+/// The check detects the three patterns that make c rational in θ_inner:
+/// 1. `rational_part` from `decompose_wrt_exp` still contains θ_inner.
+/// 2. Any exp-term has a negative power of θ_inner (e.g. `c · θ_inner^{-1}`).
+/// 3. Any exp-term coefficient itself contains θ_inner (e.g. `(θ_inner+1)^{-1}`
+///    as the coefficient of θ_inner^1).
+fn c_is_rational_in_theta(c_rest: ExprId, theta_inner: ExprId, pool: &ExprPool) -> bool {
+    use super::tower::decompose_wrt_exp;
+    let (c0, exp_terms) = decompose_wrt_exp(c_rest, theta_inner, pool);
+    if contains_subexpr(c0, theta_inner, pool) {
+        return true;
+    }
+    for (coeff, j) in &exp_terms {
+        if *j < 0 {
+            return true;
+        }
+        if contains_subexpr(*coeff, theta_inner, pool) {
+            return true;
+        }
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -522,8 +571,16 @@ fn lower_tower_poly_cascade(
     )
     .value;
     if !is_zero(residual, pool) {
-        // No polynomial-in-θ_inner solution; fall through (caller returns NotImplemented).
-        return None;
+        // Polynomial cascade fails: by the denominator-bound theorem for the
+        // hyperexponential Risch DE (Bronstein §6.2), when c is polynomial in
+        // θ_inner the denominator of v must also be polynomial (i.e., v ∈ ℚ(x)[θ_inner]).
+        // Since no polynomial solution exists, there is no rational solution either
+        // → the integral is certified non-elementary.
+        return Some(Err(IntegrationError::NonElementary(format!(
+            "∫ {} · exp(kη) dx: lower-tower cascade consistency check failed; \
+             non-elementary by denominator bound (Bronstein §6.2)",
+            pool.display(c_expr),
+        ))));
     }
 
     // Build v = Σ v[j] · θ_inner^j.

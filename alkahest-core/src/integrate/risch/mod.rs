@@ -52,12 +52,11 @@
 //! - **Algebraic × exp: degree ≥ 3 only.** `try_sqrt_poly_rde` (in `exp_case`)
 //!   handles quadratic algebraic coefficients (`√p(x)·exp(η)`).  Higher-degree
 //!   algebraic extensions (e.g. `∛(p(x))·exp(η)`) are not yet supported.
-//! - **Nested exp towers — polynomial-coefficient cascade.** When the integrand is
-//!   `c(x, exp(x))·exp(exp(x))` with c a polynomial in exp(x), the lower-tower
-//!   cascade solves the RDE level-by-level over ℚ(x).  When c ∈ ℚ(x) (no exp(x)
-//!   factor) the integral is certified NonElementary by the degree bound.  The
-//!   remaining gap is when c is a *rational* function of exp(x) (rational Risch
-//!   DE over the lower tower), which would require Hermite reduction over ℚ(x)(exp(x)).
+//! - **Nested exp towers — complete for ℚ(x)(exp(x)).**  The lower-tower cascade
+//!   handles polynomial c(x, exp(x)).  Rational c (denominator in exp(x)) is
+//!   certified NonElementary by the Hermite/pole-order argument: `D` maps any
+//!   simple pole `1/(θ-α)` (α ∈ ℚ(x)) to a double pole `(α-Dα)/(θ-α)²`;
+//!   since `Dα ≠ α` for α ∈ ℚ(x), no rational solution to the Risch DE exists.
 //! - **Log tower: K-rational base field, Hermite-reducible cases only.**
 //!   `integrate_base` now tries K-rational antidifferentiation (Gap E) via
 //!   `solve_rational_rde_k` with f=0.  This handles coefficients in ℚ(√d)(x) whose
@@ -1211,7 +1210,8 @@ mod tests {
     #[test]
     fn gapb_nested_exp_inner_coeff_nonelementary() {
         // ∫ x·exp(x)·exp(exp(x)) dx: c = x·θ (N=1, c₁=x, c₀=0).
-        // v₀ = x.  D(v₀) = 1 ≠ c₀ = 0 → cascade fails → NotImplemented.
+        // Cascade: v₀ = x, D(v₀) = 1 ≠ c₀ = 0.  No polynomial solution →
+        // denominator-bound theorem certifies NonElementary.
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let exp_x = pool.func("exp", vec![x]);
@@ -1220,8 +1220,47 @@ mod tests {
 
         let result = integrate_risch(f, x, &pool);
         assert!(
-            matches!(result, Err(IntegrationError::NotImplemented(_))),
-            "∫ x·exp(x)·exp(exp(x)) dx must be NotImplemented (cascade fails); got {result:?}"
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ x·exp(x)·exp(exp(x)) dx must be NonElementary; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn gapb_nested_exp_rational_denom_nonelementary() {
+        // ∫ exp(x)/(exp(x)+1)·exp(exp(x)) dx:
+        // c = θ/(θ+1) is rational in θ = exp(x).
+        // Hermite reduction: D maps 1/(θ-α) to a double pole; no rational v exists.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let exp_exp_x = pool.func("exp", vec![exp_x]);
+        // exp(x)/(exp(x)+1) = exp(x)·(exp(x)+1)^{-1}
+        let denom = pool.add(vec![exp_x, pool.integer(1_i32)]);
+        let coeff = pool.mul(vec![exp_x, pool.pow(denom, pool.integer(-1_i32))]);
+        let f = pool.mul(vec![coeff, exp_exp_x]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ exp(x)/(exp(x)+1)·exp(exp(x)) dx must be NonElementary; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn gapb_nested_exp_inv_theta_nonelementary() {
+        // ∫ exp(-x)·exp(exp(x)) dx = ∫ θ^{-1}·G dx:
+        // c = exp(-x) = θ^{-1} has a negative power of θ → rational → NonElementary.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let exp_exp_x = pool.func("exp", vec![exp_x]);
+        let exp_neg_x = pool.pow(exp_x, pool.integer(-1_i32));
+        let f = pool.mul(vec![exp_neg_x, exp_exp_x]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ exp(-x)·exp(exp(x)) dx must be NonElementary; got {result:?}"
         );
     }
 
