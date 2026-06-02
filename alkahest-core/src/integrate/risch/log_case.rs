@@ -169,6 +169,98 @@ fn integrate_log_poly_recursive(
     // ∫ K·g(x) dx = K · ∫ g(x) dx when K is free of x; the base integrator
     // handles only ℚ(x), so we must factor out symbolic/algebraic constants.
     let (k_alg, c_n_rest) = split_const_factor(c_n, var, pool);
+
+    // Log-derivative shortcut: if c_n_rest = α·(h'/h) for some α free of var,
+    // ∫ α·(h'/h)·θ^n dx = α·θ^{n+1}/(n+1)  (d/dx θ^{n+1} = (n+1)·θ^n·h'/h).
+    // This fires when P_n = α·θ would contain the excluded generator (log_gen),
+    // stalling the normal IBP.  Examples: 1/x·log(x), 1/(x+√2)·log(x+√2),
+    // 2/(x+1)·log(x+1)².
+    if let Some(alpha) = detect_log_deriv_coeff(c_n_rest, h, var, pool) {
+        let np1_inv = pool.pow(pool.integer((n + 1) as i32), pool.integer(-1_i32));
+        let coeff = simplify(pool.mul(vec![k_alg, alpha, np1_inv]), pool).value;
+        let log_np1 = log_power(log_gen, (n + 1) as i64, pool);
+        let term = if is_one(coeff, pool) {
+            log_np1
+        } else {
+            pool.mul(vec![coeff, log_np1])
+        };
+        // No IBP correction: the formula absorbs it. Recurse on lower degrees.
+        let rest = integrate_log_poly_recursive(&coeffs[..n], log_gen, h, var, pool, log)?;
+        let result = if is_zero(rest, pool) {
+            term
+        } else {
+            pool.add(vec![term, rest])
+        };
+        let s = simplify(result, pool);
+        *log = log.clone().merge(s.log);
+        log.push(RewriteStep::simple("risch_log_deriv_poly", c_n, s.value));
+        return Ok(s.value);
+    }
+
+    // Mixed-sum fallback: when c_n_rest is an Add, some terms may need the
+    // log-derivative formula and others the normal IBP.  Split the Add into
+    // (log_deriv_part, hermite_part), handle each, and combine.  The IBP
+    // correction only comes from the Hermite part; the log-deriv part
+    // contributes α_sum·θ^{n+1}/(n+1) directly.
+    if let Some((ld_alpha, hermite_part)) = split_log_deriv_from_add(c_n_rest, h, var, pool) {
+        // Log-deriv contribution: k_alg · ld_alpha · θ^{n+1} / (n+1)
+        let np1_inv = pool.pow(pool.integer((n + 1) as i32), pool.integer(-1_i32));
+        let ld_coeff = simplify(pool.mul(vec![k_alg, ld_alpha, np1_inv]), pool).value;
+        let log_np1 = log_power(log_gen, (n + 1) as i64, pool);
+        let ld_term = if is_one(ld_coeff, pool) {
+            log_np1
+        } else {
+            pool.mul(vec![ld_coeff, log_np1])
+        };
+
+        // IBP contribution from hermite_part (may be zero).
+        let (ibp_top, mut new_coeffs) = if is_zero(hermite_part, pool) {
+            (pool.integer(0_i32), coeffs[..n].to_vec())
+        } else {
+            let p_h = integrate_base(hermite_part, log_gen, var, pool, log)?;
+            let p_h_full = apply_const(k_alg, p_h, pool);
+            let p_h_s = simplify(p_h_full, pool).value;
+            let log_n = log_power(log_gen, n as i64, pool);
+            let top = if is_one(p_h_s, pool) {
+                log_n
+            } else {
+                pool.mul(vec![p_h_s, log_n])
+            };
+            let h_prime = differentiate_sym(h, var, pool)?;
+            let hph_s = simplify(h_prime, pool).value;
+            let hpoh = simplify(
+                pool.mul(vec![hph_s, pool.pow(h, pool.integer(-1_i32))]),
+                pool,
+            )
+            .value;
+            let corr = simplify(pool.mul(vec![pool.integer(-(n as i64)), p_h_s, hpoh]), pool).value;
+            let mut nc = coeffs[..n].to_vec();
+            if nc.is_empty() {
+                nc.push(zero);
+            }
+            let old = nc[n - 1];
+            nc[n - 1] = simplify(pool.add(vec![old, corr]), pool).value;
+            (top, nc)
+        };
+
+        if new_coeffs.is_empty() {
+            new_coeffs.push(zero);
+        }
+        let rest = integrate_log_poly_recursive(&new_coeffs, log_gen, h, var, pool, log)?;
+        let combined = [ld_term, ibp_top, rest]
+            .into_iter()
+            .filter(|&e| !is_zero(e, pool))
+            .collect::<Vec<_>>();
+        let result = match combined.len() {
+            0 => zero,
+            1 => combined[0],
+            _ => pool.add(combined),
+        };
+        let s = simplify(result, pool);
+        *log = log.clone().merge(s.log);
+        return Ok(s.value);
+    }
+
     let p_rest_raw = integrate_base(c_n_rest, log_gen, var, pool, log)?;
     let p_n_raw = apply_const(k_alg, p_rest_raw, pool);
     // Simplify P_n to avoid propagating complex unsimplified forms.
@@ -404,6 +496,80 @@ fn try_integrate_k_rational(expr: ExprId, var: ExprId, pool: &ExprPool) -> Optio
     let (v_num, v_den) = solve_rational_rde_k(&field, &k_zero, &c_num, &c_den)?;
 
     Some(build_krational_ext(&v_num, &v_den, var, &ext, pool))
+}
+
+// ---------------------------------------------------------------------------
+// Log-derivative coefficient detection
+// ---------------------------------------------------------------------------
+
+/// When `expr` is an Add that contains at least one log-derivative term and at
+/// least one non-log-derivative term, split it and return `(alpha_sum, hermite_sum)`.
+///
+/// Returns `None` when:
+/// - `expr` is not an Add, or
+/// - ALL terms are log-derivative (handled by `detect_log_deriv_coeff` directly), or
+/// - NO terms are log-derivative (the normal `integrate_base` path handles it).
+fn split_log_deriv_from_add(
+    expr: ExprId,
+    h: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<(ExprId, ExprId)> {
+    let args = match pool.get(expr) {
+        ExprData::Add(a) => a,
+        _ => return None,
+    };
+    let mut ld_alphas: Vec<ExprId> = Vec::new();
+    let mut hermite_terms: Vec<ExprId> = Vec::new();
+    for &term in &args {
+        if let Some(alpha) = detect_log_deriv_coeff(term, h, var, pool) {
+            ld_alphas.push(alpha);
+        } else {
+            hermite_terms.push(term);
+        }
+    }
+    // Only fire when BOTH buckets are non-empty — pure cases are handled elsewhere.
+    if ld_alphas.is_empty() || hermite_terms.is_empty() {
+        return None;
+    }
+    let zero = pool.integer(0_i32);
+    let ld_sum = match ld_alphas.len() {
+        1 => ld_alphas[0],
+        _ => pool.add(ld_alphas),
+    };
+    let hermite_sum = match hermite_terms.len() {
+        0 => zero,
+        1 => hermite_terms[0],
+        _ => pool.add(hermite_terms),
+    };
+    Some((ld_sum, hermite_sum))
+}
+
+/// Returns `Some(α)` if `c_rest = α · h'/h` with `α` free of `var`, else `None`.
+///
+/// The check builds `α = c_rest · h / h'` symbolically, simplifies, and tests
+/// whether the result is free of `var`.  This detects the log-derivative pattern
+/// that stalls the normal IBP (because P_n = α·log(h) contains the excluded
+/// generator).
+fn detect_log_deriv_coeff(
+    c_rest: ExprId,
+    h: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    let h_prime = crate::diff::diff(h, var, pool).ok()?.value;
+    let h_prime_s = simplify(h_prime, pool).value;
+    if is_zero(h_prime_s, pool) {
+        return None;
+    }
+    // α = c_rest · h / h'
+    let ratio_raw = pool.mul(vec![c_rest, h, pool.pow(h_prime_s, pool.integer(-1_i32))]);
+    let ratio = simplify(ratio_raw, pool).value;
+    if is_free_of_var(ratio, var, pool) {
+        Some(ratio)
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -983,5 +1149,111 @@ mod tests {
             "∫ √2/(x+√2)²·log(x+√2) dx must be elementary; got {result:?}"
         );
         verify_numeric_e(integrand, result.unwrap(), x, &pool);
+    }
+
+    // -----------------------------------------------------------------------
+    // Log-derivative shortcut: c_n = α·(h'/h), α free of var
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn log_deriv_inv_x_log_x() {
+        // ∫ (1/x)·log(x) dx = ½·log(x)²
+        // c_1 = 1/x = h'/h (h=x), α=1 → shortcut: log(x)^2/2.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let log_x = pool.func("log", vec![x]);
+        let integrand = pool.mul(vec![pool.pow(x, pool.integer(-1_i32)), log_x]);
+
+        let result = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ (1/x)·log(x) dx must be elementary; got {result:?}"
+        );
+        verify_numeric_e(integrand, result.unwrap().value, x, &pool);
+    }
+
+    #[test]
+    fn log_deriv_inv_x_plus_sqrt2_log() {
+        // ∫ 1/(x+√2)·log(x+√2) dx = ½·log(x+√2)²
+        // c_1 = 1/(x+√2) = h'/h (h=x+√2), α=1.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let h = pool.add(vec![x, sqrt2]);
+        let log_h = pool.func("log", vec![h]);
+        let integrand = pool.mul(vec![pool.pow(h, pool.integer(-1_i32)), log_h]);
+
+        let result = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ 1/(x+√2)·log(x+√2) dx must be elementary; got {result:?}"
+        );
+        verify_numeric_e(integrand, result.unwrap().value, x, &pool);
+    }
+
+    #[test]
+    fn log_deriv_two_over_xp1_log_sq() {
+        // ∫ 2/(x+1)·log(x+1)² dx = (2/3)·log(x+1)³
+        // c_2 = 2/(x+1) = 2·h'/h (h=x+1), α=2, n=2.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let h = pool.add(vec![x, pool.integer(1_i32)]);
+        let log_h = pool.func("log", vec![h]);
+        let integrand = pool.mul(vec![
+            pool.integer(2_i32),
+            pool.pow(h, pool.integer(-1_i32)),
+            pool.pow(log_h, pool.integer(2_i32)),
+        ]);
+
+        let result = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ 2/(x+1)·log(x+1)² dx must be elementary; got {result:?}"
+        );
+        verify_numeric_e(integrand, result.unwrap().value, x, &pool);
+    }
+
+    #[test]
+    fn log_deriv_sqrt2_over_xps2_log() {
+        // ∫ √2/(x+√2)·log(x+√2) dx = (√2/2)·log(x+√2)²
+        // const-factor split gives k_alg=√2, c_rest=1/(x+√2), α=1.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let h = pool.add(vec![x, sqrt2]);
+        let log_h = pool.func("log", vec![h]);
+        let integrand = pool.mul(vec![sqrt2, pool.pow(h, pool.integer(-1_i32)), log_h]);
+
+        let result = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ √2/(x+√2)·log(x+√2) dx must be elementary; got {result:?}"
+        );
+        verify_numeric_e(integrand, result.unwrap().value, x, &pool);
+    }
+
+    #[test]
+    fn log_deriv_mixed_with_hermite() {
+        // ∫ [1/(x+√2)² + 1/(x+√2)]·log(x+√2) dx
+        //   = (−log(x+√2)/(x+√2) − 1/(x+√2)) + ½·log(x+√2)²
+        // Decomposed by sum rule into two separate integrals.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let h = pool.add(vec![x, sqrt2]);
+        let log_h = pool.func("log", vec![h]);
+        // [1/(x+√2)² + 1/(x+√2)]·log(x+√2)
+        let coeff = pool.add(vec![
+            pool.pow(h, pool.integer(-2_i32)),
+            pool.pow(h, pool.integer(-1_i32)),
+        ]);
+        let integrand = pool.mul(vec![coeff, log_h]);
+
+        let result = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ [1/(x+√2)²+1/(x+√2)]·log(x+√2) dx must be elementary; got {result:?}"
+        );
+        verify_numeric_e(integrand, result.unwrap().value, x, &pool);
     }
 }
