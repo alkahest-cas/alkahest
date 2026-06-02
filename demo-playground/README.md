@@ -117,7 +117,7 @@ from playground_helpers import display_lean_cert
 
 pool = ak.ExprPool()
 x = pool.symbol("x")
-result = ak.simplify(pool, x + pool.integer(0))
+result = ak.simplify(x + pool.integer(0))
 print(f"$${latex(result.value)}$$")
 display_lean_cert(result, operation="simplify")  # renders a certificate panel
 ```

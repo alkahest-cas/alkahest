@@ -130,7 +130,7 @@ const INITIAL_CELLS: CellData[] = [
     'x = pool.symbol("x")\n' +
     'zero = pool.integer(0)\n\n' +
     'expr = x + zero\n' +
-    'result = ak.simplify(pool, expr)\n' +
+    'result = ak.simplify(expr)\n' +
     'print("simplify(x + 0) = $$" + latex(result.value) + "$$")\n' +
     'print(result.derivation)\n' +
     'display_lean_cert(result, operation="simplify")\n',
