@@ -320,14 +320,35 @@ fn try_transcendental_eta_v1(
         };
 
         if c_rest_simplified != k_deta_simplified {
-            return Err(IntegrationError::NotImplemented(format!(
-                "exponent derivative η'(x) = {} is transcendental; v=1 check \
-                 failed (coefficient {} ≠ {}·η'); nested exp tower not supported \
-                 beyond the v=1 case",
-                pool.display(deta_expr),
-                pool.display(*c_expr),
+            // v=1 check failed.  Try the lower-tower polynomial cascade: write
+            // c_rest as a polynomial in θ_inner (= deta_simplified = η') and
+            // solve the RDE level by level over ℚ(x).
+            let exp_k_eta = build_exp_k_eta(k, eta, exp_gen, pool);
+            match lower_tower_poly_cascade(
+                c_rest,
                 k,
-            )));
+                deta_simplified,
+                exp_k_eta,
+                k_const,
+                *c_expr,
+                var,
+                pool,
+                log,
+            ) {
+                Some(Ok(r)) => {
+                    result_terms.push(r);
+                    continue;
+                }
+                Some(Err(e)) => return Err(e),
+                None => {
+                    return Err(IntegrationError::NotImplemented(format!(
+                        "exponent derivative η'(x) = {} is transcendental and \
+                         the lower-tower polynomial cascade did not apply for {}",
+                        pool.display(deta_expr),
+                        pool.display(*c_expr),
+                    )))
+                }
+            }
         }
 
         // v = 1 is a solution: ∫ k·η'·exp(kη) dx = exp(kη).
@@ -350,6 +371,198 @@ fn try_transcendental_eta_v1(
         simplified.value,
     ));
     Ok(simplified.value)
+}
+
+// ---------------------------------------------------------------------------
+// Gap B (nested exp) — lower-tower polynomial cascade
+// ---------------------------------------------------------------------------
+
+/// Solve `D(v) + k·θ_inner·v = c` for `v ∈ ℚ(x)[θ_inner]` by a top-down
+/// cascade when `c` is a polynomial in `θ_inner = deta_simplified` with
+/// ℚ(x) coefficients.
+///
+/// **Algorithm** (Bronstein §5, specialised to θ_inner self-derivative):
+///
+/// Since `D(θ_inner^j) = j·θ_inner^j` (valid when θ_inner = exp(g) with g' = 1,
+/// i.e. θ_inner = exp(x)), writing `v = Σ vⱼ·θ_inner^j` and `c = Σ cⱼ·θ_inner^j`
+/// gives:
+///
+/// ```text
+///   θ_inner^N  :  k·v_{N-1} = c_N              → v_{N-1} = c_N/k
+///   θ_inner^n  :  (vₙ′+n·vₙ) + k·vₙ₋₁ = cₙ   → vₙ₋₁ = (cₙ−vₙ′−n·vₙ)/k
+///   θ_inner^0  :  v₀′ = c₀                      (consistency)
+/// ```
+///
+/// If `c ∈ ℚ(x)` (no θ_inner component) → `NonElementary`.
+/// If the consistency check fails → `None` (caller falls through to `NotImplemented`).
+/// On success → `Some(Ok(antiderivative))`.
+#[allow(clippy::too_many_arguments)]
+fn lower_tower_poly_cascade(
+    c_rest: ExprId,
+    k: i64,
+    theta_inner: ExprId, // simplified η' (must be an exp-type expression)
+    exp_k_eta: ExprId,
+    k_const: ExprId,
+    c_expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Option<Result<ExprId, IntegrationError>> {
+    use super::tower::decompose_wrt_exp;
+
+    // θ_inner must be an exp expression so that D(θ_inner^j) = j·θ_inner^j.
+    // (More precisely: θ_inner = exp(x) so D(exp(x)) = exp(x) = θ_inner.)
+    // Check that θ_inner is exp(x) specifically (exponent derivative = self).
+    let inner_eta = match pool.get(theta_inner) {
+        crate::kernel::ExprData::Func { ref name, ref args }
+            if name == "exp" && args.len() == 1 =>
+        {
+            args[0]
+        }
+        _ => return None, // θ_inner is not an exp — cascade doesn't apply.
+    };
+    // Require the inner exponent's derivative to be θ_inner itself.
+    // i.e., D(inner_eta) = θ_inner.  For inner_eta = x this is 1, but
+    // we actually need D(exp(inner_eta)) = exp(inner_eta); just check it.
+    let d_inner = match crate::diff::diff(theta_inner, var, pool) {
+        Ok(d) => simplify(d.value, pool).value,
+        Err(_) => return None,
+    };
+    if d_inner != theta_inner {
+        // D(exp(inner_eta)) ≠ exp(inner_eta) → the cascade formula is wrong.
+        return None;
+    }
+    let _ = inner_eta;
+
+    // Decompose c_rest = c₀ + Σⱼ cⱼ·θ_inner^j.
+    let (c0, exp_terms) = decompose_wrt_exp(c_rest, theta_inner, pool);
+
+    if exp_terms.is_empty() {
+        // c ∈ ℚ(x): no θ_inner factor.  The degree bound argument shows no
+        // polynomial solution in θ_inner exists → non-elementary.
+        return Some(Err(IntegrationError::NonElementary(format!(
+            "∫ {} · exp(kη) dx: coefficient has no inner-tower exp factor; \
+             non-elementary by degree bound (Bronstein §5)",
+            pool.display(c_expr),
+        ))));
+    }
+
+    // Find the maximum degree in θ_inner.
+    let cap_n = exp_terms.iter().map(|(_, j)| *j).max().unwrap_or(0);
+    if cap_n <= 0 {
+        return None; // Safety: shouldn't happen, but don't crash.
+    }
+    let cap_n = cap_n as usize;
+
+    // Build coefficient array c[0..=cap_n].
+    let zero = pool.integer(0_i32);
+    let mut c_coeffs: Vec<ExprId> = vec![zero; cap_n + 1];
+    c_coeffs[0] = c0;
+    for (coeff, j) in &exp_terms {
+        let j = *j;
+        if j >= 1 && (j as usize) <= cap_n {
+            let old = c_coeffs[j as usize];
+            let combined = if is_zero(old, pool) {
+                *coeff
+            } else {
+                pool.add(vec![old, *coeff])
+            };
+            c_coeffs[j as usize] = simplify(combined, pool).value;
+        }
+    }
+
+    // v has degree cap_n − 1 in θ_inner.
+    let mut v_coeffs: Vec<ExprId> = vec![zero; cap_n]; // v[0..cap_n-1]
+
+    // Top: v[cap_n-1] = c[cap_n] / k.
+    let c_top = simplify(c_coeffs[cap_n], pool).value;
+    v_coeffs[cap_n - 1] = if k == 1 {
+        c_top
+    } else {
+        let k_inv = pool.pow(pool.integer(k as i32), pool.integer(-1_i32));
+        simplify(pool.mul(vec![c_top, k_inv]), pool).value
+    };
+
+    // Cascade downwards: v[j-1] = (c[j] - D(v[j]) - j·v[j]) / k.
+    for j in (1..cap_n).rev() {
+        let vj = v_coeffs[j];
+        let dvj = match crate::diff::diff(vj, var, pool) {
+            Ok(d) => simplify(d.value, pool).value,
+            Err(_) => return None,
+        };
+        let j_vj = simplify(pool.mul(vec![pool.integer(j as i32), vj]), pool).value;
+        let cj = simplify(c_coeffs[j], pool).value;
+        // num = c[j] - D(v[j]) - j·v[j]
+        let neg1 = pool.integer(-1_i32);
+        let num = simplify(
+            pool.add(vec![
+                cj,
+                pool.mul(vec![neg1, dvj]),
+                pool.mul(vec![neg1, j_vj]),
+            ]),
+            pool,
+        )
+        .value;
+        v_coeffs[j - 1] = if k == 1 {
+            num
+        } else {
+            let k_inv = pool.pow(pool.integer(k as i32), pool.integer(-1_i32));
+            simplify(pool.mul(vec![num, k_inv]), pool).value
+        };
+    }
+
+    // Consistency check: D(v[0]) = c[0].
+    let dv0 = match crate::diff::diff(v_coeffs[0], var, pool) {
+        Ok(d) => simplify(d.value, pool).value,
+        Err(_) => return None,
+    };
+    let residual = simplify(
+        pool.add(vec![dv0, pool.mul(vec![pool.integer(-1_i32), c_coeffs[0]])]),
+        pool,
+    )
+    .value;
+    if !is_zero(residual, pool) {
+        // No polynomial-in-θ_inner solution; fall through (caller returns NotImplemented).
+        return None;
+    }
+
+    // Build v = Σ v[j] · θ_inner^j.
+    let mut v_terms: Vec<ExprId> = Vec::new();
+    for (j, &vj) in v_coeffs.iter().enumerate() {
+        let vj_s = simplify(vj, pool).value;
+        if is_zero(vj_s, pool) {
+            continue;
+        }
+        let theta_j = match j {
+            0 => vj_s,
+            1 => {
+                if is_one(vj_s, pool) {
+                    theta_inner
+                } else {
+                    pool.mul(vec![vj_s, theta_inner])
+                }
+            }
+            _ => {
+                let theta_pow = pool.pow(theta_inner, pool.integer(j as i32));
+                if is_one(vj_s, pool) {
+                    theta_pow
+                } else {
+                    pool.mul(vec![vj_s, theta_pow])
+                }
+            }
+        };
+        v_terms.push(theta_j);
+    }
+    let v_expr = match v_terms.len() {
+        0 => zero,
+        1 => v_terms[0],
+        _ => pool.add(v_terms),
+    };
+
+    let core = build_v_times_exp(v_expr, exp_k_eta, pool);
+    let result = apply_const(k_const, core, pool);
+    log.push(RewriteStep::simple("risch_exp_lower_tower", c_expr, result));
+    Some(Ok(result))
 }
 
 // ---------------------------------------------------------------------------
