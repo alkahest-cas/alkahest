@@ -20,6 +20,9 @@
 //! | `ratfn(x)·exp(η)`, η rational | `(1/x²)·exp(1/x)` | ✓ (generalised RDE, Gap F) |
 //! | `(c₀(x)+c₁(x)√p(x))·exp(η)`, η polynomial | `√x·exp(x)` | ✗ NonElementary / ✓ elementary |
 //! | `log(h)/√p(x)` via log tower | `log(x)/√x` | ✓ (lower-tower delegation, Gap C) |
+//! | `√p(x)·log(h)`, p ∈ ℚ[x] | `√x·log(x)` | ✓ (algebraic base-field, Gap C) |
+//! | `η'·exp(η)` nested exp, v=1 case | `exp(x)·exp(exp(x))` | ✓ (v=1 RDE, Gap B) |
+//! | `1/(x+α)^n·log(x+α)`, α ∈ ℚ(√d) | `1/(x+√2)²·log(x+√2)` | ✓ (K-rational base, Gap E) |
 //! | `sin(x)/x`, `exp(x)/x` | Ei, Si functions | ✗ (NonElementary) |
 //! | `exp(1/x)` alone | essential singularity | ✗ (NonElementary) |
 //!
@@ -48,14 +51,15 @@
 //! - **Algebraic × exp: degree ≥ 3 only.** `try_sqrt_poly_rde` (in `exp_case`)
 //!   handles quadratic algebraic coefficients (`√p(x)·exp(η)`).  Higher-degree
 //!   algebraic extensions (e.g. `∛(p(x))·exp(η)`) are not yet supported.
-//! - **Nested exp towers.** `exp(exp(x))` — where the exponent derivative is
-//!   itself transcendental — currently returns `NotImplemented`.  The special
-//!   case v = 1 (when the coefficient equals η') is not yet detected.
-//! - **Log tower: entangled algebraic coefficients.** The log-tower IBP delegates
-//!   base-field integrals to `engine::integrate`, which handles simple algebraic
-//!   coefficients (constant factors, √p(x) via the algebraic engine).  A fully
-//!   entangled form like `(x+√2)/(x−√2)·log(x)` would require the K-rational
-//!   RDE in the log IBP (not yet implemented).
+//! - **Nested exp towers beyond v=1.** The v=1 case `∫ η'·exp(exp(η)) dη` is
+//!   now handled.  General nested exp (coefficient ≠ k·η') requires a full
+//!   lower-tower RDE solver and is not yet implemented.
+//! - **Log tower: K-rational base field, Hermite-reducible cases only.**
+//!   `integrate_base` now tries K-rational antidifferentiation (Gap E) via
+//!   `solve_rational_rde_k` with f=0.  This handles coefficients in ℚ(√d)(x) whose
+//!   antiderivative is itself K-rational, e.g. `1/(x+√2)^n` (Hermite step).
+//!   Coefficients requiring new log generators (e.g. `1/(x+√2)`) still return
+//!   `NotImplemented`; those are non-elementary (polylog) in the log-tower context.
 //!
 //! ## References
 //!
@@ -79,6 +83,34 @@ use crate::simplify::engine::simplify;
 use exp_case::{integrate_exp_tower, needs_exp_risch};
 use log_case::{integrate_log_tower, needs_log_risch};
 use tower::find_generators;
+use tower::TowerLevel;
+
+// ---------------------------------------------------------------------------
+// Generator selection helpers
+// ---------------------------------------------------------------------------
+
+/// Among a list of exp generators, find the "outermost" one in the tower sense:
+/// the generator G such that G itself does not appear as a sub-expression of
+/// any other generator's argument.
+///
+/// For a nested tower like `[exp(x), exp(exp(x))]`:
+/// - `exp(x)` appears in `exp(exp(x)).argument()` → it is *inner*
+/// - `exp(exp(x))` does not appear anywhere else → it is *outer*
+///
+/// Falls back to the first element when no clear outer generator is found
+/// (e.g. two independent exp generators like `exp(x)` and `exp(x²)`).
+fn outermost_exp_generator<'a>(exp_gens: &[&'a TowerLevel], pool: &ExprPool) -> &'a TowerLevel {
+    use poly_rde::contains_subexpr;
+    for &g in exp_gens.iter() {
+        let is_inner = exp_gens.iter().any(|&other| {
+            other.generator != g.generator && contains_subexpr(other.argument(), g.generator, pool)
+        });
+        if !is_inner {
+            return g;
+        }
+    }
+    exp_gens[0]
+}
 
 // ---------------------------------------------------------------------------
 // Public detection predicate
@@ -174,10 +206,13 @@ pub fn integrate_risch(
     // -----------------------------------------------------------------------
     // Case 4: Multiple exp generators, no log generators.
     //
-    // Similarly take the outermost exp generator.
+    // Use the *outermost* exp generator — the one that is not an argument of
+    // any other exp generator in the list.  For nested towers like
+    // `exp(x)·exp(exp(x))`, DFS may visit the inner generator first, so we
+    // must search explicitly rather than relying on list order.
     // -----------------------------------------------------------------------
     if !exp_gens.is_empty() && log_gens.is_empty() {
-        let level = exp_gens[0]; // outermost exp generator
+        let level = outermost_exp_generator(&exp_gens, pool);
         let result = integrate_exp_tower(expr, level, var, pool, &mut log)?;
         let final_simplified = simplify(result, pool);
         let merged = log.merge(final_simplified.log);
@@ -193,7 +228,7 @@ pub fn integrate_risch(
     // exponent), fall through to sum decomposition.
     // -----------------------------------------------------------------------
     if !exp_gens.is_empty() && !log_gens.is_empty() {
-        let level = exp_gens[0];
+        let level = outermost_exp_generator(&exp_gens, pool);
         match integrate_exp_tower(expr, level, var, pool, &mut log) {
             Ok(result) => {
                 let final_simplified = simplify(result, pool);
@@ -1007,6 +1042,112 @@ mod tests {
             assert!(
                 (lhs - rhs).abs() < 1e-7,
                 "∫ log(x)/sqrt(x): d/dx F ≠ f at x={xv}: {lhs} vs {rhs}"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap B (nested exp): v=1 special case for transcendental η'
+    // -----------------------------------------------------------------------
+
+    /// Numeric verifier for nested-exp antiderivatives: use very small x to avoid
+    /// overflow from exp(exp(x)) growing extremely fast.
+    fn verify_nested_exp(integrand: ExprId, antideriv: ExprId, x: ExprId, pool: &ExprPool) {
+        let d = crate::diff::diff(antideriv, x, pool).unwrap();
+        let ds = crate::simplify::engine::simplify(d.value, pool).value;
+        for &xv in &[-0.5_f64, 0.0, 0.2] {
+            let lhs = eval_f64_gapb(ds, x, xv, pool);
+            let rhs = eval_f64_gapb(integrand, x, xv, pool);
+            assert!(
+                (lhs - rhs).abs() < 1e-8,
+                "d/dx F ≠ f at x={xv}: {lhs} vs {rhs}\nF={}",
+                pool.display(antideriv)
+            );
+        }
+    }
+
+    #[test]
+    fn gapb_nested_exp_elementary() {
+        // ∫ exp(x)·exp(exp(x)) dx = exp(exp(x))
+        // Top generator: exp(exp(x)), η = exp(x), η' = exp(x).
+        // RDE: v' + exp(x)·v = exp(x); v = 1 is a solution.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let exp_exp_x = pool.func("exp", vec![exp_x]);
+        let f = pool.mul(vec![exp_x, exp_exp_x]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ exp(x)·exp(exp(x)) dx must be elementary; got {result:?}"
+        );
+        verify_nested_exp(f, result.unwrap().value, x, &pool);
+    }
+
+    #[test]
+    fn gapb_nested_exp_with_const_elementary() {
+        // ∫ 3·exp(x)·exp(exp(x)) dx = 3·exp(exp(x))
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let exp_exp_x = pool.func("exp", vec![exp_x]);
+        let f = pool.mul(vec![pool.integer(3_i32), exp_x, exp_exp_x]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ 3·exp(x)·exp(exp(x)) dx must be elementary; got {result:?}"
+        );
+        verify_nested_exp(f, result.unwrap().value, x, &pool);
+    }
+
+    #[test]
+    fn gapb_nested_exp_wrong_coeff_notimplemented() {
+        // ∫ x·exp(exp(x)) dx — coefficient x ≠ η' = exp(x) → NotImplemented.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let exp_exp_x = pool.func("exp", vec![exp_x]);
+        let f = pool.mul(vec![x, exp_exp_x]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            matches!(result, Err(IntegrationError::NotImplemented(_))),
+            "∫ x·exp(exp(x)) dx must be NotImplemented; got {result:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap C (log tower + algebraic coefficient)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn gapc_sqrt_x_times_log_x_elementary() {
+        // ∫ sqrt(x)·log(x) dx = (2x^{3/2}/3)·log(x) − 4x^{3/2}/9
+        // IBP: c_1 = √x → P_1 = ∫√x dx = (2/3)x^{3/2} (via algebraic engine)
+        //   correction = −(2/3)x^{3/2}·(1/x) = −(2/3)√x
+        //   base: ∫(−(2/3)√x) dx = −(4/9)x^{3/2}
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt_x = pool.func("sqrt", vec![x]);
+        let log_x = pool.func("log", vec![x]);
+        let f = pool.mul(vec![sqrt_x, log_x]);
+
+        let result = crate::integrate::engine::integrate(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ sqrt(x)·log(x) dx must be elementary; got {result:?}"
+        );
+        let antideriv = result.unwrap().value;
+        let d = crate::diff::diff(antideriv, x, &pool).unwrap();
+        let ds = crate::simplify::engine::simplify(d.value, &pool).value;
+        for &xv in &[0.5_f64, 1.5, 4.0] {
+            let lhs = eval_f64_gapf(ds, x, xv, &pool);
+            let rhs = eval_f64_gapf(f, x, xv, &pool);
+            assert!(
+                (lhs - rhs).abs() < 1e-7,
+                "∫ sqrt(x)·log(x): d/dx F ≠ f at x={xv}: {lhs} vs {rhs}"
             );
         }
     }

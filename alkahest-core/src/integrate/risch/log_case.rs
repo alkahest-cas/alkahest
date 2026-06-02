@@ -41,7 +41,12 @@ use crate::integrate::engine::IntegrationError;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::simplify::engine::simplify;
 
+use super::exp_case::{
+    build_field_and_gens, build_krational_ext, detect_algebraic_extension,
+    expr_to_krational_general,
+};
 use super::poly_rde::{apply_const, contains_subexpr, is_free_of_var, split_const_factor};
+use super::rational_rde::solve_rational_rde_k;
 use super::tower::{decompose_as_log_poly, ExtensionKind, TowerLevel};
 
 // ---------------------------------------------------------------------------
@@ -278,6 +283,11 @@ fn integrate_base_unchecked(
         return Ok(crate::simplify::engine::simplify(r, pool).value);
     }
 
+    // Gap E: K-rational integration for constant algebraic coefficients (e.g. √2).
+    if let Some(r) = try_integrate_k_rational(expr, var, pool) {
+        return Ok(crate::simplify::engine::simplify(r, pool).value);
+    }
+
     // Full engine for lower-tower generators (Gap B).
     match crate::integrate::engine::integrate(expr, var, pool) {
         Ok(d) => Ok(crate::simplify::engine::simplify(d.value, pool).value),
@@ -335,6 +345,15 @@ fn integrate_base(
         // RT introduced the current generator — fall through.
     }
 
+    // Gap E: K-rational integration for constant algebraic coefficients (e.g. √2).
+    // K-rational results never introduce new log generators, so is_safe is always true.
+    if let Some(r) = try_integrate_k_rational(expr, var, pool) {
+        let r = crate::simplify::engine::simplify(r, pool).value;
+        if is_safe(r) {
+            return Ok(r);
+        }
+    }
+
     // Slower path (Gap B): use the full integration engine for coefficients
     // that live in the lower tower (e.g. log(x) coefficients when integrating
     // at the log(log(x)) level).  Guard: the result must not contain
@@ -359,6 +378,32 @@ fn integrate_base(
             pool.display(expr)
         ))),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Gap E — K-rational base-field integration (ℚ(α) constant coefficients)
+// ---------------------------------------------------------------------------
+
+/// Try to compute a K-rational antiderivative of `expr` when `expr` is a
+/// rational function over a number field K = ℚ(α) (where α is an algebraic
+/// constant free of `var`, e.g. `√2`).
+///
+/// Uses `solve_rational_rde_k` with `f = 0` (zero K-polynomial): the Risch DE
+/// `v' + 0·v = c` reduces to plain antidifferentiation `v' = c`.  The solver
+/// succeeds iff a K-rational antiderivative exists (no new log generators needed).
+///
+/// Returns `Some(antiderivative)` on success, `None` when the antiderivative
+/// would require new logarithmic terms (e.g. `∫ 1/(x+√2) dx = log(x+√2)`).
+fn try_integrate_k_rational(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let ext = detect_algebraic_extension(expr, pool)?;
+    let (field, gens) = build_field_and_gens(&ext);
+    let (c_num, c_den) = expr_to_krational_general(expr, var, &gens, &field, pool)?;
+
+    // f = 0 (zero K-polynomial): solve v' = c over K(x).
+    let k_zero: super::number_field::KPoly = vec![];
+    let (v_num, v_den) = solve_rational_rde_k(&field, &k_zero, &c_num, &c_den)?;
+
+    Some(build_krational_ext(&v_num, &v_den, var, &ext, pool))
 }
 
 // ---------------------------------------------------------------------------
@@ -785,5 +830,158 @@ mod tests {
         // π is symbolic — just verify the result contains log.
         let s = pool.display(result.unwrap()).to_string();
         assert!(s.contains("log"), "result should contain log: {s}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap E: ℚ(α) constant coefficients in the log tower
+    // -----------------------------------------------------------------------
+
+    /// Numeric evaluator for Gap E tests (supports sqrt of integers too).
+    fn eval_f64_e(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> f64 {
+        use crate::kernel::ExprData;
+        if expr == x {
+            return xv;
+        }
+        match pool.get(expr) {
+            ExprData::Integer(n) => n.0.to_f64(),
+            ExprData::Rational(r) => r.0.to_f64(),
+            ExprData::Add(args) => args.iter().map(|&a| eval_f64_e(a, x, xv, pool)).sum(),
+            ExprData::Mul(args) => args.iter().map(|&a| eval_f64_e(a, x, xv, pool)).product(),
+            ExprData::Pow { base, exp } => {
+                eval_f64_e(base, x, xv, pool).powf(eval_f64_e(exp, x, xv, pool))
+            }
+            ExprData::Func { ref name, ref args } if args.len() == 1 => {
+                let a = eval_f64_e(args[0], x, xv, pool);
+                match name.as_str() {
+                    "log" => a.ln(),
+                    "sqrt" => a.sqrt(),
+                    other => panic!("eval_f64_e: unsupported func {other}"),
+                }
+            }
+            other => panic!("eval_f64_e: unsupported node {other:?}"),
+        }
+    }
+
+    fn verify_numeric_e(integrand: ExprId, antideriv: ExprId, x: ExprId, pool: &ExprPool) {
+        let d = crate::diff::diff(antideriv, x, pool).unwrap();
+        let ds = crate::simplify::engine::simplify(d.value, pool).value;
+        for &xv in &[0.5_f64, 1.5, 3.0] {
+            let lhs = eval_f64_e(ds, x, xv, pool);
+            let rhs = eval_f64_e(integrand, x, xv, pool);
+            assert!(
+                (lhs - rhs).abs() < 1e-7,
+                "d/dx F ≠ f at x={xv}: got {lhs}, expected {rhs}\n  F = {}",
+                pool.display(antideriv)
+            );
+        }
+    }
+
+    #[test]
+    fn gape_inv_x_plus_sqrt2_sq_log_elementary() {
+        // ∫ 1/(x+√2)² · log(x+√2) dx = −log(x+√2)/(x+√2) − 1/(x+√2)
+        //
+        // IBP: c_1 = 1/(x+√2)².
+        //   P_1 = ∫ 1/(x+√2)² dx = −1/(x+√2)  [K-rational over ℚ(√2)] ✓
+        //   h = x+√2, h'/h = 1/(x+√2)
+        //   correction = −(−1/(x+√2))·(1/(x+√2)) = 1/(x+√2)²
+        //   c_0 = 1/(x+√2)²  → P_0 = −1/(x+√2)  [K-rational] ✓
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let x_plus_sqrt2 = pool.add(vec![x, sqrt2]);
+        let log_h = pool.func("log", vec![x_plus_sqrt2]);
+        let integrand = pool.mul(vec![pool.pow(x_plus_sqrt2, pool.integer(-2_i32)), log_h]);
+
+        use super::super::tower::find_generators;
+        let gens = find_generators(integrand, x, &pool);
+        assert_eq!(gens.len(), 1, "should find exactly one log generator");
+        let level = &gens[0];
+
+        let mut inner_log = DerivationLog::new();
+        let result = integrate_log_tower(integrand, level, x, &pool, &mut inner_log);
+        assert!(
+            result.is_ok(),
+            "∫ 1/(x+√2)²·log(x+√2) dx must be elementary; got {result:?}"
+        );
+        verify_numeric_e(integrand, result.unwrap(), x, &pool);
+    }
+
+    #[test]
+    fn gape_inv_x_plus_sqrt2_cubed_log_elementary() {
+        // ∫ 1/(x+√2)³ · log(x+√2) dx
+        //   P_1 = −1/(2(x+√2)²), correction = 1/(2(x+√2)³), P_0 = −1/(4(x+√2)²)
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let x_plus_sqrt2 = pool.add(vec![x, sqrt2]);
+        let log_h = pool.func("log", vec![x_plus_sqrt2]);
+        let integrand = pool.mul(vec![pool.pow(x_plus_sqrt2, pool.integer(-3_i32)), log_h]);
+
+        use super::super::tower::find_generators;
+        let gens = find_generators(integrand, x, &pool);
+        assert_eq!(gens.len(), 1);
+        let level = &gens[0];
+
+        let mut inner_log = DerivationLog::new();
+        let result = integrate_log_tower(integrand, level, x, &pool, &mut inner_log);
+        assert!(
+            result.is_ok(),
+            "∫ 1/(x+√2)³·log(x+√2) dx must be elementary; got {result:?}"
+        );
+        verify_numeric_e(integrand, result.unwrap(), x, &pool);
+    }
+
+    #[test]
+    fn gape_inv_x_plus_sqrt3_sq_log_elementary() {
+        // ∫ 1/(x+√3)² · log(x+√3) dx — same structure but K = ℚ(√3)
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt3 = pool.func("sqrt", vec![pool.integer(3_i32)]);
+        let x_plus_sqrt3 = pool.add(vec![x, sqrt3]);
+        let log_h = pool.func("log", vec![x_plus_sqrt3]);
+        let integrand = pool.mul(vec![pool.pow(x_plus_sqrt3, pool.integer(-2_i32)), log_h]);
+
+        use super::super::tower::find_generators;
+        let gens = find_generators(integrand, x, &pool);
+        assert_eq!(gens.len(), 1);
+        let level = &gens[0];
+
+        let mut inner_log = DerivationLog::new();
+        let result = integrate_log_tower(integrand, level, x, &pool, &mut inner_log);
+        assert!(
+            result.is_ok(),
+            "∫ 1/(x+√3)²·log(x+√3) dx must be elementary; got {result:?}"
+        );
+        verify_numeric_e(integrand, result.unwrap(), x, &pool);
+    }
+
+    #[test]
+    fn gape_const_sqrt2_times_inv_sq_log_elementary() {
+        // ∫ √2/(x+√2)² · log(x+√2) dx = √2·(−log(x+√2)/(x+√2) − 1/(x+√2))
+        // The const-factor split gives k_const=√2, c_rest=1/(x+√2)².
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let x_plus_sqrt2 = pool.add(vec![x, sqrt2]);
+        let log_h = pool.func("log", vec![x_plus_sqrt2]);
+        // integrand = √2 · 1/(x+√2)² · log(x+√2)
+        let integrand = pool.mul(vec![
+            sqrt2,
+            pool.pow(x_plus_sqrt2, pool.integer(-2_i32)),
+            log_h,
+        ]);
+
+        use super::super::tower::find_generators;
+        let gens = find_generators(integrand, x, &pool);
+        assert_eq!(gens.len(), 1);
+        let level = &gens[0];
+
+        let mut inner_log = DerivationLog::new();
+        let result = integrate_log_tower(integrand, level, x, &pool, &mut inner_log);
+        assert!(
+            result.is_ok(),
+            "∫ √2/(x+√2)²·log(x+√2) dx must be elementary; got {result:?}"
+        );
+        verify_numeric_e(integrand, result.unwrap(), x, &pool);
     }
 }
