@@ -41,6 +41,16 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
+/* Cell output — align with CodeMirror code column (not line-number gutter) */
+.cell-output-gutter {
+  background-color: #e5e4de;
+  border-right: 1px solid #e0ded6;
+}
+
+.cell-output-content {
+  padding-left: 12px;
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

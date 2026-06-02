@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
 import { python } from '@codemirror/lang-python';
 import { EditorView, keymap } from '@codemirror/view';
@@ -38,6 +38,8 @@ interface CellProps {
   onCutCell: (id: string) => void;
   onOutputsChange?: (id: string, outputs: OutputItem[]) => void;
   onFocus?: (id: string) => void;
+  /** Selected cell — shows toolbar and insert bar without hover. */
+  isActive?: boolean;
   shouldFocus?: boolean;
   zenMode?: boolean;
   showInsertBar?: boolean;
@@ -105,18 +107,23 @@ export default function Cell({
   onCutCell,
   onOutputsChange,
   onFocus,
+  isActive = false,
   shouldFocus,
   zenMode,
   showInsertBar = true,
   showLineNumbers = true,
 }: CellProps) {
   const editorRef = useRef<{ view?: { focus: () => void } }>(null);
+  const cellBodyRef = useRef<HTMLDivElement>(null);
+  const [gutterWidth, setGutterWidth] = useState(0);
   const elapsed = useElapsedTimer(cell.status);
   const onRunRef = useRef(onRun);
   const onFocusRef = useRef(onFocus);
+  const zenModeRef = useRef(zenMode);
   const cellIdRef = useRef(cell.id);
   onRunRef.current = onRun;
   onFocusRef.current = onFocus;
+  zenModeRef.current = zenMode;
   cellIdRef.current = cell.id;
 
   const editorExtensions = useMemo(
@@ -136,7 +143,7 @@ export default function Cell({
       ),
       EditorView.domEventHandlers({
         focus: () => {
-          onFocusRef.current?.(cellIdRef.current);
+          if (!zenModeRef.current) onFocusRef.current?.(cellIdRef.current);
           return false;
         },
       }),
@@ -151,6 +158,28 @@ export default function Cell({
     const t = setTimeout(() => editorRef.current?.view?.focus(), 0);
     return () => clearTimeout(t);
   }, [shouldFocus, isMarkdown, cell.id]);
+
+  useEffect(() => {
+    if (isMarkdown || !showLineNumbers) {
+      setGutterWidth(0);
+      return;
+    }
+    const root = cellBodyRef.current;
+    if (!root) return;
+
+    const measure = () => {
+      const gutters = root.querySelector('.cm-gutters');
+      setGutterWidth(gutters ? gutters.getBoundingClientRect().width : 0);
+    };
+
+    measure();
+    const gutters = root.querySelector('.cm-gutters');
+    if (!gutters) return;
+
+    const ro = new ResizeObserver(measure);
+    ro.observe(gutters);
+    return () => ro.disconnect();
+  }, [isMarkdown, showLineNumbers, cell.code]);
   const gutter = isMarkdown
     ? '[M]'
     : cell.executionCount !== null
@@ -161,20 +190,42 @@ export default function Cell({
 
   const hasError = cell.outputs.some((o) => o.type === 'error');
   const isRunning = cell.status === 'running';
+  const uiActive = isActive && !zenMode;
+  const showChrome = uiActive || isRunning;
+
+  const activateCell = () => {
+    if (zenMode) return;
+    onFocusRef.current?.(cellIdRef.current);
+  };
+
+  const handleCellMouseDown = (e: MouseEvent<HTMLDivElement>) => {
+    if (zenMode) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('button') || target.closest('[role="menu"]')) return;
+    activateCell();
+  };
+
+  const idleBorder = zenMode
+    ? 'border-ak-border'
+    : uiActive
+      ? 'border-ak-muted/60 shadow-sm'
+      : 'border-ak-border hover:border-ak-muted/40';
 
   return (
     <div className="group/cell">
       <div
         data-cell-id={cell.id}
         data-cell-status={cell.status}
+        data-cell-active={uiActive || undefined}
+        onMouseDown={handleCellMouseDown}
         className={`relative overflow-hidden rounded-lg border transition-all ${
           isMarkdown
-            ? 'border-ak-border hover:border-ak-muted/40'
+            ? idleBorder
             : isRunning
               ? 'border-ak-brand shadow-sm'
               : hasError
                 ? 'border-red-200'
-                : 'border-ak-border hover:border-ak-muted/40'
+                : idleBorder
         }`}
       >
         {/* Cell header */}
@@ -217,7 +268,7 @@ export default function Cell({
           {!zenMode && (
             <div
               className={`flex items-center gap-1 transition-opacity ${
-                isRunning ? 'opacity-100' : 'opacity-0 group-hover/cell:opacity-100'
+                showChrome ? 'opacity-100' : 'opacity-0 group-hover/cell:opacity-100'
               }`}
             >
               <CellActionsMenu
@@ -273,9 +324,11 @@ export default function Cell({
           <MarkdownCell
             source={cell.code}
             onChange={(src) => onCodeChange(cell.id, src)}
+            onActivate={activateCell}
+            shouldFocus={shouldFocus}
           />
         ) : (
-          <>
+          <div ref={cellBodyRef}>
             <CodeMirror
               ref={editorRef as never}
               value={cell.code}
@@ -294,14 +347,17 @@ export default function Cell({
             />
             <Output
               items={cell.outputs}
+              gutterWidth={gutterWidth}
+              zenMode={zenMode}
               onItemsChange={(outputs) => onOutputsChange?.(cell.id, outputs)}
             />
-          </>
+          </div>
         )}
       </div>
 
       {showInsertBar && !zenMode && (
         <CellInsertBar
+          visible={isActive}
           onAddCode={() => onAddBelow(cell.id, 'code')}
           onAddMarkdown={() => onAddBelow(cell.id, 'markdown')}
         />
@@ -311,14 +367,20 @@ export default function Cell({
 }
 
 function CellInsertBar({
+  visible,
   onAddCode,
   onAddMarkdown,
 }: {
+  visible: boolean;
   onAddCode: () => void;
   onAddMarkdown: () => void;
 }) {
   return (
-    <div className="flex h-5 items-center justify-center gap-2 opacity-0 transition-opacity group-hover/cell:opacity-100">
+    <div
+      className={`flex h-5 items-center justify-center gap-2 transition-opacity ${
+        visible ? 'opacity-100' : 'opacity-0 group-hover/cell:opacity-100'
+      }`}
+    >
       <div className="group/addcode relative">
         <button
           type="button"
@@ -348,16 +410,30 @@ function CellInsertBar({
   );
 }
 
-function MarkdownCell({ source, onChange }: { source: string; onChange: (src: string) => void }) {
+function MarkdownCell({
+  source,
+  onChange,
+  onActivate,
+  shouldFocus,
+}: {
+  source: string;
+  onChange: (src: string) => void;
+  onActivate?: () => void;
+  shouldFocus?: boolean;
+}) {
   const [editing, setEditing] = useState(!source.trim());
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (shouldFocus) setEditing(true);
+  }, [shouldFocus]);
 
   useEffect(() => {
     if (editing && textareaRef.current) {
       textareaRef.current.focus();
       autoResize(textareaRef.current);
     }
-  }, [editing]);
+  }, [editing, shouldFocus]);
 
   function autoResize(el: HTMLTextAreaElement) {
     el.style.height = 'auto';
@@ -370,6 +446,7 @@ function MarkdownCell({ source, onChange }: { source: string; onChange: (src: st
         ref={textareaRef}
         value={source}
         onChange={(e) => { onChange(e.target.value); autoResize(e.target); }}
+        onFocus={() => onActivate?.()}
         onBlur={() => { if (source.trim()) setEditing(false); }}
         onKeyDown={(e) => {
           if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
@@ -386,7 +463,10 @@ function MarkdownCell({ source, onChange }: { source: string; onChange: (src: st
 
   return (
     <div
-      onClick={() => setEditing(true)}
+      onClick={() => {
+        onActivate?.();
+        setEditing(true);
+      }}
       title="Click to edit"
       className="px-5 py-3 cursor-text prose prose-sm max-w-none hover:bg-ak-code-bg/30 transition-colors"
     >

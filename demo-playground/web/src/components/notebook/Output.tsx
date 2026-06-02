@@ -2,15 +2,21 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { OutputItem } from '@/lib/execution';
+import { outputsToPlainText } from '@/lib/output-text';
 import LeanCertificate from './LeanCertificate';
+import OutputActionsMenu from './OutputActionsMenu';
 
 interface OutputProps {
   items: OutputItem[];
   /** When set, Lean verify state updates propagate back (notebook cells). */
   onItemsChange?: (items: OutputItem[]) => void;
+  /** Width of the CodeMirror line-number gutter (px), for alignment with code. */
+  gutterWidth?: number;
+  /** Zen/recording layout — no output menu or extra chrome. */
+  zenMode?: boolean;
 }
 
-export default function Output({ items, onItemsChange }: OutputProps) {
+export default function Output({ items, onItemsChange, gutterWidth = 0, zenMode }: OutputProps) {
   const [localItems, setLocalItems] = useState(items);
 
   useEffect(() => {
@@ -25,15 +31,70 @@ export default function Output({ items, onItemsChange }: OutputProps) {
     onItemsChange?.(next);
   };
 
+  const handleClear = () => {
+    setLocalItems([]);
+    onItemsChange?.([]);
+  };
+
+  const handleCopy = async () => {
+    const text = outputsToPlainText(localItems);
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const hasGutter = gutterWidth > 0;
+  const alignWithCode = hasGutter && zenMode;
+
+  const outputItems = localItems.map((item, i) => (
+    <OutputItemView
+      key={i}
+      item={item}
+      onLeanUpdate={item.type === 'lean' ? (u) => handleLeanUpdate(i, u) : undefined}
+    />
+  ));
+
+  if (zenMode) {
+    return (
+      <div className="border-t border-ak-border bg-ak-code-bg">
+        <div className="flex min-w-0">
+          {alignWithCode && (
+            <div className="shrink-0" style={{ width: gutterWidth }} aria-hidden />
+          )}
+          <div
+            className={`min-w-0 flex-1 space-y-1 py-2 pr-3 ${
+              alignWithCode ? 'cell-output-content' : 'px-3'
+            }`}
+          >
+            {outputItems}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const menu = (
+    <OutputActionsMenu onCopy={() => void handleCopy()} onClear={handleClear} />
+  );
+
   return (
-    <div className="border-t border-ak-border bg-ak-code-bg px-4 py-2 space-y-1">
-      {localItems.map((item, i) => (
-        <OutputItemView
-          key={i}
-          item={item}
-          onLeanUpdate={item.type === 'lean' ? (u) => handleLeanUpdate(i, u) : undefined}
-        />
-      ))}
+    <div className="border-t border-ak-border bg-ak-code-bg">
+      <div className="flex min-w-0">
+        <div
+          className={`shrink-0 flex items-start justify-center pt-1.5 ${
+            hasGutter ? 'cell-output-gutter' : 'w-7'
+          }`}
+          style={hasGutter ? { width: gutterWidth } : undefined}
+        >
+          {menu}
+        </div>
+        <div className="cell-output-content min-w-0 flex-1 space-y-1 py-2 pr-3">
+          {outputItems}
+        </div>
+      </div>
     </div>
   );
 }

@@ -4,6 +4,11 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Lean 4 certificate verification (elan installs to ~/.elan/bin)
+if [ -d "${HOME}/.elan/bin" ]; then
+  export PATH="${HOME}/.elan/bin:${PATH}"
+fi
+
 # Create venv if needed
 if [ ! -d ".venv" ]; then
   echo "Creating Python virtualenv..."

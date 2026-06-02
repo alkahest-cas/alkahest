@@ -740,6 +740,7 @@ export default function Notebook({
           onCutCell={(id) => void handleCutCell(id)}
           onOutputsChange={(id, outputs) => dispatch({ type: 'SET_OUTPUTS', id, outputs })}
           onFocus={setFocusedCellId}
+          isActive={!zenMode && focusedCellId === cell.id}
           shouldFocus={focusTargetId === cell.id}
           zenMode={zenMode}
           showLineNumbers={!hideLineNumbers}
