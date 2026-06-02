@@ -21,7 +21,8 @@
 //! | `(c₀(x)+c₁(x)√p(x))·exp(η)`, η polynomial | `√x·exp(x)` | ✗ NonElementary / ✓ elementary |
 //! | `log(h)/√p(x)` via log tower | `log(x)/√x` | ✓ (lower-tower delegation, Gap C) |
 //! | `√p(x)·log(h)`, p ∈ ℚ\[x\] | `√x·log(x)` | ✓ (algebraic base-field, Gap C) |
-//! | `η'·exp(η)` nested exp, v=1 case | `exp(x)·exp(exp(x))` | ✓ (v=1 RDE, Gap B) |
+//! | `c(x,exp(x))·exp(exp(x))`, c poly in exp(x) | `exp(x)²·exp(exp(x))` | ✓ (lower-tower cascade, Gap B) |
+//! | `c(x)·exp(exp(x))`, c ∈ ℚ(x) | `x·exp(exp(x))` | ✗ NonElementary (degree bound) |
 //! | `1/(x+α)^n·log(x+α)`, α ∈ ℚ(√d) | `1/(x+√2)²·log(x+√2)` | ✓ (K-rational base, Gap E) |
 //! | `sin(x)/x`, `exp(x)/x` | Ei, Si functions | ✗ (NonElementary) |
 //! | `exp(1/x)` alone | essential singularity | ✗ (NonElementary) |
@@ -51,9 +52,11 @@
 //! - **Algebraic × exp: degree ≥ 3 only.** `try_sqrt_poly_rde` (in `exp_case`)
 //!   handles quadratic algebraic coefficients (`√p(x)·exp(η)`).  Higher-degree
 //!   algebraic extensions (e.g. `∛(p(x))·exp(η)`) are not yet supported.
-//! - **Nested exp towers beyond v=1.** The v=1 case `∫ η'·exp(exp(η)) dη` is
-//!   now handled.  General nested exp (coefficient ≠ k·η') requires a full
-//!   lower-tower RDE solver and is not yet implemented.
+//! - **Nested exp towers — complete for ℚ(x)(exp(x)).**  The lower-tower cascade
+//!   handles polynomial c(x, exp(x)).  Rational c (denominator in exp(x)) is
+//!   certified NonElementary by the Hermite/pole-order argument: `D` maps any
+//!   simple pole `1/(θ-α)` (α ∈ ℚ(x)) to a double pole `(α-Dα)/(θ-α)²`;
+//!   since `Dα ≠ α` for α ∈ ℚ(x), no rational solution to the Risch DE exists.
 //! - **Log tower: K-rational base field, Hermite-reducible cases only.**
 //!   `integrate_base` now tries K-rational antidifferentiation (Gap E) via
 //!   `solve_rational_rde_k` with f=0.  This handles coefficients in ℚ(√d)(x) whose
@@ -1103,8 +1106,9 @@ mod tests {
     }
 
     #[test]
-    fn gapb_nested_exp_wrong_coeff_notimplemented() {
-        // ∫ x·exp(exp(x)) dx — coefficient x ≠ η' = exp(x) → NotImplemented.
+    fn gapb_nested_exp_rational_coeff_nonelementary() {
+        // ∫ x·exp(exp(x)) dx — c = x ∈ ℚ[x] has no inner exp factor → NonElementary
+        // (certified by degree bound: θ_inner·v has degree > c's degree for any v).
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let exp_x = pool.func("exp", vec![x]);
@@ -1113,8 +1117,150 @@ mod tests {
 
         let result = integrate_risch(f, x, &pool);
         assert!(
-            matches!(result, Err(IntegrationError::NotImplemented(_))),
-            "∫ x·exp(exp(x)) dx must be NotImplemented; got {result:?}"
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ x·exp(exp(x)) dx must be NonElementary; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn gapb_nested_exp_bare_nonelementary() {
+        // ∫ exp(exp(x)) dx alone — c = 1 ∈ ℚ[x] → NonElementary.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let exp_exp_x = pool.func("exp", vec![exp_x]);
+
+        let result = integrate_risch(exp_exp_x, x, &pool);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ exp(exp(x)) dx must be NonElementary; got {result:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap B: nested exp — lower-tower polynomial cascade
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn gapb_nested_exp_exp_sq_elementary() {
+        // ∫ exp(x)²·exp(exp(x)) dx = (exp(x)−1)·exp(exp(x))
+        // Cascade: c = θ² (N=2), v₁ = 1, v₀ = c₁ − v₁' − v₁ = 0−0−1 = −1.
+        // D(v₀) = 0 = c₀ ✓.  v = θ−1 = exp(x)−1.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let exp_exp_x = pool.func("exp", vec![exp_x]);
+        // exp(x)^2 * exp(exp(x))
+        let f = pool.mul(vec![pool.pow(exp_x, pool.integer(2_i32)), exp_exp_x]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ exp(x)²·exp(exp(x)) dx must be elementary; got {result:?}"
+        );
+        verify_nested_exp(f, result.unwrap().value, x, &pool);
+    }
+
+    #[test]
+    fn gapb_nested_exp_poly_plus_rational_elementary() {
+        // ∫ [(x²+1)·exp(x) + 2x]·exp(exp(x)) dx = (x²+1)·exp(exp(x))
+        // Cascade: c = (x²+1)·θ + 2x (N=1).
+        // v₀ = c₁/1 = x²+1.  D(v₀) = 2x = c₀ ✓.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let exp_exp_x = pool.func("exp", vec![exp_x]);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let x2p1 = pool.add(vec![x2, pool.integer(1_i32)]);
+        let two_x = pool.mul(vec![pool.integer(2_i32), x]);
+        // ((x²+1)·exp(x) + 2x)·exp(exp(x))
+        let coeff = pool.add(vec![pool.mul(vec![x2p1, exp_x]), two_x]);
+        let f = pool.mul(vec![coeff, exp_exp_x]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ [(x²+1)exp(x)+2x]·exp(exp(x)) dx must be elementary; got {result:?}"
+        );
+        verify_nested_exp(f, result.unwrap().value, x, &pool);
+    }
+
+    #[test]
+    fn gapb_nested_exp_higher_degree_elementary() {
+        // ∫ [exp(x)²−exp(x)]·exp(exp(x)) dx = (exp(x)−2)·exp(exp(x))
+        // Cascade: c = θ²−θ (N=2, c₂=1, c₁=−1, c₀=0).
+        // v₁ = 1, v₀ = −1−0−1 = −2.  D(v₀) = 0 = c₀ ✓.  v = −2+θ = exp(x)−2.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let exp_exp_x = pool.func("exp", vec![exp_x]);
+        let exp_sq = pool.pow(exp_x, pool.integer(2_i32));
+        let neg_exp = pool.mul(vec![pool.integer(-1_i32), exp_x]);
+        let coeff = pool.add(vec![exp_sq, neg_exp]);
+        let f = pool.mul(vec![coeff, exp_exp_x]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ [exp(x)²−exp(x)]·exp(exp(x)) dx must be elementary; got {result:?}"
+        );
+        verify_nested_exp(f, result.unwrap().value, x, &pool);
+    }
+
+    #[test]
+    fn gapb_nested_exp_inner_coeff_nonelementary() {
+        // ∫ x·exp(x)·exp(exp(x)) dx: c = x·θ (N=1, c₁=x, c₀=0).
+        // Cascade: v₀ = x, D(v₀) = 1 ≠ c₀ = 0.  No polynomial solution →
+        // denominator-bound theorem certifies NonElementary.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let exp_exp_x = pool.func("exp", vec![exp_x]);
+        let f = pool.mul(vec![x, exp_x, exp_exp_x]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ x·exp(x)·exp(exp(x)) dx must be NonElementary; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn gapb_nested_exp_rational_denom_nonelementary() {
+        // ∫ exp(x)/(exp(x)+1)·exp(exp(x)) dx:
+        // c = θ/(θ+1) is rational in θ = exp(x).
+        // Hermite reduction: D maps 1/(θ-α) to a double pole; no rational v exists.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let exp_exp_x = pool.func("exp", vec![exp_x]);
+        // exp(x)/(exp(x)+1) = exp(x)·(exp(x)+1)^{-1}
+        let denom = pool.add(vec![exp_x, pool.integer(1_i32)]);
+        let coeff = pool.mul(vec![exp_x, pool.pow(denom, pool.integer(-1_i32))]);
+        let f = pool.mul(vec![coeff, exp_exp_x]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ exp(x)/(exp(x)+1)·exp(exp(x)) dx must be NonElementary; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn gapb_nested_exp_inv_theta_nonelementary() {
+        // ∫ exp(-x)·exp(exp(x)) dx = ∫ θ^{-1}·G dx:
+        // c = exp(-x) = θ^{-1} has a negative power of θ → rational → NonElementary.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let exp_exp_x = pool.func("exp", vec![exp_x]);
+        let exp_neg_x = pool.pow(exp_x, pool.integer(-1_i32));
+        let f = pool.mul(vec![exp_neg_x, exp_exp_x]);
+
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ exp(-x)·exp(exp(x)) dx must be NonElementary; got {result:?}"
         );
     }
 
