@@ -31,7 +31,7 @@ if [ -n "$WHEEL" ]; then
   pip install -q "$WHEEL"
 else
   PY_TAG=$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
-  FULL_WHEEL="https://github.com/alkahest-cas/alkahest/releases/download/v3.0.0/alkahest-3.0.0+full-${PY_TAG}-${PY_TAG}-manylinux_2_35_x86_64.whl"
+  FULL_WHEEL="https://github.com/alkahest-cas/alkahest/releases/download/v3.1.0/alkahest-3.1.0+full-${PY_TAG}-${PY_TAG}-manylinux_2_35_x86_64.whl"
   echo "Installing alkahest +full wheel: $FULL_WHEEL"
   pip install -q "$FULL_WHEEL"
 fi
