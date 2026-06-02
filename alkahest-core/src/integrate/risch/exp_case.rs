@@ -118,12 +118,19 @@ pub fn integrate_exp_tower(
                     log,
                 );
             }
-            return Err(IntegrationError::NotImplemented(format!(
-                "exponent derivative η'(x) = {} is not a rational function in {}; \
-                 only polynomial and rational exponents are supported",
-                pool.display(deta_expr),
-                pool.display(var),
-            )));
+            // Gap B (nested exp): η' is transcendental (e.g. η = exp(x), η' = exp(x)).
+            // Try the v=1 special case: D(1) + k·η'·1 = k·η', so v=1 solves the
+            // RDE iff c_rest == k·η'.  Handles ∫ exp(x)·exp(exp(x)) dx = exp(exp(x)).
+            return try_transcendental_eta_v1(
+                int_rational,
+                &exp_terms,
+                eta,
+                exp_gen,
+                deta_expr,
+                var,
+                pool,
+                log,
+            );
         }
     };
 
@@ -261,6 +268,84 @@ fn integrate_exp_tower_rational_eta(
     *log = log.clone().merge(simplified.log);
     log.push(RewriteStep::simple(
         "risch_exp_rational_eta",
+        pool.integer(0_i32),
+        simplified.value,
+    ));
+    Ok(simplified.value)
+}
+
+// ---------------------------------------------------------------------------
+// Gap B (nested exp) — v=1 special case for transcendental η'
+// ---------------------------------------------------------------------------
+
+/// Handle `∫ c(x)·exp(kη) dx` when η'(x) is transcendental (e.g. η = exp(x))
+/// by checking whether each coefficient satisfies `c_rest = k·η'` (after
+/// splitting off any var-free constant factor and simplifying both sides).
+///
+/// The Risch DE is `v' + k·η'·v = c`.  When `c = k·η'`, the constant `v = 1`
+/// is a solution: `D(1) + k·η'·1 = k·η' = c`.  The antiderivative is then
+/// `1 · exp(kη) = exp(kη)`.
+///
+/// Returns `Err(NotImplemented)` for any term where the v=1 condition fails.
+#[allow(clippy::too_many_arguments)]
+fn try_transcendental_eta_v1(
+    int_rational: ExprId,
+    exp_terms: &[(ExprId, i64)],
+    eta: ExprId,
+    exp_gen: ExprId,
+    deta_expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Result<ExprId, IntegrationError> {
+    let zero = pool.integer(0_i32);
+    // Simplify η' once; all coefficient comparisons are done against this.
+    let deta_simplified = simplify(deta_expr, pool).value;
+
+    let mut result_terms: Vec<ExprId> = Vec::new();
+    if !is_zero(int_rational, pool) {
+        result_terms.push(int_rational);
+    }
+
+    for (c_expr, k) in exp_terms {
+        let k = *k;
+        let (k_const, c_rest) = split_const_factor(*c_expr, var, pool);
+        let c_rest_simplified = simplify(c_rest, pool).value;
+
+        // k·η' simplified.
+        let k_deta_simplified = if k == 1 {
+            deta_simplified
+        } else {
+            simplify(pool.mul(vec![pool.integer(k as i32), deta_expr]), pool).value
+        };
+
+        if c_rest_simplified != k_deta_simplified {
+            return Err(IntegrationError::NotImplemented(format!(
+                "exponent derivative η'(x) = {} is transcendental; v=1 check \
+                 failed (coefficient {} ≠ {}·η'); nested exp tower not supported \
+                 beyond the v=1 case",
+                pool.display(deta_expr),
+                pool.display(*c_expr),
+                k,
+            )));
+        }
+
+        // v = 1 is a solution: ∫ k·η'·exp(kη) dx = exp(kη).
+        let exp_k_eta = build_exp_k_eta(k, eta, exp_gen, pool);
+        let result = apply_const(k_const, exp_k_eta, pool);
+        log.push(RewriteStep::simple("risch_exp_nested_v1", *c_expr, result));
+        result_terms.push(result);
+    }
+
+    let raw = match result_terms.len() {
+        0 => zero,
+        1 => result_terms[0],
+        _ => pool.add(result_terms),
+    };
+    let simplified = simplify(raw, pool);
+    *log = log.clone().merge(simplified.log);
+    log.push(RewriteStep::simple(
+        "risch_exp_transcendental_eta",
         pool.integer(0_i32),
         simplified.value,
     ));
@@ -644,7 +729,7 @@ fn build_v_times_exp(v_expr: ExprId, exp_k_eta: ExprId, pool: &ExprPool) -> Expr
 
 /// Describes an algebraic extension ℚ(α) detected in a coefficient expression.
 #[derive(Debug, Clone)]
-enum AlgebraicExtension {
+pub(super) enum AlgebraicExtension {
     /// ℚ(√d) — handled by the existing single-sqrt path; included for completeness.
     SingleSqrt { d: i64, sqrt_expr: ExprId },
     /// ℚ(√a, √b) with primitive element α = √a+√b,
@@ -664,7 +749,10 @@ enum AlgebraicExtension {
 ///
 /// Returns `None` when no radical is found or the combination is too complex
 /// (three or more distinct generators, or mixed sqrt+nth-root types).
-fn detect_algebraic_extension(expr: ExprId, pool: &ExprPool) -> Option<AlgebraicExtension> {
+pub(super) fn detect_algebraic_extension(
+    expr: ExprId,
+    pool: &ExprPool,
+) -> Option<AlgebraicExtension> {
     let mut sqrts: Vec<(i64, ExprId)> = Vec::new();
     let mut nth_roots: Vec<(i64, u32, ExprId)> = Vec::new();
     scan_algebraic_gens(expr, pool, &mut sqrts, &mut nth_roots);
@@ -791,7 +879,9 @@ fn is_perfect_mth_power(d: i64, m: u32) -> bool {
 
 /// Build the `NumberField` for an `AlgebraicExtension` and return the list of
 /// (generator_symbol, K-element) pairs used by the general K-poly parser.
-fn build_field_and_gens(ext: &AlgebraicExtension) -> (NumberField, Vec<(ExprId, KElem)>) {
+pub(super) fn build_field_and_gens(
+    ext: &AlgebraicExtension,
+) -> (NumberField, Vec<(ExprId, KElem)>) {
     match ext {
         AlgebraicExtension::SingleSqrt { d, sqrt_expr } => {
             let field = NumberField::new(vec![
@@ -930,7 +1020,7 @@ fn expr_to_kpoly_general(
 
 /// Parse `expr` as a rational function in `var` over `K = ℚ(α)`.
 /// Returns `(numerator, denominator)` or `None`.
-fn expr_to_krational_general(
+pub(super) fn expr_to_krational_general(
     expr: ExprId,
     var: ExprId,
     gens: &[(ExprId, KElem)],
@@ -1129,7 +1219,7 @@ fn kpoly_to_expr_ext(p: &KPoly, var: ExprId, ext: &AlgebraicExtension, pool: &Ex
 }
 
 /// Build the symbolic rational expression `num(x)/den(x)` for the given extension.
-fn build_krational_ext(
+pub(super) fn build_krational_ext(
     num: &KPoly,
     den: &KPoly,
     var: ExprId,
