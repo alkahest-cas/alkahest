@@ -20,7 +20,7 @@
 //! | `ratfn(x)·exp(η)`, η rational | `(1/x²)·exp(1/x)` | ✓ (generalised RDE, Gap F) |
 //! | `(c₀(x)+c₁(x)√p(x))·exp(η)`, η polynomial | `√x·exp(x)` | ✗ NonElementary / ✓ elementary |
 //! | `log(h)/√p(x)` via log tower | `log(x)/√x` | ✓ (lower-tower delegation, Gap C) |
-//! | `√p(x)·log(h)`, p ∈ ℚ[x] | `√x·log(x)` | ✓ (algebraic base-field, Gap C) |
+//! | `√p(x)·log(h)`, p ∈ ℚ\[x\] | `√x·log(x)` | ✓ (algebraic base-field, Gap C) |
 //! | `η'·exp(η)` nested exp, v=1 case | `exp(x)·exp(exp(x))` | ✓ (v=1 RDE, Gap B) |
 //! | `1/(x+α)^n·log(x+α)`, α ∈ ℚ(√d) | `1/(x+√2)²·log(x+√2)` | ✓ (K-rational base, Gap E) |
 //! | `sin(x)/x`, `exp(x)/x` | Ei, Si functions | ✗ (NonElementary) |
