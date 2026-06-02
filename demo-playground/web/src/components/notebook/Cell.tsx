@@ -182,10 +182,10 @@ export default function Cell({
   }, [isMarkdown, showLineNumbers, cell.code]);
   const gutter = isMarkdown
     ? '[M]'
-    : cell.executionCount !== null
-      ? `[${cell.executionCount}]`
-      : cell.status === 'running'
-        ? '[*]'
+    : cell.status === 'running'
+      ? '[*]'
+      : cell.executionCount !== null
+        ? `[${cell.executionCount}]`
         : '[ ]';
 
   const hasError = cell.outputs.some((o) => o.type === 'error');
@@ -222,7 +222,7 @@ export default function Cell({
           isMarkdown
             ? idleBorder
             : isRunning
-              ? 'border-ak-brand shadow-sm'
+              ? 'border-ak-run shadow-sm'
               : hasError
                 ? 'border-red-200'
                 : idleBorder
@@ -242,7 +242,7 @@ export default function Cell({
             <span
               className={`text-xs px-1.5 py-0.5 rounded font-mono ${
                 cell.backend === 'server'
-                  ? 'bg-ak-brand/10 text-ak-brand'
+                  ? 'bg-ak-run/10 text-ak-run'
                   : 'bg-green-100 text-green-700'
               }`}
             >
@@ -253,11 +253,11 @@ export default function Cell({
           {!isMarkdown && elapsed !== null && (
             <span
               className={`font-mono text-xs tabular-nums ${
-                isRunning ? 'text-ak-brand' : 'text-ak-muted'
+                isRunning ? 'text-ak-run' : 'text-ak-muted'
               }`}
             >
               {isRunning && (
-                <span className="cell-run-pulse inline-block w-1.5 h-1.5 rounded-full bg-ak-brand mr-1 align-middle" />
+                <span className="cell-run-pulse inline-block w-1.5 h-1.5 rounded-full bg-ak-run mr-1 align-middle" />
               )}
               {formatMs(elapsed)}
             </span>
@@ -292,11 +292,11 @@ export default function Cell({
                     type="button"
                     onClick={() => onStop(cell.id)}
                     title="Stop execution"
-                    className="flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium bg-ak-brand/15 text-ak-brand hover:bg-ak-brand/25 transition-colors"
+                    className="flex items-center gap-1 rounded px-2.5 py-1 text-xs font-medium bg-ak-run/15 text-ak-run hover:bg-ak-run/25 transition-colors"
                   >
                     <span className="relative flex h-3 w-3 items-center justify-center">
-                      <span className="cell-run-pulse absolute inset-0 rounded-sm border border-ak-brand/60" />
-                      <span className="relative h-2 w-2 rounded-sm bg-ak-brand" />
+                      <span className="cell-run-pulse absolute inset-0 rounded-sm border border-ak-run/60" />
+                      <span className="relative h-2 w-2 rounded-sm bg-ak-run" />
                     </span>
                     Stop
                   </button>
@@ -316,7 +316,7 @@ export default function Cell({
           )}
 
           {!isMarkdown && zenMode && isRunning && (
-            <span className="cell-run-pulse flex h-3.5 w-3.5 items-center justify-center rounded-full border-2 border-ak-brand" aria-hidden />
+            <span className="cell-run-pulse flex h-3.5 w-3.5 items-center justify-center rounded-full border-2 border-ak-run" aria-hidden />
           )}
         </div>
 

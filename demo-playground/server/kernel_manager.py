@@ -71,6 +71,7 @@ class KernelSession:
         self.kc.start_channels()
         self.kc.wait_for_ready(timeout=30)
         self._helpers_loaded = False
+        self._execution_count = 0
 
     def shutdown(self) -> None:
         try:
@@ -142,7 +143,8 @@ class KernelSession:
         queue: asyncio.Queue[dict | None] = asyncio.Queue()
 
         def _run():
-            exec_count = 0
+            self._execution_count += 1
+            exec_count = self._execution_count
             self.kc.execute(code)
             while True:
                 try:
@@ -163,8 +165,6 @@ class KernelSession:
                     data = content.get("data", {})
                     out = classify_rich(data)
                     if out:
-                        if msg_type == "execute_result":
-                            exec_count = content.get("execution_count", 0)
                         loop.call_soon_threadsafe(queue.put_nowait, out)
 
                 elif msg_type == "error":

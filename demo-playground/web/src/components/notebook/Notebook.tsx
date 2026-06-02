@@ -40,6 +40,7 @@ type Action =
   | { type: 'SET_OUTPUTS'; id: string; outputs: OutputItem[] }
   | { type: 'POSTPROCESS_OUTPUTS'; id: string }
   | { type: 'SET_EXEC_COUNT'; id: string; count: number }
+  | { type: 'CLEAR_EXEC_COUNTS' }
   | { type: 'MOVE_UP'; id: string }
   | { type: 'MOVE_DOWN'; id: string }
   | { type: 'TOGGLE_CELL_TYPE'; id: string }
@@ -93,6 +94,8 @@ function reducer(state: CellData[], action: Action): CellData[] {
       );
     case 'SET_EXEC_COUNT':
       return state.map((c) => (c.id === action.id ? { ...c, executionCount: action.count } : c));
+    case 'CLEAR_EXEC_COUNTS':
+      return state.map((c) => (c.executionCount !== null ? { ...c, executionCount: null } : c));
     case 'MOVE_UP': {
       const i = state.findIndex((c) => c.id === action.id);
       if (i <= 0) return state;
@@ -228,7 +231,6 @@ export default function Notebook({
   const [cells, dispatch] = useReducer(reducer, demoParam, initialCells);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [serverStatus, setServerStatus] = useState<'unknown' | 'online' | 'offline'>('unknown');
-  const [execCount, setExecCount] = useState(0);
   const [autoRunPending, setAutoRunPending] = useState(false);
   const [focusedCellId, setFocusedCellId] = useState<string | null>(null);
   const [focusTargetId, setFocusTargetId] = useState<string | null>(null);
@@ -237,6 +239,8 @@ export default function Notebook({
   const cfg = useRef(loadConfig());
   const cleanupFns = useRef<Map<string, () => void>>(new Map());
   const wasmExecGen = useRef<Map<string, number>>(new Map());
+  /** Monotonic run order across the notebook session (Jupyter-style In [n]). */
+  const execCountRef = useRef(0);
   const deletedStack = useRef<{ cell: CellData; index: number }[]>([]);
   const chordActive = useRef(false);
   const chordTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -439,6 +443,8 @@ export default function Notebook({
 
       dispatch({ type: 'CLEAR_OUTPUTS', id });
       dispatch({ type: 'SET_STATUS', id, status: 'running' });
+      const executionCount = ++execCountRef.current;
+      dispatch({ type: 'SET_EXEC_COUNT', id, count: executionCount });
 
       const mode = cfg.current.executionMode as ExecutionMode;
       const useServer = mode === 'server' || (mode !== 'wasm' && needsServer(cell.code));
@@ -456,18 +462,14 @@ export default function Notebook({
           return;
         }
 
-        const count = execCount + 1;
-        setExecCount(count);
-
         const cancel = executeOnServer(
           connectionFromConfig(cfg.current),
           sessionId,
           cell.code,
           (item) => dispatch({ type: 'APPEND_OUTPUT', id, item }),
-          (n) => {
+          () => {
             if (wasmExecGen.current.get(id) !== gen) return;
             dispatch({ type: 'POSTPROCESS_OUTPUTS', id });
-            dispatch({ type: 'SET_EXEC_COUNT', id, count: n });
             dispatch({ type: 'SET_STATUS', id, status: 'done' });
             cleanupFns.current.delete(id);
           },
@@ -489,9 +491,6 @@ export default function Notebook({
           .then((outputs) => {
             if (wasmExecGen.current.get(id) !== gen) return;
             outputs.forEach((item) => dispatch({ type: 'APPEND_OUTPUT', id, item }));
-            const n = execCount + 1;
-            setExecCount(n);
-            dispatch({ type: 'SET_EXEC_COUNT', id, count: n });
             dispatch({ type: 'SET_STATUS', id, status: 'done' });
           })
           .catch((err: Error) => {
@@ -505,7 +504,7 @@ export default function Notebook({
           });
       }
     },
-    [cells, sessionId, execCount],
+    [cells, sessionId],
   );
 
   const runCellsSequential = useCallback(
@@ -527,8 +526,9 @@ export default function Notebook({
       await destroySession(conn, sessionId).catch(() => {});
       setSessionId(null);
     }
+    execCountRef.current = 0;
+    dispatch({ type: 'CLEAR_EXEC_COUNTS' });
     if (!conn.httpUrl) {
-      setExecCount(0);
       return;
     }
     try {

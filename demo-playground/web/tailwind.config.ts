@@ -34,6 +34,9 @@ const config: Config = {
           'code-bg': '#eeede7',
           brand: '#c41e3a',
           'brand-dark': '#9e1830',
+          /** Execution / running state (distinct from brand red). */
+          run: '#2563eb',
+          'run-dark': '#1d4ed8',
         },
       },
       fontFamily: {
