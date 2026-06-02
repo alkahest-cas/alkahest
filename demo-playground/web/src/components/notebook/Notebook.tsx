@@ -692,7 +692,13 @@ export default function Notebook({
   }
 
   return (
-    <div className={compact ? 'px-2 py-3 space-y-1.5' : 'mx-auto max-w-4xl px-4 py-6 space-y-2'}>
+    <div
+      className={
+        compact
+          ? 'px-2 pt-3 pb-[50vh] space-y-1.5'
+          : 'mx-auto max-w-4xl px-4 pt-6 pb-[50vh] space-y-2'
+      }
+    >
       {/* Toolbar — hidden in zen mode */}
       {!zenMode && <div className="flex items-center gap-2 flex-wrap">
         <button

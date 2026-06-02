@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 import uuid
 from pathlib import Path
 from typing import Any
@@ -12,6 +14,7 @@ import jupyter_client
 from output_parse import classify_rich, postprocess_outputs
 
 SERVER_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SERVER_DIR.parent.parent
 _KERNEL_INIT_CODE = f"""
 import sys
 _p = {repr(str(SERVER_DIR))}
@@ -28,6 +31,26 @@ del _p
 _PREFERRED_KERNEL = "alkahest-dev"
 
 
+def _alkahest_libs_dir() -> Path | None:
+    """Native libs bundled with the +full wheel in the repo .venv."""
+    libs = (
+        REPO_ROOT
+        / ".venv"
+        / f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages/alkahest.libs"
+    )
+    return libs if libs.is_dir() else None
+
+
+def _kernel_env() -> dict[str, str]:
+    """Kernel env: drop dev PYTHONPATH (shadows +full JIT) and set LD_LIBRARY_PATH."""
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    libs = _alkahest_libs_dir()
+    if libs:
+        prev = env.get("LD_LIBRARY_PATH", "")
+        env["LD_LIBRARY_PATH"] = f"{libs}:{prev}" if prev else str(libs)
+    return env
+
+
 class KernelSession:
     def __init__(self) -> None:
         self.id = str(uuid.uuid4())
@@ -39,7 +62,9 @@ class KernelSession:
             kernel_name = _PREFERRED_KERNEL if _PREFERRED_KERNEL in available else None
         except Exception:
             kernel_name = None
-        km_kwargs = {"kernel_name": kernel_name} if kernel_name else {}
+        km_kwargs: dict[str, Any] = {"env": _kernel_env()}
+        if kernel_name:
+            km_kwargs["kernel_name"] = kernel_name
         self.km = jupyter_client.KernelManager(**km_kwargs)
         self.km.start_kernel()
         self.kc = self.km.client()

@@ -4,6 +4,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Dev PYTHONPATH (e.g. repo python/) shadows the +full wheel and disables JIT in kernels.
+unset PYTHONPATH
+
 # Lean 4 certificate verification (elan installs to ~/.elan/bin)
 if [ -d "${HOME}/.elan/bin" ]; then
   export PATH="${HOME}/.elan/bin:${PATH}"
@@ -39,5 +42,22 @@ if [ -n "$LIBS_DIR" ]; then
   export LD_LIBRARY_PATH="${LIBS_DIR}:${LD_LIBRARY_PATH:-}"
 fi
 
-echo "Starting alkahest demo server on port ${PORT:-8000}..."
-exec uvicorn main:app --host 0.0.0.0 --port "${PORT:-8000}" --reload
+PORT="${PORT:-8000}"
+LOG_FILE="${LOG_FILE:-/tmp/alkahest-server.log}"
+
+if [[ "${1:-}" == "--daemon" ]]; then
+  if pgrep -f "uvicorn main:app --host 0.0.0.0 --port ${PORT}" >/dev/null 2>&1; then
+    echo "Stopping existing server on port ${PORT}..."
+    pkill -f "uvicorn main:app --host 0.0.0.0 --port ${PORT}" || true
+    sleep 1
+  fi
+  echo "Starting alkahest demo server on port ${PORT} (background, log: ${LOG_FILE})..."
+  nohup uvicorn main:app --host 0.0.0.0 --port "${PORT}" >>"${LOG_FILE}" 2>&1 &
+  echo "PID $!"
+  sleep 1
+  curl -sf "http://127.0.0.1:${PORT}/health" >/dev/null && echo "Health check: ok" || echo "Health check: failed (see ${LOG_FILE})"
+  exit 0
+fi
+
+echo "Starting alkahest demo server on port ${PORT} (foreground, --reload)..."
+exec uvicorn main:app --host 0.0.0.0 --port "${PORT}" --reload
