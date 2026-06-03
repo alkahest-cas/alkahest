@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "alkahest-cas"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "bitflags 2.11.1",
  "boxcar",
@@ -37,7 +37,7 @@ dependencies = [
 
 [[package]]
 name = "alkahest-mlir"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "alkahest-cas",
  "proptest",
@@ -45,7 +45,7 @@ dependencies = [
 
 [[package]]
 name = "alkahest-py"
-version = "3.1.0"
+version = "3.1.1"
 dependencies = [
  "alkahest-cas",
  "numpy",
