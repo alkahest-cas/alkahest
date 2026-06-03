@@ -99,12 +99,13 @@ use alkahest_core::modular::{
 use alkahest_core::{
     diff as core_diff, diff_forward as core_diff_forward, integrate as core_integrate,
     limit as core_limit, load_from, log_exp_rules, rsolve as core_rsolve, series as core_series,
-    simplify as core_simplify, simplify_egraph as core_simplify_egraph,
-    simplify_egraph_with as core_simplify_egraph_with, simplify_with as core_simplify_with,
-    trig_rules, AlkahestError as AlkahestErrorTrait, DerivedExpr, DiffError, EgraphConfig,
-    IntegrationError, IoError, LimitDirection as CoreLimitDirection, LimitError,
-    LinearRecurrenceError, PatternRule, ProductError, ResultantError, RsolveError, SeriesError,
-    SimplifyConfig, SizeCost, SparseGcdError, SparseInterpError, SumError,
+    simplify as core_simplify, simplify_batch as core_simplify_batch,
+    simplify_egraph as core_simplify_egraph, simplify_egraph_with as core_simplify_egraph_with,
+    simplify_with as core_simplify_with, trig_rules, AlkahestError as AlkahestErrorTrait,
+    DerivedExpr, DiffError, EgraphConfig, IntegrationError, IoError,
+    LimitDirection as CoreLimitDirection, LimitError, LinearRecurrenceError, PatternRule,
+    ProductError, ResultantError, RsolveError, SeriesError, SimplifyConfig, SizeCost,
+    SparseGcdError, SparseInterpError, SumError,
 };
 // V3-1 — Integer number theory
 use alkahest_core::number_theory::{
@@ -4226,7 +4227,10 @@ fn py_sparse_interp(
 
     let fp = core_sparse_interpolate(&rust_eval, var_ids, term_bound, degree_bound, prime, seed)
         .map_err(sparse_interp_error_to_py)?;
-    Ok(PyMultiPolyFp { inner: fp })
+    Ok(PyMultiPolyFp {
+        inner: fp,
+        pool: None,
+    })
 }
 
 /// Compute the primitive GCD of two multivariate polynomials over ℤ using
@@ -5609,7 +5613,23 @@ fn py_solve(
         Ok(SolutionSet::Finite(solutions)) => {
             let list = pyo3::types::PyList::empty_bound(py);
             let pool = pool_py.borrow(py);
-            for sol in solutions {
+            // Symbolic solutions are simplified before hand-off. Sibling roots
+            // (±√disc) and per-variable back-substitutions share large
+            // subexpressions, so simplify them as one batch with a shared memo
+            // rather than re-simplifying common subtrees once per value.
+            let simplified: Vec<Vec<ExprId>> = if numeric {
+                Vec::new()
+            } else {
+                let flat: Vec<ExprId> = solutions.iter().flatten().copied().collect();
+                let mut out = core_simplify_batch(&flat, &pool.inner)
+                    .into_iter()
+                    .map(|d| d.value);
+                solutions
+                    .iter()
+                    .map(|sol| (0..sol.len()).map(|_| out.next().unwrap()).collect())
+                    .collect()
+            };
+            for (s, sol) in solutions.iter().enumerate() {
                 let d = pyo3::types::PyDict::new_bound(py);
                 for (i, val) in sol.iter().enumerate() {
                     let var_expr = PyExpr {
@@ -5623,9 +5643,8 @@ fn py_solve(
                             .unwrap_or(f64::NAN);
                         d.set_item(var_expr.into_py(py), f)?;
                     } else {
-                        let simplified = core_simplify(*val, &pool.inner).value;
                         let val_expr = PyExpr {
-                            id: simplified,
+                            id: simplified[s][i],
                             pool: pool_py.clone_ref(py),
                         };
                         d.set_item(var_expr.into_py(py), val_expr.into_py(py))?;
@@ -5723,6 +5742,9 @@ fn py_triangularize(
 #[pyclass(name = "MultiPolyFp")]
 struct PyMultiPolyFp {
     inner: MultiPolyFp,
+    /// When set, carries the originating pool so variable names survive a
+    /// `reduce_mod` → `lift_crt` round-trip (otherwise vars fall back to `x0`).
+    pool: Option<Py<PyExprPool>>,
 }
 
 #[pymethods]
@@ -5877,7 +5899,10 @@ fn py_nt_discrete_log(
 #[pyo3(name = "modular_reduce")]
 fn py_modular_reduce(poly: PyRef<PyMultiPoly>, p: u64) -> PyResult<PyMultiPolyFp> {
     core_reduce_mod(&poly.inner, p)
-        .map(|fp| PyMultiPolyFp { inner: fp })
+        .map(|fp| PyMultiPolyFp {
+            inner: fp,
+            pool: poly.pool.clone(),
+        })
         .map_err(modular_error_to_py)
 }
 
@@ -5901,11 +5926,11 @@ fn py_modular_lift_crt(
         .zip(primes.iter())
         .map(|(p, &prime)| (p.inner.clone(), prime))
         .collect();
+    // Preserve variable names from the first image's originating pool so the
+    // reconstructed polynomial round-trips to the same string representation.
+    let pool = polys.first().and_then(|p| p.pool.clone());
     core_lift_crt(&images)
-        .map(|mp| PyMultiPoly {
-            inner: mp,
-            pool: None,
-        })
+        .map(|mp| PyMultiPoly { inner: mp, pool })
         .map_err(modular_error_to_py)
 }
 

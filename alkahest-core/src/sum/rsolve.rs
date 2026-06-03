@@ -973,7 +973,7 @@ pub fn rsolve(
             let r = -hom_norm[1].clone();
             let re = rational_atom(pool, &r);
             let c0 = pool.symbol("C0", crate::kernel::Domain::Real);
-            let h = if r == Rational::from(1) {
+            let h = if r == 1 {
                 c0
             } else {
                 simp(pool, pool.mul(vec![c0, pool.pow(re, n)]))

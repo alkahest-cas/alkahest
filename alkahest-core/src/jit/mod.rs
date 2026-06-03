@@ -764,7 +764,7 @@ fn snapshot_expr(root: ExprId, pool: &ExprPool) -> ExprSnapshot {
     ExprSnapshot { nodes }
 }
 
-fn snap_data<'a>(snap: &'a ExprSnapshot, id: ExprId) -> Option<&'a ExprData> {
+fn snap_data(snap: &ExprSnapshot, id: ExprId) -> Option<&ExprData> {
     snap.nodes.get(&id)
 }
 

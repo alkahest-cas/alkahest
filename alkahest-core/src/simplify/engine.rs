@@ -337,6 +337,52 @@ pub fn simplify(expr: ExprId, pool: &ExprPool) -> DerivedExpr<ExprId> {
     simplify_with(expr, pool, &rules_for_config(&config), config)
 }
 
+/// Simplify several expressions, sharing the per-pass memo across all of them.
+///
+/// Each result is identical to calling [`simplify`] on the corresponding input
+/// individually (`simplify_node` is a pure function of its `ExprId`), but
+/// subexpressions common to multiple inputs — e.g. a shared `sqrt` of a
+/// discriminant in a polynomial solver's `±` roots — are simplified once per
+/// pass instead of once per expression. This is the bulk-simplify fast path for
+/// callers like `solve`, which emit clusters of structurally overlapping terms.
+pub fn simplify_batch(exprs: &[ExprId], pool: &ExprPool) -> Vec<DerivedExpr<ExprId>> {
+    let config = SimplifyConfig::default();
+    let rules = rules_for_config(&config);
+
+    let mut current: Vec<ExprId> = exprs.to_vec();
+    let mut logs: Vec<DerivationLog> = vec![DerivationLog::new(); exprs.len()];
+    let mut done = vec![false; exprs.len()];
+
+    for _ in 0..config.max_iterations {
+        // One memo shared by every input in this pass: a subexpression that
+        // appears in more than one input is simplified only the first time.
+        let mut memo: HashMap<ExprId, ExprId> = HashMap::new();
+        let mut any_changed = false;
+        for i in 0..current.len() {
+            if done[i] {
+                continue;
+            }
+            let result = simplify_node(current[i], pool, &rules, &mut memo);
+            logs[i] = std::mem::take(&mut logs[i]).merge(result.log);
+            if result.value == current[i] {
+                done[i] = true;
+            } else {
+                current[i] = result.value;
+                any_changed = true;
+            }
+        }
+        if !any_changed {
+            break;
+        }
+    }
+
+    current
+        .into_iter()
+        .zip(logs)
+        .map(|(value, log)| DerivedExpr::with_log(value, log))
+        .collect()
+}
+
 /// Simplify `expr` with expansion enabled (`(a+b)*c → a*c + b*c`).
 pub fn simplify_expanded(expr: ExprId, pool: &ExprPool) -> DerivedExpr<ExprId> {
     let config = SimplifyConfig {
@@ -477,6 +523,29 @@ mod tests {
         let r = simplify(x, &pool);
         assert_eq!(r.value, x);
         assert!(r.log.is_empty());
+    }
+
+    #[test]
+    fn simplify_batch_matches_individual() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        // Inputs that share subexpressions: `x + 0` appears inside both, and the
+        // second reuses the (unsimplified) first as a subterm.
+        let a = pool.add(vec![x, pool.integer(0_i32)]);
+        let b = pool.mul(vec![pool.add(vec![y, pool.integer(0_i32)]), a]);
+        let c = pool.pow(x, pool.integer(1_i32));
+        let inputs = [a, b, c];
+
+        let batched = simplify_batch(&inputs, &pool);
+        assert_eq!(batched.len(), inputs.len());
+        for (i, &input) in inputs.iter().enumerate() {
+            let individual = simplify(input, &pool);
+            assert_eq!(
+                batched[i].value, individual.value,
+                "batch result for input {i} must equal simplify()"
+            );
+        }
     }
 
     #[test]

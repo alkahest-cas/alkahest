@@ -597,10 +597,7 @@ fn bench_jit(c: &mut Criterion) {
     g.bench_function("interp_piecewise", |b| {
         let p = fresh_pool();
         let x = p.symbol("x", Domain::Real);
-        let pw = p.piecewise(
-            vec![(p.pred_gt(x, p.integer(0_i32)), x)],
-            p.integer(-1_i32),
-        );
+        let pw = p.piecewise(vec![(p.pred_gt(x, p.integer(0_i32)), x)], p.integer(-1_i32));
         let mut env = HashMap::new();
         env.insert(x, 1.5f64);
         b.iter(|| eval_interp(codspeed_criterion_compat::black_box(pw), &env, &p));
@@ -609,10 +606,7 @@ fn bench_jit(c: &mut Criterion) {
     g.bench_function("compiled_piecewise", |b| {
         let p = fresh_pool();
         let x = p.symbol("x", Domain::Real);
-        let pw = p.piecewise(
-            vec![(p.pred_gt(x, p.integer(0_i32)), x)],
-            p.integer(-1_i32),
-        );
+        let pw = p.piecewise(vec![(p.pred_gt(x, p.integer(0_i32)), x)], p.integer(-1_i32));
         let f = compile(pw, &[x], &p).expect("compile piecewise");
         b.iter(|| f.call(codspeed_criterion_compat::black_box(&[1.5f64])));
     });
@@ -658,10 +652,7 @@ fn bench_ball(c: &mut Criterion) {
     g.bench_function("interval_eval_piecewise", |b| {
         let p = fresh_pool();
         let x = p.symbol("x", Domain::Real);
-        let pw = p.piecewise(
-            vec![(p.pred_gt(x, p.integer(0_i32)), x)],
-            p.integer(-1_i32),
-        );
+        let pw = p.piecewise(vec![(p.pred_gt(x, p.integer(0_i32)), x)], p.integer(-1_i32));
         let x_ball = ArbBall::from_midpoint_radius(1.0, 0.1, 128);
         b.iter(|| {
             let mut ev = IntervalEval::new(128);
