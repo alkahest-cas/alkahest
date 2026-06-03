@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import math
 
-import pytest
-
 import alkahest
+import pytest
 from alkahest import PoolError
 
 
@@ -69,9 +68,7 @@ def test_product_inverted_bounds():
 def test_product_factorial_no_spurious_one_pow():
     p = alkahest.ExprPool()
     k, n = p.symbol("k"), p.symbol("n")
-    expr = alkahest.simplify(
-        alkahest.product_definite(k, k, p.integer(1), n).value
-    ).value
+    expr = alkahest.simplify(alkahest.product_definite(k, k, p.integer(1), n).value).value
     s = str(expr)
     assert "1^n" not in s
     fc = alkahest.compile_expr(expr, [n])
@@ -97,7 +94,7 @@ def test_solve_simplified_radicals():
     sols = alkahest.solve([x**2 - 1], [x])
     assert len(sols) == 2
     for s in sols:
-        val = list(s.values())[0]
+        val = next(iter(s.values()))
         simp = alkahest.simplify(val).value
         t = str(simp)
         if t in ("1", "-1", "1.0", "-1.0") or "sqrt" in t:

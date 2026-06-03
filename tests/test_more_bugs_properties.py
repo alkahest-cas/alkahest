@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import math
 
+import alkahest as ak
 import hypothesis.strategies as st
 import pytest
-from hypothesis import given
-
-import alkahest as ak
 from alkahest import NumberTheoryError
 from alkahest.number_theory import factorint, isprime
+from hypothesis import given
 
 perfect_square_n = st.integers(min_value=1, max_value=50)
 

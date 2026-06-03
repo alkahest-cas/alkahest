@@ -836,6 +836,7 @@ __all__ = [
     "ParseError",
     "PoolError",
     "Port",
+    "PrimaryComponent",
     # PA-5
     "PrimitiveRegistry",
     "Product",
@@ -943,9 +944,9 @@ __all__ = [
     # Phase 27
     "poly_normal",
     "primary_decomposition",
-    "PrimaryComponent",
     "product_definite",
     "product_indefinite",
+    "radical",
     # V2-4
     "real_roots",
     "refine_root",
@@ -955,7 +956,6 @@ __all__ = [
     # V2-13 — Differential algebra / Rosenfeld–Gröbner (groebner default feature)
     "rosenfeld_groebner",
     "round",
-    "radical",
     "rsolve",
     "satisfiable",
     "sensitivity_system",

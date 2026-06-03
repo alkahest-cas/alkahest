@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import math
 
-import pytest
-
 import alkahest as ak
+import pytest
 from alkahest import NumberTheoryError
 from alkahest.number_theory import factorint, isprime
 
@@ -16,8 +15,10 @@ def test_multipoly_display_uses_symbol_names() -> None:
     x, y = pool.symbol("x"), pool.symbol("y")
     f = ak.MultiPoly.from_symbolic((x + y) * (x - y), [x, y])
     s = str(f)
-    assert "x" in s and "y" in s
-    assert "x0" not in s and "x1" not in s
+    assert "x" in s
+    assert "y" in s
+    assert "x0" not in s
+    assert "x1" not in s
 
 
 def test_sqrt_integer_simplifies() -> None:
