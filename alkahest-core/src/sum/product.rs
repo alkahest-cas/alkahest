@@ -19,6 +19,37 @@ fn simp(pool: &ExprPool, e: ExprId) -> ExprId {
     simplify(e, pool).value
 }
 
+fn const_i64(pool: &ExprPool, e: ExprId) -> Option<i64> {
+    match pool.get(e) {
+        ExprData::Integer(n) => n.0.to_i64(),
+        _ => None,
+    }
+}
+
+fn is_one_expr(pool: &ExprPool, e: ExprId) -> bool {
+    matches!(pool.get(e), ExprData::Integer(n) if n.0 == 1)
+}
+
+/// Fold `1^n → 1` and drop multiplicative ones (cosmetic normal form for ∏ results).
+fn fold_pow_one_bases(pool: &ExprPool, e: ExprId) -> ExprId {
+    match pool.get(e) {
+        ExprData::Pow { base, .. } if is_one_expr(pool, base) => pool.integer(1_i32),
+        ExprData::Mul(args) => {
+            let folded: Vec<ExprId> = args
+                .iter()
+                .map(|&a| fold_pow_one_bases(pool, a))
+                .filter(|&a| !is_one_expr(pool, a))
+                .collect();
+            match folded.len() {
+                0 => pool.integer(1_i32),
+                1 => folded[0],
+                _ => pool.mul(folded),
+            }
+        }
+        _ => e,
+    }
+}
+
 /// Errors raised by discrete product evaluation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProductError {
@@ -345,6 +376,15 @@ pub fn product_definite(
         return Ok(DerivedExpr::with_log(z, log));
     }
 
+    if let (Some(lo_i), Some(hi_i)) = (const_i64(pool, lo), const_i64(pool, hi)) {
+        if lo_i > hi_i {
+            let one = simp(pool, pool.integer(1_i32));
+            let mut log = DerivationLog::new();
+            log.push(RewriteStep::simple("product_definite_empty", term, one));
+            return Ok(DerivedExpr::with_log(one, log));
+        }
+    }
+
     let univ_n = ratuni_poly_to_univ(&rf.num, k)?;
     let univ_d = ratuni_poly_to_univ(&rf.den, k)?;
     let fac_n = factor_univ(&univ_n)?;
@@ -362,6 +402,7 @@ pub fn product_definite(
         pool,
         pool.mul(vec![top, pool.pow(bot, pool.integer(-1_i32))]),
     );
+    let q = fold_pow_one_bases(pool, q);
 
     let mut log = DerivationLog::new();
     log.push(RewriteStep::simple("product_definite", term, q));
@@ -432,6 +473,16 @@ mod tests {
             }
             _ => eval_interp(expr, env, pool),
         }
+    }
+
+    #[test]
+    fn product_definite_empty_when_lo_gt_hi() {
+        let pool = ExprPool::new();
+        let k = pool.symbol("k", Domain::Real);
+        let lo = pool.integer(5_i32);
+        let hi = pool.integer(3_i32);
+        let p = product_definite(k, k, lo, hi, &pool).expect("prod");
+        assert_eq!(p.value, pool.integer(1_i32));
     }
 
     #[test]

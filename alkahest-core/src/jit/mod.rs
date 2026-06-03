@@ -40,6 +40,8 @@
 //! assert!((result - 25.0).abs() < 1e-10);
 //! ```
 
+use crate::kernel::eval_const::try_predicate_bool_from_expr;
+use crate::kernel::expr::PredicateKind;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use std::collections::HashMap;
 use std::fmt;
@@ -557,6 +559,65 @@ pub fn eval_interp(expr: ExprId, env: &HashMap<ExprId, f64>, pool: &ExprPool) ->
     eval_interp_inner(expr, env, pool, &mut memo)
 }
 
+fn eval_interp_predicate(
+    pred: ExprId,
+    env: &HashMap<ExprId, f64>,
+    pool: &ExprPool,
+    memo: &mut HashMap<ExprId, f64>,
+) -> Option<bool> {
+    if let Some(b) = try_predicate_bool_from_expr(pred, pool) {
+        return Some(b);
+    }
+    let ExprData::Predicate { kind, args } = pool.get(pred) else {
+        return None;
+    };
+    match kind {
+        PredicateKind::True => Some(true),
+        PredicateKind::False => Some(false),
+        PredicateKind::Not => Some(!eval_interp_predicate(args[0], env, pool, memo)?),
+        PredicateKind::And => {
+            for &a in &args {
+                if !eval_interp_predicate(a, env, pool, memo)? {
+                    return Some(false);
+                }
+            }
+            Some(true)
+        }
+        PredicateKind::Or => {
+            for &a in &args {
+                if eval_interp_predicate(a, env, pool, memo)? {
+                    return Some(true);
+                }
+            }
+            Some(false)
+        }
+        PredicateKind::Lt => Some(
+            eval_interp_inner(args[0], env, pool, memo)?
+                < eval_interp_inner(args[1], env, pool, memo)?,
+        ),
+        PredicateKind::Le => Some(
+            eval_interp_inner(args[0], env, pool, memo)?
+                <= eval_interp_inner(args[1], env, pool, memo)?,
+        ),
+        PredicateKind::Gt => Some(
+            eval_interp_inner(args[0], env, pool, memo)?
+                > eval_interp_inner(args[1], env, pool, memo)?,
+        ),
+        PredicateKind::Ge => Some(
+            eval_interp_inner(args[0], env, pool, memo)?
+                >= eval_interp_inner(args[1], env, pool, memo)?,
+        ),
+        PredicateKind::Eq => Some(
+            eval_interp_inner(args[0], env, pool, memo)?
+                == eval_interp_inner(args[1], env, pool, memo)?,
+        ),
+        PredicateKind::Ne => Some(
+            eval_interp_inner(args[0], env, pool, memo)?
+                != eval_interp_inner(args[1], env, pool, memo)?,
+        ),
+    }
+}
+
 fn eval_interp_inner(
     expr: ExprId,
     env: &HashMap<ExprId, f64>,
@@ -607,6 +668,21 @@ fn eval_interp_inner(
                 _ => return None,
             })
         }
+        ExprData::Piecewise { branches, default } => {
+            for (c, v) in branches {
+                match eval_interp_predicate(c, env, pool, memo) {
+                    Some(true) => return eval_interp_inner(v, env, pool, memo),
+                    Some(false) => {}
+                    None => return None,
+                }
+            }
+            eval_interp_inner(default, env, pool, memo)
+        }
+        ExprData::Predicate { .. } => Some(if eval_interp_predicate(expr, env, pool, memo)? {
+            1.0
+        } else {
+            0.0
+        }),
         _ => None,
     };
     if let Some(v) = val {
@@ -671,11 +747,134 @@ fn snapshot_expr(root: ExprId, pool: &ExprPool) -> ExprSnapshot {
                 stack.push(*base);
                 stack.push(*exp);
             }
+            ExprData::Piecewise { branches, default } => {
+                for (c, v) in branches {
+                    stack.push(*c);
+                    stack.push(*v);
+                }
+                stack.push(*default);
+            }
+            ExprData::Predicate { args, .. } => {
+                stack.extend_from_slice(args);
+            }
             _ => {}
         }
         nodes.insert(id, data);
     }
     ExprSnapshot { nodes }
+}
+
+fn snap_data<'a>(snap: &'a ExprSnapshot, id: ExprId) -> Option<&'a ExprData> {
+    snap.nodes.get(&id)
+}
+
+fn try_expr_f64_snap(
+    expr: ExprId,
+    snap: &ExprSnapshot,
+    env: &HashMap<ExprId, f64>,
+    memo: &mut HashMap<ExprId, f64>,
+) -> Option<f64> {
+    if let Some(&cached) = memo.get(&expr) {
+        return Some(cached);
+    }
+    let val = match snap_data(snap, expr)? {
+        ExprData::Integer(n) => Some(n.0.to_f64()),
+        ExprData::Rational(r) => {
+            let (n, d) = r.0.clone().into_numer_denom();
+            Some(n.to_f64() / d.to_f64())
+        }
+        ExprData::Float(f) => Some(f.inner.to_f64()),
+        ExprData::Symbol { .. } => env.get(&expr).copied(),
+        ExprData::Add(args) => {
+            let mut s = 0.0f64;
+            for &a in args {
+                s += try_expr_f64_snap(a, snap, env, memo)?;
+            }
+            Some(s)
+        }
+        ExprData::Mul(args) => {
+            let mut p = 1.0f64;
+            for &a in args {
+                p *= try_expr_f64_snap(a, snap, env, memo)?;
+            }
+            Some(p)
+        }
+        ExprData::Pow { base, exp } => Some(
+            try_expr_f64_snap(*base, snap, env, memo)?
+                .powf(try_expr_f64_snap(*exp, snap, env, memo)?),
+        ),
+        _ => None,
+    };
+    if let Some(v) = val {
+        memo.insert(expr, v);
+    }
+    val
+}
+
+fn try_predicate_bool_snap(
+    kind: &PredicateKind,
+    args: &[ExprId],
+    snap: &ExprSnapshot,
+    env: &HashMap<ExprId, f64>,
+    memo: &mut HashMap<ExprId, f64>,
+) -> Option<bool> {
+    match kind {
+        PredicateKind::True => Some(true),
+        PredicateKind::False => Some(false),
+        PredicateKind::Not => Some(!try_predicate_bool_snap_expr(args[0], snap, env, memo)?),
+        PredicateKind::And => {
+            for &a in args {
+                if !try_predicate_bool_snap_expr(a, snap, env, memo)? {
+                    return Some(false);
+                }
+            }
+            Some(true)
+        }
+        PredicateKind::Or => {
+            for &a in args {
+                if try_predicate_bool_snap_expr(a, snap, env, memo)? {
+                    return Some(true);
+                }
+            }
+            Some(false)
+        }
+        PredicateKind::Lt => Some(
+            try_expr_f64_snap(args[0], snap, env, memo)?
+                < try_expr_f64_snap(args[1], snap, env, memo)?,
+        ),
+        PredicateKind::Le => Some(
+            try_expr_f64_snap(args[0], snap, env, memo)?
+                <= try_expr_f64_snap(args[1], snap, env, memo)?,
+        ),
+        PredicateKind::Gt => Some(
+            try_expr_f64_snap(args[0], snap, env, memo)?
+                > try_expr_f64_snap(args[1], snap, env, memo)?,
+        ),
+        PredicateKind::Ge => Some(
+            try_expr_f64_snap(args[0], snap, env, memo)?
+                >= try_expr_f64_snap(args[1], snap, env, memo)?,
+        ),
+        PredicateKind::Eq => Some(
+            try_expr_f64_snap(args[0], snap, env, memo)?
+                == try_expr_f64_snap(args[1], snap, env, memo)?,
+        ),
+        PredicateKind::Ne => Some(
+            try_expr_f64_snap(args[0], snap, env, memo)?
+                != try_expr_f64_snap(args[1], snap, env, memo)?,
+        ),
+    }
+}
+
+fn try_predicate_bool_snap_expr(
+    expr: ExprId,
+    snap: &ExprSnapshot,
+    env: &HashMap<ExprId, f64>,
+    memo: &mut HashMap<ExprId, f64>,
+) -> Option<bool> {
+    match snap_data(snap, expr)? {
+        ExprData::Predicate { kind, args } => try_predicate_bool_snap(kind, args, snap, env, memo),
+        _ => None,
+    }
 }
 
 fn eval_interp_snap(
@@ -729,6 +928,16 @@ fn eval_interp_snap(
                 "abs" => x.abs(),
                 _ => return None,
             })
+        }
+        ExprData::Piecewise { branches, default } => {
+            for (c, v) in branches {
+                match try_predicate_bool_snap_expr(*c, snap, env, memo) {
+                    Some(true) => return eval_interp_snap(*v, env, snap, memo),
+                    Some(false) => {}
+                    None => return None,
+                }
+            }
+            eval_interp_snap(*default, env, snap, memo)
         }
         _ => None,
     };
@@ -1272,6 +1481,42 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let f = compile(x, &[x], &pool).unwrap();
         f.call(&[]);
+    }
+
+    #[test]
+    fn interp_piecewise_positive_branch() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let pw = pool.piecewise(
+            vec![(pool.pred_gt(x, pool.integer(0_i32)), x)],
+            pool.integer(-1_i32),
+        );
+        let mut env = HashMap::new();
+        env.insert(x, 2.0);
+        let v = eval_interp(pw, &env, &pool).unwrap();
+        assert!((v - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn compiled_piecewise_matches_interp() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let pw = pool.piecewise(
+            vec![(pool.pred_gt(x, pool.integer(0_i32)), x)],
+            pool.integer(-1_i32),
+        );
+        let f = compile(pw, &[x], &pool).unwrap();
+        for xv in [-2.0, -0.5, 0.5, 3.0] {
+            let mut env = HashMap::new();
+            env.insert(x, xv);
+            let direct = eval_interp(pw, &env, &pool).unwrap();
+            let compiled = f.call(&[xv]);
+            assert!(
+                (direct - compiled).abs() < 1e-12,
+                "piecewise mismatch at x={xv}: interp={direct} compiled={compiled}"
+            );
+            assert!(!compiled.is_nan());
+        }
     }
 
     /// Regression: shared DAG node (same ExprId used twice) should evaluate

@@ -140,6 +140,23 @@ fn is_wildcard(name: &str) -> bool {
     name.starts_with(|c: char| c.is_lowercase())
 }
 
+fn is_pattern_wildcard(name: &str, wildcards: bool) -> bool {
+    wildcards && is_wildcard(name)
+}
+
+/// Options for [`match_pattern`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MatchConfig {
+    /// When `false`, every symbol in the pattern is treated as a literal.
+    pub wildcards: bool,
+}
+
+impl Default for MatchConfig {
+    fn default() -> Self {
+        Self { wildcards: true }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Core matching — non-AC
 // ---------------------------------------------------------------------------
@@ -152,6 +169,7 @@ fn match_one(
     subst: Substitution,
     pool: &ExprPool,
     ac_depth: usize,
+    cfg: MatchConfig,
 ) -> Option<Substitution> {
     enum PatNode {
         Wildcard(String),
@@ -175,7 +193,9 @@ fn match_one(
     }
 
     let pat_node = pool.with(pat, |data| match data {
-        ExprData::Symbol { name, .. } if is_wildcard(name) => PatNode::Wildcard(name.clone()),
+        ExprData::Symbol { name, .. } if is_pattern_wildcard(name, cfg.wildcards) => {
+            PatNode::Wildcard(name.clone())
+        }
         ExprData::Symbol { name, .. } => PatNode::Symbol(name.clone()),
         ExprData::Integer(n) => PatNode::Integer(n.0.to_i64().unwrap_or(i64::MIN)),
         ExprData::Add(args) => PatNode::Add(args.clone()),
@@ -236,9 +256,9 @@ fn match_one(
             };
             if ac_depth >= MAX_AC_DEPTH {
                 // Fall back to exact positional matching to bound depth
-                return match_args_exact(&pat_args, &expr_args, subst, pool, ac_depth + 1);
+                return match_args_exact(&pat_args, &expr_args, subst, pool, ac_depth + 1, cfg);
             }
-            match_ac_args(&pat_args, &expr_args, subst, pool, ac_depth, true)
+            match_ac_args(&pat_args, &expr_args, subst, pool, ac_depth, true, cfg)
         }
 
         // AC-aware Mul matching
@@ -247,9 +267,9 @@ fn match_one(
                 return None;
             };
             if ac_depth >= MAX_AC_DEPTH {
-                return match_args_exact(&pat_args, &expr_args, subst, pool, ac_depth + 1);
+                return match_args_exact(&pat_args, &expr_args, subst, pool, ac_depth + 1, cfg);
             }
-            match_ac_args(&pat_args, &expr_args, subst, pool, ac_depth, true)
+            match_ac_args(&pat_args, &expr_args, subst, pool, ac_depth, false, cfg)
         }
 
         // Pow — exact structural match
@@ -257,8 +277,8 @@ fn match_one(
             let ExprNode::Pow(eb, ee) = expr_node else {
                 return None;
             };
-            let s = match_one(pb, eb, subst, pool, ac_depth + 1)?;
-            match_one(pe, ee, s, pool, ac_depth + 1)
+            let s = match_one(pb, eb, subst, pool, ac_depth + 1, cfg)?;
+            match_one(pe, ee, s, pool, ac_depth + 1, cfg)
         }
 
         // Named function — name must match, args AC-matched if Add/Mul
@@ -269,7 +289,7 @@ fn match_one(
             if pname != ename {
                 return None;
             }
-            match_args_exact(&pargs, &eargs, subst, pool, ac_depth + 1)
+            match_args_exact(&pargs, &eargs, subst, pool, ac_depth + 1, cfg)
         }
 
         // Rational/Float literal in pattern — match only if same id (structural equality)
@@ -290,13 +310,14 @@ fn match_args_exact(
     subst: Substitution,
     pool: &ExprPool,
     ac_depth: usize,
+    cfg: MatchConfig,
 ) -> Option<Substitution> {
     if pat_args.len() != expr_args.len() {
         return None;
     }
     let mut s = subst;
     for (&p, &e) in pat_args.iter().zip(expr_args.iter()) {
-        s = match_one(p, e, s, pool, ac_depth)?;
+        s = match_one(p, e, s, pool, ac_depth, cfg)?;
     }
     Some(s)
 }
@@ -323,6 +344,7 @@ fn match_ac_args(
     pool: &ExprPool,
     ac_depth: usize,
     is_add: bool,
+    cfg: MatchConfig,
 ) -> Option<Substitution> {
     if pat_args.is_empty() && expr_args.is_empty() {
         return Some(subst);
@@ -333,7 +355,7 @@ fn match_ac_args(
 
     // Exact-length case: try all permutations
     if pat_args.len() == expr_args.len() {
-        return try_permutations(pat_args, expr_args, subst, pool, ac_depth);
+        return try_permutations(pat_args, expr_args, subst, pool, ac_depth, cfg);
     }
 
     // Pattern is shorter: try matching a subset of expr_args to the first
@@ -341,10 +363,12 @@ fn match_ac_args(
     // (only if it's a wildcard).
     if pat_args.len() < expr_args.len() {
         let last_pat = *pat_args.last().unwrap();
-        let is_last_wildcard = pool.with(
-            last_pat,
-            |data| matches!(data, ExprData::Symbol { name, .. } if is_wildcard(name)),
-        );
+        let is_last_wildcard = pool.with(last_pat, |data| {
+            matches!(
+                data,
+                ExprData::Symbol { name, .. } if is_pattern_wildcard(name, cfg.wildcards)
+            )
+        });
 
         if !is_last_wildcard {
             // Can't absorb remainder — no match
@@ -355,7 +379,7 @@ fn match_ac_args(
         // Try all size-(prefix_len) subsets of expr_args for the prefix pattern args
         let indices: Vec<usize> = (0..expr_args.len()).collect();
         return try_subsets(
-            pat_args, expr_args, &indices, prefix_len, subst, pool, ac_depth, is_add,
+            pat_args, expr_args, &indices, prefix_len, subst, pool, ac_depth, is_add, cfg,
         );
     }
 
@@ -370,6 +394,7 @@ fn try_permutations(
     subst: Substitution,
     pool: &ExprPool,
     ac_depth: usize,
+    cfg: MatchConfig,
 ) -> Option<Substitution> {
     // Generate permutations via Heap's algorithm
     let mut perm: Vec<usize> = (0..expr_args.len()).collect();
@@ -378,7 +403,14 @@ fn try_permutations(
         let mut s = subst.clone();
         let mut ok = true;
         for (i, &pat_id) in pat_args.iter().enumerate() {
-            match match_one(pat_id, expr_args[perm[i]], s.clone(), pool, ac_depth + 1) {
+            match match_one(
+                pat_id,
+                expr_args[perm[i]],
+                s.clone(),
+                pool,
+                ac_depth + 1,
+                cfg,
+            ) {
                 Some(new_s) => s = new_s,
                 None => {
                     ok = false;
@@ -430,6 +462,7 @@ fn try_subsets(
     pool: &ExprPool,
     ac_depth: usize,
     is_add: bool,
+    cfg: MatchConfig,
 ) -> Option<Substitution> {
     if prefix_len == 0 {
         // All expr_args go to the last wildcard
@@ -480,6 +513,7 @@ fn try_subsets(
             subst.clone(),
             pool,
             ac_depth + 1,
+            cfg,
         ) {
             if let Some(final_s) = try_subsets(
                 pat_args,
@@ -490,6 +524,7 @@ fn try_subsets(
                 pool,
                 ac_depth,
                 is_add,
+                cfg,
             ) {
                 return Some(final_s);
             }
@@ -523,15 +558,30 @@ fn try_subsets(
 /// assert!(!matches.is_empty());
 /// ```
 pub fn match_pattern(pattern: &Pattern, expr: ExprId, pool: &ExprPool) -> Vec<Substitution> {
+    match_pattern_with_config(pattern, expr, pool, MatchConfig::default())
+}
+
+pub fn match_pattern_with_config(
+    pattern: &Pattern,
+    expr: ExprId,
+    pool: &ExprPool,
+    cfg: MatchConfig,
+) -> Vec<Substitution> {
     let mut results = Vec::new();
-    collect_matches(pattern.root, expr, pool, &mut results);
+    collect_matches(pattern.root, expr, pool, cfg, &mut results);
     results
 }
 
 /// Recursively search `expr` and its sub-expressions for matches of `pat`.
-fn collect_matches(pat: ExprId, expr: ExprId, pool: &ExprPool, results: &mut Vec<Substitution>) {
+fn collect_matches(
+    pat: ExprId,
+    expr: ExprId,
+    pool: &ExprPool,
+    cfg: MatchConfig,
+    results: &mut Vec<Substitution>,
+) {
     // Try matching at this node
-    if let Some(s) = match_one(pat, expr, Substitution::new(), pool, 0) {
+    if let Some(s) = match_one(pat, expr, Substitution::new(), pool, 0, cfg) {
         results.push(s);
     }
 
@@ -544,7 +594,7 @@ fn collect_matches(pat: ExprId, expr: ExprId, pool: &ExprPool, results: &mut Vec
     });
 
     for child in children {
-        collect_matches(pat, child, pool, results);
+        collect_matches(pat, child, pool, cfg, results);
     }
 }
 
@@ -646,6 +696,18 @@ mod tests {
         let pat = Pattern::from_expr(p.add(vec![a, b]));
         let matches = match_pattern(&pat, f, &p);
         assert!(!matches.is_empty(), "should find a+b inside f(x+y)");
+    }
+
+    #[test]
+    fn literal_symbol_pattern_no_wildcard_binding() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        let expr = p.pow(x, p.integer(2_i32));
+        let pat = Pattern::from_expr(x);
+        let wild = match_pattern(&pat, expr, &p);
+        assert!(wild.iter().any(|s| s.bindings.get("x") == Some(&expr)));
+        let literal = match_pattern_with_config(&pat, expr, &p, MatchConfig { wildcards: false });
+        assert!(!literal.iter().any(|s| s.bindings.get("x") == Some(&expr)));
     }
 
     #[test]

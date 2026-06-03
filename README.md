@@ -201,12 +201,12 @@ x, y = pool.symbol("x"), pool.symbol("y")
 # Recover a sparse univariate f ∈ 𝔽ₚ[x] from 2T black-box evaluations
 p = 32749  # prime
 target = lambda v: (v**5 + 3*v**3 + 7) % p  # hidden: x^5 + 3x^3 + 7
-f = ak.sparse_interp_univariate(target, T=3, prime=p)
+f = ak.sparse_interp_univariate(target, term_bound=3, prime=p)
 print(f)   # recovered polynomial
 
 # Recover a sparse multivariate f ∈ 𝔽ₚ[x, y] via Zippel's algorithm
 target2 = lambda vals: (vals[0]**3 * vals[1]**2 + vals[0] * vals[1]**4) % p
-g = ak.sparse_interp(target2, vars=[x, y], T=2, D=5, prime=p)
+g = ak.sparse_interp(target2, vars=[x, y], term_bound=2, degree_bound=5, prime=p)
 print(g)   # recovered MultiPolyFp
 
 # Sparse modular GCD over ℤ[x₁,...,xₙ]

@@ -39,8 +39,14 @@ def test_factorint_f5_matches_sympy_shape() -> None:
 
 
 def test_factorint_zero_negative() -> None:
-    assert factorint(0) == {0: 1}
+    with pytest.raises(NumberTheoryError):
+        factorint(0)
     assert factorint(-12) == {-1: 1, 2: 2, 3: 1}
+
+
+def test_isprime_negative_raises() -> None:
+    with pytest.raises(NumberTheoryError):
+        isprime(-5)
 
 
 def test_nextprime_and_totient() -> None:

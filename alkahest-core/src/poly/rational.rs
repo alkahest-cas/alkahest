@@ -229,6 +229,23 @@ fn from_flintpoly(fp: &FlintPoly, vars: Vec<ExprId>) -> MultiPoly {
     MultiPoly { vars, terms }
 }
 
+impl RationalFunction {
+    /// Pretty-print using symbol names from *pool*.
+    pub fn display_with(&self, pool: &ExprPool) -> String {
+        let d_is_one =
+            self.denom.terms.len() == 1 && self.denom.terms.get(&vec![]).is_some_and(|c| *c == 1);
+        if d_is_one {
+            self.numer.display_with(pool)
+        } else {
+            format!(
+                "({}) / ({})",
+                self.numer.display_with(pool),
+                self.denom.display_with(pool)
+            )
+        }
+    }
+}
+
 impl fmt::Display for RationalFunction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let d_is_one =

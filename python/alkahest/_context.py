@@ -10,7 +10,7 @@ Example
 -------
 >>> import alkahest
 >>> p = alkahest.ExprPool()
->>> with alkahest.context(pool=p, domain=alkahest.Domain.Real, simplify=True):
+>>> with alkahest.context(pool=p, domain="real", simplify=True):
 ...     x = alkahest.symbol("x")          # domain and pool inferred
 ...     expr = x ** 2
 ...     d = alkahest.diff(expr, x)        # simplify applied automatically
@@ -68,8 +68,8 @@ def context(
     domain : Domain, optional
         Default domain for ``alkahest.symbol(name)`` calls that omit ``domain``.
     simplify : bool
-        When ``True``, Alkahest helper functions that accept a ``simplify``
-        keyword will default to simplifying their result.
+        Reserved for future use: stored in the context and visible via
+        :func:`simplify_enabled`, but operations do not auto-simplify yet.
     precision : int, optional
         Default MPFR precision in bits for ball-arithmetic operations.
     **extra

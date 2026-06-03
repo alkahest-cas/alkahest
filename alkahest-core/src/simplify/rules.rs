@@ -231,6 +231,49 @@ impl RewriteRule for PowOne {
 }
 
 // ---------------------------------------------------------------------------
+// SqrtInteger: sqrt(n) → m when n is a perfect square (n, m > 0)
+// ---------------------------------------------------------------------------
+
+pub struct SqrtInteger;
+
+impl RewriteRule for SqrtInteger {
+    fn name(&self) -> &'static str {
+        "sqrt_integer"
+    }
+
+    fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
+        let arg = match pool.get(expr) {
+            ExprData::Func { name, args } if name == "sqrt" && args.len() == 1 => args[0],
+            _ => return None,
+        };
+        let n = as_integer(arg, pool)?;
+        if n <= 0 {
+            return None;
+        }
+        let n_u = n.to_u64()?;
+        let root = integer_sqrt_u64(n_u)?;
+        if root * root != n_u {
+            return None;
+        }
+        let after = pool.integer(i64::try_from(root).ok()?);
+        Some((after, one_step(self.name(), expr, after)))
+    }
+}
+
+fn integer_sqrt_u64(n: u64) -> Option<u64> {
+    if n == 0 {
+        return Some(0);
+    }
+    let mut x = n;
+    let mut y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    Some(x)
+}
+
+// ---------------------------------------------------------------------------
 // PowZero: x^0 → 1  (side condition: x ≠ 0 logged)
 // ---------------------------------------------------------------------------
 
@@ -887,6 +930,25 @@ mod tests {
         let expr = pool.pow(x, one);
         let (result, _) = PowOne.apply(expr, &pool).unwrap();
         assert_eq!(result, x);
+    }
+
+    // --- SqrtInteger ---
+
+    #[test]
+    fn sqrt_integer_perfect_square() {
+        let pool = p();
+        let four = pool.integer(4_i32);
+        let expr = pool.func("sqrt", vec![four]);
+        let (result, _) = SqrtInteger.apply(expr, &pool).unwrap();
+        assert_eq!(result, pool.integer(2_i32));
+    }
+
+    #[test]
+    fn sqrt_integer_non_square_unchanged() {
+        let pool = p();
+        let five = pool.integer(5_i32);
+        let expr = pool.func("sqrt", vec![five]);
+        assert!(SqrtInteger.apply(expr, &pool).is_none());
     }
 
     // --- PowZero ---

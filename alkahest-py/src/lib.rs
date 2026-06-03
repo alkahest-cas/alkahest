@@ -82,6 +82,11 @@ use alkahest_core::{
 };
 
 use alkahest_core::kernel::expr::PredicateKind;
+use alkahest_core::kernel::fold_predicates as core_fold_predicates;
+use alkahest_core::kernel::ExprData;
+use alkahest_core::pattern::{
+    match_pattern_with_config as core_match_pattern_with_config, MatchConfig,
+};
 #[cfg(feature = "cuda")]
 use alkahest_core::{compile_cuda as core_compile_cuda, CudaCompiledFn as CoreCudaCompiledFn};
 use std::sync::Arc;
@@ -93,14 +98,13 @@ use alkahest_core::modular::{
 };
 use alkahest_core::{
     diff as core_diff, diff_forward as core_diff_forward, integrate as core_integrate,
-    limit as core_limit, load_from, log_exp_rules, match_pattern as core_match_pattern,
-    rsolve as core_rsolve, series as core_series, simplify as core_simplify,
-    simplify_egraph as core_simplify_egraph, simplify_egraph_with as core_simplify_egraph_with,
-    simplify_with as core_simplify_with, trig_rules, AlkahestError as AlkahestErrorTrait,
-    DerivedExpr, DiffError, EgraphConfig, IntegrationError, IoError,
-    LimitDirection as CoreLimitDirection, LimitError, LinearRecurrenceError, PatternRule,
-    ProductError, ResultantError, RsolveError, SeriesError, SimplifyConfig, SizeCost,
-    SparseGcdError, SparseInterpError, SumError,
+    limit as core_limit, load_from, log_exp_rules, rsolve as core_rsolve, series as core_series,
+    simplify as core_simplify, simplify_egraph as core_simplify_egraph,
+    simplify_egraph_with as core_simplify_egraph_with, simplify_with as core_simplify_with,
+    trig_rules, AlkahestError as AlkahestErrorTrait, DerivedExpr, DiffError, EgraphConfig,
+    IntegrationError, IoError, LimitDirection as CoreLimitDirection, LimitError,
+    LinearRecurrenceError, PatternRule, ProductError, ResultantError, RsolveError, SeriesError,
+    SimplifyConfig, SizeCost, SparseGcdError, SparseInterpError, SumError,
 };
 // V3-1 — Integer number theory
 use alkahest_core::number_theory::{
@@ -111,7 +115,7 @@ use alkahest_core::number_theory::{
 };
 use pyo3::exceptions::{PyOverflowError, PyTypeError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyList, PyTuple};
+use pyo3::types::{PyDict, PyInt, PyList, PyTuple};
 use rug::{Integer, Rational};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -128,6 +132,68 @@ pyo3::create_exception!(alkahest, PyConversionError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyDomainError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyDiffError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyPoolError, PyAlkahestError);
+
+/// Parse a Python ``int`` (any size) into an interned integer expression.
+fn integer_into_pool(pool: &ExprPool, n: &Bound<'_, PyAny>) -> PyResult<ExprId> {
+    if let Ok(v) = n.extract::<i64>() {
+        return Ok(pool.integer(v));
+    }
+    let s = n.str()?.to_string();
+    let z = Integer::parse(&s).map_err(|_| {
+        PyOverflowError::new_err(format!("integer literal out of range or invalid: {s}"))
+    })?;
+    Ok(pool.integer(z))
+}
+
+fn pool_mismatch_err() -> PyErr {
+    PyPoolError::new_err(
+        "expressions belong to different ExprPool instances; combine only symbols \
+         and values created from the same pool",
+    )
+}
+
+/// Coerce a substitution value (``Expr``, ``DerivedResult``, ``int``, or ``float``).
+fn coerce_substituent(
+    pool_py: &Py<PyExprPool>,
+    ob: &Bound<'_, PyAny>,
+    py: Python<'_>,
+) -> PyResult<ExprId> {
+    if let Ok(e) = ob.extract::<PyRef<PyExpr>>() {
+        if !e.pool.is(pool_py) {
+            return Err(pool_mismatch_err());
+        }
+        return Ok(e.id);
+    }
+    if let Ok(dr) = ob.downcast::<PyDerivedResult>() {
+        let dr = dr.borrow();
+        if !dr.value.pool.is(pool_py) {
+            return Err(pool_mismatch_err());
+        }
+        return Ok(dr.value.id);
+    }
+    let pool = pool_py.borrow(py);
+    if let Ok(n) = ob.extract::<i64>() {
+        return Ok(pool.inner.integer(n));
+    }
+    if let Ok(f) = ob.extract::<f64>() {
+        return Ok(pool.inner.float(f, 53));
+    }
+    integer_into_pool(&pool.inner, ob)
+}
+
+fn expr_is_zero(py: Python<'_>, expr: &PyExpr) -> bool {
+    let pool = expr.pool.borrow(py);
+    match pool.inner.get(expr.id) {
+        ExprData::Integer(n) => n.0.is_zero(),
+        ExprData::Rational(r) => r.0.is_zero(),
+        ExprData::Float(f) => f.inner == 0.0,
+        _ => false,
+    }
+}
+
+fn expr_ids_equal(a: &PyExpr, b: &PyExpr) -> bool {
+    a.pool.is(&b.pool) && a.id == b.id
+}
 pyo3::create_exception!(alkahest, PyIntegrationError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PySeriesError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyLimitError, PyAlkahestError);
@@ -429,10 +495,10 @@ impl PyExprPool {
         PyExpr { id, pool }
     }
 
-    fn integer(slf: PyRef<'_, Self>, n: i64) -> PyExpr {
-        let id = slf.inner.integer(n);
+    fn integer(slf: PyRef<'_, Self>, n: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
+        let id = integer_into_pool(&slf.inner, n)?;
         let pool: Py<PyExprPool> = slf.into();
-        PyExpr { id, pool }
+        Ok(PyExpr { id, pool })
     }
 
     fn rational(slf: PyRef<'_, Self>, p: i64, q: i64) -> PyExpr {
@@ -628,133 +694,133 @@ impl PyExpr {
     // try the reflected operation on the other operand.
     // ------------------------------------------------------------------
 
-    fn __add__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyObject {
-        match self.coerce_scalar(other, py) {
+    fn __add__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
+        match self.coerce_scalar(other, py)? {
             Some(rhs) => {
                 let id = self.pool.borrow(py).inner.add(vec![self.id, rhs]);
-                PyExpr {
+                Ok(PyExpr {
                     id,
                     pool: self.pool.clone_ref(py),
                 }
-                .into_py(py)
+                .into_py(py))
             }
-            None => py.NotImplemented(),
+            None => Ok(py.NotImplemented()),
         }
     }
 
-    fn __radd__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyObject {
-        match self.coerce_scalar(other, py) {
+    fn __radd__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
+        match self.coerce_scalar(other, py)? {
             Some(lhs) => {
                 let id = self.pool.borrow(py).inner.add(vec![lhs, self.id]);
-                PyExpr {
+                Ok(PyExpr {
                     id,
                     pool: self.pool.clone_ref(py),
                 }
-                .into_py(py)
+                .into_py(py))
             }
-            None => py.NotImplemented(),
+            None => Ok(py.NotImplemented()),
         }
     }
 
-    fn __sub__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyObject {
-        match self.coerce_scalar(other, py) {
+    fn __sub__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
+        match self.coerce_scalar(other, py)? {
             Some(rhs) => {
                 let pool = self.pool.borrow(py);
                 let neg_one = pool.inner.integer(-1i32);
                 let neg_rhs = pool.inner.mul(vec![neg_one, rhs]);
                 let id = pool.inner.add(vec![self.id, neg_rhs]);
                 drop(pool);
-                PyExpr {
+                Ok(PyExpr {
                     id,
                     pool: self.pool.clone_ref(py),
                 }
-                .into_py(py)
+                .into_py(py))
             }
-            None => py.NotImplemented(),
+            None => Ok(py.NotImplemented()),
         }
     }
 
-    fn __rsub__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyObject {
+    fn __rsub__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
         // other - self
-        match self.coerce_scalar(other, py) {
+        match self.coerce_scalar(other, py)? {
             Some(lhs) => {
                 let pool = self.pool.borrow(py);
                 let neg_one = pool.inner.integer(-1i32);
                 let neg_self = pool.inner.mul(vec![neg_one, self.id]);
                 let id = pool.inner.add(vec![lhs, neg_self]);
                 drop(pool);
-                PyExpr {
+                Ok(PyExpr {
                     id,
                     pool: self.pool.clone_ref(py),
                 }
-                .into_py(py)
+                .into_py(py))
             }
-            None => py.NotImplemented(),
+            None => Ok(py.NotImplemented()),
         }
     }
 
-    fn __mul__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyObject {
-        match self.coerce_scalar(other, py) {
+    fn __mul__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
+        match self.coerce_scalar(other, py)? {
             Some(rhs) => {
                 let id = self.pool.borrow(py).inner.mul(vec![self.id, rhs]);
-                PyExpr {
+                Ok(PyExpr {
                     id,
                     pool: self.pool.clone_ref(py),
                 }
-                .into_py(py)
+                .into_py(py))
             }
-            None => py.NotImplemented(),
+            None => Ok(py.NotImplemented()),
         }
     }
 
-    fn __rmul__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyObject {
-        match self.coerce_scalar(other, py) {
+    fn __rmul__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
+        match self.coerce_scalar(other, py)? {
             Some(lhs) => {
                 let id = self.pool.borrow(py).inner.mul(vec![lhs, self.id]);
-                PyExpr {
+                Ok(PyExpr {
                     id,
                     pool: self.pool.clone_ref(py),
                 }
-                .into_py(py)
+                .into_py(py))
             }
-            None => py.NotImplemented(),
+            None => Ok(py.NotImplemented()),
         }
     }
 
-    fn __truediv__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyObject {
-        match self.coerce_scalar(other, py) {
+    fn __truediv__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
+        match self.coerce_scalar(other, py)? {
             Some(rhs) => {
                 let pool = self.pool.borrow(py);
                 let neg_one = pool.inner.integer(-1i32);
                 let inv = pool.inner.pow(rhs, neg_one);
                 let id = pool.inner.mul(vec![self.id, inv]);
                 drop(pool);
-                PyExpr {
+                Ok(PyExpr {
                     id,
                     pool: self.pool.clone_ref(py),
                 }
-                .into_py(py)
+                .into_py(py))
             }
-            None => py.NotImplemented(),
+            None => Ok(py.NotImplemented()),
         }
     }
 
-    fn __rtruediv__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyObject {
+    fn __rtruediv__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
         // other / self  =  other * self^-1
-        match self.coerce_scalar(other, py) {
+        match self.coerce_scalar(other, py)? {
             Some(lhs) => {
                 let pool = self.pool.borrow(py);
                 let neg_one = pool.inner.integer(-1i32);
                 let inv_self = pool.inner.pow(self.id, neg_one);
                 let id = pool.inner.mul(vec![lhs, inv_self]);
                 drop(pool);
-                PyExpr {
+                Ok(PyExpr {
                     id,
                     pool: self.pool.clone_ref(py),
                 }
-                .into_py(py)
+                .into_py(py))
             }
-            None => py.NotImplemented(),
+            None => Ok(py.NotImplemented()),
         }
     }
 
@@ -951,18 +1017,24 @@ impl PyExpr {
 impl PyExpr {
     // Coerce a Python scalar (Expr | int | float) to an interned ExprId.
     // Returns None for unrecognised types so callers can return NotImplemented.
-    fn coerce_scalar(&self, ob: &Bound<'_, PyAny>, py: Python<'_>) -> Option<ExprId> {
+    fn coerce_scalar(&self, ob: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<Option<ExprId>> {
         if let Ok(e) = ob.extract::<PyRef<PyExpr>>() {
-            return Some(e.id);
+            if !e.pool.is(&self.pool) {
+                return Err(pool_mismatch_err());
+            }
+            return Ok(Some(e.id));
         }
         let pool = self.pool.borrow(py);
         if let Ok(n) = ob.extract::<i64>() {
-            return Some(pool.inner.integer(n));
+            return Ok(Some(pool.inner.integer(n)));
         }
         if let Ok(f) = ob.extract::<f64>() {
-            return Some(pool.inner.float(f, 53));
+            return Ok(Some(pool.inner.float(f, 53)));
         }
-        None
+        if ob.is_instance_of::<PyInt>() {
+            return Ok(Some(integer_into_pool(&pool.inner, ob)?));
+        }
+        Ok(None)
     }
 }
 
@@ -1045,6 +1117,20 @@ impl PyDerivedResult {
 
     fn __repr__(&self, py: Python<'_>) -> String {
         format!("DerivedResult(value={})", self.value.__repr__(py))
+    }
+
+    fn __bool__(&self, py: Python<'_>) -> bool {
+        !expr_is_zero(py, &self.value)
+    }
+
+    fn __eq__(&self, other: &Bound<'_, PyAny>, _py: Python<'_>) -> PyResult<bool> {
+        if let Ok(other_dr) = other.downcast::<PyDerivedResult>() {
+            return Ok(expr_ids_equal(&self.value, &other_dr.borrow().value));
+        }
+        if let Ok(other_expr) = other.extract::<PyRef<PyExpr>>() {
+            return Ok(expr_ids_equal(&self.value, &other_expr));
+        }
+        Ok(false)
     }
 }
 
@@ -1394,6 +1480,12 @@ struct PyUniPoly {
 #[pyclass(name = "MultiPoly")]
 struct PyMultiPoly {
     inner: MultiPoly,
+    /// When set (e.g. from `from_symbolic`), `__str__` uses user symbol names.
+    pool: Option<Py<PyExprPool>>,
+}
+
+fn merge_mp_pool(a: &Option<Py<PyExprPool>>, b: &Option<Py<PyExprPool>>) -> Option<Py<PyExprPool>> {
+    a.clone().or_else(|| b.clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -1437,7 +1529,15 @@ impl PyMultiPolyFactorization {
         self.inner
             .factors
             .iter()
-            .map(|(p, e)| (PyMultiPoly { inner: p.clone() }, *e))
+            .map(|(p, e)| {
+                (
+                    PyMultiPoly {
+                        inner: p.clone(),
+                        pool: None,
+                    },
+                    *e,
+                )
+            })
             .collect()
     }
 }
@@ -1607,7 +1707,10 @@ impl PyMultiPoly {
         let var_ids: Vec<_> = vars.iter().map(|v| v.id).collect();
         let pool = expr.pool.borrow(py);
         MultiPoly::from_symbolic(expr.id, var_ids, &pool.inner)
-            .map(|p| PyMultiPoly { inner: p })
+            .map(|p| PyMultiPoly {
+                inner: p,
+                pool: Some(expr.pool.clone_ref(py)),
+            })
             .map_err(conv_error_to_py)
     }
 
@@ -1631,6 +1734,7 @@ impl PyMultiPoly {
         }
         Ok(PyMultiPoly {
             inner: self.inner.clone() + other.inner.clone(),
+            pool: merge_mp_pool(&self.pool, &other.pool),
         })
     }
 
@@ -1642,6 +1746,7 @@ impl PyMultiPoly {
         }
         Ok(PyMultiPoly {
             inner: self.inner.clone() - other.inner.clone(),
+            pool: merge_mp_pool(&self.pool, &other.pool),
         })
     }
 
@@ -1653,12 +1758,14 @@ impl PyMultiPoly {
         }
         Ok(PyMultiPoly {
             inner: self.inner.clone() * other.inner.clone(),
+            pool: merge_mp_pool(&self.pool, &other.pool),
         })
     }
 
     fn primitive_part(&self) -> PyMultiPoly {
         PyMultiPoly {
             inner: self.inner.primitive_part(),
+            pool: self.pool.clone(),
         }
     }
 
@@ -1666,7 +1773,10 @@ impl PyMultiPoly {
     fn gcd(&self, other: PyRef<PyMultiPoly>) -> PyResult<PyMultiPoly> {
         self.inner
             .gcd(&other.inner)
-            .map(|inner| PyMultiPoly { inner })
+            .map(|inner| PyMultiPoly {
+                inner,
+                pool: merge_mp_pool(&self.pool, &other.pool),
+            })
             .ok_or_else(|| {
                 pyo3::exceptions::PyValueError::new_err(
                     "gcd: incompatible variable lists or zero polynomial",
@@ -1686,8 +1796,13 @@ impl PyMultiPoly {
         format!("MultiPoly({})", self.inner)
     }
 
-    fn __str__(&self) -> String {
-        self.inner.to_string()
+    fn __str__(&self, py: Python<'_>) -> String {
+        if let Some(ref pool_py) = self.pool {
+            let pool = pool_py.borrow(py);
+            self.inner.display_with(&pool.inner)
+        } else {
+            self.inner.to_string()
+        }
     }
 }
 
@@ -1716,6 +1831,7 @@ fn unipoly_to_multipoly(p: &UniPoly) -> MultiPoly {
 #[pyclass(name = "RationalFunction")]
 struct PyRationalFunction {
     inner: RationalFunction,
+    pool: Option<Py<PyExprPool>>,
 }
 
 #[pymethods]
@@ -1736,7 +1852,10 @@ impl PyRationalFunction {
         let n = unipoly_to_multipoly(&numer.inner);
         let d = unipoly_to_multipoly(&denom.inner);
         RationalFunction::new(n, d)
-            .map(|r| PyRationalFunction { inner: r })
+            .map(|r| PyRationalFunction {
+                inner: r,
+                pool: None,
+            })
             .map_err(conv_error_to_py)
     }
 
@@ -1750,7 +1869,10 @@ impl PyRationalFunction {
         let var_ids: Vec<_> = vars.iter().map(|v| v.id).collect();
         let pool = numer.pool.borrow(py);
         RationalFunction::from_symbolic(numer.id, denom.id, var_ids, &pool.inner)
-            .map(|r| PyRationalFunction { inner: r })
+            .map(|r| PyRationalFunction {
+                inner: r,
+                pool: Some(numer.pool.clone_ref(py)),
+            })
             .map_err(conv_error_to_py)
     }
 
@@ -1761,42 +1883,57 @@ impl PyRationalFunction {
     fn numer(&self) -> PyMultiPoly {
         PyMultiPoly {
             inner: self.inner.numer.clone(),
+            pool: self.pool.clone(),
         }
     }
 
     fn denom(&self) -> PyMultiPoly {
         PyMultiPoly {
             inner: self.inner.denom.clone(),
+            pool: self.pool.clone(),
         }
     }
 
     fn __add__(&self, other: PyRef<PyRationalFunction>) -> PyResult<PyRationalFunction> {
         (self.inner.clone() + other.inner.clone())
-            .map(|r| PyRationalFunction { inner: r })
+            .map(|r| PyRationalFunction {
+                inner: r,
+                pool: merge_mp_pool(&self.pool, &other.pool),
+            })
             .map_err(conv_error_to_py)
     }
 
     fn __sub__(&self, other: PyRef<PyRationalFunction>) -> PyResult<PyRationalFunction> {
         (self.inner.clone() - other.inner.clone())
-            .map(|r| PyRationalFunction { inner: r })
+            .map(|r| PyRationalFunction {
+                inner: r,
+                pool: merge_mp_pool(&self.pool, &other.pool),
+            })
             .map_err(conv_error_to_py)
     }
 
     fn __mul__(&self, other: PyRef<PyRationalFunction>) -> PyResult<PyRationalFunction> {
         (self.inner.clone() * other.inner.clone())
-            .map(|r| PyRationalFunction { inner: r })
+            .map(|r| PyRationalFunction {
+                inner: r,
+                pool: merge_mp_pool(&self.pool, &other.pool),
+            })
             .map_err(conv_error_to_py)
     }
 
     fn __truediv__(&self, other: PyRef<PyRationalFunction>) -> PyResult<PyRationalFunction> {
         (self.inner.clone() / other.inner.clone())
-            .map(|r| PyRationalFunction { inner: r })
+            .map(|r| PyRationalFunction {
+                inner: r,
+                pool: merge_mp_pool(&self.pool, &other.pool),
+            })
             .map_err(conv_error_to_py)
     }
 
     fn __neg__(&self) -> PyRationalFunction {
         PyRationalFunction {
             inner: -self.inner.clone(),
+            pool: self.pool.clone(),
         }
     }
 
@@ -1804,8 +1941,13 @@ impl PyRationalFunction {
         format!("RationalFunction({})", self.inner)
     }
 
-    fn __str__(&self) -> String {
-        self.inner.to_string()
+    fn __str__(&self, py: Python<'_>) -> String {
+        if let Some(ref pool_py) = self.pool {
+            let pool = pool_py.borrow(py);
+            self.inner.display_with(&pool.inner)
+        } else {
+            self.inner.to_string()
+        }
     }
 }
 
@@ -1986,14 +2128,15 @@ fn py_rsolve(
     let pool_py = equation.pool.clone_ref(py);
     let id = {
         let pool = pool_py.borrow(py);
-        core_rsolve(
+        let raw = core_rsolve(
             &pool.inner,
             equation.id,
             n.id,
             seq_name,
             init_storage.as_ref(),
         )
-        .map_err(rsolve_error_to_py)?
+        .map_err(rsolve_error_to_py)?;
+        core_simplify(raw, &pool.inner).value
     };
     Ok(PyExpr { id, pool: pool_py })
 }
@@ -2018,14 +2161,21 @@ fn py_verify_wz_pair(
 /// Find all AC-aware matches of `pattern_expr` anywhere in `expr`.
 /// Each match is returned as a dict mapping wildcard names to matched
 /// sub-expressions.  Wildcards are symbols whose names start with a
-/// lower-case letter.
+/// lower-case letter.  Set `wildcards=False` to treat every symbol as a literal
+/// (e.g. when the pattern is a single variable like `x`).
 #[pyfunction]
-fn match_pattern(py: Python<'_>, pattern_expr: PyRef<PyExpr>, expr: PyRef<PyExpr>) -> PyObject {
+#[pyo3(signature = (pattern_expr, expr, *, wildcards = true))]
+fn match_pattern(
+    py: Python<'_>,
+    pattern_expr: PyRef<PyExpr>,
+    expr: PyRef<PyExpr>,
+    wildcards: bool,
+) -> PyObject {
     let pool_py = pattern_expr.pool.clone_ref(py);
     let matches = {
         let pool = pool_py.borrow(py);
         let pat = Pattern::from_expr(pattern_expr.id);
-        core_match_pattern(&pat, expr.id, &pool.inner)
+        core_match_pattern_with_config(&pat, expr.id, &pool.inner, MatchConfig { wildcards })
     };
     let out = PyList::empty_bound(py);
     for subst in matches {
@@ -2215,13 +2365,14 @@ fn py_subs(py: Python<'_>, expr: PyRef<PyExpr>, mapping: &Bound<'_, PyDict>) -> 
     let pool_py = expr.pool.clone_ref(py);
     let mut map: HashMap<ExprId, ExprId> = HashMap::new();
     for (k, v) in mapping.iter() {
-        let key_expr: PyRef<PyExpr> = k.extract()?;
-        let val_expr: PyRef<PyExpr> = v.extract()?;
-        map.insert(key_expr.id, val_expr.id);
+        let key_id = coerce_substituent(&pool_py, &k, py)?;
+        let val_id = coerce_substituent(&pool_py, &v, py)?;
+        map.insert(key_id, val_id);
     }
     let result_id = {
         let pool = pool_py.borrow(py);
-        core_subs(expr.id, &map, &pool.inner)
+        let substituted = core_subs(expr.id, &map, &pool.inner);
+        core_fold_predicates(substituted, &pool.inner)
     };
     Ok(PyExpr {
         id: result_id,
@@ -3114,17 +3265,24 @@ fn py_jit_is_available() -> bool {
 #[pyo3(name = "eval_expr")]
 fn py_eval_expr(
     py: Python<'_>,
-    expr: PyRef<PyExpr>,
+    expr: &Bound<'_, PyAny>,
     bindings: &Bound<'_, PyDict>,
 ) -> PyResult<f64> {
-    let pool = expr.pool.borrow(py);
+    let (expr_id, pool_py) = if let Ok(dr) = expr.downcast::<PyDerivedResult>() {
+        let dr = dr.borrow();
+        (dr.value.id, dr.value.pool.clone_ref(py))
+    } else {
+        let e: PyRef<PyExpr> = expr.extract()?;
+        (e.id, e.pool.clone_ref(py))
+    };
+    let pool = pool_py.borrow(py);
     let mut env = std::collections::HashMap::new();
     for (key, value) in bindings.iter() {
         let var: PyRef<PyExpr> = key.extract()?;
         let val: f64 = value.extract()?;
         env.insert(var.id, val);
     }
-    let result = core_eval_interp(expr.id, &env, &pool.inner).ok_or_else(|| {
+    let result = core_eval_interp(expr_id, &env, &pool.inner).ok_or_else(|| {
         pyo3::exceptions::PyValueError::new_err(
             "expression could not be evaluated (unbound variable or unsupported node)",
         )
@@ -4121,7 +4279,10 @@ fn py_gcd_sparse(
 ) -> PyResult<PyMultiPoly> {
     let result = core_gcd_sparse_modular(&f.inner, &g.inner, term_bound, degree_bound, seed)
         .map_err(sparse_gcd_error_to_py)?;
-    Ok(PyMultiPoly { inner: result })
+    Ok(PyMultiPoly {
+        inner: result,
+        pool: merge_mp_pool(&f.pool, &g.pool),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -5462,8 +5623,9 @@ fn py_solve(
                             .unwrap_or(f64::NAN);
                         d.set_item(var_expr.into_py(py), f)?;
                     } else {
+                        let simplified = core_simplify(*val, &pool.inner).value;
                         let val_expr = PyExpr {
-                            id: *val,
+                            id: simplified,
                             pool: pool_py.clone_ref(py),
                         };
                         d.set_item(var_expr.into_py(py), val_expr.into_py(py))?;
@@ -5740,7 +5902,10 @@ fn py_modular_lift_crt(
         .map(|(p, &prime)| (p.inner.clone(), prime))
         .collect();
     core_lift_crt(&images)
-        .map(|mp| PyMultiPoly { inner: mp })
+        .map(|mp| PyMultiPoly {
+            inner: mp,
+            pool: None,
+        })
         .map_err(modular_error_to_py)
 }
 

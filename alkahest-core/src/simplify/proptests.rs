@@ -82,6 +82,16 @@ proptest! {
         prop_assert_eq!(r.value, pool.integer(a * b));
     }
 
+    /// sqrt(n) → integer root when n is a perfect square (n > 0).
+    #[test]
+    fn simplify_sqrt_perfect_square(n in 1u32..=50u32) {
+        let pool = ExprPool::new();
+        let n_sq = (n as i64) * (n as i64);
+        let expr = pool.func("sqrt", vec![pool.integer(n_sq)]);
+        let r = simplify(expr, &pool);
+        prop_assert_eq!(r.value, pool.integer(n as i64));
+    }
+
     #[test]
     fn simplify_preserves_polynomial_value(
         coeffs in proptest::collection::vec(small_coeff(), 1..=4),

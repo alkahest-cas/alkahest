@@ -1,6 +1,6 @@
 use super::rules::{
     AddZero, CanonicalOrder, ConstFold, DivSelf, ExpandMul, FlattenAdd, FlattenMul, MulOne,
-    MulZero, PowOne, PowZero, RewriteRule, SubSelf,
+    MulZero, PowOne, PowZero, RewriteRule, SqrtInteger, SubSelf,
 };
 use super::rulesets::PatternRuleSet;
 use crate::deriv::log::{DerivationLog, DerivedExpr};
@@ -62,6 +62,7 @@ pub fn rules_for_config(config: &SimplifyConfig) -> Vec<Box<dyn RewriteRule>> {
         Box::new(PowZero),
         Box::new(PowOne),
         Box::new(ConstFold),
+        Box::new(SqrtInteger),
         Box::new(SubSelf),
         Box::new(DivSelf),
         Box::new(CanonicalOrder),

@@ -43,8 +43,6 @@ def isprime(n: int) -> bool:
 def factorint(n: int) -> dict[int, int]:
     """Prime factorisation of ``n`` with SymPy-compatible sign handling."""
     zi = int(n)
-    if zi == 0:
-        return {0: 1}
     sign, pairs = nt_factorint(_decimal(zi))
     out: dict[int, int] = {int(p): int(e) for p, e in pairs}
     if sign < 0:

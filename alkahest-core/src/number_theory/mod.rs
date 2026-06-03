@@ -135,7 +135,12 @@ fn parse_positive(s: &str) -> Result<Integer, NumberTheoryError> {
 /// Exact primality (`fmpz_is_prime`).
 pub fn isprime(n: &str) -> Result<bool, NumberTheoryError> {
     let z = parse_int(n)?;
-    if z.cmp0() != Ordering::Greater || z < 2 {
+    if z.cmp0() != Ordering::Greater {
+        return Err(NumberTheoryError::Domain {
+            msg: "isprime expects a positive integer",
+        });
+    }
+    if z < 2 {
         return Ok(false);
     }
     let fz = FlintInteger::from_rug(&z);
@@ -146,6 +151,11 @@ pub fn isprime(n: &str) -> Result<bool, NumberTheoryError> {
 /// Full factorisation: `(sign, list of (prime, exponent))` for \(\prod p^e\cdot \mathrm{sign}\).
 pub fn factorint(n: &str) -> Result<(i32, Vec<(String, u64)>), NumberTheoryError> {
     let z = parse_int(n)?;
+    if z.is_zero() {
+        return Err(NumberTheoryError::Domain {
+            msg: "factorint(0) is undefined",
+        });
+    }
     let fz = FlintInteger::from_rug(&z);
     // FlintIntFactor is drop-safe — no manual fmpz_factor_clear needed.
     let mut fac = FlintIntFactor::new();
@@ -334,6 +344,16 @@ mod tests {
     fn mersenne_m127_prime() {
         let m = Integer::from(2u32).pow(127_u32) - 1_u32;
         assert!(isprime(&m.to_string()).unwrap());
+    }
+
+    #[test]
+    fn factorint_zero_is_error() {
+        assert!(factorint("0").is_err());
+    }
+
+    #[test]
+    fn isprime_negative_is_error() {
+        assert!(isprime("-5").is_err());
     }
 
     #[test]

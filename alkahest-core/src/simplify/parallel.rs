@@ -233,7 +233,7 @@ fn simplify_children_par(
 pub fn rules_for_config_par(config: &SimplifyConfig) -> Vec<Box<dyn RewriteRule + Send + Sync>> {
     use crate::simplify::rules::{
         AddZero, CanonicalOrder, ConstFold, DivSelf, ExpandMul, FlattenAdd, FlattenMul, MulOne,
-        MulZero, PowOne, PowZero, SubSelf,
+        MulZero, PowOne, PowZero, SqrtInteger, SubSelf,
     };
     let mut rules: Vec<Box<dyn RewriteRule + Send + Sync>> = vec![
         Box::new(FlattenMul),
@@ -243,6 +243,7 @@ pub fn rules_for_config_par(config: &SimplifyConfig) -> Vec<Box<dyn RewriteRule 
         Box::new(MulOne),
         Box::new(PowZero),
         Box::new(PowOne),
+        Box::new(SqrtInteger),
         Box::new(ConstFold),
         Box::new(SubSelf),
         Box::new(DivSelf),

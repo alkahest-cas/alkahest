@@ -1,5 +1,7 @@
 pub mod display;
 pub mod domain;
+pub mod eval_const;
+mod eval_proptests;
 pub mod expr;
 pub mod expr_props;
 pub mod pool;
@@ -9,10 +11,11 @@ pub mod subs;
 
 pub use display::{render_latex, render_unicode};
 pub use domain::Domain;
+pub use eval_const::{try_expr_f64, try_predicate_bool, try_predicate_bool_from_expr};
 pub use expr::{BigFloat, BigInt, BigRat, ExprData, ExprId};
 pub use expr_props::{expr_contains_noncommutative_symbol, mult_tree_is_commutative};
 pub use pool::{ExprDisplay, ExprPool};
 #[allow(deprecated)]
 pub use pool_persist::PoolPersistError;
 pub use pool_persist::{load_from, open_persistent, save_to, IoError};
-pub use subs::subs;
+pub use subs::{fold_predicates, subs};

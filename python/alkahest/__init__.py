@@ -206,10 +206,13 @@ with contextlib.suppress(ImportError):
         DiophantineSolution,
         GbPoly,
         GroebnerBasis,
+        PrimaryComponent,
         RegularChain,
         RosenfeldGroebnerResult,
         dae_index_reduce,
         diophantine,
+        primary_decomposition,
+        radical,
         rosenfeld_groebner,
         solve,
         solve_numerical,
@@ -782,7 +785,6 @@ __all__ = [
     "AcausalSystem",
     # Exceptions (V1-3 — stable diagnostic codes)
     "AlkahestError",
-    "AlkahestError",
     "And",
     # Phase 22
     "ArbBall",
@@ -940,6 +942,8 @@ __all__ = [
     "plot_svg",
     # Phase 27
     "poly_normal",
+    "primary_decomposition",
+    "PrimaryComponent",
     "product_definite",
     "product_indefinite",
     # V2-4
@@ -951,6 +955,7 @@ __all__ = [
     # V2-13 — Differential algebra / Rosenfeld–Gröbner (groebner default feature)
     "rosenfeld_groebner",
     "round",
+    "radical",
     "rsolve",
     "satisfiable",
     "sensitivity_system",

@@ -21,6 +21,8 @@
 /// // (x + 1) with x→y  becomes (y + 1)
 /// assert_eq!(result, pool.add(vec![y, pool.integer(1_i32)]));
 /// ```
+use crate::kernel::eval_const::try_predicate_bool;
+use crate::kernel::expr::PredicateKind;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use std::collections::HashMap;
 
@@ -85,6 +87,81 @@ pub fn subs(expr: ExprId, mapping: &HashMap<ExprId, ExprId>, pool: &ExprPool) ->
     }
 }
 
+/// Fold predicates with numeric arguments (e.g. `(2 > 0)` → `True`) and simplify
+/// piecewise when a branch condition becomes provably true/false.
+pub fn fold_predicates(expr: ExprId, pool: &ExprPool) -> ExprId {
+    match pool.get(expr) {
+        ExprData::Predicate { kind, args } => {
+            let folded_args: Vec<ExprId> = args.iter().map(|&a| fold_predicates(a, pool)).collect();
+            if let Some(b) = try_predicate_bool(&kind, &folded_args, pool) {
+                return pool.predicate(
+                    if b {
+                        PredicateKind::True
+                    } else {
+                        PredicateKind::False
+                    },
+                    vec![],
+                );
+            }
+            pool.predicate(kind.clone(), folded_args)
+        }
+        ExprData::Piecewise { branches, default } => {
+            let mut folded_branches = Vec::with_capacity(branches.len());
+            for (c, v) in branches {
+                let fc = fold_predicates(c, pool);
+                let fv = fold_predicates(v, pool);
+                folded_branches.push((fc, fv));
+            }
+            let fd = fold_predicates(default, pool);
+            for (c, v) in &folded_branches {
+                if matches!(
+                    pool.get(*c),
+                    ExprData::Predicate {
+                        kind: PredicateKind::True,
+                        ..
+                    }
+                ) {
+                    return fold_predicates(*v, pool);
+                }
+            }
+            let remaining: Vec<(ExprId, ExprId)> = folded_branches
+                .into_iter()
+                .filter(|(c, _)| {
+                    !matches!(
+                        pool.get(*c),
+                        ExprData::Predicate {
+                            kind: PredicateKind::False,
+                            ..
+                        }
+                    )
+                })
+                .collect();
+            if remaining.is_empty() {
+                return fd;
+            }
+            pool.piecewise(remaining, fd)
+        }
+        ExprData::Add(args) => {
+            let new_args: Vec<ExprId> = args.iter().map(|&a| fold_predicates(a, pool)).collect();
+            pool.add(new_args)
+        }
+        ExprData::Mul(args) => {
+            let new_args: Vec<ExprId> = args.iter().map(|&a| fold_predicates(a, pool)).collect();
+            pool.mul(new_args)
+        }
+        ExprData::Pow { base, exp } => {
+            let b = fold_predicates(base, pool);
+            let e = fold_predicates(exp, pool);
+            pool.pow(b, e)
+        }
+        ExprData::Func { name, args } => {
+            let new_args: Vec<ExprId> = args.iter().map(|&a| fold_predicates(a, pool)).collect();
+            pool.func(name, new_args)
+        }
+        _ => expr,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -92,7 +169,8 @@ pub fn subs(expr: ExprId, mapping: &HashMap<ExprId, ExprId>, pool: &ExprPool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::kernel::{Domain, ExprPool};
+    use crate::kernel::expr::PredicateKind;
+    use crate::kernel::{Domain, ExprData, ExprPool};
 
     fn pool() -> ExprPool {
         ExprPool::new()
@@ -160,5 +238,31 @@ mod tests {
         m.insert(y, b);
         let result = subs(expr, &m, &p);
         assert_eq!(result, p.add(vec![a, b]));
+    }
+
+    #[test]
+    fn fold_predicates_numeric_gt() {
+        let p = pool();
+        let pred = p.pred_gt(p.integer(2_i32), p.integer(0_i32));
+        let folded = fold_predicates(pred, &p);
+        assert!(matches!(
+            p.get(folded),
+            ExprData::Predicate {
+                kind: PredicateKind::True,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn fold_predicates_piecewise_selects_branch() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        let pw = p.piecewise(
+            vec![(p.pred_gt(p.integer(1_i32), p.integer(0_i32)), x)],
+            p.integer(0_i32),
+        );
+        let folded = fold_predicates(pw, &p);
+        assert_eq!(folded, x);
     }
 }

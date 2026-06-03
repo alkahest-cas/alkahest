@@ -973,20 +973,28 @@ pub fn rsolve(
             let r = -hom_norm[1].clone();
             let re = rational_atom(pool, &r);
             let c0 = pool.symbol("C0", crate::kernel::Domain::Real);
-            let h = simp(pool, pool.mul(vec![c0, pool.pow(re, n)]));
+            let h = if r == Rational::from(1) {
+                c0
+            } else {
+                simp(pool, pool.mul(vec![c0, pool.pow(re, n)]))
+            };
             (h, vec![c0])
         }
         2 => {
             let c0 = pool.symbol("C0", crate::kernel::Domain::Real);
             let c1 = pool.symbol("C1", crate::kernel::Domain::Real);
             let (r1, r2) = order2_r_exprs(pool, &a)?;
-            let h = simp(
-                pool,
-                pool.add(vec![
-                    simp(pool, pool.mul(vec![c0, pool.pow(r1, n)])),
-                    simp(pool, pool.mul(vec![c1, pool.pow(r2, n)])),
-                ]),
-            );
+            let term0 = if r1 == pool.integer(1_i32) {
+                c0
+            } else {
+                simp(pool, pool.mul(vec![c0, pool.pow(r1, n)]))
+            };
+            let term1 = if r2 == pool.integer(1_i32) {
+                c1
+            } else {
+                simp(pool, pool.mul(vec![c1, pool.pow(r2, n)]))
+            };
+            let h = simp(pool, pool.add(vec![term0, term1]));
             (h, vec![c0, c1])
         }
         _ => {

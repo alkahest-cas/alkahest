@@ -415,13 +415,64 @@ impl Mul for MultiPoly {
     }
 }
 
+fn var_label(pool: &ExprPool, var: ExprId, index: usize) -> String {
+    pool.with(var, |data| match data {
+        ExprData::Symbol { name, .. } => name.clone(),
+        _ => format!("x{index}"),
+    })
+}
+
+impl MultiPoly {
+    /// Pretty-print using symbol names from *pool* (falls back to `x0`, `x1`, …).
+    pub fn display_with(&self, pool: &ExprPool) -> String {
+        if self.is_zero() {
+            return "0".to_string();
+        }
+        let mut out = String::new();
+        let mut first = true;
+        for (exp, coeff) in &self.terms {
+            if !first {
+                if *coeff > 0 {
+                    out.push_str(" + ");
+                } else {
+                    out.push_str(" - ");
+                }
+            } else if *coeff < 0 {
+                out.push('-');
+            }
+            first = false;
+
+            let abs_coeff = rug::Integer::from(coeff.abs_ref());
+            let has_vars = exp.iter().any(|&e| e > 0);
+            if abs_coeff != 1 || !has_vars {
+                out.push_str(&abs_coeff.to_string());
+            }
+            for (i, &e) in exp.iter().enumerate() {
+                if e == 0 {
+                    continue;
+                }
+                let label = if i < self.vars.len() {
+                    var_label(pool, self.vars[i], i)
+                } else {
+                    format!("x{i}")
+                };
+                if e == 1 {
+                    out.push_str(&label);
+                } else {
+                    out.push_str(&format!("{label}^{e}"));
+                }
+            }
+        }
+        out
+    }
+}
+
 impl fmt::Display for MultiPoly {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_zero() {
             return write!(f, "0");
         }
         let mut first = true;
-        // BTreeMap iterates in lexicographic key order (lowest degree first)
         for (exp, coeff) in &self.terms {
             if !first {
                 if *coeff > 0 {
@@ -443,7 +494,6 @@ impl fmt::Display for MultiPoly {
                 if e == 0 {
                     continue;
                 }
-                // Use generic xi notation since we don't have ExprPool here
                 let var_label = format!("x{i}");
                 if e == 1 {
                     write!(f, "{var_label}")?;
@@ -541,6 +591,16 @@ mod tests {
         let expr = p.add(vec![p.mul(vec![p.integer(6_i32), x]), p.integer(4_i32)]);
         let poly = MultiPoly::from_symbolic(expr, vec![x, y], &p).unwrap();
         assert_eq!(poly.integer_content(), rug::Integer::from(2));
+    }
+
+    #[test]
+    fn display_with_uses_symbol_names() {
+        let (p, x, y) = pool_xy();
+        let expr = p.mul(vec![p.add(vec![x, y]), p.add(vec![x, p.integer(-1_i32)])]);
+        let poly = MultiPoly::from_symbolic(expr, vec![x, y], &p).unwrap();
+        let s = poly.display_with(&p);
+        assert!(s.contains('x') && s.contains('y'));
+        assert!(!s.contains("x0") && !s.contains("x1"));
     }
 
     #[test]

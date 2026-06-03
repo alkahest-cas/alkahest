@@ -62,6 +62,8 @@
 // bindings, gate with `#[cfg(feature = "flint3")]`, verify all ball::tests
 // pass, then confirm rad is tighter than the MPFR path on exp/sin tests.
 
+use crate::kernel::eval_const::try_predicate_bool_from_expr;
+use crate::kernel::expr::PredicateKind;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use rug::{ops::Pow, Float};
 use std::collections::HashMap;
@@ -709,6 +711,43 @@ impl IntervalEval {
         self.eval_node(expr, pool)
     }
 
+    fn eval_predicate(&self, pred: ExprId, pool: &ExprPool) -> Option<bool> {
+        if let Some(b) = try_predicate_bool_from_expr(pred, pool) {
+            return Some(b);
+        }
+        let ExprData::Predicate { kind, args } = pool.get(pred) else {
+            return None;
+        };
+        let mid = |id: ExprId| self.eval_node(id, pool).map(|b| b.mid.to_f64());
+        match kind {
+            PredicateKind::True => Some(true),
+            PredicateKind::False => Some(false),
+            PredicateKind::Not => Some(!self.eval_predicate(args[0], pool)?),
+            PredicateKind::And => {
+                for &a in &args {
+                    if !self.eval_predicate(a, pool)? {
+                        return Some(false);
+                    }
+                }
+                Some(true)
+            }
+            PredicateKind::Or => {
+                for &a in &args {
+                    if self.eval_predicate(a, pool)? {
+                        return Some(true);
+                    }
+                }
+                Some(false)
+            }
+            PredicateKind::Lt => Some(mid(args[0])? < mid(args[1])?),
+            PredicateKind::Le => Some(mid(args[0])? <= mid(args[1])?),
+            PredicateKind::Gt => Some(mid(args[0])? > mid(args[1])?),
+            PredicateKind::Ge => Some(mid(args[0])? >= mid(args[1])?),
+            PredicateKind::Eq => Some(mid(args[0])? == mid(args[1])?),
+            PredicateKind::Ne => Some(mid(args[0])? != mid(args[1])?),
+        }
+    }
+
     fn eval_node(&self, expr: ExprId, pool: &ExprPool) -> Option<ArbBall> {
         match pool.get(expr) {
             ExprData::Integer(n) => Some(ArbBall::from_integer(&n.0, self.prec)),
@@ -749,6 +788,24 @@ impl IntervalEval {
                     "sqrt" => x.sqrt(),
                     _ => None,
                 }
+            }
+            ExprData::Piecewise { branches, default } => {
+                for (c, v) in branches {
+                    match self.eval_predicate(c, pool) {
+                        Some(true) => return self.eval_node(v, pool),
+                        Some(false) => {}
+                        None => return None,
+                    }
+                }
+                self.eval_node(default, pool)
+            }
+            ExprData::Predicate { .. } => {
+                let v = if self.eval_predicate(expr, pool)? {
+                    1.0
+                } else {
+                    0.0
+                };
+                Some(ArbBall::from_f64(v, self.prec))
             }
             _ => None,
         }
@@ -849,6 +906,20 @@ mod tests {
         let eval = IntervalEval::new(128);
         let r = eval.eval(five, &pool).unwrap();
         assert!(r.contains(5.0));
+    }
+
+    #[test]
+    fn interval_eval_piecewise_with_binding() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let pw = pool.piecewise(
+            vec![(pool.pred_gt(x, pool.integer(0_i32)), x)],
+            pool.integer(-1_i32),
+        );
+        let mut ev = IntervalEval::new(128);
+        ev.bind(x, ArbBall::from_midpoint_radius(1.0, 1e-6, 128));
+        let r = ev.eval(pw, &pool).unwrap();
+        assert!(r.contains(1.0));
     }
 
     #[test]

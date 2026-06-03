@@ -442,6 +442,13 @@ except ConversionError as e:
 
 All return `Expr`. They shadow Python builtins inside `alkahest` — use `alkahest.abs(expr)` to avoid ambiguity.
 
+For `piecewise`, branch conditions must be symbolic predicates from the pool (not Python `>`):
+
+```python
+cond = pool.gt(x, pool.integer(0))
+pw = alkahest.piecewise([(cond, x)], pool.integer(-1) * x)
+```
+
 ---
 
 ## Pytree utilities (JAX-style)
