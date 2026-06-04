@@ -18,6 +18,7 @@
 
 pub(super) mod decompose;
 pub(super) mod genus_zero;
+pub mod hermite_curve;
 pub mod integral_basis;
 pub(super) mod parametrize;
 pub(super) mod poly_utils;

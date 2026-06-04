@@ -220,7 +220,7 @@ fn is_zero(r: &RatFn) -> bool {
 
 /// Yun squarefree factorization of `p ∈ ℚ[x]`: returns `[p₁, p₂, …]` with
 /// `p = ∏ⱼ pⱼ^{j+1}` (each `pⱼ` squarefree, pairwise coprime; `pⱼ` may be `1`).
-fn squarefree_factors(p: &QPoly) -> Vec<QPoly> {
+pub(super) fn squarefree_factors(p: &QPoly) -> Vec<QPoly> {
     let p = trim(p.clone());
     if degree(&p) < 1 {
         return Vec::new();
