@@ -18,10 +18,11 @@
 //! M0 "substitute a transcendental tower for the coefficient field" hook: the
 //! radicand may now involve `t`.
 //!
-//! Scope: this provides the differential-algebra **substrate** (arithmetic +
-//! derivation) for radicand-involving-transcendental.  The *integration* step —
-//! solving the per-component Risch DE `vᵢ' + ωᵢ vᵢ = cᵢ` over this tower — is
-//! the remaining MD work and is not done here.
+//! This module provides the differential-algebra substrate (arithmetic +
+//! derivation) **and** [`solve_tower_rde`], the per-component Risch DE solver
+//! `vᵢ' + ωᵢ vᵢ = cᵢ` over the tower (verification-guarded, allowing `vᵢ` with
+//! denominators).  The end-to-end integrator that drives it lives in
+//! [`super::tower_integrate`].
 
 use rug::Rational;
 
@@ -252,39 +253,99 @@ fn monomial(j: usize, k: usize, coeff: &Rational) -> TExpr {
 }
 
 /// Solve `v' + ω·v = c` for `v ∈ ℚ(x)(t)` by an undetermined-coefficient ansatz
-/// `v = Σⱼₖ cⱼₖ xᵏ tʲ`, returning `v` iff one is found within the degree caps.
+/// `v = (Σⱼₖ cⱼₖ xᵏ tʲ) / D`, trying a sequence of candidate denominators `D`
+/// derived from `ω` and `c` (starting with `D = 1`, the polynomial case).
 ///
-/// **Sound by construction:** the returned `v` is verified to satisfy
+/// **Sound by construction:** each candidate's `v` is verified to satisfy
 /// `D(v) + ω·v = c` *exactly* in the tower field before being returned, so a
-/// `Some` is always correct.  `None` means "no polynomial-in-`(x,t)` solution
-/// within the caps" — the equation may still be solvable by a `v` with
-/// denominators (not attempted), so `None` is **not** a non-elementarity
+/// `Some` is always correct.  `None` means "no solution `U/D` was found for any
+/// tried `D` within the degree caps" — it is **not** a non-elementarity
 /// certificate.
 pub fn solve_tower_rde(field: &ExpTowerField, omega: &TExpr, c: &TExpr) -> Option<TExpr> {
+    candidate_denominators(field, omega, c)
+        .iter()
+        .find_map(|d| solve_with_denominator(field, omega, c, d))
+}
+
+/// Candidate denominators for `v`, in increasing complexity: `1`, the full
+/// denominators of `c` and `ω`, and a few products/powers.  Over-clearing is
+/// harmless (the numerator ansatz just needs more terms); verification guards
+/// correctness.
+fn candidate_denominators(field: &ExpTowerField, omega: &TExpr, c: &TExpr) -> Vec<TExpr> {
+    let one = field.one();
+    let dc = full_denominator(c);
+    let dw = full_denominator(omega);
+    let dcw = field.mul(&dc, &dw);
+    let dc2 = field.mul(&dc, &dc);
+    let mut cands = vec![
+        one,
+        dc.clone(),
+        dw.clone(),
+        dcw.clone(),
+        dc2.clone(),
+        field.mul(&dc2, &dw),
+        field.mul(&dcw, &dw),
+    ];
+    cands.dedup_by(|a, b| a == b);
+    cands
+}
+
+/// The denominator that clears `e` to a polynomial in `(x, t)`: the `t`-poly
+/// denominator times the LCM of the `x`-denominators of every coefficient.
+fn full_denominator(e: &TExpr) -> TExpr {
+    let mut d_x = vec![Rational::from(1)];
+    for rf in e.numer().iter().chain(e.denom().iter()) {
+        d_x = poly_lcm(&d_x, rf.denom());
+    }
+    let t_den = TExpr::new(e.denom().clone(), vec![RatFn::int(1)]);
+    let x_den = TExpr::from_ratfn(RatFn::from_poly(&d_x));
+    let f = qx();
+    // t_den · x_den as a tower element (both have trivial denominators).
+    TExpr::new(
+        gpoly_mul(&f, t_den.numer(), x_den.numer()),
+        vec![RatFn::int(1)],
+    )
+}
+
+/// Solve `v' + ω·v = c` seeking `v = (Σⱼₖ cⱼₖ xᵏ tʲ)/D` for the fixed `D`.
+fn solve_with_denominator(
+    field: &ExpTowerField,
+    omega: &TExpr,
+    c: &TExpr,
+    d: &TExpr,
+) -> Option<TExpr> {
     const JCAP: usize = 3; // max degree in t
     const KCAP: usize = 5; // max degree in x
 
+    let inv_d = field.inv(d)?;
     let basis: Vec<(usize, usize)> = (0..=JCAP)
         .flat_map(|j| (0..=KCAP).map(move |k| (j, k)))
         .collect();
-    // L(m) = D(m) + ω·m for each basis monomial m = xᵏtʲ.
+    // Basis element xᵏtʲ/D, and its image L(·) = D(·) + ω·(·).
     let one = Rational::from(1);
-    let cols: Vec<TExpr> = basis
+    let elems: Vec<TExpr> = basis
         .iter()
-        .map(|&(j, k)| {
-            let m = monomial(j, k, &one);
-            field.add(&field.derivation(&m), &field.mul(omega, &m))
-        })
+        .map(|&(j, k)| field.mul(&monomial(j, k, &one), &inv_d))
+        .collect();
+    let cols: Vec<TExpr> = elems
+        .iter()
+        .map(|m| field.add(&field.derivation(m), &field.mul(omega, m)))
         .collect();
 
     let (matrix, rhs) = extract_linear_system(&cols, c);
     let sol = gauss_solve(matrix, rhs, basis.len())?;
 
-    // Reconstruct v = Σ solⱼₖ xᵏ tʲ.
+    // Reconstruct v = Σ solⱼₖ (xᵏ tʲ / D).
     let mut v = field.zero();
-    for (idx, &(j, k)) in basis.iter().enumerate() {
+    for (idx, elem) in elems.iter().enumerate() {
         if sol[idx] != 0 {
-            v = field.add(&v, &monomial(j, k, &sol[idx]));
+            v = field.add(
+                &v,
+                &field.mul(
+                    &TExpr::from_ratfn(RatFn::from_poly(&vec![sol[idx].clone()])),
+                    elem,
+                ),
+            );
         }
     }
 
@@ -551,13 +612,46 @@ mod tests {
     }
 
     #[test]
-    fn solve_tower_rde_no_polynomial_solution() {
-        // v' = 1/t  ⇒  v = −1/t, which has t in the denominator: outside the
-        // polynomial-in-(x,t) ansatz, so the solver returns None (not a
-        // non-elementarity certificate — it is elementary, just not polynomial).
+    fn solve_tower_rde_with_denominator() {
+        // v' = −(1+t)/(x+t)²  ⇒  v = 1/(x+t).  Needs a denominator — exercises
+        // the lifted ansatz (D = 1 fails, a candidate denominator succeeds).
+        let field = ExpTowerField::new(RatFn::int(1));
+        let x_plus_t = field.add(&x_elem(), &TExpr::t());
+        let one_plus_t = field.add(&TExpr::int(1), &TExpr::t());
+        let xt_sq = field.mul(&x_plus_t, &x_plus_t);
+        let c = field.neg(&field.mul(&one_plus_t, &field.inv(&xt_sq).unwrap()));
+
+        let v = solve_tower_rde(&field, &field.zero(), &c).expect("solvable with a denominator");
+        // The solver verifies internally; re-assert D(v) = c.
+        assert!(
+            field.eq(&field.derivation(&v), &c),
+            "D(v) = c; got v = {v:?}"
+        );
+        // v·(x+t) should be 1 (modulo the homogeneous constant, which is 0 here).
+        let prod = field.mul(&v, &x_plus_t);
+        assert!(field.eq(&prod, &TExpr::int(1)), "v·(x+t) = 1; got {prod:?}");
+    }
+
+    #[test]
+    fn solve_tower_rde_inv_t_now_solvable() {
+        // v' = 1/t  ⇒  v = −1/t.  The lifted ansatz (denominators allowed) finds
+        // it where the old polynomial-only solver returned None.
         let field = ExpTowerField::new(RatFn::int(1));
         let inv_t = field.inv(&TExpr::t()).unwrap();
-        assert!(solve_tower_rde(&field, &field.zero(), &inv_t).is_none());
+        let v = solve_tower_rde(&field, &field.zero(), &inv_t).expect("v = −1/t");
+        assert!(
+            field.eq(&v, &field.neg(&inv_t)),
+            "v should be −1/t; got {v:?}"
+        );
+    }
+
+    #[test]
+    fn solve_tower_rde_nonelementary_returns_none() {
+        // v' = eˣ/x has no solution in ℚ(x)(eˣ) (∫eˣ/x = Ei, non-elementary):
+        // the solver returns None for every candidate denominator.
+        let field = ExpTowerField::new(RatFn::int(1));
+        let c = field.mul(&TExpr::t(), &field.inv(&x_elem()).unwrap()); // t/x
+        assert!(solve_tower_rde(&field, &field.zero(), &c).is_none());
     }
 
     #[test]
