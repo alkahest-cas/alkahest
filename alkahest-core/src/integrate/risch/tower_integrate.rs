@@ -6,7 +6,7 @@
 //! `∫ (1+1/x)/(3(x+log x)^{2/3}) dx = (x+log x)^{1/3}`).
 //!
 //! Ties together the M0 generic quotient ring, the [`ExpTowerField`] /
-//! [`LogTowerField`] towers ([`super::tower_field`]), and the [`solve_tower_rde`]
+//! [`LogTowerField`] towers ([`super::tower_field`]), and the `solve_tower_rde`
 //! tower Risch-DE solver:
 //!
 //! 1. detect the outermost radical `y = a^{1/n}` whose radicand `a` involves a
@@ -15,13 +15,13 @@
 //!    decompose the integrand over the power basis `{1, y, …, y^{n−1}}` via the
 //!    generic `Quotient` (reducing `yⁿ = a`);
 //! 3. per power: `i = 0` is `∫c₀ dx` (recurse into the engine); `i ≥ 1` is the
-//!    tower Risch DE `vᵢ' + (i/n)(a'/a)·vᵢ = cᵢ` solved by [`solve_tower_rde`];
+//!    tower Risch DE `vᵢ' + (i/n)(a'/a)·vᵢ = cᵢ` solved by `solve_tower_rde`;
 //! 4. reconstruct `F = Σ vᵢ·a^{i/n} + ∫c₀` and **verify `d/dx F = integrand`
 //!    numerically** — so the whole path is sound (a wrong reconstruction or an
 //!    unsolved component yields `None`, never an incorrect antiderivative).
 //!
 //! Scope: a single exp/log generator, polynomial `η`/`h`, and per-component
-//! solutions within [`solve_tower_rde`]'s ansatz.  Anything else → `None`.
+//! solutions within `solve_tower_rde`'s ansatz.  Anything else → `None`.
 
 use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
 use crate::integrate::engine::IntegrationError;
@@ -33,13 +33,24 @@ use super::exp_case::build_rational;
 use super::number_field::{CoeffField, Quotient};
 use super::poly_rde::{expr_to_qpoly, is_free_of_var, poly_deriv};
 use super::tower::find_generators;
-use super::tower_field::{solve_tower_rde, ExpTowerField, LogTowerField, TExpr};
+use super::tower_field::{solve_tower_rde_generic, ExpTowerField, LogTowerField, TExpr};
 
 use rug::Rational;
 
 /// Element of the radical extension over the tower: coefficients of
 /// `1, y, …, y^{n−1}`, each in `ℚ(x)(t)`.
 type TowerElem = Vec<TExpr>;
+
+/// Backwards-compatible alias of [`try_integrate_radical_over_transcendental`]
+/// (originally exp-only; now also handles log towers).  Retained as a stable
+/// public symbol.
+pub fn try_integrate_radical_over_exp(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<Result<DerivedExpr<ExprId>, IntegrationError>> {
+    try_integrate_radical_over_transcendental(expr, var, pool)
+}
 
 /// Public entry: try to integrate a radical whose radicand involves a single
 /// **exp or log** transcendental generator.  Returns `None` when the integrand
@@ -78,7 +89,7 @@ pub fn try_integrate_radical_over_transcendental(
 }
 
 /// The field-generic integration core: decompose over the radical, solve each
-/// component (`i=0` → engine, `i≥1` → [`solve_tower_rde`]), reconstruct, and
+/// component (`i=0` → engine, `i≥1` → `solve_tower_rde`), reconstruct, and
 /// verify `d/dx F = integrand`.
 fn integrate_radical_over_tower<F>(
     field: &F,
@@ -128,7 +139,7 @@ where
                 vec![Rational::from(n as i64)],
             ));
             let omega = field.mul(&scale, &log_deriv_a);
-            let vi = solve_tower_rde(field, &omega, ci)?;
+            let vi = solve_tower_rde_generic(field, &omega, ci)?;
             if field.is_zero(&vi) {
                 continue;
             }

@@ -339,7 +339,7 @@ fn monomial(j: usize, k: usize, coeff: &Rational) -> TExpr {
 /// `Some` is always correct.  `None` means "no solution `U/D` was found for any
 /// tried `D` within the degree caps" — it is **not** a non-elementarity
 /// certificate.
-pub fn solve_tower_rde<F: CoeffField<Elem = TExpr>>(
+pub(crate) fn solve_tower_rde_generic<F: CoeffField<Elem = TExpr>>(
     field: &F,
     omega: &TExpr,
     c: &TExpr,
@@ -347,6 +347,13 @@ pub fn solve_tower_rde<F: CoeffField<Elem = TExpr>>(
     candidate_denominators(field, omega, c)
         .iter()
         .find_map(|d| solve_with_denominator(field, omega, c, d))
+}
+
+/// Solve `v' + ω·v = c` over the exponential tower `ℚ(x)(eˣ)` (the concrete,
+/// stable public entry).  `solve_tower_rde_generic` is the field-generic form
+/// (also used for the logarithmic tower).
+pub fn solve_tower_rde(field: &ExpTowerField, omega: &TExpr, c: &TExpr) -> Option<TExpr> {
+    solve_tower_rde_generic(field, omega, c)
 }
 
 /// Candidate denominators for `v`, in increasing complexity: `1`, the full
