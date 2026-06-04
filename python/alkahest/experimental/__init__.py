@@ -5,7 +5,12 @@ Functions and classes in this module may change signature, be renamed, or be
 removed between minor versions without a deprecation cycle.  Graduate to
 ``alkahest.*`` once the API has been exercised in production.
 
-Current experimental surface:
+Current experimental surface (linear algebra on ``Matrix``):
+- ``Matrix.nullspace``, ``rank``, ``column_space``, ``row_space``
+- ``Matrix.lu``, ``qr``, ``cholesky``
+- ``Matrix.jordan_form``, ``rational_canonical_form``, ``minimal_polynomial``, ``matrix_exp``, ``inverse``
+
+Other experimental surface:
 - :func:`to_lean` — Lean 4 certificate export (V5-1)
 - :func:`to_stablehlo` — StableHLO / XLA bridge (V5-2)
 - :func:`to_jax` — JAX primitive integration (V5-7, requires JAX)

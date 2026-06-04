@@ -248,6 +248,18 @@ class EigenError(AlkahestError):
         super().__init__(message, code="E-EIGEN-001", remediation=remediation, span=span)
 
 
+class LinearAlgebraError(AlkahestError):
+    """Symbolic linear algebra operation failed (nullspace, decompositions, normal forms)."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-LINALG-001", remediation=remediation, span=span)
+
+
 class LatticeError(AlkahestError):
     """LLL lattice reduction failed (structure, Lovász parameter, or iteration limit)."""
 
