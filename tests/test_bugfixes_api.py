@@ -110,7 +110,8 @@ def test_domain_enum_export():
     p = alkahest.ExprPool()
     x = p.symbol("x", alkahest.Domain.Integer)
     y = p.symbol("y", "integer")
-    assert x is not None and y is not None
+    assert x is not None
+    assert y is not None
     with alkahest.context(pool=p, domain=alkahest.Domain.Real):
         z = alkahest.symbol("z")
         assert z is not None

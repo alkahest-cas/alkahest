@@ -63,7 +63,6 @@ from .alkahest import (  # noqa: F401
     # Core expression types
     DerivedResult,
     Domain,
-    _derived_result_context_simplify,
     # V1-15: EgraphConfig and simplify_egraph_with
     EgraphConfig,
     # Phase 20: Hybrid systems
@@ -97,6 +96,7 @@ from .alkahest import (  # noqa: F401
     UniPolyFactorization,
     # V2-7: Polynomial factorization
     UniPolyFactorModP,
+    _derived_result_context_simplify,
     abs,  # symbolic abs — use alkahest.abs(expr); shadows Python builtin within this module
     acos,
     adjoint_system,
@@ -531,9 +531,7 @@ def diff(expr, var):
     >>> d = diff(x**3, x)   # DerivedResult; d.value == 3*x^2
     >>> diff(d, x).value    # second derivative — passes DerivedResult directly
     """
-    return _maybe_context_simplify(
-        _native_diff(_coerce_expr(expr), _coerce_expr(var))
-    )
+    return _maybe_context_simplify(_native_diff(_coerce_expr(expr), _coerce_expr(var)))
 
 
 _native_integrate = integrate
@@ -558,9 +556,7 @@ def integrate(expr, var):
     >>> p = ExprPool(); x = p.symbol("x")
     >>> integrate(x**2, x).value   # x^3/3
     """
-    return _maybe_context_simplify(
-        _native_integrate(_coerce_expr(expr), _coerce_expr(var))
-    )
+    return _maybe_context_simplify(_native_integrate(_coerce_expr(expr), _coerce_expr(var)))
 
 
 _native_subs = subs
@@ -748,9 +744,7 @@ _native_sum_indefinite = sum_indefinite
 
 def sum_indefinite(expr, k):
     """Indefinite symbolic sum of *expr* with respect to index *k*."""
-    return _maybe_context_simplify(
-        _native_sum_indefinite(_coerce_expr(expr), _coerce_expr(k))
-    )
+    return _maybe_context_simplify(_native_sum_indefinite(_coerce_expr(expr), _coerce_expr(k)))
 
 
 _native_sum_definite = sum_definite
@@ -773,9 +767,7 @@ _native_product_indefinite = product_indefinite
 
 def product_indefinite(expr, k):
     """Indefinite symbolic product of *expr* with respect to index *k*."""
-    return _maybe_context_simplify(
-        _native_product_indefinite(_coerce_expr(expr), _coerce_expr(k))
-    )
+    return _maybe_context_simplify(_native_product_indefinite(_coerce_expr(expr), _coerce_expr(k)))
 
 
 _native_product_definite = product_definite
