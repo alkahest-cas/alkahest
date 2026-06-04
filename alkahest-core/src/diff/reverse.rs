@@ -142,22 +142,20 @@ fn propagate(node: ExprId, adj: ExprId, adjoints: &mut HashMap<ExprId, ExprId>, 
             }
         }
 
-        // d(base^n) / d(base) = n * base^(n-1)   (integer n only)
+        // d(base^r) / d(base) = r * base^(r-1)   (constant integer or rational r)
         Op::Pow { base, exp } => {
-            let maybe_n = pool.with(exp, |d| {
-                if let ExprData::Integer(n) = d {
-                    Some(n.0.clone())
-                } else {
-                    None
-                }
+            let maybe_r = pool.with(exp, |d| match d {
+                ExprData::Integer(n) => Some(rug::Rational::from(n.0.clone())),
+                ExprData::Rational(q) => Some(q.0.clone()),
+                _ => None,
             });
-            if let Some(n) = maybe_n {
-                let n_minus_1 = pool.integer(n - 1i32);
-                let base_pow = pool.pow(base, n_minus_1);
+            if let Some(r) = maybe_r {
+                let r_minus_1 = super::diff_impl::const_node(pool, r - 1);
+                let base_pow = pool.pow(base, r_minus_1);
                 let contrib = pool.mul(vec![adj, exp, base_pow]);
                 add_adj(base, contrib, adjoints, pool);
             }
-            // Non-integer exponent: no propagation (same conservative choice as diff_impl)
+            // Var-dependent exponent: no propagation (conservative; same as diff_impl)
         }
 
         // Chain rule: d(f(u)) / d(u) = f'(u)
@@ -322,6 +320,22 @@ mod tests {
         assert!(
             dx_str.contains("x") && dx_str.contains("y"),
             "got: {dx_str}"
+        );
+    }
+
+    #[test]
+    fn grad_fractional_power_agrees_with_diff() {
+        // ∂/∂x (x²+1)^{1/2} via grad vs symbolic diff.
+        use crate::diff::diff;
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let base = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(1_i32)]);
+        let f = pool.pow(base, pool.rational(1_i32, 2_i32));
+        let sym = diff(f, x, &pool).unwrap().value;
+        let rev = grad(f, &[x], &pool)[0];
+        assert_eq!(
+            crate::simplify::engine::simplify(sym, &pool).value,
+            crate::simplify::engine::simplify(rev, &pool).value
         );
     }
 

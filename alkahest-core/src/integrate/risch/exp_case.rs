@@ -31,6 +31,7 @@ use crate::integrate::engine::IntegrationError;
 use crate::kernel::{ExprId, ExprPool};
 use crate::simplify::engine::simplify;
 
+use super::alg_field::{AlgElem, AlgExtension, RatFn};
 use super::number_field::{KElem, KPoly, NumberField};
 use super::poly_rde::{
     apply_const, contains_subexpr, degree, expr_to_qpoly, is_free_of_var, poly_add, poly_deriv,
@@ -1803,7 +1804,7 @@ fn build_krational(
 }
 
 /// Build the symbolic rational function `num(x) / den(x)`.
-fn build_rational(
+pub(super) fn build_rational(
     num: &[rug::Rational],
     den: &[rug::Rational],
     var: ExprId,
@@ -2134,6 +2135,171 @@ fn decompose_over_alpha(
     }
 }
 
+// --- Degree-d generalization: decompose over an arbitrary radical generator --
+//
+// These generalize `decompose_over_alpha` (rank-2, KPair) to a degree-`n`
+// simple radical extension `ℚ(x)[y]/(yⁿ − p)` represented by `alg_field`.  They
+// are the symbolic→`AlgElem` bridge the mixed-integration integral part (MA /
+// M1, see temp-alkahest/planning/risch.md) consumes; not yet wired into the
+// integrator, hence `#[allow(dead_code)]`.
+
+/// Detect a single x-dependent simple-radical generator `p(x)^{1/n}` (`n ≥ 2`)
+/// in `expr`.  Returns `(n, p)` iff there is **exactly one** distinct such
+/// generator (keyed by radicand `p` and index `n`): `sqrt`→`n=2`, `cbrt`→`n=3`,
+/// `base^{a/n}`→`n =` the reduced exponent denominator.  Returns `None` for no
+/// generator or for two distinct ones (a compositum — out of MA scope).
+pub(super) fn detect_radical_generator(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<(usize, QPoly)> {
+    let mut found: Vec<(usize, QPoly)> = Vec::new();
+    scan_radical_generator(expr, var, pool, &mut found);
+    let mut distinct: Vec<(usize, QPoly)> = Vec::new();
+    for (n, p) in found {
+        if !distinct
+            .iter()
+            .any(|(m, q)| *m == n && trim(q.clone()) == trim(p.clone()))
+        {
+            distinct.push((n, p));
+        }
+    }
+    if distinct.len() == 1 {
+        Some(distinct.remove(0))
+    } else {
+        None
+    }
+}
+
+fn scan_radical_generator(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    out: &mut Vec<(usize, QPoly)>,
+) {
+    use crate::kernel::ExprData;
+    match pool.get(expr) {
+        ExprData::Func { ref name, ref args } if name == "sqrt" && args.len() == 1 => {
+            if let Some(p) = expr_to_qpoly(args[0], var, pool) {
+                if degree(&p) >= 1 {
+                    out.push((2, p));
+                }
+            }
+        }
+        ExprData::Func { ref name, ref args } if name == "cbrt" && args.len() == 1 => {
+            if let Some(p) = expr_to_qpoly(args[0], var, pool) {
+                if degree(&p) >= 1 {
+                    out.push((3, p));
+                }
+            }
+        }
+        ExprData::Pow { base, exp } => {
+            if let ExprData::Rational(r) = pool.get(exp) {
+                if let Some(den) = r.0.denom().to_i64() {
+                    if den >= 2 {
+                        if let Some(p) = expr_to_qpoly(base, var, pool) {
+                            if degree(&p) >= 1 {
+                                out.push((den as usize, p));
+                                return; // don't recurse into the radicand
+                            }
+                        }
+                    }
+                }
+            }
+            scan_radical_generator(base, var, pool, out);
+        }
+        ExprData::Add(args) | ExprData::Mul(args) => {
+            for &a in &args {
+                scan_radical_generator(a, var, pool, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Decompose `expr` as `Σⱼ cⱼ(x) yʲ ∈ ℚ(x)[y]/(yⁿ − p)` where `y = p^{1/n}`,
+/// returning the coefficient vector as an [`AlgElem`].  The degree-`n`
+/// generalization of [`decompose_over_alpha`].  Returns `None` if `expr` is not
+/// a polynomial-in-`y` over `ℚ(x)` with this single generator.
+pub(super) fn decompose_over_alg_generator(
+    expr: ExprId,
+    n: usize,
+    p_radicand: &QPoly,
+    e: &AlgExtension,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<AlgElem> {
+    use crate::kernel::ExprData;
+
+    // Generator-free → a pure rational function of x → a constant element.
+    if let Some((num, den)) = expr_to_qrational(expr, var, pool) {
+        return Some(e.constant(RatFn::new(num, den)));
+    }
+
+    // `base^{a/d}` with `base` the radicand and `d | n` → `y^{a·(n/d)}`.
+    let as_generator_power = |base: ExprId, numr: i64, den: i64| -> Option<AlgElem> {
+        if den >= 2 && (n as i64) % den == 0 {
+            let bp = expr_to_qpoly(base, var, pool)?;
+            if trim(bp) == trim(p_radicand.clone()) {
+                return e.pow(&e.generator(), numr * (n as i64 / den));
+            }
+        }
+        None
+    };
+
+    match pool.get(expr) {
+        ExprData::Add(args) => {
+            let mut acc = e.from_int(0);
+            for &a in &args {
+                let t = decompose_over_alg_generator(a, n, p_radicand, e, var, pool)?;
+                acc = e.add(&acc, &t);
+            }
+            Some(acc)
+        }
+        ExprData::Mul(args) => {
+            let mut acc = e.from_int(1);
+            for &a in &args {
+                let t = decompose_over_alg_generator(a, n, p_radicand, e, var, pool)?;
+                acc = e.mul(&acc, &t);
+            }
+            Some(acc)
+        }
+        ExprData::Pow { base, exp } => match pool.get(exp) {
+            ExprData::Integer(m) => {
+                let m = m.0.to_i64()?;
+                let b = decompose_over_alg_generator(base, n, p_radicand, e, var, pool)?;
+                e.pow(&b, m)
+            }
+            ExprData::Rational(r) => {
+                as_generator_power(base, r.0.numer().to_i64()?, r.0.denom().to_i64()?)
+            }
+            _ => None,
+        },
+        ExprData::Func { ref name, ref args } if name == "sqrt" && args.len() == 1 => {
+            as_generator_power(args[0], 1, 2)
+        }
+        ExprData::Func { ref name, ref args } if name == "cbrt" && args.len() == 1 => {
+            as_generator_power(args[0], 1, 3)
+        }
+        _ => None,
+    }
+}
+
+/// Detect the radical generator in `expr` and decompose it over the
+/// corresponding [`AlgExtension`].  The MA entry point: returns the extension
+/// `ℚ(x)[y]/(yⁿ − p)` together with `expr` written as an [`AlgElem`].
+#[allow(dead_code)] // consumed by MA (mixed alg+trans integral part, M1)
+fn decompose_radical(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<(AlgExtension, AlgElem)> {
+    let (n, p) = detect_radical_generator(expr, var, pool)?;
+    let e = AlgExtension::radical(n, &p);
+    let elem = decompose_over_alg_generator(expr, n, &p, &e, var, pool)?;
+    Some((e, elem))
+}
+
 /// Try to integrate `c_rest · exp(kη)` when `c_rest` contains a single
 /// x-dependent `sqrt(p(x))` algebraic generator (Gap C).
 ///
@@ -2349,6 +2515,101 @@ mod tests {
 
     fn pool() -> ExprPool {
         ExprPool::new()
+    }
+
+    // -- degree-d radical decomposition (decompose_over_alpha generalization) --
+
+    fn qp(coeffs: &[i64]) -> QPoly {
+        coeffs.iter().map(|&c| rug::Rational::from(c)).collect()
+    }
+
+    #[test]
+    fn detect_radical_generator_forms() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        // cbrt(x) → (3, x).
+        let cbrt_x = pool.func("cbrt", vec![x]);
+        assert_eq!(
+            detect_radical_generator(cbrt_x, x, &pool),
+            Some((3, qp(&[0, 1])))
+        );
+        // x^(1/3) → (3, x).
+        let x_pow = pool.pow(x, pool.rational(1_i32, 3_i32));
+        assert_eq!(
+            detect_radical_generator(x_pow, x, &pool),
+            Some((3, qp(&[0, 1])))
+        );
+        // sqrt(x+1) → (2, x+1).
+        let sqrt = pool.func("sqrt", vec![pool.add(vec![x, pool.integer(1_i32)])]);
+        assert_eq!(
+            detect_radical_generator(sqrt, x, &pool),
+            Some((2, qp(&[1, 1])))
+        );
+        // No radical → None.
+        assert_eq!(
+            detect_radical_generator(pool.add(vec![x, pool.integer(1_i32)]), x, &pool),
+            None
+        );
+        // Two distinct generators (compositum) → None.
+        let mixed = pool.add(vec![pool.func("sqrt", vec![x]), pool.func("cbrt", vec![x])]);
+        assert_eq!(detect_radical_generator(mixed, x, &pool), None);
+    }
+
+    #[test]
+    fn decompose_x_plus_cbrt_x() {
+        // x + ∛x  over  ℚ(x)[y]/(y³ − x)  →  [x, 1, 0].
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.add(vec![x, pool.func("cbrt", vec![x])]);
+        let (e, elem) = decompose_radical(expr, x, &pool).expect("decomposes");
+        assert_eq!(e.degree(), 3);
+        let expected = vec![RatFn::from_poly(&qp(&[0, 1])), RatFn::int(1)];
+        assert!(e.elem_eq(&elem, &expected), "got {elem:?}");
+    }
+
+    #[test]
+    fn decompose_cbrt_x_squared() {
+        // (∛x)²  →  y²  →  [0, 0, 1];  and x^(2/3) gives the same.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sq = pool.pow(pool.func("cbrt", vec![x]), pool.integer(2_i32));
+        let (e, elem) = decompose_radical(sq, x, &pool).expect("decomposes");
+        let expected = vec![RatFn::int(0), RatFn::int(0), RatFn::int(1)];
+        assert!(e.elem_eq(&elem, &expected), "got {elem:?}");
+
+        let frac = pool.pow(x, pool.rational(2_i32, 3_i32));
+        let (e2, elem2) = decompose_radical(frac, x, &pool).expect("decomposes");
+        assert!(e2.elem_eq(&elem2, &expected), "x^(2/3): got {elem2:?}");
+    }
+
+    #[test]
+    fn decompose_inverse_of_one_plus_cbrt_x() {
+        // 1/(1 + ∛x) over ℚ(x)(∛x): the decomposition inverts (1+y); check by
+        // multiplying back to 1.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let base = pool.add(vec![pool.integer(1_i32), pool.func("cbrt", vec![x])]);
+        let inv_expr = pool.pow(base, pool.integer(-1_i32));
+        let (e, inv_elem) = decompose_radical(inv_expr, x, &pool).expect("decomposes");
+        let base_elem = vec![RatFn::int(1), RatFn::int(1)]; // 1 + y
+        let product = e.mul(&inv_elem, &base_elem);
+        assert!(
+            e.elem_eq(&product, &e.from_int(1)),
+            "inv·(1+y) = {product:?}"
+        );
+    }
+
+    #[test]
+    fn decompose_degree2_matches_kpair_semantics() {
+        // x + √x over ℚ(x)(√x) → [x, 1] — the rank-2 KPair (c₀=x, c₁=1) as an
+        // AlgElem of length 2.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.add(vec![x, pool.func("sqrt", vec![x])]);
+        let (e, elem) = decompose_radical(expr, x, &pool).expect("decomposes");
+        assert_eq!(e.degree(), 2);
+        let expected = vec![RatFn::from_poly(&qp(&[0, 1])), RatFn::int(1)];
+        assert!(e.elem_eq(&elem, &expected), "got {elem:?}");
     }
 
     #[test]

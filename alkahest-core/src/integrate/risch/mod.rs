@@ -36,8 +36,13 @@
 //! - [`rational_rde`]: Rational RDE solver over ℚ(x) (exp tower; Bronstein §6.1).
 //!   Also contains [`rational_rde::solve_rational_rde_generalized`] for the
 //!   rational-exponent case `f = k·η' ∈ ℚ(x)` (Gap F, Bronstein §5.4).
-//! - [`number_field`]: Algebraic number field `ℚ[t]/(q)` arithmetic (used for
-//!   degree-≥3 algebraic residues and ℚ(√d) coefficients in the exp tower).
+//! - [`number_field`]: Generic polynomial-quotient core ([`number_field::CoeffField`],
+//!   [`number_field::Quotient`]) plus the algebraic number field `ℚ[t]/(q)`
+//!   ([`number_field::NumberField`], used for degree-≥3 algebraic residues and
+//!   ℚ(√d) coefficients in the exp tower).
+//! - [`alg_field`]: `x`-dependent algebraic *function* field `ℚ(x)[y]/(q(x,y))`
+//!   with a derivation `D(y) = −q_x/q_y` (Risch M0; substrate for mixed
+//!   algebraic + transcendental integration).
 //! - [`rational_integrate`]: Rational-function integration via Rothstein–Trager
 //!   (logarithmic part; Bronstein §2.5).
 //! - [`exp_case`]: Integration in the hyperexponential tower (t = exp(η)), both
@@ -70,12 +75,14 @@
 //! - Bronstein (2005). *Symbolic Integration I: Transcendental Functions*. Springer.
 //! - Geddes, Czapor, Labahn (1992). *Algorithms for Computer Algebra*. Kluwer.
 
+pub mod alg_field;
 pub mod exp_case;
 pub mod log_case;
 pub mod number_field;
 pub mod poly_rde;
 pub mod rational_integrate;
 pub mod rational_rde;
+pub mod simple_radical;
 pub mod tower;
 
 use crate::deriv::log::{DerivationLog, DerivedExpr};

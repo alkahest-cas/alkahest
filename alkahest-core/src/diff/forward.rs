@@ -115,6 +115,16 @@ impl DualValue {
         DualValue::new(value, tangent)
     }
 
+    /// `f^r` for a constant rational `r`: `d/dx f^r = r · f^{r-1} · f'`.
+    fn pow_rat(self, r: rug::Rational, pool: &ExprPool) -> Self {
+        let r_id = super::diff_impl::const_node(pool, r.clone());
+        let r_minus_1 = super::diff_impl::const_node(pool, r - 1);
+        let value = pool.pow(self.value, r_id);
+        let base_pow = pool.pow(self.value, r_minus_1);
+        let tangent = pool.mul(vec![r_id, base_pow, self.tangent]);
+        DualValue::new(value, tangent)
+    }
+
     fn sin(self, pool: &ExprPool) -> Self {
         // d/dx sin(f) = cos(f) * f'
         let value = pool.func("sin", vec![self.value]);
@@ -179,6 +189,12 @@ impl DualValue {
 /// `memo` maps `ExprId → DualValue` so that shared subexpressions are
 /// evaluated only once per `diff_forward` call.  `DualValue` holds two
 /// `ExprId` values and is cheap to clone.
+/// A recognized constant power exponent: integer or rational.
+enum ExpKind {
+    Int(rug::Integer),
+    Rat(rug::Rational),
+}
+
 fn eval_dual(
     expr: ExprId,
     var: ExprId,
@@ -260,14 +276,19 @@ fn eval_dual(
             Ok(acc)
         }
         Node::Pow { base, exp } => {
-            let n = pool
+            // Constant exponent: integer → pow_int, rational → pow_rat.
+            let exp_kind = pool
                 .with(exp, |data| match data {
-                    ExprData::Integer(n) => Some(n.0.clone()),
+                    ExprData::Integer(n) => Some(ExpKind::Int(n.0.clone())),
+                    ExprData::Rational(q) => Some(ExpKind::Rat(q.0.clone())),
                     _ => None,
                 })
                 .ok_or(DiffError::ForwardNonIntegerExponent)?;
             let b = eval_dual(base, var, pool, memo)?;
-            Ok(b.pow_int(n, pool))
+            Ok(match exp_kind {
+                ExpKind::Int(n) => b.pow_int(n, pool),
+                ExpKind::Rat(q) => b.pow_rat(q, pool),
+            })
         }
         Node::Func { name, arg } => {
             // Protect against the dummy self-referential node from multi-arg fns
@@ -396,6 +417,20 @@ mod tests {
         let fwd_poly = UniPoly::from_symbolic(fwd.value, x, &pool).unwrap();
         let sym_poly = UniPoly::from_symbolic(sym.value, x, &pool).unwrap();
         assert_eq!(fwd_poly.coefficients_i64(), sym_poly.coefficients_i64());
+    }
+
+    #[test]
+    fn forward_diff_fractional_power_agrees_with_symbolic() {
+        // d/dx x^{2/3} via forward vs symbolic.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.pow(x, pool.rational(2_i32, 3_i32));
+        let fwd = diff_forward(expr, x, &pool).unwrap().value;
+        let sym = sym_diff(expr, x, &pool).unwrap().value;
+        assert_eq!(
+            crate::simplify::engine::simplify(fwd, &pool).value,
+            crate::simplify::engine::simplify(sym, &pool).value
+        );
     }
 
     #[test]

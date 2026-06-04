@@ -5,6 +5,18 @@ use crate::simplify::engine::simplify;
 use std::collections::HashMap;
 use std::fmt;
 
+/// Build a canonical constant node for a rational `r`: an `Integer` when `r` is
+/// integer-valued, otherwise a `Rational`.  Shared by all three diff modes for
+/// the constant-exponent power rule.
+pub(crate) fn const_node(pool: &ExprPool, r: rug::Rational) -> ExprId {
+    if *r.denom() == 1 {
+        pool.integer(r.numer().clone())
+    } else {
+        let (n, d) = r.into_numer_denom();
+        pool.rational(n, d)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
@@ -262,26 +274,30 @@ fn diff_raw(
             memo.insert(expr, result.value);
             Ok(result)
         }
-        // Power rule (integer exponent): d/dx f^n = n · f^(n-1) · f'
+        // Power rule, constant exponent (integer or rational):
+        //   d/dx f^r = r · f^(r-1) · f'.
+        // A var-dependent / non-constant exponent (e.g. x^y, x^x) is a different
+        // rule (logarithmic differentiation) and remains unsupported.
         Node::Pow { base, exp } => {
             // Read the exponent without holding the pool lock during recursion.
-            let n = pool
+            let r = pool
                 .with(exp, |data| match data {
-                    ExprData::Integer(n) => Some(n.0.clone()),
+                    ExprData::Integer(n) => Some(rug::Rational::from(n.0.clone())),
+                    ExprData::Rational(q) => Some(q.0.clone()),
                     _ => None,
                 })
                 .ok_or(DiffError::NonIntegerExponent)?;
 
-            // Special case n=0: d/dx f^0 = 0
-            if n == 0 {
+            // Special case r=0: d/dx f^0 = 0
+            if r == 0 {
                 let zero = pool.integer(0_i32);
                 let mut log = DerivationLog::new();
                 log.push(RewriteStep::simple("power_rule_n0", expr, zero));
                 memo.insert(expr, zero);
                 return Ok(DerivedExpr::with_log(zero, log));
             }
-            // Special case n=1: d/dx f^1 = f'
-            if n == 1 {
+            // Special case r=1: d/dx f^1 = f'
+            if r == 1 {
                 let mut result = diff_raw(base, var, pool, memo)?;
                 result
                     .log
@@ -293,10 +309,10 @@ fn diff_raw(
             let mut log = DerivationLog::new();
             let df = diff_raw(base, var, pool, memo)?;
             log = log.merge(df.log);
-            let n_id = pool.integer(n.clone());
-            let n_minus_1 = pool.integer(n - 1);
-            let base_pow = pool.pow(base, n_minus_1);
-            let result_id = pool.mul(vec![n_id, base_pow, df.value]);
+            let r_id = const_node(pool, r.clone());
+            let r_minus_1 = const_node(pool, r - 1);
+            let base_pow = pool.pow(base, r_minus_1);
+            let result_id = pool.mul(vec![r_id, base_pow, df.value]);
             log.push(RewriteStep::simple("power_rule", expr, result_id));
             memo.insert(expr, result_id);
             Ok(DerivedExpr::with_log(result_id, log))
@@ -603,8 +619,58 @@ mod tests {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let y = pool.symbol("y", Domain::Real);
+        // A *var-dependent* exponent still needs logarithmic differentiation and
+        // remains unsupported.
         let err = diff(pool.pow(x, y), x, &pool);
         assert!(matches!(err, Err(DiffError::NonIntegerExponent)));
+    }
+
+    #[test]
+    fn diff_fractional_power() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        // d/dx x^{1/2} = (1/2) x^{-1/2}.
+        let half = pool.pow(x, pool.rational(1_i32, 2_i32));
+        let d = diff(half, x, &pool).unwrap();
+        let expected = pool.mul(vec![
+            pool.rational(1_i32, 2_i32),
+            pool.pow(x, pool.rational(-1_i32, 2_i32)),
+        ]);
+        assert_eq!(
+            simplify(d.value, &pool).value,
+            simplify(expected, &pool).value
+        );
+
+        // d/dx x^{2/3} = (2/3) x^{-1/3}.
+        let two_thirds = pool.pow(x, pool.rational(2_i32, 3_i32));
+        let d = diff(two_thirds, x, &pool).unwrap();
+        let expected = pool.mul(vec![
+            pool.rational(2_i32, 3_i32),
+            pool.pow(x, pool.rational(-1_i32, 3_i32)),
+        ]);
+        assert_eq!(
+            simplify(d.value, &pool).value,
+            simplify(expected, &pool).value
+        );
+    }
+
+    #[test]
+    fn diff_fractional_power_chain_rule() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        // d/dx (x²+1)^{3/2} = (3/2)(x²+1)^{1/2}·2x = 3x·(x²+1)^{1/2}.
+        let base = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(1_i32)]);
+        let expr = pool.pow(base, pool.rational(3_i32, 2_i32));
+        let d = diff(expr, x, &pool).unwrap();
+        let expected = pool.mul(vec![
+            pool.integer(3_i32),
+            x,
+            pool.pow(base, pool.rational(1_i32, 2_i32)),
+        ]);
+        assert_eq!(
+            simplify(d.value, &pool).value,
+            simplify(expected, &pool).value
+        );
     }
 
     #[test]
