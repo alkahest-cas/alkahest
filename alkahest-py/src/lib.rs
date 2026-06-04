@@ -344,8 +344,8 @@ fn parse_domain_arg(ob: Option<&Bound<'_, PyAny>>) -> PyResult<Domain> {
     if let Ok(d) = ob.extract::<PyDomain>() {
         return Ok(d.into());
     }
-    if let Ok(s) = ob.extract::<&str>() {
-        return Ok(parse_domain(s));
+    if let Ok(s) = ob.extract::<String>() {
+        return Ok(parse_domain(&s));
     }
     Err(PyTypeError::new_err(
         "domain must be a str (e.g. 'real') or alkahest.Domain",
