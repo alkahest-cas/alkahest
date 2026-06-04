@@ -18,6 +18,7 @@
 
 pub(super) mod decompose;
 pub(super) mod genus_zero;
+pub(super) mod parametrize;
 pub(super) mod poly_utils;
 
 use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
@@ -160,6 +161,15 @@ pub fn integrate_algebraic(
     var: ExprId,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, IntegrationError> {
+    // M2: genus-0 reduction by rational parametrization.  A single radical with a
+    // *linear* radicand `(a·x+b)^{1/n}` parametrizes as `x = (sⁿ−b)/a`, turning the
+    // integrand rational in `s` (always elementary — incl. the logarithmic part the
+    // simple-radical integral part below cannot finish).  Tried first so it fixes
+    // those cases (and their previously wrong `NonElementary`).
+    if let Some(res) = parametrize::try_parametrize_genus0(expr, var, pool) {
+        return res;
+    }
+
     // MA (Risch M0/M1): degree-≥3 simple radical `p(x)^{1/n}` over ℚ(x).  The
     // genus-0 sqrt engine below only covers degree 2; the simple-radical
     // integral part handles higher degrees (squarefree radicand).  Returns
