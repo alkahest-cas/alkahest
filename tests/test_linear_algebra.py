@@ -16,9 +16,7 @@ def test_nullspace_rank_column_row_space():
 
 def test_lu_rational_2x2():
     pool = alkahest.ExprPool()
-    m = alkahest.Matrix(
-        [[pool.integer(2), pool.integer(1)], [pool.integer(4), pool.integer(3)]]
-    )
+    m = alkahest.Matrix([[pool.integer(2), pool.integer(1)], [pool.integer(4), pool.integer(3)]])
     lower, upper, perm = m.lu()
     permuted = alkahest.Matrix([m.to_list()[i] for i in perm])
     assert (lower @ upper).simplify().to_list() == permuted.simplify().to_list()
