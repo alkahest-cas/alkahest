@@ -977,19 +977,19 @@ pub fn matrix_exponential(m: &Matrix, pool: &ExprPool) -> Result<Matrix, LinearA
     if let Ok((p, d)) = eigen::diagonalize(m, pool) {
         let exp_d = diagonal_matrix_exp(&d, pool)?;
         let inv_p = matrix_inverse(&p, pool).map_err(|_| LinearAlgebraError::SingularTransform)?;
-        return Ok(p
+        return p
             .mul(&exp_d, pool)
             .map_err(|_| LinearAlgebraError::KernelFailed)?
             .mul(&inv_p, pool)
-            .map_err(|_| LinearAlgebraError::KernelFailed)?);
+            .map_err(|_| LinearAlgebraError::KernelFailed);
     }
     let (p, j) = jordan_form(m, pool)?;
     let exp_j = jordan_matrix_exp(&j, pool)?;
     let inv_p = matrix_inverse(&p, pool).map_err(|_| LinearAlgebraError::SingularTransform)?;
-    Ok(p.mul(&exp_j, pool)
+    p.mul(&exp_j, pool)
         .map_err(|_| LinearAlgebraError::KernelFailed)?
         .mul(&inv_p, pool)
-        .map_err(|_| LinearAlgebraError::KernelFailed)?)
+        .map_err(|_| LinearAlgebraError::KernelFailed)
 }
 
 fn diagonal_matrix_exp(d: &Matrix, pool: &ExprPool) -> Result<Matrix, LinearAlgebraError> {
