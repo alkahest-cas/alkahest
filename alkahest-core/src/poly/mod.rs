@@ -4,6 +4,8 @@ pub mod factor;
 // V2-3 — Sparse interpolation
 pub mod interp;
 pub mod multipoly;
+// M3 prereq — Newton–Puiseux fractional-power local expansions of plane curves
+pub mod puiseux;
 pub mod rational;
 // V2-2 — Resultants and subresultant PRS
 pub mod resultant;
