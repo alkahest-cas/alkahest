@@ -25,7 +25,7 @@
 //!   `{1, y, …, y^{n−1}}` (`dₖ = 1`, `F = 1`), `ωₖ = (k/n)·p'/p`
 //!   ([`try_integrate_simple_radical`]).
 //! - **Non-squarefree radicand**: the explicit basis with `z = y/F`,
-//!   `dₖ = ∏ⱼ Hⱼ^⌊kj/n⌋`, handled by [`integrate_general_radical`] (monic
+//!   `dₖ = ∏ⱼ Hⱼ^⌊kj/n⌋`, handled by `integrate_general_radical` (monic
 //!   radicand; e.g. `∫∛(x²) = ⅗x^{5/3}`).
 //!
 //! ## Scope (what this slice does *not* do)
