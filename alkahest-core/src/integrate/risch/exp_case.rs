@@ -32,6 +32,7 @@ use crate::kernel::{ExprId, ExprPool};
 use crate::simplify::engine::simplify;
 
 use super::alg_field::{AlgElem, AlgExtension, RatFn};
+use super::alg_rde::solve_alg_rde;
 use super::number_field::{KElem, KPoly, NumberField};
 use super::poly_rde::{
     apply_const, contains_subexpr, degree, expr_to_qpoly, is_free_of_var, poly_add, poly_deriv,
@@ -824,6 +825,14 @@ fn integrate_single_exp_term(
     // Mixed alg+trans, degree ≥ 3: c_rest = Σᵢ cᵢ(x)·a^{i/n} times exp(kη).
     if let Some(result) =
         try_radical_poly_rde(c_rest, k, deta, exp_k_eta, k_const, c_expr, var, pool, log)
+    {
+        return result;
+    }
+
+    // M1-step-2: non-cyclic algebraic coefficient — a compositum of two square
+    // roots `√p + √q` (degree-4, coupled twisted-derivation RDE).
+    if let Some(result) =
+        try_compositum_poly_rde(c_rest, k, deta, exp_k_eta, k_const, c_expr, var, pool, log)
     {
         return result;
     }
@@ -2502,6 +2511,242 @@ fn try_radical_poly_rde(
     Some(Ok(result))
 }
 
+/// Try to integrate `c_rest · exp(kη)` when `c_rest` involves a **compositum of
+/// two distinct square roots** `√p(x)`, `√q(x)` — a degree-4 *non-cyclic*
+/// algebraic extension `ℚ(x)(α)` with `α = √p + √q` and minimal polynomial
+/// `α⁴ − 2(p+q)α² + (p−q)²`.  This is the general (coupled) **M1-step-2** case:
+/// the twisted-derivation system does *not* decouple per power as it does for a
+/// single radical, so we solve `D(v) + kη'·v = c_rest` with the general coupled
+/// solver [`solve_alg_rde`].  `None` if `c_rest` is not of this shape;
+/// `Some(Err(NonElementary))` if no rational `v` exists.
+#[allow(clippy::too_many_arguments)]
+fn try_compositum_poly_rde(
+    c_rest: ExprId,
+    k: i64,
+    deta: &[rug::Rational],
+    exp_k_eta: ExprId,
+    k_const: ExprId,
+    c_expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Option<Result<ExprId, IntegrationError>> {
+    let (p, q) = detect_two_sqrt_compositum(c_rest, var, pool)?;
+    if trim(poly_sub(&q, &p)).is_empty() {
+        return None; // p = q would be a single radical, not a compositum
+    }
+
+    // Minimal polynomial of α = √p + √q : α⁴ − 2(p+q)α² + (p−q)².
+    let pq_sum = poly_add(&p, &q);
+    let pq_diff = poly_sub(&p, &q);
+    let q_min = vec![
+        poly_mul(&pq_diff, &pq_diff),
+        poly_zero(),
+        poly_scale(&pq_sum, &rug::Rational::from(-2)),
+        poly_zero(),
+        poly_one(),
+    ];
+    let e = AlgExtension::new(&q_min);
+
+    // √p, √q expressed in the power basis {1, α, α², α³}:
+    //   √p = (α³ − (3p+q)α) / (2(q−p)),   √q = (α³ − (p+3q)α) / (2(p−q)).
+    let sqrt_p = sqrt_in_alpha_basis(&p, &q);
+    let sqrt_q = sqrt_in_alpha_basis(&q, &p);
+
+    let g = decompose_over_compositum(c_rest, &p, &q, &sqrt_p, &sqrt_q, &e, var, pool)?;
+
+    // f = k·η' (a polynomial in x), as a ℚ(x) element.
+    let f_poly: QPoly = deta
+        .iter()
+        .map(|r| r.clone() * rug::Rational::from(k))
+        .collect();
+    let f = RatFn::from_poly(&f_poly);
+
+    let ne = || {
+        IntegrationError::NonElementary(format!(
+            "the coupled Risch DE over ℚ(x)(√p+√q) for ∫ {} · exp(η)^{k} dx \
+             has no rational solution",
+            pool.display(c_expr),
+        ))
+    };
+    let y = match solve_alg_rde(&e, &f, &g) {
+        Some(y) => y,
+        None => return Some(Err(ne())),
+    };
+
+    // Reconstruct v = Σⱼ yⱼ(x)·αʲ with α = √p + √q.
+    let p_expr = qpoly_to_expr(&p, var, pool);
+    let q_expr = qpoly_to_expr(&q, var, pool);
+    let alpha = pool.add(vec![
+        pool.func("sqrt", vec![p_expr]),
+        pool.func("sqrt", vec![q_expr]),
+    ]);
+    let mut terms: Vec<ExprId> = Vec::new();
+    for (j, yj) in y.iter().enumerate() {
+        if yj.numer().is_empty() {
+            continue;
+        }
+        let coeff = build_rational(yj.numer(), yj.denom(), var, pool);
+        let term = if j == 0 {
+            coeff
+        } else {
+            pool.mul(vec![coeff, pool.pow(alpha, pool.integer(j as i32))])
+        };
+        terms.push(term);
+    }
+    let v_expr = match terms.len() {
+        0 => pool.integer(0_i32),
+        1 => terms[0],
+        _ => pool.add(terms),
+    };
+    let core = build_v_times_exp(v_expr, exp_k_eta, pool);
+    let result = apply_const(k_const, core, pool);
+    log.push(RewriteStep::simple(
+        "risch_exp_compositum_poly",
+        c_expr,
+        result,
+    ));
+    Some(Ok(result))
+}
+
+/// `√(self)` in the `{1, α, α², α³}` basis of `ℚ(x)(α)`, `α = √self + √other`:
+/// `√self = (α³ − (3·self + other)·α) / (2·(other − self))`.
+fn sqrt_in_alpha_basis(self_rad: &QPoly, other_rad: &QPoly) -> AlgElem {
+    let den = poly_scale(&poly_sub(other_rad, self_rad), &rug::Rational::from(2)); // 2(other−self)
+    let lin = poly_add(&poly_scale(self_rad, &rug::Rational::from(3)), other_rad); // 3·self+other
+    let c1 = RatFn::new(poly_scale(&lin, &rug::Rational::from(-1)), den.clone());
+    let c3 = RatFn::new(poly_one(), den);
+    vec![RatFn::int(0), c1, RatFn::int(0), c3]
+}
+
+/// Detect a compositum of **exactly two distinct** x-dependent square-root
+/// generators `√p`, `√q` in `expr`.  Returns `(p, q)` or `None`.
+fn detect_two_sqrt_compositum(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<(QPoly, QPoly)> {
+    let mut found: Vec<QPoly> = Vec::new();
+    scan_sqrt_radicands(expr, var, pool, &mut found);
+    let mut distinct: Vec<QPoly> = Vec::new();
+    for p in found {
+        if !distinct.iter().any(|q| trim(q.clone()) == trim(p.clone())) {
+            distinct.push(p);
+        }
+    }
+    if distinct.len() == 2 {
+        let q = distinct.pop().unwrap();
+        let p = distinct.pop().unwrap();
+        Some((p, q))
+    } else {
+        None
+    }
+}
+
+fn scan_sqrt_radicands(expr: ExprId, var: ExprId, pool: &ExprPool, out: &mut Vec<QPoly>) {
+    use crate::kernel::ExprData;
+    let push_if_poly = |arg: ExprId, out: &mut Vec<QPoly>| {
+        if let Some(p) = expr_to_qpoly(arg, var, pool) {
+            if degree(&p) >= 1 {
+                out.push(p);
+            }
+        }
+    };
+    match pool.get(expr) {
+        ExprData::Func { ref name, ref args } if name == "sqrt" && args.len() == 1 => {
+            push_if_poly(args[0], out);
+        }
+        ExprData::Pow { base, exp } => {
+            if let ExprData::Rational(r) = pool.get(exp) {
+                if r.0.denom().to_i64() == Some(2) {
+                    push_if_poly(base, out);
+                    return;
+                }
+            }
+            scan_sqrt_radicands(base, var, pool, out);
+        }
+        ExprData::Add(args) | ExprData::Mul(args) => {
+            for &a in &args {
+                scan_sqrt_radicands(a, var, pool, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Decompose `expr` over the power basis of `ℚ(x)(α)`, `α = √p + √q`, replacing
+/// `√p → sqrt_p`, `√q → sqrt_q` (their `α`-basis forms) and rational-in-`x`
+/// subexpressions by constants.  `None` if `expr` is not a polynomial in these
+/// generators over `ℚ(x)`.
+#[allow(clippy::too_many_arguments)]
+fn decompose_over_compositum(
+    expr: ExprId,
+    p: &QPoly,
+    q: &QPoly,
+    sqrt_p: &AlgElem,
+    sqrt_q: &AlgElem,
+    e: &AlgExtension,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<AlgElem> {
+    use crate::kernel::ExprData;
+
+    if let Some((num, den)) = expr_to_qrational(expr, var, pool) {
+        return Some(e.constant(RatFn::new(num, den)));
+    }
+
+    // `base^{a/2}` with `base` matching p or q → `(√base)^a` in the α-basis
+    // (handles inverse and odd half-powers, e.g. `1/√x = (√x)^{-1}`).
+    let half_power = |base: ExprId, a: i64| -> Option<AlgElem> {
+        let r = trim(expr_to_qpoly(base, var, pool)?);
+        if r == trim(p.clone()) {
+            e.pow(sqrt_p, a)
+        } else if r == trim(q.clone()) {
+            e.pow(sqrt_q, a)
+        } else {
+            None
+        }
+    };
+
+    match pool.get(expr) {
+        ExprData::Add(args) => {
+            let mut acc = e.from_int(0);
+            for &a in &args {
+                acc = e.add(
+                    &acc,
+                    &decompose_over_compositum(a, p, q, sqrt_p, sqrt_q, e, var, pool)?,
+                );
+            }
+            Some(acc)
+        }
+        ExprData::Mul(args) => {
+            let mut acc = e.from_int(1);
+            for &a in &args {
+                acc = e.mul(
+                    &acc,
+                    &decompose_over_compositum(a, p, q, sqrt_p, sqrt_q, e, var, pool)?,
+                );
+            }
+            Some(acc)
+        }
+        ExprData::Pow { base, exp } => match pool.get(exp) {
+            ExprData::Integer(m) => {
+                let m = m.0.to_i64()?;
+                let b = decompose_over_compositum(base, p, q, sqrt_p, sqrt_q, e, var, pool)?;
+                e.pow(&b, m)
+            }
+            ExprData::Rational(r) if r.0.denom().to_i64() == Some(2) => {
+                half_power(base, r.0.numer().to_i64()?)
+            }
+            _ => None,
+        },
+        ExprData::Func { ref name, ref args } if name == "sqrt" && args.len() == 1 => {
+            half_power(args[0], 1)
+        }
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Detection: does an integrand require the exp-tower path?
 // ---------------------------------------------------------------------------
@@ -2943,6 +3188,46 @@ mod tests {
                 pool.display(f)
             );
         }
+    }
+
+    /// M1-step-2 (non-cyclic, coupled): `α = √x + √(x+1)` is a degree-4 algebraic
+    /// extension that is **not** a pure radical, so the twisted-derivation system
+    /// couples the power basis and `try_radical_poly_rde` does not apply.
+    /// `∫ [√x + √(x+1) + 1/(2√x) + 1/(2√(x+1))]·eˣ dx = (√x + √(x+1))·eˣ`.
+    #[test]
+    fn compositum_two_sqrts_times_exp() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let xp1 = pool.add(vec![x, pool.integer(1_i32)]);
+        let sx = pool.func("sqrt", vec![x]);
+        let sx1 = pool.func("sqrt", vec![xp1]);
+        let half = pool.rational(1_i32, 2_i32);
+        let inv2sx = pool.mul(vec![half, pool.pow(x, pool.rational(-1_i32, 2_i32))]);
+        let inv2sx1 = pool.mul(vec![half, pool.pow(xp1, pool.rational(-1_i32, 2_i32))]);
+        let c_rest = pool.add(vec![sx, sx1, inv2sx, inv2sx1]);
+        let integrand = pool.mul(vec![c_rest, exp_x]);
+        verify_exp_tower(integrand, x, &pool);
+    }
+
+    /// The coupled solver must report NonElementary when no rational `v` exists:
+    /// `∫ (√x + √(x+1))·eˣ dx` is non-elementary (cf. `∫√x·eˣ`).
+    #[test]
+    fn compositum_two_sqrts_times_exp_nonelementary() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let xp1 = pool.add(vec![x, pool.integer(1_i32)]);
+        let c_rest = pool.add(vec![
+            pool.func("sqrt", vec![x]),
+            pool.func("sqrt", vec![xp1]),
+        ]);
+        let integrand = pool.mul(vec![c_rest, exp_x]);
+        let r = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            matches!(r, Err(IntegrationError::NonElementary(_))),
+            "expected NonElementary; got {r:?}"
+        );
     }
 
     #[test]
