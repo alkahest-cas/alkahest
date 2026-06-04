@@ -208,23 +208,9 @@ impl AlgExtension {
     /// `y`-derivative of `q`) is not invertible modulo `q` — i.e. if `q` is not
     /// separable, which never happens for a squarefree `q` in characteristic 0.
     pub fn new(q: &[QPoly]) -> Self {
-        let field = RationalFunctionField;
         let modulus: AlgElem = q.iter().map(RatFn::from_poly).collect();
-        let quotient = Quotient::new(field, modulus.clone());
-
-        // q_x = ∂q/∂x (coefficient-wise d/dx, holding y), as a poly in y.
-        let qx: AlgElem = modulus.iter().map(|c| c.derivative()).collect();
-        // q_y = ∂q/∂y (formal y-derivative), as a poly in y.
-        let qy = dpoly_dy(&RationalFunctionField, &modulus);
-
-        let qx_red = quotient.reduce(&qx);
-        let qy_red = quotient.reduce(&qy);
-        let qy_inv = quotient
-            .inv(&qy_red)
-            .expect("q is separable (squarefree, char 0): q_y is invertible mod q");
-        // D(y) = −q_x / q_y.
-        let dy = quotient.mul(&quotient.neg(&qx_red), &qy_inv);
-
+        let quotient = Quotient::new(RationalFunctionField, modulus);
+        let dy = radical_dy(&quotient);
         Self { quotient, dy }
     }
 
@@ -333,20 +319,14 @@ impl AlgExtension {
     ///   D(a) = Σⱼ bⱼ'(x) yʲ  +  (∂a/∂y) · D(y)        (reduced mod q)
     /// ```
     pub fn derivation(&self, a: &[RatFn]) -> AlgElem {
-        let field = RationalFunctionField;
-        // Explicit-x part: differentiate each coefficient.
-        let coeff_part: AlgElem = a.iter().map(|c| field.derivation(c)).collect();
-        // Chain-rule part: (∂a/∂y) · D(y).
-        let da_dy = dpoly_dy(&field, a);
-        let chain = self.quotient.mul(&da_dy, &self.dy);
-        self.quotient.add(&coeff_part, &chain)
+        quotient_derivation(&self.quotient, &self.dy, a)
     }
 }
 
 /// Formal derivative with respect to `y` of a polynomial-in-`y`
 /// `Σⱼ cⱼ yʲ ↦ Σⱼ j cⱼ y^{j−1}`, with coefficients in `F` (the `cⱼ` treated as
 /// constants).
-fn dpoly_dy<F: CoeffField>(field: &F, p: &[F::Elem]) -> GPoly<F> {
+pub(crate) fn dpoly_dy<F: CoeffField>(field: &F, p: &[F::Elem]) -> GPoly<F> {
     if p.len() <= 1 {
         return Vec::new();
     }
@@ -355,6 +335,45 @@ fn dpoly_dy<F: CoeffField>(field: &F, p: &[F::Elem]) -> GPoly<F> {
         .enumerate()
         .map(|(i, c)| field.mul(&field.from_i64(i as i64 + 1), c))
         .collect()
+}
+
+/// The derivative `D(y)` of the generator of `Quotient<F>` with modulus
+/// `q(x, y)`, forced by `q(x, y) = 0`: `D(y) = −q_x / q_y` where `q_x` applies
+/// the coefficient field's derivation coefficient-wise and `q_y = ∂q/∂y`.
+///
+/// Generic over the coefficient field `F`, so it works both for `ℚ(x)`
+/// ([`RationalFunctionField`]) and for a transcendental tower (the radicand
+/// then involves the transcendental — the Risch MD case).
+pub fn radical_dy<F: CoeffField>(quotient: &Quotient<F>) -> GPoly<F> {
+    let field = quotient.field();
+    let modulus = quotient.modulus();
+    // q_x = ∂q/∂x  (coefficient-wise field derivation, holding y).
+    let qx: GPoly<F> = modulus.iter().map(|c| field.derivation(c)).collect();
+    // q_y = ∂q/∂y  (formal y-derivative).
+    let qy = dpoly_dy(field, modulus);
+    let qx_red = quotient.reduce(&qx);
+    let qy_red = quotient.reduce(&qy);
+    let qy_inv = quotient
+        .inv(&qy_red)
+        .expect("q is separable (squarefree, char 0): q_y is invertible mod q");
+    quotient.mul(&quotient.neg(&qx_red), &qy_inv)
+}
+
+/// The extension derivation `D(a)` for `a = Σⱼ bⱼ yʲ` in `Quotient<F>` whose
+/// generator has derivative `dy = D(y)`:
+/// `D(a) = Σⱼ D(bⱼ) yʲ + (∂a/∂y)·D(y)` (reduced mod `q`).  Generic over `F`.
+pub fn quotient_derivation<F: CoeffField>(
+    quotient: &Quotient<F>,
+    dy: &[F::Elem],
+    a: &[F::Elem],
+) -> GPoly<F> {
+    let field = quotient.field();
+    // Explicit (coefficient-field) part: differentiate each coefficient.
+    let coeff_part: GPoly<F> = a.iter().map(|c| field.derivation(c)).collect();
+    // Chain-rule part: (∂a/∂y) · D(y).
+    let da_dy = dpoly_dy(field, a);
+    let chain = quotient.mul(&da_dy, dy);
+    quotient.add(&coeff_part, &chain)
 }
 
 // ===========================================================================

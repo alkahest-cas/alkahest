@@ -39,7 +39,7 @@ use super::poly_rde::{
     solve_poly_rde_k, split_const_factor, trim, QPoly,
 };
 use super::rational_rde::{
-    expr_to_qrational, poly_sub, solve_rational_rde, solve_rational_rde_generalized,
+    expr_to_qrational, poly_gcd, poly_sub, solve_rational_rde, solve_rational_rde_generalized,
     solve_rational_rde_k,
 };
 use super::tower::{decompose_wrt_exp, poly_degree, TowerLevel};
@@ -817,6 +817,13 @@ fn integrate_single_exp_term(
     // Gap C: x-dependent algebraic coefficient of the form c₀(x) + c₁(x)·√p(x).
     if let Some(result) =
         try_sqrt_poly_rde(c_rest, k, deta, exp_k_eta, k_const, c_expr, var, pool, log)
+    {
+        return result;
+    }
+
+    // Mixed alg+trans, degree ≥ 3: c_rest = Σᵢ cᵢ(x)·a^{i/n} times exp(kη).
+    if let Some(result) =
+        try_radical_poly_rde(c_rest, k, deta, exp_k_eta, k_const, c_expr, var, pool, log)
     {
         return result;
     }
@@ -2380,6 +2387,121 @@ fn try_sqrt_poly_rde(
     Some(Ok(result))
 }
 
+/// Try to integrate `c_rest · exp(kη)` when `c_rest` contains a single
+/// x-dependent **degree-`n` radical** generator `y = a(x)^{1/n}` (`n ≥ 3`,
+/// `a ∈ ℚ(x)` squarefree).  The degree-`n` generalization of
+/// [`try_sqrt_poly_rde`], built on the M0 `decompose_radical` substrate.
+///
+/// Seeking the antiderivative `v·exp(kη)` with `v = Σᵢ vᵢ yⁱ`, the equation
+/// `D(v) + f·v = c_rest` (`f = kη'`) decouples per power `i` into
+/// `vᵢ' + (f + (i/n)·a'/a)·vᵢ = cᵢ` — a (generalized) rational Risch DE over
+/// `ℚ(x)`.  No solution for some component ⇒ `NonElementary`.
+///
+/// Scope: the radicand `a` lives in `ℚ(x)` (constant in the exponential), so
+/// each component RDE has `ℚ(x)` coefficients.  A radicand that itself involves
+/// the transcendental (`∛(x+eˣ)`) needs the full tower recursion (MD) and is not
+/// handled here.
+#[allow(clippy::too_many_arguments)]
+fn try_radical_poly_rde(
+    c_rest: ExprId,
+    k: i64,
+    deta: &[rug::Rational],
+    exp_k_eta: ExprId,
+    k_const: ExprId,
+    c_expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Option<Result<ExprId, IntegrationError>> {
+    let (n, a) = detect_radical_generator(c_rest, var, pool)?;
+    if n < 3 {
+        return None; // degree 2 handled by try_sqrt_poly_rde
+    }
+    let a = trim(a);
+    if degree(&a) < 1 {
+        return None;
+    }
+    let a_prime = poly_deriv(&a);
+    // Squarefree radicand → power basis with ωᵢ = (i/n)·a'/a.  Non-squarefree
+    // radicands in the mixed case are not handled yet.
+    if degree(&poly_gcd(&a, &a_prime)) >= 1 {
+        return None;
+    }
+
+    let e = AlgExtension::radical(n, &a);
+    let elem = decompose_over_alg_generator(c_rest, n, &a, &e, var, pool)?;
+
+    // f = k·η' (polynomial).
+    let f: QPoly = deta
+        .iter()
+        .map(|r| r.clone() * rug::Rational::from(k))
+        .collect();
+
+    let a_expr = qpoly_to_expr(&a, var, pool);
+    let ne = || {
+        IntegrationError::NonElementary(format!(
+            "the Risch DE over ℚ(x)({}^(1/{n})) for ∫ {} · exp(η)^{k} dx \
+             has no rational solution",
+            pool.display(a_expr),
+            pool.display(c_expr),
+        ))
+    };
+
+    let mut terms: Vec<ExprId> = Vec::new();
+    for i in 0..n {
+        // cᵢ = numᵢ/denᵢ : the yⁱ-coefficient of c_rest.
+        let (c_num, c_den) = match elem.get(i) {
+            Some(r) => (r.numer().clone(), r.denom().clone()),
+            None => (QPoly::new(), poly_one()),
+        };
+        if trim(c_num.clone()).is_empty() {
+            continue;
+        }
+        let (vn, vd) = if i == 0 {
+            // v₀' + f·v₀ = c₀.
+            match solve_rational_rde(&f, &c_num, &c_den) {
+                Some(s) => s,
+                None => return Some(Err(ne())),
+            }
+        } else {
+            // f_eff = f + (i/n)·a'/a = (n·a·f + i·a') / (n·a).
+            let f_eff_num = poly_add(
+                &poly_scale(&poly_mul(&f, &a), &rug::Rational::from(n as i64)),
+                &poly_scale(&a_prime, &rug::Rational::from(i as i64)),
+            );
+            let f_eff_den = poly_scale(&a, &rug::Rational::from(n as i64));
+            match solve_rational_rde_generalized(&f_eff_num, &f_eff_den, &c_num, &c_den) {
+                Some(s) => s,
+                None => return Some(Err(ne())),
+            }
+        };
+        if trim(vn.clone()).is_empty() {
+            continue;
+        }
+        let v_expr = build_rational(&vn, &vd, var, pool);
+        if i == 0 {
+            terms.push(v_expr);
+        } else {
+            let yi = pool.pow(a_expr, pool.rational(i as i32, n as i32));
+            terms.push(pool.mul(vec![v_expr, yi]));
+        }
+    }
+
+    let v_expr = match terms.len() {
+        0 => pool.integer(0_i32),
+        1 => terms[0],
+        _ => pool.add(terms),
+    };
+    let core = build_v_times_exp(v_expr, exp_k_eta, pool);
+    let result = apply_const(k_const, core, pool);
+    log.push(RewriteStep::simple(
+        "risch_exp_radical_poly",
+        c_expr,
+        result,
+    ));
+    Some(Ok(result))
+}
+
 // ---------------------------------------------------------------------------
 // Detection: does an integrand require the exp-tower path?
 // ---------------------------------------------------------------------------
@@ -2630,6 +2752,41 @@ mod tests {
             matches!(result, Err(IntegrationError::NonElementary(_))),
             "∫ exp(x²) dx should be NonElementary, got: {:?}",
             result
+        );
+    }
+
+    #[test]
+    fn mixed_cbrt_times_exp_elementary() {
+        // ∫ (1 + 1/(3x))·x^{1/3}·exp(x) dx = x^{1/3}·exp(x).
+        // Degree-3 radical × exp: D(x^{1/3}·eˣ) = (1/(3x)·x^{1/3} + x^{1/3})eˣ.
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let x13 = pool.pow(x, pool.rational(1_i32, 3_i32));
+        let inv_3x = pool.mul(vec![
+            pool.rational(1_i32, 3_i32),
+            pool.pow(x, pool.integer(-1_i32)),
+        ]);
+        let coeff = pool.add(vec![pool.integer(1_i32), inv_3x]);
+        let integrand = pool.mul(vec![coeff, x13, pool.func("exp", vec![x])]);
+        verify_exp_tower(integrand, x, &pool);
+    }
+
+    #[test]
+    fn cbrt_times_exp_is_nonelementary() {
+        // ∫ x^{1/3}·exp(x) dx is non-elementary (incomplete-gamma family).
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let x13 = pool.pow(x, pool.rational(1_i32, 3_i32));
+        let integrand = pool.mul(vec![x13, pool.func("exp", vec![x])]);
+
+        use super::super::tower::find_generators;
+        let gens = find_generators(integrand, x, &pool);
+        let level = gens.iter().find(|g| g.is_exp()).expect("an exp generator");
+        let mut log = DerivationLog::new();
+        let result = integrate_exp_tower(integrand, level, x, &pool, &mut log);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ x^(1/3)·exp(x) dx should be NonElementary, got: {result:?}"
         );
     }
 

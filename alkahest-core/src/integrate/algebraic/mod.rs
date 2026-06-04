@@ -58,6 +58,31 @@ pub fn contains_algebraic_subterm(expr: ExprId, pool: &ExprPool) -> bool {
     }
 }
 
+/// Returns `true` if `expr` contains a **radical function of `var`** that the
+/// structural [`contains_algebraic_subterm`] misses — namely `cbrt(g(x))` (and
+/// other named nth-root forms) where the radicand depends on `var`.
+///
+/// `contains_algebraic_subterm` recognizes only `sqrt` and `Pow` with a rational
+/// exponent; a `cbrt` (or `nthroot`) *function* of a non-trivial argument needs
+/// the algebraic engine too.  Constant radicands (`cbrt(3)`) are excluded so
+/// they keep routing to the rule engine's constant rule (no regression).
+pub fn contains_algebraic_func_of_var(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    use crate::integrate::risch::poly_rde::is_free_of_var;
+    match pool.get(expr) {
+        ExprData::Func { ref name, ref args } if args.len() == 1 => {
+            if name == "cbrt" && !is_free_of_var(args[0], var, pool) {
+                return true;
+            }
+            contains_algebraic_func_of_var(args[0], var, pool)
+        }
+        ExprData::Pow { base, .. } => contains_algebraic_func_of_var(base, var, pool),
+        ExprData::Add(args) | ExprData::Mul(args) => args
+            .iter()
+            .any(|&a| contains_algebraic_func_of_var(a, var, pool)),
+        _ => false,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Generator discovery
 // ---------------------------------------------------------------------------

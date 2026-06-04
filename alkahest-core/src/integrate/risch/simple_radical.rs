@@ -9,26 +9,33 @@
 //!
 //! ## Method (eqs 22–24)
 //!
-//! For a **squarefree** radicand `p`, the radical integral basis (eq 11)
-//! collapses to the power basis `{1, y, …, y^{n−1}}` (all `D_{i−1} = 1`), and
-//! `D(yʲ) = ωⱼ·yʲ` with `ωⱼ = (j/n)·p'/p` (eq 22).  Writing the integrand and a
-//! candidate antiderivative in that basis, `D(Σⱼ vⱼ yʲ) = Σⱼ (vⱼ' + ωⱼ vⱼ) yʲ`,
-//! so the integral **decouples per power `j`**:
+//! Over the radical integral basis `wₖ = zᵏ/dₖ` (eq 11) the derivation is
+//! diagonal, `D(wₖ) = ωₖ·wₖ` (eq 22), so writing the integrand and a candidate
+//! antiderivative in that basis gives `D(Σₖ vₖ wₖ) = Σₖ (vₖ' + ωₖ vₖ) wₖ` and the
+//! integral **decouples per power `k`**:
 //!
-//! - `j = 0` (eq 23): `v₀' = b₀` — an ordinary `∫ b₀ dx` over `ℚ(x)`, handed to
+//! - `k = 0` (eq 23): `v₀' = A₀` — an ordinary `∫ A₀ dx` over `ℚ(x)`, handed to
 //!   the rational integrator (this is where any new logarithms appear).
-//! - `j ≥ 1` (eq 24): `vⱼ' + ωⱼ vⱼ = bⱼ` — a Risch differential equation over
+//! - `k ≥ 1` (eq 24): `vₖ' + ωₖ vₖ = Aₖ` — a Risch differential equation over
 //!   `ℚ(x)`, solved by [`solve_rational_rde_generalized`].  No rational
 //!   solution ⇒ the integral is **non-elementary**.
 //!
+//! Two cases of the basis:
+//! - **Squarefree radicand `p`**: the basis collapses to the power basis
+//!   `{1, y, …, y^{n−1}}` (`dₖ = 1`, `F = 1`), `ωₖ = (k/n)·p'/p`
+//!   ([`try_integrate_simple_radical`]).
+//! - **Non-squarefree radicand**: the explicit basis with `z = y/F`,
+//!   `dₖ = ∏ⱼ Hⱼ^⌊kj/n⌋`, handled by `integrate_general_radical` (monic
+//!   radicand; e.g. `∫∛(x²) = ⅗x^{5/3}`).
+//!
 //! ## Scope (what this slice does *not* do)
 //!
-//! - **Non-squarefree radicand** (e.g. `∛(x²)`): needs the general van Hoeij
-//!   integral basis (MB) — returns `None` (caller falls back).
+//! - **Non-monic non-squarefree radicand** (e.g. `∛(4x²)`): the leading
+//!   coefficient introduces an irrational constant `lc^{1/n}` — returns `None`.
 //! - **Mixed algebraic + transcendental** (`∛x·exp(x)`, `∛(x+eˣ)`): the
 //!   transcendental tower / mutual recursion is MD; such integrands are routed
 //!   to the Risch engine, not here.
-//! - **Genuine new-logarithm / torsion logic** beyond what the `j = 0` rational
+//! - **Genuine new-logarithm / torsion logic** beyond what the `k = 0` rational
 //!   integration yields (the MC logarithmic part) is not attempted.
 
 use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
@@ -38,9 +45,11 @@ use crate::simplify::engine::simplify;
 
 use super::alg_field::AlgExtension;
 use super::exp_case::{build_rational, decompose_over_alg_generator, detect_radical_generator};
-use super::poly_rde::{degree, poly_deriv, poly_scale, qpoly_to_expr, trim, QPoly};
-use super::rational_rde::poly_gcd;
-use super::rational_rde::solve_rational_rde_generalized;
+use super::poly_rde::{
+    degree, poly_deriv, poly_mul, poly_one, poly_scale, qpoly_to_expr, trim, QPoly,
+};
+use super::rational_integrate::yun;
+use super::rational_rde::{poly_gcd, poly_pow, poly_sub, solve_rational_rde_generalized};
 
 /// Attempt MA's integral part for a degree-`≥ 3` simple radical `y = p^{1/n}`
 /// over `ℚ(x)` (pure-algebraic).
@@ -65,10 +74,10 @@ pub fn try_integrate_simple_radical(
         return None;
     }
     // Power-basis shortcut requires a squarefree radicand (eq 11 with all
-    // `D_{i−1} = 1`).  Otherwise defer to the general integral basis (MB).
+    // `D_{i−1} = 1`).  Non-squarefree radicand → general integral basis below.
     let p_prime = poly_deriv(&p);
     if degree(&poly_gcd(&p, &p_prime)) >= 1 {
-        return None;
+        return integrate_general_radical(expr, n, &p, var, pool);
     }
 
     let e = AlgExtension::radical(n, &p);
@@ -122,6 +131,127 @@ pub fn try_integrate_simple_radical(
     log = log.merge(simplified.log);
     log.push(RewriteStep::simple(
         "simple_radical_risch",
+        expr,
+        simplified.value,
+    ));
+    Some(Ok(DerivedExpr::with_log(simplified.value, log)))
+}
+
+/// MA Step 1 for a **non-squarefree** radicand: the explicit radical integral
+/// basis `wₖ = zᵏ / dₖ` (eq 11) with `z = y/F`, `dₖ = ∏ⱼ Hⱼ^⌊kj/n⌋`, and basis
+/// derivative `ωₖ = (k/n)·H'/H − dₖ'/dₖ` (eq 22).  Decoupled per power `k`:
+/// `vₖ' + ωₖ vₖ = Aₖ` where `Aₖ = cₖ·Fᵏ·dₖ` and `cₖ` is the `yᵏ`-coefficient of
+/// the integrand.  Returns `None` for a non-monic radicand (the leading
+/// coefficient would introduce an irrational constant `lc^{1/n}` — deferred).
+fn integrate_general_radical(
+    expr: ExprId,
+    n: usize,
+    a: &QPoly,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<Result<DerivedExpr<ExprId>, IntegrationError>> {
+    // Require a monic radicand (see doc-comment).
+    if a.last().map(|c| *c != 1).unwrap_or(true) {
+        return None;
+    }
+
+    // Squarefree-factor a = ∏ᵢ Aᵢ^i, then split each multiplicity i = n·qᵢ + rᵢ
+    // into F = ∏ Aᵢ^{qᵢ} (pulled-out n-th powers) and H = ∏ Aᵢ^{rᵢ} (z = H^{1/n}).
+    let a_factors = yun(a)?;
+    let mut big_f = poly_one();
+    let mut big_h = poly_one();
+    for (ai, i) in &a_factors {
+        let q = i / n;
+        let r = i % n;
+        if q > 0 {
+            big_f = poly_mul(&big_f, &poly_pow(ai, q as u32));
+        }
+        if r > 0 {
+            big_h = poly_mul(&big_h, &poly_pow(ai, r as u32));
+        }
+    }
+    // Squarefree factors of H, for the basis denominators dₖ = ∏ⱼ Hⱼ^⌊kj/n⌋.
+    let h_factors = yun(&big_h)?;
+    let dk = |k: usize| -> QPoly {
+        let mut d = poly_one();
+        for (hj, j) in &h_factors {
+            let e = (k * j) / n;
+            if e > 0 {
+                d = poly_mul(&d, &poly_pow(hj, e as u32));
+            }
+        }
+        d
+    };
+
+    let e = AlgExtension::radical(n, a);
+    let elem = decompose_over_alg_generator(expr, n, a, &e, var, pool)?;
+
+    let h_prime = poly_deriv(&big_h);
+    let a_expr = qpoly_to_expr(a, var, pool);
+    let mut log = DerivationLog::new();
+    let mut terms: Vec<ExprId> = Vec::new();
+
+    for k in 0..n {
+        // cₖ = numₖ/denₖ : the yᵏ-coefficient of the integrand.
+        let (c_num, c_den) = match elem.get(k) {
+            Some(r) => (r.numer().clone(), r.denom().clone()),
+            None => (QPoly::new(), poly_one()),
+        };
+        if trim(c_num.clone()).is_empty() {
+            continue;
+        }
+        let d_k = dk(k);
+        let f_pow_k = poly_pow(&big_f, k as u32);
+
+        // Aₖ = cₖ · Fᵏ · dₖ  (as a rational function num/den).
+        let a_num = poly_mul(&poly_mul(&c_num, &f_pow_k), &d_k);
+        let a_den = c_den;
+
+        let v = if k == 0 {
+            // ω₀ = 0 ⇒ ∫ A₀ dx over ℚ(x) (eq 23).  w₀ = 1, so add the integral.
+            let a0 = build_rational(&a_num, &a_den, var, pool);
+            match integrate_raw(a0, var, pool, &mut log) {
+                Ok(v0) => terms.push(v0),
+                Err(err) => return Some(Err(err)),
+            }
+            continue;
+        } else {
+            // ωₖ = (k·H'·dₖ − n·H·dₖ') / (n·H·dₖ)  (eq 22).
+            let d_k_prime = poly_deriv(&d_k);
+            let f_num = poly_sub(
+                &poly_scale(&poly_mul(&h_prime, &d_k), &rug::Rational::from(k as i64)),
+                &poly_scale(
+                    &poly_mul(&big_h, &d_k_prime),
+                    &rug::Rational::from(n as i64),
+                ),
+            );
+            let f_den = poly_scale(&poly_mul(&big_h, &d_k), &rug::Rational::from(n as i64));
+            match solve_rational_rde_generalized(&f_num, &f_den, &a_num, &a_den) {
+                Some(sol) => sol,
+                None => return Some(Err(non_elementary(expr, pool))),
+            }
+        };
+
+        let (vn, vd) = v;
+        if trim(vn.clone()).is_empty() {
+            continue;
+        }
+        // wₖ = yᵏ / (Fᵏ·dₖ);  term = (vₖ / (Fᵏ·dₖ)) · yᵏ.
+        let denom = poly_mul(&vd, &poly_mul(&f_pow_k, &d_k));
+        let coeff = build_rational(&vn, &denom, var, pool);
+        let yk = pool.pow(a_expr, pool.rational(k as i32, n as i32));
+        terms.push(pool.mul(vec![coeff, yk]));
+    }
+
+    let raw = match terms.len() {
+        0 => pool.integer(0_i32),
+        1 => terms[0],
+        _ => pool.add(terms),
+    };
+    let simplified = simplify(raw, pool);
+    log = log.merge(simplified.log);
+    log.push(RewriteStep::simple(
+        "simple_radical_risch_general",
         expr,
         simplified.value,
     ));
@@ -275,6 +405,46 @@ mod tests {
     }
 
     #[test]
+    fn cbrt_func_routes_through_public_engine() {
+        // `cbrt(x²)` (function form) reaches the algebraic engine via the
+        // var-aware routing fix — previously the rule engine errored with
+        // "∫ cbrt(non-trivial arg)".
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.func("cbrt", vec![pool.pow(x, pool.integer(2_i32))]);
+        let res = crate::integrate::engine::integrate(f, x, &pool)
+            .expect("∫cbrt(x²) dx via public engine");
+        let g = res.value;
+        let h = 1e-6;
+        let dnum = (eval(g, x, 1.4 + h, &pool) - eval(g, x, 1.4 - h, &pool)) / (2.0 * h);
+        assert!(
+            (dnum - 1.4_f64.powf(2.0 / 3.0)).abs() < 1e-4,
+            "F = {}",
+            pool.display(g)
+        );
+    }
+
+    #[test]
+    fn cbrt_of_constant_still_rule_engine() {
+        // ∫ cbrt(5) dx = cbrt(5)·x — radicand is constant, must NOT route to the
+        // algebraic engine (no regression from the var-aware routing).
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.func("cbrt", vec![pool.integer(5_i32)]);
+        let res =
+            crate::integrate::engine::integrate(f, x, &pool).expect("∫cbrt(5) dx = cbrt(5)·x");
+        let g = res.value;
+        // d/dx of result at x=2 should equal cbrt(5).
+        let h = 1e-6;
+        let dnum = (eval(g, x, 2.0 + h, &pool) - eval(g, x, 2.0 - h, &pool)) / (2.0 * h);
+        assert!(
+            (dnum - 5.0_f64.cbrt()).abs() < 1e-4,
+            "F = {}",
+            pool.display(g)
+        );
+    }
+
+    #[test]
     fn degree_two_returns_none() {
         // √x is degree 2 — left to the genus-0 sqrt engine (returns None here).
         let pool = pool();
@@ -283,12 +453,53 @@ mod tests {
     }
 
     #[test]
-    fn non_squarefree_radicand_returns_none() {
-        // ∛(x²): radicand x² is not squarefree → deferred to MB (None).
+    fn integral_of_cbrt_x_squared_general_basis() {
+        // ∫ ∛(x²) dx = ∫ x^{2/3} dx = (3/5) x^{5/3}.  Radicand x² is NOT
+        // squarefree → exercises the general integral basis.
         let pool = pool();
         let x = pool.symbol("x", Domain::Real);
-        let x2 = pool.pow(x, pool.integer(2_i32));
-        let cbrt_x2 = pool.func("cbrt", vec![x2]);
-        assert!(try_integrate_simple_radical(cbrt_x2, x, &pool).is_none());
+        let cbrt_x2 = pool.func("cbrt", vec![pool.pow(x, pool.integer(2_i32))]);
+        verify(cbrt_x2, x, &pool);
+    }
+
+    #[test]
+    fn integral_using_basis_denominator() {
+        // ∫ ∛(x²)² / x dx = ∫ x^{1/3} dx = (3/4) x^{4/3}.  Uses the basis element
+        // w₂ = y²/x (nontrivial denominator d₂ = x).
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let cbrt_x2 = pool.func("cbrt", vec![pool.pow(x, pool.integer(2_i32))]);
+        let integrand = pool.mul(vec![
+            pool.pow(cbrt_x2, pool.integer(2_i32)),
+            pool.pow(x, pool.integer(-1_i32)),
+        ]);
+        verify(integrand, x, &pool);
+    }
+
+    #[test]
+    fn integral_of_cbrt_linear_squared() {
+        // ∫ ∛(x²+2x+1) dx = ∫ ∛((x+1)²) dx = (3/5)(x+1)^{5/3}; radicand
+        // (x+1)² = x²+2x+1 is not squarefree.  (Built expanded — the engine
+        // pre-expands via `simplify`; `expr_to_qpoly` reads expanded polys.)
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let rad = pool.add(vec![
+            pool.pow(x, pool.integer(2_i32)),
+            pool.mul(vec![pool.integer(2_i32), x]),
+            pool.integer(1_i32),
+        ]);
+        verify(pool.func("cbrt", vec![rad]), x, &pool);
+    }
+
+    #[test]
+    fn non_monic_non_squarefree_returns_none() {
+        // ∛((2x)²) = ∛(4x²): non-squarefree AND non-monic radicand (4x²) →
+        // deferred (would introduce 4^{1/3}).
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let two_x = pool.mul(vec![pool.integer(2_i32), x]);
+        let rad = pool.pow(two_x, pool.integer(2_i32)); // 4x²
+        let cbrt = pool.func("cbrt", vec![rad]);
+        assert!(try_integrate_simple_radical(cbrt, x, &pool).is_none());
     }
 }
