@@ -41,6 +41,13 @@ Tracing
 Gradient
 --------
 
+.. note::
+
+   **``grad`` here is not ``symbolic_grad``.** :func:`symbolic_grad` (see
+   :doc:`diff`) takes an :class:`Expr` and variable list and returns symbolic
+   partials. :func:`grad` below operates on a :class:`TracedFn` from
+   :func:`trace` and is composable with :func:`jit`.
+
 .. function:: grad(fn: TracedFn, *, wrt: list[Expr] = None) -> GradTracedFn
 
    Return a new callable that computes the gradient of *fn*.

@@ -42,8 +42,11 @@ Differentiation
    Differentiate *expr* with respect to each variable in *vars*.
 
    Returns a list of ``Expr`` objects (not ``DerivedResult``).
-   For a traced-function gradient composable with ``jit``,
-   see :func:`grad`.
+
+   **Not** the same name as :func:`grad` in :doc:`transform` — that function
+   differentiates a :class:`TracedFn` and returns a :class:`GradTracedFn` for
+   numeric evaluation (often with :func:`jit`). Use ``symbolic_grad`` for bare
+   expressions; use ``grad`` only after ``@trace``.
 
    Example::
 

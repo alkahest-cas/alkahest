@@ -35,7 +35,10 @@ ys = np.zeros(1000)
 result = f(xs, ys)   # vectorised automatically
 ```
 
-## Gradient
+## Gradient (`grad`, not `symbolic_grad`)
+
+`alkahest.grad` applies to a **TracedFn** from `@trace`. For partial derivatives of a
+bare `Expr`, use [`symbolic_grad`](./calculus.md#symbolic-gradient-symbolic_grad) instead.
 
 `grad` differentiates a traced function symbolically with respect to all (or a subset of) its inputs:
 

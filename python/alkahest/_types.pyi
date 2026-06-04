@@ -12,6 +12,16 @@ class Pool:
     def __enter__(self) -> Pool: ...
     def __exit__(self, *args: object) -> None: ...
 
+class Domain:
+    """Symbol domain (structural identity of symbols in a pool)."""
+
+    Real: Domain
+    Complex: Domain
+    Integer: Domain
+    Positive: Domain
+    NonNegative: Domain
+    NonZero: Domain
+
 class DerivedResult:
     """Result of a symbolic transformation with a derivation log (Phase 4+)."""
 
