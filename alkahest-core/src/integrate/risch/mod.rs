@@ -137,7 +137,12 @@ fn outermost_exp_generator<'a>(exp_gens: &[&'a TowerLevel], pool: &ExprPool) -> 
 /// - `log(h)^n` for `n ≥ 2`
 /// - `p(x)·log(h)` for non-constant polynomial `p`
 pub fn contains_risch_form(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
-    needs_exp_risch(expr, var, pool) || needs_log_risch(expr, var, pool)
+    needs_exp_risch(expr, var, pool)
+        || needs_log_risch(expr, var, pool)
+        // A radical whose radicand involves a transcendental (e.g. ∛(x+log x))
+        // is a Risch/MD form even when the transcendental appears only inside
+        // the radicand — route it to the tower integrator, not the algebraic one.
+        || tower_integrate::detect_radical_with_transcendental_radicand(expr, var, pool).is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -169,11 +174,13 @@ pub fn integrate_risch(
     var: ExprId,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, IntegrationError> {
-    // MD: a radical whose radicand involves the transcendental (e.g. ∛(x+eˣ)).
-    // The radical is the outermost generator; handle it before the exp/log
-    // dispatch (which would mis-treat the radical as a coefficient).  Returns
-    // `None` when not of this shape, so ordinary towers fall through.
-    if let Some(result) = tower_integrate::try_integrate_radical_over_exp(expr, var, pool) {
+    // MD: a radical whose radicand involves the transcendental (e.g. ∛(x+eˣ) or
+    // ∛(x+log x)).  The radical is the outermost generator; handle it before the
+    // exp/log dispatch (which would mis-treat the radical as a coefficient).
+    // Returns `None` when not of this shape, so ordinary towers fall through.
+    if let Some(result) =
+        tower_integrate::try_integrate_radical_over_transcendental(expr, var, pool)
+    {
         return result;
     }
 
