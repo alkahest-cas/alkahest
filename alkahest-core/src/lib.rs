@@ -69,9 +69,12 @@ pub use lattice::{
     lattice_reduce_rows, lattice_reduce_rows_with_delta, validate_lll_rows, LatticeError,
 };
 pub use matrix::{
-    characteristic_polynomial_lambda_minus_m, diagonalize, eigenvalues, eigenvectors, hermite_form,
-    hermite_form_poly, jacobian, smith_form, smith_form_poly, EigenError, IntegerMatrix, Matrix,
-    MatrixError, NormalFormError, PolyMatrixQ, RatUniPoly,
+    characteristic_polynomial_lambda_minus_m, cholesky, column_space_basis, diagonalize,
+    eigenvalues, eigenvectors, hermite_form, hermite_form_poly, jacobian, jordan_form,
+    lu_decomposition, matrix_exponential, matrix_inverse, minimal_polynomial, nullspace_basis,
+    qr_decomposition, rank, rational_canonical_form, row_space_basis, smith_form, smith_form_poly,
+    EigenError, IntegerMatrix, LinearAlgebraError, LuDecomposition, Matrix, MatrixError,
+    NormalFormError, PolyMatrixQ, QrDecomposition, RatUniPoly,
 };
 pub use numeric::{guess_integer_relation, PslqError};
 pub use ode::{
@@ -268,6 +271,12 @@ pub mod experimental {
     pub use crate::horner::{emit_horner_c, horner};
     pub use crate::hybrid::{Event, GuardStructure, HybridODE};
     pub use crate::lean::emit_lean_expr as emit_lean;
+    pub use crate::matrix::{
+        cholesky, column_space_basis, jordan_form, lu_decomposition, matrix_exponential,
+        matrix_inverse, minimal_polynomial, nullspace_basis, qr_decomposition, rank,
+        rational_canonical_form, row_space_basis, LinearAlgebraError, LuDecomposition,
+        QrDecomposition,
+    };
     pub use crate::modular::{
         is_prime, lift_crt, mignotte_bound, rational_reconstruction, reduce_mod,
         select_lucky_prime, ModularError, ModularValue, MultiPolyFp,

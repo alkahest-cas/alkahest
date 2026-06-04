@@ -337,7 +337,7 @@ fn lambda_identity_minus_m(m: &Matrix, lam: ExprId, pool: &ExprPool) -> Matrix {
     }
 }
 
-fn m_minus_lambda_scaled(m: &Matrix, lambda: ExprId, pool: &ExprPool) -> Matrix {
+pub(crate) fn m_minus_lambda_scaled(m: &Matrix, lambda: ExprId, pool: &ExprPool) -> Matrix {
     let n = m.rows;
     let mut data = Vec::with_capacity(n * n);
     for r in 0..n {
@@ -381,7 +381,7 @@ fn kernel_2x2_column_basis(m: &Matrix, pool: &ExprPool) -> Option<Vec<Matrix>> {
     Some(vec![col])
 }
 
-fn kernel_column_basis(m: &Matrix, pool: &ExprPool) -> Result<Vec<Matrix>, ()> {
+pub(crate) fn kernel_column_basis(m: &Matrix, pool: &ExprPool) -> Result<Vec<Matrix>, ()> {
     if m.rows == 2 && m.cols == 2 {
         if let Some(bas) = kernel_2x2_column_basis(m, pool) {
             return Ok(bas);
@@ -491,7 +491,7 @@ fn deep_normalize_for_compare(expr: ExprId, pool: &ExprPool, rounds: usize) -> E
 }
 
 #[allow(dead_code)]
-fn matrix_eq_simplified(a: &Matrix, b: &Matrix, pool: &ExprPool) -> bool {
+pub(crate) fn matrix_eq_simplified(a: &Matrix, b: &Matrix, pool: &ExprPool) -> bool {
     if a.rows != b.rows || a.cols != b.cols {
         return false;
     }
@@ -901,7 +901,7 @@ fn expr_is_exactly_zero(pool: &ExprPool, e: ExprId) -> bool {
 // Column concat + diagonal
 // ---------------------------------------------------------------------------
 
-fn concatenate_columns(cols: &[Matrix], _pool: &ExprPool) -> Result<Matrix, ()> {
+pub(crate) fn concatenate_columns(cols: &[Matrix], _pool: &ExprPool) -> Result<Matrix, ()> {
     if cols.is_empty() {
         return Err(());
     }
@@ -924,7 +924,7 @@ fn concatenate_columns(cols: &[Matrix], _pool: &ExprPool) -> Result<Matrix, ()> 
     })
 }
 
-fn diagonal_from_entries(d: &[ExprId], pool: &ExprPool) -> Matrix {
+pub(crate) fn diagonal_from_entries(d: &[ExprId], pool: &ExprPool) -> Matrix {
     let n = d.len();
     let mut mat = Matrix::zeros(n, n, pool);
     for i in 0..n {

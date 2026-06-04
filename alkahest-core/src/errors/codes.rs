@@ -58,6 +58,16 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-EIGEN-005", class: "EigenError", cause: Cause::Domain,    remediation: Some("the matrix is defective or the eigenbasis is incomplete") },
     ErrorSpec { code: "E-EIGEN-006", class: "EigenError", cause: Cause::Unsupported, remediation: Some("nullspace elimination failed; try a purely rational or ℚ(i) spectrum") },
     ErrorSpec { code: "E-EIGEN-007", class: "EigenError", cause: Cause::Domain,    remediation: Some("eigenvector matrix is singular; check multiplicities") },
+    // E-LINALG — LinearAlgebraError (symbolic LA coverage)
+    ErrorSpec { code: "E-LINALG-001", class: "LinearAlgebraError", cause: Cause::UserInput,   remediation: Some("pass a square n×n matrix") },
+    ErrorSpec { code: "E-LINALG-002", class: "LinearAlgebraError", cause: Cause::Unsupported, remediation: Some("nullspace elimination failed; try rational entries") },
+    ErrorSpec { code: "E-LINALG-003", class: "LinearAlgebraError", cause: Cause::Domain,      remediation: Some("Cholesky requires symmetric positive definite input") },
+    ErrorSpec { code: "E-LINALG-004", class: "LinearAlgebraError", cause: Cause::UserInput,   remediation: Some("ensure det(λI−M) is a polynomial in λ") },
+    ErrorSpec { code: "E-LINALG-005", class: "LinearAlgebraError", cause: Cause::Internal,    remediation: None },
+    ErrorSpec { code: "E-LINALG-006", class: "LinearAlgebraError", cause: Cause::Unsupported, remediation: Some("irreducible factor of degree > 2 in minimal polynomial") },
+    ErrorSpec { code: "E-LINALG-007", class: "LinearAlgebraError", cause: Cause::Unsupported, remediation: Some("use rational entries for Smith-based decompositions") },
+    ErrorSpec { code: "E-LINALG-008", class: "LinearAlgebraError", cause: Cause::Domain,      remediation: Some("similarity transform matrix is singular") },
+    ErrorSpec { code: "E-LINALG-009", class: "LinearAlgebraError", cause: Cause::UserInput,   remediation: Some("matrix entries must be rational constants") },
     // E-ODE — OdeError
     ErrorSpec { code: "E-ODE-001", class: "OdeError", cause: Cause::UserInput,   remediation: Some("number of state variables must equal number of RHS expressions") },
     ErrorSpec { code: "E-ODE-002", class: "OdeError", cause: Cause::UserInput,   remediation: Some("use lower_to_first_order() before passing to a solver") },

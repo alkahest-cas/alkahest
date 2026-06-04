@@ -57,6 +57,7 @@ use alkahest_core::{
     HybridODE,
     IntervalEval as CoreIntervalEval,
     LatticeError,
+    LinearAlgebraError,
     Matrix,
     MatrixError,
     MultiPoly,
@@ -201,6 +202,7 @@ pyo3::create_exception!(alkahest, PySeriesError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyLimitError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyMatrixError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyEigenError, PyMatrixError);
+pyo3::create_exception!(alkahest, PyLinearAlgebraError, PyMatrixError);
 pyo3::create_exception!(alkahest, PyModularError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyOdeError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyDaeError, PyAlkahestError);
@@ -532,6 +534,13 @@ fn matrix_error_to_py(e: MatrixError) -> PyErr {
 fn eigen_error_to_py(e: EigenError) -> PyErr {
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyEigenError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn linear_algebra_error_to_py(e: LinearAlgebraError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyLinearAlgebraError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -2753,6 +2762,188 @@ impl PyMatrix {
             },
             PyMatrix { inner: d, pool: pq },
         ))
+    }
+
+    fn nullspace(&self, py: Python<'_>) -> PyResult<Vec<PyMatrix>> {
+        let pool = self.pool.borrow(py);
+        let bas = self
+            .inner
+            .nullspace(&pool.inner)
+            .map_err(linear_algebra_error_to_py)?;
+        drop(pool);
+        Ok(bas
+            .into_iter()
+            .map(|m| PyMatrix {
+                inner: m,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect())
+    }
+
+    fn rank(&self, py: Python<'_>) -> PyResult<usize> {
+        let pool = self.pool.borrow(py);
+        self.inner
+            .rank(&pool.inner)
+            .map_err(linear_algebra_error_to_py)
+    }
+
+    fn column_space(&self, py: Python<'_>) -> PyResult<Vec<PyMatrix>> {
+        let pool = self.pool.borrow(py);
+        let bas = self
+            .inner
+            .column_space(&pool.inner)
+            .map_err(linear_algebra_error_to_py)?;
+        drop(pool);
+        Ok(bas
+            .into_iter()
+            .map(|m| PyMatrix {
+                inner: m,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect())
+    }
+
+    fn row_space(&self, py: Python<'_>) -> PyResult<Vec<PyMatrix>> {
+        let pool = self.pool.borrow(py);
+        let bas = self
+            .inner
+            .row_space(&pool.inner)
+            .map_err(linear_algebra_error_to_py)?;
+        drop(pool);
+        Ok(bas
+            .into_iter()
+            .map(|m| PyMatrix {
+                inner: m,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect())
+    }
+
+    fn lu(&self, py: Python<'_>) -> PyResult<(PyMatrix, PyMatrix, Vec<usize>)> {
+        let pool = self.pool.borrow(py);
+        let lu = self
+            .inner
+            .lu(&pool.inner)
+            .map_err(linear_algebra_error_to_py)?;
+        drop(pool);
+        let pq = self.pool.clone_ref(py);
+        Ok((
+            PyMatrix {
+                inner: lu.l,
+                pool: pq.clone_ref(py),
+            },
+            PyMatrix {
+                inner: lu.u,
+                pool: pq,
+            },
+            lu.perm,
+        ))
+    }
+
+    fn qr(&self, py: Python<'_>) -> PyResult<(PyMatrix, PyMatrix)> {
+        let pool = self.pool.borrow(py);
+        let qr = self
+            .inner
+            .qr(&pool.inner)
+            .map_err(linear_algebra_error_to_py)?;
+        drop(pool);
+        let pq = self.pool.clone_ref(py);
+        Ok((
+            PyMatrix {
+                inner: qr.q,
+                pool: pq.clone_ref(py),
+            },
+            PyMatrix {
+                inner: qr.r,
+                pool: pq,
+            },
+        ))
+    }
+
+    fn cholesky(&self, py: Python<'_>) -> PyResult<PyMatrix> {
+        let pool = self.pool.borrow(py);
+        let l = self
+            .inner
+            .cholesky(&pool.inner)
+            .map_err(linear_algebra_error_to_py)?;
+        drop(pool);
+        Ok(PyMatrix {
+            inner: l,
+            pool: self.pool.clone_ref(py),
+        })
+    }
+
+    fn jordan_form(&self, py: Python<'_>) -> PyResult<(PyMatrix, PyMatrix)> {
+        let pool = self.pool.borrow(py);
+        let (p, j) = self
+            .inner
+            .jordan_form(&pool.inner)
+            .map_err(linear_algebra_error_to_py)?;
+        drop(pool);
+        let pq = self.pool.clone_ref(py);
+        Ok((
+            PyMatrix {
+                inner: p,
+                pool: pq.clone_ref(py),
+            },
+            PyMatrix { inner: j, pool: pq },
+        ))
+    }
+
+    fn rational_canonical_form(&self, py: Python<'_>) -> PyResult<(PyMatrix, PyMatrix)> {
+        let pool = self.pool.borrow(py);
+        let (p, c) = self
+            .inner
+            .rational_canonical_form(&pool.inner)
+            .map_err(linear_algebra_error_to_py)?;
+        drop(pool);
+        let pq = self.pool.clone_ref(py);
+        Ok((
+            PyMatrix {
+                inner: p,
+                pool: pq.clone_ref(py),
+            },
+            PyMatrix { inner: c, pool: pq },
+        ))
+    }
+
+    fn minimal_polynomial(&self, py: Python<'_>) -> PyResult<PyExpr> {
+        let pool = self.pool.borrow(py);
+        let (poly, _lam) = self
+            .inner
+            .minimal_polynomial(&pool.inner)
+            .map_err(linear_algebra_error_to_py)?;
+        drop(pool);
+        Ok(PyExpr {
+            id: poly,
+            pool: self.pool.clone_ref(py),
+        })
+    }
+
+    fn matrix_exp(&self, py: Python<'_>) -> PyResult<PyMatrix> {
+        let pool = self.pool.borrow(py);
+        let expm = self
+            .inner
+            .matrix_exp(&pool.inner)
+            .map_err(linear_algebra_error_to_py)?;
+        drop(pool);
+        Ok(PyMatrix {
+            inner: expm,
+            pool: self.pool.clone_ref(py),
+        })
+    }
+
+    fn inverse(&self, py: Python<'_>) -> PyResult<PyMatrix> {
+        let pool = self.pool.borrow(py);
+        let inv = self
+            .inner
+            .inverse(&pool.inner)
+            .map_err(matrix_error_to_py)?;
+        drop(pool);
+        Ok(PyMatrix {
+            inner: inv,
+            pool: self.pool.clone_ref(py),
+        })
     }
 
     fn simplify(&self, py: Python<'_>) -> PyMatrix {
@@ -6425,6 +6616,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("LimitError", m.py().get_type_bound::<PyLimitError>())?;
     m.add("MatrixError", m.py().get_type_bound::<PyMatrixError>())?;
     m.add("EigenError", m.py().get_type_bound::<PyEigenError>())?;
+    m.add(
+        "LinearAlgebraError",
+        m.py().get_type_bound::<PyLinearAlgebraError>(),
+    )?;
     m.add("ModularError", m.py().get_type_bound::<PyModularError>())?;
     m.add("OdeError", m.py().get_type_bound::<PyOdeError>())?;
     m.add("DaeError", m.py().get_type_bound::<PyDaeError>())?;

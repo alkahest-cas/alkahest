@@ -12,12 +12,18 @@ use crate::simplify::engine::simplify;
 use std::fmt;
 
 pub mod eigen;
+pub mod linear_algebra;
 pub mod normal_form;
 mod smith;
 mod smith_poly;
 
 pub use eigen::{
     characteristic_polynomial_lambda_minus_m, diagonalize, eigenvalues, eigenvectors, EigenError,
+};
+pub use linear_algebra::{
+    cholesky, column_space_basis, jordan_form, lu_decomposition, matrix_exponential,
+    matrix_inverse, minimal_polynomial, nullspace_basis, qr_decomposition, rank,
+    rational_canonical_form, row_space_basis, LinearAlgebraError, LuDecomposition, QrDecomposition,
 };
 pub use normal_form::{
     hermite_form, hermite_form_poly, smith_form, smith_form_poly, IntegerMatrix, NormalFormError,
@@ -367,6 +373,60 @@ impl Matrix {
     /// V2-17 — `(P, D)` with `M·P == P·D` when diagonalizable in the ℚ-splitting-field sense.
     pub fn diagonalize(&self, pool: &ExprPool) -> Result<(Matrix, Matrix), EigenError> {
         eigen::diagonalize(self, pool)
+    }
+
+    pub fn nullspace(&self, pool: &ExprPool) -> Result<Vec<Matrix>, LinearAlgebraError> {
+        linear_algebra::nullspace_basis(self, pool)
+    }
+
+    pub fn rank(&self, pool: &ExprPool) -> Result<usize, LinearAlgebraError> {
+        linear_algebra::rank(self, pool)
+    }
+
+    pub fn column_space(&self, pool: &ExprPool) -> Result<Vec<Matrix>, LinearAlgebraError> {
+        linear_algebra::column_space_basis(self, pool)
+    }
+
+    pub fn row_space(&self, pool: &ExprPool) -> Result<Vec<Matrix>, LinearAlgebraError> {
+        linear_algebra::row_space_basis(self, pool)
+    }
+
+    pub fn lu(&self, pool: &ExprPool) -> Result<LuDecomposition, LinearAlgebraError> {
+        linear_algebra::lu_decomposition(self, pool)
+    }
+
+    pub fn qr(&self, pool: &ExprPool) -> Result<QrDecomposition, LinearAlgebraError> {
+        linear_algebra::qr_decomposition(self, pool)
+    }
+
+    pub fn cholesky(&self, pool: &ExprPool) -> Result<Matrix, LinearAlgebraError> {
+        linear_algebra::cholesky(self, pool)
+    }
+
+    pub fn jordan_form(&self, pool: &ExprPool) -> Result<(Matrix, Matrix), LinearAlgebraError> {
+        linear_algebra::jordan_form(self, pool)
+    }
+
+    pub fn rational_canonical_form(
+        &self,
+        pool: &ExprPool,
+    ) -> Result<(Matrix, Matrix), LinearAlgebraError> {
+        linear_algebra::rational_canonical_form(self, pool)
+    }
+
+    pub fn minimal_polynomial(
+        &self,
+        pool: &ExprPool,
+    ) -> Result<(ExprId, ExprId), LinearAlgebraError> {
+        linear_algebra::minimal_polynomial(self, pool)
+    }
+
+    pub fn matrix_exp(&self, pool: &ExprPool) -> Result<Matrix, LinearAlgebraError> {
+        linear_algebra::matrix_exponential(self, pool)
+    }
+
+    pub fn inverse(&self, pool: &ExprPool) -> Result<Matrix, MatrixError> {
+        linear_algebra::matrix_inverse(self, pool)
     }
 }
 
