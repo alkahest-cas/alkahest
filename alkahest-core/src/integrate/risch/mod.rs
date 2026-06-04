@@ -85,6 +85,7 @@ pub mod rational_rde;
 pub mod simple_radical;
 pub mod tower;
 pub mod tower_field;
+pub mod tower_integrate;
 
 use crate::deriv::log::{DerivationLog, DerivedExpr};
 use crate::integrate::engine::IntegrationError;
@@ -168,6 +169,14 @@ pub fn integrate_risch(
     var: ExprId,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, IntegrationError> {
+    // MD: a radical whose radicand involves the transcendental (e.g. ∛(x+eˣ)).
+    // The radical is the outermost generator; handle it before the exp/log
+    // dispatch (which would mis-treat the radical as a coefficient).  Returns
+    // `None` when not of this shape, so ordinary towers fall through.
+    if let Some(result) = tower_integrate::try_integrate_radical_over_exp(expr, var, pool) {
+        return result;
+    }
+
     let generators = find_generators(expr, var, pool);
 
     // Classify the generators.
