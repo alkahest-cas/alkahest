@@ -84,6 +84,7 @@ pub mod rational_integrate;
 pub mod rational_rde;
 pub mod simple_radical;
 pub mod tower;
+pub mod tower_field;
 
 use crate::deriv::log::{DerivationLog, DerivedExpr};
 use crate::integrate::engine::IntegrationError;
