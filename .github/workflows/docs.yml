@@ -22,9 +22,11 @@ permissions:
   pages: write
   id-token: write
 
-# One deploy at a time; newer push cancels an in-progress deploy.
+# One run at a time per ref (newer push to the same ref cancels the older one).
+# Scoped by ref so a PR's doc build is not cancelled by another ref's run
+# (e.g. main's deploy) — the old static `pages` group cancelled across all refs.
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

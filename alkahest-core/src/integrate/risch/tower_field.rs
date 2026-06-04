@@ -137,9 +137,9 @@ impl TExpr {
     }
 }
 
-/// `D(P)` for a `t`-polynomial `P = Σⱼ cⱼ tʲ`: `Σⱼ (cⱼ' + j·η'·cⱼ) tʲ`,
-/// where `cⱼ' = d/dx cⱼ` and `η' = deta`.
-fn tpoly_derivation(p: &TPoly, deta: &RatFn) -> TPoly {
+/// `D(P)` for a `t`-polynomial `P = Σⱼ cⱼ tʲ` in an **exponential** tower
+/// (`Dt = η'·t`): `Σⱼ (cⱼ' + j·η'·cⱼ) tʲ` — the `t`-degree is preserved.
+fn exp_tpoly_derivation(p: &TPoly, deta: &RatFn) -> TPoly {
     let f = qx();
     let mut out: TPoly = Vec::with_capacity(p.len());
     for (j, cj) in p.iter().enumerate() {
@@ -148,6 +148,35 @@ fn tpoly_derivation(p: &TPoly, deta: &RatFn) -> TPoly {
         out.push(f.add(&dc, &drift));
     }
     gtrim(&f, out)
+}
+
+/// `D(P)` for a `t`-polynomial `P = Σⱼ cⱼ tʲ` in a **logarithmic** tower
+/// (`Dt = h'/h`, free of `t`): `D(cⱼ tʲ) = cⱼ' tʲ + j·(h'/h)·cⱼ·t^{j−1}`, so
+/// collecting at degree `p` gives `cₚ' + (p+1)·(h'/h)·cₚ₊₁` — the `t`-degree is
+/// *lowered* by one in the drift term.
+fn log_tpoly_derivation(p: &TPoly, dh_over_h: &RatFn) -> TPoly {
+    let f = qx();
+    let mut out: TPoly = (0..p.len()).map(|_| f.zero()).collect();
+    for (j, cj) in p.iter().enumerate() {
+        out[j] = f.add(&out[j], &f.derivation(cj)); // cⱼ' at degree j
+        if j >= 1 {
+            // j·(h'/h)·cⱼ at degree j−1
+            let term = f.mul(&f.mul(&RatFn::int(j as i64), dh_over_h), cj);
+            out[j - 1] = f.add(&out[j - 1], &term);
+        }
+    }
+    gtrim(&f, out)
+}
+
+/// Apply the quotient rule given the `t`-derivatives of numerator/denominator:
+/// `D(num/den) = (D(num)·den − num·D(den)) / den²`.
+fn texpr_from_quotient_rule(num: &TPoly, den: &TPoly, dnum: &TPoly, dden: &TPoly) -> TExpr {
+    let f = qx();
+    let lhs = gpoly_mul(&f, dnum, den);
+    let rhs = gpoly_mul(&f, num, dden);
+    let neg1 = f.neg(&f.one());
+    let numer = gpoly_add(&f, &lhs, &gpoly_scale(&f, &rhs, &neg1));
+    TExpr::new(numer, gpoly_mul(&f, den, den))
 }
 
 /// The exponential tower `ℚ(x)(t)`, `t = exp(η)`, parameterized by `η' = deta`.
@@ -197,20 +226,69 @@ impl CoeffField for ExpTowerField {
         a == b
     }
 
-    /// `D(num/den) = (D(num)·den − num·D(den)) / den²`, with `D` the tower
-    /// derivation on `t`-polynomials.
+    /// `D(num/den)`, with the exponential-tower `t`-derivation.
     fn derivation(&self, a: &TExpr) -> TExpr {
-        let f = qx();
-        let dnum = tpoly_derivation(&a.num, &self.deta);
-        let dden = tpoly_derivation(&a.den, &self.deta);
-        let numer = {
-            let lhs = gpoly_mul(&f, &dnum, &a.den);
-            let rhs = gpoly_mul(&f, &a.num, &dden);
-            let neg1 = f.neg(&f.one());
-            gpoly_add(&f, &lhs, &gpoly_scale(&f, &rhs, &neg1))
-        };
-        let denom = gpoly_mul(&f, &a.den, &a.den);
-        TExpr::new(numer, denom)
+        let dnum = exp_tpoly_derivation(&a.num, &self.deta);
+        let dden = exp_tpoly_derivation(&a.den, &self.deta);
+        texpr_from_quotient_rule(&a.num, &a.den, &dnum, &dden)
+    }
+}
+
+/// The logarithmic tower `ℚ(x)(t)`, `t = log(h)`, parameterized by `h'/h`.
+///
+/// Same element type and arithmetic as [`ExpTowerField`]; only the derivation
+/// differs (`Dt = h'/h`, which lowers the `t`-degree in the drift term).
+#[derive(Clone, Debug)]
+pub struct LogTowerField {
+    /// `h'/h` — the logarithmic derivative of the inner argument, a `ℚ(x)` element.
+    pub dh_over_h: RatFn,
+}
+
+impl LogTowerField {
+    pub fn new(dh_over_h: RatFn) -> Self {
+        Self { dh_over_h }
+    }
+}
+
+impl CoeffField for LogTowerField {
+    type Elem = TExpr;
+
+    fn zero(&self) -> TExpr {
+        TExpr::int(0)
+    }
+    fn one(&self) -> TExpr {
+        TExpr::int(1)
+    }
+    fn from_i64(&self, n: i64) -> TExpr {
+        TExpr::int(n)
+    }
+    fn add(&self, a: &TExpr, b: &TExpr) -> TExpr {
+        a.add(b)
+    }
+    fn sub(&self, a: &TExpr, b: &TExpr) -> TExpr {
+        a.add(&b.neg())
+    }
+    fn mul(&self, a: &TExpr, b: &TExpr) -> TExpr {
+        a.mul(b)
+    }
+    fn neg(&self, a: &TExpr) -> TExpr {
+        a.neg()
+    }
+    fn inv(&self, a: &TExpr) -> Option<TExpr> {
+        a.inv()
+    }
+    fn is_zero(&self, a: &TExpr) -> bool {
+        a.is_zero()
+    }
+    fn eq(&self, a: &TExpr, b: &TExpr) -> bool {
+        a == b
+    }
+
+    /// `D(num/den)`, with the logarithmic-tower `t`-derivation.
+    fn derivation(&self, a: &TExpr) -> TExpr {
+        let dnum = log_tpoly_derivation(&a.num, &self.dh_over_h);
+        let dden = log_tpoly_derivation(&a.den, &self.dh_over_h);
+        texpr_from_quotient_rule(&a.num, &a.den, &dnum, &dden)
     }
 }
 
@@ -261,17 +339,32 @@ fn monomial(j: usize, k: usize, coeff: &Rational) -> TExpr {
 /// `Some` is always correct.  `None` means "no solution `U/D` was found for any
 /// tried `D` within the degree caps" — it is **not** a non-elementarity
 /// certificate.
-pub fn solve_tower_rde(field: &ExpTowerField, omega: &TExpr, c: &TExpr) -> Option<TExpr> {
+pub(crate) fn solve_tower_rde_generic<F: CoeffField<Elem = TExpr>>(
+    field: &F,
+    omega: &TExpr,
+    c: &TExpr,
+) -> Option<TExpr> {
     candidate_denominators(field, omega, c)
         .iter()
         .find_map(|d| solve_with_denominator(field, omega, c, d))
+}
+
+/// Solve `v' + ω·v = c` over the exponential tower `ℚ(x)(eˣ)` (the concrete,
+/// stable public entry).  `solve_tower_rde_generic` is the field-generic form
+/// (also used for the logarithmic tower).
+pub fn solve_tower_rde(field: &ExpTowerField, omega: &TExpr, c: &TExpr) -> Option<TExpr> {
+    solve_tower_rde_generic(field, omega, c)
 }
 
 /// Candidate denominators for `v`, in increasing complexity: `1`, the full
 /// denominators of `c` and `ω`, and a few products/powers.  Over-clearing is
 /// harmless (the numerator ansatz just needs more terms); verification guards
 /// correctness.
-fn candidate_denominators(field: &ExpTowerField, omega: &TExpr, c: &TExpr) -> Vec<TExpr> {
+fn candidate_denominators<F: CoeffField<Elem = TExpr>>(
+    field: &F,
+    omega: &TExpr,
+    c: &TExpr,
+) -> Vec<TExpr> {
     let one = field.one();
     let dc = full_denominator(c);
     let dw = full_denominator(omega);
@@ -308,8 +401,8 @@ fn full_denominator(e: &TExpr) -> TExpr {
 }
 
 /// Solve `v' + ω·v = c` seeking `v = (Σⱼₖ cⱼₖ xᵏ tʲ)/D` for the fixed `D`.
-fn solve_with_denominator(
-    field: &ExpTowerField,
+fn solve_with_denominator<F: CoeffField<Elem = TExpr>>(
+    field: &F,
     omega: &TExpr,
     c: &TExpr,
     d: &TExpr,
