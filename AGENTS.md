@@ -4,6 +4,7 @@
 * If asked to fix CI: check CI status using `gh` CLI if available, otherwise check https://github.com/alkahest-cas/alkahest/
 * If asked to generate a report: write it to `temp-alkahest/testing/` or `temp-alkahest/planning/` depending on what label describes the report better, include at the top — the date, the agent and model writing it (e.g. "Claude Code claude-sonnet-4-6"), and the full git commit hash being reviewed
 * A `LOCAL-AGENTS.md` file may exist at the repo root — it is untracked by git and contains device-specific instructions (paths, local tooling, machine-specific overrides). If present, follow its instructions in addition to this file.
+* If asked to write a report do not include time estimates for how long implementation will take like "~1 week" etc
 
 ## Demo playground
 
