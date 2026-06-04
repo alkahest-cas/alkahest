@@ -23,10 +23,14 @@
 //! solving the per-component Risch DE `vᵢ' + ωᵢ vᵢ = cᵢ` over this tower — is
 //! the remaining MD work and is not done here.
 
+use rug::Rational;
+
 use super::alg_field::{RatFn, RationalFunctionField};
 use super::number_field::{
     gdegree, gext_gcd, gpoly_add, gpoly_divrem, gpoly_mul, gpoly_scale, gtrim, CoeffField, GPoly,
 };
+use super::poly_rde::{poly_mul, QPoly};
+use super::rational_rde::{poly_div_exact, poly_gcd};
 
 /// A polynomial in `t` over `ℚ(x)` (ascending degree in `t`).
 type TPoly = GPoly<RationalFunctionField>;
@@ -210,6 +214,209 @@ impl CoeffField for ExpTowerField {
 }
 
 // ===========================================================================
+// Risch differential equation solver over the tower ℚ(x)(t)  (MD step)
+// ===========================================================================
+
+/// LCM of two `t`-polynomials over `ℚ(x)`.
+fn tpoly_lcm(a: &TPoly, b: &TPoly) -> TPoly {
+    let f = qx();
+    if a.is_empty() {
+        return b.clone();
+    }
+    if b.is_empty() {
+        return a.clone();
+    }
+    let (g, _, _) = gext_gcd(&f, a, b);
+    gpoly_divrem(&f, &gpoly_mul(&f, a, b), &g).0
+}
+
+/// LCM of two `ℚ[x]` polynomials.
+fn poly_lcm(a: &QPoly, b: &QPoly) -> QPoly {
+    if a.iter().all(|c| *c == 0) {
+        return b.clone();
+    }
+    if b.iter().all(|c| *c == 0) {
+        return a.clone();
+    }
+    poly_div_exact(&poly_mul(a, b), &poly_gcd(a, b))
+}
+
+/// The monomial `coeff·xᵏ·tʲ` as a tower element.
+fn monomial(j: usize, k: usize, coeff: &Rational) -> TExpr {
+    let mut xk = vec![Rational::from(0); k + 1];
+    xk[k] = coeff.clone();
+    let rk = RatFn::new(xk, vec![Rational::from(1)]);
+    let mut num: TPoly = vec![RatFn::int(0); j];
+    num.push(rk);
+    TExpr::new(num, vec![RatFn::int(1)])
+}
+
+/// Solve `v' + ω·v = c` for `v ∈ ℚ(x)(t)` by an undetermined-coefficient ansatz
+/// `v = Σⱼₖ cⱼₖ xᵏ tʲ`, returning `v` iff one is found within the degree caps.
+///
+/// **Sound by construction:** the returned `v` is verified to satisfy
+/// `D(v) + ω·v = c` *exactly* in the tower field before being returned, so a
+/// `Some` is always correct.  `None` means "no polynomial-in-`(x,t)` solution
+/// within the caps" — the equation may still be solvable by a `v` with
+/// denominators (not attempted), so `None` is **not** a non-elementarity
+/// certificate.
+pub fn solve_tower_rde(field: &ExpTowerField, omega: &TExpr, c: &TExpr) -> Option<TExpr> {
+    const JCAP: usize = 3; // max degree in t
+    const KCAP: usize = 5; // max degree in x
+
+    let basis: Vec<(usize, usize)> = (0..=JCAP)
+        .flat_map(|j| (0..=KCAP).map(move |k| (j, k)))
+        .collect();
+    // L(m) = D(m) + ω·m for each basis monomial m = xᵏtʲ.
+    let one = Rational::from(1);
+    let cols: Vec<TExpr> = basis
+        .iter()
+        .map(|&(j, k)| {
+            let m = monomial(j, k, &one);
+            field.add(&field.derivation(&m), &field.mul(omega, &m))
+        })
+        .collect();
+
+    let (matrix, rhs) = extract_linear_system(&cols, c);
+    let sol = gauss_solve(matrix, rhs, basis.len())?;
+
+    // Reconstruct v = Σ solⱼₖ xᵏ tʲ.
+    let mut v = field.zero();
+    for (idx, &(j, k)) in basis.iter().enumerate() {
+        if sol[idx] != 0 {
+            v = field.add(&v, &monomial(j, k, &sol[idx]));
+        }
+    }
+
+    // Exact verification: D(v) + ω·v == c.
+    let lhs = field.add(&field.derivation(&v), &field.mul(omega, &v));
+    if field.eq(&lhs, c) {
+        Some(v)
+    } else {
+        None
+    }
+}
+
+/// Build the exact ℚ-linear system `Σⱼₖ cⱼₖ·colⱼₖ = target` by clearing the
+/// common `t`-denominator (→ match each `tᵖ`) then the common `x`-denominator of
+/// each resulting `ℚ(x)` equation (→ match each `xᵐ`).
+fn extract_linear_system(cols: &[TExpr], target: &TExpr) -> (Vec<Vec<Rational>>, Vec<Rational>) {
+    let f = qx();
+    // Common t-denominator over all columns and the target.
+    let mut d_t = vec![f.one()];
+    for col in cols {
+        d_t = tpoly_lcm(&d_t, &col.den);
+    }
+    d_t = tpoly_lcm(&d_t, &target.den);
+
+    let scale = |e: &TExpr| -> TPoly {
+        let factor = gpoly_divrem(&f, &d_t, &e.den).0; // d_t / e.den (exact)
+        gpoly_mul(&f, &e.num, &factor)
+    };
+    let n_cols: Vec<TPoly> = cols.iter().map(scale).collect();
+    let n_target = scale(target);
+
+    let max_p = n_cols
+        .iter()
+        .map(|n| n.len())
+        .chain(std::iter::once(n_target.len()))
+        .max()
+        .unwrap_or(0);
+
+    let coeff_t =
+        |n: &TPoly, p: usize| -> RatFn { n.get(p).cloned().unwrap_or_else(|| RatFn::int(0)) };
+    let coeff_x = |q: &QPoly, m: usize| -> Rational {
+        q.get(m).cloned().unwrap_or_else(|| Rational::from(0))
+    };
+
+    let mut matrix: Vec<Vec<Rational>> = Vec::new();
+    let mut rhs: Vec<Rational> = Vec::new();
+    for p in 0..max_p {
+        // ℚ(x) equation: Σ cⱼₖ·col_rfⱼₖ = tgt_rf.
+        let col_rf: Vec<RatFn> = n_cols.iter().map(|n| coeff_t(n, p)).collect();
+        let tgt_rf = coeff_t(&n_target, p);
+
+        // Clear the common x-denominator.
+        let mut d_x = vec![Rational::from(1)];
+        for r in &col_rf {
+            d_x = poly_lcm(&d_x, r.denom());
+        }
+        d_x = poly_lcm(&d_x, tgt_rf.denom());
+
+        let s_cols: Vec<QPoly> = col_rf
+            .iter()
+            .map(|r| poly_mul(r.numer(), &poly_div_exact(&d_x, r.denom())))
+            .collect();
+        let s_tgt = poly_mul(tgt_rf.numer(), &poly_div_exact(&d_x, tgt_rf.denom()));
+
+        let max_m = s_cols
+            .iter()
+            .map(|s| s.len())
+            .chain(std::iter::once(s_tgt.len()))
+            .max()
+            .unwrap_or(0);
+        for m in 0..max_m {
+            matrix.push(s_cols.iter().map(|s| coeff_x(s, m)).collect());
+            rhs.push(coeff_x(&s_tgt, m));
+        }
+    }
+    (matrix, rhs)
+}
+
+/// Solve `M·x = b` over ℚ by Gauss–Jordan elimination, returning a particular
+/// solution (free variables set to 0) or `None` if inconsistent.
+fn gauss_solve(
+    mut m: Vec<Vec<Rational>>,
+    mut b: Vec<Rational>,
+    ncols: usize,
+) -> Option<Vec<Rational>> {
+    let nrows = m.len();
+    let mut pivot_row_of_col: Vec<Option<usize>> = vec![None; ncols];
+    let mut row = 0usize;
+    for col in 0..ncols {
+        if row >= nrows {
+            break;
+        }
+        let Some(sel) = (row..nrows).find(|&r| m[r][col] != 0) else {
+            continue;
+        };
+        m.swap(row, sel);
+        b.swap(row, sel);
+        let piv = m[row][col].clone();
+        for v in m[row].iter_mut() {
+            *v = v.clone() / piv.clone();
+        }
+        b[row] = b[row].clone() / piv.clone();
+        let pivot_row = m[row].clone();
+        let pivot_b = b[row].clone();
+        for r in 0..nrows {
+            if r != row && m[r][col] != 0 {
+                let factor = m[r][col].clone();
+                for (dst, pv) in m[r].iter_mut().zip(pivot_row.iter()) {
+                    *dst -= factor.clone() * pv.clone();
+                }
+                b[r] -= factor * pivot_b.clone();
+            }
+        }
+        pivot_row_of_col[col] = Some(row);
+        row += 1;
+    }
+    // Consistency: an all-zero row with nonzero rhs ⇒ no solution.
+    for r in 0..nrows {
+        if m[r].iter().all(|v| *v == 0) && b[r] != 0 {
+            return None;
+        }
+    }
+    let mut x = vec![Rational::from(0); ncols];
+    for (col, pr) in pivot_row_of_col.iter().enumerate() {
+        if let Some(r) = pr {
+            x[col] = b[*r].clone();
+        }
+    }
+    Some(x)
+}
+
+// ===========================================================================
 // Tests
 // ===========================================================================
 
@@ -308,6 +515,49 @@ mod tests {
             q.elem_eq(&lhs, &rhs),
             "Leibniz over the tower: {lhs:?} vs {rhs:?}"
         );
+    }
+
+    #[test]
+    fn solve_tower_rde_v_equals_t() {
+        // v' + 0·v = t.  Since D(t) = t, v = t.
+        let field = ExpTowerField::new(RatFn::int(1));
+        let v = solve_tower_rde(&field, &field.zero(), &TExpr::t()).expect("v = t");
+        assert!(field.eq(&v, &TExpr::t()), "got {v:?}");
+    }
+
+    #[test]
+    fn solve_tower_rde_example15_component() {
+        // The i=2 component of tutorial Example 15, in ℚ(x)(eˣ):
+        //   ω₂ = (2/3)·(1+t)/(x+t),  c₂ = [(2x+3)t + 5x]/(x+t)  ⇒  v₂ = 3x.
+        let field = ExpTowerField::new(RatFn::int(1)); // t = eˣ
+        let a = field.add(&x_elem(), &TExpr::t()); // x + t
+        let a_prime = field.derivation(&a); // 1 + t
+        let two_thirds = TExpr::from_ratfn(RatFn::new(vec![rat(2)], vec![rat(3)]));
+        let omega2 = field.mul(&two_thirds, &field.mul(&a_prime, &field.inv(&a).unwrap()));
+
+        let num = vec![
+            RatFn::from_poly(&vec![rat(0), rat(5)]), // 5x   · t⁰
+            RatFn::from_poly(&vec![rat(3), rat(2)]), // 2x+3 · t¹
+        ];
+        let den = vec![
+            RatFn::from_poly(&vec![rat(0), rat(1)]), // x · t⁰
+            RatFn::int(1),                           // 1 · t¹
+        ];
+        let c2 = TExpr::new(num, den);
+
+        let v = solve_tower_rde(&field, &omega2, &c2).expect("Example-15 component is solvable");
+        let expected = TExpr::from_ratfn(RatFn::from_poly(&vec![rat(0), rat(3)])); // 3x
+        assert!(field.eq(&v, &expected), "v₂ should be 3x; got {v:?}");
+    }
+
+    #[test]
+    fn solve_tower_rde_no_polynomial_solution() {
+        // v' = 1/t  ⇒  v = −1/t, which has t in the denominator: outside the
+        // polynomial-in-(x,t) ansatz, so the solver returns None (not a
+        // non-elementarity certificate — it is elementary, just not polynomial).
+        let field = ExpTowerField::new(RatFn::int(1));
+        let inv_t = field.inv(&TExpr::t()).unwrap();
+        assert!(solve_tower_rde(&field, &field.zero(), &inv_t).is_none());
     }
 
     #[test]
