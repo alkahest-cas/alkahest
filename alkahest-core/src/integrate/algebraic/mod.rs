@@ -135,6 +135,16 @@ pub fn integrate_algebraic(
     var: ExprId,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, IntegrationError> {
+    // MA (Risch M0/M1): degree-≥3 simple radical `p(x)^{1/n}` over ℚ(x).  The
+    // genus-0 sqrt engine below only covers degree 2; the simple-radical
+    // integral part handles higher degrees (squarefree radicand).  Returns
+    // `None` when not applicable, so degree-2 and unsupported cases fall through.
+    if let Some(res) =
+        crate::integrate::risch::simple_radical::try_integrate_simple_radical(expr, var, pool)
+    {
+        return res;
+    }
+
     let mut log = DerivationLog::new();
 
     // Step 1: Find the unique sqrt generator y = sqrt(P(x))
