@@ -313,7 +313,11 @@ def grad(
     *,
     wrt: Sequence[Expr] | None = None,
 ) -> GradTracedFn:
-    """Return a new callable that computes the gradient of ``fn``.
+    """Return a new callable that computes the gradient of a :class:`TracedFn`.
+
+    This is the **JAX-style** transform applied after :func:`trace`. It is **not**
+    :func:`alkahest.symbolic_grad`, which takes an :class:`~alkahest.Expr` and a
+    list of variables and returns symbolic partial expressions.
 
     Parameters
     ----------
@@ -326,7 +330,12 @@ def grad(
     Returns
     -------
     GradTracedFn
-        A callable returning ``[∂f/∂wrt[0], ∂f/∂wrt[1], …]``.
+        Callable returning ``[∂f/∂wrt[0], ∂f/∂wrt[1], …]`` as floats at a point.
+        Compose with :func:`jit` for LLVM-backed evaluation.
+
+    See Also
+    --------
+    symbolic_grad : partial derivatives of an :class:`Expr` (no :class:`TracedFn`).
     """
     if not isinstance(fn, TracedFn):
         raise TypeError(

@@ -13,7 +13,7 @@ Example
 >>> with alkahest.context(pool=p, domain="real", simplify=True):
 ...     x = alkahest.symbol("x")          # domain and pool inferred
 ...     expr = x ** 2
-...     d = alkahest.diff(expr, x)        # simplify applied automatically
+...     d = alkahest.diff(expr, x)        # algebraic simplify applied to .value automatically
 """
 
 from __future__ import annotations
@@ -65,11 +65,15 @@ def context(
     pool : ExprPool, optional
         Default expression pool used by ``alkahest.symbol`` and other
         pool-aware helpers when called without an explicit ``pool`` argument.
-    domain : Domain, optional
-        Default domain for ``alkahest.symbol(name)`` calls that omit ``domain``.
+    domain : str or Domain, optional
+        Default domain for ``alkahest.symbol(name)`` calls that omit ``domain``
+        (e.g. ``"real"``, ``Domain.Integer``).
     simplify : bool
-        Reserved for future use: stored in the context and visible via
-        :func:`simplify_enabled`, but operations do not auto-simplify yet.
+        When ``True``, :func:`diff`, :func:`integrate`, :func:`sum_indefinite`,
+        :func:`sum_definite`, :func:`product_indefinite`, and
+        :func:`product_definite` post-process their :class:`DerivedResult` with
+        :func:`simplify` (see :func:`simplify_enabled`).  Explicit
+        :func:`simplify` / :func:`simplify_trig` calls are unchanged.
     precision : int, optional
         Default MPFR precision in bits for ball-arithmetic operations.
     **extra
@@ -86,16 +90,16 @@ def context(
     --------
     >>> import alkahest
     >>> p = alkahest.ExprPool()
-    >>> with alkahest.context(pool=p, domain=alkahest.Domain.Real):
+    >>> with alkahest.context(pool=p, domain="real"):
     ...     x = alkahest.symbol("x")
     ...     y = alkahest.symbol("y")
     ...     expr = x ** 2 + y ** 2
 
-    Contexts nest::
+    Contexts nest (inner keys shadow outer ones)::
 
         with alkahest.context(pool=p):
-            with alkahest.context(simplify=True):
-                # Both pool and simplify are active here.
+            with alkahest.context(domain="integer"):
+                # pool from outer context; domain overridden here.
                 ...
 
     """
@@ -133,7 +137,7 @@ def symbol(name: str, *, pool: Any = None, domain: Any = None, commutative: bool
         Symbol name.
     pool : ExprPool, optional
         Explicit pool; overrides the context pool.
-    domain : Domain, optional
+    domain : str or Domain, optional
         Explicit domain; overrides the context domain.
     commutative : bool
         When ``False``, the symbol does not commute under multiplication (V3-2).

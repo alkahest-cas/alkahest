@@ -38,20 +38,19 @@ x = pool.symbol("x")
 y = pool.symbol("y")
 z = pool.symbol("z")
 
-# Integer and rational constants must be interned via the pool.
-# Python-native ints cannot be used directly in expressions.
-two = pool.integer(2)
+# Python int/float literals work in arithmetic (x + 1, x * 2); rationals use pool.rational.
+two = 2
 half = pool.rational(1, 2)
 
 # Arithmetic operators (+, *, **, /) are all overloaded on Expr.
-quadratic = x**2 + two * x + pool.integer(1)
+quadratic = x**2 + two * x + 1
 print(f"quadratic   : {quadratic}")
 print(f"rational    : {half * x}")
 print(f"trig combo  : {sin(x)**2 + cos(x)**2}")
 
 # Expressions are hash-consed: identical trees share storage.
-a = x**2 + pool.integer(1)
-b = x**2 + pool.integer(1)
+a = x**2 + 1
+b = x**2 + 1
 print(f"hash-cons   : a is b? {str(a) == str(b)}")
 
 # ---------------------------------------------------------------------------

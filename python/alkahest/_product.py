@@ -32,7 +32,10 @@ class Product:
         self._hi = bounds[2]
 
     def doit(self):
-        """Closed form as :class:`~alkahest.DerivedResult`; use `.value` for the `Expr`."""
+        """Closed form as :class:`~alkahest.DerivedResult`.
+
+        Use ``simplify(prod.doit()).value`` when you need a compact ``Expr``.
+        """
         import alkahest as ah
 
         return ah.product_definite(self.term, self._k, self._lo, self._hi)

@@ -4,18 +4,7 @@ Run after `maturin develop`:
     python examples/calculus.py
 """
 
-from alkahest.alkahest import (
-    ExprPool,
-    UniPoly,
-    cos,
-    diff,
-    diff_forward,
-    exp,
-    integrate,
-    log,
-    simplify,
-    sin,
-)
+import alkahest as ak
 
 
 def poly_from_coeffs(pool, x, coeffs):
@@ -39,13 +28,13 @@ def poly_from_coeffs(pool, x, coeffs):
 
 def verify_antiderivative(pool, x, expr, label=""):
     """Assert diff(integrate(f, x), x) == f and print the result."""
-    integral = integrate(expr, x)
-    deriv = diff(integral.value, x)
-    simp = simplify(deriv.value)
+    integral = ak.integrate(expr, x)
+    deriv = ak.diff(integral.value, x)
+    simp = ak.simplify(deriv.value)
 
     try:
-        f_poly = UniPoly.from_symbolic(expr, x)
-        d_poly = UniPoly.from_symbolic(simp.value, x)
+        f_poly = ak.UniPoly.from_symbolic(expr, x)
+        d_poly = ak.UniPoly.from_symbolic(simp.value, x)
         match = f_poly.coefficients() == d_poly.coefficients()
     except Exception:
         # Fall back to string comparison when rational coefficients are present
@@ -56,7 +45,7 @@ def verify_antiderivative(pool, x, expr, label=""):
 
 
 def main():
-    pool = ExprPool()
+    pool = ak.ExprPool()
     x = pool.symbol("x")
 
     # ── Symbolic differentiation ──────────────────────────────────────────
@@ -65,25 +54,25 @@ def main():
 
     # Polynomial
     p = poly_from_coeffs(pool, x, [1, 2, 3, 4])   # 1 + 2x + 3x^2 + 4x^3
-    dp = diff(p, x)
+    dp = ak.diff(p, x)
     print(f"d/dx (1+2x+3x²+4x³) = {dp.value}")
     print(f"   derivation steps  = {len(dp.steps)}")
 
     # Trigonometric: d/dx sin(x) = cos(x)
-    dsin = diff(sin(x), x)
+    dsin = ak.diff(ak.sin(x), x)
     print(f"d/dx sin(x)          = {dsin.value}")
 
     # Chain rule: d/dx sin(x^2) = 2*x*cos(x^2)
-    sin_x2 = sin(x ** 2)
-    dsin_x2 = diff(sin_x2, x)
+    sin_x2 = ak.sin(x ** 2)
+    dsin_x2 = ak.diff(sin_x2, x)
     print(f"d/dx sin(x²)         = {dsin_x2.value}")
 
     # Exponential: d/dx exp(x) = exp(x)
-    dexp = diff(exp(x), x)
+    dexp = ak.diff(ak.exp(x), x)
     print(f"d/dx exp(x)          = {dexp.value}")
 
     # Logarithm: d/dx log(x) = x^(-1)
-    dlog = diff(log(x), x)
+    dlog = ak.diff(ak.log(x), x)
     print(f"d/dx log(x)          = {dlog.value}")
 
     # ── Forward-mode AD ───────────────────────────────────────────────────
@@ -91,8 +80,8 @@ def main():
     print("\n=== Forward-mode Automatic Differentiation ===")
 
     p2 = poly_from_coeffs(pool, x, [0, 0, 1])  # x^2
-    fwd = diff_forward(p2, x)
-    sym = diff(p2, x)
+    fwd = ak.diff_forward(p2, x)
+    sym = ak.diff(p2, x)
     print(f"d/dx x² (forward)    = {fwd.value}")
     print(f"d/dx x² (symbolic)   = {sym.value}")
     print(f"  agree?             = {str(fwd.value) == str(sym.value)}")
@@ -102,16 +91,16 @@ def main():
     print("\n=== Symbolic Integration ===")
 
     # Known functions
-    r_sin = integrate(sin(x), x)
+    r_sin = ak.integrate(ak.sin(x), x)
     print(f"∫ sin(x) dx          = {r_sin.value}")
 
-    r_cos = integrate(cos(x), x)
+    r_cos = ak.integrate(ak.cos(x), x)
     print(f"∫ cos(x) dx          = {r_cos.value}")
 
-    r_exp = integrate(exp(x), x)
+    r_exp = ak.integrate(ak.exp(x), x)
     print(f"∫ exp(x) dx          = {r_exp.value}")
 
-    r_inv = integrate(x ** -1, x)
+    r_inv = ak.integrate(x ** -1, x)
     print(f"∫ 1/x dx             = {r_inv.value}")
 
     # Verification for polynomials
@@ -126,7 +115,7 @@ def main():
 
     print("\n=== Derivation Log ===")
 
-    result = diff(poly_from_coeffs(pool, x, [0, 0, 1]), x)  # d/dx x^2
+    result = ak.diff(poly_from_coeffs(pool, x, [0, 0, 1]), x)  # d/dx x^2
     print(f"Expression: x²")
     print(f"Derivative: {result.value}")
     print(f"Steps ({len(result.steps)}):")

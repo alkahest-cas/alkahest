@@ -91,6 +91,7 @@ use alkahest_core::pattern::{
 use alkahest_core::{compile_cuda as core_compile_cuda, CudaCompiledFn as CoreCudaCompiledFn};
 use std::sync::Arc;
 // V2-1 — Modular / CRT framework
+use alkahest_core::deriv::RewriteStep;
 use alkahest_core::modular::{
     lift_crt as core_lift_crt, mignotte_bound as core_mignotte_bound,
     rational_reconstruction as core_rational_reconstruction, reduce_mod as core_reduce_mod,
@@ -263,6 +264,92 @@ fn parse_domain(s: &str) -> Domain {
         "nonzero" => Domain::NonZero,
         _ => Domain::Real,
     }
+}
+
+/// Python-visible symbol domain (matches :class:`alkahest_core::kernel::Domain`).
+#[pyclass(name = "Domain")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PyDomain {
+    #[pyo3(name = "Real")]
+    Real,
+    #[pyo3(name = "Complex")]
+    Complex,
+    #[pyo3(name = "Integer")]
+    Integer,
+    #[pyo3(name = "Positive")]
+    Positive,
+    #[pyo3(name = "NonNegative")]
+    NonNegative,
+    #[pyo3(name = "NonZero")]
+    NonZero,
+}
+
+#[pymethods]
+impl PyDomain {
+    fn __str__(&self) -> &'static str {
+        self.wire_str()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("Domain.{self:?}")
+    }
+}
+
+impl PyDomain {
+    const fn wire_str(self) -> &'static str {
+        match self {
+            PyDomain::Real => "real",
+            PyDomain::Complex => "complex",
+            PyDomain::Integer => "integer",
+            PyDomain::Positive => "positive",
+            PyDomain::NonNegative => "nonneg",
+            PyDomain::NonZero => "nonzero",
+        }
+    }
+}
+
+impl From<PyDomain> for Domain {
+    fn from(d: PyDomain) -> Self {
+        match d {
+            PyDomain::Real => Domain::Real,
+            PyDomain::Complex => Domain::Complex,
+            PyDomain::Integer => Domain::Integer,
+            PyDomain::Positive => Domain::Positive,
+            PyDomain::NonNegative => Domain::NonNegative,
+            PyDomain::NonZero => Domain::NonZero,
+        }
+    }
+}
+
+impl From<Domain> for PyDomain {
+    fn from(d: Domain) -> Self {
+        match d {
+            Domain::Real => PyDomain::Real,
+            Domain::Complex => PyDomain::Complex,
+            Domain::Integer => PyDomain::Integer,
+            Domain::Positive => PyDomain::Positive,
+            Domain::NonNegative => PyDomain::NonNegative,
+            Domain::NonZero => PyDomain::NonZero,
+        }
+    }
+}
+
+fn parse_domain_arg(ob: Option<&Bound<'_, PyAny>>) -> PyResult<Domain> {
+    let Some(ob) = ob else {
+        return Ok(Domain::Real);
+    };
+    if ob.is_none() {
+        return Ok(Domain::Real);
+    }
+    if let Ok(d) = ob.extract::<PyDomain>() {
+        return Ok(d.into());
+    }
+    if let Ok(s) = ob.extract::<&str>() {
+        return Ok(parse_domain(s));
+    }
+    Err(PyTypeError::new_err(
+        "domain must be a str (e.g. 'real') or alkahest.Domain",
+    ))
 }
 
 fn py_int_decimal(v: &Bound<'_, PyAny>) -> PyResult<String> {
@@ -486,14 +573,14 @@ impl PyExprPool {
     fn symbol(
         slf: PyRef<'_, Self>,
         name: &str,
-        domain: Option<&str>,
+        domain: Option<&Bound<'_, PyAny>>,
         commutative: Option<bool>,
-    ) -> PyExpr {
+    ) -> PyResult<PyExpr> {
         let commutative = commutative.unwrap_or(true);
-        let dom = parse_domain(domain.unwrap_or("real"));
+        let dom = parse_domain_arg(domain)?;
         let id = slf.inner.symbol_commutative(name, dom, commutative);
         let pool: Py<PyExprPool> = slf.into();
-        PyExpr { id, pool }
+        Ok(PyExpr { id, pool })
     }
 
     fn integer(slf: PyRef<'_, Self>, n: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
@@ -1172,6 +1259,40 @@ fn make_derived_result(
         steps_raw,
         raw: derived,
     }
+}
+
+/// Post-process a :class:`DerivedResult` with algebraic :func:`simplify` when
+/// ``context(simplify=True)`` is active (Python layer calls this).
+#[pyfunction]
+#[pyo3(name = "_derived_result_context_simplify")]
+fn py_derived_result_context_simplify(
+    py: Python<'_>,
+    dr: PyRef<PyDerivedResult>,
+) -> PyResult<PyDerivedResult> {
+    let pool_py = dr.value.pool.clone_ref(py);
+    let simplified = {
+        let pool = pool_py.borrow(py);
+        core_simplify(dr.value.id, &pool.inner)
+    };
+    if simplified.value == dr.value.id {
+        return Ok(PyDerivedResult {
+            value: dr.value.clone(),
+            derivation: dr.derivation.clone(),
+            steps_raw: dr.steps_raw.clone(),
+            raw: dr.raw.clone(),
+        });
+    }
+    let mut log = dr.raw.log.clone();
+    log.push(RewriteStep::simple(
+        "context_simplify",
+        dr.raw.value,
+        simplified.value,
+    ));
+    let merged = DerivedExpr {
+        value: simplified.value,
+        log: log.merge(simplified.log),
+    };
+    Ok(make_derived_result(py, merged, pool_py))
 }
 
 // ---------------------------------------------------------------------------
@@ -6107,6 +6228,7 @@ fn py_plot_dot(py: Python<'_>, expr: PyRef<PyExpr>) -> String {
 #[pymodule]
 fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
+    m.add_function(wrap_pyfunction!(py_derived_result_context_simplify, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify_egraph, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify_egraph_with, m)?)?;
@@ -6154,6 +6276,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(atan2, m)?)?;
     m.add_function(wrap_pyfunction!(min_expr, m)?)?;
     m.add_function(wrap_pyfunction!(max_expr, m)?)?;
+    m.add_class::<PyDomain>()?;
     m.add_class::<PyExprPool>()?;
     m.add_class::<PyExpr>()?;
     m.add_class::<PyDerivedResult>()?;

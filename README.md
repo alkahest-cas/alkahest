@@ -131,11 +131,15 @@ The `jit` feature additionally requires LLVM 15 dev headers (`apt install llvm-1
 ```python
 import alkahest as ak
 
+caps = ak.capabilities()  # groebner, jit, egraph, parallel
 pool = ak.ExprPool()
 x = pool.symbol("x")
 
+# Python int literals work in arithmetic (pool still required for symbols)
+expr = x**2 + 1
+
 # Differentiation with derivation log
-result = ak.diff(ak.sin(x ** 2), x)
+result = ak.diff(ak.sin(expr), x)
 print(result.value)   # 2*x*cos(x^2)
 print(result.steps)   # list of rewrite steps
 
@@ -143,12 +147,13 @@ print(result.steps)   # list of rewrite steps
 r = ak.integrate(ak.exp(x), x)
 print(r.value)        # exp(x)
 
-# Simplification
-s = ak.simplify(x + pool.integer(0))
+# Simplification — use simplify_trig for sin²+cos², not the catch-all simplify
+s = ak.simplify(x + 0)
 print(s.value)        # x
+print(ak.simplify_trig(ak.sin(x)**2 + ak.cos(x)**2).value)  # 1
 
-# JIT-compile to native code
-f = ak.compile_expr(x ** 2 + pool.integer(1), [x])
+# JIT-compile to native code (interpreter fallback when caps["jit"] is False)
+f = ak.compile_expr(x**2 + 1, [x])
 print(f([3.0]))       # 10.0
 ```
 
@@ -442,14 +447,21 @@ print(cs.coordinates, cs.smale_certified, cs.enclosures())
 import alkahest as ak
 
 pool = ak.ExprPool()
+x = pool.symbol("x")
+
+# Expr partials (symbolic, no trace):
+ak.symbolic_grad(ak.sin(x**2), [x])   # list[Expr]
 
 @ak.trace(pool)
 def f(x):
     return ak.sin(x ** 2)
 
-df = ak.grad(f)          # symbolic gradient
+df = ak.grad(f)          # GradTracedFn (∂f/∂inputs at numeric points)
 df_fast = ak.jit(df)     # compiled gradient
 ```
+
+**Naming:** `symbolic_grad(expr, vars)` returns symbolic `Expr` partials.
+`grad(traced_fn)` is the JAX-style transform on a `@trace` function (compose with `jit`).
 
 ### Plotting
 

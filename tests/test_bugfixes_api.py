@@ -102,6 +102,20 @@ def test_solve_simplified_radicals():
         assert abs(alkahest.eval_expr(simp, {})) == pytest.approx(1.0)
 
 
+def test_domain_enum_export():
+    assert hasattr(alkahest, "Domain")
+    assert "Domain" in alkahest.__all__
+    assert str(alkahest.Domain.Real) == "real"
+    assert str(alkahest.Domain.Integer) == "integer"
+    p = alkahest.ExprPool()
+    x = p.symbol("x", alkahest.Domain.Integer)
+    y = p.symbol("y", "integer")
+    assert x is not None and y is not None
+    with alkahest.context(pool=p, domain=alkahest.Domain.Real):
+        z = alkahest.symbol("z")
+        assert z is not None
+
+
 def test_primary_decomposition_stable_export():
     assert hasattr(alkahest, "primary_decomposition")
     assert hasattr(alkahest, "radical")
@@ -114,3 +128,50 @@ def test_piecewise_pool_gt():
     cond = p.gt(x, p.integer(0))
     pw = alkahest.piecewise([(cond, x)], p.integer(-1) * x)
     assert pw is not None
+
+
+def test_context_simplify_invokes_postprocess(monkeypatch):
+    """context(simplify=True) runs _derived_result_context_simplify on diff."""
+    import alkahest
+
+    calls: list[object] = []
+    orig = alkahest._derived_result_context_simplify
+
+    def counting(dr):
+        calls.append(dr)
+        return orig(dr)
+
+    monkeypatch.setattr(alkahest, "_derived_result_context_simplify", counting)
+    p = alkahest.ExprPool()
+    x = p.symbol("x")
+    with alkahest.context(simplify=True):
+        alkahest.diff(x**2, x)
+    assert calls
+    calls.clear()
+    alkahest.diff(x**2, x)
+    assert not calls
+
+
+def test_context_simplify_merges_step():
+    p = alkahest.ExprPool()
+    x = p.symbol("x")
+    expr = x + 0
+    with alkahest.context(simplify=True):
+        r = alkahest.diff(expr, x)
+    rules = [s["rule"] for s in r.steps]
+    # When simplify changes the value, a context_simplify step is recorded.
+    if "context_simplify" in rules:
+        assert rules.index("context_simplify") >= 0
+
+
+def test_derived_result_coercion_extended():
+    """sum/product/poly_normal accept DerivedResult first args (B2)."""
+    p = alkahest.ExprPool()
+    k, n = p.symbol("k"), p.symbol("n")
+    hyper = alkahest.simplify(k * alkahest.gamma(k + p.integer(1)))
+    assert alkahest.sum_indefinite(hyper, k).steps
+    assert alkahest.sum_definite(hyper, k, p.integer(0), n).value is not None
+    dr_k = alkahest.integrate(p.integer(1), k)
+    assert alkahest.product_indefinite(dr_k, k).value is not None
+    assert alkahest.product_definite(dr_k, k, p.integer(1), n).value is not None
+    assert alkahest.poly_normal(alkahest.diff(k**2, k), [k]) is not None

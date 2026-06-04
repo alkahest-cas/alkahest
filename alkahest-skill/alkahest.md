@@ -30,18 +30,20 @@ maturin develop --release --manifest-path alkahest-py/Cargo.toml --features "par
 
 ## Core mental model
 
-Every expression lives in an **`ExprPool`** (a hash-consed DAG). You must create a pool before making any symbolic expression. Integer and rational constants must be interned through the pool — raw Python ints cannot appear directly in expressions.
+Every expression lives in an **`ExprPool`** (a hash-consed DAG). You must create a pool before making any symbolic expression. **Python `int` and `float` literals work in arithmetic** (`x + 1`, `x * 2.5`, `x**2`); use `pool.rational(p, q)` for exact rationals and `pool.integer(n)` when you need an explicit `Expr` constant (e.g. for APIs that only accept `Expr`).
 
 ```python
 import alkahest as ak
-from alkahest import sin, cos, exp, log, sqrt, diff, integrate, simplify
+from alkahest import sin, cos, exp, log, sqrt, diff, integrate, simplify, simplify_trig
+
+caps = ak.capabilities()  # groebner, jit, egraph, parallel — probe once per session
 
 pool = ak.ExprPool()
-x = pool.symbol("x")
+x = pool.symbol("x", ak.Domain.Real)   # or domain="real"
 y = pool.symbol("y")
 
-two   = pool.integer(2)      # always intern constants
-half  = pool.rational(1, 2)  # p/q form
+expr = x**2 + 1          # int literals in +, -, *, **, / are fine
+half = pool.rational(1, 2)  # exact rationals need pool.rational
 ```
 
 Arithmetic operators (`+`, `-`, `*`, `**`, `/`) are all overloaded on `Expr` — use them freely.
@@ -84,11 +86,13 @@ from alkahest import (
     poly_normal,         # normalize to polynomial form (raises ConversionError if not poly)
 )
 
-r = simplify(x + pool.integer(0))          # → x
-r = simplify_trig(sin(x)**2 + cos(x)**2)  # → 1
+r = simplify(x + 0)                        # → x (algebraic rules)
+r = simplify_trig(sin(x)**2 + cos(x)**2)  # → 1  (trig identities — use this, not simplify)
 r = simplify_log_exp(log(exp(x)))          # → x
-r = collect_like_terms(x + x + two*x + y) # → 4*x + y
+r = collect_like_terms(x + x + 2*x + y)   # → 4*x + y
 ```
+
+**Simplifier choice:** `simplify` is a general algebraic rewriter; it does **not** apply trig identities. For `sin²+cos²` and similar, use `simplify_trig` (or `simplify_egraph`). For `log`/`exp` laws, use `simplify_log_exp`.
 
 `simplify_egraph` / `simplify_egraph_with` run egglog e-graph saturation — use when algebraic rewriting is insufficient.
 
@@ -104,19 +108,29 @@ if HAS_EGRAPH:
 
 ## Differentiation
 
+### `diff` vs `symbolic_grad` vs `grad` (keep these names)
+
+| API | Input | Output | When to use |
+|-----|--------|--------|-------------|
+| **`diff`** | one `Expr`, one variable | `DerivedResult` (`.value`, `.steps`) | Single derivative; need derivation log |
+| **`symbolic_grad`** | one `Expr`, `list[Expr]` vars | `list[Expr]` | All partials of one expression at once |
+| **`grad`** | `TracedFn` from `@trace` | `GradTracedFn` → floats at a point | JAX-style pipeline; compose with `jit` |
+
+Do **not** pass an `Expr` to `grad` — use `symbolic_grad` or `diff`. Do **not** pass a `TracedFn` to `symbolic_grad`.
+
 ```python
 from alkahest import diff, diff_forward, symbolic_grad, jacobian
 
-# Symbolic (reverse-mode internally)
+# Single variable + step log
 d = diff(sin(x**2), x)          # DerivedResult; d.value = 2*x*cos(x^2)
 
-# Forward-mode AD
-d_fwd = diff_forward(x**2, x)   # same result, forward sweep
+# Forward-mode AD (cross-check)
+d_fwd = diff_forward(x**2, x)
 
-# All partial derivatives at once (reverse-mode)
-grads = symbolic_grad(x**2 + y**2, [x, y])  # returns list of Expr
+# All partials of one Expr (no TracedFn)
+grads = symbolic_grad(x**2 + y**2, [x, y])  # list[Expr]: [2*x, 2*y]
 
-# Jacobian matrix of a vector-valued function
+# Vector-valued → matrix
 J = jacobian([x**2 + y, sin(x)*y], [x, y])
 entry = J.get(row, col)  # Expr
 ```
@@ -172,8 +186,8 @@ except IntegrationError as e:
 ```python
 from alkahest import subs, match_pattern, make_rule
 
-# Substitute: replace symbols with expressions or numerics
-result = subs(expr, {x: pool.integer(2), y: cos(x)})
+# Substitute: values may be Expr, DerivedResult, or Python int/float (coerced to Expr)
+result = subs(expr, {x: 2, y: cos(x)})
 
 # Pattern matching
 rule = make_rule("sin(?a)**2 + cos(?a)**2", pool.integer(1))
@@ -269,10 +283,16 @@ ys = numpy_eval_par(f, xs)    # multi-core when built with --features parallel
 
 ## trace / grad / jit (JAX-style transforms)
 
+Here **`grad`** means “gradient of a **traced** function”, not `symbolic_grad`. For partials of a bare `Expr`, use **`symbolic_grad(expr, [x, y])`** (see [Differentiation](#differentiation)).
+
 ```python
 import alkahest as ak
 
 pool = ak.ExprPool()
+x, y = pool.symbol("x"), pool.symbol("y")
+
+# Expr-level partials (no @trace):
+partials = ak.symbolic_grad(x**2 + ak.sin(y), [x, y])  # list[Expr]
 
 @ak.trace(pool)
 def energy(x, y):
@@ -283,14 +303,12 @@ print(energy.expr)          # symbolic expression
 print(energy(1.0, 0.0))     # numeric float
 print(energy.symbols)       # [x, y]
 
-# Gradient
-grad_energy = ak.grad(energy)   # GradTracedFn
+# grad = gradient of TracedFn (GradTracedFn), not symbolic_grad
+grad_energy = ak.grad(energy)
 gs = grad_energy(1.0, 0.0)     # [∂/∂x, ∂/∂y] as floats
 
-# JIT compilation
 fast = ak.jit(energy)          # CompiledTracedFn
-fast(1.0, 0.0)                 # same result, LLVM-backed
-fast(np.linspace(0,1,100), np.zeros(100))  # auto-vectorised
+fast_grad = ak.jit(ak.grad(energy))  # compiled GradTracedFn
 ```
 
 Non-decorator variant: `ak.trace_fn(fn, pool)`.
@@ -392,6 +410,10 @@ pool = ak.ExprPool()
 with ak.context(pool=pool, domain="real", simplify=True):
     x = ak.symbol("x")   # pool and domain inferred
     y = ak.symbol("y")
+    d = ak.diff(x**2 + x**2, x)  # .value is algebraically simplified
+
+# simplify=True applies the general :func:`simplify` rewriter to results of
+# diff / integrate / sum_* / product_* only — not to solve or simplify_trig.
 
 # Inspect active context
 ak.active_pool()
@@ -554,14 +576,14 @@ reg = PrimitiveRegistry()
 
 ## Key rules for agents
 
-1. **Always create a pool first.** `ExprPool()` before any symbol or expression.
-2. **Integers must be interned.** Use `pool.integer(n)` and `pool.rational(p, q)`, never raw Python ints in expressions.
+1. **Always create a pool first.** `ExprPool()` before any symbol or expression. Optional: `with ak.context(pool=pool): x = ak.symbol("x")` to avoid repeating `pool=`.
+2. **Pool first; literals in arithmetic are OK.** Use `x + 1`, not only `x + pool.integer(1)`. Use `pool.rational(p, q)` for exact rationals; `subs` accepts Python `int`/`float` in the mapping.
 3. **Read `.value` for the expression.** Top-level operations return `DerivedResult`, not `Expr`.
 4. **Use specific simplifiers.** Prefer `simplify_trig`, `simplify_log_exp`, `collect_like_terms` over the catch-all `simplify` when the structure is known — it is faster.
 5. **Polynomial conversions raise.** `UniPoly.from_symbolic` and `poly_normal` raise `ConversionError` for non-polynomial input — catch it.
 6. **`solve` / Gröbner-side APIs are available in all PyPI wheels.** The `groebner` Cargo feature is a default since 2.3.1 — no feature flag or `ImportError` guard needed. Default PyPI wheels also include egglog (`HAS_EGRAPH` is typically `True`); use `simplify_egraph` when rule-based simplification is insufficient.
 7. **`trace` requires a pool argument.** Use `@alkahest.trace(pool)` (or `trace_fn(fn, pool)`). `@alkahest.trace` alone is invalid.
-8. **`grad` expects a `TracedFn`.** `jit` accepts a `TracedFn` or `GradTracedFn`; both raise `TypeError` on undecorated callables.
+8. **`grad` ≠ `symbolic_grad`.** `symbolic_grad(expr, [x, y])` → `list[Expr]`. `grad(traced_fn)` → `GradTracedFn` (needs `@trace(pool)` first). `jit` accepts `TracedFn` or `GradTracedFn`.
 9. **`numpy_eval` expects a `CompiledFn`** (from `compile_expr`), not a `TracedFn`.
 10. **Symbols from different pools are incompatible.** Keep one pool per computation graph.
 11. **`plot*` functions detect the backend automatically.** Never import matplotlib/plotly in user code just to call `ak.plot` — let alkahest dispatch. Use `backend="plotly"` or `backend="matplotlib"` to force one. Use `plot_svg` when no plotting library is available.

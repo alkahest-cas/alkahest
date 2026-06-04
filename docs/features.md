@@ -48,7 +48,7 @@ Current stable feature surface.
 
 - Symbolic differentiation (`diff`, `diff_forward`)
 - Forward-mode automatic differentiation
-- Reverse-mode automatic differentiation (`symbolic_grad`)
+- Reverse-mode partials on `Expr` (`symbolic_grad`) — distinct from JAX-style `grad` on `TracedFn`
 - Symbolic integration: power rule, log, exp tower, linear substitution, trig, and full rational-function integration (Hermite reduction, Rothstein–Trager, arctan for irreducible quadratics, √-coefficient logs, `RootSum` for degree-≥3 factors via Lazard–Rioboo–Trager)
 - Rational Risch DE for `f(x)·exp(η)` integrands with `f ∈ ℚ(x)` (Bronstein §6.1)
 - Non-elementary certification via Liouville's theorem (`E-INT-004`): `sin(x)/x`, `exp(x)/x`, `log(x)^(−n)`, etc. raise `NonElementary` instead of `NotImplemented`
@@ -86,7 +86,7 @@ Current stable feature surface.
 ## Transformations
 
 - `trace` / `trace_fn` — symbolic function tracing
-- `grad` — gradient transformation (symbolically differentiates a traced function)
+- `grad` — gradient of a `TracedFn` (`@trace`); pairs with `jit`. Use `symbolic_grad` for `Expr` partials
 - `jit` — LLVM JIT compilation of traced functions
 - `CompiledTracedFn` for array-vectorised evaluation
 - JAX-style pytree flattening (`flatten_exprs`, `unflatten_exprs`, `map_exprs`)

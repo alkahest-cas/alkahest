@@ -59,9 +59,16 @@ fwd = diff_forward(x**3, x)
 
 Forward mode is useful for checking that the symbolic rules agree with dual-number evaluation.
 
-## Symbolic gradient
+## Symbolic gradient (`symbolic_grad`)
 
-`symbolic_grad` differentiates with respect to multiple variables:
+`symbolic_grad(expr, vars)` returns a **list of `Expr`** — one partial derivative per
+variable. It does not use `@trace` and is not composable with `jit` directly.
+
+| API | Input | Output |
+|-----|--------|--------|
+| `diff(expr, var)` | one variable | `DerivedResult` with `.steps` |
+| `symbolic_grad(expr, vars)` | many variables | `list[Expr]` |
+| `grad(traced_fn)` | `TracedFn` from `@trace` | `GradTracedFn` (numeric; see [Transformations](./transformations.md)) |
 
 ```python
 from alkahest import symbolic_grad
@@ -76,7 +83,8 @@ grads = symbolic_grad(expr, [x, y])
 # grads[1] = ∂/∂y = x^2 + x*cos(x*y)
 ```
 
-For the traced-function gradient (composable with `jit`), see [Transformations](./transformations.md).
+For the JAX-style gradient of a traced Python function (compose with `jit`), use
+`alkahest.grad` — **not** `symbolic_grad`. See [Transformations](./transformations.md).
 
 ## Integration
 

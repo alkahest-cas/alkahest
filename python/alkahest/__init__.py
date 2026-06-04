@@ -62,6 +62,8 @@ from .alkahest import (  # noqa: F401
     CompiledFn,
     # Core expression types
     DerivedResult,
+    Domain,
+    _derived_result_context_simplify,
     # V1-15: EgraphConfig and simplify_egraph_with
     EgraphConfig,
     # Phase 20: Hybrid systems
@@ -188,8 +190,8 @@ from .alkahest import (  # noqa: F401
     version,
 )
 from .alkahest import (
-    # Phase 14: Reverse-mode AD (symbolic gradient; for traced-fn gradient use alkahest.grad)
-    grad as symbolic_grad,
+    # Phase 14: reverse-mode partials on Expr (native name `grad`; exported as symbolic_grad)
+    grad as _native_symbolic_grad,
 )
 
 # V5-7: JAX primitive integration (optional — requires JAX)
@@ -439,6 +441,40 @@ def numpy_eval_par(compiled_fn, *arrays):
 # ---------------------------------------------------------------------------
 
 
+def symbolic_grad(expr, vars):
+    """Symbolic partial derivatives of *expr* with respect to each variable in *vars*.
+
+    This is **not** the same as :func:`grad` from :mod:`alkahest._transform`, which
+    differentiates a :class:`~alkahest.TracedFn` produced by :func:`~alkahest.trace`
+    and returns a :class:`~alkahest.GradTracedFn` for numeric evaluation (often
+    composed with :func:`~alkahest.jit`).
+
+    Parameters
+    ----------
+    expr : Expr
+        Expression to differentiate.
+    vars : list[Expr]
+        Variables; one partial derivative per entry.
+
+    Returns
+    -------
+    list[Expr]
+        ``[∂expr/∂vars[0], ∂expr/∂vars[1], …]`` (plain expressions, no step log).
+
+    See Also
+    --------
+    diff : single-variable derivative with :class:`~alkahest.DerivedResult` steps.
+    grad : JAX-style gradient of a traced Python function.
+    jacobian : matrix of partials for a vector-valued function.
+
+    Example
+    -------
+    >>> p = ExprPool(); x, y = p.symbol("x"), p.symbol("y")
+    >>> symbolic_grad(x**2 + y**2, [x, y])  # [2*x, 2*y]
+    """
+    return _native_symbolic_grad(expr, vars)
+
+
 def _coerce_expr(x):
     """Return ``x.value`` if *x* is a :class:`DerivedResult`, else *x* unchanged.
 
@@ -452,6 +488,18 @@ def _coerce_expr(x):
     if isinstance(x, DerivedResult):
         return x.value
     return x
+
+
+def _maybe_context_simplify(result):
+    """When ``context(simplify=True)`` is active, algebraically simplify *result*.
+
+    Merges the operation's derivation log with a ``context_simplify`` step and
+    any steps from :func:`simplify`.  No-op for non-:class:`DerivedResult`
+    values or when the flag is off.
+    """
+    if not simplify_enabled() or not isinstance(result, DerivedResult):
+        return result
+    return _derived_result_context_simplify(result)
 
 
 # Wrap key calculus/simplification functions so they accept DerivedResult or
@@ -483,7 +531,9 @@ def diff(expr, var):
     >>> d = diff(x**3, x)   # DerivedResult; d.value == 3*x^2
     >>> diff(d, x).value    # second derivative — passes DerivedResult directly
     """
-    return _native_diff(_coerce_expr(expr), _coerce_expr(var))
+    return _maybe_context_simplify(
+        _native_diff(_coerce_expr(expr), _coerce_expr(var))
+    )
 
 
 _native_integrate = integrate
@@ -508,7 +558,9 @@ def integrate(expr, var):
     >>> p = ExprPool(); x = p.symbol("x")
     >>> integrate(x**2, x).value   # x^3/3
     """
-    return _native_integrate(_coerce_expr(expr), _coerce_expr(var))
+    return _maybe_context_simplify(
+        _native_integrate(_coerce_expr(expr), _coerce_expr(var))
+    )
 
 
 _native_subs = subs
@@ -521,8 +573,10 @@ def subs(expr, mapping):
     ----------
     expr : Expr or DerivedResult
         Source expression.  :class:`DerivedResult` is auto-coerced to ``.value``.
-    mapping : dict[Expr, Expr]
-        Substitution map.
+    mapping : dict[Expr, Expr | DerivedResult | int | float]
+        Substitution map. Values (and keys that are symbols) may be
+        :class:`Expr`, :class:`DerivedResult`, or Python ``int``/``float``
+        (coerced into the expression pool).
 
     Returns
     -------
@@ -531,8 +585,9 @@ def subs(expr, mapping):
     Example
     -------
     >>> p = ExprPool(); x = p.symbol("x")
+    >>> subs(x**2, {x: 3})         # int values coerced — OK
     >>> r = diff(x**2, x)          # DerivedResult
-    >>> subs(r, {x: p.integer(1)}) # passes DerivedResult directly — OK
+    >>> subs(r, {x: 1})            # DerivedResult first arg — OK
     """
     return _native_subs(_coerce_expr(expr), mapping)
 
@@ -688,6 +743,80 @@ def limit(expr, var, point, dir=None):
     return _native_limit(_coerce_expr(expr), _coerce_expr(var), _coerce_expr(point), dir)
 
 
+_native_sum_indefinite = sum_indefinite
+
+
+def sum_indefinite(expr, k):
+    """Indefinite symbolic sum of *expr* with respect to index *k*."""
+    return _maybe_context_simplify(
+        _native_sum_indefinite(_coerce_expr(expr), _coerce_expr(k))
+    )
+
+
+_native_sum_definite = sum_definite
+
+
+def sum_definite(expr, k, lo, hi):
+    """Definite symbolic sum of *expr* for *k* from *lo* to *hi* (inclusive)."""
+    return _maybe_context_simplify(
+        _native_sum_definite(
+            _coerce_expr(expr),
+            _coerce_expr(k),
+            _coerce_expr(lo),
+            _coerce_expr(hi),
+        )
+    )
+
+
+_native_product_indefinite = product_indefinite
+
+
+def product_indefinite(expr, k):
+    """Indefinite symbolic product of *expr* with respect to index *k*."""
+    return _maybe_context_simplify(
+        _native_product_indefinite(_coerce_expr(expr), _coerce_expr(k))
+    )
+
+
+_native_product_definite = product_definite
+
+
+def product_definite(expr, k, lo, hi):
+    """Definite symbolic product of *expr* for *k* from *lo* to *hi* (inclusive)."""
+    return _maybe_context_simplify(
+        _native_product_definite(
+            _coerce_expr(expr),
+            _coerce_expr(k),
+            _coerce_expr(lo),
+            _coerce_expr(hi),
+        )
+    )
+
+
+_native_rsolve = rsolve
+
+
+def rsolve(equation, n, seq_name, initials=None):
+    """Solve a linear recurrence; *equation* may be :class:`DerivedResult`."""
+    return _native_rsolve(_coerce_expr(equation), _coerce_expr(n), seq_name, initials)
+
+
+_native_poly_normal = poly_normal
+
+
+def poly_normal(expr, vars):
+    """Expand and collect *expr* as a polynomial in *vars*."""
+    return _native_poly_normal(_coerce_expr(expr), [_coerce_expr(v) for v in vars])
+
+
+_native_eval_expr = eval_expr
+
+
+def eval_expr(expr, bindings):
+    """Numerically evaluate *expr*; accepts :class:`DerivedResult` as *expr*."""
+    return _native_eval_expr(_coerce_expr(expr), bindings)
+
+
 # ---------------------------------------------------------------------------
 # Groebner stubs — fallback for custom builds using --no-default-features.
 # Since 2.3.1, groebner is a default Cargo feature and all standard PyPI
@@ -802,6 +931,7 @@ __all__ = [
     "DiffError",
     "DiophantineError",
     "DiophantineSolution",
+    "Domain",
     "DomainError",
     "EgraphConfig",
     "EigenError",
