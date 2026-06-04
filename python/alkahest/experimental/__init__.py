@@ -8,7 +8,8 @@ removed between minor versions without a deprecation cycle.  Graduate to
 Current experimental surface (linear algebra on ``Matrix``):
 - ``Matrix.nullspace``, ``rank``, ``column_space``, ``row_space``
 - ``Matrix.lu``, ``qr``, ``cholesky``
-- ``Matrix.jordan_form``, ``rational_canonical_form``, ``minimal_polynomial``, ``matrix_exp``, ``inverse``
+- ``Matrix.jordan_form``, ``rational_canonical_form``, ``minimal_polynomial``,
+  ``matrix_exp``, ``inverse``
 
 Other experimental surface:
 - :func:`to_lean` — Lean 4 certificate export (V5-1)

@@ -19,16 +19,17 @@ def test_lu_rational_2x2():
     m = alkahest.Matrix(
         [[pool.integer(2), pool.integer(1)], [pool.integer(4), pool.integer(3)]]
     )
-    l, u, perm = m.lu()
+    lower, upper, perm = m.lu()
     permuted = alkahest.Matrix([m.to_list()[i] for i in perm])
-    assert (l @ u).simplify().to_list() == permuted.simplify().to_list()
+    assert (lower @ upper).simplify().to_list() == permuted.simplify().to_list()
 
 
 def test_jordan_block_2x2():
     pool = alkahest.ExprPool()
     m = alkahest.Matrix([[pool.integer(2), pool.integer(1)], [pool.integer(0), pool.integer(2)]])
     p, j = m.jordan_form()
-    assert p.rows == 2 and j.rows == 2
+    assert p.rows == 2
+    assert j.rows == 2
     inv = p.inverse()
     assert (p @ j @ inv).simplify().to_list() == m.simplify().to_list()
 
