@@ -1276,6 +1276,87 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
+    fn mixed_cbrt_x_times_log_x_elementary() {
+        // ∫ x^{1/3}·log(x) dx = (3/4)x^{4/3}·log(x) − (9/16)x^{4/3}.
+        // Log-tower IBP delegates the base ∫x^{1/3} dx to the MA algebraic engine.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let cbrt_x = pool.pow(x, pool.rational(1_i32, 3_i32));
+        let log_x = pool.func("log", vec![x]);
+        let f = pool.mul(vec![cbrt_x, log_x]);
+
+        let result = crate::integrate::engine::integrate(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ x^(1/3)·log(x) dx must be elementary; got {result:?}"
+        );
+        let antideriv = result.unwrap().value;
+        let d = crate::diff::diff(antideriv, x, &pool).unwrap();
+        let ds = crate::simplify::engine::simplify(d.value, &pool).value;
+        for &xv in &[0.5_f64, 1.5, 4.0] {
+            let lhs = eval_f64_gapf(ds, x, xv, &pool);
+            let rhs = eval_f64_gapf(f, x, xv, &pool);
+            assert!(
+                (lhs - rhs).abs() < 1e-7,
+                "∫ x^(1/3)·log(x): d/dx F ≠ f at x={xv}: {lhs} vs {rhs}"
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_log_over_cbrt_x_elementary() {
+        // ∫ log(x)/x^{1/3} dx = (3/2)x^{2/3}·log(x) − (9/4)x^{2/3}.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let inv_cbrt = pool.pow(x, pool.rational(-1_i32, 3_i32)); // x^{-1/3}
+        let f = pool.mul(vec![inv_cbrt, pool.func("log", vec![x])]);
+        let result = crate::integrate::engine::integrate(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ log(x)/x^(1/3) dx must be elementary; got {result:?}"
+        );
+        let antideriv = result.unwrap().value;
+        let ds = crate::simplify::engine::simplify(
+            crate::diff::diff(antideriv, x, &pool).unwrap().value,
+            &pool,
+        )
+        .value;
+        for &xv in &[0.5_f64, 1.5, 4.0] {
+            let lhs = eval_f64_gapf(ds, x, xv, &pool);
+            let rhs = eval_f64_gapf(f, x, xv, &pool);
+            assert!((lhs - rhs).abs() < 1e-7, "x={xv}: {lhs} vs {rhs}");
+        }
+    }
+
+    #[test]
+    fn mixed_cbrt_nonsquarefree_times_log_x_elementary() {
+        // ∫ (x²)^{1/3}·log(x) dx, radicand x² non-squarefree → general MA basis
+        // delivers the base ∫x^{2/3} dx = (3/5)x^{5/3}; IBP wraps the log.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let rad = pool.func("cbrt", vec![x2]); // (x²)^{1/3}
+        let f = pool.mul(vec![rad, pool.func("log", vec![x])]);
+        let result = crate::integrate::engine::integrate(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ (x²)^(1/3)·log(x) dx must be elementary; got {result:?}"
+        );
+        let antideriv = result.unwrap().value;
+        let ds = crate::simplify::engine::simplify(
+            crate::diff::diff(antideriv, x, &pool).unwrap().value,
+            &pool,
+        )
+        .value;
+        for &xv in &[0.5_f64, 1.5, 4.0] {
+            // eval the integrand's cbrt(x²) via x^{2/3} equivalence.
+            let lhs = eval_f64_gapf(ds, x, xv, &pool);
+            let rhs = xv.powf(2.0 / 3.0) * xv.ln();
+            assert!((lhs - rhs).abs() < 1e-6, "x={xv}: {lhs} vs {rhs}");
+        }
+    }
+
+    #[test]
     fn gapc_sqrt_x_times_log_x_elementary() {
         // ∫ sqrt(x)·log(x) dx = (2x^{3/2}/3)·log(x) − 4x^{3/2}/9
         // IBP: c_1 = √x → P_1 = ∫√x dx = (2/3)x^{3/2} (via algebraic engine)

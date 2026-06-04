@@ -827,7 +827,8 @@ pub fn integrate(
     // engine handles the transcendental level and delegates base-field integrals
     // back to the algebraic engine, so only route to algebraic when there are NO
     // transcendental (exp/log) generators.
-    let has_algebraic = super::algebraic::contains_algebraic_subterm(expr, pool);
+    let has_algebraic = super::algebraic::contains_algebraic_subterm(expr, pool)
+        || super::algebraic::contains_algebraic_func_of_var(expr, var, pool);
     let has_transcendental = super::risch::contains_risch_form(expr, var, pool);
     if has_algebraic && !has_transcendental {
         return super::algebraic::integrate_algebraic(expr, var, pool);

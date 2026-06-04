@@ -405,6 +405,46 @@ mod tests {
     }
 
     #[test]
+    fn cbrt_func_routes_through_public_engine() {
+        // `cbrt(x²)` (function form) reaches the algebraic engine via the
+        // var-aware routing fix — previously the rule engine errored with
+        // "∫ cbrt(non-trivial arg)".
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.func("cbrt", vec![pool.pow(x, pool.integer(2_i32))]);
+        let res = crate::integrate::engine::integrate(f, x, &pool)
+            .expect("∫cbrt(x²) dx via public engine");
+        let g = res.value;
+        let h = 1e-6;
+        let dnum = (eval(g, x, 1.4 + h, &pool) - eval(g, x, 1.4 - h, &pool)) / (2.0 * h);
+        assert!(
+            (dnum - 1.4_f64.powf(2.0 / 3.0)).abs() < 1e-4,
+            "F = {}",
+            pool.display(g)
+        );
+    }
+
+    #[test]
+    fn cbrt_of_constant_still_rule_engine() {
+        // ∫ cbrt(5) dx = cbrt(5)·x — radicand is constant, must NOT route to the
+        // algebraic engine (no regression from the var-aware routing).
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.func("cbrt", vec![pool.integer(5_i32)]);
+        let res =
+            crate::integrate::engine::integrate(f, x, &pool).expect("∫cbrt(5) dx = cbrt(5)·x");
+        let g = res.value;
+        // d/dx of result at x=2 should equal cbrt(5).
+        let h = 1e-6;
+        let dnum = (eval(g, x, 2.0 + h, &pool) - eval(g, x, 2.0 - h, &pool)) / (2.0 * h);
+        assert!(
+            (dnum - 5.0_f64.cbrt()).abs() < 1e-4,
+            "F = {}",
+            pool.display(g)
+        );
+    }
+
+    #[test]
     fn degree_two_returns_none() {
         // √x is degree 2 — left to the genus-0 sqrt engine (returns None here).
         let pool = pool();
