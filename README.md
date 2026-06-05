@@ -27,6 +27,14 @@ A high-performance computer algebra system for Python built for both humans and 
 pip install alkahest
 ```
 
+**RL environments** (symbolic integration tasks for Prime Intellect / veRL): Python **≥ 3.10** required.
+
+```bash
+pip install "alkahest[rl]"
+```
+
+See [Reinforcement learning](#reinforcement-learning) and the [RL guide](docs/mdbook/src/rl.md).
+
 For an isolated environment (recommended when juggling versions or building from source):
 
 ```bash
@@ -592,6 +600,37 @@ Every top-level operation returns a `DerivedResult` with:
 - `.value` — the result expression
 - `.steps` — derivation log (list of rewrite rules applied)
 - `.certificate` — Lean 4 proof term, when available
+
+---
+
+## Reinforcement learning
+
+`alkahest.rl` exposes **verifiable RL environments** backed by the CAS. The core layer
+(`alkahest.rl.core`) is trainer-agnostic; domain environments live under
+`alkahest.rl.envs.*` and optionally integrate with [Prime Intellect Verifiers](https://github.com/PrimeIntellect-ai/verifiers).
+
+```bash
+pip install "alkahest[rl]"   # Python ≥ 3.10; adds verifiers + datasets
+```
+
+```python
+from alkahest.rl.envs.integration import IntegrationVerifier, load_environment
+
+verifier = IntegrationVerifier()
+# reward = verifier.verify(model_output, {"f_expr": f, "is_elementary": True, "pool": pool})
+
+env = load_environment(difficulty_tier=0, n_train=1000, n_eval=100, adaptive=True)
+```
+
+| Component | Description |
+|-----------|-------------|
+| `IntegrationVerifier` | Layered check: symbolic diff → e-graph → interval spot checks; rewards honest refusal on NonElementary integrands |
+| `load_environment()` | Returns a `verifiers.SingleTurnEnv` with Risch-tier curriculum |
+| `recipes/verl_integration_reward.py` | Drop-in reward for [veRL](https://github.com/volcengine/verl) |
+
+**Environments Hub:** after merging and a PyPI release, publish from
+`python/alkahest/rl/envs/integration/` with `prime env push`. Full checklist in the
+[RL guide](docs/mdbook/src/rl.md#hub-checklist).
 
 ---
 
