@@ -223,6 +223,28 @@ pub fn integrate_algebraic(
     let a_part = simplify(a_raw, pool).value;
     let b_part = simplify(b_raw, pool).value;
 
+    // MC1 (genus-1): for `y² = P(x)` with `P` a cubic, the rational part `A(x)` and
+    // the algebraic part `B(x)·y` couple into a *single* log (e.g.
+    // `∫[1/(2x) + √(x³+1)/(2x(x³+1))] dx = ⅓·log(√(x³+1)−1)`), so the combined
+    // integrand must go through the genus-1 capstone rather than integrating `A`
+    // and `B·y` separately.  `integrate_genus1_log` self-guards on genus/degree and
+    // verifies `d/dx F = integrand`, so a non-elementary integral (e.g.
+    // `∫dx/√(x³+1)`) returns `None` and falls through to the `NonElementary` path
+    // below; degree-2 (genus-0) curves also return `None` here, preserving the
+    // existing genus-0 engine.
+    if !is_zero_expr(b_part, pool) {
+        if let Some(f) = try_genus1_log(a_part, b_part, p_expr, var, pool) {
+            let simplified = simplify(f, pool);
+            log = log.merge(simplified.log);
+            log.push(RewriteStep::simple(
+                "genus1_elliptic_log",
+                expr,
+                simplified.value,
+            ));
+            return Ok(DerivedExpr::with_log(simplified.value, log));
+        }
+    }
+
     let zero = pool.integer(0_i32);
 
     // Step 4: Integrate the rational part ∫ A(x) dx
@@ -257,4 +279,123 @@ pub fn integrate_algebraic(
     ));
 
     Ok(DerivedExpr::with_log(simplified.value, log))
+}
+
+/// Attempt the genus-1 (MC1) capstone for an integrand `A(x) + B(x)·√P` over the
+/// curve `y² = P(x)`.  Parses `P` to a [`QPoly`] and `A`, `B` to rational
+/// functions over ℚ(x), assembles the combined integrand as an `AlgElem`
+/// `[A, B]` (`y = √P`), and calls [`genus1_log::integrate_genus1_log`], which
+/// returns the antiderivative only when it is elementary (cubic `P`, torsion
+/// residue divisor, `d/dx F = integrand` verified) — otherwise `None`.
+fn try_genus1_log(
+    a_part: ExprId,
+    b_part: ExprId,
+    p_expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    use crate::integrate::risch::alg_field::RatFn;
+    use crate::integrate::risch::poly_rde::expr_to_qpoly;
+    use crate::integrate::risch::rational_rde::expr_to_qrational;
+
+    let p_poly = expr_to_qpoly(p_expr, var, pool)?;
+    let a_rat = if is_zero_expr(a_part, pool) {
+        RatFn::int(0)
+    } else {
+        let (num, den) = expr_to_qrational(a_part, var, pool)?;
+        RatFn::new(num, den)
+    };
+    let (b_num, b_den) = expr_to_qrational(b_part, var, pool)?;
+    let integrand = vec![a_rat, RatFn::new(b_num, b_den)];
+    genus1_log::integrate_genus1_log(&p_poly, &integrand, var, pool)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kernel::Domain;
+
+    /// Numeric eval on the principal real branch (`sqrt`/`log` real).
+    fn eval(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> Option<f64> {
+        if expr == x {
+            return Some(xv);
+        }
+        match pool.get(expr) {
+            ExprData::Integer(n) => Some(n.0.to_f64()),
+            ExprData::Rational(r) => Some(r.0.to_f64()),
+            ExprData::Add(args) => args
+                .iter()
+                .try_fold(0.0, |s, &a| Some(s + eval(a, x, xv, pool)?)),
+            ExprData::Mul(args) => args
+                .iter()
+                .try_fold(1.0, |s, &a| Some(s * eval(a, x, xv, pool)?)),
+            ExprData::Pow { base, exp } => {
+                Some(eval(base, x, xv, pool)?.powf(eval(exp, x, xv, pool)?))
+            }
+            ExprData::Func { ref name, ref args } if args.len() == 1 => {
+                let v = eval(args[0], x, xv, pool)?;
+                match name.as_str() {
+                    "sqrt" => Some(v.sqrt()),
+                    "log" => Some(v.ln()),
+                    "exp" => Some(v.exp()),
+                    "cbrt" => Some(v.cbrt()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// `∫ [1/(2x) + √(x³+1)/(2x(x³+1))] dx = ⅓·log(√(x³+1) − 1)`, end-to-end
+    /// through the **public engine** (genus-1, `y² = x³+1`).
+    #[test]
+    fn genus1_elliptic_log_via_engine() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let x3p1 = pool.add(vec![pool.pow(x, pool.integer(3_i32)), pool.integer(1_i32)]);
+        let sq = pool.func("sqrt", vec![x3p1]);
+        let half = pool.pow(pool.integer(2_i32), pool.integer(-1_i32));
+        // A = 1/(2x)
+        let a_part = pool.mul(vec![half, pool.pow(x, pool.integer(-1_i32))]);
+        // B·√P = √(x³+1) / (2x(x³+1))
+        let denom = pool.mul(vec![pool.integer(2_i32), x, x3p1]);
+        let b_term = pool.mul(vec![sq, pool.pow(denom, pool.integer(-1_i32))]);
+        let integrand = pool.add(vec![a_part, b_term]);
+
+        let res = crate::integrate::engine::integrate(integrand, x, &pool)
+            .expect("genus-1 integrand should integrate elementarily");
+        let f = res.value;
+
+        // d/dx F = integrand at sample points where x³+1 > 0.
+        let df = simplify(crate::diff::diff(f, x, &pool).unwrap().value, &pool).value;
+        let mut checked = 0;
+        for &xv in &[0.7_f64, 1.5, 2.9] {
+            let lhs = eval(df, x, xv, &pool).unwrap();
+            let rhs = eval(integrand, x, xv, &pool).unwrap();
+            assert!(
+                (lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()),
+                "x={xv}: d/dx F = {lhs}, integrand = {rhs}\n  F = {}",
+                pool.display(f)
+            );
+            checked += 1;
+        }
+        assert!(checked >= 2);
+    }
+
+    /// `∫ dx/√(x³+1)` is a first-kind elliptic integral — non-elementary; the
+    /// public engine must still report `NonElementary` (the capstone's verify gate
+    /// declines, falling through to the genus-≥1 shortcut).
+    #[test]
+    fn genus1_first_kind_non_elementary_via_engine() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let x3p1 = pool.add(vec![pool.pow(x, pool.integer(3_i32)), pool.integer(1_i32)]);
+        let sq = pool.func("sqrt", vec![x3p1]);
+        let integrand = pool.pow(sq, pool.integer(-1_i32));
+        let res = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            matches!(res, Err(IntegrationError::NonElementary(_))),
+            "∫dx/√(x³+1) must be NonElementary, got {res:?}"
+        );
+    }
 }
