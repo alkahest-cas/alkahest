@@ -31,8 +31,8 @@ use super::integral_basis::{discriminant, is_integral, rational_singularities};
 use crate::poly::puiseux::{puiseux_at, PuiseuxSeries};
 
 /// A Laurent series in the place uniformizer `t = (x−α)^{1/e}` (integer
-/// `t`-exponents), truncated.
-type TS = BTreeMap<i64, Rational>;
+/// `t`-exponents), truncated.  Shared with [`super::residues`].
+pub(super) type TS = BTreeMap<i64, Rational>;
 
 /// Compute an integral basis `b₀, …, b_{n−1}` of `ℚ(x)(y)` over `ℚ[x]` for the
 /// monic minimal polynomial `F = Σ f_coeffs[j] yʲ`.  Returns the basis as
@@ -157,7 +157,7 @@ fn try_enlarge(
 // Laurent-series-in-t arithmetic (over ℚ)
 // ---------------------------------------------------------------------------
 
-fn branch_ts(s: &PuiseuxSeries) -> TS {
+pub(super) fn branch_ts(s: &PuiseuxSeries) -> TS {
     let e = s.ramification as i64;
     let mut ts = TS::new();
     for (exp, c) in &s.terms {
@@ -172,7 +172,7 @@ fn branch_ts(s: &PuiseuxSeries) -> TS {
 }
 
 /// Series of `b = Σⱼ bⱼ(x) yʲ` along a branch `y = bts(t)`, `x = α + t^e`.
-fn elem_ts(b: &AlgElem, alpha: &Rational, e: i64, u: i64, bts: &TS) -> TS {
+pub(super) fn elem_ts(b: &AlgElem, alpha: &Rational, e: i64, u: i64, bts: &TS) -> TS {
     let mut acc = TS::new();
     for (j, coeff) in b.iter().enumerate() {
         if coeff.numer().is_empty() {

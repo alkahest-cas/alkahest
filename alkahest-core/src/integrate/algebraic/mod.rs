@@ -22,6 +22,7 @@ pub mod hermite_curve;
 pub mod integral_basis;
 pub(super) mod parametrize;
 pub(super) mod poly_utils;
+pub mod residues;
 pub mod vanhoeij;
 
 use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
