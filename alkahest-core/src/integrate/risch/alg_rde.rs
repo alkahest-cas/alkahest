@@ -11,7 +11,7 @@
 //! the power basis `{1, α, …, α^{d−1}}`, into a **coupled** first-order linear ODE
 //! system `b' + M(x)·b = c`.  The pure-radical case (`αⁿ = a`) is *cyclic* and `M`
 //! is diagonal — solved component-wise by
-//! [`super::exp_case::try_radical_poly_rde`].  This module handles the **general
+//! `super::exp_case::try_radical_poly_rde`.  This module handles the **general
 //! (non-cyclic)** `α` — nested / compositum radicals such as `√x + √(x+1)` — where
 //! `M` genuinely couples the components.
 //!
