@@ -2,7 +2,7 @@
 
 Alkahest is a high-performance computer algebra system with a Rust core and Python API.
 
-**Install:** `pip install alkahest` from [PyPI](https://pypi.org/project/alkahest/) (**Python 3.9–3.13**). Default wheels include vendored egglog (`egraph`) and the Gröbner solver (`groebner`) — `alkahest.solve` and related APIs work out of the box. LLVM JIT, Cranelift, and `parallel` are omitted; Linux **`linux_x86_64`** **`+jit`** / **`+full`** wheels (JIT and parallel) ship on [GitHub Releases](https://github.com/alkahest-cas/alkahest/releases). The [Getting started](./getting-started.md) chapter has full install notes (venv, `LD_LIBRARY_PATH`, building from source).
+**Install:** `pip install alkahest` from [PyPI](https://pypi.org/project/alkahest/) (**Python 3.9–3.13**). Optional RL environments: `pip install "alkahest[rl]"` (**Python ≥ 3.10**). Default wheels include vendored egglog (`egraph`) and the Gröbner solver (`groebner`) — `alkahest.solve` and related APIs work out of the box. LLVM JIT, Cranelift, and `parallel` are omitted; Linux **`linux_x86_64`** **`+jit`** / **`+full`** wheels (JIT and parallel) ship on [GitHub Releases](https://github.com/alkahest-cas/alkahest/releases). The [Getting started](./getting-started.md) chapter has full install notes (venv, `LD_LIBRARY_PATH`, building from source). See [Reinforcement learning](./rl.md) for verifiable RL environments.
 
 ## What it is
 

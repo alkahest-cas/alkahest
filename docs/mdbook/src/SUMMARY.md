@@ -16,6 +16,7 @@
 - [ODE and DAE modeling](./ode-dae.md)
 - [Polynomial system solving](./solving.md)
 - [Interoperability](./interop.md)
+- [Reinforcement learning](./rl.md)
 - [Derivation logs](./derivations.md)
 - [Lean certificates](./lean-certs.md)
 - [Error handling](./errors.md)

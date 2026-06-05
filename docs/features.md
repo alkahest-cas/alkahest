@@ -174,6 +174,18 @@ Current stable feature surface.
 - Nightly CI runs with `--competitors` flag
 - Agent benchmark suite: 17 tasks across 6 categories comparing alkahest, SymPy, and Mathematica skill guides
 
+## Reinforcement learning (`alkahest.rl`)
+
+Optional Python extra: `pip install "alkahest[rl]"` (Python ≥ 3.10; pulls `verifiers` + `datasets`).
+
+- **Core** (`alkahest.rl.core`): `BaseGenerator`, `BaseVerifier`, `Rubric`, `CurriculumScheduler` — framework-agnostic
+- **Integration env** (`alkahest.rl.envs.integration`): Risch-tier task grammar, layered `IntegrationVerifier` (simplify → e-graph → interval spot checks), Prime Intellect `load_environment()` entry point
+- Hard-negative NonElementary samples train honest refusal; curriculum scheduler advances tiers on pass rate
+- veRL recipe: `recipes/verl_integration_reward.py`
+- Environments Hub manifest: `python/alkahest/rl/envs/integration/` (`prime env push`)
+
+See the [RL guide](./mdbook/src/rl.md) for install, API, and Hub publishing steps.
+
 ## Planned
 
 - AMD ROCm / `amdgcn` GPU codegen (hardware-blocked)

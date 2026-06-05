@@ -2,12 +2,25 @@
 name = "alkahest-symbolic-integration"
 version = "0.1.0"
 description = "Symbolic integration RL environment backed by the Risch algorithm"
+readme = "README.md"
+requires-python = ">=3.10"
 dependencies = [
     "verifiers>=0.1.5",
     "alkahest>=3.2.0",
     "datasets>=2.0",
 ]
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["README.md"]
+
 [tool.verifiers]
 tags = ["math", "reasoning", "single-turn", "train", "eval", "symbolic"]
 entrypoint = "alkahest.rl.envs.integration.env:load_environment"
+
+[tool.verifiers.eval]
+num_examples = 20
+rollouts_per_example = 3
