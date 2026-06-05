@@ -30,7 +30,7 @@ env = load_environment(
 )
 
 # Prime Intellect CLI
-# prime eval run alkahest-cas/symbolic-integration -m <model>
+# prime eval run alkahest/alkahest-symbolic-integration -m <model>
 ```
 
 ## Configuration

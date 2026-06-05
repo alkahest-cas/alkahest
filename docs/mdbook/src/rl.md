@@ -126,8 +126,8 @@ The integration environment includes Hub metadata at
 After install, users run:
 
 ```bash
-prime env install alkahest-cas/symbolic-integration   # org/name after publish
-prime eval run alkahest-cas/symbolic-integration -m <model>
+prime env install alkahest/alkahest-symbolic-integration
+prime eval run alkahest/alkahest-symbolic-integration -m <model>
 ```
 
 ### Hub checklist
@@ -158,7 +158,7 @@ prime eval run alkahest-cas/symbolic-integration -m <model>
 
 5. **Run a Hub eval** against a hosted model:
    ```bash
-   prime eval run alkahest-cas/symbolic-integration -m gpt-4.1-mini
+   prime eval run alkahest/alkahest-symbolic-integration -m <model>
    ```
 
 6. **Iterate** — bump `version` in `pyproject.toml` (or use `--auto-bump`) for each
