@@ -5,9 +5,12 @@
 //! logarithmic part's residue divisor is elementary iff its class in `Pic⁰` is
 //! **torsion**; by **Mazur's theorem** the torsion of `E(ℚ)` has order ≤ 12, so
 //! testing `m·S = O` for `m ∈ 1..=12` is a *complete* decision.  This module
-//! provides the short-Weierstrass model `y² = x³ + a·x + b`, the group law over
-//! `ℚ`, and the torsion-order test that genus-1 FIND-ORDER calls once the residue
-//! divisor's Abel–Jacobi image `S ∈ E(ℚ)` is known.
+//! provides the short-Weierstrass model `y² = x³ + a·x + b` (incl. reduction of a
+//! cubic via [`short_weierstrass`] or a quartic via [`weierstrass_from_quartic`]),
+//! the group law over `ℚ`, the torsion-order test ([`EllipticCurve::order`]) that
+//! genus-1 FIND-ORDER calls, and — once the order `m` is known — **Miller's
+//! algorithm** ([`EllipticCurve::miller_function`]) that *constructs* the actual
+//! log argument `u` with `div(u) = m·(P) − m·(O)` for the term `(1/m)·log(u)`.
 //!
 //! Everything here is exact rational arithmetic; the curve is required smooth
 //! (nonzero discriminant).
@@ -224,6 +227,134 @@ pub fn weierstrass_from_quartic(
     Some((e, map))
 }
 
+/// A factor of an elliptic function: the **vertical** line `x − x₀`, or the
+/// **chord/tangent** line `y − (λ·x + ν)`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EllFactor {
+    Vertical(Rational),
+    Line(Rational, Rational),
+}
+
+/// A function on an elliptic curve as a quotient of line factors `∏num / ∏den`.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct EllipticFunction {
+    pub num: Vec<EllFactor>,
+    pub den: Vec<EllFactor>,
+}
+
+impl EllipticCurve {
+    /// **Miller's algorithm**: the function `f_{m,P}` with divisor
+    /// `m·(P) − ([m]P) − (m−1)·(O)`.  When `P` has order `m` (so `[m]P = O`) this
+    /// is exactly the **log argument** `u` with `div(u) = m·(P) − m·(O)` — the
+    /// `u` in the logarithmic term `(1/m)·log(u)`.  `None` if a step degenerates
+    /// unexpectedly.
+    pub fn miller_function(&self, p: &Point, m: u32) -> Option<EllipticFunction> {
+        if m == 0 {
+            return Some(EllipticFunction::default());
+        }
+        let bits: Vec<bool> = (0..32).rev().map(|i| (m >> i) & 1 == 1).collect();
+        let first = bits.iter().position(|&b| b)?; // MSB
+        let mut f = EllipticFunction::default();
+        let mut t = p.clone();
+        for &bit in &bits[first + 1..] {
+            // f ← f² · g_{T,T},  T ← 2T.
+            f = f.squared();
+            let (g, two_t) = self.double_factor(&t);
+            f.compose(g);
+            t = two_t;
+            if bit {
+                // f ← f · g_{T,P},  T ← T + P.
+                let (g, tp) = self.add_factor(&t, p);
+                f.compose(g);
+                t = tp;
+            }
+        }
+        f.cancel();
+        Some(f)
+    }
+
+    /// `g_{T,T} = ℓ_tangent(T) / v_{2T}` and `2T`.
+    fn double_factor(&self, t: &Point) -> (EllipticFunction, Point) {
+        let Point::Affine(x, y) = t else {
+            return (EllipticFunction::default(), Point::Infinity);
+        };
+        if *y == 0 {
+            // 2-torsion: the tangent is vertical, 2T = O (no v factor).
+            return (
+                EllipticFunction::num1(EllFactor::Vertical(x.clone())),
+                Point::Infinity,
+            );
+        }
+        let lambda =
+            (Rational::from(3) * x.clone() * x + &self.a) / (Rational::from(2) * y.clone());
+        let nu = y.clone() - lambda.clone() * x;
+        let two_t = self.add(t, t);
+        let mut g = EllipticFunction::num1(EllFactor::Line(lambda, nu));
+        if let Point::Affine(x2, _) = &two_t {
+            g.den.push(EllFactor::Vertical(x2.clone()));
+        }
+        (g, two_t)
+    }
+
+    /// `g_{T,P} = ℓ_{T,P} / v_{T+P}` and `T + P`.
+    fn add_factor(&self, t: &Point, p: &Point) -> (EllipticFunction, Point) {
+        let (Point::Affine(x1, y1), Point::Affine(x2, y2)) = (t, p) else {
+            // One is O: g = 1.
+            let sum = self.add(t, p);
+            return (EllipticFunction::default(), sum);
+        };
+        if x1 == x2 {
+            if (y1.clone() + y2) == 0 {
+                // P = −T ⇒ T+P = O, line is vertical, no v factor.
+                return (
+                    EllipticFunction::num1(EllFactor::Vertical(x1.clone())),
+                    Point::Infinity,
+                );
+            }
+            return self.double_factor(t); // T = P
+        }
+        let lambda = (y2.clone() - y1) / (x2.clone() - x1);
+        let nu = y1.clone() - lambda.clone() * x1;
+        let tp = self.add(t, p);
+        let mut g = EllipticFunction::num1(EllFactor::Line(lambda, nu));
+        if let Point::Affine(x3, _) = &tp {
+            g.den.push(EllFactor::Vertical(x3.clone()));
+        }
+        (g, tp)
+    }
+}
+
+impl EllipticFunction {
+    fn num1(f: EllFactor) -> Self {
+        EllipticFunction {
+            num: vec![f],
+            den: Vec::new(),
+        }
+    }
+    fn squared(&self) -> Self {
+        EllipticFunction {
+            num: [self.num.clone(), self.num.clone()].concat(),
+            den: [self.den.clone(), self.den.clone()].concat(),
+        }
+    }
+    fn compose(&mut self, g: EllipticFunction) {
+        self.num.extend(g.num);
+        self.den.extend(g.den);
+    }
+    /// Cancel matching factors between numerator and denominator.
+    fn cancel(&mut self) {
+        let mut i = 0;
+        while i < self.num.len() {
+            if let Some(j) = self.den.iter().position(|d| *d == self.num[i]) {
+                self.num.remove(i);
+                self.den.remove(j);
+            } else {
+                i += 1;
+            }
+        }
+    }
+}
+
 fn poly_mul_small(a: &QPoly, b: &QPoly) -> QPoly {
     if a.is_empty() || b.is_empty() {
         return Vec::new();
@@ -324,5 +455,34 @@ mod tests {
         // The branch point (2,0) (a root ≠ r) maps to 2-torsion (Y=0).
         let (_, y2) = map(&r(2), &r(0));
         assert_eq!(y2, r(0));
+    }
+
+    /// Miller log-argument construction on y²=x³+1:
+    /// `(−1,0)` is 2-torsion ⇒ `f_{2,P} = x + 1` (div = 2(−1,0) − 2(O));
+    /// `(0,1)` has order 3 ⇒ `f_{3,P} = y − 1` (div = 3(0,1) − 3(O)).
+    #[test]
+    fn miller_log_arguments() {
+        let e = EllipticCurve::new(r(0), r(1));
+        // f_{2,(−1,0)} = (x − (−1)) = x + 1.
+        let f2 = e.miller_function(&pt(-1, 0), 2).expect("miller");
+        assert_eq!(f2.num, vec![EllFactor::Vertical(r(-1))]);
+        assert!(f2.den.is_empty());
+        // f_{3,(0,1)} = (y − (0·x + 1)) = y − 1.
+        let f3 = e.miller_function(&pt(0, 1), 3).expect("miller");
+        assert_eq!(f3.num, vec![EllFactor::Line(r(0), r(1))]);
+        assert!(f3.den.is_empty());
+    }
+
+    /// Miller on a higher-order point: `(2,3)` has order 6 on y²=x³+1; the
+    /// running point ends at `[6]P = O`, and `f_{6,P}` is a well-formed quotient.
+    #[test]
+    fn miller_order_six_terminates() {
+        let e = EllipticCurve::new(r(0), r(1));
+        assert_eq!(e.mul(6, &pt(2, 3)), Point::Infinity); // [6]P = O
+        let f = e.miller_function(&pt(2, 3), 6).expect("miller");
+        // After cancellation the function is nonempty (a genuine 6-torsion log
+        // argument) and shares no factor between num and den.
+        assert!(!f.num.is_empty());
+        assert!(f.num.iter().all(|n| !f.den.contains(n)));
     }
 }
