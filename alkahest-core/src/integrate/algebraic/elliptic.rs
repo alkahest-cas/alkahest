@@ -273,6 +273,36 @@ impl EllipticCurve {
         Some(f)
     }
 
+    /// **General Miller**: the function with divisor `D = Σ nₚ·(P)` for a
+    /// *principal* `D` (degree 0 and `Σ nₚ·P = O`).  Built by folding the points
+    /// into a running Abel–Jacobi accumulator, multiplying by the chord/vertical
+    /// factor at each step (and its inverse for poles).  `None` if `D` is not
+    /// principal (the accumulator does not return to `O`).
+    pub fn general_miller(&self, divisor: &[(Point, i64)]) -> Option<EllipticFunction> {
+        let mut f = EllipticFunction::default();
+        let mut acc = Point::Infinity;
+        for (p, n) in divisor {
+            for _ in 0..n.unsigned_abs() {
+                if *n > 0 {
+                    let (g, new_acc) = self.add_factor(&acc, p);
+                    f.compose(g);
+                    acc = new_acc;
+                } else {
+                    // Incorporate −(P): (acc)−(O)−(P) ~ (acc−P)−(O) via 1/g_{acc−P,P}.
+                    let am = self.add(&acc, &self.neg(p));
+                    let (g, _back) = self.add_factor(&am, p);
+                    f.compose_inverse(g);
+                    acc = am;
+                }
+            }
+        }
+        f.cancel();
+        if acc != Point::Infinity {
+            return None; // divisor not principal
+        }
+        Some(f)
+    }
+
     /// `g_{T,T} = ℓ_tangent(T) / v_{2T}` and `2T`.
     fn double_factor(&self, t: &Point) -> (EllipticFunction, Point) {
         let Point::Affine(x, y) = t else {
@@ -340,6 +370,10 @@ impl EllipticFunction {
     fn compose(&mut self, g: EllipticFunction) {
         self.num.extend(g.num);
         self.den.extend(g.den);
+    }
+    fn compose_inverse(&mut self, g: EllipticFunction) {
+        self.num.extend(g.den);
+        self.den.extend(g.num);
     }
     /// Cancel matching factors between numerator and denominator.
     fn cancel(&mut self) {
@@ -484,5 +518,18 @@ mod tests {
         // argument) and shares no factor between num and den.
         assert!(!f.num.is_empty());
         assert!(f.num.iter().all(|n| !f.den.contains(n)));
+    }
+
+    /// General Miller on the principal divisor `3(0,1) − 3(O)` of y²=x³+1
+    /// reproduces `y − 1` (= `f_{3,(0,1)}`).
+    #[test]
+    fn general_miller_multipoint() {
+        let e = EllipticCurve::new(r(0), r(1));
+        let div = [(pt(0, 1), 3), (Point::Infinity, -3)];
+        let f = e.general_miller(&div).expect("principal");
+        assert_eq!(f.num, vec![EllFactor::Line(r(0), r(1))]); // y − 1
+        assert!(f.den.is_empty());
+        // A non-principal divisor returns None.
+        assert!(e.general_miller(&[(pt(0, 1), 1), (Point::Infinity, -1)]).is_none());
     }
 }

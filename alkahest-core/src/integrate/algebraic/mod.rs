@@ -19,6 +19,7 @@
 pub(super) mod decompose;
 pub mod elliptic;
 pub mod find_order;
+pub mod genus1_log;
 pub(super) mod genus_zero;
 pub mod hermite_curve;
 pub mod integral_basis;
