@@ -166,6 +166,77 @@ pub fn short_weierstrass(
     Some((curve, map))
 }
 
+/// Reduce a genus-1 quartic `y² = q(x)` (deg `q = 4`) with a **rational root**
+/// `r` to a short-Weierstrass cubic, returning the curve and the birational
+/// point map for places with `x ≠ r`:
+///
+/// ```text
+///   q(x) = (x − r)·c(x),   u = 1/(x − r),   Y = y/(x − r)²,
+///   Y² = C(u) := u³·c(r + 1/u)   (a cubic in u),
+/// ```
+/// then composed with [`short_weierstrass`] of `C`.  The place at `x = r`
+/// (`(r,0)`) maps to `u = ∞` = the origin `O` and must be handled by the caller.
+#[allow(clippy::type_complexity)]
+pub fn weierstrass_from_quartic(
+    q: &QPoly,
+    r: &Rational,
+) -> Option<(
+    EllipticCurve,
+    impl Fn(&Rational, &Rational) -> (Rational, Rational),
+)> {
+    let q = trim(q.clone());
+    if degree(&q) != 4 {
+        return None;
+    }
+    // c = q / (x − r)  (synthetic division; remainder must be 0).
+    let mut c = vec![Rational::from(0); 4];
+    c[3] = q[4].clone();
+    c[2] = q[3].clone() + r.clone() * &c[3];
+    c[1] = q[2].clone() + r.clone() * &c[2];
+    c[0] = q[1].clone() + r.clone() * &c[1];
+    if q[0].clone() + r.clone() * &c[0] != 0 {
+        return None; // r is not a root of q
+    }
+    // C(u) = Σᵢ cᵢ·(r·u + 1)^i·u^{3−i}.
+    let lin = vec![Rational::from(1), r.clone()]; // r·u + 1
+    let mut pw = vec![Rational::from(1)]; // (r·u+1)^0
+    let mut big_c = vec![Rational::from(0); 4];
+    for (i, ci) in c.iter().enumerate() {
+        // term = cᵢ · pw · u^{3−i}.
+        for (j, pj) in pw.iter().enumerate() {
+            let k = j + (3 - i);
+            if k < big_c.len() {
+                big_c[k] += ci.clone() * pj;
+            }
+        }
+        if i < 3 {
+            pw = poly_mul_small(&pw, &lin);
+        }
+    }
+    let (e, map_c) = short_weierstrass(&big_c)?;
+    let rr = r.clone();
+    let map = move |x: &Rational, y: &Rational| -> (Rational, Rational) {
+        let d = x.clone() - &rr;
+        let u = Rational::from(1) / d.clone();
+        let yy = y.clone() / (d.clone() * &d);
+        map_c(&u, &yy)
+    };
+    Some((e, map))
+}
+
+fn poly_mul_small(a: &QPoly, b: &QPoly) -> QPoly {
+    if a.is_empty() || b.is_empty() {
+        return Vec::new();
+    }
+    let mut r = vec![Rational::from(0); a.len() + b.len() - 1];
+    for (i, ai) in a.iter().enumerate() {
+        for (j, bj) in b.iter().enumerate() {
+            r[i + j] += ai.clone() * bj;
+        }
+    }
+    r
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -239,5 +310,19 @@ mod tests {
         // x=0 ⇒ y²=1 ⇒ (0,1) on y²=c2(x); its image lies on E2.
         let (xx, yy) = map2(&r(0), &r(1));
         assert!(e2.contains(&Point::Affine(xx, yy)));
+    }
+
+    /// Quartic reduction: y² = (x²−1)(x²−4) = x⁴ − 5x² + 4, rational root r=1.
+    /// The point (0,2) (2² = 4 = q(0)) maps onto the reduced cubic.
+    #[test]
+    fn quartic_reduction() {
+        let q = vec![r(4), r(0), r(-5), r(0), r(1)];
+        let (e, map) = weierstrass_from_quartic(&q, &r(1)).expect("quartic with root");
+        assert!(e.is_smooth());
+        let (xx, yy) = map(&r(0), &r(2));
+        assert!(e.contains(&Point::Affine(xx, yy)));
+        // The branch point (2,0) (a root ≠ r) maps to 2-torsion (Y=0).
+        let (_, y2) = map(&r(2), &r(0));
+        assert_eq!(y2, r(0));
     }
 }

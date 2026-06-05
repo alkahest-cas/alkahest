@@ -9,10 +9,11 @@
 //!
 //! * **genus 0** — every degree-0 divisor is principal, so `N = 1` always
 //!   (the rational-parametrization win, seen from the divisor side).
-//! * **genus 1** (`y²=cubic`) — **implemented**: map the residue divisor to
-//!   `E(ℚ)` (Abel–Jacobi, [`super::elliptic`]) and read off the order of its
-//!   class; by **Mazur** a rational torsion point has order ≤ 12, so this is a
-//!   *complete* decision — `Principal{N}` if torsion, `NonElementary` if not.
+//! * **genus 1** (`y²=cubic` or `y²=quartic` with a rational root) — **implemented**:
+//!   map the residue divisor to `E(ℚ)` (Abel–Jacobi, [`super::elliptic`]) and read
+//!   off the order of its class; by **Mazur** a rational torsion point has order
+//!   ≤ 12, so this is a *complete* decision — `Principal{N}` if torsion,
+//!   `NonElementary` if not.
 //! * **genus ≥ 2** — no uniform bound; the Weil-bound reduction-mod-good-prime
 //!   search is best-effort — currently `NotDecided`.
 //!
@@ -24,7 +25,7 @@ use rug::{Integer, Rational};
 
 use super::super::risch::poly_rde::{degree, poly_deriv, trim, QPoly};
 use super::super::risch::rational_rde::poly_gcd;
-use super::elliptic::{short_weierstrass, Point};
+use super::elliptic::{short_weierstrass, weierstrass_from_quartic, EllipticCurve, Point};
 use super::residues::{residue_sum, Residue};
 
 /// Result of FIND-ORDER on a residue divisor.
@@ -83,21 +84,59 @@ pub fn find_order(n: usize, a: &QPoly, divisor: &[Residue]) -> FindOrder {
         // Genus 0: every degree-0 divisor is principal.
         Some(0) => FindOrder::Principal { order: 1 },
         // Genus 1: decide via the elliptic torsion of the Abel–Jacobi image
-        // (Mazur's bound makes this complete for `y² = cubic`).
-        Some(1) => genus1_cubic(n, a, divisor).unwrap_or(FindOrder::NotDecided),
+        // (Mazur's bound makes this complete for `y² = cubic`/`quartic`).
+        Some(1) => genus1(n, a, divisor).unwrap_or(FindOrder::NotDecided),
         // Genus ≥ 2: the Weil-bound reduction-mod-prime search — not yet done.
         _ => FindOrder::NotDecided,
     }
 }
 
-/// Genus-1 FIND-ORDER for `y² = a(x)` with `a` a cubic: map the residue divisor
+/// Genus-1 FIND-ORDER for `y² = a(x)` (cubic or quartic): map the residue divisor
 /// to `E(ℚ)` (Abel–Jacobi), then read off the order of its class.  `None` when
-/// outside this scope (not `y²=cubic`, or a place not on `E(ℚ)`).
-fn genus1_cubic(n: usize, a: &QPoly, divisor: &[Residue]) -> Option<FindOrder> {
-    if n != 2 || degree(&trim(a.clone())) != 3 {
+/// outside scope (degree ≠ 3,4; quartic without a rational root or with a nonzero
+/// residue at infinity; or a place not on `E(ℚ)`).
+fn genus1(n: usize, a: &QPoly, divisor: &[Residue]) -> Option<FindOrder> {
+    if n != 2 {
         return None;
     }
-    let (e, map) = short_weierstrass(a)?;
+    let a = trim(a.clone());
+    // Build the curve `E` and a place-mapper `φ`: place ↦ Some(point on E), or
+    // None when the place maps to the origin O (and drops out of the sum).
+    #[allow(clippy::type_complexity)]
+    let (e, mapper): (EllipticCurve, Box<dyn Fn(&Residue) -> Option<Point>>) = match degree(&a) {
+        3 => {
+            let (e, map) = short_weierstrass(&a)?;
+            // Cubic: ∞ is the origin O; finite places map directly.
+            let f = move |r: &Residue| -> Option<Point> {
+                if r.at_infinity {
+                    None
+                } else {
+                    let (x, y) = map(&r.point, &r.y_coord);
+                    Some(Point::Affine(x, y))
+                }
+            };
+            (e, Box::new(f))
+        }
+        4 => {
+            // Quartic: handled only with no residue at infinity and a rational
+            // root (the place at x=root maps to O).
+            if divisor.iter().any(|r| r.at_infinity && r.value != 0) {
+                return None;
+            }
+            let root = first_rational_root(&a)?;
+            let (e, map) = weierstrass_from_quartic(&a, &root)?;
+            let f = move |r: &Residue| -> Option<Point> {
+                if r.at_infinity || r.point == root {
+                    None
+                } else {
+                    let (x, y) = map(&r.point, &r.y_coord);
+                    Some(Point::Affine(x, y))
+                }
+            };
+            (e, Box::new(f))
+        }
+        _ => return None,
+    };
 
     // Scale residues to a primitive integer divisor: coeffs = value·L / g.
     let mut l = Integer::from(1);
@@ -120,19 +159,16 @@ fn genus1_cubic(n: usize, a: &QPoly, divisor: &[Residue]) -> Option<FindOrder> {
         return Some(FindOrder::Principal { order: 1 }); // all residues zero
     }
 
-    // S = Σ (coeff/g) · φ(place).  Finite places map onto E; the (unique, odd
-    // degree) place at infinity is the origin O and contributes nothing.
+    // S = Σ (coeffₚ/g) · φ(P)  in E(ℚ).
     let mut s = Point::Infinity;
     for (r, c) in divisor.iter().zip(&int_coeffs) {
-        if r.at_infinity {
-            continue;
-        }
-        let coeff = (c.clone() / &g).to_i64()?;
-        let (xx, yy) = map(&r.point, &r.y_coord);
-        let p = Point::Affine(xx, yy);
+        let Some(p) = mapper(r) else {
+            continue; // place maps to O
+        };
         if !e.contains(&p) {
             return None; // place not on E(ℚ): outside the rational-image scope
         }
+        let coeff = (c.clone() / &g).to_i64()?;
         let term = if coeff >= 0 {
             e.mul(coeff as u64, &p)
         } else {
@@ -147,6 +183,66 @@ fn genus1_cubic(n: usize, a: &QPoly, divisor: &[Residue]) -> Option<FindOrder> {
         // Non-torsion class ⇒ no multiple is principal ⇒ no elementary log part.
         None => FindOrder::NonElementary,
     })
+}
+
+/// A rational root of `p ∈ ℚ[x]` (rational-root theorem), if any.
+fn first_rational_root(p: &QPoly) -> Option<Rational> {
+    let p = trim(p.clone());
+    if degree(&p) < 1 {
+        return None;
+    }
+    if p[0] == 0 {
+        return Some(Rational::from(0));
+    }
+    let mut den_lcm = Integer::from(1);
+    for c in &p {
+        den_lcm = den_lcm.lcm(c.denom());
+    }
+    let ints: Vec<Integer> = p
+        .iter()
+        .map(|c| {
+            (c.clone() * Rational::from(den_lcm.clone()))
+                .numer()
+                .clone()
+        })
+        .collect();
+    let a0 = ints[0].clone().abs();
+    let an = ints[ints.len() - 1].clone().abs();
+    for pn in divisors(&a0) {
+        for qn in &divisors(&an) {
+            for sign in [1i32, -1] {
+                let cand = Rational::from((Integer::from(sign) * pn.clone(), qn.clone()));
+                let mut acc = Rational::from(0);
+                for c in ints.iter().rev() {
+                    acc = acc * &cand + Rational::from(c.clone());
+                }
+                if acc == 0 {
+                    return Some(cand);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn divisors(n: &Integer) -> Vec<Integer> {
+    let n = n.clone().abs();
+    if n == 0 {
+        return vec![Integer::from(1)];
+    }
+    let mut ds = Vec::new();
+    let mut d = Integer::from(1);
+    while Integer::from(&d * &d) <= n {
+        if n.is_divisible(&d) {
+            ds.push(d.clone());
+            let o = n.clone() / &d;
+            if o != d {
+                ds.push(o);
+            }
+        }
+        d += 1;
+    }
+    ds
 }
 
 fn gcd_i64(mut a: i64, mut b: i64) -> i64 {
@@ -249,5 +345,16 @@ mod tests {
         let a = qp(&[1, 0, 0, 1]);
         let div = [place(-1, 0, 1, false, 2)]; // sum = 1 ≠ 0
         assert_eq!(find_order(2, &a, &div), FindOrder::NotDecided);
+    }
+
+    /// Genus-1 **quartic** `y²=(x²−1)(x²−4)=x⁴−5x²+4` (rational roots ±1,±2).
+    /// Divisor `(1,0) − (2,0)` of two branch points (each 2-torsion) ⇒ the class
+    /// is 2-torsion ⇒ `Principal{2}`.
+    #[test]
+    fn genus1_quartic_order_two() {
+        let a = qp(&[4, 0, -5, 0, 1]);
+        assert_eq!(genus(2, &a), Some(1));
+        let div = [place(1, 0, 1, false, 2), place(2, 0, -1, false, 2)];
+        assert_eq!(find_order(2, &a, &div), FindOrder::Principal { order: 2 });
     }
 }
