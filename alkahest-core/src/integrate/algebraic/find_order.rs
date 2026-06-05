@@ -9,20 +9,24 @@
 //!
 //! * **genus 0** — every degree-0 divisor is principal, so `N = 1` always
 //!   (the rational-parametrization win, seen from the divisor side).
-//! * **genus 1** — torsion over ℚ has order ≤ 12 (**Mazur**), so `N ∈ 1..=12` is
-//!   a *complete* test; the genuine elliptic frontier (Weierstrass form + point
-//!   arithmetic) — currently `NotDecided`.
+//! * **genus 1** (`y²=cubic` or `y²=quartic` with a rational root) — **implemented**:
+//!   map the residue divisor to `E(ℚ)` (Abel–Jacobi, [`super::elliptic`]) and read
+//!   off the order of its class; by **Mazur** a rational torsion point has order
+//!   ≤ 12, so this is a *complete* decision — `Principal{N}` if torsion,
+//!   `NonElementary` if not.
 //! * **genus ≥ 2** — no uniform bound; the Weil-bound reduction-mod-good-prime
 //!   search is best-effort — currently `NotDecided`.
 //!
-//! This module provides the **genus** computation (superelliptic curves) and the
-//! genus-graded decision with **genus 0 complete** and the necessary conditions
-//! (degree-0 residue divisor; rational residues).  Sound: only `Principal`/
-//! `NonElementary` verdicts are asserted; everything uncertain is `NotDecided`.
+//! Sound: only `Principal`/`NonElementary` verdicts are asserted; anything
+//! uncertain (incomplete divisor with missing algebraic places, `y²=quartic`,
+//! genus ≥ 2) is `NotDecided`.
+
+use rug::{Integer, Rational};
 
 use super::super::risch::poly_rde::{degree, poly_deriv, trim, QPoly};
 use super::super::risch::rational_rde::poly_gcd;
-use super::residues::{residue_sum, Residue};
+use super::elliptic::{short_weierstrass, weierstrass_from_quartic, EllipticCurve, Point};
+use super::residues::{residue_sum, PlacedResidue, Residue};
 
 /// Result of FIND-ORDER on a residue divisor.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,6 +70,11 @@ pub fn genus(n: usize, a: &QPoly) -> Option<usize> {
 /// Decide the order of the residue divisor's class — the FIND-ORDER step.
 ///
 /// `divisor` is the residue divisor from [`super::residues::residue_divisor`].
+/// This entry decides **genus 0** (and the degree-0 / empty-divisor cases); the
+/// **genus-1** Abel–Jacobi torsion decision needs each place's `y`-coordinate,
+/// which the public [`Residue`] does not carry, so it is reached through the
+/// internal `find_order_placed` (used by the genus-1 integrator).  Genus ≥ 1
+/// here therefore returns [`FindOrder::NotDecided`].
 pub fn find_order(n: usize, a: &QPoly, divisor: &[Residue]) -> FindOrder {
     // Necessary: a complete residue divisor has degree 0 (Σ res = 0).  A nonzero
     // sum means places are missing (algebraic) — we cannot conclude.
@@ -79,11 +88,189 @@ pub fn find_order(n: usize, a: &QPoly, divisor: &[Residue]) -> FindOrder {
     match genus(n, a) {
         // Genus 0: every degree-0 divisor is principal.
         Some(0) => FindOrder::Principal { order: 1 },
-        // Genus ≥ 1: the torsion decision (Mazur for genus 1, Weil for ≥ 2) is
-        // the elliptic/Jacobian frontier — not yet implemented.
-        Some(_) => FindOrder::NotDecided,
-        None => FindOrder::NotDecided,
+        // Genus ≥ 1: the torsion decision needs `y`-coordinates — see
+        // [`find_order_placed`].
+        _ => FindOrder::NotDecided,
     }
+}
+
+/// FIND-ORDER on a divisor whose places carry `y`-coordinates ([`PlacedResidue`]),
+/// enabling the **genus-1** Abel–Jacobi torsion decision (Mazur ⇒ complete for
+/// `y² = cubic`/`quartic`).  Internal entry for the genus-1 integrator.
+pub(crate) fn find_order_placed(n: usize, a: &QPoly, divisor: &[PlacedResidue]) -> FindOrder {
+    if divisor
+        .iter()
+        .fold(Rational::from(0), |s, r| s + &r.residue.value)
+        != 0
+    {
+        return FindOrder::NotDecided;
+    }
+    if divisor.iter().all(|r| r.residue.value == 0) {
+        return FindOrder::Principal { order: 1 };
+    }
+    match genus(n, a) {
+        Some(0) => FindOrder::Principal { order: 1 },
+        Some(1) => genus1(n, a, divisor).unwrap_or(FindOrder::NotDecided),
+        _ => FindOrder::NotDecided,
+    }
+}
+
+/// Genus-1 FIND-ORDER for `y² = a(x)` (cubic or quartic): map the residue divisor
+/// to `E(ℚ)` (Abel–Jacobi), then read off the order of its class.  `None` when
+/// outside scope (degree ≠ 3,4; quartic without a rational root or with a nonzero
+/// residue at infinity; or a place not on `E(ℚ)`).
+fn genus1(n: usize, a: &QPoly, divisor: &[PlacedResidue]) -> Option<FindOrder> {
+    if n != 2 {
+        return None;
+    }
+    let a = trim(a.clone());
+    // Build the curve `E` and a place-mapper `φ`: place ↦ Some(point on E), or
+    // None when the place maps to the origin O (and drops out of the sum).
+    #[allow(clippy::type_complexity)]
+    let (e, mapper): (EllipticCurve, Box<dyn Fn(&PlacedResidue) -> Option<Point>>) =
+        match degree(&a) {
+            3 => {
+                let (e, map) = short_weierstrass(&a)?;
+                // Cubic: ∞ is the origin O; finite places map directly.
+                let f = move |r: &PlacedResidue| -> Option<Point> {
+                    if r.residue.at_infinity {
+                        None
+                    } else {
+                        let (x, y) = map(&r.residue.point, &r.y_coord);
+                        Some(Point::Affine(x, y))
+                    }
+                };
+                (e, Box::new(f))
+            }
+            4 => {
+                // Quartic: handled only with no residue at infinity and a rational
+                // root (the place at x=root maps to O).
+                if divisor
+                    .iter()
+                    .any(|r| r.residue.at_infinity && r.residue.value != 0)
+                {
+                    return None;
+                }
+                let root = first_rational_root(&a)?;
+                let (e, map) = weierstrass_from_quartic(&a, &root)?;
+                let f = move |r: &PlacedResidue| -> Option<Point> {
+                    if r.residue.at_infinity || r.residue.point == root {
+                        None
+                    } else {
+                        let (x, y) = map(&r.residue.point, &r.y_coord);
+                        Some(Point::Affine(x, y))
+                    }
+                };
+                (e, Box::new(f))
+            }
+            _ => return None,
+        };
+
+    // Scale residues to a primitive integer divisor: coeffs = value·L / g.
+    let mut l = Integer::from(1);
+    for r in divisor {
+        l = l.lcm(r.residue.value.denom());
+    }
+    let int_coeffs: Vec<Integer> = divisor
+        .iter()
+        .map(|r| {
+            (r.residue.value.clone() * Rational::from(l.clone()))
+                .numer()
+                .clone()
+        })
+        .collect();
+    let mut g = Integer::from(0);
+    for c in &int_coeffs {
+        g = g.gcd(c);
+    }
+    if g == 0 {
+        return Some(FindOrder::Principal { order: 1 }); // all residues zero
+    }
+
+    // S = Σ (coeffₚ/g) · φ(P)  in E(ℚ).
+    let mut s = Point::Infinity;
+    for (r, c) in divisor.iter().zip(&int_coeffs) {
+        let Some(p) = mapper(r) else {
+            continue; // place maps to O
+        };
+        if !e.contains(&p) {
+            return None; // place not on E(ℚ): outside the rational-image scope
+        }
+        let coeff = (c.clone() / &g).to_i64()?;
+        let term = if coeff >= 0 {
+            e.mul(coeff as u64, &p)
+        } else {
+            e.mul((-coeff) as u64, &e.neg(&p))
+        };
+        s = e.add(&s, &term);
+    }
+
+    Some(match e.order(&s) {
+        // Class order N: N·δ is principal ⇒ the log part is (1/N)·log(u).
+        Some(order) => FindOrder::Principal { order },
+        // Non-torsion class ⇒ no multiple is principal ⇒ no elementary log part.
+        None => FindOrder::NonElementary,
+    })
+}
+
+/// A rational root of `p ∈ ℚ[x]` (rational-root theorem), if any.
+fn first_rational_root(p: &QPoly) -> Option<Rational> {
+    let p = trim(p.clone());
+    if degree(&p) < 1 {
+        return None;
+    }
+    if p[0] == 0 {
+        return Some(Rational::from(0));
+    }
+    let mut den_lcm = Integer::from(1);
+    for c in &p {
+        den_lcm = den_lcm.lcm(c.denom());
+    }
+    let ints: Vec<Integer> = p
+        .iter()
+        .map(|c| {
+            (c.clone() * Rational::from(den_lcm.clone()))
+                .numer()
+                .clone()
+        })
+        .collect();
+    let a0 = ints[0].clone().abs();
+    let an = ints[ints.len() - 1].clone().abs();
+    for pn in divisors(&a0) {
+        for qn in &divisors(&an) {
+            for sign in [1i32, -1] {
+                let cand = Rational::from((Integer::from(sign) * pn.clone(), qn.clone()));
+                let mut acc = Rational::from(0);
+                for c in ints.iter().rev() {
+                    acc = acc * &cand + Rational::from(c.clone());
+                }
+                if acc == 0 {
+                    return Some(cand);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn divisors(n: &Integer) -> Vec<Integer> {
+    let n = n.clone().abs();
+    if n == 0 {
+        return vec![Integer::from(1)];
+    }
+    let mut ds = Vec::new();
+    let mut d = Integer::from(1);
+    while Integer::from(&d * &d) <= n {
+        if n.is_divisible(&d) {
+            ds.push(d.clone());
+            let o = n.clone() / &d;
+            if o != d {
+                ds.push(o);
+            }
+        }
+        d += 1;
+    }
+    ds
 }
 
 fn gcd_i64(mut a: i64, mut b: i64) -> i64 {
@@ -142,16 +329,71 @@ mod tests {
         ));
     }
 
-    /// Genus-1 curve `y²=x³+1`: a nonzero residue divisor is the elliptic
-    /// frontier — `NotDecided` (sound, not a wrong verdict).
+    fn place(point: i64, y: i64, value: i64, inf: bool, ram: u64) -> PlacedResidue {
+        PlacedResidue {
+            residue: Residue {
+                point: Rational::from(point),
+                at_infinity: inf,
+                sheet: 0,
+                ramification: ram,
+                value: Rational::from(value),
+            },
+            y_coord: Rational::from(y),
+        }
+    }
+
+    /// Genus-1 `y²=x³+1` (torsion ℤ/6).  Residue divisor `(−1,0) − O`: the
+    /// Abel–Jacobi image is the 2-torsion point `(−1,0)` ⇒ `Principal{2}`.
     #[test]
-    fn genus1_not_decided() {
-        let a = qp(&[1, 0, 0, 1]); // x³+1
-                                   // h = 1/((x−2)y): a simple pole at x=2 (and conjugate sheets).
-        let h = vec![RatFn::int(0), RatFn::new(qp(&[1]), qp(&[-2, 1]))];
-        let div = residue_divisor(2, &a, &h);
-        // Either the divisor is incomplete (algebraic places) or genus ≥ 1:
-        // both yield NotDecided.
-        assert_eq!(find_order(2, &a, &div), FindOrder::NotDecided);
+    fn genus1_order_two() {
+        let a = qp(&[1, 0, 0, 1]);
+        let div = [place(-1, 0, 1, false, 2), place(0, 0, -1, true, 1)];
+        assert_eq!(
+            find_order_placed(2, &a, &div),
+            FindOrder::Principal { order: 2 }
+        );
+    }
+
+    /// Same curve, divisor `(2,3) − O`: `(2,3)` has order 6 ⇒ `Principal{6}`.
+    #[test]
+    fn genus1_order_six() {
+        let a = qp(&[1, 0, 0, 1]);
+        let div = [place(2, 3, 1, false, 1), place(0, 0, -1, true, 1)];
+        assert_eq!(
+            find_order_placed(2, &a, &div),
+            FindOrder::Principal { order: 6 }
+        );
+    }
+
+    /// Mordell curve `y²=x³−2` (rank 1).  Divisor `(3,5) − O` maps to the
+    /// infinite-order point `(3,5)` ⇒ the integral is non-elementary.
+    #[test]
+    fn genus1_non_elementary() {
+        let a = qp(&[-2, 0, 0, 1]);
+        assert_eq!(genus(2, &a), Some(1));
+        let div = [place(3, 5, 1, false, 1), place(0, 0, -1, true, 1)];
+        assert_eq!(find_order_placed(2, &a, &div), FindOrder::NonElementary);
+    }
+
+    /// An incomplete divisor (Σ res ≠ 0, missing algebraic places) ⇒ NotDecided.
+    #[test]
+    fn genus1_incomplete_not_decided() {
+        let a = qp(&[1, 0, 0, 1]);
+        let div = [place(-1, 0, 1, false, 2)]; // sum = 1 ≠ 0
+        assert_eq!(find_order_placed(2, &a, &div), FindOrder::NotDecided);
+    }
+
+    /// Genus-1 **quartic** `y²=(x²−1)(x²−4)=x⁴−5x²+4` (rational roots ±1,±2).
+    /// Divisor `(1,0) − (2,0)` of two branch points (each 2-torsion) ⇒ the class
+    /// is 2-torsion ⇒ `Principal{2}`.
+    #[test]
+    fn genus1_quartic_order_two() {
+        let a = qp(&[4, 0, -5, 0, 1]);
+        assert_eq!(genus(2, &a), Some(1));
+        let div = [place(1, 0, 1, false, 2), place(2, 0, -1, false, 2)];
+        assert_eq!(
+            find_order_placed(2, &a, &div),
+            FindOrder::Principal { order: 2 }
+        );
     }
 }
