@@ -25,17 +25,20 @@
 
 use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
 use crate::integrate::engine::IntegrationError;
-use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
 use crate::simplify::engine::simplify;
 
-use super::alg_field::RatFn;
+use super::alg_field::{RatFn, RationalFunctionField};
 use super::exp_case::build_rational;
-use super::number_field::{CoeffField, Quotient};
+use super::number_field::{
+    gdegree, gext_gcd, gpoly_divrem, gpoly_mul, gtrim, CoeffField, Quotient,
+};
 use super::poly_rde::{expr_to_qpoly, is_free_of_var, poly_deriv};
 use super::tower::find_generators;
 use super::tower_field::{solve_tower_rde_generic, ExpTowerField, LogTowerField, TExpr};
 
 use rug::Rational;
+use std::collections::HashMap;
 
 /// Element of the radical extension over the tower: coefficients of
 /// `1, y, …, y^{n−1}`, each in `ℚ(x)(t)`.
@@ -112,6 +115,17 @@ where
 
     // Decompose the integrand over the power basis {1, y, …, y^{n-1}}.
     let elem = decompose_over_tower_radical(expr, n, a_expr, &q, field, var, t_gen, pool)?;
+
+    // P1 — residue criterion (Bronstein tutorial §3.4, eq 16): a *cheap,
+    // standalone* NonElementary certifier.  If it fires, the integral is
+    // provably non-elementary and we skip the (doomed) solve below.
+    if residue_criterion_certifies_nonelementary(&elem, &a_tx, t_gen, n, var, pool) {
+        return Some(Err(IntegrationError::NonElementary(
+            "radical-over-transcendental integrand fails the residue criterion \
+             (Bronstein eq 16): R ∤ κ(R) in K[z], so no elementary antiderivative exists"
+                .to_string(),
+        )));
+    }
 
     // a'/a in the tower (for ωᵢ).
     let a_prime = field.derivation(&a_tx);
@@ -478,6 +492,314 @@ fn eval(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> Option<f64> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// P1 — residue criterion (Bronstein tutorial §3.4, eq 16)
+// ---------------------------------------------------------------------------
+
+/// `ℚ(x)`-polynomial in the monomial `t` (ascending degree), the coefficient
+/// type of the tower field.
+type TPoly = Vec<RatFn>;
+
+/// Decide whether the simple-radical-over-transcendental integrand
+/// `f = Σᵢ cᵢ yⁱ` (`y = a^{1/n}`, `cᵢ ∈ ℚ(x)(t)`, single monomial `t`) is
+/// **provably non-elementary** via Bronstein's residue criterion.
+///
+/// Writing the normal part as `G/D` over the power basis `wᵢ = yⁱ` (valid since
+/// we require the radicand normal/squarefree, so `H = 1`), with `F = yⁿ − a`
+/// the minimal polynomial, the criterion (eq 16) forms
+///
+/// ```text
+///   R(z) = res_t( res_y(G − z·D′, F), D ) ∈ K[z],   K = ℚ(x),
+/// ```
+///
+/// and proves: *if `f` has an elementary integral then `R | κ(R)` in `K[z]`*,
+/// where `κ` applies `d/dx` coefficient-wise.  We therefore return `true`
+/// (certified `NonElementary`) exactly when `R ∤ κ(R)`.
+///
+/// **Soundness.**
+/// * The `pp_z` (primitive-part) step is omitted: the `z`-content of the inner
+///   resultant is free of `z`, so after `res_t` it is a factor in `K` — a *unit*
+///   in `K[z]` — and `R | κ(R)` is invariant under units in `K[z]`.
+/// * Clearing denominators before each resultant only multiplies the output by
+///   factors free of the elimination variable, i.e. further `z`-free units.
+/// * `R | κ(R) ⟺ κ(R) = u·R` for some `u ∈ K` (because `deg_z κ(R) ≤ deg_z R`)
+///   `⟺` all nonzero `z`-coefficients `rᵢ` share one logarithmic derivative
+///   `⟺ Wᵢⱼ = rᵢ′·rⱼ − rᵢ·rⱼ′ = 0` for every pair.  We certify only when some
+///   `Wᵢⱼ` is *definitely* nonzero (symbolic + numeric), so a false certificate
+///   is impossible; any ambiguity yields `false` (inconclusive).
+fn residue_criterion_certifies_nonelementary(
+    elem: &[TExpr],
+    a_tx: &TExpr,
+    t_gen: ExprId,
+    n: usize,
+    var: ExprId,
+    pool: &ExprPool,
+) -> bool {
+    let f = RationalFunctionField;
+
+    // Classify the monomial t and obtain t′ symbolically.
+    let t_is_exp =
+        matches!(pool.get(t_gen), ExprData::Func { ref name, .. } if name.as_str() == "exp");
+    let Ok(tp) = crate::diff::diff(t_gen, var, pool) else {
+        return false;
+    };
+    let tprime = simplify(tp.value, pool).value;
+
+    // D = common t-denominator of the cᵢ (the integrand's normal denominator in
+    // the power basis).
+    let mut d_tpoly: TPoly = vec![f.one()];
+    for ci in elem {
+        if ci.numer().is_empty() {
+            continue;
+        }
+        d_tpoly = tpoly_lcm(&f, &d_tpoly, ci.denom());
+    }
+    if gdegree(&f, &d_tpoly) < 1 {
+        return false; // no t-pole ⇒ residue criterion is vacuous here
+    }
+
+    // D must be *normal*: squarefree in t, and (when t = exp is special)
+    // coprime to t.
+    let dd_dt = formal_t_derivative(&f, &d_tpoly);
+    let (g, _, _) = gext_gcd(&f, &d_tpoly, &dd_dt);
+    if gdegree(&f, &g) > 0 {
+        return false; // repeated t-factor: not Hermite-reduced here
+    }
+    if t_is_exp && (d_tpoly.is_empty() || f.eq(&d_tpoly[0], &f.zero())) {
+        return false; // t | D is special, not normal
+    }
+
+    // Fresh indeterminates: T (the monomial), Y (the radical), Z (the RT param).
+    let big_t = pool.symbol("$p1_t$", Domain::Complex);
+    let big_y = pool.symbol("$p1_y$", Domain::Complex);
+    let big_z = pool.symbol("$p1_z$", Domain::Complex);
+
+    // D(x,T), a(x,T), t′(x,T).
+    let d_sym = subst_t(
+        tpoly_to_expr(&d_tpoly, var, t_gen, pool),
+        t_gen,
+        big_t,
+        pool,
+    );
+    let a_sym = subst_t(texpr_to_expr(a_tx, var, t_gen, pool), t_gen, big_t, pool);
+    let tprime_t = subst_t(tprime, t_gen, big_t, pool);
+
+    // G(x,T,Y) = Σᵢ (cᵢ · D) Yⁱ   (numerators over the common denominator D).
+    let mut g_terms: Vec<ExprId> = Vec::new();
+    for (i, ci) in elem.iter().enumerate() {
+        if ci.numer().is_empty() {
+            continue;
+        }
+        let (quot, rem) = gpoly_divrem(&f, &d_tpoly, ci.denom());
+        if !rem.is_empty() {
+            return false; // D not a multiple of denom(cᵢ) — shouldn't happen
+        }
+        let gi = gpoly_mul(&f, ci.numer(), &quot);
+        let gi_sym = subst_t(tpoly_to_expr(&gi, var, t_gen, pool), t_gen, big_t, pool);
+        let term = if i == 0 {
+            gi_sym
+        } else {
+            pool.mul(vec![gi_sym, pool.pow(big_y, pool.integer(i as i32))])
+        };
+        g_terms.push(term);
+    }
+    if g_terms.is_empty() {
+        return false;
+    }
+    let g_sym = if g_terms.len() == 1 {
+        g_terms[0]
+    } else {
+        pool.add(g_terms)
+    };
+
+    // D′ = ∂ₓD + (∂_T D)·t′(T)   (total derivative through the tower).
+    let (Ok(dx), Ok(dt)) = (
+        crate::diff::diff(d_sym, var, pool),
+        crate::diff::diff(d_sym, big_t, pool),
+    ) else {
+        return false;
+    };
+    let dprime = pool.add(vec![dx.value, pool.mul(vec![dt.value, tprime_t])]);
+
+    // P = G − Z·D′ ;  F = Yⁿ − a.
+    let neg1 = pool.integer(-1_i32);
+    let p_sym = pool.add(vec![g_sym, pool.mul(vec![neg1, big_z, dprime])]);
+    let f_sym = pool.add(vec![
+        pool.pow(big_y, pool.integer(n as i32)),
+        pool.mul(vec![neg1, a_sym]),
+    ]);
+
+    // res_y(P, F), then res_t(·, D).  Clear denominators first: the resultant
+    // needs polynomial inputs, and the dropped denominators are free of the
+    // elimination variable (z-free units, harmless to the criterion).
+    let p_num = numer_denom(p_sym, pool).0;
+    let f_num = numer_denom(f_sym, pool).0;
+    let Ok(res1) = crate::poly::resultant(p_num, f_num, big_y, pool) else {
+        return false;
+    };
+    let d_num = numer_denom(d_sym, pool).0;
+    let Ok(r_res) = crate::poly::resultant(res1.value, d_num, big_t, pool) else {
+        return false;
+    };
+    let r = simplify(r_res.value, pool).value;
+
+    // R(z) ∈ K[z] with K = ℚ(x): test R | κ(R) via the pairwise Wronskian.
+    let coeffs = collect_z_coeffs(r, big_z, n, pool);
+    for i in 0..coeffs.len() {
+        let Ok(ri_p) = crate::diff::diff(coeffs[i], var, pool) else {
+            return false;
+        };
+        for j in (i + 1)..coeffs.len() {
+            let Ok(rj_p) = crate::diff::diff(coeffs[j], var, pool) else {
+                return false;
+            };
+            // Wᵢⱼ = rᵢ′·rⱼ − rᵢ·rⱼ′
+            let w = pool.add(vec![
+                pool.mul(vec![ri_p.value, coeffs[j]]),
+                pool.mul(vec![neg1, coeffs[i], rj_p.value]),
+            ]);
+            if definitely_nonzero(w, var, pool) {
+                return true; // R ∤ κ(R) ⇒ certified NonElementary
+            }
+        }
+    }
+    false
+}
+
+/// `lcm` of two `ℚ(x)[t]` polynomials: `a·b / gcd(a, b)`.
+fn tpoly_lcm(f: &RationalFunctionField, a: &TPoly, b: &TPoly) -> TPoly {
+    if a.is_empty() {
+        return b.to_vec();
+    }
+    if b.is_empty() {
+        return a.to_vec();
+    }
+    let prod = gpoly_mul(f, a, b);
+    let (g, _, _) = gext_gcd(f, a, b);
+    gpoly_divrem(f, &prod, &g).0
+}
+
+/// Formal derivative `d/dt` of a `ℚ(x)[t]` polynomial (no `x`-derivation).
+fn formal_t_derivative(f: &RationalFunctionField, p: &TPoly) -> TPoly {
+    if p.len() <= 1 {
+        return Vec::new();
+    }
+    let mut out: TPoly = Vec::with_capacity(p.len() - 1);
+    for (j, cj) in p.iter().enumerate().skip(1) {
+        out.push(f.mul(&RatFn::int(j as i64), cj));
+    }
+    gtrim(f, out)
+}
+
+/// Replace every occurrence of the generator `t_gen` by the fresh symbol `big_t`.
+fn subst_t(e: ExprId, t_gen: ExprId, big_t: ExprId, pool: &ExprPool) -> ExprId {
+    let mut m = HashMap::new();
+    m.insert(t_gen, big_t);
+    crate::kernel::subs(e, &m, pool)
+}
+
+/// `z`-coefficients `r₀, …, r_{max_deg}` of a polynomial `r ∈ K[z]`, obtained as
+/// `rₖ = (1/k!)·∂_z^k r |_{z=0}`.
+fn collect_z_coeffs(r: ExprId, z: ExprId, max_deg: usize, pool: &ExprPool) -> Vec<ExprId> {
+    let mut out = Vec::with_capacity(max_deg + 1);
+    let mut cur = r;
+    let mut fact: i64 = 1; // k!
+    for k in 0..=max_deg {
+        let mut m = HashMap::new();
+        m.insert(z, pool.integer(0_i32));
+        let at0 = simplify(crate::kernel::subs(cur, &m, pool), pool).value;
+        let ck = if k == 0 {
+            at0
+        } else {
+            pool.mul(vec![
+                at0,
+                pool.pow(pool.integer(fact as i32), pool.integer(-1_i32)),
+            ])
+        };
+        out.push(simplify(ck, pool).value);
+        let Ok(d) = crate::diff::diff(cur, z, pool) else {
+            break;
+        };
+        cur = simplify(d.value, pool).value;
+        fact *= (k as i64) + 1;
+    }
+    out
+}
+
+/// Conservatively decide whether `e` is a *nonzero* function of `x`: it must not
+/// simplify to the literal `0`, must evaluate finitely at every sample point,
+/// and be clearly nonzero at one of them.  Any uncertainty (unevaluable, all
+/// samples ≈ 0) returns `false`, so a true-zero expression can never be reported
+/// nonzero — the property the residue certificate relies on for soundness.
+fn definitely_nonzero(e: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    let s = simplify(e, pool).value;
+    if s == pool.integer(0_i32) {
+        return false;
+    }
+    let mut saw_nonzero = false;
+    for &xv in &[0.37_f64, 0.91, 1.73, 2.59, 3.42] {
+        match eval(s, var, xv, pool) {
+            Some(v) if v.is_finite() => {
+                if v.abs() > 1e-9 {
+                    saw_nonzero = true;
+                }
+            }
+            Some(_) => {}         // ±∞ / NaN at this sample: skip
+            None => return false, // cannot evaluate ⇒ not sure ⇒ inconclusive
+        }
+    }
+    saw_nonzero
+}
+
+/// Split `e` into `(numerator, denominator)` over `±·∧` structure, clearing
+/// integer-power denominators recursively.  No GCD cancellation is attempted
+/// (extra common factors are harmless units for the residue criterion).
+/// Non-integer powers and opaque functions are treated as atoms.
+fn numer_denom(e: ExprId, pool: &ExprPool) -> (ExprId, ExprId) {
+    match pool.get(e) {
+        ExprData::Add(args) => {
+            let parts: Vec<(ExprId, ExprId)> = args.iter().map(|&a| numer_denom(a, pool)).collect();
+            let common_den = pool.mul(parts.iter().map(|(_, d)| *d).collect());
+            let mut num_terms = Vec::with_capacity(parts.len());
+            for (i, (ni, _)) in parts.iter().enumerate() {
+                let mut factors = vec![*ni];
+                for (j, (_, dj)) in parts.iter().enumerate() {
+                    if j != i {
+                        factors.push(*dj);
+                    }
+                }
+                num_terms.push(pool.mul(factors));
+            }
+            (pool.add(num_terms), common_den)
+        }
+        ExprData::Mul(args) => {
+            let mut nums = Vec::with_capacity(args.len());
+            let mut dens = Vec::with_capacity(args.len());
+            for &a in &args {
+                let (na, da) = numer_denom(a, pool);
+                nums.push(na);
+                dens.push(da);
+            }
+            (pool.mul(nums), pool.mul(dens))
+        }
+        ExprData::Pow { base, exp } => {
+            if let ExprData::Integer(k) = pool.get(exp) {
+                let ki = k.0.to_i64().unwrap_or(0);
+                let (bn, bd) = numer_denom(base, pool);
+                if ki >= 0 {
+                    (pool.pow(bn, exp), pool.pow(bd, exp))
+                } else {
+                    let pe = pool.integer((-ki) as i32);
+                    (pool.pow(bd, pe), pool.pow(bn, pe))
+                }
+            } else {
+                (e, pool.integer(1_i32))
+            }
+        }
+        _ => (e, pool.integer(1_i32)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,6 +848,83 @@ mod tests {
                 (lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()),
                 "x={xv}: d/dx F = {lhs}, f = {rhs}\n  F = {}",
                 pool.display(g)
+            );
+        }
+    }
+
+    /// P1 residue criterion (Bronstein eq 16): `∫ √(log x)/(log x − x) dx` is
+    /// non-elementary — its residue at the pole `log x = x` is `√x`, which is
+    /// not constant.  Hand check with `t = log x`, `y = √t`, `a = t`, `n = 2`:
+    /// `D = t − x`, `D′ = 1/x − 1`, `G = y`, so
+    /// `R(z) = res_t(res_y(y − z·D′, y² − t), t − x) = (1/x − 1)²·z² − x`, and
+    /// `κ(R) = −2(1−x)/x³·z² − 1`.  Then `W₀₂ = r₀′r₂ − r₀r₂′ = −(1−x)(3−x)/x² ≠ 0`,
+    /// so `R ∤ κ(R)` and the integral is certified non-elementary.
+    #[test]
+    fn residue_criterion_certifies_sqrt_log() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let log_x = pool.func("log", vec![x]);
+        let y = pool.pow(log_x, pool.rational(1, 2));
+        let den = pool.add(vec![log_x, pool.mul(vec![pool.integer(-1), x])]);
+        let f = pool.mul(vec![y, pool.pow(den, pool.integer(-1))]);
+
+        // Direct filter.
+        let r = try_integrate_radical_over_transcendental(f, x, &pool);
+        assert!(
+            matches!(r, Some(Err(IntegrationError::NonElementary(_)))),
+            "P1 should certify NonElementary; got {r:?}"
+        );
+        // End-to-end through the public engine.
+        let e = crate::integrate::engine::integrate(f, x, &pool);
+        assert!(
+            matches!(e, Err(IntegrationError::NonElementary(_))),
+            "engine should report NonElementary; got {e:?}"
+        );
+    }
+
+    /// Degree-3 analogue: `∫ ∛(x + eˣ)/(eˣ − x) dx` — non-elementary via eq 16.
+    #[test]
+    fn residue_criterion_certifies_cbrt_mixed() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let a = pool.add(vec![x, exp_x]);
+        let y = pool.pow(a, pool.rational(1, 3));
+        let den = pool.add(vec![exp_x, pool.mul(vec![pool.integer(-1), x])]);
+        let f = pool.mul(vec![y, pool.pow(den, pool.integer(-1))]);
+        let r = try_integrate_radical_over_transcendental(f, x, &pool);
+        assert!(
+            matches!(r, Some(Err(IntegrationError::NonElementary(_)))),
+            "P1 should certify NonElementary; got {r:?}"
+        );
+    }
+
+    /// Soundness control: P1 must NOT reject an *elementary* integrand that has
+    /// a genuine `t`-pole.  `∫ 1/(2x·√(log x)) dx = √(log x)` (pole at `t = 0`).
+    /// The residue criterion holds, so integration proceeds and succeeds.
+    #[test]
+    fn residue_criterion_keeps_elementary_with_pole() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let log_x = pool.func("log", vec![x]);
+        let y = pool.pow(log_x, pool.rational(1, 2));
+        let den = pool.mul(vec![pool.integer(2), x, y]);
+        let f = pool.pow(den, pool.integer(-1)); // 1/(2x√(log x))
+
+        let res = crate::integrate::engine::integrate(f, x, &pool);
+        assert!(
+            res.is_ok(),
+            "elementary integrand must not be certified NonElementary; got {res:?}"
+        );
+        // d/dx F = f, verified numerically.
+        let g = res.unwrap().value;
+        let ds = simplify(crate::diff::diff(g, x, &pool).unwrap().value, &pool).value;
+        for &xv in &[1.4_f64, 2.3, 3.1] {
+            let lhs = eval(ds, x, xv, &pool).unwrap();
+            let rhs = eval(f, x, xv, &pool).unwrap();
+            assert!(
+                (lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()),
+                "x={xv}: d/dx F = {lhs}, f = {rhs}"
             );
         }
     }

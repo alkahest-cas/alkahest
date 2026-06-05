@@ -76,6 +76,7 @@
 //! - Geddes, Czapor, Labahn (1992). *Algorithms for Computer Algebra*. Kluwer.
 
 pub mod alg_field;
+pub mod alg_rde;
 pub mod exp_case;
 pub mod log_case;
 pub mod number_field;
