@@ -179,14 +179,13 @@ pub fn short_weierstrass(
 /// ```
 /// then composed with [`short_weierstrass`] of `C`.  The place at `x = r`
 /// (`(r,0)`) maps to `u = ∞` = the origin `O` and must be handled by the caller.
-#[allow(clippy::type_complexity)]
-pub fn weierstrass_from_quartic(
-    q: &QPoly,
-    r: &Rational,
-) -> Option<(
-    EllipticCurve,
-    impl Fn(&Rational, &Rational) -> (Rational, Rational),
-)> {
+/// The cubic `C(u) = u³·c(r + 1/u)` (with `c = q/(x−r)`) obtained when reducing a
+/// genus-1 quartic `y² = q(x)` with rational root `r` to Weierstrass form via
+/// `u = 1/(x−r)`, `Y = y/(x−r)²`.  Returns `None` if `deg q ≠ 4` or `r` is not a
+/// root of `q`.  Shared by [`weierstrass_from_quartic`] (which composes it with
+/// [`short_weierstrass`]) and the genus-1 integrator (which needs `C`'s leading
+/// coefficients to back-translate the log argument to `(x, √q)`).
+pub(super) fn quartic_to_cubic(q: &QPoly, r: &Rational) -> Option<QPoly> {
     let q = trim(q.clone());
     if degree(&q) != 4 {
         return None;
@@ -216,6 +215,18 @@ pub fn weierstrass_from_quartic(
             pw = poly_mul_small(&pw, &lin);
         }
     }
+    Some(big_c)
+}
+
+#[allow(clippy::type_complexity)]
+pub fn weierstrass_from_quartic(
+    q: &QPoly,
+    r: &Rational,
+) -> Option<(
+    EllipticCurve,
+    impl Fn(&Rational, &Rational) -> (Rational, Rational),
+)> {
+    let big_c = quartic_to_cubic(q, r)?;
     let (e, map_c) = short_weierstrass(&big_c)?;
     let rr = r.clone();
     let map = move |x: &Rational, y: &Rational| -> (Rational, Rational) {

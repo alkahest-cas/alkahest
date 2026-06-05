@@ -214,7 +214,7 @@ fn genus1(n: usize, a: &QPoly, divisor: &[PlacedResidue]) -> Option<FindOrder> {
 }
 
 /// A rational root of `p ∈ ℚ[x]` (rational-root theorem), if any.
-fn first_rational_root(p: &QPoly) -> Option<Rational> {
+pub(super) fn first_rational_root(p: &QPoly) -> Option<Rational> {
     let p = trim(p.clone());
     if degree(&p) < 1 {
         return None;
