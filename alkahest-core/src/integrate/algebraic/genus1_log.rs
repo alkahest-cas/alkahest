@@ -19,9 +19,9 @@ use rug::{Integer, Rational};
 use super::super::risch::alg_field::AlgElem;
 use super::super::risch::poly_rde::{degree, qpoly_to_expr, rational_to_expr, trim, QPoly};
 use super::elliptic::{short_weierstrass, EllFactor, Point};
-use super::find_order::{find_order, genus, FindOrder};
+use super::find_order::{find_order_placed, genus, FindOrder};
 use super::hermite_curve::hermite_reduce_radical;
-use super::residues::residue_divisor;
+use super::residues::residue_divisor_placed;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::simplify::engine::simplify;
 
@@ -41,8 +41,11 @@ pub fn integrate_genus1_log(
 
     // 1–3. Hermite → (g, h); residue divisor; torsion decision.
     let (g_alg, h) = hermite_reduce_radical(2, &a, integrand)?;
-    let divisor = residue_divisor(2, &a, &h);
-    if !matches!(find_order(2, &a, &divisor), FindOrder::Principal { .. }) {
+    let divisor = residue_divisor_placed(2, &a, &h);
+    if !matches!(
+        find_order_placed(2, &a, &divisor),
+        FindOrder::Principal { .. }
+    ) {
         return None;
     }
 
@@ -50,16 +53,16 @@ pub fn integrate_genus1_log(
     let (e, map) = short_weierstrass(&a)?;
     let mut l = Integer::from(1);
     for r in &divisor {
-        l = l.lcm(r.value.denom());
+        l = l.lcm(r.residue.value.denom());
     }
     let mut pairs: Vec<(Point, i64)> = Vec::new();
     for r in &divisor {
-        let scaled = r.value.clone() * Rational::from(l.clone());
+        let scaled = r.residue.value.clone() * Rational::from(l.clone());
         let coeff = scaled.numer().to_i64()?;
-        let pt = if r.at_infinity {
+        let pt = if r.residue.at_infinity {
             Point::Infinity
         } else {
-            let (x, y) = map(&r.point, &r.y_coord);
+            let (x, y) = map(&r.residue.point, &r.y_coord);
             Point::Affine(x, y)
         };
         pairs.push((pt, coeff));

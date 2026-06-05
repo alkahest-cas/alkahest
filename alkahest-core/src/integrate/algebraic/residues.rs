@@ -48,13 +48,20 @@ pub struct Residue {
     pub ramification: u64,
     /// The residue `res_P(h dx)`.
     pub value: Rational,
-    /// The `y`-coordinate of the place (constant term of the branch): `0` at a
-    /// branch point, `±√(a(α))` at an unramified place (rational when captured);
-    /// unused when `at_infinity`.  Lets FIND-ORDER map the place onto the curve.
-    ///
-    /// `pub(crate)`: internal FIND-ORDER plumbing, kept off the semver-stable
-    /// surface (adding a `pub` field to the externally-constructible `Residue`
-    /// would be a breaking change).
+}
+
+/// A [`Residue`] paired with the place's `y`-coordinate — internal FIND-ORDER
+/// plumbing.
+///
+/// The `y`-coordinate is the constant term of the branch (`0` at a branch point,
+/// `±√(a(α))` at an unramified place; unused when `at_infinity`) and lets
+/// FIND-ORDER map the place onto the elliptic curve.  It is deliberately kept
+/// *out* of the public, semver-stable, externally-constructible [`Residue`]
+/// struct (adding any field there is a breaking change), so the genus-1 path
+/// threads this richer type through `pub(crate)` channels instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PlacedResidue {
+    pub(crate) residue: Residue,
     pub(crate) y_coord: Rational,
 }
 
@@ -66,6 +73,15 @@ pub struct Residue {
 /// scope; for fully ramified rational curves the finite residues already sum to
 /// `−res_∞`.)
 pub fn finite_residues(n: usize, a: &QPoly, h: &AlgElem) -> Vec<Residue> {
+    finite_residues_placed(n, a, h)
+        .into_iter()
+        .map(|p| p.residue)
+        .collect()
+}
+
+/// As [`finite_residues`], but each residue carries the place's `y`-coordinate
+/// (for the genus-1 Abel–Jacobi map).  Internal — see [`PlacedResidue`].
+pub(crate) fn finite_residues_placed(n: usize, a: &QPoly, h: &AlgElem) -> Vec<PlacedResidue> {
     if n < 2 {
         return Vec::new();
     }
@@ -119,12 +135,14 @@ pub fn finite_residues(n: usize, a: &QPoly, h: &AlgElem) -> Vec<Residue> {
                     .find(|(ex, _)| *ex == 0)
                     .map(|(_, c)| c.clone())
                     .unwrap_or_else(|| Rational::from(0));
-                out.push(Residue {
-                    point: alpha.clone(),
-                    at_infinity: false,
-                    sheet,
-                    ramification: br.ramification,
-                    value,
+                out.push(PlacedResidue {
+                    residue: Residue {
+                        point: alpha.clone(),
+                        at_infinity: false,
+                        sheet,
+                        ramification: br.ramification,
+                        value,
+                    },
                     y_coord,
                 });
             }
@@ -161,6 +179,15 @@ pub fn puiseux_at_infinity(n: usize, a: &QPoly, prec: u32) -> Vec<PuiseuxSeries>
 /// `x = t^{−e}`, `dx = −e·t^{−e−1} dt`), the residue is
 /// `res = [t^{-1}](h dx) = −e·[tᵉ](h along the branch)`.
 pub fn residues_at_infinity(n: usize, a: &QPoly, h: &AlgElem) -> Vec<Residue> {
+    residues_at_infinity_placed(n, a, h)
+        .into_iter()
+        .map(|p| p.residue)
+        .collect()
+}
+
+/// As [`residues_at_infinity`], but each residue carries the place's
+/// `y`-coordinate (always `0` at ∞ here).  Internal — see [`PlacedResidue`].
+pub(crate) fn residues_at_infinity_placed(n: usize, a: &QPoly, h: &AlgElem) -> Vec<PlacedResidue> {
     let m = degree(&trim(a.clone())).max(0) as usize;
     let dmax = h
         .iter()
@@ -189,12 +216,14 @@ pub fn residues_at_infinity(n: usize, a: &QPoly, h: &AlgElem) -> Vec<Residue> {
         let coeff = h_ts.get(&e).cloned().unwrap_or_else(|| Rational::from(0));
         let value = -Rational::from(e) * coeff;
         if value != 0 {
-            out.push(Residue {
-                point: Rational::from(0),
-                at_infinity: true,
-                sheet,
-                ramification: w_branch.ramification,
-                value,
+            out.push(PlacedResidue {
+                residue: Residue {
+                    point: Rational::from(0),
+                    at_infinity: true,
+                    sheet,
+                    ramification: w_branch.ramification,
+                    value,
+                },
                 y_coord: Rational::from(0),
             });
         }
@@ -249,6 +278,14 @@ fn poly_at_infinity(p: &QPoly, e: i64, u: i64) -> TS {
 pub fn residue_divisor(n: usize, a: &QPoly, h: &AlgElem) -> Vec<Residue> {
     let mut d = finite_residues(n, a, h);
     d.extend(residues_at_infinity(n, a, h));
+    d
+}
+
+/// As [`residue_divisor`], but each place carries its `y`-coordinate for the
+/// genus-1 Abel–Jacobi map.  Internal — see [`PlacedResidue`].
+pub(crate) fn residue_divisor_placed(n: usize, a: &QPoly, h: &AlgElem) -> Vec<PlacedResidue> {
+    let mut d = finite_residues_placed(n, a, h);
+    d.extend(residues_at_infinity_placed(n, a, h));
     d
 }
 
