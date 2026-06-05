@@ -17,6 +17,7 @@
 //! - Bronstein (2005). Symbolic Integration I. Springer, chs. 10–11.
 
 pub(super) mod decompose;
+pub mod find_order;
 pub(super) mod genus_zero;
 pub mod hermite_curve;
 pub mod integral_basis;
