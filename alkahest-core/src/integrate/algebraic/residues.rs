@@ -51,7 +51,11 @@ pub struct Residue {
     /// The `y`-coordinate of the place (constant term of the branch): `0` at a
     /// branch point, `±√(a(α))` at an unramified place (rational when captured);
     /// unused when `at_infinity`.  Lets FIND-ORDER map the place onto the curve.
-    pub y_coord: Rational,
+    ///
+    /// `pub(crate)`: internal FIND-ORDER plumbing, kept off the semver-stable
+    /// surface (adding a `pub` field to the externally-constructible `Residue`
+    /// would be a breaking change).
+    pub(crate) y_coord: Rational,
 }
 
 /// Residues of the differential `h dx` at all **rational finite places** of the
