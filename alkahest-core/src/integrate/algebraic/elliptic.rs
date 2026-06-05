@@ -179,14 +179,13 @@ pub fn short_weierstrass(
 /// ```
 /// then composed with [`short_weierstrass`] of `C`.  The place at `x = r`
 /// (`(r,0)`) maps to `u = ∞` = the origin `O` and must be handled by the caller.
-#[allow(clippy::type_complexity)]
-pub fn weierstrass_from_quartic(
-    q: &QPoly,
-    r: &Rational,
-) -> Option<(
-    EllipticCurve,
-    impl Fn(&Rational, &Rational) -> (Rational, Rational),
-)> {
+/// The cubic `C(u) = u³·c(r + 1/u)` (with `c = q/(x−r)`) obtained when reducing a
+/// genus-1 quartic `y² = q(x)` with rational root `r` to Weierstrass form via
+/// `u = 1/(x−r)`, `Y = y/(x−r)²`.  Returns `None` if `deg q ≠ 4` or `r` is not a
+/// root of `q`.  Shared by [`weierstrass_from_quartic`] (which composes it with
+/// [`short_weierstrass`]) and the genus-1 integrator (which needs `C`'s leading
+/// coefficients to back-translate the log argument to `(x, √q)`).
+pub(super) fn quartic_to_cubic(q: &QPoly, r: &Rational) -> Option<QPoly> {
     let q = trim(q.clone());
     if degree(&q) != 4 {
         return None;
@@ -216,6 +215,18 @@ pub fn weierstrass_from_quartic(
             pw = poly_mul_small(&pw, &lin);
         }
     }
+    Some(big_c)
+}
+
+#[allow(clippy::type_complexity)]
+pub fn weierstrass_from_quartic(
+    q: &QPoly,
+    r: &Rational,
+) -> Option<(
+    EllipticCurve,
+    impl Fn(&Rational, &Rational) -> (Rational, Rational),
+)> {
+    let big_c = quartic_to_cubic(q, r)?;
     let (e, map_c) = short_weierstrass(&big_c)?;
     let rr = r.clone();
     let map = move |x: &Rational, y: &Rational| -> (Rational, Rational) {
@@ -225,6 +236,100 @@ pub fn weierstrass_from_quartic(
         map_c(&u, &yy)
     };
     Some((e, map))
+}
+
+/// Reduction of a genus-1 quartic `y² = q(x)` (deg 4) that has **no rational
+/// root** but a finite **rational point** `(x₀, y₀)` with `y₀ ≠ 0`, via Nagell's
+/// substitution.  Translate `x̃ = x − x₀` so the point sits at `x̃ = 0`
+/// (`q̃(0) = y₀² = p²`); then with `B = a₁/(2p)` the change of variable
+///
+/// ```text
+///   z = (y − p − B·x̃) / x̃²,   w = 2(z²−a₄)·x̃ − a₃ + 2B·z
+/// ```
+/// satisfies `w² = C(z)` for the **cubic** `C(z) = Δ(z)` below — a Weierstrass
+/// model.  `aᵢ` are the coefficients of the *translated* quartic `q̃`.  The base
+/// point's conjugate sheet `(x₀,−y₀)` maps to the cubic's point at infinity; the
+/// `+` sheet and the two places at infinity map to finite points (callers that
+/// can't place those should bail).
+#[derive(Clone, Debug)]
+pub(super) struct QuarticPointModel {
+    /// Reduced cubic `C(z)` with `w² = C(z)`.
+    pub c: QPoly,
+    /// Base-point abscissa `x₀`.
+    pub x0: Rational,
+    /// Base-point ordinate `p = y₀ ≠ 0`.
+    pub p: Rational,
+    /// `B = a₁/(2p)` of the translated quartic `q̃`.
+    pub b: Rational,
+    /// Translated-quartic coefficients used by the `z ↦ w` formula.
+    pub a3: Rational,
+    pub a4: Rational,
+}
+
+impl QuarticPointModel {
+    /// `z, w` at a finite place `(x, y)` with `x ≠ x₀`.  `None` when `x = x₀`
+    /// (the base-point fibre, where the formula divides by zero).
+    pub fn zw(&self, x: &Rational, y: &Rational) -> Option<(Rational, Rational)> {
+        let xt = x.clone() - &self.x0;
+        if xt == 0 {
+            return None;
+        }
+        let z = (y.clone() - &self.p - self.b.clone() * &xt) / (xt.clone() * &xt);
+        let w = Rational::from(2) * (z.clone() * &z - &self.a4) * &xt - self.a3.clone()
+            + Rational::from(2) * &self.b * &z;
+        Some((z, w))
+    }
+}
+
+/// Build the [`QuarticPointModel`] for `y² = q(x)` from a rational point
+/// `(x₀, y₀)`, `y₀ ≠ 0`.  Returns `None` if `q` is not degree 4 or `(x₀,y₀)` is
+/// not on the curve.
+pub(super) fn quartic_point_model(
+    q: &QPoly,
+    x0: &Rational,
+    y0: &Rational,
+) -> Option<QuarticPointModel> {
+    let q = trim(q.clone());
+    if degree(&q) != 4 || *y0 == 0 {
+        return None;
+    }
+    // Translate by x₀: q̃(x̃) = q(x̃ + x₀) = Σ q_i (x̃ + x₀)^i.
+    let mut qt = vec![Rational::from(0); 5];
+    let mut pw = vec![Rational::from(1)]; // (x̃ + x₀)^i, expanded in x̃
+    let shift = vec![x0.clone(), Rational::from(1)]; // x̃ + x₀
+    for qi in q.iter() {
+        for (j, pj) in pw.iter().enumerate() {
+            qt[j] += qi.clone() * pj;
+        }
+        pw = poly_mul_small(&pw, &shift);
+        pw.truncate(5);
+    }
+    let a0 = qt[0].clone();
+    let a1 = qt[1].clone();
+    let a2 = qt[2].clone();
+    let a3 = qt[3].clone();
+    let a4 = qt[4].clone();
+    if a0 != y0.clone() * y0 {
+        return None; // (x₀,y₀) not on the curve
+    }
+    let p = y0.clone();
+    let b = a1.clone() / (Rational::from(2) * &p);
+    // Δ(z) = −8p z³ + 4a₂ z² + (8p·a₄ − 4B·a₃) z + (a₃² − 4a₄·(a₂ − B²)).
+    let a2p = a2.clone() - b.clone() * &b;
+    let c = vec![
+        a3.clone() * &a3 - Rational::from(4) * &a4 * &a2p,
+        Rational::from(8) * &p * &a4 - Rational::from(4) * &b * &a3,
+        Rational::from(4) * &a2,
+        Rational::from(-8) * &p,
+    ];
+    Some(QuarticPointModel {
+        c,
+        x0: x0.clone(),
+        p,
+        b,
+        a3,
+        a4,
+    })
 }
 
 /// A factor of an elliptic function: the **vertical** line `x − x₀`, or the
@@ -489,6 +594,31 @@ mod tests {
         // The branch point (2,0) (a root ≠ r) maps to 2-torsion (Y=0).
         let (_, y2) = map(&r(2), &r(0));
         assert_eq!(y2, r(0));
+    }
+
+    /// Point-based quartic reduction (no rational root): y² = x⁴+x³+x²+x+1
+    /// (5th cyclotomic — no rational root) with the rational point (0,1).
+    /// Places (−1,1) and (3,11) must land on the reduced cubic's curve.
+    #[test]
+    fn quartic_point_reduction() {
+        let q = vec![r(1), r(1), r(1), r(1), r(1)];
+        let m = quartic_point_model(&q, &r(0), &r(1)).expect("point on curve");
+        assert_eq!(m.c, vec![r(-2), r(6), r(4), r(-8)]); // Δ(z) = −8z³+4z²+6z−2
+        let (e, _) = short_weierstrass(&m.c).expect("cubic");
+        let c3 = m.c[3].clone();
+        let c2 = m.c[2].clone();
+        for (xv, yv) in [(r(-1), r(1)), (r(3), r(11))] {
+            // w² = C(z).
+            let (z, w) = m.zw(&xv, &yv).expect("finite place");
+            let cz = m.c.iter().rev().fold(r(0), |acc, c| acc * &z + c);
+            assert_eq!(w.clone() * &w, cz, "w²=C(z) at x={xv}");
+            // (Z,W) = (c₃z + c₂/3, c₃w) lies on E.
+            let big_x = c3.clone() * &z + c2.clone() / r(3);
+            let big_y = c3.clone() * &w;
+            assert!(e.contains(&Point::Affine(big_x, big_y)), "on E at x={xv}");
+        }
+        // The conjugate base sheet (x₀,−y₀) divides by zero ⇒ None.
+        assert!(m.zw(&r(0), &r(-1)).is_none());
     }
 
     /// Miller log-argument construction on y²=x³+1:

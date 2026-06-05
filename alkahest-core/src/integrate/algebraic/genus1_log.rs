@@ -1,7 +1,8 @@
 //! End-to-end genus-1 algebraic integration: emit the antiderivative
 //! `∫ R(x,y) dx = g + (1/N)·log(u)` (Risch **MC**, capstone).
 //!
-//! Ties the whole genus-1 stack together for `y² = a(x)` (cubic):
+//! Ties the whole genus-1 stack together for `y² = a(x)` (cubic, or quartic via
+//! a rational root or — when there is none — a finite rational point, Nagell):
 //! 1. **Hermite-on-curve** ([`super::hermite_curve`]) → algebraic part `g` plus a
 //!    third-kind remainder `h` (simple poles);
 //! 2. **residue divisor** ([`super::residues`]) of `h dx`;
@@ -18,16 +19,21 @@ use rug::{Integer, Rational};
 
 use super::super::risch::alg_field::AlgElem;
 use super::super::risch::poly_rde::{degree, qpoly_to_expr, rational_to_expr, trim, QPoly};
-use super::elliptic::{short_weierstrass, EllFactor, Point};
-use super::find_order::{find_order_placed, genus, FindOrder};
+use super::elliptic::{
+    quartic_point_model, quartic_to_cubic, short_weierstrass, weierstrass_from_quartic, EllFactor,
+    EllipticCurve, Point,
+};
+use super::find_order::{
+    find_order_placed, first_rational_point, first_rational_root, genus, FindOrder,
+};
 use super::hermite_curve::hermite_reduce_radical;
-use super::residues::residue_divisor_placed;
+use super::residues::{residue_divisor_placed, PlacedResidue};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::simplify::engine::simplify;
 
-/// Integrate `∫ (integrand) dx` on the genus-1 curve `y² = a(x)` (cubic `a`),
-/// returning the symbolic antiderivative `g + (1/N)·log(u)` when it is elementary
-/// (verified `d/dx F = integrand`), else `None`.
+/// Integrate `∫ (integrand) dx` on the genus-1 curve `y² = a(x)` (cubic or
+/// quartic `a`), returning the symbolic antiderivative `g + (1/N)·log(u)` when it
+/// is elementary (verified `d/dx F = integrand`), else `None`.
 pub fn integrate_genus1_log(
     a: &QPoly,
     integrand: &AlgElem,
@@ -35,7 +41,8 @@ pub fn integrate_genus1_log(
     pool: &ExprPool,
 ) -> Option<ExprId> {
     let a = trim(a.clone());
-    if genus(2, &a) != Some(1) || degree(&a) != 3 {
+    let deg = degree(&a);
+    if genus(2, &a) != Some(1) || !(deg == 3 || deg == 4) {
         return None;
     }
 
@@ -49,8 +56,180 @@ pub fn integrate_genus1_log(
         return None;
     }
 
-    // 4. Abel–Jacobi image and its order; build u for the principal divisor.
-    let (e, map) = short_weierstrass(&a)?;
+    let a_expr = qpoly_to_expr(&a, var, pool);
+    let y_sym = pool.func("sqrt", vec![a_expr]);
+
+    // 4. Build the elliptic curve `E`, the place→point map onto `E`, and the
+    // back-translation of an `EllFactor` (a function on `E`) to a symbolic
+    // function in `(x, √a)`.
+    //  * Cubic `y²=a`: depressed model `X = a₃x + a₂/3, Y = a₃y`; the place ∞ ↦ O.
+    //  * Quartic `y²=a` (rational root `r`, no residue at ∞): reduce via
+    //    `u = 1/(x−r)`, `Y' = y/(x−r)²` to the cubic `C(u)` then to `E`; the
+    //    place `x=r` and the ∞-places ↦ O.  An `EllFactor` in `(X,Y)` pulls back
+    //    with `X = c₃·u + c₂/3`, `Y = c₃·y/(x−r)²` (`c₃,c₂` = `C`'s top coeffs).
+    #[allow(clippy::type_complexity)]
+    let (e, place_to_point, to_expr): (
+        EllipticCurve,
+        Box<dyn Fn(&PlacedResidue) -> Point>,
+        Box<dyn Fn(&EllFactor) -> ExprId + '_>,
+    ) = if deg == 3 {
+        let (e, map) = short_weierstrass(&a)?;
+        let a3 = a[3].clone();
+        let a2 = a.get(2).cloned().unwrap_or_else(|| Rational::from(0));
+        let ptp = move |r: &PlacedResidue| -> Point {
+            if r.residue.at_infinity {
+                Point::Infinity
+            } else {
+                let (x, y) = map(&r.residue.point, &r.y_coord);
+                Point::Affine(x, y)
+            }
+        };
+        let to_expr = move |f: &EllFactor| -> ExprId {
+            match f {
+                EllFactor::Vertical(x0) => pool.add(vec![
+                    pool.mul(vec![rational_to_expr(&a3, pool), var]),
+                    rational_to_expr(&(a2.clone() / Rational::from(3) - x0.clone()), pool),
+                ]),
+                EllFactor::Line(lam, nu) => pool.add(vec![
+                    pool.mul(vec![rational_to_expr(&a3, pool), y_sym]),
+                    pool.mul(vec![rational_to_expr(&(-(lam.clone() * &a3)), pool), var]),
+                    rational_to_expr(
+                        &(-(lam.clone() * &a2 / Rational::from(3)) - nu.clone()),
+                        pool,
+                    ),
+                ]),
+            }
+        };
+        (e, Box::new(ptp), Box::new(to_expr))
+    } else if let Some(root) = first_rational_root(&a) {
+        // deg == 4 with a rational root (no residue at ∞): reduce via
+        // `u = 1/(x−r)`, `Y = y/(x−r)²`; the place `x=r` and ∞ ↦ O.
+        if divisor
+            .iter()
+            .any(|r| r.residue.at_infinity && r.residue.value != 0)
+        {
+            return None;
+        }
+        let (e, map) = weierstrass_from_quartic(&a, &root)?;
+        let big_c = quartic_to_cubic(&a, &root)?;
+        let c3 = big_c[3].clone();
+        let c2 = big_c.get(2).cloned().unwrap_or_else(|| Rational::from(0));
+        let root_p = root.clone();
+        let ptp = move |r: &PlacedResidue| -> Point {
+            if r.residue.at_infinity || r.residue.point == root_p {
+                Point::Infinity
+            } else {
+                let (x, y) = map(&r.residue.point, &r.y_coord);
+                Point::Affine(x, y)
+            }
+        };
+        let neg_root = -root.clone();
+        let to_expr = move |f: &EllFactor| -> ExprId {
+            let x_minus_r = pool.add(vec![var, rational_to_expr(&neg_root, pool)]);
+            let u = pool.pow(x_minus_r, pool.integer(-1_i32));
+            match f {
+                // X − X₀ = c₃·u + (c₂/3 − X₀)
+                EllFactor::Vertical(x0) => pool.add(vec![
+                    pool.mul(vec![rational_to_expr(&c3, pool), u]),
+                    rational_to_expr(&(c2.clone() / Rational::from(3) - x0.clone()), pool),
+                ]),
+                // Y − λX − ν = c₃·y/(x−r)² − λc₃·u − (λc₂/3 + ν)
+                EllFactor::Line(lam, nu) => {
+                    let d2 = pool.pow(x_minus_r, pool.integer(-2_i32));
+                    pool.add(vec![
+                        pool.mul(vec![rational_to_expr(&c3, pool), y_sym, d2]),
+                        pool.mul(vec![rational_to_expr(&(-(lam.clone() * &c3)), pool), u]),
+                        rational_to_expr(
+                            &(-(lam.clone() * &c2 / Rational::from(3)) - nu.clone()),
+                            pool,
+                        ),
+                    ])
+                }
+            }
+        };
+        (e, Box::new(ptp), Box::new(to_expr))
+    } else {
+        // deg == 4, no rational root: Nagell reduction via a finite rational
+        // point `(x₀,y₀)`, `y₀≠0`.  `z = (y−p−B·x̃)/x̃²`, `w = 2(z²−a₄)x̃−a₃+2Bz`
+        // (`x̃=x−x₀`, `p=y₀`) gives `w²=C(z)`; `E = short_weierstrass(C)` with
+        // `Z = c₃z+c₂/3, W = c₃w`.  Residues on the base fibre `x=x₀` aren't
+        // placeable here, and ∞-residues must be zero — bail otherwise.
+        if divisor
+            .iter()
+            .any(|r| r.residue.at_infinity && r.residue.value != 0)
+        {
+            return None;
+        }
+        let (x0, y0) = first_rational_point(&a)?;
+        if divisor
+            .iter()
+            .any(|r| !r.residue.at_infinity && r.residue.point == x0)
+        {
+            return None;
+        }
+        let m = quartic_point_model(&a, &x0, &y0)?;
+        let (e, _) = short_weierstrass(&m.c)?;
+        let c3 = m.c[3].clone();
+        let c2 = m.c.get(2).cloned().unwrap_or_else(|| Rational::from(0));
+        let mm = m.clone();
+        let (c3p, c2p) = (c3.clone(), c2.clone());
+        let ptp = move |r: &PlacedResidue| -> Point {
+            if r.residue.at_infinity {
+                return Point::Infinity;
+            }
+            match mm.zw(&r.residue.point, &r.y_coord) {
+                Some((z, w)) => Point::Affine(
+                    c3p.clone() * &z + c2p.clone() / Rational::from(3),
+                    c3p.clone() * &w,
+                ),
+                None => Point::Infinity, // x==x₀ pre-checked out
+            }
+        };
+        let to_expr = move |f: &EllFactor| -> ExprId {
+            let xt = pool.add(vec![var, rational_to_expr(&(-m.x0.clone()), pool)]);
+            // z = (y − p − B·x̃)/x̃²
+            let z = pool.mul(vec![
+                pool.add(vec![
+                    y_sym,
+                    rational_to_expr(&(-m.p.clone()), pool),
+                    pool.mul(vec![rational_to_expr(&(-m.b.clone()), pool), xt]),
+                ]),
+                pool.pow(xt, pool.integer(-2_i32)),
+            ]);
+            // w = 2(z²−a₄)·x̃ − a₃ + 2B·z
+            let w = pool.add(vec![
+                pool.mul(vec![
+                    rational_to_expr(&Rational::from(2), pool),
+                    pool.add(vec![
+                        pool.pow(z, pool.integer(2_i32)),
+                        rational_to_expr(&(-m.a4.clone()), pool),
+                    ]),
+                    xt,
+                ]),
+                rational_to_expr(&(-m.a3.clone()), pool),
+                pool.mul(vec![rational_to_expr(&(Rational::from(2) * &m.b), pool), z]),
+            ]);
+            match f {
+                // Z − Z₀ = c₃·z + (c₂/3 − Z₀)
+                EllFactor::Vertical(z0) => pool.add(vec![
+                    pool.mul(vec![rational_to_expr(&c3, pool), z]),
+                    rational_to_expr(&(c2.clone() / Rational::from(3) - z0.clone()), pool),
+                ]),
+                // W − λZ − ν = c₃·w − λc₃·z − (λc₂/3 + ν)
+                EllFactor::Line(lam, nu) => pool.add(vec![
+                    pool.mul(vec![rational_to_expr(&c3, pool), w]),
+                    pool.mul(vec![rational_to_expr(&(-(lam.clone() * &c3)), pool), z]),
+                    rational_to_expr(
+                        &(-(lam.clone() * &c2 / Rational::from(3)) - nu.clone()),
+                        pool,
+                    ),
+                ]),
+            }
+        };
+        (e, Box::new(ptp), Box::new(to_expr))
+    };
+
+    // Abel–Jacobi image and its order; build u for the principal divisor.
     let mut l = Integer::from(1);
     for r in &divisor {
         l = l.lcm(r.residue.value.denom());
@@ -59,13 +238,7 @@ pub fn integrate_genus1_log(
     for r in &divisor {
         let scaled = r.residue.value.clone() * Rational::from(l.clone());
         let coeff = scaled.numer().to_i64()?;
-        let pt = if r.residue.at_infinity {
-            Point::Infinity
-        } else {
-            let (x, y) = map(&r.residue.point, &r.y_coord);
-            Point::Affine(x, y)
-        };
-        pairs.push((pt, coeff));
+        pairs.push((place_to_point(r), coeff));
     }
     let mut s = Point::Infinity;
     for (p, c) in &pairs {
@@ -83,28 +256,7 @@ pub fn integrate_genus1_log(
         .collect();
     let u_e = e.general_miller(&scaled)?;
 
-    // Back-translate u (on E, coords X = a₃x + a₂/3, Y = a₃y) to (x, √a).
-    let a3 = a[3].clone();
-    let a2 = a.get(2).cloned().unwrap_or_else(|| Rational::from(0));
-    let a_expr = qpoly_to_expr(&a, var, pool);
-    let y_sym = pool.func("sqrt", vec![a_expr]);
-    let to_expr = |f: &EllFactor| -> ExprId {
-        match f {
-            EllFactor::Vertical(x0) => pool.add(vec![
-                pool.mul(vec![rational_to_expr(&a3, pool), var]),
-                rational_to_expr(&(a2.clone() / Rational::from(3)), pool),
-                rational_to_expr(&(-x0.clone()), pool),
-            ]),
-            EllFactor::Line(lam, nu) => pool.add(vec![
-                pool.mul(vec![rational_to_expr(&a3, pool), y_sym]),
-                pool.mul(vec![rational_to_expr(&(-(lam.clone() * &a3)), pool), var]),
-                rational_to_expr(
-                    &(-(lam.clone() * &a2 / Rational::from(3)) - nu.clone()),
-                    pool,
-                ),
-            ]),
-        }
-    };
+    // Back-translate u (on E) to (x, √a).
     let product = |fs: &[EllFactor]| -> ExprId {
         if fs.is_empty() {
             pool.integer(1_i32)
@@ -288,5 +440,202 @@ mod tests {
         // 1/y = y/(x³+1).
         let integrand = vec![RatFn::int(0), RatFn::new(qp(&[1]), qp(&[1, 0, 0, 1]))];
         assert!(integrate_genus1_log(&a, &integrand, x, &pool).is_none());
+    }
+
+    /// **Quartic** genus-1 curve `y² = x⁴ + x` (reduces to `Y²=u³+1` via `u=1/x`,
+    /// rational root `r=0`).  We build an *explicit* curve function `w` via Miller
+    /// (divisor `3(P)−3(−P)`, `P=(2,3)` ⇒ class order 3), pull it back to
+    /// `(x,√(x⁴+x))` with `X=1/x, Y=y/x²`, and integrate its logarithmic
+    /// derivative `w'/w` — an **exact** `dlog` (no first-kind part), hence
+    /// elementary.  The public engine must recover an antiderivative with
+    /// `d/dx F = w'/w`, exercising the degree-4 capstone path (rational root
+    /// `r=0`, both ∞-residues zero) through `integrate` → `integrate_algebraic`.
+    #[test]
+    fn quartic_elliptic_log_via_engine() {
+        use super::super::elliptic::{EllFactor, EllipticCurve, Point};
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.func(
+            "sqrt",
+            vec![pool.add(vec![pool.pow(x, pool.integer(4_i32)), x])],
+        );
+        let big_x = pool.pow(x, pool.integer(-1_i32)); // X = 1/x
+        let big_y = pool.mul(vec![y, pool.pow(x, pool.integer(-2_i32))]); // Y = y/x²
+        let factor = |f: &EllFactor| -> ExprId {
+            match f {
+                EllFactor::Vertical(x0) => {
+                    pool.add(vec![big_x, rational_to_expr(&(-x0.clone()), &pool)])
+                }
+                EllFactor::Line(lam, nu) => pool.add(vec![
+                    big_y,
+                    pool.mul(vec![rational_to_expr(&(-lam.clone()), &pool), big_x]),
+                    rational_to_expr(&(-nu.clone()), &pool),
+                ]),
+            }
+        };
+        let e = EllipticCurve::new(Rational::from(0), Rational::from(1)); // Y²=X³+1
+        let p = Point::Affine(Rational::from(2), Rational::from(3));
+        let np = Point::Affine(Rational::from(2), Rational::from(-3));
+        let w_e = e
+            .general_miller(&[(p, 3), (np, -3)])
+            .expect("order-3 class principal");
+        let prod = |fs: &[EllFactor]| -> ExprId {
+            if fs.is_empty() {
+                pool.integer(1_i32)
+            } else {
+                pool.mul(fs.iter().map(&factor).collect())
+            }
+        };
+        let w = if w_e.den.is_empty() {
+            prod(&w_e.num)
+        } else {
+            pool.mul(vec![
+                prod(&w_e.num),
+                pool.pow(prod(&w_e.den), pool.integer(-1_i32)),
+            ])
+        };
+        // integrand = d/dx log(w) = w'/w — an exact logarithmic derivative.
+        let integrand = simplify(
+            crate::diff::diff(pool.func("log", vec![w]), x, &pool)
+                .unwrap()
+                .value,
+            &pool,
+        )
+        .value;
+
+        let res = crate::integrate::engine::integrate(integrand, x, &pool)
+            .expect("exact dlog on quartic genus-1 curve must integrate");
+        let f = res.value;
+        let df = simplify(crate::diff::diff(f, x, &pool).unwrap().value, &pool).value;
+        let mut checked = 0;
+        for &xv in &[0.7_f64, 1.3, 2.2, 3.1] {
+            let lhs = eval(df, x, xv, &pool).unwrap();
+            let rhs = eval(integrand, x, xv, &pool).unwrap();
+            assert!(
+                (lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()),
+                "x={xv}: d/dx F = {lhs}, integrand = {rhs}\n  F = {}",
+                pool.display(f)
+            );
+            checked += 1;
+        }
+        assert!(checked >= 2);
+    }
+
+    /// **Quartic with NO rational root** — `y² = x⁴ − x² + 1` (roots are primitive
+    /// 12th roots of unity).  Reduced via a finite rational point (Nagell): base
+    /// `(−1,1)`, and the place `(0,1)` maps to an order-4 point on `E`.  We build
+    /// an explicit curve function `w` (Miller, divisor `N(φ(0,1))−N(φ(0,−1))`)
+    /// and integrate `w'/w` — an exact `dlog`, elementary — end-to-end through the
+    /// public engine, exercising the rational-root-free quartic capstone path.
+    #[test]
+    fn quartic_no_root_elliptic_log_via_engine() {
+        use super::super::elliptic::{quartic_point_model, EllFactor, Point};
+        use super::super::find_order::first_rational_point;
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let a = qp(&[1, 0, -1, 0, 1]); // x⁴ − x² + 1
+        let (x0, y0) = first_rational_point(&a).expect("rational point");
+        let m = quartic_point_model(&a, &x0, &y0).expect("model");
+        let (e, _) = short_weierstrass(&m.c).expect("cubic");
+        let c3 = m.c[3].clone();
+        let c2 = m.c[2].clone();
+        let img = |xv: &Rational, yv: &Rational| -> Point {
+            let (z, w) = m.zw(xv, yv).unwrap();
+            Point::Affine(
+                c3.clone() * &z + c2.clone() / Rational::from(3),
+                c3.clone() * &w,
+            )
+        };
+        // Generic finite places P=(0,1), Q=(0,−1) (x≠x₀=−1); their E-images.
+        let pe = img(&Rational::from(0), &Rational::from(1));
+        let qe = img(&Rational::from(0), &Rational::from(-1));
+        let n = e
+            .order(&e.add(&pe, &e.neg(&qe)))
+            .expect("class (P)−(Q) torsion") as i64;
+        let w_e = e
+            .general_miller(&[(pe, n), (qe, -n)])
+            .expect("principal divisor");
+
+        // Pull back each factor via the Nagell change of variable.
+        let y_sym = pool.func("sqrt", vec![qpoly_to_expr(&a, x, &pool)]);
+        let factor = |f: &EllFactor| -> ExprId {
+            let xt = pool.add(vec![x, rational_to_expr(&(-m.x0.clone()), &pool)]);
+            let z = pool.mul(vec![
+                pool.add(vec![
+                    y_sym,
+                    rational_to_expr(&(-m.p.clone()), &pool),
+                    pool.mul(vec![rational_to_expr(&(-m.b.clone()), &pool), xt]),
+                ]),
+                pool.pow(xt, pool.integer(-2_i32)),
+            ]);
+            let w = pool.add(vec![
+                pool.mul(vec![
+                    rational_to_expr(&Rational::from(2), &pool),
+                    pool.add(vec![
+                        pool.pow(z, pool.integer(2_i32)),
+                        rational_to_expr(&(-m.a4.clone()), &pool),
+                    ]),
+                    xt,
+                ]),
+                rational_to_expr(&(-m.a3.clone()), &pool),
+                pool.mul(vec![
+                    rational_to_expr(&(Rational::from(2) * &m.b), &pool),
+                    z,
+                ]),
+            ]);
+            match f {
+                EllFactor::Vertical(z0) => pool.add(vec![
+                    pool.mul(vec![rational_to_expr(&c3, &pool), z]),
+                    rational_to_expr(&(c2.clone() / Rational::from(3) - z0.clone()), &pool),
+                ]),
+                EllFactor::Line(lam, nu) => pool.add(vec![
+                    pool.mul(vec![rational_to_expr(&c3, &pool), w]),
+                    pool.mul(vec![rational_to_expr(&(-(lam.clone() * &c3)), &pool), z]),
+                    rational_to_expr(
+                        &(-(lam.clone() * &c2 / Rational::from(3)) - nu.clone()),
+                        &pool,
+                    ),
+                ]),
+            }
+        };
+        let prod = |fs: &[EllFactor]| -> ExprId {
+            if fs.is_empty() {
+                pool.integer(1_i32)
+            } else {
+                pool.mul(fs.iter().map(&factor).collect())
+            }
+        };
+        let w = if w_e.den.is_empty() {
+            prod(&w_e.num)
+        } else {
+            pool.mul(vec![
+                prod(&w_e.num),
+                pool.pow(prod(&w_e.den), pool.integer(-1_i32)),
+            ])
+        };
+        let integrand = simplify(
+            crate::diff::diff(pool.func("log", vec![w]), x, &pool)
+                .unwrap()
+                .value,
+            &pool,
+        )
+        .value;
+
+        let res = crate::integrate::engine::integrate(integrand, x, &pool)
+            .expect("rational-root-free quartic dlog must integrate");
+        let f = res.value;
+        let df = simplify(crate::diff::diff(f, x, &pool).unwrap().value, &pool).value;
+        let mut checked = 0;
+        for &xv in &[0.4_f64, 1.3, 2.2, 3.1] {
+            let lhs = eval(df, x, xv, &pool).unwrap();
+            let rhs = eval(integrand, x, xv, &pool).unwrap();
+            assert!(
+                (lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()),
+                "x={xv}: d/dx F = {lhs}, integrand = {rhs}\n  F = {}",
+                pool.display(f)
+            );
+            checked += 1;
+        }
+        assert!(checked >= 2);
     }
 }
