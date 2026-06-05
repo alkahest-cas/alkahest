@@ -27,7 +27,7 @@
 //! (genus-graded principality) these complete MC.
 
 use rug::{Integer, Rational};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use super::super::risch::alg_field::AlgElem;
 use super::super::risch::poly_rde::{degree, trim, QPoly};
@@ -89,8 +89,17 @@ pub fn finite_residues(n: usize, a: &QPoly, h: &AlgElem) -> Vec<Residue> {
             .unwrap_or(0)
             + n as i64
             + 3) as u32;
+        // A ramified place of index e is returned by Puiseux as e Galois-conjugate
+        // sheets, all carrying the same residue; keep one representative per place.
+        let mut seen_per_ram: HashMap<u64, usize> = HashMap::new();
         for (sheet, br) in puiseux_at(&monos, &alpha, prec).iter().enumerate() {
             let e = br.ramification as i64;
+            let idx = seen_per_ram.entry(br.ramification).or_insert(0);
+            let keep = *idx % (br.ramification.max(1) as usize) == 0;
+            *idx += 1;
+            if !keep {
+                continue;
+            }
             let u = 2 * e + 4;
             let series = elem_ts(h, &alpha, e, u, &branch_ts(br));
             let coeff = series
@@ -156,7 +165,15 @@ pub fn residues_at_infinity(n: usize, a: &QPoly, h: &AlgElem) -> Vec<Residue> {
         .unwrap_or(0);
     let prec = (dmax + (n as i64) + (m as i64) + 4) as u32;
     let mut out = Vec::new();
+    // Dedup the e conjugate sheets of a ramified place over ∞ (see finite_residues).
+    let mut seen_per_ram: HashMap<u64, usize> = HashMap::new();
     for (sheet, w_branch) in puiseux_at_infinity(n, a, prec).iter().enumerate() {
+        let idx = seen_per_ram.entry(w_branch.ramification).or_insert(0);
+        let keep = *idx % (w_branch.ramification.max(1) as usize) == 0;
+        *idx += 1;
+        if !keep {
+            continue;
+        }
         let e = w_branch.ramification as i64;
         let u = 2 * e + 2 * (m as i64) * e + 8;
         // y = 1/w  as a t-series; w from the branch (z = tᵉ).

@@ -530,6 +530,8 @@ mod tests {
         assert_eq!(f.num, vec![EllFactor::Line(r(0), r(1))]); // y − 1
         assert!(f.den.is_empty());
         // A non-principal divisor returns None.
-        assert!(e.general_miller(&[(pt(0, 1), 1), (Point::Infinity, -1)]).is_none());
+        assert!(e
+            .general_miller(&[(pt(0, 1), 1), (Point::Infinity, -1)])
+            .is_none());
     }
 }

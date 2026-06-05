@@ -74,7 +74,10 @@ pub fn integrate_genus1_log(
         s = e.add(&s, &t);
     }
     let n_s = e.order(&s)?; // class order (Mazur ≤ 12)
-    let scaled: Vec<(Point, i64)> = pairs.iter().map(|(p, c)| (p.clone(), c * n_s as i64)).collect();
+    let scaled: Vec<(Point, i64)> = pairs
+        .iter()
+        .map(|(p, c)| (p.clone(), c * n_s as i64))
+        .collect();
     let u_e = e.general_miller(&scaled)?;
 
     // Back-translate u (on E, coords X = a₃x + a₂/3, Y = a₃y) to (x, √a).
@@ -174,7 +177,7 @@ fn verify(f: ExprId, integrand: &AlgElem, a: &QPoly, var: ExprId, pool: &ExprPoo
             continue; // need √a real
         }
         let ya = av.sqrt();
-        let Some(lhs) = eval(ds, var, xv, ya, pool) else {
+        let Some(lhs) = eval(ds, var, xv, pool) else {
             return false;
         };
         let rhs = eval_alg(integrand, xv, ya);
@@ -201,21 +204,24 @@ fn eval_alg(g: &AlgElem, xv: f64, yv: f64) -> f64 {
         .sum()
 }
 
-/// Numeric eval where `sqrt(a)` evaluates to the supplied `ya` branch.
-fn eval(expr: ExprId, x: ExprId, xv: f64, ya: f64, pool: &ExprPool) -> Option<f64> {
+/// Numeric eval; `sqrt`/`cbrt` take the principal real branch (matching the
+/// `+√a` branch used by [`eval_alg`] for the integrand).
+fn eval(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> Option<f64> {
     if expr == x {
         return Some(xv);
     }
     match pool.get(expr) {
         ExprData::Integer(n) => Some(n.0.to_f64()),
         ExprData::Rational(r) => Some(r.0.to_f64()),
-        ExprData::Add(args) => args.iter().try_fold(0.0, |s, &a| Some(s + eval(a, x, xv, ya, pool)?)),
-        ExprData::Mul(args) => args.iter().try_fold(1.0, |s, &a| Some(s * eval(a, x, xv, ya, pool)?)),
-        ExprData::Pow { base, exp } => {
-            Some(eval(base, x, xv, ya, pool)?.powf(eval(exp, x, xv, ya, pool)?))
-        }
+        ExprData::Add(args) => args
+            .iter()
+            .try_fold(0.0, |s, &a| Some(s + eval(a, x, xv, pool)?)),
+        ExprData::Mul(args) => args
+            .iter()
+            .try_fold(1.0, |s, &a| Some(s * eval(a, x, xv, pool)?)),
+        ExprData::Pow { base, exp } => Some(eval(base, x, xv, pool)?.powf(eval(exp, x, xv, pool)?)),
         ExprData::Func { ref name, ref args } if args.len() == 1 => {
-            let v = eval(args[0], x, xv, ya, pool)?;
+            let v = eval(args[0], x, xv, pool)?;
             match name.as_str() {
                 "exp" => Some(v.exp()),
                 "log" => Some(v.ln()),
@@ -249,7 +255,7 @@ mod tests {
         let a = qp(&[1, 0, 0, 1]); // x³ + 1
                                    // integrand = 1/(2x)  +  y/(2x(x³+1)).
         let integrand = vec![
-            RatFn::new(qp(&[1]), qp(&[0, 2])),       // 1/(2x)
+            RatFn::new(qp(&[1]), qp(&[0, 2])),          // 1/(2x)
             RatFn::new(qp(&[1]), qp(&[0, 2, 0, 0, 2])), // 1/(2x + 2x⁴) = 1/(2x(x³+1))
         ];
         let f = integrate_genus1_log(&a, &integrand, x, &pool).expect("elementary log");
@@ -258,7 +264,7 @@ mod tests {
         for &xv in &[0.7_f64, 1.5, 2.9] {
             let av: f64 = a.iter().rev().fold(0.0, |acc, c| acc * xv + c.to_f64());
             let ya = av.sqrt();
-            let lhs = eval(ds, x, xv, ya, &pool).unwrap();
+            let lhs = eval(ds, x, xv, &pool).unwrap();
             let rhs = eval_alg(&integrand, xv, ya);
             assert!(
                 (lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()),
@@ -280,31 +286,4 @@ mod tests {
         let integrand = vec![RatFn::int(0), RatFn::new(qp(&[1]), qp(&[1, 0, 0, 1]))];
         assert!(integrate_genus1_log(&a, &integrand, x, &pool).is_none());
     }
-}
-
-#[cfg(test)]
-mod probe {
-    use super::super::super::risch::alg_field::RatFn;
-    use super::*;
-    use super::super::find_order::find_order;
-    use super::super::residues::residue_divisor;
-    use super::super::hermite_curve::hermite_reduce_radical;
-    #[test]
-    fn dbg() {
-        let a = qp(&[1, 0, 0, 1]);
-        let integrand = vec![
-            RatFn::new(qp(&[1]), qp(&[0, 2])),
-            RatFn::new(qp(&[1]), qp(&[0, 2, 0, 0, 2])),
-        ];
-        let hr = hermite_reduce_radical(2, &a, &integrand);
-        eprintln!("hermite: {:?}", hr.is_some());
-        let (g, h) = hr.unwrap();
-        eprintln!("g={:?}", g);
-        eprintln!("h={:?}", h);
-        let div = residue_divisor(2, &a, &h);
-        for r in &div { eprintln!("res: pt={} inf={} val={} y={}", r.point, r.at_infinity, r.value, r.y_coord); }
-        eprintln!("find_order={:?}", find_order(2, &a, &div));
-        panic!("probe");
-    }
-    fn qp(cs: &[i64]) -> QPoly { cs.iter().map(|&c| Rational::from(c)).collect() }
 }
