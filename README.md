@@ -628,8 +628,8 @@ env = load_environment(difficulty_tier=0, n_train=1000, n_eval=100, adaptive=Tru
 | `load_environment()` | Returns a `verifiers.SingleTurnEnv` with Risch-tier curriculum |
 | `recipes/verl_integration_reward.py` | Drop-in reward for [veRL](https://github.com/volcengine/verl) |
 
-**Environments Hub:** after merging and a PyPI release, publish from
-`python/alkahest/rl/envs/integration/` with `prime env push`. Full checklist in the
+**Environments Hub:** publish from `python/alkahest/rl/envs/integration/` with
+`prime env push` (requires `alkahest>=3.2.0` on PyPI). Full checklist in the
 [RL guide](docs/mdbook/src/rl.md#hub-checklist).
 
 ---

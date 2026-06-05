@@ -132,9 +132,9 @@ prime eval run alkahest-cas/symbolic-integration -m <model>
 
 ### Hub checklist
 
-1. **Merge and release Alkahest on PyPI** — the Hub package depends on
-   `alkahest>=…` containing `alkahest.rl`. Until that release ships, install from
-   source or a dev wheel when testing locally.
+1. **Alkahest on PyPI** — the Hub package depends on `alkahest>=3.2.0` (includes
+   `alkahest.rl`). For local development before PyPI catches up, use `maturin develop`
+   or a release wheel from GitHub.
 
 2. **Install the Prime CLI** and log in:
    ```bash
