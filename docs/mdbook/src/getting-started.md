@@ -51,6 +51,19 @@ macOS and Windows `+jit` / `+full` wheels are **not** produced in CI yet; use [b
 
 **Roadmap:** a small PEP 503 **extras index** URL hosting only `+jit` / `+full` wheels (PyTorch-style `--extra-index-url`). Until then, use PyPI for the default wheel or direct URLs / asset downloads from Releases.
 
+### Optional: RL environments (`alkahest[rl]`)
+
+Reinforcement-learning environments (symbolic integration, Prime Intellect Hub) are an
+optional extra. Requires **Python ≥ 3.10** (`verifiers` does not support 3.9).
+
+```bash
+pip install "alkahest[rl]"
+```
+
+This adds `verifiers` and `datasets`. Environment code ships in the main wheel under
+`alkahest.rl`. See the [RL guide](./rl.md) for API details, veRL integration, and
+[Environments Hub publishing](./rl.md#hub-checklist).
+
 ### From source
 
 For optional Cargo features (`jit`, `parallel`, `cuda`, …), GPU/NVPTX, or development, build the PyO3 extension with [maturin](https://github.com/PyO3/maturin). The `groebner` and `egraph` features are default and included automatically.
