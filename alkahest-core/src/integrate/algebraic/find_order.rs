@@ -9,19 +9,22 @@
 //!
 //! * **genus 0** — every degree-0 divisor is principal, so `N = 1` always
 //!   (the rational-parametrization win, seen from the divisor side).
-//! * **genus 1** — torsion over ℚ has order ≤ 12 (**Mazur**), so `N ∈ 1..=12` is
-//!   a *complete* test; the genuine elliptic frontier (Weierstrass form + point
-//!   arithmetic) — currently `NotDecided`.
+//! * **genus 1** (`y²=cubic`) — **implemented**: map the residue divisor to
+//!   `E(ℚ)` (Abel–Jacobi, [`super::elliptic`]) and read off the order of its
+//!   class; by **Mazur** a rational torsion point has order ≤ 12, so this is a
+//!   *complete* decision — `Principal{N}` if torsion, `NonElementary` if not.
 //! * **genus ≥ 2** — no uniform bound; the Weil-bound reduction-mod-good-prime
 //!   search is best-effort — currently `NotDecided`.
 //!
-//! This module provides the **genus** computation (superelliptic curves) and the
-//! genus-graded decision with **genus 0 complete** and the necessary conditions
-//! (degree-0 residue divisor; rational residues).  Sound: only `Principal`/
-//! `NonElementary` verdicts are asserted; everything uncertain is `NotDecided`.
+//! Sound: only `Principal`/`NonElementary` verdicts are asserted; anything
+//! uncertain (incomplete divisor with missing algebraic places, `y²=quartic`,
+//! genus ≥ 2) is `NotDecided`.
+
+use rug::{Integer, Rational};
 
 use super::super::risch::poly_rde::{degree, poly_deriv, trim, QPoly};
 use super::super::risch::rational_rde::poly_gcd;
+use super::elliptic::{short_weierstrass, Point};
 use super::residues::{residue_sum, Residue};
 
 /// Result of FIND-ORDER on a residue divisor.
@@ -79,11 +82,71 @@ pub fn find_order(n: usize, a: &QPoly, divisor: &[Residue]) -> FindOrder {
     match genus(n, a) {
         // Genus 0: every degree-0 divisor is principal.
         Some(0) => FindOrder::Principal { order: 1 },
-        // Genus ≥ 1: the torsion decision (Mazur for genus 1, Weil for ≥ 2) is
-        // the elliptic/Jacobian frontier — not yet implemented.
-        Some(_) => FindOrder::NotDecided,
-        None => FindOrder::NotDecided,
+        // Genus 1: decide via the elliptic torsion of the Abel–Jacobi image
+        // (Mazur's bound makes this complete for `y² = cubic`).
+        Some(1) => genus1_cubic(n, a, divisor).unwrap_or(FindOrder::NotDecided),
+        // Genus ≥ 2: the Weil-bound reduction-mod-prime search — not yet done.
+        _ => FindOrder::NotDecided,
     }
+}
+
+/// Genus-1 FIND-ORDER for `y² = a(x)` with `a` a cubic: map the residue divisor
+/// to `E(ℚ)` (Abel–Jacobi), then read off the order of its class.  `None` when
+/// outside this scope (not `y²=cubic`, or a place not on `E(ℚ)`).
+fn genus1_cubic(n: usize, a: &QPoly, divisor: &[Residue]) -> Option<FindOrder> {
+    if n != 2 || degree(&trim(a.clone())) != 3 {
+        return None;
+    }
+    let (e, map) = short_weierstrass(a)?;
+
+    // Scale residues to a primitive integer divisor: coeffs = value·L / g.
+    let mut l = Integer::from(1);
+    for r in divisor {
+        l = l.lcm(r.value.denom());
+    }
+    let int_coeffs: Vec<Integer> = divisor
+        .iter()
+        .map(|r| {
+            (r.value.clone() * Rational::from(l.clone()))
+                .numer()
+                .clone()
+        })
+        .collect();
+    let mut g = Integer::from(0);
+    for c in &int_coeffs {
+        g = g.gcd(c);
+    }
+    if g == 0 {
+        return Some(FindOrder::Principal { order: 1 }); // all residues zero
+    }
+
+    // S = Σ (coeff/g) · φ(place).  Finite places map onto E; the (unique, odd
+    // degree) place at infinity is the origin O and contributes nothing.
+    let mut s = Point::Infinity;
+    for (r, c) in divisor.iter().zip(&int_coeffs) {
+        if r.at_infinity {
+            continue;
+        }
+        let coeff = (c.clone() / &g).to_i64()?;
+        let (xx, yy) = map(&r.point, &r.y_coord);
+        let p = Point::Affine(xx, yy);
+        if !e.contains(&p) {
+            return None; // place not on E(ℚ): outside the rational-image scope
+        }
+        let term = if coeff >= 0 {
+            e.mul(coeff as u64, &p)
+        } else {
+            e.mul((-coeff) as u64, &e.neg(&p))
+        };
+        s = e.add(&s, &term);
+    }
+
+    Some(match e.order(&s) {
+        // Class order N: N·δ is principal ⇒ the log part is (1/N)·log(u).
+        Some(order) => FindOrder::Principal { order },
+        // Non-torsion class ⇒ no multiple is principal ⇒ no elementary log part.
+        None => FindOrder::NonElementary,
+    })
 }
 
 fn gcd_i64(mut a: i64, mut b: i64) -> i64 {
@@ -142,16 +205,49 @@ mod tests {
         ));
     }
 
-    /// Genus-1 curve `y²=x³+1`: a nonzero residue divisor is the elliptic
-    /// frontier — `NotDecided` (sound, not a wrong verdict).
+    fn place(point: i64, y: i64, value: i64, inf: bool, ram: u64) -> Residue {
+        Residue {
+            point: Rational::from(point),
+            at_infinity: inf,
+            sheet: 0,
+            ramification: ram,
+            value: Rational::from(value),
+            y_coord: Rational::from(y),
+        }
+    }
+
+    /// Genus-1 `y²=x³+1` (torsion ℤ/6).  Residue divisor `(−1,0) − O`: the
+    /// Abel–Jacobi image is the 2-torsion point `(−1,0)` ⇒ `Principal{2}`.
     #[test]
-    fn genus1_not_decided() {
-        let a = qp(&[1, 0, 0, 1]); // x³+1
-                                   // h = 1/((x−2)y): a simple pole at x=2 (and conjugate sheets).
-        let h = vec![RatFn::int(0), RatFn::new(qp(&[1]), qp(&[-2, 1]))];
-        let div = residue_divisor(2, &a, &h);
-        // Either the divisor is incomplete (algebraic places) or genus ≥ 1:
-        // both yield NotDecided.
+    fn genus1_order_two() {
+        let a = qp(&[1, 0, 0, 1]);
+        let div = [place(-1, 0, 1, false, 2), place(0, 0, -1, true, 1)];
+        assert_eq!(find_order(2, &a, &div), FindOrder::Principal { order: 2 });
+    }
+
+    /// Same curve, divisor `(2,3) − O`: `(2,3)` has order 6 ⇒ `Principal{6}`.
+    #[test]
+    fn genus1_order_six() {
+        let a = qp(&[1, 0, 0, 1]);
+        let div = [place(2, 3, 1, false, 1), place(0, 0, -1, true, 1)];
+        assert_eq!(find_order(2, &a, &div), FindOrder::Principal { order: 6 });
+    }
+
+    /// Mordell curve `y²=x³−2` (rank 1).  Divisor `(3,5) − O` maps to the
+    /// infinite-order point `(3,5)` ⇒ the integral is non-elementary.
+    #[test]
+    fn genus1_non_elementary() {
+        let a = qp(&[-2, 0, 0, 1]);
+        assert_eq!(genus(2, &a), Some(1));
+        let div = [place(3, 5, 1, false, 1), place(0, 0, -1, true, 1)];
+        assert_eq!(find_order(2, &a, &div), FindOrder::NonElementary);
+    }
+
+    /// An incomplete divisor (Σ res ≠ 0, missing algebraic places) ⇒ NotDecided.
+    #[test]
+    fn genus1_incomplete_not_decided() {
+        let a = qp(&[1, 0, 0, 1]);
+        let div = [place(-1, 0, 1, false, 2)]; // sum = 1 ≠ 0
         assert_eq!(find_order(2, &a, &div), FindOrder::NotDecided);
     }
 }

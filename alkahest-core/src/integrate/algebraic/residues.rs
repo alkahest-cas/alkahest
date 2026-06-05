@@ -48,6 +48,10 @@ pub struct Residue {
     pub ramification: u64,
     /// The residue `res_P(h dx)`.
     pub value: Rational,
+    /// The `y`-coordinate of the place (constant term of the branch): `0` at a
+    /// branch point, `±√(a(α))` at an unramified place (rational when captured);
+    /// unused when `at_infinity`.  Lets FIND-ORDER map the place onto the curve.
+    pub y_coord: Rational,
 }
 
 /// Residues of the differential `h dx` at all **rational finite places** of the
@@ -95,12 +99,20 @@ pub fn finite_residues(n: usize, a: &QPoly, h: &AlgElem) -> Vec<Residue> {
                 .unwrap_or_else(|| Rational::from(0));
             let value = Rational::from(e) * coeff;
             if value != 0 {
+                // y-coordinate of the place = constant term of the branch.
+                let y_coord = br
+                    .terms
+                    .iter()
+                    .find(|(ex, _)| *ex == 0)
+                    .map(|(_, c)| c.clone())
+                    .unwrap_or_else(|| Rational::from(0));
                 out.push(Residue {
                     point: alpha.clone(),
                     at_infinity: false,
                     sheet,
                     ramification: br.ramification,
                     value,
+                    y_coord,
                 });
             }
         }
@@ -162,6 +174,7 @@ pub fn residues_at_infinity(n: usize, a: &QPoly, h: &AlgElem) -> Vec<Residue> {
                 sheet,
                 ramification: w_branch.ramification,
                 value,
+                y_coord: Rational::from(0),
             });
         }
     }
