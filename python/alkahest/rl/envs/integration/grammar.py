@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from random import Random
+from typing import TYPE_CHECKING
 
 import alkahest as ak
 from alkahest import Expr, ExprPool
+
+if TYPE_CHECKING:
+    from random import Random
 
 TIERS = {
     0: "rational",
