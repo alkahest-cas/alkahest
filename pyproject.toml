@@ -24,6 +24,11 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Mathematics",
 ]
 
+[project.optional-dependencies]
+# verifiers requires Python >=3.10; keep alkahest core installable on 3.9 without rl.
+rl = ["verifiers>=0.1.5; python_version>='3.10'", "datasets>=2.0"]
+rl-integration = ["verifiers>=0.1.5; python_version>='3.10'", "datasets>=2.0"]
+
 [project.urls]
 Homepage = "https://github.com/alkahest-cas/alkahest"
 Documentation = "https://alkahest-cas.github.io/alkahest/"

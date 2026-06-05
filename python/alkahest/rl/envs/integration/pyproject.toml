@@ -1,0 +1,13 @@
+[project]
+name = "alkahest-symbolic-integration"
+version = "0.1.0"
+description = "Symbolic integration RL environment backed by the Risch algorithm"
+dependencies = [
+    "verifiers>=0.1",
+    "alkahest>=2.1",
+    "datasets>=2.0",
+]
+
+[tool.verifiers]
+tags = ["math", "reasoning", "single-turn", "train", "eval", "symbolic"]
+entrypoint = "alkahest.rl.envs.integration.env:load_environment"
