@@ -20,10 +20,12 @@
 //! MA omitted — previously returning a *wrong* `NonElementary` for e.g.
 //! `∫ ∛x/(x+1) dx`).
 //!
-//! Scope: a single radical with linear-fractional radicand (any index `n ≥ 2`).
-//! Radicands with ≥ 2 distinct finite zeros/poles (`yⁿ = p(x)`, `deg ≥ 2`,
-//! non-Möbius) are generally higher genus and out of scope.  Sound by
-//! construction: the result is accepted only after a numeric `d/dx F = integrand`
+//! Scope ([`try_parametrize_genus0`]): a single radical with linear-fractional
+//! radicand (any index `n ≥ 2`).  Radicands `yⁿ = p(x)` of `deg ≥ 2` (non-Möbius)
+//! are generally higher genus and out of scope **except** the genus-0
+//! `√(quadratic)` case, which [`try_euler_quadratic`] handles for an arbitrary
+//! rational `R(x, √(quadratic))` via an Euler substitution.  Both are sound by
+//! construction: a result is accepted only after a numeric `d/dx F = integrand`
 //! check.
 
 use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
@@ -103,6 +105,191 @@ pub(super) fn try_parametrize_genus0(
         f_x,
     ));
     Some(Ok(DerivedExpr::with_log(f_x, log)))
+}
+
+/// Genus-0 integration of `∫ R(x, √(a x²+b x+c)) dx` with **`R` an arbitrary
+/// rational function** (not just a polynomial coefficient on the radical), via an
+/// **Euler substitution**.  A nondegenerate quadratic radicand is a genus-0
+/// conic, so a rational point gives a parameter `t` in which both `x` and
+/// `√(quad)` are rational — turning the whole integrand rational in `t` (always
+/// elementary).  Two substitutions cover the rational-point cases:
+///
+/// * `a = e²` a perfect square: `√(quad) = t − e·x`, so
+///   `x = (t²−c)/(2e·t + b)`, and `t = √(quad) + e·x`;
+/// * else `c = g²` a perfect square: `√(quad) = x·t + g`, so
+///   `x = (2g·t − b)/(a − t²)`, and `t = (√(quad) − g)/x`.
+///
+/// Returns `None` when not a single `sqrt(quadratic-over-ℚ[x])` generator, or
+/// when neither leading nor constant coefficient is a rational square (a rational
+/// point at infinity / at `x=0` is then unavailable in this bounded form).
+pub(super) fn try_euler_quadratic(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<Result<DerivedExpr<ExprId>, IntegrationError>> {
+    let (n, radicand) = detect_single_radical(expr, var, pool)?;
+    if n != 2 {
+        return None;
+    }
+    // Radicand must be a degree-2 polynomial in x over ℚ.
+    let (num, den) = expr_to_qrational(radicand, var, pool)?;
+    let (num, den) = (trim(num), trim(den));
+    if degree(&den) != 0 || degree(&num) != 2 {
+        return None;
+    }
+    let coeff = |p: &QPoly, i: usize| p.get(i).cloned().unwrap_or_else(|| rug::Rational::from(0));
+    let (c, b, a) = (coeff(&num, 0), coeff(&num, 1), coeff(&num, 2));
+    let quad = num.clone(); // a·x²+b·x+c (den is the constant 1 after normalization)
+
+    let t = pool.symbol("$euler_t$", Domain::Real);
+    let two = rug::Rational::from(2);
+    let radical = pool.func("sqrt", vec![radicand]); // √(quad) in x, for back-sub
+    let (x_of_t, sqrt_t, back_t) = if let Some(e) = sqrt_rational(&a) {
+        // x = (t²−c)/(2e·t + b);  √quad = t − e·x;  t = √quad + e·x.
+        let t2 = pool.pow(t, pool.integer(2));
+        let x_num = pool.add(vec![t2, rational_to_expr(&-c.clone(), pool)]);
+        let x_den = pool.add(vec![
+            pool.mul(vec![rational_to_expr(&(two.clone() * &e), pool), t]),
+            rational_to_expr(&b, pool),
+        ]);
+        let x_of_t = pool.mul(vec![x_num, pool.pow(x_den, pool.integer(-1))]);
+        let sqrt_t = simplify(
+            pool.add(vec![
+                t,
+                pool.mul(vec![rational_to_expr(&-e.clone(), pool), x_of_t]),
+            ]),
+            pool,
+        )
+        .value;
+        let back_t = pool.add(vec![
+            radical,
+            pool.mul(vec![rational_to_expr(&e, pool), var]),
+        ]);
+        (x_of_t, sqrt_t, back_t)
+    } else if let Some(g) = sqrt_rational(&c) {
+        // x = (2g·t − b)/(a − t²);  √quad = x·t + g;  t = (√quad − g)/x.
+        let t2 = pool.pow(t, pool.integer(2));
+        let x_num = pool.add(vec![
+            pool.mul(vec![rational_to_expr(&(two.clone() * &g), pool), t]),
+            rational_to_expr(&-b.clone(), pool),
+        ]);
+        let x_den = pool.add(vec![
+            rational_to_expr(&a, pool),
+            pool.mul(vec![rational_to_expr(&rug::Rational::from(-1), pool), t2]),
+        ]);
+        let x_of_t = pool.mul(vec![x_num, pool.pow(x_den, pool.integer(-1))]);
+        let sqrt_t = simplify(
+            pool.add(vec![pool.mul(vec![x_of_t, t]), rational_to_expr(&g, pool)]),
+            pool,
+        )
+        .value;
+        let back_t = pool.mul(vec![
+            pool.add(vec![radical, rational_to_expr(&-g.clone(), pool)]),
+            pool.pow(var, pool.integer(-1)),
+        ]);
+        (x_of_t, sqrt_t, back_t)
+    } else {
+        return None;
+    };
+
+    // Rewrite the integrand rational in `t`, multiply by dx/dt, integrate, and
+    // back-substitute `t`.
+    let core = to_t(expr, var, &quad, sqrt_t, x_of_t, pool)?;
+    let dx_dt = simplify(crate::diff::diff(x_of_t, t, pool).ok()?.value, pool).value;
+    let integrand_t = simplify(pool.mul(vec![core, dx_dt]), pool).value;
+    let f_t = match crate::integrate::engine::integrate(integrand_t, t, pool) {
+        Ok(d) => d.value,
+        Err(_) => return None,
+    };
+    let mut back = HashMap::new();
+    back.insert(t, back_t);
+    let f_x = simplify(crate::kernel::subs(f_t, &back, pool), pool).value;
+
+    if !verify_derivative(f_x, expr, radicand, var, pool) {
+        return None;
+    }
+    let mut log = DerivationLog::new();
+    log.push(RewriteStep::simple("algebraic_genus0_euler", expr, f_x));
+    Some(Ok(DerivedExpr::with_log(f_x, log)))
+}
+
+/// Rewrite `expr` (rational in `x` and `√(quad)`) as a rational function of the
+/// Euler parameter `t`: `x → x_of_t`, `√(quad) → sqrt_t` (and any half-integer
+/// power of the radicand → the matching power of `sqrt_t`).  `None` if a subterm
+/// is not expressible this way.
+fn to_t(
+    expr: ExprId,
+    var: ExprId,
+    quad: &QPoly,
+    sqrt_t: ExprId,
+    x_of_t: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    if expr == var {
+        return Some(x_of_t);
+    }
+    if is_free_of_var(expr, var, pool) {
+        return Some(expr);
+    }
+    let one = vec![rug::Rational::from(1)];
+    // `quad^{c/d}` (base ≡ radicand) → `sqrt_t^{2c/d}` when `d | 2c`.
+    let radical_power = |base: ExprId, c: i64, d: i64, pool: &ExprPool| -> Option<ExprId> {
+        if same_fraction(base, quad, &one, var, pool) && (2 * c) % d == 0 {
+            Some(pool.pow(sqrt_t, pool.integer(((2 * c) / d) as i32)))
+        } else {
+            None
+        }
+    };
+    match pool.get(expr) {
+        ExprData::Func { ref name, ref args } if name == "sqrt" && args.len() == 1 => {
+            radical_power(args[0], 1, 2, pool)
+        }
+        ExprData::Add(args) => {
+            let v: Vec<ExprId> = args
+                .iter()
+                .map(|&a| to_t(a, var, quad, sqrt_t, x_of_t, pool))
+                .collect::<Option<_>>()?;
+            Some(pool.add(v))
+        }
+        ExprData::Mul(args) => {
+            let v: Vec<ExprId> = args
+                .iter()
+                .map(|&a| to_t(a, var, quad, sqrt_t, x_of_t, pool))
+                .collect::<Option<_>>()?;
+            Some(pool.mul(v))
+        }
+        ExprData::Pow { base, exp } => match pool.get(exp) {
+            ExprData::Integer(m) => {
+                let inner = to_t(base, var, quad, sqrt_t, x_of_t, pool)?;
+                Some(pool.pow(inner, pool.integer(m.0.to_i64()? as i32)))
+            }
+            ExprData::Rational(r) => {
+                radical_power(base, r.0.numer().to_i64()?, r.0.denom().to_i64()?, pool)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// A rational square root of `v ≥ 0` (numerator and denominator both perfect
+/// squares), else `None`.
+fn sqrt_rational(v: &rug::Rational) -> Option<rug::Rational> {
+    if *v < 0 {
+        return None;
+    }
+    if *v == 0 {
+        return Some(rug::Rational::from(0));
+    }
+    let nn = v.numer().clone();
+    let dd = v.denom().clone();
+    let ns = nn.clone().sqrt();
+    let ds = dd.clone().sqrt();
+    if rug::Integer::from(&ns * &ns) == nn && rug::Integer::from(&ds * &ds) == dd {
+        Some(rug::Rational::from((ns, ds)))
+    } else {
+        None
+    }
 }
 
 /// Find the unique `x`-dependent radical generator and return `(n, radicand)`.
@@ -410,5 +597,51 @@ mod tests {
             let lin = p.add(vec![p.mul(vec![p.integer(2), x]), p.integer(1)]);
             p.pow(lin, p.rational(1, 5))
         });
+    }
+
+    /// Euler (a=1 square): `∫ dx/((x²−1)·√(x²+1))` — a *rational* coefficient on a
+    /// quadratic radical (the deg-2 sqrt engine handles only polynomial weights).
+    /// Elementary; radicand positive everywhere, avoid the poles `x=±1`.
+    #[test]
+    fn euler_rational_weight_quadratic() {
+        check_at(
+            |p, x| {
+                let q = p.add(vec![p.pow(x, p.integer(2)), p.integer(1)]);
+                let d = p.add(vec![p.pow(x, p.integer(2)), p.integer(-1)]);
+                p.mul(vec![
+                    p.pow(d, p.integer(-1)),
+                    p.pow(p.func("sqrt", vec![q]), p.integer(-1)),
+                ])
+            },
+            &[0.3, 1.7, 2.6],
+        );
+    }
+
+    /// Euler (a=1 square): `∫ dx/(x·√(x²+1))` = `log((√(x²+1)−1)/x)`-type.
+    #[test]
+    fn euler_one_over_x_sqrt_quadratic() {
+        check_at(
+            |p, x| {
+                let q = p.add(vec![p.pow(x, p.integer(2)), p.integer(1)]);
+                p.mul(vec![
+                    p.pow(x, p.integer(-1)),
+                    p.pow(p.func("sqrt", vec![q]), p.integer(-1)),
+                ])
+            },
+            &[0.6, 1.4, 3.1],
+        );
+    }
+
+    /// Euler (a=1 square, c=−1 not a square): `∫ √(x²−1)/x dx`.  Radicand positive
+    /// for `x > 1`.
+    #[test]
+    fn euler_sqrt_quadratic_over_x() {
+        check_at(
+            |p, x| {
+                let q = p.add(vec![p.pow(x, p.integer(2)), p.integer(-1)]);
+                p.mul(vec![p.func("sqrt", vec![q]), p.pow(x, p.integer(-1))])
+            },
+            &[1.4, 2.5, 3.8],
+        );
     }
 }

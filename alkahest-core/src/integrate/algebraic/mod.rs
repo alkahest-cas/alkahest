@@ -187,6 +187,31 @@ pub fn integrate_algebraic(
         return res;
     }
 
+    // Standard path: decompose `A(x) + B(x)·√P` and integrate each part.  When it
+    // cannot express the integrand — e.g. a *rational* coefficient on a quadratic
+    // radical, `∫ dx/((x²−1)√(x²+1))` — fall back to the genus-0 Euler
+    // substitution, which rationalizes the whole `∫ R(x,√(quadratic)) dx`.  The
+    // decompose path is tried first so polynomial-coefficient cases keep their
+    // nicer closed forms.
+    match integrate_via_decompose(expr, var, pool) {
+        Err(IntegrationError::NotImplemented(_)) => {
+            if let Some(res) = parametrize::try_euler_quadratic(expr, var, pool) {
+                return res;
+            }
+            integrate_via_decompose(expr, var, pool)
+        }
+        other => other,
+    }
+}
+
+/// The standard algebraic path: find the single `√P` generator, decompose the
+/// integrand as `A(x) + B(x)·√P`, and integrate each part (with the genus-1
+/// capstone for `deg P ≥ 3`).
+fn integrate_via_decompose(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Result<DerivedExpr<ExprId>, IntegrationError> {
     let mut log = DerivationLog::new();
 
     // Step 1: Find the unique sqrt generator y = sqrt(P(x))
