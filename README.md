@@ -15,6 +15,8 @@ A high-performance computer algebra system for Python built for both humans and 
 
 **Demo:** try the hosted **[playground](https://alkahest-cas.github.io/playground/)** (WASM in-browser, or bring your own server/Jupyter URL + token), or run [`demo-playground/`](demo-playground/) locally for the full agent and recording stack. See [`demo-playground/README.md`](demo-playground/README.md).
 
+**Links:** [GitHub](https://github.com/alkahest-cas/alkahest) · [**RL environment**](https://app.primeintellect.ai/dashboard/environments/alkahest/alkahest-symbolic-integration) (`alkahest/alkahest-symbolic-integration` on [Prime Intellect Environments Hub](https://app.primeintellect.ai/dashboard/environments))
+
 **Stack:** Rust kernel → FLINT/Arb (polynomials, ball arithmetic) → vendored egglog + colored e-graphs (simplification) → Cranelift/LLVM JIT + MLIR (native and GPU codegen) → PyO3 → Python
 
 ---
@@ -628,9 +630,7 @@ env = load_environment(difficulty_tier=0, n_train=1000, n_eval=100, adaptive=Tru
 | `load_environment()` | Returns a `verifiers.SingleTurnEnv` with Risch-tier curriculum |
 | `recipes/verl_integration_reward.py` | Drop-in reward for [veRL](https://github.com/volcengine/verl) |
 
-**Environments Hub:** publish from `python/alkahest/rl/envs/integration/` with
-`prime env push` (requires `alkahest>=3.2.0` on PyPI). Full checklist in the
-[RL guide](docs/mdbook/src/rl.md#hub-checklist).
+**Environments Hub:** [`alkahest/alkahest-symbolic-integration`](https://app.primeintellect.ai/dashboard/environments/alkahest/alkahest-symbolic-integration) — install with `prime env install alkahest/alkahest-symbolic-integration`. Publish updates from `python/alkahest/rl/envs/integration/` with `prime env push`. Full checklist in the [RL guide](docs/mdbook/src/rl.md#hub-checklist).
 
 ---
 
