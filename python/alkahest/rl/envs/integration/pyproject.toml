@@ -3,8 +3,8 @@ name = "alkahest-symbolic-integration"
 version = "0.1.0"
 description = "Symbolic integration RL environment backed by the Risch algorithm"
 dependencies = [
-    "verifiers>=0.1",
-    "alkahest>=2.1",
+    "verifiers>=0.1.5",
+    "alkahest>=3.2.0",
     "datasets>=2.0",
 ]
 

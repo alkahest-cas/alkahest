@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+## 3.2.0 — 2026-06-05
+
+### Reinforcement learning
+
+- **`alkahest.rl`:** framework-agnostic core (`BaseGenerator`, `BaseVerifier`, `Rubric`, `CurriculumScheduler`) and a symbolic integration environment (`alkahest.rl.envs.integration`) with Risch-tier task grammar, layered `IntegrationVerifier`, and Prime Intellect `verifiers` entry point (`load_environment`).
+- Optional pip extra: `pip install "alkahest[rl]"` (Python ≥ 3.10; pulls `verifiers` + `datasets`).
+- veRL recipe: `recipes/verl_integration_reward.py`.
+- Environments Hub manifest: `python/alkahest/rl/envs/integration/`.
+
+### Calculus / integration (Risch roadmap)
+
+- Algebraic Risch extensions: tower field integration, simple radicals, coupled algebraic RDE, genus-0 reduction and parametrization.
+- Genus-1 stack (in progress): integral basis (van Hoeij), Hermite on curve, residue divisor, FIND-ORDER, elliptic engine.
+- Newton–Puiseux fractional-power expansions; algebraic-coefficient Puiseux.
+
+### Linear algebra
+
+- Expanded matrix coverage (`alkahest-core/src/matrix/linear_algebra.rs`); Python bindings and tests.
+
+## Unreleased (historical notes)
+
 ### Breaking / default-feature change
 
 - **`groebner` is now a default Cargo feature in `alkahest-cas`**, matching the Python wheel defaults. `alkahest-cas = "2"` now includes Gröbner-backed APIs (`solve`, `diophantine`, homotopy) without explicitly listing the feature. To opt out: `alkahest-cas = { version = "2", default-features = false }`.
