@@ -483,7 +483,7 @@ mod tests {
             if fs.is_empty() {
                 pool.integer(1_i32)
             } else {
-                pool.mul(fs.iter().map(|f| factor(f)).collect())
+                pool.mul(fs.iter().map(&factor).collect())
             }
         };
         let w = if w_e.den.is_empty() {
@@ -602,7 +602,7 @@ mod tests {
             if fs.is_empty() {
                 pool.integer(1_i32)
             } else {
-                pool.mul(fs.iter().map(|f| factor(f)).collect())
+                pool.mul(fs.iter().map(&factor).collect())
             }
         };
         let w = if w_e.den.is_empty() {
