@@ -9,7 +9,7 @@
 //!
 //! * **genus 0** — every degree-0 divisor is principal, so `N = 1` always
 //!   (the rational-parametrization win, seen from the divisor side).
-//! * **genus 1** (`y²=cubic` or `y²=quartic` with a rational root) — **implemented**:
+//! * **genus 1** (`y²=cubic`, or `y²=quartic` with a rational point) — **implemented**:
 //!   map the residue divisor to `E(ℚ)` (Abel–Jacobi, [`super::elliptic`]) and read
 //!   off the order of its class; by **Mazur** a rational torsion point has order
 //!   ≤ 12, so this is a *complete* decision — `Principal{N}` if torsion,
@@ -18,14 +18,16 @@
 //!   search is best-effort — currently `NotDecided`.
 //!
 //! Sound: only `Principal`/`NonElementary` verdicts are asserted; anything
-//! uncertain (incomplete divisor with missing algebraic places, `y²=quartic`,
-//! genus ≥ 2) is `NotDecided`.
+//! uncertain (incomplete divisor with missing algebraic places, a quartic with
+//! no usable rational point, genus ≥ 2) is `NotDecided`.
 
 use rug::{Integer, Rational};
 
 use super::super::risch::poly_rde::{degree, poly_deriv, trim, QPoly};
 use super::super::risch::rational_rde::poly_gcd;
-use super::elliptic::{short_weierstrass, weierstrass_from_quartic, EllipticCurve, Point};
+use super::elliptic::{
+    quartic_point_model, short_weierstrass, weierstrass_from_quartic, EllipticCurve, Point,
+};
 use super::residues::{residue_sum, PlacedResidue, Residue};
 
 /// Result of FIND-ORDER on a residue divisor.
@@ -117,8 +119,9 @@ pub(crate) fn find_order_placed(n: usize, a: &QPoly, divisor: &[PlacedResidue]) 
 
 /// Genus-1 FIND-ORDER for `y² = a(x)` (cubic or quartic): map the residue divisor
 /// to `E(ℚ)` (Abel–Jacobi), then read off the order of its class.  `None` when
-/// outside scope (degree ≠ 3,4; quartic without a rational root or with a nonzero
-/// residue at infinity; or a place not on `E(ℚ)`).
+/// outside scope (degree ≠ 3,4; a quartic with a nonzero residue at infinity, a
+/// residue on the base-point fibre, or no rational point found; or a place not on
+/// `E(ℚ)`).
 fn genus1(n: usize, a: &QPoly, divisor: &[PlacedResidue]) -> Option<FindOrder> {
     if n != 2 {
         return None;
@@ -143,25 +146,51 @@ fn genus1(n: usize, a: &QPoly, divisor: &[PlacedResidue]) -> Option<FindOrder> {
                 (e, Box::new(f))
             }
             4 => {
-                // Quartic: handled only with no residue at infinity and a rational
-                // root (the place at x=root maps to O).
+                // Quartic: handled only with no residue at infinity.
                 if divisor
                     .iter()
                     .any(|r| r.residue.at_infinity && r.residue.value != 0)
                 {
                     return None;
                 }
-                let root = first_rational_root(&a)?;
-                let (e, map) = weierstrass_from_quartic(&a, &root)?;
-                let f = move |r: &PlacedResidue| -> Option<Point> {
-                    if r.residue.at_infinity || r.residue.point == root {
-                        None
-                    } else {
-                        let (x, y) = map(&r.residue.point, &r.y_coord);
-                        Some(Point::Affine(x, y))
+                if let Some(root) = first_rational_root(&a) {
+                    // Rational root: the place at x=root maps to O.
+                    let (e, map) = weierstrass_from_quartic(&a, &root)?;
+                    let f = move |r: &PlacedResidue| -> Option<Point> {
+                        if r.residue.at_infinity || r.residue.point == root {
+                            None
+                        } else {
+                            let (x, y) = map(&r.residue.point, &r.y_coord);
+                            Some(Point::Affine(x, y))
+                        }
+                    };
+                    (e, Box::new(f))
+                } else {
+                    // No rational root: reduce via a finite rational point (Nagell).
+                    // Residues on the base-point fibre `x=x₀` aren't placeable here
+                    // (one sheet ↦ O, the other ↦ a finite point) — bail for safety.
+                    let (x0, y0) = first_rational_point(&a)?;
+                    if divisor
+                        .iter()
+                        .any(|r| !r.residue.at_infinity && r.residue.point == x0)
+                    {
+                        return None;
                     }
-                };
-                (e, Box::new(f))
+                    let m = quartic_point_model(&a, &x0, &y0)?;
+                    let (e, _) = short_weierstrass(&m.c)?;
+                    let c3 = m.c[3].clone();
+                    let c2 = m.c.get(2).cloned().unwrap_or_else(|| Rational::from(0));
+                    let f = move |r: &PlacedResidue| -> Option<Point> {
+                        if r.residue.at_infinity {
+                            return None; // infinity residues are zero here
+                        }
+                        let (z, w) = m.zw(&r.residue.point, &r.y_coord)?;
+                        let big_x = c3.clone() * &z + c2.clone() / Rational::from(3);
+                        let big_y = c3.clone() * &w;
+                        Some(Point::Affine(big_x, big_y))
+                    };
+                    (e, Box::new(f))
+                }
             }
             _ => return None,
         };
@@ -211,6 +240,45 @@ fn genus1(n: usize, a: &QPoly, divisor: &[PlacedResidue]) -> Option<FindOrder> {
         // Non-torsion class ⇒ no multiple is principal ⇒ no elementary log part.
         None => FindOrder::NonElementary,
     })
+}
+
+/// A finite **rational point** `(x₀, y₀)` on `y² = q(x)` with `y₀ ≠ 0`, searched
+/// over small rationals.  Used to reduce a rational-root-free quartic to
+/// Weierstrass form (Nagell).  Best-effort: `None` if none is found in range.
+pub(super) fn first_rational_point(q: &QPoly) -> Option<(Rational, Rational)> {
+    let q = trim(q.clone());
+    if degree(&q) != 4 {
+        return None;
+    }
+    let evalq =
+        |x: &Rational| -> Rational { q.iter().rev().fold(Rational::from(0), |acc, c| acc * x + c) };
+    let sqrt_rat = |v: &Rational| -> Option<Rational> {
+        if *v < 0 {
+            return None;
+        }
+        let n = v.numer().clone();
+        let d = v.denom().clone();
+        let ns = n.clone().sqrt();
+        let ds = d.clone().sqrt();
+        if Integer::from(&ns * &ns) == n && Integer::from(&ds * &ds) == d {
+            Some(Rational::from((ns, ds)))
+        } else {
+            None
+        }
+    };
+    for dn in 1..=4i64 {
+        for nn in -8..=8i64 {
+            let x0 = Rational::from((nn, dn));
+            let v = evalq(&x0);
+            if v == 0 {
+                continue; // a root → handled by first_rational_root (want y₀ ≠ 0)
+            }
+            if let Some(y0) = sqrt_rat(&v) {
+                return Some((x0, y0));
+            }
+        }
+    }
+    None
 }
 
 /// A rational root of `p ∈ ℚ[x]` (rational-root theorem), if any.
