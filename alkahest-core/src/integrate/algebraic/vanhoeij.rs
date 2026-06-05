@@ -219,7 +219,7 @@ fn poly_ts(p: &QPoly, alpha: &Rational, e: i64, u: i64) -> TS {
     ts
 }
 
-fn ts_add(a: &TS, b: &TS) -> TS {
+pub(super) fn ts_add(a: &TS, b: &TS) -> TS {
     let mut r = a.clone();
     for (k, c) in b {
         *r.entry(*k).or_insert_with(|| Rational::from(0)) += c;
@@ -228,7 +228,7 @@ fn ts_add(a: &TS, b: &TS) -> TS {
     r
 }
 
-fn ts_mul(a: &TS, b: &TS, u: i64) -> TS {
+pub(super) fn ts_mul(a: &TS, b: &TS, u: i64) -> TS {
     let mut r = TS::new();
     for (ka, ca) in a {
         for (kb, cb) in b {
@@ -242,7 +242,7 @@ fn ts_mul(a: &TS, b: &TS, u: i64) -> TS {
     r
 }
 
-fn ts_pow(a: &TS, m: u32, u: i64) -> TS {
+pub(super) fn ts_pow(a: &TS, m: u32, u: i64) -> TS {
     let mut acc = TS::new();
     acc.insert(0, Rational::from(1));
     for _ in 0..m {
@@ -252,7 +252,7 @@ fn ts_pow(a: &TS, m: u32, u: i64) -> TS {
 }
 
 /// Inverse of a Laurent series, truncated to exponents `< u`.
-fn ts_inv(s: &TS, u: i64) -> Option<TS> {
+pub(super) fn ts_inv(s: &TS, u: i64) -> Option<TS> {
     let (&v0, c0) = s.iter().next()?; // lowest exponent
     let inv_c0 = Rational::from(1) / c0.clone();
     let kmax = (u + v0).max(1);
