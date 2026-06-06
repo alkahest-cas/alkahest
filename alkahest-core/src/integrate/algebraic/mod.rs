@@ -23,6 +23,7 @@ pub mod genus1_log;
 pub(super) mod genus_zero;
 pub mod hermite_curve;
 pub mod integral_basis;
+mod jacobian_torsion;
 pub(super) mod parametrize;
 pub(super) mod poly_utils;
 pub mod residues;
