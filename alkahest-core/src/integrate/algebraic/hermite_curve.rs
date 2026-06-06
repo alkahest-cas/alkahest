@@ -14,13 +14,18 @@
 //! automatically by the `V·ωᵢ` term, so this is correct including at the
 //! branch locus.
 //!
-//! Sound by construction: the result is accepted only after the exact field
-//! identity `g' + h = f` is verified, and each `h` component is checked to have a
-//! squarefree denominator.
+//! [`hermite_reduce_general`] handles an **arbitrary** curve `F(x,y)=0` over the
+//! van Hoeij integral basis: the leading pole cancellation is componentwise
+//! scalar (mod `V`) on the **normal part** (factors coprime to the discriminant,
+//! where `wᵢ'` is regular), with the basis-derivation mixing handled by iteration.
 //!
-//! Scope: simple radical extensions (the diagonal case).  The general
-//! (non-diagonal) integral basis needs the coupled derivation matrix and is the
-//! documented follow-up — its substrate (`integral_basis`, `is_integral`) exists.
+//! Sound by construction: every result is accepted only after the exact field
+//! identity `g' + h = f` is verified, and each `h` component is checked to have a
+//! squarefree denominator (on the normal part).
+//!
+//! Remaining follow-up: the `different`-aware ("lazy") Hermite step that also
+//! reduces **repeated poles on the branch locus** (factors dividing the
+//! discriminant), which [`hermite_reduce_general`] leaves in place.
 
 use rug::Rational;
 
@@ -28,7 +33,8 @@ use super::super::risch::alg_field::{AlgElem, AlgExtension, RatFn, RationalFunct
 use super::super::risch::number_field::{mod_inverse, CoeffField};
 use super::super::risch::poly_rde::{degree, poly_deriv, poly_mul, trim, QPoly};
 use super::super::risch::rational_rde::{poly_div_exact, poly_gcd};
-use super::integral_basis::{radical_integral_basis, squarefree_factors};
+use super::integral_basis::{discriminant, radical_integral_basis, squarefree_factors};
+use super::vanhoeij::integral_basis;
 
 /// Hermite reduction of `∫ f dx` on the curve `yⁿ = a(x)`.  Returns `(g, h)` with
 /// `f = g' + h` and every component of `h` having a squarefree denominator
@@ -95,6 +101,198 @@ pub fn hermite_reduce_radical(
         return None;
     }
     Some((g, h))
+}
+
+/// Hermite reduction of `∫ f dx` on a **general** curve `F(x,y)=0` (not
+/// necessarily a simple radical), over the van Hoeij integral basis.  Returns
+/// `(g, h)` with `f = g' + h`, `g ∈ ℚ(x)(y)` the algebraic part and `h` a
+/// differential of the **third kind** — every integral-basis coordinate of `h`
+/// has a squarefree denominator on the **normal part** (the locus coprime to the
+/// discriminant).  `None` if the basis is unavailable or a soundness gate fails.
+///
+/// Reduces the repeated factors `V` of the denominator that are **coprime to the
+/// discriminant** (where the basis derivation is regular, so `wᵢ'` has no pole at
+/// `V`).  There the leading order-`M` pole cancels **componentwise**: with
+/// `D = U·V^M`, the integral element `b = Σ bᵢ wᵢ` solving
+/// `bᵢ ≡ −Aᵢ·(U·(M−1)·V')⁻¹ (mod V)` makes `(b/V^{M−1})'` match the pole, so
+/// `f − (b/V^{M−1})'` drops one power of `V`.  The basis-mixing `wᵢ' = Σ Mᵢⱼ wⱼ`
+/// only perturbs lower orders and is handled by iteration.  Branch-locus repeated
+/// poles (factors dividing the discriminant) are left untouched — that is the
+/// `different`-aware ("lazy") Hermite step, a documented follow-up.
+///
+/// Sound by construction: accepted only after the exact field identity
+/// `g' + h = f` holds and every `h`-coordinate denominator is squarefree on the
+/// normal part.
+pub fn hermite_reduce_general(
+    f_coeffs: &[QPoly],
+    integrand: &AlgElem,
+) -> Option<(AlgElem, AlgElem)> {
+    let ext = AlgExtension::new(f_coeffs);
+    let n = ext.degree() as usize;
+    if n < 2 {
+        return None;
+    }
+    let basis = integral_basis(f_coeffs)?;
+    let disc = discriminant(f_coeffs);
+
+    let mut cur = pad(integrand, n);
+    let mut g = ext.from_int(0);
+
+    let denom_total = |e: &AlgElem| -> i64 {
+        to_w_coords(&basis, e, n)
+            .map(|cs| cs.iter().map(|c| degree(c.denom()).max(0)).sum())
+            .unwrap_or(0)
+    };
+    let cap = 4 * (denom_total(&cur) as usize) + 8;
+
+    for _ in 0..cap {
+        let coords = to_w_coords(&basis, &cur, n)?;
+        let (d_poly, a_polys) = common_denominator(&coords);
+        // Highest-multiplicity repeated factor V of the **normal part** (mult ≥ 2,
+        // coprime to the discriminant), where the basis derivation is regular.
+        let sqf = squarefree_factors(&d_poly);
+        let Some((v, m)) = sqf
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(k, p)| *k + 1 >= 2 && degree(p) >= 1 && degree(&poly_gcd(p, &disc)) <= 0)
+            .map(|(k, p)| (p.clone(), k + 1))
+        else {
+            break; // normal part squarefree → done
+        };
+
+        // s = U·(M−1)·V'  (scalar in ℚ[x]); invertible mod V.
+        let vm = poly_pow(&v, m as u32);
+        let u = poly_div_exact(&d_poly, &vm);
+        let s = poly_scale(
+            &poly_mul(&u, &poly_deriv(&v)),
+            &Rational::from((m - 1) as i64),
+        );
+        let s_inv = mod_inverse(&s, &v)?;
+
+        // bᵢ = (−Aᵢ·s⁻¹) mod V, componentwise; b = Σ bᵢ wᵢ (→ power basis).
+        let mut b_w = vec![RatFn::int(0); n];
+        for (i, ai) in a_polys.iter().enumerate() {
+            let bi = poly_mod(&poly_mul(ai, &s_inv), &v);
+            b_w[i] = RatFn::from_poly(&poly_scale(&bi, &Rational::from(-1)));
+        }
+        let b_power = w_to_power(&basis, &b_w, &ext, n);
+
+        // term = b/V^{M−1};  cur −= term';  g += term.
+        let inv_vm1 = RatFn::new(vec![Rational::from(1)], poly_pow(&v, (m - 1) as u32));
+        let term = scale_elem(&b_power, &inv_vm1);
+        if ext.elem_eq(&term, &ext.from_int(0)) {
+            break; // no progress possible at this place
+        }
+        let next = ext.sub(&cur, &ext.derivation(&term));
+        g = ext.add(&g, &term);
+        // Progress guard: the normal-part denominator must strictly drop.
+        if denom_total(&next) >= denom_total(&cur) {
+            cur = next;
+            break;
+        }
+        cur = next;
+    }
+
+    let h = cur;
+    // Gate 1: every h-coordinate denominator is squarefree on the normal part.
+    let hcoords = to_w_coords(&basis, &h, n)?;
+    for c in &hcoords {
+        let den = c.denom();
+        let g_sq = poly_gcd(den, &poly_deriv(den));
+        // Allow repeated factors only at the discriminant (branch) locus.
+        if degree(&poly_gcd(&g_sq, &disc)) < degree(&g_sq) {
+            return None;
+        }
+    }
+    // Gate 2: g' + h = f exactly in the field.
+    let lhs = ext.add(&ext.derivation(&g), &h);
+    if !ext.elem_eq(&lhs, integrand) {
+        return None;
+    }
+    Some((g, h))
+}
+
+/// Pad an `AlgElem` to length `n` with zero coordinates.
+fn pad(e: &AlgElem, n: usize) -> AlgElem {
+    let mut v = e.clone();
+    while v.len() < n {
+        v.push(RatFn::int(0));
+    }
+    v
+}
+
+/// Coordinates of `elem` in the integral basis: solve `Σ cᵢ·basisᵢ = elem` over
+/// `ℚ(x)`.  `None` if the basis matrix is singular (should not happen).
+fn to_w_coords(basis: &[AlgElem], elem: &AlgElem, n: usize) -> Option<Vec<RatFn>> {
+    let f = RationalFunctionField;
+    let comp = |e: &AlgElem, r: usize| e.get(r).cloned().unwrap_or_else(|| RatFn::int(0));
+    // Augmented matrix: column i = basisᵢ (coeff of yʳ in row r), last column = elem.
+    let mut m: Vec<Vec<RatFn>> = (0..n)
+        .map(|r| {
+            let mut row: Vec<RatFn> = (0..n).map(|i| comp(&basis[i], r)).collect();
+            row.push(comp(elem, r));
+            row
+        })
+        .collect();
+    // Gaussian elimination over ℚ(x).
+    let mut piv_row = 0;
+    for col in 0..n {
+        let sel = (piv_row..n).find(|&r| !f.eq(&m[r][col], &f.zero()))?;
+        m.swap(piv_row, sel);
+        let inv = f.inv(&m[piv_row][col])?;
+        for v in m[piv_row].iter_mut() {
+            *v = f.mul(v, &inv);
+        }
+        for r in 0..n {
+            if r != piv_row && !f.eq(&m[r][col], &f.zero()) {
+                let factor = m[r][col].clone();
+                for c in 0..=n {
+                    let sub = f.mul(&factor, &m[piv_row][c].clone());
+                    m[r][c] = f.sub(&m[r][c], &sub);
+                }
+            }
+        }
+        piv_row += 1;
+    }
+    Some((0..n).map(|i| m[i][n].clone()).collect())
+}
+
+/// `Σ coordsᵢ · basisᵢ` (integral basis → power basis).
+fn w_to_power(basis: &[AlgElem], coords: &[RatFn], ext: &AlgExtension, n: usize) -> AlgElem {
+    let mut acc = ext.from_int(0);
+    for i in 0..n {
+        acc = ext.add(&acc, &scale_elem(&basis[i], &coords[i]));
+    }
+    acc
+}
+
+/// Multiply every coordinate of `elem` by the scalar `s ∈ ℚ(x)`.
+fn scale_elem(elem: &AlgElem, s: &RatFn) -> AlgElem {
+    let f = RationalFunctionField;
+    elem.iter().map(|c| f.mul(s, c)).collect()
+}
+
+/// Common denominator `D` of the coordinates and the integral numerators
+/// `Aᵢ = numer(cᵢ)·(D/denom(cᵢ))`, so `cᵢ = Aᵢ/D`.
+fn common_denominator(coords: &[RatFn]) -> (QPoly, Vec<QPoly>) {
+    let mut d = vec![Rational::from(1)];
+    for c in coords {
+        d = poly_lcm(&d, c.denom());
+    }
+    let a = coords
+        .iter()
+        .map(|c| poly_mul(c.numer(), &poly_div_exact(&d, c.denom())))
+        .collect();
+    (d, a)
+}
+
+/// Least common multiple `a·b/gcd(a,b)` over `ℚ[x]`.
+fn poly_lcm(a: &QPoly, b: &QPoly) -> QPoly {
+    if degree(a) < 0 || degree(b) < 0 {
+        return vec![Rational::from(1)];
+    }
+    poly_div_exact(&poly_mul(a, b), &poly_gcd(a, b))
 }
 
 /// `ωᵢ = i·a'/(n·a) − dᵢ'/dᵢ`, the basis-derivative coefficient `wᵢ' = ωᵢ wᵢ`.
@@ -264,6 +462,63 @@ mod tests {
         let (g, h) = hermite_reduce_radical(2, &qp(&[0, 1]), &integrand).expect("reduce");
         // h has squarefree denominator (gate) and the algebraic part is nontrivial.
         assert!(!g.iter().all(|c| c.numer().is_empty()));
+        for hi in &h {
+            let den = hi.denom();
+            assert!(degree(&poly_gcd(den, &poly_deriv(den))) <= 0);
+        }
+    }
+
+    /// General (non-radical) curve `y² + y − x³ = 0` (a `y`-term ⇒ non-radical;
+    /// disc = 1+4x³ squarefree ⇒ nonsingular, basis {1, y}).  Reduce an **exact
+    /// derivative**: take `g₀ = y/(x−1)` (a simple pole off the branch locus),
+    /// `f = g₀'` has a double pole; Hermite must recover `h = 0` with `g' = f`.
+    #[test]
+    fn general_curve_exact_derivative_reduces_to_zero() {
+        // F = y² + y − x³  ⇒  coeffs [ -x³, 1, 1 ].
+        let f_coeffs = [qp(&[0, 0, 0, -1]), qp(&[1]), qp(&[1])];
+        let ext = AlgExtension::new(&f_coeffs);
+        let g0 = vec![RatFn::int(0), rf(&[1], &[-1, 1])]; // y/(x−1)
+        let f = ext.derivation(&g0);
+        let (g, h) = hermite_reduce_general(&f_coeffs, &f).expect("reduce");
+        // Exact derivative ⇒ no third-kind remainder.
+        assert!(h.iter().all(|c| c.numer().is_empty()), "h = {h:?}");
+        // g' = f.
+        assert!(ext.elem_eq(&ext.derivation(&g), &f));
+    }
+
+    /// General curve, a double pole that is **not** an exact derivative: the
+    /// reduction still lowers the pole and the `g' + h = f` gate holds with `h`
+    /// having a squarefree (normal-part) denominator.
+    #[test]
+    fn general_curve_double_pole_reduces() {
+        let f_coeffs = [qp(&[0, 0, 0, -1]), qp(&[1]), qp(&[1])]; // y²+y−x³
+        let ext = AlgExtension::new(&f_coeffs);
+        // f = y/(x−1)²  = AlgElem [0, 1/(x−1)²];  (x−1)² = x²−2x+1.
+        let f = vec![RatFn::int(0), rf(&[1], &[1, -2, 1])];
+        let (g, h) = hermite_reduce_general(&f_coeffs, &f).expect("reduce");
+        // Nontrivial algebraic part extracted.
+        assert!(!g.iter().all(|c| c.numer().is_empty()));
+        // g' + h = f exactly.
+        assert!(ext.elem_eq(&ext.add(&ext.derivation(&g), &h), &f));
+        // h denominators squarefree (x=1 is off the branch locus disc=1+4x³).
+        for hi in &h {
+            let den = hi.denom();
+            assert!(degree(&poly_gcd(den, &poly_deriv(den))) <= 0);
+        }
+    }
+
+    /// The general reducer handles a higher-degree radical curve at an
+    /// **off-branch** pole: y³ = x (disc ∝ x², branch at 0), integrand y/(x−1)²
+    /// (pole at x=1, normal).  The pole is lowered and the `g'+h=f` gate holds
+    /// with squarefree `h` — exercising the degree-3 basis derivation mixing.
+    #[test]
+    fn general_off_branch_pole_cubic_radical() {
+        let f_coeffs = [qp(&[0, -1]), qp(&[]), qp(&[]), qp(&[1])]; // y³ − x
+        let ext = AlgExtension::new(&f_coeffs);
+        let f = vec![RatFn::int(0), rf(&[1], &[1, -2, 1])]; // y/(x−1)²
+        let (g, h) = hermite_reduce_general(&f_coeffs, &f).expect("reduce");
+        assert!(!g.iter().all(|c| c.numer().is_empty()));
+        assert!(ext.elem_eq(&ext.add(&ext.derivation(&g), &h), &f));
         for hi in &h {
             let den = hi.denom();
             assert!(degree(&poly_gcd(den, &poly_deriv(den))) <= 0);
