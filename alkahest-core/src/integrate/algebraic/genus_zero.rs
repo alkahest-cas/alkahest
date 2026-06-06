@@ -1,7 +1,10 @@
 //! Integration formulas for genus-0 algebraic extensions.
 //!
 //! Handles `∫ B(x) · sqrt(P(x)) dx` when P has degree ≤ 2 (genus-0 curve).
-//! For degree ≥ 3, returns `IntegrationError::NonElementary`.
+//! For degree ≥ 3 with a **polynomial** weight `B`, the *integral part*
+//! `∫ B√P = Q·√P` is solved when it exists (Liouville), so elementary cases such
+//! as `∫ (P'/2)·√P = ⅓P^{3/2}` are returned rather than wrongly rejected;
+//! otherwise (with P squarefree) the integral is genuinely `NonElementary`.
 //!
 //! Reference: Bronstein (2005) §6.3–6.5; standard CAS table integrals.
 
@@ -10,7 +13,12 @@ use super::poly_utils::{
 };
 use crate::deriv::log::{DerivationLog, RewriteStep};
 use crate::integrate::engine::IntegrationError;
+use crate::integrate::risch::poly_rde::{
+    degree, expr_to_qpoly, poly_add, poly_deriv, poly_mul, poly_scale, qpoly_to_expr, trim, QPoly,
+};
+use crate::integrate::risch::rational_rde::{poly_gcd, poly_sub};
 use crate::kernel::{ExprData, ExprId, ExprPool};
+use rug::Rational;
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -46,12 +54,18 @@ pub fn integrate_with_sqrt(
                     0 => integrate_b_sqrt_const(b, p, sqrt_id, var, pool, log),
                     1 => integrate_b_sqrt_linear(b, p, sqrt_id, var, pool, log),
                     2 => integrate_b_sqrt_quadratic(b, p, sqrt_id, var, pool, log),
-                    _ => Err(IntegrationError::NonElementary(
-                        "integral over genus-1 (elliptic) or higher curve; no elementary antiderivative"
-                            .to_string(),
-                    )),
+                    _ => unreachable!(),
                 }
             } else {
+                // deg P ≥ 3.  For a **polynomial** weight `B`, `∫ B·√P dx` has no
+                // finite poles, so it is elementary iff it equals `Q(x)·√P`
+                // (Liouville: `∫B√P = Q√P + c·∫dx/√P`, and `∫dx/√P` is
+                // non-elementary for squarefree deg P ≥ 3).  Solve the integral
+                // part; otherwise (with P squarefree) it is genuinely
+                // non-elementary.
+                if let Some(res) = try_integral_part_high_degree(b, p, sqrt_id, var, pool, log) {
+                    return res;
+                }
                 Err(IntegrationError::NonElementary(
                     "integral over genus-1 (elliptic) or higher curve; no elementary antiderivative"
                         .to_string(),
@@ -655,6 +669,118 @@ fn binomial_coeff(n: u64, k: u64) -> rug::Integer {
         result /= rug::Integer::from(i + 1);
     }
     result
+}
+
+// ---------------------------------------------------------------------------
+// Integral part for ∫ B(x)·√P dx with B polynomial and deg P ≥ 3
+//
+// `B·√P dx` has no finite poles, so by Liouville `∫ B√P = Q·√P + c·∫dx/√P`.
+// For squarefree deg P ≥ 3, `∫dx/√P` is non-elementary, hence the integral is
+// elementary iff `c = 0`, i.e. iff `Q·√P` solves it.  Differentiating,
+// `(Q√P)' = (2Q'P + QP')/(2√P) = B√P` ⟺ the polynomial identity
+//   2·Q'·P + Q·P' = 2·B·P.
+// The operator `Q ↦ 2Q'P + QP'` maps degree-k to degree k+m−1 with nonzero
+// leading coefficient `(2k+m)·lc(P)`, so the identity is solved by top-down
+// elimination; a nonzero remainder means `c ≠ 0` (non-elementary).
+// ---------------------------------------------------------------------------
+
+/// Try `∫ B·√P dx = Q·√P` for polynomial `B`, deg P ≥ 3.  Returns:
+/// * `Some(Ok(result))` — elementary, `result = Q·√P`;
+/// * `Some(Err(NonElementary))` — `B` polynomial and `P` squarefree but no `Q`
+///   exists (`c ≠ 0`), so the integral is genuinely non-elementary;
+/// * `None` — not applicable (`B` not polynomial, or `P` not squarefree), leave
+///   the decision to the caller.
+fn try_integral_part_high_degree(
+    b: ExprId,
+    p: ExprId,
+    sqrt_id: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Option<Result<ExprId, IntegrationError>> {
+    let p_poly = expr_to_qpoly(p, var, pool)?;
+    let b_poly = expr_to_qpoly(b, var, pool)?; // `None` ⇒ B not polynomial
+    if degree(&p_poly) < 3 {
+        return None;
+    }
+    // P must be squarefree for the NonElementary conclusion to be sound.
+    let p_sqfree = degree(&poly_gcd(&p_poly, &poly_deriv(&p_poly))) <= 0;
+    if !p_sqfree {
+        return None;
+    }
+    if degree(&b_poly) < 0 {
+        return None; // B = 0 handled elsewhere
+    }
+    match solve_integral_part(&p_poly, &b_poly) {
+        Some(q) => {
+            let q_expr = qpoly_to_expr(&q, var, pool);
+            let result = pool.mul(vec![q_expr, sqrt_id]);
+            log.push(RewriteStep::simple("alg_integral_part_sqrt", b, result));
+            Some(Ok(result))
+        }
+        None => Some(Err(IntegrationError::NonElementary(
+            "∫ B(x)·√P with B polynomial, P squarefree of degree ≥ 3: integral \
+             part has a residual ∫dx/√P (non-elementary)"
+                .to_string(),
+        ))),
+    }
+}
+
+/// Solve `2·Q'·P + Q·P' = 2·B·P` for a polynomial `Q ∈ ℚ[x]`, or `None` if no
+/// polynomial solution exists.
+fn solve_integral_part(p: &QPoly, b: &QPoly) -> Option<QPoly> {
+    let m = degree(p);
+    if m < 1 {
+        return None;
+    }
+    let lc = p[m as usize].clone();
+    let p_prime = poly_deriv(p);
+    let bdeg = degree(b);
+    if bdeg < 0 {
+        return None;
+    }
+    let qdeg = bdeg + 1;
+    let mut q = vec![Rational::from(0); (qdeg + 1) as usize];
+    let mut rem = poly_scale(&poly_mul(b, p), &Rational::from(2)); // 2·B·P
+
+    for k in (0..=qdeg).rev() {
+        let d = (k + m - 1) as usize; // leading degree contributed by qₖ·xᵏ
+        let cd = rem.get(d).cloned().unwrap_or_else(|| Rational::from(0));
+        if cd == 0 {
+            continue; // qₖ = 0
+        }
+        // qₖ = cd / ((2k+m)·lc(P)).
+        let factor = Rational::from(2 * k + m) * &lc;
+        let qk = cd / factor;
+        q[k as usize] = qk.clone();
+        // rem −= qₖ · L(xᵏ),  L(xᵏ) = 2k·x^{k−1}·P + xᵏ·P'.
+        let lxk = l_of_monomial(k, p, &p_prime);
+        rem = poly_sub(&rem, &poly_scale(&lxk, &qk));
+    }
+
+    if degree(&trim(rem)) >= 0 {
+        return None; // nonzero remainder ⇒ no polynomial Q ⇒ c ≠ 0
+    }
+    Some(trim(q))
+}
+
+/// `L(xᵏ) = 2k·x^{k−1}·P + xᵏ·P'`.
+fn l_of_monomial(k: i64, p: &QPoly, p_prime: &QPoly) -> QPoly {
+    let xk = monomial(k);
+    let mut out = poly_mul(&xk, p_prime);
+    if k >= 1 {
+        let xk1 = monomial(k - 1);
+        let term = poly_scale(&poly_mul(&xk1, p), &Rational::from(2 * k));
+        out = poly_add(&out, &term);
+    }
+    out
+}
+
+/// The monomial `xᵏ` as a `QPoly` (`k ≥ 0`).
+fn monomial(k: i64) -> QPoly {
+    let mut v = vec![Rational::from(0); (k.max(0) + 1) as usize];
+    v[k.max(0) as usize] = Rational::from(1);
+    v
 }
 
 fn neg_c_power(c: &rug::Integer, n: i64) -> rug::Integer {
