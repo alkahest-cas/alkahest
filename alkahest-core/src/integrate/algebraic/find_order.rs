@@ -463,6 +463,19 @@ mod tests {
         assert_eq!(find_order_placed(2, &a, &div), FindOrder::NonElementary);
     }
 
+    /// Genus-2 `y²=x⁵−x`: the 2-torsion branch divisor `(0,0) − (1,0)` routes
+    /// through MC2 and is certified `Principal{2}` by the exact ℚ test.
+    #[test]
+    fn genus2_torsion_principal_via_dispatch() {
+        let a = qp(&[0, -1, 0, 0, 0, 1]);
+        assert_eq!(genus(2, &a), Some(2));
+        let div = [place(0, 0, 1, false, 2), place(1, 0, -1, false, 2)];
+        assert_eq!(
+            find_order_placed(2, &a, &div),
+            FindOrder::Principal { order: 2 }
+        );
+    }
+
     /// Genus-2 even-degree (real model) `y²=x⁶+1` stays undecided in MC2 scope.
     #[test]
     fn genus2_even_degree_not_decided() {

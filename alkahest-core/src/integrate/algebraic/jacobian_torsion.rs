@@ -16,15 +16,19 @@
 //!    two good primes therefore pins every `v_ℓ(N)` and any **disagreement
 //!    certifies `δ` is non-torsion** ⇒ the integral is non-elementary.
 //!
-//! This module asserts only the *sound* half of the genus-graded decision:
+//! The decision is **complete and sound** for this class:
 //!
-//! * [`FindOrder::NonElementary`] when the prime-to-`p` orders are provably
-//!   inconsistent (a real theorem — no false positives).
-//! * [`FindOrder::NotDecided`] otherwise (too few good primes, even-degree /
-//!   real model, or a *consistent* candidate torsion order).  Certifying the
-//!   consistent case as `Principal{N}` would additionally require constructing a
-//!   function with divisor `N·δ` (Coates' algorithm / Riemann–Roch), which is
-//!   not yet implemented for genus ≥ 2; we never claim `Principal` here.
+//! * When the prime-to-`p` orders are inconsistent across good primes, `δ` is
+//!   non-torsion (a real theorem — no false positives) ⇒ [`FindOrder::NonElementary`].
+//! * Otherwise the reconstruction pins the **exact** candidate order `N`, and an
+//!   exact Cantor computation **over ℚ** tests whether `N·δ` is principal:
+//!   principal ⇒ [`FindOrder::Principal`] (torsion of order `N`), else
+//!   non-torsion ⇒ [`FindOrder::NonElementary`].  No Coates function
+//!   construction is needed for the *decision* — only for emitting the log
+//!   argument, which the genus-1 integrator does and the (not-yet-wired)
+//!   genus ≥ 2 integrator would.
+//! * [`FindOrder::NotDecided`] only when out of scope: too few good primes, the
+//!   order exceeds a practical cap, or the curve is outside the handled class.
 //!
 //! Scope: `n = 2` (hyperelliptic), `a` squarefree of **odd** degree `2g+1`
 //! (imaginary model, a single rational place at infinity).  Even degree (real
@@ -32,7 +36,8 @@
 
 use rug::{Integer, Rational};
 
-use super::super::risch::poly_rde::{degree, trim, QPoly};
+use super::super::risch::poly_rde::{degree, poly_add, poly_mul, poly_scale, trim, QPoly};
+use super::super::risch::rational_rde::{poly_divrem, poly_monic, poly_sub};
 use super::find_order::FindOrder;
 use super::residues::PlacedResidue;
 
@@ -541,31 +546,257 @@ fn prime_factors(mut m: u64) -> Vec<u64> {
     fs
 }
 
+// ===========================================================================
+// Exact Cantor arithmetic over ℚ — for the *principality* test
+//
+// Once reduction mod good primes pins the exact candidate torsion order `N`
+// (sound, by injectivity of reduction on prime-to-p torsion), `δ` is torsion of
+// order `N` **iff** `N·δ` is principal, i.e. reduces to the identity class.  We
+// decide that exactly over ℚ with the same Cantor/Mumford machinery — no Coates
+// function construction is needed for the *decision* (only for emitting the
+// log argument, which the genus-1 integrator does and genus ≥ 2 does not yet).
+// ===========================================================================
+
+/// Extended gcd over `ℚ[x]`: `(g, s, t)` with `s·a + t·b = g`, `g` monic.
+fn q_ext_gcd(a: &QPoly, b: &QPoly) -> (QPoly, QPoly, QPoly) {
+    let mut r0 = trim(a.clone());
+    let mut r1 = trim(b.clone());
+    let mut s0 = vec![Rational::from(1)];
+    let mut s1: QPoly = vec![];
+    let mut t0: QPoly = vec![];
+    let mut t1 = vec![Rational::from(1)];
+    while degree(&r1) >= 0 {
+        let (q, r) = poly_divrem(&r0, &r1);
+        let new_s = poly_sub(&s0, &poly_mul(&q, &s1));
+        let new_t = poly_sub(&t0, &poly_mul(&q, &t1));
+        r0 = r1;
+        r1 = r;
+        s0 = s1;
+        s1 = new_s;
+        t0 = t1;
+        t1 = new_t;
+    }
+    let lc = match trim(r0.clone()).last() {
+        Some(c) => c.clone(),
+        None => return (vec![], vec![], vec![]),
+    };
+    let inv = Rational::from(1) / lc;
+    (
+        poly_scale(&trim(r0), &inv),
+        poly_scale(&s0, &inv),
+        poly_scale(&t0, &inv),
+    )
+}
+
+fn q_is_zero(p: &QPoly) -> bool {
+    degree(p) < 0
+}
+
+fn q_rem(a: &QPoly, b: &QPoly) -> QPoly {
+    poly_divrem(a, b).1
+}
+
+/// A reduced Mumford class `(u, v)` over ℚ (`u` monic, `deg v < deg u ≤ g`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MumQ {
+    u: QPoly,
+    v: QPoly,
+}
+
+/// Imaginary hyperelliptic curve `y² = F(x)` over ℚ, `F` monic of odd degree.
+struct HypQ {
+    f: QPoly,
+    g: usize,
+}
+
+impl HypQ {
+    fn identity(&self) -> MumQ {
+        MumQ {
+            u: vec![Rational::from(1)],
+            v: vec![],
+        }
+    }
+
+    fn is_identity(d: &MumQ) -> bool {
+        degree(&d.u) == 0
+    }
+
+    fn point_class(&self, x0: &Rational, y0: &Rational) -> MumQ {
+        MumQ {
+            u: trim(vec![-x0.clone(), Rational::from(1)]),
+            v: if *y0 == 0 { vec![] } else { vec![y0.clone()] },
+        }
+    }
+
+    fn neg(&self, d: &MumQ) -> MumQ {
+        let nv = poly_scale(&d.v, &Rational::from(-1));
+        let nv = if q_is_zero(&nv) {
+            vec![]
+        } else {
+            q_rem(&nv, &d.u)
+        };
+        MumQ {
+            u: d.u.clone(),
+            v: nv,
+        }
+    }
+
+    fn reduce(&self, mut u: QPoly, mut v: QPoly) -> MumQ {
+        while degree(&u) > self.g as i64 {
+            let v2 = poly_mul(&v, &v);
+            let num = poly_sub(&self.f, &v2);
+            let (mut up, _r) = poly_divrem(&num, &u);
+            up = poly_monic(&up);
+            let nv = poly_scale(&v, &Rational::from(-1));
+            let vp = if degree(&up) <= 0 {
+                vec![]
+            } else {
+                q_rem(&nv, &up)
+            };
+            u = up;
+            v = vp;
+        }
+        let u = poly_monic(&u);
+        let v = if degree(&u) <= 0 {
+            vec![]
+        } else {
+            q_rem(&v, &u)
+        };
+        MumQ { u, v }
+    }
+
+    fn add(&self, d1: &MumQ, d2: &MumQ) -> MumQ {
+        let (u1, v1) = (&d1.u, &d1.v);
+        let (u2, v2) = (&d2.u, &d2.v);
+        let (g1, a1, b1) = q_ext_gcd(u1, u2);
+        let vsum = poly_add(v1, v2);
+        let (d, c1, c2) = q_ext_gcd(&g1, &vsum);
+        let s1 = poly_mul(&c1, &a1);
+        let s2 = poly_mul(&c1, &b1);
+        let s3 = c2;
+
+        let u1u2 = poly_mul(u1, u2);
+        let d2sq = poly_mul(&d, &d);
+        let (u, _r) = poly_divrem(&u1u2, &d2sq);
+        let u = poly_monic(&u);
+
+        let t1 = poly_mul(&poly_mul(&s1, u1), v2);
+        let t2 = poly_mul(&poly_mul(&s2, u2), v1);
+        let v1v2 = poly_mul(v1, v2);
+        let t3 = poly_mul(&s3, &poly_add(&v1v2, &self.f));
+        let vnum = poly_add(&poly_add(&t1, &t2), &t3);
+        let (vq, _vr) = poly_divrem(&vnum, &d);
+        let v = if degree(&u) <= 0 {
+            vec![]
+        } else {
+            q_rem(&vq, &u)
+        };
+        self.reduce(u, v)
+    }
+
+    fn mul(&self, k: u64, d: &MumQ) -> MumQ {
+        let mut acc = self.identity();
+        let mut base = d.clone();
+        let mut k = k;
+        while k > 0 {
+            if k & 1 == 1 {
+                acc = self.add(&acc, &base);
+            }
+            base = self.add(&base, &base);
+            k >>= 1;
+        }
+        acc
+    }
+}
+
+/// Build the monic curve `F` over ℚ (`X = lc·x`, `Y = lc^g·y`) and the divisor
+/// class `Σ cₐ·[(Xₐ,Yₐ) − ∞]`, then test whether `N·δ` is principal (reduces to
+/// the identity).  `None` if a point fails to lie on the (monicized) curve
+/// (should not happen for a genuine residue divisor) or `N` overflows the cap.
+fn n_delta_is_principal(a: &QPoly, g: usize, places: &[Place], n: u64) -> Option<bool> {
+    let d = degree(a) as usize;
+    let lc = a[d].clone();
+    // F_k = a_k · lc^{d-1-k}.
+    let mut f = vec![Rational::from(0); d + 1];
+    for (k, slot) in f.iter_mut().enumerate() {
+        let e = d as i64 - 1 - k as i64;
+        *slot = a[k].clone() * pow_rat(&lc, e);
+    }
+    let f = trim(f);
+    let curve = HypQ { f, g };
+    let lc_g = pow_rat(&lc, g as i64);
+    let mut delta = curve.identity();
+    for pl in places {
+        let big_x = lc.clone() * &pl.x;
+        let big_y = lc_g.clone() * &pl.y;
+        // On-curve sanity: Y² = F(X).
+        let fx = eval_q(&curve.f, &big_x);
+        if big_y.clone() * &big_y != fx {
+            return None;
+        }
+        let cls = curve.point_class(&big_x, &big_y);
+        let k = pl.coeff.clone().abs().to_u64()?;
+        if k == 0 {
+            continue;
+        }
+        let term = curve.mul(k, &cls);
+        let term = if pl.coeff < 0 { curve.neg(&term) } else { term };
+        delta = curve.add(&delta, &term);
+    }
+    let nd = curve.mul(n, &delta);
+    Some(HypQ::is_identity(&nd))
+}
+
+/// `r^e` for a rational base and (possibly negative) integer exponent.
+fn pow_rat(r: &Rational, e: i64) -> Rational {
+    if e >= 0 {
+        let mut acc = Rational::from(1);
+        for _ in 0..e {
+            acc *= r;
+        }
+        acc
+    } else {
+        let mut acc = Rational::from(1);
+        for _ in 0..(-e) {
+            acc *= r;
+        }
+        Rational::from(1) / acc
+    }
+}
+
+fn eval_q(p: &QPoly, x: &Rational) -> Rational {
+    let mut acc = Rational::from(0);
+    for c in p.iter().rev() {
+        acc = acc * x + c;
+    }
+    acc
+}
+
 /// FIND-ORDER for genus ≥ 2 hyperelliptic curves `y² = a(x)` (odd-degree
-/// squarefree `a`).  Sound: returns [`FindOrder::NonElementary`] only when the
-/// prime-to-`p` torsion orders are provably inconsistent across good primes;
-/// everything else (consistent candidate, too few primes, even degree) is
-/// [`FindOrder::NotDecided`].
+/// squarefree `a`).  **Complete and sound** for this class: reduction mod good
+/// primes pins the exact candidate order `N` (injectivity of reduction on
+/// prime-to-`p` torsion), then an exact Cantor computation over ℚ tests whether
+/// `N·δ` is principal — giving [`FindOrder::Principal`] (torsion, order `N`) or
+/// [`FindOrder::NonElementary`] (non-torsion).  Even-degree (real) models with
+/// **no residue at infinity** are reduced to an odd model by moving a rational
+/// branch point to infinity.  [`FindOrder::NotDecided`] only when out of scope
+/// (too few good primes, `N` past the cap, an even model with a residue at ∞ or
+/// no usable rational branch point).
 pub(crate) fn find_order_genus_ge2(n: usize, a: &QPoly, divisor: &[PlacedResidue]) -> FindOrder {
     if n != 2 {
         return FindOrder::NotDecided;
     }
     let a = trim(a.clone());
     let dd = degree(&a);
-    // Imaginary model only: odd degree ⇒ a single rational place at infinity, so
-    // the infinity residue is absorbed by Σ coeff = 0 and need not be placed.
-    if dd < 5 || dd % 2 == 0 {
-        return FindOrder::NotDecided;
+    if dd < 5 {
+        return FindOrder::NotDecided; // genus ≥ 2 needs deg ≥ 5
     }
-    let d = dd as usize;
-    let g = (d - 1) / 2;
 
-    // Collect finite places with integer (primitive) multiplicities.
+    // Collect finite places with primitive integer multiplicities.
     let finite: Vec<&PlacedResidue> = divisor.iter().filter(|r| !r.residue.at_infinity).collect();
     if finite.is_empty() {
         return FindOrder::NotDecided;
     }
-    // Scale residue values to a primitive integer divisor.
     let mut l = Integer::from(1);
     for r in &finite {
         l = l.lcm(r.residue.value.denom());
@@ -605,6 +836,112 @@ pub(crate) fn find_order_genus_ge2(n: usize, a: &QPoly, divisor: &[PlacedResidue
         return FindOrder::NotDecided;
     }
 
+    if dd % 2 == 1 {
+        // Imaginary model: a single rational place at infinity, absorbed by Σ = 0.
+        decide_odd(&a, &places)
+    } else {
+        // Real model (two places at infinity).  Handle only the case with **no
+        // residue at infinity** (mirrors the genus-1 quartic path): move a
+        // rational branch point to infinity via `x = r + 1/s` to get an odd
+        // model, then decide there.  Any residue at ∞, no rational root, or a
+        // residue on the moved fibre ⇒ undecided.
+        if divisor
+            .iter()
+            .any(|r| r.residue.at_infinity && r.residue.value != 0)
+        {
+            return FindOrder::NotDecided;
+        }
+        // Pick a rational branch point **off** the divisor support to move to ∞.
+        let Some(r) = rational_root_off_support(&a, &places) else {
+            return FindOrder::NotDecided;
+        };
+        let Some((a_odd, places_odd)) = even_to_odd(&a, &r, &places) else {
+            return FindOrder::NotDecided;
+        };
+        decide_odd(&a_odd, &places_odd)
+    }
+}
+
+/// A rational root of `a` that is **not** the `x`-coordinate of any divisor
+/// place (so the moved fibre `x=r` carries no residue).  Found by deflating out
+/// each rational root in turn.
+fn rational_root_off_support(a: &QPoly, places: &[Place]) -> Option<Rational> {
+    let support: Vec<Rational> = places.iter().map(|p| p.x.clone()).collect();
+    let mut poly = trim(a.clone());
+    while let Some(r) = super::find_order::first_rational_root(&poly) {
+        if !support.iter().any(|s| *s == r) {
+            return Some(r);
+        }
+        // Deflate by (x − r) and look for the next rational root.
+        let lin = vec![-r.clone(), Rational::from(1)];
+        let (q, _rem) = poly_divrem(&poly, &lin);
+        poly = trim(q);
+        if degree(&poly) < 1 {
+            break;
+        }
+    }
+    None
+}
+
+/// Reduce an even-degree model `y²=a(x)` (with `a(r)=0`, `r` rational) to the
+/// odd model `ỹ²=ã(s)`, `ã(s) = sᵈ·a(r+1/s)`, mapping each finite place
+/// `(α,β) ↦ (1/(α−r), β/(α−r)^{g+1})`.  `None` if a place sits on the moved
+/// fibre `x=r` (it would go to `s=∞`).
+fn even_to_odd(a: &QPoly, r: &Rational, places: &[Place]) -> Option<(QPoly, Vec<Place>)> {
+    let d = degree(a) as usize; // 2g+2
+    let g = (d - 2) / 2;
+    // ã = reverse(a(x+r)); the constant term a(r)=0 drops the top, giving deg d-1.
+    let b = poly_shift(a, r);
+    let mut a_odd = vec![Rational::from(0); d + 1];
+    for (i, slot) in a_odd.iter_mut().enumerate() {
+        if let Some(c) = b.get(d - i) {
+            *slot = c.clone();
+        }
+    }
+    let a_odd = trim(a_odd);
+    if degree(&a_odd) != (d as i64 - 1) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(places.len());
+    for pl in places {
+        let dx = pl.x.clone() - r;
+        if dx == 0 {
+            return None; // place on the moved fibre x=r
+        }
+        let s0 = Rational::from(1) / &dx;
+        let y_new = pl.y.clone() * pow_rat(&s0, g as i64 + 1);
+        out.push(Place {
+            x: s0,
+            y: y_new,
+            coeff: pl.coeff.clone(),
+        });
+    }
+    Some((a_odd, out))
+}
+
+/// `a(x + r)` (Taylor shift).
+fn poly_shift(a: &QPoly, r: &Rational) -> QPoly {
+    let mut result: QPoly = vec![];
+    let mut xr_pow = vec![Rational::from(1)]; // (x+r)^0
+    let xr = vec![r.clone(), Rational::from(1)]; // x + r
+    for ak in a.iter() {
+        if *ak != 0 {
+            result = poly_add(&result, &poly_scale(&xr_pow, ak));
+        }
+        xr_pow = poly_mul(&xr_pow, &xr);
+    }
+    trim(result)
+}
+
+/// The decision core for an **odd-degree** imaginary model `y²=a(x)` with the
+/// already-collected primitive integer finite `places`.
+fn decide_odd(a: &QPoly, places: &[Place]) -> FindOrder {
+    let dd = degree(a);
+    if dd < 5 || dd % 2 == 0 {
+        return FindOrder::NotDecided;
+    }
+    let g = (dd as usize - 1) / 2;
+
     // Gather (prime, order) pairs over several good primes.
     const MAX_PRIME: u64 = 200;
     const WANT: usize = 4;
@@ -612,7 +949,7 @@ pub(crate) fn find_order_genus_ge2(n: usize, a: &QPoly, divisor: &[PlacedResidue
     let mut p = 3u64;
     while p <= MAX_PRIME && data.len() < WANT {
         if crate::modular::is_prime(p) {
-            if let Some((curve, cls)) = reduce_and_build(&a, g, &places, p) {
+            if let Some((curve, cls)) = reduce_and_build(a, g, places, p) {
                 if let Some(order) = curve.order(&cls) {
                     data.push((p, order));
                 }
@@ -636,6 +973,8 @@ pub(crate) fn find_order_genus_ge2(n: usize, a: &QPoly, divisor: &[PlacedResidue
             }
         }
     }
+    // Candidate order N = ∏ ℓ^{v_ℓ(N)}, with v_ℓ(N) pinned by the primes ≠ ℓ.
+    let mut big_n = Integer::from(1);
     for &l in &ls {
         let witnesses: Vec<u32> = data
             .iter()
@@ -647,7 +986,7 @@ pub(crate) fn find_order_genus_ge2(n: usize, a: &QPoly, divisor: &[PlacedResidue
         }
         let v_n = witnesses[0];
         if witnesses.iter().any(|&w| w != v_n) {
-            return FindOrder::NonElementary; // prime-to-ℓ inconsistency
+            return FindOrder::NonElementary; // prime-to-ℓ inconsistency ⇒ non-torsion
         }
         // ℓ-part of the image order at the modulus ℓ must divide N.
         if let Some((_, m)) = data.iter().find(|(pi, _)| *pi == l) {
@@ -655,11 +994,24 @@ pub(crate) fn find_order_genus_ge2(n: usize, a: &QPoly, divisor: &[PlacedResidue
                 return FindOrder::NonElementary;
             }
         }
+        for _ in 0..v_n {
+            big_n *= Integer::from(l);
+        }
     }
 
-    // Consistent candidate torsion order: certifying it elementary needs Coates'
-    // function construction (not implemented for genus ≥ 2) — stay undecided.
-    FindOrder::NotDecided
+    // The prime-to-p reconstruction is exact: *if* δ is torsion its order is
+    // exactly N.  Decide torsion-ness by testing N·δ principal exactly over ℚ.
+    let Some(n) = big_n.to_u64() else {
+        return FindOrder::NotDecided; // order past a practical cap
+    };
+    if n == 0 || n > u32::MAX as u64 {
+        return FindOrder::NotDecided;
+    }
+    match n_delta_is_principal(a, g, places, n) {
+        Some(true) => FindOrder::Principal { order: n as u32 },
+        Some(false) => FindOrder::NonElementary,
+        None => FindOrder::NotDecided,
+    }
 }
 
 #[cfg(test)]
@@ -752,24 +1104,42 @@ mod tests {
         }
     }
 
-    /// Even-degree radicand (real model) is out of scope ⇒ NotDecided.
+    /// Even-degree real model `y²=x⁶+1` with no rational branch point (roots are
+    /// complex 12th roots of unity) ⇒ NotDecided (can't move a place to ∞).
     #[test]
-    fn even_degree_not_decided() {
-        // y² = x⁶+1 (genus 2, two places at ∞).
+    fn even_degree_no_rational_root_not_decided() {
         let a = qp(&[1, 0, 0, 0, 0, 0, 1]);
         let div = [place(0, 1, 1), place(0, -1, -1)];
         assert_eq!(find_order_genus_ge2(2, &a, &div), FindOrder::NotDecided);
     }
 
-    /// Genus-2 `y² = x(x-1)(x+1)(x²+1) = x⁵ - x`.  The divisor
-    /// `(0,0) − (1,0)` of two rational branch points is 2-torsion ⇒ consistent
-    /// across primes ⇒ NotDecided (sound: never asserts Principal for genus ≥ 2).
+    /// Even-degree real model `y²=(x²−1)(x²−4)(x²−9)=x⁶−14x⁴+49x²−36` (genus 2,
+    /// rational branch points ±1,±2,±3).  The branch difference `(1,0) − (2,0)`
+    /// is 2-torsion: reduce a rational root to ∞, then the exact ℚ test gives
+    /// `Principal{2}`.
     #[test]
-    fn genus2_branch_difference_consistent_not_decided() {
+    fn even_degree_branch_difference_principal() {
+        let a = qp(&[-36, 0, 49, 0, -14, 0, 1]);
+        assert_eq!(super::super::find_order::genus(2, &a), Some(2));
+        let div = [place(1, 0, 1), place(2, 0, -1)];
+        assert_eq!(
+            find_order_genus_ge2(2, &a, &div),
+            FindOrder::Principal { order: 2 }
+        );
+    }
+
+    /// Genus-2 `y² = x(x-1)(x+1)(x²+1) = x⁵ - x`.  The divisor `(0,0) − (1,0)`
+    /// of two distinct rational branch points is 2-torsion: the exact ℚ test
+    /// confirms `2·δ` is principal ⇒ `Principal{2}`.
+    #[test]
+    fn genus2_branch_difference_principal_order_two() {
         let a = qp(&[0, -1, 0, 0, 0, 1]);
         assert_eq!(super::super::find_order::genus(2, &a), Some(2));
         let div = [place(0, 0, 1), place(1, 0, -1)];
-        assert_eq!(find_order_genus_ge2(2, &a, &div), FindOrder::NotDecided);
+        assert_eq!(
+            find_order_genus_ge2(2, &a, &div),
+            FindOrder::Principal { order: 2 }
+        );
     }
 
     /// Genus-2 `y² = x⁵ + x + 1` with the non-torsion divisor `(0,1) − ∞`
