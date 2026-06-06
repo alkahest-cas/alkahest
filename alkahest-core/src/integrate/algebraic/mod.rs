@@ -453,6 +453,51 @@ mod tests {
         );
     }
 
+    /// **Rational** weight `B` on a genus-2 curve: `∫ 5x⁴/(2√(x⁵+1)) dx =
+    /// √(x⁵+1)` — the integral part `b·√P` (`b=1`) found via the rational Risch
+    /// DE `b' + (P'/2P)b = B`.  Previously hit the blind `NonElementary` shortcut.
+    #[test]
+    fn quintic_rational_b_integral_part_elementary() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let x5p1 = pool.add(vec![pool.pow(x, pool.integer(5_i32)), pool.integer(1_i32)]);
+        let inv_sqrt = pool.pow(pool.func("sqrt", vec![x5p1]), pool.integer(-1_i32));
+        let half = pool.pow(pool.integer(2_i32), pool.integer(-1_i32));
+        let integrand = pool.mul(vec![
+            pool.integer(5_i32),
+            pool.pow(x, pool.integer(4_i32)),
+            half,
+            inv_sqrt,
+        ]);
+        let res = crate::integrate::engine::integrate(integrand, x, &pool)
+            .expect("rational-B integral part is elementary");
+        let df = simplify(crate::diff::diff(res.value, x, &pool).unwrap().value, &pool).value;
+        for &xv in &[0.4_f64, 0.9, 1.6] {
+            let lhs = eval(df, x, xv, &pool).unwrap();
+            let rhs = eval(integrand, x, xv, &pool).unwrap();
+            assert!(
+                (lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()),
+                "x={xv}: d/dx F = {lhs}, integrand = {rhs}"
+            );
+        }
+    }
+
+    /// `∫ dx/√(x⁵+1)` — genus-2 first-kind hyperelliptic: no logarithmic part
+    /// (empty residue divisor) and no algebraic primitive (Risch DE unsolvable),
+    /// so soundly `NonElementary`.
+    #[test]
+    fn quintic_first_kind_non_elementary() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let x5p1 = pool.add(vec![pool.pow(x, pool.integer(5_i32)), pool.integer(1_i32)]);
+        let integrand = pool.pow(pool.func("sqrt", vec![x5p1]), pool.integer(-1_i32));
+        let res = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            matches!(res, Err(IntegrationError::NonElementary(_))),
+            "got {res:?}"
+        );
+    }
+
     /// `∫ dx/√(x³+1)` is a first-kind elliptic integral — non-elementary; the
     /// public engine must still report `NonElementary` (the capstone's verify gate
     /// declines, falling through to the genus-≥1 shortcut).

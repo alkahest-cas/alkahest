@@ -13,12 +13,18 @@ use super::poly_utils::{
 };
 use crate::deriv::log::{DerivationLog, RewriteStep};
 use crate::integrate::engine::IntegrationError;
+use crate::integrate::risch::alg_field::{AlgElem, RatFn};
 use crate::integrate::risch::poly_rde::{
-    degree, expr_to_qpoly, poly_add, poly_deriv, poly_mul, poly_scale, qpoly_to_expr, trim, QPoly,
+    degree, expr_to_qpoly, poly_deriv, poly_scale, qpoly_to_expr, trim, QPoly,
 };
-use crate::integrate::risch::rational_rde::{poly_gcd, poly_sub};
+use crate::integrate::risch::rational_rde::{
+    expr_to_qrational, poly_div_exact, poly_divrem, poly_gcd, solve_rational_rde_generalized,
+};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use rug::Rational;
+
+use super::find_order::{find_order_placed, first_rational_root, FindOrder};
+use super::residues::residue_divisor_placed;
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -57,19 +63,7 @@ pub fn integrate_with_sqrt(
                     _ => unreachable!(),
                 }
             } else {
-                // deg P ≥ 3.  For a **polynomial** weight `B`, `∫ B·√P dx` has no
-                // finite poles, so it is elementary iff it equals `Q(x)·√P`
-                // (Liouville: `∫B√P = Q√P + c·∫dx/√P`, and `∫dx/√P` is
-                // non-elementary for squarefree deg P ≥ 3).  Solve the integral
-                // part; otherwise (with P squarefree) it is genuinely
-                // non-elementary.
-                if let Some(res) = try_integral_part_high_degree(b, p, sqrt_id, var, pool, log) {
-                    return res;
-                }
-                Err(IntegrationError::NonElementary(
-                    "integral over genus-1 (elliptic) or higher curve; no elementary antiderivative"
-                        .to_string(),
-                ))
+                integrate_b_sqrt_high_degree(b, p, sqrt_id, var, pool, log)
             }
         }
     }
@@ -672,115 +666,138 @@ fn binomial_coeff(n: u64, k: u64) -> rug::Integer {
 }
 
 // ---------------------------------------------------------------------------
-// Integral part for ∫ B(x)·√P dx with B polynomial and deg P ≥ 3
+// ∫ B(x)·√P dx for deg P ≥ 3 (genus ≥ 1) — sound decision
 //
-// `B·√P dx` has no finite poles, so by Liouville `∫ B√P = Q·√P + c·∫dx/√P`.
-// For squarefree deg P ≥ 3, `∫dx/√P` is non-elementary, hence the integral is
-// elementary iff `c = 0`, i.e. iff `Q·√P` solves it.  Differentiating,
-// `(Q√P)' = (2Q'P + QP')/(2√P) = B√P` ⟺ the polynomial identity
-//   2·Q'·P + Q·P' = 2·B·P.
-// The operator `Q ↦ 2Q'P + QP'` maps degree-k to degree k+m−1 with nonzero
-// leading coefficient `(2k+m)·lc(P)`, so the identity is solved by top-down
-// elimination; a nonzero remainder means `c ≠ 0` (non-elementary).
+// By Liouville `∫ B√P = b·√P + Σ cⱼ log uⱼ` with `b ∈ ℚ(x)`.  Two parts:
+//
+//  * **Integral part** `b·√P`: differentiating, `(b√P)' = (b' + (P'/2P)·b)·√P`,
+//    so `∫B√P = b√P` iff the rational **Risch DE** `b' + (P'/2P)·b = B` has a
+//    rational solution — solved by `solve_rational_rde_generalized`.  This is
+//    exact (verified by construction) and covers e.g. `∫(P'/2√P) = √P` and
+//    polynomial weights `∫5x⁴√(x⁵+1) = ⅔(x⁵+1)^{3/2}`.
+//
+//  * **Logarithmic part**: when the RDE has no rational solution there are
+//    residues.  Liouville ⟹ no residues ⇒ `∫B√P` is elementary iff it is an
+//    exact algebraic derivative — but the RDE just said it is not — so a
+//    **complete** empty residue divisor (with P squarefree) certifies
+//    `NonElementary`.  With residues, FIND-ORDER decides: a **non-torsion**
+//    divisor ⇒ `NonElementary`; otherwise (torsion log part) emitting it on a
+//    genus ≥ 2 curve needs Coates' construction (genus 0/1 are handled upstream
+//    by the parametrization / genus-1 capstone), so we decline.
+//
+// Soundness of the residue path requires the residue divisor to be **complete**:
+// the residues live at the poles of `B` that are *not* branch points (a pole of
+// `B` at a root of `P` is regularized by `√P`'s zero, contributing none).  So we
+// require the part of `denom(B)` coprime to `P` to split over ℚ; otherwise we
+// decline rather than risk a verdict on an incomplete divisor.
 // ---------------------------------------------------------------------------
 
-/// Try `∫ B·√P dx = Q·√P` for polynomial `B`, deg P ≥ 3.  Returns:
-/// * `Some(Ok(result))` — elementary, `result = Q·√P`;
-/// * `Some(Err(NonElementary))` — `B` polynomial and `P` squarefree but no `Q`
-///   exists (`c ≠ 0`), so the integral is genuinely non-elementary;
-/// * `None` — not applicable (`B` not polynomial, or `P` not squarefree), leave
-///   the decision to the caller.
-fn try_integral_part_high_degree(
+fn integrate_b_sqrt_high_degree(
     b: ExprId,
     p: ExprId,
     sqrt_id: ExprId,
     var: ExprId,
     pool: &ExprPool,
     log: &mut DerivationLog,
-) -> Option<Result<ExprId, IntegrationError>> {
-    let p_poly = expr_to_qpoly(p, var, pool)?;
-    let b_poly = expr_to_qpoly(b, var, pool)?; // `None` ⇒ B not polynomial
+) -> Result<ExprId, IntegrationError> {
+    let nonelem = |msg: &str| IntegrationError::NonElementary(msg.to_string());
+    let notimpl = |msg: &str| IntegrationError::NotImplemented(msg.to_string());
+
+    let p_poly = expr_to_qpoly(p, var, pool)
+        .ok_or_else(|| notimpl("radicand P is not a polynomial in the variable"))?;
+    let (b_num, b_den) = expr_to_qrational(b, var, pool)
+        .ok_or_else(|| notimpl("weight B is not a rational function"))?;
     if degree(&p_poly) < 3 {
-        return None;
+        return Err(notimpl("expected deg P ≥ 3 here"));
     }
-    // P must be squarefree for the NonElementary conclusion to be sound.
-    let p_sqfree = degree(&poly_gcd(&p_poly, &poly_deriv(&p_poly))) <= 0;
-    if !p_sqfree {
-        return None;
+
+    // 1. Integral part: b' + (P'/2P)·b = B  ⇒  ∫B√P = b·√P.
+    let p_prime = poly_deriv(&p_poly);
+    let two_p = poly_scale(&p_poly, &Rational::from(2));
+    if let Some((q_num, q_den)) = solve_rational_rde_generalized(&p_prime, &two_p, &b_num, &b_den) {
+        let q_expr = qrational_to_expr(&q_num, &q_den, var, pool);
+        let result = pool.mul(vec![q_expr, sqrt_id]);
+        log.push(RewriteStep::simple("alg_integral_part_sqrt", b, result));
+        return Ok(result);
     }
-    if degree(&b_poly) < 0 {
-        return None; // B = 0 handled elsewhere
+
+    // 2. No algebraic primitive — analyze the logarithmic part via residues.
+    //    Need P squarefree for the Liouville argument below.
+    if degree(&poly_gcd(&p_poly, &p_prime)) > 0 {
+        return Err(notimpl("non-squarefree radicand at deg ≥ 3"));
     }
-    match solve_integral_part(&p_poly, &b_poly) {
-        Some(q) => {
-            let q_expr = qpoly_to_expr(&q, var, pool);
-            let result = pool.mul(vec![q_expr, sqrt_id]);
-            log.push(RewriteStep::simple("alg_integral_part_sqrt", b, result));
-            Some(Ok(result))
+    // Completeness: poles of B off the branch locus must be rational.
+    let b_den_coprime = strip_common_factors(&b_den, &p_poly);
+    if !splits_over_q(&b_den_coprime) {
+        return Err(notimpl(
+            "B has poles at non-rational points off the branch locus; \
+             residue divisor would be incomplete",
+        ));
+    }
+
+    let h: AlgElem = vec![RatFn::int(0), RatFn::new(b_num.clone(), b_den.clone())];
+    let divisor = residue_divisor_placed(2, &p_poly, &h);
+    if divisor.is_empty() {
+        // No residues ⇒ no logarithmic part (Liouville); the RDE already ruled
+        // out an algebraic primitive ⇒ a nonzero first/second-kind differential
+        // on a genus ≥ 1 curve ⇒ non-elementary.
+        return Err(nonelem(
+            "∫ B·√P over a genus ≥ 1 curve with no logarithmic part and no \
+             algebraic primitive: non-elementary",
+        ));
+    }
+    match find_order_placed(2, &p_poly, &divisor) {
+        FindOrder::NonElementary => Err(nonelem(
+            "residue divisor is non-torsion (FIND-ORDER): no elementary logarithmic part",
+        )),
+        // Torsion / undecided: an elementary log part may exist, but constructing
+        // it on a genus ≥ 2 curve needs Coates' algorithm (not yet implemented).
+        _ => Err(notimpl(
+            "genus ≥ 2 logarithmic part: residue divisor torsion/undecided, \
+             log argument not yet constructible (Coates)",
+        )),
+    }
+}
+
+/// Build the expression `num(x)/den(x)`.
+fn qrational_to_expr(num: &QPoly, den: &QPoly, var: ExprId, pool: &ExprPool) -> ExprId {
+    let n = qpoly_to_expr(num, var, pool);
+    if den.len() == 1 && den.first().map(|c| *c == 1).unwrap_or(false) {
+        return n;
+    }
+    let d = qpoly_to_expr(den, var, pool);
+    pool.mul(vec![n, pool.pow(d, pool.integer(-1_i32))])
+}
+
+/// Divide `q` by all factors it shares with `p` (remove the gcd repeatedly), so
+/// the result is coprime to `p`.
+fn strip_common_factors(q: &QPoly, p: &QPoly) -> QPoly {
+    let mut d = trim(q.clone());
+    loop {
+        let g = poly_gcd(&d, p);
+        if degree(&g) <= 0 {
+            break;
         }
-        None => Some(Err(IntegrationError::NonElementary(
-            "∫ B(x)·√P with B polynomial, P squarefree of degree ≥ 3: integral \
-             part has a residual ∫dx/√P (non-elementary)"
-                .to_string(),
-        ))),
+        d = poly_div_exact(&d, &g);
     }
+    d
 }
 
-/// Solve `2·Q'·P + Q·P' = 2·B·P` for a polynomial `Q ∈ ℚ[x]`, or `None` if no
-/// polynomial solution exists.
-fn solve_integral_part(p: &QPoly, b: &QPoly) -> Option<QPoly> {
-    let m = degree(p);
-    if m < 1 {
-        return None;
-    }
-    let lc = p[m as usize].clone();
-    let p_prime = poly_deriv(p);
-    let bdeg = degree(b);
-    if bdeg < 0 {
-        return None;
-    }
-    let qdeg = bdeg + 1;
-    let mut q = vec![Rational::from(0); (qdeg + 1) as usize];
-    let mut rem = poly_scale(&poly_mul(b, p), &Rational::from(2)); // 2·B·P
-
-    for k in (0..=qdeg).rev() {
-        let d = (k + m - 1) as usize; // leading degree contributed by qₖ·xᵏ
-        let cd = rem.get(d).cloned().unwrap_or_else(|| Rational::from(0));
-        if cd == 0 {
-            continue; // qₖ = 0
+/// Does `poly` factor into linear factors over ℚ (all roots rational)?  Decided
+/// by repeatedly deflating rational roots (rational-root theorem is complete).
+fn splits_over_q(poly: &QPoly) -> bool {
+    let mut p = trim(poly.clone());
+    while degree(&p) >= 1 {
+        match first_rational_root(&p) {
+            Some(r) => {
+                let lin = vec![-r, Rational::from(1)];
+                let (q, _rem) = poly_divrem(&p, &lin);
+                p = trim(q);
+            }
+            None => return false,
         }
-        // qₖ = cd / ((2k+m)·lc(P)).
-        let factor = Rational::from(2 * k + m) * &lc;
-        let qk = cd / factor;
-        q[k as usize] = qk.clone();
-        // rem −= qₖ · L(xᵏ),  L(xᵏ) = 2k·x^{k−1}·P + xᵏ·P'.
-        let lxk = l_of_monomial(k, p, &p_prime);
-        rem = poly_sub(&rem, &poly_scale(&lxk, &qk));
     }
-
-    if degree(&trim(rem)) >= 0 {
-        return None; // nonzero remainder ⇒ no polynomial Q ⇒ c ≠ 0
-    }
-    Some(trim(q))
-}
-
-/// `L(xᵏ) = 2k·x^{k−1}·P + xᵏ·P'`.
-fn l_of_monomial(k: i64, p: &QPoly, p_prime: &QPoly) -> QPoly {
-    let xk = monomial(k);
-    let mut out = poly_mul(&xk, p_prime);
-    if k >= 1 {
-        let xk1 = monomial(k - 1);
-        let term = poly_scale(&poly_mul(&xk1, p), &Rational::from(2 * k));
-        out = poly_add(&out, &term);
-    }
-    out
-}
-
-/// The monomial `xᵏ` as a `QPoly` (`k ≥ 0`).
-fn monomial(k: i64) -> QPoly {
-    let mut v = vec![Rational::from(0); (k.max(0) + 1) as usize];
-    v[k.max(0) as usize] = Rational::from(1);
-    v
+    true
 }
 
 fn neg_c_power(c: &rug::Integer, n: i64) -> rug::Integer {
