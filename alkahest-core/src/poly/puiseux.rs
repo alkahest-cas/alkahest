@@ -811,7 +811,7 @@ fn make_alg_series(
 /// Factor `φ(c) = Σ p[k] c^k` over `ℚ` into monic irreducible factors of degree
 /// `≥ 1`, after dividing out the largest `c`-power (the root `c = 0`, not a
 /// branch).  Returns `(monic factor, degree)`.
-fn factor_over_q(p: &[Rational]) -> Vec<(Vec<Rational>, usize)> {
+pub(crate) fn factor_over_q(p: &[Rational]) -> Vec<(Vec<Rational>, usize)> {
     let p = {
         let mut hi = p.len();
         while hi > 0 && p[hi - 1] == 0 {
