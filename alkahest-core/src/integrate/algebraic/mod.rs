@@ -27,6 +27,12 @@ mod jacobian_torsion;
 pub(super) mod parametrize;
 pub(super) mod poly_utils;
 pub mod residues;
+// Trager ℚ-basis logarithmic-part criterion: the decomposition + per-component
+// torsion core is implemented and tested; its full consumer (collecting a
+// divisor's algebraic residues into a common number field — a compositum) is the
+// remaining glue, so the entry points are not yet called from non-test code.
+#[allow(dead_code)]
+mod trager_log;
 pub mod vanhoeij;
 
 use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
