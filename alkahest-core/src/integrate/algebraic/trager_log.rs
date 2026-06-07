@@ -22,11 +22,12 @@
 //! a common `ℚ(θ)` (a compositum) and torsion of **non-branch algebraic** places
 //! are the remaining glue toward the fully general criterion.
 
-use rug::Rational;
+use rug::{Integer, Rational};
 
 use super::super::risch::number_field::KElem;
 use super::super::risch::poly_rde::QPoly;
 use super::find_order::{find_order_placed, FindOrder};
+use super::jacobian_torsion::{find_order_genus_ge2_alg, AlgPlace};
 use super::residues::{PlacedResidue, Residue};
 
 /// `ℚ`-basis decomposition of residues `r_i ∈ ℚ(θ)` (each a `KElem`, i.e. a
@@ -139,6 +140,80 @@ pub(crate) fn trager_log_criterion(
     FindOrder::Principal { order: lcm_order }
 }
 
+/// Trager's criterion with **algebraic** places: residues live in a common
+/// `ℚ(θ)` (`dim = deg θ`), attached to rational places (`rat_places`) and
+/// algebraic-place orbits (`alg_places`, see [`AlgPlace`]).  Decomposes all
+/// residues over `ℚ`; for each component the rational-coefficient divisor `δ_k`
+/// (over both place kinds) is tested by [`find_order_genus_ge2_alg`].  Returns
+/// `NonElementary` if any component is non-torsion, `Principal` (lcm of the
+/// component orders) if all are torsion, else `NotDecided`.
+///
+/// Each component's coordinates are cleared to integers (a constant rescaling
+/// that preserves torsion-ness; `find_order_genus_ge2_alg` re-primitivizes, so
+/// the reported order is that of the primitive class).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn trager_log_criterion_alg(
+    n: usize,
+    a: &QPoly,
+    rat_places: &[PlacedResidue],
+    rat_residues: &[KElem],
+    alg_places: &[AlgPlace],
+    alg_residues: &[KElem],
+    dim: usize,
+) -> FindOrder {
+    if rat_places.len() != rat_residues.len() || alg_places.len() != alg_residues.len() {
+        return FindOrder::NotDecided;
+    }
+    let nr = rat_residues.len();
+    let all_res: Vec<KElem> = rat_residues.iter().chain(alg_residues).cloned().collect();
+    if all_res.is_empty() {
+        return FindOrder::NotDecided;
+    }
+    let (ncomp, coords) = qbasis_decompose(&all_res, dim);
+    if ncomp == 0 {
+        return FindOrder::Principal { order: 1 };
+    }
+
+    let mut lcm_order: u32 = 1;
+    for k in 0..ncomp {
+        // Clear denominators of this component's coordinates to integers.
+        let mut l = Integer::from(1);
+        for c in &coords {
+            l = l.lcm(c[k].denom());
+        }
+        let rat_div: Vec<PlacedResidue> = rat_places
+            .iter()
+            .zip(&coords[..nr])
+            .map(|(pl, c)| PlacedResidue {
+                residue: Residue {
+                    point: pl.residue.point.clone(),
+                    at_infinity: pl.residue.at_infinity,
+                    sheet: pl.residue.sheet,
+                    ramification: pl.residue.ramification,
+                    value: c[k].clone() * Rational::from(l.clone()),
+                },
+                y_coord: pl.y_coord.clone(),
+            })
+            .collect();
+        let alg_div: Vec<AlgPlace> = alg_places
+            .iter()
+            .zip(&coords[nr..])
+            .map(|(ap, c)| AlgPlace {
+                minpoly: ap.minpoly.clone(),
+                x_coord: ap.x_coord.clone(),
+                y_coord: ap.y_coord.clone(),
+                coeff: (c[k].clone() * Rational::from(l.clone())).numer().clone(),
+            })
+            .collect();
+        match find_order_genus_ge2_alg(n, a, &rat_div, &alg_div) {
+            FindOrder::NonElementary => return FindOrder::NonElementary,
+            FindOrder::Principal { order } => lcm_order = lcm_u32(lcm_order, order),
+            FindOrder::NotDecided => return FindOrder::NotDecided,
+        }
+    }
+    FindOrder::Principal { order: lcm_order }
+}
+
 fn lcm_u32(a: u32, b: u32) -> u32 {
     if a == 0 || b == 0 {
         return 0;
@@ -229,6 +304,34 @@ mod tests {
             trager_log_criterion(2, &a, &places, &residues, 2),
             FindOrder::Principal { order: 2 }
         );
+    }
+
+    /// Criterion with an **algebraic place**: on the genus-2 curve
+    /// `y²=(x²−2)(x³+1)`, residues in `ℚ(√2)` — `√2` at the algebraic branch
+    /// orbit over `x²−2`, `−√2` at the rational branch point `(−1,0)`.  The
+    /// single `√2`-component divisor is branch-only ⇒ 2-torsion ⇒ `Principal`.
+    #[test]
+    fn criterion_alg_place_principal() {
+        let a = qp(&[-2, 0, 1, -2, 0, 1]); // (x²−2)(x³+1) = x⁵ − 2x³ + x² − 2
+        let rat_places = [place(-1, 0, false)]; // branch point (−1,0)
+        let rat_residues = [ke(&[0, -1])]; // −√2
+        let alg_places = [AlgPlace {
+            minpoly: qp(&[-2, 0, 1]), // x² − 2
+            x_coord: qp(&[0, 1]),     // θ
+            y_coord: Vec::new(),      // branch
+            coeff: Integer::from(0),  // (coeff is set per-component by the criterion)
+        }];
+        let alg_residues = [ke(&[0, 1])]; // √2
+        let res = trager_log_criterion_alg(
+            2,
+            &a,
+            &rat_places,
+            &rat_residues,
+            &alg_places,
+            &alg_residues,
+            2,
+        );
+        assert!(matches!(res, FindOrder::Principal { .. }), "got {res:?}");
     }
 
     /// Genuine **two-component** all-torsion case on `y²=x³+1` (ℤ/6), residues
