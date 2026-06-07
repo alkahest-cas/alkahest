@@ -14,17 +14,22 @@ use super::poly_utils::{
 use crate::deriv::log::{DerivationLog, RewriteStep};
 use crate::integrate::engine::IntegrationError;
 use crate::integrate::risch::alg_field::{AlgElem, RatFn};
+use crate::integrate::risch::number_field::KElem;
 use crate::integrate::risch::poly_rde::{
-    degree, expr_to_qpoly, poly_deriv, poly_scale, qpoly_to_expr, trim, QPoly,
+    degree, expr_to_qpoly, poly_deriv, poly_scale, qpoly_to_expr, QPoly,
 };
 use crate::integrate::risch::rational_rde::{
-    expr_to_qrational, poly_div_exact, poly_divrem, poly_gcd, solve_rational_rde_generalized,
+    expr_to_qrational, poly_gcd, solve_rational_rde_generalized,
 };
 use crate::kernel::{ExprData, ExprId, ExprPool};
-use rug::Rational;
+use rug::{Integer, Rational};
 
-use super::find_order::{find_order_placed, first_rational_root, FindOrder};
-use super::residues::residue_divisor_placed;
+use super::find_order::{find_order_placed, FindOrder};
+use super::jacobian_torsion::AlgPlace;
+use super::residues::{
+    finite_residues_algebraic, residue_divisor_placed, residue_sum_complete, AlgResidue,
+};
+use super::trager_log::trager_log_criterion_alg;
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -726,36 +731,175 @@ fn integrate_b_sqrt_high_degree(
     if degree(&poly_gcd(&p_poly, &p_prime)) > 0 {
         return Err(notimpl("non-squarefree radicand at deg ≥ 3"));
     }
-    // Completeness: poles of B off the branch locus must be rational.
-    let b_den_coprime = strip_common_factors(&b_den, &p_poly);
-    if !splits_over_q(&b_den_coprime) {
+
+    let h: AlgElem = vec![RatFn::int(0), RatFn::new(b_num.clone(), b_den.clone())];
+
+    // Soundness gate: the residue divisor must be **complete** (residue theorem
+    // Σ res = 0, counting rational, algebraic and infinite places).  Otherwise a
+    // place is missing and no verdict is safe.
+    if residue_sum_complete(2, &p_poly, &h) != 0 {
         return Err(notimpl(
-            "B has poles at non-rational points off the branch locus; \
-             residue divisor would be incomplete",
+            "residue divisor incomplete (missing places not yet supported)",
         ));
     }
 
-    let h: AlgElem = vec![RatFn::int(0), RatFn::new(b_num.clone(), b_den.clone())];
-    let divisor = residue_divisor_placed(2, &p_poly, &h);
-    if divisor.is_empty() {
-        // No residues ⇒ no logarithmic part (Liouville); the RDE already ruled
-        // out an algebraic primitive ⇒ a nonzero first/second-kind differential
-        // on a genus ≥ 1 curve ⇒ non-elementary.
-        return Err(nonelem(
-            "∫ B·√P over a genus ≥ 1 curve with no logarithmic part and no \
-             algebraic primitive: non-elementary",
-        ));
+    let alg_res = finite_residues_algebraic(2, &p_poly, &h);
+    if alg_res.is_empty() {
+        // All residues are rational — the complete divisor is the rational one.
+        let divisor = residue_divisor_placed(2, &p_poly, &h);
+        if divisor.is_empty() {
+            // No residues anywhere ⇒ no log part; RDE ruled out an algebraic
+            // primitive ⇒ a nonzero first/second-kind differential ⇒ non-elem.
+            return Err(nonelem(
+                "∫ B·√P over a genus ≥ 1 curve with no logarithmic part and no \
+                 algebraic primitive: non-elementary",
+            ));
+        }
+        return match find_order_placed(2, &p_poly, &divisor) {
+            FindOrder::NonElementary => Err(nonelem(
+                "residue divisor is non-torsion (FIND-ORDER): no elementary log part",
+            )),
+            _ => Err(notimpl(
+                "genus ≥ 2 logarithmic part: torsion/undecided, log argument not \
+                 yet constructible (Coates)",
+            )),
+        };
     }
-    match find_order_placed(2, &p_poly, &divisor) {
-        FindOrder::NonElementary => Err(nonelem(
-            "residue divisor is non-torsion (FIND-ORDER): no elementary logarithmic part",
+
+    // Algebraic residues present (a rational pole with an irrational sheet, or an
+    // algebraic-base pole).  Decide via the Trager ℚ-basis criterion in a common
+    // quadratic field; a non-torsion component certifies non-elementary.
+    match try_genus2_alg_log(&p_poly, &h, &alg_res) {
+        Some(FindOrder::NonElementary) => Err(nonelem(
+            "Trager ℚ-basis criterion: a residue component is non-torsion ⇒ \
+             no elementary logarithmic part",
         )),
-        // Torsion / undecided: an elementary log part may exist, but constructing
-        // it on a genus ≥ 2 curve needs Coates' algorithm (not yet implemented).
         _ => Err(notimpl(
-            "genus ≥ 2 logarithmic part: residue divisor torsion/undecided, \
-             log argument not yet constructible (Coates)",
+            "genus ≥ 2 logarithmic part with algebraic residues: not decided \
+             (torsion/undecided, or outside the single-quadratic-field scope)",
         )),
+    }
+}
+
+/// Trager ℚ-basis decision for `∫ (B·y) dx` on `y²=P` (deg P odd ≥ 5) when the
+/// algebraic residues live in a **single quadratic field** `ℚ(√d)` — i.e. every
+/// algebraic residue comes from a *rational* base point `α` whose sheet
+/// `√a(α)` has the same squarefree part `d`.  Collects all residues (rational
+/// and algebraic) as `ℚ(√d)` elements, with the algebraic ones at the two sheets
+/// `(α, ±√a(α))`, and runs [`trager_log_criterion_alg`].  `None` if outside this
+/// scope (an algebraic base point, or differing `d`'s — a genuine compositum).
+fn try_genus2_alg_log(p: &QPoly, h: &AlgElem, alg_res: &[AlgResidue]) -> Option<FindOrder> {
+    // Single-quadratic scope: every algebraic residue is over a degree-1 base
+    // (`conjugates == 1`, rational `α`) and shares one squarefree `d = sqfree a(α)`.
+    let mut common_d: Option<Integer> = None;
+    for ar in alg_res {
+        if ar.conjugates != 1 || degree(&ar.minpoly) != 1 {
+            return None; // algebraic base point ⇒ tower field, out of scope
+        }
+        let alpha = -ar.minpoly[0].clone(); // monic x − α
+        let a_at = eval_poly_q(p, &alpha);
+        if a_at == 0 {
+            return None; // branch point, not a B-pole sheet
+        }
+        let d = squarefree_part_rat(&a_at);
+        match &common_d {
+            None => common_d = Some(d),
+            Some(d0) if *d0 == d => {}
+            _ => return None, // distinct quadratic fields ⇒ compositum, out of scope
+        }
+    }
+    let d = common_d?;
+    let d_rat = Rational::from(d.clone());
+    let theta_min = vec![-d_rat.clone(), Rational::from(0), Rational::from(1)]; // θ² − d
+
+    // Rational + infinite places: residues are in ℚ ⊂ ℚ(√d) → KElem [value].
+    let rat_div = residue_divisor_placed(2, p, h);
+    let rat_residues: Vec<KElem> = rat_div
+        .iter()
+        .map(|r| vec![r.residue.value.clone()])
+        .collect();
+
+    // Algebraic places: the two sheets (α, ±√a(α)) = (α, ±k√d), a(α) = k²·d.
+    let mut alg_places: Vec<AlgPlace> = Vec::new();
+    let mut alg_residues: Vec<KElem> = Vec::new();
+    for ar in alg_res {
+        let alpha = -ar.minpoly[0].clone();
+        let a_at = eval_poly_q(p, &alpha);
+        let k = rat_sqrt(&(a_at / &d_rat))?; // a(α)/d is a perfect square
+        let r0 = ar.r0.first().cloned().unwrap_or_else(|| Rational::from(0));
+        let r1 = ar.r1.first().cloned().unwrap_or_else(|| Rational::from(0));
+        for sign in [Rational::from(1), Rational::from(-1)] {
+            alg_places.push(AlgPlace {
+                minpoly: theta_min.clone(),
+                x_coord: vec![alpha.clone()], // x = α
+                y_coord: vec![Rational::from(0), sign.clone() * &k], // y = ±k·θ = ±√a(α)
+                coeff: Integer::from(0),      // set per-component by the criterion
+                orbit: false,                 // a single ℚ(√d) sheet (one embedding), not an orbit
+            });
+            // residue r0 ± r1·k·√d on the ± sheet.
+            alg_residues.push(vec![r0.clone(), sign.clone() * &r1 * &k]);
+        }
+    }
+
+    Some(trager_log_criterion_alg(
+        2,
+        p,
+        &rat_div,
+        &rat_residues,
+        &alg_places,
+        &alg_residues,
+        2,
+    ))
+}
+
+/// Horner evaluation of `p ∈ ℚ[x]` at a rational point.
+fn eval_poly_q(p: &QPoly, x: &Rational) -> Rational {
+    p.iter().rev().fold(Rational::from(0), |acc, c| acc * x + c)
+}
+
+/// Squarefree part (kernel) of a rational `r ≠ 0`: the sign-carrying product of
+/// the primes dividing `r` to an odd power, as an integer (so `r / sqfree` is a
+/// perfect square).  Uses `r = (num·den)/den²`.
+fn squarefree_part_rat(r: &Rational) -> Integer {
+    let prod = r.numer().clone() * r.denom();
+    let sign = if prod < 0 {
+        Integer::from(-1)
+    } else {
+        Integer::from(1)
+    };
+    let mut m = prod.abs();
+    let mut sq = Integer::from(1);
+    let mut dd = Integer::from(2);
+    while Integer::from(&dd * &dd) <= m {
+        if m.is_divisible(&dd) {
+            let mut e = 0u32;
+            while m.is_divisible(&dd) {
+                m /= &dd;
+                e += 1;
+            }
+            if e % 2 == 1 {
+                sq *= &dd;
+            }
+        }
+        dd += 1;
+    }
+    sq *= &m; // remaining prime factor (exponent 1)
+    sq * sign
+}
+
+/// Exact rational square root, or `None` if `r` is not a perfect square in `ℚ`.
+fn rat_sqrt(r: &Rational) -> Option<Rational> {
+    if *r < 0 {
+        return None;
+    }
+    let n = r.numer().clone();
+    let d = r.denom().clone();
+    let ns = n.clone().sqrt();
+    let ds = d.clone().sqrt();
+    if Integer::from(&ns * &ns) == n && Integer::from(&ds * &ds) == d {
+        Some(Rational::from((ns, ds)))
+    } else {
+        None
     }
 }
 
@@ -767,37 +911,6 @@ fn qrational_to_expr(num: &QPoly, den: &QPoly, var: ExprId, pool: &ExprPool) -> 
     }
     let d = qpoly_to_expr(den, var, pool);
     pool.mul(vec![n, pool.pow(d, pool.integer(-1_i32))])
-}
-
-/// Divide `q` by all factors it shares with `p` (remove the gcd repeatedly), so
-/// the result is coprime to `p`.
-fn strip_common_factors(q: &QPoly, p: &QPoly) -> QPoly {
-    let mut d = trim(q.clone());
-    loop {
-        let g = poly_gcd(&d, p);
-        if degree(&g) <= 0 {
-            break;
-        }
-        d = poly_div_exact(&d, &g);
-    }
-    d
-}
-
-/// Does `poly` factor into linear factors over ℚ (all roots rational)?  Decided
-/// by repeatedly deflating rational roots (rational-root theorem is complete).
-fn splits_over_q(poly: &QPoly) -> bool {
-    let mut p = trim(poly.clone());
-    while degree(&p) >= 1 {
-        match first_rational_root(&p) {
-            Some(r) => {
-                let lin = vec![-r, Rational::from(1)];
-                let (q, _rem) = poly_divrem(&p, &lin);
-                p = trim(q);
-            }
-            None => return false,
-        }
-    }
-    true
 }
 
 fn neg_c_power(c: &rug::Integer, n: i64) -> rug::Integer {

@@ -28,10 +28,10 @@ pub(super) mod parametrize;
 pub(super) mod poly_utils;
 pub mod residues;
 // Trager ℚ-basis logarithmic-part criterion: decomposition + per-component
-// torsion over rational *and* algebraic places (`trager_log_criterion[_alg]`).
-// The remaining glue to a user-facing consumer is the engine-level
-// `∫B·√P` pipeline (Hermite → residues → collect into a common ℚ(θ) → criterion),
-// so the entry points are not yet called from non-test code.
+// torsion over rational *and* algebraic places.  `trager_log_criterion_alg` is
+// the engine consumer (via `genus_zero::integrate_b_sqrt_high_degree`); the
+// rational-only `trager_log_criterion` is its specialization, kept for reuse and
+// tests.
 #[allow(dead_code)]
 mod trager_log;
 pub mod vanhoeij;
@@ -498,6 +498,63 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let x5p1 = pool.add(vec![pool.pow(x, pool.integer(5_i32)), pool.integer(1_i32)]);
         let integrand = pool.pow(pool.func("sqrt", vec![x5p1]), pool.integer(-1_i32));
+        let res = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            matches!(res, Err(IntegrationError::NonElementary(_))),
+            "got {res:?}"
+        );
+    }
+
+    /// `∫ √(x⁵+x+1)/(x−2) dx` — a **genus-2** integrand with an algebraic-sheet
+    /// pole (rational base `x=2`, sheet `√a(2)=√35` irrational).  The end-to-end
+    /// consumer collects the residues into `ℚ(√35)` and the Trager ℚ-basis
+    /// criterion finds the `√35`-component `2[(2,√35)−∞]` non-torsion ⇒
+    /// `NonElementary`.  **Oracle-confirmed:** FriCAS 1.3.7 returns this integral
+    /// unevaluated (its complete Trager implementation ⇒ proven non-elementary).
+    #[test]
+    fn quintic_algebraic_pole_non_elementary() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![
+            pool.pow(x, pool.integer(5_i32)),
+            x,
+            pool.integer(1_i32),
+        ]);
+        let sq = pool.func("sqrt", vec![p]);
+        let integrand = pool.mul(vec![
+            sq,
+            pool.pow(
+                pool.add(vec![x, pool.integer(-2_i32)]),
+                pool.integer(-1_i32),
+            ),
+        ]);
+        let res = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            matches!(res, Err(IntegrationError::NonElementary(_))),
+            "got {res:?}"
+        );
+    }
+
+    /// `∫ x³·√(x⁵+x+1)/(x−2) dx` — likewise non-elementary (algebraic-sheet pole,
+    /// non-torsion component); FriCAS-confirmed.
+    #[test]
+    fn quintic_algebraic_pole_weighted_non_elementary() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![
+            pool.pow(x, pool.integer(5_i32)),
+            x,
+            pool.integer(1_i32),
+        ]);
+        let sq = pool.func("sqrt", vec![p]);
+        let integrand = pool.mul(vec![
+            pool.pow(x, pool.integer(3_i32)),
+            sq,
+            pool.pow(
+                pool.add(vec![x, pool.integer(-2_i32)]),
+                pool.integer(-1_i32),
+            ),
+        ]);
         let res = crate::integrate::engine::integrate(integrand, x, &pool);
         assert!(
             matches!(res, Err(IntegrationError::NonElementary(_))),
