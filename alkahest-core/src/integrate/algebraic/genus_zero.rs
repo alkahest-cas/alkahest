@@ -776,7 +776,8 @@ fn integrate_b_sqrt_high_degree(
         )),
         _ => Err(notimpl(
             "genus ≥ 2 logarithmic part with algebraic residues: not decided \
-             (torsion/undecided, or outside the single-quadratic-field scope)",
+             (torsion log not yet emittable, or an algebraic base point of \
+             degree ≥ 2 — a genuine tower)",
         )),
     }
 }
@@ -784,14 +785,18 @@ fn integrate_b_sqrt_high_degree(
 /// Trager ℚ-basis decision for `∫ (B·y) dx` on `y²=P` (deg P odd ≥ 5) when the
 /// algebraic residues live in a **single quadratic field** `ℚ(√d)` — i.e. every
 /// algebraic residue comes from a *rational* base point `α` whose sheet
-/// `√a(α)` has the same squarefree part `d`.  Collects all residues (rational
-/// and algebraic) as `ℚ(√d)` elements, with the algebraic ones at the two sheets
-/// `(α, ±√a(α))`, and runs [`trager_log_criterion_alg`].  `None` if outside this
-/// scope (an algebraic base point, or differing `d`'s — a genuine compositum).
+/// `√a(α)` is irrational.  Distinct sheets `√d₁, …, √d_k` (a **compositum** of
+/// quadratic fields) are handled too: a residue is `r0 ± r1·√d_i` (no products
+/// of distinct `√d`), so the residues span only `{1, √d₁, …, √d_k}` and the
+/// Trager ℚ-basis components **separate** — one rational `1`-component (the
+/// conjugate sheet-sums are rational) and one single-quadratic `√d_i`-component
+/// per field.  Residues are represented in that basis and fed to
+/// [`trager_log_criterion_alg`].  `None` for an algebraic *base* point
+/// (`conjugates ≠ 1`, a genuine tower) — still out of scope.
 fn try_genus2_alg_log(p: &QPoly, h: &AlgElem, alg_res: &[AlgResidue]) -> Option<FindOrder> {
-    // Single-quadratic scope: every algebraic residue is over a degree-1 base
-    // (`conjugates == 1`, rational `α`) and shares one squarefree `d = sqfree a(α)`.
-    let mut common_d: Option<Integer> = None;
+    // Collect the distinct squarefree sheet discriminants `d_i`; index them so
+    // the residue basis is {1 (index 0), √d_0 (1), √d_1 (2), …}.
+    let mut d_list: Vec<Integer> = Vec::new();
     for ar in alg_res {
         if ar.conjugates != 1 || degree(&ar.minpoly) != 1 {
             return None; // algebraic base point ⇒ tower field, out of scope
@@ -802,21 +807,22 @@ fn try_genus2_alg_log(p: &QPoly, h: &AlgElem, alg_res: &[AlgResidue]) -> Option<
             return None; // branch point, not a B-pole sheet
         }
         let d = squarefree_part_rat(&a_at);
-        match &common_d {
-            None => common_d = Some(d),
-            Some(d0) if *d0 == d => {}
-            _ => return None, // distinct quadratic fields ⇒ compositum, out of scope
+        if !d_list.contains(&d) {
+            d_list.push(d);
         }
     }
-    let d = common_d?;
-    let d_rat = Rational::from(d.clone());
-    let theta_min = vec![-d_rat.clone(), Rational::from(0), Rational::from(1)]; // θ² − d
+    let dim = 1 + d_list.len();
+    let d_index = |d: &Integer| d_list.iter().position(|x| x == d).unwrap();
 
-    // Rational + infinite places: residues are in ℚ ⊂ ℚ(√d) → KElem [value].
+    // Rational + infinite places: residues are rational ⇒ value at basis index 0.
     let rat_div = residue_divisor_placed(2, p, h);
     let rat_residues: Vec<KElem> = rat_div
         .iter()
-        .map(|r| vec![r.residue.value.clone()])
+        .map(|r| {
+            let mut v = vec![Rational::from(0); dim];
+            v[0] = r.residue.value.clone();
+            v
+        })
         .collect();
 
     // Algebraic places: the two sheets (α, ±√a(α)) = (α, ±k√d), a(α) = k²·d.
@@ -825,19 +831,26 @@ fn try_genus2_alg_log(p: &QPoly, h: &AlgElem, alg_res: &[AlgResidue]) -> Option<
     for ar in alg_res {
         let alpha = -ar.minpoly[0].clone();
         let a_at = eval_poly_q(p, &alpha);
+        let d = squarefree_part_rat(&a_at);
+        let d_rat = Rational::from(d.clone());
+        let theta_min = vec![-d_rat.clone(), Rational::from(0), Rational::from(1)]; // θ² − d_i
         let k = rat_sqrt(&(a_at / &d_rat))?; // a(α)/d is a perfect square
         let r0 = ar.r0.first().cloned().unwrap_or_else(|| Rational::from(0));
         let r1 = ar.r1.first().cloned().unwrap_or_else(|| Rational::from(0));
+        let idx = 1 + d_index(&d);
         for sign in [Rational::from(1), Rational::from(-1)] {
             alg_places.push(AlgPlace {
                 minpoly: theta_min.clone(),
                 x_coord: vec![alpha.clone()], // x = α
                 y_coord: vec![Rational::from(0), sign.clone() * &k], // y = ±k·θ = ±√a(α)
                 coeff: Integer::from(0),      // set per-component by the criterion
-                orbit: false,                 // a single ℚ(√d) sheet (one embedding), not an orbit
+                orbit: false,                 // a single ℚ(√d_i) sheet (one embedding)
             });
-            // residue r0 ± r1·k·√d on the ± sheet.
-            alg_residues.push(vec![r0.clone(), sign.clone() * &r1 * &k]);
+            // residue r0·1 ± r1·k·√d_i: r0 at index 0, ±r1·k at index 1+d_index.
+            let mut v = vec![Rational::from(0); dim];
+            v[0] = r0.clone();
+            v[idx] = sign.clone() * &r1 * &k;
+            alg_residues.push(v);
         }
     }
 
@@ -848,7 +861,7 @@ fn try_genus2_alg_log(p: &QPoly, h: &AlgElem, alg_res: &[AlgResidue]) -> Option<
         &rat_residues,
         &alg_places,
         &alg_residues,
-        2,
+        dim,
     ))
 }
 
