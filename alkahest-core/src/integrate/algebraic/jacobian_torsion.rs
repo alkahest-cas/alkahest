@@ -455,7 +455,13 @@ struct Place {
 /// Reduce `y² = a(x)` (monic-normalized) and the divisor `places` to `F_p`,
 /// building the reduced class.  Returns `None` if `p` is a **bad** prime for
 /// this data (so the caller tries the next prime).
-fn reduce_and_build(a: &QPoly, g: usize, places: &[Place], p: u64) -> Option<(HypFp, Mumford)> {
+fn reduce_and_build(
+    a: &QPoly,
+    g: usize,
+    places: &[Place],
+    alg: &[(QPoly, Integer)],
+    p: u64,
+) -> Option<(HypFp, Mumford)> {
     if p == 2 {
         return None;
     }
@@ -512,7 +518,56 @@ fn reduce_and_build(a: &QPoly, g: usize, places: &[Place], p: u64) -> Option<(Hy
         let term = if pl.coeff < 0 { curve.neg(&term) } else { term };
         acc = curve.add(&acc, &term);
     }
+
+    // Algebraic branch orbits: usable only at primes where `q` splits completely
+    // (every conjugate reduces to an F_p-rational branch point).
+    for (q, coeff) in alg {
+        let roots = fp_roots_split(q, p)?; // None ⇒ not fully split ⇒ skip prime
+        let k = coeff.clone().abs().to_u64()?;
+        if k == 0 {
+            continue;
+        }
+        for r in roots {
+            let big_x = mulmod(lc, r, p);
+            // Branch point: F(big_x) must vanish (q | a ⇒ a(r)=0 ⇒ F(big_x)=0).
+            if fp_eval(&curve.f, big_x, p) != 0 {
+                return None;
+            }
+            let cls = curve.point_class(big_x, 0); // y = 0
+            let term = curve.mul(k, &cls);
+            let term = if *coeff < 0 { curve.neg(&term) } else { term };
+            acc = curve.add(&acc, &term);
+        }
+    }
     Some((curve, acc))
+}
+
+/// Roots of `q` in `F_p`, but only if `q` **splits completely** (deg q distinct
+/// roots) mod `p`; `None` otherwise (or if a denominator vanishes mod `p`).
+fn fp_roots_split(q: &QPoly, p: u64) -> Option<Vec<u64>> {
+    let dq = degree(q);
+    if dq < 1 {
+        return None;
+    }
+    let mut q_fp = Vec::with_capacity(dq as usize + 1);
+    for c in q.iter() {
+        q_fp.push(rat_to_fp(c, p)?);
+    }
+    let q_fp = fp_trim(q_fp);
+    if q_fp.len() != dq as usize + 1 {
+        return None; // leading coeff vanished mod p
+    }
+    let mut roots = Vec::new();
+    for r in 0..p {
+        if fp_eval(&q_fp, r, p) == 0 {
+            roots.push(r);
+        }
+    }
+    if roots.len() == dq as usize {
+        Some(roots) // splits completely into distinct linear factors
+    } else {
+        None
+    }
 }
 
 /// `v_ℓ(m)` — exponent of prime `ℓ` in `m`.
@@ -782,7 +837,34 @@ fn eval_q(p: &QPoly, x: &Rational) -> Rational {
 /// branch point to infinity.  [`FindOrder::NotDecided`] only when out of scope
 /// (too few good primes, `N` past the cap, an even model with a residue at ∞ or
 /// no usable rational branch point).
+/// A Galois orbit of **branch** places (`y = 0`): the roots of an irreducible
+/// `minpoly` (which divides the radicand `a`), each with integer multiplicity
+/// `coeff`.  Branch places have no sheet ambiguity (`y = 0`), so they reduce
+/// unambiguously modulo any prime where `minpoly` splits completely.
+#[derive(Clone, Debug)]
+pub(crate) struct AlgBranchPlace {
+    pub minpoly: QPoly,
+    pub coeff: Integer,
+}
+
 pub(crate) fn find_order_genus_ge2(n: usize, a: &QPoly, divisor: &[PlacedResidue]) -> FindOrder {
+    find_order_genus_ge2_alg(n, a, divisor, &[])
+}
+
+/// FIND-ORDER for genus ≥ 2 with **rational** places (`divisor`) **and**
+/// algebraic **branch** places (`alg_branch`, Galois orbits over `y = 0`).  The
+/// algebraic places are reduced modulo only those good primes where their
+/// minimal polynomials **split completely** (so every conjugate becomes an
+/// `F_p`-rational branch point), then folded into the same Cantor / two-prime
+/// torsion test.  Odd-degree (imaginary) model only when `alg_branch` is
+/// nonempty.  Sound: same prime-to-`p` injectivity argument; non-split or
+/// out-of-scope inputs → [`FindOrder::NotDecided`].
+pub(crate) fn find_order_genus_ge2_alg(
+    n: usize,
+    a: &QPoly,
+    divisor: &[PlacedResidue],
+    alg_branch: &[AlgBranchPlace],
+) -> FindOrder {
     if n != 2 {
         return FindOrder::NotDecided;
     }
@@ -792,16 +874,15 @@ pub(crate) fn find_order_genus_ge2(n: usize, a: &QPoly, divisor: &[PlacedResidue
         return FindOrder::NotDecided; // genus ≥ 2 needs deg ≥ 5
     }
 
-    // Collect finite places with primitive integer multiplicities.
+    // Collect finite rational places with integer multiplicities (scaled by the
+    // common denominator; algebraic coeffs are already integers and join the
+    // same primitivizing gcd so the whole divisor is scaled consistently).
     let finite: Vec<&PlacedResidue> = divisor.iter().filter(|r| !r.residue.at_infinity).collect();
-    if finite.is_empty() {
-        return FindOrder::NotDecided;
-    }
     let mut l = Integer::from(1);
     for r in &finite {
         l = l.lcm(r.residue.value.denom());
     }
-    let int_coeffs: Vec<Integer> = finite
+    let mut rat_coeffs: Vec<Integer> = finite
         .iter()
         .map(|r| {
             (r.residue.value.clone() * Rational::from(l.clone()))
@@ -809,36 +890,55 @@ pub(crate) fn find_order_genus_ge2(n: usize, a: &QPoly, divisor: &[PlacedResidue
                 .clone()
         })
         .collect();
+    let alg_coeffs: Vec<Integer> = alg_branch.iter().map(|p| p.coeff.clone() * &l).collect();
     let mut gg = Integer::from(0);
-    for c in &int_coeffs {
+    for c in rat_coeffs.iter().chain(alg_coeffs.iter()) {
         gg = gg.gcd(c);
     }
     if gg == 0 {
-        return FindOrder::NotDecided; // no logarithmic part among finite places
+        return FindOrder::NotDecided; // no logarithmic part
+    }
+    for c in &mut rat_coeffs {
+        *c /= &gg;
     }
     let places: Vec<Place> = finite
         .iter()
-        .zip(&int_coeffs)
+        .zip(&rat_coeffs)
         .filter_map(|(r, c)| {
-            let coeff = c.clone() / &gg;
-            if coeff == 0 {
+            if *c == 0 {
                 None
             } else {
                 Some(Place {
                     x: r.residue.point.clone(),
                     y: r.y_coord.clone(),
-                    coeff,
+                    coeff: c.clone(),
                 })
             }
         })
         .collect();
-    if places.is_empty() {
+    let alg: Vec<(QPoly, Integer)> = alg_branch
+        .iter()
+        .zip(&alg_coeffs)
+        .filter_map(|(p, c)| {
+            let coeff = c.clone() / &gg;
+            if coeff == 0 {
+                None
+            } else {
+                Some((trim(p.minpoly.clone()), coeff))
+            }
+        })
+        .collect();
+    if places.is_empty() && alg.is_empty() {
         return FindOrder::NotDecided;
     }
 
     if dd % 2 == 1 {
         // Imaginary model: a single rational place at infinity, absorbed by Σ = 0.
-        decide_odd(&a, &places)
+        decide_odd(&a, &places, &alg)
+    } else if !alg.is_empty() {
+        // Even model + algebraic branch places: not handled (the even→odd move
+        // would have to transform the algebraic places too).
+        FindOrder::NotDecided
     } else {
         // Real model (two places at infinity).  Handle only the case with **no
         // residue at infinity** (mirrors the genus-1 quartic path): move a
@@ -858,7 +958,7 @@ pub(crate) fn find_order_genus_ge2(n: usize, a: &QPoly, divisor: &[PlacedResidue
         let Some((a_odd, places_odd)) = even_to_odd(&a, &r, &places) else {
             return FindOrder::NotDecided;
         };
-        decide_odd(&a_odd, &places_odd)
+        decide_odd(&a_odd, &places_odd, &[])
     }
 }
 
@@ -934,8 +1034,9 @@ fn poly_shift(a: &QPoly, r: &Rational) -> QPoly {
 }
 
 /// The decision core for an **odd-degree** imaginary model `y²=a(x)` with the
-/// already-collected primitive integer finite `places`.
-fn decide_odd(a: &QPoly, places: &[Place]) -> FindOrder {
+/// already-collected primitive integer finite `places` and algebraic branch
+/// orbits `alg` (`(minpoly, coeff)`, reduced only at fully-split primes).
+fn decide_odd(a: &QPoly, places: &[Place], alg: &[(QPoly, Integer)]) -> FindOrder {
     let dd = degree(a);
     if dd < 5 || dd % 2 == 0 {
         return FindOrder::NotDecided;
@@ -949,7 +1050,7 @@ fn decide_odd(a: &QPoly, places: &[Place]) -> FindOrder {
     let mut p = 3u64;
     while p <= MAX_PRIME && data.len() < WANT {
         if crate::modular::is_prime(p) {
-            if let Some((curve, cls)) = reduce_and_build(a, g, places, p) {
+            if let Some((curve, cls)) = reduce_and_build(a, g, places, alg, p) {
                 if let Some(order) = curve.order(&cls) {
                     data.push((p, order));
                 }
@@ -959,6 +1060,23 @@ fn decide_odd(a: &QPoly, places: &[Place]) -> FindOrder {
     }
     if data.len() < 2 {
         return FindOrder::NotDecided; // not enough good primes to conclude
+    }
+
+    // Algebraic branch places present: the exact ℚ-Cantor principality test does
+    // not run over a number field here.  Restrict to **branch-only** divisors
+    // (every place is a Weierstrass point, `y = 0`), where `2·δ = div(∏(x−αᵢ))`
+    // is principal, so the order divides 2 — and reduction is injective on
+    // 2-torsion at odd primes, so the (consistent) mod-p order *is* the exact
+    // order.  Mixed with a non-branch rational place ⇒ undecided.
+    if !alg.is_empty() {
+        if places.iter().any(|pl| pl.y != 0) {
+            return FindOrder::NotDecided;
+        }
+        let m = data[0].1;
+        if data.iter().all(|(_, o)| *o == m) && m <= 2 {
+            return FindOrder::Principal { order: m as u32 };
+        }
+        return FindOrder::NotDecided;
     }
 
     // Inconsistency test on prime-to-p torsion (sound non-torsion certificate).
@@ -1138,6 +1256,41 @@ mod tests {
         let div = [place(0, 0, 1), place(1, 0, -1)];
         assert_eq!(
             find_order_genus_ge2(2, &a, &div),
+            FindOrder::Principal { order: 2 }
+        );
+    }
+
+    /// **Algebraic branch places** on `y² = (x²−2)(x³+1) = x⁵ − 2x³ + x² − 2`
+    /// (genus 2).  The conjugate branch points `(±√2, 0)` (a Galois orbit over
+    /// `x²−2`) form a 2-torsion class — wired in via primes that split `x²−2`
+    /// completely (order divides 2 ⇒ the mod-p order is exact) ⇒ `Principal{2}`.
+    #[test]
+    fn genus2_algebraic_branch_orbit_principal() {
+        let a = qp(&[-2, 0, 1, -2, 0, 1]); // x⁵ − 2x³ + x² − 2
+        assert_eq!(super::super::find_order::genus(2, &a), Some(2));
+        let alg = [AlgBranchPlace {
+            minpoly: qp(&[-2, 0, 1]), // x² − 2
+            coeff: Integer::from(1),
+        }];
+        assert_eq!(
+            find_order_genus_ge2_alg(2, &a, &[], &alg),
+            FindOrder::Principal { order: 2 }
+        );
+    }
+
+    /// A rational branch point combined with an algebraic branch orbit:
+    /// `(−1,0) − [(√2,0)+(−√2,0)]` on the same curve is still branch-only ⇒
+    /// 2-torsion ⇒ `Principal{2}` (mixed rational + algebraic places).
+    #[test]
+    fn genus2_mixed_rational_algebraic_branch() {
+        let a = qp(&[-2, 0, 1, -2, 0, 1]); // x⁵ − 2x³ + x² − 2; x=−1 is a branch (x³+1=0)
+        let rat = [place(-1, 0, 2)]; // 2·(−1,0)
+        let alg = [AlgBranchPlace {
+            minpoly: qp(&[-2, 0, 1]),
+            coeff: Integer::from(-1), // −1 at each of (±√2,0)
+        }];
+        assert_eq!(
+            find_order_genus_ge2_alg(2, &a, &rat, &alg),
             FindOrder::Principal { order: 2 }
         );
     }
