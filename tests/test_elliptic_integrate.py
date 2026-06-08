@@ -152,9 +152,7 @@ def test_integral_sqrt_cubic_x3_plus_1():
     pool = ExprPool()
     x = pool.symbol("x")
     p = x**3 + pool.integer(1)
-    _check_second_kind(
-        pool, x, sqrt(p), lambda v: v**3 + 1.0, [0.5, 1.0, 2.0, 3.0], ["EllipticF"]
-    )
+    _check_second_kind(pool, x, sqrt(p), lambda v: v**3 + 1.0, [0.5, 1.0, 2.0, 3.0], ["EllipticF"])
 
 
 def test_integral_sqrt_cubic_three_real_needs_e():
@@ -162,9 +160,7 @@ def test_integral_sqrt_cubic_three_real_needs_e():
     pool = ExprPool()
     x = pool.symbol("x")
     p = x**3 - x
-    _check_second_kind(
-        pool, x, sqrt(p), lambda v: v**3 - v, [1.2, 1.6, 2.2, 3.3], ["EllipticE"]
-    )
+    _check_second_kind(pool, x, sqrt(p), lambda v: v**3 - v, [1.2, 1.6, 2.2, 3.3], ["EllipticE"])
 
 
 def test_integral_sqrt_quartic_1_minus_x4():
@@ -172,6 +168,4 @@ def test_integral_sqrt_quartic_1_minus_x4():
     pool = ExprPool()
     x = pool.symbol("x")
     p = pool.integer(1) - x**4
-    _check_second_kind(
-        pool, x, sqrt(p), lambda v: 1.0 - v**4, [-0.8, -0.3, 0.3, 0.8], ["Elliptic"]
-    )
+    _check_second_kind(pool, x, sqrt(p), lambda v: 1.0 - v**4, [-0.8, -0.3, 0.3, 0.8], ["Elliptic"])
