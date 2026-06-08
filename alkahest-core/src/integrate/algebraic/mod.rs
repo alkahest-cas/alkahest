@@ -618,11 +618,16 @@ mod tests {
         );
     }
 
-    /// A **non-Galois** algebraic base (`∫ √(x⁵+x+1)/(x²−2)`, `a(√2)=1+5√2`, the
-    /// conjugate sheet not in the tower) is soundly declined (`NotImplemented`),
-    /// never wrongly `NonElementary`.
+    /// A **non-Galois** algebraic base: `∫ √(x⁵+x+1)/(x²−2) dx` has a pole at the
+    /// irrational base `x=±√2` with `a(√2)=1+5√2`, so `N(c)=(1+5√2)(1−5√2)=−49`
+    /// and the residue field `ℚ(√2,√(1+5√2))` is *not* Galois — its closure
+    /// `L=K(√(−49))=K(7i)` has degree 8.  The conjugate-divisor reduction builds
+    /// `L` (each defining relation `α²=2, w²=c, v²=c̄` verified in `L`), forms the
+    /// four orbit places/residues, decomposes over ℚ, and finds a non-torsion
+    /// component ⇒ `NonElementary`.  (FriCAS times out on this degree-8 problem; the
+    /// verdict rests on the verified-by-construction closure + Trager torsion test.)
     #[test]
-    fn quintic_algebraic_base_non_galois_declines() {
+    fn quintic_algebraic_base_non_galois_non_elementary() {
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
         let p = pool.add(vec![
@@ -635,7 +640,7 @@ mod tests {
         let integrand = pool.mul(vec![sq, pool.pow(den, pool.integer(-1_i32))]);
         let res = crate::integrate::engine::integrate(integrand, x, &pool);
         assert!(
-            matches!(res, Err(IntegrationError::NotImplemented(_))),
+            matches!(res, Err(IntegrationError::NonElementary(_))),
             "got {res:?}"
         );
     }

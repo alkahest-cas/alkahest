@@ -19,7 +19,11 @@
 //! quadratic-field square roots ([`sqrt_in_quad`]) — no number-field
 //! factorization.  These give the conjugate residues and places (via
 //! [`compose_mod`]) that `genus_zero::try_alg_base_log` decomposes and reduces.
-//! A non-Galois tower (the conjugate sheet `√(c̄) ∉ K`) is declined.
+//! When the tower is **non-Galois** (the conjugate sheet `√(c̄) ∉ K`),
+//! [`quartic_closure`] builds the degree-8 Galois closure `L = K(√(N(c)))` — a
+//! single *rational* radical, since `N(c) = c·c̄ ∈ ℚ` — and returns `α, w` and
+//! `v = √(c̄) = √(N(c))·w⁻¹` as elements of `L`, each defining relation verified
+//! in `L`, for the explicit four-place orbit construction.
 
 use rug::Rational;
 
@@ -130,6 +134,9 @@ fn solve_columns(cols: &[Vec<Rational>], rhs: &[Rational], n: usize) -> Option<V
         for r in 0..n {
             if r != col && a[r][col] != 0 {
                 let f = a[r][col].clone();
+                // Two distinct rows (`a[r]` updated from `a[col]`): a range loop is
+                // the clearest way to index both without splitting the borrow.
+                #[allow(clippy::needless_range_loop)]
                 for k in col..=n {
                     let s = f.clone() * &a[col][k];
                     a[r][k] -= s;
@@ -264,6 +271,65 @@ fn eval_mod(f: &QPoly, beta: &QPoly, m: &QPoly) -> QPoly {
     compose_mod(f, beta, m)
 }
 
+/// For a **quadratic** base `q = x²−m` with a **non-Galois** tower
+/// `K = ℚ(√m)[w]/(w²−c)`, build the degree-8 Galois closure
+/// `L = K(√(N(c)))` and return `(M_L, α, w, v)` — the minimal polynomial of a
+/// primitive element of `L` (degree 8) and the coordinates `α = √m`, `w = √c`,
+/// `v = √(c̄)` as elements of `ℚ[Θ]/M_L`.
+///
+/// The closure works because `√c · √(c̄) = √(c·c̄) = √(N(c))` with `N(c) ∈ ℚ`, so
+/// `L = K(√(N(c)))` is `K` adjoined a single **rational** square root — itself a
+/// quadratic tower over `K` (reusing [`primitive_element`]) — and
+/// `v = √(c̄) = √(N(c)) · w⁻¹` in `L`.  `None` if `q ≠ x²−m`, `N(c)=0`, or `L`
+/// does not have degree 8 (i.e. `K` was already Galois — use [`galois_quartic`]).
+pub(crate) fn quartic_closure(q: &QPoly, c: &QPoly) -> Option<(QPoly, QPoly, QPoly, QPoly)> {
+    use super::super::risch::number_field::mod_inverse;
+    if degree(q) != 2 || q.get(1).map(|x| *x != 0).unwrap_or(false) {
+        return None;
+    }
+    let m = -q[0].clone();
+    let (mm, a_in, w_in) = primitive_element(q, c)?; // K = ℚ[θ]/M, degree 4
+    if degree(&mm) != 4 {
+        return None;
+    }
+    let u = c.first().cloned().unwrap_or_else(|| Rational::from(0));
+    let vc = c.get(1).cloned().unwrap_or_else(|| Rational::from(0));
+    let dprime = u.clone() * &u - vc.clone() * &vc * &m; // N(c) = u² − v²m ∈ ℚ
+    if dprime == 0 {
+        return None;
+    }
+    // L = K[s]/(s² − D'):  base field K (minpoly M), radicand the constant D'.
+    let (ml, theta_in, s_in) = primitive_element(&mm, &vec![dprime])?;
+    if degree(&ml) != 8 {
+        return None; // √D' ∈ K ⇒ K already Galois
+    }
+    // Re-express α, w, w⁻¹ (from K) in ℚ[Θ]/M_L, and v = s · w⁻¹.
+    let alpha_l = compose_mod(&a_in, &theta_in, &ml);
+    let w_l = compose_mod(&w_in, &theta_in, &ml);
+    let w_inv_k = mod_inverse(&w_in, &mm)?; // w⁻¹ in K
+    let w_inv_l = compose_mod(&w_inv_k, &theta_in, &ml);
+    let v_l = qmod(&poly_mul(&s_in, &w_inv_l), &ml); // v = √(c̄) = √(N(c))·w⁻¹
+
+    // Verify the defining relations the four orbit places rely on, *in L*:
+    //   α² ≡ m,   w² ≡ c(α) = u+vc·α,   v² ≡ c̄(α) = u−vc·α.
+    // Sound by construction — decline (None) rather than risk a wrong divisor.
+    let sq = |x: &QPoly| qmod(&poly_mul(x, x), &ml);
+    let c_at = |sgn: i64| {
+        // u + sgn·vc·α  in ℚ[Θ]/M_L
+        poly_add(
+            &vec![u.clone()],
+            &poly_scale(&alpha_l, &(vc.clone() * Rational::from(sgn))),
+        )
+    };
+    let alpha2_ok = degree(&qmod(&poly_sub_q(&sq(&alpha_l), &vec![m.clone()]), &ml)) < 0;
+    let w2_ok = degree(&qmod(&poly_sub_q(&sq(&w_l), &c_at(1)), &ml)) < 0;
+    let v2_ok = degree(&qmod(&poly_sub_q(&sq(&v_l), &c_at(-1)), &ml)) < 0;
+    if !(alpha2_ok && w2_ok && v2_ok) {
+        return None;
+    }
+    Some((ml, alpha_l, w_l, v_l))
+}
+
 fn poly_sub_q(a: &QPoly, b: &QPoly) -> QPoly {
     poly_add(a, &poly_scale(b, &Rational::from(-1)))
 }
@@ -337,5 +403,30 @@ mod tests {
     #[test]
     fn non_galois_quartic_declines() {
         assert!(galois_quartic(&qp(&[-2, 0, 1]), &qp(&[1, 5])).is_none());
+    }
+
+    /// `quartic_closure` builds the degree-8 Galois closure of the non-Galois
+    /// tower `ℚ(√2, √(1+5√2))`: `N(c)=(1+5√2)(1−5√2)=−49`, `L=K(√(−49))`.  The
+    /// returned `α, w, v` must satisfy `α²=2`, `w²=c=1+5√2`, `v²=c̄=1−5√2` in `L`.
+    #[test]
+    fn quartic_closure_non_galois() {
+        let q = qp(&[-2, 0, 1]);
+        let c = qp(&[1, 5]); // 1 + 5√2
+        let (ml, alpha, w, v) = quartic_closure(&q, &c).expect("degree-8 closure");
+        assert_eq!(degree(&ml), 8);
+        let sq = |x: &QPoly| qmod(&poly_mul(x, x), &ml);
+        // α² = 2.
+        assert_eq!(trim(sq(&alpha)), qp(&[2]));
+        // w² = 1 + 5α  and  v² = 1 − 5α  (c and its conjugate at −α).
+        let c_at = |sgn: i64| {
+            qmod(
+                &poly_add(&qp(&[1]), &poly_scale(&alpha, &Rational::from(5 * sgn))),
+                &ml,
+            )
+        };
+        assert_eq!(trim(sq(&w)), trim(c_at(1)));
+        assert_eq!(trim(sq(&v)), trim(c_at(-1)));
+        // And it really is non-Galois (galois_quartic declines on the same input).
+        assert!(galois_quartic(&q, &c).is_none());
     }
 }
