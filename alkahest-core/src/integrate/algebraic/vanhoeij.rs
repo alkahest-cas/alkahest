@@ -12,6 +12,11 @@
 //! [`is_integral`] test**, so the result is sound regardless of Puiseux
 //! truncation: a wrong proposal is rejected, never accepted.
 //!
+//! Efficiency (van Hoeij's remark): a **simple radical** `yⁿ = p(x)` skips the
+//! Puiseux enlargement loop entirely — [`integral_basis`] dispatches to Trager's
+//! explicit basis `wᵢ = yⁱ/dᵢ` ([`super::integral_basis::radical_integral_basis`]),
+//! whose only cost is a squarefree factorization of `p`.
+//!
 //! Scope: enlargements are proposed only at **rational** singular places, using
 //! their rational Puiseux sheets.  Sheets with algebraic coefficients are simply
 //! absent from the linear system, so a proposal there is under-constrained and
@@ -45,6 +50,16 @@ pub fn integral_basis(f_coeffs: &[QPoly]) -> Option<Vec<AlgElem>> {
     let n = ext.degree() as usize;
     if n < 1 {
         return None;
+    }
+    // Efficiency fast-path (van Hoeij's remark): for a **simple radical**
+    // `yⁿ = p(x)` the integral basis is Trager's explicit `wᵢ = yⁱ/dᵢ`, needing
+    // only a squarefree factorization of `p` — no Puiseux expansions or
+    // enlargement loop.  Each `wᵢ` is `is_integral`-gated inside, so this is
+    // sound; we only take it when it yields a full basis.
+    if let Some(p) = as_simple_radical(f_coeffs, n) {
+        if let Some(basis) = super::integral_basis::radical_integral_basis(n, &p) {
+            return Some(basis);
+        }
     }
     let monos = to_monomials(f_coeffs);
     let disc = discriminant(f_coeffs);
@@ -287,6 +302,28 @@ pub(super) fn ts_inv(s: &TS, u: i64) -> Option<TS> {
 // Small helpers
 // ---------------------------------------------------------------------------
 
+/// If `F = yⁿ − p(x)` is a **simple radical** (monic in `y`, only the top and
+/// constant `y`-coefficients nonzero), return `p`.  `None` otherwise.
+fn as_simple_radical(f_coeffs: &[QPoly], n: usize) -> Option<QPoly> {
+    if f_coeffs.len() != n + 1 {
+        return None;
+    }
+    // Monic leading coefficient.
+    if f_coeffs[n].len() != 1 || f_coeffs[n][0] != 1 {
+        return None;
+    }
+    // All middle coefficients (1..n) must vanish.
+    if f_coeffs[1..n].iter().any(|c| degree(c) >= 0) {
+        return None;
+    }
+    // p = −(constant coefficient); must be nonzero.
+    let p: QPoly = f_coeffs[0].iter().map(|c| -c.clone()).collect();
+    if degree(&p) < 0 {
+        return None;
+    }
+    Some(p)
+}
+
 fn to_monomials(f_coeffs: &[QPoly]) -> Vec<(u32, u32, Rational)> {
     let mut out = Vec::new();
     for (j, cj) in f_coeffs.iter().enumerate() {
@@ -436,6 +473,28 @@ mod tests {
             vec![RatFn::int(0), RatFn::new(qp(&[1]), qp(&[0, 1]))]
         );
         assert!(basis.iter().all(|bi| is_integral(&f, bi)));
+    }
+
+    /// Radical fast-path: `integral_basis` on a simple radical short-circuits to
+    /// the explicit Trager basis (no Puiseux loop) and matches it.  Degree-4
+    /// radical y⁴ = x³ ⇒ {1, y, y²/x, y³/x²}.
+    #[test]
+    fn radical_fast_path_matches_explicit() {
+        let f = [qp(&[0, 0, 0, -1]), qp(&[]), qp(&[]), qp(&[]), qp(&[1])]; // y⁴ − x³
+        let via_loop = integral_basis(&f).expect("basis");
+        let explicit =
+            super::super::integral_basis::radical_integral_basis(4, &qp(&[0, 0, 0, 1])).unwrap();
+        assert_eq!(via_loop, explicit);
+        assert_eq!(via_loop.len(), 4);
+        assert_eq!(
+            via_loop[2],
+            vec![
+                RatFn::int(0),
+                RatFn::int(0),
+                RatFn::new(qp(&[1]), qp(&[0, 1]))
+            ]
+        ); // y²/x
+        assert!(via_loop.iter().all(|bi| is_integral(&f, bi)));
     }
 
     /// Degree-3 radical y³ = x² ⇒ {1, y, y²/x}.

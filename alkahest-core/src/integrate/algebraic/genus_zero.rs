@@ -1,7 +1,10 @@
 //! Integration formulas for genus-0 algebraic extensions.
 //!
 //! Handles `∫ B(x) · sqrt(P(x)) dx` when P has degree ≤ 2 (genus-0 curve).
-//! For degree ≥ 3, returns `IntegrationError::NonElementary`.
+//! For degree ≥ 3 with a **polynomial** weight `B`, the *integral part*
+//! `∫ B√P = Q·√P` is solved when it exists (Liouville), so elementary cases such
+//! as `∫ (P'/2)·√P = ⅓P^{3/2}` are returned rather than wrongly rejected;
+//! otherwise (with P squarefree) the integral is genuinely `NonElementary`.
 //!
 //! Reference: Bronstein (2005) §6.3–6.5; standard CAS table integrals.
 
@@ -10,7 +13,18 @@ use super::poly_utils::{
 };
 use crate::deriv::log::{DerivationLog, RewriteStep};
 use crate::integrate::engine::IntegrationError;
+use crate::integrate::risch::alg_field::{AlgElem, RatFn};
+use crate::integrate::risch::poly_rde::{
+    degree, expr_to_qpoly, poly_deriv, poly_scale, qpoly_to_expr, trim, QPoly,
+};
+use crate::integrate::risch::rational_rde::{
+    expr_to_qrational, poly_div_exact, poly_divrem, poly_gcd, solve_rational_rde_generalized,
+};
 use crate::kernel::{ExprData, ExprId, ExprPool};
+use rug::Rational;
+
+use super::find_order::{find_order_placed, first_rational_root, FindOrder};
+use super::residues::residue_divisor_placed;
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -46,16 +60,10 @@ pub fn integrate_with_sqrt(
                     0 => integrate_b_sqrt_const(b, p, sqrt_id, var, pool, log),
                     1 => integrate_b_sqrt_linear(b, p, sqrt_id, var, pool, log),
                     2 => integrate_b_sqrt_quadratic(b, p, sqrt_id, var, pool, log),
-                    _ => Err(IntegrationError::NonElementary(
-                        "integral over genus-1 (elliptic) or higher curve; no elementary antiderivative"
-                            .to_string(),
-                    )),
+                    _ => unreachable!(),
                 }
             } else {
-                Err(IntegrationError::NonElementary(
-                    "integral over genus-1 (elliptic) or higher curve; no elementary antiderivative"
-                        .to_string(),
-                ))
+                integrate_b_sqrt_high_degree(b, p, sqrt_id, var, pool, log)
             }
         }
     }
@@ -655,6 +663,141 @@ fn binomial_coeff(n: u64, k: u64) -> rug::Integer {
         result /= rug::Integer::from(i + 1);
     }
     result
+}
+
+// ---------------------------------------------------------------------------
+// ∫ B(x)·√P dx for deg P ≥ 3 (genus ≥ 1) — sound decision
+//
+// By Liouville `∫ B√P = b·√P + Σ cⱼ log uⱼ` with `b ∈ ℚ(x)`.  Two parts:
+//
+//  * **Integral part** `b·√P`: differentiating, `(b√P)' = (b' + (P'/2P)·b)·√P`,
+//    so `∫B√P = b√P` iff the rational **Risch DE** `b' + (P'/2P)·b = B` has a
+//    rational solution — solved by `solve_rational_rde_generalized`.  This is
+//    exact (verified by construction) and covers e.g. `∫(P'/2√P) = √P` and
+//    polynomial weights `∫5x⁴√(x⁵+1) = ⅔(x⁵+1)^{3/2}`.
+//
+//  * **Logarithmic part**: when the RDE has no rational solution there are
+//    residues.  Liouville ⟹ no residues ⇒ `∫B√P` is elementary iff it is an
+//    exact algebraic derivative — but the RDE just said it is not — so a
+//    **complete** empty residue divisor (with P squarefree) certifies
+//    `NonElementary`.  With residues, FIND-ORDER decides: a **non-torsion**
+//    divisor ⇒ `NonElementary`; otherwise (torsion log part) emitting it on a
+//    genus ≥ 2 curve needs Coates' construction (genus 0/1 are handled upstream
+//    by the parametrization / genus-1 capstone), so we decline.
+//
+// Soundness of the residue path requires the residue divisor to be **complete**:
+// the residues live at the poles of `B` that are *not* branch points (a pole of
+// `B` at a root of `P` is regularized by `√P`'s zero, contributing none).  So we
+// require the part of `denom(B)` coprime to `P` to split over ℚ; otherwise we
+// decline rather than risk a verdict on an incomplete divisor.
+// ---------------------------------------------------------------------------
+
+fn integrate_b_sqrt_high_degree(
+    b: ExprId,
+    p: ExprId,
+    sqrt_id: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Result<ExprId, IntegrationError> {
+    let nonelem = |msg: &str| IntegrationError::NonElementary(msg.to_string());
+    let notimpl = |msg: &str| IntegrationError::NotImplemented(msg.to_string());
+
+    let p_poly = expr_to_qpoly(p, var, pool)
+        .ok_or_else(|| notimpl("radicand P is not a polynomial in the variable"))?;
+    let (b_num, b_den) = expr_to_qrational(b, var, pool)
+        .ok_or_else(|| notimpl("weight B is not a rational function"))?;
+    if degree(&p_poly) < 3 {
+        return Err(notimpl("expected deg P ≥ 3 here"));
+    }
+
+    // 1. Integral part: b' + (P'/2P)·b = B  ⇒  ∫B√P = b·√P.
+    let p_prime = poly_deriv(&p_poly);
+    let two_p = poly_scale(&p_poly, &Rational::from(2));
+    if let Some((q_num, q_den)) = solve_rational_rde_generalized(&p_prime, &two_p, &b_num, &b_den) {
+        let q_expr = qrational_to_expr(&q_num, &q_den, var, pool);
+        let result = pool.mul(vec![q_expr, sqrt_id]);
+        log.push(RewriteStep::simple("alg_integral_part_sqrt", b, result));
+        return Ok(result);
+    }
+
+    // 2. No algebraic primitive — analyze the logarithmic part via residues.
+    //    Need P squarefree for the Liouville argument below.
+    if degree(&poly_gcd(&p_poly, &p_prime)) > 0 {
+        return Err(notimpl("non-squarefree radicand at deg ≥ 3"));
+    }
+    // Completeness: poles of B off the branch locus must be rational.
+    let b_den_coprime = strip_common_factors(&b_den, &p_poly);
+    if !splits_over_q(&b_den_coprime) {
+        return Err(notimpl(
+            "B has poles at non-rational points off the branch locus; \
+             residue divisor would be incomplete",
+        ));
+    }
+
+    let h: AlgElem = vec![RatFn::int(0), RatFn::new(b_num.clone(), b_den.clone())];
+    let divisor = residue_divisor_placed(2, &p_poly, &h);
+    if divisor.is_empty() {
+        // No residues ⇒ no logarithmic part (Liouville); the RDE already ruled
+        // out an algebraic primitive ⇒ a nonzero first/second-kind differential
+        // on a genus ≥ 1 curve ⇒ non-elementary.
+        return Err(nonelem(
+            "∫ B·√P over a genus ≥ 1 curve with no logarithmic part and no \
+             algebraic primitive: non-elementary",
+        ));
+    }
+    match find_order_placed(2, &p_poly, &divisor) {
+        FindOrder::NonElementary => Err(nonelem(
+            "residue divisor is non-torsion (FIND-ORDER): no elementary logarithmic part",
+        )),
+        // Torsion / undecided: an elementary log part may exist, but constructing
+        // it on a genus ≥ 2 curve needs Coates' algorithm (not yet implemented).
+        _ => Err(notimpl(
+            "genus ≥ 2 logarithmic part: residue divisor torsion/undecided, \
+             log argument not yet constructible (Coates)",
+        )),
+    }
+}
+
+/// Build the expression `num(x)/den(x)`.
+fn qrational_to_expr(num: &QPoly, den: &QPoly, var: ExprId, pool: &ExprPool) -> ExprId {
+    let n = qpoly_to_expr(num, var, pool);
+    if den.len() == 1 && den.first().map(|c| *c == 1).unwrap_or(false) {
+        return n;
+    }
+    let d = qpoly_to_expr(den, var, pool);
+    pool.mul(vec![n, pool.pow(d, pool.integer(-1_i32))])
+}
+
+/// Divide `q` by all factors it shares with `p` (remove the gcd repeatedly), so
+/// the result is coprime to `p`.
+fn strip_common_factors(q: &QPoly, p: &QPoly) -> QPoly {
+    let mut d = trim(q.clone());
+    loop {
+        let g = poly_gcd(&d, p);
+        if degree(&g) <= 0 {
+            break;
+        }
+        d = poly_div_exact(&d, &g);
+    }
+    d
+}
+
+/// Does `poly` factor into linear factors over ℚ (all roots rational)?  Decided
+/// by repeatedly deflating rational roots (rational-root theorem is complete).
+fn splits_over_q(poly: &QPoly) -> bool {
+    let mut p = trim(poly.clone());
+    while degree(&p) >= 1 {
+        match first_rational_root(&p) {
+            Some(r) => {
+                let lin = vec![-r, Rational::from(1)];
+                let (q, _rem) = poly_divrem(&p, &lin);
+                p = trim(q);
+            }
+            None => return false,
+        }
+    }
+    true
 }
 
 fn neg_c_power(c: &rug::Integer, n: i64) -> rug::Integer {

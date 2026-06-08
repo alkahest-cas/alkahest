@@ -113,7 +113,9 @@ pub(crate) fn find_order_placed(n: usize, a: &QPoly, divisor: &[PlacedResidue]) 
     match genus(n, a) {
         Some(0) => FindOrder::Principal { order: 1 },
         Some(1) => genus1(n, a, divisor).unwrap_or(FindOrder::NotDecided),
-        _ => FindOrder::NotDecided,
+        // Genus ≥ 2: reduction-mod-good-prime torsion test (MC2).
+        Some(_) => super::jacobian_torsion::find_order_genus_ge2(n, a, divisor),
+        None => FindOrder::NotDecided,
     }
 }
 
@@ -448,6 +450,38 @@ mod tests {
     fn genus1_incomplete_not_decided() {
         let a = qp(&[1, 0, 0, 1]);
         let div = [place(-1, 0, 1, false, 2)]; // sum = 1 ≠ 0
+        assert_eq!(find_order_placed(2, &a, &div), FindOrder::NotDecided);
+    }
+
+    /// Genus-2 `y²=x⁵+x+1`: the divisor `(0,1) − ∞` (Σ res = 0) routes through
+    /// the MC2 reduction-mod-good-prime test and is certified non-elementary.
+    #[test]
+    fn genus2_non_torsion_via_dispatch() {
+        let a = qp(&[1, 1, 0, 0, 0, 1]);
+        assert_eq!(genus(2, &a), Some(2));
+        let div = [place(0, 1, 1, false, 1), place(0, 0, -1, true, 1)];
+        assert_eq!(find_order_placed(2, &a, &div), FindOrder::NonElementary);
+    }
+
+    /// Genus-2 `y²=x⁵−x`: the 2-torsion branch divisor `(0,0) − (1,0)` routes
+    /// through MC2 and is certified `Principal{2}` by the exact ℚ test.
+    #[test]
+    fn genus2_torsion_principal_via_dispatch() {
+        let a = qp(&[0, -1, 0, 0, 0, 1]);
+        assert_eq!(genus(2, &a), Some(2));
+        let div = [place(0, 0, 1, false, 2), place(1, 0, -1, false, 2)];
+        assert_eq!(
+            find_order_placed(2, &a, &div),
+            FindOrder::Principal { order: 2 }
+        );
+    }
+
+    /// Genus-2 even-degree (real model) `y²=x⁶+1` stays undecided in MC2 scope.
+    #[test]
+    fn genus2_even_degree_not_decided() {
+        let a = qp(&[1, 0, 0, 0, 0, 0, 1]);
+        assert_eq!(genus(2, &a), Some(2));
+        let div = [place(0, 1, 1, false, 1), place(0, -1, -1, false, 1)];
         assert_eq!(find_order_placed(2, &a, &div), FindOrder::NotDecided);
     }
 
