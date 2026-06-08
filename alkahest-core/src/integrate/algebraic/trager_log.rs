@@ -203,6 +203,7 @@ pub(crate) fn trager_log_criterion_alg(
                 x_coord: ap.x_coord.clone(),
                 y_coord: ap.y_coord.clone(),
                 coeff: (c[k].clone() * Rational::from(l.clone())).numer().clone(),
+                orbit: ap.orbit,
             })
             .collect();
         match find_order_genus_ge2_alg(n, a, &rat_div, &alg_div) {
@@ -320,6 +321,7 @@ mod tests {
             x_coord: qp(&[0, 1]),     // θ
             y_coord: Vec::new(),      // branch
             coeff: Integer::from(0),  // (coeff is set per-component by the criterion)
+            orbit: true,              // Galois orbit of the two branch points
         }];
         let alg_residues = [ke(&[0, 1])]; // √2
         let res = trager_log_criterion_alg(

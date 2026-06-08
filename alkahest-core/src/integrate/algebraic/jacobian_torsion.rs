@@ -524,14 +524,22 @@ fn reduce_and_build(
     // (every conjugate root `t` reduces to F_p; the place is `(x_coord(t),
     // y_coord(t))`, keeping the sheet consistent across the orbit).
     for ap in alg {
-        let roots = fp_roots_split(&ap.minpoly, p)?; // None ⇒ not fully split ⇒ skip prime
+        let all_roots = fp_roots_split(&ap.minpoly, p)?; // None ⇒ not fully split ⇒ skip prime
         let k = ap.coeff.clone().abs().to_u64()?;
         if k == 0 {
             continue;
         }
         let x_fp = kelem_to_fp(&ap.x_coord, p)?;
         let y_fp = kelem_to_fp(&ap.y_coord, p)?;
-        for t in roots {
+        // Galois-orbit divisor ⇒ sum over **all** conjugate roots; a single
+        // ℚ(θ)-place ⇒ reduce via **one** embedding (the first root — a fixed
+        // choice; conjugate embeddings give the same class order).
+        let roots: &[u64] = if ap.orbit {
+            &all_roots
+        } else {
+            &all_roots[..1]
+        };
+        for &t in roots {
             let xt = fp_eval(&x_fp, t, p);
             let yt = fp_eval(&y_fp, t, p);
             let big_x = mulmod(lc, xt, p);
@@ -868,6 +876,12 @@ pub(crate) struct AlgPlace {
     pub x_coord: KElem,
     pub y_coord: KElem,
     pub coeff: Integer,
+    /// `true`: the place is a full **Galois orbit** of a *rational* divisor (sum
+    /// over all conjugate roots of `minpoly` — e.g. a branch orbit).  `false`:
+    /// the place lives in `ℚ(θ)` and the divisor is reduced via a **single
+    /// embedding** `θ ↦ one root` (e.g. a Trager residue-component place, where
+    /// distinct roots are distinct sheets with distinct coefficients).
+    pub orbit: bool,
 }
 
 pub(crate) fn find_order_genus_ge2(n: usize, a: &QPoly, divisor: &[PlacedResidue]) -> FindOrder {
@@ -954,6 +968,7 @@ pub(crate) fn find_order_genus_ge2_alg(
                     x_coord: p.x_coord.clone(),
                     y_coord: trim(p.y_coord.clone()),
                     coeff,
+                    orbit: p.orbit,
                 })
             }
         })
@@ -1307,6 +1322,7 @@ mod tests {
             x_coord: qp(&[0, 1]),     // x = θ (the root √2)
             y_coord: Vec::new(),      // branch: y = 0
             coeff: Integer::from(1),
+            orbit: true, // Galois orbit (both ±√2)
         }];
         assert_eq!(
             find_order_genus_ge2_alg(2, &a, &[], &alg),
@@ -1326,6 +1342,7 @@ mod tests {
             x_coord: qp(&[0, 1]),
             y_coord: Vec::new(),
             coeff: Integer::from(-1), // −1 at each of (±√2,0)
+            orbit: true,
         }];
         assert_eq!(
             find_order_genus_ge2_alg(2, &a, &rat, &alg),
@@ -1349,12 +1366,14 @@ mod tests {
                 x_coord: qp(&[0, 1]), // θ = √2
                 y_coord: qp(&[1, 1]), // 1 + θ
                 coeff: Integer::from(1),
+                orbit: true, // full Galois orbit of div(x²−2)
             },
             AlgPlace {
                 minpoly: qp(&[-2, 0, 1]),
                 x_coord: qp(&[0, 1]),
                 y_coord: qp(&[-1, -1]), // −(1 + θ)
                 coeff: Integer::from(1),
+                orbit: true,
             },
         ];
         assert_eq!(
