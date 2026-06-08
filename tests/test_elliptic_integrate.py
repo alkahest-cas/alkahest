@@ -169,3 +169,63 @@ def test_integral_sqrt_quartic_1_minus_x4():
     x = pool.symbol("x")
     p = pool.integer(1) - x**4
     _check_second_kind(pool, x, sqrt(p), lambda v: 1.0 - v**4, [-0.8, -0.3, 0.3, 0.8], ["Elliptic"])
+
+
+# ---------------------------------------------------------------------------
+# General second kind: ∫ poly(x)/√P dx → algebraic part + EllipticF + EllipticE
+# ---------------------------------------------------------------------------
+
+
+def _check_poly_over_sqrt(pool, x, integrand, integrand_func, p_func, sample_xs, must_contain):
+    """Integrate ∫ R(x)/√P, assert the required elliptic functions appear, and
+    verify d/dx F = R(x)/√P numerically where P > 0."""
+    res = integrate(integrand, x)
+    f = res.value
+    s = str(f)
+    for needle in must_contain:
+        assert needle in s, f"expected {needle}, got {f}"
+    d = diff(f, x).value
+    checked = 0
+    for xv in sample_xs:
+        pv = p_func(xv)
+        assert pv > 0, f"sample {xv} not in domain P>0"
+        lhs = _num_eval(d, xv)
+        rhs = integrand_func(xv)
+        assert abs(lhs - rhs) < 1e-6 * (1.0 + abs(rhs)), (
+            f"x={xv}: d/dx F = {lhs}, integrand = {rhs}\n  F = {f}"
+        )
+        checked += 1
+    assert checked >= 3
+    return f
+
+
+def test_integral_x_over_sqrt_cubic_x3_plus_1():
+    """Headline: ∫ x/√(x³+1) dx → algebraic part + EllipticF + EllipticE."""
+    pool = ExprPool()
+    x = pool.symbol("x")
+    p = x**3 + pool.integer(1)
+    _check_poly_over_sqrt(
+        pool,
+        x,
+        x / sqrt(p),
+        lambda v: v / math.sqrt(v**3 + 1.0),
+        lambda v: v**3 + 1.0,
+        [0.3, 0.6, 1.0, 2.0, 3.0],
+        ["Elliptic"],
+    )
+
+
+def test_integral_x_plus_1_over_sqrt_cubic_x3_plus_1():
+    """General polynomial numerator: ∫ (x+1)/√(x³+1) dx."""
+    pool = ExprPool()
+    x = pool.symbol("x")
+    p = x**3 + pool.integer(1)
+    _check_poly_over_sqrt(
+        pool,
+        x,
+        (x + pool.integer(1)) / sqrt(p),
+        lambda v: (v + 1.0) / math.sqrt(v**3 + 1.0),
+        lambda v: v**3 + 1.0,
+        [0.3, 0.6, 1.0, 2.0, 3.0],
+        ["Elliptic"],
+    )
