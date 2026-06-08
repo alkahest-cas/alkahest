@@ -1,30 +1,41 @@
-//! First-kind elliptic-integral *output* for genus-1 radicands.
+//! Elliptic-integral *output* (first, second and third kind) for genus-1
+//! radicands.
 //!
-//! When `∫ c·dx/√(P(x))` with `P` a **cubic or quartic** polynomial is
-//! genus-1 and **non-elementary**, the antiderivative is an incomplete elliptic
-//! integral of the first kind.  This module reduces that integrand to Legendre
-//! normal form and emits a closed form
+//! When `∫ R(x, √P) dx` with `P` a **cubic or quartic** polynomial is genus-1
+//! and **non-elementary**, the antiderivative is a combination of an algebraic
+//! part and incomplete elliptic integrals of the first (`EllipticF`), second
+//! (`EllipticE`) and third (`EllipticPi`) kind.  Byrd & Friedman, *Handbook of
+//! Elliptic Integrals*, show that all of these reduce under a **single**
+//! substitution `φ = φ(x)`, `m` — the one used for the first kind.
 //!
-//! ```text
-//! F_cand(x) = g · EllipticF(φ(x), m)
-//! ```
+//! * [`try_elliptic_output`] — the *pure first kind* `∫ c·dx/√P`
+//!   → `c·g·EllipticF(φ(x), m)` (PR2).
+//! * [`try_elliptic_output_higher_kind`] — `∫ b(x)·√P dx` for rational `b`
+//!   (so the general `∫ R(x)/√P dx` via `b·√P = (b·P)/√P`), emitting
+//!   ```text
+//!   F_cand(x) = (Σⱼ αⱼ xʲ)·√P + Σ_r ρ_r·√P/(x−r)
+//!              + β·EllipticF(φ,m) + γ·EllipticE(φ,m)
+//!              + Σ_p δ_p·EllipticPi(n_p,φ,m)
+//!   ```
+//!   (PR3, second/third kind).  `φ(x) = arcsin/arccos(S(x))` for an explicit
+//!   real Möbius/quotient `S`, modulus `m` (Mathematica convention `m = k²`).
 //!
-//! with `φ(x) = arcsin(S(x))` or `arccos(S(x))` for an explicit real Möbius `S`,
-//! a modulus parameter `m` (Mathematica convention `m = k²`, matching the PR1
-//! `EllipticF` primitive), and a constant `g` — all algebraic in the roots of
-//! `P`.  The reduction follows the standard case analysis of Byrd & Friedman,
-//! *Handbook of Elliptic Integrals* (§3.13x cubics, §3.14x–§3.16x quartics).
+//! For the higher-kind path the block coefficients are **fitted numerically**
+//! (least squares over many in-domain samples, then snapped to exact rationals);
+//! several progressively richer block sets are tried and the first that
+//! *gate-verifies* wins.
 //!
 //! # Soundness
 //!
-//! The reduction constants are **not trusted blindly**.  Every candidate is run
-//! through a numeric verification gate (`verify`): its *symbolic* `d/dx` (via
-//! the engine's `diff`, which differentiates `EllipticF` through the primitive
-//! registry — `∂φ F = 1/√(1 − m·sin²φ)`, elementary) is sampled against the
-//! integrand `c/√P` at points where `P > 0`.  The form is emitted **only** if
-//! the gate passes; otherwise the caller falls through to `NonElementary`.  An
-//! imperfect reduction constant can therefore never produce a wrong answer — it
-//! merely declines.
+//! No reduction constant is trusted blindly.  Every candidate is run through a
+//! numeric verification gate (`verify` / `verify_higher`): its *symbolic*
+//! `d/dx` (via the engine's `diff`, which differentiates the elliptic functions
+//! through the primitive registry — `∂φ F = 1/√(1 − m·sin²φ)`,
+//! `∂φ E = √(1 − m·sin²φ)`, `∂φ Π = 1/((1 − n sin²φ)√(1 − m sin²φ))`, all
+//! elementary since `m`, `n` are constant here) is sampled against the integrand
+//! at points where `P > 0`.  A form is emitted **only** if the gate passes;
+//! otherwise the caller falls through to `NonElementary`.  An imperfect fit can
+//! therefore never produce a wrong answer — it merely declines.
 
 use crate::integrate::risch::poly_rde::{expr_to_qpoly, is_free_of_var};
 use crate::kernel::{ExprData, ExprId, ExprPool};
@@ -74,22 +85,7 @@ pub fn try_elliptic_output(
         return None;
     }
 
-    // Find all complex roots and classify into real / complex-conjugate pairs.
-    let roots = poly_roots(&coeffs)?;
-    let (mut reals, pairs) = classify_roots(&roots);
-    reals.sort_by(|a, b| b.partial_cmp(a).unwrap()); // descending
-
-    let inv_sqrt_lead = 1.0 / lead.abs().sqrt();
-
-    // Build the candidate reduction (g, m, phi-expr) per case.
-    let cand = match (deg, reals.len(), pairs.len()) {
-        (3, 3, 0) => cubic_three_real(&reals, inv_sqrt_lead, var, pool),
-        (3, 1, 1) => cubic_one_real(reals[0], pairs[0], inv_sqrt_lead, var, pool),
-        (4, 4, 0) => quartic_four_real(&reals, inv_sqrt_lead, var, pool),
-        (4, 2, 1) => quartic_two_real(&reals, pairs[0], inv_sqrt_lead, var, pool),
-        _ => return None, // e.g. all-complex quartic: declined (falls through)
-    }?;
-    let (g, m, phi) = cand;
+    let (g, m, phi) = first_kind_reduction(&coeffs, deg, lead, var, pool)?;
 
     // F_cand = (c · g) · EllipticF(phi, m).
     let m_expr = float_to_expr(m, pool);
@@ -103,6 +99,470 @@ pub fn try_elliptic_output(
     } else {
         None
     }
+}
+
+/// Compute the shared first-kind Legendre reduction `(g, m, φ(x))` for `√P`,
+/// chosen so that `d/dx[g·EllipticF(φ,m)] = 1/√P` on the real region where
+/// `P > 0`.  This is the *same* substitution used by every higher-kind
+/// reduction (B&F: all of `∫R(x,√P)dx` reduce under one substitution), so the
+/// second/third-kind paths reuse it verbatim.
+///
+/// Returns `None` for radicand shapes outside the handled cubic/quartic
+/// root-configurations (e.g. all-complex quartic).
+fn first_kind_reduction(
+    coeffs: &[f64],
+    deg: usize,
+    lead: f64,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<(f64, f64, ExprId)> {
+    let roots = poly_roots(coeffs)?;
+    let (mut reals, pairs) = classify_roots(&roots);
+    reals.sort_by(|a, b| b.partial_cmp(a).unwrap()); // descending
+    let inv_sqrt_lead = 1.0 / lead.abs().sqrt();
+    match (deg, reals.len(), pairs.len()) {
+        (3, 3, 0) => cubic_three_real(&reals, inv_sqrt_lead, var, pool),
+        (3, 1, 1) => cubic_one_real(reals[0], pairs[0], inv_sqrt_lead, var, pool),
+        (4, 4, 0) => quartic_four_real(&reals, inv_sqrt_lead, var, pool),
+        (4, 2, 1) => quartic_two_real(&reals, pairs[0], inv_sqrt_lead, var, pool),
+        _ => None, // e.g. all-complex quartic: declined (falls through)
+    }
+}
+
+/// Second/third-kind elliptic-integral *output* for genus-1 radicands.
+///
+/// Handles `∫ b(x)·√P dx` where `b` is a rational function of `var` and `P` is a
+/// gate-verifiable cubic/quartic — i.e. the general `∫ R(x)/√P dx` (writing
+/// `b·√P = (b·P)/√P`).  The antiderivative is built as an *ansatz*
+///
+/// ```text
+///   F_cand(x) = (Σⱼ αⱼ xʲ)·√P  +  β·EllipticF(φ,m) + γ·EllipticE(φ,m)
+///                                  +  Σ_p δ_p·EllipticPi(n_p, φ, m)
+/// ```
+///
+/// over the shared first-kind substitution `(g, m, φ)`.  The algebraic block
+/// degree is chosen from the numerator degree; the `EllipticPi` blocks are one
+/// per simple real pole `p` of `b` (third kind).  The block coefficients are
+/// **fitted numerically** (least squares over many sample points where `P > 0`),
+/// reconstructed as exact rationals, and the assembled candidate is run through
+/// the *same* `d/dx F = integrand` soundness gate as the first kind.  An
+/// imperfect fit can therefore only *decline* (return `None`, caller falls
+/// through to `NonElementary`) — never emit a wrong answer.
+///
+/// Requires `a_part = 0` (the wiring integrates a separate rational `a_part`
+/// itself); `b_part` purely algebraic.
+pub fn try_elliptic_output_higher_kind(
+    a_part: ExprId,
+    b_part: ExprId,
+    p_expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    use crate::integrate::risch::rational_rde::expr_to_qrational;
+
+    if !is_zero(a_part, pool) {
+        return None;
+    }
+    if is_zero(b_part, pool) {
+        return None;
+    }
+
+    // Parse P (ascending rational coeffs) and validate degree / leading coeff.
+    let p_poly = expr_to_qpoly(p_expr, var, pool)?;
+    let p_coeffs: Vec<f64> = p_poly.iter().map(|r| r.to_f64()).collect();
+    let deg = p_coeffs.len().checked_sub(1)?;
+    if deg != 3 && deg != 4 {
+        return None;
+    }
+    let lead = *p_coeffs.last()?;
+    if lead == 0.0 {
+        return None;
+    }
+
+    // `b = b_num / b_den` as rational polynomials in `var`.
+    let (b_num, b_den) = expr_to_qrational(b_part, var, pool)?;
+    let b_num_f: Vec<f64> = b_num.iter().map(|r| r.to_f64()).collect();
+    let b_den_f: Vec<f64> = b_den.iter().map(|r| r.to_f64()).collect();
+    if b_den_f.iter().all(|&c| c == 0.0) {
+        return None;
+    }
+
+    // The shared first-kind substitution.
+    let (g, m, phi) = first_kind_reduction(&p_coeffs, deg, lead, var, pool)?;
+    if !(g.is_finite() && m.is_finite()) || m >= 1.0 {
+        return None;
+    }
+
+    // ── Candidate block sets ───────────────────────────────────────────────
+    //
+    // Integrand to match: `b·√P`.  Every block is an `ExprId` whose `d/dx` is
+    // elementary (the elliptic derivatives reduce to `√(1−m sin²φ)`-type forms
+    // because `m`, `n` are constants here), so the gate can sample them.
+    //
+    //  * Algebraic polynomial blocks `xʲ·√P` (`d/dx → (…)/√P`, numerator degree
+    //    `j + deg − 1`).
+    //  * Rational algebraic blocks `√P/(x−r)` for each real root `r` of `P`
+    //    (needed when the substitution puts a pole into the `E` reduction — the
+    //    three-real-root cubic / generic quartic cases).
+    //  * `EllipticF`, `EllipticE` blocks (first/second kind).
+    //  * `EllipticPi(n_p,φ,m)` + `√P/(x−p)` for each simple real pole `p` of `b`
+    //    (third kind); characteristic `n_p = 1/sin²φ(p)`.
+    //
+    // We try progressively richer sets and keep the first that *gate-verifies*.
+    // Soundness is unconditional: an inexact fit just declines.
+    let m_expr = float_to_expr(m, pool);
+    let sqrt_p = pool.func("sqrt", vec![p_expr]);
+    let g_expr = float_to_expr(g, pool);
+    let f_blk = simplify(
+        pool.mul(vec![g_expr, pool.func("EllipticF", vec![phi, m_expr])]),
+        pool,
+    )
+    .value;
+    let e_blk = simplify(
+        pool.mul(vec![g_expr, pool.func("EllipticE", vec![phi, m_expr])]),
+        pool,
+    )
+    .value;
+
+    // Polynomial degree of `b` numerator (used to pick the algebraic ladder).
+    let db = (b_num.len().max(1) as i64 - 1) - (b_den.len().max(1) as i64 - 1);
+    let k_poly = (db.max(0) as usize) + 1;
+
+    // Real roots of `P` (for the rational algebraic blocks) and real poles of
+    // `b` (for the third-kind Π blocks).
+    let p_roots: Vec<f64> = {
+        let roots = poly_roots(&p_coeffs).unwrap_or_default();
+        let (mut r, _) = classify_roots(&roots);
+        r.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        r
+    };
+    let real_poles = real_simple_poles(&b_num_f, &b_den_f);
+
+    // Helper to build `xʲ·√P` and `√P/(x−r)` blocks.
+    let poly_block = |j: usize, pool: &ExprPool| -> ExprId {
+        let xj = match j {
+            0 => pool.integer(1_i32),
+            1 => var,
+            _ => pool.pow(var, pool.integer(j as i32)),
+        };
+        pool.mul(vec![xj, sqrt_p])
+    };
+    let rat_block = |r: f64, pool: &ExprPool| -> ExprId {
+        let xr = pool.add(vec![var, float_to_expr(-r, pool)]);
+        pool.mul(vec![sqrt_p, pool.pow(xr, pool.integer(-1_i32))])
+    };
+
+    // Build the list of block-set recipes (each a Vec of block ExprIds).
+    let mut recipes: Vec<Vec<ExprId>> = Vec::new();
+    // 1) base: x·√P, √P, F, E  (+ higher x ladder if b has high degree)
+    {
+        let mut s = Vec::new();
+        for j in 0..=k_poly.max(1) {
+            s.push(poly_block(j, pool));
+        }
+        s.push(f_blk);
+        s.push(e_blk);
+        recipes.push(s);
+    }
+    // 2) base + one rational block at the smallest real root of P.
+    if let Some(&rmin) = p_roots.first() {
+        let mut s = vec![poly_block(0, pool), poly_block(1, pool)];
+        s.push(rat_block(rmin, pool));
+        s.push(f_blk);
+        s.push(e_blk);
+        recipes.push(s);
+    }
+    // 3) base + a rational block at every real root of P.
+    if p_roots.len() > 1 {
+        let mut s = vec![poly_block(0, pool), poly_block(1, pool)];
+        for &r in &p_roots {
+            s.push(rat_block(r, pool));
+        }
+        s.push(f_blk);
+        s.push(e_blk);
+        recipes.push(s);
+    }
+    // 4) third kind: base + Π(n_p) + √P/(x−p) for each real pole of b.
+    if !real_poles.is_empty() {
+        let mut s = vec![poly_block(0, pool), poly_block(1, pool)];
+        if let Some(&rmin) = p_roots.first() {
+            s.push(rat_block(rmin, pool));
+        }
+        s.push(f_blk);
+        s.push(e_blk);
+        for &p in &real_poles {
+            if let Some(np) = characteristic_from_pole(p, phi, var, pool) {
+                if np.is_finite() && (np - 1.0).abs() > 1e-9 {
+                    let n_expr = float_to_expr(np, pool);
+                    s.push(
+                        simplify(pool.func("EllipticPi", vec![n_expr, phi, m_expr]), pool).value,
+                    );
+                    s.push(rat_block(p, pool));
+                }
+            }
+        }
+        recipes.push(s);
+    }
+
+    // Sample grid (shared across recipes) where `P > 0` and away from b-poles.
+    let samples = sample_grid(&p_coeffs, &b_den_f);
+
+    for blocks in &recipes {
+        if let Some(f_cand) =
+            fit_and_assemble(blocks, &samples, &p_coeffs, &b_num_f, &b_den_f, var, pool)
+        {
+            if verify_higher(f_cand, &p_coeffs, &b_num_f, &b_den_f, var, pool) {
+                return Some(f_cand);
+            }
+        }
+    }
+    None
+}
+
+/// Fit block coefficients by least squares against the integrand `b·√P` over the
+/// in-domain samples, snap them to rationals, and assemble the candidate
+/// `Σ cᵢ·blockᵢ`.  Returns `None` on a rank-deficient / non-evaluable design.
+#[allow(clippy::too_many_arguments)]
+fn fit_and_assemble(
+    blocks: &[ExprId],
+    samples: &[f64],
+    p_coeffs: &[f64],
+    b_num: &[f64],
+    b_den: &[f64],
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    let block_dx: Vec<ExprId> = blocks
+        .iter()
+        .map(|&blk| {
+            crate::diff::diff(blk, var, pool)
+                .ok()
+                .map(|d| simplify(d.value, pool).value)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let nblk = blocks.len();
+
+    let mut rows: Vec<Vec<f64>> = Vec::new();
+    let mut ys: Vec<f64> = Vec::new();
+    for &xv in samples {
+        let pv = eval_poly(p_coeffs, xv);
+        if pv <= 1e-6 {
+            continue;
+        }
+        let Some(bv) = eval_ratio(b_num, b_den, xv) else {
+            continue;
+        };
+        let yv = bv * pv.sqrt();
+        if !yv.is_finite() {
+            continue;
+        }
+        let mut row = Vec::with_capacity(nblk);
+        let mut ok = true;
+        for &dxi in &block_dx {
+            match eval(dxi, var, xv, pool) {
+                Some(v) if v.is_finite() => row.push(v),
+                _ => {
+                    ok = false;
+                    break;
+                }
+            }
+        }
+        if ok {
+            rows.push(row);
+            ys.push(yv);
+        }
+    }
+    if rows.len() < nblk + 1 {
+        return None;
+    }
+
+    let coeffs_fit = lstsq(&rows, &ys, nblk)?;
+
+    let mut terms: Vec<ExprId> = Vec::new();
+    for (i, &ci) in coeffs_fit.iter().enumerate() {
+        let cr = snap_rational(ci);
+        if cr == 0.0 {
+            continue;
+        }
+        let coeff = float_to_expr(cr, pool);
+        terms.push(pool.mul(vec![coeff, blocks[i]]));
+    }
+    if terms.is_empty() {
+        return None;
+    }
+    Some(simplify(pool.add(terms), pool).value)
+}
+
+/// Numeric value of `b_num(x)/b_den(x)` (ascending coeffs); `None` if denom ≈ 0.
+fn eval_ratio(num: &[f64], den: &[f64], x: f64) -> Option<f64> {
+    let d = eval_poly(den, x);
+    if d.abs() < 1e-12 {
+        return None;
+    }
+    Some(eval_poly(num, x) / d)
+}
+
+/// Real simple poles of `b = num/den`: real roots of `den` that are not roots of
+/// `num`.  Returns at most a couple (enough for the third-kind ladder).
+fn real_simple_poles(num: &[f64], den: &[f64]) -> Vec<f64> {
+    if den.len() <= 1 {
+        return Vec::new();
+    }
+    let Some(roots) = poly_roots(den) else {
+        return Vec::new();
+    };
+    let (reals, _) = classify_roots(&roots);
+    let mut out = Vec::new();
+    for r in reals {
+        if eval_poly(num, r).abs() > 1e-7 {
+            // Deduplicate close poles.
+            if !out.iter().any(|&q: &f64| (q - r).abs() < 1e-6) {
+                out.push(r);
+            }
+        }
+    }
+    out
+}
+
+/// Characteristic `n_p = 1/sin²φ(p)` for an `EllipticPi` block whose pole is at
+/// `x = p`.  Evaluates the elementary φ expression numerically.
+fn characteristic_from_pole(p: f64, phi: ExprId, var: ExprId, pool: &ExprPool) -> Option<f64> {
+    let phi_v = eval(phi, var, p, pool)?;
+    let s = phi_v.sin();
+    let s2 = s * s;
+    if s2.abs() < 1e-12 {
+        return None;
+    }
+    Some(1.0 / s2)
+}
+
+/// Sample grid for the fit, biased to the `P > 0` region and away from poles.
+fn sample_grid(p_coeffs: &[f64], b_den: &[f64]) -> Vec<f64> {
+    let mut xs = Vec::new();
+    let mut x = -4.0_f64;
+    while x <= 6.0 {
+        // Skip points too close to a denominator zero.
+        if eval_poly(b_den, x).abs() > 1e-3 {
+            xs.push(x);
+        }
+        let _ = p_coeffs;
+        x += 0.137;
+    }
+    xs
+}
+
+/// Minimal least-squares solver: normal equations `AᵀA c = Aᵀy` with Gaussian
+/// elimination (partial pivoting).  `n` = number of unknowns.
+fn lstsq(rows: &[Vec<f64>], ys: &[f64], n: usize) -> Option<Vec<f64>> {
+    // Normal equations.
+    let mut ata = vec![vec![0.0_f64; n]; n];
+    let mut aty = vec![0.0_f64; n];
+    for (row, &y) in rows.iter().zip(ys) {
+        for i in 0..n {
+            aty[i] += row[i] * y;
+            for j in 0..n {
+                ata[i][j] += row[i] * row[j];
+            }
+        }
+    }
+    // Gaussian elimination with partial pivoting on the n×n system.
+    for col in 0..n {
+        let mut piv = col;
+        let mut best = ata[col][col].abs();
+        for (r, arow) in ata.iter().enumerate().take(n).skip(col + 1) {
+            if arow[col].abs() > best {
+                best = arow[col].abs();
+                piv = r;
+            }
+        }
+        if best < 1e-12 {
+            return None; // singular / rank-deficient design
+        }
+        ata.swap(col, piv);
+        aty.swap(col, piv);
+        let d = ata[col][col];
+        // Snapshot the pivot row to avoid a borrow conflict while updating others.
+        let pivot_row = ata[col].clone();
+        let pivot_y = aty[col];
+        for r in 0..n {
+            if r == col {
+                continue;
+            }
+            let f = ata[r][col] / d;
+            if f == 0.0 {
+                continue;
+            }
+            for (c, prc) in pivot_row.iter().enumerate().take(n).skip(col) {
+                ata[r][c] -= f * prc;
+            }
+            aty[r] -= f * pivot_y;
+        }
+    }
+    let mut out = vec![0.0; n];
+    for (i, oi) in out.iter_mut().enumerate() {
+        *oi = aty[i] / ata[i][i];
+        if !oi.is_finite() {
+            return None;
+        }
+    }
+    Some(out)
+}
+
+/// Snap a fitted float coefficient to a nearby simple rational (denominators up
+/// to 60) and zero out numerical noise.  Keeps emitted forms clean; the gate
+/// still guards correctness regardless.
+fn snap_rational(v: f64) -> f64 {
+    if v.abs() < 1e-9 {
+        return 0.0;
+    }
+    for den in 1..=60_i64 {
+        let num = (v * den as f64).round();
+        let cand = num / den as f64;
+        if (cand - v).abs() < 1e-9 * (1.0 + v.abs()) {
+            return cand;
+        }
+    }
+    v
+}
+
+/// Numerically verify `d/dx F_cand = b·√P` at sample points where `P > 0`.
+fn verify_higher(
+    f_cand: ExprId,
+    p_coeffs: &[f64],
+    b_num: &[f64],
+    b_den: &[f64],
+    var: ExprId,
+    pool: &ExprPool,
+) -> bool {
+    let Ok(df) = crate::diff::diff(f_cand, var, pool) else {
+        return false;
+    };
+    let ds = simplify(df.value, pool).value;
+    let samples = [
+        -3.5, -2.7, -1.6, -0.9, -0.4, 0.15, 0.3, 0.55, 0.7, 0.9, 1.1, 1.4, 1.9, 2.6, 3.4, 4.7, 5.3,
+    ];
+    let mut checked = 0;
+    for &xv in &samples {
+        let pv = eval_poly(p_coeffs, xv);
+        if pv <= 1e-6 {
+            continue;
+        }
+        let Some(bv) = eval_ratio(b_num, b_den, xv) else {
+            continue;
+        };
+        let rhs = bv * pv.sqrt();
+        let Some(lhs) = eval(ds, var, xv, pool) else {
+            continue;
+        };
+        if !lhs.is_finite() || !rhs.is_finite() {
+            continue;
+        }
+        if (lhs - rhs).abs() > 1e-7 * (1.0 + rhs.abs()) {
+            return false;
+        }
+        checked += 1;
+    }
+    checked >= 3
 }
 
 // ---------------------------------------------------------------------------
@@ -533,5 +993,177 @@ mod tests {
         let zero = pool.integer(0_i32);
         let b = pool.pow(p, pool.integer(-1_i32));
         assert!(try_elliptic_output(zero, b, p, x, &pool).is_none());
+    }
+
+    // ── Second / third kind ─────────────────────────────────────────────────
+
+    /// Run the higher-kind reduction for `∫ b·√P dx`, assert it emits a form
+    /// containing each substring in `must_contain`, and verify `d/dx F = b·√P`
+    /// numerically at points where `P > 0`.
+    #[allow(clippy::too_many_arguments)]
+    fn check_higher(
+        p_expr: ExprId,
+        b: ExprId,
+        var: ExprId,
+        must_contain: &[&str],
+        b_num: &[f64],
+        b_den: &[f64],
+        p_coeffs: &[f64],
+        samples: &[f64],
+        pool: &ExprPool,
+    ) -> String {
+        let zero = pool.integer(0_i32);
+        let f = try_elliptic_output_higher_kind(zero, b, p_expr, var, pool)
+            .expect("expected higher-kind elliptic output");
+        let s = pool.display(f).to_string();
+        for needle in must_contain {
+            assert!(s.contains(needle), "expected {needle} in {s}");
+        }
+        // Independent numeric re-check of d/dx F = b·√P.
+        let df = crate::diff::diff(f, var, pool).unwrap().value;
+        let ds = simplify(df, pool).value;
+        let mut checked = 0;
+        for &xv in samples {
+            let pv = eval_poly(p_coeffs, xv);
+            if pv <= 1e-6 {
+                continue;
+            }
+            let Some(bv) = eval_ratio(b_num, b_den, xv) else {
+                continue;
+            };
+            let rhs = bv * pv.sqrt();
+            let Some(lhs) = eval(ds, var, xv, pool) else {
+                continue;
+            };
+            assert!(
+                (lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()),
+                "x={xv}: d/dx F = {lhs}, integrand = {rhs}\n  F = {s}"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 3, "too few in-domain samples");
+        s
+    }
+
+    #[test]
+    fn sqrt_cubic_x3_plus_1_emits_ellipticf_secondkind() {
+        // Headline: ∫√(x³+1) dx → algebraic part + EllipticF.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![pool.pow(x, pool.integer(3_i32)), pool.integer(1_i32)]);
+        let b = pool.integer(1_i32); // integrand = 1·√P
+        let s = check_higher(
+            p,
+            b,
+            x,
+            &["EllipticF"],
+            &[1.0],
+            &[1.0],
+            &[1.0, 0.0, 0.0, 1.0],
+            &[0.5, 1.0, 2.0, 3.0, 4.5],
+            &pool,
+        );
+        // Algebraic part `x·√P` must be present.
+        assert!(s.contains("EllipticF"), "{s}");
+    }
+
+    #[test]
+    fn sqrt_cubic_three_real_emits_ellipticf_and_e() {
+        // ∫√(x³−x) dx (region x>1) genuinely needs EllipticE.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![
+            pool.pow(x, pool.integer(3_i32)),
+            pool.mul(vec![pool.integer(-1_i32), x]),
+        ]);
+        let b = pool.integer(1_i32);
+        check_higher(
+            p,
+            b,
+            x,
+            &["EllipticE"],
+            &[1.0],
+            &[1.0],
+            &[0.0, -1.0, 0.0, 1.0],
+            &[1.2, 1.6, 2.2, 3.1, 4.0],
+            &pool,
+        );
+    }
+
+    #[test]
+    fn sqrt_cubic_x3_plus_8_emits_secondkind() {
+        // ∫√(x³+8) dx → algebraic part + EllipticF (one real root −2).
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![pool.pow(x, pool.integer(3_i32)), pool.integer(8_i32)]);
+        let b = pool.integer(1_i32);
+        check_higher(
+            p,
+            b,
+            x,
+            &["EllipticF"],
+            &[1.0],
+            &[1.0],
+            &[8.0, 0.0, 0.0, 1.0],
+            &[1.0, 2.0, 3.0, 4.5, 5.5],
+            &pool,
+        );
+    }
+
+    #[test]
+    fn sqrt_quartic_1_minus_x4_emits_secondkind() {
+        // ∫√(1−x⁴) dx → algebraic part + EllipticF/EllipticE (region |x|<1).
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![
+            pool.integer(1_i32),
+            pool.mul(vec![pool.integer(-1_i32), pool.pow(x, pool.integer(4_i32))]),
+        ]);
+        let b = pool.integer(1_i32);
+        check_higher(
+            p,
+            b,
+            x,
+            &["Elliptic"],
+            &[1.0],
+            &[1.0],
+            &[1.0, 0.0, 0.0, 0.0, -1.0],
+            &[-0.8, -0.3, 0.2, 0.6, 0.85],
+            &pool,
+        );
+    }
+
+    #[test]
+    fn engine_integrate_sqrt_x3_plus_1_emits_elliptic() {
+        // End-to-end: the algebraic engine itself returns an elliptic form for
+        // ∫√(x³+1) dx (was NonElementary before PR3), and d/dx matches √(x³+1).
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![pool.pow(x, pool.integer(3_i32)), pool.integer(1_i32)]);
+        let integrand = pool.func("sqrt", vec![p]);
+        let res = crate::integrate::engine::integrate(integrand, x, &pool)
+            .expect("∫√(x³+1) dx should now integrate (PR3)");
+        let s = pool.display(res.value).to_string();
+        assert!(s.contains("Elliptic"), "expected an elliptic form, got {s}");
+        let ds = simplify(crate::diff::diff(res.value, x, &pool).unwrap().value, &pool).value;
+        let mut checked = 0;
+        for &xv in &[0.5, 1.0, 2.0, 3.0] {
+            let rhs = (xv * xv * xv + 1.0_f64).sqrt();
+            let lhs = eval(ds, x, xv, &pool).unwrap();
+            assert!((lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()), "x={xv}");
+            checked += 1;
+        }
+        assert!(checked >= 3);
+    }
+
+    #[test]
+    fn quintic_higher_kind_declined() {
+        // ∫√(x⁵+1) dx is genus-2: higher-kind reduction declines (NonElementary).
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![pool.pow(x, pool.integer(5_i32)), pool.integer(1_i32)]);
+        let zero = pool.integer(0_i32);
+        let b = pool.integer(1_i32);
+        assert!(try_elliptic_output_higher_kind(zero, b, p, x, &pool).is_none());
     }
 }

@@ -190,11 +190,74 @@ def test_integral_poly_plus_sqrt():
 # ---------------------------------------------------------------------------
 
 
-def test_elliptic_raises():
-    """∫ sqrt(x³+1) dx should raise (elliptic, non-elementary)."""
+def test_elliptic_second_kind_emits_elliptic():
+    """∫ sqrt(x³+1) dx now emits a second-kind elliptic form (PR3).
+
+    Previously raised NonElementary; the algebraic engine reduces it to an
+    algebraic part plus `EllipticF` (and, for other radicands, `EllipticE`),
+    gate-verified by `d/dx F = √(x³+1)`.
+    """
+    import math
+
     pool = ExprPool()
     x = pool.symbol("x")
     p = x**3 + pool.integer(1)
+    res = integrate(sqrt(p), x)
+    f = res.value
+    s = str(f)
+    assert "EllipticF" in s, f"expected EllipticF in {s}"
+
+    # d/dx F = √(x³+1) where x³+1 > 0.  Evaluate the derivative tree directly
+    # (asin/acos are not supported by the native eval).
+    d = diff(f, x).value
+    unary = {
+        "sin": math.sin,
+        "cos": math.cos,
+        "tan": math.tan,
+        "asin": math.asin,
+        "acos": math.acos,
+        "atan": math.atan,
+        "sqrt": math.sqrt,
+    }
+
+    def _num(expr, xv):
+        n = expr.node()
+        tag = n[0]
+        if tag == "symbol":
+            return xv
+        if tag == "integer":
+            return float(int(n[1]))
+        if tag == "rational":
+            return float(int(n[1])) / float(int(n[2]))
+        if tag == "add":
+            return sum(_num(a, xv) for a in n[1])
+        if tag == "mul":
+            prod = 1.0
+            for a in n[1]:
+                prod *= _num(a, xv)
+            return prod
+        if tag == "pow":
+            return _num(n[1], xv) ** _num(n[2], xv)
+        if tag == "func":
+            name, args = n[1], n[2]
+            if name in unary and len(args) == 1:
+                return unary[name](_num(args[0], xv))
+        raise AssertionError(f"cannot evaluate node {n}")
+
+    checked = 0
+    for xv in (0.5, 1.0, 2.0, 3.0):
+        rhs = math.sqrt(xv**3 + 1.0)
+        lhs = _num(d, xv)
+        assert abs(lhs - rhs) < 1e-6 * (1.0 + abs(rhs)), f"x={xv}: {lhs} vs {rhs}\n  F={f}"
+        checked += 1
+    assert checked >= 3
+
+
+def test_quintic_still_non_elementary():
+    """∫ sqrt(x⁵+1) dx is genus-2 — no reduction, still raises NonElementary."""
+    pool = ExprPool()
+    x = pool.symbol("x")
+    p = x**5 + pool.integer(1)
     with pytest.raises(Exception) as exc_info:
         integrate(sqrt(p), x)
     msg = str(exc_info.value)

@@ -300,6 +300,27 @@ fn integrate_via_decompose(
             ));
             return Ok(DerivedExpr::with_log(simplified.value, log));
         }
+
+        // PR3: second/third-kind elliptic-integral *output*.  When the algebraic
+        // part is `∫ b(x)·√P dx` with `b` rational (e.g. `∫√P dx` ⇒ `b = 1`, or
+        // `∫ R/√P dx` needing `EllipticE`, or `∫ R/((x−p)√P) dx` needing
+        // `EllipticPi`) and `P` is a genus-1 cubic/quartic the capstones above
+        // proved non-elementary, emit the Legendre normal-form combination of
+        // `EllipticF`/`EllipticE`/`EllipticPi` plus an algebraic part.  Coefficients
+        // are fitted numerically then run through the same `d/dx F = integrand`
+        // gate, so a wrong reduction can only *decline* — never emit a wrong answer.
+        if let Some(f) =
+            elliptic_output::try_elliptic_output_higher_kind(a_part, b_part, p_expr, var, pool)
+        {
+            let simplified = simplify(f, pool);
+            log = log.merge(simplified.log);
+            log.push(RewriteStep::simple(
+                "genus1_elliptic_higherkind_output",
+                expr,
+                simplified.value,
+            ));
+            return Ok(DerivedExpr::with_log(simplified.value, log));
+        }
     }
 
     let zero = pool.integer(0_i32);
