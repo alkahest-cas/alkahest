@@ -229,3 +229,53 @@ def test_integral_x_plus_1_over_sqrt_cubic_x3_plus_1():
         [0.3, 0.6, 1.0, 2.0, 3.0],
         ["Elliptic"],
     )
+
+
+# ---------------------------------------------------------------------------
+# Third kind: ∫ R(x)/((x−p)√P) dx → EllipticPi  (real pole p off the roots of P)
+# ---------------------------------------------------------------------------
+
+
+def test_integral_third_kind_cubic_three_real_emits_pi():
+    """∫ dx/((x−3)√(x³−x)) → EllipticPi (+ EllipticF), gate-verified on x>1.
+
+    The radicand ``x³−x`` has three real roots {−1,0,1}; on the region ``x>1``
+    the first-kind substitution uses ``asin(√·)`` so ``sin²φ`` is Möbius in x and
+    the simple real pole at ``x=3`` reduces to a *single* incomplete elliptic
+    integral of the third kind.  The native gate verifies d/dx F = integrand
+    before emitting, so the EllipticPi form is always correct.
+    """
+    pool = ExprPool()
+    x = pool.symbol("x")
+    p = x**3 - x
+    integrand = ((x - pool.integer(3)) * sqrt(p)) ** -1
+    res = integrate(integrand, x)
+    f = res.value
+    s = str(f)
+    assert "EllipticPi" in s, f"expected EllipticPi, got {f}"
+    d = diff(f, x).value
+    checked = 0
+    for xv in [1.2, 1.6, 2.2, 4.0, 5.0]:
+        pv = xv**3 - xv
+        assert pv > 0, f"sample {xv} not in domain P>0"
+        lhs = _num_eval(d, xv)
+        rhs = 1.0 / ((xv - 3.0) * math.sqrt(pv))
+        assert abs(lhs - rhs) < 1e-6 * (1.0 + abs(rhs)), (
+            f"x={xv}: d/dx F = {lhs}, integrand = {rhs}\n  F = {f}"
+        )
+        checked += 1
+    assert checked >= 3
+
+
+def test_integral_third_kind_cubic_one_real_declines():
+    """∫ dx/((x−2)√(x³+1)) declines: the ``cosφ`` substitution for the
+    one-real-root cubic makes ``sin²φ`` a *quadratic* rational of x, so a single
+    EllipticPi has a spurious twin pole and no finite F/E/Π/algebraic combination
+    reproduces the integrand.  The soundness gate therefore never emits an
+    (incorrect) closed form — the engine reports the integral as not handled."""
+    pool = ExprPool()
+    x = pool.symbol("x")
+    p = x**3 + pool.integer(1)
+    integrand = ((x - pool.integer(2)) * sqrt(p)) ** -1
+    with pytest.raises(Exception):
+        integrate(integrand, x)

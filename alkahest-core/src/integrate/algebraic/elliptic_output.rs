@@ -235,8 +235,22 @@ pub fn try_elliptic_output_higher_kind(
         return None;
     }
 
-    // `b = b_num / b_den` as rational polynomials in `var`.
-    let (b_num, b_den) = expr_to_qrational(b_part, var, pool)?;
+    // `b = b_num / b_den` as rational polynomials in `var`.  `expr_to_qrational`
+    // does *not* reduce to lowest terms (e.g. `1/((x−p)√P)` decomposes to
+    // `(x−p)/((x−p)²·P)·√P`), so we cancel the polynomial GCD first.  This is
+    // essential for the third-kind path: an *un-reduced* `b` hides the simple pole
+    // at `x = p` (it appears as a numerator root too), so the pole detector would
+    // miss it and no `EllipticPi` block would be added.
+    let (b_num, b_den) = {
+        use crate::integrate::risch::rational_rde::{poly_div_exact, poly_gcd};
+        let (n, d) = expr_to_qrational(b_part, var, pool)?;
+        let gcd = poly_gcd(&n, &d);
+        if gcd.len() > 1 {
+            (poly_div_exact(&n, &gcd), poly_div_exact(&d, &gcd))
+        } else {
+            (n, d)
+        }
+    };
     let b_num_f: Vec<f64> = b_num.iter().map(|r| r.to_f64()).collect();
     let b_den_f: Vec<f64> = b_den.iter().map(|r| r.to_f64()).collect();
     if b_den_f.iter().all(|&c| c == 0.0) {
@@ -365,26 +379,76 @@ pub fn try_elliptic_output_higher_kind(
         s.push(e_blk);
         recipes.push(s);
     }
-    // 4) third kind: base + Π(n_p) + √P/(x−p) for each real pole of b.
-    if !real_poles.is_empty() {
-        let mut s = vec![poly_block(0, pool), poly_block(1, pool)];
-        if let Some(&rmin) = p_roots.first() {
-            s.push(rat_block(rmin, pool));
-        }
-        s.push(f_blk);
-        s.push(e_blk);
-        for &p in &real_poles {
-            if let Some(np) = characteristic_from_pole(p, phi, var, pool) {
-                if np.is_finite() && (np - 1.0).abs() > 1e-9 {
-                    let n_expr = float_to_expr(np, pool);
-                    s.push(
-                        simplify(pool.func("EllipticPi", vec![n_expr, phi, m_expr]), pool).value,
-                    );
-                    s.push(rat_block(p, pool));
-                }
+    // ── THIRD KIND (this PR) ────────────────────────────────────────────────
+    //
+    // For `∫ R(x)/((x−p)√P) dx` the antiderivative carries an `EllipticPi(n_p,φ,m)`
+    // block for each *real* simple pole `p` of the rational weight `b` that is
+    // **not** a root of `P` (a pole *at* a root of `P` is a different kind, handled
+    // by the algebraic/`F`/`E` blocks).  The characteristic is `n_p = 1/sin²φ(p)`.
+    //
+    // This single-`Π` reduction is exact **iff** `sin²φ(x)` is a Möbius
+    // (linear-fractional) function of `x`, which holds for the `asin(√·)`
+    // substitutions — the cubic-three-real-root and quartic-four-real-root
+    // configurations.  For the `cos φ` substitutions (cubic-one-real,
+    // quartic-two-real-plus-pair) `sin²φ` is a *quadratic*-over-quadratic in `x`,
+    // so a pole at `x = p` is shared with a "twin" preimage and a single `Π`
+    // introduces a spurious pole there; the fit then fails to close and the gate
+    // declines (→ `NonElementary`).  We still *try* these — soundness is
+    // unconditional — but they are expected to decline.
+    //
+    // We add the Π blocks for every off-`P`-root real pole and let the numeric fit
+    // + gate decide.  Two recipe variants are pushed: a *minimal* one (just the
+    // algebraic ladder, `F`, and the Π blocks) which produces clean rational
+    // coefficients when it closes, and the *rich* one (also `E` and a `√P/(x−r)`
+    // block at the smallest root of `P`) as a fallback.
+    let pi_poles: Vec<(f64, f64)> = real_poles
+        .iter()
+        .filter_map(|&p| {
+            // Skip poles that coincide with a root of `P` (different kind).
+            if p_roots.iter().any(|&r| (r - p).abs() < 1e-7) {
+                return None;
             }
+            let np = characteristic_from_pole(p, phi, var, pool)?;
+            if np.is_finite() && (np - 1.0).abs() > 1e-9 {
+                Some((p, np))
+            } else {
+                None
+            }
+        })
+        .collect();
+    if !pi_poles.is_empty() {
+        let build_pi = |s: &mut Vec<ExprId>, pool: &ExprPool| {
+            for &(_p, np) in &pi_poles {
+                let n_expr = float_to_expr(np, pool);
+                s.push(simplify(pool.func("EllipticPi", vec![n_expr, phi, m_expr]), pool).value);
+            }
+        };
+        // 4a) minimal third-kind basis: algebraic ladder + F + Π blocks.
+        {
+            let mut s = vec![poly_block(0, pool), poly_block(1, pool)];
+            s.push(f_blk);
+            build_pi(&mut s, pool);
+            recipes.push(s);
         }
-        recipes.push(s);
+        // 4b) rich third-kind basis: + E, + reduction-pole / root algebraic blocks
+        //     + a `√P/(x−p)` block per Π pole (cancels residual rational parts).
+        {
+            let mut s = vec![poly_block(0, pool), poly_block(1, pool)];
+            if let Some(&rmin) = p_roots.first() {
+                s.push(rat_block(rmin, pool));
+            }
+            for &p in &red_poles {
+                s.push(rat_block(p, pool));
+                s.push(rat_pow_block(p, 2, pool));
+            }
+            s.push(f_blk);
+            s.push(e_blk);
+            build_pi(&mut s, pool);
+            for &(p, _) in &pi_poles {
+                s.push(rat_block(p, pool));
+            }
+            recipes.push(s);
+        }
     }
 
     // Sample grid (shared across recipes) where `P > 0` and away from b-poles.
@@ -1405,5 +1469,165 @@ mod tests {
         let zero = pool.integer(0_i32);
         let b = pool.mul(vec![x, pool.pow(p, pool.integer(-1_i32))]);
         assert!(try_elliptic_output_higher_kind(zero, b, p, x, &pool).is_none());
+    }
+
+    // ── Third kind: `∫ R(x)/((x−p)√P) dx` → EllipticPi (this PR) ─────────────
+
+    /// Run the third-kind reduction for `∫ dx/((x−pole)√P)` (integrand
+    /// `b = 1/((x−pole)·P)`, so `b·√P = 1/((x−pole)√P)`), assert an `EllipticPi`
+    /// form is emitted, and numerically re-check `d/dx F = integrand`.
+    fn check_third_kind_simple_pole(
+        p_expr: ExprId,
+        pole: i64,
+        var: ExprId,
+        p_coeffs: &[f64],
+        samples: &[f64],
+        pool: &ExprPool,
+    ) -> String {
+        // b = 1 / ((x − pole) · P).
+        let x_minus_pole = pool.add(vec![var, pool.integer(-(pole as i32))]);
+        let den = pool.mul(vec![x_minus_pole, p_expr]);
+        let b = pool.pow(den, pool.integer(-1_i32));
+        // b_num = 1; b_den = (x − pole)·P, in ascending coeffs.
+        let mut b_den = vec![0.0; p_coeffs.len() + 1];
+        for (j, &c) in p_coeffs.iter().enumerate() {
+            b_den[j + 1] += c; // x · P
+            b_den[j] += -(pole as f64) * c; // −pole · P
+        }
+        check_higher(
+            p_expr,
+            b,
+            var,
+            &["EllipticPi"],
+            &[1.0],
+            &b_den,
+            p_coeffs,
+            samples,
+            pool,
+        )
+    }
+
+    #[test]
+    fn third_kind_cubic_three_real_emits_pi() {
+        // ∫ dx/((x−3)√(x³−x)), region x>1, pole at x=3 off the roots {−1,0,1}.
+        // sin²φ is Möbius here (asin substitution) so a single EllipticPi closes.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![
+            pool.pow(x, pool.integer(3_i32)),
+            pool.mul(vec![pool.integer(-1_i32), x]),
+        ]);
+        let s = check_third_kind_simple_pole(
+            p,
+            3,
+            x,
+            &[0.0, -1.0, 0.0, 1.0],
+            &[1.2, 1.6, 2.2, 2.6, 4.0, 5.0, 6.0],
+            &pool,
+        );
+        assert!(s.contains("EllipticPi"), "{s}");
+    }
+
+    #[test]
+    fn third_kind_quartic_four_real_emits_pi() {
+        // ∫ dx/((x−1/2 ·? )√(x⁴−5x²+4)); roots ±1,±2, region −1<x<1.
+        // Use pole at x=0? x=0 is not a root (P(0)=4) and lies in (−1,1).  But the
+        // integer-pole helper needs an integer pole inside (−1,1); none exists, so
+        // build the integrand directly with a rational pole p=1/2.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![
+            pool.pow(x, pool.integer(4_i32)),
+            pool.mul(vec![pool.integer(-5_i32), pool.pow(x, pool.integer(2_i32))]),
+            pool.integer(4_i32),
+        ]);
+        // pole at x = 1/2.
+        let half = pool.rational(rug::Integer::from(1), rug::Integer::from(2));
+        let x_minus = pool.add(vec![x, pool.mul(vec![pool.integer(-1_i32), half])]);
+        let den = pool.mul(vec![x_minus, p]);
+        let b = pool.pow(den, pool.integer(-1_i32));
+        // b_den = (x − 1/2)·P, ascending: P = 4 −5x² + x⁴.
+        let p_coeffs = [4.0, 0.0, -5.0, 0.0, 1.0];
+        let mut b_den = vec![0.0; p_coeffs.len() + 1];
+        for (j, &c) in p_coeffs.iter().enumerate() {
+            b_den[j + 1] += c;
+            b_den[j] += -0.5 * c;
+        }
+        let s = check_higher(
+            p,
+            b,
+            x,
+            &["EllipticPi"],
+            &[1.0],
+            &b_den,
+            &p_coeffs,
+            &[-0.8, -0.4, -0.1, 0.2, 0.8],
+            &pool,
+        );
+        assert!(s.contains("EllipticPi"), "{s}");
+    }
+
+    #[test]
+    fn third_kind_cubic_one_real_declines() {
+        // ∫ dx/((x−2)√(x³+1)) — the `acos`/cosφ substitution makes sin²φ a
+        // *quadratic* rational of x, so a single EllipticPi has a spurious twin
+        // pole and the fit cannot close.  The path declines (→ NonElementary):
+        // soundness gate never emits an unverified form.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![pool.pow(x, pool.integer(3_i32)), pool.integer(1_i32)]);
+        let x_minus = pool.add(vec![x, pool.integer(-2_i32)]);
+        let den = pool.mul(vec![x_minus, p]);
+        let b = pool.pow(den, pool.integer(-1_i32));
+        let zero = pool.integer(0_i32);
+        assert!(try_elliptic_output_higher_kind(zero, b, p, x, &pool).is_none());
+    }
+
+    #[test]
+    fn third_kind_complex_pole_declines() {
+        // ∫ dx/((x²+1)√(x³+1)): the pole factor x²+1 has *no real root*, so there
+        // is no real characteristic — the third-kind path adds no Π block and the
+        // remaining basis cannot represent the complex-pole integrand → declines.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![pool.pow(x, pool.integer(3_i32)), pool.integer(1_i32)]);
+        let q = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(1_i32)]);
+        let den = pool.mul(vec![q, p]);
+        let b = pool.pow(den, pool.integer(-1_i32));
+        let zero = pool.integer(0_i32);
+        assert!(try_elliptic_output_higher_kind(zero, b, p, x, &pool).is_none());
+    }
+
+    #[test]
+    fn engine_integrate_third_kind_cubic_three_real_emits_pi() {
+        // End-to-end through the engine: ∫ dx/((x−3)√(x³−x)) → EllipticPi form,
+        // with d/dx matching the integrand on x>1.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![
+            pool.pow(x, pool.integer(3_i32)),
+            pool.mul(vec![pool.integer(-1_i32), x]),
+        ]);
+        let sqrt_p = pool.func("sqrt", vec![p]);
+        let x_minus = pool.add(vec![x, pool.integer(-3_i32)]);
+        let den = pool.mul(vec![x_minus, sqrt_p]);
+        let integrand = pool.pow(den, pool.integer(-1_i32));
+        let res = crate::integrate::engine::integrate(integrand, x, &pool)
+            .expect("∫ dx/((x−3)√(x³−x)) should integrate to an elliptic form");
+        let s = pool.display(res.value).to_string();
+        assert!(s.contains("EllipticPi"), "expected EllipticPi, got {s}");
+        let ds = simplify(crate::diff::diff(res.value, x, &pool).unwrap().value, &pool).value;
+        let mut checked = 0;
+        for &xv in &[1.2, 1.6, 2.2, 4.0, 5.0] {
+            let pv: f64 = xv * xv * xv - xv;
+            if pv <= 1e-6 {
+                continue;
+            }
+            let rhs = 1.0 / ((xv - 3.0) * pv.sqrt());
+            let lhs = eval(ds, x, xv, &pool).unwrap();
+            assert!((lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()), "x={xv}");
+            checked += 1;
+        }
+        assert!(checked >= 3);
     }
 }
