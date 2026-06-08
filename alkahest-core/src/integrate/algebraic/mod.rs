@@ -27,10 +27,11 @@ mod jacobian_torsion;
 pub(super) mod parametrize;
 pub(super) mod poly_utils;
 pub mod residues;
-// Trager ℚ-basis logarithmic-part criterion: the decomposition + per-component
-// torsion core is implemented and tested; its full consumer (collecting a
-// divisor's algebraic residues into a common number field — a compositum) is the
-// remaining glue, so the entry points are not yet called from non-test code.
+// Trager ℚ-basis logarithmic-part criterion: decomposition + per-component
+// torsion over rational *and* algebraic places (`trager_log_criterion[_alg]`).
+// The remaining glue to a user-facing consumer is the engine-level
+// `∫B·√P` pipeline (Hermite → residues → collect into a common ℚ(θ) → criterion),
+// so the entry points are not yet called from non-test code.
 #[allow(dead_code)]
 mod trager_log;
 pub mod vanhoeij;
