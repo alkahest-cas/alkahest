@@ -235,25 +235,25 @@ fn to_w_coords(basis: &[AlgElem], elem: &AlgElem, n: usize) -> Option<Vec<RatFn>
             row
         })
         .collect();
-    // Gaussian elimination over ℚ(x).
-    let mut piv_row = 0;
+    // Gaussian elimination over ℚ(x).  The pivot row equals `col` at every step.
     for col in 0..n {
-        let sel = (piv_row..n).find(|&r| !f.eq(&m[r][col], &f.zero()))?;
-        m.swap(piv_row, sel);
-        let inv = f.inv(&m[piv_row][col])?;
-        for v in m[piv_row].iter_mut() {
+        let sel = (col..n).find(|&r| !f.eq(&m[r][col], &f.zero()))?;
+        m.swap(col, sel);
+        let inv = f.inv(&m[col][col])?;
+        for v in m[col].iter_mut() {
             *v = f.mul(v, &inv);
         }
         for r in 0..n {
-            if r != piv_row && !f.eq(&m[r][col], &f.zero()) {
+            if r != col && !f.eq(&m[r][col], &f.zero()) {
                 let factor = m[r][col].clone();
+                // Two distinct rows (`m[r]` updated from `m[col]`): range loop.
+                #[allow(clippy::needless_range_loop)]
                 for c in 0..=n {
-                    let sub = f.mul(&factor, &m[piv_row][c].clone());
+                    let sub = f.mul(&factor, &m[col][c].clone());
                     m[r][c] = f.sub(&m[r][c], &sub);
                 }
             }
         }
-        piv_row += 1;
     }
     Some((0..n).map(|i| m[i][n].clone()).collect())
 }
