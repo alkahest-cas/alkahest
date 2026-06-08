@@ -66,10 +66,10 @@ pub(crate) fn qbasis_decompose(residues: &[KElem], dim: usize) -> (usize, Vec<Ve
             *v /= &piv;
         }
         let pr = m[row].clone();
-        for r in 0..nrows {
-            if r != row && m[r][col] != 0 {
-                let f = m[r][col].clone();
-                for (dst, pv) in m[r].iter_mut().zip(pr.iter()) {
+        for (r, row_vec) in m.iter_mut().enumerate().take(nrows) {
+            if r != row && row_vec[col] != 0 {
+                let f = row_vec[col].clone();
+                for (dst, pv) in row_vec.iter_mut().zip(pr.iter()) {
                     *dst -= f.clone() * pv;
                 }
             }
