@@ -16,6 +16,12 @@
 //! - Trager (1984). Integration of algebraic functions. MIT PhD thesis.
 //! - Bronstein (2005). Symbolic Integration I. Springer, chs. 10–11.
 
+// Primitive-element substrate for the algebraic-base-point logarithmic part —
+// builds the quadratic tower ℚ(α)[w]/(w²−c).  Field construction only; the
+// Galois-consistent conjugate-divisor reduction that would turn it into a
+// verdict is the documented remaining step (see the module docs).
+#[allow(dead_code)]
+mod alg_tower;
 pub(super) mod decompose;
 pub mod elliptic;
 pub mod find_order;
