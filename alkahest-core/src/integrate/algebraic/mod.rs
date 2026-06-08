@@ -16,11 +16,10 @@
 //! - Trager (1984). Integration of algebraic functions. MIT PhD thesis.
 //! - Bronstein (2005). Symbolic Integration I. Springer, chs. 10–11.
 
-// Primitive-element substrate for the algebraic-base-point logarithmic part —
-// builds the quadratic tower ℚ(α)[w]/(w²−c).  Field construction only; the
-// Galois-consistent conjugate-divisor reduction that would turn it into a
-// verdict is the documented remaining step (see the module docs).
-#[allow(dead_code)]
+// Quadratic-tower field ℚ(α)[w]/(w²−c) + Galois automorphisms for the
+// algebraic-base-point logarithmic part: `primitive_element` builds the field
+// and `galois_quartic` its automorphisms, consumed by
+// `genus_zero::try_alg_base_log` (the conjugate-divisor reduction).
 mod alg_tower;
 pub(super) mod decompose;
 pub mod elliptic;
@@ -591,6 +590,52 @@ mod tests {
         let res = crate::integrate::engine::integrate(integrand, x, &pool);
         assert!(
             matches!(res, Err(IntegrationError::NonElementary(_))),
+            "got {res:?}"
+        );
+    }
+
+    /// **Algebraic base point** (degree-4 Galois tower): `∫ √(x⁵−4x+3)/(x²−2) dx`
+    /// has a pole at the irrational base `x=±√2`; since `a(√2)=3`, the residue
+    /// field is `ℚ(√2,√3)` (Galois).  The conjugate-divisor reduction builds the
+    /// four automorphisms, decomposes the conjugate residues over ℚ, and finds a
+    /// non-torsion component ⇒ `NonElementary`.  **FriCAS-confirmed**.
+    #[test]
+    fn quintic_algebraic_base_non_elementary() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![
+            pool.pow(x, pool.integer(5_i32)),
+            pool.mul(vec![pool.integer(-4_i32), x]),
+            pool.integer(3_i32),
+        ]);
+        let sq = pool.func("sqrt", vec![p]);
+        let den = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(-2_i32)]); // x²−2
+        let integrand = pool.mul(vec![sq, pool.pow(den, pool.integer(-1_i32))]);
+        let res = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            matches!(res, Err(IntegrationError::NonElementary(_))),
+            "got {res:?}"
+        );
+    }
+
+    /// A **non-Galois** algebraic base (`∫ √(x⁵+x+1)/(x²−2)`, `a(√2)=1+5√2`, the
+    /// conjugate sheet not in the tower) is soundly declined (`NotImplemented`),
+    /// never wrongly `NonElementary`.
+    #[test]
+    fn quintic_algebraic_base_non_galois_declines() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![
+            pool.pow(x, pool.integer(5_i32)),
+            x,
+            pool.integer(1_i32),
+        ]);
+        let sq = pool.func("sqrt", vec![p]);
+        let den = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(-2_i32)]);
+        let integrand = pool.mul(vec![sq, pool.pow(den, pool.integer(-1_i32))]);
+        let res = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            matches!(res, Err(IntegrationError::NotImplemented(_))),
             "got {res:?}"
         );
     }

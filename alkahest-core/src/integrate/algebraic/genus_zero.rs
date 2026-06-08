@@ -16,10 +16,10 @@ use crate::integrate::engine::IntegrationError;
 use crate::integrate::risch::alg_field::{AlgElem, RatFn};
 use crate::integrate::risch::number_field::KElem;
 use crate::integrate::risch::poly_rde::{
-    degree, expr_to_qpoly, poly_deriv, poly_scale, qpoly_to_expr, QPoly,
+    degree, expr_to_qpoly, poly_add, poly_deriv, poly_mul, poly_scale, qpoly_to_expr, trim, QPoly,
 };
 use crate::integrate::risch::rational_rde::{
-    expr_to_qrational, poly_gcd, solve_rational_rde_generalized,
+    expr_to_qrational, poly_divrem, poly_gcd, solve_rational_rde_generalized,
 };
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use rug::{Integer, Rational};
@@ -766,20 +766,102 @@ fn integrate_b_sqrt_high_degree(
         };
     }
 
-    // Algebraic residues present (a rational pole with an irrational sheet, or an
-    // algebraic-base pole).  Decide via the Trager ℚ-basis criterion in a common
-    // quadratic field; a non-torsion component certifies non-elementary.
-    match try_genus2_alg_log(&p_poly, &h, &alg_res) {
+    // Algebraic residues present.  Two routes through the Trager ℚ-basis
+    // criterion: rational base points with irrational sheets (a compositum of
+    // quadratic *sheet* fields) via `try_genus2_alg_log`; a quadratic *base*
+    // point (degree-4 tower ℚ(√m,√c)) via `try_alg_base_log`.
+    let verdict = if alg_res.iter().all(|r| r.conjugates == 1) {
+        try_genus2_alg_log(&p_poly, &h, &alg_res)
+    } else {
+        try_alg_base_log(&p_poly, &h, &alg_res)
+    };
+    match verdict {
         Some(FindOrder::NonElementary) => Err(nonelem(
             "Trager ℚ-basis criterion: a residue component is non-torsion ⇒ \
              no elementary logarithmic part",
         )),
         _ => Err(notimpl(
             "genus ≥ 2 logarithmic part with algebraic residues: not decided \
-             (torsion log not yet emittable, or an algebraic base point of \
-             degree ≥ 2 — a genuine tower)",
+             (torsion log not yet emittable, or out of the handled scope — \
+             non-Galois tower / base degree ≥ 3)",
         )),
     }
+}
+
+/// Trager ℚ-basis decision for a single **quadratic algebraic base point**: the
+/// pole denominator has an irreducible factor `q = x²−m`, the residue
+/// `r0 ± r1·√a(α)` (`r0,r1 ∈ ℚ(α)=ℚ(√m)`) living in the degree-4 tower
+/// `K = ℚ(√m)[w]/(w²−c)`, `c = a(α)`.  When `K/ℚ` is Galois
+/// ([`super::alg_tower::galois_quartic`]) the four conjugate residues and places
+/// are expressed in `ℚ[θ]/M`, decomposed over `ℚ`, and each component is tested
+/// with [`trager_log_criterion_alg`] (reducing at primes that split `M`).  `None`
+/// outside this scope (non-`x²−m` base, non-Galois `K`, more than one algebraic
+/// orbit, or base degree ≥ 3).
+fn try_alg_base_log(p: &QPoly, h: &AlgElem, alg_res: &[AlgResidue]) -> Option<FindOrder> {
+    // Exactly one algebraic orbit, a quadratic base (conjugates == 2).
+    if alg_res.len() != 1 || alg_res[0].conjugates != 2 || degree(&alg_res[0].minpoly) != 2 {
+        return None;
+    }
+    let ar = &alg_res[0];
+    let q = trim(ar.minpoly.clone());
+    // c = a(α) ∈ ℚ(α): reduce the radicand mod q.
+    let c = trim(poly_divrem(p, &q).1);
+    let (m, a_in, w_in, autos) = super::alg_tower::galois_quartic(&q, &c)?;
+
+    // ρ = r0(α) + r1(α)·w in ℚ[θ]/M.
+    let r0 = &ar.r0;
+    let r1 = &ar.r1;
+    let rho = poly_add(
+        &super::alg_tower::compose_mod(r0, &a_in, &m),
+        &poly_divrem(
+            &poly_mul(&super::alg_tower::compose_mod(r1, &a_in, &m), &w_in),
+            &m,
+        )
+        .1,
+    );
+    let rho = trim(poly_divrem(&rho, &m).1);
+    let dim = (degree(&m).max(0) as usize).max(1); // = 4
+
+    // Conjugate residues ρⱼ = σⱼ(ρ) and conjugate places (A(πⱼ), W(πⱼ)).
+    let mut alg_places: Vec<AlgPlace> = Vec::new();
+    let mut alg_residues: Vec<KElem> = Vec::new();
+    for pi in &autos {
+        let rho_j = super::alg_tower::compose_mod(&rho, pi, &m);
+        let xj = super::alg_tower::compose_mod(&a_in, pi, &m);
+        let yj = super::alg_tower::compose_mod(&w_in, pi, &m);
+        alg_places.push(AlgPlace {
+            minpoly: m.clone(),
+            x_coord: xj,
+            y_coord: yj,
+            coeff: Integer::from(0),
+            orbit: false, // a single ℚ(θ) place (one embedding per prime)
+        });
+        // residue as a length-`dim` vector (pad).
+        let mut v = rho_j;
+        v.resize(dim, Rational::from(0));
+        alg_residues.push(v);
+    }
+
+    // Rational + infinite places carry rational residues (basis index 0).
+    let rat_div = residue_divisor_placed(2, p, h);
+    let rat_residues: Vec<KElem> = rat_div
+        .iter()
+        .map(|r| {
+            let mut v = vec![Rational::from(0); dim];
+            v[0] = r.residue.value.clone();
+            v
+        })
+        .collect();
+
+    Some(trager_log_criterion_alg(
+        2,
+        p,
+        &rat_div,
+        &rat_residues,
+        &alg_places,
+        &alg_residues,
+        dim,
+    ))
 }
 
 /// Trager ℚ-basis decision for `∫ (B·y) dx` on `y²=P` (deg P odd ≥ 5) when the

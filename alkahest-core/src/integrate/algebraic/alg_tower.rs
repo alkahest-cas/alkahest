@@ -13,11 +13,13 @@
 //! polynomial of `θ = w + λα` (degree `2d`), and `α`, `w` as `QPoly`s of degree
 //! `< 2d`.  Pure exact rational linear algebra in the tower (`ℚ(α)²` arithmetic).
 //!
-//! **Status:** this is the field-construction substrate only.  Wiring it into a
-//! `NonElementary` / `Principal` *verdict* additionally requires reducing the
-//! residue-component divisors at primes with a **Galois-consistent labeling** of
-//! the `2d` conjugate places (the conjugate-divisor reduction over a generally
-//! non-Galois field) — the genuine remaining step, not provided here.
+//! For a **quadratic base** `q = x²−m` whose tower `K = ℚ(√m)[w]/(w²−c)` is
+//! Galois over `ℚ`, [`galois_quartic`] additionally returns the four
+//! automorphism images of `θ` (each *verified* `M(πⱼ) ≡ 0`), built from
+//! quadratic-field square roots ([`sqrt_in_quad`]) — no number-field
+//! factorization.  These give the conjugate residues and places (via
+//! [`compose_mod`]) that `genus_zero::try_alg_base_log` decomposes and reduces.
+//! A non-Galois tower (the conjugate sheet `√(c̄) ∉ K`) is declined.
 
 use rug::Rational;
 
@@ -141,6 +143,134 @@ fn solve_columns(cols: &[Vec<Rational>], rhs: &[Rational], n: usize) -> Option<V
     Some((0..n).map(|i| a[i][n].clone()).collect())
 }
 
+/// `f(g) mod M` — compose polynomials, reduced mod `M` (Horner).
+pub(crate) fn compose_mod(f: &QPoly, g: &QPoly, m: &QPoly) -> QPoly {
+    let mut acc: QPoly = Vec::new();
+    for fi in f.iter().rev() {
+        acc = qmod(&poly_mul(&acc, g), m);
+        if *fi != 0 {
+            acc = poly_add(&acc, &vec![fi.clone()]);
+        }
+    }
+    qmod(&acc, m)
+}
+
+/// Exact rational square root, or `None`.
+fn rat_sqrt(r: &Rational) -> Option<Rational> {
+    if *r < 0 {
+        return None;
+    }
+    let (n, d) = (r.numer().clone(), r.denom().clone());
+    let (ns, ds) = (n.clone().sqrt(), d.clone().sqrt());
+    if rug::Integer::from(&ns * &ns) == n && rug::Integer::from(&ds * &ds) == d {
+        Some(Rational::from((ns, ds)))
+    } else {
+        None
+    }
+}
+
+/// Square root of `u + v√m` in `ℚ(√m)`, as `[a, b]` (`= a + b√m`), or `None` if
+/// it is not a square there.
+fn sqrt_in_quad(u: &Rational, v: &Rational, m: &Rational) -> Option<[Rational; 2]> {
+    let zero = Rational::from(0);
+    if *v == 0 {
+        if let Some(a) = rat_sqrt(u) {
+            return Some([a, zero]);
+        }
+        if let Some(b) = rat_sqrt(&(u.clone() / m)) {
+            return Some([zero, b]);
+        }
+        return None;
+    }
+    let disc = u.clone() * u - v.clone() * v * m; // u² − v²m, must be a square
+    let s = rat_sqrt(&disc)?;
+    for sg in [Rational::from(1), Rational::from(-1)] {
+        let a2 = (u.clone() + sg * &s) / Rational::from(2);
+        if let Some(a) = rat_sqrt(&a2) {
+            if a != 0 {
+                let b = v.clone() / (Rational::from(2) * &a);
+                return Some([a, b]);
+            }
+        }
+    }
+    None
+}
+
+/// For a **quadratic** base `q = x² − m` and sheet radicand `c = a(α) ∈ ℚ(α)`
+/// (`α = √m`), build the degree-4 field `K = ℚ(√m)[w]/(w²−c)` and, **when it is
+/// Galois over ℚ**, its four automorphism images of `θ` (as `QPoly`s mod `M`).
+/// Returns `(M, α(θ), w(θ), [π₀=θ, π₁, π₂, π₃])`.  `None` if `q` is not `x²−m`,
+/// `K` is not degree 4, or `K/ℚ` is not Galois (the conjugate sheet `√(c̄)` is
+/// not in `K`) — all sound declines.  Every returned `πⱼ` is **verified**
+/// (`M(πⱼ) ≡ 0 (mod M)`), so the result is correct by construction.
+pub(crate) fn galois_quartic(q: &QPoly, c: &QPoly) -> Option<(QPoly, QPoly, QPoly, Vec<QPoly>)> {
+    if degree(q) != 2 || q.get(1).map(|x| *x != 0).unwrap_or(false) {
+        return None; // require q = x² − m
+    }
+    let m = -q[0].clone(); // α² = m
+    let (mm, a_in, w_in) = primitive_element(q, c)?;
+    if degree(&mm) != 4 {
+        return None;
+    }
+    let u = c.first().cloned().unwrap_or_else(|| Rational::from(0));
+    let v = c.get(1).cloned().unwrap_or_else(|| Rational::from(0));
+    // c̄ = u − v√m;  c̄/c = (u²+v²m − 2uv√m)/(u²−v²m).
+    let nrm = u.clone() * &u - v.clone() * &v * &m; // N(c)
+    if nrm == 0 {
+        return None;
+    }
+    let cbar = [u.clone(), -v.clone()];
+    let cbar_over_c = [
+        (u.clone() * &u + v.clone() * &v * &m) / &nrm,
+        Rational::from(-2) * &u * &v / &nrm,
+    ];
+
+    // w_α = √(c̄) ∈ K: either √(c̄/c)·w (g ∈ ℚ(α)) or √(c̄) ∈ ℚ(α).
+    let w_alpha: QPoly = if let Some(g) = sqrt_in_quad(&cbar_over_c[0], &cbar_over_c[1], &m) {
+        // g(α)·w  with g = g0 + g1·α.
+        let g_at = poly_add(
+            &vec![g[0].clone()],
+            &poly_scale(&a_in, &g[1]), // g1·α(θ)
+        );
+        qmod(&poly_mul(&g_at, &w_in), &mm)
+    } else if let Some(h) = sqrt_in_quad(&cbar[0], &cbar[1], &m) {
+        // √(c̄) = h0 + h1·α ∈ ℚ(α).
+        poly_add(&vec![h[0].clone()], &poly_scale(&a_in, &h[1]))
+    } else {
+        return None; // conjugate sheet not in K ⇒ not Galois
+    };
+
+    // π₀ = θ;  σ_w(θ) = θ − 2w;  σ_α(θ) = w_α + w − θ;  σ_αw(θ) = −w_α + w − θ.
+    let theta = vec![Rational::from(0), Rational::from(1)];
+    let two_w = poly_scale(&w_in, &Rational::from(2));
+    let sigma_w = qmod(&poly_sub_q(&theta, &two_w), &mm);
+    let sigma_a = qmod(&poly_sub_q(&poly_add(&w_alpha, &w_in), &theta), &mm);
+    let sigma_aw = qmod(&poly_sub_q(&poly_sub_q(&w_in, &w_alpha), &theta), &mm);
+    let autos = vec![theta, sigma_w, sigma_a, sigma_aw];
+
+    // Verify each is a genuine root of M (sound) and they are distinct.
+    for (i, pi) in autos.iter().enumerate() {
+        if degree(&eval_mod(&mm, pi, &mm)) >= 0 {
+            return None; // πᵢ not a root of M ⇒ construction invalid (not Galois)
+        }
+        for pj in autos.iter().take(i) {
+            if trim(pi.clone()) == trim(pj.clone()) {
+                return None; // repeated ⇒ fewer than 4 automorphisms
+            }
+        }
+    }
+    Some((mm, a_in, w_in, autos))
+}
+
+/// `f(β) mod M`.
+fn eval_mod(f: &QPoly, beta: &QPoly, m: &QPoly) -> QPoly {
+    compose_mod(f, beta, m)
+}
+
+fn poly_sub_q(a: &QPoly, b: &QPoly) -> QPoly {
+    poly_add(a, &poly_scale(b, &Rational::from(-1)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,5 +324,21 @@ mod tests {
     #[test]
     fn sextic_cubic_base() {
         check(&qp(&[-2, 0, 0, 1]), &qp(&[0, 1])); // q = x³−2, c = α
+    }
+
+    /// Galois quartic `ℚ(√2, √3)` (`q = x²−2`, `c = 3` rational): four
+    /// automorphisms; `M = t⁴−10t²+1` is the minimal polynomial of `√2+√3`.
+    #[test]
+    fn galois_quartic_multiquadratic() {
+        let (m, _a, _w, autos) = galois_quartic(&qp(&[-2, 0, 1]), &qp(&[3])).expect("Galois");
+        assert_eq!(m, qp(&[1, 0, -10, 0, 1])); // t⁴ − 10t² + 1
+        assert_eq!(autos.len(), 4);
+    }
+
+    /// Non-Galois quartic `ℚ(√2, √(1+5√2))` (`q = x²−2`, `c = 1+5√2`): the
+    /// conjugate sheet `√(1−5√2) ∉ K`, so `galois_quartic` declines.
+    #[test]
+    fn non_galois_quartic_declines() {
+        assert!(galois_quartic(&qp(&[-2, 0, 1]), &qp(&[1, 5])).is_none());
     }
 }
