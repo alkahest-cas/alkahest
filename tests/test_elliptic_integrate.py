@@ -117,3 +117,61 @@ def test_quintic_first_kind_still_non_elementary():
         integrate(integrand, x)
     msg = str(exc_info.value)
     assert "E-INT-004" in msg or "elementary" in msg.lower() or "NonElementary" in msg
+
+
+# ---------------------------------------------------------------------------
+# PR3: second-kind output  ∫√P dx  →  algebraic part + EllipticF/EllipticE
+# ---------------------------------------------------------------------------
+
+
+def _check_second_kind(pool, x, integrand, p_func, sample_xs, must_contain):
+    """Integrate ∫√P, assert the required elliptic functions appear, and verify
+    d/dx F = √P numerically where P > 0."""
+    res = integrate(integrand, x)
+    f = res.value
+    s = str(f)
+    for needle in must_contain:
+        assert needle in s, f"expected {needle}, got {f}"
+    d = diff(f, x).value
+    checked = 0
+    for xv in sample_xs:
+        pv = p_func(xv)
+        assert pv > 0, f"sample {xv} not in domain P>0"
+        lhs = _num_eval(d, xv)
+        rhs = math.sqrt(pv)
+        assert abs(lhs - rhs) < 1e-6 * (1.0 + abs(rhs)), (
+            f"x={xv}: d/dx F = {lhs}, integrand √P = {rhs}\n  F = {f}"
+        )
+        checked += 1
+    assert checked >= 3
+    return f
+
+
+def test_integral_sqrt_cubic_x3_plus_1():
+    """Headline: ∫√(x³+1) dx → algebraic part + EllipticF (one real root + pair)."""
+    pool = ExprPool()
+    x = pool.symbol("x")
+    p = x**3 + pool.integer(1)
+    _check_second_kind(
+        pool, x, sqrt(p), lambda v: v**3 + 1.0, [0.5, 1.0, 2.0, 3.0], ["EllipticF"]
+    )
+
+
+def test_integral_sqrt_cubic_three_real_needs_e():
+    """∫√(x³−x) dx (region x>1) genuinely needs EllipticE (three real roots)."""
+    pool = ExprPool()
+    x = pool.symbol("x")
+    p = x**3 - x
+    _check_second_kind(
+        pool, x, sqrt(p), lambda v: v**3 - v, [1.2, 1.6, 2.2, 3.3], ["EllipticE"]
+    )
+
+
+def test_integral_sqrt_quartic_1_minus_x4():
+    """∫√(1−x⁴) dx → algebraic part + elliptic functions (region |x|<1)."""
+    pool = ExprPool()
+    x = pool.symbol("x")
+    p = pool.integer(1) - x**4
+    _check_second_kind(
+        pool, x, sqrt(p), lambda v: 1.0 - v**4, [-0.8, -0.3, 0.3, 0.8], ["Elliptic"]
+    )
