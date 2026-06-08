@@ -535,6 +535,33 @@ mod tests {
         );
     }
 
+    /// **Compositum** of quadratic sheet fields: `∫ √(x⁵+x+1)/((x−2)(x−3)) dx`
+    /// has algebraic-sheet poles at `x=2` (`√35`) and `x=3` (`√247`) — distinct
+    /// fields.  The Trager components separate (a rational `1`-component + one
+    /// `√d_i`-component each); the `√35`-component `2[(2,√35)−∞]` is non-torsion ⇒
+    /// `NonElementary`.  **FriCAS-confirmed** (returns it unevaluated).
+    #[test]
+    fn quintic_compositum_non_elementary() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![
+            pool.pow(x, pool.integer(5_i32)),
+            x,
+            pool.integer(1_i32),
+        ]);
+        let sq = pool.func("sqrt", vec![p]);
+        let den = pool.mul(vec![
+            pool.add(vec![x, pool.integer(-2_i32)]),
+            pool.add(vec![x, pool.integer(-3_i32)]),
+        ]);
+        let integrand = pool.mul(vec![sq, pool.pow(den, pool.integer(-1_i32))]);
+        let res = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            matches!(res, Err(IntegrationError::NonElementary(_))),
+            "got {res:?}"
+        );
+    }
+
     /// `∫ x³·√(x⁵+x+1)/(x−2) dx` — likewise non-elementary (algebraic-sheet pole,
     /// non-torsion component); FriCAS-confirmed.
     #[test]
