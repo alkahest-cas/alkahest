@@ -116,6 +116,11 @@ from .alkahest import (  # noqa: F401
     # Core operations
     diff,
     diff_forward,
+    # Elliptic special functions (parameter convention m = k²)
+    elliptic_e,
+    elliptic_f,
+    elliptic_k,
+    elliptic_pi,
     emit_c,
     erf,
     erfc,
@@ -1015,6 +1020,11 @@ __all__ = [
     "diff",
     "diff_forward",
     "diophantine",
+    # Elliptic special functions (parameter convention m = k²)
+    "elliptic_e",
+    "elliptic_f",
+    "elliptic_k",
+    "elliptic_pi",
     "emit_c",
     "erf",
     "erfc",

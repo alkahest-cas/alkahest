@@ -418,6 +418,32 @@ fn latex_func(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
             };
             format!(r"e^{exp_braced}")
         }
+        // Elliptic integrals (parameter convention m = k²).  We mirror the
+        // classical typeset notation: K(m), E(m), F(φ|m), E(φ|m), Π(n;φ|m).
+        "EllipticK" => {
+            let (m, _) = latex_r(args[0], pool);
+            format!(r"K\!\left({m}\right)")
+        }
+        "EllipticE" if args.len() == 1 => {
+            let (m, _) = latex_r(args[0], pool);
+            format!(r"E\!\left({m}\right)")
+        }
+        "EllipticE" => {
+            let (phi, _) = latex_r(args[0], pool);
+            let (m, _) = latex_r(args[1], pool);
+            format!(r"E\!\left({phi}\,\middle|\,{m}\right)")
+        }
+        "EllipticF" => {
+            let (phi, _) = latex_r(args[0], pool);
+            let (m, _) = latex_r(args[1], pool);
+            format!(r"F\!\left({phi}\,\middle|\,{m}\right)")
+        }
+        "EllipticPi" => {
+            let (n, _) = latex_r(args[0], pool);
+            let (phi, _) = latex_r(args[1], pool);
+            let (m, _) = latex_r(args[2], pool);
+            format!(r"\Pi\!\left({n};{phi}\,\middle|\,{m}\right)")
+        }
         _ => {
             let fn_latex = latex_func_name(name);
             let rendered: Vec<String> = args.iter().map(|&a| latex_r(a, pool).0).collect();

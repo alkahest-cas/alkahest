@@ -260,8 +260,31 @@ fn infix_bp(tok: &Tok) -> u8 {
 // ---------------------------------------------------------------------------
 
 const KNOWN_FUNCS: &[&str] = &[
-    "sin", "cos", "tan", "sinh", "cosh", "tanh", "asin", "acos", "atan", "atan2", "exp", "log",
-    "sqrt", "abs", "sign", "floor", "ceil", "round", "erf", "erfc", "gamma",
+    "sin",
+    "cos",
+    "tan",
+    "sinh",
+    "cosh",
+    "tanh",
+    "asin",
+    "acos",
+    "atan",
+    "atan2",
+    "exp",
+    "log",
+    "sqrt",
+    "abs",
+    "sign",
+    "floor",
+    "ceil",
+    "round",
+    "erf",
+    "erfc",
+    "gamma",
+    "EllipticK",
+    "EllipticE",
+    "EllipticF",
+    "EllipticPi",
 ];
 
 fn is_known_func(name: &str) -> bool {
