@@ -1440,6 +1440,51 @@ fn max_expr(py: Python<'_>, a: PyRef<PyExpr>, b: PyRef<PyExpr>) -> PyExpr {
     make_binary_func(py, "max", a, b)
 }
 
+fn make_ternary_func(
+    py: Python<'_>,
+    name: &str,
+    a: PyRef<PyExpr>,
+    b: PyRef<PyExpr>,
+    c: PyRef<PyExpr>,
+) -> PyExpr {
+    let id = a.pool.borrow(py).inner.func(name, vec![a.id, b.id, c.id]);
+    let pool = a.pool.clone_ref(py);
+    PyExpr { id, pool }
+}
+
+// ── Elliptic special functions (parameter convention m = k²) ──────────────────
+
+/// Complete elliptic integral of the first kind, `EllipticK(m)`.
+#[pyfunction]
+fn elliptic_k(py: Python<'_>, m: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "EllipticK", m)
+}
+
+/// Elliptic integral of the second kind.
+///
+/// `elliptic_e(m)` is the *complete* integral `EllipticE(m)`.
+/// `elliptic_e(phi, m)` is the *incomplete* integral `EllipticE(phi, m)`.
+#[pyfunction]
+#[pyo3(signature = (arg1, arg2=None))]
+fn elliptic_e(py: Python<'_>, arg1: PyRef<PyExpr>, arg2: Option<PyRef<PyExpr>>) -> PyExpr {
+    match arg2 {
+        None => make_func(py, "EllipticE", arg1),
+        Some(m) => make_binary_func(py, "EllipticE", arg1, m),
+    }
+}
+
+/// Incomplete elliptic integral of the first kind, `EllipticF(phi, m)`.
+#[pyfunction]
+fn elliptic_f(py: Python<'_>, phi: PyRef<PyExpr>, m: PyRef<PyExpr>) -> PyExpr {
+    make_binary_func(py, "EllipticF", phi, m)
+}
+
+/// Incomplete elliptic integral of the third kind, `EllipticPi(n, phi, m)`.
+#[pyfunction]
+fn elliptic_pi(py: Python<'_>, n: PyRef<PyExpr>, phi: PyRef<PyExpr>, m: PyRef<PyExpr>) -> PyExpr {
+    make_ternary_func(py, "EllipticPi", n, phi, m)
+}
+
 // ---------------------------------------------------------------------------
 // Module-level: simplify and diff
 // ---------------------------------------------------------------------------
@@ -6467,6 +6512,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(atan2, m)?)?;
     m.add_function(wrap_pyfunction!(min_expr, m)?)?;
     m.add_function(wrap_pyfunction!(max_expr, m)?)?;
+    m.add_function(wrap_pyfunction!(elliptic_k, m)?)?;
+    m.add_function(wrap_pyfunction!(elliptic_e, m)?)?;
+    m.add_function(wrap_pyfunction!(elliptic_f, m)?)?;
+    m.add_function(wrap_pyfunction!(elliptic_pi, m)?)?;
     m.add_class::<PyDomain>()?;
     m.add_class::<PyExprPool>()?;
     m.add_class::<PyExpr>()?;

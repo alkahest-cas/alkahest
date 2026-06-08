@@ -309,6 +309,11 @@ impl PrimitiveRegistry {
         reg.register(Box::new(builtins::AtanPrimitive));
         reg.register(Box::new(builtins::ErfPrimitive));
         reg.register(Box::new(builtins::ErfcPrimitive));
+        // Elliptic special functions (parameter convention m = k²).
+        reg.register(Box::new(builtins::EllipticKPrimitive));
+        reg.register(Box::new(builtins::EllipticEPrimitive));
+        reg.register(Box::new(builtins::EllipticFPrimitive));
+        reg.register(Box::new(builtins::EllipticPiPrimitive));
         reg.register(Box::new(builtins::AbsPrimitive));
         reg.register(Box::new(builtins::SignPrimitive));
         reg.register(Box::new(builtins::FloorPrimitive));
@@ -348,9 +353,19 @@ impl Default for PrimitiveRegistry {
 fn probe_caps(p: &dyn Primitive) -> Capabilities {
     let mut caps = Capabilities::empty();
 
-    // Probe with both unary and binary argument lists so n-ary primitives
-    // (e.g. atan2, min, max) register their capabilities.
-    let probe_f64_sets: [&[f64]; 2] = [&[1.0], &[1.0, 2.0]];
+    // Probe with unary, binary, and ternary argument lists so n-ary
+    // primitives (e.g. atan2, min, max, EllipticPi) register their
+    // capabilities.  We also try a set of small fractional values that lie
+    // inside the convergence domain of the elliptic integrals (where larger
+    // probe inputs would be rejected as out-of-domain).
+    let probe_f64_sets: [&[f64]; 6] = [
+        &[1.0],
+        &[1.0, 2.0],
+        &[1.0, 2.0, 3.0],
+        &[0.5],
+        &[0.5, 0.3],
+        &[0.2, 0.3, 0.4],
+    ];
     for args in probe_f64_sets {
         if p.numeric_f64(args).is_some() {
             caps |= Capabilities::NUMERIC_F64;
@@ -368,18 +383,26 @@ fn probe_caps(p: &dyn Primitive) -> Capabilities {
     let pool = ExprPool::new();
     let x = pool.symbol("_probe", crate::kernel::Domain::Real);
     let y = pool.symbol("_probe_y", crate::kernel::Domain::Real);
-    let probe_id_sets: [Vec<ExprId>; 2] = [vec![x], vec![x, y]];
+    let z = pool.symbol("_probe_z", crate::kernel::Domain::Real);
+    let probe_id_sets: [Vec<ExprId>; 3] = [vec![x], vec![x, y], vec![x, y, z]];
 
-    for args in &probe_id_sets {
-        if p.diff_forward(args, x, &pool).is_some() {
-            caps |= Capabilities::DIFF_FORWARD;
-            break;
+    // A primitive may only differentiate w.r.t. *some* of its arguments
+    // (e.g. EllipticPi only has a clean ∂/∂φ), so probe differentiating w.r.t.
+    // each argument position, not just the first.
+    'fwd: for args in &probe_id_sets {
+        for &wrt in args {
+            if p.diff_forward(args, wrt, &pool).is_some() {
+                caps |= Capabilities::DIFF_FORWARD;
+                break 'fwd;
+            }
         }
     }
-    for args in &probe_id_sets {
-        if p.diff_reverse(args, x, &pool).is_some() {
-            caps |= Capabilities::DIFF_REVERSE;
-            break;
+    'rev: for args in &probe_id_sets {
+        for &wrt in args {
+            if p.diff_reverse(args, wrt, &pool).is_some() {
+                caps |= Capabilities::DIFF_REVERSE;
+                break 'rev;
+            }
         }
     }
     for args in &probe_id_sets {
@@ -1073,6 +1096,542 @@ pub mod builtins {
         }
     }
 
+    // ── Elliptic integrals ────────────────────────────────────────────────────
+    //
+    // All five elliptic special functions use the *parameter* convention
+    // `m = k²` (matching Mathematica's `EllipticK[m]`, `EllipticF[phi, m]`,
+    // …), NOT the *modulus* convention `k`.  So, e.g., the complete integral
+    // of the first kind is
+    //
+    //     K(m) = ∫₀^{π/2} dθ / √(1 − m·sin²θ).
+    //
+    // Numeric evaluation uses the arithmetic–geometric mean (AGM) for the
+    // complete integrals K(m), E(m) and adaptive Simpson quadrature of the
+    // defining integrand over [0, φ] for the incomplete integrals
+    // F(φ,m), E(φ,m), Π(n,φ,m).  Out-of-domain inputs (where the integrand
+    // is singular / complex, i.e. `m·sin²θ ≥ 1`) return `None`.
+    //
+    // NOTE on AD coverage: the symbolic differentiator `crate::diff::diff`
+    // (see `diff/diff_impl.rs`) routes multi-arg `Func` nodes through these
+    // primitives' `diff_forward`, so the symbolic path is fully wired.  The
+    // dual-number forward-AD (`diff/forward.rs`) and reverse-AD
+    // (`diff/reverse.rs`) modes only special-case *single*-argument
+    // functions; for multi-arg elliptic functions they fall back to their
+    // existing safe behaviour (returning a `ForwardUnknownFunction` error /
+    // treating the node as opaque), which is acceptable for this PR.
+
+    /// Build the elliptic "Δ-factor" `√(1 − m·sin²φ)` as an expression.
+    fn elliptic_delta(phi: ExprId, m: ExprId, pool: &ExprPool) -> ExprId {
+        let sin_phi = pool.func("sin", vec![phi]);
+        let sin2 = pool.pow(sin_phi, pool.integer(2_i32));
+        let m_sin2 = pool.mul(vec![m, sin2]);
+        let neg = pool.mul(vec![pool.integer(-1_i32), m_sin2]);
+        let one = pool.integer(1_i32);
+        let inside = pool.add(vec![one, neg]);
+        pool.func("sqrt", vec![inside])
+    }
+
+    /// Numeric AGM-based complete elliptic integral of the first kind K(m).
+    /// Returns `None` if `m ≥ 1` (out of the real convergent domain).
+    fn agm_k(m: f64) -> Option<f64> {
+        if m >= 1.0 {
+            return None;
+        }
+        let mut a = 1.0_f64;
+        let mut b = (1.0 - m).sqrt();
+        for _ in 0..100 {
+            if (a - b).abs() <= 1e-16 * a.abs() {
+                break;
+            }
+            let an = 0.5 * (a + b);
+            let bn = (a * b).sqrt();
+            a = an;
+            b = bn;
+        }
+        Some(std::f64::consts::PI / (2.0 * a))
+    }
+
+    /// Numeric AGM-based complete elliptic integral of the second kind E(m).
+    fn agm_e(m: f64) -> Option<f64> {
+        if m >= 1.0 {
+            // E(1) = 1 exactly; reject anything beyond.
+            if (m - 1.0).abs() < 1e-15 {
+                return Some(1.0);
+            }
+            return None;
+        }
+        let k = agm_k(m)?;
+        let mut a = 1.0_f64;
+        let mut b = (1.0 - m).sqrt();
+        // E/K = 1 − Σ_{n=0}^∞ 2^(n-1) c_n²  with c_0² = m (Abramowitz & Stegun
+        // 17.6).  The n = 0 term contributes 2^(-1)·m = m/2; subsequent terms
+        // use c_n = (a_{n-1} − b_{n-1})/2 with weight 2^(n-1) (1, 2, 4, …).
+        let mut sum = 0.5 * m;
+        let mut weight = 1.0_f64; // 2^(n-1) for n = 1, 2, 3, …
+                                  // Iterate until the AGM converges.  We must stop once `c_n` reaches the
+                                  // f64 noise floor: otherwise the geometrically growing weight `2^(n-1)`
+                                  // amplifies that rounding residue and corrupts the sum.
+        for _ in 0..40 {
+            let cn = 0.5 * (a - b);
+            if cn.abs() <= 1e-15 * a.abs() {
+                break;
+            }
+            let an = 0.5 * (a + b);
+            let bn = (a * b).sqrt();
+            sum += weight * cn * cn;
+            weight *= 2.0;
+            a = an;
+            b = bn;
+        }
+        Some(k * (1.0 - sum))
+    }
+
+    /// Adaptive Simpson integration of `f` over `[a, b]` to absolute
+    /// tolerance `tol`.  Returns `None` if the integrand is non-finite.
+    fn adaptive_simpson<F: Fn(f64) -> f64>(f: &F, a: f64, b: f64, tol: f64) -> Option<f64> {
+        fn simpson<F: Fn(f64) -> f64>(_f: &F, a: f64, b: f64, fa: f64, fb: f64, fm: f64) -> f64 {
+            (b - a) / 6.0 * (fa + 4.0 * fm + fb)
+        }
+        #[allow(clippy::too_many_arguments)]
+        fn recur<F: Fn(f64) -> f64>(
+            f: &F,
+            a: f64,
+            b: f64,
+            fa: f64,
+            fb: f64,
+            fm: f64,
+            whole: f64,
+            tol: f64,
+            depth: u32,
+        ) -> Option<f64> {
+            let m = 0.5 * (a + b);
+            let lm = 0.5 * (a + m);
+            let rm = 0.5 * (m + b);
+            let flm = f(lm);
+            let frm = f(rm);
+            if !flm.is_finite() || !frm.is_finite() {
+                return None;
+            }
+            let left = simpson(f, a, m, fa, fm, flm);
+            let right = simpson(f, m, b, fm, fb, frm);
+            if depth == 0 || (left + right - whole).abs() <= 15.0 * tol {
+                return Some(left + right + (left + right - whole) / 15.0);
+            }
+            let l = recur(f, a, m, fa, fm, flm, left, tol * 0.5, depth - 1)?;
+            let r = recur(f, m, b, fm, fb, frm, right, tol * 0.5, depth - 1)?;
+            Some(l + r)
+        }
+        if a == b {
+            return Some(0.0);
+        }
+        let fa = f(a);
+        let fb = f(b);
+        let m = 0.5 * (a + b);
+        let fm = f(m);
+        if !fa.is_finite() || !fb.is_finite() || !fm.is_finite() {
+            return None;
+        }
+        let whole = simpson(f, a, b, fa, fb, fm);
+        recur(f, a, b, fa, fb, fm, whole, tol, 50)
+    }
+
+    /// Check the incomplete-integral integrand is real over `[0, φ]`:
+    /// requires `m·sin²θ < 1` for all θ in range.  Since `sin²θ ≤ 1`, the
+    /// worst case is where `|sin|` is largest in `[0, φ]`.  We reject when
+    /// `m·sin²θ_max ≥ 1`.
+    fn incomplete_domain_ok(phi: f64, m: f64) -> bool {
+        if m <= 0.0 {
+            return true;
+        }
+        // Largest sin² over [0, φ] (φ may exceed π/2 in either direction).
+        let lo = phi.min(0.0);
+        let hi = phi.max(0.0);
+        let mut max_sin2 = lo.sin().powi(2).max(hi.sin().powi(2));
+        // π/2 + kπ inside the interval gives sin² = 1.
+        let half_pi = std::f64::consts::FRAC_PI_2;
+        let pi = std::f64::consts::PI;
+        let kstart = ((lo - half_pi) / pi).ceil() as i64;
+        for k in kstart..kstart + 4 {
+            let x = half_pi + (k as f64) * pi;
+            if x >= lo && x <= hi {
+                max_sin2 = 1.0;
+                break;
+            }
+        }
+        m * max_sin2 < 1.0
+    }
+
+    // ── EllipticK (complete, first kind) ───────────────────────────────────────
+
+    pub struct EllipticKPrimitive;
+
+    impl Primitive for EllipticKPrimitive {
+        fn name(&self) -> &'static str {
+            "EllipticK"
+        }
+
+        fn pretty(&self, args: &[ExprId], pool: &ExprPool) -> String {
+            format!("EllipticK({})", pool.display(args[0]))
+        }
+
+        fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
+            // d/dm K(m) = E(m)/(2m(1−m)) − K(m)/(2m)
+            let m = args[0];
+            let dm = crate::diff::diff(m, wrt, pool).ok()?.value;
+            let e = pool.func("EllipticE", vec![m]);
+            let k = pool.func("EllipticK", vec![m]);
+            let one_minus_m = pool.add(vec![
+                pool.integer(1_i32),
+                pool.mul(vec![pool.integer(-1_i32), m]),
+            ]);
+            let two_m = pool.mul(vec![pool.integer(2_i32), m]);
+            let two_m_1mm = pool.mul(vec![pool.integer(2_i32), m, one_minus_m]);
+            let term1 = pool.mul(vec![e, pool.pow(two_m_1mm, pool.integer(-1_i32))]);
+            let term2 = pool.mul(vec![
+                pool.integer(-1_i32),
+                k,
+                pool.pow(two_m, pool.integer(-1_i32)),
+            ]);
+            let dkdm = pool.add(vec![term1, term2]);
+            Some(pool.mul(vec![dkdm, dm]))
+        }
+
+        fn diff_reverse(
+            &self,
+            args: &[ExprId],
+            cotan: ExprId,
+            pool: &ExprPool,
+        ) -> Option<Vec<ExprId>> {
+            let m = args[0];
+            let e = pool.func("EllipticE", vec![m]);
+            let k = pool.func("EllipticK", vec![m]);
+            let one_minus_m = pool.add(vec![
+                pool.integer(1_i32),
+                pool.mul(vec![pool.integer(-1_i32), m]),
+            ]);
+            let two_m = pool.mul(vec![pool.integer(2_i32), m]);
+            let two_m_1mm = pool.mul(vec![pool.integer(2_i32), m, one_minus_m]);
+            let term1 = pool.mul(vec![e, pool.pow(two_m_1mm, pool.integer(-1_i32))]);
+            let term2 = pool.mul(vec![
+                pool.integer(-1_i32),
+                k,
+                pool.pow(two_m, pool.integer(-1_i32)),
+            ]);
+            let dkdm = pool.add(vec![term1, term2]);
+            Some(vec![pool.mul(vec![cotan, dkdm])])
+        }
+
+        fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
+            if args.len() != 1 {
+                return None;
+            }
+            agm_k(args[0])
+        }
+    }
+
+    // ── EllipticE (complete & incomplete, second kind) ─────────────────────────
+
+    pub struct EllipticEPrimitive;
+
+    impl Primitive for EllipticEPrimitive {
+        fn name(&self) -> &'static str {
+            "EllipticE"
+        }
+
+        fn pretty(&self, args: &[ExprId], pool: &ExprPool) -> String {
+            if args.len() == 1 {
+                format!("EllipticE({})", pool.display(args[0]))
+            } else {
+                format!(
+                    "EllipticE({}, {})",
+                    pool.display(args[0]),
+                    pool.display(args[1])
+                )
+            }
+        }
+
+        fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
+            if args.len() == 1 {
+                // d/dm E(m) = (E(m) − K(m))/(2m)
+                let m = args[0];
+                let dm = crate::diff::diff(m, wrt, pool).ok()?.value;
+                let e = pool.func("EllipticE", vec![m]);
+                let k = pool.func("EllipticK", vec![m]);
+                let two_m = pool.mul(vec![pool.integer(2_i32), m]);
+                let num = pool.add(vec![e, pool.mul(vec![pool.integer(-1_i32), k])]);
+                let dedm = pool.mul(vec![num, pool.pow(two_m, pool.integer(-1_i32))]);
+                Some(pool.mul(vec![dedm, dm]))
+            } else {
+                // Incomplete E(φ, m).
+                let phi = args[0];
+                let m = args[1];
+                let dphi = crate::diff::diff(phi, wrt, pool).ok()?.value;
+                let dm = crate::diff::diff(m, wrt, pool).ok()?.value;
+                // ∂/∂φ E(φ,m) = √(1 − m·sin²φ)
+                let delta = elliptic_delta(phi, m, pool);
+                let mut terms = vec![pool.mul(vec![delta, dphi])];
+                // ∂/∂m E(φ,m) = (E(φ,m) − F(φ,m))/(2m)
+                let e = pool.func("EllipticE", vec![phi, m]);
+                let f = pool.func("EllipticF", vec![phi, m]);
+                let two_m = pool.mul(vec![pool.integer(2_i32), m]);
+                let num = pool.add(vec![e, pool.mul(vec![pool.integer(-1_i32), f])]);
+                let dedm = pool.mul(vec![num, pool.pow(two_m, pool.integer(-1_i32))]);
+                terms.push(pool.mul(vec![dedm, dm]));
+                Some(pool.add(terms))
+            }
+        }
+
+        fn diff_reverse(
+            &self,
+            args: &[ExprId],
+            cotan: ExprId,
+            pool: &ExprPool,
+        ) -> Option<Vec<ExprId>> {
+            if args.len() == 1 {
+                let m = args[0];
+                let e = pool.func("EllipticE", vec![m]);
+                let k = pool.func("EllipticK", vec![m]);
+                let two_m = pool.mul(vec![pool.integer(2_i32), m]);
+                let num = pool.add(vec![e, pool.mul(vec![pool.integer(-1_i32), k])]);
+                let dedm = pool.mul(vec![num, pool.pow(two_m, pool.integer(-1_i32))]);
+                Some(vec![pool.mul(vec![cotan, dedm])])
+            } else {
+                let phi = args[0];
+                let m = args[1];
+                let delta = elliptic_delta(phi, m, pool);
+                let dphi = pool.mul(vec![cotan, delta]);
+                let e = pool.func("EllipticE", vec![phi, m]);
+                let f = pool.func("EllipticF", vec![phi, m]);
+                let two_m = pool.mul(vec![pool.integer(2_i32), m]);
+                let num = pool.add(vec![e, pool.mul(vec![pool.integer(-1_i32), f])]);
+                let dedm = pool.mul(vec![num, pool.pow(two_m, pool.integer(-1_i32))]);
+                Some(vec![dphi, pool.mul(vec![cotan, dedm])])
+            }
+        }
+
+        fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
+            match args.len() {
+                1 => agm_e(args[0]),
+                2 => {
+                    let (phi, m) = (args[0], args[1]);
+                    if !incomplete_domain_ok(phi, m) {
+                        return None;
+                    }
+                    adaptive_simpson(
+                        &|t: f64| (1.0 - m * t.sin().powi(2)).sqrt(),
+                        0.0,
+                        phi,
+                        1e-11,
+                    )
+                }
+                _ => None,
+            }
+        }
+    }
+
+    // ── EllipticF (incomplete, first kind) ─────────────────────────────────────
+
+    pub struct EllipticFPrimitive;
+
+    impl Primitive for EllipticFPrimitive {
+        fn name(&self) -> &'static str {
+            "EllipticF"
+        }
+
+        fn pretty(&self, args: &[ExprId], pool: &ExprPool) -> String {
+            format!(
+                "EllipticF({}, {})",
+                pool.display(args[0]),
+                pool.display(args[1])
+            )
+        }
+
+        fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
+            if args.len() != 2 {
+                return None;
+            }
+            let phi = args[0];
+            let m = args[1];
+            let dphi = crate::diff::diff(phi, wrt, pool).ok()?.value;
+            let dm = crate::diff::diff(m, wrt, pool).ok()?.value;
+            // ∂/∂φ F(φ,m) = 1/√(1 − m·sin²φ)
+            let delta = elliptic_delta(phi, m, pool);
+            let inv_delta = pool.pow(delta, pool.integer(-1_i32));
+            let mut terms = vec![pool.mul(vec![inv_delta, dphi])];
+            // ∂/∂m F(φ,m) = E(φ,m)/(2m(1−m)) − F(φ,m)/(2m)
+            //               − sin(2φ)/(4(1−m)·√(1−m·sin²φ))
+            let e = pool.func("EllipticE", vec![phi, m]);
+            let f = pool.func("EllipticF", vec![phi, m]);
+            let one_minus_m = pool.add(vec![
+                pool.integer(1_i32),
+                pool.mul(vec![pool.integer(-1_i32), m]),
+            ]);
+            let two_m = pool.mul(vec![pool.integer(2_i32), m]);
+            let two_m_1mm = pool.mul(vec![pool.integer(2_i32), m, one_minus_m]);
+            let t1 = pool.mul(vec![e, pool.pow(two_m_1mm, pool.integer(-1_i32))]);
+            let t2 = pool.mul(vec![
+                pool.integer(-1_i32),
+                f,
+                pool.pow(two_m, pool.integer(-1_i32)),
+            ]);
+            let two_phi = pool.mul(vec![pool.integer(2_i32), phi]);
+            let sin_2phi = pool.func("sin", vec![two_phi]);
+            let four_1mm = pool.mul(vec![pool.integer(4_i32), one_minus_m]);
+            let denom = pool.mul(vec![four_1mm, delta]);
+            let t3 = pool.mul(vec![
+                pool.integer(-1_i32),
+                sin_2phi,
+                pool.pow(denom, pool.integer(-1_i32)),
+            ]);
+            let dfdm = pool.add(vec![t1, t2, t3]);
+            terms.push(pool.mul(vec![dfdm, dm]));
+            Some(pool.add(terms))
+        }
+
+        fn diff_reverse(
+            &self,
+            args: &[ExprId],
+            cotan: ExprId,
+            pool: &ExprPool,
+        ) -> Option<Vec<ExprId>> {
+            if args.len() != 2 {
+                return None;
+            }
+            let phi = args[0];
+            let m = args[1];
+            let delta = elliptic_delta(phi, m, pool);
+            let inv_delta = pool.pow(delta, pool.integer(-1_i32));
+            let dphi = pool.mul(vec![cotan, inv_delta]);
+            let e = pool.func("EllipticE", vec![phi, m]);
+            let f = pool.func("EllipticF", vec![phi, m]);
+            let one_minus_m = pool.add(vec![
+                pool.integer(1_i32),
+                pool.mul(vec![pool.integer(-1_i32), m]),
+            ]);
+            let two_m = pool.mul(vec![pool.integer(2_i32), m]);
+            let two_m_1mm = pool.mul(vec![pool.integer(2_i32), m, one_minus_m]);
+            let t1 = pool.mul(vec![e, pool.pow(two_m_1mm, pool.integer(-1_i32))]);
+            let t2 = pool.mul(vec![
+                pool.integer(-1_i32),
+                f,
+                pool.pow(two_m, pool.integer(-1_i32)),
+            ]);
+            let two_phi = pool.mul(vec![pool.integer(2_i32), phi]);
+            let sin_2phi = pool.func("sin", vec![two_phi]);
+            let four_1mm = pool.mul(vec![pool.integer(4_i32), one_minus_m]);
+            let denom = pool.mul(vec![four_1mm, delta]);
+            let t3 = pool.mul(vec![
+                pool.integer(-1_i32),
+                sin_2phi,
+                pool.pow(denom, pool.integer(-1_i32)),
+            ]);
+            let dfdm = pool.add(vec![t1, t2, t3]);
+            Some(vec![dphi, pool.mul(vec![cotan, dfdm])])
+        }
+
+        fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
+            if args.len() != 2 {
+                return None;
+            }
+            let (phi, m) = (args[0], args[1]);
+            if !incomplete_domain_ok(phi, m) {
+                return None;
+            }
+            adaptive_simpson(
+                &|t: f64| 1.0 / (1.0 - m * t.sin().powi(2)).sqrt(),
+                0.0,
+                phi,
+                1e-11,
+            )
+        }
+    }
+
+    // ── EllipticPi (incomplete, third kind) ────────────────────────────────────
+
+    pub struct EllipticPiPrimitive;
+
+    impl Primitive for EllipticPiPrimitive {
+        fn name(&self) -> &'static str {
+            "EllipticPi"
+        }
+
+        fn pretty(&self, args: &[ExprId], pool: &ExprPool) -> String {
+            format!(
+                "EllipticPi({}, {}, {})",
+                pool.display(args[0]),
+                pool.display(args[1]),
+                pool.display(args[2])
+            )
+        }
+
+        fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
+            if args.len() != 3 {
+                return None;
+            }
+            let n = args[0];
+            let phi = args[1];
+            let m = args[2];
+            // Only the ∂/∂φ partial has a clean closed form; decline if n or m
+            // depend on `wrt` (the ∂/∂n, ∂/∂m closed forms are messy — see
+            // the module-level doc comment).
+            let dn = crate::diff::diff(n, wrt, pool).ok()?.value;
+            let dm = crate::diff::diff(m, wrt, pool).ok()?.value;
+            let zero = pool.integer(0_i32);
+            if dn != zero || dm != zero {
+                return None;
+            }
+            let dphi = crate::diff::diff(phi, wrt, pool).ok()?.value;
+            // ∂/∂φ Π(n,φ,m) = 1/((1 − n·sin²φ)·√(1 − m·sin²φ))
+            let sin_phi = pool.func("sin", vec![phi]);
+            let sin2 = pool.pow(sin_phi, pool.integer(2_i32));
+            let n_sin2 = pool.mul(vec![n, sin2]);
+            let one_minus_n_sin2 = pool.add(vec![
+                pool.integer(1_i32),
+                pool.mul(vec![pool.integer(-1_i32), n_sin2]),
+            ]);
+            let delta = elliptic_delta(phi, m, pool);
+            let denom = pool.mul(vec![one_minus_n_sin2, delta]);
+            let dpidphi = pool.pow(denom, pool.integer(-1_i32));
+            Some(pool.mul(vec![dpidphi, dphi]))
+        }
+
+        fn diff_reverse(
+            &self,
+            args: &[ExprId],
+            cotan: ExprId,
+            pool: &ExprPool,
+        ) -> Option<Vec<ExprId>> {
+            // Only the φ-partial is implemented; ∂/∂n and ∂/∂m are declined.
+            // Returning None keeps reverse-AD safe rather than reporting a
+            // partial cotangent vector that omits arguments.
+            let _ = (args, cotan, pool);
+            None
+        }
+
+        fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
+            if args.len() != 3 {
+                return None;
+            }
+            let (n, phi, m) = (args[0], args[1], args[2]);
+            if !incomplete_domain_ok(phi, m) {
+                return None;
+            }
+            adaptive_simpson(
+                &|t: f64| {
+                    let s2 = t.sin().powi(2);
+                    let pole = 1.0 - n * s2;
+                    if pole == 0.0 {
+                        return f64::NAN;
+                    }
+                    1.0 / (pole * (1.0 - m * s2).sqrt())
+                },
+                0.0,
+                phi,
+                1e-11,
+            )
+        }
+    }
+
     // ── abs ──────────────────────────────────────────────────────────────────
 
     pub struct AbsPrimitive;
@@ -1419,5 +1978,189 @@ mod tests {
 
         let got = reg.numeric_f64("tanh", &[0.0]).unwrap();
         assert!((got - 0.0).abs() < 1e-12);
+    }
+
+    // ── Elliptic special functions ─────────────────────────────────────────────
+
+    /// Recursively evaluate an expression to f64, substituting `var := val`,
+    /// dispatching named functions through the default registry.
+    fn eval_expr_f64(expr: ExprId, var: ExprId, val: f64, pool: &ExprPool) -> f64 {
+        use crate::kernel::ExprData;
+        let reg = PrimitiveRegistry::default_registry();
+        fn go(
+            expr: ExprId,
+            var: ExprId,
+            val: f64,
+            pool: &ExprPool,
+            reg: &PrimitiveRegistry,
+        ) -> f64 {
+            pool.with(expr, |data| match data {
+                ExprData::Integer(n) => n.0.to_f64(),
+                ExprData::Rational(q) => q.0.to_f64(),
+                ExprData::Float(f) => f.inner.to_f64(),
+                ExprData::Symbol { .. } => {
+                    if expr == var {
+                        val
+                    } else {
+                        f64::NAN
+                    }
+                }
+                ExprData::Add(args) => args.iter().map(|&a| go(a, var, val, pool, reg)).sum(),
+                ExprData::Mul(args) => args.iter().map(|&a| go(a, var, val, pool, reg)).product(),
+                ExprData::Pow { base, exp } => {
+                    let b = go(*base, var, val, pool, reg);
+                    let e = go(*exp, var, val, pool, reg);
+                    b.powf(e)
+                }
+                ExprData::Func { name, args } => {
+                    let vals: Vec<f64> = args.iter().map(|&a| go(a, var, val, pool, reg)).collect();
+                    reg.numeric_f64(name, &vals).unwrap_or(f64::NAN)
+                }
+                _ => f64::NAN,
+            })
+        }
+        go(expr, var, val, pool, &reg)
+    }
+
+    #[test]
+    fn elliptic_complete_numeric() {
+        let reg = PrimitiveRegistry::default_registry();
+        let half_pi = std::f64::consts::FRAC_PI_2;
+        // K(0) = E(0) = π/2.
+        assert!((reg.numeric_f64("EllipticK", &[0.0]).unwrap() - half_pi).abs() < 1e-9);
+        assert!((reg.numeric_f64("EllipticE", &[0.0]).unwrap() - half_pi).abs() < 1e-9);
+        // Reference values (parameter convention m).
+        assert!((reg.numeric_f64("EllipticK", &[0.5]).unwrap() - 1.854_074_677_3).abs() < 1e-6);
+        assert!((reg.numeric_f64("EllipticE", &[0.5]).unwrap() - 1.350_643_881_0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn elliptic_incomplete_numeric() {
+        let reg = PrimitiveRegistry::default_registry();
+        let qpi = std::f64::consts::FRAC_PI_4;
+        // Reference (scipy/Mathematica, parameter convention m):
+        //   EllipticF(π/4, 1/2) = 0.8260178762, EllipticE(π/4, 1/2) = 0.7481865042.
+        assert!((reg.numeric_f64("EllipticF", &[qpi, 0.5]).unwrap() - 0.826_017_876).abs() < 1e-6);
+        assert!((reg.numeric_f64("EllipticE", &[qpi, 0.5]).unwrap() - 0.748_186_504).abs() < 1e-6);
+        // φ = 0 gives 0 for both incomplete integrals.
+        assert!(reg.numeric_f64("EllipticF", &[0.0, 0.5]).unwrap().abs() < 1e-12);
+        assert!(reg.numeric_f64("EllipticE", &[0.0, 0.5]).unwrap().abs() < 1e-12);
+    }
+
+    #[test]
+    fn elliptic_pi_numeric() {
+        let reg = PrimitiveRegistry::default_registry();
+        // Π(0, φ, m) = F(φ, m).
+        let qpi = std::f64::consts::FRAC_PI_4;
+        let pi0 = reg.numeric_f64("EllipticPi", &[0.0, qpi, 0.5]).unwrap();
+        let f = reg.numeric_f64("EllipticF", &[qpi, 0.5]).unwrap();
+        assert!((pi0 - f).abs() < 1e-7, "Π(0,φ,m)={pi0} F(φ,m)={f}");
+    }
+
+    #[test]
+    fn elliptic_out_of_domain() {
+        let reg = PrimitiveRegistry::default_registry();
+        // K(m) diverges for m ≥ 1.
+        assert!(reg.numeric_f64("EllipticK", &[1.0]).is_none());
+        // F(π/2, 1) integrand singular at the endpoint.
+        let half_pi = std::f64::consts::FRAC_PI_2;
+        assert!(reg.numeric_f64("EllipticF", &[half_pi, 1.0]).is_none());
+    }
+
+    #[test]
+    fn elliptic_f_parse_roundtrip() {
+        use crate::kernel::{Domain, ExprData};
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let mut syms = std::collections::HashMap::from([("x".to_owned(), x)]);
+        let e = crate::parse::parse("EllipticF(x, 1/2)", &pool, &mut syms).unwrap();
+        pool.with(e, |data| match data {
+            ExprData::Func { name, args } => {
+                assert_eq!(name, "EllipticF");
+                assert_eq!(args.len(), 2);
+            }
+            _ => panic!("expected a 2-arg EllipticF Func node"),
+        });
+    }
+
+    #[test]
+    fn elliptic_f_diff_phi() {
+        use crate::kernel::Domain;
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let m = pool.rational(1_i32, 2_i32);
+        let f = pool.func("EllipticF", vec![x, m]);
+        let d = crate::diff::diff(f, x, &pool).unwrap().value;
+        // d/dx F(x, 1/2) = 1/√(1 − (1/2)·sin²x); check numerically at x=0.7.
+        let xv = 0.7_f64;
+        let got = eval_expr_f64(d, x, xv, &pool);
+        let expect = 1.0 / (1.0 - 0.5 * xv.sin().powi(2)).sqrt();
+        assert!((got - expect).abs() < 1e-9, "got {got} expect {expect}");
+    }
+
+    #[test]
+    fn elliptic_e_incomplete_diff_phi() {
+        use crate::kernel::Domain;
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let m = pool.rational(1_i32, 2_i32);
+        let e = pool.func("EllipticE", vec![x, m]);
+        let d = crate::diff::diff(e, x, &pool).unwrap().value;
+        // d/dx E(x, 1/2) = √(1 − (1/2)·sin²x).
+        let xv = 0.7_f64;
+        let got = eval_expr_f64(d, x, xv, &pool);
+        let expect = (1.0 - 0.5 * xv.sin().powi(2)).sqrt();
+        assert!((got - expect).abs() < 1e-9, "got {got} expect {expect}");
+    }
+
+    #[test]
+    fn elliptic_pi_diff_phi() {
+        use crate::kernel::Domain;
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let n = pool.rational(1_i32, 4_i32);
+        let m = pool.rational(1_i32, 2_i32);
+        let p = pool.func("EllipticPi", vec![n, x, m]);
+        let d = crate::diff::diff(p, x, &pool).unwrap().value;
+        // ∂/∂φ Π(n,φ,m) = 1/((1 − n·sin²φ)·√(1 − m·sin²φ)).
+        let xv = 0.6_f64;
+        let got = eval_expr_f64(d, x, xv, &pool);
+        let s2 = xv.sin().powi(2);
+        let expect = 1.0 / ((1.0 - 0.25 * s2) * (1.0 - 0.5 * s2).sqrt());
+        assert!((got - expect).abs() < 1e-9, "got {got} expect {expect}");
+    }
+
+    #[test]
+    fn elliptic_k_diff_m_finite_difference() {
+        use crate::kernel::Domain;
+        let pool = ExprPool::new();
+        let mvar = pool.symbol("m", Domain::Real);
+        let k = pool.func("EllipticK", vec![mvar]);
+        let d = crate::diff::diff(k, mvar, &pool).unwrap().value;
+        let reg = PrimitiveRegistry::default_registry();
+        let m0 = 0.4_f64;
+        let analytic = eval_expr_f64(d, mvar, m0, &pool);
+        let h = 1e-6;
+        let kp = reg.numeric_f64("EllipticK", &[m0 + h]).unwrap();
+        let km = reg.numeric_f64("EllipticK", &[m0 - h]).unwrap();
+        let fd = (kp - km) / (2.0 * h);
+        assert!((analytic - fd).abs() < 1e-5, "analytic {analytic} fd {fd}");
+    }
+
+    #[test]
+    fn elliptic_e_complete_diff_m_finite_difference() {
+        use crate::kernel::Domain;
+        let pool = ExprPool::new();
+        let mvar = pool.symbol("m", Domain::Real);
+        let e = pool.func("EllipticE", vec![mvar]);
+        let d = crate::diff::diff(e, mvar, &pool).unwrap().value;
+        let reg = PrimitiveRegistry::default_registry();
+        let m0 = 0.4_f64;
+        let analytic = eval_expr_f64(d, mvar, m0, &pool);
+        let h = 1e-6;
+        let ep = reg.numeric_f64("EllipticE", &[m0 + h]).unwrap();
+        let em = reg.numeric_f64("EllipticE", &[m0 - h]).unwrap();
+        let fd = (ep - em) / (2.0 * h);
+        assert!((analytic - fd).abs() < 1e-5, "analytic {analytic} fd {fd}");
     }
 }

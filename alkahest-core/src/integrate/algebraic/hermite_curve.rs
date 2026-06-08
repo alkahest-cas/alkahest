@@ -118,7 +118,7 @@ pub fn hermite_reduce_radical(
 /// `bᵢ ≡ −Aᵢ·(U·(M−1)·V')⁻¹ (mod V)` makes `(b/V^{M−1})'` match the pole, so
 /// `f − (b/V^{M−1})'` drops one power of `V`.  The basis-mixing `wᵢ' = Σ Mᵢⱼ wⱼ`
 /// only perturbs lower orders and is handled by iteration.  Branch-locus repeated
-/// poles (`V | disc`) are reduced by the lazy [`lazy_solve_b`] step; a genuine
+/// poles (`V | disc`) are reduced by the lazy `lazy_solve_b` step; a genuine
 /// simple pole there is left in `h`.
 ///
 /// Sound by construction: accepted only after the exact field identity

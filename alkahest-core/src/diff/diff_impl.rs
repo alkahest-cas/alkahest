@@ -371,7 +371,27 @@ fn diff_raw(
             memo.insert(expr, result);
             Ok(DerivedExpr::with_log(result, log))
         }
-        Node::Func { name, .. } => Err(DiffError::UnknownFunction(name)),
+        // Multi-argument named functions: route through the PrimitiveRegistry.
+        // The primitive's `diff_forward` computes each argument's derivative
+        // internally (via `crate::diff::diff`) and returns the total chain-rule
+        // derivative, so we only need to dispatch — no per-argument recursion
+        // here, which avoids double-counting.  We still touch each argument via
+        // `diff_raw` so the shared-subexpression memo stays consistent.
+        Node::Func { name, args } => {
+            let mut log = DerivationLog::new();
+            for &a in &args {
+                let da = diff_raw(a, var, pool, memo)?;
+                log = log.merge(da.log);
+            }
+            let reg = crate::primitive::PrimitiveRegistry::default_registry();
+            if let Some(d) = reg.diff_forward(&name, &args, var, pool) {
+                log.push(RewriteStep::simple("diff_primitive_registry", expr, d));
+                memo.insert(expr, d);
+                Ok(DerivedExpr::with_log(d, log))
+            } else {
+                Err(DiffError::UnknownFunction(name))
+            }
+        }
         // PA-9: Piecewise diff distributes into branches.
         // d/dx Piecewise([(c₁,v₁), …], d) = Piecewise([(c₁, d/dx v₁), …], d/dx d)
         Node::Piecewise { branches, default } => {

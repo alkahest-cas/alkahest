@@ -298,6 +298,11 @@ def _apply_func(name: str, args: list, offset: int):
         "erf": _ak.erf,
         "erfc": _ak.erfc,
         "gamma": _ak.gamma,
+        # Elliptic special functions (parameter convention m = k^2).
+        "EllipticK": _ak.elliptic_k,
+        "EllipticE": _ak.elliptic_e,  # 1 arg (complete) or 2 args (incomplete)
+        "EllipticF": _ak.elliptic_f,
+        "EllipticPi": _ak.elliptic_pi,
     }
     fn = _funcs.get(name)
     if fn is None:
