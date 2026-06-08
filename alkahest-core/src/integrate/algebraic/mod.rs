@@ -23,6 +23,7 @@
 mod alg_tower;
 pub(super) mod decompose;
 pub mod elliptic;
+pub mod elliptic_output;
 pub mod find_order;
 pub mod genus1_log;
 pub(super) mod genus_zero;
@@ -276,6 +277,24 @@ fn integrate_via_decompose(
             log = log.merge(simplified.log);
             log.push(RewriteStep::simple(
                 "genus1_elliptic_log",
+                expr,
+                simplified.value,
+            ));
+            return Ok(DerivedExpr::with_log(simplified.value, log));
+        }
+
+        // PR2: first-kind elliptic-integral *output*.  When the integrand is the
+        // pure first-kind shape `∫ c·dx/√P` with `P` a genus-1 cubic/quartic that
+        // the genus-1 log capstone above proved non-elementary, emit the Legendre
+        // normal-form `c·g·EllipticF(φ(x), m)`.  Gated by numeric `d/dx F =
+        // integrand` verification inside `try_elliptic_output`, so it returns
+        // `None` (falling through to the `NonElementary` path) unless the closed
+        // form is verified — never a wrong answer.
+        if let Some(f) = elliptic_output::try_elliptic_output(a_part, b_part, p_expr, var, pool) {
+            let simplified = simplify(f, pool);
+            log = log.merge(simplified.log);
+            log.push(RewriteStep::simple(
+                "genus1_elliptic_firstkind_output",
                 expr,
                 simplified.value,
             ));
@@ -709,20 +728,159 @@ mod tests {
         );
     }
 
-    /// `∫ dx/√(x³+1)` is a first-kind elliptic integral — non-elementary; the
-    /// public engine must still report `NonElementary` (the capstone's verify gate
-    /// declines, falling through to the genus-≥1 shortcut).
+    /// `∫ dx/√(x³+1)` is a first-kind elliptic integral.  **PR2**: the genus-1
+    /// log capstone proves it non-elementary, then the first-kind elliptic-output
+    /// reduction (`elliptic_output::try_elliptic_output`) emits the Legendre
+    /// normal form `c·EllipticF(φ(x), m)`.  We assert the result contains
+    /// `EllipticF` and that its symbolic `d/dx` numerically matches the integrand
+    /// `1/√(x³+1)` where `x³+1 > 0`.  (Previously this test asserted
+    /// `NonElementary`; PR1 added the primitive, PR2 wires the output.)
     #[test]
-    fn genus1_first_kind_non_elementary_via_engine() {
+    fn genus1_first_kind_emits_ellipticf_via_engine() {
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
         let x3p1 = pool.add(vec![pool.pow(x, pool.integer(3_i32)), pool.integer(1_i32)]);
         let sq = pool.func("sqrt", vec![x3p1]);
         let integrand = pool.pow(sq, pool.integer(-1_i32));
+        let res = crate::integrate::engine::integrate(integrand, x, &pool)
+            .expect("∫dx/√(x³+1) should emit a first-kind EllipticF form");
+        let f = res.value;
+        assert!(
+            pool.display(f).to_string().contains("EllipticF"),
+            "expected EllipticF in {}",
+            pool.display(f)
+        );
+        let df = simplify(crate::diff::diff(f, x, &pool).unwrap().value, &pool).value;
+        let mut checked = 0;
+        for &xv in &[0.5_f64, 1.0, 2.0, 3.0] {
+            // x³+1 > 0 for these.
+            let lhs = eval_ell(df, x, xv, &pool).unwrap();
+            let rhs = 1.0 / (xv * xv * xv + 1.0).sqrt();
+            assert!(
+                (lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()),
+                "x={xv}: d/dx F = {lhs}, integrand = {rhs}\n  F = {}",
+                pool.display(f)
+            );
+            checked += 1;
+        }
+        assert!(checked >= 3);
+    }
+
+    /// `∫ dx/√(x³−x)` (three real roots) — also reduces to a first-kind
+    /// `EllipticF` form, verified by `d/dx F = integrand` on `x > 1` (`x³−x > 0`).
+    #[test]
+    fn genus1_three_real_emits_ellipticf_via_engine() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![
+            pool.pow(x, pool.integer(3_i32)),
+            pool.mul(vec![pool.integer(-1_i32), x]),
+        ]);
+        let sq = pool.func("sqrt", vec![p]);
+        let integrand = pool.pow(sq, pool.integer(-1_i32));
+        let res = crate::integrate::engine::integrate(integrand, x, &pool)
+            .expect("∫dx/√(x³−x) should emit EllipticF");
+        let f = res.value;
+        assert!(
+            pool.display(f).to_string().contains("EllipticF"),
+            "{}",
+            pool.display(f)
+        );
+        let df = simplify(crate::diff::diff(f, x, &pool).unwrap().value, &pool).value;
+        for &xv in &[1.2_f64, 2.0, 4.0] {
+            let lhs = eval_ell(df, x, xv, &pool).unwrap();
+            let rhs = 1.0 / (xv * xv * xv - xv).sqrt();
+            assert!(
+                (lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()),
+                "x={xv}: d/dx F = {lhs}, integrand = {rhs}"
+            );
+        }
+    }
+
+    /// `∫ dx/√(1−x⁴)` (two real roots + complex pair) — first-kind quartic
+    /// reduction, verified on `|x| < 1` (`1−x⁴ > 0`).
+    #[test]
+    fn genus1_quartic_emits_ellipticf_via_engine() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        // 1 − x⁴.
+        let p = pool.add(vec![
+            pool.integer(1_i32),
+            pool.mul(vec![pool.integer(-1_i32), pool.pow(x, pool.integer(4_i32))]),
+        ]);
+        let sq = pool.func("sqrt", vec![p]);
+        let integrand = pool.pow(sq, pool.integer(-1_i32));
+        let res = crate::integrate::engine::integrate(integrand, x, &pool)
+            .expect("∫dx/√(1−x⁴) should emit EllipticF");
+        let f = res.value;
+        assert!(
+            pool.display(f).to_string().contains("EllipticF"),
+            "{}",
+            pool.display(f)
+        );
+        let df = simplify(crate::diff::diff(f, x, &pool).unwrap().value, &pool).value;
+        for &xv in &[-0.8_f64, -0.2, 0.3, 0.8] {
+            let lhs = eval_ell(df, x, xv, &pool).unwrap();
+            let rhs = 1.0 / (1.0 - xv.powi(4)).sqrt();
+            assert!(
+                (lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()),
+                "x={xv}: d/dx F = {lhs}, integrand = {rhs}"
+            );
+        }
+    }
+
+    /// `∫ dx/√(x⁵+1)` is genus-2 (quintic): no first-kind cubic/quartic
+    /// reduction applies, so the engine still soundly reports `NonElementary`.
+    #[test]
+    fn quintic_first_kind_still_non_elementary_via_engine() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![pool.pow(x, pool.integer(5_i32)), pool.integer(1_i32)]);
+        let sq = pool.func("sqrt", vec![p]);
+        let integrand = pool.pow(sq, pool.integer(-1_i32));
         let res = crate::integrate::engine::integrate(integrand, x, &pool);
         assert!(
             matches!(res, Err(IntegrationError::NonElementary(_))),
-            "∫dx/√(x³+1) must be NonElementary, got {res:?}"
+            "∫dx/√(x⁵+1) must stay NonElementary, got {res:?}"
         );
+    }
+
+    /// Numeric eval that also handles `sin`/`cos`/`asin`/`acos` so the symbolic
+    /// `d/dx` of an `EllipticF` form (which rewrites to elementary terms) can be
+    /// sampled.  Extends the `sqrt`/`log`/`exp`/`cbrt`-only `eval` above.
+    fn eval_ell(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> Option<f64> {
+        if expr == x {
+            return Some(xv);
+        }
+        match pool.get(expr) {
+            ExprData::Integer(n) => Some(n.0.to_f64()),
+            ExprData::Rational(r) => Some(r.0.to_f64()),
+            ExprData::Add(args) => args
+                .iter()
+                .try_fold(0.0, |s, &a| Some(s + eval_ell(a, x, xv, pool)?)),
+            ExprData::Mul(args) => args
+                .iter()
+                .try_fold(1.0, |s, &a| Some(s * eval_ell(a, x, xv, pool)?)),
+            ExprData::Pow { base, exp } => {
+                Some(eval_ell(base, x, xv, pool)?.powf(eval_ell(exp, x, xv, pool)?))
+            }
+            ExprData::Func { ref name, ref args } if args.len() == 1 => {
+                let v = eval_ell(args[0], x, xv, pool)?;
+                match name.as_str() {
+                    "sin" => Some(v.sin()),
+                    "cos" => Some(v.cos()),
+                    "tan" => Some(v.tan()),
+                    "asin" => Some(v.asin()),
+                    "acos" => Some(v.acos()),
+                    "atan" => Some(v.atan()),
+                    "sqrt" => Some(v.sqrt()),
+                    "log" => Some(v.ln()),
+                    "exp" => Some(v.exp()),
+                    "cbrt" => Some(v.cbrt()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
     }
 }
