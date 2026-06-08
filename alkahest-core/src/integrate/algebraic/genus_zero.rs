@@ -808,11 +808,47 @@ fn try_alg_base_log(p: &QPoly, h: &AlgElem, alg_res: &[AlgResidue]) -> Option<Fi
         return None;
     }
     let ar = &alg_res[0];
-    let q = trim(ar.minpoly.clone());
-    // c = a(α) ∈ ℚ(α): reduce the radicand mod q.
-    let c = trim(poly_divrem(p, &q).1);
-    let r0 = &ar.r0;
-    let r1 = &ar.r1;
+    let q_raw = trim(ar.minpoly.clone());
+    if degree(&q_raw) != 2 {
+        return None;
+    }
+    // Complete the square: a general monic base `q = x²+b·x+c₀` becomes the
+    // depressed `qn = x²−m` (`m = b²/4−c₀`) under `α = β − b/2` (`β = √m`).  The
+    // tower builders (`galois_quartic`/`quartic_closure`) consume `qn`; the field
+    // elements (`c = a(α)`, `r0`, `r1`) are rewritten in the β-basis via
+    // `α = β + shift`, and each place's x-coordinate is shifted *back* by `shift`
+    // so it is the **actual** base-point coordinate on `y²=P`.  (The on-curve
+    // check in `reduce_and_build` self-verifies this — a wrong shift only declines,
+    // never mis-decides.)  When `b=0` every step below is the identity.
+    let lead = q_raw[2].clone();
+    let b = q_raw[1].clone() / &lead;
+    let c0 = q_raw[0].clone() / &lead;
+    let half_b = b / Rational::from(2);
+    let shift = -half_b.clone();
+    let m_val = half_b.clone() * &half_b - &c0; // m = b²/4 − c₀
+    let q = vec![-m_val, Rational::from(0), Rational::from(1)]; // x² − m
+                                                                // `e0 + e1·α  ↦  (e0 + e1·shift) + e1·β`   (substitute `α = β + shift`).
+    let to_beta = |e: &QPoly| -> QPoly {
+        let e0 = e.first().cloned().unwrap_or_else(|| Rational::from(0));
+        let e1 = e.get(1).cloned().unwrap_or_else(|| Rational::from(0));
+        trim(vec![e0 + e1.clone() * &shift, e1])
+    };
+    // Add the constant `shift` to a place x-coordinate (in `ℚ[θ]/M`).
+    let shift_x = |x: &QPoly| -> QPoly {
+        let mut v = x.clone();
+        if v.is_empty() {
+            v.push(shift.clone());
+        } else {
+            v[0] = v[0].clone() + &shift;
+        }
+        trim(v)
+    };
+    // c = a(α) ∈ ℚ(α): reduce the radicand mod the *raw* minpoly, then β-basis.
+    let c = to_beta(&trim(poly_divrem(p, &q_raw).1));
+    let r0_b = to_beta(&ar.r0);
+    let r1_b = to_beta(&ar.r1);
+    let r0 = &r0_b;
+    let r1 = &r1_b;
 
     // Build the conjugate orbit's places and residues in a common field — the
     // degree-4 tower K when Galois, else its degree-8 Galois closure L.
@@ -837,7 +873,7 @@ fn try_alg_base_log(p: &QPoly, h: &AlgElem, alg_res: &[AlgResidue]) -> Option<Fi
                 rj.resize(dim, Rational::from(0));
                 places.push(AlgPlace {
                     minpoly: m.clone(),
-                    x_coord: super::alg_tower::compose_mod(&a_in, pi, &m),
+                    x_coord: shift_x(&super::alg_tower::compose_mod(&a_in, pi, &m)),
                     y_coord: super::alg_tower::compose_mod(&w_in, pi, &m),
                     coeff: Integer::from(0),
                     orbit: false,
@@ -892,7 +928,7 @@ fn try_alg_base_log(p: &QPoly, h: &AlgElem, alg_res: &[AlgResidue]) -> Option<Fi
             for (x, y, res) in entries {
                 places.push(AlgPlace {
                     minpoly: ml.clone(),
-                    x_coord: x,
+                    x_coord: shift_x(&x),
                     y_coord: y,
                     coeff: Integer::from(0),
                     orbit: false,

@@ -645,6 +645,70 @@ mod tests {
         );
     }
 
+    /// **General quadratic base** `x²+b·x+c₀` (Galois): the `x→x+1` translate of
+    /// `∫√(x⁵−4x+3)/(x²−2)` is `∫√(x⁵+5x⁴+10x³+10x²+x)/(x²+2x−1) dx` — the base is
+    /// now `x²+2x−1` (`b=2≠0`).  Completing the square (`α=β−1`, `m=b²/4−c₀=2`)
+    /// reduces it to the depressed `x²−2`, recovering the same Galois residue field
+    /// `ℚ(√2,√3)`.  A translation cannot change elementarity, so this must stay
+    /// `NonElementary`.
+    #[test]
+    fn quintic_general_quadratic_base_galois_non_elementary() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        // x⁵ + 5x⁴ + 10x³ + 10x² + x  (= (x+1)⁵ − 4(x+1) + 3).
+        let p = pool.add(vec![
+            pool.pow(x, pool.integer(5_i32)),
+            pool.mul(vec![pool.integer(5_i32), pool.pow(x, pool.integer(4_i32))]),
+            pool.mul(vec![pool.integer(10_i32), pool.pow(x, pool.integer(3_i32))]),
+            pool.mul(vec![pool.integer(10_i32), pool.pow(x, pool.integer(2_i32))]),
+            x,
+        ]);
+        let sq = pool.func("sqrt", vec![p]);
+        // x² + 2x − 1  (= (x+1)² − 2).
+        let den = pool.add(vec![
+            pool.pow(x, pool.integer(2_i32)),
+            pool.mul(vec![pool.integer(2_i32), x]),
+            pool.integer(-1_i32),
+        ]);
+        let integrand = pool.mul(vec![sq, pool.pow(den, pool.integer(-1_i32))]);
+        let res = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            matches!(res, Err(IntegrationError::NonElementary(_))),
+            "got {res:?}"
+        );
+    }
+
+    /// **General quadratic base** (non-Galois): the `x→x+1` translate of
+    /// `∫√(x⁵+x+1)/(x²−2)` is `∫√(x⁵+5x⁴+10x³+10x²+6x+3)/(x²+2x−1) dx` — base
+    /// `x²+2x−1` (`b=2`), depressing to `x²−2` with the same non-Galois closure
+    /// `K(7i)`.  Must remain `NonElementary` (a pure translation).
+    #[test]
+    fn quintic_general_quadratic_base_non_galois_non_elementary() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        // x⁵ + 5x⁴ + 10x³ + 10x² + 6x + 3  (= (x+1)⁵ + (x+1) + 1).
+        let p = pool.add(vec![
+            pool.pow(x, pool.integer(5_i32)),
+            pool.mul(vec![pool.integer(5_i32), pool.pow(x, pool.integer(4_i32))]),
+            pool.mul(vec![pool.integer(10_i32), pool.pow(x, pool.integer(3_i32))]),
+            pool.mul(vec![pool.integer(10_i32), pool.pow(x, pool.integer(2_i32))]),
+            pool.mul(vec![pool.integer(6_i32), x]),
+            pool.integer(3_i32),
+        ]);
+        let sq = pool.func("sqrt", vec![p]);
+        let den = pool.add(vec![
+            pool.pow(x, pool.integer(2_i32)),
+            pool.mul(vec![pool.integer(2_i32), x]),
+            pool.integer(-1_i32),
+        ]);
+        let integrand = pool.mul(vec![sq, pool.pow(den, pool.integer(-1_i32))]);
+        let res = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            matches!(res, Err(IntegrationError::NonElementary(_))),
+            "got {res:?}"
+        );
+    }
+
     /// `∫ dx/√(x³+1)` is a first-kind elliptic integral — non-elementary; the
     /// public engine must still report `NonElementary` (the capstone's verify gate
     /// declines, falling through to the genus-≥1 shortcut).
