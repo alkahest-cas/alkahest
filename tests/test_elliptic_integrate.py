@@ -107,6 +107,24 @@ def test_integral_one_over_sqrt_quartic_1_minus_x4():
     _check(pool, x, integrand, lambda v: 1.0 - v**4, [-0.8, -0.2, 0.3, 0.8])
 
 
+def test_integral_one_over_sqrt_quartic_x4_plus_1():
+    """∫ dx/√(x⁴+1) -> EllipticF (all-complex-root quartic, no real roots)."""
+    pool = ExprPool()
+    x = pool.symbol("x")
+    p = x**4 + pool.integer(1)
+    integrand = sqrt(p) ** -1
+    _check(pool, x, integrand, lambda v: v**4 + 1.0, [-1.5, -0.5, 0.5, 1.0, 2.0])
+
+
+def test_integral_one_over_sqrt_quartic_x4_plus_x2_plus_1():
+    """∫ dx/√(x⁴+x²+1) -> EllipticF (two complex-conjugate pairs)."""
+    pool = ExprPool()
+    x = pool.symbol("x")
+    p = x**4 + x**2 + pool.integer(1)
+    integrand = sqrt(p) ** -1
+    _check(pool, x, integrand, lambda v: v**4 + v**2 + 1.0, [-1.5, -0.5, 0.5, 1.0, 2.0])
+
+
 def test_quintic_first_kind_still_non_elementary():
     """∫ dx/√(x⁵+1) is genus-2: no first-kind reduction, still non-elementary."""
     pool = ExprPool()

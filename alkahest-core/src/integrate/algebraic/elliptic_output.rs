@@ -125,7 +125,8 @@ fn first_kind_reduction(
         (3, 1, 1) => cubic_one_real(reals[0], pairs[0], inv_sqrt_lead, var, pool),
         (4, 4, 0) => quartic_four_real(&reals, inv_sqrt_lead, var, pool),
         (4, 2, 1) => quartic_two_real(&reals, pairs[0], inv_sqrt_lead, var, pool),
-        _ => None, // e.g. all-complex quartic: declined (falls through)
+        (4, 0, 2) => quartic_no_real(pairs[0], pairs[1], lead, var, pool),
+        _ => None, // genus-2 / unhandled config: declined (falls through)
     }
 }
 
@@ -169,6 +170,17 @@ fn reduction_poles(coeffs: &[f64], deg: usize) -> Vec<f64> {
             let aa2 = ((b2 - b3).powi(2) + a3 * a3).sqrt();
             if (aa1 - aa2).abs() > 1e-12 {
                 out.push((b2 * aa1 - b1 * aa2) / (aa1 - aa2));
+            }
+        }
+        (4, 0, 2) => {
+            // arctan substitution: `sin²φ(x) = L²/(1+L²)`, `L = (px+q)/(rx+s)`.
+            // The only real pole of `sin²φ` (hence of the `E`-block rational part)
+            // is the pole of `L` at `x = −s/r`.
+            let lead = *coeffs.last().unwrap_or(&1.0);
+            if let Some((_p, _q, r, s, _m, _g)) = quartic_no_real_consts(pairs[0], pairs[1], lead) {
+                if r.abs() > 1e-12 {
+                    out.push(-s / r);
+                }
             }
         }
         _ => {}
@@ -859,6 +871,142 @@ fn quartic_two_real(
     let den = pool.add(vec![t1, t2]);
     let cosphi = pool.mul(vec![num, pool.pow(den, pool.integer(-1_i32))]);
     let phi = pool.func("acos", vec![cosphi]);
+    Some((g, m, phi))
+}
+
+/// Quartic with **no real roots** — two complex-conjugate pairs `b1 ± i·a1`,
+/// `b2 ± i·a2` (`a1, a2 > 0`).  `P(x) = lead·((x−b1)²+a1²)·((x−b2)²+a2²)`.
+///
+/// Reduction (derived/confirmed numerically, gate-certified):  with the
+/// `arctan` substitution `φ(x) = arctan(L(x))`, `L(x) = (p·x+q)/(r·x+s)`, one has
+///
+/// ```text
+///   d/dx[g·EllipticF(φ,m)] = g·L'/(√(1+L²)·√(1+(1−m)·L²)) = 1/√P
+/// ```
+///
+/// iff `P·g²·(ps−qr)² = ((rx+s)²+(px+q)²)·((rx+s)²+(1−m)(px+q)²)`, i.e. the two
+/// (no-real-root) quadratic factors of `P` are matched by the two sum-of-squares
+/// factors on the right.  Writing `a=(p,r)`, `b=(q,s)` and fixing the scale
+/// `|a|²=1` (`p=cosθ`, `r=±sinθ`), the matching reduces to a **quadratic in
+/// `u=√t`** (`t = 1−m`):
+///
+/// ```text
+///   a1·a2·u² − (a1²+a2²+(b1−b2)²)·u + a1·a2 = 0
+/// ```
+///
+/// whose two roots are reciprocal (`u`, `1/u`); we take the root with `u<1` so
+/// that `m = 1−u² ∈ (0,1)`.  Then `c = cos²θ = (K−1)/(t−1)` with `K = u·a1/a2`,
+/// and `q = −b1·p − r·D`, `s = −b1·r + p·D` with `D = ps−qr = ±a1`.  The signs of
+/// `r` and `D` are fixed by requiring the second-factor vertex/perp conditions
+/// `t·p·q + r·s = −b2·(t·p²+r²)` and `ps−qr = D`; we try the four sign
+/// combinations and keep the one that closes.  Finally
+/// `g = √((p²+r²)(t·p²+r²)/(lead·D²))`.
+///
+/// The whole triple `(g, m, φ)` is then handed to the shared soundness gate, so
+/// a mis-derivation can only *decline* — never emit a wrong form.
+/// Constants `(p, q, r, s, m, g)` of the no-real-root quartic `arctan`
+/// substitution (see [`quartic_no_real`]).  Pure numeric; shared by the builder
+/// and by [`reduction_poles`] (which needs `r`, `s` to locate the `E`-block pole
+/// at `x = −s/r`).  Returns `None` when no valid configuration closes.
+fn quartic_no_real_consts(
+    pair1: Croot,
+    pair2: Croot,
+    lead: f64,
+) -> Option<(f64, f64, f64, f64, f64, f64)> {
+    let (b1, a1) = pair1;
+    let (b2, a2) = pair2;
+    let (a1, a2) = (a1.abs(), a2.abs());
+    if !(a1 > 0.0 && a2 > 0.0 && lead != 0.0) {
+        return None;
+    }
+
+    // Quadratic in `u = √t`:  a1·a2·u² − (a1²+a2²+(b1−b2)²)·u + a1·a2 = 0.
+    let qa = a1 * a2;
+    let qb = -(a1 * a1 + a2 * a2 + (b1 - b2).powi(2));
+    let qc = a1 * a2;
+    let disc = qb * qb - 4.0 * qa * qc;
+    if disc < 0.0 || qa.abs() < 1e-30 {
+        return None;
+    }
+    let sqrt_disc = disc.sqrt();
+    let u_roots = [
+        (-qb + sqrt_disc) / (2.0 * qa),
+        (-qb - sqrt_disc) / (2.0 * qa),
+    ];
+
+    for &u in &u_roots {
+        if !(u.is_finite() && u > 0.0) {
+            continue;
+        }
+        let t = u * u; // t = 1 − m
+        let m = 1.0 - t;
+        if !(m > 0.0 && m < 1.0) {
+            continue;
+        }
+        // c = cos²θ = (K−1)/(t−1), K = u·a1/a2.
+        let kk = u * a1 / a2;
+        if (t - 1.0).abs() < 1e-15 {
+            continue;
+        }
+        let c = (kk - 1.0) / (t - 1.0);
+        if !c.is_finite() || !(-1e-9..=1.0 + 1e-9).contains(&c) {
+            continue;
+        }
+        let c = c.clamp(0.0, 1.0);
+        let cth = c.sqrt();
+        let sth = (1.0 - c).sqrt();
+
+        // Try the four (sign of r, sign of D) combinations; keep the one that
+        // satisfies the second-factor matching conditions.
+        for sr in [1.0_f64, -1.0] {
+            for sd in [1.0_f64, -1.0] {
+                let p = cth;
+                let r = sr * sth;
+                let d = sd * a1; // D = ps − qr
+                let q = -b1 * p - r * d;
+                let s = -b1 * r + p * d;
+                // (ps − qr) must equal D.
+                if (p * s - q * r - d).abs() > 1e-7 {
+                    continue;
+                }
+                // Second-factor vertex: t·p·q + r·s = −b2·(t·p²+r²).
+                let kk2 = t * p * p + r * r;
+                if (t * p * q + r * s + b2 * kk2).abs() > 1e-7 * (1.0 + kk2.abs()) {
+                    continue;
+                }
+                let c1 = p * p + r * r;
+                let c2 = t * p * p + r * r;
+                let val = c1 * c2 / (lead * d * d);
+                if !(val.is_finite() && val > 0.0) {
+                    continue;
+                }
+                let g = val.sqrt();
+                return Some((p, q, r, s, m, g));
+            }
+        }
+    }
+    None
+}
+
+fn quartic_no_real(
+    pair1: Croot,
+    pair2: Croot,
+    lead: f64,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<(f64, f64, ExprId)> {
+    let (p, q, r, s, m, g) = quartic_no_real_consts(pair1, pair2, lead)?;
+    // φ(x) = arctan( (p·x+q)/(r·x+s) ).
+    let lp = pool.add(vec![
+        pool.mul(vec![float_to_expr(p, pool), var]),
+        float_to_expr(q, pool),
+    ]);
+    let ld = pool.add(vec![
+        pool.mul(vec![float_to_expr(r, pool), var]),
+        float_to_expr(s, pool),
+    ]);
+    let l = pool.mul(vec![lp, pool.pow(ld, pool.integer(-1_i32))]);
+    let phi = pool.func("atan", vec![l]);
     Some((g, m, phi))
 }
 
@@ -1629,5 +1777,120 @@ mod tests {
             checked += 1;
         }
         assert!(checked >= 3);
+    }
+
+    // ── All-complex-root (no real root) genus-1 quartics (this PR) ───────────
+
+    #[test]
+    fn quartic_no_real_x4_plus_1_emits_ellipticf() {
+        // Headline: ∫ dx/√(x⁴+1) → EllipticF (two complex pairs, no real roots).
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![pool.pow(x, pool.integer(4_i32)), pool.integer(1_i32)]);
+        let s = check_emits(p, x, 1.0, &pool).expect("∫dx/√(x⁴+1) should emit EllipticF");
+        assert!(s.contains("EllipticF"), "{s}");
+    }
+
+    #[test]
+    fn quartic_no_real_x4_plus_x2_plus_1_emits_ellipticf() {
+        // ∫ dx/√(x⁴+x²+1) → EllipticF; (x²+x+1)(x²−x+1), two complex pairs.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![
+            pool.pow(x, pool.integer(4_i32)),
+            pool.pow(x, pool.integer(2_i32)),
+            pool.integer(1_i32),
+        ]);
+        check_emits(p, x, 1.0, &pool).expect("∫dx/√(x⁴+x²+1) should emit EllipticF");
+    }
+
+    #[test]
+    fn quartic_no_real_x4_plus_4_emits_ellipticf() {
+        // ∫ dx/√(x⁴+4) → EllipticF; (x²−2x+2)(x²+2x+2), roots 1±i, −1±i.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![pool.pow(x, pool.integer(4_i32)), pool.integer(4_i32)]);
+        check_emits(p, x, 1.0, &pool).expect("∫dx/√(x⁴+4) should emit EllipticF");
+    }
+
+    #[test]
+    fn quartic_no_real_scaled_lead_emits_ellipticf() {
+        // ∫ dx/√(3x⁴+3): non-unit leading coefficient, no real roots.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![
+            pool.mul(vec![pool.integer(3_i32), pool.pow(x, pool.integer(4_i32))]),
+            pool.integer(3_i32),
+        ]);
+        check_emits(p, x, 1.0, &pool).expect("∫dx/√(3x⁴+3) should emit EllipticF");
+    }
+
+    #[test]
+    fn quartic_no_real_sqrt_x4_plus_1_emits_secondkind() {
+        // Second kind: ∫ √(x⁴+1) dx → algebraic part + EllipticF/EllipticE.
+        // (The symmetric x⁴+1 closes cleanly as (1/3)x√P + (2/3)g·E.)
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![pool.pow(x, pool.integer(4_i32)), pool.integer(1_i32)]);
+        let b = pool.integer(1_i32); // integrand = 1·√P
+        let s = check_higher(
+            p,
+            b,
+            x,
+            &["Elliptic"],
+            &[1.0],
+            &[1.0],
+            &[1.0, 0.0, 0.0, 0.0, 1.0],
+            &[-2.0, -1.0, -0.3, 0.4, 1.2, 2.3, 3.0],
+            &pool,
+        );
+        assert!(s.contains("Elliptic"), "{s}");
+    }
+
+    #[test]
+    fn engine_integrate_x4_plus_1_emits_ellipticf() {
+        // End-to-end through the engine: ∫ dx/√(x⁴+1) → EllipticF form, d/dx OK.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![pool.pow(x, pool.integer(4_i32)), pool.integer(1_i32)]);
+        let sqrt_p = pool.func("sqrt", vec![p]);
+        let integrand = pool.pow(sqrt_p, pool.integer(-1_i32));
+        let res = crate::integrate::engine::integrate(integrand, x, &pool)
+            .expect("∫ dx/√(x⁴+1) should integrate to an elliptic form");
+        let s = pool.display(res.value).to_string();
+        assert!(s.contains("Elliptic"), "expected an elliptic form, got {s}");
+        let ds = simplify(crate::diff::diff(res.value, x, &pool).unwrap().value, &pool).value;
+        let mut checked = 0;
+        for &xv in &[-1.5, -0.5, 0.5, 1.0, 2.0] {
+            let rhs = 1.0 / (xv * xv * xv * xv + 1.0_f64).sqrt();
+            let lhs = eval(ds, x, xv, &pool).unwrap();
+            assert!((lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()), "x={xv}");
+            checked += 1;
+        }
+        assert!(checked >= 3);
+    }
+
+    #[test]
+    fn quartic_real_root_regression_still_works() {
+        // Regression: a real-root quartic ∫dx/√(x⁴−5x²+4) still emits EllipticF.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![
+            pool.pow(x, pool.integer(4_i32)),
+            pool.mul(vec![pool.integer(-5_i32), pool.pow(x, pool.integer(2_i32))]),
+            pool.integer(4_i32),
+        ]);
+        check_emits(p, x, 1.0, &pool).expect("∫dx/√(x⁴−5x²+4) should still emit EllipticF");
+    }
+
+    #[test]
+    fn quartic_no_real_quintic_still_declines() {
+        // Genus-2 ∫dx/√(x⁵+1) still declines (no degree-3/4 reduction).
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![pool.pow(x, pool.integer(5_i32)), pool.integer(1_i32)]);
+        let zero = pool.integer(0_i32);
+        let b = pool.pow(p, pool.integer(-1_i32));
+        assert!(try_elliptic_output(zero, b, p, x, &pool).is_none());
     }
 }
