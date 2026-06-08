@@ -22,17 +22,24 @@
 //! [`finite_residues`] handles the rational finite places (poles of `h`, branch
 //! points); [`residues_at_infinity`] handles the places over `∞` (via the
 //! `w = 1/y`, `z = 1/x` curve `ã(z)wⁿ − zᵐ = 0`); [`residue_divisor`] combines
-//! them.  Scope: rational branches; **algebraic** finite/infinite places are the
-//! remaining gap (build on `puiseux_at_zero_algebraic`).  Together with FIND-ORDER
-//! (genus-graded principality) these complete MC.
+//! them.  [`finite_residues_algebraic`] (hyperelliptic `y² = a`) covers the
+//! **algebraic** finite simple poles those miss — both algebraic base points
+//! (irreducible factors `deg ≥ 2` of the pole denominator) and rational base
+//! points with an *irrational sheet* `√a(α)` — with residues in a number field;
+//! [`residue_sum_complete`] checks the residue theorem over the resulting
+//! complete divisor.  Remaining gap: algebraic **branch** places (a pole at an
+//! irrational root of `a`) and `n > 2`.  Together with FIND-ORDER (genus-graded
+//! principality) these complete MC.
 
 use rug::{Integer, Rational};
 use std::collections::{BTreeSet, HashMap};
 
-use super::super::risch::alg_field::AlgElem;
-use super::super::risch::poly_rde::{degree, trim, QPoly};
+use super::super::risch::alg_field::{AlgElem, RatFn};
+use super::super::risch::number_field::{KElem, NumberField};
+use super::super::risch::poly_rde::{degree, poly_deriv, poly_mul, trim, QPoly};
+use super::super::risch::rational_rde::{poly_div_exact, poly_gcd};
 use super::vanhoeij::{branch_ts, elem_ts, ts_add, ts_inv, ts_mul, ts_pow, TS};
-use crate::poly::puiseux::{puiseux_at, puiseux_at_zero, PuiseuxSeries};
+use crate::poly::puiseux::{factor_over_q, puiseux_at, puiseux_at_zero, PuiseuxSeries};
 
 /// A residue at a place of the curve.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -294,6 +301,144 @@ pub fn residue_sum(divisor: &[Residue]) -> Rational {
     divisor.iter().fold(Rational::from(0), |s, r| s + &r.value)
 }
 
+// ===========================================================================
+// Residues at algebraic (non-rational) finite places — hyperelliptic `y² = a`
+// ===========================================================================
+
+/// A residue at an **algebraic place**: a Galois orbit of finite places of
+/// `y² = a(x)` over the roots of an irreducible factor `q` of the integrand's
+/// pole denominator (`deg q ≥ 2`, `q` coprime to `a`, so a non-branch place).
+///
+/// Over a root `α` of `q` there are two sheets `(α, ±√a(α))`, and on the curve
+/// the residue of `(A + B·y) dx` at sheet `±` is `r0 ± r1·√a(α)` with
+/// `r0, r1 ∈ ℚ(α) = ℚ[z]/(q)`.  The `√a(α)` part cancels between the two sheets,
+/// so the orbit's total contribution to the residue sum is `2·Tr_{ℚ(α)/ℚ}(r0)`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AlgResidue {
+    /// Monic irreducible minimal polynomial `q` of `α` (the place's base).
+    pub minpoly: QPoly,
+    /// Number of conjugate base points (`= deg q`).
+    pub conjugates: usize,
+    /// Rational part of the residue, in `ℚ[z]/(q)` (equal on both sheets).
+    pub r0: KElem,
+    /// `√a(α)` coefficient, in `ℚ[z]/(q)` (opposite sign on the two sheets).
+    pub r1: KElem,
+}
+
+/// Residues of `h dx = (A + B·y) dx` (`y² = a`) at the **algebraic** finite
+/// simple poles — the irreducible factors `q` of the pole denominator with
+/// `deg q ≥ 2` and `gcd(q, a) = 1`.  Requires a squarefree pole denominator
+/// (third-kind / simple poles); returns `[]` for `n ≠ 2`, a non-squarefree
+/// denominator, or no algebraic poles.
+///
+/// Complements [`finite_residues`] (rational places); together with
+/// [`residues_at_infinity`] they form the **complete** residue divisor whose
+/// values sum to zero (the residue theorem) — see [`residue_sum_complete`].
+pub fn finite_residues_algebraic(n: usize, a: &QPoly, h: &AlgElem) -> Vec<AlgResidue> {
+    if n != 2 {
+        return Vec::new();
+    }
+    let a = trim(a.clone());
+    let a_c = h.first().cloned().unwrap_or_else(|| RatFn::int(0)); // A
+    let b_c = h.get(1).cloned().unwrap_or_else(|| RatFn::int(0)); // B
+    let a_den = if a_c.numer().is_empty() {
+        vec![Rational::from(1)]
+    } else {
+        a_c.denom().clone()
+    };
+    let b_den = if b_c.numer().is_empty() {
+        vec![Rational::from(1)]
+    } else {
+        b_c.denom().clone()
+    };
+    // Common pole denominator D = lcm(den A, den B).
+    let d = poly_lcm(&a_den, &b_den);
+    if degree(&d) < 1 {
+        return Vec::new();
+    }
+    // Simple poles only.
+    if degree(&poly_gcd(&d, &poly_deriv(&d))) > 0 {
+        return Vec::new();
+    }
+    // Numerators over the common denominator: Ã = A_num·(D/den A), B̃ likewise.
+    let a_num = poly_mul(a_c.numer(), &poly_div_exact(&d, &a_den));
+    let b_num = poly_mul(b_c.numer(), &poly_div_exact(&d, &b_den));
+    let d_prime = poly_deriv(&d);
+
+    let mut out = Vec::new();
+    for (q, deg_q) in factor_over_q(&d) {
+        if degree(&poly_gcd(&q, &a)) > 0 {
+            continue; // shares a factor with `a`: a branch place, not handled here
+        }
+        // Which places have **algebraic** residues that `finite_residues`
+        // (rational Puiseux) misses?  (a) an algebraic base point `deg q ≥ 2`;
+        // (b) a *rational* base point `x = α` whose sheet `√a(α)` is irrational
+        // (`a(α)` not a perfect square).  Rational base + rational sheet is
+        // already handled by `finite_residues`, so skip it (no double-count).
+        if deg_q == 1 {
+            let alpha = -q.first().cloned().unwrap_or_else(|| Rational::from(0)); // q = x − α (monic)
+            let a_at = eval_q(&a, &alpha);
+            if is_rational_square(&a_at) {
+                continue; // rational sheet → `finite_residues` already counts it
+            }
+        }
+        let nf = NumberField::new(q.clone());
+        // Evaluate at α (= reduce mod q) and divide by D'(α) in ℚ(α).
+        let dp_alpha = nf.reduce(&d_prime);
+        let Some(dp_inv) = nf.inv(&dp_alpha) else {
+            continue; // D'(α) = 0 ⇒ not a simple pole (shouldn't happen, D squarefree)
+        };
+        let r0 = nf.mul(&nf.reduce(&a_num), &dp_inv);
+        let r1 = nf.mul(&nf.reduce(&b_num), &dp_inv);
+        out.push(AlgResidue {
+            minpoly: q,
+            conjugates: deg_q,
+            r0,
+            r1,
+        });
+    }
+    out
+}
+
+/// Total residue over the **complete** divisor of `y² = a`: rational finite
+/// places + algebraic finite places (`2·Tr(r0)` per orbit) + infinity.  By the
+/// residue theorem this is `0` whenever the residue computation is complete; it
+/// is the soundness check that no place was missed.
+pub fn residue_sum_complete(n: usize, a: &QPoly, h: &AlgElem) -> Rational {
+    let mut total = residue_sum(&finite_residues(n, a, h));
+    total += residue_sum(&residues_at_infinity(n, a, h));
+    for r in finite_residues_algebraic(n, a, h) {
+        let nf = NumberField::new(r.minpoly.clone());
+        total += Rational::from(2) * nf.trace(&r.r0);
+    }
+    total
+}
+
+/// Least common multiple `a·b/gcd(a,b)` over `ℚ[x]`.
+fn poly_lcm(a: &QPoly, b: &QPoly) -> QPoly {
+    if degree(a) < 0 || degree(b) < 0 {
+        return vec![Rational::from(1)];
+    }
+    poly_div_exact(&poly_mul(a, b), &poly_gcd(a, b))
+}
+
+/// Horner evaluation of `p` at a rational point.
+fn eval_q(p: &QPoly, x: &Rational) -> Rational {
+    p.iter().rev().fold(Rational::from(0), |acc, c| acc * x + c)
+}
+
+/// Is the rational `r` a perfect square in `ℚ` (`r = (s)²`, `s ∈ ℚ`)?
+fn is_rational_square(r: &Rational) -> bool {
+    if *r < 0 {
+        return false;
+    }
+    let n = r.numer().clone();
+    let d = r.denom().clone();
+    let ns = n.clone().sqrt();
+    let ds = d.clone().sqrt();
+    Integer::from(&ns * &ns) == n && Integer::from(&ds * &ds) == d
+}
+
 /// Monomials `(i, j, coeff)` of `F = yⁿ − a(x)`.
 fn curve_monomials(n: usize, a: &QPoly) -> Vec<(u32, u32, Rational)> {
     let mut m = vec![(0u32, n as u32, Rational::from(1))]; // yⁿ
@@ -387,6 +532,40 @@ mod tests {
     }
     fn r(n: i64) -> Rational {
         Rational::from(n)
+    }
+
+    /// Algebraic place over `x² − 2` (`α = ±√2`) on `y² = x`, differential
+    /// `(x + y)/(x²−2) dx`.  Direct residue values: `r0 = ½`, `r1 = ¼·√2`
+    /// (so res on sheet ± = ½ ± ¼√2·√(√2)), conjugates = 2.
+    #[test]
+    fn algebraic_residue_values() {
+        // h = (x + y)/(x²−2) = AlgElem [x/(x²−2), 1/(x²−2)].
+        let h = vec![rf(&[0, 1], &[-2, 0, 1]), rf(&[1], &[-2, 0, 1])];
+        let res = finite_residues_algebraic(2, &qp(&[0, 1]), &h);
+        assert_eq!(res.len(), 1);
+        let ar = &res[0];
+        assert_eq!(ar.minpoly, qp(&[-2, 0, 1])); // x²−2
+        assert_eq!(ar.conjugates, 2);
+        assert_eq!(ar.r0, vec![Rational::from((1, 2))]); // ½
+        assert_eq!(ar.r1, vec![r(0), Rational::from((1, 4))]); // ¼·√2
+    }
+
+    /// Residue theorem over the **complete** divisor (rational + algebraic +
+    /// infinity) must sum to zero — the soundness check for algebraic places.
+    #[test]
+    fn residue_theorem_with_algebraic_places() {
+        // (x + y)/(x²−2) on y²=x: poles only at the algebraic place ±√2.
+        let h = vec![rf(&[0, 1], &[-2, 0, 1]), rf(&[1], &[-2, 0, 1])];
+        assert_eq!(residue_sum_complete(2, &qp(&[0, 1]), &h), r(0));
+
+        // A mixed case: 1/((x−1)(x²−3)) · (1 + y) on y²=x+1, rational pole at
+        // x=1 plus an algebraic place over x²−3.
+        let den = qp(&[3, -3, -1, 1]); // (x−1)(x²−3) = x³ − x² − 3x + 3
+        let h2 = vec![
+            RatFn::new(qp(&[1]), den.clone()),
+            RatFn::new(qp(&[1]), den.clone()),
+        ];
+        assert_eq!(residue_sum_complete(2, &qp(&[1, 1]), &h2), r(0));
     }
 
     /// h dx = du/u with u = (y−1)/(y+1) on y²=x:
