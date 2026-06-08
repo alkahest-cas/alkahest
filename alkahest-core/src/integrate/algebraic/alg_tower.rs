@@ -130,6 +130,9 @@ fn solve_columns(cols: &[Vec<Rational>], rhs: &[Rational], n: usize) -> Option<V
         for r in 0..n {
             if r != col && a[r][col] != 0 {
                 let f = a[r][col].clone();
+                // Two distinct rows (`a[r]` updated from `a[col]`): a range loop is
+                // the clearest way to index both without splitting the borrow.
+                #[allow(clippy::needless_range_loop)]
                 for k in col..=n {
                     let s = f.clone() * &a[col][k];
                     a[r][k] -= s;
