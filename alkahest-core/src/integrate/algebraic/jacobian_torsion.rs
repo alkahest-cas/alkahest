@@ -1014,7 +1014,7 @@ fn rational_root_off_support(a: &QPoly, places: &[Place]) -> Option<Rational> {
     let support: Vec<Rational> = places.iter().map(|p| p.x.clone()).collect();
     let mut poly = trim(a.clone());
     while let Some(r) = super::find_order::first_rational_root(&poly) {
-        if !support.iter().any(|s| *s == r) {
+        if !support.contains(&r) {
             return Some(r);
         }
         // Deflate by (x − r) and look for the next rational root.
