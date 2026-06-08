@@ -797,6 +797,11 @@ fn integrate_b_sqrt_high_degree(
 /// with [`trager_log_criterion_alg`] (reducing at primes that split `M`).  `None`
 /// outside this scope (non-`x²−m` base, non-Galois `K`, more than one algebraic
 /// orbit, or base degree ≥ 3).
+/// `a mod m` over `ℚ[x]`.
+fn qmod_l(a: &QPoly, m: &QPoly) -> QPoly {
+    trim(poly_divrem(a, m).1)
+}
+
 fn try_alg_base_log(p: &QPoly, h: &AlgElem, alg_res: &[AlgResidue]) -> Option<FindOrder> {
     // Exactly one algebraic orbit, a quadratic base (conjugates == 2).
     if alg_res.len() != 1 || alg_res[0].conjugates != 2 || degree(&alg_res[0].minpoly) != 2 {
@@ -806,41 +811,98 @@ fn try_alg_base_log(p: &QPoly, h: &AlgElem, alg_res: &[AlgResidue]) -> Option<Fi
     let q = trim(ar.minpoly.clone());
     // c = a(α) ∈ ℚ(α): reduce the radicand mod q.
     let c = trim(poly_divrem(p, &q).1);
-    let (m, a_in, w_in, autos) = super::alg_tower::galois_quartic(&q, &c)?;
-
-    // ρ = r0(α) + r1(α)·w in ℚ[θ]/M.
     let r0 = &ar.r0;
     let r1 = &ar.r1;
-    let rho = poly_add(
-        &super::alg_tower::compose_mod(r0, &a_in, &m),
-        &poly_divrem(
-            &poly_mul(&super::alg_tower::compose_mod(r1, &a_in, &m), &w_in),
-            &m,
-        )
-        .1,
-    );
-    let rho = trim(poly_divrem(&rho, &m).1);
-    let dim = (degree(&m).max(0) as usize).max(1); // = 4
 
-    // Conjugate residues ρⱼ = σⱼ(ρ) and conjugate places (A(πⱼ), W(πⱼ)).
-    let mut alg_places: Vec<AlgPlace> = Vec::new();
-    let mut alg_residues: Vec<KElem> = Vec::new();
-    for pi in &autos {
-        let rho_j = super::alg_tower::compose_mod(&rho, pi, &m);
-        let xj = super::alg_tower::compose_mod(&a_in, pi, &m);
-        let yj = super::alg_tower::compose_mod(&w_in, pi, &m);
-        alg_places.push(AlgPlace {
-            minpoly: m.clone(),
-            x_coord: xj,
-            y_coord: yj,
-            coeff: Integer::from(0),
-            orbit: false, // a single ℚ(θ) place (one embedding per prime)
-        });
-        // residue as a length-`dim` vector (pad).
-        let mut v = rho_j;
-        v.resize(dim, Rational::from(0));
-        alg_residues.push(v);
-    }
+    // Build the conjugate orbit's places and residues in a common field — the
+    // degree-4 tower K when Galois, else its degree-8 Galois closure L.
+    let (alg_places, alg_residues, dim) =
+        if let Some((m, a_in, w_in, autos)) = super::alg_tower::galois_quartic(&q, &c) {
+            // Galois: ρ = r0(α)+r1(α)w in ℚ[θ]/M; orbit = {σⱼ(ρ), σⱼ(P₀)}.
+            let dim = (degree(&m).max(0) as usize).max(1); // = 4
+            let rho = qmod_l(
+                &poly_add(
+                    &super::alg_tower::compose_mod(r0, &a_in, &m),
+                    &qmod_l(
+                        &poly_mul(&super::alg_tower::compose_mod(r1, &a_in, &m), &w_in),
+                        &m,
+                    ),
+                ),
+                &m,
+            );
+            let mut places = Vec::new();
+            let mut residues = Vec::new();
+            for pi in &autos {
+                let mut rj = super::alg_tower::compose_mod(&rho, pi, &m);
+                rj.resize(dim, Rational::from(0));
+                places.push(AlgPlace {
+                    minpoly: m.clone(),
+                    x_coord: super::alg_tower::compose_mod(&a_in, pi, &m),
+                    y_coord: super::alg_tower::compose_mod(&w_in, pi, &m),
+                    coeff: Integer::from(0),
+                    orbit: false,
+                });
+                residues.push(rj);
+            }
+            (places, residues, dim)
+        } else {
+            // Non-Galois: work in the degree-8 closure L = K(√(N(c))).  Build the
+            // four orbit places (±α, ±√c), (±α, ±√c̄) and residues explicitly.
+            let (ml, alpha, w, v) = super::alg_tower::quartic_closure(&q, &c)?;
+            let dim = (degree(&ml).max(0) as usize).max(1); // = 8
+            let neg_alpha = poly_scale(&alpha, &Rational::from(-1));
+            let lin = |coef: &QPoly, a: &QPoly| {
+                qmod_l(
+                    &poly_add(
+                        &vec![coef.first().cloned().unwrap_or_else(|| Rational::from(0))],
+                        &poly_scale(
+                            a,
+                            &coef.get(1).cloned().unwrap_or_else(|| Rational::from(0)),
+                        ),
+                    ),
+                    &ml,
+                )
+            };
+            let r0a = lin(r0, &alpha);
+            let r1a = lin(r1, &alpha);
+            let r0n = lin(r0, &neg_alpha);
+            let r1n = lin(r1, &neg_alpha);
+            let mulm = |x: &QPoly, y: &QPoly| qmod_l(&poly_mul(x, y), &ml);
+            let sub = |a: &QPoly, b: &QPoly| poly_add(a, &poly_scale(b, &Rational::from(-1)));
+            let entries: [(QPoly, QPoly, QPoly); 4] = [
+                (alpha.clone(), w.clone(), poly_add(&r0a, &mulm(&r1a, &w))),
+                (
+                    alpha.clone(),
+                    poly_scale(&w, &Rational::from(-1)),
+                    sub(&r0a, &mulm(&r1a, &w)),
+                ),
+                (
+                    neg_alpha.clone(),
+                    v.clone(),
+                    poly_add(&r0n, &mulm(&r1n, &v)),
+                ),
+                (
+                    neg_alpha.clone(),
+                    poly_scale(&v, &Rational::from(-1)),
+                    sub(&r0n, &mulm(&r1n, &v)),
+                ),
+            ];
+            let mut places = Vec::new();
+            let mut residues = Vec::new();
+            for (x, y, res) in entries {
+                places.push(AlgPlace {
+                    minpoly: ml.clone(),
+                    x_coord: x,
+                    y_coord: y,
+                    coeff: Integer::from(0),
+                    orbit: false,
+                });
+                let mut rv = trim(res);
+                rv.resize(dim, Rational::from(0));
+                residues.push(rv);
+            }
+            (places, residues, dim)
+        };
 
     // Rational + infinite places carry rational residues (basis index 0).
     let rat_div = residue_divisor_placed(2, p, h);
