@@ -10,7 +10,7 @@
 //! - Concrete implementations that **wrap the existing solvers** — no new math:
 //!   * [`RationalDiffField`] for `ℚ(x)` (wraps
 //!     [`solve_rational_rde_generalized`]),
-//!   * [`DifferentialField`] for [`ExpTowerField`] (wraps [`solve_tower_rde`]),
+//!   * [`DifferentialField`] for [`ExpTowerField`] (wraps `solve_tower_rde`),
 //!   * [`DifferentialField`] for [`LogTowerField`] (wraps the field-generic
 //!     `solve_tower_rde_generic`).
 //!
@@ -32,9 +32,12 @@
 
 use super::alg_field::{RatFn, RationalFunctionField};
 use super::number_field::CoeffField;
-use super::rational_rde::solve_rational_rde_generalized;
+use super::poly_rde::{degree, poly_deriv, trim};
+use super::rational_rde::{
+    numerator_degree_bound, poly_div_exact, poly_gcd, solve_rational_rde_generalized,
+};
 use super::tower_field::{
-    solve_tower_rde, solve_tower_rde_generic, ExpTowerField, LogTowerField, TExpr,
+    solve_tower_rde_generic_bounded, tower_x_degree_bound, ExpTowerField, LogTowerField, TExpr,
 };
 
 // ===========================================================================
@@ -100,6 +103,24 @@ pub trait DifferentialField {
     /// found within the search bounds", **not** a proof of non-existence.  See
     /// each implementation's docs.
     fn rational_rde(&self, f: &Self::Elem, g: &Self::Elem) -> Option<Self::Elem>;
+
+    /// Upper bound on the degree (in the base variable `x`) of the numerator
+    /// ansatz for a solution of `D(y) + f·y = g`, per Bronstein §6.5, or `None`
+    /// if this level exposes no analytic bound (the caller then falls back to its
+    /// heuristic cap).
+    ///
+    /// MUST be a **sound upper bound**: the true solution's numerator
+    /// `x`-degree is `≤` this value.  It is used only as a *search ceiling* — the
+    /// ansatz solvers take `max(this_bound, their_fixed_cap)`, so the ceiling is
+    /// never lowered below today's heuristic (zero regression), and every
+    /// candidate is still exact-verified in-field before being returned
+    /// (soundness unchanged).  Over-estimating only widens the search;
+    /// under-estimating would *miss* solutions, so when in doubt return a
+    /// generous bound (or `None`).
+    fn rde_degree_bound(&self, f: &Self::Elem, g: &Self::Elem) -> Option<usize> {
+        let _ = (f, g);
+        None
+    }
 
     /// LimitedIntegrate (Bronstein §7.1): given `g` and `D`-generators
     /// `w₁…wₙ ∈ K`, find `v ∈ K` and constants `c₁…cₙ` with
@@ -199,6 +220,49 @@ impl DifferentialField for RationalDiffField {
             solve_rational_rde_generalized(f.numer(), f.denom(), g.numer(), g.denom())?;
         Some(RatFn::new(num, den))
     }
+
+    /// The canonical Bronstein §6.5 base-case numerator-degree bound, mirroring
+    /// `numerator_degree_bound` (the source of truth used inside
+    /// [`solve_rational_rde`](super::rational_rde::solve_rational_rde)).
+    ///
+    /// Writing the solution as `y = N/E` with `E = gcd(B, B')` for the reduced
+    /// denominator `B` of `g = C/B`, the bound is
+    /// `deg E + max(deg C − deg B, deg f) + 2`.  When `f` is a genuine rational
+    /// function (denominator `Bf`) we add `deg Bf` for the matching generalized
+    /// path.  Always a sound upper bound on the numerator's `x`-degree.
+    fn rde_degree_bound(&self, f: &RatFn, g: &RatFn) -> Option<usize> {
+        let c_num = trim(g.numer().clone());
+        let c_den = trim(g.denom().clone());
+        // g = 0 ⇒ y = 0 ⇒ numerator degree 0.
+        if c_num.is_empty() {
+            return Some(0);
+        }
+        if c_den.is_empty() {
+            return None;
+        }
+        // Reduce g = C/B (B from the denominator), then E = gcd(B, B').
+        let gc = poly_gcd(&c_num, &c_den);
+        let big_c = poly_div_exact(&c_num, &gc);
+        let big_b = poly_div_exact(&c_den, &gc);
+        let bprime = poly_deriv(&big_b);
+        let e_poly = poly_gcd(&big_b, &bprime);
+
+        let deg_b = degree(&big_b);
+        let deg_c = degree(&big_c);
+        let deg_e = degree(&e_poly);
+
+        // f's effective polynomial degree, plus its denominator degree for the
+        // rational-f (generalized) path.
+        let f_den = trim(f.denom().clone());
+        let deg_f = degree(f.numer());
+        let deg_bf = if degree(&f_den) > 0 {
+            degree(&f_den).max(0)
+        } else {
+            0
+        };
+
+        Some(numerator_degree_bound(deg_b, deg_c, deg_e, deg_f) + deg_bf as usize)
+    }
 }
 
 // ===========================================================================
@@ -240,13 +304,22 @@ impl DifferentialField for ExpTowerField {
     }
 
     /// Solve `D(v) + f·v = g` over the exponential tower `ℚ(x)(eᵑ)` by wrapping
-    /// [`solve_tower_rde`] (with `omega = f`, `c = g`).
+    /// the bounded solver (with `omega = f`, `c = g`), passing the analytic
+    /// `x`-degree ceiling from [`rde_degree_bound`](Self::rde_degree_bound).
     ///
     /// The underlying solver is verification-guarded over a bounded ansatz, so a
     /// `Some` is always a correct solution but `None` only means "no solution
     /// found within the search bounds" — not a non-elementarity certificate.
     fn rational_rde(&self, f: &TExpr, g: &TExpr) -> Option<TExpr> {
-        solve_tower_rde(self, f, g)
+        solve_tower_rde_generic_bounded(self, f, g, self.rde_degree_bound(f, g))
+    }
+
+    /// Sound `x`-degree ceiling for the exp-tower ansatz (Bronstein §6.5): the
+    /// drift coefficient is `η' = deta`, so the bound is driven by the `x`-degrees
+    /// of `f`, `g`, and `η'`.  See `tower_x_degree_bound`.
+    fn rde_degree_bound(&self, f: &TExpr, g: &TExpr) -> Option<usize> {
+        let drift = degree(self.deta.numer()).max(degree(self.deta.denom()));
+        Some(tower_x_degree_bound(f, g, drift))
     }
 }
 
@@ -289,11 +362,21 @@ impl DifferentialField for LogTowerField {
     }
 
     /// Solve `D(v) + f·v = g` over the logarithmic tower `ℚ(x)(log h)` by
-    /// wrapping the field-generic `solve_tower_rde_generic` (with `omega = f`,
-    /// `c = g`).  Same verification-guarded semantics as the exp-tower impl: a
-    /// `Some` is correct; `None` means "not found within bounds".
+    /// wrapping the field-generic bounded solver (with `omega = f`, `c = g`) and
+    /// passing the analytic `x`-degree ceiling from
+    /// [`rde_degree_bound`](Self::rde_degree_bound).  Same verification-guarded
+    /// semantics as the exp-tower impl: a `Some` is correct; `None` means "not
+    /// found within bounds".
     fn rational_rde(&self, f: &TExpr, g: &TExpr) -> Option<TExpr> {
-        solve_tower_rde_generic(self, f, g)
+        solve_tower_rde_generic_bounded(self, f, g, self.rde_degree_bound(f, g))
+    }
+
+    /// Sound `x`-degree ceiling for the log-tower ansatz (Bronstein §6.5): the
+    /// drift coefficient is `h'/h = dh_over_h`, so the bound is driven by the
+    /// `x`-degrees of `f`, `g`, and the drift.  See `tower_x_degree_bound`.
+    fn rde_degree_bound(&self, f: &TExpr, g: &TExpr) -> Option<usize> {
+        let drift = degree(self.dh_over_h.numer()).max(degree(self.dh_over_h.denom()));
+        Some(tower_x_degree_bound(f, g, drift))
     }
 }
 
@@ -303,6 +386,7 @@ impl DifferentialField for LogTowerField {
 
 #[cfg(test)]
 mod tests {
+    use super::super::tower_field::{solve_tower_rde, solve_tower_rde_generic};
     use super::*;
     use crate::integrate::risch::poly_rde::QPoly;
     use rug::Rational;

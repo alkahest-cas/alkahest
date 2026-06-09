@@ -37,11 +37,43 @@
 use rug::Rational;
 
 use super::alg_field::{AlgElem, AlgExtension, RatFn};
-use super::poly_rde::{poly_mul, poly_one, trim, QPoly};
+use super::poly_rde::{degree, poly_mul, poly_one, trim, QPoly};
 use super::rational_rde::{poly_div_exact, poly_gcd};
 
-/// Max numerator degree tried in the ansatz `bⱼ = pⱼ(x)/Den`.
+/// Heuristic floor on the numerator degree tried in the ansatz `bⱼ = pⱼ(x)/Den`.
+/// The effective cap is `max(DEG_CAP, analytic_bound)` (see [`alg_x_degree_bound`]),
+/// so the search ceiling is never below this floor — existing solves never regress.
 const DEG_CAP: usize = 6;
+
+/// Hard clamp on the numerator-degree ansatz ceiling, guarding against a
+/// pathological analytic bound that would blow up the `ℚ`-linear system.  Larger
+/// solutions are rare and the exact in-field verification keeps soundness anyway.
+const X_DEG_SANITY_CAP: usize = 48;
+
+/// A sound upper bound (Bronstein §6.5, algebraic level) on the `x`-degree of the
+/// per-component numerator `pⱼ(x)` in the ansatz `y = Σⱼ (pⱼ/Den) αʲ` for a
+/// solution of `D(y) + f·y = g` over `ℚ(x)(α)`.  Driven by the largest `x`-degree
+/// occurring across the components of `f`, `g`, and the basis derivatives
+/// `D(αʲ)`, plus a small slack.  It is used only as a *search ceiling* (the
+/// caller takes `max(DEG_CAP, this)`), so over-estimating merely widens the
+/// search; verification gates correctness.
+pub(crate) fn alg_x_degree_bound(e: &AlgExtension, f: &AlgElem, g: &AlgElem) -> usize {
+    let comp_xdeg = |el: &AlgElem| -> i64 {
+        el.iter()
+            .map(|c| degree(c.numer()).max(degree(c.denom())))
+            .max()
+            .unwrap_or(0)
+    };
+    let mut base = comp_xdeg(f).max(comp_xdeg(g));
+    let d = e.degree() as usize;
+    let gen = e.generator();
+    for j in 0..d {
+        if let Some(aj) = e.pow(&gen, j as i64) {
+            base = base.max(comp_xdeg(&e.derivation(&aj)));
+        }
+    }
+    (base.max(0) + 2) as usize
+}
 
 /// Solve `D(y) + f·y = g` for `y ∈ ℚ(x)(α)` with a **base scalar** `f ∈ ℚ(x)`,
 /// or `None` if no rational solution is found within the ansatz bounds.  Sound by
@@ -70,9 +102,13 @@ pub(crate) fn solve_alg_rde_general(e: &AlgExtension, f: &AlgElem, g: &AlgElem) 
     if d == 0 {
         return None;
     }
+    // Search ceiling: the analytic Bronstein §6.5 bound raised to at least the
+    // heuristic floor `DEG_CAP` (so existing solves never regress) and clamped by
+    // `X_DEG_SANITY_CAP` (so a pathological bound can't blow up the system).
+    let cap = alg_x_degree_bound(e, f, g).clamp(DEG_CAP, X_DEG_SANITY_CAP);
     let dens = candidate_denominators(e, f, g, d);
     for den in &dens {
-        for ncap in 0..=DEG_CAP {
+        for ncap in 0..=cap {
             if let Some(y) = solve_with_denominator(e, f, g, den, ncap, d) {
                 return Some(y);
             }
@@ -442,5 +478,45 @@ mod tests {
         let f = e.generator(); // α (non-base)
         let g = e.constant(RatFn::new(poly_one(), vec![rat(0), rat(1)])); // 1/x
         assert!(solve_alg_rde_general(&e, &f, &g).is_none());
+    }
+
+    /// **Degree-bound polymorphism demonstration.**  The true solution has a
+    /// numerator of `x`-degree 8 — *beyond* the historical fixed `DEG_CAP = 6`,
+    /// so the old fixed-cap search would miss it.  The analytic Bronstein §6.5
+    /// bound ([`alg_x_degree_bound`]) raises the search ceiling to ≥ 8, so the
+    /// generalized solver now recovers it (still verified exactly in-field).
+    #[test]
+    fn high_degree_solution_recovered_by_analytic_bound() {
+        let e = AlgExtension::radical(2, &vec![rat(0), rat(1)]); // α² = x
+                                                                 // y = x⁸·α  (numerator x-degree 8 > DEG_CAP)
+        let mut p8 = vec![rat(0); 9];
+        p8[8] = rat(1);
+        let y_true: AlgElem = vec![RatFn::int(0), RatFn::from_poly(&p8)];
+        let f_elem = e.constant(RatFn::int(1)); // f = 1 (base scalar)
+        let g = e.add(&e.derivation(&y_true), &e.mul(&f_elem, &y_true));
+
+        // The analytic bound sees the degree-8 data and exceeds the old cap.
+        let bound = alg_x_degree_bound(&e, &f_elem, &g);
+        assert!(
+            bound >= 8,
+            "analytic bound {bound} must cover the degree-8 solution"
+        );
+        assert!(
+            bound > DEG_CAP,
+            "bound {bound} must exceed the old fixed DEG_CAP {DEG_CAP}"
+        );
+
+        // The OLD behavior (search only up to DEG_CAP at Den = 1) misses it.
+        assert!(
+            solve_with_denominator(&e, &f_elem, &g, &poly_one(), DEG_CAP, 2).is_none(),
+            "degree-{DEG_CAP} ansatz must NOT contain the degree-8 solution"
+        );
+
+        // The bounded solver now recovers it, verified in-field.
+        let y = solve_alg_rde_general(&e, &f_elem, &g)
+            .expect("analytic bound must recover the high-degree solution");
+        let lhs = e.add(&e.derivation(&y), &e.mul(&f_elem, &y));
+        assert!(e.elem_eq(&lhs, &g), "D(y)+f·y must equal g; y = {y:?}");
+        assert!(e.elem_eq(&y, &y_true), "expected y = x⁸·α; got {y:?}");
     }
 }

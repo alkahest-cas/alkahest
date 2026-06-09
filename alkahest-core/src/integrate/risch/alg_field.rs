@@ -349,7 +349,7 @@ impl AlgExtension {
 // over an arbitrary lower differential field remains future work — see
 // `radical_ext.rs`.)
 
-use super::alg_rde::solve_alg_rde_general;
+use super::alg_rde::{alg_x_degree_bound, solve_alg_rde_general};
 use super::diff_field::DifferentialField;
 
 impl DifferentialField for AlgExtension {
@@ -421,6 +421,16 @@ impl DifferentialField for AlgExtension {
         } else {
             None
         }
+    }
+
+    /// Sound per-component `x`-degree ceiling (Bronstein §6.5, algebraic level)
+    /// for the coupled ansatz solving `D(y)+f·y=g` over `ℚ(x)(α)`; see
+    /// `alg_x_degree_bound`.  The solver itself uses `max(DEG_CAP, this)` so a
+    /// `None` is never returned here — the bound only ever *raises* the heuristic
+    /// search ceiling, recovering high-degree solutions while keeping soundness
+    /// (every candidate is verified in-field).
+    fn rde_degree_bound(&self, f: &AlgElem, g: &AlgElem) -> Option<usize> {
+        Some(alg_x_degree_bound(self, f, g))
     }
 }
 
