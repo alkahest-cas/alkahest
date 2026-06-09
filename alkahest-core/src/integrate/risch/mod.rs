@@ -186,6 +186,18 @@ pub fn integrate_risch(
         return result;
     }
 
+    // M4 multi-generator (PR2): ∫ exp(η)·(radical over a log/exp tower) dx.
+    // The integrand mixes an outer transcendental coefficient exp(η) with a
+    // radical over a *separate* tower; solved by descending one tower level via
+    // `DifferentialField::rational_rde` per radical component, numeric-gated.
+    // Additive: returns `None` for everything the single-generator path or the
+    // ordinary towers already cover, so it never changes existing behavior.
+    if let Some(result) =
+        tower_integrate::try_integrate_exp_times_radical_over_tower(expr, var, pool)
+    {
+        return result;
+    }
+
     let generators = find_generators(expr, var, pool);
 
     // Classify the generators.

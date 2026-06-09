@@ -22,6 +22,23 @@
 //!
 //! Scope: a single exp/log generator, polynomial `η`/`h`, and per-component
 //! solutions within `solve_tower_rde`'s ansatz.  Anything else → `None`.
+//!
+//! ## M4 PR2 — the trait-recursive multi-generator case
+//!
+//! [`try_integrate_exp_times_radical_over_tower`] adds the first genuinely
+//! *multi-generator* path: `∫ exp(η)·R dx` where the **outer** transcendental
+//! coefficient `exp(η)` (`η` a polynomial in `x`) multiplies a rational function
+//! `R` over a radical `y = a^{1/n}` whose radicand involves a **separate**
+//! transcendental `t = log(h)` (or `exp`).  Seeking `F = exp(η)·w`, the integral
+//! becomes the twisted Risch DE `D(w) + η'·w = R` over
+//! `Quotient<LogTowerField|ExpTowerField>`; decomposing over the radical power
+//! basis gives per-component `D(wᵢ) + (η' + (i/n)a'/a)·wᵢ = Rᵢ`, each solved by
+//! **descending one tower level** through [`DifferentialField`]`::rational_rde`
+//! on the coefficient field — the M4 recursion.  Same numeric soundness gate; a
+//! `None` falls through (never a wrong answer).  This catches integrands the
+//! single-generator path declines (e.g.
+//! `∫[eˣ√(x+log x)+eˣ(1+1/x)/(2√(x+log x))]dx = eˣ√(x+log x)`); it is purely
+//! additive.
 
 use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
 use crate::integrate::engine::IntegrationError;
@@ -29,11 +46,12 @@ use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
 use crate::simplify::engine::simplify;
 
 use super::alg_field::{RatFn, RationalFunctionField};
+use super::diff_field::DifferentialField;
 use super::exp_case::build_rational;
 use super::number_field::{
     gdegree, gext_gcd, gpoly_divrem, gpoly_mul, gtrim, CoeffField, Quotient,
 };
-use super::poly_rde::{expr_to_qpoly, is_free_of_var, poly_deriv};
+use super::poly_rde::{contains_subexpr, expr_to_qpoly, is_free_of_var, poly_deriv};
 use super::tower::find_generators;
 use super::tower_field::{solve_tower_rde_generic, ExpTowerField, LogTowerField, TExpr};
 
@@ -89,6 +107,206 @@ pub fn try_integrate_radical_over_transcendental(
     } else {
         None
     }
+}
+
+// ===========================================================================
+// M4 PR2 — multi-generator recursive integrator
+//   ∫ exp(η)·(radical over a log/exp tower) dx
+// ===========================================================================
+
+/// Try to integrate `∫ exp(η)·R dx` where `R` is a rational function over a
+/// radical `y = a^{1/n}` whose radicand `a` involves a **single, different**
+/// transcendental `t = log(h)` (or `t = exp(…)`), and `η` is a polynomial in
+/// `x` alone.
+///
+/// This is the M4 multi-generator case: the integrand mixes the *outer*
+/// transcendental coefficient `exp(η)` with a radical over a *separate* tower.
+/// Seeking an antiderivative `F = exp(η)·w` with `w` in the radical extension,
+/// `D(F) = exp(η)·(D(w) + η'·w)`, so we must solve the twisted Risch DE
+/// `D(w) + η'·w = R` in `Quotient<LogTowerField>`.  The radical power basis
+/// `{1, y, …, y^{n−1}}` diagonalizes the twist (`D(yⁱ) = (i/n)(a'/a)·yⁱ`),
+/// giving per-component equations
+///
+/// ```text
+///   D(wᵢ) + (η' + (i/n)·a'/a)·wᵢ = Rᵢ      over ℚ(x)(t),
+/// ```
+///
+/// each solved by **descending one tower level** via
+/// [`DifferentialField::rational_rde`] on the coefficient field (the M4
+/// recursion).  The reconstructed `F = exp(η)·Σ wᵢ yⁱ` is accepted **only**
+/// after the numeric soundness gate `d/dx F = integrand` passes; otherwise
+/// `None` (the caller falls through, never a wrong answer).
+///
+/// Returns `None` when the integrand is not of this shape.
+pub fn try_integrate_exp_times_radical_over_tower(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<Result<DerivedExpr<ExprId>, IntegrationError>> {
+    // The radical and its radicand `a` (single transcendental generator `t`).
+    let (n, a_expr) = detect_radical_with_transcendental_radicand(expr, var, pool)?;
+    let inner_gens = find_generators(a_expr, var, pool);
+    if inner_gens.len() != 1 {
+        return None;
+    }
+    let inner = &inner_gens[0];
+
+    // The outer factor exp(η): an exp generator of the *whole* integrand that is
+    // not the radicand's generator and whose argument η is a polynomial in x.
+    let all_gens = find_generators(expr, var, pool);
+    let mut eta: Option<ExprId> = None;
+    for g in &all_gens {
+        if !g.is_exp() {
+            continue;
+        }
+        if g.generator == inner.generator {
+            continue; // that's the radicand's own generator, not the outer factor
+        }
+        // η must be a polynomial in x (no other generators inside it).
+        if expr_to_qpoly(g.argument(), var, pool).is_some() {
+            if eta.is_some() {
+                return None; // more than one candidate outer exp — out of scope
+            }
+            eta = Some(g.argument());
+        }
+    }
+    let eta = eta?;
+    let exp_eta = pool.func("exp", vec![eta]);
+
+    // η' as a ℚ(x) element.
+    let eta_poly = expr_to_qpoly(eta, var, pool)?;
+    let eta_prime = RatFn::from_poly(&poly_deriv(&eta_poly));
+
+    // Build the inner tower field (the radicand lives here).
+    if inner.is_log() {
+        let h = inner.argument();
+        let t_gen = pool.func("log", vec![h]);
+        let h_poly = expr_to_qpoly(h, var, pool)?;
+        let dh_over_h = RatFn::new(poly_deriv(&h_poly), h_poly);
+        let field = LogTowerField::new(dh_over_h);
+        integrate_exp_times_radical(
+            &field, t_gen, exp_eta, eta_prime, expr, n, a_expr, var, pool,
+        )
+    } else if inner.is_exp() {
+        let inner_eta = inner.argument();
+        let t_gen = pool.func("exp", vec![inner_eta]);
+        let inner_eta_poly = expr_to_qpoly(inner_eta, var, pool)?;
+        let field = ExpTowerField::new(RatFn::from_poly(&poly_deriv(&inner_eta_poly)));
+        integrate_exp_times_radical(
+            &field, t_gen, exp_eta, eta_prime, expr, n, a_expr, var, pool,
+        )
+    } else {
+        None
+    }
+}
+
+/// Core of [`try_integrate_exp_times_radical_over_tower`], generic over the
+/// inner tower field `F` (which must be a [`DifferentialField`] so we can
+/// recurse via [`DifferentialField::rational_rde`]).
+#[allow(clippy::too_many_arguments)]
+fn integrate_exp_times_radical<F>(
+    field: &F,
+    t_gen: ExprId,
+    exp_eta: ExprId,
+    eta_prime: RatFn,
+    expr: ExprId,
+    n: usize,
+    a_expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<Result<DerivedExpr<ExprId>, IntegrationError>>
+where
+    F: CoeffField<Elem = TExpr> + DifferentialField<Elem = TExpr> + Clone,
+{
+    // R = integrand / exp(η): divide out the outer exp factor so the remaining
+    // coefficients are pure rational-in-(x, t) (free of exp(η)).  Divide each
+    // additive term separately and simplify it so the exp(η)·exp(η)⁻¹
+    // cancellation actually fires (a single top-level multiply may not
+    // distribute), then re-assemble; finally require R to be free of exp(η).
+    let neg1 = pool.integer(-1_i32);
+    let inv_exp_eta = pool.pow(exp_eta, neg1);
+    let div_term = |t: ExprId, pool: &ExprPool| -> ExprId {
+        simplify(pool.mul(vec![t, inv_exp_eta]), pool).value
+    };
+    let r_expr = match pool.get(expr) {
+        ExprData::Add(args) => {
+            let parts: Vec<ExprId> = args.iter().map(|&t| div_term(t, pool)).collect();
+            simplify(pool.add(parts), pool).value
+        }
+        _ => div_term(expr, pool),
+    };
+    // R must no longer mention exp(η); otherwise the cancellation did not
+    // succeed and this is not the supported shape.
+    if contains_subexpr(r_expr, exp_eta, pool) {
+        return None;
+    }
+
+    // The quotient ring ℚ(x)(t)[y]/(yⁿ − a).
+    let a_tx = expr_to_texpr(field, a_expr, var, t_gen, pool)?;
+    let mut modulus = vec![<F as CoeffField>::zero(field); n + 1];
+    modulus[0] = <F as CoeffField>::neg(field, &a_tx);
+    modulus[n] = <F as CoeffField>::one(field);
+    let q = Quotient::new(field.clone(), modulus);
+
+    // Decompose R over the power basis {1, y, …, y^{n−1}}.
+    let r_elem = decompose_over_tower_radical(r_expr, n, a_expr, &q, field, var, t_gen, pool)?;
+
+    // a'/a in the tower (for the twist ωᵢ).
+    let a_prime = <F as CoeffField>::derivation(field, &a_tx);
+    let a_inv = <F as CoeffField>::inv(field, &a_tx)?;
+    let log_deriv_a = <F as CoeffField>::mul(field, &a_prime, &a_inv);
+    let eta_prime_tx = TExpr::from_ratfn(eta_prime);
+
+    // Solve D(wᵢ) + (η' + (i/n)·a'/a)·wᵢ = Rᵢ per component, descending one
+    // tower level via the DifferentialField::rational_rde recursion.
+    let mut w_terms: Vec<ExprId> = Vec::new();
+    for (i, ri) in r_elem.iter().enumerate() {
+        if <F as CoeffField>::is_zero(field, ri) {
+            continue;
+        }
+        let scale = TExpr::from_ratfn(RatFn::new(
+            vec![Rational::from(i as i64)],
+            vec![Rational::from(n as i64)],
+        ));
+        let twist = <F as CoeffField>::mul(field, &scale, &log_deriv_a);
+        let omega = <F as CoeffField>::add(field, &eta_prime_tx, &twist);
+
+        // M4 recursion: descend to the coefficient field's RDE solver.
+        let wi = DifferentialField::rational_rde(field, &omega, ri)?;
+        if <F as CoeffField>::is_zero(field, &wi) {
+            continue;
+        }
+        let wi_expr = texpr_to_expr(&wi, var, t_gen, pool);
+        if i == 0 {
+            w_terms.push(wi_expr);
+        } else {
+            let yi = pool.pow(a_expr, pool.rational(i as i32, n as i32));
+            w_terms.push(pool.mul(vec![wi_expr, yi]));
+        }
+    }
+
+    if w_terms.is_empty() {
+        return None;
+    }
+    let w_raw = if w_terms.len() == 1 {
+        w_terms[0]
+    } else {
+        pool.add(w_terms)
+    };
+    // F = exp(η)·w.
+    let f = simplify(pool.mul(vec![exp_eta, w_raw]), pool).value;
+
+    // Soundness gate: d/dx F must equal the integrand numerically.
+    if !verify_derivative(f, expr, var, pool) {
+        return None;
+    }
+    let mut log = DerivationLog::new();
+    log.push(RewriteStep::simple(
+        "risch_exp_times_radical_over_tower",
+        expr,
+        f,
+    ));
+    Some(Ok(DerivedExpr::with_log(f, log)))
 }
 
 /// The field-generic integration core: decompose over the radical, solve each
@@ -965,5 +1183,93 @@ mod tests {
                 pool.display(g)
             );
         }
+    }
+
+    /// M4 PR2 headline — multi-generator recursive integrator.
+    /// ∫ [ eˣ·√(x+log x) + eˣ·(1+1/x)/(2·√(x+log x)) ] dx = eˣ·√(x+log x).
+    ///
+    /// Outer transcendental coefficient `eˣ` multiplies a radical
+    /// `y = √(x+log x)` over a *separate* log tower.  The integral reduces to the
+    /// twisted Risch DE `D(w) + w = R` over `Quotient<LogTowerField>`, solved
+    /// per radical component by descending one tower level via
+    /// `LogTowerField::rational_rde` (the M4 trait recursion).
+    #[test]
+    fn exp_times_sqrt_x_plus_log_x_end_to_end() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let log_x = pool.func("log", vec![x]);
+        let a = pool.add(vec![x, log_x]); // x + log x
+        let y = pool.pow(a, pool.rational(1_i32, 2_i32)); // √(x+log x)
+        let inv_y = pool.pow(a, pool.rational(-1_i32, 2_i32)); // 1/√(x+log x)
+
+        // term1 = eˣ·√(x+log x)
+        let term1 = pool.mul(vec![exp_x, y]);
+        // term2 = eˣ·(1+1/x)/(2√(x+log x))
+        let one_plus_inv_x = pool.add(vec![pool.integer(1_i32), pool.pow(x, pool.integer(-1_i32))]);
+        let term2 = pool.mul(vec![
+            exp_x,
+            one_plus_inv_x,
+            pool.rational(1_i32, 2_i32),
+            inv_y,
+        ]);
+        let integrand = pool.add(vec![term1, term2]);
+
+        // Direct path returns Some(Ok(...)).
+        let direct = try_integrate_exp_times_radical_over_tower(integrand, x, &pool);
+        assert!(
+            matches!(direct, Some(Ok(_))),
+            "headline should integrate via the multi-generator path; got {direct:?}"
+        );
+
+        // End-to-end through the public engine.
+        let res = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(res.is_ok(), "headline should integrate; got {res:?}");
+        let g = res.unwrap().value;
+
+        // d/dx F = integrand, verified numerically.
+        let ds = simplify(crate::diff::diff(g, x, &pool).unwrap().value, &pool).value;
+        for &xv in &[0.7_f64, 1.5, 2.6] {
+            let lhs = eval(ds, x, xv, &pool).unwrap();
+            let rhs = eval(integrand, x, xv, &pool).unwrap();
+            assert!(
+                (lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()),
+                "x={xv}: d/dx F = {lhs}, f = {rhs}\n  F = {}",
+                pool.display(g)
+            );
+        }
+
+        // F numerically equals eˣ·√(x+log x).
+        let expected = pool.mul(vec![pool.func("exp", vec![x]), y]);
+        for &xv in &[1.3_f64, 2.1, 3.4] {
+            let fv = eval(g, x, xv, &pool).unwrap();
+            let ev = eval(expected, x, xv, &pool).unwrap();
+            assert!(
+                (fv - ev).abs() < 1e-6 * (1.0 + ev.abs()),
+                "x={xv}: F = {fv}, eˣ√(x+log x) = {ev}"
+            );
+        }
+    }
+
+    /// The new multi-generator path declines (returns `None`) on the existing
+    /// single-generator cases — it is purely additive.
+    #[test]
+    fn multigen_declines_single_generator_cases() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+
+        // Example-15 style ∛(x+eˣ) integrand: no separate outer exp factor.
+        let f15 = example15_integrand(&pool, x);
+        assert!(
+            try_integrate_exp_times_radical_over_tower(f15, x, &pool).is_none(),
+            "multigen path must decline the single-generator exp radical case"
+        );
+
+        // Plain x·exp(x): no radical at all.
+        let plain = pool.mul(vec![x, pool.func("exp", vec![x])]);
+        assert!(
+            try_integrate_exp_times_radical_over_tower(plain, x, &pool).is_none(),
+            "multigen path must decline non-radical integrands"
+        );
     }
 }
