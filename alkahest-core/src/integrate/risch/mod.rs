@@ -78,6 +78,7 @@
 pub mod alg_field;
 pub mod alg_rde;
 pub mod diff_field;
+pub mod exp_algebraic;
 pub mod exp_case;
 pub mod log_case;
 pub mod number_field;
@@ -196,6 +197,16 @@ pub fn integrate_risch(
     if let Some(result) =
         tower_integrate::try_integrate_exp_times_radical_over_tower(expr, var, pool)
     {
+        return result;
+    }
+
+    // M1 PR2 (non-diagonal f): ∫ R(x, α)·exp(β) dx with β an *algebraic* function
+    // of x (a radical α = p(x)^{1/n}).  Seeking F = v·exp(β), the integral reduces
+    // to the in-field Risch DE D(v) + f·v = R with f = D(β) a *non-base* element of
+    // ℚ(x)(α), solved by `solve_alg_rde_general` (PR1) and numeric-gated.  Must run
+    // before the exp/log dispatch, which would mistreat the algebraic exp argument.
+    // Returns `None` for everything outside this shape, so it is purely additive.
+    if let Some(result) = exp_algebraic::try_integrate_exp_of_algebraic(expr, var, pool) {
         return result;
     }
 
