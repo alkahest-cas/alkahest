@@ -77,6 +77,7 @@
 
 pub mod alg_field;
 pub mod alg_rde;
+pub mod diff_field;
 pub mod exp_case;
 pub mod log_case;
 pub mod number_field;
