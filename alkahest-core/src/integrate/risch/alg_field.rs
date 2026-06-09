@@ -323,6 +323,115 @@ impl AlgExtension {
     }
 }
 
+// ===========================================================================
+// AlgExtension as a DifferentialField — Risch M4 PR4
+// ===========================================================================
+//
+// Fold the general algebraic extension `ℚ(x)[y]/(q(x,y))` (any minimal poly,
+// not just radicals) into the `DifferentialField` trait, completing the
+// trait's field coverage (ℚ(x), exp tower, log tower, `RadicalExt`,
+// `AlgExtension`).
+//
+// The field-structure methods delegate to the existing `AlgExtension` methods
+// (which take `&[RatFn]`; trait elements are `AlgElem = Vec<RatFn>`, so the
+// slice/Vec plumbing is just `&a[..]`).  `derivation` reuses the `−qₓ/q_y`
+// rule already implemented here.
+//
+// `rational_rde` mirrors `RadicalExt`'s **`f ∈ base` restriction**: the
+// underlying coupled solver `solve_alg_rde` takes `f: RatFn` (a base scalar in
+// ℚ(x)), so when `f` is a base scalar (only its constant `y⁰` component is
+// nonzero) we extract that `RatFn` and call `solve_alg_rde`; otherwise we
+// decline (`None`).  `solve_alg_rde` self-verifies in-field, and we
+// additionally re-verify `D(y)+f·y=g` through the trait's own ops
+// (defense-in-depth) before returning `Some`.
+
+use super::alg_rde::solve_alg_rde;
+use super::diff_field::DifferentialField;
+
+impl DifferentialField for AlgExtension {
+    type Elem = AlgElem;
+
+    fn zero(&self) -> AlgElem {
+        self.from_int(0)
+    }
+
+    fn one(&self) -> AlgElem {
+        self.from_int(1)
+    }
+
+    fn add(&self, a: &AlgElem, b: &AlgElem) -> AlgElem {
+        AlgExtension::add(self, a, b)
+    }
+
+    fn sub(&self, a: &AlgElem, b: &AlgElem) -> AlgElem {
+        AlgExtension::sub(self, a, b)
+    }
+
+    fn mul(&self, a: &AlgElem, b: &AlgElem) -> AlgElem {
+        AlgExtension::mul(self, a, b)
+    }
+
+    fn neg(&self, a: &AlgElem) -> AlgElem {
+        AlgExtension::neg(self, a)
+    }
+
+    fn inv(&self, a: &AlgElem) -> Option<AlgElem> {
+        AlgExtension::inv(self, a)
+    }
+
+    fn is_zero(&self, a: &AlgElem) -> bool {
+        AlgExtension::is_zero(self, a)
+    }
+
+    fn eq(&self, a: &AlgElem, b: &AlgElem) -> bool {
+        self.elem_eq(a, b)
+    }
+
+    fn derivation(&self, a: &AlgElem) -> AlgElem {
+        AlgExtension::derivation(self, a)
+    }
+
+    /// Solve `D(y) + f·y = g` over `ℚ(x)(α)` for **`f ∈ base`** (a scalar in
+    /// `ℚ(x)`), wrapping the general coupled solver `solve_alg_rde`.
+    ///
+    /// Mirrors [`RadicalExt`](super::radical_ext::RadicalExt)'s restriction: the
+    /// underlying solver only accepts `f: RatFn`, so when `f`'s only nonzero
+    /// power-basis component is the constant `y⁰` term we extract that `RatFn`
+    /// and solve; if `f` carries any higher `y`-power (`f ∉ base`) we decline
+    /// (`None`).  Declining is always sound.
+    ///
+    /// `solve_alg_rde` verifies its candidate in-field; we re-verify
+    /// `D(y)+f·y=g` through the trait's own ops as defense-in-depth before
+    /// returning `Some`.  `None` therefore means "no solution found within the
+    /// ansatz bounds (or `f ∉ base`)", not a non-existence certificate.
+    fn rational_rde(&self, f: &AlgElem, g: &AlgElem) -> Option<AlgElem> {
+        // f ∈ base: every component above y⁰ must vanish.
+        let f_red = self.reduce(f);
+        if f_red
+            .iter()
+            .skip(1)
+            .any(|c| !self.quotient.field().is_zero(c))
+        {
+            return None; // f carries y-powers — non-base, declined (future work)
+        }
+        let f_ratfn = f_red.first().cloned().unwrap_or_else(|| RatFn::int(0));
+
+        let y = solve_alg_rde(self, &f_ratfn, g)?;
+
+        // Defense-in-depth: re-verify D(y) + f·y = g via the trait's own ops.
+        let lhs = DifferentialField::add(
+            self,
+            &DifferentialField::derivation(self, &y),
+            &DifferentialField::mul(self, f, &y),
+        );
+        if DifferentialField::eq(self, &lhs, g) {
+            Some(y)
+        } else {
+            None
+        }
+    }
+}
+
 /// Formal derivative with respect to `y` of a polynomial-in-`y`
 /// `Σⱼ cⱼ yʲ ↦ Σⱼ j cⱼ y^{j−1}`, with coefficients in `F` (the `cⱼ` treated as
 /// constants).
@@ -573,5 +682,208 @@ mod tests {
             let rhs = e.add(&e.derivation(&a), &e.derivation(&b));
             prop_assert!(e.elem_eq(&lhs, &rhs));
         }
+    }
+}
+
+// ===========================================================================
+// Tests for the `DifferentialField` impl (Risch M4 PR4)
+// ===========================================================================
+//
+// Equivalence: the trait `rational_rde` must agree exactly with the wrapped
+// coupled solver `solve_alg_rde` for `f ∈ base`, the solution must self-verify
+// in-field, an unsolvable target must yield `None`, and `f ∉ base` must yield
+// `None`.  Field-structure ops (`derivation`, etc.) must match the existing
+// `AlgExtension` methods.
+
+#[cfg(test)]
+mod diff_field_impl_tests {
+    use super::*;
+    use crate::integrate::risch::alg_rde::solve_alg_rde;
+    use crate::integrate::risch::diff_field::DifferentialField;
+    use crate::integrate::risch::poly_rde::{poly_one, poly_scale};
+
+    fn rat(n: i64) -> Rational {
+        Rational::from(n)
+    }
+
+    /// `α = ∛x` extension, `ℚ(x)[y]/(y³ − x)`.
+    fn cbrt_ext() -> AlgExtension {
+        AlgExtension::radical(3, &vec![rat(0), rat(1)])
+    }
+
+    /// `α = √x` extension, `ℚ(x)[y]/(y² − x)`.
+    fn sqrt_ext() -> AlgExtension {
+        AlgExtension::radical(2, &vec![rat(0), rat(1)])
+    }
+
+    /// Non-cyclic `α = √x + √(x+1)`, `q = α⁴ − 2(2x+1)α² + 1`.
+    fn compositum_ext() -> AlgExtension {
+        let q: Vec<QPoly> = vec![
+            poly_one(),
+            Vec::new(),
+            poly_scale(&vec![rat(1), rat(2)], &rat(-2)), // −2(2x+1)
+            Vec::new(),
+            poly_one(),
+        ];
+        AlgExtension::new(&q)
+    }
+
+    /// Assert `trait.rational_rde(f, g) == solve_alg_rde(f, g)` exactly, and
+    /// (when `Some`) that the returned `y` satisfies `D(y)+f·y=g` via the trait.
+    fn check_equiv(e: &AlgExtension, f_ratfn: &RatFn, g: &AlgElem) {
+        let f_elem = e.constant(f_ratfn.clone());
+        let trait_res = DifferentialField::rational_rde(e, &f_elem, g);
+        let direct = solve_alg_rde(e, f_ratfn, g);
+        match (&trait_res, &direct) {
+            (Some(yt), Some(yd)) => {
+                assert!(
+                    e.elem_eq(yt, yd),
+                    "trait and direct solutions must agree; trait={yt:?}, direct={yd:?}"
+                );
+                // Self-verify D(y)+f·y=g via the trait's own ops.
+                let lhs = DifferentialField::add(
+                    e,
+                    &DifferentialField::derivation(e, yt),
+                    &DifferentialField::mul(e, &f_elem, yt),
+                );
+                assert!(
+                    DifferentialField::eq(e, &lhs, g),
+                    "trait RDE solution must satisfy D(y)+f·y=g; y={yt:?}"
+                );
+            }
+            (None, None) => {}
+            _ => panic!("trait vs direct disagree on solvability: {trait_res:?} vs {direct:?}"),
+        }
+    }
+
+    #[test]
+    fn derivation_matches_algextension() {
+        // D(α) via the trait must equal AlgExtension::derivation.
+        let e = cbrt_ext();
+        let alpha = e.generator();
+        let dt = DifferentialField::derivation(&e, &alpha);
+        let dd = AlgExtension::derivation(&e, &alpha);
+        assert!(e.elem_eq(&dt, &dd), "trait D(α) must match AlgExtension");
+        // And it equals the stored dy.
+        assert!(e.elem_eq(&dt, e.dy()));
+    }
+
+    #[test]
+    fn field_ops_match_algextension() {
+        let e = compositum_ext();
+        let a = e.generator(); // α
+        let b = e.constant(RatFn::from_poly(&vec![rat(0), rat(1)])); // x
+        assert!(DifferentialField::eq(
+            &e,
+            &DifferentialField::add(&e, &a, &b),
+            &AlgExtension::add(&e, &a, &b)
+        ));
+        assert!(DifferentialField::eq(
+            &e,
+            &DifferentialField::mul(&e, &a, &b),
+            &AlgExtension::mul(&e, &a, &b)
+        ));
+        assert!(DifferentialField::eq(
+            &e,
+            &DifferentialField::sub(&e, &a, &b),
+            &AlgExtension::sub(&e, &a, &b)
+        ));
+        // zero / one.
+        assert!(DifferentialField::is_zero(&e, &DifferentialField::zero(&e)));
+        assert!(e.elem_eq(&DifferentialField::one(&e), &e.from_int(1)));
+        // inv round-trip.
+        let inv_a = DifferentialField::inv(&e, &a).expect("α invertible");
+        assert!(DifferentialField::eq(
+            &e,
+            &DifferentialField::mul(&e, &a, &inv_a),
+            &DifferentialField::one(&e)
+        ));
+    }
+
+    #[test]
+    fn equiv_cyclic_sqrt() {
+        // α = √x, f = 0, g = (3/2)α ⇒ y = x·α (= x^{3/2}).
+        let e = sqrt_ext();
+        let g: AlgElem = vec![
+            RatFn::int(0),
+            RatFn::from_poly(&vec![Rational::from((3, 2))]),
+        ];
+        check_equiv(&e, &RatFn::int(0), &g);
+        let f_elem = e.zero();
+        let y = DifferentialField::rational_rde(&e, &f_elem, &g).expect("solvable");
+        let expected: AlgElem = vec![RatFn::int(0), RatFn::from_poly(&vec![rat(0), rat(1)])];
+        assert!(e.elem_eq(&y, &expected), "y should be x·α; got {y:?}");
+    }
+
+    #[test]
+    fn equiv_cbrt_with_base_scalar_f() {
+        // α = ∛x, f = 1/x ∈ base, target y = α; g = D(α) + (1/x)·α.
+        let e = cbrt_ext();
+        let f = RatFn::new(poly_one(), vec![rat(0), rat(1)]); // 1/x
+        let alpha = e.generator();
+        let f_elem = e.constant(f.clone());
+        let g = e.add(&e.derivation(&alpha), &e.mul(&f_elem, &alpha));
+        check_equiv(&e, &f, &g);
+        let y = DifferentialField::rational_rde(&e, &f_elem, &g).expect("solvable");
+        assert!(e.elem_eq(&y, &alpha), "y should be α; got {y:?}");
+    }
+
+    #[test]
+    fn equiv_noncyclic_compositum() {
+        // α = √x + √(x+1) (degree 4, coupled), f = 0, g = D(α) ⇒ y = α.
+        let e = compositum_ext();
+        let alpha = e.generator();
+        let g = e.derivation(&alpha);
+        check_equiv(&e, &RatFn::int(0), &g);
+        let f_elem = e.zero();
+        let y = DifferentialField::rational_rde(&e, &f_elem, &g).expect("coupled solvable");
+        assert!(
+            e.elem_eq(&e.derivation(&y), &g),
+            "D(y) must equal g; y={y:?}"
+        );
+    }
+
+    #[test]
+    fn equiv_noncyclic_compositum_with_f() {
+        // α = √x + √(x+1), f = 1/x ∈ base, g = D(α)+(1/x)·α ⇒ y = α.
+        let e = compositum_ext();
+        let f = RatFn::new(poly_one(), vec![rat(0), rat(1)]); // 1/x
+        let alpha = e.generator();
+        let f_elem = e.constant(f.clone());
+        let g = e.add(&e.derivation(&alpha), &e.mul(&f_elem, &alpha));
+        check_equiv(&e, &f, &g);
+    }
+
+    #[test]
+    fn unsolvable_target_is_none() {
+        // g = 1/x (constant ∈ ℚ(x)); ∫1/x = log x ∉ ℚ(x)(α) ⇒ None,
+        // and the trait must agree with the direct solver (both None).
+        let e = compositum_ext();
+        let g = e.constant(RatFn::new(poly_one(), vec![rat(0), rat(1)])); // 1/x
+        check_equiv(&e, &RatFn::int(0), &g); // asserts trait == direct (None == None)
+        assert!(DifferentialField::rational_rde(&e, &e.zero(), &g).is_none());
+    }
+
+    #[test]
+    fn non_base_f_declines() {
+        // f = α (carries a y-power) ⇒ f ∉ base ⇒ trait declines (None),
+        // even though the equation might be solvable.  Soundness: declining ok.
+        let e = sqrt_ext();
+        let f = e.generator(); // α ∉ base
+        let g = e.one();
+        assert!(
+            DifferentialField::rational_rde(&e, &f, &g).is_none(),
+            "f ∉ base ⇒ declines"
+        );
+    }
+
+    #[test]
+    fn stubs_decline() {
+        let e = cbrt_ext();
+        let one = DifferentialField::one(&e);
+        assert!(e
+            .limited_integrate(&one, std::slice::from_ref(&one))
+            .is_none());
+        assert!(e.param_log_deriv(&one, &one).is_none());
     }
 }

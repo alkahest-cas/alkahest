@@ -837,6 +837,15 @@ fn integrate_single_exp_term(
         return result;
     }
 
+    // M4 PR4: non-cyclic algebraic coefficient — a **nested radical**
+    // `α = √(a(x) + √b(x))` (degree-4, coupled twisted-derivation RDE), routed
+    // through the same coupled solver via the `AlgExtension` `DifferentialField`.
+    if let Some(result) =
+        try_nested_radical_poly_rde(c_rest, k, deta, exp_k_eta, k_const, c_expr, var, pool, log)
+    {
+        return result;
+    }
+
     // Outside all supported subsets.
     Err(IntegrationError::NotImplemented(format!(
         "coefficient {} of exp(η)^{} is not a polynomial or rational function over \
@@ -2511,6 +2520,385 @@ fn try_radical_poly_rde(
     Some(Ok(result))
 }
 
+/// Try to integrate `c_rest · exp(kη)` when `c_rest` involves a **nested
+/// radical** `α = √(a(x) + √b(x))` — a degree-4 *non-cyclic* algebraic
+/// extension `ℚ(x)(α)` with minimal polynomial
+/// `α⁴ − 2a·α² + (a² − b) = 0` (from `(α² − a)² = b`).
+///
+/// This is a genuinely-new reachable family for **M4 PR4**: the coupled
+/// twisted-derivation RDE `D(v) + kη'·v = c_rest` is solved by the same general
+/// solver [`solve_alg_rde`] (consumed by `AlgExtension`'s `DifferentialField`
+/// impl), with detection + minimal-poly construction + α-basis decomposition
+/// wired here.  The decomposition is simpler than the two-sqrt compositum: in
+/// the `{1, α, α², α³}` basis,
+///
+/// ```text
+///   √(a + √b) = α            (the generator),
+///   √b        = α² − a       (since α² = a + √b).
+/// ```
+///
+/// Returns `None` if `c_rest` is not of this shape; `Some(Err(NonElementary))`
+/// if no rational `v` exists (after exact in-field verification by the solver).
+#[allow(clippy::too_many_arguments)]
+fn try_nested_radical_poly_rde(
+    c_rest: ExprId,
+    k: i64,
+    deta: &[rug::Rational],
+    exp_k_eta: ExprId,
+    k_const: ExprId,
+    c_expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Option<Result<ExprId, IntegrationError>> {
+    let (a, b) = detect_nested_radical(c_rest, var, pool)?;
+
+    // Minimal polynomial of α = √(a + √b): α⁴ − 2a·α² + (a² − b).
+    // Ascending coeffs in α: [a²−b, 0, −2a, 0, 1].
+    let a2_minus_b = poly_sub(&poly_mul(&a, &a), &b);
+    let q_min = vec![
+        a2_minus_b,
+        poly_zero(),
+        poly_scale(&a, &rug::Rational::from(-2)),
+        poly_zero(),
+        poly_one(),
+    ];
+    let e = AlgExtension::new(&q_min);
+
+    // α-basis forms (power basis {1, α, α², α³}):
+    //   √(a+√b) = α          → [0, 1, 0, 0]
+    //   √b      = α² − a     → [−a, 0, 1, 0]
+    let sqrt_outer: AlgElem = vec![RatFn::int(0), RatFn::int(1)];
+    let sqrt_inner: AlgElem = e.reduce(&[
+        RatFn::new(poly_scale(&a, &rug::Rational::from(-1)), poly_one()),
+        RatFn::int(0),
+        RatFn::int(1),
+    ]);
+
+    let g = decompose_over_nested_radical(c_rest, &a, &b, &sqrt_outer, &sqrt_inner, &e, var, pool)?;
+
+    // f = k·η' (a polynomial in x), as a ℚ(x) element.
+    let f_poly: QPoly = deta
+        .iter()
+        .map(|r| r.clone() * rug::Rational::from(k))
+        .collect();
+    let f = RatFn::from_poly(&f_poly);
+
+    let ne = || {
+        IntegrationError::NonElementary(format!(
+            "the coupled Risch DE over ℚ(x)(√(a+√b)) for ∫ {} · exp(η)^{k} dx \
+             has no rational solution",
+            pool.display(c_expr),
+        ))
+    };
+    let y = match solve_alg_rde(&e, &f, &g) {
+        Some(y) => y,
+        None => return Some(Err(ne())),
+    };
+
+    // Reconstruct v = Σⱼ yⱼ(x)·αʲ with α = √(a + √b).
+    let a_expr = qpoly_to_expr(&a, var, pool);
+    let b_expr = qpoly_to_expr(&b, var, pool);
+    let inner = pool.add(vec![a_expr, pool.func("sqrt", vec![b_expr])]);
+    let alpha = pool.func("sqrt", vec![inner]);
+    let mut terms: Vec<ExprId> = Vec::new();
+    for (j, yj) in y.iter().enumerate() {
+        if yj.numer().is_empty() {
+            continue;
+        }
+        let coeff = build_rational(yj.numer(), yj.denom(), var, pool);
+        let term = if j == 0 {
+            coeff
+        } else {
+            pool.mul(vec![coeff, pool.pow(alpha, pool.integer(j as i32))])
+        };
+        terms.push(term);
+    }
+    let v_expr = match terms.len() {
+        0 => pool.integer(0_i32),
+        1 => terms[0],
+        _ => pool.add(terms),
+    };
+    let core = build_v_times_exp(v_expr, exp_k_eta, pool);
+    let result = apply_const(k_const, core, pool);
+    log.push(RewriteStep::simple(
+        "risch_exp_nested_radical_poly",
+        c_expr,
+        result,
+    ));
+    Some(Ok(result))
+}
+
+/// Detect a **nested radical** `√(a(x) + √b(x))` generator in `expr`: a `sqrt`
+/// (or `^{1/2}`) whose radicand is `a + √b` with `a, b ∈ ℚ[x]`, `deg b ≥ 1`
+/// (so the inner radical is genuinely irrational) and `b` not a perfect
+/// square as a polynomial.  Returns `(a, b)` for the unique such nesting, or
+/// `None`.
+fn detect_nested_radical(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<(QPoly, QPoly)> {
+    let mut found: Vec<(QPoly, QPoly)> = Vec::new();
+    scan_nested_radical(expr, var, pool, &mut found);
+    let mut distinct: Vec<(QPoly, QPoly)> = Vec::new();
+    for (a, b) in found {
+        if !distinct.iter().any(|(a2, b2)| {
+            trim(a2.clone()) == trim(a.clone()) && trim(b2.clone()) == trim(b.clone())
+        }) {
+            distinct.push((a, b));
+        }
+    }
+    if distinct.len() == 1 {
+        Some(distinct.remove(0))
+    } else {
+        None
+    }
+}
+
+/// Recursively collect `√(a + √b)` nestings.  The outer radicand must be a
+/// single `Add` of a polynomial part `a` and exactly one inner `√b` term.
+fn scan_nested_radical(expr: ExprId, var: ExprId, pool: &ExprPool, out: &mut Vec<(QPoly, QPoly)>) {
+    use crate::kernel::ExprData;
+
+    let try_radicand = |radicand: ExprId, out: &mut Vec<(QPoly, QPoly)>| {
+        if let Some((a, b)) = match_a_plus_sqrt_b(radicand, var, pool) {
+            out.push((a, b));
+        }
+    };
+
+    match pool.get(expr) {
+        ExprData::Func { ref name, ref args } if name == "sqrt" && args.len() == 1 => {
+            try_radicand(args[0], out);
+            // Recurse into the radicand for deeper nestings / sibling generators.
+            scan_nested_radical(args[0], var, pool, out);
+        }
+        ExprData::Pow { base, exp } => {
+            if let ExprData::Rational(r) = pool.get(exp) {
+                if r.0.denom().to_i64() == Some(2) {
+                    try_radicand(base, out);
+                    scan_nested_radical(base, var, pool, out);
+                    return;
+                }
+            }
+            scan_nested_radical(base, var, pool, out);
+        }
+        ExprData::Add(args) | ExprData::Mul(args) => {
+            for &a in &args {
+                scan_nested_radical(a, var, pool, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Match an expression of the form `a(x) + √b(x)` with `a, b ∈ ℚ[x]`,
+/// `deg b ≥ 1`, and `b` *not* a perfect square (else `√b` is rational and the
+/// nesting is spurious).  Returns `(a, b)`.
+fn match_a_plus_sqrt_b(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<(QPoly, QPoly)> {
+    use crate::kernel::ExprData;
+    let ExprData::Add(args) = pool.get(expr) else {
+        return None;
+    };
+    let mut a = poly_zero();
+    let mut inner_b: Option<QPoly> = None;
+    for &term in &args {
+        if let Some(p) = expr_to_qpoly(term, var, pool) {
+            a = poly_add(&a, &p);
+            continue;
+        }
+        // A single √b term (sqrt or ^{1/2}); reject if a second one appears.
+        let b = match pool.get(term) {
+            ExprData::Func { ref name, ref args } if name == "sqrt" && args.len() == 1 => {
+                expr_to_qpoly(args[0], var, pool)
+            }
+            ExprData::Pow { base, exp } => match pool.get(exp) {
+                ExprData::Rational(r)
+                    if r.0.denom().to_i64() == Some(2) && r.0.numer().to_i64() == Some(1) =>
+                {
+                    expr_to_qpoly(base, var, pool)
+                }
+                _ => return None,
+            },
+            _ => return None,
+        }?;
+        if inner_b.is_some() {
+            return None; // more than one inner radical — not this shape
+        }
+        inner_b = Some(b);
+    }
+    let b = inner_b?;
+    if degree(&b) < 1 || is_perfect_square_poly(&b) {
+        return None;
+    }
+    Some((a, trim(b)))
+}
+
+/// Is the polynomial `b` a perfect square in `ℚ[x]` (so `√b ∈ ℚ(x)`)?  Decided
+/// via `gcd(b, b') = b/√b` when `b` is a square: `b` is a perfect square iff
+/// `b = c·g²` for the squarefree part... we use the simpler exact test:
+/// `b` is a square iff `r := b / gcd(b, b')` satisfies `r² · lc-adjust == b`.
+/// We use a direct construction: compute `s` with `s·s == b` by matching the
+/// top coefficient and dividing; cheaper here to just test odd degree (never a
+/// square) and otherwise attempt an exact square root.
+fn is_perfect_square_poly(b: &QPoly) -> bool {
+    let b = trim(b.clone());
+    let d = degree(&b);
+    if d < 0 {
+        return true; // 0 = 0²
+    }
+    if d % 2 != 0 {
+        return false; // odd degree ⇒ not a square
+    }
+    // Attempt exact polynomial square root by undetermined coefficients on the
+    // leading half; verify by squaring.
+    if let Some(s) = poly_sqrt_exact(&b) {
+        return trim(poly_mul(&s, &s)) == b;
+    }
+    false
+}
+
+/// Exact polynomial square root: returns `s` with `s·s = b`, or `None`.  Builds
+/// `s` coefficient-by-coefficient from the top (requires the leading coeff of
+/// `b` to be a perfect rational square).
+fn poly_sqrt_exact(b: &QPoly) -> Option<QPoly> {
+    let b = trim(b.clone());
+    let d = degree(&b);
+    if d < 0 {
+        return Some(poly_zero());
+    }
+    if d % 2 != 0 {
+        return None;
+    }
+    let n = (d / 2) as usize; // deg s
+                              // Leading coeff of s: sqrt of leading coeff of b (must be a rational square).
+    let lead_b = b[d as usize].clone();
+    let lead_s = rational_sqrt(&lead_b)?;
+    let mut s = vec![rug::Rational::from(0); n + 1];
+    s[n] = lead_s;
+    // s_{n-1}, …, s_0 from matching the coefficient of x^{n+k} in s² = b:
+    //   [x^{n+k}] s² = Σ_{i+j=n+k} s_i s_j = 2·s_n·s_k + Σ_{i+j=n+k, k<i,j<n} s_i s_j.
+    // The first term isolates the unknown s_k (all higher s_i already known).
+    for k in (0..n).rev() {
+        let target = b
+            .get(n + k)
+            .cloned()
+            .unwrap_or_else(|| rug::Rational::from(0));
+        let mut rest = rug::Rational::from(0);
+        for i in 0..s.len() {
+            let jj = (n + k) as i64 - i as i64;
+            if jj < 0 || jj as usize >= s.len() {
+                continue;
+            }
+            let j = jj as usize;
+            if (i == n && j == k) || (i == k && j == n) {
+                continue; // the unknown 2·s_n·s_k term
+            }
+            rest += s[i].clone() * s[j].clone();
+        }
+        let two_sn = rug::Rational::from(2) * s[n].clone();
+        s[k] = (target - rest) / two_sn;
+    }
+    Some(trim(s))
+}
+
+/// Exact rational square root, or `None` if `r` is not a perfect square.
+fn rational_sqrt(r: &rug::Rational) -> Option<rug::Rational> {
+    if *r.numer() < 0 {
+        return None;
+    }
+    let num = r.numer().clone();
+    let den = r.denom().clone();
+    let sn = num.clone().sqrt(); // floor sqrt
+    let sd = den.clone().sqrt();
+    if sn.clone() * sn.clone() == num && sd.clone() * sd.clone() == den {
+        Some(rug::Rational::from((sn, sd)))
+    } else {
+        None
+    }
+}
+
+/// Decompose `expr` over the power basis of `ℚ(x)(α)`, `α = √(a + √b)`,
+/// replacing `√(a+√b) → sqrt_outer` (= α) and `√b → sqrt_inner` (= α² − a),
+/// and rational-in-`x` subexpressions by constants.  `None` if `expr` is not a
+/// polynomial in these generators over `ℚ(x)`.
+#[allow(clippy::too_many_arguments)]
+fn decompose_over_nested_radical(
+    expr: ExprId,
+    a: &QPoly,
+    b: &QPoly,
+    sqrt_outer: &AlgElem,
+    sqrt_inner: &AlgElem,
+    e: &AlgExtension,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<AlgElem> {
+    use crate::kernel::ExprData;
+
+    if let Some((num, den)) = expr_to_qrational(expr, var, pool) {
+        return Some(e.constant(RatFn::new(num, den)));
+    }
+
+    // `√(a+√b)` (the nesting) → α;  `√b` → α² − a.  Both via integer powers too.
+    let radical_in_basis = |radicand: ExprId| -> Option<AlgElem> {
+        // outer nesting?
+        if let Some((ra, rb)) = match_a_plus_sqrt_b(radicand, var, pool) {
+            if trim(ra) == trim(a.clone()) && trim(rb) == trim(b.clone()) {
+                return Some(sqrt_outer.clone());
+            }
+        }
+        // inner radical √b?
+        if let Some(rb) = expr_to_qpoly(radicand, var, pool) {
+            if trim(rb) == trim(b.clone()) {
+                return Some(sqrt_inner.clone());
+            }
+        }
+        None
+    };
+
+    match pool.get(expr) {
+        ExprData::Add(args) => {
+            let mut acc = e.from_int(0);
+            for &arg in &args {
+                acc = e.add(
+                    &acc,
+                    &decompose_over_nested_radical(
+                        arg, a, b, sqrt_outer, sqrt_inner, e, var, pool,
+                    )?,
+                );
+            }
+            Some(acc)
+        }
+        ExprData::Mul(args) => {
+            let mut acc = e.from_int(1);
+            for &arg in &args {
+                acc = e.mul(
+                    &acc,
+                    &decompose_over_nested_radical(
+                        arg, a, b, sqrt_outer, sqrt_inner, e, var, pool,
+                    )?,
+                );
+            }
+            Some(acc)
+        }
+        ExprData::Pow { base, exp } => match pool.get(exp) {
+            ExprData::Integer(m) => {
+                let m = m.0.to_i64()?;
+                let bb = decompose_over_nested_radical(
+                    base, a, b, sqrt_outer, sqrt_inner, e, var, pool,
+                )?;
+                e.pow(&bb, m)
+            }
+            ExprData::Rational(r) if r.0.denom().to_i64() == Some(2) => {
+                let m = r.0.numer().to_i64()?;
+                let g = radical_in_basis(base)?;
+                e.pow(&g, m)
+            }
+            _ => None,
+        },
+        ExprData::Func { ref name, ref args } if name == "sqrt" && args.len() == 1 => {
+            radical_in_basis(args[0])
+        }
+        _ => None,
+    }
+}
+
 /// Try to integrate `c_rest · exp(kη)` when `c_rest` involves a **compositum of
 /// two distinct square roots** `√p(x)`, `√q(x)` — a degree-4 *non-cyclic*
 /// algebraic extension `ℚ(x)(α)` with `α = √p + √q` and minimal polynomial
@@ -3208,6 +3596,82 @@ mod tests {
         let c_rest = pool.add(vec![sx, sx1, inv2sx, inv2sx1]);
         let integrand = pool.mul(vec![c_rest, exp_x]);
         verify_exp_tower(integrand, x, &pool);
+    }
+
+    /// M4 PR4 (nested radical, coupled): `α = √(x + √x)` is a degree-4 algebraic
+    /// extension with minimal polynomial `α⁴ − 2x·α² + (x² − x) = 0`.  Choosing
+    /// the antiderivative `F = α·eˣ` gives the integrand `(D(α) + α)·eˣ` with
+    /// `D(α) = (2 + x^{-1/2}) / (4·α)`.  The new `try_nested_radical_poly_rde`
+    /// hook (routing through `solve_alg_rde` via the `AlgExtension`
+    /// `DifferentialField` impl) must integrate it back to `α·eˣ`, gated by the
+    /// numeric `d/dx F = integrand` check.
+    #[test]
+    fn nested_radical_sqrt_x_plus_sqrt_x_times_exp() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let sx = pool.func("sqrt", vec![x]); // √x
+        let inner = pool.add(vec![x, sx]); // x + √x
+        let alpha = pool.func("sqrt", vec![inner]); // α = √(x + √x)
+
+        // D(α) = (2 + x^{-1/2}) / (4·α)  =  (1/4)·(2 + x^{-1/2})·α^{-1}.
+        let x_inv_half = pool.pow(x, pool.rational(-1_i32, 2_i32)); // x^{-1/2}
+        let num = pool.add(vec![pool.integer(2_i32), x_inv_half]); // 2 + x^{-1/2}
+        let alpha_inv = pool.pow(alpha, pool.integer(-1_i32)); // α^{-1}
+        let quarter = pool.rational(1_i32, 4_i32);
+        let d_alpha = pool.mul(vec![quarter, num, alpha_inv]); // D(α)
+
+        // c_rest = D(α) + α   (so that v = α solves D(v) + v = c_rest, k=η'=1).
+        let c_rest = pool.add(vec![d_alpha, alpha]);
+        let integrand = pool.mul(vec![c_rest, exp_x]);
+        verify_exp_tower(integrand, x, &pool);
+    }
+
+    /// Detection of the nested-radical generator `√(a + √b)`: positive match
+    /// for `√(x + √x)` (b=x, not a square) and `√(1 + √(x²+1))`, but **rejection**
+    /// when the inner radicand is a perfect square (`√(x + √(x²)) = √(x + x)`),
+    /// exercising `is_perfect_square_poly` / `poly_sqrt_exact`.
+    #[test]
+    fn detect_nested_radical_cases() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        // √(x + √x) → (a=x, b=x).
+        let sx = pool.func("sqrt", vec![x]);
+        let nested = pool.func("sqrt", vec![pool.add(vec![x, sx])]);
+        assert_eq!(
+            detect_nested_radical(nested, x, &pool),
+            Some((qp(&[0, 1]), qp(&[0, 1])))
+        );
+        // √(1 + √(x²+1)) → (a=1, b=x²+1).
+        let x2p1 = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(1_i32)]);
+        let inner = pool.add(vec![pool.integer(1_i32), pool.func("sqrt", vec![x2p1])]);
+        let nested2 = pool.func("sqrt", vec![inner]);
+        assert_eq!(
+            detect_nested_radical(nested2, x, &pool),
+            Some((qp(&[1]), qp(&[1, 0, 1])))
+        );
+        // √(x + √(x²)) : √(x²)=x is rational ⇒ not a genuine nesting ⇒ None.
+        let sqrt_x2 = pool.func("sqrt", vec![pool.pow(x, pool.integer(2_i32))]);
+        let spurious = pool.func("sqrt", vec![pool.add(vec![x, sqrt_x2])]);
+        assert_eq!(detect_nested_radical(spurious, x, &pool), None);
+    }
+
+    /// Nested-radical family must certify NonElementary when no rational `v`
+    /// exists: `∫ √(x + √x)·eˣ dx` (bare radical times eˣ, no derivative term)
+    /// has no rational antiderivative over `ℚ(x)(α)` — cf. `∫√x·eˣ`.
+    #[test]
+    fn nested_radical_times_exp_nonelementary() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let sx = pool.func("sqrt", vec![x]);
+        let alpha = pool.func("sqrt", vec![pool.add(vec![x, sx])]); // √(x+√x)
+        let integrand = pool.mul(vec![alpha, exp_x]);
+        let r = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            matches!(r, Err(IntegrationError::NonElementary(_))),
+            "expected NonElementary; got {r:?}"
+        );
     }
 
     /// The coupled solver must report NonElementary when no rational `v` exists:
