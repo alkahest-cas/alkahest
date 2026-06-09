@@ -285,15 +285,36 @@ def test_integral_third_kind_cubic_three_real_emits_pi():
     assert checked >= 3
 
 
-def test_integral_third_kind_cubic_one_real_declines():
-    """∫ dx/((x−2)√(x³+1)) declines: the ``cosφ`` substitution for the
-    one-real-root cubic makes ``sin²φ`` a *quadratic* rational of x, so a single
-    EllipticPi has a spurious twin pole and no finite F/E/Π/algebraic combination
-    reproduces the integrand.  The soundness gate therefore never emits an
-    (incorrect) closed form — the engine reports the integral as not handled."""
+def test_integral_third_kind_cubic_one_real_emits_pi_and_log():
+    """∫ dx/((x−2)√(x³+1)) → EllipticPi + EllipticF + log, gate-verified.
+
+    The one-real-root cubic uses the ``cosφ`` substitution, so ``sin²φ`` is a
+    *quadratic* rational of x and the simple real pole at ``x=2`` shares a "twin"
+    preimage (here ``x=0``).  A single ``EllipticPi`` would introduce a spurious
+    pole at the twin; adding the twin's elementary log blocks
+    (``log|x|`` and ``log(√P+1)``) cancels it and lets the fit close to
+    ``δ·EllipticPi + β·EllipticF + ε·log(√P+1) + ζ·log|x|``.  The native gate
+    verifies ``d/dx F = integrand`` before emitting, so the form is always
+    correct.
+    """
     pool = ExprPool()
     x = pool.symbol("x")
     p = x**3 + pool.integer(1)
     integrand = ((x - pool.integer(2)) * sqrt(p)) ** -1
-    with pytest.raises(Exception):
-        integrate(integrand, x)
+    res = integrate(integrand, x)
+    f = res.value
+    s = str(f)
+    assert "EllipticPi" in s, f"expected EllipticPi, got {f}"
+    assert "log" in s, f"expected an elementary log block, got {f}"
+    d = diff(f, x).value
+    checked = 0
+    for xv in [1.2, 1.6, 2.4, 2.8, 3.5, 4.0]:
+        pv = xv**3 + 1.0
+        assert pv > 0, f"sample {xv} not in domain P>0"
+        lhs = _num_eval(d, xv)
+        rhs = 1.0 / ((xv - 2.0) * math.sqrt(pv))
+        assert abs(lhs - rhs) < 1e-6 * (1.0 + abs(rhs)), (
+            f"x={xv}: d/dx F = {lhs}, integrand = {rhs}\n  F = {f}"
+        )
+        checked += 1
+    assert checked >= 3

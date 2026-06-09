@@ -403,16 +403,25 @@ pub fn try_elliptic_output_higher_kind(
     // substitutions — the cubic-three-real-root and quartic-four-real-root
     // configurations.  For the `cos φ` substitutions (cubic-one-real,
     // quartic-two-real-plus-pair) `sin²φ` is a *quadratic*-over-quadratic in `x`,
-    // so a pole at `x = p` is shared with a "twin" preimage and a single `Π`
-    // introduces a spurious pole there; the fit then fails to close and the gate
-    // declines (→ `NonElementary`).  We still *try* these — soundness is
-    // unconditional — but they are expected to decline.
+    // so a pole at `x = p` is shared with a "twin" preimage `t` and a single `Π`
+    // introduces a **spurious pole at `t`**: `d/dx[Π] = N(x)/((x−p)(x−t)√P)`, so
+    // the genuine `1/((x−p)√P)` is accompanied by a `1/((x−t)√P)` part the
+    // `Π`/`F`/`E`/algebraic basis alone cannot match (the fit closes only to
+    // ~1e-5 and the gate declines).
+    //
+    // **This PR** adds the missing *elementary* block: when the twin `t` lies in
+    // the real region (`P(t) > 0`), the twin third-kind integral `∫dx/((x−t)√P)`
+    // is elementary for these configurations — a combination of `log|x − t|` and
+    // `log(√P + √P(t))` (see [`elem_log_blocks`]) — whose derivative supplies
+    // exactly the twin part.  With it the cubic-one-real third kind closes, e.g.
+    // `∫dx/((x−2)√(x³+1))` → `δ·Π + β·F + ε·log(√P+1) + ζ·log|x|` (gate-verified).
+    // When the twin integral is *not* elementary the enriched fit still fails and
+    // the path declines — soundness is unconditional.
     //
     // We add the Π blocks for every off-`P`-root real pole and let the numeric fit
-    // + gate decide.  Two recipe variants are pushed: a *minimal* one (just the
-    // algebraic ladder, `F`, and the Π blocks) which produces clean rational
-    // coefficients when it closes, and the *rich* one (also `E` and a `√P/(x−r)`
-    // block at the smallest root of `P`) as a fallback.
+    // + gate decide.  Recipe variants are pushed: a *minimal* one (algebraic
+    // ladder, `F`, Π), the *rich* one (also `E` + reduction-pole blocks), and the
+    // *elementary-augmented* ones (adding the twin log blocks) for the cos φ case.
     let pi_poles: Vec<(f64, f64)> = real_poles
         .iter()
         .filter_map(|&p| {
@@ -460,6 +469,39 @@ pub fn try_elliptic_output_higher_kind(
                 s.push(rat_block(p, pool));
             }
             recipes.push(s);
+        }
+        // 4c/4d) ELEMENTARY-AUGMENTED third-kind basis (this PR) for the cos φ
+        //     configurations.  For each Π pole add the twin's elementary log
+        //     blocks (`log|x−t|`, `log(√P+√P(t))`) so the spurious twin-pole part
+        //     of the Π derivative can be cancelled and the fit can close.  Two
+        //     variants: minimal (ladder + F + Π + logs) for clean coefficients,
+        //     and rich (also E) as a fallback.
+        let twin_logs: Vec<ExprId> = pi_poles
+            .iter()
+            .filter_map(|&(p, _)| twin_pole(p, phi, var, pool))
+            .flat_map(|t| elem_log_blocks(t, p_expr, sqrt_p, var, pool))
+            .collect();
+        if !twin_logs.is_empty() {
+            // 4c) minimal + twin logs.
+            {
+                let mut s = vec![poly_block(0, pool), poly_block(1, pool)];
+                s.push(f_blk);
+                build_pi(&mut s, pool);
+                s.extend(twin_logs.iter().copied());
+                recipes.push(s);
+            }
+            // 4d) + E (and the smallest-root algebraic block) + twin logs.
+            {
+                let mut s = vec![poly_block(0, pool), poly_block(1, pool)];
+                if let Some(&rmin) = p_roots.first() {
+                    s.push(rat_block(rmin, pool));
+                }
+                s.push(f_blk);
+                s.push(e_blk);
+                build_pi(&mut s, pool);
+                s.extend(twin_logs.iter().copied());
+                recipes.push(s);
+            }
         }
     }
 
@@ -618,6 +660,103 @@ fn characteristic_from_pole(p: f64, phi: ExprId, var: ExprId, pool: &ExprPool) -
         return None;
     }
     Some(1.0 / s2)
+}
+
+/// For a `cos φ` substitution `sin²φ(x)` is *quadratic*-over-quadratic in `x`, so
+/// the value `sin²φ(p)` at a pole `p` is shared by a second "twin" preimage
+/// `x = t ≠ p`.  An `EllipticPi(n_p, φ, m)` block (characteristic `n_p =
+/// 1/sin²φ(p)`) consequently has a *spurious* pole at the twin `t` in addition to
+/// the genuine pole at `p`; the twin contribution must be cancelled by an extra
+/// elementary block for the third-kind fit to close (see [`elem_log_blocks`]).
+///
+/// Returns the twin `t` (the real `x ≠ p` with `sin²φ(x) = sin²φ(p)`), located by
+/// a coarse sign-change scan of `sin²φ(x) − sin²φ(p)` followed by bisection.
+/// `None` if no distinct twin is found in the scanned window.
+fn twin_pole(p: f64, phi: ExprId, var: ExprId, pool: &ExprPool) -> Option<f64> {
+    let target = {
+        let v = eval(phi, var, p, pool)?;
+        let s = v.sin();
+        s * s
+    };
+    let f = |x: f64| -> Option<f64> {
+        let v = eval(phi, var, x, pool)?;
+        let s = v.sin();
+        Some(s * s - target)
+    };
+    // Coarse scan for a sign change away from `p`.
+    let (lo, hi, step) = (-40.0_f64, 40.0_f64, 0.05_f64);
+    let mut x0 = lo;
+    let mut f0 = f(x0);
+    let mut x = lo + step;
+    while x <= hi {
+        let f1 = f(x);
+        if let (Some(a), Some(b)) = (f0, f1) {
+            if a.is_finite() && b.is_finite() && a * b <= 0.0 && (x - p).abs() > 1e-3 {
+                // Bisect on [x0, x].
+                let (mut l, mut r) = (x0, x);
+                let (mut fl, _fr) = (a, b);
+                for _ in 0..80 {
+                    let mid = 0.5 * (l + r);
+                    let Some(fm) = f(mid) else { break };
+                    if !fm.is_finite() {
+                        break;
+                    }
+                    if fl * fm <= 0.0 {
+                        r = mid;
+                    } else {
+                        l = mid;
+                        fl = fm;
+                    }
+                }
+                let root = 0.5 * (l + r);
+                if (root - p).abs() > 1e-4 && root.is_finite() {
+                    return Some(root);
+                }
+            }
+        }
+        x0 = x;
+        f0 = f1;
+        x += step;
+    }
+    None
+}
+
+/// Elementary log blocks that cancel the **twin-pole** contribution of an
+/// `EllipticPi` block in the `cos φ` third-kind configurations (cubic-one-real,
+/// quartic-two-real).
+///
+/// When the twin preimage `t` of a pole `p` lies in the real region where
+/// `P(t) > 0`, the twin third-kind integral `∫dx/((x−t)√P)` is *elementary* for
+/// these configurations and its closed form is a combination of
+/// `log|x − t|` and `log(√P(x) + √P(t))`.  Adding both as candidate blocks lets
+/// the otherwise-stuck fit close (and the soundness gate certifies it); when the
+/// twin integral is *not* elementary the fit simply fails and the path declines.
+///
+/// Returns the (possibly empty) list of block `ExprId`s; the numeric fit assigns
+/// their coefficients.
+fn elem_log_blocks(
+    t: f64,
+    p_expr: ExprId,
+    sqrt_p: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Vec<ExprId> {
+    let mut blocks = Vec::new();
+    // `√P(t)` must be a positive real for the second block to be well defined.
+    let pt = {
+        let v = eval(sqrt_p, var, t, pool);
+        v.filter(|w| w.is_finite() && *w > 0.0)
+    };
+    // Block 1: log|x − t|.
+    let xt = pool.add(vec![var, float_to_expr(-t, pool)]);
+    blocks.push(pool.func("log", vec![xt]));
+    // Block 2: log(√P + √P(t)).
+    if let Some(spt) = pt {
+        let _ = p_expr;
+        let arg = pool.add(vec![sqrt_p, float_to_expr(spt, pool)]);
+        blocks.push(pool.func("log", vec![arg]));
+    }
+    blocks
 }
 
 /// Sample grid for the fit, biased to the `P > 0` region and away from poles.
@@ -1716,19 +1855,101 @@ mod tests {
     }
 
     #[test]
-    fn third_kind_cubic_one_real_declines() {
-        // ∫ dx/((x−2)√(x³+1)) — the `acos`/cosφ substitution makes sin²φ a
-        // *quadratic* rational of x, so a single EllipticPi has a spurious twin
-        // pole and the fit cannot close.  The path declines (→ NonElementary):
-        // soundness gate never emits an unverified form.
+    fn third_kind_cubic_one_real_emits_pi_and_log() {
+        // Headline (this PR): ∫ dx/((x−2)√(x³+1)).  The `acos`/cosφ substitution
+        // makes sin²φ a *quadratic* rational of x, so a single EllipticPi has a
+        // spurious twin pole (here at x=0).  Adding the twin's elementary log
+        // blocks (`log|x|`, `log(√P+1)`) lets the fit close:
+        //   F = δ·Π + β·F + ε·log(√P+1) + ζ·log|x|  (gate-verified).
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
         let p = pool.add(vec![pool.pow(x, pool.integer(3_i32)), pool.integer(1_i32)]);
         let x_minus = pool.add(vec![x, pool.integer(-2_i32)]);
         let den = pool.mul(vec![x_minus, p]);
         let b = pool.pow(den, pool.integer(-1_i32));
+        // b_den = (x−2)·P, ascending.
+        let p_coeffs = [1.0, 0.0, 0.0, 1.0];
+        let mut b_den = vec![0.0; p_coeffs.len() + 1];
+        for (j, &c) in p_coeffs.iter().enumerate() {
+            b_den[j + 1] += c;
+            b_den[j] += -2.0 * c;
+        }
+        let s = check_higher(
+            p,
+            b,
+            x,
+            &["EllipticPi", "log"],
+            &[1.0],
+            &b_den,
+            &p_coeffs,
+            &[1.2, 1.6, 2.4, 2.8, 3.5, 4.0, 5.0],
+            &pool,
+        );
+        assert!(s.contains("EllipticPi"), "{s}");
+        assert!(s.contains("log"), "{s}");
+    }
+
+    #[test]
+    fn engine_integrate_third_kind_cubic_one_real_emits_pi() {
+        // End-to-end through the engine: ∫ dx/((x−2)√(x³+1)) → EllipticPi + log
+        // form, with d/dx matching the integrand on x>−1, x≠2.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![pool.pow(x, pool.integer(3_i32)), pool.integer(1_i32)]);
+        let sqrt_p = pool.func("sqrt", vec![p]);
+        let x_minus = pool.add(vec![x, pool.integer(-2_i32)]);
+        let den = pool.mul(vec![x_minus, sqrt_p]);
+        let integrand = pool.pow(den, pool.integer(-1_i32));
+        let res = crate::integrate::engine::integrate(integrand, x, &pool)
+            .expect("∫ dx/((x−2)√(x³+1)) should integrate to an elliptic form");
+        let s = pool.display(res.value).to_string();
+        assert!(s.contains("EllipticPi"), "expected EllipticPi, got {s}");
+        let ds = simplify(crate::diff::diff(res.value, x, &pool).unwrap().value, &pool).value;
+        let mut checked = 0;
+        for &xv in &[1.2_f64, 1.6, 2.4, 2.8, 3.5, 4.0] {
+            let pv: f64 = xv * xv * xv + 1.0;
+            if pv <= 1e-6 {
+                continue;
+            }
+            let rhs = 1.0 / ((xv - 2.0) * pv.sqrt());
+            let lhs = eval(ds, x, xv, &pool).unwrap();
+            assert!((lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()), "x={xv}");
+            checked += 1;
+        }
+        assert!(checked >= 3);
+    }
+
+    #[test]
+    fn third_kind_cubic_one_real_plus2_emits_or_declines_soundly() {
+        // ∫ dx/((x+2)√(x³+1)): the pole x=−2 lies where P(−2)=−7<0, outside the
+        // φ domain — `characteristic_from_pole` returns NaN so no Π block is added
+        // and the path declines.  (Kept as a soundness assertion: never emits an
+        // unverified form.  If a future reduction handles it the form must still
+        // gate-verify.)
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![pool.pow(x, pool.integer(3_i32)), pool.integer(1_i32)]);
+        let x_plus = pool.add(vec![x, pool.integer(2_i32)]);
+        let den = pool.mul(vec![x_plus, p]);
+        let b = pool.pow(den, pool.integer(-1_i32));
         let zero = pool.integer(0_i32);
-        assert!(try_elliptic_output_higher_kind(zero, b, p, x, &pool).is_none());
+        if let Some(f) = try_elliptic_output_higher_kind(zero, b, p, x, &pool) {
+            // If something is emitted it must be gate-correct.
+            let b_num = [1.0];
+            let mut b_den = vec![0.0; 5];
+            for (j, &c) in [1.0, 0.0, 0.0, 1.0].iter().enumerate() {
+                b_den[j + 1] += c;
+                b_den[j] += 2.0 * c;
+            }
+            assert!(verify_higher(
+                f,
+                &[1.0, 0.0, 0.0, 1.0],
+                &b_num,
+                &b_den,
+                x,
+                &pool
+            ));
+        }
     }
 
     #[test]
