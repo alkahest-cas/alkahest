@@ -132,7 +132,7 @@ prime eval run alkahest/alkahest-symbolic-integration -m <model>
 
 ### Hub checklist
 
-1. **Alkahest on PyPI** — the Hub package depends on `alkahest>=3.2.0` (includes
+1. **Alkahest on PyPI** — the Hub package depends on `alkahest>=3.3.0` (includes
    `alkahest.rl`). For local development before PyPI catches up, use `maturin develop`
    or a release wheel from GitHub.
 
