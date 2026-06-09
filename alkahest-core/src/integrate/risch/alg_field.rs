@@ -337,15 +337,19 @@ impl AlgExtension {
 // slice/Vec plumbing is just `&a[..]`).  `derivation` reuses the `−qₓ/q_y`
 // rule already implemented here.
 //
-// `rational_rde` mirrors `RadicalExt`'s **`f ∈ base` restriction**: the
-// underlying coupled solver `solve_alg_rde` takes `f: RatFn` (a base scalar in
-// ℚ(x)), so when `f` is a base scalar (only its constant `y⁰` component is
-// nonzero) we extract that `RatFn` and call `solve_alg_rde`; otherwise we
-// decline (`None`).  `solve_alg_rde` self-verifies in-field, and we
+// `rational_rde` handles an **arbitrary** `f ∈ E` — base scalar *or* a general
+// extension element carrying `y`-powers (the *non-diagonal* coupled case).  It
+// calls the generalized solver `solve_alg_rde_general`, which builds the same
+// `ℚ`-linear ansatz system but multiplies by the full extension `f` (mixing the
+// power basis — the genuine coupling) and collects denominators across every
+// component of `f`.  `solve_alg_rde_general` self-verifies in-field, and we
 // additionally re-verify `D(y)+f·y=g` through the trait's own ops
-// (defense-in-depth) before returning `Some`.
+// (defense-in-depth) before returning `Some`.  The historical `f ∈ base`
+// restriction is thereby lifted.  (`RadicalExt`'s *generic* non-diagonal case
+// over an arbitrary lower differential field remains future work — see
+// `radical_ext.rs`.)
 
-use super::alg_rde::solve_alg_rde;
+use super::alg_rde::solve_alg_rde_general;
 use super::diff_field::DifferentialField;
 
 impl DifferentialField for AlgExtension {
@@ -391,32 +395,20 @@ impl DifferentialField for AlgExtension {
         AlgExtension::derivation(self, a)
     }
 
-    /// Solve `D(y) + f·y = g` over `ℚ(x)(α)` for **`f ∈ base`** (a scalar in
-    /// `ℚ(x)`), wrapping the general coupled solver `solve_alg_rde`.
+    /// Solve `D(y) + f·y = g` over `ℚ(x)(α)` for an **arbitrary** `f ∈ ℚ(x)(α)`
+    /// (base scalar *or* non-diagonal extension element), wrapping the
+    /// generalized coupled solver `solve_alg_rde_general`.
     ///
-    /// Mirrors [`RadicalExt`](super::radical_ext::RadicalExt)'s restriction: the
-    /// underlying solver only accepts `f: RatFn`, so when `f`'s only nonzero
-    /// power-basis component is the constant `y⁰` term we extract that `RatFn`
-    /// and solve; if `f` carries any higher `y`-power (`f ∉ base`) we decline
-    /// (`None`).  Declining is always sound.
+    /// The historical `f ∈ base` restriction is lifted: when `f` carries
+    /// `y`-powers, multiplication-by-`f` mixes the power basis and the system is
+    /// genuinely coupled, which the ansatz solver handles directly.
     ///
-    /// `solve_alg_rde` verifies its candidate in-field; we re-verify
+    /// `solve_alg_rde_general` verifies its candidate in-field; we re-verify
     /// `D(y)+f·y=g` through the trait's own ops as defense-in-depth before
     /// returning `Some`.  `None` therefore means "no solution found within the
-    /// ansatz bounds (or `f ∉ base`)", not a non-existence certificate.
+    /// ansatz bounds", not a non-existence certificate.
     fn rational_rde(&self, f: &AlgElem, g: &AlgElem) -> Option<AlgElem> {
-        // f ∈ base: every component above y⁰ must vanish.
-        let f_red = self.reduce(f);
-        if f_red
-            .iter()
-            .skip(1)
-            .any(|c| !self.quotient.field().is_zero(c))
-        {
-            return None; // f carries y-powers — non-base, declined (future work)
-        }
-        let f_ratfn = f_red.first().cloned().unwrap_or_else(|| RatFn::int(0));
-
-        let y = solve_alg_rde(self, &f_ratfn, g)?;
+        let y = solve_alg_rde_general(self, f, g)?;
 
         // Defense-in-depth: re-verify D(y) + f·y = g via the trait's own ops.
         let lhs = DifferentialField::add(
@@ -691,9 +683,10 @@ mod tests {
 //
 // Equivalence: the trait `rational_rde` must agree exactly with the wrapped
 // coupled solver `solve_alg_rde` for `f ∈ base`, the solution must self-verify
-// in-field, an unsolvable target must yield `None`, and `f ∉ base` must yield
-// `None`.  Field-structure ops (`derivation`, etc.) must match the existing
-// `AlgExtension` methods.
+// in-field, an unsolvable target must yield `None`.  Since PR1 lifted the
+// `f ∈ base` restriction, a constructed-solvable **non-base `f`** must now yield
+// `Some` (previously `None`).  Field-structure ops (`derivation`, etc.) must
+// match the existing `AlgExtension` methods.
 
 #[cfg(test)]
 mod diff_field_impl_tests {
@@ -865,15 +858,39 @@ mod diff_field_impl_tests {
     }
 
     #[test]
-    fn non_base_f_declines() {
-        // f = α (carries a y-power) ⇒ f ∉ base ⇒ trait declines (None),
-        // even though the equation might be solvable.  Soundness: declining ok.
+    fn non_base_f_now_solves() {
+        // PR1: f ∉ base is now solved (was declined).  Take f = 1/(2√x) =
+        // (1/(2x))·α and y = √x = α over ℚ(x)(√x); g = D(y)+f·y must be
+        // recovered with a self-verifying solution through the trait.
+        let e = sqrt_ext();
+        let alpha = e.generator();
+        let f: AlgElem = vec![RatFn::int(0), RatFn::new(poly_one(), vec![rat(0), rat(2)])];
+        let g = DifferentialField::add(
+            &e,
+            &DifferentialField::derivation(&e, &alpha),
+            &DifferentialField::mul(&e, &f, &alpha),
+        );
+        let y = DifferentialField::rational_rde(&e, &f, &g).expect("non-base f now solves");
+        let lhs = DifferentialField::add(
+            &e,
+            &DifferentialField::derivation(&e, &y),
+            &DifferentialField::mul(&e, &f, &y),
+        );
+        assert!(
+            DifferentialField::eq(&e, &lhs, &g),
+            "trait RDE solution must satisfy D(y)+f·y=g; y={y:?}"
+        );
+    }
+
+    #[test]
+    fn non_base_f_unsolvable_declines() {
+        // Non-base f = α but g = 1/x (→ log x ∉ field): still None.  Soundness.
         let e = sqrt_ext();
         let f = e.generator(); // α ∉ base
-        let g = e.one();
+        let g = e.constant(RatFn::new(poly_one(), vec![rat(0), rat(1)])); // 1/x
         assert!(
             DifferentialField::rational_rde(&e, &f, &g).is_none(),
-            "f ∉ base ⇒ declines"
+            "unsolvable non-base case ⇒ None"
         );
     }
 

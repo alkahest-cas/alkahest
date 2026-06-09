@@ -47,10 +47,18 @@
 //!
 //! each solved by `base.rational_rde(…)` — the M4 descent.  If `f` has any
 //! nonzero higher `y`-component, multiplication-by-`f` *mixes* components and
-//! the system is **not** diagonal; this impl then declines (returns `None`).
-//! This is sound (declining is always allowed) and covers PR2's use, where the
-//! per-component twist `ω = η' + (i/n)D(a)/a` is itself a base scalar plus the
-//! diagonal radical twist.  A full non-diagonal coupled solve is left to PR4.
+//! the system is **not** diagonal; this **generic** `RadicalExt<F>` impl then
+//! declines (returns `None`).  This is sound (declining is always allowed) and
+//! covers PR2's use, where the per-component twist
+//! `ω = η' + (i/n)D(a)/a` is itself a base scalar plus the diagonal radical
+//! twist.
+//!
+//! A full non-diagonal coupled solve over an *arbitrary* lower field `F`
+//! remains future work for the generic `RadicalExt`.  The concrete case that
+//! the downstream `exp(algebraic)` work needs — `α` algebraic over `ℚ(x)` — is
+//! instead handled by [`AlgExtension`](super::alg_field::AlgExtension)'s
+//! `DifferentialField::rational_rde`, which routes non-base `f` through the
+//! generalized ansatz solver `solve_alg_rde_general`.
 //!
 //! `limited_integrate` / `param_log_deriv` remain unimplemented (`None`).
 
