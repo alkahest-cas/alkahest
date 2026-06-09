@@ -82,6 +82,7 @@ pub mod exp_case;
 pub mod log_case;
 pub mod number_field;
 pub mod poly_rde;
+pub mod radical_ext;
 pub mod rational_integrate;
 pub mod rational_rde;
 pub mod simple_radical;
