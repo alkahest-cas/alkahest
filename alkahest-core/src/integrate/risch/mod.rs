@@ -165,48 +165,37 @@ pub fn contains_risch_form(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
 ///
 /// # Algorithm
 ///
-/// 1. Detect all transcendental generators (exp/log) in `expr`.
-/// 2. If there is exactly one exp generator: apply the exp-tower Risch algorithm.
-/// 3. If there is exactly one log generator: apply the log-tower IBP reduction.
-/// 4. Multiple generators of the same kind: take the outermost (first in
-///    depth-first order) and recurse; the base-field integration handles the
-///    inner generators.
-/// 5. Mixed exp+log: route to exp tower; the log generator lives in the base
-///    field and is handled by the poly-in-log RDE or lower-tower recursion.
+/// 1. **Algebraic / tower dispatch.** First try the additive hooks for radicals
+///    and algebraic exponents whose *outermost* generator is a radical (or an
+///    `exp` of an algebraic function) — these recurse through the differential-
+///    field trait one tower level at a time (the practical realization of the
+///    M4 "pick the top generator, recurse" idea).  Each is purely additive,
+///    returning `None` for everything the ordinary towers already cover.
+/// 2. **Top-generator selection over exp/log.** Detect the transcendental
+///    generators (exp/log).  When all generators are of one kind, integrate at
+///    the *outermost* generator (the one not appearing inside another's
+///    argument); the base-field integration handles the inner generators.
+/// 3. **Mixed exp+log.** Route to the exp tower at the outermost exp generator;
+///    the log generator lives in the base field and is handled by the poly-in-log
+///    RDE or lower-tower recursion.  On `NotImplemented` (only), fall through.
+/// 4. **Sum decomposition** for independent generators (e.g. `exp(x²)+log(x)²`).
+/// 5. Otherwise `NotImplemented`: outside the supported tower subsets.
 pub fn integrate_risch(
     expr: ExprId,
     var: ExprId,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, IntegrationError> {
-    // MD: a radical whose radicand involves the transcendental (e.g. ∛(x+eˣ) or
-    // ∛(x+log x)).  The radical is the outermost generator; handle it before the
-    // exp/log dispatch (which would mis-treat the radical as a coefficient).
-    // Returns `None` when not of this shape, so ordinary towers fall through.
-    if let Some(result) =
-        tower_integrate::try_integrate_radical_over_transcendental(expr, var, pool)
-    {
-        return result;
-    }
-
-    // M4 multi-generator (PR2): ∫ exp(η)·(radical over a log/exp tower) dx.
-    // The integrand mixes an outer transcendental coefficient exp(η) with a
-    // radical over a *separate* tower; solved by descending one tower level via
-    // `DifferentialField::rational_rde` per radical component, numeric-gated.
-    // Additive: returns `None` for everything the single-generator path or the
-    // ordinary towers already cover, so it never changes existing behavior.
-    if let Some(result) =
-        tower_integrate::try_integrate_exp_times_radical_over_tower(expr, var, pool)
-    {
-        return result;
-    }
-
-    // M1 PR2 (non-diagonal f): ∫ R(x, α)·exp(β) dx with β an *algebraic* function
-    // of x (a radical α = p(x)^{1/n}).  Seeking F = v·exp(β), the integral reduces
-    // to the in-field Risch DE D(v) + f·v = R with f = D(β) a *non-base* element of
-    // ℚ(x)(α), solved by `solve_alg_rde_general` (PR1) and numeric-gated.  Must run
-    // before the exp/log dispatch, which would mistreat the algebraic exp argument.
-    // Returns `None` for everything outside this shape, so it is purely additive.
-    if let Some(result) = exp_algebraic::try_integrate_exp_of_algebraic(expr, var, pool) {
+    // -----------------------------------------------------------------------
+    // Step 1: algebraic / tower outermost-generator dispatch.
+    //
+    // These hooks handle integrands whose top generator is a radical (or an exp
+    // of an algebraic function), recursing through the differential-field trait
+    // one tower level at a time.  They run before the exp/log dispatch (which
+    // would mis-treat a radical or algebraic exponent as a coefficient) and are
+    // purely additive — each returns `None` for everything the ordinary towers
+    // already cover, so existing behavior is unchanged.
+    // -----------------------------------------------------------------------
+    if let Some(result) = try_tower_algebraic_dispatch(expr, var, pool) {
         return result;
     }
 
@@ -218,75 +207,59 @@ pub fn integrate_risch(
 
     let mut log = DerivationLog::new();
 
-    // -----------------------------------------------------------------------
-    // Case 1: Single exp generator, no log generators.
-    // -----------------------------------------------------------------------
-    if exp_gens.len() == 1 && log_gens.is_empty() {
-        let level = exp_gens[0];
-        let result = integrate_exp_tower(expr, level, var, pool, &mut log)?;
-        let final_simplified = simplify(result, pool);
-        let merged = log.merge(final_simplified.log);
-        return Ok(DerivedExpr::with_log(final_simplified.value, merged));
-    }
+    // Shared tail for every tower case: simplify, merge the derivation log, and
+    // wrap.  Keeps each case purely about *which* generator/tower to integrate.
+    let finish =
+        |result: ExprId, log: DerivationLog| -> Result<DerivedExpr<ExprId>, IntegrationError> {
+            let final_simplified = simplify(result, pool);
+            let merged = log.merge(final_simplified.log);
+            Ok(DerivedExpr::with_log(final_simplified.value, merged))
+        };
 
     // -----------------------------------------------------------------------
-    // Case 2: Single log generator, no exp generators.
-    // -----------------------------------------------------------------------
-    if log_gens.len() == 1 && exp_gens.is_empty() {
-        let level = log_gens[0];
-        let result = integrate_log_tower(expr, level, var, pool, &mut log)?;
-        let final_simplified = simplify(result, pool);
-        let merged = log.merge(final_simplified.log);
-        return Ok(DerivedExpr::with_log(final_simplified.value, merged));
-    }
-
-    // -----------------------------------------------------------------------
-    // Case 3: Multiple log generators, no exp generators.
+    // Step 2a: exp generators only (no log).
     //
-    // `find_generators` visits in depth-first order, so the *outermost*
-    // generator (highest tower level) appears first.  For example, for
-    // log(log(x))/x the list is [log(log(x)), log(x)] and we integrate at
-    // the log(log(x)) level; log(x) is handled recursively by integrate_base.
-    // -----------------------------------------------------------------------
-    if !log_gens.is_empty() && exp_gens.is_empty() {
-        let level = log_gens[0]; // outermost log generator
-        let result = integrate_log_tower(expr, level, var, pool, &mut log)?;
-        let final_simplified = simplify(result, pool);
-        let merged = log.merge(final_simplified.log);
-        return Ok(DerivedExpr::with_log(final_simplified.value, merged));
-    }
-
-    // -----------------------------------------------------------------------
-    // Case 4: Multiple exp generators, no log generators.
-    //
-    // Use the *outermost* exp generator — the one that is not an argument of
-    // any other exp generator in the list.  For nested towers like
-    // `exp(x)·exp(exp(x))`, DFS may visit the inner generator first, so we
-    // must search explicitly rather than relying on list order.
+    // Integrate at the *outermost* exp generator — the one that is not an
+    // argument of any other exp generator in the list.  For nested towers like
+    // `exp(x)·exp(exp(x))`, DFS may visit the inner generator first, so we must
+    // search explicitly rather than relying on list order.  For a single exp
+    // generator `outermost_exp_generator` returns that generator (`exp_gens[0]`),
+    // so this branch subsumes both the single- and multi-exp cases.
     // -----------------------------------------------------------------------
     if !exp_gens.is_empty() && log_gens.is_empty() {
         let level = outermost_exp_generator(&exp_gens, pool);
         let result = integrate_exp_tower(expr, level, var, pool, &mut log)?;
-        let final_simplified = simplify(result, pool);
-        let merged = log.merge(final_simplified.log);
-        return Ok(DerivedExpr::with_log(final_simplified.value, merged));
+        return finish(result, log);
     }
 
     // -----------------------------------------------------------------------
-    // Case 5: Mixed exp + log generators.
+    // Step 2b: log generators only (no exp).
+    //
+    // `find_generators` visits in depth-first order, so the *outermost*
+    // generator (highest tower level) appears first.  For example, for
+    // log(log(x))/x the list is [log(log(x)), log(x)] and we integrate at the
+    // log(log(x)) level; log(x) is handled recursively by integrate_base.  This
+    // branch subsumes both the single- and multi-log cases.
+    // -----------------------------------------------------------------------
+    if !log_gens.is_empty() && exp_gens.is_empty() {
+        let level = log_gens[0]; // outermost log generator
+        let result = integrate_log_tower(expr, level, var, pool, &mut log)?;
+        return finish(result, log);
+    }
+
+    // -----------------------------------------------------------------------
+    // Step 3: Mixed exp + log generators.
     //
     // Route to the exp tower: the log generator lives in the base field k and
     // is handled by the poly-in-log RDE (Bronstein §5.9 / IntegrateHyperexp).
     // If the exp tower returns NotImplemented (e.g. exp has a transcendental
-    // exponent), fall through to sum decomposition.
+    // exponent), fall through to sum decomposition; all other errors propagate.
     // -----------------------------------------------------------------------
     if !exp_gens.is_empty() && !log_gens.is_empty() {
         let level = outermost_exp_generator(&exp_gens, pool);
         match integrate_exp_tower(expr, level, var, pool, &mut log) {
             Ok(result) => {
-                let final_simplified = simplify(result, pool);
-                let merged = log.merge(final_simplified.log);
-                return Ok(DerivedExpr::with_log(final_simplified.value, merged));
+                return finish(result, log);
             }
             Err(IntegrationError::NonElementary(msg)) => {
                 return Err(IntegrationError::NonElementary(msg));
@@ -304,14 +277,12 @@ pub fn integrate_risch(
     }
 
     // -----------------------------------------------------------------------
-    // Case 6: Try sum decomposition for independent generators.
+    // Step 4: Try sum decomposition for independent generators.
     // e.g., exp(x²) + log(x)² — each term has only one generator.
     // -----------------------------------------------------------------------
     if !generators.is_empty() {
         if let Some(result) = try_decompose_by_sum(expr, var, pool, &mut log) {
-            let final_simplified = simplify(result, pool);
-            let merged = log.merge(final_simplified.log);
-            return Ok(DerivedExpr::with_log(final_simplified.value, merged));
+            return finish(result, log);
         }
     }
 
@@ -325,6 +296,51 @@ pub fn integrate_risch(
          (Bronstein 2005, §5.8–5.9, §8)",
         gen_names
     )))
+}
+
+// ---------------------------------------------------------------------------
+// Algebraic / tower outermost-generator dispatch
+// ---------------------------------------------------------------------------
+
+/// Try the additive algebraic/tower hooks whose *outermost* generator is a
+/// radical (or an `exp` of an algebraic function), in priority order:
+///
+/// 1. `try_integrate_radical_over_transcendental` — a radical whose radicand
+///    involves the transcendental (e.g. `∛(x+eˣ)`, `∛(x+log x)`).  The radical
+///    is the outermost generator; the exp/log dispatch would mis-treat it as a
+///    coefficient.
+/// 2. `try_integrate_exp_times_radical_over_tower` — M4 multi-generator
+///    `∫ exp(η)·(radical over a *separate* log/exp tower) dx`, solved by
+///    descending one tower level per radical component via
+///    `DifferentialField::rational_rde`.
+/// 3. `try_integrate_exp_of_algebraic` — M1 `∫ R(x, α)·exp(β) dx` with `β` an
+///    algebraic function of `x`, reduced to an in-field Risch DE over `ℚ(x)(α)`
+///    and solved by `solve_alg_rde_general`.
+///
+/// Each hook returns `None` for everything outside its shape (so ordinary towers
+/// fall through unchanged) and is numeric-gated.  Returns the first `Some`.
+fn try_tower_algebraic_dispatch(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<Result<DerivedExpr<ExprId>, IntegrationError>> {
+    if let Some(result) =
+        tower_integrate::try_integrate_radical_over_transcendental(expr, var, pool)
+    {
+        return Some(result);
+    }
+
+    if let Some(result) =
+        tower_integrate::try_integrate_exp_times_radical_over_tower(expr, var, pool)
+    {
+        return Some(result);
+    }
+
+    if let Some(result) = exp_algebraic::try_integrate_exp_of_algebraic(expr, var, pool) {
+        return Some(result);
+    }
+
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -1427,5 +1443,112 @@ mod tests {
                 "∫ sqrt(x)·log(x): d/dx F ≠ f at x={xv}: {lhs} vs {rhs}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Dispatch characterization tests.
+    //
+    // These pin the *dispatch outcome* (Ok vs which Err variant) for one
+    // integrand per `integrate_risch` branch, so the structural refactor of the
+    // dispatch is guaranteed behavior-preserving.  They only assert the success/
+    // error class — the numeric correctness of the results is covered by the
+    // dedicated tests above.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn dispatch_exp_x_over_x_nonelementary() {
+        // ∫ exp(x)/x dx — Ei; single exp generator, NonElementary.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let inv_x = pool.pow(x, pool.integer(-1_i32));
+        let f = pool.mul(vec![exp_x, inv_x]);
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ exp(x)/x dx must be NonElementary; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn dispatch_log_x_over_x_elementary() {
+        // ∫ log(x)/x dx = log(x)²/2 — single log generator, elementary.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let log_x = pool.func("log", vec![x]);
+        let inv_x = pool.pow(x, pool.integer(-1_i32));
+        let f = pool.mul(vec![log_x, inv_x]);
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ log(x)/x dx must be elementary; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn dispatch_log_log_x_over_x_elementary() {
+        // ∫ log(log(x))/x dx — multiple log generators, elementary.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let log_x = pool.func("log", vec![x]);
+        let log_log_x = pool.func("log", vec![log_x]);
+        let inv_x = pool.pow(x, pool.integer(-1_i32));
+        let f = pool.mul(vec![log_log_x, inv_x]);
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ log(log(x))/x dx must be elementary; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn dispatch_exp_x_times_exp_exp_x_elementary() {
+        // ∫ exp(x)·exp(exp(x)) dx = exp(exp(x)) — multiple exp generators,
+        // outermost-exp selection, elementary.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let exp_exp_x = pool.func("exp", vec![exp_x]);
+        let f = pool.mul(vec![exp_x, exp_exp_x]);
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ exp(x)·exp(exp(x)) dx must be elementary; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn dispatch_exp_x_times_log_x_nonelementary() {
+        // ∫ exp(x)·log(x) dx — mixed exp+log; NonElementary (Ei).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let log_x = pool.func("log", vec![x]);
+        let f = pool.mul(vec![exp_x, log_x]);
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ exp(x)·log(x) dx must be NonElementary; got {result:?}"
+        );
+    }
+
+    #[test]
+    fn dispatch_exp_sqrt_x_algebraic_hook_elementary() {
+        // ∫ exp(√x)·(1/(2√x) + 1/2) dx — the algebraic exp-of-radical hook
+        // (Step 1, `try_integrate_exp_of_algebraic`).  Antiderivative √x·exp(√x).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt_x = pool.func("sqrt", vec![x]);
+        let exp_sqrt_x = pool.func("exp", vec![sqrt_x]);
+        // 1/(2√x) + 1/2
+        let half = pool.rational(1_i32, 2_i32);
+        let inv_2_sqrt_x = pool.mul(vec![half, pool.pow(sqrt_x, pool.integer(-1_i32))]);
+        let coeff = pool.add(vec![inv_2_sqrt_x, half]);
+        let f = pool.mul(vec![exp_sqrt_x, coeff]);
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ exp(√x)·(1/(2√x)+1/2) dx must be elementary (algebraic hook); got {result:?}"
+        );
     }
 }
