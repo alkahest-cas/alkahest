@@ -30,11 +30,16 @@ use super::alg_field::{RatFn, RationalFunctionField};
 use super::number_field::{
     gdegree, gext_gcd, gpoly_add, gpoly_divrem, gpoly_mul, gpoly_scale, gtrim, CoeffField, GPoly,
 };
-use super::poly_rde::{poly_mul, QPoly};
+use super::poly_rde::{degree, poly_mul, QPoly};
 use super::rational_rde::{poly_div_exact, poly_gcd};
 
 /// A polynomial in `t` over `ℚ(x)` (ascending degree in `t`).
 type TPoly = GPoly<RationalFunctionField>;
+
+/// Hard clamp on the `x`-degree ansatz ceiling, guarding against pathological
+/// analytic bounds that would blow up the linear system.  Solutions of larger
+/// degree are rare and the verification gate keeps soundness regardless.
+const X_DEGREE_SANITY_CAP: usize = 48;
 
 fn qx() -> RationalFunctionField {
     RationalFunctionField
@@ -344,9 +349,23 @@ pub(crate) fn solve_tower_rde_generic<F: CoeffField<Elem = TExpr>>(
     omega: &TExpr,
     c: &TExpr,
 ) -> Option<TExpr> {
+    solve_tower_rde_generic_bounded(field, omega, c, None)
+}
+
+/// As [`solve_tower_rde_generic`], but with an optional analytic `x`-degree
+/// search ceiling `x_bound` (Bronstein §6.5).  The effective `x`-cap is
+/// `max(KCAP, x_bound)` clamped by [`X_DEGREE_SANITY_CAP`] — never below the
+/// heuristic `KCAP` (so existing solves never regress) and never large enough to
+/// blow up the linear system.  `None` ⇒ the historical fixed `KCAP`.
+pub(crate) fn solve_tower_rde_generic_bounded<F: CoeffField<Elem = TExpr>>(
+    field: &F,
+    omega: &TExpr,
+    c: &TExpr,
+    x_bound: Option<usize>,
+) -> Option<TExpr> {
     candidate_denominators(field, omega, c)
         .iter()
-        .find_map(|d| solve_with_denominator(field, omega, c, d))
+        .find_map(|d| solve_with_denominator(field, omega, c, d, x_bound))
 }
 
 /// Solve `v' + ω·v = c` over the exponential tower `ℚ(x)(eˣ)` (the concrete,
@@ -354,6 +373,33 @@ pub(crate) fn solve_tower_rde_generic<F: CoeffField<Elem = TExpr>>(
 /// (also used for the logarithmic tower).
 pub fn solve_tower_rde(field: &ExpTowerField, omega: &TExpr, c: &TExpr) -> Option<TExpr> {
     solve_tower_rde_generic(field, omega, c)
+}
+
+/// The largest `x`-degree (numerator over denominator) appearing in any
+/// coefficient of a tower element `e` (over both its `t`-numerator and
+/// `t`-denominator).  Used to build a sound `x`-degree search ceiling.
+fn texpr_x_degree(e: &TExpr) -> i64 {
+    let mut best = 0i64;
+    for rf in e.numer().iter().chain(e.denom().iter()) {
+        best = best.max(degree(rf.numer())).max(degree(rf.denom()));
+    }
+    best
+}
+
+/// A sound upper bound on the `x`-degree of any per-`(t,x)`-power numerator
+/// coefficient in the ansatz `v = (Σⱼₖ cⱼₖ xᵏ tʲ)/D` solving `D(v) + ω·v = c`
+/// over a tower (`drift_deg` = `x`-degree of the derivation drift coefficient:
+/// `η'` for the exp tower, `h'/h` for the log tower), per Bronstein §6.5.
+///
+/// Mirrors the base-case shape `deg E + max(poly_part, deg ω) + 2` but, since the
+/// per-power balance here is dominated by the `x`-degrees that actually occur in
+/// `ω`, `c` and the drift, we take a generous degree-driven ceiling: the largest
+/// `x`-degree across `ω` and `c`, plus the drift degree, plus a small slack.  It
+/// is only a ceiling — verification gates correctness — so over-estimating is
+/// safe while under-estimating is not.
+pub(crate) fn tower_x_degree_bound(omega: &TExpr, c: &TExpr, drift_deg: i64) -> usize {
+    let base = texpr_x_degree(omega).max(texpr_x_degree(c)).max(0);
+    (base + drift_deg.max(0) + 2).max(0) as usize
 }
 
 /// Candidate denominators for `v`, in increasing complexity: `1`, the full
@@ -401,18 +447,28 @@ fn full_denominator(e: &TExpr) -> TExpr {
 }
 
 /// Solve `v' + ω·v = c` seeking `v = (Σⱼₖ cⱼₖ xᵏ tʲ)/D` for the fixed `D`.
+///
+/// `x_bound` is an optional analytic `x`-degree ceiling (Bronstein §6.5); the
+/// effective `x`-cap is `max(KCAP, x_bound)` clamped by [`X_DEGREE_SANITY_CAP`].
 fn solve_with_denominator<F: CoeffField<Elem = TExpr>>(
     field: &F,
     omega: &TExpr,
     c: &TExpr,
     d: &TExpr,
+    x_bound: Option<usize>,
 ) -> Option<TExpr> {
     const JCAP: usize = 3; // max degree in t
-    const KCAP: usize = 5; // max degree in x
+    const KCAP: usize = 5; // heuristic floor on the max degree in x
+
+    // Raise the x-degree ceiling to the analytic bound when it exceeds KCAP, but
+    // never below KCAP (zero regression) and never above the sanity clamp.
+    let kcap = x_bound
+        .map_or(KCAP, |b| b.max(KCAP))
+        .min(X_DEGREE_SANITY_CAP);
 
     let inv_d = field.inv(d)?;
     let basis: Vec<(usize, usize)> = (0..=JCAP)
-        .flat_map(|j| (0..=KCAP).map(move |k| (j, k)))
+        .flat_map(|j| (0..=kcap).map(move |k| (j, k)))
         .collect();
     // Basis element xᵏtʲ/D, and its image L(·) = D(·) + ω·(·).
     let one = Rational::from(1);

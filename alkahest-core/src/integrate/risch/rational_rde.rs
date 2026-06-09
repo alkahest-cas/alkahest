@@ -216,6 +216,19 @@ fn solve_linear_system(
 // Rational RDE solver
 // ---------------------------------------------------------------------------
 
+/// The canonical Bronstein §6.5 base-case bound on the degree of the numerator
+/// `N` of a rational solution `v = N/E` of `v' + f·v = c`, where `c = C/B`
+/// (reduced, `B` monic) and `E = gcd(B, B')`.
+///
+/// Concretely `dbound = deg E + max(deg C − deg B, deg f) + 2` (clamped at 0).
+/// This is the single source of truth for the base bound; the polymorphic
+/// [`DifferentialField::rde_degree_bound`](super::diff_field::DifferentialField::rde_degree_bound)
+/// for `ℚ(x)` mirrors it so the ansatz solvers can use it as a search ceiling.
+pub(crate) fn numerator_degree_bound(deg_b: i64, deg_c: i64, deg_e: i64, deg_f: i64) -> usize {
+    let poly_part = (deg_c - deg_b).max(0);
+    (deg_e.max(0) + poly_part.max(deg_f.max(0)) + 2).max(0) as usize
+}
+
 /// Solve `v' + f·v = c_num/c_den` for `v ∈ ℚ(x)`.
 ///
 /// `f` is a polynomial (the exp-tower coefficient `k·η'`).  Returns the solution
@@ -256,13 +269,12 @@ pub fn solve_rational_rde(f: &QPoly, c_num: &QPoly, c_den: &QPoly) -> Option<(QP
     let gef = poly_mul(&ge, f); // G·E·f
     let target = poly_mul(&big_c, &e_poly); // C·E
 
-    // Degree bound for N (= numerator of v = N/E).
+    // Degree bound for N (= numerator of v = N/E).  See [`numerator_degree_bound`].
     let deg_b = degree(&big_b);
     let deg_c = degree(&big_c);
     let deg_e = degree(&e_poly).max(0);
     let deg_f = degree(f).max(0);
-    let poly_part = (deg_c - deg_b).max(0);
-    let dbound = (deg_e + poly_part.max(deg_f) + 2).max(0) as usize;
+    let dbound = numerator_degree_bound(deg_b, deg_c, deg_e, deg_f);
     let cols = dbound + 1; // unknowns n_0..n_dbound
 
     // Maximum degree appearing in the identity.
