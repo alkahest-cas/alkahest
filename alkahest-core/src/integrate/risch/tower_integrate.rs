@@ -52,6 +52,7 @@ use super::number_field::{
     gdegree, gext_gcd, gpoly_divrem, gpoly_mul, gtrim, CoeffField, Quotient,
 };
 use super::poly_rde::{contains_subexpr, expr_to_qpoly, is_free_of_var, poly_deriv};
+use super::radical_ext::RadicalExt;
 use super::tower::find_generators;
 use super::tower_field::{solve_tower_rde_generic, ExpTowerField, LogTowerField, TExpr};
 
@@ -241,42 +242,37 @@ where
         return None;
     }
 
-    // The quotient ring ℚ(x)(t)[y]/(yⁿ − a).
+    // The quotient ring ℚ(x)(t)[y]/(yⁿ − a) (for decomposing R over the
+    // power basis), and the *same* extension as a generic `DifferentialField`
+    // (for the per-component RDE descent — M4 PR3).
     let a_tx = expr_to_texpr(field, a_expr, var, t_gen, pool)?;
     let mut modulus = vec![<F as CoeffField>::zero(field); n + 1];
     modulus[0] = <F as CoeffField>::neg(field, &a_tx);
     modulus[n] = <F as CoeffField>::one(field);
     let q = Quotient::new(field.clone(), modulus);
+    let ext = RadicalExt::new(field.clone(), a_tx, n);
 
     // Decompose R over the power basis {1, y, …, y^{n−1}}.
     let r_elem = decompose_over_tower_radical(r_expr, n, a_expr, &q, field, var, t_gen, pool)?;
 
-    // a'/a in the tower (for the twist ωᵢ).
-    let a_prime = <F as CoeffField>::derivation(field, &a_tx);
-    let a_inv = <F as CoeffField>::inv(field, &a_tx)?;
-    let log_deriv_a = <F as CoeffField>::mul(field, &a_prime, &a_inv);
-    let eta_prime_tx = TExpr::from_ratfn(eta_prime);
+    // Solve D(w) + η'·w = R over the radical extension in ONE call: the generic
+    // `RadicalExt::rational_rde` (M4 PR3) performs the per-component descent
+    //   D(wᵢ) + (η' + (i/n)·a'/a)·wᵢ = Rᵢ      over ℚ(x)(t)
+    // through `DifferentialField::rational_rde` on the lower field, and
+    // self-verifies the assembled solution in-field.  `f = η'` is a *base*
+    // scalar (the diagonal twist is baked in per component), so this is exactly
+    // the supported `f ∈ base` case.
+    let eta_prime_elem = vec![TExpr::from_ratfn(eta_prime)]; // η' ∈ base, component 0
+    let w_elem =
+        <RadicalExt<F> as DifferentialField>::rational_rde(&ext, &eta_prime_elem, &r_elem)?;
 
-    // Solve D(wᵢ) + (η' + (i/n)·a'/a)·wᵢ = Rᵢ per component, descending one
-    // tower level via the DifferentialField::rational_rde recursion.
+    // Reconstruct F = exp(η)·w from the solution components wᵢ.
     let mut w_terms: Vec<ExprId> = Vec::new();
-    for (i, ri) in r_elem.iter().enumerate() {
-        if <F as CoeffField>::is_zero(field, ri) {
+    for (i, wi) in w_elem.iter().enumerate() {
+        if <F as CoeffField>::is_zero(field, wi) {
             continue;
         }
-        let scale = TExpr::from_ratfn(RatFn::new(
-            vec![Rational::from(i as i64)],
-            vec![Rational::from(n as i64)],
-        ));
-        let twist = <F as CoeffField>::mul(field, &scale, &log_deriv_a);
-        let omega = <F as CoeffField>::add(field, &eta_prime_tx, &twist);
-
-        // M4 recursion: descend to the coefficient field's RDE solver.
-        let wi = DifferentialField::rational_rde(field, &omega, ri)?;
-        if <F as CoeffField>::is_zero(field, &wi) {
-            continue;
-        }
-        let wi_expr = texpr_to_expr(&wi, var, t_gen, pool);
+        let wi_expr = texpr_to_expr(wi, var, t_gen, pool);
         if i == 0 {
             w_terms.push(wi_expr);
         } else {
@@ -1247,6 +1243,64 @@ mod tests {
             assert!(
                 (fv - ev).abs() < 1e-6 * (1.0 + ev.abs()),
                 "x={xv}: F = {fv}, eˣ√(x+log x) = {ev}"
+            );
+        }
+    }
+
+    /// M4 PR3 new nesting case — radical over an *exp* tower (vs the headline's
+    /// *log* tower), demonstrating the same tower-recursive descent now lives in
+    /// the generic `RadicalExt::rational_rde`.
+    ///
+    /// ∫ [ eˣ·√(x+e^{x²}) + eˣ·(1+2x·e^{x²})/(2·√(x+e^{x²})) ] dx
+    ///     = eˣ·√(x+e^{x²}).
+    ///
+    /// Outer transcendental coefficient `eˣ` multiplies a radical
+    /// `y = √(x+e^{x²})` over a *separate, independent* exp tower `e^{x²}`.  The
+    /// twisted Risch DE `D(w)+w = R` over `Quotient<ExpTowerField>` is solved
+    /// per radical component by descending one tower level via
+    /// `ExpTowerField::rational_rde` — through the generic `RadicalExt` impl.
+    #[test]
+    fn exp_times_sqrt_x_plus_exp_x_squared_end_to_end() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let exp_x2 = pool.func("exp", vec![x2]); // e^{x²}
+        let a = pool.add(vec![x, exp_x2]); // x + e^{x²}
+        let y = pool.pow(a, pool.rational(1_i32, 2_i32)); // √(x+e^{x²})
+        let inv_y = pool.pow(a, pool.rational(-1_i32, 2_i32));
+
+        // term1 = eˣ·√(x+e^{x²})
+        let term1 = pool.mul(vec![exp_x, y]);
+        // a' = 1 + 2x·e^{x²};  term2 = eˣ·a'/(2√(x+e^{x²}))
+        let a_prime = pool.add(vec![
+            pool.integer(1_i32),
+            pool.mul(vec![pool.integer(2_i32), x, exp_x2]),
+        ]);
+        let term2 = pool.mul(vec![exp_x, a_prime, pool.rational(1_i32, 2_i32), inv_y]);
+        let integrand = pool.add(vec![term1, term2]);
+
+        // Direct path integrates.
+        let direct = try_integrate_exp_times_radical_over_tower(integrand, x, &pool);
+        assert!(
+            matches!(direct, Some(Ok(_))),
+            "new exp-tower nesting case should integrate; got {direct:?}"
+        );
+
+        // End-to-end through the public engine.
+        let res = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(res.is_ok(), "should integrate; got {res:?}");
+        let g = res.unwrap().value;
+
+        // d/dx F = integrand, verified numerically.
+        let ds = simplify(crate::diff::diff(g, x, &pool).unwrap().value, &pool).value;
+        for &xv in &[0.4_f64, 0.8, 1.2] {
+            let lhs = eval(ds, x, xv, &pool).unwrap();
+            let rhs = eval(integrand, x, xv, &pool).unwrap();
+            assert!(
+                (lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()),
+                "x={xv}: d/dx F = {lhs}, f = {rhs}\n  F = {}",
+                pool.display(g)
             );
         }
     }
