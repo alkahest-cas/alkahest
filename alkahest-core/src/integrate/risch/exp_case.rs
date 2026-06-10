@@ -1381,7 +1381,7 @@ pub(super) fn expr_to_krational_general(
 // ---------------------------------------------------------------------------
 
 /// Convert a K-element back to a symbolic `ExprId` for the given extension.
-fn kelem_to_expr_ext(e: &KElem, ext: &AlgebraicExtension, pool: &ExprPool) -> ExprId {
+pub(super) fn kelem_to_expr_ext(e: &KElem, ext: &AlgebraicExtension, pool: &ExprPool) -> ExprId {
     match ext {
         AlgebraicExtension::SingleSqrt { sqrt_expr, .. } => kelem_to_expr(e, *sqrt_expr, pool),
         AlgebraicExtension::NthRoot { root_expr, .. } => {
@@ -1480,7 +1480,12 @@ fn kelem_to_expr_ext(e: &KElem, ext: &AlgebraicExtension, pool: &ExprPool) -> Ex
 
 /// Convert a K-polynomial `p` in `var` back to a symbolic expression for the
 /// given algebraic extension.
-fn kpoly_to_expr_ext(p: &KPoly, var: ExprId, ext: &AlgebraicExtension, pool: &ExprPool) -> ExprId {
+pub(super) fn kpoly_to_expr_ext(
+    p: &KPoly,
+    var: ExprId,
+    ext: &AlgebraicExtension,
+    pool: &ExprPool,
+) -> ExprId {
     let mut terms: Vec<ExprId> = Vec::new();
     for (i, c) in p.iter().enumerate() {
         if NumberField::is_zero(c) {
@@ -2799,7 +2804,7 @@ fn poly_sqrt_exact(b: &QPoly) -> Option<QPoly> {
 }
 
 /// Exact rational square root, or `None` if `r` is not a perfect square.
-fn rational_sqrt(r: &rug::Rational) -> Option<rug::Rational> {
+pub(super) fn rational_sqrt(r: &rug::Rational) -> Option<rug::Rational> {
     if *r.numer() < 0 {
         return None;
     }

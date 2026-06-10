@@ -43,8 +43,10 @@ use crate::simplify::engine::simplify;
 
 use super::exp_case::{
     build_field_and_gens, build_krational_ext, detect_algebraic_extension,
-    expr_to_krational_general,
+    expr_to_krational_general, kelem_to_expr_ext,
 };
+use super::k_rational_integrate::integrate_k_rational_with_logs;
+use super::number_field::NumberField;
 use super::poly_rde::{apply_const, contains_subexpr, is_free_of_var, split_const_factor};
 use super::rational_rde::solve_rational_rde_k;
 use super::tower::{decompose_as_log_poly, ExtensionKind, TowerLevel};
@@ -401,6 +403,12 @@ fn integrate_base_unchecked(
         return Ok(crate::simplify::engine::simplify(r, pool).value);
     }
 
+    // Gap E (follow-up): K-rational integration WITH new K-log terms, e.g.
+    // ∫ 1/(x·(x+√2)) dx = (1/√2)·[log(x) − log(x+√2)].
+    if let Some(r) = try_integrate_k_rational_with_logs(expr, var, pool) {
+        return Ok(crate::simplify::engine::simplify(r, pool).value);
+    }
+
     // Full engine for lower-tower generators (Gap B).
     match crate::integrate::engine::integrate(expr, var, pool) {
         Ok(d) => Ok(crate::simplify::engine::simplify(d.value, pool).value),
@@ -467,6 +475,17 @@ fn integrate_base(
         }
     }
 
+    // Gap E (follow-up): K-rational integration WITH new K-log terms.  These
+    // new logs are over K-linear arguments (x − rᵢ, rᵢ ∈ K) — distinct from
+    // `excluded_gen` (the current transcendental log generator h), so is_safe
+    // should always hold; check anyway for soundness.
+    if let Some(r) = try_integrate_k_rational_with_logs(expr, var, pool) {
+        let r = crate::simplify::engine::simplify(r, pool).value;
+        if is_safe(r) {
+            return Ok(r);
+        }
+    }
+
     // Slower path (Gap B): use the full integration engine for coefficients
     // that live in the lower tower (e.g. log(x) coefficients when integrating
     // at the log(log(x)) level).  Guard: the result must not contain
@@ -517,6 +536,85 @@ fn try_integrate_k_rational(expr: ExprId, var: ExprId, pool: &ExprPool) -> Optio
     let (v_num, v_den) = solve_rational_rde_k(&field, &k_zero, &c_num, &c_den)?;
 
     Some(build_krational_ext(&v_num, &v_den, var, &ext, pool))
+}
+
+/// Try to compute a K-rational antiderivative of `expr` **allowing new
+/// `K`-coefficient `log` terms** when `expr` is a rational function over a
+/// number field `K = ℚ(α)`.
+///
+/// This is the fallback for when [`try_integrate_k_rational`] declines (i.e.
+/// `solve_rational_rde_k` returns `None` because the antiderivative needs new
+/// logarithms).  Uses [`integrate_k_rational_with_logs`] (Rothstein–Trager /
+/// partial fractions over `K`) to produce
+/// `∫ c dx = (K-rational part) + Σ cᵢ·log(x − rᵢ)`, `cᵢ, rᵢ ∈ K`.
+///
+/// Returns `None` when:
+/// - `expr` does not parse as a `K`-rational function over a detected `ℚ(α)`,
+/// - the denominator has a repeated factor (Hermite reduction over `K` not
+///   yet implemented), or
+/// - the denominator does not split completely into distinct `K`-linear
+///   factors (e.g. an irreducible quadratic over `K`).
+fn try_integrate_k_rational_with_logs(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    let ext = detect_algebraic_extension(expr, pool)?;
+    let (field, gens) = build_field_and_gens(&ext);
+    let (c_num, c_den) = expr_to_krational_general(expr, var, &gens, &field, pool)?;
+
+    let result = integrate_k_rational_with_logs(&field, &ext, &c_num, &c_den)?;
+
+    // Rational part: result.rational_num/result.rational_den = Q, a K-polynomial
+    // (rational_den is always [1] — see integrate_k_rational_with_logs).
+    // Integrate term-by-term: ∫ Σ qᵢ xⁱ dx = Σ qᵢ·x^{i+1}/(i+1).
+    let mut terms: Vec<ExprId> = Vec::new();
+    for (i, c) in result.rational_num.iter().enumerate() {
+        if NumberField::is_zero(c) {
+            continue;
+        }
+        let c_expr = kelem_to_expr_ext(c, &ext, pool);
+        let i1 = (i + 1) as i32;
+        let pow_term = pool.pow(var, pool.integer(i1));
+        let scaled = pool.mul(vec![
+            c_expr,
+            pool.pow(pool.integer(i1), pool.integer(-1_i32)),
+            pow_term,
+        ]);
+        terms.push(scaled);
+    }
+    let rational_antideriv = match terms.len() {
+        0 => pool.integer(0_i32),
+        1 => terms[0],
+        _ => pool.add(terms),
+    };
+
+    // Log terms: Σ cᵢ·log(x − rᵢ).
+    let mut log_terms: Vec<ExprId> = Vec::new();
+    for (residue, root) in &result.log_terms {
+        let residue_expr = kelem_to_expr_ext(residue, &ext, pool);
+        let root_expr = kelem_to_expr_ext(root, &ext, pool);
+        let arg = if is_zero(root_expr, pool) {
+            var
+        } else {
+            pool.add(vec![var, pool.mul(vec![pool.integer(-1_i32), root_expr])])
+        };
+        let log_arg = pool.func("log", vec![arg]);
+        let term = pool.mul(vec![residue_expr, log_arg]);
+        log_terms.push(term);
+    }
+
+    let mut all_terms = Vec::new();
+    if !is_zero(rational_antideriv, pool) {
+        all_terms.push(rational_antideriv);
+    }
+    all_terms.extend(log_terms);
+
+    match all_terms.len() {
+        0 => Some(pool.integer(0_i32)),
+        1 => Some(all_terms[0]),
+        _ => Some(pool.add(all_terms)),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1451,11 +1549,12 @@ mod tests {
 
     /// ∫ 1/(x+√2)²·log(x) dx IS mathematically elementary (double pole at x=−√2
     /// has zero simple residue; P_1 = −1/(x+√2) is K-rational), so eq (18) is
-    /// solvable (e=0) and the §E certificate correctly does NOT fire.  The engine
-    /// still *declines* this one (NotImplemented) because integrating the IBP base
-    /// term `∫ 1/(x(x+√2)) dx = (1/√2)(log x − log(x+√2))` needs a K-rational
-    /// integrator *with* logarithms, which the base field path lacks — a
-    /// pre-existing gap, NOT introduced here.  The load-bearing invariant is the
+    /// solvable (e=0) and the §E certificate correctly does NOT fire.  The IBP
+    /// base term `∫ 1/(x(x+√2)) dx = (1/√2)(log x − log(x+√2))` requires a
+    /// K-rational integrator *with* logarithms
+    /// ([`super::k_rational_integrate::integrate_k_rational_with_logs`]), now
+    /// wired into [`try_integrate_k_rational_with_logs`], so the engine produces
+    /// a verified antiderivative.  The load-bearing invariant remains the
     /// negative: it must NEVER be certified NonElementary.
     #[test]
     fn klog_inv_x_plus_sqrt2_sq_log_x_not_nonelementary() {
@@ -1471,9 +1570,13 @@ mod tests {
             !matches!(result, Err(IntegrationError::NonElementary(_))),
             "∫ 1/(x+√2)²·log(x) dx is elementary; must NEVER be NonElementary; got {result:?}"
         );
-        // If an antiderivative is produced, it must be correct.
-        if let Ok(d) = result {
-            verify_numeric_e(integrand, d.value, x, &pool);
+        // The K-rational-with-logs path now closes this gap: it must succeed.
+        match &result {
+            Ok(d) => {
+                println!("∫ 1/(x+√2)²·log(x) dx = {}", pool.display(d.value));
+                verify_numeric_e(integrand, d.value, x, &pool);
+            }
+            Err(e) => panic!("∫ 1/(x+√2)²·log(x) dx must now be elementary; got {e:?}"),
         }
     }
 
@@ -1569,5 +1672,72 @@ mod tests {
             "∫ (1/(x+√2))·log(x+√2)² dx must be elementary (=log³/3); got {result:?}"
         );
         verify_numeric_e(integrand, result.unwrap().value, x, &pool);
+    }
+
+    // ----- Gap E follow-up: K-rational integration with K-log emission -----
+
+    /// `try_integrate_k_rational_with_logs` directly: ∫ 1/(x·(x+√2)) dx
+    /// = (1/√2)·[log(x) − log(x+√2)].  Both poles are K-rational (x=0 and
+    /// x=−√2), neither is a removable (zero-residue) pole, so the plain
+    /// K-rational RDE solver declines and `try_integrate_k_rational_with_logs`
+    /// must produce the dilog-free closed form (matches the module-doc
+    /// example and the `x_times_x_plus_sqrt2_log_terms` algebra-level test).
+    #[test]
+    fn k_rational_with_logs_x_times_x_plus_sqrt2() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let x_plus_sqrt2 = pool.add(vec![x, sqrt2]);
+        let integrand = pool.pow(pool.mul(vec![x, x_plus_sqrt2]), pool.integer(-1_i32));
+
+        let r = try_integrate_k_rational_with_logs(integrand, x, &pool)
+            .expect("∫ 1/(x(x+√2)) dx = (1/√2)(log x − log(x+√2)) must succeed");
+        let r = crate::simplify::engine::simplify(r, &pool).value;
+        println!("∫ 1/(x(x+√2)) dx = {}", pool.display(r));
+        verify_numeric_e(integrand, r, x, &pool);
+    }
+
+    /// `try_integrate_k_rational_with_logs` directly: ∫ 1/((x−√2)·(x+√2)) dx
+    /// = (1/(2√2))·[log(x−√2) − log(x+√2)], exercising a non-zero pair of
+    /// K-roots from a degree-2 denominator (both factors written explicitly
+    /// with √2 so the integrand is detected as K=ℚ(√2)-rational).
+    #[test]
+    fn k_rational_with_logs_inv_x_sq_minus_2() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let neg_sqrt2 = pool.mul(vec![pool.integer(-1_i32), sqrt2]);
+        let x_minus_sqrt2 = pool.add(vec![x, neg_sqrt2]);
+        let x_plus_sqrt2 = pool.add(vec![x, sqrt2]);
+        let denom = pool.mul(vec![x_minus_sqrt2, x_plus_sqrt2]);
+        let integrand = pool.pow(denom, pool.integer(-1_i32));
+
+        let r = try_integrate_k_rational_with_logs(integrand, x, &pool)
+            .expect("∫ 1/((x−√2)(x+√2)) dx = (1/(2√2))[log(x−√2) − log(x+√2)] must succeed");
+        let r = crate::simplify::engine::simplify(r, &pool).value;
+        println!("∫ 1/((x−√2)(x+√2)) dx = {}", pool.display(r));
+        verify_numeric_e(integrand, r, x, &pool);
+    }
+
+    /// Decline: ∫ √2/(x²+1) dx — the denominator's discriminant (−4) is not a
+    /// K-square in K=ℚ(√2), so x²+1 does not split into K-linear factors.
+    /// `try_integrate_k_rational_with_logs` must decline (`None`); the
+    /// (rational, K-free) `arctan` path handles this elsewhere.
+    #[test]
+    fn k_rational_with_logs_irreducible_quadratic_declines() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        // Multiply by √2 so the integrand parses as a K=ℚ(√2)-rational
+        // function (otherwise detect_algebraic_extension finds no extension
+        // and this isn't exercising the K-rational-with-logs path at all).
+        let two = pool.integer(2_i32);
+        let denom = pool.add(vec![pool.pow(x, two), pool.integer(1_i32)]);
+        let integrand = pool.mul(vec![sqrt2, pool.pow(denom, pool.integer(-1_i32))]);
+
+        assert!(
+            try_integrate_k_rational_with_logs(integrand, x, &pool).is_none(),
+            "∫ √2/(x²+1) dx: denominator x²+1 is K-irreducible over ℚ(√2); must decline"
+        );
     }
 }
