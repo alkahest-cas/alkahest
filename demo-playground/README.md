@@ -83,7 +83,7 @@ Pushes to `main` under `demo-playground/` deploy automatically via `.github/work
 
 ## Notebook mode
 
-The default view is a notebook with two starter cells — one using alkahest, one using SymPy for comparison.
+The default view is a starter notebook with markdown sections and code cells covering simplification, differentiation, integration, and trigonometric identities (`demos/default_notebook.py`). Use **Clear notebook** in the toolbar to reset to a single empty code cell.
 
 - **⌘ Enter** — run focused cell
 - **Run all** — execute all cells top-to-bottom

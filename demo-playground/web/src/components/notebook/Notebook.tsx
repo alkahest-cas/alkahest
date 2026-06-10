@@ -24,6 +24,7 @@ import { connectionFromConfig } from '@/lib/server-connection';
 import { isStaticHosting } from '@/lib/hosting';
 import { parseNotebookFile } from '@/lib/notebook-import';
 import { cellsFromDemoParam, readAutoRunFromUrl, readHideLineNumbersFromUrl } from '@/lib/recording';
+import { DEFAULT_NOTEBOOK_CELLS } from '@/lib/default-notebook';
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -123,26 +124,13 @@ function reducer(state: CellData[], action: Action): CellData[] {
   }
 }
 
-// Avoid JS template literals for Python code that contains ${} — use string concat instead
-const INITIAL_CELLS: CellData[] = [
-  newCell(
-    'import alkahest as ak\n' +
-    'from alkahest import latex\n' +
-    'from playground_helpers import display_lean_cert\n\n' +
-    'pool = ak.ExprPool()\n' +
-    'x = pool.symbol("x")\n' +
-    'zero = pool.integer(0)\n\n' +
-    'expr = x + zero\n' +
-    'result = ak.simplify(expr)\n' +
-    'print("simplify(x + 0) = $$" + latex(result.value) + "$$")\n' +
-    'print(result.derivation)\n' +
-    'display_lean_cert(result, operation="simplify")\n',
-  ),
-];
+const INITIAL_CELLS: CellData[] = DEFAULT_NOTEBOOK_CELLS.map(({ code, cellType }) =>
+  newCell(code, cellType),
+);
 
 function cellFromDemoSource(code: string): CellData {
   const trimmed = code.trimStart();
-  if (trimmed.startsWith('##') || trimmed.startsWith('# Groebner')) {
+  if (trimmed.startsWith('##')) {
     return newCell(code, 'markdown');
   }
   return newCell(code, 'code');
@@ -681,6 +669,23 @@ export default function Notebook({
     return () => window.removeEventListener('keydown', onKeyDown, true);
   }, [zenMode, addCodeCellBelow, undoDeleteCell]);
 
+  const handleClearNotebook = useCallback(() => {
+    if (!window.confirm('Clear all cells? This cannot be undone.')) return;
+    interruptAll();
+    execCountRef.current = 0;
+    dispatch({ type: 'CLEAR_EXEC_COUNTS' });
+    const emptyId = uuid();
+    const empty = [newCell('', 'code', emptyId)];
+    dispatch({ type: 'SET_CELLS', cells: empty });
+    localStorage.removeItem(NOTEBOOK_STORAGE_KEY);
+    deletedStack.current = [];
+    setCanUndoDelete(false);
+    isDirtyRef.current = false;
+    onDirtyChangeRef.current?.(false);
+    setFocusedCellId(emptyId);
+    setFocusTargetId(emptyId);
+  }, [interruptAll]);
+
   async function handleWheelUpload(file: File) {
     if (!sessionId) return alert('Server not connected');
     try {
@@ -725,6 +730,16 @@ export default function Notebook({
           Install wheel
           <input type="file" accept=".whl" className="hidden" onChange={(e) => e.target.files?.[0] && handleWheelUpload(e.target.files[0])} />
         </label>
+
+        <button
+          type="button"
+          onClick={handleClearNotebook}
+          title="Remove all cells and start with one empty code cell"
+          className="flex items-center gap-1.5 rounded border border-ak-border px-3 py-1.5 text-xs hover:bg-ak-code-bg transition-colors"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>
+          Clear notebook
+        </button>
 
         <div className="flex-1" />
       </div>}
