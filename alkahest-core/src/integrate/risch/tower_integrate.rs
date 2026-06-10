@@ -1305,6 +1305,83 @@ mod tests {
         }
     }
 
+    /// M4 capstone (target B): `∫∛(eˣ+1) dx` is **provably elementary** via the
+    /// rationalizing substitution `u = ∛(eˣ+1)` and now integrates end-to-end
+    /// through the public engine (was `NotImplemented` before the
+    /// `radical_subst` hook).
+    #[test]
+    fn m4_capstone_cbrt_exp_plus_one() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let inner = pool.add(vec![exp_x, pool.integer(1_i32)]);
+        let integrand = pool.pow(inner, pool.rational(1_i32, 3_i32));
+
+        let res = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(res.is_ok(), "∫∛(eˣ+1) dx must integrate; got {res:?}");
+        let g = res.unwrap().value;
+
+        let ds = simplify(crate::diff::diff(g, x, &pool).unwrap().value, &pool).value;
+        for &xv in &[0.35_f64, 0.7, 1.3, 2.1] {
+            let lhs = eval(ds, x, xv, &pool).unwrap();
+            let rhs = eval(integrand, x, xv, &pool).unwrap();
+            assert!(
+                (lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()),
+                "x={xv}: d/dx F = {lhs}, f = {rhs}\n  F = {}",
+                pool.display(g)
+            );
+        }
+    }
+
+    /// M4 capstone (target B sibling): `∫ eˣ/∛(eˣ+1) dx` — radical in the
+    /// denominator — also rationalizes (`∫ 3u du = (3/2)·∛(eˣ+1)²`).
+    #[test]
+    fn m4_capstone_exp_over_cbrt() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let inner = pool.add(vec![exp_x, pool.integer(1_i32)]);
+        let inv_cbrt = pool.pow(inner, pool.rational(-1_i32, 3_i32));
+        let integrand = pool.mul(vec![exp_x, inv_cbrt]);
+
+        let res = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(res.is_ok(), "∫ eˣ/∛(eˣ+1) dx must integrate; got {res:?}");
+        let g = res.unwrap().value;
+
+        let ds = simplify(crate::diff::diff(g, x, &pool).unwrap().value, &pool).value;
+        for &xv in &[0.35_f64, 0.7, 1.3, 2.1] {
+            let lhs = eval(ds, x, xv, &pool).unwrap();
+            let rhs = eval(integrand, x, xv, &pool).unwrap();
+            assert!(
+                (lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()),
+                "x={xv}: d/dx F = {lhs}, f = {rhs}\n  F = {}",
+                pool.display(g)
+            );
+        }
+    }
+
+    /// M4 capstone (target A): `∫ exp(x)/∛(x+log x) dx` — the radicand mixes two
+    /// independent transcendentals (`x` and `log x`), so the rationalizing
+    /// substitution does not apply and the `exp`/`log` interaction is genuinely
+    /// unsupported.  The engine **declines** (no wrong elementary answer); this
+    /// pins that honest decline.
+    #[test]
+    fn m4_capstone_exp_over_cbrt_x_plus_logx_declines() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let log_x = pool.func("log", vec![x]);
+        let a = pool.add(vec![x, log_x]);
+        let inv_cbrt = pool.pow(a, pool.rational(-1_i32, 3_i32));
+        let integrand = pool.mul(vec![exp_x, inv_cbrt]);
+
+        let res = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            res.is_err(),
+            "∫ exp(x)/∛(x+log x) dx is not reachable; expected decline, got {res:?}"
+        );
+    }
+
     /// The new multi-generator path declines (returns `None`) on the existing
     /// single-generator cases — it is purely additive.
     #[test]

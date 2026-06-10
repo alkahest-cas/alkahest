@@ -84,6 +84,7 @@ pub mod log_case;
 pub mod number_field;
 pub mod poly_rde;
 pub mod radical_ext;
+pub mod radical_subst;
 pub mod rational_integrate;
 pub mod rational_rde;
 pub mod simple_radical;
@@ -316,6 +317,10 @@ pub fn integrate_risch(
 /// 3. `try_integrate_exp_of_algebraic` — M1 `∫ R(x, α)·exp(β) dx` with `β` an
 ///    algebraic function of `x`, reduced to an in-field Risch DE over `ℚ(x)(α)`
 ///    and solved by `solve_alg_rde_general`.
+/// 4. `try_integrate_radical_over_exp_subst` — M4 `∫ R(eᵏˣ, y) dx` with
+///    `y = (c·eᵏˣ+d)^{1/n}` an algebraic generator over an *exp* tower, solved by
+///    the rationalizing substitution `u = y` (e.g. `∫∛(eˣ+1) dx`).  The radical
+///    is the outermost generator and rationalizes the whole integrand.
 ///
 /// Each hook returns `None` for everything outside its shape (so ordinary towers
 /// fall through unchanged) and is numeric-gated.  Returns the first `Some`.
@@ -337,6 +342,10 @@ fn try_tower_algebraic_dispatch(
     }
 
     if let Some(result) = exp_algebraic::try_integrate_exp_of_algebraic(expr, var, pool) {
+        return Some(result);
+    }
+
+    if let Some(result) = radical_subst::try_integrate_radical_over_exp_subst(expr, var, pool) {
         return Some(result);
     }
 
