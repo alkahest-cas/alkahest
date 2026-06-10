@@ -526,7 +526,8 @@ mod backend {
             ExprData::Pow { base, exp } => {
                 let base = fold_numeric_pow(base, pool);
                 let exp = fold_numeric_pow(exp, pool);
-                if let (ExprData::Integer(b), ExprData::Integer(e)) = (pool.get(base), pool.get(exp))
+                if let (ExprData::Integer(b), ExprData::Integer(e)) =
+                    (pool.get(base), pool.get(exp))
                 {
                     if b.0 == 1 {
                         return pool.integer(1_i32);
@@ -1030,7 +1031,12 @@ mod tests {
         #[cfg(feature = "egraph")]
         {
             let result = simplify_egraph(expr, &pool);
-            assert_eq!(result.value, pool.integer(1_i32), "got {}", pool.display(result.value));
+            assert_eq!(
+                result.value,
+                pool.integer(1_i32),
+                "got {}",
+                pool.display(result.value)
+            );
         }
         #[cfg(not(feature = "egraph"))]
         let _ = expr;
@@ -1043,7 +1049,12 @@ mod tests {
         #[cfg(feature = "egraph")]
         {
             let result = simplify_egraph(expr, &pool);
-            assert_eq!(result.value, pool.integer(1_i32), "got {}", pool.display(result.value));
+            assert_eq!(
+                result.value,
+                pool.integer(1_i32),
+                "got {}",
+                pool.display(result.value)
+            );
         }
         #[cfg(not(feature = "egraph"))]
         let _ = expr;
