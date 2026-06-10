@@ -38,7 +38,8 @@ use super::rational_rde::{
     numerator_degree_bound, poly_div_exact, poly_gcd, solve_rational_rde_generalized,
 };
 use super::tower_field::{
-    solve_tower_rde_generic_bounded, tower_x_degree_bound, ExpTowerField, LogTowerField, TExpr,
+    solve_tower_coupled_radical_rde_bounded, solve_tower_rde_generic_bounded, tower_x_degree_bound,
+    ExpTowerField, LogTowerField, TExpr,
 };
 
 // ===========================================================================
@@ -396,6 +397,26 @@ impl DifferentialField for ExpTowerField {
         let drift = degree(self.deta.numer()).max(degree(self.deta.denom()));
         Some(tower_x_degree_bound(f, g, drift))
     }
+
+    /// Coupled radical RDE over the exponential tower `ℚ(x)(eᵑ)`: solve
+    /// `D(u) + f·u = g` in the radical extension `yⁿ = a` for a possibly
+    /// non-diagonal `f`, via the tower-base coupled solver
+    /// `solve_tower_coupled_radical_rde_bounded` (undetermined-coefficient ansatz
+    /// `uᵢ = (Σ cᵢⱼₖ xᵏ tʲ)/D` per `y`-component, exact ℚ-linear system, Gauss
+    /// solve, exact in-field verification of `D(u)+f·u=g`).  The `x`-degree search
+    /// ceiling is raised to the analytic bound (drift `η'`) but never below the
+    /// heuristic floor.  `n < 2` or `a = 0` returns `None`; the caller re-verifies.
+    fn coupled_radical_rde(
+        &self,
+        n: usize,
+        a: &TExpr,
+        f: &[TExpr],
+        g: &[TExpr],
+    ) -> Option<Vec<TExpr>> {
+        let drift = degree(self.deta.numer()).max(degree(self.deta.denom()));
+        let x_bound = tower_coupled_x_bound(a, f, g, drift);
+        solve_tower_coupled_radical_rde_bounded(self, n, a, f, g, Some(x_bound))
+    }
 }
 
 // ===========================================================================
@@ -453,6 +474,38 @@ impl DifferentialField for LogTowerField {
         let drift = degree(self.dh_over_h.numer()).max(degree(self.dh_over_h.denom()));
         Some(tower_x_degree_bound(f, g, drift))
     }
+
+    /// Coupled radical RDE over the logarithmic tower `ℚ(x)(log h)`: solve
+    /// `D(u) + f·u = g` in the radical extension `yⁿ = a` for a possibly
+    /// non-diagonal `f`, via the tower-base coupled solver
+    /// `solve_tower_coupled_radical_rde_bounded` (same ansatz / exact ℚ-linear
+    /// system / Gauss solve / exact in-field verification as the exp-tower impl;
+    /// only the tower derivation differs).  The `x`-degree ceiling uses the
+    /// log-tower drift `h'/h` and is never lowered below the heuristic floor.
+    /// `n < 2` or `a = 0` returns `None`; the caller re-verifies.
+    fn coupled_radical_rde(
+        &self,
+        n: usize,
+        a: &TExpr,
+        f: &[TExpr],
+        g: &[TExpr],
+    ) -> Option<Vec<TExpr>> {
+        let drift = degree(self.dh_over_h.numer()).max(degree(self.dh_over_h.denom()));
+        let x_bound = tower_coupled_x_bound(a, f, g, drift);
+        solve_tower_coupled_radical_rde_bounded(self, n, a, f, g, Some(x_bound))
+    }
+}
+
+/// A sound `x`-degree search ceiling for the coupled tower radical ansatz: the
+/// max of the scalar [`tower_x_degree_bound`] over the radicand `a` and every
+/// component of `f`, `g` (with the given derivation drift degree).  Over-
+/// estimating only widens the search — verification gates correctness.
+fn tower_coupled_x_bound(a: &TExpr, f: &[TExpr], g: &[TExpr], drift: i64) -> usize {
+    let mut bound = tower_x_degree_bound(a, a, drift);
+    for c in f.iter().chain(g.iter()) {
+        bound = bound.max(tower_x_degree_bound(c, c, drift));
+    }
+    bound
 }
 
 // ===========================================================================

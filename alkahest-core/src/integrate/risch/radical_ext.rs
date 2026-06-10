@@ -62,14 +62,21 @@
 //! declining default means a base field with no coupled solver still declines
 //! (`None`).
 //!
-//! The tractable, proven slice is the **radical-over-`ℚ(x)`** base case:
-//! [`RationalDiffField`](super::diff_field::RationalDiffField)'s
-//! `coupled_radical_rde` bridges to an [`AlgExtension`](super::alg_field::AlgExtension)
-//! and runs the coupled solver `solve_alg_rde_general` (whose derivation matches
-//! `RadicalExt`'s diagonal twist, so the bridge is sound; it is verification-
-//! gated regardless).  Tower bases (`ExpTowerField`/`LogTowerField`) keep the
-//! declining default — the fully-generic coupled solve over an arbitrary
-//! transcendental tower remains future work.
+//! The tractable, proven slices are:
+//!   * the **radical-over-`ℚ(x)`** base case:
+//!     [`RationalDiffField`](super::diff_field::RationalDiffField)'s
+//!     `coupled_radical_rde` bridges to an
+//!     [`AlgExtension`](super::alg_field::AlgExtension) and runs the coupled solver
+//!     `solve_alg_rde_general` (whose derivation matches `RadicalExt`'s diagonal
+//!     twist, so the bridge is sound; it is verification-gated regardless);
+//!   * the **radical-over-tower** case (`ExpTowerField`/`LogTowerField`): their
+//!     `coupled_radical_rde` runs the tower-base coupled solver
+//!     `solve_tower_coupled_radical_rde_bounded` — a per-`y`-component
+//!     undetermined-coefficient ansatz `uᵢ = (Σ cᵢⱼₖ xᵏ tʲ)/D` over candidate
+//!     denominators, exact ℚ-linear system, Gauss solve, and exact in-field
+//!     verification.  The fully-generic coupled solve over an arbitrary nested
+//!     tower (more than one transcendental, or radicands needing higher caps)
+//!     remains future work — a missed solution declines, never a wrong answer.
 //!
 //! `limited_integrate` / `param_log_deriv` remain unimplemented (`None`).
 
@@ -350,7 +357,8 @@ impl<F: DifferentialField> DifferentialField for RadicalExt<F> {
     /// is coupled; this delegates to the base field's
     /// [`coupled_radical_rde`](DifferentialField::coupled_radical_rde) hook (the
     /// `ℚ(x)` impl bridges to `solve_alg_rde_general` over an `AlgExtension`;
-    /// tower bases keep the declining default and so still return `None`).
+    /// the `ExpTowerField`/`LogTowerField` impls run the tower-base coupled
+    /// solver; a base field without a coupled solver keeps the declining default).
     ///
     /// In both cases the assembled candidate is **verified in-field**
     /// (`D(u) + f·u = g`) before being returned, mirroring PR1's verification
@@ -363,8 +371,8 @@ impl<F: DifferentialField> DifferentialField for RadicalExt<F> {
             // Non-diagonal: multiplication-by-`f` mixes the power basis into a
             // genuinely coupled system.  Defer to the base field's coupled-radical
             // solver (the `ℚ(x)` impl bridges to `solve_alg_rde_general` over an
-            // `AlgExtension`; tower bases keep the declining default).  Any
-            // returned candidate is re-verified in-field before being accepted.
+            // `AlgExtension`; the tower impls run the tower-base coupled solver).
+            // Any returned candidate is re-verified in-field before acceptance.
             return self.coupled_nondiagonal_rde(f, g);
         }
         let f0 = f_trim
@@ -521,7 +529,7 @@ mod tests {
     use crate::integrate::risch::alg_field::RatFn;
     use crate::integrate::risch::diff_field::RationalDiffField;
     use crate::integrate::risch::poly_rde::QPoly;
-    use crate::integrate::risch::tower_field::{LogTowerField, TExpr};
+    use crate::integrate::risch::tower_field::{ExpTowerField, LogTowerField, TExpr};
     use rug::Rational;
 
     fn rat(n: i64) -> Rational {
@@ -677,28 +685,78 @@ mod tests {
     }
 
     #[test]
-    fn rde_nondiagonal_f_over_tower_base_declines() {
-        // RadicalExt over a LOG tower base: the base field has no coupled-radical
-        // solver (default hook ⇒ None), so a non-diagonal f still declines.  This
-        // documents the remaining hard case (coupled solve over a transcendental
-        // tower).
+    fn rde_nondiagonal_f_over_log_tower_base_solves() {
+        // RadicalExt over a LOG tower base, y = √(x + log x), now solves the
+        // non-diagonal coupled RDE via the tower-base coupled solver.
+        // Take a non-base twist f = c·y with c = 1/(x+log x) ∈ ℚ(x)(t) and the
+        // target u_true = y.  Then g = D(y) + c·y·y = D(y) + c·(x+log x) = D(y)+1,
+        // a genuinely coupled construction that the solver must recover.
         let dh_over_h = RatFn::new(vec![rat(1)], vec![rat(0), rat(1)]); // 1/x
         let log_field = LogTowerField::new(dh_over_h);
-        // Radicand a = x + log x.
-        let a = {
-            let x = TExpr::from_ratfn(rf_poly(&[0, 1]));
-            <LogTowerField as DifferentialField>::add(&log_field, &x, &TExpr::t())
-        };
+        let x = TExpr::from_ratfn(rf_poly(&[0, 1]));
+        let a = <LogTowerField as DifferentialField>::add(&log_field, &x, &TExpr::t()); // x + log x
+        let ext = RadicalExt::new(log_field.clone(), a.clone(), 2);
+
+        // c = 1/(x+log x); f = c·y (non-diagonal: nonzero y-component, c ∉ ℚ).
+        let c = <LogTowerField as DifferentialField>::inv(&log_field, &a).unwrap();
+        let f = vec![<LogTowerField as DifferentialField>::zero(&log_field), c];
+        let u_true = vec![
+            <LogTowerField as DifferentialField>::zero(&log_field),
+            <LogTowerField as DifferentialField>::one(&log_field),
+        ]; // y
+        assert!(ext.trim(f.clone()).len() > 1, "f must be non-diagonal");
+        let g = ext.add(&ext.derivation(&u_true), &ext.mul(&f, &u_true));
+        let sol = ext.rational_rde(&f, &g).expect("log-tower coupled solve");
+        // In-field re-verification of D(u)+f·u=g.
+        let lhs = ext.add(&ext.derivation(&sol), &ext.mul(&f, &sol));
+        assert!(ext.eq(&lhs, &g), "coupled RDE not satisfied; sol={sol:?}");
+        // And the headline solution u = y is recovered.
+        assert!(ext.eq(&sol, &u_true), "expected u = y; got {sol:?}");
+    }
+
+    #[test]
+    fn rde_nondiagonal_f_over_exp_tower_base_solves() {
+        // RadicalExt over an EXP tower base, y = √(x + eˣ).  Non-base twist
+        // f = (1/(x+eˣ))·y, target u_true = y.  Exercises the exp-tower drift.
+        let exp_field = ExpTowerField::new(RatFn::int(1)); // t = eˣ
+        let x = TExpr::from_ratfn(rf_poly(&[0, 1]));
+        let a = <ExpTowerField as DifferentialField>::add(&exp_field, &x, &TExpr::t()); // x + eˣ
+        let ext = RadicalExt::new(exp_field.clone(), a.clone(), 2);
+
+        let c = <ExpTowerField as DifferentialField>::inv(&exp_field, &a).unwrap();
+        let f = vec![<ExpTowerField as DifferentialField>::zero(&exp_field), c];
+        let u_true = vec![
+            <ExpTowerField as DifferentialField>::zero(&exp_field),
+            <ExpTowerField as DifferentialField>::one(&exp_field),
+        ];
+        let g = ext.add(&ext.derivation(&u_true), &ext.mul(&f, &u_true));
+        let sol = ext.rational_rde(&f, &g).expect("exp-tower coupled solve");
+        let lhs = ext.add(&ext.derivation(&sol), &ext.mul(&f, &sol));
+        assert!(ext.eq(&lhs, &g), "coupled RDE not satisfied; sol={sol:?}");
+    }
+
+    #[test]
+    fn rde_nondiagonal_f_over_tower_base_unsolvable_is_none() {
+        // y = √(x + log x), non-base f = 1·y, g = (1/x)·1 in component 0:
+        // the component-0 equation needs ∫1/x = log x, but the coupling cannot
+        // produce a rational/tower solution — the solver declines (None), never a
+        // wrong answer.  A genuine decline over the tower base.
+        let dh_over_h = RatFn::new(vec![rat(1)], vec![rat(0), rat(1)]); // 1/x
+        let log_field = LogTowerField::new(dh_over_h);
+        let x = TExpr::from_ratfn(rf_poly(&[0, 1]));
+        let a = <LogTowerField as DifferentialField>::add(&log_field, &x, &TExpr::t());
         let ext = RadicalExt::new(log_field.clone(), a, 2);
-        // Non-base f = 1·y (nonzero y-component).
         let f = vec![
             <LogTowerField as DifferentialField>::zero(&log_field),
             <LogTowerField as DifferentialField>::one(&log_field),
         ];
-        let g = ext.one();
+        // g = 1/x in component 0 (whose antiderivative log x is not reachable as
+        // a rational solution of this coupled system within the ansatz bounds).
+        let inv_x = TExpr::from_ratfn(RatFn::new(vec![rat(1)], vec![rat(0), rat(1)]));
+        let g = vec![inv_x];
         assert!(
             ext.rational_rde(&f, &g).is_none(),
-            "tower-base non-diagonal f ⇒ declines (default hook)"
+            "unsolvable tower-base coupled case ⇒ None"
         );
     }
 
