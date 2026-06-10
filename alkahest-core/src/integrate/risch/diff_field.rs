@@ -30,7 +30,8 @@
 //! on top of that scalar structure; it is deliberately a separate trait so that
 //! a level may carry solvers a bare `CoeffField` does not.
 
-use super::alg_field::{RatFn, RationalFunctionField};
+use super::alg_field::{AlgElem, AlgExtension, RatFn, RationalFunctionField};
+use super::alg_rde::solve_alg_rde_general;
 use super::number_field::CoeffField;
 use super::poly_rde::{degree, poly_deriv, trim};
 use super::rational_rde::{
@@ -119,6 +120,28 @@ pub trait DifferentialField {
     /// generous bound (or `None`).
     fn rde_degree_bound(&self, f: &Self::Elem, g: &Self::Elem) -> Option<usize> {
         let _ = (f, g);
+        None
+    }
+
+    /// Solve the *coupled* radical Risch DE `D(u) + f·u = g` over the radical
+    /// extension `yⁿ = a` of THIS field, for a possibly NON-BASE `f`.  `a` is the
+    /// radicand (an element of THIS field); `f`, `g`, and the returned `u` are
+    /// given as coefficient vectors `[c₀,…,c_{n−1}]` over the power basis
+    /// `1,y,…,y^{n−1}` (each cᵢ an element of THIS field).
+    ///
+    /// Default: `None` — "this base field has no coupled-radical solver"
+    /// (the caller then declines).  Implemented where the coupled system is
+    /// tractable (e.g. `ℚ(x)` via `AlgExtension` / `solve_alg_rde_general`).
+    /// Returns `None` for unsolvable/out-of-scope inputs; a `Some` need not be
+    /// pre-verified (the caller re-verifies in-field).
+    fn coupled_radical_rde(
+        &self,
+        n: usize,
+        a: &Self::Elem,
+        f: &[Self::Elem],
+        g: &[Self::Elem],
+    ) -> Option<Vec<Self::Elem>> {
+        let _ = (n, a, f, g);
         None
     }
 
@@ -262,6 +285,58 @@ impl DifferentialField for RationalDiffField {
         };
 
         Some(numerator_degree_bound(deg_b, deg_c, deg_e, deg_f) + deg_bf as usize)
+    }
+
+    /// Coupled radical RDE over `ℚ(x)`: solve `D(u) + f·u = g` in the radical
+    /// extension `yⁿ = a` for a possibly non-base `f`, by bridging to the proven
+    /// coupled solver `solve_alg_rde_general` over an `AlgExtension`.
+    ///
+    /// Requires the radicand `a` to be a polynomial (its canonical denominator is
+    /// the monic constant `1`); otherwise returns `None`.  Builds
+    /// `AlgExtension::radical(n, a.numer())` (so `α = a^{1/n}` with the same
+    /// diagonal derivation twist `D(α) = (1/n)(a'/a)α` as `RadicalExt`), maps the
+    /// power-basis coefficient vectors `f`, `g` (each `&[RatFn]`, padded/truncated
+    /// to length `n`) to `AlgElem`, runs the coupled solver, and maps the result
+    /// back to a length-`n` `Vec<RatFn>`.  `n < 2` returns `None`
+    /// (`AlgExtension::radical` needs degree ≥ 2; the degenerate `n = 1` case has
+    /// no `y`-coupling anyway).  The caller re-verifies in-field.
+    fn coupled_radical_rde(
+        &self,
+        n: usize,
+        a: &RatFn,
+        f: &[RatFn],
+        g: &[RatFn],
+    ) -> Option<Vec<RatFn>> {
+        if n < 2 {
+            return None;
+        }
+        // Radicand must be a polynomial: canonical denominator is monic, so a
+        // constant denominator is exactly `[1]` (poly_one).
+        if degree(a.denom()) != 0 {
+            return None;
+        }
+        let ext = AlgExtension::radical(n, a.numer());
+
+        // Pad/truncate a power-basis coefficient vector to length `n`, then reduce
+        // mod `yⁿ − a` into an `AlgElem`.
+        let to_alg = |v: &[RatFn]| -> AlgElem {
+            let mut comps = vec![RatFn::int(0); n];
+            for (i, c) in v.iter().take(n).enumerate() {
+                comps[i] = c.clone();
+            }
+            ext.reduce(&comps)
+        };
+
+        let f_alg = to_alg(f);
+        let g_alg = to_alg(g);
+        let u_alg = solve_alg_rde_general(&ext, &f_alg, &g_alg)?;
+
+        // Map the AlgElem (length ≤ n) back to a length-n power-basis vector.
+        let mut u = vec![RatFn::int(0); n];
+        for (i, c) in u_alg.into_iter().take(n).enumerate() {
+            u[i] = c;
+        }
+        Some(u)
     }
 }
 
