@@ -279,19 +279,19 @@ fn try_enlarge_algebraic(
         let bts = branch_kts(&nf, s);
         let xseries = x_alpha_kts(&nf, &alpha, e); // x along the branch
                                                    // Series of `xˡ` (l = 0..m−1).
-        let mut xpows: Vec<KTS> = Vec::with_capacity(m);
+        let mut xpows: Vec<Kts> = Vec::with_capacity(m);
         xpows.push(kts_one(&nf));
         for l in 1..m {
             xpows.push(kts_mul(&nf, &xpows[l - 1], &xseries, u_bound));
         }
         // Series of each bᵢ and of bd along this branch (K-coefficients).
-        let bi_ts: Vec<KTS> = (0..d)
+        let bi_ts: Vec<Kts> = (0..d)
             .map(|i| elem_kts(&nf, &b[i], &alpha, e, u_bound, &bts))
             .collect();
         let bd_ts = elem_kts(&nf, bd, &alpha, e, u_bound, &bts);
         // For column (i,l): the series of `xˡ·bᵢ` (the linear contribution of
         // aᵢₗ to the numerator).
-        let mut col_ts: Vec<KTS> = Vec::with_capacity(ncols);
+        let mut col_ts: Vec<Kts> = Vec::with_capacity(ncols);
         for bi in &bi_ts {
             for xl in &xpows {
                 col_ts.push(kts_mul(&nf, xl, bi, u_bound));
@@ -334,17 +334,17 @@ fn try_enlarge_algebraic(
 // ---------------------------------------------------------------------------
 
 /// A Laurent series in the place uniformizer `t`, coefficients in `K = ℚ(α)`.
-type KTS = BTreeMap<i64, KElem>;
+type Kts = BTreeMap<i64, KElem>;
 
-fn kts_one(nf: &NumberField) -> KTS {
-    let mut s = KTS::new();
+fn kts_one(nf: &NumberField) -> Kts {
+    let mut s = Kts::new();
     s.insert(0, nf.from_int(1));
     s
 }
 
 /// `α + t^e` as a `K`-series in `t`.
-fn x_alpha_kts(nf: &NumberField, alpha: &KElem, e: i64) -> KTS {
-    let mut s = KTS::new();
+fn x_alpha_kts(nf: &NumberField, alpha: &KElem, e: i64) -> Kts {
+    let mut s = Kts::new();
     if !NumberField::is_zero(alpha) {
         s.insert(0, alpha.clone());
     }
@@ -352,10 +352,10 @@ fn x_alpha_kts(nf: &NumberField, alpha: &KElem, e: i64) -> KTS {
     s
 }
 
-/// The Puiseux branch `y(t) = Σ c_k t^{exp·e}` (`c_k ∈ K`) as a `KTS`.
-fn branch_kts(nf: &NumberField, s: &AlgBasePuiseuxSeries) -> KTS {
+/// The Puiseux branch `y(t) = Σ c_k t^{exp·e}` (`c_k ∈ K`) as a `Kts`.
+fn branch_kts(nf: &NumberField, s: &AlgBasePuiseuxSeries) -> Kts {
     let e = s.ramification as i64;
-    let mut ts = KTS::new();
+    let mut ts = Kts::new();
     for (exp, c) in &s.terms {
         let k = (exp.clone() * Rational::from(e))
             .numer()
@@ -370,8 +370,8 @@ fn branch_kts(nf: &NumberField, s: &AlgBasePuiseuxSeries) -> KTS {
 
 /// Series of `b = Σⱼ bⱼ(x) yʲ` (`bⱼ ∈ ℚ(x)`) along a `K`-branch `y = bts(t)`,
 /// `x = α + t^e`.
-fn elem_kts(nf: &NumberField, b: &AlgElem, alpha: &KElem, e: i64, u: i64, bts: &KTS) -> KTS {
-    let mut acc = KTS::new();
+fn elem_kts(nf: &NumberField, b: &AlgElem, alpha: &KElem, e: i64, u: i64, bts: &Kts) -> Kts {
+    let mut acc = Kts::new();
     for (j, coeff) in b.iter().enumerate() {
         if coeff.numer().is_empty() {
             continue;
@@ -383,18 +383,18 @@ fn elem_kts(nf: &NumberField, b: &AlgElem, alpha: &KElem, e: i64, u: i64, bts: &
     acc
 }
 
-fn ratfn_kts(nf: &NumberField, r: &RatFn, alpha: &KElem, e: i64, u: i64) -> KTS {
+fn ratfn_kts(nf: &NumberField, r: &RatFn, alpha: &KElem, e: i64, u: i64) -> Kts {
     let num = poly_kts(nf, r.numer(), alpha, e, u);
     let den = poly_kts(nf, r.denom(), alpha, e, u);
     match kts_inv(nf, &den, u) {
         Some(inv) => kts_mul(nf, &num, &inv, u),
-        None => KTS::new(),
+        None => Kts::new(),
     }
 }
 
 /// `p(α + t^e)` (`p ∈ ℚ[x]`) as a `K`-series truncated to `t`-exponents `< u`.
-fn poly_kts(nf: &NumberField, p: &QPoly, alpha: &KElem, e: i64, u: i64) -> KTS {
-    let mut ts = KTS::new();
+fn poly_kts(nf: &NumberField, p: &QPoly, alpha: &KElem, e: i64, u: i64) -> Kts {
+    let mut ts = Kts::new();
     for (mexp, pm) in p.iter().enumerate() {
         if *pm == 0 {
             continue;
@@ -419,7 +419,7 @@ fn poly_kts(nf: &NumberField, p: &QPoly, alpha: &KElem, e: i64, u: i64) -> KTS {
     ts
 }
 
-fn kts_add(nf: &NumberField, a: &KTS, b: &KTS) -> KTS {
+fn kts_add(nf: &NumberField, a: &Kts, b: &Kts) -> Kts {
     let mut r = a.clone();
     for (k, c) in b {
         let slot = r.entry(*k).or_insert_with(NumberField::k_zero);
@@ -429,8 +429,8 @@ fn kts_add(nf: &NumberField, a: &KTS, b: &KTS) -> KTS {
     r
 }
 
-fn kts_mul(nf: &NumberField, a: &KTS, b: &KTS, u: i64) -> KTS {
-    let mut r = KTS::new();
+fn kts_mul(nf: &NumberField, a: &Kts, b: &Kts, u: i64) -> Kts {
+    let mut r = Kts::new();
     for (ka, ca) in a {
         for (kb, cb) in b {
             let k = ka + kb;
@@ -444,7 +444,7 @@ fn kts_mul(nf: &NumberField, a: &KTS, b: &KTS, u: i64) -> KTS {
     r
 }
 
-fn kts_pow(nf: &NumberField, a: &KTS, m: u32, u: i64) -> KTS {
+fn kts_pow(nf: &NumberField, a: &Kts, m: u32, u: i64) -> Kts {
     let mut acc = kts_one(nf);
     for _ in 0..m {
         acc = kts_mul(nf, &acc, a, u);
@@ -455,7 +455,7 @@ fn kts_pow(nf: &NumberField, a: &KTS, m: u32, u: i64) -> KTS {
 /// Inverse of a `K`-Laurent series, truncated to exponents `< u`.  `None` if the
 /// leading coefficient is not invertible in `K` (e.g. a zero divisor mod a
 /// reducible `q` — which cannot arise for an irreducible discriminant factor).
-fn kts_inv(nf: &NumberField, s: &KTS, u: i64) -> Option<KTS> {
+fn kts_inv(nf: &NumberField, s: &Kts, u: i64) -> Option<Kts> {
     let (&v0, c0) = s.iter().next()?; // lowest exponent
     let inv_c0 = nf.inv(c0)?;
     let kmax = (u + v0).max(1);
@@ -476,7 +476,7 @@ fn kts_inv(nf: &NumberField, s: &KTS, u: i64) -> Option<KTS> {
         }
         iu[k] = nf.neg(&acc);
     }
-    let mut res = KTS::new();
+    let mut res = Kts::new();
     for (k, iuk) in iu.iter().enumerate() {
         let exp = -v0 + k as i64;
         if exp < u && !NumberField::is_zero(iuk) {
@@ -487,7 +487,7 @@ fn kts_inv(nf: &NumberField, s: &KTS, u: i64) -> Option<KTS> {
 }
 
 /// The ℚ-component `comp` (coefficient of `αᶜᵒᵐᵖ`) of `s[t^k]`.
-fn kts_comp(s: &KTS, k: i64, comp: usize) -> Rational {
+fn kts_comp(s: &Kts, k: i64, comp: usize) -> Rational {
     s.get(&k)
         .and_then(|c| c.get(comp))
         .cloned()
