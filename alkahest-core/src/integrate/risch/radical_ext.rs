@@ -45,20 +45,31 @@
 //!   D(uᵢ) + ( f₀ + (i/n)·D(a)/a )·uᵢ = gᵢ      over F,
 //! ```
 //!
-//! each solved by `base.rational_rde(…)` — the M4 descent.  If `f` has any
-//! nonzero higher `y`-component, multiplication-by-`f` *mixes* components and
-//! the system is **not** diagonal; this **generic** `RadicalExt<F>` impl then
-//! declines (returns `None`).  This is sound (declining is always allowed) and
-//! covers PR2's use, where the per-component twist
-//! `ω = η' + (i/n)D(a)/a` is itself a base scalar plus the diagonal radical
-//! twist.
+//! each solved by `base.rational_rde(…)` — the M4 descent.  This diagonal
+//! fast-path is kept unchanged (it is correct and cheaper) and covers PR2's
+//! use, where the per-component twist `ω = η' + (i/n)D(a)/a` is itself a base
+//! scalar plus the diagonal radical twist.
 //!
-//! A full non-diagonal coupled solve over an *arbitrary* lower field `F`
-//! remains future work for the generic `RadicalExt`.  The concrete case that
-//! the downstream `exp(algebraic)` work needs — `α` algebraic over `ℚ(x)` — is
-//! instead handled by [`AlgExtension`](super::alg_field::AlgExtension)'s
-//! `DifferentialField::rational_rde`, which routes non-base `f` through the
-//! generalized ansatz solver `solve_alg_rde_general`.
+//! ### Non-diagonal `f` — the coupled case
+//!
+//! If `f` has any nonzero higher `y`-component, multiplication-by-`f` *mixes*
+//! components and the system is **not** diagonal: it becomes a genuinely
+//! coupled linear system `b' + M·b = c` over `F`.  Rather than always
+//! declining, this impl now delegates to the base field's
+//! [`coupled_radical_rde`](DifferentialField::coupled_radical_rde) hook (gather
+//! `f`, `g` as length-`n` component vectors over `F`, call the hook, then
+//! re-verify `D(u)+f·u=g` exactly in-field before accepting).  The hook's
+//! declining default means a base field with no coupled solver still declines
+//! (`None`).
+//!
+//! The tractable, proven slice is the **radical-over-`ℚ(x)`** base case:
+//! [`RationalDiffField`](super::diff_field::RationalDiffField)'s
+//! `coupled_radical_rde` bridges to an [`AlgExtension`](super::alg_field::AlgExtension)
+//! and runs the coupled solver `solve_alg_rde_general` (whose derivation matches
+//! `RadicalExt`'s diagonal twist, so the bridge is sound; it is verification-
+//! gated regardless).  Tower bases (`ExpTowerField`/`LogTowerField`) keep the
+//! declining default — the fully-generic coupled solve over an arbitrary
+//! transcendental tower remains future work.
 //!
 //! `limited_integrate` / `param_log_deriv` remain unimplemented (`None`).
 
@@ -173,6 +184,41 @@ impl<F: DifferentialField> RadicalExt<F> {
         }
         v.truncate(self.n);
         self.trim(v)
+    }
+
+    /// Coupled (non-diagonal) `D(u) + f·u = g` solve for a non-base `f`, via the
+    /// base field's [`coupled_radical_rde`](DifferentialField::coupled_radical_rde)
+    /// hook.  Gathers `f` and `g` as length-`n` component vectors over `F`, calls
+    /// the hook, and — like the diagonal fast-path — **verifies `D(u) + f·u = g`
+    /// in-field** before returning.  Returns `None` if the base field has no
+    /// coupled solver (the default), the hook finds no solution, or verification
+    /// fails; so a `Some` is always correct.
+    fn coupled_nondiagonal_rde(&self, f: &[F::Elem], g: &[F::Elem]) -> Option<Vec<F::Elem>> {
+        // Component vectors of length n over F (pad with base zeros).
+        let comps = |v: &[F::Elem]| -> Vec<F::Elem> {
+            let mut out = vec![self.base.zero(); self.n];
+            for (i, c) in v.iter().take(self.n).enumerate() {
+                out[i] = c.clone();
+            }
+            out
+        };
+        let f_comps = comps(f);
+        let g_comps = comps(g);
+
+        let u = self
+            .base
+            .coupled_radical_rde(self.n, &self.radicand_a, &f_comps, &g_comps)?;
+        let u = self.trim(u);
+
+        // In-field verification: D(u) + f·u = g (mirrors the diagonal path).
+        let f_elem = f.to_vec();
+        let g_elem = self.trim(g.to_vec());
+        let lhs = self.add(&self.derivation(&u), &self.mul(&f_elem, &u));
+        if self.eq(&lhs, &g_elem) {
+            Some(u)
+        } else {
+            None
+        }
     }
 }
 
@@ -293,22 +339,33 @@ impl<F: DifferentialField> DifferentialField for RadicalExt<F> {
         self.trim(out)
     }
 
-    /// Solve `D(u) + f·u = g` over the radical extension, **diagonal case only**.
+    /// Solve `D(u) + f·u = g` over the radical extension.
     ///
-    /// Requires `f ∈ F` (the base): only its `1`-component may be nonzero.  Then
-    /// the system decouples per `y`-power into
-    /// `D(uᵢ) + (f₀ + (i/n)·D(a)/a)·uᵢ = gᵢ` over `F`, each solved by the lower
-    /// field's [`rational_rde`](DifferentialField::rational_rde).  Returns
-    /// `None` (declines) when `f` has any nonzero higher component (the
-    /// non-diagonal case, deferred to PR4) or when any component is unsolvable.
+    /// **Diagonal case (`f ∈ F`, only the `1`-component nonzero):** the system
+    /// decouples per `y`-power into `D(uᵢ) + (f₀ + (i/n)·D(a)/a)·uᵢ = gᵢ` over
+    /// `F`, each solved by the lower field's
+    /// [`rational_rde`](DifferentialField::rational_rde).
     ///
-    /// The assembled candidate is **verified in-field** (`D(u) + f·u = g`)
-    /// before being returned, mirroring PR1's verification discipline.
+    /// **Non-diagonal case (`f` carries higher `y`-powers):** the multiplication
+    /// is coupled; this delegates to the base field's
+    /// [`coupled_radical_rde`](DifferentialField::coupled_radical_rde) hook (the
+    /// `ℚ(x)` impl bridges to `solve_alg_rde_general` over an `AlgExtension`;
+    /// tower bases keep the declining default and so still return `None`).
+    ///
+    /// In both cases the assembled candidate is **verified in-field**
+    /// (`D(u) + f·u = g`) before being returned, mirroring PR1's verification
+    /// discipline; so a `Some` is always correct and `None` means
+    /// declined/not-found.
     fn rational_rde(&self, f: &Self::Elem, g: &Self::Elem) -> Option<Self::Elem> {
         // f ∈ base: every higher component must be zero.
         let f_trim = self.trim(f.to_vec());
         if f_trim.len() > 1 {
-            return None; // non-diagonal multiplication — declined (PR4)
+            // Non-diagonal: multiplication-by-`f` mixes the power basis into a
+            // genuinely coupled system.  Defer to the base field's coupled-radical
+            // solver (the `ℚ(x)` impl bridges to `solve_alg_rde_general` over an
+            // `AlgExtension`; tower bases keep the declining default).  Any
+            // returned candidate is re-verified in-field before being accepted.
+            return self.coupled_nondiagonal_rde(f, g);
         }
         let f0 = f_trim
             .into_iter()
@@ -578,15 +635,70 @@ mod tests {
         assert!(ext.rational_rde(&f, &g).is_none(), "log x ∉ ℚ(x) ⇒ None");
     }
 
+    // ---- non-diagonal f over ℚ(x): coupled solve via the AlgExtension bridge ----
+
+    /// Assert `rational_rde(f, g)` solves the *non-diagonal* (coupled) RDE for a
+    /// non-base `f`, with `g = D(u_true) + f·u_true` constructed in-field, and
+    /// that the returned `u` re-verifies `D(u) + f·u = g`.
+    fn check_nondiag_solvable(
+        ext: &RadicalExt<RationalDiffField>,
+        f: &Vec<RatFn>,
+        u_true: &Vec<RatFn>,
+    ) {
+        // Sanity: f really is non-diagonal (has a higher y-component).
+        assert!(ext.trim(f.clone()).len() > 1, "test f must be non-diagonal");
+        let g = ext.add(&ext.derivation(u_true), &ext.mul(f, u_true));
+        let sol = ext
+            .rational_rde(f, &g)
+            .expect("non-diagonal f over ℚ(x) should now solve");
+        let lhs = ext.add(&ext.derivation(&sol), &ext.mul(f, &sol));
+        assert!(ext.eq(&lhs, &g), "coupled RDE not satisfied; sol={sol:?}");
+    }
+
     #[test]
-    fn rde_non_base_f_declines() {
-        // f has a nonzero y-component ⇒ non-diagonal ⇒ declined (None).
+    fn rde_nondiagonal_f_sqrt_x_solves() {
+        // y = √x (n=2, a=x).  Non-base f = (1/(2x))·y, target u_true = y.
+        // Previously this declined (PR4); now the ℚ(x) coupled hook solves it.
         let ext = sqrt_x();
-        let f = vec![ext.base().zero(), ext.base().one()]; // f = y
+        let inv_2x = RatFn::new(vec![rat(1)], vec![rat(0), rat(2)]); // 1/(2x)
+        let f = vec![ext.base().zero(), inv_2x]; // (1/(2x))·y
+        let u_true = vec![ext.base().zero(), ext.base().one()]; // y
+        check_nondiag_solvable(&ext, &f, &u_true);
+    }
+
+    #[test]
+    fn rde_nondiagonal_f_cbrt_x_solves() {
+        // y = ∛x (n=3, a=x).  Non-base f = (1/(3x))·y, target u_true = y.
+        let ext = RadicalExt::new(RationalDiffField::new(), rf_poly(&[0, 1]), 3);
+        let inv_3x = RatFn::new(vec![rat(1)], vec![rat(0), rat(3)]); // 1/(3x)
+        let f = vec![ext.base().zero(), inv_3x]; // (1/(3x))·y
+        let u_true = vec![ext.base().zero(), ext.base().one()]; // y
+        check_nondiag_solvable(&ext, &f, &u_true);
+    }
+
+    #[test]
+    fn rde_nondiagonal_f_over_tower_base_declines() {
+        // RadicalExt over a LOG tower base: the base field has no coupled-radical
+        // solver (default hook ⇒ None), so a non-diagonal f still declines.  This
+        // documents the remaining hard case (coupled solve over a transcendental
+        // tower).
+        let dh_over_h = RatFn::new(vec![rat(1)], vec![rat(0), rat(1)]); // 1/x
+        let log_field = LogTowerField::new(dh_over_h);
+        // Radicand a = x + log x.
+        let a = {
+            let x = TExpr::from_ratfn(rf_poly(&[0, 1]));
+            <LogTowerField as DifferentialField>::add(&log_field, &x, &TExpr::t())
+        };
+        let ext = RadicalExt::new(log_field.clone(), a, 2);
+        // Non-base f = 1·y (nonzero y-component).
+        let f = vec![
+            <LogTowerField as DifferentialField>::zero(&log_field),
+            <LogTowerField as DifferentialField>::one(&log_field),
+        ];
         let g = ext.one();
         assert!(
             ext.rational_rde(&f, &g).is_none(),
-            "f ∉ base ⇒ declines (PR4 territory)"
+            "tower-base non-diagonal f ⇒ declines (default hook)"
         );
     }
 
