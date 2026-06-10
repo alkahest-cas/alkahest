@@ -52,7 +52,7 @@ pub use deriv::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
 pub use diff::{diff, diff_forward, grad, DiffError, DualValue, ForwardDiffError};
 pub use flint::{FlintInteger, FlintPoly};
 pub use hybrid::{Event, GuardStructure, HybridODE};
-pub use integrate::{integrate, IntegrationError};
+pub use integrate::{integrate, integrate_definite, IntegrationError};
 #[allow(deprecated)]
 pub use kernel::{
     expr_contains_noncommutative_symbol, load_from, mult_tree_is_commutative, open_persistent,
@@ -85,11 +85,12 @@ pub use ode::{
 pub use parse::{parse, ParseError};
 pub use pattern::{match_pattern, Pattern, Substitution};
 pub use poly::{
-    factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z, gcd_sparse_modular,
+    apart, factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z, gcd_sparse_modular,
     poly_normal, real_roots, real_roots_symbolic, refine_root, resultant, sparse_interpolate,
-    sparse_interpolate_univariate, subresultant_prs, ConversionError, FactorError, MultiPoly,
-    MultiPolyFactorization, RationalFunction, RealRootError, ResultantError, RootInterval,
-    SparseGcdError, SparseInterpError, UniPoly, UniPolyFactorModP, UniPolyFactorization,
+    sparse_interpolate_univariate, subresultant_prs, ApartError, ConversionError, FactorError,
+    MultiPoly, MultiPolyFactorization, RationalFunction, RealRootError, ResultantError,
+    RootInterval, SparseGcdError, SparseInterpError, UniPoly, UniPolyFactorModP,
+    UniPolyFactorization,
 };
 
 // Phase 24 — Horner form
@@ -198,7 +199,7 @@ pub mod stable {
     pub use crate::ideal::{
         primary_decomposition, radical, PrimaryComponent, PrimaryDecompositionError,
     };
-    pub use crate::integrate::{integrate, IntegrationError};
+    pub use crate::integrate::{integrate, integrate_definite, IntegrationError};
     pub use crate::jit::{compile, CompileCache, CompiledFn, JitError};
     #[cfg(feature = "cuda")]
     pub use crate::jit::{compile_cuda, CudaCompiledFn, CudaError};
@@ -231,11 +232,12 @@ pub mod stable {
     pub use crate::parse::{parse, ParseError};
     pub use crate::pattern::{match_pattern, Pattern, Substitution};
     pub use crate::poly::{
-        factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z, gcd_sparse_modular,
-        poly_normal, real_roots, real_roots_symbolic, refine_root, resultant, sparse_interpolate,
-        sparse_interpolate_univariate, subresultant_prs, ConversionError, FactorError, MultiPoly,
-        MultiPolyFactorization, RationalFunction, RealRootError, ResultantError, RootInterval,
-        SparseGcdError, SparseInterpError, UniPoly, UniPolyFactorModP, UniPolyFactorization,
+        apart, factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z,
+        gcd_sparse_modular, poly_normal, real_roots, real_roots_symbolic, refine_root, resultant,
+        sparse_interpolate, sparse_interpolate_univariate, subresultant_prs, ApartError,
+        ConversionError, FactorError, MultiPoly, MultiPolyFactorization, RationalFunction,
+        RealRootError, ResultantError, RootInterval, SparseGcdError, SparseInterpError, UniPoly,
+        UniPolyFactorModP, UniPolyFactorization,
     };
     pub use crate::primitive::{Primitive, PrimitiveRegistry};
     pub use crate::real::{cad_lift, cad_project, decide, decide_expr, CadError, QeResult};

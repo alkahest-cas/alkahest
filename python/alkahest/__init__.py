@@ -100,6 +100,8 @@ from .alkahest import (  # noqa: F401
     abs,  # symbolic abs — use alkahest.abs(expr); shadows Python builtin within this module
     acos,
     adjoint_system,
+    # Partial-fraction decomposition over ℚ
+    apart,
     asin,
     atan,
     atan2,
@@ -197,6 +199,9 @@ from .alkahest import (  # noqa: F401
 from .alkahest import (
     # Phase 14: reverse-mode partials on Expr (native name `grad`; exported as symbolic_grad)
     grad as _native_symbolic_grad,
+)
+from .alkahest import (
+    integrate_definite as _native_integrate_definite,
 )
 
 # V5-7: JAX primitive integration (optional — requires JAX)
@@ -495,6 +500,20 @@ def _coerce_expr(x):
     return x
 
 
+def _coerce_bound(value, like):
+    """Coerce a definite-integral bound to an :class:`Expr` in *like*'s pool.
+
+    *value* may already be an :class:`Expr`/:class:`DerivedResult` (returned as
+    is, after ``.value`` coercion), or a Python ``int``/``float``, which is lifted
+    into the same :class:`ExprPool` as *like* via ``like * 0 + value`` (the
+    arithmetic operators coerce the scalar and the ``like * 0`` term vanishes).
+    """
+    value = _coerce_expr(value)
+    if isinstance(value, Expr):
+        return value
+    return like * 0 + value
+
+
 def _maybe_context_simplify(result):
     """When ``context(simplify=True)`` is active, algebraically simplify *result*.
 
@@ -542,8 +561,13 @@ def diff(expr, var):
 _native_integrate = integrate
 
 
-def integrate(expr, var):
-    """Indefinite integral of *expr* with respect to *var*.
+def integrate(expr, var, a=None, b=None):
+    """Indefinite or definite integral of *expr* with respect to *var*.
+
+    With two arguments this returns the indefinite integral (antiderivative).
+    When both bounds *a* and *b* are supplied it returns the definite integral
+    ``∫_a^b expr d(var)`` via the fundamental theorem of calculus,
+    ``F(b) − F(a)`` where ``F`` is the antiderivative.
 
     Parameters
     ----------
@@ -551,17 +575,88 @@ def integrate(expr, var):
         Integrand.  :class:`DerivedResult` is auto-coerced to ``.value``.
     var : Expr
         Integration variable.
+    a, b : Expr, optional
+        Lower and upper bounds.  Provide **both** for a definite integral.
 
     Returns
     -------
     DerivedResult
 
+    Raises
+    ------
+    ValueError
+        If exactly one of *a*, *b* is provided.
+
+    Notes
+    -----
+    The definite form is the elementary FTC wrapper: it requires an elementary
+    antiderivative that is finite at both bounds.  Improper integrals, poles
+    between the bounds, and the residue-theorem route are not handled; in those
+    cases the underlying integration error is propagated rather than guessed.
+
     Example
     -------
     >>> p = ExprPool(); x = p.symbol("x")
-    >>> integrate(x**2, x).value   # x^3/3
+    >>> integrate(x**2, x).value         # x^3/3
+    >>> integrate(x**2, x, 0, 1).value   # 1/3
     """
-    return _maybe_context_simplify(_native_integrate(_coerce_expr(expr), _coerce_expr(var)))
+    if (a is None) != (b is None):
+        raise ValueError(
+            "integrate: provide both bounds for a definite integral, or neither "
+            "for the indefinite integral"
+        )
+    var = _coerce_expr(var)
+    if a is None:
+        return _maybe_context_simplify(_native_integrate(_coerce_expr(expr), var))
+    return _maybe_context_simplify(
+        _native_integrate_definite(
+            _coerce_expr(expr),
+            var,
+            _coerce_bound(a, var),
+            _coerce_bound(b, var),
+        )
+    )
+
+
+_native_apart = apart
+
+
+def apart(expr, var):
+    """Partial-fraction decomposition of *expr* as a rational function of *var*.
+
+    Decomposes ``p(x)/q(x)`` into ``poly_part + Σ A_ij(x) / f_i(x)**j`` where the
+    ``f_i`` are the distinct **ℚ-irreducible** factors of the denominator and
+    ``deg A_ij < deg f_i``.
+
+    Parameters
+    ----------
+    expr : Expr or DerivedResult
+        A rational function of *var*.  :class:`DerivedResult` is coerced to
+        ``.value``.
+    var : Expr
+        The variable to decompose in.
+
+    Returns
+    -------
+    Expr
+
+    Raises
+    ------
+    ValueError
+        If *expr* is not a rational function of *var*, or denominator
+        factorization fails.
+
+    Notes
+    -----
+    Decomposition is over ℚ: irreducible quadratics (and higher) are kept
+    intact, not split into complex/algebraic linear factors.
+
+    Example
+    -------
+    >>> p = ExprPool(); x = p.symbol("x")
+    >>> apart(1 / (x**2 - 1), x)   # 1/(2(x-1)) - 1/(2(x+1))
+    """
+    return _native_apart(_coerce_expr(expr), _coerce_expr(var))
 
 
 _native_subs = subs
@@ -1000,6 +1095,7 @@ __all__ = [
     "active_domain",
     "active_pool",
     "adjoint_system",
+    "apart",
     "asin",
     "atan",
     "cad_lift",
