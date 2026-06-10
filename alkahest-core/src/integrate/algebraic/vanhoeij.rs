@@ -18,8 +18,8 @@
 //! whose only cost is a squarefree factorization of `p`.
 //!
 //! Scope: enlargements are proposed at **rational** singular places (rational
-//! `α`, [`try_enlarge`]) and at **algebraic** singular places (irreducible
-//! discriminant factors `q` of degree ≥ 2 with `q² | disc`, [`try_enlarge_algebraic`]).
+//! `α`, `try_enlarge`) and at **algebraic** singular places (irreducible
+//! discriminant factors `q` of degree ≥ 2 with `q² | disc`, `try_enlarge_algebraic`).
 //! At an algebraic place the proposal has van Hoeij's q-adic form
 //! `(Σ aᵢ(x) bᵢ + bd)/q(x)` with `aᵢ ∈ ℚ[x]` of degree `< deg q`; the
 //! coefficients are found from the **`K`-valued** Puiseux sheets over a root `α`
@@ -76,7 +76,7 @@ pub fn integral_basis(f_coeffs: &[QPoly]) -> Option<Vec<AlgElem>> {
     let sing = rational_singularities(&disc);
     // Algebraic singular places: irreducible factors `q` of the discriminant of
     // degree ≥ 2 with `q² | disc`.  Enlargements there carry coefficients in
-    // `K = ℚ(α)`, `q(α)=0` (see [`try_enlarge_algebraic`]).
+    // `K = ℚ(α)`, `q(α)=0` (see `try_enlarge_algebraic`).
     let alg_sing = algebraic_singularities(&disc);
 
     let mut b: Vec<AlgElem> = vec![ext.from_int(1)]; // b₀ = 1
