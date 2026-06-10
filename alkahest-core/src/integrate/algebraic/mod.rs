@@ -904,4 +904,74 @@ mod tests {
             _ => None,
         }
     }
+
+    /// **M3 capstone (item 2):** `∫ x dx/√(x³+x)`, the lemniscatic-type
+    /// integral `∫√x/√(x²+1) dx`.  This is a genuine elliptic integral
+    /// (genus-1 curve `y² = x³+x = x(x²+1)`, one real root `x=0`), not
+    /// reducible to elementary functions — but the engine's elliptic-output
+    /// reduction (PR2/PR4) emits a closed `EllipticF`/`EllipticE` form
+    /// (Legendre normal form, `m=1/2`) whose derivative matches the
+    /// integrand. We verify `d/dx F = integrand` numerically over a wide
+    /// range of `x > 0` (where `x³+x > 0`).
+    #[test]
+    fn lemniscatic_emits_elliptic_form_via_engine() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![pool.pow(x, pool.integer(3_i32)), x]);
+        let sq = pool.func("sqrt", vec![p]);
+        let integrand = pool.mul(vec![x, pool.pow(sq, pool.integer(-1_i32))]);
+        let res = crate::integrate::engine::integrate(integrand, x, &pool)
+            .expect("∫x dx/√(x³+x) should emit a closed elliptic form");
+        let f = res.value;
+        assert!(
+            pool.display(f).to_string().contains("Elliptic"),
+            "expected an elliptic special-function form in {}",
+            pool.display(f)
+        );
+        let df = simplify(crate::diff::diff(f, x, &pool).unwrap().value, &pool).value;
+        let mut checked = 0;
+        for &xv in &[0.05_f64, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0, 50.0] {
+            let lhs = eval_ell(df, x, xv, &pool).unwrap();
+            let rhs = eval_ell(integrand, x, xv, &pool).unwrap();
+            assert!(
+                (lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()),
+                "x={xv}: d/dx F = {lhs}, integrand = {rhs}\n  F = {}",
+                pool.display(f)
+            );
+            checked += 1;
+        }
+        assert!(checked >= 6);
+    }
+
+    /// **M3 capstone (item 4):** `∫ dx/((x²−1)√(x²+1))` — the Euler
+    /// substitution `t = x + √(x²+1)` rationalizes the integrand and yields
+    /// an elementary closed form in terms of `log`.  Verified by
+    /// `d/dx F = integrand` numerically.
+    #[test]
+    fn euler_substitution_emits_elementary_log_via_engine() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let x2m1 = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(-1_i32)]);
+        let x2p1 = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(1_i32)]);
+        let sq = pool.func("sqrt", vec![x2p1]);
+        let denom = pool.mul(vec![x2m1, sq]);
+        let integrand = pool.pow(denom, pool.integer(-1_i32));
+        let res = crate::integrate::engine::integrate(integrand, x, &pool)
+            .expect("∫dx/((x²−1)√(x²+1)) should integrate elementarily");
+        let f = res.value;
+        let df = simplify(crate::diff::diff(f, x, &pool).unwrap().value, &pool).value;
+        let mut checked = 0;
+        // Avoid x = ±1 (poles of the integrand).
+        for &xv in &[0.3_f64, 2.0, 3.0, -2.0, -0.5] {
+            let lhs = eval_ell(df, x, xv, &pool).unwrap();
+            let rhs = eval_ell(integrand, x, xv, &pool).unwrap();
+            assert!(
+                (lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()),
+                "x={xv}: d/dx F = {lhs}, integrand = {rhs}\n  F = {}",
+                pool.display(f)
+            );
+            checked += 1;
+        }
+        assert!(checked >= 4);
+    }
 }
