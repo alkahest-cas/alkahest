@@ -409,14 +409,29 @@ pub fn try_elliptic_output_higher_kind(
     // `Π`/`F`/`E`/algebraic basis alone cannot match (the fit closes only to
     // ~1e-5 and the gate declines).
     //
-    // **This PR** adds the missing *elementary* block: when the twin `t` lies in
-    // the real region (`P(t) > 0`), the twin third-kind integral `∫dx/((x−t)√P)`
-    // is elementary for these configurations — a combination of `log|x − t|` and
-    // `log(√P + √P(t))` (see [`elem_log_blocks`]) — whose derivative supplies
-    // exactly the twin part.  With it the cubic-one-real third kind closes, e.g.
-    // `∫dx/((x−2)√(x³+1))` → `δ·Π + β·F + ε·log(√P+1) + ζ·log|x|` (gate-verified).
-    // When the twin integral is *not* elementary the enriched fit still fails and
-    // the path declines — soundness is unconditional.
+    // PR7 adds the missing *elementary* block for the **cubic** one-real config:
+    // when the twin `t` lies in the real region (`P(t) > 0`), the twin third-kind
+    // integral `∫dx/((x−t)√P)` is **elementary for a *cubic* `P`** — a combination
+    // of `log|x − t|` and `log(√P + √P(t))` (see [`elem_log_blocks`]) — whose
+    // derivative supplies exactly the twin part.  With it the cubic-one-real third
+    // kind closes, e.g. `∫dx/((x−2)√(x³+1))` → `δ·Π + β·F + ε·log(√P+1) + ζ·log|x|`
+    // (gate-verified).
+    //
+    // **The `quartic` two-real cos φ config does NOT close this way** (diagnosed
+    // 2026-06-10, `risch/elliptic-output-remaining`): for a *quartic* `P` the twin
+    // third-kind integral `∫dx/((x−t)√P)` is itself **non-elementary** (a genuine
+    // third-kind elliptic integral — numerically, the best elementary-log fit of
+    // its antiderivative stalls at residual ~1.6e-2, never closing).  Because the
+    // pole `p` and its twin `t` share the *same* characteristic
+    // `n = 1/sin²φ(p) = 1/sin²φ(t)`, a single real `EllipticPi(n,φ,m)` carries both
+    // poles and a *second* real `Π` would be the identical block, so the genuine
+    // `1/((x−p)√P)` part cannot be isolated within the real
+    // `F`/`E`/`Π`/algebraic/elementary-log basis (the derivative-gate residual
+    // stays ≳ 3.6 with the full basis).  The `twin_log`/`elem_log_blocks` recipes
+    // are still *offered* (they are correct for the cubic case and harmless here —
+    // the gate just declines), so the quartic-two-real third kind falls through to
+    // `NonElementary`.  Soundness is unconditional: an incomplete basis only
+    // declines, never emits a wrong answer.
     //
     // We add the Π blocks for every off-`P`-root real pole and let the numeric fit
     // + gate decide.  Recipe variants are pushed: a *minimal* one (algebraic
@@ -2113,5 +2128,100 @@ mod tests {
         let zero = pool.integer(0_i32);
         let b = pool.pow(p, pool.integer(-1_i32));
         assert!(try_elliptic_output(zero, b, p, x, &pool).is_none());
+    }
+
+    // ── Decline-stability: genus-1 configs that remain NonElementary ─────────
+    //
+    // The following integrals are gate-safe *declines* — the available real
+    // `F`/`E`/`Π`/algebraic/elementary-log basis cannot represent them (see the
+    // diagnosis in `try_elliptic_output_higher_kind`'s THIRD KIND comment and the
+    // `(4,0,2)` arm of `reduction_poles`), so the path returns `None` and the
+    // caller falls through to `NonElementary`.  These tests pin that the path
+    // never *emits* a (necessarily wrong) closed form, guarding the soundness gate
+    // against future basis changes that might fit numerically but mis-verify.
+
+    #[test]
+    fn x2_over_sqrt_x4_plus_1_declines() {
+        // ∫ x²/√(x⁴+1) dx.  The (4,0,2) arctan config's `sin²φ = L²/(1+L²)` has its
+        // EllipticPi characteristic tied to the (complex-rooted) `den_E` quadratic,
+        // so no *real* `Π` aligns; F/E/algebraic alone is insufficient (derivative-
+        // gate residual ≳ 0.16 even with two `Π` + the rich algebraic ladder).
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![pool.pow(x, pool.integer(4_i32)), pool.integer(1_i32)]);
+        let zero = pool.integer(0_i32);
+        // integrand x²/√P = b·√P with b = x²/P.
+        let b = pool.mul(vec![
+            pool.pow(x, pool.integer(2_i32)),
+            pool.pow(p, pool.integer(-1_i32)),
+        ]);
+        assert!(
+            try_elliptic_output_higher_kind(zero, b, p, x, &pool).is_none(),
+            "∫x²/√(x⁴+1) must decline (no real Π characteristic for the arctan config)"
+        );
+    }
+
+    #[test]
+    fn sqrt_x4_plus_x2_plus_1_declines() {
+        // ∫ √(x⁴+x²+1) dx — non-symmetric all-complex quartic.  The fixed
+        // first-kind (g,m,φ) does not also linearize this second-kind integrand;
+        // the F/E/algebraic basis is insufficient and there is no aligned real `Π`.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![
+            pool.pow(x, pool.integer(4_i32)),
+            pool.pow(x, pool.integer(2_i32)),
+            pool.integer(1_i32),
+        ]);
+        let zero = pool.integer(0_i32);
+        let b = pool.integer(1_i32); // integrand = 1·√P
+        assert!(
+            try_elliptic_output_higher_kind(zero, b, p, x, &pool).is_none(),
+            "∫√(x⁴+x²+1) must decline (non-symmetric quartic, basis insufficient)"
+        );
+    }
+
+    #[test]
+    fn quartic_two_real_third_kind_declines() {
+        // ∫ dx/((x−½)√P), P = −x⁴−x³+x+1 = (1−x²)(x²+x+1): two real roots ±1 + a
+        // complex pair (the quartic two-real cos φ config).  The pole p=½ and its
+        // twin t=−⅘ share the same characteristic, and the twin third-kind integral
+        // ∫dx/((x−t)√P) is itself NON-elementary for a quartic (unlike the cubic
+        // one-real case PR7 closed), so the single `Π` cannot be isolated — declines.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![
+            pool.integer(1_i32),
+            x,
+            pool.mul(vec![pool.integer(-1_i32), pool.pow(x, pool.integer(3_i32))]),
+            pool.mul(vec![pool.integer(-1_i32), pool.pow(x, pool.integer(4_i32))]),
+        ]);
+        let zero = pool.integer(0_i32);
+        // b = 1/(x−½); integrand = √P/(x−½).
+        let xp = pool.add(vec![x, pool.rational(-1, 2)]);
+        let b = pool.pow(xp, pool.integer(-1_i32));
+        assert!(
+            try_elliptic_output_higher_kind(zero, b, p, x, &pool).is_none(),
+            "quartic two-real third kind must decline (twin integral non-elementary)"
+        );
+    }
+
+    #[test]
+    fn cubic_one_real_nonelementary_twin_declines() {
+        // ∫ dx/((x−3)√(x³+1)) — cubic one-real cos φ config whose twin t=−¼ has a
+        // twin third-kind integral ∫dx/((x−t)√P) that is NOT elementary, so PR7's
+        // elementary-log augmented basis (`twin_log`/`elem_log_blocks`) still cannot
+        // close it (it closes only when that twin integral *is* elementary, e.g. the
+        // headline ∫dx/((x−2)√(x³+1)), twin t=0).  Gate-safe decline (roadmap item 3).
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![pool.pow(x, pool.integer(3_i32)), pool.integer(1_i32)]);
+        let zero = pool.integer(0_i32);
+        let xp = pool.add(vec![x, pool.integer(-3_i32)]);
+        let b = pool.pow(xp, pool.integer(-1_i32));
+        assert!(
+            try_elliptic_output_higher_kind(zero, b, p, x, &pool).is_none(),
+            "∫dx/((x−3)√(x³+1)) must decline (non-elementary twin)"
+        );
     }
 }
