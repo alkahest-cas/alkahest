@@ -867,6 +867,23 @@ pub fn integrate(
         return Err(IntegrationError::NonElementary(reason));
     }
 
+    integrate_inner(expr, var, pool, 0)
+}
+
+/// Internal entry point that runs the full elementary pipeline — rule engine,
+/// then the rational-function fallback, then the non-linear u-substitution
+/// fallback — threading a recursion `depth` so u-substitution can recurse on the
+/// reduced integrand without risking unbounded recursion.
+///
+/// `depth == 0` is the top-level call from [`integrate`]; u-substitution
+/// increments it for the inner integral and only recurses while
+/// `depth < U_SUBST_MAX_DEPTH`.
+fn integrate_inner(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    depth: u32,
+) -> Result<DerivedExpr<ExprId>, IntegrationError> {
     let mut log = DerivationLog::new();
     match integrate_raw(expr, var, pool, &mut log) {
         Ok(raw) => {
@@ -884,6 +901,24 @@ pub fn integrate(
                 let mut rlog = DerivationLog::new();
                 rlog.push(RewriteStep::simple(
                     "rothstein_trager",
+                    expr,
+                    simplified.value,
+                ));
+                let final_log = rlog.merge(simplified.log);
+                return Ok(DerivedExpr::with_log(simplified.value, final_log));
+            }
+            // Non-linear substitution (derivative-divides heuristic):
+            // ∫ f(g(x))·g'(x) dx = ∫ f(u) du with u = g(x).  Tried only after
+            // the rules and the rational path have declined, so anything they
+            // already solve is untouched.  The result is soundness-gated: it is
+            // returned only when its derivative matches the integrand, so a
+            // wrong antiderivative is never produced (a clean decline falls
+            // through to the existing error).
+            if let Some(result) = try_u_substitution(expr, var, pool, depth) {
+                let simplified = simplify(result, pool);
+                let mut rlog = DerivationLog::new();
+                rlog.push(RewriteStep::simple(
+                    "u_substitution",
                     expr,
                     simplified.value,
                 ));
@@ -948,6 +983,259 @@ fn subs_var(expr: ExprId, var: ExprId, value: ExprId, pool: &ExprPool) -> ExprId
     let mut map = HashMap::new();
     map.insert(var, value);
     crate::kernel::subs(expr, &map, pool)
+}
+
+// ---------------------------------------------------------------------------
+// Non-linear integration by substitution (u-substitution / derivative-divides)
+// ---------------------------------------------------------------------------
+
+/// Maximum recursion depth for nested u-substitutions.  The reduced integrand is
+/// structurally simpler at each step, but the cap is the hard guarantee against
+/// pathological inputs.
+const U_SUBST_MAX_DEPTH: u32 = 3;
+
+/// Maximum number of candidate inner functions `g` tried per call, so degenerate
+/// inputs cannot cause combinatorial blow-up.
+const U_SUBST_MAX_CANDIDATES: usize = 12;
+
+/// Recognise `∫ f(g(x))·g'(x) dx` and solve it by `u = g(x)` (the
+/// derivative-divides heuristic).
+///
+/// For each non-trivial inner function `g` (arguments of `Func` nodes, bases of
+/// `Pow` nodes, and non-constant factors of a top-level `Mul`), divide the
+/// integrand by `g'(x)`.  If the quotient depends on `x` only through `g`, the
+/// integral reduces to `∫ (quotient with g↦u) du`, which is integrated
+/// recursively and back-substituted (`u ↦ g`).
+///
+/// Every candidate result is **soundness-gated**: it is returned only when its
+/// derivative equals the original integrand (structurally, or to ~1e-7 over
+/// several real sample points).  A failing candidate is skipped; if none passes,
+/// the function declines with `None` and the caller reports its existing error.
+fn try_u_substitution(expr: ExprId, var: ExprId, pool: &ExprPool, depth: u32) -> Option<ExprId> {
+    if depth >= U_SUBST_MAX_DEPTH {
+        return None;
+    }
+
+    // Try the integrand as written, and a trig-expanded form (tan → sin·cos⁻¹,
+    // etc.) so that `∫ tan x dx` exposes the inner function `g = cos x`.  The
+    // soundness gate always checks against the original `expr`.
+    let mut variants = vec![expr];
+    let expanded = trig_expand(expr, pool);
+    if expanded != expr {
+        variants.push(expanded);
+    }
+
+    for &form in &variants {
+        let candidates = collect_usub_candidates(form, var, pool);
+
+        for g in candidates.into_iter().take(U_SUBST_MAX_CANDIDATES) {
+            // g must contain var, must not be var itself, and must not be constant.
+            if g == var || is_free_of(g, var, pool) {
+                continue;
+            }
+
+            // g'(x)
+            let Ok(dg_raw) = crate::diff::diff(g, var, pool) else {
+                continue;
+            };
+            let dg = simplify(dg_raw.value, pool).value;
+            if is_zero(dg, pool) {
+                continue;
+            }
+
+            // quotient = form / g'.  Distribute the reciprocal over the factors
+            // of `dg` (so `x · (2·x)⁻¹` becomes `x · 2⁻¹ · x⁻¹`, which the
+            // simplifier cancels to `1/2`; a bare `(2·x)⁻¹` Pow node is not
+            // cancelled factor-by-factor).
+            let inv = reciprocal(dg, pool);
+            let quotient = simplify(pool.mul(vec![form, inv]), pool).value;
+
+            // Replace g with a fresh symbol u and check the quotient depends on
+            // x only through g.
+            let u = pool.symbol("__usub_u", crate::kernel::Domain::Real);
+            let mut fwd = HashMap::new();
+            fwd.insert(g, u);
+            let replaced = crate::kernel::subs(quotient, &fwd, pool);
+            if !is_free_of(replaced, var, pool) {
+                continue;
+            }
+
+            // Integrate the reduced integrand in u (full pipeline, deeper level).
+            let Ok(inner) = integrate_inner(replaced, u, pool, depth + 1) else {
+                continue;
+            };
+
+            // Back-substitute u ↦ g.
+            let mut back = HashMap::new();
+            back.insert(u, g);
+            let result = simplify(crate::kernel::subs(inner.value, &back, pool), pool).value;
+
+            // Soundness gate: d/dx(result) must equal the original integrand.
+            if verify_antiderivative(result, expr, var, pool) {
+                return Some(result);
+            }
+        }
+    }
+
+    None
+}
+
+/// Rewrite trigonometric functions in terms of `sin`/`cos` (e.g. `tan → sin·cos⁻¹`)
+/// using the simplifier's `trig_rules` ruleset, so the derivative-divides search
+/// can find inner functions such as `g = cos x` for `∫ tan x dx`.  Returns the
+/// rewritten expression (equal to the input when no rule fires).
+fn trig_expand(expr: ExprId, pool: &ExprPool) -> ExprId {
+    use crate::simplify::engine::{simplify_with, SimplifyConfig};
+    use crate::simplify::rulesets::trig_rules;
+    let rules = trig_rules();
+    simplify_with(expr, pool, &rules, SimplifyConfig::default()).value
+}
+
+/// Build `1/expr`, distributing the reciprocal over the factors of a `Mul` and
+/// over an existing `Pow` exponent.  This produces a form the simplifier can
+/// cancel against the numerator (a bare `Pow{Mul[..], -1}` node is not cancelled
+/// factor-by-factor by the rule simplifier).
+fn reciprocal(expr: ExprId, pool: &ExprPool) -> ExprId {
+    let neg_one = pool.integer(-1_i32);
+    match pool.get(expr) {
+        ExprData::Mul(args) => {
+            let inv_args: Vec<ExprId> = args.iter().map(|&a| reciprocal(a, pool)).collect();
+            pool.mul(inv_args)
+        }
+        ExprData::Pow { base, exp } => {
+            let neg_exp = pool.mul(vec![neg_one, exp]);
+            pool.pow(base, neg_exp)
+        }
+        _ => pool.pow(expr, neg_one),
+    }
+}
+
+/// Collect candidate inner functions `g` for u-substitution, in priority order
+/// (larger / more composite candidates first).
+fn collect_usub_candidates(expr: ExprId, var: ExprId, pool: &ExprPool) -> Vec<ExprId> {
+    let mut out: Vec<ExprId> = Vec::new();
+    let mut seen: std::collections::HashSet<ExprId> = std::collections::HashSet::new();
+
+    // Top-level Mul factors (lower priority, appended after structural ones).
+    let mut factor_candidates: Vec<ExprId> = Vec::new();
+    if let ExprData::Mul(args) = pool.get(expr) {
+        for &a in &args {
+            if a != var && !is_free_of(a, var, pool) && seen.insert(a) {
+                factor_candidates.push(a);
+            }
+        }
+    }
+
+    collect_usub_inner(expr, var, pool, &mut out, &mut seen);
+
+    // Larger candidates (more nodes) first so we prefer the most composite inner
+    // function (e.g. x²+1 over x²).
+    out.sort_by_key(|&c| std::cmp::Reverse(node_count(c, pool)));
+    out.extend(factor_candidates);
+    out
+}
+
+/// Recursively gather `Func` arguments and `Pow` bases that contain `var`.
+fn collect_usub_inner(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    out: &mut Vec<ExprId>,
+    seen: &mut std::collections::HashSet<ExprId>,
+) {
+    match pool.get(expr) {
+        ExprData::Func { args, .. } => {
+            for a in args {
+                if a != var && !is_free_of(a, var, pool) && seen.insert(a) {
+                    out.push(a);
+                }
+                collect_usub_inner(a, var, pool, out, seen);
+            }
+        }
+        ExprData::Pow { base, exp } => {
+            if base != var && !is_free_of(base, var, pool) && seen.insert(base) {
+                out.push(base);
+            }
+            collect_usub_inner(base, var, pool, out, seen);
+            collect_usub_inner(exp, var, pool, out, seen);
+        }
+        ExprData::Add(args) | ExprData::Mul(args) => {
+            for a in args {
+                collect_usub_inner(a, var, pool, out, seen);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Number of nodes in `expr` (a cheap structural-size proxy), used to order
+/// candidates largest-first.
+fn node_count(expr: ExprId, pool: &ExprPool) -> usize {
+    1 + pool.with(expr, |data| match data {
+        ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
+            args.iter().map(|&a| node_count(a, pool)).sum::<usize>()
+        }
+        ExprData::Pow { base, exp } => node_count(*base, pool) + node_count(*exp, pool),
+        _ => 0,
+    })
+}
+
+/// `true` if `expr` is the integer `0`.
+fn is_zero(expr: ExprId, pool: &ExprPool) -> bool {
+    as_integer(expr, pool) == Some(0)
+}
+
+/// Soundness gate: verify `d/dx(candidate) == integrand`.
+///
+/// Accepts when `d/dx(candidate) − integrand` simplifies structurally to zero,
+/// **or** when a numeric check agrees to ~1e-7 over several real sample points
+/// (skipping points where either side is non-finite, e.g. singularities).  A
+/// `candidate` whose derivative cannot be confirmed equal is rejected, so the
+/// integrator never returns a wrong antiderivative.
+fn verify_antiderivative(
+    candidate: ExprId,
+    integrand: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> bool {
+    let Ok(d_raw) = crate::diff::diff(candidate, var, pool) else {
+        return false;
+    };
+    let d = simplify(d_raw.value, pool).value;
+
+    // Structural check: d − integrand simplifies to zero.
+    let neg = pool.mul(vec![pool.integer(-1_i32), integrand]);
+    let diff_expr = simplify(pool.add(vec![d, neg]), pool).value;
+    if is_zero(diff_expr, pool) {
+        return true;
+    }
+
+    // Numeric check at several sample points (irrational, to dodge poles).
+    let samples = [0.3719_f64, 0.9137, 1.4231, 2.1719, 2.8123, 3.6411];
+    let mut checked = 0_usize;
+    for &xv in &samples {
+        let mut env = HashMap::new();
+        env.insert(var, xv);
+        let (Some(dv), Some(fv)) = (
+            crate::jit::eval_interp(d, &env, pool),
+            crate::jit::eval_interp(integrand, &env, pool),
+        ) else {
+            // Unevaluable expression — cannot certify numerically.
+            return false;
+        };
+        if !dv.is_finite() || !fv.is_finite() {
+            continue; // near a singularity; skip this sample
+        }
+        let tol = 1e-7 * (1.0 + dv.abs().max(fv.abs()));
+        if (dv - fv).abs() > tol {
+            return false;
+        }
+        checked += 1;
+    }
+
+    // Require at least a couple of usable samples so an all-singular set cannot
+    // vacuously pass.
+    checked >= 2
 }
 
 // ---------------------------------------------------------------------------
@@ -1672,5 +1960,147 @@ mod tests {
         ]);
         let r = integrate_definite(f, x, pool.integer(1_i32), pool.integer(2_i32), &pool);
         assert!(r.is_err(), "∫ sin(x)/x dx must error in definite form");
+    }
+
+    // -----------------------------------------------------------------------
+    // Non-linear u-substitution (derivative-divides heuristic)
+    // -----------------------------------------------------------------------
+
+    /// Numeric verification of an antiderivative for transcendental integrands
+    /// (the `coeffs_equal` helper only handles polynomials).  Checks
+    /// `d/dx(F) == f` to ~1e-7 over several non-singular real samples.
+    fn verify_numeric(integrand: ExprId, x: ExprId, pool: &ExprPool) {
+        let integral = integrate(integrand, x, pool)
+            .unwrap_or_else(|e| panic!("integrate failed for {}: {e}", pool.display(integrand)));
+        let deriv = diff(integral.value, x, pool).unwrap();
+        let d = simplify(deriv.value, pool).value;
+        let samples = [0.41_f64, 0.93, 1.37, 2.11, 2.83];
+        let mut checked = 0;
+        for &xv in &samples {
+            let mut env = std::collections::HashMap::new();
+            env.insert(x, xv);
+            let (Some(dv), Some(fv)) = (
+                crate::jit::eval_interp(d, &env, pool),
+                crate::jit::eval_interp(integrand, &env, pool),
+            ) else {
+                continue;
+            };
+            if !dv.is_finite() || !fv.is_finite() {
+                continue;
+            }
+            assert!(
+                (dv - fv).abs() <= 1e-7 * (1.0 + dv.abs().max(fv.abs())),
+                "diff(∫f) ≠ f at x={xv}: got {dv}, want {fv}, for f = {}, F = {}",
+                pool.display(integrand),
+                pool.display(integral.value),
+            );
+            checked += 1;
+        }
+        assert!(checked >= 2, "no usable samples to verify antiderivative");
+    }
+
+    #[test]
+    fn usub_x_sin_x2() {
+        // ∫ x·sin(x²) dx = −cos(x²)/2
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let f = pool.mul(vec![x, pool.func("sin", vec![x2])]);
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn usub_2x_exp_x2() {
+        // ∫ 2x·e^(x²) dx = e^(x²)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let f = pool.mul(vec![pool.integer(2_i32), x, pool.func("exp", vec![x2])]);
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn usub_x_exp_x2() {
+        // ∫ x·e^(x²) dx = e^(x²)/2
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let f = pool.mul(vec![x, pool.func("exp", vec![x2])]);
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn usub_lnx_over_x() {
+        // ∫ (ln x)/x dx = (ln x)²/2
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.mul(vec![
+            pool.func("log", vec![x]),
+            pool.pow(x, pool.integer(-1_i32)),
+        ]);
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn usub_tan_x() {
+        // ∫ tan(x) dx = −ln(cos x)  (g = cos x)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.func("tan", vec![x]);
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn usub_exp_cos_exp() {
+        // ∫ e^x·cos(e^x) dx = sin(e^x)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let ex = pool.func("exp", vec![x]);
+        let f = pool.mul(vec![ex, pool.func("cos", vec![ex])]);
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn usub_x_cos_x2_plus_1() {
+        // ∫ x·cos(x²+1) dx = sin(x²+1)/2
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let inner = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(1_i32)]);
+        let f = pool.mul(vec![x, pool.func("cos", vec![inner])]);
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn usub_nonelementary_still_errors() {
+        // ∫ e^(x²) dx has no elementary antiderivative — must NOT be fabricated.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let f = pool.func("exp", vec![x2]);
+        let r = integrate(f, x, &pool);
+        assert!(
+            r.is_err(),
+            "∫ e^(x²) dx must error, got {:?}",
+            r.map(|d| pool.display(d.value))
+        );
+    }
+
+    #[test]
+    fn usub_does_not_disturb_basic_rules() {
+        // Pre-existing cases must still be solved (by the rules, not u-subst).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        // ∫ sin x dx
+        let sinx = pool.func("sin", vec![x]);
+        verify_numeric(sinx, x, &pool);
+        // ∫ x² dx
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        verify(x2, x, &pool);
+        // ∫ e^x dx
+        let ex = pool.func("exp", vec![x]);
+        verify_numeric(ex, x, &pool);
+        // ∫ 1/x dx
+        let inv = pool.pow(x, pool.integer(-1_i32));
+        verify_numeric(inv, x, &pool);
     }
 }
