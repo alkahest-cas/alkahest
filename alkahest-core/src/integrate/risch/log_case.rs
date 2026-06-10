@@ -127,6 +127,27 @@ fn integrate_log_poly(
     // ∫ c_n(x)·log(h)^n dx = P_n(x)·log(h)^n − n·∫ P_n(x)·(h'/h)·log(h)^{n-1} dx
     // where P_n is an antiderivative of c_n.
 
+    // §E — NonElementary certificate for entangled K-log coefficients.
+    // Before attempting the IBP, test Bronstein eq (18) on the *top* coefficient
+    // c_n: a necessary condition for ∫ Σ c_k log(h)^k dx to be elementary is that
+    // c_n = v' + (n+1)·e·(h'/h) be solvable for v ∈ K(x) and a constant e.  When
+    // c_n is a genuinely-K-rational coefficient whose partial-fraction poles
+    // include a K-irrational point that is NOT a zero of h (so no constant e can
+    // absorb its residue), eq (18) has no solution and the integral is provably
+    // non-elementary (Bronstein 2005, §5.10 / Tutorial §3.5: "either proving that
+    // (18) has no solution, in which case f has no elementary integral").  The
+    // headline case is ∫ 1/(x+√2)·log(x) dx (dilogarithm pole at x = −√2).
+    if certify_klog_top_obstruction(coeffs, h, var, pool) {
+        return Err(IntegrationError::NonElementary(format!(
+            "∫ Σ c_k·log({})^k dx: the top coefficient has a K-irrational pole \
+             whose residue is not a constant multiple of the tower generator's \
+             logarithmic derivative — Bronstein eq (18) (primitive case) has no \
+             solution, so the integral is non-elementary (dilogarithm-type) \
+             (Bronstein 2005, Symbolic Integration I, §5.10)",
+            pool.display(h)
+        )));
+    }
+
     // Start with the full polynomial and collect terms.
     integrate_log_poly_recursive(coeffs, log_gen, h, var, pool, log)
 }
@@ -496,6 +517,110 @@ fn try_integrate_k_rational(expr: ExprId, var: ExprId, pool: &ExprPool) -> Optio
     let (v_num, v_den) = solve_rational_rde_k(&field, &k_zero, &c_num, &c_den)?;
 
     Some(build_krational_ext(&v_num, &v_den, var, &ext, pool))
+}
+
+// ---------------------------------------------------------------------------
+// §E — NonElementary certificate for entangled K-log coefficients
+// ---------------------------------------------------------------------------
+
+/// Decide whether the *top* coefficient of the log polynomial obstructs
+/// elementarity by Bronstein's primitive-case eq (18).
+///
+/// Given `∫ Σ_{k=0}^{n} c_k(x)·log(h)^k dx` with `t = log(h)` a logarithmic
+/// monomial over `K(x)` (`K = ℚ(α)` a number field), the integral can be
+/// elementary only if the top coefficient `c_n` admits
+///
+/// ```text
+///     c_n = v' + (n+1)·e·(h'/h),     v ∈ K(x),  e ∈ Const(K)
+/// ```
+/// (Bronstein 2005, *Symbolic Integration I*, §5.10; Tutorial §3.5, eq (18)).
+/// We test exactly this with [`solve_primitive_top_rde_k`]: a `None` means no
+/// `(v, e)` exists, which **proves** the whole integral non-elementary.
+///
+/// **Soundness gates (the certificate fires only when fully justified):**
+/// - **EVERY** coefficient `c_0, …, c_n` must parse as a *genuinely K-rational*
+///   function (no residual transcendental generator) over one detected `ℚ(α)`.
+///   This is the load-bearing gate: eq (18) is a valid necessary condition only
+///   when the integrand is a true polynomial in the single monomial `t = log(h)`
+///   over `K(x)`.  If any coefficient still carries a *second* `log`/`exp`
+///   generator (e.g. the combined integrand
+///   `1/(x+√2)·log(x) + log(x+√2)/x = (log x · log(x+√2))'`, whose `c_0`
+///   coefficient is `log(x+√2)/x`), the single-monomial structure does **not**
+///   hold, eq (18) does not apply, and we return `false` (decline, never
+///   certify).  Without this gate the certificate would wrongly fire on that
+///   *elementary* sum.
+/// - `h'/h` must itself be K-rational (always true for `h ∈ K(x)`); if the parse
+///   fails we decline.
+/// - We require the extension to be *non-trivial* (an actual algebraic α): a pure
+///   `ℚ(x)` coefficient is not detected as an extension, and its log obstruction
+///   is the ordinary rational `Li`/`Ei` case already handled elsewhere.
+///
+/// Returns `true` ⟺ eq (18) is provably unsolvable for the top coefficient
+/// **and** the integrand is a genuine K(x)-polynomial in `t = log(h)`.
+fn certify_klog_top_obstruction(
+    coeffs: &[ExprId],
+    h: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> bool {
+    use super::rational_rde::solve_primitive_top_rde_k;
+
+    // Locate the genuine top degree n and its coefficient c_n.
+    let n = find_top_degree(coeffs, pool);
+    if n == 0 {
+        return false; // degree-0: ordinary base-field integration, not eq (18).
+    }
+    let c_n = simplify(coeffs[n], pool).value;
+    // Strip any algebraic constant factor (e.g. √2·…); the residue structure is
+    // unchanged by a constant scalar, so the obstruction test is unaffected.
+    let (_k_alg, c_n_rest) = split_const_factor(c_n, var, pool);
+
+    // Parse c_n_rest as a rational function over a detected algebraic extension K.
+    let Some(ext) = detect_algebraic_extension(c_n_rest, pool) else {
+        return false; // not an algebraic-extension coefficient → not our case.
+    };
+    let (field, gens) = build_field_and_gens(&ext);
+    let Some((c_num, c_den)) = expr_to_krational_general(c_n_rest, var, &gens, &field, pool) else {
+        return false; // c_n carries a transcendental / foreign term → decline.
+    };
+
+    // GATE: every *lower* coefficient must also be genuinely K-rational over the
+    // same field.  A coefficient that still contains a second transcendental
+    // (e.g. another log) breaks the poly-in-t-over-K(x) structure that eq (18)
+    // relies on — the integral may then be elementary by cancellation across
+    // levels (the `log(x)·log(x+√2)` combined-sum case).  Declining here is the
+    // single most important soundness guard for this certificate.
+    for &ck_raw in &coeffs[..n] {
+        let ck = simplify(ck_raw, pool).value;
+        if is_zero(ck, pool) {
+            continue;
+        }
+        let (_k_alg_k, ck_rest) = split_const_factor(ck, var, pool);
+        if expr_to_krational_general(ck_rest, var, &gens, &field, pool).is_none() {
+            return false; // c_k ∉ K(x): structure invalid → decline.
+        }
+    }
+
+    // Build h'/h as a K-rational function (h ∈ K(x)).
+    let h_prime = match crate::diff::diff(h, var, pool) {
+        Ok(d) => simplify(d.value, pool).value,
+        Err(_) => return false,
+    };
+    if is_zero(h_prime, pool) {
+        return false; // h' = 0 → no drift; not the entangled case.
+    }
+    // h'/h symbolically, then parse numerator/denominator over K.
+    let hph = simplify(
+        pool.mul(vec![h_prime, pool.pow(h, pool.integer(-1_i32))]),
+        pool,
+    )
+    .value;
+    let Some((gd_num, gd_den)) = expr_to_krational_general(hph, var, &gens, &field, pool) else {
+        return false; // h'/h not K-rational (shouldn't happen for h ∈ K(x)).
+    };
+
+    // eq (18): solvable ⇒ Some(..); provably unsolvable ⇒ None ⇒ certify.
+    solve_primitive_top_rde_k(&field, &c_num, &c_den, &gd_num, &gd_den, n as i64).is_none()
 }
 
 // ---------------------------------------------------------------------------
@@ -1253,6 +1378,195 @@ mod tests {
         assert!(
             result.is_ok(),
             "∫ [1/(x+√2)²+1/(x+√2)]·log(x+√2) dx must be elementary; got {result:?}"
+        );
+        verify_numeric_e(integrand, result.unwrap().value, x, &pool);
+    }
+
+    // -----------------------------------------------------------------------
+    // §E — NonElementary certificate for entangled K-log coefficients
+    //      (Bronstein 2005, §5.10 / Tutorial §3.5, eq (18))
+    // -----------------------------------------------------------------------
+
+    /// ∫ 1/(x+√2)·log(x) dx is genuinely non-elementary (dilogarithm): the top
+    /// coefficient 1/(x+√2) has a residue 1 at the K-irrational pole x=−√2,
+    /// which is *not* a zero of the tower argument h=x, so no constant e absorbs
+    /// it in eq (18).  Must now certify NonElementary (was NotImplemented).
+    #[test]
+    fn klog_inv_x_plus_sqrt2_log_x_nonelementary() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let x_plus_sqrt2 = pool.add(vec![x, sqrt2]);
+        let log_x = pool.func("log", vec![x]);
+        let integrand = pool.mul(vec![pool.pow(x_plus_sqrt2, pool.integer(-1_i32)), log_x]);
+
+        let result = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ 1/(x+√2)·log(x) dx must be certified NonElementary; got {result:?}"
+        );
+    }
+
+    /// Generalisation: 1/(x+√3)·log(x) — same obstruction over K = ℚ(√3).
+    #[test]
+    fn klog_inv_x_plus_sqrt3_log_x_nonelementary() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt3 = pool.func("sqrt", vec![pool.integer(3_i32)]);
+        let x_plus_sqrt3 = pool.add(vec![x, sqrt3]);
+        let log_x = pool.func("log", vec![x]);
+        let integrand = pool.mul(vec![pool.pow(x_plus_sqrt3, pool.integer(-1_i32)), log_x]);
+
+        let result = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ 1/(x+√3)·log(x) dx must be certified NonElementary; got {result:?}"
+        );
+    }
+
+    /// Const-factored variant √2/(x+√2)·log(x): the algebraic constant factor is
+    /// split off before the obstruction test, which is unchanged; still
+    /// non-elementary.
+    #[test]
+    fn klog_sqrt2_over_x_plus_sqrt2_log_x_nonelementary() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let x_plus_sqrt2 = pool.add(vec![x, sqrt2]);
+        let log_x = pool.func("log", vec![x]);
+        let integrand = pool.mul(vec![
+            sqrt2,
+            pool.pow(x_plus_sqrt2, pool.integer(-1_i32)),
+            log_x,
+        ]);
+
+        let result = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ √2/(x+√2)·log(x) dx must be certified NonElementary; got {result:?}"
+        );
+    }
+
+    // ----- Adversarial elementary cases: the certificate must NOT fire -----
+
+    /// ∫ 1/(x+√2)²·log(x) dx IS mathematically elementary (double pole at x=−√2
+    /// has zero simple residue; P_1 = −1/(x+√2) is K-rational), so eq (18) is
+    /// solvable (e=0) and the §E certificate correctly does NOT fire.  The engine
+    /// still *declines* this one (NotImplemented) because integrating the IBP base
+    /// term `∫ 1/(x(x+√2)) dx = (1/√2)(log x − log(x+√2))` needs a K-rational
+    /// integrator *with* logarithms, which the base field path lacks — a
+    /// pre-existing gap, NOT introduced here.  The load-bearing invariant is the
+    /// negative: it must NEVER be certified NonElementary.
+    #[test]
+    fn klog_inv_x_plus_sqrt2_sq_log_x_not_nonelementary() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let x_plus_sqrt2 = pool.add(vec![x, sqrt2]);
+        let log_x = pool.func("log", vec![x]);
+        let integrand = pool.mul(vec![pool.pow(x_plus_sqrt2, pool.integer(-2_i32)), log_x]);
+
+        let result = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            !matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ 1/(x+√2)²·log(x) dx is elementary; must NEVER be NonElementary; got {result:?}"
+        );
+        // If an antiderivative is produced, it must be correct.
+        if let Ok(d) = result {
+            verify_numeric_e(integrand, d.value, x, &pool);
+        }
+    }
+
+    /// ∫ 1/(x+√2)·log(x+√2) dx = ½·log(x+√2)² — the log-derivative case, h=x+√2.
+    /// The residue at x=−√2 IS a zero of h, so eq (18) is solvable (e=1/2).
+    /// (Caught earlier by the log-derivative shortcut; here we re-assert it stays
+    /// elementary even though the coefficient is K-rational with a pole.)
+    #[test]
+    fn klog_inv_x_plus_sqrt2_log_same_arg_elementary() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let h = pool.add(vec![x, sqrt2]);
+        let log_h = pool.func("log", vec![h]);
+        let integrand = pool.mul(vec![pool.pow(h, pool.integer(-1_i32)), log_h]);
+
+        let result = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ 1/(x+√2)·log(x+√2) dx must stay elementary (=½log²); got {result:?}"
+        );
+        verify_numeric_e(integrand, result.unwrap().value, x, &pool);
+    }
+
+    /// ∫ log(x)/x dx = ½·log(x)² — pure ℚ(x) coefficient, no algebraic extension,
+    /// certificate declines (detect_algebraic_extension returns None).  Elementary.
+    #[test]
+    fn klog_log_x_over_x_elementary() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let log_x = pool.func("log", vec![x]);
+        let integrand = pool.mul(vec![pool.pow(x, pool.integer(-1_i32)), log_x]);
+
+        let result = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ log(x)/x dx must be elementary (=½log²); got {result:?}"
+        );
+        verify_numeric_e(integrand, result.unwrap().value, x, &pool);
+    }
+
+    /// Adversarial combined sum: ∫ [1/(x+√2)·log(x) + log(x+√2)/x] dx is
+    /// elementary — it equals log(x)·log(x+√2) (the two non-elementary
+    /// dilogarithm halves cancel).  The integrand has TWO log generators, so it
+    /// never reaches the single-generator poly-in-t path with a K-rational top
+    /// coefficient; the §E certificate must NOT fire.  The engine may either
+    /// integrate it (to log·log) or decline — but it must NEVER certify
+    /// NonElementary.  This is the load-bearing safety case.
+    #[test]
+    fn klog_combined_sum_not_nonelementary() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let x_plus_sqrt2 = pool.add(vec![x, sqrt2]);
+        let log_x = pool.func("log", vec![x]);
+        let log_xps2 = pool.func("log", vec![x_plus_sqrt2]);
+        // 1/(x+√2)·log(x) + (1/x)·log(x+√2)
+        let term1 = pool.mul(vec![pool.pow(x_plus_sqrt2, pool.integer(-1_i32)), log_x]);
+        let term2 = pool.mul(vec![pool.pow(x, pool.integer(-1_i32)), log_xps2]);
+        let integrand = pool.add(vec![term1, term2]);
+
+        let result = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            !matches!(result, Err(IntegrationError::NonElementary(_))),
+            "∫ [1/(x+√2)·log(x) + log(x+√2)/x] dx = log(x)log(x+√2) is ELEMENTARY; \
+             must never be certified NonElementary; got {result:?}"
+        );
+        // If the engine produced an antiderivative, it must be correct.
+        if let Ok(d) = result {
+            verify_numeric_e(integrand, d.value, x, &pool);
+        }
+    }
+
+    /// Adversarial: ∫ (h'/h)·log(h)² with h=x+√2, i.e. 2(x+√2)/(x+√2)²·log²… —
+    /// the standard log-derivative power rule, elementary.  Must not be
+    /// certified: the top coefficient's pole IS a zero of h.
+    #[test]
+    fn klog_log_deriv_power_rule_sqrt2_elementary() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let h = pool.add(vec![x, sqrt2]);
+        let log_h = pool.func("log", vec![h]);
+        // (1/(x+√2))·log(x+√2)² = (h'/h)·t²  → t³/3
+        let integrand = pool.mul(vec![
+            pool.pow(h, pool.integer(-1_i32)),
+            pool.pow(log_h, pool.integer(2_i32)),
+        ]);
+
+        let result = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ (1/(x+√2))·log(x+√2)² dx must be elementary (=log³/3); got {result:?}"
         );
         verify_numeric_e(integrand, result.unwrap().value, x, &pool);
     }

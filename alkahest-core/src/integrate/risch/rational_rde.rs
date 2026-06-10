@@ -598,6 +598,159 @@ pub fn solve_rational_rde_k(
     Some((num, den))
 }
 
+/// Decide Bronstein eq (18) for the primitive (log) case top coefficient.
+///
+/// For a logarithmic monomial `t = log(b)` over `K(x)` and integrand
+/// `f = Σ fᵢ tⁱ`, the structure theorem (Bronstein 2005, §5.10; *Symbolic
+/// Integration Tutorial* §3.5, eq (18)) requires that the **top** coefficient
+/// `f_d` satisfy
+///
+/// ```text
+///     f_d = v_d' + (d+1)·e·(b'/b),     v_d ∈ K(x),  e ∈ Const(K).
+/// ```
+///
+/// i.e. `∫ f_d dx` is elementary **and** its only new logarithm is a constant
+/// multiple of the tower generator `t = log(b)` itself.  Equation (18) has a
+/// solution iff the affine family `{ f_d − e·g_drift : e ∈ K }` (with
+/// `g_drift = (d+1)·b'/b`) contains a `K(x)`-rational antiderivative — a single
+/// free scalar `e` that can cancel the residue at the zeros/poles of `b`, but
+/// **nothing else**.
+///
+/// This routine returns:
+/// - `Some(Some(e))` — eq (18) is solvable with that constant `e` (so `f_d` does
+///   not by itself obstruct elementarity; the lower coefficients decide the rest);
+/// - `Some(None)`    — `g_drift` is identically zero (degenerate `b' = 0`); falls
+///   back to the plain `e = 0` antidifferentiation decision by the caller;
+/// - `None`          — eq (18) has **no** solution for any `e`, which by the
+///   structure theorem **proves `∫ f dx` is non-elementary** (the obstruction is
+///   a residue at a pole that is not a zero of `b`, e.g. the dilogarithm pole of
+///   `1/(x+√2)·log(x)` at `x = −√2`).
+///
+/// The decision is exact linear algebra over `K`: the ansatz `v_d = N/E` with
+/// `E = gcd(B, B')` reduces eq (18) to a `K`-linear system in the coefficients of
+/// `N` **and** the single unknown `e`; a verified solution of that system is
+/// returned, an inconsistent system is `None`.  Soundness: a `None` is only
+/// emitted after the exact system proves no `(N, e)` exists, exactly mirroring
+/// the `f = 0` solver's certificate that the residual simple poles cannot be
+/// absorbed.
+///
+/// `c_num/c_den = f_d` and `gd_num/gd_den = b'/b`, all `K`-polynomials in `x`.
+#[allow(clippy::type_complexity)]
+pub fn solve_primitive_top_rde_k(
+    field: &NumberField,
+    c_num: &KPoly,
+    c_den: &KPoly,
+    gd_num: &KPoly,
+    gd_den: &KPoly,
+    d: i64,
+) -> Option<Option<KElem>> {
+    let c_num = NumberField::kpoly_trim(c_num.clone());
+    let c_den = NumberField::kpoly_trim(c_den.clone());
+    if c_den.is_empty() {
+        return None; // malformed input (division by zero)
+    }
+    // f_d = 0 ⇒ trivially solvable with e = 0.
+    if c_num.is_empty() {
+        return Some(Some(NumberField::k_zero()));
+    }
+
+    let gd_num = NumberField::kpoly_trim(gd_num.clone());
+    let gd_den = NumberField::kpoly_trim(gd_den.clone());
+
+    // (d+1)·(b'/b).  If b'/b is zero (b' = 0), there is no drift direction.
+    let dp1 = field.from_int(d + 1);
+    let drift_num = field.kpoly_scale(&gd_num, &dp1);
+    if drift_num.is_empty() || gd_den.is_empty() {
+        return Some(None);
+    }
+
+    // Put f_d and g_drift over a common denominator Bc (monic).
+    //   f_d      = c_num/c_den
+    //   g_drift  = drift_num/gd_den
+    // Common denominator Bc = lcm(c_den, gd_den); numerators rescaled.
+    let g = field.kpoly_gcd(&c_den, &gd_den)?;
+    let cd_over_g = field.kpoly_div_exact(&c_den, &g)?;
+    let gdd_over_g = field.kpoly_div_exact(&gd_den, &g)?;
+    let bc_raw = field.kpoly_mul(&c_den, &gdd_over_g); // = lcm(c_den, gd_den)
+    let bcd = NumberField::kdeg(&bc_raw);
+    let lead_inv = field.inv(&bc_raw[bcd as usize])?;
+    let bc = field.kpoly_scale(&bc_raw, &lead_inv);
+    // f_d  = (c_num·gdd_over_g)/(Bc·lead)   ⇒ scale numerators by lead_inv too.
+    let cf = field.kpoly_scale(&field.kpoly_mul(&c_num, &gdd_over_g), &lead_inv);
+    // g_drift = (drift_num·cd_over_g)/(Bc·lead)
+    let cg = field.kpoly_scale(&field.kpoly_mul(&drift_num, &cd_over_g), &lead_inv);
+
+    // v_d = N/E with E = gcd(Bc, Bc'),  G = Bc/E.
+    let bcp = field.kpoly_deriv(&bc);
+    let e_poly = field.kpoly_gcd(&bc, &bcp)?;
+    let g_poly = field.kpoly_div_exact(&bc, &e_poly)?;
+    let eprime = field.kpoly_deriv(&e_poly);
+    let ge = field.kpoly_mul(&g_poly, &e_poly);
+    let gep = field.kpoly_mul(&g_poly, &eprime);
+    // RHS target: (Cf − e·Cg)·E, with e unknown ⇒ split into Cf·E and (Cg·E).
+    let target = field.kpoly_mul(&cf, &e_poly);
+    let cg_e = field.kpoly_mul(&cg, &e_poly);
+
+    // Degree bound for N (numerator of v_d = N/E), f = 0 here.
+    let deg_bc = NumberField::kdeg(&bc);
+    let deg_cf = NumberField::kdeg(&cf);
+    let deg_e = NumberField::kdeg(&e_poly).max(0);
+    let poly_part = (deg_cf - deg_bc).max(0);
+    let dbound = (deg_e + poly_part + 2).max(0) as usize;
+    let n_cols = dbound + 1; // coefficients of N
+    let cols = n_cols + 1; // + the unknown constant e (last column)
+
+    let max_deg = (NumberField::kdeg(&ge) + dbound as i64)
+        .max(NumberField::kdeg(&gep) + dbound as i64)
+        .max(NumberField::kdeg(&target))
+        .max(NumberField::kdeg(&cg_e))
+        .max(0) as usize;
+    let n_rows = max_deg + 1;
+
+    // Assemble M·[n; e] = target.
+    //   Σ_j n_j·(G·E·j x^{j-1} − G·E'·x^j)  +  e·(Cg·E)  =  Cf·E
+    // (no f·v term: f = 0 for the primitive antidifferentiation).
+    let mut mat = vec![vec![NumberField::k_zero(); cols]; n_rows];
+    for (deg, row) in mat.iter_mut().enumerate() {
+        let deg = deg as i64;
+        for (j, cell) in row.iter_mut().take(n_cols).enumerate() {
+            let jj = j as i64;
+            // [G·E·(j x^{j-1})]_deg = j · (G·E)[deg-j+1]
+            let mut v = field.mul(&field.from_int(jj), &NumberField::kcoeff(&ge, deg - jj + 1));
+            // − [G·E'·x^j]_deg = −(G·E')[deg-j]
+            v = field.sub(&v, &NumberField::kcoeff(&gep, deg - jj));
+            *cell = v;
+        }
+        // e-column: + (Cg·E)[deg]
+        row[n_cols] = NumberField::kcoeff(&cg_e, deg);
+    }
+    let rhs: Vec<KElem> = (0..n_rows)
+        .map(|deg| NumberField::kcoeff(&target, deg as i64))
+        .collect();
+
+    let solution = solve_linear_system_k(field, mat, rhs, cols)?;
+
+    // Verify: with N = solution[..n_cols], e = solution[n_cols],
+    //   (N'·E − N·E')·Bc  ==  (Cf − e·Cg)·E².
+    let n_poly = NumberField::kpoly_trim(solution[..n_cols].to_vec());
+    let e_val = solution[n_cols].clone();
+    let np = field.kpoly_deriv(&n_poly);
+    let lhs = field.kpoly_mul(
+        &field.kpoly_sub(
+            &field.kpoly_mul(&np, &e_poly),
+            &field.kpoly_mul(&n_poly, &eprime),
+        ),
+        &bc,
+    );
+    let rhs_num = field.kpoly_sub(&cf, &field.kpoly_scale(&cg, &e_val));
+    let rhs_check = field.kpoly_mul(&rhs_num, &field.kpoly_mul(&e_poly, &e_poly));
+    if !NumberField::kpoly_eq(&lhs, &rhs_check) {
+        return None;
+    }
+
+    Some(Some(e_val))
+}
+
 /// Solve `mat · x = rhs` over a number field `K` by Gauss–Jordan elimination.
 /// Returns a particular solution (free variables 0), or `None` if inconsistent.
 fn solve_linear_system_k(
@@ -881,6 +1034,92 @@ mod tests {
         let (vn, vd) = solve_rational_rde_k(&field, &f, &c_num, &c_den).expect("elementary");
         assert_eq!(trim(vn[0].clone()), vec![Rational::from((1, 2))]);
         assert_eq!(trim(vd[0].clone()), vec![rat(1)]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Primitive (log) case eq (18) — solve_primitive_top_rde_k
+    // -----------------------------------------------------------------------
+
+    /// ∫ 1/(x+√2)·log(x) dx: top coefficient f_1 = 1/(x+√2), tower arg b = x so
+    /// b'/b = 1/x.  eq (18): 1/(x+√2) = v' + 2·e·(1/x) has NO solution (residue 1
+    /// at x=−√2 cannot be absorbed by any e acting at x=0).  Must return None →
+    /// certify NonElementary.
+    #[test]
+    fn primitive_top_inv_x_plus_sqrt2_over_log_x_none() {
+        let field = field_sqrt2();
+        let sqrt2 = vec![rat(0), rat(1)];
+        // f_1 = 1/(x+√2):  c_num = 1, c_den = x + √2.
+        let c_num: KPoly = vec![kc(&field, 1)];
+        let c_den: KPoly = vec![sqrt2.clone(), kc(&field, 1)];
+        // b'/b = 1/x: gd_num = 1, gd_den = x.
+        let gd_num: KPoly = vec![kc(&field, 1)];
+        let gd_den: KPoly = vec![NumberField::k_zero(), kc(&field, 1)];
+        let r = solve_primitive_top_rde_k(&field, &c_num, &c_den, &gd_num, &gd_den, 1);
+        assert!(
+            r.is_none(),
+            "eq (18) for 1/(x+√2) with b=x must be unsolvable (None); got {r:?}"
+        );
+    }
+
+    /// ∫ 1/(x+√2)²·log(x) dx: f_1 = 1/(x+√2)² is K-rationally integrable on its
+    /// own (P = −1/(x+√2), zero simple residue), so eq (18) is solvable with e=0.
+    /// Must return Some(..) → certificate declines.
+    #[test]
+    fn primitive_top_inv_x_plus_sqrt2_sq_over_log_x_some() {
+        let field = field_sqrt2();
+        let sqrt2 = vec![rat(0), rat(1)];
+        let base: KPoly = vec![sqrt2.clone(), kc(&field, 1)]; // x + √2
+        let c_num: KPoly = vec![kc(&field, 1)]; // 1
+        let c_den = field.kpoly_mul(&base, &base); // (x+√2)²
+        let gd_num: KPoly = vec![kc(&field, 1)];
+        let gd_den: KPoly = vec![NumberField::k_zero(), kc(&field, 1)]; // x
+        let r = solve_primitive_top_rde_k(&field, &c_num, &c_den, &gd_num, &gd_den, 1);
+        assert!(
+            r.is_some(),
+            "eq (18) for 1/(x+√2)² with b=x must be solvable (Some); got {r:?}"
+        );
+    }
+
+    /// ∫ 1/(x+√2)·log(x+√2) dx: f_1 = 1/(x+√2) = b'/b with b = x+√2.  eq (18) is
+    /// solvable with e = 1/2 (v=0): the residue at x=−√2 IS the drift pole.  Must
+    /// return Some(..) → certificate declines (the log-derivative shortcut covers
+    /// this elsewhere, but the obstruction test must agree it is solvable).
+    #[test]
+    fn primitive_top_log_derivative_same_arg_some() {
+        let field = field_sqrt2();
+        let sqrt2 = vec![rat(0), rat(1)];
+        let base: KPoly = vec![sqrt2.clone(), kc(&field, 1)]; // x + √2
+        let c_num: KPoly = vec![kc(&field, 1)]; // 1
+        let c_den = base.clone(); // x + √2
+                                  // b = x+√2 ⇒ b'/b = 1/(x+√2).
+        let gd_num: KPoly = vec![kc(&field, 1)];
+        let gd_den = base.clone();
+        let r = solve_primitive_top_rde_k(&field, &c_num, &c_den, &gd_num, &gd_den, 1);
+        assert!(
+            r.is_some(),
+            "eq (18) for 1/(x+√2) with b=x+√2 must be solvable (Some); got {r:?}"
+        );
+    }
+
+    /// Soundness probe for the degree bound: a *polynomial* top coefficient
+    /// f_1 = x has the trivial K-rational antiderivative v = x²/2 (e = 0), so
+    /// eq (18) must be solvable.  This guards against a too-small `dbound`
+    /// spuriously rejecting a genuine polynomial-part solution (a false None
+    /// here would be a wrong NonElementary).  b = x ⇒ b'/b = 1/x.
+    #[test]
+    fn primitive_top_polynomial_coeff_some() {
+        let field = field_sqrt2();
+        // f_1 = x:  c_num = x, c_den = 1.
+        let c_num: KPoly = vec![NumberField::k_zero(), kc(&field, 1)];
+        let c_den: KPoly = vec![kc(&field, 1)];
+        // b'/b = 1/x: gd_num = 1, gd_den = x.
+        let gd_num: KPoly = vec![kc(&field, 1)];
+        let gd_den: KPoly = vec![NumberField::k_zero(), kc(&field, 1)];
+        let r = solve_primitive_top_rde_k(&field, &c_num, &c_den, &gd_num, &gd_den, 1);
+        assert!(
+            r.is_some(),
+            "eq (18) for the polynomial coeff f_1=x (v=x²/2, e=0) must be solvable; got {r:?}"
+        );
     }
 
     // -----------------------------------------------------------------------
