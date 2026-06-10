@@ -99,12 +99,13 @@ use alkahest_core::modular::{
     select_lucky_prime as core_select_lucky_prime, ModularError, MultiPolyFp,
 };
 use alkahest_core::{
-    diff as core_diff, diff_forward as core_diff_forward, integrate as core_integrate,
+    apart as core_apart, diff as core_diff, diff_forward as core_diff_forward,
+    integrate as core_integrate, integrate_definite as core_integrate_definite,
     limit as core_limit, load_from, log_exp_rules, rsolve as core_rsolve, series as core_series,
     simplify as core_simplify, simplify_batch as core_simplify_batch,
     simplify_egraph as core_simplify_egraph, simplify_egraph_with as core_simplify_egraph_with,
     simplify_with as core_simplify_with, trig_rules, AlkahestError as AlkahestErrorTrait,
-    DerivedExpr, DiffError, EgraphConfig, IntegrationError, IoError,
+    ApartError, DerivedExpr, DiffError, EgraphConfig, IntegrationError, IoError,
     LimitDirection as CoreLimitDirection, LimitError, LinearRecurrenceError, PatternRule,
     ProductError, ResultantError, RsolveError, SeriesError, SimplifyConfig, SizeCost,
     SparseGcdError, SparseInterpError, SumError,
@@ -2144,6 +2145,39 @@ fn py_integrate(
     };
     let pool_py = expr.pool.clone_ref(py);
     Ok(make_derived_result(py, derived, pool_py))
+}
+
+#[pyfunction]
+#[pyo3(name = "integrate_definite")]
+fn py_integrate_definite(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    var: PyRef<PyExpr>,
+    lower: PyRef<PyExpr>,
+    upper: PyRef<PyExpr>,
+) -> PyResult<PyDerivedResult> {
+    let derived = {
+        let pool = expr.pool.borrow(py);
+        core_integrate_definite(expr.id, var.id, lower.id, upper.id, &pool.inner)
+            .map_err(integrate_error_to_py)?
+    };
+    let pool_py = expr.pool.clone_ref(py);
+    Ok(make_derived_result(py, derived, pool_py))
+}
+
+#[pyfunction]
+#[pyo3(name = "apart")]
+fn py_apart(py: Python<'_>, expr: PyRef<PyExpr>, var: PyRef<PyExpr>) -> PyResult<PyExpr> {
+    let pool_py = expr.pool.clone_ref(py);
+    let id = {
+        let pool = pool_py.borrow(py);
+        core_apart(expr.id, var.id, &pool.inner).map_err(apart_error_to_py)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+fn apart_error_to_py(e: ApartError) -> PyErr {
+    pyo3::exceptions::PyValueError::new_err(e.to_string())
 }
 
 #[pyfunction]
@@ -6476,6 +6510,8 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_diff, m)?)?;
     m.add_function(wrap_pyfunction!(py_diff_forward, m)?)?;
     m.add_function(wrap_pyfunction!(py_integrate, m)?)?;
+    m.add_function(wrap_pyfunction!(py_integrate_definite, m)?)?;
+    m.add_function(wrap_pyfunction!(py_apart, m)?)?;
     m.add_function(wrap_pyfunction!(py_series, m)?)?;
     m.add_function(wrap_pyfunction!(py_limit, m)?)?;
     m.add_function(wrap_pyfunction!(py_sum_indefinite, m)?)?;

@@ -4,6 +4,8 @@ pub mod factor;
 // V2-3 — Sparse interpolation
 pub mod interp;
 pub mod multipoly;
+// Partial-fraction decomposition (apart) over ℚ
+pub mod partial_fractions;
 // M3 prereq — Newton–Puiseux fractional-power local expansions of plane curves
 pub mod puiseux;
 pub mod rational;
@@ -30,6 +32,7 @@ pub use interp::{
     SparseInterpError,
 };
 pub use multipoly::MultiPoly;
+pub use partial_fractions::{apart, ApartError};
 pub use rational::RationalFunction;
 // V2-2 — Resultants and subresultant PRS
 pub use resultant::{resultant, subresultant_prs, ResultantError};

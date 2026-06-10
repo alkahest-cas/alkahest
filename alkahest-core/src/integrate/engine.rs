@@ -896,6 +896,60 @@ pub fn integrate(
     }
 }
 
+/// Definite integral `∫_lower^upper f dx` via the fundamental theorem of
+/// calculus: `F(upper) − F(lower)` where `F = ∫ f dx`.
+///
+/// This is the elementary FTC wrapper: it computes an antiderivative with
+/// [`integrate`], substitutes the bounds, and simplifies the difference.  It
+/// handles only the case where the antiderivative exists and is finite at both
+/// bounds.
+///
+/// It deliberately does **not** handle improper integrals, discontinuities of
+/// `F` on `[lower, upper]` (e.g. a pole between the bounds), or the
+/// residue-theorem route.  When the antiderivative is non-elementary or
+/// unsupported, the underlying [`IntegrationError`] is propagated unchanged, so
+/// a definite result is never fabricated.
+///
+/// # Errors
+///
+/// Returns the same errors as [`integrate`]: [`IntegrationError::NonElementary`]
+/// when no elementary antiderivative exists, or
+/// [`IntegrationError::NotImplemented`] when the integrand is outside the
+/// supported subset.
+pub fn integrate_definite(
+    expr: ExprId,
+    var: ExprId,
+    lower: ExprId,
+    upper: ExprId,
+    pool: &ExprPool,
+) -> Result<DerivedExpr<ExprId>, IntegrationError> {
+    let antideriv = integrate(expr, var, pool)?;
+    let f = antideriv.value;
+
+    // F(upper) − F(lower) via substitution of the bound for `var`.
+    let f_upper = subs_var(f, var, upper, pool);
+    let f_lower = subs_var(f, var, lower, pool);
+    let neg_lower = pool.mul(vec![pool.integer(-1_i32), f_lower]);
+    let diff_expr = pool.add(vec![f_upper, neg_lower]);
+
+    let simplified = simplify(diff_expr, pool);
+    let mut log = DerivationLog::new();
+    log.push(RewriteStep::simple(
+        "fundamental_theorem_of_calculus",
+        expr,
+        simplified.value,
+    ));
+    let final_log = antideriv.log.merge(log).merge(simplified.log);
+    Ok(DerivedExpr::with_log(simplified.value, final_log))
+}
+
+/// Substitute `value` for `var` everywhere in `expr`.
+fn subs_var(expr: ExprId, var: ExprId, value: ExprId, pool: &ExprPool) -> ExprId {
+    let mut map = HashMap::new();
+    map.insert(var, value);
+    crate::kernel::subs(expr, &map, pool)
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1508,5 +1562,115 @@ mod tests {
             integrate(f, x, &pool).is_err(),
             "∫ x/log(x) dx must not be (mis)integrated by the log-derivative rule"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Definite integration (FTC wrapper)
+    // -----------------------------------------------------------------------
+
+    /// Minimal numeric evaluator for closed-form definite-integral results
+    /// (Integer/Rational/Add/Mul/Pow/log/atan/sqrt; no free symbols expected).
+    fn eval_num(expr: ExprId, pool: &ExprPool) -> f64 {
+        match pool.get(expr) {
+            ExprData::Integer(n) => n.0.to_f64(),
+            ExprData::Rational(r) => r.0.to_f64(),
+            ExprData::Add(args) => args.iter().map(|&a| eval_num(a, pool)).sum(),
+            ExprData::Mul(args) => args.iter().map(|&a| eval_num(a, pool)).product(),
+            ExprData::Pow { base, exp } => {
+                let b = eval_num(base, pool);
+                if let ExprData::Integer(n) = pool.get(exp) {
+                    if let Some(k) = n.0.to_i32() {
+                        return b.powi(k);
+                    }
+                }
+                b.powf(eval_num(exp, pool))
+            }
+            ExprData::Func { ref name, ref args } if args.len() == 1 => {
+                let a = eval_num(args[0], pool);
+                match name.as_str() {
+                    "log" => a.ln(),
+                    "atan" => a.atan(),
+                    "sqrt" => a.sqrt(),
+                    other => panic!("eval_num: unsupported func {other}"),
+                }
+            }
+            other => panic!("eval_num: unsupported {other:?}"),
+        }
+    }
+
+    fn assert_num(result: ExprId, expected: f64, pool: &ExprPool) {
+        let got = eval_num(result, pool);
+        assert!(
+            (got - expected).abs() < 1e-9,
+            "definite integral = {got}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn definite_x_squared_0_1() {
+        // ∫_0^1 x² dx = 1/3.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(x, pool.integer(2_i32));
+        let r = integrate_definite(f, x, pool.integer(0_i32), pool.integer(1_i32), &pool).unwrap();
+        assert_num(r.value, 1.0 / 3.0, &pool);
+    }
+
+    #[test]
+    fn definite_two_x_0_1() {
+        // ∫_0^1 2x dx = 1.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.mul(vec![pool.integer(2_i32), x]);
+        let r = integrate_definite(f, x, pool.integer(0_i32), pool.integer(1_i32), &pool).unwrap();
+        assert_num(r.value, 1.0, &pool);
+    }
+
+    #[test]
+    fn definite_one_over_x_1_2() {
+        // ∫_1^2 1/x dx = log(2).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(x, pool.integer(-1_i32));
+        let r = integrate_definite(f, x, pool.integer(1_i32), pool.integer(2_i32), &pool).unwrap();
+        assert_num(r.value, 2.0_f64.ln(), &pool);
+    }
+
+    #[test]
+    fn definite_sin_arctan_bounds() {
+        // ∫_0^1 1/(x²+1) dx = atan(1) − atan(0) = π/4.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let den = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(1_i32)]);
+        let f = pool.pow(den, pool.integer(-1_i32));
+        let r = integrate_definite(f, x, pool.integer(0_i32), pool.integer(1_i32), &pool).unwrap();
+        assert_num(r.value, std::f64::consts::FRAC_PI_4, &pool);
+    }
+
+    #[test]
+    fn definite_nonelementary_propagates() {
+        // ∫_0^1 exp(x²) dx — non-elementary antiderivative ⇒ must error, not a
+        // (wrong) number.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.func("exp", vec![pool.pow(x, pool.integer(2_i32))]);
+        let r = integrate_definite(f, x, pool.integer(0_i32), pool.integer(1_i32), &pool);
+        assert!(
+            r.is_err(),
+            "∫_0^1 exp(x²) dx must propagate the integration error, got {r:?}"
+        );
+    }
+
+    #[test]
+    fn definite_unsupported_propagates() {
+        // ∫ sin(x)/x dx is non-elementary; the definite form must error too.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.mul(vec![
+            pool.func("sin", vec![x]),
+            pool.pow(x, pool.integer(-1_i32)),
+        ]);
+        let r = integrate_definite(f, x, pool.integer(1_i32), pool.integer(2_i32), &pool);
+        assert!(r.is_err(), "∫ sin(x)/x dx must error in definite form");
     }
 }
