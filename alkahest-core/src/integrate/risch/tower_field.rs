@@ -627,6 +627,280 @@ fn gauss_solve(
 }
 
 // ===========================================================================
+// Coupled radical Risch DE over a tower base ℚ(x)(t)  (M4 tower-base step)
+// ===========================================================================
+//
+// Solve the *coupled* radical Risch DE `D(u) + f·u = g` in the radical extension
+// `yⁿ = a` of a tower field `F = ℚ(x)(t)`, for a possibly NON-DIAGONAL `f`
+// (carrying higher `y`-powers).  Element are coefficient vectors `[u₀,…,u_{n−1}]`
+// over the power basis `1,y,…,y^{n−1}`, each `uᵢ ∈ ℚ(x)(t)`.
+//
+// This combines the two proven patterns:
+//   * the SCALAR tower ansatz `v = (Σⱼₖ cⱼₖ xᵏ tʲ)/D` ([`solve_with_denominator`]),
+//     extended to a per-`y`-component ansatz `uᵢ = (Σ cᵢⱼₖ xᵏ tʲ)/D`;
+//   * the COUPLED power-basis lift of [`super::alg_rde::solve_alg_rde_general`]:
+//     the operator `L(u) = D(u) + f·u` is ℚ-linear in the unknown coefficients,
+//     with the radical-extension diagonal-twist derivation
+//     `D(Σ uᵢ yⁱ) = Σ (D(uᵢ) + uᵢ·(i/n)·D(a)/a) yⁱ` and the mul-by-`f` mixing
+//     reduced mod `yⁿ = a`.
+//
+// We evaluate `L` on each basis element `xᵏ tʲ yⁱ / D`, extract one big exact
+// ℚ-linear system (match `y`-powers, then `t`-powers, then `x`-powers),
+// Gauss-solve it, reconstruct `u`, and **verify `D(u) + f·u = g` exactly in the
+// radical extension** before returning — sound by construction (a bounded ansatz
+// that misses the solution yields `None`, never a wrong answer).
+
+/// `D(a)/a` in the tower field `F`, or `None` if `a` is zero.
+fn tower_log_deriv<F: CoeffField<Elem = TExpr>>(field: &F, a: &TExpr) -> Option<TExpr> {
+    let da = field.derivation(a);
+    let inv_a = field.inv(a)?;
+    Some(field.mul(&da, &inv_a))
+}
+
+/// The base scalar `m/n ∈ ℚ ⊂ F` as a tower element.
+fn tower_ratio<F: CoeffField<Elem = TExpr>>(field: &F, m: usize, n: usize) -> TExpr {
+    let _ = field;
+    TExpr::from_ratfn(RatFn::new(
+        vec![Rational::from(m as i64)],
+        vec![Rational::from(n as i64)],
+    ))
+}
+
+/// Reduce an `F`-polynomial in `y` (length possibly `> n`) modulo `yⁿ = a` into a
+/// length-`n` coefficient vector over the tower field `F`.
+fn rad_reduce<F: CoeffField<Elem = TExpr>>(
+    field: &F,
+    a: &TExpr,
+    n: usize,
+    raw: &[TExpr],
+) -> Vec<TExpr> {
+    let mut v: Vec<TExpr> = raw.to_vec();
+    if v.len() < n {
+        v.resize(n, field.zero());
+    }
+    for k in (n..v.len()).rev() {
+        let c = v[k].clone();
+        if field.is_zero(&c) {
+            continue;
+        }
+        let folded = field.mul(&c, a); // y^k = a · y^{k−n}
+        v[k - n] = field.add(&v[k - n], &folded);
+        v[k] = field.zero();
+    }
+    v.truncate(n);
+    v
+}
+
+/// Multiply two length-`n` power-basis vectors over `F`, reduced mod `yⁿ = a`.
+fn rad_mul<F: CoeffField<Elem = TExpr>>(
+    field: &F,
+    a: &TExpr,
+    n: usize,
+    p: &[TExpr],
+    q: &[TExpr],
+) -> Vec<TExpr> {
+    if p.is_empty() || q.is_empty() {
+        return vec![field.zero(); n];
+    }
+    let mut raw = vec![field.zero(); p.len() + q.len() - 1];
+    for (i, ci) in p.iter().enumerate() {
+        if field.is_zero(ci) {
+            continue;
+        }
+        for (j, cj) in q.iter().enumerate() {
+            let prod = field.mul(ci, cj);
+            raw[i + j] = field.add(&raw[i + j], &prod);
+        }
+    }
+    rad_reduce(field, a, n, &raw)
+}
+
+/// The radical-extension derivation (diagonal twist) of a length-`n` vector:
+/// `D(Σ uᵢ yⁱ) = Σ (D(uᵢ) + uᵢ·(i/n)·D(a)/a) yⁱ`.  Needs `a ≠ 0`.
+fn rad_derivation<F: CoeffField<Elem = TExpr>>(
+    field: &F,
+    a: &TExpr,
+    n: usize,
+    u: &[TExpr],
+) -> Option<Vec<TExpr>> {
+    let lda = tower_log_deriv(field, a)?; // D(a)/a
+    let mut out = vec![field.zero(); n];
+    for (i, ui) in u.iter().enumerate().take(n) {
+        let dci = field.derivation(ui);
+        if i == 0 {
+            out[0] = dci;
+        } else {
+            let scale = tower_ratio(field, i, n); // i/n
+            let twist = field.mul(ui, &field.mul(&scale, &lda));
+            out[i] = field.add(&dci, &twist);
+        }
+    }
+    Some(out)
+}
+
+/// Solve the coupled radical Risch DE `D(u) + f·u = g` over the radical
+/// extension `yⁿ = a` of a tower field `F`, with an optional analytic `x`-degree
+/// search ceiling (passed through to the per-component ansatz cap).
+pub(crate) fn solve_tower_coupled_radical_rde_bounded<F: CoeffField<Elem = TExpr>>(
+    field: &F,
+    n: usize,
+    a: &TExpr,
+    f: &[TExpr],
+    g: &[TExpr],
+    x_bound: Option<usize>,
+) -> Option<Vec<TExpr>> {
+    if n < 2 || field.is_zero(a) {
+        return None;
+    }
+    // Pad f, g to length n.
+    let pad = |v: &[TExpr]| -> Vec<TExpr> {
+        let mut out = vec![field.zero(); n];
+        for (i, c) in v.iter().take(n).enumerate() {
+            out[i] = c.clone();
+        }
+        out
+    };
+    let f = pad(f);
+    let g = pad(g);
+
+    // Candidate common denominators (TExpr), gathered from a, every component of
+    // f and g, and the diagonal-twist coefficient D(a)/a.
+    let mut probe = field.zero();
+    probe = field.add(&probe, a);
+    if let Some(lda) = tower_log_deriv(field, a) {
+        probe = field.add(&probe, &lda);
+    }
+    for c in f.iter().chain(g.iter()) {
+        probe = field.add(&probe, c);
+    }
+    // Reuse the scalar candidate set (D=1, denominators of probe / its parts).
+    let dens = candidate_denominators(field, &probe, &g_combined(field, &g));
+
+    for d in &dens {
+        if let Some(u) = solve_coupled_with_denominator(field, n, a, &f, &g, d, x_bound) {
+            return Some(u);
+        }
+    }
+    None
+}
+
+/// Sum the components of a length-`n` vector into a single `TExpr` (only used to
+/// seed the candidate-denominator heuristic — soundness is from verification).
+fn g_combined<F: CoeffField<Elem = TExpr>>(field: &F, g: &[TExpr]) -> TExpr {
+    let mut acc = field.zero();
+    for c in g {
+        acc = field.add(&acc, c);
+    }
+    acc
+}
+
+/// Solve the coupled radical RDE seeking `uᵢ = (Σⱼₖ cᵢⱼₖ xᵏ tʲ)/D` for the fixed
+/// common denominator `D`.
+fn solve_coupled_with_denominator<F: CoeffField<Elem = TExpr>>(
+    field: &F,
+    n: usize,
+    a: &TExpr,
+    f: &[TExpr],
+    g: &[TExpr],
+    d: &TExpr,
+    x_bound: Option<usize>,
+) -> Option<Vec<TExpr>> {
+    const JCAP: usize = 3; // max degree in t
+    const KCAP: usize = 5; // heuristic floor on the max degree in x
+
+    let kcap = x_bound
+        .map_or(KCAP, |b| b.max(KCAP))
+        .min(X_DEGREE_SANITY_CAP);
+
+    let inv_d = field.inv(d)?;
+
+    // Basis: (component i, t-degree j, x-degree k) → element xᵏtʲ/D in component i.
+    let basis: Vec<(usize, usize, usize)> = (0..n)
+        .flat_map(|i| (0..=JCAP).flat_map(move |j| (0..=kcap).map(move |k| (i, j, k))))
+        .collect();
+
+    let one = Rational::from(1);
+    // Each ansatz basis element as a length-n power-basis vector over F.
+    let elems: Vec<Vec<TExpr>> = basis
+        .iter()
+        .map(|&(i, j, k)| {
+            let scalar = field.mul(&monomial(j, k, &one), &inv_d); // xᵏtʲ/D ∈ F
+            let mut v = vec![field.zero(); n];
+            v[i] = scalar;
+            v
+        })
+        .collect();
+
+    // L(elem) = D_rad(elem) + f·elem, each a length-n vector.
+    let mut cols: Vec<Vec<TExpr>> = Vec::with_capacity(elems.len());
+    for elem in &elems {
+        let dv = rad_derivation(field, a, n, elem)?;
+        let fv = rad_mul(field, a, n, f, elem);
+        let mut lv = vec![field.zero(); n];
+        for i in 0..n {
+            lv[i] = field.add(&dv[i], &fv[i]);
+        }
+        cols.push(lv);
+    }
+
+    let (matrix, rhs) = extract_linear_system_coupled(&cols, g, n);
+    let sol = gauss_solve(matrix, rhs, basis.len())?;
+
+    // Reconstruct u = Σ solᵢ · elemᵢ (each contributes to one component).
+    let mut u = vec![field.zero(); n];
+    for (idx, elem) in elems.iter().enumerate() {
+        if sol[idx] != 0 {
+            let s = TExpr::from_ratfn(RatFn::from_poly(&vec![sol[idx].clone()]));
+            for i in 0..n {
+                u[i] = field.add(&u[i], &field.mul(&s, &elem[i]));
+            }
+        }
+    }
+
+    // Exact in-field verification: D(u) + f·u == g.
+    let du = rad_derivation(field, a, n, &u)?;
+    let fu = rad_mul(field, a, n, f, &u);
+    let g_pad = {
+        let mut gp = vec![field.zero(); n];
+        for (i, c) in g.iter().take(n).enumerate() {
+            gp[i] = c.clone();
+        }
+        gp
+    };
+    for i in 0..n {
+        let lhs = field.add(&du[i], &fu[i]);
+        if !field.eq(&lhs, &g_pad[i]) {
+            return None;
+        }
+    }
+    Some(u)
+}
+
+/// Build the exact ℚ-linear system for the coupled solve by matching every
+/// `y`-power component (then `t`-powers, then `x`-powers via the scalar
+/// [`extract_linear_system`]) and concatenating the per-component rows.
+fn extract_linear_system_coupled(
+    cols: &[Vec<TExpr>],
+    target: &[TExpr],
+    n: usize,
+) -> (Vec<Vec<Rational>>, Vec<Rational>) {
+    let mut matrix: Vec<Vec<Rational>> = Vec::new();
+    let mut rhs: Vec<Rational> = Vec::new();
+    let zero = TExpr::int(0);
+    for comp in 0..n {
+        let comp_cols: Vec<TExpr> = cols
+            .iter()
+            .map(|c| c.get(comp).cloned().unwrap_or_else(|| zero.clone()))
+            .collect();
+        let comp_tgt = target.get(comp).cloned().unwrap_or_else(|| zero.clone());
+        let (m, r) = extract_linear_system(&comp_cols, &comp_tgt);
+        matrix.extend(m);
+        rhs.extend(r);
+    }
+    (matrix, rhs)
+}
+
+// ===========================================================================
 // Tests
 // ===========================================================================
 
