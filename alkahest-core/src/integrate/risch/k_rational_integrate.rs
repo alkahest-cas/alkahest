@@ -10,7 +10,7 @@
 //!   ∫ 1/(x·(x+√2)) dx = (1/√2)·[log(x) − log(x+√2)]
 //! ```
 //!
-//! This module provides [`integrate_k_rational_with_logs`], a Rothstein–Trager
+//! This module provides `integrate_k_rational_with_logs`, a Rothstein–Trager
 //! / partial-fractions step over `K` that produces the **rational part** plus a
 //! list of `(residue, linear factor)` pairs `(cᵢ, x − rᵢ)` with `cᵢ, rᵢ ∈ K`,
 //! i.e. `Σ cᵢ·log(x − rᵢ)`.
@@ -27,7 +27,7 @@
 //!   that piece; combining the two is a follow-up.)
 //! - `D` must split **completely into distinct `K`-linear factors** (`deg ≤ 2`
 //!   with the quadratic case requiring its discriminant to be a perfect square
-//!   in `K`, currently only for `K = ℚ(√d)` — [`AlgebraicExtension::SingleSqrt`]).
+//!   in `K`, currently only for `K = ℚ(√d)` — `AlgebraicExtension::SingleSqrt`).
 //!   For each root `rᵢ ∈ K` of `D`, the residue is the simple-pole formula
 //!   `cᵢ = R(rᵢ) / D'(rᵢ)` evaluated by `K`-arithmetic.
 //! - Non-linear irreducible `K`-factors of `D` (e.g. an irreducible quadratic
@@ -40,7 +40,7 @@ use rug::Rational;
 use super::exp_case::{rational_sqrt, AlgebraicExtension};
 use super::number_field::{KElem, KPoly, NumberField};
 
-/// Result of [`integrate_k_rational_with_logs`]: the polynomial/rational part
+/// Result of `integrate_k_rational_with_logs`: the polynomial/rational part
 /// (as a `K`-rational function `(num, den)`) plus the logarithmic terms
 /// `Σ cᵢ·log(x − rᵢ)`.
 pub struct KRationalLogResult {
@@ -115,7 +115,7 @@ fn k_sqrt_quadratic(field: &NumberField, d: i64, elem: &KElem) -> Option<KElem> 
 /// Returns `None` if `den` has degree ≥ 3, or (for degree 2) its discriminant
 /// is not a `K`-square — i.e. `den` does not split completely into distinct
 /// `K`-linear factors.  `ext` selects the field-specific square-root routine
-/// (currently only [`AlgebraicExtension::SingleSqrt`] supports the degree-2
+/// (currently only `AlgebraicExtension::SingleSqrt` supports the degree-2
 /// case).
 fn find_k_roots(
     field: &NumberField,
