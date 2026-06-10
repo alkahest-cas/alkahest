@@ -1673,4 +1673,71 @@ mod tests {
         );
         verify_numeric_e(integrand, result.unwrap().value, x, &pool);
     }
+
+    // ----- Gap E follow-up: K-rational integration with K-log emission -----
+
+    /// `try_integrate_k_rational_with_logs` directly: ∫ 1/(x·(x+√2)) dx
+    /// = (1/√2)·[log(x) − log(x+√2)].  Both poles are K-rational (x=0 and
+    /// x=−√2), neither is a removable (zero-residue) pole, so the plain
+    /// K-rational RDE solver declines and `try_integrate_k_rational_with_logs`
+    /// must produce the dilog-free closed form (matches the module-doc
+    /// example and the `x_times_x_plus_sqrt2_log_terms` algebra-level test).
+    #[test]
+    fn k_rational_with_logs_x_times_x_plus_sqrt2() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let x_plus_sqrt2 = pool.add(vec![x, sqrt2]);
+        let integrand = pool.pow(pool.mul(vec![x, x_plus_sqrt2]), pool.integer(-1_i32));
+
+        let r = try_integrate_k_rational_with_logs(integrand, x, &pool)
+            .expect("∫ 1/(x(x+√2)) dx = (1/√2)(log x − log(x+√2)) must succeed");
+        let r = crate::simplify::engine::simplify(r, &pool).value;
+        println!("∫ 1/(x(x+√2)) dx = {}", pool.display(r));
+        verify_numeric_e(integrand, r, x, &pool);
+    }
+
+    /// `try_integrate_k_rational_with_logs` directly: ∫ 1/((x−√2)·(x+√2)) dx
+    /// = (1/(2√2))·[log(x−√2) − log(x+√2)], exercising a non-zero pair of
+    /// K-roots from a degree-2 denominator (both factors written explicitly
+    /// with √2 so the integrand is detected as K=ℚ(√2)-rational).
+    #[test]
+    fn k_rational_with_logs_inv_x_sq_minus_2() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let neg_sqrt2 = pool.mul(vec![pool.integer(-1_i32), sqrt2]);
+        let x_minus_sqrt2 = pool.add(vec![x, neg_sqrt2]);
+        let x_plus_sqrt2 = pool.add(vec![x, sqrt2]);
+        let denom = pool.mul(vec![x_minus_sqrt2, x_plus_sqrt2]);
+        let integrand = pool.pow(denom, pool.integer(-1_i32));
+
+        let r = try_integrate_k_rational_with_logs(integrand, x, &pool)
+            .expect("∫ 1/((x−√2)(x+√2)) dx = (1/(2√2))[log(x−√2) − log(x+√2)] must succeed");
+        let r = crate::simplify::engine::simplify(r, &pool).value;
+        println!("∫ 1/((x−√2)(x+√2)) dx = {}", pool.display(r));
+        verify_numeric_e(integrand, r, x, &pool);
+    }
+
+    /// Decline: ∫ √2/(x²+1) dx — the denominator's discriminant (−4) is not a
+    /// K-square in K=ℚ(√2), so x²+1 does not split into K-linear factors.
+    /// `try_integrate_k_rational_with_logs` must decline (`None`); the
+    /// (rational, K-free) `arctan` path handles this elsewhere.
+    #[test]
+    fn k_rational_with_logs_irreducible_quadratic_declines() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        // Multiply by √2 so the integrand parses as a K=ℚ(√2)-rational
+        // function (otherwise detect_algebraic_extension finds no extension
+        // and this isn't exercising the K-rational-with-logs path at all).
+        let two = pool.integer(2_i32);
+        let denom = pool.add(vec![pool.pow(x, two), pool.integer(1_i32)]);
+        let integrand = pool.mul(vec![sqrt2, pool.pow(denom, pool.integer(-1_i32))]);
+
+        assert!(
+            try_integrate_k_rational_with_logs(integrand, x, &pool).is_none(),
+            "∫ √2/(x²+1) dx: denominator x²+1 is K-irreducible over ℚ(√2); must decline"
+        );
+    }
 }
