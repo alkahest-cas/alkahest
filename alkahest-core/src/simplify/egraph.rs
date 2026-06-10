@@ -351,9 +351,7 @@ mod backend {
 (rule ((= e (Mul (Num ?a) (Num ?b))))
       ((union e (Num (* ?a ?b))))
       :ruleset const-fold)
-(rule ((= e (Pow (Num ?a) (Num ?b))) (>= ?b 0))
-      ((union e (Num (^ ?a ?b))))
-      :ruleset const-fold)
+; Integer Pow folding is done in Rust after extraction: egglog's i64 `^` is XOR.
 
 ; ── phased schedule ───────────────────────────────────────────────────────────
 {schedule}
@@ -509,6 +507,60 @@ mod backend {
         }
     }
 
+    /// Fold `Pow` with numeric integer base and non-negative integer exponent.
+    ///
+    /// Egglog's i64 `^` is bitwise XOR, so Pow constant folding cannot be done
+    /// inside the egglog program without polluting the e-graph.
+    pub(super) fn fold_numeric_pow(expr: ExprId, pool: &ExprPool) -> ExprId {
+        use crate::simplify::rules::RewriteRule;
+        use rug::ops::Pow;
+        match pool.get(expr) {
+            ExprData::Add(args) => {
+                let args: Vec<ExprId> = args.iter().map(|&a| fold_numeric_pow(a, pool)).collect();
+                pool.add(args)
+            }
+            ExprData::Mul(args) => {
+                let args: Vec<ExprId> = args.iter().map(|&a| fold_numeric_pow(a, pool)).collect();
+                pool.mul(args)
+            }
+            ExprData::Pow { base, exp } => {
+                let base = fold_numeric_pow(base, pool);
+                let exp = fold_numeric_pow(exp, pool);
+                if let (ExprData::Integer(b), ExprData::Integer(e)) =
+                    (pool.get(base), pool.get(exp))
+                {
+                    if b.0 == 1 {
+                        return pool.integer(1_i32);
+                    }
+                    if b.0 == -1 {
+                        let sign: i64 = if e.0.is_even() { 1 } else { -1 };
+                        return pool.integer(sign);
+                    }
+                    if e.0 >= 0 {
+                        if let Some(e_u32) = e.0.to_u32() {
+                            let result: rug::Integer = b.0.clone().pow(e_u32);
+                            return pool.integer(result);
+                        }
+                    }
+                }
+                pool.pow(base, exp)
+            }
+            ExprData::Func { name, args } => {
+                let args: Vec<ExprId> = args.iter().map(|&a| fold_numeric_pow(a, pool)).collect();
+                let folded = pool.func(&name, args);
+                if name == "sqrt" {
+                    if let Some((after, _)) =
+                        crate::simplify::rules::SqrtInteger.apply(folded, pool)
+                    {
+                        return after;
+                    }
+                }
+                folded
+            }
+            _ => expr,
+        }
+    }
+
     /// Canonicalize linear combinations in an expression.
     ///
     /// At each `Add` node, collects `(coefficient, symbol)` pairs and sums
@@ -618,6 +670,7 @@ mod backend {
         })();
 
         let simplified = result.unwrap_or(expr);
+        let simplified = fold_numeric_pow(simplified, pool);
         // RW-3: apply linear canonizer as a post-extraction pass.
         let simplified = canonicalize_linear(simplified, pool);
 
@@ -962,6 +1015,49 @@ mod tests {
         let penalised = sc.cost("Add", &[2.0, 2.0]);
         let normal = sc.cost("Add", &[0.1, 2.0]);
         assert!(penalised > normal);
+    }
+
+    #[test]
+    fn egraph_sqrt_trig_identity_squared() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let sin_x = pool.func("sin", vec![x]);
+        let cos_x = pool.func("cos", vec![x]);
+        let inner = pool.add(vec![
+            pool.pow(sin_x, pool.integer(2_i32)),
+            pool.pow(cos_x, pool.integer(2_i32)),
+        ]);
+        let expr = pool.func("sqrt", vec![pool.pow(inner, pool.integer(2_i32))]);
+        #[cfg(feature = "egraph")]
+        {
+            let result = simplify_egraph(expr, &pool);
+            assert_eq!(
+                result.value,
+                pool.integer(1_i32),
+                "got {}",
+                pool.display(result.value)
+            );
+        }
+        #[cfg(not(feature = "egraph"))]
+        let _ = expr;
+    }
+
+    #[test]
+    fn egraph_pow_one_squared_is_one() {
+        let pool = ExprPool::new();
+        let expr = pool.pow(pool.integer(1_i32), pool.integer(2_i32));
+        #[cfg(feature = "egraph")]
+        {
+            let result = simplify_egraph(expr, &pool);
+            assert_eq!(
+                result.value,
+                pool.integer(1_i32),
+                "got {}",
+                pool.display(result.value)
+            );
+        }
+        #[cfg(not(feature = "egraph"))]
+        let _ = expr;
     }
 
     // V1-15: trig identity via Pow form (sin(x)^2 + cos(x)^2 → 1)
