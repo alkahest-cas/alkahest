@@ -103,6 +103,9 @@ fn expr_to_multivariate_coeffs(
             name: name.clone(),
         },
         ExprData::Integer(n) => NodeInfo::Integer(n.0.clone()),
+        // A `Rational` node whose value is integral (denominator 1) can arise
+        // from un-collapsed arithmetic; treat it as the integer numerator.
+        ExprData::Rational(r) if *r.0.denom() == 1 => NodeInfo::Integer(r.0.numer().clone()),
         ExprData::Rational(_) | ExprData::Float(_) => NodeInfo::NonIntCoeff,
         ExprData::Add(args) => NodeInfo::Add(args.clone()),
         ExprData::Mul(args) => NodeInfo::Mul(args.clone()),

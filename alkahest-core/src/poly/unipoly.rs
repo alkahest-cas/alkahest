@@ -241,6 +241,16 @@ fn expr_to_univariate_coeffs(
             }
             Ok(map)
         }
+        // A `Rational` node whose value is integral (denominator 1) can arise
+        // from un-collapsed arithmetic; treat it as the integer numerator.
+        ExprData::Rational(r) if *r.0.denom() == 1 => {
+            let mut map = CoeffMap::new();
+            let n = r.0.numer().clone();
+            if n != 0 {
+                map.insert(0, n);
+            }
+            Ok(map)
+        }
         ExprData::Rational(_) | ExprData::Float(_) => Err(ConversionError::NonIntegerCoefficient),
         // n-ary sum: recurse and accumulate
         ExprData::Add(args) => {
@@ -664,6 +674,27 @@ mod tests {
         let (p, x) = pool_and_var();
         let poly = UniPoly::from_symbolic(x, x, &p).unwrap();
         assert_eq!(poly.coefficients_i64(), vec![0, 1]);
+    }
+
+    #[test]
+    fn from_symbolic_integer_valued_rational_node() {
+        // An un-collapsed Rational(4, 1) node should be accepted as the
+        // integer constant 4.
+        let (p, x) = pool_and_var();
+        let four = p.rational(4_i32, 1_i32);
+        let poly = UniPoly::from_symbolic(four, x, &p).unwrap();
+        assert_eq!(poly.coefficients_i64(), vec![4]);
+    }
+
+    #[test]
+    fn from_symbolic_non_integer_rational_still_rejected() {
+        // A genuine non-integer Rational(1, 2) node must still error.
+        let (p, x) = pool_and_var();
+        let half = p.rational(1_i32, 2_i32);
+        assert!(matches!(
+            UniPoly::from_symbolic(half, x, &p),
+            Err(ConversionError::NonIntegerCoefficient)
+        ));
     }
 
     #[test]

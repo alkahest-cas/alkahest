@@ -365,6 +365,30 @@ mod tests {
     }
 
     #[test]
+    fn integer_valued_rational_node_accepted() {
+        // numer = Rational(4, 1) (un-collapsed integer), denom = x
+        // Should be parsed as the integer 4, not rejected as NonIntegerCoefficient.
+        let (p, x, y) = pool_xy();
+        let n_expr = p.rational(4_i32, 1_i32);
+        let d_expr = x;
+        let rf = RationalFunction::from_symbolic(n_expr, d_expr, vec![x, y], &p).unwrap();
+        assert_eq!(rf.numer.terms[&vec![]], rug::Integer::from(4));
+        assert_eq!(rf.denom.terms[&vec![1]], rug::Integer::from(1));
+    }
+
+    #[test]
+    fn genuine_non_integer_rational_node_rejected() {
+        // numer = Rational(1, 2), denom = x — not integer-valued, must still error.
+        let (p, x, y) = pool_xy();
+        let n_expr = p.rational(1_i32, 2_i32);
+        let d_expr = x;
+        assert!(matches!(
+            RationalFunction::from_symbolic(n_expr, d_expr, vec![x, y], &p),
+            Err(ConversionError::NonIntegerCoefficient)
+        ));
+    }
+
+    #[test]
     fn trivial_rational() {
         // x / 1 → displayed without denominator
         let (p, x, y) = pool_xy();
