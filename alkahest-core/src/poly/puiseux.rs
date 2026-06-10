@@ -864,7 +864,7 @@ pub(crate) fn factor_over_q(p: &[Rational]) -> Vec<(Vec<Rational>, usize)> {
 /// A Puiseux branch at an **algebraic** base point `x = α`, with coefficients in
 /// the base number field `K = ℚ[t]/(α_minpoly)` (where the generator `t = α`).
 ///
-/// The branch is `y(x) = Σ c_k (x − α)^{k/e}` with each `c_k ∈ K` (a [`KElem`],
+/// The branch is `y(x) = Σ c_k (x − α)^{k/e}` with each `c_k ∈ K` (a `KElem`,
 /// a ℚ-polynomial in `α`).  A class over a degree-`d` base field represents
 /// `conjugates = d` concrete conjugate branches (one per embedding of `α`).
 #[derive(Clone, Debug)]
