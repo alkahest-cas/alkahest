@@ -80,6 +80,7 @@ pub mod alg_rde;
 pub mod diff_field;
 pub mod exp_algebraic;
 pub mod exp_case;
+pub mod k_rational_integrate;
 pub mod log_case;
 pub mod number_field;
 pub mod poly_rde;
