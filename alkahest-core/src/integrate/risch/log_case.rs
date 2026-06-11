@@ -565,11 +565,9 @@ fn try_integrate_k_rational_with_logs(
 
     let result = integrate_k_rational_with_logs(&field, &ext, &c_num, &c_den)?;
 
-    // Rational part: result.rational_num/result.rational_den = Q, a K-polynomial
-    // (rational_den is always [1] — see integrate_k_rational_with_logs).
-    // Integrate term-by-term: ∫ Σ qᵢ xⁱ dx = Σ qᵢ·x^{i+1}/(i+1).
+    // Polynomial part: ∫ Σ qᵢ xⁱ dx = Σ qᵢ·x^{i+1}/(i+1).
     let mut terms: Vec<ExprId> = Vec::new();
-    for (i, c) in result.rational_num.iter().enumerate() {
+    for (i, c) in result.poly_part.iter().enumerate() {
         if NumberField::is_zero(c) {
             continue;
         }
@@ -583,11 +581,18 @@ fn try_integrate_k_rational_with_logs(
         ]);
         terms.push(scaled);
     }
-    let rational_antideriv = match terms.len() {
+    let poly_antideriv = match terms.len() {
         0 => pool.integer(0_i32),
         1 => terms[0],
         _ => pool.add(terms),
     };
+
+    // Already-integrated Hermite terms B/V^p.
+    let mut hermite_exprs: Vec<ExprId> = Vec::new();
+    for (b, v_pow, _p) in &result.hermite_terms {
+        let term = build_krational_ext(b, v_pow, var, &ext, pool);
+        hermite_exprs.push(term);
+    }
 
     // Log terms: Σ cᵢ·log(x − rᵢ).
     let mut log_terms: Vec<ExprId> = Vec::new();
@@ -605,9 +610,10 @@ fn try_integrate_k_rational_with_logs(
     }
 
     let mut all_terms = Vec::new();
-    if !is_zero(rational_antideriv, pool) {
-        all_terms.push(rational_antideriv);
+    if !is_zero(poly_antideriv, pool) {
+        all_terms.push(poly_antideriv);
     }
+    all_terms.extend(hermite_exprs);
     all_terms.extend(log_terms);
 
     match all_terms.len() {
@@ -1739,5 +1745,165 @@ mod tests {
             try_integrate_k_rational_with_logs(integrand, x, &pool).is_none(),
             "∫ √2/(x²+1) dx: denominator x²+1 is K-irreducible over ℚ(√2); must decline"
         );
+    }
+
+    // ----- Hermite reduction over K (repeated K-factors) -----
+
+    /// `try_integrate_k_rational_with_logs` directly: ∫ 1/(x·(x+√2)²) dx.
+    ///
+    /// `(x+√2)` is a repeated K-factor of the denominator — Hermite reduction
+    /// over K peels off a `B/(x+√2)` rational term, leaving a squarefree
+    /// `x·(x+√2)` remainder for the K-log part.
+    #[test]
+    fn k_rational_with_logs_x_times_x_plus_sqrt2_squared() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let x_plus_sqrt2 = pool.add(vec![x, sqrt2]);
+        let denom = pool.mul(vec![x, pool.pow(x_plus_sqrt2, pool.integer(2_i32))]);
+        let integrand = pool.pow(denom, pool.integer(-1_i32));
+
+        let r = try_integrate_k_rational_with_logs(integrand, x, &pool)
+            .expect("∫ 1/(x(x+√2)²) dx must close via Hermite reduction over K");
+        let r = crate::simplify::engine::simplify(r, &pool).value;
+        println!("∫ 1/(x(x+√2)²) dx = {}", pool.display(r));
+        verify_numeric_e(integrand, r, x, &pool);
+    }
+
+    /// `try_integrate_k_rational_with_logs` directly:
+    /// ∫ (x+√2+1)/((x−√2)²·(x+√2)) dx.
+    ///
+    /// `(x−√2)` is a repeated K-factor; Hermite reduction over K peels a
+    /// rational term, leaving a squarefree `(x−√2)(x+√2)` remainder for the
+    /// K-log part.
+    #[test]
+    fn k_rational_with_logs_repeated_x_minus_sqrt2() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let neg_sqrt2 = pool.mul(vec![pool.integer(-1_i32), sqrt2]);
+        let x_minus_sqrt2 = pool.add(vec![x, neg_sqrt2]);
+        let x_plus_sqrt2 = pool.add(vec![x, sqrt2]);
+
+        let numerator = pool.add(vec![x, sqrt2, pool.integer(1_i32)]);
+        let denom = pool.mul(vec![
+            pool.pow(x_minus_sqrt2, pool.integer(2_i32)),
+            x_plus_sqrt2,
+        ]);
+        let integrand = pool.mul(vec![numerator, pool.pow(denom, pool.integer(-1_i32))]);
+
+        let r = try_integrate_k_rational_with_logs(integrand, x, &pool)
+            .expect("∫ (x+√2+1)/((x−√2)²(x+√2)) dx must close via Hermite reduction over K");
+        let r = crate::simplify::engine::simplify(r, &pool).value;
+        println!("∫ (x+√2+1)/((x−√2)²(x+√2)) dx = {}", pool.display(r));
+        verify_numeric_e(integrand, r, x, &pool);
+    }
+
+    /// Through the log-tower IBP base case: ∫ 1/(x+√2)³·log(x+√2) dx.
+    ///
+    /// `c_1 = 1/(x+√2)³` has its *only* pole at `x=−√2`, which IS a zero of
+    /// `h=x+√2` — the §E certificate's "K-irrational pole not covered by h"
+    /// condition does not apply, so this should proceed to the IBP/Hermite
+    /// path.  `P_1 = ∫1/(x+√2)³ dx = −1/(2(x+√2)²)` (Hermite over K, `i=3`).
+    #[test]
+    fn k_rational_with_logs_inv_x_plus_sqrt2_cubed_times_log_x_plus_sqrt2() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let x_plus_sqrt2 = pool.add(vec![x, sqrt2]);
+        let denom = pool.pow(x_plus_sqrt2, pool.integer(3_i32));
+        let log_h = pool.func("log", vec![x_plus_sqrt2]);
+        let integrand = pool.mul(vec![pool.pow(denom, pool.integer(-1_i32)), log_h]);
+
+        use super::super::tower::find_generators;
+        let gens = find_generators(integrand, x, &pool);
+        assert_eq!(gens.len(), 1, "should find exactly one log generator");
+        let level = &gens[0];
+
+        let mut inner_log = DerivationLog::new();
+        let result = integrate_log_tower(integrand, level, x, &pool, &mut inner_log);
+        match result {
+            Ok(r) => {
+                let r = crate::simplify::engine::simplify(r, &pool).value;
+                println!("∫ log(x+√2)/(x+√2)³ dx = {}", pool.display(r));
+                verify_numeric_e(integrand, r, x, &pool);
+            }
+            Err(e) => {
+                println!("∫ log(x+√2)/(x+√2)³ dx declined: {e:?}");
+            }
+        }
+    }
+
+    /// Through the log-tower IBP base case: ∫ 1/(x·(x+√2)²)·log(x+√2) dx.
+    ///
+    /// `h = x+√2` covers the K-irrational pole of `c_1 = 1/(x(x+√2)²)` at
+    /// `x=−√2`, so the §E primitive-case certificate does not fire here (unlike
+    /// `log(x)`); the IBP correction term then needs the Hermite-over-K
+    /// antiderivative `P_1` of `c_1`.  Document what closes — assert only what
+    /// numerically verifies.
+    #[test]
+    fn k_rational_with_logs_x_times_x_plus_sqrt2_squared_times_log_x_plus_sqrt2() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let x_plus_sqrt2 = pool.add(vec![x, sqrt2]);
+        let denom = pool.mul(vec![x, pool.pow(x_plus_sqrt2, pool.integer(2_i32))]);
+        let log_h = pool.func("log", vec![x_plus_sqrt2]);
+        let integrand = pool.mul(vec![pool.pow(denom, pool.integer(-1_i32)), log_h]);
+
+        use super::super::tower::find_generators;
+        let gens = find_generators(integrand, x, &pool);
+        assert_eq!(gens.len(), 1, "should find exactly one log generator");
+        let level = &gens[0];
+
+        let mut inner_log = DerivationLog::new();
+        let result = integrate_log_tower(integrand, level, x, &pool, &mut inner_log);
+        match result {
+            Ok(r) => {
+                let r = crate::simplify::engine::simplify(r, &pool).value;
+                println!("∫ 1/(x(x+√2)²)·log(x+√2) dx = {}", pool.display(r));
+                verify_numeric_e(integrand, r, x, &pool);
+            }
+            Err(e) => {
+                println!("∫ 1/(x(x+√2)²)·log(x+√2) dx declined: {e:?}");
+            }
+        }
+    }
+
+    /// Through the log-tower IBP base case: ∫ 1/(x·(x+√2)²)·log(x) dx.
+    ///
+    /// `c_1 = 1/(x(x+√2)²)` requires Hermite reduction over K to find its
+    /// K-rational antiderivative `P_1`; the IBP correction term is then
+    /// integrated as `c_0`.  We assert only what numerically verifies (the
+    /// engine may still decline some sub-steps; this test pins what closes).
+    #[test]
+    fn k_rational_with_logs_x_times_x_plus_sqrt2_squared_times_log_x() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt2 = pool.func("sqrt", vec![pool.integer(2_i32)]);
+        let x_plus_sqrt2 = pool.add(vec![x, sqrt2]);
+        let denom = pool.mul(vec![x, pool.pow(x_plus_sqrt2, pool.integer(2_i32))]);
+        let log_x = pool.func("log", vec![x]);
+        let integrand = pool.mul(vec![pool.pow(denom, pool.integer(-1_i32)), log_x]);
+
+        use super::super::tower::find_generators;
+        let gens = find_generators(integrand, x, &pool);
+        assert_eq!(gens.len(), 1, "should find exactly one log generator");
+        let level = &gens[0];
+
+        let mut inner_log = DerivationLog::new();
+        let result = integrate_log_tower(integrand, level, x, &pool, &mut inner_log);
+        match result {
+            Ok(r) => {
+                let r = crate::simplify::engine::simplify(r, &pool).value;
+                println!("∫ 1/(x(x+√2)²)·log(x) dx = {}", pool.display(r));
+                verify_numeric_e(integrand, r, x, &pool);
+            }
+            Err(e) => {
+                // Document, don't force: the IBP correction term may still
+                // exceed the K-rational(+logs) base-field integrator.
+                println!("∫ 1/(x(x+√2)²)·log(x) dx declined: {e:?}");
+            }
+        }
     }
 }
