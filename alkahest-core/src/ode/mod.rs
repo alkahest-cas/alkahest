@@ -6,6 +6,7 @@
 //! Phase 19 sensitivity analysis is also implemented here as
 //! `sensitivity_system`.
 
+pub mod dsolve;
 pub mod sensitivity;
 
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
