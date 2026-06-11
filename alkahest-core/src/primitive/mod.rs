@@ -31,8 +31,13 @@
 //! assert!(caps.contains(Capabilities::DIFF_FORWARD));
 //!
 //! let report = reg.coverage_report();
-//! // Every built-in has at least NUMERIC_F64 coverage.
+//! // Every built-in *function* has at least NUMERIC_F64 coverage; the only
+//! // exception is the Dirac delta `δ`, which is a distribution with no
+//! // pointwise `f64` value.
 //! for row in &report.rows {
+//!     if row.name == "diracdelta" {
+//!         continue;
+//!     }
 //!     assert!(row.caps.contains(Capabilities::NUMERIC_F64));
 //! }
 //! ```
@@ -2046,6 +2051,35 @@ mod tests {
 
         let got = reg.numeric_f64("tanh", &[0.0]).unwrap();
         assert!((got - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn heaviside_and_dirac_registered() {
+        use crate::kernel::{Domain, ExprData, ExprPool};
+        let reg = PrimitiveRegistry::default_registry();
+        assert!(reg.is_registered("heaviside"));
+        assert!(reg.is_registered("diracdelta"));
+
+        // Heaviside numeric: θ(−1)=0, θ(0)=1/2, θ(1)=1.
+        assert_eq!(reg.numeric_f64("heaviside", &[-1.0]), Some(0.0));
+        assert_eq!(reg.numeric_f64("heaviside", &[0.0]), Some(0.5));
+        assert_eq!(reg.numeric_f64("heaviside", &[1.0]), Some(1.0));
+
+        // Dirac delta has no pointwise f64 value (it is a distribution).
+        assert_eq!(reg.numeric_f64("diracdelta", &[0.0]), None);
+
+        // d/dx θ(x) = δ(x): the forward derivative is a δ-function node.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let dh = reg.diff_forward("heaviside", &[x], x, &pool).unwrap();
+        let dh = crate::simplify::simplify(dh, &pool).value;
+        match pool.get(dh) {
+            ExprData::Func { name, args } => {
+                assert_eq!(name, "diracdelta");
+                assert_eq!(args, vec![x]);
+            }
+            other => panic!("expected diracdelta(x), got {other:?}"),
+        }
     }
 
     // ── Elliptic special functions ─────────────────────────────────────────────
