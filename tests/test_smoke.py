@@ -286,6 +286,16 @@ def test_lean_export():
     assert len(lean) > 0
 
 
+def test_lean_diff_export():
+    p = pool()
+    x = p.symbol("x")
+    result = diff(x**3, x)
+    lean = to_lean(result)
+    assert "deriv (fun" in lean
+    assert "deriv_pow" in lean
+    assert "MeasureTheory" not in lean
+
+
 # ---------------------------------------------------------------------------
 # StableHLO / XLA bridge
 # ---------------------------------------------------------------------------

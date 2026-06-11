@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Lean certificates
+
+- **Differentiation:** `to_lean` / `DerivedResult.certificate` on `diff` results now emit `deriv (fun x => …) x = …` goals with Mathlib derivative lemmas instead of incorrect rewrite equalities (e.g. `x³ = 3x²`).
+
 ## 3.4.0 — 2026-06-10
 
 ### Calculus / integration (Risch roadmap)
