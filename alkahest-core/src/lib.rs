@@ -78,6 +78,7 @@ pub use matrix::{
 };
 pub use numeric::{guess_integer_relation, PslqError};
 pub use ode::{
+    dsolve::{dsolve, DsolveError, DsolveResult, DsolveSolution, OdeInput},
     lower_to_first_order,
     sensitivity::{adjoint_system, sensitivity_system, AdjointSystem, SensitivitySystem},
     OdeError, ScalarODE, ODE,
