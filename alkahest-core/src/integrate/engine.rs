@@ -808,7 +808,7 @@ pub(crate) fn integrate_raw(
 /// |----------------------------|-----------------------------|------------------------|
 /// | `exp(g)`, deg(g) ≥ 2      | `v·exp(g)` (if elementary)  | Risch DE solvable      |
 /// | `exp(g)`, deg(g) ≥ 2      | `NonElementary`             | Risch DE unsolvable    |
-/// | `p(x)·exp(a·x)`, deg≥2    | polynomial · exp            | undetermined coeff.    |
+/// | `p(x)·exp(a·x+b)`, deg≥1  | polynomial · exp            | RDE / undetermined coeff. (`x·exp(x)` itself stays in the rule-based `int_x_exp` table) |
 /// | `log(h)^n`, n ≥ 2         | polynomial in log           | IBP reduction          |
 /// | `p(x)·log(h)`              | polynomial · log            | IBP reduction          |
 ///
@@ -1455,6 +1455,126 @@ mod tests {
             r.log.steps().iter().any(|s| s.rule_name == "int_x_exp"),
             "should fire int_x_exp for 3*x*exp(x)"
         );
+    }
+
+    /// Numeric evaluator supporting exp/sin/cos/tan and `log(abs(.))` (the
+    /// `int_x_exp`-family / trig-substitution antiderivatives use these).
+    fn eval_exp_trig(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> f64 {
+        if expr == x {
+            return xv;
+        }
+        match pool.get(expr) {
+            ExprData::Integer(n) => n.0.to_f64(),
+            ExprData::Rational(r) => r.0.to_f64(),
+            ExprData::Add(args) => args.iter().map(|&a| eval_exp_trig(a, x, xv, pool)).sum(),
+            ExprData::Mul(args) => args
+                .iter()
+                .map(|&a| eval_exp_trig(a, x, xv, pool))
+                .product(),
+            ExprData::Pow { base, exp } => {
+                eval_exp_trig(base, x, xv, pool).powf(eval_exp_trig(exp, x, xv, pool))
+            }
+            ExprData::Func { ref name, ref args } if args.len() == 1 => {
+                let a = eval_exp_trig(args[0], x, xv, pool);
+                match name.as_str() {
+                    "exp" => a.exp(),
+                    "sin" => a.sin(),
+                    "cos" => a.cos(),
+                    "tan" => a.tan(),
+                    "sec" => 1.0 / a.cos(),
+                    "log" => a.ln(),
+                    "abs" => a.abs(),
+                    other => panic!("eval_exp_trig: unsupported func {other}"),
+                }
+            }
+            other => panic!("eval_exp_trig: unsupported node {other:?}"),
+        }
+    }
+
+    /// Integrate and assert `d/dx F = f` numerically at a few sample points.
+    fn verify_exp_trig(f: ExprId, x: ExprId, pool: &ExprPool) {
+        let r = integrate(f, x, pool).unwrap_or_else(|e| panic!("expected elementary: {e:?}"));
+        let d = diff(r.value, x, pool).unwrap();
+        let ds = simplify(d.value, pool).value;
+        for &xv in &[0.3_f64, 0.7, 1.1] {
+            let lhs = eval_exp_trig(ds, x, xv, pool);
+            let rhs = eval_exp_trig(f, x, xv, pool);
+            assert!(
+                (lhs - rhs).abs() < 1e-6,
+                "d/dx F ≠ f at x={xv}: {lhs} vs {rhs}\n  F = {}",
+                pool.display(r.value)
+            );
+        }
+    }
+
+    #[test]
+    fn integrate_x_times_exp_neg3x() {
+        // ∫ x·exp(-3x) dx — Bug #1 (PR #153 dsolve fallback): the engine
+        // previously declined this with "irreducible product of var-dependent
+        // factors" because `try_x_times_func` only matches `exp(var)` exactly
+        // (a=1) and `needs_exp_risch` only routes `poly·exp(linear)` to Risch
+        // when the surrounding polynomial has degree ≥ 2.  For a≠1, x·exp(a·x)
+        // (degree-1 poly) fell into neither path.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let neg3 = pool.integer(-3_i32);
+        let neg3x = pool.mul(vec![neg3, x]);
+        let expr = pool.mul(vec![x, pool.func("exp", vec![neg3x])]);
+        verify_exp_trig(expr, x, &pool);
+    }
+
+    #[test]
+    fn integrate_x_times_exp_2x_plus_1() {
+        // ∫ x·exp(2x+1) dx — non-unit rate AND nonzero additive constant; also
+        // outside `try_x_times_func` (eta = 2x+1 ≠ x).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let two_x = pool.mul(vec![pool.integer(2_i32), x]);
+        let two_x_plus_1 = pool.add(vec![two_x, pool.integer(1_i32)]);
+        let expr = pool.mul(vec![x, pool.func("exp", vec![two_x_plus_1])]);
+        verify_exp_trig(expr, x, &pool);
+    }
+
+    #[test]
+    fn integrate_x_squared_times_exp_neg_x() {
+        // ∫ x²·exp(-x) dx — degree-2 poly with non-unit rate (already routed to
+        // Risch before this fix; regression check that it still works).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let neg_x = pool.mul(vec![pool.integer(-1_i32), x]);
+        let expr = pool.mul(vec![
+            pool.pow(x, pool.integer(2_i32)),
+            pool.func("exp", vec![neg_x]),
+        ]);
+        verify_exp_trig(expr, x, &pool);
+    }
+
+    #[test]
+    fn integrate_x_times_exp_x_unaffected() {
+        // ∫ x·exp(x) dx still goes through `int_x_exp` (basic engine), not Risch.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![x, pool.func("exp", vec![x])]);
+        let r = integrate(expr, x, &pool).unwrap();
+        assert!(
+            r.log.steps().iter().any(|s| s.rule_name == "int_x_exp"),
+            "x*exp(x) should still fire int_x_exp"
+        );
+        verify_exp_trig(expr, x, &pool);
+    }
+
+    #[test]
+    #[ignore = "Bug #2 (PR #153 follow-up): ∫ tan(x)·sin(x) dx = ln|sec(x)+tan(x)| - sin(x) \
+                requires a Pythagorean-identity rewrite (sin² = 1 - cos² to split \
+                sin²/cos into sec - cos) plus `sec` integration support, neither of \
+                which exist yet. Out of scope for the contained routing fix in this \
+                PR; tracked separately."]
+    fn integrate_tan_times_sin() {
+        // ∫ tan(x)·sin(x) dx = ln|sec(x) + tan(x)| − sin(x) — Bug #2.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![pool.func("tan", vec![x]), pool.func("sin", vec![x])]);
+        verify_exp_trig(expr, x, &pool);
     }
 
     #[test]
