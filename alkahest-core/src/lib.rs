@@ -41,6 +41,8 @@ pub mod diffalg;
 // V2-10 — Gosper / creative telescoping (WZ certificates)
 pub mod stablehlo;
 pub mod sum;
+// §3.3 — symbolic integral transforms (Laplace and inverse Laplace)
+pub mod transform;
 // Plot — dependency-free SVG / DOT renderers
 pub mod plot;
 
@@ -92,6 +94,9 @@ pub use poly::{
     RootInterval, SparseGcdError, SparseInterpError, UniPoly, UniPolyFactorModP,
     UniPolyFactorization,
 };
+
+// §3.3 — Laplace transform and inverse (experimental surface; see `experimental`)
+pub use transform::{inverse_laplace_transform, laplace_transform, LaplaceError};
 
 // Phase 24 — Horner form
 pub use horner::{emit_horner_c, eval_horner_f64, eval_horner_f64_batch, horner};
@@ -297,6 +302,8 @@ pub mod experimental {
         CONTEXT_COLOR, ROOT_COLOR,
     };
     pub use crate::stablehlo::emit_stablehlo;
+    pub use crate::transform::laplace::laplace_derivative_rule;
+    pub use crate::transform::{inverse_laplace_transform, laplace_transform, LaplaceError};
 
     #[cfg(feature = "parallel")]
     pub use crate::simplify::parallel::{simplify_par, simplify_par_with_config};
