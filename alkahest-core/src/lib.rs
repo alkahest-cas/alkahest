@@ -99,6 +99,9 @@ pub use poly::{
 // §3.3 — Laplace transform and inverse (experimental surface; see `experimental`)
 pub use transform::{inverse_laplace_transform, laplace_transform, LaplaceError};
 
+// §3.4 — Fourier transform and inverse (experimental surface; see `experimental`)
+pub use transform::{fourier_transform, inverse_fourier_transform, FourierError};
+
 // Phase 24 — Horner form
 pub use horner::{emit_horner_c, eval_horner_f64, eval_horner_f64_batch, horner};
 pub use simplify::rulesets::{log_exp_rules, log_exp_rules_safe, trig_rules};
@@ -303,8 +306,12 @@ pub mod experimental {
         CONTEXT_COLOR, ROOT_COLOR,
     };
     pub use crate::stablehlo::emit_stablehlo;
+    pub use crate::transform::fourier::fourier_derivative_rule;
     pub use crate::transform::laplace::laplace_derivative_rule;
-    pub use crate::transform::{inverse_laplace_transform, laplace_transform, LaplaceError};
+    pub use crate::transform::{
+        fourier_transform, inverse_fourier_transform, inverse_laplace_transform, laplace_transform,
+        FourierError, LaplaceError,
+    };
 
     #[cfg(feature = "parallel")]
     pub use crate::simplify::parallel::{simplify_par, simplify_par_with_config};
