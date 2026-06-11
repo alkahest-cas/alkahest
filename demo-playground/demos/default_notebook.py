@@ -58,3 +58,18 @@ print("\\int \\cos x\\,dx = $$" + latex(r2.value) + "$$")
 
 r = simplify_trig(sin(x)**2 + cos(x)**2)
 print("\\sin^2 x + \\cos^2 x = $$" + latex(r.value) + "$$")
+
+# ---
+
+## Lean 4 certificate
+
+Differentiate and emit a Mathlib proof — use **Verify in Lean** in the panel below.
+
+# ---
+
+from playground_helpers import display_lean_cert
+
+result = diff(x**three, x)
+print("Symbolic:", result.value)
+print("Steps:", len(result.steps))
+display_lean_cert(result, operation="diff")

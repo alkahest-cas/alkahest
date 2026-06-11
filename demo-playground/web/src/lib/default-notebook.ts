@@ -67,4 +67,19 @@ export const DEFAULT_NOTEBOOK_CELLS: DefaultNotebookCell[] = [
       'r = simplify_trig(sin(x)**2 + cos(x)**2)\n' +
       'print("\\\\sin^2 x + \\\\cos^2 x = $$" + latex(r.value) + "$$")\n',
   },
+  {
+    cellType: 'markdown',
+    code:
+      '## Lean 4 certificate\n\n' +
+      'Differentiate and emit a Mathlib proof — use **Verify in Lean** in the panel below.',
+  },
+  {
+    cellType: 'code',
+    code:
+      'from playground_helpers import display_lean_cert\n\n' +
+      'result = diff(x**three, x)\n' +
+      'print("Symbolic:", result.value)\n' +
+      'print("Steps:", len(result.steps))\n' +
+      'display_lean_cert(result, operation="diff")\n',
+  },
 ];
