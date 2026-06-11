@@ -94,7 +94,12 @@ class TestExpandedPrimitives:
         reg = alkahest.PrimitiveRegistry()
         report = reg.coverage_report()
         missing = [r["name"] for r in report if not r["numeric_f64"]]
-        assert not missing, f"primitives missing numeric_f64: {missing}"
+        # DiracDelta is the documented distributional exception: it is not a
+        # pointwise function, so it deliberately has no numeric_f64 kernel
+        # (mirrors the Rust-side primitive coverage doctest).
+        assert missing == ["diracdelta"], (
+            f"primitives missing numeric_f64 (only diracdelta allowed): {missing}"
+        )
 
     def test_primitive_registry_most_have_diff_forward(self):
         reg = alkahest.PrimitiveRegistry()

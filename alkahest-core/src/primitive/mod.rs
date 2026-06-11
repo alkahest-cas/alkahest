@@ -31,8 +31,13 @@
 //! assert!(caps.contains(Capabilities::DIFF_FORWARD));
 //!
 //! let report = reg.coverage_report();
-//! // Every built-in has at least NUMERIC_F64 coverage.
+//! // Every built-in *function* has at least NUMERIC_F64 coverage; the only
+//! // exception is the Dirac delta `δ`, which is a distribution with no
+//! // pointwise `f64` value.
 //! for row in &report.rows {
+//!     if row.name == "diracdelta" {
+//!         continue;
+//!     }
 //!     assert!(row.caps.contains(Capabilities::NUMERIC_F64));
 //! }
 //! ```
@@ -316,6 +321,8 @@ impl PrimitiveRegistry {
         reg.register(Box::new(builtins::EllipticPiPrimitive));
         reg.register(Box::new(builtins::AbsPrimitive));
         reg.register(Box::new(builtins::SignPrimitive));
+        reg.register(Box::new(builtins::HeavisidePrimitive));
+        reg.register(Box::new(builtins::DiracDeltaPrimitive));
         reg.register(Box::new(builtins::FloorPrimitive));
         reg.register(Box::new(builtins::CeilPrimitive));
         reg.register(Box::new(builtins::RoundPrimitive));
@@ -1678,6 +1685,72 @@ pub mod builtins {
         }
     }
 
+    // ── Heaviside (unit step) ──────────────────────────────────────────────────
+
+    /// The Heaviside unit-step function `θ(x)`: `0` for `x < 0`, `1` for `x > 0`.
+    ///
+    /// The value at `x = 0` is left unspecified (the half-maximum convention
+    /// `θ(0) = 1/2` is used for numeric evaluation).  Its distributional
+    /// derivative is the [`DiracDeltaPrimitive`].  Registered so the Laplace
+    /// transform can recognise shifted steps `θ(t − a)`.
+    pub struct HeavisidePrimitive;
+
+    impl Primitive for HeavisidePrimitive {
+        fn name(&self) -> &'static str {
+            "heaviside"
+        }
+
+        fn pretty(&self, args: &[ExprId], pool: &ExprPool) -> String {
+            format!("θ({})", pool.display(args[0]))
+        }
+
+        fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
+            // d/dx θ(g(x)) = δ(g(x))·g'(x)  (distributional derivative).
+            let g = args[0];
+            let dg = crate::diff::diff(g, wrt, pool).ok()?.value;
+            let delta = pool.func("diracdelta", vec![g]);
+            Some(pool.mul(vec![delta, dg]))
+        }
+
+        fn diff_reverse(
+            &self,
+            args: &[ExprId],
+            cotan: ExprId,
+            pool: &ExprPool,
+        ) -> Option<Vec<ExprId>> {
+            let delta = pool.func("diracdelta", vec![args[0]]);
+            Some(vec![pool.mul(vec![cotan, delta])])
+        }
+
+        fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
+            Some(if args[0] > 0.0 {
+                1.0
+            } else if args[0] < 0.0 {
+                0.0
+            } else {
+                0.5
+            })
+        }
+    }
+
+    // ── Dirac delta ─────────────────────────────────────────────────────────────
+
+    /// The Dirac delta distribution `δ(x)`: the distributional derivative of the
+    /// [`HeavisidePrimitive`], with `∫ δ = 1`.  Not a classical function; numeric
+    /// evaluation is intentionally unimplemented.  Registered as a symbol so the
+    /// Laplace transform can map `δ(t − a) ↦ e^{−as}`.
+    pub struct DiracDeltaPrimitive;
+
+    impl Primitive for DiracDeltaPrimitive {
+        fn name(&self) -> &'static str {
+            "diracdelta"
+        }
+
+        fn pretty(&self, args: &[ExprId], pool: &ExprPool) -> String {
+            format!("δ({})", pool.display(args[0]))
+        }
+    }
+
     // ── floor ────────────────────────────────────────────────────────────────
 
     pub struct FloorPrimitive;
@@ -1978,6 +2051,35 @@ mod tests {
 
         let got = reg.numeric_f64("tanh", &[0.0]).unwrap();
         assert!((got - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn heaviside_and_dirac_registered() {
+        use crate::kernel::{Domain, ExprData, ExprPool};
+        let reg = PrimitiveRegistry::default_registry();
+        assert!(reg.is_registered("heaviside"));
+        assert!(reg.is_registered("diracdelta"));
+
+        // Heaviside numeric: θ(−1)=0, θ(0)=1/2, θ(1)=1.
+        assert_eq!(reg.numeric_f64("heaviside", &[-1.0]), Some(0.0));
+        assert_eq!(reg.numeric_f64("heaviside", &[0.0]), Some(0.5));
+        assert_eq!(reg.numeric_f64("heaviside", &[1.0]), Some(1.0));
+
+        // Dirac delta has no pointwise f64 value (it is a distribution).
+        assert_eq!(reg.numeric_f64("diracdelta", &[0.0]), None);
+
+        // d/dx θ(x) = δ(x): the forward derivative is a δ-function node.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let dh = reg.diff_forward("heaviside", &[x], x, &pool).unwrap();
+        let dh = crate::simplify::simplify(dh, &pool).value;
+        match pool.get(dh) {
+            ExprData::Func { name, args } => {
+                assert_eq!(name, "diracdelta");
+                assert_eq!(args, vec![x]);
+            }
+            other => panic!("expected diracdelta(x), got {other:?}"),
+        }
     }
 
     // ── Elliptic special functions ─────────────────────────────────────────────
