@@ -31,7 +31,7 @@ if [ -n "$WHEEL" ]; then
   pip install -q "$WHEEL"
 else
   PY_TAG=$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
-  FULL_WHEEL="https://github.com/alkahest-cas/alkahest/releases/download/v3.3.0/alkahest-3.3.0+full-${PY_TAG}-${PY_TAG}-manylinux_2_35_x86_64.whl"
+  FULL_WHEEL="https://github.com/alkahest-cas/alkahest/releases/download/v3.4.0/alkahest-3.4.0+full-${PY_TAG}-${PY_TAG}-manylinux_2_35_x86_64.whl"
   echo "Installing alkahest +full wheel: $FULL_WHEEL"
   pip install -q "$FULL_WHEEL"
 fi
@@ -48,7 +48,7 @@ if [ -d "$REPO_VENV" ]; then
   REPO_PY="${REPO_VENV}/bin/python"
   if [ -x "$REPO_PY" ]; then
     REPO_TAG=$("$REPO_PY" -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
-    FULL_WHEEL_REPO="https://github.com/alkahest-cas/alkahest/releases/download/v3.3.0/alkahest-3.3.0+full-${REPO_TAG}-${REPO_TAG}-manylinux_2_35_x86_64.whl"
+    FULL_WHEEL_REPO="https://github.com/alkahest-cas/alkahest/releases/download/v3.4.0/alkahest-3.4.0+full-${REPO_TAG}-${REPO_TAG}-manylinux_2_35_x86_64.whl"
     echo "Ensuring alkahest +full in repo venv for alkahest-dev kernel..."
     "$REPO_PY" -m pip install -q --force-reinstall "$FULL_WHEEL_REPO"
     REPO_LIBS=$("$REPO_PY" -c "import pathlib,site; roots=[pathlib.Path(p) for p in site.getsitepackages()]; print(next((r/'alkahest.libs' for r in roots if (r/'alkahest.libs').is_dir()), ''))")

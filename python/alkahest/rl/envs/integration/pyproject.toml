@@ -7,7 +7,7 @@ requires-python = ">=3.10"
 tags = ["math", "reasoning", "single-turn", "train", "eval", "symbolic"]
 dependencies = [
     "verifiers>=0.1.5",
-    "alkahest>=3.3.0",
+    "alkahest>=3.4.0",
     "datasets>=2.0",
 ]
 

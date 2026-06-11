@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 3.4.0 — 2026-06-10
+
+### Calculus / integration (Risch roadmap)
+
+- **M4 algebraic tower:** `AlgExtension` as a `DifferentialField`; algebraic top-generator dispatch via radical-over-exp substitution; coupled `coupled_radical_rde` over exp/log tower bases; K-rational integration with K-log emission; certify `NonElementary` for entangled K-log coefficients.
+- **Non-diagonal f Risch DE:** generalize coupled algebraic Risch DE to f ∈ ℚ(x)(α); ∫R·exp(β) with β algebraic; non-diagonal f for `RadicalExt` over ℚ(x); polymorphic RDE degree bounds (Bronstein §6.5).
+- **Algebraic singular places:** van Hoeij enlargement; Newton–Puiseux expansion at algebraic base points.
+- **Genus-1 elliptic:** diagnose and decline-stability for remaining genus-1 elliptic configs; M3 capstone tests.
+- **Integration utilities:** partial fractions (`apart`) and definite integration via FTC; non-linear u-substitution (derivative-divides heuristic).
+
+### Demo playground
+
+- Clear notebook control and calculus starter demo.
+
+### Fixes
+
+- **simplify:** correct e-graph integer `Pow` constant folding.
+- **poly:** accept integer-valued `Rational` nodes in `RationalFunction::from_symbolic`.
+
 ## 3.3.0 — 2026-06-08
 
 ### Calculus / integration (Risch roadmap)
