@@ -316,6 +316,8 @@ impl PrimitiveRegistry {
         reg.register(Box::new(builtins::EllipticPiPrimitive));
         reg.register(Box::new(builtins::AbsPrimitive));
         reg.register(Box::new(builtins::SignPrimitive));
+        reg.register(Box::new(builtins::HeavisidePrimitive));
+        reg.register(Box::new(builtins::DiracDeltaPrimitive));
         reg.register(Box::new(builtins::FloorPrimitive));
         reg.register(Box::new(builtins::CeilPrimitive));
         reg.register(Box::new(builtins::RoundPrimitive));
@@ -1675,6 +1677,72 @@ pub mod builtins {
             } else {
                 0.0
             })
+        }
+    }
+
+    // ── Heaviside (unit step) ──────────────────────────────────────────────────
+
+    /// The Heaviside unit-step function `θ(x)`: `0` for `x < 0`, `1` for `x > 0`.
+    ///
+    /// The value at `x = 0` is left unspecified (the half-maximum convention
+    /// `θ(0) = 1/2` is used for numeric evaluation).  Its distributional
+    /// derivative is the [`DiracDeltaPrimitive`].  Registered so the Laplace
+    /// transform can recognise shifted steps `θ(t − a)`.
+    pub struct HeavisidePrimitive;
+
+    impl Primitive for HeavisidePrimitive {
+        fn name(&self) -> &'static str {
+            "heaviside"
+        }
+
+        fn pretty(&self, args: &[ExprId], pool: &ExprPool) -> String {
+            format!("θ({})", pool.display(args[0]))
+        }
+
+        fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
+            // d/dx θ(g(x)) = δ(g(x))·g'(x)  (distributional derivative).
+            let g = args[0];
+            let dg = crate::diff::diff(g, wrt, pool).ok()?.value;
+            let delta = pool.func("diracdelta", vec![g]);
+            Some(pool.mul(vec![delta, dg]))
+        }
+
+        fn diff_reverse(
+            &self,
+            args: &[ExprId],
+            cotan: ExprId,
+            pool: &ExprPool,
+        ) -> Option<Vec<ExprId>> {
+            let delta = pool.func("diracdelta", vec![args[0]]);
+            Some(vec![pool.mul(vec![cotan, delta])])
+        }
+
+        fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
+            Some(if args[0] > 0.0 {
+                1.0
+            } else if args[0] < 0.0 {
+                0.0
+            } else {
+                0.5
+            })
+        }
+    }
+
+    // ── Dirac delta ─────────────────────────────────────────────────────────────
+
+    /// The Dirac delta distribution `δ(x)`: the distributional derivative of the
+    /// [`HeavisidePrimitive`], with `∫ δ = 1`.  Not a classical function; numeric
+    /// evaluation is intentionally unimplemented.  Registered as a symbol so the
+    /// Laplace transform can map `δ(t − a) ↦ e^{−as}`.
+    pub struct DiracDeltaPrimitive;
+
+    impl Primitive for DiracDeltaPrimitive {
+        fn name(&self) -> &'static str {
+            "diracdelta"
+        }
+
+        fn pretty(&self, args: &[ExprId], pool: &ExprPool) -> String {
+            format!("δ({})", pool.display(args[0]))
         }
     }
 
