@@ -3198,8 +3198,15 @@ fn needs_exp_risch_inner(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
             // Check if there's an exp factor with linear η AND the remaining product
             // has degree ≥ 2 (not just "x * exp(x)" which the basic engine handles).
             let mut has_linear_exp = false;
+            // Linear exp factor whose argument is `var` itself (η = x exactly,
+            // i.e. a=1, b=0) — the only linear-exp shape `int_x_exp` knows about.
+            let mut has_unit_eta_exp = false;
             let mut max_poly_deg: u32 = 0;
             let mut has_nonlinear_exp = false;
+            // A factor that is exactly `var` (degree-1 monomial with coefficient
+            // 1) — the only polynomial shape `try_x_times_func`/`int_x_exp` knows
+            // how to combine with `exp(x)`.
+            let mut has_bare_var_factor = false;
             // A var-dependent denominator (negative power) makes the exp coefficient
             // a rational function — handled by the rational Risch DE (Gap 1), not the
             // basic engine.
@@ -3216,6 +3223,9 @@ fn needs_exp_risch_inner(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
                                 has_nonlinear_exp = true;
                             } else {
                                 has_linear_exp = true;
+                                if eta == var {
+                                    has_unit_eta_exp = true;
+                                }
                             }
                         } else {
                             // Non-polynomial η (e.g. 1/x): treat as nonlinear
@@ -3225,6 +3235,9 @@ fn needs_exp_risch_inner(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
                         }
                     }
                     _ => {
+                        if a == var {
+                            has_bare_var_factor = true;
+                        }
                         // Track degree of non-exp factors.
                         if let Some(d) = poly_degree(a, var, pool) {
                             max_poly_deg = max_poly_deg.max(d);
@@ -3240,6 +3253,18 @@ fn needs_exp_risch_inner(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
             }
             // Linear exp + polynomial factor of degree ≥ 2: Risch needed.
             if has_linear_exp && max_poly_deg >= 2 {
+                return true;
+            }
+            // Linear exp(η) with a non-constant polynomial coefficient (degree
+            // ≥ 1) that is *not* the exact `x · exp(x)` shape `int_x_exp`
+            // covers (η ≠ x, or the coefficient is something other than a bare
+            // `x` factor, e.g. `x·exp(-3x)`, `x·exp(2x+1)`, `x²·exp(-x)`):
+            // route to the Risch exp-tower RDE, which solves
+            // `v' + η'·v = c` for any constant rate and polynomial `c`.
+            if has_linear_exp
+                && max_poly_deg >= 1
+                && !(has_unit_eta_exp && max_poly_deg == 1 && has_bare_var_factor)
+            {
                 return true;
             }
             // Any exp generator with a rational (denominator-bearing) coefficient:
