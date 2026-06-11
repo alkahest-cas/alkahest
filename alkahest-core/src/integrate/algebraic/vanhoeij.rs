@@ -258,19 +258,10 @@ fn try_enlarge_algebraic(
 
     let dmax = max_denom_degree(b, bd);
     let prec = (dmax + n + 3) as u32;
-    let (all_branches, _skipped) = puiseux_at_algebraic(monos, q, prec);
-    // Restrict to branches whose coefficients live in `K = ℚ(α)` itself.  A branch
-    // whose continuation required a *further* extension (tower collapse) has its
-    // coefficients in a larger compositum `K' ⊋ K` (`coeff_minpoly ≠ q`); the
-    // `branch_kts`/`elem_kts` machinery below reduces every coefficient mod `q`, so
-    // such a branch must be dropped here (a dropped branch only *under*-constrains
-    // the ℚ-linear system → an unverified proposal that `is_integral` rejects;
-    // soundness never depends on completeness).  Consuming the tower branches over
-    // `K'` is a follow-up (risch.md §A "MB integral basis").
-    let branches: Vec<AlgBasePuiseuxSeries> = all_branches
-        .into_iter()
-        .filter(|s| s.coeff_minpoly == *q)
-        .collect();
+    let (branches, _skipped) = puiseux_at_algebraic(monos, q, prec);
+    // A skipped branch can only *under*-constrain the system → an unverified
+    // proposal that `is_integral` (the caller's gate) then rejects; soundness
+    // never depends on completeness.
     if branches.is_empty() {
         return None;
     }
