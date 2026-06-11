@@ -11,10 +11,94 @@ Or rely on ``result.certificate`` / ``alkahest.to_lean(result)`` and print the m
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 AK_LEAN_MARKER = "__AK_LEAN_CERT__"
 AK_LEAN_MIME = "application/x-alkahest-lean+json"
+
+_DIFF_HEADER = (
+    "import Mathlib.Tactic\n"
+    "import Mathlib.Analysis.Calculus.Deriv.Basic\n"
+    "import Mathlib.Analysis.Calculus.Deriv.Pow\n"
+    "import Mathlib.Analysis.SpecialFunctions.Trigonometric.Deriv\n"
+    "import Mathlib.Analysis.SpecialFunctions.ExpDeriv\n"
+    "import Mathlib.Analysis.SpecialFunctions.Log.Deriv\n"
+    "\n"
+    "open Real\n\n"
+)
+
+_DIFF_RULE_TACTICS: dict[str, str] = {
+    "diff_identity": "by simp [deriv_id]",
+    "diff_const": "by simp [deriv_const]",
+    "diff_univariate_poly": "by simp [deriv_pow, deriv_add, deriv_mul, deriv_const]",
+    "sum_rule": "by simp [deriv_add]",
+    "product_rule": "by simp [deriv_mul]",
+    "power_rule": "by simp [deriv_pow, deriv_mul]",
+    "power_rule_n1": "by simp [deriv_pow, deriv_mul]",
+    "power_rule_n0": "by simp [deriv_const]",
+}
+
+_DIFF_STEP_RULES = frozenset(_DIFF_RULE_TACTICS) | frozenset(
+    {
+        "diff_sin",
+        "diff_cos",
+        "diff_exp",
+        "diff_log",
+        "diff_sqrt",
+        "diff_forward",
+        "diff_primitive_registry",
+        "diff_piecewise",
+        "diff_root_sum",
+    }
+)
+
+_STEP_BLOCK_RE = re.compile(
+    r"(-- Step (?P<num>\d+): (?P<rule>\S+)\n)"
+    r"example : (?P<lhs>.+?) = (?P<rhs>.+?) :=\n"
+    r"  (?P<tactic>.+?)(?=\n\n|-- Step |\Z)",
+    re.DOTALL,
+)
+
+
+def fix_legacy_diff_lean(source: str) -> str:
+    """
+    Upgrade pre-wrt Lean certificates from older alkahest wheels.
+
+    Older releases emitted ``x^3 = 3*x^2`` for ``diff(x**3, x)`` instead of a
+    ``deriv`` goal.  The playground server rewrites those certificates so
+    ``lake env lean`` can typecheck them with Mathlib's derivative lemmas.
+    """
+    if "deriv (fun" in source:
+        return source
+    if not any(
+        "-- Step" in line and rule in line for line in source.splitlines() for rule in _DIFF_STEP_RULES
+    ):
+        return source
+
+    var = "x"
+    var_match = re.search(r"\(([A-Za-z_]\w*) : ℝ\)", source)
+    if var_match:
+        var = var_match.group(1)
+
+    blocks: list[str] = []
+    for match in _STEP_BLOCK_RE.finditer(source):
+        rule = match.group("rule")
+        if rule not in _DIFF_STEP_RULES:
+            continue
+        lhs = match.group("lhs").strip()
+        rhs = match.group("rhs").strip()
+        tactic = _DIFF_RULE_TACTICS.get(rule, "by sorry")
+        blocks.append(
+            f"-- Step {match.group('num')}: {rule}\n"
+            f"example : deriv (fun ({var} : ℝ) => {lhs}) {var} = {rhs} :=\n"
+            f"  {tactic}\n"
+        )
+
+    if not blocks:
+        return source
+
+    return _DIFF_HEADER + "\n".join(blocks) + "\n"
 
 
 def lean_cert_payload(
@@ -60,8 +144,10 @@ def display_lean_cert(result, operation: str | None = None) -> None:
     cert = getattr(result, "certificate", None)
     if cert is None:
         cert = alkahest.to_lean(result)
-    steps = len(getattr(result, "steps", []) or [])
     op = operation or "compute"
+    if op == "diff" or "diff_" in cert:
+        cert = fix_legacy_diff_lean(cert)
+    steps = len(getattr(result, "steps", []) or [])
     payload = lean_cert_payload(cert, operation=op, steps=steps)
 
     try:
