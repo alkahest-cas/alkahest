@@ -622,6 +622,59 @@ impl<F: CoeffField> Quotient<F> {
         let b = self.kpoly_trim(b.to_vec());
         a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| self.elem_eq(x, y))
     }
+
+    /// Remainder of `a mod m` (quotient-polynomials in `x`).  `None` if `m` is
+    /// zero or has a non-invertible leading coefficient.
+    pub fn kpoly_mod(&self, a: &[GPoly<F>], m: &[GPoly<F>]) -> Option<KPolyG<F>> {
+        Some(self.kpoly_divrem(a, m)?.1)
+    }
+
+    /// Extended GCD of quotient-polynomials in `x`: returns `(g, s, t)` with
+    /// `s·a + t·b = g`, `g` monic in `x`.  `None` if a leading coefficient
+    /// along the way is not invertible in the quotient.
+    pub fn kpoly_ext_gcd(
+        &self,
+        a: &[GPoly<F>],
+        b: &[GPoly<F>],
+    ) -> Option<(KPolyG<F>, KPolyG<F>, KPolyG<F>)> {
+        let one = vec![self.from_int(1)];
+        let zero: KPolyG<F> = Vec::new();
+        let (mut old_r, mut r) = (self.kpoly_trim(a.to_vec()), self.kpoly_trim(b.to_vec()));
+        let (mut old_s, mut s) = (one.clone(), zero.clone());
+        let (mut old_t, mut t) = (zero, one);
+        while self.kdeg(&r) >= 0 {
+            let (q, rem) = self.kpoly_divrem(&old_r, &r)?;
+            old_r = r;
+            r = rem;
+            let ns = self.kpoly_sub(&old_s, &self.kpoly_mul(&q, &s));
+            old_s = s;
+            s = ns;
+            let nt = self.kpoly_sub(&old_t, &self.kpoly_mul(&q, &t));
+            old_t = t;
+            t = nt;
+        }
+        let dg = self.kdeg(&old_r);
+        if dg < 0 {
+            return Some((Vec::new(), old_s, old_t));
+        }
+        let inv = self.inv(&old_r[dg as usize])?;
+        Some((
+            self.kpoly_scale(&old_r, &inv),
+            self.kpoly_scale(&old_s, &inv),
+            self.kpoly_scale(&old_t, &inv),
+        ))
+    }
+
+    /// Inverse of `w` modulo `v` (quotient-polynomials in `x`); requires
+    /// `gcd(w, v) = 1` (a unit, i.e. `deg_x g = 0`).  `None` otherwise.
+    pub fn kpoly_mod_inverse(&self, w: &[GPoly<F>], v: &[GPoly<F>]) -> Option<KPolyG<F>> {
+        let (g, s, _t) = self.kpoly_ext_gcd(w, v)?;
+        if self.kdeg(&g) != 0 {
+            return None; // not coprime
+        }
+        let g_inv = self.inv(&g[0])?;
+        self.kpoly_mod(&self.kpoly_scale(&s, &g_inv), v)
+    }
 }
 
 // ===========================================================================
@@ -810,6 +863,23 @@ impl NumberField {
     /// divide `a` evenly (or `b` is zero / has a non-invertible leading term).
     pub fn kpoly_div_exact(&self, a: &[KElem], b: &[KElem]) -> Option<KPoly> {
         self.inner.kpoly_div_exact(a, b)
+    }
+
+    /// Remainder of `a mod m` (`K`-polynomials in `x`).
+    pub fn kpoly_mod(&self, a: &[KElem], m: &[KElem]) -> Option<KPoly> {
+        self.inner.kpoly_mod(a, m)
+    }
+
+    /// Extended GCD of `K`-polynomials in `x`: `(g, s, t)` with `s·a + t·b = g`,
+    /// `g` monic in `x`.
+    pub fn kpoly_ext_gcd(&self, a: &[KElem], b: &[KElem]) -> Option<(KPoly, KPoly, KPoly)> {
+        self.inner.kpoly_ext_gcd(a, b)
+    }
+
+    /// Inverse of `w` modulo `v` (`K`-polynomials in `x`); `None` unless
+    /// `gcd_x(w, v)` is a unit.
+    pub fn kpoly_mod_inverse(&self, w: &[KElem], v: &[KElem]) -> Option<KPoly> {
+        self.inner.kpoly_mod_inverse(w, v)
     }
 
     /// Coefficient of `x^i` in a `K`-polynomial; the zero element for `i < 0` or
