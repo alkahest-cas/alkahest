@@ -253,6 +253,50 @@ fn variation_of_parameters_tan() {
     }
 }
 
+#[test]
+fn nonhomogeneous_polynomial_rhs() {
+    // y'' - y = x^2 + 1.  Undetermined coefficients (polynomial RHS).
+    let (p, x, y) = setup();
+    let (input, _yp, ypp) = OdeInput::second_order(x, y, &p);
+    let rhs = p.add(vec![p.pow(x, p.integer(2_i32)), p.integer(1_i32)]);
+    let eq = p.add(vec![
+        ypp,
+        p.mul(vec![p.integer(-1_i32), y]),
+        p.mul(vec![p.integer(-1_i32), rhs]),
+    ]);
+    let input = input.with_equation(eq);
+    let res = dsolve(&input, &p).expect("polynomial RHS should solve");
+    assert_verifies(&input, &res.solutions[0], &p);
+}
+
+#[test]
+fn nonhomogeneous_nonresonant_exp() {
+    // y'' - y = e^{2x}.  Undetermined coefficients (non-resonant exp).
+    let (p, x, y) = setup();
+    let (input, _yp, ypp) = OdeInput::second_order(x, y, &p);
+    let e2x = p.func("exp", vec![p.mul(vec![p.integer(2_i32), x])]);
+    let eq = p.add(vec![
+        ypp,
+        p.mul(vec![p.integer(-1_i32), y]),
+        p.mul(vec![p.integer(-1_i32), e2x]),
+    ]);
+    let input = input.with_equation(eq);
+    let res = dsolve(&input, &p).expect("non-resonant exp RHS should solve");
+    assert_verifies(&input, &res.solutions[0], &p);
+}
+
+#[test]
+fn fourth_order_constant_coeff() {
+    // y'''' - y = 0  → roots ±1, ±i → e^x, e^{-x}, cos x, sin x
+    let (p, x, y) = setup();
+    let (input, derivs) = OdeInput::higher_order(x, y, 4, &p);
+    let eq = p.add(vec![derivs[3], p.mul(vec![p.integer(-1_i32), y])]);
+    let input = input.with_equation(eq);
+    let res = dsolve(&input, &p).expect("fourth order should solve");
+    assert_eq!(res.solutions[0].constants.len(), 4);
+    assert_verifies(&input, &res.solutions[0], &p);
+}
+
 // ---------------------------------------------------------------------------
 // Euler–Cauchy
 // ---------------------------------------------------------------------------
