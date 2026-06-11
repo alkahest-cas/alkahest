@@ -550,10 +550,11 @@ fn try_integrate_k_rational(expr: ExprId, var: ExprId, pool: &ExprPool) -> Optio
 ///
 /// Returns `None` when:
 /// - `expr` does not parse as a `K`-rational function over a detected `ℚ(α)`,
-/// - the denominator has a repeated factor (Hermite reduction over `K` not
-///   yet implemented), or
-/// - the denominator does not split completely into distinct `K`-linear
-///   factors (e.g. an irreducible quadratic over `K`).
+///   or
+/// - the squarefree logarithmic remainder's denominator does not split
+///   completely into distinct `K`-linear factors (e.g. an irreducible
+///   quadratic over `K`) — even after Hermite reduction has peeled off any
+///   repeated factors.
 fn try_integrate_k_rational_with_logs(
     expr: ExprId,
     var: ExprId,
@@ -565,34 +566,14 @@ fn try_integrate_k_rational_with_logs(
 
     let result = integrate_k_rational_with_logs(&field, &ext, &c_num, &c_den)?;
 
-    // Polynomial part: ∫ Σ qᵢ xⁱ dx = Σ qᵢ·x^{i+1}/(i+1).
-    let mut terms: Vec<ExprId> = Vec::new();
-    for (i, c) in result.poly_part.iter().enumerate() {
-        if NumberField::is_zero(c) {
-            continue;
-        }
-        let c_expr = kelem_to_expr_ext(c, &ext, pool);
-        let i1 = (i + 1) as i32;
-        let pow_term = pool.pow(var, pool.integer(i1));
-        let scaled = pool.mul(vec![
-            c_expr,
-            pool.pow(pool.integer(i1), pool.integer(-1_i32)),
-            pow_term,
-        ]);
-        terms.push(scaled);
-    }
-    let poly_antideriv = match terms.len() {
-        0 => pool.integer(0_i32),
-        1 => terms[0],
-        _ => pool.add(terms),
+    // Already-integrated K-rational antiderivative piece (combines the
+    // integrated polynomial part `∫Q dx` with any Hermite rational terms
+    // `B/V^p` over a common denominator).
+    let rational_antideriv = if NumberField::kdeg(&result.rational_num) < 0 {
+        pool.integer(0_i32)
+    } else {
+        build_krational_ext(&result.rational_num, &result.rational_den, var, &ext, pool)
     };
-
-    // Already-integrated Hermite terms B/V^p.
-    let mut hermite_exprs: Vec<ExprId> = Vec::new();
-    for (b, v_pow, _p) in &result.hermite_terms {
-        let term = build_krational_ext(b, v_pow, var, &ext, pool);
-        hermite_exprs.push(term);
-    }
 
     // Log terms: Σ cᵢ·log(x − rᵢ).
     let mut log_terms: Vec<ExprId> = Vec::new();
@@ -610,10 +591,9 @@ fn try_integrate_k_rational_with_logs(
     }
 
     let mut all_terms = Vec::new();
-    if !is_zero(poly_antideriv, pool) {
-        all_terms.push(poly_antideriv);
+    if !is_zero(rational_antideriv, pool) {
+        all_terms.push(rational_antideriv);
     }
-    all_terms.extend(hermite_exprs);
     all_terms.extend(log_terms);
 
     match all_terms.len() {

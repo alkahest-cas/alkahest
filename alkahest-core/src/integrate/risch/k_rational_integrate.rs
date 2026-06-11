@@ -19,19 +19,18 @@
 //!
 //! - The polynomial part `Q` of `c_num = Q·c_den + R` is always integrated
 //!   (`∫Q` is a `K`-polynomial — always elementary).
-//! - The proper fraction `R/D` (`D` made monic, `gcd(R,D)=1`) must have a
-//!   **squarefree** denominator `D`.  Repeated factors (Hermite reduction) are
-//!   **not yet handled** — declines (`None`).  (The Hermite-reduced rational
-//!   part can still be produced separately by
-//!   [`super::rational_rde::solve_rational_rde_k`] when no logs are needed for
-//!   that piece; combining the two is a follow-up.)
-//! - `D` must split **completely into distinct `K`-linear factors** (`deg ≤ 2`
+//! - The proper fraction `R/D` (`D` made monic, `gcd(R,D)=1`) is first
+//!   Hermite-reduced over `K`: repeated `K`-factors of `D` are peeled off into
+//!   already-integrated rational terms `Bᵢ/Vᵢ^pᵢ`, leaving a proper fraction
+//!   `H/Drad` with `Drad` **squarefree**.
+//! - `Drad` must split **completely into distinct `K`-linear factors** (`deg ≤ 2`
 //!   with the quadratic case requiring its discriminant to be a perfect square
 //!   in `K`, currently only for `K = ℚ(√d)` — `AlgebraicExtension::SingleSqrt`).
-//!   For each root `rᵢ ∈ K` of `D`, the residue is the simple-pole formula
-//!   `cᵢ = R(rᵢ) / D'(rᵢ)` evaluated by `K`-arithmetic.
-//! - Non-linear irreducible `K`-factors of `D` (e.g. an irreducible quadratic
-//!   over `K` whose discriminant is not a `K`-square) **decline** (`None`).
+//!   For each root `rᵢ ∈ K` of `Drad`, the residue is the simple-pole formula
+//!   `cᵢ = H(rᵢ) / Drad'(rᵢ)` evaluated by `K`-arithmetic.
+//! - Non-linear irreducible `K`-factors of `Drad` (e.g. an irreducible
+//!   quadratic over `K` whose discriminant is not a `K`-square) **decline**
+//!   (`None`).
 //!   Documented as a follow-up: would need a `K`-algebraic extension `K(β)`
 //!   (Lazard–Rioboo–Trager `RootSum`-style) to express the residues.
 
@@ -44,20 +43,20 @@ use super::number_field::{KElem, KPoly, NumberField};
 /// `B/V^p` to the antiderivative.
 type KHermiteTerms = Vec<(KPoly, KPoly, usize)>;
 
-/// Result of `integrate_k_rational_with_logs`:
+/// Result of `integrate_k_rational_with_logs`: the **already-integrated**
+/// `K`-rational antiderivative piece (as `(num, den)`) plus the logarithmic
+/// terms `Σ cᵢ·log(x − rᵢ)`.
 ///
-/// - `poly_part`: a `K`-polynomial `Q` whose `∫Q dx` is the polynomial piece
-///   of the antiderivative (the caller integrates it term-by-term).
-/// - `hermite_terms`: `(B, V, p)` triples — **already-integrated** rational
-///   pieces `B/V^p` (`p ≥ 1`) produced by Hermite reduction of repeated `K`-
-///   factors of the denominator.  These are *not* integrated further.
-/// - `log_terms`: `(residue, root)` pairs contributing `Σ residue·log(x −
-///   root)` for the squarefree logarithmic remainder.
+/// `rational_num/rational_den` is the combined antiderivative of the
+/// polynomial part `Q` (`∫Q dx`, itself a `K`-polynomial) and any Hermite
+/// rational terms `B/V^p` produced by reducing repeated `K`-factors of the
+/// denominator, expressed as a single fraction over a common denominator.
+/// When there is no Hermite part, `rational_den = [1]` and `rational_num =
+/// ∫Q dx` (a `K`-polynomial), matching the historical shape of this field.
 pub struct KRationalLogResult {
-    /// `K`-polynomial part `Q`: `∫Q dx` is elementary (caller integrates).
-    pub poly_part: KPoly,
-    /// Already-integrated Hermite rational terms `B/V^p`.
-    pub hermite_terms: KHermiteTerms,
+    /// `K`-rational antiderivative of the "no new log" part: `(num, den)`.
+    pub rational_num: KPoly,
+    pub rational_den: KPoly,
     /// `(residue, root)` pairs: contributes `Σ residue·log(x − root)`.
     pub log_terms: Vec<(KElem, KElem)>,
 }
@@ -414,9 +413,30 @@ pub(super) fn integrate_k_rational_with_logs(
         }
     }
 
+    // Combine the polynomial part's antiderivative `∫Q dx` with any Hermite
+    // rational terms `Bᵢ/Vᵢ^pᵢ` into a single fraction `rational_num /
+    // rational_den` over a common denominator.
+    let poly_antideriv = field.kpoly_integrate(&NumberField::kpoly_trim(q));
+    let (rational_num, rational_den) = if hermite_terms.is_empty() {
+        (poly_antideriv, vec![field.from_int(1)])
+    } else {
+        let one = vec![field.from_int(1)];
+        let common_den = hermite_terms
+            .iter()
+            .fold(one.clone(), |acc, (_, v_pow, _)| {
+                field.kpoly_mul(&acc, v_pow)
+            });
+        let mut num = field.kpoly_mul(&poly_antideriv, &common_den);
+        for (b, v_pow, _) in &hermite_terms {
+            let cofactor = field.kpoly_div_exact(&common_den, v_pow)?;
+            num = field.kpoly_add(&num, &field.kpoly_mul(b, &cofactor));
+        }
+        (NumberField::kpoly_trim(num), common_den)
+    };
+
     Some(KRationalLogResult {
-        poly_part: NumberField::kpoly_trim(q),
-        hermite_terms,
+        rational_num,
+        rational_den,
         log_terms,
     })
 }
@@ -496,8 +516,12 @@ mod tests {
         let result = integrate_k_rational_with_logs(&field, &ext, &num, &den)
             .expect("x(x+sqrt2) splits into K-linear factors");
 
-        assert!(NumberField::kdeg(&result.poly_part) < 0); // no polynomial part
-        assert!(result.hermite_terms.is_empty()); // squarefree denom — no Hermite part
+        // No rational antiderivative part — squarefree denom, no Hermite terms.
+        assert!(NumberField::kdeg(&result.rational_num) < 0);
+        assert!(NumberField::kpoly_eq(
+            &result.rational_den,
+            &[field.from_int(1)]
+        ));
         assert_eq!(result.log_terms.len(), 2);
 
         // Roots should be {0, -sqrt2}; residues should be {1/sqrt2, -1/sqrt2}.
@@ -554,16 +578,15 @@ mod tests {
         let result = integrate_k_rational_with_logs(&field, &ext, &num, &den)
             .expect("Hermite reduction handles the repeated K-factor");
 
-        assert!(NumberField::kdeg(&result.poly_part) < 0); // no polynomial part
         assert!(result.log_terms.is_empty()); // exact Hermite reduction, no logs
-        assert_eq!(result.hermite_terms.len(), 1);
 
-        let (b, v_pow, p) = &result.hermite_terms[0];
-        assert_eq!(*p, 1);
-        // B = -1 (constant), V^1 = x + sqrt2.
-        assert!(NumberField::kpoly_eq(b, &[field.neg(&field.from_int(1))]));
+        // rational_num/rational_den = -1/(x+sqrt2) (B = -1, V^1 = x + sqrt2).
+        assert!(NumberField::kpoly_eq(
+            &result.rational_num,
+            &[field.neg(&field.from_int(1))]
+        ));
         let v: KPoly = vec![sqrt2.clone(), field.from_int(1)];
-        assert!(NumberField::kpoly_eq(v_pow, &v));
+        assert!(NumberField::kpoly_eq(&result.rational_den, &v));
     }
 
     #[test]
@@ -586,8 +609,8 @@ mod tests {
         let result = integrate_k_rational_with_logs(&field, &ext, &num, &den)
             .expect("x*(x+sqrt2)^2 splits with one repeated K-factor");
 
-        assert!(NumberField::kdeg(&result.poly_part) < 0); // no polynomial part
-        assert_eq!(result.hermite_terms.len(), 1);
+        // Hermite term contributes a non-trivial rational antiderivative part.
+        assert!(NumberField::kdeg(&result.rational_den) > 0);
         // The squarefree remainder log_terms should be nonempty (x and x+sqrt2
         // both contribute logs).
         assert_eq!(result.log_terms.len(), 2);
