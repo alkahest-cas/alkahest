@@ -5,7 +5,7 @@ import { v4 as uuid } from 'uuid';
 import Cell, { type CellData } from './Cell';
 import CommandPalette, { type PaletteCommand } from './CommandPalette';
 import RunMenu, { type RunMenuAction } from './RunMenu';
-import { writeCellToClipboard } from '@/lib/cell-clipboard';
+import { writeCellAndOutputToClipboard, writeCellToClipboard } from '@/lib/cell-clipboard';
 import { handleNotebookChordKey } from '@/lib/notebook-chords';
 import { ADD_CODE_CELL_SHORTCUT_HINT, NOTEBOOK_COMMAND_DEFS, type NotebookCommandId } from '@/lib/notebook-commands';
 import type { OutputItem, ExecutionMode } from '@/lib/execution';
@@ -322,6 +322,16 @@ export default function Notebook({
     if (!cell) return;
     try {
       await writeCellToClipboard(cell);
+    } catch {
+      alert('Could not copy to clipboard.');
+    }
+  }, []);
+
+  const handleCopyCellWithOutput = useCallback(async (id: string) => {
+    const cell = cellsRef.current.find((c) => c.id === id);
+    if (!cell || cell.cellType === 'markdown') return;
+    try {
+      await writeCellAndOutputToClipboard(cell);
     } catch {
       alert('Could not copy to clipboard.');
     }
@@ -759,6 +769,7 @@ export default function Notebook({
           onToggleCellType={(id) => userDispatch({ type: 'TOGGLE_CELL_TYPE', id })}
           onCopyCell={(id) => void handleCopyCell(id)}
           onCutCell={(id) => void handleCutCell(id)}
+          onCopyCellWithOutput={(id) => void handleCopyCellWithOutput(id)}
           onOutputsChange={(id, outputs) => dispatch({ type: 'SET_OUTPUTS', id, outputs })}
           onFocus={setFocusedCellId}
           isActive={!zenMode && focusedCellId === cell.id}

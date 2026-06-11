@@ -71,6 +71,8 @@ def classify_rich(data: dict[str, str]) -> dict | None:
         return {"type": "image", "format": "svg", "data": data["image/svg+xml"]}
     if "text/html" in data:
         return {"type": "html", "html": data["text/html"]}
+    if "text/markdown" in data:
+        return {"type": "text", "stream": "stdout", "text": data["text/markdown"]}
     if "application/json" in data:
         raw = data["application/json"]
         return {"type": "json", "data": json.loads(raw) if isinstance(raw, str) else raw}

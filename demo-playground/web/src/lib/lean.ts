@@ -96,6 +96,7 @@ export function classifyRichMime(data: Record<string, string>): OutputItem | nul
   if (data['image/png']) return { type: 'image', format: 'png', data: data['image/png'] };
   if (data['image/svg+xml']) return { type: 'image', format: 'svg', data: data['image/svg+xml'] };
   if (data['text/html']) return { type: 'html', html: data['text/html'] };
+  if (data['text/markdown']) return { type: 'text', stream: 'stdout', text: data['text/markdown'] };
   if (data['application/json']) {
     try {
       return { type: 'json', data: JSON.parse(data['application/json']) };

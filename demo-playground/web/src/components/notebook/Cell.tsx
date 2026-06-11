@@ -5,10 +5,7 @@ import CodeMirror from '@uiw/react-codemirror';
 import { python } from '@codemirror/lang-python';
 import { EditorView, keymap } from '@codemirror/view';
 import { Prec } from '@codemirror/state';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
+import MarkdownRender from '@/lib/markdown-render';
 import type { OutputItem } from '@/lib/execution';
 import { ADD_CODE_CELL_SHORTCUT_HINT } from '@/lib/notebook-commands';
 import CellActionsMenu from './CellActionsMenu';
@@ -36,6 +33,7 @@ interface CellProps {
   onToggleCellType: (id: string) => void;
   onCopyCell: (id: string) => void;
   onCutCell: (id: string) => void;
+  onCopyCellWithOutput: (id: string) => void;
   onOutputsChange?: (id: string, outputs: OutputItem[]) => void;
   onFocus?: (id: string) => void;
   /** Selected cell — shows toolbar and insert bar without hover. */
@@ -105,6 +103,7 @@ export default function Cell({
   onToggleCellType,
   onCopyCell,
   onCutCell,
+  onCopyCellWithOutput,
   onOutputsChange,
   onFocus,
   isActive = false,
@@ -232,12 +231,6 @@ export default function Cell({
         <div className="flex items-center gap-2 px-3 py-1.5 border-b border-ak-border bg-ak-bg">
           <span className="font-mono text-xs text-ak-muted w-8 shrink-0">{gutter}</span>
 
-          {isMarkdown && (
-            <span className="text-xs px-1.5 py-0.5 rounded font-mono bg-purple-100 text-purple-700">
-              md
-            </span>
-          )}
-
           {!isMarkdown && cell.backend && (
             <span
               className={`text-xs px-1.5 py-0.5 rounded font-mono ${
@@ -276,6 +269,7 @@ export default function Cell({
                 onToggleType={() => onToggleCellType(cell.id)}
                 onCopy={() => onCopyCell(cell.id)}
                 onCut={() => onCutCell(cell.id)}
+                onCopyWithOutput={() => onCopyCellWithOutput(cell.id)}
               />
               <CellBtn title="Move up" onClick={() => onMoveUp(cell.id)}>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m18 15-6-6-6 6"/></svg>
@@ -470,9 +464,7 @@ function MarkdownCell({
       title="Click to edit"
       className="px-5 py-3 cursor-text prose prose-sm max-w-none hover:bg-ak-code-bg/30 transition-colors"
     >
-      <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath]} rehypePlugins={[rehypeKatex]}>
-        {source}
-      </ReactMarkdown>
+      <MarkdownRender source={source} />
     </div>
   );
 }

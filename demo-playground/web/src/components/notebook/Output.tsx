@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { OutputItem } from '@/lib/execution';
+import MarkdownRender from '@/lib/markdown-render';
 import { outputsToPlainText } from '@/lib/output-text';
 import LeanCertificate from './LeanCertificate';
 import OutputActionsMenu from './OutputActionsMenu';
@@ -59,13 +60,13 @@ export default function Output({ items, onItemsChange, gutterWidth = 0, zenMode 
 
   if (zenMode) {
     return (
-      <div className="border-t border-ak-border bg-ak-code-bg">
+      <div className="border-t border-ak-border bg-ak-bg">
         <div className="flex min-w-0">
           {alignWithCode && (
             <div className="shrink-0" style={{ width: gutterWidth }} aria-hidden />
           )}
           <div
-            className={`min-w-0 flex-1 space-y-1 py-2 pr-3 ${
+            className={`min-w-0 flex-1 space-y-2 py-2.5 pr-3 ${
               alignWithCode ? 'cell-output-content' : 'px-3'
             }`}
           >
@@ -81,7 +82,7 @@ export default function Output({ items, onItemsChange, gutterWidth = 0, zenMode 
   );
 
   return (
-    <div className="border-t border-ak-border bg-ak-code-bg">
+    <div className="border-t border-ak-border bg-ak-bg">
       <div className="flex min-w-0">
         <div
           className={`shrink-0 flex items-start justify-center pt-1.5 ${
@@ -91,7 +92,7 @@ export default function Output({ items, onItemsChange, gutterWidth = 0, zenMode 
         >
           {menu}
         </div>
-        <div className="cell-output-content min-w-0 flex-1 space-y-1 py-2 pr-3">
+        <div className="cell-output-content min-w-0 flex-1 space-y-2 py-2.5 pr-3">
           {outputItems}
         </div>
       </div>
@@ -107,11 +108,18 @@ function OutputItemView({
   onLeanUpdate?: (item: OutputItem) => void;
 }) {
   if (item.type === 'text') {
-    return <MixedTextOutput text={item.text} stream={item.stream} />;
+    if (item.stream === 'stderr') {
+      return (
+        <pre className="whitespace-pre-wrap font-mono text-sm leading-relaxed text-red-600">
+          {item.text}
+        </pre>
+      );
+    }
+    return <MarkdownRender source={item.text} />;
   }
 
   if (item.type === 'latex') {
-    return <LatexBlock latex={item.latex} />;
+    return <MarkdownRender source={`$$\n${item.latex}\n$$`} />;
   }
 
   if (item.type === 'html') {
@@ -167,83 +175,6 @@ function OutputItemView({
   }
 
   return null;
-}
-
-type TextSegment = { kind: 'text'; content: string } | { kind: 'latex'; content: string };
-
-function splitMixedText(text: string): TextSegment[] {
-  const lines = text.split('\n');
-  const segments: TextSegment[] = [];
-  let buf: string[] = [];
-
-  const flushBuf = () => {
-    if (buf.length > 0) {
-      segments.push({ kind: 'text', content: buf.join('\n') });
-      buf = [];
-    }
-  };
-
-  for (const line of lines) {
-    const t = line.trim();
-    // Match a line that is entirely a $$...$$ block (display math)
-    if (t.startsWith('$$') && t.endsWith('$$') && t.length > 4) {
-      flushBuf();
-      segments.push({ kind: 'latex', content: t.slice(2, -2).trim() });
-    } else {
-      buf.push(line);
-    }
-  }
-  flushBuf();
-  return segments;
-}
-
-function MixedTextOutput({ text, stream }: { text: string; stream: 'stdout' | 'stderr' }) {
-  const preClass = `whitespace-pre-wrap font-mono text-sm leading-relaxed ${
-    stream === 'stderr' ? 'text-red-600' : 'text-ak-fg'
-  }`;
-
-  const segments = splitMixedText(text);
-
-  // No LaTeX found — render original <pre> unchanged
-  if (segments.length === 1 && segments[0].kind === 'text') {
-    return <pre className={preClass}>{text}</pre>;
-  }
-
-  return (
-    <div>
-      {segments.map((seg, i) =>
-        seg.kind === 'latex' ? (
-          <LatexBlock key={i} latex={seg.content} />
-        ) : seg.content !== '' ? (
-          <pre key={i} className={preClass}>{seg.content}</pre>
-        ) : null,
-      )}
-    </div>
-  );
-}
-
-function LatexBlock({ latex }: { latex: string }) {
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const render = async () => {
-      if (!ref.current) return;
-      try {
-        const katex = (await import('katex')).default;
-        const clean = latex.replace(/^\$\$?|\$\$?$/g, '').trim();
-        katex.render(clean, ref.current, {
-          displayMode: true,
-          throwOnError: false,
-          output: 'html',
-        });
-      } catch {
-        if (ref.current) ref.current.textContent = latex;
-      }
-    };
-    render();
-  }, [latex]);
-
-  return <div ref={ref} className="py-1 overflow-x-auto" />;
 }
 
 function SafeHtml({ html }: { html: string }) {

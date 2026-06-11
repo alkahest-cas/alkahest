@@ -7,6 +7,7 @@ interface CellActionsMenuProps {
   onToggleType: () => void;
   onCopy: () => void;
   onCut: () => void;
+  onCopyWithOutput?: () => void;
 }
 
 export default function CellActionsMenu({
@@ -14,6 +15,7 @@ export default function CellActionsMenu({
   onToggleType,
   onCopy,
   onCut,
+  onCopyWithOutput,
 }: CellActionsMenuProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -86,6 +88,16 @@ export default function CellActionsMenu({
           >
             Cut cell
           </button>
+          {!isMarkdown && onCopyWithOutput && (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => pick(onCopyWithOutput)}
+              className="w-full px-3 py-1.5 text-left text-xs transition-colors hover:bg-ak-code-bg"
+            >
+              Copy cell and output
+            </button>
+          )}
         </div>
       )}
     </div>
