@@ -23,10 +23,11 @@
 //! At an algebraic place the proposal has van Hoeij's q-adic form
 //! `(Σ aᵢ(x) bᵢ + bd)/q(x)` with `aᵢ ∈ ℚ[x]` of degree `< deg q`; the
 //! coefficients are found from the **`K`-valued** Puiseux sheets over a root `α`
-//! of `q` (`K = ℚ(α)`, via [`crate::poly::puiseux::puiseux_at_algebraic`]) —
-//! each negative-power `K`-coefficient is `deg q` rational equations, so the
-//! linear system is still over ℚ.  Sheets whose coefficients escape `K` (skipped
-//! by `puiseux_at_algebraic`) merely *under*-constrain the system, so a proposal
+//! of `q` (`K = ℚ(α)`, via [`crate::poly::puiseux::puiseux_at_algebraic_tower`]
+//! restricted to the in-`K` sheets) — each negative-power `K`-coefficient is
+//! `deg q` rational equations, so the linear system is still over ℚ.  Sheets whose
+//! coefficients escape `K` (continued over a compositum `K' ⊋ K` by the tower
+//! entry, then dropped here) merely *under*-constrain the system, so a proposal
 //! there is rejected by the exact [`super::integral_basis::is_integral`] gate —
 //! the basis may then be non-maximal at such a place, but is **never incorrect**.
 //! Produces correct integral bases for radical curves, rational-branch curves
@@ -42,7 +43,7 @@ use super::super::risch::poly_rde::{degree, poly_deriv, QPoly};
 use super::super::risch::rational_rde::poly_gcd;
 use super::integral_basis::{discriminant, is_integral, rational_singularities};
 use crate::poly::puiseux::{
-    factor_over_q, puiseux_at, puiseux_at_algebraic, AlgBasePuiseuxSeries, PuiseuxSeries,
+    factor_over_q, puiseux_at, puiseux_at_algebraic_tower, AlgBasePuiseuxSeries, PuiseuxSeries,
 };
 
 /// A Laurent series in the place uniformizer `t = (x−α)^{1/e}` (integer
@@ -236,7 +237,8 @@ fn algebraic_singularities(disc: &QPoly) -> Vec<QPoly> {
 ///
 /// van Hoeij's q-adic form (1994 §2/§4 non-rational singularities): the
 /// numerator `Σ aᵢ(x) bᵢ + bd` is expanded along each Puiseux sheet over `α`
-/// (coefficients in `K`, via [`puiseux_at_algebraic`]); requiring the
+/// (coefficients in `K`, via [`puiseux_at_algebraic_tower`] filtered to in-`K`
+/// sheets); requiring the
 /// negative-power coefficients in the place uniformizer to vanish gives a
 /// **ℚ-linear** system in the unknown rationals `aᵢₗ` (`aᵢ = Σ_{l<m} aᵢₗ xˡ`),
 /// since each `K`-coefficient is `m` ℚ-components.
@@ -258,10 +260,20 @@ fn try_enlarge_algebraic(
 
     let dmax = max_denom_degree(b, bd);
     let prec = (dmax + n + 3) as u32;
-    let (branches, _skipped) = puiseux_at_algebraic(monos, q, prec);
-    // A skipped branch can only *under*-constrain the system → an unverified
-    // proposal that `is_integral` (the caller's gate) then rejects; soundness
-    // never depends on completeness.
+    let (all_branches, _skipped) = puiseux_at_algebraic_tower(monos, q, prec);
+    // Restrict to branches whose coefficients live in `K = ℚ(α)` itself.  A branch
+    // whose continuation required a *further* extension (tower collapse) has its
+    // coefficients in a larger compositum `K' ⊋ K` (`coeff_minpoly ≠ q`); the
+    // `branch_kts`/`elem_kts` machinery below reduces every coefficient mod `q`, so
+    // such a branch must be dropped here (a dropped branch only *under*-constrains
+    // the ℚ-linear system → an unverified proposal that `is_integral` rejects;
+    // soundness never depends on completeness).  Consuming the tower branches over
+    // `K'` is a follow-up (risch.md §A "MB integral basis").
+    let branches: Vec<AlgBasePuiseuxSeries> = all_branches
+        .into_iter()
+        .filter(|s| s.coeff_minpoly == *q)
+        .map(|s| s.branch)
+        .collect();
     if branches.is_empty() {
         return None;
     }

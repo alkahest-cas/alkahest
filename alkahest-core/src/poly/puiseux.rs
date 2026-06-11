@@ -566,18 +566,22 @@ pub fn puiseux_at_zero_algebraic(
                 &[(rzero(), c0.clone())],
             ));
         } else {
-            // Algebraic constant c₀ = θ over K = ℚ[t]/(fac).
+            // Algebraic constant c₀ = θ over K = ℚ[t]/(fac).  A deeper non-linear
+            // characteristic over ℚ(θ) collapses into a compositum (tower).
             let nf = NumberField::new(fac.clone());
             let theta = nf.reduce(&vec![Rational::from(0), Rational::from(1)]);
             let gk = substitute_k(&nf, &embed(&nf, &f), &rzero(), &theta);
-            for (terms, exact) in lift_k(&nf, &gk, &prec_r, 0) {
-                let mut full = vec![(rzero(), theta.clone())];
-                full.extend(terms);
+            let (subs, _missed) = lift_tower(&nf, &gk, &prec_r, 0, deg);
+            for sub in subs {
+                let kfinal = NumberField::new(sub.mp.clone());
+                let theta_f = embed_elem(&kfinal, &theta, &sub.theta_in_f);
+                let mut full = vec![(rzero(), theta_f)];
+                full.extend(sub.terms);
                 out.push(make_alg_series(
-                    Some(fac.clone()),
-                    deg,
+                    Some(sub.mp.clone()),
+                    sub.conjugates,
                     full,
-                    exact,
+                    sub.exact,
                     &prec_r,
                 ));
             }
@@ -590,7 +594,7 @@ pub fn puiseux_at_zero_algebraic(
 /// the **algebraic** (number-field) branches: at each edge, factor the
 /// characteristic polynomial over `ℚ`; degree-1 factors continue rationally
 /// (recurse, to reach deeper spawns), degree-≥2 factors spawn an extension and
-/// continue over it via [`lift_k`].
+/// continue over it via `lift_tower` (which may further collapse to a compositum).
 fn collect_algebraic(
     g: &Bi,
     prec: &Rational,
@@ -639,93 +643,32 @@ fn collect_algebraic(
                     continue;
                 }
                 let gk = substitute_k(&nf, &embed(&nf, &g), &q, &theta);
-                for (sub, exact) in lift_k(&nf, &gk, &(prec.clone() - &q), 0) {
-                    let mut full = embed_prefix(&nf, prefix);
-                    full.push((q.clone(), theta.clone()));
-                    for (gamma, b) in sub {
-                        full.push((q.clone() + &gamma, b));
-                    }
-                    out.push(make_alg_series(Some(fac.clone()), deg, full, exact, prec));
+                // Continue over ℚ(θ); a *deeper* non-linear characteristic over
+                // ℚ(θ) collapses into a compositum via the tower machinery, so the
+                // returned sub-branch may live in a field F ⊇ ℚ(θ).
+                let (subs, _missed) = lift_tower(&nf, &gk, &(prec.clone() - &q), 0, deg);
+                for sub in subs {
+                    let kfinal = NumberField::new(sub.mp.clone());
+                    // Embed the rational prefix and the θ head into F.
+                    let mut full: Vec<(Rational, KElem)> = prefix
+                        .iter()
+                        .map(|(e, c)| (e.clone(), kfinal.from_rational(c)))
+                        .collect();
+                    let theta_f = embed_elem(&kfinal, &theta, &sub.theta_in_f);
+                    full.push((q.clone(), theta_f));
+                    full.extend(sub.terms);
+                    out.push(make_alg_series(
+                        Some(sub.mp.clone()),
+                        sub.conjugates,
+                        full,
+                        sub.exact,
+                        prec,
+                    ));
                 }
             }
         }
     }
     out
-}
-
-/// `lift` over a fixed number field `nf`: find the `w → 0` branches of `g(x,w)=0`,
-/// taking only roots that lie in `nf` (linear characteristic factors — sufficient
-/// for smooth radical continuations; non-linear cases are skipped).
-fn lift_k(
-    nf: &NumberField,
-    g: &KBi,
-    prec: &Rational,
-    depth: u32,
-) -> Vec<(Vec<(Rational, KElem)>, bool)> {
-    const MAX_DEPTH: u32 = 48;
-    let mut g = g.clone();
-    g.retain(|_, a| !NumberField::is_zero(a));
-    if g.is_empty() {
-        return vec![(Vec::new(), true)];
-    }
-    if depth > MAX_DEPTH {
-        return vec![(Vec::new(), false)];
-    }
-    let mut result = Vec::new();
-    let m0 = g.keys().map(|(_, j)| *j).min().unwrap_or(0);
-    if m0 > 0 {
-        result.push((Vec::new(), true));
-        g = g
-            .into_iter()
-            .map(|((xe, ye), a)| ((xe, ye - m0), a))
-            .collect();
-    }
-    let keys: Vec<(Rational, u32)> = g.keys().cloned().collect();
-    for (q, on_edge) in newton_edges_keys(&keys) {
-        // Characteristic polynomial over nf, indexed by y-exponent.
-        let mut phi: BTreeMap<u32, KElem> = BTreeMap::new();
-        for k in &on_edge {
-            let e = phi.entry(k.1).or_default();
-            *e = nf.add(e, &g[k]);
-        }
-        let Some(c) = k_linear_root(nf, &phi) else {
-            continue; // non-linear over nf: would need a further extension
-        };
-        if prec.clone() - &q <= 0 {
-            result.push((vec![(q.clone(), c)], false));
-            continue;
-        }
-        let gk = substitute_k(nf, &g, &q, &c);
-        for (sub, exact) in lift_k(nf, &gk, &(prec.clone() - &q), depth + 1) {
-            let mut terms = vec![(q.clone(), c.clone())];
-            for (gamma, b) in sub {
-                terms.push((q.clone() + &gamma, b));
-            }
-            result.push((terms, exact));
-        }
-    }
-    result
-}
-
-/// The unique root in `nf` of a characteristic polynomial `Σ_j a_j c^j` that is a
-/// **binomial of consecutive degrees** `a_{j} c^{j} + a_{j+1} c^{j+1}` (root
-/// `−a_j/a_{j+1}`).  `None` otherwise (no nonzero root, or degree ≥ 2 ⇒ would need
-/// a further extension).
-fn k_linear_root(nf: &NumberField, phi: &BTreeMap<u32, KElem>) -> Option<KElem> {
-    let nz: Vec<(&u32, &KElem)> = phi
-        .iter()
-        .filter(|(_, c)| !NumberField::is_zero(c))
-        .collect();
-    if nz.len() != 2 {
-        return None;
-    }
-    let (j1, a1) = nz[0];
-    let (j2, a2) = nz[1];
-    if *j2 != *j1 + 1 {
-        return None; // c^{j2−j1} = … : a higher root, not in nf in general
-    }
-    let inv = nf.inv(a2)?;
-    Some(nf.neg(&nf.mul(a1, &inv)))
 }
 
 /// `w = x^q (c + w₁)` substitution over a number field, then divide by `x^ν`.
@@ -883,6 +826,32 @@ pub struct AlgBasePuiseuxSeries {
     pub order: Option<Rational>,
 }
 
+/// A Puiseux branch at an algebraic base point `x = α` whose continuation may have
+/// **escaped** the base field `K = ℚ(α)` into a proper extension (an extension
+/// *tower*).  This is the richer return type of [`puiseux_at_algebraic_tower`].
+///
+/// The inner [`Self::branch`] is the usual [`AlgBasePuiseuxSeries`]; its
+/// coefficients are `KElem`s reduced modulo [`Self::coeff_minpoly`] — the modulus
+/// of the field the **coefficients actually live in**.  For a branch that stays in
+/// `K = ℚ(α)`, `coeff_minpoly == branch.alpha_minpoly`; for a branch whose
+/// continuation required a *further* extension (Trager + primitive-element
+/// collapse, risch.md §D), `coeff_minpoly` is the minimal polynomial of the
+/// compositum `K' = ℚ(α)(θ') ⊋ K`, and `branch.conjugates == deg(coeff_minpoly)
+/// == [K':ℚ]`.
+///
+/// A consumer that only handles `K = ℚ(α)` coefficients must restrict to branches
+/// with `coeff_minpoly == branch.alpha_minpoly` (this is exactly what the
+/// `K`-only wrapper [`puiseux_at_algebraic`] does — see its docs).
+#[derive(Clone, Debug)]
+pub struct TowerPuiseuxSeries {
+    /// The branch itself (coefficients reduced mod [`Self::coeff_minpoly`]).
+    pub branch: AlgBasePuiseuxSeries,
+    /// Minimal polynomial (over `ℚ`, monic, ascending) of the field the branch
+    /// **coefficients** live in.  Equals `branch.alpha_minpoly` for a branch that
+    /// stays in `K = ℚ(α)`; a strictly larger compositum otherwise.
+    pub coeff_minpoly: Vec<Rational>,
+}
+
 /// Branches of `F(x, y) = 0` at an **algebraic** base point `x = α`, where `α`
 /// is an irrational algebraic number given by its minimal polynomial
 /// `alpha_minpoly` over `ℚ`.
@@ -891,8 +860,8 @@ pub struct AlgBasePuiseuxSeries {
 /// `0`, but now over the number field `K = ℚ(α)` — the curve coefficients
 /// (polynomials in `ℚ[x]`) become `K[x]`-polynomials.  The classical
 /// Newton–Puiseux recursion then runs with **coefficient arithmetic in `K`**
-/// instead of `ℚ`, reusing the same generic `lift_k` / `substitute_k` core that
-/// backs [`puiseux_at_zero_algebraic`].  Exponents are powers of `(x − α)`.
+/// instead of `ℚ`, reusing the same generic `lift_k_counted` / `substitute_k` core
+/// that backs [`puiseux_at_zero_algebraic`].  Exponents are powers of `(x − α)`.
 ///
 /// Return type: a [`Vec`] of [`AlgBasePuiseuxSeries`] (each over `K`) plus a
 /// `skipped` count of branches whose continuation needs a **further** extension
@@ -910,7 +879,9 @@ pub struct AlgBasePuiseuxSeries {
 /// leading coefficient is `√(·)` of a non-square of `K`) is **skipped-but-
 /// counted** — the `skipped` total plus the summed `conjugates` reveal whether
 /// every sheet over `α` was recovered.  Lifting those branches needs a Puiseux
-/// tower `ℚ(α)(θ)` (risch.md §D "Puiseux over a tower of extensions").
+/// tower `ℚ(α)(θ)` (risch.md §D "Puiseux over a tower of extensions"); the richer
+/// [`puiseux_at_algebraic_tower`] *does* return them (over the compositum field).
+/// This `K`-only entry deliberately keeps its historical skip-but-count behavior.
 ///
 /// Every returned branch is back-substitution checked in the test suite:
 /// `F(α + t^e, y(t)) ≡ 0 (mod t^N)` with **exact** arithmetic in `K[t]`.
@@ -1000,6 +971,153 @@ pub fn puiseux_at_algebraic(
                 deg_alpha,
                 full,
                 exact,
+                &prec_r,
+            ));
+        }
+    }
+    (out, skipped)
+}
+
+/// Branches of `F(x, y) = 0` at an **algebraic** base point `x = α`, returning
+/// **all** branches — including those whose continuation **escapes** the base
+/// field `K = ℚ(α)` into a proper extension (an extension *tower*).
+///
+/// This is the tower-aware companion of [`puiseux_at_algebraic`].  Where that
+/// `K`-only entry skip-but-counts a branch whose characteristic root leaves `K`,
+/// this entry **continues it** over a compositum `K' = ℚ(α)(θ') ⊋ K` built by
+/// Trager `K`-factorization plus a primitive-element collapse (`θ' = θ + λ·z`),
+/// and returns it as a [`TowerPuiseuxSeries`] whose `coeff_minpoly` records `K'`.
+/// A single call can span a **multi-level** tower (e.g. `y⁴ − 2x²` at `x = 0`
+/// climbs `ℚ → ℚ(√2) → ℚ(2^{1/4})`).
+///
+/// Return type: a [`Vec`] of [`TowerPuiseuxSeries`] plus a `skipped` count of
+/// sheets whose continuation needs a field of degree beyond the internal cap
+/// (`[K':ℚ] > 16`) or that is otherwise not collapsible — never mis-reported,
+/// only counted, exactly as [`puiseux_at_algebraic`].  Every returned branch is
+/// exact back-substitution verified.
+///
+/// Recover the historical `K`-only set by filtering on
+/// `s.coeff_minpoly == s.branch.alpha_minpoly`.
+pub fn puiseux_at_algebraic_tower(
+    coeffs: &[(u32, u32, Rational)],
+    alpha_minpoly: &[Rational],
+    prec: u32,
+) -> (Vec<TowerPuiseuxSeries>, usize) {
+    let deg_alpha = {
+        let mut d = alpha_minpoly.len();
+        while d > 0 && alpha_minpoly[d - 1] == 0 {
+            d -= 1;
+        }
+        d.saturating_sub(1)
+    };
+    // Degenerate base field ℚ (deg ≤ 1): fold through `puiseux_at`, exactly as
+    // `puiseux_at_algebraic` does; every coefficient stays in ℚ, so
+    // `coeff_minpoly == alpha_minpoly` for all branches.
+    if deg_alpha <= 1 {
+        let alpha = if deg_alpha == 0 {
+            rzero()
+        } else {
+            -alpha_minpoly[0].clone() / alpha_minpoly[1].clone()
+        };
+        let branches = puiseux_at(coeffs, &alpha, prec);
+        let out = branches
+            .into_iter()
+            .map(|s| TowerPuiseuxSeries {
+                branch: AlgBasePuiseuxSeries {
+                    alpha_minpoly: vec![Rational::from(1)],
+                    conjugates: 1,
+                    ramification: s.ramification,
+                    terms: s.terms.into_iter().map(|(e, c)| (e, vec![c])).collect(),
+                    order: s.order,
+                },
+                coeff_minpoly: vec![Rational::from(1)],
+            })
+            .collect();
+        return (out, 0);
+    }
+
+    let nf = NumberField::new(alpha_minpoly.to_vec());
+    let alpha = nf.reduce(&vec![rzero(), Rational::from(1)]); // α = t
+    let prec_r = Rational::from(prec);
+
+    // Shift x ↦ x + α over K: F(x+α, y) as a K-bivariate `(x-exp, y-exp) → K`.
+    let mut f = shift_x_alpha(&nf, coeffs, &alpha);
+
+    // Strip a common x-power (does not change the branches).
+    factor_min_x_k(&mut f);
+    if f.is_empty() {
+        return (Vec::new(), 0);
+    }
+
+    // F(α, y): the y-fibre over the base point, a univariate over K.
+    let mut f0: BTreeMap<u32, KElem> = BTreeMap::new();
+    for ((xe, ye), a) in &f {
+        if *xe == 0 {
+            let e = f0.entry(*ye).or_default();
+            *e = nf.add(e, a);
+        }
+    }
+    let f0_dense = k_dense(&nf, &f0);
+
+    let mut out: Vec<TowerPuiseuxSeries> = Vec::new();
+    let mut skipped = 0usize;
+
+    // Constant roots c₀ of F(α, y): the y-values of the branches at x = α.  Roots
+    // in K continue directly; an irreducible-over-K factor of degree ≥ 2 collapses
+    // to a compositum (tower continuation) when within the degree cap.
+    let (roots, kfactors) = k_roots_and_factors(&nf, &f0_dense);
+    for c0 in roots {
+        let g = if NumberField::is_zero(&c0) {
+            f.clone()
+        } else {
+            shift_y_k(&nf, &f, &c0)
+        };
+        let in_k_prefix = !NumberField::is_zero(&c0);
+        let (lifted, missed) = lift_tower(&nf, &g, &prec_r, 0, deg_alpha);
+        skipped += missed;
+        for sub in lifted {
+            let kfinal = NumberField::new(sub.mp.clone());
+            let mut full = Vec::new();
+            if in_k_prefix {
+                // Embed the in-K constant root into the branch's final field.
+                let c0_f = embed_elem(&kfinal, &c0, &sub.theta_in_f);
+                full.push((rzero(), c0_f));
+            }
+            full.extend(sub.terms);
+            out.push(make_tower_series(
+                alpha_minpoly,
+                &sub.mp,
+                sub.conjugates,
+                full,
+                sub.exact,
+                &prec_r,
+            ));
+        }
+    }
+    // Constant roots that escape K (an irreducible degree-≥2 K-factor of F(α,y)):
+    // collapse to a compositum K' and continue the branch there.
+    for (chi, fdeg) in kfactors {
+        let Some((kp, theta_img, z_img)) = build_compositum(&nf, &chi) else {
+            skipped += fdeg; // past the cap (or non-primitive): skip-count
+            continue;
+        };
+        // z = c₀ ∈ K'; shift y ↦ z_img + w over K' and continue over K'.
+        let f_kp = embed_bivariate(&kp, &f, &theta_img);
+        let g = shift_y_k(&kp, &f_kp, &z_img);
+        let conj_kp = kp.degree().max(0) as usize;
+        let (lifted, missed) = lift_tower(&kp, &g, &prec_r, 0, conj_kp);
+        skipped += missed;
+        for sub in lifted {
+            let kfinal = NumberField::new(sub.mp.clone());
+            let c0_f = embed_elem(&kfinal, &z_img, &sub.theta_in_f);
+            let mut full = vec![(rzero(), c0_f)];
+            full.extend(sub.terms);
+            out.push(make_tower_series(
+                alpha_minpoly,
+                &sub.mp,
+                sub.conjugates,
+                full,
+                sub.exact,
                 &prec_r,
             ));
         }
@@ -1268,11 +1386,12 @@ fn lagrange_interpolate(xs: &[Rational], ys: &[Rational]) -> Vec<Rational> {
 /// `exact` flag (a terminating branch).
 type KLiftedBranch = (Vec<(Rational, KElem)>, bool);
 
-/// `lift_k` with a skip counter, and finding **all** `K`-roots at each edge: like
-/// [`lift_k`] but it (a) factors each edge's characteristic polynomial for every
-/// root in `K` (not just the binomial case) via [`k_roots_in_field`], and
-/// (b) returns the number of characteristic roots that are not in `K` (so their
-/// branch needs a further extension and is skipped).
+/// `K`-only Newton lift with a skip counter, finding **all** `K`-roots at each
+/// edge: it (a) factors each edge's characteristic polynomial for every root in
+/// `K` (not just the binomial case) via [`k_roots_in_field`], and (b) returns the
+/// number of characteristic roots that are not in `K` (so their branch needs a
+/// further extension and is skipped).  Backs the historical [`puiseux_at_algebraic`]
+/// `K`-only entry; the tower-continuing companion is [`lift_tower`].
 fn lift_k_counted(
     nf: &NumberField,
     g: &KBi,
@@ -1351,6 +1470,533 @@ fn make_alg_base_series(
         terms,
         order: if exact { None } else { Some(prec.clone()) },
     }
+}
+
+/// Like [`make_alg_base_series`] but for the **tower** API: builds the inner
+/// [`AlgBasePuiseuxSeries`] over the (possibly extended) coefficient field and
+/// wraps it together with `coeff_minpoly` (the modulus of that field) into a
+/// [`TowerPuiseuxSeries`].  The inner series' `conjugates` is `[F:ℚ]` of the
+/// coefficient field `F` (= `coeff_minpoly`'s degree).
+fn make_tower_series(
+    alpha_minpoly: &[Rational],
+    coeff_minpoly: &[Rational],
+    conjugates: usize,
+    terms: Vec<(Rational, KElem)>,
+    exact: bool,
+    prec: &Rational,
+) -> TowerPuiseuxSeries {
+    let branch = make_alg_base_series(alpha_minpoly, conjugates, terms, exact, prec);
+    TowerPuiseuxSeries {
+        branch,
+        coeff_minpoly: coeff_minpoly.to_vec(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tower continuation: primitive-element collapse  (risch.md §D item 2)
+// ---------------------------------------------------------------------------
+//
+// A Newton-polygon characteristic polynomial `χ(z)` may be **irreducible of
+// degree d ≥ 2 over the current field K = ℚ(θ)** — its roots generate a *proper*
+// extension of `K`, so the branch cannot continue with `K`-coefficients.  Rather
+// than build a genuine tower `K(z)` and carry two generators, we collapse to a
+// single primitive element: `K' = ℚ(θ')` with `θ' = θ + λ·z` for a small integer
+// `λ`, and continue the recursion over `K'` (where `z` — hence the root — is now a
+// `K'`-element).  This is **Trager's classical method**:
+//
+// 1. **`K`-factorization of `χ`** (`kfactor_over_k`): factor the `ℚ`-norm
+//    `N_{K/ℚ}(χ)` over `ℚ` (FLINT) for a shift that makes the norm squarefree,
+//    then recover the `K`-irreducible factors as `gcd_K(χ, gᵢ(z))` for each
+//    `ℚ`-irreducible norm factor `gᵢ`.
+// 2. **Primitive-element compositum** (`build_compositum`): for a `K`-irreducible
+//    factor `χ₁` of degree `d`, build `K' = ℚ[t']/(m')` with `m'` the minimal
+//    polynomial of `θ' = θ + λ·z` over `ℚ` (`deg m' = [K:ℚ]·d`), together with the
+//    **exact embeddings** `θ ↦ ι_θ(t')`, `z ↦ ι_z(t')` recovered by linear algebra
+//    in the basis `{θⁱ zʲ}`.
+// 3. Re-express the partial branch (its `K`-coefficients and the working
+//    `K`-bivariate `g`) in `K'` via the embedding and **continue the recursion**.
+//
+// The total field degree is **capped** at [`TOWER_DEGREE_CAP`]; past the cap the
+// branch is left **skip-but-count** (sound).  Every returned branch is exact
+// back-substitution-checked (the test convention is unchanged).
+
+/// Maximum `[K':ℚ]` the tower collapse will build.  Beyond it, a branch needing a
+/// further extension is skip-but-counted (sound) rather than collapsed.
+const TOWER_DEGREE_CAP: usize = 16;
+
+/// A `K`-irreducible factor of a characteristic polynomial, with its degree.
+type KFactor = (KPoly, usize);
+
+/// A lifted branch, tagged with the field its coefficients live in.  Fields:
+/// * `mp` — minimal polynomial over `ℚ` of the branch's coefficient field `F`;
+/// * `conjugates` — `[F:ℚ]`;
+/// * `theta_in_f` — the image in `F` of the **current** recursion level's
+///   generator `θ` (identity `[0,1]` when `F` is the current field, otherwise a
+///   `ℚ`-polynomial in the compositum generator), so a caller can embed its own
+///   head coefficient `c ∈ K_current` into `F` via [`embed_elem`];
+/// * `terms` — `(exponent, coefficient ∈ F)` pairs;
+/// * `exact` — terminating-branch flag.
+struct TowerBranch {
+    mp: Vec<Rational>,
+    conjugates: usize,
+    theta_in_f: KElem,
+    terms: Vec<(Rational, KElem)>,
+    exact: bool,
+}
+
+/// Newton-recursion over `K = ℚ[t]/(nf)` that, at every edge, finds the
+/// characteristic roots **in `K`** (continue directly) *and* collapses any
+/// `K`-irreducible factor of degree `≥ 2` into a compositum `K' ⊋ K` via Trager
+/// factorization + primitive element, then continues over `K'` (risch.md §D
+/// "Puiseux over a tower of extensions").  Returns the lifted branches (each
+/// tagged with its coefficient field) and the count of sheets still skipped (past
+/// the degree cap or non-primitive).  `conj_base = [K:ℚ]` is the conjugate
+/// multiplier carried for branches that stay in `K`.
+fn lift_tower(
+    nf: &NumberField,
+    g: &KBi,
+    prec: &Rational,
+    depth: u32,
+    conj_base: usize,
+) -> (Vec<TowerBranch>, usize) {
+    const MAX_DEPTH: u32 = 48;
+    let mut g = g.clone();
+    g.retain(|_, a| !NumberField::is_zero(a));
+    let here_mp = nf.modulus().clone();
+    let ident: KElem = nf.reduce(&vec![rzero(), Rational::from(1)]); // θ = t
+    let mk_leaf = |exact: bool| TowerBranch {
+        mp: here_mp.clone(),
+        conjugates: conj_base,
+        theta_in_f: ident.clone(),
+        terms: Vec::new(),
+        exact,
+    };
+    if g.is_empty() {
+        return (vec![mk_leaf(true)], 0);
+    }
+    if depth > MAX_DEPTH {
+        return (vec![mk_leaf(false)], 0);
+    }
+    let mut result: Vec<TowerBranch> = Vec::new();
+    let mut skipped = 0usize;
+    let m0 = g.keys().map(|(_, j)| *j).min().unwrap_or(0);
+    if m0 > 0 {
+        result.push(mk_leaf(true));
+        g = g
+            .into_iter()
+            .map(|((xe, ye), a)| ((xe, ye - m0), a))
+            .collect();
+    }
+    let keys: Vec<(Rational, u32)> = g.keys().cloned().collect();
+    for (q, on_edge) in newton_edges_keys(&keys) {
+        let mut phi: BTreeMap<u32, KElem> = BTreeMap::new();
+        for k in &on_edge {
+            let e = phi.entry(k.1).or_default();
+            *e = nf.add(e, &g[k]);
+        }
+        let phi_dense = k_dense(nf, &phi);
+        let (roots, kfactors) = k_roots_and_factors(nf, &phi_dense);
+        // Roots in K: continue over K (no field change at this step).
+        for c in roots {
+            if NumberField::is_zero(&c) {
+                continue;
+            }
+            if prec.clone() - &q <= 0 {
+                result.push(TowerBranch {
+                    mp: here_mp.clone(),
+                    conjugates: conj_base,
+                    theta_in_f: ident.clone(),
+                    terms: vec![(q.clone(), c)],
+                    exact: false,
+                });
+                continue;
+            }
+            let gk = substitute_k(nf, &g, &q, &c);
+            let (subs, sub_missed) =
+                lift_tower(nf, &gk, &(prec.clone() - &q), depth + 1, conj_base);
+            skipped += sub_missed;
+            for sub in subs {
+                // The sub-branch's field F may extend K (a deeper tower spawn);
+                // embed this head (q, c) into F via the recorded θ-image.
+                let kfinal = NumberField::new(sub.mp.clone());
+                let head_c = embed_elem(&kfinal, &c, &sub.theta_in_f);
+                let mut terms = vec![(q.clone(), head_c)];
+                for (gamma, b) in sub.terms {
+                    terms.push((q.clone() + &gamma, b));
+                }
+                result.push(TowerBranch {
+                    mp: sub.mp,
+                    conjugates: sub.conjugates,
+                    theta_in_f: sub.theta_in_f,
+                    terms,
+                    exact: sub.exact,
+                });
+            }
+        }
+        // K-irreducible factors of degree ≥ 2: collapse to a compositum K' ⊋ K.
+        for (chi, fdeg) in kfactors {
+            let Some((kp, theta_img, z_img)) = build_compositum(nf, &chi) else {
+                skipped += fdeg; // past the cap / non-primitive: skip-count
+                continue;
+            };
+            let conj_kp = kp.degree().max(0) as usize;
+            // Re-express g in K', then substitute w = x^q (z_img + w₁) and recurse.
+            let g_kp = embed_bivariate(&kp, &g, &theta_img);
+            if prec.clone() - &q <= 0 {
+                result.push(TowerBranch {
+                    mp: kp.modulus().clone(),
+                    conjugates: conj_kp,
+                    theta_in_f: theta_img.clone(),
+                    terms: vec![(q.clone(), z_img)],
+                    exact: false,
+                });
+                continue;
+            }
+            let gk = substitute_k(&kp, &g_kp, &q, &z_img);
+            let (subs, sub_missed) = lift_tower(&kp, &gk, &(prec.clone() - &q), depth + 1, conj_kp);
+            skipped += sub_missed;
+            for sub in subs {
+                let kfinal = NumberField::new(sub.mp.clone());
+                // Head root z ∈ K' embedded into the (possibly deeper) final field.
+                let head_c = embed_elem(&kfinal, &z_img, &sub.theta_in_f);
+                // Compose the θ-images: θ(old K) ↦ theta_img(K') ↦ final.
+                let theta_old_in_final = embed_elem(&kfinal, &theta_img, &sub.theta_in_f);
+                let mut terms = vec![(q.clone(), head_c)];
+                for (gamma, b) in sub.terms {
+                    terms.push((q.clone() + &gamma, b));
+                }
+                result.push(TowerBranch {
+                    mp: sub.mp,
+                    conjugates: sub.conjugates,
+                    theta_in_f: theta_old_in_final,
+                    terms,
+                    exact: sub.exact,
+                });
+            }
+        }
+    }
+    (result, skipped)
+}
+
+/// Roots **in `K`** of a univariate `φ(c) = Σ p[k] c^k` over `K`, together with the
+/// `K`-irreducible factors of degree `≥ 2` (whose roots lie in a *proper*
+/// extension of `K`).
+///
+/// Method (Trager, no global `K`-factoring needed beyond [`kfactor_over_k`]):
+/// factor `φ` over `K` into monic `K`-irreducibles; a **degree-1** factor
+/// `h₀ + h₁ c` contributes the `K`-root `−h₀/h₁`; a **degree-≥2** factor collects
+/// roots conjugate over `K` and is returned so the caller can build a compositum
+/// and collapse the tower (or skip-but-count past the degree cap).  The root
+/// `c = 0` (when `c | φ`) is included among the roots.
+fn k_roots_and_factors(nf: &NumberField, p: &[KElem]) -> (Vec<KElem>, Vec<KFactor>) {
+    let mut hi = p.len();
+    while hi > 0 && NumberField::is_zero(&p[hi - 1]) {
+        hi -= 1;
+    }
+    let p = &p[..hi];
+    if p.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    let mut roots: Vec<KElem> = Vec::new();
+    let mut lo = 0usize;
+    while lo < p.len() && NumberField::is_zero(&p[lo]) {
+        lo += 1;
+    }
+    if lo > 0 {
+        roots.push(NumberField::k_zero());
+    }
+    let work: Vec<KElem> = p[lo..].iter().map(|c| nf.reduce(c)).collect();
+    if work.len() <= 1 {
+        return (roots, Vec::new());
+    }
+    let mut factors: Vec<KFactor> = Vec::new();
+    for (h, hdeg) in kfactor_over_k(nf, &work) {
+        if hdeg == 1 {
+            if let Some(inv) = nf.inv(&h[1]) {
+                roots.push(nf.neg(&nf.mul(&h[0], &inv)));
+            }
+        } else {
+            factors.push((h, hdeg));
+        }
+    }
+    (roots, factors)
+}
+
+/// Factor a univariate `φ(z) = Σ p[k] zᵏ` over `K = ℚ[t]/(nf.modulus())` into
+/// monic-in-`z` `K`-irreducible factors, after dividing out the largest `z`-power
+/// (the root `z = 0`, handled separately).  Returns the factors with their
+/// `z`-degrees.
+///
+/// **Trager's algorithm.**  Pick a small integer shift `s` so the `ℚ`-norm
+/// `N_{K/ℚ}(φ(z − s·θ))` is **squarefree** (separable); factor that norm over `ℚ`
+/// (FLINT, via [`factor_over_q`]); each `ℚ`-irreducible norm factor `g(z)` yields a
+/// `K`-irreducible factor of `φ` as `gcd_K(φ_shifted, g)` (then shift back
+/// `z ↦ z + s·θ`).  Squarefreeness of the norm is exactly the condition that this
+/// gcd-recovery is unambiguous.
+fn kfactor_over_k(nf: &NumberField, p: &[KElem]) -> Vec<KFactor> {
+    // Trim trailing zeros; strip leading z-power (root 0 handled by caller).
+    let mut hi = p.len();
+    while hi > 0 && NumberField::is_zero(&p[hi - 1]) {
+        hi -= 1;
+    }
+    let p = &p[..hi];
+    let mut lo = 0usize;
+    while lo < p.len() && NumberField::is_zero(&p[lo]) {
+        lo += 1;
+    }
+    let work: KPoly = p[lo..].iter().map(|c| nf.reduce(c)).collect();
+    if NumberField::kdeg(&work) < 1 {
+        return Vec::new();
+    }
+    // Make φ monic in z over K.
+    let Some(phi) = nf.kpoly_monic(&work) else {
+        return Vec::new();
+    };
+    let theta: KElem = nf.reduce(&vec![rzero(), Rational::from(1)]); // θ = t
+
+    // Find a shift s with squarefree norm.
+    for s in 0..=8i64 {
+        // φ_s(z) = φ(z − s·θ): substitute z ↦ z − s·θ.
+        let phi_s = if s == 0 {
+            phi.clone()
+        } else {
+            let shift = nf.mul(&nf.from_int(-s), &theta); // −s·θ ∈ K
+            kpoly_shift_z(nf, &phi, &shift)
+        };
+        let norm = k_norm_poly(nf, &phi_s);
+        if norm.len() <= 1 || !is_squarefree_q(&norm) {
+            continue;
+        }
+        let mut out: Vec<KFactor> = Vec::new();
+        let mut ok = true;
+        for (g, _deg) in factor_over_q(&norm) {
+            let gk: KPoly = g.iter().map(|c| nf.reduce(&vec![c.clone()])).collect();
+            let Some(h) = nf.kpoly_gcd(&phi_s, &gk) else {
+                ok = false;
+                break;
+            };
+            let hdeg = NumberField::kdeg(&h);
+            if hdeg < 1 {
+                ok = false; // norm factor with no K-common root: norm not separable
+                break;
+            }
+            // Shift back: z ↦ z + s·θ.
+            let h_back = if s == 0 {
+                h
+            } else {
+                let shift = nf.mul(&nf.from_int(s), &theta);
+                kpoly_shift_z(nf, &h, &shift)
+            };
+            let Some(h_monic) = nf.kpoly_monic(&h_back) else {
+                ok = false;
+                break;
+            };
+            let d = NumberField::kdeg(&h_monic) as usize;
+            out.push((h_monic, d));
+        }
+        if ok && !out.is_empty() {
+            return out;
+        }
+    }
+    // No good shift found within the search window: report the whole polynomial as
+    // one factor (its degree is the count of escaping sheets — sound skip-count).
+    let d = NumberField::kdeg(&phi) as usize;
+    vec![(phi, d)]
+}
+
+/// `φ(z + c)` for `c ∈ K`: substitute `z ↦ z + c` in a monic `K`-polynomial via
+/// repeated Horner-style expansion (`Σ pₖ (z+c)ᵏ`).
+fn kpoly_shift_z(nf: &NumberField, phi: &[KElem], c: &KElem) -> KPoly {
+    // (z + c)ᵏ accumulated incrementally.
+    let mut acc: KPoly = Vec::new();
+    let mut zpc_pow: KPoly = vec![nf.from_int(1)]; // (z+c)^0
+    let zpc: KPoly = vec![c.clone(), nf.from_int(1)]; // z + c
+    for (k, pk) in phi.iter().enumerate() {
+        if k > 0 {
+            zpc_pow = nf.kpoly_mul(&zpc_pow, &zpc);
+        }
+        if !NumberField::is_zero(pk) {
+            let term = nf.kpoly_scale(&zpc_pow, pk);
+            acc = nf.kpoly_add(&acc, &term);
+        }
+    }
+    NumberField::kpoly_trim(acc)
+}
+
+/// Is a `ℚ`-polynomial (ascending) squarefree?  `gcd(f, f') = const`.
+fn is_squarefree_q(f: &[Rational]) -> bool {
+    let f = trim_q(f.to_vec());
+    if f.len() <= 1 {
+        return true;
+    }
+    // f' (ascending).
+    let mut df: Vec<Rational> = Vec::with_capacity(f.len().saturating_sub(1));
+    for (k, c) in f.iter().enumerate().skip(1) {
+        df.push(Rational::from(k as i64) * c);
+    }
+    let g = q_gcd(&f, &df);
+    g.len() <= 1
+}
+
+/// Monic `ℚ`-GCD (ascending) via the Euclidean algorithm.
+fn q_gcd(a: &[Rational], b: &[Rational]) -> Vec<Rational> {
+    let mut a = trim_q(a.to_vec());
+    let mut b = trim_q(b.to_vec());
+    while !b.is_empty() {
+        let r = q_rem(&a, &b);
+        a = b;
+        b = trim_q(r);
+    }
+    if let Some(lc) = a.last().cloned() {
+        if lc != 0 {
+            for c in a.iter_mut() {
+                *c /= &lc;
+            }
+        }
+    }
+    a
+}
+
+/// The compositum `K' = ℚ(θ')`, `θ' = θ + λ·z`, of `K = ℚ[t]/(nf.modulus())` and a
+/// `K`-irreducible `χ₁(z)` of degree `d ≥ 2`.  Returns
+/// `(K', ι_θ, ι_z)` where `K'` is the number field `ℚ[t']/(m')`,
+/// `ι_θ ∈ K'` is the image of the old generator `θ`, and `ι_z ∈ K'` is the image
+/// of the adjoined root `z` (a root of `χ₁`).  Both images are **exact** (verified
+/// by reconstruction in the basis `{θⁱ zʲ}`).  `None` if no small `λ` is primitive
+/// or `[K':ℚ] > TOWER_DEGREE_CAP`.
+#[allow(clippy::type_complexity)]
+fn build_compositum(nf: &NumberField, chi: &[KElem]) -> Option<(NumberField, KElem, KElem)> {
+    let n = nf.degree().max(0) as usize; // [K:ℚ]
+    let chi_monic = nf.kpoly_monic(chi)?;
+    let d = NumberField::kdeg(&chi_monic).max(0) as usize; // deg χ₁
+    if d < 2 || n == 0 {
+        return None;
+    }
+    let big = n * d; // [K':ℚ]
+    if big > TOWER_DEGREE_CAP {
+        return None;
+    }
+
+    // Arithmetic in T = K[z]/(χ₁): an element is a KPoly of z-degree < d.
+    // Basis of T over ℚ: {θⁱ zʲ : 0≤i<n, 0≤j<d}, flattened index = j·n + i.
+    let tred = |a: &[KElem]| -> KPoly {
+        // reduce a (z-poly over K) mod χ₁.
+        match nf.kpoly_divrem(a, &chi_monic) {
+            Some((_q, rem)) => NumberField::kpoly_trim(rem),
+            None => NumberField::kpoly_trim(a.to_vec()),
+        }
+    };
+    let tmul = |a: &[KElem], b: &[KElem]| -> KPoly { tred(&nf.kpoly_mul(a, b)) };
+    let flat = |a: &[KElem]| -> Vec<Rational> {
+        let mut v = vec![rzero(); big];
+        for (j, cj) in a.iter().enumerate().take(d) {
+            // cj ∈ K is a ℚ-poly in θ of degree < n.
+            let cjr = nf.reduce(cj);
+            for (i, ci) in cjr.iter().enumerate().take(n) {
+                v[j * n + i] = ci.clone();
+            }
+        }
+        v
+    };
+
+    let z_elem: KPoly = vec![NumberField::k_zero(), nf.from_int(1)]; // z
+    let theta_elem: KPoly = vec![nf.reduce(&vec![rzero(), Rational::from(1)])]; // θ (in K, z-deg 0)
+
+    for lambda in 1..=8i64 {
+        // θ' = θ + λ·z  in T.
+        let theta_p =
+            tred(&nf.kpoly_add(&theta_elem, &nf.kpoly_scale(&z_elem, &nf.from_int(lambda))));
+        // Powers θ'^0 … θ'^big as ℚ^big columns.
+        let one_t: KPoly = vec![nf.from_int(1)];
+        let mut powers: Vec<KPoly> = vec![one_t.clone()];
+        let mut cur = one_t.clone();
+        for _ in 0..big {
+            cur = tmul(&cur, &theta_p);
+            powers.push(cur.clone());
+        }
+        let cols: Vec<Vec<Rational>> = (0..big).map(|k| flat(&powers[k])).collect();
+        // Solve θ'^big = Σ mₖ θ'^k  ⇒  m' = t^big − Σ mₖ t^k.
+        let Some(mcoef) = solve_q_columns(&cols, &flat(&powers[big]), big) else {
+            continue; // θ' not primitive at this λ
+        };
+        let mut mprime = vec![rzero(); big + 1];
+        mprime[big] = Rational::from(1);
+        for (k, mk) in mcoef.iter().enumerate() {
+            mprime[k] = -mk.clone();
+        }
+        // Images of θ and z in K' = ℚ[t']/(m').
+        let Some(theta_in) = solve_q_columns(&cols, &flat(&theta_elem), big) else {
+            continue;
+        };
+        let Some(z_in) = solve_q_columns(&cols, &flat(&z_elem), big) else {
+            continue;
+        };
+        let kprime = NumberField::new(trim_q(mprime));
+        return Some((
+            kprime.clone(),
+            kprime.reduce(&trim_q(theta_in)),
+            kprime.reduce(&trim_q(z_in)),
+        ));
+    }
+    None
+}
+
+/// Solve `A·x = rhs` over `ℚ` (columns `cols`, each length `n`).  `None` if `A` is
+/// singular.  (A local copy mirroring `alg_tower::solve_columns`, kept here to keep
+/// `poly` free of an `integrate` dependency.)
+fn solve_q_columns(cols: &[Vec<Rational>], rhs: &[Rational], n: usize) -> Option<Vec<Rational>> {
+    let mut a: Vec<Vec<Rational>> = (0..n)
+        .map(|i| {
+            let mut row: Vec<Rational> = (0..n).map(|j| cols[j][i].clone()).collect();
+            row.push(rhs[i].clone());
+            row
+        })
+        .collect();
+    for col in 0..n {
+        let piv = (col..n).find(|&rr| a[rr][col] != 0)?;
+        a.swap(col, piv);
+        let inv = Rational::from(1) / a[col][col].clone();
+        for v in a[col].iter_mut() {
+            *v *= &inv;
+        }
+        for rr in 0..n {
+            if rr != col && a[rr][col] != 0 {
+                let f = a[rr][col].clone();
+                #[allow(clippy::needless_range_loop)]
+                for k in col..=n {
+                    let s = f.clone() * &a[col][k];
+                    a[rr][k] -= s;
+                }
+            }
+        }
+    }
+    Some((0..n).map(|i| a[i][n].clone()).collect())
+}
+
+/// Re-express a `K`-element `c` (ℚ-poly in `θ`) as a `K'`-element, given the image
+/// `ι_θ ∈ K'` of `θ`: evaluate the ℚ-polynomial `c` at `t = ι_θ` in `K'` (Horner).
+fn embed_elem(kp: &NumberField, c: &KElem, theta_img: &KElem) -> KElem {
+    let mut acc = NumberField::k_zero();
+    for ci in c.iter().rev() {
+        acc = kp.mul(&acc, theta_img);
+        if *ci != 0 {
+            acc = kp.add(&acc, &kp.from_rational(ci));
+        }
+    }
+    acc
+}
+
+/// Re-express a `K`-bivariate `g` (`(x-exp, y-exp) → KElem` over `K`) in `K'` via
+/// the embedding `θ ↦ theta_img`.
+fn embed_bivariate(kp: &NumberField, g: &KBi, theta_img: &KElem) -> KBi {
+    let mut out: KBi = BTreeMap::new();
+    for (k, a) in g {
+        let e = embed_elem(kp, a, theta_img);
+        if !NumberField::is_zero(&e) {
+            out.insert(k.clone(), e);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1763,6 +2409,216 @@ mod tests {
         for s in &br {
             verify_alg_branch(&f, &mp, s, 3);
         }
+    }
+
+    /// Numeric back-substitution check for a **tower** branch (coefficients in a
+    /// compositum `K' = ℚ[t']/coeff_minpoly` strictly larger than the base
+    /// `K = ℚ(α)`).  For each numeric root `θ'₀` of `coeff_minpoly` there is an
+    /// induced base point `α₀` (a root of `alpha_minpoly`); the branch must satisfy
+    /// `F(α₀ + δ, y) = O(δ^prec)` for *some* such `α₀` and small real `δ` (we test a
+    /// real `θ'₀` to keep the check real-valued).
+    fn verify_alg_branch_tower(
+        coeffs: &[(u32, u32, Rational)],
+        alpha_minpoly: &[Rational],
+        s: &TowerPuiseuxSeries,
+        prec: u32,
+    ) {
+        // Real roots of coeff_minpoly (coarse bisection-free scan + refine).
+        let eval = |p: &[Rational], x: f64| -> f64 {
+            p.iter().rev().fold(0.0, |acc, c| acc * x + c.to_f64())
+        };
+        let mut tprimes = Vec::new();
+        let (lo, hi, steps) = (-6.0_f64, 6.0_f64, 24000);
+        let dx = (hi - lo) / steps as f64;
+        let mut prev = eval(&s.coeff_minpoly, lo);
+        for k in 1..=steps {
+            let x = lo + dx * k as f64;
+            let cur = eval(&s.coeff_minpoly, x);
+            if prev == 0.0 || (prev < 0.0) != (cur < 0.0) {
+                // Refine by a few bisection steps.
+                let (mut a, mut b) = (x - dx, x);
+                for _ in 0..60 {
+                    let mid = 0.5 * (a + b);
+                    if (eval(&s.coeff_minpoly, a) < 0.0) != (eval(&s.coeff_minpoly, mid) < 0.0) {
+                        b = mid;
+                    } else {
+                        a = mid;
+                    }
+                }
+                tprimes.push(0.5 * (a + b));
+            }
+            prev = cur;
+        }
+        assert!(
+            !tprimes.is_empty(),
+            "coeff_minpoly should have a real root for the numeric check: {s:?}"
+        );
+        let alpha_roots: Vec<f64> = {
+            // Real roots of alpha_minpoly by the same scan.
+            let mut rts = Vec::new();
+            let mut prev = eval(alpha_minpoly, lo);
+            for k in 1..=steps {
+                let x = lo + dx * k as f64;
+                let cur = eval(alpha_minpoly, x);
+                if prev == 0.0 || (prev < 0.0) != (cur < 0.0) {
+                    let (mut a, mut b) = (x - dx, x);
+                    for _ in 0..60 {
+                        let mid = 0.5 * (a + b);
+                        if (eval(alpha_minpoly, a) < 0.0) != (eval(alpha_minpoly, mid) < 0.0) {
+                            b = mid;
+                        } else {
+                            a = mid;
+                        }
+                    }
+                    rts.push(0.5 * (a + b));
+                }
+                prev = cur;
+            }
+            rts
+        };
+        for tp in &tprimes {
+            // Try each numeric α₀; the branch must vanish for the consistent one.
+            let mut best = f64::INFINITY;
+            for a0 in &alpha_roots {
+                for &delta in &[0.002_f64, 0.005, 0.011] {
+                    let x = a0 + delta;
+                    let y: f64 = s
+                        .branch
+                        .terms
+                        .iter()
+                        .map(|(exp, c)| eval(c, *tp) * delta.powf(exp.to_f64()))
+                        .sum();
+                    let fval: f64 = coeffs
+                        .iter()
+                        .map(|(i, j, a)| a.to_f64() * x.powi(*i as i32) * y.powi(*j as i32))
+                        .sum();
+                    let tol = 1e-6 + 200.0 * delta.powf(prec as f64);
+                    best = best.min(fval.abs() / tol);
+                }
+            }
+            assert!(
+                best < 1.0,
+                "tower branch {s:?} at θ'₀={tp}: F not O(δ^{prec}) for any α₀ ({alpha_roots:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn alg_base_ramified_tower_collapse_sqrt2_to_quartic() {
+        // F = y² − (x²−2) at α=√2.  Shift x→x+√2: x²−2 = x² + 2√2·x, so near the
+        // place F = y² − 2√2·x − x²: a ramified branch y = c·x^{1/2}+… with leading
+        // coefficient c = ±(2√2)^{1/2} = ±2^{3/4} ∈ ℚ(2^{3/4}) ⊋ ℚ(√2).  The tower
+        // collapse builds the degree-4 compositum K' = ℚ(√2)(2^{3/4}) = ℚ(2^{1/4})
+        // and RETURNS the branch (the K-only `puiseux_at_algebraic` skip-counts it).
+        let f = [(0, 2, r(1)), (2, 0, r(-1)), (0, 0, r(2))]; // y² − x² + 2
+        let mp = vec![r(-2), r(0), r(1)]; // √2
+        let (br, skipped) = puiseux_at_algebraic_tower(&f, &mp, 3);
+        assert_eq!(skipped, 0, "tower closes — nothing skipped: {br:?}");
+        // The ramified x^{1/2} branch is now present, over a degree-4 field.
+        let ram: Vec<&TowerPuiseuxSeries> = br
+            .iter()
+            .filter(|s| s.branch.terms.iter().any(|(e, _)| *e == rr(1, 2)))
+            .collect();
+        assert!(!ram.is_empty(), "ramified branch must be returned: {br:?}");
+        for s in &ram {
+            assert_eq!(s.branch.ramification, 2);
+            // Compositum is a proper extension of ℚ(√2): degree 4 = [ℚ(√2):ℚ]·2.
+            assert_ne!(s.coeff_minpoly, mp, "coeff field must extend ℚ(√2)");
+            assert_eq!(s.coeff_minpoly.len() - 1, 4, "deg K' = 4: {s:?}");
+            assert_eq!(s.branch.conjugates, 4);
+            verify_alg_branch_tower(&f, &mp, s, 3);
+        }
+        // The K-only entry preserves its historical skip-but-count behavior.
+        let (k_only, k_skipped) = puiseux_at_algebraic(&f, &mp, 3);
+        assert_eq!(k_skipped, 2, "K-only entry skip-counts the two sheets");
+        assert!(
+            k_only
+                .iter()
+                .all(|s| s.terms.iter().all(|(e, _)| *e != rr(1, 2))),
+            "K-only entry returns no ramified branch: {k_only:?}"
+        );
+    }
+
+    #[test]
+    fn alg_base_node_tower_collapse_sqrt2() {
+        // F = y² − (x²−2)²·(x+1) has an irrational double point at x = ±√2.
+        // F = y² − x⁵ − x⁴ + 4x³ + 4x² − 4x − 4.  At α=√2 the node has two branches
+        // y ≈ ±x·√(8(√2+1)) with √(8(√2+1)) ∉ ℚ(√2): the tower collapse closes them
+        // over the degree-4 compositum (the K-only entry skip-counts them).
+        let f = [
+            (0, 2, r(1)),
+            (5, 0, r(-1)),
+            (4, 0, r(-1)),
+            (3, 0, r(4)),
+            (2, 0, r(4)),
+            (1, 0, r(-4)),
+            (0, 0, r(-4)),
+        ];
+        let mp = vec![r(-2), r(0), r(1)]; // √2
+        let (br, skipped) = puiseux_at_algebraic_tower(&f, &mp, 3);
+        assert_eq!(skipped, 0, "tower closes — nothing skipped: {br:?}");
+        // The two escaping node sheets are returned over a proper extension of ℚ(√2).
+        let tower: Vec<&TowerPuiseuxSeries> = br.iter().filter(|s| s.coeff_minpoly != mp).collect();
+        assert!(!tower.is_empty(), "node tower branches returned: {br:?}");
+        for s in &tower {
+            assert_eq!(s.coeff_minpoly.len() - 1, 4, "deg K' = 4: {s:?}");
+            assert_eq!(s.branch.conjugates, 4);
+            verify_alg_branch_tower(&f, &mp, s, 3);
+        }
+    }
+
+    #[test]
+    fn alg_base_constant_tower_sqrt2_over_sqrt3() {
+        // F = y² − 2 at the algebraic BASE point α = √3 (minpoly t² − 3).  The
+        // y-fibre F(√3, y) = y² − 2 is irreducible over K = ℚ(√3) (2 is not a
+        // square there), so the constant root √2 escapes ℚ(√3): the tower collapse
+        // builds the compositum ℚ(√3, √2) (degree 4) and RETURNS the branch.
+        let f = [(0, 2, r(1)), (0, 0, r(-2))]; // y² − 2
+        let mp = vec![r(-3), r(0), r(1)]; // √3
+        let (br, skipped) = puiseux_at_algebraic_tower(&f, &mp, 2);
+        assert_eq!(skipped, 0, "tower closes: {br:?}");
+        assert_eq!(
+            br.len(),
+            1,
+            "one class (±√2 are conjugate over ℚ(√3)): {br:?}"
+        );
+        let s = &br[0];
+        assert_ne!(s.coeff_minpoly, mp, "coeff field must extend ℚ(√3)");
+        assert_eq!(s.coeff_minpoly.len() - 1, 4, "deg ℚ(√3,√2) = 4: {s:?}");
+        assert_eq!(s.branch.conjugates, 4);
+        // Constant branch: a single (exponent 0) term, the value √2 in the
+        // compositum; squares to 2.  Verify numerically.
+        verify_alg_branch_tower(&f, &mp, s, 2);
+    }
+
+    #[test]
+    fn zero_genuine_two_level_tower_y4_minus_2x2() {
+        // F = y⁴ − 2x² at x = 0.  Newton edge slope 1/2: characteristic y⁴ = 2x²,
+        // i.e. y² = ±√2·x  (first extension ℚ(√2)); then y = ±2^{1/4}·√(±x)
+        // (second extension ℚ(2^{1/4})).  A GENUINE tower over ℚ — the deeper
+        // characteristic is non-linear over ℚ(√2) and collapses to ℚ(2^{1/4}).
+        let f = [(0, 4, r(1)), (2, 0, r(-2))]; // y⁴ − 2x²
+        let br = puiseux_at_zero_algebraic(&f, 2);
+        // Total sheets = deg_y = 4.
+        let total: usize = br.iter().map(|s| s.conjugates).sum();
+        assert_eq!(total, 4, "all four sheets recovered: {br:?}");
+        // Every returned class has a leading x^{1/2} term and lives over a field of
+        // degree ≥ 2 (ℚ(2^{1/4}) for the genuine tower sheets).
+        for s in &br {
+            assert!(
+                s.terms.iter().any(|(e, _)| *e == rr(1, 2)),
+                "leading x^{{1/2}}: {s:?}"
+            );
+        }
+        // At least one class is over the degree-4 compositum ℚ(2^{1/4}).
+        assert!(
+            br.iter().any(|s| s
+                .minpoly
+                .as_ref()
+                .map(|m| m.len() - 1 == 4)
+                .unwrap_or(false)),
+            "a degree-4 tower class expected: {br:?}"
+        );
     }
 
     #[test]
