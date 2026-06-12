@@ -20,6 +20,20 @@ Other experimental surface:
 - :func:`solve` — polynomial system solver (V1-4, requires ``groebner`` feature)
 - :func:`compile_cuda` — NVPTX codegen + GPU batch evaluation via
   :class:`CudaCompiledFn` (requires ``cuda`` + ``jit`` features)
+
+Calculus / ODE / transform surface (PyO3 bindings deferred at landing,
+PRs #152–#161):
+- :func:`heaviside`, :func:`dirac_delta` — distribution primitive constructors
+  (placed here rather than at the top level so the frozen ``__all__`` is
+  untouched).
+- :func:`dsolve` — classical symbolic ODE solver (#153).
+- :func:`laplace_transform` / :func:`inverse_laplace_transform` (#152).
+- :func:`fourier_transform` / :func:`inverse_fourier_transform` (#158).
+- :func:`z_transform` / :func:`inverse_z_transform` (#159).
+- :func:`multilimit` — two-variable limits (#156).
+- :func:`asymptotic_expand` — asymptotic expansion at infinity (#161).
+- :func:`series_solve` — power-series / Frobenius ODE solutions (#160).
+- :class:`Fps` — lazy formal power series over ℚ (#155).
 """
 
 from __future__ import annotations
@@ -28,6 +42,23 @@ import contextlib
 
 # Re-export everything from the stable module for convenience
 from alkahest import to_stablehlo
+
+# Calculus / ODE / transform surface (always built into the extension).
+from alkahest.alkahest import (
+    Fps,
+    asymptotic_expand,
+    dirac_delta,
+    dsolve,
+    fourier_transform,
+    heaviside,
+    inverse_fourier_transform,
+    inverse_laplace_transform,
+    inverse_z_transform,
+    laplace_transform,
+    multilimit,
+    series_solve,
+    z_transform,
+)
 
 with contextlib.suppress(ImportError):
     from alkahest.alkahest import to_lean
@@ -43,11 +74,24 @@ with contextlib.suppress(ImportError):
 
 __all__ = [
     "CudaCompiledFn",
+    "Fps",
     "GbPoly",
     "GroebnerBasis",
+    "asymptotic_expand",
     "compile_cuda",
+    "dirac_delta",
+    "dsolve",
+    "fourier_transform",
+    "heaviside",
+    "inverse_fourier_transform",
+    "inverse_laplace_transform",
+    "inverse_z_transform",
+    "laplace_transform",
+    "multilimit",
+    "series_solve",
     "solve",
     "to_jax",
     "to_lean",
     "to_stablehlo",
+    "z_transform",
 ]
