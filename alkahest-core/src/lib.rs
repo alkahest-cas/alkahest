@@ -278,6 +278,9 @@ pub mod stable {
 pub mod experimental {
     pub use crate::acausal::{capacitor, resistor, voltage_source, Component, Port, System};
     pub use crate::ball::{AcbBall, ArbBall, IntervalEval};
+    pub use crate::calculus::asymptotic::{
+        asymptotic_expand, AsymptoticError, AsymptoticExpansion, AsymptoticTerm,
+    };
     pub use crate::deriv::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
     pub use crate::horner::{emit_horner_c, horner};
     pub use crate::hybrid::{Event, GuardStructure, HybridODE};
