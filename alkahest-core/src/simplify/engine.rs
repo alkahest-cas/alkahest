@@ -1,7 +1,6 @@
 use super::rules::{
-    AddZero, CanonicalOrder, ConstFold, DistributePowOverLiteralCoeff, DivSelf, ElementaryAtConst,
-    EvenPowerSignFold, ExpandMul, FlattenAdd, FlattenMul, MulOne, MulZero, PowOfPow, PowOne,
-    PowZero, RationalCanon, RewriteRule, SqrtInteger, SubSelf,
+    AddZero, CanonicalOrder, ConstFold, DivSelf, ExpandMul, FlattenAdd, FlattenMul, MulOne,
+    MulZero, PowOne, PowZero, RewriteRule, SqrtInteger, SubSelf,
 };
 use super::rulesets::PatternRuleSet;
 use crate::deriv::log::{DerivationLog, DerivedExpr};
@@ -57,16 +56,17 @@ pub fn rules_for_config(config: &SimplifyConfig) -> Vec<Box<dyn RewriteRule>> {
     let mut rules: Vec<Box<dyn RewriteRule>> = vec![
         Box::new(FlattenMul),
         Box::new(FlattenAdd),
-        Box::new(RationalCanon),
         Box::new(MulZero),
         Box::new(AddZero),
         Box::new(MulOne),
-        Box::new(ElementaryAtConst),
         Box::new(PowZero),
         Box::new(PowOne),
-        Box::new(EvenPowerSignFold),
-        Box::new(PowOfPow),
-        Box::new(DistributePowOverLiteralCoeff),
+        // ConstFold also covers elementary-functions-at-const, power-of-power,
+        // even-power sign folding, distribution of pow over a literal Mul
+        // coefficient, and Rational(n/1) canonicalization — these were
+        // previously separate rules but are now extra match arms inside
+        // ConstFold's existing per-node dispatch (see rules.rs) so they don't
+        // add per-node iterations to the rule loop below.
         Box::new(ConstFold),
         Box::new(SqrtInteger),
         Box::new(SubSelf),
@@ -649,5 +649,71 @@ mod tests {
         // Compiled path (interpreter fallback, no LLVM needed)
         let f = compile(expr, &[x], &pool).unwrap();
         assert!((f.call(&[3.0]) - 16.0).abs() < 1e-10);
+    }
+
+    /// Local perf probe for the rule-dispatch hot path: builds a corpus of
+    /// largish polynomial/rational expressions (mimicking the
+    /// jacobian/integrate-style benchmarks that hammer `simplify` on
+    /// expressions that do NOT contain any of the elementary-at-const /
+    /// pow-of-pow / even-power-sign / distribute-pow / rational-canon
+    /// patterns) and times repeated `simplify` calls.
+    ///
+    /// Not part of the default test run (`--ignored`); intended for manual
+    /// before/after comparisons of rule-dispatch overhead, e.g.:
+    ///
+    /// ```text
+    /// cargo test -p alkahest-cas --release --lib \
+    ///     simplify::engine::tests::perf_simplify_hot_path -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn perf_simplify_hot_path() {
+        use std::time::Instant;
+
+        let pool = p();
+        let vars: Vec<ExprId> = (0..8)
+            .map(|i| pool.symbol(format!("x{i}"), Domain::Real))
+            .collect();
+
+        // Build a corpus of expressions resembling an 8x8 Jacobian /
+        // degree-16 polynomial workload: nested sums of products of
+        // (var + integer)^k terms, none of which contain Integer(0)/(1)
+        // bases for Pow, elementary functions at 0/1, or `(-1*x)^n` / Mul
+        // coefficients on the Pow base — i.e. none of the new fold patterns
+        // fire, so this isolates pure dispatch overhead.
+        let mut exprs: Vec<ExprId> = Vec::new();
+        for row in 0..vars.len() {
+            let mut terms: Vec<ExprId> = Vec::new();
+            for (col, &v) in vars.iter().enumerate() {
+                let shifted = pool.add(vec![v, pool.integer((row * 3 + col + 2) as i64)]);
+                let power = pool.pow(shifted, pool.integer(((col % 4) + 1) as i64));
+                terms.push(power);
+            }
+            // Product of all the shifted-power terms, plus a polynomial sum.
+            let prod = pool.mul(terms.clone());
+            let sum = pool.add(terms);
+            exprs.push(pool.add(vec![prod, sum]));
+        }
+
+        // Warm up (pool interning, JIT-free path).
+        for &e in &exprs {
+            let _ = simplify(e, &pool);
+        }
+
+        const ITERS: usize = 200;
+        let start = Instant::now();
+        for _ in 0..ITERS {
+            for &e in &exprs {
+                let _ = simplify(e, &pool);
+            }
+        }
+        let elapsed = start.elapsed();
+        eprintln!(
+            "perf_simplify_hot_path: {ITERS} iterations over {} exprs in {:?} ({:?}/iter, {:?}/expr)",
+            exprs.len(),
+            elapsed,
+            elapsed / ITERS as u32,
+            elapsed / (ITERS * exprs.len()) as u32
+        );
     }
 }
