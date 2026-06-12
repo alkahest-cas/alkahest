@@ -55,6 +55,43 @@ extern "C" fn tramp_abs(x: f64) -> f64 {
 extern "C" fn tramp_pow(base: f64, exp: f64) -> f64 {
     base.powf(exp)
 }
+extern "C" fn tramp_sinh(x: f64) -> f64 {
+    x.sinh()
+}
+extern "C" fn tramp_cosh(x: f64) -> f64 {
+    x.cosh()
+}
+extern "C" fn tramp_tanh(x: f64) -> f64 {
+    x.tanh()
+}
+extern "C" fn tramp_asin(x: f64) -> f64 {
+    x.asin()
+}
+extern "C" fn tramp_acos(x: f64) -> f64 {
+    x.acos()
+}
+extern "C" fn tramp_atan(x: f64) -> f64 {
+    x.atan()
+}
+extern "C" fn tramp_floor(x: f64) -> f64 {
+    x.floor()
+}
+extern "C" fn tramp_ceil(x: f64) -> f64 {
+    x.ceil()
+}
+extern "C" fn tramp_round(x: f64) -> f64 {
+    x.round()
+}
+/// Matches `SignPrimitive::numeric_f64`: `0` for `x == 0`, `±1` otherwise.
+extern "C" fn tramp_sign(x: f64) -> f64 {
+    if x > 0.0 {
+        1.0
+    } else if x < 0.0 {
+        -1.0
+    } else {
+        0.0
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Helper: declared function IDs for math imports
@@ -69,6 +106,16 @@ struct MathFuncIds {
     tan_id: FuncId,
     abs_id: FuncId,
     pow_id: FuncId,
+    sinh_id: FuncId,
+    cosh_id: FuncId,
+    tanh_id: FuncId,
+    asin_id: FuncId,
+    acos_id: FuncId,
+    atan_id: FuncId,
+    floor_id: FuncId,
+    ceil_id: FuncId,
+    round_id: FuncId,
+    sign_id: FuncId,
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +183,16 @@ fn codegen_node(
                 "sqrt" => math.sqrt_id,
                 "tan" => math.tan_id,
                 "abs" => math.abs_id,
+                "sinh" => math.sinh_id,
+                "cosh" => math.cosh_id,
+                "tanh" => math.tanh_id,
+                "asin" => math.asin_id,
+                "acos" => math.acos_id,
+                "atan" => math.atan_id,
+                "floor" => math.floor_id,
+                "ceil" => math.ceil_id,
+                "round" => math.round_id,
+                "sign" => math.sign_id,
                 other => {
                     return Err(JitError::UnsupportedNode(format!("function '{other}'")));
                 }
@@ -254,6 +311,16 @@ pub fn compile_cranelift(
     jit_builder.symbol("alkahest_tan", tramp_tan as *const u8);
     jit_builder.symbol("alkahest_abs", tramp_abs as *const u8);
     jit_builder.symbol("alkahest_pow", tramp_pow as *const u8);
+    jit_builder.symbol("alkahest_sinh", tramp_sinh as *const u8);
+    jit_builder.symbol("alkahest_cosh", tramp_cosh as *const u8);
+    jit_builder.symbol("alkahest_tanh", tramp_tanh as *const u8);
+    jit_builder.symbol("alkahest_asin", tramp_asin as *const u8);
+    jit_builder.symbol("alkahest_acos", tramp_acos as *const u8);
+    jit_builder.symbol("alkahest_atan", tramp_atan as *const u8);
+    jit_builder.symbol("alkahest_floor", tramp_floor as *const u8);
+    jit_builder.symbol("alkahest_ceil", tramp_ceil as *const u8);
+    jit_builder.symbol("alkahest_round", tramp_round as *const u8);
+    jit_builder.symbol("alkahest_sign", tramp_sign as *const u8);
 
     let mut module = JITModule::new(jit_builder);
 
@@ -284,6 +351,16 @@ pub fn compile_cranelift(
         tan_id: decl(&mut module, "alkahest_tan", &f1_sig)?,
         abs_id: decl(&mut module, "alkahest_abs", &f1_sig)?,
         pow_id: decl(&mut module, "alkahest_pow", &f2_sig)?,
+        sinh_id: decl(&mut module, "alkahest_sinh", &f1_sig)?,
+        cosh_id: decl(&mut module, "alkahest_cosh", &f1_sig)?,
+        tanh_id: decl(&mut module, "alkahest_tanh", &f1_sig)?,
+        asin_id: decl(&mut module, "alkahest_asin", &f1_sig)?,
+        acos_id: decl(&mut module, "alkahest_acos", &f1_sig)?,
+        atan_id: decl(&mut module, "alkahest_atan", &f1_sig)?,
+        floor_id: decl(&mut module, "alkahest_floor", &f1_sig)?,
+        ceil_id: decl(&mut module, "alkahest_ceil", &f1_sig)?,
+        round_id: decl(&mut module, "alkahest_round", &f1_sig)?,
+        sign_id: decl(&mut module, "alkahest_sign", &f1_sig)?,
     };
 
     // ------------------------------------------------------------------
@@ -540,5 +617,36 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let f = compile_cranelift(x, &[x], &pool).unwrap();
         f.call(&[]);
+    }
+
+    /// The newly-registered unary math trampolines (sinh, cosh, tanh, asin,
+    /// acos, atan, floor, ceil, round, sign) all compile and evaluate
+    /// correctly via the Cranelift backend.
+    #[test]
+    fn cranelift_unary_math_trampolines() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+
+        let cases: &[(&str, f64, f64)] = &[
+            ("sinh", 0.5, 0.5_f64.sinh()),
+            ("cosh", 0.5, 0.5_f64.cosh()),
+            ("tanh", 0.5, 0.5_f64.tanh()),
+            ("asin", 0.5, 0.5_f64.asin()),
+            ("acos", 0.5, 0.5_f64.acos()),
+            ("atan", 0.5, 0.5_f64.atan()),
+            ("floor", 1.7, 1.0),
+            ("ceil", 1.2, 2.0),
+            ("round", 1.5, 2.0),
+            ("sign", -3.0, -1.0),
+        ];
+        for &(name, input, expected) in cases {
+            let expr = pool.func(name, vec![x]);
+            let f = compile_cranelift(expr, &[x], &pool).unwrap();
+            let got = f.call(&[input]);
+            assert!(
+                (got - expected).abs() < 1e-12,
+                "{name}({input}): got {got}, expected {expected}"
+            );
+        }
     }
 }

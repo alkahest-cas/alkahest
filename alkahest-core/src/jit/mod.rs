@@ -43,8 +43,26 @@
 use crate::kernel::eval_const::try_predicate_bool_from_expr;
 use crate::kernel::expr::PredicateKind;
 use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::primitive::PrimitiveRegistry;
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::OnceLock;
+
+// ---------------------------------------------------------------------------
+// Shared primitive registry — used to evaluate `ExprData::Func` nodes in the
+// tree-walking interpreters below.
+// ---------------------------------------------------------------------------
+
+/// Returns a lazily-initialised, process-wide [`PrimitiveRegistry`].
+///
+/// `eval_interp` and the snapshot interpreter dispatch every `Func { name,
+/// args }` node through `registry().numeric_f64(name, &vals)` so that *every*
+/// primitive with a `numeric_f64` kernel is automatically evaluable here —
+/// new primitives don't need a hand-written match arm in this module.
+fn registry() -> &'static PrimitiveRegistry {
+    static REGISTRY: OnceLock<PrimitiveRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(PrimitiveRegistry::default_registry)
+}
 
 #[cfg(feature = "cuda")]
 pub mod nvptx;
@@ -654,19 +672,12 @@ fn eval_interp_inner(
             let e = eval_interp_inner(exp, env, pool, memo)?;
             Some(b.powf(e))
         }
-        ExprData::Func { name, args } if args.len() == 1 => {
-            let x = eval_interp_inner(args[0], env, pool, memo)?;
-            Some(match name.as_str() {
-                "sin" => x.sin(),
-                "cos" => x.cos(),
-                "tan" => x.tan(),
-                "exp" => x.exp(),
-                "log" => x.ln(),
-                "sqrt" => x.sqrt(),
-                "gamma" => rug::Float::with_val(53, x).gamma().to_f64(),
-                "abs" => x.abs(),
-                _ => return None,
-            })
+        ExprData::Func { name, args } => {
+            let mut vals = Vec::with_capacity(args.len());
+            for &a in &args {
+                vals.push(eval_interp_inner(a, env, pool, memo)?);
+            }
+            registry().numeric_f64(name.as_str(), &vals)
         }
         ExprData::Piecewise { branches, default } => {
             for (c, v) in branches {
@@ -803,6 +814,13 @@ fn try_expr_f64_snap(
             try_expr_f64_snap(*base, snap, env, memo)?
                 .powf(try_expr_f64_snap(*exp, snap, env, memo)?),
         ),
+        ExprData::Func { name, args } => {
+            let mut vals = Vec::with_capacity(args.len());
+            for &a in args {
+                vals.push(try_expr_f64_snap(a, snap, env, memo)?);
+            }
+            registry().numeric_f64(name.as_str(), &vals)
+        }
         _ => None,
     };
     if let Some(v) = val {
@@ -914,20 +932,13 @@ fn eval_interp_snap(
             let (b, e) = (*base, *exp);
             Some(eval_interp_snap(b, env, snap, memo)?.powf(eval_interp_snap(e, env, snap, memo)?))
         }
-        ExprData::Func { name, args } if args.len() == 1 => {
-            let a = args[0];
-            let x = eval_interp_snap(a, env, snap, memo)?;
-            Some(match name.as_str() {
-                "sin" => x.sin(),
-                "cos" => x.cos(),
-                "tan" => x.tan(),
-                "exp" => x.exp(),
-                "log" => x.ln(),
-                "sqrt" => x.sqrt(),
-                "gamma" => rug::Float::with_val(53, x).gamma().to_f64(),
-                "abs" => x.abs(),
-                _ => return None,
-            })
+        ExprData::Func { name, args } => {
+            let args = args.clone();
+            let mut vals = Vec::with_capacity(args.len());
+            for a in args {
+                vals.push(eval_interp_snap(a, env, snap, memo)?);
+            }
+            registry().numeric_f64(name.as_str(), &vals)
         }
         ExprData::Piecewise { branches, default } => {
             for (c, v) in branches {
@@ -1343,6 +1354,17 @@ mod llvm_backend {
                     "log" => "llvm.log.f64",
                     "sqrt" => "llvm.sqrt.f64",
                     "abs" => "llvm.fabs.f64",
+                    "floor" => "llvm.floor.f64",
+                    "ceil" => "llvm.ceil.f64",
+                    "round" => "llvm.round.f64",
+                    // No dedicated LLVM intrinsic; declared as external libm
+                    // calls resolved by the JIT execution engine.
+                    "sinh" => "sinh",
+                    "cosh" => "cosh",
+                    "tanh" => "tanh",
+                    "asin" => "asin",
+                    "acos" => "acos",
+                    "atan" => "atan",
                     other => {
                         return Err(JitError::UnsupportedNode(format!("function '{other}'")));
                     }
@@ -1667,5 +1689,175 @@ mod tests {
         for (got, exp) in out.iter().zip(expected.iter()) {
             assert!((got - exp).abs() < 1e-10, "got {got}, expected {exp}");
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Registry / eval_interp sync test
+    // -----------------------------------------------------------------
+
+    /// Probe argument lists, ordered to prefer well-behaved (in-domain)
+    /// inputs for every registered primitive — mirrors the probe sets used
+    /// by `primitive::probe_caps`.
+    const PROBE_ARG_SETS: &[&[f64]] = &[
+        &[0.5],
+        &[0.5, 0.3],
+        &[0.2, 0.3, 0.4],
+        &[1.0],
+        &[1.0, 2.0],
+        &[1.0, 2.0, 3.0],
+    ];
+
+    /// Every primitive in [`PrimitiveRegistry::default_registry`] that has a
+    /// `numeric_f64` kernel must be evaluable through [`eval_interp`] when
+    /// expressed as `Func { name, args }`.
+    ///
+    /// `diracdelta` is the documented exception: it is a distribution with no
+    /// pointwise `f64` value (see the `primitive::mod` coverage doctest and
+    /// `tests/test_v10.py::test_primitive_registry_all_have_numeric_f64`).
+    #[test]
+    fn eval_interp_covers_all_numeric_f64_primitives() {
+        use crate::primitive::{Capabilities, PrimitiveRegistry};
+
+        let reg = PrimitiveRegistry::default_registry();
+        let pool = p();
+
+        let mut missing = Vec::new();
+
+        for (name, caps) in reg.iter() {
+            if !caps.contains(Capabilities::NUMERIC_F64) {
+                continue;
+            }
+            if name == "diracdelta" {
+                continue;
+            }
+
+            // Find an arg-count / value combination this primitive accepts.
+            let Some(probe) = PROBE_ARG_SETS
+                .iter()
+                .find(|args| reg.numeric_f64(name, args).is_some())
+            else {
+                // Registered as NUMERIC_F64 but none of our probe sets work —
+                // treat as a coverage gap to investigate rather than silently
+                // skipping.
+                missing.push(format!("{name} (no working probe args)"));
+                continue;
+            };
+
+            let expected = reg.numeric_f64(name, probe).unwrap();
+
+            let arg_ids: Vec<ExprId> = probe.iter().map(|&v| pool.float(v, 53)).collect();
+            let expr = pool.func(name, arg_ids);
+
+            let env = HashMap::new();
+            match eval_interp(expr, &env, &pool) {
+                Some(got) => {
+                    if (got - expected).abs() > 1e-9 {
+                        missing.push(format!(
+                            "{name}: eval_interp({probe:?}) = {got}, \
+                             registry.numeric_f64 = {expected}"
+                        ));
+                    }
+                }
+                None => missing.push(format!(
+                    "{name}: eval_interp returned None for {probe:?} \
+                     (registry.numeric_f64 = {expected})"
+                )),
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "eval_interp is missing coverage for registered NUMERIC_F64 \
+             primitives:\n{}",
+            missing.join("\n")
+        );
+    }
+
+    #[test]
+    fn eval_interp_unary_heads() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let mut env = HashMap::new();
+        env.insert(x, 0.5_f64);
+
+        let cases: &[(&str, f64)] = &[
+            ("sinh", 0.5_f64.sinh()),
+            ("cosh", 0.5_f64.cosh()),
+            ("tanh", 0.5_f64.tanh()),
+            ("asin", 0.5_f64.asin()),
+            ("acos", 0.5_f64.acos()),
+            ("atan", 0.5_f64.atan()),
+            ("sign", 1.0),
+            ("floor", 0.0),
+            ("ceil", 1.0),
+            ("round", 1.0),
+        ];
+        for &(name, expected) in cases {
+            let expr = pool.func(name, vec![x]);
+            let got = eval_interp(expr, &env, &pool)
+                .unwrap_or_else(|| panic!("eval_interp returned None for {name}"));
+            assert!(
+                (got - expected).abs() < 1e-12,
+                "{name}(0.5): got {got}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn eval_interp_erf_erfc_gamma() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let mut env = HashMap::new();
+        env.insert(x, 1.0_f64);
+
+        let erf = eval_interp(pool.func("erf", vec![x]), &env, &pool).unwrap();
+        let erfc = eval_interp(pool.func("erfc", vec![x]), &env, &pool).unwrap();
+        assert!((erf + erfc - 1.0).abs() < 1e-9, "erf+erfc should be 1");
+
+        let gamma = eval_interp(pool.func("gamma", vec![x]), &env, &pool).unwrap();
+        assert!((gamma - 1.0).abs() < 1e-9, "Γ(1) = 1, got {gamma}");
+    }
+
+    #[test]
+    fn eval_interp_heaviside() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+
+        // θ(−1) = 0, θ(0) = 1/2, θ(1) = 1 — matches `HeavisidePrimitive`.
+        for (xv, expected) in [(-1.0, 0.0), (0.0, 0.5), (1.0, 1.0)] {
+            let mut env = HashMap::new();
+            env.insert(x, xv);
+            let expr = pool.func("heaviside", vec![x]);
+            let got = eval_interp(expr, &env, &pool).unwrap();
+            assert_eq!(got, expected, "heaviside({xv})");
+        }
+    }
+
+    #[test]
+    fn eval_interp_binary_and_ternary_heads() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let mut env = HashMap::new();
+        env.insert(x, 1.0_f64);
+        env.insert(y, 2.0_f64);
+
+        let atan2 = eval_interp(pool.func("atan2", vec![x, y]), &env, &pool).unwrap();
+        assert!((atan2 - 1.0_f64.atan2(2.0)).abs() < 1e-12);
+
+        let min = eval_interp(pool.func("min", vec![x, y]), &env, &pool).unwrap();
+        assert_eq!(min, 1.0);
+
+        let max = eval_interp(pool.func("max", vec![x, y]), &env, &pool).unwrap();
+        assert_eq!(max, 2.0);
+
+        // EllipticK(0) = EllipticE(0) = π/2.
+        let zero = pool.integer(0_i32);
+        let env = HashMap::new();
+        let k0 = eval_interp(pool.func("EllipticK", vec![zero]), &env, &pool).unwrap();
+        let e0 = eval_interp(pool.func("EllipticE", vec![zero]), &env, &pool).unwrap();
+        let half_pi = std::f64::consts::PI / 2.0;
+        assert!((k0 - half_pi).abs() < 1e-9);
+        assert!((e0 - half_pi).abs() < 1e-9);
     }
 }
