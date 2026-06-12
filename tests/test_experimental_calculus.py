@@ -18,7 +18,6 @@ from fractions import Fraction
 import alkahest as A
 from alkahest import experimental as ex
 
-
 # ---------------------------------------------------------------------------
 # Distribution primitives
 # ---------------------------------------------------------------------------
@@ -120,7 +119,10 @@ def test_fourier_gaussian_self_dual():
     f = A.exp(p.integer(-1) * pi * x**2)
     got = ex.fourier_transform(f, x, xi)
     text = str(got)
-    assert text.startswith("exp(") and "pi" in text and "xi^2" in text and "-1" in text
+    assert text.startswith("exp(")
+    assert "pi" in text
+    assert "xi^2" in text
+    assert "-1" in text
     # Numerically self-dual: F{e^{-pi x^2}}(xi) = e^{-pi xi^2}.
     import math
 
