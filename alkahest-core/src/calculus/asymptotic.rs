@@ -907,6 +907,34 @@ mod tests {
     }
 
     #[test]
+    fn sqrt_third_coefficient() {
+        // sqrt(x^2+1) third term is -1/(8 x^3): check the x^{-3} coefficient.
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Positive);
+        let inside = p.add(vec![p.pow(x, p.integer(2)), p.integer(1)]);
+        let f = p.func("sqrt", vec![inside]);
+        let exp = asymptotic_expand(f, x, 3, &p).unwrap();
+        let terms = exp.term_exprs();
+        assert!(terms.len() >= 3, "got {}", terms.len());
+        // Evaluate the x^{-3} term against the expected -1/8 · x^{-3}.
+        let mut env = HashMap::new();
+        env.insert(x, 2.0f64);
+        let third = eval_interp(terms[2], &env, &p).unwrap();
+        let expected = -1.0 / 8.0 * 2.0f64.powi(-3);
+        assert!((third - expected).abs() < 1e-12, "third={third}");
+    }
+
+    #[test]
+    fn oscillatory_declines() {
+        // sin(x) at +infinity has no power-scale asymptotic expansion; the
+        // o()-gate / scale detection must decline rather than fabricate terms.
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Positive);
+        let f = p.func("sin", vec![x]);
+        assert!(asymptotic_expand(f, x, 3, &p).is_err());
+    }
+
+    #[test]
     fn exp_one_over_x_times_x() {
         // e^{1/x} * x ~ x + 1 + 1/(2x) + ...
         let p = ExprPool::new();
