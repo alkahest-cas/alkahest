@@ -113,6 +113,102 @@ fn gaussian_numeric_spotcheck() {
     }
 }
 
+// --- table: shifted Gaussian (completing the square) ------------------------
+
+#[test]
+fn shifted_gaussian_expanded() {
+    // F{e^{−a(x−b)²}}(ξ) = √(π/a)·e^{−π² ξ²/a}·e^{−2πi b ξ}.
+    // Feed the *expanded* exponent −a x² + 2ab x − a b² with a = 1, b = 2:
+    //   exponent = −x² + 4x − 4.
+    let (pool, x, xi) = setup();
+    let x2 = pool.pow(x, int(&pool, 2));
+    let exponent = pool.add(vec![
+        pool.mul(vec![int(&pool, -1), x2]),
+        pool.mul(vec![int(&pool, 4), x]),
+        int(&pool, -4),
+    ]);
+    let f = pool.func("exp", vec![exponent]);
+    let g = fourier_transform(f, x, xi, &pool).unwrap();
+
+    // a = 1, b = 2  ⇒  √π · e^{−π² ξ²} · e^{−4πi ξ}.
+    let pi = pool.symbol("pi", Domain::Real);
+    let half = pool.rational(1, 2);
+    let prefactor = pool.pow(pi, half); // √(π/1)
+    let pi2 = pool.pow(pi, int(&pool, 2));
+    let xi2 = pool.pow(xi, int(&pool, 2));
+    let gauss = pool.func("exp", vec![pool.mul(vec![int(&pool, -1), pi2, xi2])]);
+    let i = pool.imaginary_unit();
+    let phase = pool.func(
+        "exp",
+        vec![pool.mul(vec![int(&pool, -4), pi, i, xi])], // −2π i b ξ with b = 2
+    );
+    let expected = pool.mul(vec![prefactor, gauss, phase]);
+    assert_eq_simplified(&pool, g, expected);
+}
+
+#[test]
+fn shifted_gaussian_factored_form() {
+    // Same pair fed as e^{−(x−2)²} (factored) — the simplifier expands the
+    // square so the quadratic matcher still recognises it.
+    let (pool, x, xi) = setup();
+    let shifted = pool.add(vec![x, int(&pool, -2)]);
+    let sq = pool.pow(shifted, int(&pool, 2));
+    let f = pool.func("exp", vec![pool.mul(vec![int(&pool, -1), sq])]);
+    let g = fourier_transform(f, x, xi, &pool);
+    assert!(
+        g.is_ok(),
+        "factored shifted Gaussian e^{{-(x-2)^2}} should be recognised: {g:?}",
+    );
+    // Result must be free of I² (the cross-term must have collapsed): the only
+    // I appears linearly in the phase e^{−4π i ξ}.  Spot-check: the centred
+    // magnitude |F| = √π e^{−π² ξ²} matches the real Gaussian numerically.
+    let g = simp(g.unwrap(), &pool);
+    let s = disp(&pool, g);
+    // I appears (the linear phase) but no surviving I² cross-term: completing
+    // the square must have collapsed it via the kernel's i² = −1 rule.
+    assert!(s.contains("I"), "phase factor should carry I: {s}");
+    assert!(!s.contains("I^2"), "I² cross-term must have collapsed: {s}");
+}
+
+/// Numeric spot-check of the *magnitude* of the shifted-Gaussian transform:
+/// |F{e^{−x²}}(ξ)| via quadrature equals √π·e^{−π²ξ²}.  The shift only adds a
+/// unit-modulus phase, so the magnitude equals the centred Gaussian's.
+#[test]
+fn shifted_gaussian_magnitude_numeric() {
+    use std::f64::consts::PI;
+    // |F{e^{−(x−b)²}}(ξ)| = |F{e^{−x²}}(ξ)| = √π·e^{−π²ξ²}.
+    let mag = |xi: f64| -> f64 {
+        let l = 8.0;
+        let n = 40_000usize;
+        let h = 2.0 * l / n as f64;
+        // ∫ e^{−x²} e^{−2πiξx} dx — accumulate real and imaginary parts.
+        let (mut re, mut im) = (0.0_f64, 0.0_f64);
+        for k in 0..=n {
+            let xv = -l + k as f64 * h;
+            let w = if k == 0 || k == n {
+                1.0
+            } else if k % 2 == 0 {
+                2.0
+            } else {
+                4.0
+            };
+            let g = (-xv * xv).exp();
+            re += w * g * (2.0 * PI * xi * xv).cos();
+            im += w * g * -(2.0 * PI * xi * xv).sin();
+        }
+        let (re, im) = (re * h / 3.0, im * h / 3.0);
+        (re * re + im * im).sqrt()
+    };
+    for &xi in &[0.0, 0.3, 0.7] {
+        let numeric = mag(xi);
+        let analytic = PI.sqrt() * (-PI * PI * xi * xi).exp();
+        assert!(
+            (numeric - analytic).abs() < 1e-6,
+            "shifted-Gaussian magnitude mismatch at ξ={xi}: {numeric} vs {analytic}",
+        );
+    }
+}
+
 // --- table: two-sided exponential → Lorentzian ------------------------------
 
 #[test]

@@ -15,16 +15,16 @@
 //!
 //! # Complex representation
 //!
-//! The Alkahest kernel has **no first-class imaginary unit** — `Domain::Complex`
-//! is only a *symbol* flag, and there is no `ExprData` node for `i = √(−1)`.
-//! Rather than retreat to the real cos/sin formulation, this module represents
-//! the imaginary unit as the interned **symbol `I` (`Domain::Complex`)**, so the
-//! complex-exponential pairs the convention naturally produces (`δ(x−a) ↦
-//! e^{−2πiaξ}`, the one-sided exponential, the shift/modulation/derivative
-//! theorems) are emitted honestly as `e^{… I …}`.  `I` is an *opaque* symbol: no
-//! simplification rule knows `I² = −1`, so results that would require collapsing
-//! `I²` are not auto-simplified (none of the table entries below need it).  The
-//! purely real self-dual pairs (Gaussian, two-sided exponential → Lorentzian)
+//! The imaginary unit is the kernel's first-class
+//! [`ExprPool::imaginary_unit`] — the interned, kernel-blessed symbol `I`
+//! (`Domain::Complex`) for which the simplifier knows the algebraic identities
+//! `I² = −1`, `I³ = −i`, `I⁴ = 1`, … (see the kernel docs).  The complex
+//! exponential pairs the convention naturally produces (`δ(x−a) ↦ e^{−2πiaξ}`,
+//! the one-sided exponential, the shift / modulation / derivative theorems) are
+//! emitted honestly as `e^{… I …}`.  Because `I²` now folds, the
+//! **shifted Gaussian** `e^{−a(x−b)²}` completes the square and collapses its
+//! cross-term `I²` to a real prefactor (see the table below).  The purely real
+//! self-dual pairs (centred Gaussian, two-sided exponential → Lorentzian)
 //! contain no `I` at all and are fully real.
 //!
 //! # Forward transform table
@@ -35,6 +35,7 @@
 //! |-------------------------|----------------------------------------|-----------------|
 //! | `e^{−π x²}`             | `e^{−π ξ²}`                            | Gaussian (self-dual) |
 //! | `e^{−a x²}` (`a>0`)     | `√(π/a)·e^{−π² ξ²/a}`                  | Gaussian        |
+//! | `e^{−a(x−b)²}` (`a>0`)  | `√(π/a)·e^{−π² ξ²/a}·e^{−2πi b ξ}`     | shifted Gaussian (completes the square) |
 //! | `e^{−a |x|}` (`a>0`)    | `2a/(a² + 4π² ξ²)`                     | two-sided exp / Lorentzian |
 //! | `θ(x)·e^{−a x}`         | `1/(a + 2πi ξ)`                        | one-sided exp   |
 //! | `δ(x−a)`               | `e^{−2πi a ξ}`  (`δ(x) ↦ 1`)           | impulse         |
@@ -187,9 +188,10 @@ fn pi(pool: &ExprPool) -> ExprId {
     pool.symbol("pi", Domain::Real)
 }
 
-/// The imaginary unit `i`, represented as the opaque complex symbol `I`.
+/// The imaginary unit `i`, the kernel's canonical [`ExprPool::imaginary_unit`].
+/// The simplifier knows `i² = −1`, so completing-the-square `i²` terms fold.
 fn imag(pool: &ExprPool) -> ExprId {
-    pool.symbol("I", Domain::Complex)
+    pool.imaginary_unit()
 }
 
 /// `2πi` as an expression.
@@ -729,9 +731,14 @@ fn fourier_exp(
     xi: ExprId,
     pool: &ExprPool,
 ) -> Result<ExprId, FourierError> {
-    // ── Gaussian: arg = −a·x² (no linear/constant part). ────────────────────
-    if let Some(a) = match_quadratic_neg(arg, x, pool) {
-        // F{e^{−a x²}}(ξ) = √(π/a)·e^{−π² ξ²/a}.
+    // ── Gaussian (centred or shifted): arg = −a·(x − b)² + d. ───────────────
+    // Completing the square handles the centred case (b = 0, d = 0) as well as
+    // a genuine shift/offset.  The shift produces the linear phase e^{−2πi b ξ}
+    // (its derivation collapses an I² cross-term via the kernel's i² = −1 rule);
+    // the constant offset d rides along as the scalar e^{d}.
+    if let Some((a, b, d)) = match_gaussian_quadratic(arg, x, pool) {
+        // F{e^{−a x²}}(ξ) = √(π/a)·e^{−π² ξ²/a}; shift by b multiplies by the
+        // phase e^{−2πi b ξ} (shift theorem); the offset d scales by e^{d}.
         let pi_e = pi(pool);
         let half = pool.rational(1_i32, 2_i32);
         let prefactor = pool.pow(pool.mul(vec![pi_e, recip(a, pool)]), half);
@@ -739,7 +746,16 @@ fn fourier_exp(
         let xi2 = pool.pow(xi, pool.integer(2_i32));
         let exponent = neg(pool.mul(vec![pi2, xi2, recip(a, pool)]), pool);
         let gauss = pool.func("exp", vec![simp(exponent, pool)]);
-        return Ok(simp(pool.mul(vec![prefactor, gauss]), pool));
+        let mut out_factors = vec![prefactor, gauss];
+        // Linear phase from the spatial shift b (zero ⇒ omitted).
+        if b != pool.integer(0_i32) {
+            out_factors.push(phase_minus(b, xi, pool));
+        }
+        // Constant offset d (zero ⇒ omitted): scalar e^{d}.
+        if d != pool.integer(0_i32) {
+            out_factors.push(pool.func("exp", vec![d]));
+        }
+        return Ok(simp(pool.mul(out_factors), pool));
     }
 
     // ── Two-sided exponential: arg = −a·|x| (a free of x, a > 0 assumed). ────
@@ -767,32 +783,170 @@ fn fourier_exp(
     )))
 }
 
-/// If `arg = −a·x²` with `a` free of `x` and no lower-order terms, return `a`.
-fn match_quadratic_neg(arg: ExprId, x: ExprId, pool: &ExprPool) -> Option<ExprId> {
-    // arg must be c · x², c free of x; then a = −c.
-    let x2 = pool.pow(x, pool.integer(2_i32));
-    if arg == x2 {
-        return None; // a = −1 < 0, diverges; not a decaying Gaussian.
+/// Decompose a Gaussian exponent `arg = −a·(x − b)² + d` by completing the
+/// square, returning `(a, b, d)` with `a` the (positive, for convergence)
+/// curvature, `b` the spatial shift, and `d` the constant offset.
+///
+/// Internally `arg` is read as the general quadratic `A·x² + B·x + C` (each
+/// coefficient free of `x`); then `a = −A`, `b = B/(2a)`, `d = C + B²/(4a)`.
+/// The centred case (`B = C = 0`) returns `b = d = 0`, which the caller emits
+/// without any phase or offset factor.
+///
+/// Returns `None` for a non-quadratic `arg`, a missing/zero `x²` term, or a
+/// curvature that the simplifier can prove is `> 0` (a *growing* Gaussian
+/// `e^{+a x²}`, which diverges) — matching the old centred-only behaviour for
+/// `arg = +x²`.
+fn match_gaussian_quadratic(
+    arg: ExprId,
+    x: ExprId,
+    pool: &ExprPool,
+) -> Option<(ExprId, ExprId, ExprId)> {
+    // arg = A·x² + B·x + C, each coefficient free of x.
+    let (a_coeff, b_coeff, c_coeff) = quadratic_abc(arg, x, pool)?;
+    // a = −A (positive curvature for a decaying Gaussian).
+    let a = simp(neg(a_coeff, pool), pool);
+    // Reject a literally-negative curvature (a ≤ 0 ⇒ divergent / not Gaussian).
+    if let Some(r) = literal_rational(a, pool) {
+        if r <= 0 {
+            return None;
+        }
     }
-    if let ExprData::Mul(args) = pool.get(arg) {
-        let pos = args.iter().position(|&a| a == x2)?;
+    let two_a = pool.mul(vec![pool.integer(2_i32), a]);
+    // b = B / (2a).
+    let b = simp(pool.mul(vec![b_coeff, recip(two_a, pool)]), pool);
+    // d = C + B²/(4a).
+    let four_a = pool.mul(vec![pool.integer(4_i32), a]);
+    let b2 = pool.pow(b_coeff, pool.integer(2_i32));
+    let d = simp(
+        pool.add(vec![c_coeff, pool.mul(vec![b2, recip(four_a, pool)])]),
+        pool,
+    );
+    Some((a, b, d))
+}
+
+/// Decompose `expr = A·x² + B·x + C` (each coefficient free of `x`), returning
+/// `(A, B, C)`.  Requires a non-zero, x-free `x²` coefficient; rejects any term
+/// of degree > 2 or otherwise non-polynomial in `x`.
+fn quadratic_abc(expr: ExprId, x: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId, ExprId)> {
+    let x2 = pool.pow(x, pool.integer(2_i32));
+    let terms: Vec<ExprId> = match pool.get(expr) {
+        ExprData::Add(a) => a,
+        _ => vec![expr],
+    };
+    let mut a_parts: Vec<ExprId> = Vec::new();
+    let mut b_parts: Vec<ExprId> = Vec::new();
+    let mut c_parts: Vec<ExprId> = Vec::new();
+    for term in terms {
+        if is_free_of(term, x, pool) {
+            c_parts.push(term);
+            continue;
+        }
+        // Coefficient of x² (term is `coeff·x²` or bare `x²`).
+        if let Some(coeff) = coeff_of(term, x2, x, pool) {
+            a_parts.push(coeff);
+            continue;
+        }
+        // Coefficient of x¹ (term is `coeff·x` or bare `x`).
+        if let Some(coeff) = coeff_of(term, x, x, pool) {
+            b_parts.push(coeff);
+            continue;
+        }
+        // A squared affine factor `coeff·(p·x + q)²` (the *factored* Gaussian
+        // `e^{−a(x−b)²}` the simplifier does not expand).  Expand it in place:
+        // contributes A += coeff·p², B += coeff·2pq, C += coeff·q².
+        if let Some((coeff, p, q)) = squared_affine(term, x, pool) {
+            let p2 = pool.pow(p, pool.integer(2_i32));
+            a_parts.push(pool.mul(vec![coeff, p2]));
+            b_parts.push(pool.mul(vec![coeff, pool.integer(2_i32), p, q]));
+            let q2 = pool.pow(q, pool.integer(2_i32));
+            c_parts.push(pool.mul(vec![coeff, q2]));
+            continue;
+        }
+        return None; // higher-degree or non-polynomial in x
+    }
+    let a = simp(sum_or(&a_parts, 0, pool), pool);
+    if a == pool.integer(0_i32) {
+        return None; // no x² term ⇒ not a Gaussian exponent
+    }
+    Some((a, sum_or(&b_parts, 0, pool), sum_or(&c_parts, 0, pool)))
+}
+
+/// Coefficient of `power` (e.g. `x` or `x²`) in a single (non-Add) `term`,
+/// requiring every other factor to be free of `var`.  Returns `1` for the bare
+/// power, the product of the remaining factors for `coeff·power`, or `None`
+/// when `power` does not appear as a whole factor.
+fn coeff_of(term: ExprId, power: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    if term == power {
+        return Some(pool.integer(1_i32));
+    }
+    if let ExprData::Mul(args) = pool.get(term) {
+        let pos = args.iter().position(|&m| m == power)?;
         let others: Vec<ExprId> = args
             .iter()
             .enumerate()
             .filter(|&(i, _)| i != pos)
-            .map(|(_, &a)| a)
+            .map(|(_, &m)| m)
             .collect();
-        if others.iter().all(|&o| is_free_of(o, x, pool)) {
-            let c = match others.len() {
-                0 => pool.integer(1_i32),
-                1 => others[0],
-                _ => pool.mul(others),
-            };
-            // a = −c.
-            return Some(simp(neg(c, pool), pool));
+        if others.iter().all(|&o| is_free_of(o, var, pool)) {
+            return Some(sum_or(&others, 1, pool));
         }
     }
     None
+}
+
+/// `Add` (when `identity == 0`) or `Mul` (when `identity == 1`) of `parts`,
+/// collapsing to the identity for an empty slice and to the lone element for a
+/// singleton.
+fn sum_or(parts: &[ExprId], identity: i32, pool: &ExprPool) -> ExprId {
+    match parts.len() {
+        0 => pool.integer(identity),
+        1 => parts[0],
+        _ if identity == 0 => pool.add(parts.to_vec()),
+        _ => pool.mul(parts.to_vec()),
+    }
+}
+
+/// Recognise a term `coeff·(p·x + q)²` where the squared base is affine in `x`
+/// and every other factor is free of `x`.  Returns `(coeff, p, q)`.  Used to
+/// expand the *factored* shifted Gaussian `e^{−a(x−b)²}`, which the global
+/// simplifier leaves unexpanded.
+fn squared_affine(term: ExprId, x: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId, ExprId)> {
+    let factors: Vec<ExprId> = match pool.get(term) {
+        ExprData::Mul(a) => a,
+        _ => vec![term],
+    };
+    // Find the single `(affine)²` factor.
+    let mut sq_idx = None;
+    let mut pq = None;
+    for (i, &fac) in factors.iter().enumerate() {
+        if let ExprData::Pow { base, exp } = pool.get(fac) {
+            if exp == pool.integer(2_i32) && !is_free_of(base, x, pool) {
+                let (p, q) = as_affine(base, x, pool)?;
+                if sq_idx.is_some() {
+                    return None; // product of two x-dependent squares ⇒ degree > 2
+                }
+                sq_idx = Some(i);
+                pq = Some((p, q));
+            }
+        }
+    }
+    let idx = sq_idx?;
+    let (p, q) = pq?;
+    // The remaining factors form the (x-free) scalar coefficient.
+    let coeff = remove_index(&factors, idx, pool);
+    if !is_free_of(coeff, x, pool) {
+        return None;
+    }
+    Some((coeff, p, q))
+}
+
+/// If `expr` simplifies to a literal rational (integer or ratio), return it.
+fn literal_rational(expr: ExprId, pool: &ExprPool) -> Option<rug::Rational> {
+    match pool.get(expr) {
+        ExprData::Integer(n) => Some(rug::Rational::from(n.0.clone())),
+        ExprData::Rational(r) => Some(r.0.clone()),
+        _ => None,
+    }
 }
 
 /// If `arg = −a·|x|` (with `|x|` as `abs(x)` or `(x²)^{1/2}`) and `a` free of
