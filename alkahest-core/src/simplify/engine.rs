@@ -1,6 +1,7 @@
 use super::rules::{
-    AddZero, CanonicalOrder, ConstFold, DivSelf, ExpandMul, FlattenAdd, FlattenMul, MulOne,
-    MulZero, PowOne, PowZero, RewriteRule, SqrtInteger, SubSelf,
+    AddZero, CanonicalOrder, ConstFold, DistributePowOverLiteralCoeff, DivSelf, ElementaryAtConst,
+    EvenPowerSignFold, ExpandMul, FlattenAdd, FlattenMul, MulOne, MulZero, PowOfPow, PowOne,
+    PowZero, RationalCanon, RewriteRule, SqrtInteger, SubSelf,
 };
 use super::rulesets::PatternRuleSet;
 use crate::deriv::log::{DerivationLog, DerivedExpr};
@@ -56,11 +57,16 @@ pub fn rules_for_config(config: &SimplifyConfig) -> Vec<Box<dyn RewriteRule>> {
     let mut rules: Vec<Box<dyn RewriteRule>> = vec![
         Box::new(FlattenMul),
         Box::new(FlattenAdd),
+        Box::new(RationalCanon),
         Box::new(MulZero),
         Box::new(AddZero),
         Box::new(MulOne),
+        Box::new(ElementaryAtConst),
         Box::new(PowZero),
         Box::new(PowOne),
+        Box::new(EvenPowerSignFold),
+        Box::new(PowOfPow),
+        Box::new(DistributePowOverLiteralCoeff),
         Box::new(ConstFold),
         Box::new(SqrtInteger),
         Box::new(SubSelf),

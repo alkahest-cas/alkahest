@@ -673,6 +673,14 @@ mod backend {
         let simplified = fold_numeric_pow(simplified, pool);
         // RW-3: apply linear canonizer as a post-extraction pass.
         let simplified = canonicalize_linear(simplified, pool);
+        // Final post-extraction pass: run the rule-based simplifier so that
+        // constant-folding rules not modeled inside the egglog program
+        // (elementary functions at 0/1, x^1, 1^r, power-of-power, even-power
+        // sign folding, Rational(n/1) canonicalization, and numeric
+        // cancellation across products) also apply to the extracted term.
+        // The expression is typically already near-normal-form at this
+        // point, so this is a cheap bounded pass.
+        let simplified = super::super::engine::simplify(simplified, pool).value;
 
         let mut log = DerivationLog::new();
         if simplified != expr {
