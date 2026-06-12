@@ -52,6 +52,8 @@ jobs:
       - name: Install maturin and build alkahest
         run: |
           python -m venv .venv
+          # maturin ≥1.13 uses `pip install --group` (PEP 735) which requires pip ≥25.
+          .venv/bin/pip install --upgrade pip
           .venv/bin/pip install maturin
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
           .venv/bin/maturin develop -m alkahest-py/Cargo.toml --features groebner

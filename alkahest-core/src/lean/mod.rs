@@ -316,7 +316,12 @@ pub fn emit_diff_goal(before: ExprId, after: ExprId, wrt: ExprId, pool: &ExprPoo
 /// Emit the Lean proof for a single [`RewriteStep`].
 ///
 /// Returns a complete `example` statement with a tactic proof.
-pub fn emit_step(step: &RewriteStep, pool: &ExprPool, wrt: Option<ExprId>) -> String {
+pub fn emit_step(step: &RewriteStep, pool: &ExprPool) -> String {
+    emit_step_wrt(step, pool, None)
+}
+
+/// Like [`emit_step`], but when `wrt` is set emits a `deriv` goal instead of a rewrite equality.
+pub fn emit_step_wrt(step: &RewriteStep, pool: &ExprPool, wrt: Option<ExprId>) -> String {
     let goal = if let Some(var) = wrt {
         emit_diff_goal(step.before, step.after, var, pool)
     } else {
@@ -383,7 +388,7 @@ pub fn emit_lean_expr_wrt(
 
     for (i, step) in steps.iter().enumerate() {
         out.push_str(&format!("-- Step {}: {}\n", i + 1, step.rule_name));
-        out.push_str(&emit_step(step, pool, wrt));
+        out.push_str(&emit_step_wrt(step, pool, wrt));
         out.push_str("\n\n");
     }
 
@@ -519,7 +524,7 @@ mod tests {
         let zero = pool.integer(0_i32);
         let before = pool.add(vec![x, zero]);
         let step = crate::deriv::log::RewriteStep::simple("add_zero", before, x);
-        let s = emit_step(&step, &pool, None);
+        let s = emit_step(&step, &pool);
         assert!(s.contains("add_zero"));
         assert!(s.contains("simp"));
     }

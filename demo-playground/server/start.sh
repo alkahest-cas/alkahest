@@ -34,16 +34,23 @@ pip install -q --upgrade pip
 pip install -q -r requirements.txt
 
 install_alkahest_wheel() {
-  local PY_TAG
+  local PY_TAG WHEEL_PLAT
   PY_TAG=$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
+  case "$(uname -m)" in
+    x86_64) WHEEL_PLAT="manylinux_2_35_x86_64" ;;
+    aarch64|arm64) WHEEL_PLAT="manylinux_2_35_aarch64" ;;
+    *) echo "Unsupported architecture for +full wheel: $(uname -m)"; return 1 ;;
+  esac
   local ALKAHEST_VERSION="${ALKAHEST_VERSION:-3.4.0}"
-  local FULL_WHEEL="https://github.com/alkahest-cas/alkahest/releases/download/v${ALKAHEST_VERSION}/alkahest-${ALKAHEST_VERSION}+full-${PY_TAG}-${PY_TAG}-manylinux_2_35_x86_64.whl"
+  local FULL_WHEEL="https://github.com/alkahest-cas/alkahest/releases/download/v${ALKAHEST_VERSION}/alkahest-${ALKAHEST_VERSION}+full-${PY_TAG}-${PY_TAG}-${WHEEL_PLAT}.whl"
   echo "Installing alkahest +full wheel: $FULL_WHEEL"
   if pip install -q --force-reinstall "$FULL_WHEEL"; then
     return 0
   fi
   local WHEEL
-  WHEEL=$(ls "${REPO_ROOT}"/dist/*+full*.whl 2>/dev/null | sort -V | tail -n1)
+  WHEEL=$(find "${REPO_ROOT}/dist" -maxdepth 1 -type f \
+    -name "*+full-${PY_TAG}-${PY_TAG}-*.whl" \
+    | sort -V | tail -n1)
   if [ -n "$WHEEL" ]; then
     echo "GitHub wheel failed; trying local dist wheel: $WHEEL"
     pip install -q --force-reinstall "$WHEEL"
@@ -106,7 +113,9 @@ if [ -n "$LIBS_DIR" ]; then
 import json, os
 p = os.path.expanduser('${KERNEL_JSON}')
 d = json.load(open(p))
-d['env'] = {'LD_LIBRARY_PATH': '${LIBS_DIR}'}
+if 'env' not in d:
+    d['env'] = {}
+d['env']['LD_LIBRARY_PATH'] = '${LIBS_DIR}'
 json.dump(d, open(p, 'w'), indent=2)
 "
 fi

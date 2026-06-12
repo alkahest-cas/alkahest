@@ -45,12 +45,20 @@ if [ -z "$URL" ]; then
 fi
 
 # Wait until reachable (quick tunnels can take a few seconds)
+reachable=0
 for _ in $(seq 1 20); do
   if curl -sf "${URL}/health" >/dev/null 2>&1; then
+    reachable=1
     break
   fi
   sleep 1
 done
+
+if [ "$reachable" -ne 1 ]; then
+  echo "Tunnel URL discovered but not reachable: ${URL}/health"
+  echo "See log: ${LOG_FILE}"
+  exit 1
+fi
 
 TOKEN=""
 if [ -f "${SCRIPT_DIR}/.env.local" ]; then
