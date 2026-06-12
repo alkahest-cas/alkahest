@@ -110,6 +110,30 @@ use alkahest_core::{
     ProductError, ResultantError, RsolveError, SeriesError, SimplifyConfig, SizeCost,
     SparseGcdError, SparseInterpError, SumError,
 };
+// Experimental calculus / ODE / transform surface (PyO3 bindings deferred at
+// landing time — see PRs #152–#161). These mirror the Rust `experimental`
+// re-exports; the Python surface lives under `alkahest.experimental`.
+use alkahest_core::calculus::asymptotic::{
+    asymptotic_expand as core_asymptotic_expand, AsymptoticError as CoreAsymptoticError,
+};
+use alkahest_core::calculus::fps::{Fps as CoreFps, FpsError as CoreFpsError};
+use alkahest_core::calculus::multilimit::{
+    multilimit as core_multilimit, MultiLimit as CoreMultiLimit,
+};
+use alkahest_core::ode::dsolve::{
+    dsolve as core_dsolve, DsolveError as CoreDsolveError, OdeInput as CoreOdeInput,
+};
+use alkahest_core::ode::series_solve::{
+    series_solve as core_series_solve, PointKind as CorePointKind,
+    SeriesError as CoreSeriesSolveError, SeriesOde as CoreSeriesOde,
+};
+use alkahest_core::transform::{
+    fourier_transform as core_fourier_transform, inverse_fourier_transform as core_ifourier,
+    inverse_laplace_transform as core_ilaplace, inverse_z_transform as core_iztransform,
+    laplace_transform as core_laplace, z_transform as core_ztransform,
+    FourierError as CoreFourierError, LaplaceError as CoreLaplaceError,
+    ZTransformError as CoreZTransformError,
+};
 // V3-1 — Integer number theory
 use alkahest_core::number_theory::{
     discrete_log as nt_discrete_log, factorint as nt_factorint, isprime as nt_isprime,
@@ -1165,6 +1189,285 @@ impl PySeries {
 }
 
 // ---------------------------------------------------------------------------
+// PyFps — lazy formal power series over ℚ (experimental, PR #155)
+// ---------------------------------------------------------------------------
+
+/// Coerce a Python `int`, `fractions.Fraction`, or `(numer, denom)` tuple into a
+/// rug `Rational`. (Floats are intentionally rejected — Fps is exact over ℚ.)
+fn py_to_rational(ob: &Bound<'_, PyAny>) -> PyResult<Rational> {
+    if let Ok(v) = ob.extract::<i64>() {
+        return Ok(Rational::from(v));
+    }
+    if let Ok((n, d)) = ob.extract::<(i64, i64)>() {
+        if d == 0 {
+            return Err(pyo3::exceptions::PyZeroDivisionError::new_err(
+                "Fps coefficient denominator is zero",
+            ));
+        }
+        return Ok(Rational::from((Integer::from(n), Integer::from(d))));
+    }
+    // Fraction-like: has integer `numerator` / `denominator` attributes.
+    if let (Ok(n), Ok(d)) = (ob.getattr("numerator"), ob.getattr("denominator")) {
+        let ns = n.str()?.to_string();
+        let ds = d.str()?.to_string();
+        let nz = Integer::parse(&ns)
+            .map_err(|_| PyTypeError::new_err(format!("invalid numerator: {ns}")))?;
+        let dz = Integer::parse(&ds)
+            .map_err(|_| PyTypeError::new_err(format!("invalid denominator: {ds}")))?;
+        let nz = Integer::from(nz);
+        let dz = Integer::from(dz);
+        if dz == 0 {
+            return Err(pyo3::exceptions::PyZeroDivisionError::new_err(
+                "Fps coefficient denominator is zero",
+            ));
+        }
+        return Ok(Rational::from((nz, dz)));
+    }
+    // Bare big integer.
+    let s = ob.str()?.to_string();
+    let z = Integer::parse(&s)
+        .map_err(|_| PyTypeError::new_err(format!("cannot coerce {s} to a rational")))?;
+    Ok(Rational::from(Integer::from(z)))
+}
+
+fn py_seq_to_rationals(seq: &Bound<'_, PyAny>) -> PyResult<Vec<Rational>> {
+    let mut out = Vec::new();
+    for item in seq.iter()? {
+        out.push(py_to_rational(&item?)?);
+    }
+    Ok(out)
+}
+
+/// Lazy formal power series `∑ aₙ xⁿ` over ℚ with memoized coefficients
+/// (experimental; mirrors the Rust :rust:`Fps`).
+///
+/// Exact-rational only — coefficients are Python `int` / `fractions.Fraction`.
+/// Expression-backed series (`Fps.from_expr`) are snapshotted to a finite order
+/// at construction (the Rust `Fps<'p>` borrows the pool, which cannot cross the
+/// Python boundary), so coefficients past that order read as `0`; pass a larger
+/// `order` for deeper work. All other constructors and operations are fully lazy
+/// over `Fps<'static>`.
+#[pyclass(name = "Fps", unsendable)]
+#[derive(Clone)]
+struct PyFps {
+    inner: CoreFps<'static>,
+}
+
+#[pymethods]
+impl PyFps {
+    /// Series from explicit ascending rational coefficients of a polynomial.
+    #[staticmethod]
+    fn from_poly(coeffs: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let cs = py_seq_to_rationals(coeffs)?;
+        Ok(PyFps {
+            inner: CoreFps::from_poly(&cs),
+        })
+    }
+
+    /// Series of `p(x)/q(x)` from ascending coefficient lists `num` / `den`
+    /// (requires `den[0] != 0`).
+    #[staticmethod]
+    fn from_rational(num: &Bound<'_, PyAny>, den: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let n = py_seq_to_rationals(num)?;
+        let d = py_seq_to_rationals(den)?;
+        Ok(PyFps {
+            inner: CoreFps::from_rational(&n, &d).map_err(fps_error_to_py)?,
+        })
+    }
+
+    /// Snapshot the series of `expr` in `var` about `0` to `order` coefficients.
+    ///
+    /// Coefficients of index `>= order` read as `0` (see the class note).
+    #[staticmethod]
+    #[pyo3(signature = (expr, var, order=32))]
+    fn from_expr(
+        py: Python<'_>,
+        expr: PyRef<PyExpr>,
+        var: PyRef<PyExpr>,
+        order: usize,
+    ) -> PyResult<Self> {
+        let pool = expr.pool.borrow(py);
+        let fps = CoreFps::from_expr(expr.id, var.id, &pool.inner).map_err(fps_error_to_py)?;
+        let coeffs = fps.coeffs(order);
+        Ok(PyFps {
+            inner: CoreFps::from_poly(&coeffs),
+        })
+    }
+
+    /// The zero series.
+    #[staticmethod]
+    fn zero() -> Self {
+        PyFps {
+            inner: CoreFps::zero(),
+        }
+    }
+
+    /// The constant series `c`.
+    #[staticmethod]
+    fn constant(c: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(PyFps {
+            inner: CoreFps::constant(py_to_rational(c)?),
+        })
+    }
+
+    /// The series `x`.
+    #[staticmethod]
+    fn x() -> Self {
+        PyFps {
+            inner: CoreFps::x(),
+        }
+    }
+
+    /// `exp(x) = ∑ xⁿ/n!`.
+    #[staticmethod]
+    fn exp_series() -> Self {
+        PyFps {
+            inner: CoreFps::exp_series(),
+        }
+    }
+
+    /// `sin(x) = ∑ (−1)ᵏ x^{2k+1}/(2k+1)!`.
+    #[staticmethod]
+    fn sin_series() -> Self {
+        PyFps {
+            inner: CoreFps::sin_series(),
+        }
+    }
+
+    /// `cos(x) = ∑ (−1)ᵏ x^{2k}/(2k)!`.
+    #[staticmethod]
+    fn cos_series() -> Self {
+        PyFps {
+            inner: CoreFps::cos_series(),
+        }
+    }
+
+    /// `log(1+x) = ∑_{n≥1} (−1)^{n+1} xⁿ/n`.
+    #[staticmethod]
+    fn log1p_series() -> Self {
+        PyFps {
+            inner: CoreFps::log1p_series(),
+        }
+    }
+
+    /// `atan(x) = ∑_{k≥0} (−1)ᵏ x^{2k+1}/(2k+1)`.
+    #[staticmethod]
+    fn atan_series() -> Self {
+        PyFps {
+            inner: CoreFps::atan_series(),
+        }
+    }
+
+    /// Binomial series `(1+x)^α = ∑ C(α,n) xⁿ` for rational `α`.
+    #[staticmethod]
+    fn binomial_series(alpha: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(PyFps {
+            inner: CoreFps::binomial_series(py_to_rational(alpha)?),
+        })
+    }
+
+    /// The `n`-th coefficient `aₙ` as a Python `int` / `Fraction`.
+    fn coeff(&self, py: Python<'_>, n: usize) -> PyResult<PyObject> {
+        rational_to_py(py, &self.inner.coeff(n))
+    }
+
+    /// The first `n` coefficients `[a₀, …, a_{n-1}]`.
+    fn coeffs(&self, py: Python<'_>, n: usize) -> PyResult<PyObject> {
+        let out = PyList::empty_bound(py);
+        for c in self.inner.coeffs(n) {
+            out.append(rational_to_py(py, &c)?)?;
+        }
+        Ok(out.into_py(py))
+    }
+
+    /// Truncate to a symbolic `Expr` of degree `< order` in `var` (with an
+    /// `O(varᵒʳᵈᵉʳ)` tail).
+    fn to_expr(&self, py: Python<'_>, var: PyRef<PyExpr>, order: u32) -> PyExpr {
+        let pool_py = var.pool.clone_ref(py);
+        let id = {
+            let pool = pool_py.borrow(py);
+            self.inner.to_expr(var.id, order, &pool.inner)
+        };
+        PyExpr { id, pool: pool_py }
+    }
+
+    /// Sum `self + other`.
+    fn add(&self, other: &PyFps) -> Self {
+        PyFps {
+            inner: self.inner.add(&other.inner),
+        }
+    }
+
+    /// Difference `self - other`.
+    fn sub(&self, other: &PyFps) -> Self {
+        PyFps {
+            inner: self.inner.sub(&other.inner),
+        }
+    }
+
+    /// Cauchy product `self * other`.
+    fn mul(&self, other: &PyFps) -> Self {
+        PyFps {
+            inner: self.inner.mul(&other.inner),
+        }
+    }
+
+    /// Scale every coefficient by the rational `c`.
+    fn scale(&self, c: &Bound<'_, PyAny>) -> PyResult<Self> {
+        Ok(PyFps {
+            inner: self.inner.scale(py_to_rational(c)?),
+        })
+    }
+
+    /// Quotient `self / other` (requires `other(0) != 0`).
+    fn div(&self, other: &PyFps) -> PyResult<Self> {
+        Ok(PyFps {
+            inner: self.inner.div(&other.inner).map_err(fps_error_to_py)?,
+        })
+    }
+
+    /// Multiplicative inverse `1/self` (requires `self(0) != 0`).
+    fn inverse(&self) -> PyResult<Self> {
+        Ok(PyFps {
+            inner: self.inner.inverse().map_err(fps_error_to_py)?,
+        })
+    }
+
+    /// Composition `self ∘ g` (requires `g(0) = 0`).
+    fn compose(&self, g: &PyFps) -> PyResult<Self> {
+        Ok(PyFps {
+            inner: self.inner.compose(&g.inner).map_err(fps_error_to_py)?,
+        })
+    }
+
+    /// Compositional inverse (reversion) of `self` (requires `self(0) = 0`,
+    /// `self'(0) != 0`).
+    fn revert(&self) -> PyResult<Self> {
+        Ok(PyFps {
+            inner: self.inner.revert().map_err(fps_error_to_py)?,
+        })
+    }
+
+    /// Formal derivative.
+    fn derivative(&self) -> Self {
+        PyFps {
+            inner: self.inner.derivative(),
+        }
+    }
+
+    /// Formal integral (zero constant term).
+    fn integral(&self) -> Self {
+        PyFps {
+            inner: self.inner.integral(),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        "Fps(...)".to_string()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PyDerivedResult
 // ---------------------------------------------------------------------------
 
@@ -1425,6 +1728,24 @@ fn round_expr(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 #[pyfunction]
 fn gamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "gamma", expr)
+}
+
+/// Heaviside step `θ(x)` (registered primitive; `θ(0) = 1/2`).
+///
+/// Surfaced under `alkahest.experimental` to avoid mutating the frozen
+/// top-level `__all__` (the constructor pairs with the experimental Laplace
+/// transform — PR #152).
+#[pyfunction]
+fn heaviside(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "heaviside", expr)
+}
+
+/// Dirac delta `δ(x)` (registered primitive; derivative of `heaviside`).
+///
+/// Surfaced under `alkahest.experimental` (see [`heaviside`]).
+#[pyfunction]
+fn dirac_delta(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "diracdelta", expr)
 }
 
 fn make_binary_func(py: Python<'_>, name: &str, a: PyRef<PyExpr>, b: PyRef<PyExpr>) -> PyExpr {
@@ -2226,6 +2547,369 @@ fn py_limit(
         core_limit(expr.id, var.id, point.id, d, &pool.inner).map_err(limit_error_to_py)?
     };
     Ok(PyExpr { id, pool: pool_py })
+}
+
+// ===========================================================================
+// Experimental calculus / ODE / transform surface (PyO3 bindings, PRs #152–#161)
+//
+// Exposed via `alkahest.experimental`. Conversions follow the integrate/apart
+// idiom: borrow the input `Expr`'s pool, call the core routine, and wrap the
+// resulting `ExprId`s back into `Expr` against the same pool.
+// ===========================================================================
+
+/// Convert a rug `Rational` into a Python `int` (when integral) or
+/// `fractions.Fraction` (otherwise), so Fps coefficients are exact in Python.
+fn rational_to_py(py: Python<'_>, r: &Rational) -> PyResult<PyObject> {
+    let numer = r.numer().to_string();
+    let denom = r.denom().to_string();
+    if *r.denom() == 1 {
+        let int_cls = py.get_type_bound::<PyInt>();
+        return Ok(int_cls.call1((numer,))?.into_py(py));
+    }
+    let fractions = py.import_bound("fractions")?;
+    let frac = fractions.getattr("Fraction")?;
+    // Fraction(str) accepts the "numer/denom" form; the two-argument form
+    // requires Rational instances, not strings.
+    Ok(frac.call1((format!("{numer}/{denom}"),))?.into_py(py))
+}
+
+fn dsolve_error_to_py(e: CoreDsolveError) -> PyErr {
+    pyo3::exceptions::PyValueError::new_err(e.to_string())
+}
+fn laplace_error_to_py(e: CoreLaplaceError) -> PyErr {
+    pyo3::exceptions::PyValueError::new_err(e.to_string())
+}
+fn fourier_error_to_py(e: CoreFourierError) -> PyErr {
+    pyo3::exceptions::PyValueError::new_err(e.to_string())
+}
+fn ztransform_error_to_py(e: CoreZTransformError) -> PyErr {
+    pyo3::exceptions::PyValueError::new_err(e.to_string())
+}
+fn asymptotic_error_to_py(e: CoreAsymptoticError) -> PyErr {
+    pyo3::exceptions::PyValueError::new_err(e.to_string())
+}
+fn series_solve_error_to_py(e: CoreSeriesSolveError) -> PyErr {
+    pyo3::exceptions::PyValueError::new_err(e.to_string())
+}
+fn fps_error_to_py(e: CoreFpsError) -> PyErr {
+    pyo3::exceptions::PyValueError::new_err(e.to_string())
+}
+
+/// `experimental.dsolve(equation, x, y, [y', y'', …])` — solve a scalar ODE.
+///
+/// `equation` is interpreted as `equation = 0`, written in terms of the
+/// independent variable `x`, the unknown `y`, and the derivative symbols
+/// `derivs` (`derivs[0] = y'`, …). Returns a list of solution dicts with keys
+/// `y_of_x` (the `Expr` for `y(x)`), `constants` (list of `Expr`), and `method`.
+#[pyfunction]
+#[pyo3(name = "dsolve")]
+fn py_dsolve(
+    py: Python<'_>,
+    equation: PyRef<PyExpr>,
+    x: PyRef<PyExpr>,
+    y: PyRef<PyExpr>,
+    derivs: Vec<PyExpr>,
+) -> PyResult<PyObject> {
+    let pool_py = equation.pool.clone_ref(py);
+    let result = {
+        let pool = pool_py.borrow(py);
+        let input = CoreOdeInput {
+            x: x.id,
+            y: y.id,
+            derivs: derivs.iter().map(|e| e.id).collect(),
+            equation: equation.id,
+        };
+        core_dsolve(&input, &pool.inner).map_err(dsolve_error_to_py)?
+    };
+    let out = PyList::empty_bound(py);
+    for sol in result.solutions {
+        let d = PyDict::new_bound(py);
+        d.set_item(
+            "y_of_x",
+            PyExpr {
+                id: sol.y_of_x,
+                pool: pool_py.clone_ref(py),
+            }
+            .into_py(py),
+        )?;
+        let consts = PyList::empty_bound(py);
+        for c in sol.constants {
+            consts.append(
+                PyExpr {
+                    id: c,
+                    pool: pool_py.clone_ref(py),
+                }
+                .into_py(py),
+            )?;
+        }
+        d.set_item("constants", consts)?;
+        d.set_item("method", sol.method)?;
+        out.append(d)?;
+    }
+    Ok(out.into_py(py))
+}
+
+/// `experimental.laplace_transform(f, t, s)` → `Expr` for `L{f}(s)`.
+#[pyfunction]
+#[pyo3(name = "laplace_transform")]
+fn py_laplace_transform(
+    py: Python<'_>,
+    f: PyRef<PyExpr>,
+    t: PyRef<PyExpr>,
+    s: PyRef<PyExpr>,
+) -> PyResult<PyExpr> {
+    let pool_py = f.pool.clone_ref(py);
+    let id = {
+        let pool = pool_py.borrow(py);
+        core_laplace(f.id, t.id, s.id, &pool.inner).map_err(laplace_error_to_py)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// `experimental.inverse_laplace_transform(F, s, t)` → `Expr` for `L⁻¹{F}(t)`.
+#[pyfunction]
+#[pyo3(name = "inverse_laplace_transform")]
+fn py_inverse_laplace_transform(
+    py: Python<'_>,
+    big_f: PyRef<PyExpr>,
+    s: PyRef<PyExpr>,
+    t: PyRef<PyExpr>,
+) -> PyResult<PyExpr> {
+    let pool_py = big_f.pool.clone_ref(py);
+    let id = {
+        let pool = pool_py.borrow(py);
+        core_ilaplace(big_f.id, s.id, t.id, &pool.inner).map_err(laplace_error_to_py)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// `experimental.fourier_transform(f, x, xi)` → `Expr` for `F{f}(ξ)` (unitary,
+/// ordinary-frequency convention).
+#[pyfunction]
+#[pyo3(name = "fourier_transform")]
+fn py_fourier_transform(
+    py: Python<'_>,
+    f: PyRef<PyExpr>,
+    x: PyRef<PyExpr>,
+    xi: PyRef<PyExpr>,
+) -> PyResult<PyExpr> {
+    let pool_py = f.pool.clone_ref(py);
+    let id = {
+        let pool = pool_py.borrow(py);
+        core_fourier_transform(f.id, x.id, xi.id, &pool.inner).map_err(fourier_error_to_py)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// `experimental.inverse_fourier_transform(g, xi, x)` → `Expr` for `F⁻¹{g}(x)`.
+#[pyfunction]
+#[pyo3(name = "inverse_fourier_transform")]
+fn py_inverse_fourier_transform(
+    py: Python<'_>,
+    g: PyRef<PyExpr>,
+    xi: PyRef<PyExpr>,
+    x: PyRef<PyExpr>,
+) -> PyResult<PyExpr> {
+    let pool_py = g.pool.clone_ref(py);
+    let id = {
+        let pool = pool_py.borrow(py);
+        core_ifourier(g.id, xi.id, x.id, &pool.inner).map_err(fourier_error_to_py)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// `experimental.z_transform(a, n, z)` → `Expr` for the unilateral `Z{a[n]}(z)`.
+#[pyfunction]
+#[pyo3(name = "z_transform")]
+fn py_z_transform(
+    py: Python<'_>,
+    a: PyRef<PyExpr>,
+    n: PyRef<PyExpr>,
+    z: PyRef<PyExpr>,
+) -> PyResult<PyExpr> {
+    let pool_py = a.pool.clone_ref(py);
+    let id = {
+        let pool = pool_py.borrow(py);
+        core_ztransform(a.id, n.id, z.id, &pool.inner).map_err(ztransform_error_to_py)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// `experimental.inverse_z_transform(X, z, n)` → `Expr` for `Z⁻¹{X}[n]`.
+#[pyfunction]
+#[pyo3(name = "inverse_z_transform")]
+fn py_inverse_z_transform(
+    py: Python<'_>,
+    big_x: PyRef<PyExpr>,
+    z: PyRef<PyExpr>,
+    n: PyRef<PyExpr>,
+) -> PyResult<PyExpr> {
+    let pool_py = big_x.pool.clone_ref(py);
+    let id = {
+        let pool = pool_py.borrow(py);
+        core_iztransform(big_x.id, z.id, n.id, &pool.inner).map_err(ztransform_error_to_py)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+/// `experimental.multilimit(f, x, y, a, b)` — two-variable limit.
+///
+/// Returns a dict with key `status` in `{"value", "dne", "undecided"}`:
+/// - `value`: also `value` (`Expr`);
+/// - `dne`: also `path_a` / `path_b`, each a dict with `description` (str),
+///   `value` (`Expr`), and `value_numeric` (float);
+/// - `undecided`: no further keys.
+#[pyfunction]
+#[pyo3(name = "multilimit")]
+fn py_multilimit(
+    py: Python<'_>,
+    f: PyRef<PyExpr>,
+    x: PyRef<PyExpr>,
+    y: PyRef<PyExpr>,
+    a: PyRef<PyExpr>,
+    b: PyRef<PyExpr>,
+) -> PyResult<PyObject> {
+    let pool_py = f.pool.clone_ref(py);
+    let result = {
+        let pool = pool_py.borrow(py);
+        core_multilimit(f.id, x.id, y.id, a.id, b.id, &pool.inner)
+    };
+    let d = PyDict::new_bound(py);
+    match result {
+        CoreMultiLimit::Value(v) => {
+            d.set_item("status", "value")?;
+            d.set_item(
+                "value",
+                PyExpr {
+                    id: v,
+                    pool: pool_py.clone_ref(py),
+                }
+                .into_py(py),
+            )?;
+        }
+        CoreMultiLimit::DoesNotExist { path_a, path_b } => {
+            d.set_item("status", "dne")?;
+            let mk =
+                |w: &alkahest_core::calculus::multilimit::PathWitness| -> PyResult<Py<PyDict>> {
+                    let pw = PyDict::new_bound(py);
+                    pw.set_item("description", w.description.clone())?;
+                    pw.set_item(
+                        "value",
+                        PyExpr {
+                            id: w.value,
+                            pool: pool_py.clone_ref(py),
+                        }
+                        .into_py(py),
+                    )?;
+                    pw.set_item("value_numeric", w.value_numeric)?;
+                    Ok(pw.into())
+                };
+            d.set_item("path_a", mk(&path_a)?)?;
+            d.set_item("path_b", mk(&path_b)?)?;
+        }
+        CoreMultiLimit::Undecided => {
+            d.set_item("status", "undecided")?;
+        }
+    }
+    Ok(d.into_py(py))
+}
+
+/// `experimental.asymptotic_expand(f, var, n_terms)` — asymptotic expansion at
+/// `+∞`, returning a list of term `Expr`s (most significant first).
+#[pyfunction]
+#[pyo3(name = "asymptotic_expand")]
+fn py_asymptotic_expand(
+    py: Python<'_>,
+    f: PyRef<PyExpr>,
+    var: PyRef<PyExpr>,
+    n_terms: usize,
+) -> PyResult<PyObject> {
+    let pool_py = f.pool.clone_ref(py);
+    let terms = {
+        let pool = pool_py.borrow(py);
+        core_asymptotic_expand(f.id, var.id, n_terms, &pool.inner)
+            .map_err(asymptotic_error_to_py)?
+            .term_exprs()
+    };
+    let out = PyList::empty_bound(py);
+    for id in terms {
+        out.append(
+            PyExpr {
+                id,
+                pool: pool_py.clone_ref(py),
+            }
+            .into_py(py),
+        )?;
+    }
+    Ok(out.into_py(py))
+}
+
+/// `experimental.series_solve(x, p, q, r, x0, order)` — power-series / Frobenius
+/// solution of `p·y'' + q·y' + r·y = 0` about `x0`.
+///
+/// Returns a dict with `kind` (`"ordinary"` / `"regular_singular"`), `order`
+/// (int), `x0` (`Expr`), and `solutions`: a list of dicts each with `exponent`
+/// (Fraction/int), `coeffs` (list of Fraction/int), `log_coeff`
+/// (Fraction/int or `None`), and `expr` (the truncated symbolic `Expr`).
+#[pyfunction]
+#[pyo3(name = "series_solve")]
+fn py_series_solve(
+    py: Python<'_>,
+    x: PyRef<PyExpr>,
+    p: PyRef<PyExpr>,
+    q: PyRef<PyExpr>,
+    r: PyRef<PyExpr>,
+    x0: PyRef<PyExpr>,
+    order: usize,
+) -> PyResult<PyObject> {
+    let pool_py = x.pool.clone_ref(py);
+    let pool = pool_py.borrow(py);
+    let ode = CoreSeriesOde::new(x.id, p.id, q.id, r.id);
+    let result =
+        core_series_solve(&ode, x0.id, order, &pool.inner).map_err(series_solve_error_to_py)?;
+    let d = PyDict::new_bound(py);
+    d.set_item(
+        "kind",
+        match result.kind {
+            CorePointKind::Ordinary => "ordinary",
+            CorePointKind::RegularSingular => "regular_singular",
+        },
+    )?;
+    d.set_item("order", result.order)?;
+    d.set_item(
+        "x0",
+        PyExpr {
+            id: result.x0,
+            pool: pool_py.clone_ref(py),
+        }
+        .into_py(py),
+    )?;
+    let sols = PyList::empty_bound(py);
+    for s in &result.solutions {
+        let sd = PyDict::new_bound(py);
+        sd.set_item("exponent", rational_to_py(py, &s.exponent)?)?;
+        let coeffs = PyList::empty_bound(py);
+        for c in &s.coeffs {
+            coeffs.append(rational_to_py(py, c)?)?;
+        }
+        sd.set_item("coeffs", coeffs)?;
+        match &s.log_coeff {
+            Some(c) => sd.set_item("log_coeff", rational_to_py(py, c)?)?,
+            None => sd.set_item("log_coeff", py.None())?,
+        }
+        let expr_id = s.to_expr(x.id, x0.id, order, &pool.inner);
+        sd.set_item(
+            "expr",
+            PyExpr {
+                id: expr_id,
+                pool: pool_py.clone_ref(py),
+            }
+            .into_py(py),
+        )?;
+        sols.append(sd)?;
+    }
+    d.set_item("solutions", sols)?;
+    Ok(d.into_py(py))
 }
 
 #[pyfunction]
@@ -6583,6 +7267,20 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ceil, m)?)?;
     m.add_function(wrap_pyfunction!(round_expr, m)?)?;
     m.add_function(wrap_pyfunction!(gamma, m)?)?;
+    m.add_function(wrap_pyfunction!(heaviside, m)?)?;
+    m.add_function(wrap_pyfunction!(dirac_delta, m)?)?;
+    // Experimental calculus / ODE / transform surface (PRs #152–#161).
+    m.add_function(wrap_pyfunction!(py_dsolve, m)?)?;
+    m.add_function(wrap_pyfunction!(py_laplace_transform, m)?)?;
+    m.add_function(wrap_pyfunction!(py_inverse_laplace_transform, m)?)?;
+    m.add_function(wrap_pyfunction!(py_fourier_transform, m)?)?;
+    m.add_function(wrap_pyfunction!(py_inverse_fourier_transform, m)?)?;
+    m.add_function(wrap_pyfunction!(py_z_transform, m)?)?;
+    m.add_function(wrap_pyfunction!(py_inverse_z_transform, m)?)?;
+    m.add_function(wrap_pyfunction!(py_multilimit, m)?)?;
+    m.add_function(wrap_pyfunction!(py_asymptotic_expand, m)?)?;
+    m.add_function(wrap_pyfunction!(py_series_solve, m)?)?;
+    m.add_class::<PyFps>()?;
     m.add_function(wrap_pyfunction!(atan2, m)?)?;
     m.add_function(wrap_pyfunction!(min_expr, m)?)?;
     m.add_function(wrap_pyfunction!(max_expr, m)?)?;

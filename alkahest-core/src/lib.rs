@@ -286,6 +286,8 @@ pub mod experimental {
     pub use crate::calculus::asymptotic::{
         asymptotic_expand, AsymptoticError, AsymptoticExpansion, AsymptoticTerm,
     };
+    pub use crate::calculus::fps::{Fps, FpsError};
+    pub use crate::calculus::multilimit::{multilimit, MultiLimit, PathWitness};
     pub use crate::deriv::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
     pub use crate::horner::{emit_horner_c, horner};
     pub use crate::hybrid::{Event, GuardStructure, HybridODE};
@@ -301,8 +303,13 @@ pub mod experimental {
         select_lucky_prime, ModularError, ModularValue, MultiPolyFp,
     };
     pub use crate::numeric::{guess_integer_relation, PslqError};
+    pub use crate::ode::dsolve::{dsolve, DsolveError, DsolveResult, DsolveSolution, OdeInput};
     pub use crate::ode::sensitivity::{
         adjoint_system, sensitivity_system, AdjointSystem, SensitivitySystem,
+    };
+    pub use crate::ode::series_solve::{
+        series_solve, PointKind, SeriesError as SeriesSolveError, SeriesOde, SeriesResult,
+        SeriesSolution,
     };
     pub use crate::plot::{render_dot, render_svg, render_svg_opts};
     pub use crate::poly::{
