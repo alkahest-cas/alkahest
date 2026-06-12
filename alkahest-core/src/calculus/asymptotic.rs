@@ -14,7 +14,7 @@
 //!
 //! The core engine is the substitution `x = 1/t` followed by a (Laurent /
 //! Puiseux-lite) series of `f(1/t)` at `t → 0⁺`, reusing
-//! [`crate::calculus::series`]. A term `c · t^e` of that series maps back to
+//! [`mod@crate::calculus::series`]. A term `c · t^e` of that series maps back to
 //! `c · x^{−e}`; the polynomial-growth part (negative `t`-powers, i.e. positive
 //! `x`-powers) is carried along automatically. This covers:
 //!
@@ -264,7 +264,7 @@ fn power_scale_terms_raw(
         out.push((x_pow, term));
     }
     // Most significant (largest x-power) first.
-    out.sort_by(|a, b| b.0.cmp(&a.0));
+    out.sort_by_key(|p| std::cmp::Reverse(p.0));
     Ok(out)
 }
 
