@@ -115,10 +115,21 @@ pub fn apart(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<ExprId, Apart
         return Err(ApartError::ZeroDenominator);
     }
 
-    // Reduce to lowest terms and make the denominator monic.
+    // Reduce to lowest terms and make the denominator monic. Making `den`
+    // monic scales it by `1/lc`, so `num` must be scaled by the same factor
+    // to preserve `num/den` (otherwise the result is off by a factor of
+    // `lc`).
     let g = poly_gcd(&num, &den);
     let num = poly_div_exact(&num, &g);
-    let den = poly_monic(&poly_div_exact(&den, &g));
+    let den = poly_div_exact(&den, &g);
+    let den_trimmed = trim(den.clone());
+    let lc = if degree(&den_trimmed) >= 0 {
+        den_trimmed[degree(&den_trimmed) as usize].clone()
+    } else {
+        Rational::from(1)
+    };
+    let num = poly_scale(&num, &(Rational::from(1) / lc));
+    let den = poly_monic(&den);
 
     // Constant (degree-0) denominator: nothing to decompose.  After monic
     // normalisation the denominator is the constant 1, so the result is `num`.

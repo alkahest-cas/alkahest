@@ -102,6 +102,11 @@ pub use transform::{inverse_laplace_transform, laplace_transform, LaplaceError};
 // §3.4 — Fourier transform and inverse (experimental surface; see `experimental`)
 pub use transform::{fourier_transform, inverse_fourier_transform, FourierError};
 
+// §3.5 — Z-transform and inverse (experimental surface; see `experimental`)
+pub use transform::{
+    inverse_z_transform, z_shift_advance, z_shift_delay, z_transform, ZTransformError,
+};
+
 // Phase 24 — Horner form
 pub use horner::{emit_horner_c, eval_horner_f64, eval_horner_f64_batch, horner};
 pub use simplify::rulesets::{log_exp_rules, log_exp_rules_safe, trig_rules};
@@ -311,6 +316,9 @@ pub mod experimental {
     pub use crate::transform::{
         fourier_transform, inverse_fourier_transform, inverse_laplace_transform, laplace_transform,
         FourierError, LaplaceError,
+    };
+    pub use crate::transform::{
+        inverse_z_transform, z_shift_advance, z_shift_delay, z_transform, ZTransformError,
     };
 
     #[cfg(feature = "parallel")]
