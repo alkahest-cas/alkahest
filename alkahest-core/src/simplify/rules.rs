@@ -202,6 +202,19 @@ impl RewriteRule for MulZero {
         if !args.iter().any(|&a| is_zero(a, pool)) {
             return None;
         }
+        // Do not fold `0 * 0^(-1) * ...` (or `0 * 0^(-2)`, etc.) to `0`: a
+        // literal `0^(negative)` factor is itself undefined (division by
+        // zero), so the product is indeterminate, not `0`. This is the
+        // n=0 boundary of `0 * x^(-1)` being indeterminate at x=0.
+        let has_zero_to_neg_pow = args.iter().any(|&a| match pool.get(a) {
+            ExprData::Pow { base, exp } => {
+                is_zero(base, pool) && as_integer(exp, pool).is_some_and(|e| e < 0)
+            }
+            _ => false,
+        });
+        if has_zero_to_neg_pow {
+            return None;
+        }
         let after = pool.integer(0_i32);
         Some((after, one_step(self.name(), expr, after)))
     }
@@ -305,8 +318,33 @@ impl RewriteRule for PowZero {
 }
 
 // ---------------------------------------------------------------------------
-// ConstFold: numeric folding for Add/Mul (partial) and Pow (integer exponents)
-// Handles Integer, Rational (with promotion), and Float atoms.
+// ConstFold: numeric folding for Add/Mul (partial), Pow (integer exponents,
+// power-of-power, and distribution over a literal coefficient), Func
+// (elementary functions at exact literal arguments), and Rational
+// (denominator-1 canonicalization).
+//
+// All of the `Func`/`Pow` sub-cases below were originally separate rules
+// (`ElementaryAtConst`, `PowOfPow`, `DistributePowOverLiteralCoeff`,
+// `EvenPowerSignFold`, `RationalCanon`); they are folded into ConstFold's
+// existing per-node dispatch so the rule-iteration loop in `simplify_node`
+// does not pay a separate per-node check for each of them. Each sub-case
+// retains its original soundness argument (see git history / PR description
+// for the detailed proofs):
+//
+//   Func, single arg, elementary functions at 0/1:
+//     exp(0)→1  sin(0)→0  cos(0)→1  sinh(0)→0  cosh(0)→1  tan(0)→0
+//     atan(0)→0  asin(0)→0  log(1)→0  ln(1)→0
+//     (exact values strictly inside the domain of analyticity — no branch
+//     cuts, no poles — sound regardless of sign/positivity of other symbols)
+//
+//   Pow:
+//     1^r → 1                                  (any literal rational r)
+//     (-1·x)^n → x^n                           (literal even integer n)
+//     (x^a)^b → x^(a·b)                        (literal integer a, b)
+//     (c·rest)^n → c^n · rest^n                (literal integer c ≠ 0,±1, n)
+//     b^e → integer/rational fold              (literal integer base/exp)
+//
+//   Rational(n/1) → Integer(n)
 // ---------------------------------------------------------------------------
 
 fn intern_rational(r: rug::Rational, pool: &ExprPool) -> ExprId {
@@ -395,6 +433,64 @@ impl RewriteRule for ConstFold {
                 Some((after, one_step(self.name(), expr, after)))
             }
             ExprData::Pow { base, exp } => {
+                // 1^r = 1 for any literal rational (or integer) exponent `r`,
+                // including non-integer exponents like 1/2. This is sound
+                // unconditionally: 1^r = exp(r * log(1)) = exp(r * 0) = 1
+                // under the principal branch, with no branch-cut ambiguity.
+                if is_one(base, pool) && as_rational(exp, pool).is_some() {
+                    let after = pool.integer(1_i32);
+                    if after == expr {
+                        return None;
+                    }
+                    return Some((after, one_step(self.name(), expr, after)));
+                }
+
+                // (-1·x)^n → x^n for literal even integer n (EvenPowerSignFold).
+                // Cheap discriminant: exp must be an integer literal and base
+                // must be a Mul — both checks are O(1) and fail fast for the
+                // overwhelmingly common case of a plain symbol/atom base.
+                if let Some(after) = even_power_sign_fold(base, exp, pool) {
+                    if after != expr {
+                        return Some((after, one_step(self.name(), expr, after)));
+                    }
+                }
+
+                // (x^a)^b → x^(a·b) for literal integer a, b (PowOfPow).
+                // Cheap discriminant: base must itself be a Pow node.
+                if let ExprData::Pow {
+                    base: inner_base,
+                    exp: inner_exp,
+                } = pool.get(base)
+                {
+                    if let (Some(a), Some(b)) = (as_integer(inner_exp, pool), as_integer(exp, pool))
+                    {
+                        let new_exp = pool.integer(a * b);
+                        let after = pool.pow(inner_base, new_exp);
+                        if after != expr {
+                            return Some((after, one_step(self.name(), expr, after)));
+                        }
+                    }
+                }
+
+                // (c·rest)^n → c^n · rest^n for a literal integer coefficient
+                // c (!= 0, ±1) and literal integer exponent n
+                // (DistributePowOverLiteralCoeff). This is the key step that
+                // lets `π · (4π)^(-1)` reduce to `π · 4^(-1) · π^(-1)`, which
+                // `DivSelf` and the b^e fold below then collapse to `1/4`.
+                if let Some(n) = as_integer(exp, pool) {
+                    if let ExprData::Mul(_) = pool.get(base) {
+                        let (coeff, rest) = extract_int_coeff(base, pool);
+                        if coeff != 1 && coeff != -1 && coeff != 0 && rest != pool.integer(1_i32) {
+                            let coeff_pow = pool.pow(pool.integer(coeff), pool.integer(n.clone()));
+                            let rest_pow = pool.pow(rest, pool.integer(n));
+                            let after = pool.mul(vec![coeff_pow, rest_pow]);
+                            if after != expr {
+                                return Some((after, one_step(self.name(), expr, after)));
+                            }
+                        }
+                    }
+                }
+
                 let b = as_integer(base, pool)?;
                 let e = as_integer(exp, pool)?;
                 // 1^e = 1 and (-1)^e = ±1 for any integer e (including negative)
@@ -414,7 +510,22 @@ impl RewriteRule for ConstFold {
                     return Some((after, one_step(self.name(), expr, after)));
                 }
                 if e < 0 {
-                    return None; // negative integer pow → rational; skip
+                    // b^e for nonzero integer base `b` and negative integer
+                    // exponent `e` is the rational `1 / b^|e|`. Sound for any
+                    // nonzero b (b == 0, ±1 handled above / 0 excluded since
+                    // 0^(negative) is undefined and `as_integer` would give 0
+                    // only for base literal 0, which we reject here).
+                    if b == 0 {
+                        return None; // 0^(negative) undefined
+                    }
+                    let e_u32 = (-e.clone()).to_u32()?;
+                    let denom: rug::Integer = b.pow(e_u32);
+                    let result = rug::Rational::from((rug::Integer::from(1), denom));
+                    let after = intern_rational(result, pool);
+                    if after == expr {
+                        return None;
+                    }
+                    return Some((after, one_step(self.name(), expr, after)));
                 }
                 let e_u32 = e.to_u32()?;
                 let result: rug::Integer = b.pow(e_u32);
@@ -424,9 +535,71 @@ impl RewriteRule for ConstFold {
                 }
                 Some((after, one_step(self.name(), expr, after)))
             }
+            ExprData::Func { name, args } if args.len() == 1 => {
+                // Elementary functions at exact literal arguments
+                // (ElementaryAtConst).
+                let arg = args[0];
+                let after = match name.as_str() {
+                    "exp" if is_zero(arg, pool) => pool.integer(1_i32),
+                    "cos" if is_zero(arg, pool) => pool.integer(1_i32),
+                    "cosh" if is_zero(arg, pool) => pool.integer(1_i32),
+                    "sin" | "sinh" | "tan" | "atan" | "asin" if is_zero(arg, pool) => {
+                        pool.integer(0_i32)
+                    }
+                    "log" | "ln" if is_one(arg, pool) => pool.integer(0_i32),
+                    _ => return None,
+                };
+                if after == expr {
+                    return None;
+                }
+                Some((after, one_step(self.name(), expr, after)))
+            }
+            // Rational(n/1) → Integer(n) (RationalCanon).
+            //
+            // `ExprPool::rational` reduces to lowest terms but does not
+            // collapse a denominator of 1 to an `Integer` node — such nodes
+            // can also arise from un-collapsed arithmetic (see PR #147).
+            // Canonicalizing here ensures `Rational` nodes always have
+            // denominator > 1, simplifying downstream pattern matches (e.g.
+            // `as_integer`, polynomial coefficient extraction). Always sound:
+            // the value is unchanged, only the representation changes.
+            ExprData::Rational(r) if *r.0.denom() == 1 => {
+                let after = pool.integer(r.0.numer().clone());
+                Some((after, one_step(self.name(), expr, after)))
+            }
             _ => None,
         }
     }
+}
+
+/// Helper for `ConstFold`'s `(-1·x)^n → x^n` fold (literal even integer `n`).
+/// Returns `None` if the pattern doesn't match (cheap discriminant checks
+/// fail fast for the common case).
+fn even_power_sign_fold(base: ExprId, exp: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let n = as_integer(exp, pool)?;
+    if !n.is_even() || n == 0 {
+        return None;
+    }
+    let args = match pool.get(base) {
+        ExprData::Mul(v) => v,
+        _ => return None,
+    };
+    // Find a literal -1 factor.
+    let neg_pos = args
+        .iter()
+        .position(|&a| as_integer(a, pool).is_some_and(|i| i == -1))?;
+    let rest: Vec<ExprId> = args
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i != neg_pos)
+        .map(|(_, &a)| a)
+        .collect();
+    let new_base = match rest.len() {
+        0 => pool.integer(1_i32),
+        1 => rest[0],
+        _ => pool.mul(rest),
+    };
+    Some(pool.pow(new_base, exp))
 }
 
 // ---------------------------------------------------------------------------
@@ -1079,5 +1252,337 @@ mod tests {
             result.is_none(),
             "CanonicalOrder should be a no-op when children are already sorted at construction"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // ElementaryAtConst
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn exp_zero_is_one() {
+        let pool = p();
+        let zero = pool.integer(0_i32);
+        let expr = pool.func("exp", vec![zero]);
+        let (result, _) = ConstFold.apply(expr, &pool).unwrap();
+        assert_eq!(result, pool.integer(1_i32));
+    }
+
+    #[test]
+    fn sin_zero_is_zero() {
+        let pool = p();
+        let zero = pool.integer(0_i32);
+        let expr = pool.func("sin", vec![zero]);
+        let (result, _) = ConstFold.apply(expr, &pool).unwrap();
+        assert_eq!(result, pool.integer(0_i32));
+    }
+
+    #[test]
+    fn cos_zero_is_one() {
+        let pool = p();
+        let zero = pool.integer(0_i32);
+        let expr = pool.func("cos", vec![zero]);
+        let (result, _) = ConstFold.apply(expr, &pool).unwrap();
+        assert_eq!(result, pool.integer(1_i32));
+    }
+
+    #[test]
+    fn sinh_zero_is_zero() {
+        let pool = p();
+        let zero = pool.integer(0_i32);
+        let expr = pool.func("sinh", vec![zero]);
+        let (result, _) = ConstFold.apply(expr, &pool).unwrap();
+        assert_eq!(result, pool.integer(0_i32));
+    }
+
+    #[test]
+    fn cosh_zero_is_one() {
+        let pool = p();
+        let zero = pool.integer(0_i32);
+        let expr = pool.func("cosh", vec![zero]);
+        let (result, _) = ConstFold.apply(expr, &pool).unwrap();
+        assert_eq!(result, pool.integer(1_i32));
+    }
+
+    #[test]
+    fn tan_zero_is_zero() {
+        let pool = p();
+        let zero = pool.integer(0_i32);
+        let expr = pool.func("tan", vec![zero]);
+        let (result, _) = ConstFold.apply(expr, &pool).unwrap();
+        assert_eq!(result, pool.integer(0_i32));
+    }
+
+    #[test]
+    fn atan_zero_is_zero() {
+        let pool = p();
+        let zero = pool.integer(0_i32);
+        let expr = pool.func("atan", vec![zero]);
+        let (result, _) = ConstFold.apply(expr, &pool).unwrap();
+        assert_eq!(result, pool.integer(0_i32));
+    }
+
+    #[test]
+    fn asin_zero_is_zero() {
+        let pool = p();
+        let zero = pool.integer(0_i32);
+        let expr = pool.func("asin", vec![zero]);
+        let (result, _) = ConstFold.apply(expr, &pool).unwrap();
+        assert_eq!(result, pool.integer(0_i32));
+    }
+
+    #[test]
+    fn log_one_is_zero() {
+        let pool = p();
+        let one = pool.integer(1_i32);
+        let expr = pool.func("log", vec![one]);
+        let (result, _) = ConstFold.apply(expr, &pool).unwrap();
+        assert_eq!(result, pool.integer(0_i32));
+    }
+
+    #[test]
+    fn ln_one_is_zero() {
+        let pool = p();
+        let one = pool.integer(1_i32);
+        let expr = pool.func("ln", vec![one]);
+        let (result, _) = ConstFold.apply(expr, &pool).unwrap();
+        assert_eq!(result, pool.integer(0_i32));
+    }
+
+    #[test]
+    fn elementary_at_const_no_match_for_nonzero_arg() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.func("exp", vec![x]);
+        assert!(ConstFold.apply(expr, &pool).is_none());
+    }
+
+    #[test]
+    fn exp_zero_fires_via_full_simplify() {
+        let pool = p();
+        let zero = pool.integer(0_i32);
+        let expr = pool.func("exp", vec![zero]);
+        let r = crate::simplify::simplify(expr, &pool);
+        assert_eq!(r.value, pool.integer(1_i32));
+    }
+
+    // -------------------------------------------------------------------
+    // PowOne (x^1 → x) — already implemented; exercised via full simplify
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn pow_one_via_full_simplify() {
+        let pool = p();
+        let s = pool.symbol("s", Domain::Real);
+        let expr = pool.pow(s, pool.integer(1_i32));
+        let r = crate::simplify::simplify(expr, &pool);
+        assert_eq!(r.value, s);
+    }
+
+    // -------------------------------------------------------------------
+    // 1^r → 1 for literal rational exponents
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn one_pow_half_is_one() {
+        let pool = p();
+        let one = pool.integer(1_i32);
+        let half = pool.rational(1_i32, 2_i32);
+        let expr = pool.pow(one, half);
+        let (result, _) = ConstFold.apply(expr, &pool).unwrap();
+        assert_eq!(result, pool.integer(1_i32));
+    }
+
+    #[test]
+    fn one_pow_half_via_full_simplify() {
+        let pool = p();
+        let one = pool.integer(1_i32);
+        let half = pool.rational(1_i32, 2_i32);
+        let expr = pool.pow(one, half);
+        let r = crate::simplify::simplify(expr, &pool);
+        assert_eq!(r.value, pool.integer(1_i32));
+    }
+
+    // -------------------------------------------------------------------
+    // PowOfPow: (x^a)^b → x^(a*b) for literal integer a, b
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn pow_of_pow_combines_integer_exponents() {
+        // (s^4)^(-1) → s^(-4)
+        let pool = p();
+        let s = pool.symbol("s", Domain::Real);
+        let s4 = pool.pow(s, pool.integer(4_i32));
+        let expr = pool.pow(s4, pool.integer(-1_i32));
+        let (result, _) = ConstFold.apply(expr, &pool).unwrap();
+        assert_eq!(result, pool.pow(s, pool.integer(-4_i32)));
+    }
+
+    #[test]
+    fn pow_of_pow_via_full_simplify() {
+        let pool = p();
+        let s = pool.symbol("s", Domain::Real);
+        let s4 = pool.pow(s, pool.integer(4_i32));
+        let expr = pool.pow(s4, pool.integer(-1_i32));
+        let r = crate::simplify::simplify(expr, &pool);
+        assert_eq!(r.value, pool.pow(s, pool.integer(-4_i32)));
+    }
+
+    #[test]
+    fn pow_of_pow_does_not_fire_for_fractional_inner_exponent() {
+        // (x^(1/2))^2 is NOT rewritten by PowOfPow (left for other rules /
+        // domain-aware identities) — branch-cut conservatism.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let half = pool.rational(1_i32, 2_i32);
+        let x_half = pool.pow(x, half);
+        let expr = pool.pow(x_half, pool.integer(2_i32));
+        assert!(ConstFold.apply(expr, &pool).is_none());
+    }
+
+    // -------------------------------------------------------------------
+    // EvenPowerSignFold: (-1 * x)^n → x^n for literal even integer n
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn even_power_sign_fold_squares() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let neg_x = pool.mul(vec![pool.integer(-1_i32), x]);
+        let expr = pool.pow(neg_x, pool.integer(2_i32));
+        let (result, _) = ConstFold.apply(expr, &pool).unwrap();
+        assert_eq!(result, pool.pow(x, pool.integer(2_i32)));
+    }
+
+    #[test]
+    fn even_power_sign_fold_via_full_simplify() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let neg_x = pool.mul(vec![pool.integer(-1_i32), x]);
+        let expr = pool.pow(neg_x, pool.integer(2_i32));
+        let r = crate::simplify::simplify(expr, &pool);
+        assert_eq!(r.value, pool.pow(x, pool.integer(2_i32)));
+    }
+
+    #[test]
+    fn odd_power_sign_fold_does_not_fire() {
+        // (-1 * x)^3 should NOT drop the sign (it's -x^3).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let neg_x = pool.mul(vec![pool.integer(-1_i32), x]);
+        let expr = pool.pow(neg_x, pool.integer(3_i32));
+        assert!(ConstFold.apply(expr, &pool).is_none());
+    }
+
+    // -------------------------------------------------------------------
+    // RationalCanon: Rational(n/1) → Integer(n)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn rational_with_denom_one_canonicalizes_to_integer() {
+        let pool = p();
+        // Build a Rational(3/1) node directly (bypassing ExprPool::rational's
+        // own reduction, which still leaves a Rational node for denom == 1).
+        let r = rug::Rational::from((rug::Integer::from(3), rug::Integer::from(1)));
+        let expr = pool.intern(ExprData::Rational(crate::kernel::expr::BigRat(r)));
+        let (result, _) = ConstFold.apply(expr, &pool).unwrap();
+        assert_eq!(result, pool.integer(3_i32));
+    }
+
+    #[test]
+    fn rational_with_denom_gt_one_unchanged() {
+        let pool = p();
+        let half = pool.rational(1_i32, 2_i32);
+        assert!(ConstFold.apply(half, &pool).is_none());
+    }
+
+    // -------------------------------------------------------------------
+    // Numeric cancellation across a product:
+    //   π · (4π)^(-1) → 1/4   (DistributePowOverLiteralCoeff + DivSelf +
+    //   ConstFold's new negative-integer-exponent fold)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn distribute_pow_over_literal_coeff() {
+        // (4*pi)^(-1) → 4^(-1) * pi^(-1)
+        let pool = p();
+        let pi = pool.symbol("pi", Domain::Real);
+        let four_pi = pool.mul(vec![pool.integer(4_i32), pi]);
+        let expr = pool.pow(four_pi, pool.integer(-1_i32));
+        let (result, _) = ConstFold.apply(expr, &pool).unwrap();
+        let expected = pool.mul(vec![
+            pool.pow(pool.integer(4_i32), pool.integer(-1_i32)),
+            pool.pow(pi, pool.integer(-1_i32)),
+        ]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn pi_times_inverse_four_pi_is_one_quarter() {
+        // pi * (4*pi)^(-1) → 1/4
+        let pool = p();
+        let pi = pool.symbol("pi", Domain::Real);
+        let four_pi = pool.mul(vec![pool.integer(4_i32), pi]);
+        let inv = pool.pow(four_pi, pool.integer(-1_i32));
+        let expr = pool.mul(vec![pi, inv]);
+        let r = crate::simplify::simplify(expr, &pool);
+        assert_eq!(r.value, pool.rational(1_i32, 4_i32));
+    }
+
+    #[test]
+    fn integer_to_negative_one_is_reciprocal_rational() {
+        // 4^(-1) → 1/4
+        let pool = p();
+        let expr = pool.pow(pool.integer(4_i32), pool.integer(-1_i32));
+        let (result, _) = ConstFold.apply(expr, &pool).unwrap();
+        assert_eq!(result, pool.rational(1_i32, 4_i32));
+    }
+
+    // -------------------------------------------------------------------
+    // Idempotency spot-checks on larger expressions
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn idempotent_on_combined_expression() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let pi = pool.symbol("pi", Domain::Real);
+
+        // Build: exp(0) + sin(0) + (1)^(1/2) + (s^4)^(-1) + (-1*x)^2
+        //        + pi * (4*pi)^(-1)
+        let s = pool.symbol("s", Domain::Real);
+        let exp0 = pool.func("exp", vec![pool.integer(0_i32)]);
+        let sin0 = pool.func("sin", vec![pool.integer(0_i32)]);
+        let one_pow_half = pool.pow(pool.integer(1_i32), pool.rational(1_i32, 2_i32));
+        let s_pow_pow = pool.pow(pool.pow(s, pool.integer(4_i32)), pool.integer(-1_i32));
+        let neg_x_sq = pool.pow(pool.mul(vec![pool.integer(-1_i32), x]), pool.integer(2_i32));
+        let four_pi = pool.mul(vec![pool.integer(4_i32), pi]);
+        let pi_cancel = pool.mul(vec![pi, pool.pow(four_pi, pool.integer(-1_i32))]);
+
+        let expr = pool.add(vec![
+            exp0,
+            sin0,
+            one_pow_half,
+            s_pow_pow,
+            neg_x_sq,
+            pi_cancel,
+        ]);
+
+        let r1 = crate::simplify::simplify(expr, &pool);
+        let r2 = crate::simplify::simplify(r1.value, &pool);
+        assert_eq!(r1.value, r2.value, "simplify should be idempotent");
+    }
+
+    #[test]
+    fn idempotent_on_rational_canon_node() {
+        let pool = p();
+        let r = rug::Rational::from((rug::Integer::from(5), rug::Integer::from(1)));
+        let rat_five = pool.intern(ExprData::Rational(crate::kernel::expr::BigRat(r)));
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.add(vec![rat_five, x]);
+
+        let r1 = crate::simplify::simplify(expr, &pool);
+        let r2 = crate::simplify::simplify(r1.value, &pool);
+        assert_eq!(r1.value, r2.value);
+        assert_eq!(r1.value, pool.add(vec![pool.integer(5_i32), x]));
     }
 }

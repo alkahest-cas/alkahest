@@ -628,6 +628,75 @@ mod backend {
     }
 
     // -----------------------------------------------------------------------
+    // Final post-extraction constant-fold pass
+    // -----------------------------------------------------------------------
+
+    /// Apply only the cheap constant-folding rules to `expr`, bottom-up, to a
+    /// per-node fixpoint.
+    ///
+    /// This covers the folds not modeled inside the egglog program itself:
+    /// elementary functions at 0/1, `x^0`/`x^1`, `1^r`, power-of-power,
+    /// even-power sign folding, distribution of `pow` over a literal `Mul`
+    /// coefficient, `Rational(n/1)` canonicalization, and `0`/`1`
+    /// identities for `Add`/`Mul` — all via [`ConstFold`], [`PowZero`],
+    /// [`PowOne`], [`AddZero`], [`MulOne`], and [`MulZero`].
+    ///
+    /// Unlike [`super::super::engine::simplify`], this does **not** run the
+    /// full rule engine (no flattening, no `SubSelf`/`DivSelf`, no
+    /// discrimination-net pattern rules, no fixed-point loop over the whole
+    /// tree) — each node is visited once and folded to a local fixpoint, so
+    /// the pass is `O(n)` in the size of the extracted term rather than
+    /// `O(n * iterations)`. The extracted term is already near-normal-form,
+    /// so this bounded local fold is sufficient to pick up the constant
+    /// folds above without re-running the whole simplifier.
+    pub(super) fn apply_const_folds(expr: ExprId, pool: &ExprPool) -> ExprId {
+        use crate::simplify::rules::{
+            AddZero, ConstFold, MulOne, MulZero, PowOne, PowZero, RewriteRule,
+        };
+
+        // Recurse into children first.
+        let rebuilt = match pool.get(expr) {
+            ExprData::Add(args) => {
+                let args: Vec<ExprId> = args.iter().map(|&a| apply_const_folds(a, pool)).collect();
+                pool.add(args)
+            }
+            ExprData::Mul(args) => {
+                let args: Vec<ExprId> = args.iter().map(|&a| apply_const_folds(a, pool)).collect();
+                pool.mul(args)
+            }
+            ExprData::Pow { base, exp } => {
+                let base = apply_const_folds(base, pool);
+                let exp = apply_const_folds(exp, pool);
+                pool.pow(base, exp)
+            }
+            ExprData::Func { name, args } => {
+                let args: Vec<ExprId> = args.iter().map(|&a| apply_const_folds(a, pool)).collect();
+                pool.func(&name, args)
+            }
+            _ => expr,
+        };
+
+        // Fold the rebuilt node to a local fixpoint with the cheap rules
+        // only. Each rule either strictly shrinks the term or returns
+        // `None`, so this loop terminates quickly.
+        let mut current = rebuilt;
+        loop {
+            let next = AddZero
+                .apply(current, pool)
+                .or_else(|| MulZero.apply(current, pool))
+                .or_else(|| MulOne.apply(current, pool))
+                .or_else(|| PowZero.apply(current, pool))
+                .or_else(|| PowOne.apply(current, pool))
+                .or_else(|| ConstFold.apply(current, pool));
+            match next {
+                Some((after, _)) if after != current => current = after,
+                _ => break,
+            }
+        }
+        current
+    }
+
+    // -----------------------------------------------------------------------
     // 4. Public implementation
     // -----------------------------------------------------------------------
 
@@ -673,6 +742,14 @@ mod backend {
         let simplified = fold_numeric_pow(simplified, pool);
         // RW-3: apply linear canonizer as a post-extraction pass.
         let simplified = canonicalize_linear(simplified, pool);
+        // Final post-extraction pass: apply only the cheap constant-folding
+        // rules (elementary functions at 0/1, x^0/x^1, 1^r, power-of-power,
+        // even-power sign folding, distribution of pow over a literal Mul
+        // coefficient, Rational(n/1) canonicalization, and Add/Mul 0/1
+        // identities) to the extracted term. See `apply_const_folds` — this
+        // is a single bottom-up O(n) pass, not a full re-run of the rule
+        // engine.
+        let simplified = apply_const_folds(simplified, pool);
 
         let mut log = DerivationLog::new();
         if simplified != expr {
