@@ -34,19 +34,20 @@ pip install -q --upgrade pip
 pip install -q -r requirements.txt
 
 install_alkahest_wheel() {
-  local WHEEL
-  WHEEL=$(ls "${REPO_ROOT}"/dist/*.whl 2>/dev/null | sort -V | tail -n1)
-  if [ -n "$WHEEL" ]; then
-    echo "Installing alkahest wheel: $WHEEL"
-    pip install -q --force-reinstall "$WHEEL"
-    return 0
-  fi
   local PY_TAG
   PY_TAG=$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
   local ALKAHEST_VERSION="${ALKAHEST_VERSION:-3.4.0}"
   local FULL_WHEEL="https://github.com/alkahest-cas/alkahest/releases/download/v${ALKAHEST_VERSION}/alkahest-${ALKAHEST_VERSION}+full-${PY_TAG}-${PY_TAG}-manylinux_2_35_x86_64.whl"
   echo "Installing alkahest +full wheel: $FULL_WHEEL"
-  pip install -q --force-reinstall "$FULL_WHEEL"
+  if pip install -q --force-reinstall "$FULL_WHEEL"; then
+    return 0
+  fi
+  local WHEEL
+  WHEEL=$(ls "${REPO_ROOT}"/dist/*+full*.whl 2>/dev/null | sort -V | tail -n1)
+  if [ -n "$WHEEL" ]; then
+    echo "GitHub wheel failed; trying local dist wheel: $WHEEL"
+    pip install -q --force-reinstall "$WHEEL"
+  fi
 }
 
 install_alkahest_local() {
@@ -76,7 +77,7 @@ install_alkahest_local() {
     cd "$REPO_ROOT"
     maturin develop --release \
       --manifest-path alkahest-py/Cargo.toml \
-      --features "cranelift jit egraph parallel groebner"
+      --features "jit egraph parallel groebner"
   ); then
     touch "$MARKER"
     return 0
