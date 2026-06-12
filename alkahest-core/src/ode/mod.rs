@@ -8,6 +8,7 @@
 
 pub mod dsolve;
 pub mod sensitivity;
+pub mod series_solve;
 
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
 use crate::simplify::engine::simplify;
