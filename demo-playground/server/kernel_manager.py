@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -24,17 +25,48 @@ try:
     from playground_helpers import display_lean_cert, emit_lean_marker
 except ImportError:
     pass
+try:
+    import matplotlib_inline
+    matplotlib_inline.backend_inline.setup_matplotlib()
+except Exception:
+    try:
+        get_ipython().run_line_magic('matplotlib', 'inline')
+    except Exception:
+        pass
 del _p
 """
 
+# Capture matplotlib figures even when a cell selects a non-inline backend (e.g. Agg).
+_FLUSH_MATPLOTLIB = """
+try:
+    import io
+    import base64
+    import matplotlib.pyplot as _plt
+    from IPython.display import display as _display
+    for _n in _plt.get_fignums():
+        _buf = io.BytesIO()
+        _plt.figure(_n).savefig(_buf, format='png', bbox_inches='tight', dpi=120)
+        _buf.seek(0)
+        _display({'image/png': base64.b64encode(_buf.read()).decode('ascii')}, raw=True)
+    _plt.close('all')
+except Exception:
+    pass
+"""
 
-_PREFERRED_KERNEL = "alkahest-dev"
+
+def _with_matplotlib_flush(code: str) -> str:
+    if re.search(r"\b(matplotlib|plt\.|\.plot\()", code):
+        return code.rstrip() + "\n" + _FLUSH_MATPLOTLIB
+    return code
+
+
+_PREFERRED_KERNELS = ("alkahest-playground", "alkahest-dev")
 
 
 def _alkahest_libs_dir() -> Path | None:
-    """Native libs bundled with the +full wheel in the repo .venv."""
+    """Native libs bundled with the +full wheel in the server venv."""
     libs = (
-        REPO_ROOT
+        SERVER_DIR
         / ".venv"
         / f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages/alkahest.libs"
     )
@@ -54,12 +86,12 @@ def _kernel_env() -> dict[str, str]:
 class KernelSession:
     def __init__(self) -> None:
         self.id = str(uuid.uuid4())
-        # Prefer the alkahest-dev kernelspec (main venv with 2.2.x + LD_LIBRARY_PATH).
+        # Prefer the isolated playground kernelspec (server .venv with +full wheel).
         # Fall back to the default kernel if not registered.
         try:
             ks = jupyter_client.kernelspec.KernelSpecManager()
             available = list(ks.get_all_specs().keys())
-            kernel_name = _PREFERRED_KERNEL if _PREFERRED_KERNEL in available else None
+            kernel_name = next((k for k in _PREFERRED_KERNELS if k in available), None)
         except Exception:
             kernel_name = None
         km_kwargs: dict[str, Any] = {"env": _kernel_env()}
@@ -98,7 +130,7 @@ class KernelSession:
 
     def _raw_execute(self, code: str) -> list[dict[str, Any]]:
         outputs: list[dict[str, Any]] = []
-        self.kc.execute(code)
+        self.kc.execute(_with_matplotlib_flush(code))
 
         while True:
             try:
@@ -145,7 +177,7 @@ class KernelSession:
         def _run():
             self._execution_count += 1
             exec_count = self._execution_count
-            self.kc.execute(code)
+            self.kc.execute(_with_matplotlib_flush(code))
             while True:
                 try:
                     msg = self.kc.get_iopub_msg(timeout=60)

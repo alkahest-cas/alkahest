@@ -2,7 +2,16 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="${SCRIPT_DIR}/../.."
 cd "$SCRIPT_DIR"
+
+# Optional Bearer token for remote access (see .env.example).
+if [ -f ".env.local" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source ".env.local"
+  set +a
+fi
 
 # Dev PYTHONPATH (e.g. repo python/) shadows the +full wheel and disables JIT in kernels.
 unset PYTHONPATH
@@ -24,16 +33,70 @@ source .venv/bin/activate
 pip install -q --upgrade pip
 pip install -q -r requirements.txt
 
-# Install alkahest (+full: JIT + parallel) unless a newer local wheel exists in dist/
-WHEEL=$(ls ../dist/*.whl 2>/dev/null | sort -V | tail -n1)
-if [ -n "$WHEEL" ]; then
-  echo "Installing alkahest wheel: $WHEEL"
-  pip install -q "$WHEEL"
-else
+install_alkahest_wheel() {
+  local PY_TAG WHEEL_PLAT
   PY_TAG=$(python -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
-  FULL_WHEEL="https://github.com/alkahest-cas/alkahest/releases/download/v3.4.0/alkahest-3.4.0+full-${PY_TAG}-${PY_TAG}-manylinux_2_35_x86_64.whl"
+  case "$(uname -m)" in
+    x86_64) WHEEL_PLAT="manylinux_2_35_x86_64" ;;
+    aarch64|arm64) WHEEL_PLAT="manylinux_2_35_aarch64" ;;
+    *) echo "Unsupported architecture for +full wheel: $(uname -m)"; return 1 ;;
+  esac
+  local ALKAHEST_VERSION="${ALKAHEST_VERSION:-3.4.0}"
+  local FULL_WHEEL="https://github.com/alkahest-cas/alkahest/releases/download/v${ALKAHEST_VERSION}/alkahest-${ALKAHEST_VERSION}+full-${PY_TAG}-${PY_TAG}-${WHEEL_PLAT}.whl"
   echo "Installing alkahest +full wheel: $FULL_WHEEL"
-  pip install -q "$FULL_WHEEL"
+  if pip install -q --force-reinstall "$FULL_WHEEL"; then
+    return 0
+  fi
+  local WHEEL
+  WHEEL=$(find "${REPO_ROOT}/dist" -maxdepth 1 -type f \
+    -name "*+full-${PY_TAG}-${PY_TAG}-*.whl" \
+    | sort -V | tail -n1)
+  if [ -n "$WHEEL" ]; then
+    echo "GitHub wheel failed; trying local dist wheel: $WHEEL"
+    pip install -q --force-reinstall "$WHEEL"
+  fi
+}
+
+install_alkahest_local() {
+  local MARKER=".venv/.alkahest-local-build"
+  local MANIFEST="${REPO_ROOT}/alkahest-py/Cargo.toml"
+  if [ ! -f "$MANIFEST" ]; then
+    return 1
+  fi
+  if [ "${ALKAHEST_USE_RELEASE_WHEEL:-0}" = "1" ]; then
+    return 1
+  fi
+  if ! command -v maturin >/dev/null 2>&1; then
+    pip install -q maturin
+  fi
+  local NEED_BUILD=0
+  if [ ! -f "$MARKER" ] || [ "${ALKAHEST_FORCE_REBUILD:-0}" = "1" ]; then
+    NEED_BUILD=1
+  elif find "${REPO_ROOT}/alkahest-py" "${REPO_ROOT}/alkahest-core" -name '*.rs' -newer "$MARKER" -print -quit 2>/dev/null | grep -q .; then
+    NEED_BUILD=1
+  fi
+  if [ "$NEED_BUILD" != "1" ]; then
+    echo "Local alkahest build up to date ($MARKER)"
+    return 0
+  fi
+  echo "Building local alkahest into server venv (maturin develop)..."
+  if (
+    cd "$REPO_ROOT"
+    maturin develop --release \
+      --manifest-path alkahest-py/Cargo.toml \
+      --features "jit egraph parallel groebner"
+  ); then
+    touch "$MARKER"
+    return 0
+  fi
+  echo "maturin develop failed; falling back to release wheel"
+  rm -f "$MARKER"
+  return 1
+}
+
+# Prefer local source when developing in the repo checkout; fall back to wheels.
+if ! install_alkahest_local; then
+  install_alkahest_wheel
 fi
 
 # Bundled wheels ship native libs under site-packages/alkahest.libs/
@@ -42,28 +105,19 @@ if [ -n "$LIBS_DIR" ]; then
   export LD_LIBRARY_PATH="${LIBS_DIR}:${LD_LIBRARY_PATH:-}"
 fi
 
-# Jupyter kernels use ~/alkahest/.venv (alkahest-dev). Ensure +full wheel, not editable dev install.
-REPO_VENV="${SCRIPT_DIR}/../../.venv"
-if [ -d "$REPO_VENV" ]; then
-  REPO_PY="${REPO_VENV}/bin/python"
-  if [ -x "$REPO_PY" ]; then
-    REPO_TAG=$("$REPO_PY" -c "import sys; print(f'cp{sys.version_info.major}{sys.version_info.minor}')")
-    FULL_WHEEL_REPO="https://github.com/alkahest-cas/alkahest/releases/download/v3.4.0/alkahest-3.4.0+full-${REPO_TAG}-${REPO_TAG}-manylinux_2_35_x86_64.whl"
-    echo "Ensuring alkahest +full in repo venv for alkahest-dev kernel..."
-    "$REPO_PY" -m pip install -q --force-reinstall "$FULL_WHEEL_REPO"
-    REPO_LIBS=$("$REPO_PY" -c "import pathlib,site; roots=[pathlib.Path(p) for p in site.getsitepackages()]; print(next((r/'alkahest.libs' for r in roots if (r/'alkahest.libs').is_dir()), ''))")
-    if [ -n "$REPO_LIBS" ]; then
-      "$REPO_PY" -m ipykernel install --user --name=alkahest-dev --display-name="Alkahest Dev (3.3+full)"
-      KERNEL_JSON="${HOME}/.local/share/jupyter/kernels/alkahest-dev/kernel.json"
-      "$REPO_PY" -c "
+# Isolated Jupyter kernel (server .venv only — never touches repo .venv / agent worktrees).
+if [ -n "$LIBS_DIR" ]; then
+  python -m ipykernel install --user --name=alkahest-playground --display-name="Alkahest Playground (+full)"
+  KERNEL_JSON="${HOME}/.local/share/jupyter/kernels/alkahest-playground/kernel.json"
+  python -c "
 import json, os
 p = os.path.expanduser('${KERNEL_JSON}')
 d = json.load(open(p))
-d['env'] = {'LD_LIBRARY_PATH': '${REPO_LIBS}'}
+if 'env' not in d:
+    d['env'] = {}
+d['env']['LD_LIBRARY_PATH'] = '${LIBS_DIR}'
 json.dump(d, open(p, 'w'), indent=2)
 "
-    fi
-  fi
 fi
 
 PORT="${PORT:-8000}"
@@ -76,7 +130,12 @@ if [[ "${1:-}" == "--daemon" ]]; then
     sleep 1
   fi
   echo "Starting alkahest demo server on port ${PORT} (background, log: ${LOG_FILE})..."
-  nohup uvicorn main:app --host 0.0.0.0 --port "${PORT}" >>"${LOG_FILE}" 2>&1 &
+  if [ -n "${ALKAHEST_SERVER_TOKEN:-}" ]; then
+    echo "Auth: ALKAHEST_SERVER_TOKEN is set (Bearer required for sessions / Lean / WS)."
+  else
+    echo "Auth: no token (open server)."
+  fi
+  nohup env ALKAHEST_SERVER_TOKEN="${ALKAHEST_SERVER_TOKEN:-}" uvicorn main:app --host 0.0.0.0 --port "${PORT}" >>"${LOG_FILE}" 2>&1 &
   echo "PID $!"
   sleep 1
   curl -sf "http://127.0.0.1:${PORT}/health" >/dev/null && echo "Health check: ok" || echo "Health check: failed (see ${LOG_FILE})"
@@ -84,4 +143,4 @@ if [[ "${1:-}" == "--daemon" ]]; then
 fi
 
 echo "Starting alkahest demo server on port ${PORT} (foreground, --reload)..."
-exec uvicorn main:app --host 0.0.0.0 --port "${PORT}" --reload
+exec env ALKAHEST_SERVER_TOKEN="${ALKAHEST_SERVER_TOKEN:-}" uvicorn main:app --host 0.0.0.0 --port "${PORT}" --reload

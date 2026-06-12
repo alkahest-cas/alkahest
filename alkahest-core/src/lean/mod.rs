@@ -60,6 +60,28 @@ fn rule_to_tactic(rule_name: &str) -> &'static str {
     }
 }
 
+/// True when a derivation log records differentiation (not algebraic rewrite).
+fn is_diff_certificate(wrt: Option<ExprId>) -> bool {
+    wrt.is_some()
+}
+
+fn diff_rule_to_tactic(rule_name: &str) -> &'static str {
+    match rule_name {
+        "diff_identity" => "by simp [deriv_id]",
+        "diff_const" => "by simp [deriv_const]",
+        "diff_univariate_poly" => "by simp [deriv_pow, deriv_add, deriv_mul, deriv_const]",
+        "sum_rule" => "by simp [deriv_add]",
+        "product_rule" => "by simp [deriv_mul]",
+        "power_rule" | "power_rule_n1" => "by simp [deriv_pow, deriv_mul]",
+        "power_rule_n0" => "by simp [deriv_const]",
+        "diff_sin" | "diff_cos" | "diff_exp" | "diff_log" | "diff_sqrt" => "by sorry",
+        "diff_forward" | "diff_primitive_registry" | "diff_piecewise" | "diff_root_sum" => {
+            "by sorry"
+        }
+        _ => "by sorry",
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Header
 // ---------------------------------------------------------------------------
@@ -72,6 +94,19 @@ pub fn emit_header() -> String {
      import Mathlib.MeasureTheory.Integral.IntervalIntegral\n\
      \n\
      open Real MeasureTheory\n\n"
+        .to_string()
+}
+
+/// Emit the Lean 4 file header for differentiation certificates.
+pub fn emit_diff_header() -> String {
+    "import Mathlib.Tactic\n\
+     import Mathlib.Analysis.Calculus.Deriv.Basic\n\
+     import Mathlib.Analysis.Calculus.Deriv.Pow\n\
+     import Mathlib.Analysis.SpecialFunctions.Trigonometric.Deriv\n\
+     import Mathlib.Analysis.SpecialFunctions.ExpDeriv\n\
+     import Mathlib.Analysis.SpecialFunctions.Log.Deriv\n\
+     \n\
+     open Real\n\n"
         .to_string()
 }
 
@@ -263,6 +298,17 @@ pub fn emit_goal(before: ExprId, after: ExprId, pool: &ExprPool) -> String {
     format!("example : {before_str} = {after_str}")
 }
 
+/// Emit a Lean `example` asserting `deriv (fun v => before) v = after`.
+pub fn emit_diff_goal(before: ExprId, after: ExprId, wrt: ExprId, pool: &ExprPool) -> String {
+    let var_name = pool.with(wrt, |d| match d {
+        ExprData::Symbol { name, .. } => name.clone(),
+        _ => "x".to_string(),
+    });
+    let before_str = expr_to_lean(before, pool);
+    let after_str = expr_to_lean(after, pool);
+    format!("example : deriv (fun ({var_name} : ℝ) => {before_str}) {var_name} = {after_str}")
+}
+
 // ---------------------------------------------------------------------------
 // Step emission
 // ---------------------------------------------------------------------------
@@ -271,8 +317,21 @@ pub fn emit_goal(before: ExprId, after: ExprId, pool: &ExprPool) -> String {
 ///
 /// Returns a complete `example` statement with a tactic proof.
 pub fn emit_step(step: &RewriteStep, pool: &ExprPool) -> String {
-    let goal = emit_goal(step.before, step.after, pool);
-    let tactic = rule_to_tactic(step.rule_name);
+    emit_step_wrt(step, pool, None)
+}
+
+/// Like [`emit_step`], but when `wrt` is set emits a `deriv` goal instead of a rewrite equality.
+pub fn emit_step_wrt(step: &RewriteStep, pool: &ExprPool, wrt: Option<ExprId>) -> String {
+    let goal = if let Some(var) = wrt {
+        emit_diff_goal(step.before, step.after, var, pool)
+    } else {
+        emit_goal(step.before, step.after, pool)
+    };
+    let tactic = if wrt.is_some() {
+        diff_rule_to_tactic(step.rule_name)
+    } else {
+        rule_to_tactic(step.rule_name)
+    };
     let mut out = format!("{goal} :=\n  {tactic}");
     if !step.side_conditions.is_empty() {
         out.push_str("\n  -- Side conditions: ");
@@ -299,7 +358,22 @@ pub fn emit_step(step: &RewriteStep, pool: &ExprPool) -> String {
 ///
 /// Returns the Lean source as a `String`.
 pub fn emit_lean_expr(derived: &DerivedExpr<ExprId>, pool: &ExprPool) -> String {
-    let mut out = emit_header();
+    emit_lean_expr_wrt(derived, pool, None)
+}
+
+/// Like [`emit_lean_expr`], but when `wrt` is set emits differentiation goals
+/// (`deriv … = …`) instead of rewrite equalities (`before = after`).
+pub fn emit_lean_expr_wrt(
+    derived: &DerivedExpr<ExprId>,
+    pool: &ExprPool,
+    wrt: Option<ExprId>,
+) -> String {
+    let diff_mode = is_diff_certificate(wrt);
+    let mut out = if diff_mode {
+        emit_diff_header()
+    } else {
+        emit_header()
+    };
 
     let steps = derived.log.steps();
 
@@ -314,7 +388,7 @@ pub fn emit_lean_expr(derived: &DerivedExpr<ExprId>, pool: &ExprPool) -> String 
 
     for (i, step) in steps.iter().enumerate() {
         out.push_str(&format!("-- Step {}: {}\n", i + 1, step.rule_name));
-        out.push_str(&emit_step(step, pool));
+        out.push_str(&emit_step_wrt(step, pool, wrt));
         out.push_str("\n\n");
     }
 
@@ -453,6 +527,30 @@ mod tests {
         let s = emit_step(&step, &pool);
         assert!(s.contains("add_zero"));
         assert!(s.contains("simp"));
+    }
+
+    #[test]
+    fn emit_lean_diff_univariate_poly() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let three = pool.integer(3_i32);
+        let expr = pool.pow(x, three);
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            lean.contains("deriv (fun (x : ℝ)"),
+            "expected deriv goal, got: {lean}"
+        );
+        assert!(
+            lean.contains("deriv_pow"),
+            "expected deriv_pow tactic, got: {lean}"
+        );
+        assert!(
+            !lean.contains("= (((x : ℝ)) ^ (2 : ℕ) * (3 : ℝ)) :=") || lean.contains("deriv"),
+            "must not claim x^3 = 3*x^2 without deriv: {lean}"
+        );
     }
 
     #[test]

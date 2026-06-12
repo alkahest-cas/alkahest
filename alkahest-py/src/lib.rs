@@ -1174,6 +1174,8 @@ struct PyDerivedResult {
     derivation: String,
     steps_raw: Vec<(String, String, String, Vec<String>)>,
     raw: DerivedExpr<ExprId>,
+    /// Differentiation variable when this result comes from :func:`diff`.
+    wrt: Option<ExprId>,
 }
 
 #[pymethods]
@@ -1210,7 +1212,11 @@ impl PyDerivedResult {
         }
         let pool_py = self.value.pool.clone_ref(py);
         let pool = pool_py.borrow(py);
-        Some(alkahest_core::emit_lean(&self.raw, &pool.inner))
+        Some(alkahest_core::emit_lean_expr_wrt(
+            &self.raw,
+            &pool.inner,
+            self.wrt,
+        ))
     }
 
     fn __repr__(&self, py: Python<'_>) -> String {
@@ -1236,6 +1242,7 @@ fn make_derived_result(
     py: Python<'_>,
     derived: alkahest_core::DerivedExpr<alkahest_core::ExprId>,
     pool_py: Py<PyExprPool>,
+    wrt: Option<ExprId>,
 ) -> PyDerivedResult {
     let derivation = {
         let pool = pool_py.borrow(py);
@@ -1268,6 +1275,7 @@ fn make_derived_result(
         derivation,
         steps_raw,
         raw: derived,
+        wrt,
     }
 }
 
@@ -1290,6 +1298,7 @@ fn py_derived_result_context_simplify(
             derivation: dr.derivation.clone(),
             steps_raw: dr.steps_raw.clone(),
             raw: dr.raw.clone(),
+            wrt: dr.wrt,
         });
     }
     let mut log = dr.raw.log.clone();
@@ -1302,7 +1311,7 @@ fn py_derived_result_context_simplify(
         value: simplified.value,
         log: log.merge(simplified.log),
     };
-    Ok(make_derived_result(py, merged, pool_py))
+    Ok(make_derived_result(py, merged, pool_py, dr.wrt))
 }
 
 // ---------------------------------------------------------------------------
@@ -1498,7 +1507,7 @@ fn py_simplify(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDerivedResult {
         core_simplify(expr.id, &pool.inner)
     };
     let pool_py = expr.pool.clone_ref(py);
-    make_derived_result(py, derived, pool_py)
+    make_derived_result(py, derived, pool_py, None)
 }
 
 /// Python-visible configuration for the e-graph simplifier.
@@ -1597,7 +1606,7 @@ fn py_simplify_egraph(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDerivedResult {
         core_simplify_egraph(expr.id, &pool.inner)
     };
     let pool_py = expr.pool.clone_ref(py);
-    make_derived_result(py, derived, pool_py)
+    make_derived_result(py, derived, pool_py, None)
 }
 
 /// Simplify using the e-graph backend with a custom [`EgraphConfig`].
@@ -1616,7 +1625,7 @@ fn py_simplify_egraph_with(
         core_simplify_egraph_with(expr.id, &pool.inner, &config.inner, &SizeCost)
     };
     let pool_py = expr.pool.clone_ref(py);
-    make_derived_result(py, derived, pool_py)
+    make_derived_result(py, derived, pool_py, None)
 }
 
 #[pyfunction]
@@ -1627,7 +1636,7 @@ fn py_diff(py: Python<'_>, expr: PyRef<PyExpr>, var: PyRef<PyExpr>) -> PyResult<
         core_diff(expr.id, var.id, &pool.inner).map_err(diff_error_to_py)?
     };
     let pool_py = expr.pool.clone_ref(py);
-    Ok(make_derived_result(py, derived, pool_py))
+    Ok(make_derived_result(py, derived, pool_py, Some(var.id)))
 }
 
 #[pyfunction]
@@ -1642,7 +1651,7 @@ fn py_diff_forward(
         core_diff_forward(expr.id, var.id, &pool.inner).map_err(diff_error_to_py)?
     };
     let pool_py = expr.pool.clone_ref(py);
-    Ok(make_derived_result(py, derived, pool_py))
+    Ok(make_derived_result(py, derived, pool_py, Some(var.id)))
 }
 
 // ---------------------------------------------------------------------------
@@ -2144,7 +2153,7 @@ fn py_integrate(
         core_integrate(expr.id, var.id, &pool.inner).map_err(integrate_error_to_py)?
     };
     let pool_py = expr.pool.clone_ref(py);
-    Ok(make_derived_result(py, derived, pool_py))
+    Ok(make_derived_result(py, derived, pool_py, None))
 }
 
 #[pyfunction]
@@ -2162,7 +2171,7 @@ fn py_integrate_definite(
             .map_err(integrate_error_to_py)?
     };
     let pool_py = expr.pool.clone_ref(py);
-    Ok(make_derived_result(py, derived, pool_py))
+    Ok(make_derived_result(py, derived, pool_py, None))
 }
 
 #[pyfunction]
@@ -2230,7 +2239,12 @@ fn py_sum_indefinite(
         let pool = expr.pool.borrow(py);
         core_sum_indefinite(expr.id, k.id, &pool.inner).map_err(sum_error_to_py)?
     };
-    Ok(make_derived_result(py, derived, expr.pool.clone_ref(py)))
+    Ok(make_derived_result(
+        py,
+        derived,
+        expr.pool.clone_ref(py),
+        None,
+    ))
 }
 
 #[pyfunction]
@@ -2246,7 +2260,12 @@ fn py_sum_definite(
         let pool = expr.pool.borrow(py);
         core_sum_definite(expr.id, k.id, lo.id, hi.id, &pool.inner).map_err(sum_error_to_py)?
     };
-    Ok(make_derived_result(py, derived, expr.pool.clone_ref(py)))
+    Ok(make_derived_result(
+        py,
+        derived,
+        expr.pool.clone_ref(py),
+        None,
+    ))
 }
 
 #[pyfunction]
@@ -2260,7 +2279,12 @@ fn py_product_indefinite(
         let pool = expr.pool.borrow(py);
         core_product_indefinite(expr.id, k.id, &pool.inner).map_err(product_error_to_py)?
     };
-    Ok(make_derived_result(py, derived, expr.pool.clone_ref(py)))
+    Ok(make_derived_result(
+        py,
+        derived,
+        expr.pool.clone_ref(py),
+        None,
+    ))
 }
 
 #[pyfunction]
@@ -2277,7 +2301,12 @@ fn py_product_definite(
         core_product_definite(expr.id, k.id, lo.id, hi.id, &pool.inner)
             .map_err(product_error_to_py)?
     };
-    Ok(make_derived_result(py, derived, expr.pool.clone_ref(py)))
+    Ok(make_derived_result(
+        py,
+        derived,
+        expr.pool.clone_ref(py),
+        None,
+    ))
 }
 
 #[pyfunction]
@@ -2465,7 +2494,7 @@ fn py_simplify_with(
             .collect();
         core_simplify_with(expr.id, &pool.inner, &boxed, SimplifyConfig::default())
     };
-    make_derived_result(py, derived, pool_py)
+    make_derived_result(py, derived, pool_py, None)
 }
 
 /// `alkahest.simplify_expanded(expr)` — simplify with distributive expansion.
@@ -2479,7 +2508,7 @@ fn py_simplify_expanded(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDerivedResult 
         alkahest_core::simplify_expanded(expr.id, &pool.inner)
     };
     let pool_py = expr.pool.clone_ref(py);
-    make_derived_result(py, derived, pool_py)
+    make_derived_result(py, derived, pool_py, None)
 }
 
 /// `alkahest.simplify_trig(expr)` — simplify with trigonometric identities.
@@ -2492,7 +2521,7 @@ fn py_simplify_trig(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDerivedResult {
         core_simplify_with(expr.id, &pool.inner, &rules, SimplifyConfig::default())
     };
     let pool_py = expr.pool.clone_ref(py);
-    make_derived_result(py, derived, pool_py)
+    make_derived_result(py, derived, pool_py, None)
 }
 
 /// `alkahest.simplify_log_exp(expr)` — simplify with log/exp identities.
@@ -2505,7 +2534,7 @@ fn py_simplify_log_exp(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDerivedResult {
         core_simplify_with(expr.id, &pool.inner, &rules, SimplifyConfig::default())
     };
     let pool_py = expr.pool.clone_ref(py);
-    make_derived_result(py, derived, pool_py)
+    make_derived_result(py, derived, pool_py, None)
 }
 
 // ---------------------------------------------------------------------------
@@ -2540,7 +2569,11 @@ fn py_to_lean(py: Python<'_>, arg: &Bound<'_, PyAny>) -> PyResult<String> {
         let d = derived_bound.borrow();
         let pool_py = d.value.pool.clone_ref(py);
         let pool = pool_py.borrow(py);
-        return Ok(alkahest_core::emit_lean(&d.raw, &pool.inner));
+        return Ok(alkahest_core::emit_lean_expr_wrt(
+            &d.raw,
+            &pool.inner,
+            d.wrt,
+        ));
     }
     if let Ok(expr_bound) = arg.downcast::<PyExpr>() {
         let expr = expr_bound.borrow();
@@ -4102,7 +4135,12 @@ fn py_simplify_par(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedRes
     #[cfg(not(feature = "parallel"))]
     let result = alkahest_core::simplify(expr.id, &pool_ref.inner);
     drop(pool_ref);
-    Ok(make_derived_result(py, result, expr.pool.clone_ref(py)))
+    Ok(make_derived_result(
+        py,
+        result,
+        expr.pool.clone_ref(py),
+        None,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -4178,7 +4216,7 @@ fn py_collect_like_terms(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDerivedResult
         let rules = rules_for_config(&SimplifyConfig::default());
         simplify_with(expr.id, &pool.inner, &rules, SimplifyConfig::default())
     };
-    make_derived_result(py, derived, pool_py)
+    make_derived_result(py, derived, pool_py, None)
 }
 
 // ---------------------------------------------------------------------------
@@ -4198,7 +4236,7 @@ fn py_simplify_pauli(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDerivedResult {
         rules.extend(pauli_product_rules());
         simplify_with(expr.id, &pool.inner, &rules, SimplifyConfig::default())
     };
-    make_derived_result(py, derived, pool_py)
+    make_derived_result(py, derived, pool_py, None)
 }
 
 /// Simplify with default rules plus orthogonal Clifford anticommutation on ``cliff_e1``, ``cliff_e2``.
@@ -4214,7 +4252,7 @@ fn py_simplify_clifford_orthogonal(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDer
         rules.extend(clifford_orthogonal_rules());
         simplify_with(expr.id, &pool.inner, &rules, SimplifyConfig::default())
     };
-    make_derived_result(py, derived, pool_py)
+    make_derived_result(py, derived, pool_py, None)
 }
 
 // ---------------------------------------------------------------------------
@@ -4294,7 +4332,7 @@ fn py_resultant(
         let pool = pool_py.borrow(py);
         core_resultant(p.id, q.id, var.id, &pool.inner).map_err(resultant_error_to_py)?
     };
-    Ok(make_derived_result(py, derived, pool_py))
+    Ok(make_derived_result(py, derived, pool_py, None))
 }
 
 /// Compute the subresultant polynomial remainder sequence of two univariate

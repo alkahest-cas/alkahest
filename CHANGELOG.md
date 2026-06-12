@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Lean certificates
+
+- **Differentiation:** `to_lean` / `DerivedResult.certificate` on `diff` results now emit `deriv (fun x => …) x = …` goals with Mathlib derivative lemmas instead of incorrect rewrite equalities (e.g. `x³ = 3x²`).
+
+### Demo playground
+
+- **Server kernel:** isolated `alkahest-playground` kernelspec in the server venv; matplotlib inline + figure flush; route matplotlib/numpy/playground_helpers cells to the server.
+- **Lean verify:** legacy diff certificate shim in `playground_helpers` for older wheels; `start.sh` builds local alkahest via `maturin develop` when developing in-repo.
+
 ## 3.4.0 — 2026-06-10
 
 ### Calculus / integration (Risch roadmap)

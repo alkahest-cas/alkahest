@@ -28,7 +28,13 @@ export type OutputItem =
 export type ExecutionMode = 'auto' | 'wasm' | 'server';
 
 export function needsServer(code: string): boolean {
-  return /\bimport\s+alkahest\b|from\s+alkahest\b/.test(code);
+  return (
+    /\bimport\s+alkahest\b|from\s+alkahest\b/.test(code) ||
+    /\bimport\s+matplotlib\b|from\s+matplotlib\b|import\s+numpy\b|from\s+numpy\b|import\s+sympy\b|from\s+sympy\b/.test(
+      code,
+    ) ||
+    /\bplayground_helpers\b/.test(code)
+  );
 }
 
 // ── Server-side execution ─────────────────────────────────────────────────────
