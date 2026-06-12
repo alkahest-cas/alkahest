@@ -47,9 +47,21 @@
 //! | `A·z/(z−a)`               | `A·aⁿ`                                  |
 //! | `A·z/(z−a)²`              | `A·n·aⁿ⁻¹`  (rewritten as `(A/a)·n·aⁿ`) |
 //! | `A·z/(z−1)`               | `A` (constant)                          |
+//! | `(P z² + Q z)/(z² + b z + c)` (`b² − 4c < 0`) | `rⁿ(A cos θn + B sin θn)`, **real** |
 //!
-//! Higher-order repeated poles `(z−a)^k`, `k ≥ 3`, and irreducible quadratic
-//! denominators are declined (outside the table — see [`ZTransformError`]).
+//! The last row covers an **irreducible quadratic** denominator — a
+//! complex-conjugate pole pair `r e^{±iθ}` with `r = √c`, `θ = acos(−b/2√c)` —
+//! and emits the **real** damped sinusoid (no imaginary unit in the output;
+//! the `i² = −1` collapse happens inside the derivation, not the result).  For
+//! example `X(z) = z/(z² − z + 1)` inverts to `(2/√3)·sin(π n / 3)`, which the
+//! forward table round-trips back to `z/(z² − z + 1)`.
+//!
+//! Higher-order repeated poles `(z−a)^k`, `k ≥ 3`, *repeated* complex poles
+//! (`k ≥ 2`), and quadratic denominators with **non-negative discriminant**
+//! (real, possibly surd, roots — e.g. the Fibonacci denominator `z² − z − 1`,
+//! discriminant `5`) remain declined (outside the table — see
+//! [`ZTransformError`]).  Such surd-root cases factor only over an algebraic
+//! extension and have no rational-coefficient closed form here.
 //!
 //! # Caveats
 //!
@@ -656,6 +668,14 @@ fn invert_term(
         )));
     }
 
+    // Irreducible quadratic denominator (complex-conjugate poles) → real
+    // damped sinusoid `rⁿ(A cos θn + B sin θn)`.  Handle this before the
+    // linear-pole numerator shape check, since here the numerator is a genuine
+    // degree-≤2 polynomial in z (e.g. `P z² + Q z`), not `A·zᵖ`.
+    if poly_degree(base, z, pool) == Some(2) {
+        return invert_quadratic_pole(numer, base, k, z, n, pool);
+    }
+
     let (coeff, p) = split_z_power(numer, z, pool).ok_or_else(|| {
         ZTransformError::NotInvertible(format!(
             "linear-pole numerator not of the form A·z^p: {}",
@@ -861,6 +881,224 @@ fn invert_linear_pole(
         _ => Err(ZTransformError::NotInvertible(format!(
             "repeated linear pole of order {k} (only k = 1, 2 are tabulated)"
         ))),
+    }
+}
+
+/// Invert a term `numer · (z² + b z + c)^{−k}` whose denominator is an
+/// *irreducible* quadratic (complex-conjugate poles `r e^{±iθ}`).  Produces the
+/// **real** damped sinusoid
+///
+/// ```text
+///   Z⁻¹{·}(n) = rⁿ (A cos(θ n) + B sin(θ n)),
+/// ```
+///
+/// with `r = √c`, `θ = acos(−b / 2√c)`, and no imaginary unit in the output.
+///
+/// The denominator must be monic with `k == 1` (a single quadratic factor); the
+/// discriminant `b² − 4c` must be a literal *negative* rational (genuine
+/// complex pair).  Repeated complex poles (`k ≥ 2`), non-monic denominators,
+/// real-surd roots (non-negative discriminant), or a non-literal discriminant
+/// are declined.
+fn invert_quadratic_pole(
+    numer: ExprId,
+    base: ExprId,
+    k: u64,
+    z: ExprId,
+    n: ExprId,
+    pool: &ExprPool,
+) -> Result<ExprId, ZTransformError> {
+    if k != 1 {
+        return Err(ZTransformError::NotInvertible(format!(
+            "repeated complex-conjugate pole of order {k} (only k = 1 is tabulated)"
+        )));
+    }
+
+    // base = z² + b z + c (monic, coefficients free of z).
+    let (b, c) = monic_quadratic_coeffs(base, z, pool).ok_or_else(|| {
+        ZTransformError::NotInvertible(format!(
+            "non-monic / non-quadratic denominator: {}",
+            pool.display(base)
+        ))
+    })?;
+
+    // Discriminant must be a literal negative rational (true complex pair).
+    // A non-negative discriminant means real (possibly surd) roots — declined
+    // (e.g. the Fibonacci denominator z² − z − 1 has discriminant 5 > 0).
+    let b2 = pool.pow(b, pool.integer(2_i32));
+    let four_c = pool.mul(vec![pool.integer(4_i32), c]);
+    let disc = simp(pool.add(vec![b2, neg(four_c, pool)]), pool);
+    match literal_rational(disc, pool) {
+        Some(d) if d < 0 => {}
+        Some(_) => {
+            return Err(ZTransformError::NotInvertible(format!(
+                "real-root quadratic denominator (discriminant ≥ 0): {}",
+                pool.display(base)
+            )));
+        }
+        None => {
+            return Err(ZTransformError::NotInvertible(format!(
+                "quadratic denominator with non-literal discriminant: {}",
+                pool.display(base)
+            )));
+        }
+    }
+
+    // numer = P z² + Q z (no constant term: every apart(X/z) term is re-scaled
+    // by z, so the lowest power is z¹).  Reject anything outside that shape.
+    let (p_coeff, q_coeff) = quadratic_numer_pq(numer, z, pool).ok_or_else(|| {
+        ZTransformError::NotInvertible(format!(
+            "complex-pole numerator not of the form P·z² + Q·z: {}",
+            pool.display(numer)
+        ))
+    })?;
+
+    // r = √c, cosθ = −b / (2r), sinθ = √(1 − cos²θ), θ = acos(cosθ).
+    let half = pool.rational(1_i32, 2_i32);
+    let r = simp(pool.pow(c, half), pool);
+    let two_r = pool.mul(vec![pool.integer(2_i32), r]);
+    let cos_theta = simp(pool.mul(vec![neg(b, pool), recip(two_r, pool)]), pool);
+    // sinθ = (1 − cos²θ)^{1/2}  (θ ∈ (0, π) so sinθ > 0).
+    let cos2 = pool.pow(cos_theta, pool.integer(2_i32));
+    let sin_theta = simp(
+        pool.pow(pool.add(vec![pool.integer(1_i32), neg(cos2, pool)]), half),
+        pool,
+    );
+    let theta = pool.func("acos", vec![cos_theta]);
+    let theta_n = simp(pool.mul(vec![theta, n]), pool);
+
+    // Match P z² + Q z = A·z(z − r cosθ) + B·z·r sinθ:
+    //   A = P,  B = (Q + A r cosθ) / (r sinθ).
+    let a_amp = p_coeff;
+    let r_cos = pool.mul(vec![r, cos_theta]);
+    let r_sin = pool.mul(vec![r, sin_theta]);
+    let b_amp = simp(
+        pool.mul(vec![
+            pool.add(vec![q_coeff, pool.mul(vec![a_amp, r_cos])]),
+            recip(r_sin, pool),
+        ]),
+        pool,
+    );
+
+    // rⁿ (A cos(θn) + B sin(θn)).
+    let r_pow_n = pool.pow(r, n);
+    let cos_term = pool.mul(vec![a_amp, pool.func("cos", vec![theta_n])]);
+    let sin_term = pool.mul(vec![b_amp, pool.func("sin", vec![theta_n])]);
+    let combo = pool.add(vec![cos_term, sin_term]);
+    Ok(simp(pool.mul(vec![r_pow_n, combo]), pool))
+}
+
+/// Extract `(b, c)` from a monic quadratic `z² + b z + c` (coefficients free of
+/// `z`).  Returns `None` for a non-monic leading coefficient or a missing/extra
+/// degree.
+fn monic_quadratic_coeffs(base: ExprId, z: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
+    let z2 = pool.pow(z, pool.integer(2_i32));
+    let terms: Vec<ExprId> = match pool.get(base) {
+        ExprData::Add(a) => a,
+        _ => vec![base],
+    };
+    let mut a2: Option<ExprId> = None; // coeff of z²
+    let mut b1_parts: Vec<ExprId> = Vec::new(); // coeffs of z
+    let mut c0_parts: Vec<ExprId> = Vec::new(); // constant
+    for term in terms {
+        if is_free_of(term, z, pool) {
+            c0_parts.push(term);
+            continue;
+        }
+        if let Some(coeff) = monomial_coeff(term, z2, z, pool) {
+            if a2.is_some() {
+                return None;
+            }
+            a2 = Some(coeff);
+            continue;
+        }
+        if let Some(coeff) = monomial_coeff(term, z, z, pool) {
+            b1_parts.push(coeff);
+            continue;
+        }
+        return None;
+    }
+    // Leading coefficient must be 1 (monic).
+    if simp(a2?, pool) != pool.integer(1_i32) {
+        return None;
+    }
+    let b = match b1_parts.len() {
+        0 => pool.integer(0_i32),
+        1 => b1_parts[0],
+        _ => pool.add(b1_parts),
+    };
+    let c = match c0_parts.len() {
+        0 => pool.integer(0_i32),
+        1 => c0_parts[0],
+        _ => pool.add(c0_parts),
+    };
+    Some((b, c))
+}
+
+/// Coefficient of `power` (e.g. `z` or `z²`) in a single (non-Add) `term`,
+/// requiring every other factor to be free of `var`; `1` for the bare power.
+fn monomial_coeff(term: ExprId, power: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    if term == power {
+        return Some(pool.integer(1_i32));
+    }
+    if let ExprData::Mul(args) = pool.get(term) {
+        let pos = args.iter().position(|&m| m == power)?;
+        let others: Vec<ExprId> = args
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| i != pos)
+            .map(|(_, &m)| m)
+            .collect();
+        if others.iter().all(|&o| is_free_of(o, var, pool)) {
+            return Some(match others.len() {
+                0 => pool.integer(1_i32),
+                1 => others[0],
+                _ => pool.mul(others),
+            });
+        }
+    }
+    None
+}
+
+/// Extract `(P, Q)` from a numerator `P·z² + Q·z` (no constant or higher term);
+/// `None` otherwise.
+fn quadratic_numer_pq(numer: ExprId, z: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
+    let z2 = pool.pow(z, pool.integer(2_i32));
+    let terms: Vec<ExprId> = match pool.get(numer) {
+        ExprData::Add(a) => a,
+        _ => vec![numer],
+    };
+    let mut p_parts: Vec<ExprId> = Vec::new();
+    let mut q_parts: Vec<ExprId> = Vec::new();
+    for term in terms {
+        if let Some(coeff) = monomial_coeff(term, z2, z, pool) {
+            p_parts.push(coeff);
+            continue;
+        }
+        if let Some(coeff) = monomial_coeff(term, z, z, pool) {
+            q_parts.push(coeff);
+            continue;
+        }
+        return None; // constant or higher-degree numerator term
+    }
+    let p = match p_parts.len() {
+        0 => pool.integer(0_i32),
+        1 => p_parts[0],
+        _ => pool.add(p_parts),
+    };
+    let q = match q_parts.len() {
+        0 => pool.integer(0_i32),
+        1 => q_parts[0],
+        _ => pool.add(q_parts),
+    };
+    Some((p, q))
+}
+
+/// If `expr` is a literal rational (integer or ratio), return it.
+fn literal_rational(expr: ExprId, pool: &ExprPool) -> Option<rug::Rational> {
+    match pool.get(expr) {
+        ExprData::Integer(n) => Some(rug::Rational::from(n.0.clone())),
+        ExprData::Rational(r) => Some(r.0.clone()),
+        _ => None,
     }
 }
 

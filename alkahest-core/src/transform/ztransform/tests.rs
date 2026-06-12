@@ -372,13 +372,88 @@ fn decline_high_order_pole() {
 }
 
 #[test]
-fn decline_irreducible_quadratic_inverse() {
+fn decline_real_surd_quadratic_inverse() {
     let (pool, n, z) = setup();
-    // X(z) = z / (z^2 + 1) -- irreducible quadratic denominator, declined.
-    let denom = pool.add(vec![pool.pow(z, pool.integer(2_i32)), pool.integer(1_i32)]);
+    // X(z) = z / (z^2 - z - 1) -- the Fibonacci denominator: real (golden-ratio)
+    // surd roots, discriminant 5 > 0. Not a complex-conjugate pair, so the
+    // damped-sinusoid inverse does not apply -> declined (documented).
+    let z2 = pool.pow(z, pool.integer(2_i32));
+    let denom = pool.add(vec![z2, neg(z, &pool), pool.integer(-1_i32)]);
     let big_x = pool.mul(vec![z, pool.pow(denom, pool.integer(-1_i32))]);
     let err = inverse_z_transform(big_x, z, n, &pool).unwrap_err();
     assert!(matches!(err, ZTransformError::NotInvertible(_)));
+}
+
+// ── inverse: irreducible-quadratic (complex-conjugate) poles → real cos/sin ──
+
+#[test]
+fn inverse_complex_pole_unit_circle() {
+    // X(z) = z/(z² − z + 1) → real damped sinusoid (r = 1, θ = π/3):
+    //   x[n] = (2/√3)·sin(π n / 3).
+    // Verified by round-tripping the forward transform of the recovered x[n].
+    let (pool, n, z) = setup();
+    let z2 = pool.pow(z, pool.integer(2_i32));
+    let denom = pool.add(vec![z2, neg(z, &pool), pool.integer(1_i32)]);
+    let big_x = pool.mul(vec![z, pool.pow(denom, pool.integer(-1_i32))]);
+
+    let x_n = inverse_z_transform(big_x, z, n, &pool).unwrap();
+    // The output must be real — no imaginary unit anywhere.
+    assert!(
+        !pool.display(x_n).to_string().contains('I'),
+        "complex-pole inverse must be real (no I): {}",
+        pool.display(x_n),
+    );
+
+    // Round-trip: Z{x[n]} must reproduce the original X(z) (numerically in z).
+    let round = z_transform(x_n, n, z, &pool).unwrap();
+    assert_numeric_eq(round, big_x, z, &[2.0, 3.0, 5.0, 7.0], &pool);
+}
+
+#[test]
+fn inverse_complex_pole_pure_imaginary() {
+    // X(z) = z/(z² + 1) → r = 1, θ = π/2: x[n] = sin(π n / 2).
+    let (pool, n, z) = setup();
+    let z2 = pool.pow(z, pool.integer(2_i32));
+    let denom = pool.add(vec![z2, pool.integer(1_i32)]);
+    let big_x = pool.mul(vec![z, pool.pow(denom, pool.integer(-1_i32))]);
+
+    let x_n = inverse_z_transform(big_x, z, n, &pool).unwrap();
+    assert!(
+        !pool.display(x_n).to_string().contains('I'),
+        "complex-pole inverse must be real (no I): {}",
+        pool.display(x_n),
+    );
+    // x[n] = sin(π n / 2): 0, 1, 0, −1, 0, 1, … — check the first few samples.
+    for (k, want) in [(0.0, 0.0), (1.0, 1.0), (2.0, 0.0), (3.0, -1.0), (4.0, 0.0)] {
+        let got = eval_at(x_n, n, k, &pool).expect("evaluable");
+        assert!(
+            (got - want).abs() < 1e-9,
+            "x[{k}] = {got}, want {want} for sin(πn/2)",
+        );
+    }
+
+    // Round-trip through the forward transform.
+    let round = z_transform(x_n, n, z, &pool).unwrap();
+    assert_numeric_eq(round, big_x, z, &[2.0, 3.0, 5.0], &pool);
+}
+
+#[test]
+fn inverse_complex_pole_damped() {
+    // Damped: X(z) = z/(z² − z + 1/2) → r = 1/√2, θ = π/4.
+    // (z² − 2r cosθ z + r²) with r² = 1/2, 2r cosθ = 1 ⇒ cosθ = 1/√2 ⇒ θ = π/4.)
+    let (pool, n, z) = setup();
+    let z2 = pool.pow(z, pool.integer(2_i32));
+    let denom = pool.add(vec![z2, neg(z, &pool), pool.rational(1_i32, 2_i32)]);
+    let big_x = pool.mul(vec![z, pool.pow(denom, pool.integer(-1_i32))]);
+
+    let x_n = inverse_z_transform(big_x, z, n, &pool).unwrap();
+    assert!(
+        !pool.display(x_n).to_string().contains('I'),
+        "complex-pole inverse must be real (no I): {}",
+        pool.display(x_n),
+    );
+    let round = z_transform(x_n, n, z, &pool).unwrap();
+    assert_numeric_eq(round, big_x, z, &[2.0, 3.0, 5.0, 8.0], &pool);
 }
 
 // ── tie-in: cross-check against rsolve (Fibonacci) ──────────────────────────

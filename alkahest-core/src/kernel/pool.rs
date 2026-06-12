@@ -165,6 +165,44 @@ impl ExprPool {
         self.symbol_commutative(name, domain, true)
     }
 
+    /// Canonical name of the kernel-blessed imaginary unit `i = √(−1)`.
+    ///
+    /// Reserved: do not create an unrelated free symbol with this name and
+    /// `Domain::Complex` — the simplifier applies the algebraic power rules
+    /// `i² = −1`, `i³ = −i`, `i⁴ = 1`, … to any symbol matching this name and
+    /// domain (see [`ExprPool::is_imaginary_unit`]).
+    pub const IMAGINARY_UNIT_NAME: &'static str = "I";
+
+    /// The first-class imaginary unit `i = √(−1)`.
+    ///
+    /// Represented as the interned, kernel-blessed commuting symbol
+    /// [`IMAGINARY_UNIT_NAME`](Self::IMAGINARY_UNIT_NAME) with
+    /// [`Domain::Complex`]. This is the *canonical* representation: the
+    /// simplifier knows the algebraic identities `i² = −1`, `i³ = −i`,
+    /// `i⁴ = 1`, and more generally `i^(4k+r) → i^r` for literal integer
+    /// exponents (no branch-cut identities — `√(−1) → i`, `log`/`exp` of
+    /// complex arguments etc. are *not* added).
+    ///
+    /// Differentiation treats it as a constant (`d/dx i = 0`, like `π`/`e`)
+    /// and numeric evaluation declines (it has no `f64` value), matching the
+    /// behaviour of other non-real atoms.
+    pub fn imaginary_unit(&self) -> ExprId {
+        self.symbol(Self::IMAGINARY_UNIT_NAME, Domain::Complex)
+    }
+
+    /// Returns `true` iff `id` is the canonical imaginary unit produced by
+    /// [`ExprPool::imaginary_unit`] (an interned `Domain::Complex` symbol named
+    /// [`IMAGINARY_UNIT_NAME`](Self::IMAGINARY_UNIT_NAME)).
+    pub fn is_imaginary_unit(&self, id: ExprId) -> bool {
+        self.with(id, |d| {
+            matches!(
+                d,
+                ExprData::Symbol { name, domain, .. }
+                    if name == Self::IMAGINARY_UNIT_NAME && *domain == Domain::Complex
+            )
+        })
+    }
+
     /// Free symbol with explicit commutative flag (V3-2). `commutative: false` is for
     /// matrix or operator generators where `A*B` and `B*A` must remain distinct.
     pub fn symbol_commutative(

@@ -90,6 +90,55 @@ pub(super) fn extract_int_coeff(expr: ExprId, pool: &ExprPool) -> (rug::Integer,
     }
 }
 
+// ---------------------------------------------------------------------------
+// Imaginary unit `i = √(−1)` — pure algebraic power rules.
+//
+// `i^n` for a literal integer `n` cycles with period 4:
+//   i^(4k+0) = 1,  i^(4k+1) = i,  i^(4k+2) = −1,  i^(4k+3) = −i.
+// These rules are purely algebraic — no branch cuts, no `√(−1) → i`, no
+// `log`/`exp` complex identities. They ride [`ConstFold`]'s existing `Pow`
+// and `Mul` dispatch arms (and the cheap egraph post-pass), keeping every
+// check literal-only so CodSpeed-sensitive paths stay fast.
+// ---------------------------------------------------------------------------
+
+/// If `expr` is an imaginary-unit power factor — the bare unit `i` (exponent
+/// `1`) or `i^k` for a literal integer `k` — return its integer exponent `k`.
+/// Returns `None` otherwise (including `i^(1/2)` and other non-integer powers,
+/// which carry branch-cut ambiguity we deliberately do not touch).
+fn imaginary_unit_exp(expr: ExprId, pool: &ExprPool) -> Option<rug::Integer> {
+    if pool.is_imaginary_unit(expr) {
+        return Some(rug::Integer::from(1));
+    }
+    match pool.get(expr) {
+        ExprData::Pow { base, exp } if pool.is_imaginary_unit(base) => as_integer(exp, pool),
+        _ => None,
+    }
+}
+
+/// Build `i^r` in fully reduced form for `r = n mod 4 ∈ {0,1,2,3}`:
+/// `1`, `i`, `−1`, `−i` respectively.
+fn imaginary_unit_pow_residue(residue: u32, pool: &ExprPool) -> ExprId {
+    let i = pool.imaginary_unit();
+    match residue {
+        0 => pool.integer(1_i32),
+        1 => i,
+        2 => pool.integer(-1_i32),
+        // 3 → −i
+        _ => pool.mul(vec![pool.integer(-1_i32), i]),
+    }
+}
+
+/// Non-negative residue of `n mod 4` (rug's `Integer` remainder is truncating,
+/// so adjust for negative `n` — exponents may be negative, e.g. `i⁻¹ = −i`).
+fn mod4_nonneg(n: &rug::Integer) -> u32 {
+    let mut r = rug::Integer::from(n % 4);
+    if r < 0 {
+        r += 4;
+    }
+    // r ∈ {0,1,2,3}, always fits in u32.
+    r.to_u32().unwrap_or(0)
+}
+
 /// Extract (integer_exponent, base) for use in DivSelf.
 /// Returns `Some((1, expr))` for all terms including integer constants so
 /// that `n * n^(-1) → 1` is handled correctly.
@@ -398,19 +447,46 @@ impl RewriteRule for ConstFold {
                 Some((after, one_step(self.name(), expr, after)))
             }
             ExprData::Mul(args) => {
+                // Count how many factors are imaginary-unit powers (the bare
+                // unit `i`, or `i^k` for literal integer `k`). When ≥2 such
+                // factors are present they collapse via i² = −1 (e.g. i·i → −1,
+                // (2i)·(3i) → −6); a single one is left untouched. The check is
+                // O(args) of O(1) probes — cheap and fails fast.
+                let imag_factor_count = args
+                    .iter()
+                    .filter(|&&a| imaginary_unit_exp(a, pool).is_some())
+                    .count();
                 let numeric_count = args
                     .iter()
                     .filter(|&&a| as_rational(a, pool).is_some())
                     .count();
-                if numeric_count < 2 {
+                if numeric_count < 2 && imag_factor_count < 2 {
                     return None;
                 }
                 let mut prod = rug::Rational::from(1);
+                // Total imaginary-unit exponent collected from i / i^k factors.
+                let mut imag_exp = rug::Integer::from(0);
                 let mut non_numeric: Vec<ExprId> = vec![];
                 for &a in &args {
-                    match as_rational(a, pool) {
-                        Some(r) => prod *= r,
-                        None => non_numeric.push(a),
+                    if let Some(r) = as_rational(a, pool) {
+                        prod *= r;
+                    } else if let Some(k) = imaginary_unit_exp(a, pool) {
+                        imag_exp += k;
+                    } else {
+                        non_numeric.push(a);
+                    }
+                }
+                // Collapse the accumulated i^(imag_exp) into {1, i, −1, −i}.
+                // The sign (−1 for residues 2,3) folds into the rational
+                // product; the residual `i` (residues 1,3) becomes a factor.
+                match mod4_nonneg(&imag_exp) {
+                    0 => {}
+                    1 => non_numeric.push(pool.imaginary_unit()),
+                    2 => prod *= -1,
+                    _ => {
+                        // residue 3 → −i
+                        prod *= -1;
+                        non_numeric.push(pool.imaginary_unit());
                     }
                 }
                 let after = if prod == 0 {
@@ -433,6 +509,20 @@ impl RewriteRule for ConstFold {
                 Some((after, one_step(self.name(), expr, after)))
             }
             ExprData::Pow { base, exp } => {
+                // i^n → {1, i, −1, −i} for a literal integer exponent n,
+                // cycling with period 4 (ImaginaryUnitPow). Pure algebra; no
+                // branch cuts. Cheap discriminant: the base must be the
+                // canonical imaginary unit and the exponent a literal integer,
+                // both O(1) checks that fail fast for ordinary powers.
+                if pool.is_imaginary_unit(base) {
+                    if let Some(n) = as_integer(exp, pool) {
+                        let after = imaginary_unit_pow_residue(mod4_nonneg(&n), pool);
+                        if after != expr {
+                            return Some((after, one_step(self.name(), expr, after)));
+                        }
+                    }
+                }
+
                 // 1^r = 1 for any literal rational (or integer) exponent `r`,
                 // including non-integer exponents like 1/2. This is sound
                 // unconditionally: 1^r = exp(r * log(1)) = exp(r * 0) = 1
@@ -1584,5 +1674,95 @@ mod tests {
         let r2 = crate::simplify::simplify(r1.value, &pool);
         assert_eq!(r1.value, r2.value);
         assert_eq!(r1.value, pool.add(vec![pool.integer(5_i32), x]));
+    }
+
+    // -------------------------------------------------------------------
+    // Imaginary unit — algebraic power rules (i² = −1, i^(4k+r) → i^r)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn imaginary_unit_pow_cycle() {
+        let pool = p();
+        let i = pool.imaginary_unit();
+        let neg_i = pool.mul(vec![pool.integer(-1_i32), i]);
+        // i² = −1
+        let i2 = pool.pow(i, pool.integer(2_i32));
+        assert_eq!(
+            crate::simplify::simplify(i2, &pool).value,
+            pool.integer(-1_i32)
+        );
+        // i³ = −i
+        let i3 = pool.pow(i, pool.integer(3_i32));
+        assert_eq!(crate::simplify::simplify(i3, &pool).value, neg_i);
+        // i⁴ = 1
+        let i4 = pool.pow(i, pool.integer(4_i32));
+        assert_eq!(
+            crate::simplify::simplify(i4, &pool).value,
+            pool.integer(1_i32)
+        );
+        // i⁵ = i
+        let i5 = pool.pow(i, pool.integer(5_i32));
+        assert_eq!(crate::simplify::simplify(i5, &pool).value, i);
+        // i^(-1) = −i
+        let im1 = pool.pow(i, pool.integer(-1_i32));
+        assert_eq!(crate::simplify::simplify(im1, &pool).value, neg_i);
+        // i^7 = −i  (4·1 + 3)
+        let i7 = pool.pow(i, pool.integer(7_i32));
+        assert_eq!(crate::simplify::simplify(i7, &pool).value, neg_i);
+    }
+
+    #[test]
+    fn imaginary_unit_mul_collapses() {
+        let pool = p();
+        let i = pool.imaginary_unit();
+        // i · i → −1
+        let ii = pool.mul(vec![i, i]);
+        assert_eq!(
+            crate::simplify::simplify(ii, &pool).value,
+            pool.integer(-1_i32)
+        );
+        // (2i)·(3i) → −6
+        let two_i = pool.mul(vec![pool.integer(2_i32), i]);
+        let three_i = pool.mul(vec![pool.integer(3_i32), i]);
+        let prod = pool.mul(vec![two_i, three_i]);
+        assert_eq!(
+            crate::simplify::simplify(prod, &pool).value,
+            pool.integer(-6_i32)
+        );
+        // i · i · i → −i
+        let neg_i = pool.mul(vec![pool.integer(-1_i32), i]);
+        let iii = pool.mul(vec![i, i, i]);
+        assert_eq!(crate::simplify::simplify(iii, &pool).value, neg_i);
+        // i² · i² → 1  (mix of i^k factors)
+        let i2 = pool.pow(i, pool.integer(2_i32));
+        let quad = pool.mul(vec![i2, i2]);
+        assert_eq!(
+            crate::simplify::simplify(quad, &pool).value,
+            pool.integer(1_i32)
+        );
+    }
+
+    #[test]
+    fn imaginary_unit_single_factor_untouched() {
+        // A lone `i` (or `c·i`) must not be folded away — only collapses
+        // happen when ≥2 imaginary factors meet.
+        let pool = p();
+        let i = pool.imaginary_unit();
+        let two_i = pool.mul(vec![pool.integer(2_i32), i]);
+        assert_eq!(crate::simplify::simplify(two_i, &pool).value, two_i);
+    }
+
+    #[test]
+    fn imaginary_unit_is_constant_under_diff() {
+        // d/dx i = 0 — the imaginary unit is a constant atom (like π/e), so
+        // differentiating w.r.t. an unrelated variable yields 0.
+        let pool = p();
+        let i = pool.imaginary_unit();
+        let x = pool.symbol("x", crate::kernel::Domain::Real);
+        let d = crate::diff::diff(i, x, &pool).unwrap().value;
+        assert_eq!(
+            crate::simplify::simplify(d, &pool).value,
+            pool.integer(0_i32)
+        );
     }
 }
