@@ -764,6 +764,12 @@ pub fn real_roots(poly: &UniPoly) -> Result<Vec<RootInterval>, RealRootError> {
 
 /// Isolate all real roots of a symbolic expression in `var`.
 ///
+/// Coefficients may be exact rationals (e.g. `x^2 - 1/2`): they are cleared
+/// to an integer-coefficient polynomial with the same real roots (by scaling
+/// by the LCM of the coefficient denominators) before isolation, since
+/// multiplying a polynomial by a nonzero constant does not change its real
+/// roots.
+///
 /// # Errors
 ///
 /// - [`RealRootError::NotAPolynomial`] if the expression cannot be converted.
@@ -773,7 +779,8 @@ pub fn real_roots_symbolic(
     var: ExprId,
     pool: &ExprPool,
 ) -> Result<Vec<RootInterval>, RealRootError> {
-    let poly = UniPoly::from_symbolic(expr, var, pool).map_err(RealRootError::NotAPolynomial)?;
+    let poly = UniPoly::from_symbolic_clear_denoms(expr, var, pool)
+        .map_err(RealRootError::NotAPolynomial)?;
     real_roots(&poly)
 }
 
@@ -1103,6 +1110,94 @@ mod tests {
                 w[0],
                 w[1]
             );
+        }
+    }
+
+    // ---- real_roots_symbolic with rational coefficients ----
+
+    /// Check that `iv` brackets a true root of `poly`, i.e. `poly` changes
+    /// sign (or is exactly zero) at the endpoints of `iv`.
+    fn assert_brackets_root(poly: &UniPoly, iv: &RootInterval) {
+        if iv.lo == iv.hi {
+            let v = poly.eval_rational(&iv.lo);
+            assert_eq!(v, rug::Rational::from(0), "exact root {iv} is not a root");
+            return;
+        }
+        let f_lo = poly.eval_rational(&iv.lo);
+        let f_hi = poly.eval_rational(&iv.hi);
+        assert!(
+            f_lo == 0 || f_hi == 0 || (f_lo < 0) != (f_hi < 0),
+            "interval {iv} does not bracket a root: f(lo)={f_lo}, f(hi)={f_hi}"
+        );
+    }
+
+    #[test]
+    fn real_roots_symbolic_rational_coefficient_x_squared_minus_half() {
+        // x^2 - 1/2 has roots at ±1/√2 ≈ ±0.7071.
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let xsq = p.pow(x, p.integer(2_i32));
+        let half = p.rational(1, 2);
+        let expr = p.add(vec![xsq, p.mul(vec![p.integer(-1_i32), half])]);
+
+        let roots = real_roots_symbolic(expr, x, &p).unwrap();
+        assert_eq!(roots.len(), 2, "x^2 - 1/2 has 2 real roots");
+
+        let approx = 1.0_f64 / 2.0_f64.sqrt(); // ≈ 0.7071
+                                               // Negative root brackets -0.7071.
+        assert!(roots[0].lo_f64() <= -approx && roots[0].hi_f64() >= -approx);
+        // Positive root brackets +0.7071.
+        assert!(roots[1].lo_f64() <= approx && roots[1].hi_f64() >= approx);
+
+        // Verify isolating intervals actually bracket the true roots via the
+        // *cleared* integer polynomial 2x^2 - 1 (same roots as x^2 - 1/2).
+        let cleared = UniPoly::from_symbolic_clear_denoms(expr, x, &p).unwrap();
+        assert_eq!(cleared.coefficients_i64(), vec![-1, 0, 2]);
+        for iv in &roots {
+            assert_brackets_root(&cleared, iv);
+        }
+    }
+
+    #[test]
+    fn real_roots_symbolic_2x_squared_minus_1_matches_rational_form() {
+        // 2x^2 - 1 (already integer) has the same roots as x^2 - 1/2.
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let xsq = p.pow(x, p.integer(2_i32));
+        let two_xsq = p.mul(vec![p.integer(2_i32), xsq]);
+        let expr = p.add(vec![two_xsq, p.integer(-1_i32)]);
+
+        let roots = real_roots_symbolic(expr, x, &p).unwrap();
+        assert_eq!(roots.len(), 2, "2x^2 - 1 has 2 real roots");
+
+        let approx = 1.0_f64 / 2.0_f64.sqrt();
+        assert!(roots[0].lo_f64() <= -approx && roots[0].hi_f64() >= -approx);
+        assert!(roots[1].lo_f64() <= approx && roots[1].hi_f64() >= approx);
+
+        let poly = UniPoly::from_symbolic(expr, x, &p).unwrap();
+        for iv in &roots {
+            assert_brackets_root(&poly, iv);
+        }
+    }
+
+    #[test]
+    fn real_roots_symbolic_integer_case_still_works() {
+        // x^2 - 2 has roots at ±√2.
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let xsq = p.pow(x, p.integer(2_i32));
+        let expr = p.add(vec![xsq, p.integer(-2_i32)]);
+
+        let roots = real_roots_symbolic(expr, x, &p).unwrap();
+        assert_eq!(roots.len(), 2, "x^2 - 2 has 2 real roots");
+
+        let approx = std::f64::consts::SQRT_2;
+        assert!(roots[0].lo_f64() <= -approx && roots[0].hi_f64() >= -approx);
+        assert!(roots[1].lo_f64() <= approx && roots[1].hi_f64() >= approx);
+
+        let poly = UniPoly::from_symbolic(expr, x, &p).unwrap();
+        for iv in &roots {
+            assert_brackets_root(&poly, iv);
         }
     }
 
