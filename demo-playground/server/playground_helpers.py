@@ -28,14 +28,17 @@ _DIFF_HEADER = (
     "open Real\n\n"
 )
 
+# Close goals when Alkahest's canonical mul order differs from Mathlib (e.g. x^2 * 3 vs 3 * x^2).
+_DIFF_RING = "; ring"
+
 _DIFF_RULE_TACTICS: dict[str, str] = {
     "diff_identity": "by simp [deriv_id]",
     "diff_const": "by simp [deriv_const]",
-    "diff_univariate_poly": "by simp [deriv_pow, deriv_add, deriv_mul, deriv_const]",
-    "sum_rule": "by simp [deriv_add]",
-    "product_rule": "by simp [deriv_mul]",
-    "power_rule": "by simp [deriv_pow, deriv_mul]",
-    "power_rule_n1": "by simp [deriv_pow, deriv_mul]",
+    "diff_univariate_poly": f"by simp [deriv_pow, deriv_add, deriv_mul, deriv_const]{_DIFF_RING}",
+    "sum_rule": f"by simp [deriv_add]{_DIFF_RING}",
+    "product_rule": f"by simp [deriv_mul]{_DIFF_RING}",
+    "power_rule": f"by simp [deriv_pow, deriv_mul]{_DIFF_RING}",
+    "power_rule_n1": f"by simp [deriv_pow, deriv_mul]{_DIFF_RING}",
     "power_rule_n0": "by simp [deriv_const]",
 }
 
