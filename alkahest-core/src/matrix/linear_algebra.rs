@@ -12,7 +12,7 @@ use crate::matrix::normal_form::{smith_form_poly, PolyMatrixQ, RatUniPoly};
 use crate::matrix::{Matrix, MatrixError};
 use crate::poly::unipoly::UniPoly;
 use crate::poly::{factor_univariate_z, FactorError};
-use crate::simplify::engine::simplify;
+use crate::simplify::engine::{simplify, simplify_expanded};
 use rug::Rational;
 use std::fmt;
 use std::ops::Mul;
@@ -1079,7 +1079,7 @@ pub fn matrix_inverse(m: &Matrix, pool: &ExprPool) -> Result<Matrix, MatrixError
     }
     let n = m.rows;
     let Some(a) = matrix_to_rational_grid(m, pool) else {
-        return Err(MatrixError::SingularMatrix);
+        return symbolic_inverse(m, pool);
     };
     let mut aug: Vec<Vec<Rational>> = a
         .into_iter()
@@ -1125,6 +1125,53 @@ pub fn matrix_inverse(m: &Matrix, pool: &ExprPool) -> Result<Matrix, MatrixError
     }
     let inv_grid: Vec<Vec<Rational>> = aug.into_iter().map(|row| row[n..].to_vec()).collect();
     Ok(rational_grid_to_matrix(&inv_grid, pool))
+}
+
+/// Symbolic matrix inverse for matrices containing non-rational entries.
+///
+/// Uses the adjugate formula: `inv[i][j] = (-1)^(i+j) · det(minor_ji) / det(A)`,
+/// where `minor_ji` removes row `j` and column `i` (note the transpose). The
+/// symbolic determinant engine (`Matrix::det`) handles arbitrary entries, so this
+/// path supports transfer functions `C(sI−A)⁻¹B+D`, symbolic mass matrices, etc.
+///
+/// If `det(A)` simplifies to a literal zero the matrix is genuinely singular and
+/// `MatrixError::SingularMatrix` is returned, keeping that error meaningful.
+fn symbolic_inverse(m: &Matrix, pool: &ExprPool) -> Result<Matrix, MatrixError> {
+    let n = m.rows;
+    if n == 0 {
+        return Ok(Matrix::zeros(0, 0, pool));
+    }
+    // Expand the determinant into canonical polynomial form so that the shared
+    // `1/det` factor in the resulting entries cancels cleanly against expanded
+    // cofactor numerators (e.g. so A·A⁻¹ collapses to the identity on simplify).
+    let det = simplify_expanded(m.det(pool)?, pool).value;
+    if expr_is_zero(pool, det) {
+        return Err(MatrixError::SingularMatrix);
+    }
+    let inv_det = simplify(pool.pow(det, pool.integer(-1_i32)), pool).value;
+
+    let mut rows: Vec<Vec<ExprId>> = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut row: Vec<ExprId> = Vec::with_capacity(n);
+        for j in 0..n {
+            // Transposed cofactor: minor removes row j and column i.
+            let minor = m.minor(j, i);
+            let minor_det = if n == 1 {
+                pool.integer(1_i32)
+            } else {
+                simplify_expanded(minor.det(pool)?, pool).value
+            };
+            let sign = if (i + j) % 2 == 0 {
+                pool.integer(1_i32)
+            } else {
+                pool.integer(-1_i32)
+            };
+            let cofactor = pool.mul(vec![sign, minor_det, inv_det]);
+            row.push(simplify(cofactor, pool).value);
+        }
+        rows.push(row);
+    }
+    Matrix::new(rows).map_err(|_| MatrixError::SingularMatrix)
 }
 
 // ---------------------------------------------------------------------------
@@ -1341,5 +1388,124 @@ mod tests {
         assert_eq!(expm.cols, 2);
         assert!(!expr_is_zero(&p, expm.get(0, 0)));
         assert!(!expr_is_zero(&p, expm.get(1, 1)));
+    }
+
+    #[test]
+    fn symbolic_inverse_diag_s_s() {
+        // diag(s, s) has determinant s^2; its inverse is diag(1/s, 1/s).
+        let p = pool();
+        let s = p.symbol("s", Domain::Real);
+        let z = p.integer(0_i32);
+        let m = Matrix::new(vec![vec![s, z], vec![z, s]]).unwrap();
+        let inv = matrix_inverse(&m, &p).unwrap();
+        let inv_s = simplify(p.pow(s, p.integer(-1_i32)), &p).value;
+        let expected = Matrix::new(vec![vec![inv_s, z], vec![z, inv_s]]).unwrap();
+        assert!(eigen::matrix_eq_simplified(&inv, &expected, &p));
+        // And A * A^-1 = I.
+        let prod = m.mul(&inv, &p).unwrap().simplify_entries(&p);
+        assert!(eigen::matrix_eq_simplified(
+            &prod,
+            &Matrix::identity(2, &p),
+            &p
+        ));
+    }
+
+    #[test]
+    fn symbolic_inverse_2x2_product_is_identity() {
+        // [[s, 1], [2, s+3]] inverse, verify A · A⁻¹ = I.
+        //
+        // The kernel simplifier has no multivariate `together`/`cancel` pass, so a
+        // symbolic A·A⁻¹ cannot be coaxed structurally to the literal identity (the
+        // shared 1/det factor spread over a *sum* of cofactor terms never collapses
+        // — only a bare `Mul([X, X⁻¹])` cancels). We therefore (1) confirm the
+        // computed inverse equals adj(A)/det entry-by-entry, and (2) verify the
+        // equivalent denominator-cleared identity A · adj(A) = det(A)·I, which is a
+        // pure polynomial relation that `simplify_expanded` fully normalizes.
+        let p = pool();
+        let s = p.symbol("s", Domain::Real);
+        let one = p.integer(1_i32);
+        let two = p.integer(2_i32);
+        let s_plus_3 = simplify(p.add(vec![s, p.integer(3_i32)]), &p).value;
+        let m = Matrix::new(vec![vec![s, one], vec![two, s_plus_3]]).unwrap();
+        let inv = matrix_inverse(&m, &p).unwrap();
+        let det = simplify_expanded(m.det(&p).unwrap(), &p).value;
+        let det_inv = simplify(p.pow(det, p.integer(-1_i32)), &p).value;
+
+        // adj(A)[i][j] = (-1)^(i+j) · det(minor_ji)   (transposed cofactor)
+        let adj_entry = |i: usize, j: usize, p: &ExprPool| -> ExprId {
+            let minor_det = simplify_expanded(m.minor(j, i).det(p).unwrap(), p).value;
+            let sign = if (i + j) % 2 == 0 { 1_i32 } else { -1_i32 };
+            simplify(p.mul(vec![p.integer(sign), minor_det]), p).value
+        };
+
+        // (1) inverse == adj(A) · (1/det), entry-by-entry, after a single cancelling Mul.
+        for i in 0..2 {
+            for j in 0..2 {
+                let expected = simplify(p.mul(vec![adj_entry(i, j, &p), det_inv]), &p).value;
+                assert!(
+                    eigen::matrix_eq_simplified(
+                        &Matrix::new(vec![vec![inv.get(i, j)]]).unwrap(),
+                        &Matrix::new(vec![vec![expected]]).unwrap(),
+                        &p,
+                    ),
+                    "inverse entry [{i}][{j}] mismatch"
+                );
+            }
+        }
+
+        // (2) A · adj(A) = det(A) · I  (pure polynomial — no 1/det anywhere).
+        let adj = Matrix::new(
+            (0..2)
+                .map(|i| (0..2).map(|j| adj_entry(i, j, &p)).collect())
+                .collect(),
+        )
+        .unwrap();
+        let prod = m.mul(&adj, &p).unwrap();
+        for i in 0..2 {
+            for j in 0..2 {
+                let expected = if i == j { det } else { p.integer(0_i32) };
+                let diff = simplify_expanded(
+                    p.add(vec![
+                        prod.get(i, j),
+                        p.mul(vec![p.integer(-1_i32), expected]),
+                    ]),
+                    &p,
+                )
+                .value;
+                assert!(
+                    expr_is_zero(&p, diff),
+                    "(A·adj)[{i}][{j}] != det·I[{i}][{j}]: {:?}",
+                    p.get(diff)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn symbolic_inverse_singular_returns_error() {
+        // [[s, s], [1, 1]] has determinant s*1 - s*1 = 0 -> genuinely singular.
+        let p = pool();
+        let s = p.symbol("s", Domain::Real);
+        let one = p.integer(1_i32);
+        let m = Matrix::new(vec![vec![s, s], vec![one, one]]).unwrap();
+        assert_eq!(matrix_inverse(&m, &p), Err(MatrixError::SingularMatrix));
+    }
+
+    #[test]
+    fn numeric_inverse_still_works() {
+        // Rational fast path must remain correct.
+        let p = pool();
+        let m = Matrix::new(vec![
+            vec![p.integer(4), p.integer(7)],
+            vec![p.integer(2), p.integer(6)],
+        ])
+        .unwrap();
+        let inv = matrix_inverse(&m, &p).unwrap();
+        let prod = m.mul(&inv, &p).unwrap().simplify_entries(&p);
+        assert!(eigen::matrix_eq_simplified(
+            &prod,
+            &Matrix::identity(2, &p),
+            &p
+        ));
     }
 }
