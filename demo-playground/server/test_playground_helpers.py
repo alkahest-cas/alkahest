@@ -20,6 +20,7 @@ def test_fix_legacy_diff_rewrites_deriv_goal():
     fixed = fix_legacy_diff_lean(_LEGACY_DIFF_X3)
     assert "deriv (fun (x : ℝ)" in fixed
     assert "deriv_pow" in fixed
+    assert "; ring" in fixed
     assert "MeasureTheory" not in fixed
     assert "ring_nf" not in fixed
     assert "((x : ℝ)) ^ (3 : ℕ) = ((3 : ℝ)" not in fixed

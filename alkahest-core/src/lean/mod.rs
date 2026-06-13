@@ -69,10 +69,10 @@ fn diff_rule_to_tactic(rule_name: &str) -> &'static str {
     match rule_name {
         "diff_identity" => "by simp [deriv_id]",
         "diff_const" => "by simp [deriv_const]",
-        "diff_univariate_poly" => "by simp [deriv_pow, deriv_add, deriv_mul, deriv_const]",
-        "sum_rule" => "by simp [deriv_add]",
-        "product_rule" => "by simp [deriv_mul]",
-        "power_rule" | "power_rule_n1" => "by simp [deriv_pow, deriv_mul]",
+        "diff_univariate_poly" => "by simp [deriv_pow, deriv_add, deriv_mul, deriv_const]; ring",
+        "sum_rule" => "by simp [deriv_add]; ring",
+        "product_rule" => "by simp [deriv_mul]; ring",
+        "power_rule" | "power_rule_n1" => "by simp [deriv_pow, deriv_mul]; ring",
         "power_rule_n0" => "by simp [deriv_const]",
         "diff_sin" | "diff_cos" | "diff_exp" | "diff_log" | "diff_sqrt" => "by sorry",
         "diff_forward" | "diff_primitive_registry" | "diff_piecewise" | "diff_root_sum" => {
@@ -546,6 +546,10 @@ mod tests {
         assert!(
             lean.contains("deriv_pow"),
             "expected deriv_pow tactic, got: {lean}"
+        );
+        assert!(
+            lean.contains("; ring"),
+            "expected ring to close mul-order goals, got: {lean}"
         );
         assert!(
             !lean.contains("= (((x : ℝ)) ^ (2 : ℕ) * (3 : ℝ)) :=") || lean.contains("deriv"),
