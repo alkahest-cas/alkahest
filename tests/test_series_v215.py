@@ -52,3 +52,13 @@ def test_series_order_zero_raises():
     x = p.symbol("x")
     with pytest.raises(alkahest.SeriesError):
         alkahest.series(x, x, p.integer(0), 0)
+
+
+def test_series_accepts_bare_int_point():
+    """series()'s `point` accepts a bare Python int, coerced into expr's pool."""
+    p = alkahest.ExprPool()
+    x = p.symbol("x")
+    cx = alkahest.cos(x)
+    s_int = alkahest.series(cx, x, 0, 6)
+    s_expr = alkahest.series(cx, x, p.integer(0), 6)
+    assert str(s_int.expr) == str(s_expr.expr)

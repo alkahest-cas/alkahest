@@ -2519,13 +2519,14 @@ fn py_series(
     py: Python<'_>,
     expr: PyRef<PyExpr>,
     var: PyRef<PyExpr>,
-    point: PyRef<PyExpr>,
+    point: &Bound<'_, PyAny>,
     order: u32,
 ) -> PyResult<PySeries> {
     let pool_py = expr.pool.clone_ref(py);
+    let point_id = coerce_substituent(&pool_py, point, py)?;
     let id = {
         let pool = pool_py.borrow(py);
-        core_series(expr.id, var.id, point.id, order, &pool.inner)
+        core_series(expr.id, var.id, point_id, order, &pool.inner)
             .map_err(series_error_to_py)?
             .expr()
     };
@@ -3348,7 +3349,7 @@ fn py_grad(py: Python<'_>, expr: PyRef<PyExpr>, vars: Vec<PyRef<PyExpr>>) -> Vec
 // Phase 15: Matrix and jacobian
 // ---------------------------------------------------------------------------
 
-#[pyclass(name = "Matrix")]
+#[pyclass(name = "Matrix", subclass)]
 struct PyMatrix {
     inner: Matrix,
     pool: Py<PyExprPool>,
@@ -3358,22 +3359,60 @@ struct PyMatrix {
 impl PyMatrix {
     // Allow Matrix([[expr, expr], [expr, expr]]) in addition to from_rows.
     #[new]
-    fn __new__(py: Python<'_>, rows: Vec<Vec<PyRef<PyExpr>>>) -> PyResult<PyMatrix> {
+    fn __new__(py: Python<'_>, rows: Vec<Vec<Bound<'_, PyAny>>>) -> PyResult<PyMatrix> {
         PyMatrix::from_rows(py, rows)
     }
 
+    /// Build a matrix from a 2D list of entries.
+    ///
+    /// Each entry may be an :class:`Expr`, :class:`DerivedResult`, Python
+    /// ``int``, or Python ``float``. Bare numeric literals are coerced into
+    /// the same :class:`ExprPool` as the first :class:`Expr`/``DerivedResult``
+    /// found anywhere in `rows` (consistent with how arithmetic operators
+    /// coerce scalars). If `rows` contains no `Expr`/`DerivedResult` at all
+    /// (e.g. an all-integer matrix), the pool cannot be inferred and a
+    /// `TypeError` is raised — pass at least one `Expr`/`DerivedResult`
+    /// entry (or use `ExprPool.integer`/`pool.matrix_of(...)`-style helpers)
+    /// so the pool can be determined.
     #[staticmethod]
-    fn from_rows(py: Python<'_>, rows: Vec<Vec<PyRef<PyExpr>>>) -> PyResult<PyMatrix> {
+    fn from_rows(py: Python<'_>, rows: Vec<Vec<Bound<'_, PyAny>>>) -> PyResult<PyMatrix> {
         if rows.is_empty() {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "Matrix must have at least one row",
             ));
         }
-        let pool_py: Py<PyExprPool> = rows[0][0].pool.clone_ref(py);
+        // Find the pool from the first Expr/DerivedResult entry anywhere in `rows`.
+        let mut pool_py: Option<Py<PyExprPool>> = None;
+        for row in &rows {
+            for entry in row {
+                if let Ok(e) = entry.extract::<PyRef<PyExpr>>() {
+                    pool_py = Some(e.pool.clone_ref(py));
+                    break;
+                }
+                if let Ok(dr) = entry.downcast::<PyDerivedResult>() {
+                    pool_py = Some(dr.borrow().value.pool.clone_ref(py));
+                    break;
+                }
+            }
+            if pool_py.is_some() {
+                break;
+            }
+        }
+        let pool_py = pool_py.ok_or_else(|| {
+            PyTypeError::new_err(
+                "Matrix.from_rows could not determine an ExprPool: at least one entry must \
+                 be an Expr or DerivedResult (bare int/float entries are coerced into that \
+                 pool, but the pool cannot be inferred from numbers alone)",
+            )
+        })?;
         let data: Vec<Vec<ExprId>> = rows
             .iter()
-            .map(|row| row.iter().map(|e| e.id).collect())
-            .collect();
+            .map(|row| {
+                row.iter()
+                    .map(|entry| coerce_substituent(&pool_py, entry, py))
+                    .collect::<PyResult<Vec<ExprId>>>()
+            })
+            .collect::<PyResult<Vec<Vec<ExprId>>>>()?;
         let m = Matrix::new(data).map_err(matrix_error_to_py)?;
         Ok(PyMatrix {
             inner: m,
@@ -4996,8 +5035,10 @@ fn py_horner(py: Python<'_>, expr: PyRef<PyExpr>, var: PyRef<PyExpr>) -> PyResul
 /// ----------
 /// expr : Expr
 ///     A univariate polynomial in `var`.
-/// var : Expr
-///     The polynomial variable.
+/// var : Expr or list[Expr]
+///     The polynomial variable. `emit_c` only supports univariate
+///     polynomials, so a list/tuple is accepted as a convenience but must
+///     contain exactly one `Expr` (e.g. `[x]` is equivalent to `x`).
 /// var_name : str
 ///     The C variable name (default ``"x"``).
 /// fn_name : str
@@ -5008,13 +5049,37 @@ fn py_horner(py: Python<'_>, expr: PyRef<PyExpr>, var: PyRef<PyExpr>) -> PyResul
 fn py_emit_c(
     py: Python<'_>,
     expr: PyRef<PyExpr>,
-    var: PyRef<PyExpr>,
+    var: &Bound<'_, PyAny>,
     var_name: &str,
     fn_name: &str,
 ) -> PyResult<String> {
+    let var_id = extract_univariate_var(var)?;
     let pool = expr.pool.borrow(py);
-    core_emit_horner_c(expr.id, var.id, var_name, fn_name, &pool.inner)
+    core_emit_horner_c(expr.id, var_id, var_name, fn_name, &pool.inner)
         .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+
+/// Extract a single `Expr`'s id from `var`, which may be an `Expr` directly
+/// or a one-element `list`/`tuple` containing an `Expr` (a common but
+/// incorrect guess for APIs that expect a single variable).
+fn extract_univariate_var(var: &Bound<'_, PyAny>) -> PyResult<ExprId> {
+    if let Ok(e) = var.extract::<PyRef<PyExpr>>() {
+        return Ok(e.id);
+    }
+    if let Ok(seq) = var.extract::<Vec<PyRef<PyExpr>>>() {
+        return match seq.len() {
+            1 => Ok(seq[0].id),
+            n => Err(PyTypeError::new_err(format!(
+                "var must be a single Expr (or a one-element list/tuple); \
+                 got a sequence of length {n}. emit_c only supports univariate \
+                 polynomials."
+            ))),
+        };
+    }
+    Err(PyTypeError::new_err(
+        "var must be an Expr (the polynomial variable), or a one-element \
+         list/tuple containing one, e.g. emit_c(expr, x) or emit_c(expr, [x])",
+    ))
 }
 
 // Phase 25 — NumPy / batch evaluation: call_batch_raw is merged into PyCompiledFn above.

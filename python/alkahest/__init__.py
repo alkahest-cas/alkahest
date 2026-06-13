@@ -74,7 +74,7 @@ from .alkahest import (  # noqa: F401
     Forall,
     HybridODE,
     # Phase 15: Symbolic matrices
-    Matrix,
+    Matrix as _NativeMatrix,
     # Polynomial types
     MultiPoly,
     MultiPolyFactorization,
@@ -528,6 +528,63 @@ def _maybe_context_simplify(result):
     if not simplify_enabled() or not isinstance(result, DerivedResult):
         return result
     return _derived_result_context_simplify(result)
+
+
+# ---------------------------------------------------------------------------
+# Matrix — accept bare int/float entries in `Matrix(...)` / `Matrix.from_rows(...)`
+# ---------------------------------------------------------------------------
+
+
+def _coerce_matrix_rows(rows):
+    """Return *rows* unchanged unless every entry is a plain ``int``/``float``.
+
+    The native ``Matrix.from_rows`` can infer an :class:`ExprPool` and coerce
+    bare numbers as long as *some* entry in `rows` is already an
+    :class:`Expr`/:class:`DerivedResult`.  If `rows` is entirely numeric
+    (e.g. ``[[0, 1], [-1, 0]]``), there is no pool to infer it from, so we
+    fall back to :func:`active_pool` (set via ``with alkahest.context(pool=...)``)
+    and lift each entry into that pool with ``pool.integer``/``pool.float``.
+    """
+    has_expr = any(
+        isinstance(entry, (Expr, DerivedResult)) for row in rows for entry in row
+    )
+    if has_expr:
+        return rows
+    pool = active_pool()
+    if pool is None:
+        # No pool anywhere — let the native constructor raise its clear error.
+        return rows
+
+    def lift(entry):
+        if isinstance(entry, bool):
+            # bool is a subclass of int; treat as int (0/1).
+            return pool.integer(int(entry))
+        if isinstance(entry, int):
+            return pool.integer(entry)
+        if isinstance(entry, float):
+            return pool.float(entry)
+        return entry
+
+    return [[lift(entry) for entry in row] for row in rows]
+
+
+class Matrix(_NativeMatrix):
+    """Symbolic matrix.  See :class:`alkahest.alkahest.Matrix` for full docs.
+
+    This thin wrapper additionally accepts a fully-numeric ``rows`` (every
+    entry a Python ``int``/``float``, e.g. ``Matrix([[0, 1], [-1, 0]])``) by
+    coercing entries into :func:`active_pool` (the pool set via
+    ``with alkahest.context(pool=...)``).  Mixed int/``Expr`` rows already
+    work without this wrapper, since the native constructor infers the pool
+    from any :class:`Expr`/:class:`DerivedResult` entry.
+    """
+
+    def __new__(cls, rows):
+        return _NativeMatrix.__new__(cls, _coerce_matrix_rows(rows))
+
+    @staticmethod
+    def from_rows(rows):
+        return _NativeMatrix.from_rows(_coerce_matrix_rows(rows))
 
 
 # Wrap key calculus/simplification functions so they accept DerivedResult or

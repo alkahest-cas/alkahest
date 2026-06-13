@@ -120,6 +120,24 @@ class TestHorner:
         with pytest.raises(ValueError):
             emit_c(expr, x)
 
+    def test_emit_c_accepts_one_element_list_var(self):
+        """`var` may be a single Expr or a one-element list/tuple containing one."""
+        p = pool()
+        x = p.symbol("x")
+        expr = x**2 + p.integer(2) * x + p.integer(1)
+        code_expr = emit_c(expr, x, "x", "eval_quad")
+        code_list = emit_c(expr, [x], "x", "eval_quad")
+        code_tuple = emit_c(expr, (x,), "x", "eval_quad")
+        assert code_expr == code_list == code_tuple
+
+    def test_emit_c_multi_element_list_var_raises_clear_error(self):
+        p = pool()
+        x = p.symbol("x")
+        y = p.symbol("y")
+        expr = x + y
+        with pytest.raises(TypeError, match="univariate"):
+            emit_c(expr, [x, y])
+
 
 # ===========================================================================
 # P-25 — NumPy / batch evaluation
