@@ -73,8 +73,6 @@ from .alkahest import (  # noqa: F401
     ExprPool,
     Forall,
     HybridODE,
-    # Phase 15: Symbolic matrices
-    Matrix as _NativeMatrix,
     # Polynomial types
     MultiPoly,
     MultiPolyFactorization,
@@ -199,6 +197,10 @@ from .alkahest import (  # noqa: F401
     verify_wz_pair,
     version,
     voltage_source,
+)
+from .alkahest import (
+    # Phase 15: Symbolic matrices
+    Matrix as _NativeMatrix,
 )
 from .alkahest import (
     # Phase 14: reverse-mode partials on Expr (native name `grad`; exported as symbolic_grad)
