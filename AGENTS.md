@@ -54,17 +54,7 @@ Skipped tests are feature-gated (e.g. `--features groebner`) or oracle tests req
 
 ## Architecture
 
-- `alkahest-core/` — Rust kernel (all math). Add new algorithms here.
-- `alkahest-mlir/` — MLIR dialect and lowering passes. Only touch for codegen work.
-- `alkahest-py/` — PyO3 bindings (thin glue). Exposes Rust APIs to Python; add new bindings here when a Rust function needs a Python surface.
-- `python/alkahest/` — Pure-Python layer. Use for Python-only utilities (parsing, pretty-printing, pytrees, context manager).
-
-## Stable vs experimental API
-
-- **Rust stable surface:** `alkahest_core::stable` re-exports. Adding a function here triggers `cargo semver-checks` in CI — be intentional.
-- **Python stable surface:** `alkahest.__all__` in `python/alkahest/__init__.py`. Same rule.
-- Experimental / unstable APIs go under `alkahest_core::experimental` and `alkahest.experimental`.
-- `scripts/check_api_freeze.py` enforces this in CI.
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for crates, directory layout, stable vs experimental API surfaces, and key files.
 
 ## Adding a new mathematical primitive
 
@@ -73,14 +63,3 @@ See CONTRIBUTING.md for the 6-step registration process. The short version: impl
 ## Error codes
 
 Every error type has a stable `E-SUBSYSTEM-NNN` code. When adding a new error, follow the existing pattern in the relevant `mod.rs` file and add the code to `docs/` if user-facing.
-
-## Key files
-
-| Path | Purpose |
-|------|---------|
-| `alkahest-core/src/lib.rs` | Crate root, all re-exports |
-| `alkahest-core/src/kernel/mod.rs` | `ExprPool`, `ExprData`, `ExprId` |
-| `alkahest-core/src/stable.rs` | Semver-stable public API surface |
-| `alkahest-py/src/lib.rs` | All PyO3 `#[pyfunction]` / `#[pyclass]` bindings |
-| `python/alkahest/__init__.py` | Python package root and `__all__` |
-| `scripts/check_api_freeze.py` | CI guard for stable API surface |

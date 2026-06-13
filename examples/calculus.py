@@ -111,6 +111,21 @@ def main():
     verify_antiderivative(pool, x, poly_from_coeffs(pool, x, [0, 0, 0, 1]), "x³")
     verify_antiderivative(pool, x, poly_from_coeffs(pool, x, [0, 0, 0, 0, 1]), "x⁴")
 
+    # ── Partial fractions ─────────────────────────────────────────────────
+
+    print("\n=== Partial Fractions (apart) ===")
+
+    f = 1 / (x**2 - pool.integer(1))
+    pf = ak.apart(f, x)
+    print(f"apart(1/(x²−1)) = {pf}")
+
+    # ── Definite integration ──────────────────────────────────────────────
+
+    print("\n=== Definite Integration ===")
+
+    r_def = ak.integrate(x**2, x, pool.integer(0), pool.integer(1))
+    print(f"∫₀¹ x² dx = {r_def.value}")
+
     # ── Derivation log inspection ─────────────────────────────────────────
 
     print("\n=== Derivation Log ===")
@@ -121,6 +136,9 @@ def main():
     print(f"Steps ({len(result.steps)}):")
     for step in result.steps[:5]:
         print(f"  rule={step['rule']:25s}  {step['before']}  →  {step['after']}")
+
+    if result.certificate:
+        print(f"Lean certificate (first 120 chars): {result.certificate[:120]}…")
 
 
 if __name__ == "__main__":
