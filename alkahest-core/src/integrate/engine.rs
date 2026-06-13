@@ -31,11 +31,6 @@ pub enum IntegrationError {
     UnsupportedExtensionDegree(u32),
     /// The integrand provably has no elementary antiderivative (e.g. elliptic integrals).
     NonElementary(String),
-    /// A definite-integral bound is `±∞` and the limit of the antiderivative at
-    /// that bound could not be evaluated (divergent, or beyond the implemented
-    /// limit rules). Returned instead of fabricating a finite-looking value by
-    /// substituting `∞` as if it were an ordinary symbol.
-    InfiniteBoundUnsupported(String),
 }
 
 impl fmt::Display for IntegrationError {
@@ -51,11 +46,6 @@ impl fmt::Display for IntegrationError {
             IntegrationError::NonElementary(msg) => {
                 write!(f, "integrate: no elementary antiderivative exists: {msg}")
             }
-            IntegrationError::InfiniteBoundUnsupported(msg) => write!(
-                f,
-                "integrate: improper integral with an infinite bound could not be \
-                 evaluated: {msg}"
-            ),
         }
     }
 }
@@ -79,12 +69,6 @@ impl IntegrationError {
                 "this integrand has no closed-form antiderivative in terms of elementary \
                  functions; use a numeric integrator or elliptic-integral library",
             ),
-            IntegrationError::InfiniteBoundUnsupported(_) => Some(
-                "the limit of the antiderivative at ±∞ could not be computed; the \
-                 integral may diverge, or its evaluation is outside the implemented \
-                 limit rules — use pool.pos_infinity() for the bound and check with \
-                 `limit` directly, or evaluate numerically",
-            ),
         }
     }
 
@@ -101,7 +85,6 @@ impl crate::errors::AlkahestError for IntegrationError {
             IntegrationError::DivisionByZero => "E-INT-002",
             IntegrationError::UnsupportedExtensionDegree(_) => "E-INT-003",
             IntegrationError::NonElementary(_) => "E-INT-004",
-            IntegrationError::InfiniteBoundUnsupported(_) => "E-INT-005",
         }
     }
 
@@ -1006,9 +989,10 @@ pub fn integrate_definite(
 /// For a finite `bound`, this is plain substitution. For `bound == +∞` (or
 /// `-∞`, represented as `(-1)·(+∞)` per [`ExprPool::pos_infinity`]'s
 /// documented convention), the value is `lim_{var→bound} f`, computed via
-/// [`crate::calculus::limit`]. A limit that cannot be determined is reported
-/// as [`IntegrationError::InfiniteBoundUnsupported`] — never silently
-/// substituted as if `∞` were an ordinary symbol.
+/// [`crate::calculus::limit`]. A limit that cannot be determined (or one that
+/// is itself non-finite, i.e. the integral diverges) is reported as
+/// [`IntegrationError::NotImplemented`] — never silently substituted as if `∞`
+/// were an ordinary symbol.
 fn eval_bound(
     f: ExprId,
     var: ExprId,
@@ -1024,8 +1008,8 @@ fn eval_bound(
             pool,
         )
         .map_err(|e| {
-            IntegrationError::InfiniteBoundUnsupported(format!(
-                "lim_{{{}→{}}} {} : {e}",
+            IntegrationError::NotImplemented(format!(
+                "improper integral with an infinite bound: lim_{{{}→{}}} {} : {e}",
                 pool.display(var),
                 pool.display(bound),
                 pool.display(f),
@@ -1038,8 +1022,8 @@ fn eval_bound(
         // feeding `∞`/an unresolved pole into the FTC subtraction, which would
         // simplify into a finite-looking (but meaningless) value.
         if expr_is_non_finite(lim, pool) {
-            return Err(IntegrationError::InfiniteBoundUnsupported(format!(
-                "lim_{{{}→{}}} {} = {} is not finite (the improper integral may diverge)",
+            return Err(IntegrationError::NotImplemented(format!(
+                "improper integral with an infinite bound: lim_{{{}→{}}} {} = {} is not finite (the improper integral may diverge)",
                 pool.display(var),
                 pool.display(bound),
                 pool.display(f),
@@ -2246,9 +2230,9 @@ mod tests {
         let f = pool.pow(x, pool.integer(-1_i32));
         let r = integrate_definite(f, x, pool.integer(1_i32), pool.pos_infinity(), &pool);
         match r {
-            Err(IntegrationError::InfiniteBoundUnsupported(_)) => {}
+            Err(IntegrationError::NotImplemented(_)) => {}
             other => {
-                panic!("∫_1^∞ 1/x dx diverges; expected InfiniteBoundUnsupported, got {other:?}")
+                panic!("∫_1^∞ 1/x dx diverges; expected NotImplemented, got {other:?}")
             }
         }
     }
@@ -2261,8 +2245,8 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let r = integrate_definite(x, x, pool.integer(0_i32), pool.pos_infinity(), &pool);
         assert!(
-            matches!(r, Err(IntegrationError::InfiniteBoundUnsupported(_))),
-            "∫_0^∞ x dx diverges; expected InfiniteBoundUnsupported, got {r:?}"
+            matches!(r, Err(IntegrationError::NotImplemented(_))),
+            "∫_0^∞ x dx diverges; expected NotImplemented, got {r:?}"
         );
     }
 
