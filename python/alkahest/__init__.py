@@ -547,9 +547,7 @@ def _coerce_matrix_rows(rows):
     fall back to :func:`active_pool` (set via ``with alkahest.context(pool=...)``)
     and lift each entry into that pool with ``pool.integer``/``pool.float``.
     """
-    has_expr = any(
-        isinstance(entry, (Expr, DerivedResult)) for row in rows for entry in row
-    )
+    has_expr = any(isinstance(entry, (Expr, DerivedResult)) for row in rows for entry in row)
     if has_expr:
         return rows
     pool = active_pool()
