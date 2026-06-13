@@ -272,6 +272,9 @@ pub fn integrate_risch(
             Err(IntegrationError::UnsupportedExtensionDegree(d)) => {
                 return Err(IntegrationError::UnsupportedExtensionDegree(d));
             }
+            Err(IntegrationError::InfiniteBoundUnsupported(msg)) => {
+                return Err(IntegrationError::InfiniteBoundUnsupported(msg));
+            }
             Err(IntegrationError::NotImplemented(_)) => {
                 // Fall through to sum decomposition below.
             }

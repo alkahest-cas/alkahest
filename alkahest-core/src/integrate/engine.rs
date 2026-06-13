@@ -31,6 +31,11 @@ pub enum IntegrationError {
     UnsupportedExtensionDegree(u32),
     /// The integrand provably has no elementary antiderivative (e.g. elliptic integrals).
     NonElementary(String),
+    /// A definite-integral bound is `±∞` and the limit of the antiderivative at
+    /// that bound could not be evaluated (divergent, or beyond the implemented
+    /// limit rules). Returned instead of fabricating a finite-looking value by
+    /// substituting `∞` as if it were an ordinary symbol.
+    InfiniteBoundUnsupported(String),
 }
 
 impl fmt::Display for IntegrationError {
@@ -46,6 +51,11 @@ impl fmt::Display for IntegrationError {
             IntegrationError::NonElementary(msg) => {
                 write!(f, "integrate: no elementary antiderivative exists: {msg}")
             }
+            IntegrationError::InfiniteBoundUnsupported(msg) => write!(
+                f,
+                "integrate: improper integral with an infinite bound could not be \
+                 evaluated: {msg}"
+            ),
         }
     }
 }
@@ -69,6 +79,12 @@ impl IntegrationError {
                 "this integrand has no closed-form antiderivative in terms of elementary \
                  functions; use a numeric integrator or elliptic-integral library",
             ),
+            IntegrationError::InfiniteBoundUnsupported(_) => Some(
+                "the limit of the antiderivative at ±∞ could not be computed; the \
+                 integral may diverge, or its evaluation is outside the implemented \
+                 limit rules — use pool.pos_infinity() for the bound and check with \
+                 `limit` directly, or evaluate numerically",
+            ),
         }
     }
 
@@ -85,6 +101,7 @@ impl crate::errors::AlkahestError for IntegrationError {
             IntegrationError::DivisionByZero => "E-INT-002",
             IntegrationError::UnsupportedExtensionDegree(_) => "E-INT-003",
             IntegrationError::NonElementary(_) => "E-INT-004",
+            IntegrationError::InfiniteBoundUnsupported(_) => "E-INT-005",
         }
     }
 
@@ -961,9 +978,15 @@ pub fn integrate_definite(
     let antideriv = integrate(expr, var, pool)?;
     let f = antideriv.value;
 
-    // F(upper) − F(lower) via substitution of the bound for `var`.
-    let f_upper = subs_var(f, var, upper, pool);
-    let f_lower = subs_var(f, var, lower, pool);
+    // F(upper) and F(lower). For a finite bound this is plain substitution; for
+    // `±∞` (V2-16's canonical pos_infinity, or its negation) substitution would
+    // silently treat `∞` as an ordinary free symbol and fabricate a
+    // finite-looking but meaningless expression (e.g. `exp(-k·∞)`). Instead the
+    // bound value is the *limit* of `F` as `var → bound`, computed via
+    // [`crate::calculus::limit`]. If that limit cannot be determined, the
+    // integral errors rather than returning a wrong answer.
+    let f_upper = eval_bound(f, var, upper, pool)?;
+    let f_lower = eval_bound(f, var, lower, pool)?;
     let neg_lower = pool.mul(vec![pool.integer(-1_i32), f_lower]);
     let diff_expr = pool.add(vec![f_upper, neg_lower]);
 
@@ -976,6 +999,99 @@ pub fn integrate_definite(
     ));
     let final_log = antideriv.log.merge(log).merge(simplified.log);
     Ok(DerivedExpr::with_log(simplified.value, final_log))
+}
+
+/// Evaluate the antiderivative `f` at `bound` for the FTC difference.
+///
+/// For a finite `bound`, this is plain substitution. For `bound == +∞` (or
+/// `-∞`, represented as `(-1)·(+∞)` per [`ExprPool::pos_infinity`]'s
+/// documented convention), the value is `lim_{var→bound} f`, computed via
+/// [`crate::calculus::limit`]. A limit that cannot be determined is reported
+/// as [`IntegrationError::InfiniteBoundUnsupported`] — never silently
+/// substituted as if `∞` were an ordinary symbol.
+fn eval_bound(
+    f: ExprId,
+    var: ExprId,
+    bound: ExprId,
+    pool: &ExprPool,
+) -> Result<ExprId, IntegrationError> {
+    if is_infinite_bound(bound, pool) {
+        let lim = crate::calculus::limit(
+            f,
+            var,
+            bound,
+            crate::calculus::LimitDirection::Bidirectional,
+            pool,
+        )
+        .map_err(|e| {
+            IntegrationError::InfiniteBoundUnsupported(format!(
+                "lim_{{{}→{}}} {} : {e}",
+                pool.display(var),
+                pool.display(bound),
+                pool.display(f),
+            ))
+        })?;
+        // The antiderivative diverges at this bound (the limit is itself `±∞`,
+        // or — for forms `limit` cannot fully reduce — contains a residual
+        // `0^{negative}` pole artifact). Either way the *definite* integral is
+        // divergent or beyond what can be certified here: error rather than
+        // feeding `∞`/an unresolved pole into the FTC subtraction, which would
+        // simplify into a finite-looking (but meaningless) value.
+        if expr_is_non_finite(lim, pool) {
+            return Err(IntegrationError::InfiniteBoundUnsupported(format!(
+                "lim_{{{}→{}}} {} = {} is not finite (the improper integral may diverge)",
+                pool.display(var),
+                pool.display(bound),
+                pool.display(f),
+                pool.display(lim),
+            )));
+        }
+        return Ok(lim);
+    }
+    Ok(subs_var(f, var, bound, pool))
+}
+
+/// True when `expr` is (or contains) `±∞` (the canonical [`ExprPool::pos_infinity`]
+/// symbol) or an unresolved `0^{negative integer}` pole artifact — i.e. is not a
+/// finite value, so it must not be used as an endpoint in the FTC subtraction.
+fn expr_is_non_finite(expr: ExprId, pool: &ExprPool) -> bool {
+    if expr == pool.pos_infinity() {
+        return true;
+    }
+    match pool.get(expr) {
+        ExprData::Pow { base, exp } => {
+            if let ExprData::Integer(n) = pool.get(exp) {
+                if n.0 < 0 {
+                    if let ExprData::Integer(b) = pool.get(base) {
+                        if b.0 == 0 {
+                            return true;
+                        }
+                    }
+                }
+            }
+            expr_is_non_finite(base, pool) || expr_is_non_finite(exp, pool)
+        }
+        ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().any(|x| expr_is_non_finite(*x, pool)),
+        ExprData::Func { args, .. } => args.iter().any(|a| expr_is_non_finite(*a, pool)),
+        _ => false,
+    }
+}
+
+/// True when `bound` is `+∞` (canonical [`ExprPool::pos_infinity`] symbol) or
+/// `-∞` (`(-1)·(+∞)`, the documented convention for limits at minus infinity).
+fn is_infinite_bound(bound: ExprId, pool: &ExprPool) -> bool {
+    let pos_inf = pool.pos_infinity();
+    if bound == pos_inf {
+        return true;
+    }
+    if let ExprData::Mul(args) = pool.get(bound) {
+        if args.len() == 2 {
+            let m_one = pool.integer(-1_i32);
+            return (args[0] == m_one && args[1] == pos_inf)
+                || (args[1] == m_one && args[0] == pos_inf);
+        }
+    }
+    false
 }
 
 /// Substitute `value` for `var` everywhere in `expr`.
@@ -2080,6 +2196,91 @@ mod tests {
         ]);
         let r = integrate_definite(f, x, pool.integer(1_i32), pool.integer(2_i32), &pool);
         assert!(r.is_err(), "∫ sin(x)/x dx must error in definite form");
+    }
+
+    // -----------------------------------------------------------------------
+    // Infinite bounds (V2-16 pos_infinity): never substitute `∞` as an
+    // ordinary symbol — evaluate via `limit`, or error.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn definite_exp_neg_x_0_to_infinity() {
+        // ∫_0^∞ exp(-x) dx = 1.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let neg_x = pool.mul(vec![pool.integer(-1_i32), x]);
+        let f = pool.func("exp", vec![neg_x]);
+        let r = integrate_definite(f, x, pool.integer(0_i32), pool.pos_infinity(), &pool)
+            .unwrap_or_else(|e| panic!("∫_0^∞ exp(-x) dx should evaluate, got error: {e}"));
+        assert_eq!(
+            r.value,
+            pool.integer(1_i32),
+            "∫_0^∞ exp(-x) dx = 1, got {}",
+            pool.display(r.value)
+        );
+    }
+
+    #[test]
+    fn definite_one_over_x_squared_one_to_infinity() {
+        // ∫_1^∞ 1/x² dx = 1 (lim_{x→∞} -1/x = 0, so F(∞) - F(1) = 0 - (-1) = 1).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(x, pool.integer(-2_i32));
+        let r = integrate_definite(f, x, pool.integer(1_i32), pool.pos_infinity(), &pool)
+            .unwrap_or_else(|e| panic!("∫_1^∞ 1/x² dx should evaluate, got error: {e}"));
+        assert_eq!(
+            r.value,
+            pool.integer(1_i32),
+            "∫_1^∞ 1/x² dx = 1, got {}",
+            pool.display(r.value)
+        );
+    }
+
+    #[test]
+    fn definite_one_over_x_diverges_at_infinity_errors() {
+        // ∫_1^∞ 1/x dx = log(x)|_1^∞ diverges (log(x) → ∞). Must NOT fabricate
+        // a finite-looking expression by substituting ∞ for x in log(x); must
+        // error instead.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(x, pool.integer(-1_i32));
+        let r = integrate_definite(f, x, pool.integer(1_i32), pool.pos_infinity(), &pool);
+        match r {
+            Err(IntegrationError::InfiniteBoundUnsupported(_)) => {}
+            other => {
+                panic!("∫_1^∞ 1/x dx diverges; expected InfiniteBoundUnsupported, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn definite_polynomial_diverges_at_infinity_errors() {
+        // ∫_0^∞ x dx diverges (lim_{x→∞} x²/2 = ∞). Must error, not return ∞
+        // or a finite-looking value from naive substitution.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let r = integrate_definite(x, x, pool.integer(0_i32), pool.pos_infinity(), &pool);
+        assert!(
+            matches!(r, Err(IntegrationError::InfiniteBoundUnsupported(_))),
+            "∫_0^∞ x dx diverges; expected InfiniteBoundUnsupported, got {r:?}"
+        );
+    }
+
+    #[test]
+    fn definite_exp_neg_x_neg_infinity_to_zero() {
+        // ∫_{-∞}^0 exp(x) dx = 1 — exercises the `-∞` (lower) bound.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.func("exp", vec![x]);
+        let neg_inf = pool.mul(vec![pool.integer(-1_i32), pool.pos_infinity()]);
+        let r = integrate_definite(f, x, neg_inf, pool.integer(0_i32), &pool)
+            .unwrap_or_else(|e| panic!("∫_{{-∞}}^0 exp(x) dx should evaluate, got error: {e}"));
+        assert_eq!(
+            r.value,
+            pool.integer(1_i32),
+            "∫_{{-∞}}^0 exp(x) dx = 1, got {}",
+            pool.display(r.value)
+        );
     }
 
     // -----------------------------------------------------------------------

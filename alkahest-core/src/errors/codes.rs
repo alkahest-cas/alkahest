@@ -46,6 +46,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-INT-002", class: "IntegrationError", cause: Cause::Domain,      remediation: None },
     ErrorSpec { code: "E-INT-003", class: "IntegrationError", cause: Cause::Unsupported, remediation: Some("v1.1 supports sqrt(P(x)) only; higher-degree radicals planned for v2.0") },
     ErrorSpec { code: "E-INT-004", class: "IntegrationError", cause: Cause::Domain,      remediation: Some("no elementary antiderivative exists; use a numeric integrator or elliptic-integral library") },
+    ErrorSpec { code: "E-INT-005", class: "IntegrationError", cause: Cause::Unsupported, remediation: Some("the limit of the antiderivative at ±∞ could not be computed; the integral may diverge or its evaluation is outside the implemented limit rules") },
     // E-MAT — MatrixError
     ErrorSpec { code: "E-MAT-001", class: "MatrixError", cause: Cause::UserInput, remediation: Some("check that row/column counts agree") },
     ErrorSpec { code: "E-MAT-002", class: "MatrixError", cause: Cause::UserInput, remediation: Some("use pseudo-inverse for rectangular matrices") },
