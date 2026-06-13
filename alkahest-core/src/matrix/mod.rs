@@ -304,7 +304,7 @@ impl Matrix {
     }
 
     /// Submatrix obtained by removing row `r` and column `c`.
-    fn minor(&self, skip_row: usize, skip_col: usize) -> Matrix {
+    pub(crate) fn minor(&self, skip_row: usize, skip_col: usize) -> Matrix {
         let n = self.rows;
         let mut data = Vec::with_capacity((n - 1) * (n - 1));
         for r in 0..n {
