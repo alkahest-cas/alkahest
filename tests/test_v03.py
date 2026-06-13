@@ -15,12 +15,14 @@ from alkahest.alkahest import (
     DAE,
     ODE,
     AcausalSystem,
+    Component,
     Event,
     ExprPool,
     HybridODE,
     Matrix,
     SensitivitySystem,
     adjoint_system,
+    capacitor,
     cos,
     diff,
     exp,
@@ -31,6 +33,7 @@ from alkahest.alkahest import (
     resistor,
     sensitivity_system,
     sin,
+    voltage_source,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -361,6 +364,52 @@ class TestAcausal:
         dae = sys.flatten(self.t)
         # Empty system → empty DAE
         assert dae.n_equations() == 0
+
+    def test_component_accessible_from_dict(self):
+        R = self.pool.symbol("R")
+        comp = resistor("R1", R)["component"]
+        assert isinstance(comp, Component)
+        assert comp.name == "R1"
+        assert comp.n_equations() == 1
+        assert comp.n_ports() == 2
+        port = comp.port("R1.p")
+        assert port is not None
+        assert port.name == "R1.p"
+        assert comp.port("does.not.exist") is None
+        assert len(comp.ports()) == 2
+
+    def test_capacitor_and_voltage_source_dicts(self):
+        C = self.pool.symbol("C")
+        Vs = self.pool.symbol("Vs")
+        cap = capacitor("C1", C)
+        src = voltage_source("V1", Vs)
+        assert cap["n_equations"] == 2
+        assert cap["n_ports"] == 2
+        assert src["n_equations"] == 1
+        assert src["n_ports"] == 2
+
+    def test_acausal_rc_circuit_add_component_and_connect(self):
+        R = self.pool.symbol("R")
+        C = self.pool.symbol("C")
+        Vs = self.pool.symbol("Vs")
+
+        src = voltage_source("V1", Vs)["component"]
+        res = resistor("R1", R)["component"]
+        cap = capacitor("C1", C)["component"]
+
+        sys = AcausalSystem(self.pool)
+        sys.add_component(src)
+        sys.add_component(res)
+        sys.add_component(cap)
+
+        sys.connect(src.port("V1.p"), res.port("R1.p"))
+        sys.connect(res.port("R1.n"), cap.port("C1.p"))
+        sys.connect(cap.port("C1.n"), src.port("V1.n"))
+
+        dae = sys.flatten(self.t)
+        # 1 (source) + 1 (resistor) + 2 (capacitor) + 2*3 (connections) = 10
+        assert dae.n_equations() == 10
+        assert dae.n_variables() > 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────

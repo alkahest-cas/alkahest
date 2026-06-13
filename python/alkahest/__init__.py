@@ -60,6 +60,7 @@ from .alkahest import (  # noqa: F401
     CompileCache,
     # Phase 21: JIT compiled evaluation
     CompiledFn,
+    Component,
     # Core expression types
     DerivedResult,
     Domain,
@@ -107,6 +108,8 @@ from .alkahest import (  # noqa: F401
     atan2,
     cad_lift,
     cad_project,
+    # Phase 18: Acausal modelling (component constructors)
+    capacitor,
     ceil,
     # Phase 26: collect_like_terms
     collect_like_terms,
@@ -195,6 +198,7 @@ from .alkahest import (  # noqa: F401
     to_stablehlo,
     verify_wz_pair,
     version,
+    voltage_source,
 )
 from .alkahest import (
     # Phase 14: reverse-mode partials on Expr (native name `grad`; exported as symbolic_grad)
@@ -1016,6 +1020,7 @@ __all__ = [
     "CompiledFn",
     "CompiledGradTracedFn",
     "CompiledTracedFn",
+    "Component",
     "ConversionError",
     "DaeError",
     "DaeIndexReduction",
@@ -1101,6 +1106,7 @@ __all__ = [
     "cad_lift",
     "cad_project",
     "capabilities",
+    "capacitor",
     "ceil",
     # Phase 26
     "collect_like_terms",
@@ -1233,4 +1239,5 @@ __all__ = [
     "unicode_str",
     "verify_wz_pair",
     "version",
+    "voltage_source",
 ]

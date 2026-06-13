@@ -75,32 +75,60 @@ Sensitivity analysis
 Acausal modeling
 ----------------
 
-.. class:: AcausalSystem
+.. class:: AcausalSystem(pool: ExprPool)
 
-   An acausal component model. Components are added via :meth:`add` and
-   connected via :meth:`connect`. The system is compiled to a :class:`DAE`
-   via :meth:`to_dae`.
+   An acausal component model. Components are added via
+   :meth:`add_component` and connected via :meth:`connect`. The system is
+   compiled to a :class:`DAE` via :meth:`flatten`.
 
-   .. method:: add(component) -> None
+   .. method:: add_component(component: Component) -> None
 
       Add a component to the system.
 
    .. method:: connect(port_a: Port, port_b: Port) -> None
 
-      Connect two component ports.
+      Connect two component ports (equates potentials, balances flows).
 
-   .. method:: to_dae() -> DAE
+   .. method:: flatten(time_var: Expr) -> DAE
 
-      Assemble the component equations into a DAE.
+      Assemble the component and connection equations into a DAE.
+
+.. class:: Component
+
+   A physical component (resistor, capacitor, voltage source, …) with named
+   :class:`Port` connectors and constitutive equations. Returned inside the
+   ``"component"`` key of the dicts produced by :func:`resistor`,
+   :func:`capacitor`, and :func:`voltage_source`.
+
+   .. method:: port(name: str) -> Port | None
+
+      Look up a port by its full name (e.g. ``"R1.p"``).
+
+   .. method:: ports() -> list[Port]
+
+      All ports, in declaration order.
 
 .. class:: Port
 
    A connection port on a component (e.g. positive/negative terminals
-   of a resistor).
+   of a resistor), exposing ``potential`` and ``flow`` :class:`Expr`
+   attributes.
 
-.. function:: resistor(pool: ExprPool, resistance: Expr) -> object
+.. function:: resistor(name: str, resistance: Expr) -> dict
 
-   Create a resistor component with the given resistance expression.
+   Create a resistor component (``v - R*i = 0``). Returns a dict with keys
+   ``"name"``, ``"n_equations"``, ``"n_ports"``, and ``"component"`` (a
+   :class:`Component`).
+
+.. function:: capacitor(name: str, capacitance: Expr) -> dict
+
+   Create an ideal capacitor component (``C * dv/dt - i = 0``). Same return
+   shape as :func:`resistor`.
+
+.. function:: voltage_source(name: str, voltage: Expr) -> dict
+
+   Create an ideal voltage source component (``v_p - v_n = V``). Same return
+   shape as :func:`resistor`.
 
 Hybrid systems
 --------------

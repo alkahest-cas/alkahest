@@ -2,6 +2,7 @@ use alkahest_core::{
     adjoint_system as core_adjoint_system,
     cad_lift as core_cad_lift,
     cad_project as core_cad_project,
+    capacitor as core_capacitor,
     // Phase 21 — JIT
     compile as core_compile,
     decide_expr as core_decide_expr,
@@ -42,12 +43,14 @@ use alkahest_core::{
     sum_definite as core_sum_definite,
     sum_indefinite as core_sum_indefinite,
     verify_wz_pair as core_verify_wz_pair,
+    voltage_source as core_voltage_source,
     // Phase 22 — Ball arithmetic
     ArbBall as CoreArbBall,
     // V2-9 — CAD / real QE
     CadError,
     Capabilities,
     CompileCache as CoreCompileCache,
+    Component,
     Domain,
     EigenError,
     Event,
@@ -4248,19 +4251,93 @@ impl PyPort {
     }
 }
 
+/// A physical component (resistor, capacitor, voltage source, …) with named
+/// :class:`Port` connectors and internal constitutive equations.
+///
+/// Construct components via :func:`resistor`, :func:`capacitor`, or
+/// :func:`voltage_source`, then register them on an :class:`AcausalSystem`
+/// with :meth:`AcausalSystem.add_component` and wire them together with
+/// :meth:`AcausalSystem.connect`.
+#[pyclass(name = "Component")]
+#[derive(Clone)]
+struct PyComponent {
+    inner: Component,
+    pool: Py<PyExprPool>,
+}
+
+#[pymethods]
+impl PyComponent {
+    #[getter]
+    fn name(&self) -> &str {
+        &self.inner.name
+    }
+
+    /// Number of constitutive equations contributed by this component.
+    fn n_equations(&self) -> usize {
+        self.inner.equations.len()
+    }
+
+    /// Number of external connection ports.
+    fn n_ports(&self) -> usize {
+        self.inner.ports.len()
+    }
+
+    /// All ports, in declaration order.
+    fn ports(&self, py: Python<'_>) -> Vec<PyPort> {
+        self.inner
+            .ports
+            .iter()
+            .map(|p| PyPort {
+                inner: p.clone(),
+                pool: self.pool.clone_ref(py),
+            })
+            .collect()
+    }
+
+    /// Look up a port by its full name (e.g. `"R1.p"`), or `None` if absent.
+    fn port(&self, py: Python<'_>, name: &str) -> Option<PyPort> {
+        self.inner.port(name).map(|p| PyPort {
+            inner: p.clone(),
+            pool: self.pool.clone_ref(py),
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Component(name={:?}, n_ports={}, n_equations={})",
+            self.inner.name,
+            self.inner.ports.len(),
+            self.inner.equations.len()
+        )
+    }
+}
+
 /// Acausal component-based modelling system.
 ///
 /// An :class:`AcausalSystem` aggregates components connected through
-/// :class:`Port` objects (potential/flow pairs).  Call :meth:`flatten` to
-/// convert the component network into an equivalent :class:`DAE` suitable
-/// for simulation or index reduction.
+/// :class:`Port` objects (potential/flow pairs).  Add components with
+/// :meth:`add_component`, wire ports together with :meth:`connect`, and
+/// call :meth:`flatten` to convert the component network into an equivalent
+/// :class:`DAE` suitable for simulation or index reduction.
 ///
-/// Example::
+/// Example (RC circuit)::
 ///
 ///     p = alkahest.ExprPool()
-///     sys = alkahest.AcausalSystem(p)
-///     r = alkahest.resistor("R1", p.rational(100, 1))
 ///     t = p.symbol("t")
+///
+///     src = alkahest.voltage_source("V1", p.symbol("Vs"))
+///     res = alkahest.resistor("R1", p.symbol("R"))
+///     cap = alkahest.capacitor("C1", p.symbol("C"))
+///
+///     sys = alkahest.AcausalSystem(p)
+///     sys.add_component(src["component"])
+///     sys.add_component(res["component"])
+///     sys.add_component(cap["component"])
+///
+///     sys.connect(src["component"].port("V1.p"), res["component"].port("R1.p"))
+///     sys.connect(res["component"].port("R1.n"), cap["component"].port("C1.p"))
+///     sys.connect(cap["component"].port("C1.n"), src["component"].port("V1.n"))
+///
 ///     dae = sys.flatten(t)
 #[pyclass(name = "AcausalSystem")]
 struct PyAcausalSystem {
@@ -4279,6 +4356,19 @@ impl PyAcausalSystem {
         }
     }
 
+    /// Add a component (e.g. from :func:`resistor`, :func:`capacitor`,
+    /// :func:`voltage_source`) to the system.
+    fn add_component(&mut self, component: PyRef<PyComponent>) {
+        self.inner.add_component(component.inner.clone());
+    }
+
+    /// Connect two ports: equates their potentials and balances their flows
+    /// (`a.potential == b.potential`, `a.flow + b.flow == 0`).
+    fn connect(&mut self, port_a: PyRef<PyPort>, port_b: PyRef<PyPort>) {
+        self.inner.connect(&port_a.inner, &port_b.inner);
+    }
+
+    /// Flatten all component and connection equations into a :class:`DAE`.
     fn flatten(&self, py: Python<'_>, time_var: PyRef<PyExpr>) -> PyDAE {
         let pool = self.pool.borrow(py);
         let dae = self.inner.flatten(time_var.id, &pool.inner);
@@ -4290,20 +4380,68 @@ impl PyAcausalSystem {
     }
 }
 
-/// `alkahest.resistor(name, resistance)` — create a resistor component.
-#[pyfunction]
-#[pyo3(name = "resistor")]
-fn py_resistor(py: Python<'_>, name: &str, resistance: PyRef<PyExpr>) -> PyResult<PyObject> {
-    // Return as a Python dict for simplicity
-    let pool = resistance.pool.borrow(py);
-    let comp = core_resistor(name, resistance.id, &pool.inner);
-    drop(pool);
-    // Pack as dict: {"name": name, "n_equations": N, "n_ports": M}
+/// Pack a core `Component` into the dict shape returned by `resistor`,
+/// `capacitor`, and `voltage_source`: `{"name", "n_equations", "n_ports",
+/// "component"}`, where `"component"` is a :class:`Component` instance that
+/// can be passed to `AcausalSystem.add_component` and `.port(name)`.
+fn component_to_pydict(
+    py: Python<'_>,
+    comp: Component,
+    pool: Py<PyExprPool>,
+) -> PyResult<PyObject> {
     let d = PyDict::new_bound(py);
     d.set_item("name", comp.name.clone())?;
     d.set_item("n_equations", comp.equations.len())?;
     d.set_item("n_ports", comp.ports.len())?;
+    d.set_item("component", PyComponent { inner: comp, pool }.into_py(py))?;
     Ok(d.into_py(py))
+}
+
+/// `alkahest.resistor(name, resistance)` — create a resistor component.
+///
+/// Returns a dict `{"name", "n_equations", "n_ports", "component"}`; the
+/// `"component"` entry is a :class:`Component` usable with
+/// `AcausalSystem.add_component` and `.port(name)`.
+#[pyfunction]
+#[pyo3(name = "resistor")]
+fn py_resistor(py: Python<'_>, name: &str, resistance: PyRef<PyExpr>) -> PyResult<PyObject> {
+    let pool_py = resistance.pool.clone_ref(py);
+    let pool = resistance.pool.borrow(py);
+    let comp = core_resistor(name, resistance.id, &pool.inner);
+    drop(pool);
+    component_to_pydict(py, comp, pool_py)
+}
+
+/// `alkahest.capacitor(name, capacitance)` — create an ideal capacitor
+/// component (`C * dv/dt = i`).
+///
+/// Returns a dict `{"name", "n_equations", "n_ports", "component"}`; the
+/// `"component"` entry is a :class:`Component` usable with
+/// `AcausalSystem.add_component` and `.port(name)`.
+#[pyfunction]
+#[pyo3(name = "capacitor")]
+fn py_capacitor(py: Python<'_>, name: &str, capacitance: PyRef<PyExpr>) -> PyResult<PyObject> {
+    let pool_py = capacitance.pool.clone_ref(py);
+    let pool = capacitance.pool.borrow(py);
+    let comp = core_capacitor(name, capacitance.id, &pool.inner);
+    drop(pool);
+    component_to_pydict(py, comp, pool_py)
+}
+
+/// `alkahest.voltage_source(name, voltage)` — create an ideal voltage
+/// source component (`v_p - v_n = V`).
+///
+/// Returns a dict `{"name", "n_equations", "n_ports", "component"}`; the
+/// `"component"` entry is a :class:`Component` usable with
+/// `AcausalSystem.add_component` and `.port(name)`.
+#[pyfunction]
+#[pyo3(name = "voltage_source")]
+fn py_voltage_source(py: Python<'_>, name: &str, voltage: PyRef<PyExpr>) -> PyResult<PyObject> {
+    let pool_py = voltage.pool.clone_ref(py);
+    let pool = voltage.pool.borrow(py);
+    let comp = core_voltage_source(name, voltage.id, &pool.inner);
+    drop(pool);
+    component_to_pydict(py, comp, pool_py)
 }
 
 // ---------------------------------------------------------------------------
@@ -7313,8 +7451,11 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_pantelides, m)?)?;
     // Phase 18
     m.add_class::<PyPort>()?;
+    m.add_class::<PyComponent>()?;
     m.add_class::<PyAcausalSystem>()?;
     m.add_function(wrap_pyfunction!(py_resistor, m)?)?;
+    m.add_function(wrap_pyfunction!(py_capacitor, m)?)?;
+    m.add_function(wrap_pyfunction!(py_voltage_source, m)?)?;
     // Phase 19
     m.add_class::<PySensitivitySystem>()?;
     m.add_function(wrap_pyfunction!(py_sensitivity_system, m)?)?;
