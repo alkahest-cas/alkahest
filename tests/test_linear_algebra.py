@@ -5,6 +5,26 @@ from __future__ import annotations
 import alkahest
 
 
+def test_matrix_from_rows_mixed_int_expr():
+    """from_rows accepts bare ints alongside Expr; pool is inferred from the Expr."""
+    pool = alkahest.ExprPool()
+    x = pool.symbol("x")
+    m = alkahest.Matrix.from_rows([[x, 1], [0, x]])
+    assert m.shape() == (2, 2)
+    assert m.get(0, 1).node() == pool.integer(1).node()
+
+
+def test_matrix_from_rows_all_int_with_active_pool():
+    """from_rows accepts an all-int matrix when an active pool is set via context()."""
+    pool = alkahest.ExprPool()
+    with alkahest.context(pool=pool):
+        m = alkahest.Matrix.from_rows([[0, 1], [-1, 0]])
+        m2 = alkahest.Matrix([[1, 0], [0, 1]])
+    assert m.shape() == (2, 2)
+    assert m2.shape() == (2, 2)
+    assert m.get(1, 0).node() == pool.integer(-1).node()
+
+
 def test_nullspace_rank_column_row_space():
     pool = alkahest.ExprPool()
     m = alkahest.Matrix([[pool.integer(1), pool.integer(2)]])
