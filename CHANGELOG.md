@@ -2,14 +2,58 @@
 
 ## Unreleased
 
+## 3.5.0 — 2026-06-12
+
+### Kernel
+
+- **Imaginary unit:** canonical `I = √(−1)` as a kernel-blessed `Complex` symbol (`ExprPool::imaginary_unit()`); `i^n` power cycling and `Mul` collapse via `i² = −1`.
+
+### Transforms
+
+- **Fourier / Laplace / Z-transform:** symbolic forward and inverse transforms.
+- **Fourier:** shifted Gaussian `F{e^{−a(x−b)²}}` with explicit phase factor via completing the square.
+- **Z-transform inverse:** irreducible quadratic denominators (complex-conjugate poles) → real damped sinusoids.
+
+### Calculus
+
+- **Formal power series:** lazy FPS ring over ℚ with analytic operations.
+- **Multivariate limits:** path-certificate non-existence.
+- **Asymptotic expansions** at infinity.
+
+### ODE
+
+- **Classical `dsolve`:** first-order classes, linear constant-coefficient, and Euler–Cauchy.
+- **Series solutions:** power-series and Frobenius methods for linear ODEs.
+
+### Python
+
+- **Experimental surface** (`alkahest.experimental`) for calculus, ODE, and transform APIs.
+
+### Integration / Risch
+
+- **Elementary products:** `x·exp(a·x)` (and related cases).
+- **K-rational Hermite** reduction in `k_rational_integrate`.
+
+### Poly
+
+- **Puiseux tower continuation** with additive API (semver-safe re-land).
+
 ### Lean certificates
 
 - **Differentiation:** `to_lean` / `DerivedResult.certificate` on `diff` results now emit `deriv (fun x => …) x = …` goals with Mathlib derivative lemmas instead of incorrect rewrite equalities (e.g. `x³ = 3x²`).
 
 ### Demo playground
 
+- **Outputs:** render cell results as markdown; copy cell with output.
+- **Lean certificate** cell in the default notebook.
 - **Server kernel:** isolated `alkahest-playground` kernelspec in the server venv; matplotlib inline + figure flush; route matplotlib/numpy/playground_helpers cells to the server.
 - **Lean verify:** legacy diff certificate shim in `playground_helpers` for older wheels; `start.sh` builds local alkahest via `maturin develop` when developing in-repo.
+
+### Fixes
+
+- **JIT:** cover all numeric primitives in `eval_interp` (+ registry sync test).
+- **simplify:** fold elementary constants, trivial powers, and rational canonicalization.
+- **lean:** emit `deriv` goals for diff certificates.
 
 ## 3.4.0 — 2026-06-10
 
