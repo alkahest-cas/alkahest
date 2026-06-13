@@ -1838,6 +1838,31 @@ pub mod builtins {
             }
         }
 
+        fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
+            // d/dt atan2(y, x) = (x·y' − y·x') / (x² + y²)
+            if args.len() != 2 {
+                return None;
+            }
+            let y = args[0];
+            let x = args[1];
+            let dy = crate::diff::diff(y, wrt, pool).ok()?.value;
+            let dx = crate::diff::diff(x, wrt, pool).ok()?.value;
+
+            let neg_one = pool.integer(-1_i32);
+            let neg_dx = pool.mul(vec![neg_one, dx]);
+
+            let x_dy = pool.mul(vec![x, dy]);
+            let y_dx = pool.mul(vec![y, neg_dx]);
+            let numerator = pool.add(vec![x_dy, y_dx]);
+
+            let two = pool.integer(2_i32);
+            let x2 = pool.pow(x, two);
+            let y2 = pool.pow(y, two);
+            let denominator = pool.add(vec![x2, y2]);
+
+            Some(pool.mul(vec![numerator, pool.pow(denominator, neg_one)]))
+        }
+
         fn lean_theorem(&self) -> Option<&'static str> {
             Some("Real.arctan2")
         }
@@ -2016,6 +2041,63 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let result = reg.diff_forward("sin", &[x], x, &pool);
         assert!(result.is_some(), "sin diff_forward returned None");
+    }
+
+    #[test]
+    fn diff_atan2_full_chain_rule() {
+        // d/dx atan2(y, x) = (x·y' - y·x') / (x² + y²), evaluated numerically
+        // against a finite-difference approximation for y = x^2, var = x.
+        use crate::jit::eval_interp;
+        use std::collections::HashMap;
+
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.pow(x, pool.integer(2_i32));
+        let expr = pool.func("atan2", vec![y, x]);
+
+        let derived = crate::diff::diff(expr, x, &pool).expect("atan2 should be differentiable");
+
+        let h = 1e-6;
+        for &xv in &[0.5_f64, 1.0, 2.0, -1.5] {
+            let f = |xv: f64| xv.powi(2).atan2(xv);
+            let numeric = (f(xv + h) - f(xv - h)) / (2.0 * h);
+
+            let mut env = HashMap::new();
+            env.insert(x, xv);
+            let analytic = eval_interp(derived.value, &env, &pool)
+                .expect("derivative should evaluate numerically");
+
+            assert!(
+                (numeric - analytic).abs() < 1e-4,
+                "atan2 derivative mismatch at x={xv}: numeric={numeric}, analytic={analytic}"
+            );
+        }
+    }
+
+    #[test]
+    fn diff_atan2_simple_case_x_over_constant() {
+        // atan2(x, c) for constant c: d/dx atan2(x, c) = c / (c² + x²)
+        use crate::jit::eval_interp;
+        use std::collections::HashMap;
+
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let c = pool.integer(2_i32);
+        let expr = pool.func("atan2", vec![x, c]);
+
+        let derived = crate::diff::diff(expr, x, &pool).expect("atan2 should be differentiable");
+
+        for &xv in &[0.0_f64, 1.0, -3.0, 5.0] {
+            let expected = 2.0 / (4.0 + xv * xv);
+            let mut env = HashMap::new();
+            env.insert(x, xv);
+            let got = eval_interp(derived.value, &env, &pool)
+                .expect("derivative should evaluate numerically");
+            assert!(
+                (got - expected).abs() < 1e-9,
+                "atan2(x,2) derivative mismatch at x={xv}: got={got}, expected={expected}"
+            );
+        }
     }
 
     #[test]
