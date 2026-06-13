@@ -123,7 +123,8 @@ Current stable feature surface.
 - Symbolic matrices (`Matrix`), determinant, inverse, transpose, Jacobian
 - ODE representation and first-order lowering (`ODE`, `lower_to_first_order`)
 - DAE structural analysis: Pantelides index reduction (`DAE`, `pantelides`)
-- Acausal component modeling (`AcausalSystem`, `Port`, `resistor`)
+- Acausal component modeling (`AcausalSystem`, `Port`, `Component`, `resistor`, `capacitor`, `voltage_source`)
+- Laplace transform (`alkahest.experimental.laplace_transform` / `inverse_laplace_transform`)
 - Sensitivity analysis: forward (`sensitivity_system`) and adjoint (`adjoint_system`)
 - Hybrid systems with events (`HybridODE`, `Event`)
 - Piecewise expressions and predicates

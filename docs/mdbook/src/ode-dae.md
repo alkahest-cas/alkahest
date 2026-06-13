@@ -91,22 +91,43 @@ adj = adjoint_system(ode, output_expr, [p])
 Acausal component modeling lets you describe physical systems by their component equations without manually choosing which direction information flows:
 
 ```python
-from alkahest import AcausalSystem, Port, resistor
+from alkahest import AcausalSystem, ExprPool, capacitor, resistor, voltage_source
 
-# Build a simple RC circuit symbolically
 pool = ExprPool()
-circuit = AcausalSystem()
+t = pool.symbol("t")
 
-R = resistor(pool, resistance=pool.symbol("R"))
-# Connect components via ports
-circuit.add(R)
-circuit.connect(R.port_pos, ...)
+# Component constructors return {"name", "n_equations", "n_ports", "component"}.
+src = voltage_source("V1", pool.symbol("Vs"))["component"]
+res = resistor("R1", pool.symbol("R"))["component"]
+cap = capacitor("C1", pool.symbol("C"))["component"]
 
-# Extract the DAE from the connected system
-dae = circuit.to_dae()
+circuit = AcausalSystem(pool)
+circuit.add_component(src)
+circuit.add_component(res)
+circuit.add_component(cap)
+
+# Wire the loop: Vs.p -> R.p, R.n -> C.p, C.n -> Vs.n
+circuit.connect(src.port("V1.p"), res.port("R1.p"))
+circuit.connect(res.port("R1.n"), cap.port("C1.p"))
+circuit.connect(cap.port("C1.n"), src.port("V1.n"))
+
+# Flatten into a DAE
+dae = circuit.flatten(t)
 ```
 
-Built-in components (`resistor`, and others registered via the component API) generate their constitutive equations automatically. The system then assembles them into a DAE that Pantelides can reduce.
+Built-in components (`resistor`, `capacitor`, `voltage_source`, and others registered via the component API) generate their constitutive equations automatically. `AcausalSystem.flatten` assembles them, plus the Kirchhoff-style connection equations, into a `DAE` that Pantelides can reduce. See `examples/acausal_and_laplace.py` for a runnable end-to-end example.
+
+## Laplace transform
+
+The Laplace transform lives in `alkahest.experimental` (the calculus/ODE/transform surface is not yet semver-frozen):
+
+```python
+from alkahest.experimental import inverse_laplace_transform, laplace_transform
+
+s, t = pool.symbol("s"), pool.symbol("t")
+F = laplace_transform(pool.integer(1), t, s)            # 1/s
+f = inverse_laplace_transform(F, s, t)                   # back to 1 (Heaviside(t))
+```
 
 ## Hybrid systems
 
