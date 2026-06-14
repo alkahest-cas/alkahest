@@ -2,6 +2,8 @@ use alkahest_core::{
     adjoint_system as core_adjoint_system,
     cad_lift as core_cad_lift,
     cad_project as core_cad_project,
+    // Rational-function cancel/together
+    cancel as core_cancel,
     capacitor as core_capacitor,
     // Phase 21 — JIT
     compile as core_compile,
@@ -42,6 +44,7 @@ use alkahest_core::{
     subs as core_subs,
     sum_definite as core_sum_definite,
     sum_indefinite as core_sum_indefinite,
+    together as core_together,
     verify_wz_pair as core_verify_wz_pair,
     voltage_source as core_voltage_source,
     // Phase 22 — Ball arithmetic
@@ -5176,6 +5179,63 @@ fn py_poly_normal(
     })
 }
 
+/// Cancel common polynomial factors in a rational expression.
+///
+/// Combines an expression built from ``+``, ``-``, ``*``, ``/`` and integer
+/// powers of polynomials in *vars* over a common denominator, then divides the
+/// numerator and denominator by their polynomial GCD.  Any sub-expression that
+/// is not a polynomial in *vars* (a function call like ``sin(x)``, a symbol not
+/// listed in *vars*, or a base with a symbolic exponent) is treated as an
+/// opaque generator.
+///
+/// Examples::
+///
+///     cancel((x**2 - 1) / (x - 1), [x])   # -> x + 1
+///     cancel(1/x + 1/(x + 1), [x])         # -> (2*x + 1) / (x**2 + x)
+///     cancel(x / x, [x])                   # -> 1
+///
+/// Limitations: generators are matched structurally (``sin(x)`` and
+/// ``sin(2*x/2)`` are distinct), and bases raised to symbolic exponents are
+/// opaque as a whole.
+#[pyfunction]
+#[pyo3(name = "cancel")]
+fn py_cancel(py: Python<'_>, expr: PyRef<PyExpr>, vars: Vec<PyRef<PyExpr>>) -> PyResult<PyExpr> {
+    let pool_py = expr.pool.clone_ref(py);
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+    let result = {
+        let pool = pool_py.borrow(py);
+        core_cancel(expr.id, var_ids, &pool.inner).map_err(conv_error_to_py)?
+    };
+    Ok(PyExpr {
+        id: result,
+        pool: pool_py,
+    })
+}
+
+/// Combine a rational expression over a single common denominator.
+///
+/// Behaves like :func:`cancel` (the numerator/denominator GCD is divided out by
+/// the underlying rational-function constructor); provided as a companion name
+/// for callers that want the explicit "put over a common denominator" intent.
+///
+/// Example::
+///
+///     together(1/x + 1/(x + 1), [x])   # -> (2*x + 1) / (x**2 + x)
+#[pyfunction]
+#[pyo3(name = "together")]
+fn py_together(py: Python<'_>, expr: PyRef<PyExpr>, vars: Vec<PyRef<PyExpr>>) -> PyResult<PyExpr> {
+    let pool_py = expr.pool.clone_ref(py);
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+    let result = {
+        let pool = pool_py.borrow(py);
+        core_together(expr.id, var_ids, &pool.inner).map_err(conv_error_to_py)?
+    };
+    Ok(PyExpr {
+        id: result,
+        pool: pool_py,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // V2-2 — Resultants and subresultant PRS
 // ---------------------------------------------------------------------------
@@ -7549,6 +7609,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_simplify_clifford_orthogonal, m)?)?;
     // Phase 27 — poly_normal
     m.add_function(wrap_pyfunction!(py_poly_normal, m)?)?;
+    // Rational-function cancel/together
+    m.add_function(wrap_pyfunction!(py_cancel, m)?)?;
+    m.add_function(wrap_pyfunction!(py_together, m)?)?;
     // PA-5 — Primitive registry
     m.add_class::<PyPrimitiveRegistry>()?;
     // PA-9 — Piecewise

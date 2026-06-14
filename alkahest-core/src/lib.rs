@@ -88,12 +88,12 @@ pub use ode::{
 pub use parse::{parse, ParseError};
 pub use pattern::{match_pattern, Pattern, Substitution};
 pub use poly::{
-    apart, factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z, gcd_sparse_modular,
-    poly_normal, real_roots, real_roots_symbolic, refine_root, resultant, sparse_interpolate,
-    sparse_interpolate_univariate, subresultant_prs, ApartError, ConversionError, FactorError,
-    MultiPoly, MultiPolyFactorization, RationalFunction, RealRootError, ResultantError,
-    RootInterval, SparseGcdError, SparseInterpError, UniPoly, UniPolyFactorModP,
-    UniPolyFactorization,
+    apart, cancel, factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z,
+    gcd_sparse_modular, poly_normal, real_roots, real_roots_symbolic, refine_root, resultant,
+    sparse_interpolate, sparse_interpolate_univariate, subresultant_prs, together, together_parts,
+    ApartError, ConversionError, FactorError, MultiPoly, MultiPolyFactorization, RationalFunction,
+    RealRootError, ResultantError, RootInterval, SparseGcdError, SparseInterpError, UniPoly,
+    UniPolyFactorModP, UniPolyFactorization,
 };
 
 // §3.3 — Laplace transform and inverse (experimental surface; see `experimental`)
@@ -246,12 +246,12 @@ pub mod stable {
     pub use crate::parse::{parse, ParseError};
     pub use crate::pattern::{match_pattern, Pattern, Substitution};
     pub use crate::poly::{
-        apart, factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z,
+        apart, cancel, factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z,
         gcd_sparse_modular, poly_normal, real_roots, real_roots_symbolic, refine_root, resultant,
-        sparse_interpolate, sparse_interpolate_univariate, subresultant_prs, ApartError,
-        ConversionError, FactorError, MultiPoly, MultiPolyFactorization, RationalFunction,
-        RealRootError, ResultantError, RootInterval, SparseGcdError, SparseInterpError, UniPoly,
-        UniPolyFactorModP, UniPolyFactorization,
+        sparse_interpolate, sparse_interpolate_univariate, subresultant_prs, together,
+        together_parts, ApartError, ConversionError, FactorError, MultiPoly,
+        MultiPolyFactorization, RationalFunction, RealRootError, ResultantError, RootInterval,
+        SparseGcdError, SparseInterpError, UniPoly, UniPolyFactorModP, UniPolyFactorization,
     };
     pub use crate::primitive::{Primitive, PrimitiveRegistry};
     pub use crate::real::{cad_lift, cad_project, decide, decide_expr, CadError, QeResult};
