@@ -222,6 +222,14 @@ fn limit_inner(
         return Ok(r);
     }
 
+    // Indeterminate power f^g (1^∞, 0^0, ∞^0) at ±∞: rewrite to exp(g·log f) so the
+    // exp-aware Gruntz/series machinery can handle it.  Plain `(1+1/x)^x → e` lives here.
+    if is_pos_infinity(point, pool) || is_neg_infinity(point, pool) {
+        if let Some(r) = try_indeterminate_power(expr, var, point, direction, pool, depth)? {
+            return Ok(r);
+        }
+    }
+
     // Gruntz algorithm — best for exp/log expressions at +∞ (runs before the 1/t substitution
     // so the exp structure is still visible in the original variable).
     if is_pos_infinity(point, pool) {
@@ -341,6 +349,114 @@ fn try_x_log_x_at_zero(
         pool,
         depth + 1,
     )?))
+}
+
+/// Detect an indeterminate power `base^exp` as `var → ±∞` and rewrite it to
+/// `exp(exp · log(base))`, feeding that through the recursive limit machinery
+/// (Gruntz collects the resulting `exp(h)` and gets the right answer).
+///
+/// Only the genuinely indeterminate exponential forms are rewritten:
+///   * `1^∞`  (base → 1, exp → ±∞)
+///   * `∞^0`  (base → ±∞, exp → 0)
+///   * `0^0`  (base → 0, exp → 0)  — only when `base` is structurally positive
+///
+/// Non-indeterminate powers (e.g. `2^x → ∞`, `x^2 → ∞`, or `base → c ≠ 1` with
+/// `exp → ∞`) are left untouched so the existing fast paths still apply and no
+/// new silent-wrong answers are introduced.  `log(base)` is only formed when we
+/// can establish `base > 0` near the limit.
+fn try_indeterminate_power(
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    direction: LimitDirection,
+    pool: &ExprPool,
+    depth: u32,
+) -> Result<Option<ExprId>, LimitError> {
+    let ExprData::Pow { base, exp } = pool.get(expr) else {
+        return Ok(None);
+    };
+    // A constant base (e.g. exp(...) form is already handled, and 2^x is not
+    // indeterminate) — only proceed when the base genuinely varies with `var`.
+    if !depends_on(base, var, pool) {
+        return Ok(None);
+    }
+
+    // Limits of the base and exponent (independently).  If either sub-limit is
+    // not computable, do not attempt the rewrite.
+    let base_lim = match limit_inner(base, var, point, direction, pool, depth + 1) {
+        Ok(b) => b,
+        Err(_) => return Ok(None),
+    };
+    let exp_lim = match limit_inner(exp, var, point, direction, pool, depth + 1) {
+        Ok(e) => e,
+        Err(_) => return Ok(None),
+    };
+
+    let base_is_one = is_one_like(base_lim, pool);
+    let base_is_zero = is_zero_like(base_lim, pool);
+    let base_is_inf = is_pos_infinity(base_lim, pool) || is_neg_infinity(base_lim, pool);
+    let exp_is_zero = is_zero_like(exp_lim, pool);
+    let exp_is_inf = is_pos_infinity(exp_lim, pool) || is_neg_infinity(exp_lim, pool);
+
+    // Classify the indeterminate exponential forms.
+    let indeterminate = (base_is_one && exp_is_inf)            // 1^∞
+        || (base_is_inf && exp_is_zero)                       // ∞^0
+        || (base_is_zero && exp_is_zero); // 0^0
+    if !indeterminate {
+        return Ok(None);
+    }
+
+    // `log(base)` must be valid: require base > 0 near the limit.  base → 1 or
+    // base → +∞ are positive; base → 0 only qualifies if structurally positive.
+    let base_positive = base_is_one
+        || is_pos_infinity(base_lim, pool)
+        || (base_is_zero && structurally_positive(base, pool));
+    if !base_positive {
+        return Ok(None);
+    }
+
+    // Rewrite f^g → exp(g · log f).  Compute the inner limit `L = lim(g · log f)`
+    // via the existing (correct) machinery, then map it through exp:
+    //   L finite → exp(L),   L = +∞ → +∞,   L = -∞ → 0.
+    // Computing L directly (rather than recursing on `exp(g·log f)`) avoids the
+    // Gruntz `exp(finite)` path, which only retains the leading order and would
+    // give e.g. exp(1) for (1+2/x)^x instead of exp(2).
+    let log_base = pool.func("log", vec![base]);
+    let inner = simplify(pool.mul(vec![exp, log_base]), pool).value;
+    let inner_lim = match limit_inner(inner, var, point, direction, pool, depth + 1) {
+        Ok(l) => l,
+        Err(_) => return Ok(None),
+    };
+    if is_pos_infinity(inner_lim, pool) {
+        return Ok(Some(pool.pos_infinity()));
+    }
+    if is_neg_infinity(inner_lim, pool) {
+        return Ok(Some(pool.integer(0_i32)));
+    }
+    // Finite inner limit ⇒ exp(L).
+    let result = simplify(pool.func("exp", vec![inner_lim]), pool).value;
+    Ok(Some(result))
+}
+
+/// Conservative structural test that `e > 0` everywhere it is defined — used to
+/// license `log(e)` for `0^0` rewrites.  `1 + h` with positive constant part,
+/// positive constants, even powers, and products/sums of positives qualify.
+fn structurally_positive(e: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(e) {
+        ExprData::Integer(n) => n.0 > 0,
+        ExprData::Rational(r) => r.0 > 0,
+        ExprData::Func { name, .. } if name == "exp" || name == "cosh" => true,
+        ExprData::Pow { base, exp } => {
+            if let ExprData::Integer(n) = pool.get(exp) {
+                if n.0.clone() % 2 == 0 {
+                    return true;
+                }
+            }
+            structurally_positive(base, pool)
+        }
+        ExprData::Mul(xs) => xs.iter().all(|x| structurally_positive(*x, pool)),
+        _ => false,
+    }
 }
 
 fn try_special_function_limits(
@@ -865,6 +981,65 @@ mod tests {
         let ex = simplify(p.pow(x, p.integer(2_i32)), &p).value;
         let r = limit(ex, x, p.pos_infinity(), LimitDirection::Bidirectional, &p).unwrap();
         assert_eq!(r, p.pos_infinity(), "{}", p.display(r));
+    }
+
+    /// `lim_{x→∞} (1 + 1/x)^x = e = exp(1)`  (the silent-wrong-answer regression).
+    #[test]
+    fn limit_compound_interest_is_e() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        // (1 + 1/x)^x
+        let base = p.add(vec![p.integer(1), p.pow(x, p.integer(-1))]);
+        let ex = simplify(p.pow(base, x), &p).value;
+        let r = limit(ex, x, p.pos_infinity(), LimitDirection::Bidirectional, &p).unwrap();
+        let expected = simplify(p.func("exp", vec![p.integer(1)]), &p).value;
+        assert_eq!(r, expected, "got {}", p.display(r));
+    }
+
+    /// `lim_{x→∞} (1 + a/x)^x = exp(a)` for a concrete integer `a = 2`.
+    #[test]
+    fn limit_one_plus_a_over_x_pow_x_is_exp_a() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        // (1 + 2/x)^x
+        let two_over_x = p.mul(vec![p.integer(2), p.pow(x, p.integer(-1))]);
+        let base = p.add(vec![p.integer(1), two_over_x]);
+        let ex = simplify(p.pow(base, x), &p).value;
+        let r = limit(ex, x, p.pos_infinity(), LimitDirection::Bidirectional, &p).unwrap();
+        let expected = simplify(p.func("exp", vec![p.integer(2)]), &p).value;
+        assert_eq!(r, expected, "got {}", p.display(r));
+    }
+
+    /// Non-regression: `2^x` has a constant base (not the indeterminate `1^∞`
+    /// form), so the new rewrite must NOT fire and must NOT fabricate a finite
+    /// value.  The engine declines it (as it did before this fix); the key point
+    /// is that it never returns a wrong finite limit.
+    #[test]
+    fn limit_two_pow_x_not_rewritten_to_finite() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let ex = simplify(p.pow(p.integer(2), x), &p).value;
+        let r = limit(ex, x, p.pos_infinity(), LimitDirection::Bidirectional, &p);
+        // Either it stays unsupported or returns +∞ — but never a finite number.
+        if let Ok(v) = r {
+            assert_eq!(
+                v,
+                p.pos_infinity(),
+                "2^x must not be a finite value: {}",
+                p.display(v)
+            );
+        }
+    }
+
+    /// Non-regression: `lim_{x→∞} (1 + 1/x) = 1` (not a power; sanity that the
+    /// helper does not perturb the simple base limit).
+    #[test]
+    fn limit_one_plus_one_over_x_is_one() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let ex = simplify(p.add(vec![p.integer(1), p.pow(x, p.integer(-1))]), &p).value;
+        let r = limit(ex, x, p.pos_infinity(), LimitDirection::Bidirectional, &p).unwrap();
+        assert_eq!(r, p.integer(1), "got {}", p.display(r));
     }
 
     #[test]
