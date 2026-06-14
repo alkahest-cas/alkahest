@@ -287,10 +287,18 @@ impl RewriteRule for CosDoubleAngle {
     }
 }
 
-/// Angle-subtraction for sine: `sin(a)·cos(b) − cos(a)·sin(b) → sin(a−b)`.
+/// Angle-subtraction for sine: `c·sin(a)·cos(b) − c·cos(a)·sin(b) → c·sin(a−b)`.
 ///
-/// Fires on an `Add` of exactly the two products `sin(a)·cos(b)` and
-/// `(-1)·cos(a)·sin(b)` (plus any unrelated terms, which are preserved).
+/// Fires on an `Add` containing a positive product `c·sin(a)·cos(b)` and a
+/// negative product `(-1)·c·cos(a)·sin(b)` that share the **same** coefficient
+/// multiset `c` (numeric or symbolic, possibly empty — the bare
+/// `sin(a)cos(b) − cos(a)sin(b)` case).  The matched pair is replaced by
+/// `c·sin(a−b)`; unrelated terms are preserved.
+///
+/// The coefficient match is the angle-identity analogue of the coefficient-aware
+/// Pythagorean rule: it lets the 2-link Jacobian determinant
+/// `l1·l2·cos(θ1)·sin(θ1+θ2) − l1·l2·sin(θ1)·cos(θ1+θ2)` collapse to
+/// `l1·l2·sin(θ2)` even though `l1·l2` is shared across both terms.
 pub struct SinAngleSub;
 
 impl RewriteRule for SinAngleSub {
@@ -304,25 +312,37 @@ impl RewriteRule for SinAngleSub {
             _ => return None,
         };
 
-        // Positive term `sin(a)·cos(b)`.
+        // Positive term `c·sin(a)·cos(b)` (coefficient must be sign-positive,
+        // i.e. carry no `-1` factor).
         for (pi, &pos) in args.iter().enumerate() {
-            let Some((a, b)) = match_func_pair("sin", "cos", pos, pool) else {
+            let Some((a, b, pos_coeff)) = split_trig_pair("sin", "cos", pos, pool) else {
                 continue;
             };
-            // Negative term `(-1)·cos(a)·sin(b)`.
+            if coeff_has_neg_one(&pos_coeff, pool) {
+                continue;
+            }
+            // Negative term `(-1)·c·cos(a)·sin(b)` with the same (a, b) and the
+            // same coefficient multiset `c`.
             for (ni, &neg) in args.iter().enumerate() {
                 if ni == pi {
                     continue;
                 }
-                let Some(inner) = neg_inner(neg, pool) else {
+                let Some((na, nb, neg_coeff)) = split_trig_pair("cos", "sin", neg, pool) else {
                     continue;
                 };
-                if match_func_pair("cos", "sin", inner, pool) != Some((a, b)) {
+                if (na, nb) != (a, b) {
+                    continue;
+                }
+                let Some(rest) = strip_one_neg_one(&neg_coeff, pool) else {
+                    continue;
+                };
+                if !coeff_multiset_eq(&pos_coeff, &rest, pool) {
                     continue;
                 }
                 let diff = sub(a, b, pool);
                 let sin_diff = pool.func("sin", vec![diff]);
-                let after = rebuild_add_replacing(&args, pi, ni, sin_diff, pool);
+                let replacement = attach_coeff(&pos_coeff, sin_diff, pool);
+                let after = rebuild_add_replacing(&args, pi, ni, replacement, pool);
                 return Some((after, one_step(self.name(), expr, after)));
             }
         }
@@ -330,7 +350,11 @@ impl RewriteRule for SinAngleSub {
     }
 }
 
-/// Angle-subtraction for cosine: `cos(a)·cos(b) + sin(a)·sin(b) → cos(a−b)`.
+/// Angle-subtraction for cosine: `c·cos(a)·cos(b) + c·sin(a)·sin(b) → c·cos(a−b)`.
+///
+/// Coefficient-aware in the same way as [`SinAngleSub`]: both products must
+/// share the same coefficient multiset `c` (numeric or symbolic, possibly
+/// empty).
 pub struct CosAngleSub;
 
 impl RewriteRule for CosAngleSub {
@@ -345,23 +369,31 @@ impl RewriteRule for CosAngleSub {
         };
 
         for (ci, &cc) in args.iter().enumerate() {
-            let Some((a, b)) = match_func_pair("cos", "cos", cc, pool) else {
+            let Some((a, b, cos_coeff)) = split_trig_pair("cos", "cos", cc, pool) else {
                 continue;
             };
+            if coeff_has_neg_one(&cos_coeff, pool) {
+                continue;
+            }
             for (si, &ss) in args.iter().enumerate() {
                 if si == ci {
                     continue;
                 }
-                // `sin(a)·sin(b)` with the same (a, b) — order-insensitive.
-                let Some((sa, sb)) = match_func_pair("sin", "sin", ss, pool) else {
+                // `c·sin(a)·sin(b)` with the same (a, b) — order-insensitive —
+                // and the same coefficient multiset.
+                let Some((sa, sb, sin_coeff)) = split_trig_pair("sin", "sin", ss, pool) else {
                     continue;
                 };
                 if !((sa == a && sb == b) || (sa == b && sb == a)) {
                     continue;
                 }
+                if !coeff_multiset_eq(&cos_coeff, &sin_coeff, pool) {
+                    continue;
+                }
                 let diff = sub(a, b, pool);
                 let cos_diff = pool.func("cos", vec![diff]);
-                let after = rebuild_add_replacing(&args, ci, si, cos_diff, pool);
+                let replacement = attach_coeff(&cos_coeff, cos_diff, pool);
+                let after = rebuild_add_replacing(&args, ci, si, replacement, pool);
                 return Some((after, one_step(self.name(), expr, after)));
             }
         }
@@ -823,42 +855,120 @@ fn split_trig_sq(name: &str, term: ExprId, pool: &ExprPool) -> Option<(ExprId, V
     inner.map(|u| (u, rest))
 }
 
-/// If `term` is a product `f(a)·g(b)` of exactly two single-argument function
-/// applications named `f_name` and `g_name`, return `(a, b)`.
+/// Split an `Add`-term `c · f(a) · g(b)` into the trig argument pair plus the
+/// surrounding (possibly empty) coefficient factor list.
 ///
-/// The product must have exactly those two factors (no extra coefficient).
-/// `f` and `g` are matched positionally: the `f_name` factor supplies `a`, the
-/// `g_name` factor supplies `b`.  When `f_name == g_name` the two arguments are
-/// returned in the canonical factor order of the `Mul`.
-fn match_func_pair(
+/// Allows an arbitrary number of *extra*
+/// multiplicative factors (a shared coefficient, numeric or symbolic) around
+/// exactly one `f(·)` and exactly one `g(·)`:
+///
+/// ```text
+/// l1·l2·cos(θ1)·sin(θ1+θ2)  →  (θ1, θ1+θ2, [l1, l2])   for f=cos, g=sin
+/// sin(a)·cos(b)             →  (a,  b,     [])
+/// ```
+///
+/// Returns `(a, b, coeff)` where `a` is the argument of the `f`-named factor and
+/// `b` that of the `g`-named factor.  When `f_name == g_name` the two arguments
+/// are returned in the canonical factor order in which they appear.  Any factor
+/// that is itself an `f`/`g` application beyond the first match makes the term
+/// ambiguous and yields `None`.  The coefficient list is whatever remains; it is
+/// returned in the term's canonical factor order so two terms sharing the same
+/// coefficient multiset compare equal.
+fn split_trig_pair(
     f_name: &str,
     g_name: &str,
     term: ExprId,
     pool: &ExprPool,
-) -> Option<(ExprId, ExprId)> {
-    let factors = match pool.get(term) {
-        ExprData::Mul(v) if v.len() == 2 => v,
-        _ => return None,
-    };
+) -> Option<(ExprId, ExprId, Vec<ExprId>)> {
+    let factors = factor_list(term, pool);
+    let mut a = None;
+    let mut b = None;
+    let mut coeff = Vec::with_capacity(factors.len());
+
     if f_name == g_name {
-        let a = func_arg(f_name, factors[0], pool)?;
-        let b = func_arg(g_name, factors[1], pool)?;
-        return Some((a, b));
+        // Need exactly two `f(·)` factors; everything else is coefficient.
+        for &f in &factors {
+            if let Some(arg) = func_arg(f_name, f, pool) {
+                if a.is_none() {
+                    a = Some(arg);
+                } else if b.is_none() {
+                    b = Some(arg);
+                } else {
+                    return None; // three+ matching factors — ambiguous
+                }
+            } else {
+                coeff.push(f);
+            }
+        }
+        return Some((a?, b?, coeff));
     }
-    // Try both orderings since `Mul` is canonically sorted by ExprId.
-    if let (Some(a), Some(b)) = (
-        func_arg(f_name, factors[0], pool),
-        func_arg(g_name, factors[1], pool),
-    ) {
-        return Some((a, b));
+
+    for &f in &factors {
+        if a.is_none() {
+            if let Some(arg) = func_arg(f_name, f, pool) {
+                a = Some(arg);
+                continue;
+            }
+        } else if func_arg(f_name, f, pool).is_some() {
+            return None; // second `f` factor — ambiguous
+        }
+        if b.is_none() {
+            if let Some(arg) = func_arg(g_name, f, pool) {
+                b = Some(arg);
+                continue;
+            }
+        } else if func_arg(g_name, f, pool).is_some() {
+            return None; // second `g` factor — ambiguous
+        }
+        coeff.push(f);
     }
-    if let (Some(a), Some(b)) = (
-        func_arg(f_name, factors[1], pool),
-        func_arg(g_name, factors[0], pool),
-    ) {
-        return Some((a, b));
+    Some((a?, b?, coeff))
+}
+
+/// Does the coefficient factor list contain a literal `-1`?
+fn coeff_has_neg_one(coeff: &[ExprId], pool: &ExprPool) -> bool {
+    coeff
+        .iter()
+        .any(|&f| pool.with(f, |d| matches!(d, ExprData::Integer(n) if n.0 == -1)))
+}
+
+/// Remove exactly one literal `-1` factor from `coeff`, returning the rest.
+/// `None` if there is no `-1` factor (so the term is not sign-negative).
+fn strip_one_neg_one(coeff: &[ExprId], pool: &ExprPool) -> Option<Vec<ExprId>> {
+    let pos = coeff
+        .iter()
+        .position(|&f| pool.with(f, |d| matches!(d, ExprData::Integer(n) if n.0 == -1)))?;
+    let rest: Vec<ExprId> = coeff
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i != pos)
+        .map(|(_, &f)| f)
+        .collect();
+    Some(rest)
+}
+
+/// Compare two coefficient factor lists as multisets (order-independent).
+fn coeff_multiset_eq(a: &[ExprId], b: &[ExprId], _pool: &ExprPool) -> bool {
+    if a.len() != b.len() {
+        return false;
     }
-    None
+    let mut a_sorted: Vec<ExprId> = a.to_vec();
+    let mut b_sorted: Vec<ExprId> = b.to_vec();
+    a_sorted.sort_unstable();
+    b_sorted.sort_unstable();
+    a_sorted == b_sorted
+}
+
+/// Multiply `inner` by the coefficient factors (empty → `inner` unchanged).
+fn attach_coeff(coeff: &[ExprId], inner: ExprId, pool: &ExprPool) -> ExprId {
+    match coeff.len() {
+        0 => inner,
+        _ => {
+            let mut factors = coeff.to_vec();
+            factors.push(inner);
+            pool.mul(factors)
+        }
+    }
 }
 
 /// Build `a − b` as `Add([a, (-1)·b])`.
@@ -1128,6 +1238,130 @@ mod tests {
         let diff = pool.add(vec![a, pool.mul(vec![pool.integer(-1_i32), b])]);
         let expected = pool.func("cos", vec![diff]);
         assert_eq!(r.value, expected, "got {}", pool.display(r.value));
+    }
+
+    #[test]
+    fn sin_angle_sub_coefficient_aware_symbolic() {
+        // l1·l2·sin(a)·cos(b) − l1·l2·cos(a)·sin(b) → l1·l2·sin(a−b)
+        let pool = p();
+        let a = pool.symbol("a", Domain::Real);
+        let b = pool.symbol("b", Domain::Real);
+        let l1 = pool.symbol("l1", Domain::Real);
+        let l2 = pool.symbol("l2", Domain::Real);
+        let pos = pool.mul(vec![
+            l1,
+            l2,
+            pool.func("sin", vec![a]),
+            pool.func("cos", vec![b]),
+        ]);
+        let neg = pool.mul(vec![
+            pool.integer(-1_i32),
+            l1,
+            l2,
+            pool.func("cos", vec![a]),
+            pool.func("sin", vec![b]),
+        ]);
+        let expr = pool.add(vec![pos, neg]);
+        let r = simplify_with(expr, &pool, &trig_rules(), SimplifyConfig::default());
+        let diff = pool.add(vec![a, pool.mul(vec![pool.integer(-1_i32), b])]);
+        let sin_diff = pool.func("sin", vec![diff]);
+        let expected = pool.mul(vec![l1, l2, sin_diff]);
+        assert_eq!(r.value, expected, "got {}", pool.display(r.value));
+    }
+
+    #[test]
+    fn cos_angle_sub_coefficient_aware_symbolic() {
+        // l1·l2·cos(a)·cos(b) + l1·l2·sin(a)·sin(b) → l1·l2·cos(a−b)
+        let pool = p();
+        let a = pool.symbol("a", Domain::Real);
+        let b = pool.symbol("b", Domain::Real);
+        let l1 = pool.symbol("l1", Domain::Real);
+        let l2 = pool.symbol("l2", Domain::Real);
+        let cc = pool.mul(vec![
+            l1,
+            l2,
+            pool.func("cos", vec![a]),
+            pool.func("cos", vec![b]),
+        ]);
+        let ss = pool.mul(vec![
+            l1,
+            l2,
+            pool.func("sin", vec![a]),
+            pool.func("sin", vec![b]),
+        ]);
+        let expr = pool.add(vec![cc, ss]);
+        let r = simplify_with(expr, &pool, &trig_rules(), SimplifyConfig::default());
+        let diff = pool.add(vec![a, pool.mul(vec![pool.integer(-1_i32), b])]);
+        let cos_diff = pool.func("cos", vec![diff]);
+        let expected = pool.mul(vec![l1, l2, cos_diff]);
+        assert_eq!(r.value, expected, "got {}", pool.display(r.value));
+    }
+
+    #[test]
+    fn sin_angle_sub_mismatched_coeff_does_not_collapse() {
+        // 2·sin(a)·cos(b) − 3·cos(a)·sin(b) must NOT become sin(a−b): the
+        // coefficients differ, so no angle identity applies.
+        let pool = p();
+        let a = pool.symbol("a", Domain::Real);
+        let b = pool.symbol("b", Domain::Real);
+        let pos = pool.mul(vec![
+            pool.integer(2_i32),
+            pool.func("sin", vec![a]),
+            pool.func("cos", vec![b]),
+        ]);
+        let neg = pool.mul(vec![
+            pool.integer(-3_i32),
+            pool.func("cos", vec![a]),
+            pool.func("sin", vec![b]),
+        ]);
+        let expr = pool.add(vec![pos, neg]);
+        let r = simplify_with(expr, &pool, &trig_rules(), SimplifyConfig::default());
+        let diff = pool.add(vec![a, pool.mul(vec![pool.integer(-1_i32), b])]);
+        let sin_diff = pool.func("sin", vec![diff]);
+        assert_ne!(
+            r.value, sin_diff,
+            "mismatched coefficients must not collapse to sin(a-b)"
+        );
+        // It must also not become c·sin(a−b) for any single coefficient.
+        for c in [
+            pool.integer(2_i32),
+            pool.integer(3_i32),
+            pool.integer(-3_i32),
+        ] {
+            let bogus = pool.mul(vec![c, sin_diff]);
+            assert_ne!(r.value, bogus, "got {}", pool.display(r.value));
+        }
+    }
+
+    #[test]
+    fn sin_angle_sub_symbolic_coeff_mismatch_does_not_collapse() {
+        // l1·sin(a)·cos(b) − l2·cos(a)·sin(b): different symbolic coefficients
+        // (l1 vs l2) must NOT collapse.
+        let pool = p();
+        let a = pool.symbol("a", Domain::Real);
+        let b = pool.symbol("b", Domain::Real);
+        let l1 = pool.symbol("l1", Domain::Real);
+        let l2 = pool.symbol("l2", Domain::Real);
+        let pos = pool.mul(vec![
+            l1,
+            pool.func("sin", vec![a]),
+            pool.func("cos", vec![b]),
+        ]);
+        let neg = pool.mul(vec![
+            pool.integer(-1_i32),
+            l2,
+            pool.func("cos", vec![a]),
+            pool.func("sin", vec![b]),
+        ]);
+        let expr = pool.add(vec![pos, neg]);
+        let r = simplify_with(expr, &pool, &trig_rules(), SimplifyConfig::default());
+        let diff = pool.add(vec![a, pool.mul(vec![pool.integer(-1_i32), b])]);
+        let sin_diff = pool.func("sin", vec![diff]);
+        for c in [l1, l2] {
+            let bogus = pool.mul(vec![c, sin_diff]);
+            assert_ne!(r.value, bogus, "got {}", pool.display(r.value));
+        }
+        assert_ne!(r.value, sin_diff, "got {}", pool.display(r.value));
     }
 
     #[test]
