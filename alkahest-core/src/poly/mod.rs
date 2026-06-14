@@ -1,3 +1,5 @@
+// Rational-function cancel/together normalization
+pub mod cancel;
 pub mod error;
 // V2-7 — Polynomial factorization
 pub mod factor;
@@ -21,6 +23,7 @@ pub mod groebner;
 #[cfg(test)]
 mod proptests;
 
+pub use cancel::{cancel, together, together_parts};
 pub use error::{ConversionError, FactorError};
 pub use factor::{
     factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z, MultiPolyFactorization,

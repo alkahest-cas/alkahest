@@ -106,6 +106,8 @@ from .alkahest import (  # noqa: F401
     atan2,
     cad_lift,
     cad_project,
+    # Rational-function cancel/together
+    cancel,
     # Phase 18: Acausal modelling (component constructors)
     capacitor,
     ceil,
@@ -194,6 +196,7 @@ from .alkahest import (  # noqa: F401
     to_lean,
     # V5-2: StableHLO/XLA bridge
     to_stablehlo,
+    together,
     verify_wz_pair,
     version,
     voltage_source,
@@ -962,6 +965,24 @@ def poly_normal(expr, vars):
     return _native_poly_normal(_coerce_expr(expr), [_coerce_expr(v) for v in vars])
 
 
+_native_cancel = cancel
+_native_together = together
+
+
+def cancel(expr, vars):
+    """Combine *expr* over a common denominator and cancel common polynomial factors.
+
+    Non-polynomial sub-expressions (e.g. ``sin(x)`` or symbols not in *vars*) are
+    treated as opaque generators. Accepts :class:`DerivedResult` as *expr*.
+    """
+    return _native_cancel(_coerce_expr(expr), [_coerce_expr(v) for v in vars])
+
+
+def together(expr, vars):
+    """Combine *expr* over a single common denominator (alias of :func:`cancel`)."""
+    return _native_together(_coerce_expr(expr), [_coerce_expr(v) for v in vars])
+
+
 _native_eval_expr = eval_expr
 
 
@@ -1162,6 +1183,7 @@ __all__ = [
     "atan",
     "cad_lift",
     "cad_project",
+    "cancel",
     "capabilities",
     "capacitor",
     "ceil",
@@ -1288,6 +1310,7 @@ __all__ = [
     "to_lean",
     # V5-2
     "to_stablehlo",
+    "together",
     "trace",
     "trace_fn",
     # V2-11 — Regular chains / triangular decomposition

@@ -11,6 +11,7 @@ Covers:
 import pytest
 from alkahest import (
     ExprPool,
+    cancel,
     collect_like_terms,
     compile_expr,
     emit_c,
@@ -18,6 +19,7 @@ from alkahest import (
     numpy_eval,
     poly_normal,
     sin,
+    together,
 )
 
 # ===========================================================================
@@ -403,6 +405,57 @@ class TestPolyNormal:
         for v in [-2.0, -1.0, 0.0, 1.0, 2.0]:
             expected = 3 * v**2 + 2 * v + 1
             assert abs(f([v]) - expected) < 1e-10
+
+
+# ===========================================================================
+# Rational-function cancel / together
+# ===========================================================================
+
+
+class TestCancel:
+    def test_difference_of_squares(self):
+        # (x^2 - 1)/(x - 1) -> x + 1
+        p = pool()
+        x = p.symbol("x")
+        result = cancel((x**2 - 1) / (x - 1), [x])
+        f = compile_expr(result, [x])
+        for v in [0.0, 2.0, 3.0, -4.0]:
+            assert abs(f([v]) - (v + 1.0)) < 1e-10
+
+    def test_sum_of_fractions(self):
+        # 1/x + 1/(x+1) -> (2x + 1)/(x^2 + x)
+        p = pool()
+        x = p.symbol("x")
+        result = together(1 / x + 1 / (x + 1), [x])
+        f = compile_expr(result, [x])
+        for v in [1.0, 2.0, 3.5, -2.0]:
+            expected = 1.0 / v + 1.0 / (v + 1.0)
+            assert abs(f([v]) - expected) < 1e-9
+
+    def test_constant_quotient(self):
+        # x / x -> 1
+        p = pool()
+        x = p.symbol("x")
+        result = cancel(x / x, [x])
+        f = compile_expr(result, [x])
+        for v in [1.0, 2.0, -3.0]:
+            assert abs(f([v]) - 1.0) < 1e-10
+
+    def test_matrix_inverse_product_is_identity(self):
+        # cancel applied entrywise to A * A^-1 collapses to the identity.
+        from alkahest import Matrix
+
+        p = pool()
+        a, b, c, d = (p.symbol(s) for s in ("a", "b", "c", "d"))
+        m = Matrix([[a, b], [c, d]])
+        prod = m @ m.inverse()
+        for r in range(2):
+            for col in range(2):
+                reduced = cancel(prod.get(r, col), [a, b, c, d])
+                f = compile_expr(reduced, [a, b, c, d])
+                val = f([2.0, 1.0, 1.0, 3.0])  # det = 5, nonsingular
+                expected = 1.0 if r == col else 0.0
+                assert abs(val - expected) < 1e-9, (r, col, val)
 
 
 # ===========================================================================
