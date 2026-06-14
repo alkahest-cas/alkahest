@@ -1429,7 +1429,8 @@ fn is_quartic_radical(n: i64) -> bool {
 ///   1. simple rational `p/q`;
 ///   2. `(p/q)·√n`            (`n` squarefree);
 ///   3. `(p/q)·n^{±1/4}`      (`n` a 4th-power-free non-square);
-///   4. `a/q + (b/q)·√n`      (`a + b√n` over a common denominator).
+///   4. `a/q + (b/q)·√n`      (`a + b√n` over a common denominator);
+///   5. `(a/q)·√m + (b/q)·√n` (two distinct `√`, e.g. `2(√3−√2)`, `(√2+√3)/2`).
 fn pretty_const(v: f64, pool: &ExprPool) -> Option<ExprId> {
     if !v.is_finite() || v == 0.0 {
         return None;
@@ -1483,6 +1484,43 @@ fn pretty_const(v: f64, pool: &ExprPool) -> Option<ExprId> {
                     let sqrt_n = pool.func("sqrt", vec![pool.integer(n as i32)]);
                     let b_e = scale((bnum, q), sqrt_n, pool);
                     return Some(pool.add(vec![a_e, b_e]));
+                }
+            }
+        }
+    }
+
+    // 5) (a/q)·√m + (b/q)·√n with distinct squarefree m < n, over a common
+    //    denominator q.  Catches constants in `ℚ(√m, √n)` that the single-radical
+    //    forms miss — e.g. the four-real-root quartic with roots `±√2, ±√3`, whose
+    //    `g = 2(√3−√2)` and `sin²φ` coefficient `(√2+√3)/2` are otherwise floats.
+    for q in 1..=16i64 {
+        let w = v * q as f64;
+        for (i, &m) in squarefree.iter().enumerate() {
+            if m > 30 {
+                break;
+            }
+            let sm = (m as f64).sqrt();
+            for &n in &squarefree[i + 1..] {
+                if n > 30 {
+                    break;
+                }
+                let sn = (n as f64).sqrt();
+                for bnum in -24..=24i64 {
+                    if bnum == 0 {
+                        continue;
+                    }
+                    let af = (w - bnum as f64 * sn) / sm;
+                    let ar = af.round();
+                    if ar != 0.0
+                        && ar.abs() <= 1.0e9
+                        && (af - ar).abs() <= PRETTY_TOL * (1.0 + w.abs())
+                    {
+                        let sqrt_m = pool.func("sqrt", vec![pool.integer(m as i32)]);
+                        let sqrt_n = pool.func("sqrt", vec![pool.integer(n as i32)]);
+                        let a_e = scale((ar as i64, q), sqrt_m, pool);
+                        let b_e = scale((bnum, q), sqrt_n, pool);
+                        return Some(pool.add(vec![a_e, b_e]));
+                    }
                 }
             }
         }
@@ -1656,6 +1694,10 @@ mod tests {
             (12.0_f64.powf(-0.25), ""),
             // 1+√2: the normalized ∫dx/√(x⁴+1) atan Möbius coefficient.
             (1.0 + 2.0_f64.sqrt(), "sqrt(2)"),
+            // 2√3−2√2 and (√2+√3)/2: ℚ(√2,√3) constants from the four-real-root
+            // quartic with roots ±√2, ±√3 (∫dx/√(x⁴−5x²+6)).
+            (2.0 * 3.0_f64.sqrt() - 2.0 * 2.0_f64.sqrt(), "sqrt(3)"),
+            ((2.0_f64.sqrt() + 3.0_f64.sqrt()) / 2.0, "sqrt(2)"),
         ];
         for (v, needle) in cases {
             let e = float_to_expr(v, &pool);
@@ -2397,6 +2439,32 @@ mod tests {
             pool.integer(4_i32),
         ]);
         check_emits(p, x, 1.0, &pool).expect("∫dx/√(x⁴−5x²+4) should still emit EllipticF");
+    }
+
+    #[test]
+    fn quartic_four_real_irrational_roots_emits_clean() {
+        // ∫dx/√(x⁴−5x²+6), P = (x²−2)(x²−3): four irrational real roots ±√2, ±√3.
+        // The substitution constants live in ℚ(√2,√3) — `g = 2(√3−√2)`, `sin²φ`
+        // coefficient `(√2+√3)/2` — so they exercise the two-radical recognizer and
+        // must print exactly, with no float-reconstruction denominators.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![
+            pool.pow(x, pool.integer(4_i32)),
+            pool.mul(vec![pool.integer(-5_i32), pool.pow(x, pool.integer(2_i32))]),
+            pool.integer(6_i32),
+        ]);
+        let s = check_emits(p, x, 1.0, &pool).expect("∫dx/√(x⁴−5x²+6) should emit EllipticF");
+        assert!(
+            !s.contains("9007199254740992")
+                && !s.contains("4503599627370496")
+                && !s.contains("1125899906842624"),
+            "ℚ(√2,√3) constants leaked a float reconstruction: {s}"
+        );
+        assert!(
+            s.contains("sqrt(2)") && s.contains("sqrt(3)"),
+            "expected √2 and √3: {s}"
+        );
     }
 
     #[test]
