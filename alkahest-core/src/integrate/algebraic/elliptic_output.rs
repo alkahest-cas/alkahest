@@ -1266,13 +1266,30 @@ fn eval(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> Option<f64> {
     }
 }
 
-/// Build an `ExprId` for an `f64` value as an exact rational reconstruction of
-/// the float.  Keeping the constant rational (rather than a float literal the
-/// engine has no node for) lets `simplify`/`diff` operate on it cleanly.
+/// Build an `ExprId` for an `f64` constant.
+///
+/// The reduction constants `g`, `m`, the Legendre substitution's root offsets and
+/// the fitted block coefficients are computed numerically, but they are almost
+/// always **simple algebraic numbers** — `√3`, `3^(-1/4)`, `(2+√3)/4`, … — not
+/// arbitrary floats.  Reconstructing them with `rug::Rational::from_f64` is
+/// *exact for the float* but yields ugly `…/2⁵³` denominators that merely
+/// approximate the true constant (e.g. `∫dx/√(x³+1)` printed `√3` as
+/// `3900231685776981/2251799813685248`).
+///
+/// [`pretty_const`] first tries to recognize `v` as one of those simple closed
+/// forms and emit it symbolically; only when nothing matches do we fall back to
+/// the exact float→rational reconstruction (preserving the previous behaviour for
+/// genuinely irrational-with-no-simple-form constants).  This is purely a
+/// *display* improvement: the soundness gate (`verify` / `verify_higher`)
+/// re-checks `d/dx F = integrand` numerically afterwards, so a mis-recognition
+/// can only make the path *decline*, never emit a wrong answer.
 fn float_to_expr(v: f64, pool: &ExprPool) -> ExprId {
     // Exact small integers stay integer nodes.
     if v.fract() == 0.0 && v.abs() <= i32::MAX as f64 {
         return pool.integer(v as i32);
+    }
+    if let Some(e) = pretty_const(v, pool) {
+        return e;
     }
     match rug::Rational::from_f64(v) {
         Some(r) => {
@@ -1281,6 +1298,153 @@ fn float_to_expr(v: f64, pool: &ExprPool) -> ExprId {
         }
         None => pool.integer(0_i32),
     }
+}
+
+/// Tolerance for accepting a recognized closed form (relative).  Kept tight: the
+/// reduction constants carry only root-finder / float round-off (≈1e-13), so a
+/// genuine simple form matches to well under this, while an unrelated float will
+/// not coincide with a low-height algebraic number to this precision.
+const PRETTY_TOL: f64 = 1e-11;
+
+/// Emit `num/den` as a reduced integer or rational `ExprId` (`den` may be any
+/// non-zero sign; `rug::Rational` canonicalizes).
+fn rat_expr(num: i64, den: i64, pool: &ExprPool) -> ExprId {
+    let r = rug::Rational::from((rug::Integer::from(num), rug::Integer::from(den)));
+    if r.is_integer() {
+        return pool.integer(r.numer().clone());
+    }
+    let (n, d) = r.into_numer_denom();
+    pool.rational(n, d)
+}
+
+/// `coeff · factor`, collapsing the trivial `coeff = ±1` cases for clean display.
+fn scale(coeff: (i64, i64), factor: ExprId, pool: &ExprPool) -> ExprId {
+    if coeff == (1, 1) {
+        return factor;
+    }
+    if coeff == (-1, 1) {
+        return pool.mul(vec![pool.integer(-1_i32), factor]);
+    }
+    pool.mul(vec![rat_expr(coeff.0, coeff.1, pool), factor])
+}
+
+/// Best simple rational `p/q` (reduced, `q ≤ max_den`) within `PRETTY_TOL` of `v`,
+/// via continued-fraction convergents.  `None` if no such rational is that close.
+fn as_rational(v: f64, max_den: i64) -> Option<(i64, i64)> {
+    if !v.is_finite() {
+        return None;
+    }
+    let sign = if v < 0.0 { -1 } else { 1 };
+    let x = v.abs();
+    let (mut h0, mut k0, mut h1, mut k1) = (0i64, 1i64, 1i64, 0i64);
+    let mut b = x;
+    for _ in 0..48 {
+        let a = b.floor();
+        if !a.is_finite() || a.abs() > 1e15 {
+            break;
+        }
+        let ai = a as i64;
+        let h2 = ai.checked_mul(h1)?.checked_add(h0)?;
+        let k2 = ai.checked_mul(k1)?.checked_add(k0)?;
+        if k2 <= 0 || k2 > max_den {
+            break;
+        }
+        h0 = h1;
+        k0 = k1;
+        h1 = h2;
+        k1 = k2;
+        if (h1 as f64 / k1 as f64 - x).abs() <= PRETTY_TOL * (1.0 + x) {
+            return Some((sign * h1, k1));
+        }
+        let frac = b - a;
+        if frac.abs() < 1e-15 {
+            break;
+        }
+        b = 1.0 / frac;
+    }
+    None
+}
+
+/// Whether `n` is squarefree (so `√n`, `n^{1/4}` are genuinely irrational and not
+/// reducible to a smaller radical).
+fn is_squarefree(mut n: i64) -> bool {
+    if n < 2 {
+        return false;
+    }
+    let mut d = 2i64;
+    while d * d <= n {
+        if n % (d * d) == 0 {
+            return false;
+        }
+        if n % d == 0 {
+            n /= d;
+        } else {
+            d += 1;
+        }
+    }
+    true
+}
+
+/// Recognize `v` as a simple algebraic constant and build it symbolically, else
+/// `None` (caller falls back to exact float→rational reconstruction).
+///
+/// Forms tried, in increasing complexity (first match wins):
+///   1. simple rational `p/q`;
+///   2. `(p/q)·√n`            (`n` squarefree);
+///   3. `(p/q)·n^{±1/4}`      (`n` squarefree);
+///   4. `a/q + (b/q)·√n`      (`a + b√n` over a common denominator).
+fn pretty_const(v: f64, pool: &ExprPool) -> Option<ExprId> {
+    if !v.is_finite() || v == 0.0 {
+        return None;
+    }
+
+    // 1) simple rational.
+    if let Some(pq) = as_rational(v, 4096) {
+        return Some(rat_expr(pq.0, pq.1, pool));
+    }
+
+    let squarefree: Vec<i64> = (2..=50).filter(|&n| is_squarefree(n)).collect();
+
+    // 2) (p/q)·√n  and  3) (p/q)·n^{±1/4}.
+    for &n in &squarefree {
+        let sn = (n as f64).sqrt();
+        if let Some(pq) = as_rational(v / sn, 256) {
+            let sqrt_n = pool.func("sqrt", vec![pool.integer(n as i32)]);
+            return Some(scale(pq, sqrt_n, pool));
+        }
+        let q4 = (n as f64).powf(0.25);
+        if let Some(pq) = as_rational(v / q4, 64) {
+            let r = pool.pow(pool.integer(n as i32), rat_expr(1, 4, pool));
+            return Some(scale(pq, r, pool));
+        }
+        if let Some(pq) = as_rational(v * q4, 64) {
+            let r = pool.pow(pool.integer(n as i32), rat_expr(-1, 4, pool));
+            return Some(scale(pq, r, pool));
+        }
+    }
+
+    // 4) a + b·√n over a common denominator q (catches e.g. `(2+√3)/4`).
+    for q in 1..=24i64 {
+        let w = v * q as f64;
+        for &n in &squarefree {
+            let sn = (n as f64).sqrt();
+            for bnum in -32..=32i64 {
+                if bnum == 0 {
+                    continue;
+                }
+                let a = w - bnum as f64 * sn;
+                let ar = a.round();
+                if ar.abs() <= 1.0e9 && (a - ar).abs() <= PRETTY_TOL * (1.0 + w.abs()) {
+                    let a_e = rat_expr(ar as i64, q, pool);
+                    let sqrt_n = pool.func("sqrt", vec![pool.integer(n as i32)]);
+                    let b_e = scale((bnum, q), sqrt_n, pool);
+                    return Some(pool.add(vec![a_e, b_e]));
+                }
+            }
+        }
+    }
+
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -1419,6 +1583,52 @@ mod tests {
         let p = pool.add(vec![pool.pow(x, pool.integer(3_i32)), pool.integer(1_i32)]);
         let s = check_emits(p, x, 1.0, &pool).expect("∫dx/√(x³+1) should emit EllipticF");
         assert!(s.contains("EllipticF"), "{s}");
+        // The reduction constants are √3 / 3^(-1/4) / (2+√3)/4, *not* float
+        // reconstructions: the output must be free of the giant 2⁵³-scale
+        // denominators that the old float→rational path produced.
+        assert!(
+            !s.contains("9007199254740992") && !s.contains("2251799813685248"),
+            "elliptic constants leaked a float reconstruction: {s}"
+        );
+        assert!(
+            s.contains("sqrt(3)") || s.contains('√'),
+            "expected an exact √3: {s}"
+        );
+    }
+
+    #[test]
+    fn pretty_const_recognizes_simple_algebraic_numbers() {
+        let pool = ExprPool::new();
+        // √3, 3^(-1/4), (2+√3)/4, 2/3 — the constants that show up in the
+        // ∫dx/√(x³+1) reduction — must round-trip to a clean symbolic form whose
+        // value matches and whose printout carries no float-reconstruction junk.
+        let cases = [
+            (3.0_f64.sqrt(), "sqrt(3)"),
+            (3.0_f64.powf(-0.25), ""),
+            ((2.0 + 3.0_f64.sqrt()) / 4.0, "sqrt(3)"),
+            (2.0 / 3.0, ""),
+        ];
+        for (v, needle) in cases {
+            let e = float_to_expr(v, &pool);
+            let got = eval(e, x_dummy(&pool), 0.0, &pool).expect("evaluable");
+            assert!(
+                (got - v).abs() <= 1e-10 * (1.0 + v.abs()),
+                "value drift for {v}"
+            );
+            let s = pool.display(e).to_string();
+            assert!(
+                !s.contains("9007199254740992") && !s.contains("2251799813685248"),
+                "float reconstruction leaked for {v}: {s}"
+            );
+            if !needle.is_empty() {
+                assert!(s.contains(needle), "expected {needle} in {s}");
+            }
+        }
+    }
+
+    /// A throwaway symbol so constant-only expressions can be fed to `eval`.
+    fn x_dummy(pool: &ExprPool) -> ExprId {
+        pool.symbol("__unused__", Domain::Real)
     }
 
     #[test]
