@@ -1150,7 +1150,21 @@ fn quartic_no_real(
     pool: &ExprPool,
 ) -> Option<(f64, f64, ExprId)> {
     let (p, q, r, s, m, g) = quartic_no_real_consts(pair1, pair2, lead)?;
-    // φ(x) = arctan( (p·x+q)/(r·x+s) ).
+    // φ(x) = arctan( L(x) ),  L = (p·x+q)/(r·x+s).  The raw `(p,q,r,s)` are
+    // `cos/sin θ`-scaled (θ a fixed angle of the substitution), so individually
+    // they are nested-radical floats — but `atan(L)` is invariant under scaling
+    // the numerator and denominator of `L` by the *same* constant.  Divide all
+    // four by their largest magnitude so the shared `cos/sin θ` factor cancels and
+    // `float_to_expr` sees simple `a+b√n` coefficients (e.g. `∫dx/√(x⁴+1)` →
+    // `L = (1+√2)(x−1)/(x+1)`) instead of `2⁵³`-scale reconstructions.
+    let nrm = [p, q, r, s]
+        .iter()
+        .fold(0.0_f64, |acc, &v| acc.max(v.abs()));
+    let (p, q, r, s) = if nrm > 1e-300 {
+        (p / nrm, q / nrm, r / nrm, s / nrm)
+    } else {
+        (p, q, r, s)
+    };
     let lp = pool.add(vec![
         pool.mul(vec![float_to_expr(p, pool), var]),
         float_to_expr(q, pool),
@@ -1365,8 +1379,8 @@ fn as_rational(v: f64, max_den: i64) -> Option<(i64, i64)> {
     None
 }
 
-/// Whether `n` is squarefree (so `√n`, `n^{1/4}` are genuinely irrational and not
-/// reducible to a smaller radical).
+/// Whether `n` is squarefree (so `√n` is genuinely irrational and not reducible
+/// to a smaller radical).
 fn is_squarefree(mut n: i64) -> bool {
     if n < 2 {
         return false;
@@ -1385,13 +1399,36 @@ fn is_squarefree(mut n: i64) -> bool {
     true
 }
 
+/// Whether `n^{1/4}` is a sensible canonical radical to emit: `n` must be a
+/// non-square (else `n^{1/4} = √(√n)` reduces to a `√` form) and **4th-power-free**
+/// (no `d⁴ ∣ n`, else `n^{1/4}` pulls out an integer factor).  This *includes*
+/// non-squarefree `n` like `12` — `12^{-1/4}` is exactly the `∫dx/√(x³+8)`
+/// coefficient `(2√3)^{-1/2}`, which the squarefree `√`/`n^{1/4}` forms miss.
+fn is_quartic_radical(n: i64) -> bool {
+    if n < 2 {
+        return false;
+    }
+    let r = (n as f64).sqrt().round() as i64;
+    if r * r == n {
+        return false; // perfect square → use the √ form instead
+    }
+    let mut d = 2i64;
+    while d * d * d * d <= n {
+        if n % (d * d * d * d) == 0 {
+            return false;
+        }
+        d += 1;
+    }
+    true
+}
+
 /// Recognize `v` as a simple algebraic constant and build it symbolically, else
 /// `None` (caller falls back to exact float→rational reconstruction).
 ///
 /// Forms tried, in increasing complexity (first match wins):
 ///   1. simple rational `p/q`;
 ///   2. `(p/q)·√n`            (`n` squarefree);
-///   3. `(p/q)·n^{±1/4}`      (`n` squarefree);
+///   3. `(p/q)·n^{±1/4}`      (`n` a 4th-power-free non-square);
 ///   4. `a/q + (b/q)·√n`      (`a + b√n` over a common denominator).
 fn pretty_const(v: f64, pool: &ExprPool) -> Option<ExprId> {
     if !v.is_finite() || v == 0.0 {
@@ -1405,12 +1442,19 @@ fn pretty_const(v: f64, pool: &ExprPool) -> Option<ExprId> {
 
     let squarefree: Vec<i64> = (2..=50).filter(|&n| is_squarefree(n)).collect();
 
-    // 2) (p/q)·√n  and  3) (p/q)·n^{±1/4}.
+    // 2) (p/q)·√n.
     for &n in &squarefree {
         let sn = (n as f64).sqrt();
         if let Some(pq) = as_rational(v / sn, 256) {
             let sqrt_n = pool.func("sqrt", vec![pool.integer(n as i32)]);
             return Some(scale(pq, sqrt_n, pool));
+        }
+    }
+
+    // 3) (p/q)·n^{±1/4}.
+    for n in 2..=50i64 {
+        if !is_quartic_radical(n) {
+            continue;
         }
         let q4 = (n as f64).powf(0.25);
         if let Some(pq) = as_rational(v / q4, 64) {
@@ -1607,6 +1651,11 @@ mod tests {
             (3.0_f64.powf(-0.25), ""),
             ((2.0 + 3.0_f64.sqrt()) / 4.0, "sqrt(3)"),
             (2.0 / 3.0, ""),
+            // 12^(-1/4) = (2√3)^(-1/2): the ∫dx/√(x³+8) coefficient (non-squarefree
+            // 4th-power-free radicand).
+            (12.0_f64.powf(-0.25), ""),
+            // 1+√2: the normalized ∫dx/√(x⁴+1) atan Möbius coefficient.
+            (1.0 + 2.0_f64.sqrt(), "sqrt(2)"),
         ];
         for (v, needle) in cases {
             let e = float_to_expr(v, &pool);
@@ -1719,6 +1768,14 @@ mod tests {
             let Some(lhs) = eval(ds, var, xv, pool) else {
                 continue;
             };
+            // Skip removable singularities of the *derivative representation*
+            // (e.g. the `atan` Möbius pole at `x = −1` for `√(x⁴+1)`, where the
+            // exact `(−1+√2)(x+1)` denominator vanishes and `L'/(1+L²)` evaluates
+            // to `∞/∞`).  The antiderivative is fine there; the production gate
+            // `verify_higher` skips such points the same way.
+            if !lhs.is_finite() || !rhs.is_finite() {
+                continue;
+            }
             assert!(
                 (lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()),
                 "x={xv}: d/dx F = {lhs}, integrand = {rhs}\n  F = {s}"
@@ -2235,6 +2292,19 @@ mod tests {
         let p = pool.add(vec![pool.pow(x, pool.integer(4_i32)), pool.integer(1_i32)]);
         let s = check_emits(p, x, 1.0, &pool).expect("∫dx/√(x⁴+1) should emit EllipticF");
         assert!(s.contains("EllipticF"), "{s}");
+        // The `atan` substitution's Möbius coefficients are normalized so they
+        // print as exact `1±√2` constants, not `2⁵³`-scale float reconstructions.
+        assert!(
+            !s.contains("9007199254740992")
+                && !s.contains("2251799813685248")
+                && !s.contains("4503599627370496")
+                && !s.contains("1125899906842624"),
+            "atan Möbius coefficients leaked a float reconstruction: {s}"
+        );
+        assert!(
+            s.contains("sqrt(2)") || s.contains('√'),
+            "expected an exact √2: {s}"
+        );
     }
 
     #[test]
