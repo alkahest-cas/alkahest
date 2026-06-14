@@ -106,6 +106,8 @@ from .alkahest import (  # noqa: F401
     atan2,
     cad_lift,
     cad_project,
+    # Rational-function cancel/together
+    cancel,
     # Phase 18: Acausal modelling (component constructors)
     capacitor,
     ceil,
@@ -154,9 +156,6 @@ from .alkahest import (  # noqa: F401
     piecewise,
     # Phase 27: poly_normal
     poly_normal,
-    # Rational-function cancel/together
-    cancel,
-    together,
     product_definite,
     product_indefinite,
     real_roots,
@@ -197,6 +196,7 @@ from .alkahest import (  # noqa: F401
     to_lean,
     # V5-2: StableHLO/XLA bridge
     to_stablehlo,
+    together,
     verify_wz_pair,
     version,
     voltage_source,
@@ -1183,6 +1183,7 @@ __all__ = [
     "atan",
     "cad_lift",
     "cad_project",
+    "cancel",
     "capabilities",
     "capacitor",
     "ceil",
@@ -1255,8 +1256,6 @@ __all__ = [
     "plot_svg",
     # Phase 27
     "poly_normal",
-    "cancel",
-    "together",
     "primary_decomposition",
     "product_definite",
     "product_indefinite",
@@ -1311,6 +1310,7 @@ __all__ = [
     "to_lean",
     # V5-2
     "to_stablehlo",
+    "together",
     "trace",
     "trace_fn",
     # V2-11 — Regular chains / triangular decomposition
