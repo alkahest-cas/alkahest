@@ -932,7 +932,7 @@ fn fold_numeric_terms(terms: Vec<ExprId>, pool: &ExprPool) -> Vec<ExprId> {
     }
     if let Some(sum) = acc {
         // Drop an exact zero so it does not survive as `… + 0`.
-        if sum != rug::Rational::from(0) || others.is_empty() {
+        if sum.cmp0() != std::cmp::Ordering::Equal || others.is_empty() {
             others.push(intern_rational(sum, pool));
         }
     }
