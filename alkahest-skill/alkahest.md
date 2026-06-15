@@ -1,6 +1,6 @@
 # Alkahest Agent Skill
 
-Use this skill whenever you are writing Python code that uses the `alkahest` library.
+Use this skill whenever you are writing Python code that uses the `alkahest` library, or Rust code using the `alkahest-cas` crate.
 
 ## Official links
 
@@ -8,23 +8,120 @@ Use this skill whenever you are writing Python code that uses the `alkahest` lib
 - **Website:** [alkahest-cas.github.io/](https://alkahest-cas.github.io/)
 - **Documentation:** [alkahest-cas.github.io/alkahest/](https://alkahest-cas.github.io/alkahest/)
 - **API reference:** [alkahest-cas.github.io/alkahest/api/](https://alkahest-cas.github.io/alkahest/api/)
+- **Playground:** [alkahest-cas.github.io/playground/](https://alkahest-cas.github.io/playground/)
+- **RL environment:** [Prime Intellect Environments Hub](https://app.primeintellect.ai/dashboard/environments/alkahest/alkahest-symbolic-integration) (`alkahest/alkahest-symbolic-integration`)
+- **Further reading:** [`ARCHITECTURE.md`](https://github.com/alkahest-cas/alkahest/blob/main/ARCHITECTURE.md), [`CONTRIBUTING.md`](https://github.com/alkahest-cas/alkahest/blob/main/CONTRIBUTING.md), [`TESTING.md`](https://github.com/alkahest-cas/alkahest/blob/main/TESTING.md), [`examples/`](https://github.com/alkahest-cas/alkahest/tree/main/examples/)
 
 ## Install
 
-**Python:** 3.9–3.13 (`requires-python` on PyPI).
+**Requirements:** Python **3.9–3.13** ([PyPI](https://pypi.org/project/alkahest/) `requires-python`).
 
 ```bash
 pip install alkahest
 ```
 
-Default PyPI wheels include the **vendored egglog** e-graph backend (`egraph`) and the **Gröbner solver** (`groebner`) — so `alkahest.solve`, Diophantine, and homotopy APIs work out of the box. They omit LLVM JIT, Cranelift, and `parallel`. Numeric paths use the tree-walking interpreter; use `jit_is_available()` to see whether native JIT is present, or install a `+jit` / `+full` Linux wheel or build from source for JIT/parallel (see repo `README.md`).
+**RL environments** (symbolic integration tasks for Prime Intellect / veRL): Python **≥ 3.10** required.
 
-Source build from the repository root (adds JIT and parallel on top of the defaults `egraph groebner`):
+```bash
+pip install "alkahest[rl]"
+```
+
+For an isolated environment (recommended when juggling versions or building from source):
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m pip install -U pip
+pip install alkahest
+```
+
+Default PyPI wheels include the **vendored egglog** e-graph backend (`egraph` feature) and the **Gröbner solver** (`groebner` feature — so `alkahest.solve`, Diophantine, homotopy, and related APIs are available out of the box) but **not** LLVM JIT, Cranelift, or `parallel`. Numeric APIs use the tree-walking interpreter fallback. For native LLVM CPU JIT—or JIT plus parallel F4—use a **PyTorch-style** opt-in wheel (separate artifact / index), not the default PyPI resolver path. From source, add `--features cranelift` for a pure-Rust fast-compile JIT tier without system LLVM.
+
+### Opt-in Linux wheels: `+jit` and `+full` (PyTorch-style)
+
+**Why a separate index or direct wheel URL:** feature-heavy wheels use a PEP 440 **local version** (for example `2.0.3+jit` or `2.0.3+full`). Those builds **must not** be mixed into the main PyPI project’s simple API for the same reason PyTorch publishes CUDA wheels on `download.pytorch.org`: otherwise `pip install alkahest` could resolve a `+jit` / `+full` build as “newer” than `2.0.3` and pull LLVM (or a much larger binary) when you wanted the default wheel.
+
+There is **no** `pip install alkahest[jit]` / `alkahest[full]` that swaps the native extension: **pip extras only add Python dependencies**, not alternate binaries for the same wheel slot.
+
+**Until a dedicated PEP 503 simple index is published**, tagged releases attach Linux **`linux_x86_64`** wheels on [GitHub Releases](https://github.com/alkahest-cas/alkahest/releases) (CI builds them on `ubuntu-22.04`, not the manylinux image used for default wheels). Pick the `.whl` whose tags match your Python (`cp311`, etc.) and **`linux_x86_64`**.
+
+| Local version | Cargo features | When to use |
+|---------------|----------------|-------------|
+| `+jit` | `egraph groebner jit` | LLVM CPU JIT (smaller than `+full`; groebner/egraph are already in default wheels). |
+| `+full` | `egraph groebner jit parallel` | JIT plus parallel F4 S-polynomial reduction (largest wheel; groebner already in default). |
+
+Direct-install examples (adjust tag and filename after checking the release assets):
+
+```bash
+pip install "https://github.com/alkahest-cas/alkahest/releases/download/v2.3.1/alkahest-2.3.1+full-cp311-cp311-linux_x86_64.whl"
+pip install "https://github.com/alkahest-cas/alkahest/releases/download/v2.3.1/alkahest-2.3.1+jit-cp311-cp311-linux_x86_64.whl"
+```
+
+These wheels vendor LLVM (for JIT) and related `.so` files under `site-packages/alkahest.libs/`. If `import alkahest` fails with a missing `libffi-*.so` or `libLLVM-*.so`, prepend that directory to `LD_LIBRARY_PATH` (or install matching system packages).
+
+If your client chokes on `+` in the URL, use percent-encoding (`2.3.1%2Bfull` in the filename segment).
+
+After installing `+jit` or `+full`, `alkahest.jit_is_available()` should be `True`. Gröbner-backed APIs such as `alkahest.solve` are available in **all** wheels (including the default PyPI wheel) since `groebner` became a default feature.
+
+*macOS and Windows `+jit` / `+full` wheels are not produced in CI yet (LLVM / MSYS2 constraints); use [building from source](#from-source) there.*
+
+**Target layout (roadmap):** a small **extra index** URL (PEP 503) hosting only `+jit` / `+full` wheels, mirroring PyTorch’s `--extra-index-url` workflow:
+
+```bash
+pip install 'alkahest==2.0.3+full' --extra-index-url https://EXAMPLE/alkahest-extras/simple
+```
+
+### From source
+
+Required to enable optional features (`jit`, `cuda`, `parallel`) or for development. The `groebner` and `egraph` features are already built into default wheels; a source build inherits them automatically. Prerequisites:
+
+- **Rust** stable ≥ 1.76 and nightly:
+  ```bash
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  rustup toolchain install nightly
+  ```
+- **uv** (recommended Python tool manager): `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- **LLVM 15**: `apt install llvm-15 libllvm15 llvm-15-dev` / `brew install llvm@15`
+- **FLINT ≥ 2.9** (includes GMP and MPFR): `apt install libflint-dev` / `brew install flint`
+
+```bash
+# Install dev tools (maturin, pytest, ruff, ty, …) without building the Rust extension:
+uv sync --no-install-project --group dev
+# Build and install the extension into the project venv:
+uv run maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel egraph jit groebner"
+```
+
+Without `uv`, install maturin directly and run the same develop command:
 
 ```bash
 pip install maturin
-maturin develop --release --manifest-path alkahest-py/Cargo.toml --features "parallel cranelift jit"
+maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel egraph jit groebner"
 ```
+
+Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_par`), `egraph` (vendored egglog backend; **default** in PyPI wheels), `groebner` (Gröbner solver + Diophantine + homotopy; **default** in both the Rust crate and PyPI wheels), `cranelift` (pure-Rust Tier-1 JIT), `jit` (LLVM JIT), `cuda` (NVPTX codegen).
+
+### Rust crate
+
+`alkahest-cas` is also published on [crates.io](https://crates.io/crates/alkahest-cas) ([docs.rs](https://docs.rs/alkahest-cas)) for use directly from Rust without a Python runtime:
+
+```toml
+[dependencies]
+alkahest-cas = "2"
+
+# groebner is included by default; add other optional features as needed:
+# alkahest-cas = { version = "2", features = ["parallel", "egraph"] }
+```
+
+**System prerequisites** (same libraries as the Python build — must be present before `cargo build`):
+
+```bash
+# Debian / Ubuntu
+sudo apt-get install -y libflint-dev libgmp-dev libmpfr-dev
+
+# macOS
+brew install flint
+```
+
+The `jit` feature additionally requires LLVM 15 dev headers (`apt install llvm-15-dev` / `brew install llvm@15`). A self-contained runnable example is in [`examples/rust_quickstart/`](https://github.com/alkahest-cas/alkahest/tree/main/examples/rust_quickstart/).
 
 ---
 
@@ -47,6 +144,19 @@ half = pool.rational(1, 2)  # exact rationals need pool.rational
 ```
 
 Arithmetic operators (`+`, `-`, `*`, `**`, `/`) are all overloaded on `Expr` — use them freely.
+
+### Expression representations
+
+| Type | Description |
+|---|---|
+| `Expr` | Generic hash-consed symbolic expression |
+| `UniPoly` | Dense univariate polynomial (FLINT-backed) |
+| `MultiPoly` | Sparse multivariate polynomial over ℤ |
+| `MultiPolyFp` | Sparse multivariate polynomial over 𝔽ₚ (modular arithmetic) |
+| `RationalFunction` | Quotient of polynomials with GCD normalization |
+| `ArbBall` | Real interval with rigorous error bounds (Arb) |
+
+Representation types are explicit — no silent performance cliffs. Conversion between them is always an opt-in call (`UniPoly.from_symbolic(...)`, etc.).
 
 ---
 
@@ -557,9 +667,36 @@ fplot(ak.sin(x), x, (-10, 10), n=100_000)   # 100k-point GPU line
 
 ---
 
+## Reinforcement learning
+
+`alkahest.rl` exposes **verifiable RL environments** backed by the CAS. The core layer (`alkahest.rl.core`) is trainer-agnostic; domain environments live under `alkahest.rl.envs.*` and optionally integrate with [Prime Intellect Verifiers](https://github.com/PrimeIntellect-ai/verifiers).
+
+```bash
+pip install "alkahest[rl]"   # Python ≥ 3.10; adds verifiers + datasets
+```
+
+```python
+from alkahest.rl.envs.integration import IntegrationVerifier, load_environment
+
+verifier = IntegrationVerifier()
+# reward = verifier.verify(model_output, {"f_expr": f, "is_elementary": True, "pool": pool})
+
+env = load_environment(difficulty_tier=0, n_train=1000, n_eval=100, adaptive=True)
+```
+
+| Component | Description |
+|-----------|-------------|
+| `IntegrationVerifier` | Layered check: symbolic diff → e-graph → interval spot checks; rewards honest refusal on NonElementary integrands |
+| `load_environment()` | Returns a `verifiers.SingleTurnEnv` with Risch-tier curriculum |
+| `recipes/verl_integration_reward.py` | Drop-in reward for [veRL](https://github.com/volcengine/verl) |
+
+**Environments Hub:** [`alkahest/alkahest-symbolic-integration`](https://app.primeintellect.ai/dashboard/environments/alkahest/alkahest-symbolic-integration) — install with `prime env install alkahest/alkahest-symbolic-integration`. Full checklist in the [RL guide](https://alkahest-cas.github.io/alkahest/rl.html).
+
+---
+
 ## Stable vs experimental API
 
-Semantics-stable symbols are those in `alkahest.__all__` (and Rust `alkahest_core::stable`). New or unstable Python APIs live under `alkahest.experimental` and may change in minor releases—prefer top-level exports for agent-written code unless the user asks for experimental features.
+Alkahest follows semantic versioning from `1.0`. The stable surface is everything re-exported from `alkahest_cas::stable` (Rust) and `alkahest.__all__` (Python). Experimental APIs live under `alkahest_cas::experimental` and `alkahest.experimental` and may change in minor releases—prefer top-level exports for agent-written code unless the user asks for experimental features.
 
 ---
 
