@@ -876,9 +876,7 @@ fn verify_higher(
         return false;
     };
     let ds = simplify(df.value, pool).value;
-    let samples = [
-        -3.5, -2.7, -1.6, -0.9, -0.4, 0.15, 0.3, 0.55, 0.7, 0.9, 1.1, 1.4, 1.9, 2.6, 3.4, 4.7, 5.3,
-    ];
+    let samples = gate_samples(p_coeffs);
     let mut checked = 0;
     for &xv in &samples {
         let pv = eval_poly(p_coeffs, xv);
@@ -1182,16 +1180,67 @@ fn quartic_no_real(
 // Verification gate
 // ---------------------------------------------------------------------------
 
+/// Region-aware sample points for the soundness gate.
+///
+/// The reduction's substitution is only valid on *part* of the `P > 0` set — a
+/// cubic-three-real reduction is valid only beyond the largest root, a
+/// quartic-two-real one only outside the real roots, etc.  A fixed grid can land
+/// fewer than the three required points in that valid region and make a *correct*
+/// reduction spuriously decline (e.g. `∫dx/√(x³−7x−6)`, region `x ≥ 3`;
+/// `∫dx/√(x⁴−1)`, region `|x| > 1`).
+///
+/// This derives points from `P`'s real roots so every `P > 0` interval is
+/// covered — in particular the unbounded region beyond the largest (and below the
+/// smallest) real root — on top of a wide fixed grid.  Adding points never
+/// weakens the gate: it still rejects on *any* disagreement, and points where the
+/// substitution is invalid simply evaluate non-finite and are skipped.
+fn gate_samples(p_coeffs: &[f64]) -> Vec<f64> {
+    let mut xs: Vec<f64> = vec![
+        -3.5, -2.7, -1.6, -0.9, -0.4, 0.15, 0.3, 0.55, 0.7, 0.9, 1.1, 1.4, 1.9, 2.6, 3.4, 4.7, 5.3,
+    ];
+    let mut reals = poly_roots(p_coeffs)
+        .map(|roots| classify_roots(&roots).0)
+        .unwrap_or_default();
+    reals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let pos = |x: f64| eval_poly(p_coeffs, x) > 1e-6;
+    if let (Some(&lo), Some(&hi)) = (reals.first(), reals.last()) {
+        // Unbounded regions beyond the extreme roots (where most odd-degree /
+        // two-real-root reductions are valid).
+        for o in [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0] {
+            let (rgt, lft) = (hi + o, lo - o);
+            if pos(rgt) {
+                xs.push(rgt);
+            }
+            if pos(lft) {
+                xs.push(lft);
+            }
+        }
+        // Interior of each bounded `P > 0` interval between consecutive roots.
+        for w in reals.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            if b - a < 1e-6 {
+                continue;
+            }
+            for f in [0.15, 0.3, 0.45, 0.6, 0.75, 0.85] {
+                let x = a + (b - a) * f;
+                if pos(x) {
+                    xs.push(x);
+                }
+            }
+        }
+    }
+    xs
+}
+
 /// Numerically verify `d/dx F_cand = c/√P` at sample points where `P > 0`.
 fn verify(f_cand: ExprId, coeffs: &[f64], c: f64, var: ExprId, pool: &ExprPool) -> bool {
     let Ok(df) = crate::diff::diff(f_cand, var, pool) else {
         return false;
     };
     let ds = simplify(df.value, pool).value;
-    // Sample widely; keep only points where P > 0 and both sides are finite reals.
-    let samples = [
-        -3.5, -2.7, -1.6, -0.9, -0.4, 0.15, 0.3, 0.55, 0.7, 0.9, 1.1, 1.4, 1.9, 2.6, 3.4, 4.7,
-    ];
+    // Sample each P > 0 region (region-aware) and keep points where both sides are
+    // finite reals.
+    let samples = gate_samples(coeffs);
     let mut checked = 0;
     for &xv in &samples {
         let pv = eval_poly(coeffs, xv);
@@ -1732,6 +1781,23 @@ mod tests {
             pool.mul(vec![pool.integer(-1_i32), x]),
         ]);
         check_emits(p, x, 1.0, &pool).expect("∫dx/√(x³−x) should emit EllipticF");
+    }
+
+    #[test]
+    fn cubic_three_real_narrow_region_emits_ellipticf() {
+        // Regression for the gate's region-aware sampling: (x+1)(x+2)(x−3) =
+        // x³ − 7x − 6 has its valid reduction region at x ≥ 3, far from the old
+        // fixed sample grid's center.  Before `gate_samples` this *spuriously
+        // declined* (only 2 fixed grid points fell in x ≥ 3, below the 3 required);
+        // now it emits a gate-verified EllipticF.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = pool.add(vec![
+            pool.pow(x, pool.integer(3_i32)),
+            pool.mul(vec![pool.integer(-7_i32), x]),
+            pool.integer(-6_i32),
+        ]);
+        check_emits(p, x, 1.0, &pool).expect("∫dx/√(x³−7x−6) should emit EllipticF (region x ≥ 3)");
     }
 
     #[test]
