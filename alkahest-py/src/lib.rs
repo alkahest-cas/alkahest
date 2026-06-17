@@ -6607,9 +6607,10 @@ fn py_ideal_radical(
 
 #[cfg(feature = "groebner")]
 use alkahest_core::{
-    diophantine as core_diophantine, solve_numerical, solve_polynomial_system, triangularize,
-    CertifiedPoint, DiophantineError, DiophantineSolution as CoreDiophantineSolution,
-    HomotopyError, HomotopyOpts, RegularChain, SolutionSet,
+    diophantine as core_diophantine, solve_numerical, solve_polynomial_system,
+    solve_transcendental, triangularize, CertifiedPoint, DiophantineError,
+    DiophantineSolution as CoreDiophantineSolution, HomotopyError, HomotopyOpts, RegularChain,
+    SolutionSet, TranscendentalOutcome,
 };
 
 #[cfg(feature = "groebner")]
@@ -6969,11 +6970,41 @@ fn py_solve(
         )));
     }
 
+    // Transcendental pre-processing: for a single equation in a single unknown
+    // containing `exp`/`log`, try the scoped closed-form solver before handing
+    // off to the polynomial path (which would reject any transcendental).  On
+    // `Unsupported` we fall straight through to `solve_polynomial_system`.
+    if eq_ids.len() == 1 && var_ids.len() == 1 {
+        let trans = {
+            let pool = pool_py.borrow(py);
+            solve_transcendental(eq_ids[0], var_ids[0], &pool.inner)
+        };
+        if let TranscendentalOutcome::Solved(values) = trans {
+            // Each value is a solution for the single variable.
+            let solutions: Vec<Vec<ExprId>> = values.into_iter().map(|v| vec![v]).collect();
+            let result: Result<SolutionSet, alkahest_core::SolverError> =
+                Ok(SolutionSet::Finite(solutions));
+            return finite_solutions_to_py(py, result, &pool_py, &var_ids, numeric);
+        }
+    }
+
     let result = {
         let pool = pool_py.borrow(py);
         solve_polynomial_system(eq_ids, var_ids.clone(), &pool.inner)
     };
+    finite_solutions_to_py(py, result, &pool_py, &var_ids, numeric)
+}
 
+/// Shared formatting for a [`SolutionSet`] result into the Python return shape
+/// (list of dicts, a `GroebnerBasis`, or a structured error).
+#[cfg(feature = "groebner")]
+fn finite_solutions_to_py(
+    py: Python<'_>,
+    result: Result<SolutionSet, alkahest_core::SolverError>,
+    pool_py: &Py<PyExprPool>,
+    var_ids: &[ExprId],
+    numeric: bool,
+) -> PyResult<PyObject> {
     match result {
         Err(e) => Python::with_gil(|py2| {
             let exc_type = py2.get_type_bound::<PySolverError>();
