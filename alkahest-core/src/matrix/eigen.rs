@@ -125,10 +125,95 @@ pub fn characteristic_polynomial_lambda_minus_m(
     Ok((simplify(det, pool).value, lam))
 }
 
-/// multiset of eigenvalue Expr → algebraic multiplicity  
+/// multiset of eigenvalue Expr → algebraic multiplicity
 pub fn eigenvalues(m: &Matrix, pool: &ExprPool) -> Result<Vec<(ExprId, usize)>, EigenError> {
     let (poly_e, lam) = characteristic_polynomial_lambda_minus_m(m, pool)?;
-    eigenvalues_from_char_poly(poly_e, lam, pool)
+    match eigenvalues_from_char_poly(poly_e, lam, pool) {
+        Ok(v) => Ok(v),
+        Err(EigenError::CharPolyConversion(_)) => {
+            // The characteristic polynomial has non-rational (free-symbol) coefficients,
+            // so it cannot be cleared to ℤ[λ]. For 2×2 matrices the eigenvalues are still
+            // available in closed form via the quadratic formula, fully symbolically.
+            symbolic_eigenvalues_2x2(m, pool)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Closed-form eigenvalues of a 2×2 matrix `[[a, b], [c, d]]` over arbitrary symbolic
+/// entries: roots of `λ² − (a+d)λ + (ad − bc)`. Returns the two roots
+/// `(tr ± √(tr² − 4·det)) / 2`, collapsing to a single eigenvalue of multiplicity 2
+/// when the discriminant simplifies to exactly zero.
+///
+/// This deliberately covers only the 2×2 case — higher-dimensional symbolic spectra
+/// need general radical/algebraic-number machinery and are out of scope here.
+fn symbolic_eigenvalues_2x2(
+    m: &Matrix,
+    pool: &ExprPool,
+) -> Result<Vec<(ExprId, usize)>, EigenError> {
+    if m.rows != m.cols {
+        return Err(EigenError::NonSquare);
+    }
+    if m.rows != 2 {
+        // No general symbolic spectrum for n ≥ 3 yet.
+        return Err(EigenError::UnsupportedIrreducibleDegree { degree: m.rows });
+    }
+    let a = m.get(0, 0);
+    let b = m.get(0, 1);
+    let c = m.get(1, 0);
+    let d = m.get(1, 1);
+    let neg_one = pool.integer(-1_i32);
+
+    // trace = a + d
+    let trace = simplify(pool.add(vec![a, d]), pool).value;
+    // det = a*d - b*c
+    let ad = pool.mul(vec![a, d]);
+    let bc = pool.mul(vec![b, c]);
+    let det = simplify(pool.add(vec![ad, pool.mul(vec![neg_one, bc])]), pool).value;
+
+    // discriminant = trace² - 4*det
+    let trace_sq = pool.pow(trace, pool.integer(2_i32));
+    let four_det = pool.mul(vec![pool.integer(4_i32), det]);
+    let disc = simplify(
+        pool.add(vec![trace_sq, pool.mul(vec![neg_one, four_det])]),
+        pool,
+    )
+    .value;
+
+    let half = pool.rational(rug::Integer::from(1), rug::Integer::from(2));
+
+    // Repeated root when the discriminant is exactly zero: λ = trace/2 (mult 2).
+    if expr_is_exactly_zero(pool, disc) {
+        let lam = simplify(pool.mul(vec![half, trace]), pool).value;
+        return Ok(vec![(lam, 2)]);
+    }
+
+    let sqrt_disc = simplify(pool.func("sqrt", vec![disc]), pool).value;
+    let neg_sqrt = simplify(pool.mul(vec![neg_one, sqrt_disc]), pool).value;
+    let lam_plus = simplify(
+        pool.mul(vec![
+            half,
+            simplify(pool.add(vec![trace, sqrt_disc]), pool).value,
+        ]),
+        pool,
+    )
+    .value;
+    let lam_minus = simplify(
+        pool.mul(vec![
+            half,
+            simplify(pool.add(vec![trace, neg_sqrt]), pool).value,
+        ]),
+        pool,
+    )
+    .value;
+
+    // If the two roots collapse after simplification (e.g. discriminant simplified to a
+    // perfect square that the zero-check missed), treat as a repeated eigenvalue.
+    if lam_plus == lam_minus {
+        return Ok(vec![(lam_plus, 2)]);
+    }
+    let (x, y) = order_two_roots(lam_plus, lam_minus, pool);
+    Ok(vec![(x, 1), (y, 1)])
 }
 
 /// `(value, multiplicity, column eigenvectors)`
@@ -973,6 +1058,270 @@ mod tests {
         ])
         .unwrap();
         eigenvalues(&m, &p).unwrap();
+    }
+
+    /// Complex number for numeric verification of symbolic eigenvalues.
+    #[derive(Clone, Copy)]
+    struct C {
+        re: f64,
+        im: f64,
+    }
+    impl C {
+        fn new(re: f64, im: f64) -> Self {
+            C { re, im }
+        }
+        fn add(self, o: C) -> C {
+            C::new(self.re + o.re, self.im + o.im)
+        }
+        fn mul(self, o: C) -> C {
+            C::new(
+                self.re * o.re - self.im * o.im,
+                self.re * o.im + self.im * o.re,
+            )
+        }
+        fn powi(self, n: i64) -> C {
+            if n == 0 {
+                return C::new(1.0, 0.0);
+            }
+            if n < 0 {
+                let p = self.powi(-n);
+                let den = p.re * p.re + p.im * p.im;
+                return C::new(p.re / den, -p.im / den);
+            }
+            let mut acc = C::new(1.0, 0.0);
+            for _ in 0..n {
+                acc = acc.mul(self);
+            }
+            acc
+        }
+        fn sqrt(self) -> C {
+            // Principal square root of a complex number.
+            let r = (self.re * self.re + self.im * self.im).sqrt();
+            let re = ((r + self.re) / 2.0).max(0.0).sqrt();
+            let mut im = ((r - self.re) / 2.0).max(0.0).sqrt();
+            if self.im < 0.0 {
+                im = -im;
+            }
+            C::new(re, im)
+        }
+        fn near(self, o: C) -> bool {
+            (self.re - o.re).abs() < 1e-7 && (self.im - o.im).abs() < 1e-7
+        }
+    }
+
+    /// Numerically evaluate `e` under a symbol→value map (complex), used purely to verify
+    /// closed-form symbolic eigenvalues without fighting the simplifier over nested radicals.
+    fn eval_c(e: ExprId, env: &[(ExprId, C)], pool: &ExprPool) -> C {
+        match pool.get(e) {
+            ExprData::Integer(n) => C::new(n.0.to_f64(), 0.0),
+            ExprData::Rational(r) => {
+                let (num, den) = r.0.clone().into_numer_denom();
+                C::new(num.to_f64() / den.to_f64(), 0.0)
+            }
+            ExprData::Symbol { .. } => env
+                .iter()
+                .find(|(s, _)| *s == e)
+                .map(|(_, v)| *v)
+                .unwrap_or(C::new(0.0, 0.0)),
+            ExprData::Add(args) => args
+                .iter()
+                .fold(C::new(0.0, 0.0), |acc, &a| acc.add(eval_c(a, env, pool))),
+            ExprData::Mul(args) => args
+                .iter()
+                .fold(C::new(1.0, 0.0), |acc, &a| acc.mul(eval_c(a, env, pool))),
+            ExprData::Pow { base, exp } => {
+                let b = eval_c(base, env, pool);
+                if let ExprData::Integer(n) = pool.get(exp) {
+                    b.powi(n.0.to_i64().unwrap_or(0))
+                } else if let ExprData::Rational(r) = pool.get(exp) {
+                    // handle ^(1/2) and ^(-1/2) which appear via sqrt lowering
+                    let (num, den) = r.0.clone().into_numer_denom();
+                    if den == 1 {
+                        b.powi(num.to_i64().unwrap_or(0))
+                    } else if den == 2 {
+                        let s = b.sqrt();
+                        s.powi(num.to_i64().unwrap_or(1))
+                    } else {
+                        C::new(f64::NAN, f64::NAN)
+                    }
+                } else {
+                    C::new(f64::NAN, f64::NAN)
+                }
+            }
+            ExprData::Func { name, args } if name == "sqrt" && args.len() == 1 => {
+                eval_c(args[0], env, pool).sqrt()
+            }
+            _ => C::new(f64::NAN, f64::NAN),
+        }
+    }
+
+    /// True iff every returned eigenvalue satisfies `λ² − tr·λ + det = 0` for the 2×2 `m`,
+    /// checked numerically at several random rational substitutions for the free symbols.
+    fn eigvals_satisfy_2x2_charpoly(m: &Matrix, vals: &[(ExprId, usize)], p: &ExprPool) -> bool {
+        let a = m.get(0, 0);
+        let b = m.get(0, 1);
+        let c = m.get(1, 0);
+        let d = m.get(1, 1);
+        let tr = p.add(vec![a, d]);
+        let det = p.add(vec![
+            p.mul(vec![a, d]),
+            p.mul(vec![p.integer(-1), p.mul(vec![b, c])]),
+        ]);
+        // Collect free symbols present in the matrix.
+        let mut syms: Vec<ExprId> = Vec::new();
+        for &e in m.entries() {
+            collect_symbols(e, p, &mut syms);
+        }
+        // A handful of generic substitution points (avoid trivial coincidences).
+        let points: [&[f64]; 3] = [
+            &[2.0, 3.0, 5.0, 7.0, 11.0, 13.0],
+            &[1.5, -2.0, 4.0, 0.5, -3.0, 6.0],
+            &[-1.0, 2.0, -3.0, 5.0, 1.0, -4.0],
+        ];
+        for pt in points.iter() {
+            let env: Vec<(ExprId, C)> = syms
+                .iter()
+                .enumerate()
+                .map(|(i, &s)| (s, C::new(pt[i % pt.len()], 0.0)))
+                .collect();
+            let tr_v = eval_c(tr, &env, p);
+            let det_v = eval_c(det, &env, p);
+            for (lam, _) in vals {
+                let l = eval_c(*lam, &env, p);
+                // λ² − tr·λ + det
+                let lhs = l.powi(2).add(tr_v.mul(l).mul(C::new(-1.0, 0.0))).add(det_v);
+                if !lhs.near(C::new(0.0, 0.0)) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    fn collect_symbols(e: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>) {
+        match pool.get(e) {
+            ExprData::Symbol { .. } if !out.contains(&e) => {
+                out.push(e);
+            }
+            ExprData::Add(args) | ExprData::Mul(args) => {
+                for a in args.iter() {
+                    collect_symbols(*a, pool, out);
+                }
+            }
+            ExprData::Pow { base, exp } => {
+                collect_symbols(base, pool, out);
+                collect_symbols(exp, pool, out);
+            }
+            ExprData::Func { args, .. } => {
+                for a in args.iter() {
+                    collect_symbols(*a, pool, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn symbolic_eigenvalues_harmonic_oscillator() {
+        // [[0, 1], [-w^2, 0]] — undamped oscillator companion matrix.
+        // char poly: λ² + w² → eigenvalues ± w·√(-1)  (i.e. ±iw).
+        let p = pool();
+        let w = p.symbol("w", Domain::Real);
+        let zero = p.integer(0_i32);
+        let one = p.integer(1_i32);
+        let w2 = p.pow(w, p.integer(2_i32));
+        let neg_w2 = p.mul(vec![p.integer(-1_i32), w2]);
+        let m = Matrix::new(vec![vec![zero, one], vec![neg_w2, zero]]).unwrap();
+        let vals = eigenvalues(&m, &p).unwrap();
+        assert_eq!(vals.len(), 2, "two distinct eigenvalues");
+        for (_lam, mult) in &vals {
+            assert_eq!(*mult, 1);
+        }
+        // Both satisfy λ² + w² = 0 (verified numerically over the free symbol w).
+        assert!(eigvals_satisfy_2x2_charpoly(&m, &vals, &p));
+    }
+
+    #[test]
+    fn symbolic_eigenvalues_diagonal_free_symbols() {
+        // [[a, 0], [0, b]] → eigenvalues solve (λ−a)(λ−b)=0; both roots satisfy char poly.
+        let p = pool();
+        let a = p.symbol("a", Domain::Real);
+        let b = p.symbol("b", Domain::Real);
+        let zero = p.integer(0_i32);
+        let m = Matrix::new(vec![vec![a, zero], vec![zero, b]]).unwrap();
+        let vals = eigenvalues(&m, &p).unwrap();
+        assert_eq!(vals.len(), 2);
+        assert!(eigvals_satisfy_2x2_charpoly(&m, &vals, &p));
+    }
+
+    #[test]
+    fn symbolic_eigenvalues_repeated_scalar_matrix() {
+        // [[k, 0], [0, k]] → single eigenvalue k with algebraic multiplicity 2.
+        let p = pool();
+        let k = p.symbol("k", Domain::Real);
+        let zero = p.integer(0_i32);
+        let m = Matrix::new(vec![vec![k, zero], vec![zero, k]]).unwrap();
+        let vals = eigenvalues(&m, &p).unwrap();
+        assert_eq!(vals.len(), 1);
+        assert_eq!(vals[0].1, 2);
+        assert_eq!(vals[0].0, k);
+    }
+
+    #[test]
+    fn symbolic_eigenvalues_satisfy_char_poly() {
+        // General symbolic 2×2 — every returned eigenvalue must satisfy λ²−tr·λ+det = 0.
+        let p = pool();
+        let a = p.symbol("a", Domain::Real);
+        let b = p.symbol("b", Domain::Real);
+        let c = p.symbol("c", Domain::Real);
+        let d = p.symbol("d", Domain::Real);
+        let m = Matrix::new(vec![vec![a, b], vec![c, d]]).unwrap();
+        let vals = eigenvalues(&m, &p).unwrap();
+        assert_eq!(vals.len(), 2);
+        assert!(
+            eigvals_satisfy_2x2_charpoly(&m, &vals, &p),
+            "eigenvalues do not satisfy the characteristic polynomial"
+        );
+    }
+
+    #[test]
+    fn symbolic_eigenvectors_satisfy_definition() {
+        // For a symbolic 2×2 with distinct eigenvalues, each returned eigenvector v must
+        // satisfy A·v = λ·v. Verified numerically over random rational substitutions of the
+        // free symbol, since the closed-form vectors involve nested radicals.
+        let p = pool();
+        let w = p.symbol("w", Domain::Real);
+        let zero = p.integer(0_i32);
+        let one = p.integer(1_i32);
+        let w2 = p.pow(w, p.integer(2_i32));
+        let neg_w2 = p.mul(vec![p.integer(-1_i32), w2]);
+        // [[0, 1], [-w², 0]] — undamped oscillator companion matrix.
+        let m = Matrix::new(vec![vec![zero, one], vec![neg_w2, zero]]).unwrap();
+        let triples = eigenvectors(&m, &p).unwrap();
+        assert_eq!(triples.len(), 2, "two distinct symbolic eigenpairs");
+
+        let a = m.get(0, 0);
+        let b = m.get(0, 1);
+        let c = m.get(1, 0);
+        let d = m.get(1, 1);
+        let points: [f64; 3] = [2.0, 3.5, 5.0];
+        for (lambda, _mult, vecs) in &triples {
+            assert!(!vecs.is_empty(), "eigenvalue must have ≥1 eigenvector");
+            for v in vecs {
+                let v0 = v.get(0, 0);
+                let v1 = v.get(1, 0);
+                for &wv in points.iter() {
+                    let env = [(w, C::new(wv, 0.0))];
+                    let lam = eval_c(*lambda, &env, &p);
+                    let x0 = eval_c(v0, &env, &p);
+                    let x1 = eval_c(v1, &env, &p);
+                    let av0 = eval_c(a, &env, &p).mul(x0).add(eval_c(b, &env, &p).mul(x1));
+                    let av1 = eval_c(c, &env, &p).mul(x0).add(eval_c(d, &env, &p).mul(x1));
+                    assert!(av0.near(lam.mul(x0)), "row0: A·v ≠ λ·v at w={wv}");
+                    assert!(av1.near(lam.mul(x1)), "row1: A·v ≠ λ·v at w={wv}");
+                }
+            }
+        }
     }
 
     #[test]
