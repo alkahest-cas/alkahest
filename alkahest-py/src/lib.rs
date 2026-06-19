@@ -129,6 +129,11 @@ use alkahest_core::calculus::multilimit::{
 use alkahest_core::ode::dsolve::{
     dsolve as core_dsolve, DsolveError as CoreDsolveError, OdeInput as CoreOdeInput,
 };
+use alkahest_core::ode::numeric::{
+    integrate_rk4 as core_integrate_rk4, integrate_rk45 as core_integrate_rk45,
+    NumericOdeError as CoreNumericOdeError, OdeTrajectory as CoreOdeTrajectory,
+    Rk45Options as CoreRk45Options, Rk4Options as CoreRk4Options,
+};
 use alkahest_core::ode::series_solve::{
     series_solve as core_series_solve, PointKind as CorePointKind,
     SeriesError as CoreSeriesSolveError, SeriesOde as CoreSeriesOde,
@@ -2654,6 +2659,224 @@ fn py_dsolve(
         out.append(d)?;
     }
     Ok(out.into_py(py))
+}
+
+// ---------------------------------------------------------------------------
+// Numeric ODE integrators (experimental, Phase 16b)
+// ---------------------------------------------------------------------------
+
+/// Convert a [`CoreNumericOdeError`] to a Python exception.
+fn numeric_ode_error_to_py(e: CoreNumericOdeError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyOdeError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+/// Sampled ODE trajectory returned by :func:`ode_integrate_rk4` and
+/// :func:`ode_integrate_rk45`.
+///
+/// Attributes
+/// ----------
+/// t : list[float]
+///     Time points (length = number of accepted steps + 1, including ``t_start``).
+/// y : list[list[float]]
+///     State values at each time point.  ``y[i][j]`` is the value of state
+///     variable ``j`` at time ``t[i]``.
+///
+/// Methods
+/// -------
+/// t_final() → float | None
+///     The last time point.
+/// y_final() → list[float] | None
+///     The state vector at the last time point.
+#[pyclass(name = "OdeTrajectory")]
+struct PyOdeTrajectory {
+    inner: CoreOdeTrajectory,
+}
+
+#[pymethods]
+impl PyOdeTrajectory {
+    #[getter]
+    fn t(&self, py: Python<'_>) -> PyObject {
+        PyList::new_bound(py, &self.inner.t).into_py(py)
+    }
+
+    #[getter]
+    fn y(&self, py: Python<'_>) -> PyObject {
+        let rows: Vec<PyObject> = self
+            .inner
+            .y
+            .iter()
+            .map(|row| PyList::new_bound(py, row).into_py(py))
+            .collect();
+        PyList::new_bound(py, rows).into_py(py)
+    }
+
+    fn t_final(&self) -> Option<f64> {
+        self.inner.t_final()
+    }
+
+    fn y_final(&self, py: Python<'_>) -> Option<PyObject> {
+        self.inner
+            .y_final()
+            .map(|v| PyList::new_bound(py, v).into_py(py))
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "OdeTrajectory(steps={}, t_final={:?})",
+            self.inner.len(),
+            self.inner.t_final()
+        )
+    }
+}
+
+/// ``experimental.ode_integrate_rk4(ode, y0, t_start, t_end, h, max_steps)``
+///
+/// Integrate a first-order ODE system using the classical 4th-order fixed-step
+/// Runge–Kutta method.
+///
+/// Parameters
+/// ----------
+/// ode : ODE
+///     First-order system ``dy/dt = f(t, y)`` built with :class:`alkahest.ODE`.
+/// y0 : list[float]
+///     Initial conditions; one value per state variable.
+/// t_start : float
+///     Start of the integration interval.
+/// t_end : float
+///     End of the integration interval; must satisfy ``t_end > t_start``.
+/// h : float, optional
+///     Fixed step size (default ``0.01``).
+/// max_steps : int, optional
+///     Maximum number of steps (default ``1_000_000``).
+///
+/// Returns
+/// -------
+/// OdeTrajectory
+///     Sampled trajectory with ``.t`` and ``.y`` arrays.
+///
+/// Raises
+/// ------
+/// OdeError
+///     On any integration failure (non-finite value, max steps exceeded, etc.).
+///
+/// Example::
+///
+///     import alkahest as A
+///     from alkahest import experimental as ex
+///     p = A.ExprPool()
+///     t, y = p.symbol("t"), p.symbol("y")
+///     ode = A.ODE([y], [y], t)   # dy/dt = y
+///     traj = ex.ode_integrate_rk4(ode, [1.0], 0.0, 1.0, h=0.001)
+///     import math
+///     assert abs(traj.y_final()[0] - math.e) < 1e-6
+#[pyfunction]
+#[pyo3(name = "ode_integrate_rk4", signature = (ode, y0, t_start, t_end, h=0.01, max_steps=1_000_000))]
+fn py_ode_integrate_rk4(
+    py: Python<'_>,
+    ode: PyRef<PyODE>,
+    y0: Vec<f64>,
+    t_start: f64,
+    t_end: f64,
+    h: f64,
+    max_steps: usize,
+) -> PyResult<PyOdeTrajectory> {
+    let opts = CoreRk4Options { h, max_steps };
+    let traj = {
+        let pool = ode.pool.borrow(py);
+        core_integrate_rk4(&ode.inner, &y0, t_start, t_end, &opts, &pool.inner)
+            .map_err(numeric_ode_error_to_py)?
+    };
+    Ok(PyOdeTrajectory { inner: traj })
+}
+
+/// ``experimental.ode_integrate_rk45(ode, y0, t_start, t_end, ...)``
+///
+/// Integrate a first-order ODE system using the adaptive Dormand–Prince
+/// RK4(5) method with automatic step-size control.
+///
+/// Parameters
+/// ----------
+/// ode : ODE
+///     First-order system ``dy/dt = f(t, y)`` built with :class:`alkahest.ODE`.
+/// y0 : list[float]
+///     Initial conditions; one value per state variable.
+/// t_start : float
+///     Start of the integration interval.
+/// t_end : float
+///     End of the integration interval; must satisfy ``t_end > t_start``.
+/// h_init : float, optional
+///     Initial step size (default ``0.01``).
+/// h_min : float, optional
+///     Minimum allowable step size (default ``1e-12``).
+/// h_max : float, optional
+///     Maximum allowable step size (default ``1.0``).
+/// rtol : float, optional
+///     Relative tolerance (default ``1e-6``).
+/// atol : float, optional
+///     Absolute tolerance (default ``1e-9``).
+/// max_steps : int, optional
+///     Maximum number of accepted steps (default ``1_000_000``).
+///
+/// Returns
+/// -------
+/// OdeTrajectory
+///     Sampled trajectory with ``.t`` and ``.y`` arrays.
+///
+/// Raises
+/// ------
+/// OdeError
+///     On any integration failure (step size too small, non-finite value, etc.).
+///
+/// Example::
+///
+///     import alkahest as A
+///     from alkahest import experimental as ex
+///     p = A.ExprPool()
+///     t, y = p.symbol("t"), p.symbol("y")
+///     ode = A.ODE([y], [y], t)   # dy/dt = y
+///     traj = ex.ode_integrate_rk45(ode, [1.0], 0.0, 1.0, rtol=1e-9, atol=1e-12)
+///     import math
+///     assert abs(traj.y_final()[0] - math.e) < 1e-8
+#[pyfunction]
+#[pyo3(name = "ode_integrate_rk45", signature = (
+    ode, y0, t_start, t_end,
+    h_init=0.01, h_min=1e-12, h_max=1.0, rtol=1e-6, atol=1e-9, max_steps=1_000_000
+))]
+#[allow(clippy::too_many_arguments)]
+fn py_ode_integrate_rk45(
+    py: Python<'_>,
+    ode: PyRef<PyODE>,
+    y0: Vec<f64>,
+    t_start: f64,
+    t_end: f64,
+    h_init: f64,
+    h_min: f64,
+    h_max: f64,
+    rtol: f64,
+    atol: f64,
+    max_steps: usize,
+) -> PyResult<PyOdeTrajectory> {
+    let opts = CoreRk45Options {
+        h_init,
+        h_min,
+        h_max,
+        rtol,
+        atol,
+        max_steps,
+    };
+    let traj = {
+        let pool = ode.pool.borrow(py);
+        core_integrate_rk45(&ode.inner, &y0, t_start, t_end, &opts, &pool.inner)
+            .map_err(numeric_ode_error_to_py)?
+    };
+    Ok(PyOdeTrajectory { inner: traj })
 }
 
 /// `experimental.laplace_transform(f, t, s)` → `Expr` for `L{f}(s)`.
@@ -7571,6 +7794,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Phase 16
     m.add_class::<PyODE>()?;
     m.add_function(wrap_pyfunction!(py_lower_to_first_order, m)?)?;
+    // Phase 16b — numeric ODE integrators
+    m.add_class::<PyOdeTrajectory>()?;
+    m.add_function(wrap_pyfunction!(py_ode_integrate_rk4, m)?)?;
+    m.add_function(wrap_pyfunction!(py_ode_integrate_rk45, m)?)?;
     // Phase 17
     m.add_class::<PyDAE>()?;
     m.add_function(wrap_pyfunction!(py_pantelides, m)?)?;

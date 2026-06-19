@@ -7,6 +7,7 @@
 //! `sensitivity_system`.
 
 pub mod dsolve;
+pub mod numeric;
 pub mod sensitivity;
 pub mod series_solve;
 
