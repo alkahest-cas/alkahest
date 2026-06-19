@@ -1,6 +1,6 @@
 use super::rules::{
-    AddZero, CanonicalOrder, ConstFold, DivSelf, ExpandMul, FlattenAdd, FlattenMul, MulOne,
-    MulZero, PowOne, PowZero, RewriteRule, SqrtInteger, SubSelf,
+    AddZero, CanonicalOrder, ConstFold, DivSelf, ExpandMul, ExpandPow, FlattenAdd, FlattenMul,
+    MulOne, MulZero, PowOne, PowZero, RewriteRule, SqrtInteger, SubSelf,
 };
 use super::rulesets::PatternRuleSet;
 use crate::deriv::log::{DerivationLog, DerivedExpr};
@@ -74,6 +74,7 @@ pub fn rules_for_config(config: &SimplifyConfig) -> Vec<Box<dyn RewriteRule>> {
         Box::new(CanonicalOrder),
     ];
     if config.expand {
+        rules.push(Box::new(ExpandPow));
         rules.push(Box::new(ExpandMul));
     }
     rules
@@ -396,6 +397,39 @@ pub fn simplify_expanded(expr: ExprId, pool: &ExprPool) -> DerivedExpr<ExprId> {
         ..SimplifyConfig::default()
     };
     simplify_with(expr, pool, &rules_for_config(&config), config)
+}
+
+/// Simplify `expr` to a **trigonometric normal form**.
+///
+/// Runs the full algebraic core *with bounded polynomial expansion* together
+/// with the sin/cos-polynomial trig identities — argument-sign normalization
+/// and the Pythagorean identity, including the multi-angle
+/// [`PythagoreanMultiAngle`] case — driven to a fixed point. This composes
+/// product expansion, constant folding, like-term collection, and Pythagorean
+/// reduction into a single call.
+///
+/// The headline use case is verifying orthogonality of a direction-cosine
+/// (rotation) matrix: every entry of `Rᵀ·R − I` for a 3-2-1 Euler-angle DCM
+/// collapses to `0` here, whereas neither [`simplify`] nor the bare
+/// [`trig_rules`](super::rulesets::trig_rules) set can even multiply the
+/// rotations out, let alone close the Pythagorean cancellation chain in one
+/// pass.
+///
+/// # Scope
+///
+/// This is opt-in and heavier than [`simplify`] (it expands products and
+/// bounded powers of sums), so it is deliberately *not* on the default hot
+/// path. It targets real-argument sin/cos polynomials (rotation entries),
+/// reducing them in the sin/cos monomial basis; it deliberately does **not**
+/// introduce compound-angle forms (`sin(2u)`, `sin(u+v)`, …), and it is not a
+/// complete decision procedure for arbitrary trigonometric identities.
+pub fn simplify_trig_normal_form(expr: ExprId, pool: &ExprPool) -> DerivedExpr<ExprId> {
+    let config = SimplifyConfig {
+        expand: true,
+        ..SimplifyConfig::default()
+    };
+    let rules = super::rulesets::trig_normal_form_rules();
+    simplify_with(expr, pool, &rules, config)
 }
 
 // ---------------------------------------------------------------------------

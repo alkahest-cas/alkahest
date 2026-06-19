@@ -1042,6 +1042,87 @@ impl RewriteRule for ExpandMul {
 }
 
 // ---------------------------------------------------------------------------
+// ExpandPow: (a + b + …)^n → fully distributed Σ of monomials
+//
+// for a literal positive integer exponent `n` within a small cap. This is the
+// companion to `ExpandMul`: it unfolds a power of a sum directly into the flat
+// polynomial expansion. Gated behind `SimplifyConfig::expand` (default off).
+//
+// IMPORTANT — termination: the result is an `Add` of products, never a `Mul`
+// of repeated identical `Add` factors. Emitting `(a+b)·(a+b)` here would
+// immediately be re-collapsed to `(a+b)^2` by `DivSelf`
+// (`collect_mul_factors`), and the two rules would oscillate forever. By
+// distributing all the way to monomials in one step, each summand is a distinct
+// product whose factors `collect_mul_factors` may merge (`a·a → a²`) without
+// ever reconstructing the original `(Add)^n`, so the fixed point is reached.
+//
+// The exponent is capped (`MAX_EXPAND_POW_EXP`) so a stray large literal
+// exponent cannot trigger combinatorial blow-up; powers above the cap are left
+// untouched.
+// ---------------------------------------------------------------------------
+
+/// Maximum literal exponent that [`ExpandPow`] will unfold. A binomial squared
+/// is the dominant DCM case; cap at 4 to bound term growth while still covering
+/// realistic hand-entered polynomials.
+const MAX_EXPAND_POW_EXP: u32 = 4;
+
+pub struct ExpandPow;
+
+impl ExpandPow {
+    /// Distribute `acc · (summands)` into a flat list of product-terms.
+    /// `acc` holds the partial monomials accumulated so far.
+    fn distribute_once(acc: &[ExprId], summands: &[ExprId], pool: &ExprPool) -> Vec<ExprId> {
+        let mut out = Vec::with_capacity(acc.len() * summands.len());
+        for &term in acc {
+            for &s in summands {
+                out.push(pool.mul(vec![term, s]));
+            }
+        }
+        out
+    }
+}
+
+impl RewriteRule for ExpandPow {
+    fn name(&self) -> &'static str {
+        "expand_pow"
+    }
+
+    fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
+        let (base, exp) = match pool.get(expr) {
+            ExprData::Pow { base, exp } => (base, exp),
+            _ => return None,
+        };
+        // Base must be a sum; otherwise there is nothing to distribute.
+        let summands = match pool.get(base) {
+            ExprData::Add(v) => v,
+            _ => return None,
+        };
+        let n = as_integer(exp, pool)?;
+        if n <= 1 {
+            return None;
+        }
+        let n_u32 = n.to_u32()?;
+        if n_u32 > MAX_EXPAND_POW_EXP {
+            return None;
+        }
+
+        // Fully distribute: start from the summands themselves (n = 1) and
+        // multiply by `summands` n−1 more times, producing a flat Σ of
+        // products. Never emit `(Add)·(Add)`, which `collect_mul_factors`
+        // would fold straight back into `(Add)^n`.
+        let mut terms: Vec<ExprId> = summands.clone();
+        for _ in 1..n_u32 {
+            terms = Self::distribute_once(&terms, &summands, pool);
+        }
+        let after = pool.add(terms);
+        if after == expr {
+            return None;
+        }
+        Some((after, one_step(self.name(), expr, after)))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ExpPow: exp(h)^n → exp(n·h)  for integer n
 // ---------------------------------------------------------------------------
 

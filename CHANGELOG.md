@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Simplification
+
+- **Trig normal form (`simplify_trig_normal_form`):** opt-in simplifier that composes bounded polynomial expansion (`ExpandPow` + `ExpandMul`), constant folding, like-term collection, and the sin/cos-polynomial trig identities — argument-sign normalization plus the Pythagorean identity, including a new multi-angle Pythagorean rule — into a single fixed-point run. Reduces every entry of `Rᵀ·R − I` for a 3-2-1 Euler-angle direction-cosine matrix to `0` in one call. Works in the sin/cos monomial basis and does not introduce compound-angle (`sin(2u)`, `sin(u+v)`, …) forms. Heavier than `simplify`, so it is never wired into the default hot path. Exposed in Rust (`alkahest_core::simplify_trig_normal_form`, also in `stable`) and Python (`alkahest.simplify_trig_normal_form`).
+
 ## 3.5.1 — 2026-06-15
 
 ### Integration / Risch

@@ -110,6 +110,7 @@ use alkahest_core::{
     limit as core_limit, load_from, log_exp_rules, rsolve as core_rsolve, series as core_series,
     simplify as core_simplify, simplify_batch as core_simplify_batch,
     simplify_egraph as core_simplify_egraph, simplify_egraph_with as core_simplify_egraph_with,
+    simplify_trig_normal_form as core_simplify_trig_normal_form,
     simplify_with as core_simplify_with, trig_rules, AlkahestError as AlkahestErrorTrait,
     ApartError, DerivedExpr, DiffError, EgraphConfig, IntegrationError, IoError,
     LimitDirection as CoreLimitDirection, LimitError, LinearRecurrenceError, PatternRule,
@@ -3210,6 +3211,31 @@ fn py_simplify_trig(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDerivedResult {
         let pool = expr.pool.borrow(py);
         let rules = trig_rules();
         core_simplify_with(expr.id, &pool.inner, &rules, SimplifyConfig::default())
+    };
+    let pool_py = expr.pool.clone_ref(py);
+    make_derived_result(py, derived, pool_py, None)
+}
+
+/// `alkahest.simplify_trig_normal_form(expr)` — reduce to a trig normal form.
+///
+/// Runs the full algebraic core *with bounded polynomial expansion* plus the
+/// sin/cos-polynomial trig identities — argument-sign normalization and the
+/// Pythagorean identity, including its multi-angle case — driven to a fixed
+/// point. Unlike :func:`simplify_trig` (trig identities only, no expansion),
+/// this composes product expansion, constant folding, like-term collection,
+/// and Pythagorean reduction into a single call.
+///
+/// The headline use case is verifying orthogonality of a rotation
+/// (direction-cosine) matrix: every entry of ``R.T @ R - I`` collapses to ``0``.
+/// It reduces in the sin/cos monomial basis and does not introduce
+/// compound-angle (``sin(2u)``, ``sin(u+v)``, …) forms. This bundle is heavier
+/// than :func:`simplify` and is opt-in.
+#[pyfunction]
+#[pyo3(name = "simplify_trig_normal_form")]
+fn py_simplify_trig_normal_form(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDerivedResult {
+    let derived = {
+        let pool = expr.pool.borrow(py);
+        core_simplify_trig_normal_form(expr.id, &pool.inner)
     };
     let pool_py = expr.pool.clone_ref(py);
     make_derived_result(py, derived, pool_py, None)
@@ -7491,6 +7517,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_simplify_with, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify_expanded, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify_trig, m)?)?;
+    m.add_function(wrap_pyfunction!(py_simplify_trig_normal_form, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify_log_exp, m)?)?;
     m.add_function(wrap_pyfunction!(py_diff, m)?)?;
     m.add_function(wrap_pyfunction!(py_diff_forward, m)?)?;

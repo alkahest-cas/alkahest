@@ -19,8 +19,8 @@ pub use egraph::{
     OpCost, SizeCost, StabilityCost,
 };
 pub use engine::{
-    rules_for_config, simplify, simplify_batch, simplify_expanded, simplify_with,
-    simplify_with_pattern_rules, SimplifyConfig,
+    rules_for_config, simplify, simplify_batch, simplify_expanded, simplify_trig_normal_form,
+    simplify_with, simplify_with_pattern_rules, SimplifyConfig,
 };
 pub use rules::RewriteRule;
 pub use rulesets::{PatternRule, PatternRuleSet};
