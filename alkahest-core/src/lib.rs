@@ -177,9 +177,9 @@ pub use primitive::{Capabilities, CoverageReport, CoverageRow, Primitive, Primit
 #[cfg(feature = "groebner")]
 pub use solver::{
     diophantine, expr_to_gbpoly, extract_regular_chain_from_basis, main_variable_recursive,
-    solve_numerical, solve_polynomial_system, triangularize, CertifiedPoint, DiophantineError,
-    DiophantineSolution, HomotopyError, HomotopyOpts, RegularChain, Solution, SolutionSet,
-    SolverError,
+    solve_numerical, solve_polynomial_system, solve_transcendental, triangularize, CertifiedPoint,
+    DiophantineError, DiophantineSolution, HomotopyError, HomotopyOpts, RegularChain, Solution,
+    SolutionSet, SolverError, TranscendentalOutcome,
 };
 
 pub fn version() -> &'static str {

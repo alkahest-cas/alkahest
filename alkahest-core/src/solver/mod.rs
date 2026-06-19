@@ -24,6 +24,9 @@ pub mod diophantine;
 pub mod homotopy;
 pub mod polyhedral;
 pub mod regular_chains;
+pub mod transcendental;
+
+pub use transcendental::{solve_transcendental, TranscendentalOutcome};
 
 pub use regular_chains::{
     extract_regular_chain_from_basis, main_variable_recursive, triangularize, RegularChain,
