@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Real / decision procedures
+
+- **Parametric Routh–Hurwitz (`routh_hurwitz`):** symbolic stability analysis of a characteristic polynomial whose coefficients are free parameters. Builds the Routh array purely symbolically and returns the first-column entries plus the stability condition as a conjunction of strict-positivity predicates (e.g. `s²+a·s+b` → `a>0 ∧ b>0`; `s³+a·s²+b·s+c` → `a>0 ∧ a·b−c>0 ∧ c>0`). Exposed in Python as `alkahest.routh_hurwitz(poly, var)`.
+
 ## 3.5.1 — 2026-06-15
 
 ### Integration / Risch

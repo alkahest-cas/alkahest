@@ -34,6 +34,8 @@ use alkahest_core::{
     resistor as core_resistor,
     // V2-2 — Resultants and subresultant PRS
     resultant as core_resultant,
+    // Parametric Routh–Hurwitz stability conditions
+    routh_hurwitz as core_routh_hurwitz,
     // V3-3 — FOFormula / satisfiability
     satisfiable as core_satisfiable,
     sensitivity_system as core_sensitivity_system,
@@ -5853,6 +5855,59 @@ fn py_cad_lift(
     Ok(intervals.into_iter().map(core_interval_to_py).collect())
 }
 
+/// Symbolic / parametric Routh–Hurwitz stability analysis.
+///
+/// Given a characteristic polynomial ``poly`` in the analysis variable ``var``
+/// whose coefficients may be symbolic expressions in free parameters, returns a
+/// dict with:
+///
+/// - ``"degree"``: the degree of ``poly`` in ``var``;
+/// - ``"first_column"``: the Routh-array first-column entries (top to bottom) as
+///   ``Expr`` objects in the parameters;
+/// - ``"condition"``: the stability condition as a single predicate ``Expr`` — a
+///   conjunction of ``entry > 0`` over the non-trivial first-column entries.
+///
+/// For example ``s**2 + a*s + b`` yields the condition ``a > 0 ∧ b > 0`` and
+/// ``s**3 + a*s**2 + b*s + c`` yields ``a > 0 ∧ a*b - c > 0 ∧ c > 0``.
+#[pyfunction(name = "routh_hurwitz")]
+fn py_routh_hurwitz(py: Python<'_>, poly: PyRef<PyExpr>, var: PyRef<PyExpr>) -> PyResult<PyObject> {
+    let pool_py = poly.pool.clone_ref(py);
+    if !var.pool.is(&pool_py) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "routh_hurwitz expects poly and var in the same ExprPool",
+        ));
+    }
+    let rh = {
+        let bor = pool_py.borrow(py);
+        core_routh_hurwitz(poly.id, var.id, &bor.inner).map_err(cad_error_to_py)?
+    };
+    let first_column: Vec<PyObject> = rh
+        .first_column
+        .iter()
+        .map(|&id| {
+            PyExpr {
+                id,
+                pool: pool_py.clone_ref(py),
+            }
+            .into_py(py)
+        })
+        .collect();
+    let condition_id = {
+        let bor = pool_py.borrow(py);
+        rh.condition_expr(&bor.inner)
+    };
+    let condition = PyExpr {
+        id: condition_id,
+        pool: pool_py.clone_ref(py),
+    }
+    .into_py(py);
+    let d = PyDict::new_bound(py);
+    d.set_item("degree", rh.degree)?;
+    d.set_item("first_column", first_column)?;
+    d.set_item("condition", condition)?;
+    Ok(d.into_py(py))
+}
+
 // ---------------------------------------------------------------------------
 // PA-5 — Primitive registry Python bindings
 // ---------------------------------------------------------------------------
@@ -7625,6 +7680,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_decide, m)?)?;
     m.add_function(wrap_pyfunction!(py_cad_project, m)?)?;
     m.add_function(wrap_pyfunction!(py_cad_lift, m)?)?;
+    m.add_function(wrap_pyfunction!(py_routh_hurwitz, m)?)?;
     // V5-1 — Lean 4 certificate exporter
     m.add_function(wrap_pyfunction!(py_to_lean, m)?)?;
     // V5-2 — StableHLO/XLA bridge
