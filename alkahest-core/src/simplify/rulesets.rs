@@ -168,6 +168,92 @@ impl RewriteRule for SinCosIdentity {
     }
 }
 
+/// Multi-angle Pythagorean identity: `c·sin²(u) + c·cos²(u) → c` where the
+/// shared coefficient `c` may itself contain *other* trig-squared factors with
+/// **different** arguments.
+///
+/// This generalizes [`SinCosIdentity`], whose `split_trig_sq` bails as soon as
+/// a term holds more than one trig-squared factor.  When two angles interleave —
+/// as in a direction-cosine matrix — entries look like
+///
+/// ```text
+/// cos²(θ)·sin²(φ) + cos²(θ)·cos²(φ)
+/// ```
+///
+/// Here each term carries *two* trig-squared factors (`cos²(θ)` and the
+/// `sin²/cos²(φ)` pair).  Keyed on the inner angle `φ`, the matching `cos²(θ)`
+/// is just part of the coefficient, so the pair collapses to `cos²(θ)`.  Fed
+/// back through the same rule (now with `sin²(θ) + cos²(θ)`) the whole `RᵀR`
+/// diagonal entry reaches `1`.
+///
+/// The coefficient match is a multiset comparison, so factor order is
+/// irrelevant and a single `sin²`/`cos²(u)` factor per term is required (terms
+/// with two `sin²(u)` for the *same* `u` are left untouched).
+pub struct PythagoreanMultiAngle;
+
+impl RewriteRule for PythagoreanMultiAngle {
+    fn name(&self) -> &'static str {
+        "pythagorean_multi_angle"
+    }
+
+    fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
+        let args = match pool.get(expr) {
+            ExprData::Add(v) => v,
+            _ => return None,
+        };
+        if args.len() < 2 {
+            return None;
+        }
+
+        // For each term, enumerate every angle `u` that appears as a sin²(u)
+        // factor, and try to find a partner cos²(u) term with the same
+        // coefficient multiset (where the partner's coefficient excludes its
+        // own cos²(u) factor).
+        for (sin_i, &sin_term) in args.iter().enumerate() {
+            for u in trig_sq_angles("sin", sin_term, pool) {
+                let Some(sin_coeff) = split_trig_sq_for_angle("sin", u, sin_term, pool) else {
+                    continue;
+                };
+                for (cos_i, &cos_term) in args.iter().enumerate() {
+                    if cos_i == sin_i {
+                        continue;
+                    }
+                    let Some(cos_coeff) = split_trig_sq_for_angle("cos", u, cos_term, pool) else {
+                        continue;
+                    };
+                    if !coeff_multiset_eq(&sin_coeff, &cos_coeff, pool) {
+                        continue;
+                    }
+                    // Collapse: replace both terms with the shared coefficient.
+                    let coeff_expr = match sin_coeff.len() {
+                        0 => pool.integer(1_i32),
+                        1 => sin_coeff[0],
+                        _ => pool.mul(sin_coeff.clone()),
+                    };
+                    let mut new_args: Vec<ExprId> = args
+                        .iter()
+                        .enumerate()
+                        .filter(|&(k, _)| k != sin_i && k != cos_i)
+                        .map(|(_, &a)| a)
+                        .collect();
+                    new_args.push(coeff_expr);
+                    new_args = fold_numeric_terms(new_args, pool);
+                    let after = match new_args.len() {
+                        0 => pool.integer(0_i32),
+                        1 => new_args[0],
+                        _ => pool.add(new_args),
+                    };
+                    if after == expr {
+                        return None;
+                    }
+                    return Some((after, one_step(self.name(), expr, after)));
+                }
+            }
+        }
+        None
+    }
+}
+
 /// Double-angle for sine: `2·sin(u)·cos(u) → sin(2u)`.
 ///
 /// Fires on a `Mul` containing the literal factor `2`, a `sin(u)` and a
@@ -422,6 +508,58 @@ pub fn trig_rules() -> Vec<Box<dyn RewriteRule>> {
         Box::new(SinAngleSub),
         Box::new(CosAngleSub),
     ]
+}
+
+/// Trigonometric **normal-form** rule set: the full algebraic core *with
+/// bounded polynomial expansion* (`ExpandPow` + `ExpandMul`) plus the
+/// sin/cos-polynomial trig identities — argument-sign normalization
+/// ([`SinNeg`]/[`CosNeg`]) and the Pythagorean identities
+/// ([`SinCosIdentity`] and its multi-angle generalization
+/// [`PythagoreanMultiAngle`]).
+///
+/// Unlike [`trig_rules`] — which carries only the trig identities and so cannot
+/// even multiply out a product of rotations — this bundle composes
+/// expansion → constant folding → like-term collection → Pythagorean
+/// reduction into a single fixed-point run.  It is what
+/// [`simplify_trig_normal_form`](super::engine::simplify_trig_normal_form) uses
+/// to collapse `Rᵀ·R − I → 0` for a direction-cosine matrix in one call.
+///
+/// # Why no double-angle / angle-sum rules
+///
+/// The reduction works by driving everything into a canonical **sin/cos
+/// monomial polynomial** where like terms cancel.  Folding rules such as
+/// `2·sin·cos → sin(2u)` or `sin·cos ± cos·sin → sin(u±v)`
+/// ([`SinDoubleAngle`], [`CosDoubleAngle`], [`SinAngleSub`], [`CosAngleSub`])
+/// are deliberately **excluded**: they pull terms *out* of that monomial basis
+/// into compound-angle functions, and because they only fire when the
+/// coefficient is isolable, they collapse one term of a cancelling pair but not
+/// its partner — leaving a non-zero `sin(2u)·X − 2·sin·cos·X` residue that can
+/// never close.  Pythagorean reduction in the pure monomial basis is both
+/// complete for orthogonality probes and cheap.
+///
+/// # Scope
+///
+/// The expansion rules are bounded (`ExpandPow` caps the literal exponent it
+/// unfolds and distributes straight to a flat sum, so it never oscillates with
+/// the factor-collecting rule), so this set is heavier than the default
+/// simplifier and is **opt-in** — it is never wired into
+/// [`simplify`](super::engine::simplify).  It targets real-argument sin/cos
+/// polynomials (DCM / rotation entries); it is not a complete decision
+/// procedure for arbitrary trigonometric expressions and does not introduce
+/// compound-angle (`sin(2u)`, `sin(u+v)`, …) forms.
+pub fn trig_normal_form_rules() -> Vec<Box<dyn RewriteRule>> {
+    let cfg = super::engine::SimplifyConfig {
+        expand: true,
+        ..Default::default()
+    };
+    let mut rules = super::engine::rules_for_config(&cfg);
+    // Append the sin/cos-polynomial identities only.  Compound-angle folding
+    // rules are intentionally omitted — see the doc comment above.
+    rules.push(Box::new(SinNeg));
+    rules.push(Box::new(CosNeg));
+    rules.push(Box::new(SinCosIdentity));
+    rules.push(Box::new(PythagoreanMultiAngle));
+    rules
 }
 
 // ---------------------------------------------------------------------------
@@ -855,6 +993,57 @@ fn split_trig_sq(name: &str, term: ExprId, pool: &ExprPool) -> Option<(ExprId, V
     inner.map(|u| (u, rest))
 }
 
+/// List the distinct angles `u` for which `term` contains a `name²(u)` factor,
+/// in canonical factor order, de-duplicated.
+fn trig_sq_angles(name: &str, term: ExprId, pool: &ExprPool) -> Vec<ExprId> {
+    let mut angles = Vec::new();
+    for &f in &factor_list(term, pool) {
+        if let Some(u) = trig_sq_inner(name, f, pool) {
+            if !angles.contains(&u) {
+                angles.push(u);
+            }
+        }
+    }
+    angles
+}
+
+/// Like [`split_trig_sq`] but targets a **specific** angle `u`.
+///
+/// Returns the coefficient factor list (everything except the single
+/// `name²(u)` factor) when the term contains exactly one `name²(u)` factor for
+/// that *specific* `u`.  Unlike [`split_trig_sq`], other trig-squared factors
+/// with *different* arguments (e.g. `cos²(θ)` inside `cos²(θ)·cos²(φ)`) are
+/// tolerated — they become part of the coefficient.  This is what lets the
+/// multi-angle Pythagorean rule collapse
+/// `cos²(θ)·sin²(φ) + cos²(θ)·cos²(φ) → cos²(θ)` even though each term carries a
+/// second trig-squared factor.
+fn split_trig_sq_for_angle(
+    name: &str,
+    u: ExprId,
+    term: ExprId,
+    pool: &ExprPool,
+) -> Option<Vec<ExprId>> {
+    let factors = factor_list(term, pool);
+    let mut rest = Vec::with_capacity(factors.len());
+    let mut matched = 0usize;
+    for &f in &factors {
+        if trig_sq_inner(name, f, pool) == Some(u) {
+            matched += 1;
+            if matched > 1 {
+                // Two `name²(u)` factors for the same angle — ambiguous; bail.
+                return None;
+            }
+        } else {
+            rest.push(f);
+        }
+    }
+    if matched == 1 {
+        Some(rest)
+    } else {
+        None
+    }
+}
+
 /// Split an `Add`-term `c · f(a) · g(b)` into the trig argument pair plus the
 /// surrounding (possibly empty) coefficient factor list.
 ///
@@ -1115,6 +1304,196 @@ mod tests {
         let rules = trig_rules();
         let r = simplify_with(expr, &pool, &rules, SimplifyConfig::default());
         assert_eq!(r.value, pool.integer(1_i32));
+    }
+
+    // -------------------------------------------------------------------
+    // Multi-angle Pythagorean + trig normal form (RᵀR = I for a DCM)
+    // -------------------------------------------------------------------
+
+    /// 3×3 matrix multiply over `ExprId` cells (no simplification).
+    fn mat3_mul(pool: &ExprPool, a: &[[ExprId; 3]; 3], b: &[[ExprId; 3]; 3]) -> [[ExprId; 3]; 3] {
+        let mut out = [[pool.integer(0_i32); 3]; 3];
+        for (i, orow) in out.iter_mut().enumerate() {
+            for (j, ocell) in orow.iter_mut().enumerate() {
+                let terms: Vec<ExprId> = (0..3).map(|k| pool.mul(vec![a[i][k], b[k][j]])).collect();
+                *ocell = pool.add(terms);
+            }
+        }
+        out
+    }
+
+    fn mat3_transpose(pool: &ExprPool, a: &[[ExprId; 3]; 3]) -> [[ExprId; 3]; 3] {
+        let mut out = [[pool.integer(0_i32); 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                out[i][j] = a[j][i];
+            }
+        }
+        out
+    }
+
+    /// Build a 3-2-1 (yaw-pitch-roll) direction-cosine matrix
+    /// `R = Rx(φ)·Ry(θ)·Rz(ψ)` with the given Euler-angle symbols.
+    fn dcm_321(pool: &ExprPool, phi: ExprId, theta: ExprId, psi: ExprId) -> [[ExprId; 3]; 3] {
+        let s = |a: ExprId| pool.func("sin", vec![a]);
+        let c = |a: ExprId| pool.func("cos", vec![a]);
+        let neg = |a: ExprId| pool.mul(vec![pool.integer(-1_i32), a]);
+        let zero = pool.integer(0_i32);
+        let one = pool.integer(1_i32);
+        let rz = [
+            [c(psi), s(psi), zero],
+            [neg(s(psi)), c(psi), zero],
+            [zero, zero, one],
+        ];
+        let ry = [
+            [c(theta), zero, neg(s(theta))],
+            [zero, one, zero],
+            [s(theta), zero, c(theta)],
+        ];
+        let rx = [
+            [one, zero, zero],
+            [zero, c(phi), s(phi)],
+            [zero, neg(s(phi)), c(phi)],
+        ];
+        let rxy = mat3_mul(pool, &rx, &ry);
+        mat3_mul(pool, &rxy, &rz)
+    }
+
+    #[test]
+    fn dcm_rtr_minus_identity_is_zero() {
+        // For a 3-2-1 Euler-angle direction-cosine matrix R, every entry of
+        // Rᵀ·R − I must collapse to 0 under a single `simplify_trig_normal_form`
+        // call.  This is the headline orthogonality probe: it requires
+        // expansion, constant folding, like-term collection, and the
+        // multi-angle Pythagorean identity to all compose in one pass.
+        let pool = p();
+        let phi = pool.symbol("phi", Domain::Real);
+        let theta = pool.symbol("theta", Domain::Real);
+        let psi = pool.symbol("psi", Domain::Real);
+        let r = dcm_321(&pool, phi, theta, psi);
+        let rt = mat3_transpose(&pool, &r);
+        let rtr = mat3_mul(&pool, &rt, &r);
+        let zero = pool.integer(0_i32);
+        for (i, row) in rtr.iter().enumerate() {
+            for (j, &entry) in row.iter().enumerate() {
+                let identity = if i == j {
+                    pool.integer(1_i32)
+                } else {
+                    pool.integer(0_i32)
+                };
+                // entry − identity
+                let neg_id = pool.mul(vec![pool.integer(-1_i32), identity]);
+                let diff = pool.add(vec![entry, neg_id]);
+                let res = crate::simplify::simplify_trig_normal_form(diff, &pool);
+                assert_eq!(
+                    res.value,
+                    zero,
+                    "RᵀR − I entry [{}][{}] did not collapse to 0: got {}",
+                    i,
+                    j,
+                    pool.display(res.value)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dcm_rtr_diagonal_entry_is_one() {
+        // A direct check that a diagonal entry of Rᵀ·R itself reduces to 1.
+        let pool = p();
+        let phi = pool.symbol("phi", Domain::Real);
+        let theta = pool.symbol("theta", Domain::Real);
+        let psi = pool.symbol("psi", Domain::Real);
+        let r = dcm_321(&pool, phi, theta, psi);
+        let rt = mat3_transpose(&pool, &r);
+        let rtr = mat3_mul(&pool, &rt, &r);
+        let res = crate::simplify::simplify_trig_normal_form(rtr[2][2], &pool);
+        assert_eq!(
+            res.value,
+            pool.integer(1_i32),
+            "got {}",
+            pool.display(res.value)
+        );
+    }
+
+    #[test]
+    fn non_orthogonal_product_does_not_collapse() {
+        // Guard: a genuinely non-identity product must NOT be simplified to 0.
+        // Take M = R·R (not Rᵀ·R) for a 3-2-1 DCM; MᵀM is still I (R·R is a
+        // rotation), so instead scale one rotation to break orthogonality.
+        //
+        // Concretely, perturb R by replacing R with 2·R (no longer a rotation);
+        // then (2R)ᵀ(2R) = 4·I, whose [0][0] entry − 1 = 3 ≠ 0, and whose
+        // off-diagonal [0][1] entry is 0.  We assert the diagonal does NOT
+        // collapse to 0 and in fact reduces to the correct nonzero constant 3.
+        let pool = p();
+        let phi = pool.symbol("phi", Domain::Real);
+        let theta = pool.symbol("theta", Domain::Real);
+        let psi = pool.symbol("psi", Domain::Real);
+        let r = dcm_321(&pool, phi, theta, psi);
+        let two = pool.integer(2_i32);
+        // scale every entry of R by 2
+        let mut m = [[pool.integer(0_i32); 3]; 3];
+        for i in 0..3 {
+            for j in 0..3 {
+                m[i][j] = pool.mul(vec![two, r[i][j]]);
+            }
+        }
+        let mt = mat3_transpose(&pool, &m);
+        let mtm = mat3_mul(&pool, &mt, &m);
+        // (2R)ᵀ(2R) [0][0] − 1 should reduce to 3, never 0.
+        let neg_one = pool.integer(-1_i32);
+        let diff = pool.add(vec![mtm[0][0], neg_one]);
+        let res = crate::simplify::simplify_trig_normal_form(diff, &pool);
+        let zero = pool.integer(0_i32);
+        assert_ne!(
+            res.value, zero,
+            "non-orthogonal (2R)ᵀ(2R)−I diagonal must not collapse to 0"
+        );
+        assert_eq!(
+            res.value,
+            pool.integer(3_i32),
+            "expected (2R)ᵀ(2R)[0][0]−1 = 3, got {}",
+            pool.display(res.value)
+        );
+    }
+
+    #[test]
+    fn pythagorean_multi_angle_basic() {
+        // cos²(θ)·sin²(φ) + cos²(θ)·cos²(φ) → cos²(θ)
+        let pool = p();
+        let theta = pool.symbol("theta", Domain::Real);
+        let phi = pool.symbol("phi", Domain::Real);
+        let two = pool.integer(2_i32);
+        let cos_th_sq = pool.pow(pool.func("cos", vec![theta]), two);
+        let sin_ph_sq = pool.pow(pool.func("sin", vec![phi]), two);
+        let cos_ph_sq = pool.pow(pool.func("cos", vec![phi]), two);
+        let t1 = pool.mul(vec![cos_th_sq, sin_ph_sq]);
+        let t2 = pool.mul(vec![cos_th_sq, cos_ph_sq]);
+        let expr = pool.add(vec![t1, t2]);
+        let (after, _) = PythagoreanMultiAngle.apply(expr, &pool).unwrap();
+        assert_eq!(after, cos_th_sq, "got {}", pool.display(after));
+    }
+
+    #[test]
+    fn pythagorean_multi_angle_mismatched_coeff_no_fire() {
+        // cos²(θ)·sin²(φ) + sin²(θ)·cos²(φ): coefficients differ
+        // (cos²θ vs sin²θ), so no Pythagorean collapse on φ may fire.
+        let pool = p();
+        let theta = pool.symbol("theta", Domain::Real);
+        let phi = pool.symbol("phi", Domain::Real);
+        let two = pool.integer(2_i32);
+        let cos_th_sq = pool.pow(pool.func("cos", vec![theta]), two);
+        let sin_th_sq = pool.pow(pool.func("sin", vec![theta]), two);
+        let sin_ph_sq = pool.pow(pool.func("sin", vec![phi]), two);
+        let cos_ph_sq = pool.pow(pool.func("cos", vec![phi]), two);
+        let t1 = pool.mul(vec![cos_th_sq, sin_ph_sq]);
+        let t2 = pool.mul(vec![sin_th_sq, cos_ph_sq]);
+        let expr = pool.add(vec![t1, t2]);
+        assert!(
+            PythagoreanMultiAngle.apply(expr, &pool).is_none(),
+            "must not collapse when coefficient multisets differ"
+        );
     }
 
     /// Helper: `c · sin²(u)` (or any single-arg trig) built as a Mul.

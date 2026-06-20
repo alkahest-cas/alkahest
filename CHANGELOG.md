@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Simplification
+
+- **Trig normal form (`simplify_trig_normal_form`):** opt-in simplifier that composes bounded polynomial expansion (`ExpandPow` + `ExpandMul`), constant folding, like-term collection, and the sin/cos-polynomial trig identities — argument-sign normalization plus the Pythagorean identity, including a new multi-angle Pythagorean rule — into a single fixed-point run. Reduces every entry of `Rᵀ·R − I` for a 3-2-1 Euler-angle direction-cosine matrix to `0` in one call. Works in the sin/cos monomial basis and does not introduce compound-angle (`sin(2u)`, `sin(u+v)`, …) forms. Heavier than `simplify`, so it is never wired into the default hot path. Exposed in Rust (`alkahest_core::simplify_trig_normal_form`, also in `stable`) and Python (`alkahest.simplify_trig_normal_form`).
+
 ### Real / decision procedures
 
 - **Parametric Routh–Hurwitz (`routh_hurwitz`):** symbolic stability analysis of a characteristic polynomial whose coefficients are free parameters. Builds the Routh array purely symbolically and returns the first-column entries plus the stability condition as a conjunction of strict-positivity predicates (e.g. `s²+a·s+b` → `a>0 ∧ b>0`; `s³+a·s²+b·s+c` → `a>0 ∧ a·b−c>0 ∧ c>0`). Exposed in Python as `alkahest.routh_hurwitz(poly, var)`.

@@ -114,12 +114,15 @@ pub use horner::{
     emit_expr_c, emit_expr_c_vec, emit_horner_c, eval_horner_f64, eval_horner_f64_batch, horner,
     EmitCError,
 };
-pub use simplify::rulesets::{log_exp_rules, log_exp_rules_safe, trig_rules};
+pub use simplify::rulesets::{
+    log_exp_rules, log_exp_rules_safe, trig_normal_form_rules, trig_rules,
+};
 pub use simplify::{
     assumptions_satisfy, rules_for_config, simplify, simplify_batch, simplify_colored,
-    simplify_egraph, simplify_egraph_with, simplify_expanded, simplify_with, ColorId,
-    ColoredEgraph, DepthCost, EgraphConfig, EgraphCost, NoncommutativeCost, OpCost, PatternRule,
-    RewriteRule, SimplifyConfig, SizeCost, StabilityCost, CONTEXT_COLOR, ROOT_COLOR,
+    simplify_egraph, simplify_egraph_with, simplify_expanded, simplify_trig_normal_form,
+    simplify_with, ColorId, ColoredEgraph, DepthCost, EgraphConfig, EgraphCost, NoncommutativeCost,
+    OpCost, PatternRule, RewriteRule, SimplifyConfig, SizeCost, StabilityCost, CONTEXT_COLOR,
+    ROOT_COLOR,
 };
 pub use sum::{
     gosper_certificate, gosper_normal_form, hypergeom_ratio, product_definite, product_indefinite,
@@ -263,8 +266,9 @@ pub mod stable {
         cad_lift, cad_project, decide, decide_expr, routh_hurwitz, CadError, QeResult, RouthHurwitz,
     };
     pub use crate::simplify::{
-        simplify, simplify_egraph, simplify_egraph_with, simplify_with, DepthCost, EgraphConfig,
-        EgraphCost, NoncommutativeCost, OpCost, SimplifyConfig, SizeCost, StabilityCost,
+        simplify, simplify_egraph, simplify_egraph_with, simplify_trig_normal_form, simplify_with,
+        DepthCost, EgraphConfig, EgraphCost, NoncommutativeCost, OpCost, SimplifyConfig, SizeCost,
+        StabilityCost,
     };
     #[cfg(feature = "groebner")]
     pub use crate::solver::{

@@ -182,6 +182,7 @@ from .alkahest import (  # noqa: F401
     simplify_par,
     simplify_pauli,
     simplify_trig,
+    simplify_trig_normal_form,
     simplify_with,
     sin,
     sinh,
@@ -812,6 +813,36 @@ def simplify_trig(expr):
     return _native_simplify_trig(_coerce_expr(expr))
 
 
+_native_simplify_trig_normal_form = simplify_trig_normal_form
+
+
+def simplify_trig_normal_form(expr):
+    """Trigonometric normal-form simplifier.
+
+    Runs the full algebraic core *with bounded polynomial expansion* plus the
+    sin/cos-polynomial trig identities (argument-sign normalization and the
+    Pythagorean identity, including its multi-angle case), driven to a fixed
+    point.  Unlike :func:`simplify_trig` (identities only, no expansion), this
+    composes product expansion, constant folding, like-term collection, and
+    Pythagorean reduction in a single call.
+
+    The headline use case is verifying orthogonality of a rotation
+    (direction-cosine) matrix: every entry of ``R.T @ R - I`` collapses to
+    ``0``.  It reduces in the sin/cos monomial basis and does not introduce
+    compound-angle (``sin(2u)``, ``sin(u+v)``, …) forms.  This bundle is heavier
+    than :func:`simplify` and is opt-in.
+
+    Parameters
+    ----------
+    expr : Expr or DerivedResult
+
+    Returns
+    -------
+    DerivedResult
+    """
+    return _native_simplify_trig_normal_form(_coerce_expr(expr))
+
+
 _native_simplify_log_exp = simplify_log_exp
 
 
@@ -1293,6 +1324,7 @@ __all__ = [
     "simplify_par",
     "simplify_pauli",
     "simplify_trig",
+    "simplify_trig_normal_form",
     "simplify_with",
     # Math functions (core 5)
     "sin",
