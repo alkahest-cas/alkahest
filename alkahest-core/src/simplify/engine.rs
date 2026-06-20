@@ -404,7 +404,7 @@ pub fn simplify_expanded(expr: ExprId, pool: &ExprPool) -> DerivedExpr<ExprId> {
 /// Runs the full algebraic core *with bounded polynomial expansion* together
 /// with the sin/cos-polynomial trig identities — argument-sign normalization
 /// and the Pythagorean identity, including the multi-angle
-/// [`PythagoreanMultiAngle`] case — driven to a fixed point. This composes
+/// `PythagoreanMultiAngle` case — driven to a fixed point. This composes
 /// product expansion, constant folding, like-term collection, and Pythagorean
 /// reduction into a single call.
 ///
