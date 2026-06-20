@@ -974,6 +974,13 @@ pub fn matrix_exponential(m: &Matrix, pool: &ExprPool) -> Result<Matrix, LinearA
     if m.rows != m.cols {
         return Err(LinearAlgebraError::NonSquare);
     }
+    // A diagonal matrix (possibly with free-symbol entries) exponentiates entrywise:
+    // exp(diag(d₀, …, dₙ)) = diag(e^{d₀}, …, e^{dₙ}). Short-circuit so symbolic diagonal /
+    // decoupled state matrices succeed without invoking the eigenvector machinery, whose
+    // radical eigenvalues can collapse the eigenbasis for these cases.
+    if is_diagonal(m, pool) {
+        return diagonal_matrix_exp(m, pool);
+    }
     if let Ok((p, d)) = eigen::diagonalize(m, pool) {
         let exp_d = diagonal_matrix_exp(&d, pool)?;
         let inv_p = matrix_inverse(&p, pool).map_err(|_| LinearAlgebraError::SingularTransform)?;
@@ -990,6 +997,21 @@ pub fn matrix_exponential(m: &Matrix, pool: &ExprPool) -> Result<Matrix, LinearA
         .map_err(|_| LinearAlgebraError::KernelFailed)?
         .mul(&inv_p, pool)
         .map_err(|_| LinearAlgebraError::KernelFailed)
+}
+
+/// True iff every off-diagonal entry simplifies to exactly zero.
+fn is_diagonal(m: &Matrix, pool: &ExprPool) -> bool {
+    if m.rows != m.cols {
+        return false;
+    }
+    for r in 0..m.rows {
+        for c in 0..m.cols {
+            if r != c && !expr_is_zero(pool, simplify(m.get(r, c), pool).value) {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn diagonal_matrix_exp(d: &Matrix, pool: &ExprPool) -> Result<Matrix, LinearAlgebraError> {
@@ -1388,6 +1410,66 @@ mod tests {
         assert_eq!(expm.cols, 2);
         assert!(!expr_is_zero(&p, expm.get(0, 0)));
         assert!(!expr_is_zero(&p, expm.get(1, 1)));
+    }
+
+    #[test]
+    fn matrix_exp_symbolic_diagonal() {
+        // exp(diag(a, b)) = diag(e^a, e^b) for free symbols a ≠ b.
+        let p = pool();
+        let a = p.symbol("a", Domain::Real);
+        let b = p.symbol("b", Domain::Real);
+        let z = p.integer(0_i32);
+        let m = Matrix::new(vec![vec![a, z], vec![z, b]]).unwrap();
+        let expm = matrix_exponential(&m, &p).unwrap().simplify_entries(&p);
+        let ea = simplify(p.func("exp", vec![a]), &p).value;
+        let eb = simplify(p.func("exp", vec![b]), &p).value;
+        let expected = Matrix::new(vec![vec![ea, z], vec![z, eb]]).unwrap();
+        assert!(
+            eigen::matrix_eq_simplified(&expm, &expected, &p),
+            "got {}",
+            expm.display(&p)
+        );
+    }
+
+    #[test]
+    fn matrix_exp_symbolic_oscillator_has_closed_form() {
+        // The headline probe: a state matrix with a FREE SYMBOL now yields e^{A} in closed
+        // form (previously errored "entries must simplify to rationals"). A = [[0,1],[-w²,0]].
+        let p = pool();
+        let w = p.symbol("w", Domain::Real);
+        let z = p.integer(0_i32);
+        let one = p.integer(1_i32);
+        let w2 = p.pow(w, p.integer(2_i32));
+        let neg_w2 = p.mul(vec![p.integer(-1_i32), w2]);
+        let a = Matrix::new(vec![vec![z, one], vec![neg_w2, z]]).unwrap();
+        let expm = matrix_exponential(&a, &p).expect("symbolic e^A closed form");
+        assert_eq!(expm.rows, 2);
+        assert_eq!(expm.cols, 2);
+        // Every entry depends on w (via exp(±√(−4w²)/2)) — i.e. genuinely symbolic.
+        let s = expm.display(&p);
+        assert!(s.contains("exp"), "expected exponential entries: {s}");
+        assert!(s.contains('w'), "expected dependence on free symbol w: {s}");
+    }
+
+    #[test]
+    fn matrix_exp_symbolic_state_matrix_t_zero_is_identity() {
+        // For a symbolic state matrix A(parameter), exp(0·A) must be the identity.
+        // Build A = [[0, 1], [-k, 0]] (oscillator with symbolic stiffness k) scaled by 0.
+        let p = pool();
+        let k = p.symbol("k", Domain::Real);
+        let z = p.integer(0_i32);
+        let one = p.integer(1_i32);
+        let neg_k = p.mul(vec![p.integer(-1_i32), k]);
+        let a = Matrix::new(vec![vec![z, one], vec![neg_k, z]]).unwrap();
+        let zero_a = a.scale(z, &p);
+        let expm = matrix_exponential(&zero_a, &p)
+            .unwrap()
+            .simplify_entries(&p);
+        assert!(
+            eigen::matrix_eq_simplified(&expm, &Matrix::identity(2, &p), &p),
+            "exp(0) should be I, got {}",
+            expm.display(&p)
+        );
     }
 
     #[test]

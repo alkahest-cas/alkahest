@@ -109,6 +109,101 @@ def test_similar_integer_diagonal_random3x3():
         assert sum(len(vs) for (_, _, vs) in triples) == 3
 
 
+def test_symbolic_eigenvals_2x2_free_symbol():
+    """Issue #3 — eigenvalues of a 2×2 matrix with a FREE SYMBOL (no longer requires
+    rational entries). [[0, 1], [-w², 0]] is the undamped-oscillator companion matrix."""
+    pool = alkahest.ExprPool()
+    w = pool.symbol("w")
+    z = pool.integer(0)
+    one = pool.integer(1)
+    neg_w2 = -(w**2)
+    m = alkahest.Matrix([[z, one], [neg_w2, z]])
+    vals = m.eigenvals()
+    assert len(vals) == 2
+    # Every eigenvalue must satisfy the characteristic polynomial λ² + w² = 0.
+    sw = sympy.Symbol("w")
+    for ev, mult in vals.items():
+        assert mult == 1
+        lam = _expr_to_sympy(ev)
+        assert sympy.simplify(lam**2 + sw**2) == 0
+
+
+def test_symbolic_eigenvals_general_2x2():
+    """A fully symbolic 2×2 [[a, b], [c, d]] returns radical eigenvalues that satisfy
+    λ² − (a+d)λ + (ad − bc) = 0."""
+    pool = alkahest.ExprPool()
+    a = pool.symbol("a")
+    b = pool.symbol("b")
+    c = pool.symbol("c")
+    d = pool.symbol("d")
+    m = alkahest.Matrix([[a, b], [c, d]])
+    vals = m.eigenvals()
+    assert len(vals) == 2
+    sa, sb, sc, sd = sympy.symbols("a b c d")
+    tr, det = sa + sd, sa * sd - sb * sc
+    for ev, _mult in vals.items():
+        lam = _expr_to_sympy(ev)
+        assert sympy.simplify(lam**2 - tr * lam + det) == 0
+
+
+def test_symbolic_eigenvects_2x2_free_symbol():
+    """Issue #3 — eigenvectors of a 2×2 matrix with a FREE SYMBOL. Each eigenpair (λ, v)
+    must satisfy A·v = λ·v, checked symbolically via SymPy on [[0, 1], [-w², 0]]."""
+    pool = alkahest.ExprPool()
+    w = pool.symbol("w")
+    z = pool.integer(0)
+    one = pool.integer(1)
+    neg_w2 = -(w**2)
+    m = alkahest.Matrix([[z, one], [neg_w2, z]])
+    triples = m.eigenvects()
+    assert len(triples) == 2
+    sw = sympy.Symbol("w")
+    sa = sympy.Matrix([[0, 1], [-(sw**2), 0]])
+    for ev, _mult, vecs in triples:
+        lam = _expr_to_sympy(ev)
+        assert len(vecs) >= 1
+        for v in vecs:
+            col = v.to_list()
+            sv = sympy.Matrix([[_expr_to_sympy(col[i][0])] for i in range(len(col))])
+            # A·v − λ·v must vanish identically in w.
+            assert sympy.simplify(sa * sv - lam * sv) == sympy.zeros(2, 1)
+
+
+def test_symbolic_matrix_exp_diagonal():
+    """exp(diag(a, b)) = diag(e^a, e^b) for free symbols — previously errored."""
+    pool = alkahest.ExprPool()
+    a = pool.symbol("a")
+    b = pool.symbol("b")
+    z = pool.integer(0)
+    m = alkahest.Matrix([[a, z], [z, b]])
+    expm = m.matrix_exp().simplify().to_list()
+    sa, sb = sympy.symbols("a b")
+    assert sympy.simplify(_expr_to_sympy(expm[0][0]) - sympy.exp(sa)) == 0
+    assert sympy.simplify(_expr_to_sympy(expm[1][1]) - sympy.exp(sb)) == 0
+    assert sympy.simplify(_expr_to_sympy(expm[0][1])) == 0
+    assert sympy.simplify(_expr_to_sympy(expm[1][0])) == 0
+
+
+def test_symbolic_matrix_exp_oscillator_state_matrix():
+    """The headline probe: e^{A} for a state matrix A = [[0,1],[-w²,0]] with a free symbol
+    now returns a closed form instead of erroring on rationals. Verify numerically at w=2
+    against SymPy's matrix exponential."""
+    pool = alkahest.ExprPool()
+    w = pool.symbol("w")
+    z = pool.integer(0)
+    one = pool.integer(1)
+    neg_w2 = -(w**2)
+    a = alkahest.Matrix([[z, one], [neg_w2, z]])
+    expm = a.matrix_exp().to_list()
+    sw = sympy.Symbol("w")
+    got = sympy.Matrix([[_expr_to_sympy(expm[i][j]) for j in range(2)] for i in range(2)])
+    want = sympy.exp(sympy.Matrix([[0, 1], [-(sw**2), 0]]))
+    diff = sympy.simplify((got - want).subs(sw, 2))
+    for i in range(2):
+        for j in range(2):
+            assert abs(complex(diff[i, j])) < 1e-9, (i, j, diff[i, j])
+
+
 def test_rotation_diagonalizes():
     pool = alkahest.ExprPool()
     z = pool.integer(0)

@@ -8,6 +8,8 @@ use alkahest_core::{
     // Phase 21 — JIT
     compile as core_compile,
     decide_expr as core_decide_expr,
+    emit_expr_c as core_emit_expr_c,
+    emit_expr_c_vec as core_emit_expr_c_vec,
     emit_horner_c as core_emit_horner_c,
     emit_stablehlo as core_emit_stablehlo,
     eval_interp as core_eval_interp,
@@ -129,6 +131,11 @@ use alkahest_core::calculus::multilimit::{
 };
 use alkahest_core::ode::dsolve::{
     dsolve as core_dsolve, DsolveError as CoreDsolveError, OdeInput as CoreOdeInput,
+};
+use alkahest_core::ode::numeric::{
+    integrate_rk4 as core_integrate_rk4, integrate_rk45 as core_integrate_rk45,
+    NumericOdeError as CoreNumericOdeError, OdeTrajectory as CoreOdeTrajectory,
+    Rk45Options as CoreRk45Options, Rk4Options as CoreRk4Options,
 };
 use alkahest_core::ode::series_solve::{
     series_solve as core_series_solve, PointKind as CorePointKind,
@@ -2657,6 +2664,224 @@ fn py_dsolve(
     Ok(out.into_py(py))
 }
 
+// ---------------------------------------------------------------------------
+// Numeric ODE integrators (experimental, Phase 16b)
+// ---------------------------------------------------------------------------
+
+/// Convert a [`CoreNumericOdeError`] to a Python exception.
+fn numeric_ode_error_to_py(e: CoreNumericOdeError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyOdeError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+/// Sampled ODE trajectory returned by :func:`ode_integrate_rk4` and
+/// :func:`ode_integrate_rk45`.
+///
+/// Attributes
+/// ----------
+/// t : list[float]
+///     Time points (length = number of accepted steps + 1, including ``t_start``).
+/// y : list[list[float]]
+///     State values at each time point.  ``y[i][j]`` is the value of state
+///     variable ``j`` at time ``t[i]``.
+///
+/// Methods
+/// -------
+/// t_final() → float | None
+///     The last time point.
+/// y_final() → list[float] | None
+///     The state vector at the last time point.
+#[pyclass(name = "OdeTrajectory")]
+struct PyOdeTrajectory {
+    inner: CoreOdeTrajectory,
+}
+
+#[pymethods]
+impl PyOdeTrajectory {
+    #[getter]
+    fn t(&self, py: Python<'_>) -> PyObject {
+        PyList::new_bound(py, &self.inner.t).into_py(py)
+    }
+
+    #[getter]
+    fn y(&self, py: Python<'_>) -> PyObject {
+        let rows: Vec<PyObject> = self
+            .inner
+            .y
+            .iter()
+            .map(|row| PyList::new_bound(py, row).into_py(py))
+            .collect();
+        PyList::new_bound(py, rows).into_py(py)
+    }
+
+    fn t_final(&self) -> Option<f64> {
+        self.inner.t_final()
+    }
+
+    fn y_final(&self, py: Python<'_>) -> Option<PyObject> {
+        self.inner
+            .y_final()
+            .map(|v| PyList::new_bound(py, v).into_py(py))
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "OdeTrajectory(steps={}, t_final={:?})",
+            self.inner.len(),
+            self.inner.t_final()
+        )
+    }
+}
+
+/// ``experimental.ode_integrate_rk4(ode, y0, t_start, t_end, h, max_steps)``
+///
+/// Integrate a first-order ODE system using the classical 4th-order fixed-step
+/// Runge–Kutta method.
+///
+/// Parameters
+/// ----------
+/// ode : ODE
+///     First-order system ``dy/dt = f(t, y)`` built with :class:`alkahest.ODE`.
+/// y0 : list[float]
+///     Initial conditions; one value per state variable.
+/// t_start : float
+///     Start of the integration interval.
+/// t_end : float
+///     End of the integration interval; must satisfy ``t_end > t_start``.
+/// h : float, optional
+///     Fixed step size (default ``0.01``).
+/// max_steps : int, optional
+///     Maximum number of steps (default ``1_000_000``).
+///
+/// Returns
+/// -------
+/// OdeTrajectory
+///     Sampled trajectory with ``.t`` and ``.y`` arrays.
+///
+/// Raises
+/// ------
+/// OdeError
+///     On any integration failure (non-finite value, max steps exceeded, etc.).
+///
+/// Example::
+///
+///     import alkahest as A
+///     from alkahest import experimental as ex
+///     p = A.ExprPool()
+///     t, y = p.symbol("t"), p.symbol("y")
+///     ode = A.ODE([y], [y], t)   # dy/dt = y
+///     traj = ex.ode_integrate_rk4(ode, [1.0], 0.0, 1.0, h=0.001)
+///     import math
+///     assert abs(traj.y_final()[0] - math.e) < 1e-6
+#[pyfunction]
+#[pyo3(name = "ode_integrate_rk4", signature = (ode, y0, t_start, t_end, h=0.01, max_steps=1_000_000))]
+fn py_ode_integrate_rk4(
+    py: Python<'_>,
+    ode: PyRef<PyODE>,
+    y0: Vec<f64>,
+    t_start: f64,
+    t_end: f64,
+    h: f64,
+    max_steps: usize,
+) -> PyResult<PyOdeTrajectory> {
+    let opts = CoreRk4Options { h, max_steps };
+    let traj = {
+        let pool = ode.pool.borrow(py);
+        core_integrate_rk4(&ode.inner, &y0, t_start, t_end, &opts, &pool.inner)
+            .map_err(numeric_ode_error_to_py)?
+    };
+    Ok(PyOdeTrajectory { inner: traj })
+}
+
+/// ``experimental.ode_integrate_rk45(ode, y0, t_start, t_end, ...)``
+///
+/// Integrate a first-order ODE system using the adaptive Dormand–Prince
+/// RK4(5) method with automatic step-size control.
+///
+/// Parameters
+/// ----------
+/// ode : ODE
+///     First-order system ``dy/dt = f(t, y)`` built with :class:`alkahest.ODE`.
+/// y0 : list[float]
+///     Initial conditions; one value per state variable.
+/// t_start : float
+///     Start of the integration interval.
+/// t_end : float
+///     End of the integration interval; must satisfy ``t_end > t_start``.
+/// h_init : float, optional
+///     Initial step size (default ``0.01``).
+/// h_min : float, optional
+///     Minimum allowable step size (default ``1e-12``).
+/// h_max : float, optional
+///     Maximum allowable step size (default ``1.0``).
+/// rtol : float, optional
+///     Relative tolerance (default ``1e-6``).
+/// atol : float, optional
+///     Absolute tolerance (default ``1e-9``).
+/// max_steps : int, optional
+///     Maximum number of accepted steps (default ``1_000_000``).
+///
+/// Returns
+/// -------
+/// OdeTrajectory
+///     Sampled trajectory with ``.t`` and ``.y`` arrays.
+///
+/// Raises
+/// ------
+/// OdeError
+///     On any integration failure (step size too small, non-finite value, etc.).
+///
+/// Example::
+///
+///     import alkahest as A
+///     from alkahest import experimental as ex
+///     p = A.ExprPool()
+///     t, y = p.symbol("t"), p.symbol("y")
+///     ode = A.ODE([y], [y], t)   # dy/dt = y
+///     traj = ex.ode_integrate_rk45(ode, [1.0], 0.0, 1.0, rtol=1e-9, atol=1e-12)
+///     import math
+///     assert abs(traj.y_final()[0] - math.e) < 1e-8
+#[pyfunction]
+#[pyo3(name = "ode_integrate_rk45", signature = (
+    ode, y0, t_start, t_end,
+    h_init=0.01, h_min=1e-12, h_max=1.0, rtol=1e-6, atol=1e-9, max_steps=1_000_000
+))]
+#[allow(clippy::too_many_arguments)]
+fn py_ode_integrate_rk45(
+    py: Python<'_>,
+    ode: PyRef<PyODE>,
+    y0: Vec<f64>,
+    t_start: f64,
+    t_end: f64,
+    h_init: f64,
+    h_min: f64,
+    h_max: f64,
+    rtol: f64,
+    atol: f64,
+    max_steps: usize,
+) -> PyResult<PyOdeTrajectory> {
+    let opts = CoreRk45Options {
+        h_init,
+        h_min,
+        h_max,
+        rtol,
+        atol,
+        max_steps,
+    };
+    let traj = {
+        let pool = ode.pool.borrow(py);
+        core_integrate_rk45(&ode.inner, &y0, t_start, t_end, &opts, &pool.inner)
+            .map_err(numeric_ode_error_to_py)?
+    };
+    Ok(PyOdeTrajectory { inner: traj })
+}
+
 /// `experimental.laplace_transform(f, t, s)` → `Expr` for `L{f}(s)`.
 #[pyfunction]
 #[pyo3(name = "laplace_transform")]
@@ -5111,6 +5336,216 @@ fn extract_univariate_var(var: &Bound<'_, PyAny>) -> PyResult<ExprId> {
     ))
 }
 
+// ---------------------------------------------------------------------------
+// Transcendental C emission — general expression DAG walker
+// ---------------------------------------------------------------------------
+
+/// Emit a C function that evaluates a symbolic expression including
+/// transcendental functions.
+///
+/// Unlike :func:`emit_c` (which is restricted to univariate polynomials and
+/// uses Horner form), ``emit_c_expr`` supports arbitrary expressions including
+/// ``sin``, ``cos``, ``exp``, ``log``, ``sqrt``, ``tan``, ``atan2``, ``erf``,
+/// ``floor``, ``ceil``, and more.  The emitted code requires ``#include <math.h>``.
+///
+/// Parameters
+/// ----------
+/// expr : Expr
+///     The symbolic expression to compile.
+/// vars : Expr | list[Expr]
+///     The symbolic variables (in argument order).  A single ``Expr`` is treated
+///     as a one-element list.
+/// var_names : str | list[str], optional
+///     C parameter names for each variable.  If omitted, defaults to the
+///     symbolic name of each variable.  Must have the same length as *vars*.
+/// fn_name : str, optional
+///     The C function name (default ``"f"``).
+///
+/// Returns
+/// -------
+/// str
+///     A complete C function definition.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If the expression calls a function with no ``<math.h>`` equivalent
+///     (e.g. ``diracdelta``, elliptic integrals) or references a symbol not
+///     listed in *vars*.
+///
+/// Examples
+/// --------
+/// >>> from alkahest import pool, sin, emit_c_expr
+/// >>> p = pool(); x = p.symbol("x")
+/// >>> print(emit_c_expr(sin(x) + x**2, x))
+/// double f(double x) {
+///     return (sin(x) + (x * x));
+/// }
+#[pyfunction]
+#[pyo3(name = "emit_c_expr")]
+#[pyo3(signature = (expr, vars, var_names=None, fn_name="f"))]
+fn py_emit_c_expr(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    vars: &Bound<'_, PyAny>,
+    var_names: Option<&Bound<'_, PyAny>>,
+    fn_name: &str,
+) -> PyResult<String> {
+    // Collect variable ExprIds.
+    let var_ids: Vec<ExprId> = if let Ok(e) = vars.extract::<PyRef<PyExpr>>() {
+        vec![e.id]
+    } else if let Ok(seq) = vars.extract::<Vec<PyRef<PyExpr>>>() {
+        seq.iter().map(|e| e.id).collect()
+    } else {
+        return Err(PyTypeError::new_err(
+            "vars must be an Expr or a list of Expr",
+        ));
+    };
+
+    // Collect (or derive) C parameter names.
+    let pool_guard = expr.pool.borrow(py);
+    let c_names: Vec<String> = if let Some(names_obj) = var_names {
+        if let Ok(s) = names_obj.extract::<String>() {
+            vec![s]
+        } else if let Ok(seq) = names_obj.extract::<Vec<String>>() {
+            seq
+        } else {
+            return Err(PyTypeError::new_err(
+                "var_names must be a str or list of str",
+            ));
+        }
+    } else {
+        // Default: use the symbolic name of each variable.
+        var_ids
+            .iter()
+            .map(|&id| match pool_guard.inner.get(id) {
+                alkahest_core::kernel::ExprData::Symbol { name, .. } => name,
+                _ => "v".to_string(),
+            })
+            .collect()
+    };
+
+    if var_ids.len() != c_names.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "vars and var_names must have the same length (got {} and {})",
+            var_ids.len(),
+            c_names.len()
+        )));
+    }
+
+    let name_refs: Vec<&str> = c_names.iter().map(String::as_str).collect();
+    core_emit_expr_c(expr.id, &var_ids, &name_refs, fn_name, &pool_guard.inner)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+
+/// Emit a C function that writes multiple symbolic expressions into an output
+/// array.
+///
+/// Computes ``len(exprs)`` values and writes them to ``double *out``:
+///
+/// .. code-block:: c
+///
+///    void fn_name(double x, double y, …, double *out);
+///    /* out[0] = exprs[0], out[1] = exprs[1], … */
+///
+/// All expressions share the same input variables and the same ``<math.h>``
+/// support as :func:`emit_c_expr`.
+///
+/// Parameters
+/// ----------
+/// exprs : list[Expr]
+///     The symbolic expressions to evaluate (one per output component).
+/// vars : Expr | list[Expr]
+///     The symbolic variables (in argument order).
+/// var_names : str | list[str], optional
+///     C parameter names for each variable.  Defaults to the symbolic names.
+/// fn_name : str, optional
+///     The C function name (default ``"eval_vec"``).
+///
+/// Returns
+/// -------
+/// str
+///     A complete C function definition with a ``void`` return type.
+///
+/// Raises
+/// ------
+/// ValueError
+///     Same conditions as :func:`emit_c_expr`.
+///
+/// Examples
+/// --------
+/// >>> from alkahest import pool, sin, cos, emit_c_vec
+/// >>> p = pool(); x = p.symbol("x")
+/// >>> print(emit_c_vec([sin(x), cos(x)], x))
+/// void eval_vec(double x, double *out) {
+///     out[0] = sin(x);
+///     out[1] = cos(x);
+/// }
+#[pyfunction]
+#[pyo3(name = "emit_c_vec")]
+#[pyo3(signature = (exprs, vars, var_names=None, fn_name="eval_vec"))]
+fn py_emit_c_vec(
+    py: Python<'_>,
+    exprs: Vec<PyRef<PyExpr>>,
+    vars: &Bound<'_, PyAny>,
+    var_names: Option<&Bound<'_, PyAny>>,
+    fn_name: &str,
+) -> PyResult<String> {
+    if exprs.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "emit_c_vec requires at least one expression",
+        ));
+    }
+
+    // All exprs must share the same pool; use the first one.
+    let pool_guard = exprs[0].pool.borrow(py);
+    let expr_ids: Vec<ExprId> = exprs.iter().map(|e| e.id).collect();
+
+    // Collect variable ExprIds.
+    let var_ids: Vec<ExprId> = if let Ok(e) = vars.extract::<PyRef<PyExpr>>() {
+        vec![e.id]
+    } else if let Ok(seq) = vars.extract::<Vec<PyRef<PyExpr>>>() {
+        seq.iter().map(|e| e.id).collect()
+    } else {
+        return Err(PyTypeError::new_err(
+            "vars must be an Expr or a list of Expr",
+        ));
+    };
+
+    // Collect (or derive) C parameter names.
+    let c_names: Vec<String> = if let Some(names_obj) = var_names {
+        if let Ok(s) = names_obj.extract::<String>() {
+            vec![s]
+        } else if let Ok(seq) = names_obj.extract::<Vec<String>>() {
+            seq
+        } else {
+            return Err(PyTypeError::new_err(
+                "var_names must be a str or list of str",
+            ));
+        }
+    } else {
+        var_ids
+            .iter()
+            .map(|&id| match pool_guard.inner.get(id) {
+                alkahest_core::kernel::ExprData::Symbol { name, .. } => name,
+                _ => "v".to_string(),
+            })
+            .collect()
+    };
+
+    if var_ids.len() != c_names.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "vars and var_names must have the same length (got {} and {})",
+            var_ids.len(),
+            c_names.len()
+        )));
+    }
+
+    let name_refs: Vec<&str> = c_names.iter().map(String::as_str).collect();
+    core_emit_expr_c_vec(&expr_ids, &var_ids, &name_refs, fn_name, &pool_guard.inner)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+
 // Phase 25 — NumPy / batch evaluation: call_batch_raw is merged into PyCompiledFn above.
 
 // ---------------------------------------------------------------------------
@@ -6633,9 +7068,10 @@ fn py_ideal_radical(
 
 #[cfg(feature = "groebner")]
 use alkahest_core::{
-    diophantine as core_diophantine, solve_numerical, solve_polynomial_system, triangularize,
-    CertifiedPoint, DiophantineError, DiophantineSolution as CoreDiophantineSolution,
-    HomotopyError, HomotopyOpts, RegularChain, SolutionSet,
+    diophantine as core_diophantine, solve_numerical, solve_polynomial_system,
+    solve_transcendental, triangularize, CertifiedPoint, DiophantineError,
+    DiophantineSolution as CoreDiophantineSolution, HomotopyError, HomotopyOpts, RegularChain,
+    SolutionSet, TranscendentalOutcome,
 };
 
 #[cfg(feature = "groebner")]
@@ -6995,11 +7431,41 @@ fn py_solve(
         )));
     }
 
+    // Transcendental pre-processing: for a single equation in a single unknown
+    // containing `exp`/`log`, try the scoped closed-form solver before handing
+    // off to the polynomial path (which would reject any transcendental).  On
+    // `Unsupported` we fall straight through to `solve_polynomial_system`.
+    if eq_ids.len() == 1 && var_ids.len() == 1 {
+        let trans = {
+            let pool = pool_py.borrow(py);
+            solve_transcendental(eq_ids[0], var_ids[0], &pool.inner)
+        };
+        if let TranscendentalOutcome::Solved(values) = trans {
+            // Each value is a solution for the single variable.
+            let solutions: Vec<Vec<ExprId>> = values.into_iter().map(|v| vec![v]).collect();
+            let result: Result<SolutionSet, alkahest_core::SolverError> =
+                Ok(SolutionSet::Finite(solutions));
+            return finite_solutions_to_py(py, result, &pool_py, &var_ids, numeric);
+        }
+    }
+
     let result = {
         let pool = pool_py.borrow(py);
         solve_polynomial_system(eq_ids, var_ids.clone(), &pool.inner)
     };
+    finite_solutions_to_py(py, result, &pool_py, &var_ids, numeric)
+}
 
+/// Shared formatting for a [`SolutionSet`] result into the Python return shape
+/// (list of dicts, a `GroebnerBasis`, or a structured error).
+#[cfg(feature = "groebner")]
+fn finite_solutions_to_py(
+    py: Python<'_>,
+    result: Result<SolutionSet, alkahest_core::SolverError>,
+    pool_py: &Py<PyExprPool>,
+    var_ids: &[ExprId],
+    numeric: bool,
+) -> PyResult<PyObject> {
     match result {
         Err(e) => Python::with_gil(|py2| {
             let exc_type = py2.get_type_bound::<PySolverError>();
@@ -7598,6 +8064,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Phase 16
     m.add_class::<PyODE>()?;
     m.add_function(wrap_pyfunction!(py_lower_to_first_order, m)?)?;
+    // Phase 16b — numeric ODE integrators
+    m.add_class::<PyOdeTrajectory>()?;
+    m.add_function(wrap_pyfunction!(py_ode_integrate_rk4, m)?)?;
+    m.add_function(wrap_pyfunction!(py_ode_integrate_rk45, m)?)?;
     // Phase 17
     m.add_class::<PyDAE>()?;
     m.add_function(wrap_pyfunction!(py_pantelides, m)?)?;
@@ -7629,6 +8099,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Phase 24 — Horner form
     m.add_function(wrap_pyfunction!(py_horner, m)?)?;
     m.add_function(wrap_pyfunction!(py_emit_c, m)?)?;
+    // Transcendental C emission (general DAG walker)
+    m.add_function(wrap_pyfunction!(py_emit_c_expr, m)?)?;
+    m.add_function(wrap_pyfunction!(py_emit_c_vec, m)?)?;
     // Phase 26 — collect_like_terms
     m.add_function(wrap_pyfunction!(py_collect_like_terms, m)?)?;
     // V3-2 — Pauli / Clifford (non-commutative helpers)
