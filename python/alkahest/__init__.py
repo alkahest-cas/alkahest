@@ -166,6 +166,8 @@ from .alkahest import (  # noqa: F401
     # V2-2: Resultants and subresultant PRS
     resultant,
     round,  # symbolic round — use alkahest.round(expr)
+    # Parametric Routh–Hurwitz stability conditions
+    routh_hurwitz,
     rsolve,
     satisfiable,
     sensitivity_system,
@@ -1304,6 +1306,7 @@ __all__ = [
     # V2-13 — Differential algebra / Rosenfeld–Gröbner (groebner default feature)
     "rosenfeld_groebner",
     "round",
+    "routh_hurwitz",
     "rsolve",
     "satisfiable",
     "sensitivity_system",

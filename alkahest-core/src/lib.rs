@@ -65,7 +65,9 @@ pub use logic::{
     dpll_sat, formula_from_expr, satisfiable, BoolClause, BoolLit, Formula, LogicError,
     Satisfiability,
 };
-pub use real::{cad_lift, cad_project, decide, decide_expr, CadError, QeResult};
+pub use real::{
+    cad_lift, cad_project, decide, decide_expr, routh_hurwitz, CadError, QeResult, RouthHurwitz,
+};
 // V2-6 — LLL + integer relations (augmented lattice heuristic)
 pub use lattice::{
     lattice_reduce_rows, lattice_reduce_rows_with_delta, validate_lll_rows, LatticeError,
@@ -260,7 +262,9 @@ pub mod stable {
         SparseGcdError, SparseInterpError, UniPoly, UniPolyFactorModP, UniPolyFactorization,
     };
     pub use crate::primitive::{Primitive, PrimitiveRegistry};
-    pub use crate::real::{cad_lift, cad_project, decide, decide_expr, CadError, QeResult};
+    pub use crate::real::{
+        cad_lift, cad_project, decide, decide_expr, routh_hurwitz, CadError, QeResult, RouthHurwitz,
+    };
     pub use crate::simplify::{
         simplify, simplify_egraph, simplify_egraph_with, simplify_trig_normal_form, simplify_with,
         DepthCost, EgraphConfig, EgraphCost, NoncommutativeCost, OpCost, SimplifyConfig, SizeCost,
