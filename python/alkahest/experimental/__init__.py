@@ -34,6 +34,11 @@ PRs #152–#161):
 - :func:`asymptotic_expand` — asymptotic expansion at infinity (#161).
 - :func:`series_solve` — power-series / Frobenius ODE solutions (#160).
 - :class:`Fps` — lazy formal power series over ℚ (#155).
+
+Numeric ODE integrators (Phase 16b):
+- :func:`ode_integrate_rk4` — fixed-step 4th-order Runge–Kutta integrator.
+- :func:`ode_integrate_rk45` — adaptive Dormand–Prince RK4(5) integrator.
+- :class:`OdeTrajectory` — sampled trajectory returned by the integrators.
 """
 
 from __future__ import annotations
@@ -46,6 +51,7 @@ from alkahest import to_stablehlo
 # Calculus / ODE / transform surface (always built into the extension).
 from alkahest.alkahest import (
     Fps,
+    OdeTrajectory,
     asymptotic_expand,
     dirac_delta,
     dsolve,
@@ -56,6 +62,8 @@ from alkahest.alkahest import (
     inverse_z_transform,
     laplace_transform,
     multilimit,
+    ode_integrate_rk4,
+    ode_integrate_rk45,
     series_solve,
     z_transform,
 )
@@ -77,6 +85,7 @@ __all__ = [
     "Fps",
     "GbPoly",
     "GroebnerBasis",
+    "OdeTrajectory",
     "asymptotic_expand",
     "compile_cuda",
     "dirac_delta",
@@ -88,6 +97,8 @@ __all__ = [
     "inverse_z_transform",
     "laplace_transform",
     "multilimit",
+    "ode_integrate_rk4",
+    "ode_integrate_rk45",
     "series_solve",
     "solve",
     "to_jax",
