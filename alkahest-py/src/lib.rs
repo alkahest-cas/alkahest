@@ -8,6 +8,8 @@ use alkahest_core::{
     // Phase 21 — JIT
     compile as core_compile,
     decide_expr as core_decide_expr,
+    emit_expr_c as core_emit_expr_c,
+    emit_expr_c_vec as core_emit_expr_c_vec,
     emit_horner_c as core_emit_horner_c,
     emit_stablehlo as core_emit_stablehlo,
     eval_interp as core_eval_interp,
@@ -5308,6 +5310,216 @@ fn extract_univariate_var(var: &Bound<'_, PyAny>) -> PyResult<ExprId> {
     ))
 }
 
+// ---------------------------------------------------------------------------
+// Transcendental C emission — general expression DAG walker
+// ---------------------------------------------------------------------------
+
+/// Emit a C function that evaluates a symbolic expression including
+/// transcendental functions.
+///
+/// Unlike :func:`emit_c` (which is restricted to univariate polynomials and
+/// uses Horner form), ``emit_c_expr`` supports arbitrary expressions including
+/// ``sin``, ``cos``, ``exp``, ``log``, ``sqrt``, ``tan``, ``atan2``, ``erf``,
+/// ``floor``, ``ceil``, and more.  The emitted code requires ``#include <math.h>``.
+///
+/// Parameters
+/// ----------
+/// expr : Expr
+///     The symbolic expression to compile.
+/// vars : Expr | list[Expr]
+///     The symbolic variables (in argument order).  A single ``Expr`` is treated
+///     as a one-element list.
+/// var_names : str | list[str], optional
+///     C parameter names for each variable.  If omitted, defaults to the
+///     symbolic name of each variable.  Must have the same length as *vars*.
+/// fn_name : str, optional
+///     The C function name (default ``"f"``).
+///
+/// Returns
+/// -------
+/// str
+///     A complete C function definition.
+///
+/// Raises
+/// ------
+/// ValueError
+///     If the expression calls a function with no ``<math.h>`` equivalent
+///     (e.g. ``diracdelta``, elliptic integrals) or references a symbol not
+///     listed in *vars*.
+///
+/// Examples
+/// --------
+/// >>> from alkahest import pool, sin, emit_c_expr
+/// >>> p = pool(); x = p.symbol("x")
+/// >>> print(emit_c_expr(sin(x) + x**2, x))
+/// double f(double x) {
+///     return (sin(x) + (x * x));
+/// }
+#[pyfunction]
+#[pyo3(name = "emit_c_expr")]
+#[pyo3(signature = (expr, vars, var_names=None, fn_name="f"))]
+fn py_emit_c_expr(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    vars: &Bound<'_, PyAny>,
+    var_names: Option<&Bound<'_, PyAny>>,
+    fn_name: &str,
+) -> PyResult<String> {
+    // Collect variable ExprIds.
+    let var_ids: Vec<ExprId> = if let Ok(e) = vars.extract::<PyRef<PyExpr>>() {
+        vec![e.id]
+    } else if let Ok(seq) = vars.extract::<Vec<PyRef<PyExpr>>>() {
+        seq.iter().map(|e| e.id).collect()
+    } else {
+        return Err(PyTypeError::new_err(
+            "vars must be an Expr or a list of Expr",
+        ));
+    };
+
+    // Collect (or derive) C parameter names.
+    let pool_guard = expr.pool.borrow(py);
+    let c_names: Vec<String> = if let Some(names_obj) = var_names {
+        if let Ok(s) = names_obj.extract::<String>() {
+            vec![s]
+        } else if let Ok(seq) = names_obj.extract::<Vec<String>>() {
+            seq
+        } else {
+            return Err(PyTypeError::new_err(
+                "var_names must be a str or list of str",
+            ));
+        }
+    } else {
+        // Default: use the symbolic name of each variable.
+        var_ids
+            .iter()
+            .map(|&id| match pool_guard.inner.get(id) {
+                alkahest_core::kernel::ExprData::Symbol { name, .. } => name,
+                _ => "v".to_string(),
+            })
+            .collect()
+    };
+
+    if var_ids.len() != c_names.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "vars and var_names must have the same length (got {} and {})",
+            var_ids.len(),
+            c_names.len()
+        )));
+    }
+
+    let name_refs: Vec<&str> = c_names.iter().map(String::as_str).collect();
+    core_emit_expr_c(expr.id, &var_ids, &name_refs, fn_name, &pool_guard.inner)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+
+/// Emit a C function that writes multiple symbolic expressions into an output
+/// array.
+///
+/// Computes ``len(exprs)`` values and writes them to ``double *out``:
+///
+/// .. code-block:: c
+///
+///    void fn_name(double x, double y, …, double *out);
+///    /* out[0] = exprs[0], out[1] = exprs[1], … */
+///
+/// All expressions share the same input variables and the same ``<math.h>``
+/// support as :func:`emit_c_expr`.
+///
+/// Parameters
+/// ----------
+/// exprs : list[Expr]
+///     The symbolic expressions to evaluate (one per output component).
+/// vars : Expr | list[Expr]
+///     The symbolic variables (in argument order).
+/// var_names : str | list[str], optional
+///     C parameter names for each variable.  Defaults to the symbolic names.
+/// fn_name : str, optional
+///     The C function name (default ``"eval_vec"``).
+///
+/// Returns
+/// -------
+/// str
+///     A complete C function definition with a ``void`` return type.
+///
+/// Raises
+/// ------
+/// ValueError
+///     Same conditions as :func:`emit_c_expr`.
+///
+/// Examples
+/// --------
+/// >>> from alkahest import pool, sin, cos, emit_c_vec
+/// >>> p = pool(); x = p.symbol("x")
+/// >>> print(emit_c_vec([sin(x), cos(x)], x))
+/// void eval_vec(double x, double *out) {
+///     out[0] = sin(x);
+///     out[1] = cos(x);
+/// }
+#[pyfunction]
+#[pyo3(name = "emit_c_vec")]
+#[pyo3(signature = (exprs, vars, var_names=None, fn_name="eval_vec"))]
+fn py_emit_c_vec(
+    py: Python<'_>,
+    exprs: Vec<PyRef<PyExpr>>,
+    vars: &Bound<'_, PyAny>,
+    var_names: Option<&Bound<'_, PyAny>>,
+    fn_name: &str,
+) -> PyResult<String> {
+    if exprs.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "emit_c_vec requires at least one expression",
+        ));
+    }
+
+    // All exprs must share the same pool; use the first one.
+    let pool_guard = exprs[0].pool.borrow(py);
+    let expr_ids: Vec<ExprId> = exprs.iter().map(|e| e.id).collect();
+
+    // Collect variable ExprIds.
+    let var_ids: Vec<ExprId> = if let Ok(e) = vars.extract::<PyRef<PyExpr>>() {
+        vec![e.id]
+    } else if let Ok(seq) = vars.extract::<Vec<PyRef<PyExpr>>>() {
+        seq.iter().map(|e| e.id).collect()
+    } else {
+        return Err(PyTypeError::new_err(
+            "vars must be an Expr or a list of Expr",
+        ));
+    };
+
+    // Collect (or derive) C parameter names.
+    let c_names: Vec<String> = if let Some(names_obj) = var_names {
+        if let Ok(s) = names_obj.extract::<String>() {
+            vec![s]
+        } else if let Ok(seq) = names_obj.extract::<Vec<String>>() {
+            seq
+        } else {
+            return Err(PyTypeError::new_err(
+                "var_names must be a str or list of str",
+            ));
+        }
+    } else {
+        var_ids
+            .iter()
+            .map(|&id| match pool_guard.inner.get(id) {
+                alkahest_core::kernel::ExprData::Symbol { name, .. } => name,
+                _ => "v".to_string(),
+            })
+            .collect()
+    };
+
+    if var_ids.len() != c_names.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "vars and var_names must have the same length (got {} and {})",
+            var_ids.len(),
+            c_names.len()
+        )));
+    }
+
+    let name_refs: Vec<&str> = c_names.iter().map(String::as_str).collect();
+    core_emit_expr_c_vec(&expr_ids, &var_ids, &name_refs, fn_name, &pool_guard.inner)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+}
+
 // Phase 25 — NumPy / batch evaluation: call_batch_raw is merged into PyCompiledFn above.
 
 // ---------------------------------------------------------------------------
@@ -7860,6 +8072,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // Phase 24 — Horner form
     m.add_function(wrap_pyfunction!(py_horner, m)?)?;
     m.add_function(wrap_pyfunction!(py_emit_c, m)?)?;
+    // Transcendental C emission (general DAG walker)
+    m.add_function(wrap_pyfunction!(py_emit_c_expr, m)?)?;
+    m.add_function(wrap_pyfunction!(py_emit_c_vec, m)?)?;
     // Phase 26 — collect_like_terms
     m.add_function(wrap_pyfunction!(py_collect_like_terms, m)?)?;
     // V3-2 — Pauli / Clifford (non-commutative helpers)

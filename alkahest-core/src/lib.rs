@@ -108,7 +108,10 @@ pub use transform::{
 };
 
 // Phase 24 — Horner form
-pub use horner::{emit_horner_c, eval_horner_f64, eval_horner_f64_batch, horner};
+pub use horner::{
+    emit_expr_c, emit_expr_c_vec, emit_horner_c, eval_horner_f64, eval_horner_f64_batch, horner,
+    EmitCError,
+};
 pub use simplify::rulesets::{log_exp_rules, log_exp_rules_safe, trig_rules};
 pub use simplify::{
     assumptions_satisfy, rules_for_config, simplify, simplify_batch, simplify_colored,
@@ -289,7 +292,7 @@ pub mod experimental {
     pub use crate::calculus::fps::{Fps, FpsError};
     pub use crate::calculus::multilimit::{multilimit, MultiLimit, PathWitness};
     pub use crate::deriv::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
-    pub use crate::horner::{emit_horner_c, horner};
+    pub use crate::horner::{emit_expr_c, emit_expr_c_vec, emit_horner_c, horner, EmitCError};
     pub use crate::hybrid::{Event, GuardStructure, HybridODE};
     pub use crate::lean::emit_lean_expr as emit_lean;
     pub use crate::matrix::{
