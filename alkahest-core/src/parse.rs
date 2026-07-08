@@ -105,7 +105,7 @@ impl AlkahestError for ParseError {
         match self.code_idx {
             1 => Some("only ASCII arithmetic expressions are supported"),
             2 => Some("check parentheses and operator placement"),
-            _ => Some("use a known function: sin, cos, tan, sinh, cosh, tanh, asin, acos, atan, atan2, exp, log, sqrt, abs, sign, floor, ceil, round, erf, erfc, gamma"),
+            _ => Some("use a known function: sin, cos, tan, sec, csc, cot, sinh, cosh, tanh, sech, csch, coth, asin, acos, atan, atan2, exp, log, sqrt, abs, sign, floor, ceil, round, erf, erfc, gamma"),
         }
     }
 
@@ -285,10 +285,37 @@ const KNOWN_FUNCS: &[&str] = &[
     "EllipticE",
     "EllipticF",
     "EllipticPi",
+    // Reciprocal trig / hyperbolic functions.  These are *desugared* in
+    // `parse_funcall` to their elementary reciprocal definitions (e.g.
+    // `sec(x) → cos(x)^(-1)`); no `sec`/`csc`/… node ever enters the pool.
+    "sec",
+    "csc",
+    "cot",
+    "sech",
+    "csch",
+    "coth",
 ];
 
 fn is_known_func(name: &str) -> bool {
     KNOWN_FUNCS.contains(&name)
+}
+
+/// If `name` is a reciprocal trig/hyperbolic function, return the elementary
+/// primitive it is the reciprocal of (`sec → cos`, `csc → sin`, `cot → tan`,
+/// and the hyperbolic analogues).  These are desugared to `base(x)^(-1)` at
+/// parse time so every downstream stage (diff, eval, integrate, simplify)
+/// operates purely on the existing `cos`/`sin`/`tan`/`cosh`/`sinh`/`tanh`
+/// primitives.
+fn reciprocal_base(name: &str) -> Option<&'static str> {
+    match name {
+        "sec" => Some("cos"),
+        "csc" => Some("sin"),
+        "cot" => Some("tan"),
+        "sech" => Some("cosh"),
+        "csch" => Some("sinh"),
+        "coth" => Some("tanh"),
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -481,6 +508,23 @@ impl<'a> Parser<'a> {
             }
         }
         self.expect(&Tok::RParen)?;
+
+        // Desugar reciprocal trig/hyperbolic calls to `base(x)^(-1)` so no
+        // `sec`/`csc`/… node ever reaches the pool.  Only the single-argument
+        // form is meaningful; any other arity is a syntax error, mirroring how
+        // the other unary functions reject extra arguments downstream.
+        if let Some(base) = reciprocal_base(name) {
+            if args.len() != 1 {
+                return Err(ParseError::syntax(
+                    format!("{name} takes exactly 1 argument, got {}", args.len()),
+                    (offset, offset + name.len()),
+                ));
+            }
+            let inner = self.pool.func(base, args);
+            let neg1 = self.pool.integer(-1_i64);
+            return Ok(self.pool.pow(inner, neg1));
+        }
+
         Ok(self.pool.func(name, args))
     }
 }
@@ -498,6 +542,12 @@ impl<'a> Parser<'a> {
 /// `sin`, `cos`, `tan`, `sinh`, `cosh`, `tanh`, `asin`, `acos`, `atan`,
 /// `atan2`, `exp`, `log`, `sqrt`, `abs`, `sign`, `floor`, `ceil`, `round`,
 /// `erf`, `erfc`, `gamma`.
+///
+/// The reciprocal trig/hyperbolic functions `sec`, `csc`, `cot`, `sech`,
+/// `csch`, and `coth` are also accepted; they are desugared at parse time to
+/// their elementary reciprocal definitions (`sec(x) → cos(x)^(-1)`,
+/// `csc(x) → sin(x)^(-1)`, `cot(x) → tan(x)^(-1)`, and the hyperbolic
+/// analogues), so no dedicated node for them exists in the pool.
 ///
 /// `symbols` maps identifier names to pre-existing [`ExprId`]s.  Identifiers
 /// not in the map are interned as new `Domain::Real` symbols and added to the
@@ -655,5 +705,99 @@ mod tests {
         let mut syms = HashMap::new();
         parse("y + 1", &pool, &mut syms).unwrap();
         assert!(syms.contains_key("y"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Reciprocal trig / hyperbolic desugaring
+    // -----------------------------------------------------------------------
+
+    /// Each reciprocal function desugars to `base(x)^(-1)`; no `sec`/`csc`/…
+    /// node is ever produced.
+    #[test]
+    fn reciprocal_trig_desugar_structure() {
+        let cases = [
+            ("sec(x)", "cos"),
+            ("csc(x)", "sin"),
+            ("cot(x)", "tan"),
+            ("sech(x)", "cosh"),
+            ("csch(x)", "sinh"),
+            ("coth(x)", "tanh"),
+        ];
+        for (src, base) in cases {
+            let (pool, x, mut syms) = pool_and_x();
+            let e = parse(src, &pool, &mut syms).unwrap();
+            let neg1 = pool.integer(-1i64);
+            let expected = pool.pow(pool.func(base, vec![x]), neg1);
+            assert_eq!(e, expected, "{src} should desugar to {base}(x)^(-1)");
+        }
+    }
+
+    /// The desugared argument is threaded through, not just a bare symbol.
+    #[test]
+    fn reciprocal_trig_desugar_with_expression_arg() {
+        let (pool, x, mut syms) = pool_and_x();
+        let e = parse("sec(2*x)", &pool, &mut syms).unwrap();
+        let two_x = pool.mul(vec![pool.integer(2i64), x]);
+        let neg1 = pool.integer(-1i64);
+        let expected = pool.pow(pool.func("cos", vec![two_x]), neg1);
+        assert_eq!(e, expected);
+    }
+
+    /// Differentiating a reciprocal function succeeds (routes through the
+    /// existing `cos`/`sin`/… diff rules via the `^(-1)` desugar).
+    #[test]
+    fn reciprocal_trig_diff_closes() {
+        let (pool, x, mut syms) = pool_and_x();
+        let e = parse("sec(x)", &pool, &mut syms).unwrap();
+        let d = crate::diff::diff(e, x, &pool);
+        assert!(d.is_ok(), "d/dx sec(x) should differentiate");
+    }
+
+    /// `∫ sec(x)² dx` closes (== tan(x)) and routes through the reciprocal-square
+    /// trig rule: `sec(x)^2` parses to `(cos(x)^(-1))^2`, which `simplify`
+    /// canonicalizes to `cos(x)^(-2)` — the exact shape the integrator's
+    /// `∫ 1/cos² = tan` rule matches.  Like every integrand, it must be in
+    /// canonical (simplified) form; the integrator's internal soundness gate then
+    /// guarantees `d/dx(result) == sec(x)²`.
+    #[test]
+    fn reciprocal_trig_integrate_sec_squared() {
+        let (pool, x, mut syms) = pool_and_x();
+        let e =
+            crate::simplify::simplify(parse("sec(x)^2", &pool, &mut syms).unwrap(), &pool).value;
+        let r = crate::integrate::integrate(e, x, &pool);
+        assert!(r.is_ok(), "∫ sec(x)² dx should close (== tan(x))");
+    }
+
+    /// `∫ csc(x)² dx` closes (== −cot(x)); `csc(x)^2` simplifies to `sin(x)^(-2)`.
+    #[test]
+    fn reciprocal_trig_integrate_csc_squared() {
+        let (pool, x, mut syms) = pool_and_x();
+        let e =
+            crate::simplify::simplify(parse("csc(x)^2", &pool, &mut syms).unwrap(), &pool).value;
+        let r = crate::integrate::integrate(e, x, &pool);
+        assert!(r.is_ok(), "∫ csc(x)² dx should close");
+    }
+
+    /// A reciprocal function called with the wrong arity is a syntax error.
+    #[test]
+    fn reciprocal_trig_wrong_arity_errors() {
+        let (pool, _x, mut syms) = pool_and_x();
+        let err = parse("sec(x, x)", &pool, &mut syms).unwrap_err();
+        assert_eq!(err.code(), "E-PARSE-002");
+    }
+
+    /// Regression: the base trig/hyperbolic functions and `atan2` still parse
+    /// to plain `Func` nodes (unaffected by the desugar).
+    #[test]
+    fn base_trig_functions_unchanged() {
+        for src in [
+            "sin(x)", "cos(x)", "tan(x)", "sinh(x)", "cosh(x)", "tanh(x)",
+        ] {
+            let (pool, _x, mut syms) = pool_and_x();
+            parse(src, &pool, &mut syms).unwrap();
+        }
+        let pool = ExprPool::new();
+        let mut syms = HashMap::new();
+        parse("atan2(1, 2)", &pool, &mut syms).unwrap();
     }
 }

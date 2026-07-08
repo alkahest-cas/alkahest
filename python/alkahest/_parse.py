@@ -61,8 +61,29 @@ _FUNC_NAMES = frozenset(
         "erf",
         "erfc",
         "gamma",
+        # Reciprocal trig / hyperbolic functions (desugared to base(x) ** -1).
+        "sec",
+        "csc",
+        "cot",
+        "sech",
+        "csch",
+        "coth",
     }
 )
+
+# Reciprocal trig / hyperbolic functions map to the elementary primitive they
+# are the reciprocal of; a call ``f(x)`` is desugared to ``base(x) ** -1`` so no
+# dedicated ``sec``/``csc``/… node is ever built and everything downstream
+# (diff, eval, integrate, simplify) runs on the existing cos/sin/tan/cosh/sinh/
+# tanh primitives.  Mirrors the desugar in ``alkahest-core/src/parse.rs``.
+_RECIPROCAL_BASE: dict[str, str] = {
+    "sec": "cos",
+    "csc": "sin",
+    "cot": "tan",
+    "sech": "cosh",
+    "csch": "sinh",
+    "coth": "tanh",
+}
 
 # ---------------------------------------------------------------------------
 # Lexer
@@ -304,12 +325,25 @@ def _apply_func(name: str, args: list, offset: int):
         "EllipticF": _ak.elliptic_f,
         "EllipticPi": _ak.elliptic_pi,
     }
+    # Desugar reciprocal trig/hyperbolic calls to ``base(x) ** -1``.  Only the
+    # single-argument form is meaningful; any other arity is a parse error.
+    base = _RECIPROCAL_BASE.get(name)
+    if base is not None:
+        if len(args) != 1:
+            raise ParseError(
+                f"{name} takes exactly 1 argument, got {len(args)}",
+                span=(offset, offset + len(name)),
+            )
+        return _funcs[base](*args) ** -1
+
     fn = _funcs.get(name)
     if fn is None:
         raise ParseError(
             f"unknown function {name!r}",
             span=(offset, offset + len(name)),
-            remediation=f"known functions: {', '.join(sorted(_funcs))}",
+            remediation=(
+                f"known functions: {', '.join(sorted(set(_funcs) | set(_RECIPROCAL_BASE)))}"
+            ),
         )
     return fn(*args)
 
