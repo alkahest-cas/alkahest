@@ -1705,6 +1705,21 @@ fn atan(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 }
 
 #[pyfunction]
+fn asinh(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "asinh", expr)
+}
+
+#[pyfunction]
+fn acosh(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "acosh", expr)
+}
+
+#[pyfunction]
+fn atanh(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "atanh", expr)
+}
+
+#[pyfunction]
 fn erf(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "erf", expr)
 }
@@ -8070,6 +8085,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(asin, m)?)?;
     m.add_function(wrap_pyfunction!(acos, m)?)?;
     m.add_function(wrap_pyfunction!(atan, m)?)?;
+    m.add_function(wrap_pyfunction!(asinh, m)?)?;
+    m.add_function(wrap_pyfunction!(acosh, m)?)?;
+    m.add_function(wrap_pyfunction!(atanh, m)?)?;
     m.add_function(wrap_pyfunction!(erf, m)?)?;
     m.add_function(wrap_pyfunction!(erfc, m)?)?;
     m.add_function(wrap_pyfunction!(abs_expr, m)?)?;

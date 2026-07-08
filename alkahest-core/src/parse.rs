@@ -105,7 +105,7 @@ impl AlkahestError for ParseError {
         match self.code_idx {
             1 => Some("only ASCII arithmetic expressions are supported"),
             2 => Some("check parentheses and operator placement"),
-            _ => Some("use a known function: sin, cos, tan, sec, csc, cot, sinh, cosh, tanh, sech, csch, coth, asin, acos, atan, atan2, exp, log, sqrt, abs, sign, floor, ceil, round, erf, erfc, gamma"),
+            _ => Some("use a known function: sin, cos, tan, sec, csc, cot, sinh, cosh, tanh, sech, csch, coth, asin, acos, atan, asinh, acosh, atanh, atan2, exp, log, sqrt, abs, sign, floor, ceil, round, erf, erfc, gamma"),
         }
     }
 
@@ -269,6 +269,9 @@ const KNOWN_FUNCS: &[&str] = &[
     "asin",
     "acos",
     "atan",
+    "asinh",
+    "acosh",
+    "atanh",
     "atan2",
     "exp",
     "log",
@@ -540,8 +543,8 @@ impl<'a> Parser<'a> {
 /// operators (`+`, `-`, `*`, `/`, `^`, `**`), unary `-`/`+`, parentheses,
 /// and a fixed set of mathematical functions:
 /// `sin`, `cos`, `tan`, `sinh`, `cosh`, `tanh`, `asin`, `acos`, `atan`,
-/// `atan2`, `exp`, `log`, `sqrt`, `abs`, `sign`, `floor`, `ceil`, `round`,
-/// `erf`, `erfc`, `gamma`.
+/// `asinh`, `acosh`, `atanh`, `atan2`, `exp`, `log`, `sqrt`, `abs`, `sign`,
+/// `floor`, `ceil`, `round`, `erf`, `erfc`, `gamma`.
 ///
 /// The reciprocal trig/hyperbolic functions `sec`, `csc`, `cot`, `sech`,
 /// `csch`, and `coth` are also accepted; they are desugared at parse time to

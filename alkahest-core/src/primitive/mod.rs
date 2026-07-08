@@ -312,6 +312,9 @@ impl PrimitiveRegistry {
         reg.register(Box::new(builtins::AsinPrimitive));
         reg.register(Box::new(builtins::AcosPrimitive));
         reg.register(Box::new(builtins::AtanPrimitive));
+        reg.register(Box::new(builtins::AsinhPrimitive));
+        reg.register(Box::new(builtins::AcoshPrimitive));
+        reg.register(Box::new(builtins::AtanhPrimitive));
         reg.register(Box::new(builtins::ErfPrimitive));
         reg.register(Box::new(builtins::ErfcPrimitive));
         // Elliptic special functions (parameter convention m = k²).
@@ -1007,6 +1010,163 @@ pub mod builtins {
 
         fn lean_theorem(&self) -> Option<&'static str> {
             Some("Real.arctan_deriv")
+        }
+    }
+
+    // ── asinh ────────────────────────────────────────────────────────────────
+
+    pub struct AsinhPrimitive;
+
+    impl Primitive for AsinhPrimitive {
+        fn name(&self) -> &'static str {
+            "asinh"
+        }
+
+        fn pretty(&self, args: &[ExprId], pool: &ExprPool) -> String {
+            format!("asinh({})", pool.display(args[0]))
+        }
+
+        fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
+            // d/dx asinh(x) = dx / sqrt(x² + 1)
+            let x = args[0];
+            let dx = crate::diff::diff(x, wrt, pool).ok()?.value;
+            let x2 = pool.pow(x, pool.integer(2_i32));
+            let one = pool.integer(1_i32);
+            let x2_plus_one = pool.add(vec![x2, one]);
+            let denom = pool.func("sqrt", vec![x2_plus_one]);
+            Some(pool.mul(vec![dx, pool.pow(denom, pool.integer(-1_i32))]))
+        }
+
+        fn diff_reverse(
+            &self,
+            args: &[ExprId],
+            cotan: ExprId,
+            pool: &ExprPool,
+        ) -> Option<Vec<ExprId>> {
+            let x = args[0];
+            let x2 = pool.pow(x, pool.integer(2_i32));
+            let one = pool.integer(1_i32);
+            let x2_plus_one = pool.add(vec![x2, one]);
+            let denom = pool.func("sqrt", vec![x2_plus_one]);
+            Some(vec![
+                pool.mul(vec![cotan, pool.pow(denom, pool.integer(-1_i32))])
+            ])
+        }
+
+        fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
+            Some(args[0].asinh())
+        }
+
+        fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
+            Some(args[0].asinh())
+        }
+
+        fn lean_theorem(&self) -> Option<&'static str> {
+            Some("Real.arsinh")
+        }
+    }
+
+    // ── acosh ────────────────────────────────────────────────────────────────
+
+    pub struct AcoshPrimitive;
+
+    impl Primitive for AcoshPrimitive {
+        fn name(&self) -> &'static str {
+            "acosh"
+        }
+
+        fn pretty(&self, args: &[ExprId], pool: &ExprPool) -> String {
+            format!("acosh({})", pool.display(args[0]))
+        }
+
+        fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
+            // d/dx acosh(x) = dx / sqrt(x² − 1)
+            let x = args[0];
+            let dx = crate::diff::diff(x, wrt, pool).ok()?.value;
+            let x2 = pool.pow(x, pool.integer(2_i32));
+            let neg_one = pool.integer(-1_i32);
+            let x2_minus_one = pool.add(vec![x2, neg_one]);
+            let denom = pool.func("sqrt", vec![x2_minus_one]);
+            Some(pool.mul(vec![dx, pool.pow(denom, pool.integer(-1_i32))]))
+        }
+
+        fn diff_reverse(
+            &self,
+            args: &[ExprId],
+            cotan: ExprId,
+            pool: &ExprPool,
+        ) -> Option<Vec<ExprId>> {
+            let x = args[0];
+            let x2 = pool.pow(x, pool.integer(2_i32));
+            let neg_one = pool.integer(-1_i32);
+            let x2_minus_one = pool.add(vec![x2, neg_one]);
+            let denom = pool.func("sqrt", vec![x2_minus_one]);
+            Some(vec![
+                pool.mul(vec![cotan, pool.pow(denom, pool.integer(-1_i32))])
+            ])
+        }
+
+        fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
+            Some(args[0].acosh())
+        }
+
+        fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
+            args[0].acosh()
+        }
+
+        fn lean_theorem(&self) -> Option<&'static str> {
+            Some("Real.arcosh")
+        }
+    }
+
+    // ── atanh ────────────────────────────────────────────────────────────────
+
+    pub struct AtanhPrimitive;
+
+    impl Primitive for AtanhPrimitive {
+        fn name(&self) -> &'static str {
+            "atanh"
+        }
+
+        fn pretty(&self, args: &[ExprId], pool: &ExprPool) -> String {
+            format!("atanh({})", pool.display(args[0]))
+        }
+
+        fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
+            // d/dx atanh(x) = dx / (1 − x²)
+            let x = args[0];
+            let dx = crate::diff::diff(x, wrt, pool).ok()?.value;
+            let x2 = pool.pow(x, pool.integer(2_i32));
+            let neg_x2 = pool.mul(vec![pool.integer(-1_i32), x2]);
+            let denom = pool.add(vec![pool.integer(1_i32), neg_x2]);
+            Some(pool.mul(vec![dx, pool.pow(denom, pool.integer(-1_i32))]))
+        }
+
+        fn diff_reverse(
+            &self,
+            args: &[ExprId],
+            cotan: ExprId,
+            pool: &ExprPool,
+        ) -> Option<Vec<ExprId>> {
+            let x = args[0];
+            let x2 = pool.pow(x, pool.integer(2_i32));
+            let neg_x2 = pool.mul(vec![pool.integer(-1_i32), x2]);
+            let denom = pool.add(vec![pool.integer(1_i32), neg_x2]);
+            Some(vec![
+                pool.mul(vec![cotan, pool.pow(denom, pool.integer(-1_i32))])
+            ])
+        }
+
+        fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
+            Some(args[0].atanh())
+        }
+
+        fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
+            args[0].atanh()
+        }
+
+        fn lean_theorem(&self) -> Option<&'static str> {
+            Some("Real.artanh")
         }
     }
 
@@ -2098,6 +2258,68 @@ mod tests {
                 "atan2(x,2) derivative mismatch at x={xv}: got={got}, expected={expected}"
             );
         }
+    }
+
+    #[test]
+    fn inverse_hyperbolic_registered() {
+        let reg = PrimitiveRegistry::default_registry();
+        for name in ["asinh", "acosh", "atanh"] {
+            assert!(reg.is_registered(name), "{name} should be registered");
+        }
+    }
+
+    #[test]
+    fn inverse_hyperbolic_numeric_f64_matches_std() {
+        let reg = PrimitiveRegistry::default_registry();
+        // Sample points chosen inside each function's real domain.
+        let cases: &[(&str, f64, f64)] = &[
+            ("asinh", 0.7, 0.7_f64.asinh()),
+            ("asinh", -2.3, (-2.3_f64).asinh()),
+            ("acosh", 1.5, 1.5_f64.acosh()),
+            ("acosh", 3.2, 3.2_f64.acosh()),
+            ("atanh", 0.4, 0.4_f64.atanh()),
+            ("atanh", -0.85, (-0.85_f64).atanh()),
+        ];
+        for (name, input, expected) in cases {
+            let got = reg.numeric_f64(name, &[*input]).unwrap();
+            assert!(
+                (got - expected).abs() < 1e-12,
+                "{name}({input}) = {got}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn inverse_hyperbolic_diff_matches_finite_difference() {
+        // d/dx asinh = 1/√(x²+1), acosh = 1/√(x²−1), atanh = 1/(1−x²),
+        // checked against a central finite difference at in-domain points.
+        use crate::jit::eval_interp;
+
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let h = 1e-6;
+
+        // Reference closed forms and in-domain sample points per function.
+        let check = |name: &str, f: fn(f64) -> f64, pts: &[f64]| {
+            let expr = pool.func(name, vec![x]);
+            let derived = crate::diff::diff(expr, x, &pool)
+                .unwrap_or_else(|_| panic!("{name} should be differentiable"));
+            for &xv in pts {
+                let numeric = (f(xv + h) - f(xv - h)) / (2.0 * h);
+                let mut env = HashMap::new();
+                env.insert(x, xv);
+                let analytic = eval_interp(derived.value, &env, &pool)
+                    .expect("derivative should evaluate numerically");
+                assert!(
+                    (numeric - analytic).abs() < 1e-4,
+                    "{name}' mismatch at x={xv}: numeric={numeric}, analytic={analytic}"
+                );
+            }
+        };
+
+        check("asinh", f64::asinh, &[0.3, 0.7, 1.9, -1.2]);
+        check("acosh", f64::acosh, &[1.4, 2.1, 3.5]);
+        check("atanh", f64::atanh, &[0.2, 0.5, -0.7]);
     }
 
     #[test]

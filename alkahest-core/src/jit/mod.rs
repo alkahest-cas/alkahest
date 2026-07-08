@@ -1365,6 +1365,9 @@ mod llvm_backend {
                     "asin" => "asin",
                     "acos" => "acos",
                     "atan" => "atan",
+                    "asinh" => "asinh",
+                    "acosh" => "acosh",
+                    "atanh" => "atanh",
                     other => {
                         return Err(JitError::UnsupportedNode(format!("function '{other}'")));
                     }

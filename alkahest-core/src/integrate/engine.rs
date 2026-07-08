@@ -7,7 +7,8 @@
 /// - Sum rule: `∫ (f + g) dx = ∫f dx + ∫g dx`
 /// - Constant-multiple rule: `∫ c·f dx = c · ∫f dx`
 /// - Known functions: sin, cos, exp, 1/x
-/// - Inverse-trig via integration by parts: atan, asin, acos (bare and `rest(x)·f(x)`)
+/// - Inverse-trig / inverse-hyperbolic via integration by parts: atan, asin,
+///   acos, asinh, acosh, atanh (bare and `rest(x)·f(x)`)
 ///
 /// Everything else returns `Err(IntegrationError::NotImplemented)`.
 ///
@@ -376,14 +377,17 @@ fn try_x_times_func(
 // Inverse-trigonometric integration by parts
 // ---------------------------------------------------------------------------
 
-/// `true` if `name` is one of the inverse-trigonometric functions handled by the
-/// IBP path (`atan`, `asin`, `acos`).
+/// `true` if `name` is one of the inverse-trigonometric or inverse-hyperbolic
+/// functions handled by the IBP path (`atan`, `asin`, `acos`, `asinh`, `acosh`,
+/// `atanh`).  All six have algebraic (rational-or-√-quadratic) derivatives, so
+/// the IBP residual `∫ P·f'` closes through the existing rational/√-quadratic
+/// engines.
 fn is_inverse_trig(name: &str) -> bool {
-    matches!(name, "atan" | "asin" | "acos")
+    matches!(name, "atan" | "asin" | "acos" | "asinh" | "acosh" | "atanh")
 }
 
-/// `true` if `expr` contains an inverse-trigonometric function (`atan`/`asin`/
-/// `acos`) anywhere in its tree.  Used to guarantee the IBP residual is
+/// `true` if `expr` contains an inverse-trigonometric or inverse-hyperbolic
+/// function anywhere in its tree.  Used to guarantee the IBP residual is
 /// inverse-trig-free, so the IBP branch cannot re-enter itself (termination).
 fn contains_inverse_trig(expr: ExprId, pool: &ExprPool) -> bool {
     match pool.get(expr) {
@@ -400,14 +404,21 @@ fn contains_inverse_trig(expr: ExprId, pool: &ExprPool) -> bool {
     }
 }
 
-/// Derivative `f'(var)` for an inverse-trigonometric `f`:
-/// `atan'(x) = 1/(1+x²)`, `asin'(x) = 1/√(1−x²)`, `acos'(x) = −1/√(1−x²)`.
+/// Derivative `f'(var)` for an inverse-trigonometric or inverse-hyperbolic `f`:
+/// `atan'(x) = 1/(1+x²)`, `asin'(x) = 1/√(1−x²)`, `acos'(x) = −1/√(1−x²)`,
+/// `asinh'(x) = 1/√(x²+1)`, `acosh'(x) = 1/√(x²−1)`, `atanh'(x) = 1/(1−x²)`.
 fn inverse_trig_derivative(name: &str, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
     let x2 = pool.pow(var, pool.integer(2_i32));
     match name {
         "atan" => {
             // 1/(1 + x²)
             let denom = pool.add(vec![pool.integer(1_i32), x2]);
+            Some(pool.pow(denom, pool.integer(-1_i32)))
+        }
+        "atanh" => {
+            // 1/(1 − x²)
+            let neg_x2 = pool.mul(vec![pool.integer(-1_i32), x2]);
+            let denom = pool.add(vec![pool.integer(1_i32), neg_x2]);
             Some(pool.pow(denom, pool.integer(-1_i32)))
         }
         "asin" | "acos" => {
@@ -421,6 +432,18 @@ fn inverse_trig_derivative(name: &str, var: ExprId, pool: &ExprPool) -> Option<E
             } else {
                 Some(pool.mul(vec![pool.integer(-1_i32), inv]))
             }
+        }
+        "asinh" => {
+            // 1/√(x² + 1)
+            let x2_plus_one = pool.add(vec![x2, pool.integer(1_i32)]);
+            let sqrt = pool.func("sqrt", vec![x2_plus_one]);
+            Some(pool.pow(sqrt, pool.integer(-1_i32)))
+        }
+        "acosh" => {
+            // 1/√(x² − 1)
+            let x2_minus_one = pool.add(vec![x2, pool.integer(-1_i32)]);
+            let sqrt = pool.func("sqrt", vec![x2_minus_one]);
+            Some(pool.pow(sqrt, pool.integer(-1_i32)))
         }
         _ => None,
     }
@@ -1508,6 +1531,9 @@ pub(crate) fn integrate_raw(
 /// | `atan(x)`          | `x*atan(x) - ½log(1+x²)`   | `int_inverse_trig_ibp`  |
 /// | `asin(x)`          | `x*asin(x) + √(1-x²)`      | `int_inverse_trig_ibp`  |
 /// | `acos(x)`          | `x*acos(x) - √(1-x²)`      | `int_inverse_trig_ibp`  |
+/// | `asinh(x)`         | `x*asinh(x) - √(x²+1)`     | `int_inverse_trig_ibp`  |
+/// | `acosh(x)`         | `x*acosh(x) - √(x²-1)`     | `int_inverse_trig_ibp`  |
+/// | `atanh(x)`         | `x*atanh(x) + ½log(1-x²)`  | `int_inverse_trig_ibp`  |
 /// | `rest(x)*atan(x)`  | IBP: `P*atan - ∫P·f'`      | `int_inverse_trig_ibp`  |
 /// | `p(x)*sin(a·x+b)`  | repeated IBP (tabular)      | `int_poly_trig_ibp`     |
 /// | `p(x)*cos(a·x+b)`  | repeated IBP (tabular)      | `int_poly_trig_ibp`     |
@@ -3360,6 +3386,92 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let f = pool.mul(vec![x, pool.func("acos", vec![x])]);
         verify_numeric(f, x, &pool);
+    }
+
+    // --- Inverse-hyperbolic integration by parts (asinh / acosh / atanh) ---
+
+    #[test]
+    fn integrate_asinh() {
+        // ∫ asinh(x) dx = x·asinh(x) − √(x²+1)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.func("asinh", vec![x]);
+        let r = integrate(f, x, &pool).unwrap();
+        assert!(
+            r.log
+                .steps()
+                .iter()
+                .any(|s| s.rule_name == "int_inverse_trig_ibp"),
+            "should fire int_inverse_trig_ibp"
+        );
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_acosh() {
+        // ∫ acosh(x) dx = x·acosh(x) − √(x²−1)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.func("acosh", vec![x]);
+        let r = integrate(f, x, &pool).unwrap();
+        assert!(
+            r.log
+                .steps()
+                .iter()
+                .any(|s| s.rule_name == "int_inverse_trig_ibp"),
+            "should fire int_inverse_trig_ibp"
+        );
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_atanh() {
+        // ∫ atanh(x) dx = x·atanh(x) + ½·log(1−x²)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.func("atanh", vec![x]);
+        let r = integrate(f, x, &pool).unwrap();
+        assert!(
+            r.log
+                .steps()
+                .iter()
+                .any(|s| s.rule_name == "int_inverse_trig_ibp"),
+            "should fire int_inverse_trig_ibp"
+        );
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_x_times_asinh() {
+        // ∫ x·asinh(x) dx (residual ∫ x²/√(x²+1) resolves via the √-quadratic engine)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.mul(vec![x, pool.func("asinh", vec![x])]);
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_x_times_atanh() {
+        // ∫ x·atanh(x) dx (residual ∫ x²/(1−x²) resolves via the rational engine)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.mul(vec![x, pool.func("atanh", vec![x])]);
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_inverse_hyperbolic_diff_table_ok() {
+        // Regression: d/dx of each inverse-hyperbolic function is non-zero.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for name in ["asinh", "acosh", "atanh"] {
+            let d = diff(pool.func(name, vec![x]), x, &pool).unwrap();
+            assert_ne!(
+                d.value,
+                pool.integer(0_i32),
+                "d/dx {name}(x) must be non-zero"
+            );
+        }
     }
 
     #[test]

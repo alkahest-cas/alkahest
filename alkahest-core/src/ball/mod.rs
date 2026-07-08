@@ -564,6 +564,56 @@ impl ArbBall {
         }
     }
 
+    /// asinh([m-r, m+r]) — monotone increasing on all of ℝ.
+    pub fn asinh(&self) -> Self {
+        let prec = self.prec;
+        let lo = Float::with_val(prec, self.lo().asinh());
+        let hi = Float::with_val(prec, self.hi().asinh());
+        let sum = Float::with_val(prec, &lo + &hi);
+        let diff = Float::with_val(prec, &hi - &lo);
+        ArbBall {
+            mid: sum / 2_f64,
+            rad: diff / 2_f64,
+            prec,
+        }
+    }
+
+    /// acosh([m-r, m+r]) — monotone increasing on `[1, ∞)`. Returns `None` if
+    /// the interval extends below 1 (outside the real domain).
+    pub fn acosh(&self) -> Option<Self> {
+        if self.lo() < 1 {
+            return None;
+        }
+        let prec = self.prec;
+        let lo = Float::with_val(prec, self.lo().acosh());
+        let hi = Float::with_val(prec, self.hi().acosh());
+        let sum = Float::with_val(prec, &lo + &hi);
+        let diff = Float::with_val(prec, &hi - &lo);
+        Some(ArbBall {
+            mid: sum / 2_f64,
+            rad: diff / 2_f64,
+            prec,
+        })
+    }
+
+    /// atanh([m-r, m+r]) — monotone increasing on `(-1, 1)`. Returns `None` if
+    /// the interval reaches or leaves `(-1, 1)` (outside the real domain).
+    pub fn atanh(&self) -> Option<Self> {
+        if self.lo() <= -1 || self.hi() >= 1 {
+            return None;
+        }
+        let prec = self.prec;
+        let lo = Float::with_val(prec, self.lo().atanh());
+        let hi = Float::with_val(prec, self.hi().atanh());
+        let sum = Float::with_val(prec, &lo + &hi);
+        let diff = Float::with_val(prec, &hi - &lo);
+        Some(ArbBall {
+            mid: sum / 2_f64,
+            rad: diff / 2_f64,
+            prec,
+        })
+    }
+
     pub fn erf(&self) -> Self {
         let prec = self.prec;
         // Use midpoint + Lipschitz: |erf'(x)| = 2/sqrt(π) * exp(-x²) ≤ 2/sqrt(π) ≈ 1.13
