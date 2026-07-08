@@ -733,6 +733,319 @@ fn try_exp_trig_ibp(
 }
 
 // ---------------------------------------------------------------------------
+// Trigonometric powers and products via Fourier linearization
+// ---------------------------------------------------------------------------
+
+/// Maximum combined trig degree (number of `sin`/`cos` factors) the Fourier
+/// linearizer will expand.  The term count grows as `2^degree`, so this bounds
+/// the work; beyond it the fast-path declines and the integrand falls through.
+const MAX_TRIG_LINEARIZE_DEGREE: usize = 8;
+
+/// A single term of a finite Fourier expansion: `coeff · f(arg)` with
+/// `f ∈ {sin, cos}` and `arg` linear in the integration variable.
+struct FourierTerm {
+    coeff: ExprId,
+    is_sin: bool,
+    arg: ExprId,
+}
+
+/// Fast-path for `∫ sin^m(a·x+b)·cos^n(c·x+d) dx` (nonnegative integer powers,
+/// linear arguments) — covering `sin²`, `cos²`, `sin³`, `sin²·cos²`,
+/// different-frequency products like `sin(2x)·cos(x)`, … — plus the small
+/// reciprocal-square family `∫ 1/cos² = tan`, `∫ 1/sin² = −cot`,
+/// `∫ tan² = tan − x`.
+///
+/// The product/power case is rewritten into a linear combination of
+/// `sin(k·x)`/`cos(k·x)`/constant via product-to-sum identities (a finite
+/// Fourier expansion), then each term is integrated with the elementary
+/// `∫ sin(k·x) = −cos(k·x)/k`, `∫ cos(k·x) = sin(k·x)/k`, `∫ c = c·x` rules.
+/// Every emitted antiderivative is soundness-gated by [`verify_antiderivative`],
+/// so a wrong result is never returned; unmatched shapes decline cleanly.
+///
+/// Terminates without recursing into [`integrate_raw`]: each linearized term is
+/// a bare `sin`/`cos` of a linear argument, integrated in closed form here.
+fn try_trig_power_product(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Option<ExprId> {
+    // Small reciprocal-square / tan² table first (not Fourier-linearizable).
+    if let Some(result) = trig_reciprocal_square_antiderivative(expr, var, pool) {
+        if verify_antiderivative(result, expr, var, pool) {
+            log.push(RewriteStep::simple("int_trig_reciprocal_sq", expr, result));
+            return Some(result);
+        }
+    }
+
+    // Product/power of sin/cos with linear arguments → Fourier linearization.
+    let (coeff, factors) = collect_trig_product(expr, var, pool)?;
+    // Require genuine linearization work (combined degree ≥ 2): bare `sin(x)` /
+    // `cos(x)` keep their existing dedicated rules and are not intercepted here.
+    if factors.len() < 2 || factors.len() > MAX_TRIG_LINEARIZE_DEGREE {
+        return None;
+    }
+
+    let terms = fourier_expand(coeff, &factors, pool);
+    let parts: Vec<ExprId> = terms
+        .iter()
+        .map(|t| integrate_fourier_term(t, var, pool))
+        .collect();
+    let result = pool.add(parts);
+
+    // Soundness gate: only emit when d/dx result equals the integrand.
+    if !verify_antiderivative(result, expr, var, pool) {
+        return None;
+    }
+    log.push(RewriteStep::simple("int_trig_linearize", expr, result));
+    Some(result)
+}
+
+/// Collect the constant coefficient and the list of `sin`/`cos` factors (with
+/// linear arguments) making up a pure trig product/power.  Returns `None` if any
+/// `var`-dependent factor is not a nonnegative integer power of `sin`/`cos` of a
+/// linear argument, so polynomial·trig, exp·trig, `tan`, negative powers, etc.
+/// are left to their dedicated paths.
+fn collect_trig_product(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<(ExprId, Vec<(bool, ExprId)>)> {
+    let factors: Vec<ExprId> = match pool.get(expr) {
+        ExprData::Mul(args) => args,
+        ExprData::Pow { .. } => vec![expr],
+        _ => return None,
+    };
+
+    let mut coeff_factors: Vec<ExprId> = Vec::new();
+    let mut trig: Vec<(bool, ExprId)> = Vec::new();
+    for f in factors {
+        if is_free_of(f, var, pool) {
+            coeff_factors.push(f);
+            continue;
+        }
+        if !push_trig_factor(f, var, pool, &mut trig) {
+            return None;
+        }
+        // Guard the `2^degree` blow-up early on a large explicit power.
+        if trig.len() > MAX_TRIG_LINEARIZE_DEGREE {
+            return None;
+        }
+    }
+
+    let coeff = match coeff_factors.len() {
+        0 => pool.integer(1_i32),
+        1 => coeff_factors[0],
+        _ => pool.mul(coeff_factors),
+    };
+    Some((coeff, trig))
+}
+
+/// Push one `var`-dependent factor onto `trig` when it is `sin`/`cos` of a
+/// linear argument raised to a nonnegative integer power; return `false`
+/// otherwise (so the caller declines the whole integrand).
+fn push_trig_factor(
+    f: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    trig: &mut Vec<(bool, ExprId)>,
+) -> bool {
+    match pool.get(f) {
+        ExprData::Func { name, args } if args.len() == 1 => {
+            let is_sin = name == "sin";
+            if (is_sin || name == "cos") && is_linear_in(args[0], var, pool).is_some() {
+                trig.push((is_sin, args[0]));
+                true
+            } else {
+                false
+            }
+        }
+        ExprData::Pow { base, exp } => {
+            let Some(n) = as_integer(exp, pool) else {
+                return false;
+            };
+            if !(1..=MAX_TRIG_LINEARIZE_DEGREE as i64).contains(&n) {
+                return false;
+            }
+            match pool.get(base) {
+                ExprData::Func { name, args } if args.len() == 1 => {
+                    let is_sin = name == "sin";
+                    if (is_sin || name == "cos") && is_linear_in(args[0], var, pool).is_some() {
+                        for _ in 0..n {
+                            trig.push((is_sin, args[0]));
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Expand `coeff · Π f_i(arg_i)` (each `f_i ∈ {sin, cos}`, `arg_i` linear) into a
+/// finite Fourier sum `Σ c_j · g_j(θ_j)` via product-to-sum identities.  Every
+/// output argument stays linear in the integration variable, so each term
+/// integrates in closed form.
+fn fourier_expand(coeff: ExprId, factors: &[(bool, ExprId)], pool: &ExprPool) -> Vec<FourierTerm> {
+    let neg_one = pool.integer(-1_i32);
+    let half = pool.rational(1_i32, 2_i32);
+    // Seed with `coeff · cos(0)` (= coeff), the multiplicative identity.
+    let mut terms = vec![FourierTerm {
+        coeff,
+        is_sin: false,
+        arg: pool.integer(0_i32),
+    }];
+
+    for &(g_sin, u) in factors {
+        let mut next: Vec<FourierTerm> = Vec::with_capacity(terms.len() * 2);
+        for t in &terms {
+            let hc = pool.mul(vec![half, t.coeff]);
+            let neg_hc = pool.mul(vec![neg_one, hc]);
+            let a = t.arg;
+            let neg_a = pool.mul(vec![neg_one, a]);
+            let neg_u = pool.mul(vec![neg_one, u]);
+            let u_plus_a = simplify(pool.add(vec![u, a]), pool).value;
+            let u_minus_a = simplify(pool.add(vec![u, neg_a]), pool).value;
+            let a_minus_u = simplify(pool.add(vec![a, neg_u]), pool).value;
+            match (g_sin, t.is_sin) {
+                // sin(u)·cos(A) = ½[sin(u+A) + sin(u−A)]
+                (true, false) => {
+                    next.push(FourierTerm {
+                        coeff: hc,
+                        is_sin: true,
+                        arg: u_plus_a,
+                    });
+                    next.push(FourierTerm {
+                        coeff: hc,
+                        is_sin: true,
+                        arg: u_minus_a,
+                    });
+                }
+                // sin(u)·sin(A) = ½[cos(u−A) − cos(u+A)]
+                (true, true) => {
+                    next.push(FourierTerm {
+                        coeff: hc,
+                        is_sin: false,
+                        arg: u_minus_a,
+                    });
+                    next.push(FourierTerm {
+                        coeff: neg_hc,
+                        is_sin: false,
+                        arg: u_plus_a,
+                    });
+                }
+                // cos(u)·cos(A) = ½[cos(u−A) + cos(u+A)]
+                (false, false) => {
+                    next.push(FourierTerm {
+                        coeff: hc,
+                        is_sin: false,
+                        arg: u_minus_a,
+                    });
+                    next.push(FourierTerm {
+                        coeff: hc,
+                        is_sin: false,
+                        arg: u_plus_a,
+                    });
+                }
+                // cos(u)·sin(A) = ½[sin(A+u) + sin(A−u)]
+                (false, true) => {
+                    next.push(FourierTerm {
+                        coeff: hc,
+                        is_sin: true,
+                        arg: u_plus_a,
+                    });
+                    next.push(FourierTerm {
+                        coeff: hc,
+                        is_sin: true,
+                        arg: a_minus_u,
+                    });
+                }
+            }
+        }
+        terms = next;
+    }
+    terms
+}
+
+/// Integrate one Fourier term `c · f(arg)` (arg linear in `var`) in closed form:
+/// `∫ c·sin(k·x+φ) = −c·cos(k·x+φ)/k`, `∫ c·cos(k·x+φ) = c·sin(k·x+φ)/k`, and
+/// `∫ c·f(const) dx = c·f(const)·x` when `arg` is free of `var`.
+fn integrate_fourier_term(t: &FourierTerm, var: ExprId, pool: &ExprPool) -> ExprId {
+    match is_linear_in(t.arg, var, pool) {
+        Some((a, _b)) => {
+            let a_inv = pool.pow(a, pool.integer(-1_i32));
+            if t.is_sin {
+                // ∫ c·sin(arg) = −c·cos(arg)/a
+                let cos_arg = pool.func("cos", vec![t.arg]);
+                pool.mul(vec![pool.integer(-1_i32), t.coeff, a_inv, cos_arg])
+            } else {
+                // ∫ c·cos(arg) = c·sin(arg)/a
+                let sin_arg = pool.func("sin", vec![t.arg]);
+                pool.mul(vec![t.coeff, a_inv, sin_arg])
+            }
+        }
+        None => {
+            // arg free of var ⇒ f(arg) is constant ⇒ ∫ c·f(arg) dx = c·f(arg)·x.
+            let name = if t.is_sin { "sin" } else { "cos" };
+            let f = pool.func(name, vec![t.arg]);
+            pool.mul(vec![t.coeff, f, var])
+        }
+    }
+}
+
+/// Small explicit table for `∫ 1/cos²(u) = tan(u)/a`, `∫ 1/sin²(u) = −cot(u)/a`
+/// (emitted as `−cos(u)/(a·sin(u))` so the result differentiates through the
+/// registered primitives), and `∫ tan²(u) = tan(u)/a − x`, with `u = a·x+b`
+/// linear in `var`.  Returns an unverified candidate; the caller gates it with
+/// [`verify_antiderivative`].
+fn trig_reciprocal_square_antiderivative(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    let ExprData::Pow { base, exp } = pool.get(expr) else {
+        return None;
+    };
+    let n = as_integer(exp, pool)?;
+    let ExprData::Func { name, args } = pool.get(base) else {
+        return None;
+    };
+    if args.len() != 1 {
+        return None;
+    }
+    let u = args[0];
+    let (a, _b) = is_linear_in(u, var, pool)?;
+    let a_inv = pool.pow(a, pool.integer(-1_i32));
+    let neg_one = pool.integer(-1_i32);
+
+    match (name.as_str(), n) {
+        // ∫ sec²(u) dx = tan(u)/a
+        ("cos", -2) => {
+            let tan_u = pool.func("tan", vec![u]);
+            Some(pool.mul(vec![a_inv, tan_u]))
+        }
+        // ∫ csc²(u) dx = −cot(u)/a, written as −cos(u)/(a·sin(u)).
+        ("sin", -2) => {
+            let cos_u = pool.func("cos", vec![u]);
+            let sin_inv = pool.pow(pool.func("sin", vec![u]), neg_one);
+            Some(pool.mul(vec![neg_one, a_inv, cos_u, sin_inv]))
+        }
+        // ∫ tan²(u) dx = tan(u)/a − x
+        ("tan", 2) => {
+            let tan_u = pool.func("tan", vec![u]);
+            let first = pool.mul(vec![a_inv, tan_u]);
+            let neg_x = pool.mul(vec![neg_one, var]);
+            Some(pool.add(vec![first, neg_x]))
+        }
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Known non-elementary pre-check (Risch Gap 6)
 // ---------------------------------------------------------------------------
 
@@ -925,6 +1238,14 @@ pub(crate) fn integrate_raw(
     //   ∫ exp(a·x+c)·sin(b·x+d) dx, ∫ exp(a·x+c)·cos(b·x+d) dx.
     // Soundness-gated inside the helper.
     if let Some(result) = try_exp_trig_ibp(expr, var, pool, log) {
+        return Ok(result);
+    }
+
+    // Powers and products of sin/cos (and the small 1/cos², 1/sin², tan² family):
+    //   ∫ sin^m(a·x+b)·cos^n(c·x+d) dx via Fourier linearization + termwise
+    //   integration, ∫ 1/cos² = tan, ∫ 1/sin² = −cot, ∫ tan² = tan − x.
+    // Soundness-gated inside the helper; does not recurse into integrate_raw.
+    if let Some(result) = try_trig_power_product(expr, var, pool, log) {
         return Ok(result);
     }
 
@@ -3068,5 +3389,170 @@ mod tests {
                 "d/dx {name}(x) must be non-zero"
             );
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // Trigonometric powers and products (Fourier linearization fast-path)
+    // ---------------------------------------------------------------------
+
+    fn sinp(x: ExprId, n: i32, pool: &ExprPool) -> ExprId {
+        pool.pow(pool.func("sin", vec![x]), pool.integer(n))
+    }
+    fn cosp(x: ExprId, n: i32, pool: &ExprPool) -> ExprId {
+        pool.pow(pool.func("cos", vec![x]), pool.integer(n))
+    }
+
+    #[test]
+    fn integrate_sin_squared() {
+        // ∫ sin²(x) dx = x/2 − sin(2x)/4
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        verify_numeric(sinp(x, 2, &pool), x, &pool);
+    }
+
+    #[test]
+    fn integrate_cos_squared() {
+        // ∫ cos²(x) dx = x/2 + sin(2x)/4
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        verify_numeric(cosp(x, 2, &pool), x, &pool);
+    }
+
+    #[test]
+    fn integrate_sin_cubed() {
+        // ∫ sin³(x) dx = cos³(x)/3 − cos(x)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        verify_numeric(sinp(x, 3, &pool), x, &pool);
+    }
+
+    #[test]
+    fn integrate_cos_cubed() {
+        // ∫ cos³(x) dx = sin(x) − sin³(x)/3
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        verify_numeric(cosp(x, 3, &pool), x, &pool);
+    }
+
+    #[test]
+    fn integrate_sin_squared_cos_squared() {
+        // ∫ sin²(x)·cos²(x) dx = x/8 − sin(4x)/32
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.mul(vec![sinp(x, 2, &pool), cosp(x, 2, &pool)]);
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_sin_2x_times_cos_x() {
+        // ∫ sin(2x)·cos(x) dx  (product-to-sum of different frequencies)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let two_x = pool.mul(vec![pool.integer(2_i32), x]);
+        let f = pool.mul(vec![
+            pool.func("sin", vec![two_x]),
+            pool.func("cos", vec![x]),
+        ]);
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_sin_x_times_sin_2x() {
+        // ∫ sin(x)·sin(2x) dx  (product-to-sum, cos family)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let two_x = pool.mul(vec![pool.integer(2_i32), x]);
+        let f = pool.mul(vec![
+            pool.func("sin", vec![x]),
+            pool.func("sin", vec![two_x]),
+        ]);
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_cos_x_times_cos_3x() {
+        // ∫ cos(x)·cos(3x) dx  (product-to-sum, cos family)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let three_x = pool.mul(vec![pool.integer(3_i32), x]);
+        let f = pool.mul(vec![
+            pool.func("cos", vec![x]),
+            pool.func("cos", vec![three_x]),
+        ]);
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_sec_squared() {
+        // ∫ 1/cos²(x) dx = tan(x)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        verify_numeric(cosp(x, -2, &pool), x, &pool);
+    }
+
+    #[test]
+    fn integrate_csc_squared() {
+        // ∫ 1/sin²(x) dx = −cot(x)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        verify_numeric(sinp(x, -2, &pool), x, &pool);
+    }
+
+    #[test]
+    fn integrate_tan_squared() {
+        // ∫ tan²(x) dx = tan(x) − x
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(pool.func("tan", vec![x]), pool.integer(2_i32));
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_sin_squared_linear_arg() {
+        // ∫ sin²(2x+1) dx  (linear argument a·x+b)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let arg = pool.add(vec![
+            pool.mul(vec![pool.integer(2_i32), x]),
+            pool.integer(1_i32),
+        ]);
+        let f = pool.pow(pool.func("sin", vec![arg]), pool.integer(2_i32));
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_trig_powers_do_not_regress_basics() {
+        // The new fast-path must not disturb the already-working simple cases.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        // ∫ sin(x), ∫ cos(x)
+        verify_numeric(pool.func("sin", vec![x]), x, &pool);
+        verify_numeric(pool.func("cos", vec![x]), x, &pool);
+        // ∫ tan(x) = −log(cos x)
+        verify_numeric(pool.func("tan", vec![x]), x, &pool);
+        // ∫ sin(x)·cos(x)
+        let sc = pool.mul(vec![pool.func("sin", vec![x]), pool.func("cos", vec![x])]);
+        verify_numeric(sc, x, &pool);
+        // ∫ x·sin(x)  (poly·trig IBP path still owns this)
+        let xsin = pool.mul(vec![x, pool.func("sin", vec![x])]);
+        verify_numeric(xsin, x, &pool);
+    }
+
+    #[test]
+    fn integrate_unsupported_trig_shape_declines_cleanly() {
+        // ∫ sin(x)/x is non-elementary; must decline (no panic), not fabricate.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.mul(vec![
+            pool.func("sin", vec![x]),
+            pool.pow(x, pool.integer(-1_i32)),
+        ]);
+        assert!(integrate(f, x, &pool).is_err(), "∫ sin(x)/x should decline");
+        // ∫ 1/cos³(x) is outside the supported reciprocal family — decline cleanly.
+        let sec3 = cosp(x, -3, &pool);
+        assert!(
+            integrate(sec3, x, &pool).is_err(),
+            "∫ 1/cos³(x) should decline, not panic"
+        );
     }
 }
