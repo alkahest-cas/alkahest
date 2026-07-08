@@ -73,6 +73,15 @@ extern "C" fn tramp_acos(x: f64) -> f64 {
 extern "C" fn tramp_atan(x: f64) -> f64 {
     x.atan()
 }
+extern "C" fn tramp_asinh(x: f64) -> f64 {
+    x.asinh()
+}
+extern "C" fn tramp_acosh(x: f64) -> f64 {
+    x.acosh()
+}
+extern "C" fn tramp_atanh(x: f64) -> f64 {
+    x.atanh()
+}
 extern "C" fn tramp_floor(x: f64) -> f64 {
     x.floor()
 }
@@ -112,6 +121,9 @@ struct MathFuncIds {
     asin_id: FuncId,
     acos_id: FuncId,
     atan_id: FuncId,
+    asinh_id: FuncId,
+    acosh_id: FuncId,
+    atanh_id: FuncId,
     floor_id: FuncId,
     ceil_id: FuncId,
     round_id: FuncId,
@@ -189,6 +201,9 @@ fn codegen_node(
                 "asin" => math.asin_id,
                 "acos" => math.acos_id,
                 "atan" => math.atan_id,
+                "asinh" => math.asinh_id,
+                "acosh" => math.acosh_id,
+                "atanh" => math.atanh_id,
                 "floor" => math.floor_id,
                 "ceil" => math.ceil_id,
                 "round" => math.round_id,
@@ -317,6 +332,9 @@ pub fn compile_cranelift(
     jit_builder.symbol("alkahest_asin", tramp_asin as *const u8);
     jit_builder.symbol("alkahest_acos", tramp_acos as *const u8);
     jit_builder.symbol("alkahest_atan", tramp_atan as *const u8);
+    jit_builder.symbol("alkahest_asinh", tramp_asinh as *const u8);
+    jit_builder.symbol("alkahest_acosh", tramp_acosh as *const u8);
+    jit_builder.symbol("alkahest_atanh", tramp_atanh as *const u8);
     jit_builder.symbol("alkahest_floor", tramp_floor as *const u8);
     jit_builder.symbol("alkahest_ceil", tramp_ceil as *const u8);
     jit_builder.symbol("alkahest_round", tramp_round as *const u8);
@@ -357,6 +375,9 @@ pub fn compile_cranelift(
         asin_id: decl(&mut module, "alkahest_asin", &f1_sig)?,
         acos_id: decl(&mut module, "alkahest_acos", &f1_sig)?,
         atan_id: decl(&mut module, "alkahest_atan", &f1_sig)?,
+        asinh_id: decl(&mut module, "alkahest_asinh", &f1_sig)?,
+        acosh_id: decl(&mut module, "alkahest_acosh", &f1_sig)?,
+        atanh_id: decl(&mut module, "alkahest_atanh", &f1_sig)?,
         floor_id: decl(&mut module, "alkahest_floor", &f1_sig)?,
         ceil_id: decl(&mut module, "alkahest_ceil", &f1_sig)?,
         round_id: decl(&mut module, "alkahest_round", &f1_sig)?,
@@ -620,8 +641,8 @@ mod tests {
     }
 
     /// The newly-registered unary math trampolines (sinh, cosh, tanh, asin,
-    /// acos, atan, floor, ceil, round, sign) all compile and evaluate
-    /// correctly via the Cranelift backend.
+    /// acos, atan, asinh, acosh, atanh, floor, ceil, round, sign) all compile
+    /// and evaluate correctly via the Cranelift backend.
     #[test]
     fn cranelift_unary_math_trampolines() {
         let pool = p();
@@ -634,6 +655,9 @@ mod tests {
             ("asin", 0.5, 0.5_f64.asin()),
             ("acos", 0.5, 0.5_f64.acos()),
             ("atan", 0.5, 0.5_f64.atan()),
+            ("asinh", 0.5, 0.5_f64.asinh()),
+            ("acosh", 1.5, 1.5_f64.acosh()),
+            ("atanh", 0.5, 0.5_f64.atanh()),
             ("floor", 1.7, 1.0),
             ("ceil", 1.2, 2.0),
             ("round", 1.5, 2.0),
