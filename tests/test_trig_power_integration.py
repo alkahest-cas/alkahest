@@ -171,10 +171,11 @@ def test_basics_not_regressed():
 
 
 def test_unsupported_trig_shape_declines():
-    """∫ sin(x)/x is non-elementary; ∫ 1/cos³(x) is out of scope — both decline."""
+    """∫ sin(x)/x is non-elementary; ∫ 1/cos¹⁰(x) is above the reciprocal-trig
+    reduction cap (n ≤ 8) — both decline."""
     pool = ExprPool()
     x = pool.symbol("x")
     with pytest.raises(IntegrationError):
         integrate(sin(x) / x, x)
     with pytest.raises(IntegrationError):
-        integrate(cos(x) ** -3, x)
+        integrate(cos(x) ** -10, x)

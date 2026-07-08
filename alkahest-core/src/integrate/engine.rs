@@ -824,6 +824,164 @@ fn try_trig_power_product(
     Some(result)
 }
 
+/// Maximum power `n` for the reciprocal-trig reductions `∫ secⁿ` / `∫ cscⁿ`.
+/// Caps the reduction-formula recursion so a pathological exponent cannot blow
+/// up the emitted expression; higher powers decline cleanly.
+const MAX_RECIP_TRIG_POWER: i64 = 8;
+
+/// Fast-path for `∫ secⁿ` / `∫ cscⁿ` — integrands that are a **negative integer
+/// power** of `sin`/`cos` of a linear argument `u = a·x + b`.
+///
+/// Because `sec`/`csc` desugar to reciprocals at parse time, the integrand
+/// arrives as `cos(u)^(-n)` / `sin(u)^(-n)` (flattened) or as the *nested*
+/// `(cos(u)^(-1))^m` shape produced by `sec(u)^m`. Both are recognized here; the
+/// exponent is flattened (`(g^p)^q → g^(p·q)`) before dispatch.
+///
+/// Closed forms (`u = a·x + b`, each divided by `a` for the chain rule):
+///   - `n = 1`: `∫ sec = log((1+sin)/cos)`, `∫ csc = log((1−cos)/sin)` — real
+///     forms of `log|sec+tan|` and `log|tan(u/2)|`.
+///   - `n = 2`: `∫ sec² = tan`, `∫ csc² = −cot`.
+///   - `n ≥ 3`: the standard reduction formula, recursing down to the `n∈{1,2}`
+///     base cases (capped at [`MAX_RECIP_TRIG_POWER`]).
+///
+/// Every emitted antiderivative is soundness-gated by [`verify_antiderivative`],
+/// so a wrong result is never returned; positive powers (owned by the trig
+/// linearization path) and non-linear arguments decline cleanly here.
+fn try_reciprocal_trig_power(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Option<ExprId> {
+    let (is_sin, u, n) = detect_reciprocal_trig_power(expr, pool)?;
+    let (a, _b) = is_linear_in(u, var, pool)?;
+
+    let u_integral = reciprocal_trig_u_integral(is_sin, u, n, pool)?;
+    // Chain rule: ∫ f(a·x+b) dx = (1/a) · [∫ f(u) du].
+    let a_inv = pool.pow(a, pool.integer(-1_i32));
+    let result = pool.mul(vec![a_inv, u_integral]);
+
+    // Soundness gate: only emit when d/dx result equals the integrand.
+    if !verify_antiderivative(result, expr, var, pool) {
+        return None;
+    }
+    log.push(RewriteStep::simple(
+        "int_reciprocal_trig_power",
+        expr,
+        result,
+    ));
+    Some(result)
+}
+
+/// Detect a negative-integer power of `sin`/`cos`, flattening one optional level
+/// of nesting `(g^p)^q → g^(p·q)`. Returns `(is_sin, arg, n)` with `n = −exp ≥ 1`,
+/// or `None` for any other shape (including zero/positive exponents, which are
+/// owned by other paths).
+fn detect_reciprocal_trig_power(expr: ExprId, pool: &ExprPool) -> Option<(bool, ExprId, i64)> {
+    let ExprData::Pow { base, exp } = pool.get(expr) else {
+        return None;
+    };
+    let outer = as_integer(exp, pool)?;
+    // Flatten one optional level of nesting: (g^p)^q → g^(p·q).
+    let (fname, arg, total) = match pool.get(base) {
+        ExprData::Func { name, args } if args.len() == 1 => (name, args[0], outer),
+        ExprData::Pow {
+            base: inner_base,
+            exp: inner_exp,
+        } => {
+            let inner = as_integer(inner_exp, pool)?;
+            let ExprData::Func { name, args } = pool.get(inner_base) else {
+                return None;
+            };
+            if args.len() != 1 {
+                return None;
+            }
+            (name, args[0], inner.checked_mul(outer)?)
+        }
+        _ => return None,
+    };
+    if fname != "sin" && fname != "cos" {
+        return None;
+    }
+    // Only negative powers (the reciprocal family); positive/zero exponents are
+    // handled by the trig linearization path.
+    if total >= 0 {
+        return None;
+    }
+    Some((fname == "sin", arg, -total))
+}
+
+/// Antiderivative of `secⁿ(u)` / `cscⁿ(u)` **with respect to `u`** (the caller
+/// applies the chain-rule `1/a` factor). Returns `None` above the recursion cap.
+fn reciprocal_trig_u_integral(is_sin: bool, u: ExprId, n: i64, pool: &ExprPool) -> Option<ExprId> {
+    if !(1..=MAX_RECIP_TRIG_POWER).contains(&n) {
+        return None;
+    }
+    Some(if is_sin {
+        csc_u_integral(u, n, pool)
+    } else {
+        sec_u_integral(u, n, pool)
+    })
+}
+
+/// `∫ secⁿ(u) du` via the reduction formula (`sec = 1/cos`), recursing to the
+/// `n∈{1,2}` base cases. Assumes `1 ≤ n ≤ MAX_RECIP_TRIG_POWER`.
+fn sec_u_integral(u: ExprId, n: i64, pool: &ExprPool) -> ExprId {
+    let cos_u = pool.func("cos", vec![u]);
+    match n {
+        // ∫ sec(u) du = log((1+sin u)/cos u) = log|sec u + tan u|.
+        1 => {
+            let num = pool.add(vec![pool.integer(1_i32), pool.func("sin", vec![u])]);
+            let inv_cos = pool.pow(cos_u, pool.integer(-1_i32));
+            let arg = pool.mul(vec![num, inv_cos]);
+            pool.func("log", vec![arg])
+        }
+        // ∫ sec²(u) du = tan(u).
+        2 => pool.func("tan", vec![u]),
+        // ∫ secⁿ = secⁿ⁻²·tan/(n−1) + (n−2)/(n−1)·∫secⁿ⁻².
+        _ => {
+            let sec_pow = pool.pow(cos_u, pool.integer(-((n - 2) as i32)));
+            let tan_u = pool.func("tan", vec![u]);
+            let term1 = pool.mul(vec![pool.rational(1_i32, (n - 1) as i32), sec_pow, tan_u]);
+            let rec = sec_u_integral(u, n - 2, pool);
+            let term2 = pool.mul(vec![pool.rational((n - 2) as i32, (n - 1) as i32), rec]);
+            pool.add(vec![term1, term2])
+        }
+    }
+}
+
+/// `∫ cscⁿ(u) du` via the reduction formula (`csc = 1/sin`, `cot = cos/sin`),
+/// recursing to the `n∈{1,2}` base cases. Assumes `1 ≤ n ≤ MAX_RECIP_TRIG_POWER`.
+fn csc_u_integral(u: ExprId, n: i64, pool: &ExprPool) -> ExprId {
+    let sin_u = pool.func("sin", vec![u]);
+    let cos_u = pool.func("cos", vec![u]);
+    match n {
+        // ∫ csc(u) du = log((1−cos u)/sin u) = log|tan(u/2)| = −log|csc u + cot u|.
+        1 => {
+            let neg_cos = pool.mul(vec![pool.integer(-1_i32), cos_u]);
+            let num = pool.add(vec![pool.integer(1_i32), neg_cos]);
+            let inv_sin = pool.pow(sin_u, pool.integer(-1_i32));
+            let arg = pool.mul(vec![num, inv_sin]);
+            pool.func("log", vec![arg])
+        }
+        // ∫ csc²(u) du = −cot(u) = −cos(u)/sin(u).
+        2 => {
+            let inv_sin = pool.pow(sin_u, pool.integer(-1_i32));
+            pool.mul(vec![pool.integer(-1_i32), cos_u, inv_sin])
+        }
+        // ∫ cscⁿ = −cscⁿ⁻²·cot/(n−1) + (n−2)/(n−1)·∫cscⁿ⁻².
+        _ => {
+            let csc_pow = pool.pow(sin_u, pool.integer(-((n - 2) as i32)));
+            let inv_sin = pool.pow(sin_u, pool.integer(-1_i32));
+            let cot_u = pool.mul(vec![cos_u, inv_sin]);
+            let term1 = pool.mul(vec![pool.rational(-1_i32, (n - 1) as i32), csc_pow, cot_u]);
+            let rec = csc_u_integral(u, n - 2, pool);
+            let term2 = pool.mul(vec![pool.rational((n - 2) as i32, (n - 1) as i32), rec]);
+            pool.add(vec![term1, term2])
+        }
+    }
+}
+
 /// Collect the constant coefficient and the list of `sin`/`cos` factors (with
 /// linear arguments) making up a pure trig product/power.  Returns `None` if any
 /// `var`-dependent factor is not a nonnegative integer power of `sin`/`cos` of a
@@ -1269,6 +1427,16 @@ pub(crate) fn integrate_raw(
     //   integration, ∫ 1/cos² = tan, ∫ 1/sin² = −cot, ∫ tan² = tan − x.
     // Soundness-gated inside the helper; does not recurse into integrate_raw.
     if let Some(result) = try_trig_power_product(expr, var, pool, log) {
+        return Ok(result);
+    }
+
+    // Negative integer powers of sin/cos (i.e. ∫ secⁿ / ∫ cscⁿ), which arrive as
+    // reciprocal-power expressions because sec/csc desugar at parse time:
+    //   ∫ 1/cos = log((1+sin)/cos), ∫ 1/sin = log((1−cos)/sin), ∫ sec² = tan,
+    //   ∫ csc² = −cot, and ∫ secⁿ / ∫ cscⁿ (n ≥ 3) via the reduction formula.
+    // Recognizes both the flattened `cos(x)^(-n)` and the nested `(cos(x)^(-1))^m`
+    // shapes. Soundness-gated inside the helper.
+    if let Some(result) = try_reciprocal_trig_power(expr, var, pool, log) {
         return Ok(result);
     }
 
@@ -3660,11 +3828,107 @@ mod tests {
             pool.pow(x, pool.integer(-1_i32)),
         ]);
         assert!(integrate(f, x, &pool).is_err(), "∫ sin(x)/x should decline");
-        // ∫ 1/cos³(x) is outside the supported reciprocal family — decline cleanly.
-        let sec3 = cosp(x, -3, &pool);
+        // ∫ 1/cos¹⁰(x): the reciprocal-trig reduction is capped at n ≤ 8, so a
+        // power above the cap must decline cleanly rather than blow up.
+        let sec10 = cosp(x, -10, &pool);
         assert!(
-            integrate(sec3, x, &pool).is_err(),
-            "∫ 1/cos³(x) should decline, not panic"
+            integrate(sec10, x, &pool).is_err(),
+            "∫ 1/cos¹⁰(x) is above the reduction cap — should decline, not panic"
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Reciprocal trig powers: ∫ secⁿ / ∫ cscⁿ (negative sin/cos powers)
+    // ---------------------------------------------------------------------
+
+    /// `sec(x)^m` as it parses after desugaring: the nested `(cos(x)^(-1))^m`.
+    fn nested_sec(x: ExprId, m: i32, pool: &ExprPool) -> ExprId {
+        let sec = pool.pow(pool.func("cos", vec![x]), pool.integer(-1_i32));
+        pool.pow(sec, pool.integer(m))
+    }
+    fn nested_csc(x: ExprId, m: i32, pool: &ExprPool) -> ExprId {
+        let csc = pool.pow(pool.func("sin", vec![x]), pool.integer(-1_i32));
+        pool.pow(csc, pool.integer(m))
+    }
+
+    #[test]
+    fn integrate_sec_squared_nested() {
+        // ∫ sec(x)² dx — the nested (cos(x)^(-1))^2 spelling must close to tan(x).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        verify_numeric(nested_sec(x, 2, &pool), x, &pool);
+    }
+
+    #[test]
+    fn integrate_csc_squared_nested() {
+        // ∫ csc(x)² dx — nested (sin(x)^(-1))^2 spelling must close to −cot(x).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        verify_numeric(nested_csc(x, 2, &pool), x, &pool);
+    }
+
+    #[test]
+    fn integrate_sec_squared_flattened() {
+        // ∫ 1/cos(x)² dx = tan(x) (flattened spelling still closes).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        verify_numeric(cosp(x, -2, &pool), x, &pool);
+    }
+
+    #[test]
+    fn integrate_sec() {
+        // ∫ sec(x) dx = log((1+sin x)/cos x).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        verify_numeric(nested_sec(x, 1, &pool), x, &pool);
+        verify_numeric(cosp(x, -1, &pool), x, &pool);
+    }
+
+    #[test]
+    fn integrate_csc() {
+        // ∫ csc(x) dx = log((1−cos x)/sin x).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        verify_numeric(nested_csc(x, 1, &pool), x, &pool);
+        verify_numeric(sinp(x, -1, &pool), x, &pool);
+    }
+
+    #[test]
+    fn integrate_sec_cubed() {
+        // ∫ sec(x)³ dx via the reduction formula.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        verify_numeric(nested_sec(x, 3, &pool), x, &pool);
+        verify_numeric(cosp(x, -3, &pool), x, &pool);
+    }
+
+    #[test]
+    fn integrate_csc_cubed() {
+        // ∫ csc(x)³ dx via the reduction formula.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        verify_numeric(nested_csc(x, 3, &pool), x, &pool);
+        verify_numeric(sinp(x, -3, &pool), x, &pool);
+    }
+
+    #[test]
+    fn integrate_sec_quartic() {
+        // ∫ sec(x)⁴ dx (even power, recurses to the tan base case).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        verify_numeric(nested_sec(x, 4, &pool), x, &pool);
+    }
+
+    #[test]
+    fn integrate_sec_linear_arg() {
+        // ∫ sec(2x+1) dx — the chain-rule 1/a factor must be applied.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let arg = pool.add(vec![
+            pool.mul(vec![pool.integer(2_i32), x]),
+            pool.integer(1_i32),
+        ]);
+        let f = pool.pow(pool.func("cos", vec![arg]), pool.integer(-1_i32));
+        verify_numeric(f, x, &pool);
     }
 }
