@@ -30,7 +30,9 @@
 
 use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
 use crate::integrate::engine::IntegrationError;
-use crate::integrate::risch::poly_rde::{degree, is_free_of_var, poly_mul, rational_to_expr, trim};
+use crate::integrate::risch::poly_rde::{
+    degree, is_free_of_var, poly_mul, qpoly_to_expr, rational_to_expr, trim,
+};
 use crate::integrate::risch::rational_rde::expr_to_qrational;
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
 use crate::simplify::engine::simplify;
@@ -213,6 +215,122 @@ pub(super) fn try_euler_quadratic(
     Some(Ok(DerivedExpr::with_log(f_x, log)))
 }
 
+/// General genus-0 `∫ R(x, √(a·x²+b·x+c)) dx` for **any** nondegenerate
+/// quadratic radicand with `a > 0` — including the cases where **neither** the
+/// leading coefficient `a` **nor** the constant `c` is a rational square
+/// (`√(2x²+3)`, `√(3x²+2x+2)`, …), which [`try_euler_quadratic`] declines because
+/// no rational point on the conic is available in its bounded form.
+///
+/// Completing the square gives `a·x²+b·x+c = a·((x + b/2a)² + k)` with
+/// `k = c/a − b²/4a²`, so with `u = x + b/2a` the radical factors as
+/// `√(quad) = √a · √(u²+k)`, and the **monic** `u²+k` (leading coefficient
+/// `1 = 1²`) has the rational point at infinity the first-kind Euler
+/// substitution `t = u + √(u²+k)` needs.  That substitution makes `u`, `√(u²+k)`,
+/// and hence the whole integrand rational in `t`; the irrational constant `√a`
+/// rides along as an **opaque symbol** `k_a` (so the recursively-integrated
+/// integrand is a genuine rational function of `t` — never a bare `sqrt` constant
+/// that the engine would misroute as an algebraic generator), and is resolved to
+/// `√a` only at the very end.
+///
+/// Only the `a > 0` branch (monic `u²+k`) is taken; the `a < 0` conic reduces to
+/// `√(k−u²)` (an `arcsin`-type genus-0 form) and is left to decline.  As always,
+/// a result is emitted only after the shared numeric `d/dx F = integrand` gate,
+/// so an unsupported reduction (e.g. one needing an `arctan` the constant-coefficient
+/// rational engine cannot form) simply declines — never a wrong integral.
+pub(super) fn try_euler_quadratic_general(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<Result<DerivedExpr<ExprId>, IntegrationError>> {
+    let (n, radicand) = detect_single_radical(expr, var, pool)?;
+    if n != 2 {
+        return None;
+    }
+    let (num, den) = expr_to_qrational(radicand, var, pool)?;
+    let (num, den) = (trim(num), trim(den));
+    if degree(&den) != 0 || degree(&num) != 2 {
+        return None;
+    }
+    let coeff = |p: &QPoly, i: usize| p.get(i).cloned().unwrap_or_else(|| rug::Rational::from(0));
+    let (c, b, a) = (coeff(&num, 0), coeff(&num, 1), coeff(&num, 2));
+    // Only the a>0 branch (monic `u²+k`); a<0 is the arcsin conic, left to decline.
+    if a <= 0 {
+        return None;
+    }
+    let quad = num.clone();
+
+    // shift = b/(2a);  k = c/a − b²/(4a²).
+    let shift = b.clone() / (rug::Rational::from(2) * a.clone());
+    let k = c.clone() / a.clone()
+        - (b.clone() * b.clone()) / (rug::Rational::from(4) * a.clone() * a.clone());
+    let neg_k = -k.clone();
+    let neg_shift = -shift.clone();
+
+    let t = pool.symbol("$euler_t$", Domain::Real);
+    let k_a = pool.symbol("$euler_sqrt_a$", Domain::Real); // opaque √a
+    let t2 = pool.pow(t, pool.integer(2));
+    let inv_two_t = pool.pow(pool.mul(vec![pool.integer(2), t]), pool.integer(-1));
+    // u(t) = (t²−k)/(2t);  x(t) = u − shift.
+    let u_of_t = pool.mul(vec![
+        pool.add(vec![t2, rational_to_expr(&neg_k, pool)]),
+        inv_two_t,
+    ]);
+    let x_of_t = simplify(
+        pool.add(vec![u_of_t, rational_to_expr(&neg_shift, pool)]),
+        pool,
+    )
+    .value;
+    // √(u²+k) = (t²+k)/(2t) — the *monic* radical value (rational in `t`); the
+    // actual `√(quad) = k_a · sqrt_u`, with the constant `k_a = √a` kept as a
+    // separate factor so every radical power emits `k_a^M · sqrt_u^M` (a
+    // *distributed* product), letting `simplify` collect all `k_a` powers into a
+    // single leading constant the rational engine can factor out.
+    let sqrt_u = pool.mul(vec![
+        pool.add(vec![t2, rational_to_expr(&k, pool)]),
+        inv_two_t,
+    ]);
+
+    // Rewrite the integrand rational in `t` (`to_t_scaled`: any power of the
+    // radicand → `k_a^M · sqrt_u^M`), times dx/dt.
+    let core = to_t_scaled(expr, var, &quad, k_a, sqrt_u, x_of_t, pool)?;
+    let dx_dt = simplify(crate::diff::diff(x_of_t, t, pool).ok()?.value, pool).value;
+    let integrand_t = simplify(pool.mul(vec![core, dx_dt]), pool).value;
+    // Integrate term-by-term.  The opaque constant `k_a = √a` would defeat the
+    // rational-function integrator (which normalizes over ℚ(t)), so from each
+    // additive term we pull *every* `t`-free factor — including the `k_a` power —
+    // out as a constant, collapse the remaining `t`-part into a single rational
+    // function `N(t)/D(t)`, integrate that pure ℚ(t) integrand with the engine,
+    // and multiply the constant back (linearity).
+    let f_t = integrate_scaled_rational(integrand_t, t, pool)?;
+
+    // Back-substitute t = u + √(u²+k) = (x+shift) + √(quad)/√a, then the opaque
+    // symbol k_a → √a.
+    let radical = pool.func("sqrt", vec![radicand]);
+    let back_t = pool.add(vec![
+        var,
+        rational_to_expr(&shift, pool),
+        pool.mul(vec![radical, pool.pow(k_a, pool.integer(-1))]),
+    ]);
+    let mut back = HashMap::new();
+    back.insert(t, back_t);
+    let f_bt = crate::kernel::subs(f_t, &back, pool);
+    let sqrt_a_val = pool.func("sqrt", vec![rational_to_expr(&a, pool)]);
+    let mut back_a = HashMap::new();
+    back_a.insert(k_a, sqrt_a_val);
+    let f_x = simplify(crate::kernel::subs(f_bt, &back_a, pool), pool).value;
+
+    if !verify_derivative(f_x, expr, radicand, var, pool) {
+        return None;
+    }
+    let mut log = DerivationLog::new();
+    log.push(RewriteStep::simple(
+        "algebraic_genus0_euler_general",
+        expr,
+        f_x,
+    ));
+    Some(Ok(DerivedExpr::with_log(f_x, log)))
+}
+
 /// Rewrite `expr` (rational in `x` and `√(quad)`) as a rational function of the
 /// Euler parameter `t`: `x → x_of_t`, `√(quad) → sqrt_t` (and any half-integer
 /// power of the radicand → the matching power of `sqrt_t`).  `None` if a subterm
@@ -269,6 +387,159 @@ fn to_t(
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// Like [`to_t`], but for the completed-square general Euler reduction where the
+/// radical value is `√(quad) = k_a · sqrt_u` (`k_a = √a` an opaque constant
+/// symbol, `sqrt_u = √(u²+k)` rational in `t`).  Every radicand power
+/// `quad^{c/d}` becomes the **distributed** product `k_a^M · sqrt_u^M`
+/// (`M = 2c/d`) — keeping `k_a` a separate factor so that, after `simplify`
+/// collects the `k_a` powers into one leading constant, the integrand is a
+/// genuine rational function of `t` the engine can integrate (a nested
+/// `(k_a·sqrt_u)^M` would instead read as an irreducible two-variable product).
+/// `None` if a subterm is not expressible this way.
+fn to_t_scaled(
+    expr: ExprId,
+    var: ExprId,
+    quad: &QPoly,
+    k_a: ExprId,
+    sqrt_u: ExprId,
+    x_of_t: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    if expr == var {
+        return Some(x_of_t);
+    }
+    if is_free_of_var(expr, var, pool) {
+        return Some(expr);
+    }
+    let one = vec![rug::Rational::from(1)];
+    // `quad^{c/d}` (base ≡ radicand) → `k_a^{2c/d} · sqrt_u^{2c/d}` when `d | 2c`.
+    let radical_power = |base: ExprId, c: i64, d: i64, pool: &ExprPool| -> Option<ExprId> {
+        if same_fraction(base, quad, &one, var, pool) && (2 * c) % d == 0 {
+            let m = ((2 * c) / d) as i32;
+            Some(pool.mul(vec![
+                pool.pow(k_a, pool.integer(m)),
+                pool.pow(sqrt_u, pool.integer(m)),
+            ]))
+        } else {
+            None
+        }
+    };
+    match pool.get(expr) {
+        ExprData::Func { ref name, ref args } if name == "sqrt" && args.len() == 1 => {
+            radical_power(args[0], 1, 2, pool)
+        }
+        ExprData::Add(args) => {
+            let v: Vec<ExprId> = args
+                .iter()
+                .map(|&a| to_t_scaled(a, var, quad, k_a, sqrt_u, x_of_t, pool))
+                .collect::<Option<_>>()?;
+            Some(pool.add(v))
+        }
+        ExprData::Mul(args) => {
+            let v: Vec<ExprId> = args
+                .iter()
+                .map(|&a| to_t_scaled(a, var, quad, k_a, sqrt_u, x_of_t, pool))
+                .collect::<Option<_>>()?;
+            Some(pool.mul(v))
+        }
+        ExprData::Pow { base, exp } => match pool.get(exp) {
+            ExprData::Integer(m) => {
+                let inner = to_t_scaled(base, var, quad, k_a, sqrt_u, x_of_t, pool)?;
+                // Distribute the outer integer power over any `k_a^M · sqrt_u^M`
+                // product `radical_power` produced, so `√(quad)^{-1}` becomes
+                // `k_a^{-1} · sqrt_u^{-1}` (separate factors) rather than
+                // `(k_a·sqrt_u)^{-1}` (which reads as a two-variable inverse).
+                Some(pow_int_distribute(inner, m.0.to_i64()? as i32, pool))
+            }
+            ExprData::Rational(r) => {
+                radical_power(base, r.0.numer().to_i64()?, r.0.denom().to_i64()?, pool)
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Integrate `∫ expr dt` where `expr` is a sum of terms, each a product of `t`-free
+/// constants (notably powers of the opaque `k_a = √a`) times a rational function
+/// of `t`.  Each term's constant part is pulled out, its `t`-part is collapsed to a
+/// single `N(t)/D(t)` (so the engine's Rothstein–Trager rational integrator — which
+/// normalizes over ℚ(t) and would otherwise be defeated by the extra `k_a`
+/// indeterminate — sees a pure rational function), integrated, and the constant
+/// multiplied back.  `None` if any term's `t`-part is not rational in `t` or the
+/// engine cannot integrate it.
+fn integrate_scaled_rational(expr: ExprId, t: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let terms: Vec<ExprId> = match pool.get(expr) {
+        ExprData::Add(args) => args.clone(),
+        _ => vec![expr],
+    };
+    let mut pieces = Vec::with_capacity(terms.len());
+    for term in terms {
+        let factors: Vec<ExprId> = match pool.get(term) {
+            ExprData::Mul(args) => args.clone(),
+            _ => vec![term],
+        };
+        let (consts, tdep): (Vec<ExprId>, Vec<ExprId>) = factors
+            .into_iter()
+            .partition(|&f| is_free_of_var(f, t, pool));
+        let int_tpart = if tdep.is_empty() {
+            // ∫ (constant) dt = constant · t.
+            t
+        } else {
+            let tpart = if tdep.len() == 1 {
+                tdep[0]
+            } else {
+                pool.mul(tdep)
+            };
+            let (num, den) = expr_to_qrational(tpart, t, pool)?;
+            let frac = pool.mul(vec![
+                qpoly_to_expr(&trim(num), t, pool),
+                pool.pow(qpoly_to_expr(&trim(den), t, pool), pool.integer(-1)),
+            ]);
+            crate::integrate::engine::integrate(frac, t, pool)
+                .ok()?
+                .value
+        };
+        let mut all = consts;
+        all.push(int_tpart);
+        pieces.push(pool.mul(all));
+    }
+    Some(if pieces.len() == 1 {
+        pieces.remove(0)
+    } else {
+        pool.add(pieces)
+    })
+}
+
+/// Raise `base` to the integer power `m`, distributing over `Mul` factors and
+/// folding into inner integer `Pow` exponents, so a product never ends up buried
+/// inside a single `(…)^m` (which the rational engine treats as one opaque
+/// var-dependent factor).  Used only by [`to_t_scaled`] on the small
+/// `k_a^M · sqrt_u^M` shapes it builds.
+fn pow_int_distribute(base: ExprId, m: i32, pool: &ExprPool) -> ExprId {
+    if m == 1 {
+        return base;
+    }
+    match pool.get(base) {
+        ExprData::Mul(args) => {
+            let v: Vec<ExprId> = args
+                .iter()
+                .map(|&f| pow_int_distribute(f, m, pool))
+                .collect();
+            pool.mul(v)
+        }
+        ExprData::Pow { base: b, exp } => {
+            if let ExprData::Integer(e) = pool.get(exp) {
+                if let Some(ei) = e.0.to_i64() {
+                    return pool.pow(b, pool.integer(ei as i32 * m));
+                }
+            }
+            pool.pow(base, pool.integer(m))
+        }
+        _ => pool.pow(base, pool.integer(m)),
     }
 }
 
@@ -642,6 +913,117 @@ mod tests {
                 p.mul(vec![p.func("sqrt", vec![q]), p.pow(x, p.integer(-1))])
             },
             &[1.4, 2.5, 3.8],
+        );
+    }
+
+    /// General Euler (`a=2` not a square, `c=3` not a square): `∫ x/√(2x²+3) dx =
+    /// √(2x²+3)/2`.  Completed-square reduction; radicand positive everywhere.
+    #[test]
+    fn euler_general_x_over_sqrt_2x2_plus_3() {
+        check_at(
+            |p, x| {
+                let q = p.add(vec![
+                    p.mul(vec![p.integer(2), p.pow(x, p.integer(2))]),
+                    p.integer(3),
+                ]);
+                p.mul(vec![x, p.pow(p.func("sqrt", vec![q]), p.integer(-1))])
+            },
+            &[-1.5, 0.4, 1.7, 3.1],
+        );
+    }
+
+    /// General Euler with a linear term (`a=3`, `b=2`, `c=2`, discriminant < 0):
+    /// `∫ 1/√(3x²+2x+2) dx` — an `asinh`/`log` form.  Radicand positive everywhere.
+    #[test]
+    fn euler_general_one_over_sqrt_3x2_2x_2() {
+        check_at(
+            |p, x| {
+                let q = p.add(vec![
+                    p.mul(vec![p.integer(3), p.pow(x, p.integer(2))]),
+                    p.mul(vec![p.integer(2), x]),
+                    p.integer(2),
+                ]);
+                p.pow(p.func("sqrt", vec![q]), p.integer(-1))
+            },
+            &[-2.0, -0.3, 1.1, 2.6],
+        );
+    }
+
+    /// General Euler with a rational weight: `∫ 1/((x−1)·√(2x²+3)) dx` — an
+    /// elementary `log` form.  Radicand positive everywhere; avoid the pole `x=1`.
+    #[test]
+    fn euler_general_weighted_1_over_x_minus_1_sqrt_2x2_3() {
+        check_at(
+            |p, x| {
+                let q = p.add(vec![
+                    p.mul(vec![p.integer(2), p.pow(x, p.integer(2))]),
+                    p.integer(3),
+                ]);
+                let w = p.pow(p.add(vec![x, p.integer(-1)]), p.integer(-1));
+                p.mul(vec![w, p.pow(p.func("sqrt", vec![q]), p.integer(-1))])
+            },
+            &[-1.5, 0.2, 2.3, 3.7],
+        );
+    }
+
+    /// Regression: `∫ √(2x²+3) dx` — already worked via the polynomial-`B`
+    /// integral part; the new general fallback must not disturb it.
+    #[test]
+    fn regression_sqrt_2x2_plus_3() {
+        check_at(
+            |p, x| {
+                let q = p.add(vec![
+                    p.mul(vec![p.integer(2), p.pow(x, p.integer(2))]),
+                    p.integer(3),
+                ]);
+                p.func("sqrt", vec![q])
+            },
+            &[-1.5, 0.4, 1.7, 3.1],
+        );
+    }
+
+    /// Regression: `∫ 1/√(2x²+3) dx` — already worked; keep it working.
+    #[test]
+    fn regression_one_over_sqrt_2x2_plus_3() {
+        check_at(
+            |p, x| {
+                let q = p.add(vec![
+                    p.mul(vec![p.integer(2), p.pow(x, p.integer(2))]),
+                    p.integer(3),
+                ]);
+                p.pow(p.func("sqrt", vec![q]), p.integer(-1))
+            },
+            &[-1.5, 0.4, 1.7, 3.1],
+        );
+    }
+
+    /// Regression: `∫ x·√(x²+1) dx = (x²+1)^{3/2}/3` — the polynomial-`B` integral
+    /// part's nicer closed form must be preserved (a=1 square, not routed here).
+    #[test]
+    fn regression_x_sqrt_x2_plus_1() {
+        check_at(
+            |p, x| {
+                let q = p.add(vec![p.pow(x, p.integer(2)), p.integer(1)]);
+                p.mul(vec![x, p.func("sqrt", vec![q])])
+            },
+            &[-1.3, 0.4, 1.7, 3.1],
+        );
+    }
+
+    /// Regression: `∫ dx/((x²−1)·√(x²+1))` — the existing `a=1`-square Euler path
+    /// (rational weight on a quadratic radical) must keep working.  Avoid `x=±1`.
+    #[test]
+    fn regression_dx_over_x2_minus_1_sqrt_x2_plus_1() {
+        check_at(
+            |p, x| {
+                let q = p.add(vec![p.pow(x, p.integer(2)), p.integer(1)]);
+                let d = p.add(vec![p.pow(x, p.integer(2)), p.integer(-1)]);
+                p.mul(vec![
+                    p.pow(d, p.integer(-1)),
+                    p.pow(p.func("sqrt", vec![q]), p.integer(-1)),
+                ])
+            },
+            &[0.3, 1.7, 2.6, -2.0],
         );
     }
 }

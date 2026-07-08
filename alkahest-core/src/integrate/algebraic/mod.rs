@@ -212,6 +212,13 @@ pub fn integrate_algebraic(
             if let Some(res) = parametrize::try_euler_quadratic(expr, var, pool) {
                 return res;
             }
+            // Completed-square generalization: `√(a x²+b x+c)` with `a > 0` but
+            // neither `a` nor `c` a rational square (`√(2x²+3)`, `√(3x²+2x+2)`,
+            // …), which `try_euler_quadratic` above cannot rationalize.  Tried
+            // last so the nicer closed forms of the earlier paths are preserved.
+            if let Some(res) = parametrize::try_euler_quadratic_general(expr, var, pool) {
+                return res;
+            }
             integrate_via_decompose(expr, var, pool)
         }
         other => other,

@@ -171,6 +171,32 @@ def test_integral_const_times_sqrt_quadratic():
 
 
 # ---------------------------------------------------------------------------
+# General quadratic radicand: leading coeff `a` not a rational square, so the
+# completed-square Euler reduction (t = u + √(u²+k), √a factored out) is needed.
+# ---------------------------------------------------------------------------
+
+
+def test_integral_x_over_sqrt_2x2_plus_3():
+    """∫ x/√(2x²+3) dx = √(2x²+3)/2  (a=2 not a square; previously declined)."""
+    pool = ExprPool()
+    x = pool.symbol("x")
+    p = pool.integer(2) * x**2 + pool.integer(3)
+    f = x * (sqrt(p) ** -1)
+    r = integrate(f, x)
+    check_antiderivative(pool, x, f, r.value, "x/sqrt(2x^2+3)")
+
+
+def test_integral_1_over_sqrt_3x2_2x_2():
+    """∫ 1/√(3x²+2x+2) dx — asinh/log form (a=3, discriminant < 0)."""
+    pool = ExprPool()
+    x = pool.symbol("x")
+    p = pool.integer(3) * x**2 + pool.integer(2) * x + pool.integer(2)
+    f = sqrt(p) ** -1
+    r = integrate(f, x)
+    check_antiderivative(pool, x, f, r.value, "1/sqrt(3x^2+2x+2)")
+
+
+# ---------------------------------------------------------------------------
 # Mixed integrand A(x) + B(x)·sqrt(P)
 # ---------------------------------------------------------------------------
 
