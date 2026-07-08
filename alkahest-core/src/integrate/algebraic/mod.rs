@@ -201,6 +201,19 @@ pub fn integrate_algebraic(
         return res;
     }
 
+    // Negative-leading-coefficient quadratic radicand `√(a x²+b x+c)`, `a < 0`
+    // (the `arcsin` family): completing the square gives `a x²+b x+c =
+    // |a|·(k²−(x−h)²)`, and the substitution `w = x−h` reduces `∫ R(x,√P) dx` to
+    // `∫ poly(w)/√(k²−w²) dw`, i.e. `asin`/√ table integrals.  Tried *before* the
+    // decompose path because that path would otherwise emit an ugly imaginary-log
+    // rendering (`sqrt(-1)·log(…)`) of the same antiderivative for `a < 0`.
+    // Self-guards on `a < 0` and a positive real interval, and every emission is
+    // numerically `d/dx F = integrand` verified — so `a ≥ 0` behavior is untouched
+    // and unsupported `a < 0` shapes decline cleanly (falling through below).
+    if let Some(res) = parametrize::try_arcsin_quadratic(expr, var, pool) {
+        return res;
+    }
+
     // Standard path: decompose `A(x) + B(x)·√P` and integrate each part.  When it
     // cannot express the integrand — e.g. a *rational* coefficient on a quadratic
     // radical, `∫ dx/((x²−1)√(x²+1))` — fall back to the genus-0 Euler

@@ -331,6 +331,280 @@ pub(super) fn try_euler_quadratic_general(
     Some(Ok(DerivedExpr::with_log(f_x, log)))
 }
 
+/// Genus-0 `∫ R(x, √(a·x²+b·x+c)) dx` for a **negative** leading coefficient
+/// `a < 0` — the `arcsin` family (`∫dx/√(2−3x²)`, `∫x/√(5−2x²)`,
+/// `∫dx/√(−x²+2x+3)`, `∫√(2−3x²) dx`, …).
+///
+/// For `a < 0` the conic `y² = a x²+b x+c` has no real point at infinity, so the
+/// Euler substitution used for `a > 0` ([`try_euler_quadratic_general`]) has no
+/// real form; the natural normal form is `arcsin`.  Completing the square,
+/// ```text
+///   a·x²+b·x+c = |a|·(k² − (x−h)²),   h = −b/(2a),   k² = (c − b²/(4a))/|a|,
+/// ```
+/// (`k² > 0` iff the radicand is positive somewhere — else it is `√(negative)`
+/// everywhere and we decline).  The shift `w = x−h` (rational, `dx = dw`) gives
+/// `√(quad) = √|a|·√(k²−w²)`, turning the integrand into
+/// `Σ_n c_n · wⁿ / √(k²−w²)` (a polynomial numerator over the radical) whenever
+/// `R` is such that multiplying by the radical clears it — i.e. `R = poly(x)/√P`
+/// or `poly(x)·√P`.  Those reduce by the standard table integrals
+/// ```text
+///   ∫ dw/√(k²−w²)      = asin(w/k),
+///   ∫ w/√(k²−w²) dw    = −√(k²−w²),
+///   ∫ wⁿ/√(k²−w²) dw   = −wⁿ⁻¹√(k²−w²)/n + (n−1)k²/n · ∫ wⁿ⁻²/√(k²−w²) dw,
+/// ```
+/// back-substituted `w = x−h`, `√(k²−w²) = √(quad)/√|a|`.
+///
+/// Returns `None` (declines, no regression) unless the integrand is exactly a
+/// single `√(a x²+b x+c)` generator with `a < 0`, a positive real interval, and a
+/// polynomial-numerator-over-radical shape.  As always the result is emitted only
+/// after the shared numeric `d/dx F = integrand` gate — an unsupported shape (a
+/// rational weight with a pole, a mixed rational+radical integrand, …) simply
+/// declines rather than emitting a wrong answer.
+pub(super) fn try_arcsin_quadratic(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<Result<DerivedExpr<ExprId>, IntegrationError>> {
+    let (n, radicand) = detect_single_radical(expr, var, pool)?;
+    if n != 2 {
+        return None;
+    }
+    let (num, den) = expr_to_qrational(radicand, var, pool)?;
+    let (num, den) = (trim(num), trim(den));
+    if degree(&den) != 0 || degree(&num) != 2 {
+        return None;
+    }
+    let coeff = |p: &QPoly, i: usize| p.get(i).cloned().unwrap_or_else(|| rug::Rational::from(0));
+    let (c, b, a) = (coeff(&num, 0), coeff(&num, 1), coeff(&num, 2));
+    // Only the a<0 branch (the arcsin conic); a>0 is left to the earlier paths.
+    if a >= 0 {
+        return None;
+    }
+    let quad = num.clone();
+
+    // h = −b/(2a);  |a| = −a;  k² = (c − b²/(4a))/|a|  (need k² > 0).
+    let abs_a = -a.clone();
+    let h = -b.clone() / (rug::Rational::from(2) * a.clone());
+    let disc = c.clone() - (b.clone() * b.clone()) / (rug::Rational::from(4) * a.clone());
+    let kk = disc / abs_a.clone();
+    if kk <= 0 {
+        return None; // radicand negative everywhere — √(negative), decline
+    }
+
+    // Opaque constants: amp = √|a|, s = √(k²−w²); w is the shifted variable.
+    let w = pool.symbol("$arcsin_w$", Domain::Real);
+    let s = pool.symbol("$arcsin_s$", Domain::Real);
+    let amp = pool.symbol("$arcsin_amp$", Domain::Real);
+    let x_of_w = pool.add(vec![w, rational_to_expr(&h, pool)]);
+
+    // Rewrite R in `w`, `√(quad) = amp·s` (reusing the completed-square rewriter):
+    // standalone x → w+h, every radical power `quad^{c/d}` → amp^M · s^M.
+    let integrand_w = to_t_scaled(expr, var, &quad, amp, s, x_of_w, pool)?;
+    // Multiply by the radical `s` so a `poly/√` term becomes a bare polynomial and
+    // a `poly·√` term becomes `poly·s²`; then rewrite the even power `s² = k²−w²`.
+    let prod = simplify(pool.mul(vec![integrand_w, s]), pool).value;
+    let kk_minus_w2 = pool.add(vec![
+        rational_to_expr(&kk, pool),
+        pool.mul(vec![pool.integer(-1), pool.pow(w, pool.integer(2))]),
+    ]);
+    let reduced = reduce_even_s_powers(prod, s, kk_minus_w2, pool);
+    // A leftover odd power of `s` means a genuine rational (non-radical) part or an
+    // `s⁻³`-type shape this table does not cover: decline.
+    if !is_free_of_var(reduced, s, pool) {
+        return None;
+    }
+    // Collect `reduced` as a polynomial in `w` (coefficients free of `w`, possibly
+    // carrying the opaque `amp`).  A pole in `w` (rational weight) → `None`.
+    let coeffs = poly_coeffs_in(reduced, w, pool)?;
+
+    // Integrate `Σ c_n wⁿ / √(k²−w²)` by the asin/√ table above.
+    let f_w = integrate_poly_over_neg_quad(&coeffs, w, s, &kk, pool);
+
+    // Back-substitute: w → x−h,  amp → √|a|,  s → √(quad)/√|a|.
+    let amp_val = pool.func("sqrt", vec![rational_to_expr(&abs_a, pool)]);
+    let sqrt_p = pool.func("sqrt", vec![radicand]);
+    let s_val = pool.mul(vec![sqrt_p, pool.pow(amp_val, pool.integer(-1))]);
+    let mut back = HashMap::new();
+    back.insert(w, pool.add(vec![var, rational_to_expr(&-h.clone(), pool)]));
+    back.insert(amp, amp_val);
+    back.insert(s, s_val);
+    let f_x = simplify(crate::kernel::subs(f_w, &back, pool), pool).value;
+
+    if !verify_derivative(f_x, expr, radicand, var, pool) {
+        return None;
+    }
+    let mut log = DerivationLog::new();
+    log.push(RewriteStep::simple("algebraic_arcsin_quadratic", expr, f_x));
+    Some(Ok(DerivedExpr::with_log(f_x, log)))
+}
+
+/// Rewrite every **even** integer power `s^{2m}` of the opaque radical symbol `s`
+/// to `(k²−w²)^m` (`kk_minus_w2`), leaving odd powers of `s` untouched (so a
+/// caller can detect an uncovered shape by testing whether the result still
+/// contains `s`).  Used by [`try_arcsin_quadratic`] after multiplying the
+/// integrand by one factor of `s`.
+fn reduce_even_s_powers(expr: ExprId, s: ExprId, kk_minus_w2: ExprId, pool: &ExprPool) -> ExprId {
+    match pool.get(expr) {
+        ExprData::Pow { base, exp } if base == s => {
+            if let ExprData::Integer(e) = pool.get(exp) {
+                if let Some(ei) = e.0.to_i64() {
+                    if ei % 2 == 0 {
+                        return pool.pow(kk_minus_w2, pool.integer((ei / 2) as i32));
+                    }
+                }
+            }
+            expr // odd/non-integer power of s: leave it (signals decline)
+        }
+        ExprData::Add(args) => {
+            let v: Vec<ExprId> = args
+                .iter()
+                .map(|&a| reduce_even_s_powers(a, s, kk_minus_w2, pool))
+                .collect();
+            pool.add(v)
+        }
+        ExprData::Mul(args) => {
+            let v: Vec<ExprId> = args
+                .iter()
+                .map(|&a| reduce_even_s_powers(a, s, kk_minus_w2, pool))
+                .collect();
+            pool.mul(v)
+        }
+        ExprData::Pow { base, exp } => {
+            let nb = reduce_even_s_powers(base, s, kk_minus_w2, pool);
+            pool.pow(nb, exp)
+        }
+        ExprData::Func { ref name, ref args } => {
+            let v: Vec<ExprId> = args
+                .iter()
+                .map(|&a| reduce_even_s_powers(a, s, kk_minus_w2, pool))
+                .collect();
+            pool.func(name.clone(), v)
+        }
+        _ => expr,
+    }
+}
+
+/// Collect `expr` as a polynomial in `w`: a map `degree → coefficient` where each
+/// coefficient is an [`ExprId`] free of `w` (it may carry other symbols, e.g. the
+/// opaque `amp = √|a|`).  Returns `None` if `expr` is not polynomial in `w` (a
+/// `w`-dependent denominator / pole, a radical or transcendental of `w`, …).
+fn poly_coeffs_in(expr: ExprId, w: ExprId, pool: &ExprPool) -> Option<HashMap<usize, ExprId>> {
+    if expr == w {
+        let mut m = HashMap::new();
+        m.insert(1usize, pool.integer(1));
+        return Some(m);
+    }
+    if is_free_of_var(expr, w, pool) {
+        let mut m = HashMap::new();
+        m.insert(0usize, expr);
+        return Some(m);
+    }
+    match pool.get(expr) {
+        ExprData::Add(args) => {
+            let mut acc: HashMap<usize, ExprId> = HashMap::new();
+            for &a in &args {
+                let cm = poly_coeffs_in(a, w, pool)?;
+                for (d, c) in cm {
+                    acc.entry(d)
+                        .and_modify(|e| *e = pool.add(vec![*e, c]))
+                        .or_insert(c);
+                }
+            }
+            Some(acc)
+        }
+        ExprData::Mul(args) => {
+            let mut acc: HashMap<usize, ExprId> = HashMap::new();
+            acc.insert(0usize, pool.integer(1));
+            for &a in &args {
+                let cm = poly_coeffs_in(a, w, pool)?;
+                acc = poly_convolve(&acc, &cm, pool);
+            }
+            Some(acc)
+        }
+        ExprData::Pow { base, exp } => {
+            let e = match pool.get(exp) {
+                ExprData::Integer(e) => e.0.to_i64()?,
+                _ => return None,
+            };
+            if e < 0 {
+                return None; // w-dependent denominator: pole, decline
+            }
+            let bm = poly_coeffs_in(base, w, pool)?;
+            let mut acc: HashMap<usize, ExprId> = HashMap::new();
+            acc.insert(0usize, pool.integer(1));
+            for _ in 0..e {
+                acc = poly_convolve(&acc, &bm, pool);
+            }
+            Some(acc)
+        }
+        _ => None,
+    }
+}
+
+/// Polynomial (Cauchy) product of two `degree → coefficient` maps.
+fn poly_convolve(
+    p: &HashMap<usize, ExprId>,
+    q: &HashMap<usize, ExprId>,
+    pool: &ExprPool,
+) -> HashMap<usize, ExprId> {
+    let mut out: HashMap<usize, ExprId> = HashMap::new();
+    for (&dp, &cp) in p {
+        for (&dq, &cq) in q {
+            let term = pool.mul(vec![cp, cq]);
+            out.entry(dp + dq)
+                .and_modify(|e| *e = pool.add(vec![*e, term]))
+                .or_insert(term);
+        }
+    }
+    out
+}
+
+/// Integrate `∫ (Σ_n c_n wⁿ) / √(k²−w²) dw` by the `asin`/√ reduction, returning
+/// the antiderivative in terms of `w`, the opaque radical `s = √(k²−w²)`, and
+/// `asin(w/√(k²))` (`kk = k²`, rational).  The `c_n` are arbitrary `w`-free
+/// coefficients (linearity), so this is exact for any polynomial numerator.
+fn integrate_poly_over_neg_quad(
+    coeffs: &HashMap<usize, ExprId>,
+    w: ExprId,
+    s: ExprId,
+    kk: &rug::Rational,
+    pool: &ExprPool,
+) -> ExprId {
+    let maxd = coeffs.keys().copied().max().unwrap_or(0);
+    let k_expr = pool.func("sqrt", vec![rational_to_expr(kk, pool)]);
+    let k_inv = pool.pow(k_expr, pool.integer(-1));
+    // reductions[n] = ∫ wⁿ/√(k²−w²) dw.
+    let mut red: Vec<ExprId> = Vec::with_capacity(maxd + 1);
+    // I₀ = asin(w/k).
+    red.push(pool.func("asin", vec![pool.mul(vec![w, k_inv])]));
+    if maxd >= 1 {
+        // I₁ = −√(k²−w²) = −s.
+        red.push(pool.mul(vec![pool.integer(-1), s]));
+    }
+    for nn in 2..=maxd {
+        let n = nn as i64;
+        // Iₙ = (−1/n)·wⁿ⁻¹·s + ((n−1)/n)·k²·Iₙ₋₂.
+        let c1 = rug::Rational::from((-1, n));
+        let term1 = pool.mul(vec![
+            rational_to_expr(&c1, pool),
+            pool.pow(w, pool.integer((nn - 1) as i32)),
+            s,
+        ]);
+        let c2 = rug::Rational::from((n - 1, n)) * kk.clone();
+        let term2 = pool.mul(vec![rational_to_expr(&c2, pool), red[nn - 2]]);
+        red.push(pool.add(vec![term1, term2]));
+    }
+    let mut terms = Vec::with_capacity(coeffs.len());
+    for (&d, &c) in coeffs {
+        terms.push(pool.mul(vec![c, red[d]]));
+    }
+    if terms.len() == 1 {
+        terms.remove(0)
+    } else {
+        pool.add(terms)
+    }
+}
+
 /// Rewrite `expr` (rational in `x` and `√(quad)`) as a rational function of the
 /// Euler parameter `t`: `x → x_of_t`, `√(quad) → sqrt_t` (and any half-integer
 /// power of the radicand → the matching power of `sqrt_t`).  `None` if a subterm
@@ -1025,5 +1299,130 @@ mod tests {
             },
             &[0.3, 1.7, 2.6, -2.0],
         );
+    }
+
+    /// Arcsin family (a<0, non-square leading coeff): `∫ 1/√(2−3x²) dx =
+    /// (1/√3)·asin(x·√(3/2))`.  Radicand positive on `|x| < √(2/3) ≈ 0.816`.
+    #[test]
+    fn arcsin_one_over_sqrt_2_minus_3x2() {
+        check_at(
+            |p, x| {
+                let q = p.add(vec![
+                    p.integer(2),
+                    p.mul(vec![p.integer(-3), p.pow(x, p.integer(2))]),
+                ]);
+                p.pow(p.func("sqrt", vec![q]), p.integer(-1))
+            },
+            &[-0.6, -0.1, 0.3, 0.7],
+        );
+    }
+
+    /// Arcsin family: `∫ 1/√(5−2x²) dx`.  Radicand positive on `|x| < √(5/2) ≈ 1.58`.
+    #[test]
+    fn arcsin_one_over_sqrt_5_minus_2x2() {
+        check_at(
+            |p, x| {
+                let q = p.add(vec![
+                    p.integer(5),
+                    p.mul(vec![p.integer(-2), p.pow(x, p.integer(2))]),
+                ]);
+                p.pow(p.func("sqrt", vec![q]), p.integer(-1))
+            },
+            &[-1.2, -0.4, 0.5, 1.3],
+        );
+    }
+
+    /// Arcsin family with a linear term: `∫ 1/√(−x²+2x+3) dx = asin((x−1)/2)`
+    /// (complete square: `4 − (x−1)²`).  Radicand positive on `(−1, 3)`.
+    #[test]
+    fn arcsin_one_over_sqrt_neg_x2_2x_3() {
+        check_at(
+            |p, x| {
+                let q = p.add(vec![
+                    p.mul(vec![p.integer(-1), p.pow(x, p.integer(2))]),
+                    p.mul(vec![p.integer(2), x]),
+                    p.integer(3),
+                ]);
+                p.pow(p.func("sqrt", vec![q]), p.integer(-1))
+            },
+            &[-0.5, 0.7, 1.6, 2.5],
+        );
+    }
+
+    /// Arcsin family, linear numerator: `∫ x/√(5−2x²) dx = −√(5−2x²)/2`.
+    /// Radicand positive on `|x| < √(5/2)`.
+    #[test]
+    fn arcsin_x_over_sqrt_5_minus_2x2() {
+        check_at(
+            |p, x| {
+                let q = p.add(vec![
+                    p.integer(5),
+                    p.mul(vec![p.integer(-2), p.pow(x, p.integer(2))]),
+                ]);
+                p.mul(vec![x, p.pow(p.func("sqrt", vec![q]), p.integer(-1))])
+            },
+            &[-1.2, -0.4, 0.5, 1.3],
+        );
+    }
+
+    /// Arcsin family, `√P` numerator (the improved-form bonus): `∫ √(2−3x²) dx =
+    /// x√(2−3x²)/2 + (1/√3)·asin(x√(3/2))` — a *real* asin form (no `sqrt(-3)`).
+    #[test]
+    fn arcsin_sqrt_2_minus_3x2() {
+        check_at(
+            |p, x| {
+                let q = p.add(vec![
+                    p.integer(2),
+                    p.mul(vec![p.integer(-3), p.pow(x, p.integer(2))]),
+                ]);
+                p.func("sqrt", vec![q])
+            },
+            &[-0.6, -0.1, 0.3, 0.7],
+        );
+    }
+
+    /// Regression: `∫ 1/√(1−x²) dx = asin(x)`.  Radicand positive on `(−1, 1)`.
+    #[test]
+    fn arcsin_one_over_sqrt_1_minus_x2() {
+        check_at(
+            |p, x| {
+                let q = p.add(vec![
+                    p.integer(1),
+                    p.mul(vec![p.integer(-1), p.pow(x, p.integer(2))]),
+                ]);
+                p.pow(p.func("sqrt", vec![q]), p.integer(-1))
+            },
+            &[-0.7, -0.2, 0.3, 0.8],
+        );
+    }
+
+    /// Regression: `∫ 1/√(4−x²) dx = asin(x/2)`.  Radicand positive on `(−2, 2)`.
+    #[test]
+    fn arcsin_one_over_sqrt_4_minus_x2() {
+        check_at(
+            |p, x| {
+                let q = p.add(vec![
+                    p.integer(4),
+                    p.mul(vec![p.integer(-1), p.pow(x, p.integer(2))]),
+                ]);
+                p.pow(p.func("sqrt", vec![q]), p.integer(-1))
+            },
+            &[-1.5, -0.4, 0.6, 1.7],
+        );
+    }
+
+    /// `√(−1−x²)` is negative everywhere (`k² < 0`): the arcsin path declines
+    /// cleanly (no panic).
+    #[test]
+    fn arcsin_negative_everywhere_declines() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let q = pool.add(vec![
+            pool.integer(-1),
+            pool.mul(vec![pool.integer(-1), pool.pow(x, pool.integer(2))]),
+        ]);
+        let f = pool.pow(pool.func("sqrt", vec![q]), pool.integer(-1));
+        // Must not panic; declining (Err) is acceptable — just never a wrong answer.
+        let _ = crate::integrate::engine::integrate(f, x, &pool);
     }
 }
