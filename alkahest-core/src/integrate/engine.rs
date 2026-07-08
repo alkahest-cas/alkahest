@@ -7,6 +7,7 @@
 /// - Sum rule: `∫ (f + g) dx = ∫f dx + ∫g dx`
 /// - Constant-multiple rule: `∫ c·f dx = c · ∫f dx`
 /// - Known functions: sin, cos, exp, 1/x
+/// - Inverse-trig via integration by parts: atan, asin, acos (bare and `rest(x)·f(x)`)
 ///
 /// Everything else returns `Err(IntegrationError::NotImplemented)`.
 ///
@@ -372,6 +373,149 @@ fn try_x_times_func(
 }
 
 // ---------------------------------------------------------------------------
+// Inverse-trigonometric integration by parts
+// ---------------------------------------------------------------------------
+
+/// `true` if `name` is one of the inverse-trigonometric functions handled by the
+/// IBP path (`atan`, `asin`, `acos`).
+fn is_inverse_trig(name: &str) -> bool {
+    matches!(name, "atan" | "asin" | "acos")
+}
+
+/// `true` if `expr` contains an inverse-trigonometric function (`atan`/`asin`/
+/// `acos`) anywhere in its tree.  Used to guarantee the IBP residual is
+/// inverse-trig-free, so the IBP branch cannot re-enter itself (termination).
+fn contains_inverse_trig(expr: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(expr) {
+        ExprData::Func { name, args } => {
+            is_inverse_trig(&name) || args.iter().any(|&a| contains_inverse_trig(a, pool))
+        }
+        ExprData::Add(args) | ExprData::Mul(args) => {
+            args.iter().any(|&a| contains_inverse_trig(a, pool))
+        }
+        ExprData::Pow { base, exp } => {
+            contains_inverse_trig(base, pool) || contains_inverse_trig(exp, pool)
+        }
+        _ => false,
+    }
+}
+
+/// Derivative `f'(var)` for an inverse-trigonometric `f`:
+/// `atan'(x) = 1/(1+x²)`, `asin'(x) = 1/√(1−x²)`, `acos'(x) = −1/√(1−x²)`.
+fn inverse_trig_derivative(name: &str, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let x2 = pool.pow(var, pool.integer(2_i32));
+    match name {
+        "atan" => {
+            // 1/(1 + x²)
+            let denom = pool.add(vec![pool.integer(1_i32), x2]);
+            Some(pool.pow(denom, pool.integer(-1_i32)))
+        }
+        "asin" | "acos" => {
+            // ±1/√(1 − x²)
+            let neg_x2 = pool.mul(vec![pool.integer(-1_i32), x2]);
+            let one_minus_x2 = pool.add(vec![pool.integer(1_i32), neg_x2]);
+            let sqrt = pool.func("sqrt", vec![one_minus_x2]);
+            let inv = pool.pow(sqrt, pool.integer(-1_i32));
+            if name == "asin" {
+                Some(inv)
+            } else {
+                Some(pool.mul(vec![pool.integer(-1_i32), inv]))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Integrate `∫ rest(x)·f(x) dx` by parts with `u = f(x)`, `dv = rest·dx`, where
+/// `f ∈ {atan, asin, acos}` and its argument is exactly `var`:
+///
+/// ```text
+/// ∫ rest·f dx = P·f − ∫ P·f' dx,   P = ∫ rest dx.
+/// ```
+///
+/// `rest` is the product of all factors other than the single inverse-trig
+/// factor (or `1` for the bare `∫ f(x) dx` case).  Both `P = ∫ rest dx` and the
+/// residual `∫ P·f' dx` are computed by recursing through the full [`integrate`]
+/// engine (so rational and algebraic-√ residuals resolve).  `P·f'` is
+/// inverse-trig-free, so the residual can never re-enter this branch — the
+/// recursion terminates.  The final antiderivative is soundness-gated by
+/// [`verify_antiderivative`]: it is returned only if `d/dx result = integrand`,
+/// so a wrong integral is never emitted.  Returns `None` (decline) when the
+/// shape does not match or any sub-integral declines.
+fn try_inverse_trig_ibp(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Option<ExprId> {
+    // Identify the single inverse-trig factor f(var) and the remaining product `rest`.
+    let (fname, rest) = match pool.get(expr) {
+        // Bare ∫ f(x) dx.
+        ExprData::Func { name, args }
+            if args.len() == 1 && args[0] == var && is_inverse_trig(&name) =>
+        {
+            (name, pool.integer(1_i32))
+        }
+        // Product ∫ rest(x)·f(x) dx with exactly one inverse-trig factor.
+        ExprData::Mul(args) => {
+            let mut found: Option<(usize, String)> = None;
+            for (i, &a) in args.iter().enumerate() {
+                if let ExprData::Func { name, args: fargs } = pool.get(a) {
+                    if fargs.len() == 1 && fargs[0] == var && is_inverse_trig(&name) {
+                        if found.is_some() {
+                            return None; // two inverse-trig factors — out of scope
+                        }
+                        found = Some((i, name));
+                    }
+                }
+            }
+            let (pos, name) = found?;
+            let rest_factors: Vec<ExprId> = args
+                .iter()
+                .enumerate()
+                .filter(|&(i, _)| i != pos)
+                .map(|(_, &a)| a)
+                .collect();
+            let rest = match rest_factors.len() {
+                0 => pool.integer(1_i32),
+                1 => rest_factors[0],
+                _ => pool.mul(rest_factors),
+            };
+            // `rest` must be inverse-trig-free (termination guard: the residual
+            // P·f' then contains no inverse-trig function and cannot recurse here).
+            if contains_inverse_trig(rest, pool) {
+                return None;
+            }
+            (name, rest)
+        }
+        _ => return None,
+    };
+
+    let fprime = inverse_trig_derivative(&fname, var, pool)?;
+
+    // P = ∫ rest dx (full engine, so rational/algebraic residuals resolve).
+    let p = integrate(rest, var, pool).ok()?.value;
+
+    // Residual ∫ P·f' dx. Inverse-trig-free ⇒ no re-entry into this branch.
+    let residual_integrand = pool.mul(vec![p, fprime]);
+    let residual = integrate(residual_integrand, var, pool).ok()?.value;
+
+    // ∫ rest·f = P·f − ∫ P·f'.
+    let f = pool.func(&fname, vec![var]);
+    let pf = pool.mul(vec![p, f]);
+    let neg_residual = pool.mul(vec![pool.integer(-1_i32), residual]);
+    let result = pool.add(vec![pf, neg_residual]);
+
+    // Soundness gate: only emit when d/dx result equals the integrand.
+    if !verify_antiderivative(result, expr, var, pool) {
+        return None;
+    }
+
+    log.push(RewriteStep::simple("int_inverse_trig_ibp", expr, result));
+    Some(result)
+}
+
+// ---------------------------------------------------------------------------
 // Known non-elementary pre-check (Risch Gap 6)
 // ---------------------------------------------------------------------------
 
@@ -542,6 +686,14 @@ pub(crate) fn integrate_raw(
 ) -> Result<ExprId, IntegrationError> {
     // Fast-path: ∫ c * x * exp(x) dx = c * exp(x) * (x - 1)
     if let Some(result) = try_x_times_func(expr, var, pool, log) {
+        return Ok(result);
+    }
+
+    // Inverse-trigonometric integration by parts:
+    //   ∫ rest(x)·f(x) dx with f ∈ {atan, asin, acos} and arg == var.
+    // Handles both the bare case (∫ atan(x) dx) and the product case
+    // (∫ x·atan(x) dx). Soundness-gated inside the helper.
+    if let Some(result) = try_inverse_trig_ibp(expr, var, pool, log) {
         return Ok(result);
     }
 
@@ -801,6 +953,10 @@ pub(crate) fn integrate_raw(
 /// | `log(x)`           | `x*log(x) - x`              | `int_log`               |
 /// | `x * exp(x)`       | `exp(x)*(x-1)`              | `int_x_exp`             |
 /// | `1/(a*x + b)`      | `log(a*x+b) / a`            | `int_linear_inv`        |
+/// | `atan(x)`          | `x*atan(x) - ½log(1+x²)`   | `int_inverse_trig_ibp`  |
+/// | `asin(x)`          | `x*asin(x) + √(1-x²)`      | `int_inverse_trig_ibp`  |
+/// | `acos(x)`          | `x*acos(x) - √(1-x²)`      | `int_inverse_trig_ibp`  |
+/// | `rest(x)*atan(x)`  | IBP: `P*atan - ∫P·f'`      | `int_inverse_trig_ibp`  |
 ///
 /// # Transcendental Risch (Risch engine)
 ///
@@ -2407,5 +2563,126 @@ mod tests {
         // ∫ 1/x dx
         let inv = pool.pow(x, pool.integer(-1_i32));
         verify_numeric(inv, x, &pool);
+    }
+
+    // --- Inverse-trigonometric integration by parts (atan / asin / acos) ---
+
+    #[test]
+    fn integrate_atan() {
+        // ∫ atan(x) dx = x·atan(x) − ½·log(1+x²)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.func("atan", vec![x]);
+        let r = integrate(f, x, &pool).unwrap();
+        assert!(
+            r.log
+                .steps()
+                .iter()
+                .any(|s| s.rule_name == "int_inverse_trig_ibp"),
+            "should fire int_inverse_trig_ibp"
+        );
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_x_times_atan() {
+        // ∫ x·atan(x) dx = ½(x²+1)·atan(x) − x/2
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.mul(vec![x, pool.func("atan", vec![x])]);
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_x_squared_times_atan() {
+        // ∫ x²·atan(x) dx
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let f = pool.mul(vec![x2, pool.func("atan", vec![x])]);
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_atan_over_x_squared() {
+        // ∫ atan(x)/x² dx = −atan(x)/x + log(x) − ½·log(1+x²)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x_inv2 = pool.pow(x, pool.integer(-2_i32));
+        let f = pool.mul(vec![pool.func("atan", vec![x]), x_inv2]);
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_asin() {
+        // ∫ asin(x) dx = x·asin(x) + √(1−x²)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.func("asin", vec![x]);
+        let r = integrate(f, x, &pool).unwrap();
+        assert!(
+            r.log
+                .steps()
+                .iter()
+                .any(|s| s.rule_name == "int_inverse_trig_ibp"),
+            "should fire int_inverse_trig_ibp"
+        );
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_x_times_asin() {
+        // ∫ x·asin(x) dx
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.mul(vec![x, pool.func("asin", vec![x])]);
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_acos() {
+        // ∫ acos(x) dx = x·acos(x) − √(1−x²)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.func("acos", vec![x]);
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_x_times_acos() {
+        // ∫ x·acos(x) dx
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.mul(vec![x, pool.func("acos", vec![x])]);
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_atan_squared_declines() {
+        // ∫ atan(x)² dx is out of scope — must decline cleanly (no panic).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(pool.func("atan", vec![x]), pool.integer(2_i32));
+        let r = integrate(f, x, &pool);
+        assert!(
+            r.is_err(),
+            "∫ atan(x)² dx should decline, got {:?}",
+            r.map(|d| pool.display(d.value))
+        );
+    }
+
+    #[test]
+    fn integrate_atan_diff_table_ok() {
+        // Regression: d/dx atan(x) = 1/(1+x²), asin/acos non-zero (diff-table sanity).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for name in ["atan", "asin", "acos"] {
+            let d = diff(pool.func(name, vec![x]), x, &pool).unwrap();
+            assert_ne!(
+                d.value,
+                pool.integer(0_i32),
+                "d/dx {name}(x) must be non-zero"
+            );
+        }
     }
 }
