@@ -35,8 +35,7 @@ def check_antiderivative(x, f, F, label=""):
         if not math.isfinite(lhs) or not math.isfinite(rhs):  # outside domain
             continue
         assert abs(lhs - rhs) < 1e-9, (
-            f"{label}: d/dx F({pt}) = {lhs}, f({pt}) = {rhs} — mismatch\n"
-            f"  F = {F}\n  f = {f}"
+            f"{label}: d/dx F({pt}) = {lhs}, f({pt}) = {rhs} — mismatch\n  F = {F}\n  f = {f}"
         )
         checked += 1
     assert checked >= 2, f"{label}: not enough usable sample points"
