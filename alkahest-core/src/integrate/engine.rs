@@ -516,6 +516,223 @@ fn try_inverse_trig_ibp(
 }
 
 // ---------------------------------------------------------------------------
+// Products of polynomial/exponential with a trigonometric factor (IBP)
+// ---------------------------------------------------------------------------
+
+/// Match `∫ p(x)·sin(a·x+b) dx` / `∫ p(x)·cos(a·x+b) dx` where `p` is a genuine
+/// polynomial in `var` and the trig argument is linear (`a·x+b`, `a ≠ 0`), and
+/// build the antiderivative by repeated integration by parts (each step lowers
+/// `deg p` by one and terminates at a constant `p`).  Soundness-gated: the result
+/// is returned only when its derivative equals the integrand.
+///
+/// Declines (returns `None`) on non-polynomial coefficients, a non-linear trig
+/// argument, or two trig factors (product-of-trigs linearization is out of
+/// scope), so nothing already handled elsewhere regresses.
+fn try_poly_trig_ibp(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Option<ExprId> {
+    let args = match pool.get(expr) {
+        ExprData::Mul(v) => v,
+        _ => return None,
+    };
+
+    // Exactly one sin/cos factor whose argument is linear (non-constant) in var.
+    let mut found: Option<(usize, bool, ExprId)> = None; // (pos, is_sin, arg)
+    for (i, &a) in args.iter().enumerate() {
+        if let ExprData::Func { name, args: fargs } = pool.get(a) {
+            if fargs.len() == 1 && (name == "sin" || name == "cos") {
+                let arg = fargs[0];
+                if is_linear_in(arg, var, pool).is_some() {
+                    if found.is_some() {
+                        return None; // two trig factors — out of scope
+                    }
+                    found = Some((i, name == "sin", arg));
+                }
+            }
+        }
+    }
+    let (pos, is_sin, arg) = found?;
+
+    // Remaining factors form the polynomial coefficient p.
+    let rest_factors: Vec<ExprId> = args
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i != pos)
+        .map(|(_, &a)| a)
+        .collect();
+    let p = match rest_factors.len() {
+        0 => pool.integer(1_i32),
+        1 => rest_factors[0],
+        _ => pool.mul(rest_factors),
+    };
+    // Require a genuine polynomial coefficient (decline e.g. `exp(x)·sin(x)`,
+    // which the exp·trig fast-path handles instead).
+    if !is_polynomial_in(p, var, pool) {
+        return None;
+    }
+
+    let result = integrate_poly_trig(p, is_sin, arg, var, pool)?;
+
+    // Soundness gate: only emit when d/dx result equals the integrand.
+    if !verify_antiderivative(result, expr, var, pool) {
+        return None;
+    }
+    log.push(RewriteStep::simple("int_poly_trig_ibp", expr, result));
+    Some(result)
+}
+
+/// Recursive integration-by-parts kernel for `∫ p·sin(arg)` / `∫ p·cos(arg)`
+/// with `arg = a·x+b` linear in `var`.  Uses `∫ p·f = p·v − ∫ v·p'` where `v`
+/// is the antiderivative of the trig part; each recursion differentiates `p`
+/// (lowering its degree) and swaps sin↔cos, terminating once `p` is constant.
+fn integrate_poly_trig(
+    p: ExprId,
+    is_sin: bool,
+    arg: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    let (a, _b) = is_linear_in(arg, var, pool)?;
+    let a_inv = pool.pow(a, pool.integer(-1_i32));
+    let neg_one = pool.integer(-1_i32);
+
+    // v = antiderivative of the trig part:
+    //   sin(arg) -> -cos(arg)/a ,  cos(arg) -> sin(arg)/a
+    let v = if is_sin {
+        let cos_arg = pool.func("cos", vec![arg]);
+        pool.mul(vec![neg_one, a_inv, cos_arg])
+    } else {
+        let sin_arg = pool.func("sin", vec![arg]);
+        pool.mul(vec![a_inv, sin_arg])
+    };
+    let pv = pool.mul(vec![p, v]);
+
+    // Base case: p constant ⇒ p' = 0 ⇒ ∫ v·p' = 0.
+    if is_free_of(p, var, pool) {
+        return Some(pv);
+    }
+
+    // p' via differentiation (degree strictly decreases ⇒ termination).
+    let dp = crate::diff::diff(p, var, pool).ok()?.value;
+    let dp = simplify(dp, pool).value;
+
+    // ∫ v·p':  v = -cos(arg)/a (sin case) ⇒ -a_inv·∫ p'·cos(arg);
+    //          v =  sin(arg)/a (cos case) ⇒  a_inv·∫ p'·sin(arg).
+    let inner = integrate_poly_trig(dp, !is_sin, arg, var, pool)?;
+    let coeff = if is_sin {
+        pool.mul(vec![neg_one, a_inv])
+    } else {
+        a_inv
+    };
+    let vp_integral = pool.mul(vec![coeff, inner]);
+
+    // result = p·v − ∫ v·p'.
+    let neg_vp = pool.mul(vec![neg_one, vp_integral]);
+    Some(pool.add(vec![pv, neg_vp]))
+}
+
+/// Match `∫ exp(a·x+c)·sin(b·x+d) dx` / `∫ exp(a·x+c)·cos(b·x+d) dx` (constant
+/// `a`, `b`) and build the cyclic integration-by-parts closed form directly:
+///
+/// ```text
+/// ∫ exp(g)·sin(h) dx = exp(g)·(a·sin h − b·cos h)/(a² + b²)
+/// ∫ exp(g)·cos(h) dx = exp(g)·(b·sin h + a·cos h)/(a² + b²)
+/// ```
+///
+/// with `g = a·x+c`, `h = b·x+d`.  Constant extra factors are carried through.
+/// Soundness-gated; declines anything outside this exact shape (e.g. a leftover
+/// polynomial factor — triple products are out of scope).
+fn try_exp_trig_ibp(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Option<ExprId> {
+    let args = match pool.get(expr) {
+        ExprData::Mul(v) => v,
+        _ => return None,
+    };
+
+    let mut exp_factor: Option<(usize, ExprId)> = None; // (pos, g)
+    let mut trig_factor: Option<(usize, bool, ExprId)> = None; // (pos, is_sin, h)
+    for (i, &a) in args.iter().enumerate() {
+        if let ExprData::Func { name, args: fargs } = pool.get(a) {
+            if fargs.len() == 1 {
+                let inner = fargs[0];
+                if name == "exp" && is_linear_in(inner, var, pool).is_some() {
+                    if exp_factor.is_some() {
+                        return None;
+                    }
+                    exp_factor = Some((i, inner));
+                    continue;
+                }
+                if (name == "sin" || name == "cos") && is_linear_in(inner, var, pool).is_some() {
+                    if trig_factor.is_some() {
+                        return None;
+                    }
+                    trig_factor = Some((i, name == "sin", inner));
+                    continue;
+                }
+            }
+        }
+    }
+    let (epos, g) = exp_factor?;
+    let (tpos, is_sin, h) = trig_factor?;
+
+    // Every other factor must be constant (free of var) — no leftover polynomial.
+    let const_factors: Vec<ExprId> = args
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i != epos && i != tpos)
+        .map(|(_, &a)| a)
+        .collect();
+    if !const_factors.iter().all(|&a| is_free_of(a, var, pool)) {
+        return None;
+    }
+
+    let (a, _c) = is_linear_in(g, var, pool)?;
+    let (b, _d) = is_linear_in(h, var, pool)?;
+
+    // Denominator a² + b².
+    let two = pool.integer(2_i32);
+    let a2 = pool.pow(a, two);
+    let b2 = pool.pow(b, two);
+    let denom = pool.add(vec![a2, b2]);
+    let denom_inv = pool.pow(denom, pool.integer(-1_i32));
+
+    let neg_one = pool.integer(-1_i32);
+    let exp_g = pool.func("exp", vec![g]);
+    let sin_h = pool.func("sin", vec![h]);
+    let cos_h = pool.func("cos", vec![h]);
+
+    let numerator = if is_sin {
+        // a·sin h − b·cos h
+        let a_sin = pool.mul(vec![a, sin_h]);
+        let neg_b_cos = pool.mul(vec![neg_one, b, cos_h]);
+        pool.add(vec![a_sin, neg_b_cos])
+    } else {
+        // b·sin h + a·cos h
+        let b_sin = pool.mul(vec![b, sin_h]);
+        let a_cos = pool.mul(vec![a, cos_h]);
+        pool.add(vec![b_sin, a_cos])
+    };
+
+    let mut factors = vec![exp_g, numerator, denom_inv];
+    factors.extend_from_slice(&const_factors);
+    let result = pool.mul(factors);
+
+    // Soundness gate: only emit when d/dx result equals the integrand.
+    if !verify_antiderivative(result, expr, var, pool) {
+        return None;
+    }
+    log.push(RewriteStep::simple("int_exp_trig_ibp", expr, result));
+    Some(result)
+}
+
+// ---------------------------------------------------------------------------
 // Known non-elementary pre-check (Risch Gap 6)
 // ---------------------------------------------------------------------------
 
@@ -694,6 +911,20 @@ pub(crate) fn integrate_raw(
     // Handles both the bare case (∫ atan(x) dx) and the product case
     // (∫ x·atan(x) dx). Soundness-gated inside the helper.
     if let Some(result) = try_inverse_trig_ibp(expr, var, pool, log) {
+        return Ok(result);
+    }
+
+    // Polynomial × trig product via repeated integration by parts:
+    //   ∫ p(x)·sin(a·x+b) dx, ∫ p(x)·cos(a·x+b) dx  (p polynomial, linear arg).
+    // Soundness-gated inside the helper.
+    if let Some(result) = try_poly_trig_ibp(expr, var, pool, log) {
+        return Ok(result);
+    }
+
+    // Exponential × trig product via the cyclic IBP closed form:
+    //   ∫ exp(a·x+c)·sin(b·x+d) dx, ∫ exp(a·x+c)·cos(b·x+d) dx.
+    // Soundness-gated inside the helper.
+    if let Some(result) = try_exp_trig_ibp(expr, var, pool, log) {
         return Ok(result);
     }
 
@@ -957,6 +1188,10 @@ pub(crate) fn integrate_raw(
 /// | `asin(x)`          | `x*asin(x) + √(1-x²)`      | `int_inverse_trig_ibp`  |
 /// | `acos(x)`          | `x*acos(x) - √(1-x²)`      | `int_inverse_trig_ibp`  |
 /// | `rest(x)*atan(x)`  | IBP: `P*atan - ∫P·f'`      | `int_inverse_trig_ibp`  |
+/// | `p(x)*sin(a·x+b)`  | repeated IBP (tabular)      | `int_poly_trig_ibp`     |
+/// | `p(x)*cos(a·x+b)`  | repeated IBP (tabular)      | `int_poly_trig_ibp`     |
+/// | `exp(a·x)*sin(b·x)`| cyclic IBP closed form      | `int_exp_trig_ibp`      |
+/// | `exp(a·x)*cos(b·x)`| cyclic IBP closed form      | `int_exp_trig_ibp`      |
 ///
 /// # Transcendental Risch (Risch engine)
 ///
@@ -1816,6 +2051,155 @@ mod tests {
             r.log.steps().iter().any(|s| s.rule_name == "int_x_exp"),
             "x*exp(x) should still fire int_x_exp"
         );
+        verify_exp_trig(expr, x, &pool);
+    }
+
+    // -- Polynomial × trig products (int_poly_trig_ibp) -----------------------
+
+    #[test]
+    fn integrate_x_times_sin() {
+        // ∫ x·sin(x) dx = sin(x) − x·cos(x)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![x, pool.func("sin", vec![x])]);
+        let r = integrate(expr, x, &pool).unwrap();
+        assert!(
+            r.log
+                .steps()
+                .iter()
+                .any(|s| s.rule_name == "int_poly_trig_ibp"),
+            "x·sin(x) should fire int_poly_trig_ibp"
+        );
+        verify_exp_trig(expr, x, &pool);
+    }
+
+    #[test]
+    fn integrate_x_times_cos() {
+        // ∫ x·cos(x) dx = cos(x) + x·sin(x)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![x, pool.func("cos", vec![x])]);
+        verify_exp_trig(expr, x, &pool);
+    }
+
+    #[test]
+    fn integrate_x_squared_times_sin() {
+        // ∫ x²·sin(x) dx (repeated IBP)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![
+            pool.pow(x, pool.integer(2_i32)),
+            pool.func("sin", vec![x]),
+        ]);
+        verify_exp_trig(expr, x, &pool);
+    }
+
+    #[test]
+    fn integrate_x_squared_times_cos() {
+        // ∫ x²·cos(x) dx (repeated IBP)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![
+            pool.pow(x, pool.integer(2_i32)),
+            pool.func("cos", vec![x]),
+        ]);
+        verify_exp_trig(expr, x, &pool);
+    }
+
+    #[test]
+    fn integrate_poly_times_sin() {
+        // ∫ (x²+1)·sin(x) dx
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let poly = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(1_i32)]);
+        let expr = pool.mul(vec![poly, pool.func("sin", vec![x])]);
+        verify_exp_trig(expr, x, &pool);
+    }
+
+    #[test]
+    fn integrate_x_times_sin_linear_arg() {
+        // ∫ x·sin(2x+1) dx — linear (non-unit) trig argument.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let arg = pool.add(vec![
+            pool.mul(vec![pool.integer(2_i32), x]),
+            pool.integer(1_i32),
+        ]);
+        let expr = pool.mul(vec![x, pool.func("sin", vec![arg])]);
+        verify_exp_trig(expr, x, &pool);
+    }
+
+    // -- Exponential × trig products (int_exp_trig_ibp) -----------------------
+
+    #[test]
+    fn integrate_exp_times_sin() {
+        // ∫ exp(x)·sin(x) dx = ½·exp(x)·(sin(x) − cos(x))
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![pool.func("exp", vec![x]), pool.func("sin", vec![x])]);
+        let r = integrate(expr, x, &pool).unwrap();
+        assert!(
+            r.log
+                .steps()
+                .iter()
+                .any(|s| s.rule_name == "int_exp_trig_ibp"),
+            "exp(x)·sin(x) should fire int_exp_trig_ibp"
+        );
+        verify_exp_trig(expr, x, &pool);
+    }
+
+    #[test]
+    fn integrate_exp_times_cos() {
+        // ∫ exp(x)·cos(x) dx = ½·exp(x)·(sin(x) + cos(x))
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![pool.func("exp", vec![x]), pool.func("cos", vec![x])]);
+        verify_exp_trig(expr, x, &pool);
+    }
+
+    #[test]
+    fn integrate_exp2x_times_cos3x() {
+        // ∫ exp(2x)·cos(3x) dx = exp(2x)·(3·sin(3x) + 2·cos(3x))/13
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let two_x = pool.mul(vec![pool.integer(2_i32), x]);
+        let three_x = pool.mul(vec![pool.integer(3_i32), x]);
+        let expr = pool.mul(vec![
+            pool.func("exp", vec![two_x]),
+            pool.func("cos", vec![three_x]),
+        ]);
+        verify_exp_trig(expr, x, &pool);
+    }
+
+    // -- Regressions: existing paths untouched by the new fast-paths ----------
+
+    #[test]
+    fn integrate_x_times_exp_x_still_int_x_exp() {
+        // ∫ x·exp(x) dx still routes through int_x_exp (not the new trig paths).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![x, pool.func("exp", vec![x])]);
+        let r = integrate(expr, x, &pool).unwrap();
+        assert!(
+            r.log.steps().iter().any(|s| s.rule_name == "int_x_exp"),
+            "x·exp(x) should still fire int_x_exp"
+        );
+    }
+
+    #[test]
+    fn integrate_log_still_works() {
+        // ∫ log(x) dx = x·log(x) − x
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        verify_exp_trig(pool.func("log", vec![x]), x, &pool);
+    }
+
+    #[test]
+    fn integrate_x_times_log_still_works() {
+        // ∫ x·log(x) dx = x²·log(x)/2 − x²/4
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![x, pool.func("log", vec![x])]);
         verify_exp_trig(expr, x, &pool);
     }
 
