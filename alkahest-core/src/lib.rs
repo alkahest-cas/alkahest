@@ -1,3 +1,9 @@
+// clippy 1.97 promoted `clippy::question_mark` to fire on `else if let … else {
+// return None }` chains used idiomatically across the crate; under CI's
+// `-D warnings` this newly fails the build.  Allow it crate-wide (toolchain
+// adaptation; idiomatic `?` rewrites can follow as a separate cleanup).
+#![allow(clippy::question_mark)]
+
 pub mod acausal;
 pub mod algebra;
 pub mod ball;
