@@ -21,6 +21,7 @@
 // and `galois_quartic` its automorphisms, consumed by
 // `genus_zero::try_alg_base_log` (the conjugate-divisor reduction).
 mod alg_tower;
+mod coates;
 pub(super) mod decompose;
 pub mod elliptic;
 pub mod elliptic_output;
