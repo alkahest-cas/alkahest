@@ -33,6 +33,10 @@ print("=" * 62)
 print("1. Expression Construction")
 print("=" * 62)
 
+capabilities = ak.capabilities()
+print(f"agent contract: v{capabilities['contract_version']}")
+print(f"build features: {capabilities['features']}")
+
 pool = ExprPool()
 x = pool.symbol("x")
 y = pool.symbol("y")
@@ -63,6 +67,7 @@ print("=" * 62)
 
 r = simplify(x + pool.integer(0))
 print(f"x + 0              → {r.value}  ({len(r.steps)} steps)")
+print(f"verification status: {r.verification['status']}")
 
 r = simplify_trig(sin(x)**2 + cos(x)**2)
 print(f"sin²+cos²          → {r.value}")

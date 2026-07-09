@@ -95,6 +95,7 @@ from .alkahest import (  # noqa: F401
     UniPolyFactorization,
     # V2-7: Polynomial factorization
     UniPolyFactorModP,
+    _build_features,
     _derived_result_context_simplify,
     abs,  # symbolic abs — use alkahest.abs(expr); shadows Python builtin within this module
     acos,
@@ -1082,16 +1083,21 @@ if "solve" not in dir():
 
 
 def capabilities() -> dict:
-    """Return a dict of feature capability flags for this alkahest build.
+    """Return the versioned agent contract for this installed build.
 
-    Agents should call this once at session start to know which APIs are
-    available before attempting to use them.
+    Agents should call this once at session start before selecting an
+    operation. The ``features`` mapping is authoritative for the installed
+    extension; it does not infer availability from project defaults or Python
+    fallback functions.
 
     Returns
     -------
     dict
-        Keys: ``"groebner"``, ``"jit"``, ``"egraph"``, ``"parallel"``.
-        Each value is a :class:`bool`.
+        ``contract_version`` identifies this schema. ``groebner``, ``jit``,
+        ``egraph``, and ``parallel`` are compatibility feature booleans.
+        ``features`` contains installed Cargo features, ``primitives`` is
+        deterministic per-primitive implementation coverage, and
+        ``verification`` describes available evidence artifacts and checkers.
 
     Example
     -------
@@ -1102,17 +1108,29 @@ def capabilities() -> dict:
     >>> if not caps["jit"]:
     ...     print("JIT unavailable; compile_expr will run in interpreter mode")
     """
-    import sys as _sys
-
-    _mod = _sys.modules[__name__]
-    # groebner: solve must be the real Rust binding, not our stub above
-    _solve = getattr(_mod, "solve", None)
-    _groebner_real = _solve is not None and getattr(_solve, "__module__", None) != __name__
+    features = _build_features()
+    primitive_rows = PrimitiveRegistry.default_registry().coverage_report()
+    primitive_rows.sort(key=lambda row: row["name"])
     return {
-        "groebner": _groebner_real,
-        "jit": bool(jit_is_available()),
-        "egraph": bool(HAS_EGRAPH),
-        "parallel": hasattr(_mod, "simplify_par") and callable(_mod.simplify_par),
+        "contract_version": 1,
+        # Compatibility keys: report what this extension was compiled with,
+        # even where a Python-level fallback exists.
+        "groebner": features["groebner"],
+        "jit": features["jit"] or features["cranelift"],
+        "egraph": features["egraph"],
+        "parallel": features["parallel"],
+        "features": features,
+        "primitives": primitive_rows,
+        "verification": {
+            "statuses": [
+                "lean_checked",
+                "certificate_available",
+                "exactly_verified",
+                "unverified",
+            ],
+            "artifacts": {"lean4_source": True},
+            "checkers": {"lean4": "external"},
+        },
     }
 
 

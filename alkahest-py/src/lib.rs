@@ -1538,6 +1538,54 @@ impl PyDerivedResult {
         ))
     }
 
+    /// Machine-readable evidence metadata for this derived result.
+    ///
+    /// A generated Lean source artifact is not a statement that Lean has
+    /// checked it.  External verification must be performed separately.
+    #[getter]
+    fn verification<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
+        let metadata = PyDict::new_bound(py);
+        let has_certificate = !self.raw.log.is_empty();
+        metadata
+            .set_item(
+                "status",
+                if has_certificate {
+                    "certificate_available"
+                } else {
+                    "unverified"
+                },
+            )
+            .unwrap();
+        metadata
+            .set_item(
+                "evidence",
+                if has_certificate {
+                    "derivation_log"
+                } else {
+                    "none"
+                },
+            )
+            .unwrap();
+        metadata.set_item("externally_verified", false).unwrap();
+        metadata
+            .set_item(
+                "artifact_format",
+                if has_certificate { Some("lean4") } else { None },
+            )
+            .unwrap();
+
+        let side_conditions = PyList::empty_bound(py);
+        for (_, _, _, conditions) in &self.steps_raw {
+            for condition in conditions {
+                side_conditions.append(condition).unwrap();
+            }
+        }
+        metadata
+            .set_item("side_conditions", side_conditions)
+            .unwrap();
+        metadata
+    }
+
     fn __repr__(&self, py: Python<'_>) -> String {
         format!("DerivedResult(value={})", self.value.__repr__(py))
     }
@@ -4853,6 +4901,28 @@ fn py_compile_expr(
 #[pyo3(name = "jit_is_available")]
 fn py_jit_is_available() -> bool {
     core_jit_available()
+}
+
+/// Return the Cargo feature flags compiled into this extension.
+///
+/// This reports the installed artifact, not the project defaults or the
+/// availability of Python fallback functions.
+#[pyfunction]
+#[pyo3(name = "_build_features")]
+fn py_build_features() -> std::collections::HashMap<String, bool> {
+    [
+        ("egraph", cfg!(feature = "egraph")),
+        ("groebner", cfg!(feature = "groebner")),
+        ("jit", cfg!(feature = "jit")),
+        ("cranelift", cfg!(feature = "cranelift")),
+        ("parallel", cfg!(feature = "parallel")),
+        ("numpy", cfg!(feature = "numpy")),
+        ("cuda", cfg!(feature = "cuda")),
+        ("groebner_cuda", cfg!(feature = "groebner-cuda")),
+    ]
+    .into_iter()
+    .map(|(name, enabled)| (name.to_string(), enabled))
+    .collect()
 }
 
 /// Evaluate a symbolic expression numerically using the interpreter.
@@ -8202,6 +8272,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_compile_expr, m)?)?;
     m.add_function(wrap_pyfunction!(py_eval_expr, m)?)?;
     m.add_function(wrap_pyfunction!(py_jit_is_available, m)?)?;
+    m.add_function(wrap_pyfunction!(py_build_features, m)?)?;
     m.add_class::<PyCompiledFn>()?;
     m.add_class::<PyCompileCache>()?;
     // Phase 22 — Ball arithmetic

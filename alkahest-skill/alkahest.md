@@ -168,14 +168,22 @@ Every top-level operation returns a `DerivedResult`:
 |-----------|------|-------------|
 | `.value` | `Expr` | The result expression |
 | `.steps` | `list[dict]` | Rewrite log; each step has `"rule"`, `"before"`, `"after"` keys |
-| `.certificate` | `str \| None` | Lean 4 `.lean` source (Mathlib proof file), when steps are certifiable |
+| `.verification` | `dict` | Evidence status, emitted artifact format, external-check status, and side conditions |
+| `.certificate` | `str \| None` | Generated Lean 4 `.lean` source; generation is not Lean proof checking |
 | `to_lean(result)` | `str` | Same as `.certificate`; also accepts `Expr` (runs `simplify` first) |
 
 ```python
+caps = ak.capabilities()
+if not caps["groebner"]:
+    # Select a non-Gröbner strategy before calling solve().
+    pass
+
 result = diff(sin(x**2), x)
 print(result.value)   # 2*x*cos(x^2)
 print(result.steps)   # list of rewrite-rule dicts
-print(result.certificate)  # or: to_lean(result)
+evidence = result.verification
+if evidence["status"] == "certificate_available":
+    print(result.certificate)  # Lean source; check it with Lean separately
 ```
 
 ---

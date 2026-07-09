@@ -118,20 +118,19 @@ DerivedResult
       - ``rule`` (str) — rule name
       - ``before`` (str) — expression before the rewrite
       - ``after`` (str) — expression after the rewrite
-      - ``subst`` (dict, optional) — variable substitution
-      - ``side_condition`` (str, optional) — side condition checked
+      - ``side_conditions`` (list[str]) — conditions recorded for the rewrite
 
    .. attribute:: certificate
 
-      Lean 4 proof term as a string, or ``None`` if not exported.
+      Generated Lean 4 source as a string, or ``None`` for an empty derivation
+      log. Generation is not proof checking.
 
-   .. attribute:: assumptions
+   .. attribute:: verification
 
-      List of side conditions that were verified during derivation.
-
-   .. attribute:: warnings
-
-      List of non-fatal warning strings (e.g. branch-cut warnings).
+      A mapping with the evidence ``status``, ``artifact_format``,
+      ``externally_verified`` flag, and recorded ``side_conditions``. A result
+      with ``status == "certificate_available"`` has generated Lean source but
+      has not been checked by Lean in this execution.
 
    Example::
 
