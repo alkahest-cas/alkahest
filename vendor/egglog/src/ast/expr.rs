@@ -152,6 +152,7 @@ macro_rules! var {
 }
 
 // Rust macro annoyance; see stackoverflow.com/questions/26731243/how-do-i-use-a-macro-across-module-files
+#[allow(unused_imports)]
 pub use {call, lit, var};
 
 impl<Head: Clone + Display, Leaf: Hash + Clone + Display + Eq> GenericExpr<Head, Leaf> {
