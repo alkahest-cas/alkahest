@@ -46,6 +46,14 @@ impl UniPolyFactorization {
         }
         UniPoly { var, coeffs: acc }
     }
+
+    /// Check exactly that this factorization reconstructs `original`.
+    ///
+    /// This verifies the represented product over the integer coefficient
+    /// ring. It does not establish irreducibility of the returned factors.
+    pub fn verifies_product(&self, original: &UniPoly) -> bool {
+        self.expand_with_var(original.var) == *original
+    }
 }
 
 impl MultiPolyFactorization {
@@ -67,6 +75,30 @@ impl MultiPolyFactorization {
             acc = acc * powered;
         }
         acc
+    }
+
+    /// Check exactly that this factorization reconstructs `original`.
+    ///
+    /// The variable list comes from `original` so constant multivariate
+    /// factorizations retain their ambient polynomial ring.
+    pub fn verifies_product(&self, original: &MultiPoly) -> bool {
+        let mut terms = std::collections::BTreeMap::new();
+        terms.insert(vec![], self.unit.clone());
+        let mut acc = MultiPoly {
+            vars: original.vars.clone(),
+            terms,
+        };
+        for (factor, exponent) in &self.factors {
+            if factor.vars != original.vars {
+                return false;
+            }
+            let mut powered = MultiPoly::constant(original.vars.clone(), 1);
+            for _ in 0..*exponent {
+                powered = powered * factor.clone();
+            }
+            acc = acc * powered;
+        }
+        acc == *original
     }
 }
 
@@ -193,6 +225,7 @@ mod tests {
         assert_eq!(fac.factors.len(), 2);
         let prod = fac.expand_with_var(x);
         assert_eq!(prod, p);
+        assert!(fac.verifies_product(&p));
     }
 
     #[test]
@@ -249,5 +282,6 @@ mod tests {
         let fac = product.factor_z().unwrap();
         let expanded = fac.expand_clone_vars();
         assert_eq!(expanded, product);
+        assert!(fac.verifies_product(&product));
     }
 }
