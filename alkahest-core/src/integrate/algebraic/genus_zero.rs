@@ -16,18 +16,22 @@ use crate::integrate::engine::IntegrationError;
 use crate::integrate::risch::alg_field::{AlgElem, RatFn};
 use crate::integrate::risch::number_field::KElem;
 use crate::integrate::risch::poly_rde::{
-    degree, expr_to_qpoly, poly_add, poly_deriv, poly_mul, poly_scale, qpoly_to_expr, trim, QPoly,
+    degree, expr_to_qpoly, poly_add, poly_deriv, poly_mul, poly_scale, qpoly_to_expr,
+    rational_to_expr, trim, QPoly,
 };
 use crate::integrate::risch::rational_rde::{
     expr_to_qrational, poly_divrem, poly_gcd, solve_rational_rde_generalized,
 };
 use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::simplify::engine::simplify;
 use rug::{Integer, Rational};
 
+use super::coates::{coates_hyperelliptic, CoatesPlace};
 use super::find_order::{find_order_placed, FindOrder};
 use super::jacobian_torsion::AlgPlace;
 use super::residues::{
     finite_residues_algebraic, residue_divisor_placed, residue_sum_complete, AlgResidue,
+    PlacedResidue,
 };
 use super::trager_log::trager_log_criterion_alg;
 
@@ -707,6 +711,11 @@ fn integrate_b_sqrt_high_degree(
 ) -> Result<ExprId, IntegrationError> {
     let nonelem = |msg: &str| IntegrationError::NonElementary(msg.to_string());
     let notimpl = |msg: &str| IntegrationError::NotImplemented(msg.to_string());
+    // FIND-ORDER could not settle elementarity (torsion undecided, or the Coates
+    // construction did not yield a gate-verified argument).  Surfaced as a
+    // NotImplemented with a "NotDecided" marker rather than a new public enum
+    // variant — honest "cannot decide", never a wrong answer.
+    let notdecided = |msg: &str| IntegrationError::NotImplemented(format!("NotDecided: {msg}"));
 
     let p_poly = expr_to_qpoly(p, var, pool)
         .ok_or_else(|| notimpl("radicand P is not a polynomial in the variable"))?;
@@ -759,9 +768,22 @@ fn integrate_b_sqrt_high_degree(
             FindOrder::NonElementary => Err(nonelem(
                 "residue divisor is non-torsion (FIND-ORDER): no elementary log part",
             )),
-            _ => Err(notimpl(
-                "genus ≥ 2 logarithmic part: torsion/undecided, log argument not \
-                 yet constructible (Coates)",
+            FindOrder::Principal { order } => {
+                // Torsion log part.  Construct `u` with `div(u) = N·δ` (Coates)
+                // and emit `(gg/(L·N))·log(u)`, but only if it passes the numeric
+                // `d/dx F = B·√P` gate — else decline honestly.
+                match try_emit_genus2_coates_log(&p_poly, &divisor, order, &h, var, pool, log) {
+                    Some(f) => Ok(f),
+                    None => Err(notdecided(
+                        "genus ≥ 2 torsion log part: Coates construction did not yield \
+                         a gate-verified antiderivative in the handled scope (even-\
+                         degree/real model, or an unverified argument)",
+                    )),
+                }
+            }
+            FindOrder::NotDecided => Err(notdecided(
+                "genus ≥ 2 residue divisor: torsion order could not be decided \
+                 (FIND-ORDER undecided) — elementarity unknown",
             )),
         };
     }
@@ -785,6 +807,168 @@ fn integrate_b_sqrt_high_degree(
              (torsion log not yet emittable, or out of the handled scope — \
              non-Galois tower / base degree ≥ 3)",
         )),
+    }
+}
+
+/// Construct and **gate-verify** the genus ≥ 2 torsion logarithmic part.
+///
+/// Given the rational residue divisor `δ` and its torsion order `N`
+/// (`FindOrder::Principal{N}`), primitivize `δ = (gg/L)·δ_prim` (integer
+/// `δ_prim`), build `u` with `div(u) = N·δ_prim` via Coates
+/// ([`super::coates`]), and return `(gg/(L·N))·log(u)` — but **only if** it
+/// passes the numeric `d/dx F = B·√P` gate.  Returns `None` outside the
+/// constructible scope (even-degree/real model, unverified argument), so the
+/// caller declines soundly.  A wrong `u` never escapes the gate.
+fn try_emit_genus2_coates_log(
+    a: &QPoly,
+    divisor: &[PlacedResidue],
+    order: u32,
+    h: &AlgElem,
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Option<ExprId> {
+    if degree(a) % 2 == 0 {
+        return None; // Coates here handles the odd (imaginary) model only.
+    }
+    let finite: Vec<&PlacedResidue> = divisor.iter().filter(|r| !r.residue.at_infinity).collect();
+    if finite.is_empty() {
+        return None;
+    }
+    // Primitivize: L = lcm of residue denominators, coeffs = numer(value·L),
+    // gg = gcd(coeffs); δ_prim coeff = coeffs/gg.
+    let mut l = Integer::from(1);
+    for r in &finite {
+        l = l.lcm(r.residue.value.denom());
+    }
+    let coeffs: Vec<Integer> = finite
+        .iter()
+        .map(|r| {
+            (r.residue.value.clone() * Rational::from(l.clone()))
+                .numer()
+                .clone()
+        })
+        .collect();
+    let mut gg = Integer::from(0);
+    for c in &coeffs {
+        gg = gg.gcd(c);
+    }
+    if gg == 0 {
+        return None;
+    }
+    let n = Integer::from(order);
+    // The principal divisor `N·δ_prim` as Coates places.
+    let places: Vec<CoatesPlace> = finite
+        .iter()
+        .zip(&coeffs)
+        .filter_map(|(r, c)| {
+            let cprim = c.clone() / &gg;
+            if cprim == 0 {
+                return None;
+            }
+            Some(CoatesPlace {
+                x: r.residue.point.clone(),
+                y: r.y_coord.clone(),
+                coeff: cprim * &n,
+            })
+        })
+        .collect();
+    if places.is_empty() {
+        return None;
+    }
+    let u = coates_hyperelliptic(a, &places, var, pool)?;
+
+    // ω = B·√P dx has residue divisor δ; dlog(u) has residue divisor N·δ_prim;
+    // δ = (gg/L)·δ_prim, so ω = (gg/(L·N))·dlog(u) as third-kind differentials.
+    let coeff = Rational::from((gg.clone(), l.clone() * &n));
+    let log_u = pool.func("log", vec![u]);
+    let f = simplify(pool.mul(vec![rational_to_expr(&coeff, pool), log_u]), pool).value;
+
+    // Soundness gate: d/dx F = B·√P numerically (where a(x) > 0).
+    if verify_bsqrt_derivative(f, h, a, var, pool) {
+        let from = pool.func("sqrt", vec![qpoly_to_expr(a, var, pool)]);
+        log.push(RewriteStep::simple("genus2_coates_torsion_log", from, f));
+        Some(f)
+    } else {
+        None
+    }
+}
+
+/// Numeric gate: `d/dx F == (h as B·√a)` at several real samples with `a(x)>0`.
+/// `h = c₀ + c₁·y` (`y = √a`) is the integrand's algebraic form.
+fn verify_bsqrt_derivative(
+    f: ExprId,
+    h: &AlgElem,
+    a: &QPoly,
+    var: ExprId,
+    pool: &ExprPool,
+) -> bool {
+    let Ok(df) = crate::diff::diff(f, var, pool) else {
+        return false;
+    };
+    let ds = simplify(df.value, pool).value;
+    let mut checked = 0;
+    for &xv in &[0.3_f64, 1.4, 2.7, 3.6, 4.9, 5.8] {
+        let av = eval_qpoly_f64(a, xv);
+        if av <= 1e-6 {
+            continue; // need √a real
+        }
+        let ya = av.sqrt();
+        let Some(lhs) = eval_f64(ds, var, xv, pool) else {
+            return false;
+        };
+        let rhs = eval_alg_f64(h, xv, ya);
+        if !lhs.is_finite() || !rhs.is_finite() || (lhs - rhs).abs() > 1e-6 * (1.0 + rhs.abs()) {
+            return false;
+        }
+        checked += 1;
+    }
+    checked >= 2
+}
+
+fn eval_qpoly_f64(p: &QPoly, xv: f64) -> f64 {
+    p.iter().rev().fold(0.0, |acc, c| acc * xv + c.to_f64())
+}
+
+fn eval_alg_f64(g: &AlgElem, xv: f64, yv: f64) -> f64 {
+    g.iter()
+        .enumerate()
+        .map(|(j, c)| {
+            let num = eval_qpoly_f64(c.numer(), xv);
+            let den = eval_qpoly_f64(c.denom(), xv);
+            (num / den) * yv.powi(j as i32)
+        })
+        .sum()
+}
+
+/// Numeric eval; `sqrt`/`cbrt` take the principal real branch (matching `+√a`).
+fn eval_f64(expr: ExprId, x: ExprId, xv: f64, pool: &ExprPool) -> Option<f64> {
+    if expr == x {
+        return Some(xv);
+    }
+    match pool.get(expr) {
+        ExprData::Integer(n) => Some(n.0.to_f64()),
+        ExprData::Rational(r) => Some(r.0.to_f64()),
+        ExprData::Add(args) => args
+            .iter()
+            .try_fold(0.0, |s, &a| Some(s + eval_f64(a, x, xv, pool)?)),
+        ExprData::Mul(args) => args
+            .iter()
+            .try_fold(1.0, |s, &a| Some(s * eval_f64(a, x, xv, pool)?)),
+        ExprData::Pow { base, exp } => {
+            Some(eval_f64(base, x, xv, pool)?.powf(eval_f64(exp, x, xv, pool)?))
+        }
+        ExprData::Func { ref name, ref args } if args.len() == 1 => {
+            let v = eval_f64(args[0], x, xv, pool)?;
+            match name.as_str() {
+                "exp" => Some(v.exp()),
+                "log" => Some(v.ln()),
+                "sqrt" => Some(v.sqrt()),
+                "cbrt" => Some(v.cbrt()),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }
 
@@ -1121,5 +1305,138 @@ fn neg_c_power(c: &rug::Integer, n: i64) -> rug::Integer {
         // negative power: for integer arithmetic this requires the value to be ±1
         // (for general use, fallback to 0 if not invertible)
         rug::Integer::from(0)
+    }
+}
+
+#[cfg(test)]
+mod genus2_log_tests {
+    use super::*;
+    use crate::integrate::algebraic::residues::{PlacedResidue, Residue};
+    use crate::integrate::risch::rational_rde::poly_sub;
+    use crate::kernel::Domain;
+
+    fn qp(cs: &[i64]) -> QPoly {
+        cs.iter().map(|&c| Rational::from(c)).collect()
+    }
+
+    fn sqrt_of(a: &QPoly, x: ExprId, pool: &ExprPool) -> ExprId {
+        pool.func("sqrt", vec![qpoly_to_expr(a, x, pool)])
+    }
+
+    /// End-to-end genus-2 (odd quintic) **torsion logarithmic part**: the
+    /// FIND-ORDER (MC2) decision + Coates construction + numeric gate.
+    ///
+    /// With `v = x+1` and `a = v² + Π(x−rᵢ)` (roots `−2,−1,3,4,5`), the function
+    /// `u = (y−v)/(y+v)` has norm `u·ū = 1`, so `ω = dlog(u) = B·√a dx` is a pure
+    /// second-/third-kind differential with the **anti-symmetric** residue divisor
+    /// `δ = Σ (rᵢ, v(rᵢ)) − (rᵢ, −v(rᵢ))`, which is principal (`N=1`).
+    /// `find_order_placed` must certify `Principal{1}`, and the wired Coates path
+    /// must emit a gate-verified `F` with `d/dx F = B·√a`.
+    ///
+    /// The residue divisor is built directly here: the AST-level residue
+    /// *extraction* (`residues::finite_residues_placed`) is slow for a degree-10
+    /// pole denominator — a pre-existing Puiseux-stack cost, orthogonal to the
+    /// FIND-ORDER→Coates→gate emission this test exercises.
+    #[test]
+    fn genus2_coates_torsion_log_emitted() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let roots = [-2_i64, -1, 3, 4, 5];
+        let mut prod = qp(&[1]);
+        for &r in &roots {
+            prod = poly_mul(&prod, &qp(&[-r, 1]));
+        }
+        let v = qp(&[1, 1]); // x + 1
+        let a = trim(poly_add(&poly_mul(&v, &v), &prod));
+        assert_eq!(degree(&a), 5);
+        assert_eq!(super::super::find_order::genus(2, &a), Some(2));
+
+        // ω = dlog((y−v)/(y+v)) = B·√a with B = (a'·v − 2a)/(a·(a − v²)).
+        let a_prime = poly_deriv(&a);
+        let b_num = poly_sub(&poly_mul(&a_prime, &v), &poly_scale(&a, &Rational::from(2)));
+        let b_den = poly_mul(&a, &poly_sub(&a, &poly_mul(&v, &v)));
+        let h: AlgElem = vec![RatFn::int(0), RatFn::new(b_num, b_den)];
+
+        // Anti-symmetric residue divisor δ = Σ (rᵢ, v(rᵢ)) − (rᵢ, −v(rᵢ)).
+        let mut divisor: Vec<PlacedResidue> = Vec::new();
+        for &r in &roots {
+            let vr = eval_qpoly_f64(&v, r as f64) as i64;
+            for (beta, val) in [(vr, 1_i64), (-vr, -1)] {
+                divisor.push(PlacedResidue {
+                    residue: Residue {
+                        point: Rational::from(r),
+                        at_infinity: false,
+                        sheet: 0,
+                        ramification: 1,
+                        value: Rational::from(val),
+                    },
+                    y_coord: Rational::from(beta),
+                });
+            }
+        }
+
+        // MC2 FIND-ORDER must certify the divisor principal.
+        let order = match find_order_placed(2, &a, &divisor) {
+            FindOrder::Principal { order } => order,
+            other => panic!("expected Principal, got {other:?}"),
+        };
+        assert_eq!(order, 1);
+
+        // Wired emission: Coates → (gg/(L·N))·log(u), gate-verified.
+        let mut logd = crate::deriv::log::DerivationLog::new();
+        let f = try_emit_genus2_coates_log(&a, &divisor, order, &h, x, &pool, &mut logd)
+            .expect("Coates torsion log must be emitted (gate-verified)");
+
+        // Independently re-confirm d/dx F = B·√a numerically.
+        let df = simplify(crate::diff::diff(f, x, &pool).unwrap().value, &pool).value;
+        let mut checked = 0;
+        for &xv in &[0.31_f64, 1.27, 2.73, 3.61, 4.19, 5.53] {
+            let av = eval_qpoly_f64(&a, xv);
+            if av <= 1e-6 {
+                continue;
+            }
+            let lhs = eval_f64(df, x, xv, &pool).unwrap();
+            let rhs = eval_alg_f64(&h, xv, av.sqrt());
+            assert!(
+                (lhs - rhs).abs() < 1e-6 * (1.0 + rhs.abs()),
+                "x={xv}: d/dx F = {lhs}, integrand = {rhs}"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 3, "too few verified sample points");
+    }
+
+    /// A genus-2 **non-torsion** pure `B·√a` differential stays declined (never a
+    /// wrong answer): `∫ √a/x dx` on `y² = x⁵ + x + 1` has residue divisor
+    /// `(0,1) − (0,−1)`, whose class is non-torsion ⇒ certified non-elementary.
+    #[test]
+    fn genus2_non_torsion_declines() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let a = qp(&[1, 1, 0, 0, 0, 1]); // x⁵ + x + 1
+        let integrand = pool.mul(vec![
+            sqrt_of(&a, x, &pool),
+            pool.pow(x, pool.integer(-1_i32)),
+        ]);
+        let res = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            matches!(res, Err(IntegrationError::NonElementary(_))),
+            "expected NonElementary, got {res:?}"
+        );
+    }
+
+    /// `∫ dx/√(x⁵+1)` — the genus-2 first-kind headline — is unchanged: no log
+    /// part, no algebraic primitive ⇒ non-elementary.
+    #[test]
+    fn genus2_first_kind_unchanged() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let a = qp(&[1, 0, 0, 0, 0, 1]); // x⁵ + 1
+        let integrand = pool.pow(sqrt_of(&a, x, &pool), pool.integer(-1_i32));
+        let res = crate::integrate::engine::integrate(integrand, x, &pool);
+        assert!(
+            matches!(res, Err(IntegrationError::NonElementary(_))),
+            "expected NonElementary, got {res:?}"
+        );
     }
 }
