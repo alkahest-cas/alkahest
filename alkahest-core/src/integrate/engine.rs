@@ -1178,6 +1178,184 @@ fn integrate_fourier_term(t: &FourierTerm, var: ExprId, pool: &ExprPool) -> Expr
     }
 }
 
+/// True when `expr` contains at least one `sin`/`cos`/`tan` applied to exactly
+/// `var`.  Cheap pre-filter for the Weierstrass path so it never allocates the
+/// half-angle symbol for a non-trig integrand.
+fn contains_trig_of_var(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(expr) {
+        ExprData::Func { name, args } if args.len() == 1 => {
+            (matches!(name.as_str(), "sin" | "cos" | "tan") && args[0] == var)
+                || contains_trig_of_var(args[0], var, pool)
+        }
+        ExprData::Add(args) | ExprData::Mul(args) => {
+            args.iter().any(|&a| contains_trig_of_var(a, var, pool))
+        }
+        ExprData::Pow { base, exp } => {
+            contains_trig_of_var(base, var, pool) || contains_trig_of_var(exp, var, pool)
+        }
+        _ => false,
+    }
+}
+
+/// True when `expr` contains a genuine rational-trig denominator: a negative
+/// integer power of an `Add` node that itself contains a trig function of `var`
+/// (e.g. `(2+cos x)^(-1)`, `(sin x + cos x)^(-1)`, `(1+sin x)^(-2)`).
+///
+/// This is the trigger for the Weierstrass path.  It deliberately excludes bare
+/// `sin`/`cos`/`tan`, pure powers/products of trig, and `secⁿ`/`cscⁿ`
+/// (reciprocal powers of a single trig *function*, whose base is a `Func`, not an
+/// `Add`) — all of which the dedicated fast-paths and rules already handle with
+/// nicer closed forms.
+fn has_rational_trig_denominator(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(expr) {
+        ExprData::Pow { base, exp } => {
+            let negative = as_integer(exp, pool).map(|n| n < 0).unwrap_or(false);
+            if negative
+                && matches!(pool.get(base), ExprData::Add(_))
+                && contains_trig_of_var(base, var, pool)
+            {
+                return true;
+            }
+            has_rational_trig_denominator(base, var, pool)
+                || has_rational_trig_denominator(exp, var, pool)
+        }
+        ExprData::Add(args) | ExprData::Mul(args) => args
+            .iter()
+            .any(|&a| has_rational_trig_denominator(a, var, pool)),
+        ExprData::Func { args, .. } => args
+            .iter()
+            .any(|&a| has_rational_trig_denominator(a, var, pool)),
+        _ => false,
+    }
+}
+
+/// Structurally rewrite `expr` — a rational function of `sin(var)`, `cos(var)`,
+/// and `tan(var)` (argument exactly `var`) — into the half-angle variable `t`,
+/// using `sin x = 2t/(1+t²)`, `cos x = (1−t²)/(1+t²)`, `tan x = 2t/(1−t²)`.
+///
+/// Returns `None` when `expr` is not rational in those trig functions of `var`:
+/// e.g. it contains a bare `var`, an `exp(x)`/`log(x)`/inverse-trig call, a
+/// power with a `var`-dependent exponent, or a trig call whose argument is not
+/// exactly `var` (`sin(2x)`, `cos(x²)`, …).  Constants (free of `var`) pass
+/// through unchanged.
+fn weierstrass_rewrite(expr: ExprId, var: ExprId, t: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    if is_free_of(expr, var, pool) {
+        return Some(expr);
+    }
+    if expr == var {
+        // A bare occurrence of the integration variable is not rational-in-trig.
+        return None;
+    }
+
+    let one = pool.integer(1_i32);
+    let two = pool.integer(2_i32);
+    let neg_one = pool.integer(-1_i32);
+    let t2 = pool.pow(t, two);
+    let one_plus_t2 = pool.add(vec![one, t2]);
+    let one_minus_t2 = pool.add(vec![one, pool.mul(vec![neg_one, t2])]);
+
+    match pool.get(expr) {
+        ExprData::Add(args) => {
+            let mut out = Vec::with_capacity(args.len());
+            for a in args {
+                out.push(weierstrass_rewrite(a, var, t, pool)?);
+            }
+            Some(pool.add(out))
+        }
+        ExprData::Mul(args) => {
+            let mut out = Vec::with_capacity(args.len());
+            for a in args {
+                out.push(weierstrass_rewrite(a, var, t, pool)?);
+            }
+            Some(pool.mul(out))
+        }
+        ExprData::Pow { base, exp } => {
+            // The exponent must be a constant (free of `var`) — e.g. the `−1` in
+            // a denominator, or a positive integer power of sin/cos.
+            if !is_free_of(exp, var, pool) {
+                return None;
+            }
+            let new_base = weierstrass_rewrite(base, var, t, pool)?;
+            Some(pool.pow(new_base, exp))
+        }
+        ExprData::Func { name, args } if args.len() == 1 && args[0] == var => match name.as_str() {
+            "sin" => Some(pool.mul(vec![two, t, pool.pow(one_plus_t2, neg_one)])),
+            "cos" => Some(pool.mul(vec![one_minus_t2, pool.pow(one_plus_t2, neg_one)])),
+            "tan" => Some(pool.mul(vec![two, t, pool.pow(one_minus_t2, neg_one)])),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Integrate a rational function of `sin(var)`/`cos(var)`/`tan(var)` (single
+/// frequency, argument exactly `var`) via the Weierstrass half-angle
+/// substitution `t = tan(x/2)`:
+///
+/// ```text
+/// sin x = 2t/(1+t²),  cos x = (1−t²)/(1+t²),  tan x = 2t/(1−t²),  dx = 2/(1+t²) dt.
+/// ```
+///
+/// The integrand is rewritten as a rational function of `t`, integrated through
+/// the full elementary pipeline (partial fractions / Rothstein–Trager / atan /
+/// log), and back-substituted `t ↦ tan(x/2)`.
+///
+/// Placed *after* the dedicated trig fast-paths in [`integrate_raw`], so it only
+/// catches genuinely rational-in-trig integrands those decline (e.g.
+/// `1/(2+cos x)`); the nicer closed forms for `∫sin²`, `∫sec²`, `∫sin(2x)cos(x)`
+/// are untouched.  Soundness-gated by [`verify_antiderivative`]: the candidate
+/// is returned only when `d/dx result = integrand`, so a wrong antiderivative is
+/// never produced.  Declines cleanly (`None`) when the integrand is not rational
+/// in trig or the `t`-integral does not close.
+fn try_weierstrass_rational_trig(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Option<ExprId> {
+    // Only fire on genuine rational-trig integrands (a trig-containing sum in a
+    // denominator); bare/product/power trig keep their nicer dedicated forms.
+    if !has_rational_trig_denominator(expr, var, pool) {
+        return None;
+    }
+
+    // Fresh half-angle variable t = tan(x/2).
+    let t = pool.symbol("__weierstrass_t", crate::kernel::Domain::Real);
+
+    // Rewrite the integrand as a rational function of t.
+    let g_body = weierstrass_rewrite(expr, var, t, pool)?;
+
+    // Jacobian: dx = 2/(1+t²) dt.
+    let one = pool.integer(1_i32);
+    let t2 = pool.pow(t, pool.integer(2_i32));
+    let one_plus_t2 = pool.add(vec![one, t2]);
+    let jac = pool.mul(vec![
+        pool.integer(2_i32),
+        pool.pow(one_plus_t2, pool.integer(-1_i32)),
+    ]);
+    let g = simplify(pool.mul(vec![g_body, jac]), pool).value;
+
+    // Integrate the rational function in t through the full elementary pipeline.
+    // `g` is rational in `t` with no trig of `t`, so this path cannot re-fire and
+    // recursion is bounded.
+    let inner = integrate(g, t, pool).ok()?;
+
+    // Back-substitute t = tan(x/2).
+    let half = pool.rational(1_i32, 2_i32);
+    let half_x = pool.mul(vec![half, var]);
+    let tan_half = pool.func("tan", vec![half_x]);
+    let mut back = HashMap::new();
+    back.insert(t, tan_half);
+    let result = simplify(crate::kernel::subs(inner.value, &back, pool), pool).value;
+
+    // Soundness gate: d/dx(result) must equal the original integrand.
+    if !verify_antiderivative(result, expr, var, pool) {
+        return None;
+    }
+    log.push(RewriteStep::simple("int_weierstrass_trig", expr, result));
+    Some(result)
+}
+
 /// Small explicit table for `∫ 1/cos²(u) = tan(u)/a`, `∫ 1/sin²(u) = −cot(u)/a`
 /// (emitted as `−cos(u)/(a·sin(u))` so the result differentiates through the
 /// registered primitives), and `∫ tan²(u) = tan(u)/a − x`, with `u = a·x+b`
@@ -1437,6 +1615,16 @@ pub(crate) fn integrate_raw(
     // Recognizes both the flattened `cos(x)^(-n)` and the nested `(cos(x)^(-1))^m`
     // shapes. Soundness-gated inside the helper.
     if let Some(result) = try_reciprocal_trig_power(expr, var, pool, log) {
+        return Ok(result);
+    }
+
+    // Rational functions of sin/cos/tan (single frequency, argument `var`) via
+    // the Weierstrass half-angle substitution t = tan(x/2).  Placed AFTER the
+    // dedicated trig fast-paths so it only catches genuinely rational-in-trig
+    // integrands they decline (e.g. 1/(2+cos x), 1/(1+sin x)); the nicer closed
+    // forms for ∫sin², ∫sec², ∫sin(2x)cos(x) are preserved.  Soundness-gated in
+    // the helper.
+    if let Some(result) = try_weierstrass_rational_trig(expr, var, pool, log) {
         return Ok(result);
     }
 
@@ -3930,5 +4118,173 @@ mod tests {
         ]);
         let f = pool.pow(pool.func("cos", vec![arg]), pool.integer(-1_i32));
         verify_numeric(f, x, &pool);
+    }
+
+    // -----------------------------------------------------------------------
+    // Weierstrass half-angle substitution: rational functions of sin/cos.
+    // -----------------------------------------------------------------------
+
+    /// True when the derivation log for `∫ integrand dx` contains the Weierstrass
+    /// rule step (i.e. the half-angle path is what closed the integral).
+    fn weierstrass_fired(integrand: ExprId, x: ExprId, pool: &ExprPool) -> bool {
+        let integral = integrate(integrand, x, pool).unwrap();
+        integral
+            .log
+            .steps()
+            .iter()
+            .any(|s| s.rule_name == "int_weierstrass_trig")
+    }
+
+    #[test]
+    fn weierstrass_one_over_2_plus_cos() {
+        // ∫ 1/(2+cos x) dx = (2/√3)·atan(tan(x/2)/√3)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let denom = pool.add(vec![pool.integer(2_i32), pool.func("cos", vec![x])]);
+        let f = pool.pow(denom, pool.integer(-1_i32));
+        verify_numeric(f, x, &pool);
+        assert!(weierstrass_fired(f, x, &pool));
+    }
+
+    #[test]
+    fn weierstrass_one_over_1_plus_sin() {
+        // ∫ 1/(1+sin x) dx = −2/(1+tan(x/2))
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let denom = pool.add(vec![pool.integer(1_i32), pool.func("sin", vec![x])]);
+        let f = pool.pow(denom, pool.integer(-1_i32));
+        verify_numeric(f, x, &pool);
+        assert!(weierstrass_fired(f, x, &pool));
+    }
+
+    #[test]
+    fn weierstrass_one_over_5_plus_4cos() {
+        // ∫ 1/(5+4cos x) dx = (2/3)·atan(tan(x/2)/3)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let denom = pool.add(vec![
+            pool.integer(5_i32),
+            pool.mul(vec![pool.integer(4_i32), pool.func("cos", vec![x])]),
+        ]);
+        let f = pool.pow(denom, pool.integer(-1_i32));
+        verify_numeric(f, x, &pool);
+        assert!(weierstrass_fired(f, x, &pool));
+    }
+
+    #[test]
+    fn weierstrass_one_over_sin_plus_cos() {
+        // ∫ 1/(sin x + cos x) dx
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let denom = pool.add(vec![pool.func("sin", vec![x]), pool.func("cos", vec![x])]);
+        let f = pool.pow(denom, pool.integer(-1_i32));
+        verify_numeric(f, x, &pool);
+        assert!(weierstrass_fired(f, x, &pool));
+    }
+
+    #[test]
+    fn weierstrass_sin_over_1_plus_sin() {
+        // ∫ sin x/(1+sin x) dx
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let sinx = pool.func("sin", vec![x]);
+        let denom = pool.add(vec![pool.integer(1_i32), sinx]);
+        let f = pool.mul(vec![sinx, pool.pow(denom, pool.integer(-1_i32))]);
+        verify_numeric(f, x, &pool);
+        assert!(weierstrass_fired(f, x, &pool));
+    }
+
+    #[test]
+    fn weierstrass_one_over_2_plus_sin() {
+        // ∫ 1/(2+sin x) dx = (2/√3)·atan((2·tan(x/2)+1)/√3)
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let denom = pool.add(vec![pool.integer(2_i32), pool.func("sin", vec![x])]);
+        let f = pool.pow(denom, pool.integer(-1_i32));
+        verify_numeric(f, x, &pool);
+        assert!(weierstrass_fired(f, x, &pool));
+    }
+
+    // Regression: the dedicated trig fast-paths keep their nicer closed forms —
+    // the Weierstrass path must NOT intercept them.
+
+    #[test]
+    fn weierstrass_does_not_intercept_sin() {
+        // ∫ sin x dx stays −cos(x), not a half-angle form.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.func("sin", vec![x]);
+        let r = integrate(f, x, &pool).unwrap();
+        let expected = pool.mul(vec![pool.integer(-1_i32), pool.func("cos", vec![x])]);
+        assert!(coeffs_equal(r.value, expected, x, &pool));
+        assert!(!weierstrass_fired(f, x, &pool));
+    }
+
+    #[test]
+    fn weierstrass_does_not_intercept_cos() {
+        // ∫ cos x dx stays sin(x).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.func("cos", vec![x]);
+        let r = integrate(f, x, &pool).unwrap();
+        assert_eq!(r.value, pool.func("sin", vec![x]));
+        assert!(!weierstrass_fired(f, x, &pool));
+    }
+
+    #[test]
+    fn weierstrass_does_not_intercept_sin_squared() {
+        // ∫ sin²x dx keeps the Fourier-linearized form (no half-angle).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = sinp(x, 2, &pool);
+        verify_numeric(f, x, &pool);
+        assert!(!weierstrass_fired(f, x, &pool));
+    }
+
+    #[test]
+    fn weierstrass_does_not_intercept_sec_squared() {
+        // ∫ sec²x dx keeps the tan(x) closed form.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(pool.func("cos", vec![x]), pool.integer(-2_i32));
+        verify_numeric(f, x, &pool);
+        assert!(!weierstrass_fired(f, x, &pool));
+    }
+
+    #[test]
+    fn weierstrass_does_not_intercept_tan() {
+        // ∫ tan x dx = −log(cos x) via u-substitution, not half-angle.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.func("tan", vec![x]);
+        verify_numeric(f, x, &pool);
+        assert!(!weierstrass_fired(f, x, &pool));
+    }
+
+    #[test]
+    fn weierstrass_does_not_intercept_sin2x_cos_x() {
+        // ∫ sin(2x)·cos(x) dx keeps the Fourier-linearized form.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let two_x = pool.mul(vec![pool.integer(2_i32), x]);
+        let f = pool.mul(vec![
+            pool.func("sin", vec![two_x]),
+            pool.func("cos", vec![x]),
+        ]);
+        verify_numeric(f, x, &pool);
+        assert!(!weierstrass_fired(f, x, &pool));
+    }
+
+    #[test]
+    fn weierstrass_declines_non_rational_trig() {
+        // ∫ sin(x)/x dx is non-elementary: the Weierstrass rewrite hits a bare
+        // `x` and must decline cleanly (no panic, returns an error).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.mul(vec![
+            pool.func("sin", vec![x]),
+            pool.pow(x, pool.integer(-1_i32)),
+        ]);
+        assert!(integrate(f, x, &pool).is_err());
     }
 }
