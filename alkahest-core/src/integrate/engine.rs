@@ -15,7 +15,7 @@
 /// The result is simplified with the rule-based simplifier before returning.
 use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
 use crate::kernel::{ExprData, ExprId, ExprPool};
-use crate::simplify::engine::simplify;
+use crate::simplify::engine::{simplify, simplify_expanded};
 use std::collections::HashMap;
 use std::fmt;
 
@@ -449,50 +449,99 @@ fn inverse_trig_derivative(name: &str, var: ExprId, pool: &ExprPool) -> Option<E
     }
 }
 
-/// Integrate `∫ rest(x)·f(x) dx` by parts with `u = f(x)`, `dv = rest·dx`, where
-/// `f ∈ {atan, asin, acos}` and its argument is exactly `var`:
-///
-/// ```text
-/// ∫ rest·f dx = P·f − ∫ P·f' dx,   P = ∫ rest dx.
-/// ```
-///
-/// `rest` is the product of all factors other than the single inverse-trig
-/// factor (or `1` for the bare `∫ f(x) dx` case).  Both `P = ∫ rest dx` and the
-/// residual `∫ P·f' dx` are computed by recursing through the full [`integrate`]
-/// engine (so rational and algebraic-√ residuals resolve).  `P·f'` is
-/// inverse-trig-free, so the residual can never re-enter this branch — the
-/// recursion terminates.  The final antiderivative is soundness-gated by
-/// [`verify_antiderivative`]: it is returned only if `d/dx result = integrand`,
-/// so a wrong integral is never emitted.  Returns `None` (decline) when the
-/// shape does not match or any sub-integral declines.
-fn try_inverse_trig_ibp(
-    expr: ExprId,
-    var: ExprId,
-    pool: &ExprPool,
-    log: &mut DerivationLog,
-) -> Option<ExprId> {
-    // Identify the single inverse-trig factor f(var) and the remaining product `rest`.
-    let (fname, rest) = match pool.get(expr) {
-        // Bare ∫ f(x) dx.
+/// Largest integer power `k` of an inverse-trig factor the IBP reduction will
+/// attempt.  Each IBP step lowers `k` by one, so recursion always terminates;
+/// this cap only bounds expression blow-up for pathological inputs (powers above
+/// it decline cleanly rather than expanding a huge intermediate form).
+const MAX_INVERSE_TRIG_POWER: i64 = 12;
+
+thread_local! {
+    /// Re-entry depth of [`try_inverse_trig_ibp`] on the current thread.  Needed
+    /// because a `k ≥ 2` residual of a *rational*-derivative inverse function
+    /// (atan/atanh) is `∫ log(1∓x²)/(1∓x²) dx`, which the Risch log-case
+    /// integrates by parts back into `∫ atan(x)·(…) dx` — a product that re-enters
+    /// this branch, forming a mutual-recursion cycle with no elementary fixed
+    /// point.  Bounding the re-entry depth breaks the cycle so those genuinely
+    /// non-elementary integrals decline cleanly instead of overflowing the stack.
+    /// The elementary (algebraic-derivative) cases never re-enter, so the bound
+    /// does not affect them.
+    static INVERSE_TRIG_IBP_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Maximum re-entry depth for [`try_inverse_trig_ibp`].  The elementary
+/// (asin/acos/asinh/acosh) reductions enter exactly once, so `1` suffices;
+/// deeper re-entry only ever arises from the non-elementary atan²/atanh² cycle,
+/// which must decline.
+const INVERSE_TRIG_IBP_MAX_DEPTH: u32 = 1;
+
+/// RAII guard that increments [`INVERSE_TRIG_IBP_DEPTH`] on construction and
+/// decrements it on drop, so the depth is restored on every exit path (including
+/// the `?` early returns in [`try_inverse_trig_ibp`]).
+struct InverseTrigIbpDepthGuard;
+
+impl Drop for InverseTrigIbpDepthGuard {
+    fn drop(&mut self) {
+        INVERSE_TRIG_IBP_DEPTH.with(|d| d.set(d.get().saturating_sub(1)));
+    }
+}
+
+/// If `a` is `f(var)` or `f(var)^k` for an inverse-trig `f` and integer `k ≥ 1`,
+/// return `(fname, k)`.  A bare function is treated as `k = 1`.  Non-integer,
+/// zero, or negative exponents, and any other shape, return `None`.
+fn as_inverse_trig_power(a: ExprId, var: ExprId, pool: &ExprPool) -> Option<(String, i64)> {
+    match pool.get(a) {
         ExprData::Func { name, args }
             if args.len() == 1 && args[0] == var && is_inverse_trig(&name) =>
         {
-            (name, pool.integer(1_i32))
+            Some((name, 1))
         }
-        // Product ∫ rest(x)·f(x) dx with exactly one inverse-trig factor.
+        ExprData::Pow { base, exp } => {
+            let k = as_integer(exp, pool)?;
+            if k < 1 {
+                return None;
+            }
+            match pool.get(base) {
+                ExprData::Func { name, args }
+                    if args.len() == 1 && args[0] == var && is_inverse_trig(&name) =>
+                {
+                    Some((name, k))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Identify the shape `∫ rest(x)·f(x)^k dx`: a single inverse-trig factor `f`
+/// (argument exactly `var`) raised to an integer power `k ≥ 1`, times an
+/// inverse-trig-free polynomial/rational `rest` (or `1`).  Returns
+/// `(fname, k, rest)`, or `None` when the integrand is not of this form (no
+/// inverse-trig factor, two of them, a non-integer power, or a `rest` that still
+/// contains an inverse-trig subterm).
+fn match_inverse_trig_power(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<(String, i64, ExprId)> {
+    match pool.get(expr) {
+        // Bare ∫ f(x)^k dx (including the k = 1 function node).
+        ExprData::Func { .. } | ExprData::Pow { .. } => {
+            let (name, k) = as_inverse_trig_power(expr, var, pool)?;
+            Some((name, k, pool.integer(1_i32)))
+        }
+        // Product ∫ rest(x)·f(x)^k dx with exactly one inverse-trig factor.
         ExprData::Mul(args) => {
-            let mut found: Option<(usize, String)> = None;
+            let mut found: Option<(usize, String, i64)> = None;
             for (i, &a) in args.iter().enumerate() {
-                if let ExprData::Func { name, args: fargs } = pool.get(a) {
-                    if fargs.len() == 1 && fargs[0] == var && is_inverse_trig(&name) {
-                        if found.is_some() {
-                            return None; // two inverse-trig factors — out of scope
-                        }
-                        found = Some((i, name));
+                if let Some((name, k)) = as_inverse_trig_power(a, var, pool) {
+                    if found.is_some() {
+                        return None; // two inverse-trig factors — out of scope
                     }
+                    found = Some((i, name, k));
                 }
             }
-            let (pos, name) = found?;
+            let (pos, name, k) = found?;
             let rest_factors: Vec<ExprId> = args
                 .iter()
                 .enumerate()
@@ -504,30 +553,131 @@ fn try_inverse_trig_ibp(
                 1 => rest_factors[0],
                 _ => pool.mul(rest_factors),
             };
-            // `rest` must be inverse-trig-free (termination guard: the residual
-            // P·f' then contains no inverse-trig function and cannot recurse here).
+            // `rest` must be inverse-trig-free (any remaining inverse-trig factor
+            // would be a second one, or nested — out of scope for this branch).
             if contains_inverse_trig(rest, pool) {
                 return None;
             }
-            (name, rest)
+            Some((name, k, rest))
         }
-        _ => return None,
+        _ => None,
+    }
+}
+
+/// Integrate `∫ coeff(x)·f(x)^k dx` for integer `k ≥ 0` by repeated integration
+/// by parts on the inverse-trig power, where `coeff` is inverse-trig-free:
+///
+/// ```text
+/// ∫ coeff·f^k dx = C·f^k − k·∫ (C·f')·f^{k−1} dx,   C = ∫ coeff dx.
+/// ```
+///
+/// Each step lowers the power of `f` by one, so the recursion terminates; the
+/// new coefficient `C·f'` is again inverse-trig-free (`f'` is rational or
+/// algebraic-√).  At `k = 0` this is the base case `∫ coeff dx`, resolved
+/// through the full [`integrate`] engine (rational, algebraic-√, or a clean
+/// decline when the residual is non-elementary — e.g. the `atan²`/`atanh²`
+/// residual `∫ log(1∓x²)/(1∓x²) dx`).  Returns `None` if any sub-integral
+/// declines.
+fn integrate_inverse_trig_power(
+    coeff: ExprId,
+    fname: &str,
+    k: i64,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    // Base case: pure ∫ coeff dx (coeff is inverse-trig-free ⇒ no re-entry).
+    if k <= 0 {
+        return integrate_additive(coeff, var, pool);
+    }
+
+    let fprime = inverse_trig_derivative(fname, var, pool)?;
+
+    // C = ∫ coeff dx (full engine, so rational/algebraic-√ residuals resolve).
+    let cap = simplify(integrate_additive(coeff, var, pool)?, pool).value;
+
+    // Main term C·f^k.
+    let f = pool.func(fname, vec![var]);
+    let fk = if k == 1 {
+        f
+    } else {
+        pool.pow(f, pool.integer(k))
     };
+    let main = pool.mul(vec![cap, fk]);
 
-    let fprime = inverse_trig_derivative(&fname, var, pool)?;
+    // Residual −k·∫ (C·f')·f^{k−1} dx.  `C·f'` may reintroduce `f` (e.g.
+    // `∫ x²/√(1−x²)` contributes an `asin` term), so it is not assumed
+    // inverse-trig-free; the reduction is still valid and the recursion still
+    // lowers the tracked power of `f` by one.
+    // Expand so a reintroduced-`f` term separates from the algebraic part into a
+    // top-level sum (e.g. `(asin − x√)/(2√) → asin/(2√) − x/2`); the base case
+    // then integrates each summand independently through the full pipeline.
+    let new_coeff = simplify_expanded(pool.mul(vec![cap, fprime]), pool).value;
+    let residual = integrate_inverse_trig_power(new_coeff, fname, k - 1, var, pool)?;
+    let neg = pool.mul(vec![pool.integer(-k), residual]);
 
-    // P = ∫ rest dx (full engine, so rational/algebraic residuals resolve).
-    let p = integrate(rest, var, pool).ok()?.value;
+    Some(pool.add(vec![main, neg]))
+}
 
-    // Residual ∫ P·f' dx. Inverse-trig-free ⇒ no re-entry into this branch.
-    let residual_integrand = pool.mul(vec![p, fprime]);
-    let residual = integrate(residual_integrand, var, pool).ok()?.value;
+/// Integrate `∫ expr dx` term-by-term over a top-level sum, sending each summand
+/// through the full [`integrate`] pipeline (rule engine → rational fallback →
+/// derivative-divides u-substitution).  The plain [`Node::Add`] sum-rule only
+/// runs the rule engine on each term, so an `f(x)·f'(x)` summand produced by the
+/// inverse-trig IBP reduction (which needs the u-substitution fallback to close)
+/// would be missed; splitting here routes each term through the fallback.
+/// Returns `None` if any summand declines.
+fn integrate_additive(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    if let ExprData::Add(args) = pool.get(expr) {
+        let mut terms = Vec::with_capacity(args.len());
+        for a in args {
+            terms.push(integrate_additive(a, var, pool)?);
+        }
+        return Some(pool.add(terms));
+    }
+    integrate(expr, var, pool).ok().map(|d| d.value)
+}
 
-    // ∫ rest·f = P·f − ∫ P·f'.
-    let f = pool.func(&fname, vec![var]);
-    let pf = pool.mul(vec![p, f]);
-    let neg_residual = pool.mul(vec![pool.integer(-1_i32), residual]);
-    let result = pool.add(vec![pf, neg_residual]);
+/// Integrate `∫ rest(x)·f(x)^k dx` by parts, where `f ∈ {atan, asin, acos,
+/// asinh, acosh, atanh}` (argument exactly `var`), `k ≥ 1` is an integer, and
+/// `rest` is an inverse-trig-free polynomial/rational factor (or `1`):
+///
+/// ```text
+/// ∫ rest·f^k dx = P·f^k − k·∫ (P·f')·f^{k−1} dx,   P = ∫ rest dx.
+/// ```
+///
+/// The reduction ([`integrate_inverse_trig_power`]) recurses, lowering the power
+/// of `f` by one each step until the pure `∫ … dx` base case, and terminates.
+/// Whether the whole thing closes depends on the derivative of `f`:
+/// asin/acos/asinh/acosh have **algebraic** derivatives (`1/√(1∓x²)` /
+/// `1/√(x²±1)`), so every residual resolves and powers such as `∫ asin(x)² dx`
+/// are elementary; atan/atanh have **rational** derivatives (`1/(1±x²)`), and
+/// for `k ≥ 2` the final residual is the non-elementary `∫ log(1∓x²)/(1∓x²) dx`,
+/// so `∫ atan(x)² dx` / `∫ atanh(x)² dx` decline cleanly (the sub-integral
+/// returns `None`).  The final antiderivative is soundness-gated by
+/// [`verify_antiderivative`]: it is returned only if `d/dx result = integrand`,
+/// so a wrong integral is never emitted.  Returns `None` (decline) when the
+/// shape does not match or any sub-integral declines.
+fn try_inverse_trig_ibp(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    log: &mut DerivationLog,
+) -> Option<ExprId> {
+    let (fname, k, rest) = match_inverse_trig_power(expr, var, pool)?;
+
+    // Bound intermediate blow-up; powers above the cap decline cleanly.
+    if k > MAX_INVERSE_TRIG_POWER {
+        return None;
+    }
+
+    // Break the atan²/atanh² mutual-recursion cycle with the Risch log-case.
+    let depth = INVERSE_TRIG_IBP_DEPTH.with(|d| d.get());
+    if depth >= INVERSE_TRIG_IBP_MAX_DEPTH {
+        return None;
+    }
+    INVERSE_TRIG_IBP_DEPTH.with(|d| d.set(depth + 1));
+    let _depth_guard = InverseTrigIbpDepthGuard;
+
+    let result = integrate_inverse_trig_power(rest, &fname, k, var, pool)?;
 
     // Soundness gate: only emit when d/dx result equals the integrand.
     if !verify_antiderivative(result, expr, var, pool) {
@@ -1924,7 +2074,12 @@ pub fn integrate(
     let has_algebraic = super::algebraic::contains_algebraic_subterm(expr, pool)
         || super::algebraic::contains_algebraic_func_of_var(expr, var, pool);
     let has_transcendental = super::risch::contains_risch_form(expr, var, pool);
-    if has_algebraic && !has_transcendental {
+    // An inverse-trig factor (atan/asin/…·√…) is outside the pure-algebraic
+    // engine's scope — it rejects such `B(x)·√(quadratic)` integrands.  Skip the
+    // algebraic route in that case so the integrand falls through to the rule
+    // engine and the derivative-divides u-substitution (which resolves the
+    // `f(x)·f'(x)` sub-integrals produced by the inverse-trig IBP reduction).
+    if has_algebraic && !has_transcendental && !contains_inverse_trig(expr, pool) {
         return super::algebraic::integrate_algebraic(expr, var, pool);
     }
 
@@ -3830,9 +3985,77 @@ mod tests {
         }
     }
 
+    // --- Integer powers of inverse functions (IBP reduction) ---
+
+    #[test]
+    fn integrate_asin_squared() {
+        // ∫ asin(x)² dx = x·asin(x)² + 2√(1−x²)·asin(x) − 2x (algebraic derivative
+        // ⇒ elementary).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(pool.func("asin", vec![x]), pool.integer(2_i32));
+        let r = integrate(f, x, &pool).unwrap();
+        assert!(
+            r.log
+                .steps()
+                .iter()
+                .any(|s| s.rule_name == "int_inverse_trig_ibp"),
+            "should fire int_inverse_trig_ibp"
+        );
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_acos_squared() {
+        // ∫ acos(x)² dx — elementary (algebraic derivative).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(pool.func("acos", vec![x]), pool.integer(2_i32));
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_asinh_squared() {
+        // ∫ asinh(x)² dx — elementary (algebraic derivative).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(pool.func("asinh", vec![x]), pool.integer(2_i32));
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_acosh_squared() {
+        // ∫ acosh(x)² dx — elementary (algebraic derivative).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(pool.func("acosh", vec![x]), pool.integer(2_i32));
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_x_times_asin_squared() {
+        // ∫ x·asin(x)² dx — elementary (algebraic derivative, polynomial factor).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let asin2 = pool.pow(pool.func("asin", vec![x]), pool.integer(2_i32));
+        let f = pool.mul(vec![x, asin2]);
+        verify_numeric(f, x, &pool);
+    }
+
+    #[test]
+    fn integrate_asin_cubed() {
+        // ∫ asin(x)³ dx — elementary (deeper IBP recursion, still algebraic).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(pool.func("asin", vec![x]), pool.integer(3_i32));
+        verify_numeric(f, x, &pool);
+    }
+
     #[test]
     fn integrate_atan_squared_declines() {
-        // ∫ atan(x)² dx is out of scope — must decline cleanly (no panic).
+        // ∫ atan(x)² dx is NON-elementary — must decline cleanly (no panic, no
+        // wrong closed form).  The IBP residual ∫ log(1+x²)/(1+x²) dx is a
+        // dilog-type non-elementary integral (rational derivative 1/(1+x²)).
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let f = pool.pow(pool.func("atan", vec![x]), pool.integer(2_i32));
@@ -3840,6 +4063,21 @@ mod tests {
         assert!(
             r.is_err(),
             "∫ atan(x)² dx should decline, got {:?}",
+            r.map(|d| pool.display(d.value))
+        );
+    }
+
+    #[test]
+    fn integrate_atanh_squared_declines() {
+        // ∫ atanh(x)² dx is NON-elementary — the residual ∫ log(1−x²)/(1−x²) dx
+        // is non-elementary (rational derivative 1/(1−x²)).  Decline cleanly.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(pool.func("atanh", vec![x]), pool.integer(2_i32));
+        let r = integrate(f, x, &pool);
+        assert!(
+            r.is_err(),
+            "∫ atanh(x)² dx should decline, got {:?}",
             r.map(|d| pool.display(d.value))
         );
     }
