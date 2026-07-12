@@ -97,6 +97,26 @@ def test_integrate_constant():
     assert r.value is not None
 
 
+def test_integrate_exact_verification_metadata():
+    p = pool()
+    x = p.symbol("x")
+    r = integrate(x**2, x)
+
+    assert r.verification["status"] == "exactly_verified"
+    assert r.verification["evidence"] == "antiderivative_derivative_identity"
+    assert r.verification["method"] == "in_kernel_symbolic_residual"
+    assert r.verification["externally_verified"] is False
+
+
+def test_non_integration_retains_derivation_verification_metadata():
+    p = pool()
+    x = p.symbol("x")
+
+    verification = diff(x**2, x).verification
+    assert verification["status"] == "certificate_available"
+    assert verification["method"] == "derivation_log"
+
+
 # ---------------------------------------------------------------------------
 # Simplification (rule-based)
 # ---------------------------------------------------------------------------
