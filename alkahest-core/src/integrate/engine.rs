@@ -2534,6 +2534,25 @@ fn is_zero(expr: ExprId, pool: &ExprPool) -> bool {
     as_integer(expr, pool) == Some(0)
 }
 
+/// Verify exactly that `d/dx(candidate) == integrand` after symbolic
+/// simplification.
+///
+/// This is an in-kernel symbolic check. It does not use numeric sampling and
+/// therefore returns `false` when equality cannot be established structurally.
+pub fn verify_antiderivative_exact(
+    candidate: ExprId,
+    integrand: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> bool {
+    let Ok(d_raw) = crate::diff::diff(candidate, var, pool) else {
+        return false;
+    };
+    let d = simplify(d_raw.value, pool).value;
+    let neg = pool.mul(vec![pool.integer(-1_i32), integrand]);
+    is_zero(simplify(pool.add(vec![d, neg]), pool).value, pool)
+}
+
 /// Soundness gate: verify `d/dx(candidate) == integrand`.
 ///
 /// Accepts when `d/dx(candidate) − integrand` simplifies structurally to zero,
@@ -2547,19 +2566,15 @@ fn verify_antiderivative(
     var: ExprId,
     pool: &ExprPool,
 ) -> bool {
-    let Ok(d_raw) = crate::diff::diff(candidate, var, pool) else {
-        return false;
-    };
-    let d = simplify(d_raw.value, pool).value;
-
-    // Structural check: d − integrand simplifies to zero.
-    let neg = pool.mul(vec![pool.integer(-1_i32), integrand]);
-    let diff_expr = simplify(pool.add(vec![d, neg]), pool).value;
-    if is_zero(diff_expr, pool) {
+    if verify_antiderivative_exact(candidate, integrand, var, pool) {
         return true;
     }
 
     // Numeric check at several sample points (irrational, to dodge poles).
+    let Ok(d_raw) = crate::diff::diff(candidate, var, pool) else {
+        return false;
+    };
+    let d = simplify(d_raw.value, pool).value;
     let samples = [0.3719_f64, 0.9137, 1.4231, 2.1719, 2.8123, 3.6411];
     let mut checked = 0_usize;
     for &xv in &samples {

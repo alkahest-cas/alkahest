@@ -667,6 +667,13 @@ def integrate(expr, var, a=None, b=None):
     between the bounds, and the residue-theorem route are not handled; in those
     cases the underlying integration error is propagated rather than guessed.
 
+    For an indefinite integral, ``result.verification`` reports
+    ``"exactly_verified"`` only when the kernel proves the symbolic residual
+    ``diff(result, var) - expr`` is zero. A successful result with
+    ``"unverified"`` may instead have passed the integrator's separate numeric
+    soundness gate. Definite integral results have no antiderivative
+    verification metadata.
+
     Example
     -------
     >>> p = ExprPool(); x = p.symbol("x")
