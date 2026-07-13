@@ -1496,9 +1496,8 @@ struct PyDerivedResult {
     raw: DerivedExpr<ExprId>,
     /// Differentiation variable when this result comes from :func:`diff`.
     wrt: Option<ExprId>,
-    /// Exact symbolic antiderivative verification, when this result is from
-    /// indefinite integration.
-    integration_exactly_verified: Option<bool>,
+    /// Integrand and variable for lazy exact antiderivative verification.
+    integration_verification_input: Option<(ExprId, ExprId)>,
 }
 
 #[pymethods]
@@ -1551,7 +1550,11 @@ impl PyDerivedResult {
     fn verification<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
         let metadata = PyDict::new_bound(py);
         let has_certificate = !self.raw.log.is_empty();
-        let exactly_verified = self.integration_exactly_verified;
+        let exactly_verified = self.integration_verification_input.map(|(integrand, var)| {
+            let pool_py = self.value.pool.clone_ref(py);
+            let pool = pool_py.borrow(py);
+            core_verify_antiderivative_exact(self.raw.value, integrand, var, &pool.inner)
+        });
         metadata
             .set_item(
                 "status",
@@ -1665,7 +1668,7 @@ fn make_derived_result(
         steps_raw,
         raw: derived,
         wrt,
-        integration_exactly_verified: None,
+        integration_verification_input: None,
     }
 }
 
@@ -1689,7 +1692,7 @@ fn py_derived_result_context_simplify(
             steps_raw: dr.steps_raw.clone(),
             raw: dr.raw.clone(),
             wrt: dr.wrt,
-            integration_exactly_verified: dr.integration_exactly_verified,
+            integration_verification_input: dr.integration_verification_input,
         });
     }
     let mut log = dr.raw.log.clone();
@@ -2612,17 +2615,13 @@ fn py_integrate(
     expr: PyRef<PyExpr>,
     var: PyRef<PyExpr>,
 ) -> PyResult<PyDerivedResult> {
-    let (derived, exactly_verified) = {
+    let derived = {
         let pool = expr.pool.borrow(py);
-        let derived =
-            core_integrate(expr.id, var.id, &pool.inner).map_err(integrate_error_to_py)?;
-        let exactly_verified =
-            core_verify_antiderivative_exact(derived.value, expr.id, var.id, &pool.inner);
-        (derived, exactly_verified)
+        core_integrate(expr.id, var.id, &pool.inner).map_err(integrate_error_to_py)?
     };
     let pool_py = expr.pool.clone_ref(py);
     let mut result = make_derived_result(py, derived, pool_py, None);
-    result.integration_exactly_verified = Some(exactly_verified);
+    result.integration_verification_input = Some((expr.id, var.id));
     Ok(result)
 }
 
