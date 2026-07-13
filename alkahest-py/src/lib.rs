@@ -115,11 +115,12 @@ use alkahest_core::{
     simplify as core_simplify, simplify_batch as core_simplify_batch,
     simplify_egraph as core_simplify_egraph, simplify_egraph_with as core_simplify_egraph_with,
     simplify_trig_normal_form as core_simplify_trig_normal_form,
-    simplify_with as core_simplify_with, trig_rules, AlkahestError as AlkahestErrorTrait,
-    ApartError, DerivedExpr, DiffError, EgraphConfig, IntegrationError, IoError,
-    LimitDirection as CoreLimitDirection, LimitError, LinearRecurrenceError, PatternRule,
-    ProductError, ResultantError, RsolveError, SeriesError, SimplifyConfig, SizeCost,
-    SparseGcdError, SparseInterpError, SumError,
+    simplify_with as core_simplify_with, trig_rules,
+    verify_antiderivative_exact as core_verify_antiderivative_exact,
+    AlkahestError as AlkahestErrorTrait, ApartError, DerivedExpr, DiffError, EgraphConfig,
+    IntegrationError, IoError, LimitDirection as CoreLimitDirection, LimitError,
+    LinearRecurrenceError, PatternRule, ProductError, ResultantError, RsolveError, SeriesError,
+    SimplifyConfig, SizeCost, SparseGcdError, SparseInterpError, SumError,
 };
 // Experimental calculus / ODE / transform surface (PyO3 bindings deferred at
 // landing time — see PRs #152–#161). These mirror the Rust `experimental`
@@ -1495,6 +1496,8 @@ struct PyDerivedResult {
     raw: DerivedExpr<ExprId>,
     /// Differentiation variable when this result comes from :func:`diff`.
     wrt: Option<ExprId>,
+    /// Integrand and variable for lazy exact antiderivative verification.
+    integration_verification_input: Option<(ExprId, ExprId)>,
 }
 
 #[pymethods]
@@ -1541,15 +1544,25 @@ impl PyDerivedResult {
     /// Machine-readable evidence metadata for this derived result.
     ///
     /// A generated Lean source artifact is not a statement that Lean has
-    /// checked it.  External verification must be performed separately.
+    /// checked it. An indefinite integration result is ``exactly_verified``
+    /// only when its symbolic derivative residual simplifies to zero.
     #[getter]
     fn verification<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
         let metadata = PyDict::new_bound(py);
         let has_certificate = !self.raw.log.is_empty();
+        let exactly_verified = self.integration_verification_input.map(|(integrand, var)| {
+            let pool_py = self.value.pool.clone_ref(py);
+            let pool = pool_py.borrow(py);
+            core_verify_antiderivative_exact(self.raw.value, integrand, var, &pool.inner)
+        });
         metadata
             .set_item(
                 "status",
-                if has_certificate {
+                if exactly_verified == Some(true) {
+                    "exactly_verified"
+                } else if exactly_verified == Some(false) {
+                    "unverified"
+                } else if has_certificate {
                     "certificate_available"
                 } else {
                     "unverified"
@@ -1559,7 +1572,9 @@ impl PyDerivedResult {
         metadata
             .set_item(
                 "evidence",
-                if has_certificate {
+                if exactly_verified == Some(true) {
+                    "antiderivative_derivative_identity"
+                } else if has_certificate {
                     "derivation_log"
                 } else {
                     "none"
@@ -1582,6 +1597,16 @@ impl PyDerivedResult {
         }
         metadata
             .set_item("side_conditions", side_conditions)
+            .unwrap();
+        metadata
+            .set_item(
+                "method",
+                if exactly_verified.is_some() {
+                    "in_kernel_symbolic_residual"
+                } else {
+                    "derivation_log"
+                },
+            )
             .unwrap();
         metadata
     }
@@ -1643,6 +1668,7 @@ fn make_derived_result(
         steps_raw,
         raw: derived,
         wrt,
+        integration_verification_input: None,
     }
 }
 
@@ -1666,6 +1692,7 @@ fn py_derived_result_context_simplify(
             steps_raw: dr.steps_raw.clone(),
             raw: dr.raw.clone(),
             wrt: dr.wrt,
+            integration_verification_input: dr.integration_verification_input,
         });
     }
     let mut log = dr.raw.log.clone();
@@ -2593,7 +2620,9 @@ fn py_integrate(
         core_integrate(expr.id, var.id, &pool.inner).map_err(integrate_error_to_py)?
     };
     let pool_py = expr.pool.clone_ref(py);
-    Ok(make_derived_result(py, derived, pool_py, None))
+    let mut result = make_derived_result(py, derived, pool_py, None);
+    result.integration_verification_input = Some((expr.id, var.id));
+    Ok(result)
 }
 
 #[pyfunction]
