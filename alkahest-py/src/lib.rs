@@ -119,10 +119,11 @@ use alkahest_core::{
     simplify_trig_normal_form as core_simplify_trig_normal_form,
     simplify_with as core_simplify_with, trig_rules,
     verify_antiderivative_status as core_verify_antiderivative_status,
-    AlkahestError as AlkahestErrorTrait, AntiderivativeVerification, ApartError, DerivedExpr,
-    DiffError, EgraphConfig, IntegrationError, IoError, LimitDirection as CoreLimitDirection,
-    LimitError, LinearRecurrenceError, PatternRule, ProductError, ResultantError, RsolveError,
-    SeriesError, SimplifyConfig, SizeCost, SparseGcdError, SparseInterpError, SumError,
+    AlkahestError as AlkahestErrorTrait, AntiderivativeVerification, ApartError,
+    AssumptionContext as CoreAssumptionContext, AssumptionError, DerivedExpr, DiffError,
+    EgraphConfig, IntegrationError, IoError, LimitDirection as CoreLimitDirection, LimitError,
+    LinearRecurrenceError, PatternRule, ProductError, ResultantError, RsolveError, SeriesError,
+    SimplifyConfig, SizeCost, SparseGcdError, SparseInterpError, SumError,
 };
 // Experimental calculus / ODE / transform surface (PyO3 bindings deferred at
 // landing time — see PRs #152–#161). These mirror the Rust `experimental`
@@ -179,6 +180,7 @@ pyo3::create_exception!(alkahest, PyConversionError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyDomainError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyDiffError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyPoolError, PyAlkahestError);
+pyo3::create_exception!(alkahest, PyAssumptionError, PyAlkahestError);
 
 /// Parse a Python ``int`` (any size) into an interned integer expression.
 fn integer_into_pool(pool: &ExprPool, n: &Bound<'_, PyAny>) -> PyResult<ExprId> {
@@ -405,6 +407,13 @@ fn py_int_decimal(v: &Bound<'_, PyAny>) -> PyResult<String> {
 fn diff_error_to_py(e: DiffError) -> PyErr {
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyDiffError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn assumption_error_to_py(e: AssumptionError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyAssumptionError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -1483,6 +1492,80 @@ impl PyFps {
 
     fn __repr__(&self) -> String {
         "Fps(...)".to_string()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Explicit assumptions
+// ---------------------------------------------------------------------------
+
+/// Experimental, pool-scoped assumptions for conservative simplification.
+#[pyclass(name = "Assumptions")]
+struct PyAssumptions {
+    pool: Py<PyExprPool>,
+    inner: CoreAssumptionContext,
+}
+
+#[pymethods]
+impl PyAssumptions {
+    #[new]
+    fn new(pool: Py<PyExprPool>) -> Self {
+        Self {
+            pool,
+            inner: CoreAssumptionContext::new(),
+        }
+    }
+
+    /// Add a predicate to this context.
+    ///
+    /// Only positive and non-zero facts authorize conditional rewrites. Other
+    /// predicates remain provenance for contradiction detection.
+    fn refine(&mut self, py: Python<'_>, predicate: PyRef<PyExpr>) -> PyResult<()> {
+        if !predicate.pool.is(&self.pool) {
+            return Err(pool_mismatch_err());
+        }
+        let pool = self.pool.borrow(py);
+        self.inner
+            .refine(predicate.id, &pool.inner)
+            .map_err(assumption_error_to_py)
+    }
+
+    /// Simplify an expression under this explicit assumption context.
+    fn simplify(&self, py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedResult> {
+        if !expr.pool.is(&self.pool) {
+            return Err(pool_mismatch_err());
+        }
+        let derived = {
+            let pool = self.pool.borrow(py);
+            self.inner.simplify(expr.id, &pool.inner)
+        };
+        Ok(make_derived_result(
+            py,
+            derived,
+            self.pool.clone_ref(py),
+            None,
+        ))
+    }
+
+    /// Predicates explicitly asserted in this context.
+    #[getter]
+    fn predicates<'py>(&self, py: Python<'py>) -> Bound<'py, PyList> {
+        let predicates = PyList::empty_bound(py);
+        for &id in self.inner.predicates() {
+            predicates
+                .append(
+                    Py::new(
+                        py,
+                        PyExpr {
+                            id,
+                            pool: self.pool.clone_ref(py),
+                        },
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        predicates
     }
 }
 
@@ -8516,6 +8599,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyExprPool>()?;
     m.add_class::<PyExpr>()?;
     m.add_class::<PyEvaluationResult>()?;
+    m.add_class::<PyAssumptions>()?;
     m.add_class::<PyDerivedResult>()?;
     m.add_class::<PySeries>()?;
     m.add_class::<PyUniPoly>()?;
@@ -8669,6 +8753,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("DomainError", m.py().get_type_bound::<PyDomainError>())?;
     m.add("DiffError", m.py().get_type_bound::<PyDiffError>())?;
     m.add("PoolError", m.py().get_type_bound::<PyPoolError>())?;
+    m.add(
+        "AssumptionError",
+        m.py().get_type_bound::<PyAssumptionError>(),
+    )?;
     m.add(
         "IntegrationError",
         m.py().get_type_bound::<PyIntegrationError>(),

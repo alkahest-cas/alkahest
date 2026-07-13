@@ -38,6 +38,8 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-DIFF-002", class: "DiffError", cause: Cause::UserInput,   remediation: Some("symbolic exponents require the chain rule; use diff_forward for non-integer powers") },
     ErrorSpec { code: "E-DIFF-003", class: "DiffError", cause: Cause::Unsupported, remediation: Some("register the function in PrimitiveRegistry with diff_forward implemented") },
     ErrorSpec { code: "E-DIFF-004", class: "DiffError", cause: Cause::UserInput,   remediation: Some("substitute concrete values first; diff_forward requires integer exponents") },
+    // E-SIMPLIFY — AssumptionError
+    ErrorSpec { code: "E-SIMPLIFY-001", class: "AssumptionError", cause: Cause::Domain, remediation: Some("remove the conflicting refinement or create a separate AssumptionContext") },
     // E-SERIES — SeriesError (V2-15 truncated expansions)
     ErrorSpec { code: "E-SERIES-001", class: "SeriesError", cause: Cause::Unsupported, remediation: Some("ensure all functions are registered primitives with differentiation rules") },
     ErrorSpec { code: "E-SERIES-002", class: "SeriesError", cause: Cause::UserInput,   remediation: Some("pass order >= 1 (exclusive truncation degree in x)") },

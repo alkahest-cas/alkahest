@@ -28,8 +28,8 @@ from alkahest import simplify_trig, simplify_log_exp, simplify_expanded
 # Pythagorean identity and double-angle formulas
 r = simplify_trig(sin(x)**2 + cos(x)**2)  # → 1
 
-# Logarithm and exponential cancellation (branch-cut safe)
-r = simplify_log_exp(exp(log(x)))   # → x  (with positive domain side condition)
+# Conservatively leaves branch-sensitive identities unchanged
+r = simplify_log_exp(exp(log(x)))
 
 # Expand products and collect like terms
 r = simplify_expanded((x + pool.integer(1))**3)
@@ -47,18 +47,27 @@ r = simplify_with(expr, rules=[my_rule])
 
 ### Conditional simplification (colored e-graphs)
 
-When domain assumptions are known, pass them via `SimplifyConfig` (Rust) so conditional rewrites apply — e.g. `x > 0` enables `sqrt(x²) → x` instead of `|x|`:
+Branch-sensitive rewrites are opt-in. In Python, create an explicit experimental
+context tied to one expression pool; `x > 0` then enables `sqrt(x²) → x`:
 
-```rust
-// Rust API (experimental re-export)
-use alkahest_cas::{simplify_with, SimplifyConfig, Predicate};
+```python
+from alkahest.experimental import Assumptions
 
-let mut config = SimplifyConfig::default();
-config.assumptions = vec![Predicate::Gt(x, pool.integer(0))];
-let r = simplify_with(expr, &pool, &rules, config);
+assumptions = Assumptions(pool)
+assumptions.refine(pool.gt(x, pool.integer(0)))
+r = assumptions.simplify(sqrt(x**2))  # → x
 ```
 
-The colored pass (`simplify/colored_egraph.rs`) runs a native layered union-find e-graph before the rule engine when assumptions are non-empty. The egglog backend is unchanged.
+The current fact language recognizes conjunctions of positive and non-zero
+predicates. Unsupported predicates are retained for contradiction detection but
+do not authorize a rewrite; a definitive contradiction raises
+`AssumptionError` with code `E-SIMPLIFY-001`. Contexts never modify the
+thread-local `context()` helper or global simplifier state.
+
+Without a proven fact, domain-changing identities such as `x/x → 1`, `x^0 → 1`,
+`exp(log(x)) → x`, and `log(a*b) → log(a) + log(b)` remain unchanged. The
+colored pass runs after ordinary rule simplification and preserves repeated
+terms and factors.
 
 ### Parallel simplification
 

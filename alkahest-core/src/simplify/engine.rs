@@ -22,12 +22,12 @@ pub struct SimplifyConfig {
     /// Keep disabled unless explicitly expanding, because expansion can loop
     /// against a future `factor` rule.
     pub expand: bool,
-    /// Allow branch-cut-sensitive rewrites such as `log(a*b) → log(a) + log(b)`.
+    /// Legacy compatibility preference for branch-cut-sensitive rewrites.
     ///
-    /// This identity only holds when `a` and `b` are positive reals.  Set this
-    /// flag to `true` when you know all variables are positive and want the
-    /// full log/exp rule set; leave it `false` (the default) for safe behaviour
-    /// over complex numbers or when sign information is unavailable.
+    /// This flag never authorizes a rewrite by itself. Such rewrites require
+    /// matching explicit or static facts in [`Self::assumptions`]; callers
+    /// should use [`super::AssumptionContext`] rather than treating this as a
+    /// blanket "variables are positive" switch.
     pub allow_branch_cut_rewrites: bool,
     /// Assumptions for colored e-graph simplification (e.g. `x > 0`).
     ///
@@ -492,11 +492,7 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let expr = pool.pow(x, pool.integer(0_i32));
         let r = simplify(expr, &pool);
-        assert_eq!(r.value, pool.integer(1_i32));
-        assert!(
-            r.log.steps().iter().any(|s| !s.side_conditions.is_empty()),
-            "pow_zero should record side condition"
-        );
+        assert_eq!(r.value, expr);
     }
 
     #[test]
@@ -536,13 +532,13 @@ mod tests {
 
     #[test]
     fn simplify_div_self() {
-        // x * x^(-1) → 1
+        // Cancellation needs an explicit non-zero fact.
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let x_inv = pool.pow(x, pool.integer(-1_i32));
         let expr = pool.mul(vec![x, x_inv]);
         let r = simplify(expr, &pool);
-        assert_eq!(r.value, pool.integer(1_i32));
+        assert_eq!(r.value, expr);
     }
 
     #[test]

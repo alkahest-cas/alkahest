@@ -12,6 +12,8 @@ Current experimental surface (linear algebra on ``Matrix``):
   ``matrix_exp``, ``inverse``
 
 Other experimental surface:
+- :class:`Assumptions` — explicit positive/nonzero refinement for conservative
+  simplification
 - :func:`to_lean` — Lean 4 certificate export (V5-1)
 - :func:`to_stablehlo` — StableHLO / XLA bridge (V5-2)
 - :func:`to_jax` — JAX primitive integration (V5-7, requires JAX)
@@ -53,6 +55,7 @@ from alkahest import to_stablehlo
 
 # Calculus / ODE / transform surface (always built into the extension).
 from alkahest.alkahest import (
+    Assumptions,
     EvaluationResult,
     Fps,
     OdeTrajectory,
@@ -90,6 +93,7 @@ with contextlib.suppress(ImportError):
     from alkahest.alkahest import CudaCompiledFn, compile_cuda
 
 __all__ = [
+    "Assumptions",
     "CudaCompiledFn",
     "EvaluationResult",
     "Fps",

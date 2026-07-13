@@ -653,26 +653,21 @@ impl RewriteRule for LogOfPow {
     }
 }
 
-/// Return all log/exp identity rules.
+/// Return the conservative log/exp identity rules.
 ///
-/// Includes [`LogOfProduct`] which records [`SideCondition::Positive`] side
-/// conditions when it fires.  If you need a fully branch-cut-safe set, use
-/// [`log_exp_rules_safe`] instead.
+/// Symbolic log/exp identities need real-domain or positivity facts. Use an
+/// [`crate::simplify::AssumptionContext`] to enable the condition-gated
+/// identities; this standalone ruleset intentionally keeps no such facts.
 pub fn log_exp_rules() -> Vec<Box<dyn RewriteRule>> {
-    vec![
-        Box::new(LogOfExp),
-        Box::new(ExpOfLog),
-        Box::new(LogOfProduct),
-        Box::new(LogOfPow),
-    ]
+    vec![]
 }
 
 /// Log/exp rules that are safe for complex numbers (no branch-cut rewrites).
 ///
-/// Excludes [`LogOfProduct`] because `log(a*b) → log(a) + log(b)` is only
-/// valid when `a` and `b` are positive reals.
+/// No nontrivial symbolic log/exp identity is valid over all principal-complex
+/// branches, so this is intentionally empty.
 pub fn log_exp_rules_safe() -> Vec<Box<dyn RewriteRule>> {
-    vec![Box::new(LogOfExp), Box::new(ExpOfLog), Box::new(LogOfPow)]
+    vec![]
 }
 
 // ---------------------------------------------------------------------------
@@ -1785,58 +1780,46 @@ mod tests {
     }
 
     #[test]
-    fn log_of_exp_fires() {
+    fn log_of_exp_stays_conservative_without_context() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let expr = pool.func("log", vec![pool.func("exp", vec![x])]);
         let rules = log_exp_rules();
         let r = simplify_with(expr, &pool, &rules, SimplifyConfig::default());
-        assert_eq!(r.value, x);
+        assert_eq!(r.value, expr);
     }
 
     #[test]
-    fn exp_of_log_fires() {
+    fn exp_of_log_stays_conservative_without_context() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let expr = pool.func("exp", vec![pool.func("log", vec![x])]);
         let rules = log_exp_rules();
         let r = simplify_with(expr, &pool, &rules, SimplifyConfig::default());
-        assert_eq!(r.value, x);
+        assert_eq!(r.value, expr);
     }
 
     #[test]
-    fn log_of_product_fires() {
+    fn log_of_product_stays_conservative_without_context() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let y = pool.symbol("y", Domain::Real);
         let expr = pool.func("log", vec![pool.mul(vec![x, y])]);
         let rules = log_exp_rules();
         let r = simplify_with(expr, &pool, &rules, SimplifyConfig::default());
-        let log_x = pool.func("log", vec![x]);
-        let log_y = pool.func("log", vec![y]);
-        let expected = pool.add(vec![log_x, log_y]);
-        assert_eq!(r.value, expected);
+        assert_eq!(r.value, expr);
     }
 
     #[test]
-    fn log_of_product_records_positive_side_conditions() {
-        // LogOfProduct should record Positive(x) and Positive(y) as side conditions.
+    fn log_of_product_does_not_emit_unproven_side_conditions() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let y = pool.symbol("y", Domain::Real);
         let expr = pool.func("log", vec![pool.mul(vec![x, y])]);
         let rules = log_exp_rules();
         let r = simplify_with(expr, &pool, &rules, SimplifyConfig::default());
-        let has_positive_conds = r.log.steps().iter().any(|s| {
-            s.rule_name == "log_of_product"
-                && s.side_conditions
-                    .iter()
-                    .any(|c| matches!(c, SideCondition::Positive(_)))
-        });
-        assert!(
-            has_positive_conds,
-            "log_of_product should record Positive side conditions"
-        );
+        assert_eq!(r.value, expr);
+        assert!(r.log.is_empty());
     }
 
     #[test]
@@ -1855,16 +1838,14 @@ mod tests {
     }
 
     #[test]
-    fn log_of_pow_fires() {
+    fn log_of_pow_stays_conservative_without_context() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let n = pool.integer(3_i32);
         let expr = pool.func("log", vec![pool.pow(x, n)]);
         let rules = log_exp_rules();
         let r = simplify_with(expr, &pool, &rules, SimplifyConfig::default());
-        let log_x = pool.func("log", vec![x]);
-        let expected = pool.mul(vec![n, log_x]);
-        assert_eq!(r.value, expected);
+        assert_eq!(r.value, expr);
     }
 
     #[test]

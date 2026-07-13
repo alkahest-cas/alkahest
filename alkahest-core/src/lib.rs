@@ -82,6 +82,7 @@ pub use logic::{
 pub use real::{
     cad_lift, cad_project, decide, decide_expr, routh_hurwitz, CadError, QeResult, RouthHurwitz,
 };
+pub use simplify::{simplify_with_assumptions, AssumptionContext, AssumptionError};
 // V2-6 — LLL + integer relations (augmented lattice heuristic)
 pub use lattice::{
     lattice_reduce_rows, lattice_reduce_rows_with_delta, validate_lll_rows, LatticeError,

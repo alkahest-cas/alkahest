@@ -104,6 +104,18 @@ class DomainError(AlkahestError):
         super().__init__(message, code="E-DOMAIN-001", remediation=remediation, span=span)
 
 
+class AssumptionError(AlkahestError):
+    """An explicit simplification assumption contradicted the current context."""
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-SIMPLIFY-001", remediation=remediation, span=span)
+
+
 class DiffError(AlkahestError):
     """Differentiation failed (e.g. unknown function)."""
 
