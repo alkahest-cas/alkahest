@@ -294,6 +294,9 @@ def test_lean_diff_export():
     assert "deriv (fun" in lean
     assert "deriv_pow" in lean
     assert "MeasureTheory" not in lean
+    assert "sorry" not in lean
+    assert "admit" not in lean
+    assert any(step["rule"] == "diff_univariate_poly" for step in result.steps)
 
 
 # ---------------------------------------------------------------------------

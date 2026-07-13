@@ -7,14 +7,34 @@ on:
     branches: [main]
     paths:
       - 'alkahest-core/src/lean/**'
+      - 'alkahest-core/src/deriv/**'
+      - 'alkahest-core/src/diff/**'
+      - 'alkahest-core/src/simplify/**'
+      - 'alkahest-core/src/kernel/**'
+      - 'alkahest-py/src/lib.rs'
       - 'tests/lean_corpus.py'
+      - 'tests/test_smoke.py'
+      - 'lean/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'alkahest-py/Cargo.toml'
       - '.github/workflows/lean.yml'
   pull_request:
     branches: [main]
     paths:
       - 'alkahest-core/src/lean/**'
+      - 'alkahest-core/src/deriv/**'
+      - 'alkahest-core/src/diff/**'
+      - 'alkahest-core/src/simplify/**'
+      - 'alkahest-core/src/kernel/**'
+      - 'alkahest-py/src/lib.rs'
       - 'tests/lean_corpus.py'
+      - 'tests/test_smoke.py'
       - 'lean/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'alkahest-py/Cargo.toml'
+      - '.github/workflows/lean.yml'
 
 jobs:
   lean-verify:
@@ -37,7 +57,7 @@ jobs:
           path: |
             ~/.elan
             lean/.lake
-          key: lean-${{ runner.os }}-${{ hashFiles('lean/lean-toolchain', 'lean/lakefile.lean') }}-v1
+          key: lean-${{ runner.os }}-${{ hashFiles('lean/lean-toolchain', 'lean/lakefile.lean', 'lean/lake-manifest.json') }}-v2
           restore-keys: |
             lean-${{ runner.os }}-
 
@@ -68,12 +88,24 @@ jobs:
           lake update
           lake exe cache get
 
-      - name: Verify proofs with Lean
+      - name: Verify proofs with Lean without admissions
         run: |
           cd lean
           for f in /tmp/lean_proofs/*.lean; do
             fname=$(basename "$f")
             echo "Verifying $fname..."
-            lake env lean "$f" || { echo "FAILED: $fname"; exit 1; }
+            if grep -Eq '\b(sorry|admit|axiom)\b' "$f"; then
+              echo "FAILED: $fname contains an admission"
+              exit 1
+            fi
+            lake env lean -DwarningAsError=true "$f" || { echo "FAILED: $fname"; exit 1; }
           done
-          echo "All Lean proofs verified."
+          echo "All generated Lean proofs verified without admissions."
+
+      - name: Upload generated Lean proofs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: generated-lean-proofs
+          path: /tmp/lean_proofs
+          if-no-files-found: ignore

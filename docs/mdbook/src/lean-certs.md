@@ -1,14 +1,25 @@
 # Lean certificates
 
-Alkahest can export machine-checkable Lean 4 proofs for a subset of computations.
+Alkahest can emit Lean 4 source for derivations. Generated source becomes a
+machine-checked proof only after it typechecks with the pinned Lean/Mathlib
+toolchain and without admitted placeholders.
 
 ## Three levels of evidence
 
 **Derivation logs** — always on, always cheap. Records every rewrite rule applied, with rule name and arguments. Human-readable; machine-parseable; forms the basis for Lean export.
 
-**Lean certificate export** — for computations expressible as sequences of rewrites tagged with Lean theorem names. The library emits a `.lean` file containing a proof term. Lean checks it independently.
+**Lean certificate export** — for computations expressible as sequences of
+rewrites tagged with Lean theorem names. The library emits a `.lean` file
+containing a proof term. Emission makes a certificate *available*; it does not
+by itself mean Lean has checked the source.
 
-**Algorithmic certificates** — for operations where rewrite sequences do not work (polynomial factoring, integration by the Risch algorithm). The library emits a verifiable witness instead. For factoring, the witness is the claimed factorization, which Lean verifies by multiplying out.
+In the agent contract, `certificate_available` has this same meaning. Only a
+corpus artifact compiled by pinned Lean/Mathlib without admissions can be
+described as `lean_checked`.
+
+**Algorithmic certificates** — planned evidence for operations where rewrite
+sequences do not work. Do not treat a derivation log as an independently
+verified witness.
 
 ## Theorem mapping
 
@@ -55,35 +66,40 @@ theorem alkahest_diff_sin_sq (x : ℝ) :
   exact (Real.hasDerivAt_sin _).comp x h1
 ```
 
-## Lean CI
+## Strict Lean CI
 
-The CI pipeline (`.github/workflows/lean.yml`) runs on every change to `lean/`-tagged files:
+The CI pipeline (`.github/workflows/lean.yml`) generates a deliberately small,
+strict corpus of basic arithmetic rewrites and `d/dx x³`. Every corpus entry
+must have the expected non-empty derivation log, must contain no `sorry`,
+`admit`, or `axiom`, and must typecheck with warnings treated as errors. The
+pinned Lean 4.9 compiler does not provide a `--no-sorries` command-line flag,
+so the source admission check is explicit in both the generator and CI.
 
 1. Generates proof files via `tests/lean_corpus.py`
-2. Compiles them with the `lean` compiler (with Mathlib cached)
-3. Fails the build if any proof does not typecheck
+2. Compiles them with the pinned Lean/Mathlib toolchain (with Mathlib cached)
+3. Fails the build if a proof contains an admission or does not typecheck
 
 ## Coverage
 
-Lean export works for computations that decompose into the tagged primitive set. Operations that currently produce certificates:
+The strict CI corpus currently covers:
 
-- Polynomial differentiation (all degrees)
-- Trigonometric differentiation (`sin`, `cos`, `tan`, and chain compositions)
-- Exponential and logarithm differentiation
-- Basic arithmetic rewrites (`add_zero`, `mul_one`, `mul_comm`, etc.)
+- Basic arithmetic rewrites (`add_zero`, `mul_one`, `mul_zero`, constant
+  folding, and `pow_one`)
+- The polynomial differentiation fast path for `d/dx x³`
 
-Operations that use algorithmic certificates (witness-based):
+Other exports are generated source, not CI-qualified Lean proofs. In
+particular, non-polynomial differentiation, conditional logarithm/power
+rewrites, integration, limits, and unsupported expression forms can require
+side conditions or currently use a placeholder tactic. They must remain
+unverified until their proof encoding and strict corpus coverage are added.
 
-- Polynomial factoring — the claimed factorization is verified by `ring_nf` in Lean
-- Polynomial GCD — verified by showing `gcd` divides both inputs and is a linear combination
+Planned algorithmic certificates include:
 
-Operations without Lean certificates (Lean theorem not yet mapped, or algorithm not expressible as rewrites):
-
-- Integration by the Risch algorithm
-- E-graph extraction steps
-
-**Upcoming (v2.0):** Deeper Mathlib coverage including limits (`Filter.Tendsto`), series (`HasSum`), and real algebraic geometry (`Polynomial.roots`).
+- Polynomial factoring
+- Polynomial GCD
 
 ## Side conditions in proofs
 
-Side conditions (domain constraints, branch cut restrictions) are propagated into the emitted Lean proof as hypotheses. A certificate that depends on `x > 0` will include `hx : 0 < x` as an assumption in the proof term. This makes the trust boundary explicit: the certificate is only verifiable when the side conditions hold.
+Side conditions (domain constraints and branch-cut restrictions) are recorded in
+the derivation log. They are not yet translated into Lean hypotheses by the
+exporter, so conditional rewrites are excluded from the strict corpus.
