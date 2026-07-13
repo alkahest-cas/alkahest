@@ -21,9 +21,8 @@ dr = diff(sin(x**2), x)
 |---|---|---|
 | `.value` | `Expr` | The result expression |
 | `.steps` | `list[dict]` | Ordered list of rewrite steps |
-| `.certificate` | `str \| None` | Lean 4 proof term, if exported |
-| `.assumptions` | `list` | Side conditions that were verified |
-| `.warnings` | `list[str]` | Non-fatal issues (e.g. branch cut warning) |
+| `.verification` | `dict` | Evidence status, artifact format, external-check status, and side conditions |
+| `.certificate` | `str \| None` | Generated Lean 4 source, when a derivation log exists |
 
 ## Rewrite steps
 
@@ -34,8 +33,7 @@ Each step in `.steps` is a dict with:
 | `rule` | Rule name (string) |
 | `before` | Expression before the rewrite |
 | `after` | Expression after the rewrite |
-| `subst` | Variable substitution, if any |
-| `side_condition` | Side condition that was checked |
+| `side_conditions` | Side conditions recorded for the rewrite |
 
 ```python
 for step in dr.steps:
@@ -51,7 +49,15 @@ A side condition is a predicate that must hold for a rewrite to be sound:
 - `Integer(n)` — `n` must be an integer (e.g. for some power rules)
 - `BranchCut(f, x)` — records that `f` may have a branch cut at `x`
 
-Side conditions propagate into the derivation log as `SideCondition` entries. When a side condition is not provable from the symbol's domain, the step is still recorded but flagged. Lean export only produces a verifiable proof for steps where all side conditions are proved.
+Side conditions propagate into the derivation log as `SideCondition` entries and are aggregated in `dr.verification["side_conditions"]`. A generated Lean source artifact is evidence that can be checked; it is not a claim that the project has checked the artifact with Lean.
+
+```python
+evidence = dr.verification
+if evidence["status"] == "certificate_available":
+    assert not evidence["externally_verified"]
+    lean_source = dr.certificate
+    # Invoke a pinned Lean/Mathlib checker before treating this as lean_checked.
+```
 
 ## Inspecting a derivation
 
@@ -65,8 +71,8 @@ for step in dr.steps[:5]:
     before = step['before']
     after = step['after']
     print(f"  [{rule}]: {before} → {after}")
-    if step.get('side_condition'):
-        print(f"    side_condition: {step['side_condition']}")
+    for condition in step["side_conditions"]:
+        print(f"    side condition: {condition}")
 ```
 
 ## DerivationLog overhead
