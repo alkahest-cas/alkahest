@@ -108,7 +108,13 @@ The library produces proof artifacts at three levels of rigor:
 
 **Lean certificate export.** Each rewrite rule is tagged with a corresponding Lean 4 / Mathlib theorem name. For operations expressible as sequences of rewrites, the library emits a `.lean` file containing a proof term that Lean can verify independently. Side conditions (non-zero denominators, branch cuts, domain constraints) are tracked and propagated into the Lean output.
 
-**Algorithmic certificates.** For operations where rewrite sequences don't work (polynomial factoring, Risch integration), the library emits verifiable witnesses instead of proof traces. For factoring, the witness is the claimed factorization — Lean verifies it by multiplying out. For integration, the witness is the claimed antiderivative, verified by differentiating.
+**Algorithmic evidence.** For operations where rewrite sequences do not work,
+the library can expose an operation-specific witness or exact checker. Integer
+factorization results carry an in-kernel reconstruction check: the unit and
+powered factors are multiplied in the exact coefficient ring and compared with
+the input. This establishes the represented factor product, not irreducibility
+or a Lean-checked certificate. Risch integration verification remains a
+separate, narrower effort.
 
 ### Statelessness
 

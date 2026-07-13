@@ -15,6 +15,12 @@ def test_unipoly_factor_quadratic():
     for base, exp in fac.factor_list():
         assert exp == 1
         assert base.degree() == 1
+    assert fac.verification == {
+        "status": "exactly_verified",
+        "evidence": "factor_product",
+        "method": "in_kernel_exact_reconstruction",
+        "lean_checked": False,
+    }
 
 
 def test_multipoly_factor_product():
@@ -28,6 +34,9 @@ def test_multipoly_factor_product():
     mp = alkahest.MultiPoly.from_symbolic(e, [x, y])
     fac = mp.factor_z()
     assert len(fac.factor_list()) >= 2
+    assert fac.verification["status"] == "exactly_verified"
+    assert fac.verification["evidence"] == "factor_product"
+    assert fac.verification["lean_checked"] is False
 
 
 def test_factor_univariate_mod_p_x_squared_plus_one_char2():

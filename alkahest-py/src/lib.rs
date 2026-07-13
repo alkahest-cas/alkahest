@@ -2033,6 +2033,7 @@ fn merge_mp_pool(a: &Option<Py<PyExprPool>>, b: &Option<Py<PyExprPool>>) -> Opti
 #[pyclass(name = "UniPolyFactorization")]
 struct PyUniPolyFactorization {
     inner: UniPolyFactorization,
+    original: UniPoly,
 }
 
 #[pymethods]
@@ -2049,11 +2050,18 @@ impl PyUniPolyFactorization {
             .map(|(p, e)| (PyUniPoly { inner: p.clone() }, *e))
             .collect()
     }
+
+    /// Exact in-kernel reconstruction evidence for this factorization.
+    #[getter]
+    fn verification<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
+        factor_verification_dict(py, self.inner.verifies_product(&self.original))
+    }
 }
 
 #[pyclass(name = "MultiPolyFactorization")]
 struct PyMultiPolyFactorization {
     inner: MultiPolyFactorization,
+    original: MultiPoly,
 }
 
 #[pymethods]
@@ -2078,6 +2086,32 @@ impl PyMultiPolyFactorization {
             })
             .collect()
     }
+
+    /// Exact in-kernel reconstruction evidence for this factorization.
+    #[getter]
+    fn verification<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
+        factor_verification_dict(py, self.inner.verifies_product(&self.original))
+    }
+}
+
+fn factor_verification_dict<'py>(py: Python<'py>, verified: bool) -> Bound<'py, PyDict> {
+    let result = PyDict::new_bound(py);
+    result
+        .set_item(
+            "status",
+            if verified {
+                "exactly_verified"
+            } else {
+                "unverified"
+            },
+        )
+        .unwrap();
+    result.set_item("evidence", "factor_product").unwrap();
+    result
+        .set_item("method", "in_kernel_exact_reconstruction")
+        .unwrap();
+    result.set_item("lean_checked", false).unwrap();
+    result
 }
 
 #[pyclass(name = "UniPolyFactorModP")]
@@ -2217,7 +2251,10 @@ impl PyUniPoly {
     fn factor_z(&self) -> PyResult<PyUniPolyFactorization> {
         self.inner
             .factor_z()
-            .map(|inner| PyUniPolyFactorization { inner })
+            .map(|inner| PyUniPolyFactorization {
+                inner,
+                original: self.inner.clone(),
+            })
             .map_err(factor_error_to_py)
     }
 
@@ -2326,7 +2363,10 @@ impl PyMultiPoly {
     fn factor_z(&self) -> PyResult<PyMultiPolyFactorization> {
         self.inner
             .factor_z()
-            .map(|inner| PyMultiPolyFactorization { inner })
+            .map(|inner| PyMultiPolyFactorization {
+                inner,
+                original: self.inner.clone(),
+            })
             .map_err(factor_error_to_py)
     }
 
