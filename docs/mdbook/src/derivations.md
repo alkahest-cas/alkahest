@@ -51,6 +51,12 @@ A side condition is a predicate that must hold for a rewrite to be sound:
 
 Side conditions propagate into the derivation log as `SideCondition` entries and are aggregated in `dr.verification["side_conditions"]`. A generated Lean source artifact is evidence that can be checked; it is not a claim that the project has checked the artifact with Lean.
 
+For antiderivatives, `exactly_verified` means that the in-kernel symbolic
+residual `d/dx(F) - f` simplified to zero. `numerically_checked` means only
+that the integration soundness gate found agreement at several floating-point
+samples; it is useful evidence, but it is not an exact proof. `lean_checked`
+remains reserved for an actual completed external Lean check.
+
 ```python
 evidence = dr.verification
 if evidence["status"] == "certificate_available":

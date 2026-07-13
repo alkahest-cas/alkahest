@@ -60,7 +60,10 @@ pub use deriv::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
 pub use diff::{diff, diff_forward, grad, DiffError, DualValue, ForwardDiffError};
 pub use flint::{FlintInteger, FlintPoly};
 pub use hybrid::{Event, GuardStructure, HybridODE};
-pub use integrate::{integrate, integrate_definite, verify_antiderivative_exact, IntegrationError};
+pub use integrate::{
+    integrate, integrate_definite, verify_antiderivative_exact, verify_antiderivative_status,
+    AntiderivativeVerification, IntegrationError,
+};
 #[allow(deprecated)]
 pub use kernel::{
     expr_contains_noncommutative_symbol, load_from, mult_tree_is_commutative, open_persistent,

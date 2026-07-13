@@ -51,6 +51,7 @@ def test_capabilities_describes_verification_boundary():
         "lean_checked",
         "certificate_available",
         "exactly_verified",
+        "numerically_checked",
         "unverified",
     ]
     assert verification["artifacts"] == {"lean4_source": True}
