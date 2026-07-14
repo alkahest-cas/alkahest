@@ -15,6 +15,7 @@ Other experimental surface:
 - :func:`to_lean` — Lean 4 certificate export (V5-1)
 - :func:`to_stablehlo` — StableHLO / XLA bridge (V5-2)
 - :func:`to_jax` — JAX primitive integration (V5-7, requires JAX)
+- :func:`evaluate` — unified exact, f64, and interval evaluation
 - :class:`GroebnerBasis`, :class:`GbPoly` — parallel F4 Gröbner basis (V5-11,
   requires ``groebner`` feature)
 - :func:`solve` — polynomial system solver (V1-4, requires ``groebner`` feature)
@@ -50,11 +51,13 @@ from alkahest import to_stablehlo
 
 # Calculus / ODE / transform surface (always built into the extension).
 from alkahest.alkahest import (
+    EvaluationResult,
     Fps,
     OdeTrajectory,
     asymptotic_expand,
     dirac_delta,
     dsolve,
+    evaluate,
     fourier_transform,
     heaviside,
     inverse_fourier_transform,
@@ -82,6 +85,7 @@ with contextlib.suppress(ImportError):
 
 __all__ = [
     "CudaCompiledFn",
+    "EvaluationResult",
     "Fps",
     "GbPoly",
     "GroebnerBasis",
@@ -90,6 +94,7 @@ __all__ = [
     "compile_cuda",
     "dirac_delta",
     "dsolve",
+    "evaluate",
     "fourier_transform",
     "heaviside",
     "inverse_fourier_transform",

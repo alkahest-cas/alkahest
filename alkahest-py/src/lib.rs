@@ -110,10 +110,12 @@ use alkahest_core::modular::{
 };
 use alkahest_core::{
     apart as core_apart, diff as core_diff, diff_forward as core_diff_forward,
-    integrate as core_integrate, integrate_definite as core_integrate_definite,
-    limit as core_limit, load_from, log_exp_rules, rsolve as core_rsolve, series as core_series,
-    simplify as core_simplify, simplify_batch as core_simplify_batch,
-    simplify_egraph as core_simplify_egraph, simplify_egraph_with as core_simplify_egraph_with,
+    eval_exact_rational as core_eval_exact_rational, eval_f64 as core_eval_f64,
+    eval_interval as core_eval_interval, integrate as core_integrate,
+    integrate_definite as core_integrate_definite, limit as core_limit, load_from, log_exp_rules,
+    rsolve as core_rsolve, series as core_series, simplify as core_simplify,
+    simplify_batch as core_simplify_batch, simplify_egraph as core_simplify_egraph,
+    simplify_egraph_with as core_simplify_egraph_with,
     simplify_trig_normal_form as core_simplify_trig_normal_form,
     simplify_with as core_simplify_with, trig_rules,
     verify_antiderivative_exact as core_verify_antiderivative_exact,
@@ -161,7 +163,7 @@ use alkahest_core::number_theory::{
 use pyo3::exceptions::{PyOverflowError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyInt, PyList, PyTuple};
-use rug::{Integer, Rational};
+use rug::{Complete, Integer, Rational};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -5390,6 +5392,216 @@ fn py_interval_eval(
     Ok(PyArbBall { inner: result })
 }
 
+/// Structured result returned by the experimental unified evaluator.
+#[pyclass(name = "EvaluationResult")]
+struct PyEvaluationResult {
+    value: PyObject,
+    status: String,
+    backend: String,
+    requested_mode: String,
+    requested_precision_bits: Option<u32>,
+    achieved_precision_bits: Option<u32>,
+    enclosure: Option<Py<PyArbBall>>,
+    reason: Option<String>,
+}
+
+#[pymethods]
+impl PyEvaluationResult {
+    #[getter]
+    fn value(&self, py: Python<'_>) -> PyObject {
+        self.value.clone_ref(py)
+    }
+    #[getter]
+    fn status(&self) -> &str {
+        &self.status
+    }
+    #[getter]
+    fn backend(&self) -> &str {
+        &self.backend
+    }
+    #[getter]
+    fn requested_mode(&self) -> &str {
+        &self.requested_mode
+    }
+    #[getter]
+    fn requested_precision_bits(&self) -> Option<u32> {
+        self.requested_precision_bits
+    }
+    #[getter]
+    fn achieved_precision_bits(&self) -> Option<u32> {
+        self.achieved_precision_bits
+    }
+    #[getter]
+    fn enclosure(&self, py: Python<'_>) -> Option<Py<PyArbBall>> {
+        self.enclosure.as_ref().map(|ball| ball.clone_ref(py))
+    }
+    #[getter]
+    fn reason(&self) -> Option<&str> {
+        self.reason.as_deref()
+    }
+    #[getter]
+    fn is_enclosure(&self) -> bool {
+        self.enclosure.is_some()
+    }
+}
+
+fn exact_binding(value: &Bound<'_, PyAny>) -> PyResult<Rational> {
+    if let Ok(integer) = value.extract::<i64>() {
+        return Ok(Rational::from(integer));
+    }
+    let numerator: String = value.getattr("numerator")?.str()?.extract()?;
+    let denominator: String = value.getattr("denominator")?.str()?.extract()?;
+    let numerator = Integer::parse(numerator)
+        .map_err(|_| PyTypeError::new_err("exact bindings must be int or fractions.Fraction"))?
+        .complete();
+    let denominator = Integer::parse(denominator)
+        .map_err(|_| PyTypeError::new_err("exact bindings must be int or fractions.Fraction"))?
+        .complete();
+    if denominator == 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "exact binding denominator must be non-zero",
+        ));
+    }
+    Ok(Rational::from((numerator, denominator)))
+}
+
+#[pyfunction]
+#[pyo3(name = "evaluate", signature = (expr, bindings, *, mode = "auto", precision_bits = None))]
+fn py_evaluate(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    bindings: &Bound<'_, PyDict>,
+    mode: &str,
+    precision_bits: Option<u32>,
+) -> PyResult<PyEvaluationResult> {
+    if !matches!(mode, "auto" | "exact" | "f64" | "interval") {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "mode must be 'auto', 'exact', 'f64', or 'interval'",
+        ));
+    }
+    if precision_bits == Some(0) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "precision_bits must be positive",
+        ));
+    }
+    let pool = expr.pool.borrow(py);
+    let wants_interval = mode == "interval"
+        || (mode == "auto"
+            && (precision_bits.is_some()
+                || bindings
+                    .iter()
+                    .any(|(_, v)| v.is_instance_of::<PyArbBall>())));
+    if wants_interval {
+        let precision = precision_bits.unwrap_or(128);
+        let mut evaluator = CoreIntervalEval::new(precision);
+        for (key, value) in bindings.iter() {
+            let var: PyRef<PyExpr> = key.extract()?;
+            let ball: PyRef<PyArbBall> = value
+                .extract()
+                .map_err(|_| PyTypeError::new_err("interval bindings must be ArbBall values"))?;
+            evaluator.bind(var.id, ball.inner.clone());
+        }
+        return Ok(match core_eval_interval(expr.id, &pool.inner, &evaluator) {
+            Ok(ball) => {
+                let py_ball = Py::new(py, PyArbBall { inner: ball })?;
+                PyEvaluationResult {
+                    value: py_ball.clone_ref(py).into_py(py),
+                    status: "ok".into(),
+                    backend: "mpfr_ball".into(),
+                    requested_mode: mode.into(),
+                    requested_precision_bits: precision_bits,
+                    achieved_precision_bits: Some(precision),
+                    enclosure: Some(py_ball),
+                    reason: None,
+                }
+            }
+            Err(error) => PyEvaluationResult {
+                value: py.None(),
+                status: "unsupported".into(),
+                backend: "none".into(),
+                requested_mode: mode.into(),
+                requested_precision_bits: precision_bits,
+                achieved_precision_bits: None,
+                enclosure: None,
+                reason: Some(error.reason.code().to_owned()),
+            },
+        });
+    }
+    let mut exact = std::collections::HashMap::new();
+    let mut exact_possible = true;
+    for (key, value) in bindings.iter() {
+        let var: PyRef<PyExpr> = key.extract()?;
+        match exact_binding(&value) {
+            Ok(v) => {
+                exact.insert(var.id, v);
+            }
+            Err(_) => {
+                exact_possible = false;
+                break;
+            }
+        }
+    }
+    if mode == "exact" || (mode == "auto" && exact_possible) {
+        return Ok(
+            match core_eval_exact_rational(expr.id, &pool.inner, &exact) {
+                Ok(value) => {
+                    let fraction = py
+                        .import_bound("fractions")?
+                        .getattr("Fraction")?
+                        .call1((format!("{}/{}", value.numer(), value.denom()),))?;
+                    PyEvaluationResult {
+                        value: fraction.into_py(py),
+                        status: "ok".into(),
+                        backend: "exact_rational".into(),
+                        requested_mode: mode.into(),
+                        requested_precision_bits: precision_bits,
+                        achieved_precision_bits: None,
+                        enclosure: None,
+                        reason: None,
+                    }
+                }
+                Err(error) => PyEvaluationResult {
+                    value: py.None(),
+                    status: "unsupported".into(),
+                    backend: "none".into(),
+                    requested_mode: mode.into(),
+                    requested_precision_bits: precision_bits,
+                    achieved_precision_bits: None,
+                    enclosure: None,
+                    reason: Some(error.reason.code().to_owned()),
+                },
+            },
+        );
+    }
+    let mut env = std::collections::HashMap::new();
+    for (key, value) in bindings.iter() {
+        let var: PyRef<PyExpr> = key.extract()?;
+        env.insert(var.id, value.extract::<f64>()?);
+    }
+    Ok(match core_eval_f64(expr.id, &pool.inner, &env) {
+        Ok(value) => PyEvaluationResult {
+            value: value.into_py(py),
+            status: "ok".into(),
+            backend: "interpreter_f64".into(),
+            requested_mode: mode.into(),
+            requested_precision_bits: precision_bits,
+            achieved_precision_bits: Some(53),
+            enclosure: None,
+            reason: None,
+        },
+        Err(error) => PyEvaluationResult {
+            value: py.None(),
+            status: "unsupported".into(),
+            backend: "none".into(),
+            requested_mode: mode.into(),
+            requested_precision_bits: precision_bits,
+            achieved_precision_bits: None,
+            enclosure: None,
+            reason: Some(error.reason.code().to_owned()),
+        },
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Phase 23 — Parallel simplification
 // ---------------------------------------------------------------------------
@@ -8194,6 +8406,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_simplify_trig, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify_trig_normal_form, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify_log_exp, m)?)?;
+    m.add_function(wrap_pyfunction!(py_evaluate, m)?)?;
     m.add_function(wrap_pyfunction!(py_diff, m)?)?;
     m.add_function(wrap_pyfunction!(py_diff_forward, m)?)?;
     m.add_function(wrap_pyfunction!(py_integrate, m)?)?;
@@ -8259,6 +8472,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDomain>()?;
     m.add_class::<PyExprPool>()?;
     m.add_class::<PyExpr>()?;
+    m.add_class::<PyEvaluationResult>()?;
     m.add_class::<PyDerivedResult>()?;
     m.add_class::<PySeries>()?;
     m.add_class::<PyUniPoly>()?;
