@@ -12,6 +12,7 @@ pub mod dae;
 pub mod deriv;
 pub mod diff;
 pub mod errors;
+pub mod eval;
 pub mod flint;
 pub mod horner;
 pub mod hybrid;
@@ -58,6 +59,10 @@ pub use dae::{pantelides, DaeError, PantelidesResult, DAE};
 pub use deriv::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
 #[allow(deprecated)]
 pub use diff::{diff, diff_forward, grad, DiffError, DualValue, ForwardDiffError};
+pub use eval::{
+    eval_exact_rational, eval_f64, eval_interval, evaluate, EvalError, EvalMode, EvalValue,
+    UnsupportedReason,
+};
 pub use flint::{FlintInteger, FlintPoly};
 pub use hybrid::{Event, GuardStructure, HybridODE};
 pub use integrate::{integrate, integrate_definite, verify_antiderivative_exact, IntegrationError};
@@ -306,6 +311,10 @@ pub mod experimental {
     pub use crate::calculus::fps::{Fps, FpsError};
     pub use crate::calculus::multilimit::{multilimit, MultiLimit, PathWitness};
     pub use crate::deriv::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
+    pub use crate::eval::{
+        eval_exact_rational, eval_f64, eval_interval, evaluate, EvalError, EvalMode, EvalValue,
+        UnsupportedReason,
+    };
     pub use crate::horner::{emit_expr_c, emit_expr_c_vec, emit_horner_c, horner, EmitCError};
     pub use crate::hybrid::{Event, GuardStructure, HybridODE};
     pub use crate::lean::emit_lean_expr as emit_lean;

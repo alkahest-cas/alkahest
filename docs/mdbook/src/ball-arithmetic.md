@@ -1,5 +1,33 @@
 # Ball arithmetic
 
+## Unified evaluation (experimental)
+
+`alkahest.experimental.evaluate` provides one result contract for exact
+rational, `f64`, and rigorous interval evaluation. It returns an
+`EvaluationResult`; mathematically unsupported inputs return
+`status == "unsupported"` and a stable `E-EVAL-*` reason code rather than raising.
+Invalid API input, such as an invalid mode or zero precision, still raises
+`ValueError`.
+
+```python
+from fractions import Fraction
+import alkahest as ak
+from alkahest.experimental import evaluate
+
+p = ak.ExprPool()
+x = p.symbol("x")
+result = evaluate(x + p.rational(1, 3), {x: Fraction(1, 6)})
+assert result.value == Fraction(1, 2)
+assert result.backend == "exact_rational"
+```
+
+Use `mode="f64"` for ordinary floating-point evaluation and
+`mode="interval"` with `ArbBall` bindings for an enclosure. In interval mode,
+`result.value` and `result.enclosure` are the same `ArbBall`; its `lo` and
+`hi` bound the true result. `mode="auto"` selects intervals for `ArbBall`
+bindings (or an explicit precision), exact rationals when possible, and
+otherwise falls back to `f64`.
+
 Ball arithmetic provides rigorous enclosures: every operation produces an interval guaranteed to contain the true result. Alkahest uses FLINT's Arb library as the backend.
 
 ## ArbBall

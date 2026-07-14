@@ -62,7 +62,6 @@
 // bindings, gate with `#[cfg(feature = "flint3")]`, verify all ball::tests
 // pass, then confirm rad is tighter than the MPFR path on exp/sin tests.
 
-use crate::kernel::eval_const::try_predicate_bool_from_expr;
 use crate::kernel::expr::PredicateKind;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use rug::{ops::Pow, Float};
@@ -761,18 +760,18 @@ impl IntervalEval {
         self.eval_node(expr, pool)
     }
 
+    /// Evaluate a predicate only when its truth value is uniform throughout
+    /// every bound input ball.  `None` means the predicate changes (or may
+    /// change) within an interval, so choosing a `Piecewise` branch would be
+    /// unsound.
     fn eval_predicate(&self, pred: ExprId, pool: &ExprPool) -> Option<bool> {
-        if let Some(b) = try_predicate_bool_from_expr(pred, pool) {
-            return Some(b);
-        }
         let ExprData::Predicate { kind, args } = pool.get(pred) else {
             return None;
         };
-        let mid = |id: ExprId| self.eval_node(id, pool).map(|b| b.mid.to_f64());
         match kind {
             PredicateKind::True => Some(true),
             PredicateKind::False => Some(false),
-            PredicateKind::Not => Some(!self.eval_predicate(args[0], pool)?),
+            PredicateKind::Not => Some(!self.eval_predicate(*args.first()?, pool)?),
             PredicateKind::And => {
                 for &a in &args {
                     if !self.eval_predicate(a, pool)? {
@@ -789,12 +788,50 @@ impl IntervalEval {
                 }
                 Some(false)
             }
-            PredicateKind::Lt => Some(mid(args[0])? < mid(args[1])?),
-            PredicateKind::Le => Some(mid(args[0])? <= mid(args[1])?),
-            PredicateKind::Gt => Some(mid(args[0])? > mid(args[1])?),
-            PredicateKind::Ge => Some(mid(args[0])? >= mid(args[1])?),
-            PredicateKind::Eq => Some(mid(args[0])? == mid(args[1])?),
-            PredicateKind::Ne => Some(mid(args[0])? != mid(args[1])?),
+            PredicateKind::Lt
+            | PredicateKind::Le
+            | PredicateKind::Gt
+            | PredicateKind::Ge
+            | PredicateKind::Eq
+            | PredicateKind::Ne => {
+                let [lhs, rhs] = args.as_slice() else {
+                    return None;
+                };
+                let lhs = self.eval_node(*lhs, pool)?;
+                let rhs = self.eval_node(*rhs, pool)?;
+                let lhs_lo = lhs.lo();
+                let lhs_hi = lhs.hi();
+                let rhs_lo = rhs.lo();
+                let rhs_hi = rhs.hi();
+
+                match kind {
+                    // A strict ordering is uniform only when the two closed
+                    // balls are separated.  In particular, do not inspect
+                    // their midpoints: a midpoint can select the wrong
+                    // Piecewise branch when an interval crosses a threshold.
+                    PredicateKind::Lt if lhs_hi < rhs_lo => Some(true),
+                    PredicateKind::Lt if lhs_lo >= rhs_hi => Some(false),
+                    PredicateKind::Le if lhs_hi <= rhs_lo => Some(true),
+                    PredicateKind::Le if lhs_lo > rhs_hi => Some(false),
+                    PredicateKind::Gt if lhs_lo > rhs_hi => Some(true),
+                    PredicateKind::Gt if lhs_hi <= rhs_lo => Some(false),
+                    PredicateKind::Ge if lhs_lo >= rhs_hi => Some(true),
+                    PredicateKind::Ge if lhs_hi < rhs_lo => Some(false),
+                    // Equality is uniformly true only for the same singleton
+                    // interval.  It is uniformly false for disjoint balls.
+                    PredicateKind::Eq if lhs.is_exact() && rhs.is_exact() && lhs.mid == rhs.mid => {
+                        Some(true)
+                    }
+                    PredicateKind::Eq if lhs_hi < rhs_lo || lhs_lo > rhs_hi => Some(false),
+                    // Inequality is the converse only in the cases we can
+                    // prove uniformly; overlap remains indeterminate.
+                    PredicateKind::Ne if lhs_hi < rhs_lo || lhs_lo > rhs_hi => Some(true),
+                    PredicateKind::Ne if lhs.is_exact() && rhs.is_exact() && lhs.mid == rhs.mid => {
+                        Some(false)
+                    }
+                    _ => None,
+                }
+            }
         }
     }
 
@@ -970,6 +1007,22 @@ mod tests {
         ev.bind(x, ArbBall::from_midpoint_radius(1.0, 1e-6, 128));
         let r = ev.eval(pw, &pool).unwrap();
         assert!(r.contains(1.0));
+    }
+
+    #[test]
+    fn interval_eval_refuses_piecewise_threshold_spanning_binding() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let pw = pool.piecewise(
+            vec![(pool.pred_gt(x, pool.integer(0_i32)), pool.integer(1_i32))],
+            pool.integer(-1_i32),
+        );
+        let mut ev = IntervalEval::new(128);
+        ev.bind(x, ArbBall::from_midpoint_radius(0.1, 0.2, 128));
+
+        // The interval contains both negative and positive values.  Selecting
+        // the positive branch from the midpoint would exclude -1.
+        assert!(ev.eval(pw, &pool).is_none());
     }
 
     #[test]
