@@ -630,6 +630,31 @@ impl RewriteRule for ConstFold {
                 // (ElementaryAtConst).
                 let arg = args[0];
                 let after = match name.as_str() {
+                    "conjugate" if pool.is_imaginary_unit(arg) => {
+                        pool.mul(vec![pool.integer(-1_i32), arg])
+                    }
+                    "conjugate" => match pool.get(arg) {
+                        ExprData::Func {
+                            name: inner,
+                            args: inner_args,
+                        } if inner == "conjugate" && inner_args.len() == 1 => inner_args[0],
+                        ExprData::Integer(_) | ExprData::Rational(_) => arg,
+                        _ => return None,
+                    },
+                    "re" if matches!(
+                        pool.get(arg),
+                        ExprData::Integer(_) | ExprData::Rational(_)
+                    ) =>
+                    {
+                        arg
+                    }
+                    "im" if matches!(
+                        pool.get(arg),
+                        ExprData::Integer(_) | ExprData::Rational(_)
+                    ) =>
+                    {
+                        pool.integer(0_i32)
+                    }
                     "exp" if is_zero(arg, pool) => pool.integer(1_i32),
                     "cos" if is_zero(arg, pool) => pool.integer(1_i32),
                     "cosh" if is_zero(arg, pool) => pool.integer(1_i32),

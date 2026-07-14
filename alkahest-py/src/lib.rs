@@ -1745,6 +1745,24 @@ fn sqrt(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "sqrt", expr)
 }
 
+/// Experimental symbolic complex conjugation.
+#[pyfunction]
+fn conjugate(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "conjugate", expr)
+}
+
+/// Experimental symbolic real-part constructor.
+#[pyfunction]
+fn re(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "re", expr)
+}
+
+/// Experimental symbolic imaginary-part constructor.
+#[pyfunction]
+fn im(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "im", expr)
+}
+
 // V1-12: expanded primitive registry
 #[pyfunction]
 fn tan(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
@@ -8433,6 +8451,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(exp, m)?)?;
     m.add_function(wrap_pyfunction!(log, m)?)?;
     m.add_function(wrap_pyfunction!(sqrt, m)?)?;
+    m.add_function(wrap_pyfunction!(conjugate, m)?)?;
+    m.add_function(wrap_pyfunction!(re, m)?)?;
+    m.add_function(wrap_pyfunction!(im, m)?)?;
     // V1-12: expanded primitive registry
     m.add_function(wrap_pyfunction!(tan, m)?)?;
     m.add_function(wrap_pyfunction!(sinh, m)?)?;
