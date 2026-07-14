@@ -1102,7 +1102,8 @@ def capabilities() -> dict:
     dict
         ``contract_version`` identifies this schema. ``groebner``, ``jit``,
         ``egraph``, and ``parallel`` are compatibility feature booleans.
-        ``features`` contains installed Cargo features, ``primitives`` is
+        ``features`` contains installed Cargo features and explicit
+        ``llvm_jit`` / ``cranelift_jit`` backend flags; ``primitives`` is
         deterministic per-primitive implementation coverage, and
         ``verification`` describes available evidence artifacts and checkers.
 
@@ -1123,7 +1124,7 @@ def capabilities() -> dict:
         # Compatibility keys: report what this extension was compiled with,
         # even where a Python-level fallback exists.
         "groebner": features["groebner"],
-        "jit": features["jit"] or features["cranelift"],
+        "jit": features["llvm_jit"] or features["cranelift_jit"],
         "egraph": features["egraph"],
         "parallel": features["parallel"],
         "features": features,

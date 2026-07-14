@@ -75,6 +75,12 @@ jobs:
           print(ak.simplify(x + 0).value)
           print(ak.simplify_egraph(x + 0).value)
           assert hasattr(ak, 'solve'), 'expected groebner APIs in default wheel'
+          assert ak.capabilities()["features"] == {
+              "egraph": True, "groebner": True, "jit": False,
+              "cranelift": False, "llvm_jit": False, "cranelift_jit": False,
+              "parallel": False, "numpy": False, "cuda": False,
+              "groebner_cuda": False,
+          }
           print('groebner ok')
           "
 
@@ -153,7 +159,7 @@ jobs:
           if [ -n "$SITE_LIBS" ]; then
             export LD_LIBRARY_PATH="${SITE_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           fi
-          python -c "import alkahest as ak; assert ak.jit_is_available(), 'expected LLVM JIT in +jit wheel'"
+          python -c "import alkahest as ak; caps = ak.capabilities(); assert caps['features']['llvm_jit'] and not caps['features']['parallel'], 'expected LLVM-only JIT in +jit wheel'"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -224,7 +230,7 @@ jobs:
           if [ -n "$SITE_LIBS" ]; then
             export LD_LIBRARY_PATH="${SITE_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           fi
-          python -c "import alkahest as ak; assert ak.jit_is_available(); assert hasattr(ak, 'solve'), 'expected groebner APIs in +full wheel'"
+          python -c "import alkahest as ak; caps = ak.capabilities(); assert caps['features']['llvm_jit'] and caps['features']['parallel']; assert hasattr(ak, 'solve'), 'expected groebner APIs in +full wheel'"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -322,7 +328,7 @@ jobs:
       - name: Smoke test
         run: |
           pip install --no-index --find-links dist alkahest
-          python -c "import alkahest; p = alkahest.ExprPool(); x = p.symbol('x'); print(alkahest.simplify(x + 0))"
+          python -c "import alkahest; p = alkahest.ExprPool(); x = p.symbol('x'); print(alkahest.simplify(x + 0)); caps = alkahest.capabilities(); assert caps['features']['egraph'] and caps['features']['groebner']; assert not caps['features']['jit'] and not caps['features']['parallel']"
 
       - uses: actions/upload-artifact@v7
         with:

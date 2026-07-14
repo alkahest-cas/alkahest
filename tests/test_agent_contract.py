@@ -15,6 +15,8 @@ def test_capabilities_reports_installed_build_features():
         "groebner",
         "jit",
         "cranelift",
+        "llvm_jit",
+        "cranelift_jit",
         "parallel",
         "numpy",
         "cuda",
@@ -23,7 +25,9 @@ def test_capabilities_reports_installed_build_features():
     assert caps["groebner"] is caps["features"]["groebner"]
     assert caps["egraph"] is caps["features"]["egraph"]
     assert caps["parallel"] is caps["features"]["parallel"]
-    assert caps["jit"] is (caps["features"]["jit"] or caps["features"]["cranelift"])
+    assert caps["features"]["jit"] is caps["features"]["llvm_jit"]
+    assert caps["features"]["cranelift"] is caps["features"]["cranelift_jit"]
+    assert caps["jit"] is (caps["features"]["llvm_jit"] or caps["features"]["cranelift_jit"])
     assert caps["jit"] is alkahest.jit_is_available()
 
 

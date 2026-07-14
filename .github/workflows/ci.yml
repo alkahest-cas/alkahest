@@ -90,6 +90,11 @@ jobs:
       - name: maturin develop
         run: maturin develop --manifest-path alkahest-py/Cargo.toml --features "groebner egraph"
 
+      - name: Cranelift capability smoke test
+        run: |
+          maturin develop --manifest-path alkahest-py/Cargo.toml --features "groebner egraph cranelift"
+          python -c "import alkahest as ak; f = ak.capabilities()['features']; assert f['cranelift_jit'] and not f['llvm_jit'] and not f['parallel']"
+
       - name: ty check
         run: ty check python/alkahest/
 

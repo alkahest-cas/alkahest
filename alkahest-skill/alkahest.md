@@ -133,7 +133,8 @@ Every expression lives in an **`ExprPool`** (a hash-consed DAG). You must create
 import alkahest as ak
 from alkahest import sin, cos, exp, log, sqrt, diff, integrate, simplify, simplify_trig
 
-caps = ak.capabilities()  # groebner, jit, egraph, parallel — probe once per session
+caps = ak.capabilities()  # probe the installed native build once per session
+features = caps["features"]  # includes llvm_jit, cranelift_jit, cuda, and parallel
 
 pool = ak.ExprPool()
 x = pool.symbol("x", ak.Domain.Real)   # or domain="real"
