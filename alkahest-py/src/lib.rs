@@ -4922,7 +4922,7 @@ fn py_compile_expr(
     })
 }
 
-/// Return True if LLVM JIT compilation is available in this build.
+/// Return True if any native JIT backend is available in this build.
 ///
 /// When False, `compile_expr` falls back to the tree-walking interpreter and
 /// emits a RuntimeWarning.
@@ -4942,8 +4942,12 @@ fn py_build_features() -> std::collections::HashMap<String, bool> {
     [
         ("egraph", cfg!(feature = "egraph")),
         ("groebner", cfg!(feature = "groebner")),
+        // Retain the Cargo feature names for compatibility and expose
+        // backend-specific names so callers need not infer what `jit` means.
         ("jit", cfg!(feature = "jit")),
         ("cranelift", cfg!(feature = "cranelift")),
+        ("llvm_jit", cfg!(feature = "jit")),
+        ("cranelift_jit", cfg!(feature = "cranelift")),
         ("parallel", cfg!(feature = "parallel")),
         ("numpy", cfg!(feature = "numpy")),
         ("cuda", cfg!(feature = "cuda")),

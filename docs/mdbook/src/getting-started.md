@@ -34,11 +34,11 @@ Tagged releases attach **`linux_x86_64`** wheels on [GitHub Releases](https://gi
 | `+jit` | `egraph groebner jit` | LLVM CPU JIT (smaller than `+full`; groebner and egraph are already in the default PyPI wheel). |
 | `+full` | `egraph groebner jit parallel` | JIT plus parallel F4 S-polynomial reduction (largest wheel). |
 
-Example direct installs (replace **version**, tag, and wheel name using the release asset list):
+Example direct installs (replace `<version>` and the wheel name using the release asset list):
 
 ```bash
-pip install "https://github.com/alkahest-cas/alkahest/releases/download/v2.0.2/alkahest-2.0.2+full-cp311-cp311-linux_x86_64.whl"
-pip install "https://github.com/alkahest-cas/alkahest/releases/download/v2.0.2/alkahest-2.0.2+jit-cp311-cp311-linux_x86_64.whl"
+pip install "https://github.com/alkahest-cas/alkahest/releases/download/v<version>/alkahest-<version>+full-cp311-cp311-linux_x86_64.whl"
+pip install "https://github.com/alkahest-cas/alkahest/releases/download/v<version>/alkahest-<version>+jit-cp311-cp311-linux_x86_64.whl"
 ```
 
 These wheels vendor LLVM and related `.so` files under `site-packages/alkahest.libs/`. If `import alkahest` fails with a missing `libLLVM-*.so` or `libffi-*.so`, prepend that directory to `LD_LIBRARY_PATH` (or install matching system packages).
@@ -50,6 +50,30 @@ After `+jit` or `+full`, `alkahest.jit_is_available()` should be `True`. Gröbne
 macOS and Windows `+jit` / `+full` wheels are **not** produced in CI yet; use [building from source](#from-source) there.
 
 **Roadmap:** a small PEP 503 **extras index** URL hosting only `+jit` / `+full` wheels (PyTorch-style `--extra-index-url`). Until then, use PyPI for the default wheel or direct URLs / asset downloads from Releases.
+
+### Build-profile verification
+
+Every published wheel runs an import-and-capability smoke test in release CI.
+After installing, inspect the exact native build rather than inferring features
+from available Python functions:
+
+```python
+import alkahest as ak
+
+features = ak.capabilities()["features"]
+print(features)
+```
+
+| Distribution | Tested platforms | Native feature profile |
+|---|---|---|
+| Default PyPI wheel | Linux x86_64, macOS arm64, Windows x86_64 | `egraph`, `groebner` |
+| Release `+jit` | Linux x86_64 | Default profile plus `llvm_jit` |
+| Release `+full` | Linux x86_64 | `+jit` profile plus `parallel` |
+
+`jit` and `cranelift` remain compatibility names in this mapping. Prefer
+`llvm_jit` and `cranelift_jit` when selecting a backend explicitly. CUDA and
+`groebner_cuda` indicate that the extension was compiled with those features;
+they do not claim that a usable GPU is present at runtime.
 
 ### Optional: RL environments (`alkahest[rl]`)
 
