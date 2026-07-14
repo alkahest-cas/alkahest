@@ -99,7 +99,7 @@ pub fn evaluate(expr: ExprId, pool: &ExprPool, mode: EvalMode<'_>) -> Result<Eva
         EvalMode::Interval(eval) => eval
             .eval(expr, pool)
             .map(EvalValue::Interval)
-            .ok_or_else(|| error(UnsupportedReason::IntervalEvaluationFailed)),
+            .ok_or(error(UnsupportedReason::IntervalEvaluationFailed)),
     }
 }
 
@@ -132,8 +132,8 @@ pub fn eval_interval(
     pool: &ExprPool,
     eval: &IntervalEval,
 ) -> Result<ArbBall, EvalError> {
-    evaluate(expr, pool, EvalMode::Interval(eval)).and_then(|value| match value {
-        EvalValue::Interval(ball) => Ok(ball),
+    evaluate(expr, pool, EvalMode::Interval(eval)).map(|value| match value {
+        EvalValue::Interval(ball) => ball,
         _ => unreachable!("interval mode always returns an interval"),
     })
 }
@@ -154,7 +154,7 @@ fn eval_rational_node(
         ExprData::Symbol { .. } => bindings
             .get(&expr)
             .cloned()
-            .ok_or_else(|| error(UnsupportedReason::UnboundSymbol { symbol: expr })),
+            .ok_or(error(UnsupportedReason::UnboundSymbol { symbol: expr })),
         ExprData::Add(args) => {
             let mut sum = Rational::from(0);
             for arg in args {
@@ -198,12 +198,12 @@ fn integer_exponent(expr: ExprId, pool: &ExprPool) -> Result<i64, EvalError> {
     match pool.get(expr) {
         ExprData::Integer(n) => {
             n.0.to_i64()
-                .ok_or_else(|| error(UnsupportedReason::NonIntegerExponent))
+                .ok_or(error(UnsupportedReason::NonIntegerExponent))
         }
         ExprData::Rational(r) if *r.0.denom() == 1 => {
             r.0.numer()
                 .to_i64()
-                .ok_or_else(|| error(UnsupportedReason::NonIntegerExponent))
+                .ok_or(error(UnsupportedReason::NonIntegerExponent))
         }
         _ => Err(error(UnsupportedReason::NonIntegerExponent)),
     }
@@ -297,7 +297,7 @@ fn eval_f64_node(
         ExprData::Symbol { .. } => bindings
             .get(&expr)
             .copied()
-            .ok_or_else(|| error(UnsupportedReason::UnboundSymbol { symbol: expr })),
+            .ok_or(error(UnsupportedReason::UnboundSymbol { symbol: expr })),
         ExprData::Add(args) => {
             let mut sum = 0.0;
             for arg in args {

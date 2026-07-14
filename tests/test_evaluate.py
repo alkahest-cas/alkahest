@@ -43,7 +43,7 @@ def test_unsupported_evaluation_returns_stable_status():
     pool = ak.ExprPool()
     x = pool.symbol("x")
 
-    result = evaluate(ak.log(x), {}, mode="exact")
+    result = evaluate(x, {}, mode="exact")
 
     assert result.status == "unsupported"
     assert result.value is None

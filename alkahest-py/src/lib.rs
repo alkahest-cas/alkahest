@@ -5548,7 +5548,7 @@ fn py_evaluate(
                     let fraction = py
                         .import_bound("fractions")?
                         .getattr("Fraction")?
-                        .call1((value.numer().to_string(), value.denom().to_string()))?;
+                        .call1((format!("{}/{}", value.numer(), value.denom()),))?;
                     PyEvaluationResult {
                         value: fraction.into_py(py),
                         status: "ok".into(),
