@@ -1504,11 +1504,8 @@ mod tests {
         let log_log_x = pool.func("log", vec![log_x]);
         let inv_x = pool.pow(x, pool.integer(-1_i32));
         let f = pool.mul(vec![log_log_x, inv_x]);
-        let result = integrate_risch(f, x, &pool);
-        assert!(
-            result.is_ok(),
-            "∫ log(log(x))/x dx must be elementary; got {result:?}"
-        );
+        let result = integrate_risch(f, x, &pool).expect("∫ log(log(x))/x must be elementary");
+        verify_gapb(f, result.value, x, &pool);
     }
 
     #[test]

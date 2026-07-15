@@ -40,6 +40,8 @@ use crate::deriv::log::{DerivationLog, RewriteStep};
 use crate::integrate::engine::IntegrationError;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::simplify::engine::simplify;
+use std::cell::RefCell;
+use std::collections::HashSet;
 
 use super::exp_case::{
     build_field_and_gens, build_krational_ext, detect_algebraic_extension,
@@ -50,6 +52,40 @@ use super::number_field::NumberField;
 use super::poly_rde::{apply_const, contains_subexpr, is_free_of_var, split_const_factor};
 use super::rational_rde::solve_rational_rde_k;
 use super::tower::{decompose_as_log_poly, ExtensionKind, TowerLevel};
+
+thread_local! {
+    /// Full-engine fallback is allowed only to descend to a lower log tower.
+    /// Track active dispatches so a fallback cannot re-enter the same IBP
+    /// coefficient and consume the thread stack before returning a decline.
+    static ACTIVE_LOWER_TOWER_DISPATCHES: RefCell<HashSet<(ExprId, ExprId, ExprId)>> =
+        RefCell::new(HashSet::new());
+}
+
+struct LowerTowerDispatchGuard {
+    key: (ExprId, ExprId, ExprId),
+}
+
+impl LowerTowerDispatchGuard {
+    fn enter(expr: ExprId, excluded_gen: ExprId, var: ExprId) -> Result<Self, IntegrationError> {
+        let key = (expr, excluded_gen, var);
+        let inserted = ACTIVE_LOWER_TOWER_DISPATCHES.with(|active| active.borrow_mut().insert(key));
+        if inserted {
+            Ok(Self { key })
+        } else {
+            Err(IntegrationError::NotImplemented(
+                "lower-tower integration would re-enter the active log generator".to_string(),
+            ))
+        }
+    }
+}
+
+impl Drop for LowerTowerDispatchGuard {
+    fn drop(&mut self) {
+        ACTIVE_LOWER_TOWER_DISPATCHES.with(|active| {
+            active.borrow_mut().remove(&self.key);
+        });
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -122,7 +158,7 @@ fn integrate_log_poly(
     // log_gen — it's the final "rest" term and is combined with term_top.
     if n == 0 {
         let c0 = coeffs[0];
-        return integrate_base_unchecked(c0, var, pool, log);
+        return integrate_base_unchecked(c0, log_gen, var, pool, log);
     }
 
     // General step: work from degree n down to 0.
@@ -175,7 +211,7 @@ fn integrate_log_poly_recursive(
         // Only a constant (in log) term.  Result may contain log_gen — safe here.
         let c0 = simplify(coeffs[0], pool).value;
         let (k_alg0, c0_rest) = split_const_factor(c0, var, pool);
-        let integral0 = integrate_base_unchecked(c0_rest, var, pool, log)?;
+        let integral0 = integrate_base_unchecked(c0_rest, log_gen, var, pool, log)?;
         return Ok(apply_const(k_alg0, integral0, pool));
     }
 
@@ -371,6 +407,7 @@ fn integrate_log_poly_recursive(
 /// terms in the running sum and the degree cannot increase).
 fn integrate_base_unchecked(
     expr: ExprId,
+    excluded_gen: ExprId,
     var: ExprId,
     pool: &ExprPool,
     log: &mut DerivationLog,
@@ -409,7 +446,9 @@ fn integrate_base_unchecked(
         return Ok(crate::simplify::engine::simplify(r, pool).value);
     }
 
-    // Full engine for lower-tower generators (Gap B).
+    // Full engine for lower-tower generators (Gap B). A guard makes accidental
+    // re-entry into this same tower a controlled decline rather than recursion.
+    let _dispatch_guard = LowerTowerDispatchGuard::enter(expr, excluded_gen, var)?;
     match crate::integrate::engine::integrate(expr, var, pool) {
         Ok(d) => Ok(crate::simplify::engine::simplify(d.value, pool).value),
         Err(IE::NonElementary(msg)) => Err(IE::NonElementary(msg)),
@@ -490,6 +529,7 @@ fn integrate_base(
     // that live in the lower tower (e.g. log(x) coefficients when integrating
     // at the log(log(x)) level).  Guard: the result must not contain
     // excluded_gen, otherwise the IBP recursion would diverge.
+    let _dispatch_guard = LowerTowerDispatchGuard::enter(expr, excluded_gen, var)?;
     match crate::integrate::engine::integrate(expr, var, pool) {
         Ok(d) => {
             let r = crate::simplify::engine::simplify(d.value, pool).value;
@@ -903,6 +943,20 @@ mod tests {
 
     fn pool() -> ExprPool {
         ExprPool::new()
+    }
+
+    #[test]
+    fn lower_tower_dispatch_guard_rejects_reentry() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let outer_log = pool.func("log", vec![pool.func("log", vec![x])]);
+        let expr = pool.pow(x, pool.integer(-1_i32));
+
+        let _active = LowerTowerDispatchGuard::enter(expr, outer_log, x).unwrap();
+        assert!(matches!(
+            LowerTowerDispatchGuard::enter(expr, outer_log, x),
+            Err(IntegrationError::NotImplemented(_))
+        ));
     }
 
     #[test]
