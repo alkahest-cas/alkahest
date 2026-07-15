@@ -492,7 +492,11 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let expr = pool.pow(x, pool.integer(0_i32));
         let r = simplify(expr, &pool);
-        assert_eq!(r.value, expr);
+        assert_eq!(r.value, pool.integer(1_i32));
+        assert!(
+            r.log.steps().iter().any(|s| !s.side_conditions.is_empty()),
+            "pow_zero should record side condition"
+        );
     }
 
     #[test]
@@ -532,13 +536,13 @@ mod tests {
 
     #[test]
     fn simplify_div_self() {
-        // Cancellation needs an explicit non-zero fact.
+        // x * x^(-1) → 1
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let x_inv = pool.pow(x, pool.integer(-1_i32));
         let expr = pool.mul(vec![x, x_inv]);
         let r = simplify(expr, &pool);
-        assert_eq!(r.value, expr);
+        assert_eq!(r.value, pool.integer(1_i32));
     }
 
     #[test]

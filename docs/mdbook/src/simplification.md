@@ -64,8 +64,10 @@ do not authorize a rewrite; a definitive contradiction raises
 `AssumptionError` with code `E-SIMPLIFY-001`. Contexts never modify the
 thread-local `context()` helper or global simplifier state.
 
-Without a proven fact, domain-changing identities such as `x/x → 1`, `x^0 → 1`,
-`exp(log(x)) → x`, and `log(a*b) → log(a) + log(b)` remain unchanged. The
+Without a proven fact, branch-cut identities such as `sqrt(x²) → x`,
+`exp(log(x)) → x`, and `log(a*b) → log(a) + log(b)` remain unchanged. Algebraic
+cancelations such as `x/x → 1` and `x^0 → 1` still fire in the default
+simplifier and record `NonZero` side conditions in the derivation log. The
 colored pass runs after ordinary rule simplification and preserves repeated
 terms and factors.
 

@@ -82,8 +82,7 @@ def test_subs_folds_numeric_predicates() -> None:
 def test_simplify_x_pow_zero() -> None:
     pool = ak.ExprPool()
     x = pool.symbol("x")
-    # 0^0 is undefined, so an unconstrained symbolic base is not rewritten.
-    assert str(ak.simplify(x**0).value) == "x^0"
+    assert str(ak.simplify(x**0).value) == "1"
 
 
 def test_factorint_zero_raises() -> None:

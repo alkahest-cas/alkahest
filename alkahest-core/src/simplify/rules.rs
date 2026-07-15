@@ -1,4 +1,4 @@
-use crate::deriv::log::{DerivationLog, RewriteStep};
+use crate::deriv::log::{DerivationLog, RewriteStep, SideCondition};
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
 use rug::ops::Pow;
 use std::collections::{HashMap, HashSet};
@@ -73,23 +73,20 @@ fn is_one(expr: ExprId, pool: &ExprPool) -> bool {
     as_integer(expr, pool).is_some_and(|n| n == 1)
 }
 
-/// Whether the expression is non-zero without relying on a dynamic assumption.
-///
-/// Dynamic facts are applied by the colored simplifier.  Default rules may use
-/// only literal values and a symbol's declared domain.
-fn is_proven_nonzero(expr: ExprId, pool: &ExprPool) -> bool {
-    match pool.get(expr) {
-        ExprData::Integer(n) => n.0 != 0,
-        ExprData::Rational(r) => !r.0.is_zero(),
-        ExprData::Float(f) => f.inner != 0.0,
-        ExprData::Symbol { domain, .. } => matches!(domain, Domain::Positive | Domain::NonZero),
-        _ => false,
-    }
-}
-
 pub(crate) fn one_step(name: &'static str, before: ExprId, after: ExprId) -> DerivationLog {
     let mut log = DerivationLog::new();
     log.push(RewriteStep::simple(name, before, after));
+    log
+}
+
+fn one_step_with(
+    name: &'static str,
+    before: ExprId,
+    after: ExprId,
+    conds: Vec<SideCondition>,
+) -> DerivationLog {
+    let mut log = DerivationLog::new();
+    log.push(RewriteStep::with_conditions(name, before, after, conds));
     log
 }
 
@@ -368,7 +365,7 @@ fn integer_sqrt_u64(n: u64) -> Option<u64> {
 }
 
 // ---------------------------------------------------------------------------
-// PowZero: x^0 → 1 when x is statically known non-zero.
+// PowZero: x^0 → 1  (side condition: x ≠ 0 logged)
 // ---------------------------------------------------------------------------
 
 pub struct PowZero;
@@ -386,11 +383,15 @@ impl RewriteRule for PowZero {
         if !is_zero(exp, pool) {
             return None;
         }
-        if !is_proven_nonzero(base, pool) {
+        // 0^0 is undefined — do not rewrite.
+        if is_zero(base, pool) {
             return None;
         }
         let after = pool.integer(1_i32);
-        Some((after, one_step(self.name(), expr, after)))
+        Some((
+            after,
+            one_step_with(self.name(), expr, after, vec![SideCondition::NonZero(base)]),
+        ))
     }
 }
 
@@ -884,14 +885,6 @@ impl RewriteRule for DivSelf {
             if !any_zero && !any_merged {
                 return None;
             }
-            if exp_map
-                .iter()
-                .any(|(base, exp)| *exp == 0 && !is_proven_nonzero(*base, pool))
-            {
-                // Dropping x^0 would extend x/x and x^n*x^-n across x = 0.
-                // Dynamic NonZero facts are handled by the colored engine.
-                return None;
-            }
 
             let mut seen: HashSet<ExprId> = HashSet::new();
             let mut new_args: Vec<ExprId> = vec![];
@@ -923,12 +916,6 @@ impl RewriteRule for DivSelf {
             }
             let any_zero = merged.iter().any(|(e, _)| *e == 0);
             if !changed && !any_zero {
-                return None;
-            }
-            if merged
-                .iter()
-                .any(|(exp, base)| *exp == 0 && !is_proven_nonzero(*base, pool))
-            {
                 return None;
             }
             merged
@@ -1383,18 +1370,16 @@ mod tests {
     // --- PowZero ---
 
     #[test]
-    fn pow_zero_requires_static_nonzero_proof() {
+    fn pow_zero_gives_one_with_condition() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let zero = pool.integer(0_i32);
         let expr = pool.pow(x, zero);
-        assert!(PowZero.apply(expr, &pool).is_none());
-
-        let x = pool.symbol("x_nonzero", Domain::NonZero);
-        let expr = pool.pow(x, zero);
         let (result, log) = PowZero.apply(expr, &pool).unwrap();
         assert_eq!(result, pool.integer(1_i32));
-        assert!(log.steps()[0].side_conditions.is_empty());
+        let step = &log.steps()[0];
+        assert_eq!(step.side_conditions.len(), 1);
+        assert!(matches!(step.side_conditions[0], SideCondition::NonZero(_)));
     }
 
     // --- ConstFold ---
@@ -1470,15 +1455,10 @@ mod tests {
     // --- DivSelf ---
 
     #[test]
-    fn div_self_requires_static_nonzero_proof() {
+    fn div_self_cancels_factors() {
         // x * x^(-1) = 1
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
-        let x_inv = pool.pow(x, pool.integer(-1_i32));
-        let expr = pool.mul(vec![x, x_inv]);
-        assert!(DivSelf.apply(expr, &pool).is_none());
-
-        let x = pool.symbol("x_nonzero", Domain::NonZero);
         let x_inv = pool.pow(x, pool.integer(-1_i32));
         let expr = pool.mul(vec![x, x_inv]);
         let (result, _) = DivSelf.apply(expr, &pool).unwrap();
