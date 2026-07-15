@@ -118,11 +118,11 @@ use alkahest_core::{
     simplify_egraph_with as core_simplify_egraph_with,
     simplify_trig_normal_form as core_simplify_trig_normal_form,
     simplify_with as core_simplify_with, trig_rules,
-    verify_antiderivative_exact as core_verify_antiderivative_exact,
-    AlkahestError as AlkahestErrorTrait, ApartError, DerivedExpr, DiffError, EgraphConfig,
-    IntegrationError, IoError, LimitDirection as CoreLimitDirection, LimitError,
-    LinearRecurrenceError, PatternRule, ProductError, ResultantError, RsolveError, SeriesError,
-    SimplifyConfig, SizeCost, SparseGcdError, SparseInterpError, SumError,
+    verify_antiderivative_status as core_verify_antiderivative_status,
+    AlkahestError as AlkahestErrorTrait, AntiderivativeVerification, ApartError, DerivedExpr,
+    DiffError, EgraphConfig, IntegrationError, IoError, LimitDirection as CoreLimitDirection,
+    LimitError, LinearRecurrenceError, PatternRule, ProductError, ResultantError, RsolveError,
+    SeriesError, SimplifyConfig, SizeCost, SparseGcdError, SparseInterpError, SumError,
 };
 // Experimental calculus / ODE / transform surface (PyO3 bindings deferred at
 // landing time — see PRs #152–#161). These mirror the Rust `experimental`
@@ -1552,18 +1552,20 @@ impl PyDerivedResult {
     fn verification<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
         let metadata = PyDict::new_bound(py);
         let has_certificate = !self.raw.log.is_empty();
-        let exactly_verified = self.integration_verification_input.map(|(integrand, var)| {
-            let pool_py = self.value.pool.clone_ref(py);
-            let pool = pool_py.borrow(py);
-            core_verify_antiderivative_exact(self.raw.value, integrand, var, &pool.inner)
-        });
+        let integration_verification =
+            self.integration_verification_input
+                .and_then(|(integrand, var)| {
+                    let pool_py = self.value.pool.clone_ref(py);
+                    let pool = pool_py.borrow(py);
+                    core_verify_antiderivative_status(self.raw.value, integrand, var, &pool.inner)
+                });
         metadata
             .set_item(
                 "status",
-                if exactly_verified == Some(true) {
+                if integration_verification == Some(AntiderivativeVerification::Exact) {
                     "exactly_verified"
-                } else if exactly_verified == Some(false) {
-                    "unverified"
+                } else if integration_verification == Some(AntiderivativeVerification::Numeric) {
+                    "numerically_checked"
                 } else if has_certificate {
                     "certificate_available"
                 } else {
@@ -1574,8 +1576,10 @@ impl PyDerivedResult {
         metadata
             .set_item(
                 "evidence",
-                if exactly_verified == Some(true) {
+                if integration_verification == Some(AntiderivativeVerification::Exact) {
                     "antiderivative_derivative_identity"
+                } else if integration_verification == Some(AntiderivativeVerification::Numeric) {
+                    "antiderivative_numeric_samples"
                 } else if has_certificate {
                     "derivation_log"
                 } else {
@@ -1603,8 +1607,10 @@ impl PyDerivedResult {
         metadata
             .set_item(
                 "method",
-                if exactly_verified.is_some() {
+                if integration_verification == Some(AntiderivativeVerification::Exact) {
                     "in_kernel_symbolic_residual"
+                } else if integration_verification == Some(AntiderivativeVerification::Numeric) {
+                    "floating_point_samples"
                 } else {
                     "derivation_log"
                 },
@@ -1707,7 +1713,9 @@ fn py_derived_result_context_simplify(
         value: simplified.value,
         log: log.merge(simplified.log),
     };
-    Ok(make_derived_result(py, merged, pool_py, dr.wrt))
+    let mut result = make_derived_result(py, merged, pool_py, dr.wrt);
+    result.integration_verification_input = dr.integration_verification_input;
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------

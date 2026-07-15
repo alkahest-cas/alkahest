@@ -1134,6 +1134,7 @@ def capabilities() -> dict:
                 "lean_checked",
                 "certificate_available",
                 "exactly_verified",
+                "numerically_checked",
                 "unverified",
             ],
             "artifacts": {"lean4_source": True},

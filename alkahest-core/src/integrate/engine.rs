@@ -2553,6 +2553,18 @@ pub fn verify_antiderivative_exact(
     is_zero(simplify(pool.add(vec![d, neg]), pool).value, pool)
 }
 
+/// Evidence established by the antiderivative soundness gate.
+///
+/// Numeric sampling is a useful acceptance screen, but is deliberately distinct
+/// from an in-kernel symbolic derivative identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AntiderivativeVerification {
+    /// The symbolic residual `d/dx(candidate) - integrand` simplified to zero.
+    Exact,
+    /// Several finite floating-point samples agreed, but no exact identity was found.
+    Numeric,
+}
+
 /// Soundness gate: verify `d/dx(candidate) == integrand`.
 ///
 /// Accepts when `d/dx(candidate) − integrand` simplifies structurally to zero,
@@ -2560,19 +2572,19 @@ pub fn verify_antiderivative_exact(
 /// (skipping points where either side is non-finite, e.g. singularities).  A
 /// `candidate` whose derivative cannot be confirmed equal is rejected, so the
 /// integrator never returns a wrong antiderivative.
-fn verify_antiderivative(
+pub fn verify_antiderivative_status(
     candidate: ExprId,
     integrand: ExprId,
     var: ExprId,
     pool: &ExprPool,
-) -> bool {
+) -> Option<AntiderivativeVerification> {
     if verify_antiderivative_exact(candidate, integrand, var, pool) {
-        return true;
+        return Some(AntiderivativeVerification::Exact);
     }
 
     // Numeric check at several sample points (irrational, to dodge poles).
     let Ok(d_raw) = crate::diff::diff(candidate, var, pool) else {
-        return false;
+        return None;
     };
     let d = simplify(d_raw.value, pool).value;
     let samples = [0.3719_f64, 0.9137, 1.4231, 2.1719, 2.8123, 3.6411];
@@ -2585,21 +2597,30 @@ fn verify_antiderivative(
             crate::jit::eval_interp(integrand, &env, pool),
         ) else {
             // Unevaluable expression — cannot certify numerically.
-            return false;
+            return None;
         };
         if !dv.is_finite() || !fv.is_finite() {
             continue; // near a singularity; skip this sample
         }
         let tol = 1e-7 * (1.0 + dv.abs().max(fv.abs()));
         if (dv - fv).abs() > tol {
-            return false;
+            return None;
         }
         checked += 1;
     }
 
     // Require at least a couple of usable samples so an all-singular set cannot
     // vacuously pass.
-    checked >= 2
+    (checked >= 2).then_some(AntiderivativeVerification::Numeric)
+}
+
+fn verify_antiderivative(
+    candidate: ExprId,
+    integrand: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> bool {
+    verify_antiderivative_status(candidate, integrand, var, pool).is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -2615,6 +2636,19 @@ mod tests {
 
     fn p() -> ExprPool {
         ExprPool::new()
+    }
+
+    #[test]
+    fn antiderivative_verification_distinguishes_numeric_evidence() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let candidate = pool.func("sqrt", vec![pool.pow(x, pool.integer(2_i32))]);
+        let one = pool.integer(1_i32);
+
+        assert_eq!(
+            verify_antiderivative_status(candidate, one, x, &pool),
+            Some(AntiderivativeVerification::Numeric)
+        );
     }
 
     fn coeffs_equal(a: ExprId, b: ExprId, x: ExprId, pool: &ExprPool) -> bool {

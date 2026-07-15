@@ -187,6 +187,11 @@ if evidence["status"] == "certificate_available":
     print(result.certificate)  # Lean source; check it with Lean separately
 ```
 
+For indefinite integrals, distinguish `"exactly_verified"` (the symbolic
+derivative residual is zero) from `"numerically_checked"` (the integration
+gate passed floating-point samples only). Never treat the latter as an exact
+or Lean-checked proof.
+
 ---
 
 ## Simplification
