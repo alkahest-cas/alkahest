@@ -707,6 +707,10 @@ env = load_environment(difficulty_tier=0, n_train=1000, n_eval=100, adaptive=Tru
 
 Alkahest follows semantic versioning from `1.0`. The stable surface is everything re-exported from `alkahest_cas::stable` (Rust) and `alkahest.__all__` (Python). Experimental APIs live under `alkahest_cas::experimental` and `alkahest.experimental` and may change in minor releases—prefer top-level exports for agent-written code unless the user asks for experimental features.
 
+Symbolic complex constructors (`conjugate`, `re`, `im`, `arg`) are experimental.
+Principal `arg` only folds domain-safe literals (`arg(Positive)`, `arg(I)`);
+leave `arg(0)`, negative reals, and branch-cut expressions unevaluated.
+
 ---
 
 ## Primitive registry

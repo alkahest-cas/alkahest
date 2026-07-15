@@ -1763,6 +1763,15 @@ fn im(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "im", expr)
 }
 
+/// Experimental principal argument (`Arg ∈ (−π, π]`).
+///
+/// Only domain-safe literal simplifications are applied; branch-cut cases
+/// remain symbolic.
+#[pyfunction]
+fn arg(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "arg", expr)
+}
+
 // V1-12: expanded primitive registry
 #[pyfunction]
 fn tan(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
@@ -8454,6 +8463,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(conjugate, m)?)?;
     m.add_function(wrap_pyfunction!(re, m)?)?;
     m.add_function(wrap_pyfunction!(im, m)?)?;
+    m.add_function(wrap_pyfunction!(arg, m)?)?;
     // V1-12: expanded primitive registry
     m.add_function(wrap_pyfunction!(tan, m)?)?;
     m.add_function(wrap_pyfunction!(sinh, m)?)?;
