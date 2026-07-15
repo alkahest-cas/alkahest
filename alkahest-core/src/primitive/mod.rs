@@ -35,7 +35,10 @@
 //! // exceptions are the Dirac delta `δ` and symbolic complex constructors,
 //! // which deliberately have no pointwise real `f64` value.
 //! for row in &report.rows {
-//!     if matches!(row.name.as_str(), "diracdelta" | "conjugate" | "re" | "im") {
+//!     if matches!(
+//!         row.name.as_str(),
+//!         "diracdelta" | "conjugate" | "re" | "im" | "arg"
+//!     ) {
 //!         continue;
 //!     }
 //!     assert!(row.caps.contains(Capabilities::NUMERIC_F64));
@@ -336,6 +339,7 @@ impl PrimitiveRegistry {
         reg.register(Box::new(builtins::ConjugatePrimitive));
         reg.register(Box::new(builtins::RePrimitive));
         reg.register(Box::new(builtins::ImPrimitive));
+        reg.register(Box::new(builtins::ArgPrimitive));
         reg
     }
 
@@ -455,6 +459,7 @@ pub mod builtins {
     symbolic_complex_primitive!(ConjugatePrimitive, "conjugate");
     symbolic_complex_primitive!(RePrimitive, "re");
     symbolic_complex_primitive!(ImPrimitive, "im");
+    symbolic_complex_primitive!(ArgPrimitive, "arg");
 
     // ── sin ──────────────────────────────────────────────────────────────────
 

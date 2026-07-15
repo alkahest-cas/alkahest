@@ -110,3 +110,16 @@ r = collect_like_terms(pool.integer(2) * x + pool.integer(3) * x)
 # Normalize to canonical polynomial form over given variables
 r = poly_normal(x**2 + pool.integer(2) * x * y + y**2, [x, y])
 ```
+
+## Complex constructors (experimental)
+
+`alkahest.experimental` exposes symbolic `conjugate`, `re`, `im`, and principal
+`arg`. These are symbolic-only: they are not registered for f64, ball, or JIT
+evaluation.
+
+Safe simplifications include involution of `conjugate`, real/integer literals
+for `re`/`im`, `arg` of a strictly positive literal or `Domain.Positive`
+symbol, and exact `arg(I)` / `arg(-I)`. Branch-sensitive cases such as
+`conjugate(log(z))`, `arg(0)`, negative reals, and generic complex inputs stay
+unevaluated. Principal Arg uses the conventional range `(−π, π]` with a cut on
+the negative real axis; do not rewrite through `atan2`, `log`, or `sqrt` yet.

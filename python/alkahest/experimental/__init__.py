@@ -16,6 +16,8 @@ Other experimental surface:
 - :func:`to_stablehlo` — StableHLO / XLA bridge (V5-2)
 - :func:`to_jax` — JAX primitive integration (V5-7, requires JAX)
 - :func:`evaluate` — unified exact, f64, and interval evaluation
+- :func:`conjugate`, :func:`re`, :func:`im`, :func:`arg` — symbolic complex
+  constructors (principal Arg only; no numeric/JIT evaluation yet)
 - :class:`GroebnerBasis`, :class:`GbPoly` — parallel F4 Gröbner basis (V5-11,
   requires ``groebner`` feature)
 - :func:`solve` — polynomial system solver (V1-4, requires ``groebner`` feature)
@@ -54,6 +56,7 @@ from alkahest.alkahest import (
     EvaluationResult,
     Fps,
     OdeTrajectory,
+    arg,
     asymptotic_expand,
     conjugate,
     dirac_delta,
@@ -93,6 +96,7 @@ __all__ = [
     "GbPoly",
     "GroebnerBasis",
     "OdeTrajectory",
+    "arg",
     "asymptotic_expand",
     "compile_cuda",
     "conjugate",

@@ -1,5 +1,5 @@
 use crate::deriv::log::{DerivationLog, RewriteStep, SideCondition};
-use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
 use rug::ops::Pow;
 use std::collections::{HashMap, HashSet};
 
@@ -34,6 +34,35 @@ fn as_integer(expr: ExprId, pool: &ExprPool) -> Option<rug::Integer> {
         ExprData::Integer(n) => Some(n.0.clone()),
         _ => None,
     }
+}
+
+fn is_neg_imaginary_unit(expr: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(expr) {
+        ExprData::Mul(args) if args.len() == 2 => {
+            (as_integer(args[0], pool).is_some_and(|n| n == -1) && pool.is_imaginary_unit(args[1]))
+                || (as_integer(args[1], pool).is_some_and(|n| n == -1)
+                    && pool.is_imaginary_unit(args[0]))
+        }
+        _ => false,
+    }
+}
+
+fn is_strictly_positive_literal(expr: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(expr) {
+        ExprData::Integer(n) => n.0 > 0,
+        ExprData::Rational(r) => r.0 > 0,
+        _ => false,
+    }
+}
+
+fn is_positive_domain_symbol(expr: ExprId, pool: &ExprPool) -> bool {
+    matches!(
+        pool.get(expr),
+        ExprData::Symbol {
+            domain: Domain::Positive,
+            ..
+        }
+    )
 }
 
 fn is_zero(expr: ExprId, pool: &ExprPool) -> bool {
@@ -654,6 +683,24 @@ impl RewriteRule for ConstFold {
                     ) =>
                     {
                         pool.integer(0_i32)
+                    }
+                    // Principal Arg ∈ (−π, π]: only literal/domain-safe cases.
+                    // Leave arg(0), negative reals, and generic complex inputs
+                    // unevaluated — no atan2/log/sqrt rewrites.
+                    "arg" => {
+                        let pi = pool.symbol("pi", Domain::Positive);
+                        let half_pi = pool.mul(vec![pool.rational(1, 2), pi]);
+                        if pool.is_imaginary_unit(arg) {
+                            half_pi
+                        } else if is_neg_imaginary_unit(arg, pool) {
+                            pool.mul(vec![pool.integer(-1_i32), half_pi])
+                        } else if is_strictly_positive_literal(arg, pool)
+                            || is_positive_domain_symbol(arg, pool)
+                        {
+                            pool.integer(0_i32)
+                        } else {
+                            return None;
+                        }
                     }
                     "exp" if is_zero(arg, pool) => pool.integer(1_i32),
                     "cos" if is_zero(arg, pool) => pool.integer(1_i32),
@@ -1870,5 +1917,41 @@ mod tests {
             crate::simplify::simplify(d, &pool).value,
             pool.integer(0_i32)
         );
+    }
+
+    #[test]
+    fn principal_arg_safe_cases_and_branch_cut_refusal() {
+        let pool = p();
+        let i = pool.imaginary_unit();
+        let neg_i = pool.mul(vec![pool.integer(-1_i32), i]);
+        let pos = pool.symbol("x", Domain::Positive);
+        let z = pool.symbol("z", Domain::Complex);
+        let pi = pool.symbol("pi", Domain::Positive);
+        let half_pi = pool.mul(vec![pool.rational(1, 2), pi]);
+        let neg_half_pi = pool.mul(vec![pool.integer(-1_i32), half_pi]);
+
+        assert_eq!(
+            crate::simplify::simplify(pool.func("arg", vec![pool.integer(3_i32)]), &pool).value,
+            pool.integer(0_i32)
+        );
+        assert_eq!(
+            crate::simplify::simplify(pool.func("arg", vec![pos]), &pool).value,
+            pool.integer(0_i32)
+        );
+        assert_eq!(
+            crate::simplify::simplify(pool.func("arg", vec![i]), &pool).value,
+            crate::simplify::simplify(half_pi, &pool).value
+        );
+        assert_eq!(
+            crate::simplify::simplify(pool.func("arg", vec![neg_i]), &pool).value,
+            crate::simplify::simplify(neg_half_pi, &pool).value
+        );
+        // Zero, negatives, and generic complex stay unevaluated.
+        let arg0 = pool.func("arg", vec![pool.integer(0_i32)]);
+        assert_eq!(crate::simplify::simplify(arg0, &pool).value, arg0);
+        let arg_neg = pool.func("arg", vec![pool.integer(-1_i32)]);
+        assert_eq!(crate::simplify::simplify(arg_neg, &pool).value, arg_neg);
+        let arg_z = pool.func("arg", vec![z]);
+        assert_eq!(crate::simplify::simplify(arg_z, &pool).value, arg_z);
     }
 }
