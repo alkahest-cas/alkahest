@@ -32,10 +32,10 @@
 //!
 //! let report = reg.coverage_report();
 //! // Every built-in *function* has at least NUMERIC_F64 coverage; the only
-//! // exception is the Dirac delta `δ`, which is a distribution with no
-//! // pointwise `f64` value.
+//! // exceptions are the Dirac delta `δ` and symbolic complex constructors,
+//! // which deliberately have no pointwise real `f64` value.
 //! for row in &report.rows {
-//!     if row.name == "diracdelta" {
+//!     if matches!(row.name.as_str(), "diracdelta" | "conjugate" | "re" | "im") {
 //!         continue;
 //!     }
 //!     assert!(row.caps.contains(Capabilities::NUMERIC_F64));
@@ -333,6 +333,9 @@ impl PrimitiveRegistry {
         reg.register(Box::new(builtins::GammaPrimitive));
         reg.register(Box::new(builtins::MinPrimitive));
         reg.register(Box::new(builtins::MaxPrimitive));
+        reg.register(Box::new(builtins::ConjugatePrimitive));
+        reg.register(Box::new(builtins::RePrimitive));
+        reg.register(Box::new(builtins::ImPrimitive));
         reg
     }
 
@@ -435,6 +438,23 @@ pub mod builtins {
     use super::Primitive;
     use crate::ball::ArbBall;
     use crate::kernel::{ExprId, ExprPool};
+
+    macro_rules! symbolic_complex_primitive {
+        ($type:ident, $name:literal) => {
+            pub struct $type;
+            impl Primitive for $type {
+                fn name(&self) -> &'static str {
+                    $name
+                }
+                fn pretty(&self, args: &[ExprId], pool: &ExprPool) -> String {
+                    format!("{}({})", $name, pool.display(args[0]))
+                }
+            }
+        };
+    }
+    symbolic_complex_primitive!(ConjugatePrimitive, "conjugate");
+    symbolic_complex_primitive!(RePrimitive, "re");
+    symbolic_complex_primitive!(ImPrimitive, "im");
 
     // ── sin ──────────────────────────────────────────────────────────────────
 
