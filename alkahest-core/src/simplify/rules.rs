@@ -1,4 +1,4 @@
-use crate::deriv::log::{DerivationLog, RewriteStep, SideCondition};
+use crate::deriv::log::{DerivationLog, RewriteStep};
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
 use rug::ops::Pow;
 use std::collections::{HashMap, HashSet};
