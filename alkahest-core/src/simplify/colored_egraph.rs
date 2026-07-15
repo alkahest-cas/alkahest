@@ -165,7 +165,6 @@ impl ColoredEgraph {
                     .map(|&a| self.rebuild_rec(a, pool, color, visiting))
                     .collect();
                 children.sort_by_key(|id| self.find(*id, color).0);
-                children.dedup_by_key(|id| self.find(*id, color).0);
                 if children.is_empty() {
                     pool.integer(0_i32)
                 } else if children.len() == 1 {
@@ -180,7 +179,6 @@ impl ColoredEgraph {
                     .map(|&a| self.rebuild_rec(a, pool, color, visiting))
                     .collect();
                 children.sort_by_key(|id| self.find(*id, color).0);
-                children.dedup_by_key(|id| self.find(*id, color).0);
                 if children.is_empty() {
                     pool.integer(1_i32)
                 } else if children.len() == 1 {
@@ -453,11 +451,44 @@ fn rule_log_of_product(expr: ExprId, pool: &ExprPool) -> Option<(ExprId, Vec<Sid
     Some((after, conds))
 }
 
-/// `exp(log(x)) → x` (unconditional on the reals with principal branch).
+/// `exp(log(x)) → x` when `x > 0`.
 fn rule_exp_of_log(expr: ExprId, pool: &ExprPool) -> Option<(ExprId, Vec<SideCondition>)> {
     let arg = func_arg("exp", expr, pool)?;
     let inner = func_arg("log", arg, pool)?;
-    Some((inner, vec![]))
+    Some((inner, vec![SideCondition::Positive(inner)]))
+}
+
+/// `x^0 → 1` when `x ≠ 0`.
+fn rule_pow_zero_nonzero(expr: ExprId, pool: &ExprPool) -> Option<(ExprId, Vec<SideCondition>)> {
+    let (base, exp) = match pool.get(expr) {
+        ExprData::Pow { base, exp } => (base, exp),
+        _ => return None,
+    };
+    if !is_int_n(exp, 0, pool) {
+        return None;
+    }
+    Some((pool.integer(1_i32), vec![SideCondition::NonZero(base)]))
+}
+
+/// `x * x^-1 → 1` when `x ≠ 0`.
+fn rule_mul_inverse_nonzero(expr: ExprId, pool: &ExprPool) -> Option<(ExprId, Vec<SideCondition>)> {
+    let factors = match pool.get(expr) {
+        ExprData::Mul(factors) if factors.len() == 2 => factors,
+        _ => return None,
+    };
+    for &(base, other) in [(factors[0], factors[1]), (factors[1], factors[0])].iter() {
+        let ExprData::Pow {
+            base: inverse_base,
+            exp,
+        } = pool.get(other)
+        else {
+            continue;
+        };
+        if inverse_base == base && is_int_n(exp, -1, pool) {
+            return Some((pool.integer(1_i32), vec![SideCondition::NonZero(base)]));
+        }
+    }
+    None
 }
 
 fn default_conditional_rules() -> &'static [ConditionalRule] {
@@ -473,6 +504,14 @@ fn default_conditional_rules() -> &'static [ConditionalRule] {
         ConditionalRule {
             name: "exp_of_log",
             apply: rule_exp_of_log,
+        },
+        ConditionalRule {
+            name: "pow_zero_nonzero",
+            apply: rule_pow_zero_nonzero,
+        },
+        ConditionalRule {
+            name: "mul_inverse_nonzero",
+            apply: rule_mul_inverse_nonzero,
         },
     ]
 }
@@ -607,12 +646,33 @@ mod tests {
     }
 
     #[test]
-    fn exp_of_log_unconditional_in_colored() {
+    fn exp_of_log_requires_positive_assumption() {
         let pool = pool();
         let x = pool.symbol("x", Domain::Real);
         let expr = pool.func("exp", vec![pool.func("log", vec![x])]);
         let r = simplify_colored(expr, &pool, &[]);
+        assert_eq!(r.value, expr);
+
+        let r = simplify_colored(expr, &pool, &[SideCondition::Positive(x)]);
         assert_eq!(r.value, x);
+    }
+
+    #[test]
+    fn colored_rebuild_preserves_repeated_children() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let assumptions = [SideCondition::Positive(x)];
+
+        let doubled = pool.add(vec![x, x]);
+        let squared = pool.mul(vec![x, x]);
+        assert_eq!(
+            simplify_colored(doubled, &pool, &assumptions).value,
+            doubled
+        );
+        assert_eq!(
+            simplify_colored(squared, &pool, &assumptions).value,
+            squared
+        );
     }
 
     #[test]

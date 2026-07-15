@@ -257,6 +257,7 @@ with contextlib.suppress(ImportError):
 # have no stub (CadError, …).
 from .exceptions import (
     AlkahestError,
+    AssumptionError,
     CadError,
     ConversionError,
     DaeError,
@@ -290,6 +291,7 @@ from .exceptions import (
 
 _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     "AlkahestError",
+    "AssumptionError",
     "CadError",
     "ConversionError",
     "DaeError",
@@ -1156,6 +1158,7 @@ __all__ = [
     "And",
     # Phase 22
     "ArbBall",
+    "AssumptionError",
     "CadError",
     "CertifiedSolution",
     "CompileCache",

@@ -1,3 +1,4 @@
+pub mod assumptions;
 pub mod colored_egraph;
 pub mod discrimination_net;
 pub mod egraph;
@@ -10,6 +11,7 @@ pub mod rulesets;
 #[cfg(test)]
 mod proptests;
 
+pub use assumptions::{simplify_with_assumptions, AssumptionContext, AssumptionError};
 pub use colored_egraph::{
     assumptions_satisfy, simplify_colored, ColorId, ColoredEgraph, CONTEXT_COLOR, ROOT_COLOR,
 };

@@ -1748,7 +1748,7 @@ mod tests {
     fn distribute_pow_over_literal_coeff() {
         // (4*pi)^(-1) → 4^(-1) * pi^(-1)
         let pool = p();
-        let pi = pool.symbol("pi", Domain::Real);
+        let pi = pool.symbol("pi", Domain::NonZero);
         let four_pi = pool.mul(vec![pool.integer(4_i32), pi]);
         let expr = pool.pow(four_pi, pool.integer(-1_i32));
         let (result, _) = ConstFold.apply(expr, &pool).unwrap();
@@ -1763,7 +1763,7 @@ mod tests {
     fn pi_times_inverse_four_pi_is_one_quarter() {
         // pi * (4*pi)^(-1) → 1/4
         let pool = p();
-        let pi = pool.symbol("pi", Domain::Real);
+        let pi = pool.symbol("pi", Domain::NonZero);
         let four_pi = pool.mul(vec![pool.integer(4_i32), pi]);
         let inv = pool.pow(four_pi, pool.integer(-1_i32));
         let expr = pool.mul(vec![pi, inv]);
