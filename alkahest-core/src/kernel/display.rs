@@ -472,6 +472,10 @@ fn latex_func_name(name: &str) -> String {
         "erf" => r"\operatorname{erf}".into(),
         "erfc" => r"\operatorname{erfc}".into(),
         "gamma" => r"\Gamma".into(),
+        "digamma" => r"\psi".into(),
+        "lambert_w" => r"W".into(),
+        "bessel_j0" => r"J_0".into(),
+        "bessel_j1" => r"J_1".into(),
         other => format!(r"\operatorname{{{other}}}"),
     }
 }
@@ -782,6 +786,10 @@ fn unicode_func(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
         _ => {
             let fn_name = match name {
                 "gamma" => "Γ",
+                "digamma" => "ψ",
+                "bessel_j0" => "J₀",
+                "bessel_j1" => "J₁",
+                "lambert_w" => "W",
                 "asin" => "arcsin",
                 "acos" => "arccos",
                 "atan" => "arctan",

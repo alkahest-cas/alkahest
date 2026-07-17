@@ -334,6 +334,10 @@ impl PrimitiveRegistry {
         reg.register(Box::new(builtins::RoundPrimitive));
         reg.register(Box::new(builtins::Atan2Primitive));
         reg.register(Box::new(builtins::GammaPrimitive));
+        reg.register(Box::new(builtins::LambertWPrimitive));
+        reg.register(Box::new(builtins::DigammaPrimitive));
+        reg.register(Box::new(builtins::BesselJ0Primitive));
+        reg.register(Box::new(builtins::BesselJ1Primitive));
         reg.register(Box::new(builtins::MinPrimitive));
         reg.register(Box::new(builtins::MaxPrimitive));
         reg.register(Box::new(builtins::ConjugatePrimitive));
@@ -441,6 +445,7 @@ fn probe_caps(p: &dyn Primitive) -> Capabilities {
 pub mod builtins {
     use super::Primitive;
     use crate::ball::ArbBall;
+    use crate::kernel::expr::ExprData;
     use crate::kernel::{ExprId, ExprPool};
 
     macro_rules! symbolic_complex_primitive {
@@ -2053,6 +2058,238 @@ pub mod builtins {
         }
     }
 
+    // ── lambert_w ────────────────────────────────────────────────────────────
+
+    pub struct LambertWPrimitive;
+
+    impl Primitive for LambertWPrimitive {
+        fn name(&self) -> &'static str {
+            "lambert_w"
+        }
+
+        fn pretty(&self, args: &[ExprId], pool: &ExprPool) -> String {
+            format!("W({})", pool.display(args[0]))
+        }
+
+        fn simplify(&self, args: &[ExprId], pool: &ExprPool) -> Option<ExprId> {
+            let x = args[0];
+            if matches!(pool.get(x), ExprData::Integer(n) if n.0.is_zero()) {
+                return Some(pool.integer(0_i32));
+            }
+            if is_neg_inv_e_literal(x, pool) {
+                return Some(pool.integer(-1_i32));
+            }
+            None
+        }
+
+        fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
+            let x = args[0];
+            let dx = crate::diff::diff(x, wrt, pool).ok()?.value;
+            let w = pool.func("lambert_w", vec![x]);
+            let denom = pool.mul(vec![x, pool.add(vec![pool.integer(1_i32), w])]);
+            Some(pool.mul(vec![w, pool.pow(denom, pool.integer(-1_i32)), dx]))
+        }
+
+        fn diff_reverse(
+            &self,
+            args: &[ExprId],
+            cotan: ExprId,
+            pool: &ExprPool,
+        ) -> Option<Vec<ExprId>> {
+            let x = args[0];
+            let w = pool.func("lambert_w", vec![x]);
+            let denom = pool.mul(vec![x, pool.add(vec![pool.integer(1_i32), w])]);
+            Some(vec![pool.mul(vec![
+                cotan,
+                w,
+                pool.pow(denom, pool.integer(-1_i32)),
+            ])])
+        }
+
+        fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
+            if args.len() == 1 {
+                crate::special::lambert_w0(args[0])
+            } else {
+                None
+            }
+        }
+
+        fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
+            if args.len() == 1 {
+                args[0].lambert_w0()
+            } else {
+                None
+            }
+        }
+    }
+
+    // ── digamma ──────────────────────────────────────────────────────────────
+
+    pub struct DigammaPrimitive;
+
+    impl Primitive for DigammaPrimitive {
+        fn name(&self) -> &'static str {
+            "digamma"
+        }
+
+        fn pretty(&self, args: &[ExprId], pool: &ExprPool) -> String {
+            format!("ψ({})", pool.display(args[0]))
+        }
+
+        fn simplify(&self, args: &[ExprId], pool: &ExprPool) -> Option<ExprId> {
+            let n = positive_integer_literal(args[0], pool)?;
+            if n > 20 {
+                return None;
+            }
+            Some(harmonic_minus_gamma(n, pool))
+        }
+
+        fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
+            if args.len() == 1 {
+                crate::special::digamma(args[0])
+            } else {
+                None
+            }
+        }
+
+        fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
+            if args.len() == 1 {
+                args[0].digamma()
+            } else {
+                None
+            }
+        }
+    }
+
+    // ── bessel_j0 / bessel_j1 ────────────────────────────────────────────────
+
+    pub struct BesselJ0Primitive;
+
+    impl Primitive for BesselJ0Primitive {
+        fn name(&self) -> &'static str {
+            "bessel_j0"
+        }
+
+        fn pretty(&self, args: &[ExprId], pool: &ExprPool) -> String {
+            format!("J₀({})", pool.display(args[0]))
+        }
+
+        fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
+            let x = args[0];
+            let dx = crate::diff::diff(x, wrt, pool).ok()?.value;
+            let j1 = pool.func("bessel_j1", vec![x]);
+            Some(pool.mul(vec![pool.integer(-1_i32), j1, dx]))
+        }
+
+        fn diff_reverse(
+            &self,
+            args: &[ExprId],
+            cotan: ExprId,
+            pool: &ExprPool,
+        ) -> Option<Vec<ExprId>> {
+            let x = args[0];
+            let j1 = pool.func("bessel_j1", vec![x]);
+            Some(vec![pool.mul(vec![pool.integer(-1_i32), cotan, j1])])
+        }
+
+        fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
+            if args.len() == 1 {
+                Some(crate::special::bessel_j0(args[0]))
+            } else {
+                None
+            }
+        }
+
+        fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
+            if args.len() == 1 {
+                Some(args[0].bessel_jn(0))
+            } else {
+                None
+            }
+        }
+    }
+
+    pub struct BesselJ1Primitive;
+
+    impl Primitive for BesselJ1Primitive {
+        fn name(&self) -> &'static str {
+            "bessel_j1"
+        }
+
+        fn pretty(&self, args: &[ExprId], pool: &ExprPool) -> String {
+            format!("J₁({})", pool.display(args[0]))
+        }
+
+        fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
+            let x = args[0];
+            let dx = crate::diff::diff(x, wrt, pool).ok()?.value;
+            let j0 = pool.func("bessel_j0", vec![x]);
+            let j1 = pool.func("bessel_j1", vec![x]);
+            let quot = pool.mul(vec![j1, pool.pow(x, pool.integer(-1_i32))]);
+            let deriv = pool.add(vec![j0, pool.mul(vec![pool.integer(-1_i32), quot])]);
+            Some(pool.mul(vec![deriv, dx]))
+        }
+
+        fn diff_reverse(
+            &self,
+            args: &[ExprId],
+            cotan: ExprId,
+            pool: &ExprPool,
+        ) -> Option<Vec<ExprId>> {
+            let x = args[0];
+            let j0 = pool.func("bessel_j0", vec![x]);
+            let j1 = pool.func("bessel_j1", vec![x]);
+            let quot = pool.mul(vec![j1, pool.pow(x, pool.integer(-1_i32))]);
+            let local = pool.add(vec![j0, pool.mul(vec![pool.integer(-1_i32), quot])]);
+            Some(vec![pool.mul(vec![cotan, local])])
+        }
+
+        fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
+            if args.len() == 1 {
+                Some(crate::special::bessel_j1(args[0]))
+            } else {
+                None
+            }
+        }
+
+        fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
+            if args.len() == 1 {
+                Some(args[0].bessel_jn(1))
+            } else {
+                None
+            }
+        }
+    }
+
+    fn is_neg_inv_e_literal(arg: ExprId, pool: &ExprPool) -> bool {
+        match pool.get(arg) {
+            ExprData::Float(f) => (f.inner.to_f64() * std::f64::consts::E + 1.0).abs() < 1e-14,
+            _ => false,
+        }
+    }
+
+    fn positive_integer_literal(arg: ExprId, pool: &ExprPool) -> Option<i64> {
+        if let ExprData::Integer(n) = pool.get(arg) {
+            let v = n.0.to_i64()?;
+            (v >= 1).then_some(v)
+        } else {
+            None
+        }
+    }
+
+    fn harmonic_minus_gamma(n: i64, pool: &ExprPool) -> ExprId {
+        let mut terms = Vec::new();
+        for k in 1..n {
+            terms.push(pool.rational(1, k as i32));
+        }
+        let harmonic = if terms.is_empty() {
+            pool.integer(0_i32)
+        } else {
+            pool.add(terms)
+        };
+        pool.add(vec![harmonic, pool.float(-crate::special::EULER_GAMMA, 53)])
+    }
+
     // ── gamma ────────────────────────────────────────────────────────────────
 
     pub struct GammaPrimitive;
@@ -2593,5 +2830,100 @@ mod tests {
         let em = reg.numeric_f64("EllipticE", &[m0 - h]).unwrap();
         let fd = (ep - em) / (2.0 * h);
         assert!((analytic - fd).abs() < 1e-5, "analytic {analytic} fd {fd}");
+    }
+
+    #[test]
+    fn special_functions_numeric_and_folds() {
+        use crate::kernel::{Domain, ExprData};
+        use crate::special::EULER_GAMMA;
+
+        let reg = PrimitiveRegistry::default_registry();
+        let pool = ExprPool::new();
+
+        assert_eq!(reg.numeric_f64("lambert_w", &[0.0]).unwrap(), 0.0);
+        let em = crate::special::lambert_w0_domain_min();
+        assert!((reg.numeric_f64("lambert_w", &[em]).unwrap() + 1.0).abs() < 1e-12);
+        assert!(reg.numeric_f64("lambert_w", &[em - 0.1]).is_none());
+
+        let psi1 = reg.numeric_f64("digamma", &[1.0]).unwrap();
+        assert!((psi1 + EULER_GAMMA).abs() < 1e-12);
+
+        assert!((reg.numeric_f64("bessel_j0", &[0.0]).unwrap() - 1.0).abs() < 1e-12);
+        assert!(reg.numeric_f64("bessel_j1", &[0.0]).unwrap().abs() < 1e-15);
+
+        assert_eq!(
+            reg.get("lambert_w")
+                .unwrap()
+                .simplify(&[pool.integer(0_i32)], &pool)
+                .unwrap(),
+            pool.integer(0_i32)
+        );
+
+        let neg_em = pool.float(em, 53);
+        assert_eq!(
+            reg.get("lambert_w")
+                .unwrap()
+                .simplify(&[neg_em], &pool)
+                .unwrap(),
+            pool.integer(-1_i32)
+        );
+
+        let psi3 = reg
+            .get("digamma")
+            .unwrap()
+            .simplify(&[pool.integer(3_i32)], &pool)
+            .unwrap();
+        pool.with(psi3, |data| {
+            if let ExprData::Add(args) = data {
+                assert_eq!(args.len(), 2);
+            } else {
+                panic!("expected harmonic − γ fold");
+            }
+        });
+
+        let x = pool.symbol("x", Domain::Real);
+        let j0 = pool.func("bessel_j0", vec![x]);
+        let dj0 = crate::diff::diff(j0, x, &pool).unwrap().value;
+        let expected = pool.mul(vec![pool.integer(-1_i32), pool.func("bessel_j1", vec![x])]);
+        assert_eq!(dj0, expected);
+    }
+
+    #[test]
+    fn lambert_w_ball_capability() {
+        use crate::ball::ArbBall;
+        use crate::primitive::{Capabilities, PrimitiveRegistry};
+
+        let reg = PrimitiveRegistry::default_registry();
+        let b = ArbBall::from_f64(1.0, 128);
+        assert!(
+            reg.numeric_ball("lambert_w", std::slice::from_ref(&b))
+                .is_some(),
+            "lambert_w ball eval at 1.0 should succeed"
+        );
+        assert!(reg
+            .capabilities("lambert_w")
+            .contains(Capabilities::NUMERIC_BALL));
+    }
+
+    #[test]
+    fn lambert_w_diff_finite_difference() {
+        use crate::jit::eval_interp;
+        use crate::kernel::Domain;
+        use std::collections::HashMap;
+
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let w = pool.func("lambert_w", vec![x]);
+        let d = crate::diff::diff(w, x, &pool).unwrap().value;
+        let reg = PrimitiveRegistry::default_registry();
+        let x0 = 0.5_f64;
+        let h = 1e-6;
+        let wp = reg.numeric_f64("lambert_w", &[x0 + h]).unwrap();
+        let wm = reg.numeric_f64("lambert_w", &[x0 - h]).unwrap();
+        let fd = (wp - wm) / (2.0 * h);
+        let mut env = HashMap::new();
+        env.insert(x, x0);
+        let analytic = eval_interp(d, &env, &pool).unwrap();
+        assert!((analytic - fd).abs() < 1e-4, "analytic {analytic} fd {fd}");
     }
 }
