@@ -271,6 +271,7 @@ from .exceptions import (
     JitError,
     LatticeError,
     LimitError,
+    LinearAlgebraError,
     LinearRecurrenceError,
     MatrixError,
     NumberTheoryError,
@@ -305,6 +306,7 @@ _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     "JitError",
     "LatticeError",
     "LimitError",
+    "LinearAlgebraError",
     "LinearRecurrenceError",
     "MatrixError",
     "NumberTheoryError",
@@ -1108,6 +1110,10 @@ def capabilities() -> dict:
         ``llvm_jit`` / ``cranelift_jit`` backend flags; ``primitives`` is
         deterministic per-primitive implementation coverage, and
         ``verification`` describes available evidence artifacts and checkers.
+        Symbolic linear algebra (``Matrix.rref``, ``rank``, ``nullspace``,
+        ``jordan_form``, ``minimal_polynomial``, LU/QR/Cholesky, etc.) is available
+        on :class:`Matrix`; unsupported inputs raise :class:`LinearAlgebraError`
+        with stable ``E-LINALG-*`` codes.
 
     Example
     -------
@@ -1196,6 +1202,7 @@ __all__ = [
     "JitError",
     "LatticeError",
     "LimitError",
+    "LinearAlgebraError",
     "LinearRecurrenceError",
     # Phase 15
     "Matrix",

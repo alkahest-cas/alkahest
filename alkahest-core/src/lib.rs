@@ -91,9 +91,9 @@ pub use matrix::{
     characteristic_polynomial_lambda_minus_m, cholesky, column_space_basis, diagonalize,
     eigenvalues, eigenvectors, hermite_form, hermite_form_poly, jacobian, jordan_form,
     lu_decomposition, matrix_exponential, matrix_inverse, minimal_polynomial, nullspace_basis,
-    qr_decomposition, rank, rational_canonical_form, row_space_basis, smith_form, smith_form_poly,
-    EigenError, IntegerMatrix, LinearAlgebraError, LuDecomposition, Matrix, MatrixError,
-    NormalFormError, PolyMatrixQ, QrDecomposition, RatUniPoly,
+    qr_decomposition, rank, rational_canonical_form, row_space_basis, rref, smith_form,
+    smith_form_poly, EigenError, IntegerMatrix, LinearAlgebraError, LuDecomposition, Matrix,
+    MatrixError, NormalFormError, PolyMatrixQ, QrDecomposition, RatUniPoly,
 };
 pub use numeric::{guess_integer_relation, PslqError};
 pub use ode::{
@@ -325,7 +325,7 @@ pub mod experimental {
     pub use crate::matrix::{
         cholesky, column_space_basis, jordan_form, lu_decomposition, matrix_exponential,
         matrix_inverse, minimal_polynomial, nullspace_basis, qr_decomposition, rank,
-        rational_canonical_form, row_space_basis, LinearAlgebraError, LuDecomposition,
+        rational_canonical_form, row_space_basis, rref, LinearAlgebraError, LuDecomposition,
         QrDecomposition,
     };
     pub use crate::modular::{
