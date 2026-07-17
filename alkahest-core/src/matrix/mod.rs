@@ -23,7 +23,8 @@ pub use eigen::{
 pub use linear_algebra::{
     cholesky, column_space_basis, jordan_form, lu_decomposition, matrix_exponential,
     matrix_inverse, minimal_polynomial, nullspace_basis, qr_decomposition, rank,
-    rational_canonical_form, row_space_basis, LinearAlgebraError, LuDecomposition, QrDecomposition,
+    rational_canonical_form, row_space_basis, rref, LinearAlgebraError, LuDecomposition,
+    QrDecomposition,
 };
 pub use normal_form::{
     hermite_form, hermite_form_poly, smith_form, smith_form_poly, IntegerMatrix, NormalFormError,
@@ -381,6 +382,10 @@ impl Matrix {
 
     pub fn rank(&self, pool: &ExprPool) -> Result<usize, LinearAlgebraError> {
         linear_algebra::rank(self, pool)
+    }
+
+    pub fn rref(&self, pool: &ExprPool) -> Result<Matrix, LinearAlgebraError> {
+        linear_algebra::rref(self, pool)
     }
 
     pub fn column_space(&self, pool: &ExprPool) -> Result<Vec<Matrix>, LinearAlgebraError> {

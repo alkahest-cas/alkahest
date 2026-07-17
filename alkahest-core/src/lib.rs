@@ -42,6 +42,7 @@ pub mod real;
 pub mod simplify;
 #[cfg(feature = "groebner")]
 pub mod solver;
+pub mod special;
 // V2-13 — Differential algebra / Rosenfeld–Gröbner
 #[cfg(feature = "groebner")]
 pub mod diffalg;
@@ -91,9 +92,9 @@ pub use matrix::{
     characteristic_polynomial_lambda_minus_m, cholesky, column_space_basis, diagonalize,
     eigenvalues, eigenvectors, hermite_form, hermite_form_poly, jacobian, jordan_form,
     lu_decomposition, matrix_exponential, matrix_inverse, minimal_polynomial, nullspace_basis,
-    qr_decomposition, rank, rational_canonical_form, row_space_basis, smith_form, smith_form_poly,
-    EigenError, IntegerMatrix, LinearAlgebraError, LuDecomposition, Matrix, MatrixError,
-    NormalFormError, PolyMatrixQ, QrDecomposition, RatUniPoly,
+    qr_decomposition, rank, rational_canonical_form, row_space_basis, rref, smith_form,
+    smith_form_poly, EigenError, IntegerMatrix, LinearAlgebraError, LuDecomposition, Matrix,
+    MatrixError, NormalFormError, PolyMatrixQ, QrDecomposition, RatUniPoly,
 };
 pub use numeric::{guess_integer_relation, PslqError};
 pub use ode::{
@@ -325,7 +326,7 @@ pub mod experimental {
     pub use crate::matrix::{
         cholesky, column_space_basis, jordan_form, lu_decomposition, matrix_exponential,
         matrix_inverse, minimal_polynomial, nullspace_basis, qr_decomposition, rank,
-        rational_canonical_form, row_space_basis, LinearAlgebraError, LuDecomposition,
+        rational_canonical_form, row_space_basis, rref, LinearAlgebraError, LuDecomposition,
         QrDecomposition,
     };
     pub use crate::modular::{
@@ -371,4 +372,8 @@ pub mod experimental {
         compute_groebner_basis_f5, fglm, grevlex_staircase, is_zero_dimensional, GbPoly,
         GroebnerBasis, MonomialOrder,
     };
+
+    /// Bounded content-addressed expression pool (RFC 0001). Not used by default
+    /// [`crate::ExprPool`]; unit-tested prototype only.
+    pub mod merkle_pool;
 }

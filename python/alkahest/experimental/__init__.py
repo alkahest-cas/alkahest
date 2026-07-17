@@ -6,10 +6,14 @@ removed between minor versions without a deprecation cycle.  Graduate to
 ``alkahest.*`` once the API has been exercised in production.
 
 Current experimental surface (linear algebra on ``Matrix``):
-- ``Matrix.nullspace``, ``rank``, ``column_space``, ``row_space``
+- ``Matrix.rref``, ``nullspace``, ``rank``, ``column_space``, ``row_space``
 - ``Matrix.lu``, ``qr``, ``cholesky``
 - ``Matrix.jordan_form``, ``rational_canonical_form``, ``minimal_polynomial``,
   ``matrix_exp``, ``inverse``
+
+Agents should probe ``alkahest.capabilities()`` at session start; symbolic LA
+methods live on :class:`~alkahest.Matrix` and raise :class:`~alkahest.LinearAlgebraError`
+(``E-LINALG-*``) when an operation is unsupported for the input field or shape.
 
 Other experimental surface:
 - :class:`Assumptions` — explicit positive/nonzero refinement for conservative
@@ -41,6 +45,9 @@ PRs #152–#161):
 - :func:`asymptotic_expand` — asymptotic expansion at infinity (#161).
 - :func:`series_solve` — power-series / Frobenius ODE solutions (#160).
 - :class:`Fps` — lazy formal power series over ℚ (#155).
+- :func:`lambert_w`, :func:`digamma`, :func:`bessel_j0`, :func:`bessel_j1` —
+  special-function foundation primitives (principal Lambert W₀, digamma ψ,
+  Bessel J₀/J₁).
 
 Numeric ODE integrators (Phase 16b):
 - :func:`ode_integrate_rk4` — fixed-step 4th-order Runge–Kutta integrator.
@@ -63,7 +70,10 @@ from alkahest.alkahest import (
     OdeTrajectory,
     arg,
     asymptotic_expand,
+    bessel_j0,
+    bessel_j1,
     conjugate,
+    digamma,
     dirac_delta,
     dsolve,
     evaluate,
@@ -105,8 +115,11 @@ __all__ = [
     "OdeTrajectory",
     "arg",
     "asymptotic_expand",
+    "bessel_j0",
+    "bessel_j1",
     "compile_cuda",
     "conjugate",
+    "digamma",
     "dirac_delta",
     "dsolve",
     "evaluate",

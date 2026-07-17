@@ -31,7 +31,15 @@ def test_capabilities_reports_installed_build_features():
     assert caps["jit"] is alkahest.jit_is_available()
 
 
-def test_capabilities_primitive_rows_are_deterministic():
+def test_cranelift_jit_enables_session_jit_flag():
+    caps = alkahest.capabilities()
+    features = caps["features"]
+    if features["cranelift_jit"]:
+        assert caps["jit"] is True
+        assert alkahest.jit_is_available()
+        assert features["cranelift"] is True
+        assert not features["llvm_jit"]
+
     primitives = alkahest.capabilities()["primitives"]
 
     assert primitives

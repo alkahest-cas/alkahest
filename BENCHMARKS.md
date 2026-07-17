@@ -81,6 +81,23 @@ cargo bench -p alkahest-cas -- --baseline before_change
 
 Criterion will print `Performance has regressed` / `improved` for each benchmark.
 
+### Symbolic GPU harness (CPU baselines + optional GPU comparison)
+
+`alkahest-core/benches/symbolic_gpu_bench.rs` records structured JSON Lines metrics
+for candidate GPU kernels. GPU is **not** the default success path — see
+[`docs/symbolic-gpu-benchmarks.md`](docs/symbolic-gpu-benchmarks.md) for crossover policy.
+
+```bash
+# CPU baseline (CI-friendly)
+cargo bench -p alkahest-cas --bench symbolic_gpu_bench -- --nocapture
+
+# Macaulay mod-p reduction + optional GPU timing
+ALKAHEST_GPU_BENCH=1 cargo bench -p alkahest-cas --bench symbolic_gpu_bench \
+  --features groebner-cuda -- --nocapture
+```
+
+Report: `target/symbolic_gpu_bench.jsonl` (override with `SYMBOLIC_GPU_BENCH_OUT`).
+
 ---
 
 ## Python benchmarks
