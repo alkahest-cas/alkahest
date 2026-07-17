@@ -40,7 +40,6 @@ def test_cranelift_jit_enables_session_jit_flag():
         assert features["cranelift"] is True
         assert not features["llvm_jit"]
 
-
     primitives = alkahest.capabilities()["primitives"]
 
     assert primitives
