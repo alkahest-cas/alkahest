@@ -41,13 +41,18 @@ struct BenchRecord {
     wall_ns: u64,
     alloc_bytes: u64,
     correct: bool,
-    note: Option<&'static str>,
+    note: Option<String>,
+}
+
+fn skipped_no_cuda(note: &Option<String>) -> bool {
+    note.as_deref() == Some("skipped: no CUDA device")
 }
 
 impl BenchRecord {
     fn to_json_line(&self) -> String {
         let note = self
             .note
+            .as_ref()
             .map(|n| format!(",\"note\":\"{n}\""))
             .unwrap_or_default();
         format!(
@@ -181,7 +186,31 @@ fn time_iters<F: FnMut()>(mut f: F) -> (Duration, u64) {
     }
     let elapsed = start.elapsed();
     let alloc_delta = alloc_snapshot().saturating_sub(before);
-    (elapsed / MEASURE_ITERS, alloc_delta)
+    (
+        elapsed / MEASURE_ITERS,
+        alloc_delta / u64::from(MEASURE_ITERS),
+    )
+}
+
+#[cfg(feature = "groebner-cuda")]
+fn time_iters_fallible<F>(mut f: F) -> Result<(Duration, u64), String>
+where
+    F: FnMut() -> Result<(), String>,
+{
+    for _ in 0..WARMUP_ITERS {
+        f().map_err(|e| format!("warmup: {e}"))?;
+    }
+    let before = alloc_snapshot();
+    let start = Instant::now();
+    for _ in 0..MEASURE_ITERS {
+        f().map_err(|e| format!("measure: {e}"))?;
+    }
+    let elapsed = start.elapsed();
+    let alloc_delta = alloc_snapshot().saturating_sub(before);
+    Ok((
+        elapsed / MEASURE_ITERS,
+        alloc_delta / u64::from(MEASURE_ITERS),
+    ))
 }
 
 #[cfg(feature = "groebner-cuda")]
@@ -228,6 +257,22 @@ fn random_coeffs(deg: usize, seed: u64) -> Vec<i64> {
         .collect()
 }
 
+fn naive_convolve(a: &[i64], b: &[i64]) -> Vec<i64> {
+    if a.is_empty() || b.is_empty() {
+        return vec![0];
+    }
+    let mut out = vec![0i64; a.len() + b.len() - 1];
+    for (i, &ca) in a.iter().enumerate() {
+        for (j, &cb) in b.iter().enumerate() {
+            out[i + j] = out[i + j].saturating_add(ca.saturating_mul(cb));
+        }
+    }
+    while out.len() > 1 && out.last() == Some(&0) {
+        out.pop();
+    }
+    out
+}
+
 fn coeff_bit_width(coeffs: &[i64]) -> u32 {
     coeffs
         .iter()
@@ -257,16 +302,14 @@ fn bench_unipoly_mul() -> Vec<BenchRecord> {
         let a = UniPoly::from_symbolic(poly_expr(&p, x, &a_coeffs), x, &p).unwrap();
         let b = UniPoly::from_symbolic(poly_expr(&p, x, &b_coeffs), x, &p).unwrap();
 
-        // Reference multiply for correctness (once).
-        let reference = &a * &b;
+        let expected = naive_convolve(&a_coeffs, &b_coeffs);
 
         let (wall, alloc_bytes) = time_iters(|| {
             let prod = &a * &b;
             std::hint::black_box(prod.degree());
         });
 
-        let check = &a * &b;
-        let correct = check == reference;
+        let correct = (&a * &b).coefficients_i64() == expected;
 
         out.push(BenchRecord {
             kernel_family: "unipoly_mul",
@@ -277,7 +320,7 @@ fn bench_unipoly_mul() -> Vec<BenchRecord> {
             wall_ns: wall.as_nanos() as u64,
             alloc_bytes,
             correct,
-            note: Some("FLINT fmpz_poly_mul (NTT/FFT for large degrees)"),
+            note: Some("FLINT fmpz_poly_mul (NTT/FFT for large degrees)".into()),
         });
     }
 
@@ -307,6 +350,22 @@ fn bench_macaulay_reduce() -> Vec<BenchRecord> {
             terms: terms.iter().map(|(e, c)| (e.to_vec(), rat(*c))).collect(),
             n_vars,
         }
+    }
+
+    fn gb_input_coeff_bits(polys: &[GbPoly]) -> u32 {
+        fn int_bits(v: &rug::Integer) -> u32 {
+            if v == &0 {
+                0
+            } else {
+                (v.significant_bits() as u32).max(1)
+            }
+        }
+        polys
+            .iter()
+            .flat_map(|p| p.terms.values())
+            .map(|c| int_bits(c.numer()).max(int_bits(c.denom())))
+            .max()
+            .unwrap_or(0)
     }
 
     // Toy systems: row count scales with `n` (Katsura-style dense coupling).
@@ -347,7 +406,7 @@ fn bench_macaulay_reduce() -> Vec<BenchRecord> {
 
     for (input_family, polys) in systems {
         let size = polys.len();
-        let coeff_bits = 32; // 31-bit CRT primes; coefficients are small integers
+        let coeff_bits = gb_input_coeff_bits(polys);
 
         let reference = {
             let mut m = MacaulayMatrix::build(polys, MonomialOrder::Lex, PRIME)
@@ -372,7 +431,7 @@ fn bench_macaulay_reduce() -> Vec<BenchRecord> {
             wall_ns: cpu_wall.as_nanos() as u64,
             alloc_bytes: cpu_alloc,
             correct: true,
-            note: Some("dense GF(p) RREF; Gröbner Macaulay preprocessing"),
+            note: Some("dense GF(p) RREF; 31-bit prime modulus".into()),
         });
 
         if gpu_bench_enabled() {
@@ -386,32 +445,72 @@ fn bench_macaulay_reduce() -> Vec<BenchRecord> {
                     wall_ns: 0,
                     alloc_bytes: 0,
                     correct: false,
-                    note: Some("skipped: no CUDA device"),
+                    note: Some("skipped: no CUDA device".into()),
                 });
             } else {
-                let (gpu_wall, gpu_alloc) = time_iters(|| {
-                    let mut m = MacaulayMatrix::build(polys, MonomialOrder::Lex, PRIME)
-                        .expect("unlucky prime for toy system");
-                    m.reduce_gpu(0).expect("GPU reduce");
-                    std::hint::black_box(&m.data[..]);
-                });
-
-                let mut check = MacaulayMatrix::build(polys, MonomialOrder::Lex, PRIME)
-                    .expect("unlucky prime for toy system");
-                check.reduce_gpu(0).expect("GPU reduce check");
+                let mut check = match MacaulayMatrix::build(polys, MonomialOrder::Lex, PRIME) {
+                    Some(m) => m,
+                    None => {
+                        out.push(BenchRecord {
+                            kernel_family: "macaulay_reduce_mod_p",
+                            backend: "gpu",
+                            input_family,
+                            size,
+                            coeff_bits,
+                            wall_ns: 0,
+                            alloc_bytes: 0,
+                            correct: false,
+                            note: Some("gpu error: build failed (unlucky prime)".into()),
+                        });
+                        continue;
+                    }
+                };
+                if let Err(e) = check.reduce_gpu(0) {
+                    out.push(BenchRecord {
+                        kernel_family: "macaulay_reduce_mod_p",
+                        backend: "gpu",
+                        input_family,
+                        size,
+                        coeff_bits,
+                        wall_ns: 0,
+                        alloc_bytes: 0,
+                        correct: false,
+                        note: Some(format!("gpu error: {e}")),
+                    });
+                    continue;
+                }
                 let correct = check.data == reference;
 
-                out.push(BenchRecord {
-                    kernel_family: "macaulay_reduce_mod_p",
-                    backend: "gpu",
-                    input_family,
-                    size,
-                    coeff_bits,
-                    wall_ns: gpu_wall.as_nanos() as u64,
-                    alloc_bytes: gpu_alloc,
-                    correct,
-                    note: Some("PTX eliminate_row_kernel; host pivot loop"),
-                });
+                match time_iters_fallible(|| {
+                    let mut m = MacaulayMatrix::build(polys, MonomialOrder::Lex, PRIME)
+                        .ok_or_else(|| "build failed (unlucky prime)".to_string())?;
+                    m.reduce_gpu(0).map_err(|e| format!("{e}"))?;
+                    std::hint::black_box(&m.data[..]);
+                    Ok(())
+                }) {
+                    Ok((gpu_wall, gpu_alloc)) => out.push(BenchRecord {
+                        kernel_family: "macaulay_reduce_mod_p",
+                        backend: "gpu",
+                        input_family,
+                        size,
+                        coeff_bits,
+                        wall_ns: gpu_wall.as_nanos() as u64,
+                        alloc_bytes: gpu_alloc,
+                        correct,
+                        note: Some("PTX eliminate_row_kernel; host pivot loop".into()),
+                    }),
+                    Err(e) => out.push(BenchRecord {
+                        kernel_family: "macaulay_reduce_mod_p",
+                        backend: "gpu",
+                        input_family,
+                        size,
+                        coeff_bits,
+                        wall_ns: 0,
+                        alloc_bytes: 0,
+                        correct: false,
+                        note: Some(format!("gpu error: {e}")),
+                    }),
+                }
             }
         }
     }
@@ -465,13 +564,15 @@ fn main() {
     records.extend(bench_unipoly_mul());
     records.extend(bench_macaulay_reduce());
 
+    write_report(&records);
+
     let all_correct = records
         .iter()
-        .all(|r| r.correct || r.note == Some("skipped: no CUDA device"));
+        .all(|r| r.correct || skipped_no_cuda(&r.note));
     if !all_correct {
         eprintln!("correctness check FAILED for at least one record");
         for r in &records {
-            if !r.correct && r.note != Some("skipped: no CUDA device") {
+            if !r.correct && !skipped_no_cuda(&r.note) {
                 eprintln!(
                     "  FAIL: {:?} {:?} size={}",
                     r.kernel_family, r.backend, r.size
@@ -480,8 +581,6 @@ fn main() {
         }
         std::process::exit(1);
     }
-
-    write_report(&records);
 
     let policy = CrossoverPolicy::default();
     let picks = crossover_recommendation(&records, &policy);
