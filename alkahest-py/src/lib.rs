@@ -4133,6 +4133,19 @@ impl PyMatrix {
             .map_err(linear_algebra_error_to_py)
     }
 
+    fn rref(&self, py: Python<'_>) -> PyResult<PyMatrix> {
+        let pool = self.pool.borrow(py);
+        let r = self
+            .inner
+            .rref(&pool.inner)
+            .map_err(linear_algebra_error_to_py)?;
+        drop(pool);
+        Ok(PyMatrix {
+            inner: r,
+            pool: self.pool.clone_ref(py),
+        })
+    }
+
     fn column_space(&self, py: Python<'_>) -> PyResult<Vec<PyMatrix>> {
         let pool = self.pool.borrow(py);
         let bas = self

@@ -6,10 +6,14 @@ removed between minor versions without a deprecation cycle.  Graduate to
 ``alkahest.*`` once the API has been exercised in production.
 
 Current experimental surface (linear algebra on ``Matrix``):
-- ``Matrix.nullspace``, ``rank``, ``column_space``, ``row_space``
+- ``Matrix.rref``, ``nullspace``, ``rank``, ``column_space``, ``row_space``
 - ``Matrix.lu``, ``qr``, ``cholesky``
 - ``Matrix.jordan_form``, ``rational_canonical_form``, ``minimal_polynomial``,
   ``matrix_exp``, ``inverse``
+
+Agents should probe ``alkahest.capabilities()`` at session start; symbolic LA
+methods live on :class:`~alkahest.Matrix` and raise :class:`~alkahest.LinearAlgebraError`
+(``E-LINALG-*``) when an operation is unsupported for the input field or shape.
 
 Other experimental surface:
 - :class:`Assumptions` — explicit positive/nonzero refinement for conservative
