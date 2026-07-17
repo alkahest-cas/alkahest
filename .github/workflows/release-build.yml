@@ -51,7 +51,7 @@ jobs:
           command: build
           # Explicit CPython list — --find-interpreter also picks up PyPy and
           # Python 3.14, which PyO3 0.21 cannot target.
-          args: --release --strip --out dist --features egraph,groebner --interpreter python3.9 python3.10 python3.11 python3.12 python3.13
+          args: --release --strip --out dist --features egraph,groebner,cranelift --interpreter python3.9 python3.10 python3.11 python3.12 python3.13
           manylinux: "2_28"
           before-script-linux: |
             dnf install -y epel-release || true
@@ -75,13 +75,15 @@ jobs:
           print(ak.simplify(x + 0).value)
           print(ak.simplify_egraph(x + 0).value)
           assert hasattr(ak, 'solve'), 'expected groebner APIs in default wheel'
-          assert ak.capabilities()["features"] == {
+          f = ak.capabilities()["features"]
+          assert f == {
               "egraph": True, "groebner": True, "jit": False,
-              "cranelift": False, "llvm_jit": False, "cranelift_jit": False,
+              "cranelift": True, "llvm_jit": False, "cranelift_jit": True,
               "parallel": False, "numpy": False, "cuda": False,
               "groebner_cuda": False,
           }
-          print('groebner ok')
+          assert ak.jit_is_available(), "expected Cranelift JIT in default wheel"
+          print('default wheel ok (groebner + cranelift)')
           "
 
       - uses: actions/upload-artifact@v7
@@ -295,7 +297,7 @@ jobs:
 
       - name: Build wheel (macOS)
         if: runner.os == 'macOS'
-        run: maturin build --release --strip --features "egraph groebner" --out dist
+        run: maturin build --release --strip --features "egraph groebner cranelift" --out dist
 
       - name: Build wheel (Windows)
         if: runner.os == 'Windows'
@@ -305,7 +307,7 @@ jobs:
         # build script's `sh -c "configure ..."` couldn't find the compiler.
         shell: msys2 {0}
         run: |
-          maturin build --release --strip --features "egraph groebner" --target x86_64-pc-windows-gnu --out dist
+          maturin build --release --strip --features "egraph groebner cranelift" --target x86_64-pc-windows-gnu --out dist
 
       - name: Repair wheel with delvewheel (Windows)
         if: runner.os == 'Windows'
@@ -328,7 +330,7 @@ jobs:
       - name: Smoke test
         run: |
           pip install --no-index --find-links dist alkahest
-          python -c "import alkahest; p = alkahest.ExprPool(); x = p.symbol('x'); print(alkahest.simplify(x + 0)); caps = alkahest.capabilities(); assert caps['features']['egraph'] and caps['features']['groebner']; assert not caps['features']['jit'] and not caps['features']['parallel']"
+          python -c "import alkahest; p = alkahest.ExprPool(); x = p.symbol('x'); print(alkahest.simplify(x + 0)); caps = alkahest.capabilities(); f = caps['features']; assert f['egraph'] and f['groebner'] and f['cranelift_jit']; assert not f['llvm_jit'] and not f['parallel']; assert caps['jit'] and alkahest.jit_is_available()"
 
       - uses: actions/upload-artifact@v7
         with:

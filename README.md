@@ -11,7 +11,7 @@
 
 A high-performance computer algebra system for Python built for both humans and agents. Symbolic operations run orders of magnitude faster than SymPy and can run on modern accelerated hardware. Every computation produces a derivation log; a meaningful subset can export Lean 4 proofs for independent verification.
 
-**Install:** the package is published on [PyPI](https://pypi.org/project/alkahest/); use `pip install alkahest` (**Python 3.9–3.13**). See [Install](#install) below for optional **`+jit`** / **`+full`** Linux wheels (GitHub Releases or a future extras index) and building from source.
+**Install:** the package is published on [PyPI](https://pypi.org/project/alkahest/); use `pip install alkahest` (**Python 3.9–3.13**). Default wheels ship **Cranelift** CPU JIT (pure Rust, no LLVM). See [Install](#install) for the capability matrix and optional **`+jit`** / **`+full`** Linux wheels (GitHub Releases).
 
 **Demo:** try the hosted **[playground](https://alkahest-cas.github.io/playground/)** (WASM in-browser, or bring your own server/Jupyter URL + token), or run [`demo-playground/`](demo-playground/) locally for the full agent and recording stack. See [`demo-playground/README.md`](demo-playground/README.md).
 
@@ -45,7 +45,21 @@ python -m pip install -U pip
 pip install alkahest
 ```
 
-Default PyPI wheels include the **vendored egglog** e-graph backend (`egraph` feature) and the **Gröbner solver** (`groebner` feature — so `alkahest.solve`, Diophantine, homotopy, and related APIs are available out of the box) but **not** LLVM JIT, Cranelift, or `parallel`. Numeric APIs use the tree-walking interpreter fallback. For native LLVM CPU JIT—or JIT plus parallel F4—use a **PyTorch-style** opt-in wheel (separate artifact / index), not the default PyPI resolver path. From source, add `--features cranelift` for a pure-Rust fast-compile JIT tier without system LLVM.
+Default PyPI wheels include the **vendored egglog** e-graph backend (`egraph`), the **Gröbner solver** (`groebner` — so `alkahest.solve`, Diophantine, homotopy, and related APIs work out of the box), and **Cranelift** Tier-1 CPU JIT (`cranelift`, pure Rust, ~2 MB larger than the interpreter-only baseline). They do **not** include LLVM JIT or `parallel`. For LLVM CPU JIT—or JIT plus parallel F4—use a **PyTorch-style** opt-in **`+jit`** / **`+full`** Linux wheel from [GitHub Releases](#opt-in-linux-wheels-jit-and-full-pytorch-style), not the default PyPI resolver path.
+
+### Install matrix (default vs opt-in wheels)
+
+Probe your environment after install: `alkahest.capabilities()["features"]` and `alkahest.jit_is_available()`.
+
+| Artifact | Where | OS / arch (CI) | Python | `egraph` | `groebner` | Cranelift JIT | LLVM JIT | `parallel` |
+|----------|-------|----------------|--------|----------|------------|---------------|----------|------------|
+| **Default** (`pip install alkahest`) | [PyPI](https://pypi.org/project/alkahest/) | Linux manylinux x86_64; macOS arm64; Windows x86_64 | 3.9–3.13 | yes | yes | yes | no | no |
+| **`+jit`** (`X.Y.Z+jit`) | GitHub Releases only | Linux x86_64 | 3.9–3.13 | yes | yes | no | yes | no |
+| **`+full`** (`X.Y.Z+full`) | GitHub Releases only | Linux x86_64 | 3.9–3.13 | yes | yes | no | yes | yes |
+
+**macOS / Windows:** default PyPI wheels include Cranelift JIT. **`+jit`** and **`+full`** are **not** built in CI (LLVM / MSYS2 constraints); use [building from source](#from-source) with `--features jit` (and `parallel` for F4 parallelism) on those platforms.
+
+**Linux LLVM wheels** vendor LLVM and related `.so` files under `site-packages/alkahest.libs/`. If `import alkahest` fails with a missing `libffi-*.so` or `libLLVM-*.so`, prepend that directory to `LD_LIBRARY_PATH`.
 
 ### Opt-in Linux wheels: `+jit` and `+full` (PyTorch-style)
 
@@ -57,8 +71,9 @@ There is **no** `pip install alkahest[jit]` / `alkahest[full]` that swaps the na
 
 | Local version | Cargo features | When to use |
 |---------------|----------------|-------------|
-| `+jit` | `egraph groebner jit` | LLVM CPU JIT (smaller than `+full`; groebner/egraph are already in default wheels). |
-| `+full` | `egraph groebner jit parallel` | JIT plus parallel F4 S-polynomial reduction (largest wheel; groebner already in default). |
+| *(default PyPI)* | `egraph groebner cranelift` | Cranelift CPU JIT on all published platforms; no system LLVM. |
+| `+jit` | `egraph groebner jit` | LLVM CPU JIT (Linux only in CI; larger than default; no Cranelift). |
+| `+full` | `egraph groebner jit parallel` | LLVM JIT plus parallel F4 S-polynomial reduction (largest wheel; Linux only in CI). |
 
 Direct-install examples (adjust tag and filename after checking the release assets):
 
@@ -71,9 +86,9 @@ These wheels vendor LLVM (for JIT) and related `.so` files under `site-packages/
 
 If your client chokes on `+` in the URL, use percent-encoding (`2.3.1%2Bfull` in the filename segment).
 
-After installing `+jit` or `+full`, `alkahest.jit_is_available()` should be `True`. Gröbner-backed APIs such as `alkahest.solve` are available in **all** wheels (including the default PyPI wheel) since `groebner` became a default feature.
+After installing the **default** wheel, `alkahest.jit_is_available()` is `True` (Cranelift). After **`+jit`** or **`+full`**, it is also `True` (LLVM). Gröbner-backed APIs such as `alkahest.solve` are available in **all** wheels since `groebner` became a default feature.
 
-*macOS and Windows `+jit` / `+full` wheels are not produced in CI yet (LLVM / MSYS2 constraints); use [building from source](#from-source) there.*
+*See the [install matrix](#install-matrix-default-vs-opt-in-wheels) for per-platform coverage.*
 
 **Target layout (roadmap):** a small **extra index** URL (PEP 503) hosting only `+jit` / `+full` wheels, mirroring PyTorch’s `--extra-index-url` workflow:
 
