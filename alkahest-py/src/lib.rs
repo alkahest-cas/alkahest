@@ -5764,7 +5764,7 @@ fn py_evaluate(
         }
         return Ok(match core_eval_complex_f64(expr.id, &pool.inner, &env) {
             Ok(value) => {
-                let pc = PyComplex::from_doubles(py, value.re, value.im);
+                let pc = PyComplex::from_doubles_bound(py, value.re, value.im);
                 PyEvaluationResult {
                     value: pc.into_py(py),
                     status: "ok".into(),

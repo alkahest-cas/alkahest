@@ -82,7 +82,7 @@ impl UnsupportedReason {
     }
 
     /// Agent-facing error code, including complex branch-cut declines that
-    /// reuse [`UnsupportedExpression`] without a breaking enum variant.
+    /// reuse [`UnsupportedReason::UnsupportedExpression`] without a breaking enum variant.
     pub fn agent_code(&self) -> &'static str {
         match self {
             Self::UnsupportedExpression { kind: "branch_cut" } => "E-EVAL-011",
