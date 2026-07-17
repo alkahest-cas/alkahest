@@ -60,7 +60,8 @@ def test_diff_bessel_j0(pool, x):
     j0 = ex.bessel_j0(x)
     d = diff(j0, x)
     s = str(d.value)
-    assert "bessel_j1" in s and "-1" in s
+    assert "bessel_j1" in s
+    assert "-1" in s
 
 
 def test_diff_lambert_w(pool, x):
