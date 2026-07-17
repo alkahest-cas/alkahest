@@ -60,8 +60,8 @@ pub use deriv::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
 #[allow(deprecated)]
 pub use diff::{diff, diff_forward, grad, DiffError, DualValue, ForwardDiffError};
 pub use eval::{
-    eval_exact_rational, eval_f64, eval_interval, evaluate, EvalError, EvalMode, EvalValue,
-    UnsupportedReason,
+    eval_complex_f64, eval_exact_rational, eval_f64, eval_interval, evaluate, ComplexF64,
+    EvalError, EvalMode, EvalValue, UnsupportedReason,
 };
 pub use flint::{FlintInteger, FlintPoly};
 pub use hybrid::{Event, GuardStructure, HybridODE};
@@ -106,11 +106,12 @@ pub use parse::{parse, ParseError};
 pub use pattern::{match_pattern, Pattern, Substitution};
 pub use poly::{
     apart, cancel, factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z,
-    gcd_sparse_modular, poly_normal, real_roots, real_roots_symbolic, refine_root, resultant,
-    sparse_interpolate, sparse_interpolate_univariate, subresultant_prs, together, together_parts,
-    ApartError, ConversionError, FactorError, MultiPoly, MultiPolyFactorization, RationalFunction,
-    RealRootError, ResultantError, RootInterval, SparseGcdError, SparseInterpError, UniPoly,
-    UniPolyFactorModP, UniPolyFactorization,
+    gcd_sparse_modular, poly_normal, real_roots, real_roots_symbolic, refine_root, residue,
+    resultant, sparse_interpolate, sparse_interpolate_univariate, subresultant_prs, together,
+    together_parts, ApartError, ConversionError, FactorError, GaussRat, MultiPoly,
+    MultiPolyFactorization, RationalFunction, RealRootError, ResidueError, ResultantError,
+    RootInterval, SparseGcdError, SparseInterpError, UniPoly, UniPolyFactorModP,
+    UniPolyFactorization,
 };
 
 // §3.3 — Laplace transform and inverse (experimental surface; see `experimental`)
@@ -270,11 +271,12 @@ pub mod stable {
     pub use crate::pattern::{match_pattern, Pattern, Substitution};
     pub use crate::poly::{
         apart, cancel, factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z,
-        gcd_sparse_modular, poly_normal, real_roots, real_roots_symbolic, refine_root, resultant,
-        sparse_interpolate, sparse_interpolate_univariate, subresultant_prs, together,
-        together_parts, ApartError, ConversionError, FactorError, MultiPoly,
-        MultiPolyFactorization, RationalFunction, RealRootError, ResultantError, RootInterval,
-        SparseGcdError, SparseInterpError, UniPoly, UniPolyFactorModP, UniPolyFactorization,
+        gcd_sparse_modular, poly_normal, real_roots, real_roots_symbolic, refine_root, residue,
+        resultant, sparse_interpolate, sparse_interpolate_univariate, subresultant_prs, together,
+        together_parts, ApartError, ConversionError, FactorError, GaussRat, MultiPoly,
+        MultiPolyFactorization, RationalFunction, RealRootError, ResidueError, ResultantError,
+        RootInterval, SparseGcdError, SparseInterpError, UniPoly, UniPolyFactorModP,
+        UniPolyFactorization,
     };
     pub use crate::primitive::{Primitive, PrimitiveRegistry};
     pub use crate::real::{
@@ -316,8 +318,8 @@ pub mod experimental {
     pub use crate::calculus::multilimit::{multilimit, MultiLimit, PathWitness};
     pub use crate::deriv::{DerivationLog, DerivedExpr, RewriteStep, SideCondition};
     pub use crate::eval::{
-        eval_exact_rational, eval_f64, eval_interval, evaluate, EvalError, EvalMode, EvalValue,
-        UnsupportedReason,
+        eval_complex_f64, eval_exact_rational, eval_f64, eval_interval, evaluate, ComplexF64,
+        EvalError, EvalMode, EvalValue, UnsupportedReason,
     };
     pub use crate::horner::{emit_expr_c, emit_expr_c_vec, emit_horner_c, horner, EmitCError};
     pub use crate::hybrid::{Event, GuardStructure, HybridODE};
@@ -343,8 +345,8 @@ pub mod experimental {
     };
     pub use crate::plot::{render_dot, render_svg, render_svg_opts};
     pub use crate::poly::{
-        gcd_sparse_modular, sparse_interpolate, sparse_interpolate_univariate, SparseGcdError,
-        SparseInterpError,
+        gcd_sparse_modular, residue, sparse_interpolate, sparse_interpolate_univariate, GaussRat,
+        ResidueError, SparseGcdError, SparseInterpError,
     };
     pub use crate::simplify::{
         simplify_colored, simplify_egraph, simplify_expanded, ColorId, ColoredEgraph,

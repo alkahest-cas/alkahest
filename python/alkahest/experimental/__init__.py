@@ -17,9 +17,10 @@ Other experimental surface:
 - :func:`to_lean` — Lean 4 certificate export (V5-1)
 - :func:`to_stablehlo` — StableHLO / XLA bridge (V5-2)
 - :func:`to_jax` — JAX primitive integration (V5-7, requires JAX)
-- :func:`evaluate` — unified exact, f64, and interval evaluation
+- :func:`evaluate` — unified exact, f64, complex f64, and interval evaluation
 - :func:`conjugate`, :func:`re`, :func:`im`, :func:`arg` — symbolic complex
-  constructors (principal Arg only; no numeric/JIT evaluation yet)
+  constructors (principal Arg only; numeric evaluation via :func:`evaluate` in ``complex`` / ``auto`` mode)
+- :func:`residue` — rational meromorphic residues at points in ℚ(i)
 - :class:`GroebnerBasis`, :class:`GbPoly` — parallel F4 Gröbner basis (V5-11,
   requires ``groebner`` feature)
 - :func:`solve` — polynomial system solver (V1-4, requires ``groebner`` feature)
@@ -39,6 +40,9 @@ PRs #152–#161):
 - :func:`asymptotic_expand` — asymptotic expansion at infinity (#161).
 - :func:`series_solve` — power-series / Frobenius ODE solutions (#160).
 - :class:`Fps` — lazy formal power series over ℚ (#155).
+- :func:`lambert_w`, :func:`digamma`, :func:`bessel_j0`, :func:`bessel_j1` —
+  special-function foundation primitives (principal Lambert W₀, digamma ψ,
+  Bessel J₀/J₁).
 
 Numeric ODE integrators (Phase 16b):
 - :func:`ode_integrate_rk4` — fixed-step 4th-order Runge–Kutta integrator.
@@ -61,7 +65,10 @@ from alkahest.alkahest import (
     OdeTrajectory,
     arg,
     asymptotic_expand,
+    bessel_j0,
+    bessel_j1,
     conjugate,
+    digamma,
     dirac_delta,
     dsolve,
     evaluate,
@@ -72,10 +79,12 @@ from alkahest.alkahest import (
     inverse_laplace_transform,
     inverse_z_transform,
     laplace_transform,
+    lambert_w,
     multilimit,
     ode_integrate_rk4,
     ode_integrate_rk45,
     re,
+    residue,
     series_solve,
     z_transform,
 )
@@ -102,9 +111,12 @@ __all__ = [
     "OdeTrajectory",
     "arg",
     "asymptotic_expand",
+    "bessel_j0",
+    "bessel_j1",
     "compile_cuda",
     "conjugate",
     "dirac_delta",
+    "digamma",
     "dsolve",
     "evaluate",
     "fourier_transform",
@@ -113,11 +125,13 @@ __all__ = [
     "inverse_fourier_transform",
     "inverse_laplace_transform",
     "inverse_z_transform",
+    "lambert_w",
     "laplace_transform",
     "multilimit",
     "ode_integrate_rk4",
     "ode_integrate_rk45",
     "re",
+    "residue",
     "series_solve",
     "solve",
     "to_jax",

@@ -5,12 +5,16 @@
 //! [`IntervalEval`] provides rigorous enclosures.  This module gives callers a
 //! single dispatch point and reports unsupported constructs structurally.
 
+mod complex_f64;
+
 use crate::ball::{ArbBall, IntervalEval};
 use crate::kernel::expr::PredicateKind;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use rug::Rational;
 use std::collections::HashMap;
 use std::fmt;
+
+pub use complex_f64::{eval_complex_f64, ComplexF64};
 
 /// Input bindings and representation selected for an evaluation.
 pub enum EvalMode<'a> {
@@ -19,6 +23,7 @@ pub enum EvalMode<'a> {
     ExactRational(&'a HashMap<ExprId, Rational>),
     /// Fast approximate evaluation using IEEE-754 double precision.
     F64(&'a HashMap<ExprId, f64>),
+    ComplexF64(&'a HashMap<ExprId, ComplexF64>),
     /// Rigorous ball evaluation through the existing [`IntervalEval`] engine.
     Interval(&'a IntervalEval),
 }
@@ -28,6 +33,7 @@ pub enum EvalMode<'a> {
 pub enum EvalValue {
     Rational(Rational),
     F64(f64),
+    ComplexF64(ComplexF64),
     Interval(ArbBall),
 }
 
@@ -54,6 +60,7 @@ pub enum UnsupportedReason {
     IndeterminatePredicate,
     NonFiniteResult,
     IntervalEvaluationFailed,
+    BranchCutIndeterminate,
 }
 
 impl UnsupportedReason {
@@ -70,6 +77,7 @@ impl UnsupportedReason {
             Self::IndeterminatePredicate => "E-EVAL-008",
             Self::NonFiniteResult => "E-EVAL-009",
             Self::IntervalEvaluationFailed => "E-EVAL-010",
+            Self::BranchCutIndeterminate => "E-EVAL-011",
         }
     }
 }
@@ -96,6 +104,9 @@ pub fn evaluate(expr: ExprId, pool: &ExprPool, mode: EvalMode<'_>) -> Result<Eva
             eval_exact_rational(expr, pool, bindings).map(EvalValue::Rational)
         }
         EvalMode::F64(bindings) => eval_f64(expr, pool, bindings).map(EvalValue::F64),
+        EvalMode::ComplexF64(bindings) => {
+            eval_complex_f64(expr, pool, bindings).map(EvalValue::ComplexF64)
+        }
         EvalMode::Interval(eval) => eval
             .eval(expr, pool)
             .map(EvalValue::Interval)
@@ -400,7 +411,11 @@ fn eval_f64_predicate(
     }
 }
 
-fn check_arity(kind: &PredicateKind, args: &[ExprId], expected: usize) -> Result<(), EvalError> {
+pub(crate) fn check_arity(
+    kind: &PredicateKind,
+    args: &[ExprId],
+    expected: usize,
+) -> Result<(), EvalError> {
     if args.len() == expected {
         Ok(())
     } else {
@@ -412,12 +427,16 @@ fn check_arity(kind: &PredicateKind, args: &[ExprId], expected: usize) -> Result
     }
 }
 
-fn predicate_arg(kind: &PredicateKind, args: &[ExprId], index: usize) -> Result<ExprId, EvalError> {
+pub(crate) fn predicate_arg(
+    kind: &PredicateKind,
+    args: &[ExprId],
+    index: usize,
+) -> Result<ExprId, EvalError> {
     check_arity(kind, args, 1)?;
     Ok(args[index])
 }
 
-fn expr_kind(expr: &ExprData) -> &'static str {
+pub(crate) fn expr_kind(expr: &ExprData) -> &'static str {
     match expr {
         ExprData::Forall { .. } => "Forall",
         ExprData::Exists { .. } => "Exists",

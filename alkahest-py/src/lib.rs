@@ -33,6 +33,7 @@ use alkahest_core::{
     // V2-4 — Real root isolation
     real_roots_symbolic as core_real_roots_symbolic,
     refine_root as core_refine_root,
+    residue as core_residue,
     resistor as core_resistor,
     // V2-2 — Resultants and subresultant PRS
     resultant as core_resultant,
@@ -110,8 +111,8 @@ use alkahest_core::modular::{
 };
 use alkahest_core::{
     apart as core_apart, diff as core_diff, diff_forward as core_diff_forward,
-    eval_exact_rational as core_eval_exact_rational, eval_f64 as core_eval_f64,
-    eval_interval as core_eval_interval, integrate as core_integrate,
+    eval_complex_f64 as core_eval_complex_f64, eval_exact_rational as core_eval_exact_rational,
+    eval_f64 as core_eval_f64, eval_interval as core_eval_interval, integrate as core_integrate,
     integrate_definite as core_integrate_definite, limit as core_limit, load_from, log_exp_rules,
     rsolve as core_rsolve, series as core_series, simplify as core_simplify,
     simplify_batch as core_simplify_batch, simplify_egraph as core_simplify_egraph,
@@ -120,10 +121,11 @@ use alkahest_core::{
     simplify_with as core_simplify_with, trig_rules,
     verify_antiderivative_status as core_verify_antiderivative_status,
     AlkahestError as AlkahestErrorTrait, AntiderivativeVerification, ApartError,
-    AssumptionContext as CoreAssumptionContext, AssumptionError, DerivedExpr, DiffError,
-    EgraphConfig, IntegrationError, IoError, LimitDirection as CoreLimitDirection, LimitError,
-    LinearRecurrenceError, PatternRule, ProductError, ResultantError, RsolveError, SeriesError,
-    SimplifyConfig, SizeCost, SparseGcdError, SparseInterpError, SumError,
+    AssumptionContext as CoreAssumptionContext, AssumptionError, ComplexF64, DerivedExpr,
+    DiffError, EgraphConfig, GaussRat, IntegrationError, IoError,
+    LimitDirection as CoreLimitDirection, LimitError, LinearRecurrenceError, PatternRule,
+    ProductError, ResidueError, ResultantError, RsolveError, SeriesError, SimplifyConfig, SizeCost,
+    SparseGcdError, SparseInterpError, SumError,
 };
 // Experimental calculus / ODE / transform surface (PyO3 bindings deferred at
 // landing time — see PRs #152–#161). These mirror the Rust `experimental`
@@ -163,7 +165,7 @@ use alkahest_core::number_theory::{
 };
 use pyo3::exceptions::{PyOverflowError, PyTypeError};
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyInt, PyList, PyTuple};
+use pyo3::types::{PyComplex, PyDict, PyInt, PyList, PyTuple};
 use rug::{Complete, Integer, Rational};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -1956,6 +1958,38 @@ fn gamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "gamma", expr)
 }
 
+/// Principal-branch Lambert W₀(x), with W(x)·e^W(x) = x.
+///
+/// Surfaced under `alkahest.experimental` (special-function foundation).
+#[pyfunction]
+fn lambert_w(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "lambert_w", expr)
+}
+
+/// Digamma ψ(x) = Γ′(x)/Γ(x).
+///
+/// Surfaced under `alkahest.experimental` (special-function foundation).
+#[pyfunction]
+fn digamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "digamma", expr)
+}
+
+/// Bessel function of the first kind, order 0: J₀(x).
+///
+/// Surfaced under `alkahest.experimental` (special-function foundation).
+#[pyfunction]
+fn bessel_j0(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "bessel_j0", expr)
+}
+
+/// Bessel function of the first kind, order 1: J₁(x).
+///
+/// Surfaced under `alkahest.experimental` (special-function foundation).
+#[pyfunction]
+fn bessel_j1(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "bessel_j1", expr)
+}
+
 /// Heaviside step `θ(x)` (registered primitive; `θ(0) = 1/2`).
 ///
 /// Surfaced under `alkahest.experimental` to avoid mutating the frozen
@@ -2770,6 +2804,68 @@ fn py_apart(py: Python<'_>, expr: PyRef<PyExpr>, var: PyRef<PyExpr>) -> PyResult
     let id = {
         let pool = pool_py.borrow(py);
         core_apart(expr.id, var.id, &pool.inner).map_err(apart_error_to_py)?
+    };
+    Ok(PyExpr { id, pool: pool_py })
+}
+
+fn residue_error_to_py(e: ResidueError) -> PyErr {
+    pyo3::exceptions::PyValueError::new_err(format!("{} ({})", e, e.code()))
+}
+fn rational_from_py(ob: &Bound<'_, PyAny>) -> PyResult<Rational> {
+    if let Ok(i) = ob.extract::<i64>() {
+        return Ok(Rational::from(i));
+    }
+    exact_binding(ob)
+}
+fn parse_gauss_point(ob: &Bound<'_, PyAny>) -> PyResult<GaussRat> {
+    if let Ok(t) = ob.downcast::<PyTuple>() {
+        if t.len() == 2 {
+            return Ok(GaussRat::from_re_im(
+                rational_from_py(&t.get_item(0)?)?,
+                rational_from_py(&t.get_item(1)?)?,
+            ));
+        }
+    }
+    if let Ok(c) = ob.downcast::<PyComplex>() {
+        let (re, im) = (c.real(), c.imag());
+        if re.fract() == 0.0 && im.fract() == 0.0 {
+            return Ok(GaussRat::from_re_im(
+                Rational::from(re as i64),
+                Rational::from(im as i64),
+            ));
+        }
+    }
+    Ok(GaussRat::from_re_im(
+        rational_from_py(ob)?,
+        Rational::from(0),
+    ))
+}
+fn try_complex_binding(ob: &Bound<'_, PyAny>) -> Option<ComplexF64> {
+    if let Ok(c) = ob.downcast::<PyComplex>() {
+        return Some(ComplexF64::new(c.real(), c.imag()));
+    }
+    if let Ok(t) = ob.downcast::<PyTuple>() {
+        if t.len() == 2 {
+            let re: f64 = t.get_item(0).ok()?.extract().ok()?;
+            let im: f64 = t.get_item(1).ok()?.extract().ok()?;
+            return Some(ComplexF64::new(re, im));
+        }
+    }
+    None
+}
+#[pyfunction]
+#[pyo3(name = "residue")]
+fn py_residue(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    var: PyRef<PyExpr>,
+    point: &Bound<'_, PyAny>,
+) -> PyResult<PyExpr> {
+    let pool_py = expr.pool.clone_ref(py);
+    let gauss = parse_gauss_point(point)?;
+    let id = {
+        let pool = pool_py.borrow(py);
+        core_residue(expr.id, var.id, gauss, &pool.inner).map_err(residue_error_to_py)?
     };
     Ok(PyExpr { id, pool: pool_py })
 }
@@ -5596,9 +5692,9 @@ fn py_evaluate(
     mode: &str,
     precision_bits: Option<u32>,
 ) -> PyResult<PyEvaluationResult> {
-    if !matches!(mode, "auto" | "exact" | "f64" | "interval") {
+    if !matches!(mode, "auto" | "exact" | "f64" | "interval" | "complex") {
         return Err(pyo3::exceptions::PyValueError::new_err(
-            "mode must be 'auto', 'exact', 'f64', or 'interval'",
+            "mode must be 'auto', 'exact', 'f64', 'complex', or 'interval'",
         ));
     }
     if precision_bits == Some(0) {
@@ -5634,6 +5730,49 @@ fn py_evaluate(
                     requested_precision_bits: precision_bits,
                     achieved_precision_bits: Some(precision),
                     enclosure: Some(py_ball),
+                    reason: None,
+                }
+            }
+            Err(error) => PyEvaluationResult {
+                value: py.None(),
+                status: "unsupported".into(),
+                backend: "none".into(),
+                requested_mode: mode.into(),
+                requested_precision_bits: precision_bits,
+                achieved_precision_bits: None,
+                enclosure: None,
+                reason: Some(error.reason.code().to_owned()),
+            },
+        });
+    }
+
+    let wants_complex = mode == "complex"
+        || (mode == "auto"
+            && bindings
+                .iter()
+                .any(|(_, v)| try_complex_binding(&v).is_some()));
+    if wants_complex {
+        let mut env = std::collections::HashMap::new();
+        for (key, value) in bindings.iter() {
+            let var: PyRef<PyExpr> = key.extract()?;
+            env.insert(
+                var.id,
+                try_complex_binding(&value).ok_or_else(|| {
+                    PyTypeError::new_err("complex bindings must be complex numbers")
+                })?,
+            );
+        }
+        return Ok(match core_eval_complex_f64(expr.id, &pool.inner, &env) {
+            Ok(value) => {
+                let pc = PyComplex::from_doubles(py, value.re, value.im);
+                PyEvaluationResult {
+                    value: pc.into_py(py),
+                    status: "ok".into(),
+                    backend: "interpreter_complex_f64".into(),
+                    requested_mode: mode.into(),
+                    requested_precision_bits: precision_bits,
+                    achieved_precision_bits: Some(53),
+                    enclosure: None,
                     reason: None,
                 }
             }
@@ -8534,6 +8673,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_integrate, m)?)?;
     m.add_function(wrap_pyfunction!(py_integrate_definite, m)?)?;
     m.add_function(wrap_pyfunction!(py_apart, m)?)?;
+    m.add_function(wrap_pyfunction!(py_residue, m)?)?;
     m.add_function(wrap_pyfunction!(py_series, m)?)?;
     m.add_function(wrap_pyfunction!(py_limit, m)?)?;
     m.add_function(wrap_pyfunction!(py_sum_indefinite, m)?)?;
@@ -8574,6 +8714,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ceil, m)?)?;
     m.add_function(wrap_pyfunction!(round_expr, m)?)?;
     m.add_function(wrap_pyfunction!(gamma, m)?)?;
+    m.add_function(wrap_pyfunction!(lambert_w, m)?)?;
+    m.add_function(wrap_pyfunction!(digamma, m)?)?;
+    m.add_function(wrap_pyfunction!(bessel_j0, m)?)?;
+    m.add_function(wrap_pyfunction!(bessel_j1, m)?)?;
     m.add_function(wrap_pyfunction!(heaviside, m)?)?;
     m.add_function(wrap_pyfunction!(dirac_delta, m)?)?;
     // Experimental calculus / ODE / transform surface (PRs #152–#161).
