@@ -43,6 +43,9 @@ PRs #152–#161):
 - :func:`asymptotic_expand` — asymptotic expansion at infinity (#161).
 - :func:`series_solve` — power-series / Frobenius ODE solutions (#160).
 - :class:`Fps` — lazy formal power series over ℚ (#155).
+- :func:`lambert_w`, :func:`digamma`, :func:`bessel_j0`, :func:`bessel_j1` —
+  special-function foundation primitives (principal Lambert W₀, digamma ψ,
+  Bessel J₀/J₁).
 
 Numeric ODE integrators (Phase 16b):
 - :func:`ode_integrate_rk4` — fixed-step 4th-order Runge–Kutta integrator.
@@ -65,7 +68,10 @@ from alkahest.alkahest import (
     OdeTrajectory,
     arg,
     asymptotic_expand,
+    bessel_j0,
+    bessel_j1,
     conjugate,
+    digamma,
     dirac_delta,
     dsolve,
     evaluate,
@@ -75,6 +81,7 @@ from alkahest.alkahest import (
     inverse_fourier_transform,
     inverse_laplace_transform,
     inverse_z_transform,
+    lambert_w,
     laplace_transform,
     multilimit,
     ode_integrate_rk4,
@@ -106,8 +113,11 @@ __all__ = [
     "OdeTrajectory",
     "arg",
     "asymptotic_expand",
+    "bessel_j0",
+    "bessel_j1",
     "compile_cuda",
     "conjugate",
+    "digamma",
     "dirac_delta",
     "dsolve",
     "evaluate",
@@ -117,6 +127,7 @@ __all__ = [
     "inverse_fourier_transform",
     "inverse_laplace_transform",
     "inverse_z_transform",
+    "lambert_w",
     "laplace_transform",
     "multilimit",
     "ode_integrate_rk4",

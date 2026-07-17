@@ -1956,6 +1956,38 @@ fn gamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "gamma", expr)
 }
 
+/// Principal-branch Lambert W₀(x), with W(x)·e^W(x) = x.
+///
+/// Surfaced under `alkahest.experimental` (special-function foundation).
+#[pyfunction]
+fn lambert_w(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "lambert_w", expr)
+}
+
+/// Digamma ψ(x) = Γ′(x)/Γ(x).
+///
+/// Surfaced under `alkahest.experimental` (special-function foundation).
+#[pyfunction]
+fn digamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "digamma", expr)
+}
+
+/// Bessel function of the first kind, order 0: J₀(x).
+///
+/// Surfaced under `alkahest.experimental` (special-function foundation).
+#[pyfunction]
+fn bessel_j0(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "bessel_j0", expr)
+}
+
+/// Bessel function of the first kind, order 1: J₁(x).
+///
+/// Surfaced under `alkahest.experimental` (special-function foundation).
+#[pyfunction]
+fn bessel_j1(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "bessel_j1", expr)
+}
+
 /// Heaviside step `θ(x)` (registered primitive; `θ(0) = 1/2`).
 ///
 /// Surfaced under `alkahest.experimental` to avoid mutating the frozen
@@ -8587,6 +8619,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ceil, m)?)?;
     m.add_function(wrap_pyfunction!(round_expr, m)?)?;
     m.add_function(wrap_pyfunction!(gamma, m)?)?;
+    m.add_function(wrap_pyfunction!(lambert_w, m)?)?;
+    m.add_function(wrap_pyfunction!(digamma, m)?)?;
+    m.add_function(wrap_pyfunction!(bessel_j0, m)?)?;
+    m.add_function(wrap_pyfunction!(bessel_j1, m)?)?;
     m.add_function(wrap_pyfunction!(heaviside, m)?)?;
     m.add_function(wrap_pyfunction!(dirac_delta, m)?)?;
     // Experimental calculus / ODE / transform surface (PRs #152–#161).

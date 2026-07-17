@@ -42,6 +42,7 @@ pub mod real;
 pub mod simplify;
 #[cfg(feature = "groebner")]
 pub mod solver;
+pub mod special;
 // V2-13 — Differential algebra / Rosenfeld–Gröbner
 #[cfg(feature = "groebner")]
 pub mod diffalg;

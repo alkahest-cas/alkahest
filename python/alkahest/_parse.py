@@ -325,6 +325,10 @@ def _apply_func(name: str, args: list, offset: int):
         "erf": _ak.erf,
         "erfc": _ak.erfc,
         "gamma": _ak.gamma,
+        "lambert_w": _ak.experimental.lambert_w,
+        "digamma": _ak.experimental.digamma,
+        "bessel_j0": _ak.experimental.bessel_j0,
+        "bessel_j1": _ak.experimental.bessel_j1,
         # Elliptic special functions (parameter convention m = k^2).
         "EllipticK": _ak.elliptic_k,
         "EllipticE": _ak.elliptic_e,  # 1 arg (complete) or 2 args (incomplete)
