@@ -19,7 +19,8 @@ Other experimental surface:
 - :func:`to_jax` — JAX primitive integration (V5-7, requires JAX)
 - :func:`evaluate` — unified exact, f64, complex f64, and interval evaluation
 - :func:`conjugate`, :func:`re`, :func:`im`, :func:`arg` — symbolic complex
-  constructors (principal Arg only; numeric evaluation via :func:`evaluate` in ``complex`` / ``auto`` mode)
+  constructors (principal Arg only; numeric evaluation via :func:`evaluate` in
+  ``complex`` / ``auto`` mode)
 - :func:`residue` — rational meromorphic residues at points in ℚ(i)
 - :class:`GroebnerBasis`, :class:`GbPoly` — parallel F4 Gröbner basis (V5-11,
   requires ``groebner`` feature)
@@ -78,8 +79,8 @@ from alkahest.alkahest import (
     inverse_fourier_transform,
     inverse_laplace_transform,
     inverse_z_transform,
-    laplace_transform,
     lambert_w,
+    laplace_transform,
     multilimit,
     ode_integrate_rk4,
     ode_integrate_rk45,
@@ -115,8 +116,8 @@ __all__ = [
     "bessel_j1",
     "compile_cuda",
     "conjugate",
-    "dirac_delta",
     "digamma",
+    "dirac_delta",
     "dsolve",
     "evaluate",
     "fourier_transform",

@@ -1,5 +1,5 @@
 import alkahest as ak
-from alkahest.experimental import arg, evaluate, re, im
+from alkahest.experimental import arg, evaluate, im, re
 
 
 def test_complex_auto_mode_with_complex_binding():

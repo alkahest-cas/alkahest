@@ -1,13 +1,12 @@
-import pytest
-
 import alkahest as ak
+import pytest
 from alkahest.experimental import residue
 
 
 def test_residue_simple_pole_at_origin():
     pool = ak.ExprPool()
     z = pool.symbol("z", ak.Domain.Complex)
-    expr = z ** -1
+    expr = z**-1
 
     assert str(ak.simplify(residue(expr, z, 0)).value) == "1"
 
@@ -36,7 +35,7 @@ def test_non_pole_returns_zero():
     pool = ak.ExprPool()
     z = pool.symbol("z", ak.Domain.Complex)
 
-    assert str(ak.simplify(residue(z ** -1, z, 1)).value) == "0"
+    assert str(ak.simplify(residue(z**-1, z, 1)).value) == "0"
 
 
 def test_non_rational_declines():
