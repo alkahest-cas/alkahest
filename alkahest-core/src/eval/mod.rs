@@ -17,13 +17,16 @@ use std::fmt;
 pub use complex_f64::{eval_complex_f64, ComplexF64};
 
 /// Input bindings and representation selected for an evaluation.
+///
+/// Complex evaluation is intentionally a separate entry point
+/// ([`eval_complex_f64`]) so this enum stays semver-compatible without a
+/// major bump when the complex path lands.
 pub enum EvalMode<'a> {
     /// Exact evaluation over rational numbers.  Float literals and
     /// transcendental functions are rejected.
     ExactRational(&'a HashMap<ExprId, Rational>),
     /// Fast approximate evaluation using IEEE-754 double precision.
     F64(&'a HashMap<ExprId, f64>),
-    ComplexF64(&'a HashMap<ExprId, ComplexF64>),
     /// Rigorous ball evaluation through the existing [`IntervalEval`] engine.
     Interval(&'a IntervalEval),
 }
@@ -33,7 +36,6 @@ pub enum EvalMode<'a> {
 pub enum EvalValue {
     Rational(Rational),
     F64(f64),
-    ComplexF64(ComplexF64),
     Interval(ArbBall),
 }
 
@@ -60,7 +62,6 @@ pub enum UnsupportedReason {
     IndeterminatePredicate,
     NonFiniteResult,
     IntervalEvaluationFailed,
-    BranchCutIndeterminate,
 }
 
 impl UnsupportedReason {
@@ -77,7 +78,15 @@ impl UnsupportedReason {
             Self::IndeterminatePredicate => "E-EVAL-008",
             Self::NonFiniteResult => "E-EVAL-009",
             Self::IntervalEvaluationFailed => "E-EVAL-010",
-            Self::BranchCutIndeterminate => "E-EVAL-011",
+        }
+    }
+
+    /// Agent-facing error code, including complex branch-cut declines that
+    /// reuse [`UnsupportedExpression`] without a breaking enum variant.
+    pub fn agent_code(&self) -> &'static str {
+        match self {
+            Self::UnsupportedExpression { kind: "branch_cut" } => "E-EVAL-011",
+            other => other.code(),
         }
     }
 }
@@ -104,9 +113,6 @@ pub fn evaluate(expr: ExprId, pool: &ExprPool, mode: EvalMode<'_>) -> Result<Eva
             eval_exact_rational(expr, pool, bindings).map(EvalValue::Rational)
         }
         EvalMode::F64(bindings) => eval_f64(expr, pool, bindings).map(EvalValue::F64),
-        EvalMode::ComplexF64(bindings) => {
-            eval_complex_f64(expr, pool, bindings).map(EvalValue::ComplexF64)
-        }
         EvalMode::Interval(eval) => eval
             .eval(expr, pool)
             .map(EvalValue::Interval)

@@ -5784,7 +5784,7 @@ fn py_evaluate(
                 requested_precision_bits: precision_bits,
                 achieved_precision_bits: None,
                 enclosure: None,
-                reason: Some(error.reason.code().to_owned()),
+                reason: Some(error.reason.agent_code().to_owned()),
             },
         });
     }

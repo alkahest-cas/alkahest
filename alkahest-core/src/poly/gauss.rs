@@ -203,10 +203,10 @@ impl GaussTaylor {
     pub fn mul(&self, o: &Self) -> Self {
         let n = self.coeffs.len().max(o.coeffs.len());
         let mut out = vec![GaussRat::zero(); n];
-        for i in 0..n {
+        for (i, slot) in out.iter_mut().enumerate().take(n) {
             for j in 0..=i {
                 if j < self.coeffs.len() && (i - j) < o.coeffs.len() {
-                    out[i] = out[i].add(&self.coeffs[j].mul(&o.coeffs[i - j]));
+                    *slot = slot.add(&self.coeffs[j].mul(&o.coeffs[i - j]));
                 }
             }
         }

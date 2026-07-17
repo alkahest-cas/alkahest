@@ -64,7 +64,9 @@ impl ComplexF64 {
     }
     fn ln(self) -> Result<Self, EvalError> {
         if self.re == 0.0 && self.im == 0.0 {
-            return Err(error(UnsupportedReason::BranchCutIndeterminate));
+            return Err(error(UnsupportedReason::UnsupportedExpression {
+                kind: "branch_cut",
+            }));
         }
         let r = (self.re * self.re + self.im * self.im).sqrt();
         Ok(Self::new(r.ln(), self.im.atan2(self.re)))
@@ -83,7 +85,9 @@ impl ComplexF64 {
     }
     fn principal_arg(self) -> Result<f64, EvalError> {
         if (self.re == 0.0 && self.im == 0.0) || (self.im == 0.0 && self.re <= 0.0) {
-            return Err(error(UnsupportedReason::BranchCutIndeterminate));
+            return Err(error(UnsupportedReason::UnsupportedExpression {
+                kind: "branch_cut",
+            }));
         }
         Ok(self.im.atan2(self.re))
     }
@@ -169,7 +173,7 @@ mod tests {
             eval_complex_f64(expr, &pool, &HashMap::new())
                 .unwrap_err()
                 .reason,
-            UnsupportedReason::BranchCutIndeterminate
+            UnsupportedReason::UnsupportedExpression { kind: "branch_cut" }
         );
     }
 }

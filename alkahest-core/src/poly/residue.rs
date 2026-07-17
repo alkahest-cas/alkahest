@@ -1,7 +1,5 @@
 //! Residue of a rational meromorphic function at a point in ℚ(i).
 
-use rug::Rational;
-
 use crate::integrate::risch::poly_rde::trim;
 use crate::integrate::risch::rational_rde::{expr_to_qrational, poly_div_exact, poly_gcd};
 use crate::kernel::{ExprId, ExprPool};
@@ -89,9 +87,9 @@ fn gauss_to_expr(g: &GaussRat, pool: &ExprPool) -> ExprId {
     }
     if g.im != 0 {
         let i = pool.imaginary_unit();
-        let im = if g.im == Rational::from(1) {
+        let im = if g.im == 1 {
             i
-        } else if g.im == Rational::from(-1) {
+        } else if g.im == -1 {
             pool.mul(vec![pool.integer(-1_i32), i])
         } else {
             let (n, d) = g.im.clone().into_numer_denom();
