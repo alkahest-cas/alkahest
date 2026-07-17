@@ -334,6 +334,8 @@ impl PrimitiveRegistry {
         reg.register(Box::new(builtins::RoundPrimitive));
         reg.register(Box::new(builtins::Atan2Primitive));
         reg.register(Box::new(builtins::GammaPrimitive));
+        // Principal-branch Lambert W (experimental constructor; used by solve).
+        reg.register(Box::new(builtins::LambertWPrimitive));
         reg.register(Box::new(builtins::MinPrimitive));
         reg.register(Box::new(builtins::MaxPrimitive));
         reg.register(Box::new(builtins::ConjugatePrimitive));
@@ -2075,6 +2077,110 @@ pub mod builtins {
         }
     }
 
+    // ── lambert_w (principal branch W₀) ──────────────────────────────────────
+    //
+    // Thin primitive so transcendental `solve` can return closed forms like
+    // `W(c)` for `x·e^x = c`.  Numeric evaluation covers the real principal
+    // branch on `[-1/e, ∞)`; the full special-function bundle (ball, branches
+    // W_{-1}, …) can grow later without changing the constructor name.
+
+    pub struct LambertWPrimitive;
+
+    impl Primitive for LambertWPrimitive {
+        fn name(&self) -> &'static str {
+            "lambert_w"
+        }
+
+        fn pretty(&self, args: &[ExprId], pool: &ExprPool) -> String {
+            format!("W({})", pool.display(args[0]))
+        }
+
+        fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
+            let x = args[0];
+            let dx = crate::diff::diff(x, wrt, pool).ok()?.value;
+            // d/dx W(x) = W(x) / (x · (1 + W(x))) for x ≠ 0 (limit at 0 is 1).
+            let w = pool.func("lambert_w", vec![x]);
+            let one = pool.integer(1_i32);
+            let one_plus_w = pool.add(vec![one, w]);
+            let denom = pool.mul(vec![x, one_plus_w]);
+            let inv = pool.pow(denom, pool.integer(-1_i32));
+            Some(pool.mul(vec![w, inv, dx]))
+        }
+
+        fn diff_reverse(
+            &self,
+            args: &[ExprId],
+            cotan: ExprId,
+            pool: &ExprPool,
+        ) -> Option<Vec<ExprId>> {
+            let x = args[0];
+            let w = pool.func("lambert_w", vec![x]);
+            let one = pool.integer(1_i32);
+            let one_plus_w = pool.add(vec![one, w]);
+            let denom = pool.mul(vec![x, one_plus_w]);
+            let inv = pool.pow(denom, pool.integer(-1_i32));
+            Some(vec![pool.mul(vec![cotan, w, inv])])
+        }
+
+        fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
+            lambert_w0_f64(args[0])
+        }
+    }
+
+    /// Principal real branch W₀ via Halley's method.  Returns `None` outside
+    /// `[-1/e, ∞)` or on non-finite input.
+    fn lambert_w0_f64(x: f64) -> Option<f64> {
+        if !x.is_finite() {
+            return None;
+        }
+        let neg_inv_e = -std::f64::consts::E.recip();
+        if x < neg_inv_e {
+            return None;
+        }
+        if x == 0.0 {
+            return Some(0.0);
+        }
+        if (x - neg_inv_e).abs() <= 1e-15 {
+            return Some(-1.0);
+        }
+
+        let mut w = if x < 0.0 {
+            let p = (2.0 * (1.0 + std::f64::consts::E * x)).sqrt();
+            -1.0 + p - p * p / 3.0
+        } else if x < 1.0 {
+            x
+        } else {
+            x.ln()
+        };
+
+        for _ in 0..64 {
+            let ew = w.exp();
+            let we = w * ew;
+            let num = we - x;
+            if !num.is_finite() {
+                return None;
+            }
+            let w1 = w + 1.0;
+            if w1.abs() < 1e-30 {
+                return Some(-1.0);
+            }
+            let denom = ew * w1 - (w + 2.0) * num / (2.0 * w1);
+            if denom.abs() < 1e-30 {
+                break;
+            }
+            let w_new = w - num / denom;
+            if (w_new - w).abs() <= 1e-14 * (1.0 + w.abs()) {
+                return Some(w_new);
+            }
+            w = w_new;
+        }
+        if (w * w.exp() - x).abs() <= 1e-10 * (1.0 + x.abs()) {
+            Some(w)
+        } else {
+            None
+        }
+    }
+
     // ── min ──────────────────────────────────────────────────────────────────
 
     pub struct MinPrimitive;
@@ -2409,6 +2515,16 @@ mod tests {
             }
             other => panic!("expected diracdelta(x), got {other:?}"),
         }
+    }
+
+    #[test]
+    fn lambert_w_registered_and_numeric() {
+        let reg = PrimitiveRegistry::default_registry();
+        assert!(reg.is_registered("lambert_w"));
+        assert_eq!(reg.numeric_f64("lambert_w", &[0.0]), Some(0.0));
+        let w1 = reg.numeric_f64("lambert_w", &[1.0]).unwrap();
+        assert!((w1 * w1.exp() - 1.0).abs() < 1e-12);
+        assert!(reg.numeric_f64("lambert_w", &[-1.0]).is_none()); // < -1/e
     }
 
     // ── Elliptic special functions ─────────────────────────────────────────────

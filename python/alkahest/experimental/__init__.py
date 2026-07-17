@@ -31,6 +31,8 @@ PRs #152–#161):
 - :func:`heaviside`, :func:`dirac_delta` — distribution primitive constructors
   (placed here rather than at the top level so the frozen ``__all__`` is
   untouched).
+- :func:`lambert_w` — principal Lambert W constructor (used by transcendental
+  ``solve`` for ``x·e^x = c`` forms).
 - :func:`dsolve` — classical symbolic ODE solver (#153).
 - :func:`laplace_transform` / :func:`inverse_laplace_transform` (#152).
 - :func:`fourier_transform` / :func:`inverse_fourier_transform` (#158).
@@ -71,6 +73,7 @@ from alkahest.alkahest import (
     inverse_fourier_transform,
     inverse_laplace_transform,
     inverse_z_transform,
+    lambert_w,
     laplace_transform,
     multilimit,
     ode_integrate_rk4,
@@ -113,6 +116,7 @@ __all__ = [
     "inverse_fourier_transform",
     "inverse_laplace_transform",
     "inverse_z_transform",
+    "lambert_w",
     "laplace_transform",
     "multilimit",
     "ode_integrate_rk4",

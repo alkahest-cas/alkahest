@@ -1974,6 +1974,15 @@ fn dirac_delta(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "diracdelta", expr)
 }
 
+/// Principal branch of the Lambert W function `W₀(x)`.
+///
+/// Surfaced under `alkahest.experimental` so the frozen top-level `__all__`
+/// stays untouched.  Used by transcendental `solve` for `x·e^x = c` forms.
+#[pyfunction]
+fn lambert_w(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "lambert_w", expr)
+}
+
 fn make_binary_func(py: Python<'_>, name: &str, a: PyRef<PyExpr>, b: PyRef<PyExpr>) -> PyExpr {
     let id = a.pool.borrow(py).inner.func(name, vec![a.id, b.id]);
     let pool = a.pool.clone_ref(py);
@@ -7975,9 +7984,9 @@ fn py_solve(
     }
 
     // Transcendental pre-processing: for a single equation in a single unknown
-    // containing `exp`/`log`, try the scoped closed-form solver before handing
-    // off to the polynomial path (which would reject any transcendental).  On
-    // `Unsupported` we fall straight through to `solve_polynomial_system`.
+    // containing exp/log/Lambert-W/trig, try the scoped closed-form solver before
+    // handing off to the polynomial path (which would reject any transcendental).
+    // On `Unsupported` we fall straight through to `solve_polynomial_system`.
     if eq_ids.len() == 1 && var_ids.len() == 1 {
         let trans = {
             let pool = pool_py.borrow(py);
@@ -8576,6 +8585,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(gamma, m)?)?;
     m.add_function(wrap_pyfunction!(heaviside, m)?)?;
     m.add_function(wrap_pyfunction!(dirac_delta, m)?)?;
+    m.add_function(wrap_pyfunction!(lambert_w, m)?)?;
     // Experimental calculus / ODE / transform surface (PRs #152–#161).
     m.add_function(wrap_pyfunction!(py_dsolve, m)?)?;
     m.add_function(wrap_pyfunction!(py_laplace_transform, m)?)?;

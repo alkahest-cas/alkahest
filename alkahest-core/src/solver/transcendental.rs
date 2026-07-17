@@ -1,4 +1,4 @@
-//! Transcendental-aware solving for single-variable `exp`/`log` equations.
+//! Transcendental-aware solving for single-variable equations.
 //!
 //! The polynomial system solver ([`super::solve_polynomial_system`]) rejects any
 //! equation containing a transcendental function.  This module adds a *scoped*
@@ -12,19 +12,29 @@
 //!   `K`, substitute `u = K`, solve the polynomial in `u` (degree ≤ 2), and
 //!   back-substitute through `ln`/`exp`.  Covers
 //!   `exp(x)² − 3·exp(x) + 2 = 0  →  x ∈ {0, ln 2}`.
+//! * **Lambert W** — recognises `α·u·exp(u) = c` with affine `u = a·x+b` and
+//!   var-free `α, c`, returning the principal branch `u = W(c/α)` (then
+//!   solving the affine for `x`).  Covers `x·e^x = c`, `e^x·x = c`,
+//!   `(ax+b)·e^{ax+b} = c`, and `a·x·e^x = c`.
+//! * **Trig principal values** — `sin(f) = c`, `cos(f) = c`, `tan(f) = c` with
+//!   affine `f` and constant `c` in the real range, returning the principal
+//!   inverse (`asin`/`acos`/`atan`) only.  The full `2πk` / reflection family
+//!   is not enumerated (documented limitation — never invent roots).
 //!
 //! Scope boundary (documented honestly):
 //! * exactly **one** equation in exactly **one** unknown;
-//! * exactly **one** distinct transcendental kernel involving the unknown, and
-//!   the kernel's argument `f` must be **affine** (degree ≤ 1) in the unknown so
-//!   that back-substitution `f = ln r` / `f = exp r` is itself linearly
-//!   solvable;
-//! * the polynomial in the kernel has degree ≤ 2 (reuses the quadratic path).
+//! * for exp/log: exactly **one** distinct transcendental kernel involving the
+//!   unknown, and the kernel's argument `f` must be **affine** (degree ≤ 1) in
+//!   the unknown so that back-substitution is itself linearly solvable;
+//! * the polynomial in the kernel has degree ≤ 2 (reuses the quadratic path);
+//! * Lambert / trig paths are pattern-matched separately and decline with
+//!   [`TranscendentalOutcome::Unsupported`] when the form is not recognised.
 //!
 //! Anything outside this slice returns
 //! [`TranscendentalOutcome::Unsupported`] — the caller surfaces a clean error
 //! rather than a fabricated answer.  We only emit solutions we can justify:
-//! roots of `exp(·)` that are non-positive are discarded (no real `ln`).
+//! roots of `exp(·)` that are non-positive are discarded (no real `ln`);
+//! `sin`/`cos` with `|c| > 1` yield an empty solution set.
 
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use rug::Rational;
@@ -65,14 +75,33 @@ struct Kernel {
     arg: ExprId,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TrigKind {
+    Sin,
+    Cos,
+    Tan,
+}
+
 /// Attempt to solve `equation = 0` for the single variable `var`, handling
-/// `exp`/`log` equations.  Returns [`TranscendentalOutcome::Unsupported`] when
-/// the equation is outside the supported slice so the caller can fall back.
+/// `exp`/`log`/Lambert-W/trig equations.  Returns
+/// [`TranscendentalOutcome::Unsupported`] when the equation is outside the
+/// supported slice so the caller can fall back.
 pub fn solve_transcendental(
     equation: ExprId,
     var: ExprId,
     pool: &ExprPool,
 ) -> TranscendentalOutcome {
+    if let Some(out) = try_trig_solve(equation, var, pool) {
+        return out;
+    }
+    if let Some(out) = try_lambert_solve(equation, var, pool) {
+        return out;
+    }
+    solve_exp_log(equation, var, pool)
+}
+
+/// Existing exp/log kernel-substitution path.
+fn solve_exp_log(equation: ExprId, var: ExprId, pool: &ExprPool) -> TranscendentalOutcome {
     // Collect distinct transcendental kernels whose argument mentions `var`.
     let mut kernels: Vec<Kernel> = Vec::new();
     if !collect_kernels(equation, var, pool, 0, &mut kernels) {
@@ -150,6 +179,556 @@ pub fn solve_transcendental(
     }
 
     TranscendentalOutcome::Solved(out)
+}
+
+/// `sin(f)=c` / `cos(f)=c` / `tan(f)=c` with affine `f` and var-free `c`.
+/// Returns principal inverse only (no `2πk` family).
+fn try_trig_solve(equation: ExprId, var: ExprId, pool: &ExprPool) -> Option<TranscendentalOutcome> {
+    let mut trigs: Vec<(TrigKind, ExprId, ExprId)> = Vec::new();
+    if !collect_trig_kernels(equation, var, pool, 0, &mut trigs) {
+        return None; // mixed / unsupported transcendingals — other paths may apply
+    }
+    let mut seen = std::collections::HashSet::new();
+    trigs.retain(|(_, node, _)| seen.insert(*node));
+    if trigs.len() != 1 {
+        return None;
+    }
+    let (kind, node, arg) = trigs[0];
+    let (a, b) = affine_in_var(arg, var, pool)?;
+
+    let u = pool.symbol("__u_trig__", crate::kernel::Domain::Real);
+    let in_u = substitute_node(equation, node, u, pool, 0)?;
+    // Degree-1 in the trig kernel with var-free coefficients: A·u + B = 0.
+    let (coeff_u, coeff_0) = linear_in_placeholder(in_u, u, pool, 0)?;
+    if !independent_of_var(coeff_u, var, pool) || !independent_of_var(coeff_0, var, pool) {
+        return None;
+    }
+    if is_zero_expr(coeff_u, pool) {
+        return None;
+    }
+    // u = -B/A — prefer a rational when both coeffs are numeric.
+    let c = match (as_rational(coeff_0, pool), as_rational(coeff_u, pool)) {
+        (Some(b), Some(a)) if a != 0 => rational_to_expr(&((-b) / a), pool),
+        _ => {
+            let neg_one = pool.integer(-1_i32);
+            let neg_b = pool.mul(vec![neg_one, coeff_0]);
+            let inv_a = pool.pow(coeff_u, neg_one);
+            pool.mul(vec![neg_b, inv_a])
+        }
+    };
+
+    match trig_rhs_real_ok(kind, c, pool) {
+        Some(false) => return Some(TranscendentalOutcome::Solved(vec![])),
+        Some(true) | None => {}
+    }
+
+    let inv_name = match kind {
+        TrigKind::Sin => "asin",
+        TrigKind::Cos => "acos",
+        TrigKind::Tan => "atan",
+    };
+    let rhs = pool.func(inv_name, vec![c]);
+    let var_val = solve_affine(&a, &b, rhs, pool);
+    Some(TranscendentalOutcome::Solved(vec![var_val]))
+}
+
+/// Recognise `α · arg · exp(arg) + B = 0` with var-free `α, B` and affine `arg`.
+fn try_lambert_solve(
+    equation: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<TranscendentalOutcome> {
+    let mut kernels: Vec<Kernel> = Vec::new();
+    if !collect_exp_only(equation, var, pool, 0, &mut kernels) {
+        return None;
+    }
+    let mut seen = std::collections::HashSet::new();
+    kernels.retain(|k| seen.insert(k.node));
+    if kernels.len() != 1 || kernels[0].kind != KernelKind::Exp {
+        return None;
+    }
+    let kernel = kernels[0];
+    let (a, b) = affine_in_var(kernel.arg, var, pool)?;
+    // Need a genuine unknown in the argument (otherwise not a W equation in var).
+    if is_zero_expr(a, pool) {
+        return None;
+    }
+
+    let e = pool.symbol("__e_lambert__", crate::kernel::Domain::Real);
+    let in_e = substitute_node(equation, kernel.node, e, pool, 0)?;
+    let (coeff_e, coeff_0) = linear_in_placeholder(in_e, e, pool, 0)?;
+    // Constant term must be free of `var`; E-coefficient must be α·arg.
+    if !independent_of_var(coeff_0, var, pool) {
+        return None;
+    }
+    if contains_var(coeff_e, e, pool, 0) {
+        return None;
+    }
+    let alpha = constant_factor_of(coeff_e, kernel.arg, var, pool)?;
+    if contains_var(alpha, var, pool, 0) || is_zero_expr(alpha, pool) {
+        return None;
+    }
+
+    // α · arg · exp(arg) + B = 0  ⟹  arg · exp(arg) = -B/α  ⟹  arg = W(-B/α)
+    let c = match (as_rational(coeff_0, pool), as_rational(alpha, pool)) {
+        (Some(b), Some(al)) if al != 0 => rational_to_expr(&((-b) / al), pool),
+        _ => {
+            let neg_one = pool.integer(-1_i32);
+            let neg_b = pool.mul(vec![neg_one, coeff_0]);
+            let inv_alpha = pool.pow(alpha, neg_one);
+            pool.mul(vec![neg_b, inv_alpha])
+        }
+    };
+
+    match lambert_rhs_real_ok(c, pool) {
+        Some(false) => return Some(TranscendentalOutcome::Solved(vec![])),
+        Some(true) | None => {}
+    }
+
+    let w = pool.func("lambert_w", vec![c]);
+    let var_val = solve_affine(&a, &b, w, pool);
+    Some(TranscendentalOutcome::Solved(vec![var_val]))
+}
+
+fn collect_trig_kernels(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    depth: usize,
+    out: &mut Vec<(TrigKind, ExprId, ExprId)>,
+) -> bool {
+    if depth > MAX_DEPTH {
+        return false;
+    }
+    enum Node {
+        Add(Vec<ExprId>),
+        Mul(Vec<ExprId>),
+        Pow(ExprId, ExprId),
+        Func(String, Vec<ExprId>),
+        Leaf,
+    }
+    let node = pool.with(expr, |d| match d {
+        ExprData::Add(a) => Node::Add(a.clone()),
+        ExprData::Mul(a) => Node::Mul(a.clone()),
+        ExprData::Pow { base, exp } => Node::Pow(*base, *exp),
+        ExprData::Func { name, args } => Node::Func(name.clone(), args.clone()),
+        _ => Node::Leaf,
+    });
+    match node {
+        Node::Leaf => true,
+        Node::Add(args) | Node::Mul(args) => {
+            for a in args {
+                if !collect_trig_kernels(a, var, pool, depth + 1, out) {
+                    return false;
+                }
+            }
+            true
+        }
+        Node::Pow(base, exp) => {
+            collect_trig_kernels(base, var, pool, depth + 1, out)
+                && collect_trig_kernels(exp, var, pool, depth + 1, out)
+        }
+        Node::Func(name, args) => {
+            let mentions = args.iter().any(|&a| contains_var(a, var, pool, 0));
+            let trig = match name.as_str() {
+                "sin" => Some(TrigKind::Sin),
+                "cos" => Some(TrigKind::Cos),
+                "tan" => Some(TrigKind::Tan),
+                _ => None,
+            };
+            match (trig, mentions) {
+                (Some(kind), true) if args.len() == 1 => {
+                    if has_any_transcendental(args[0], var, pool, 0) {
+                        return false;
+                    }
+                    out.push((kind, expr, args[0]));
+                    true
+                }
+                (Some(_), true) => false,
+                (None, true) => {
+                    // Other var-bearing transcendental (exp, log, asin, …).
+                    false
+                }
+                _ => {
+                    for a in args {
+                        if !collect_trig_kernels(a, var, pool, depth + 1, out) {
+                            return false;
+                        }
+                    }
+                    true
+                }
+            }
+        }
+    }
+}
+
+/// Collect `exp` kernels mentioning `var`; fail if any other var-bearing
+/// transcendental appears (including `log`/`sin`/…).
+fn collect_exp_only(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    depth: usize,
+    out: &mut Vec<Kernel>,
+) -> bool {
+    if depth > MAX_DEPTH {
+        return false;
+    }
+    enum Node {
+        Add(Vec<ExprId>),
+        Mul(Vec<ExprId>),
+        Pow(ExprId, ExprId),
+        Func(String, Vec<ExprId>),
+        Leaf,
+    }
+    let node = pool.with(expr, |d| match d {
+        ExprData::Add(a) => Node::Add(a.clone()),
+        ExprData::Mul(a) => Node::Mul(a.clone()),
+        ExprData::Pow { base, exp } => Node::Pow(*base, *exp),
+        ExprData::Func { name, args } => Node::Func(name.clone(), args.clone()),
+        _ => Node::Leaf,
+    });
+    match node {
+        Node::Leaf => true,
+        Node::Add(args) | Node::Mul(args) => {
+            for a in args {
+                if !collect_exp_only(a, var, pool, depth + 1, out) {
+                    return false;
+                }
+            }
+            true
+        }
+        Node::Pow(base, exp) => {
+            collect_exp_only(base, var, pool, depth + 1, out)
+                && collect_exp_only(exp, var, pool, depth + 1, out)
+        }
+        Node::Func(name, args) => {
+            let mentions = args.iter().any(|&a| contains_var(a, var, pool, 0));
+            match (name.as_str(), mentions) {
+                ("exp", true) if args.len() == 1 => {
+                    if has_any_transcendental(args[0], var, pool, 0) {
+                        return false;
+                    }
+                    out.push(Kernel {
+                        kind: KernelKind::Exp,
+                        node: expr,
+                        arg: args[0],
+                    });
+                    true
+                }
+                ("exp", true) => false,
+                (_, true) if is_transcendental_name(&name) => false,
+                _ => {
+                    for a in args {
+                        if !collect_exp_only(a, var, pool, depth + 1, out) {
+                            return false;
+                        }
+                    }
+                    true
+                }
+            }
+        }
+    }
+}
+
+fn is_transcendental_name(name: &str) -> bool {
+    matches!(
+        name,
+        "exp"
+            | "log"
+            | "ln"
+            | "sin"
+            | "cos"
+            | "tan"
+            | "asin"
+            | "acos"
+            | "atan"
+            | "sinh"
+            | "cosh"
+            | "tanh"
+            | "asinh"
+            | "acosh"
+            | "atanh"
+            | "lambert_w"
+    )
+}
+
+/// Any transcendental (broad list) mentioning `var` inside `expr`.
+fn has_any_transcendental(expr: ExprId, var: ExprId, pool: &ExprPool, depth: usize) -> bool {
+    if depth > MAX_DEPTH {
+        return true;
+    }
+    pool.with(expr, |d| match d {
+        ExprData::Func { name, args } => {
+            let is_trans = is_transcendental_name(name);
+            (is_trans && args.iter().any(|&a| contains_var(a, var, pool, 0)))
+                || args
+                    .iter()
+                    .any(|&a| has_any_transcendental(a, var, pool, depth + 1))
+        }
+        ExprData::Add(a) | ExprData::Mul(a) => a
+            .iter()
+            .any(|&x| has_any_transcendental(x, var, pool, depth + 1)),
+        ExprData::Pow { base, exp } => {
+            has_any_transcendental(*base, var, pool, depth + 1)
+                || has_any_transcendental(*exp, var, pool, depth + 1)
+        }
+        _ => false,
+    })
+}
+
+/// Express `expr` as `coeff_u · u + coeff_0` where neither coeff contains `u`.
+/// Returns `None` if higher degree in `u` or non-polynomial structure in `u`.
+fn linear_in_placeholder(
+    expr: ExprId,
+    u: ExprId,
+    pool: &ExprPool,
+    depth: usize,
+) -> Option<(ExprId, ExprId)> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    let zero = pool.integer(0_i32);
+    let one = pool.integer(1_i32);
+    if expr == u {
+        return Some((one, zero));
+    }
+    if !contains_var(expr, u, pool, 0) {
+        return Some((zero, expr));
+    }
+    enum Node {
+        Add(Vec<ExprId>),
+        Mul(Vec<ExprId>),
+        Pow(ExprId, ExprId),
+        Other,
+    }
+    let node = pool.with(expr, |d| match d {
+        ExprData::Add(a) => Node::Add(a.clone()),
+        ExprData::Mul(a) => Node::Mul(a.clone()),
+        ExprData::Pow { base, exp } => Node::Pow(*base, *exp),
+        _ => Node::Other,
+    });
+    match node {
+        Node::Add(args) => {
+            let mut cu_terms = Vec::new();
+            let mut c0_terms = Vec::new();
+            for t in args {
+                let (cu, c0) = linear_in_placeholder(t, u, pool, depth + 1)?;
+                cu_terms.push(cu);
+                c0_terms.push(c0);
+            }
+            Some((sum(cu_terms, pool), sum(c0_terms, pool)))
+        }
+        Node::Mul(args) => {
+            let mut free: Vec<ExprId> = Vec::new();
+            let mut u_factor: Option<ExprId> = None;
+            for f in &args {
+                if contains_var(*f, u, pool, 0) {
+                    if u_factor.is_some() {
+                        return None; // u·u or product of two u-bearing factors
+                    }
+                    u_factor = Some(*f);
+                } else {
+                    free.push(*f);
+                }
+            }
+            let scale = if free.is_empty() { one } else { pool.mul(free) };
+            match u_factor {
+                None => Some((zero, expr)),
+                Some(uf) => {
+                    let (cu, c0) = linear_in_placeholder(uf, u, pool, depth + 1)?;
+                    // Avoid emitting `0·scale` (still mentions `var` syntactically).
+                    let cu_s = if is_zero_expr(cu, pool) {
+                        zero
+                    } else if is_one_expr(cu, pool) {
+                        scale
+                    } else {
+                        pool.mul(vec![scale, cu])
+                    };
+                    let c0_s = if is_zero_expr(c0, pool) {
+                        zero
+                    } else if is_one_expr(c0, pool) {
+                        scale
+                    } else {
+                        pool.mul(vec![scale, c0])
+                    };
+                    Some((cu_s, c0_s))
+                }
+            }
+        }
+        Node::Pow(base, exp) => {
+            let n = pool.with(exp, |d| match d {
+                ExprData::Integer(n) => n.0.to_i32(),
+                _ => None,
+            })?;
+            if n == 0 {
+                return Some((zero, one));
+            }
+            if n == 1 {
+                return linear_in_placeholder(base, u, pool, depth + 1);
+            }
+            // Higher powers of a u-bearing base are not linear in u.
+            if contains_var(base, u, pool, 0) {
+                return None;
+            }
+            // Constant^n (u-free base).
+            Some((zero, expr))
+        }
+        Node::Other => None,
+    }
+}
+
+/// If `expr = α · target` with `α` free of `var`, return `α`.
+fn constant_factor_of(
+    expr: ExprId,
+    target: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    let one = pool.integer(1_i32);
+    if expr == target {
+        return Some(one);
+    }
+    // Peel Mul: var-free factors times remainder == target.
+    let peeled = pool.with(expr, |d| match d {
+        ExprData::Mul(args) => Some(args.clone()),
+        _ => None,
+    });
+    if let Some(args) = peeled {
+        let mut coeff: Vec<ExprId> = Vec::new();
+        let mut rest: Vec<ExprId> = Vec::new();
+        for a in args {
+            if contains_var(a, var, pool, 0) {
+                rest.push(a);
+            } else {
+                coeff.push(a);
+            }
+        }
+        let rest_expr = match rest.len() {
+            0 => return None,
+            1 => rest[0],
+            _ => pool.mul(rest),
+        };
+        if rest_expr == target {
+            return Some(if coeff.is_empty() {
+                one
+            } else {
+                pool.mul(coeff)
+            });
+        }
+    }
+
+    // Affine proportionality with rational α: expr = α · target.
+    let (ea, eb) = affine_in_var(expr, var, pool)?;
+    let (ta, tb) = affine_in_var(target, var, pool)?;
+    let rea = as_rational(ea, pool)?;
+    let rta = as_rational(ta, pool)?;
+    if rta == 0 {
+        return None;
+    }
+    let alpha = rea / rta;
+    match (as_rational(eb, pool), as_rational(tb, pool)) {
+        (Some(reb), Some(rtb)) => {
+            if reb != alpha.clone() * rtb {
+                return None;
+            }
+        }
+        _ if is_zero_expr(eb, pool) && is_zero_expr(tb, pool) => {}
+        _ => {
+            let a_expr = rational_to_expr(&alpha, pool);
+            if is_zero_expr(tb, pool) {
+                if !is_zero_expr(eb, pool) {
+                    return None;
+                }
+            } else {
+                let expect = pool.mul(vec![a_expr, tb]);
+                if expect != eb {
+                    return None;
+                }
+            }
+        }
+    }
+    Some(rational_to_expr(&alpha, pool))
+}
+
+fn as_rational(expr: ExprId, pool: &ExprPool) -> Option<Rational> {
+    pool.with(expr, |d| match d {
+        ExprData::Integer(n) => Some(Rational::from(n.0.clone())),
+        ExprData::Rational(r) => Some(r.0.clone()),
+        ExprData::Float(f) => Rational::from_f64(f.inner.to_f64()),
+        ExprData::Mul(args) => {
+            let mut acc = Rational::from(1);
+            for &a in args {
+                acc *= as_rational(a, pool)?;
+            }
+            Some(acc)
+        }
+        ExprData::Add(args) => {
+            let mut acc = Rational::from(0);
+            for &a in args {
+                acc += as_rational(a, pool)?;
+            }
+            Some(acc)
+        }
+        _ => None,
+    })
+}
+
+fn is_zero_expr(expr: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| match d {
+        ExprData::Integer(n) => n.0 == 0,
+        ExprData::Rational(r) => r.0 == 0,
+        ExprData::Float(f) => f.inner.to_f64() == 0.0,
+        _ => false,
+    })
+}
+
+fn is_one_expr(expr: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| match d {
+        ExprData::Integer(n) => n.0 == 1,
+        ExprData::Rational(r) => r.0 == 1,
+        ExprData::Float(f) => f.inner.to_f64() == 1.0,
+        _ => false,
+    })
+}
+
+/// True when `expr` does not depend on `var` (affine coeff of `var` is zero).
+fn independent_of_var(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    match affine_in_var(expr, var, pool) {
+        Some((a, _)) => is_zero_expr(a, pool),
+        None => !contains_var(expr, var, pool, 0),
+    }
+}
+
+/// `Some(true)` = real principal OK, `Some(false)` = no real, `None` = unknown.
+fn trig_rhs_real_ok(kind: TrigKind, c: ExprId, pool: &ExprPool) -> Option<bool> {
+    match kind {
+        TrigKind::Tan => {
+            // Any real c is fine; decline only if we can prove non-real (skip).
+            if let Some(r) = as_rational(c, pool) {
+                let _ = r;
+                return Some(true);
+            }
+            None
+        }
+        TrigKind::Sin | TrigKind::Cos => {
+            let r = as_rational(c, pool)?;
+            let v = r.to_f64();
+            if !v.is_finite() {
+                return Some(false);
+            }
+            Some((-1.0..=1.0).contains(&v))
+        }
+    }
+}
+
+fn lambert_rhs_real_ok(c: ExprId, pool: &ExprPool) -> Option<bool> {
+    let r = as_rational(c, pool)?;
+    let v = r.to_f64();
+    if !v.is_finite() {
+        return Some(false);
+    }
+    Some(v >= -std::f64::consts::E.recip() - 1e-15)
 }
 
 /// Walk the expression collecting `exp`/`log` kernels whose argument mentions
@@ -727,11 +1306,123 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_sin() {
-        // sin(x) = 0 → unsupported (not exp/log).
+    fn sin_x_eq_half_principal() {
+        // sin(x) - 1/2 = 0 → x = asin(1/2) (principal only).
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
-        let eq = pool.func("sin", vec![x]);
+        let half = pool.rational(rug::Integer::from(-1), rug::Integer::from(2));
+        let eq = pool.add(vec![pool.func("sin", vec![x]), half]);
+        let sols = solved(eq, x, &pool);
+        assert_eq!(sols.len(), 1);
+        assert!((evalf(sols[0], &pool) - (0.5f64).asin()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn cos_x_eq_zero_principal() {
+        // cos(x) = 0 → x = acos(0) = π/2.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let eq = pool.func("cos", vec![x]);
+        let sols = solved(eq, x, &pool);
+        assert_eq!(sols.len(), 1);
+        assert!((evalf(sols[0], &pool) - std::f64::consts::FRAC_PI_2).abs() < 1e-10);
+    }
+
+    #[test]
+    fn tan_x_eq_one_principal() {
+        // tan(x) - 1 = 0 → x = atan(1) = π/4.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let neg1 = pool.integer(-1_i32);
+        let eq = pool.add(vec![pool.func("tan", vec![x]), neg1]);
+        let sols = solved(eq, x, &pool);
+        assert_eq!(sols.len(), 1);
+        assert!((evalf(sols[0], &pool) - 1f64.atan()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn sin_out_of_range_empty() {
+        // sin(x) = 2 → no real solution.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let neg2 = pool.integer(-2_i32);
+        let eq = pool.add(vec![pool.func("sin", vec![x]), neg2]);
+        let sols = solved(eq, x, &pool);
+        assert!(sols.is_empty());
+    }
+
+    #[test]
+    fn lambert_x_exp_x() {
+        // x·exp(x) - 1 = 0 → x = W(1).
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let term = pool.mul(vec![x, pool.func("exp", vec![x])]);
+        let eq = pool.add(vec![term, pool.integer(-1_i32)]);
+        let sols = solved(eq, x, &pool);
+        assert_eq!(sols.len(), 1);
+        let v = evalf(sols[0], &pool);
+        // W(1) ≈ 0.567143; check x·e^x = 1.
+        assert!((v * v.exp() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn lambert_exp_x_times_x() {
+        // exp(x)·x - 2 = 0 → x = W(2).
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let term = pool.mul(vec![pool.func("exp", vec![x]), x]);
+        let eq = pool.add(vec![term, pool.integer(-2_i32)]);
+        let sols = solved(eq, x, &pool);
+        assert_eq!(sols.len(), 1);
+        let v = evalf(sols[0], &pool);
+        assert!((v * v.exp() - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn lambert_scaled_x_exp_x() {
+        // 2·x·exp(x) - 1 = 0 → x = W(1/2).
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let term = pool.mul(vec![pool.integer(2_i32), x, pool.func("exp", vec![x])]);
+        let eq = pool.add(vec![term, pool.integer(-1_i32)]);
+        let sols = solved(eq, x, &pool);
+        assert_eq!(sols.len(), 1);
+        let v = evalf(sols[0], &pool);
+        assert!((2.0 * v * v.exp() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn lambert_affine_arg() {
+        // (x+1)·exp(x+1) - 1 = 0 → x+1 = W(1) → x = W(1)-1.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let xp1 = pool.add(vec![x, pool.integer(1_i32)]);
+        let term = pool.mul(vec![xp1, pool.func("exp", vec![xp1])]);
+        let eq = pool.add(vec![term, pool.integer(-1_i32)]);
+        let sols = solved(eq, x, &pool);
+        assert_eq!(sols.len(), 1);
+        let v = evalf(sols[0], &pool);
+        let u = v + 1.0;
+        assert!((u * u.exp() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn lambert_domain_empty() {
+        // x·exp(x) + 1 = 0 → x·e^x = -1 < -1/e → no real W₀.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let term = pool.mul(vec![x, pool.func("exp", vec![x])]);
+        let eq = pool.add(vec![term, pool.integer(1_i32)]);
+        let sols = solved(eq, x, &pool);
+        assert!(sols.is_empty());
+    }
+
+    #[test]
+    fn unsupported_mixed_sin_exp() {
+        // sin(x) + exp(x) = 0 → mixed kernels → unsupported.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let eq = pool.add(vec![pool.func("sin", vec![x]), pool.func("exp", vec![x])]);
         assert!(matches!(
             solve_transcendental(eq, x, &pool),
             TranscendentalOutcome::Unsupported

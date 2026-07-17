@@ -64,6 +64,7 @@ _FUNC_NAMES = frozenset(
         "erf",
         "erfc",
         "gamma",
+        "lambert_w",
         # Reciprocal trig / hyperbolic functions (desugared to base(x) ** -1).
         "sec",
         "csc",
@@ -299,6 +300,7 @@ class _Parser:
 def _apply_func(name: str, args: list, offset: int):
     # Local import to avoid circular dependency at module load time.
     import alkahest as _ak
+    from alkahest.alkahest import lambert_w as _lambert_w
 
     _funcs = {
         "sin": _ak.sin,
@@ -325,6 +327,7 @@ def _apply_func(name: str, args: list, offset: int):
         "erf": _ak.erf,
         "erfc": _ak.erfc,
         "gamma": _ak.gamma,
+        "lambert_w": _lambert_w,
         # Elliptic special functions (parameter convention m = k^2).
         "EllipticK": _ak.elliptic_k,
         "EllipticE": _ak.elliptic_e,  # 1 arg (complete) or 2 args (incomplete)
