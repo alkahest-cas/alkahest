@@ -127,6 +127,11 @@ pub fn rank(m: &Matrix, pool: &ExprPool) -> Result<usize, LinearAlgebraError> {
     Ok(row_echelon_pivots(m, pool)?.pivot_cols.len())
 }
 
+/// Reduced row echelon form of `m`.
+pub fn rref(m: &Matrix, pool: &ExprPool) -> Result<Matrix, LinearAlgebraError> {
+    Ok(row_echelon_pivots(m, pool)?.echelon)
+}
+
 /// Basis of the column space of `m` (original pivot columns).
 pub fn column_space_basis(m: &Matrix, pool: &ExprPool) -> Result<Vec<Matrix>, LinearAlgebraError> {
     let rref = row_echelon_pivots(m, pool)?;
@@ -159,16 +164,19 @@ pub fn row_space_basis(m: &Matrix, pool: &ExprPool) -> Result<Vec<Matrix>, Linea
 struct RowEchelonInfo {
     pivot_cols: Vec<usize>,
     pivot_row_flags: Vec<bool>,
+    echelon: Matrix,
 }
 
 fn row_echelon_pivots(m: &Matrix, pool: &ExprPool) -> Result<RowEchelonInfo, LinearAlgebraError> {
     let rows = m.rows;
     let cols = m.cols;
     if let Some(grid) = matrix_to_rational_grid(m, pool) {
-        let (pivot_cols, pivot_row_flags) = rational_row_echelon_pivots(&grid, rows, cols);
+        let (pivot_cols, pivot_row_flags, echelon_grid) =
+            rational_row_echelon_pivots(&grid, rows, cols);
         return Ok(RowEchelonInfo {
             pivot_cols,
             pivot_row_flags,
+            echelon: rational_grid_to_matrix(&echelon_grid, pool),
         });
     }
     let mut a: Vec<Vec<ExprId>> = (0..rows)
@@ -223,6 +231,7 @@ fn row_echelon_pivots(m: &Matrix, pool: &ExprPool) -> Result<RowEchelonInfo, Lin
     Ok(RowEchelonInfo {
         pivot_cols,
         pivot_row_flags,
+        echelon: Matrix::new(a).expect("row echelon grid"),
     })
 }
 
@@ -230,7 +239,7 @@ fn rational_row_echelon_pivots(
     mat: &[Vec<Rational>],
     rows: usize,
     cols: usize,
-) -> (Vec<usize>, Vec<bool>) {
+) -> (Vec<usize>, Vec<bool>, Vec<Vec<Rational>>) {
     let mut a = mat.to_vec();
     let mut pivot_cols = Vec::new();
     let mut pivot_row_flags = vec![false; rows];
@@ -271,7 +280,7 @@ fn rational_row_echelon_pivots(
         pivot_row_flags[r] = true;
         r += 1;
     }
-    (pivot_cols, pivot_row_flags)
+    (pivot_cols, pivot_row_flags, a)
 }
 
 // ---------------------------------------------------------------------------
@@ -1337,6 +1346,28 @@ mod tests {
         let p = pool();
         let id = Matrix::identity(3, &p);
         assert_eq!(rank(&id, &p).unwrap(), 3);
+    }
+
+    #[test]
+    fn rref_2x3_rational() {
+        let p = pool();
+        let m = Matrix::new(vec![
+            vec![p.integer(1), p.integer(2), p.integer(3)],
+            vec![p.integer(2), p.integer(4), p.integer(6)],
+        ])
+        .unwrap();
+        let r = rref(&m, &p).unwrap();
+        assert_eq!(r.rows, 2);
+        assert_eq!(r.cols, 3);
+        let one = p.integer(1_i32);
+        let two = p.integer(2_i32);
+        let three = p.integer(3_i32);
+        let z = p.integer(0_i32);
+        assert!(eigen::matrix_eq_simplified(
+            &r,
+            &Matrix::new(vec![vec![one, two, three], vec![z, z, z]]).unwrap(),
+            &p
+        ));
     }
 
     #[test]

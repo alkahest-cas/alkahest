@@ -634,6 +634,68 @@ impl ArbBall {
         b
     }
 
+    /// Principal-branch Lambert W₀.  Domain: `x ≥ −1/e`.
+    pub fn lambert_w0(&self) -> Option<Self> {
+        let em = crate::special::lambert_w0_domain_min();
+        if self.lo().to_f64() < em - 1e-15 {
+            return None;
+        }
+        let prec = self.prec;
+        let w_lo = crate::special::lambert_w0(self.lo().to_f64())?;
+        let w_hi = crate::special::lambert_w0(self.hi().to_f64())?;
+        let lo = Float::with_val(prec, w_lo);
+        let hi = Float::with_val(prec, w_hi);
+        let sum = Float::with_val(prec, &lo + &hi);
+        let diff = Float::with_val(prec, &hi - &lo);
+        Some(ArbBall {
+            mid: sum / 2_f64,
+            rad: diff / 2_f64,
+            prec,
+        })
+    }
+
+    /// Digamma ψ(x).  Returns `None` when the ball contains a non-positive
+    /// integer pole.
+    pub fn digamma(&self) -> Option<Self> {
+        let lo = self.lo().to_f64();
+        let hi = self.hi().to_f64();
+        let k_start = lo.ceil() as i64;
+        let k_end = hi.floor() as i64;
+        for k in k_start..=k_end {
+            if k <= 0 {
+                return None;
+            }
+        }
+        let prec = self.prec;
+        let mut flo = Float::with_val(prec, lo);
+        flo.digamma_mut();
+        let mut fhi = Float::with_val(prec, hi);
+        fhi.digamma_mut();
+        let sum = Float::with_val(prec, &flo + &fhi);
+        let diff = Float::with_val(prec, &fhi - &flo);
+        Some(ArbBall {
+            mid: sum / 2_f64,
+            rad: diff / 2_f64,
+            prec,
+        })
+    }
+
+    /// Bessel function of the first kind Jₙ(x) for integer order `n`.
+    pub fn bessel_jn(&self, n: i32) -> Self {
+        let prec = self.prec;
+        let mut flo = Float::with_val(prec, self.lo().to_f64());
+        flo.jn_mut(n);
+        let mut fhi = Float::with_val(prec, self.hi().to_f64());
+        fhi.jn_mut(n);
+        let sum = Float::with_val(prec, &flo + &fhi);
+        let diff = Float::with_val(prec, &fhi - &flo);
+        ArbBall {
+            mid: sum / 2_f64,
+            rad: diff / 2_f64,
+            prec,
+        }
+    }
+
     pub fn abs_ball(&self) -> Self {
         let prec = self.prec;
         // |[m-r, m+r]| — if interval straddles zero the lower bound is 0
@@ -940,6 +1002,12 @@ mod tests {
         // True range: [1.5*2.5, 2.5*3.5] = [3.75, 8.75]
         assert!(c.contains(4.0));
         assert!(c.contains(8.0));
+    }
+
+    #[test]
+    fn ball_lambert_w0_at_one() {
+        let b = ArbBall::from_f64(1.0, 128);
+        assert!(b.lambert_w0().is_some());
     }
 
     #[test]
