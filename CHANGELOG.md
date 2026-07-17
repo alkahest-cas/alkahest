@@ -2,17 +2,42 @@
 
 ## Unreleased
 
-### Solver
+## 3.6.0 — 2026-07-17
 
-- **Lambert W / trig transcendental solve:** `solve` now recognises `α·u·e^u = c` (affine `u`) via the principal branch `W₀`, and `sin`/`cos`/`tan` of an affine argument equal to a constant (principal `asin`/`acos`/`atan` only — no `2πk` family). Unrecognised forms still decline with `Unsupported` rather than inventing roots. Thin experimental constructor: `alkahest.experimental.lambert_w`.
+### Release / packaging
+
+- **Cranelift JIT in default PyPI wheels:** default Linux/macOS/Windows wheels ship `egraph` + `groebner` + Cranelift JIT (`cranelift_jit`); LLVM `+jit` / `+full` remain GitHub Release–only local versions.
+
+### Complex / numeric evaluation
+
+- **Complex numeric evaluation and rational residues:** complex-mode numeric evaluation with rational residue support.
+- **Principal Arg and complex symbolics:** branch-safe `Arg` folds and conservative symbolic complex primitives.
+- **Unified experimental evaluation API.**
+
+### Special functions / solver
+
+- **Special-function foundation:** Lambert W, digamma, Bessel J₀/J₁ primitives.
+- **Lambert W / trig transcendental solve:** `solve` recognises `α·u·e^u = c` (affine `u`) via principal `W₀`, and `sin`/`cos`/`tan` of an affine argument equal to a constant (principal inverse only — no `2πk` family). Thin experimental constructor: `alkahest.experimental.lambert_w`.
+- **Transcendental solve** for exp/log equations.
 
 ### Simplification
 
-- **Trig normal form (`simplify_trig_normal_form`):** opt-in simplifier that composes bounded polynomial expansion (`ExpandPow` + `ExpandMul`), constant folding, like-term collection, and the sin/cos-polynomial trig identities — argument-sign normalization plus the Pythagorean identity, including a new multi-angle Pythagorean rule — into a single fixed-point run. Reduces every entry of `Rᵀ·R − I` for a 3-2-1 Euler-angle direction-cosine matrix to `0` in one call. Works in the sin/cos monomial basis and does not introduce compound-angle (`sin(2u)`, `sin(u+v)`, …) forms. Heavier than `simplify`, so it is never wired into the default hot path. Exposed in Rust (`alkahest_core::simplify_trig_normal_form`, also in `stable`) and Python (`alkahest.simplify_trig_normal_form`).
+- **Trig normal form (`simplify_trig_normal_form`):** opt-in fixed-point simplifier for sin/cos polynomials (DCM `Rᵀ·R − I` → `0` in one call).
+- **Sound assumptions:** conditional rewrites require explicit assumptions.
 
-### Real / decision procedures
+### Integration / Risch
 
-- **Parametric Routh–Hurwitz (`routh_hurwitz`):** symbolic stability analysis of a characteristic polynomial whose coefficients are free parameters. Builds the Routh array purely symbolically and returns the first-column entries plus the stability condition as a conjunction of strict-positivity predicates (e.g. `s²+a·s+b` → `a>0 ∧ b>0`; `s³+a·s²+b·s+c` → `a>0 ∧ a·b−c>0 ∧ c>0`). Exposed in Python as `alkahest.routh_hurwitz(poly, var)`.
+- Genus-0 √quadratic (including arcsin / negative leading coeff), Weierstrass `t=tan(x/2)`, trig powers & products, inverse-trig / reciprocal-trig / inverse-hyperbolic antiderivatives, Coates genus≥2 hyperelliptic logs, and exact vs numeric verification status.
+
+### Linear algebra / ODE / real
+
+- **Matrix:** symbolic eigenvalues / `matrix_exp`; `Matrix.rref` on the agent surface.
+- **ODE:** numeric RK4/RK45 integrator and `dsolve` Python binding.
+- **Parametric Routh–Hurwitz (`routh_hurwitz`).**
+
+### API / agents
+
+- **`capabilities()` / feature parity reporting** and agent capability / verification contract metadata.
 
 ## 3.5.1 — 2026-06-15
 

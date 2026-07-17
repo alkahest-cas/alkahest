@@ -41,7 +41,7 @@ install_alkahest_wheel() {
     aarch64|arm64) WHEEL_PLAT="manylinux_2_35_aarch64" ;;
     *) echo "Unsupported architecture for +full wheel: $(uname -m)"; return 1 ;;
   esac
-  local ALKAHEST_VERSION="${ALKAHEST_VERSION:-3.5.1}"
+  local ALKAHEST_VERSION="${ALKAHEST_VERSION:-3.6.0}"
   local FULL_WHEEL="https://github.com/alkahest-cas/alkahest/releases/download/v${ALKAHEST_VERSION}/alkahest-${ALKAHEST_VERSION}+full-${PY_TAG}-${PY_TAG}-${WHEEL_PLAT}.whl"
   echo "Installing alkahest +full wheel: $FULL_WHEEL"
   if pip install -q --force-reinstall "$FULL_WHEEL"; then

@@ -215,7 +215,7 @@ wheels = [
 
 [[package]]
 name = "alkahest"
-version = "3.5.1"
+version = "3.6.0"
 source = { editable = "." }
 
 [package.optional-dependencies]
