@@ -217,9 +217,8 @@ fn try_trig_solve(equation: ExprId, var: ExprId, pool: &ExprPool) -> Option<Tran
         }
     };
 
-    match trig_rhs_real_ok(kind, c, pool) {
-        Some(false) => return Some(TranscendentalOutcome::Solved(vec![])),
-        Some(true) | None => {}
+    if let Some(false) = trig_rhs_real_ok(kind, c, pool) {
+        return Some(TranscendentalOutcome::Solved(vec![]));
     }
 
     let inv_name = match kind {
@@ -280,9 +279,8 @@ fn try_lambert_solve(
         }
     };
 
-    match lambert_rhs_real_ok(c, pool) {
-        Some(false) => return Some(TranscendentalOutcome::Solved(vec![])),
-        Some(true) | None => {}
+    if let Some(false) = lambert_rhs_real_ok(c, pool) {
+        return Some(TranscendentalOutcome::Solved(vec![]));
     }
 
     let w = pool.func("lambert_w", vec![c]);
