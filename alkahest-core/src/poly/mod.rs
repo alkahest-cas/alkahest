@@ -3,6 +3,7 @@ pub mod cancel;
 pub mod error;
 // V2-7 — Polynomial factorization
 pub mod factor;
+pub mod gauss;
 // V2-3 — Sparse interpolation
 pub mod interp;
 pub mod multipoly;
@@ -11,6 +12,7 @@ pub mod partial_fractions;
 // M3 prereq — Newton–Puiseux fractional-power local expansions of plane curves
 pub mod puiseux;
 pub mod rational;
+pub mod residue;
 // V2-2 — Resultants and subresultant PRS
 pub mod resultant;
 // V2-4 — Real root isolation (VAS)
@@ -30,6 +32,7 @@ pub use factor::{
     UniPolyFactorModP, UniPolyFactorization,
 };
 // V2-3 — Sparse interpolation and sparse modular GCD
+pub use gauss::GaussRat;
 pub use interp::{
     gcd_sparse_modular, sparse_interpolate, sparse_interpolate_univariate, SparseGcdError,
     SparseInterpError,
@@ -37,6 +40,7 @@ pub use interp::{
 pub use multipoly::MultiPoly;
 pub use partial_fractions::{apart, ApartError};
 pub use rational::RationalFunction;
+pub use residue::{residue, ResidueError};
 // V2-2 — Resultants and subresultant PRS
 pub use resultant::{resultant, subresultant_prs, ResultantError};
 // V2-4 — Real root isolation (VAS)

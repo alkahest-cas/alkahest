@@ -161,7 +161,22 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // E-PARSE — expression parser (V2-21)
     ErrorSpec { code: "E-PARSE-001", class: "ParseError", cause: Cause::UserInput,   remediation: Some("only ASCII arithmetic expressions are supported") },
     ErrorSpec { code: "E-PARSE-002", class: "ParseError", cause: Cause::UserInput,   remediation: Some("check parentheses and operator placement") },
-    ErrorSpec { code: "E-PARSE-003", class: "ParseError", cause: Cause::UserInput,   remediation: Some("use a known function: sin, cos, tan, sinh, cosh, tanh, asin, acos, atan, atan2, exp, log, sqrt, abs, sign, floor, ceil, round, erf, erfc, gamma, lambert_w") },
+    ErrorSpec { code: "E-PARSE-003", class: "ParseError", cause: Cause::UserInput,   remediation: Some("use a known function: sin, cos, tan, sinh, cosh, tanh, asin, acos, atan, atan2, exp, log, sqrt, abs, sign, floor, ceil, round, erf, erfc, gamma, lambert_w, digamma, bessel_j0, bessel_j1") },
+    ErrorSpec { code: "E-EVAL-001", class: "EvalError", cause: Cause::UserInput,   remediation: Some("bind every free symbol before evaluation") },
+    ErrorSpec { code: "E-EVAL-002", class: "EvalError", cause: Cause::UserInput,   remediation: Some("use mode='f64' or 'complex' for float literals") },
+    ErrorSpec { code: "E-EVAL-003", class: "EvalError", cause: Cause::UserInput,   remediation: Some("only integer exponents are supported in exact mode") },
+    ErrorSpec { code: "E-EVAL-004", class: "EvalError", cause: Cause::Domain,      remediation: Some("0 to a negative power is undefined") },
+    ErrorSpec { code: "E-EVAL-005", class: "EvalError", cause: Cause::Unsupported, remediation: Some("register the function or use a supported evaluation mode") },
+    ErrorSpec { code: "E-EVAL-006", class: "EvalError", cause: Cause::Unsupported, remediation: Some("this expression form is not evaluable in the requested mode") },
+    ErrorSpec { code: "E-EVAL-007", class: "EvalError", cause: Cause::UserInput,   remediation: Some("check predicate arity") },
+    ErrorSpec { code: "E-EVAL-008", class: "EvalError", cause: Cause::Domain,      remediation: Some("predicate truth value is not uniform over the input domain") },
+    ErrorSpec { code: "E-EVAL-009", class: "EvalError", cause: Cause::Domain,      remediation: Some("result is not finite") },
+    ErrorSpec { code: "E-EVAL-010", class: "EvalError", cause: Cause::Domain,      remediation: Some("interval evaluation failed or branch is indeterminate") },
+    ErrorSpec { code: "E-EVAL-011", class: "EvalError", cause: Cause::Domain,      remediation: Some("principal Arg/log branch cut — expression stays unevaluated at this point") },
+    ErrorSpec { code: "E-RESIDUE-001", class: "ResidueError", cause: Cause::UserInput,   remediation: Some("input must be a rational function of the variable over ℚ") },
+    ErrorSpec { code: "E-RESIDUE-002", class: "ResidueError", cause: Cause::Domain,      remediation: Some("denominator must be non-zero") },
+    ErrorSpec { code: "E-RESIDUE-003", class: "ResidueError", cause: Cause::Unsupported, remediation: Some("pole order exceeds supported bound; essential singularities are out of scope") },
+    ErrorSpec { code: "E-RESIDUE-004", class: "ResidueError", cause: Cause::Domain,      remediation: Some("division by zero during Laurent coefficient extraction") },
     // E-DOMAIN — reserved; DomainError is Python-only pending Rust implementation
 ];
 

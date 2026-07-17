@@ -21,9 +21,11 @@ Other experimental surface:
 - :func:`to_lean` — Lean 4 certificate export (V5-1)
 - :func:`to_stablehlo` — StableHLO / XLA bridge (V5-2)
 - :func:`to_jax` — JAX primitive integration (V5-7, requires JAX)
-- :func:`evaluate` — unified exact, f64, and interval evaluation
+- :func:`evaluate` — unified exact, f64, complex f64, and interval evaluation
 - :func:`conjugate`, :func:`re`, :func:`im`, :func:`arg` — symbolic complex
-  constructors (principal Arg only; no numeric/JIT evaluation yet)
+  constructors (principal Arg only; numeric evaluation via :func:`evaluate` in
+  ``complex`` / ``auto`` mode)
+- :func:`residue` — rational meromorphic residues at points in ℚ(i)
 - :class:`GroebnerBasis`, :class:`GbPoly` — parallel F4 Gröbner basis (V5-11,
   requires ``groebner`` feature)
 - :func:`solve` — polynomial system solver (V1-4, requires ``groebner`` feature)
@@ -89,6 +91,7 @@ from alkahest.alkahest import (
     ode_integrate_rk4,
     ode_integrate_rk45,
     re,
+    residue,
     series_solve,
     z_transform,
 )
@@ -135,6 +138,7 @@ __all__ = [
     "ode_integrate_rk4",
     "ode_integrate_rk45",
     "re",
+    "residue",
     "series_solve",
     "solve",
     "to_jax",

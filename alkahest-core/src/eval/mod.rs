@@ -5,6 +5,8 @@
 //! [`IntervalEval`] provides rigorous enclosures.  This module gives callers a
 //! single dispatch point and reports unsupported constructs structurally.
 
+mod complex_f64;
+
 use crate::ball::{ArbBall, IntervalEval};
 use crate::kernel::expr::PredicateKind;
 use crate::kernel::{ExprData, ExprId, ExprPool};
@@ -12,7 +14,13 @@ use rug::Rational;
 use std::collections::HashMap;
 use std::fmt;
 
+pub use complex_f64::{eval_complex_f64, ComplexF64};
+
 /// Input bindings and representation selected for an evaluation.
+///
+/// Complex evaluation is intentionally a separate entry point
+/// ([`eval_complex_f64`]) so this enum stays semver-compatible without a
+/// major bump when the complex path lands.
 pub enum EvalMode<'a> {
     /// Exact evaluation over rational numbers.  Float literals and
     /// transcendental functions are rejected.
@@ -70,6 +78,15 @@ impl UnsupportedReason {
             Self::IndeterminatePredicate => "E-EVAL-008",
             Self::NonFiniteResult => "E-EVAL-009",
             Self::IntervalEvaluationFailed => "E-EVAL-010",
+        }
+    }
+
+    /// Agent-facing error code, including complex branch-cut declines that
+    /// reuse [`UnsupportedReason::UnsupportedExpression`] without a breaking enum variant.
+    pub fn agent_code(&self) -> &'static str {
+        match self {
+            Self::UnsupportedExpression { kind: "branch_cut" } => "E-EVAL-011",
+            other => other.code(),
         }
     }
 }
@@ -400,7 +417,11 @@ fn eval_f64_predicate(
     }
 }
 
-fn check_arity(kind: &PredicateKind, args: &[ExprId], expected: usize) -> Result<(), EvalError> {
+pub(crate) fn check_arity(
+    kind: &PredicateKind,
+    args: &[ExprId],
+    expected: usize,
+) -> Result<(), EvalError> {
     if args.len() == expected {
         Ok(())
     } else {
@@ -412,12 +433,16 @@ fn check_arity(kind: &PredicateKind, args: &[ExprId], expected: usize) -> Result
     }
 }
 
-fn predicate_arg(kind: &PredicateKind, args: &[ExprId], index: usize) -> Result<ExprId, EvalError> {
+pub(crate) fn predicate_arg(
+    kind: &PredicateKind,
+    args: &[ExprId],
+    index: usize,
+) -> Result<ExprId, EvalError> {
     check_arity(kind, args, 1)?;
     Ok(args[index])
 }
 
-fn expr_kind(expr: &ExprData) -> &'static str {
+pub(crate) fn expr_kind(expr: &ExprData) -> &'static str {
     match expr {
         ExprData::Forall { .. } => "Forall",
         ExprData::Exists { .. } => "Exists",
