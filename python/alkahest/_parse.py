@@ -64,6 +64,7 @@ _FUNC_NAMES = frozenset(
         "erf",
         "erfc",
         "gamma",
+        "lambert_w",
         # Reciprocal trig / hyperbolic functions (desugared to base(x) ** -1).
         "sec",
         "csc",

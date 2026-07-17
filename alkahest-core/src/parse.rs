@@ -105,7 +105,7 @@ impl AlkahestError for ParseError {
         match self.code_idx {
             1 => Some("only ASCII arithmetic expressions are supported"),
             2 => Some("check parentheses and operator placement"),
-            _ => Some("use a known function: sin, cos, tan, sec, csc, cot, sinh, cosh, tanh, sech, csch, coth, asin, acos, atan, asinh, acosh, atanh, atan2, exp, log, sqrt, abs, sign, floor, ceil, round, erf, erfc, gamma"),
+            _ => Some("use a known function: sin, cos, tan, sec, csc, cot, sinh, cosh, tanh, sech, csch, coth, asin, acos, atan, asinh, acosh, atanh, atan2, exp, log, sqrt, abs, sign, floor, ceil, round, erf, erfc, gamma, lambert_w"),
         }
     }
 

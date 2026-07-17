@@ -161,7 +161,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // E-PARSE — expression parser (V2-21)
     ErrorSpec { code: "E-PARSE-001", class: "ParseError", cause: Cause::UserInput,   remediation: Some("only ASCII arithmetic expressions are supported") },
     ErrorSpec { code: "E-PARSE-002", class: "ParseError", cause: Cause::UserInput,   remediation: Some("check parentheses and operator placement") },
-    ErrorSpec { code: "E-PARSE-003", class: "ParseError", cause: Cause::UserInput,   remediation: Some("use a known function: sin, cos, tan, sinh, cosh, tanh, asin, acos, atan, atan2, exp, log, sqrt, abs, sign, floor, ceil, round, erf, erfc, gamma") },
+    ErrorSpec { code: "E-PARSE-003", class: "ParseError", cause: Cause::UserInput,   remediation: Some("use a known function: sin, cos, tan, sinh, cosh, tanh, asin, acos, atan, atan2, exp, log, sqrt, abs, sign, floor, ceil, round, erf, erfc, gamma, lambert_w") },
     // E-DOMAIN — reserved; DomainError is Python-only pending Rust implementation
 ];
 

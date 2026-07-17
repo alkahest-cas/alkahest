@@ -8020,9 +8020,9 @@ fn py_solve(
     }
 
     // Transcendental pre-processing: for a single equation in a single unknown
-    // containing `exp`/`log`, try the scoped closed-form solver before handing
-    // off to the polynomial path (which would reject any transcendental).  On
-    // `Unsupported` we fall straight through to `solve_polynomial_system`.
+    // containing exp/log/Lambert-W/trig, try the scoped closed-form solver before
+    // handing off to the polynomial path (which would reject any transcendental).
+    // On `Unsupported` we fall straight through to `solve_polynomial_system`.
     if eq_ids.len() == 1 && var_ids.len() == 1 {
         let trans = {
             let pool = pool_py.borrow(py);

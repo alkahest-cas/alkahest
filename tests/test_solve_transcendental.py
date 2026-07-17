@@ -1,4 +1,4 @@
-"""Transcendental (exp/log) solving via ``solve`` (issue #5).
+"""Transcendental (exp/log/Lambert W/trig) solving via ``solve`` (issue #5).
 
 These exercise the scoped transcendental pre-processing layer added on top of
 the polynomial (Gröbner) solver.  Skipped when the native module is built
@@ -71,13 +71,100 @@ def test_exp_no_real_solution_returns_empty():
     assert sols == []
 
 
-def test_unsupported_transcendental_falls_through_to_error():
-    # sin(x) = 0 is not in the supported exp/log slice; the transcendental
-    # layer reports Unsupported and the polynomial solver then rejects it with
-    # a clean structured error (rather than returning a wrong answer).
+def test_sin_principal():
+    # sin(x) = 1/2 -> x = asin(1/2) (principal value only; no 2πk family).
     p = alkahest.ExprPool()
     x = p.symbol("x")
-    eq = alkahest.sin(x)
+    eq = alkahest.sin(x) + p.rational(-1, 2)
+    sols = alkahest.solve([eq], [x], numeric=True)
+    assert len(sols) == 1
+    assert abs(sols[0][x] - math.asin(0.5)) < 1e-9
+
+
+def test_cos_principal():
+    p = alkahest.ExprPool()
+    x = p.symbol("x")
+    eq = alkahest.cos(x)  # cos(x) = 0
+    sols = alkahest.solve([eq], [x], numeric=True)
+    assert len(sols) == 1
+    assert abs(sols[0][x] - math.pi / 2) < 1e-9
+
+
+def test_tan_principal():
+    p = alkahest.ExprPool()
+    x = p.symbol("x")
+    eq = alkahest.tan(x) + p.integer(-1)
+    sols = alkahest.solve([eq], [x], numeric=True)
+    assert len(sols) == 1
+    assert abs(sols[0][x] - math.atan(1.0)) < 1e-9
+
+
+def test_sin_out_of_range_empty():
+    p = alkahest.ExprPool()
+    x = p.symbol("x")
+    eq = alkahest.sin(x) + p.integer(-2)
+    sols = alkahest.solve([eq], [x], numeric=True)
+    assert sols == []
+
+
+def test_lambert_w_x_exp_x():
+    # x·exp(x) = 1 -> x = W(1)
+    p = alkahest.ExprPool()
+    x = p.symbol("x")
+    eq = x * alkahest.exp(x) + p.integer(-1)
+    sols = alkahest.solve([eq], [x], numeric=True)
+    assert len(sols) == 1
+    v = sols[0][x]
+    assert abs(v * math.exp(v) - 1.0) < 1e-9
+
+
+def test_lambert_w_scaled():
+    # 2·x·exp(x) = 1 -> x = W(1/2)
+    p = alkahest.ExprPool()
+    x = p.symbol("x")
+    eq = p.integer(2) * x * alkahest.exp(x) + p.integer(-1)
+    sols = alkahest.solve([eq], [x], numeric=True)
+    assert len(sols) == 1
+    v = sols[0][x]
+    assert abs(2.0 * v * math.exp(v) - 1.0) < 1e-9
+
+
+def test_lambert_w_affine():
+    # (x+1)·exp(x+1) = 1 -> x = W(1) - 1
+    p = alkahest.ExprPool()
+    x = p.symbol("x")
+    u = x + p.integer(1)
+    eq = u * alkahest.exp(u) + p.integer(-1)
+    sols = alkahest.solve([eq], [x], numeric=True)
+    assert len(sols) == 1
+    v = sols[0][x] + 1.0
+    assert abs(v * math.exp(v) - 1.0) < 1e-9
+
+
+def test_lambert_w_symbolic_contains_w():
+    p = alkahest.ExprPool()
+    x = p.symbol("x")
+    eq = x * alkahest.exp(x) + p.integer(-1)
+    sols = alkahest.solve([eq], [x])
+    assert len(sols) == 1
+    s = str(sols[0][x]).lower()
+    assert "w(" in s or "lambert" in s
+
+
+def test_lambert_w_constructor_experimental():
+    from alkahest import experimental as ex
+
+    p = alkahest.ExprPool()
+    x = p.symbol("x")
+    w = ex.lambert_w(x)
+    assert "W(" in str(w) or "lambert" in str(w).lower()
+
+
+def test_unsupported_mixed_falls_through_to_error():
+    # sin(x) + exp(x) = 0 is outside the supported single-kernel slice.
+    p = alkahest.ExprPool()
+    x = p.symbol("x")
+    eq = alkahest.sin(x) + alkahest.exp(x)
     with pytest.raises(Exception):
         alkahest.solve([eq], [x])
 

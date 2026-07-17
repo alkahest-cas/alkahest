@@ -2648,6 +2648,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn lambert_w_registered_and_numeric() {
+        let reg = PrimitiveRegistry::default_registry();
+        assert!(reg.is_registered("lambert_w"));
+        assert_eq!(reg.numeric_f64("lambert_w", &[0.0]), Some(0.0));
+        let w1 = reg.numeric_f64("lambert_w", &[1.0]).unwrap();
+        assert!((w1 * w1.exp() - 1.0).abs() < 1e-12);
+        assert!(reg.numeric_f64("lambert_w", &[-1.0]).is_none()); // < -1/e
+    }
+
     // ── Elliptic special functions ─────────────────────────────────────────────
 
     /// Recursively evaluate an expression to f64, substituting `var := val`,
