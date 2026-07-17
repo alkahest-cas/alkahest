@@ -77,6 +77,10 @@ codspeed-criterion-compat = { version = "2", features = ["html_reports"] }
 name = "alkahest_bench"
 harness = false
 
+[[bench]]
+name = "symbolic_gpu_bench"
+harness = false
+
 [[example]]
 name = "dump_ptx"
 required-features = ["cuda"]
