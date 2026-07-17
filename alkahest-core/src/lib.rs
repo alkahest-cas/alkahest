@@ -371,4 +371,8 @@ pub mod experimental {
         compute_groebner_basis_f5, fglm, grevlex_staircase, is_zero_dimensional, GbPoly,
         GroebnerBasis, MonomialOrder,
     };
+
+    /// Bounded content-addressed expression pool (RFC 0001). Not used by default
+    /// [`ExprPool`]; unit-tested prototype only.
+    pub mod merkle_pool;
 }
