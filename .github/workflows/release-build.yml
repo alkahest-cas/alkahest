@@ -68,7 +68,8 @@ jobs:
       - name: Smoke test
         run: |
           pip install --no-index --find-links dist alkahest
-          python -c "
+          # Heredoc (not python -c) so bash does not strip Python "..." quotes.
+          python - <<'PY'
           import alkahest as ak
           p = ak.ExprPool()
           x = p.symbol('x')
@@ -84,7 +85,7 @@ jobs:
           }
           assert ak.jit_is_available(), "expected Cranelift JIT in default wheel"
           print('default wheel ok (groebner + cranelift)')
-          "
+          PY
 
       - uses: actions/upload-artifact@v7
         with:
