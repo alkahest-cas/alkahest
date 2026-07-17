@@ -84,7 +84,8 @@ impl ComplexF64 {
         )
     }
     fn principal_arg(self) -> Result<f64, EvalError> {
-        if (self.re == 0.0 && self.im == 0.0) || (self.im == 0.0 && self.re <= 0.0) {
+        // Principal arg is undefined at 0 and discontinuous on the negative real axis.
+        if self.im == 0.0 && self.re <= 0.0 {
             return Err(error(UnsupportedReason::UnsupportedExpression {
                 kind: "branch_cut",
             }));

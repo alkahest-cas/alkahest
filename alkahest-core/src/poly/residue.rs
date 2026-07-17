@@ -113,6 +113,7 @@ fn gauss_to_expr(g: &GaussRat, pool: &ExprPool) -> ExprId {
 mod tests {
     use super::*;
     use crate::kernel::Domain;
+    use rug::Rational;
 
     fn pt(re: i64, im: i64) -> GaussRat {
         GaussRat::from_re_im(Rational::from(re), Rational::from(im))
