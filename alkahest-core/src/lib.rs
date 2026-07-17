@@ -373,6 +373,6 @@ pub mod experimental {
     };
 
     /// Bounded content-addressed expression pool (RFC 0001). Not used by default
-    /// [`ExprPool`]; unit-tested prototype only.
+    /// [`crate::ExprPool`]; unit-tested prototype only.
     pub mod merkle_pool;
 }
