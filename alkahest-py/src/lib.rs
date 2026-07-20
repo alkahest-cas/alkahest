@@ -8063,6 +8063,8 @@ fn py_solve_numerical(
 ///     Variables to solve for (symbols).
 /// numeric : bool, default False
 ///     Used when ``method="groebner"``: symbolic ``Expr`` values vs ``float``.
+///     When Lex back-substitution hits a degree > 2 univariate, ``numeric=True``
+///     falls back to homotopy continuation (same as ``method="homotopy"``).
 /// method : str, default ``"groebner"``
 ///     ``"groebner"`` — Lex basis + triangular back-substitution.
 ///     ``"homotopy"`` — total-degree homotopy continuation in ``ℂⁿ`` followed
@@ -8146,8 +8148,39 @@ fn py_solve(
 
     let result = {
         let pool = pool_py.borrow(py);
-        solve_polynomial_system(eq_ids, var_ids.clone(), &pool.inner)
+        solve_polynomial_system(eq_ids.clone(), var_ids.clone(), &pool.inner)
     };
+
+    // B5: `numeric=True` means the caller accepts floats — when Lex back-substitution
+    // hits a degree > 2 univariate, fall through to homotopy instead of raising.
+    if numeric {
+        if let Err(alkahest_core::SolverError::HighDegree(_)) = &result {
+            let opts = HomotopyOpts::default();
+            let pts = {
+                let pool = pool_py.borrow(py);
+                solve_numerical(&eq_ids, &var_ids, &pool.inner, &opts)
+            };
+            return match pts {
+                Err(e) => Err(homotopy_err_to_py(e)),
+                Ok(points) => {
+                    let list = pyo3::types::PyList::empty_bound(py);
+                    for p in points {
+                        let d = pyo3::types::PyDict::new_bound(py);
+                        for (i, &val) in p.coordinates.iter().enumerate() {
+                            let var_expr = PyExpr {
+                                id: var_ids[i],
+                                pool: pool_py.clone_ref(py),
+                            };
+                            d.set_item(var_expr.into_py(py), val)?;
+                        }
+                        list.append(d)?;
+                    }
+                    Ok(list.into())
+                }
+            };
+        }
+    }
+
     finite_solutions_to_py(py, result, &pool_py, &var_ids, numeric)
 }
 

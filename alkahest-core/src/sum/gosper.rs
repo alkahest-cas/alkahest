@@ -133,7 +133,11 @@ fn rational_gaussian_solve(
                 break;
             }
         }
-        let pr = piv?;
+        // A zero column is a free variable (set to 0), not a failure — e.g. the
+        // constant basis poly for `x(k+1)-x(k)=k` is identically zero.
+        let Some(pr) = piv else {
+            continue;
+        };
         mat.swap(row, pr);
         rhs.swap(row, pr);
         let factor = mat[row][col].clone();
@@ -303,5 +307,28 @@ mod tests {
         let r = RatFunc { num, den }.normalize();
         let cert = gosper_certificate(&r).expect("Gosper certificate exists");
         assert!(!cert.num.is_zero());
+    }
+
+    #[test]
+    fn gosper_sums_polynomial_k() {
+        // F(k)=k ⇒ r=(k+1)/k ⇒ R=(k-1)/2
+        let num = compose_affine(&RatUniPoly::x(), &Rational::from(1), &Rational::from(1));
+        let den = RatUniPoly::x();
+        let r = RatFunc { num, den }.normalize();
+        let cert = gosper_certificate(&r).expect("Gosper must sum F(k)=k");
+        // R = (k - 1)/2
+        assert_eq!(cert.den.degree(), 0);
+        assert_eq!(cert.num.degree(), 1);
+        assert_eq!(cert.num.coeffs[1], Rational::from(1) / Rational::from(2));
+        assert_eq!(cert.num.coeffs[0], Rational::from(-1) / Rational::from(2));
+    }
+
+    #[test]
+    fn gosper_sums_polynomial_k_squared() {
+        let lin = compose_affine(&RatUniPoly::x(), &Rational::from(1), &Rational::from(1));
+        let num = &lin * &lin;
+        let den = &RatUniPoly::x() * &RatUniPoly::x();
+        let r = RatFunc { num, den }.normalize();
+        assert!(gosper_certificate(&r).is_some(), "Gosper must sum F(k)=k^2");
     }
 }

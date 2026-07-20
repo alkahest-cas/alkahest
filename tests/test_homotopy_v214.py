@@ -46,3 +46,29 @@ def test_solve_numerical_certified_solution_api():
     d = pts[0].to_dict()
     assert len(d) == 1
     assert abs(next(iter(d.values())) ** 2 - 1.0) < 1e-10
+
+
+def test_solve_numeric_true_falls_back_past_degree_two():
+    """B5: numeric=True must not die on degree-3 Lex back-substitution."""
+    p = alkahest.ExprPool()
+    x, y, z = p.symbol("x"), p.symbol("y"), p.symbol("z")
+    eqs = [x + y + z - 6, x * y + y * z + z * x - 11, x * y * z - 6]
+    # Symbolic Groebner still raises HighDegree.
+    with pytest.raises(Exception) as exc_info:
+        alkahest.solve(eqs, [x, y, z])
+    msg = str(exc_info.value).lower()
+    code = getattr(exc_info.value, "code", "")
+    assert "degree" in msg or code == "E-SOLVE-002"
+
+    sols = alkahest.solve(eqs, [x, y, z], numeric=True)
+    assert len(sols) == 6
+    perms = {
+        (1.0, 2.0, 3.0),
+        (1.0, 3.0, 2.0),
+        (2.0, 1.0, 3.0),
+        (2.0, 3.0, 1.0),
+        (3.0, 1.0, 2.0),
+        (3.0, 2.0, 1.0),
+    }
+    found = {(round(s[x], 6), round(s[y], 6), round(s[z], 6)) for s in sols}
+    assert found == {(round(a, 6), round(b, 6), round(c, 6)) for a, b, c in perms}
