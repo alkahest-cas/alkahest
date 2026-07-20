@@ -149,6 +149,14 @@ pub fn contains_risch_form(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
         // is a Risch/MD form even when the transcendental appears only inside
         // the radicand — route it to the tower integrator, not the algebraic one.
         || tower_integrate::detect_radical_with_transcendental_radicand(expr, var, pool).is_some()
+        // Mixed exp+log (e.g. (log(x)+1/x)·exp(x)): the log may sit inside a
+        // coefficient Add that `needs_log_risch` does not flag as a direct
+        // `c·log` factor.  Route any such mixed tower to the exp-tower /
+        // poly-in-log RDE path rather than the rule engine.
+        || {
+            let gens = find_generators(expr, var, pool);
+            gens.iter().any(|g| g.is_exp()) && gens.iter().any(|g| g.is_log())
+        }
 }
 
 // ---------------------------------------------------------------------------
@@ -989,6 +997,29 @@ mod tests {
         assert!(
             result.is_ok(),
             "∫ (log(x)+x+1/x)·exp(x) dx must be elementary; got {result:?}"
+        );
+        verify_gapb(f, result.unwrap().value, x, &pool);
+    }
+
+    #[test]
+    fn gapb_exp_log_plus_exp_over_x_elementary() {
+        // ∫ (exp(x)·log(x) + exp(x)/x) dx = exp(x)·log(x)
+        // Classic trap (B2): each summand alone is non-elementary / Ei-related,
+        // but the sum is elementary (product rule). Same-k coefficients from
+        // `decompose_wrt_exp` must be combined before the poly-in-log RDE.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let log_x = pool.func("log", vec![x]);
+        let inv_x = pool.pow(x, pool.integer(-1_i32));
+        let f = pool.add(vec![
+            pool.mul(vec![exp_x, log_x]),
+            pool.mul(vec![exp_x, inv_x]),
+        ]);
+        let result = integrate_risch(f, x, &pool);
+        assert!(
+            result.is_ok(),
+            "∫ exp(x)log(x)+exp(x)/x dx must be elementary; got {result:?}"
         );
         verify_gapb(f, result.unwrap().value, x, &pool);
     }

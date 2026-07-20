@@ -202,16 +202,23 @@ pub fn decompose_wrt_exp(
     exp_gen: ExprId,
     pool: &ExprPool,
 ) -> (ExprId, Vec<(ExprId, i64)>) {
+    use std::collections::BTreeMap;
+
     let zero = pool.integer(0_i32);
 
     match pool.get(expr) {
         ExprData::Add(args) => {
             let mut rational_terms: Vec<ExprId> = Vec::new();
-            let mut exp_terms: Vec<(ExprId, i64)> = Vec::new();
+            // Combine coefficients of equal powers of `exp_gen`.  Without this,
+            // ∫ (c₁·θ + c₀)·exp(η) written as a sum of products
+            // (c₁·θ·exp(η) + c₀·exp(η)) is integrated term-by-term and each
+            // summand can be mis-certified NonElementary even when the combined
+            // coefficient admits a poly-in-log RDE solution (B2).
+            let mut by_k: BTreeMap<i64, Vec<ExprId>> = BTreeMap::new();
 
             for &a in &args {
                 if let Some((coeff, k)) = extract_exp_factor(a, exp_gen, pool) {
-                    exp_terms.push((coeff, k));
+                    by_k.entry(k).or_default().push(coeff);
                 } else {
                     rational_terms.push(a);
                 }
@@ -222,6 +229,16 @@ pub fn decompose_wrt_exp(
                 1 => rational_terms[0],
                 _ => pool.add(rational_terms),
             };
+            let exp_terms: Vec<(ExprId, i64)> = by_k
+                .into_iter()
+                .map(|(k, coeffs)| {
+                    let coeff = match coeffs.len() {
+                        1 => coeffs[0],
+                        _ => pool.add(coeffs),
+                    };
+                    (coeff, k)
+                })
+                .collect();
             (rational_part, exp_terms)
         }
 
