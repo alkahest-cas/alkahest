@@ -319,6 +319,38 @@ def test_lean_diff_export():
     assert any(step["rule"] == "diff_univariate_poly" for step in result.steps)
 
 
+def test_lean_withholds_false_integrate_certificate():
+    """B3: ∫ sin must not emit the false equality `sin x = -cos x`."""
+    p = pool()
+    x = p.symbol("x")
+    r = integrate(sin(x), x)
+    assert r.certificate is None
+    assert to_lean(r) == ""
+    # Residual check still labels the antiderivative as exact.
+    assert r.verification["status"] == "exactly_verified"
+
+
+def test_lean_diff_sin_certificate_has_no_sorry():
+    """B3: simple d/dx sin(x) emits Real.deriv_sin, not sorry."""
+    p = pool()
+    x = p.symbol("x")
+    r = diff(sin(x), x)
+    cert = r.certificate
+    assert isinstance(cert, str) and cert
+    assert "sorry" not in cert
+    assert "Real.deriv_sin" in cert
+    assert r.verification["status"] == "certificate_available"
+
+
+def test_lean_withholds_chain_rule_diff_certificate():
+    """B3: chain-rule diffs are withheld until Lean-encoded."""
+    p = pool()
+    x = p.symbol("x")
+    r = diff(sin(x**2), x)
+    assert r.certificate is None
+    assert r.verification["status"] == "unverified"
+
+
 # ---------------------------------------------------------------------------
 # StableHLO / XLA bridge
 # ---------------------------------------------------------------------------

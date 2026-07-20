@@ -48,10 +48,9 @@ fn rule_to_tactic(rule_name: &str) -> &'static str {
         "log_of_pow" => "by rw [Real.log_pow]",
         "sin_sq_plus_cos_sq" => "by rw [Real.sin_sq_add_cos_sq]",
         "power_rule" | "constant_rule" | "sum_rule" | "constant_multiple_rule" => "by ring",
-        "int_sin" => "by simp [MeasureTheory.integral_sin]",
-        "int_cos" => "by simp [MeasureTheory.integral_cos]",
-        "int_exp" => "by simp [MeasureTheory.integral_exp]",
-        "log_rule" => "by simp [MeasureTheory.integral_inv_of_pos (by positivity)]",
+        // Integration rules must not be emitted as bare `integrand = F` equalities
+        // (that claim is false). They are filtered out by [`step_is_certifiable`].
+        "int_sin" | "int_cos" | "int_exp" | "log_rule" => "by sorry",
         "collect_add_terms" | "collect_mul_factors" => "by ring",
         "flatten_mul" | "flatten_add" | "canonical_order" => "by ring",
         "expand_mul" => "by ring",
@@ -65,21 +64,88 @@ fn is_diff_certificate(wrt: Option<ExprId>) -> bool {
     wrt.is_some()
 }
 
-fn diff_rule_to_tactic(rule_name: &str) -> &'static str {
+/// Rules that construct derivatives (as opposed to algebraic cleanup after diff).
+fn is_differentiation_rule(rule_name: &str) -> bool {
+    rule_name.starts_with("diff_")
+        || matches!(
+            rule_name,
+            "sum_rule"
+                | "product_rule"
+                | "quotient_rule"
+                | "chain_rule"
+                | "power_rule"
+                | "power_rule_n0"
+                | "power_rule_n1"
+        )
+}
+
+/// Rules that build antiderivatives. Emitting `before = after` for these is
+/// mathematically false (e.g. `sin x = -cos x`).
+fn is_integration_rule(rule_name: &str) -> bool {
+    rule_name.starts_with("int_")
+        || rule_name.starts_with("risch_")
+        || matches!(
+            rule_name,
+            "fundamental_theorem_of_calculus"
+                | "log_rule"
+                | "gosper_indefinite"
+                | "gosper_definite_telescope"
+        )
+}
+
+/// `before` is structurally `f(wrt)` for a unary primitive `f`.
+fn is_unary_of_var(before: ExprId, wrt: ExprId, pool: &ExprPool) -> bool {
+    pool.with(
+        before,
+        |d| matches!(d, ExprData::Func { args, .. } if args.len() == 1 && args[0] == wrt),
+    )
+}
+
+fn diff_rule_to_tactic(rule_name: &str) -> Option<&'static str> {
     match rule_name {
-        "diff_identity" => "by simp [deriv_id]",
-        "diff_const" => "by simp [deriv_const]",
-        "diff_univariate_poly" => "by simp [deriv_pow, deriv_add, deriv_mul, deriv_const]",
-        "sum_rule" => "by simp [deriv_add]; ring",
-        "product_rule" => "by simp [deriv_mul]; ring",
-        "power_rule" | "power_rule_n1" => "by simp [deriv_pow, deriv_mul]; ring",
-        "power_rule_n0" => "by simp [deriv_const]",
-        "diff_sin" | "diff_cos" | "diff_exp" | "diff_log" | "diff_sqrt" => "by sorry",
-        "diff_forward" | "diff_primitive_registry" | "diff_piecewise" | "diff_root_sum" => {
-            "by sorry"
-        }
-        _ => "by sorry",
+        "diff_identity" => Some("by simp [deriv_id]"),
+        "diff_const" => Some("by simp [deriv_const]"),
+        "diff_univariate_poly" => Some("by simp [deriv_pow, deriv_add, deriv_mul, deriv_const]"),
+        "sum_rule" => Some("by simp [deriv_add]; ring"),
+        // product_rule currently leaves unsolved goals on realistic logs — withhold.
+        "product_rule" => None,
+        "power_rule" | "power_rule_n1" => Some("by simp [deriv_pow, deriv_mul]; ring"),
+        "power_rule_n0" => Some("by simp [deriv_const]"),
+        // Pointwise Mathlib lemmas for `deriv (fun x => f x) x = …` when the
+        // argument is exactly the free variable. Chain-rule cases are withheld.
+        "diff_sin" => Some("by simp [Real.deriv_sin, one_mul, mul_one]"),
+        "diff_cos" => Some("by simp [Real.deriv_cos, one_mul, mul_one]"),
+        "diff_exp" => Some("by simp [Real.deriv_exp, one_mul, mul_one]"),
+        // log/sqrt need side conditions / different lemmas — withhold for now.
+        "diff_log" | "diff_sqrt" => None,
+        "diff_forward" | "diff_primitive_registry" | "diff_piecewise" | "diff_root_sum" => None,
+        _ => None,
     }
+}
+
+/// Whether this step can be emitted as a Lean `example` expected to typecheck
+/// without `sorry` / `admit`.
+fn step_is_certifiable(step: &RewriteStep, wrt: Option<ExprId>, pool: &ExprPool) -> bool {
+    if is_integration_rule(step.rule_name) {
+        return false;
+    }
+    if let Some(var) = wrt {
+        if is_differentiation_rule(step.rule_name) {
+            match step.rule_name {
+                "diff_sin" | "diff_cos" | "diff_exp" | "diff_log" | "diff_sqrt" => {
+                    // Chain rule / composite arguments are not yet encoded.
+                    return is_unary_of_var(step.before, var, pool)
+                        && diff_rule_to_tactic(step.rule_name).is_some();
+                }
+                name => return diff_rule_to_tactic(name).is_some(),
+            }
+        }
+        // Algebraic cleanup steps in a diff log use plain equality goals.
+        let tactic = rule_to_tactic(step.rule_name);
+        return !tactic.contains("sorry");
+    }
+    let tactic = rule_to_tactic(step.rule_name);
+    !tactic.contains("sorry")
 }
 
 // ---------------------------------------------------------------------------
@@ -320,15 +386,18 @@ pub fn emit_step(step: &RewriteStep, pool: &ExprPool) -> String {
     emit_step_wrt(step, pool, None)
 }
 
-/// Like [`emit_step`], but when `wrt` is set emits a `deriv` goal instead of a rewrite equality.
+/// Like [`emit_step`], but when `wrt` is set, differentiation rules emit a
+/// `deriv` goal while algebraic cleanup steps in the same log stay plain
+/// equalities (so `mul_one` is not wrongly wrapped as `deriv (1·cos) = cos`).
 pub fn emit_step_wrt(step: &RewriteStep, pool: &ExprPool, wrt: Option<ExprId>) -> String {
-    let goal = if let Some(var) = wrt {
+    let diff_step = wrt.is_some() && is_differentiation_rule(step.rule_name);
+    let goal = if let (true, Some(var)) = (diff_step, wrt) {
         emit_diff_goal(step.before, step.after, var, pool)
     } else {
         emit_goal(step.before, step.after, pool)
     };
-    let tactic = if wrt.is_some() {
-        diff_rule_to_tactic(step.rule_name)
+    let tactic = if diff_step {
+        diff_rule_to_tactic(step.rule_name).unwrap_or("by sorry")
     } else {
         rule_to_tactic(step.rule_name)
     };
@@ -356,28 +425,33 @@ pub fn emit_step_wrt(step: &RewriteStep, pool: &ExprPool, wrt: Option<ExprId>) -
 /// 1. A Mathlib import header.
 /// 2. One `example` per rewrite step (each step is checked independently).
 ///
-/// Returns the Lean source as a `String`.
+/// Returns the Lean source as a `String`. When the log cannot be certified
+/// without `sorry` or would assert a false unwrapped equality (integration),
+/// returns an empty string — callers should treat that as "no certificate".
 pub fn emit_lean_expr(derived: &DerivedExpr<ExprId>, pool: &ExprPool) -> String {
     emit_lean_expr_wrt(derived, pool, None)
 }
 
 /// Like [`emit_lean_expr`], but when `wrt` is set emits differentiation goals
-/// (`deriv … = …`) instead of rewrite equalities (`before = after`).
+/// (`deriv … = …`) for differentiation rules.
+///
+/// Returns `""` when any step is not Lean-certifiable (B3): integration
+/// antiderivative construction, chain-rule diffs not yet encoded, or tactics
+/// that would emit `sorry`.
 pub fn emit_lean_expr_wrt(
     derived: &DerivedExpr<ExprId>,
     pool: &ExprPool,
     wrt: Option<ExprId>,
 ) -> String {
-    let diff_mode = is_diff_certificate(wrt);
-    let mut out = if diff_mode {
-        emit_diff_header()
-    } else {
-        emit_header()
-    };
-
     let steps = derived.log.steps();
 
     if steps.is_empty() {
+        let diff_mode = is_diff_certificate(wrt);
+        let mut out = if diff_mode {
+            emit_diff_header()
+        } else {
+            emit_header()
+        };
         let e = derived.value;
         let lean_e = expr_to_lean(e, pool);
         out.push_str(&format!(
@@ -386,10 +460,27 @@ pub fn emit_lean_expr_wrt(
         return out;
     }
 
+    // Withhold the whole certificate if any step is unsound or unfinished.
+    if steps.iter().any(|s| !step_is_certifiable(s, wrt, pool)) {
+        return String::new();
+    }
+
+    let diff_mode = is_diff_certificate(wrt);
+    let mut out = if diff_mode {
+        emit_diff_header()
+    } else {
+        emit_header()
+    };
+
     for (i, step) in steps.iter().enumerate() {
         out.push_str(&format!("-- Step {}: {}\n", i + 1, step.rule_name));
         out.push_str(&emit_step_wrt(step, pool, wrt));
         out.push_str("\n\n");
+    }
+
+    // Defense in depth: never hand out a certificate containing admissions.
+    if out.contains("sorry") || out.contains("admit") {
+        return String::new();
     }
 
     out
@@ -554,6 +645,70 @@ mod tests {
         assert!(
             !lean.contains("= (((x : ℝ)) ^ (2 : ℕ) * (3 : ℝ)) :=") || lean.contains("deriv"),
             "must not claim x^3 = 3*x^2 without deriv: {lean}"
+        );
+    }
+
+    #[test]
+    fn withhold_false_integrate_sin_certificate() {
+        use crate::integrate::integrate;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let sin_x = pool.func("sin", vec![x]);
+        let derived = integrate(sin_x, x, &pool).expect("integrate");
+        let lean = emit_lean_expr(&derived, &pool);
+        assert!(
+            lean.is_empty(),
+            "∫ sin must not emit false `sin = -cos` Lean equality, got: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_lean_diff_sin_without_sorry() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let sin_x = pool.func("sin", vec![x]);
+        let derived = diff(sin_x, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(!lean.is_empty(), "d/dx sin(x) should be Lean-certifiable");
+        assert!(
+            !lean.contains("sorry"),
+            "d/dx sin(x) certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("Real.deriv_sin"),
+            "expected Real.deriv_sin tactic: {lean}"
+        );
+        // Algebraic cleanup must not be wrapped as a deriv goal.
+        assert!(
+            lean.contains("mul_one"),
+            "expected mul_one cleanup step: {lean}"
+        );
+        let mul_one_block = lean
+            .split("-- Step")
+            .find(|b| b.contains("mul_one"))
+            .expect("mul_one step");
+        assert!(
+            !mul_one_block.contains("deriv (fun"),
+            "mul_one cleanup must be a plain equality, got: {mul_one_block}"
+        );
+    }
+
+    #[test]
+    fn withhold_chain_rule_diff_sin_certificate() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let sin_x2 = pool.func("sin", vec![x2]);
+        let derived = diff(sin_x2, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            lean.is_empty(),
+            "chain-rule d/dx sin(x²) is not yet Lean-encoded; got: {lean}"
         );
     }
 

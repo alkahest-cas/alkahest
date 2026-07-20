@@ -1814,14 +1814,14 @@ pub(crate) fn integrate_raw(
             let two = pool.integer(2_i32);
             let inv_two = pool.pow(two, pool.integer(-1_i32));
             let result = pool.mul(vec![pool.pow(var, two), inv_two]);
-            log.push(RewriteStep::simple("power_rule", expr, result));
+            log.push(RewriteStep::simple("int_power_rule", expr, result));
             Ok(result)
         }
 
         // ∫ c dx = c*x  (c free of var)
         Node::Constant => {
             let result = pool.mul(vec![expr, var]);
-            log.push(RewriteStep::simple("constant_rule", expr, result));
+            log.push(RewriteStep::simple("int_constant_rule", expr, result));
             Ok(result)
         }
 
@@ -1833,7 +1833,7 @@ pub(crate) fn integrate_raw(
                 int_args.push(ia);
             }
             let result = pool.add(int_args);
-            log.push(RewriteStep::simple("sum_rule", expr, result));
+            log.push(RewriteStep::simple("int_sum_rule", expr, result));
             Ok(result)
         }
 
@@ -1846,7 +1846,7 @@ pub(crate) fn integrate_raw(
             if non_consts.is_empty() {
                 // All factors are constants — treat whole expression as constant
                 let result = pool.mul(vec![expr, var]);
-                log.push(RewriteStep::simple("constant_rule", expr, result));
+                log.push(RewriteStep::simple("int_constant_rule", expr, result));
                 return Ok(result);
             }
 
@@ -1881,7 +1881,7 @@ pub(crate) fn integrate_raw(
                 None => int_inner,
                 Some(c) => {
                     let r = pool.mul(vec![c, int_inner]);
-                    log.push(RewriteStep::simple("constant_multiple_rule", expr, r));
+                    log.push(RewriteStep::simple("int_constant_multiple_rule", expr, r));
                     r
                 }
             };
@@ -1905,7 +1905,7 @@ pub(crate) fn integrate_raw(
                     let np1 = pool.integer(n + 1);
                     let inv_np1 = pool.pow(np1, pool.integer(-1_i32));
                     let result = pool.mul(vec![pool.pow(var, np1), inv_np1]);
-                    log.push(RewriteStep::simple("power_rule", expr, result));
+                    log.push(RewriteStep::simple("int_power_rule", expr, result));
                     return Ok(result);
                 }
 
@@ -1923,7 +1923,7 @@ pub(crate) fn integrate_raw(
                 // base is free of var: ∫ c^n dx = c^n * x
                 if is_free_of(base, var, pool) {
                     let result = pool.mul(vec![expr, var]);
-                    log.push(RewriteStep::simple("constant_rule", expr, result));
+                    log.push(RewriteStep::simple("int_constant_rule", expr, result));
                     return Ok(result);
                 }
             }
@@ -1940,7 +1940,7 @@ pub(crate) fn integrate_raw(
                 if is_free_of(arg, var, pool) {
                     // ∫ f(c) dx = f(c) * x
                     let result = pool.mul(vec![expr, var]);
-                    log.push(RewriteStep::simple("constant_rule", expr, result));
+                    log.push(RewriteStep::simple("int_constant_rule", expr, result));
                     return Ok(result);
                 }
                 // ∫ exp(a*x + b) dx = exp(a*x + b) / a
@@ -3169,7 +3169,11 @@ mod tests {
             !r.log.is_empty(),
             "integration should produce a derivation log"
         );
-        assert!(r.log.steps().iter().any(|s| s.rule_name == "power_rule"));
+        assert!(r
+            .log
+            .steps()
+            .iter()
+            .any(|s| s.rule_name == "int_power_rule"));
     }
 
     #[test]
