@@ -734,19 +734,21 @@ impl RewriteRule for LogOfPow {
     }
 }
 
-/// Return the conservative log/exp identity rules.
+/// Return the default log/exp identity rules.
 ///
-/// Symbolic log/exp identities need real-domain or positivity facts. Use an
-/// [`crate::simplify::AssumptionContext`] to enable the condition-gated
-/// identities; this standalone ruleset intentionally keeps no such facts.
+/// Includes the inverse cancellations `log(exp(x)) → x` and `exp(log(x)) → x`.
+/// Branch-cut-sensitive expansions (`log(a*b)`, `log(a^n)`) are intentionally
+/// omitted; use an [`crate::simplify::AssumptionContext`] for condition-gated
+/// rewrites, or [`log_exp_rules_safe`] for the empty complex-safe set.
 pub fn log_exp_rules() -> Vec<Box<dyn RewriteRule>> {
-    vec![]
+    vec![Box::new(LogOfExp), Box::new(ExpOfLog)]
 }
 
 /// Log/exp rules that are safe for complex numbers (no branch-cut rewrites).
 ///
-/// No nontrivial symbolic log/exp identity is valid over all principal-complex
-/// branches, so this is intentionally empty.
+/// Empty: even the inverse cancellations assume a real/positive domain for
+/// the principal branch, so callers that need complex-safe behaviour get no
+/// rewrites here.
 pub fn log_exp_rules_safe() -> Vec<Box<dyn RewriteRule>> {
     vec![]
 }
@@ -1917,23 +1919,39 @@ mod tests {
     }
 
     #[test]
-    fn log_of_exp_stays_conservative_without_context() {
+    fn log_of_exp_folds() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let expr = pool.func("log", vec![pool.func("exp", vec![x])]);
         let rules = log_exp_rules();
         let r = simplify_with(expr, &pool, &rules, SimplifyConfig::default());
-        assert_eq!(r.value, expr);
+        assert_eq!(r.value, x, "got {}", pool.display(r.value));
     }
 
     #[test]
-    fn exp_of_log_stays_conservative_without_context() {
+    fn exp_of_log_folds() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let expr = pool.func("exp", vec![pool.func("log", vec![x])]);
         let rules = log_exp_rules();
         let r = simplify_with(expr, &pool, &rules, SimplifyConfig::default());
-        assert_eq!(r.value, expr);
+        assert_eq!(r.value, x, "got {}", pool.display(r.value));
+    }
+
+    #[test]
+    fn log_exp_inverse_pair_folds_under_add() {
+        // Bottom-up simplify_with must rewrite both Add children.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let expr = pool.add(vec![
+            pool.func("log", vec![pool.func("exp", vec![x])]),
+            pool.func("exp", vec![pool.func("log", vec![y])]),
+        ]);
+        let rules = log_exp_rules();
+        let r = simplify_with(expr, &pool, &rules, SimplifyConfig::default());
+        let expected = pool.add(vec![x, y]);
+        assert_eq!(r.value, expected, "got {}", pool.display(r.value));
     }
 
     #[test]

@@ -6,14 +6,10 @@ Three first-course topics: log/exp inverse identities, rational-function
 checks against known references, never string-matching alkahest's normal
 form).
 
-`log(exp(x)) -> x` and `exp(log(x)) -> x` are unconditionally-valid inverse
-identities, but as of the 2026-07-20 usage eval (report7-20.md, "Output
-hygiene" section) `simplify_log_exp` doesn't fold either — even standalone,
-not just combined. That's still checked here as a plain (non-xfail) value
--preservation test: the identity holds numerically regardless of whether the
-simplifier collapses the expression's shape, and this suite promises not to
-assert on shape. The exact case documented in report7-20.md as a no-op
-(`log(exp(x)) + exp(log(y))`) is kept as the one dedicated xfail regression.
+`log(exp(x)) -> x` and `exp(log(x)) -> x` are checked numerically via
+value-preservation (this suite avoids string-matching normal form). The
+combined case `log(exp(x)) + exp(log(y))` uses structural equality against
+`simplify(x + y)` so a no-op rewrite cannot slip through as a false pass.
 """
 
 from __future__ import annotations
@@ -89,11 +85,6 @@ def test_exp_log_inverse_simplify(x):
     assert_matches_reference(r, x, lambda v: v, points=POSITIVE_POINTS)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="report7-20.md 'rough edges': simplify_log_exp(log(exp(x)) + exp(log(y))) is a no-op, "
-    "including the unconditionally-valid log(exp(x)) -> x subterm",
-)
 def test_simplify_log_exp_inverse_pair(pool, x, y):
     """log(exp(x)) + exp(log(y)) should collapse to x + y via the two
     independent inverse identities. This is checked via *structural* Expr
