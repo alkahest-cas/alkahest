@@ -168,6 +168,86 @@ impl RewriteRule for SinCosIdentity {
     }
 }
 
+/// Hyperbolic Pythagorean identity: `a·cosh²(u) − a·sinh²(u) → a`.
+///
+/// Unlike [`SinCosIdentity`] (same-sign coefficients), the Python surface builds
+/// subtraction as `Add([cosh², Mul([-1, sinh²])])`, so the coefficients are
+/// opposite in sign: empty/`a` on the cosh term and `[-1]`/`[-1, …a…]` on the
+/// sinh term.  Matched pairs collapse to the shared magnitude `a`:
+///
+/// - `cosh²(u) − sinh²(u) → 1`,
+/// - `2·cosh²(u) − 2·sinh²(u) → 2`,
+/// - `a·cosh²(u) − a·sinh²(u) → a`.
+///
+/// The cosh coefficient must be sign-positive (no literal `-1` factor); the
+/// sinh coefficient must carry exactly one `-1` whose remainder matches the
+/// cosh coefficient as a multiset.
+pub struct CoshSinhIdentity;
+
+impl RewriteRule for CoshSinhIdentity {
+    fn name(&self) -> &'static str {
+        "cosh_sq_minus_sinh_sq"
+    }
+
+    fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
+        let args = match pool.get(expr) {
+            ExprData::Add(v) => v,
+            _ => return None,
+        };
+
+        // Positive term `a·cosh²(u)` (no `-1` factor in the coefficient).
+        for (ci, &cosh_term) in args.iter().enumerate() {
+            let Some((u, cosh_coeff)) = split_trig_sq("cosh", cosh_term, pool) else {
+                continue;
+            };
+            if coeff_has_neg_one(&cosh_coeff, pool) {
+                continue;
+            }
+            // Negative term `(-1)·a·sinh²(u)` with the same `u` and magnitude `a`.
+            for (si, &sinh_term) in args.iter().enumerate() {
+                if si == ci {
+                    continue;
+                }
+                let Some((su, sinh_coeff)) = split_trig_sq("sinh", sinh_term, pool) else {
+                    continue;
+                };
+                if su != u {
+                    continue;
+                }
+                let Some(rest) = strip_one_neg_one(&sinh_coeff, pool) else {
+                    continue;
+                };
+                if !coeff_multiset_eq(&cosh_coeff, &rest, pool) {
+                    continue;
+                }
+
+                let coeff_expr = match cosh_coeff.len() {
+                    0 => pool.integer(1_i32),
+                    1 => cosh_coeff[0],
+                    _ => pool.mul(cosh_coeff.clone()),
+                };
+
+                let mut new_args: Vec<ExprId> = args
+                    .iter()
+                    .enumerate()
+                    .filter(|&(i, _)| i != ci && i != si)
+                    .map(|(_, &a)| a)
+                    .collect();
+                new_args.push(coeff_expr);
+                new_args = fold_numeric_terms(new_args, pool);
+
+                let after = match new_args.len() {
+                    0 => pool.integer(0_i32),
+                    1 => new_args[0],
+                    _ => pool.add(new_args),
+                };
+                return Some((after, one_step(self.name(), expr, after)));
+            }
+        }
+        None
+    }
+}
+
 /// Multi-angle Pythagorean identity: `c·sin²(u) + c·cos²(u) → c` where the
 /// shared coefficient `c` may itself contain *other* trig-squared factors with
 /// **different** arguments.
@@ -503,6 +583,7 @@ pub fn trig_rules() -> Vec<Box<dyn RewriteRule>> {
         Box::new(CosNeg),
         Box::new(TanExpand),
         Box::new(SinCosIdentity),
+        Box::new(CoshSinhIdentity),
         Box::new(SinDoubleAngle),
         Box::new(CosDoubleAngle),
         Box::new(SinAngleSub),
@@ -1299,6 +1380,62 @@ mod tests {
         let rules = trig_rules();
         let r = simplify_with(expr, &pool, &rules, SimplifyConfig::default());
         assert_eq!(r.value, pool.integer(1_i32));
+    }
+
+    #[test]
+    fn cosh_sinh_identity_fires() {
+        // cosh²(x) − sinh²(x) → 1
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let two = pool.integer(2_i32);
+        let cosh_sq = pool.pow(pool.func("cosh", vec![x]), two);
+        let sinh_sq = pool.pow(pool.func("sinh", vec![x]), two);
+        let neg_sinh_sq = pool.mul(vec![pool.integer(-1_i32), sinh_sq]);
+        let expr = pool.add(vec![cosh_sq, neg_sinh_sq]);
+        let r = simplify_with(expr, &pool, &trig_rules(), SimplifyConfig::default());
+        assert_eq!(
+            r.value,
+            pool.integer(1_i32),
+            "got {}",
+            pool.display(r.value)
+        );
+    }
+
+    #[test]
+    fn cosh_sinh_identity_coeff() {
+        // 2·cosh²(x) − 2·sinh²(x) → 2
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let two = pool.integer(2_i32);
+        let cosh_sq = pool.pow(pool.func("cosh", vec![x]), pool.integer(2_i32));
+        let sinh_sq = pool.pow(pool.func("sinh", vec![x]), pool.integer(2_i32));
+        let pos = pool.mul(vec![two, cosh_sq]);
+        let neg = pool.mul(vec![pool.integer(-1_i32), two, sinh_sq]);
+        let expr = pool.add(vec![pos, neg]);
+        let r = simplify_with(expr, &pool, &trig_rules(), SimplifyConfig::default());
+        assert_eq!(
+            r.value,
+            pool.integer(2_i32),
+            "got {}",
+            pool.display(r.value)
+        );
+    }
+
+    #[test]
+    fn cosh_sinh_identity_different_angles_untouched() {
+        // cosh²(x) − sinh²(y) must not fold when angles differ.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let two = pool.integer(2_i32);
+        let cosh_sq = pool.pow(pool.func("cosh", vec![x]), two);
+        let sinh_sq = pool.pow(pool.func("sinh", vec![y]), two);
+        let neg_sinh_sq = pool.mul(vec![pool.integer(-1_i32), sinh_sq]);
+        let expr = pool.add(vec![cosh_sq, neg_sinh_sq]);
+        assert!(
+            CoshSinhIdentity.apply(expr, &pool).is_none(),
+            "must not collapse when hyperbolic angles differ"
+        );
     }
 
     // -------------------------------------------------------------------
