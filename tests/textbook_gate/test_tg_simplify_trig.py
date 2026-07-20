@@ -164,17 +164,9 @@ def test_one_plus_tan_squared_matches_sec_squared(x):
     assert_matches_reference(r, x, lambda v: 1 / math.cos(v) ** 2)
 
 
-# --- hyperbolic Pythagorean identity: not handled by simplify_trig ------------
+# --- hyperbolic Pythagorean identity -----------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="simplify_trig does not touch hyperbolic functions at all: "
-    "cosh(x)^2 - sinh(x)^2 is left as `(cosh(x)^2 + (sinh(x)^2 * -1))` with `x` "
-    "still structurally present, so it cannot even be evaluated with no bindings "
-    "(eval_expr raises 'unbound variable') despite being identically 1 for all "
-    "real x. Not documented in report7-20.md as of this writing.",
-)
 def test_hyperbolic_pythagorean_identity_folds_to_constant(x):
     """cosh(x)^2 - sinh(x)^2 -> 1 (unconditionally valid for real x)."""
     r = ak.simplify_trig(ak.cosh(x) ** 2 - ak.sinh(x) ** 2).value
