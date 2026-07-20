@@ -7,14 +7,9 @@ cubic/quartic systems that need numeric (homotopy continuation) solving. See
 solution is checked by substituting it back into the original equations and
 confirming the residual is ~0, never by comparing to a printed normal form.
 
-As of the 2026-07-20 usage eval (report7-20.md, bug B5),
-``ak.solve(eqs, vars, numeric=True)`` does not actually fall back to a numeric
-method on systems the symbolic back-substitution path can't handle (degree
-≥ 3 univariate polys) — it still raises ``SolverError``, even though the
-*same* system is solved correctly by ``method="homotopy"`` and by
-``ak.solve_numerical``. That's captured below as a single xfail regression
-case; the two working numeric paths are exercised directly elsewhere in this
-file.
+B5 (report7-20.md): ``ak.solve(..., numeric=True)`` falls back past the
+symbolic HighDegree limit (homotopy). Direct ``method="homotopy"`` and
+``ak.solve_numerical`` paths are also exercised below.
 """
 
 from __future__ import annotations
@@ -254,28 +249,20 @@ def test_solve_default_method_rejects_cubic(pool, x):
         ak.solve(eqs, [x])
 
 
-# --- B5 regression: numeric=True doesn't fall back -----------------------
+# --- B5 regression: numeric=True falls back past HighDegree ---------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="B5 (report7-20.md): solve(numeric=True) doesn't route past the degree<=2 "
-    "back-substitution limit even though method='homotopy' and solve_numerical solve the same system",
-)
 def test_solve_numeric_true_falls_back_on_cubic(pool, x, y, z):
     eqs = [
         x + y + z - pool.integer(6),
         x * y + y * z + z * x - pool.integer(11),
         x * y * z - pool.integer(6),
     ]
-    ak.solve(eqs, [x, y, z], numeric=True)
+    sols = ak.solve(eqs, [x, y, z], numeric=True)
+    assert len(sols) == 6
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="B5 (report7-20.md): solve(numeric=True) doesn't route past the degree<=2 "
-    "back-substitution limit even though method='homotopy' and solve_numerical solve the same system",
-)
 def test_solve_numeric_true_falls_back_on_plain_cubic(pool, x):
     eqs = [x**3 - pool.integer(6) * x**2 + pool.integer(11) * x - pool.integer(6)]
-    ak.solve(eqs, [x], numeric=True)
+    sols = ak.solve(eqs, [x], numeric=True)
+    assert len(sols) >= 1

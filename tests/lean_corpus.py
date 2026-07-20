@@ -56,8 +56,12 @@ STRICT_CASES = [
         "diff_univariate_poly",
         lambda pool: alkahest.diff(pool.symbol("x") ** 3, pool.symbol("x")),
     ),
+    (
+        "diff_sin",
+        "diff_sin",
+        lambda pool: alkahest.diff(alkahest.sin(pool.symbol("x")), pool.symbol("x")),
+    ),
 ]
-
 FORBIDDEN_TOKENS = ("sorry", "admit", "axiom")
 
 

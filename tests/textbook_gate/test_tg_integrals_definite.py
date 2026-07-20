@@ -14,8 +14,8 @@ from __future__ import annotations
 import math
 
 import alkahest as ak
-from _tg_helpers import assert_definite_value
 import pytest
+from _tg_helpers import assert_definite_value
 
 
 @pytest.fixture

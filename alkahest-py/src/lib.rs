@@ -1613,19 +1613,28 @@ impl PyDerivedResult {
         list
     }
 
-    /// Lean 4 proof certificate (``.lean`` source), when the derivation log is certifiable.
+    /// Lean 4 proof certificate (``.lean`` source), when the derivation log is
+    /// certifiable without ``sorry`` and without false unwrapped equalities.
+    ///
+    /// Returns ``None`` when the log is empty, records an integration (where
+    /// ``integrand = F`` would be false), or would require an admission (B3).
     #[getter]
     fn certificate(&self, py: Python<'_>) -> Option<String> {
         if self.raw.log.is_empty() {
             return None;
         }
+        // Integration derivation logs construct antiderivatives; emitting them
+        // as rewrite equalities is unsound (e.g. `sin x = -cos x`).
+        if self.integration_verification_input.is_some() {
+            return None;
+        }
         let pool_py = self.value.pool.clone_ref(py);
         let pool = pool_py.borrow(py);
-        Some(alkahest_core::emit_lean_expr_wrt(
-            &self.raw,
-            &pool.inner,
-            self.wrt,
-        ))
+        let src = alkahest_core::emit_lean_expr_wrt(&self.raw, &pool.inner, self.wrt);
+        if src.is_empty() || src.contains("sorry") || src.contains("admit") {
+            return None;
+        }
+        Some(src)
     }
 
     /// Machine-readable evidence metadata for this derived result.
@@ -1636,7 +1645,21 @@ impl PyDerivedResult {
     #[getter]
     fn verification<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
         let metadata = PyDict::new_bound(py);
-        let has_certificate = !self.raw.log.is_empty();
+        let lean_certificate = {
+            if self.raw.log.is_empty() || self.integration_verification_input.is_some() {
+                None
+            } else {
+                let pool_py = self.value.pool.clone_ref(py);
+                let pool = pool_py.borrow(py);
+                let src = alkahest_core::emit_lean_expr_wrt(&self.raw, &pool.inner, self.wrt);
+                if src.is_empty() || src.contains("sorry") || src.contains("admit") {
+                    None
+                } else {
+                    Some(src)
+                }
+            }
+        };
+        let has_certificate = lean_certificate.is_some();
         let integration_verification =
             self.integration_verification_input
                 .and_then(|(integrand, var)| {
@@ -3859,13 +3882,17 @@ fn py_simplify_log_exp(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDerivedResult {
 fn py_to_lean(py: Python<'_>, arg: &Bound<'_, PyAny>) -> PyResult<String> {
     if let Ok(derived_bound) = arg.downcast::<PyDerivedResult>() {
         let d = derived_bound.borrow();
+        // Match `.certificate`: withhold unsound / unfinished Lean sources.
+        if d.integration_verification_input.is_some() {
+            return Ok(String::new());
+        }
         let pool_py = d.value.pool.clone_ref(py);
         let pool = pool_py.borrow(py);
-        return Ok(alkahest_core::emit_lean_expr_wrt(
-            &d.raw,
-            &pool.inner,
-            d.wrt,
-        ));
+        let src = alkahest_core::emit_lean_expr_wrt(&d.raw, &pool.inner, d.wrt);
+        if src.contains("sorry") || src.contains("admit") {
+            return Ok(String::new());
+        }
+        return Ok(src);
     }
     if let Ok(expr_bound) = arg.downcast::<PyExpr>() {
         let expr = expr_bound.borrow();
