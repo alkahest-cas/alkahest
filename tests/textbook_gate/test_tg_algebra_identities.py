@@ -22,7 +22,7 @@ import math
 
 import alkahest as ak
 import pytest
-from _tg_helpers import POSITIVE_POINTS, assert_definite_value, assert_matches_reference, eval_at
+from _tg_helpers import POSITIVE_POINTS, assert_definite_value, assert_matches_reference
 
 
 @pytest.fixture

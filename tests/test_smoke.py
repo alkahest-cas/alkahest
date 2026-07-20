@@ -336,7 +336,8 @@ def test_lean_diff_sin_certificate_has_no_sorry():
     x = p.symbol("x")
     r = diff(sin(x), x)
     cert = r.certificate
-    assert isinstance(cert, str) and cert
+    assert isinstance(cert, str)
+    assert cert
     assert "sorry" not in cert
     assert "Real.deriv_sin" in cert
     assert r.verification["status"] == "certificate_available"
