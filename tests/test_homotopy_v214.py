@@ -56,10 +56,19 @@ def test_solve_numeric_true_falls_back_past_degree_two():
     # Symbolic Groebner still raises HighDegree.
     with pytest.raises(Exception) as exc_info:
         alkahest.solve(eqs, [x, y, z])
-    assert "degree" in str(exc_info.value).lower() or getattr(exc_info.value, "code", "") == "E-SOLVE-002"
+    msg = str(exc_info.value).lower()
+    code = getattr(exc_info.value, "code", "")
+    assert "degree" in msg or code == "E-SOLVE-002"
 
     sols = alkahest.solve(eqs, [x, y, z], numeric=True)
     assert len(sols) == 6
-    perms = {(1.0, 2.0, 3.0), (1.0, 3.0, 2.0), (2.0, 1.0, 3.0), (2.0, 3.0, 1.0), (3.0, 1.0, 2.0), (3.0, 2.0, 1.0)}
+    perms = {
+        (1.0, 2.0, 3.0),
+        (1.0, 3.0, 2.0),
+        (2.0, 1.0, 3.0),
+        (2.0, 3.0, 1.0),
+        (3.0, 1.0, 2.0),
+        (3.0, 2.0, 1.0),
+    }
     found = {(round(s[x], 6), round(s[y], 6), round(s[z], 6)) for s in sols}
     assert found == {(round(a, 6), round(b, 6), round(c, 6)) for a, b, c in perms}
