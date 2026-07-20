@@ -1501,7 +1501,7 @@ impl PyFps {
 // Explicit assumptions
 // ---------------------------------------------------------------------------
 
-/// Experimental, pool-scoped assumptions for conservative simplification.
+/// Pool-scoped assumptions for conservative simplification (stable top-level).
 #[pyclass(name = "Assumptions")]
 struct PyAssumptions {
     pool: Py<PyExprPool>,
@@ -1838,25 +1838,25 @@ fn sqrt(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "sqrt", expr)
 }
 
-/// Experimental symbolic complex conjugation.
+/// Symbolic complex conjugation (stable top-level export).
 #[pyfunction]
 fn conjugate(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "conjugate", expr)
 }
 
-/// Experimental symbolic real-part constructor.
+/// Symbolic real-part constructor (stable top-level export).
 #[pyfunction]
 fn re(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "re", expr)
 }
 
-/// Experimental symbolic imaginary-part constructor.
+/// Symbolic imaginary-part constructor (stable top-level export).
 #[pyfunction]
 fn im(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "im", expr)
 }
 
-/// Experimental principal argument (`Arg ∈ (−π, π]`).
+/// Principal argument (`Arg ∈ (−π, π]`; stable top-level export).
 ///
 /// Only domain-safe literal simplifications are applied; branch-cut cases
 /// remain symbolic.
@@ -1960,7 +1960,7 @@ fn gamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 
 /// Principal-branch Lambert W₀(x), with W(x)·e^W(x) = x.
 ///
-/// Surfaced under `alkahest.experimental` (special-function foundation).
+/// Stable top-level export (also re-exported from ``alkahest.experimental``).
 #[pyfunction]
 fn lambert_w(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "lambert_w", expr)
@@ -1968,7 +1968,7 @@ fn lambert_w(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 
 /// Digamma ψ(x) = Γ′(x)/Γ(x).
 ///
-/// Surfaced under `alkahest.experimental` (special-function foundation).
+/// Stable top-level export (also re-exported from ``alkahest.experimental``).
 #[pyfunction]
 fn digamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "digamma", expr)
@@ -1976,7 +1976,7 @@ fn digamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 
 /// Bessel function of the first kind, order 0: J₀(x).
 ///
-/// Surfaced under `alkahest.experimental` (special-function foundation).
+/// Stable top-level export (also re-exported from ``alkahest.experimental``).
 #[pyfunction]
 fn bessel_j0(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "bessel_j0", expr)
@@ -1984,7 +1984,7 @@ fn bessel_j0(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 
 /// Bessel function of the first kind, order 1: J₁(x).
 ///
-/// Surfaced under `alkahest.experimental` (special-function foundation).
+/// Stable top-level export (also re-exported from ``alkahest.experimental``).
 #[pyfunction]
 fn bessel_j1(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "bessel_j1", expr)
@@ -5623,7 +5623,7 @@ fn py_interval_eval(
     Ok(PyArbBall { inner: result })
 }
 
-/// Structured result returned by the experimental unified evaluator.
+/// Structured result returned by the unified evaluator (stable top-level).
 #[pyclass(name = "EvaluationResult")]
 struct PyEvaluationResult {
     value: PyObject,
