@@ -109,8 +109,8 @@ impl AlkahestError for SolverError {
                  transcendental functions are not supported",
             ),
             SolverError::HighDegree(_) => Some(
-                "degree > 2 univariate solving is not yet implemented; \
-                 the Gröbner basis is still returned for manual inspection",
+                "degree > 2 univariate solving is not yet implemented symbolically; \
+                 retry with numeric=True or method=\"homotopy\"",
             ),
             SolverError::ShapeMismatch => {
                 Some("provide one equation per variable for zero-dimensional system solving")

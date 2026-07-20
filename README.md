@@ -165,7 +165,7 @@ expr = x**2 + 1
 
 # Differentiation with derivation log
 result = ak.diff(ak.sin(expr), x)
-print(result.value)   # 2*x*cos(x^2)
+print(result.value)   # 2*x*cos(x^2 + 1)
 print(result.steps)   # list of rewrite steps
 
 # Integration
