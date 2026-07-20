@@ -31,7 +31,8 @@ def test_unproven_branch_cut_rewrites_remain_unchanged():
     y = p.symbol("y")
 
     assert str(alkahest.simplify(alkahest.sqrt(x**2)).value) == "sqrt(x^2)"
-    assert str(alkahest.simplify_log_exp(alkahest.exp(alkahest.log(x))).value) == "exp(log(x))"
+    # Dedicated simplify_log_exp folds inverses; default simplify stays conservative.
+    assert str(alkahest.simplify_log_exp(alkahest.exp(alkahest.log(x))).value) == "x"
     assert str(alkahest.simplify_log_exp(alkahest.log(x * y)).value) == "log((x * y))"
 
 
