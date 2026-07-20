@@ -89,6 +89,10 @@ fn ratio_factor(f: ExprId, k: ExprId, pool: &ExprPool) -> Result<RatFunc, SumErr
             }
         }
         ExprData::Pow { base, exp } => {
+            // Geometric / exponential-in-k: c^k or c^{a·k+b} with c free of k.
+            if is_free_of_k(base, k, pool) && !is_free_of_k(exp, k, pool) {
+                return geometric_base_ratio(base, exp, k, pool);
+            }
             let e = match pool.get(exp) {
                 ExprData::Integer(n) => {
                     n.0.to_i32()
@@ -100,11 +104,22 @@ fn ratio_factor(f: ExprId, k: ExprId, pool: &ExprPool) -> Result<RatFunc, SumErr
                 return Ok(RatFunc::one());
             }
             let rb = ratio_factor(base, k, pool)?;
-            let mut acc = rb.clone();
-            for _ in 1..e {
-                acc = acc.mul_ratfunc(&rb);
+            if e > 0 {
+                let mut acc = rb.clone();
+                for _ in 1..e {
+                    acc = acc.mul_ratfunc(&rb);
+                }
+                Ok(acc)
+            } else {
+                let inv = rb.inv().ok_or_else(|| {
+                    SumError::NotHypergeometric("zero base raised to a negative power".into())
+                })?;
+                let mut acc = inv.clone();
+                for _ in 1..(-e) {
+                    acc = acc.mul_ratfunc(&inv);
+                }
+                Ok(acc)
             }
-            Ok(acc)
         }
         ExprData::Mul(_) => ratio_product(f, k, pool),
         ExprData::Add(_) => {
@@ -151,6 +166,145 @@ fn ratio_factor(f: ExprId, k: ExprId, pool: &ExprPool) -> Result<RatFunc, SumErr
     }
 }
 
+fn is_free_of_k(expr: ExprId, k: ExprId, pool: &ExprPool) -> bool {
+    if expr == k {
+        return false;
+    }
+    match pool.get(expr) {
+        ExprData::Add(args) | ExprData::Mul(args) => args.iter().all(|&a| is_free_of_k(a, k, pool)),
+        ExprData::Pow { base, exp } => is_free_of_k(base, k, pool) && is_free_of_k(exp, k, pool),
+        ExprData::Func { args, .. } => args.iter().all(|&a| is_free_of_k(a, k, pool)),
+        _ => true,
+    }
+}
+
+fn const_to_rational(expr: ExprId, pool: &ExprPool) -> Result<Rational, SumError> {
+    match pool.get(expr) {
+        ExprData::Integer(n) => Ok(Rational::from(n.0.clone())),
+        ExprData::Rational(r) => Ok(r.0.clone()),
+        ExprData::Mul(args) => {
+            let mut acc = Rational::from(1);
+            for &a in &args {
+                acc *= const_to_rational(a, pool)?;
+            }
+            Ok(acc)
+        }
+        ExprData::Pow { base, exp } => {
+            let b = const_to_rational(base, pool)?;
+            let e = match pool.get(exp) {
+                ExprData::Integer(n) => n.0.to_i32().ok_or_else(|| {
+                    SumError::NotHypergeometric("constant exponent too large".into())
+                })?,
+                _ => {
+                    return Err(SumError::NotHypergeometric(
+                        "geometric base must be a rational constant".into(),
+                    ))
+                }
+            };
+            if e >= 0 {
+                let mut p = Rational::from(1);
+                for _ in 0..e {
+                    p *= b.clone();
+                }
+                Ok(p)
+            } else {
+                if b.is_zero() {
+                    return Err(SumError::NotHypergeometric("zero geometric base".into()));
+                }
+                let mut p = Rational::from(1);
+                for _ in 0..(-e) {
+                    p *= b.clone();
+                }
+                Ok(Rational::from(1) / p)
+            }
+        }
+        _ => Err(SumError::NotHypergeometric(
+            "geometric base must be a rational constant".into(),
+        )),
+    }
+}
+
+/// `F(k) = c^{a·k+b}` with `c` free of `k` ⇒ `F(k+1)/F(k) = c^a`.
+fn geometric_base_ratio(
+    base: ExprId,
+    exp: ExprId,
+    k: ExprId,
+    pool: &ExprPool,
+) -> Result<RatFunc, SumError> {
+    let c = const_to_rational(base, pool)?;
+    if c.is_zero() {
+        return Err(SumError::NotHypergeometric(
+            "geometric term with zero base".into(),
+        ));
+    }
+    let a = affine_slope_in_k(exp, k, pool)?;
+    if a == 0 {
+        return Ok(RatFunc::one());
+    }
+    let mut pow = Rational::from(1);
+    let steps = a.unsigned_abs();
+    for _ in 0..steps {
+        pow *= c.clone();
+    }
+    if a > 0 {
+        Ok(RatFunc::scalar(pow))
+    } else {
+        Ok(RatFunc::scalar(Rational::from(1) / pow))
+    }
+}
+
+/// Extract integer slope `a` from an affine exponent `a·k + b` (`b` free of `k`).
+fn affine_slope_in_k(exp: ExprId, k: ExprId, pool: &ExprPool) -> Result<i64, SumError> {
+    if exp == k {
+        return Ok(1);
+    }
+    match pool.get(exp) {
+        ExprData::Add(args) => {
+            let mut slope = 0_i64;
+            for &a in &args {
+                slope += affine_slope_in_k(a, k, pool)?;
+            }
+            Ok(slope)
+        }
+        ExprData::Mul(args) => {
+            let mut slope_part = None;
+            let mut coeff = Rational::from(1);
+            for &a in &args {
+                if !is_free_of_k(a, k, pool) {
+                    if slope_part.is_some() {
+                        return Err(SumError::NotHypergeometric(
+                            "geometric exponent must be affine in k".into(),
+                        ));
+                    }
+                    slope_part = Some(affine_slope_in_k(a, k, pool)?);
+                } else {
+                    coeff *= const_to_rational(a, pool)?;
+                }
+            }
+            match slope_part {
+                Some(s) => {
+                    let scaled = coeff * Rational::from(s);
+                    if *scaled.denom() != 1 {
+                        return Err(SumError::NotHypergeometric(
+                            "geometric exponent slope must be an integer".into(),
+                        ));
+                    }
+                    scaled.numer().to_i64().ok_or_else(|| {
+                        SumError::NotHypergeometric(
+                            "geometric exponent slope must be an integer".into(),
+                        )
+                    })
+                }
+                None => Ok(0),
+            }
+        }
+        _ if is_free_of_k(exp, k, pool) => Ok(0),
+        _ => Err(SumError::NotHypergeometric(
+            "geometric exponent must be affine in k".into(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +320,26 @@ mod tests {
         let r = hypergeom_ratio(term, k, &pool).unwrap();
         let cert = gosper_certificate(&r).expect("gosper");
         assert!(!cert.num.is_zero());
+    }
+
+    #[test]
+    fn ratio_geometric_two_pow_k() {
+        let pool = ExprPool::new();
+        let k = pool.symbol("k", Domain::Real);
+        let term = pool.pow(pool.integer(2_i32), k);
+        let r = hypergeom_ratio(term, k, &pool).expect("2^k is hypergeometric");
+        assert_eq!(r.den.degree(), 0);
+        assert_eq!(r.num.coeffs[0], Rational::from(2));
+        assert!(gosper_certificate(&r).is_some());
+    }
+
+    #[test]
+    fn ratio_inv_k_times_k_plus_1() {
+        let pool = ExprPool::new();
+        let k = pool.symbol("k", Domain::Real);
+        let den = pool.mul(vec![k, pool.add(vec![k, pool.integer(1_i32)])]);
+        let term = pool.pow(den, pool.integer(-1_i32));
+        let r = hypergeom_ratio(term, k, &pool).expect("1/(k(k+1)) ratio");
+        assert!(gosper_certificate(&r).is_some());
     }
 }

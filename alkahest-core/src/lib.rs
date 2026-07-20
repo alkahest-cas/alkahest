@@ -234,6 +234,10 @@ pub mod stable {
         DifferentialRanking, DifferentialRing, RegularDifferentialChain, RosenfeldGroebnerResult,
     };
     pub use crate::errors::AlkahestError;
+    pub use crate::eval::{
+        eval_complex_f64, eval_exact_rational, eval_f64, eval_interval, evaluate, ComplexF64,
+        EvalError, EvalMode, EvalValue, UnsupportedReason,
+    };
     #[cfg(feature = "groebner")]
     pub use crate::ideal::{
         primary_decomposition, radical, PrimaryComponent, PrimaryDecompositionError,
@@ -285,8 +289,8 @@ pub mod stable {
     };
     pub use crate::simplify::{
         simplify, simplify_egraph, simplify_egraph_with, simplify_trig_normal_form, simplify_with,
-        DepthCost, EgraphConfig, EgraphCost, NoncommutativeCost, OpCost, SimplifyConfig, SizeCost,
-        StabilityCost,
+        simplify_with_assumptions, AssumptionContext, DepthCost, EgraphConfig, EgraphCost,
+        NoncommutativeCost, OpCost, SimplifyConfig, SizeCost, StabilityCost,
     };
     #[cfg(feature = "groebner")]
     pub use crate::solver::{

@@ -1501,7 +1501,7 @@ impl PyFps {
 // Explicit assumptions
 // ---------------------------------------------------------------------------
 
-/// Experimental, pool-scoped assumptions for conservative simplification.
+/// Pool-scoped assumptions for conservative simplification (stable top-level).
 #[pyclass(name = "Assumptions")]
 struct PyAssumptions {
     pool: Py<PyExprPool>,
@@ -1861,25 +1861,25 @@ fn sqrt(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "sqrt", expr)
 }
 
-/// Experimental symbolic complex conjugation.
+/// Symbolic complex conjugation (stable top-level export).
 #[pyfunction]
 fn conjugate(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "conjugate", expr)
 }
 
-/// Experimental symbolic real-part constructor.
+/// Symbolic real-part constructor (stable top-level export).
 #[pyfunction]
 fn re(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "re", expr)
 }
 
-/// Experimental symbolic imaginary-part constructor.
+/// Symbolic imaginary-part constructor (stable top-level export).
 #[pyfunction]
 fn im(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "im", expr)
 }
 
-/// Experimental principal argument (`Arg ∈ (−π, π]`).
+/// Principal argument (`Arg ∈ (−π, π]`; stable top-level export).
 ///
 /// Only domain-safe literal simplifications are applied; branch-cut cases
 /// remain symbolic.
@@ -1983,7 +1983,7 @@ fn gamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 
 /// Principal-branch Lambert W₀(x), with W(x)·e^W(x) = x.
 ///
-/// Surfaced under `alkahest.experimental` (special-function foundation).
+/// Stable top-level export (also re-exported from ``alkahest.experimental``).
 #[pyfunction]
 fn lambert_w(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "lambert_w", expr)
@@ -1991,7 +1991,7 @@ fn lambert_w(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 
 /// Digamma ψ(x) = Γ′(x)/Γ(x).
 ///
-/// Surfaced under `alkahest.experimental` (special-function foundation).
+/// Stable top-level export (also re-exported from ``alkahest.experimental``).
 #[pyfunction]
 fn digamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "digamma", expr)
@@ -1999,7 +1999,7 @@ fn digamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 
 /// Bessel function of the first kind, order 0: J₀(x).
 ///
-/// Surfaced under `alkahest.experimental` (special-function foundation).
+/// Stable top-level export (also re-exported from ``alkahest.experimental``).
 #[pyfunction]
 fn bessel_j0(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "bessel_j0", expr)
@@ -2007,7 +2007,7 @@ fn bessel_j0(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 
 /// Bessel function of the first kind, order 1: J₁(x).
 ///
-/// Surfaced under `alkahest.experimental` (special-function foundation).
+/// Stable top-level export (also re-exported from ``alkahest.experimental``).
 #[pyfunction]
 fn bessel_j1(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "bessel_j1", expr)
@@ -5650,7 +5650,7 @@ fn py_interval_eval(
     Ok(PyArbBall { inner: result })
 }
 
-/// Structured result returned by the experimental unified evaluator.
+/// Structured result returned by the unified evaluator (stable top-level).
 #[pyclass(name = "EvaluationResult")]
 struct PyEvaluationResult {
     value: PyObject,
@@ -8090,6 +8090,8 @@ fn py_solve_numerical(
 ///     Variables to solve for (symbols).
 /// numeric : bool, default False
 ///     Used when ``method="groebner"``: symbolic ``Expr`` values vs ``float``.
+///     When Lex back-substitution hits a degree > 2 univariate, ``numeric=True``
+///     falls back to homotopy continuation (same as ``method="homotopy"``).
 /// method : str, default ``"groebner"``
 ///     ``"groebner"`` — Lex basis + triangular back-substitution.
 ///     ``"homotopy"`` — total-degree homotopy continuation in ``ℂⁿ`` followed
@@ -8173,8 +8175,39 @@ fn py_solve(
 
     let result = {
         let pool = pool_py.borrow(py);
-        solve_polynomial_system(eq_ids, var_ids.clone(), &pool.inner)
+        solve_polynomial_system(eq_ids.clone(), var_ids.clone(), &pool.inner)
     };
+
+    // B5: `numeric=True` means the caller accepts floats — when Lex back-substitution
+    // hits a degree > 2 univariate, fall through to homotopy instead of raising.
+    if numeric {
+        if let Err(alkahest_core::SolverError::HighDegree(_)) = &result {
+            let opts = HomotopyOpts::default();
+            let pts = {
+                let pool = pool_py.borrow(py);
+                solve_numerical(&eq_ids, &var_ids, &pool.inner, &opts)
+            };
+            return match pts {
+                Err(e) => Err(homotopy_err_to_py(e)),
+                Ok(points) => {
+                    let list = pyo3::types::PyList::empty_bound(py);
+                    for p in points {
+                        let d = pyo3::types::PyDict::new_bound(py);
+                        for (i, &val) in p.coordinates.iter().enumerate() {
+                            let var_expr = PyExpr {
+                                id: var_ids[i],
+                                pool: pool_py.clone_ref(py),
+                            };
+                            d.set_item(var_expr.into_py(py), val)?;
+                        }
+                        list.append(d)?;
+                    }
+                    Ok(list.into())
+                }
+            };
+        }
+    }
+
     finite_solutions_to_py(py, result, &pool_py, &var_ids, numeric)
 }
 

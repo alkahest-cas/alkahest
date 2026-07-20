@@ -57,6 +57,8 @@ from .alkahest import (  # noqa: F401
     And,
     # Phase 22: Ball arithmetic
     ArbBall,
+    # Explicit positive/nonzero refinement for conservative simplification
+    Assumptions,
     CompileCache,
     # Phase 21: JIT compiled evaluation
     CompiledFn,
@@ -66,6 +68,8 @@ from .alkahest import (  # noqa: F401
     Domain,
     # V1-15: EgraphConfig and simplify_egraph_with
     EgraphConfig,
+    # Unified exact / f64 / complex / interval evaluation
+    EvaluationResult,
     # Phase 20: Hybrid systems
     Event,
     Exists,
@@ -103,11 +107,15 @@ from .alkahest import (  # noqa: F401
     adjoint_system,
     # Partial-fraction decomposition over ℚ
     apart,
+    # Symbolic complex constructors (principal Arg)
+    arg,
     asin,
     asinh,
     atan,
     atan2,
     atanh,
+    bessel_j0,
+    bessel_j1,
     cad_lift,
     cad_project,
     # Rational-function cancel/together
@@ -118,6 +126,7 @@ from .alkahest import (  # noqa: F401
     # Phase 26: collect_like_terms
     collect_like_terms,
     compile_expr,
+    conjugate,
     # Math functions
     cos,
     cosh,
@@ -125,6 +134,7 @@ from .alkahest import (  # noqa: F401
     # Core operations
     diff,
     diff_forward,
+    digamma,
     # Elliptic special functions (parameter convention m = k²)
     elliptic_e,
     elliptic_f,
@@ -136,6 +146,7 @@ from .alkahest import (  # noqa: F401
     erf,
     erfc,
     eval_expr,
+    evaluate,
     exp,
     factor_univariate_mod_p,
     floor,
@@ -146,10 +157,12 @@ from .alkahest import (  # noqa: F401
     guess_relation,
     # Phase 24: Horner-form code emission
     horner,
+    im,
     integrate,
     interval_eval,
     jacobian,
     jit_is_available,
+    lambert_w,
     limit,
     log,
     lower_to_first_order,
@@ -164,8 +177,11 @@ from .alkahest import (  # noqa: F401
     poly_normal,
     product_definite,
     product_indefinite,
+    re,
     real_roots,
     refine_root,
+    # Rational meromorphic residues at points in ℚ(i)
+    residue,
     resistor,
     # V2-2: Resultants and subresultant PRS
     resultant,
@@ -1165,6 +1181,7 @@ __all__ = [
     # Phase 22
     "ArbBall",
     "AssumptionError",
+    "Assumptions",
     "CadError",
     "CertifiedSolution",
     "CompileCache",
@@ -1184,6 +1201,7 @@ __all__ = [
     "DomainError",
     "EgraphConfig",
     "EigenError",
+    "EvaluationResult",
     # Phase 20
     "Event",
     "Exists",
@@ -1255,10 +1273,13 @@ __all__ = [
     "active_pool",
     "adjoint_system",
     "apart",
+    "arg",
     "asin",
     "asinh",
     "atan",
     "atanh",
+    "bessel_j0",
+    "bessel_j1",
     "cad_lift",
     "cad_project",
     "cancel",
@@ -1268,6 +1289,7 @@ __all__ = [
     # Phase 26
     "collect_like_terms",
     "compile_expr",
+    "conjugate",
     # RW-7
     "context",
     "cos",
@@ -1278,6 +1300,7 @@ __all__ = [
     # Calculus
     "diff",
     "diff_forward",
+    "digamma",
     "diophantine",
     # Elliptic special functions (parameter convention m = k²)
     "elliptic_e",
@@ -1290,6 +1313,7 @@ __all__ = [
     "erf",
     "erfc",
     "eval_expr",
+    "evaluate",
     "exp",
     "factor_univariate_mod_p",
     "flatten_exprs",
@@ -1302,11 +1326,13 @@ __all__ = [
     "guess_relation",
     # Phase 24
     "horner",
+    "im",
     "integrate",
     "interval_eval",
     "jacobian",
     "jit",
     "jit_is_available",
+    "lambert_w",
     # V2-20
     "latex",
     "lattice",
@@ -1340,9 +1366,11 @@ __all__ = [
     "product_definite",
     "product_indefinite",
     "radical",
+    "re",
     # V2-4
     "real_roots",
     "refine_root",
+    "residue",
     "resistor",
     # V2-2
     "resultant",

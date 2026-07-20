@@ -302,6 +302,33 @@ def test_log_x_plus_x():
     check_antiderivative(pool, x, f, result.value, "log(x)² + x", points=(0.5, 1.2, 2.7))
 
 
+def test_exp_log_plus_exp_over_x_elementary():
+    """B2: ∫ (exp(x)·log(x) + exp(x)/x) dx = exp(x)·log(x).
+
+    Each summand alone is non-elementary (Ei-related), but the sum is the
+    product-rule derivative of exp(x)·log(x). Same-k coefficients must be
+    combined before the poly-in-log RDE.
+    """
+    pool = ExprPool()
+    x = pool.symbol("x")
+    exp_x = pool.func("exp", [x])
+    log_x = pool.func("log", [x])
+    f = exp_x * log_x + exp_x / x
+    result = integrate(f, x)
+    check_antiderivative(pool, x, f, result.value, "exp(x)log(x)+exp(x)/x", points=(0.5, 1.2, 2.7))
+
+
+def test_factored_log_plus_inv_x_times_exp_elementary():
+    """∫ (log(x) + 1/x)·exp(x) dx = exp(x)·log(x) — factored form of B2."""
+    pool = ExprPool()
+    x = pool.symbol("x")
+    exp_x = pool.func("exp", [x])
+    log_x = pool.func("log", [x])
+    f = (log_x + 1 / x) * exp_x
+    result = integrate(f, x)
+    check_antiderivative(pool, x, f, result.value, "(log(x)+1/x)·exp(x)", points=(0.5, 1.2, 2.7))
+
+
 # ---------------------------------------------------------------------------
 # Derivation log checks
 # ---------------------------------------------------------------------------

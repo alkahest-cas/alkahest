@@ -377,3 +377,35 @@ class TestPublicAPI:
     def test_parse_returns_expr(self, pool, x):
         e = parse("x + 1", pool, {"x": x})
         assert isinstance(e, alkahest.Expr)
+
+    def test_parse_function_call_without_experimental(self):
+        """B1: parse must not require importing alkahest.experimental.
+
+        The function table used to eagerly touch ``_ak.experimental.*``, which
+        crashes every call like ``sin(x)`` in a fresh interpreter. Run in a
+        subprocess so earlier tests that import experimental cannot mask it.
+        """
+        import subprocess
+        import sys
+
+        script = """
+import sys
+import alkahest as ak
+assert "alkahest.experimental" not in sys.modules
+e = ak.parse("sin(x)", ak.ExprPool())
+assert "sin" in str(e)
+e2 = ak.parse("lambert_w(x)", ak.ExprPool())
+assert "lambert_w" in str(e2)
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    def test_graduated_specials_are_stable(self):
+        for name in ("lambert_w", "digamma", "bessel_j0", "bessel_j1", "evaluate", "residue"):
+            assert name in alkahest.__all__, name
+            assert hasattr(alkahest, name), name

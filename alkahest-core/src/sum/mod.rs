@@ -270,6 +270,44 @@ mod tests {
     }
 
     #[test]
+    fn indefinite_sum_of_k() {
+        let pool = ExprPool::new();
+        let k = pool.symbol("k", Domain::Real);
+        let r = sum_indefinite(k, k, &pool).expect("Σk indefinite");
+        // G(k) = k(k-1)/2
+        for ki in 1..=10 {
+            let mut env = HashMap::new();
+            env.insert(k, ki as f64);
+            let gv = eval_interp(r.value, &env, &pool).expect("G eval");
+            let expected = (ki * (ki - 1)) as f64 / 2.0;
+            assert!((gv - expected).abs() < 1e-9, "G({ki})={gv} want {expected}");
+        }
+    }
+
+    #[test]
+    fn definite_sum_of_k_one_to_ten() {
+        let pool = ExprPool::new();
+        let k = pool.symbol("k", Domain::Real);
+        let lo = pool.integer(1_i32);
+        let hi = pool.integer(10_i32);
+        let s = sum_definite(k, k, lo, hi, &pool).expect("Σ_{1}^{10} k");
+        let v = eval_interp(s.value, &HashMap::new(), &pool).expect("eval");
+        assert!((v - 55.0).abs() < 1e-9, "got {v}");
+    }
+
+    #[test]
+    fn definite_geometric_two_pow_k() {
+        let pool = ExprPool::new();
+        let k = pool.symbol("k", Domain::Real);
+        let term = pool.pow(pool.integer(2_i32), k);
+        let lo = pool.integer(0_i32);
+        let hi = pool.integer(5_i32);
+        let s = sum_definite(term, k, lo, hi, &pool).expect("Σ 2^k");
+        let v = eval_interp(s.value, &HashMap::new(), &pool).expect("eval");
+        assert!((v - 63.0).abs() < 1e-9, "got {v}"); // 1+2+4+8+16+32
+    }
+
+    #[test]
     fn wz_pair_zero_is_certificate() {
         let pool = ExprPool::new();
         let n = pool.symbol("n", Domain::Real);

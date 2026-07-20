@@ -56,3 +56,34 @@ def test_verify_wz_pair_trivial():
     k = pool.symbol("k")
     z = pool.integer(0)
     assert alkahest.verify_wz_pair(z, z, n, k)
+
+
+def test_sum_definite_polynomial_k_faulhaber():
+    """B4: Σ_{k=1}^{10} k = 55 (polynomial / Faulhaber base case)."""
+    pool = alkahest.ExprPool()
+    k = pool.symbol("k")
+    s = alkahest.sum_definite(k, k, pool.integer(1), pool.integer(10)).value
+    assert abs(alkahest.eval_expr(s, {}) - 55.0) < 1e-9
+
+
+def test_sum_definite_k_squared():
+    pool = alkahest.ExprPool()
+    k = pool.symbol("k")
+    s = alkahest.sum_definite(k**2, k, pool.integer(1), pool.integer(10)).value
+    assert abs(alkahest.eval_expr(s, {}) - 385.0) < 1e-9
+
+
+def test_sum_definite_telescoping_partial_fractions():
+    pool = alkahest.ExprPool()
+    k = pool.symbol("k")
+    term = 1 / (k * (k + 1))
+    s = alkahest.sum_definite(term, k, pool.integer(1), pool.integer(10)).value
+    # Σ_{1}^{10} (1/k - 1/(k+1)) = 1 - 1/11 = 10/11
+    assert abs(alkahest.eval_expr(s, {}) - 10.0 / 11.0) < 1e-9
+
+
+def test_sum_definite_geometric_two_pow_k():
+    pool = alkahest.ExprPool()
+    k = pool.symbol("k")
+    s = alkahest.sum_definite(pool.integer(2) ** k, k, pool.integer(0), pool.integer(5)).value
+    assert abs(alkahest.eval_expr(s, {}) - 63.0) < 1e-9
