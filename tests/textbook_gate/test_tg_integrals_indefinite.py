@@ -9,10 +9,9 @@ numerically to the original integrand, so it is immune to +C, `log(x-2)` vs
 `-log(2-x)`, or any other cosmetic difference in the printed form (see
 ``tests/textbook_gate/README.md``).
 
-Also includes a regression case for bug B2 (report7-20.md): alkahest's Risch
-layer falsely claims `exp(x)*log(x) + exp(x)/x` has no elementary
-antiderivative, when the antiderivative is simply `exp(x)*log(x)`. And a
-handful of "correct refusal" checks confirming genuinely non-elementary
+Also includes a regression case for bug B2 (report7-20.md):
+`exp(x)*log(x) + exp(x)/x` has elementary antiderivative `exp(x)*log(x)`.
+And a handful of "correct refusal" checks confirming genuinely non-elementary
 integrands (Gaussian integral, sine integral, exponential integral) still
 correctly raise ``IntegrationError`` — those are good behavior, not bugs.
 """
@@ -22,11 +21,6 @@ from __future__ import annotations
 import alkahest as ak
 import pytest
 from _tg_helpers import POSITIVE_POINTS, UNIT_INTERVAL_POINTS, assert_integral_self_consistent
-
-_B2_REASON = (
-    "B2 (report7-20.md): integrate falsely claims exp(x)*log(x)+exp(x)/x has no "
-    "elementary antiderivative (it's exp(x)*log(x))"
-)
 
 
 @pytest.fixture
@@ -194,14 +188,11 @@ def test_int_exp_x_over_x_correctly_non_elementary(x):
         ak.integrate(ak.exp(x) / x, x)
 
 
-# --- B2 regression: false non-elementary verdict --------------------------
+# --- B2 regression: mixed exp·log elementary ------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason=_B2_REASON)
 def test_int_exp_log_plus_exp_over_x_elementary(x):
-    """exp(x)*log(x) + exp(x)/x has elementary antiderivative exp(x)*log(x),
-    but alkahest's Risch layer wrongly claims no elementary antiderivative
-    exists (poly-in-log RDE branch, mixed exp*log case)."""
+    """exp(x)*log(x) + exp(x)/x has elementary antiderivative exp(x)*log(x)."""
     assert_integral_self_consistent(
         ak.exp(x) * ak.log(x) + ak.exp(x) / x, x, points=POSITIVE_POINTS
     )
