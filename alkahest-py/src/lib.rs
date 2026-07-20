@@ -1719,8 +1719,6 @@ impl PyDerivedResult {
                     "in_kernel_symbolic_residual"
                 } else if integration_verification == Some(AntiderivativeVerification::Numeric) {
                     "floating_point_samples"
-                } else if has_certificate {
-                    "derivation_log"
                 } else {
                     "derivation_log"
                 },
