@@ -300,12 +300,17 @@ impl MultiPoly {
         if self.terms.is_empty() {
             return pool.integer(0_i32);
         }
+        let one = rug::Integer::from(1);
         let summands: Vec<ExprId> = self
             .terms
             .iter()
             .map(|(exps, coeff)| {
-                let coeff_id = pool.integer(coeff.clone());
-                let mut factors = vec![coeff_id];
+                let mut factors = Vec::new();
+                // Omit a unit coefficient when there are variable factors so
+                // cancel((x²-1)/(x-1)) prints as `x + 1`, not `1 + (x * 1)`.
+                if coeff != &one {
+                    factors.push(pool.integer(coeff.clone()));
+                }
                 for (i, &e) in exps.iter().enumerate() {
                     if e == 0 || i >= self.vars.len() {
                         continue;

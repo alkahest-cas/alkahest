@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Output hygiene
+
+- Parenthesize nested powers in `str` / LaTeX / Unicode so `x^(1/2)^3` is unambiguous.
+- `MultiPoly.to_expr` omits unit coefficients (`cancel((x²−1)/(x−1))` → `x + 1`).
+- `simplify(gamma(1))` → `1` via a new `PrimitiveFold` rule.
+- Literal division by zero raises `ZeroDivisionError` instead of building `0^-1`.
+
 ## 3.6.0 — 2026-07-17
 
 ### Release / packaging

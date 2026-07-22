@@ -1,6 +1,6 @@
 use super::rules::{
     AddZero, CanonicalOrder, ConstFold, DivSelf, ExpandMul, ExpandPow, FlattenAdd, FlattenMul,
-    MulOne, MulZero, PowOne, PowZero, RewriteRule, SqrtInteger, SubSelf,
+    MulOne, MulZero, PowOne, PowZero, PrimitiveFold, RewriteRule, SqrtInteger, SubSelf,
 };
 use super::rulesets::PatternRuleSet;
 use crate::deriv::log::{DerivationLog, DerivedExpr};
@@ -68,6 +68,7 @@ pub fn rules_for_config(config: &SimplifyConfig) -> Vec<Box<dyn RewriteRule>> {
         // ConstFold's existing per-node dispatch (see rules.rs) so they don't
         // add per-node iterations to the rule loop below.
         Box::new(ConstFold),
+        Box::new(PrimitiveFold),
         Box::new(SqrtInteger),
         Box::new(SubSelf),
         Box::new(DivSelf),

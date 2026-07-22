@@ -2303,6 +2303,19 @@ pub mod builtins {
             format!("Γ({})", pool.display(args[0]))
         }
 
+        fn simplify(&self, args: &[ExprId], pool: &ExprPool) -> Option<ExprId> {
+            // Γ(n) = (n-1)! for positive integers n.
+            let n = positive_integer_literal(args[0], pool)?;
+            if n < 1 || n > 21 {
+                return None;
+            }
+            let mut acc: i64 = 1;
+            for k in 2..n {
+                acc = acc.checked_mul(k)?;
+            }
+            Some(pool.integer(acc))
+        }
+
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
             Some(libm_gamma(args[0]))
         }

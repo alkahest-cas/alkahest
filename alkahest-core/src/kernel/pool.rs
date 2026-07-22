@@ -388,6 +388,30 @@ impl fmt::Debug for ExprDisplay<'_> {
     }
 }
 
+/// Format a power base or exponent, parenthesizing compound subexpressions.
+fn fmt_pow_atom(id: ExprId, pool: &ExprPool) -> String {
+    let s = pool.display(id).to_string();
+    let needs_parens = match pool.get(id) {
+        ExprData::Symbol { .. } | ExprData::Integer(_) | ExprData::Float(_) => false,
+        ExprData::Func { .. } => false,
+        ExprData::Rational(_)
+        | ExprData::Pow { .. }
+        | ExprData::Add(_)
+        | ExprData::Mul(_)
+        | ExprData::Piecewise { .. }
+        | ExprData::Predicate { .. }
+        | ExprData::Forall { .. }
+        | ExprData::Exists { .. }
+        | ExprData::BigO(_)
+        | ExprData::RootSum { .. } => true,
+    };
+    if needs_parens {
+        format!("({s})")
+    } else {
+        s
+    }
+}
+
 fn fmt_data(data: &ExprData, pool: &ExprPool, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match data {
         ExprData::Symbol { name, .. } => write!(f, "{}", name),
@@ -415,7 +439,11 @@ fn fmt_data(data: &ExprData, pool: &ExprPool, f: &mut fmt::Formatter<'_>) -> fmt
             write!(f, ")")
         }
         ExprData::Pow { base, exp } => {
-            write!(f, "{}^{}", pool.display(*base), pool.display(*exp))
+            // Parenthesize compound bases/exponents so `x^(1/2)^3` cannot be
+            // misread as `x^1 / 2^3`. Prefer `(x^(1/2))^3`.
+            let base_s = fmt_pow_atom(*base, pool);
+            let exp_s = fmt_pow_atom(*exp, pool);
+            write!(f, "{base_s}^{exp_s}")
         }
         ExprData::Func { name, args } => {
             write!(f, "{}(", name)?;
