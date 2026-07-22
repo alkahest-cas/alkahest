@@ -77,6 +77,38 @@ def test_limit_sqrt_rationalization(pool, x):
     assert_limit_equals(r, 0.5)
 
 
+def test_limit_exp_minus_1_minus_x_over_x_squared(pool, x):
+    """(e^x - 1 - x)/x^2 -> 1/2 as x -> 0 — second-order L'Hopital, needs two
+    successive applications since the first derivative ratio is still 0/0."""
+    r = ak.limit((ak.exp(x) - 1 - x) / x**2, x, pool.integer(0))
+    assert_limit_equals(r, 0.5)
+
+
+def test_limit_log_over_x_minus_one_at_one(pool, x):
+    """log(x)/(x-1) -> 1 as x -> 1 — 0/0 form at a non-zero point."""
+    r = ak.limit(ak.log(x) / (x - 1), x, pool.integer(1))
+    assert_limit_equals(r, 1.0)
+
+
+def test_limit_log_one_plus_x_over_x(pool, x):
+    """log(1+x)/x -> 1 as x -> 0 — derivative of log at 1, by definition."""
+    r = ak.limit(ak.log(1 + x) / x, x, pool.integer(0))
+    assert_limit_equals(r, 1.0)
+
+
+def test_limit_exp_two_x_minus_1_over_x(pool, x):
+    """(e^(2x) - 1)/x -> 2 as x -> 0 — chain-rule-scaled version of the
+    standard (e^x-1)/x -> 1 limit."""
+    r = ak.limit((ak.exp(2 * x) - 1) / x, x, pool.integer(0))
+    assert_limit_equals(r, 2.0)
+
+
+def test_limit_x_to_the_x_at_zero_plus(pool, x):
+    """x^x -> 1 as x -> 0+ — indeterminate 0^0 form."""
+    r = ak.limit(x**x, x, pool.integer(0), dir="+")
+    assert_limit_equals(r, 1.0)
+
+
 # --- removable singularities (factor-and-cancel) -----------------------------
 
 
@@ -173,3 +205,18 @@ def test_limit_of_constant(pool, x):
     """The limit of a constant is itself, regardless of the approach point."""
     r = ak.limit(pool.integer(5), x, pool.integer(0))
     assert_limit_equals(r, 5.0)
+
+
+# --- classic constant-defining limits -------------------------------------------
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="new finding: limit((1+x)^(1/x), x, 0) returns 1 instead of e — this is "
+    "the textbook limit definition of e itself, arguably the single most iconic "
+    "first-course limit after sin(x)/x",
+)
+def test_limit_one_plus_x_to_one_over_x_is_e(pool, x):
+    """(1+x)^(1/x) -> e as x -> 0 — the limit definition of Euler's number."""
+    r = ak.limit((1 + x) ** (1 / x), x, pool.integer(0))
+    assert_limit_equals(r, math.e)

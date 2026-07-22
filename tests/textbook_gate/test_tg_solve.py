@@ -141,6 +141,21 @@ def test_solve_parabola_and_line(pool, x, y):
     assert_solutions_satisfy(eqs, [x, y], sols, expected_count=2)
 
 
+def test_solve_two_conics(pool, x, y):
+    """x^2+y^2=13, x^2-y=7 -> two conics meeting at (+-3,2) and (+-2,-3)."""
+    eqs = [x**2 + y**2 - pool.integer(13), x**2 - y - pool.integer(7)]
+    sols = ak.solve(eqs, [x, y])
+    assert_solutions_satisfy(eqs, [x, y], sols, expected_count=4)
+
+
+def test_solve_two_circles(pool, x, y):
+    """x^2+y^2=25, (x-3)^2+y^2=16 -> two intersecting circles, meeting at
+    (3,4) and (3,-4) (a 3-4-5 right triangle)."""
+    eqs = [x**2 + y**2 - pool.integer(25), (x - pool.integer(3)) ** 2 + y**2 - pool.integer(16)]
+    sols = ak.solve(eqs, [x, y])
+    assert_solutions_satisfy(eqs, [x, y], sols, expected_count=2)
+
+
 # --- cubic/quartic systems (numeric, method="homotopy") -----------------
 
 
@@ -189,6 +204,32 @@ def test_solve_cubic_system_homotopy_distinct_values(pool, x, y, z):
     ]
     sols = ak.solve(eqs, [x, y, z], method="homotopy")
     assert_solutions_satisfy(eqs, [x, y, z], sols, expected_count=6)
+
+
+def test_solve_sphere_and_two_planes_homotopy(pool, x, y, z):
+    """A sphere/plane-type system: x^2+y^2+z^2=14, x+y+z=6, y-x=1 -- the
+    sphere and two planes meet at the two permutations (1,2,3) and (2,3,1)
+    of the point satisfying both linear constraints."""
+    eqs = [
+        x**2 + y**2 + z**2 - pool.integer(14),
+        x + y + z - pool.integer(6),
+        y - x - pool.integer(1),
+    ]
+    sols = ak.solve(eqs, [x, y, z], method="homotopy")
+    assert_solutions_satisfy(eqs, [x, y, z], sols, expected_count=2)
+
+
+def test_solve_cyclic_quadratic_system_homotopy(pool, x, y, z):
+    """A cyclic (non-symmetric-sum) polynomial system: x^2-y=1, y^2-z=1,
+    z^2-x=1. Its two real solutions are the fixed points x=y=z of
+    t^2-t-1=0, i.e. the golden ratio and its conjugate."""
+    eqs = [
+        x**2 - y - pool.integer(1),
+        y**2 - z - pool.integer(1),
+        z**2 - x - pool.integer(1),
+    ]
+    sols = ak.solve(eqs, [x, y, z], method="homotopy")
+    assert_solutions_satisfy(eqs, [x, y, z], sols, expected_count=2)
 
 
 # --- solve_numerical (alternative numeric path with certification) ------

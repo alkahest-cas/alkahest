@@ -37,6 +37,9 @@ in `pytest.ini`). Shared verification helpers live in `tests/_tg_helpers.py`
 | `test_tg_polynomials.py` | Expand, factor, gcd, roots, division |
 | `test_tg_simplify_trig.py` | Pythagorean/double-angle/reciprocal trig identities |
 | `test_tg_algebra_identities.py` | log/exp inverses, `cancel`/`together`, exponent rules |
+| `test_tg_linear_algebra.py` | Determinant, rank, rref, inverse, transpose, nullspace, LU, eigenvalues |
+| `test_tg_ode.py` | First/second-order ODEs (separable, linear, constant-coefficient) via `dsolve` |
+| `test_tg_number_theory.py` | Primality, factorization, totient, modular arithmetic |
 
 ## Verification philosophy
 

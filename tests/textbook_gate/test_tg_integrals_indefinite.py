@@ -110,6 +110,29 @@ def test_int_x_over_x_squared_plus_one(x):
     assert_integral_self_consistent(x / (x**2 + 1), x)
 
 
+# --- trigonometric substitution --------------------------------------------
+
+
+def test_int_x_over_sqrt_x_squared_plus_one(x):
+    """x/sqrt(x^2+1) -> sqrt(x^2+1), a Pythagorean-form substitution."""
+    assert_integral_self_consistent(x / ak.sqrt(x**2 + 1), x)
+
+
+def test_int_sqrt_four_minus_x_squared(x):
+    """sqrt(4-x^2): classic x = 2 sin(theta) trig substitution."""
+    assert_integral_self_consistent(ak.sqrt(4 - x**2), x, points=(-1.5, -0.5, 0.5, 1.0, 1.5))
+
+
+def test_int_one_over_x_squared_sqrt_x_squared_plus_one(x):
+    """1/(x^2*sqrt(x^2+1)): x = tan(theta) trig substitution."""
+    assert_integral_self_consistent(1 / (x**2 * ak.sqrt(x**2 + 1)), x, points=(0.3, 0.7, 1.3, 1.9))
+
+
+def test_int_one_over_sqrt_x_squared_minus_one(x):
+    """1/sqrt(x^2-1): x = sec(theta) trig substitution."""
+    assert_integral_self_consistent(1 / ak.sqrt(x**2 - 1), x, points=(1.3, 1.9, 2.4, 3.0))
+
+
 # --- integration by parts -------------------------------------------------
 
 
@@ -127,6 +150,16 @@ def test_int_x_log_x(x):
 
 def test_int_log_x(x):
     assert_integral_self_consistent(ak.log(x), x, points=POSITIVE_POINTS)
+
+
+def test_int_x_squared_cos_x(x):
+    """x^2*cos(x): requires two successive rounds of integration by parts."""
+    assert_integral_self_consistent(x**2 * ak.cos(x), x)
+
+
+def test_int_log_x_squared(x):
+    """log(x)^2: integration by parts with u = log(x)^2."""
+    assert_integral_self_consistent(ak.log(x) ** 2, x, points=POSITIVE_POINTS)
 
 
 # --- partial fractions (distinct real linear factors) ---------------------
@@ -157,6 +190,19 @@ def test_int_partial_fractions_four_factors(x, pool):
 def test_int_x_over_x_squared_minus_one(x):
     """x/(x^2-1), rational function with a nontrivial numerator."""
     assert_integral_self_consistent(x / (x**2 - 1), x)
+
+
+def test_int_partial_fractions_repeated_linear_factor(x, pool):
+    """1/(x-1)^2 — a repeated linear factor (power rule after a shift, but
+    exercises the same repeated-root partial-fraction path).
+    """
+    assert_integral_self_consistent(1 / (x - pool.integer(1)) ** 2, x, points=(-0.5, 0.3, 1.3, 2.4))
+
+
+def test_int_partial_fractions_repeated_linear_times_distinct(x, pool):
+    """1/((x-1)^2(x+1)): a repeated linear factor combined with a distinct one."""
+    denom = (x - pool.integer(1)) ** 2 * (x + pool.integer(1))
+    assert_integral_self_consistent(1 / denom, x, points=(-0.5, 0.3, 1.3, 2.4))
 
 
 # --- tan(x) -----------------------------------------------------------------

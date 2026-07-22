@@ -171,3 +171,43 @@ def test_hyperbolic_pythagorean_identity_folds_to_constant(x):
     """cosh(x)^2 - sinh(x)^2 -> 1 (unconditionally valid for real x)."""
     r = ak.simplify_trig(ak.cosh(x) ** 2 - ak.sinh(x) ** 2).value
     assert_definite_value(r, 1.0)
+
+
+def test_tanh_equals_sinh_over_cosh(x):
+    """sinh(x)/cosh(x) is value-preserved and numerically matches tanh(x).
+    Like the ordinary-trig cases above, `simplify_trig` does not restructure
+    this into the bare `tanh` primitive (verified below: the printed form is
+    still a `sinh(x) * cosh(x)^-1` product), so this is checked as
+    value-preservation against the known closed form, same pattern as
+    `test_one_plus_tan_squared_matches_sec_squared`.
+    """
+    r = ak.simplify_trig(ak.sinh(x) / ak.cosh(x)).value
+    assert_matches_reference(r, x, math.tanh)
+
+
+def test_hyperbolic_double_angle_cosine_via_cosh_squared(x):
+    """2 cosh(x)^2 - 1 -> cosh(2x)."""
+    r = ak.simplify_trig(2 * ak.cosh(x) ** 2 - 1).value
+    assert_matches_reference(r, x, lambda v: math.cosh(2 * v))
+
+
+def test_hyperbolic_double_angle_sine(x):
+    """2 sinh(x) cosh(x) -> sinh(2x)."""
+    r = ak.simplify_trig(2 * ak.sinh(x) * ak.cosh(x)).value
+    assert_matches_reference(r, x, lambda v: math.sinh(2 * v))
+
+
+def test_one_minus_tanh_squared_matches_sech_squared(x):
+    """1 - tanh(x)^2 = sech(x)^2 = 1/cosh(x)^2. alkahest has no `sech`
+    primitive and `simplify_trig` does not rewrite this into a single power
+    of cosh(x) — checked purely as value-preservation against the known
+    closed form, same pattern as the ordinary-trig `sec^2` case above.
+    """
+    r = ak.simplify_trig(1 - ak.tanh(x) ** 2).value
+    assert_matches_reference(r, x, lambda v: 1 / math.cosh(v) ** 2)
+
+
+def test_hyperbolic_sine_is_odd(x):
+    """sinh(-x) -> -sinh(x)."""
+    r = ak.simplify_trig(ak.sinh(-x)).value
+    assert_matches_reference(r, x, lambda v: -math.sinh(v))
