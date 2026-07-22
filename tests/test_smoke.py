@@ -359,7 +359,8 @@ def test_lean_diff_x_squared_certificate():
     x = p.symbol("x")
     r = diff(x**2, x)
     cert = r.certificate
-    assert isinstance(cert, str) and cert
+    assert isinstance(cert, str)
+    assert cert
     assert "sorry" not in cert
     assert "deriv (fun" in cert
 
