@@ -42,7 +42,7 @@ pub use partial_fractions::{apart, ApartError};
 pub use rational::RationalFunction;
 pub use residue::{residue, ResidueError};
 // V2-2 — Resultants and subresultant PRS
-pub use resultant::{resultant, subresultant_prs, ResultantError};
+pub use resultant::{collect_free_vars, resultant, subresultant_prs, ResultantError};
 // V2-4 — Real root isolation (VAS)
 pub use real_roots::{real_roots, real_roots_symbolic, refine_root, RealRootError, RootInterval};
 pub use unipoly::UniPoly;

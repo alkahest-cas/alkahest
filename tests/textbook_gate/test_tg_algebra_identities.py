@@ -107,26 +107,13 @@ def test_simplify_log_exp_inverse_pair(pool, x, y):
 
 # --- log/exp combining rules (product/power/quotient) -------------------------
 #
-# The B-series fix that landed `log(exp(x)) -> x` / `exp(log(x)) -> x` only
-# implements that direct inverse-pair rewrite. Probing empirically shows the
-# classic logarithm product/power/quotient rules — and the mirror-image
-# exponent-of-a-sum rule for `exp` — are not implemented by `simplify_log_exp`
-# (nor by plain `simplify`): the expressions below evaluate to the correct
-# value already (so a numeric value-preservation check would trivially pass
-# whether or not anything folded, exactly the blind spot
-# `test_simplify_log_exp_inverse_pair` above calls out), but structurally the
-# simplifier returns them completely unchanged — no product/power/quotient
-# rewriting occurs in either direction.
+# Inverse cancellations plus the textbook combining/expansion rules:
+# `log(x)+log(y)→log(xy)`, `log(x^n)→n·log(x)`, `log(x/y)→log(x)−log(y)`,
+# and `exp(x)·exp(y)→exp(x+y)`.  Structural equality is required here for the
+# same reason as `test_simplify_log_exp_inverse_pair`: the unsimplified forms
+# already evaluate correctly, so numeric checks cannot detect a no-op.
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "simplify_log_exp does not implement the logarithm product rule: "
-        "log(x) + log(y) is returned unchanged (still `(log(x) + log(y))`), "
-        "not folded to log(x*y)."
-    ),
-)
 def test_simplify_log_exp_product_rule_folds(pool, x, y):
     """log(x) + log(y) -> log(x*y) for positive x, y."""
     r = ak.simplify_log_exp(ak.log(x) + ak.log(y)).value
@@ -134,14 +121,6 @@ def test_simplify_log_exp_product_rule_folds(pool, x, y):
     assert r == target
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "simplify_log_exp does not implement the logarithm power rule: "
-        "log(x**2) is returned unchanged (still `log(x^2)`), not folded to "
-        "2*log(x)."
-    ),
-)
 def test_simplify_log_exp_power_rule_folds(pool, x):
     """log(x**2) -> 2*log(x) for positive x."""
     r = ak.simplify_log_exp(ak.log(x**2)).value
@@ -149,14 +128,6 @@ def test_simplify_log_exp_power_rule_folds(pool, x):
     assert r == target
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "simplify_log_exp does not implement the logarithm quotient rule: "
-        "log(x/y) is returned unchanged (still `log((x * y^-1))`), not "
-        "folded to log(x) - log(y)."
-    ),
-)
 def test_simplify_log_exp_quotient_rule_folds(pool, x, y):
     """log(x/y) -> log(x) - log(y) for positive x, y."""
     r = ak.simplify_log_exp(ak.log(x / y)).value
@@ -164,14 +135,6 @@ def test_simplify_log_exp_quotient_rule_folds(pool, x, y):
     assert r == target
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "simplify_log_exp does not implement the mirror-image exp-of-a-sum "
-        "rule: exp(x) * exp(y) is returned unchanged (still "
-        "`(exp(x) * exp(y))`), not folded to exp(x+y)."
-    ),
-)
 def test_simplify_log_exp_product_of_exps_folds(pool, x, y):
     """exp(x) * exp(y) -> exp(x+y)."""
     r = ak.simplify_log_exp(ak.exp(x) * ak.exp(y)).value
@@ -244,15 +207,14 @@ def test_together_reciprocal_difference(x, y):
     assert_two_var_matches_reference(r, x, y, lambda a, b: 1 / a - 1 / b)
 
 
-def test_cancel_requires_vars_argument(x):
-    """cancel/together require an explicit vars list — omitting it raises
-    TypeError (documented API quirk from report7-20.md's 'API consistency'
-    section, kept here as a green canary so the signature isn't silently
-    loosened or tightened further without this suite noticing).
+def test_cancel_infers_vars_when_omitted(x):
+    """cancel/together infer free symbols when *vars* is omitted (API consistency
+    fix from report7-20.md rough edges). Explicit vars remain supported.
     """
     e = (x**2 - 4) / (x - 2)
-    with pytest.raises(TypeError):
-        ak.cancel(e)
+    out = ak.cancel(e)
+    assert ak.simplify(out).value == x + 2 or ak.simplify(out).value == 2 + x
+    assert ak.cancel(e, [x]) is not None
 
 
 # --- exponent rules ------------------------------------------------------------

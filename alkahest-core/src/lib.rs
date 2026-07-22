@@ -106,12 +106,12 @@ pub use ode::{
 pub use parse::{parse, ParseError};
 pub use pattern::{match_pattern, Pattern, Substitution};
 pub use poly::{
-    apart, cancel, factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z,
-    gcd_sparse_modular, poly_normal, real_roots, real_roots_symbolic, refine_root, residue,
-    resultant, sparse_interpolate, sparse_interpolate_univariate, subresultant_prs, together,
-    together_parts, ApartError, ConversionError, FactorError, GaussRat, MultiPoly,
-    MultiPolyFactorization, RationalFunction, RealRootError, ResidueError, ResultantError,
-    RootInterval, SparseGcdError, SparseInterpError, UniPoly, UniPolyFactorModP,
+    apart, cancel, collect_free_vars, factor_multivariate_z, factor_univariate_mod_p,
+    factor_univariate_z, gcd_sparse_modular, poly_normal, real_roots, real_roots_symbolic,
+    refine_root, residue, resultant, sparse_interpolate, sparse_interpolate_univariate,
+    subresultant_prs, together, together_parts, ApartError, ConversionError, FactorError, GaussRat,
+    MultiPoly, MultiPolyFactorization, RationalFunction, RealRootError, ResidueError,
+    ResultantError, RootInterval, SparseGcdError, SparseInterpError, UniPoly, UniPolyFactorModP,
     UniPolyFactorization,
 };
 
@@ -275,13 +275,13 @@ pub mod stable {
     pub use crate::parse::{parse, ParseError};
     pub use crate::pattern::{match_pattern, Pattern, Substitution};
     pub use crate::poly::{
-        apart, cancel, factor_multivariate_z, factor_univariate_mod_p, factor_univariate_z,
-        gcd_sparse_modular, poly_normal, real_roots, real_roots_symbolic, refine_root, residue,
-        resultant, sparse_interpolate, sparse_interpolate_univariate, subresultant_prs, together,
-        together_parts, ApartError, ConversionError, FactorError, GaussRat, MultiPoly,
-        MultiPolyFactorization, RationalFunction, RealRootError, ResidueError, ResultantError,
-        RootInterval, SparseGcdError, SparseInterpError, UniPoly, UniPolyFactorModP,
-        UniPolyFactorization,
+        apart, cancel, collect_free_vars, factor_multivariate_z, factor_univariate_mod_p,
+        factor_univariate_z, gcd_sparse_modular, poly_normal, real_roots, real_roots_symbolic,
+        refine_root, residue, resultant, sparse_interpolate, sparse_interpolate_univariate,
+        subresultant_prs, together, together_parts, ApartError, ConversionError, FactorError,
+        GaussRat, MultiPoly, MultiPolyFactorization, RationalFunction, RealRootError, ResidueError,
+        ResultantError, RootInterval, SparseGcdError, SparseInterpError, UniPoly,
+        UniPolyFactorModP, UniPolyFactorization,
     };
     pub use crate::primitive::{Primitive, PrimitiveRegistry};
     pub use crate::real::{

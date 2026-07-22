@@ -210,12 +210,6 @@ def test_limit_of_constant(pool, x):
 # --- classic constant-defining limits -------------------------------------------
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="new finding: limit((1+x)^(1/x), x, 0) returns 1 instead of e — this is "
-    "the textbook limit definition of e itself, arguably the single most iconic "
-    "first-course limit after sin(x)/x",
-)
 def test_limit_one_plus_x_to_one_over_x_is_e(pool, x):
     """(1+x)^(1/x) -> e as x -> 0 — the limit definition of Euler's number."""
     r = ak.limit((1 + x) ** (1 / x), x, pool.integer(0))

@@ -9,6 +9,13 @@
 - `simplify(gamma(1))` → `1` via a new `PrimitiveFold` rule.
 - Literal division by zero raises `ZeroDivisionError` instead of building `0^-1`.
 
+### API
+
+- `UniPoly.from_coefficients` accepts Python ``int`` coefficients (not only ``Expr``).
+- `cancel` / `together` / `MultiPoly.from_symbolic` / `radical` infer free symbols when
+  *vars* is omitted.
+- Structured error messages now include the stable code prefix, e.g. ``[E-INT-004] …``.
+
 ### Docs
 
 - Document `parse` in the README quickstart; clarify that `limit` / `series` are not `DerivedResult`.

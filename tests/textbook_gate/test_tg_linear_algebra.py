@@ -200,14 +200,6 @@ def test_nullspace_vector_maps_to_zero(pool):
     assert result == pytest.approx([0.0, 0.0], abs=1e-9)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="new finding: Matrix.nullspace() returns a spurious nonzero vector for "
-    "every full-rank (invertible) 2x2 matrix tried (identity, diag(2,3), [[2,1],[1,1]], "
-    "[[1,2],[0,1]], ...) — e.g. nullspace(I2) == [[0,1]], but I2 @ [0,1] == [0,1] != 0, "
-    "so the returned vector isn't actually in the nullspace. Silently wrong, not a crash. "
-    "3x3 full-rank matrices correctly return []; the bug appears specific to the 2x2 path.",
-)
 def test_nullspace_trivial_for_full_rank(pool):
     A = ak.Matrix([[pool.integer(1), pool.integer(0)], [pool.integer(0), pool.integer(1)]])
     assert A.nullspace() == []
@@ -260,13 +252,6 @@ def test_eigenvals_triangular_matrix_are_diagonal_entries(pool):
 # --- rational-root-theorem-adjacent: char poly degree matches matrix size --
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="new finding (parallel to B5): Matrix.eigenvals() raises PyEigenError "
-    "'irreducible characteristic factor of degree 3; only degrees 1-2 are supported' "
-    "for a plain 3x3 matrix whose characteristic polynomial happens to be an "
-    "irreducible cubic — eigenvalues of 3x3+ matrices are a first-course topic",
-)
 def test_characteristic_polynomial_degree_matches_size(pool):
     rows = [[1, 2, 3], [0, 1, 4], [5, 6, 0]]
     A = ak.Matrix([[pool.integer(v) for v in row] for row in rows])

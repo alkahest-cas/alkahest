@@ -293,14 +293,16 @@ fn make_structured_err<E: AlkahestErrorTrait>(
     e: &E,
 ) -> PyErr {
     let msg = e.to_string();
+    let code = e.code();
     let remediation = e.remediation().unwrap_or("");
+    // Prefix the stable code so `str(exc)` / logs are greppable without reading `.code`.
     let full_msg = if remediation.is_empty() {
-        msg
+        format!("[{code}] {msg}")
     } else {
-        format!("{msg}\nRemediation: {remediation}")
+        format!("[{code}] {msg}\nRemediation: {remediation}")
     };
     let exc = exc_type.call1((full_msg,)).unwrap();
-    exc.setattr("code", e.code()).ok();
+    exc.setattr("code", code).ok();
     exc.setattr("remediation", e.remediation()).ok();
     exc.setattr("span", e.span()).ok();
     PyErr::from_value_bound(exc)
@@ -2412,41 +2414,56 @@ impl PyUniPoly {
             .map_err(conv_error_to_py)
     }
 
-    /// Construct a `UniPoly` from a list of symbolic integer expressions (constant term first).
+    /// Construct a `UniPoly` from coefficients (constant term first).
+    ///
+    /// Each coefficient may be a Python ``int`` or an integer ``Expr`` from the
+    /// same pool as *var*.
     ///
     /// ```python
     /// p = ExprPool()
     /// x = p.symbol("x")
     /// # -1 + x^2  (coefficients in ascending degree order)
+    /// poly = UniPoly.from_coefficients([-1, 0, 1], x)
+    /// # also accepted:
     /// poly = UniPoly.from_coefficients([p.integer(-1), p.integer(0), p.integer(1)], x)
     /// ```
     ///
-    /// Raises `TypeError` if any coefficient is not an integer expression.
+    /// Raises `TypeError` if any coefficient is not an int / integer expression.
     /// Raises `OverflowError` if any coefficient overflows `i64`.
     #[staticmethod]
     fn from_coefficients(
         py: Python<'_>,
-        coefficients: Vec<PyRef<'_, PyExpr>>,
+        coefficients: Vec<Bound<'_, PyAny>>,
         var: PyRef<'_, PyExpr>,
     ) -> PyResult<Self> {
         let pool = var.pool.borrow(py);
         let mut i64_coeffs: Vec<i64> = Vec::with_capacity(coefficients.len());
         for (idx, coeff) in coefficients.iter().enumerate() {
-            match pool.inner.get(coeff.id) {
-                alkahest_core::ExprData::Integer(bi) => {
-                    let n = bi.0.to_i64().ok_or_else(|| {
-                        PyOverflowError::new_err(format!(
-                            "UniPoly.from_coefficients: coefficient at index {idx} overflows i64"
-                        ))
-                    })?;
-                    i64_coeffs.push(n);
-                }
-                _ => {
-                    return Err(PyTypeError::new_err(format!(
-                        "UniPoly.from_coefficients: coefficient at index {idx} is not an integer expression"
-                    )));
+            if let Ok(n) = coeff.extract::<i64>() {
+                i64_coeffs.push(n);
+                continue;
+            }
+            if let Ok(expr) = coeff.extract::<PyRef<PyExpr>>() {
+                match pool.inner.get(expr.id) {
+                    alkahest_core::ExprData::Integer(bi) => {
+                        let n = bi.0.to_i64().ok_or_else(|| {
+                            PyOverflowError::new_err(format!(
+                                "UniPoly.from_coefficients: coefficient at index {idx} overflows i64"
+                            ))
+                        })?;
+                        i64_coeffs.push(n);
+                        continue;
+                    }
+                    _ => {
+                        return Err(PyTypeError::new_err(format!(
+                            "UniPoly.from_coefficients: coefficient at index {idx} is not an integer expression"
+                        )));
+                    }
                 }
             }
+            return Err(PyTypeError::new_err(format!(
+                "UniPoly.from_coefficients: coefficient at index {idx} must be int or integer Expr"
+            )));
         }
         let coeffs = alkahest_core::FlintPoly::from_coefficients(&i64_coeffs);
         Ok(PyUniPoly {
@@ -2540,14 +2557,22 @@ impl PyUniPoly {
 
 #[pymethods]
 impl PyMultiPoly {
+    /// Build a multivariate polynomial from a symbolic expression.
+    ///
+    /// If *vars* is omitted, free symbols of *expr* are used (sorted by
+    /// internal id for a deterministic order).
     #[staticmethod]
+    #[pyo3(signature = (expr, vars=None))]
     fn from_symbolic(
         py: Python<'_>,
         expr: PyRef<PyExpr>,
-        vars: Vec<PyRef<PyExpr>>,
+        vars: Option<Vec<PyRef<PyExpr>>>,
     ) -> PyResult<Self> {
-        let var_ids: Vec<_> = vars.iter().map(|v| v.id).collect();
         let pool = expr.pool.borrow(py);
+        let var_ids: Vec<_> = match vars {
+            Some(v) => v.iter().map(|v| v.id).collect(),
+            None => alkahest_core::collect_free_vars(expr.id, &pool.inner),
+        };
         MultiPoly::from_symbolic(expr.id, var_ids, &pool.inner)
             .map(|p| PyMultiPoly {
                 inner: p,
@@ -6333,9 +6358,12 @@ fn py_poly_normal(
 /// listed in *vars*, or a base with a symbolic exponent) is treated as an
 /// opaque generator.
 ///
+/// If *vars* is omitted, free symbols of *expr* are used.
+///
 /// Examples::
 ///
 ///     cancel((x**2 - 1) / (x - 1), [x])   # -> x + 1
+///     cancel((x**2 - 1) / (x - 1))        # vars inferred
 ///     cancel(1/x + 1/(x + 1), [x])         # -> (2*x + 1) / (x**2 + x)
 ///     cancel(x / x, [x])                   # -> 1
 ///
@@ -6343,12 +6371,19 @@ fn py_poly_normal(
 /// ``sin(2*x/2)`` are distinct), and bases raised to symbolic exponents are
 /// opaque as a whole.
 #[pyfunction]
-#[pyo3(name = "cancel")]
-fn py_cancel(py: Python<'_>, expr: PyRef<PyExpr>, vars: Vec<PyRef<PyExpr>>) -> PyResult<PyExpr> {
+#[pyo3(name = "cancel", signature = (expr, vars=None))]
+fn py_cancel(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    vars: Option<Vec<PyRef<PyExpr>>>,
+) -> PyResult<PyExpr> {
     let pool_py = expr.pool.clone_ref(py);
-    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
     let result = {
         let pool = pool_py.borrow(py);
+        let var_ids: Vec<ExprId> = match vars {
+            Some(v) => v.iter().map(|v| v.id).collect(),
+            None => alkahest_core::collect_free_vars(expr.id, &pool.inner),
+        };
         core_cancel(expr.id, var_ids, &pool.inner).map_err(conv_error_to_py)?
     };
     Ok(PyExpr {
@@ -6363,16 +6398,25 @@ fn py_cancel(py: Python<'_>, expr: PyRef<PyExpr>, vars: Vec<PyRef<PyExpr>>) -> P
 /// the underlying rational-function constructor); provided as a companion name
 /// for callers that want the explicit "put over a common denominator" intent.
 ///
+/// If *vars* is omitted, free symbols of *expr* are used.
+///
 /// Example::
 ///
 ///     together(1/x + 1/(x + 1), [x])   # -> (2*x + 1) / (x**2 + x)
 #[pyfunction]
-#[pyo3(name = "together")]
-fn py_together(py: Python<'_>, expr: PyRef<PyExpr>, vars: Vec<PyRef<PyExpr>>) -> PyResult<PyExpr> {
+#[pyo3(name = "together", signature = (expr, vars=None))]
+fn py_together(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    vars: Option<Vec<PyRef<PyExpr>>>,
+) -> PyResult<PyExpr> {
     let pool_py = expr.pool.clone_ref(py);
-    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
     let result = {
         let pool = pool_py.borrow(py);
+        let var_ids: Vec<ExprId> = match vars {
+            Some(v) => v.iter().map(|v| v.id).collect(),
+            None => alkahest_core::collect_free_vars(expr.id, &pool.inner),
+        };
         core_together(expr.id, var_ids, &pool.inner).map_err(conv_error_to_py)?
     };
     Ok(PyExpr {
@@ -7763,23 +7807,50 @@ fn py_primary_decomposition(
     Ok(out)
 }
 
-/// Radical √I of the ideal generated by `polys` (same variable order as `vars`).
+/// Radical √I of the ideal generated by `polys`.
+///
+/// If *vars* is omitted, free symbols across all *polys* are used (sorted by
+/// internal id). At least one free symbol must be present.
 #[cfg(feature = "groebner")]
 #[pyfunction]
-#[pyo3(name = "radical", signature = (polys, vars))]
+#[pyo3(name = "radical", signature = (polys, vars=None))]
 fn py_ideal_radical(
     py: Python<'_>,
     polys: Vec<PyRef<PyExpr>>,
-    vars: Vec<PyRef<PyExpr>>,
+    vars: Option<Vec<PyRef<PyExpr>>>,
 ) -> PyResult<Py<PyGroebnerBasis>> {
-    if polys.is_empty() || vars.is_empty() {
+    if polys.is_empty() {
         return Err(pyo3::exceptions::PyValueError::new_err(
-            "radical requires at least one polynomial and one variable",
+            "radical requires at least one polynomial",
         ));
     }
     let pool_py = polys[0].pool.clone_ref(py);
     let pool = pool_py.borrow(py);
-    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+    let var_ids: Vec<ExprId> = match vars {
+        Some(v) => {
+            if v.is_empty() {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "radical requires at least one variable",
+                ));
+            }
+            v.iter().map(|v| v.id).collect()
+        }
+        None => {
+            let mut set = std::collections::BTreeSet::new();
+            for p in &polys {
+                for v in alkahest_core::collect_free_vars(p.id, &pool.inner) {
+                    set.insert(v);
+                }
+            }
+            let ids: Vec<ExprId> = set.into_iter().collect();
+            if ids.is_empty() {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "radical: no free symbols found to use as variables",
+                ));
+            }
+            ids
+        }
+    };
     let mut gb_polys = Vec::with_capacity(polys.len());
     for p in &polys {
         let gbp = expr_to_gbpoly(p.id, &var_ids, &pool.inner)
