@@ -973,7 +973,11 @@ _native_sum_indefinite = sum_indefinite
 
 
 def sum_indefinite(expr, k):
-    """Indefinite symbolic sum of *expr* with respect to index *k*."""
+    """Indefinite symbolic sum of *expr* with respect to index *k*.
+
+    Same algorithm family as :func:`sum_definite` (Gosper / hypergeometric).
+    Polynomial and geometric closed forms are not yet implemented.
+    """
     return _maybe_context_simplify(_native_sum_indefinite(_coerce_expr(expr), _coerce_expr(k)))
 
 
@@ -981,7 +985,14 @@ _native_sum_definite = sum_definite
 
 
 def sum_definite(expr, k, lo, hi):
-    """Definite symbolic sum of *expr* for *k* from *lo* to *hi* (inclusive)."""
+    """Definite symbolic sum of *expr* for *k* from *lo* to *hi* (inclusive).
+
+    Uses Gosper / hypergeometric summation. Polynomial Faulhaber sums
+    (e.g. ``Σ k``, ``Σ k²``) and geometric terms such as ``Σ 2^k`` are
+    **not** yet supported and raise ``SumError`` (``E-SUM-002``) even when
+    a closed form exists. Prefer an explicit formula or another CAS for
+    those textbook cases until Faulhaber / geometric handlers land.
+    """
     return _maybe_context_simplify(
         _native_sum_definite(
             _coerce_expr(expr),

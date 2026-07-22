@@ -9,6 +9,11 @@
   *vars* is omitted.
 - Structured error messages now include the stable code prefix, e.g. ``[E-INT-004] …``.
 
+### Docs
+
+- Document `parse` in the README quickstart; clarify that `limit` / `series` are not `DerivedResult`.
+- Expand `sum_definite` / `sum_indefinite` / `diophantine` / `solve` docs (Faulhaber gap, binary Diophantine patterns, no parametric solve).
+
 ## 3.6.0 — 2026-07-17
 
 ### Release / packaging
