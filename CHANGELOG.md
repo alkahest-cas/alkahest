@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### API
+
+- Hide import-machinery leaks (`contextlib`, `exceptions`, `alkahest`) from
+  ``dir(alkahest)`` / autocomplete; submodules remain explicitly importable.
+
 ## 3.6.0 — 2026-07-17
 
 ### Release / packaging
