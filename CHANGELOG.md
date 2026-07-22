@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Features
+
+- **Parametric `solve`:** free symbols omitted from `vars` are treated as
+  parameters, so e.g. `solve([x**2 - y], [x])` returns `±sqrt(y)` instead of
+  raising `SolverError`.
+
 ### Output hygiene
 
 - Parenthesize nested powers in `str` / LaTeX / Unicode so `x^(1/2)^3` is unambiguous.
@@ -21,7 +27,7 @@
 ### Docs
 
 - Document `parse` in the README quickstart; clarify that `limit` / `series` are not `DerivedResult`.
-- Expand `sum_definite` / `sum_indefinite` / `diophantine` / `solve` docs (Faulhaber gap, binary Diophantine patterns, no parametric solve).
+- Expand `sum_definite` / `sum_indefinite` / `diophantine` / `solve` docs (Faulhaber gap, binary Diophantine patterns, parametric solve).
 
 ## 3.6.0 — 2026-07-17
 

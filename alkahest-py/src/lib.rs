@@ -8193,9 +8193,10 @@ fn py_solve_numerical(
 /// equations : list[Expr]
 ///     Each expression represents `p(vars) = 0`.
 /// vars : list[Expr]
-///     Variables to solve for (symbols). Every free symbol that appears in
-///     *equations* must be listed here — parametric solve (e.g. ``x² = y``
-///     with ``y`` kept free) is not supported and raises ``SolverError``.
+///     Variables to solve for (symbols). Free symbols that appear in
+///     *equations* but are omitted from *vars* are treated as parameters;
+///     solutions may be expressions in those symbols (e.g. ``solve([x**2 - y],
+///     [x])`` → ``±sqrt(y)``).
 /// numeric : bool, default False
 ///     Used when ``method="groebner"``: symbolic ``Expr`` values vs ``float``.
 ///     When Lex back-substitution hits a degree > 2 univariate, ``numeric=True``

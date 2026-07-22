@@ -14,13 +14,14 @@ Polynomial system solving via Gröbner bases. The ``groebner`` Cargo feature is 
    symbolic square roots.
 
    :param equations: List of polynomial expressions (each equal to zero).
-   :param variables: Variables to solve for.
+   :param variables: Variables to solve for. Free symbols that appear in
+      *equations* but are omitted here are treated as parameters.
    :returns:
 
       - ``list[dict[Expr, Expr]]`` — one dict per solution, mapping
         variable → value (symbolic, e.g. ``sqrt(2)/2``).
       - ``[]`` (empty list) — if the system is inconsistent.
-      - :class:`GroebnerBasis` — for parametric (infinite) solution sets.
+      - :class:`GroebnerBasis` — for underdetermined (infinite) solution sets.
 
    Example::
 
@@ -36,6 +37,10 @@ Polynomial system solving via Gröbner bases. The ``groebner`` Cargo feature is 
       sols = solve([x**2 + y**2 - pool.integer(1), y - x], [x, y])
       # → [{x: sqrt(2)/2, y: sqrt(2)/2},
       #    {x: -sqrt(2)/2, y: -sqrt(2)/2}]
+
+      # Parametric: omit free symbols from variables
+      sols = solve([x**2 - y], [x])
+      # → [{x: sqrt(y)}, {x: -sqrt(y)}]
 
    .. note::
 

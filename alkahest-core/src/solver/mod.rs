@@ -19,6 +19,12 @@
 //! Inputs are polynomial equations (`lhs - rhs = 0`), variables, and an
 //! `ExprPool`; outputs are symbolic `ExprId` values (may include `sqrt`),
 //! or `SolutionSet::Parametric` / `SolutionSet::NoSolution`.
+//!
+//! Free symbols that appear in the equations but are not listed in `vars` are
+//! treated as **parameters**: they become extra indeterminates in the Gröbner
+//! basis (appended after the solve variables under Lex) and are pre-bound to
+//! themselves during back-substitution, so solutions may involve those
+//! symbols (e.g. `solve([x² − y], [x])` → `±√y`).
 
 pub mod diophantine;
 pub mod homotopy;
@@ -38,9 +44,10 @@ pub use diophantine::{diophantine, DiophantineError, DiophantineSolution};
 
 use crate::errors::AlkahestError;
 use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::poly::collect_free_vars;
 use crate::poly::groebner::{GbPoly, GroebnerBasis, MonomialOrder};
 use rug::{ops::NegAssign, Rational};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 // ---------------------------------------------------------------------------
@@ -516,15 +523,27 @@ enum BacksolveOutcome {
     NoSolution,
 }
 
+/// Lex-order backsolve over a fixed generator list.
+///
+/// `vars` is the full indeterminate list (solve unknowns first, then free
+/// parameters).  `n_solve` is the number of unknowns to assign; indices
+/// `n_solve..vars.len()` are pre-bound to themselves (parametric coefficients).
 fn try_backsolve_generators(
     gens: &[GbPoly],
     vars: &[ExprId],
+    n_solve: usize,
     pool: &ExprPool,
 ) -> Result<BacksolveOutcome, SolverError> {
     let n_vars = vars.len();
-    let mut partials: Vec<Vec<Option<ExprId>>> = vec![vec![None; n_vars]];
+    debug_assert!(n_solve <= n_vars);
 
-    for _ in 0..n_vars {
+    let mut initial = vec![None; n_vars];
+    for i in n_solve..n_vars {
+        initial[i] = Some(vars[i]);
+    }
+    let mut partials: Vec<Vec<Option<ExprId>>> = vec![initial];
+
+    for _ in 0..n_solve {
         let mut new_partials = Vec::new();
         for partial in &partials {
             let solvable = find_solvable(gens, partial, n_vars);
@@ -532,6 +551,11 @@ fn try_backsolve_generators(
                 Some(t) => t,
                 None => return Ok(BacksolveOutcome::Stuck),
             };
+            // Only solve unknowns; a generator whose sole unsolved var is a
+            // parameter should not appear (parameters are pre-assigned).
+            if var_idx >= n_solve {
+                return Ok(BacksolveOutcome::Stuck);
+            }
             if max_deg > 2 {
                 return Err(SolverError::HighDegree(max_deg as usize));
             }
@@ -558,7 +582,8 @@ fn try_backsolve_generators(
         .into_iter()
         .map(|p| {
             p.into_iter()
-                .map(|o| o.expect("all vars assigned"))
+                .take(n_solve)
+                .map(|o| o.expect("all solve vars assigned"))
                 .collect()
         })
         .collect();
@@ -566,22 +591,46 @@ fn try_backsolve_generators(
     Ok(BacksolveOutcome::Finite(solutions))
 }
 
-/// Solve a zero-dimensional polynomial system.
+/// Free symbols in `equations` that are not among the declared solve `vars`,
+/// in stable [`ExprId`] order (via [`collect_free_vars`]'s `BTreeSet`).
+fn collect_parameters(equations: &[ExprId], vars: &[ExprId], pool: &ExprPool) -> Vec<ExprId> {
+    let declared: BTreeSet<ExprId> = vars.iter().copied().collect();
+    let mut params = BTreeSet::new();
+    for &eq in equations {
+        for v in collect_free_vars(eq, pool) {
+            if !declared.contains(&v) {
+                params.insert(v);
+            }
+        }
+    }
+    params.into_iter().collect()
+}
+
+/// Solve a polynomial system in the declared unknowns.
 ///
-/// `equations` — list of `ExprId` each representing `p(vars) = 0`.
-/// `vars` — list of symbolic variables in the order used for `GbPoly` exponent vectors.
+/// `equations` — list of `ExprId` each representing `p = 0`.
+/// `vars` — unknowns to solve for (order used for `GbPoly` exponent vectors).
 ///
-/// Returns a [`SolutionSet`] with symbolic `ExprId` values for each solution.
+/// Symbols that appear in `equations` but are absent from `vars` are treated as
+/// free parameters: solutions may be expressions in those symbols (e.g.
+/// `x² − y = 0` in `[x]` yields `x = ±√y`).
+///
+/// Returns a [`SolutionSet`] with symbolic `ExprId` values for each solution
+/// (parallel to `vars` only — parameters are not included in solution tuples).
 pub fn solve_polynomial_system(
     equations: Vec<ExprId>,
     vars: Vec<ExprId>,
     pool: &ExprPool,
 ) -> Result<SolutionSet, SolverError> {
-    let n_vars = vars.len();
+    let n_solve = vars.len();
+    let params = collect_parameters(&equations, &vars, pool);
+    let mut all_vars = vars;
+    all_vars.extend(params);
+    let n_vars = all_vars.len();
 
     let mut polys: Vec<GbPoly> = Vec::with_capacity(equations.len());
     for eq in &equations {
-        polys.push(expr_to_gbpoly(*eq, &vars, pool)?);
+        polys.push(expr_to_gbpoly(*eq, &all_vars, pool)?);
     }
 
     let gb = GroebnerBasis::compute(polys, MonomialOrder::Lex);
@@ -595,7 +644,7 @@ pub fn solve_polynomial_system(
         return Ok(SolutionSet::NoSolution);
     }
 
-    match try_backsolve_generators(gens, &vars, pool)? {
+    match try_backsolve_generators(gens, &all_vars, n_solve, pool)? {
         BacksolveOutcome::Finite(solutions) => Ok(SolutionSet::Finite(solutions)),
         BacksolveOutcome::NoSolution => Ok(SolutionSet::NoSolution),
         BacksolveOutcome::Stuck => {
@@ -603,7 +652,7 @@ pub fn solve_polynomial_system(
             if chain.polys.is_empty() {
                 return Ok(SolutionSet::Parametric(gb));
             }
-            match try_backsolve_generators(&chain.polys, &vars, pool)? {
+            match try_backsolve_generators(&chain.polys, &all_vars, n_solve, pool)? {
                 BacksolveOutcome::Finite(solutions) => Ok(SolutionSet::Finite(solutions)),
                 _ => Ok(SolutionSet::Parametric(gb)),
             }
@@ -737,5 +786,76 @@ mod tests {
         } else {
             panic!("expected finite solution set");
         }
+    }
+
+    #[test]
+    fn parametric_quadratic_free_rhs() {
+        // x² − y = 0 in [x] → x = ±√y
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let two = pool.integer(2_i32);
+        let x2 = pool.pow(x, two);
+        let eq = pool.add(vec![x2, pool.mul(vec![pool.integer(-1_i32), y])]);
+        let result = solve_polynomial_system(vec![eq], vec![x], &pool).unwrap();
+        let SolutionSet::Finite(sols) = result else {
+            panic!("expected finite parametric solutions");
+        };
+        assert_eq!(sols.len(), 2);
+        // Bind y = 4 and check numeric roots ±2.
+        let mut env = HashMap::new();
+        env.insert(y, 4.0);
+        let vals: Vec<f64> = sols
+            .iter()
+            .map(|s| eval_interp(s[0], &env, &pool).expect("eval"))
+            .collect();
+        assert!(vals.iter().any(|v| (v - 2.0).abs() < 1e-10));
+        assert!(vals.iter().any(|v| (v + 2.0).abs() < 1e-10));
+    }
+
+    #[test]
+    fn parametric_linear_affine() {
+        // a·x − b = 0 in [x] → x = b/a
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let a = pool.symbol("a", Domain::Real);
+        let b = pool.symbol("b", Domain::Real);
+        let eq = pool.add(vec![
+            pool.mul(vec![a, x]),
+            pool.mul(vec![pool.integer(-1_i32), b]),
+        ]);
+        let result = solve_polynomial_system(vec![eq], vec![x], &pool).unwrap();
+        let SolutionSet::Finite(sols) = result else {
+            panic!("expected finite parametric solution");
+        };
+        assert_eq!(sols.len(), 1);
+        let mut env = HashMap::new();
+        env.insert(a, 2.0);
+        env.insert(b, 6.0);
+        let val = eval_interp(sols[0][0], &env, &pool).expect("eval");
+        assert!((val - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn parametric_system_line_with_parameter() {
+        // x + y − c = 0, x − y = 0 in [x, y] → x = y = c/2
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let c = pool.symbol("c", Domain::Real);
+        let neg_one = pool.integer(-1_i32);
+        let eq1 = pool.add(vec![x, y, pool.mul(vec![neg_one, c])]);
+        let eq2 = pool.add(vec![x, pool.mul(vec![neg_one, y])]);
+        let result = solve_polynomial_system(vec![eq1, eq2], vec![x, y], &pool).unwrap();
+        let SolutionSet::Finite(sols) = result else {
+            panic!("expected finite parametric solutions");
+        };
+        assert_eq!(sols.len(), 1);
+        let mut env = HashMap::new();
+        env.insert(c, 4.0);
+        let xv = eval_interp(sols[0][0], &env, &pool).expect("eval x");
+        let yv = eval_interp(sols[0][1], &env, &pool).expect("eval y");
+        assert!((xv - 2.0).abs() < 1e-10);
+        assert!((yv - 2.0).abs() < 1e-10);
     }
 }

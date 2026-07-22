@@ -23,9 +23,13 @@ solutions = solve(
     [x, y]
 )
 # → [{x: sqrt(2)/2, y: sqrt(2)/2}, {x: -sqrt(2)/2, y: -sqrt(2)/2}]
+
+# Parametric solve: free symbols omitted from `vars` stay as parameters
+solutions = solve([x**2 - y], [x])
+# → [{x: sqrt(y)}, {x: -sqrt(y)}]
 ```
 
-Solutions are symbolic: irrational roots are returned as `Expr` trees (e.g. `sqrt(2)/2`) rather than floats. Quadratic elimination produces exact symbolic answers.
+Solutions are symbolic: irrational roots are returned as `Expr` trees (e.g. `sqrt(2)/2`) rather than floats. Quadratic elimination produces exact symbolic answers. Free symbols that appear in the equations but are not listed in `vars` are treated as parameters, so solutions may depend on those symbols.
 
 ### Solution types
 
