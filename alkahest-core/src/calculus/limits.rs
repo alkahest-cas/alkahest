@@ -222,12 +222,11 @@ fn limit_inner(
         return Ok(r);
     }
 
-    // Indeterminate power f^g (1^∞, 0^0, ∞^0) at ±∞: rewrite to exp(g·log f) so the
-    // exp-aware Gruntz/series machinery can handle it.  Plain `(1+1/x)^x → e` lives here.
-    if is_pos_infinity(point, pool) || is_neg_infinity(point, pool) {
-        if let Some(r) = try_indeterminate_power(expr, var, point, direction, pool, depth)? {
-            return Ok(r);
-        }
+    // Indeterminate power f^g (1^∞, 0^0, ∞^0): rewrite to exp(g·log f).
+    // Runs for finite points as well as ±∞ so textbook forms like
+    // `(1+x)^(1/x) → e` as `x → 0` are not lost to the `1^anything → 1` fold.
+    if let Some(r) = try_indeterminate_power(expr, var, point, direction, pool, depth)? {
+        return Ok(r);
     }
 
     // Gruntz algorithm — best for exp/log expressions at +∞ (runs before the 1/t substitution
@@ -381,12 +380,30 @@ fn try_indeterminate_power(
         return Ok(None);
     }
 
-    // Limits of the base and exponent (independently).  If either sub-limit is
-    // not computable, do not attempt the rewrite.
+    // Limits of the base and exponent (independently).
     let base_lim = match limit_inner(base, var, point, direction, pool, depth + 1) {
         Ok(b) => b,
         Err(_) => return Ok(None),
     };
+
+    // When `base → 1`, the classic `1^∞` rewrite `exp(g·log f)` is licensed even
+    // if `lim g` itself needs a one-sided approach (e.g. `(1+x)^(1/x)` as
+    // `x → 0`): `lim (g·log f) = lim log(1+x)/x = 1` exists bidirectionally.
+    if is_one_like(base_lim, pool) {
+        let log_base = pool.func("log", vec![base]);
+        let inner = simplify(pool.mul(vec![exp, log_base]), pool).value;
+        if let Ok(inner_lim) = limit_inner(inner, var, point, direction, pool, depth + 1) {
+            if is_pos_infinity(inner_lim, pool) {
+                return Ok(Some(pool.pos_infinity()));
+            }
+            if is_neg_infinity(inner_lim, pool) {
+                return Ok(Some(pool.integer(0_i32)));
+            }
+            let result = simplify(pool.func("exp", vec![inner_lim]), pool).value;
+            return Ok(Some(result));
+        }
+    }
+
     let exp_lim = match limit_inner(exp, var, point, direction, pool, depth + 1) {
         Ok(e) => e,
         Err(_) => return Ok(None),
@@ -741,7 +758,16 @@ fn fold_known_reals(expr: ExprId, pool: &ExprPool) -> ExprId {
         ExprData::Pow { base, exp } => {
             let b = fold_known_reals(base, pool);
             let xp = fold_known_reals(exp, pool);
+            // `1^∞` / `1^(singular)` must not collapse to 1 — that silently
+            // turns `(1+x)^(1/x)|_{x=0}` into 1 before the indeterminate-power
+            // rewrite can recover `e`.
             if is_one_like(b, pool) {
+                if substitution_is_singular(xp, pool)
+                    || is_pos_infinity(xp, pool)
+                    || is_neg_infinity(xp, pool)
+                {
+                    return simplify(pool.pow(b, xp), pool).value;
+                }
                 return pool.integer(1_i32);
             }
             simplify(pool.pow(b, xp), pool).value
@@ -1029,6 +1055,18 @@ mod tests {
                 p.display(v)
             );
         }
+    }
+
+    /// `lim_{x→0} (1 + x)^(1/x) = e` — the finite-point twin of the compound-interest form.
+    #[test]
+    fn limit_one_plus_x_to_one_over_x_is_e() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let base = p.add(vec![p.integer(1), x]);
+        let ex = simplify(p.pow(base, p.pow(x, p.integer(-1))), &p).value;
+        let r = limit(ex, x, p.integer(0_i32), LimitDirection::Bidirectional, &p).unwrap();
+        let expected = simplify(p.func("exp", vec![p.integer(1)]), &p).value;
+        assert_eq!(r, expected, "got {}", p.display(r));
     }
 
     /// Non-regression: `lim_{x→∞} (1 + 1/x) = 1` (not a power; sanity that the
