@@ -1,4 +1,4 @@
-import contextlib
+from contextlib import suppress as _suppress
 from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from importlib.metadata import version as _meta_version
 
@@ -239,13 +239,13 @@ from .alkahest import (
 )
 
 # V5-7: JAX primitive integration (optional — requires JAX)
-with contextlib.suppress(ImportError):
+with _suppress(ImportError):
     from ._jax import to_jax  # noqa: F401
 
 # V1-4 / V1-16: Polynomial system solver + Gröbner basis
 # groebner is a default Cargo feature since 2.3.1 — present in all PyPI wheels.
-# contextlib.suppress is kept as a safety net for custom builds with --no-default-features.
-with contextlib.suppress(ImportError):
+# suppress is kept as a safety net for custom builds with --no-default-features.
+with _suppress(ImportError):
     from .alkahest import (
         CertifiedSolution,
         DaeIndexReduction,
@@ -1453,3 +1453,18 @@ __all__ = [
     "version",
     "voltage_source",
 ]
+
+# Drop import-machinery leaks from ``dir(alkahest)`` / autocomplete. Lazy
+# ``__getattr__`` below still resolves ``alkahest.exceptions`` /
+# ``alkahest.alkahest`` attribute access (and ``from alkahest.X import …``).
+for _leak in ("exceptions", "alkahest", "_suppress"):
+    globals().pop(_leak, None)
+del _leak
+
+
+def __getattr__(name: str):
+    if name in ("exceptions", "alkahest"):
+        import importlib
+
+        return importlib.import_module(f".{name}", __name__)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
