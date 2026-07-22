@@ -1438,4 +1438,3 @@ __all__ = [
 for _leak in ("exceptions", "alkahest", "_suppress"):
     globals().pop(_leak, None)
 del _leak
-
