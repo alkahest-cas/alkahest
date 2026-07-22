@@ -389,15 +389,18 @@ impl fmt::Debug for ExprDisplay<'_> {
 }
 
 /// Format a power base or exponent, parenthesizing compound subexpressions.
+///
+/// `Add`/`Mul` already render with outer parentheses, so wrapping again would
+/// produce `((z + -2))^-1`. Only wrap forms that do not already self-group.
 fn fmt_pow_atom(id: ExprId, pool: &ExprPool) -> String {
     let s = pool.display(id).to_string();
     let needs_parens = match pool.get(id) {
         ExprData::Symbol { .. } | ExprData::Integer(_) | ExprData::Float(_) => false,
         ExprData::Func { .. } => false,
+        // Already printed as `(…)` by fmt_data.
+        ExprData::Add(_) | ExprData::Mul(_) => false,
         ExprData::Rational(_)
         | ExprData::Pow { .. }
-        | ExprData::Add(_)
-        | ExprData::Mul(_)
         | ExprData::Piecewise { .. }
         | ExprData::Predicate { .. }
         | ExprData::Forall { .. }
