@@ -6,7 +6,8 @@ publish = false
 
 [dependencies]
 afl = "0.15"
-alkahest-core = { path = "../alkahest-core" }
+# Package renamed to alkahest-cas; keep the dep key so `use alkahest_core::…` still works.
+alkahest-core = { path = "../alkahest-core", package = "alkahest-cas" }
 
 [[bin]]
 name = "fuzz_expr_builder"

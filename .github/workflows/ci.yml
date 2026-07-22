@@ -6,6 +6,7 @@ on:
   pull_request:
   schedule:
     - cron: "0 2 * * *"   # 02:00 UTC daily — triggers the nightly job
+  workflow_dispatch:        # allow re-running nightly shards after CI fixes
 
 env:
   CARGO_TERM_COLOR: always
@@ -132,7 +133,7 @@ jobs:
   tier1-python-slow:
     name: Tier 1b — Python slow tests
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v6
@@ -181,7 +182,7 @@ jobs:
   nightly:
     name: Nightly (${{ matrix.shard }})
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 360
     strategy:
       fail-fast: false
@@ -267,9 +268,22 @@ jobs:
       - name: LeakSanitizer
         if: matrix.shard == 'lsan'
         env:
-          LSAN_OPTIONS: suppressions=${{ github.workspace }}/lsan.supp
-          LLVM_SYMBOLIZER_PATH: /usr/bin/llvm-symbolizer-15
+          # Prefer the real binary from llvm-15-tools; the /usr/bin/llvm-symbolizer-15
+          # alternative is missing on some Ubuntu noble images, leaving stacks
+          # unsymbolized so lsan.supp (mpfr_*/__gmp*) never matches.
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/lsan.supp:symbolize=1
         run: |
+          for candidate in /usr/lib/llvm-15/bin/llvm-symbolizer /usr/bin/llvm-symbolizer-15 /usr/bin/llvm-symbolizer; do
+            if [ -x "$candidate" ]; then
+              export LLVM_SYMBOLIZER_PATH="$candidate"
+              break
+            fi
+          done
+          if [ -z "${LLVM_SYMBOLIZER_PATH:-}" ]; then
+            echo "error: no llvm-symbolizer found; LSAN suppressions will not match" >&2
+            exit 1
+          fi
+          echo "Using LLVM_SYMBOLIZER_PATH=$LLVM_SYMBOLIZER_PATH"
           RUSTFLAGS="-Zsanitizer=leak" \
           cargo +nightly test --workspace --lib --tests \
             --target x86_64-unknown-linux-gnu \
