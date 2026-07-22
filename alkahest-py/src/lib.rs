@@ -7871,7 +7871,8 @@ impl PyCertifiedSolution {
     }
 }
 
-/// Integer Diophantine solver (linear parametric families, sum of two squares, Pell-type).
+/// Result of [`diophantine`](py_diophantine): a parametric linear family,
+/// a finite list of integer points, or a Pell-type description.
 #[cfg(feature = "groebner")]
 #[pyclass(name = "DiophantineSolution")]
 struct PyDiophantineSolution {
@@ -8007,6 +8008,25 @@ fn diophantine_core_to_py(
     }
 }
 
+/// `alkahest.diophantine(equation, vars)` — integer solutions of a binary
+/// Diophantine equation.
+///
+/// Solves `equation = 0` over the integers in exactly two unknowns.
+/// Supported patterns:
+///
+/// * **Linear** — returns a parametric family ``x(t), y(t)``
+///   (``kind == "parametric_linear"``).
+/// * **Sum of two squares** — ``x² + y² = n`` (finite list of points).
+/// * **Pell / generalized Pell** — ``x² − D·y² = 1`` or ``= N``.
+///
+/// Raises ``DiophantineError`` when the equation is not a polynomial in
+/// *vars*, has non-integer coefficients, is an unsupported pattern, or has
+/// no integer solution.
+///
+/// Example::
+///
+///     sol = diophantine(x + 2*y - 5, [x, y])
+///     # sol.kind == "parametric_linear"; sol.parametric = [x(t), y(t)]
 #[cfg(feature = "groebner")]
 #[pyfunction]
 #[pyo3(name = "diophantine", signature = (equation, vars))]
@@ -8087,7 +8107,9 @@ fn py_solve_numerical(
 /// equations : list[Expr]
 ///     Each expression represents `p(vars) = 0`.
 /// vars : list[Expr]
-///     Variables to solve for (symbols).
+///     Variables to solve for (symbols). Every free symbol that appears in
+///     *equations* must be listed here — parametric solve (e.g. ``x² = y``
+///     with ``y`` kept free) is not supported and raises ``SolverError``.
 /// numeric : bool, default False
 ///     Used when ``method="groebner"``: symbolic ``Expr`` values vs ``float``.
 ///     When Lex back-substitution hits a degree > 2 univariate, ``numeric=True``
