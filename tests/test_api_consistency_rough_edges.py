@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
 import alkahest as ak
+import pytest
 
 
 @pytest.fixture
@@ -14,7 +13,7 @@ def pool_x():
 
 
 def test_unipoly_from_coefficients_accepts_python_ints(pool_x):
-    pool, x = pool_x
+    _pool, x = pool_x
     poly = ak.UniPoly.from_coefficients([-1, 0, 1], x)
     assert poly.degree() == 2
     assert poly.coefficients() == [-1, 0, 1]
