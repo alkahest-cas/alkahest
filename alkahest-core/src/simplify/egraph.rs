@@ -641,11 +641,18 @@ mod backend {
     /// identities for `Add`/`Mul` — all via [`ConstFold`], [`PowZero`],
     /// [`PowOne`], [`AddZero`], [`MulOne`], and [`MulZero`].
     ///
+    /// Nested `Add`/`Mul` trees are flattened before the local fold so that
+    /// coefficients introduced by earlier post-passes (e.g. linear
+    /// canonization turning `x+x` into `2·x` under an outer `·½`) meet in
+    /// one n-ary product and fold (`2·½ → 1`). Without flattening,
+    /// `ConstFold` only sees one numeric factor per nested `Mul` and leaves
+    /// `((x * 2) * 1/2)` untouched.
+    ///
     /// Unlike [`super::super::engine::simplify`], this does **not** run the
-    /// full rule engine (no flattening, no `SubSelf`/`DivSelf`, no
-    /// discrimination-net pattern rules, no fixed-point loop over the whole
-    /// tree) — each node is visited once and folded to a local fixpoint, so
-    /// the pass is `O(n)` in the size of the extracted term rather than
+    /// full rule engine (no `SubSelf`/`DivSelf`, no discrimination-net
+    /// pattern rules, no fixed-point loop over the whole tree) — each node
+    /// is visited once and folded to a local fixpoint, so the pass is
+    /// `O(n)` in the size of the extracted term rather than
     /// `O(n * iterations)`. The extracted term is already near-normal-form,
     /// so this bounded local fold is sufficient to pick up the constant
     /// folds above without re-running the whole simplifier.
@@ -654,15 +661,32 @@ mod backend {
             AddZero, ConstFold, MulOne, MulZero, PowOne, PowZero, RewriteRule,
         };
 
-        // Recurse into children first.
+        // Recurse into children first, then flatten nested Add/Mul so
+        // numeric factors from sibling subtrees share one n-ary node.
         let rebuilt = match pool.get(expr) {
             ExprData::Add(args) => {
-                let args: Vec<ExprId> = args.iter().map(|&a| apply_const_folds(a, pool)).collect();
-                pool.add(args)
+                let args: Vec<ExprId> = args
+                    .iter()
+                    .map(|&a| apply_const_folds(a, pool))
+                    .flat_map(|a| flatten_add_args(a, pool))
+                    .collect();
+                match args.len() {
+                    0 => pool.integer(0_i32),
+                    1 => args[0],
+                    _ => pool.add(args),
+                }
             }
             ExprData::Mul(args) => {
-                let args: Vec<ExprId> = args.iter().map(|&a| apply_const_folds(a, pool)).collect();
-                pool.mul(args)
+                let args: Vec<ExprId> = args
+                    .iter()
+                    .map(|&a| apply_const_folds(a, pool))
+                    .flat_map(|a| flatten_mul_args(a, pool))
+                    .collect();
+                match args.len() {
+                    0 => pool.integer(1_i32),
+                    1 => args[0],
+                    _ => pool.mul(args),
+                }
             }
             ExprData::Pow { base, exp } => {
                 let base = apply_const_folds(base, pool);
@@ -689,7 +713,29 @@ mod backend {
                 .or_else(|| PowOne.apply(current, pool))
                 .or_else(|| ConstFold.apply(current, pool));
             match next {
-                Some((after, _)) if after != current => current = after,
+                Some((after, _)) if after != current => {
+                    // ConstFold / MulOne may reintroduce nesting; flatten
+                    // again so a subsequent ConstFold can merge coefficients.
+                    current = match pool.get(after) {
+                        ExprData::Add(_) => {
+                            let flat = flatten_add_args(after, pool);
+                            match flat.len() {
+                                0 => pool.integer(0_i32),
+                                1 => flat[0],
+                                _ => pool.add(flat),
+                            }
+                        }
+                        ExprData::Mul(_) => {
+                            let flat = flatten_mul_args(after, pool);
+                            match flat.len() {
+                                0 => pool.integer(1_i32),
+                                1 => flat[0],
+                                _ => pool.mul(flat),
+                            }
+                        }
+                        _ => after,
+                    };
+                }
                 _ => break,
             }
         }
@@ -1052,6 +1098,38 @@ mod tests {
         }
         #[cfg(not(feature = "egraph"))]
         let _ = expr;
+    }
+
+    /// report7-20: nested `(2·x)·(1/2)` must fold after linear canonization.
+    #[test]
+    fn apply_const_folds_flattens_nested_mul_coefficients() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let two_x = pool.mul(vec![pool.integer(2_i32), x]);
+        let half = pool.rational(1, 2);
+        let nested = pool.mul(vec![two_x, half]);
+        #[cfg(feature = "egraph")]
+        {
+            let folded = backend::apply_const_folds(nested, &pool);
+            assert_eq!(folded, x, "expected (2*x)*(1/2) → x, got {folded:?}");
+        }
+        #[cfg(not(feature = "egraph"))]
+        let _ = nested;
+    }
+
+    /// report7-20 headline: `simplify_egraph((x+x)/2)` → `x`.
+    #[test]
+    fn egraph_folds_double_over_two() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let inv2 = pool.pow(pool.integer(2_i32), pool.integer(-1_i32));
+        let expr = pool.mul(vec![pool.add(vec![x, x]), inv2]);
+        let result = simplify_egraph(expr, &pool);
+        assert_eq!(
+            result.value, x,
+            "expected (x+x)/2 → x, got {:?}",
+            result.value
+        );
     }
 
     // RW-2: config wiring compiles and does not panic

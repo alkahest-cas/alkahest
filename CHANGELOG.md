@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixes
+
+- **E-graph constant folding:** `simplify_egraph((x+x)/2)` now returns `x`
+  instead of leaving `((x * 2) * 1/2)`. The post-extraction const-fold pass
+  flattens nested `Add`/`Mul` so coefficients from linear canonization and
+  reciprocal folds meet in one n-ary product.
+
 ### Features
 
 - **Parametric `solve`:** free symbols omitted from `vars` are treated as
