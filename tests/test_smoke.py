@@ -20,6 +20,7 @@ from alkahest import (
     interval_eval,
     jit_is_available,
     latex,
+    log,
     parse,
     simplify,
     sin,
@@ -350,6 +351,61 @@ def test_lean_withholds_chain_rule_diff_certificate():
     r = diff(sin(x**2), x)
     assert r.certificate is None
     assert r.verification["status"] == "unverified"
+
+
+def test_lean_diff_x_squared_certificate():
+    """d/dx x² must close coeff order (`2*x` vs `x*2`) without sorry."""
+    p = pool()
+    x = p.symbol("x")
+    r = diff(x**2, x)
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "deriv (fun" in cert
+
+
+def test_lean_sum_and_product_rule_certificates():
+    """Sum/product of unary trig/exp diffs should emit, not withhold."""
+    p = pool()
+    x = p.symbol("x")
+    sum_r = diff(sin(x) + cos(x), x)
+    assert sum_r.certificate
+    assert "sorry" not in sum_r.certificate
+    assert any(s["rule"] == "sum_rule" for s in sum_r.steps)
+
+    prod_r = diff(sin(x) * exp(x), x)
+    assert prod_r.certificate
+    assert "sorry" not in prod_r.certificate
+    assert any(s["rule"] == "product_rule" for s in prod_r.steps)
+
+
+def test_lean_log_exp_parens_and_exp_log_withheld():
+    """Nested log/exp must parenthesize; exp∘log withheld (needs 0<x)."""
+    from alkahest import simplify_log_exp
+
+    p = pool()
+    x = p.symbol("x")
+    log_exp = simplify_log_exp(log(exp(x)))
+    assert log_exp.certificate
+    assert "Real.log (Real.exp" in log_exp.certificate
+    assert "sorry" not in log_exp.certificate
+
+    exp_log = simplify_log_exp(exp(log(x)))
+    assert exp_log.certificate is None
+    assert to_lean(exp_log) == ""
+
+
+def test_lean_tan_expand_certificate():
+    from alkahest import simplify_trig, tan
+
+    p = pool()
+    x = p.symbol("x")
+    r = simplify_trig(tan(x))
+    assert r.certificate
+    assert "div_eq_mul_inv" in r.certificate
+    assert "Real.tan" in r.certificate
+    assert "sorry" not in r.certificate
 
 
 # ---------------------------------------------------------------------------

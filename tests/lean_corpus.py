@@ -57,9 +57,45 @@ STRICT_CASES = [
         lambda pool: alkahest.diff(pool.symbol("x") ** 3, pool.symbol("x")),
     ),
     (
+        "diff_x_squared",
+        "diff_univariate_poly",
+        lambda pool: alkahest.diff(pool.symbol("x") ** 2, pool.symbol("x")),
+    ),
+    (
         "diff_sin",
         "diff_sin",
         lambda pool: alkahest.diff(alkahest.sin(pool.symbol("x")), pool.symbol("x")),
+    ),
+    (
+        "diff_sum_sin_cos",
+        "sum_rule",
+        lambda pool: alkahest.diff(
+            alkahest.sin(pool.symbol("x")) + alkahest.cos(pool.symbol("x")),
+            pool.symbol("x"),
+        ),
+    ),
+    (
+        "diff_product_sin_exp",
+        "product_rule",
+        lambda pool: alkahest.diff(
+            alkahest.sin(pool.symbol("x")) * alkahest.exp(pool.symbol("x")),
+            pool.symbol("x"),
+        ),
+    ),
+    (
+        "log_of_exp",
+        "log_of_exp",
+        lambda pool: alkahest.simplify_log_exp(alkahest.log(alkahest.exp(pool.symbol("x")))),
+    ),
+    (
+        "tan_expand",
+        "tan_expand",
+        lambda pool: alkahest.simplify_trig(alkahest.tan(pool.symbol("x"))),
+    ),
+    (
+        "log_of_pow",
+        "log_of_pow",
+        lambda pool: alkahest.simplify_log_exp(alkahest.log(pool.symbol("x") ** 3)),
     ),
 ]
 FORBIDDEN_TOKENS = ("sorry", "admit", "axiom")
