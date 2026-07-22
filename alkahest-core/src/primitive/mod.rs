@@ -2306,7 +2306,7 @@ pub mod builtins {
         fn simplify(&self, args: &[ExprId], pool: &ExprPool) -> Option<ExprId> {
             // Γ(n) = (n-1)! for positive integers n.
             let n = positive_integer_literal(args[0], pool)?;
-            if n < 1 || n > 21 {
+            if !(1..=21).contains(&n) {
                 return None;
             }
             let mut acc: i64 = 1;

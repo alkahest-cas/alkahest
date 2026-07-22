@@ -180,6 +180,10 @@ print(ak.simplify_trig(ak.sin(x)**2 + ak.cos(x)**2).value)  # 1
 # JIT-compile to native code (interpreter fallback when caps["jit"] is False)
 f = ak.compile_expr(x**2 + 1, [x])
 print(f([3.0]))       # 10.0
+
+# String entry point for agents / notebooks (bindings optional)
+e = ak.parse("sin(x)^2 + cos(x)^2", pool, {"x": x})
+print(ak.simplify_trig(e).value)  # 1
 ```
 
 Partial fractions, definite integration, and Lean certificates:
@@ -219,11 +223,13 @@ Representation types are explicit — no silent performance cliffs. Conversion b
 
 ## Result objects
 
-Every top-level operation returns a `DerivedResult` with:
+Most transforming operations (`diff`, `simplify`, `integrate`, `sum_*`, …) return a `DerivedResult` with:
 
 - `.value` — the result expression
 - `.steps` — derivation log (list of rewrite rules applied)
 - `.certificate` — Lean 4 proof term, when available
+
+Exceptions: `limit` returns a bare `Expr`, and `series` returns a `Series` (with its own `.polynomial` / `.order` fields). Use `.value` only on `DerivedResult`.
 
 ---
 

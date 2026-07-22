@@ -1,10 +1,10 @@
 # Derivation logs
 
-Every transformation in Alkahest returns a `DerivedResult` that records the exact sequence of rewrite steps applied. This log is the foundation for both human inspection and Lean proof export.
+Most transformations in Alkahest return a `DerivedResult` that records the exact sequence of rewrite steps applied. This log is the foundation for both human inspection and Lean proof export.
 
 ## DerivedResult
 
-`DerivedResult` is the return type of `diff`, `simplify`, `integrate`, and all top-level operations:
+`DerivedResult` is the return type of `diff`, `simplify`, `integrate`, `sum_*`, and most other transforming operations. Notable exceptions: `limit` returns a bare `Expr`, and `series` returns a `Series`.
 
 ```python
 from alkahest import diff, sin
