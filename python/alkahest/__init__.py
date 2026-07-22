@@ -1035,18 +1035,29 @@ _native_cancel = cancel
 _native_together = together
 
 
-def cancel(expr, vars):
+def cancel(expr, vars=None):
     """Combine *expr* over a common denominator and cancel common polynomial factors.
 
     Non-polynomial sub-expressions (e.g. ``sin(x)`` or symbols not in *vars*) are
     treated as opaque generators. Accepts :class:`DerivedResult` as *expr*.
+
+    If *vars* is omitted, free symbols of *expr* are inferred.
     """
-    return _native_cancel(_coerce_expr(expr), [_coerce_expr(v) for v in vars])
+    coerced = _coerce_expr(expr)
+    if vars is None:
+        return _native_cancel(coerced)
+    return _native_cancel(coerced, [_coerce_expr(v) for v in vars])
 
 
-def together(expr, vars):
-    """Combine *expr* over a single common denominator (alias of :func:`cancel`)."""
-    return _native_together(_coerce_expr(expr), [_coerce_expr(v) for v in vars])
+def together(expr, vars=None):
+    """Combine *expr* over a single common denominator (alias of :func:`cancel`).
+
+    If *vars* is omitted, free symbols of *expr* are inferred.
+    """
+    coerced = _coerce_expr(expr)
+    if vars is None:
+        return _native_together(coerced)
+    return _native_together(coerced, [_coerce_expr(v) for v in vars])
 
 
 _native_eval_expr = eval_expr
