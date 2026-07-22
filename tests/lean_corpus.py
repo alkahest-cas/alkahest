@@ -85,9 +85,7 @@ STRICT_CASES = [
     (
         "log_of_exp",
         "log_of_exp",
-        lambda pool: alkahest.simplify_log_exp(
-            alkahest.log(alkahest.exp(pool.symbol("x")))
-        ),
+        lambda pool: alkahest.simplify_log_exp(alkahest.log(alkahest.exp(pool.symbol("x")))),
     ),
     (
         "tan_expand",
@@ -97,9 +95,7 @@ STRICT_CASES = [
     (
         "log_of_pow",
         "log_of_pow",
-        lambda pool: alkahest.simplify_log_exp(
-            alkahest.log(pool.symbol("x") ** 3)
-        ),
+        lambda pool: alkahest.simplify_log_exp(alkahest.log(pool.symbol("x") ** 3)),
     ),
 ]
 FORBIDDEN_TOKENS = ("sorry", "admit", "axiom")
