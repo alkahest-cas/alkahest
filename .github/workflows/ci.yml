@@ -6,6 +6,7 @@ on:
   pull_request:
   schedule:
     - cron: "0 2 * * *"   # 02:00 UTC daily — triggers the nightly job
+  workflow_dispatch:        # allow re-running nightly shards after CI fixes
 
 env:
   CARGO_TERM_COLOR: always
@@ -132,7 +133,7 @@ jobs:
   tier1-python-slow:
     name: Tier 1b — Python slow tests
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v6
@@ -181,7 +182,7 @@ jobs:
   nightly:
     name: Nightly (${{ matrix.shard }})
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 360
     strategy:
       fail-fast: false
