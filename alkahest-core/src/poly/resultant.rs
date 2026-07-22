@@ -85,7 +85,7 @@ impl crate::errors::AlkahestError for ResultantError {
 /// Walk the expression DAG and collect every distinct [`ExprId`] that
 /// corresponds to a `Symbol` node.  Result is sorted by `ExprId` for a
 /// deterministic variable ordering.
-pub(crate) fn collect_free_vars(expr: ExprId, pool: &ExprPool) -> Vec<ExprId> {
+pub fn collect_free_vars(expr: ExprId, pool: &ExprPool) -> Vec<ExprId> {
     let mut set = BTreeSet::new();
     collect_vars_rec(expr, pool, &mut set);
     set.into_iter().collect()

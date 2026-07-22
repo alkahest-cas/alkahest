@@ -6,6 +6,10 @@
 
 - Hide import-machinery leaks (`contextlib`, `exceptions`, `alkahest`) from
   ``dir(alkahest)`` / autocomplete; submodules remain explicitly importable.
+- `UniPoly.from_coefficients` accepts Python ``int`` coefficients (not only ``Expr``).
+- `cancel` / `together` / `MultiPoly.from_symbolic` / `radical` infer free symbols when
+  *vars* is omitted.
+- Structured error messages now include the stable code prefix, e.g. ``[E-INT-004] …``.
 
 ### Docs
 

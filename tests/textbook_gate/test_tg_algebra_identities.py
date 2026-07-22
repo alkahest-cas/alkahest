@@ -207,15 +207,14 @@ def test_together_reciprocal_difference(x, y):
     assert_two_var_matches_reference(r, x, y, lambda a, b: 1 / a - 1 / b)
 
 
-def test_cancel_requires_vars_argument(x):
-    """cancel/together require an explicit vars list — omitting it raises
-    TypeError (documented API quirk from report7-20.md's 'API consistency'
-    section, kept here as a green canary so the signature isn't silently
-    loosened or tightened further without this suite noticing).
+def test_cancel_infers_vars_when_omitted(x):
+    """cancel/together infer free symbols when *vars* is omitted (API consistency
+    fix from report7-20.md rough edges). Explicit vars remain supported.
     """
     e = (x**2 - 4) / (x - 2)
-    with pytest.raises(TypeError):
-        ak.cancel(e)
+    out = ak.cancel(e)
+    assert ak.simplify(out).value == x + 2 or ak.simplify(out).value == 2 + x
+    assert ak.cancel(e, [x]) is not None
 
 
 # --- exponent rules ------------------------------------------------------------
