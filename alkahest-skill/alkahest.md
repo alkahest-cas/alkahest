@@ -359,8 +359,9 @@ from alkahest import solve, solve_numerical, GroebnerBasis, GbPoly
 # solve(equations, vars, *, numeric=False, method="groebner")
 # - method="groebner" (default): Lex/triangular path. Each finite solution is a dict
 #   mapping variable Expr → Expr (symbolic) or float if numeric=True.
+# - Free symbols omitted from vars are parameters (e.g. solve([x**2 - y], [x]) → ±√y).
 # - method="homotopy": numerical continuation in ℂⁿ; dict values are float.
-# - If the ideal is parametric / not zero-dimensional finite, Groebner mode may
+# - If the ideal is underdetermined / not zero-dimensional finite, Groebner mode may
 #   return a GroebnerBasis instead of a list of dicts.
 solutions = solve(
     [x**2 + y**2 + pool.integer(-1), y + pool.integer(-1)*x],
