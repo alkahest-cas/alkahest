@@ -203,6 +203,16 @@ fn pool_mismatch_err() -> PyErr {
     )
 }
 
+/// True when *id* is a literal integer/rational/float zero.
+fn expr_is_literal_zero(pool: &ExprPool, id: ExprId) -> bool {
+    match pool.get(id) {
+        ExprData::Integer(n) => n.0.is_zero(),
+        ExprData::Rational(r) => r.0.is_zero(),
+        ExprData::Float(f) => f.inner == 0.0,
+        _ => false,
+    }
+}
+
 /// Coerce a substitution value (``Expr``, ``DerivedResult``, ``int``, or ``float``).
 fn coerce_substituent(
     pool_py: &Py<PyExprPool>,
@@ -234,12 +244,7 @@ fn coerce_substituent(
 
 fn expr_is_zero(py: Python<'_>, expr: &PyExpr) -> bool {
     let pool = expr.pool.borrow(py);
-    match pool.inner.get(expr.id) {
-        ExprData::Integer(n) => n.0.is_zero(),
-        ExprData::Rational(r) => r.0.is_zero(),
-        ExprData::Float(f) => f.inner == 0.0,
-        _ => false,
-    }
+    expr_is_literal_zero(&pool.inner, expr.id)
 }
 
 fn expr_ids_equal(a: &PyExpr, b: &PyExpr) -> bool {
@@ -945,6 +950,11 @@ impl PyExpr {
         match self.coerce_scalar(other, py)? {
             Some(rhs) => {
                 let pool = self.pool.borrow(py);
+                if expr_is_literal_zero(&pool.inner, rhs) {
+                    return Err(pyo3::exceptions::PyZeroDivisionError::new_err(
+                        "division by zero",
+                    ));
+                }
                 let neg_one = pool.inner.integer(-1i32);
                 let inv = pool.inner.pow(rhs, neg_one);
                 let id = pool.inner.mul(vec![self.id, inv]);
@@ -964,6 +974,11 @@ impl PyExpr {
         match self.coerce_scalar(other, py)? {
             Some(lhs) => {
                 let pool = self.pool.borrow(py);
+                if expr_is_literal_zero(&pool.inner, self.id) {
+                    return Err(pyo3::exceptions::PyZeroDivisionError::new_err(
+                        "division by zero",
+                    ));
+                }
                 let neg_one = pool.inner.integer(-1i32);
                 let inv_self = pool.inner.pow(self.id, neg_one);
                 let id = pool.inner.mul(vec![lhs, inv_self]);

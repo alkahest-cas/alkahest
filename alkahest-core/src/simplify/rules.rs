@@ -1277,6 +1277,34 @@ impl RewriteRule for CollectExp {
 }
 
 // ---------------------------------------------------------------------------
+// PrimitiveFold: call Primitive::simplify for registered Func nodes
+// (e.g. gamma(1) → 1, digamma(n) → H_{n-1} − γ).
+// ---------------------------------------------------------------------------
+
+pub struct PrimitiveFold;
+
+impl RewriteRule for PrimitiveFold {
+    fn name(&self) -> &'static str {
+        "primitive_simplify"
+    }
+
+    fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
+        let (name, args) = match pool.get(expr) {
+            ExprData::Func { name, args } => (name, args),
+            _ => return None,
+        };
+        use std::sync::OnceLock;
+        static REG: OnceLock<crate::primitive::PrimitiveRegistry> = OnceLock::new();
+        let reg = REG.get_or_init(crate::primitive::PrimitiveRegistry::default_registry);
+        let after = reg.get(&name)?.simplify(&args, pool)?;
+        if after == expr {
+            return None;
+        }
+        Some((after, one_step(self.name(), expr, after)))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests for rules
 // ---------------------------------------------------------------------------
 

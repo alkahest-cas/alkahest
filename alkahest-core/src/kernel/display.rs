@@ -381,7 +381,7 @@ fn latex_pow(base: ExprId, exp: ExprId, pool: &ExprPool) -> String {
             return latex_frac("1", &base_tex);
         }
     }
-    let base_tex = latex_wrap(base, pool, PREC_POW);
+    let base_tex = latex_wrap(base, pool, PREC_POW + 1);
     let (exp_tex, _) = latex_r(exp, pool);
     let exp_braced = if exp_tex.len() == 1 {
         exp_tex
@@ -742,7 +742,7 @@ fn unicode_pow(base: ExprId, exp: ExprId, pool: &ExprPool) -> String {
             };
         }
     }
-    let base_tex = unicode_wrap(base, pool, PREC_POW);
+    let base_tex = unicode_wrap(base, pool, PREC_POW + 1);
     if let ExprData::Integer(n) = pool.get(exp) {
         if let Some(v) = n.0.to_i64() {
             if v == 1 {
