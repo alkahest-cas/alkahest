@@ -43,9 +43,11 @@ fn rule_to_tactic(rule_name: &str) -> &'static str {
         "sin_neg" => "by simp [Real.sin_neg]",
         "cos_neg" => "by simp [Real.cos_neg]",
         "log_of_exp" => "by simp [Real.log_exp]",
-        "exp_of_log" => "by simp [Real.exp_log (by positivity)]",
-        "log_of_product" => "by rw [Real.log_mul (by positivity) (by positivity)]",
-        "log_of_pow" => "by rw [Real.log_pow]",
+        // Needs a positivity hypothesis on the free variable; withhold via
+        // [`step_is_certifiable`] rather than emitting a failing `positivity`.
+        "exp_of_log" => "by sorry",
+        "log_of_product" => "by sorry",
+        "log_of_pow" => "by simp [Real.log_pow]",
         "sin_sq_plus_cos_sq" => "by rw [Real.sin_sq_add_cos_sq]",
         "power_rule" | "constant_rule" | "sum_rule" | "constant_multiple_rule" => "by ring",
         // Integration rules must not be emitted as bare `integrand = F` equalities
@@ -54,7 +56,8 @@ fn rule_to_tactic(rule_name: &str) -> &'static str {
         "collect_add_terms" | "collect_mul_factors" => "by ring",
         "flatten_mul" | "flatten_add" | "canonical_order" => "by ring",
         "expand_mul" => "by ring",
-        "tan_expand" => "by rw [Real.tan_eq_sin_div_cos]",
+        // `tan_eq_sin_div_cos` yields `/`; Alkahest stores the reciprocal product.
+        "tan_expand" => "by rw [Real.tan_eq_sin_div_cos, div_eq_mul_inv]",
         _ => "by ring_nf; simp",
     }
 }
@@ -101,15 +104,35 @@ fn is_unary_of_var(before: ExprId, wrt: ExprId, pool: &ExprPool) -> bool {
     )
 }
 
+/// `before` is structurally `wrt ^ e` for some exponent.
+fn is_pow_of_var(before: ExprId, wrt: ExprId, pool: &ExprPool) -> bool {
+    pool.with(
+        before,
+        |d| matches!(d, ExprData::Pow { base, .. } if *base == wrt),
+    )
+}
+
 fn diff_rule_to_tactic(rule_name: &str) -> Option<&'static str> {
     match rule_name {
         "diff_identity" => Some("by simp [deriv_id]"),
         "diff_const" => Some("by simp [deriv_const]"),
-        "diff_univariate_poly" => Some("by simp [deriv_pow, deriv_add, deriv_mul, deriv_const]"),
-        "sum_rule" => Some("by simp [deriv_add]; ring"),
-        // product_rule currently leaves unsolved goals on realistic logs — withhold.
-        "product_rule" => None,
-        "power_rule" | "power_rule_n1" => Some("by simp [deriv_pow, deriv_mul]; ring"),
+        // `; try ring` closes coefficient-order goals like `2 * x = x * 2`.
+        "diff_univariate_poly" => {
+            Some("by simp [deriv_pow, deriv_add, deriv_mul, deriv_const]; try ring")
+        }
+        // `deriv_add`/`deriv_mul` need DifferentiableAt side goals; include the
+        // common Real lemmas so unary trig/exp sums and products close.
+        "sum_rule" => Some(
+            "by simp [deriv_add, Real.deriv_sin, Real.deriv_cos, Real.deriv_exp, \
+             Real.differentiableAt_sin, Real.differentiableAt_cos, Real.differentiableAt_exp, \
+             deriv_pow, deriv_mul, deriv_const, one_mul, mul_one, mul_neg, neg_mul]; try ring",
+        ),
+        "product_rule" => Some(
+            "by simp [deriv_mul, Real.deriv_sin, Real.deriv_cos, Real.deriv_exp, \
+             Real.differentiableAt_sin, Real.differentiableAt_cos, Real.differentiableAt_exp, \
+             deriv_const, differentiableAt_const, one_mul, mul_one, mul_neg, neg_mul]; try ring",
+        ),
+        "power_rule" | "power_rule_n1" => Some("by simp [deriv_pow, deriv_mul]; try ring"),
         "power_rule_n0" => Some("by simp [deriv_const]"),
         // Pointwise Mathlib lemmas for `deriv (fun x => f x) x = …` when the
         // argument is exactly the free variable. Chain-rule cases are withheld.
@@ -135,6 +158,12 @@ fn step_is_certifiable(step: &RewriteStep, wrt: Option<ExprId>, pool: &ExprPool)
                 "diff_sin" | "diff_cos" | "diff_exp" | "diff_log" | "diff_sqrt" => {
                     // Chain rule / composite arguments are not yet encoded.
                     return is_unary_of_var(step.before, var, pool)
+                        && diff_rule_to_tactic(step.rule_name).is_some();
+                }
+                // Generalized power rule `d/dx[f^n]` embeds a chain rule when
+                // `f ≠ x`; only `d/dx[x^n]` is Lean-encoded today.
+                "power_rule" | "power_rule_n1" | "power_rule_n0" => {
+                    return is_pow_of_var(step.before, var, pool)
                         && diff_rule_to_tactic(step.rule_name).is_some();
                 }
                 name => return diff_rule_to_tactic(name).is_some(),
@@ -538,12 +567,16 @@ fn expr_to_lean(expr: ExprId, pool: &ExprPool) -> String {
         }
         ExprData::Func { name, args } => {
             let arg_strs: Vec<String> = args.iter().map(|&a| expr_to_lean(a, pool)).collect();
+            // Always parenthesize the argument: `Real.log Real.exp x` parses as
+            // `(Real.log Real.exp) x`, and `Real.log x ^ 3` parses as
+            // `(Real.log x) ^ 3` — both are type/math errors.
             match name.as_str() {
-                "sin" => format!("Real.sin {}", arg_strs[0]),
-                "cos" => format!("Real.cos {}", arg_strs[0]),
-                "exp" => format!("Real.exp {}", arg_strs[0]),
-                "log" => format!("Real.log {}", arg_strs[0]),
-                "sqrt" => format!("Real.sqrt {}", arg_strs[0]),
+                "sin" => format!("Real.sin ({})", arg_strs[0]),
+                "cos" => format!("Real.cos ({})", arg_strs[0]),
+                "tan" => format!("Real.tan ({})", arg_strs[0]),
+                "exp" => format!("Real.exp ({})", arg_strs[0]),
+                "log" => format!("Real.log ({})", arg_strs[0]),
+                "sqrt" => format!("Real.sqrt ({})", arg_strs[0]),
                 other => format!("{other} ({})", arg_strs.join(", ")),
             }
         }
@@ -689,6 +722,160 @@ mod tests {
                 "mul_one cleanup must be a plain equality, got: {mul_one_block}"
             );
         }
+    }
+
+    #[test]
+    fn emit_lean_parens_nested_log_exp() {
+        use crate::simplify::{rulesets::log_exp_rules, simplify_with, SimplifyConfig};
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.func("log", vec![pool.func("exp", vec![x])]);
+        let derived = simplify_with(expr, &pool, &log_exp_rules(), SimplifyConfig::default());
+        let lean = emit_lean_expr(&derived, &pool);
+        assert!(!lean.is_empty(), "log(exp(x)) should be Lean-certifiable");
+        assert!(
+            lean.contains("Real.log (Real.exp"),
+            "nested funcs must be parenthesized, got: {lean}"
+        );
+        assert!(
+            !lean.contains("Real.log Real.exp "),
+            "unparenthesized application is a type error: {lean}"
+        );
+    }
+
+    #[test]
+    fn withhold_exp_of_log_without_positivity_hyp() {
+        use crate::simplify::{rulesets::log_exp_rules, simplify_with, SimplifyConfig};
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.func("exp", vec![pool.func("log", vec![x])]);
+        let derived = simplify_with(expr, &pool, &log_exp_rules(), SimplifyConfig::default());
+        let lean = emit_lean_expr(&derived, &pool);
+        assert!(
+            lean.is_empty(),
+            "exp(log(x)) needs 0 < x; must not emit failing positivity: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_lean_diff_x_squared_closes_with_ring() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.pow(x, pool.integer(2_i32));
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(!lean.is_empty(), "d/dx x² should be Lean-certifiable");
+        assert!(
+            lean.contains("try ring") || lean.contains("; ring"),
+            "x² coeff order needs ring: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_lean_sum_rule_sin_cos() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.add(vec![pool.func("sin", vec![x]), pool.func("cos", vec![x])]);
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "d/dx (sin+cos) should be Lean-certifiable"
+        );
+        assert!(
+            lean.contains("differentiableAt_sin") || lean.contains("deriv_add"),
+            "sum_rule needs DifferentiableAt lemmas: {lean}"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "sum certificate must not use sorry: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_lean_product_rule_sin_exp() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![pool.func("sin", vec![x]), pool.func("exp", vec![x])]);
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "d/dx (sin·exp) should be Lean-certifiable after product_rule fix"
+        );
+        assert!(
+            lean.contains("deriv_mul"),
+            "expected product_rule deriv_mul tactic: {lean}"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "product certificate must not use sorry: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_lean_tan_expand_uses_div_eq_mul_inv() {
+        use crate::simplify::{rulesets::trig_rules, simplify_with, SimplifyConfig};
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.func("tan", vec![x]);
+        let derived = simplify_with(expr, &pool, &trig_rules(), SimplifyConfig::default());
+        let lean = emit_lean_expr(&derived, &pool);
+        assert!(!lean.is_empty(), "tan(x) expand should be Lean-certifiable");
+        assert!(
+            lean.contains("div_eq_mul_inv"),
+            "tan→sin/cos needs div_eq_mul_inv for reciprocal form: {lean}"
+        );
+        assert!(
+            lean.contains("Real.tan"),
+            "tan must emit Real.tan, got: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_lean_log_pow_parenthesized() {
+        use crate::simplify::{rulesets::log_exp_rules, simplify_with, SimplifyConfig};
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.func("log", vec![pool.pow(x, pool.integer(3_i32))]);
+        let derived = simplify_with(expr, &pool, &log_exp_rules(), SimplifyConfig::default());
+        let lean = emit_lean_expr(&derived, &pool);
+        assert!(!lean.is_empty(), "log(x^3) should be Lean-certifiable");
+        assert!(
+            lean.contains("Real.log (") && lean.contains("^"),
+            "log of a power must keep the power inside the log arg: {lean}"
+        );
+        // Guard against `(Real.log x) ^ 3` parse.
+        assert!(
+            !lean.contains("Real.log (x : ℝ)) ^") && !lean.contains("Real.log x ^"),
+            "power must not bind tighter than log: {lean}"
+        );
+    }
+
+    #[test]
+    fn withhold_generalized_power_rule_on_sin_squared() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let sin_x = pool.func("sin", vec![x]);
+        let expr = pool.pow(sin_x, pool.integer(2_i32));
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            lean.is_empty(),
+            "d/dx sin(x)² embeds chain rule via power_rule; must withhold: {lean}"
+        );
     }
 
     #[test]
