@@ -715,6 +715,10 @@ impl RewriteRule for LogOfProduct {
 }
 
 /// `log(a^n) → n * log(a)`.
+///
+/// **Branch-cut caveat**: only unconditionally valid for positive real `a` (and
+/// real `n`).  Recorded without side conditions for parity with the historical
+/// `LogOfPow` helper; prefer [`log_exp_rules_safe`] when complex-safe.
 pub struct LogOfPow;
 
 impl RewriteRule for LogOfPow {
@@ -734,14 +738,139 @@ impl RewriteRule for LogOfPow {
     }
 }
 
+/// `log(x) + log(y) + ⋯ → log(x·y·⋯)`.
+///
+/// **Branch-cut caveat**: valid when every argument is positive real.  Each
+/// factor is recorded as [`SideCondition::Positive`].  Inverse of
+/// [`LogOfProduct`] (which is *not* registered in [`log_exp_rules`], so the
+/// two cannot oscillate).
+pub struct SumOfLogs;
+
+impl RewriteRule for SumOfLogs {
+    fn name(&self) -> &'static str {
+        "sum_of_logs"
+    }
+
+    fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
+        let terms = match pool.get(expr) {
+            ExprData::Add(v) if v.len() >= 2 => v,
+            _ => return None,
+        };
+        let mut args = Vec::with_capacity(terms.len());
+        for t in terms {
+            let a = func_arg("log", t, pool)?;
+            args.push(a);
+        }
+        let after = pool.func("log", vec![pool.mul(args.clone())]);
+        let conds: Vec<SideCondition> = args.iter().map(|&a| SideCondition::Positive(a)).collect();
+        let mut log = DerivationLog::new();
+        log.push(RewriteStep::with_conditions(
+            "sum_of_logs",
+            expr,
+            after,
+            conds,
+        ));
+        Some((after, log))
+    }
+}
+
+/// `log(a · b⁻¹ · ⋯) → log(a) − log(b) − ⋯`.
+///
+/// Fires only when the argument is a product containing at least one negative
+/// integer power (canonical quotient form).  Plain `log(x·y)` is intentionally
+/// left alone so it does not fight [`SumOfLogs`].
+pub struct LogOfQuotient;
+
+impl RewriteRule for LogOfQuotient {
+    fn name(&self) -> &'static str {
+        "log_of_quotient"
+    }
+
+    fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
+        let arg = func_arg("log", expr, pool)?;
+        let factors = match pool.get(arg) {
+            ExprData::Mul(v) if v.len() >= 2 => v,
+            _ => return None,
+        };
+        let has_reciprocal = factors.iter().any(|&f| match pool.get(f) {
+            ExprData::Pow { exp, .. } => match pool.get(exp) {
+                ExprData::Integer(n) => n.0 < 0,
+                _ => false,
+            },
+            _ => false,
+        });
+        if !has_reciprocal {
+            return None;
+        }
+        let mut terms: Vec<ExprId> = Vec::with_capacity(factors.len());
+        let mut conds: Vec<SideCondition> = Vec::new();
+        for f in factors {
+            match pool.get(f) {
+                ExprData::Pow { base, exp } => {
+                    conds.push(SideCondition::Positive(base));
+                    let log_base = pool.func("log", vec![base]);
+                    terms.push(pool.mul(vec![exp, log_base]));
+                }
+                _ => {
+                    conds.push(SideCondition::Positive(f));
+                    terms.push(pool.func("log", vec![f]));
+                }
+            }
+        }
+        let after = pool.add(terms);
+        let mut log = DerivationLog::new();
+        log.push(RewriteStep::with_conditions(
+            "log_of_quotient",
+            expr,
+            after,
+            conds,
+        ));
+        Some((after, log))
+    }
+}
+
+/// `exp(x) · exp(y) · ⋯ → exp(x + y + ⋯)`.
+///
+/// Unconditionally valid over ℂ (unlike the log product/sum rules).
+pub struct ProductOfExps;
+
+impl RewriteRule for ProductOfExps {
+    fn name(&self) -> &'static str {
+        "product_of_exps"
+    }
+
+    fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
+        let factors = match pool.get(expr) {
+            ExprData::Mul(v) if v.len() >= 2 => v,
+            _ => return None,
+        };
+        let mut args = Vec::with_capacity(factors.len());
+        for f in factors {
+            let a = func_arg("exp", f, pool)?;
+            args.push(a);
+        }
+        let after = pool.func("exp", vec![pool.add(args)]);
+        Some((after, one_step(self.name(), expr, after)))
+    }
+}
+
 /// Return the default log/exp identity rules.
 ///
-/// Includes the inverse cancellations `log(exp(x)) → x` and `exp(log(x)) → x`.
-/// Branch-cut-sensitive expansions (`log(a*b)`, `log(a^n)`) are intentionally
-/// omitted; use an [`crate::simplify::AssumptionContext`] for condition-gated
-/// rewrites, or [`log_exp_rules_safe`] for the empty complex-safe set.
+/// Includes inverse cancellations, the combining rules `log(x)+log(y)→log(xy)`
+/// and `exp(x)·exp(y)→exp(x+y)`, the power rule `log(a^n)→n·log(a)`, and the
+/// quotient expansion `log(a/b)→log(a)−log(b)`.  The expand-style
+/// [`LogOfProduct`] (`log(ab)→log a+log b`) is intentionally omitted so it
+/// cannot oscillate against [`SumOfLogs`].  Use [`log_exp_rules_safe`] for the
+/// empty complex-safe set.
 pub fn log_exp_rules() -> Vec<Box<dyn RewriteRule>> {
-    vec![Box::new(LogOfExp), Box::new(ExpOfLog)]
+    vec![
+        Box::new(LogOfExp),
+        Box::new(ExpOfLog),
+        Box::new(SumOfLogs),
+        Box::new(LogOfPow),
+        Box::new(LogOfQuotient),
+        Box::new(ProductOfExps),
+    ]
 }
 
 /// Log/exp rules that are safe for complex numbers (no branch-cut rewrites).
@@ -1956,6 +2085,8 @@ mod tests {
 
     #[test]
     fn log_of_product_stays_conservative_without_context() {
+        // Expand-style LogOfProduct is not registered — log(x*y) stays put
+        // (SumOfLogs runs the opposite direction).
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let y = pool.symbol("y", Domain::Real);
@@ -1993,14 +2124,55 @@ mod tests {
     }
 
     #[test]
-    fn log_of_pow_stays_conservative_without_context() {
+    fn log_of_pow_folds() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let n = pool.integer(3_i32);
         let expr = pool.func("log", vec![pool.pow(x, n)]);
         let rules = log_exp_rules();
         let r = simplify_with(expr, &pool, &rules, SimplifyConfig::default());
-        assert_eq!(r.value, expr);
+        let expected = pool.mul(vec![n, pool.func("log", vec![x])]);
+        assert_eq!(r.value, expected, "got {}", pool.display(r.value));
+    }
+
+    #[test]
+    fn sum_of_logs_folds() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let expr = pool.add(vec![pool.func("log", vec![x]), pool.func("log", vec![y])]);
+        let rules = log_exp_rules();
+        let r = simplify_with(expr, &pool, &rules, SimplifyConfig::default());
+        let expected = pool.func("log", vec![pool.mul(vec![x, y])]);
+        assert_eq!(r.value, expected, "got {}", pool.display(r.value));
+    }
+
+    #[test]
+    fn log_of_quotient_folds() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let quot = pool.mul(vec![x, pool.pow(y, pool.integer(-1_i32))]);
+        let expr = pool.func("log", vec![quot]);
+        let rules = log_exp_rules();
+        let r = simplify_with(expr, &pool, &rules, SimplifyConfig::default());
+        let expected = pool.add(vec![
+            pool.func("log", vec![x]),
+            pool.mul(vec![pool.integer(-1_i32), pool.func("log", vec![y])]),
+        ]);
+        assert_eq!(r.value, expected, "got {}", pool.display(r.value));
+    }
+
+    #[test]
+    fn product_of_exps_folds() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let expr = pool.mul(vec![pool.func("exp", vec![x]), pool.func("exp", vec![y])]);
+        let rules = log_exp_rules();
+        let r = simplify_with(expr, &pool, &rules, SimplifyConfig::default());
+        let expected = pool.func("exp", vec![pool.add(vec![x, y])]);
+        assert_eq!(r.value, expected, "got {}", pool.display(r.value));
     }
 
     #[test]

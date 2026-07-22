@@ -1,9 +1,11 @@
 //! V2-17 — Eigenvalues, eigenvectors, and diagonalization for dense symbolic matrices
-//! whose characteristic polynomial splits over ℚ into linear and quadratic factors.
+//! whose characteristic polynomial splits over ℚ into linear, quadratic, or cubic
+//! factors.
 //!
 //! The characteristic polynomial is `det(λI − M)` in a fresh λ symbol. Entries may
 //! be rational; the determinant is read as a ℚ-polynomial in λ and cleared to a
-//! ℤ-polynomial for factorization (same roots).
+//! ℤ-polynomial for factorization (same roots). Irreducible cubics are solved via
+//! the trigonometric (casus irreducibilis) or Cardano formula.
 
 #![allow(clippy::needless_range_loop)]
 
@@ -26,7 +28,7 @@ pub enum EigenError {
     CharPolyConversion(ConversionError),
     /// FLINT factorization failed.
     Factorization(FactorError),
-    /// The characteristic polynomial has an irreducible factor of degree greater than two.
+    /// The characteristic polynomial has an irreducible factor of degree greater than three.
     UnsupportedIrreducibleDegree { degree: usize },
     /// Algebraic and geometric multiplicity disagree (Jordan block situation).
     NonDiagonalizable,
@@ -44,7 +46,7 @@ impl fmt::Display for EigenError {
             EigenError::Factorization(e) => write!(f, "factorization failed: {e}"),
             EigenError::UnsupportedIrreducibleDegree { degree } => write!(
                 f,
-                "irreducible characteristic factor of degree {degree}; only degrees 1–2 are supported"
+                "irreducible characteristic factor of degree {degree}; only degrees 1–3 are supported"
             ),
             EigenError::NonDiagonalizable => {
                 write!(f, "matrix is not diagonalizable over the computed eigenbasis")
@@ -83,7 +85,7 @@ impl crate::errors::AlkahestError for EigenError {
             ),
             EigenError::Factorization(_) => None,
             EigenError::UnsupportedIrreducibleDegree { .. } => {
-                Some("higher-degree irreducible characteristic factors require a CAS / algebraic-numbers extension")
+                Some("degree-4+ irreducible characteristic factors require a CAS / algebraic-numbers extension")
             }
             EigenError::NonDiagonalizable => {
                 Some("use Jordan-form tooling or restrict to diagonalizable matrices")
@@ -289,6 +291,11 @@ fn eigenvalues_from_char_poly(
                 pairs.push((r1, exp as usize));
                 pairs.push((r2, exp as usize));
             }
+            3 => {
+                for r in cubic_roots(&base, pool)? {
+                    pairs.push((r, exp as usize));
+                }
+            }
             _ => return Err(EigenError::UnsupportedIrreducibleDegree { degree: d }),
         }
     }
@@ -396,6 +403,150 @@ fn order_two_roots(a: ExprId, b: ExprId, pool: &ExprPool) -> (ExprId, ExprId) {
     }
 }
 
+fn rational_to_expr(r: &Rational, pool: &ExprPool) -> ExprId {
+    if r.denom().clone() == 1 {
+        pool.integer(r.numer().clone())
+    } else {
+        pool.rational(r.numer().clone(), r.denom().clone())
+    }
+}
+
+/// Roots of an irreducible cubic `c₀ + c₁λ + c₂λ² + c₃λ³` via depression +
+/// trigonometric Cardano (three real roots) or radical Cardano (one real root).
+fn cubic_roots(p: &UniPoly, pool: &ExprPool) -> Result<[ExprId; 3], EigenError> {
+    let c = p.coefficients();
+    if c.len() != 4 {
+        return Err(EigenError::UnsupportedIrreducibleDegree {
+            degree: p.degree().max(0) as usize,
+        });
+    }
+    let c0 = c[0].clone();
+    let c1 = c[1].clone();
+    let c2 = c[2].clone();
+    let c3 = c[3].clone();
+    if c3 == 0 {
+        return Err(EigenError::UnsupportedIrreducibleDegree { degree: 2 });
+    }
+    // Monic coefficients: λ³ + a λ² + b λ + c = 0.
+    let a = Rational::from((c2, c3.clone()));
+    let b = Rational::from((c1, c3.clone()));
+    let cc = Rational::from((c0, c3));
+    // Depress: λ = t − a/3,   t³ + p t + q = 0.
+    let a2 = a.clone() * a.clone();
+    let a3 = a2.clone() * a.clone();
+    let p_coeff = b.clone() - a2 / Rational::from(3);
+    let q_coeff =
+        cc + (Rational::from(2) * a3 - Rational::from(9) * a.clone() * b) / Rational::from(27);
+    let shift = rational_to_expr(&(a / Rational::from(3)), pool);
+    let neg_shift = simplify(pool.mul(vec![pool.integer(-1_i32), shift]), pool).value;
+
+    let half_q = q_coeff.clone() / Rational::from(2);
+    let third_p = p_coeff.clone() / Rational::from(3);
+    // Δ = (q/2)² + (p/3)³.  Δ < 0 ⇒ three distinct real roots (casus irreducibilis).
+    let mut delta = half_q.clone() * half_q.clone();
+    delta += third_p.clone() * third_p.clone() * third_p.clone();
+
+    let roots_t: [ExprId; 3] = if delta < 0 {
+        // t_k = 2√(−p/3) cos((θ + 2πk)/3),  cos θ = (−q/2) / (√(−p/3))³.
+        let neg_third_p = Rational::from(0) - third_p;
+        let sqrt_neg_third_p = simplify(
+            pool.func("sqrt", vec![rational_to_expr(&neg_third_p, pool)]),
+            pool,
+        )
+        .value;
+        let two_sqrt = simplify(pool.mul(vec![pool.integer(2_i32), sqrt_neg_third_p]), pool).value;
+        let denom = simplify(pool.pow(sqrt_neg_third_p, pool.integer(3_i32)), pool).value;
+        let neg_half_q = rational_to_expr(&(Rational::from(0) - half_q), pool);
+        let cos_theta = simplify(
+            pool.mul(vec![neg_half_q, pool.pow(denom, pool.integer(-1_i32))]),
+            pool,
+        )
+        .value;
+        let theta = pool.func("acos", vec![cos_theta]);
+        let pi = pool.symbol("pi", Domain::Real);
+        let two_pi = pool.mul(vec![pool.integer(2_i32), pi]);
+        let mut out = [pool.integer(0_i32); 3];
+        for k in 0..3 {
+            let angle = simplify(
+                pool.mul(vec![
+                    pool.rational(rug::Integer::from(1), rug::Integer::from(3)),
+                    pool.add(vec![theta, pool.mul(vec![two_pi, pool.integer(k as i32)])]),
+                ]),
+                pool,
+            )
+            .value;
+            out[k] = simplify(
+                pool.mul(vec![two_sqrt, pool.func("cos", vec![angle])]),
+                pool,
+            )
+            .value;
+        }
+        out
+    } else {
+        // One real root via Cardano: A = ∛(−q/2 + √Δ), B = ∛(−q/2 − √Δ), t₀ = A+B.
+        let sqrt_delta = simplify(
+            pool.func("sqrt", vec![rational_to_expr(&delta, pool)]),
+            pool,
+        )
+        .value;
+        let neg_half_q = rational_to_expr(&(Rational::from(0) - half_q), pool);
+        let a_cbrt = simplify(
+            pool.pow(
+                pool.add(vec![neg_half_q, sqrt_delta]),
+                pool.rational(rug::Integer::from(1), rug::Integer::from(3)),
+            ),
+            pool,
+        )
+        .value;
+        let b_cbrt = simplify(
+            pool.pow(
+                pool.add(vec![
+                    neg_half_q,
+                    pool.mul(vec![pool.integer(-1_i32), sqrt_delta]),
+                ]),
+                pool.rational(rug::Integer::from(1), rug::Integer::from(3)),
+            ),
+            pool,
+        )
+        .value;
+        let t0 = simplify(pool.add(vec![a_cbrt, b_cbrt]), pool).value;
+        // Complex conjugate pair: −(A+B)/2 ± i √3 (A−B)/2.
+        let half = pool.rational(rug::Integer::from(1), rug::Integer::from(2));
+        let neg_half_sum = simplify(pool.mul(vec![pool.integer(-1_i32), half, t0]), pool).value;
+        let aminus_b = simplify(
+            pool.add(vec![a_cbrt, pool.mul(vec![pool.integer(-1_i32), b_cbrt])]),
+            pool,
+        )
+        .value;
+        let imag = simplify(
+            pool.mul(vec![
+                half,
+                pool.func("sqrt", vec![pool.integer(3_i32)]),
+                aminus_b,
+                imag_unit(pool),
+            ]),
+            pool,
+        )
+        .value;
+        let t1 = simplify(pool.add(vec![neg_half_sum, imag]), pool).value;
+        let t2 = simplify(
+            pool.add(vec![
+                neg_half_sum,
+                pool.mul(vec![pool.integer(-1_i32), imag]),
+            ]),
+            pool,
+        )
+        .value;
+        [t0, t1, t2]
+    };
+
+    let mut out = [pool.integer(0_i32); 3];
+    for (i, t) in roots_t.into_iter().enumerate() {
+        out[i] = simplify(pool.add(vec![t, neg_shift]), pool).value;
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // λ I − M and M − λ I
 // ---------------------------------------------------------------------------
@@ -452,9 +603,32 @@ fn kernel_2x2_column_basis(m: &Matrix, pool: &ExprPool) -> Option<Vec<Matrix>> {
     let b01 = simplify(m.get(0, 1), pool).value;
     let c10 = simplify(m.get(1, 0), pool).value;
     let d11 = simplify(m.get(1, 1), pool).value;
+    // Full-rank gate for numeric/rational matrices: if det is a nonzero
+    // constant then the kernel is trivial.  Do *not* use an `M·v = 0` check on
+    // the candidate perpendicular — for symbolic `(A − λI)` that residual only
+    // vanishes after substituting an eigenvalue, so the check would wrongly
+    // drop legitimate eigenspace bases.
+    let det = simplify(
+        pool.add(vec![
+            pool.mul(vec![a00, d11]),
+            pool.mul(vec![pool.integer(-1_i32), b01, c10]),
+        ]),
+        pool,
+    )
+    .value;
+    let det_nonzero_const = match pool.get(det) {
+        ExprData::Integer(n) => n.0 != 0,
+        ExprData::Rational(r) => r.0 != 0,
+        _ => false,
+    };
+    if det_nonzero_const {
+        return Some(Vec::new());
+    }
     let neg_one = pool.integer(-1_i32);
     let (a, b) = if expr_is_exactly_zero(pool, a00) && expr_is_exactly_zero(pool, b01) {
         if expr_is_exactly_zero(pool, c10) && expr_is_exactly_zero(pool, d11) {
+            // Zero matrix — fall through to the general rational/Gauss path,
+            // which returns a full 2-dimensional basis.
             return None;
         }
         (c10, d11)
