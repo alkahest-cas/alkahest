@@ -666,7 +666,7 @@ impl RewriteRule for LogOfExp {
 ///
 /// Not registered in [`log_exp_rules`]: the identity is branch-cut sensitive and
 /// only fires via the colored e-graph when an explicit or static
-/// [`SideCondition::Positive`] fact is present. Prefer
+/// [`crate::deriv::SideCondition::Positive`] fact is present. Prefer
 /// [`crate::simplify::AssumptionContext`] or `Domain::Positive` symbols.
 pub struct ExpOfLog;
 
@@ -703,7 +703,7 @@ impl RewriteRule for LogOfProduct {
 /// `log(a^n) → n * log(a)` (requires `a > 0`).
 ///
 /// Not registered in [`log_exp_rules`]; gated via the colored e-graph under a
-/// [`SideCondition::Positive`] fact on the base.
+/// [`crate::deriv::SideCondition::Positive`] fact on the base.
 pub struct LogOfPow;
 
 impl RewriteRule for LogOfPow {

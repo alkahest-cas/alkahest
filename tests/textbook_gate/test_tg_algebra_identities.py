@@ -145,6 +145,7 @@ def test_simplify_log_exp_product_of_exps_folds(pool, x, y):
 
 # --- cancel / together --------------------------------------------------------
 
+
 def test_cancel_difference_of_squares(x):
     """cancel((x^2-4)/(x-2), [x]) -> x+2, checked away from the removed x=2
     singularity.
