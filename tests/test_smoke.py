@@ -346,11 +346,13 @@ def test_lean_integrate_certifies_via_ftc_derivative():
     x = p.symbol("x")
     r = integrate(sin(x), x)
     cert = r.certificate
-    assert isinstance(cert, str) and cert
+    assert isinstance(cert, str)
+    assert cert
     assert to_lean(r) == cert
     # The sound statement is the derivative relation, not `sin x = -cos x`.
     assert "deriv (fun" in cert
-    assert "sorry" not in cert and "admit" not in cert
+    assert "sorry" not in cert
+    assert "admit" not in cert
     # Must never assert the false unwrapped integration equality.
     assert "Real.sin ((x : ℝ)) = " not in cert
     # Residual check still labels the antiderivative as exact.
