@@ -63,11 +63,12 @@ def test_lean_theorem_bit_reflects_actual_certificate_availability():
 
     This is deliberately narrower than "a Mathlib lemma with this name
     exists" — see the `Primitive::lean_theorem` doc comment in
-    `alkahest-core/src/primitive/mod.rs`. `log`, `sqrt`, `tan`, the
-    hyperbolic/inverse family, `atan2`, and `gamma` all have real Mathlib
-    derivative lemmas, but Alkahest's Lean emitter withholds their
-    certificates (side conditions or chain-rule encoding not implemented
-    yet), so their bit must stay `False` until the emitter catches up.
+    `alkahest-core/src/primitive/mod.rs`. `log` (`Real.deriv_log`, holds
+    unconditionally) and `sqrt`/`tan` (explicit `x ≠ 0` / `cos x ≠ 0`
+    hypothesis binders, mirroring #236's positivity-binder mechanism) are now
+    certifiable at the pointwise `f(x)` shape. The hyperbolic/inverse family,
+    `atan2`, and `gamma` still have no encoding, so their bit must stay
+    `False` until the emitter catches up.
 
     If you make a new primitive's certificate typecheck, flip its
     `lean_theorem()` override to `Some(...)`, add it to
@@ -75,7 +76,7 @@ def test_lean_theorem_bit_reflects_actual_certificate_availability():
     `lake env lean -DwarningAsError=true <file>` in `lean/` — not by
     inspection alone.
     """
-    CERTIFIABLE_PRIMITIVES = {"sin", "cos", "exp"}
+    CERTIFIABLE_PRIMITIVES = {"sin", "cos", "exp", "log", "sqrt", "tan"}
 
     primitives = alkahest.capabilities()["primitives"]
     claiming = {row["name"] for row in primitives if row["lean_theorem"]}

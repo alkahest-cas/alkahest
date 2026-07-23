@@ -168,6 +168,51 @@ STRICT_CASES = [
         "int_power_rule",
         lambda pool: alkahest.integrate(pool.symbol("x") ** 2, pool.symbol("x")),
     ),
+    # `Real.deriv_log` holds unconditionally (no positivity hypothesis needed).
+    (
+        "diff_log",
+        "diff_log",
+        lambda pool: alkahest.diff(alkahest.log(pool.symbol("x")), pool.symbol("x")),
+    ),
+    # `Real.hasDerivAt_sqrt` needs `x ≠ 0`; upgraded to an explicit
+    # `(x : ℝ) (hx : 0 < x)` binder, mirroring #236's positivity mechanism.
+    (
+        "diff_sqrt",
+        "diff_sqrt",
+        lambda pool: alkahest.diff(alkahest.sqrt(pool.symbol("x")), pool.symbol("x")),
+    ),
+    # `tan` is dispatched through the generic `diff_primitive_registry` rule;
+    # mapped to `Real.hasDerivAt_tan` + `Real.inv_one_add_tan_sq` (needs
+    # `cos x ≠ 0`) to reconcile Alkahest's `1 + tan²x` form.
+    (
+        "diff_tan",
+        "diff_primitive_registry",
+        lambda pool: alkahest.diff(alkahest.tan(pool.symbol("x")), pool.symbol("x")),
+    ),
+    # Generalized power rule with chain: `d/dx sin(x)² = 2 sin x cos x`, via
+    # `HasDerivAt.pow` — unconditional.
+    (
+        "diff_power_of_primitive_sin_squared",
+        "power_rule",
+        lambda pool: alkahest.diff(alkahest.sin(pool.symbol("x")) ** 2, pool.symbol("x")),
+    ),
+    # `d/dx (1 / sin x)`, via `HasDerivAt.inv`; needs `sin x ≠ 0`.
+    (
+        "diff_inv_of_primitive_one_over_sin",
+        "power_rule",
+        lambda pool: alkahest.diff(alkahest.sin(pool.symbol("x")) ** -1, pool.symbol("x")),
+    ),
+    # `d/dx (sin x / cos x)`, via `HasDerivAt.mul` + `HasDerivAt.inv`; needs
+    # `cos x ≠ 0`. Also exercises the `collect_mul_factors:
+    # cos x * (cos x)⁻¹ = 1` cleanup step, closed via the nonzero-hypothesis
+    # `field_simp` upgrade rather than the (unsound here) bare `ring`.
+    (
+        "diff_quotient_sin_over_cos",
+        "product_rule",
+        lambda pool: alkahest.diff(
+            alkahest.sin(pool.symbol("x")) / alkahest.cos(pool.symbol("x")), pool.symbol("x")
+        ),
+    ),
 ]
 FORBIDDEN_TOKENS = ("sorry", "admit", "axiom")
 

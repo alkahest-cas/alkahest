@@ -658,11 +658,13 @@ pub mod builtins {
             args[0].log()
         }
 
-        // NOTE: no `lean_theorem` override — `diff_log` is withheld by
-        // `lean::diff_rule_to_tactic` (side-condition gap on `x > 0`), so
-        // the emitter never actually produces a non-`sorry` certificate
-        // for this primitive's derivative today. See `lean_theorem`'s
-        // trait doc for why the bit must track real certifiability.
+        fn lean_theorem(&self) -> Option<&'static str> {
+            // `Real.deriv_log (x : ℝ) : deriv log x = x⁻¹` holds unconditionally
+            // (Mathlib extends `log` to negatives/zero, and the derivative
+            // identity survives), so `lean::diff_step_certificate` now closes
+            // `d/dx log(x)` with no side condition — see `diff_rule_to_tactic`.
+            Some("Real.deriv_log")
+        }
     }
 
     // ── sqrt ─────────────────────────────────────────────────────────────────
@@ -711,10 +713,12 @@ pub mod builtins {
             args[0].sqrt()
         }
 
-        // NOTE: no `lean_theorem` override — `diff_sqrt` is withheld by
-        // `lean::diff_rule_to_tactic` (side-condition gap on `x > 0`), so
-        // the emitter never actually produces a non-`sorry` certificate
-        // for this primitive's derivative today.
+        fn lean_theorem(&self) -> Option<&'static str> {
+            // `lean::diff_sqrt_certificate` upgrades `d/dx sqrt(x)` to an
+            // explicit `(x : ℝ) (hx : 0 < x)` binder and closes it with
+            // `Real.hasDerivAt_sqrt hx.ne'` — see `diff_step_certificate`.
+            Some("Real.hasDerivAt_sqrt")
+        }
     }
 
     // ── tan ──────────────────────────────────────────────────────────────────
@@ -763,10 +767,14 @@ pub mod builtins {
             args[0].tan()
         }
 
-        // NOTE: no `lean_theorem` override — this primitive's diff step is
-        // recorded under the generic `diff_primitive_registry` rule, which
-        // `lean::diff_rule_to_tactic` never certifies, so the emitter never
-        // produces a non-`sorry` certificate for its derivative today.
+        fn lean_theorem(&self) -> Option<&'static str> {
+            // This primitive's diff step is recorded under the generic
+            // `diff_primitive_registry` rule; `lean::registry_diff_certificate`
+            // now dispatches `tan` specifically to `Real.hasDerivAt_tan` +
+            // `Real.inv_one_add_tan_sq` (needs `cos x ≠ 0`) — see
+            // `diff_step_certificate`.
+            Some("Real.hasDerivAt_tan")
+        }
     }
 
     // ── sinh ─────────────────────────────────────────────────────────────────
