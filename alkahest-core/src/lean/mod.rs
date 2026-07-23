@@ -532,38 +532,61 @@ fn positivity_certificate(step: &RewriteStep, pool: &ExprPool) -> Option<(String
     Some((binders.join(" "), tactic))
 }
 
-/// If `before = a * a⁻¹` or `a⁻¹ * a` and `after = 1`, return `a`. This is
-/// the shape produced by `collect_mul_factors` (and similar cleanup rules)
-/// canceling a reciprocal pair — e.g. `cos x * (cos x)⁻¹ = 1`.
+/// If `before = a^m * a^n` for integer `m, n` with at least one negative
+/// (i.e. the product genuinely routes through an inverse — same-sign
+/// integer powers combine soundly via plain `ring` and are left alone), and
+/// `after` is the fully-collapsed `a^(m+n)` (rendered as `1` when `m+n = 0`),
+/// return `a`. This is the shape produced by `collect_mul_factors` (and
+/// similar cleanup rules) — e.g. `cos x * (cos x)⁻¹ = 1`, `x² * x⁻² = 1`,
+/// or `x⁻² * x⁵ = x³`.
 ///
 /// Critically, this claim is only true when `a ≠ 0`: Lean's junk-value
-/// convention (`0⁻¹ = 0`) makes it *false* at `a = 0` (`0 * 0 = 0 ≠ 1`), so
-/// `ring`/`norm_num` — which only prove identities that hold unconditionally
-/// — cannot close it. The static per-rule-name tactic table (`"by ring"` for
-/// `collect_mul_factors`) cannot be trusted whenever this shape is detected;
-/// see [`inv_cancel_certificate`] for the actual closing tactic.
-fn inv_cancel_base(before: ExprId, after: ExprId, pool: &ExprPool) -> Option<ExprId> {
-    let is_one = pool.with(after, |d| matches!(d, ExprData::Integer(n) if n.0 == 1));
-    if !is_one {
-        return None;
-    }
+/// convention (`0⁻¹ = 0`) makes `0^m` for `m < 0` evaluate to `0` rather than
+/// diverging, so e.g. `0² * 0⁻² = 0 ≠ 1`. `ring`/`norm_num` — which only
+/// prove identities that hold unconditionally — cannot close it. The static
+/// per-rule-name tactic table (`"by ring"` for `collect_mul_factors`) cannot
+/// be trusted whenever this shape is detected; see
+/// [`inv_cancel_certificate`] for the actual closing tactic.
+///
+/// Returns `(base, net_exponent)`. `net_exponent` tells the caller whether
+/// `field_simp` alone fully closes the goal: empirically, when the net
+/// exponent is `0` (the `after = 1` case), `field_simp`'s own simp set
+/// closes it outright, but for a nonzero net exponent (`after = a^k`,
+/// `k ≠ 0`) it leaves a genuine commutative-ring rearrangement (e.g.
+/// `x⁵ = x³ * x²`) that needs a following `ring`. Emitting an unconditional
+/// `field_simp [hne]; ring` would trip Lean's `unreachableTactic` linter
+/// (promoted to a hard error by `-DwarningAsError=true`) on the `net = 0`
+/// cases, where `ring` would never run — so the caller must branch on this.
+fn inv_cancel_base(before: ExprId, after: ExprId, pool: &ExprPool) -> Option<(ExprId, i64)> {
     let (a, b) = pool.with(before, |d| match d {
         ExprData::Mul(xs) if xs.len() == 2 => Some((xs[0], xs[1])),
         _ => None,
     })?;
-    let is_recip_of = |base: ExprId, maybe_inv: ExprId| {
-        pool.with(maybe_inv, |d| {
-            matches!(d, ExprData::Pow { base: b2, exp } if *b2 == base
-                && pool.with(*exp, |e| matches!(e, ExprData::Integer(n) if n.0 == -1)))
+    // A bare factor `a` is `a^1`; `Pow{base,exp}` is itself otherwise.
+    let base_exp = |id: ExprId| -> (ExprId, i64) {
+        pool.with(id, |d| match d {
+            ExprData::Pow { base, exp } => pool
+                .with(*exp, |e| match e {
+                    ExprData::Integer(n) => n.0.to_i64(),
+                    _ => None,
+                })
+                .map(|n| (*base, n))
+                .unwrap_or((id, 1)),
+            _ => (id, 1),
         })
     };
-    if is_recip_of(a, b) {
-        Some(a)
-    } else if is_recip_of(b, a) {
-        Some(b)
-    } else {
-        None
+    let (base_a, exp_a) = base_exp(a);
+    let (base_b, exp_b) = base_exp(b);
+    if base_a != base_b || (exp_a >= 0 && exp_b >= 0) {
+        return None;
     }
+    let net = exp_a + exp_b;
+    let expected_after = if net == 0 {
+        pool.integer(1_i32)
+    } else {
+        pool.pow(base_a, pool.integer(net))
+    };
+    (after == expected_after).then_some((base_a, net))
 }
 
 /// Build a nonzero-hypothesis certificate for an [`inv_cancel_base`] shape,
@@ -577,10 +600,17 @@ fn inv_cancel_certificate(
     after: ExprId,
     pool: &ExprPool,
 ) -> Option<(String, String)> {
-    let base = inv_cancel_base(before, after, pool)?;
+    let (base, net) = inv_cancel_base(before, after, pool)?;
+    // See `inv_cancel_base`'s doc: only append `ring` when it's actually
+    // going to run (net ≠ 0), or the `unreachableTactic` linter fires.
+    let tactic = if net == 0 {
+        "by field_simp [hne]".to_string()
+    } else {
+        "by\n    field_simp [hne]\n    ring".to_string()
+    };
     if let Some(sym) = symbol_name(base, pool) {
         let binder = format!("({sym} : ℝ) (hne : {sym} ≠ 0)");
-        return Some((binder, "by field_simp [hne]".to_string()));
+        return Some((binder, tactic));
     }
     let name = pool.with(base, |d| match d {
         ExprData::Func { name, args } if args.len() == 1 => {
@@ -593,12 +623,41 @@ fn inv_cancel_certificate(
         return None;
     }
     let binder = format!("({sym} : ℝ) (hne : Real.{name} {sym} ≠ 0)");
-    Some((binder, "by field_simp [hne]".to_string()))
+    Some((binder, tactic))
+}
+
+/// `before = (a⁻¹)⁻¹`, `after = a` or `a^1` — Mathlib's `inv_inv : a⁻¹⁻¹ = a`
+/// holds *unconditionally* (at `a = 0`: `0⁻¹ = 0`, so `(0⁻¹)⁻¹ = 0⁻¹ = 0 =
+/// a`), unlike [`inv_cancel_base`]'s shapes. `ring` still can't close it —
+/// `ring` treats `⁻¹` as an opaque atom and doesn't know the involution law
+/// — so this needs the dedicated `inv_inv` simp lemma instead. Returns
+/// `true` when this shape matches.
+fn is_double_inv_cancel(before: ExprId, after: ExprId, pool: &ExprPool) -> bool {
+    let base = pool.with(before, |d| match d {
+        ExprData::Pow { base, exp }
+            if pool.with(*exp, |e| matches!(e, ExprData::Integer(n) if n.0 == -1)) =>
+        {
+            pool.with(*base, |bd| match bd {
+                ExprData::Pow { base: b2, exp: e2 }
+                    if pool.with(*e2, |e| matches!(e, ExprData::Integer(n) if n.0 == -1)) =>
+                {
+                    Some(*b2)
+                }
+                _ => None,
+            })
+        }
+        _ => None,
+    });
+    match base {
+        Some(a) => after == a || after == pool.pow(a, pool.integer(1_i32)),
+        None => false,
+    }
 }
 
 /// Resolve `(explicit_binders, tactic)` for a non-differentiation ("plain
 /// equality `before = after`") rewrite step. Tries, in order: the
-/// [`inv_cancel_certificate`] soundness override (whenever the shape
+/// [`inv_cancel_certificate`] soundness override and the
+/// [`is_double_inv_cancel`] unconditional override (whenever either shape
 /// matches, the static table tactic is never trusted, even if it doesn't
 /// literally contain `"sorry"`), the [`positivity_certificate`] upgrade, and
 /// finally the static per-rule-name tactic ([`rule_to_tactic`]) when it
@@ -606,6 +665,9 @@ fn inv_cancel_certificate(
 fn plain_step_certificate(step: &RewriteStep, pool: &ExprPool) -> Option<(Option<String>, String)> {
     if inv_cancel_base(step.before, step.after, pool).is_some() {
         return inv_cancel_certificate(step.before, step.after, pool).map(|(b, t)| (Some(b), t));
+    }
+    if is_double_inv_cancel(step.before, step.after, pool) {
+        return Some((None, "by simp [inv_inv]".to_string()));
     }
     if let Some((binders, tactic)) = positivity_certificate(step, pool) {
         return Some((Some(binders), tactic));
@@ -1683,6 +1745,101 @@ mod tests {
         assert!(
             lean.contains("← Real.exp_add"),
             "expected exp_add fold: {lean}"
+        );
+    }
+
+    #[test]
+    fn inv_cancel_x_squared_times_x_neg_squared_certifies_with_nonzero_hyp() {
+        // `x² * x⁻² = 1`: `ring` cannot prove this (false at `x = 0` under
+        // Lean's `0⁻¹ = 0` junk value), so `collect_mul_factors`'s static
+        // "by ring" table entry must not be trusted — the emitter upgrades
+        // it to an explicit `(x : ℝ) (hne : x ≠ 0)` binder + `field_simp`.
+        use crate::simplify::simplify;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![
+            pool.pow(x, pool.integer(2_i32)),
+            pool.pow(x, pool.integer(-2_i32)),
+        ]);
+        let derived = simplify(expr, &pool);
+        let lean = emit_lean_expr(&derived, &pool);
+        assert!(!lean.is_empty(), "x² * x⁻² = 1 should certify under x ≠ 0");
+        assert!(
+            !lean.contains("sorry"),
+            "certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("(hne : x ≠ 0)"),
+            "expected an explicit nonzero-hypothesis binder: {lean}"
+        );
+        assert!(
+            lean.contains("field_simp [hne]"),
+            "expected field_simp to consume the hypothesis: {lean}"
+        );
+    }
+
+    #[test]
+    fn inv_cancel_mixed_sign_exponents_needs_trailing_ring() {
+        // `x⁻² * x⁵ = x³`: like the `net = 0` case above, `field_simp` needs
+        // `x ≠ 0`, but here it leaves a genuine ring rearrangement
+        // (`x⁵ = x³ * x²`) that a *following* `ring` must close — appending
+        // `ring` unconditionally (even when unneeded, as in the `= 1` case)
+        // would trip Lean's `unreachableTactic` lint under
+        // `-DwarningAsError=true`, so the emitter must only add it here.
+        use crate::simplify::simplify;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![
+            pool.pow(x, pool.integer(-2_i32)),
+            pool.pow(x, pool.integer(5_i32)),
+        ]);
+        let derived = simplify(expr, &pool);
+        let lean = emit_lean_expr(&derived, &pool);
+        assert!(!lean.is_empty(), "x⁻² * x⁵ = x³ should certify under x ≠ 0");
+        assert!(
+            !lean.contains("sorry"),
+            "certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("(hne : x ≠ 0)"),
+            "expected an explicit nonzero-hypothesis binder: {lean}"
+        );
+        assert!(
+            lean.contains("field_simp [hne]") && lean.contains("ring"),
+            "expected field_simp followed by a closing ring: {lean}"
+        );
+    }
+
+    #[test]
+    fn double_inverse_certifies_unconditionally() {
+        // `(x⁻¹)⁻¹ = x`: true for *every* real `x` including `0`
+        // (`(0⁻¹)⁻¹ = 0⁻¹ = 0`), via Mathlib's `inv_inv`. `ring` can't close
+        // it (it treats `⁻¹` as an opaque atom), but no hypothesis binder is
+        // needed either — unlike the reciprocal-cancellation shapes above.
+        use crate::simplify::simplify;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.pow(pool.pow(x, pool.integer(-1_i32)), pool.integer(-1_i32));
+        let derived = simplify(expr, &pool);
+        let lean = emit_lean_expr(&derived, &pool);
+        assert!(
+            !lean.is_empty(),
+            "(x⁻¹)⁻¹ = x should certify unconditionally"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "certificate must not use sorry: {lean}"
+        );
+        assert!(
+            !lean.contains("(hne"),
+            "double inverse needs no hypothesis binder: {lean}"
+        );
+        assert!(
+            lean.contains("simp [inv_inv]"),
+            "expected the inv_inv simp lemma: {lean}"
         );
     }
 
