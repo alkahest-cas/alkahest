@@ -59,21 +59,28 @@ def main():
 
     print("\n=== log / exp Identities ===")
 
-    # log(exp(x)) → x
+    # log(exp(x)) → x  (unconditional on reals)
     r = simplify_log_exp(log(exp(x)))
     print(f"log(exp(x))             → {r.value}")
 
-    # exp(log(x)) → x
-    r = simplify_log_exp(exp(log(x)))
-    print(f"exp(log(x))             → {r.value}")
+    # Branch-cut identities need positivity (Assumptions or Domain.Positive)
+    from alkahest import Assumptions
 
-    # log(x*y) → log(x) + log(y)
-    r = simplify_log_exp(log(x * y))
-    print(f"log(x*y)                → {r.value}")
+    assumptions = Assumptions(pool)
+    assumptions.refine(pool.gt(x, pool.integer(0)))
+    assumptions.refine(pool.gt(y, pool.integer(0)))
 
-    # log(x^3) → 3*log(x)
-    r = simplify_log_exp(log(x ** 3))
-    print(f"log(x³)                 → {r.value}")
+    # exp(log(x)) → x  when x > 0
+    r = simplify_log_exp(exp(log(x)), assumptions)
+    print(f"exp(log(x)) [x>0]       → {r.value}")
+
+    # log(x)+log(y) → log(x*y) when x,y > 0
+    r = simplify_log_exp(log(x) + log(y), assumptions)
+    print(f"log(x)+log(y) [x,y>0]   → {r.value}")
+
+    # log(x^3) → 3*log(x) when x > 0
+    r = simplify_log_exp(log(x ** 3), assumptions)
+    print(f"log(x³) [x>0]           → {r.value}")
 
     # ── User-defined rules via make_rule ──────────────────────────────────
 

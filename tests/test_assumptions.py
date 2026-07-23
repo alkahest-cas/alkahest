@@ -31,9 +31,33 @@ def test_unproven_branch_cut_rewrites_remain_unchanged():
     y = p.symbol("y")
 
     assert str(alkahest.simplify(alkahest.sqrt(x**2)).value) == "sqrt(x^2)"
-    # Dedicated simplify_log_exp folds inverses; default simplify stays conservative.
-    assert str(alkahest.simplify_log_exp(alkahest.exp(alkahest.log(x))).value) == "x"
+    # Branch-cut log/exp identities stay put without positivity facts.
+    assert str(alkahest.simplify_log_exp(alkahest.exp(alkahest.log(x))).value) == "exp(log(x))"
     assert str(alkahest.simplify_log_exp(alkahest.log(x * y)).value) == "log((x * y))"
+    assert str(alkahest.simplify_log_exp(alkahest.log(x) + alkahest.log(y)).value) == (
+        "(log(x) + log(y))"
+    )
+
+
+def test_simplify_log_exp_folds_under_assumptions():
+    p = alkahest.ExprPool()
+    x = p.symbol("x")
+    y = p.symbol("y")
+    assumptions = Assumptions(p)
+    assumptions.refine(p.gt(x, p.integer(0)))
+    assumptions.refine(p.gt(y, p.integer(0)))
+
+    assert str(alkahest.simplify_log_exp(alkahest.exp(alkahest.log(x)), assumptions).value) == "x"
+    assert str(alkahest.simplify_log_exp(alkahest.log(x) + alkahest.log(y), assumptions).value) == (
+        "log((x * y))"
+    )
+
+
+def test_static_positive_domain_enables_exp_of_log():
+    p = alkahest.ExprPool()
+    x = p.symbol("x", domain=alkahest.Domain.Positive)
+    assert str(alkahest.simplify_log_exp(alkahest.exp(alkahest.log(x))).value) == "x"
+    assert str(alkahest.simplify(alkahest.sqrt(x**2)).value) == "x"
 
 
 def test_contradiction_is_structured_and_context_is_unchanged():

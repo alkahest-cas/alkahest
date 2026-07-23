@@ -78,8 +78,12 @@ print(f"sin(-x)            → {r.value}")
 r = simplify_log_exp(log(exp(x)))
 print(f"log(exp(x))        → {r.value}")
 
-r = simplify_log_exp(exp(log(x)))
-print(f"exp(log(x))        → {r.value}")
+from alkahest import Assumptions
+
+assumptions = Assumptions(pool)
+assumptions.refine(pool.gt(x, pool.integer(0)))
+r = simplify_log_exp(exp(log(x)), assumptions)
+print(f"exp(log(x)) [x>0]  → {r.value}")
 
 r = collect_like_terms(x + x + two * x + y)
 print(f"x+x+2x+y           → {r.value}")

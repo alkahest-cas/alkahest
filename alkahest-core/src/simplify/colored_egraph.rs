@@ -458,6 +458,69 @@ fn rule_exp_of_log(expr: ExprId, pool: &ExprPool) -> Option<(ExprId, Vec<SideCon
     Some((inner, vec![SideCondition::Positive(inner)]))
 }
 
+/// `log(x) + log(y) + ⋯ → log(x·y·⋯)` when every argument is positive.
+fn rule_sum_of_logs(expr: ExprId, pool: &ExprPool) -> Option<(ExprId, Vec<SideCondition>)> {
+    let terms = match pool.get(expr) {
+        ExprData::Add(v) if v.len() >= 2 => v,
+        _ => return None,
+    };
+    let mut args = Vec::with_capacity(terms.len());
+    for t in terms {
+        let a = func_arg("log", t, pool)?;
+        args.push(a);
+    }
+    let after = pool.func("log", vec![pool.mul(args.clone())]);
+    let conds: Vec<SideCondition> = args.iter().map(|&a| SideCondition::Positive(a)).collect();
+    Some((after, conds))
+}
+
+/// `log(a^n) → n * log(a)` when `a > 0`.
+fn rule_log_of_pow(expr: ExprId, pool: &ExprPool) -> Option<(ExprId, Vec<SideCondition>)> {
+    let arg = func_arg("log", expr, pool)?;
+    let (base, exp) = match pool.get(arg) {
+        ExprData::Pow { base, exp } => (base, exp),
+        _ => return None,
+    };
+    let log_base = pool.func("log", vec![base]);
+    let after = pool.mul(vec![exp, log_base]);
+    Some((after, vec![SideCondition::Positive(base)]))
+}
+
+/// `log(a · b⁻¹ · ⋯) → log(a) − log(b) − ⋯` when factors are positive.
+fn rule_log_of_quotient(expr: ExprId, pool: &ExprPool) -> Option<(ExprId, Vec<SideCondition>)> {
+    let arg = func_arg("log", expr, pool)?;
+    let factors = match pool.get(arg) {
+        ExprData::Mul(v) if v.len() >= 2 => v,
+        _ => return None,
+    };
+    let has_reciprocal = factors.iter().any(|&f| match pool.get(f) {
+        ExprData::Pow { exp, .. } => match pool.get(exp) {
+            ExprData::Integer(n) => n.0 < 0,
+            _ => false,
+        },
+        _ => false,
+    });
+    if !has_reciprocal {
+        return None;
+    }
+    let mut terms: Vec<ExprId> = Vec::with_capacity(factors.len());
+    let mut conds: Vec<SideCondition> = Vec::new();
+    for f in factors {
+        match pool.get(f) {
+            ExprData::Pow { base, exp } => {
+                conds.push(SideCondition::Positive(base));
+                let log_base = pool.func("log", vec![base]);
+                terms.push(pool.mul(vec![exp, log_base]));
+            }
+            _ => {
+                conds.push(SideCondition::Positive(f));
+                terms.push(pool.func("log", vec![f]));
+            }
+        }
+    }
+    Some((pool.add(terms), conds))
+}
+
 /// `x^0 → 1` when `x ≠ 0`.
 fn rule_pow_zero_nonzero(expr: ExprId, pool: &ExprPool) -> Option<(ExprId, Vec<SideCondition>)> {
     let (base, exp) = match pool.get(expr) {
@@ -504,6 +567,18 @@ fn default_conditional_rules() -> &'static [ConditionalRule] {
         ConditionalRule {
             name: "exp_of_log",
             apply: rule_exp_of_log,
+        },
+        ConditionalRule {
+            name: "sum_of_logs",
+            apply: rule_sum_of_logs,
+        },
+        ConditionalRule {
+            name: "log_of_pow",
+            apply: rule_log_of_pow,
+        },
+        ConditionalRule {
+            name: "log_of_quotient",
+            apply: rule_log_of_quotient,
         },
         ConditionalRule {
             name: "pow_zero_nonzero",

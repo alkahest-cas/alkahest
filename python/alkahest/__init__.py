@@ -877,18 +877,25 @@ def simplify_trig_normal_form(expr):
 _native_simplify_log_exp = simplify_log_exp
 
 
-def simplify_log_exp(expr):
+def simplify_log_exp(expr, assumptions=None):
     """Logarithm / exponential simplifier.
+
+    Branch-cut identities such as ``exp(log(x)) → x`` and
+    ``log(x) + log(y) → log(x*y)`` require positivity facts from
+    ``assumptions`` (an :class:`Assumptions` context) or symbols declared
+    with ``Domain.Positive``. Safe identities ``log(exp(x)) → x`` and
+    ``exp(x)*exp(y) → exp(x+y)`` always apply.
 
     Parameters
     ----------
     expr : Expr or DerivedResult
+    assumptions : Assumptions, optional
 
     Returns
     -------
     DerivedResult
     """
-    return _native_simplify_log_exp(_coerce_expr(expr))
+    return _native_simplify_log_exp(_coerce_expr(expr), assumptions)
 
 
 _native_simplify_expanded = simplify_expanded

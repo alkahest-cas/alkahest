@@ -2,7 +2,7 @@
 
 Verifies that:
 1. simplify_egraph reduces sin(x)**2 + cos(x)**2 → 1 by default.
-2. simplify_egraph reduces exp(log(x)) → x by default.
+2. simplify_egraph does **not** reduce exp(log(x)) → x (needs positivity).
 3. simplify_egraph reduces log(exp(x)) → x by default.
 4. Existing egraph proptests are not broken (basic identities still hold).
 5. Opt-out: EgraphConfig(include_trig_rules=False) does NOT apply trig rules.
@@ -59,10 +59,10 @@ class TestEgraphTrigIdentity:
 
 class TestEgraphLogExpCancellation:
     @needs_egraph
-    def test_exp_of_log(self, pool, x):
+    def test_exp_of_log_stays_without_assumptions(self, pool, x):
         expr = exp(log(x))
         result = simplify_egraph(expr)
-        assert str(result.value) == "x"
+        assert str(result.value) == "exp(log(x))"
 
     @needs_egraph
     def test_log_of_exp(self, pool, x):
@@ -112,9 +112,9 @@ class TestEgraphConfig:
     @needs_egraph
     def test_opt_out_log_exp_rules_does_not_simplify(self, pool, x):
         cfg = EgraphConfig(include_log_exp_rules=False)
-        expr = exp(log(x))
+        expr = log(exp(x))
         result = simplify_egraph_with(expr, cfg)
-        assert str(result.value) != "x"
+        assert str(result.value) == "log(exp(x))"
 
     def test_custom_node_limit_attr(self):
         cfg = EgraphConfig(node_limit=50_000)

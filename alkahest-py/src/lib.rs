@@ -113,10 +113,10 @@ use alkahest_core::{
     apart as core_apart, diff as core_diff, diff_forward as core_diff_forward,
     eval_complex_f64 as core_eval_complex_f64, eval_exact_rational as core_eval_exact_rational,
     eval_f64 as core_eval_f64, eval_interval as core_eval_interval, integrate as core_integrate,
-    integrate_definite as core_integrate_definite, limit as core_limit, load_from, log_exp_rules,
+    integrate_definite as core_integrate_definite, limit as core_limit, load_from,
     rsolve as core_rsolve, series as core_series, simplify as core_simplify,
     simplify_batch as core_simplify_batch, simplify_egraph as core_simplify_egraph,
-    simplify_egraph_with as core_simplify_egraph_with,
+    simplify_egraph_with as core_simplify_egraph_with, simplify_log_exp as core_simplify_log_exp,
     simplify_trig_normal_form as core_simplify_trig_normal_form,
     simplify_with as core_simplify_with, trig_rules,
     verify_antiderivative_status as core_verify_antiderivative_status,
@@ -3903,17 +3903,33 @@ fn py_simplify_trig_normal_form(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDerive
     make_derived_result(py, derived, pool_py, None)
 }
 
-/// `alkahest.simplify_log_exp(expr)` — simplify with log/exp identities.
+/// `alkahest.simplify_log_exp(expr, assumptions=None)` — simplify with log/exp identities.
+///
+/// Unconditional rules: `log(exp(x))→x`, `exp(x)·exp(y)→exp(x+y)`.
+/// Branch-cut identities (`exp(log(x))→x`, sum/power/quotient of logs) require
+/// positivity facts from ``assumptions`` or ``Domain.Positive`` symbols.
 #[pyfunction]
-#[pyo3(name = "simplify_log_exp")]
-fn py_simplify_log_exp(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDerivedResult {
+#[pyo3(name = "simplify_log_exp", signature = (expr, assumptions=None))]
+fn py_simplify_log_exp(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    assumptions: Option<PyRef<PyAssumptions>>,
+) -> PyResult<PyDerivedResult> {
+    if let Some(ref a) = assumptions {
+        if !a.pool.is(&expr.pool) {
+            return Err(pool_mismatch_err());
+        }
+    }
     let derived = {
         let pool = expr.pool.borrow(py);
-        let rules = log_exp_rules();
-        core_simplify_with(expr.id, &pool.inner, &rules, SimplifyConfig::default())
+        let facts = match &assumptions {
+            Some(a) => a.inner.facts().to_vec(),
+            None => Vec::new(),
+        };
+        core_simplify_log_exp(expr.id, &pool.inner, &facts)
     };
     let pool_py = expr.pool.clone_ref(py);
-    make_derived_result(py, derived, pool_py, None)
+    Ok(make_derived_result(py, derived, pool_py, None))
 }
 
 // ---------------------------------------------------------------------------

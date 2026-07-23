@@ -297,12 +297,13 @@ pub fn simplify_with(
         current = DerivedExpr::with_log(result.value, merged_log);
     }
 
-    if !config.assumptions.is_empty() {
-        let colored = super::colored_egraph::apply_colored_if_needed(
-            current.value,
-            pool,
-            &config.assumptions,
-        );
+    let mut assumptions = config.assumptions;
+    // Static symbol domains (e.g. Domain::Positive) authorize the same
+    // conditional rewrites as explicit AssumptionContext facts.
+    super::assumptions::collect_static_domain_facts(current.value, pool, &mut assumptions);
+    if !assumptions.is_empty() {
+        let colored =
+            super::colored_egraph::apply_colored_if_needed(current.value, pool, &assumptions);
         return DerivedExpr::with_log(colored.value, current.log.merge(colored.log));
     }
     current
@@ -328,15 +329,32 @@ pub fn simplify_with_pattern_rules(
         current = DerivedExpr::with_log(result.value, merged_log);
     }
 
-    if !config.assumptions.is_empty() {
-        let colored = super::colored_egraph::apply_colored_if_needed(
-            current.value,
-            pool,
-            &config.assumptions,
-        );
+    let mut assumptions = config.assumptions;
+    super::assumptions::collect_static_domain_facts(current.value, pool, &mut assumptions);
+    if !assumptions.is_empty() {
+        let colored =
+            super::colored_egraph::apply_colored_if_needed(current.value, pool, &assumptions);
         return DerivedExpr::with_log(colored.value, current.log.merge(colored.log));
     }
     current
+}
+
+/// Simplify with the log/exp rule set, plus assumption-gated colored rewrites.
+///
+/// Unconditional rules cover `log(exp(x))→x` and `exp(x)·exp(y)→exp(x+y)`.
+/// Branch-cut identities (`exp(log(x))→x`, sum/power/quotient of logs) fire
+/// only when `assumptions` (or static `Domain::Positive` symbols) discharge
+/// the required positivity facts.
+pub fn simplify_log_exp(
+    expr: ExprId,
+    pool: &ExprPool,
+    assumptions: &[crate::deriv::log::SideCondition],
+) -> DerivedExpr<ExprId> {
+    let config = SimplifyConfig {
+        assumptions: assumptions.to_vec(),
+        ..SimplifyConfig::default()
+    };
+    simplify_with(expr, pool, &super::rulesets::log_exp_rules(), config)
 }
 
 /// Simplify `expr` with the default rule set.

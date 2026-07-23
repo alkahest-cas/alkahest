@@ -20,6 +20,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import alkahest
 
 
+def _positive_log_case(pool, builder):
+    """Run ``builder(x[, y])`` under explicit positivity assumptions."""
+    x = pool.symbol("x")
+    y = pool.symbol("y")
+    assumptions = alkahest.Assumptions(pool)
+    assumptions.refine(pool.gt(x, pool.integer(0)))
+    assumptions.refine(pool.gt(y, pool.integer(0)))
+    return assumptions.simplify(builder(x, y))
+
+
 def _log_of_product_case(pool):
     """log(x*y) -> log(x) + log(y), certified under explicit x > 0, y > 0.
 
@@ -28,12 +38,23 @@ def _log_of_product_case(pool):
     through the colored e-graph's conditional `log_of_product_positive` rule
     instead, reached via `alkahest.Assumptions`.
     """
+    return _positive_log_case(pool, lambda x, y: alkahest.log(x * y))
+
+
+def _exp_of_log_case(pool):
+    """exp(log(x)) -> x under x > 0."""
     x = pool.symbol("x")
-    y = pool.symbol("y")
     assumptions = alkahest.Assumptions(pool)
     assumptions.refine(pool.gt(x, pool.integer(0)))
-    assumptions.refine(pool.gt(y, pool.integer(0)))
-    return assumptions.simplify(alkahest.log(x * y))
+    return assumptions.simplify(alkahest.exp(alkahest.log(x)))
+
+
+def _log_of_pow_case(pool):
+    """log(x^3) -> 3*log(x) under x > 0."""
+    x = pool.symbol("x")
+    assumptions = alkahest.Assumptions(pool)
+    assumptions.refine(pool.gt(x, pool.integer(0)))
+    return assumptions.simplify(alkahest.log(x**3))
 
 
 STRICT_CASES = [
@@ -112,12 +133,12 @@ STRICT_CASES = [
     (
         "log_of_pow",
         "log_of_pow",
-        lambda pool: alkahest.simplify_log_exp(alkahest.log(pool.symbol("x") ** 3)),
+        _log_of_pow_case,
     ),
     (
         "exp_of_log",
         "exp_of_log",
-        lambda pool: alkahest.simplify_log_exp(alkahest.exp(alkahest.log(pool.symbol("x")))),
+        _exp_of_log_case,
     ),
     (
         "log_of_product",
