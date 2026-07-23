@@ -88,9 +88,12 @@ jobs:
         run: |
           python tests/lean_corpus.py --output /tmp/lean_proofs/
 
-      - name: Generate Lean proofs (randomized textbook-gate sample)
+      - name: Generate Lean proofs (full deduplicated textbook-gate pool)
         run: |
-          python tests/lean_corpus_sample.py --output /tmp/lean_sample/
+          # Every distinct certificate the library emits from the textbook gate
+          # — not a random sample. A random draw made CI green by luck; the full
+          # deduplicated pool surfaces any non-compiling certificate every run.
+          python tests/lean_corpus_sample.py --output /tmp/lean_pool/
 
       - name: Set up Mathlib (lake update + cache get)
         run: |
@@ -101,7 +104,7 @@ jobs:
       - name: Verify proofs with Lean without admissions
         run: |
           cd lean
-          for dir in /tmp/lean_proofs /tmp/lean_sample; do
+          for dir in /tmp/lean_proofs /tmp/lean_pool; do
             echo "== Verifying certificates in $dir =="
             for f in "$dir"/*.lean; do
               fname=$(basename "$f")
@@ -113,7 +116,7 @@ jobs:
               lake env lean -DwarningAsError=true "$f" || { echo "FAILED: $fname"; exit 1; }
             done
           done
-          echo "All generated Lean proofs (fixed corpus + textbook-gate sample) verified without admissions."
+          echo "All generated Lean proofs (fixed corpus + full textbook-gate pool) verified without admissions."
 
       - name: Upload generated Lean proofs on failure
         if: failure()
@@ -122,5 +125,5 @@ jobs:
           name: generated-lean-proofs
           path: |
             /tmp/lean_proofs
-            /tmp/lean_sample
+            /tmp/lean_pool
           if-no-files-found: ignore
