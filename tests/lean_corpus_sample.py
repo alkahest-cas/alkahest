@@ -19,12 +19,19 @@ lists to drift out of sync — see ``tests/_tg_helpers.py`` and
 ``tests/textbook_gate/*.py``, which this reuses as-is).
 
 ``alkahest.to_lean()`` deliberately WITHHOLDS a certificate (returns ``""``)
-for results it cannot certify soundly yet — most notably every
-``integrate()`` result, since integration certificates are not currently
-symbolically re-derivable (see the ``to_lean`` docstring in
-``alkahest-py/src/lib.rs``). Those withheld/empty certificates are
-correct-by-design and are skipped here, not treated as generation failures.
-Only genuinely emitted (non-empty) certificates are sampled and written out.
+for results it cannot certify soundly yet. Those withheld/empty certificates
+are correct-by-design and are skipped here, not treated as generation
+failures. Only genuinely emitted (non-empty) certificates are sampled and
+written out.
+
+Indefinite ``integrate()`` results now emit certificates via the FTC
+derivative relation ``deriv (fun x => F) x = f`` (see the ``to_lean`` docstring
+in ``alkahest-py/src/lib.rs``), but they are intentionally excluded from this
+*randomized* textbook-gate sample and covered instead by the deterministic
+strict corpus in ``tests/lean_corpus.py`` (the ``int_*`` cases). Keeping them
+out of the random pool avoids reshuffling the fixed-seed sample every time the
+integrator's coverage changes, while still verifying every emitted integration
+certificate against Lean in CI.
 
 Usage::
 
@@ -54,6 +61,10 @@ FORBIDDEN_TOKENS = ("sorry", "admit", "axiom")
 # naturally filtered out below like any other empty cert, so including it
 # costs nothing and keeps this list matching "every derivation-producing
 # function the textbook gate exercises."
+# NOTE: `integrate` is deliberately omitted. Its certificates now emit (Part A,
+# via the FTC derivative relation) but are verified deterministically through
+# the strict corpus (`tests/lean_corpus.py`), not this randomized sample — see
+# the module docstring.
 RECORDED_FUNCTIONS = (
     "diff",
     "simplify",
@@ -61,7 +72,6 @@ RECORDED_FUNCTIONS = (
     "simplify_log_exp",
     "sum_indefinite",
     "sum_definite",
-    "integrate",
 )
 
 

@@ -301,10 +301,28 @@ def test_solver_linear_system():
 def test_lean_export():
     p = pool()
     x = p.symbol("x")
-    # to_lean takes an Expr, not a DerivedResult
-    lean = to_lean(x**2)
+    # to_lean takes an Expr, not a DerivedResult. A bare Expr whose default
+    # simplification does real work (here `x + 0 → x` via add_zero) emits a
+    # certificate of that derivation.
+    lean = to_lean(x + p.integer(0))
     assert isinstance(lean, str)
     assert len(lean) > 0
+    assert "add_zero" in lean or "simp" in lean
+
+
+def test_lean_export_withholds_vacuous_identity():
+    """Part C: a bare Expr the default simplifier leaves untouched has no
+    derivation, so `to_lean` must not present `example : e = e := rfl` (which
+    reads as a proven theorem). It withholds (returns "") instead."""
+    p = pool()
+    x = p.symbol("x")
+    # `x**2` is already canonical (empty derivation log). The rewrite that would
+    # touch `exp(log(x))` lives in `simplify_log_exp`, not the default set, so
+    # the default simplifier also leaves it untouched.
+    for expr in (x**2, exp(log(x))):
+        src = to_lean(expr)
+        assert src == "", f"vacuous identity must withhold, got: {src!r}"
+        assert "rfl" not in src
 
 
 def test_lean_diff_export():
@@ -320,15 +338,34 @@ def test_lean_diff_export():
     assert any(step["rule"] == "diff_univariate_poly" for step in result.steps)
 
 
-def test_lean_withholds_false_integrate_certificate():
-    """B3: ∫ sin must not emit the false equality `sin x = -cos x`."""
+def test_lean_integrate_certifies_via_ftc_derivative():
+    """Part A: ∫ f dx = F certifies via the FTC derivative relation
+    `deriv (fun x => F) x = f`, never the false unwrapped equality `f = F`
+    (e.g. `sin x = -cos x`)."""
     p = pool()
     x = p.symbol("x")
     r = integrate(sin(x), x)
-    assert r.certificate is None
-    assert to_lean(r) == ""
+    cert = r.certificate
+    assert isinstance(cert, str) and cert
+    assert to_lean(r) == cert
+    # The sound statement is the derivative relation, not `sin x = -cos x`.
+    assert "deriv (fun" in cert
+    assert "sorry" not in cert and "admit" not in cert
+    # Must never assert the false unwrapped integration equality.
+    assert "Real.sin ((x : ℝ)) = " not in cert
     # Residual check still labels the antiderivative as exact.
     assert r.verification["status"] == "exactly_verified"
+
+
+def test_lean_withholds_non_elementary_integrate_certificate():
+    """An antiderivative whose derivative escapes the certifiable diff fragment
+    (here `∫ log x dx`, differentiating via `diff_log`) stays withheld rather
+    than emitting an admission."""
+    p = pool()
+    x = p.symbol("x")
+    r = integrate(log(x), x)
+    assert r.certificate is None
+    assert to_lean(r) == ""
 
 
 def test_lean_diff_sin_certificate_has_no_sorry():
