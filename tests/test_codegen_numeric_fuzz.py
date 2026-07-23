@@ -211,3 +211,84 @@ def test_emit_c_matches_reference_and_eval():
 
     assert not c_bugs, f"emit_c_expr disagrees with reference ({len(c_bugs)}): {c_bugs[:5]}"
     assert not e_bugs, f"eval_expr disagrees with reference ({len(e_bugs)}): {e_bugs[:5]}"
+
+
+# ---------------------------------------------------------------------------
+# JIT paths (compile_expr scalar + numpy_eval vectorized).
+# These skip on non-JIT builds (the default PyPI wheel and the groebner-only CI
+# build report jit_is_available() == False); they run on +jit / +cranelift
+# wheels and local `--features cranelift` dev builds.
+# ---------------------------------------------------------------------------
+
+_HAS_JIT = bool(getattr(ak, "jit_is_available", lambda: False)())
+
+
+@pytest.mark.skipif(not _HAS_JIT, reason="no native JIT backend in this build")
+def test_jit_erf_erfc_accuracy():
+    """compile_expr(erf/erfc) must also match math to full precision (separate lowering)."""
+    p = ak.ExprPool()
+    x = p.symbol("x")
+    worst = 0.0
+    v = -4.0
+    while v <= 4.0:
+        for expr, ref in ((ak.erf(x), math.erf(v)), (ak.erfc(x), math.erfc(v))):
+            got = ak.compile_expr(expr, [x])([v])
+            worst = max(worst, abs(got - ref) / max(abs(ref), 1e-300))
+        v += 0.01
+    assert worst < 1e-12, f"JIT erf/erfc accuracy regressed: worst relative error {worst:.2e}"
+
+
+@pytest.mark.skipif(not _HAS_JIT, reason="no native JIT backend in this build")
+def test_jit_and_numpy_match_reference():
+    """Fuzz: compile_expr (scalar) and numpy_eval (vectorized) must match a Python reference."""
+    np = pytest.importorskip("numpy")
+    rng = random.Random(20260724)
+    n = 150
+    points = 6
+
+    scalar_bugs = []
+    numpy_bugs = []
+    compiled = 0
+    for _ in range(n):
+        try:
+            e, pfn = _gen(rng.randint(2, 5), rng)
+        except Exception:
+            continue
+        try:
+            cf = ak.compile_expr(e, VARS)
+        except Exception:
+            continue  # unsupported op in the JIT lowering — not a correctness bug
+        compiled += 1
+
+        pts, refs = [], []
+        attempts = 0
+        while len(pts) < points and attempts < points * 8:
+            attempts += 1
+            xv, yv, zv = (round(rng.uniform(-4, 4), 4) for _ in range(3))
+            try:
+                ref = pfn((xv, yv, zv))
+            except (ValueError, ZeroDivisionError, OverflowError):
+                continue
+            if not isinstance(ref, float) or not math.isfinite(ref) or abs(ref) > 1e12:
+                continue
+            pts.append((xv, yv, zv))
+            refs.append(ref)
+        if not pts:
+            continue
+
+        for (xv, yv, zv), ref in zip(pts, refs):
+            sv = cf([xv, yv, zv])
+            if not _isclose(sv, ref):
+                scalar_bugs.append((str(e)[:60], (xv, yv, zv), ref, sv))
+
+        xs = np.array([p[0] for p in pts])
+        ys = np.array([p[1] for p in pts])
+        zs = np.array([p[2] for p in pts])
+        nv = np.asarray(ak.numpy_eval(cf, xs, ys, zs))
+        for k, ref in enumerate(refs):
+            if not _isclose(float(nv[k]), ref):
+                numpy_bugs.append((str(e)[:60], pts[k], ref, float(nv[k])))
+
+    assert compiled > 0, "no expressions compiled through the JIT"
+    assert not scalar_bugs, f"compile_expr scalar disagrees with reference: {scalar_bugs[:5]}"
+    assert not numpy_bugs, f"numpy_eval disagrees with reference: {numpy_bugs[:5]}"
