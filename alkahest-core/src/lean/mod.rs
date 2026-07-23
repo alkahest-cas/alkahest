@@ -169,6 +169,192 @@ fn chain_outer_lemma(rule_name: &str) -> Option<&'static str> {
     }
 }
 
+/// The printed name of a differentiation variable, falling back to `"x"` for
+/// anything that isn't a bare [`ExprData::Symbol`] (shouldn't happen in
+/// practice — `wrt` is always a symbol — but keeps this total).
+fn wrt_name(wrt: ExprId, pool: &ExprPool) -> String {
+    pool.with(wrt, |d| match d {
+        ExprData::Symbol { name, .. } => name.clone(),
+        _ => "x".to_string(),
+    })
+}
+
+/// The Mathlib pointwise `Real.hasDerivAt_<f>` fact for a primitive with a
+/// known *unconditional* derivative at every real point — distinct from
+/// [`chain_outer_lemma`], which composes `f` with an inner function rather
+/// than supplying `f`'s own pointwise derivative.
+fn pointwise_hasderivat_lemma(name: &str) -> Option<&'static str> {
+    match name {
+        "sin" => Some("Real.hasDerivAt_sin"),
+        "cos" => Some("Real.hasDerivAt_cos"),
+        "exp" => Some("Real.hasDerivAt_exp"),
+        _ => None,
+    }
+}
+
+/// `expr` is `name(wrt)` for some single-argument named function — i.e. a
+/// unary primitive applied directly to the differentiation variable (not a
+/// composite argument). Returns the function name.
+fn unary_func_name(expr: ExprId, wrt: ExprId, pool: &ExprPool) -> Option<String> {
+    pool.with(expr, |d| match d {
+        ExprData::Func { name, args } if args.len() == 1 && args[0] == wrt => Some(name.clone()),
+        _ => None,
+    })
+}
+
+/// If `before` is `f(wrt) ^ n` for `f` a primitive with a known pointwise
+/// `HasDerivAt` fact ([`pointwise_hasderivat_lemma`]) and integer exponent
+/// `n`, return `(explicit_binders, tactic)` for the shapes this emitter knows
+/// how to close:
+///   - `n ≥ 2`: `HasDerivAt.pow`, unconditional (e.g. `d/dx sin(x)² = 2 sin x cos x`).
+///   - `n == -1`: `HasDerivAt.inv`, needs `f(x) ≠ 0` (e.g. `d/dx (1 / sin x)`).
+///
+/// Other exponents (`0`, `1`, `≤ -2`) aren't encoded and return `None` — the
+/// caller withholds. This is the "outer power, inner primitive" mirror of
+/// [`composite_pow_inner_exp`]/[`chain_diff_tactic`], which instead handles
+/// `f(x^n)` (power *inside* the primitive).
+fn power_chain_certificate(
+    before: ExprId,
+    wrt: ExprId,
+    pool: &ExprPool,
+) -> Option<(Option<String>, String)> {
+    let (base, exp_n) = pool.with(before, |d| match d {
+        ExprData::Pow { base, exp } => pool.with(*exp, |e| match e {
+            ExprData::Integer(n) => n.0.to_i64().map(|k| (*base, k)),
+            _ => None,
+        }),
+        _ => None,
+    })?;
+    let name = unary_func_name(base, wrt, pool)?;
+    let lemma = pointwise_hasderivat_lemma(&name)?;
+    let var = wrt_name(wrt, pool);
+    if exp_n >= 2 {
+        let tactic = format!(
+            "by\n    \
+             have hf := {lemma} {var}\n    \
+             rw [(hf.pow {exp_n}).deriv]\n    \
+             push_cast\n    \
+             ring"
+        );
+        return Some((None, tactic));
+    }
+    if exp_n == -1 {
+        let binder = format!("({var} : ℝ) (hne : Real.{name} {var} ≠ 0)");
+        let tactic = format!(
+            "by\n    \
+             have hf := {lemma} {var}\n    \
+             rw [(hf.inv hne).deriv]\n    \
+             ring"
+        );
+        return Some((Some(binder), tactic));
+    }
+    None
+}
+
+/// If `before` is `Mul([f(wrt), g(wrt)⁻¹])` (in either factor order) for
+/// `f`, `g` primitives with known pointwise `HasDerivAt` facts, build a
+/// certificate for the quotient's `product_rule` step directly via
+/// `HasDerivAt.mul` + `HasDerivAt.inv`, given `g(x) ≠ 0`.
+///
+/// Alkahest has no explicit division node — `f(x)/g(x)` is represented as
+/// `f(x) * g(x)⁻¹` — so this targets that shape rather than Mathlib's
+/// `HasDerivAt.div` (whose LHS pattern is literally `c y / d y`, which would
+/// not syntactically match our `rw` target without first rewriting `/` to
+/// `* ⁻¹`). Note: `field_simp` (not `ring`) is required to close the
+/// resulting goal — see [`inv_cancel_certificate`] for why bare `ring` can't
+/// discharge the `g x * (g x)⁻¹` cancellation buried inside it.
+fn quotient_chain_certificate(
+    before: ExprId,
+    wrt: ExprId,
+    pool: &ExprPool,
+) -> Option<(Option<String>, String)> {
+    let factor_inv_base = |id: ExprId| -> Option<ExprId> {
+        pool.with(id, |d| match d {
+            ExprData::Pow { base, exp } => pool
+                .with(*exp, |e| matches!(e, ExprData::Integer(n) if n.0 == -1))
+                .then_some(*base),
+            _ => None,
+        })
+    };
+    let (num, den_base) = pool.with(before, |d| match d {
+        ExprData::Mul(xs) if xs.len() == 2 => {
+            if let Some(b) = factor_inv_base(xs[1]) {
+                Some((xs[0], b))
+            } else {
+                factor_inv_base(xs[0]).map(|b| (xs[1], b))
+            }
+        }
+        _ => None,
+    })?;
+    let fname = unary_func_name(num, wrt, pool)?;
+    let gname = unary_func_name(den_base, wrt, pool)?;
+    let flemma = pointwise_hasderivat_lemma(&fname)?;
+    let glemma = pointwise_hasderivat_lemma(&gname)?;
+    let var = wrt_name(wrt, pool);
+    let binder = format!("({var} : ℝ) (hne : Real.{gname} {var} ≠ 0)");
+    let tactic = format!(
+        "by\n    \
+         have hf := {flemma} {var}\n    \
+         have hg := ({glemma} {var}).inv hne\n    \
+         rw [(hf.mul hg).deriv]\n    \
+         field_simp [hne]"
+    );
+    Some((Some(binder), tactic))
+}
+
+/// `deriv (fun x => Real.sqrt x) x = 1 / (2 * sqrt x)` needs `x ≠ 0`
+/// (`Real.hasDerivAt_sqrt`), unlike `Real.deriv_log`'s unconditional identity.
+/// Always succeeds once called — callers gate on
+/// [`is_unary_of_var`]`(before, wrt, ..)` first.
+fn diff_sqrt_certificate(wrt: ExprId, pool: &ExprPool) -> (Option<String>, String) {
+    let var = wrt_name(wrt, pool);
+    let binder = format!("({var} : ℝ) (hx : 0 < {var})");
+    let tactic = "by\n    \
+         have h := (Real.hasDerivAt_sqrt hx.ne').deriv\n    \
+         rw [h]\n    \
+         ring"
+        .to_string();
+    (Some(binder), tactic)
+}
+
+/// Certificates for `diff_primitive_registry` steps: the generic rule name
+/// `lean::diff_rule_to_tactic` never maps, so dispatch on the actual
+/// primitive by re-inspecting `before` (mirroring how
+/// [`PrimitiveRegistry::diff_forward`](crate::primitive::PrimitiveRegistry::diff_forward)
+/// dispatched when building the derivative in the first place).
+///
+/// Only `tan` is encoded today: Alkahest's `TanPrimitive::diff_forward`
+/// records `d/dx tan(x) = (1 + tan(x)²) · 1` (the `1 + tan²` identity, not
+/// `1/cos²`), so closing the goal needs both `Real.hasDerivAt_tan` (needs
+/// `cos x ≠ 0`) *and* `Real.inv_one_add_tan_sq` to reconcile the two forms —
+/// a bare `rw [Real.deriv_tan]; ring` is not enough since that equivalence
+/// itself depends on `cos x ≠ 0`.
+fn registry_diff_certificate(
+    before: ExprId,
+    wrt: ExprId,
+    pool: &ExprPool,
+) -> Option<(Option<String>, String)> {
+    let name = unary_func_name(before, wrt, pool)?;
+    match name.as_str() {
+        "tan" => {
+            let var = wrt_name(wrt, pool);
+            let binder = format!("({var} : ℝ) (hne : Real.cos {var} ≠ 0)");
+            let tactic = format!(
+                "by\n    \
+                 have hderiv := (Real.hasDerivAt_tan hne).deriv\n    \
+                 have hinv : (1 + Real.tan {var} ^ 2)⁻¹ = Real.cos {var} ^ 2 := \
+                 Real.inv_one_add_tan_sq hne\n    \
+                 have hsq : 1 + Real.tan {var} ^ 2 = (Real.cos {var} ^ 2)⁻¹ := by \
+                 rw [← hinv, inv_inv]\n    \
+                 rw [hderiv, one_div, hsq]\n    \
+                 ring"
+            );
+            Some((Some(binder), tactic))
+        }
+        _ => None,
+    }
+}
+
 /// Build a self-contained Lean tactic proving a chain-rule derivative goal
 /// `deriv (fun x => f (x^n)) x = <after>` for `f ∈ {sin, cos, exp}` and integer
 /// `n ≥ 2`.
@@ -186,10 +372,7 @@ fn chain_diff_tactic(
 ) -> Option<String> {
     let n = composite_pow_inner_exp(before, wrt, pool)?;
     let suffix = chain_outer_lemma(rule_name)?;
-    let var_name = pool.with(wrt, |d| match d {
-        ExprData::Symbol { name, .. } => name.clone(),
-        _ => "x".to_string(),
-    });
+    let var_name = wrt_name(wrt, pool);
     Some(format!(
         "by\n    \
          have hg := hasDerivAt_pow {n} {var_name}\n    \
@@ -226,10 +409,70 @@ fn diff_rule_to_tactic(rule_name: &str) -> Option<&'static str> {
         "diff_sin" => Some("by simp [Real.deriv_sin, one_mul, mul_one]"),
         "diff_cos" => Some("by simp [Real.deriv_cos, one_mul, mul_one]"),
         "diff_exp" => Some("by simp [Real.deriv_exp, one_mul, mul_one]"),
-        // log/sqrt need side conditions / different lemmas — withhold for now.
-        "diff_log" | "diff_sqrt" => None,
+        // `Real.deriv_log (x : ℝ) : deriv log x = x⁻¹` holds unconditionally —
+        // Mathlib extends `Real.log` to negatives via `log |x|` and to `0` via
+        // the junk value `log 0 = 0`, and the derivative identity survives
+        // both, so (unlike `diff_sqrt`) no positivity hypothesis is needed.
+        "diff_log" => Some("by simp [Real.deriv_log, one_mul, mul_one]"),
+        // `diff_sqrt` needs an explicit `x ≠ 0` side condition
+        // (`Real.hasDerivAt_sqrt`) that this unconditional table can't
+        // express; see [`diff_sqrt_certificate`].
+        "diff_sqrt" => None,
         "diff_forward" | "diff_primitive_registry" | "diff_piecewise" | "diff_root_sum" => None,
         _ => None,
+    }
+}
+
+/// Resolve the full certificate for a differentiation-rule step: an optional
+/// explicit hypothesis-binder preamble plus the tactic that closes
+/// `deriv (fun v => before) v = after`. Returns `None` when nothing this
+/// emitter knows about applies — the caller must withhold.
+///
+/// Tries, in order: the `f(x^n)` chain rule ([`chain_diff_tactic`]), then a
+/// per-rule dispatch that covers the pointwise cases (gated on
+/// [`is_unary_of_var`]/[`is_pow_of_var`] so composites correctly fall
+/// through to withholding), the `diff_sqrt` positivity certificate, the
+/// `diff_primitive_registry` dispatch (`tan`), and the `f(x)^n` / quotient
+/// chain shapes ([`power_chain_certificate`], [`quotient_chain_certificate`]).
+fn diff_step_certificate(
+    step: &RewriteStep,
+    wrt: ExprId,
+    pool: &ExprPool,
+) -> Option<(Option<String>, String)> {
+    match step.rule_name {
+        "diff_sin" | "diff_cos" | "diff_exp" => {
+            if is_unary_of_var(step.before, wrt, pool) {
+                return diff_rule_to_tactic(step.rule_name).map(|t| (None, t.to_string()));
+            }
+            chain_diff_tactic(step.rule_name, step.before, wrt, pool).map(|t| (None, t))
+        }
+        "diff_log" => {
+            if is_unary_of_var(step.before, wrt, pool) {
+                diff_rule_to_tactic("diff_log").map(|t| (None, t.to_string()))
+            } else {
+                None
+            }
+        }
+        "diff_sqrt" => {
+            if is_unary_of_var(step.before, wrt, pool) {
+                Some(diff_sqrt_certificate(wrt, pool))
+            } else {
+                None
+            }
+        }
+        "diff_primitive_registry" => registry_diff_certificate(step.before, wrt, pool),
+        "power_rule" | "power_rule_n1" | "power_rule_n0" => {
+            if is_pow_of_var(step.before, wrt, pool) {
+                diff_rule_to_tactic(step.rule_name).map(|t| (None, t.to_string()))
+            } else if step.rule_name == "power_rule" {
+                power_chain_certificate(step.before, wrt, pool)
+            } else {
+                None
+            }
+        }
+        "product_rule" => quotient_chain_certificate(step.before, wrt, pool)
+            .or_else(|| diff_rule_to_tactic("product_rule").map(|t| (None, t.to_string()))),
+        name => diff_rule_to_tactic(name).map(|t| (None, t.to_string())),
     }
 }
 
@@ -289,6 +532,92 @@ fn positivity_certificate(step: &RewriteStep, pool: &ExprPool) -> Option<(String
     Some((binders.join(" "), tactic))
 }
 
+/// If `before = a * a⁻¹` or `a⁻¹ * a` and `after = 1`, return `a`. This is
+/// the shape produced by `collect_mul_factors` (and similar cleanup rules)
+/// canceling a reciprocal pair — e.g. `cos x * (cos x)⁻¹ = 1`.
+///
+/// Critically, this claim is only true when `a ≠ 0`: Lean's junk-value
+/// convention (`0⁻¹ = 0`) makes it *false* at `a = 0` (`0 * 0 = 0 ≠ 1`), so
+/// `ring`/`norm_num` — which only prove identities that hold unconditionally
+/// — cannot close it. The static per-rule-name tactic table (`"by ring"` for
+/// `collect_mul_factors`) cannot be trusted whenever this shape is detected;
+/// see [`inv_cancel_certificate`] for the actual closing tactic.
+fn inv_cancel_base(before: ExprId, after: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let is_one = pool.with(after, |d| matches!(d, ExprData::Integer(n) if n.0 == 1));
+    if !is_one {
+        return None;
+    }
+    let (a, b) = pool.with(before, |d| match d {
+        ExprData::Mul(xs) if xs.len() == 2 => Some((xs[0], xs[1])),
+        _ => None,
+    })?;
+    let is_recip_of = |base: ExprId, maybe_inv: ExprId| {
+        pool.with(maybe_inv, |d| {
+            matches!(d, ExprData::Pow { base: b2, exp } if *b2 == base
+                && pool.with(*exp, |e| matches!(e, ExprData::Integer(n) if n.0 == -1)))
+        })
+    };
+    if is_recip_of(a, b) {
+        Some(a)
+    } else if is_recip_of(b, a) {
+        Some(b)
+    } else {
+        None
+    }
+}
+
+/// Build a nonzero-hypothesis certificate for an [`inv_cancel_base`] shape,
+/// when the canceled base is a bare symbol or a known-total unary primitive
+/// (`sin`/`cos`/`exp`) applied to one — the same primitive family covered
+/// elsewhere in this module, all defined (and hence junk-value-safe) at
+/// every real point. Returns `None` for anything else; callers must
+/// withhold rather than trust the static "by ring" table entry.
+fn inv_cancel_certificate(
+    before: ExprId,
+    after: ExprId,
+    pool: &ExprPool,
+) -> Option<(String, String)> {
+    let base = inv_cancel_base(before, after, pool)?;
+    if let Some(sym) = symbol_name(base, pool) {
+        let binder = format!("({sym} : ℝ) (hne : {sym} ≠ 0)");
+        return Some((binder, "by field_simp [hne]".to_string()));
+    }
+    let name = pool.with(base, |d| match d {
+        ExprData::Func { name, args } if args.len() == 1 => {
+            symbol_name(args[0], pool).map(|sym| (name.clone(), sym))
+        }
+        _ => None,
+    })?;
+    let (name, sym) = name;
+    if !matches!(name.as_str(), "sin" | "cos" | "exp") {
+        return None;
+    }
+    let binder = format!("({sym} : ℝ) (hne : Real.{name} {sym} ≠ 0)");
+    Some((binder, "by field_simp [hne]".to_string()))
+}
+
+/// Resolve `(explicit_binders, tactic)` for a non-differentiation ("plain
+/// equality `before = after`") rewrite step. Tries, in order: the
+/// [`inv_cancel_certificate`] soundness override (whenever the shape
+/// matches, the static table tactic is never trusted, even if it doesn't
+/// literally contain `"sorry"`), the [`positivity_certificate`] upgrade, and
+/// finally the static per-rule-name tactic ([`rule_to_tactic`]) when it
+/// doesn't require `sorry`. Returns `None` when the step must be withheld.
+fn plain_step_certificate(step: &RewriteStep, pool: &ExprPool) -> Option<(Option<String>, String)> {
+    if inv_cancel_base(step.before, step.after, pool).is_some() {
+        return inv_cancel_certificate(step.before, step.after, pool).map(|(b, t)| (Some(b), t));
+    }
+    if let Some((binders, tactic)) = positivity_certificate(step, pool) {
+        return Some((Some(binders), tactic));
+    }
+    let tactic = rule_to_tactic(step.rule_name);
+    if tactic.contains("sorry") {
+        None
+    } else {
+        Some((None, tactic.to_string()))
+    }
+}
+
 /// Whether this step can be emitted as a Lean `example` expected to typecheck
 /// without `sorry` / `admit`.
 fn step_is_certifiable(step: &RewriteStep, wrt: Option<ExprId>, pool: &ExprPool) -> bool {
@@ -297,34 +626,12 @@ fn step_is_certifiable(step: &RewriteStep, wrt: Option<ExprId>, pool: &ExprPool)
     }
     if let Some(var) = wrt {
         if is_differentiation_rule(step.rule_name) {
-            match step.rule_name {
-                "diff_sin" | "diff_cos" | "diff_exp" => {
-                    // Pointwise `f(x)` uses the direct Mathlib deriv lemma; a
-                    // composite `f(x^n)` is closed via the chain-rule tactic.
-                    return (is_unary_of_var(step.before, var, pool)
-                        && diff_rule_to_tactic(step.rule_name).is_some())
-                        || chain_diff_tactic(step.rule_name, step.before, var, pool).is_some();
-                }
-                "diff_log" | "diff_sqrt" => {
-                    // Chain rule / composite arguments are not yet encoded.
-                    return is_unary_of_var(step.before, var, pool)
-                        && diff_rule_to_tactic(step.rule_name).is_some();
-                }
-                // Generalized power rule `d/dx[f^n]` embeds a chain rule when
-                // `f ≠ x`; only `d/dx[x^n]` is Lean-encoded today.
-                "power_rule" | "power_rule_n1" | "power_rule_n0" => {
-                    return is_pow_of_var(step.before, var, pool)
-                        && diff_rule_to_tactic(step.rule_name).is_some();
-                }
-                name => return diff_rule_to_tactic(name).is_some(),
-            }
+            return diff_step_certificate(step, var, pool).is_some();
         }
         // Algebraic cleanup steps in a diff log use plain equality goals.
-        let tactic = rule_to_tactic(step.rule_name);
-        return !tactic.contains("sorry") || positivity_certificate(step, pool).is_some();
+        return plain_step_certificate(step, pool).is_some();
     }
-    let tactic = rule_to_tactic(step.rule_name);
-    !tactic.contains("sorry") || positivity_certificate(step, pool).is_some()
+    plain_step_certificate(step, pool).is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -347,9 +654,13 @@ pub fn emit_diff_header() -> String {
     "import Mathlib.Tactic\n\
      import Mathlib.Analysis.Calculus.Deriv.Basic\n\
      import Mathlib.Analysis.Calculus.Deriv.Pow\n\
+     import Mathlib.Analysis.Calculus.Deriv.Mul\n\
+     import Mathlib.Analysis.Calculus.Deriv.Inv\n\
      import Mathlib.Analysis.SpecialFunctions.Trigonometric.Deriv\n\
+     import Mathlib.Analysis.SpecialFunctions.Trigonometric.ArctanDeriv\n\
      import Mathlib.Analysis.SpecialFunctions.ExpDeriv\n\
      import Mathlib.Analysis.SpecialFunctions.Log.Deriv\n\
+     import Mathlib.Analysis.SpecialFunctions.Sqrt\n\
      \n\
      open Real\n\n"
         .to_string()
@@ -580,12 +891,13 @@ fn depends_on(haystack: ExprId, needle: ExprId, pool: &ExprPool) -> bool {
     })
 }
 
-/// Emit a Lean `example` asserting `deriv (fun v => before) v = after`.
-pub fn emit_diff_goal(before: ExprId, after: ExprId, wrt: ExprId, pool: &ExprPool) -> String {
-    let var_name = pool.with(wrt, |d| match d {
-        ExprData::Symbol { name, .. } => name.clone(),
-        _ => "x".to_string(),
-    });
+/// The `deriv (fun v => before) v = after` body of a differentiation goal,
+/// without the leading `example [binders] :`. Shared by [`emit_diff_goal`]
+/// (no binders) and [`emit_step_wrt`]'s hypothesis-gated certificates
+/// (`diff_sqrt`, `tan`, the power/quotient chains — which prepend explicit
+/// `(x : ℝ) (h... : ...)` binders before this same body).
+fn diff_goal_body(before: ExprId, after: ExprId, wrt: ExprId, pool: &ExprPool) -> String {
+    let var_name = wrt_name(wrt, pool);
     // When the integrand doesn't mention the differentiation variable (e.g. the
     // derivative of a constant `C`), the lambda binder is genuinely unused. Under
     // `-DwarningAsError=true` Mathlib's `unusedVariables` linter turns that into a
@@ -598,7 +910,12 @@ pub fn emit_diff_goal(before: ExprId, after: ExprId, wrt: ExprId, pool: &ExprPoo
     };
     let before_str = expr_to_lean(before, pool);
     let after_str = expr_to_lean(after, pool);
-    format!("example : deriv (fun ({binder} : ℝ) => {before_str}) {var_name} = {after_str}")
+    format!("deriv (fun ({binder} : ℝ) => {before_str}) {var_name} = {after_str}")
+}
+
+/// Emit a Lean `example` asserting `deriv (fun v => before) v = after`.
+pub fn emit_diff_goal(before: ExprId, after: ExprId, wrt: ExprId, pool: &ExprPool) -> String {
+    format!("example : {}", diff_goal_body(before, after, wrt, pool))
 }
 
 // ---------------------------------------------------------------------------
@@ -612,60 +929,51 @@ pub fn emit_step(step: &RewriteStep, pool: &ExprPool) -> String {
     emit_step_wrt(step, pool, None)
 }
 
+/// Append the `-- Side conditions: …` trailer (if any) recorded on `step`.
+fn append_side_conditions(out: &mut String, step: &RewriteStep, pool: &ExprPool) {
+    if step.side_conditions.is_empty() {
+        return;
+    }
+    out.push_str("\n  -- Side conditions: ");
+    let conds: Vec<String> = step
+        .side_conditions
+        .iter()
+        .map(|c| c.display_with(pool).to_string())
+        .collect();
+    out.push_str(&conds.join(", "));
+}
+
 /// Like [`emit_step`], but when `wrt` is set, differentiation rules emit a
 /// `deriv` goal while algebraic cleanup steps in the same log stay plain
 /// equalities (so `mul_one` is not wrongly wrapped as `deriv (1·cos) = cos`).
 pub fn emit_step_wrt(step: &RewriteStep, pool: &ExprPool, wrt: Option<ExprId>) -> String {
     let diff_step = wrt.is_some() && is_differentiation_rule(step.rule_name);
 
-    // Positivity-hypothesis certificates (`exp_of_log`, `log_of_product`, …)
-    // need explicit `(x : ℝ) (hx : 0 < x)` binders on the `example` header
-    // rather than the plain `example : before = after` goal, so they're
-    // built separately from the diff/algebraic goal below.
-    if !diff_step {
-        if let Some((binders, tactic)) = positivity_certificate(step, pool) {
-            let before_str = expr_to_lean(step.before, pool);
-            let after_str = expr_to_lean(step.after, pool);
-            let mut out = format!("example {binders} : {before_str} = {after_str} :=\n  {tactic}");
-            out.push_str("\n  -- Side conditions: ");
-            let conds: Vec<String> = step
-                .side_conditions
-                .iter()
-                .map(|c| c.display_with(pool).to_string())
-                .collect();
-            out.push_str(&conds.join(", "));
-            return out;
-        }
+    if let (true, Some(var)) = (diff_step, wrt) {
+        let (binders, tactic) =
+            diff_step_certificate(step, var, pool).unwrap_or((None, "by sorry".to_string()));
+        let body = diff_goal_body(step.before, step.after, var, pool);
+        let mut out = match binders {
+            Some(b) => format!("example {b} : {body} :=\n  {tactic}"),
+            None => format!("example : {body} :=\n  {tactic}"),
+        };
+        append_side_conditions(&mut out, step, pool);
+        return out;
     }
 
-    let goal = if let (true, Some(var)) = (diff_step, wrt) {
-        emit_diff_goal(step.before, step.after, var, pool)
-    } else {
-        emit_goal(step.before, step.after, pool)
+    // Plain equality goal: either `wrt` is unset entirely, or this is an
+    // algebraic-cleanup step inside a diff log (e.g. `mul_one`,
+    // `collect_mul_factors`) — both share the same `before = after` shape,
+    // optionally upgraded with an explicit hypothesis binder.
+    let (binders, tactic) =
+        plain_step_certificate(step, pool).unwrap_or((None, "by sorry".to_string()));
+    let before_str = expr_to_lean(step.before, pool);
+    let after_str = expr_to_lean(step.after, pool);
+    let mut out = match binders {
+        Some(b) => format!("example {b} : {before_str} = {after_str} :=\n  {tactic}"),
+        None => format!("example : {before_str} = {after_str} :=\n  {tactic}"),
     };
-    let tactic: String = if let (true, Some(var)) = (diff_step, wrt) {
-        chain_diff_tactic(step.rule_name, step.before, var, pool).unwrap_or_else(|| {
-            diff_rule_to_tactic(step.rule_name)
-                .unwrap_or("by sorry")
-                .to_string()
-        })
-    } else if diff_step {
-        diff_rule_to_tactic(step.rule_name)
-            .unwrap_or("by sorry")
-            .to_string()
-    } else {
-        rule_to_tactic(step.rule_name).to_string()
-    };
-    let mut out = format!("{goal} :=\n  {tactic}");
-    if !step.side_conditions.is_empty() {
-        out.push_str("\n  -- Side conditions: ");
-        let conds: Vec<String> = step
-            .side_conditions
-            .iter()
-            .map(|c| c.display_with(pool).to_string())
-            .collect();
-        out.push_str(&conds.join(", "));
-    }
+    append_side_conditions(&mut out, step, pool);
     out
 }
 
@@ -1538,7 +1846,10 @@ mod tests {
     }
 
     #[test]
-    fn withhold_generalized_power_rule_on_sin_squared() {
+    fn generalized_power_rule_on_sin_squared_certifies() {
+        // `d/dx sin(x)² = 2 sin x cos x` via `HasDerivAt.pow` composed with
+        // the pointwise `Real.hasDerivAt_sin` — unconditional, no side
+        // condition needed (unlike the `1 / sin x` shape below).
         use crate::diff::diff;
 
         let pool = p();
@@ -1548,8 +1859,99 @@ mod tests {
         let derived = diff(expr, x, &pool).expect("diff");
         let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
         assert!(
+            !lean.is_empty(),
+            "d/dx sin(x)² should now be Lean-certifiable via HasDerivAt.pow"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "sin(x)² certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("hf.pow 2"),
+            "expected HasDerivAt.pow composition: {lean}"
+        );
+    }
+
+    #[test]
+    fn inv_of_primitive_on_one_over_sin_certifies_with_nonzero_hyp() {
+        // `d/dx (1 / sin x) = -cos x / sin²x` via `HasDerivAt.inv`, needs
+        // `sin x ≠ 0` — unlike the `sin(x)²` shape above.
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let sin_x = pool.func("sin", vec![x]);
+        let expr = pool.pow(sin_x, pool.integer(-1_i32));
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "d/dx (1/sin x) should be Lean-certifiable via HasDerivAt.inv"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "1/sin(x) certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("(hne : Real.sin x ≠ 0)"),
+            "expected an explicit nonzero-hypothesis binder: {lean}"
+        );
+        assert!(
+            lean.contains("hf.inv hne"),
+            "expected HasDerivAt.inv composition: {lean}"
+        );
+    }
+
+    #[test]
+    fn quotient_of_primitives_sin_over_cos_certifies() {
+        // `d/dx (sin x / cos x)`, represented as `sin(x) * cos(x)⁻¹`, closes
+        // via `HasDerivAt.mul` + `HasDerivAt.inv` given `cos x ≠ 0`. This
+        // also exercises the `collect_mul_factors: cos x * (cos x)⁻¹ = 1`
+        // cleanup step buried in the log, which needs the nonzero-hypothesis
+        // upgrade (`inv_cancel_certificate`) rather than bare `ring`.
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let sin_x = pool.func("sin", vec![x]);
+        let cos_x = pool.func("cos", vec![x]);
+        let expr = pool.mul(vec![sin_x, pool.pow(cos_x, pool.integer(-1_i32))]);
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "d/dx (sin x / cos x) should be Lean-certifiable via HasDerivAt.mul/.inv"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "sin/cos certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("hf.mul hg"),
+            "expected the quotient-chain HasDerivAt composition: {lean}"
+        );
+        assert!(
+            lean.contains("field_simp [hne]"),
+            "expected the cos x * (cos x)⁻¹ cleanup to use field_simp, not bare ring: {lean}"
+        );
+    }
+
+    #[test]
+    fn withhold_power_of_primitive_with_unsupported_exponent() {
+        // `n ≤ -2` (e.g. `sin(x)^-2`) isn't encoded by `power_chain_certificate`
+        // (only `n ≥ 2` via `HasDerivAt.pow` and `n == -1` via `HasDerivAt.inv`
+        // are); must withhold rather than emit a broken cert.
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let sin_x = pool.func("sin", vec![x]);
+        let expr = pool.pow(sin_x, pool.integer(-2_i32));
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
             lean.is_empty(),
-            "d/dx sin(x)² embeds chain rule via power_rule; must withhold: {lean}"
+            "d/dx sin(x)^-2 is not encoded; must withhold: {lean}"
         );
     }
 
@@ -1615,6 +2017,127 @@ mod tests {
         assert!(
             lean.is_empty(),
             "chain-rule d/dx log(x²) is not encoded; must withhold: {lean}"
+        );
+    }
+
+    #[test]
+    fn diff_log_certifies_unconditionally() {
+        // `Real.deriv_log` holds for every real `x` (including `0` and
+        // negatives, via Mathlib's `log |x|` extension and junk value at
+        // `0`), so `d/dx log(x)` needs no positivity binder — unlike
+        // `diff_sqrt` below.
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let log_x = pool.func("log", vec![x]);
+        let derived = diff(log_x, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(!lean.is_empty(), "d/dx log(x) should be Lean-certifiable");
+        assert!(
+            !lean.contains("sorry"),
+            "log certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("Real.deriv_log"),
+            "expected Real.deriv_log tactic: {lean}"
+        );
+        // No `example (x : ℝ) (hx : ...)` binder for `diff_log` — see `diff_sqrt`.
+        assert!(
+            lean.contains("example : deriv (fun (x : ℝ) => Real.log"),
+            "diff_log needs no explicit hypothesis binder: {lean}"
+        );
+    }
+
+    #[test]
+    fn diff_sqrt_certifies_with_positivity_hyp() {
+        // `Real.hasDerivAt_sqrt` needs `x ≠ 0`; the emitter upgrades this to
+        // an explicit `(x : ℝ) (hx : 0 < x)` binder, mirroring #236's
+        // positivity-binder mechanism but on a DIFFERENTIATION certificate.
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let sqrt_x = pool.func("sqrt", vec![x]);
+        let derived = diff(sqrt_x, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(!lean.is_empty(), "d/dx sqrt(x) should be Lean-certifiable");
+        assert!(
+            !lean.contains("sorry"),
+            "sqrt certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("(hx : 0 < x)"),
+            "expected an explicit positivity binder: {lean}"
+        );
+        assert!(
+            lean.contains("Real.hasDerivAt_sqrt hx.ne'"),
+            "expected Real.hasDerivAt_sqrt to consume the hypothesis: {lean}"
+        );
+    }
+
+    #[test]
+    fn withhold_chain_rule_diff_sqrt_composite() {
+        // d/dx sqrt(x²) still routes through diff_sqrt on a composite
+        // argument; that shape stays withheld (same reasoning as diff_log).
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let sqrt_x2 = pool.func("sqrt", vec![x2]);
+        let derived = diff(sqrt_x2, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            lean.is_empty(),
+            "chain-rule d/dx sqrt(x²) is not encoded; must withhold: {lean}"
+        );
+    }
+
+    #[test]
+    fn diff_tan_certifies_via_primitive_registry() {
+        // `tan` is dispatched through `diff_primitive_registry` (not a
+        // dedicated `diff_*` rule name); the emitter maps it to
+        // `Real.hasDerivAt_tan` + `Real.inv_one_add_tan_sq` to reconcile
+        // Alkahest's `1 + tan²x` form with Mathlib's `1/cos²x` form.
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let tan_x = pool.func("tan", vec![x]);
+        let derived = diff(tan_x, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(!lean.is_empty(), "d/dx tan(x) should be Lean-certifiable");
+        assert!(
+            !lean.contains("sorry"),
+            "tan certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("(hne : Real.cos x ≠ 0)"),
+            "expected an explicit nonzero-hypothesis binder: {lean}"
+        );
+        assert!(
+            lean.contains("Real.hasDerivAt_tan hne") && lean.contains("Real.inv_one_add_tan_sq"),
+            "expected the tan deriv + Pythagorean-identity reconciliation: {lean}"
+        );
+    }
+
+    #[test]
+    fn withhold_chain_rule_diff_tan_composite() {
+        // d/dx tan(x²) routes through diff_primitive_registry on a composite
+        // argument; must withhold (no chain-rule encoding for the registry
+        // dispatch).
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let tan_x2 = pool.func("tan", vec![x2]);
+        let derived = diff(tan_x2, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            lean.is_empty(),
+            "chain-rule d/dx tan(x²) is not encoded; must withhold: {lean}"
         );
     }
 
