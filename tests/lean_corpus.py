@@ -124,6 +124,27 @@ STRICT_CASES = [
         "log_of_product_positive",
         _log_of_product_case,
     ),
+    # Chain rule for unary composites f(x^n), f ∈ {sin, cos, exp}, n ≥ 2.
+    (
+        "diff_chain_sin_x_squared",
+        "diff_sin",
+        lambda pool: alkahest.diff(alkahest.sin(pool.symbol("x") ** 2), pool.symbol("x")),
+    ),
+    (
+        "diff_chain_exp_x_squared",
+        "diff_exp",
+        lambda pool: alkahest.diff(alkahest.exp(pool.symbol("x") ** 2), pool.symbol("x")),
+    ),
+    (
+        "diff_chain_cos_x_squared",
+        "diff_cos",
+        lambda pool: alkahest.diff(alkahest.cos(pool.symbol("x") ** 2), pool.symbol("x")),
+    ),
+    (
+        "diff_chain_sin_x_cubed",
+        "diff_sin",
+        lambda pool: alkahest.diff(alkahest.sin(pool.symbol("x") ** 3), pool.symbol("x")),
+    ),
 ]
 FORBIDDEN_TOKENS = ("sorry", "admit", "axiom")
 
