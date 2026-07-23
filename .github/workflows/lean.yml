@@ -13,6 +13,9 @@ on:
       - 'alkahest-core/src/kernel/**'
       - 'alkahest-py/src/lib.rs'
       - 'tests/lean_corpus.py'
+      - 'tests/lean_corpus_sample.py'
+      - 'tests/_tg_helpers.py'
+      - 'tests/textbook_gate/**'
       - 'tests/test_smoke.py'
       - 'lean/**'
       - 'Cargo.toml'
@@ -29,6 +32,9 @@ on:
       - 'alkahest-core/src/kernel/**'
       - 'alkahest-py/src/lib.rs'
       - 'tests/lean_corpus.py'
+      - 'tests/lean_corpus_sample.py'
+      - 'tests/_tg_helpers.py'
+      - 'tests/textbook_gate/**'
       - 'tests/test_smoke.py'
       - 'lean/**'
       - 'Cargo.toml'
@@ -74,13 +80,17 @@ jobs:
           python -m venv .venv
           # maturin ≥1.13 uses `pip install --group` (PEP 735) which requires pip ≥25.
           .venv/bin/pip install --upgrade pip
-          .venv/bin/pip install maturin
+          .venv/bin/pip install maturin pytest hypothesis
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
           .venv/bin/maturin develop -m alkahest-py/Cargo.toml --features groebner
 
-      - name: Generate Lean proofs
+      - name: Generate Lean proofs (fixed strict corpus)
         run: |
           python tests/lean_corpus.py --output /tmp/lean_proofs/
+
+      - name: Generate Lean proofs (randomized textbook-gate sample)
+        run: |
+          python tests/lean_corpus_sample.py --output /tmp/lean_sample/
 
       - name: Set up Mathlib (lake update + cache get)
         run: |
@@ -91,21 +101,26 @@ jobs:
       - name: Verify proofs with Lean without admissions
         run: |
           cd lean
-          for f in /tmp/lean_proofs/*.lean; do
-            fname=$(basename "$f")
-            echo "Verifying $fname..."
-            if grep -Eq '\b(sorry|admit|axiom)\b' "$f"; then
-              echo "FAILED: $fname contains an admission"
-              exit 1
-            fi
-            lake env lean -DwarningAsError=true "$f" || { echo "FAILED: $fname"; exit 1; }
+          for dir in /tmp/lean_proofs /tmp/lean_sample; do
+            echo "== Verifying certificates in $dir =="
+            for f in "$dir"/*.lean; do
+              fname=$(basename "$f")
+              echo "Verifying $fname..."
+              if grep -Eq '\b(sorry|admit|axiom)\b' "$f"; then
+                echo "FAILED: $fname contains an admission"
+                exit 1
+              fi
+              lake env lean -DwarningAsError=true "$f" || { echo "FAILED: $fname"; exit 1; }
+            done
           done
-          echo "All generated Lean proofs verified without admissions."
+          echo "All generated Lean proofs (fixed corpus + textbook-gate sample) verified without admissions."
 
       - name: Upload generated Lean proofs on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: generated-lean-proofs
-          path: /tmp/lean_proofs
+          path: |
+            /tmp/lean_proofs
+            /tmp/lean_sample
           if-no-files-found: ignore
