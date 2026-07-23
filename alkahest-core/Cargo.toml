@@ -52,6 +52,9 @@ groebner-cuda = ["groebner", "dep:cudarc"]
 [dependencies]
 rug = { version = "1", features = ["integer", "rational", "float"] }
 num-integer = "0.1"
+# Accurate transcendental fallbacks for the f64 evaluation path (erf/erfc), so
+# eval_expr matches the emitted C (libm) and the interval path.
+libm = "0.2"
 # force-cross lets gmp-mpfr-sys build when the Rust host and target triples
 # differ (e.g. x86_64-pc-windows-msvc host → x86_64-pc-windows-gnu target).
 gmp-mpfr-sys = { version = "1", features = ["force-cross"] }

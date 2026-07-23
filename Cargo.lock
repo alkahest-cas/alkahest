@@ -28,6 +28,7 @@ dependencies = [
  "egglog",
  "gmp-mpfr-sys",
  "inkwell",
+ "libm",
  "num-integer",
  "proptest",
  "rayon",
