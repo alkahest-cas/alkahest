@@ -56,6 +56,42 @@ def test_cranelift_jit_enables_session_jit_flag():
     } == primitives[0].keys()
 
 
+def test_lean_theorem_bit_reflects_actual_certificate_availability():
+    """`primitives[i]["lean_theorem"]` must be a *truthful* signal: true only
+    for primitives whose derivative certificate actually emits (non-empty,
+    no `sorry`) from `alkahest.to_lean(alkahest.diff(...))` today.
+
+    This is deliberately narrower than "a Mathlib lemma with this name
+    exists" — see the `Primitive::lean_theorem` doc comment in
+    `alkahest-core/src/primitive/mod.rs`. `log`, `sqrt`, `tan`, the
+    hyperbolic/inverse family, `atan2`, and `gamma` all have real Mathlib
+    derivative lemmas, but Alkahest's Lean emitter withholds their
+    certificates (side conditions or chain-rule encoding not implemented
+    yet), so their bit must stay `False` until the emitter catches up.
+
+    If you make a new primitive's certificate typecheck, flip its
+    `lean_theorem()` override to `Some(...)`, add it to
+    `CERTIFIABLE_PRIMITIVES` below, and verify with
+    `lake env lean -DwarningAsError=true <file>` in `lean/` — not by
+    inspection alone.
+    """
+    CERTIFIABLE_PRIMITIVES = {"sin", "cos", "exp"}
+
+    primitives = alkahest.capabilities()["primitives"]
+    claiming = {row["name"] for row in primitives if row["lean_theorem"]}
+    assert claiming == CERTIFIABLE_PRIMITIVES
+
+    pool = alkahest.ExprPool()
+    x = pool.symbol("x")
+    for name in CERTIFIABLE_PRIMITIVES:
+        fn = getattr(alkahest, name)
+        derived = alkahest.diff(fn(x), x)
+        cert = alkahest.to_lean(derived)
+        assert cert.strip(), f"{name}: lean_theorem=True but to_lean() is empty"
+        assert "sorry" not in cert, f"{name}: certificate contains sorry"
+        assert "admit" not in cert, f"{name}: certificate contains admit"
+
+
 def test_capabilities_describes_verification_boundary():
     verification = alkahest.capabilities()["verification"]
 
