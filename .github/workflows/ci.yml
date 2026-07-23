@@ -127,6 +127,65 @@ jobs:
             -Z build-std
           echo "::endgroup::"
 
+  # ── Wheel smoke: README quickstart + fresh-interpreter parse, against a
+  # *built wheel* installed into its own clean venv -- not tier1's
+  # `maturin develop` editable install of the source tree, and not pytest's
+  # single shared process where an earlier test can import
+  # alkahest.experimental (or otherwise warm up module state) before any
+  # test touches parse(). That's exactly what previously masked a bug where
+  # `alkahest.parse(...)` raised as the very first call in a genuinely
+  # fresh interpreter (B1). This job also runs the README, which previously
+  # caught stale/wrong quickstart output (B6). Exists so both classes of
+  # bug are caught at PR time, not just on release.
+  wheel-smoke:
+    name: Wheel smoke — README quickstart + fresh-interpreter parse
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-wheel-smoke-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-wheel-smoke-
+
+      - name: Install system dependencies
+        run: sudo apt-get install -y libflint-dev
+
+      # Deliberately a plain `maturin build` (real wheel) into its own venv,
+      # not `maturin develop` -- see the job comment above for why.
+      - name: Build wheel (PyPI-parity features)
+        run: |
+          python -m venv .venv-build
+          .venv-build/bin/pip install -q -U pip maturin
+          .venv-build/bin/maturin build --release --strip \
+            --manifest-path alkahest-py/Cargo.toml \
+            --features "egraph groebner cranelift" \
+            --out dist
+
+      - name: Install wheel into a clean venv
+        run: |
+          python -m venv .venv-smoke
+          .venv-smoke/bin/pip install -q dist/*.whl
+
+      - name: README quickstart + fresh-interpreter parse smoke
+        run: .venv-smoke/bin/python tests/smoke_readme.py
+
   # ── Tier 1b: slow Python integration (roadmap-level sparse_interp)
   # Runs on the nightly schedule only so push/PR CI stays fast; run locally with:
   #   pytest tests/test_sparse_interp.py -m slow --timeout=0 -v --override-ini="addopts=-v"
