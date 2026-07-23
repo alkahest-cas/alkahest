@@ -536,3 +536,75 @@ fn fibonacci_via_z_transform_matches_rsolve() {
         assert!((v - exp).abs() < 1e-4, "n={ni}: rsolve={v} expected={exp}");
     }
 }
+
+// ── round-trips ─────────────────────────────────────────────────────────────
+
+#[test]
+fn round_trip_sin_cos_table() {
+    // Forward sinusoid forms carry transcendental coefficients (sin(ω), cos(ω)),
+    // which `apart` rejects.  The inverse table must match them directly so
+    // Z⁻¹{Z{sin(ωn)}} and Z⁻¹{Z{cos(ωn)}} are identities.
+    let (pool, n, z) = setup();
+    let omega = pool.integer(1_i32);
+    let sin_n = pool.func("sin", vec![pool.mul(vec![omega, n])]);
+    let cos_n = pool.func("cos", vec![pool.mul(vec![omega, n])]);
+
+    for f in [sin_n, cos_n] {
+        let big_x = z_transform(f, n, z, &pool).unwrap();
+        let back = inverse_z_transform(big_x, z, n, &pool).unwrap();
+        for k in 0..=8 {
+            let va = eval_at(back, n, k as f64, &pool).expect("evaluable");
+            let vb = eval_at(f, n, k as f64, &pool).expect("evaluable");
+            assert!(
+                (va - vb).abs() < 1e-9,
+                "mismatch at n={k}: {} = {va} vs {} = {vb}",
+                pool.display(back),
+                pool.display(f),
+            );
+        }
+    }
+}
+
+#[test]
+fn round_trip_sin_scaled_amplitude() {
+    let (pool, n, z) = setup();
+    let omega = pool.rational(2_i32, 1_i32);
+    let f = pool.mul(vec![
+        pool.integer(3_i32),
+        pool.func("sin", vec![pool.mul(vec![omega, n])]),
+    ]);
+    let big_x = z_transform(f, n, z, &pool).unwrap();
+    let back = inverse_z_transform(big_x, z, n, &pool).unwrap();
+    for k in 0..=6 {
+        let va = eval_at(back, n, k as f64, &pool).expect("evaluable");
+        let vb = eval_at(f, n, k as f64, &pool).expect("evaluable");
+        assert!((va - vb).abs() < 1e-9, "n={k}: {va} vs {vb}");
+    }
+}
+
+#[test]
+fn round_trip_rational_table_smoke() {
+    let (pool, n, z) = setup();
+    let two = pool.integer(2_i32);
+    let cases: Vec<ExprId> = vec![
+        pool.integer(1_i32),
+        pool.pow(two, n),
+        n,
+        pool.mul(vec![n, pool.pow(two, n)]),
+        pool.pow(pool.integer(-1_i32), n),
+    ];
+    for f in cases {
+        let big_x = z_transform(f, n, z, &pool).unwrap();
+        let back = inverse_z_transform(big_x, z, n, &pool).unwrap();
+        for k in 0..=6 {
+            let va = eval_at(back, n, k as f64, &pool).expect("evaluable");
+            let vb = eval_at(f, n, k as f64, &pool).expect("evaluable");
+            assert!(
+                (va - vb).abs() < 1e-8 * (1.0 + va.abs() + vb.abs()),
+                "mismatch at n={k} for {}: {va} vs {vb} (back={})",
+                pool.display(f),
+                pool.display(back),
+            );
+        }
+    }
+}

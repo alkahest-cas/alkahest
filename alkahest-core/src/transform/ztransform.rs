@@ -40,7 +40,20 @@
 //! [`inverse_z_transform`] inverts a **rational** `X(z)` by writing
 //! `X(z)/z` in partial fractions (via [`crate::poly::apart`]), multiplying each
 //! term back by `z`, and mapping the resulting `z/(z−a)^k` shapes through the
-//! inverse table:
+//! inverse table.  Before the rational path, it also matches the **forward
+//! sinusoid table** forms
+//!
+//! ```text
+//!   z·sin(ω)/(z² − 2z·cos(ω) + 1)      ↦  sin(ω n)
+//!   z(z − cos(ω))/(z² − 2z·cos(ω) + 1) ↦  cos(ω n)
+//! ```
+//!
+//! (including a constant amplitude factor).  Those expressions have
+//! transcendental coefficients, so `apart` (which requires ℚ-coefficients)
+//! cannot see them as rational functions — the direct table match is what
+//! makes `Z⁻¹{Z{sin(ω n)}}` and `Z⁻¹{Z{cos(ω n)}}` round-trip.
+//!
+//! Rational inverse table:
 //!
 //! | term in `X(z)`           | `Z⁻¹` term (`n ≥ 0`)                  |
 //! |---------------------------|----------------------------------------|
@@ -628,6 +641,11 @@ pub fn inverse_z_transform(
         return Err(ZTransformError::SameVariable);
     }
 
+    // Forward sinusoid table (transcendental coeffs — `apart` cannot see these).
+    if let Some(seq) = try_match_sinusoid_table(big_x, z, n, pool) {
+        return Ok(seq);
+    }
+
     // X(z)/z, partial-fractioned in z.
     let x_over_z = simp(pool.mul(vec![big_x, recip(z, pool)]), pool);
     let pf = crate::poly::apart(x_over_z, z, pool)
@@ -645,6 +663,147 @@ pub fn inverse_z_transform(
         out.push(invert_term(term_z, z, n, pool)?);
     }
     Ok(simp(pool.add(out), pool))
+}
+
+/// Match `X(z)` against the forward sin/cos table (unit-circle poles with
+/// transcendental coefficients that `apart` rejects as non-rational).
+///
+/// Recognises `A · z · sin(ω) / (z² − 2 z cos(ω) + 1)` and
+/// `A · z (z − cos(ω)) / (z² − 2 z cos(ω) + 1)` (any constant amplitude `A`
+/// free of `z`), returning `A·sin(ω n)` / `A·cos(ω n)`.
+fn try_match_sinusoid_table(
+    big_x: ExprId,
+    z: ExprId,
+    n: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    let (numer, denom) = split_fraction(big_x, pool)?;
+    let omega = match_unit_circle_denom(denom, z, pool)?;
+
+    let omega_n = pool.mul(vec![omega, n]);
+    if let Some(amp) = match_sin_table_numer(numer, z, omega, pool) {
+        let sin_term = pool.func("sin", vec![omega_n]);
+        return Some(match amp == pool.integer(1_i32) {
+            true => sin_term,
+            false => pool.mul(vec![amp, sin_term]),
+        });
+    }
+    if let Some(amp) = match_cos_table_numer(numer, z, omega, pool) {
+        let cos_term = pool.func("cos", vec![omega_n]);
+        return Some(match amp == pool.integer(1_i32) {
+            true => cos_term,
+            false => pool.mul(vec![amp, cos_term]),
+        });
+    }
+    None
+}
+
+/// Split `numer · denom^{−1}` (possibly flattened as a Mul of factors).
+fn split_fraction(expr: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
+    let factors: Vec<ExprId> = match pool.get(expr) {
+        ExprData::Mul(a) => a,
+        ExprData::Pow { base, exp } if is_neg_one(exp, pool) => {
+            return Some((pool.integer(1_i32), base));
+        }
+        _ => return None,
+    };
+    let mut denoms = Vec::new();
+    let mut numers = Vec::new();
+    for &fac in &factors {
+        match pool.get(fac) {
+            ExprData::Pow { base, exp } if is_neg_one(exp, pool) => denoms.push(base),
+            _ => numers.push(fac),
+        }
+    }
+    if denoms.len() != 1 {
+        return None;
+    }
+    let numer = match numers.len() {
+        0 => pool.integer(1_i32),
+        1 => numers[0],
+        _ => pool.mul(numers),
+    };
+    Some((numer, denoms[0]))
+}
+
+fn is_neg_one(exp: ExprId, pool: &ExprPool) -> bool {
+    matches!(pool.get(exp), ExprData::Integer(n) if n.0 == -1)
+}
+
+/// Recognise monic `z² − 2 z·cos(ω) + 1`, returning `ω`.
+fn match_unit_circle_denom(denom: ExprId, z: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let (b, c) = monic_quadratic_coeffs(denom, z, pool)?;
+    if c != pool.integer(1_i32) {
+        return None;
+    }
+    // cos(ω) = −b/2
+    let cos_omega = simp(
+        pool.mul(vec![neg(b, pool), pool.rational(1_i32, 2_i32)]),
+        pool,
+    );
+    match pool.get(cos_omega) {
+        ExprData::Func { name, args } if name == "cos" && args.len() == 1 => Some(args[0]),
+        _ => None,
+    }
+}
+
+/// Numer of the form `A · z · sin(ω)` with `A` free of `z`.
+fn match_sin_table_numer(
+    numer: ExprId,
+    z: ExprId,
+    omega: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    let sin_w = pool.func("sin", vec![omega]);
+    peel_factors(numer, &[z, sin_w], z, pool)
+}
+
+/// Numer of the form `A · z · (z − cos(ω))` with `A` free of `z`.
+fn match_cos_table_numer(
+    numer: ExprId,
+    z: ExprId,
+    omega: ExprId,
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    let cos_w = pool.func("cos", vec![omega]);
+    let z_minus_cos = simp(pool.add(vec![z, neg(cos_w, pool)]), pool);
+    // Prefer the factored shape `z · (z − cos(ω))`.
+    if let Some(amp) = peel_factors(numer, &[z, z_minus_cos], z, pool) {
+        return Some(amp);
+    }
+    // Expanded `z² − cos(ω)·z` (= P z² + Q z with P = A, Q = −A cos(ω)).
+    let (p_coeff, q_coeff) = quadratic_numer_pq(numer, z, pool)?;
+    let want_q = simp(pool.mul(vec![neg(p_coeff, pool), cos_w]), pool);
+    if simp(q_coeff, pool) == want_q {
+        Some(p_coeff)
+    } else {
+        None
+    }
+}
+
+/// Peel each of `needles` (by `ExprId` equality after a best-effort simplify of
+/// the needle) out of a Mul, returning the product of leftover factors — which
+/// must be free of `z`.  Returns `None` if any needle is missing.
+fn peel_factors(numer: ExprId, needles: &[ExprId], z: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    let mut factors: Vec<ExprId> = match pool.get(numer) {
+        ExprData::Mul(a) => a,
+        _ => vec![numer],
+    };
+    for &needle in needles {
+        let needle = simp(needle, pool);
+        let pos = factors.iter().position(|&f| simp(f, pool) == needle)?;
+        factors.remove(pos);
+    }
+    let amp = match factors.len() {
+        0 => pool.integer(1_i32),
+        1 => factors[0],
+        _ => pool.mul(factors),
+    };
+    if is_free_of(amp, z, pool) {
+        Some(amp)
+    } else {
+        None
+    }
 }
 
 /// Invert a single term `A·z^p·(z−a)^{−k}` (after re-multiplying the

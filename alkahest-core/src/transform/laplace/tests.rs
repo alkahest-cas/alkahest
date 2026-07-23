@@ -505,3 +505,54 @@ fn round_trip_t_squared() {
     let back = inverse_laplace_transform(big_f, s, t, &pool).unwrap();
     assert_numeric_eq(back, f, t, &[0.0, 0.5, 1.0, 2.0], &pool);
 }
+
+#[test]
+fn round_trip_t_sin() {
+    // Frequency-diff of L{sin} produces a repeated quadratic pole; n = 2
+    // inverse is required for L⁻¹{L{t sin(ωt)}} = t sin(ωt).
+    let (pool, t, s) = setup();
+    let f = pool.mul(vec![
+        t,
+        pool.func("sin", vec![pool.mul(vec![pool.integer(2_i32), t])]),
+    ]);
+    let big_f = laplace_transform(f, t, s, &pool).unwrap();
+    let back = inverse_laplace_transform(big_f, s, t, &pool).unwrap();
+    assert_numeric_eq(back, f, t, &[0.25, 0.5, 1.0, 1.5, 2.0], &pool);
+}
+
+#[test]
+fn round_trip_t_cos() {
+    let (pool, t, s) = setup();
+    let f = pool.mul(vec![
+        t,
+        pool.func("cos", vec![pool.mul(vec![pool.integer(3_i32), t])]),
+    ]);
+    let big_f = laplace_transform(f, t, s, &pool).unwrap();
+    let back = inverse_laplace_transform(big_f, s, t, &pool).unwrap();
+    assert_numeric_eq(back, f, t, &[0.25, 0.5, 1.0, 1.5, 2.0], &pool);
+}
+
+#[test]
+fn round_trip_table_smoke() {
+    // Cheap forward∘inverse identity checks on the core rational table.
+    let (pool, t, s) = setup();
+    let cases: Vec<ExprId> = vec![
+        pool.integer(1_i32),
+        t,
+        pool.pow(t, pool.integer(2_i32)),
+        pool.func("exp", vec![pool.mul(vec![pool.integer(-2_i32), t])]),
+        pool.func("sin", vec![pool.mul(vec![pool.integer(5_i32), t])]),
+        pool.func("cos", vec![t]),
+        pool.mul(vec![
+            pool.func("exp", vec![pool.mul(vec![pool.integer(2_i32), t])]),
+            pool.func("sin", vec![pool.mul(vec![pool.integer(3_i32), t])]),
+        ]),
+        pool.mul(vec![t, pool.func("exp", vec![t])]),
+    ];
+    let samples = [0.3_f64, 0.7, 1.1, 1.9];
+    for f in cases {
+        let big_f = laplace_transform(f, t, s, &pool).unwrap();
+        let back = inverse_laplace_transform(big_f, s, t, &pool).unwrap();
+        assert_numeric_eq(back, f, t, &samples, &pool);
+    }
+}
