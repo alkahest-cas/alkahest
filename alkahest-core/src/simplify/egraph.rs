@@ -193,7 +193,7 @@ mod backend {
         } else {
             "explore"
         };
-        let log_rs = if config.disjoint_schedule {
+        let _log_rs = if config.disjoint_schedule {
             "explore-log"
         } else {
             "explore"
@@ -213,13 +213,10 @@ mod backend {
         };
 
         let log_exp_rules = if config.include_log_exp_rules {
-            // Only `log(exp(x))→x` is loaded by default. `exp(log(x))→x` needs
-            // `x > 0` and is intentionally omitted: egglog has no assumption
-            // context, so firing it here would be silently unsound.
-            format!(
-                "(rewrite (Log (Exp ?x)) ?x :ruleset {log_rs})",
-                log_rs = log_rs,
-            )
+            // Intentionally empty: egglog cannot check symbol domains, and
+            // `log(exp(z))→z` / `exp(log(z))→z` are unsound over ℂ without
+            // that check. Use `simplify_log_exp` (real-gated) or Assumptions.
+            String::new()
         } else {
             String::new()
         };
@@ -919,10 +916,9 @@ impl EgraphCost for NoncommutativeCost {
 ///
 /// # Rule flags
 ///
-/// By default both `include_trig_rules` and `include_log_exp_rules` are `true`,
-/// so `simplify_egraph` reduces `sin²(x)+cos²(x)→1` and `log(exp(x))→x`.
-/// `exp(log(x))→x` is **not** included (requires positivity; use
-/// [`crate::simplify::AssumptionContext`]).
+/// By default `include_trig_rules` is `true` so `simplify_egraph` reduces
+/// `sin²(x)+cos²(x)→1`. Log/exp cancellation is **not** loaded in egglog
+/// (no domain check); use [`crate::simplify::engine::simplify_log_exp`].
 /// without any extra configuration.  Set either flag to `false` to suppress
 /// the corresponding rule set (useful when you need to benchmark rule impact or
 /// avoid domain-sensitive rewrites).
@@ -941,8 +937,9 @@ pub struct EgraphConfig {
     /// Include the Pythagorean trig identity (`sin²+cos²→1`) in the explore phase.
     /// Default `true`.
     pub include_trig_rules: bool,
-    /// Include safe log/exp cancellation (`log(exp(x))→x`) in the
-    /// explore phase. Does **not** include `exp(log(x))→x`. Default `true`.
+    /// Reserved for log/exp egglog rules. Currently a no-op: principal-branch
+    /// log/exp cancellation needs a domain check egglog cannot express.
+    /// Prefer [`crate::simplify::engine::simplify_log_exp`]. Default `true`.
     pub include_log_exp_rules: bool,
     /// Schedule match-disjoint egglog rule groups (Add / Mul / Pow / trig / log)
     /// as separate `(run …)` steps within each phase. Default `true`.
@@ -1253,16 +1250,16 @@ mod tests {
         let _ = expr;
     }
 
-    // V1-15: log(exp(x)) → x
+    // log(exp(x)) must not fire in egglog (no domain check).
     #[test]
-    fn egraph_log_of_exp() {
+    fn egraph_log_of_exp_stays() {
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
         let expr = pool.func("log", vec![pool.func("exp", vec![x])]);
         #[cfg(feature = "egraph")]
         {
             let result = simplify_egraph(expr, &pool);
-            assert_eq!(result.value, x);
+            assert_eq!(result.value, expr, "got {}", pool.display(result.value));
         }
         #[cfg(not(feature = "egraph"))]
         let _ = expr;
@@ -1286,7 +1283,7 @@ mod tests {
         assert_ne!(result.value, pool.integer(1_i32));
     }
 
-    // Opt-out: with include_log_exp_rules=false, log(exp(x)) stays put.
+    // Opt-out flag remains API-stable; log/exp egglog rules are already empty.
     #[test]
     fn egraph_opt_out_log_exp_rules() {
         let pool = ExprPool::new();

@@ -16,7 +16,7 @@
 /// // tan(x) → sin(x) * cos(x)^(-1)
 /// ```
 use crate::deriv::log::{DerivationLog, RewriteStep};
-use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
 use crate::pattern::{Pattern, Substitution};
 use crate::simplify::discrimination_net::{pattern_head, DiscriminationIndex};
 use crate::simplify::rules::{FlattenAdd, FlattenMul, RewriteRule};
@@ -25,6 +25,43 @@ fn one_step(name: &'static str, before: ExprId, after: ExprId) -> DerivationLog 
     let mut log = DerivationLog::new();
     log.push(RewriteStep::simple(name, before, after));
     log
+}
+
+/// True when every free symbol in `expr` lives in a real subdomain.
+///
+/// Used to gate `log(exp(x)) → x`, which fails for complex `x` whenever
+/// `Im(x) ∉ (−π, π]` (principal branch). `Domain::Complex` symbols (including
+/// the imaginary unit) refuse the rewrite.
+fn is_real_valued(expr: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(expr) {
+        ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => true,
+        ExprData::Symbol { domain, .. } => matches!(
+            domain,
+            Domain::Real
+                | Domain::Integer
+                | Domain::Positive
+                | Domain::NonNegative
+                | Domain::NonZero
+        ),
+        ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
+            args.iter().all(|&a| is_real_valued(a, pool))
+        }
+        ExprData::Pow { base, exp } => is_real_valued(base, pool) && is_real_valued(exp, pool),
+        ExprData::Piecewise { branches, default } => {
+            branches
+                .iter()
+                .all(|&(c, v)| is_real_valued(c, pool) && is_real_valued(v, pool))
+                && is_real_valued(default, pool)
+        }
+        ExprData::Predicate { args, .. } => args.iter().all(|&a| is_real_valued(a, pool)),
+        ExprData::BigO(arg) => is_real_valued(arg, pool),
+        ExprData::Forall { var, body } | ExprData::Exists { var, body } => {
+            is_real_valued(var, pool) && is_real_valued(body, pool)
+        }
+        ExprData::RootSum { poly, var, body } => {
+            is_real_valued(poly, pool) && is_real_valued(var, pool) && is_real_valued(body, pool)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -647,7 +684,12 @@ pub fn trig_normal_form_rules() -> Vec<Box<dyn RewriteRule>> {
 // log / exp identity rules
 // ---------------------------------------------------------------------------
 
-/// `log(exp(x)) → x`.
+/// `log(exp(x)) → x` when `x` is real-valued.
+///
+/// Over ℂ the identity fails whenever `Im(x) ∉ (−π, π]` on the principal
+/// branch. The rule therefore requires every free symbol in `x` to live in a
+/// real subdomain (`Real` / `Integer` / `Positive` / …); `Domain::Complex`
+/// (including `I`) refuses the rewrite.
 pub struct LogOfExp;
 
 impl RewriteRule for LogOfExp {
@@ -658,6 +700,9 @@ impl RewriteRule for LogOfExp {
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
         let arg = func_arg("log", expr, pool)?;
         let inner = func_arg("exp", arg, pool)?;
+        if !is_real_valued(inner, pool) {
+            return None;
+        }
         Some((inner, one_step(self.name(), expr, inner)))
     }
 }
@@ -779,12 +824,12 @@ impl RewriteRule for ProductOfExps {
 
 /// Return the default log/exp identity rules.
 ///
-/// Only identities that are safe without positivity assumptions:
-/// `log(exp(x))→x` (real principal branch) and `exp(x)·exp(y)→exp(x+y)`
-/// (valid over ℂ). Branch-cut sensitive rewrites (`exp(log(x))→x`,
-/// `log(x)+log(y)→log(xy)`, `log(a^n)→n·log(a)`, `log(a/b)→log(a)−log(b)`,
-/// `log(ab)→log a+log b`) live exclusively in the colored e-graph and require
-/// matching [`crate::simplify::SimplifyConfig::assumptions`] /
+/// Includes `log(exp(x))→x` only when `x` is real-valued (see [`LogOfExp`]) and
+/// `exp(x)·exp(y)→exp(x+y)` (valid over ℂ). Branch-cut sensitive rewrites
+/// (`exp(log(x))→x`, `log(x)+log(y)→log(xy)`, `log(a^n)→n·log(a)`,
+/// `log(a/b)→log(a)−log(b)`, `log(ab)→log a+log b`) live exclusively in the
+/// colored e-graph and require matching
+/// [`crate::simplify::SimplifyConfig::assumptions`] /
 /// [`crate::simplify::AssumptionContext`] facts (or `Domain::Positive`
 /// symbols). Use [`log_exp_rules_safe`] for the empty complex-safe set.
 pub fn log_exp_rules() -> Vec<Box<dyn RewriteRule>> {
@@ -1973,6 +2018,27 @@ mod tests {
         let rules = log_exp_rules();
         let r = simplify_with(expr, &pool, &rules, SimplifyConfig::default());
         assert_eq!(r.value, x, "got {}", pool.display(r.value));
+    }
+
+    #[test]
+    fn log_of_exp_stays_for_complex_symbol() {
+        // Principal log(exp(z)) ≠ z when Im(z) ∉ (−π, π].
+        let pool = p();
+        let z = pool.symbol("z", Domain::Complex);
+        let expr = pool.func("log", vec![pool.func("exp", vec![z])]);
+        let r = simplify_with(expr, &pool, &log_exp_rules(), SimplifyConfig::default());
+        assert_eq!(r.value, expr, "got {}", pool.display(r.value));
+    }
+
+    #[test]
+    fn log_of_exp_stays_when_imaginary_unit_present() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let i = pool.imaginary_unit();
+        let inner = pool.add(vec![x, i]);
+        let expr = pool.func("log", vec![pool.func("exp", vec![inner])]);
+        let r = simplify_with(expr, &pool, &log_exp_rules(), SimplifyConfig::default());
+        assert_eq!(r.value, expr, "got {}", pool.display(r.value));
     }
 
     #[test]

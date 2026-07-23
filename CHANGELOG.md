@@ -4,6 +4,11 @@
 
 ### Fixes
 
+- **`log(exp(z))` over ℂ:** `simplify_log_exp` only folds `log(exp(x))→x` when
+  every free symbol in `x` is real-valued; `Domain.Complex` (and `I`) refuse
+  the rewrite. Egglog no longer loads `Log∘Exp` (no domain check). Prevents
+  silent wrong answers when `Im(z) ∉ (−π, π]`.
+
 - **Complex branch-cut evaluation:** `evaluate(..., mode="complex")` now
   auto-binds the canonical imaginary unit `I → 1j`, accepts real scalar
   bindings, and evaluates non-integer powers on the principal branch via

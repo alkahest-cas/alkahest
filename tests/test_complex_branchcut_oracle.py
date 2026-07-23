@@ -212,3 +212,16 @@ def test_symbolic_arg_folds_remain_branch_safe(pool, i):
     assert "pi" in str(ak.simplify(arg(i)).value)
     assert str(ak.simplify(arg(pool.integer(-1))).value) == "arg(-1)"
     assert str(ak.simplify(arg(pool.integer(0))).value) == "arg(0)"
+
+
+def test_log_of_exp_not_folded_for_complex_symbol(pool):
+    """log(exp(z))→z is unsound over ℂ when Im(z) wraps the principal strip."""
+    from alkahest import simplify_log_exp
+
+    z = pool.symbol("z", ak.Domain.Complex)
+    expr = log(exp(z))
+    assert str(simplify_log_exp(expr).value) == "log(exp(z))"
+    # Numeric: at Im = 3π the principal value is πi, not 3πi.
+    w = complex(0, 3 * math.pi)
+    orig = evaluate(expr, {z: w}, mode="complex").value
+    assert _close(orig, complex(0, math.pi), rel=1e-9, abs_tol=1e-9)
