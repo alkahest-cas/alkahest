@@ -654,6 +654,16 @@ impl PyExprPool {
         Ok(PyExpr { id, pool })
     }
 
+    /// Canonical imaginary unit `I` (`Domain.Complex` symbol named ``"I"``).
+    ///
+    /// In ``evaluate(..., mode="complex")`` this auto-binds to ``1j`` when
+    /// unbound. Symbolic simplification folds ``I**2 → -1``, etc.
+    fn imaginary_unit(slf: PyRef<'_, Self>) -> PyExpr {
+        let id = slf.inner.imaginary_unit();
+        let pool: Py<PyExprPool> = slf.into();
+        PyExpr { id, pool }
+    }
+
     fn integer(slf: PyRef<'_, Self>, n: &Bound<'_, PyAny>) -> PyResult<PyExpr> {
         let id = integer_into_pool(&slf.inner, n)?;
         let pool: Py<PyExprPool> = slf.into();
@@ -1010,11 +1020,13 @@ impl PyExpr {
         _modulo: Option<PyObject>,
         py: Python<'_>,
     ) -> PyObject {
-        // Accept both Python int literals (x**2) and pool.integer(n) Expr objects
-        // (x**pool.integer(2)) so either style works without raising TypeError.
+        // Accept Python int/float literals and Expr exponents.
         let pool = self.pool.borrow(py);
         let exp_id = if let Ok(n) = exp.extract::<i64>() {
             pool.inner.integer(n)
+        } else if let Ok(x) = exp.extract::<f64>() {
+            // IEEE float literal → pool float node (complex eval uses principal Log).
+            pool.inner.float(x, 53)
         } else if let Ok(expr_ref) = exp.extract::<PyRef<PyExpr>>() {
             expr_ref.id
         } else {
@@ -2937,6 +2949,13 @@ fn try_complex_binding(ob: &Bound<'_, PyAny>) -> Option<ComplexF64> {
             let im: f64 = t.get_item(1).ok()?.extract().ok()?;
             return Some(ComplexF64::new(re, im));
         }
+    }
+    // Real scalars are valid complex bindings (im = 0) in complex mode.
+    if let Ok(x) = ob.extract::<f64>() {
+        return Some(ComplexF64::new(x, 0.0));
+    }
+    if let Ok(x) = ob.extract::<i64>() {
+        return Some(ComplexF64::new(x as f64, 0.0));
     }
     None
 }

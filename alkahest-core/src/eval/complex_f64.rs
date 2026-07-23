@@ -26,14 +26,20 @@ impl ComplexF64 {
             self.re * o.im + self.im * o.re,
         )
     }
-    fn powi(self, n: i64) -> Self {
+    fn powi(self, n: i64) -> Result<Self, EvalError> {
         if n == 0 {
-            return Self::ONE;
+            return Ok(Self::ONE);
         }
         if n < 0 {
-            let p = self.powi(-n);
+            if self.re == 0.0 && self.im == 0.0 {
+                return Err(error(UnsupportedReason::ZeroToNegativePower));
+            }
+            let p = self.powi(-n)?;
             let d = p.re * p.re + p.im * p.im;
-            return Self::new(p.re / d, -p.im / d);
+            if d == 0.0 || !d.is_finite() {
+                return Err(error(UnsupportedReason::NonFiniteResult));
+            }
+            return Ok(Self::new(p.re / d, -p.im / d));
         }
         let mut acc = Self::ONE;
         let mut base = self;
@@ -47,16 +53,36 @@ impl ComplexF64 {
                 base = base.mul(base);
             }
         }
-        acc
+        Ok(acc)
     }
-    fn sqrt(self) -> Self {
-        let r = (self.re * self.re + self.im * self.im).sqrt();
-        let re = ((r + self.re) / 2.0).max(0.0).sqrt();
-        let mut im = ((r - self.re) / 2.0).max(0.0).sqrt();
-        if self.im < 0.0 {
-            im = -im;
+
+    /// Principal-branch power `z^w = exp(w · Log z)` for `z ≠ 0`.
+    fn powc(self, exp: Self) -> Result<Self, EvalError> {
+        if self.re == 0.0 && self.im == 0.0 {
+            // 0^w: only non-negative real exponents are defined in the
+            // principal sense we support here.
+            if exp.im == 0.0 && exp.re > 0.0 {
+                return Ok(Self::ZERO);
+            }
+            if exp.re == 0.0 && exp.im == 0.0 {
+                return Err(error(UnsupportedReason::UnsupportedExpression {
+                    kind: "branch_cut",
+                }));
+            }
+            return Err(error(UnsupportedReason::ZeroToNegativePower));
         }
-        Self::new(re, im)
+        let ln = self.ln()?;
+        Ok(exp.mul(ln).exp())
+    }
+
+    fn sqrt(self) -> Result<Self, EvalError> {
+        // Use the principal logarithm rather than the textbook geometric
+        // formula: `((r±re)/2)^½` suffers catastrophic cancellation for
+        // arguments near the negative-real cut (e.g. -100 + 1e-6·i).
+        if self.re == 0.0 && self.im == 0.0 {
+            return Ok(Self::ZERO);
+        }
+        self.powc(Self::new(0.5, 0.0))
     }
     fn exp(self) -> Self {
         let s = self.re.exp();
@@ -116,10 +142,17 @@ fn eval_node(
         ExprData::Integer(n) => Ok(ComplexF64::new(n.0.to_f64(), 0.0)),
         ExprData::Rational(r) => Ok(ComplexF64::new(r.0.to_f64(), 0.0)),
         ExprData::Float(f) => Ok(ComplexF64::new(f.inner.to_f64(), 0.0)),
-        ExprData::Symbol { .. } => bindings
-            .get(&expr)
-            .copied()
-            .ok_or(error(UnsupportedReason::UnboundSymbol { symbol: expr })),
+        ExprData::Symbol { .. } => {
+            if let Some(&v) = bindings.get(&expr) {
+                Ok(v)
+            } else if pool.is_imaginary_unit(expr) {
+                // Canonical I evaluates to 0+1j in complex mode without an
+                // explicit binding (matches symbolic `i² → −1` folding).
+                Ok(ComplexF64::new(0.0, 1.0))
+            } else {
+                Err(error(UnsupportedReason::UnboundSymbol { symbol: expr }))
+            }
+        }
         ExprData::Add(args) => args.iter().try_fold(ComplexF64::ZERO, |a, &x| {
             Ok(a.add(eval_node(x, pool, bindings)?))
         }),
@@ -129,11 +162,21 @@ fn eval_node(
         ExprData::Pow { base, exp } => {
             let b = eval_node(base, pool, bindings)?;
             match pool.get(exp) {
-                ExprData::Integer(n) => Ok(b.powi(n.0.to_i64().unwrap_or(0))),
+                ExprData::Integer(n) => b.powi(n.0.to_i64().unwrap_or(0)),
                 ExprData::Rational(r) if *r.0.denom() == 1 => {
-                    Ok(b.powi(r.0.numer().to_i64().unwrap_or(0)))
+                    b.powi(r.0.numer().to_i64().unwrap_or(0))
                 }
-                _ => Err(error(UnsupportedReason::NonIntegerExponent)),
+                // Principal branch: z^w = exp(w · Log z). Covers float and
+                // non-integer rational exponents (e.g. (-1)^(1/2) → i).
+                _ => {
+                    let e = eval_node(exp, pool, bindings)?;
+                    // Fast path: pure integer-valued real exponent.
+                    if e.im == 0.0 && e.re.fract() == 0.0 && e.re.abs() < (i64::MAX as f64) {
+                        b.powi(e.re as i64)
+                    } else {
+                        b.powc(e)
+                    }
+                }
             }
         }
         ExprData::Func { name, args } if args.len() == 1 => {
@@ -143,7 +186,7 @@ fn eval_node(
                 "cos" => Ok(x.cos()),
                 "exp" => Ok(x.exp()),
                 "log" => x.ln(),
-                "sqrt" => Ok(x.sqrt()),
+                "sqrt" => x.sqrt(),
                 "re" => Ok(ComplexF64::new(x.re, 0.0)),
                 "im" => Ok(ComplexF64::new(x.im, 0.0)),
                 "conjugate" => Ok(ComplexF64::new(x.re, -x.im)),
@@ -176,5 +219,40 @@ mod tests {
                 .reason,
             UnsupportedReason::UnsupportedExpression { kind: "branch_cut" }
         );
+    }
+
+    #[test]
+    fn imaginary_unit_auto_binds() {
+        let pool = crate::kernel::ExprPool::new();
+        let i = pool.imaginary_unit();
+        let v = eval_complex_f64(i, &pool, &HashMap::new()).unwrap();
+        assert_eq!(v, ComplexF64::new(0.0, 1.0));
+        let i2 = pool.mul(vec![i, i]);
+        let v2 = eval_complex_f64(i2, &pool, &HashMap::new()).unwrap();
+        assert!((v2.re + 1.0).abs() < 1e-12 && v2.im.abs() < 1e-12);
+    }
+
+    #[test]
+    fn principal_sqrt_of_negative_one() {
+        let pool = crate::kernel::ExprPool::new();
+        let expr = pool.func("sqrt", vec![pool.integer(-1_i32)]);
+        let v = eval_complex_f64(expr, &pool, &HashMap::new()).unwrap();
+        assert!((v.re).abs() < 1e-12 && (v.im - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn principal_half_power_of_negative_one() {
+        let pool = crate::kernel::ExprPool::new();
+        let expr = pool.pow(pool.integer(-1_i32), pool.rational(1, 2));
+        let v = eval_complex_f64(expr, &pool, &HashMap::new()).unwrap();
+        assert!((v.re).abs() < 1e-12 && (v.im - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn log_of_negative_one_is_i_pi() {
+        let pool = crate::kernel::ExprPool::new();
+        let expr = pool.func("log", vec![pool.integer(-1_i32)]);
+        let v = eval_complex_f64(expr, &pool, &HashMap::new()).unwrap();
+        assert!(v.re.abs() < 1e-12 && (v.im - std::f64::consts::PI).abs() < 1e-12);
     }
 }
