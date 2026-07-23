@@ -2940,6 +2940,23 @@ fn parse_gauss_point(ob: &Bound<'_, PyAny>) -> PyResult<GaussRat> {
     ))
 }
 fn try_complex_binding(ob: &Bound<'_, PyAny>) -> Option<ComplexF64> {
+    if let Some(v) = try_strict_complex_binding(ob) {
+        return Some(v);
+    }
+    // Real scalars are valid only when the caller already selected complex mode.
+    if let Ok(x) = ob.extract::<f64>() {
+        return Some(ComplexF64::new(x, 0.0));
+    }
+    if let Ok(x) = ob.extract::<i64>() {
+        return Some(ComplexF64::new(x as f64, 0.0));
+    }
+    None
+}
+
+/// True complex values that should trigger auto-mode complex evaluation.
+/// Deliberately excludes reals/`Fraction` (those extract as `f64`) so auto
+/// mode still prefers exact rational / f64 backends.
+fn try_strict_complex_binding(ob: &Bound<'_, PyAny>) -> Option<ComplexF64> {
     if let Ok(c) = ob.downcast::<PyComplex>() {
         return Some(ComplexF64::new(c.real(), c.imag()));
     }
@@ -2949,13 +2966,6 @@ fn try_complex_binding(ob: &Bound<'_, PyAny>) -> Option<ComplexF64> {
             let im: f64 = t.get_item(1).ok()?.extract().ok()?;
             return Some(ComplexF64::new(re, im));
         }
-    }
-    // Real scalars are valid complex bindings (im = 0) in complex mode.
-    if let Ok(x) = ob.extract::<f64>() {
-        return Some(ComplexF64::new(x, 0.0));
-    }
-    if let Ok(x) = ob.extract::<i64>() {
-        return Some(ComplexF64::new(x as f64, 0.0));
     }
     None
 }
@@ -5906,7 +5916,7 @@ fn py_evaluate(
         || (mode == "auto"
             && bindings
                 .iter()
-                .any(|(_, v)| try_complex_binding(&v).is_some()));
+                .any(|(_, v)| try_strict_complex_binding(&v).is_some()));
     if wants_complex {
         let mut env = std::collections::HashMap::new();
         for (key, value) in bindings.iter() {
@@ -5914,7 +5924,9 @@ fn py_evaluate(
             env.insert(
                 var.id,
                 try_complex_binding(&value).ok_or_else(|| {
-                    PyTypeError::new_err("complex bindings must be complex numbers")
+                    PyTypeError::new_err(
+                        "complex bindings must be complex numbers (or real scalars in mode='complex')",
+                    )
                 })?,
             );
         }
