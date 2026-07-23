@@ -73,9 +73,11 @@ def test_log_exp_inverse_simplify(x):
     assert_matches_reference(r, x, lambda v: v)
 
 
-def test_exp_log_inverse_simplify_log_exp(x):
-    """exp(log(x)) -> x for positive x, checked via simplify_log_exp."""
-    r = ak.simplify_log_exp(ak.exp(ak.log(x))).value
+def test_exp_log_inverse_simplify_log_exp(x, pool):
+    """exp(log(x)) -> x for positive x, via Assumptions + simplify_log_exp."""
+    assumptions = ak.Assumptions(pool)
+    assumptions.refine(pool.gt(x, pool.integer(0)))
+    r = ak.simplify_log_exp(ak.exp(ak.log(x)), assumptions).value
     assert_matches_reference(r, x, lambda v: v, points=POSITIVE_POINTS)
 
 
@@ -86,21 +88,11 @@ def test_exp_log_inverse_simplify(x):
 
 
 def test_simplify_log_exp_inverse_pair(pool, x, y):
-    """log(exp(x)) + exp(log(y)) should collapse to x + y via the two
-    independent inverse identities. This is checked via *structural* Expr
-    equality against `simplify(x + y)` (the same technique the exemplar
-    `test_tg_derivatives.py::test_derivative_of_constant_wrt_unrelated_var`
-    uses via `r.value == pool.integer(0)`) rather than numeric evaluation:
-    since `log(exp(x)) + exp(log(y))` already evaluates correctly to `x + y`
-    even when left completely unsimplified, a numeric value-preservation
-    check cannot detect this no-op at all (it trivially passes either way).
-    Structural equality is not the same as string-matching the normal form —
-    it's the pool's own canonical-node equality, and it's precisely what's
-    needed to notice "nothing was folded" as opposed to "something wrong was
-    computed".
-    """
+    """log(exp(x)) + exp(log(y)) collapses to x + y under y > 0."""
+    assumptions = ak.Assumptions(pool)
+    assumptions.refine(pool.gt(y, pool.integer(0)))
     combined = ak.log(ak.exp(x)) + ak.exp(ak.log(y))
-    r = ak.simplify_log_exp(combined).value
+    r = ak.simplify_log_exp(combined, assumptions).value
     target = ak.simplify(x + y).value
     assert r == target
 
@@ -112,25 +104,34 @@ def test_simplify_log_exp_inverse_pair(pool, x, y):
 # and `exp(x)·exp(y)→exp(x+y)`.  Structural equality is required here for the
 # same reason as `test_simplify_log_exp_inverse_pair`: the unsimplified forms
 # already evaluate correctly, so numeric checks cannot detect a no-op.
+# Positivity-sensitive rules require explicit Assumptions.
 
 
 def test_simplify_log_exp_product_rule_folds(pool, x, y):
     """log(x) + log(y) -> log(x*y) for positive x, y."""
-    r = ak.simplify_log_exp(ak.log(x) + ak.log(y)).value
+    assumptions = ak.Assumptions(pool)
+    assumptions.refine(pool.gt(x, pool.integer(0)))
+    assumptions.refine(pool.gt(y, pool.integer(0)))
+    r = ak.simplify_log_exp(ak.log(x) + ak.log(y), assumptions).value
     target = ak.simplify(ak.log(x * y)).value
     assert r == target
 
 
 def test_simplify_log_exp_power_rule_folds(pool, x):
     """log(x**2) -> 2*log(x) for positive x."""
-    r = ak.simplify_log_exp(ak.log(x**2)).value
+    assumptions = ak.Assumptions(pool)
+    assumptions.refine(pool.gt(x, pool.integer(0)))
+    r = ak.simplify_log_exp(ak.log(x**2), assumptions).value
     target = ak.simplify(2 * ak.log(x)).value
     assert r == target
 
 
 def test_simplify_log_exp_quotient_rule_folds(pool, x, y):
     """log(x/y) -> log(x) - log(y) for positive x, y."""
-    r = ak.simplify_log_exp(ak.log(x / y)).value
+    assumptions = ak.Assumptions(pool)
+    assumptions.refine(pool.gt(x, pool.integer(0)))
+    assumptions.refine(pool.gt(y, pool.integer(0)))
+    r = ak.simplify_log_exp(ak.log(x / y), assumptions).value
     target = ak.simplify(ak.log(x) - ak.log(y)).value
     assert r == target
 
@@ -143,7 +144,6 @@ def test_simplify_log_exp_product_of_exps_folds(pool, x, y):
 
 
 # --- cancel / together --------------------------------------------------------
-
 
 def test_cancel_difference_of_squares(x):
     """cancel((x^2-4)/(x-2), [x]) -> x+2, checked away from the removed x=2

@@ -15,7 +15,7 @@
 /// let r = simplify_with(tan_x, &pool, &rules, SimplifyConfig::default());
 /// // tan(x) → sin(x) * cos(x)^(-1)
 /// ```
-use crate::deriv::log::{DerivationLog, RewriteStep, SideCondition};
+use crate::deriv::log::{DerivationLog, RewriteStep};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::pattern::{Pattern, Substitution};
 use crate::simplify::discrimination_net::{pattern_head, DiscriminationIndex};
@@ -662,12 +662,12 @@ impl RewriteRule for LogOfExp {
     }
 }
 
-/// `exp(log(x)) → x`.
+/// `exp(log(x)) → x` (requires `x > 0`).
 ///
-/// **Branch-cut caveat**: only unconditionally valid for `x > 0`. The rule
-/// still fires, but records [`SideCondition::Positive`] on `x` in the
-/// derivation log so callers (including the Lean certificate exporter) can
-/// audit — or discharge — the assumption made.
+/// Not registered in [`log_exp_rules`]: the identity is branch-cut sensitive and
+/// only fires via the colored e-graph when an explicit or static
+/// [`SideCondition::Positive`] fact is present. Prefer
+/// [`crate::simplify::AssumptionContext`] or `Domain::Positive` symbols.
 pub struct ExpOfLog;
 
 impl RewriteRule for ExpOfLog {
@@ -676,26 +676,17 @@ impl RewriteRule for ExpOfLog {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        let arg = func_arg("exp", expr, pool)?;
-        let inner = func_arg("log", arg, pool)?;
-        let mut log = DerivationLog::new();
-        log.push(RewriteStep::with_conditions(
-            self.name(),
-            expr,
-            inner,
-            vec![SideCondition::Positive(inner)],
-        ));
-        Some((inner, log))
+        // Intentionally a no-op in the ungated rule engine. Conditional firing
+        // lives in `colored_egraph::rule_exp_of_log`.
+        let _ = (expr, pool);
+        None
     }
 }
 
-/// `log(a * b) → log(a) + log(b)`.
+/// `log(a * b) → log(a) + log(b)` (requires positive factors).
 ///
-/// **Branch-cut caveat**: this identity is only valid when all factors are
-/// positive reals.  The rule still fires, but each factor is recorded as a
-/// [`SideCondition::Positive`] in the derivation log so callers can audit the
-/// assumptions made.  Use [`log_exp_rules_safe`] to obtain a rule set that
-/// excludes this rule entirely.
+/// Not registered in [`log_exp_rules`]; gated via the colored e-graph's
+/// `log_of_product_positive` rule under matching positivity facts.
 pub struct LogOfProduct;
 
 impl RewriteRule for LogOfProduct {
@@ -704,33 +695,15 @@ impl RewriteRule for LogOfProduct {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        let arg = func_arg("log", expr, pool)?;
-        let factors = match pool.get(arg) {
-            ExprData::Mul(v) if v.len() >= 2 => v,
-            _ => return None,
-        };
-        let logs: Vec<ExprId> = factors.iter().map(|&f| pool.func("log", vec![f])).collect();
-        let after = pool.add(logs);
-        let conds: Vec<SideCondition> = factors
-            .iter()
-            .map(|&f| SideCondition::Positive(f))
-            .collect();
-        let mut log = DerivationLog::new();
-        log.push(RewriteStep::with_conditions(
-            "log_of_product",
-            expr,
-            after,
-            conds,
-        ));
-        Some((after, log))
+        let _ = (expr, pool);
+        None
     }
 }
 
-/// `log(a^n) → n * log(a)`.
+/// `log(a^n) → n * log(a)` (requires `a > 0`).
 ///
-/// **Branch-cut caveat**: only unconditionally valid for positive real `a` (and
-/// real `n`).  Recorded without side conditions for parity with the historical
-/// `LogOfPow` helper; prefer [`log_exp_rules_safe`] when complex-safe.
+/// Not registered in [`log_exp_rules`]; gated via the colored e-graph under a
+/// [`SideCondition::Positive`] fact on the base.
 pub struct LogOfPow;
 
 impl RewriteRule for LogOfPow {
@@ -739,23 +712,15 @@ impl RewriteRule for LogOfPow {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        let arg = func_arg("log", expr, pool)?;
-        let (base, exp) = match pool.get(arg) {
-            ExprData::Pow { base, exp } => (base, exp),
-            _ => return None,
-        };
-        let log_base = pool.func("log", vec![base]);
-        let after = pool.mul(vec![exp, log_base]);
-        Some((after, one_step(self.name(), expr, after)))
+        let _ = (expr, pool);
+        None
     }
 }
 
-/// `log(x) + log(y) + ⋯ → log(x·y·⋯)`.
+/// `log(x) + log(y) + ⋯ → log(x·y·⋯)` (requires every argument positive).
 ///
-/// **Branch-cut caveat**: valid when every argument is positive real.  Each
-/// factor is recorded as [`SideCondition::Positive`].  Inverse of
-/// [`LogOfProduct`] (which is *not* registered in [`log_exp_rules`], so the
-/// two cannot oscillate).
+/// Not registered in [`log_exp_rules`]; gated via the colored e-graph. Inverse
+/// of the colored `log_of_product_positive` rule (also assumption-gated).
 pub struct SumOfLogs;
 
 impl RewriteRule for SumOfLogs {
@@ -764,33 +729,16 @@ impl RewriteRule for SumOfLogs {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        let terms = match pool.get(expr) {
-            ExprData::Add(v) if v.len() >= 2 => v,
-            _ => return None,
-        };
-        let mut args = Vec::with_capacity(terms.len());
-        for t in terms {
-            let a = func_arg("log", t, pool)?;
-            args.push(a);
-        }
-        let after = pool.func("log", vec![pool.mul(args.clone())]);
-        let conds: Vec<SideCondition> = args.iter().map(|&a| SideCondition::Positive(a)).collect();
-        let mut log = DerivationLog::new();
-        log.push(RewriteStep::with_conditions(
-            "sum_of_logs",
-            expr,
-            after,
-            conds,
-        ));
-        Some((after, log))
+        let _ = (expr, pool);
+        None
     }
 }
 
-/// `log(a · b⁻¹ · ⋯) → log(a) − log(b) − ⋯`.
+/// `log(a · b⁻¹ · ⋯) → log(a) − log(b) − ⋯` (requires positive factors).
 ///
-/// Fires only when the argument is a product containing at least one negative
-/// integer power (canonical quotient form).  Plain `log(x·y)` is intentionally
-/// left alone so it does not fight [`SumOfLogs`].
+/// Not registered in [`log_exp_rules`]; gated via the colored e-graph. Fires
+/// only when the argument is a product containing at least one negative
+/// integer power (canonical quotient form).
 pub struct LogOfQuotient;
 
 impl RewriteRule for LogOfQuotient {
@@ -799,45 +747,8 @@ impl RewriteRule for LogOfQuotient {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        let arg = func_arg("log", expr, pool)?;
-        let factors = match pool.get(arg) {
-            ExprData::Mul(v) if v.len() >= 2 => v,
-            _ => return None,
-        };
-        let has_reciprocal = factors.iter().any(|&f| match pool.get(f) {
-            ExprData::Pow { exp, .. } => match pool.get(exp) {
-                ExprData::Integer(n) => n.0 < 0,
-                _ => false,
-            },
-            _ => false,
-        });
-        if !has_reciprocal {
-            return None;
-        }
-        let mut terms: Vec<ExprId> = Vec::with_capacity(factors.len());
-        let mut conds: Vec<SideCondition> = Vec::new();
-        for f in factors {
-            match pool.get(f) {
-                ExprData::Pow { base, exp } => {
-                    conds.push(SideCondition::Positive(base));
-                    let log_base = pool.func("log", vec![base]);
-                    terms.push(pool.mul(vec![exp, log_base]));
-                }
-                _ => {
-                    conds.push(SideCondition::Positive(f));
-                    terms.push(pool.func("log", vec![f]));
-                }
-            }
-        }
-        let after = pool.add(terms);
-        let mut log = DerivationLog::new();
-        log.push(RewriteStep::with_conditions(
-            "log_of_quotient",
-            expr,
-            after,
-            conds,
-        ));
-        Some((after, log))
+        let _ = (expr, pool);
+        None
     }
 }
 
@@ -868,21 +779,16 @@ impl RewriteRule for ProductOfExps {
 
 /// Return the default log/exp identity rules.
 ///
-/// Includes inverse cancellations, the combining rules `log(x)+log(y)→log(xy)`
-/// and `exp(x)·exp(y)→exp(x+y)`, the power rule `log(a^n)→n·log(a)`, and the
-/// quotient expansion `log(a/b)→log(a)−log(b)`.  The expand-style
-/// [`LogOfProduct`] (`log(ab)→log a+log b`) is intentionally omitted so it
-/// cannot oscillate against [`SumOfLogs`].  Use [`log_exp_rules_safe`] for the
-/// empty complex-safe set.
+/// Only identities that are safe without positivity assumptions:
+/// `log(exp(x))→x` (real principal branch) and `exp(x)·exp(y)→exp(x+y)`
+/// (valid over ℂ). Branch-cut sensitive rewrites (`exp(log(x))→x`,
+/// `log(x)+log(y)→log(xy)`, `log(a^n)→n·log(a)`, `log(a/b)→log(a)−log(b)`,
+/// `log(ab)→log a+log b`) live exclusively in the colored e-graph and require
+/// matching [`crate::simplify::SimplifyConfig::assumptions`] /
+/// [`crate::simplify::AssumptionContext`] facts (or `Domain::Positive`
+/// symbols). Use [`log_exp_rules_safe`] for the empty complex-safe set.
 pub fn log_exp_rules() -> Vec<Box<dyn RewriteRule>> {
-    vec![
-        Box::new(LogOfExp),
-        Box::new(ExpOfLog),
-        Box::new(SumOfLogs),
-        Box::new(LogOfPow),
-        Box::new(LogOfQuotient),
-        Box::new(ProductOfExps),
-    ]
+    vec![Box::new(LogOfExp), Box::new(ProductOfExps)]
 }
 
 /// Log/exp rules that are safe for complex numbers (no branch-cut rewrites).
@@ -2070,18 +1976,32 @@ mod tests {
     }
 
     #[test]
-    fn exp_of_log_folds() {
+    fn exp_of_log_stays_without_assumptions() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let expr = pool.func("exp", vec![pool.func("log", vec![x])]);
         let rules = log_exp_rules();
         let r = simplify_with(expr, &pool, &rules, SimplifyConfig::default());
+        assert_eq!(r.value, expr, "got {}", pool.display(r.value));
+    }
+
+    #[test]
+    fn exp_of_log_folds_under_positive_assumptions() {
+        use crate::deriv::SideCondition;
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.func("exp", vec![pool.func("log", vec![x])]);
+        let config = SimplifyConfig {
+            assumptions: vec![SideCondition::Positive(x)],
+            ..SimplifyConfig::default()
+        };
+        let r = simplify_with(expr, &pool, &log_exp_rules(), config);
         assert_eq!(r.value, x, "got {}", pool.display(r.value));
     }
 
     #[test]
-    fn log_exp_inverse_pair_folds_under_add() {
-        // Bottom-up simplify_with must rewrite both Add children.
+    fn log_exp_inverse_pair_folds_log_of_exp_only_without_assumptions() {
+        // Bottom-up simplify_with rewrites log(exp(x)); exp(log(y)) stays put.
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let y = pool.symbol("y", Domain::Real);
@@ -2091,7 +2011,7 @@ mod tests {
         ]);
         let rules = log_exp_rules();
         let r = simplify_with(expr, &pool, &rules, SimplifyConfig::default());
-        let expected = pool.add(vec![x, y]);
+        let expected = pool.add(vec![x, pool.func("exp", vec![pool.func("log", vec![y])])]);
         assert_eq!(r.value, expected, "got {}", pool.display(r.value));
     }
 
@@ -2136,31 +2056,61 @@ mod tests {
     }
 
     #[test]
-    fn log_of_pow_folds() {
+    fn log_of_pow_stays_without_assumptions() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let n = pool.integer(3_i32);
         let expr = pool.func("log", vec![pool.pow(x, n)]);
         let rules = log_exp_rules();
         let r = simplify_with(expr, &pool, &rules, SimplifyConfig::default());
+        assert_eq!(r.value, expr, "got {}", pool.display(r.value));
+    }
+
+    #[test]
+    fn log_of_pow_folds_under_positive_assumptions() {
+        use crate::deriv::SideCondition;
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let n = pool.integer(3_i32);
+        let expr = pool.func("log", vec![pool.pow(x, n)]);
+        let config = SimplifyConfig {
+            assumptions: vec![SideCondition::Positive(x)],
+            ..SimplifyConfig::default()
+        };
+        let r = simplify_with(expr, &pool, &log_exp_rules(), config);
         let expected = pool.mul(vec![n, pool.func("log", vec![x])]);
         assert_eq!(r.value, expected, "got {}", pool.display(r.value));
     }
 
     #[test]
-    fn sum_of_logs_folds() {
+    fn sum_of_logs_stays_without_assumptions() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let y = pool.symbol("y", Domain::Real);
         let expr = pool.add(vec![pool.func("log", vec![x]), pool.func("log", vec![y])]);
         let rules = log_exp_rules();
         let r = simplify_with(expr, &pool, &rules, SimplifyConfig::default());
+        assert_eq!(r.value, expr, "got {}", pool.display(r.value));
+    }
+
+    #[test]
+    fn sum_of_logs_folds_under_positive_assumptions() {
+        use crate::deriv::SideCondition;
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let expr = pool.add(vec![pool.func("log", vec![x]), pool.func("log", vec![y])]);
+        let config = SimplifyConfig {
+            assumptions: vec![SideCondition::Positive(x), SideCondition::Positive(y)],
+            ..SimplifyConfig::default()
+        };
+        let r = simplify_with(expr, &pool, &log_exp_rules(), config);
         let expected = pool.func("log", vec![pool.mul(vec![x, y])]);
         assert_eq!(r.value, expected, "got {}", pool.display(r.value));
     }
 
     #[test]
-    fn log_of_quotient_folds() {
+    fn log_of_quotient_stays_without_assumptions() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let y = pool.symbol("y", Domain::Real);
@@ -2168,6 +2118,22 @@ mod tests {
         let expr = pool.func("log", vec![quot]);
         let rules = log_exp_rules();
         let r = simplify_with(expr, &pool, &rules, SimplifyConfig::default());
+        assert_eq!(r.value, expr, "got {}", pool.display(r.value));
+    }
+
+    #[test]
+    fn log_of_quotient_folds_under_positive_assumptions() {
+        use crate::deriv::SideCondition;
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let quot = pool.mul(vec![x, pool.pow(y, pool.integer(-1_i32))]);
+        let expr = pool.func("log", vec![quot]);
+        let config = SimplifyConfig {
+            assumptions: vec![SideCondition::Positive(x), SideCondition::Positive(y)],
+            ..SimplifyConfig::default()
+        };
+        let r = simplify_with(expr, &pool, &log_exp_rules(), config);
         let expected = pool.add(vec![
             pool.func("log", vec![x]),
             pool.mul(vec![pool.integer(-1_i32), pool.func("log", vec![y])]),

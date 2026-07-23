@@ -4,6 +4,14 @@
 
 ### Fixes
 
+- **Assumption-gated log/exp rewrites:** `simplify_log_exp` and egglog no longer
+  apply branch-cut identities (`exp(log(x))→x`, `log(x)+log(y)→log(xy)`,
+  `log(a^n)→n·log(a)`, `log(a/b)→log(a)−log(b)`) without positivity facts.
+  Pass an `Assumptions` context or use `Domain.Positive` symbols; safe rules
+  `log(exp(x))→x` and `exp(x)·exp(y)→exp(x+y)` still apply unconditionally.
+  Static symbol domains are now collected into the colored e-graph pass for
+  all `simplify_with` callers.
+
 - **E-graph constant folding:** `simplify_egraph((x+x)/2)` now returns `x`
   instead of leaving `((x * 2) * 1/2)`. The post-extraction const-fold pass
   flattens nested `Add`/`Mul` so coefficients from linear canonization and

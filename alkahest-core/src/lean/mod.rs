@@ -1582,15 +1582,21 @@ mod tests {
 
     #[test]
     fn exp_of_log_certifies_with_positivity_hyp() {
-        // `ExpOfLog` records `SideCondition::Positive(x)`; the Lean exporter
-        // upgrades that into an explicit `(x : ℝ) (hx : 0 < x)` binder and
-        // closes the goal with `Real.exp_log hx` instead of withholding.
-        use crate::simplify::{rulesets::log_exp_rules, simplify_with, SimplifyConfig};
+        // Colored `exp_of_log` records `SideCondition::Positive(x)` once the
+        // caller discharges it; the Lean exporter upgrades that into an
+        // explicit `(x : ℝ) (hx : 0 < x)` binder closed by `Real.exp_log hx`.
+        use crate::kernel::expr::PredicateKind;
+        use crate::simplify::AssumptionContext;
 
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
+        let zero = pool.integer(0_i32);
+        let mut assumptions = AssumptionContext::new();
+        assumptions
+            .refine(pool.predicate(PredicateKind::Gt, vec![x, zero]), &pool)
+            .unwrap();
         let expr = pool.func("exp", vec![pool.func("log", vec![x])]);
-        let derived = simplify_with(expr, &pool, &log_exp_rules(), SimplifyConfig::default());
+        let derived = assumptions.simplify(expr, &pool);
         let lean = emit_lean_expr(&derived, &pool);
         assert!(
             !lean.is_empty(),
@@ -1698,17 +1704,25 @@ mod tests {
 
     #[test]
     fn sum_of_logs_certifies_with_positivity_hyp() {
-        // `SumOfLogs` (`log x + log y → log(x·y)`) records `Positive(x)`,
-        // `Positive(y)`. The exporter upgrades the two-factor case into an
-        // explicit-binder `Real.log_mul` certificate rather than the (failing)
-        // `ring_nf; simp` fallback.
-        use crate::simplify::{rulesets::log_exp_rules, simplify_with, SimplifyConfig};
+        // Colored `sum_of_logs` records `Positive(x)`, `Positive(y)` once the
+        // caller discharges them; the exporter upgrades the two-factor case
+        // into an explicit-binder `Real.log_mul` certificate.
+        use crate::kernel::expr::PredicateKind;
+        use crate::simplify::AssumptionContext;
 
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let y = pool.symbol("y", Domain::Real);
+        let zero = pool.integer(0_i32);
+        let mut assumptions = AssumptionContext::new();
+        assumptions
+            .refine(pool.predicate(PredicateKind::Gt, vec![x, zero]), &pool)
+            .unwrap();
+        assumptions
+            .refine(pool.predicate(PredicateKind::Gt, vec![y, zero]), &pool)
+            .unwrap();
         let expr = pool.add(vec![pool.func("log", vec![x]), pool.func("log", vec![y])]);
-        let derived = simplify_with(expr, &pool, &log_exp_rules(), SimplifyConfig::default());
+        let derived = assumptions.simplify(expr, &pool);
         let lean = emit_lean_expr(&derived, &pool);
         assert!(!lean.is_empty(), "log x + log y should certify under x,y>0");
         assert!(

@@ -147,7 +147,15 @@ fn push_unique(facts: &mut Vec<SideCondition>, fact: SideCondition) {
     }
 }
 
-fn collect_static_domain_facts(expr: ExprId, pool: &ExprPool, facts: &mut Vec<SideCondition>) {
+/// Walk `expr` and record rewrite facts implied by static symbol domains.
+///
+/// Only [`Domain::Positive`] (→ Positive + NonZero) and [`Domain::NonZero`] are
+/// collected. Other domains do not authorize conditional rewrites.
+pub(crate) fn collect_static_domain_facts(
+    expr: ExprId,
+    pool: &ExprPool,
+    facts: &mut Vec<SideCondition>,
+) {
     match pool.get(expr) {
         ExprData::Symbol { domain, .. } => match domain {
             Domain::Positive => {

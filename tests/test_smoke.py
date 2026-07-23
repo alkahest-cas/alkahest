@@ -434,8 +434,8 @@ def test_lean_sum_and_product_rule_certificates():
 
 
 def test_lean_log_exp_parens_and_exp_log_certifies_with_positivity_hyp():
-    """Nested log/exp must parenthesize; exp∘log certifies via a `0 < x` binder."""
-    from alkahest import simplify_log_exp
+    """Nested log/exp must parenthesize; exp∘log certifies under x > 0."""
+    from alkahest import Assumptions, simplify_log_exp
 
     p = pool()
     x = p.symbol("x")
@@ -444,11 +444,11 @@ def test_lean_log_exp_parens_and_exp_log_certifies_with_positivity_hyp():
     assert "Real.log (Real.exp" in log_exp.certificate
     assert "sorry" not in log_exp.certificate
 
-    # exp(log(x)) needs `0 < x`; the derivation log records that as a
-    # positivity side condition, and the Lean exporter upgrades it into an
-    # explicit `(x : ℝ) (hx : 0 < x)` binder closed by `Real.exp_log hx`
-    # rather than withholding the certificate.
-    exp_log = simplify_log_exp(exp(log(x)))
+    # exp(log(x)) needs `0 < x`; gate via Assumptions so the colored rewrite
+    # records positivity and the Lean exporter emits `(hx : 0 < x)`.
+    assumptions = Assumptions(p)
+    assumptions.refine(p.gt(x, p.integer(0)))
+    exp_log = simplify_log_exp(exp(log(x)), assumptions)
     assert exp_log.certificate is not None
     assert "(hx : 0 < x)" in exp_log.certificate
     assert "Real.exp_log hx" in exp_log.certificate
