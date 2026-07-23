@@ -33,7 +33,8 @@
 //! | term in `F(s)`              | `L⁻¹` term                       |
 //! |-----------------------------|----------------------------------|
 //! | `A/(s−a)^n`                 | `A·t^{n−1} e^{a t}/(n−1)!`        |
-//! | `(B s + C)/((s−p)²+ω²)^n`   | damped sin/cos (`n = 1`)         |
+//! | `(B s + C)/((s−p)²+ω²)`     | damped sin/cos (`n = 1`)         |
+//! | `(B s + C)/((s−p)²+ω²)²`    | `t`-weighted damped sin/cos      |
 //! | `e^{−a s} F(s)`             | `θ(t−a)·(L⁻¹F)(t−a)`             |
 //!
 //! A leading polynomial part of `F` (improper rational) maps back to derivatives
@@ -875,11 +876,19 @@ fn invert_linear_pole(
     Ok(pool.mul(parts))
 }
 
-/// Invert `(B s + C)/((s−p)² + ω²)` (single power `n = 1`) into damped sin/cos:
+/// Invert `(B s + C)/((s−p)² + ω²)^n` for `n ∈ {1, 2}` into damped sin/cos.
 ///
 /// ```text
-///   L⁻¹ = e^{p t} ( B cos(ω t) + ((C + B p)/ω) sin(ω t) ).
+///   n = 1:  e^{p t} ( B cos(ω t) + ((C + B p)/ω) sin(ω t) )
+///
+///   n = 2:  write B s + C = B(s−p) + (B p + C); then
+///           L⁻¹{(s−p)/den²} = (t/(2ω)) e^{p t} sin(ω t)
+///           L⁻¹{1/den²}     = e^{p t}/(2ω³) (sin(ω t) − ω t cos(ω t))
 /// ```
+///
+/// Higher powers (`n ≥ 3`) are declined.  The `n = 2` case is required for
+/// round-trips of `t·sin` / `t·cos` (frequency differentiation of the
+/// quadratic table entries).
 fn invert_quadratic(
     numer: ExprId,
     base: ExprId,
@@ -888,9 +897,9 @@ fn invert_quadratic(
     t: ExprId,
     pool: &ExprPool,
 ) -> Result<ExprId, LaplaceError> {
-    if n != 1 {
+    if n != 1 && n != 2 {
         return Err(LaplaceError::NotInvertible(
-            "repeated irreducible quadratic pole (n ≥ 2) not in table".into(),
+            "repeated irreducible quadratic pole (n ≥ 3) not in table".into(),
         ));
     }
     // Write base = s² + β s + γ. Complete the square: (s + β/2)² + (γ − β²/4).
@@ -916,14 +925,32 @@ fn invert_quadratic(
     let (bb, cc) = as_affine(numer, s, pool)
         .ok_or_else(|| LaplaceError::NotInvertible(pool.display(numer).to_string()))?;
 
-    // e^{p t} [ B cos(ω t) + ((C + B p)/ω) sin(ω t) ]
     let exp_pt = pool.func("exp", vec![pool.mul(vec![p, t])]);
     let omega_t = pool.mul(vec![omega, t]);
-    let cos_term = pool.mul(vec![bb, pool.func("cos", vec![omega_t])]);
-    let bp = pool.mul(vec![bb, p]);
-    let sin_coeff = pool.mul(vec![pool.add(vec![cc, bp]), recip(omega, pool)]);
-    let sin_term = pool.mul(vec![sin_coeff, pool.func("sin", vec![omega_t])]);
-    Ok(pool.mul(vec![exp_pt, pool.add(vec![cos_term, sin_term])]))
+    let sin_wt = pool.func("sin", vec![omega_t]);
+    let cos_wt = pool.func("cos", vec![omega_t]);
+
+    if n == 1 {
+        // e^{p t} [ B cos(ω t) + ((C + B p)/ω) sin(ω t) ]
+        let cos_term = pool.mul(vec![bb, cos_wt]);
+        let bp = pool.mul(vec![bb, p]);
+        let sin_coeff = pool.mul(vec![pool.add(vec![cc, bp]), recip(omega, pool)]);
+        let sin_term = pool.mul(vec![sin_coeff, sin_wt]);
+        return Ok(pool.mul(vec![exp_pt, pool.add(vec![cos_term, sin_term])]));
+    }
+
+    // n = 2: B·(t/(2ω)) e^{pt} sin(ωt)
+    //      + (Bp+C)·e^{pt}/(2ω³)·(sin(ωt) − ωt cos(ωt)).
+    let two = pool.integer(2_i32);
+    let two_omega = pool.mul(vec![two, omega]);
+    let bp_plus_c = pool.add(vec![pool.mul(vec![bb, p]), cc]);
+
+    let t_sin = pool.mul(vec![bb, t, recip(two_omega, pool), sin_wt]);
+    let sin_minus_wt_cos = pool.add(vec![sin_wt, neg(pool.mul(vec![omega, t, cos_wt]), pool)]);
+    let omega3 = pool.mul(vec![omega, omega, omega]);
+    let two_omega3 = pool.mul(vec![two, omega3]);
+    let second = pool.mul(vec![bp_plus_c, recip(two_omega3, pool), sin_minus_wt_cos]);
+    Ok(pool.mul(vec![exp_pt, pool.add(vec![t_sin, second])]))
 }
 
 /// Coefficients `(α, β, γ)` of a monic-or-scaled quadratic `α s² + β s + γ`.

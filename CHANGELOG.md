@@ -4,6 +4,12 @@
 
 ### Fixes
 
+- **Transform round-trips:** Inverse Laplace now inverts repeated irreducible
+  quadratic poles of order 2 (needed for `L⁻¹{L{t sin}}` / `t cos`). Inverse Z
+  matches the forward sin/cos table forms directly so transcendental
+  coefficients (`sin(ω)`, `cos(ω)`) do not block `Z⁻¹{Z{sin(ωn)}}` via `apart`.
+  Locked in by Rust unit tests and `tests/test_transform_roundtrips.py`.
+
 - **`log(exp(z))` over ℂ:** `simplify_log_exp` only folds `log(exp(x))→x` when
   every free symbol in `x` is real-valued; `Domain.Complex` (and `I`) refuse
   the rewrite. Egglog no longer loads `Log∘Exp` (no domain check). Prevents
