@@ -58,6 +58,17 @@ fn rule_to_tactic(rule_name: &str) -> &'static str {
         // a failing `positivity`.
         "exp_of_log" => "by sorry",
         "log_of_product" | "log_of_product_positive" => "by sorry",
+        // `sum_of_logs` (`log a + log b + … = log(a·b·…)`) is only sound with a
+        // positivity hypothesis on every argument. [`emit_step_wrt`] upgrades the
+        // two-factor case to an explicit-binder `Real.log_mul` certificate via
+        // [`positivity_certificate`]; anything it can't upgrade (compound
+        // arguments, or three-plus factors [`positivity_tactic`] has no chained
+        // lemma for) must be withheld, so the table default is a withheld `sorry`.
+        "sum_of_logs" => "by sorry",
+        // `exp a · exp b · … = exp(a + b + …)` is unconditionally valid; fold the
+        // product of exponentials back with `Real.exp_add` (applied right-to-left,
+        // repeatedly for ≥ 3 factors).
+        "product_of_exps" => "by simp only [← Real.exp_add]",
         "log_of_pow" => "by simp [Real.log_pow]",
         "sin_sq_plus_cos_sq" => "by rw [Real.sin_sq_add_cos_sq]",
         "power_rule" | "constant_rule" | "sum_rule" | "constant_multiple_rule" => "by ring",
@@ -242,7 +253,7 @@ fn symbol_name(id: ExprId, pool: &ExprPool) -> Option<String> {
 fn positivity_tactic(rule_name: &str, names: &[String]) -> Option<String> {
     match (rule_name, names) {
         ("exp_of_log", [x]) => Some(format!("by rw [Real.exp_log h{x}]")),
-        ("log_of_product" | "log_of_product_positive", [x, y]) => Some(format!(
+        ("log_of_product" | "log_of_product_positive" | "sum_of_logs", [x, y]) => Some(format!(
             "by rw [Real.log_mul (ne_of_gt h{x}) (ne_of_gt h{y})]"
         )),
         _ => None,
@@ -325,6 +336,7 @@ pub fn emit_header() -> String {
     "import Mathlib.Tactic\n\
      import Mathlib.Analysis.SpecialFunctions.Trigonometric.Basic\n\
      import Mathlib.Analysis.SpecialFunctions.Log.Basic\n\
+     import Mathlib.Analysis.SpecialFunctions.Gamma.Basic\n\
      \n\
      open Real\n\n"
         .to_string()
@@ -537,15 +549,56 @@ pub fn emit_goal(before: ExprId, after: ExprId, pool: &ExprPool) -> String {
     format!("example : {before_str} = {after_str}")
 }
 
+/// True iff `needle` occurs anywhere inside `haystack`. Because the pool
+/// interns subexpressions, any occurrence of the `wrt` symbol shares its
+/// `ExprId`, so a structural id-equality walk is exact.
+fn depends_on(haystack: ExprId, needle: ExprId, pool: &ExprPool) -> bool {
+    if haystack == needle {
+        return true;
+    }
+    pool.with(haystack, |d| match d {
+        ExprData::Add(xs) | ExprData::Mul(xs) | ExprData::Func { args: xs, .. } => {
+            xs.iter().any(|&c| depends_on(c, needle, pool))
+        }
+        ExprData::Pow { base, exp } => {
+            depends_on(*base, needle, pool) || depends_on(*exp, needle, pool)
+        }
+        ExprData::Predicate { args, .. } => args.iter().any(|&c| depends_on(c, needle, pool)),
+        ExprData::Piecewise { branches, default } => {
+            branches
+                .iter()
+                .any(|&(c, v)| depends_on(c, needle, pool) || depends_on(v, needle, pool))
+                || depends_on(*default, needle, pool)
+        }
+        ExprData::BigO(a) => depends_on(*a, needle, pool),
+        ExprData::Forall { var, body }
+        | ExprData::Exists { var, body }
+        | ExprData::RootSum { var, body, .. } => {
+            depends_on(*var, needle, pool) || depends_on(*body, needle, pool)
+        }
+        _ => false,
+    })
+}
+
 /// Emit a Lean `example` asserting `deriv (fun v => before) v = after`.
 pub fn emit_diff_goal(before: ExprId, after: ExprId, wrt: ExprId, pool: &ExprPool) -> String {
     let var_name = pool.with(wrt, |d| match d {
         ExprData::Symbol { name, .. } => name.clone(),
         _ => "x".to_string(),
     });
+    // When the integrand doesn't mention the differentiation variable (e.g. the
+    // derivative of a constant `C`), the lambda binder is genuinely unused. Under
+    // `-DwarningAsError=true` Mathlib's `unusedVariables` linter turns that into a
+    // hard error, so bind it as `_<var>` (underscore-prefixed names are exempt).
+    // The evaluation point stays `var_name` (it is a real use of the free var).
+    let binder = if depends_on(before, wrt, pool) {
+        var_name.clone()
+    } else {
+        format!("_{var_name}")
+    };
     let before_str = expr_to_lean(before, pool);
     let after_str = expr_to_lean(after, pool);
-    format!("example : deriv (fun ({var_name} : ℝ) => {before_str}) {var_name} = {after_str}")
+    format!("example : deriv (fun ({binder} : ℝ) => {before_str}) {var_name} = {after_str}")
 }
 
 // ---------------------------------------------------------------------------
@@ -750,6 +803,10 @@ fn expr_to_lean(expr: ExprId, pool: &ExprPool) -> String {
                 "exp" => format!("Real.exp ({})", arg_strs[0]),
                 "log" => format!("Real.log ({})", arg_strs[0]),
                 "sqrt" => format!("Real.sqrt ({})", arg_strs[0]),
+                // `Real.Gamma : ℝ → ℝ` (imported in the non-diff header). Alkahest
+                // spells it lowercase `gamma`; map it to the Mathlib name so the
+                // emitted term type-checks.
+                "gamma" => format!("Real.Gamma ({})", arg_strs[0]),
                 other => format!("{other} ({})", arg_strs.join(", ")),
             }
         }
@@ -1030,6 +1087,114 @@ mod tests {
         assert!(
             lean.contains("sorry"),
             "three-factor log_of_product has no known lemma yet; must withhold: {lean}"
+        );
+    }
+
+    #[test]
+    fn sum_of_logs_certifies_with_positivity_hyp() {
+        // `SumOfLogs` (`log x + log y → log(x·y)`) records `Positive(x)`,
+        // `Positive(y)`. The exporter upgrades the two-factor case into an
+        // explicit-binder `Real.log_mul` certificate rather than the (failing)
+        // `ring_nf; simp` fallback.
+        use crate::simplify::{rulesets::log_exp_rules, simplify_with, SimplifyConfig};
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let expr = pool.add(vec![pool.func("log", vec![x]), pool.func("log", vec![y])]);
+        let derived = simplify_with(expr, &pool, &log_exp_rules(), SimplifyConfig::default());
+        let lean = emit_lean_expr(&derived, &pool);
+        assert!(!lean.is_empty(), "log x + log y should certify under x,y>0");
+        assert!(
+            !lean.contains("sorry"),
+            "certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("(hx : 0 < x)") && lean.contains("(hy : 0 < y)"),
+            "expected explicit positivity binders: {lean}"
+        );
+        assert!(
+            lean.contains("Real.log_mul (ne_of_gt hx) (ne_of_gt hy)"),
+            "expected Real.log_mul to consume both hypotheses: {lean}"
+        );
+    }
+
+    #[test]
+    fn product_of_exps_certifies_with_exp_add() {
+        // `exp x · exp y → exp(x + y)` is unconditionally valid; the exporter
+        // folds it with `Real.exp_add` applied right-to-left.
+        use crate::simplify::{rulesets::log_exp_rules, simplify_with, SimplifyConfig};
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let expr = pool.mul(vec![pool.func("exp", vec![x]), pool.func("exp", vec![y])]);
+        let derived = simplify_with(expr, &pool, &log_exp_rules(), SimplifyConfig::default());
+        let lean = emit_lean_expr(&derived, &pool);
+        assert!(!lean.is_empty(), "exp x * exp y should certify");
+        assert!(
+            !lean.contains("sorry"),
+            "certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("← Real.exp_add"),
+            "expected exp_add fold: {lean}"
+        );
+    }
+
+    #[test]
+    fn gamma_maps_to_real_gamma_and_imports() {
+        // Alkahest's lowercase `gamma` must be emitted as Mathlib's `Real.Gamma`,
+        // with the Gamma import present in the (non-diff) header, so a factorial /
+        // gamma identity type-checks.
+        use crate::deriv::log::DerivedExpr;
+
+        let pool = p();
+        let k = pool.symbol("k", Domain::Real);
+        let one = pool.integer(1_i32);
+        let expr = pool.mul(vec![k, pool.func("gamma", vec![pool.add(vec![k, one])])]);
+        assert!(
+            expr_to_lean(expr, &pool).contains("Real.Gamma"),
+            "gamma must map to Real.Gamma"
+        );
+        let derived = DerivedExpr::new(expr);
+        let lean = emit_lean_expr(&derived, &pool);
+        assert!(
+            lean.contains("import Mathlib.Analysis.SpecialFunctions.Gamma.Basic"),
+            "header must import Gamma: {lean}"
+        );
+        assert!(
+            lean.contains("Real.Gamma") && !lean.contains("sorry"),
+            "gamma reflexivity cert must reference Real.Gamma without sorry: {lean}"
+        );
+    }
+
+    #[test]
+    fn diff_goal_names_unused_binder_underscore() {
+        // The derivative of a constant leaves the lambda binder unused; under
+        // `-DwarningAsError=true` that would be a hard lint error, so the binder
+        // is emitted underscore-prefixed while the eval point stays a real use.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let c = pool.symbol("C1", Domain::Real);
+        let zero = pool.integer(0_i32);
+        let goal = emit_diff_goal(c, zero, x, &pool);
+        assert!(
+            goal.contains("fun (_x : ℝ)"),
+            "unused binder must be underscore-prefixed: {goal}"
+        );
+        assert!(
+            goal.contains(") x = "),
+            "eval point must remain the bare variable: {goal}"
+        );
+
+        // When the body *does* use the variable, the binder keeps its real name.
+        let sin_x = pool.func("sin", vec![x]);
+        let one = pool.integer(1_i32);
+        let used = emit_diff_goal(sin_x, one, x, &pool);
+        assert!(
+            used.contains("fun (x : ℝ)"),
+            "a used binder must not be renamed: {used}"
         );
     }
 
