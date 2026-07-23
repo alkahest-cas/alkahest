@@ -145,6 +145,29 @@ STRICT_CASES = [
         "diff_sin",
         lambda pool: alkahest.diff(alkahest.sin(pool.symbol("x") ** 3), pool.symbol("x")),
     ),
+    # Indefinite integrals, certified via the FTC derivative relation
+    # `deriv (fun x => F) x = f` (Part A). The recorded step is the integration
+    # rule; `to_lean` differentiates the antiderivative and certifies that.
+    (
+        "int_cos",
+        "int_cos",
+        lambda pool: alkahest.integrate(alkahest.cos(pool.symbol("x")), pool.symbol("x")),
+    ),
+    (
+        "int_sin",
+        "int_sin",
+        lambda pool: alkahest.integrate(alkahest.sin(pool.symbol("x")), pool.symbol("x")),
+    ),
+    (
+        "int_exp",
+        "int_exp",
+        lambda pool: alkahest.integrate(alkahest.exp(pool.symbol("x")), pool.symbol("x")),
+    ),
+    (
+        "int_power_x_squared",
+        "int_power_rule",
+        lambda pool: alkahest.integrate(pool.symbol("x") ** 2, pool.symbol("x")),
+    ),
 ]
 FORBIDDEN_TOKENS = ("sorry", "admit", "axiom")
 

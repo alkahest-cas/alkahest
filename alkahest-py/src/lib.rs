@@ -1637,12 +1637,21 @@ impl PyDerivedResult {
     /// ``integrand = F`` would be false), or would require an admission (B3).
     #[getter]
     fn certificate(&self, py: Python<'_>) -> Option<String> {
-        if self.raw.log.is_empty() {
-            return None;
-        }
         // Integration derivation logs construct antiderivatives; emitting them
-        // as rewrite equalities is unsound (e.g. `sin x = -cos x`).
-        if self.integration_verification_input.is_some() {
+        // as rewrite equalities is unsound (e.g. `sin x = -cos x`). They are
+        // instead certified via the FTC derivative relation
+        // `deriv (fun x => F) x = f` (Part A).
+        if let Some((integrand, var)) = self.integration_verification_input {
+            let pool_py = self.value.pool.clone_ref(py);
+            let pool = pool_py.borrow(py);
+            let src =
+                alkahest_core::emit_integration_cert(self.raw.value, integrand, var, &pool.inner);
+            if src.is_empty() || src.contains("sorry") || src.contains("admit") {
+                return None;
+            }
+            return Some(src);
+        }
+        if self.raw.log.is_empty() {
             return None;
         }
         let pool_py = self.value.pool.clone_ref(py);
@@ -1663,7 +1672,22 @@ impl PyDerivedResult {
     fn verification<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
         let metadata = PyDict::new_bound(py);
         let lean_certificate = {
-            if self.raw.log.is_empty() || self.integration_verification_input.is_some() {
+            if let Some((integrand, var)) = self.integration_verification_input {
+                // Integrals certify via the FTC derivative relation (Part A).
+                let pool_py = self.value.pool.clone_ref(py);
+                let pool = pool_py.borrow(py);
+                let src = alkahest_core::emit_integration_cert(
+                    self.raw.value,
+                    integrand,
+                    var,
+                    &pool.inner,
+                );
+                if src.is_empty() || src.contains("sorry") || src.contains("admit") {
+                    None
+                } else {
+                    Some(src)
+                }
+            } else if self.raw.log.is_empty() {
                 None
             } else {
                 let pool_py = self.value.pool.clone_ref(py);
@@ -3922,9 +3946,17 @@ fn py_simplify_log_exp(py: Python<'_>, expr: PyRef<PyExpr>) -> PyDerivedResult {
 fn py_to_lean(py: Python<'_>, arg: &Bound<'_, PyAny>) -> PyResult<String> {
     if let Ok(derived_bound) = arg.downcast::<PyDerivedResult>() {
         let d = derived_bound.borrow();
-        // Match `.certificate`: withhold unsound / unfinished Lean sources.
-        if d.integration_verification_input.is_some() {
-            return Ok(String::new());
+        // Integration results certify via the FTC derivative relation
+        // `deriv (fun x => F) x = f` rather than a false `f = F` equality.
+        if let Some((integrand, var)) = d.integration_verification_input {
+            let pool_py = d.value.pool.clone_ref(py);
+            let pool = pool_py.borrow(py);
+            let src =
+                alkahest_core::emit_integration_cert(d.raw.value, integrand, var, &pool.inner);
+            if src.contains("sorry") || src.contains("admit") {
+                return Ok(String::new());
+            }
+            return Ok(src);
         }
         let pool_py = d.value.pool.clone_ref(py);
         let pool = pool_py.borrow(py);
@@ -3941,6 +3973,15 @@ fn py_to_lean(py: Python<'_>, arg: &Bound<'_, PyAny>) -> PyResult<String> {
             let pool = pool_py.borrow(py);
             core_simplify(expr.id, &pool.inner)
         };
+        // Part C: the default simplifier may leave the expression untouched
+        // (e.g. `exp(log(x))`, whose rewrite lives in `simplify_log_exp`, not
+        // the default set). Emitting `example : e = e := rfl` in that case reads
+        // as a proven theorem about `e` when nothing was actually derived. When
+        // no non-trivial rewrite occurred, withhold instead of presenting a
+        // vacuous reflexive identity as a certificate.
+        if derived.log.is_empty() {
+            return Ok(String::new());
+        }
         let pool = pool_py.borrow(py);
         return Ok(alkahest_core::emit_lean(&derived, &pool.inner));
     }

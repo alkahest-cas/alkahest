@@ -741,6 +741,120 @@ pub fn emit_lean_expr_wrt(
     out
 }
 
+/// Structural gate for antiderivatives whose FTC derivative certificate is
+/// known to typecheck under the reused differentiation machinery.
+///
+/// The diff exporter's `deriv (fun x => F) x = …` tactics reliably close for a
+/// restricted fragment: constants, powers of the differentiation variable,
+/// *pointwise* `sin`/`cos`/`exp` (argument exactly the variable), sums of
+/// those, and *flat* products of those (a product whose factors are atoms /
+/// pointwise primitives, e.g. `x · cos x`). Two shapes that the diff exporter
+/// currently emits but does **not** discharge — leaving `deriv` or a
+/// `DifferentiableAt` side goal open — must be withheld here:
+///
+/// * a **chain composite** `f(g x)` with `g ≠ x` (e.g. `exp (x²)`), because the
+///   product-rule simp set lacks the composite's `DifferentiableAt` lemma;
+/// * a **sum nested inside a product** (e.g. `-1 · (a + b)`), because the
+///   post-`simp` `ring` cannot reduce the still-symbolic nested `deriv`.
+///
+/// Rejecting these keeps the integration certificate sound: a withheld integral
+/// is always preferable to a `.lean` file that fails to typecheck. Composites
+/// and by-parts results outside this fragment simply stay withheld.
+fn antiderivative_in_certifiable_fragment(f: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    // `in_product`: we are inside a Mul, where a nested Add would defeat `ring`.
+    fn walk(f: ExprId, var: ExprId, pool: &ExprPool, in_product: bool) -> bool {
+        pool.with(f, |d| match d {
+            ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => true,
+            ExprData::Symbol { .. } => true,
+            ExprData::Pow { base, exp } => {
+                // Only powers of the differentiation variable with an integer
+                // exponent — the polynomial / reciprocal fast path.
+                *base == var && pool.with(*exp, |e| matches!(e, ExprData::Integer(_)))
+            }
+            ExprData::Func { name, args } => {
+                // Pointwise primitive only: sin/cos/exp applied to exactly `var`.
+                matches!(name.as_str(), "sin" | "cos" | "exp") && args.len() == 1 && args[0] == var
+            }
+            ExprData::Add(xs) => {
+                // A sum inside a product is the shape `ring` cannot finish.
+                !in_product && xs.iter().all(|&c| walk(c, var, pool, false))
+            }
+            ExprData::Mul(xs) => xs.iter().all(|&c| walk(c, var, pool, true)),
+            _ => false,
+        })
+    }
+    walk(f, var, pool, false)
+}
+
+/// Emit a Lean certificate for an **indefinite integral** `∫ f dx = F`.
+///
+/// A bare `f = F` equality is false (`sin x ≠ -cos x`), so an integration
+/// result cannot be certified as a rewrite. The sound statement that pins the
+/// antiderivative is the FTC derivative relation
+///
+/// ```text
+/// deriv (fun x => F) x = f
+/// ```
+///
+/// which we discharge by *reusing the differentiation-certificate machinery*:
+/// we differentiate `F` in the kernel and hand the resulting derivation log to
+/// [`emit_lean_expr_wrt`]. That already proves `deriv (fun x => F) x = d/dx F`
+/// via `deriv_pow` / `Real.deriv_sin` / `HasDerivAt.comp` / … and withholds
+/// (returns `""`) whenever the goal escapes the certifiable diff fragment.
+///
+/// The one extra obligation for an *integral* is that the differentiated
+/// antiderivative is syntactically the integrand, so that the certificate's
+/// final right-hand side is exactly `f` (i.e. the cert really proves
+/// `deriv F = f`, not `deriv F = <something else>`). We require the kernel's
+/// simplified `d/dx F` to intern to the same [`ExprId`] as `integrand`;
+/// otherwise we WITHHOLD. This is precisely the exact-residual antiderivative
+/// check, so numeric-only antiderivatives stay withheld.
+///
+/// Returns `""` (no certificate) when `F` cannot be differentiated, when its
+/// derivative is not structurally the integrand, or when the diff certificate
+/// itself is withheld. Never emits `sorry` / `admit`.
+pub fn emit_integration_cert(
+    antiderivative: ExprId,
+    integrand: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> String {
+    // Withhold antiderivatives whose derivative certificate escapes the
+    // reliably-typechecking diff fragment (chain composites, sums nested in
+    // products): the reused exporter would emit a non-closing proof for them.
+    if !antiderivative_in_certifiable_fragment(antiderivative, var, pool) {
+        return String::new();
+    }
+    let Ok(derived_diff) = crate::diff::diff(antiderivative, var, pool) else {
+        return String::new();
+    };
+    // The certificate proves `deriv F = d/dx F`; only present it as certifying
+    // `∫ f = F` when `d/dx F` is exactly the integrand.
+    if derived_diff.value != integrand {
+        return String::new();
+    }
+    let cert = emit_lean_expr_wrt(&derived_diff, pool, Some(var));
+    if cert.is_empty() {
+        return String::new();
+    }
+    // Prefix a note tying the diff certificate back to the integral it proves.
+    let f = expr_to_lean(integrand, pool);
+    let big_f = expr_to_lean(antiderivative, pool);
+    let var_name = pool.with(var, |d| match d {
+        ExprData::Symbol { name, .. } => name.clone(),
+        _ => "x".to_string(),
+    });
+    let note = format!(
+        "-- ∫ {f} d{var_name} = {big_f}\n\
+         -- certified via the FTC derivative relation: deriv (fun {var_name} => {big_f}) {var_name} = {f}\n"
+    );
+    // Splice the note directly before the first proof step, after the imports.
+    match cert.find("-- Step 1") {
+        Some(idx) => format!("{}{note}{}", &cert[..idx], &cert[idx..]),
+        None => format!("{cert}{note}"),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Expression → Lean syntax
 // ---------------------------------------------------------------------------
@@ -923,6 +1037,128 @@ mod tests {
         assert!(
             lean.is_empty(),
             "∫ sin must not emit false `sin = -cos` Lean equality, got: {lean}"
+        );
+    }
+
+    #[test]
+    fn integration_cert_cos_via_ftc_derivative() {
+        // ∫ cos x dx = sin x, certified as `deriv (fun x => sin x) x = cos x`.
+        use crate::integrate::integrate;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let cos_x = pool.func("cos", vec![x]);
+        let derived = integrate(cos_x, x, &pool).expect("integrate");
+        let lean = emit_integration_cert(derived.value, cos_x, x, &pool);
+        assert!(
+            !lean.is_empty(),
+            "∫ cos x should certify via the FTC relation"
+        );
+        assert!(
+            lean.contains("deriv (fun (x : ℝ)"),
+            "must state the derivative relation, got: {lean}"
+        );
+        assert!(
+            lean.contains("Real.deriv_sin"),
+            "antiderivative sin is discharged by Real.deriv_sin: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
+    }
+
+    #[test]
+    fn integration_cert_sin_via_ftc_derivative() {
+        // ∫ sin x dx = -cos x, certified as `deriv (fun x => -cos x) x = sin x`.
+        use crate::integrate::integrate;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let sin_x = pool.func("sin", vec![x]);
+        let derived = integrate(sin_x, x, &pool).expect("integrate");
+        let lean = emit_integration_cert(derived.value, sin_x, x, &pool);
+        assert!(
+            !lean.is_empty(),
+            "∫ sin x should certify via the FTC relation, got empty"
+        );
+        assert!(
+            lean.contains("deriv (fun (x : ℝ)"),
+            "must state the derivative relation: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
+    }
+
+    #[test]
+    fn integration_cert_exp_via_ftc_derivative() {
+        use crate::integrate::integrate;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let derived = integrate(exp_x, x, &pool).expect("integrate");
+        let lean = emit_integration_cert(derived.value, exp_x, x, &pool);
+        assert!(
+            !lean.is_empty(),
+            "∫ exp x should certify via the FTC relation"
+        );
+        assert!(
+            lean.contains("Real.deriv_exp"),
+            "expected deriv_exp: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
+    }
+
+    #[test]
+    fn integration_cert_power_via_ftc_derivative() {
+        // ∫ x² dx = x³/3, certified via the polynomial derivative fragment.
+        use crate::integrate::integrate;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let derived = integrate(x2, x, &pool).expect("integrate");
+        let lean = emit_integration_cert(derived.value, x2, x, &pool);
+        assert!(!lean.is_empty(), "∫ x² should certify via the FTC relation");
+        assert!(
+            lean.contains("deriv (fun (x : ℝ)"),
+            "must state the derivative relation: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
+    }
+
+    #[test]
+    fn integration_cert_withheld_for_chain_composite_antiderivative() {
+        // ∫ x·exp(x²) dx = ½·exp(x²). Its derivative certificate would emit a
+        // product rule whose factor is the composite exp(x²); the reused diff
+        // tactic leaves a `DifferentiableAt` side goal open, so the integral
+        // certificate must be withheld by the fragment gate.
+        use crate::integrate::integrate;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let integrand = pool.mul(vec![x, pool.func("exp", vec![x2])]);
+        let derived = integrate(integrand, x, &pool).expect("integrate");
+        let lean = emit_integration_cert(derived.value, integrand, x, &pool);
+        assert!(
+            lean.is_empty(),
+            "∫ x·exp(x²) has a composite antiderivative; must withhold: {lean}"
+        );
+    }
+
+    #[test]
+    fn integration_cert_withheld_for_non_certifiable_diff() {
+        // ∫ log x dx = x·log x − x. Its derivative routes through `diff_log`,
+        // which is outside the certifiable diff fragment, so the integral cert
+        // must be withheld rather than emit an admission.
+        use crate::integrate::integrate;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let log_x = pool.func("log", vec![x]);
+        let derived = integrate(log_x, x, &pool).expect("integrate");
+        let lean = emit_integration_cert(derived.value, log_x, x, &pool);
+        assert!(
+            lean.is_empty(),
+            "∫ log x's antiderivative differentiates via diff_log; must withhold: {lean}"
         );
     }
 
