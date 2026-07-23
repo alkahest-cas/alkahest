@@ -4,6 +4,15 @@
 
 ### Fixes
 
+- **Complex branch-cut evaluation:** `evaluate(..., mode="complex")` now
+  auto-binds the canonical imaginary unit `I → 1j`, accepts real scalar
+  bindings, and evaluates non-integer powers on the principal branch via
+  `exp(w·Log z)` (so e.g. `(-1)**(1/2) → i`). Complex `sqrt` uses the same
+  Log path to avoid cancellation near the negative-real cut. Locked in by an
+  mpmath fuzz oracle (`tests/test_complex_branchcut_oracle.py`). Exact `Arg`
+  on the cut still declines (`E-EVAL-011`). `ExprPool.imaginary_unit()` is
+  exposed in Python; `Expr ** float` builds a float-exponent node.
+
 - **Assumption-gated log/exp rewrites:** `simplify_log_exp` and egglog no longer
   apply branch-cut identities (`exp(log(x))→x`, `log(x)+log(y)→log(xy)`,
   `log(a^n)→n·log(a)`, `log(a/b)→log(a)−log(b)`) without positivity facts.

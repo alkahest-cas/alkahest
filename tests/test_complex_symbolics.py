@@ -20,7 +20,7 @@ def test_branch_sensitive_conjugation_remains_symbolic():
 def test_principal_arg_safe_cases():
     p = ak.ExprPool()
     x = p.symbol("x", ak.Domain.Positive)
-    i = p.symbol("I", ak.Domain.Complex)
+    i = p.imaginary_unit()
 
     assert str(ak.simplify(arg(p.integer(3))).value) == "0"
     assert str(ak.simplify(arg(x)).value) == "0"
