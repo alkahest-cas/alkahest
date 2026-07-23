@@ -33,8 +33,10 @@
 //! | term in `F(s)`              | `L⁻¹` term                       |
 //! |-----------------------------|----------------------------------|
 //! | `A/(s−a)^n`                 | `A·t^{n−1} e^{a t}/(n−1)!`        |
-//! | `(B s + C)/((s−p)²+ω²)`     | damped sin/cos (`n = 1`)         |
+//! | `(B s + C)/((s−p)²+ω²)`     | damped sin/cos (`n = 1`, `ω² > 0`) |
+//! | `(B s + C)/((s−p)²−κ²)`     | damped sinh/cosh (`n = 1`, `κ² > 0`) |
 //! | `(B s + C)/((s−p)²+ω²)²`    | `t`-weighted damped sin/cos      |
+//! | `(B s + C)/((s−p)²−κ²)²`    | `t`-weighted damped sinh/cosh    |
 //! | `e^{−a s} F(s)`             | `θ(t−a)·(L⁻¹F)(t−a)`             |
 //!
 //! A leading polynomial part of `F` (improper rational) maps back to derivatives
@@ -461,6 +463,7 @@ fn try_time_shift(
         (Some(hi), Some(a)) => (hi, simp(a, pool)),
         _ => return Ok(None),
     };
+    require_nonneg_shift(a, pool)?;
 
     // The remaining factors form g(t − a).  Substitute u = t + a (i.e. shift the
     // argument back) and transform g(u), then attach e^{−a s}.
@@ -516,7 +519,7 @@ fn laplace_func(
                 "{name}(b t): argument must be a nonzero multiple of t"
             )));
         }
-        let b2 = pool.pow(b, pool.integer(2_i32));
+        let b2 = square_of_freq(b, pool);
         let s2 = pool.pow(s, pool.integer(2_i32));
         return Ok(match name {
             // sin(bt) = b/(s²+b²)
@@ -543,7 +546,7 @@ fn laplace_func(
         });
     }
 
-    // θ(t − a) → e^{−a s}/s   (a ≥ 0 assumed; a = 0 ⇒ 1/s).
+    // θ(t − a) → e^{−a s}/s   (requires a ≥ 0 when `a` is a literal).
     if name == "heaviside" {
         let (coeff, b) = as_affine(arg, t, pool).ok_or_else(|| {
             LaplaceError::NoRule(format!(
@@ -557,11 +560,12 @@ fn laplace_func(
             ));
         }
         let a = simp(neg(b, pool), pool); // a = −b
+        require_nonneg_shift(a, pool)?;
         let exp_neg_as = pool.func("exp", vec![simp(neg(pool.mul(vec![a, s]), pool), pool)]);
         return Ok(pool.mul(vec![exp_neg_as, recip(s, pool)]));
     }
 
-    // δ(t − a) → e^{−a s}   (δ(t) ↦ 1).
+    // δ(t − a) → e^{−a s}   (δ(t) ↦ 1; requires a ≥ 0 when `a` is a literal).
     if name == "diracdelta" {
         let (coeff, b) = as_affine(arg, t, pool).ok_or_else(|| {
             LaplaceError::NoRule(format!(
@@ -575,10 +579,23 @@ fn laplace_func(
             ));
         }
         let a = simp(neg(b, pool), pool);
+        require_nonneg_shift(a, pool)?;
         return Ok(pool.func("exp", vec![simp(neg(pool.mul(vec![a, s]), pool), pool)]));
     }
 
     Err(LaplaceError::NoRule(format!("{name}(...)")))
+}
+
+/// `b²` for a frequency coefficient, folding `(√c)² → c` so the forward
+/// sinh/cosh table emits a ℚ-rational denominator (needed for inverse `apart`).
+fn square_of_freq(b: ExprId, pool: &ExprPool) -> ExprId {
+    let half = pool.rational(1_i32, 2_i32);
+    if let ExprData::Pow { base, exp } = pool.get(b) {
+        if exp == half {
+            return base;
+        }
+    }
+    simp(pool.pow(b, pool.integer(2_i32)), pool)
 }
 
 /// Substitute every occurrence of `from` with `to` in `expr`.
@@ -684,6 +701,13 @@ pub fn inverse_laplace_transform(
         return Ok(simp(pool.mul(vec![heaviside, shifted]), pool));
     }
 
+    // Peel s-free scalar factors (e.g. √2 in √2/(s²−2) from L{sinh(√2 t)})
+    // so `apart` sees a ℚ-rational function of `s`.
+    if let Some((scalar, rest)) = split_s_free_scalar(big_f, s, pool) {
+        let rest_inv = inverse_laplace_transform(rest, s, t, pool)?;
+        return Ok(simp(pool.mul(vec![scalar, rest_inv]), pool));
+    }
+
     // Rational route: partial fractions, then table per term.
     let pf = crate::poly::apart(big_f, s, pool)
         .map_err(|e| LaplaceError::NotInvertible(format!("apart failed: {e}")))?;
@@ -698,6 +722,37 @@ pub fn inverse_laplace_transform(
         out.push(invert_term(term, s, t, pool)?);
     }
     Ok(simp(pool.add(out), pool))
+}
+
+/// If `F` is a product with at least one factor free of `s`, return
+/// `(product of s-free factors, product of the rest)`.  Used so algebraic
+/// amplitudes from the forward sinh/cosh table do not block `apart`.
+fn split_s_free_scalar(big_f: ExprId, s: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
+    let factors: Vec<ExprId> = match pool.get(big_f) {
+        ExprData::Mul(a) => a,
+        _ => return None,
+    };
+    let mut free = Vec::new();
+    let mut rest = Vec::new();
+    for &fac in &factors {
+        if is_free_of(fac, s, pool) {
+            free.push(fac);
+        } else {
+            rest.push(fac);
+        }
+    }
+    if free.is_empty() || rest.is_empty() {
+        return None;
+    }
+    let scalar = match free.len() {
+        1 => free[0],
+        _ => pool.mul(free),
+    };
+    let body = match rest.len() {
+        1 => rest[0],
+        _ => pool.mul(rest),
+    };
+    Some((scalar, body))
 }
 
 /// Split `F = e^{−a s} · G(s)` returning `(a, G)`, or `None` if there is no
@@ -876,19 +931,25 @@ fn invert_linear_pole(
     Ok(pool.mul(parts))
 }
 
-/// Invert `(B s + C)/((s−p)² + ω²)^n` for `n ∈ {1, 2}` into damped sin/cos.
+/// Invert `(B s + C)/((s−p)² ± λ²)^n` for `n ∈ {1, 2}`.
+///
+/// Completing the square yields `ω² = γ − β²/4`.  The sign selects the table:
 ///
 /// ```text
-///   n = 1:  e^{p t} ( B cos(ω t) + ((C + B p)/ω) sin(ω t) )
+///   ω² > 0:  oscillatory — sin/cos with ω = √(ω²)
+///   ω² < 0:  hyperbolic  — sinh/cosh with κ = √(−ω²)
+///   ω² = 0:  declined (degenerate; should have been a linear factor)
 ///
-///   n = 2:  write B s + C = B(s−p) + (B p + C); then
-///           L⁻¹{(s−p)/den²} = (t/(2ω)) e^{p t} sin(ω t)
-///           L⁻¹{1/den²}     = e^{p t}/(2ω³) (sin(ω t) − ω t cos(ω t))
+///   n = 1, oscillatory:
+///     e^{p t} ( B cos(ω t) + ((C + B p)/ω) sin(ω t) )
+///   n = 1, hyperbolic:
+///     e^{p t} ( B cosh(κ t) + ((C + B p)/κ) sinh(κ t) )
+///
+///   n = 2: analogous t-weighted forms (sin−ωt cos ↔ κt cosh−sinh).
 /// ```
 ///
-/// Higher powers (`n ≥ 3`) are declined.  The `n = 2` case is required for
-/// round-trips of `t·sin` / `t·cos` (frequency differentiation of the
-/// quadratic table entries).
+/// Higher powers (`n ≥ 3`) are declined.  The `n = 2` oscillatory case is
+/// required for round-trips of `t·sin` / `t·cos`.
 fn invert_quadratic(
     numer: ExprId,
     base: ExprId,
@@ -910,7 +971,7 @@ fn invert_quadratic(
             "non-monic quadratic denominator".into(),
         ));
     }
-    // p = −β/2 ; ω² = γ − β²/4 ; ω = sqrt(ω²).
+    // p = −β/2 ; ω² = γ − β²/4.
     let half = pool.rational(1_i32, 2_i32);
     let p = simp(pool.mul(vec![neg(beta, pool), half]), pool);
     let beta2 = pool.pow(beta, pool.integer(2_i32));
@@ -919,38 +980,93 @@ fn invert_quadratic(
         pool.add(vec![gamma, neg(pool.mul(vec![beta2, quarter]), pool)]),
         pool,
     );
-    let omega = simp(pool.pow(omega_sq, half), pool);
+
+    // Literal sign of ω² selects sin/cos vs sinh/cosh.  Non-literal ω² keeps
+    // the historical oscillatory path (formal √).
+    let hyperbolic = match literal_rational(omega_sq, pool) {
+        Some(r) if r < 0 => true,
+        Some(r) if r == 0 => {
+            return Err(LaplaceError::NotInvertible(
+                "degenerate quadratic pole (ω² = 0)".into(),
+            ));
+        }
+        _ => false,
+    };
+
+    let freq_sq = if hyperbolic {
+        simp(neg(omega_sq, pool), pool) // κ² = −ω²
+    } else {
+        omega_sq
+    };
+    let freq = simp(pool.pow(freq_sq, half), pool); // ω or κ
 
     // numerator B s + C.
     let (bb, cc) = as_affine(numer, s, pool)
         .ok_or_else(|| LaplaceError::NotInvertible(pool.display(numer).to_string()))?;
 
     let exp_pt = pool.func("exp", vec![pool.mul(vec![p, t])]);
-    let omega_t = pool.mul(vec![omega, t]);
-    let sin_wt = pool.func("sin", vec![omega_t]);
-    let cos_wt = pool.func("cos", vec![omega_t]);
+    let freq_t = pool.mul(vec![freq, t]);
+    let (odd_fn, even_fn) = if hyperbolic {
+        (
+            pool.func("sinh", vec![freq_t]),
+            pool.func("cosh", vec![freq_t]),
+        )
+    } else {
+        (
+            pool.func("sin", vec![freq_t]),
+            pool.func("cos", vec![freq_t]),
+        )
+    };
 
     if n == 1 {
-        // e^{p t} [ B cos(ω t) + ((C + B p)/ω) sin(ω t) ]
-        let cos_term = pool.mul(vec![bb, cos_wt]);
+        // e^{p t} [ B · even(freq·t) + ((C + B p)/freq) · odd(freq·t) ]
+        let even_term = pool.mul(vec![bb, even_fn]);
         let bp = pool.mul(vec![bb, p]);
-        let sin_coeff = pool.mul(vec![pool.add(vec![cc, bp]), recip(omega, pool)]);
-        let sin_term = pool.mul(vec![sin_coeff, sin_wt]);
-        return Ok(pool.mul(vec![exp_pt, pool.add(vec![cos_term, sin_term])]));
+        let odd_coeff = pool.mul(vec![pool.add(vec![cc, bp]), recip(freq, pool)]);
+        let odd_term = pool.mul(vec![odd_coeff, odd_fn]);
+        return Ok(pool.mul(vec![exp_pt, pool.add(vec![even_term, odd_term])]));
     }
 
-    // n = 2: B·(t/(2ω)) e^{pt} sin(ωt)
-    //      + (Bp+C)·e^{pt}/(2ω³)·(sin(ωt) − ωt cos(ωt)).
+    // n = 2.
+    // Oscillatory: B·(t/(2ω)) sin + (Bp+C)/(2ω³)·(sin − ωt cos)
+    // Hyperbolic:  B·(t/(2κ)) sinh + (Bp+C)/(2κ³)·(κt cosh − sinh)
     let two = pool.integer(2_i32);
-    let two_omega = pool.mul(vec![two, omega]);
+    let two_freq = pool.mul(vec![two, freq]);
     let bp_plus_c = pool.add(vec![pool.mul(vec![bb, p]), cc]);
 
-    let t_sin = pool.mul(vec![bb, t, recip(two_omega, pool), sin_wt]);
-    let sin_minus_wt_cos = pool.add(vec![sin_wt, neg(pool.mul(vec![omega, t, cos_wt]), pool)]);
-    let omega3 = pool.mul(vec![omega, omega, omega]);
-    let two_omega3 = pool.mul(vec![two, omega3]);
-    let second = pool.mul(vec![bp_plus_c, recip(two_omega3, pool), sin_minus_wt_cos]);
-    Ok(pool.mul(vec![exp_pt, pool.add(vec![t_sin, second])]))
+    let t_odd = pool.mul(vec![bb, t, recip(two_freq, pool), odd_fn]);
+    let combo = if hyperbolic {
+        pool.add(vec![pool.mul(vec![freq, t, even_fn]), neg(odd_fn, pool)])
+    } else {
+        pool.add(vec![odd_fn, neg(pool.mul(vec![freq, t, even_fn]), pool)])
+    };
+    let freq3 = pool.mul(vec![freq, freq, freq]);
+    let two_freq3 = pool.mul(vec![two, freq3]);
+    let second = pool.mul(vec![bp_plus_c, recip(two_freq3, pool), combo]);
+    Ok(pool.mul(vec![exp_pt, pool.add(vec![t_odd, second])]))
+}
+
+/// Refuse a literal negative delay `a` in `θ(t−a)` / `δ(t−a)` (unilateral
+/// table assumes `a ≥ 0`).  Non-literal shifts are left to the caller.
+fn require_nonneg_shift(a: ExprId, pool: &ExprPool) -> Result<(), LaplaceError> {
+    if let Some(r) = literal_rational(a, pool) {
+        if r < 0 {
+            return Err(LaplaceError::NoRule(format!(
+                "shift a = {} must be ≥ 0 for unilateral Heaviside/Dirac",
+                pool.display(a)
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// If `expr` is a literal rational (integer or ratio), return it.
+fn literal_rational(expr: ExprId, pool: &ExprPool) -> Option<rug::Rational> {
+    match pool.get(expr) {
+        ExprData::Integer(n) => Some(rug::Rational::from(n.0.clone())),
+        ExprData::Rational(r) => Some(r.0.clone()),
+        _ => None,
+    }
 }
 
 /// Coefficients `(α, β, γ)` of a monic-or-scaled quadratic `α s² + β s + γ`.
