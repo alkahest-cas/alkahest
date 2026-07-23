@@ -25,7 +25,7 @@
 //! assert!(lean_src.contains("simp"));
 //! ```
 
-use crate::deriv::log::{DerivedExpr, RewriteStep};
+use crate::deriv::log::{DerivedExpr, RewriteStep, SideCondition};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 
 // ---------------------------------------------------------------------------
@@ -43,10 +43,17 @@ fn rule_to_tactic(rule_name: &str) -> &'static str {
         "sin_neg" => "by simp [Real.sin_neg]",
         "cos_neg" => "by simp [Real.cos_neg]",
         "log_of_exp" => "by simp [Real.log_exp]",
-        // Needs a positivity hypothesis on the free variable; withhold via
-        // [`step_is_certifiable`] rather than emitting a failing `positivity`.
+        // These need a positivity hypothesis on the free variable(s). When the
+        // recorded side conditions are simple (bare symbols), [`emit_step_wrt`]
+        // upgrades the goal with explicit `(x : ℝ) (hx : 0 < x)` binders and
+        // calls [`positivity_tactic`] instead of using this fallback. This
+        // entry is only reached when that upgrade isn't possible (e.g. a
+        // compound side-condition expression, or — for `log_of_product` — more
+        // factors than [`positivity_tactic`] has a chained lemma for); such
+        // steps are withheld via [`step_is_certifiable`] rather than emitting
+        // a failing `positivity`.
         "exp_of_log" => "by sorry",
-        "log_of_product" => "by sorry",
+        "log_of_product" | "log_of_product_positive" => "by sorry",
         "log_of_pow" => "by simp [Real.log_pow]",
         "sin_sq_plus_cos_sq" => "by rw [Real.sin_sq_add_cos_sq]",
         "power_rule" | "constant_rule" | "sum_rule" | "constant_multiple_rule" => "by ring",
@@ -146,6 +153,62 @@ fn diff_rule_to_tactic(rule_name: &str) -> Option<&'static str> {
     }
 }
 
+/// The name of `id` if it's a bare [`ExprData::Symbol`], else `None`.
+///
+/// Positivity certificates only bind explicit `(name : ℝ) (hname : 0 < name)`
+/// binders for symbols — a compound side-condition expression (e.g. `x + y`)
+/// has no single name to bind and is left withheld.
+fn symbol_name(id: ExprId, pool: &ExprPool) -> Option<String> {
+    pool.with(id, |d| match d {
+        ExprData::Symbol { name, .. } => Some(name.clone()),
+        _ => None,
+    })
+}
+
+/// Select the Lean tactic that discharges `rule_name` given hypothesis names
+/// `h<name>` (one per entry of `names`, in the same order as the step's
+/// recorded [`SideCondition::Positive`] facts). Returns `None` when there's no
+/// known closing lemma for this shape (e.g. `log_of_product` with more than
+/// two factors) — callers must fall back to withholding the step.
+fn positivity_tactic(rule_name: &str, names: &[String]) -> Option<String> {
+    match (rule_name, names) {
+        ("exp_of_log", [x]) => Some(format!("by rw [Real.exp_log h{x}]")),
+        ("log_of_product" | "log_of_product_positive", [x, y]) => Some(format!(
+            "by rw [Real.log_mul (ne_of_gt h{x}) (ne_of_gt h{y})]"
+        )),
+        _ => None,
+    }
+}
+
+/// Attempt to build a self-contained positivity certificate for `step`: an
+/// explicit `(x : ℝ) (hx : 0 < x) …` binder list plus a tactic that consumes
+/// those hypotheses to close the goal.
+///
+/// Returns `None` when the step has no recorded positivity side conditions,
+/// any condition is over a compound expression rather than a bare symbol, or
+/// [`positivity_tactic`] has no lemma for this rule/arity combination — in
+/// all of those cases the caller falls back to the (withheld) table tactic.
+fn positivity_certificate(step: &RewriteStep, pool: &ExprPool) -> Option<(String, String)> {
+    if step.side_conditions.is_empty() {
+        return None;
+    }
+    let names: Vec<String> = step
+        .side_conditions
+        .iter()
+        .map(|c| match c {
+            SideCondition::Positive(id) => symbol_name(*id, pool),
+            _ => None,
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let tactic = positivity_tactic(step.rule_name, &names)?;
+    let mut binders = names
+        .iter()
+        .map(|n| format!("({n} : ℝ)"))
+        .collect::<Vec<_>>();
+    binders.extend(names.iter().map(|n| format!("(h{n} : 0 < {n})")));
+    Some((binders.join(" "), tactic))
+}
+
 /// Whether this step can be emitted as a Lean `example` expected to typecheck
 /// without `sorry` / `admit`.
 fn step_is_certifiable(step: &RewriteStep, wrt: Option<ExprId>, pool: &ExprPool) -> bool {
@@ -171,10 +234,10 @@ fn step_is_certifiable(step: &RewriteStep, wrt: Option<ExprId>, pool: &ExprPool)
         }
         // Algebraic cleanup steps in a diff log use plain equality goals.
         let tactic = rule_to_tactic(step.rule_name);
-        return !tactic.contains("sorry");
+        return !tactic.contains("sorry") || positivity_certificate(step, pool).is_some();
     }
     let tactic = rule_to_tactic(step.rule_name);
-    !tactic.contains("sorry")
+    !tactic.contains("sorry") || positivity_certificate(step, pool).is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -420,6 +483,27 @@ pub fn emit_step(step: &RewriteStep, pool: &ExprPool) -> String {
 /// equalities (so `mul_one` is not wrongly wrapped as `deriv (1·cos) = cos`).
 pub fn emit_step_wrt(step: &RewriteStep, pool: &ExprPool, wrt: Option<ExprId>) -> String {
     let diff_step = wrt.is_some() && is_differentiation_rule(step.rule_name);
+
+    // Positivity-hypothesis certificates (`exp_of_log`, `log_of_product`, …)
+    // need explicit `(x : ℝ) (hx : 0 < x)` binders on the `example` header
+    // rather than the plain `example : before = after` goal, so they're
+    // built separately from the diff/algebraic goal below.
+    if !diff_step {
+        if let Some((binders, tactic)) = positivity_certificate(step, pool) {
+            let before_str = expr_to_lean(step.before, pool);
+            let after_str = expr_to_lean(step.after, pool);
+            let mut out = format!("example {binders} : {before_str} = {after_str} :=\n  {tactic}");
+            out.push_str("\n  -- Side conditions: ");
+            let conds: Vec<String> = step
+                .side_conditions
+                .iter()
+                .map(|c| c.display_with(pool).to_string())
+                .collect();
+            out.push_str(&conds.join(", "));
+            return out;
+        }
+    }
+
     let goal = if let (true, Some(var)) = (diff_step, wrt) {
         emit_diff_goal(step.before, step.after, var, pool)
     } else {
@@ -745,7 +829,10 @@ mod tests {
     }
 
     #[test]
-    fn withhold_exp_of_log_without_positivity_hyp() {
+    fn exp_of_log_certifies_with_positivity_hyp() {
+        // `ExpOfLog` records `SideCondition::Positive(x)`; the Lean exporter
+        // upgrades that into an explicit `(x : ℝ) (hx : 0 < x)` binder and
+        // closes the goal with `Real.exp_log hx` instead of withholding.
         use crate::simplify::{rulesets::log_exp_rules, simplify_with, SimplifyConfig};
 
         let pool = p();
@@ -754,8 +841,106 @@ mod tests {
         let derived = simplify_with(expr, &pool, &log_exp_rules(), SimplifyConfig::default());
         let lean = emit_lean_expr(&derived, &pool);
         assert!(
-            lean.is_empty(),
-            "exp(log(x)) needs 0 < x; must not emit failing positivity: {lean}"
+            !lean.is_empty(),
+            "exp(log(x)) with a recorded positivity condition should certify"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("(hx : 0 < x)"),
+            "expected an explicit positivity binder: {lean}"
+        );
+        assert!(
+            lean.contains("Real.exp_log hx"),
+            "expected Real.exp_log to consume the hypothesis: {lean}"
+        );
+    }
+
+    #[test]
+    fn exp_of_log_withheld_when_positivity_unproven() {
+        // A step with no recorded side condition at all (e.g. hand-built,
+        // bypassing `ExpOfLog::apply`) must still be withheld — the exporter
+        // never invents a hypothesis that wasn't in the derivation log.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.func("exp", vec![pool.func("log", vec![x])]);
+        let step = RewriteStep::simple("exp_of_log", expr, x);
+        let lean = emit_step(&step, &pool);
+        assert!(
+            lean.contains("sorry"),
+            "step without a positivity side condition must fall back to sorry: {lean}"
+        );
+    }
+
+    #[test]
+    fn log_of_product_certifies_two_factors_under_positivity() {
+        // The colored e-graph's conditional `log_of_product_positive` rule
+        // records `Positive(x)`/`Positive(y)` once the caller's assumptions
+        // discharge them; the exporter should turn that into a real
+        // `Real.log_mul` certificate instead of withholding.
+        use crate::kernel::expr::PredicateKind;
+        use crate::simplify::AssumptionContext;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let zero = pool.integer(0_i32);
+        let mut assumptions = AssumptionContext::new();
+        assumptions
+            .refine(pool.predicate(PredicateKind::Gt, vec![x, zero]), &pool)
+            .unwrap();
+        assumptions
+            .refine(pool.predicate(PredicateKind::Gt, vec![y, zero]), &pool)
+            .unwrap();
+        let expr = pool.func("log", vec![pool.mul(vec![x, y])]);
+        let derived = assumptions.simplify(expr, &pool);
+        let lean = emit_lean_expr(&derived, &pool);
+        assert!(!lean.is_empty(), "log(x*y) should certify under x>0, y>0");
+        assert!(
+            !lean.contains("sorry"),
+            "certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("(hx : 0 < x)") && lean.contains("(hy : 0 < y)"),
+            "expected explicit positivity binders: {lean}"
+        );
+        assert!(
+            lean.contains("Real.log_mul (ne_of_gt hx) (ne_of_gt hy)"),
+            "expected Real.log_mul to consume both hypotheses: {lean}"
+        );
+    }
+
+    #[test]
+    fn log_of_product_withheld_for_three_factors() {
+        // `positivity_tactic` only has a chained lemma for two factors; a
+        // three-factor product must stay withheld rather than emit a tactic
+        // that can't close the goal.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let z = pool.symbol("z", Domain::Real);
+        let before = pool.func("log", vec![pool.mul(vec![x, y, z])]);
+        let after = pool.add(vec![
+            pool.func("log", vec![x]),
+            pool.func("log", vec![y]),
+            pool.func("log", vec![z]),
+        ]);
+        let step = RewriteStep::with_conditions(
+            "log_of_product",
+            before,
+            after,
+            vec![
+                SideCondition::Positive(x),
+                SideCondition::Positive(y),
+                SideCondition::Positive(z),
+            ],
+        );
+        let lean = emit_step(&step, &pool);
+        assert!(
+            lean.contains("sorry"),
+            "three-factor log_of_product has no known lemma yet; must withhold: {lean}"
         );
     }
 
