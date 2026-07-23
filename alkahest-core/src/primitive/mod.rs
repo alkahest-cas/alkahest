@@ -137,7 +137,25 @@ pub trait Primitive: 'static + Send + Sync {
         None
     }
 
-    /// Name of the Lean 4 / Mathlib theorem that certifies this primitive.
+    /// Name of the Lean 4 / Mathlib theorem that certifies this primitive's
+    /// derivative — but only if `alkahest_core::lean`'s certificate emitter
+    /// (`emit_lean_expr_wrt` / `diff_rule_to_tactic` / `step_is_certifiable`)
+    /// actually produces a non-`sorry` certificate for it *today*.
+    ///
+    /// This is deliberately narrower than "a Mathlib lemma with this name
+    /// exists": several primitives (`log`, `sqrt`, the hyperbolic/inverse
+    /// family, `tan`, `atan2`, `gamma`, …) have a real Mathlib derivative
+    /// lemma but the emitter withholds the certificate — either because a
+    /// side condition (e.g. `x > 0`) isn't encoded yet, or because the diff
+    /// step is recorded under the generic `diff_primitive_registry` rule
+    /// name that `diff_rule_to_tactic` never maps to a tactic. Returning
+    /// `Some` here when the emitter can't back it up would make the
+    /// `capabilities()["primitives"]` agent-contract signal a false
+    /// promise. When you make a new primitive's certificate actually
+    /// typecheck (add a `diff_rule_to_tactic` arm, wire up the rule name,
+    /// etc.), flip this back to `Some` — and verify empirically, e.g. via
+    /// `alkahest.to_lean(alkahest.diff(f(x), x))` checked with
+    /// `lake env lean`, not by inspection alone.
     fn lean_theorem(&self) -> Option<&'static str> {
         None
     }
@@ -640,9 +658,11 @@ pub mod builtins {
             args[0].log()
         }
 
-        fn lean_theorem(&self) -> Option<&'static str> {
-            Some("Real.log_deriv")
-        }
+        // NOTE: no `lean_theorem` override — `diff_log` is withheld by
+        // `lean::diff_rule_to_tactic` (side-condition gap on `x > 0`), so
+        // the emitter never actually produces a non-`sorry` certificate
+        // for this primitive's derivative today. See `lean_theorem`'s
+        // trait doc for why the bit must track real certifiability.
     }
 
     // ── sqrt ─────────────────────────────────────────────────────────────────
@@ -691,9 +711,10 @@ pub mod builtins {
             args[0].sqrt()
         }
 
-        fn lean_theorem(&self) -> Option<&'static str> {
-            Some("Real.sqrt_deriv")
-        }
+        // NOTE: no `lean_theorem` override — `diff_sqrt` is withheld by
+        // `lean::diff_rule_to_tactic` (side-condition gap on `x > 0`), so
+        // the emitter never actually produces a non-`sorry` certificate
+        // for this primitive's derivative today.
     }
 
     // ── tan ──────────────────────────────────────────────────────────────────
@@ -742,9 +763,10 @@ pub mod builtins {
             args[0].tan()
         }
 
-        fn lean_theorem(&self) -> Option<&'static str> {
-            Some("Real.tan_deriv")
-        }
+        // NOTE: no `lean_theorem` override — this primitive's diff step is
+        // recorded under the generic `diff_primitive_registry` rule, which
+        // `lean::diff_rule_to_tactic` never certifies, so the emitter never
+        // produces a non-`sorry` certificate for its derivative today.
     }
 
     // ── sinh ─────────────────────────────────────────────────────────────────
@@ -786,9 +808,8 @@ pub mod builtins {
             Some(args[0].sinh())
         }
 
-        fn lean_theorem(&self) -> Option<&'static str> {
-            Some("Real.sinh_deriv")
-        }
+        // NOTE: no `lean_theorem` override — see the `tan` primitive above
+        // for why (generic `diff_primitive_registry` rule, never certified).
     }
 
     // ── cosh ─────────────────────────────────────────────────────────────────
@@ -830,9 +851,8 @@ pub mod builtins {
             Some(args[0].cosh())
         }
 
-        fn lean_theorem(&self) -> Option<&'static str> {
-            Some("Real.cosh_deriv")
-        }
+        // NOTE: no `lean_theorem` override — see the `tan` primitive above
+        // for why (generic `diff_primitive_registry` rule, never certified).
     }
 
     // ── tanh ─────────────────────────────────────────────────────────────────
@@ -883,9 +903,8 @@ pub mod builtins {
             Some(args[0].tanh())
         }
 
-        fn lean_theorem(&self) -> Option<&'static str> {
-            Some("Real.tanh_deriv")
-        }
+        // NOTE: no `lean_theorem` override — see the `tan` primitive above
+        // for why (generic `diff_primitive_registry` rule, never certified).
     }
 
     // ── asin ─────────────────────────────────────────────────────────────────
@@ -1038,9 +1057,8 @@ pub mod builtins {
             Some(args[0].atan())
         }
 
-        fn lean_theorem(&self) -> Option<&'static str> {
-            Some("Real.arctan_deriv")
-        }
+        // NOTE: no `lean_theorem` override — see the `tan` primitive above
+        // for why (generic `diff_primitive_registry` rule, never certified).
     }
 
     // ── asinh ────────────────────────────────────────────────────────────────
@@ -1091,9 +1109,8 @@ pub mod builtins {
             Some(args[0].asinh())
         }
 
-        fn lean_theorem(&self) -> Option<&'static str> {
-            Some("Real.arsinh")
-        }
+        // NOTE: no `lean_theorem` override — see the `tan` primitive above
+        // for why (generic `diff_primitive_registry` rule, never certified).
     }
 
     // ── acosh ────────────────────────────────────────────────────────────────
@@ -1144,9 +1161,8 @@ pub mod builtins {
             args[0].acosh()
         }
 
-        fn lean_theorem(&self) -> Option<&'static str> {
-            Some("Real.arcosh")
-        }
+        // NOTE: no `lean_theorem` override — see the `tan` primitive above
+        // for why (generic `diff_primitive_registry` rule, never certified).
     }
 
     // ── atanh ────────────────────────────────────────────────────────────────
@@ -1195,9 +1211,8 @@ pub mod builtins {
             args[0].atanh()
         }
 
-        fn lean_theorem(&self) -> Option<&'static str> {
-            Some("Real.artanh")
-        }
+        // NOTE: no `lean_theorem` override — see the `tan` primitive above
+        // for why (generic `diff_primitive_registry` rule, never certified).
     }
 
     // ── erf ──────────────────────────────────────────────────────────────────
@@ -2053,9 +2068,8 @@ pub mod builtins {
             Some(pool.mul(vec![numerator, pool.pow(denominator, neg_one)]))
         }
 
-        fn lean_theorem(&self) -> Option<&'static str> {
-            Some("Real.arctan2")
-        }
+        // NOTE: no `lean_theorem` override — see the `tan` primitive above
+        // for why (generic `diff_primitive_registry` rule, never certified).
     }
 
     // ── lambert_w ────────────────────────────────────────────────────────────
@@ -2320,9 +2334,9 @@ pub mod builtins {
             Some(libm_gamma(args[0]))
         }
 
-        fn lean_theorem(&self) -> Option<&'static str> {
-            Some("Real.Gamma")
-        }
+        // NOTE: no `lean_theorem` override — `gamma` isn't even wired into
+        // `diff::diff` yet (see E-DIFF-001), let alone certified by
+        // `lean::diff_rule_to_tactic`, so no certificate is ever emitted.
     }
 
     // ── min ──────────────────────────────────────────────────────────────────
