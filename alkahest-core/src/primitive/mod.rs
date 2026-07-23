@@ -1262,7 +1262,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(libm_erf(args[0]))
+            Some(libm::erf(args[0]))
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -1308,7 +1308,7 @@ pub mod builtins {
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
-            Some(1.0 - libm_erf(args[0]))
+            Some(libm::erfc(args[0]))
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
@@ -2427,15 +2427,6 @@ pub mod builtins {
     // Helper: erf via polynomial approximation (Horner-form, max error ≤ 1.5e-7)
     // Abramowitz & Stegun 7.1.26
     // ---------------------------------------------------------------------------
-
-    fn libm_erf(x: f64) -> f64 {
-        let t = 1.0 / (1.0 + 0.3275911 * x.abs());
-        let poly = t
-            * (0.254829592
-                + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
-        let sign = if x < 0.0 { -1.0 } else { 1.0 };
-        sign * (1.0 - poly * (-x * x).exp())
-    }
 }
 
 // ---------------------------------------------------------------------------
