@@ -25,6 +25,37 @@ constant of integration. If no elementary antiderivative exists, write exactly: 
 N_TIERS = len(TIERS)
 
 
+def _known_nonelementary_forms(pool: ak.ExprPool, x: ak.Expr) -> list:
+    """Curated corpus of integrands with *no* elementary antiderivative.
+
+    SOUNDNESS INVARIANT (directional issue #3): hard-negative ("nonelementary")
+    training rows are labelled ONLY from this hand-verified list — never from the
+    engine's own ``integrate()`` verdict. The engine's ``NonElementary`` verdict
+    (``E-INT-004``) is a *sound-but-incomplete* oracle: it can emit a FALSE
+    ``NonElementary`` on an actually-elementary integrand (see bug B2, fixed in
+    #219) and, conversely, it gives up with ``E-INT-001`` ("not implemented") on
+    genuinely non-elementary integrands it cannot classify. Trusting either code
+    to *generate* labels would poison the "honest refusal" reward. Each entry
+    below is a classical, textbook-known non-elementary integrand:
+
+      * exp(x^2)        — Gaussian; antiderivative is erf (non-elementary).
+      * sin(x)/x        — sine integral Si(x).
+      * exp(x)/x        — exponential integral Ei(x).
+      * log(log(x+2))   — logarithmic-integral family; genuinely non-elementary
+                          even though the engine only reports E-INT-001 for it.
+
+    The reward (see ``verifier.IntegrationVerifier``) credits an honest refusal
+    solely on rows carrying this curated ``is_elementary=False`` label, so a
+    refusal is rewarded ONLY when the integrand is provably non-elementary.
+    """
+    return [
+        ak.exp(x * x),
+        ak.sin(x) / x,
+        ak.exp(x) / x,
+        ak.log(ak.log(x + pool.integer(2))),
+    ]
+
+
 def load_environment(
     difficulty_tier: int = 0,
     hard_negative_fraction: float = 0.25,
@@ -91,13 +122,8 @@ def _make_row(tier: int, nonelementary: bool, rng: random.Random) -> dict:
     pool = ak.ExprPool()
     x = pool.symbol("x")
     if nonelementary:
-        ne_forms = [
-            ak.exp(x * x),
-            ak.sin(x) / x,
-            ak.exp(x) / x,
-            ak.log(ak.log(x + pool.integer(2))),
-        ]
-        f = rng.choice(ne_forms)
+        # Labels come from the curated corpus, NOT from the engine's verdict.
+        f = rng.choice(_known_nonelementary_forms(pool, x))
         return {
             "prompt": [{"role": "user", "content": f"Find ∫ {ak.unicode_str(f)} dx"}],
             "f_str": str(f),

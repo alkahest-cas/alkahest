@@ -13,6 +13,19 @@ _SPOT_PRIMES = [3, 5, 7, 11, 13, 17, 19, 23]
 
 
 class IntegrationVerifier(BaseVerifier):
+    """Reward model integration attempts.
+
+    Soundness note (directional issue #3): the "honest refusal" reward is gated
+    exclusively on the ``is_elementary`` label carried by the row — which comes
+    from the curated known-non-elementary corpus in ``env._known_nonelementary_forms``
+    — and NEVER on the engine's own ``integrate()`` classification. We therefore
+    reward a refusal only when the integrand is *provably* non-elementary, and
+    never when the engine merely gave up (``E-INT-001``) or emitted a false
+    ``NonElementary`` verdict (``E-INT-004``; cf. bug B2, fixed in #219). A model
+    answer is otherwise scored by differentiating it and comparing to the
+    integrand, independent of any engine verdict.
+    """
+
     def verify(self, completion: str, metadata: dict) -> float:
         is_elementary: bool = metadata["is_elementary"]
         f_expr: Expr = metadata["f_expr"]
