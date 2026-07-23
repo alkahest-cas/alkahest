@@ -186,9 +186,8 @@ pub fn emit_header() -> String {
     "import Mathlib.Tactic\n\
      import Mathlib.Analysis.SpecialFunctions.Trigonometric.Basic\n\
      import Mathlib.Analysis.SpecialFunctions.Log.Basic\n\
-     import Mathlib.MeasureTheory.Integral.IntervalIntegral\n\
      \n\
-     open Real MeasureTheory\n\n"
+     open Real\n\n"
         .to_string()
 }
 
@@ -231,7 +230,8 @@ pub fn emit_limit_header() -> String {
 /// * `lim`   — the computed limit value
 /// * `pool`  — expression pool
 ///
-/// Returns a complete `.lean` source snippet including the header.
+/// Returns a complete `.lean` source snippet including the header. Returns an
+/// empty string if the proof would require `sorry` or `admit` (unrecognized patterns).
 pub fn emit_tendsto_cert(expr: ExprId, var: ExprId, lim: ExprId, pool: &ExprPool) -> String {
     let var_name = pool.with(var, |d| match d {
         ExprData::Symbol { name, .. } => name.clone(),
@@ -240,6 +240,11 @@ pub fn emit_tendsto_cert(expr: ExprId, var: ExprId, lim: ExprId, pool: &ExprPool
     let body = expr_to_lean(expr, pool);
     let (codom_filter, limit_display) = lean_codom_filter(lim, pool);
     let tactic = tendsto_tactic(expr, var, lim, pool);
+
+    // Gate: do not emit certificates that would require sorry or admit.
+    if tactic.contains("sorry") || tactic.contains("admit") {
+        return String::new();
+    }
 
     let mut out = emit_limit_header();
     out.push_str(&format!(
@@ -964,16 +969,35 @@ mod tests {
     }
 
     #[test]
-    fn emit_tendsto_fallback_uses_sorry() {
+    fn emit_tendsto_unrecognized_pattern_withheld() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
-        // sin(x) → no known pattern → sorry
+        // sin(x) → no known pattern → should return empty string
         let expr = pool.func("sin", vec![x]);
         let zero = pool.integer(0_i32);
         let lean = emit_tendsto_cert(expr, x, zero, &pool);
         assert!(
-            lean.contains("sorry"),
-            "complex patterns should fall back to sorry: {lean}"
+            lean.is_empty(),
+            "unrecognized patterns must not emit sorry certificates: got {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_tendsto_recognized_pattern_yields_cert() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        // exp(-x) → recognized pattern → should yield non-empty cert
+        let neg_x = pool.mul(vec![pool.integer(-1_i32), x]);
+        let expr = pool.func("exp", vec![neg_x]);
+        let zero = pool.integer(0_i32);
+        let lean = emit_tendsto_cert(expr, x, zero, &pool);
+        assert!(
+            !lean.is_empty(),
+            "recognized tendsto patterns must yield a certificate"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "recognized pattern certificate must not use sorry: {lean}"
         );
     }
 
