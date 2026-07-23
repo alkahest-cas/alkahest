@@ -344,11 +344,25 @@ def test_lean_diff_sin_certificate_has_no_sorry():
     assert r.verification["status"] == "certificate_available"
 
 
-def test_lean_withholds_chain_rule_diff_certificate():
-    """B3: chain-rule diffs are withheld until Lean-encoded."""
+def test_lean_emits_chain_rule_composite_certificate():
+    """Chain rule for f(x^n), f in {sin, cos, exp}, now emits a compiling cert."""
     p = pool()
     x = p.symbol("x")
     r = diff(sin(x**2), x)
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "hasDerivAt_pow" in cert
+    assert "(hg.sin).deriv" in cert
+    assert r.verification["status"] == "certificate_available"
+
+
+def test_lean_withholds_chain_rule_log_composite():
+    """Composite log(x^n) still routes through diff_log and stays withheld."""
+    p = pool()
+    x = p.symbol("x")
+    r = diff(log(x**2), x)
     assert r.certificate is None
     assert r.verification["status"] == "unverified"
 

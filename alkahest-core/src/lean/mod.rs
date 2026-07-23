@@ -34,7 +34,11 @@ use crate::kernel::{ExprData, ExprId, ExprPool};
 
 fn rule_to_tactic(rule_name: &str) -> &'static str {
     match rule_name {
-        "const_fold" => "by norm_num",
+        // `const_fold` folds constant arithmetic, but in a differentiation log it
+        // can also reorder a symbolic atom past the folded coefficient (e.g.
+        // `x*2*sin(x²)*-1 = x*sin(x²)*-2`). `ring` closes both the pure-numeric
+        // folds and these symbolic reorderings.
+        "const_fold" => "by ring",
         "add_zero" => "by simp [add_zero]",
         "mul_one" => "by simp [mul_one]",
         "mul_zero" => "by simp [mul_zero]",
@@ -117,6 +121,71 @@ fn is_pow_of_var(before: ExprId, wrt: ExprId, pool: &ExprPool) -> bool {
         before,
         |d| matches!(d, ExprData::Pow { base, .. } if *base == wrt),
     )
+}
+
+/// If `before` is a unary composite `f(wrt ^ n)` whose inner argument is a pure
+/// power of the differentiation variable with integer exponent `n ≥ 2`, return
+/// `n`. This is the subset of the chain rule that we can emit as a compiling
+/// Lean certificate via `HasDerivAt.comp` + `hasDerivAt_pow`.
+fn composite_pow_inner_exp(before: ExprId, wrt: ExprId, pool: &ExprPool) -> Option<i64> {
+    pool.with(before, |d| {
+        let arg = match d {
+            ExprData::Func { args, .. } if args.len() == 1 => args[0],
+            _ => return None,
+        };
+        pool.with(arg, |inner| match inner {
+            ExprData::Pow { base, exp } if *base == wrt => pool.with(*exp, |e| match e {
+                ExprData::Integer(n) => n.0.to_i64().filter(|&k| k >= 2),
+                _ => None,
+            }),
+            _ => None,
+        })
+    })
+}
+
+/// The Mathlib `HasDerivAt.<f>` composite lemma suffix for the outer unary
+/// primitive of a chain-rule differentiation step, if we know how to compose it.
+///
+/// These lemmas (`HasDerivAt.sin`, `HasDerivAt.cos`, `HasDerivAt.exp`) take a
+/// `HasDerivAt` for the inner function and yield one for `fun x => f (g x)`,
+/// avoiding the higher-order unification pitfalls of the raw `HasDerivAt.comp`.
+fn chain_outer_lemma(rule_name: &str) -> Option<&'static str> {
+    match rule_name {
+        "diff_sin" => Some("sin"),
+        "diff_cos" => Some("cos"),
+        "diff_exp" => Some("exp"),
+        _ => None,
+    }
+}
+
+/// Build a self-contained Lean tactic proving a chain-rule derivative goal
+/// `deriv (fun x => f (x^n)) x = <after>` for `f ∈ {sin, cos, exp}` and integer
+/// `n ≥ 2`.
+///
+/// The proof takes `hasDerivAt_pow` for the polynomial inner, lifts it through
+/// the outer primitive's `HasDerivAt.<f>` composite lemma, discharges the
+/// derivative via `HasDerivAt.deriv`, and reconciles the (cast-laden) Mathlib
+/// derivative form with Alkahest's recorded `after` using `push_cast; ring`.
+/// Returns `None` when the step is not a supported composite shape.
+fn chain_diff_tactic(
+    rule_name: &str,
+    before: ExprId,
+    wrt: ExprId,
+    pool: &ExprPool,
+) -> Option<String> {
+    let n = composite_pow_inner_exp(before, wrt, pool)?;
+    let suffix = chain_outer_lemma(rule_name)?;
+    let var_name = pool.with(wrt, |d| match d {
+        ExprData::Symbol { name, .. } => name.clone(),
+        _ => "x".to_string(),
+    });
+    Some(format!(
+        "by\n    \
+         have hg := hasDerivAt_pow {n} {var_name}\n    \
+         rw [(hg.{suffix}).deriv]\n    \
+         push_cast\n    \
+         ring"
+    ))
 }
 
 fn diff_rule_to_tactic(rule_name: &str) -> Option<&'static str> {
@@ -218,7 +287,14 @@ fn step_is_certifiable(step: &RewriteStep, wrt: Option<ExprId>, pool: &ExprPool)
     if let Some(var) = wrt {
         if is_differentiation_rule(step.rule_name) {
             match step.rule_name {
-                "diff_sin" | "diff_cos" | "diff_exp" | "diff_log" | "diff_sqrt" => {
+                "diff_sin" | "diff_cos" | "diff_exp" => {
+                    // Pointwise `f(x)` uses the direct Mathlib deriv lemma; a
+                    // composite `f(x^n)` is closed via the chain-rule tactic.
+                    return (is_unary_of_var(step.before, var, pool)
+                        && diff_rule_to_tactic(step.rule_name).is_some())
+                        || chain_diff_tactic(step.rule_name, step.before, var, pool).is_some();
+                }
+                "diff_log" | "diff_sqrt" => {
                     // Chain rule / composite arguments are not yet encoded.
                     return is_unary_of_var(step.before, var, pool)
                         && diff_rule_to_tactic(step.rule_name).is_some();
@@ -514,10 +590,18 @@ pub fn emit_step_wrt(step: &RewriteStep, pool: &ExprPool, wrt: Option<ExprId>) -
     } else {
         emit_goal(step.before, step.after, pool)
     };
-    let tactic = if diff_step {
-        diff_rule_to_tactic(step.rule_name).unwrap_or("by sorry")
+    let tactic: String = if let (true, Some(var)) = (diff_step, wrt) {
+        chain_diff_tactic(step.rule_name, step.before, var, pool).unwrap_or_else(|| {
+            diff_rule_to_tactic(step.rule_name)
+                .unwrap_or("by sorry")
+                .to_string()
+        })
+    } else if diff_step {
+        diff_rule_to_tactic(step.rule_name)
+            .unwrap_or("by sorry")
+            .to_string()
     } else {
-        rule_to_tactic(step.rule_name)
+        rule_to_tactic(step.rule_name).to_string()
     };
     let mut out = format!("{goal} :=\n  {tactic}");
     if !step.side_conditions.is_empty() {
@@ -700,8 +784,8 @@ mod tests {
             "missing import: {lean}"
         );
         assert!(
-            lean.contains("norm_num"),
-            "ConstFold should produce norm_num: {lean}"
+            lean.contains("ring"),
+            "ConstFold should produce a ring proof: {lean}"
         );
     }
 
@@ -1069,7 +1153,7 @@ mod tests {
     }
 
     #[test]
-    fn withhold_chain_rule_diff_sin_certificate() {
+    fn emit_lean_chain_rule_diff_sin_x_squared() {
         use crate::diff::diff;
 
         let pool = p();
@@ -1079,8 +1163,57 @@ mod tests {
         let derived = diff(sin_x2, x, &pool).expect("diff");
         let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
         assert!(
+            !lean.is_empty(),
+            "chain-rule d/dx sin(x²) should now be Lean-certifiable"
+        );
+        assert!(
+            lean.contains("hasDerivAt_pow") && lean.contains("(hg.sin).deriv"),
+            "expected chain-rule composition tactic: {lean}"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "chain-rule certificate must not use sorry: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_lean_chain_rule_diff_exp_x_squared() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let exp_x2 = pool.func("exp", vec![x2]);
+        let derived = diff(exp_x2, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "chain-rule d/dx exp(x²) should now be Lean-certifiable"
+        );
+        assert!(
+            lean.contains("hasDerivAt_pow") && lean.contains("(hg.exp).deriv"),
+            "expected exp chain-rule composition tactic: {lean}"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "chain-rule certificate must not use sorry: {lean}"
+        );
+    }
+
+    #[test]
+    fn withhold_chain_rule_diff_log_composite() {
+        use crate::diff::diff;
+
+        // d/dx log(x²) still routes through diff_log; that shape stays withheld.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let log_x2 = pool.func("log", vec![x2]);
+        let derived = diff(log_x2, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
             lean.is_empty(),
-            "chain-rule d/dx sin(x²) is not yet Lean-encoded; got: {lean}"
+            "chain-rule d/dx log(x²) is not encoded; must withhold: {lean}"
         );
     }
 
