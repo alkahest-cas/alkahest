@@ -556,3 +556,71 @@ fn round_trip_table_smoke() {
         assert_numeric_eq(back, f, t, &samples, &pool);
     }
 }
+
+#[test]
+fn inverse_hyperbolic_poles() {
+    // Irreducible over ℚ with ω² < 0 must use sinh/cosh — not sin(√(−κ²)).
+    let (pool, t, s) = setup();
+    // L⁻¹{1/(s² − 2)} = sinh(√2 · t)/√2
+    let den = pool.add(vec![pool.pow(s, pool.integer(2_i32)), pool.integer(-2_i32)]);
+    let big_f = recip(den, &pool);
+    let got = inverse_laplace_transform(big_f, s, t, &pool).unwrap();
+    assert!(
+        pool.display(got).to_string().contains("sinh"),
+        "expected sinh, got {}",
+        pool.display(got)
+    );
+    let kappa = (2.0_f64).sqrt();
+    for &x in &[0.5_f64, 1.0, 1.5] {
+        let va = eval_at(got, t, x, &pool).expect("finite");
+        let vb = (kappa * x).sinh() / kappa;
+        assert!(
+            (va - vb).abs() < 1e-8,
+            "1/(s²−2) at t={x}: {va} vs sinh/√2 = {vb}"
+        );
+    }
+
+    // L⁻¹{s/(s² − 2)} = cosh(√2 · t)
+    let big_f = pool.mul(vec![s, recip(den, &pool)]);
+    let got = inverse_laplace_transform(big_f, s, t, &pool).unwrap();
+    assert!(
+        pool.display(got).to_string().contains("cosh"),
+        "expected cosh, got {}",
+        pool.display(got)
+    );
+    for &x in &[0.5_f64, 1.0, 1.5] {
+        let va = eval_at(got, t, x, &pool).expect("finite");
+        let vb = (kappa * x).cosh();
+        assert!((va - vb).abs() < 1e-8, "s/(s²−2) at t={x}: {va} vs {vb}");
+    }
+}
+
+#[test]
+fn round_trip_sinh_irreducible() {
+    // L{sinh(√2 · t)} →  √2/(s²−2); inverse must recover sinh (not NaN sin).
+    let (pool, t, s) = setup();
+    let sqrt2 = pool.pow(pool.integer(2_i32), pool.rational(1_i32, 2_i32));
+    let f = pool.func("sinh", vec![pool.mul(vec![sqrt2, t])]);
+    let big_f = laplace_transform(f, t, s, &pool).unwrap();
+    let back = inverse_laplace_transform(big_f, s, t, &pool).unwrap();
+    assert_numeric_eq(back, f, t, &[0.25, 0.5, 1.0, 1.5], &pool);
+}
+
+#[test]
+fn decline_negative_heaviside_shift() {
+    let (pool, t, s) = setup();
+    // θ(t + 1) = θ(t − (−1)) — unilateral table requires a ≥ 0.
+    let arg = pool.add(vec![t, pool.integer(1_i32)]);
+    let f = pool.func("heaviside", vec![arg]);
+    let err = laplace_transform(f, t, s, &pool).unwrap_err();
+    assert!(matches!(err, LaplaceError::NoRule(_)), "{err}");
+}
+
+#[test]
+fn decline_negative_dirac_shift() {
+    let (pool, t, s) = setup();
+    let arg = pool.add(vec![t, pool.integer(2_i32)]);
+    let f = pool.func("diracdelta", vec![arg]);
+    let err = laplace_transform(f, t, s, &pool).unwrap_err();
+    assert!(matches!(err, LaplaceError::NoRule(_)), "{err}");
+}

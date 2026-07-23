@@ -4,6 +4,14 @@
 
 ### Fixes
 
+- **Laplace hyperbolic inverse:** irreducible quadratics with `ω² < 0`
+  (e.g. `1/(s²−2)`) now invert to sinh/cosh instead of `sin(√(−κ²))` (which
+  evaluated to NaN / declined). Forward sinh/cosh folds `(√c)²→c` in the
+  denominator and the inverse peels s-free amplitudes so `L⁻¹{L{sinh(√2 t)}}`
+  round-trips. Literal negative Heaviside/Dirac shifts `θ(t+a)`, `δ(t+a)`
+  with `a > 0` are refused (`E-TRANSFORM-001`) rather than emitting the wrong
+  unilateral formula.
+
 - **Transform round-trips:** Inverse Laplace now inverts repeated irreducible
   quadratic poles of order 2 (needed for `L⁻¹{L{t sin}}` / `t cos`). Inverse Z
   matches the forward sin/cos table forms directly so transcendental
