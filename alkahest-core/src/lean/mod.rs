@@ -65,6 +65,12 @@ fn rule_to_tactic(rule_name: &str) -> &'static str {
         // arguments, or three-plus factors [`positivity_tactic`] has no chained
         // lemma for) must be withheld, so the table default is a withheld `sorry`.
         "sum_of_logs" => "by sorry",
+        // `log(x·y⁻¹) = log x − log y` is only sound with `x > 0`, `y > 0`.
+        // [`emit_step_wrt`] upgrades the two-symbol case to an explicit-binder
+        // certificate via [`positivity_certificate`]/[`positivity_tactic`];
+        // anything it can't upgrade must be withheld, so the table default is a
+        // withheld `sorry` rather than the (non-compiling) `ring_nf; simp`.
+        "log_of_quotient" => "by sorry",
         // `exp a · exp b · … = exp(a + b + …)` is unconditionally valid; fold the
         // product of exponentials back with `Real.exp_add` (applied right-to-left,
         // repeatedly for ≥ 3 factors).
@@ -382,26 +388,78 @@ fn chain_diff_tactic(
     ))
 }
 
+/// The single tactic that closes every "combine" differentiation step —
+/// `diff_univariate_poly`, `sum_rule`, `product_rule` — over the
+/// *everywhere-differentiable* fragment ([`diff_body_unconditional`]).
+///
+/// `simp only` rewrites strictly at `deriv`/`DifferentiableAt` positions (no
+/// algebraic normalization of the lambda body, which would desync the
+/// structural `deriv_add`/`deriv_mul` match), and the raised
+/// `maxDischargeDepth` lets simp's discharger recurse through
+/// `DifferentiableAt.add`/`.mul`/`.pow` for deeply nested products and sums
+/// (the default depth of 2 silently leaves the `deriv` unreduced — the exact
+/// "green by luck" failure this gate hardening fixes). `try ring` then
+/// reconciles Alkahest's coefficient ordering / `1 *` decorations with the
+/// Mathlib derivative; it is a no-op (not a linter error) on the rare step
+/// simp closes outright.
+const UNCONDITIONAL_DIFF_TACTIC: &str = "by\n    \
+     simp (config := { maxDischargeDepth := 8 }) only [deriv_add, deriv_mul, deriv_pow, \
+     deriv_const, deriv_id'', Real.deriv_sin, Real.deriv_cos, Real.deriv_exp, \
+     differentiableAt_pow, differentiableAt_id', differentiableAt_const, \
+     Real.differentiableAt_sin, Real.differentiableAt_cos, Real.differentiableAt_exp, \
+     DifferentiableAt.add, DifferentiableAt.mul, DifferentiableAt.pow]\n    \
+     try ring";
+
+/// True when the differentiated body `before` is built only from atoms whose
+/// derivative [`UNCONDITIONAL_DIFF_TACTIC`]'s simp set computes *without any
+/// side condition* — i.e. the function is differentiable at every real point:
+/// the differentiation variable, constant symbols (`C1`, `C2`, …) and numeric
+/// literals, sums and products of those, non-negative integer powers of the
+/// variable, and the pointwise primitives `sin`/`cos`/`exp` applied to exactly
+/// the variable.
+///
+/// Everything else must be withheld by the caller: `log`/`sqrt`/`tan` and any
+/// inverse or negative power need an `x ≠ 0` (or positivity) hypothesis the
+/// unconditional simp set cannot discharge, and a chain composite `f(g x)`
+/// with `g ≠ x` lacks the composite's `DifferentiableAt` lemma (those go
+/// through [`chain_diff_tactic`] instead, never this fragment).
+fn diff_body_unconditional(before: ExprId, wrt: ExprId, pool: &ExprPool) -> bool {
+    fn walk(f: ExprId, wrt: ExprId, pool: &ExprPool) -> bool {
+        pool.with(f, |d| match d {
+            ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => true,
+            // A bare symbol is either the differentiation variable or a free
+            // constant (`fun x => C1` is constant in `x`); both are handled by
+            // `differentiableAt_id'` / `differentiableAt_const`.
+            ExprData::Symbol { .. } => true,
+            ExprData::Pow { base, exp } => {
+                *base == wrt
+                    && pool.with(*exp, |e| match e {
+                        ExprData::Integer(n) => n.0.to_i64().is_some_and(|k| k >= 0),
+                        _ => false,
+                    })
+            }
+            ExprData::Func { name, args } => {
+                matches!(name.as_str(), "sin" | "cos" | "exp") && args.len() == 1 && args[0] == wrt
+            }
+            ExprData::Add(xs) => xs.iter().all(|&c| walk(c, wrt, pool)),
+            ExprData::Mul(xs) => xs.iter().all(|&c| walk(c, wrt, pool)),
+            _ => false,
+        })
+    }
+    walk(before, wrt, pool)
+}
+
 fn diff_rule_to_tactic(rule_name: &str) -> Option<&'static str> {
     match rule_name {
         "diff_identity" => Some("by simp [deriv_id]"),
         "diff_const" => Some("by simp [deriv_const]"),
-        // `; try ring` closes coefficient-order goals like `2 * x = x * 2`.
-        "diff_univariate_poly" => {
-            Some("by simp [deriv_pow, deriv_add, deriv_mul, deriv_const]; try ring")
-        }
-        // `deriv_add`/`deriv_mul` need DifferentiableAt side goals; include the
-        // common Real lemmas so unary trig/exp sums and products close.
-        "sum_rule" => Some(
-            "by simp [deriv_add, Real.deriv_sin, Real.deriv_cos, Real.deriv_exp, \
-             Real.differentiableAt_sin, Real.differentiableAt_cos, Real.differentiableAt_exp, \
-             deriv_pow, deriv_mul, deriv_const, one_mul, mul_one, mul_neg, neg_mul]; try ring",
-        ),
-        "product_rule" => Some(
-            "by simp [deriv_mul, Real.deriv_sin, Real.deriv_cos, Real.deriv_exp, \
-             Real.differentiableAt_sin, Real.differentiableAt_cos, Real.differentiableAt_exp, \
-             deriv_const, differentiableAt_const, one_mul, mul_one, mul_neg, neg_mul]; try ring",
-        ),
+        // Combine steps over the everywhere-differentiable fragment. Callers in
+        // [`diff_step_certificate`] gate these on [`diff_body_unconditional`]
+        // and withhold anything outside it, so the tactic never runs on a body
+        // whose `deriv`/`DifferentiableAt` it cannot discharge.
+        "diff_univariate_poly" => Some(UNCONDITIONAL_DIFF_TACTIC),
+        "sum_rule" => Some(UNCONDITIONAL_DIFF_TACTIC),
+        "product_rule" => Some(UNCONDITIONAL_DIFF_TACTIC),
         "power_rule" | "power_rule_n1" => Some("by simp [deriv_pow, deriv_mul]; try ring"),
         "power_rule_n0" => Some("by simp [deriv_const]"),
         // Pointwise Mathlib lemmas for `deriv (fun x => f x) x = …` when the
@@ -462,7 +520,13 @@ fn diff_step_certificate(
         }
         "diff_primitive_registry" => registry_diff_certificate(step.before, wrt, pool),
         "power_rule" | "power_rule_n1" | "power_rule_n0" => {
-            if is_pow_of_var(step.before, wrt, pool) {
+            // `deriv (fun x => xⁿ)` closes via `deriv_pow` only for a
+            // non-negative integer `n`; a negative/inverse power (stored as
+            // `x^(-k)`) needs `x ≠ 0` and must be withheld. `is_pow_of_var`
+            // alone accepts `x^(-2)`, so also require the unconditional gate.
+            if is_pow_of_var(step.before, wrt, pool)
+                && diff_body_unconditional(step.before, wrt, pool)
+            {
                 diff_rule_to_tactic(step.rule_name).map(|t| (None, t.to_string()))
             } else if step.rule_name == "power_rule" {
                 power_chain_certificate(step.before, wrt, pool)
@@ -470,8 +534,17 @@ fn diff_step_certificate(
                 None
             }
         }
-        "product_rule" => quotient_chain_certificate(step.before, wrt, pool)
-            .or_else(|| diff_rule_to_tactic("product_rule").map(|t| (None, t.to_string()))),
+        // Combine steps: only certifiable when the differentiated body lies in
+        // the everywhere-differentiable fragment (otherwise the unconditional
+        // simp set leaves a `deriv`/`DifferentiableAt` goal open — withhold).
+        "diff_univariate_poly" | "sum_rule" => diff_body_unconditional(step.before, wrt, pool)
+            .then(|| (None, UNCONDITIONAL_DIFF_TACTIC.to_string())),
+        // `product_rule` first tries the `f(x)/g(x)` quotient chain (which
+        // carries its own `g x ≠ 0` binder), then the unconditional fragment.
+        "product_rule" => quotient_chain_certificate(step.before, wrt, pool).or_else(|| {
+            diff_body_unconditional(step.before, wrt, pool)
+                .then(|| (None, UNCONDITIONAL_DIFF_TACTIC.to_string()))
+        }),
         name => diff_rule_to_tactic(name).map(|t| (None, t.to_string())),
     }
 }
@@ -498,6 +571,13 @@ fn positivity_tactic(rule_name: &str, names: &[String]) -> Option<String> {
         ("exp_of_log", [x]) => Some(format!("by rw [Real.exp_log h{x}]")),
         ("log_of_product" | "log_of_product_positive" | "sum_of_logs", [x, y]) => Some(format!(
             "by rw [Real.log_mul (ne_of_gt h{x}) (ne_of_gt h{y})]"
+        )),
+        // `log(x · y⁻¹) = log x + (-1)·log y`, sound under `x > 0`, `y > 0`.
+        // `Real.log_inv` (the `log y⁻¹ = -log y` half) is unconditional; only
+        // the `Real.log_mul` split needs the nonzero hypotheses.
+        ("log_of_quotient", [x, y]) => Some(format!(
+            "by rw [Real.log_mul (ne_of_gt h{x}) (inv_ne_zero (ne_of_gt h{y})), \
+             Real.log_inv]; ring"
         )),
         _ => None,
     }
@@ -662,7 +742,38 @@ fn is_double_inv_cancel(before: ExprId, after: ExprId, pool: &ExprPool) -> bool 
 /// literally contain `"sorry"`), the [`positivity_certificate`] upgrade, and
 /// finally the static per-rule-name tactic ([`rule_to_tactic`]) when it
 /// doesn't require `sorry`. Returns `None` when the step must be withheld.
+/// Certificate for a `sin_double_angle` fold `2 · sin u · cos u = sin(2u)`
+/// (Alkahest stores the LHS as `sin u · 2 · cos u` and the RHS as `sin(u·2)`).
+/// `Real.sin_two_mul u : sin (2·u) = 2 · sin u · cos u` is *unconditional*, so
+/// no side condition is needed — we only have to reconcile the `u·2` vs `2·u`
+/// argument order (a `mul_comm` rewrite confined to the sine's argument) and
+/// the factor ordering (`ring`). Returns `None` (→ withhold) if `before` is
+/// not literally a product containing a `sin` factor.
+fn sin_double_angle_certificate(before: ExprId, pool: &ExprPool) -> Option<String> {
+    let factors = pool.with(before, |d| match d {
+        ExprData::Mul(xs) => Some(xs.clone()),
+        _ => None,
+    })?;
+    let arg = factors.iter().find_map(|&fac| {
+        pool.with(fac, |d| match d {
+            ExprData::Func { name, args } if name == "sin" && args.len() == 1 => Some(args[0]),
+            _ => None,
+        })
+    })?;
+    let arg_str = expr_to_lean(arg, pool);
+    Some(format!(
+        "by rw [mul_comm ({arg_str} : ℝ) (2 : ℝ), Real.sin_two_mul]; ring"
+    ))
+}
+
 fn plain_step_certificate(step: &RewriteStep, pool: &ExprPool) -> Option<(Option<String>, String)> {
+    // `sin_double_angle` is unconditional but needs a shape-specific rewrite
+    // (`Real.sin_two_mul`); the static table's `ring_nf; simp` fallback cannot
+    // close it. Handle it here (withholding if the product shape is unexpected)
+    // so it never reaches — and wrongly trusts — that fallback.
+    if step.rule_name == "sin_double_angle" {
+        return sin_double_angle_certificate(step.before, pool).map(|t| (None, t));
+    }
     if inv_cancel_base(step.before, step.after, pool).is_some() {
         return inv_cancel_certificate(step.before, step.after, pool).map(|(b, t)| (Some(b), t));
     }
@@ -1972,6 +2083,72 @@ mod tests {
         assert!(
             !lean.contains("sorry"),
             "product certificate must not use sorry: {lean}"
+        );
+    }
+
+    #[test]
+    fn multi_term_poly_combine_certifies_via_discharge_depth() {
+        use crate::diff::diff;
+
+        // A multi-term polynomial derivative combine (`diff_univariate_poly`)
+        // whose nested `DifferentiableAt` discharge exceeds simp's default
+        // depth of 2 — the exact "green by luck" shape. It must certify (not be
+        // withheld) and use the raised `maxDischargeDepth` tactic.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.add(vec![
+            pool.mul(vec![pool.integer(3_i32), pool.pow(x, pool.integer(3_i32))]),
+            pool.mul(vec![pool.integer(2_i32), pool.pow(x, pool.integer(2_i32))]),
+            pool.mul(vec![x, pool.integer(5_i32)]),
+            pool.integer(7_i32),
+        ]);
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "multi-term polynomial derivative must be certifiable: {lean}"
+        );
+        assert!(
+            lean.contains("maxDischargeDepth"),
+            "combine steps must use the raised discharge-depth tactic: {lean}"
+        );
+        assert!(!lean.contains("sorry"), "must not admit: {lean}");
+    }
+
+    #[test]
+    fn log_in_product_combine_is_withheld() {
+        use crate::diff::diff;
+
+        // `d/dx (x · log x)` needs `x ≠ 0` (log is not differentiable at 0), a
+        // side condition the unconditional combine tactic cannot discharge — so
+        // the whole certificate must be withheld rather than emit a
+        // non-compiling `deriv (fun x => x * log x) = …` goal.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![x, pool.func("log", vec![x])]);
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            lean.is_empty(),
+            "d/dx (x·log x) must be withheld (needs x ≠ 0), got: {lean}"
+        );
+    }
+
+    #[test]
+    fn negative_power_of_var_diff_is_withheld() {
+        use crate::diff::diff;
+
+        // `d/dx (x⁻²)` (stored as a negative power of the variable) needs
+        // `x ≠ 0`; `deriv_pow` only closes non-negative integer powers, so this
+        // must be withheld, not emitted with the unconditional power tactic.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.pow(x, pool.integer(-2_i32));
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            lean.is_empty(),
+            "d/dx (x⁻²) must be withheld (needs x ≠ 0), got: {lean}"
         );
     }
 

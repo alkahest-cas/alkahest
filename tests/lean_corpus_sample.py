@@ -1,13 +1,21 @@
 #!/usr/bin/env python3
 """
-Lean corpus sampler — V5-9.
+Lean corpus harvester — V5-10.
 
 Extends the fixed strict corpus (``tests/lean_corpus.py``, 14 curated cases)
-with a deterministic, randomized SAMPLE of Lean certificates harvested live
-from the textbook gate (``tests/textbook_gate/``) — the first-course
-calculus/algebra identity suite. The point: every certificate the library
-actually emits from a textbook identity must compile, not just the 14 fixed
-showcase cases.
+with the FULL, DEDUPLICATED set of Lean certificates harvested live from the
+textbook gate (``tests/textbook_gate/``) — the first-course calculus/algebra
+identity suite. The point: every certificate the library actually emits from a
+textbook identity must compile, not just the 14 fixed showcase cases.
+
+This deliberately replaces the earlier fixed-seed RANDOM SAMPLE (n=25,
+seed=1337). A random draw made CI green *by luck*: the candidate pool contained
+certificates that did not typecheck, and whether the seed happened to draw one
+was the difference between a passing and a failing run. Any emitter change
+reshuffled the draw and could surface a latent non-compiling certificate.
+Harvesting and checking the *entire* deduplicated pool removes that lottery —
+if the library can emit a broken certificate from a textbook identity, CI sees
+it every time.
 
 How it works: this script instruments ``alkahest.diff``, ``alkahest.simplify``,
 ``alkahest.simplify_trig``, ``alkahest.simplify_log_exp``,
@@ -26,24 +34,28 @@ written out.
 
 Indefinite ``integrate()`` results now emit certificates via the FTC
 derivative relation ``deriv (fun x => F) x = f`` (see the ``to_lean`` docstring
-in ``alkahest-py/src/lib.rs``), but they are intentionally excluded from this
-*randomized* textbook-gate sample and covered instead by the deterministic
-strict corpus in ``tests/lean_corpus.py`` (the ``int_*`` cases). Keeping them
-out of the random pool avoids reshuffling the fixed-seed sample every time the
-integrator's coverage changes, while still verifying every emitted integration
-certificate against Lean in CI.
+in ``alkahest-py/src/lib.rs``), but they are intentionally excluded here (the
+``diff`` instrumentation still captures the derivative-check steps the gate
+runs) and covered instead by the deterministic strict corpus in
+``tests/lean_corpus.py`` (the ``int_*`` cases).
+
+Deduplication: many textbook-gate cases produce byte-identical certificates
+(e.g. every ``mul_one`` cleanup step). The pool is deduplicated by certificate
+text so each *distinct* certificate is written — and hence typechecked — exactly
+once, keeping the Lean CI runtime bounded (~1.5 s of Mathlib load per file)
+while still covering every distinct shape the library can emit.
 
 Usage::
 
-    python tests/lean_corpus_sample.py --output /tmp/lean_sample/ [--n 25] [--seed 1337]
+    python tests/lean_corpus_sample.py --output /tmp/lean_sample/
 """
 
 from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
 import os
-import random
 import re
 import sys
 
@@ -63,7 +75,7 @@ FORBIDDEN_TOKENS = ("sorry", "admit", "axiom")
 # function the textbook gate exercises."
 # NOTE: `integrate` is deliberately omitted. Its certificates now emit (Part A,
 # via the FTC derivative relation) but are verified deterministically through
-# the strict corpus (`tests/lean_corpus.py`), not this randomized sample — see
+# the strict corpus (`tests/lean_corpus.py`), not this harvested pool — see
 # the module docstring.
 RECORDED_FUNCTIONS = (
     "diff",
@@ -150,11 +162,10 @@ def sanitize(text: str) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Sample Lean certificates harvested from the textbook gate"
+        description="Harvest the full deduplicated set of Lean certificates "
+        "emitted by the textbook gate"
     )
     parser.add_argument("--output", default=".", help="Output directory for .lean files")
-    parser.add_argument("--n", type=int, default=25, help="Max number of certificates to sample")
-    parser.add_argument("--seed", type=int, default=1337, help="Deterministic sample seed")
     args = parser.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
@@ -185,34 +196,47 @@ def main() -> int:
         f"({empty} withheld as empty, {to_lean_errors} raised errors)."
     )
 
-    # Deterministic regardless of harvesting/collection order: sort first,
-    # then draw a fixed-seed sample.
+    # Deterministic and independent of harvesting order: sort by identity, then
+    # deduplicate by certificate TEXT so each distinct certificate is written —
+    # and typechecked in CI — exactly once. NO random sampling: a sample could
+    # hide a non-compiling certificate (the "green by luck" seed lottery this
+    # harvester exists to eliminate).
     candidates.sort(key=lambda c: (c[0], c[1], c[2]))
-    rng = random.Random(args.seed)
-    sample = candidates if len(candidates) <= args.n else rng.sample(candidates, args.n)
-    sample.sort(key=lambda c: (c[0], c[1], c[2]))
+    seen_hashes: set[str] = set()
+    distinct: list[tuple[str, str, int, str]] = []
+    for cand in candidates:
+        digest = hashlib.sha256(cand[3].encode("utf-8")).hexdigest()
+        if digest in seen_hashes:
+            continue
+        seen_hashes.add(digest)
+        distinct.append(cand)
+
+    print(
+        f"{len(distinct)} distinct certificates after text-deduplication "
+        f"(of {len(candidates)} non-empty)."
+    )
 
     success = 0
     admission_failures = 0
-    for i, (name, test_id, idx, lean_src) in enumerate(sample):
+    for i, (name, test_id, idx, lean_src) in enumerate(distinct):
         bad_tokens = [token for token in FORBIDDEN_TOKENS if token in lean_src]
         if bad_tokens:
             print(
-                f"ERROR: sample {i} ({name} @ {test_id}#{idx}) contains "
+                f"ERROR: certificate {i} ({name} @ {test_id}#{idx}) contains "
                 f"forbidden token(s) {bad_tokens!r}",
                 file=sys.stderr,
             )
             admission_failures += 1
             continue
-        fname = f"sample_{i:03d}_{sanitize(name)}_{sanitize(test_id)}_{idx}.lean"
+        fname = f"cert_{i:03d}_{sanitize(name)}_{sanitize(test_id)}_{idx}.lean"
         out_path = os.path.join(args.output, fname)
         with open(out_path, "w") as f:
             f.write(lean_src)
         print(f"Generated: {out_path}")
         success += 1
 
-    print(f"\n{success}/{len(sample)} sampled certificates written to {args.output}")
-    return 0 if success == len(sample) and admission_failures == 0 else 1
+    print(f"\n{success}/{len(distinct)} distinct certificates written to {args.output}")
+    return 0 if success == len(distinct) and admission_failures == 0 else 1
 
 
 if __name__ == "__main__":
