@@ -87,6 +87,19 @@ jobs:
           print('default wheel ok (groebner + cranelift)')
           PY
 
+      # Real user-perspective check: the capability-flag smoke test above already
+      # calls several other alkahest APIs before this point, so on its own it
+      # cannot catch a bug that only reproduces when parse() is the FIRST thing
+      # a fresh interpreter asks the installed wheel to do (see B1 -- masked in
+      # the old test suite because an earlier test happened to import
+      # alkahest.experimental first). It also never executed the README, so
+      # stale/wrong quickstart output (see B6) went unnoticed.
+      # tests/smoke_readme.py runs in its own fresh `python` process against
+      # the wheel just installed above (no maturin develop / editable install
+      # involved) to close both gaps.
+      - name: README quickstart + fresh-interpreter parse smoke
+        run: python tests/smoke_readme.py
+
       - uses: actions/upload-artifact@v7
         with:
           name: wheels-ubuntu-22.04
@@ -332,6 +345,12 @@ jobs:
         run: |
           pip install --no-index --find-links dist alkahest
           python -c "import alkahest; p = alkahest.ExprPool(); x = p.symbol('x'); print(alkahest.simplify(x + 0)); caps = alkahest.capabilities(); f = caps['features']; assert f['egraph'] and f['groebner'] and f['cranelift_jit']; assert not f['llvm_jit'] and not f['parallel']; assert caps['jit'] and alkahest.jit_is_available()"
+
+      # See build-linux's identical step: catches the class of bug (B1, B6)
+      # that only reproduces against a real wheel install in a fresh
+      # interpreter, not an editable/dev environment or a warmed-up process.
+      - name: README quickstart + fresh-interpreter parse smoke
+        run: python tests/smoke_readme.py
 
       - uses: actions/upload-artifact@v7
         with:
