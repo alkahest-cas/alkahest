@@ -662,7 +662,12 @@ impl RewriteRule for LogOfExp {
     }
 }
 
-/// `exp(log(x)) → x` (domain: x > 0 assumed).
+/// `exp(log(x)) → x`.
+///
+/// **Branch-cut caveat**: only unconditionally valid for `x > 0`. The rule
+/// still fires, but records [`SideCondition::Positive`] on `x` in the
+/// derivation log so callers (including the Lean certificate exporter) can
+/// audit — or discharge — the assumption made.
 pub struct ExpOfLog;
 
 impl RewriteRule for ExpOfLog {
@@ -673,7 +678,14 @@ impl RewriteRule for ExpOfLog {
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
         let arg = func_arg("exp", expr, pool)?;
         let inner = func_arg("log", arg, pool)?;
-        Some((inner, one_step(self.name(), expr, inner)))
+        let mut log = DerivationLog::new();
+        log.push(RewriteStep::with_conditions(
+            self.name(),
+            expr,
+            inner,
+            vec![SideCondition::Positive(inner)],
+        ));
+        Some((inner, log))
     }
 }
 
