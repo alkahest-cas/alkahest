@@ -34,7 +34,7 @@ def _agree(a, b, var, samples, tol=1e-5) -> None:
 
 
 @pytest.mark.parametrize(
-    "name,builder",
+    ("name", "builder"),
     [
         ("1", lambda p, t: p.integer(1)),
         ("t", lambda p, t: t),
@@ -92,10 +92,7 @@ def test_laplace_roundtrip_fuzz_trig_exp():
         elif kind == "t_sin":
             f = p.mul([t, A.sin(omega * t)])
         else:
-            if a == 0:
-                f = A.sin(omega * t)
-            else:
-                f = p.mul([A.exp(a * t), A.sin(omega * t)])
+            f = A.sin(omega * t) if a == 0 else p.mul([A.exp(a * t), A.sin(omega * t)])
         big_f = ex.laplace_transform(f, t, s)
         back = ex.inverse_laplace_transform(big_f, s, t)
         _agree(back, f, t, [0.4, 0.9, 1.3, 2.1])
@@ -107,7 +104,7 @@ def test_laplace_roundtrip_fuzz_trig_exp():
 
 
 @pytest.mark.parametrize(
-    "name,builder",
+    ("name", "builder"),
     [
         ("1", lambda p, n: p.integer(1)),
         ("2^n", lambda p, n: p.integer(2) ** n),
@@ -138,10 +135,7 @@ def test_z_roundtrip_fuzz_sin_cos():
     for _ in range(10):
         omega = rng.choice([1, 2, 3, 4])
         amp = rng.choice([1, 2, 3, -1])
-        if rng.random() < 0.5:
-            xn = amp * A.sin(omega * n)
-        else:
-            xn = amp * A.cos(omega * n)
+        xn = amp * A.sin(omega * n) if rng.random() < 0.5 else amp * A.cos(omega * n)
         big_x = ex.z_transform(xn, n, z)
         back = ex.inverse_z_transform(big_x, z, n)
         _agree(back, xn, n, list(range(0, 7)))
