@@ -1336,6 +1336,211 @@ pub fn emit_integration_cert(
     }
 }
 
+/// Lean import header for **definite** interval-integral certificates.
+///
+/// Adds Mathlib's interval-integral and second FTC lemmas
+/// (`intervalIntegral.integral_eq_sub_of_hasDerivAt`) on top of the derivative
+/// lemmas the `HasDerivAt` obligations need (`Real.hasDerivAt_sin`,
+/// `Real.hasDerivAt_exp`, `hasDerivAt_pow`, …).
+fn emit_definite_integral_header() -> String {
+    "import Mathlib.Tactic\n\
+     import Mathlib.Analysis.SpecialFunctions.Trigonometric.Deriv\n\
+     import Mathlib.Analysis.SpecialFunctions.ExpDeriv\n\
+     import Mathlib.Analysis.Calculus.Deriv.Pow\n\
+     import Mathlib.MeasureTheory.Integral.IntervalIntegral\n\
+     import Mathlib.MeasureTheory.Integral.FundThmCalculus\n\
+     \n\
+     open Real\n\n"
+        .to_string()
+}
+
+/// The certifiable definite-integral fragment: an integrand class for which we
+/// can emit a `HasDerivAt` witness on `Set.uIcc a b` and an
+/// `IntervalIntegrable` side condition that Lean reliably discharges.
+///
+/// Every variant pins a concrete antiderivative `F` with `d/dx F = f` on all of
+/// `ℝ`, so the resulting certificate proves the *sound* interval-FTC statement
+/// `∫ x in a..b, f x = F b - F a` — never a false equality.
+enum DefiniteIntegrandClass {
+    /// `∫ cos x`, antiderivative `sin x`.
+    Cos,
+    /// `∫ sin x`, antiderivative `-cos x`.
+    Sin,
+    /// `∫ exp x`, antiderivative `exp x`.
+    Exp,
+    /// `∫ xⁿ` (`n ≥ 1`), antiderivative `x^(n+1) / (n+1)`.
+    Pow(i64),
+}
+
+/// Classify `integrand` into the certifiable definite-integral fragment.
+///
+/// Returns `None` (⇒ withhold) for anything outside the pointwise
+/// `sin`/`cos`/`exp` of the integration variable, a positive integer power
+/// of the variable, or the bare variable itself (treated as `x¹`). Sums,
+/// products, composites, and every other shape stay withheld — a missing
+/// certificate is always preferable to an unsound or non-compiling one.
+fn classify_definite_integrand(
+    integrand: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<DefiniteIntegrandClass> {
+    pool.with(integrand, |d| match d {
+        ExprData::Symbol { .. } if integrand == var => Some(DefiniteIntegrandClass::Pow(1)),
+        ExprData::Func { name, args } if args.len() == 1 && args[0] == var => match name.as_str() {
+            "sin" => Some(DefiniteIntegrandClass::Sin),
+            "cos" => Some(DefiniteIntegrandClass::Cos),
+            "exp" => Some(DefiniteIntegrandClass::Exp),
+            _ => None,
+        },
+        ExprData::Pow { base, exp } if *base == var => pool.with(*exp, |e| match e {
+            ExprData::Integer(n) => {
+                n.0.to_i64()
+                    .filter(|&k| k >= 1)
+                    .map(DefiniteIntegrandClass::Pow)
+            }
+            _ => None,
+        }),
+        _ => None,
+    })
+}
+
+/// True when `bound` is (or contains) the canonical `±∞` symbol — an improper
+/// endpoint the finite interval-FTC lemma cannot certify.
+fn bound_is_infinite(bound: ExprId, pool: &ExprPool) -> bool {
+    if bound == pool.pos_infinity() {
+        return true;
+    }
+    pool.with(bound, |d| match d {
+        ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().any(|&c| bound_is_infinite(c, pool)),
+        ExprData::Pow { base, exp } => {
+            bound_is_infinite(*base, pool) || bound_is_infinite(*exp, pool)
+        }
+        ExprData::Func { args, .. } => args.iter().any(|&a| bound_is_infinite(a, pool)),
+        _ => false,
+    })
+}
+
+/// Emit a Lean certificate for a **definite integral**
+/// `∫ x in a..b, f x = F b - F a`.
+///
+/// Unlike an indefinite integral (which can only be certified via the FTC
+/// *derivative* relation), a definite integral has a genuine equational
+/// statement Mathlib can prove directly:
+///
+/// ```text
+/// intervalIntegral.integral_eq_sub_of_hasDerivAt
+///   (hderiv : ∀ x ∈ Set.uIcc a b, HasDerivAt F (f x) x)
+///   (hint   : IntervalIntegrable f volume a b) :
+///   ∫ x in a..b, f x = F b - F a
+/// ```
+///
+/// The certificate states `∫ x in a..b, f x = F b - F a` with the endpoints
+/// substituted textually (so the right-hand side is `sin b - sin a`,
+/// `exp b - exp a`, …), and discharges it with a single `exact` of the lemma
+/// above — the substituted right-hand side is definitionally equal to
+/// `F b - F a` by β-reduction, so no fragile numeric/`ring` closer (and thus no
+/// linter noise under `-DwarningAsError=true`) is ever needed.
+///
+/// Certified integrand classes (the same family the indefinite path certifies):
+/// `cos`, `sin`, `exp` of the integration variable, and integer powers `xⁿ`
+/// (`n ≥ 1`, plus the bare variable as `x¹`). Every other integrand — and any
+/// improper (`±∞`) endpoint — is **withheld** (returns `""`). Never emits
+/// `sorry` / `admit`, and never asserts an unproven statement.
+pub fn emit_definite_integration_cert(
+    integrand: ExprId,
+    var: ExprId,
+    lower: ExprId,
+    upper: ExprId,
+    pool: &ExprPool,
+) -> String {
+    // Improper endpoints escape the finite interval-FTC lemma: withhold.
+    if bound_is_infinite(lower, pool) || bound_is_infinite(upper, pool) {
+        return String::new();
+    }
+    let Some(class) = classify_definite_integrand(integrand, var, pool) else {
+        return String::new();
+    };
+
+    let var_name = pool.with(var, |d| match d {
+        ExprData::Symbol { name, .. } => name.clone(),
+        _ => "x".to_string(),
+    });
+    let a_lean = expr_to_lean(lower, pool);
+    let b_lean = expr_to_lean(upper, pool);
+    let f_lean = expr_to_lean(integrand, pool);
+
+    // `antideriv_body(t)` renders the antiderivative `F` with the binder/endpoint
+    // spelled `t`. `F(var_name)` is the lambda body; `F(a_lean)` / `F(b_lean)`
+    // are the substituted endpoints (β-equal to `(fun x => F) a` / `… b`).
+    #[allow(clippy::type_complexity)]
+    let (antideriv_body, hderiv_close, hint_expr): (
+        Box<dyn Fn(&str) -> String>,
+        String,
+        String,
+    ) = match class {
+        DefiniteIntegrandClass::Cos => (
+            Box::new(|t: &str| format!("Real.sin ({t})")),
+            format!("exact Real.hasDerivAt_sin {var_name}"),
+            "Real.continuous_cos.intervalIntegrable _ _".to_string(),
+        ),
+        DefiniteIntegrandClass::Sin => (
+            Box::new(|t: &str| format!("-Real.cos ({t})")),
+            format!("simpa using (Real.hasDerivAt_cos {var_name}).neg"),
+            "Real.continuous_sin.intervalIntegrable _ _".to_string(),
+        ),
+        DefiniteIntegrandClass::Exp => (
+            Box::new(|t: &str| format!("Real.exp ({t})")),
+            format!("exact Real.hasDerivAt_exp {var_name}"),
+            "Real.continuous_exp.intervalIntegrable _ _".to_string(),
+        ),
+        DefiniteIntegrandClass::Pow(n) => {
+            let m = n + 1;
+            (
+                Box::new(move |t: &str| format!("({t}) ^ ({m} : ℕ) / ({m})")),
+                format!("simpa using (hasDerivAt_pow {m} {var_name}).div_const {m}"),
+                // `∫ xⁿ`: the integrand `fun x => xⁿ` is continuous. `x¹` is
+                // written by Alkahest as the bare symbol, so its integrand is
+                // `id`; higher powers use `continuous_pow`.
+                if n == 1 {
+                    "continuous_id.intervalIntegrable _ _".to_string()
+                } else {
+                    format!("(continuous_pow {n}).intervalIntegrable _ _")
+                },
+            )
+        }
+    };
+
+    let f_body = antideriv_body(&var_name);
+    let rhs = format!(
+        "({}) - ({})",
+        antideriv_body(&b_lean),
+        antideriv_body(&a_lean)
+    );
+
+    let mut out = emit_definite_integral_header();
+    out.push_str(&format!(
+        "-- ∫ {var_name} in {a_lean}..{b_lean}, {f_lean} = F {b_lean} - F {a_lean}   (F = fun {var_name} => {f_body})\n\
+         -- certified via the second FTC for interval integrals:\n\
+         --   intervalIntegral.integral_eq_sub_of_hasDerivAt (deriv F = f on uIcc) (IntervalIntegrable f)\n"
+    ));
+    out.push_str(&format!(
+        "example : ∫ {var_name} in ({a_lean})..({b_lean}), {f_lean} = {rhs} := by\n\
+         \x20 have hderiv : ∀ {var_name} ∈ Set.uIcc ({a_lean}) ({b_lean}),\n\
+         \x20     HasDerivAt (fun ({var_name} : ℝ) => {f_body}) ({f_lean}) {var_name} := by\n\
+         \x20   intro {var_name} _\n\
+         \x20   {hderiv_close}\n\
+         \x20 have hint : IntervalIntegrable (fun ({var_name} : ℝ) => {f_lean}) MeasureTheory.volume ({a_lean}) ({b_lean}) :=\n\
+         \x20   {hint_expr}\n\
+         \x20 exact intervalIntegral.integral_eq_sub_of_hasDerivAt hderiv hint\n"
+    ));
+
+    // Defense in depth: never hand out a certificate containing admissions.
+    if out.contains("sorry") || out.contains("admit") {
+        return String::new();
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Expression → Lean syntax
 // ---------------------------------------------------------------------------
@@ -1603,6 +1808,148 @@ mod tests {
             "must state the derivative relation: {lean}"
         );
         assert!(!lean.contains("sorry") && !lean.contains("admit"));
+    }
+
+    #[test]
+    fn definite_integration_cert_cos() {
+        // ∫₀¹ cos x = sin 1 - sin 0, via the interval FTC.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let cos_x = pool.func("cos", vec![x]);
+        let lean = emit_definite_integration_cert(
+            cos_x,
+            x,
+            pool.integer(0_i32),
+            pool.integer(1_i32),
+            &pool,
+        );
+        assert!(
+            !lean.is_empty(),
+            "∫₀¹ cos must certify via the interval FTC"
+        );
+        assert!(
+            lean.contains("intervalIntegral.integral_eq_sub_of_hasDerivAt"),
+            "must invoke the interval FTC lemma: {lean}"
+        );
+        assert!(
+            lean.contains("HasDerivAt (fun (x : ℝ) => Real.sin (x))"),
+            "antiderivative is sin: {lean}"
+        );
+        assert!(
+            lean.contains("Real.hasDerivAt_sin"),
+            "cos derivative witness: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
+    }
+
+    #[test]
+    fn definite_integration_cert_sin() {
+        // ∫₀¹ sin x = (-cos 1) - (-cos 0), via the interval FTC.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let sin_x = pool.func("sin", vec![x]);
+        let lean = emit_definite_integration_cert(
+            sin_x,
+            x,
+            pool.integer(0_i32),
+            pool.integer(1_i32),
+            &pool,
+        );
+        assert!(
+            !lean.is_empty(),
+            "∫₀¹ sin must certify via the interval FTC"
+        );
+        assert!(
+            lean.contains("intervalIntegral.integral_eq_sub_of_hasDerivAt"),
+            "must invoke the interval FTC lemma: {lean}"
+        );
+        assert!(
+            lean.contains("Real.hasDerivAt_cos"),
+            "sin derivative witness comes from cos: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
+    }
+
+    #[test]
+    fn definite_integration_cert_power() {
+        // ∫₀¹ x² = 1³/3 - 0³/3, via the interval FTC + hasDerivAt_pow.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let lean =
+            emit_definite_integration_cert(x2, x, pool.integer(0_i32), pool.integer(1_i32), &pool);
+        assert!(!lean.is_empty(), "∫₀¹ x² must certify via the interval FTC");
+        assert!(
+            lean.contains("hasDerivAt_pow"),
+            "power derivative witness: {lean}"
+        );
+        assert!(
+            lean.contains("continuous_pow"),
+            "power integrability via continuous_pow: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
+    }
+
+    #[test]
+    fn definite_integration_cert_exp() {
+        // ∫₀¹ exp x = exp 1 - exp 0, via the interval FTC.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let lean = emit_definite_integration_cert(
+            exp_x,
+            x,
+            pool.integer(0_i32),
+            pool.integer(1_i32),
+            &pool,
+        );
+        assert!(
+            !lean.is_empty(),
+            "∫₀¹ exp must certify via the interval FTC"
+        );
+        assert!(
+            lean.contains("Real.hasDerivAt_exp"),
+            "exp derivative witness: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
+    }
+
+    #[test]
+    fn definite_integration_cert_withheld_for_unsupported_integrand() {
+        // log x is outside the certifiable definite fragment: withhold.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let log_x = pool.func("log", vec![x]);
+        let lean = emit_definite_integration_cert(
+            log_x,
+            x,
+            pool.integer(1_i32),
+            pool.integer(2_i32),
+            &pool,
+        );
+        assert!(
+            lean.is_empty(),
+            "∫ log x is outside the certifiable fragment; must withhold: {lean}"
+        );
+    }
+
+    #[test]
+    fn definite_integration_cert_withheld_for_infinite_bound() {
+        // Improper integral (∞ endpoint) must never claim the finite interval FTC.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_neg_x = pool.func("exp", vec![x]);
+        let lean = emit_definite_integration_cert(
+            exp_neg_x,
+            x,
+            pool.integer(0_i32),
+            pool.pos_infinity(),
+            &pool,
+        );
+        assert!(
+            lean.is_empty(),
+            "∫ with an infinite bound must withhold the interval-FTC cert: {lean}"
+        );
     }
 
     #[test]

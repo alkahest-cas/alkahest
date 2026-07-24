@@ -1614,6 +1614,9 @@ struct PyDerivedResult {
     wrt: Option<ExprId>,
     /// Integrand and variable for lazy exact antiderivative verification.
     integration_verification_input: Option<(ExprId, ExprId)>,
+    /// `(integrand, var, lower, upper)` for a definite integral, used to emit an
+    /// interval-FTC Lean certificate (`∫ a..b f = F b − F a`) lazily.
+    definite_integration_input: Option<(ExprId, ExprId, ExprId, ExprId)>,
 }
 
 #[pymethods]
@@ -1663,6 +1666,23 @@ impl PyDerivedResult {
             }
             return Some(src);
         }
+        // Definite integrals certify the sound interval-FTC equation
+        // `∫ x in a..b, f x = F b - F a` (never emitted as a false rewrite).
+        if let Some((integrand, var, lower, upper)) = self.definite_integration_input {
+            let pool_py = self.value.pool.clone_ref(py);
+            let pool = pool_py.borrow(py);
+            let src = alkahest_core::emit_definite_integration_cert(
+                integrand,
+                var,
+                lower,
+                upper,
+                &pool.inner,
+            );
+            if src.is_empty() || src.contains("sorry") || src.contains("admit") {
+                return None;
+            }
+            return Some(src);
+        }
         if self.raw.log.is_empty() {
             return None;
         }
@@ -1692,6 +1712,22 @@ impl PyDerivedResult {
                     self.raw.value,
                     integrand,
                     var,
+                    &pool.inner,
+                );
+                if src.is_empty() || src.contains("sorry") || src.contains("admit") {
+                    None
+                } else {
+                    Some(src)
+                }
+            } else if let Some((integrand, var, lower, upper)) = self.definite_integration_input {
+                // Definite integrals certify via the interval FTC (Part A).
+                let pool_py = self.value.pool.clone_ref(py);
+                let pool = pool_py.borrow(py);
+                let src = alkahest_core::emit_definite_integration_cert(
+                    integrand,
+                    var,
+                    lower,
+                    upper,
                     &pool.inner,
                 );
                 if src.is_empty() || src.contains("sorry") || src.contains("admit") {
@@ -1838,6 +1874,7 @@ fn make_derived_result(
         raw: derived,
         wrt,
         integration_verification_input: None,
+        definite_integration_input: None,
     }
 }
 
@@ -1862,6 +1899,7 @@ fn py_derived_result_context_simplify(
             raw: dr.raw.clone(),
             wrt: dr.wrt,
             integration_verification_input: dr.integration_verification_input,
+            definite_integration_input: dr.definite_integration_input,
         });
     }
     let mut log = dr.raw.log.clone();
@@ -1876,6 +1914,7 @@ fn py_derived_result_context_simplify(
     };
     let mut result = make_derived_result(py, merged, pool_py, dr.wrt);
     result.integration_verification_input = dr.integration_verification_input;
+    result.definite_integration_input = dr.definite_integration_input;
     Ok(result)
 }
 
@@ -2893,7 +2932,9 @@ fn py_integrate_definite(
             .map_err(integrate_error_to_py)?
     };
     let pool_py = expr.pool.clone_ref(py);
-    Ok(make_derived_result(py, derived, pool_py, None))
+    let mut result = make_derived_result(py, derived, pool_py, None);
+    result.definite_integration_input = Some((expr.id, var.id, lower.id, upper.id));
+    Ok(result)
 }
 
 #[pyfunction]
@@ -3998,6 +4039,22 @@ fn py_to_lean(py: Python<'_>, arg: &Bound<'_, PyAny>) -> PyResult<String> {
             let pool = pool_py.borrow(py);
             let src =
                 alkahest_core::emit_integration_cert(d.raw.value, integrand, var, &pool.inner);
+            if src.contains("sorry") || src.contains("admit") {
+                return Ok(String::new());
+            }
+            return Ok(src);
+        }
+        // Definite integrals certify via the interval FTC equation.
+        if let Some((integrand, var, lower, upper)) = d.definite_integration_input {
+            let pool_py = d.value.pool.clone_ref(py);
+            let pool = pool_py.borrow(py);
+            let src = alkahest_core::emit_definite_integration_cert(
+                integrand,
+                var,
+                lower,
+                upper,
+                &pool.inner,
+            );
             if src.contains("sorry") || src.contains("admit") {
                 return Ok(String::new());
             }
