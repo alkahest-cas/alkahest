@@ -46,17 +46,24 @@ impl fmt::Display for EigenError {
             EigenError::Factorization(e) => write!(f, "factorization failed: {e}"),
             EigenError::UnsupportedIrreducibleDegree { degree } => write!(
                 f,
-                "irreducible characteristic factor of degree {degree}; only degrees 1–3 are supported"
+                "characteristic polynomial has an irreducible factor of degree {degree}; \
+                 closed-form eigenvalues are only available up to degree 3"
             ),
             EigenError::NonDiagonalizable => {
-                write!(f, "matrix is not diagonalizable over the computed eigenbasis")
+                write!(
+                    f,
+                    "matrix is not diagonalizable over the computed eigenbasis"
+                )
             }
             EigenError::KernelComputationFailed => write!(
                 f,
                 "could not compute eigenvectors (nullspace) for this coefficient field"
             ),
             EigenError::SingularModalMatrix => {
-                write!(f, "eigenvector matrix is singular — no diagonal decomposition")
+                write!(
+                    f,
+                    "eigenvector matrix is singular — no diagonal decomposition"
+                )
             }
         }
     }
@@ -134,9 +141,16 @@ pub fn eigenvalues(m: &Matrix, pool: &ExprPool) -> Result<Vec<(ExprId, usize)>, 
         Ok(v) => Ok(v),
         Err(EigenError::CharPolyConversion(_)) => {
             // The characteristic polynomial has non-rational (free-symbol) coefficients,
-            // so it cannot be cleared to ℤ[λ]. For 2×2 matrices the eigenvalues are still
-            // available in closed form via the quadratic formula, fully symbolically.
-            symbolic_eigenvalues_2x2(m, pool)
+            // so it cannot be cleared to ℤ[λ]. For small matrices the eigenvalues are still
+            // available in closed form: 2×2 via the quadratic formula, 3×3 via the depressed
+            // cubic / Cardano formulas — all fully symbolically.
+            match m.rows {
+                2 => symbolic_eigenvalues_2x2(m, pool),
+                3 => symbolic_eigenvalues_3x3(m, pool),
+                // The characteristic polynomial of a symbolic n×n matrix has degree n, and no
+                // general closed form exists for its roots when n ≥ 4.
+                n => Err(EigenError::UnsupportedIrreducibleDegree { degree: n }),
+            }
         }
         Err(e) => Err(e),
     }
@@ -216,6 +230,296 @@ fn symbolic_eigenvalues_2x2(
     }
     let (x, y) = order_two_roots(lam_plus, lam_minus, pool);
     Ok(vec![(x, 1), (y, 1)])
+}
+
+/// Closed-form eigenvalues of a 3×3 matrix over arbitrary symbolic entries.
+///
+/// The characteristic polynomial `det(λI − M)` is a monic cubic in `λ` with Expr
+/// coefficients. We depress it (`λ = t − a/3`) to `t³ + p·t + q` and emit the three
+/// roots via the general Cardano radical form, which is valid regardless of the sign
+/// of the (symbolic, hence undecidable at build time) discriminant:
+///
+/// ```text
+///   A = ∛(−q/2 + √Δ),   B = −p / (3A),   Δ = (q/2)² + (p/3)³
+///   t_k = ωᵏ·A + ω²ᵏ·B      (k = 0,1,2),   ω = (−1 + i√3)/2
+/// ```
+///
+/// Choosing `B = −p/(3A)` fixes the branch pairing so that `A·B = −p/3` holds
+/// identically — that is what makes each emitted `t_k` an actual root of the depressed
+/// cubic (Cardano's constraint). The emitted eigenvalues may contain nested radicals,
+/// cube roots, and the imaginary unit, exactly like the numeric `cubic_roots` path.
+///
+/// Degenerate depressed cubics are handled directly: `p = q = 0` collapses to a single
+/// triple root `−a/3`, and `p = 0` (pure `t³ + q`) uses the cube roots of `−q`.
+fn symbolic_eigenvalues_3x3(
+    m: &Matrix,
+    pool: &ExprPool,
+) -> Result<Vec<(ExprId, usize)>, EigenError> {
+    if m.rows != m.cols {
+        return Err(EigenError::NonSquare);
+    }
+    if m.rows != 3 {
+        return Err(EigenError::UnsupportedIrreducibleDegree { degree: m.rows });
+    }
+    let (poly_e, lam) = characteristic_polynomial_lambda_minus_m(m, pool)?;
+    // Expand so the powers of λ are explicit and coefficient collection is exact.
+    let poly = simplify_expanded(poly_e, pool).value;
+    let coeffs = expr_poly_coeffs_in(poly, lam, pool)
+        .ok_or(EigenError::UnsupportedIrreducibleDegree { degree: 3 })?;
+    if coeffs.len() != 4 {
+        // det(λI − M) is always a monic cubic for a 3×3; anything else is unexpected.
+        return Err(EigenError::UnsupportedIrreducibleDegree { degree: m.rows });
+    }
+
+    let neg_one = pool.integer(-1_i32);
+    let third = pool.rational(rug::Integer::from(1), rug::Integer::from(3));
+
+    // Make monic: divide by the leading coefficient (identically 1 for det(λI − M),
+    // but divide anyway so the formulas are correct even if a factor slips in).
+    let inv_c3 = simplify(pool.pow(coeffs[3], neg_one), pool).value;
+    let a = simplify(pool.mul(vec![coeffs[2], inv_c3]), pool).value;
+    let b = simplify(pool.mul(vec![coeffs[1], inv_c3]), pool).value;
+    let cc = simplify(pool.mul(vec![coeffs[0], inv_c3]), pool).value;
+
+    // Depress λ = t − a/3 ⇒ t³ + p·t + q, with
+    //   p = b − a²/3,   q = 2a³/27 − a·b/3 + c.
+    let a_over_3 = simplify(pool.mul(vec![third, a]), pool).value;
+    let a_sq = pool.pow(a, pool.integer(2_i32));
+    let a_cu = pool.pow(a, pool.integer(3_i32));
+    let p = simplify(
+        pool.add(vec![b, pool.mul(vec![neg_one, third, a_sq])]),
+        pool,
+    )
+    .value;
+    let two_27 = pool.rational(rug::Integer::from(2), rug::Integer::from(27));
+    let neg_third = pool.rational(rug::Integer::from(-1), rug::Integer::from(3));
+    let q = simplify(
+        pool.add(vec![
+            pool.mul(vec![two_27, a_cu]),
+            pool.mul(vec![neg_third, a, b]),
+            cc,
+        ]),
+        pool,
+    )
+    .value;
+
+    // The eigenvalue is t − a/3; precompute the (constant-in-k) shift term.
+    let neg_shift = simplify(pool.mul(vec![neg_one, a_over_3]), pool).value;
+
+    // Fully degenerate depressed cubic t³ = 0 ⇒ triple root at −a/3.
+    if expr_is_exactly_zero(pool, p) && expr_is_exactly_zero(pool, q) {
+        return Ok(vec![(neg_shift, 3)]);
+    }
+
+    // A = ∛(−q/2 + √Δ),  B = −p/(3A).  For p = 0 the pure cubic t³ + q = 0 has
+    // A = ∛(−q) and B = 0, sidestepping the 0/0 in −p/(3A).
+    let one_third_exp = pool.rational(rug::Integer::from(1), rug::Integer::from(3));
+    let (a_root, b_root) = if expr_is_exactly_zero(pool, p) {
+        let neg_q = simplify(pool.mul(vec![neg_one, q]), pool).value;
+        let a_root = simplify(pool.pow(neg_q, one_third_exp), pool).value;
+        (a_root, pool.integer(0_i32))
+    } else {
+        let half = pool.rational(rug::Integer::from(1), rug::Integer::from(2));
+        let neg_half = pool.rational(rug::Integer::from(-1), rug::Integer::from(2));
+        let neg_q_half = simplify(pool.mul(vec![neg_half, q]), pool).value; // −q/2
+        let q_half = simplify(pool.mul(vec![half, q]), pool).value; // q/2
+        let p_third = simplify(pool.mul(vec![third, p]), pool).value; // p/3
+                                                                      // Δ = (q/2)² + (p/3)³.
+        let delta = simplify(
+            pool.add(vec![
+                pool.pow(q_half, pool.integer(2_i32)),
+                pool.pow(p_third, pool.integer(3_i32)),
+            ]),
+            pool,
+        )
+        .value;
+        let sqrt_delta = simplify(pool.func("sqrt", vec![delta]), pool).value;
+        let radicand = simplify(pool.add(vec![neg_q_half, sqrt_delta]), pool).value; // −q/2 + √Δ
+        let a_root = simplify(pool.pow(radicand, one_third_exp), pool).value;
+        let three_a = simplify(pool.mul(vec![pool.integer(3_i32), a_root]), pool).value;
+        let inv_three_a = simplify(pool.pow(three_a, neg_one), pool).value;
+        let b_root = simplify(pool.mul(vec![neg_one, p, inv_three_a]), pool).value; // −p/(3A)
+        (a_root, b_root)
+    };
+
+    // Cube roots of unity: ω = −1/2 + (√3/2)·i,  ω² = −1/2 − (√3/2)·i.
+    let half = pool.rational(rug::Integer::from(1), rug::Integer::from(2));
+    let neg_half = pool.rational(rug::Integer::from(-1), rug::Integer::from(2));
+    let sqrt3 = pool.func("sqrt", vec![pool.integer(3_i32)]);
+    let i_unit = imag_unit(pool);
+    let omega = simplify(
+        pool.add(vec![neg_half, pool.mul(vec![half, sqrt3, i_unit])]),
+        pool,
+    )
+    .value;
+    let omega2 = simplify(
+        pool.add(vec![neg_half, pool.mul(vec![neg_half, sqrt3, i_unit])]),
+        pool,
+    )
+    .value;
+    let omega_pow = [pool.integer(1_i32), omega, omega2];
+
+    // t_k = ωᵏ·A + ω²ᵏ·B, then λ_k = t_k − a/3.
+    let mut roots: Vec<ExprId> = Vec::with_capacity(3);
+    for k in 0..3usize {
+        let wk = omega_pow[k];
+        let w2k = omega_pow[(2 * k) % 3];
+        let t = simplify(
+            pool.add(vec![
+                pool.mul(vec![wk, a_root]),
+                pool.mul(vec![w2k, b_root]),
+            ]),
+            pool,
+        )
+        .value;
+        let lam_k = simplify(pool.add(vec![t, neg_shift]), pool).value;
+        roots.push(lam_k);
+    }
+
+    // Collapse structurally-identical roots into a single eigenvalue with summed
+    // multiplicity (mirrors the 2×2 discriminant-zero collapse).
+    let mut pairs: Vec<(ExprId, usize)> = Vec::new();
+    for r in roots {
+        if let Some(entry) = pairs.iter_mut().find(|(e, _)| *e == r) {
+            entry.1 += 1;
+        } else {
+            pairs.push((r, 1));
+        }
+    }
+    sort_eigenpairs(&pairs, pool)
+}
+
+/// Dense Expr coefficients of `expr` viewed as a polynomial in `var`: entry `i`
+/// is the (simplified) coefficient of `var^i`. Returns `None` when `expr` is not a
+/// polynomial in `var` (e.g. `var` appears under a transcendental or a non-integer
+/// power). Parameters (all other symbols) are treated as symbolic constants.
+fn expr_poly_coeffs_in(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<Vec<ExprId>> {
+    let deg = expr_poly_degree_in(expr, var, pool)?;
+    let mut coeffs = vec![pool.integer(0_i32); deg + 1];
+    expr_accumulate_coeffs(expr, var, &mut coeffs, pool)?;
+    for c in coeffs.iter_mut() {
+        *c = simplify(*c, pool).value;
+    }
+    Some(coeffs)
+}
+
+/// Polynomial degree of `expr` in `var`, or `None` if not polynomial in `var`.
+fn expr_poly_degree_in(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<usize> {
+    if expr == var {
+        return Some(1);
+    }
+    if expr_free_of(expr, var, pool) {
+        return Some(0);
+    }
+    match pool.get(expr) {
+        ExprData::Add(args) => {
+            let mut max_d = 0usize;
+            for a in &args {
+                max_d = max_d.max(expr_poly_degree_in(*a, var, pool)?);
+            }
+            Some(max_d)
+        }
+        ExprData::Mul(args) => {
+            let mut total = 0usize;
+            for a in &args {
+                total = total.checked_add(expr_poly_degree_in(*a, var, pool)?)?;
+            }
+            Some(total)
+        }
+        ExprData::Pow { base, exp } if base == var => match pool.get(exp) {
+            ExprData::Integer(n) => usize::try_from(n.0.to_i64()?).ok(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// True iff `var` does not occur anywhere in `expr`.
+fn expr_free_of(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    if expr == var {
+        return false;
+    }
+    match pool.get(expr) {
+        ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => true,
+        ExprData::Symbol { .. } => expr != var,
+        ExprData::Add(args) | ExprData::Mul(args) => {
+            args.iter().all(|&a| expr_free_of(a, var, pool))
+        }
+        ExprData::Pow { base, exp } => {
+            expr_free_of(base, var, pool) && expr_free_of(exp, var, pool)
+        }
+        ExprData::Func { args, .. } => args.iter().all(|&a| expr_free_of(a, var, pool)),
+        // Any other node type (piecewise, quantifiers, …) shouldn't appear inside a
+        // characteristic polynomial; be conservative and treat `var` as possibly present.
+        _ => false,
+    }
+}
+
+/// Accumulate `expr` into `coeffs[i] += (coefficient of var^i)`.
+fn expr_accumulate_coeffs(
+    expr: ExprId,
+    var: ExprId,
+    coeffs: &mut [ExprId],
+    pool: &ExprPool,
+) -> Option<()> {
+    match pool.get(expr) {
+        ExprData::Add(args) => {
+            for a in &args {
+                expr_accumulate_coeffs(*a, var, coeffs, pool)?;
+            }
+            Some(())
+        }
+        _ => {
+            let (power, rest) = expr_split_var_power(expr, var, pool)?;
+            if power >= coeffs.len() {
+                return None;
+            }
+            let slot = coeffs[power];
+            coeffs[power] = if expr_is_exactly_zero(pool, slot) {
+                rest
+            } else {
+                pool.add(vec![slot, rest])
+            };
+            Some(())
+        }
+    }
+}
+
+/// Split a single monomial `expr` into `(power_of_var, remaining_coefficient)`.
+fn expr_split_var_power(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<(usize, ExprId)> {
+    if expr == var {
+        return Some((1, pool.integer(1_i32)));
+    }
+    if expr_free_of(expr, var, pool) {
+        return Some((0, expr));
+    }
+    match pool.get(expr) {
+        ExprData::Pow { base, exp } if base == var => match pool.get(exp) {
+            ExprData::Integer(n) => {
+                let e = usize::try_from(n.0.to_i64()?).ok()?;
+                Some((e, pool.integer(1_i32)))
+            }
+            _ => None,
+        },
+        ExprData::Mul(args) => {
+            let mut power = 0usize;
+            let mut rest: Vec<ExprId> = Vec::with_capacity(args.len());
+            for a in &args {
+                let (pa, ra) = expr_split_var_power(*a, var, pool)?;
+                power = power.checked_add(pa)?;
+                rest.push(ra);
+            }
+            let rest_e = if rest.is_empty() {
+                pool.integer(1_i32)
+            } else if rest.len() == 1 {
+                rest[0]
+            } else {
+                pool.mul(rest)
+            };
+            Some((power, rest_e))
+        }
+        _ => None,
+    }
 }
 
 /// `(value, multiplicity, column eigenvectors)`
@@ -1278,6 +1582,16 @@ mod tests {
             }
             C::new(re, im)
         }
+        /// Principal complex value of `self^(num/den)` via polar form. Used to evaluate the
+        /// cube roots (`den == 3`) that appear in the symbolic 3×3 Cardano eigenvalues.
+        fn powr(self, num: i64, den: i64) -> C {
+            let mag = (self.re * self.re + self.im * self.im).sqrt();
+            let theta = self.im.atan2(self.re);
+            let exp = num as f64 / den as f64;
+            let new_mag = mag.powf(exp);
+            let new_theta = theta * exp;
+            C::new(new_mag * new_theta.cos(), new_mag * new_theta.sin())
+        }
         fn near(self, o: C) -> bool {
             (self.re - o.re).abs() < 1e-7 && (self.im - o.im).abs() < 1e-7
         }
@@ -1316,7 +1630,8 @@ mod tests {
                         let s = b.sqrt();
                         s.powi(num.to_i64().unwrap_or(1))
                     } else {
-                        C::new(f64::NAN, f64::NAN)
+                        // Cube roots and other fractional powers (symbolic 3×3 Cardano form).
+                        b.powr(num.to_i64().unwrap_or(1), den.to_i64().unwrap_or(1))
                     }
                 } else {
                     C::new(f64::NAN, f64::NAN)
@@ -1395,6 +1710,40 @@ mod tests {
         }
     }
 
+    /// True iff every returned eigenvalue substituted into `det(λI − M)` evaluates to zero,
+    /// checked numerically at several random rational substitutions for the free symbols.
+    /// Handles any matrix size (uses the actual characteristic polynomial, not the 2×2 form).
+    fn eigvals_satisfy_charpoly(m: &Matrix, vals: &[(ExprId, usize)], p: &ExprPool) -> bool {
+        let (poly, lam) = characteristic_polynomial_lambda_minus_m(m, p).unwrap();
+        let mut syms: Vec<ExprId> = Vec::new();
+        for &e in m.entries() {
+            collect_symbols(e, p, &mut syms);
+        }
+        let points: [&[f64]; 3] = [
+            &[2.0, 3.0, 5.0, 7.0, 11.0, 13.0],
+            &[1.5, -2.0, 4.0, 0.5, -3.0, 6.0],
+            &[-1.0, 2.0, -3.0, 5.0, 1.0, -4.0],
+        ];
+        for pt in points.iter() {
+            let mut env: Vec<(ExprId, C)> = syms
+                .iter()
+                .enumerate()
+                .map(|(i, &s)| (s, C::new(pt[i % pt.len()], 0.0)))
+                .collect();
+            for (lam_expr, _) in vals {
+                // Substitute the (numeric) eigenvalue for λ, then evaluate the char poly.
+                let lam_val = eval_c(*lam_expr, &env, p);
+                env.push((lam, lam_val));
+                let poly_val = eval_c(poly, &env, p);
+                env.pop();
+                if !poly_val.near(C::new(0.0, 0.0)) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     #[test]
     fn symbolic_eigenvalues_harmonic_oscillator() {
         // [[0, 1], [-w^2, 0]] — undamped oscillator companion matrix.
@@ -1456,6 +1805,98 @@ mod tests {
             eigvals_satisfy_2x2_charpoly(&m, &vals, &p),
             "eigenvalues do not satisfy the characteristic polynomial"
         );
+    }
+
+    #[test]
+    fn symbolic_eigenvalues_3x3_irreducible_cubic() {
+        // M = [[a,1,0],[0,a,1],[1,0,a]] — char poly (λ−a)³ − 1, an irreducible cubic
+        // in λ over ℚ(a). This regression previously errored with E-EIGEN-004.
+        let p = pool();
+        let a = p.symbol("a", Domain::Real);
+        let one = p.integer(1_i32);
+        let zero = p.integer(0_i32);
+        let m = Matrix::new(vec![
+            vec![a, one, zero],
+            vec![zero, a, one],
+            vec![one, zero, a],
+        ])
+        .unwrap();
+        let vals = eigenvalues(&m, &p).unwrap();
+        // Three distinct roots a+1, a+ω, a+ω².
+        let total: usize = vals.iter().map(|(_, mult)| *mult).sum();
+        assert_eq!(total, 3, "algebraic multiplicities must total 3");
+        assert_eq!(vals.len(), 3, "three distinct symbolic eigenvalues");
+        assert!(
+            eigvals_satisfy_charpoly(&m, &vals, &p),
+            "symbolic 3×3 eigenvalues do not satisfy the characteristic polynomial"
+        );
+    }
+
+    #[test]
+    fn symbolic_eigenvalues_3x3_general_satisfy_char_poly() {
+        // Fully symbolic 3×3 with a mix of parameters; every eigenvalue must satisfy
+        // det(λI − M) = 0 (checked numerically over random substitutions).
+        let p = pool();
+        let a = p.symbol("a", Domain::Real);
+        let b = p.symbol("b", Domain::Real);
+        let one = p.integer(1_i32);
+        let two = p.integer(2_i32);
+        let zero = p.integer(0_i32);
+        // A companion-like matrix with free symbols on the sub/super-diagonals.
+        let m = Matrix::new(vec![
+            vec![a, one, zero],
+            vec![zero, b, one],
+            vec![two, zero, a],
+        ])
+        .unwrap();
+        let vals = eigenvalues(&m, &p).unwrap();
+        let total: usize = vals.iter().map(|(_, mult)| *mult).sum();
+        assert_eq!(total, 3, "algebraic multiplicities must total 3");
+        assert!(
+            eigvals_satisfy_charpoly(&m, &vals, &p),
+            "symbolic 3×3 eigenvalues do not satisfy the characteristic polynomial"
+        );
+    }
+
+    #[test]
+    fn symbolic_eigenvalues_3x3_scalar_triple_root() {
+        // diag(a,a,a) → single eigenvalue a with algebraic multiplicity 3, and the
+        // matrix is (trivially) diagonalizable.
+        let p = pool();
+        let a = p.symbol("a", Domain::Real);
+        let zero = p.integer(0_i32);
+        let m = Matrix::new(vec![
+            vec![a, zero, zero],
+            vec![zero, a, zero],
+            vec![zero, zero, a],
+        ])
+        .unwrap();
+        let vals = eigenvalues(&m, &p).unwrap();
+        assert_eq!(vals.len(), 1);
+        assert_eq!(vals[0].1, 3);
+        assert_eq!(vals[0].0, a);
+        // Already diagonal — diagonalize must succeed without regressing.
+        assert!(diagonalize(&m, &p).is_ok());
+    }
+
+    #[test]
+    fn symbolic_eigenvalues_3x3_does_not_error_on_eigenvects() {
+        // eigenvects/diagonalize may decline to produce radical eigenspaces, but they must
+        // not panic or spuriously error on the eigenvalue computation itself.
+        let p = pool();
+        let a = p.symbol("a", Domain::Real);
+        let one = p.integer(1_i32);
+        let zero = p.integer(0_i32);
+        let m = Matrix::new(vec![
+            vec![a, one, zero],
+            vec![zero, a, one],
+            vec![one, zero, a],
+        ])
+        .unwrap();
+        // eigenvals must succeed.
+        assert!(eigenvalues(&m, &p).is_ok());
+        // eigenvects returns a Result either way — just must not panic.
+        let _ = eigenvectors(&m, &p);
     }
 
     #[test]
