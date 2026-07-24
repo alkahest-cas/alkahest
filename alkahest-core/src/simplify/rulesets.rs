@@ -43,10 +43,37 @@ fn is_real_valued(expr: ExprId, pool: &ExprPool) -> bool {
                 | Domain::NonNegative
                 | Domain::NonZero
         ),
-        ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
-            args.iter().all(|&a| is_real_valued(a, pool))
+        ExprData::Add(args) | ExprData::Mul(args) => args.iter().all(|&a| is_real_valued(a, pool)),
+        ExprData::Func { name, args } => {
+            match name.as_str() {
+                // Branch-cut functions map some real arguments to complex
+                // values, so real-typed arguments are not sufficient.
+                //   √x  is real only for x ≥ 0   (√(−20) = √20·i)
+                //   log is real only for x > 0    (log(−1) = iπ)
+                "sqrt" => args.len() == 1 && is_nonneg_real(args[0], pool),
+                "log" | "ln" => args.len() == 1 && is_positive_real(args[0], pool),
+                // Inverse trig/hyperbolic functions leave ℝ outside a bounded
+                // real domain (e.g. asin(2), acosh(0), atanh(2) are complex);
+                // conservatively refuse rather than prove the argument's range.
+                "asin" | "arcsin" | "acos" | "arccos" | "acosh" | "arccosh" | "atanh"
+                | "arctanh" => false,
+                // Remaining functions (exp, sin, cos, sinh, cosh, tan, …) are
+                // real-valued on real arguments.
+                _ => args.iter().all(|&a| is_real_valued(a, pool)),
+            }
         }
-        ExprData::Pow { base, exp } => is_real_valued(base, pool) && is_real_valued(exp, pool),
+        ExprData::Pow { base, exp } => {
+            if !is_real_valued(base, pool) || !is_real_valued(exp, pool) {
+                return false;
+            }
+            // A real base raised to an integer power is real. A *non-integer*
+            // power of a possibly-negative real is complex on the principal
+            // branch (e.g. `(−20)^(1/2) = √20·i`), so only accept it when the
+            // base is provably non-negative. Without this guard `log(exp(x))`
+            // would wrongly fold for `x = √(−20)`, whose imaginary part `√20`
+            // lies outside `(−π, π]`.
+            is_integer_literal(exp, pool) || is_nonneg_real(base, pool)
+        }
         ExprData::Piecewise { branches, default } => {
             branches
                 .iter()
@@ -61,6 +88,45 @@ fn is_real_valued(expr: ExprId, pool: &ExprPool) -> bool {
         ExprData::RootSum { poly, var, body } => {
             is_real_valued(poly, pool) && is_real_valued(var, pool) && is_real_valued(body, pool)
         }
+    }
+}
+
+/// Whether `expr` is a literal integer (an integer, or a rational with unit
+/// denominator). Used to decide when `base^exp` is real for a real `base`.
+fn is_integer_literal(expr: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(expr) {
+        ExprData::Integer(_) => true,
+        ExprData::Rational(r) => *r.0.denom() == 1,
+        _ => false,
+    }
+}
+
+/// Whether `expr` is *provably* a non-negative real: a non-negative literal, or
+/// a symbol confined to a non-negative real subdomain. Deliberately
+/// conservative — anything it cannot prove non-negative returns `false`.
+fn is_nonneg_real(expr: ExprId, pool: &ExprPool) -> bool {
+    use std::cmp::Ordering;
+    match pool.get(expr) {
+        ExprData::Integer(n) => n.0.cmp0() != Ordering::Less,
+        ExprData::Rational(r) => r.0.cmp0() != Ordering::Less,
+        ExprData::Float(f) => f.inner.to_f64() >= 0.0,
+        ExprData::Symbol { domain, .. } => {
+            matches!(domain, Domain::Positive | Domain::NonNegative)
+        }
+        _ => false,
+    }
+}
+
+/// Whether `expr` is *provably* a strictly positive real: a positive literal, or
+/// a `Domain::Positive` symbol. Conservative — used to admit `log(x)` as real.
+fn is_positive_real(expr: ExprId, pool: &ExprPool) -> bool {
+    use std::cmp::Ordering;
+    match pool.get(expr) {
+        ExprData::Integer(n) => n.0.cmp0() == Ordering::Greater,
+        ExprData::Rational(r) => r.0.cmp0() == Ordering::Greater,
+        ExprData::Float(f) => f.inner.to_f64() > 0.0,
+        ExprData::Symbol { domain, .. } => matches!(domain, Domain::Positive),
+        _ => false,
     }
 }
 
@@ -2039,6 +2105,72 @@ mod tests {
         let expr = pool.func("log", vec![pool.func("exp", vec![inner])]);
         let r = simplify_with(expr, &pool, &log_exp_rules(), SimplifyConfig::default());
         assert_eq!(r.value, expr, "got {}", pool.display(r.value));
+    }
+
+    #[test]
+    fn log_of_exp_stays_for_sqrt_of_negative() {
+        // `√(−20)` is real-*typed* structurally (a ½-power of a negative
+        // integer) but complex-valued (`√20·i`), with imaginary part outside
+        // `(−π, π]`. `log(exp(√(−20)))` must NOT fold to `√(−20)`.
+        let pool = p();
+        let base = pool.integer(-20_i32);
+        let half = pool.rational(1, 2);
+        let root = pool.pow(base, half);
+        let expr = pool.func("log", vec![pool.func("exp", vec![root])]);
+        let r = simplify_with(expr, &pool, &log_exp_rules(), SimplifyConfig::default());
+        assert_eq!(r.value, expr, "got {}", pool.display(r.value));
+    }
+
+    #[test]
+    fn log_of_exp_stays_for_sqrt_func_of_negative() {
+        // Same unsoundness via the `sqrt` *function* node (not a `Pow`).
+        let pool = p();
+        let root = pool.func("sqrt", vec![pool.integer(-20_i32)]);
+        let expr = pool.func("log", vec![pool.func("exp", vec![root])]);
+        let r = simplify_with(expr, &pool, &log_exp_rules(), SimplifyConfig::default());
+        assert_eq!(r.value, expr, "got {}", pool.display(r.value));
+    }
+
+    #[test]
+    fn log_of_exp_stays_for_log_of_negative() {
+        // `log(−5)` is complex (`ln5 + iπ`); `log(exp(log(−5)))` must not fold.
+        let pool = p();
+        let inner_log = pool.func("log", vec![pool.integer(-5_i32)]);
+        let expr = pool.func("log", vec![pool.func("exp", vec![inner_log])]);
+        let r = simplify_with(expr, &pool, &log_exp_rules(), SimplifyConfig::default());
+        assert_eq!(r.value, expr, "got {}", pool.display(r.value));
+    }
+
+    #[test]
+    fn log_of_exp_folds_for_sqrt_func_of_positive() {
+        // `sqrt(5)` is genuinely real, so the fold is preserved.
+        let pool = p();
+        let root = pool.func("sqrt", vec![pool.integer(5_i32)]);
+        let expr = pool.func("log", vec![pool.func("exp", vec![root])]);
+        let r = simplify_with(expr, &pool, &log_exp_rules(), SimplifyConfig::default());
+        assert_eq!(r.value, root, "got {}", pool.display(r.value));
+    }
+
+    #[test]
+    fn log_of_exp_folds_for_nonneg_base_root() {
+        // `√2` (½-power of a non-negative base) is genuinely real, so the fold
+        // is still allowed — the guard is conservative, not blanket.
+        let pool = p();
+        let root = pool.pow(pool.integer(2_i32), pool.rational(1, 2));
+        let expr = pool.func("log", vec![pool.func("exp", vec![root])]);
+        let r = simplify_with(expr, &pool, &log_exp_rules(), SimplifyConfig::default());
+        assert_eq!(r.value, root, "got {}", pool.display(r.value));
+    }
+
+    #[test]
+    fn log_of_exp_folds_for_integer_power_of_real() {
+        // A real symbol to an integer power stays real; the fold is preserved.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let sq = pool.pow(x, pool.integer(2_i32));
+        let expr = pool.func("log", vec![pool.func("exp", vec![sq])]);
+        let r = simplify_with(expr, &pool, &log_exp_rules(), SimplifyConfig::default());
+        assert_eq!(r.value, sq, "got {}", pool.display(r.value));
     }
 
     #[test]
