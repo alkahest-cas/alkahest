@@ -189,6 +189,42 @@ STRICT_CASES = [
         "int_power_rule",
         lambda pool: alkahest.integrate(pool.symbol("x") ** 2, pool.symbol("x")),
     ),
+    # Definite integrals, certified via the second fundamental theorem of
+    # calculus for interval integrals:
+    #   ∫ x in a..b, f x = F b - F a
+    # discharged by `intervalIntegral.integral_eq_sub_of_hasDerivAt` with a
+    # `HasDerivAt` witness on `Set.uIcc a b` and an `IntervalIntegrable` side
+    # condition. The recorded step is `fundamental_theorem_of_calculus`; the
+    # emitter builds the antiderivative + FTC proof for the certifiable fragment
+    # (pointwise sin/cos/exp of the variable, integer powers xⁿ).
+    (
+        "int_def_cos_0_1",
+        "fundamental_theorem_of_calculus",
+        lambda pool: alkahest.integrate(
+            alkahest.cos(pool.symbol("x")), pool.symbol("x"), pool.integer(0), pool.integer(1)
+        ),
+    ),
+    (
+        "int_def_sin_0_1",
+        "fundamental_theorem_of_calculus",
+        lambda pool: alkahest.integrate(
+            alkahest.sin(pool.symbol("x")), pool.symbol("x"), pool.integer(0), pool.integer(1)
+        ),
+    ),
+    (
+        "int_def_exp_0_1",
+        "fundamental_theorem_of_calculus",
+        lambda pool: alkahest.integrate(
+            alkahest.exp(pool.symbol("x")), pool.symbol("x"), pool.integer(0), pool.integer(1)
+        ),
+    ),
+    (
+        "int_def_x_squared_0_1",
+        "fundamental_theorem_of_calculus",
+        lambda pool: alkahest.integrate(
+            pool.symbol("x") ** 2, pool.symbol("x"), pool.integer(0), pool.integer(1)
+        ),
+    ),
     # `Real.deriv_log` holds unconditionally (no positivity hypothesis needed).
     (
         "diff_log",

@@ -180,7 +180,10 @@ pub use poly::groebner::{
 };
 
 pub use errors::AlkahestError;
-pub use lean::{emit_integration_cert, emit_lean_expr as emit_lean, emit_lean_expr_wrt};
+pub use lean::{
+    emit_definite_integration_cert, emit_integration_cert, emit_lean_expr as emit_lean,
+    emit_lean_expr_wrt,
+};
 // V2-1 — Modular / CRT framework
 #[cfg(feature = "groebner")]
 pub use diffalg::{
