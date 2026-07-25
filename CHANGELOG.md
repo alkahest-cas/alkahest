@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## 3.7.0 — 2026-07-25
+
+### Matrix / linear algebra
+
+- **SymPy-style matrix multiply:** `A * B` is the matrix product (same as
+  `A @ B`); `A * k` / `k * A` scalar-multiply; `A ** n` for non-negative
+  integer powers; named `multiply` / `scalar_mul` / `hadamard` methods.
+- **Symbolic 3×3 eigenvalues:** closed-form eigenvalues for parametric 3×3
+  matrices whose characteristic polynomial is an irreducible cubic over the
+  parameter field (Cardano / trigonometric path), not only 2×2.
+
+### Lean certificates
+
+- **Definite-integral certificates:** definite `integrate` emits a
+  type-checking Lean proof via Mathlib's FTC / interval-integral lemmas
+  (previously only indefinite integrals had certificates).
+- Broader Lean coverage for differentiation (chain rule, log/sqrt/tan,
+  quotient) and assumption-gated exp/log identities; certificates that do
+  not typecheck are withheld rather than emitting broken proofs.
+
 ### Fixes
 
 - **Laplace hyperbolic inverse:** irreducible quadratics with `ω² < 0`
@@ -49,6 +69,9 @@
   flattens nested `Add`/`Mul` so coefficients from linear canonization and
   reciprocal folds meet in one n-ary product.
 
+- **Accurate `erf`/`erfc` in f64 eval:** use libm rather than a coarse
+  approximation on the numeric evaluation path.
+
 ### Features
 
 - **Parametric `solve`:** free symbols omitted from `vars` are treated as
@@ -71,10 +94,11 @@
   *vars* is omitted.
 - Structured error messages now include the stable code prefix, e.g. ``[E-INT-004] …``.
 
-### Docs
+### Docs / release
 
 - Document `parse` in the README quickstart; clarify that `limit` / `series` are not `DerivedResult`.
 - Expand `sum_definite` / `sum_indefinite` / `diophantine` / `solve` docs (Faulhaber gap, binary Diophantine patterns, parametric solve).
+- Release wheel smoke runs the README quickstart + fresh-interpreter `parse` against the built wheel; Windows runners force UTF-8 so Lean certificates containing `∫` do not abort the smoke step.
 
 ## 3.6.0 — 2026-07-17
 
