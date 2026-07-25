@@ -349,7 +349,11 @@ jobs:
       # See build-linux's identical step: catches the class of bug (B1, B6)
       # that only reproduces against a real wheel install in a fresh
       # interpreter, not an editable/dev environment or a warmed-up process.
+      # PYTHONIOENCODING: Windows runners default to cp1252; Lean certs print ∫.
       - name: README quickstart + fresh-interpreter parse smoke
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUTF8: "1"
         run: python tests/smoke_readme.py
 
       - uses: actions/upload-artifact@v7
