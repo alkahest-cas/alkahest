@@ -294,7 +294,24 @@ def run_readme_quickstart() -> None:
             _BLOCK_CHECKS[i](ns)
 
 
+def _configure_stdio() -> None:
+    """Windows CI runners default to cp1252; Lean certificates print ∫ etc.
+
+    Without this, printing README quickstart stdout (which includes
+    ``print(r.certificate)``) raises UnicodeEncodeError on Windows and
+    fails the release wheel smoke job even though the wheel itself is fine.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def main() -> int:
+    _configure_stdio()
     run_parse_smoke()
     run_readme_quickstart()
 
