@@ -4250,16 +4250,149 @@ impl PyMatrix {
     }
 
     fn __matmul__(&self, py: Python<'_>, other: PyRef<PyMatrix>) -> PyResult<PyMatrix> {
+        self.matmul_impl(py, &other)
+    }
+
+    /// `other @ self` (only reached when `other` is a `Matrix` that did not
+    /// itself handle `@`). Provided for symmetry with `__matmul__`.
+    fn __rmatmul__(&self, py: Python<'_>, other: PyRef<PyMatrix>) -> PyResult<PyMatrix> {
+        other.matmul_impl(py, self)
+    }
+
+    /// `self * other`.
+    ///
+    /// Follows the SymPy / CAS convention: if `other` is a :class:`Matrix`,
+    /// this is the **matrix product** (identical to ``self @ other``, with the
+    /// same inner-dimension check). If `other` is a scalar — an :class:`Expr`,
+    /// :class:`DerivedResult`, Python ``int``, or ``float`` — every entry is
+    /// scaled by it. There is no elementwise (Hadamard) product on ``*``; use
+    /// :meth:`hadamard` for that.
+    fn __mul__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
+        if let Ok(rhs) = other.downcast::<PyMatrix>() {
+            return Ok(self.matmul_impl(py, &rhs.borrow())?.into_py(py));
+        }
+        match self.coerce_matrix_scalar(other, py)? {
+            Some(scalar) => Ok(self.scale_impl(py, scalar).into_py(py)),
+            None => Ok(py.NotImplemented()),
+        }
+    }
+
+    /// `other * self` — scalar multiplication with the scalar on the left
+    /// (e.g. ``2 * A`` or ``expr * A``). Matrix-on-the-left products are
+    /// handled by the left operand's ``*`` / ``@``.
+    fn __rmul__(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyObject> {
+        match self.coerce_matrix_scalar(other, py)? {
+            Some(scalar) => Ok(self.scale_impl(py, scalar).into_py(py)),
+            None => Ok(py.NotImplemented()),
+        }
+    }
+
+    /// Matrix product ``self @ other`` (SymPy-style named alias).
+    ///
+    /// Same result as ``self @ other`` and ``self * other``. Raises a
+    /// `MatrixError` (E-MAT-001) if the inner dimensions do not match.
+    fn multiply(&self, py: Python<'_>, other: PyRef<PyMatrix>) -> PyResult<PyMatrix> {
+        self.matmul_impl(py, &other)
+    }
+
+    /// Scale every entry by `scalar` (an :class:`Expr`, :class:`DerivedResult`,
+    /// Python ``int``, or ``float``). Same as ``self * scalar``.
+    fn scalar_mul(&self, other: &Bound<'_, PyAny>, py: Python<'_>) -> PyResult<PyMatrix> {
+        match self.coerce_matrix_scalar(other, py)? {
+            Some(scalar) => Ok(self.scale_impl(py, scalar)),
+            None => Err(PyTypeError::new_err(
+                "scalar_mul expects a scalar (Expr, DerivedResult, int, or float)",
+            )),
+        }
+    }
+
+    /// Elementwise (Hadamard) product — multiply corresponding entries.
+    ///
+    /// Requires both matrices to have the same shape. This is *not* the
+    /// matrix product; use ``@`` / ``*`` / :meth:`multiply` for that. Exposed
+    /// only as a named method (never on an operator) so ``*`` unambiguously
+    /// means the matrix product, per the CAS convention.
+    fn hadamard(&self, py: Python<'_>, other: PyRef<PyMatrix>) -> PyResult<PyMatrix> {
+        if self.inner.rows != other.inner.rows || self.inner.cols != other.inner.cols {
+            return Err(matrix_error_to_py(MatrixError::DimensionMismatch {
+                msg: format!(
+                    "cannot take Hadamard product of {}×{} and {}×{}: shapes must match",
+                    self.inner.rows, self.inner.cols, other.inner.rows, other.inner.cols
+                ),
+            }));
+        }
         let pool = self.pool.borrow(py);
-        let m = self
-            .inner
-            .mul(&other.inner, &pool.inner)
-            .map_err(matrix_error_to_py)?;
+        let rows = self.inner.rows;
+        let cols = self.inner.cols;
+        let data: Vec<Vec<ExprId>> = (0..rows)
+            .map(|r| {
+                (0..cols)
+                    .map(|c| {
+                        pool.inner
+                            .mul(vec![self.inner.get(r, c), other.inner.get(r, c)])
+                    })
+                    .collect()
+            })
+            .collect();
         drop(pool);
+        let m = Matrix::new(data).map_err(matrix_error_to_py)?;
         Ok(PyMatrix {
             inner: m,
             pool: self.pool.clone_ref(py),
         })
+    }
+
+    /// ``self ** n`` for a non-negative integer `n` (repeated matrix product).
+    ///
+    /// ``A ** 0`` is the identity matrix of the same size; ``A ** 1`` is `A`;
+    /// ``A ** n`` is ``A @ A @ ... @ A`` (`n` factors). Requires a square
+    /// matrix. Negative or non-integer exponents raise `TypeError`.
+    fn __pow__(
+        &self,
+        py: Python<'_>,
+        exp: &Bound<'_, PyAny>,
+        modulo: &Bound<'_, PyAny>,
+    ) -> PyResult<PyObject> {
+        if !modulo.is_none() {
+            return Ok(py.NotImplemented());
+        }
+        let n: i64 = match exp.extract::<i64>() {
+            Ok(n) => n,
+            Err(_) => return Ok(py.NotImplemented()),
+        };
+        if n < 0 {
+            return Err(PyTypeError::new_err(
+                "matrix power requires a non-negative integer exponent (matrix inverse for \
+                 negative powers is not supported via **; use .inverse())",
+            ));
+        }
+        if self.inner.rows != self.inner.cols {
+            return Err(matrix_error_to_py(MatrixError::DimensionMismatch {
+                msg: format!(
+                    "cannot raise a non-square {}×{} matrix to a power",
+                    self.inner.rows, self.inner.cols
+                ),
+            }));
+        }
+        let pool = self.pool.borrow(py);
+        // `A**0` is the identity; for `n >= 1` start from `A` (not `I @ A`) so
+        // that `A**1` is exactly `A` and `A**n` matches `A @ A @ ... @ A`.
+        let mut acc = if n == 0 {
+            Matrix::identity(self.inner.rows, &pool.inner)
+        } else {
+            self.inner.clone()
+        };
+        for _ in 1..n {
+            acc = acc
+                .mul(&self.inner, &pool.inner)
+                .map_err(matrix_error_to_py)?;
+        }
+        drop(pool);
+        Ok(PyMatrix {
+            inner: acc,
+            pool: self.pool.clone_ref(py),
+        }
+        .into_py(py))
     }
 
     fn det(&self, py: Python<'_>) -> PyResult<PyExpr> {
@@ -4580,6 +4713,71 @@ impl PyMatrix {
     fn __repr__(&self, py: Python<'_>) -> String {
         let pool = self.pool.borrow(py);
         self.inner.display(&pool.inner)
+    }
+}
+
+// Private (non-`#[pymethods]`) helpers shared by the multiplication surface.
+impl PyMatrix {
+    /// Matrix product `self @ other`, reused by `@`, `*`, `**`, and `multiply`.
+    fn matmul_impl(&self, py: Python<'_>, other: &PyMatrix) -> PyResult<PyMatrix> {
+        let pool = self.pool.borrow(py);
+        let m = self
+            .inner
+            .mul(&other.inner, &pool.inner)
+            .map_err(matrix_error_to_py)?;
+        drop(pool);
+        Ok(PyMatrix {
+            inner: m,
+            pool: self.pool.clone_ref(py),
+        })
+    }
+
+    /// Scale every entry by an already-coerced `ExprId` scalar.
+    fn scale_impl(&self, py: Python<'_>, scalar: ExprId) -> PyMatrix {
+        let pool = self.pool.borrow(py);
+        let m = self.inner.scale(scalar, &pool.inner);
+        drop(pool);
+        PyMatrix {
+            inner: m,
+            pool: self.pool.clone_ref(py),
+        }
+    }
+
+    /// Coerce `ob` into a scalar `ExprId` in this matrix's pool.
+    ///
+    /// Accepts `Expr`, `DerivedResult`, Python `int` (including bignum), and
+    /// `float`. Returns `Ok(None)` for anything else so operators can fall
+    /// back to `NotImplemented`. Pool mismatches raise (like the rest of the
+    /// API).
+    fn coerce_matrix_scalar(
+        &self,
+        ob: &Bound<'_, PyAny>,
+        py: Python<'_>,
+    ) -> PyResult<Option<ExprId>> {
+        if let Ok(e) = ob.extract::<PyRef<PyExpr>>() {
+            if !e.pool.is(&self.pool) {
+                return Err(pool_mismatch_err());
+            }
+            return Ok(Some(e.id));
+        }
+        if let Ok(dr) = ob.downcast::<PyDerivedResult>() {
+            let dr = dr.borrow();
+            if !dr.value.pool.is(&self.pool) {
+                return Err(pool_mismatch_err());
+            }
+            return Ok(Some(dr.value.id));
+        }
+        let pool = self.pool.borrow(py);
+        if let Ok(n) = ob.extract::<i64>() {
+            return Ok(Some(pool.inner.integer(n)));
+        }
+        if let Ok(f) = ob.extract::<f64>() {
+            return Ok(Some(pool.inner.float(f, 53)));
+        }
+        if ob.is_instance_of::<PyInt>() {
+            return Ok(Some(integer_into_pool(&pool.inner, ob)?));
+        }
+        Ok(None)
     }
 }
 
