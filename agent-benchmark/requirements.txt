@@ -1,0 +1,4 @@
+# Harness dependencies only.  The CAS libraries under test are NOT listed here:
+# each benchmark arm installs its own into an isolated virtualenv (see envs.py),
+# which is what keeps one arm from scoring points with another arm's library.
+litellm>=1.40

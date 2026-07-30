@@ -281,107 +281,126 @@ perf stat -e cache-misses,cache-references,instructions \
 
 ## Agent benchmarks (`agent-benchmark/`)
 
-A separate suite that benchmarks **AI agents** solving math problems when equipped
-with different CAS skill guides. Where the Rust/Python benchmarks measure raw
-library throughput, the agent benchmarks measure skill-driven agent accuracy,
-token cost, and task success rate.
+A separate suite that benchmarks **AI agents** solving math problems when
+equipped with different CAS skill guides. Where the Rust/Python benchmarks
+measure raw library throughput, this measures how well an agent does *with* a
+library — and specifically how often the library lets it state a confident wrong
+answer.
 
-### Concept
+Full methodology: [`agent-benchmark/README.md`](agent-benchmark/README.md).
 
-Each run gives an AI agent (Claude) one of three skill guides:
+### Headline metric: silent-error rate
 
-| Skill | Library | Skill file |
+Raw accuracy saturates. Every mainstream CAS correctly differentiates
+`sin(x**2)`, so an accuracy comparison on such problems measures nothing. What
+differs is edge behaviour: a library that raises an error gives the agent
+something to act on; one that returns a plausible wrong number does not.
+
+The headline number is therefore the share of attempts producing a **confident
+but mathematically wrong answer**. Honest refusals ("divergent", "undefined",
+"nonelementary") are scored as success on trap tasks, where refusal is the
+correct answer.
+
+### Arms
+
+| Arm | Library | Skill file |
 |---|---|---|
-| `alkahest` | This library | `alkahest-skill/alkahest.md` |
+| `alkahest` | This library, installed from PyPI | `alkahest-skill/alkahest.md` |
 | `sympy` | SymPy | `agent-benchmark/skills/sympy.md` |
 | `mathematica` | Wolfram Engine via `wolframclient` | `agent-benchmark/skills/mathematica.md` |
+| `none` | **Control** — no CAS, stdlib + NumPy | `agent-benchmark/skills/none.md` |
 
-The agent writes a self-contained Python script, which the harness executes and
-checks for correctness. A task is marked correct if the captured `ANSWER:` line
-matches the expected value within tolerance.
+Each arm executes generated code in **its own virtualenv containing only its own
+library**, so an arm cannot score points using another arm's CAS. Attempts to do
+so are reported as `wrong_library`. The `none` arm is the floor: whatever a CAS
+arm scores above it is the value the library adds over plain numerics.
 
 ### Task catalogue
 
-17 tasks across 6 categories (difficulty 1–3):
+19 tasks in five kinds (`agent-benchmark/tasks/catalogue.py`):
 
-| Category | Tasks |
-|---|---|
-| differentiation | `diff_sin_x2`, `diff_poly_leading`, `gradient_sum` |
-| integration | `integrate_x2_definite`, `integrate_sin_definite`, `risch_nonelementary` |
-| simplification | `trig_identity`, `log_exp_simplify`, `trig_sum_simplify` |
-| polynomial | `poly_gcd_eval`, `poly_eval` |
-| solving | `solve_circle_line`, `solve_quadratic_count` |
-| linear\_algebra | `jacobian_entry`, `matrix_det` |
-| numerics | `ball_sin_cos`, `jit_poly_sum` |
+| Kind | Count | What it tests |
+|---|---|---|
+| `control` | 6 | Floor — any working CAS passes |
+| `trap` | 7 | A plausible-but-wrong answer is available; refusal is correct |
+| `rigor` | 2 | Sound enclosure or extended precision, not a close-looking float |
+| `scale` | 3 | Large enough that a slow or recursion-bound implementation fails |
+| `certificate` | 1 | Machine-checkable proof; reported separately, excluded from accuracy |
+
+Expected values were verified against both SymPy and alkahest before being
+recorded, and the catalogue deliberately includes tasks alkahest fails.
 
 ### Run
 
-The harness uses [LiteLLM](https://docs.litellm.ai/) so any supported provider
-works — set the matching API key and pass a LiteLLM model string.
-
 ```bash
-# Prerequisites
-pip install litellm
+pip install -r agent-benchmark/requirements.txt
+
+# One-time: build the isolated per-arm environments (needs network)
+python agent-benchmark/run.py --setup-envs
 
 # Anthropic (default model: claude-haiku-4-5-20251001)
-ANTHROPIC_API_KEY=sk-... python agent-benchmark/run.py
+ANTHROPIC_API_KEY=sk-... python agent-benchmark/run.py --repeats 5 --temperature 0.7
 
-# OpenAI
+# Other providers
 OPENAI_API_KEY=sk-... python agent-benchmark/run.py --model gpt-4o
+GEMINI_API_KEY=...    python agent-benchmark/run.py --model gemini/gemini-2.5-pro
 
-# Google Gemini
-GEMINI_API_KEY=... python agent-benchmark/run.py --model gemini/gemini-1.5-pro
+# Subsets
+python agent-benchmark/run.py --kinds trap --repeats 5 --temperature 0.7
+python agent-benchmark/run.py --max-difficulty 2
+python agent-benchmark/run.py --tasks pole_interior_inverse_square --debug
 
-# Local Ollama (no key needed)
-python agent-benchmark/run.py --model ollama/llama3
-
-# Specific skills and difficulty level
-python agent-benchmark/run.py --skills alkahest,sympy --difficulty 1
-
-# Preview prompts without calling the API
+# Preview prompts without calling any API
 python agent-benchmark/run.py --dry-run
 
-# Single task, debug mode (prints generated code)
-python agent-benchmark/run.py --tasks diff_sin_x2 --debug
+# Pin the library under test
+python agent-benchmark/run.py --setup-envs --alkahest-spec 'alkahest==3.7.0'
 
-# List available tasks or skills
-python agent-benchmark/run.py --list-tasks
-python agent-benchmark/run.py --list-skills
-
-# Choose model and output paths
-python agent-benchmark/run.py --model claude-sonnet-4-6 \
-    --output agent-benchmark/results/results.jsonl \
-    --report agent-benchmark/results/report.md
+# Harness self-test (no API calls, no venvs needed)
+python -m pytest agent-benchmark/test_benchmark.py -v
 ```
 
 ### Output
 
-`agent-benchmark/results/results.jsonl` — one JSON line per (skill, task) run:
+| File | Contents |
+|---|---|
+| `results/results.jsonl` | One JSON object per run |
+| `results/report.md` | Rendered tables |
+| `results/provenance.json` | Library versions + `capabilities()`, git SHA, model, skill-file hashes |
 
-```json
-{"skill": "alkahest", "task": "diff_sin_x2", "category": "differentiation",
- "difficulty": 1, "ok": true, "answer_correct": true, "tokens": 512,
- "wall_ms": 3241.0, "model": "claude-haiku-4-5-20251001"}
-```
-
-`agent-benchmark/results/report.md` — markdown summary with per-skill accuracy,
-full results table, and token usage.
+Provenance is recorded because version strings alone are not trustworthy: a
+local build once reported `3.6.0` while containing part of 3.7.0. Results from a
+build that cannot be reconstructed are not usable.
 
 ### Metrics
 
 | Metric | Meaning |
 |---|---|
-| Accuracy | Fraction of tasks where `ANSWER:` matches expected |
-| `wall_ms` | End-to-end time including API call + code execution |
-| Tokens | Total input + output tokens per run (cost proxy) |
-| `ok` | Code ran without errors (distinct from answer correctness) |
+| pass@1 | Per-attempt success rate, with a 95% Wilson interval |
+| pass@k | Fraction of tasks solved in at least one of k repeats |
+| Silent error | Share of checkable attempts that were confidently wrong |
+| `exec_ms` | Code execution only — excludes model latency |
+| `llm_ms` | Model latency only |
+| Prompt / completion tokens | Reported separately; prompt tokens mostly track skill-guide length |
+
+The `alkahest` and `sympy` guides are length- and depth-matched (~1040 vs ~1180
+lines, same section coverage), so a measured difference is not a documentation-size
+artifact. The `mathematica` guide is not matched — read that arm with the gap in
+mind or exclude it.
 
 ### Adding a new skill
 
-1. Create `agent-benchmark/skills/<name>.md` following the format of `sympy.md`.
-2. Add an entry to `SKILL_PATHS` in `agent-benchmark/harness.py`.
-3. Add `run_<name>` methods to `benchmarks/competitors/` if you also want
-   the raw timing comparison in the cross-CAS suite.
+1. Create `agent-benchmark/skills/<name>.md`.
+2. Add a `SkillSpec` to `build_registry()` in `agent-benchmark/envs.py`, listing
+   its pip packages and the modules it is allowed to import.
+3. Run `python agent-benchmark/run.py --setup-envs --skills <name>`.
+
+### Adding a new task
+
+Add an `AgentTask` to the appropriate list in `agent-benchmark/tasks/catalogue.py`.
+Verify the expected value against at least two CAS libraries first, and record
+in `rationale` what the task discriminates — `test_benchmark.py` enforces that
+every task has one.
 
 ---
 
