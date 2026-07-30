@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Fixes
+
+- **Definite integrals no longer integrate through poles.** `integrate(f, x, a, b)`
+  computed the antiderivative and returned `F(b) − F(a)` without checking for
+  singularities of `f` inside `[a, b]`, so divergent integrals came back as clean,
+  plausible, wrong values with no error raised — `∫_{-1}^{1} x⁻² dx` returned
+  `-2`, `∫_{-1}^{1} x⁻¹ dx` returned `-log(-1)`, and `∫_0^2 dx/(x²-1)` returned a
+  residual containing `log(-1)`. (`verification.status` was `"unverified"` for
+  these, but it is also `"unverified"` for correct results, so it did not
+  distinguish them.) Rational integrands are now checked for real poles on the
+  closed interval — with factors shared with the numerator divided out, so
+  removable singularities such as `(x²-1)/(x-1)` at `x = 1` are still accepted —
+  and an improper integral raises `E-INT-001` instead of returning a value.
+  Non-polynomial denominators (`1/sin(x)`) are not analysed and are unaffected,
+  as are symbolic bounds, which cannot be compared against root locations.
+
 ## 3.7.0 — 2026-07-25
 
 ### Matrix / linear algebra

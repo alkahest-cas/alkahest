@@ -2188,18 +2188,21 @@ fn integrate_inner(
 /// handles only the case where the antiderivative exists and is finite at both
 /// bounds.
 ///
-/// It deliberately does **not** handle improper integrals, discontinuities of
-/// `F` on `[lower, upper]` (e.g. a pole between the bounds), or the
-/// residue-theorem route.  When the antiderivative is non-elementary or
-/// unsupported, the underlying [`IntegrationError`] is propagated unchanged, so
-/// a definite result is never fabricated.
+/// It deliberately does **not** evaluate improper integrals or take the
+/// residue-theorem route.  Where the integrand is a rational function, a pole on
+/// `[lower, upper]` is *detected* and reported as an error rather than being
+/// pushed through the FTC difference, which would yield a finite-looking but
+/// wrong value (`∫_{-1}^{1} x^{-2} dx` would otherwise "evaluate" to `-2`, while
+/// the integral diverges).  Non-polynomial denominators (`1/sin(x)`) are not
+/// analysed and still fall through unchecked.
 ///
 /// # Errors
 ///
 /// Returns the same errors as [`integrate`]: [`IntegrationError::NonElementary`]
 /// when no elementary antiderivative exists, or
 /// [`IntegrationError::NotImplemented`] when the integrand is outside the
-/// supported subset.
+/// supported subset — including when a detected pole makes the integral
+/// improper.
 pub fn integrate_definite(
     expr: ExprId,
     var: ExprId,
@@ -2207,6 +2210,16 @@ pub fn integrate_definite(
     upper: ExprId,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, IntegrationError> {
+    // A pole of the integrand strictly inside (or at an endpoint of) the
+    // interval makes the integral improper: `F` is discontinuous there, so the
+    // FTC difference `F(b) - F(a)` is not the integral and is often a clean,
+    // plausible, wrong number (`∫_{-1}^{1} x^{-2} dx` "=" `-1 - 1` = `-2`,
+    // while the integral diverges). Detect that before substituting, so the
+    // caller gets an error instead of a fabricated value.
+    if let Some(reason) = interior_singularity(expr, var, lower, upper, pool) {
+        return Err(IntegrationError::NotImplemented(reason));
+    }
+
     let antideriv = integrate(expr, var, pool)?;
     let f = antideriv.value;
 
@@ -2231,6 +2244,120 @@ pub fn integrate_definite(
     ));
     let final_log = antideriv.log.merge(log).merge(simplified.log);
     Ok(DerivedExpr::with_log(simplified.value, final_log))
+}
+
+/// Split `expr` into `(numerator, denominator)` by collecting factors carrying a
+/// negative integer power into the denominator.
+fn split_numer_denom(expr: ExprId, pool: &ExprPool) -> (ExprId, ExprId) {
+    let factors = match pool.get(expr) {
+        ExprData::Mul(xs) => xs,
+        _ => vec![expr],
+    };
+    let mut nums = Vec::new();
+    let mut dens = Vec::new();
+    for factor in factors {
+        if let ExprData::Pow { base, exp } = pool.get(factor) {
+            if let ExprData::Integer(n) = pool.get(exp) {
+                if n.0 < 0 {
+                    let positive = simplify(pool.mul(vec![pool.integer(-1_i32), exp]), pool).value;
+                    dens.push(pool.pow(base, positive));
+                    continue;
+                }
+            }
+        }
+        nums.push(factor);
+    }
+    let numer = if nums.is_empty() {
+        pool.integer(1_i32)
+    } else {
+        simplify(pool.mul(nums), pool).value
+    };
+    let denom = if dens.is_empty() {
+        pool.integer(1_i32)
+    } else {
+        simplify(pool.mul(dens), pool).value
+    };
+    (numer, denom)
+}
+
+/// Interpret `bound` as a concrete `f64`, if it is a numeric constant.
+fn numeric_bound(bound: ExprId, pool: &ExprPool) -> Option<f64> {
+    let value = crate::eval::eval_f64(bound, pool, &std::collections::HashMap::new()).ok()?;
+    value.is_finite().then_some(value)
+}
+
+/// Detect a singularity of `integrand` on the closed interval `[lower, upper]`.
+///
+/// Returns a human-readable description when a pole is found, or `None` when
+/// there is none *or* when the question cannot be decided — the check must never
+/// reject an integral that is actually proper, so every uncertain case falls
+/// through to the previous behaviour.
+///
+/// Scope: rational integrands, whose poles are the real roots of the reduced
+/// denominator. Common factors shared with the numerator are divided out first,
+/// so removable singularities (`(x²-1)/(x-1)` at `x = 1`) are correctly *not*
+/// reported. Non-polynomial denominators (`1/sin(x)`, `1/log(x)`) are not
+/// analysed and still fall through.
+fn interior_singularity(
+    integrand: ExprId,
+    var: ExprId,
+    lower: ExprId,
+    upper: ExprId,
+    pool: &ExprPool,
+) -> Option<String> {
+    // Symbolic bounds cannot be compared against root locations.
+    let (a, b) = (numeric_bound(lower, pool)?, numeric_bound(upper, pool)?);
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+
+    let simplified = simplify(integrand, pool).value;
+    let (numer, denom) = split_numer_denom(simplified, pool);
+
+    // A denominator free of the integration variable has no poles in `var`.
+    let denom_poly = crate::poly::UniPoly::from_symbolic(denom, var, pool).ok()?;
+    if denom_poly.degree() == 0 {
+        return None;
+    }
+
+    // Divide out factors shared with the numerator: those singularities are
+    // removable and must not be reported.
+    // The pseudo-quotient has the same roots as the exact quotient (they differ
+    // only by a constant factor), which is all this check needs.
+    let reduced = crate::poly::UniPoly::from_symbolic(numer, var, pool)
+        .ok()
+        .and_then(|numer_poly| denom_poly.gcd(&numer_poly))
+        .filter(|common| common.degree() > 0)
+        .and_then(|common| denom_poly.pseudo_divrem(&common))
+        .filter(|(_, remainder)| remainder.is_zero())
+        .map(|(quotient, _)| quotient)
+        .unwrap_or_else(|| denom_poly.clone());
+    if reduced.degree() == 0 {
+        return None;
+    }
+
+    for interval in crate::poly::real_roots(&reduced).ok()? {
+        // `real_roots` isolates one root per interval. Report only when the
+        // whole bracket lies inside `[lo, hi]`, so the root is *certainly*
+        // inside; a partially overlapping bracket is ambiguous and is skipped
+        // rather than risking a false rejection.
+        if interval.lo_f64() >= lo && interval.hi_f64() <= hi {
+            let location = if interval.lo_f64() == interval.hi_f64() {
+                format!("{}", interval.lo_f64())
+            } else {
+                format!("in [{}, {}]", interval.lo_f64(), interval.hi_f64())
+            };
+            return Some(format!(
+                "improper integral: the integrand has a pole at {} = {}, inside the \
+                 interval of integration [{}, {}]. The integral does not converge \
+                 (or converges only as a principal value), so the \
+                 fundamental-theorem difference F(b) - F(a) is not its value",
+                pool.display(var),
+                location,
+                lo,
+                hi,
+            ));
+        }
+    }
+    None
 }
 
 /// Evaluate the antiderivative `f` at `bound` for the FTC difference.
@@ -3593,6 +3720,144 @@ mod tests {
         let f = pool.pow(x, pool.integer(-1_i32));
         let r = integrate_definite(f, x, pool.integer(1_i32), pool.integer(2_i32), &pool).unwrap();
         assert_num(r.value, 2.0_f64.ln(), &pool);
+    }
+
+    // ── Interior-pole detection ──────────────────────────────────────────────
+    //
+    // Before this guard existed, each of these returned a clean, plausible,
+    // wrong value via the FTC difference instead of erroring: `∫_{-1}^{1} x^{-2}`
+    // gave `-2`, and the two log cases gave residuals containing `log(-1)`.
+
+    fn assert_improper(r: Result<DerivedExpr<ExprId>, IntegrationError>, what: &str) {
+        match r {
+            Err(IntegrationError::NotImplemented(msg)) => {
+                assert!(
+                    msg.contains("pole"),
+                    "{what}: expected a pole diagnostic, got: {msg}"
+                );
+            }
+            Err(other) => panic!("{what}: expected NotImplemented, got {other:?}"),
+            Ok(value) => panic!("{what}: expected an error, got {:?}", value.value),
+        }
+    }
+
+    #[test]
+    fn definite_pole_at_origin_inverse_square_is_rejected() {
+        // ∫_{-1}^{1} x^{-2} dx diverges; naive FTC gives F(1) − F(−1) = −2.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(x, pool.integer(-2_i32));
+        assert_improper(
+            integrate_definite(f, x, pool.integer(-1_i32), pool.integer(1_i32), &pool),
+            "1/x^2 over [-1, 1]",
+        );
+    }
+
+    #[test]
+    fn definite_pole_at_origin_inverse_is_rejected() {
+        // ∫_{-1}^{1} x^{-1} dx diverges; naive FTC gives −log(−1).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(x, pool.integer(-1_i32));
+        assert_improper(
+            integrate_definite(f, x, pool.integer(-1_i32), pool.integer(1_i32), &pool),
+            "1/x over [-1, 1]",
+        );
+    }
+
+    #[test]
+    fn definite_interior_pole_away_from_origin_is_rejected() {
+        // ∫_0^2 1/(x²−1) dx has a pole at x = 1, strictly inside.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let den = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(-1_i32)]);
+        let f = pool.pow(den, pool.integer(-1_i32));
+        assert_improper(
+            integrate_definite(f, x, pool.integer(0_i32), pool.integer(2_i32), &pool),
+            "1/(x^2-1) over [0, 2]",
+        );
+    }
+
+    #[test]
+    fn definite_pole_at_endpoint_is_rejected() {
+        // ∫_0^1 x^{-1} dx is improper at the lower endpoint.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(x, pool.integer(-1_i32));
+        assert_improper(
+            integrate_definite(f, x, pool.integer(0_i32), pool.integer(1_i32), &pool),
+            "1/x over [0, 1]",
+        );
+    }
+
+    #[test]
+    fn definite_pole_outside_interval_still_integrates() {
+        // The guard must not reject a proper integral: the pole of 1/(x²−1) at
+        // x = ±1 lies outside [2, 3].
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let den = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(-1_i32)]);
+        let f = pool.pow(den, pool.integer(-1_i32));
+        let r = integrate_definite(f, x, pool.integer(2_i32), pool.integer(3_i32), &pool)
+            .expect("pole outside the interval must not be rejected");
+        // ∫_2^3 dx/(x²−1) = ½·ln((x−1)/(x+1)) |_2^3 = ½·(ln(1/2) − ln(1/3)).
+        let expected = 0.5 * ((1.0_f64 / 2.0).ln() - (1.0_f64 / 3.0).ln());
+        assert_num(r.value, expected, &pool);
+    }
+
+    #[test]
+    fn removable_singularity_is_not_reported_as_a_pole() {
+        // (x²−1)/(x−1) reduces to x+1, so x = 1 is removable. The guard must not
+        // fire even though the raw denominator vanishes at 1.
+        //
+        // Asserted against `interior_singularity` directly rather than through
+        // `integrate_definite`, because the integrator independently declines
+        // this unsimplified product form ("irreducible product of var-dependent
+        // factors"). What matters here is only that the guard stays silent.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let numer = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(-1_i32)]);
+        let denom = pool.add(vec![x, pool.integer(-1_i32)]);
+        let f = pool.mul(vec![numer, pool.pow(denom, pool.integer(-1_i32))]);
+        assert_eq!(
+            interior_singularity(f, x, pool.integer(0_i32), pool.integer(2_i32), &pool),
+            None,
+            "a removable singularity must not be reported as a pole"
+        );
+    }
+
+    #[test]
+    fn non_polynomial_denominator_falls_through() {
+        // 1/sin(x) has poles, but the denominator is not polynomial so the check
+        // cannot analyse it. It must fall through silently rather than guess.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(pool.func("sin", vec![x]), pool.integer(-1_i32));
+        assert_eq!(
+            interior_singularity(f, x, pool.integer(-1_i32), pool.integer(1_i32), &pool),
+            None
+        );
+    }
+
+    #[test]
+    fn definite_polynomial_unaffected_by_pole_check() {
+        // A pole-free integrand must be untouched: ∫_0^1 x² dx = 1/3.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(x, pool.integer(2_i32));
+        let r = integrate_definite(f, x, pool.integer(0_i32), pool.integer(1_i32), &pool).unwrap();
+        assert_num(r.value, 1.0 / 3.0, &pool);
+    }
+
+    #[test]
+    fn definite_symbolic_bounds_are_not_rejected() {
+        // Bounds that are not numeric cannot be compared against root
+        // locations; the check must fall through rather than guess.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let a = pool.symbol("a", Domain::Real);
+        let f = pool.pow(x, pool.integer(2_i32));
+        assert!(integrate_definite(f, x, pool.integer(0_i32), a, &pool).is_ok());
     }
 
     #[test]
