@@ -178,6 +178,33 @@ def assert_sum_closed_form(
     return s
 
 
+def assert_infinite_sum_value(
+    term_expr: ak.Expr,
+    k: ak.Expr,
+    lo: ak.Expr,
+    pool: ak.ExprPool,
+    expected: float,
+    *,
+    rtol: float = 1e-9,
+    atol: float = 1e-9,
+) -> ak.Expr:
+    """Compute ``sum_definite(term_expr, k, lo, pool.pos_infinity())`` and check
+    it against a known numeric constant (e.g. the Basel sum, `pi**2/6`).
+
+    Recognized infinite sums come back as an exact multiple of the symbolic
+    `pi` — the interned `Domain.Real` symbol named `"pi"`, same convention as
+    `pool.symbol("pi")` — so this binds that symbol to `math.pi` before
+    evaluating, mirroring how a caller would do it themselves.
+    """
+    s = ak.sum_definite(term_expr, k, lo, pool.pos_infinity()).value
+    pi = pool.symbol("pi")
+    got = ak.eval_expr(s, {pi: math.pi})
+    assert math.isclose(got, expected, rel_tol=rtol, abs_tol=atol), (
+        f"infinite sum: alkahest={got!r} expected={expected!r}"
+    )
+    return s
+
+
 def assert_solutions_satisfy(
     equations: Sequence[ak.Expr],
     variables: Sequence[ak.Expr],

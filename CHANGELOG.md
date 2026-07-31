@@ -2,7 +2,25 @@
 
 ## Unreleased
 
+### Additions
+
+- **Basel-family infinite sums:** `sum_definite(expr, k, lo, hi)` now recognizes
+  `hi = pool.pos_infinity()` p-series with an even power, e.g.
+  `sum_definite(1/k**2, k, 1, pool.pos_infinity())` → `π²/6` (the Basel
+  problem) and `Σ 1/k⁴ = π⁴/90`, via a Bernoulli-number/even-zeta table
+  (`alkahest_core::sum::special`) rather than Gosper, which cannot sum `1/k^p`
+  in closed form. Odd powers (`ζ(3)`, …) and any other unrecognized infinite
+  bound still honestly raise `E-SUM-002` instead of guessing. `sum_definite` /
+  `sum_indefinite` docstrings also no longer claim Faulhaber/geometric sums
+  are unsupported — they've worked via general Gosper summation all along.
+
 ### Fixes
+
+- **`alkahest.SumError` now actually catches native summation errors.**
+  `sum_definite` / `sum_indefinite` raise the native `E-SUM-*` exception, but
+  `SumError` was missing from the native-exception overlay list, so
+  `except alkahest.SumError` (or `pytest.raises(alkahest.SumError)`) silently
+  failed to catch it — the only error class with this gap.
 
 - **Definite integrals no longer integrate through poles.** `integrate(f, x, a, b)`
   computed the antiderivative and returned `F(b) − F(a)` without checking for

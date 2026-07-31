@@ -137,3 +137,45 @@ def test_definite_x_log_x_1_to_e(pool, x):
     """∫₁^e x*log(x) dx = (e^2+1)/4, by parts."""
     r = ak.integrate(x * ak.log(x), x, pool.integer(1), pool.float(math.e)).value
     assert_definite_value(r, (math.e**2 + 1) / 4)
+
+
+# --- improper integrals: interior/endpoint poles must refuse, not fabricate -
+#
+# Naive FTC (F(b) - F(a)) is a clean, plausible, *wrong* number whenever the
+# integrand has a pole between the bounds — e.g. ∫₋₁¹ x⁻² dx "=" -1 - 1 = -2
+# via 1/x's antiderivative, even though the integral actually diverges. This
+# was fixed on main (`fix(integrate): reject definite integrals with a pole
+# inside the bounds`); these cases pin that fix as a textbook-gate regression.
+
+
+def test_definite_one_over_x_squared_straddling_pole_refuses(pool, x):
+    """∫₋₁¹ 1/x² dx diverges (pole at x=0 inside the interval) — must raise,
+    not silently return -2 from the naive FTC difference."""
+    with pytest.raises(ak.IntegrationError):
+        ak.integrate(1 / x**2, x, pool.integer(-1), pool.integer(1))
+
+
+def test_definite_one_over_x_straddling_pole_refuses(pool, x):
+    """∫₋₁¹ 1/x dx diverges (pole at x=0 inside the interval)."""
+    with pytest.raises(ak.IntegrationError):
+        ak.integrate(1 / x, x, pool.integer(-1), pool.integer(1))
+
+
+def test_definite_one_over_x_pole_at_lower_endpoint_refuses(pool, x):
+    """∫₀¹ 1/x dx diverges (pole at the lower endpoint x=0)."""
+    with pytest.raises(ak.IntegrationError):
+        ak.integrate(1 / x, x, pool.integer(0), pool.integer(1))
+
+
+def test_definite_one_over_x_to_infinity_diverges_refuses(pool, x):
+    """∫₁^∞ 1/x dx diverges (log growth) — an infinite bound must not be
+    silently substituted as an ordinary symbol."""
+    with pytest.raises(ak.IntegrationError):
+        ak.integrate(1 / x, x, pool.integer(1), pool.pos_infinity())
+
+
+def test_definite_one_over_x_squared_to_infinity_converges(pool, x):
+    """∫₁^∞ 1/x² dx = 1 — the convergent counterpart to the case above,
+    pinned alongside the refusals so the infinite-bound path isn't over-eager."""
+    r = ak.integrate(1 / x**2, x, pool.integer(1), pool.pos_infinity()).value
+    assert_definite_value(r, 1.0)
