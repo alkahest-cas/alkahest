@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Performance
+
+- **`numpy_eval` / `numpy_eval_par` no longer round-trip through a Python
+  list of floats.** The previous implementation converted every NumPy array
+  to a flat Python list via `.tolist()` before crossing into Rust
+  (`compiled_fn.call_batch_raw(inputs_flat, ...)`), which boxes/unboxes one
+  `PyFloat` object per element on both the input and output side — the root
+  cause of `numpy_eval` measuring ~25× slower than `sympy.lambdify(...,
+  "numpy")` for large batches. `CompiledFn` gains
+  `call_batch_buffer`/`call_batch_buffer_par`, which read NumPy (or any
+  buffer-protocol) `float64` arrays via a single bulk copy per array, run
+  the native `call_batch`/`call_batch_par` with the GIL released, and write
+  results directly into a caller-supplied output array. `numpy_eval` and
+  `numpy_eval_par` (and the JAX primitive's concrete-eval path) use this
+  fast path automatically, with a transparent fallback to the legacy
+  `call_batch_raw`/`call_batch_raw_par` for older extension builds that
+  lack it. `call_batch_raw`/`call_batch_raw_par` are unchanged and kept for
+  backward compatibility. Non-contiguous or non-float64 inputs are still
+  converted once via `np.ascontiguousarray(..., dtype=np.float64)`, never
+  via `.tolist()`.
+
 ### Additions
 
 - **Basel-family infinite sums:** `sum_definite(expr, k, lo, hi)` now recognizes

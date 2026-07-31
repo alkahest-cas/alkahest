@@ -40,6 +40,7 @@ except ImportError:
 import numpy as np
 
 import alkahest
+from alkahest._dlpack import _call_batch
 
 
 def _require_jax() -> None:
@@ -88,12 +89,11 @@ def as_jax_primitive(expr, inputs: list) -> Callable:
         compiled_fn = None
 
     def _eval_impl(*arrays):
-        """Concrete evaluation via alkahest.numpy_eval or call_batch_raw."""
+        """Concrete evaluation via the native buffer fast path (see `alkahest.numpy_eval`)."""
         flat_arrays = [np.asarray(a, dtype=np.float64).ravel() for a in arrays]
         n_pts = flat_arrays[0].size if flat_arrays else 1
         if compiled_fn is not None:
-            inputs_flat = np.concatenate(flat_arrays)
-            out = np.array(compiled_fn.call_batch_raw(inputs_flat.tolist(), len(inputs), n_pts))
+            out = _call_batch(compiled_fn, flat_arrays, n_pts)
         else:
             out = np.zeros(n_pts)
             for i in range(n_pts):
