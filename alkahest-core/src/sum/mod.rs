@@ -12,6 +12,7 @@ mod product;
 mod ratfunc;
 mod recurrence;
 mod rsolve;
+mod special;
 
 pub use expr_ratio::hypergeom_ratio;
 pub use gosper::{gosper_certificate, gosper_normal_form};
@@ -68,7 +69,7 @@ impl crate::errors::AlkahestError for SumError {
 
     fn remediation(&self) -> Option<&'static str> {
         Some(
-            "supported indefinite sums are hypergeometric terms built from polynomials in k, products, and gamma(linear(k)); Zeilberger automation is partial — use verify_wz_pair for certificates",
+            "supported indefinite sums are hypergeometric terms built from polynomials in k, products, and gamma(linear(k)); Zeilberger automation is partial — use verify_wz_pair for certificates. For sums to infinity, only recognized Basel-family even p-series (e.g. sum_definite(1/k**2, k, 1, pool.pos_infinity())) resolve to a closed form (pi^2/6, pi^4/90, ...); other improper sums are refused rather than guessed",
         )
     }
 }
@@ -128,6 +129,19 @@ pub fn sum_indefinite(
 }
 
 /// Definite sum `∑_{k=lo}^{hi} term(k)` when Gosper applies (upper bound inclusive).
+///
+/// When `hi` is [`ExprPool::pos_infinity`] this is an infinite sum. Gosper's
+/// algorithm never applies there — its antidifference, even when it exists,
+/// is a rational-times-hypergeometric term with no reason to vanish at `∞`,
+/// so blindly substituting `k = ∞` (like [`crate::integrate::integrate_definite`]
+/// warns against for the analogous FTC bound) would fabricate a meaningless
+/// value. Instead an infinite upper bound is checked against a small table of
+/// recognized closed forms — currently the Basel-family even p-series
+/// `Σ_{k=1}^{∞} c/k^{2m} = c·ζ(2m)` (see [`special::basel_family_closed_form`]),
+/// e.g. `sum_definite(1/k**2, k, 1, pool.pos_infinity())` → `π²/6`. Anything
+/// else with an infinite bound honestly returns
+/// [`SumError::NotGosperSummable`] rather than a wrong or unresolved-`∞`
+/// answer.
 pub fn sum_definite(
     term: ExprId,
     k: ExprId,
@@ -135,6 +149,13 @@ pub fn sum_definite(
     hi: ExprId,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, SumError> {
+    if hi == pool.pos_infinity() {
+        let value = special::basel_family_closed_form(term, k, lo, hi, pool)
+            .ok_or(SumError::NotGosperSummable)?;
+        let mut log = DerivationLog::new();
+        log.push(RewriteStep::simple("basel_zeta_even", term, value));
+        return Ok(DerivedExpr::with_log(value, log));
+    }
     let ind = sum_indefinite(term, k, pool)?;
     let g = ind.value;
     let one = pool.integer(1_i32);

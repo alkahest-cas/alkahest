@@ -337,6 +337,7 @@ _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     "SolverError",
     "SparseGcdError",
     "SparseInterpError",
+    "SumError",
 )
 
 try:
@@ -982,8 +983,10 @@ _native_sum_indefinite = sum_indefinite
 def sum_indefinite(expr, k):
     """Indefinite symbolic sum of *expr* with respect to index *k*.
 
-    Same algorithm family as :func:`sum_definite` (Gosper / hypergeometric).
-    Polynomial and geometric closed forms are not yet implemented.
+    Same algorithm family as :func:`sum_definite` (Gosper / hypergeometric),
+    which covers polynomial terms (Faulhaber sums, e.g. ``Σ k``, ``Σ k²``)
+    and geometric terms (``Σ 2^k``) as special cases — both are
+    hypergeometric in ``k``, so no separate handler is needed.
     """
     return _maybe_context_simplify(_native_sum_indefinite(_coerce_expr(expr), _coerce_expr(k)))
 
@@ -994,11 +997,23 @@ _native_sum_definite = sum_definite
 def sum_definite(expr, k, lo, hi):
     """Definite symbolic sum of *expr* for *k* from *lo* to *hi* (inclusive).
 
-    Uses Gosper / hypergeometric summation. Polynomial Faulhaber sums
-    (e.g. ``Σ k``, ``Σ k²``) and geometric terms such as ``Σ 2^k`` are
-    **not** yet supported and raise ``SumError`` (``E-SUM-002``) even when
-    a closed form exists. Prefer an explicit formula or another CAS for
-    those textbook cases until Faulhaber / geometric handlers land.
+    Uses Gosper / hypergeometric summation, which covers the standard
+    first-course cases directly: Faulhaber sums (``Σ k``, ``Σ k²``, ``Σ k³``,
+    …), geometric series (``Σ r^k``), and telescoping products.
+
+    ``hi`` may also be :attr:`ExprPool.pos_infinity` for an infinite sum.
+    Gosper's algorithm doesn't apply there (its antidifference has no reason
+    to vanish at ``∞``), so infinite bounds instead go through a small table
+    of recognized closed forms — currently the Basel-family even p-series
+    ``Σ_{k=1}^∞ c/k^(2m) = c·ζ(2m)``, e.g.::
+
+        pi = pool.symbol("pi")
+        s = ak.sum_definite(1 / k**2, k, pool.integer(1), pool.pos_infinity())
+        ak.eval_expr(s.value, {pi: math.pi})  # -> pi**2/6 ≈ 1.6449...
+
+    Odd powers (``Σ 1/k³``, Apéry's ``ζ(3)``, …) and any other unrecognized
+    infinite-bound sum raise ``SumError`` (``E-SUM-002``) rather than
+    guessing — there is no known elementary closed form to fall back on.
     """
     return _maybe_context_simplify(
         _native_sum_definite(

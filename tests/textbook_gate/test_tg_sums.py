@@ -2,14 +2,19 @@
 
 First-course finite sums: Faulhaber sums (Σk, Σk², Σk³), geometric series,
 and telescoping sums. B4 (report7-20.md) fixed Faulhaber/geometric support in
-`sum_definite` / `sum_indefinite`.
+`sum_definite` / `sum_indefinite`. Also covers the Basel-family infinite
+p-series (`Σ 1/n²`, `Σ 1/n⁴`) — the remaining agent-benchmark gap: alkahest
+used to refuse every infinite-bound sum with `E-SUM-002` even where a closed
+form exists.
 """
 
 from __future__ import annotations
 
+import math
+
 import alkahest as ak
 import pytest
-from _tg_helpers import assert_sum_closed_form
+from _tg_helpers import assert_infinite_sum_value, assert_sum_closed_form
 
 
 @pytest.fixture
@@ -103,3 +108,54 @@ def test_sum_telescoping_reciprocal_product(pool, k, n):
 def test_sum_indefinite_k(k):
     """Σk (antidifference) should be Gosper-summable — it's the textbook example."""
     ak.sum_indefinite(k, k)
+
+
+# --- Basel-family infinite sums --------------------------------------------
+#
+# Gosper's algorithm never applies to Σ 1/k^p (its antidifference is a
+# polygamma function, not hypergeometric), so these are recognized via a
+# small even-zeta / Bernoulli-number table rather than Gosper — see
+# `alkahest_core::sum::special`. Only even powers have a known closed form in
+# `pi`; odd ones (Apéry's ζ(3), …) are honestly refused, not guessed.
+
+
+def test_basel_sum_pi_squared_over_six(pool, k):
+    """Σ_{n=1}^∞ 1/n² = π²/6 — the Basel problem."""
+    term = ak.simplify(k ** pool.integer(-2)).value
+    assert_infinite_sum_value(term, k, pool.integer(1), pool, math.pi**2 / 6)
+
+
+def test_sum_reciprocal_fourth_power_to_infinity(pool, k):
+    """Σ_{n=1}^∞ 1/n⁴ = π⁴/90."""
+    term = ak.simplify(k ** pool.integer(-4)).value
+    assert_infinite_sum_value(term, k, pool.integer(1), pool, math.pi**4 / 90)
+
+
+def test_basel_sum_carries_a_scalar_coefficient(pool, k):
+    """Σ_{n=1}^∞ 3/n² = 3·π²/6 = π²/2 — the coefficient must ride along."""
+    term = ak.simplify(3 / k**2).value
+    assert_infinite_sum_value(term, k, pool.integer(1), pool, 3 * math.pi**2 / 6)
+
+
+def test_sum_reciprocal_cube_to_infinity_refuses(pool, k):
+    """Σ 1/n³ = ζ(3) (Apéry's constant) has no known closed form in π — must
+    raise E-SUM-002, not silently return a wrong or unevaluated value."""
+    term = ak.simplify(k ** pool.integer(-3)).value
+    with pytest.raises(ak.SumError) as exc_info:
+        ak.sum_definite(term, k, pool.integer(1), pool.pos_infinity())
+    assert exc_info.value.code == "E-SUM-002"
+
+
+def test_sum_k_squared_to_infinity_diverges_and_refuses(pool, k):
+    """Σ_{n=1}^∞ n² diverges — must not be mistaken for a p-series."""
+    with pytest.raises(ak.SumError):
+        ak.sum_definite(k**2, k, pool.integer(1), pool.pos_infinity())
+
+
+def test_basel_sum_requires_lower_bound_one(pool, k):
+    """Σ_{n=2}^∞ 1/n² has no simple closed form here (would need a finite
+    correction term with no closed form of its own) — honestly refused
+    rather than silently starting from n=1 anyway."""
+    term = ak.simplify(k ** pool.integer(-2)).value
+    with pytest.raises(ak.SumError):
+        ak.sum_definite(term, k, pool.integer(2), pool.pos_infinity())
