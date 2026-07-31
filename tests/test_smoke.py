@@ -468,6 +468,95 @@ def test_lean_tan_expand_certificate():
     assert "sorry" not in r.certificate
 
 
+def test_lean_definite_integral_sum_certificate():
+    """∫ (sin x + cos x) certifies via HasDerivAt.add / IntervalIntegrable.add
+    composed on top of the interval FTC — the linear-combination fragment."""
+    p = pool()
+    x = p.symbol("x")
+    r = integrate(sin(x) + cos(x), x, p.integer(0), p.integer(1))
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "admit" not in cert
+    assert "intervalIntegral.integral_eq_sub_of_hasDerivAt" in cert
+    assert ".add" in cert
+    assert to_lean(r) == cert
+
+
+def test_lean_definite_integral_constant_multiple_certificate():
+    """∫ 3*cos(x) certifies via HasDerivAt.const_mul / .mul_const."""
+    p = pool()
+    x = p.symbol("x")
+    r = integrate(3 * cos(x), x, p.integer(0), p.integer(1))
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "admit" not in cert
+    assert "const_mul" in cert or "mul_const" in cert
+
+
+def test_lean_definite_integral_negative_coefficient_certificate():
+    """∫ -exp(x) (i.e. -1 * exp(x)) also certifies via the same scaling path."""
+    p = pool()
+    x = p.symbol("x")
+    r = integrate(-exp(x), x, p.integer(0), p.integer(1))
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "admit" not in cert
+
+
+def test_lean_definite_integral_rational_coefficient_certificate():
+    """A Rational-literal coefficient (not just Integer) must also certify."""
+    p = pool()
+    x = p.symbol("x")
+    half = p.rational(1, 2)
+    r = integrate(half * x**2, x, p.integer(0), p.integer(1))
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "admit" not in cert
+
+
+def test_lean_definite_integral_three_term_linear_combination_certificate():
+    """A three-term sum mixing a bare power, a bare trig term, and a scaled
+    trig term must certify as a single linear-combination certificate."""
+    p = pool()
+    x = p.symbol("x")
+    r = integrate(x**2 + sin(x) + 3 * cos(x), x, p.integer(0), p.integer(1))
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "admit" not in cert
+
+
+def test_lean_definite_integral_withholds_sum_with_unsupported_term():
+    """One non-certifiable addend (log x) must withhold the WHOLE certificate,
+    not silently drop that term."""
+    p = pool()
+    x = p.symbol("x")
+    r = integrate(cos(x) + log(x), x, p.integer(1), p.integer(2))
+    assert r.certificate is None
+    assert to_lean(r) == ""
+
+
+def test_lean_definite_integral_withholds_symbolic_coefficient():
+    """A non-literal (symbolic) coefficient must not be mistaken for a
+    constant multiple: `y * cos(x)` withholds rather than fabricating an
+    unsound `HasDerivAt.const_mul` proof."""
+    p = pool()
+    x = p.symbol("x")
+    y = p.symbol("y")
+    r = integrate(y * cos(x), x, p.integer(0), p.integer(1))
+    assert r.certificate is None
+    assert to_lean(r) == ""
+
+
 # ---------------------------------------------------------------------------
 # StableHLO / XLA bridge
 # ---------------------------------------------------------------------------

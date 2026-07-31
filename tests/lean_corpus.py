@@ -225,6 +225,62 @@ STRICT_CASES = [
             pool.symbol("x") ** 2, pool.symbol("x"), pool.integer(0), pool.integer(1)
         ),
     ),
+    # Expanded definite-integral fragment: finite sums and numeric-literal
+    # constant multiples of the base pointwise/`xⁿ` family, certified via
+    # `HasDerivAt.add`/`.const_mul`/`.mul_const` and the `IntervalIntegrable`
+    # analogues composed on top of the same interval-FTC lemma.
+    (
+        "int_def_sum_sin_cos_0_1",
+        "fundamental_theorem_of_calculus",
+        lambda pool: alkahest.integrate(
+            alkahest.sin(pool.symbol("x")) + alkahest.cos(pool.symbol("x")),
+            pool.symbol("x"),
+            pool.integer(0),
+            pool.integer(1),
+        ),
+    ),
+    (
+        "int_def_const_mul_cos_0_1",
+        "fundamental_theorem_of_calculus",
+        lambda pool: alkahest.integrate(
+            3 * alkahest.cos(pool.symbol("x")),
+            pool.symbol("x"),
+            pool.integer(0),
+            pool.integer(1),
+        ),
+    ),
+    (
+        "int_def_neg_exp_0_1",
+        "fundamental_theorem_of_calculus",
+        lambda pool: alkahest.integrate(
+            -alkahest.exp(pool.symbol("x")),
+            pool.symbol("x"),
+            pool.integer(0),
+            pool.integer(1),
+        ),
+    ),
+    (
+        "int_def_rational_coeff_x_squared_0_1",
+        "fundamental_theorem_of_calculus",
+        lambda pool: alkahest.integrate(
+            pool.rational(1, 2) * pool.symbol("x") ** 2,
+            pool.symbol("x"),
+            pool.integer(0),
+            pool.integer(1),
+        ),
+    ),
+    (
+        "int_def_three_term_combo_0_1",
+        "fundamental_theorem_of_calculus",
+        lambda pool: alkahest.integrate(
+            pool.symbol("x") ** 2
+            + alkahest.sin(pool.symbol("x"))
+            + 3 * alkahest.cos(pool.symbol("x")),
+            pool.symbol("x"),
+            pool.integer(0),
+            pool.integer(1),
+        ),
+    ),
     # `Real.deriv_log` holds unconditionally (no positivity hypothesis needed).
     (
         "diff_log",
