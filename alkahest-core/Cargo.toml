@@ -87,3 +87,20 @@ harness = false
 [[example]]
 name = "dump_ptx"
 required-features = ["cuda"]
+
+# Scaling / regression harnesses for the parallel simplifier.
+[[example]]
+name = "simplify_scaling"
+required-features = ["parallel"]
+
+[[example]]
+name = "simplify_probe"
+required-features = ["parallel"]
+
+[[example]]
+name = "simplify_clean"
+required-features = ["parallel"]
+
+[[example]]
+name = "pool_read_scaling"
+required-features = ["parallel"]
