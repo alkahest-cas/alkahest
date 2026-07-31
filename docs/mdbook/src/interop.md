@@ -20,7 +20,7 @@ xs = np.linspace(0, 2 * np.pi, 1_000_000)
 ys = numpy_eval(f, xs)   # returns a NumPy array, shape (1_000_000,)
 ```
 
-Inputs are converted to `f64` arrays via DLPack or `__array__`. The call is vectorised through `call_batch_raw` in Rust — no Python loop.
+Inputs are converted to `f64` arrays via DLPack or `__array__`. The call is vectorised through `CompiledFn.call_batch_buffer` in Rust: each array is read via the buffer protocol in one bulk copy (no per-element Python `float` boxing, no `.tolist()`), the native call runs with the GIL released, and the result is written directly into a preallocated output array — no Python loop, and no intermediate Python list on either side. `numpy_eval_par` (requires `--features parallel`) additionally distributes points across CPU cores via Rayon.
 
 ### Array protocol
 

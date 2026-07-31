@@ -47,6 +47,11 @@ Compiled evaluation
    have the same number of elements. Accepts NumPy arrays, PyTorch CPU
    tensors, JAX arrays, or anything with ``__dlpack__`` or ``__array__``.
 
+   Internally this reads each input array via the buffer protocol (one
+   bulk copy per array, not a Python ``float`` per element) and calls
+   :meth:`CompiledFn.call_batch_buffer` with the GIL released, avoiding
+   the ``.tolist()`` round-trip that older versions used.
+
    :returns: ``numpy.ndarray`` of float64 with the same shape as the
       first input.
 
@@ -55,7 +60,14 @@ Compiled evaluation
       import numpy as np
       f = compile_expr(sin(x) * exp(pool.integer(-1) * x), [x])
       xs = np.linspace(0, 10, 1_000_000)
-      ys = numpy_eval(f, xs)   # vectorised, no Python loop
+      ys = numpy_eval(f, xs)   # vectorised, no per-element Python floats
+
+.. function:: numpy_eval_par(compiled_fn: CompiledFn, *arrays) -> numpy.ndarray
+
+   Identical to :func:`numpy_eval` but distributes the evaluation points
+   across all CPU cores via Rayon (requires ``--features parallel``; falls
+   back to :func:`numpy_eval` otherwise). The GIL is released for the
+   duration of the native call.
 
 .. class:: CompiledFn
 
@@ -65,10 +77,27 @@ Compiled evaluation
 
       Evaluate at a single point.
 
+   .. method:: call_batch_buffer(inputs: list[numpy.ndarray], output: numpy.ndarray) -> None
+
+      Fast-path batch evaluation used internally by :func:`numpy_eval`.
+      *inputs* is a list of ``n_inputs`` C-contiguous float64
+      buffer-protocol objects (e.g. NumPy arrays), each of length
+      ``n_pts``; *output* is a writable float64 buffer of the same
+      length that receives the results. No Python-level list or
+      per-element ``float`` object is created for either side.
+
+   .. method:: call_batch_buffer_par(inputs: list[numpy.ndarray], output: numpy.ndarray) -> None
+
+      Parallel counterpart to :meth:`call_batch_buffer` (requires
+      ``--features parallel``). Used internally by :func:`numpy_eval_par`.
+
    .. method:: call_batch_raw(flat: list[float], n_vars: int, n_pts: int) -> list[float]
 
-      Low-level batch evaluation. *flat* contains all input values
-      concatenated: ``[x0_pt0, x0_pt1, ..., x1_pt0, x1_pt1, ...]``.
+      Legacy low-level batch evaluation, kept for backward compatibility.
+      *flat* contains all input values concatenated:
+      ``[x0_pt0, x0_pt1, ..., x1_pt0, x1_pt1, ...]``. Prefer
+      :meth:`call_batch_buffer` (used automatically by :func:`numpy_eval`)
+      since this method requires materialising a Python list of floats.
 
    .. attribute:: n_inputs
 

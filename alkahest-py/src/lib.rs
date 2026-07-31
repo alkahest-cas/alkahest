@@ -163,6 +163,7 @@ use alkahest_core::number_theory::{
     totient as nt_totient, NumberTheoryError as CoreNumberTheoryError,
     QuadraticDirichlet as CoreQuadraticDirichlet,
 };
+use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyOverflowError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyComplex, PyDict, PyInt, PyList, PyTuple};
@@ -5755,6 +5756,110 @@ impl PyCompiledFn {
         });
         Ok(output)
     }
+
+    /// Fast-path batch evaluation directly against buffer-protocol objects
+    /// (NumPy `float64` arrays, `array.array('d', …)`, memoryviews, …).
+    ///
+    /// Unlike :meth:`call_batch_raw`, this never materialises a Python list
+    /// or `float` object per element: each input array's contents are copied
+    /// into a native `Vec<f64>` in one bulk `memcpy`-style operation (via
+    /// PyO3's buffer protocol), the compiled function runs with the GIL
+    /// released, and the result is written back into the caller-supplied
+    /// `output` buffer the same way.
+    ///
+    /// `inputs` must contain exactly `n_inputs` buffers, each of length
+    /// `n_points`, C-contiguous, and holding `float64` elements. `output`
+    /// must be a writable buffer of the same shape (e.g. `numpy.empty`).
+    ///
+    /// This is the method used internally by :func:`alkahest.numpy_eval`;
+    /// most callers should use that helper rather than calling this
+    /// directly.
+    fn call_batch_buffer(
+        &self,
+        py: Python<'_>,
+        inputs: Vec<PyBuffer<f64>>,
+        output: PyBuffer<f64>,
+    ) -> PyResult<()> {
+        let n_points = output.item_count();
+        let cols = extract_batch_columns(&inputs, self.inner.n_inputs, n_points, py)?;
+        let col_refs: Vec<&[f64]> = cols.iter().map(|v| v.as_slice()).collect();
+
+        let mut out_vec = vec![0.0f64; n_points];
+        py.allow_threads(|| {
+            self.inner.call_batch(&col_refs, &mut out_vec);
+        });
+
+        output.copy_from_slice(py, &out_vec).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("failed to write output buffer: {e}"))
+        })
+    }
+
+    /// Parallel counterpart to :meth:`call_batch_buffer` (requires
+    /// `--features parallel`). Distributes the `n_points` evaluations across
+    /// all available CPU cores via Rayon; the GIL is released for the
+    /// duration of the native call.
+    ///
+    /// Used internally by :func:`alkahest.numpy_eval_par`.
+    #[cfg(feature = "parallel")]
+    fn call_batch_buffer_par(
+        &self,
+        py: Python<'_>,
+        inputs: Vec<PyBuffer<f64>>,
+        output: PyBuffer<f64>,
+    ) -> PyResult<()> {
+        let n_points = output.item_count();
+        let cols = extract_batch_columns(&inputs, self.inner.n_inputs, n_points, py)?;
+        let col_refs: Vec<&[f64]> = cols.iter().map(|v| v.as_slice()).collect();
+
+        let mut out_vec = vec![0.0f64; n_points];
+        py.allow_threads(|| {
+            self.inner.call_batch_par(&col_refs, &mut out_vec);
+        });
+
+        output.copy_from_slice(py, &out_vec).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("failed to write output buffer: {e}"))
+        })
+    }
+}
+
+/// Shared validation + bulk-copy helper for [`PyCompiledFn::call_batch_buffer`]
+/// and [`PyCompiledFn::call_batch_buffer_par`].
+///
+/// Copies each input buffer into an owned `Vec<f64>` via a single
+/// `PyBuffer::to_vec` bulk copy (no per-element Python object boxing), after
+/// validating shapes so the native `call_batch` call is safe.
+fn extract_batch_columns(
+    inputs: &[PyBuffer<f64>],
+    n_inputs: usize,
+    n_points: usize,
+    py: Python<'_>,
+) -> PyResult<Vec<Vec<f64>>> {
+    if inputs.len() != n_inputs {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "expected {} input array(s), got {}",
+            n_inputs,
+            inputs.len()
+        )));
+    }
+    inputs
+        .iter()
+        .map(|buf| {
+            if buf.item_count() != n_points {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "all input arrays must have length {n_points}, got {}",
+                    buf.item_count()
+                )));
+            }
+            if !buf.is_c_contiguous() {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "input arrays must be C-contiguous (use np.ascontiguousarray)",
+                ));
+            }
+            buf.to_vec(py).map_err(|e| {
+                pyo3::exceptions::PyValueError::new_err(format!("failed to read input buffer: {e}"))
+            })
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

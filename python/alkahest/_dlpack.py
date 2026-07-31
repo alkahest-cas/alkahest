@@ -42,7 +42,54 @@ Example
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+
+def _call_batch(compiled_fn, flat_arrays: Sequence, n_points: int, *, parallel: bool = False):
+    """Dispatch a batch evaluation to the fastest available native path.
+
+    Prefers ``call_batch_buffer`` (or ``call_batch_buffer_par``), which reads
+    the input NumPy buffers and writes the output buffer via bulk
+    (``memcpy``-style) copies with the GIL released during evaluation —
+    no per-element Python `float` boxing.  Falls back to the legacy
+    ``call_batch_raw`` (which requires a flat Python list, i.e. ``.tolist()``)
+    only when running against an older/foreign extension build that lacks
+    the buffer-protocol methods.
+
+    Parameters
+    ----------
+    compiled_fn : CompiledFn
+    flat_arrays : sequence of numpy.ndarray
+        One contiguous ``float64`` 1-D array per input variable, each of
+        length ``n_points``.
+    n_points : int
+    parallel : bool
+        Use the Rayon-parallel native path when available.
+
+    Returns
+    -------
+    numpy.ndarray
+        Flat ``float64`` array of length ``n_points``.
+    """
+    import numpy as np
+
+    buffer_method = "call_batch_buffer_par" if parallel else "call_batch_buffer"
+    if hasattr(compiled_fn, buffer_method):
+        result = np.empty(n_points, dtype=np.float64)
+        getattr(compiled_fn, buffer_method)(list(flat_arrays), result)
+        return result
+
+    # Legacy fallback for extension builds predating the buffer fast path.
+    n_vars = len(flat_arrays)
+    raw_method = "call_batch_raw"
+    if parallel and hasattr(compiled_fn, "call_batch_raw_par"):
+        raw_method = "call_batch_raw_par"
+    inputs_flat = [v for arr in flat_arrays for v in arr.tolist()]
+    result_flat = getattr(compiled_fn, raw_method)(inputs_flat, n_vars, n_points)
+    return np.array(result_flat, dtype=np.float64)
 
 
 def _to_numpy(x: Any):
@@ -126,12 +173,10 @@ def numpy_eval_dlpack(compiled_fn, *arrays):
     if any(a.size != n_points for a in flat_arrays):
         raise ValueError("all input arrays must have the same number of elements")
 
-    inputs_flat = [v for arr in flat_arrays for v in arr.tolist()]
-    result_flat = compiled_fn.call_batch_raw(inputs_flat, n_vars, n_points)
-    result = np.array(result_flat, dtype=np.float64)
+    result = _call_batch(compiled_fn, flat_arrays, n_points)
     if out_shape:
         result = result.reshape(out_shape)
     return result
 
 
-__all__ = ["_to_numpy", "numpy_eval_dlpack"]
+__all__ = ["_call_batch", "_to_numpy", "numpy_eval_dlpack"]

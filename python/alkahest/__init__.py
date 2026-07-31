@@ -15,7 +15,7 @@ from ._context import (
     simplify_enabled,
     symbol,
 )
-from ._dlpack import _to_numpy
+from ._dlpack import _call_batch, _to_numpy
 from ._parse import parse
 from ._plot import (
     plot,
@@ -362,6 +362,14 @@ def numpy_eval(compiled_fn, *arrays):
 
     Phase 25 / PA-8 — NumPy / JAX / PyTorch / DLPack array evaluation.
 
+    Evaluation runs entirely natively: input arrays are read via the buffer
+    protocol (a single bulk copy per array, not a Python `float` per
+    element), the compiled function is called with the GIL released, and the
+    result is written directly into a preallocated output array. No
+    intermediate Python list of floats (``.tolist()``) is ever created, which
+    is what previously made this path dramatically slower than it needed to
+    be for large arrays.
+
     Parameters
     ----------
     compiled_fn : CompiledFn
@@ -385,7 +393,7 @@ def numpy_eval(compiled_fn, *arrays):
     >>> x = p.symbol("x")
     >>> f = alkahest.compile_expr(x ** 2, [x])
     >>> xs = np.linspace(0, 1, 1_000_000)
-    >>> ys = alkahest.numpy_eval(f, xs)   # vectorised; ≥100× faster than a loop
+    >>> ys = alkahest.numpy_eval(f, xs)   # vectorised native batch eval
     """
     try:
         import numpy as np
@@ -405,9 +413,7 @@ def numpy_eval(compiled_fn, *arrays):
     if any(a.size != n_points for a in flat_arrays):
         raise ValueError("all input arrays must have the same number of elements")
 
-    inputs_flat = [v for arr in flat_arrays for v in arr.tolist()]
-    result_flat = compiled_fn.call_batch_raw(inputs_flat, n_vars, n_points)
-    result = np.array(result_flat, dtype=np.float64)
+    result = _call_batch(compiled_fn, flat_arrays, n_points)
     if out_shape:
         result = result.reshape(out_shape)
     return result
@@ -454,8 +460,11 @@ def numpy_eval_par(compiled_fn, *arrays):
     >>> xs = np.linspace(0, 1, 10_000_000)
     >>> ys = alkahest.numpy_eval_par(f, xs)   # multi-core evaluation
     """
-    # Use the parallel path if call_batch_raw_par is available (parallel feature).
-    if not hasattr(compiled_fn, "call_batch_raw_par"):
+    # Use the parallel path if a parallel native method is available (parallel feature).
+    has_parallel_path = hasattr(compiled_fn, "call_batch_buffer_par") or hasattr(
+        compiled_fn, "call_batch_raw_par"
+    )
+    if not has_parallel_path:
         return numpy_eval(compiled_fn, *arrays)
 
     try:
@@ -477,9 +486,7 @@ def numpy_eval_par(compiled_fn, *arrays):
     if any(a.size != n_points for a in flat_arrays):
         raise ValueError("all input arrays must have the same number of elements")
 
-    inputs_flat = [v for arr in flat_arrays for v in arr.tolist()]
-    result_flat = compiled_fn.call_batch_raw_par(inputs_flat, n_vars, n_points)
-    result = np.array(result_flat, dtype=np.float64)
+    result = _call_batch(compiled_fn, flat_arrays, n_points, parallel=True)
     if out_shape:
         result = result.reshape(out_shape)
     return result
