@@ -14,6 +14,19 @@ Example
 ...     x = alkahest.symbol("x")          # domain and pool inferred
 ...     expr = x ** 2
 ...     d = alkahest.diff(expr, x)        # algebraic simplify applied to .value automatically
+
+RW-7b — ``context(assumptions=...)`` additionally sets a thread-local
+:class:`~alkahest.Assumptions` context. ``alkahest.simplify``,
+``alkahest.simplify_log_exp``, and ``alkahest.solve`` pick it up automatically
+when the caller omits the corresponding keyword argument, so agents don't have
+to thread an ``Assumptions`` object through every call by hand::
+
+    >>> p = alkahest.ExprPool()
+    >>> x = p.symbol("x")
+    >>> assumptions = alkahest.Assumptions(p)
+    >>> assumptions.refine(p.gt(x, p.integer(0)))
+    >>> with alkahest.context(pool=p, assumptions=assumptions):
+    ...     alkahest.simplify(alkahest.sqrt(x**2)).value   # x, not sqrt(x^2)
 """
 
 from __future__ import annotations
@@ -56,6 +69,7 @@ def context(
     domain: Any = None,
     simplify: bool = False,
     precision: int | None = None,
+    assumptions: Any = None,
     **extra: Any,
 ) -> Generator[None, None, None]:
     """Thread-local context for Alkahest calls.
@@ -76,6 +90,13 @@ def context(
         :func:`simplify` / :func:`simplify_trig` calls are unchanged.
     precision : int, optional
         Default MPFR precision in bits for ball-arithmetic operations.
+    assumptions : Assumptions, optional
+        Default :class:`~alkahest.Assumptions` context, scoped to *pool*.
+        :func:`alkahest.simplify`, :func:`alkahest.simplify_log_exp`, and
+        :func:`alkahest.solve` pick this up automatically when called without
+        an explicit ``assumptions``/``domain`` argument of their own (see
+        :func:`active_assumptions`). Explicit arguments to those functions
+        always take precedence over the context.
     **extra
         Additional key-value pairs stored in the context and accessible via
         :func:`get_context_value`.
@@ -102,6 +123,14 @@ def context(
                 # pool from outer context; domain overridden here.
                 ...
 
+    Assumptions flow through to assumption-aware simplifiers::
+
+        >>> x = p.symbol("x")
+        >>> assumptions = alkahest.Assumptions(p)
+        >>> assumptions.refine(p.gt(x, p.integer(0)))
+        >>> with alkahest.context(pool=p, assumptions=assumptions):
+        ...     alkahest.simplify_log_exp(alkahest.exp(alkahest.log(x))).value  # x
+
     """
     if not hasattr(_state, "stack"):
         _state.stack = []
@@ -114,6 +143,8 @@ def context(
     ctx["simplify"] = simplify
     if precision is not None:
         ctx["precision"] = precision
+    if assumptions is not None:
+        ctx["assumptions"] = assumptions
     ctx.update(extra)
 
     _state.stack.append(ctx)
@@ -177,3 +208,14 @@ def active_domain() -> Any | None:
 def simplify_enabled() -> bool:
     """Return ``True`` if the active context has ``simplify=True``."""
     return bool(get_context_value("simplify", False))
+
+
+def active_assumptions() -> Any | None:
+    """Return the :class:`~alkahest.Assumptions` from the innermost active
+    context, or ``None`` if no context set one.
+
+    Used by :func:`alkahest.simplify`, :func:`alkahest.simplify_log_exp`, and
+    :func:`alkahest.solve` to fall back to a caller-established assumption
+    context when they're invoked without their own ``assumptions`` argument.
+    """
+    return get_context_value("assumptions")

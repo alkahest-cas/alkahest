@@ -57,6 +57,12 @@ fn rule_to_tactic(rule_name: &str) -> &'static str {
         // steps are withheld via [`step_is_certifiable`] rather than emitting
         // a failing `positivity`.
         "exp_of_log" => "by sorry",
+        // `abs_of_positive` (`abs(x) = x` under `x > 0`) is upgraded to a
+        // `abs_of_pos` certificate by `positivity_certificate` for the bare-
+        // symbol case; anything else must be withheld, so the table default
+        // is a withheld `sorry` rather than the (non-compiling) generic
+        // fallback.
+        "abs_of_positive" => "by sorry",
         "log_of_product" | "log_of_product_positive" => "by sorry",
         // `sum_of_logs` (`log a + log b + … = log(a·b·…)`) is only sound with a
         // positivity hypothesis on every argument. [`emit_step_wrt`] upgrades the
@@ -569,6 +575,7 @@ fn symbol_name(id: ExprId, pool: &ExprPool) -> Option<String> {
 fn positivity_tactic(rule_name: &str, names: &[String]) -> Option<String> {
     match (rule_name, names) {
         ("exp_of_log", [x]) => Some(format!("by rw [Real.exp_log h{x}]")),
+        ("abs_of_positive", [x]) => Some(format!("by rw [abs_of_pos h{x}]")),
         ("log_of_product" | "log_of_product_positive" | "sum_of_logs", [x, y]) => Some(format!(
             "by rw [Real.log_mul (ne_of_gt h{x}) (ne_of_gt h{y})]"
         )),
@@ -817,6 +824,7 @@ pub fn emit_header() -> String {
      import Mathlib.Analysis.SpecialFunctions.Trigonometric.Basic\n\
      import Mathlib.Analysis.SpecialFunctions.Log.Basic\n\
      import Mathlib.Analysis.SpecialFunctions.Gamma.Basic\n\
+     import Mathlib.Algebra.Order.Group.Abs\n\
      \n\
      open Real\n\n"
         .to_string()
@@ -2436,6 +2444,58 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let expr = pool.func("exp", vec![pool.func("log", vec![x])]);
         let step = RewriteStep::simple("exp_of_log", expr, x);
+        let lean = emit_step(&step, &pool);
+        assert!(
+            lean.contains("sorry"),
+            "step without a positivity side condition must fall back to sorry: {lean}"
+        );
+    }
+
+    #[test]
+    fn abs_of_positive_certifies_with_positivity_hyp() {
+        // Colored `abs_of_positive` records `SideCondition::Positive(x)` once
+        // the caller discharges it; the exporter upgrades that into an
+        // explicit `(x : ℝ) (hx : 0 < x)` binder closed by `abs_of_pos hx`.
+        use crate::kernel::expr::PredicateKind;
+        use crate::simplify::AssumptionContext;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let zero = pool.integer(0_i32);
+        let mut assumptions = AssumptionContext::new();
+        assumptions
+            .refine(pool.predicate(PredicateKind::Gt, vec![x, zero]), &pool)
+            .unwrap();
+        let expr = pool.func("abs", vec![x]);
+        let derived = assumptions.simplify(expr, &pool);
+        let lean = emit_lean_expr(&derived, &pool);
+        assert!(
+            !lean.is_empty(),
+            "abs(x) with a recorded positivity condition should certify"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("(hx : 0 < x)"),
+            "expected an explicit positivity binder: {lean}"
+        );
+        assert!(
+            lean.contains("abs_of_pos hx"),
+            "expected abs_of_pos to consume the hypothesis: {lean}"
+        );
+    }
+
+    #[test]
+    fn abs_of_positive_withheld_when_positivity_unproven() {
+        // A step with no recorded side condition at all must still be
+        // withheld — the exporter never invents a hypothesis that wasn't in
+        // the derivation log.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.func("abs", vec![x]);
+        let step = RewriteStep::simple("abs_of_positive", expr, x);
         let lean = emit_step(&step, &pool);
         assert!(
             lean.contains("sorry"),

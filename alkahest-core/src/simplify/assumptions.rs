@@ -268,6 +268,30 @@ mod tests {
     }
 
     #[test]
+    fn positive_refinement_enables_abs_of_positive() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let zero = pool.integer(0_i32);
+        let mut assumptions = AssumptionContext::new();
+        assumptions
+            .refine(pool.predicate(PredicateKind::Gt, vec![x, zero]), &pool)
+            .unwrap();
+
+        assert_eq!(
+            assumptions.simplify(pool.func("abs", vec![x]), &pool).value,
+            x
+        );
+    }
+
+    #[test]
+    fn abs_without_positive_fact_unchanged() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.func("abs", vec![x]);
+        assert_eq!(AssumptionContext::new().simplify(expr, &pool).value, expr);
+    }
+
+    #[test]
     fn static_positive_domain_is_available_without_refinement() {
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Positive);

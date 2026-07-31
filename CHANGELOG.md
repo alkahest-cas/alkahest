@@ -4,6 +4,36 @@
 
 ### Additions
 
+- **`Assumptions` is now first-class for agent workflows.** Previously
+  `Assumptions` had to be threaded through `simplify()` / `simplify_log_exp()`
+  by hand on every call. Now:
+  - `alkahest.context(pool=p, assumptions=my_assumptions)` sets a thread-local
+    default; `simplify()`, `simplify_log_exp()`, and `solve()` pick it up
+    automatically whenever the caller omits their own `assumptions=`/explicit
+    argument (an explicit argument always overrides the context). See
+    `alkahest._context.active_assumptions` and the updated `context()`
+    docstring.
+  - `solve(equations, vars, assumptions=...)` (or the context default) now
+    drops any returned solution that assigns a non-positive value to a
+    variable the assumptions declare `> 0` — e.g.
+    `solve([x**2 - 4], [x], domain="real", assumptions=positive_x)` returns
+    only `x = 2`. This composes with `domain="real"` as a final filter rather
+    than replacing its complex/real logic, and is a no-op (returns the
+    `GroebnerBasis`/list unfiltered) when there's nothing to check.
+    `Assumptions.is_positive(expr)` is the new agent-facing predicate this is
+    built on (true for an explicit `refine(x > 0)` fact or a `Domain.Positive`
+    symbol).
+  - **New sound rewrite: `abs(x) → x` under `x > 0`.** Joins the existing
+    `sqrt(x**2) → x` / `exp(log(x)) → x` family gated on
+    `Assumptions`/`Domain.Positive`. `abs(x) → -x` under `x < 0` is *not*
+    added (a distinct, currently untracked, side condition) — only the sound
+    direction ships. Emits a Lean certificate (`abs_of_pos`) for the
+    bare-symbol case, withheld (no `sorry`) otherwise, matching the existing
+    `exp_of_log`/`sqrt_of_square` certificate discipline.
+  - `tests/test_assumptions.py` now imports `Assumptions` from the stable
+    `alkahest` top level instead of `alkahest.experimental` (the experimental
+    module still re-exports it unchanged, so old imports keep working).
+
 - **Basel-family infinite sums:** `sum_definite(expr, k, lo, hi)` now recognizes
   `hi = pool.pos_infinity()` p-series with an even power, e.g.
   `sum_definite(1/k**2, k, 1, pool.pos_infinity())` → `π²/6` (the Basel

@@ -124,8 +124,8 @@ use alkahest_core::{
     AssumptionContext as CoreAssumptionContext, AssumptionError, ComplexF64, DerivedExpr,
     DiffError, EgraphConfig, GaussRat, IntegrationError, IoError,
     LimitDirection as CoreLimitDirection, LimitError, LinearRecurrenceError, PatternRule,
-    ProductError, ResidueError, ResultantError, RsolveError, SeriesError, SimplifyConfig, SizeCost,
-    SparseGcdError, SparseInterpError, SumError,
+    ProductError, ResidueError, ResultantError, RsolveError, SeriesError, SideCondition,
+    SimplifyConfig, SizeCost, SparseGcdError, SparseInterpError, SumError,
 };
 // Experimental calculus / ODE / transform surface (PyO3 bindings deferred at
 // landing time — see PRs #152–#161). These mirror the Rust `experimental`
@@ -1589,6 +1589,35 @@ impl PyAssumptions {
             derived,
             self.pool.clone_ref(py),
             None,
+        ))
+    }
+
+    /// True when this context has a strict-positivity fact for `expr` —
+    /// either an explicit `refine(x > 0)` or `expr` itself being declared
+    /// with `Domain.Positive`.
+    ///
+    /// Agent-facing helper for composing assumptions with other APIs (e.g.
+    /// filtering `solve` roots) without exposing the internal `SideCondition`
+    /// representation.
+    fn is_positive(&self, py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<bool> {
+        if !expr.pool.is(&self.pool) {
+            return Err(pool_mismatch_err());
+        }
+        if self
+            .inner
+            .facts()
+            .iter()
+            .any(|f| matches!(f, SideCondition::Positive(id) if *id == expr.id))
+        {
+            return Ok(true);
+        }
+        let pool = self.pool.borrow(py);
+        Ok(matches!(
+            pool.inner.get(expr.id),
+            ExprData::Symbol {
+                domain: Domain::Positive,
+                ..
+            }
         ))
     }
 
