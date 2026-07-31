@@ -34,11 +34,22 @@ python -m pip install -U pip
 pip install alkahest
 ```
 
-Default PyPI wheels include the **vendored egglog** e-graph backend (`egraph` feature) and the **Gröbner solver** (`groebner` feature — so `alkahest.solve`, Diophantine, homotopy, and related APIs are available out of the box) but **not** LLVM JIT, Cranelift, or `parallel`. Numeric APIs use the tree-walking interpreter fallback. For native LLVM CPU JIT—or JIT plus parallel F4—use a **PyTorch-style** opt-in wheel (separate artifact / index), not the default PyPI resolver path. From source, add `--features cranelift` for a pure-Rust fast-compile JIT tier without system LLVM.
+Default PyPI wheels (Linux, macOS, Windows) ship the **vendored egglog** e-graph backend (`egraph`), the **Gröbner solver** (`groebner` — so `alkahest.solve`, Diophantine, homotopy and related APIs work out of the box), and the **Cranelift JIT** (`cranelift`, since 3.6.0 — so `jit_is_available()` is `True` on a plain `pip install alkahest`). They do **not** include LLVM JIT (`jit`) or `parallel`. For native LLVM CPU JIT—or LLVM JIT plus parallel F4—use a **PyTorch-style** opt-in wheel (separate artifact / index), not the default PyPI resolver path.
+
+Note that the Cargo `default` feature set (`egraph`, `groebner`) is narrower than what release CI builds into the published wheels (`egraph`, `groebner`, `cranelift`). A plain `cargo build` or `maturin develop` therefore has **no** JIT unless you pass `--features cranelift`. Never infer the active feature set from the version number — probe it:
+
+```python
+import alkahest as ak
+caps = ak.capabilities()
+caps["features"]["cranelift_jit"]   # True on default wheels, False in a bare source build
+ak.jit_is_available()
+```
 
 ### Opt-in Linux wheels: `+jit` and `+full` (PyTorch-style)
 
-**Why a separate index or direct wheel URL:** feature-heavy wheels use a PEP 440 **local version** (for example `2.0.3+jit` or `2.0.3+full`). Those builds **must not** be mixed into the main PyPI project’s simple API for the same reason PyTorch publishes CUDA wheels on `download.pytorch.org`: otherwise `pip install alkahest` could resolve a `+jit` / `+full` build as “newer” than `2.0.3` and pull LLVM (or a much larger binary) when you wanted the default wheel.
+Since 3.6.0 the default wheel already has a JIT (Cranelift), so `+jit` / `+full` now buy you only the **LLVM** backend and (for `+full`) parallel F4 — not "JIT vs no JIT". Most agent code does not need them.
+
+**Why a separate index or direct wheel URL:** feature-heavy wheels use a PEP 440 **local version** (for example `3.7.0+jit` or `3.7.0+full`). Those builds **must not** be mixed into the main PyPI project’s simple API for the same reason PyTorch publishes CUDA wheels on `download.pytorch.org`: otherwise `pip install alkahest` could resolve a `+jit` / `+full` build as “newer” than `3.7.0` and pull LLVM (or a much larger binary) when you wanted the default wheel.
 
 There is **no** `pip install alkahest[jit]` / `alkahest[full]` that swaps the native extension: **pip extras only add Python dependencies**, not alternate binaries for the same wheel slot.
 
@@ -52,22 +63,22 @@ There is **no** `pip install alkahest[jit]` / `alkahest[full]` that swaps the na
 Direct-install examples (adjust tag and filename after checking the release assets):
 
 ```bash
-pip install "https://github.com/alkahest-cas/alkahest/releases/download/v2.3.1/alkahest-2.3.1+full-cp311-cp311-linux_x86_64.whl"
-pip install "https://github.com/alkahest-cas/alkahest/releases/download/v2.3.1/alkahest-2.3.1+jit-cp311-cp311-linux_x86_64.whl"
+pip install "https://github.com/alkahest-cas/alkahest/releases/download/v3.7.0/alkahest-3.7.0+full-cp311-cp311-linux_x86_64.whl"
+pip install "https://github.com/alkahest-cas/alkahest/releases/download/v3.7.0/alkahest-3.7.0+jit-cp311-cp311-linux_x86_64.whl"
 ```
 
 These wheels vendor LLVM (for JIT) and related `.so` files under `site-packages/alkahest.libs/`. If `import alkahest` fails with a missing `libffi-*.so` or `libLLVM-*.so`, prepend that directory to `LD_LIBRARY_PATH` (or install matching system packages).
 
-If your client chokes on `+` in the URL, use percent-encoding (`2.3.1%2Bfull` in the filename segment).
+If your client chokes on `+` in the URL, use percent-encoding (`3.7.0%2Bfull` in the filename segment).
 
-After installing `+jit` or `+full`, `alkahest.jit_is_available()` should be `True`. Gröbner-backed APIs such as `alkahest.solve` are available in **all** wheels (including the default PyPI wheel) since `groebner` became a default feature.
+After installing `+jit` or `+full`, `capabilities()["features"]["llvm_jit"]` should be `True` (`jit_is_available()` is already `True` on the default wheel via Cranelift, so it does not distinguish the builds — check `llvm_jit` / `parallel` instead). Gröbner-backed APIs such as `alkahest.solve` are available in **all** wheels (including the default PyPI wheel) since `groebner` became a default feature.
 
 *macOS and Windows `+jit` / `+full` wheels are not produced in CI yet (LLVM / MSYS2 constraints); use [building from source](#from-source) there.*
 
 **Target layout (roadmap):** a small **extra index** URL (PEP 503) hosting only `+jit` / `+full` wheels, mirroring PyTorch’s `--extra-index-url` workflow:
 
 ```bash
-pip install 'alkahest==2.0.3+full' --extra-index-url https://EXAMPLE/alkahest-extras/simple
+pip install 'alkahest==3.7.0+full' --extra-index-url https://EXAMPLE/alkahest-extras/simple
 ```
 
 ### From source
@@ -97,7 +108,7 @@ pip install maturin
 maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel egraph jit groebner"
 ```
 
-Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_par`), `egraph` (vendored egglog backend; **default** in PyPI wheels), `groebner` (Gröbner solver + Diophantine + homotopy; **default** in both the Rust crate and PyPI wheels), `cranelift` (pure-Rust Tier-1 JIT), `jit` (LLVM JIT), `cuda` (NVPTX codegen).
+Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_par`), `egraph` (vendored egglog backend; **default** in PyPI wheels), `groebner` (Gröbner solver + Diophantine + homotopy; **default** in both the Rust crate and PyPI wheels), `cranelift` (pure-Rust Tier-1 JIT; **shipped in PyPI wheels** but *not* in the Cargo `default` set — pass it explicitly in a source build), `jit` (LLVM JIT), `cuda` (NVPTX codegen).
 
 ### Rust crate
 
@@ -105,10 +116,10 @@ Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_pa
 
 ```toml
 [dependencies]
-alkahest-cas = "2"
+alkahest-cas = "3"
 
 # groebner is included by default; add other optional features as needed:
-# alkahest-cas = { version = "2", features = ["parallel", "egraph"] }
+# alkahest-cas = { version = "3", features = ["parallel", "egraph"] }
 ```
 
 **System prerequisites** (same libraries as the Python build — must be present before `cargo build`):
@@ -163,7 +174,20 @@ Representation types are explicit — no silent performance cliffs. Conversion b
 
 ## Return type: `DerivedResult`
 
-Every top-level operation returns a `DerivedResult`:
+**Most** top-level operations return a `DerivedResult` — but not all. Check before
+you reach for `.value`:
+
+| Operation | Returns |
+|---|---|
+| `diff`, `integrate`, `simplify*`, `sum_*`, `product_*`, `resultant`, … | `DerivedResult` |
+| `limit` | plain `Expr` — **no `.value`** |
+| `series` | `Series` object — **no `.value`** |
+| `solve` | `list[dict[Expr, Expr]]` (or `GroebnerBasis`) |
+| `evaluate` | `EvaluationResult` |
+| `real_roots` | `list[RootInterval]` |
+| `symbolic_grad` | `list[Expr]` |
+
+`DerivedResult` fields:
 
 | Attribute | Type | Description |
 |-----------|------|-------------|
@@ -192,6 +216,30 @@ derivative residual is zero) from `"numerically_checked"` (the integration
 gate passed floating-point samples only). Never treat the latter as an exact
 or Lean-checked proof.
 
+### Lean certificate coverage
+
+`.certificate` is Lean 4 source against Mathlib; alkahest **generates** it but does
+not run Lean, so "certificate available" ≠ "proved". Run `lake build` on it
+yourself if you need the proof checked.
+
+| Operation | Certificate |
+|---|---|
+| `diff` | Yes — chain rule, log/sqrt/tan, quotient |
+| `integrate` (indefinite) | Yes |
+| `integrate` (definite) | Yes, **since 3.7.0** (Mathlib FTC / interval-integral lemmas) |
+| exp/log identities | Yes, assumption-gated |
+
+Certificates that do not typecheck are **withheld** rather than emitted broken, so
+`.certificate is None` means "no proof available", not "proof failed silently".
+Because coverage is version-dependent, always branch on the value rather than
+assuming it is present:
+
+```python
+r = integrate(x**2, x, pool.integer(0), pool.integer(1))
+if r.certificate is not None:
+    Path("cert.lean").write_text(r.certificate)
+```
+
 ---
 
 ## Simplification
@@ -217,6 +265,32 @@ r = collect_like_terms(x + x + 2*x + y)   # → 4*x + y
 ```
 
 **Simplifier choice:** `simplify` is a general algebraic rewriter; it does **not** apply trig identities. For `sin²+cos²` and similar, use `simplify_trig` (or `simplify_egraph`). For `log`/`exp` laws, use `simplify_log_exp`.
+
+### Assumptions gate the conditional rewrites
+
+`simplify_log_exp(log(exp(x)))` → `x` is unconditionally valid, so it always fires.
+The **reverse** direction is not: `exp(log(x)) = x` only holds for `x > 0`, so it
+stays unevaluated unless positivity is known. This is a deliberate refusal, not a
+missing rule — do not work around it by string-rewriting the result.
+
+Two ways to supply the fact:
+
+```python
+from alkahest import Assumptions, Domain
+
+# 1. Declare it on the symbol
+xp = pool.symbol("xp", Domain.Positive)
+simplify_log_exp(exp(log(xp))).value      # → xp
+
+# 2. Pool-scoped assumption context
+asm = Assumptions(pool)                    # takes the pool
+asm.refine(pool.gt(x, pool.integer(0)))    # add a predicate
+simplify_log_exp(exp(log(x)), assumptions=asm).value   # → x
+asm.predicates                             # attribute, not a method
+```
+
+Only positive and non-zero facts authorize conditional rewrites; other predicates
+are recorded for contradiction detection.
 
 `simplify_egraph` / `simplify_egraph_with` run egglog e-graph saturation — use when algebraic rewriting is insufficient.
 
@@ -305,6 +379,53 @@ except IntegrationError as e:
 
 ---
 
+## Limits and series
+
+Both take `point` as an **`Expr`** (a Python `0` raises `TypeError`), and **neither
+returns a `DerivedResult`** — there is no `.value` to read.
+
+```python
+from alkahest import limit, series
+
+limit(sin(x) / x, x, pool.integer(0))              # → Expr: 1
+limit(pool.integer(1) / x, x, pool.integer(0), dir="+")   # one-sided
+
+s = series(exp(x), x, pool.integer(0), 4)          # → Series
+s.expr    # ((1 * 1) + (x * 1) + (1/2 * x^2) + (1/6 * x^3) + O(x^4))
+```
+
+`Series` exposes a single attribute, `.expr`, which retains the `O(...)` term —
+strip or truncate it before feeding the result into numeric evaluation.
+
+For asymptotics and multivariate limits, see `experimental.asymptotic_expand` and
+`experimental.multilimit`.
+
+---
+
+## Logic and real quantifier elimination
+
+```python
+from alkahest import And, Or, Not, Exists, Forall, decide, satisfiable
+
+# Predicates come from the pool, not Python comparison operators
+pos = pool.gt(x, pool.integer(0))
+lt1 = pool.lt(x, pool.integer(1))
+# pool.ge, pool.le, pool.pred_eq, pool.pred_ne, pool.pred_and, pool.pred_or,
+# pool.pred_not, pool.pred_true, pool.pred_false
+
+satisfiable(And(pos, lt1))     # {'x': '1/2'} — witness as a rational string
+                               # False if unsat, True if sat without a witness,
+                               # None if the fragment is unsupported
+
+decide(Forall(x, pool.ge(x**2, pool.integer(0))))   # (True, None)
+# decide takes ONE bound symbol (not a list) and returns (truth, witness_or_none)
+
+# Cylindrical algebraic decomposition primitives
+from alkahest import cad_project, cad_lift
+```
+
+---
+
 ## Substitution and pattern matching
 
 ```python
@@ -314,7 +435,10 @@ from alkahest import subs, match_pattern, make_rule
 result = subs(expr, {x: 2, y: cos(x)})
 
 # Pattern matching
-rule = make_rule("sin(?a)**2 + cos(?a)**2", pool.integer(1))
+# Pattern *arguments are `Expr`, not strings.* Any symbol in the LHS acts as a
+# wildcard that binds to whatever subterm appears in that position.
+a = pool.symbol("a")
+rule = make_rule(sin(a) ** 2 + cos(a) ** 2, pool.integer(1))
 simplified = simplify_with(expr, [rule])
 ```
 
@@ -331,7 +455,10 @@ from alkahest import UniPoly, MultiPoly, RationalFunction
 p = UniPoly.from_symbolic(x**3 + pool.integer(-2)*x + pool.integer(1), x)
 p.degree()         # 3
 p.coefficients()   # [1, -2, 0, 1]  (constant first)
-p.evaluate(2.0)    # numeric eval
+# `UniPoly` has no numeric-eval method.  Its full surface is:
+#   from_symbolic, from_coefficients, coefficients, degree, is_zero, gcd, factor_z
+# To evaluate numerically, evaluate the original `Expr` instead:
+eval_expr(x**3 + pool.integer(-2) * x + pool.integer(1), {x: 2.0})   # 5.0
 
 # GCD
 a = UniPoly.from_symbolic(x**2 + pool.integer(-1), x)
@@ -380,20 +507,37 @@ for s in solutions:
 ```python
 from alkahest import compile_expr, eval_expr, CompiledFn, CompileCache, jit_is_available
 
-jit_is_available()   # False on default PyPI wheel; True with JIT-enabled build
+jit_is_available()   # True on current default PyPI wheels (Cranelift ships by
+                     # default since 3.6.0); False only for a source build
+                     # without `cranelift`/`jit`.  Always probe, never assume.
 
-# Compile (interpreter on default wheel; Cranelift/LLVM when built with those features)
+# Compile (Cranelift on default wheels; LLVM with --features jit; tree-walking
+# interpreter if the build has neither)
 f = compile_expr(x**2 + pool.integer(1), [x])   # CompiledFn
-f([3.0])          # → [10.0]  (list in, list out)
+f([3.0])          # → 10.0   (list in, *scalar float* out — not a list)
 f.n_inputs        # 1
 
 # Memoize repeated compilations within a session
 cache = CompileCache()
-f = cache.compile(x**2, [x], pool)
+f = cache.compile(x**2, [x])   # signature is (expr, inputs) — no pool argument
 print(cache.stats())   # hits, compiles, hit_rate
 
 # Interpreter (no JIT)
 val = eval_expr(x**2 + y, {x: 3.0, y: 1.0})  # float
+
+# Unified evaluation API — returns an EvaluationResult, not a bare float.
+# Prefer this when you need to know *how* the number was produced.
+r = ak.evaluate(x**2 + pool.integer(1), {x: 3.0})
+r.value                     # 10.0
+r.status                    # "ok"
+r.backend                   # "interpreter_f64" | JIT / ball backends
+r.is_enclosure              # False for f64; True when a rigorous ball was used
+r.enclosure                 # ArbBall when is_enclosure
+r.achieved_precision_bits
+r.reason                    # why a backend was declined / downgraded
+
+# Complex mode follows principal branch cuts
+ak.evaluate(sqrt(x), {x: -1.0}, mode="complex")
 
 # Vectorised evaluation (DLPack): NumPy, JAX, PyTorch CPU tensors, etc.
 import numpy as np
@@ -462,6 +606,37 @@ ball = ArbBall(1.0, 1e-10)         # centre ± radius
 result = interval_eval(sin(x), {x: ball})  # rigorous enclosure
 ```
 
+The mapping values must be `ArbBall` objects — a `(centre, radius)` tuple raises
+`TypeError`.
+
+### Real roots, resultants, and stability
+
+```python
+from alkahest import real_roots, refine_root, resultant, subresultant_prs, routh_hurwitz
+
+ivs = real_roots(x**2 - pool.integer(2), x)   # [RootInterval(-2, -1), RootInterval(1, 2)]
+refine_root(x**2 - pool.integer(2), ivs[1], x)  # ArbBall(1.414214 ± 1.11e-16)
+# signature is (poly, interval, var) — the interval comes second
+
+resultant(x**2 - pool.integer(1), x - pool.integer(1), x)   # DerivedResult
+subresultant_prs(...)                                       # subresultant chain
+
+# Parametric Routh–Hurwitz: symbolic stability conditions
+a = pool.symbol("a")
+routh_hurwitz(x**3 + a*x**2 + pool.integer(3)*x + pool.integer(1), x)
+# {'degree': 3, 'first_column': [1, a, (-1 + (a * 3)), 1],
+#  'condition': ((a > 0) ∧ ((-1 + (a * 3)) > 0))}
+```
+
+`real_roots` returns isolating intervals, **not** floats — refine them to the
+precision you need instead of assuming a numeric answer.
+
+### Sparse polynomial algorithms
+
+`gcd_sparse`, `sparse_interp`, `sparse_interp_univariate`, `factor_univariate_mod_p`,
+`primary_decomposition`, `radical`, `triangularize`, `rosenfeld_groebner`, and
+`diophantine` are all top-level exports for large / structured polynomial work.
+
 ---
 
 ## Symbolic matrices
@@ -475,10 +650,67 @@ R = Matrix.from_rows([
 ])
 R.rows            # 2
 R.cols            # 2
+R.shape()         # (2, 2) — a method, not a property
 R.get(0, 1)       # Expr
-R.det()           # symbolic determinant
 R.to_list()       # list[list[Expr]]
 ```
+
+### Arithmetic
+
+`*` is the **matrix product** (SymPy convention), not elementwise — use `hadamard`
+for elementwise. Since 3.7.0:
+
+```python
+A * B             # matrix product (same as A.multiply(B))
+A * k, k * A      # scalar multiply when the operand is a scalar Expr
+A ** n            # matrix power, non-negative integer n
+A.multiply(B)     # explicit matrix product
+A.scalar_mul(k)   # explicit scalar multiply
+A.hadamard(B)     # elementwise product
+```
+
+### Decompositions and spectral data
+
+```python
+R.det()                   # symbolic determinant
+R.trace()                 # Expr
+R.rank()                  # int
+R.transpose()             # Matrix
+R.inverse()               # Matrix (raises MatrixError if singular)
+R.rref()                  # list[list[Expr]] — reduced row echelon form
+R.nullspace()             # basis of the kernel
+R.column_space(), R.row_space()
+
+R.eigenvals()             # dict: eigenvalue Expr → algebraic multiplicity
+R.eigenvects()            # list of (eigenvalue, multiplicity, eigenvectors)
+R.jordan_form()
+R.characteristic_polynomial_lambda_minus_m()   # (poly, lambda_symbol)
+
+R.lu(), R.qr(), R.cholesky()
+R.matrix_exp()            # symbolic matrix exponential
+R.simplify()              # simplify every entry
+```
+
+Three methods have narrower domains than the rest and raise rather than guess —
+handle the error instead of assuming they apply:
+
+| Method | Raises when | Code |
+|---|---|---|
+| `diagonalize()` | matrix is defective (fewer independent eigenvectors than the multiplicity) | `E-EIGEN-005` |
+| `minimal_polynomial()` | entries contain free symbols | `E-LINALG-004` |
+| `rational_canonical_form()` | any entry is not a rational constant | `E-LINALG-009` |
+
+So `minimal_polynomial` and `rational_canonical_form` are **numeric-matrix only**;
+for symbolic matrices use `characteristic_polynomial_lambda_minus_m` or
+`jordan_form`.
+
+Symbolic eigenvalues are closed-form for 2×2 and, since 3.7.0, for parametric 3×3
+matrices whose characteristic polynomial is an irreducible cubic (Cardano /
+trigonometric path).
+
+Note that products are built structurally, so entries come back unsimplified
+(`((x * x) + (1 * 0))`). Call `.simplify()` on the result matrix, or `simplify`
+on individual entries, before comparing or printing.
 
 ---
 
@@ -508,6 +740,43 @@ ode_1st = lower_to_first_order(x, pool.integer(-1)*x, 2, t)
 # dae = DAE.new(...)
 # reduced = pantelides(dae)
 ```
+
+Numeric integration and closed-form `dsolve` live in `alkahest.experimental`
+(see below).
+
+---
+
+## Integral transforms and `dsolve` (experimental)
+
+These live in `alkahest.experimental`, **not** at top level. Import the submodule
+explicitly — `alkahest.experimental` is not an attribute of the top-level module
+until imported:
+
+```python
+from alkahest import experimental as ex
+
+t = pool.symbol("t")
+s = pool.symbol("s")
+
+ex.laplace_transform(sin(t), t, s)                        # (1 + s^2)^-1
+ex.inverse_laplace_transform(pool.integer(1) / (s**2 + pool.integer(1)), s, t)   # sin(t)
+
+ex.fourier_transform(...), ex.inverse_fourier_transform(...)
+ex.z_transform(...), ex.inverse_z_transform(...)
+
+# ODEs
+ex.dsolve(...)                    # closed-form solution
+ex.ode_integrate_rk4(...)         # numeric, fixed step
+ex.ode_integrate_rk45(...)        # numeric, adaptive → OdeTrajectory
+```
+
+Other experimental exports worth knowing: `asymptotic_expand`, `multilimit`,
+`series_solve`, `residue`, `heaviside`, `dirac_delta`, `Fps`, `to_jax`.
+
+Transform round-trips are supported but not total — inverse Laplace covers
+repeated irreducible quadratic poles and sinh/cosh forms as of 3.7.0. Literal
+negative Heaviside/Dirac shifts (`θ(t+a)`, `δ(t+a)` with `a > 0`) are **refused**
+with `E-TRANSFORM-001` rather than silently applying the wrong unilateral formula.
 
 ---
 
@@ -574,7 +843,8 @@ from alkahest import ConversionError, IntegrationError
 try:
     poly_normal(sin(x), [x])
 except ConversionError as e:
-    print(e.code)          # "E-POLY-001"
+    print(e.code)          # "E-POLY-006" (non-polynomial function in input)
+                           # "E-POLY-001" is a different case: unexpected symbol
     print(e.remediation)   # human-readable fix hint
 ```
 
@@ -583,11 +853,18 @@ except ConversionError as e:
 ## Available math functions
 
 `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`,
-`exp`, `log`, `sqrt`, `erf`, `erfc`, `gamma`,
+`asinh`, `acosh`, `atanh`,
+`exp`, `log`, `sqrt`, `erf`, `erfc`, `gamma`, `digamma`,
+`lambert_w`, `bessel_j0`, `bessel_j1`, `elliptic_e`, `elliptic_f`, `elliptic_k`, `elliptic_pi`,
+`re`, `im`, `arg`, `conjugate`,
 `abs`, `sign`, `floor`, `ceil`, `round`,
 `min`, `max`, `piecewise`
 
 All return `Expr`. They shadow Python builtins inside `alkahest` — use `alkahest.abs(expr)` to avoid ambiguity.
+
+`atan2`, `gamma`, `min`, and `max` are reachable as attributes (`alkahest.gamma(...)`)
+but are **not** in `__all__`, so `from alkahest import *` will not bring them into
+scope — import them by name.
 
 For `piecewise`, branch conditions must be symbolic predicates from the pool (not Python `>`):
 
@@ -604,7 +881,8 @@ pw = alkahest.piecewise([(cond, x)], pool.integer(-1) * x)
 from alkahest import flatten_exprs, unflatten_exprs, map_exprs, TreeDef
 
 leaves, treedef = flatten_exprs({"x": x_expr, "y": [y1, y2]})
-reconstructed = unflatten_exprs(treedef, leaves)
+# Note the argument order: leaves FIRST, treedef second (JAX puts treedef first).
+reconstructed = unflatten_exprs(leaves, treedef)
 mapped = map_exprs(lambda e: diff(e, x).value, {"f": f_expr})
 ```
 
@@ -715,17 +993,31 @@ Alkahest follows semantic versioning from `1.0`. The stable surface is everythin
 
 Symbolic complex constructors (`conjugate`, `re`, `im`, `arg`) are experimental.
 Principal `arg` only folds domain-safe literals (`arg(Positive)`, `arg(I)`);
-leave `arg(0)`, negative reals, and branch-cut expressions unevaluated.
+`arg(0)`, negative reals, and branch-cut expressions stay unevaluated.
+
+Constructing `arg(...)` does **not** fold on its own — it builds an unevaluated node.
+The domain-safe folds are `simplify` rewrite rules, so you must call `simplify`:
+
+```python
+ak.arg(I)                      # arg(I)          — unevaluated node
+ak.simplify(ak.arg(I)).value   # (pi * 1/2)      — folded
+```
 
 ---
 
 ## Primitive registry
 
+The registry is **read-only introspection**. There is no public API for registering
+custom primitives from Python — do not attempt `reg.register(...)`, it does not exist.
+
 ```python
 from alkahest import PrimitiveRegistry
 
-reg = PrimitiveRegistry()
-# reg.register(name, diff_rule, ...) — extend the kernel with custom primitives
+reg = PrimitiveRegistry.default_registry()
+reg.is_registered("sin")        # bool
+reg.capabilities("sin")         # which rules (diff, integrate, …) are implemented
+reg.coverage_report()           # structured coverage across all primitives
+reg.coverage_report_markdown()  # same, rendered as a Markdown table
 ```
 
 ---
@@ -734,7 +1026,7 @@ reg = PrimitiveRegistry()
 
 1. **Always create a pool first.** `ExprPool()` before any symbol or expression. Optional: `with ak.context(pool=pool): x = ak.symbol("x")` to avoid repeating `pool=`.
 2. **Pool first; literals in arithmetic are OK.** Use `x + 1`, not only `x + pool.integer(1)`. Use `pool.rational(p, q)` for exact rationals; `subs` accepts Python `int`/`float` in the mapping.
-3. **Read `.value` for the expression.** Top-level operations return `DerivedResult`, not `Expr`.
+3. **Read `.value` for the expression** — for the operations that return `DerivedResult`. `limit` returns a bare `Expr`, `series` returns a `Series`, `solve` returns a list of dicts, and `evaluate` returns an `EvaluationResult`; none of those have `.value`. See the table in [Return type](#return-type-derivedresult).
 4. **Use specific simplifiers.** Prefer `simplify_trig`, `simplify_log_exp`, `collect_like_terms` over the catch-all `simplify` when the structure is known — it is faster.
 5. **Polynomial conversions raise.** `UniPoly.from_symbolic` and `poly_normal` raise `ConversionError` for non-polynomial input — catch it.
 6. **`solve` / Gröbner-side APIs are available in all PyPI wheels.** The `groebner` Cargo feature is a default since 2.3.1 — no feature flag or `ImportError` guard needed. Default PyPI wheels also include egglog (`HAS_EGRAPH` is typically `True`); use `simplify_egraph` when rule-based simplification is insufficient.

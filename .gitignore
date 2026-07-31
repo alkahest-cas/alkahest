@@ -38,6 +38,7 @@ _site/
 # Benchmark results (generated output — not source)
 benchmarks/results/
 agent-benchmark/results/
+agent-benchmark/.envs/
 
 # Criterion benchmark output (written into target/ which is already ignored)
 **/criterion/
