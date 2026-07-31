@@ -1097,8 +1097,85 @@ _native_eval_expr = eval_expr
 
 
 def eval_expr(expr, bindings):
-    """Numerically evaluate *expr*; accepts :class:`DerivedResult` as *expr*."""
+    """Numerically evaluate *expr*; accepts :class:`DerivedResult` as *expr*.
+
+    Raises :class:`DomainError` (a :class:`ValueError`) if *expr* is
+    mathematically undefined at *bindings* — e.g. a removable singularity
+    such as ``(x**2 - 1) / (x - 1)`` evaluated as written at ``x = 1``
+    reduces to ``0/0`` and raises, rather than silently returning the limit
+    (``2``). Call :func:`cancel` first to evaluate the simplified,
+    everywhere-defined form instead.
+    """
     return _native_eval_expr(_coerce_expr(expr), bindings)
+
+
+if "solve" in dir():
+    _native_solve = solve
+
+    def _solution_is_real(solution, atol=1e-9):
+        """Best-effort check that every value in a solution dict is real.
+
+        Numeric (``float``) values are real by construction. Symbolic values
+        are evaluated in ``mode="complex"``; a solution is rejected only if
+        that evaluation *succeeds* and reports a nonzero imaginary part —
+        free parameters or anything else that fails to evaluate is kept
+        rather than silently dropped, since we can't prove it's complex.
+        """
+        for value in solution.values():
+            if isinstance(value, (int, float)):
+                continue
+            result = evaluate(value, {}, mode="complex")
+            if result.status != "ok":
+                continue
+            # NB: don't use the builtin `abs()` — this module shadows it with
+            # the symbolic `alkahest.abs(Expr)` primitive.
+            imag = result.value.imag
+            if imag > atol or imag < -atol:
+                return False
+        return True
+
+    def solve(equations, vars, *, numeric=False, method="groebner", domain=None):
+        """Solve a zero-dimensional polynomial system (see native ``solve`` for
+        the base behavior of *equations*, *vars*, *numeric*, and *method*).
+
+        Parameters
+        ----------
+        domain : {None, "real", "complex"}, optional
+            Restrict returned solutions to a domain. ``domain="real"``
+            filters out any solution with a nonzero imaginary part — e.g.
+            ``solve([x**2 + 1], [x], domain="real")`` returns ``[]`` instead
+            of the complex roots ``±i``, and ``solve([x**2 - 1], [x],
+            domain="real")`` still returns ``±1``. The default, ``None``
+            (equivalent to ``domain="complex"``), preserves alkahest's
+            existing behavior of returning every root the solver finds,
+            including complex ones written via ``sqrt`` of a negative
+            discriminant. ``method="homotopy"`` already reports only real
+            roots by construction, so ``domain="real"`` is a no-op there;
+            it only changes anything for the symbolic Gröbner path.
+        """
+        if domain not in (None, "real", "complex"):
+            raise ValueError(f"domain must be 'real', 'complex', or None, got {domain!r}")
+        if domain != "real" or method == "homotopy":
+            return _native_solve(equations, vars, numeric=numeric, method=method)
+
+        # Filtering for realness needs the symbolic (sqrt-of-discriminant)
+        # form: a numeric NaN can't be told apart from "complex root" vs.
+        # "solver gave up for an unrelated reason".
+        try:
+            symbolic = _native_solve(equations, vars, numeric=False, method=method)
+        except SolverError as exc:
+            if numeric and getattr(exc, "code", None) == "E-SOLVE-002":
+                # HighDegree with numeric=True falls back to homotopy inside
+                # the native solver, which already yields real roots only.
+                return _native_solve(equations, vars, numeric=True, method=method)
+            raise
+        if not isinstance(symbolic, list):
+            # GroebnerBasis (parametric ideal) — domain filtering doesn't apply.
+            return symbolic
+        real_solutions = [sol for sol in symbolic if _solution_is_real(sol)]
+        if not numeric:
+            return real_solutions
+        return [{var: eval_expr(val, {}) for var, val in sol.items()} for sol in real_solutions]
 
 
 # ---------------------------------------------------------------------------

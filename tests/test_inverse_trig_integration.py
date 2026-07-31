@@ -25,13 +25,23 @@ from alkahest.alkahest import (
 _TEST_POINTS = (0.11, 0.37, 0.62, 0.83)
 
 
+def _eval_or_nan(expr, bindings):
+    """`eval_expr` raises instead of returning a non-finite float for a point
+    outside an expression's domain — translate back to `nan` so the
+    `math.isfinite` skip below still works."""
+    try:
+        return eval_expr(expr, bindings)
+    except ValueError:
+        return math.nan
+
+
 def check_antiderivative(x, f, F, label=""):
     """Verify ∫ f dx = F numerically: d/dx F(x) == f(x) at several test points."""
     dF = diff(F, x).value
     checked = 0
     for pt in _TEST_POINTS:
-        lhs = eval_expr(dF, {x: pt})
-        rhs = eval_expr(f, {x: pt})
+        lhs = _eval_or_nan(dF, {x: pt})
+        rhs = _eval_or_nan(f, {x: pt})
         if not math.isfinite(lhs) or not math.isfinite(rhs):  # outside domain
             continue
         assert abs(lhs - rhs) < 1e-9, (

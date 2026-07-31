@@ -12,7 +12,7 @@ use alkahest_core::{
     emit_expr_c_vec as core_emit_expr_c_vec,
     emit_horner_c as core_emit_horner_c,
     emit_stablehlo as core_emit_stablehlo,
-    eval_interp as core_eval_interp,
+    eval_interp_checked as core_eval_interp_checked,
     factor_univariate_mod_p as core_factor_univariate_mod_p,
     // V2-3 — Sparse interpolation and sparse modular GCD
     gcd_sparse_modular as core_gcd_sparse_modular,
@@ -471,6 +471,20 @@ fn parse_limit_direction(dir: Option<&str>) -> CoreLimitDirection {
         "+-" | "" => CoreLimitDirection::Bidirectional,
         _ => CoreLimitDirection::Bidirectional,
     }
+}
+
+/// Build a `DomainError` with `.code`/`.remediation` attributes for failures
+/// that don't come from a type implementing `AlkahestError` (e.g.
+/// [`alkahest_core::InterpEvalError`], which is intentionally lightweight
+/// since it's an interpreter-internal detail, not a user-facing subsystem).
+fn domain_error(py: Python<'_>, code: &str, message: String, remediation: &str) -> PyErr {
+    let exc_type = py.get_type_bound::<PyDomainError>();
+    let full_msg = format!("[{code}] {message}\nRemediation: {remediation}");
+    let exc = exc_type.call1((full_msg,)).unwrap();
+    exc.setattr("code", code).ok();
+    exc.setattr("remediation", remediation).ok();
+    exc.setattr("span", py.None()).ok();
+    PyErr::from_value_bound(exc)
 }
 
 fn conv_error_to_py(e: alkahest_core::ConversionError) -> PyErr {
@@ -5619,12 +5633,21 @@ fn py_eval_expr(
         let val: f64 = value.extract()?;
         env.insert(var.id, val);
     }
-    let result = core_eval_interp(expr_id, &env, &pool.inner).ok_or_else(|| {
-        pyo3::exceptions::PyValueError::new_err(
+    core_eval_interp_checked(expr_id, &env, &pool.inner).map_err(|e| match e {
+        alkahest_core::InterpEvalError::Unevaluable => pyo3::exceptions::PyValueError::new_err(
             "expression could not be evaluated (unbound variable or unsupported node)",
-        )
-    })?;
-    Ok(result)
+        ),
+        alkahest_core::InterpEvalError::NonFinite => domain_error(
+            py,
+            "E-EVAL-009",
+            "expression is undefined at this point: substituting the bindings produced a \
+             non-finite result (e.g. division by zero). This is not the same as a removable- \
+             singularity limit — if you want the limiting value, call cancel() first and \
+             evaluate the simplified expression."
+                .to_string(),
+            "result is not finite",
+        ),
+    })
 }
 
 #[pyclass(name = "CompiledFn", unsendable)]

@@ -40,6 +40,7 @@ in `pytest.ini`). Shared verification helpers live in `tests/_tg_helpers.py`
 | `test_tg_linear_algebra.py` | Determinant, rank, rref, inverse, transpose, nullspace, LU, eigenvalues |
 | `test_tg_ode.py` | First/second-order ODEs (separable, linear, constant-coefficient) via `dsolve` |
 | `test_tg_number_theory.py` | Primality, factorization, totient, modular arithmetic |
+| `test_tg_silent_errors.py` | Silent-error discipline: interior-pole integrals, removable-singularity evaluation, real-domain solving, non-elementary antiderivatives all *refuse* rather than confidently returning a wrong number |
 
 ## Verification philosophy
 

@@ -150,9 +150,10 @@ pub use sum::{
 
 // Phase 21 — JIT
 pub use jit::{
-    compile, compile_jit_only, compile_with, eval_interp, expr_subgraph_size, jit_available,
-    select_compile_tier, CompileCache, CompileConfig, CompileTier, CompiledFn, JitError,
-    INTERP_MAX_EXPECTED_EVALS, INTERP_MAX_NODES, LLVM_MIN_EXPECTED_EVALS,
+    compile, compile_jit_only, compile_with, eval_interp, eval_interp_checked, expr_subgraph_size,
+    jit_available, select_compile_tier, CompileCache, CompileConfig, CompileTier, CompiledFn,
+    InterpEvalError, JitError, INTERP_MAX_EXPECTED_EVALS, INTERP_MAX_NODES,
+    LLVM_MIN_EXPECTED_EVALS,
 };
 
 // Plot — SVG polyline and Graphviz DOT renderers (dependency-free)

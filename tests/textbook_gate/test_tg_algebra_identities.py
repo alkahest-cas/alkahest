@@ -157,12 +157,13 @@ def test_cancel_difference_of_squares(x):
 
 def test_cancel_difference_of_squares_removes_singularity(x):
     """The whole point of cancel is removing the removable singularity: the
-    original (x^2-4)/(x-2) is NaN at x=2 (0/0), but the cancelled form
-    evaluates cleanly there to the correct limit, 4.
+    original (x^2-4)/(x-2) is undefined at x=2 (0/0) and evaluating it AS
+    WRITTEN there raises, but the cancelled form evaluates cleanly to the
+    correct limit, 4.
     """
     e = (x**2 - 4) / (x - 2)
-    orig_at_2 = ak.eval_expr(e, {x: 2.0})
-    assert math.isnan(orig_at_2)
+    with pytest.raises(ak.DomainError):
+        ak.eval_expr(e, {x: 2.0})
     r = ak.cancel(e, [x])
     assert math.isclose(ak.eval_expr(r, {x: 2.0}), 4.0, rel_tol=1e-9, abs_tol=1e-9)
 
@@ -170,7 +171,8 @@ def test_cancel_difference_of_squares_removes_singularity(x):
 def test_cancel_another_difference_of_squares(x):
     """cancel((x^2-1)/(x-1), [x]) -> x+1, and the x=1 singularity is removed."""
     e = (x**2 - 1) / (x - 1)
-    assert math.isnan(ak.eval_expr(e, {x: 1.0}))
+    with pytest.raises(ak.DomainError):
+        ak.eval_expr(e, {x: 1.0})
     r = ak.cancel(e, [x])
     assert_matches_reference(r, x, lambda v: v + 1, points=(0.3, 0.7, 1.3, 3.0))
     assert math.isclose(ak.eval_expr(r, {x: 1.0}), 2.0, rel_tol=1e-9, abs_tol=1e-9)
