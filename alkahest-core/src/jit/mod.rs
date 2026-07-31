@@ -577,6 +577,65 @@ pub fn eval_interp(expr: ExprId, env: &HashMap<ExprId, f64>, pool: &ExprPool) ->
     eval_interp_inner(expr, env, pool, &mut memo)
 }
 
+/// Why [`eval_interp_checked`] could not produce a usable number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterpEvalError {
+    /// An unbound symbol or an expression form the interpreter doesn't
+    /// support — the same condition under which [`eval_interp`] returns
+    /// `None`.
+    Unevaluable,
+    /// The interpreter produced `NaN` or `±inf`. Under plain IEEE-754
+    /// arithmetic this happens for e.g. `0^-1` or `0 * inf`, which is what
+    /// `(x²-1)/(x-1)` reduces to at `x = 1`: the numerator vanishes, the
+    /// denominator's reciprocal blows up, and `0 * inf = NaN`. That is not a
+    /// number the caller should treat as the value of the expression at that
+    /// point — the expression is undefined there (the value `2` is the limit
+    /// as `x → 1`, obtained only after an explicit `cancel()`).
+    NonFinite,
+}
+
+impl std::fmt::Display for InterpEvalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InterpEvalError::Unevaluable => {
+                write!(
+                    f,
+                    "expression could not be evaluated (unbound variable or unsupported node)"
+                )
+            }
+            InterpEvalError::NonFinite => write!(
+                f,
+                "expression is undefined at this point (substitution produced a non-finite \
+                 result, e.g. division by zero); this is not the same as a removable-\
+                 singularity limit — call cancel() first if that's what you want"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for InterpEvalError {}
+
+/// Like [`eval_interp`], but treats a non-finite result (`NaN`/`±inf`) as an
+/// evaluation failure instead of a number.
+///
+/// `eval_interp` itself is unchanged (and stays available for callers that
+/// already guard for finiteness themselves, e.g. the SVG plotter, which
+/// skips non-finite sample points) — this wrapper exists for entry points
+/// that hand the numeric result directly to a caller who could otherwise
+/// mistake a silent `NaN` for a valid answer, most importantly the Python
+/// `eval_expr` binding.
+pub fn eval_interp_checked(
+    expr: ExprId,
+    env: &HashMap<ExprId, f64>,
+    pool: &ExprPool,
+) -> Result<f64, InterpEvalError> {
+    match eval_interp(expr, env, pool) {
+        Some(v) if v.is_finite() => Ok(v),
+        Some(_) => Err(InterpEvalError::NonFinite),
+        None => Err(InterpEvalError::Unevaluable),
+    }
+}
+
 fn eval_interp_predicate(
     pred: ExprId,
     env: &HashMap<ExprId, f64>,
@@ -1560,6 +1619,60 @@ mod tests {
         // (4+1) * (4+1) = 25
         let val = eval_interp(expr, &env, &pool).unwrap();
         assert!((val - 25.0).abs() < 1e-10);
+    }
+
+    /// `(x²-1)/(x-1)` evaluated AS WRITTEN at `x = 1` (no `cancel()` first)
+    /// must not silently produce the limit `2`. Under raw IEEE-754 semantics
+    /// this is `0 * (1/0) = NaN`; `eval_interp` (unchecked) still returns
+    /// that `NaN` — mirroring plain float arithmetic — but
+    /// `eval_interp_checked` must refuse it as [`InterpEvalError::NonFinite`]
+    /// rather than let a caller mistake `NaN` for a number.
+    #[test]
+    fn eval_interp_checked_rejects_removable_singularity_evaluated_as_written() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let numerator = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(-1_i32)]);
+        let denominator = pool.add(vec![x, pool.integer(-1_i32)]);
+        let inv_denominator = pool.pow(denominator, pool.integer(-1_i32));
+        let f = pool.mul(vec![numerator, inv_denominator]);
+
+        let mut env = HashMap::new();
+        env.insert(x, 1.0);
+
+        assert!(eval_interp(f, &env, &pool).unwrap().is_nan());
+        assert_eq!(
+            eval_interp_checked(f, &env, &pool),
+            Err(InterpEvalError::NonFinite)
+        );
+
+        // Away from the pole, both agree with the algebraic simplification.
+        env.insert(x, 3.0);
+        assert_eq!(eval_interp_checked(f, &env, &pool), Ok(4.0));
+    }
+
+    /// After an explicit `cancel()`-style rewrite to `x + 1`, evaluating at
+    /// `x = 1` legitimately gives `2` — `eval_interp_checked` must not
+    /// refuse ordinary, well-defined evaluation.
+    #[test]
+    fn eval_interp_checked_accepts_cancelled_form_at_former_pole() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let cancelled = pool.add(vec![x, pool.integer(1_i32)]);
+
+        let mut env = HashMap::new();
+        env.insert(x, 1.0);
+        assert_eq!(eval_interp_checked(cancelled, &env, &pool), Ok(2.0));
+    }
+
+    #[test]
+    fn eval_interp_checked_reports_unbound_symbol() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let env = HashMap::new();
+        assert_eq!(
+            eval_interp_checked(x, &env, &pool),
+            Err(InterpEvalError::Unevaluable)
+        );
     }
 
     /// Deeply shared DAG: 20 levels of squaring produces 21 nodes but

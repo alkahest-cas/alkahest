@@ -4,6 +4,28 @@
 
 ### Fixes
 
+- **`eval_expr` no longer returns `nan`/`inf` as if it were a value.**
+  Substituting into an expression whose denominator is zero at that point
+  (e.g. `(x²-1)/(x-1)` evaluated *as written* at `x = 1`) reduces to `0 ·
+  (1/0)` under plain IEEE-754 arithmetic — previously `eval_expr` handed that
+  `nan` straight back as a normal-looking float. It now raises `DomainError`
+  (`E-EVAL-009`) instead. `cancel()` first is still the correct way to get
+  the limit: `eval_expr(cancel((x**2-1)/(x-1)), {x: 1})` legitimately
+  returns `2`. The structured `evaluate(..., mode="f64")` API already
+  reported this case as `status="unsupported"`; `eval_expr` (the raw
+  `float`-returning entry point, and the tree-walking interpreter
+  `eval_interp` it's built on internally) is now consistent with it. New
+  `alkahest_core::jit::eval_interp_checked` for Rust callers that want the
+  same check without a panic-on-`None` `.unwrap()`.
+- **`solve(..., domain="real")` filters out complex roots.** `solve([x**2 +
+  1], [x])` always returns the complex roots `±i` (`x² = -1` has no real
+  solutions) — previously there was no way to ask for real solutions only
+  short of manually inspecting each returned expression for an imaginary
+  part. `domain="real"` (default `None`, unchanged existing behavior) now
+  filters the solver's output: `solve([x**2 + 1], [x], domain="real")` →
+  `[]`, `solve([x**2 - 1], [x], domain="real")` → `±1`. Composes with
+  `numeric=True` and the `numeric=True` degree-limit fallback to homotopy
+  continuation (which already returns real roots only).
 - **Definite integrals no longer integrate through poles.** `integrate(f, x, a, b)`
   computed the antiderivative and returned `F(b) − F(a)` without checking for
   singularities of `f` inside `[a, b]`, so divergent integrals came back as clean,

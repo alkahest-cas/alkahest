@@ -307,3 +307,74 @@ def test_solve_numeric_true_falls_back_on_plain_cubic(pool, x):
     eqs = [x**3 - pool.integer(6) * x**2 + pool.integer(11) * x - pool.integer(6)]
     sols = ak.solve(eqs, [x], numeric=True)
     assert len(sols) >= 1
+
+
+# --- domain="real": complex roots must not be returned as real solutions --
+#
+# Agent-benchmark trap `solve_x2_plus_1_real`: both SymPy and (pre-fix)
+# alkahest hand back complex roots from the default solver even when a user
+# asks a "real-world" question ("how many real solutions does x^2 = -1
+# have?"). `domain="real"` filters the solver's output rather than requiring
+# the caller to inspect each returned Expr for an imaginary part themselves.
+
+
+def test_solve_no_real_roots_returns_empty(pool, x):
+    """x^2 + 1 = 0 has no real roots -- domain='real' must return []."""
+    sols = ak.solve([x**2 + 1], [x], domain="real")
+    assert sols == []
+
+
+def test_solve_real_roots_kept_under_domain_real(pool, x):
+    """x^2 - 1 = 0 has two real roots -- domain='real' must not drop them."""
+    eqs = [x**2 - pool.integer(1)]
+    sols = ak.solve(eqs, [x], domain="real")
+    assert_solutions_satisfy(eqs, [x], sols, expected_count=2)
+
+
+def test_solve_default_domain_still_returns_complex_roots(pool, x):
+    """Without domain= (or domain='complex'), existing behavior is unchanged:
+    x^2+1=0 still returns its two complex roots."""
+    sols = ak.solve([x**2 + 1], [x])
+    assert len(sols) == 2
+    sols_explicit = ak.solve([x**2 + 1], [x], domain="complex")
+    assert len(sols_explicit) == 2
+
+
+def test_solve_mixed_real_and_complex_roots_filtered(pool, x):
+    """(x-2)(x^2+1) = 0 has one real root (2) and two complex ones; domain='real'
+    keeps only the real one. Degree 3 overall, so this also needs numeric=True
+    to reach the homotopy fallback -- the point being that the *filtering*
+    still happens on the symbolic form before that fallback is used."""
+    eqs = [(x - pool.integer(2)) * (x**2 + 1)]
+    sols = ak.solve(eqs, [x], domain="real", numeric=True)
+    assert len(sols) == 1
+    assert sols[0][x] == pytest.approx(2.0)
+
+
+def test_solve_domain_real_with_numeric_true(pool, x):
+    """domain='real' composes with numeric=True: only real roots, as floats."""
+    sols = ak.solve([x**2 - pool.integer(1)], [x], domain="real", numeric=True)
+    assert sorted(sol[x] for sol in sols) == pytest.approx([-1.0, 1.0])
+    assert ak.solve([x**2 + 1], [x], domain="real", numeric=True) == []
+
+
+def test_solve_domain_real_is_noop_for_homotopy(pool, x):
+    """method='homotopy' already returns only real roots, so domain='real'
+    changes nothing there (x^4-2=0 has 2 real + 2 complex roots)."""
+    eqs = [x**4 - pool.integer(2)]
+    sols = ak.solve(eqs, [x], method="homotopy", domain="real")
+    assert_solutions_satisfy(eqs, [x], sols, expected_count=2)
+
+
+def test_solve_domain_real_falls_back_past_high_degree(pool, x):
+    """domain='real' + numeric=True on a degree>2 univariate still falls
+    back to homotopy (which is real-only) rather than raising HighDegree."""
+    eqs = [x**5 - pool.integer(2)]
+    sols = ak.solve(eqs, [x], domain="real", numeric=True)
+    assert len(sols) == 1
+    assert sols[0][x] == pytest.approx(2 ** (1 / 5))
+
+
+def test_solve_invalid_domain_raises(pool, x):
+    with pytest.raises(ValueError):
+        ak.solve([x**2 - 1], [x], domain="quaternion")
