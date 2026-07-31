@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Lean certificates
+
+- **Definite-integral certificates now cover finite sums and constant
+  multiples**, not just a single `sin`/`cos`/`exp`/`xⁿ` term: `∫ (sin x + cos
+  x)`, `∫ 3·cos x`, `∫ -exp x`, and mixed multi-term combinations like
+  `∫ (x² + sin x + 3·cos x)` now emit a type-checking interval-FTC proof
+  (`HasDerivAt.add`/`.const_mul`/`.mul_const` and the `IntervalIntegrable`
+  analogues composed over the existing base fragment). A numeric-literal
+  coefficient (`Integer` or `Rational`) is required — a symbolic factor (e.g.
+  `y · cos x`) and any addend outside the certifiable base fragment still
+  withhold the *entire* certificate, never a partial one.
+
 ### Fixes
 
 - **Definite integrals no longer integrate through poles.** `integrate(f, x, a, b)`

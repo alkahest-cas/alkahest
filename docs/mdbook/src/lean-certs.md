@@ -86,6 +86,16 @@ The strict CI corpus currently covers:
 - Basic arithmetic rewrites (`add_zero`, `mul_one`, `mul_zero`, constant
   folding, and `pow_one`)
 - The polynomial differentiation fast path for `d/dx x³`
+- Indefinite integrals of `sin`, `cos`, `exp`, and `xⁿ`, certified via the FTC
+  derivative relation `deriv (fun x => F) x = f`
+- Definite integrals `∫ x in a..b, f x = F b - F a` of the same base family
+  (`sin`, `cos`, `exp`, `xⁿ`), **plus finite sums and numeric-literal constant
+  multiples of those terms** (`∫ (sin x + cos x)`, `∫ 3·cos x`, `∫ -exp x`,
+  `∫ (x² + sin x + 3·cos x)`, …), certified via Mathlib's interval-FTC lemma
+  (`intervalIntegral.integral_eq_sub_of_hasDerivAt`) composed with
+  `HasDerivAt.add`/`.const_mul`/`.mul_const` and the matching
+  `IntervalIntegrable` combinators. A symbolic (non-literal) coefficient, or
+  any addend outside the base family, withholds the whole certificate.
 
 Other exports are generated source, not CI-qualified Lean proofs. In
 particular, non-polynomial differentiation, conditional logarithm/power
