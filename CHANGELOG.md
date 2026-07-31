@@ -4,6 +4,25 @@
 
 ### Additions
 
+- **`decide` now handles two real variables with a quantifier prefix of
+  length ≤ 2** (`alkahest_core::real::cad`), not just the single-variable
+  fragment from V2-9: `∃x∃y`, `∀x∀y` (same-flavor blocks), and mixed
+  alternation `∃x∀y` / `∀x∃y`, all for purely polynomial bodies over ℚ. The
+  approach eliminates one variable via the existing [`cad_project`] (Brown
+  projection), then re-decides the resulting univariate-in-the-other-variable
+  sentence at every rational CAD-cell sample with the existing univariate
+  engine — e.g. `∃x∃y. x²+y²=0` → `true` (witness `x=0, y=0`), `∃x∃y.
+  x²+y²+1=0` → `false`, `∀x∀y. x²+y²≥0` → `true`, `∀x∀y. x·y>0` → `false`.
+  If a projection root is irrational *and* the body contains an
+  equality/inequation atom, that CAD cell can't be tested exactly with
+  rational sampling alone (it would need full algebraic-number CAD lifting),
+  so `decide` raises `Unsupported` (`E-CAD-001`) rather than risk an unsound
+  `true`/`false` — same for quantifier prefixes longer than two variables.
+  The univariate fragment's behavior is unchanged; `decide_exists_univariate`
+  internals were also generalized (via `UniPoly::from_symbolic_clear_denoms`)
+  to accept rational (not just integer) coefficient polynomials, which the
+  two-variable path needs after substituting a rational sample for the
+  eliminated variable.
 - **Basel-family infinite sums:** `sum_definite(expr, k, lo, hi)` now recognizes
   `hi = pool.pos_infinity()` p-series with an even power, e.g.
   `sum_definite(1/k**2, k, 1, pool.pos_infinity())` → `π²/6` (the Basel
