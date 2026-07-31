@@ -8,6 +8,7 @@ from . import (
     number_theory,
 )
 from ._context import (
+    active_assumptions,
     active_domain,
     active_pool,
     context,
@@ -799,12 +800,19 @@ def subs(expr, mapping):
 _native_simplify = simplify
 
 
-def simplify(expr):
+def simplify(expr, assumptions=None):
     """Apply the algebraic rewrite-rule simplifier.
 
     Parameters
     ----------
     expr : Expr or DerivedResult
+    assumptions : Assumptions, optional
+        Explicit assumption context to authorize condition-gated rewrites
+        (e.g. ``sqrt(x**2) -> x`` under ``x > 0``). When omitted, falls back
+        to the active ``alkahest.context(assumptions=...)`` (see
+        :func:`alkahest._context.active_assumptions`), if any. Static
+        ``Domain.Positive`` / ``Domain.NonZero`` symbol domains in *expr*
+        always authorize their rewrites regardless of this argument.
 
     Returns
     -------
@@ -815,7 +823,12 @@ def simplify(expr):
     >>> p = ExprPool(); x = p.symbol("x")
     >>> simplify(x + 0).value   # x
     """
-    return _native_simplify(_coerce_expr(expr))
+    expr = _coerce_expr(expr)
+    if assumptions is None:
+        assumptions = active_assumptions()
+    if assumptions is not None:
+        return assumptions.simplify(expr)
+    return _native_simplify(expr)
 
 
 _native_simplify_egraph = simplify_egraph
@@ -898,11 +911,16 @@ def simplify_log_exp(expr, assumptions=None):
     ----------
     expr : Expr or DerivedResult
     assumptions : Assumptions, optional
+        When omitted, falls back to the active
+        ``alkahest.context(assumptions=...)``, if any (see
+        :func:`alkahest._context.active_assumptions`).
 
     Returns
     -------
     DerivedResult
     """
+    if assumptions is None:
+        assumptions = active_assumptions()
     return _native_simplify_log_exp(_coerce_expr(expr), assumptions)
 
 
@@ -1141,7 +1159,42 @@ if "solve" in dir():
                 return False
         return True
 
-    def solve(equations, vars, *, numeric=False, method="groebner", domain=None):
+    def _solution_respects_assumptions(solution, assumptions, atol=1e-9):
+        """Reject a solution that assigns a non-positive value to a variable
+        the caller declared ``> 0``.
+
+        Best-effort like :func:`_solution_is_real`: a variable is only
+        checked when ``assumptions`` recorded it as strictly positive
+        (``assumptions.is_positive(var)``), and only rejected when numeric
+        evaluation *succeeds* and definitively shows a non-positive real
+        part — anything that fails to evaluate (free parameters, etc.) is
+        kept rather than silently dropped.
+        """
+        for var, value in solution.items():
+            try:
+                positive = assumptions.is_positive(var)
+            except (TypeError, ValueError):
+                # `var` isn't an Expr in `assumptions`' pool — nothing to check.
+                continue
+            if not positive:
+                continue
+            if isinstance(value, (int, float)):
+                real_part = float(value)
+            else:
+                result = evaluate(value, {}, mode="complex")
+                if result.status != "ok":
+                    continue
+                real_part = result.value.real
+            if real_part <= atol:
+                return False
+        return True
+
+    def _filter_by_assumptions(result, assumptions):
+        if assumptions is None or not isinstance(result, list):
+            return result
+        return [sol for sol in result if _solution_respects_assumptions(sol, assumptions)]
+
+    def solve(equations, vars, *, numeric=False, method="groebner", domain=None, assumptions=None):
         """Solve a zero-dimensional polynomial system (see native ``solve`` for
         the base behavior of *equations*, *vars*, *numeric*, and *method*).
 
@@ -1159,11 +1212,26 @@ if "solve" in dir():
             discriminant. ``method="homotopy"`` already reports only real
             roots by construction, so ``domain="real"`` is a no-op there;
             it only changes anything for the symbolic Gröbner path.
+        assumptions : Assumptions, optional
+            When given (or picked up from an active
+            ``alkahest.context(assumptions=...)``), solutions that assign a
+            non-positive value to a variable declared ``> 0`` are dropped.
+            This composes with *domain* rather than replacing it: it is
+            applied as a final filter on whatever list *domain* and
+            *method* already produced, and is skipped entirely for a
+            :class:`GroebnerBasis` result (parametric ideal — no concrete
+            solutions to filter). Pass ``assumptions=Assumptions(pool)``
+            (no ``refine`` calls) to opt out of the context default for a
+            single call.
         """
         if domain not in (None, "real", "complex"):
             raise ValueError(f"domain must be 'real', 'complex', or None, got {domain!r}")
+        if assumptions is None:
+            assumptions = active_assumptions()
+
         if domain != "real" or method == "homotopy":
-            return _native_solve(equations, vars, numeric=numeric, method=method)
+            result = _native_solve(equations, vars, numeric=numeric, method=method)
+            return _filter_by_assumptions(result, assumptions)
 
         # Filtering for realness needs the symbolic (sqrt-of-discriminant)
         # form: a numeric NaN can't be told apart from "complex root" vs.
@@ -1174,15 +1242,20 @@ if "solve" in dir():
             if numeric and getattr(exc, "code", None) == "E-SOLVE-002":
                 # HighDegree with numeric=True falls back to homotopy inside
                 # the native solver, which already yields real roots only.
-                return _native_solve(equations, vars, numeric=True, method=method)
+                result = _native_solve(equations, vars, numeric=True, method=method)
+                return _filter_by_assumptions(result, assumptions)
             raise
         if not isinstance(symbolic, list):
-            # GroebnerBasis (parametric ideal) — domain filtering doesn't apply.
+            # GroebnerBasis (parametric ideal) — domain/assumptions filtering
+            # don't apply.
             return symbolic
         real_solutions = [sol for sol in symbolic if _solution_is_real(sol)]
         if not numeric:
-            return real_solutions
-        return [{var: eval_expr(val, {}) for var, val in sol.items()} for sol in real_solutions]
+            return _filter_by_assumptions(real_solutions, assumptions)
+        numeric_solutions = [
+            {var: eval_expr(val, {}) for var, val in sol.items()} for sol in real_solutions
+        ]
+        return _filter_by_assumptions(numeric_solutions, assumptions)
 
 
 # ---------------------------------------------------------------------------
@@ -1397,6 +1470,7 @@ __all__ = [
     "abs",
     "acos",
     "acosh",
+    "active_assumptions",
     "active_domain",
     "active_pool",
     "adjoint_system",

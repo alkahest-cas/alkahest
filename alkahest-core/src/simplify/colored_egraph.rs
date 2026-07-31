@@ -435,6 +435,18 @@ fn rule_sqrt_of_square(expr: ExprId, pool: &ExprPool) -> Option<(ExprId, Vec<Sid
     Some((base, vec![cond]))
 }
 
+/// `abs(x) → x` when `x > 0`.
+///
+/// Sound direction only: `x ≥ 0` (not just `x > 0`) would also license this,
+/// but this context only tracks [`SideCondition::Positive`], not a weaker
+/// non-negative fact, so we require the stronger hypothesis. Do not add an
+/// `abs(x) → -x` companion under `x < 0` here — that's a distinct, currently
+/// untracked, side condition and out of scope for this rule.
+fn rule_abs_of_positive(expr: ExprId, pool: &ExprPool) -> Option<(ExprId, Vec<SideCondition>)> {
+    let inner = func_arg("abs", expr, pool)?;
+    Some((inner, vec![SideCondition::Positive(inner)]))
+}
+
 /// `log(a * b) → log(a) + log(b)` when all factors are positive.
 fn rule_log_of_product(expr: ExprId, pool: &ExprPool) -> Option<(ExprId, Vec<SideCondition>)> {
     let arg = func_arg("log", expr, pool)?;
@@ -559,6 +571,10 @@ fn default_conditional_rules() -> &'static [ConditionalRule] {
         ConditionalRule {
             name: "sqrt_of_square_positive",
             apply: rule_sqrt_of_square,
+        },
+        ConditionalRule {
+            name: "abs_of_positive",
+            apply: rule_abs_of_positive,
         },
         ConditionalRule {
             name: "log_of_product_positive",
@@ -704,6 +720,30 @@ mod tests {
         let pool = pool();
         let x = pool.symbol("x", Domain::Real);
         let expr = pool.func("sqrt", vec![pool.pow(x, pool.integer(2_i32))]);
+        let r = simplify_colored(expr, &pool, &[]);
+        assert_eq!(r.value, expr);
+    }
+
+    #[test]
+    fn abs_of_positive_simplifies() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Positive);
+        let expr = pool.func("abs", vec![x]);
+        let assumptions = vec![SideCondition::Positive(x)];
+        let r = simplify_colored(expr, &pool, &assumptions);
+        assert_eq!(r.value, x);
+        assert!(r
+            .log
+            .steps()
+            .iter()
+            .any(|s| s.rule_name == "abs_of_positive"));
+    }
+
+    #[test]
+    fn abs_without_assumption_unchanged() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.func("abs", vec![x]);
         let r = simplify_colored(expr, &pool, &[]);
         assert_eq!(r.value, expr);
     }
