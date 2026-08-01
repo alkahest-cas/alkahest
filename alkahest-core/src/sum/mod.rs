@@ -137,7 +137,7 @@ pub fn sum_indefinite(
 /// warns against for the analogous FTC bound) would fabricate a meaningless
 /// value. Instead an infinite upper bound is checked against a small table of
 /// recognized closed forms — currently the Basel-family even p-series
-/// `Σ_{k=1}^{∞} c/k^{2m} = c·ζ(2m)` (see [`special::basel_family_closed_form`]),
+/// `Σ_{k=1}^{∞} c/k^{2m} = c·ζ(2m)` (Basel-family even zeta values),
 /// e.g. `sum_definite(1/k**2, k, 1, pool.pos_infinity())` → `π²/6`. Anything
 /// else with an infinite bound honestly returns
 /// [`SumError::NotGosperSummable`] rather than a wrong or unresolved-`∞`

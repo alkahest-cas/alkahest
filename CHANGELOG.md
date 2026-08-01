@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixes
+
+- **Withhold Lean certificates for Basel-family infinite sums.** The
+  `basel_zeta_even` derivation step had no Mathlib proof and fell through to
+  the default `by ring_nf; simp` tactic, emitting false equalities (e.g.
+  `3/k² = π²/2`) into the textbook-gate Lean pool. Treated like Gosper:
+  withhold the whole certificate rather than emit a broken one.
+- **Rustdoc:** drop a private-item intra-doc link from `sum_definite` that
+  broke `cargo doc -D warnings`.
+- **Ruff:** quiet unused `wit` bindings and a compound assert in
+  `tests/test_cad_decide.py`.
+
 ### Performance
 
 - **`numpy_eval` / `numpy_eval_par` no longer round-trip through a Python

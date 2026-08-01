@@ -127,6 +127,8 @@ fn is_integration_rule(rule_name: &str) -> bool {
                 | "log_rule"
                 | "gosper_indefinite"
                 | "gosper_definite_telescope"
+                // Algorithmic Basel/ζ(2m) closed form — no Mathlib step proof yet.
+                | "basel_zeta_even"
         )
 }
 
@@ -1927,6 +1929,25 @@ mod tests {
         assert!(
             lean.is_empty(),
             "∫ sin must not emit false `sin = -cos` Lean equality, got: {lean}"
+        );
+    }
+
+    #[test]
+    fn withhold_basel_zeta_even_certificate() {
+        // Σ 1/k² = π²/6 is a real closed form, but `basel_zeta_even` is not a
+        // Mathlib-backed rewrite step. Emitting `1/k² = π²/6` (or a scaled
+        // variant) as an equality example is false and must be withheld.
+        use crate::sum::sum_definite;
+
+        let pool = p();
+        let k = pool.symbol("k", Domain::Real);
+        let one = pool.integer(1_i32);
+        let term = pool.pow(k, pool.integer(-2_i32));
+        let derived = sum_definite(term, k, one, pool.pos_infinity(), &pool).expect("Basel sum");
+        let lean = emit_lean_expr(&derived, &pool);
+        assert!(
+            lean.is_empty(),
+            "Basel sum_definite must withhold Lean cert until Mathlib-backed, got: {lean}"
         );
     }
 
