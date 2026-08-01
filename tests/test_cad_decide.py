@@ -109,7 +109,7 @@ def test_decide_forall_forall_product_positive_false():
     y = pool.symbol("y")
     body = pool.gt(x * y, pool.integer(0))
     phi = alkahest.Forall(x, alkahest.Forall(y, body))
-    truth, wit = alkahest.decide(phi)
+    truth, _wit = alkahest.decide(phi)
     assert truth is False
 
 
@@ -128,7 +128,7 @@ def test_decide_forall_exists_every_x_has_bigger_y_true():
     y = pool.symbol("y")
     body = pool.gt(y, x)
     phi = alkahest.Forall(x, alkahest.Exists(y, body))
-    truth, wit = alkahest.decide(phi)
+    truth, _wit = alkahest.decide(phi)
     assert truth is True
 
 
@@ -141,7 +141,7 @@ def test_decide_exists_forall_no_x_is_upper_bound_false():
     y = pool.symbol("y")
     body = pool.ge(x, y)
     phi = alkahest.Exists(x, alkahest.Forall(y, body))
-    truth, wit = alkahest.decide(phi)
+    truth, _wit = alkahest.decide(phi)
     assert truth is False
 
 
@@ -181,7 +181,8 @@ def test_decide_univariate_regression_exists_quadratic_root():
     phi = alkahest.Exists(x, body)
     truth, wit = alkahest.decide(phi)
     assert truth is True
-    assert isinstance(wit, dict) and "x" in wit
+    assert isinstance(wit, dict)
+    assert "x" in wit
 
 
 def test_decide_univariate_regression_forall_square_nonneg():
