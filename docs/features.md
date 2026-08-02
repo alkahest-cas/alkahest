@@ -25,7 +25,9 @@ Current stable feature surface.
 - Phased saturation with `node_limit` / `iter_limit` config
 - `collect_like_terms`, `poly_normal`
 - Branch-cut-aware log/exp rewrites with `SideCondition` tracking
-- Parallel simplification (`simplify_par`, `--features parallel`)
+- Parallel simplification, two schedulers (`--features parallel`): fork-join
+  (`simplify_par`) and level-scheduled (`simplify_redex`, Rust-only, deterministic
+  derivation logs) — see [Simplification](mdbook/src/simplification.md) for which wins where
 - Pauli and Clifford algebra rewrite tables (`simplify_pauli`, `simplify_clifford_orthogonal`)
 
 ## Polynomial algebra (FLINT-backed)

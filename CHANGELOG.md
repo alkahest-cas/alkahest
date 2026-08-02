@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Added
+
+- **`simplify_redex`: level-scheduled parallel simplification** (Rust,
+  `--features parallel`, exported through `experimental`). Buckets the
+  expression DAG by height and simplifies each level with one `par_iter`, using
+  a flat `Vec<AtomicU32>` indexed by `ExprId` as the memo instead of a hashed
+  side table. Borrowed from HVM2's redex-bag scheduling; the interaction-net
+  runtime itself does not transfer, since alkahest's hot paths are FLINT/Arb
+  arithmetic. Does **not** replace `simplify_par` — best time over 1–32 threads
+  on 32 cores: deep chain 23.1 ms → 5.5 ms, but a wide sum of independent terms
+  5.1 ms → 10.3 ms. Fork-join keeps a chain on one worker and wins on width;
+  level scheduling wins on depth, and on every shape at one thread. The
+  traversal is iterative (no stack-overflow risk on deep inputs) and each node
+  is visited once, so the derivation log is deterministic across thread counts.
+  A barrier-free variant using per-node counters of unreduced children — HVM2's
+  actual discipline — was measured and was never reliably faster, so it is not
+  included.
+
 ### Fixes
 
 - **Withhold Lean certificates for Basel-family infinite sums.** The
