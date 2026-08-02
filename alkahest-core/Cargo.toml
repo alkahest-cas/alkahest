@@ -104,3 +104,7 @@ required-features = ["parallel"]
 [[example]]
 name = "pool_read_scaling"
 required-features = ["parallel"]
+
+[[example]]
+name = "simplify_three_way"
+required-features = ["parallel"]
