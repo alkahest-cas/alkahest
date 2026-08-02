@@ -81,6 +81,36 @@ exprs = [x**i for i in range(100)]
 results = simplify_par(exprs)
 ```
 
+Builds without `--features parallel` (including the default PyPI wheel) fall
+back to the sequential path, so `simplify_par` is always callable.
+
+On the Rust side there are two parallel schedulers, and neither dominates:
+
+| | `simplify_par` | `simplify_redex` |
+|---|---|---|
+| Strategy | fork-join mirroring the sequential traversal | expression bucketed by height, one `par_iter` per level |
+| Forks on | `Add`/`Mul` with ≥ 4 children | every node, regardless of type |
+| Memo | sharded `DashMap` | flat `Vec<AtomicU32>` indexed by `ExprId` |
+| Traversal | recursive (stack-refill trampoline for deep inputs) | iterative |
+| Derivation log | order varies with thread count | deterministic |
+
+Measured on 32 cores, best time over 1–32 threads:
+
+| shape | sequential | `simplify_par` | `simplify_redex` |
+|---|---|---|---|
+| deep chain (2000 levels, width 1) | 38.7 ms | 23.1 ms | **5.5 ms** |
+| wide sum, independent terms | 28.4 ms | **5.1 ms** | 10.3 ms |
+| many medium chains | 115.6 ms | **19.2 ms** | 36.6 ms |
+| wide sum over a shared DAG | 2.48 ms | 0.89 ms | **0.83 ms** |
+
+Fork-join keeps each chain on one worker and wins on wide expressions through
+cache locality. Level scheduling wins on deep ones, where fork-join finds no
+wide node to fork on and runs essentially sequentially. At one thread the level
+scheduler is faster on every shape measured. Reproduce with
+`cargo run --release --features parallel --example simplify_three_way`.
+
+Both are `experimental`: `alkahest_core::experimental::{simplify_par, simplify_redex}`.
+
 ## E-graph simplification
 
 `simplify_egraph` uses equality saturation via [egglog](https://github.com/egraphs-good/egglog) to explore many equivalent forms simultaneously before committing to the best one via a cost function.
