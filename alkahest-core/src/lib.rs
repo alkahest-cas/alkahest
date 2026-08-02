@@ -172,6 +172,8 @@ pub use ball::{AcbBall, ArbBall, IntervalEval, DEFAULT_PREC};
 // Phase 23 — Parallel simplification
 #[cfg(feature = "parallel")]
 pub use simplify::parallel::{simplify_par, simplify_par_with_config};
+#[cfg(feature = "parallel")]
+pub use simplify::redex::{simplify_redex, simplify_redex_with_config};
 
 // V5-11 — Gröbner basis
 #[cfg(feature = "groebner")]
@@ -374,6 +376,8 @@ pub mod experimental {
 
     #[cfg(feature = "parallel")]
     pub use crate::simplify::parallel::{simplify_par, simplify_par_with_config};
+    #[cfg(feature = "parallel")]
+    pub use crate::simplify::redex::{simplify_redex, simplify_redex_with_config};
 
     #[cfg(feature = "groebner-cuda")]
     pub use crate::poly::groebner::GpuGroebnerError;

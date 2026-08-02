@@ -5,6 +5,8 @@ pub mod egraph;
 pub mod engine;
 #[cfg(feature = "parallel")]
 pub mod parallel;
+#[cfg(feature = "parallel")]
+pub mod redex;
 pub mod rules;
 pub mod rulesets;
 
