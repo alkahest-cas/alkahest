@@ -6,6 +6,7 @@
 //!   cargo run --release --features parallel --example simplify_three_way
 
 use alkahest_cas::kernel::{Domain, ExprId, ExprPool};
+use alkahest_cas::simplify::dispatch::simplify_auto;
 use alkahest_cas::simplify::parallel::simplify_par;
 use alkahest_cas::simplify::redex::simplify_redex;
 use alkahest_cas::simplify::simplify;
@@ -112,12 +113,13 @@ fn run(name: &str, build: &dyn Fn(&ExprPool) -> ExprId, threads: &[usize], reps:
     // Agreement check before timing anything else.
     let pool = ExprPool::new();
     let e = build(&pool);
-    let (a, b, c) = (
+    let (a, b, c, d) = (
         simplify(e, &pool).value,
         simplify_par(e, &pool).value,
         simplify_redex(e, &pool).value,
+        simplify_auto(e, &pool).value,
     );
-    let agree = a == b && b == c;
+    let agree = a == b && b == c && c == d;
 
     println!(
         "\n=== {name} ===   agreement: {}",
@@ -125,8 +127,8 @@ fn run(name: &str, build: &dyn Fn(&ExprPool) -> ExprId, threads: &[usize], reps:
     );
     println!("  {:<10} {:>9.2} ms", "sequential", ms(seq));
     println!(
-        "  {:<10} {:>9} {:>9}   (speedup vs sequential)",
-        "threads", "fork-join", "level"
+        "  {:<10} {:>9} {:>9} {:>9}   (speedup vs sequential)",
+        "threads", "fork-join", "level", "auto"
     );
 
     for &nt in threads {
@@ -140,13 +142,18 @@ fn run(name: &str, build: &dyn Fn(&ExprPool) -> ExprId, threads: &[usize], reps:
         let lvl = time_op(reps, build, &|e, pool| {
             tp.install(|| simplify_redex(e, pool).value)
         });
+        let auto = time_op(reps, build, &|e, pool| {
+            tp.install(|| simplify_auto(e, pool).value)
+        });
         println!(
-            "  t={:<8} {:>7.2}ms {:>7.2}ms   fork-join {:.2}x  level {:.2}x",
+            "  t={:<8} {:>7.2}ms {:>7.2}ms {:>7.2}ms   fork-join {:.2}x  level {:.2}x  auto {:.2}x",
             nt,
             ms(par),
             ms(lvl),
+            ms(auto),
             seq.as_secs_f64() / par.as_secs_f64(),
             seq.as_secs_f64() / lvl.as_secs_f64(),
+            seq.as_secs_f64() / auto.as_secs_f64(),
         );
     }
 }
