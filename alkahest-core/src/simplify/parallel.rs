@@ -83,7 +83,11 @@ thread_local! {
 type Memo = DashMap<ExprId, ExprId>;
 
 /// Shared rule list handed to every worker.
-type Rules = Arc<Vec<Box<dyn RewriteRule + Send + Sync>>>;
+///
+/// `RewriteRule` requires `Send + Sync`, so `Box<dyn RewriteRule>` is already
+/// shareable; spelling the auto traits again would only prevent this list from
+/// being passed to the shared rule loop in `engine`.
+type Rules = Arc<Vec<Box<dyn RewriteRule>>>;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -105,7 +109,7 @@ pub fn simplify_par_with_config(
     pool: &ExprPool,
     config: &SimplifyConfig,
 ) -> DerivedExpr<ExprId> {
-    let rules: Rules = Arc::new(rules_for_config_par(config));
+    let rules: Rules = Arc::new(crate::simplify::rules_for_config(config));
     let mut current = expr;
     let mut full_log = DerivationLog::new();
     for _ in 0..config.max_iterations {
@@ -156,22 +160,8 @@ fn simplify_node_par(
             simplify_children_par(expr, data, pool, rules, memo)
         });
 
-        let mut current = rebuilt;
-        let mut rule_log = DerivationLog::new();
-        loop {
-            let mut fired = false;
-            for rule in rules.as_ref() {
-                if let Some((new_expr, step_log)) = rule.apply(current, pool) {
-                    rule_log = rule_log.merge(step_log);
-                    current = new_expr;
-                    fired = true;
-                    break;
-                }
-            }
-            if !fired {
-                break;
-            }
-        }
+        let (current, rule_log) =
+            crate::simplify::engine::apply_rules(rebuilt, pool, rules.as_ref());
         DerivedExpr::with_log(current, child_log.merge(rule_log))
     });
 

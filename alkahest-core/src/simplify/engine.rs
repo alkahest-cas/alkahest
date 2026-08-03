@@ -89,6 +89,47 @@ pub fn default_rules() -> Vec<Box<dyn RewriteRule>> {
 // Internal: bottom-up traversal — simplify children, then current node
 // ---------------------------------------------------------------------------
 
+/// Apply `rules` to `expr` repeatedly until none fires, returning the fixed
+/// point and the steps taken.
+///
+/// Rules whose [`NodeKinds`] mask excludes this node's kind are skipped without
+/// calling `apply`.  The engine tries every rule on every node, and each
+/// `apply` re-inspects the node before deciding it does not match, so the bit
+/// test replaces most of that work.  Debug builds verify that a skipped rule
+/// really would not have fired.
+pub(crate) fn apply_rules(
+    expr: ExprId,
+    pool: &ExprPool,
+    rules: &[Box<dyn RewriteRule>],
+) -> (ExprId, DerivationLog) {
+    let mut current = expr;
+    let mut log = DerivationLog::new();
+    loop {
+        let kind = crate::simplify::rules::node_kind(current, pool);
+        let mut fired = false;
+        for rule in rules {
+            if !rule.node_kinds().contains(kind) {
+                debug_assert!(
+                    rule.apply(current, pool).is_none(),
+                    "rule `{}` was skipped by its node_kinds mask but would have fired",
+                    rule.name()
+                );
+                continue;
+            }
+            if let Some((next, step_log)) = rule.apply(current, pool) {
+                log = log.merge(step_log);
+                current = next;
+                fired = true;
+                break; // restart from first rule after any change
+            }
+        }
+        if !fired {
+            break;
+        }
+    }
+    (current, log)
+}
+
 /// Memoised bottom-up simplification.
 ///
 /// `memo` maps an input `ExprId` to the `ExprId` of its simplified form within
@@ -118,22 +159,7 @@ fn simplify_node(
     });
 
     // 2. Apply rules to rebuilt node until no rule fires
-    let mut current = rebuilt;
-    let mut rule_log = DerivationLog::new();
-    loop {
-        let mut fired = false;
-        for rule in rules {
-            if let Some((new_expr, step_log)) = rule.apply(current, pool) {
-                rule_log = rule_log.merge(step_log);
-                current = new_expr;
-                fired = true;
-                break; // restart from first rule after any change
-            }
-        }
-        if !fired {
-            break;
-        }
-    }
+    let (current, rule_log) = apply_rules(rebuilt, pool, rules);
 
     let result = DerivedExpr::with_log(current, child_log.merge(rule_log));
     memo.insert(expr, result.value);

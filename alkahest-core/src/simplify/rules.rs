@@ -19,10 +19,74 @@ pub(super) fn as_rational(expr: ExprId, pool: &ExprPool) -> Option<rug::Rational
 // RewriteRule trait
 // ---------------------------------------------------------------------------
 
+/// The set of node kinds a rewrite rule can possibly fire on, as a bitmask.
+///
+/// The rule engine tries every rule on every node, and each `apply` re-inspects
+/// the node before deciding it does not match.  A rule that only rewrites
+/// `Mul` nodes can declare so, and the engine skips it with a bit test.
+///
+/// Kinds correspond to [`ExprData`] variants; the leaf kinds that no built-in
+/// rule dispatches on individually share [`NodeKinds::OTHER`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct NodeKinds(u16);
+
+impl NodeKinds {
+    pub const ADD: NodeKinds = NodeKinds(1 << 0);
+    pub const MUL: NodeKinds = NodeKinds(1 << 1);
+    pub const POW: NodeKinds = NodeKinds(1 << 2);
+    pub const FUNC: NodeKinds = NodeKinds(1 << 3);
+    pub const INTEGER: NodeKinds = NodeKinds(1 << 4);
+    pub const RATIONAL: NodeKinds = NodeKinds(1 << 5);
+    pub const FLOAT: NodeKinds = NodeKinds(1 << 6);
+    pub const SYMBOL: NodeKinds = NodeKinds(1 << 7);
+    /// Piecewise, Predicate, Forall, Exists, BigO, RootSum.
+    pub const OTHER: NodeKinds = NodeKinds(1 << 8);
+    /// Every kind — the default, meaning "no useful prefilter".
+    pub const ALL: NodeKinds = NodeKinds(u16::MAX);
+
+    /// Union of two masks, usable in `const` position.
+    pub const fn or(self, other: NodeKinds) -> NodeKinds {
+        NodeKinds(self.0 | other.0)
+    }
+
+    /// Whether this mask admits `kind`.
+    pub fn contains(self, kind: NodeKinds) -> bool {
+        self.0 & kind.0 != 0
+    }
+}
+
+/// The [`NodeKinds`] bit for the node `expr` currently holds.
+///
+/// Allocation-free, unlike [`super::discrimination_net::expr_head`], which
+/// clones the node and builds a `String` for `Func`/`Symbol`.
+pub fn node_kind(expr: ExprId, pool: &ExprPool) -> NodeKinds {
+    pool.with(expr, |data| match data {
+        ExprData::Add(_) => NodeKinds::ADD,
+        ExprData::Mul(_) => NodeKinds::MUL,
+        ExprData::Pow { .. } => NodeKinds::POW,
+        ExprData::Func { .. } => NodeKinds::FUNC,
+        ExprData::Integer(_) => NodeKinds::INTEGER,
+        ExprData::Rational(_) => NodeKinds::RATIONAL,
+        ExprData::Float(_) => NodeKinds::FLOAT,
+        ExprData::Symbol { .. } => NodeKinds::SYMBOL,
+        _ => NodeKinds::OTHER,
+    })
+}
+
 pub trait RewriteRule: Send + Sync {
     fn name(&self) -> &'static str;
     /// Try to apply the rule to `expr`. Returns `None` if the rule does not match.
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)>;
+
+    /// Node kinds this rule can rewrite.
+    ///
+    /// The engine skips `apply` entirely for nodes outside this mask, so an
+    /// over-narrow answer silently disables the rule; debug builds assert that
+    /// a skipped rule really would not have fired.  The default admits every
+    /// kind, so implementations outside this crate keep working unchanged.
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::ALL
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -229,6 +293,9 @@ fn rebuild_exp_term(exp: &rug::Integer, base: ExprId, pool: &ExprPool) -> ExprId
 pub struct AddZero;
 
 impl RewriteRule for AddZero {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::ADD
+    }
     fn name(&self) -> &'static str {
         "add_zero"
     }
@@ -258,6 +325,9 @@ impl RewriteRule for AddZero {
 pub struct MulOne;
 
 impl RewriteRule for MulOne {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::MUL
+    }
     fn name(&self) -> &'static str {
         "mul_one"
     }
@@ -287,6 +357,9 @@ impl RewriteRule for MulOne {
 pub struct MulZero;
 
 impl RewriteRule for MulZero {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::MUL
+    }
     fn name(&self) -> &'static str {
         "mul_zero"
     }
@@ -329,6 +402,9 @@ impl RewriteRule for MulZero {
 pub struct PowOne;
 
 impl RewriteRule for PowOne {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::POW
+    }
     fn name(&self) -> &'static str {
         "pow_one"
     }
@@ -352,6 +428,9 @@ impl RewriteRule for PowOne {
 pub struct SqrtInteger;
 
 impl RewriteRule for SqrtInteger {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::FUNC
+    }
     fn name(&self) -> &'static str {
         "sqrt_integer"
     }
@@ -395,6 +474,9 @@ fn integer_sqrt_u64(n: u64) -> Option<u64> {
 pub struct PowZero;
 
 impl RewriteRule for PowZero {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::POW
+    }
     fn name(&self) -> &'static str {
         "pow_zero"
     }
@@ -460,6 +542,13 @@ fn intern_rational(r: rug::Rational, pool: &ExprPool) -> ExprId {
 pub struct ConstFold;
 
 impl RewriteRule for ConstFold {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::ADD
+            .or(NodeKinds::MUL)
+            .or(NodeKinds::POW)
+            .or(NodeKinds::FUNC)
+            .or(NodeKinds::RATIONAL)
+    }
     fn name(&self) -> &'static str {
         "const_fold"
     }
@@ -795,6 +884,9 @@ fn even_power_sign_fold(base: ExprId, exp: ExprId, pool: &ExprPool) -> Option<Ex
 pub struct SubSelf;
 
 impl RewriteRule for SubSelf {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::ADD
+    }
     fn name(&self) -> &'static str {
         "collect_add_terms"
     }
@@ -864,6 +956,9 @@ impl RewriteRule for SubSelf {
 pub struct DivSelf;
 
 impl RewriteRule for DivSelf {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::MUL
+    }
     fn name(&self) -> &'static str {
         "collect_mul_factors"
     }
@@ -970,6 +1065,9 @@ impl RewriteRule for DivSelf {
 pub struct FlattenMul;
 
 impl RewriteRule for FlattenMul {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::MUL
+    }
     fn name(&self) -> &'static str {
         "flatten_mul"
     }
@@ -1007,6 +1105,9 @@ impl RewriteRule for FlattenMul {
 pub struct FlattenAdd;
 
 impl RewriteRule for FlattenAdd {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::ADD
+    }
     fn name(&self) -> &'static str {
         "flatten_add"
     }
@@ -1048,6 +1149,9 @@ impl RewriteRule for FlattenAdd {
 pub struct CanonicalOrder;
 
 impl RewriteRule for CanonicalOrder {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::ADD.or(NodeKinds::MUL)
+    }
     fn name(&self) -> &'static str {
         "canonical_order"
     }
@@ -1095,6 +1199,9 @@ impl RewriteRule for CanonicalOrder {
 pub struct ExpandMul;
 
 impl RewriteRule for ExpandMul {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::MUL
+    }
     fn name(&self) -> &'static str {
         "expand_mul"
     }
@@ -1191,6 +1298,9 @@ impl ExpandPow {
 }
 
 impl RewriteRule for ExpandPow {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::POW
+    }
     fn name(&self) -> &'static str {
         "expand_pow"
     }
@@ -1237,6 +1347,9 @@ impl RewriteRule for ExpandPow {
 pub struct ExpPow;
 
 impl RewriteRule for ExpPow {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::POW
+    }
     fn name(&self) -> &'static str {
         "exp_pow"
     }
@@ -1270,6 +1383,9 @@ impl RewriteRule for ExpPow {
 pub struct CollectExp;
 
 impl RewriteRule for CollectExp {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::MUL
+    }
     fn name(&self) -> &'static str {
         "collect_exp"
     }
@@ -1323,6 +1439,9 @@ impl RewriteRule for CollectExp {
 pub struct PrimitiveFold;
 
 impl RewriteRule for PrimitiveFold {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::FUNC
+    }
     fn name(&self) -> &'static str {
         "primitive_simplify"
     }
