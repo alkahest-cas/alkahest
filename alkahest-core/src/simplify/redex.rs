@@ -179,24 +179,7 @@ fn reduce_node(
     table: &[AtomicU32],
 ) -> DerivationLog {
     let rebuilt = pool.with(id, |data| rebuild(id, data, pool, table));
-
-    let mut current = rebuilt;
-    let mut log = DerivationLog::new();
-    loop {
-        let mut fired = false;
-        for rule in rules {
-            if let Some((next, step_log)) = rule.apply(current, pool) {
-                log = log.merge(step_log);
-                current = next;
-                fired = true;
-                break;
-            }
-        }
-        if !fired {
-            break;
-        }
-    }
-
+    let (current, log) = crate::simplify::engine::apply_rules(rebuilt, pool, rules);
     table[id.0 as usize].store(current.0, Ordering::Relaxed);
     log
 }

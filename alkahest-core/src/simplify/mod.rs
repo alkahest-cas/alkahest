@@ -1,6 +1,8 @@
 pub mod assumptions;
 pub mod colored_egraph;
 pub mod discrimination_net;
+#[cfg(feature = "parallel")]
+pub mod dispatch;
 pub mod egraph;
 pub mod engine;
 #[cfg(feature = "parallel")]
@@ -26,5 +28,5 @@ pub use engine::{
     rules_for_config, simplify, simplify_batch, simplify_expanded, simplify_log_exp,
     simplify_trig_normal_form, simplify_with, simplify_with_pattern_rules, SimplifyConfig,
 };
-pub use rules::RewriteRule;
+pub use rules::{node_kind, NodeKinds, RewriteRule};
 pub use rulesets::{PatternRule, PatternRuleSet};

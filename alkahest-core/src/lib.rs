@@ -171,6 +171,8 @@ pub use ball::{AcbBall, ArbBall, IntervalEval, DEFAULT_PREC};
 
 // Phase 23 — Parallel simplification
 #[cfg(feature = "parallel")]
+pub use simplify::dispatch::{choose_strategy, simplify_auto, simplify_auto_with_config, Strategy};
+#[cfg(feature = "parallel")]
 pub use simplify::parallel::{simplify_par, simplify_par_with_config};
 #[cfg(feature = "parallel")]
 pub use simplify::redex::{simplify_redex, simplify_redex_with_config};
@@ -374,6 +376,10 @@ pub mod experimental {
         inverse_z_transform, z_shift_advance, z_shift_delay, z_transform, ZTransformError,
     };
 
+    #[cfg(feature = "parallel")]
+    pub use crate::simplify::dispatch::{
+        choose_strategy, simplify_auto, simplify_auto_with_config, Strategy,
+    };
     #[cfg(feature = "parallel")]
     pub use crate::simplify::parallel::{simplify_par, simplify_par_with_config};
     #[cfg(feature = "parallel")]
