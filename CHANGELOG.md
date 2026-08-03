@@ -4,6 +4,15 @@
 
 ### Added
 
+- **Python bindings for the parallel simplifiers**: `simplify_redex`,
+  `simplify_auto` and `simplify_strategy` join the existing `simplify_par`.
+  All take a single expression and return the same result as `simplify`; only
+  the schedule differs. Each falls back to sequential `simplify` when the
+  extension is built without `--features parallel` (as the PyPI wheel is), so
+  the calls are always available and `simplify_strategy` then reports
+  `"sequential"`. The three parallel entry points now release the GIL for the
+  duration of the native call, so other Python threads run alongside them.
+
 - **`simplify_redex`: level-scheduled parallel simplification** (Rust,
   `--features parallel`, exported through `experimental`). Buckets the
   expression DAG by height and simplifies each level with one `par_iter`, using
@@ -22,6 +31,10 @@
 
 ### Fixes
 
+- **Docs: `simplify_par` was documented with a signature it never had.** Both
+  the Sphinx API page and the mdbook chapter showed it taking a list of
+  expressions and returning a list; it takes one expression and returns one
+  `DerivedResult`, and the documented call raises `TypeError`.
 - **Withhold Lean certificates for Basel-family infinite sums.** The
   `basel_zeta_even` derivation step had no Mathlib proof and fell through to
   the default `by ring_nf; simp` tactic, emitting false equalities (e.g.
