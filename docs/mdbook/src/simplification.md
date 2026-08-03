@@ -74,17 +74,20 @@ terms and factors.
 ### Parallel simplification
 
 ```python
-from alkahest import simplify_par
+from alkahest import simplify_auto, simplify_par, simplify_redex, simplify_strategy
 
-# Simplify a list of expressions concurrently (requires --features parallel)
-exprs = [x**i for i in range(100)]
-results = simplify_par(exprs)
+simplify_par(expr)      # fork-join: best on wide expressions
+simplify_redex(expr)    # level-scheduled: best on deep ones, deterministic log
+simplify_auto(expr)     # picks one of the two from the expression's shape
+simplify_strategy(expr) # "fork_join" | "level_scheduled" | "sequential"
 ```
 
-Builds without `--features parallel` (including the default PyPI wheel) fall
-back to the sequential path, so `simplify_par` is always callable.
+Each takes a single expression and returns the same result as `simplify`; only
+the schedule differs. Builds without `--features parallel` — including the
+default PyPI wheel — fall back to the sequential path, so all four are always
+callable, and `simplify_strategy` then reports `"sequential"`.
 
-On the Rust side there are two parallel schedulers, and neither dominates:
+Neither parallel scheduler dominates:
 
 | | `simplify_par` | `simplify_redex` |
 |---|---|---|

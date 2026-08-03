@@ -3,10 +3,12 @@
 Covers:
   Phase 21 — JIT / interpreter-based compiled evaluation
   Phase 22 — Ball arithmetic (ArbBall, interval_eval)
-  Phase 23 — Parallel simplification (simplify_par)
+  Phase 23 — Parallel simplification (simplify_par, simplify_redex,
+             simplify_auto, simplify_strategy)
 """
 
 import math
+from typing import ClassVar
 
 import pytest
 from _step_logs import assert_same_step_rules
@@ -19,7 +21,10 @@ from alkahest import (
     exp,
     interval_eval,
     simplify,
+    simplify_auto,
     simplify_par,
+    simplify_redex,
+    simplify_strategy,
     sin,
     sqrt,
 )
@@ -447,3 +452,139 @@ class TestSimplifyPar:
         seq_result = simplify(expr)
         assert str(par_result.value) == str(seq_result.value)
         assert_same_step_rules(seq_result.steps, par_result.steps, context="nested cancel")
+
+
+# ===========================================================================
+# Phase 23 — Level-scheduled and auto-dispatched simplification
+# ===========================================================================
+
+
+def _deep_chain(p, depth):
+    """A narrow chain: ((x * 1) + 0) nested `depth` times, all removable."""
+    e = p.symbol("x")
+    one, zero = p.integer(1), p.integer(0)
+    for _ in range(depth):
+        e = e * one
+        e = e + zero
+    return e
+
+
+def _wide_sum(p, n):
+    """A wide sum of independent removable terms."""
+    zero = p.integer(0)
+    terms = [p.symbol(f"x{i}") + zero for i in range(n)]
+    expr = terms[0]
+    for t in terms[1:]:
+        expr = expr + t
+    return expr
+
+
+class TestSimplifyRedex:
+    """`simplify_redex` must agree with `simplify` on every shape."""
+
+    def test_matches_simplify_on_wide_sum(self):
+        p = pool()
+        expr = _wide_sum(p, 64)
+        seq, red = simplify(expr), simplify_redex(expr)
+        assert str(red.value) == str(seq.value)
+        assert_same_step_rules(seq.steps, red.steps, context="redex wide sum")
+
+    def test_matches_simplify_on_deep_chain(self):
+        p = pool()
+        expr = _deep_chain(p, 50)
+        seq, red = simplify(expr), simplify_redex(expr)
+        assert str(red.value) == str(seq.value)
+        assert str(red.value) == "x"
+
+    def test_matches_simplify_on_shared_subexpression(self):
+        p = pool()
+        shared = _deep_chain(p, 8)
+        expr = shared * p.integer(2)
+        for i in range(3, 12):
+            expr = expr + shared * p.integer(i)
+        seq, red = simplify(expr), simplify_redex(expr)
+        assert str(red.value) == str(seq.value)
+
+    def test_constant_folds(self):
+        p = pool()
+        expr = p.integer(1)
+        for i in range(2, 21):
+            expr = expr + p.integer(i)
+        assert str(simplify_redex(expr).value) == "210"
+
+    def test_derivation_log_is_deterministic(self):
+        """Unlike simplify_par, the level-scheduled log must not vary."""
+        p = pool()
+        expr = _wide_sum(p, 64)
+        runs = [
+            [(s["rule"], s["before"], s["after"]) for s in simplify_redex(expr).steps]
+            for _ in range(5)
+        ]
+        assert all(r == runs[0] for r in runs[1:])
+
+    def test_returns_derived_result(self):
+        p = pool()
+        expr = p.symbol("x") + p.integer(0)
+        result = simplify_redex(expr)
+        assert hasattr(result, "value")
+        assert hasattr(result, "steps")
+
+
+class TestSimplifyAuto:
+    """`simplify_auto` must agree with `simplify` whichever branch it takes."""
+
+    def test_matches_simplify_on_deep_chain(self):
+        p = pool()
+        expr = _deep_chain(p, 50)
+        assert str(simplify_auto(expr).value) == str(simplify(expr).value)
+
+    def test_matches_simplify_on_wide_sum(self):
+        p = pool()
+        expr = _wide_sum(p, 64)
+        seq, auto = simplify(expr), simplify_auto(expr)
+        assert str(auto.value) == str(seq.value)
+        assert_same_step_rules(seq.steps, auto.steps, context="auto wide sum")
+
+    def test_agrees_with_both_parallel_strategies(self):
+        p = pool()
+        for expr in (_deep_chain(p, 30), _wide_sum(p, 32)):
+            values = {
+                str(simplify(expr).value),
+                str(simplify_par(expr).value),
+                str(simplify_redex(expr).value),
+                str(simplify_auto(expr).value),
+            }
+            assert len(values) == 1, f"strategies disagreed: {values}"
+
+
+class TestSimplifyStrategy:
+    """`simplify_strategy` reports the dispatch decision without running it."""
+
+    KNOWN: ClassVar[set[str]] = {"fork_join", "level_scheduled", "sequential"}
+
+    def test_reports_a_known_strategy(self):
+        p = pool()
+        assert simplify_strategy(_wide_sum(p, 64)) in self.KNOWN
+        assert simplify_strategy(_deep_chain(p, 50)) in self.KNOWN
+
+    def test_deep_chain_never_uses_fork_join(self):
+        """Fork-join has nothing to fork on in a chain; it must not be chosen."""
+        p = pool()
+        assert simplify_strategy(_deep_chain(p, 200)) != "fork_join"
+
+    def test_is_stable_for_one_expression(self):
+        p = pool()
+        expr = _wide_sum(p, 64)
+        assert len({simplify_strategy(expr) for _ in range(5)}) == 1
+
+    def test_reports_sequential_only_without_parallel_feature(self):
+        """The 'sequential' answer must match how the wheel was actually built."""
+        import alkahest
+
+        parallel = alkahest.capabilities()["features"]["parallel"]
+        p = pool()
+        strategy = simplify_strategy(_wide_sum(p, 32))
+        if parallel:
+            assert strategy != "sequential"
+        else:
+            assert strategy == "sequential"

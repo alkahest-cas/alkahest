@@ -26,8 +26,9 @@ Current stable feature surface.
 - `collect_like_terms`, `poly_normal`
 - Branch-cut-aware log/exp rewrites with `SideCondition` tracking
 - Parallel simplification, two schedulers (`--features parallel`): fork-join
-  (`simplify_par`) and level-scheduled (`simplify_redex`, Rust-only, deterministic
-  derivation logs) — see [Simplification](mdbook/src/simplification.md) for which wins where
+  (`simplify_par`) and level-scheduled (`simplify_redex`, deterministic derivation
+  logs), with `simplify_auto` dispatching on shape and `simplify_strategy` reporting
+  the choice — see [Simplification](mdbook/src/simplification.md) for which wins where
 - Pauli and Clifford algebra rewrite tables (`simplify_pauli`, `simplify_clifford_orthogonal`)
 
 ## Polynomial algebra (FLINT-backed)

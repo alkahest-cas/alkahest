@@ -6447,15 +6447,30 @@ fn py_evaluate(
 // Phase 23 — Parallel simplification
 // ---------------------------------------------------------------------------
 
-/// Simplify an expression using parallel bottom-up traversal (requires
-/// the `parallel` feature to be enabled at build time for speedup;
-/// falls back to sequential otherwise).
+/// Simplify an expression using a recursive fork-join traversal.
+///
+/// Requires the ``parallel`` feature at build time; without it this falls back
+/// to sequential :func:`simplify`, so the call is always available. Check
+/// ``alkahest.capabilities()["features"]["parallel"]`` to tell which you have.
+///
+/// Fork-join keeps each subtree on one worker, which suits **wide** expressions
+/// — a large sum or product of independent terms. For deep, narrow expressions
+/// prefer :func:`simplify_redex`, or let :func:`simplify_auto` choose.
+///
+/// The result matches :func:`simplify` exactly. The derivation log may vary in
+/// order between runs, because two workers can reach the same node
+/// concurrently; :func:`simplify_redex` does not have that property.
 #[pyfunction]
 #[pyo3(name = "simplify_par")]
 fn py_simplify_par(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedResult> {
     let pool_ref = expr.pool.borrow(py);
+    // Bind out of the `PyRef` first: it carries a `Python` marker and so is
+    // not `Sync`, but the pool and id themselves are safe to send.
     #[cfg(feature = "parallel")]
-    let result = alkahest_core::simplify_par(expr.id, &pool_ref.inner);
+    let result = {
+        let (id, pool) = (expr.id, &pool_ref.inner);
+        py.allow_threads(|| alkahest_core::simplify_par(id, pool))
+    };
     #[cfg(not(feature = "parallel"))]
     let result = alkahest_core::simplify(expr.id, &pool_ref.inner);
     drop(pool_ref);
@@ -6465,6 +6480,102 @@ fn py_simplify_par(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedRes
         expr.pool.clone_ref(py),
         None,
     ))
+}
+
+/// Simplify an expression by scheduling independent rewrites level by level.
+///
+/// Requires the ``parallel`` feature at build time; without it this falls back
+/// to sequential :func:`simplify`, so the call is always available.
+///
+/// Nodes are bucketed by height, so every node at a given height is rewritten
+/// concurrently regardless of its type. That suits **deep** expressions, where
+/// :func:`simplify_par` finds no wide node to fork on and ends up running
+/// essentially sequentially. It also visits each node exactly once, so unlike
+/// :func:`simplify_par` the derivation log is **deterministic** — identical
+/// across runs and across CPU counts.
+///
+/// The result matches :func:`simplify` exactly.
+#[pyfunction]
+#[pyo3(name = "simplify_redex")]
+fn py_simplify_redex(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedResult> {
+    let pool_ref = expr.pool.borrow(py);
+    // Bind out of the `PyRef` first: it carries a `Python` marker and so is
+    // not `Sync`, but the pool and id themselves are safe to send.
+    #[cfg(feature = "parallel")]
+    let result = {
+        let (id, pool) = (expr.id, &pool_ref.inner);
+        py.allow_threads(|| alkahest_core::simplify_redex(id, pool))
+    };
+    #[cfg(not(feature = "parallel"))]
+    let result = alkahest_core::simplify(expr.id, &pool_ref.inner);
+    drop(pool_ref);
+    Ok(make_derived_result(
+        py,
+        result,
+        expr.pool.clone_ref(py),
+        None,
+    ))
+}
+
+/// Simplify in parallel, choosing the strategy from the expression's shape.
+///
+/// Requires the ``parallel`` feature at build time; without it this falls back
+/// to sequential :func:`simplify`, so the call is always available.
+///
+/// Dispatches to :func:`simplify_par` for wide expressions when enough CPU
+/// cores are available, and to :func:`simplify_redex` otherwise. Use
+/// :func:`simplify_strategy` to see which it would pick without running it.
+///
+/// This is the one to reach for if you do not want to think about shape. The
+/// result matches :func:`simplify` exactly.
+#[pyfunction]
+#[pyo3(name = "simplify_auto")]
+fn py_simplify_auto(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedResult> {
+    let pool_ref = expr.pool.borrow(py);
+    // Bind out of the `PyRef` first: it carries a `Python` marker and so is
+    // not `Sync`, but the pool and id themselves are safe to send.
+    #[cfg(feature = "parallel")]
+    let result = {
+        let (id, pool) = (expr.id, &pool_ref.inner);
+        py.allow_threads(|| alkahest_core::simplify_auto(id, pool))
+    };
+    #[cfg(not(feature = "parallel"))]
+    let result = alkahest_core::simplify(expr.id, &pool_ref.inner);
+    drop(pool_ref);
+    Ok(make_derived_result(
+        py,
+        result,
+        expr.pool.clone_ref(py),
+        None,
+    ))
+}
+
+/// Report which strategy :func:`simplify_auto` would use for ``expr``.
+///
+/// Returns ``"fork_join"`` (:func:`simplify_par`), ``"level_scheduled"``
+/// (:func:`simplify_redex`), or ``"sequential"`` when the extension was built
+/// without the ``parallel`` feature and both parallel entry points fall back to
+/// :func:`simplify`.
+///
+/// The answer depends on the number of worker threads available as well as the
+/// expression, so it can differ between machines.
+#[pyfunction]
+#[pyo3(name = "simplify_strategy")]
+fn py_simplify_strategy(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<String> {
+    #[cfg(feature = "parallel")]
+    {
+        let pool_ref = expr.pool.borrow(py);
+        let strategy = alkahest_core::choose_strategy(expr.id, &pool_ref.inner);
+        Ok(match strategy {
+            alkahest_core::Strategy::ForkJoin => "fork_join".to_string(),
+            alkahest_core::Strategy::LevelScheduled => "level_scheduled".to_string(),
+        })
+    }
+    #[cfg(not(feature = "parallel"))]
+    {
+        let _ = (py, expr);
+        Ok("sequential".to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -9476,6 +9587,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_interval_eval, m)?)?;
     // Phase 23 — Parallel simplification
     m.add_function(wrap_pyfunction!(py_simplify_par, m)?)?;
+    m.add_function(wrap_pyfunction!(py_simplify_redex, m)?)?;
+    m.add_function(wrap_pyfunction!(py_simplify_auto, m)?)?;
+    m.add_function(wrap_pyfunction!(py_simplify_strategy, m)?)?;
     // Phase 24 — Horner form
     m.add_function(wrap_pyfunction!(py_horner, m)?)?;
     m.add_function(wrap_pyfunction!(py_emit_c, m)?)?;

@@ -51,10 +51,47 @@ Rule-based simplification
    Expand products and collect like terms. Useful for canonicalizing
    polynomial expressions before further processing.
 
-.. function:: simplify_par(exprs: list[Expr]) -> list[DerivedResult]
+Parallel simplification
+-----------------------
 
-   Simplify a list of expressions concurrently using Rayon.
-   Requires ``--features parallel``.
+All three take a single expression and return the same result as
+:func:`simplify`; only the schedule differs. Each requires ``--features
+parallel`` at build time and falls back to sequential :func:`simplify`
+without it, so the calls are always available. Check
+``capabilities()["features"]["parallel"]`` to tell which you have.
+
+.. function:: simplify_par(expr: Expr) -> DerivedResult
+
+   Recursive fork-join traversal. Keeps each subtree on one worker, which
+   suits **wide** expressions — a large sum or product of independent terms.
+
+   The derivation log may vary in order between runs, because two workers can
+   reach the same node concurrently.
+
+.. function:: simplify_redex(expr: Expr) -> DerivedResult
+
+   Level-scheduled traversal: nodes are bucketed by height and every node at a
+   given height is rewritten concurrently, whatever its type. This suits
+   **deep** expressions, where :func:`simplify_par` finds no wide node to fork
+   on and ends up running essentially sequentially.
+
+   Each node is visited exactly once, so the derivation log is
+   **deterministic** — identical across runs and across CPU counts.
+
+.. function:: simplify_auto(expr: Expr) -> DerivedResult
+
+   Dispatch to :func:`simplify_par` or :func:`simplify_redex` based on the
+   expression's shape and the number of available cores. Reach for this if you
+   do not want to think about shape.
+
+.. function:: simplify_strategy(expr: Expr) -> str
+
+   Report which strategy :func:`simplify_auto` would use, without running it:
+   ``"fork_join"``, ``"level_scheduled"``, or ``"sequential"`` when the
+   extension was built without ``--features parallel``.
+
+   The answer depends on the worker count as well as the expression, so it can
+   differ between machines.
 
 Utility passes
 --------------
