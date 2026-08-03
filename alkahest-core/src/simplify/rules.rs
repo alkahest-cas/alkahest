@@ -30,47 +30,63 @@ pub trait RewriteRule: Send + Sync {
 // ---------------------------------------------------------------------------
 
 fn as_integer(expr: ExprId, pool: &ExprPool) -> Option<rug::Integer> {
-    match pool.get(expr) {
+    // `pool.get` would clone the whole node — for an `Integer` that is a
+    // bignum allocation — only for `n.0` to be cloned again below.
+    pool.with(expr, |data| match data {
         ExprData::Integer(n) => Some(n.0.clone()),
         _ => None,
-    }
+    })
+}
+
+/// Test an integer literal without materialising it.
+///
+/// `is_zero`/`is_one` run on nearly every node visited by `MulZero`, `AddZero`
+/// and `MulOne`, so going through `as_integer` cost two bignum clones per test.
+fn integer_is(expr: ExprId, pool: &ExprPool, value: i32) -> bool {
+    pool.with(expr, |data| match data {
+        ExprData::Integer(n) => n.0 == value,
+        _ => false,
+    })
 }
 
 fn is_neg_imaginary_unit(expr: ExprId, pool: &ExprPool) -> bool {
-    match pool.get(expr) {
-        ExprData::Mul(args) if args.len() == 2 => {
-            (as_integer(args[0], pool).is_some_and(|n| n == -1) && pool.is_imaginary_unit(args[1]))
-                || (as_integer(args[1], pool).is_some_and(|n| n == -1)
-                    && pool.is_imaginary_unit(args[0]))
-        }
-        _ => false,
-    }
+    let args = pool.with(expr, |data| match data {
+        ExprData::Mul(args) if args.len() == 2 => Some([args[0], args[1]]),
+        _ => None,
+    });
+    let Some([a0, a1]) = args else {
+        return false;
+    };
+    (as_integer(a0, pool).is_some_and(|n| n == -1) && pool.is_imaginary_unit(a1))
+        || (as_integer(a1, pool).is_some_and(|n| n == -1) && pool.is_imaginary_unit(a0))
 }
 
 fn is_strictly_positive_literal(expr: ExprId, pool: &ExprPool) -> bool {
-    match pool.get(expr) {
+    pool.with(expr, |data| match data {
         ExprData::Integer(n) => n.0 > 0,
         ExprData::Rational(r) => r.0 > 0,
         _ => false,
-    }
+    })
 }
 
 fn is_positive_domain_symbol(expr: ExprId, pool: &ExprPool) -> bool {
-    matches!(
-        pool.get(expr),
-        ExprData::Symbol {
-            domain: Domain::Positive,
-            ..
-        }
-    )
+    pool.with(expr, |data| {
+        matches!(
+            data,
+            ExprData::Symbol {
+                domain: Domain::Positive,
+                ..
+            }
+        )
+    })
 }
 
 fn is_zero(expr: ExprId, pool: &ExprPool) -> bool {
-    as_integer(expr, pool).is_some_and(|n| n == 0)
+    integer_is(expr, pool, 0)
 }
 
 fn is_one(expr: ExprId, pool: &ExprPool) -> bool {
-    as_integer(expr, pool).is_some_and(|n| n == 1)
+    integer_is(expr, pool, 1)
 }
 
 pub(crate) fn one_step(name: &'static str, before: ExprId, after: ExprId) -> DerivationLog {
@@ -99,9 +115,12 @@ pub(super) fn extract_int_coeff(expr: ExprId, pool: &ExprPool) -> (rug::Integer,
             let mut int_product = rug::Integer::from(1);
             let mut non_ints: Vec<ExprId> = vec![];
             for &a in &args {
-                match pool.get(a) {
-                    ExprData::Integer(n) => int_product *= n.0.clone(),
-                    _ => non_ints.push(a),
+                match pool.with(a, |d| match d {
+                    ExprData::Integer(n) => Some(n.0.clone()),
+                    _ => None,
+                }) {
+                    Some(n) => int_product *= n,
+                    None => non_ints.push(a),
                 }
             }
             if non_ints.len() == args.len() {
@@ -284,11 +303,16 @@ impl RewriteRule for MulZero {
         // literal `0^(negative)` factor is itself undefined (division by
         // zero), so the product is indeterminate, not `0`. This is the
         // n=0 boundary of `0 * x^(-1)` being indeterminate at x=0.
-        let has_zero_to_neg_pow = args.iter().any(|&a| match pool.get(a) {
-            ExprData::Pow { base, exp } => {
-                is_zero(base, pool) && as_integer(exp, pool).is_some_and(|e| e < 0)
+        let has_zero_to_neg_pow = args.iter().any(|&a| {
+            match pool.with(a, |d| match d {
+                ExprData::Pow { base, exp } => Some((*base, *exp)),
+                _ => None,
+            }) {
+                Some((base, exp)) => {
+                    is_zero(base, pool) && as_integer(exp, pool).is_some_and(|e| e < 0)
+                }
+                None => false,
             }
-            _ => false,
         });
         if has_zero_to_neg_pow {
             return None;
@@ -597,7 +621,7 @@ impl RewriteRule for ConstFold {
                 // lets `π · (4π)^(-1)` reduce to `π · 4^(-1) · π^(-1)`, which
                 // `DivSelf` and the b^e fold below then collapse to `1/4`.
                 if let Some(n) = as_integer(exp, pool) {
-                    if let ExprData::Mul(_) = pool.get(base) {
+                    if pool.with(base, |d| matches!(d, ExprData::Mul(_))) {
                         let (coeff, rest) = extract_int_coeff(base, pool);
                         if coeff != 1 && coeff != -1 && coeff != 0 && rest != pool.integer(1_i32) {
                             let coeff_pow = pool.pow(pool.integer(coeff), pool.integer(n.clone()));
@@ -958,12 +982,18 @@ impl RewriteRule for FlattenMul {
         let mut flat = Vec::new();
         let mut changed = false;
         for &a in &args {
-            match pool.get(a) {
-                ExprData::Mul(inner) => {
+            // Borrow the child: cloning it here allocated a `Vec` per child on
+            // every visit, and these two rules are tried on every node.
+            let nested = pool.with(a, |d| match d {
+                ExprData::Mul(inner) => Some(inner.clone()),
+                _ => None,
+            });
+            match nested {
+                Some(inner) => {
                     flat.extend_from_slice(&inner);
                     changed = true;
                 }
-                _ => flat.push(a),
+                None => flat.push(a),
             }
         }
         if !changed {
@@ -989,12 +1019,18 @@ impl RewriteRule for FlattenAdd {
         let mut flat = Vec::new();
         let mut changed = false;
         for &a in &args {
-            match pool.get(a) {
-                ExprData::Add(inner) => {
+            // Borrow the child: cloning it here allocated a `Vec` per child on
+            // every visit, and these two rules are tried on every node.
+            let nested = pool.with(a, |d| match d {
+                ExprData::Add(inner) => Some(inner.clone()),
+                _ => None,
+            });
+            match nested {
+                Some(inner) => {
                     flat.extend_from_slice(&inner);
                     changed = true;
                 }
-                _ => flat.push(a),
+                None => flat.push(a),
             }
         }
         if !changed {
@@ -1072,7 +1108,7 @@ impl RewriteRule for ExpandMul {
         // Find the first Add factor
         let add_pos = args
             .iter()
-            .position(|&a| matches!(pool.get(a), ExprData::Add(_)))?;
+            .position(|&a| pool.with(a, |d| matches!(d, ExprData::Add(_))))?;
 
         let add_args = match pool.get(args[add_pos]) {
             ExprData::Add(v) => v,
@@ -1247,11 +1283,14 @@ impl RewriteRule for CollectExp {
         let mut exp_args: Vec<ExprId> = Vec::new();
         let mut other: Vec<ExprId> = Vec::new();
         for &a in &args {
-            match pool.get(a) {
+            match pool.with(a, |d| match d {
                 ExprData::Func { name, args: fargs } if name == "exp" && fargs.len() == 1 => {
-                    exp_args.push(fargs[0]);
+                    Some(fargs[0])
                 }
-                _ => other.push(a),
+                _ => None,
+            }) {
+                Some(inner) => exp_args.push(inner),
+                None => other.push(a),
             }
         }
 

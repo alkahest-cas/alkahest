@@ -82,9 +82,21 @@ impl PoolIndex {
 /// into a `boxcar::Vec` via a single atomic load with no lock acquisition.
 /// Write operations (`intern`) use a per-shard lock (parallel mode) or a
 /// `Mutex` (non-parallel mode) only during new-node insertion.
+/// A node plus the properties that are cheaper to record once than to recompute.
+struct Node {
+    data: ExprData,
+    /// Whether every generator in this subtree commutes under multiplication.
+    ///
+    /// This is a bottom-up property, and hash-consing guarantees a node's
+    /// children are interned before the node itself, so it is computed once
+    /// here from the children's cached flags — O(arity) — instead of by
+    /// walking the whole subtree on every query.
+    mult_commutative: bool,
+}
+
 pub struct ExprPool {
     /// Lock-free, append-only, reference-stable node array.
-    nodes: boxcar::Vec<ExprData>,
+    nodes: boxcar::Vec<Node>,
     /// Deduplication index: ExprData → ExprId.
     #[cfg(feature = "parallel")]
     index: PoolIndex,
@@ -118,8 +130,10 @@ impl ExprPool {
             // Slow path: DashMap shard write-lock ensures at most one push
             // per unique key.  `boxcar::push` is lock-free so it can be
             // called safely while the shard lock is held.
-            self.index
-                .or_insert_with(data.clone(), || ExprId(self.nodes.push(data) as u32))
+            self.index.or_insert_with(data.clone(), || {
+                let node = self.make_node(data);
+                ExprId(self.nodes.push(node) as u32)
+            })
         }
 
         #[cfg(not(feature = "parallel"))]
@@ -128,18 +142,60 @@ impl ExprPool {
             if let Some(id) = idx.get(&data) {
                 return id;
             }
-            let id = ExprId(self.nodes.push(data.clone()) as u32);
+            let node = self.make_node(data.clone());
+            let id = ExprId(self.nodes.push(node) as u32);
             idx.insert(data, id);
             id
         }
     }
 
+    /// Wrap `data` with its cached properties.  Children are already interned,
+    /// so their flags are just array reads.
+    fn make_node(&self, data: ExprData) -> Node {
+        let mult_commutative = self.compute_mult_commutative(&data);
+        Node {
+            data,
+            mult_commutative,
+        }
+    }
+
+    /// One level of the `mult_tree_is_commutative` recurrence, reading each
+    /// child's cached flag rather than descending into it.
+    fn compute_mult_commutative(&self, data: &ExprData) -> bool {
+        let child = |c: ExprId| self.is_mult_commutative(c);
+        match data {
+            ExprData::Symbol { commutative, .. } => *commutative,
+            ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => true,
+            ExprData::Add(args) | ExprData::Mul(args) => args.iter().copied().all(child),
+            ExprData::Pow { base, exp } => child(*base) && child(*exp),
+            ExprData::Func { args, .. } => args.iter().copied().all(child),
+            ExprData::Piecewise { branches, default } => {
+                branches.iter().all(|&(c, v)| child(c) && child(v)) && child(*default)
+            }
+            ExprData::Predicate { args, .. } => args.iter().copied().all(child),
+            ExprData::Forall { var, body } | ExprData::Exists { var, body } => {
+                child(*var) && child(*body)
+            }
+            ExprData::BigO(inner) => child(*inner),
+            ExprData::RootSum { poly, body, .. } => child(*poly) && child(*body),
+        }
+    }
+
+    /// Whether every generator in the subtree rooted at `id` commutes under
+    /// multiplication.  O(1): the flag was computed when `id` was interned.
+    pub fn is_mult_commutative(&self, id: ExprId) -> bool {
+        self.node(id).mult_commutative
+    }
+
+    fn node(&self, id: ExprId) -> &Node {
+        self.nodes
+            .get(id.0 as usize)
+            .expect("ExprPool: ExprId out of range")
+    }
+
     /// Borrow a node by id and apply `f` without cloning.  Lock-free.
     pub fn with<R, F: FnOnce(&ExprData) -> R>(&self, id: ExprId, f: F) -> R {
-        f(self
-            .nodes
-            .get(id.0 as usize)
-            .expect("ExprPool: ExprId out of range"))
+        f(&self.node(id).data)
     }
 
     /// Clone and return the `ExprData` for `id`.

@@ -111,9 +111,11 @@ fn simplify_node(
         return DerivedExpr::new(cached);
     }
 
-    // 1. Rebuild with simplified children
-    let data = pool.get(expr);
-    let (rebuilt, child_log) = simplify_children(data, pool, rules, memo);
+    // 1. Rebuild with simplified children.  `with` borrows the node; cloning
+    //    it here allocated a fresh `Vec` (and a `String` for `Func`) per visit.
+    let (rebuilt, child_log) = pool.with(expr, |data| {
+        simplify_children(expr, data, pool, rules, memo)
+    });
 
     // 2. Apply rules to rebuilt node until no rule fires
     let mut current = rebuilt;
@@ -149,8 +151,9 @@ fn simplify_node_indexed(
         return DerivedExpr::new(cached);
     }
 
-    let data = pool.get(expr);
-    let (rebuilt, child_log) = simplify_children(data, pool, child_rules, memo);
+    let (rebuilt, child_log) = pool.with(expr, |data| {
+        simplify_children(expr, data, pool, child_rules, memo)
+    });
 
     let mut current = rebuilt;
     let mut rule_log = DerivationLog::new();
@@ -175,8 +178,18 @@ fn simplify_node_indexed(
 }
 
 /// Simplify children of a node and return (rebuilt_expr, child_log).
+///
+/// When every child simplifies to itself, `expr` is reused instead of being
+/// re-interned.  Interning re-hashes the whole node, and `ExprPool::mul`
+/// additionally consults the commutativity of its arguments, so rebuilding an
+/// unchanged node is pure overhead — and most nodes in a pass are unchanged.
+///
+/// `add` and `mul` canonically sort their arguments, so for those the shortcut
+/// is only taken when the original list is already sorted; otherwise reusing
+/// `expr` would skip a canonicalisation the rebuild would have applied.
 fn simplify_children(
-    data: ExprData,
+    expr: ExprId,
+    data: &ExprData,
     pool: &ExprPool,
     rules: &[Box<dyn RewriteRule>],
     memo: &mut HashMap<ExprId, ExprId>,
@@ -184,91 +197,135 @@ fn simplify_children(
     let mut log = DerivationLog::new();
     match data {
         ExprData::Add(args) => {
-            let new_args: Vec<ExprId> = args
-                .into_iter()
-                .map(|a| {
-                    let r = simplify_node(a, pool, rules, memo);
-                    log = std::mem::take(&mut log).merge(r.log);
-                    r.value
-                })
-                .collect();
-            (pool.add(new_args), log)
+            let (new_args, changed) = simplify_args(args, pool, rules, memo, &mut log);
+            let id = if !changed && is_sorted(args) {
+                expr
+            } else {
+                pool.add(new_args)
+            };
+            (id, log)
         }
         ExprData::Mul(args) => {
-            let new_args: Vec<ExprId> = args
-                .into_iter()
-                .map(|a| {
-                    let r = simplify_node(a, pool, rules, memo);
-                    log = std::mem::take(&mut log).merge(r.log);
-                    r.value
-                })
-                .collect();
-            (pool.mul(new_args), log)
+            let (new_args, changed) = simplify_args(args, pool, rules, memo, &mut log);
+            let id = if !changed && is_sorted(args) {
+                expr
+            } else {
+                pool.mul(new_args)
+            };
+            (id, log)
         }
         ExprData::Pow { base, exp } => {
-            let rb = simplify_node(base, pool, rules, memo);
+            let rb = simplify_node(*base, pool, rules, memo);
             log = log.merge(rb.log);
-            let re = simplify_node(exp, pool, rules, memo);
+            let re = simplify_node(*exp, pool, rules, memo);
             log = log.merge(re.log);
-            (pool.pow(rb.value, re.value), log)
+            let id = if rb.value == *base && re.value == *exp {
+                expr
+            } else {
+                pool.pow(rb.value, re.value)
+            };
+            (id, log)
         }
         ExprData::Func { name, args } => {
-            let new_args: Vec<ExprId> = args
-                .into_iter()
-                .map(|a| {
-                    let r = simplify_node(a, pool, rules, memo);
-                    log = std::mem::take(&mut log).merge(r.log);
-                    r.value
-                })
-                .collect();
-            (pool.func(name, new_args), log)
+            let (new_args, changed) = simplify_args(args, pool, rules, memo, &mut log);
+            let id = if changed {
+                pool.func(name.as_str(), new_args)
+            } else {
+                expr
+            };
+            (id, log)
         }
         // PA-9: Simplify values in each branch and the default.
         // The condition expressions (predicates) are passed through unchanged
         // since there are no simplification rules for predicates yet.
         ExprData::Piecewise { branches, default } => {
+            let mut changed = false;
             let new_branches: Vec<(ExprId, ExprId)> = branches
-                .into_iter()
-                .map(|(cond, val)| {
+                .iter()
+                .map(|&(cond, val)| {
                     let rv = simplify_node(val, pool, rules, memo);
                     log = std::mem::take(&mut log).merge(rv.log);
+                    changed |= rv.value != val;
                     (cond, rv.value)
                 })
                 .collect();
-            let rd = simplify_node(default, pool, rules, memo);
+            let rd = simplify_node(*default, pool, rules, memo);
             log = log.merge(rd.log);
-            (pool.piecewise(new_branches, rd.value), log)
+            let id = if !changed && rd.value == *default {
+                expr
+            } else {
+                pool.piecewise(new_branches, rd.value)
+            };
+            (id, log)
         }
         // Predicate args may be simplified as expressions.
         ExprData::Predicate { kind, args } => {
-            let new_args: Vec<ExprId> = args
-                .into_iter()
-                .map(|a| {
-                    let r = simplify_node(a, pool, rules, memo);
-                    log = std::mem::take(&mut log).merge(r.log);
-                    r.value
-                })
-                .collect();
-            (pool.predicate(kind, new_args), log)
+            let (new_args, changed) = simplify_args(args, pool, rules, memo, &mut log);
+            let id = if changed {
+                pool.predicate(kind.clone(), new_args)
+            } else {
+                expr
+            };
+            (id, log)
         }
         ExprData::Forall { var, body } => {
-            let rb = simplify_node(body, pool, rules, memo);
+            let rb = simplify_node(*body, pool, rules, memo);
             log = log.merge(rb.log);
-            (pool.forall(var, rb.value), log)
+            let id = if rb.value == *body {
+                expr
+            } else {
+                pool.forall(*var, rb.value)
+            };
+            (id, log)
         }
         ExprData::Exists { var, body } => {
-            let rb = simplify_node(body, pool, rules, memo);
+            let rb = simplify_node(*body, pool, rules, memo);
             log = log.merge(rb.log);
-            (pool.exists(var, rb.value), log)
+            let id = if rb.value == *body {
+                expr
+            } else {
+                pool.exists(*var, rb.value)
+            };
+            (id, log)
         }
         ExprData::BigO(arg) => {
-            let r = simplify_node(arg, pool, rules, memo);
+            let r = simplify_node(*arg, pool, rules, memo);
             log = log.merge(r.log);
-            (pool.big_o(r.value), log)
+            let id = if r.value == *arg {
+                expr
+            } else {
+                pool.big_o(r.value)
+            };
+            (id, log)
         }
-        // Atoms have no children
-        atom => (pool.intern(atom), log),
+        // Atoms have no children; `expr` already interns this exact node.
+        _ => (expr, log),
     }
+}
+
+/// Simplify each argument in order, reporting whether any of them changed.
+fn simplify_args(
+    args: &[ExprId],
+    pool: &ExprPool,
+    rules: &[Box<dyn RewriteRule>],
+    memo: &mut HashMap<ExprId, ExprId>,
+    log: &mut DerivationLog,
+) -> (Vec<ExprId>, bool) {
+    let mut changed = false;
+    let new_args: Vec<ExprId> = args
+        .iter()
+        .map(|&a| {
+            let r = simplify_node(a, pool, rules, memo);
+            *log = std::mem::take(log).merge(r.log);
+            changed |= r.value != a;
+            r.value
+        })
+        .collect();
+    (new_args, changed)
+}
+
+fn is_sorted(args: &[ExprId]) -> bool {
+    args.windows(2).all(|w| w[0] <= w[1])
 }
 
 // ---------------------------------------------------------------------------
