@@ -371,13 +371,24 @@ fn eq_polynomials_for_sampling(
         out: &mut Vec<UniPoly>,
     ) -> Result<(), CadError> {
         match f {
+            // `Eq`, and also the *non-strict* inequalities.
+            //
+            // A `≤`/`≥` atom can be satisfied at nothing but its boundary:
+            // `x² ≤ 0` holds only at `x = 0`. The open-cell sampling above
+            // never lands on such a point, so omitting `Le`/`Ge` here made
+            // `∃x. x² ≤ 0` return false — and, by negation, made
+            // `∀x. x² > 0` return *true*, a proof of a false statement.
+            //
+            // Strict atoms need no boundary sample: their solution sets are
+            // open, so if non-empty they contain a whole interval and the
+            // open-cell pass is already complete for them.
             Formula::Atom {
-                kind: PredicateKind::Eq,
+                kind: PredicateKind::Eq | PredicateKind::Le | PredicateKind::Ge,
                 args,
             } => {
                 if args.len() != 2 {
                     return Err(CadError::Logic(LogicError::UnsupportedExpr(
-                        "Eq arity must be 2",
+                        "comparison arity must be 2",
                     )));
                 }
                 let d = UniPoly::from_symbolic_clear_denoms(
@@ -396,16 +407,18 @@ fn eq_polynomials_for_sampling(
             }
             Formula::Not(x) => {
                 if let Formula::Atom {
-                    kind: PredicateKind::Eq,
+                    kind: PredicateKind::Eq | PredicateKind::Le | PredicateKind::Ge,
                     args,
                 } = x.as_ref()
                 {
-                    // Sampling roots of Eq is irrelevant inside Ne — skip specialized roots.
+                    // Negating any of these yields a *strict* atom (`≠`, `>`,
+                    // `<`), whose solution set is open — the open-cell pass
+                    // already covers it, so its boundary roots are irrelevant.
                     let _ = args;
                     Ok(())
                 } else {
                     Err(CadError::Unsupported(
-                        "NOT over non-Eq unsupported for sampling roots",
+                        "NOT over strict comparison unsupported for sampling roots",
                     ))
                 }
             }
@@ -624,7 +637,22 @@ fn decide_exists_univariate(
 
     breakpoints.sort();
     breakpoints.dedup_by(|a, b| *a == *b);
-    // midpoints between consecutive breakpoints strictly inside intervals
+    // The breakpoints themselves, and the midpoints between them.
+    //
+    // Sampling only the midpoints misses cells that happen to sit *around* a
+    // breakpoint. `1 - 3x² + 2x³ + 3x⁴` isolates its roots to `(-2,-1)` and
+    // `(-1,0)` and is negative only between them — a band containing `x = -1`.
+    // The midpoints `-1.5` and `-0.5` both fall outside it, so `∃x. p < 0`
+    // came back false and `∀x. p > 0` came back *true*, a proof of a false
+    // statement.
+    //
+    // Adding candidates is monotonically safe: every candidate is checked by
+    // `eval_qf_formula` at that exact rational before it is accepted, so a
+    // larger sample set can only turn a missed witness into a found one — it
+    // can never manufacture a wrong answer.
+    for b in &breakpoints {
+        candidates.insert(b.clone());
+    }
     for w in breakpoints.windows(2) {
         let lo = &w[0];
         let hi = &w[1];
