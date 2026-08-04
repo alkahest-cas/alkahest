@@ -33,6 +33,10 @@ pub enum IntegrationError {
     UnsupportedExtensionDegree(u32),
     /// The integrand provably has no elementary antiderivative (e.g. elliptic integrals).
     NonElementary(String),
+    /// The active [`crate::budget::Budget`] was exceeded, or cancellation was
+    /// requested, at a cooperative checkpoint inside the integration engine.
+    /// See `crate::budget` — P1 search plumbing item 4.
+    Budget(crate::budget::BudgetError),
 }
 
 impl fmt::Display for IntegrationError {
@@ -48,11 +52,18 @@ impl fmt::Display for IntegrationError {
             IntegrationError::NonElementary(msg) => {
                 write!(f, "integrate: no elementary antiderivative exists: {msg}")
             }
+            IntegrationError::Budget(e) => write!(f, "integrate: {e}"),
         }
     }
 }
 
 impl std::error::Error for IntegrationError {}
+
+impl From<crate::budget::BudgetError> for IntegrationError {
+    fn from(e: crate::budget::BudgetError) -> Self {
+        IntegrationError::Budget(e)
+    }
+}
 
 impl IntegrationError {
     /// A human-readable remediation hint for the user.
@@ -71,6 +82,10 @@ impl IntegrationError {
                 "this integrand has no closed-form antiderivative in terms of elementary \
                  functions; use a numeric integrator or elliptic-integral library",
             ),
+            IntegrationError::Budget(e) => {
+                use crate::errors::AlkahestError;
+                e.remediation()
+            }
         }
     }
 
@@ -87,6 +102,7 @@ impl crate::errors::AlkahestError for IntegrationError {
             IntegrationError::DivisionByZero => "E-INT-002",
             IntegrationError::UnsupportedExtensionDegree(_) => "E-INT-003",
             IntegrationError::NonElementary(_) => "E-INT-004",
+            IntegrationError::Budget(e) => e.code(),
         }
     }
 
@@ -2066,6 +2082,13 @@ pub fn integrate(
     var: ExprId,
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, IntegrationError> {
+    // Cooperative budget checkpoint (P1 search plumbing item 4): the single
+    // entry point every public integration route passes through, so a fan-out
+    // loop over many candidates can bound wall-clock/step cost or request
+    // cancellation without waiting for an OS-level kill. No-op unless the
+    // caller entered a `budget::Budget` — see `crate::budget`.
+    crate::budget::check()?;
+
     // V1-2: Route algebraic integrands to the Trager/Risch algebraic engine.
     // For *mixed* algebraic+transcendental (e.g. exp(x)/sqrt(x²+1)) the Risch
     // engine handles the transcendental level and delegates base-field integrals
@@ -2133,6 +2156,12 @@ fn integrate_inner(
     pool: &ExprPool,
     depth: u32,
 ) -> Result<DerivedExpr<ExprId>, IntegrationError> {
+    // Cooperative budget checkpoint at the recursion boundary: u-substitution
+    // re-enters `integrate_inner` (see `try_u_substitution` below), so this
+    // one call site also bounds the recursive fallback chain, not just the
+    // initial call. See `crate::budget` — P1 search plumbing item 4.
+    crate::budget::check()?;
+
     let mut log = DerivationLog::new();
     match integrate_raw(expr, var, pool, &mut log) {
         Ok(raw) => {

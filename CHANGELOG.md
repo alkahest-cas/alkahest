@@ -4,6 +4,24 @@
 
 ### Added
 
+- **Budgets, cooperative cancellation, and a determinism seed** (P1 search
+  plumbing item 4): `alkahest.Budget(wall_ms=..., max_steps=..., seed=...)`
+  and `alkahest.context(budget=...)` push a wall-clock/step budget into a
+  new Rust-side cooperative checkpoint (`alkahest_core::budget`), so a
+  fan-out loop trying many candidate integrals/rewrites can bound one
+  candidate's cost instead of hanging on it. `alkahest.integrate` checks it
+  at its top-level entry and its recursion boundary and raises
+  `BudgetExceededError` (`E-BUDGET-001` wall clock, `E-BUDGET-002` step
+  limit, `E-BUDGET-003` cancelled) rather than running unbounded;
+  `alkahest.simplify` checks it once per rewrite pass and, since it has no
+  error channel, stops early instead of raising (`run_with_wall_fallback`
+  supplements this with a hard deadline via a worker thread when needed).
+  `alkahest.request_cancel()` / `clear_cancel()` / `is_cancelled()` expose a
+  process-wide cancellation flag so an orchestrator thread can stop a heavy
+  call running elsewhere; `alkahest.budget_seed()` exposes the active
+  budget's seed to RNG-consuming samplers for reproducible runs. See
+  [`docs/mdbook/src/budgets.md`](docs/mdbook/src/budgets.md).
+
 - **Python bindings for the parallel simplifiers**: `simplify_redex`,
   `simplify_auto` and `simplify_strategy` join the existing `simplify_par`.
   All take a single expression and return the same result as `simplify`; only

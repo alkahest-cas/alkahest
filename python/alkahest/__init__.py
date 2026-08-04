@@ -10,6 +10,15 @@ from . import (
     number_theory,
     research,  # session-level claim graph (provenance objects)
 )
+from ._budget import (
+    Budget,
+    budget_seed,
+    clear_cancel,
+    is_budget_active,
+    is_cancelled,
+    request_cancel,
+    run_with_wall_fallback,
+)
 from ._certificates import (
     Certifiability,
     certifiable,
@@ -18,6 +27,7 @@ from ._certificates import (
 )
 from ._context import (
     active_assumptions,
+    active_budget,
     active_domain,
     active_pool,
     context,
@@ -287,6 +297,7 @@ with _suppress(ImportError):
 from .exceptions import (
     AlkahestError,
     AssumptionError,
+    BudgetExceededError,
     CadError,
     CertificateUnavailableError,
     ConversionError,
@@ -323,6 +334,7 @@ from .exceptions import (
 _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     "AlkahestError",
     "AssumptionError",
+    "BudgetExceededError",
     "CadError",
     "ConversionError",
     "DaeError",
@@ -1494,6 +1506,9 @@ __all__ = [
     "ArbBall",
     "AssumptionError",
     "Assumptions",
+    # P1 search plumbing item 4 — budgets, cancellation, determinism
+    "Budget",
+    "BudgetExceededError",
     "CadError",
     # V5-12 — certificate ledger
     "Certifiability",
@@ -1585,6 +1600,8 @@ __all__ = [
     "acos",
     "acosh",
     "active_assumptions",
+    # P1 search plumbing item 4
+    "active_budget",
     "active_domain",
     "active_pool",
     "adjoint_system",
@@ -1596,6 +1613,8 @@ __all__ = [
     "atanh",
     "bessel_j0",
     "bessel_j1",
+    # P1 search plumbing item 4
+    "budget_seed",
     "cad_lift",
     "cad_project",
     "cancel",
@@ -1605,6 +1624,8 @@ __all__ = [
     # V5-12 — certificate ledger
     "certifiable",
     "certificate_coverage",
+    # P1 search plumbing item 4
+    "clear_cancel",
     # Phase 26
     "collect_like_terms",
     "compile_expr",
@@ -1648,6 +1669,9 @@ __all__ = [
     "im",
     "integrate",
     "interval_eval",
+    # P1 search plumbing item 4
+    "is_budget_active",
+    "is_cancelled",
     "jacobian",
     "jit",
     "jit_is_available",
@@ -1689,6 +1713,8 @@ __all__ = [
     # V2-4
     "real_roots",
     "refine_root",
+    # P1 search plumbing item 4
+    "request_cancel",
     # V5-12 — certificate ledger
     "require_certificate",
     # Session-level provenance: claim graph for autoresearch loops
@@ -1702,6 +1728,8 @@ __all__ = [
     "round",
     "routh_hurwitz",
     "rsolve",
+    # P1 search plumbing item 4
+    "run_with_wall_fallback",
     "satisfiable",
     "sensitivity_system",
     "series",

@@ -7,6 +7,8 @@
 pub mod acausal;
 pub mod algebra;
 pub mod ball;
+// P1 search plumbing item 4 — budgets, cancellation, determinism
+pub mod budget;
 pub mod calculus;
 pub mod dae;
 pub mod deriv;
@@ -184,6 +186,11 @@ pub use poly::groebner::{
     MonomialOrder,
 };
 
+// P1 search plumbing item 4 — budgets, cancellation, determinism
+pub use budget::{
+    check as budget_check, clear_cancel, enter as budget_enter, is_active as budget_is_active,
+    is_cancelled, request_cancel, seed as budget_seed, Budget, BudgetError, BudgetGuard,
+};
 pub use errors::AlkahestError;
 pub use lean::{
     emit_definite_integration_cert, emit_integration_cert, emit_lean_expr as emit_lean,

@@ -164,7 +164,7 @@ use alkahest_core::number_theory::{
     QuadraticDirichlet as CoreQuadraticDirichlet,
 };
 use pyo3::buffer::PyBuffer;
-use pyo3::exceptions::{PyOverflowError, PyTypeError};
+use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyComplex, PyDict, PyInt, PyList, PyTuple};
 use rug::{Complete, Integer, Rational};
@@ -286,6 +286,8 @@ pyo3::create_exception!(alkahest, PyLinearRecurrenceError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyRsolveError, PyAlkahestError);
 #[cfg(feature = "groebner")]
 pyo3::create_exception!(alkahest, PyDiophantineError, PyAlkahestError);
+// P1 search plumbing item 4 — budgets, cancellation, determinism
+pyo3::create_exception!(alkahest, PyBudgetExceededError, PyAlkahestError);
 
 /// Build a structured exception with `.code`, `.remediation`, `.span` attributes.
 fn make_structured_err<E: AlkahestErrorTrait>(
@@ -445,10 +447,116 @@ fn gpu_groebner_error_to_py(e: alkahest_core::experimental::GpuGroebnerError) ->
 }
 
 fn integrate_error_to_py(e: IntegrationError) -> PyErr {
+    // A budget/cancellation trip is not an integration failure — raise the
+    // dedicated `BudgetExceededError` (E-BUDGET-*) instead of `IntegrationError`
+    // so callers can catch it uniformly regardless of which engine tripped it.
+    if let IntegrationError::Budget(inner) = &e {
+        return budget_error_to_py(inner);
+    }
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyIntegrationError>();
         make_structured_err(py, &exc_type, &e)
     })
+}
+
+/// Map a [`alkahest_core::budget::BudgetError`] to Python's
+/// `BudgetExceededError` (`E-BUDGET-001..003`). See `crate::budget` — P1
+/// search plumbing item 4.
+fn budget_error_to_py(e: &alkahest_core::budget::BudgetError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+        make_structured_err(py, &exc_type, e)
+    })
+}
+
+// ---------------------------------------------------------------------------
+// P1 search plumbing item 4 — budgets, cancellation, determinism
+//
+// `alkahest_core::budget::enter` returns an RAII guard that must be dropped
+// on the same thread it was created on (the underlying stack is
+// thread-local). `alkahest.context(budget=...)` is a `@contextmanager`, so
+// its `push`/`pop` calls always run on the thread that entered the `with`
+// block — there is no `push`/`pop` pair here without a matching thread, and
+// no guard object crosses the Python/Rust boundary. Each `push_budget` call
+// stores its guard on a Rust-side thread-local stack; `pop_budget` pops and
+// drops the most recent one.
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static PY_BUDGET_GUARDS: std::cell::RefCell<Vec<alkahest_core::budget::BudgetGuard>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Push a [`alkahest_core::budget::Budget`] onto this thread's active-budget
+/// stack. Pair with [`py_pop_budget`]; `alkahest.context(budget=...)` calls
+/// both around its `with` block.
+#[pyfunction]
+#[pyo3(name = "push_budget")]
+#[pyo3(signature = (wall_ms=None, max_steps=None, seed=None))]
+fn py_push_budget(wall_ms: Option<f64>, max_steps: Option<u64>, seed: Option<u64>) -> PyResult<()> {
+    let mut budget = alkahest_core::budget::Budget::new();
+    if let Some(ms) = wall_ms {
+        if !ms.is_finite() || ms < 0.0 {
+            return Err(PyValueError::new_err(
+                "wall_ms must be a finite, non-negative number of milliseconds",
+            ));
+        }
+        budget.wall = Some(std::time::Duration::from_secs_f64(ms / 1000.0));
+    }
+    budget.max_steps = max_steps;
+    budget.seed = seed;
+    let guard = alkahest_core::budget::enter(budget);
+    PY_BUDGET_GUARDS.with(|g| g.borrow_mut().push(guard));
+    Ok(())
+}
+
+/// Pop the most recently pushed [`alkahest_core::budget::Budget`] from this
+/// thread's active-budget stack, dropping its guard.
+#[pyfunction]
+#[pyo3(name = "pop_budget")]
+fn py_pop_budget() -> PyResult<()> {
+    let popped = PY_BUDGET_GUARDS.with(|g| g.borrow_mut().pop());
+    if popped.is_none() {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "pop_budget() called with no active budget on this thread",
+        ));
+    }
+    Ok(())
+}
+
+/// `True` if a [`alkahest_core::budget::Budget`] is active on this thread.
+#[pyfunction]
+#[pyo3(name = "is_budget_active")]
+fn py_is_budget_active() -> bool {
+    alkahest_core::budget::is_active()
+}
+
+/// The seed of the innermost active budget on this thread, or `None`.
+#[pyfunction]
+#[pyo3(name = "budget_seed")]
+fn py_budget_seed() -> Option<u64> {
+    alkahest_core::budget::seed()
+}
+
+/// Request cancellation of the current cooperative operation(s), process-wide.
+#[pyfunction]
+#[pyo3(name = "request_cancel")]
+fn py_request_cancel() {
+    alkahest_core::budget::request_cancel();
+}
+
+/// Clear a previously requested cancellation.
+#[pyfunction]
+#[pyo3(name = "clear_cancel")]
+fn py_clear_cancel() {
+    alkahest_core::budget::clear_cancel();
+}
+
+/// `True` if [`py_request_cancel`] was called and not yet cleared.
+#[pyfunction]
+#[pyo3(name = "is_cancelled")]
+fn py_is_cancelled() -> bool {
+    alkahest_core::budget::is_cancelled()
 }
 
 fn series_error_to_py(e: SeriesError) -> PyErr {
@@ -9823,6 +9931,18 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "DiophantineError",
         m.py().get_type_bound::<PyDiophantineError>(),
     )?;
+    // P1 search plumbing item 4 — budgets, cancellation, determinism
+    m.add(
+        "BudgetExceededError",
+        m.py().get_type_bound::<PyBudgetExceededError>(),
+    )?;
+    m.add_function(wrap_pyfunction!(py_push_budget, m)?)?;
+    m.add_function(wrap_pyfunction!(py_pop_budget, m)?)?;
+    m.add_function(wrap_pyfunction!(py_is_budget_active, m)?)?;
+    m.add_function(wrap_pyfunction!(py_budget_seed, m)?)?;
+    m.add_function(wrap_pyfunction!(py_request_cancel, m)?)?;
+    m.add_function(wrap_pyfunction!(py_clear_cancel, m)?)?;
+    m.add_function(wrap_pyfunction!(py_is_cancelled, m)?)?;
     // V1-15: compile-time flag so Python tests can skip egraph-dependent assertions.
     m.add("HAS_EGRAPH", cfg!(feature = "egraph"))?;
     Ok(())

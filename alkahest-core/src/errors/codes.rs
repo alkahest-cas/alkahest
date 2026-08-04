@@ -177,6 +177,10 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-RESIDUE-002", class: "ResidueError", cause: Cause::Domain,      remediation: Some("denominator must be non-zero") },
     ErrorSpec { code: "E-RESIDUE-003", class: "ResidueError", cause: Cause::Unsupported, remediation: Some("pole order exceeds supported bound; essential singularities are out of scope") },
     ErrorSpec { code: "E-RESIDUE-004", class: "ResidueError", cause: Cause::Domain,      remediation: Some("division by zero during Laurent coefficient extraction") },
+    // E-BUDGET — BudgetError (P1 search plumbing item 4: budgets/cancellation/determinism)
+    ErrorSpec { code: "E-BUDGET-001", class: "BudgetError", cause: Cause::Resource, remediation: Some("raise Budget(wall_ms=...), or accept a heuristic/numeric result for this candidate instead of an exact one") },
+    ErrorSpec { code: "E-BUDGET-002", class: "BudgetError", cause: Cause::Resource, remediation: Some("raise Budget(max_steps=...), or accept a partial/heuristic result for this candidate instead of an exact one") },
+    ErrorSpec { code: "E-BUDGET-003", class: "BudgetError", cause: Cause::Resource, remediation: Some("call alkahest.clear_cancel() (Python) or budget::clear_cancel() (Rust) before starting the next candidate") },
     // E-DOMAIN — reserved; DomainError is Python-only pending Rust implementation
 ];
 

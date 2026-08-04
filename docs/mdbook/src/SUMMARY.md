@@ -22,4 +22,5 @@
 - [Lean certificates](./lean-certs.md)
   - [Certificate coverage](./certificate-coverage.md)
 - [Error handling](./errors.md)
+- [Budgets, cancellation, and determinism](./budgets.md)
 - [Stability policy](./stability.md)

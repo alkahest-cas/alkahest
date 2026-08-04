@@ -367,6 +367,16 @@ pub fn simplify_with(
 ) -> DerivedExpr<ExprId> {
     let mut current = DerivedExpr::new(expr);
     for _ in 0..config.max_iterations {
+        // Cooperative budget checkpoint, once per full bottom-up pass (P1
+        // search plumbing item 4). `simplify` has no `Result` return type, so
+        // a budget/cancellation trip here stops further passes early and
+        // returns the best value simplified so far — exactly like running out
+        // of `max_iterations` already does silently. Callers that need a hard
+        // `BudgetExceeded` raise on this path should wrap the call in a
+        // Python-level wall timeout (see `docs/mdbook/src/budgets.md`).
+        if crate::budget::check().is_err() {
+            break;
+        }
         // Fresh memo per pass: maps input ExprId → simplified ExprId.
         // Shared subexpressions are simplified once and the result reused for
         // all subsequent occurrences within the same bottom-up sweep.
@@ -402,6 +412,10 @@ pub fn simplify_with_pattern_rules(
     let child_rules = rule_set.as_dyn_rules();
     let mut current = DerivedExpr::new(expr);
     for _ in 0..config.max_iterations {
+        // See the matching checkpoint in `simplify_with` above.
+        if crate::budget::check().is_err() {
+            break;
+        }
         let mut memo: HashMap<ExprId, ExprId> = HashMap::new();
         let result = simplify_node_indexed(current.value, pool, rule_set, &child_rules, &mut memo);
         let merged_log = current.log.merge(result.log);
@@ -463,6 +477,11 @@ pub fn simplify_batch(exprs: &[ExprId], pool: &ExprPool) -> Vec<DerivedExpr<Expr
     let mut done = vec![false; exprs.len()];
 
     for _ in 0..config.max_iterations {
+        // See the matching checkpoint in `simplify_with` above — bounds the
+        // whole batch's total pass count, not just one expression's.
+        if crate::budget::check().is_err() {
+            break;
+        }
         // One memo shared by every input in this pass: a subexpression that
         // appears in more than one input is simplified only the first time.
         let mut memo: HashMap<ExprId, ExprId> = HashMap::new();
