@@ -563,7 +563,283 @@ def sweep_sums(report, verbose=False):
             print(f"  {label}: {got}")
 
 
+# ---------------------------------------------------------------------------
+# Surface 4 — branch cuts
+# ---------------------------------------------------------------------------
+
+#: Identities that hold only on part of the real line.  Each entry is
+#: ``(builder, name, sample_points)``: ``builder`` takes the alkahest pool and
+#: the symbol and returns the expression to simplify, ``name`` labels it, and
+#: the sample points deliberately straddle the branch cut.
+#:
+#: The failure being hunted is a simplifier that rewrites one of these to its
+#: unrestricted form — ``sqrt(x**2) -> x``, ``(x**2)**(1/2) -> x``,
+#: ``asin(sin x) -> x`` — which is true on one side of the cut and silently
+#: wrong on the other.  Nothing in the reported result distinguishes the two.
+_BRANCH_CASES = [
+    (
+        "sqrt(x**2)",
+        lambda p, x: p.func("sqrt", [x ** p.integer(2)]),
+        [-3.0, -1.0, -0.5, 0.5, 1.0, 3.0],
+    ),
+    (
+        "(x**2)**(1/2)",
+        lambda p, x: (x ** p.integer(2)) ** p.rational(1, 2),
+        [-3.0, -1.0, -0.5, 0.5, 1.0, 3.0],
+    ),
+    (
+        "(x**4)**(1/4)",
+        lambda p, x: (x ** p.integer(4)) ** p.rational(1, 4),
+        [-3.0, -1.0, 1.0, 3.0],
+    ),
+    (
+        "(x**2)**(3/2)",
+        lambda p, x: (x ** p.integer(2)) ** p.rational(3, 2),
+        [-2.0, -1.0, 1.0, 2.0],
+    ),
+    (
+        "(x**6)**(1/6)",
+        lambda p, x: (x ** p.integer(6)) ** p.rational(1, 6),
+        [-2.0, -1.0, 1.0, 2.0],
+    ),
+    (
+        "log(exp(x))",
+        lambda p, x: p.func("log", [p.func("exp", [x])]),
+        [-2.0, -0.5, 0.5, 2.0],
+    ),
+    (
+        "exp(log(x))",
+        lambda p, x: p.func("exp", [p.func("log", [x])]),
+        [0.5, 1.0, 2.0],
+    ),
+    (
+        "log(x**2)",
+        lambda p, x: p.func("log", [x ** p.integer(2)]),
+        [-3.0, -1.0, 1.0, 3.0],
+    ),
+    (
+        "sqrt(x)**2",
+        lambda p, x: p.func("sqrt", [x]) ** p.integer(2),
+        [0.5, 1.0, 4.0],
+    ),
+    (
+        "sqrt(x**2)*sqrt(x**2)",
+        lambda p, x: p.func("sqrt", [x ** p.integer(2)]) * p.func("sqrt", [x ** p.integer(2)]),
+        [-2.0, -1.0, 1.0, 2.0],
+    ),
+    (
+        "asin(sin(x))",
+        lambda p, x: p.func("asin", [p.func("sin", [x])]),
+        [-3.0, -2.0, -0.5, 0.5, 2.0, 3.0],
+    ),
+    (
+        "acos(cos(x))",
+        lambda p, x: p.func("acos", [p.func("cos", [x])]),
+        [-2.0, -0.5, 0.5, 2.0, 4.0],
+    ),
+    (
+        "atan(tan(x))",
+        lambda p, x: p.func("atan", [p.func("tan", [x])]),
+        [-2.0, -0.5, 0.5, 2.0],
+    ),
+    (
+        "sinh(asinh(x))",
+        lambda p, x: p.func("sinh", [p.func("asinh", [x])]),
+        [-2.0, -0.5, 0.5, 2.0],
+    ),
+    (
+        "cosh(acosh(x))",
+        lambda p, x: p.func("cosh", [p.func("acosh", [x])]),
+        [1.5, 2.0, 4.0],
+    ),
+    (
+        "atanh(tanh(x))",
+        lambda p, x: p.func("atanh", [p.func("tanh", [x])]),
+        [-2.0, -0.5, 0.5, 2.0],
+    ),
+]
+
+#: Simplifiers to put each identity through.  A rewrite is only a finding if
+#: the *simplified* form disagrees with the original numerically.
+_BRANCH_SIMPLIFIERS = [
+    ("simplify", lambda e: ak.simplify(e)),
+    ("simplify_log_exp", lambda e: ak.simplify_log_exp(e)),
+    ("simplify_trig", lambda e: ak.simplify_trig(e)),
+    ("simplify_expanded", lambda e: ak.simplify_expanded(e)),
+]
+
+
+def sweep_branch_cuts(report, verbose=False):
+    """Check that no simplifier rewrites across a branch cut.
+
+    This surface needs no external oracle: the original expression *is* the
+    oracle.  If ``simplify(e)`` disagrees with ``e`` at a point where both are
+    defined, the rewrite is unsound there, full stop.
+    """
+    for label, build, points in _BRANCH_CASES:
+        for simp_name, simp in _BRANCH_SIMPLIFIERS:
+            pool = ak.ExprPool()
+            x = pool.symbol("x")
+            case = f"{simp_name}({label})"
+            try:
+                original = build(pool, x)
+            except Exception as e:
+                report.record(SKIP, "branch_cut", case, str(e)[:100])
+                continue
+            got = guarded(simp, original)
+            if got is None:
+                report.record(REFUSED, "branch_cut", case)
+                continue
+            got = getattr(got, "value", got)
+            if got == original:
+                report.record(OK, "branch_cut", case, "unchanged")
+                continue
+            # Rewritten — it must agree wherever both sides are defined.
+            disagreements = []
+            comparable = 0
+            for pt in points:
+                before = _at(original, x, pt)
+                after = _at(got, x, pt)
+                if before is None or after is None:
+                    continue
+                comparable += 1
+                if abs(before - after) > 1e-9 * max(1.0, abs(before)):
+                    disagreements.append((pt, before, after))
+            if not comparable:
+                report.record(SKIP, "branch_cut", case, "no comparable sample points")
+            elif disagreements:
+                pt, before, after = disagreements[0]
+                report.record(
+                    WRONG,
+                    "branch_cut",
+                    case,
+                    f"rewrote to {got}; at x={pt} original is {before} but rewrite gives {after}"
+                    f" ({len(disagreements)}/{comparable} sample points disagree)",
+                )
+            else:
+                report.record(OK, "branch_cut", case, f"rewrote to {got}, agrees")
+            if verbose:
+                print(f"  {case}: {got}")
+
+
+def _at(expr, var, value):
+    """Evaluate ``expr`` at ``var = value``, or None where it is undefined."""
+    try:
+        out = complex(ak.eval_expr(expr, {var: value}))
+    except Exception:
+        return None
+    if abs(out.imag) > 1e-12 or not math.isfinite(out.real):
+        return None
+    return out.real
+
+
+# ---------------------------------------------------------------------------
+# Surface 5 — assumption-licensed rewrites
+# ---------------------------------------------------------------------------
+
+#: ``(label, builder, predicate, sample_points)``.  ``predicate`` is the
+#: assumption to refine into the context, and the sample points all *satisfy*
+#: it.
+#:
+#: Branch-cut rewrites that are unsound in general become sound under an
+#: assumption — ``sqrt(x**2) -> x`` given ``x > 0``.  That is exactly the
+#: mechanism by which an assumption engine can do damage: it unlocks rewrites,
+#: so a bug there converts a conservative simplifier into a confidently wrong
+#: one.  Sampling only inside the assumed region is the point — a rewrite that
+#: is wrong *there* is wrong under its own stated hypothesis.
+_ASSUMPTION_CASES = [
+    ("sqrt(x**2) | x>0", lambda p, x: p.func("sqrt", [x ** p.integer(2)]), "pos", [0.5, 1.0, 3.0]),
+    (
+        "sqrt(x**2) | x<0",
+        lambda p, x: p.func("sqrt", [x ** p.integer(2)]),
+        "neg",
+        [-3.0, -1.0, -0.5],
+    ),
+    (
+        "(x**2)**(1/2) | x>0",
+        lambda p, x: (x ** p.integer(2)) ** p.rational(1, 2),
+        "pos",
+        [0.5, 2.0],
+    ),
+    (
+        "(x**2)**(1/2) | x<0",
+        lambda p, x: (x ** p.integer(2)) ** p.rational(1, 2),
+        "neg",
+        [-2.0, -0.5],
+    ),
+    ("exp(log(x)) | x>0", lambda p, x: p.func("exp", [p.func("log", [x])]), "pos", [0.5, 1.0, 3.0]),
+    ("log(exp(x)) | x>0", lambda p, x: p.func("log", [p.func("exp", [x])]), "pos", [0.5, 2.0]),
+    ("log(exp(x)) | x<0", lambda p, x: p.func("log", [p.func("exp", [x])]), "neg", [-2.0, -0.5]),
+    ("log(x**2) | x<0", lambda p, x: p.func("log", [x ** p.integer(2)]), "neg", [-3.0, -1.0]),
+    ("sqrt(x)**2 | x>0", lambda p, x: p.func("sqrt", [x]) ** p.integer(2), "pos", [0.5, 4.0]),
+    (
+        "(x**4)**(1/4) | x<0",
+        lambda p, x: (x ** p.integer(4)) ** p.rational(1, 4),
+        "neg",
+        [-3.0, -1.0],
+    ),
+]
+
+
+def sweep_assumptions(report, verbose=False):
+    """Check that an assumption never licenses a rewrite false in its own region.
+
+    Like the branch-cut surface this needs no external oracle: the original
+    expression is the oracle, and the sample points are drawn from inside the
+    assumed region, so any disagreement is a rewrite that its own hypothesis
+    does not justify.
+    """
+    for label, build, sign, points in _ASSUMPTION_CASES:
+        for simp_name in ("simplify", "simplify_log_exp"):
+            pool = ak.ExprPool()
+            x = pool.symbol("x")
+            case = f"{simp_name}({label})"
+            try:
+                original = build(pool, x)
+                assumptions = ak.Assumptions(pool)
+                zero = pool.integer(0)
+                assumptions.refine(pool.gt(x, zero) if sign == "pos" else pool.lt(x, zero))
+            except Exception as e:
+                report.record(SKIP, "assumptions", case, str(e)[:100])
+                continue
+            got = guarded(lambda: getattr(ak, simp_name)(original, assumptions=assumptions))
+            if got is None:
+                report.record(REFUSED, "assumptions", case)
+                continue
+            got = getattr(got, "value", got)
+            if got == original:
+                report.record(OK, "assumptions", case, "unchanged")
+                continue
+            disagreements = []
+            comparable = 0
+            for pt in points:
+                before = _at(original, x, pt)
+                after = _at(got, x, pt)
+                if before is None or after is None:
+                    continue
+                comparable += 1
+                if abs(before - after) > 1e-9 * max(1.0, abs(before)):
+                    disagreements.append((pt, before, after))
+            if not comparable:
+                report.record(SKIP, "assumptions", case, "no comparable sample points")
+            elif disagreements:
+                pt, before, after = disagreements[0]
+                report.record(
+                    WRONG,
+                    "assumptions",
+                    case,
+                    f"rewrote to {got}; at x={pt} (inside the assumed region) original is "
+                    f"{before} but rewrite gives {after}",
+                )
+            else:
+                report.record(OK, "assumptions", case, f"rewrote to {got}, agrees")
+            if verbose:
+                print(f"  {case}: {got}")
+
+
 SURFACES = {
+    "assumptions": sweep_assumptions,
+    "branch_cut": sweep_branch_cuts,
     "definite_integral": sweep_definite,
     "limit": sweep_limits,
     "sum": sweep_sums,
