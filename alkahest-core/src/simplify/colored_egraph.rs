@@ -85,14 +85,17 @@ pub struct ColoredEgraph {
     context: ColorUnionFind,
     /// All expression nodes reachable from the input.
     nodes: HashSet<ExprId>,
-    /// Assumptions attached to the context layer.
-    #[allow(dead_code)]
-    assumptions: Vec<SideCondition>,
 }
 
 impl ColoredEgraph {
     /// Build a colored e-graph from `expr`, collecting all DAG nodes.
-    pub fn from_expr(expr: ExprId, pool: &ExprPool, assumptions: &[SideCondition]) -> Self {
+    ///
+    /// `_assumptions` is unused: the e-graph itself is assumption-agnostic, and
+    /// [`simplify_colored`] checks declared assumptions against each rule's side
+    /// conditions via [`assumptions_satisfy`] before requesting a context merge.
+    /// The parameter is retained because it is part of the released signature and
+    /// because gating merges inside the union-find would need it.
+    pub fn from_expr(expr: ExprId, pool: &ExprPool, _assumptions: &[SideCondition]) -> Self {
         let mut nodes = HashSet::new();
         collect_nodes(expr, pool, &mut nodes);
         let mut root = ColorUnionFind::default();
@@ -105,7 +108,6 @@ impl ColoredEgraph {
             root,
             context,
             nodes,
-            assumptions: assumptions.to_vec(),
         }
     }
 
