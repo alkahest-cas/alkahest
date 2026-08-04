@@ -119,6 +119,31 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-POOL-*` | `PoolError` | `ExprPool` misuse (closed, cross-pool, persisted-handle mismatch) |
 | `E-PARSE-*` | `ParseError` *(reserved)* | Parser integration — owns `span()` by default |
 | `E-IO-*` | `IoError` *(reserved)* | Checkpoint/serde paths (`PoolPersistError`) |
+| `E-CERT-*` | `CertificateUnavailableError` | A Lean certificate was required but withheld |
+
+### `E-CERT-*` — certificate policy
+
+| Code | Meaning | Remediation |
+|---|---|---|
+| `E-CERT-001` | A result was required to carry a Lean certificate and none was available | Pick a certifiable route — see [Certificate coverage](./certificate-coverage.md) and `alkahest.certifiable()` — or drop the requirement |
+
+This one is unusual: the computation *succeeded*. What is missing is the
+machine-checkable evidence, so it is a policy failure rather than a
+mathematical one. It is raised only when you ask for it, by
+`alkahest.require_certificate(result)` or ambiently inside
+`with alkahest.context(require_certificate=True):`. The remediation names the
+blocking rewrite rules where they can be identified.
+
+```python
+import alkahest as ak
+
+p = ak.ExprPool()
+x = p.symbol("x")
+
+with ak.context(require_certificate=True):
+    ak.diff(ak.sin(x), x)        # fine — certifies
+    ak.integrate(ak.log(x), x)   # raises E-CERT-001
+```
 
 ### Cause axis
 

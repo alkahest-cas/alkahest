@@ -141,6 +141,34 @@ Exception subclasses
    Code prefix ``E-POOL-*``. ``ExprPool`` misuse: closed pool, cross-pool
    expression mixing, persisted-handle mismatch.
 
+.. exception:: CertificateUnavailableError
+
+   Code prefix ``E-CERT-*``. A Lean certificate was required but the emitter
+   withheld one. Unusually among these, the computation *succeeded* — what is
+   missing is the machine-checkable evidence, so this is a policy failure
+   rather than a mathematical one. Raised only when you ask for it, by
+   :func:`~alkahest.require_certificate` or ambiently inside
+   ``with alkahest.context(require_certificate=True):``.
+
+   - ``E-CERT-001`` — no certificate available for this result
+
+   ``.remediation`` names the blocking rewrite rules where they can be
+   identified. Use :func:`~alkahest.certifiable` to test a route before
+   committing to it, and :func:`~alkahest.certificate_coverage` for the whole
+   boundary::
+
+      import alkahest as ak
+
+      pool = ak.ExprPool()
+      x = pool.symbol("x")
+
+      answer = ak.certifiable("integrate", ak.log(x), x)
+      print(bool(answer), answer.reason)   # False class_withheld
+
+      with ak.context(require_certificate=True):
+          ak.diff(ak.sin(x), x)            # fine — certifies
+          ak.integrate(ak.log(x), x)       # raises E-CERT-001
+
 Catching errors by subsystem
 ----------------------------
 
