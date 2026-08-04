@@ -6,7 +6,9 @@ import alkahest
 def test_capabilities_reports_installed_build_features():
     caps = alkahest.capabilities()
 
-    assert caps["contract_version"] == 1
+    # v2: `verification` gained a generated `coverage` block and dropped the
+    # never-emitted `lean_checked` status. See tests/test_certificate_ledger.py.
+    assert caps["contract_version"] == 2
     assert {"groebner", "jit", "egraph", "parallel", "features", "primitives", "verification"} <= (
         caps.keys()
     )
@@ -70,8 +72,13 @@ def test_lean_theorem_bit_reflects_actual_certificate_availability():
     `atan2`, and `gamma` still have no encoding, so their bit must stay
     `False` until the emitter catches up.
 
-    If you make a new primitive's certificate typecheck, flip its
-    `lean_theorem()` override to `Some(...)`, add it to
+    The value `capabilities()` reports now comes from the generated certificate
+    ledger rather than the native bit, so it cannot be hand-edited into an
+    overclaim; `tests/test_certificate_ledger.py` pins the native
+    `Primitive::lean_theorem` overrides to the same set. If you make a new
+    primitive's certificate typecheck, flip its `lean_theorem()` override to
+    `Some(...)`, regenerate the ledger
+    (`python scripts/gen_certificate_ledger.py`), add it to
     `CERTIFIABLE_PRIMITIVES` below, and verify with
     `lake env lean -DwarningAsError=true <file>` in `lean/` — not by
     inspection alone.
@@ -96,8 +103,10 @@ def test_lean_theorem_bit_reflects_actual_certificate_availability():
 def test_capabilities_describes_verification_boundary():
     verification = alkahest.capabilities()["verification"]
 
+    # `lean_checked` is deliberately absent: no code path has ever produced it
+    # (checking is out of process — see `checkers` below), so advertising it was
+    # an overclaim of the same kind as a false `lean_theorem` bit.
     assert verification["statuses"] == [
-        "lean_checked",
         "certificate_available",
         "exactly_verified",
         "numerically_checked",
@@ -105,6 +114,7 @@ def test_capabilities_describes_verification_boundary():
     ]
     assert verification["artifacts"] == {"lean4_source": True}
     assert verification["checkers"] == {"lean4": "external"}
+    assert verification["coverage"]["shape_classes"]["certified"] > 0
 
 
 def test_derived_result_labels_emitted_lean_source_as_unchecked_evidence():

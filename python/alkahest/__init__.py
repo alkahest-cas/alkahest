@@ -1,11 +1,20 @@
+import functools as _functools
 from contextlib import suppress as _suppress
 from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from importlib.metadata import version as _meta_version
 
 from . import (
+    _certificates,
     lattice,
     modular,  # noqa: F401 — V2-1: expose alkahest.modular submodule
     number_theory,
+    research,  # session-level claim graph (provenance objects)
+)
+from ._certificates import (
+    Certifiability,
+    certifiable,
+    certificate_coverage,
+    require_certificate,
 )
 from ._context import (
     active_assumptions,
@@ -279,6 +288,7 @@ from .exceptions import (
     AlkahestError,
     AssumptionError,
     CadError,
+    CertificateUnavailableError,
     ConversionError,
     DaeError,
     DiffError,
@@ -1363,6 +1373,10 @@ def capabilities() -> dict:
         ``llvm_jit`` / ``cranelift_jit`` backend flags; ``primitives`` is
         deterministic per-primitive implementation coverage, and
         ``verification`` describes available evidence artifacts and checkers.
+        ``verification["coverage"]`` summarises the generated certificate
+        ledger (:func:`certificate_coverage`), which is also where each
+        primitive's ``lean_theorem`` bit comes from — so the capability bits
+        and the coverage table cannot disagree.
         Symbolic linear algebra (``Matrix.rref``, ``rank``, ``nullspace``,
         ``jordan_form``, ``minimal_polynomial``, LU/QR/Cholesky, etc.) is available
         on :class:`Matrix`; unsupported inputs raise :class:`LinearAlgebraError`
@@ -1380,8 +1394,16 @@ def capabilities() -> dict:
     features = _build_features()
     primitive_rows = PrimitiveRegistry.default_registry().coverage_report()
     primitive_rows.sort(key=lambda row: row["name"])
+    # One source of truth: `lean_theorem` reports what the generated certificate
+    # ledger observed, not a separately-maintained bit that can drift from what
+    # the emitter can actually prove. `tests/test_certificate_ledger.py` pins the
+    # native `Capabilities::LEAN_THEOREM` bit to this same set, so a divergence
+    # fails CI rather than silently overclaiming.
+    _certifiable_primitives = _certificates.certifiable_primitives()
+    for row in primitive_rows:
+        row["lean_theorem"] = row["name"] in _certifiable_primitives
     return {
-        "contract_version": 1,
+        "contract_version": 2,
         # Compatibility keys: report what this extension was compiled with,
         # even where a Python-level fallback exists.
         "groebner": features["groebner"],
@@ -1391,8 +1413,11 @@ def capabilities() -> dict:
         "features": features,
         "primitives": primitive_rows,
         "verification": {
+            # Exactly the statuses `DerivedResult.verification["status"]` can
+            # report. `lean_checked` used to be advertised here and is not in
+            # this list any more: no code path has ever produced it, because
+            # checking is out of process by construction (`checkers` below).
             "statuses": [
-                "lean_checked",
                 "certificate_available",
                 "exactly_verified",
                 "numerically_checked",
@@ -1400,8 +1425,58 @@ def capabilities() -> dict:
             ],
             "artifacts": {"lean4_source": True},
             "checkers": {"lean4": "external"},
+            # Where certificate emission stops, tabulated from observed
+            # behaviour. Full table: alkahest.certificate_coverage().
+            "coverage": _certificates.coverage_summary(),
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Ambient require_certificate enforcement
+# ---------------------------------------------------------------------------
+
+#: Public entry points that return a :class:`DerivedResult`, and are therefore
+#: subject to ``with context(require_certificate=True)``.  Kept in sync with
+#: ``_certificates.OPERATIONS`` by ``tests/test_certificate_ledger.py``.
+_DERIVATION_ENTRY_POINTS = (
+    "diff",
+    "integrate",
+    "simplify",
+    "simplify_egraph",
+    "simplify_expanded",
+    "simplify_log_exp",
+    "simplify_trig",
+    "simplify_trig_normal_form",
+    "sum_indefinite",
+    "sum_definite",
+    "product_indefinite",
+    "product_definite",
+)
+
+
+def _certificate_gate(fn):
+    """Enforce ``context(require_certificate=True)`` on *fn*'s result.
+
+    A single wrapper applied uniformly beats a ``require_certificate=`` keyword
+    threaded through a dozen signatures: the interesting use is ambient (a whole
+    research loop that must not accumulate unbacked claims), and the per-call
+    use is already served by :func:`require_certificate`.
+    """
+
+    @_functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        result = fn(*args, **kwargs)
+        if _certificates.certificate_required() and isinstance(result, DerivedResult):
+            return require_certificate(result)
+        return result
+
+    return wrapper
+
+
+for _entry_point in _DERIVATION_ENTRY_POINTS:
+    globals()[_entry_point] = _certificate_gate(globals()[_entry_point])
+del _entry_point
 
 
 __all__ = [
@@ -1420,6 +1495,9 @@ __all__ = [
     "AssumptionError",
     "Assumptions",
     "CadError",
+    # V5-12 — certificate ledger
+    "Certifiability",
+    "CertificateUnavailableError",
     "CertifiedSolution",
     "CompileCache",
     # Phase 21
@@ -1524,6 +1602,9 @@ __all__ = [
     "capabilities",
     "capacitor",
     "ceil",
+    # V5-12 — certificate ledger
+    "certifiable",
+    "certificate_coverage",
     # Phase 26
     "collect_like_terms",
     "compile_expr",
@@ -1608,6 +1689,10 @@ __all__ = [
     # V2-4
     "real_roots",
     "refine_root",
+    # V5-12 — certificate ledger
+    "require_certificate",
+    # Session-level provenance: claim graph for autoresearch loops
+    "research",
     "residue",
     "resistor",
     # V2-2

@@ -802,7 +802,14 @@ fn plain_step_certificate(step: &RewriteStep, pool: &ExprPool) -> Option<(Option
 
 /// Whether this step can be emitted as a Lean `example` expected to typecheck
 /// without `sorry` / `admit`.
-fn step_is_certifiable(step: &RewriteStep, wrt: Option<ExprId>, pool: &ExprPool) -> bool {
+///
+/// Public so the certificate ledger (`alkahest.certifiable`) can report *which*
+/// step blocks a withheld certificate instead of a bare "no". Note that a
+/// derivation whose every step is certifiable is not automatically certifiable
+/// as a whole: integration logs certify through the FTC relation rather than
+/// step-by-step, so this predicate is a diagnostic, not the emission gate. The
+/// emission gate is [`emit_lean_expr_wrt`] returning a non-empty string.
+pub fn step_is_certifiable(step: &RewriteStep, wrt: Option<ExprId>, pool: &ExprPool) -> bool {
     if is_integration_rule(step.rule_name) {
         return false;
     }

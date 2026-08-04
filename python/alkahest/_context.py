@@ -70,6 +70,7 @@ def context(
     simplify: bool = False,
     precision: int | None = None,
     assumptions: Any = None,
+    require_certificate: bool | None = None,
     **extra: Any,
 ) -> Generator[None, None, None]:
     """Thread-local context for Alkahest calls.
@@ -97,6 +98,15 @@ def context(
         an explicit ``assumptions``/``domain`` argument of their own (see
         :func:`active_assumptions`). Explicit arguments to those functions
         always take precedence over the context.
+    require_certificate : bool, optional
+        When ``True``, every derivation-producing call in the block
+        (:func:`diff`, :func:`integrate`, the :func:`simplify` family, the
+        sum/product solvers) must yield a Lean certificate, or it raises
+        :class:`~alkahest.CertificateUnavailableError` (``E-CERT-001``) instead
+        of returning an uncertified result. This is the ambient form of
+        :func:`alkahest.require_certificate`; use it to stop a research loop
+        from silently accumulating claims it cannot back up. Pass ``False`` in
+        an inner block to opt back out.
     **extra
         Additional key-value pairs stored in the context and accessible via
         :func:`get_context_value`.
@@ -145,8 +155,30 @@ def context(
         ctx["precision"] = precision
     if assumptions is not None:
         ctx["assumptions"] = assumptions
+    if require_certificate is not None:
+        ctx["require_certificate"] = require_certificate
     ctx.update(extra)
 
+    _state.stack.append(ctx)
+    try:
+        yield
+    finally:
+        _state.stack.pop()
+
+
+@contextmanager
+def _overlay(**overrides: Any) -> Generator[None, None, None]:
+    """Push a context frame that inherits the current one, with *overrides*.
+
+    Unlike :func:`context`, which builds a frame from its own arguments only,
+    this copies the active frame first.  Internal helpers use it to change one
+    setting (e.g. suppress ``require_certificate``) without silently dropping
+    the caller's pool, domain, or assumptions.
+    """
+    if not hasattr(_state, "stack"):
+        _state.stack = []
+    ctx = dict(_get())
+    ctx.update(overrides)
     _state.stack.append(ctx)
     try:
         yield
