@@ -2216,7 +2216,22 @@ pub fn integrate_definite(
     // plausible, wrong number (`∫_{-1}^{1} x^{-2} dx` "=" `-1 - 1` = `-2`,
     // while the integral diverges). Detect that before substituting, so the
     // caller gets an error instead of a fabricated value.
+    // Normalise the bounds first: a caller-supplied bound may be an unreduced
+    // expression (the Python binding lifts a scalar as `var·0 + n`), and every
+    // check below reasons about the bound's *value*.
+    let lower = simplify(lower, pool).value;
+    let upper = simplify(upper, pool).value;
+
     if let Some(reason) = interior_singularity(expr, var, lower, upper, pool) {
+        return Err(IntegrationError::NotImplemented(reason));
+    }
+
+    // The exact check above only sees rational integrands.  `1/cos(x)^2` on
+    // `[0, 2]` has a pole at `π/2` that no polynomial root isolation can find,
+    // and the FTC difference `tan(2) - tan(0) = -2.185…` is a clean, plausible,
+    // *negative* number for an integrand that is positive everywhere and whose
+    // integral diverges.  Confirm blow-up numerically instead.
+    if let Some(reason) = numeric_interior_singularity(expr, var, lower, upper, pool) {
         return Err(IntegrationError::NotImplemented(reason));
     }
 
@@ -2236,6 +2251,26 @@ pub fn integrate_definite(
     let diff_expr = pool.add(vec![f_upper, neg_lower]);
 
     let simplified = simplify(diff_expr, pool);
+
+    // Last gate: for numeric bounds the answer is a closed numeric expression,
+    // so it must denote a finite real.  `∫_{-1}^{1} x^{-1} dx` reduces to
+    // `-log(-1)` and `∫_0^1 x^{-3/2} dx` to `-2 + 2·(0^{1/2})^{-1}`: both look
+    // like values but denote nothing real, and both come from applying the FTC
+    // where its hypotheses fail.  Refuse rather than hand back an expression
+    // the evaluator itself rejects.
+    if numeric_bound(lower, pool).is_some() && numeric_bound(upper, pool).is_some() {
+        if let Some(reason) = non_real_closed_form(simplified.value, pool) {
+            return Err(IntegrationError::NotImplemented(format!(
+                "improper integral: the fundamental-theorem difference F(b) - F(a) = {} {reason}, \
+                 so the antiderivative is not real and finite across [{}, {}] and the FTC does \
+                 not apply (the integral diverges, or converges only as a principal value)",
+                pool.display(simplified.value),
+                pool.display(lower),
+                pool.display(upper),
+            )));
+        }
+    }
+
     let mut log = DerivationLog::new();
     log.push(RewriteStep::simple(
         "fundamental_theorem_of_calculus",
@@ -2244,6 +2279,155 @@ pub fn integrate_definite(
     ));
     let final_log = antideriv.log.merge(log).merge(simplified.log);
     Ok(DerivedExpr::with_log(simplified.value, final_log))
+}
+
+/// Describe why a *closed* (symbol-free) numeric expression does not denote a
+/// finite real, or `None` when it does — or when the question cannot be decided
+/// (unbound symbols, functions the evaluator does not implement), in which case
+/// the caller must not reject.
+fn non_real_closed_form(expr: ExprId, pool: &ExprPool) -> Option<&'static str> {
+    use crate::eval::UnsupportedReason;
+    match crate::eval::eval_f64(expr, pool, &HashMap::new()) {
+        Ok(_) => None,
+        Err(e) => match e.reason {
+            UnsupportedReason::NonFiniteResult => Some("is not a finite real number"),
+            UnsupportedReason::ZeroToNegativePower => {
+                Some("contains a division by zero (an unresolved pole)")
+            }
+            UnsupportedReason::UnsupportedExpression { kind: "branch_cut" } => {
+                Some("leaves the real branch of a logarithm or root")
+            }
+            _ => None,
+        },
+    }
+}
+
+/// Number of grid samples used to look for a blow-up of the integrand.
+const POLE_SCAN_SAMPLES: usize = 257;
+/// Bisection refinements applied to a candidate blow-up.
+const POLE_SCAN_REFINEMENTS: usize = 60;
+/// The refined magnitude must exceed this before a pole is declared.
+const POLE_SCAN_MAGNITUDE: f64 = 1e30;
+/// …and must have grown by at least this factor during refinement, so an
+/// integrand that is merely large everywhere is never mistaken for a pole.
+const POLE_SCAN_GROWTH: f64 = 1e12;
+/// Fraction of the interval width excluded at each end.  Endpoint singularities
+/// are a different (and often convergent) story — `∫_0^1 log x dx = -1` is
+/// perfectly well defined — and are handled by [`non_real_closed_form`] on the
+/// resulting closed form, not here.
+const POLE_SCAN_MARGIN: f64 = 1e-3;
+
+/// Numerically confirm a singularity of `integrand` **strictly inside**
+/// `(lower, upper)`.
+///
+/// This complements [`interior_singularity`], which is exact but only sees
+/// rational integrands.  Here the integrand is sampled on a grid, the largest
+/// magnitude is refined by repeated bracket shrinking, and a pole is reported
+/// only when the magnitude both exceeds [`POLE_SCAN_MAGNITUDE`] and has grown by
+/// a factor of [`POLE_SCAN_GROWTH`] over the refinement.  No function that is
+/// bounded on the interval can pass that test, so a proper integral is never
+/// rejected; an integrand the evaluator cannot handle numerically simply falls
+/// through with `None`, exactly as before.
+// The negated comparisons below (`!(width > 0.0)`, `!(lo_b < hi_b)`, …) are
+// deliberate: they are NaN-safe bail-outs.  `!(width > 0.0)` is true when
+// `width` is NaN and correctly abandons the scan, whereas clippy's suggested
+// `width <= 0.0` is false for NaN and would let a degenerate interval through
+// into the sampling loop.  Since this function's whole job is to decide whether
+// an integral is safe to evaluate, failing open on NaN is exactly the bug it
+// exists to prevent.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+fn numeric_interior_singularity(
+    integrand: ExprId,
+    var: ExprId,
+    lower: ExprId,
+    upper: ExprId,
+    pool: &ExprPool,
+) -> Option<String> {
+    let (a, b) = (numeric_bound(lower, pool)?, numeric_bound(upper, pool)?);
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    let width = hi - lo;
+    if !(width > 0.0) || !width.is_finite() {
+        return None;
+    }
+    let (scan_lo, scan_hi) = (lo + POLE_SCAN_MARGIN * width, hi - POLE_SCAN_MARGIN * width);
+    if !(scan_lo < scan_hi) {
+        return None;
+    }
+
+    let at = |t: f64| -> Option<f64> {
+        let mut bindings = HashMap::new();
+        bindings.insert(var, t);
+        crate::eval::eval_f64(integrand, pool, &bindings)
+            .ok()
+            .filter(|v| v.is_finite())
+    };
+
+    // Coarse scan for the largest magnitude on the grid.
+    let scan_width = scan_hi - scan_lo;
+    let mut evaluated = 0usize;
+    let mut center = f64::NAN;
+    let mut m0 = 0.0f64;
+    for i in 0..POLE_SCAN_SAMPLES {
+        let t = scan_lo + scan_width * (i as f64 + 0.5) / POLE_SCAN_SAMPLES as f64;
+        if let Some(v) = at(t) {
+            evaluated += 1;
+            if v.abs() > m0 {
+                m0 = v.abs();
+                center = t;
+            }
+        }
+    }
+    // Nothing evaluated: the integrand is outside the numeric evaluator's
+    // vocabulary, so this check has no opinion.
+    if evaluated == 0 || !center.is_finite() || m0 <= 0.0 {
+        return None;
+    }
+
+    // Refine: keep shrinking a bracket around the running maximum.
+    let mut half = scan_width / POLE_SCAN_SAMPLES as f64;
+    let mut peak = m0;
+    let mut peak_at = center;
+    for _ in 0..POLE_SCAN_REFINEMENTS {
+        let (mut lo_b, mut hi_b) = (peak_at - half, peak_at + half);
+        lo_b = lo_b.max(scan_lo);
+        hi_b = hi_b.min(scan_hi);
+        if !(lo_b < hi_b) {
+            break;
+        }
+        let step = (hi_b - lo_b) / 6.0;
+        if !(step > 0.0) {
+            break;
+        }
+        for j in 1..=5 {
+            let t = lo_b + step * j as f64;
+            if let Some(v) = at(t) {
+                if v.abs() > peak {
+                    peak = v.abs();
+                    peak_at = t;
+                }
+            }
+        }
+        // Always shrink, even when this round found nothing bigger: once the
+        // bracket is narrower than six times the distance to the pole none of
+        // the probes can beat the incumbent, and stopping there would abandon
+        // the search a few rounds before the blow-up becomes visible.
+        half = step;
+    }
+
+    if peak > POLE_SCAN_MAGNITUDE && peak > POLE_SCAN_GROWTH * m0 {
+        return Some(format!(
+            "improper integral: the integrand blows up at {} ≈ {}, strictly inside the \
+             interval of integration [{}, {}] (|integrand| exceeds {:e} there). The \
+             fundamental-theorem difference F(b) - F(a) is not the value of this integral \
+             — it diverges, or converges only as a principal value",
+            pool.display(var),
+            peak_at,
+            lo,
+            hi,
+            peak,
+        ));
+    }
+    None
 }
 
 /// Split `expr` into `(numerator, denominator)` by collecting factors carrying a
@@ -2281,7 +2465,15 @@ fn split_numer_denom(expr: ExprId, pool: &ExprPool) -> (ExprId, ExprId) {
 }
 
 /// Interpret `bound` as a concrete `f64`, if it is a numeric constant.
+///
+/// The bound is simplified first.  Callers do not always hand in a bare
+/// literal: the Python binding lifts a plain `int`/`float` into the pool as
+/// `var·0 + n`, which still *mentions* the integration variable.  Evaluating
+/// that unsimplified fails with an unbound symbol, and every singularity check
+/// keyed off this function would then silently switch itself off for every
+/// Python caller.
 fn numeric_bound(bound: ExprId, pool: &ExprPool) -> Option<f64> {
+    let bound = simplify(bound, pool).value;
     let value = crate::eval::eval_f64(bound, pool, &std::collections::HashMap::new()).ok()?;
     value.is_finite().then_some(value)
 }
