@@ -82,6 +82,14 @@ jobs:
       - name: cargo test
         run: cargo test --all
 
+      # `cargo test --all` builds without `egraph`, where `simplify_egraph` is a
+      # no-op passthrough. The egraph proptests are `#[cfg(feature = "egraph")]`
+      # and so never ran here at all, and the preservation tests passed
+      # vacuously against the fallback. Without this step the egraph rewrite
+      # engine has no effective test coverage in CI.
+      - name: cargo test (egraph feature)
+        run: cargo test -p alkahest-cas --features egraph
+
       - name: ruff check
         run: ruff check python/ tests/
 
