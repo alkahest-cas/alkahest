@@ -1665,6 +1665,12 @@ mod opaque_atom_tests {
     /// sensitivity is a pre-existing property of the rule set — plain
     /// `(x + y) − (x + y)` behaves exactly the same way — and is independent
     /// of the atom encoding under test here.
+    ///
+    /// Gated on the `egraph` feature: without it `simplify_egraph` returns the
+    /// expression unchanged, so there is no rewrite to cancel. The sibling
+    /// `egraph_preserves_*` tests are deliberately left ungated — they assert
+    /// that nothing is *corrupted*, which the no-op fallback satisfies too.
+    #[cfg(feature = "egraph")]
     #[test]
     fn egraph_identical_rational_subterms_cancel() {
         let pool = ExprPool::new();
