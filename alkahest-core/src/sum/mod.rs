@@ -173,9 +173,49 @@ pub fn sum_definite(
         pool,
         pool.add(vec![upper, pool.mul(vec![lower, pool.integer(-1_i32)])]),
     );
+    // `Σ_{k=0}^{6} 1/(k(k+1))` telescopes to `-1/7 + 0^{-1}`: the `k = 0` term
+    // is undefined, so the antidifference has a pole inside the summation
+    // range and the telescoping difference is not the sum.  A residual
+    // `0^{negative}` is exactly that pole surviving into the answer; it is not
+    // a value and must not be returned as one.
+    if contains_zero_to_negative_power(diff, pool) {
+        return Err(SumError::BoundSubstitution(format!(
+            "the antidifference has a pole inside the summation range \
+             (telescoping gave {}, which contains a division by zero) — a term of the \
+             sum is undefined for some integer between the bounds, so the telescoped \
+             difference G(hi+1) - G(lo) is not the sum",
+            pool.display(diff),
+        )));
+    }
     let mut log = DerivationLog::new();
     log.push(RewriteStep::simple("gosper_definite_telescope", term, diff));
     Ok(DerivedExpr::with_log(diff, log))
+}
+
+/// True when `expr` contains a `0^n` node with `n` negative — an unresolved
+/// division by zero that survived simplification.
+fn contains_zero_to_negative_power(expr: ExprId, pool: &ExprPool) -> bool {
+    use crate::kernel::ExprData;
+    match pool.get(expr) {
+        ExprData::Pow { base, exp } => {
+            let zero_base = matches!(pool.get(base), ExprData::Integer(n) if n.0 == 0);
+            let negative_exp = match pool.get(exp) {
+                ExprData::Integer(n) => n.0 < 0,
+                ExprData::Rational(r) => r.0 < 0,
+                _ => false,
+            };
+            (zero_base && negative_exp)
+                || contains_zero_to_negative_power(base, pool)
+                || contains_zero_to_negative_power(exp, pool)
+        }
+        ExprData::Add(xs) | ExprData::Mul(xs) => {
+            xs.iter().any(|&x| contains_zero_to_negative_power(x, pool))
+        }
+        ExprData::Func { args, .. } => args
+            .iter()
+            .any(|&a| contains_zero_to_negative_power(a, pool)),
+        _ => false,
+    }
 }
 
 /// Witness `(F, G)` for Zeilberger/WZ-style telescoping in `k`:
