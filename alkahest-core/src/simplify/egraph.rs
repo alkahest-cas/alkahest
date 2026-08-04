@@ -1813,8 +1813,6 @@ mod opaque_atom_proptests {
         Sqrt(Box<Ast>),
         /// Uninterpreted unary function.
         Tan(Box<Ast>),
-        /// Binary function — not expressible in the egglog datatype.
-        Atan2(Box<Ast>, Box<Ast>),
     }
 
     fn build(ast: &Ast, pool: &ExprPool, x: ExprId, y: ExprId) -> ExprId {
@@ -1833,9 +1831,6 @@ mod opaque_atom_proptests {
             Ast::Cos(a) => pool.func("cos", vec![build(a, pool, x, y)]),
             Ast::Sqrt(a) => pool.func("sqrt", vec![build(a, pool, x, y)]),
             Ast::Tan(a) => pool.func("tan", vec![build(a, pool, x, y)]),
-            Ast::Atan2(a, b) => {
-                pool.func("atan2", vec![build(a, pool, x, y), build(b, pool, x, y)])
-            }
         }
     }
 
@@ -1859,8 +1854,23 @@ mod opaque_atom_proptests {
                 inner.clone().prop_map(|a| Ast::Sin(Box::new(a))),
                 inner.clone().prop_map(|a| Ast::Cos(Box::new(a))),
                 inner.clone().prop_map(|a| Ast::Sqrt(Box::new(a))),
-                inner.clone().prop_map(|a| Ast::Tan(Box::new(a))),
-                (inner.clone(), inner).prop_map(|(a, b)| Ast::Atan2(Box::new(a), Box::new(b))),
+                // `Ast::Atan2` is deliberately absent from this *numeric*
+                // property. `x·0 → 0` discards the sign of IEEE zero — for
+                // negative `x`, `x·0` is `-0.0` — and `atan2` is discontinuous
+                // across signed zero, so the original and simplified forms land
+                // on opposite sides of its branch cut: `atan2(-0.0, -1) = -π`
+                // vs `atan2(0.0, -1) = +π`, and `atan2(0, sqrt(-0.0)) = π` vs
+                // `atan2(0, 0) = 0`. The gap is not a fixed multiple of π, so
+                // no tolerance rescues it.
+                //
+                // This is not an egraph artifact — mainline `simplify` and
+                // `simplify_expanded` perform the identical rewrite, as does
+                // every mainstream CAS. Float equivalence is simply not a sound
+                // oracle for `atan2` under a rewrite that holds only up to
+                // signed zero. Binary-`Func` preservation (the arity-2 case the
+                // `(Num 0)` bug corrupted) is covered structurally and exactly
+                // by `egraph_preserves_binary_func` instead.
+                inner.prop_map(|a| Ast::Tan(Box::new(a))),
             ]
         })
     }
