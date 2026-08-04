@@ -97,10 +97,35 @@ jobs:
       - name: ty check
         run: ty check python/alkahest/
 
+      # Its own step, ahead of the general suite: a silent error -- a confident,
+      # plausible, mathematically wrong answer returned with no exception and no
+      # verification flag -- is the one failure class that compounds. In an
+      # autoresearch loop it is not one wrong answer, it is a false lemma every
+      # downstream derivation inherits. Separating the step means a red gate is
+      # identifiable from the job list without opening the pytest log; the step
+      # prints the measured rate and per-subsystem breakdown either way.
+      # See tests/silent_errors/README.md.
+      - name: Silent-error gate (deterministic trap corpus)
+        env:
+          PYTHONUNBUFFERED: "1"
+          ALKAHEST_SILENT_ERROR_REPORT: silent-error-summary.json
+        run: pytest tests/silent_errors/ --timeout=300
+
+      - name: Upload silent-error summary
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: silent-error-summary-${{ github.run_id }}
+          path: silent-error-summary.json
+          if-no-files-found: warn
+
+      # --ignore=tests/silent_errors: already run by the dedicated step above.
+      # It stays collected by a plain local `pytest tests/` -- the ignore is a
+      # CI-only de-duplication, not an opt-in marker developers must remember.
       - name: pytest (default excludes @pytest.mark.slow sparse roadmap; see pytest.ini)
         env:
           PYTHONUNBUFFERED: "1"
-        run: pytest --timeout=900
+        run: pytest --timeout=900 --ignore=tests/silent_errors
 
       - name: Install Rust nightly (for ASan)
         uses: dtolnay/rust-toolchain@nightly
