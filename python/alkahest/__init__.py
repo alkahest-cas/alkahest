@@ -6,6 +6,7 @@ from . import (
     lattice,
     modular,  # noqa: F401 — V2-1: expose alkahest.modular submodule
     number_theory,
+    research,  # session-level claim graph (provenance objects)
 )
 from ._context import (
     active_assumptions,
@@ -1575,6 +1576,8 @@ __all__ = [
     # V2-4
     "real_roots",
     "refine_root",
+    # Session-level provenance: claim graph for autoresearch loops
+    "research",
     "residue",
     "resistor",
     # V2-2
