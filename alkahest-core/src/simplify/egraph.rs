@@ -19,6 +19,30 @@
 /// The iteration counts and node/iteration limits are taken from
 /// [`EgraphConfig`], allowing callers to trade completeness for bounded
 /// run time on large inputs.
+///
+/// # Opaque atoms
+///
+/// The egglog datatype below can only express integer literals, variables,
+/// `Add`/`Mul`/`Pow`, five known unary functions, and an uninterpreted unary
+/// `Fn`.  *Everything else* — rationals, floats, out-of-`i64` integers,
+/// n-ary/nullary `Func`, `Piecewise`, `Predicate`, `Forall`, `Exists`,
+/// `RootSum`, `BigO` — is replaced by a freshly generated **opaque atom**
+/// (`(Var "a<k>")`) that no arithmetic rule can match, with a side table
+/// mapping the atom back to the original [`ExprId`].
+///
+/// Two properties matter and are both guaranteed by keying the table on
+/// `ExprId` (which the pool interns structurally):
+///
+/// * the *same* subterm always gets the *same* atom, so structural sharing
+///   and cancellation still work; and
+/// * *different* subterms never share an atom.
+///
+/// Symbols go through the same table rather than being written out under
+/// their own names.  That means every `Var` string egglog ever sees was
+/// generated here, so a user symbol literally named `a0` cannot collide
+/// with an opaque atom, and extraction restores the original symbol node —
+/// including its [`Domain`](crate::kernel::Domain) and commutativity flag —
+/// instead of re-interning a lookalike.
 #[cfg(feature = "egraph")]
 mod backend {
     use crate::kernel::{ExprData, ExprId, ExprPool};
@@ -28,80 +52,129 @@ mod backend {
     // 1. Serialise ExprId → egglog expression string (binary left-fold)
     // -----------------------------------------------------------------------
 
-    pub(super) fn expr_to_egglog(expr: ExprId, pool: &ExprPool) -> String {
-        enum Node {
-            Num(i64),
-            Var(String),
-            Add(Vec<ExprId>),
-            Mul(Vec<ExprId>),
-            Pow(ExprId, ExprId),
-            Func(String, ExprId),
-            Unsupported,
+    /// Prefix for generated atom names.  Never collides with user symbols
+    /// because user symbol names are not emitted at all — see the module
+    /// docs.
+    const ATOM_PREFIX: &str = "a";
+
+    /// The five unary functions the egglog datatype models directly.
+    fn known_unary(name: &str) -> Option<&'static str> {
+        match name {
+            "sin" => Some("Sin"),
+            "cos" => Some("Cos"),
+            "exp" => Some("Exp"),
+            "log" => Some("Log"),
+            "sqrt" => Some("Sqrt"),
+            _ => None,
+        }
+    }
+
+    /// Can `name` be embedded verbatim in an egglog string literal?
+    ///
+    /// Restricting to `[A-Za-z0-9_]+` keeps quotes, backslashes and
+    /// whitespace out of the generated program; anything else falls back to
+    /// an opaque atom rather than producing a malformed term.
+    fn is_plain_ident(name: &str) -> bool {
+        !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    }
+
+    /// Serialiser state: the atom table built while walking the expression.
+    pub(super) struct Encoder<'p> {
+        pool: &'p ExprPool,
+        /// Subterm → generated atom name (dedupes repeated occurrences).
+        atom_of: HashMap<ExprId, String>,
+        /// Generated atom name → subterm (used on the way out).
+        expr_of: HashMap<String, ExprId>,
+    }
+
+    impl<'p> Encoder<'p> {
+        pub(super) fn new(pool: &'p ExprPool) -> Self {
+            Encoder {
+                pool,
+                atom_of: HashMap::new(),
+                expr_of: HashMap::new(),
+            }
         }
 
-        let node = pool.with(expr, |data| match data {
-            ExprData::Integer(n) => {
-                let v =
-                    n.0.to_i64()
-                        .unwrap_or(if n.0 > 0 { i64::MAX } else { i64::MIN });
-                Node::Num(v)
-            }
-            ExprData::Rational(_) | ExprData::Float(_) => Node::Unsupported,
-            ExprData::Symbol { name, .. } => Node::Var(name.clone()),
-            ExprData::Add(args) => Node::Add(args.clone()),
-            ExprData::Mul(args) => Node::Mul(args.clone()),
-            ExprData::Pow { base, exp } => Node::Pow(*base, *exp),
-            ExprData::Func { name, args } if args.len() == 1 => Node::Func(name.clone(), args[0]),
-            ExprData::Func { .. } => Node::Unsupported,
-            ExprData::Piecewise { .. }
-            | ExprData::Predicate { .. }
-            | ExprData::Forall { .. }
-            | ExprData::Exists { .. }
-            | ExprData::RootSum { .. }
-            | ExprData::BigO(_) => Node::Unsupported,
-        });
+        /// The atom-name → subterm table, for [`parse_egglog_term`].
+        pub(super) fn atoms(&self) -> &HashMap<String, ExprId> {
+            &self.expr_of
+        }
 
-        match node {
-            Node::Num(n) => format!("(Num {n})"),
-            Node::Var(name) => format!("(Var \"{name}\")"),
-            Node::Add(args) => {
-                // Binary left-fold; the parser flattens this back to n-ary.
-                let mut it = args.into_iter();
-                let first = it.next().expect(
-                    "Add node must have at least one argument — ExprPool invariant violated",
-                );
-                let init = expr_to_egglog(first, pool);
-                it.fold(init, |acc, id| {
-                    format!("(Add {acc} {})", expr_to_egglog(id, pool))
-                })
+        /// Return the opaque atom standing for `expr`, allocating it on
+        /// first use so equal subterms share one atom.
+        fn atom(&mut self, expr: ExprId) -> String {
+            if let Some(name) = self.atom_of.get(&expr) {
+                return format!("(Var \"{name}\")");
             }
-            Node::Mul(args) => {
-                let mut it = args.into_iter();
-                let first = it.next().expect(
-                    "Mul node must have at least one argument — ExprPool invariant violated",
-                );
-                let init = expr_to_egglog(first, pool);
-                it.fold(init, |acc, id| {
-                    format!("(Mul {acc} {})", expr_to_egglog(id, pool))
-                })
+            let name = format!("{ATOM_PREFIX}{}", self.atom_of.len());
+            self.atom_of.insert(expr, name.clone());
+            self.expr_of.insert(name.clone(), expr);
+            format!("(Var \"{name}\")")
+        }
+
+        pub(super) fn encode(&mut self, expr: ExprId) -> String {
+            enum Node {
+                Num(i64),
+                Add(Vec<ExprId>),
+                Mul(Vec<ExprId>),
+                Pow(ExprId, ExprId),
+                /// One of the datatype's built-in unary constructors.
+                Known(&'static str, ExprId),
+                /// Uninterpreted unary function: `(Fn "name" arg)`.
+                Fn(String, ExprId),
+                /// Not expressible in the datatype — becomes an opaque atom.
+                Atom,
             }
-            Node::Pow(base, exp) => format!(
-                "(Pow {} {})",
-                expr_to_egglog(base, pool),
-                expr_to_egglog(exp, pool)
-            ),
-            Node::Func(name, arg) => {
-                let inner = expr_to_egglog(arg, pool);
-                match name.as_str() {
-                    "sin" => format!("(Sin {inner})"),
-                    "cos" => format!("(Cos {inner})"),
-                    "exp" => format!("(Exp {inner})"),
-                    "log" => format!("(Log {inner})"),
-                    "sqrt" => format!("(Sqrt {inner})"),
-                    _ => format!("(Var \"{name}_{inner}\")"),
+
+            let pool = self.pool;
+            let node = pool.with(expr, |data| match data {
+                // Integers outside i64 cannot be represented by `(Num i64)`.
+                // Clamping would silently change the value, so they become
+                // opaque atoms instead.
+                ExprData::Integer(n) => match n.0.to_i64() {
+                    Some(v) => Node::Num(v),
+                    None => Node::Atom,
+                },
+                ExprData::Add(args) => Node::Add(args.clone()),
+                ExprData::Mul(args) => Node::Mul(args.clone()),
+                ExprData::Pow { base, exp } => Node::Pow(*base, *exp),
+                ExprData::Func { name, args } if args.len() == 1 => match known_unary(name) {
+                    Some(ctor) => Node::Known(ctor, args[0]),
+                    None if is_plain_ident(name) => Node::Fn(name.clone(), args[0]),
+                    None => Node::Atom,
+                },
+                // Symbols (see module docs), rationals, floats, and every
+                // structured node the datatype cannot express.
+                _ => Node::Atom,
+            });
+
+            match node {
+                Node::Num(n) => format!("(Num {n})"),
+                Node::Atom => self.atom(expr),
+                Node::Add(args) => {
+                    // Binary left-fold; the parser flattens this back to n-ary.
+                    let mut it = args.into_iter();
+                    let first = it.next().expect(
+                        "Add node must have at least one argument — ExprPool invariant violated",
+                    );
+                    let init = self.encode(first);
+                    it.fold(init, |acc, id| format!("(Add {acc} {})", self.encode(id)))
                 }
+                Node::Mul(args) => {
+                    let mut it = args.into_iter();
+                    let first = it.next().expect(
+                        "Mul node must have at least one argument — ExprPool invariant violated",
+                    );
+                    let init = self.encode(first);
+                    it.fold(init, |acc, id| format!("(Mul {acc} {})", self.encode(id)))
+                }
+                Node::Pow(base, exp) => {
+                    format!("(Pow {} {})", self.encode(base), self.encode(exp))
+                }
+                Node::Known(ctor, arg) => format!("({ctor} {})", self.encode(arg)),
+                Node::Fn(name, arg) => format!("(Fn \"{name}\" {})", self.encode(arg)),
             }
-            Node::Unsupported => "(Num 0)".to_string(),
         }
     }
 
@@ -340,7 +413,8 @@ mod backend {
   (Cos Expr)
   (Exp Expr)
   (Log Expr)
-  (Sqrt Expr))
+  (Sqrt Expr)
+  (Fn String Expr))
 {rules_block}
 ; ── constant folding ──────────────────────────────────────────────────────────
 (ruleset const-fold)
@@ -388,7 +462,18 @@ mod backend {
         }
     }
 
-    fn parse_egglog_term(s: &str, pool: &ExprPool) -> Option<ExprId> {
+    /// Parse an extracted egglog term back to an [`ExprId`].
+    ///
+    /// `atoms` is the atom-name → subterm table produced by [`Encoder`].
+    /// Every `Var` egglog can emit was generated by the encoder, so a miss
+    /// means the output is not something we produced; returning `None` makes
+    /// the caller fall back to the input expression rather than inventing a
+    /// symbol.
+    fn parse_egglog_term(
+        s: &str,
+        pool: &ExprPool,
+        atoms: &HashMap<String, ExprId>,
+    ) -> Option<ExprId> {
         let s = s.trim();
         if s.starts_with('(') && s.ends_with(')') {
             let inner = &s[1..s.len() - 1];
@@ -399,13 +484,13 @@ mod backend {
                     Some(pool.integer(n))
                 }
                 "Var" => {
-                    let name = rest.trim().trim_matches('"');
-                    Some(pool.symbol(name, crate::kernel::Domain::Real))
+                    let name = unquote(rest.trim())?;
+                    atoms.get(name).copied()
                 }
                 "Add" => {
                     let (a_str, b_str) = split_two_args(rest)?;
-                    let a = parse_egglog_term(&a_str, pool)?;
-                    let b = parse_egglog_term(&b_str, pool)?;
+                    let a = parse_egglog_term(&a_str, pool, atoms)?;
+                    let b = parse_egglog_term(&b_str, pool, atoms)?;
                     // RW-1: flatten binary tree back to n-ary on the way out.
                     let mut children = flatten_add_args(a, pool);
                     children.extend(flatten_add_args(b, pool));
@@ -413,29 +498,43 @@ mod backend {
                 }
                 "Mul" => {
                     let (a_str, b_str) = split_two_args(rest)?;
-                    let a = parse_egglog_term(&a_str, pool)?;
-                    let b = parse_egglog_term(&b_str, pool)?;
+                    let a = parse_egglog_term(&a_str, pool, atoms)?;
+                    let b = parse_egglog_term(&b_str, pool, atoms)?;
                     let mut children = flatten_mul_args(a, pool);
                     children.extend(flatten_mul_args(b, pool));
                     Some(pool.mul(children))
                 }
                 "Pow" => {
                     let (a_str, b_str) = split_two_args(rest)?;
-                    let a = parse_egglog_term(&a_str, pool)?;
-                    let b = parse_egglog_term(&b_str, pool)?;
+                    let a = parse_egglog_term(&a_str, pool, atoms)?;
+                    let b = parse_egglog_term(&b_str, pool, atoms)?;
                     Some(pool.pow(a, b))
                 }
-                "Sin" => Some(pool.func("sin", vec![parse_egglog_term(rest.trim(), pool)?])),
-                "Cos" => Some(pool.func("cos", vec![parse_egglog_term(rest.trim(), pool)?])),
-                "Exp" => Some(pool.func("exp", vec![parse_egglog_term(rest.trim(), pool)?])),
-                "Log" => Some(pool.func("log", vec![parse_egglog_term(rest.trim(), pool)?])),
-                "Sqrt" => Some(pool.func("sqrt", vec![parse_egglog_term(rest.trim(), pool)?])),
+                "Fn" => {
+                    let (name_tok, remainder) = consume_term(rest)?;
+                    let name = unquote(name_tok)?;
+                    let arg = parse_egglog_term(remainder.trim(), pool, atoms)?;
+                    Some(pool.func(name, vec![arg]))
+                }
+                "Sin" => Some(pool.func("sin", vec![parse_egglog_term(rest, pool, atoms)?])),
+                "Cos" => Some(pool.func("cos", vec![parse_egglog_term(rest, pool, atoms)?])),
+                "Exp" => Some(pool.func("exp", vec![parse_egglog_term(rest, pool, atoms)?])),
+                "Log" => Some(pool.func("log", vec![parse_egglog_term(rest, pool, atoms)?])),
+                "Sqrt" => Some(pool.func("sqrt", vec![parse_egglog_term(rest, pool, atoms)?])),
                 _ => None,
             }
         } else {
             let n: i64 = s.parse().ok()?;
             Some(pool.integer(n))
         }
+    }
+
+    /// Strip the surrounding double quotes of an egglog string literal.
+    ///
+    /// Deliberately stricter than `trim_matches('"')`: an unquoted token is
+    /// rejected rather than silently accepted.
+    fn unquote(s: &str) -> Option<&str> {
+        s.trim().strip_prefix('"')?.strip_suffix('"')
     }
 
     fn split_head(s: &str) -> Option<(&str, &str)> {
@@ -773,14 +872,15 @@ mod backend {
             }
         }
 
-        let expr_str = expr_to_egglog(expr, pool);
+        let mut encoder = Encoder::new(pool);
+        let expr_str = encoder.encode(expr);
         let program = egglog_program(&expr_str, config);
 
         let result: Option<ExprId> = (|| {
             let mut egraph = egglog::EGraph::default();
             let outputs = egraph.parse_and_run_program(None, &program).ok()?;
             let term_str = outputs.into_iter().last()?;
-            parse_egglog_term(&term_str, pool)
+            parse_egglog_term(&term_str, pool, encoder.atoms())
         })();
 
         let simplified = result.unwrap_or(expr);
@@ -1295,5 +1395,526 @@ mod tests {
         };
         let result = simplify_egraph_with(expr, &pool, &config, &SizeCost);
         assert_eq!(result.value, expr);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Opaque-atom soundness regression tests
+//
+// Before the opaque-atom encoding, every node kind the egglog datatype could
+// not express was serialised as the *literal number zero*.  The arithmetic
+// rules then fired on it correctly but on a corrupted term, so
+// `simplify_egraph` silently returned wrong answers: `1/2 → 0`,
+// `x + 1/2 → x`, `x^(1/2) → 1`, and so on for rationals, floats,
+// out-of-`i64` integers, n-ary `Func`, `Piecewise`, `Predicate`, `Forall`,
+// `Exists`, `RootSum` and `BigO`.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod opaque_atom_tests {
+    use super::*;
+    use crate::kernel::{Domain, ExprPool};
+    use rug::ops::Pow as _;
+
+    /// A node that the egglog datatype cannot express must survive
+    /// `simplify_egraph` untouched — bare and in every position where an
+    /// arithmetic rule could have matched a literal `0`.
+    fn assert_opaque_preserved(pool: &ExprPool, node: ExprId, label: &str) {
+        let x = pool.symbol("x_probe", Domain::Real);
+
+        let got = simplify_egraph(node, pool).value;
+        assert_eq!(
+            got,
+            node,
+            "{label}: bare — expected {}, got {}",
+            pool.display(node),
+            pool.display(got)
+        );
+
+        // `(Add ?x (Num 0)) → ?x` must not swallow it.
+        let sum = pool.add(vec![x, node]);
+        let got = simplify_egraph(sum, pool).value;
+        assert_eq!(
+            got,
+            sum,
+            "{label}: x + node — expected {}, got {}",
+            pool.display(sum),
+            pool.display(got)
+        );
+
+        // `(Mul ?x (Num 0)) → (Num 0)` must not absorb it.
+        let prod = pool.mul(vec![x, node]);
+        let got = simplify_egraph(prod, pool).value;
+        assert_eq!(
+            got,
+            prod,
+            "{label}: x * node — expected {}, got {}",
+            pool.display(prod),
+            pool.display(got)
+        );
+
+        // `(Pow ?x (Num 0)) → (Num 1)` must not fire on it.
+        let power = pool.pow(x, node);
+        let got = simplify_egraph(power, pool).value;
+        assert_eq!(
+            got,
+            power,
+            "{label}: x^node — expected {}, got {}",
+            pool.display(power),
+            pool.display(got)
+        );
+    }
+
+    // -- the six reported reproduction cases --------------------------------
+
+    #[test]
+    fn egraph_preserves_bare_rational() {
+        let pool = ExprPool::new();
+        let half = pool.rational(1, 2);
+        assert_eq!(simplify_egraph(half, &pool).value, half);
+    }
+
+    #[test]
+    fn egraph_preserves_symbol_over_rational() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![x, pool.rational(1, 2)]);
+        assert_eq!(simplify_egraph(expr, &pool).value, expr);
+    }
+
+    #[test]
+    fn egraph_preserves_symbol_plus_rational() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.add(vec![x, pool.rational(1, 2)]);
+        assert_eq!(simplify_egraph(expr, &pool).value, expr);
+    }
+
+    #[test]
+    fn egraph_preserves_rational_exponent() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.pow(x, pool.rational(1, 2));
+        assert_eq!(simplify_egraph(expr, &pool).value, expr);
+    }
+
+    #[test]
+    fn egraph_preserves_integer_to_rational_power() {
+        let pool = ExprPool::new();
+        let expr = pool.pow(pool.integer(2_i32), pool.rational(1, 2));
+        assert_eq!(simplify_egraph(expr, &pool).value, expr);
+    }
+
+    #[test]
+    fn egraph_preserves_symbol_plus_float() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.add(vec![x, pool.float(0.5, 53)]);
+        assert_eq!(simplify_egraph(expr, &pool).value, expr);
+    }
+
+    // -- one case per node kind routed through the opaque path ---------------
+
+    #[test]
+    fn egraph_preserves_rational_literal() {
+        let pool = ExprPool::new();
+        assert_opaque_preserved(&pool, pool.rational(2, 3), "Rational");
+    }
+
+    #[test]
+    fn egraph_preserves_float_literal() {
+        let pool = ExprPool::new();
+        assert_opaque_preserved(&pool, pool.float(0.5, 53), "Float");
+    }
+
+    /// Integers wider than `i64` used to be clamped to `i64::MAX`/`MIN`.
+    #[test]
+    fn egraph_preserves_out_of_range_integer() {
+        let pool = ExprPool::new();
+        let big = pool.integer(rug::Integer::from(2).pow(100_u32));
+        assert_opaque_preserved(&pool, big, "Integer(2^100)");
+    }
+
+    #[test]
+    fn egraph_preserves_binary_func() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        assert_opaque_preserved(&pool, pool.func("atan2", vec![x, y]), "Func/2");
+    }
+
+    #[test]
+    fn egraph_preserves_nullary_func() {
+        let pool = ExprPool::new();
+        assert_opaque_preserved(&pool, pool.func("rand", vec![]), "Func/0");
+    }
+
+    #[test]
+    fn egraph_preserves_piecewise() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let pw = pool.piecewise(
+            vec![(pool.pred_gt(x, pool.integer(0_i32)), x)],
+            pool.integer(-1_i32),
+        );
+        assert_opaque_preserved(&pool, pw, "Piecewise");
+    }
+
+    #[test]
+    fn egraph_preserves_predicate() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        assert_opaque_preserved(&pool, pool.pred_gt(x, y), "Predicate");
+    }
+
+    #[test]
+    fn egraph_preserves_forall() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let body = pool.pred_ge(pool.pow(x, pool.integer(2_i32)), pool.integer(0_i32));
+        assert_opaque_preserved(&pool, pool.forall(x, body), "Forall");
+    }
+
+    #[test]
+    fn egraph_preserves_exists() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let body = pool.pred_eq(pool.pow(x, pool.integer(2_i32)), pool.integer(2_i32));
+        assert_opaque_preserved(&pool, pool.exists(x, body), "Exists");
+    }
+
+    #[test]
+    fn egraph_preserves_root_sum() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let c = pool.symbol("c", Domain::Real);
+        // Σ_{c : c² − 2 = 0} log(x − c)
+        let poly = pool.add(vec![pool.pow(c, pool.integer(2_i32)), pool.integer(-2_i32)]);
+        let body = pool.func(
+            "log",
+            vec![pool.add(vec![x, pool.mul(vec![pool.integer(-1_i32), c])])],
+        );
+        assert_opaque_preserved(&pool, pool.root_sum(poly, c, body), "RootSum");
+    }
+
+    #[test]
+    fn egraph_preserves_big_o() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        assert_opaque_preserved(&pool, pool.big_o(x), "BigO");
+    }
+
+    /// A unary function whose name is not a plain identifier cannot be
+    /// embedded in an egglog string literal, so it also takes the opaque path.
+    #[test]
+    fn egraph_preserves_func_with_exotic_name() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        assert_opaque_preserved(&pool, pool.func("weird name\"", vec![x]), "Func/exotic");
+    }
+
+    // -- uninterpreted unary functions --------------------------------------
+
+    /// Unknown unary functions used to be mangled into a symbol literally
+    /// named `"tan_(Num 3)"`.
+    #[test]
+    fn egraph_preserves_unknown_unary_func() {
+        let pool = ExprPool::new();
+        let expr = pool.func("tan", vec![pool.integer(3_i32)]);
+        let got = simplify_egraph(expr, &pool).value;
+        assert_eq!(got, expr, "got {}", pool.display(got));
+    }
+
+    /// `Fn` keeps unknown functions *structured*, so rules still fire inside
+    /// the argument.
+    #[test]
+    fn egraph_simplifies_inside_unknown_unary_func() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.func("tan", vec![pool.add(vec![x, pool.integer(0_i32)])]);
+        let got = simplify_egraph(expr, &pool).value;
+        assert_eq!(
+            got,
+            pool.func("tan", vec![x]),
+            "expected tan(x), got {}",
+            pool.display(got)
+        );
+    }
+
+    /// Distinct unknown functions of the same argument must stay distinct.
+    #[test]
+    fn egraph_distinct_unknown_funcs_do_not_collide() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.func("tan", vec![x]);
+        let g = pool.func("erf", vec![x]);
+        let expr = pool.add(vec![f, pool.mul(vec![pool.integer(-1_i32), g])]);
+        let got = simplify_egraph(expr, &pool).value;
+        assert_ne!(got, pool.integer(0_i32), "tan(x) − erf(x) must not be 0");
+    }
+
+    // -- atom identity: same subterm unifies, different subterms do not ------
+
+    /// A subterm containing an opaque atom still cancels against itself,
+    /// because equal subterms share one atom.
+    ///
+    /// `-1` is interned first on purpose: `pool.mul` sorts its children by
+    /// `ExprId`, and the cancellation rule is spelled `(Mul (Num -1) ?x)`,
+    /// so it only matches when `-1` sorts to the front.  That ordering
+    /// sensitivity is a pre-existing property of the rule set — plain
+    /// `(x + y) − (x + y)` behaves exactly the same way — and is independent
+    /// of the atom encoding under test here.
+    #[test]
+    fn egraph_identical_rational_subterms_cancel() {
+        let pool = ExprPool::new();
+        let neg = pool.integer(-1_i32);
+        let x = pool.symbol("x", Domain::Real);
+        let t = pool.add(vec![x, pool.rational(1, 2)]);
+        let expr = pool.add(vec![t, pool.mul(vec![neg, t])]);
+        let got = simplify_egraph(expr, &pool).value;
+        assert_eq!(
+            got,
+            pool.integer(0_i32),
+            "(x + 1/2) − (x + 1/2) should be 0, got {}",
+            pool.display(got)
+        );
+    }
+
+    /// The same, for a wholly opaque subterm.
+    #[test]
+    fn egraph_identical_opaque_subterms_cancel() {
+        let pool = ExprPool::new();
+        let neg = pool.integer(-1_i32);
+        let x = pool.symbol("x", Domain::Real);
+        let pw = pool.piecewise(vec![(pool.pred_gt(x, pool.integer(0_i32)), x)], neg);
+        let expr = pool.add(vec![pw, pool.mul(vec![neg, pw])]);
+        let got = simplify_egraph(expr, &pool).value;
+        assert_eq!(
+            got,
+            pool.integer(0_i32),
+            "p − p should be 0 for opaque p, got {}",
+            pool.display(got)
+        );
+    }
+
+    /// Two occurrences of the same rational literal share one atom.
+    #[test]
+    fn egraph_identical_rational_atoms_cancel() {
+        let pool = ExprPool::new();
+        let neg = pool.integer(-1_i32);
+        let half = pool.rational(1, 2);
+        let expr = pool.add(vec![half, pool.mul(vec![neg, half])]);
+        let got = simplify_egraph(expr, &pool).value;
+        assert_eq!(
+            got,
+            pool.integer(0_i32),
+            "1/2 − 1/2 should be 0, got {}",
+            pool.display(got)
+        );
+    }
+
+    #[test]
+    fn egraph_distinct_rationals_do_not_collide() {
+        let pool = ExprPool::new();
+        let a = pool.rational(1, 2);
+        let b = pool.rational(1, 3);
+        let expr = pool.add(vec![a, pool.mul(vec![pool.integer(-1_i32), b])]);
+        let got = simplify_egraph(expr, &pool).value;
+        assert_ne!(got, pool.integer(0_i32), "1/2 − 1/3 must not be 0");
+    }
+
+    #[test]
+    fn egraph_distinct_opaque_subterms_do_not_collide() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let ox = pool.big_o(x);
+        let oy = pool.big_o(y);
+        let expr = pool.add(vec![ox, pool.mul(vec![pool.integer(-1_i32), oy])]);
+        let got = simplify_egraph(expr, &pool).value;
+        assert_ne!(got, pool.integer(0_i32), "O(x) − O(y) must not be 0");
+    }
+
+    // -- user symbols cannot collide with generated atom names ---------------
+
+    /// A user is allowed to name a symbol `a0` / `a1` — exactly the shape of
+    /// a generated opaque atom.  Symbol names are never emitted into the
+    /// egglog program, so a collision is impossible by construction.
+    #[test]
+    fn egraph_user_symbol_shaped_like_atom_does_not_collide() {
+        let pool = ExprPool::new();
+        let a0 = pool.symbol("a0", Domain::Real);
+        let a1 = pool.symbol("a1", Domain::Real);
+        let a2 = pool.symbol("a2", Domain::Real);
+        let neg = pool.integer(-1_i32);
+        let zero = pool.integer(0_i32);
+
+        for (lhs, rhs, label) in [
+            (a0, pool.rational(1, 2), "a0 − 1/2"),
+            (a1, pool.rational(1, 2), "a1 − 1/2"),
+            (a2, pool.float(0.25, 53), "a2 − 0.25"),
+            (a0, pool.big_o(a1), "a0 − O(a1)"),
+            (a0, a1, "a0 − a1"),
+        ] {
+            let expr = pool.add(vec![lhs, pool.mul(vec![neg, rhs])]);
+            let got = simplify_egraph(expr, &pool).value;
+            assert_ne!(got, zero, "{label} must not cancel");
+        }
+
+        // …while genuine self-cancellation still works.
+        let expr = pool.add(vec![a0, pool.mul(vec![neg, a0])]);
+        assert_eq!(simplify_egraph(expr, &pool).value, zero, "a0 − a0 = 0");
+    }
+
+    /// Symbols round-trip as themselves, keeping their domain and
+    /// commutativity flag instead of being re-interned as `Domain::Real`.
+    #[test]
+    fn egraph_preserves_symbol_domain() {
+        let pool = ExprPool::new();
+        let z = pool.symbol("z", Domain::Complex);
+        let expr = pool.add(vec![z, pool.integer(0_i32)]);
+        let got = simplify_egraph(expr, &pool).value;
+        assert_eq!(got, z, "z:Complex + 0 must stay the Complex symbol");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Property test: simplify_egraph must preserve semantics
+// ---------------------------------------------------------------------------
+
+#[cfg(all(test, feature = "egraph"))]
+mod opaque_atom_proptests {
+    use super::*;
+    use crate::jit::eval_interp;
+    use crate::kernel::{Domain, ExprPool};
+    use proptest::prelude::*;
+    use std::collections::HashMap;
+
+    /// A small expression grammar covering every serialiser path: integer
+    /// literals (`Num`), rationals and floats (opaque atoms), symbols
+    /// (atoms), `Add`/`Mul`/`Pow`, known unary functions, an uninterpreted
+    /// unary function (`Fn`), and a binary function (opaque atom).
+    #[derive(Debug, Clone)]
+    enum Ast {
+        Int(i64),
+        Rat(i64, i64),
+        Flt(i32),
+        X,
+        Y,
+        Add(Box<Ast>, Box<Ast>),
+        Mul(Box<Ast>, Box<Ast>),
+        Neg(Box<Ast>),
+        PowI(Box<Ast>, i32),
+        /// `base^(1/2)` — a rational in exponent position.
+        PowHalf(Box<Ast>),
+        Sin(Box<Ast>),
+        Cos(Box<Ast>),
+        Sqrt(Box<Ast>),
+        /// Uninterpreted unary function.
+        Tan(Box<Ast>),
+        /// Binary function — not expressible in the egglog datatype.
+        Atan2(Box<Ast>, Box<Ast>),
+    }
+
+    fn build(ast: &Ast, pool: &ExprPool, x: ExprId, y: ExprId) -> ExprId {
+        match ast {
+            Ast::Int(n) => pool.integer(*n),
+            Ast::Rat(n, d) => pool.rational(*n, *d),
+            Ast::Flt(k) => pool.float(f64::from(*k) / 8.0, 53),
+            Ast::X => x,
+            Ast::Y => y,
+            Ast::Add(a, b) => pool.add(vec![build(a, pool, x, y), build(b, pool, x, y)]),
+            Ast::Mul(a, b) => pool.mul(vec![build(a, pool, x, y), build(b, pool, x, y)]),
+            Ast::Neg(a) => pool.mul(vec![pool.integer(-1_i32), build(a, pool, x, y)]),
+            Ast::PowI(a, e) => pool.pow(build(a, pool, x, y), pool.integer(*e)),
+            Ast::PowHalf(a) => pool.pow(build(a, pool, x, y), pool.rational(1, 2)),
+            Ast::Sin(a) => pool.func("sin", vec![build(a, pool, x, y)]),
+            Ast::Cos(a) => pool.func("cos", vec![build(a, pool, x, y)]),
+            Ast::Sqrt(a) => pool.func("sqrt", vec![build(a, pool, x, y)]),
+            Ast::Tan(a) => pool.func("tan", vec![build(a, pool, x, y)]),
+            Ast::Atan2(a, b) => {
+                pool.func("atan2", vec![build(a, pool, x, y), build(b, pool, x, y)])
+            }
+        }
+    }
+
+    fn ast_strategy() -> impl Strategy<Value = Ast> {
+        let leaf = prop_oneof![
+            (-6i64..=6).prop_map(Ast::Int),
+            (-6i64..=6, 1i64..=6).prop_map(|(n, d)| Ast::Rat(n, d)),
+            (-40i32..=40).prop_map(Ast::Flt),
+            Just(Ast::X),
+            Just(Ast::Y),
+        ];
+        leaf.prop_recursive(4, 32, 2, |inner| {
+            prop_oneof![
+                (inner.clone(), inner.clone())
+                    .prop_map(|(a, b)| Ast::Add(Box::new(a), Box::new(b))),
+                (inner.clone(), inner.clone())
+                    .prop_map(|(a, b)| Ast::Mul(Box::new(a), Box::new(b))),
+                inner.clone().prop_map(|a| Ast::Neg(Box::new(a))),
+                (inner.clone(), -2i32..=3).prop_map(|(a, e)| Ast::PowI(Box::new(a), e)),
+                inner.clone().prop_map(|a| Ast::PowHalf(Box::new(a))),
+                inner.clone().prop_map(|a| Ast::Sin(Box::new(a))),
+                inner.clone().prop_map(|a| Ast::Cos(Box::new(a))),
+                inner.clone().prop_map(|a| Ast::Sqrt(Box::new(a))),
+                inner.clone().prop_map(|a| Ast::Tan(Box::new(a))),
+                (inner.clone(), inner).prop_map(|(a, b)| Ast::Atan2(Box::new(a), Box::new(b))),
+            ]
+        })
+    }
+
+    /// Generic sample points — deliberately not small integers, so an
+    /// accidental agreement is unlikely.
+    const SAMPLE_POINTS: [(f64, f64); 5] = [
+        (0.7137, 1.2911),
+        (2.3049, -0.8513),
+        (-1.4471, 0.6301),
+        (3.7219, 2.2087),
+        (0.1303, -2.9411),
+    ];
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// `simplify_egraph(e)` must be *semantically* equal to `e`.
+        ///
+        /// This is the property that would have caught the `Node::Unsupported
+        /// → (Num 0)` bug: `x + 1/2 → x` disagrees numerically everywhere.
+        #[test]
+        fn egraph_simplify_preserves_value(ast in ast_strategy()) {
+            let pool = ExprPool::new();
+            let x = pool.symbol("x", Domain::Real);
+            let y = pool.symbol("y", Domain::Real);
+            let expr = build(&ast, &pool, x, y);
+            let simplified = simplify_egraph(expr, &pool).value;
+
+            // Structural identity implies semantic identity.
+            if simplified != expr {
+                for (xv, yv) in SAMPLE_POINTS {
+                    let mut env = HashMap::new();
+                    env.insert(x, xv);
+                    env.insert(y, yv);
+                    let (Some(a), Some(b)) = (
+                        eval_interp(expr, &env, &pool),
+                        eval_interp(simplified, &env, &pool),
+                    ) else {
+                        continue;
+                    };
+                    // Undefined / overflowing points carry no information.
+                    if !a.is_finite() || !b.is_finite() {
+                        continue;
+                    }
+                    let tol = 1e-6 * (1.0 + a.abs().max(b.abs()));
+                    prop_assert!(
+                        (a - b).abs() <= tol,
+                        "at (x, y) = ({xv}, {yv}): {} = {a} but simplify_egraph gave {} = {b}",
+                        pool.display(expr),
+                        pool.display(simplified),
+                    );
+                }
+            }
+        }
     }
 }
