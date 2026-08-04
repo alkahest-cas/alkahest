@@ -307,6 +307,7 @@ def _ledger() -> dict[str, Any]:
     """Load (and memoise) the generated ledger artifact."""
     global _LEDGER_CACHE
     if _LEDGER_CACHE is None:
+        data: dict[str, Any]
         try:
             with open(_LEDGER_PATH, encoding="utf-8") as handle:
                 data = json.load(handle)
