@@ -394,11 +394,16 @@ impl ArbBall {
         let hi = Float::with_val(prec, self.hi().exp());
         let sum = Float::with_val(prec, &lo + &hi);
         let diff = Float::with_val(prec, &hi - &lo);
-        ArbBall {
+        let mut b = ArbBall {
             mid: sum / 2_f64,
             rad: diff / 2_f64,
             prec,
-        }
+        };
+        // `lo`/`hi` are themselves rounded to `prec`; without this the ball is
+        // exact-looking (`rad == 0`) for an exact input, which is a false
+        // rigorous claim about a transcendental value.
+        b.add_rounding_error();
+        b
     }
 
     pub fn log(&self) -> Option<Self> {
@@ -410,11 +415,16 @@ impl ArbBall {
         let hi = Float::with_val(prec, self.hi().ln());
         let sum = Float::with_val(prec, &lo + &hi);
         let diff = Float::with_val(prec, &hi - &lo);
-        Some(ArbBall {
+        let mut b = ArbBall {
             mid: sum / 2_f64,
             rad: diff / 2_f64,
             prec,
-        })
+        };
+        // Endpoints are rounded to `prec`; without this a ball built from an
+        // exact input reports `rad == 0`, falsely claiming an irrational result
+        // is exactly representable.
+        b.add_rounding_error();
+        Some(b)
     }
 
     pub fn sqrt(&self) -> Option<Self> {
@@ -426,11 +436,16 @@ impl ArbBall {
         let hi = Float::with_val(prec, self.hi().sqrt());
         let sum = Float::with_val(prec, &lo + &hi);
         let diff = Float::with_val(prec, &hi - &lo);
-        Some(ArbBall {
+        let mut b = ArbBall {
             mid: sum / 2_f64,
             rad: diff / 2_f64,
             prec,
-        })
+        };
+        // Endpoints are rounded to `prec`; without this a ball built from an
+        // exact input reports `rad == 0`, falsely claiming an irrational result
+        // is exactly representable.
+        b.add_rounding_error();
+        Some(b)
     }
 
     /// tan([m-r, m+r]) — Lipschitz constant: sec²(m+r) (may blow up near π/2).
@@ -457,11 +472,16 @@ impl ArbBall {
         }
         let sum = Float::with_val(prec, &lo_tan + &hi_tan);
         let diff = Float::with_val(prec, &hi_tan - &lo_tan);
-        Some(ArbBall {
+        let mut b = ArbBall {
             mid: sum / 2_f64,
             rad: diff / 2_f64,
             prec,
-        })
+        };
+        // Endpoints are rounded to `prec`; without this a ball built from an
+        // exact input reports `rad == 0`, falsely claiming an irrational result
+        // is exactly representable.
+        b.add_rounding_error();
+        Some(b)
     }
 
     pub fn sinh(&self) -> Self {
@@ -470,11 +490,14 @@ impl ArbBall {
         let hi = Float::with_val(prec, self.hi().sinh());
         let sum = Float::with_val(prec, &lo + &hi);
         let diff = Float::with_val(prec, &hi - &lo);
-        ArbBall {
+        let mut b = ArbBall {
             mid: sum / 2_f64,
             rad: diff / 2_f64,
             prec,
-        }
+        };
+        // Endpoints are rounded to `prec`; see `exp`.
+        b.add_rounding_error();
+        b
     }
 
     pub fn cosh(&self) -> Self {
@@ -496,11 +519,14 @@ impl ArbBall {
         };
         let sum = Float::with_val(prec, &min_val + &max_val);
         let diff = Float::with_val(prec, &max_val - &min_val);
-        ArbBall {
+        let mut b = ArbBall {
             mid: sum / 2_f64,
             rad: diff / 2_f64,
             prec,
-        }
+        };
+        // Endpoints are rounded to `prec`; see `exp`.
+        b.add_rounding_error();
+        b
     }
 
     pub fn tanh(&self) -> Self {
@@ -510,11 +536,14 @@ impl ArbBall {
         let hi = Float::with_val(prec, self.hi().tanh());
         let sum = Float::with_val(prec, &lo + &hi);
         let diff = Float::with_val(prec, &hi - &lo);
-        ArbBall {
+        let mut b = ArbBall {
             mid: sum / 2_f64,
             rad: diff / 2_f64,
             prec,
-        }
+        };
+        // Endpoints are rounded to `prec`; see `exp`.
+        b.add_rounding_error();
+        b
     }
 
     pub fn asin(&self) -> Option<Self> {
@@ -526,11 +555,16 @@ impl ArbBall {
         let hi = Float::with_val(prec, self.hi().asin());
         let sum = Float::with_val(prec, &lo + &hi);
         let diff = Float::with_val(prec, &hi - &lo);
-        Some(ArbBall {
+        let mut b = ArbBall {
             mid: sum / 2_f64,
             rad: diff / 2_f64,
             prec,
-        })
+        };
+        // Endpoints are rounded to `prec`; without this a ball built from an
+        // exact input reports `rad == 0`, falsely claiming an irrational result
+        // is exactly representable.
+        b.add_rounding_error();
+        Some(b)
     }
 
     pub fn acos(&self) -> Option<Self> {
@@ -543,11 +577,16 @@ impl ArbBall {
         // acos is decreasing, so lo/hi swap
         let sum = Float::with_val(prec, &lo + &hi);
         let diff = Float::with_val(prec, &lo - &hi);
-        Some(ArbBall {
+        let mut b = ArbBall {
             mid: sum / 2_f64,
             rad: diff / 2_f64,
             prec,
-        })
+        };
+        // Endpoints are rounded to `prec`; without this a ball built from an
+        // exact input reports `rad == 0`, falsely claiming an irrational result
+        // is exactly representable.
+        b.add_rounding_error();
+        Some(b)
     }
 
     pub fn atan(&self) -> Self {
@@ -556,11 +595,14 @@ impl ArbBall {
         let hi = Float::with_val(prec, self.hi().atan());
         let sum = Float::with_val(prec, &lo + &hi);
         let diff = Float::with_val(prec, &hi - &lo);
-        ArbBall {
+        let mut b = ArbBall {
             mid: sum / 2_f64,
             rad: diff / 2_f64,
             prec,
-        }
+        };
+        // Endpoints are rounded to `prec`; see `exp`.
+        b.add_rounding_error();
+        b
     }
 
     /// asinh([m-r, m+r]) — monotone increasing on all of ℝ.
@@ -570,11 +612,14 @@ impl ArbBall {
         let hi = Float::with_val(prec, self.hi().asinh());
         let sum = Float::with_val(prec, &lo + &hi);
         let diff = Float::with_val(prec, &hi - &lo);
-        ArbBall {
+        let mut b = ArbBall {
             mid: sum / 2_f64,
             rad: diff / 2_f64,
             prec,
-        }
+        };
+        // Endpoints are rounded to `prec`; see `exp`.
+        b.add_rounding_error();
+        b
     }
 
     /// acosh([m-r, m+r]) — monotone increasing on `[1, ∞)`. Returns `None` if
@@ -588,11 +633,16 @@ impl ArbBall {
         let hi = Float::with_val(prec, self.hi().acosh());
         let sum = Float::with_val(prec, &lo + &hi);
         let diff = Float::with_val(prec, &hi - &lo);
-        Some(ArbBall {
+        let mut b = ArbBall {
             mid: sum / 2_f64,
             rad: diff / 2_f64,
             prec,
-        })
+        };
+        // Endpoints are rounded to `prec`; without this a ball built from an
+        // exact input reports `rad == 0`, falsely claiming an irrational result
+        // is exactly representable.
+        b.add_rounding_error();
+        Some(b)
     }
 
     /// atanh([m-r, m+r]) — monotone increasing on `(-1, 1)`. Returns `None` if
@@ -606,11 +656,16 @@ impl ArbBall {
         let hi = Float::with_val(prec, self.hi().atanh());
         let sum = Float::with_val(prec, &lo + &hi);
         let diff = Float::with_val(prec, &hi - &lo);
-        Some(ArbBall {
+        let mut b = ArbBall {
             mid: sum / 2_f64,
             rad: diff / 2_f64,
             prec,
-        })
+        };
+        // Endpoints are rounded to `prec`; without this a ball built from an
+        // exact input reports `rad == 0`, falsely claiming an irrational result
+        // is exactly representable.
+        b.add_rounding_error();
+        Some(b)
     }
 
     pub fn erf(&self) -> Self {
@@ -647,11 +702,16 @@ impl ArbBall {
         let hi = Float::with_val(prec, w_hi);
         let sum = Float::with_val(prec, &lo + &hi);
         let diff = Float::with_val(prec, &hi - &lo);
-        Some(ArbBall {
+        let mut b = ArbBall {
             mid: sum / 2_f64,
             rad: diff / 2_f64,
             prec,
-        })
+        };
+        // Endpoints are rounded to `prec`; without this a ball built from an
+        // exact input reports `rad == 0`, falsely claiming an irrational result
+        // is exactly representable.
+        b.add_rounding_error();
+        Some(b)
     }
 
     /// Digamma ψ(x).  Returns `None` when the ball contains a non-positive
@@ -673,11 +733,16 @@ impl ArbBall {
         fhi.digamma_mut();
         let sum = Float::with_val(prec, &flo + &fhi);
         let diff = Float::with_val(prec, &fhi - &flo);
-        Some(ArbBall {
+        let mut b = ArbBall {
             mid: sum / 2_f64,
             rad: diff / 2_f64,
             prec,
-        })
+        };
+        // Endpoints are rounded to `prec`; without this a ball built from an
+        // exact input reports `rad == 0`, falsely claiming an irrational result
+        // is exactly representable.
+        b.add_rounding_error();
+        Some(b)
     }
 
     /// Bessel function of the first kind Jₙ(x) for integer order `n`.
@@ -689,11 +754,14 @@ impl ArbBall {
         fhi.jn_mut(n);
         let sum = Float::with_val(prec, &flo + &fhi);
         let diff = Float::with_val(prec, &fhi - &flo);
-        ArbBall {
+        let mut b = ArbBall {
             mid: sum / 2_f64,
             rad: diff / 2_f64,
             prec,
-        }
+        };
+        // Endpoints are rounded to `prec`; see `exp`.
+        b.add_rounding_error();
+        b
     }
 
     pub fn abs_ball(&self) -> Self {
@@ -721,11 +789,14 @@ impl ArbBall {
         let hi_floor = Float::with_val(prec, self.hi().floor());
         let diff = Float::with_val(prec, &hi_floor - &lo_floor);
         let sum = Float::with_val(prec, &lo_floor + &hi_floor);
-        ArbBall {
+        let mut b = ArbBall {
             mid: sum / 2_f64,
             rad: diff / 2_f64,
             prec,
-        }
+        };
+        // Endpoints are rounded to `prec`; see `exp`.
+        b.add_rounding_error();
+        b
     }
 
     pub fn ceil_ball(&self) -> Self {
@@ -734,11 +805,14 @@ impl ArbBall {
         let hi_ceil = Float::with_val(prec, self.hi().ceil());
         let diff = Float::with_val(prec, &hi_ceil - &lo_ceil);
         let sum = Float::with_val(prec, &lo_ceil + &hi_ceil);
-        ArbBall {
+        let mut b = ArbBall {
             mid: sum / 2_f64,
             rad: diff / 2_f64,
             prec,
-        }
+        };
+        // Endpoints are rounded to `prec`; see `exp`.
+        b.add_rounding_error();
+        b
     }
 }
 
@@ -1139,5 +1213,64 @@ mod tests {
         let z = AcbBall::from_f64(3.0, 4.0, 128);
         let m = z.modulus();
         assert!(m.contains(5.0));
+    }
+}
+
+#[cfg(test)]
+mod rounding_soundness_tests {
+    use super::*;
+
+    const PREC: u32 = 128;
+
+    /// Every transcendental op must carry a rounding term.
+    ///
+    /// `exp`/`log`/`sqrt`/`tan`/`asin`/`acos`/`atan`/`asinh`/`atanh` built their
+    /// result from `f(lo)` and `f(hi)` at finite precision and took the spread
+    /// as the radius. Given an *exact* input those endpoints coincide, so the
+    /// radius came out exactly zero — claiming a transcendental value is
+    /// exactly representable. `sin`/`cos` already added the term.
+    #[test]
+    fn transcendental_ops_never_report_zero_radius_on_exact_input() {
+        let half = ArbBall::from_f64(0.5, PREC);
+        let two = ArbBall::from_f64(2.0, PREC);
+
+        let mut zero_radius: Vec<&str> = Vec::new();
+        let mut check = |name: &'static str, b: ArbBall| {
+            if b.rad == 0 {
+                zero_radius.push(name);
+            }
+        };
+
+        check("exp", half.exp());
+        check("sin", half.sin());
+        check("cos", half.cos());
+        check("log", two.log().expect("log 2 defined"));
+        check("sqrt", two.sqrt().expect("sqrt 2 defined"));
+        check("tan", half.tan().expect("tan 0.5 defined"));
+        check("asin", half.asin().expect("asin 0.5 defined"));
+        check("acos", half.acos().expect("acos 0.5 defined"));
+        check("atan", half.atan());
+        check("asinh", half.asinh());
+        check("atanh", half.atanh().expect("atanh 0.5 defined"));
+
+        assert!(
+            zero_radius.is_empty(),
+            "these ops claim an irrational result is exact: {zero_radius:?}"
+        );
+    }
+
+    /// The radius must stay at the working-precision scale, not balloon.
+    ///
+    /// Soundness is trivially achievable by making every ball enormous; this
+    /// pins that the fix did not take that route.
+    #[test]
+    fn rounding_term_stays_at_precision_scale() {
+        let b = ArbBall::from_f64(0.5, PREC).exp();
+        let bound = Float::with_val(PREC, 1e-30);
+        assert!(
+            b.rad < bound,
+            "radius {} is far above the 2^-prec scale",
+            b.rad
+        );
     }
 }
