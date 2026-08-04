@@ -142,6 +142,17 @@ def real_solution_count(equations: list[ak.Expr], unknowns: list[ak.Expr]) -> Ca
     return op
 
 
+def universal_holds(poly: ak.Expr, kind: str) -> Callable[[], bool]:
+    """Answer = ``decide``'s verdict on ``forall x. poly <kind> 0``."""
+
+    def op() -> bool:
+        rel = {"ge": POOL.ge, "le": POOL.le, "gt": POOL.gt, "lt": POOL.lt}[kind]
+        truth, _witness = ak.decide(ak.Forall(X, rel(poly, _int(0))))
+        return truth
+
+    return op
+
+
 def _matrix(rows: list[list[int]]) -> ak.Matrix:
     return ak.Matrix([[_int(v) for v in row] for row in rows])
 
@@ -186,6 +197,78 @@ CALCULUS = "first-course calculus fact, re-derived by hand"
 
 
 CASES: list[Case] = [
+    # ── real quantifier elimination ──────────────────────────────────────────
+    #
+    # `decide` is the engine behind every stability proof and bound check, so a
+    # false `True` here is a machine-checked-looking proof of a false theorem —
+    # the most damaging silent error in the library.
+    Case(
+        id="decide_forall_touching_zero_strict",
+        subsystem="real_qe",
+        statement="forall x. x^2 > 0 is FALSE (x = 0)",
+        op=universal_holds(X ** _int(2), "gt"),
+        contract=Returns(False),
+        verified_by="x=0 gives 0 > 0, which is false. Fixed: Le/Ge boundary sampling.",
+    ),
+    Case(
+        id="decide_forall_quartic_touching_zero",
+        subsystem="real_qe",
+        statement="forall x. x^4 > 0 is FALSE (x = 0)",
+        op=universal_holds(X ** _int(4), "gt"),
+        contract=Returns(False),
+        verified_by="x=0 gives 0 > 0, false.",
+    ),
+    Case(
+        id="decide_forall_shifted_square_strict",
+        subsystem="real_qe",
+        statement="forall x. (x-1)^2 > 0 is FALSE (x = 1)",
+        op=universal_holds((X - _int(1)) ** _int(2), "gt"),
+        contract=Returns(False),
+        verified_by="x=1 gives 0 > 0, false.",
+    ),
+    Case(
+        id="decide_forall_nonneg_square",
+        subsystem="real_qe",
+        statement="forall x. x^2 >= 0 is TRUE",
+        op=universal_holds(X ** _int(2), "ge"),
+        contract=Returns(True),
+        verified_by="Squares are non-negative. Guards against over-refusing the fix.",
+    ),
+    Case(
+        id="decide_forall_narrow_negative_cell",
+        subsystem="real_qe",
+        statement="forall x. 2x^4 + x^3 - 4x^2 + 3 >= 0 is FALSE (x = -6/5 gives -213/625)",
+        op=universal_holds(
+            _int(2) * X ** _int(4) + X ** _int(3) - _int(4) * X ** _int(2) + _int(3), "ge"
+        ),
+        contract=Returns(False),
+        verified_by=(
+            "Exact rational evaluation at x=-6/5: 2(1296/625) + (-216/125) - 4(36/25) + 3 "
+            "= -213/625 < 0."
+        ),
+        xfail=(
+            "SILENT ERROR: decide returns True for a false universal. Residual CAD "
+            "incompleteness after the Le/Ge-boundary and breakpoint fixes: the region "
+            "where the polynomial is negative is a narrow cell between two roots, and "
+            "no candidate rational sample lands inside it. Fixing this needs algebraic "
+            "sample points (or sound isolating-interval refinement -- bisection by sign "
+            "is NOT sound here, because even-multiplicity roots have no sign change)."
+        ),
+    ),
+    Case(
+        id="decide_forall_narrow_positive_cell",
+        subsystem="real_qe",
+        statement="forall x. -4x^4 - 4x^3 + 3x^2 - 3 <= 0 is FALSE (x = 4 gives -1235... )",
+        op=universal_holds(
+            -_int(4) * X ** _int(4) - _int(4) * X ** _int(3) + _int(3) * X ** _int(2) - _int(3),
+            "le",
+        ),
+        contract=Returns(False),
+        verified_by="Exact evaluation finds a point where the polynomial is positive.",
+        xfail=(
+            "SILENT ERROR: same residual CAD incompleteness as decide_forall_narrow_negative_cell."
+        ),
+    ),
     # -----------------------------------------------------------------------
     # Definite integration through an interior pole.  Naive FTC produces a
     # clean finite number for every one of these; every one of them diverges.
