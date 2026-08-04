@@ -4,6 +4,17 @@
 
 ### Added
 
+- **`DerivedResult.to_dict` / `.to_json`: versioned, token-efficient result
+  envelopes** (P1 search plumbing item 6). Combines `.value`, `.verification`,
+  `.certificate_status`, and `.steps` into one dict/JSON string with a stable
+  `"kind": "alkahest.derived_result"` discriminator and independent
+  `RESULT_SCHEMA_VERSION` / `STEPS_SCHEMA_VERSION` constants (also exported at
+  module level and as `DerivedResult.SCHEMA_VERSION` /
+  `.STEPS_SCHEMA_VERSION`). `mode="compact"` drops `before`/`after` step text
+  and uses short step keys (`r`/`s`), but never renames, hides, or drops
+  `verification["status"]` and never includes Lean certificate source in
+  either mode. See `docs/mdbook/src/derivations.md`.
+
 - **Python bindings for the parallel simplifiers**: `simplify_redex`,
   `simplify_auto` and `simplify_strategy` join the existing `simplify_par`.
   All take a single expression and return the same result as `simplify`; only
