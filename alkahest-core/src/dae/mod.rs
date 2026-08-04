@@ -257,8 +257,6 @@ pub fn pantelides(dae: &DAE, pool: &ExprPool) -> Result<PantelidesResult, DaeErr
 
 struct Matching {
     eq_to_var: Vec<Option<usize>>,
-    #[allow(dead_code)]
-    var_to_eq: Vec<Option<usize>>,
 }
 
 /// Build an incidence list: `result[i]` = set of variable indices that equation `i` depends on.
@@ -316,10 +314,7 @@ fn maximum_matching(adj: &[Vec<usize>], n_eq: usize, n_var: usize) -> Matching {
             eq_to_var[eq] = Some(var);
         }
     }
-    Matching {
-        eq_to_var,
-        var_to_eq,
-    }
+    Matching { eq_to_var }
 }
 
 /// Differentiate `equation` with respect to time, using `d(var)/dt = deriv`.

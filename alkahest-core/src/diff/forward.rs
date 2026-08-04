@@ -72,31 +72,12 @@ impl DualValue {
         DualValue::new(value, tangent)
     }
 
-    #[allow(dead_code)]
-    fn neg(self, pool: &ExprPool) -> Self {
-        let neg_one = pool.integer(-1_i32);
-        let value = pool.mul(vec![neg_one, self.value]);
-        let tangent = pool.mul(vec![neg_one, self.tangent]);
-        DualValue::new(value, tangent)
-    }
-
-    #[allow(dead_code)]
-    fn sub(self, rhs: Self, pool: &ExprPool) -> Self {
-        self.add(rhs.neg(pool), pool)
-    }
-
-    /// Division: d(a/b) = (b·da - a·db) / b²
-    #[allow(dead_code)]
-    fn div(self, rhs: Self, pool: &ExprPool) -> Self {
-        let value = pool.mul(vec![self.value, pool.pow(rhs.value, pool.integer(-1_i32))]);
-        let bda = pool.mul(vec![rhs.value, self.tangent]);
-        let adb = pool.mul(vec![self.value, rhs.tangent]);
-        let neg_one = pool.integer(-1_i32);
-        let numerator = pool.add(vec![bda, pool.mul(vec![neg_one, adb])]);
-        let b_sq = pool.pow(rhs.value, pool.integer(2_i32));
-        let tangent = pool.mul(vec![numerator, pool.pow(b_sq, pool.integer(-1_i32))]);
-        DualValue::new(value, tangent)
-    }
+    // No `neg`, `sub` or `div`: the kernel has no `Neg`, `Sub` or `Div` node.
+    // Subtraction is `Add([a, Mul([-1, b])])` and division is `Mul([a, Pow(b, -1)])`,
+    // so both reach this evaluator through `add`, `mul` and `pow_int` alone.  The
+    // quotient rule falls out of the product rule composed with `pow_int(-1)`:
+    // `d(a·b⁻¹) = b⁻¹·da + a·(−b⁻²·db) = (b·da − a·db)/b²`.  See the
+    // `forward_diff_subtraction_*` and `forward_diff_division_*` tests.
 
     /// Power rule for integer exponent n: d(f^n) = n * f^(n-1) * f'
     fn pow_int(self, n: rug::Integer, pool: &ExprPool) -> Self {
@@ -443,6 +424,55 @@ mod tests {
         let fwd_poly = UniPoly::from_symbolic(fwd, x, &pool).unwrap();
         let sym_poly = UniPoly::from_symbolic(sym, x, &pool).unwrap();
         assert_eq!(fwd_poly.coefficients_i64(), sym_poly.coefficients_i64());
+    }
+
+    // The kernel has no `Sub` or `Div` node, so subtraction and division reach
+    // forward mode as `Add`/`Mul`/`Pow` over canonical forms.  These two tests
+    // pin that down: they are the reason `DualValue` needs no `sub`/`div`/`neg`.
+
+    #[test]
+    fn forward_diff_subtraction_agrees_with_symbolic() {
+        // d/dx (x² − 3x) = 2x − 3, where `− 3x` is `Mul([-3, x])`.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.add(vec![
+            pool.pow(x, pool.integer(2_i32)),
+            pool.mul(vec![pool.integer(-3_i32), x]),
+        ]);
+        let fwd = diff_forward(expr, x, &pool).unwrap().value;
+        let sym = sym_diff(expr, x, &pool).unwrap().value;
+        let fwd_poly = UniPoly::from_symbolic(fwd, x, &pool).unwrap();
+        let sym_poly = UniPoly::from_symbolic(sym, x, &pool).unwrap();
+        assert_eq!(fwd_poly.coefficients_i64(), sym_poly.coefficients_i64());
+        assert_eq!(fwd_poly.coefficients_i64(), vec![-3, 2]);
+    }
+
+    #[test]
+    fn forward_diff_division_agrees_with_symbolic() {
+        // d/dx ((x+1)/x) = −1/x², where the quotient is `Mul([x+1, Pow(x, -1)])`.
+        // Compared by exact rational evaluation, since neither derivative is a
+        // polynomial and the two spellings need not be structurally identical.
+        use crate::eval::eval_exact_rational;
+        use rug::Rational;
+        use std::collections::HashMap;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let numer = pool.add(vec![x, pool.integer(1_i32)]);
+        let expr = pool.mul(vec![numer, pool.pow(x, pool.integer(-1_i32))]);
+        let fwd = diff_forward(expr, x, &pool).unwrap().value;
+        let sym = sym_diff(expr, x, &pool).unwrap().value;
+
+        for pt in [2_i32, 3, 5, -4] {
+            let mut b = HashMap::new();
+            b.insert(x, Rational::from(pt));
+            let fv = eval_exact_rational(fwd, &pool, &b).unwrap();
+            let sv = eval_exact_rational(sym, &pool, &b).unwrap();
+            // Closed form: −1/x².
+            let expected = Rational::from((-1, pt as i64 * pt as i64));
+            assert_eq!(fv, sv, "forward vs symbolic disagree at x = {pt}");
+            assert_eq!(fv, expected, "forward wrong at x = {pt}");
+        }
     }
 
     #[test]
