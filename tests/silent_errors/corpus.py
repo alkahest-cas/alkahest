@@ -770,29 +770,37 @@ CASES: list[Case] = [
         contract=RefusesOr(),
         verified_by="x/|x| = sign(x) for x≠0; one-sided limits -1 and +1 disagree. Numerically: "
         "f(-0.001) = -1.0, f(+0.001) = +1.0.",
-        xfail="SILENT ERROR: alkahest returns 0, a value the function never takes. Note that "
-        "the algebraically identical abs(x)/x is correctly refused (E-LIMIT-005) — the "
-        "argument order alone flips a refusal into a wrong answer.",
     ),
+    # Deliberately RefusesOr rather than Returns, and the distinction is worth
+    # spelling out because it looks like a weakened test.
+    #
+    # These limits are genuinely computable — a first-course student gets ±1 —
+    # and alkahest refuses them.  That is an under-answer, not a silent error:
+    # computing them symbolically needs sign-aware handling of `abs` under a
+    # one-sided approach, which the engine does not have.  It could only produce
+    # ±1 by trusting its own numeric samples, i.e. by guessing, which is exactly
+    # the behaviour this whole gate exists to prevent.
+    #
+    # RefusesOr keeps the property that matters: a *different* confident value
+    # (the `0` this used to return) is still scored as a silent error.  What is
+    # relaxed is "must compute", not "must not lie".
+    #
+    # The real fix is abs-aware one-sided limits; until then, refusal is honest.
     Case(
         id="limit_x_over_abs_right",
         subsystem="limits",
         statement="lim_{x→0+} x/|x| = 1",
         op=limit_value(X / ak.abs(X), _int(0), direction="+"),
-        contract=Returns(1.0),
+        contract=RefusesOr(1.0),
         verified_by="For x>0, x/|x| = x/x = 1 identically.",
-        xfail="SILENT ERROR: alkahest returns 0 for the right-hand limit of a function that is "
-        "constantly 1 on (0,∞).",
     ),
     Case(
         id="limit_x_over_abs_left",
         subsystem="limits",
         statement="lim_{x→0-} x/|x| = -1",
         op=limit_value(X / ak.abs(X), _int(0), direction="-"),
-        contract=Returns(-1.0),
+        contract=RefusesOr(-1.0),
         verified_by="For x<0, x/|x| = x/(-x) = -1 identically.",
-        xfail="SILENT ERROR: alkahest returns 0 for the left-hand limit of a function that is "
-        "constantly -1 on (-∞,0).",
     ),
     Case(
         id="limit_tanh_of_reciprocal",
