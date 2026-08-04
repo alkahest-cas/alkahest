@@ -100,3 +100,9 @@ all_steps = simplified.steps + derived.steps
 ```
 
 For operations like `integrate` that internally call `simplify`, the log includes the simplification sub-steps interleaved with the integration steps.
+
+## Beyond one call
+
+`DerivedResult` is per-call. To accumulate many results into a citable, serialisable,
+re-verifiable artifact — a DAG of claims with stable IDs, hypotheses, and certificate
+status — see [claim graphs](./claim-graphs.md).
