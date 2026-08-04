@@ -801,8 +801,6 @@ CASES: list[Case] = [
         op=limit_value(ak.tanh(1 / X), _int(0)),
         contract=RefusesOr(),
         verified_by="tanh(t) → ±1 as t → ±∞, and 1/x → ±∞ as x → 0±.",
-        xfail="SILENT ERROR: alkahest returns the unevaluated tanh(0^-1), which reduces to the "
-        "confident value 1.0 — the right-hand limit presented as the two-sided one.",
     ),
     Case(
         id="limit_arctan_of_reciprocal",
@@ -811,8 +809,6 @@ CASES: list[Case] = [
         op=limit_value(ak.atan(1 / X), _int(0)),
         contract=RefusesOr(),
         verified_by="arctan(t) → ±π/2 as t → ±∞.",
-        xfail="SILENT ERROR: alkahest returns the unevaluated atan(0^-1), which reduces to "
-        "+π/2 ≈ 1.5707963 — again the right-hand limit passed off as two-sided.",
     ),
     Case(
         id="limit_exp_of_negative_reciprocal_two_sided",
@@ -821,8 +817,6 @@ CASES: list[Case] = [
         op=limit_value(ak.exp(-1 / X), _int(0)),
         contract=RefusesOr(),
         verified_by="As x→0+, -1/x → -∞ so e^{-1/x} → 0; as x→0-, -1/x → +∞ so e^{-1/x} → +∞.",
-        xfail="SILENT ERROR: alkahest returns exp(-1·0^-1), which reduces to the confident "
-        "value 0.0 despite the left-hand limit being +∞.",
     ),
     Case(
         id="limit_exp_of_negative_reciprocal_left",
@@ -832,9 +826,6 @@ CASES: list[Case] = [
         contract=RefusesOr(),
         verified_by="x→0- ⇒ -1/x → +∞ ⇒ e^{-1/x} → +∞. A finite answer is wrong; +inf reads as "
         "a refusal under this gate's taxonomy, matching agent-benchmark.",
-        xfail="SILENT ERROR: alkahest returns the same expression it returns for the *right*-"
-        "hand limit, which reduces to 0.0 — off by an infinity, and the `dir` argument is "
-        "ignored entirely.",
     ),
     Case(
         id="limit_control_sinc",
@@ -1019,11 +1010,6 @@ CASES: list[Case] = [
         op=simplified_value(ak.simplify_egraph, (X**2) ** _rat(1, 2), at=-2.0),
         contract=Returns(2.0),
         verified_by="((-2)²)^(1/2) = 2, by hand.",
-        xfail="SILENT ERROR: simplify_egraph returns the constant 1 for every rational-exponent "
-        "power. Root cause in alkahest-core/src/simplify/egraph.rs: expr_to_egglog maps "
-        "Node::Unsupported (which covers ExprData::Rational and ExprData::Float) to the "
-        "literal `(Num 0)`, so x^(1/2) is serialised as (Pow x 0) and the sound rule "
-        "(Pow ?x (Num 0)) → (Num 1) then fires on a corrupted term.",
     ),
     Case(
         id="simplify_egraph_square_root_power",
@@ -1032,8 +1018,6 @@ CASES: list[Case] = [
         op=simplified_value(ak.simplify_egraph, X ** _rat(1, 2), at=4.0),
         contract=Returns(2.0),
         verified_by="4^(1/2) = 2.",
-        xfail="SILENT ERROR: returns the constant 1. Same egraph.rs Unsupported→(Num 0) bug; "
-        "this is its minimal reproducer.",
     ),
     Case(
         id="simplify_egraph_rational_literal",
@@ -1042,8 +1026,6 @@ CASES: list[Case] = [
         op=simplified_value(ak.simplify_egraph, _rat(1, 2)),
         contract=Returns(0.5),
         verified_by="A rational literal simplifies to itself.",
-        xfail="SILENT ERROR: returns 0. Every Rational literal is serialised as (Num 0) by "
-        "expr_to_egglog, so the e-graph simplifier reports 1/2 = 0.",
     ),
     Case(
         id="simplify_egraph_rational_coefficient",
@@ -1052,8 +1034,6 @@ CASES: list[Case] = [
         op=simplified_value(ak.simplify_egraph, X * _rat(1, 2), at=3.0),
         contract=Returns(1.5),
         verified_by="3 · (1/2) = 1.5, by hand.",
-        xfail="SILENT ERROR: returns 0 — the rational coefficient becomes (Num 0) and "
-        "Mul-by-zero then annihilates the whole product.",
     ),
     Case(
         id="simplify_egraph_rational_summand",
@@ -1062,8 +1042,6 @@ CASES: list[Case] = [
         op=simplified_value(ak.simplify_egraph, X + _rat(1, 2), at=1.0),
         contract=Returns(1.5),
         verified_by="1 + 1/2 = 1.5.",
-        xfail="SILENT ERROR: returns x (evaluating to 1.0) — the 1/2 summand becomes (Num 0) "
-        "and Add-zero silently deletes it.",
     ),
     Case(
         id="simplify_egraph_float_summand",
@@ -1072,8 +1050,6 @@ CASES: list[Case] = [
         op=simplified_value(ak.simplify_egraph, X + POOL.float(0.5), at=1.0),
         contract=Returns(1.5),
         verified_by="1 + 0.5 = 1.5.",
-        xfail="SILENT ERROR: returns x (evaluating to 1.0). Float literals hit the same "
-        "Unsupported→(Num 0) path as rationals.",
     ),
     Case(
         id="simplify_egraph_control_pythagorean",
