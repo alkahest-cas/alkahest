@@ -6114,19 +6114,32 @@ impl PyArbBall {
         self.inner.mid_f64()
     }
 
+    /// Radius, rounded **up** to `f64`.
+    ///
+    /// Nearest-rounding here would report a radius smaller than the true one
+    /// and turn a valid enclosure into an invalid one at the Python boundary.
     #[getter]
     fn rad(&self) -> f64 {
-        self.inner.rad_f64()
+        self.inner.rad.to_f64_round(rug::float::Round::Up)
     }
 
+    /// Lower endpoint, rounded **down** to `f64`.
+    ///
+    /// The ball is computed at `prec` bits — far finer than `f64` — so a
+    /// nearest-rounded endpoint can land *inside* the true interval. A caller
+    /// writing `lo <= v <= hi` would then get `False` for a value the ball
+    /// genuinely encloses, which defeats the entire purpose of rigorous
+    /// arithmetic. Rounding outward keeps the `f64` view a valid enclosure of
+    /// the exact one, at the cost of being at most one ulp wider.
     #[getter]
     fn lo(&self) -> f64 {
-        self.inner.lo().to_f64()
+        self.inner.lo().to_f64_round(rug::float::Round::Down)
     }
 
+    /// Upper endpoint, rounded **up** to `f64`. See [`lo`].
     #[getter]
     fn hi(&self) -> f64 {
-        self.inner.hi().to_f64()
+        self.inner.hi().to_f64_round(rug::float::Round::Up)
     }
 
     fn contains(&self, v: f64) -> bool {
