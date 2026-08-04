@@ -37,6 +37,7 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-IO-001    … E-IO-009     IoError  (formerly PoolPersistError / E-POOL-*)
     E-PARSE-*                  ParseError  (reserved; parser not yet integrated)
     E-DOMAIN-*                 DomainError  (reserved; Python-only pending Rust impl)
+    E-CERT-001                 CertificateUnavailableError  (Python-only; certificate ledger)
 """
 
 from __future__ import annotations
@@ -438,6 +439,28 @@ class NumberTheoryError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code="E-NT-001", remediation=remediation, span=span)
+
+
+class CertificateUnavailableError(AlkahestError):
+    """A Lean certificate was required but the emitter withheld one.
+
+    Raised by :func:`alkahest.require_certificate` and by any derivation-producing
+    call made under ``with alkahest.context(require_certificate=True)``. The
+    computation itself succeeded — what is missing is the machine-checkable
+    evidence, so this is a *policy* failure, not a mathematical one.
+
+    ``.remediation`` names the blocking rewrite rules where they can be
+    identified. :func:`alkahest.certificate_coverage` tabulates which shapes
+    certify.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-CERT-001", remediation=remediation, span=span)
 
 
 class ParseError(AlkahestError):

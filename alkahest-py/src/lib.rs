@@ -1739,6 +1739,65 @@ impl PyDerivedResult {
         Some(src)
     }
 
+    /// Why this result does (or does not) carry a Lean certificate.
+    ///
+    /// Returns a dict with:
+    ///
+    /// * ``certifiable`` — ``True`` iff :attr:`certificate` is not ``None``.
+    /// * ``reason`` — stable reason code: ``"emitted"``,
+    ///   ``"withheld_no_derivation"`` (nothing was rewritten, so there is
+    ///   nothing to prove), ``"withheld_integration_shape"`` (the integral
+    ///   falls outside the FTC fragment the emitter can encode), or
+    ///   ``"withheld_uncertifiable_step"``.
+    /// * ``blocking_steps`` — for ``withheld_uncertifiable_step``, the list of
+    ///   ``{"index", "rule", "before", "after"}`` records whose rewrite rule has
+    ///   no sound Lean encoding today. This is a *diagnostic*: an empty list
+    ///   with ``certifiable=False`` means the whole-derivation gate withheld
+    ///   for a reason not attributable to a single step.
+    ///
+    /// The certifiability boundary this reports is exactly the one tabulated by
+    /// :func:`alkahest.certificate_coverage`.
+    #[getter]
+    fn certificate_status<'py>(&self, py: Python<'py>) -> Bound<'py, PyDict> {
+        let status = PyDict::new_bound(py);
+        let certifiable = self.certificate(py).is_some();
+        let blocking = PyList::empty_bound(py);
+
+        let reason = if certifiable {
+            "emitted"
+        } else if self.integration_verification_input.is_some()
+            || self.definite_integration_input.is_some()
+        {
+            "withheld_integration_shape"
+        } else if self.raw.log.is_empty() {
+            "withheld_no_derivation"
+        } else {
+            let pool_py = self.value.pool.clone_ref(py);
+            let pool = pool_py.borrow(py);
+            for (index, step) in self.raw.log.steps().iter().enumerate() {
+                if alkahest_core::step_is_certifiable(step, self.wrt, &pool.inner) {
+                    continue;
+                }
+                let record = PyDict::new_bound(py);
+                record.set_item("index", index).unwrap();
+                record.set_item("rule", step.rule_name).unwrap();
+                record
+                    .set_item("before", pool.inner.display(step.before).to_string())
+                    .unwrap();
+                record
+                    .set_item("after", pool.inner.display(step.after).to_string())
+                    .unwrap();
+                blocking.append(record).unwrap();
+            }
+            "withheld_uncertifiable_step"
+        };
+
+        status.set_item("certifiable", certifiable).unwrap();
+        status.set_item("reason", reason).unwrap();
+        status.set_item("blocking_steps", blocking).unwrap();
+        status
+    }
+
     /// Machine-readable evidence metadata for this derived result.
     ///
     /// A generated Lean source artifact is not a statement that Lean has

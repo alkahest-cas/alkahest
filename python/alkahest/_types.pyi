@@ -28,5 +28,32 @@ class DerivedResult:
     value: Expr
     derivation: str
     steps: list[dict[str, object]]
+    certificate: str | None
+    certificate_status: dict[str, object]
 
+class Certifiability:
+    """Verdict from :func:`certifiable` — truthy iff a certificate is produced."""
+
+    certifiable: bool
+    operation: str
+    shape: str
+    verdict: str
+    reason: str
+    detail: str
+    checked: bool
+    result: DerivedResult | None
+    error: Exception | None
+    evidence: dict[str, object] | None
+
+    def __bool__(self) -> bool: ...
+    def as_dict(self) -> dict[str, object]: ...
+
+def certifiable(
+    op: str | object,
+    *args: object,
+    mode: str = ...,
+    **kwargs: object,
+) -> Certifiability: ...
+def certificate_coverage(operation: str | None = ...) -> list[dict[str, object]]: ...
+def require_certificate(result: DerivedResult) -> DerivedResult: ...
 def version() -> str: ...
