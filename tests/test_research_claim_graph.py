@@ -8,6 +8,7 @@ re-verification that can only lower confidence.
 from __future__ import annotations
 
 import json
+import threading
 
 import alkahest as ak
 import pytest
@@ -191,6 +192,27 @@ def test_capture_stops_at_the_end_of_the_block(pool):
     before = len(s.graph)
     ak.integrate(x, x)
     assert len(s.graph) == before
+
+
+def test_concurrent_capture_sessions_do_not_cross_contaminate():
+    # The hooks are process-global and permanent; only the thread-local session
+    # stack decides what gets recorded, so parallel loops must stay separate.
+    results: dict[str, tuple[int, list[str]]] = {}
+
+    def work(tag: str, count: int) -> None:
+        local_pool = ak.ExprPool()
+        x = local_pool.symbol("x")
+        with session(title=tag, pool=local_pool, capture=True) as s:
+            for power in range(1, count + 1):
+                ak.integrate(x ** local_pool.integer(power), x)
+        results[tag] = (len(s.graph), s.capture_errors)
+
+    threads = [threading.Thread(target=work, args=(f"t{i}", i + 2)) for i in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert results == {"t0": (2, []), "t1": (3, []), "t2": (4, []), "t3": (5, [])}
 
 
 def test_run_records_without_capture(pool):
