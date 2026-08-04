@@ -172,8 +172,8 @@ fn side_estimate(
     pool: &ExprPool,
 ) -> Option<SideEstimate> {
     let mut samples = Vec::with_capacity(APPROACH_OFFSETS.len());
+    let mut env: HashMap<ExprId, f64> = HashMap::with_capacity(1);
     for offset in APPROACH_OFFSETS {
-        let mut env = HashMap::new();
         env.insert(var, at + sign * offset);
         match crate::jit::eval_interp(expr, &env, pool) {
             Some(v) if v.is_finite() => samples.push(v),
@@ -327,34 +327,55 @@ fn probe_looks_suspicious(
     claimed: Option<f64>,
     pool: &ExprPool,
 ) -> bool {
-    let offset = APPROACH_OFFSETS[APPROACH_OFFSETS.len() - 1];
-    let sample = |sign: f64| -> Option<f64> {
-        let mut env = HashMap::new();
+    // Two offsets a hundredfold apart, so the *trend* is visible.
+    //
+    // Comparing a single sample against `claimed` does not work: a function
+    // approaching its limit is legitimately still some distance away at a
+    // finite offset — `(x⁸−1)/(x−1)` is 8.0028 at `x = 1.0001`, not 8 — so an
+    // absolute-tolerance probe escalates for essentially every non-constant
+    // function and saves nothing. What distinguishes a correct limit is that
+    // the samples *close in on* the claimed value as the offset shrinks.
+    let far = APPROACH_OFFSETS[1];
+    let near = APPROACH_OFFSETS[APPROACH_OFFSETS.len() - 1];
+    // One map, rewritten per sample. Allocating a fresh `HashMap` per
+    // evaluation costs more than the evaluation does on small expressions.
+    let mut env: HashMap<ExprId, f64> = HashMap::with_capacity(1);
+    let mut sample = |sign: f64, offset: f64| -> Option<f64> {
         env.insert(var, at + sign * offset);
         crate::jit::eval_interp(expr, &env, pool).filter(|v| v.is_finite())
     };
-    let left = (direction != LimitDirection::Plus)
-        .then(|| sample(-1.0))
-        .flatten();
-    let right = (direction != LimitDirection::Minus)
-        .then(|| sample(1.0))
-        .flatten();
 
-    match claimed {
-        Some(c) => {
-            let tol = 1e-6 * (1.0 + c.abs());
-            let off = |v: Option<f64>| v.is_some_and(|v| (v - c).abs() > tol);
-            off(left) || off(right)
+    let mut side_is_suspicious = |sign: f64| -> bool {
+        let (Some(f_far), Some(f_near)) = (sample(sign, far), sample(sign, near)) else {
+            // Cannot see the trend here. The full analysis needs three samples
+            // on a side, so it would not reach a verdict either — stay silent.
+            return false;
+        };
+        match claimed {
+            // Converging toward the claimed value: nothing to investigate. The
+            // 0.75 factor is deliberately lenient — linear convergence shrinks
+            // the gap a hundredfold over this range, so anything genuinely
+            // heading for `claimed` clears it easily, while `x/|x|` (gap 1 at
+            // both offsets) does not.
+            Some(c) => (f_near - c).abs() > 0.75 * (f_far - c).abs(),
+            None => false,
         }
-        // No numeric answer to compare against: only the two-sided
-        // does-not-exist check can fire, and it needs both sides.
-        None => match (left, right) {
-            (Some(l), Some(r)) if direction == LimitDirection::Bidirectional => {
-                (l - r).abs() > 1e-6 * (1.0 + l.abs().max(r.abs()))
-            }
-            _ => false,
-        },
+    };
+
+    let left_bad = direction != LimitDirection::Plus && side_is_suspicious(-1.0);
+    let right_bad = direction != LimitDirection::Minus && side_is_suspicious(1.0);
+    if left_bad || right_bad {
+        return true;
     }
+
+    // No numeric answer to compare against: only the two-sided
+    // does-not-exist check can fire, and it needs both sides.
+    if claimed.is_none() && direction == LimitDirection::Bidirectional {
+        if let (Some(l), Some(r)) = (sample(-1.0, near), sample(1.0, near)) {
+            return (l - r).abs() > 1e-6 * (1.0 + l.abs().max(r.abs()));
+        }
+    }
+    false
 }
 
 /// Evaluate a closed-form expression to `f64`, or `None` if it is not a
