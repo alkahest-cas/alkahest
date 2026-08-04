@@ -246,14 +246,6 @@ CASES: list[Case] = [
             "Exact rational evaluation at x=-6/5: 2(1296/625) + (-216/125) - 4(36/25) + 3 "
             "= -213/625 < 0."
         ),
-        xfail=(
-            "SILENT ERROR: decide returns True for a false universal. Residual CAD "
-            "incompleteness after the Le/Ge-boundary and breakpoint fixes: the region "
-            "where the polynomial is negative is a narrow cell between two roots, and "
-            "no candidate rational sample lands inside it. Fixing this needs algebraic "
-            "sample points (or sound isolating-interval refinement -- bisection by sign "
-            "is NOT sound here, because even-multiplicity roots have no sign change)."
-        ),
     ),
     Case(
         id="decide_forall_narrow_positive_cell",
@@ -265,9 +257,6 @@ CASES: list[Case] = [
         ),
         contract=Returns(False),
         verified_by="Exact evaluation finds a point where the polynomial is positive.",
-        xfail=(
-            "SILENT ERROR: same residual CAD incompleteness as decide_forall_narrow_negative_cell."
-        ),
     ),
     # -----------------------------------------------------------------------
     # Definite integration through an interior pole.  Naive FTC produces a
