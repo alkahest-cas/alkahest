@@ -133,7 +133,159 @@ pub fn limit(
     if contains_zero_to_negative_power(result, pool) {
         return Err(LimitError::Unsupported);
     }
+    if numeric_evidence_contradicts(expr, var, point, direction, result, pool) {
+        return Err(LimitError::Unsupported);
+    }
     Ok(result)
+}
+
+/// Offsets used to sample a function as it approaches a finite point.
+///
+/// Deliberately stops at `1e-4`: closer in, catastrophic cancellation in
+/// expressions like `(cos x - 1)/x²` dominates the signal and the sampler
+/// would start manufacturing disagreements that are artifacts of binary
+/// floating point rather than facts about the function.
+const APPROACH_OFFSETS: [f64; 4] = [1e-1, 1e-2, 1e-3, 1e-4];
+
+/// A one-sided numeric estimate, kept only when the samples have settled.
+struct SideEstimate {
+    /// Value at the closest offset.
+    value: f64,
+    /// How far the estimate still moved over the last refinement — the scale
+    /// below which a disagreement is not yet meaningful.
+    movement: f64,
+}
+
+/// Sample `expr` approaching `at` from one side, returning an estimate only
+/// when the samples converge.
+///
+/// `sign` is `+1.0` to approach from above, `-1.0` from below. Returns `None`
+/// when the function cannot be evaluated, or when the samples are still moving
+/// enough that no honest verdict can be drawn from them — an oscillating
+/// integrand such as `x·sin(1/x)` must fall in the second bucket, so that this
+/// check stays silent rather than guessing.
+fn side_estimate(
+    expr: ExprId,
+    var: ExprId,
+    at: f64,
+    sign: f64,
+    pool: &ExprPool,
+) -> Option<SideEstimate> {
+    let mut samples = Vec::with_capacity(APPROACH_OFFSETS.len());
+    for offset in APPROACH_OFFSETS {
+        let mut env = HashMap::new();
+        env.insert(var, at + sign * offset);
+        match crate::jit::eval_interp(expr, &env, pool) {
+            Some(v) if v.is_finite() => samples.push(v),
+            // A single unevaluable or non-finite sample is not evidence of
+            // anything; it just means this offset landed on a hole.
+            _ => continue,
+        }
+    }
+    if samples.len() < 3 {
+        return None;
+    }
+    let last = samples[samples.len() - 1];
+    let prev = samples[samples.len() - 2];
+    let movement = (last - prev).abs();
+    let scale = 1.0 + last.abs();
+    // Still moving by more than 1% of its own magnitude: not converged.
+    if movement > 0.01 * scale {
+        return None;
+    }
+    Some(SideEstimate {
+        value: last,
+        movement,
+    })
+}
+
+/// True when numeric sampling clearly contradicts the symbolic `result`.
+///
+/// The symbolic machinery can return a confident value that the function never
+/// approaches. `lim_{x→0} x/|x|` came back as `0` in all three directions, when
+/// the one-sided limits are `∓1` and the two-sided limit does not exist —
+/// a plausible finite number with nothing to distinguish it from a correct one.
+/// (The algebraically identical `|x|/x` was refused, so argument order alone
+/// decided whether the caller got a refusal or a wrong answer.)
+///
+/// This is a *refutation* check, not a verification one: it fires only on a
+/// clear contradiction and stays silent whenever the evidence is weak, so it
+/// can turn a wrong answer into a refusal but never a right answer into one.
+/// Every guard below is a reason to say nothing.
+fn numeric_evidence_contradicts(
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    direction: LimitDirection,
+    result: ExprId,
+    pool: &ExprPool,
+) -> bool {
+    // Only finite approach points; `∞` is not a place to sample around.
+    let Some(at) = constant_f64(point, pool) else {
+        return false;
+    };
+    // A free parameter besides `var` makes the samples meaningless.
+    if has_free_symbol_besides(expr, var, pool) {
+        return false;
+    }
+
+    let left = side_estimate(expr, var, at, -1.0, pool);
+    let right = side_estimate(expr, var, at, 1.0, pool);
+
+    // Two-sided: settled but disagreeing sides mean the limit does not exist,
+    // whatever value the symbolic route produced.
+    if direction == LimitDirection::Bidirectional {
+        if let (Some(l), Some(r)) = (&left, &right) {
+            let tol = 1e-6 + 20.0 * (l.movement + r.movement);
+            if (l.value - r.value).abs() > tol {
+                return true;
+            }
+        }
+    }
+
+    // Any direction: compare the symbolic answer against the side(s) it claims
+    // to describe. Only meaningful when the answer is itself a finite number —
+    // `∞` and symbolic results are left alone.
+    let Some(claimed) = constant_f64(result, pool) else {
+        return false;
+    };
+    let sides: [&Option<SideEstimate>; 2] = match direction {
+        LimitDirection::Plus => [&right, &None],
+        LimitDirection::Minus => [&left, &None],
+        LimitDirection::Bidirectional => [&left, &right],
+    };
+    for side in sides.into_iter().flatten() {
+        let tol = 1e-6 * (1.0 + claimed.abs()) + 20.0 * side.movement;
+        if (side.value - claimed).abs() > tol {
+            return true;
+        }
+    }
+    false
+}
+
+/// Evaluate a closed-form expression to `f64`, or `None` if it is not a
+/// constant this interpreter can reduce to a finite number.
+fn constant_f64(expr: ExprId, pool: &ExprPool) -> Option<f64> {
+    let env = HashMap::new();
+    crate::jit::eval_interp(expr, &env, pool).filter(|v| v.is_finite())
+}
+
+/// True when `expr` mentions a symbol other than `var`.
+fn has_free_symbol_besides(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    if expr == var {
+        return false;
+    }
+    match pool.get(expr) {
+        ExprData::Symbol { .. } => true,
+        ExprData::Add(xs) | ExprData::Mul(xs) => {
+            xs.iter().any(|&x| has_free_symbol_besides(x, var, pool))
+        }
+        ExprData::Pow { base, exp } => {
+            has_free_symbol_besides(base, var, pool) || has_free_symbol_besides(exp, var, pool)
+        }
+        ExprData::Func { args, .. } => args.iter().any(|&a| has_free_symbol_besides(a, var, pool)),
+        _ => false,
+    }
 }
 
 /// True when `expr` contains a `0^n` node with `n` a negative integer — the
@@ -1130,5 +1282,102 @@ mod tests {
         m.insert(t, p.integer(0));
         let sub = fold_known_reals(simplify(subs(r, &m, &p), &p).value, &p);
         assert_eq!(sub, p.integer(1), "canonical={}", p.display(canon));
+    }
+}
+
+#[cfg(test)]
+mod numeric_refutation_tests {
+    use super::*;
+    use crate::kernel::Domain;
+
+    /// `x/|x|` is `sign(x)`: it never takes the value 0, yet the symbolic
+    /// route returned 0 in all three directions.
+    ///
+    /// The algebraically identical `|x|/x` was already refused, so before this
+    /// guard the *order of the operands* decided whether a caller got an honest
+    /// refusal or a confident wrong answer.
+    #[test]
+    fn sign_function_limit_is_refused_in_every_direction() {
+        for direction in [
+            LimitDirection::Bidirectional,
+            LimitDirection::Plus,
+            LimitDirection::Minus,
+        ] {
+            let p = ExprPool::new();
+            let x = p.symbol("x", Domain::Real);
+            let ex = p.mul(vec![x, p.pow(p.func("abs", vec![x]), p.integer(-1_i32))]);
+            let got = limit(ex, x, p.integer(0_i32), direction, &p);
+            assert!(
+                got.is_err(),
+                "x/|x| at 0 ({direction:?}) should refuse, got {}",
+                p.display(got.unwrap())
+            );
+        }
+    }
+
+    /// The guard must not fire on limits that genuinely exist, including ones
+    /// that need cancellation to evaluate.
+    #[test]
+    fn ordinary_limits_survive_the_guard() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let one = p.integer(1_i32);
+
+        let sinc = simplify(
+            p.mul(vec![p.func("sin", vec![x]), p.pow(x, p.integer(-1_i32))]),
+            &p,
+        )
+        .value;
+        assert_eq!(
+            limit(sinc, x, p.integer(0_i32), LimitDirection::Bidirectional, &p).unwrap(),
+            one
+        );
+
+        // (1 - cos x)/x² = 1/2 — the case that would break if the sampler
+        // pushed closer than 1e-4 and hit catastrophic cancellation.
+        let half = p.mul(vec![
+            p.add(vec![
+                one,
+                p.mul(vec![p.integer(-1_i32), p.func("cos", vec![x])]),
+            ]),
+            p.pow(x, p.integer(-2_i32)),
+        ]);
+        let got = limit(
+            simplify(half, &p).value,
+            x,
+            p.integer(0_i32),
+            LimitDirection::Bidirectional,
+            &p,
+        )
+        .unwrap();
+        assert_eq!(got, p.rational(1, 2));
+    }
+
+    /// An oscillating factor has no settled one-sided estimate, so the guard
+    /// must stay silent rather than refuse a correct answer.
+    ///
+    /// `x·sin(1/x) → 0` at 0 by squeeze, and the samples swing wildly, so this
+    /// pins that "no verdict" is distinct from "contradiction".
+    #[test]
+    fn oscillation_does_not_trigger_a_false_refusal() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let ex = p.mul(vec![x, p.func("sin", vec![p.pow(x, p.integer(-1_i32))])]);
+        let got = limit(ex, x, p.integer(0_i32), LimitDirection::Bidirectional, &p);
+        assert_eq!(got.unwrap(), p.integer(0_i32));
+    }
+
+    /// A free parameter makes sampling meaningless, so the guard abstains.
+    #[test]
+    fn symbolic_parameter_abstains() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let a = p.symbol("a", Domain::Real);
+        assert!(has_free_symbol_besides(p.mul(vec![a, x]), x, &p));
+        assert!(!has_free_symbol_besides(
+            p.mul(vec![x, p.func("sin", vec![x])]),
+            x,
+            &p
+        ));
     }
 }
