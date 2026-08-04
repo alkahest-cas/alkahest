@@ -124,7 +124,41 @@ pub fn limit(
     let r_simp = simplify(r, pool).value;
     let r_fold = fold_known_reals(r_simp, pool);
     let result = simplify(r_fold, pool).value;
+    // A residual `0^{negative}` is not a value: it is what is left over when the
+    // substitution `x ↦ 1/t`, `t → 0` never resolved.  Returning it produces
+    // confident nonsense for limits that do not exist — `lim_{x→∞} sin x` came
+    // back as `sin(0^{-1})` and `lim_{x→0} exp(1/x)` as `exp(0^{-1})`, neither
+    // flagged as an error.  Report the honest failure instead.  Genuine
+    // infinities use the canonical `∞` symbol and are unaffected.
+    if contains_zero_to_negative_power(result, pool) {
+        return Err(LimitError::Unsupported);
+    }
     Ok(result)
+}
+
+/// True when `expr` contains a `0^n` node with `n` a negative integer — the
+/// unresolved-pole artifact described in [`limit`].
+fn contains_zero_to_negative_power(expr: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(expr) {
+        ExprData::Pow { base, exp } => {
+            let zero_base = matches!(pool.get(base), ExprData::Integer(n) if n.0 == 0);
+            let negative_exp = match pool.get(exp) {
+                ExprData::Integer(n) => n.0 < 0,
+                ExprData::Rational(r) => r.0 < 0,
+                _ => false,
+            };
+            (zero_base && negative_exp)
+                || contains_zero_to_negative_power(base, pool)
+                || contains_zero_to_negative_power(exp, pool)
+        }
+        ExprData::Add(xs) | ExprData::Mul(xs) => {
+            xs.iter().any(|&x| contains_zero_to_negative_power(x, pool))
+        }
+        ExprData::Func { args, .. } => args
+            .iter()
+            .any(|&a| contains_zero_to_negative_power(a, pool)),
+        _ => false,
+    }
 }
 
 /// `(g^m)^n ↦ g^{m n}` when `m,n ∈ ℤ`, so substitutions like `(1/t)^k` become `t^{-k}` Laurent heads.

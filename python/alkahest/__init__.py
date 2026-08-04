@@ -8,6 +8,7 @@ from . import (
     lattice,
     modular,  # noqa: F401 — V2-1: expose alkahest.modular submodule
     number_theory,
+    research,  # session-level claim graph (provenance objects)
 )
 from ._certificates import (
     Certifiability,
@@ -708,6 +709,16 @@ def integrate(expr, var, a=None, b=None):
     between the bounds, and the residue-theorem route are not handled; in those
     cases the underlying integration error is propagated rather than guessed.
 
+    A singularity of the integrand inside the interval is *detected* and
+    refused (``E-INT-001``) rather than pushed through ``F(b) − F(a)``, which
+    would produce a finite-looking but wrong number.  Rational integrands are
+    checked exactly (real root isolation of the reduced denominator); other
+    integrands are checked by confirming numeric blow-up, which catches e.g.
+    ``∫_0^2 sec²x dx`` (pole at ``π/2``; the FTC difference ``tan 2`` is
+    *negative* for a positive integrand).  Finally, when both bounds are
+    numeric the closed form must denote a finite real: results such as
+    ``−log(−1)`` or ``2·(0^{1/2})^{−1}`` are refused, not returned.
+
     For an indefinite integral, ``result.verification`` reports
     ``"exactly_verified"`` only when the kernel proves the symbolic residual
     ``diff(result, var) - expr`` is zero. A successful result with
@@ -1010,6 +1021,14 @@ def limit(expr, var, point, dir=None):
     Returns
     -------
     Expr
+
+    Notes
+    -----
+    A limit that does not exist raises rather than returning a value.  An
+    infinite limit is returned as the canonical ``∞`` symbol (or ``−1·∞``);
+    an oscillating one — ``lim_{x→∞} sin x``, ``lim_{x→0} sin(1/x)`` — raises
+    ``LimitError`` (``E-LIMIT-005``), and a two-sided limit at an odd-order
+    pole raises ``E-LIMIT-003`` asking for a direction.
     """
     return _native_limit(_coerce_expr(expr), _coerce_expr(var), _coerce_expr(point), dir)
 
@@ -1051,6 +1070,21 @@ def sum_definite(expr, k, lo, hi):
     Odd powers (``Σ 1/k³``, Apéry's ``ζ(3)``, …) and any other unrecognized
     infinite-bound sum raise ``SumError`` (``E-SUM-002``) rather than
     guessing — there is no known elementary closed form to fall back on.
+
+    Conventions and refusals
+    ------------------------
+    **Reversed bounds.** When ``hi < lo`` the result follows the *reversal*
+    convention ``Σ_{k=a}^{b} f = −Σ_{k=b+1}^{a−1} f``, the same convention
+    SymPy uses: ``sum_definite(k, k, 5, 1)`` is ``−9``, not ``0``.  Systems
+    that treat a reversed range as empty (Mathematica) return ``0`` here, so
+    do not rely on the two agreeing.  ``hi == lo − 1`` is the empty sum and is
+    ``0`` under both conventions.
+
+    **A pole in the range.** If a term is undefined for some integer between
+    the bounds — ``Σ_{k=1}^{10} 1/(k²−1)`` at ``k = 1`` — the telescoped
+    difference is not the sum, and ``SumError`` (``E-SUM-003``) is raised
+    instead of returning the division by zero embedded in an otherwise
+    plausible expression.
     """
     return _maybe_context_simplify(
         _native_sum_definite(
@@ -1657,6 +1691,8 @@ __all__ = [
     "refine_root",
     # V5-12 — certificate ledger
     "require_certificate",
+    # Session-level provenance: claim graph for autoresearch loops
+    "research",
     "residue",
     "resistor",
     # V2-2
