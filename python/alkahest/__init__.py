@@ -10,6 +10,14 @@ from . import (
     number_theory,
     research,  # session-level claim graph (provenance objects)
 )
+from ._batch import (
+    BatchItem,
+    batch_map,
+    batch_map_iter,
+    diff_many,
+    integrate_many,
+    simplify_many,
+)
 from ._certificates import (
     Certifiability,
     certifiable,
@@ -1494,6 +1502,8 @@ __all__ = [
     "ArbBall",
     "AssumptionError",
     "Assumptions",
+    # P1 search plumbing item 5 — batch/streaming fan-out
+    "BatchItem",
     "CadError",
     # V5-12 — certificate ledger
     "Certifiability",
@@ -1594,6 +1604,9 @@ __all__ = [
     "asinh",
     "atan",
     "atanh",
+    # P1 search plumbing item 5 — batch/streaming fan-out
+    "batch_map",
+    "batch_map_iter",
     "bessel_j0",
     "bessel_j1",
     "cad_lift",
@@ -1619,6 +1632,8 @@ __all__ = [
     # Calculus
     "diff",
     "diff_forward",
+    # P1 search plumbing item 5 — batch/streaming fan-out
+    "diff_many",
     "digamma",
     "diophantine",
     # Elliptic special functions (parameter convention m = k²)
@@ -1647,6 +1662,8 @@ __all__ = [
     "horner",
     "im",
     "integrate",
+    # P1 search plumbing item 5 — batch/streaming fan-out
+    "integrate_many",
     "interval_eval",
     "jacobian",
     "jit",
@@ -1715,6 +1732,8 @@ __all__ = [
     "simplify_enabled",
     "simplify_expanded",
     "simplify_log_exp",
+    # P1 search plumbing item 5 — batch/streaming fan-out
+    "simplify_many",
     "simplify_par",
     "simplify_pauli",
     "simplify_redex",
