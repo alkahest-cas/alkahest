@@ -39,6 +39,9 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-DOMAIN-*                 DomainError  (reserved; Python-only pending Rust impl)
     E-CERT-001                 CertificateUnavailableError  (Python-only; certificate ledger)
     E-BUDGET-001 … E-BUDGET-003 BudgetExceededError (P1 search plumbing item 4)
+    E-BATCH-001                 (Python-only; alkahest._batch fallback for a
+                                 batch_map/batch_map_iter item whose exception carried no
+                                 .code of its own — see docs/mdbook/src/batch.md)
 """
 
 from __future__ import annotations

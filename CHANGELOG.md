@@ -22,6 +22,17 @@
   budget's seed to RNG-consuming samplers for reproducible runs. See
   [`docs/mdbook/src/budgets.md`](docs/mdbook/src/budgets.md).
 
+- **Batch and streaming evaluation** (`alkahest._batch`, Python-only): `batch_map` /
+  `batch_map_iter` call a function once per item and **never raise** for a single bad
+  element — the exception is captured into a `BatchItem(index, ok, value, error,
+  elapsed_ms)`, with `error["code"]` set to the failing exception's own `E-*` code
+  (`E-BATCH-001` as a fallback for exceptions with none). `batch_map` always returns
+  results in input order, whether or not `parallel=True` fans the calls out over a
+  `ThreadPoolExecutor`; `batch_map_iter` streams in input order when sequential and in
+  completion order when parallel. `integrate_many`, `simplify_many`, and `diff_many` are
+  thin `batch_map` wrappers over the three most common derivation entry points. See
+  [`docs/mdbook/src/batch.md`](docs/mdbook/src/batch.md).
+
 - **Python bindings for the parallel simplifiers**: `simplify_redex`,
   `simplify_auto` and `simplify_strategy` join the existing `simplify_par`.
   All take a single expression and return the same result as `simplify`; only

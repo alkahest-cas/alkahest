@@ -18,6 +18,7 @@
 - [Interoperability](./interop.md)
 - [Reinforcement learning](./rl.md)
 - [Derivation logs](./derivations.md)
+- [Batch and streaming evaluation](./batch.md)
 - [Claim graphs](./claim-graphs.md)
 - [Lean certificates](./lean-certs.md)
   - [Certificate coverage](./certificate-coverage.md)
