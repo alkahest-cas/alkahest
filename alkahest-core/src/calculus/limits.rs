@@ -220,12 +220,38 @@ fn numeric_evidence_contradicts(
     result: ExprId,
     pool: &ExprPool,
 ) -> bool {
+    // Checked first, and in this order, because both are whole-expression
+    // walks and polynomials are the common case in hot paths.
+    //
+    // A polynomial is continuous on the whole line: its limit at a finite point
+    // is just its value there, and none of the failure modes this check hunts —
+    // poles, branch cuts, sign discontinuities, one-sided divergence — can
+    // occur. Sampling it can only confirm what substitution already settled.
+    // `is_polynomial_in` also rejects any symbol other than `var`, so passing it
+    // subsumes the free-parameter check below.
+    if is_polynomial_in(expr, var, pool) {
+        return false;
+    }
+    // A free parameter besides `var` makes the samples meaningless.
+    if has_free_symbol_besides(expr, var, pool) {
+        return false;
+    }
     // Only finite approach points; `∞` is not a place to sample around.
     let Some(at) = constant_f64(point, pool) else {
         return false;
     };
-    // A free parameter besides `var` makes the samples meaningless.
-    if has_free_symbol_besides(expr, var, pool) {
+
+    let claimed = constant_f64(result, pool);
+
+    // Cheap probe before the full analysis. The convergence test below costs up
+    // to eight evaluations, and the overwhelming majority of calls are limits
+    // that are simply correct — one sample per relevant side is enough to see
+    // that and leave. Escalating only on a whiff of disagreement keeps the
+    // common path at two evaluations instead of eight.
+    //
+    // Skipping here can only make the check stay *silent*, never fire wrongly,
+    // which is the direction a refutation check is allowed to be wrong in.
+    if !probe_looks_suspicious(expr, var, at, direction, claimed, pool) {
         return false;
     }
 
@@ -246,7 +272,7 @@ fn numeric_evidence_contradicts(
     // Any direction: compare the symbolic answer against the side(s) it claims
     // to describe. Only meaningful when the answer is itself a finite number —
     // `∞` and symbolic results are left alone.
-    let Some(claimed) = constant_f64(result, pool) else {
+    let Some(claimed) = claimed else {
         return false;
     };
     let sides: [&Option<SideEstimate>; 2] = match direction {
@@ -261,6 +287,74 @@ fn numeric_evidence_contradicts(
         }
     }
     false
+}
+
+/// True when `expr` is a polynomial in `var` — sums and products of `var`,
+/// constants, and non-negative integer powers thereof.
+///
+/// Conservative: anything it does not recognise (a `Func`, a negative or
+/// non-integer exponent, a symbolic exponent) returns `false`, which merely
+/// costs the caller the sampling it was trying to avoid.
+fn is_polynomial_in(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    if expr == var {
+        return true;
+    }
+    match pool.get(expr) {
+        ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => true,
+        ExprData::Symbol { .. } => false,
+        ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().all(|&x| is_polynomial_in(x, var, pool)),
+        ExprData::Pow { base, exp } => {
+            matches!(pool.get(exp), ExprData::Integer(n) if n.0 >= 0)
+                && is_polynomial_in(base, var, pool)
+        }
+        _ => false,
+    }
+}
+
+/// One sample per relevant side, to decide whether the full convergence
+/// analysis is worth running.
+///
+/// Returns `true` when the closest sample already disagrees with `claimed`
+/// (or, for a two-sided limit with no numeric `claimed`, when the two sides
+/// disagree with each other). A `false` here ends the check, so this is
+/// deliberately biased toward escalating: a needless escalation costs six more
+/// evaluations, while a missed one costs a silent error.
+fn probe_looks_suspicious(
+    expr: ExprId,
+    var: ExprId,
+    at: f64,
+    direction: LimitDirection,
+    claimed: Option<f64>,
+    pool: &ExprPool,
+) -> bool {
+    let offset = APPROACH_OFFSETS[APPROACH_OFFSETS.len() - 1];
+    let sample = |sign: f64| -> Option<f64> {
+        let mut env = HashMap::new();
+        env.insert(var, at + sign * offset);
+        crate::jit::eval_interp(expr, &env, pool).filter(|v| v.is_finite())
+    };
+    let left = (direction != LimitDirection::Plus)
+        .then(|| sample(-1.0))
+        .flatten();
+    let right = (direction != LimitDirection::Minus)
+        .then(|| sample(1.0))
+        .flatten();
+
+    match claimed {
+        Some(c) => {
+            let tol = 1e-6 * (1.0 + c.abs());
+            let off = |v: Option<f64>| v.is_some_and(|v| (v - c).abs() > tol);
+            off(left) || off(right)
+        }
+        // No numeric answer to compare against: only the two-sided
+        // does-not-exist check can fire, and it needs both sides.
+        None => match (left, right) {
+            (Some(l), Some(r)) if direction == LimitDirection::Bidirectional => {
+                (l - r).abs() > 1e-6 * (1.0 + l.abs().max(r.abs()))
+            }
+            _ => false,
+        },
+    }
 }
 
 /// Evaluate a closed-form expression to `f64`, or `None` if it is not a
