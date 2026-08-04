@@ -1756,6 +1756,22 @@ impl PyAssumptions {
 // PyDerivedResult
 // ---------------------------------------------------------------------------
 
+// Result envelope schema versions (P1 search-plumbing item 6).
+//
+// Bump `RESULT_SCHEMA_VERSION` for any change to the *envelope* shape
+// returned by `DerivedResult.to_dict` / `to_json` (added/removed/renamed
+// top-level keys: `kind`, `value`, `verification`, `certificate_status`,
+// `steps`, `has_certificate`, ...). Bump `STEPS_SCHEMA_VERSION` for any
+// change to the shape of a single `steps` entry (full-mode field names
+// `rule`/`before`/`after`/`side_conditions`, or the compact-mode short-key
+// mapping `r`/`s`). These are independent so a caller that only reads
+// `.value` / `.verification` doesn't need to re-check its parsing when a
+// `steps` internal detail changes, and vice versa. Both are exposed as
+// module-level attributes (`alkahest.RESULT_SCHEMA_VERSION`) and as
+// `DerivedResult` class attributes; see `docs/mdbook/src/derivations.md`.
+const RESULT_SCHEMA_VERSION: u32 = 1;
+const STEPS_SCHEMA_VERSION: u32 = 1;
+
 #[pyclass(name = "DerivedResult")]
 struct PyDerivedResult {
     value: PyExpr,
@@ -1773,6 +1789,16 @@ struct PyDerivedResult {
 
 #[pymethods]
 impl PyDerivedResult {
+    /// Envelope schema version for :meth:`to_dict` / :meth:`to_json`. See
+    /// module-level ``alkahest.RESULT_SCHEMA_VERSION``.
+    #[classattr]
+    const SCHEMA_VERSION: u32 = crate::RESULT_SCHEMA_VERSION;
+
+    /// Schema version of each entry in ``.steps`` / the ``steps`` key of
+    /// :meth:`to_dict`. See module-level ``alkahest.STEPS_SCHEMA_VERSION``.
+    #[classattr]
+    const STEPS_SCHEMA_VERSION: u32 = crate::STEPS_SCHEMA_VERSION;
+
     #[getter]
     fn value(&self) -> PyExpr {
         self.value.clone()
@@ -2043,6 +2069,139 @@ impl PyDerivedResult {
             return Ok(expr_ids_equal(&self.value, &other_expr));
         }
         Ok(false)
+    }
+
+    /// Stable, versioned dict envelope for machine/agent consumers.
+    ///
+    /// ``mode="full"`` (default) carries the same information as
+    /// ``.steps`` / ``.verification`` / ``.certificate_status`` combined
+    /// under one discriminated envelope (``kind="alkahest.derived_result"``,
+    /// versioned by :attr:`SCHEMA_VERSION` / :attr:`STEPS_SCHEMA_VERSION`).
+    ///
+    /// ``mode="compact"`` is strictly smaller and intended for hot loops /
+    /// tight agent context budgets:
+    ///
+    /// * ``steps`` entries drop ``before``/``after`` (usually the largest
+    ///   strings in a derivation — the single biggest token cost) and use
+    ///   short keys: ``r`` (rule name) and ``s`` (``side_conditions``,
+    ///   *omitted entirely* when the list is empty).
+    /// * ``verification`` is pruned to ``status`` and
+    ///   ``externally_verified`` only — the two fields that carry the
+    ///   honesty signal (whether this result is verified, and whether that
+    ///   verification happened out-of-process). ``verification["status"]``
+    ///   is **never** renamed, abbreviated, or omitted in compact mode.
+    /// * ``certificate_status`` is pruned to ``certifiable`` and
+    ///   ``reason``; the ``blocking_steps`` diagnostic list (which repeats
+    ///   ``before``/``after`` expression text) is dropped.
+    ///
+    /// Neither mode ever includes the Lean certificate source text — use
+    /// the :attr:`certificate` getter for that. ``has_certificate`` (a
+    /// bool) plus ``certificate_status.reason`` is enough to know whether a
+    /// certificate exists and why not, without paying for the source.
+    ///
+    /// Raises ``ValueError`` for any ``mode`` other than ``"full"`` /
+    /// ``"compact"``.
+    #[pyo3(signature = (mode="full"))]
+    fn to_dict<'py>(&self, py: Python<'py>, mode: &str) -> PyResult<Bound<'py, PyDict>> {
+        let compact = derived_result_mode_is_compact(mode)?;
+
+        let has_certificate = self.certificate(py).is_some();
+        let verification_full = self.verification(py);
+        let certificate_status_full = self.certificate_status(py);
+
+        let out = PyDict::new_bound(py);
+        out.set_item("kind", "alkahest.derived_result")?;
+        out.set_item("schema_version", RESULT_SCHEMA_VERSION)?;
+        out.set_item("steps_schema_version", STEPS_SCHEMA_VERSION)?;
+        out.set_item("value", self.value.__str__(py))?;
+
+        if compact {
+            let verification = PyDict::new_bound(py);
+            verification.set_item(
+                "status",
+                verification_full
+                    .get_item("status")?
+                    .expect("verification always sets status"),
+            )?;
+            verification.set_item(
+                "externally_verified",
+                verification_full
+                    .get_item("externally_verified")?
+                    .expect("verification always sets externally_verified"),
+            )?;
+            out.set_item("verification", verification)?;
+
+            let certificate_status = PyDict::new_bound(py);
+            certificate_status.set_item(
+                "certifiable",
+                certificate_status_full
+                    .get_item("certifiable")?
+                    .expect("certificate_status always sets certifiable"),
+            )?;
+            certificate_status.set_item(
+                "reason",
+                certificate_status_full
+                    .get_item("reason")?
+                    .expect("certificate_status always sets reason"),
+            )?;
+            out.set_item("certificate_status", certificate_status)?;
+        } else {
+            out.set_item("verification", verification_full)?;
+            out.set_item("certificate_status", certificate_status_full)?;
+        }
+
+        out.set_item("steps", self.steps_dict_list(py, compact))?;
+        out.set_item("has_certificate", has_certificate)?;
+        Ok(out)
+    }
+
+    /// ``json.dumps(self.to_dict(mode=mode))``, via Python's own ``json``
+    /// module so the output matches what an agent's own ``json.dumps``
+    /// would produce. See :meth:`to_dict` for the schema.
+    #[pyo3(signature = (mode="full"))]
+    fn to_json(&self, py: Python<'_>, mode: &str) -> PyResult<String> {
+        derived_result_mode_is_compact(mode)?;
+        let dict = self.to_dict(py, mode)?;
+        let json = PyModule::import_bound(py, "json")?;
+        json.getattr("dumps")?.call1((dict,))?.extract()
+    }
+}
+
+/// Shared `mode` validation for `to_dict` / `to_json`. Returns `true` for
+/// `"compact"`, `false` for `"full"`.
+fn derived_result_mode_is_compact(mode: &str) -> PyResult<bool> {
+    match mode {
+        "full" => Ok(false),
+        "compact" => Ok(true),
+        other => Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "DerivedResult.to_dict/to_json: mode must be 'full' or 'compact', got {other:?}"
+        ))),
+    }
+}
+
+impl PyDerivedResult {
+    /// `steps` list for [`PyDerivedResult::to_dict`]. Full mode mirrors the
+    /// `.steps` getter exactly (`rule`/`before`/`after`/`side_conditions`);
+    /// compact mode uses short keys and drops `before`/`after`, omitting
+    /// `s` entirely when `side_conditions` is empty.
+    fn steps_dict_list<'py>(&self, py: Python<'py>, compact: bool) -> Bound<'py, PyList> {
+        let list = PyList::empty_bound(py);
+        for (rule, before, after, conds) in &self.steps_raw {
+            let d = PyDict::new_bound(py);
+            if compact {
+                d.set_item("r", rule).unwrap();
+                if !conds.is_empty() {
+                    d.set_item("s", conds).unwrap();
+                }
+            } else {
+                d.set_item("rule", rule).unwrap();
+                d.set_item("before", before).unwrap();
+                d.set_item("after", after).unwrap();
+                d.set_item("side_conditions", conds).unwrap();
+            }
+            list.append(d).unwrap();
+        }
+        list
     }
 }
 
@@ -9945,5 +10104,8 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_is_cancelled, m)?)?;
     // V1-15: compile-time flag so Python tests can skip egraph-dependent assertions.
     m.add("HAS_EGRAPH", cfg!(feature = "egraph"))?;
+    // P1 search-plumbing item 6: versioned DerivedResult.to_dict/to_json envelope.
+    m.add("RESULT_SCHEMA_VERSION", RESULT_SCHEMA_VERSION)?;
+    m.add("STEPS_SCHEMA_VERSION", STEPS_SCHEMA_VERSION)?;
     Ok(())
 }

@@ -63,6 +63,12 @@ from ._pytree import (
     map_exprs,
     unflatten_exprs,
 )
+from ._result_schema import (
+    RESULT_SCHEMA_VERSION,
+    STEP_FIELDS,
+    STEP_FIELDS_COMPACT,
+    STEPS_SCHEMA_VERSION,
+)
 from ._transform import (
     CompiledGradTracedFn,
     CompiledTracedFn,
@@ -1505,6 +1511,11 @@ __all__ = [
     "HAS_EGRAPH",
     # Phase 16
     "ODE",
+    # P1 search plumbing item 6 — DerivedResult.to_dict/to_json schema
+    "RESULT_SCHEMA_VERSION",
+    "STEPS_SCHEMA_VERSION",
+    "STEP_FIELDS",
+    "STEP_FIELDS_COMPACT",
     # Phase 18
     "AcausalSystem",
     # Exceptions (V1-3 — stable diagnostic codes)
