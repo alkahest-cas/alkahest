@@ -14,8 +14,26 @@ const N_SMOKE: usize = 1 << 20;
 /// Points for the bandwidth test — 16M × 8B in × 8B out ≈ 256 MB traffic.
 const N_BW: usize = 16 << 20;
 
+/// Whether the device tests should run, failing loudly when one was promised.
+///
+/// `ALKAHEST_GPU_TESTS=1` is set by `.github/workflows/cuda_nightly.yml` on a
+/// `[self-hosted, gpu-3090]` runner and asserts that a GPU is present. Skipping
+/// quietly in that case would report success for a job whose entire purpose is
+/// to exercise hardware: with the devices hidden the whole suite finished in
+/// 0.27 s and passed, versus 1.48 s of real work.
+///
+/// Without the variable the tests still skip, so `cargo test --features cuda`
+/// remains usable on a developer machine with no GPU. Main CI never builds
+/// these features at all, so this cannot block ordinary PRs.
 fn device_available() -> bool {
-    cudarc::driver::CudaContext::new(0).is_ok()
+    let device_ok = cudarc::driver::CudaContext::new(0).is_ok();
+    let requested = std::env::var("ALKAHEST_GPU_TESTS").ok().as_deref() == Some("1");
+    assert!(
+        !(requested && !device_ok),
+        "ALKAHEST_GPU_TESTS=1 asserts a CUDA device is present, but none could be \
+         initialised. Refusing to report success for GPU tests that cannot run."
+    );
+    device_ok
 }
 
 #[test]
