@@ -51,7 +51,7 @@ fn gpu_available() -> bool {
     let requested = std::env::var("ALKAHEST_GPU_TESTS").ok().as_deref() == Some("1");
     let device_ok = cudarc::driver::CudaContext::new(0).is_ok();
     assert!(
-        !(requested && !device_ok),
+        !requested || device_ok,
         "ALKAHEST_GPU_TESTS=1 asserts a CUDA device is present, but none could be \
          initialised. Refusing to report success for GPU tests that cannot run."
     );

@@ -159,9 +159,9 @@ impl CudaCompiledFn {
             .runtime
             .lock()
             .map_err(|_| CudaError::LaunchError("runtime cache poisoned".to_string()))?;
-        if !cache.contains_key(&device_ordinal) {
+        if let std::collections::hash_map::Entry::Vacant(e) = cache.entry(device_ordinal) {
             let rt = runtime::load_ptx(device_ordinal, &self.ptx)?;
-            cache.insert(device_ordinal, rt);
+            e.insert(rt);
         }
         let rt = cache.get(&device_ordinal).unwrap();
 
@@ -188,9 +188,9 @@ impl CudaCompiledFn {
             .runtime
             .lock()
             .map_err(|_| CudaError::LaunchError("runtime cache poisoned".to_string()))?;
-        if !cache.contains_key(&device_ordinal) {
+        if let std::collections::hash_map::Entry::Vacant(e) = cache.entry(device_ordinal) {
             let rt = runtime::load_ptx(device_ordinal, &self.ptx)?;
-            cache.insert(device_ordinal, rt);
+            e.insert(rt);
         }
         let rt = cache.get(&device_ordinal).unwrap();
         runtime::launch_raw(rt, self.n_inputs, device_in, device_out, n_pts)
@@ -514,7 +514,7 @@ mod codegen {
                 // Fast path: small positive integer exponent → unrolled multiplies.
                 if let ExprData::Integer(n) = pool.get(exp) {
                     let n_i64 = n.0.to_f64() as i64;
-                    if n_i64 >= 0 && n_i64 <= 16 && (n_i64 as f64) == n.0.to_f64() {
+                    if (0..=16).contains(&n_i64) && (n_i64 as f64) == n.0.to_f64() {
                         let mut acc = f64_t.const_float(1.0);
                         for _ in 0..n_i64 {
                             acc = builder
@@ -627,6 +627,14 @@ mod codegen {
     /// Emit the `!nvvm.annotations` metadata entry that flags our function
     /// as a PTX kernel. Inkwell 0.9 doesn't expose named-metadata APIs, so
     /// we drop to llvm-sys directly.
+    /// NVVM requires the `nvvm.annotations` metadata node to mark a function as
+    /// a kernel, and inkwell exposes no safe wrapper for it. The `*InContext`
+    /// builders are deprecated upstream in favour of `*InContext2`, but those
+    /// take an explicit length and are not surfaced by inkwell's re-export at
+    /// the LLVM 15 version this crate pins. Migrating is a change to codegen,
+    /// not a lint fix, so the deprecation is acknowledged rather than papered
+    /// over by widening the lint level for the whole module.
+    #[allow(deprecated)]
     fn emit_nvvm_kernel_annotation<'ctx>(
         ctx: &'ctx Context,
         module: &Module<'ctx>,
@@ -721,6 +729,14 @@ mod codegen {
 
     /// Run a minimal whole-module cleanup: inline libdevice helpers into the
     /// kernel, then DCE everything the kernel doesn't reach.
+    ///
+    /// Uses the legacy pass manager, which inkwell deprecates in favour of
+    /// `PassBuilderOptions` + `Module::run_passes`. Switching pass pipelines
+    /// changes what the NVPTX backend actually emits, so it belongs in its own
+    /// change with the GPU suite run against it — not in a lint sweep. The
+    /// allow is scoped to this function so a *new* deprecated use elsewhere
+    /// still fails the build.
+    #[allow(deprecated)]
     fn run_libdevice_cleanup_passes<'ctx>(module: &Module<'ctx>) {
         use inkwell::passes::PassManager;
         let pm: PassManager<Module<'_>> = PassManager::create(());
@@ -752,11 +768,8 @@ mod codegen {
 #[cfg(feature = "cuda")]
 mod runtime {
     use super::{CudaError, DeviceRuntime};
-    use cudarc::driver::{
-        sys as cu_sys, CudaContext, CudaFunction, CudaModule, LaunchConfig, PushKernelArg,
-    };
+    use cudarc::driver::{sys as cu_sys, CudaContext, LaunchConfig, PushKernelArg};
     use cudarc::nvrtc::Ptx;
-    use std::sync::Arc;
 
     pub fn load_ptx(device: usize, ptx: &str) -> Result<DeviceRuntime, CudaError> {
         let ctx = CudaContext::new(device)
@@ -860,7 +873,7 @@ mod runtime {
     fn kernel_config(n_pts: usize) -> LaunchConfig {
         let block: u32 = 256;
         let n = n_pts as u32;
-        let grid = (n + block - 1) / block;
+        let grid = n.div_ceil(block);
         LaunchConfig {
             grid_dim: (grid.max(1), 1, 1),
             block_dim: (block, 1, 1),
