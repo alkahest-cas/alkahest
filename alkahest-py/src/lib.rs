@@ -464,7 +464,6 @@ fn integrate_error_to_py(e: IntegrationError) -> PyErr {
     })
 }
 
-
 // ---------------------------------------------------------------------------
 // P1 search plumbing item 4 — budgets, cancellation, determinism
 //

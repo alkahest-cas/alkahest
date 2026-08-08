@@ -30,10 +30,11 @@ pub enum IntegrationError {
     /// Also used as a **semver-safe carrier** for budget/cancellation trips
     /// (see [`IntegrationError::from`] for [`crate::budget::BudgetError`]):
     /// adding a dedicated `Budget` variant would be a major break on this
-    /// exhaustive enum. Encoded messages start with [`BUDGET_MARKER`]; use
-    /// [`IntegrationError::is_budget`] / [`IntegrationError::budget_code`] to
-    /// distinguish them from genuine "not implemented" declines. Python maps
-    /// these to `BudgetExceededError` (`E-BUDGET-*`).
+    /// exhaustive enum. Encoded messages start with the internal `[[budget]]`
+    /// marker; use [`IntegrationError::is_budget`] /
+    /// [`IntegrationError::budget_code`] to distinguish them from genuine
+    /// "not implemented" declines. Python maps these to `BudgetExceededError`
+    /// (`E-BUDGET-*`).
     NotImplemented(String),
     /// Division by zero would occur (e.g. power-rule with n=-1 on a non-x base).
     DivisionByZero,
