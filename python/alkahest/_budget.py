@@ -61,7 +61,7 @@ __all__ = [
 _T = TypeVar("_T")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Budget:
     """A per-call resource budget for search-style workloads.
 

@@ -200,14 +200,13 @@ def batch_map(
     if not parallel:
         return [_invoke(fn, item, i, kwargs) for i, item in enumerate(materialized)]
 
-    results: list[BatchItem | None] = [None] * len(materialized)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {
-            executor.submit(_invoke, fn, item, i, kwargs): i for i, item in enumerate(materialized)
-        }
-        for future in futures:
-            results[futures[future]] = future.result()
-    return results  # type: ignore[return-value]  # every slot was filled above
+        # Submit in input order and collect in the same order so the return
+        # type stays ``list[BatchItem]`` (no ``None`` placeholders for ty).
+        futures = [
+            executor.submit(_invoke, fn, item, i, kwargs) for i, item in enumerate(materialized)
+        ]
+        return [future.result() for future in futures]
 
 
 def batch_map_iter(
