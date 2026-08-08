@@ -19,7 +19,7 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-SOLVE-010 … E-SOLVE-011  SolverError  (GPU Gröbner)
     E-JIT-001   … E-JIT-003    JitError
     E-LAT-001 … E-LAT-004      LatticeError
-    E-PSLQ-001 … E-PSLQ-003    PslqError
+    E-PSLQ-001 … E-PSLQ-004    PslqError  (004 = input precision below requested)
     E-CAD-001                  CadError
     E-ROOT-001 … E-ROOT-002    RealRootError (V2-4 VAS real root isolation)
     E-RES-001 … E-RES-003      ResultantError (V2-2)
@@ -286,15 +286,20 @@ class LatticeError(AlkahestError):
 
 
 class PslqError(AlkahestError):
-    """Integer-relation heuristic failed (input, coefficient bound, or lattice step)."""
+    """Integer-relation heuristic failed (input, coefficient bound, or lattice step).
+
+    ``E-PSLQ-004`` is raised when the supplied constants carry less precision
+    than the search requests — see :func:`alkahest.guess_relation`.
+    """
 
     def __init__(
         self,
         message: str,
         remediation: str | None = None,
         span: tuple[int, int] | None = None,
+        code: str = "E-PSLQ-001",
     ):
-        super().__init__(message, code="E-PSLQ-001", remediation=remediation, span=span)
+        super().__init__(message, code=code, remediation=remediation, span=span)
 
 
 class CadError(AlkahestError):
