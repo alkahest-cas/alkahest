@@ -458,6 +458,63 @@ fn combine_algebraic_master(main_var: ExprId, polys: &[UniPoly]) -> UniPoly {
     }
 }
 
+/// Bisection budget for tightening an isolating interval.
+///
+/// 60 halvings shrink a bracket to ~1e-18 of its width, far below any gap
+/// these degree-bounded polynomials produce between distinct roots.
+const ISOLATION_REFINEMENTS: u32 = 60;
+
+/// Tighten an isolating interval around its single root by bisection.
+///
+/// Root isolation only promises "exactly one root in here", and the bracket it
+/// returns can be wide enough to swallow the neighbouring cell: the roots of
+/// `2x⁴ + x³ - 4x² + 3` isolate to `(-2,-1)` and the exact point `-1`, and the
+/// entire region where that polynomial is negative lies *inside* the first
+/// bracket. No midpoint of the raw breakpoints lands in it.
+///
+/// Sound because `master` is squarefree (see [`combine_algebraic_master`]), so
+/// every root is simple and a sign change is guaranteed across it. That is the
+/// precondition bisection needs — on a polynomial with an even-multiplicity
+/// root both endpoints share a sign and this would walk away from the root.
+fn refine_isolating(master: &UniPoly, iv: &RootInterval) -> (rug::Rational, rug::Rational) {
+    let mut lo = iv.lo.clone();
+    let mut hi = iv.hi.clone();
+
+    // Which endpoint's sign steers the bisection. An endpoint can itself be a
+    // root of `master` — of a *different* root than the one this bracket
+    // isolates, since neighbouring brackets share endpoints: `2x⁴+x³-4x²+3`
+    // isolates one root inside `(-2,-1)` while `-1` is another root outright.
+    // Collapsing the bracket onto such an endpoint throws away the root it was
+    // supposed to isolate, so steer by whichever endpoint has a usable sign.
+    let v_lo = master.eval_rational(&lo);
+    let v_hi = master.eval_rational(&hi);
+    let (anchor_positive, anchor_is_lo) = if v_lo != 0 {
+        (v_lo > 0, true)
+    } else if v_hi != 0 {
+        (v_hi > 0, false)
+    } else {
+        // Both endpoints are roots: nothing to bisect against. Leave the
+        // bracket alone rather than guess.
+        return (lo, hi);
+    };
+
+    for _ in 0..ISOLATION_REFINEMENTS {
+        let mid = iv_midpoint(&lo, &hi);
+        let v = master.eval_rational(&mid);
+        if v == 0 {
+            return (mid.clone(), mid);
+        }
+        // Move the endpoint on the anchor's side when the midpoint agrees with
+        // it; otherwise move the other one.
+        if ((v > 0) == anchor_positive) == anchor_is_lo {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    (lo, hi)
+}
+
 fn cauchy_bound(p: &UniPoly) -> rug::Rational {
     let coeffs = p.coefficients();
     if coeffs.is_empty() || p.degree() <= 0 {
@@ -632,6 +689,17 @@ fn decide_exists_univariate(
     for iv in roots_iv.iter() {
         breakpoints.push(iv.lo.clone());
         breakpoints.push(iv.hi.clone());
+        // Tight brackets *in addition to* the raw ones. Adding them creates
+        // consecutive pairs that straddle the narrow cells between nearby
+        // roots, which the raw endpoints are often too coarse to expose.
+        //
+        // Additive on purpose: replacing the raw endpoints deletes the
+        // midpoints that were covering other cells, which is a net loss. Every
+        // candidate is verified exactly before it is accepted, so a larger
+        // breakpoint set can only find witnesses it was previously missing.
+        let (rlo, rhi) = refine_isolating(&master, iv);
+        breakpoints.push(rlo);
+        breakpoints.push(rhi);
     }
     breakpoints.push(br.clone());
 
@@ -1409,5 +1477,122 @@ mod tests {
         };
         let r = decide(&f, &p).unwrap();
         assert!(r.truth);
+    }
+}
+
+#[cfg(test)]
+mod sample_point_completeness_tests {
+    use super::*;
+    use crate::kernel::Domain;
+
+    /// Build `Σ coeffs[i]·xⁱ`.
+    fn poly(pool: &ExprPool, x: ExprId, coeffs: &[i64]) -> ExprId {
+        let terms: Vec<ExprId> = coeffs
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| {
+                let ci = pool.integer(c);
+                if i == 0 {
+                    ci
+                } else {
+                    pool.mul(vec![ci, pool.pow(x, pool.integer(i as i64))])
+                }
+            })
+            .collect();
+        pool.add(terms)
+    }
+
+    fn forall(pool: &ExprPool, x: ExprId, body: Formula) -> Result<QeResult, CadError> {
+        decide(
+            &Formula::Forall {
+                var: x,
+                body: Box::new(body),
+            },
+            pool,
+        )
+    }
+
+    fn atom(kind: PredicateKind, lhs: ExprId, rhs: ExprId) -> Formula {
+        Formula::Atom {
+            kind,
+            args: vec![lhs, rhs],
+        }
+    }
+
+    /// The three shapes that used to yield a proof of a false statement.
+    ///
+    /// - `x² > 0` / `x⁴ > 0`: satisfied-only-on-the-boundary negation, missed
+    ///   because `Le`/`Ge` boundaries were not sampled.
+    /// - `2x⁴+x³-4x²+3 ≥ 0`: false at `x = -6/5`, in a narrow cell between two
+    ///   roots that no raw breakpoint or midpoint reaches.
+    #[test]
+    fn false_universals_are_not_proved() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let zero = pool.integer(0_i32);
+
+        for (label, coeffs, kind) in [
+            ("x^2 > 0", vec![0, 0, 1], PredicateKind::Gt),
+            ("x^4 > 0", vec![0, 0, 0, 0, 1], PredicateKind::Gt),
+            (
+                "2x^4+x^3-4x^2+3 >= 0",
+                vec![3, 0, -4, 1, 2],
+                PredicateKind::Ge,
+            ),
+        ] {
+            let p = poly(&pool, x, &coeffs);
+            let got = forall(&pool, x, atom(kind, p, zero)).expect("decidable");
+            assert!(
+                !got.truth,
+                "`forall x. {label}` is false but decide returned true"
+            );
+        }
+    }
+
+    /// The fix must not flip true statements to false.
+    #[test]
+    fn true_universals_still_hold() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let zero = pool.integer(0_i32);
+
+        for (label, coeffs, kind) in [
+            ("x^2 >= 0", vec![0, 0, 1], PredicateKind::Ge),
+            ("x^2 + 1 > 0", vec![1, 0, 1], PredicateKind::Gt),
+            ("(x-1)^2 >= 0", vec![1, -2, 1], PredicateKind::Ge),
+        ] {
+            let p = poly(&pool, x, &coeffs);
+            let got = forall(&pool, x, atom(kind, p, zero)).expect("decidable");
+            assert!(
+                got.truth,
+                "`forall x. {label}` is true but decide returned false"
+            );
+        }
+    }
+
+    /// Bisection must survive a bracket whose endpoint is a *different* root.
+    ///
+    /// `2x⁴+x³-4x²+3` isolates one root inside `(-2,-1)` while `-1` is itself a
+    /// root, so neighbouring brackets share that endpoint. Steering the
+    /// bisection by an endpoint that evaluates to zero collapsed the bracket
+    /// onto it and discarded the root being isolated — which is precisely how
+    /// the narrow negative cell stayed unreachable.
+    #[test]
+    fn refinement_survives_a_root_valued_endpoint() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let p = poly(&pool, x, &[3, 0, -4, 1, 2]);
+        let up = UniPoly::from_symbolic_clear_denoms(p, x, &pool).expect("polynomial");
+        let master = combine_algebraic_master(x, &[up]);
+
+        let iv = RootInterval::new(rug::Rational::from(-2), rug::Rational::from(-1));
+        let (lo, hi) = refine_isolating(&master, &iv);
+
+        assert!(lo <= hi, "refined bracket is inverted");
+        assert!(
+            hi < -1,
+            "bracket collapsed onto the endpoint root -1 instead of isolating its own root"
+        );
+        assert!(lo > -2, "bracket did not tighten at all");
     }
 }
