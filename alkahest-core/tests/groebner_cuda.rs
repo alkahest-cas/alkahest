@@ -30,8 +30,32 @@ fn poly(terms: &[(&[u32], i64)]) -> GbPoly {
     }
 }
 
+/// Whether the GPU-only tests should run — and a hard failure when they were
+/// asked for but cannot happen.
+///
+/// The distinction matters. `ALKAHEST_GPU_TESTS=1` is set by
+/// `.github/workflows/cuda_nightly.yml`, which runs on a `[self-hosted,
+/// gpu-3090]` runner; setting it is an assertion that a GPU *is* present. If
+/// the device is then missing or the driver is broken, the run must fail — that
+/// is the runner being broken, and it is the only signal anyone would get.
+///
+/// Previously this only read the environment variable and the tests returned
+/// early on failure, so they reported `ok` in three situations that are not the
+/// same thing: no GPU wanted, no GPU present, and a GPU present but unusable.
+/// With the devices hidden (`CUDA_VISIBLE_DEVICES=""`) the suite still went
+/// green while silently falling back to the CPU 32 times.
+///
+/// Main CI never reaches this code — `ci.yml` does not enable the `cuda` or
+/// `groebner-cuda` features — so failing here cannot hold up ordinary PRs.
 fn gpu_available() -> bool {
-    std::env::var("ALKAHEST_GPU_TESTS").ok().as_deref() == Some("1")
+    let requested = std::env::var("ALKAHEST_GPU_TESTS").ok().as_deref() == Some("1");
+    let device_ok = cudarc::driver::CudaContext::new(0).is_ok();
+    assert!(
+        !(requested && !device_ok),
+        "ALKAHEST_GPU_TESTS=1 asserts a CUDA device is present, but none could be \
+         initialised. Refusing to report success for GPU tests that cannot run."
+    );
+    requested && device_ok
 }
 
 // ---------------------------------------------------------------------------
