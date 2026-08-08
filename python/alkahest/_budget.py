@@ -100,9 +100,7 @@ class Budget:
 
     def __post_init__(self) -> None:
         if self.wall_ms is not None and (not math.isfinite(self.wall_ms) or self.wall_ms < 0):
-            raise ValueError(
-                "Budget.wall_ms must be a finite, non-negative number of milliseconds"
-            )
+            raise ValueError("Budget.wall_ms must be a finite, non-negative number of milliseconds")
         if self.max_steps is not None and self.max_steps < 0:
             raise ValueError("Budget.max_steps must be a non-negative integer")
         if self.seed is not None and self.seed < 0:
