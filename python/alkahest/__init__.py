@@ -1,4 +1,5 @@
 import functools as _functools
+import math
 from contextlib import suppress as _suppress
 from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from importlib.metadata import version as _meta_version
@@ -1127,6 +1128,164 @@ def rsolve(equation, n, seq_name, initials=None):
     return _native_rsolve(_coerce_expr(equation), _coerce_expr(n), seq_name, initials)
 
 
+# ---------------------------------------------------------------------------
+# Integer relations (PSLQ/LLL) — input-precision guard
+# ---------------------------------------------------------------------------
+
+_native_guess_relation = guess_relation
+
+#: A Python ``float`` carries 53 bits of mantissa, ~15.95 decimal digits.
+_FLOAT_SIGNIFICAND_BITS = 53
+
+#: bits per decimal digit, ``log2(10)``.
+_BITS_PER_DIGIT = 3.321928094887362
+
+#: The engine's own minimum working precision (``E-PSLQ-003``).
+_MIN_ENGINE_BITS = 64
+
+
+def _supplied_bits(value) -> float:
+    """How much precision *value* is *known* to carry, in bits.
+
+    Only ``float`` is constrained. A float is 53 bits of mantissa no matter how
+    it is printed, and that is knowable with certainty.
+
+    Everything else is reported as exact, deliberately. A decimal string is
+    exactly the rational it spells — ``"1"`` is one, not "one to one significant
+    figure" — so a relation among supplied strings is a true statement about the
+    values supplied. Whether those values are the constants the caller *meant*
+    is not something this library can know, and guessing would refuse honest
+    exact-rational searches like ``["1", "2", "3"]``.
+    """
+    if isinstance(value, float):
+        return float(_FLOAT_SIGNIFICAND_BITS)
+    return math.inf
+
+
+class _RelationPrecisionError(PslqError):
+    """``E-PSLQ-004`` — inputs carry less precision than the search requested.
+
+    A subclass of the native :class:`PslqError` so ``except ak.PslqError``
+    catches it like any other integer-relation failure, while still carrying its
+    own stable code.
+    """
+
+    def __init__(self, message: str, remediation: str):
+        super().__init__(message)
+        self.code = "E-PSLQ-004"
+        self.remediation = remediation
+
+
+def _relation_is_credible(constants, coeffs) -> tuple[bool, float, float]:
+    """Judge a *found* relation against the precision its inputs actually have.
+
+    This is the standard experimental-mathematics criterion, and it uses
+    evidence rather than guessing what the caller meant. Pinning down `n`
+    coefficients of magnitude `H` consumes about `n·log10(H)` digits of
+    agreement. If that exceeds the digits the inputs carry, the relation was
+    *purchasable* from the available precision and is evidence of nothing.
+
+    Only ``float`` inputs constrain anything — see :func:`_supplied_bits`. With
+    exact inputs there is nothing to be sceptical of: the relation holds of the
+    values supplied, exactly.
+
+    Returns ``(credible, available_digits, consumed_digits)``.
+    """
+    supplied = math.inf
+    for c in constants:
+        bits = _supplied_bits(c)
+        if bits < supplied:
+            supplied = bits
+    if not math.isfinite(supplied):
+        return True, math.inf, 0.0
+    available = supplied / _BITS_PER_DIGIT
+    # NB: `abs`/`min`/`max` in this module's namespace are the *symbolic*
+    # constructors, so the builtins are unavailable here.
+    biggest = 1
+    for a in coeffs:
+        magnitude = -a if a < 0 else a
+        if magnitude > biggest:
+            biggest = magnitude
+    consumed = len(coeffs) * math.log10(biggest) if biggest > 1 else 0.0
+    return consumed <= available, available, consumed
+
+
+def relation_confidence(constants, coeffs) -> dict:
+    """Judge a found relation against the precision its inputs actually carry.
+
+    Pinning down ``n`` coefficients of magnitude ``H`` takes about
+    ``n·log10(H)`` digits of agreement. When that exceeds the digits the inputs
+    have, the relation was *purchasable* from the available precision — the
+    search would have found something whatever the constants were — and it is
+    evidence of nothing.
+
+    Only ``float`` inputs constrain anything (53 bits, ~16 digits, however they
+    are printed). Decimal strings and ints are exactly the values they spell, so
+    a relation among them holds exactly and there is nothing to be sceptical of.
+
+    Returns ``available_digits``, ``consumed_digits``, ``spare_digits`` and
+    ``credible``.
+
+    >>> import alkahest as ak
+    >>> ak.relation_confidence([1.0, 2.0, 3.0], [1, 1, -1])["credible"]
+    True
+    >>> ak.relation_confidence([0.1, 0.2, 0.7], [60771139, 67263243, 11653676])["credible"]
+    False
+    """
+    credible, available, consumed = _relation_is_credible(constants, coeffs)
+    return {
+        "available_digits": available,
+        "consumed_digits": consumed,
+        "spare_digits": available - consumed,
+        "credible": credible,
+    }
+
+
+def guess_relation(constants, precision_bits=664, max_abs_coeff=None, check_precision=True):
+    """Search for integers ``aᵢ`` with ``Σ aᵢ·constantsᵢ ≈ 0``.
+
+    Raises :class:`PslqError` (``E-PSLQ-004``) when the relation found is larger
+    than the inputs' precision can justify, rather than returning a number that
+    is an artifact of how the inputs were written.
+
+    Passing ``float`` values — 53 bits, ~16 digits — while searching at the
+    664-bit default zero-pads them into exact rationals, among which exact
+    integer relations genuinely exist::
+
+        guess_relation([float(pi), float(e), float(log(2))])
+        # was: [-60771139, 67263243, 11653676]   ← confident and meaningless
+        # now: raises E-PSLQ-004
+
+    The same constants supplied as 200-digit decimal strings correctly return
+    ``None``. In an autoresearch loop the old behaviour is a false lemma every
+    later step inherits, so a refusal is the only honest answer.
+
+    The test is on the *result*, not the input, so small relations among floats
+    still come back: ``[1.0, 2.0, 3.0]`` needs almost no precision to pin down
+    and is returned normally. See :func:`relation_confidence` for the numbers.
+
+    Pass ``check_precision=False`` to accept a relation among the supplied
+    values themselves.
+    """
+    coeffs = _native_guess_relation(constants, precision_bits, max_abs_coeff)
+    if coeffs is None or not check_precision:
+        return coeffs
+    credible, available, consumed = _relation_is_credible(constants, coeffs)
+    if not credible:
+        raise _RelationPrecisionError(
+            f"the relation {coeffs} needs ~{consumed:.0f} digits of agreement to pin "
+            f"down, but the inputs carry only ~{available:.0f}; a relation this size is "
+            "purchasable from the available precision and is evidence of nothing",
+            (
+                "supply the constants as high-precision decimal strings — a float "
+                f"carries only ~{_FLOAT_SIGNIFICAND_BITS} bits (~{available:.0f} digits) "
+                "however it is printed; pass check_precision=False to accept a relation "
+                "among the supplied values themselves"
+            ),
+        )
+    return coeffs
+
+
 _native_poly_normal = poly_normal
 
 
@@ -1689,6 +1848,8 @@ __all__ = [
     # V2-4
     "real_roots",
     "refine_root",
+    # Integer-relation input-precision guard
+    "relation_confidence",
     # V5-12 — certificate ledger
     "require_certificate",
     # Session-level provenance: claim graph for autoresearch loops
