@@ -11,6 +11,23 @@ from . import (
     number_theory,
     research,  # session-level claim graph (provenance objects)
 )
+from ._batch import (
+    BatchItem,
+    batch_map,
+    batch_map_iter,
+    diff_many,
+    integrate_many,
+    simplify_many,
+)
+from ._budget import (
+    Budget,
+    budget_seed,
+    clear_cancel,
+    is_budget_active,
+    is_cancelled,
+    request_cancel,
+    run_with_wall_fallback,
+)
 from ._certificates import (
     Certifiability,
     certifiable,
@@ -19,6 +36,7 @@ from ._certificates import (
 )
 from ._context import (
     active_assumptions,
+    active_budget,
     active_domain,
     active_pool,
     context,
@@ -45,6 +63,12 @@ from ._pytree import (
     flatten_exprs,
     map_exprs,
     unflatten_exprs,
+)
+from ._result_schema import (
+    RESULT_SCHEMA_VERSION,
+    STEP_FIELDS,
+    STEP_FIELDS_COMPACT,
+    STEPS_SCHEMA_VERSION,
 )
 from ._transform import (
     CompiledGradTracedFn,
@@ -288,6 +312,7 @@ with _suppress(ImportError):
 from .exceptions import (
     AlkahestError,
     AssumptionError,
+    BudgetExceededError,
     CadError,
     CertificateUnavailableError,
     ConversionError,
@@ -324,6 +349,7 @@ from .exceptions import (
 _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     "AlkahestError",
     "AssumptionError",
+    "BudgetExceededError",
     "CadError",
     "ConversionError",
     "DaeError",
@@ -1644,6 +1670,11 @@ __all__ = [
     "HAS_EGRAPH",
     # Phase 16
     "ODE",
+    # P1 search plumbing item 6 — DerivedResult.to_dict/to_json schema
+    "RESULT_SCHEMA_VERSION",
+    "STEPS_SCHEMA_VERSION",
+    "STEP_FIELDS",
+    "STEP_FIELDS_COMPACT",
     # Phase 18
     "AcausalSystem",
     # Exceptions (V1-3 — stable diagnostic codes)
@@ -1653,6 +1684,10 @@ __all__ = [
     "ArbBall",
     "AssumptionError",
     "Assumptions",
+    # P1 search plumbing items 4–5 — budgets + batch/streaming fan-out
+    "BatchItem",
+    "Budget",
+    "BudgetExceededError",
     "CadError",
     # V5-12 — certificate ledger
     "Certifiability",
@@ -1744,6 +1779,8 @@ __all__ = [
     "acos",
     "acosh",
     "active_assumptions",
+    # P1 search plumbing item 4
+    "active_budget",
     "active_domain",
     "active_pool",
     "adjoint_system",
@@ -1753,8 +1790,13 @@ __all__ = [
     "asinh",
     "atan",
     "atanh",
+    # P1 search plumbing item 5 — batch/streaming fan-out
+    "batch_map",
+    "batch_map_iter",
     "bessel_j0",
     "bessel_j1",
+    # P1 search plumbing item 4
+    "budget_seed",
     "cad_lift",
     "cad_project",
     "cancel",
@@ -1764,6 +1806,8 @@ __all__ = [
     # V5-12 — certificate ledger
     "certifiable",
     "certificate_coverage",
+    # P1 search plumbing item 4
+    "clear_cancel",
     # Phase 26
     "collect_like_terms",
     "compile_expr",
@@ -1778,6 +1822,8 @@ __all__ = [
     # Calculus
     "diff",
     "diff_forward",
+    # P1 search plumbing item 5 — batch/streaming fan-out
+    "diff_many",
     "digamma",
     "diophantine",
     # Elliptic special functions (parameter convention m = k²)
@@ -1806,7 +1852,12 @@ __all__ = [
     "horner",
     "im",
     "integrate",
+    # P1 search plumbing item 5 — batch/streaming fan-out
+    "integrate_many",
     "interval_eval",
+    # P1 search plumbing item 4
+    "is_budget_active",
+    "is_cancelled",
     "jacobian",
     "jit",
     "jit_is_available",
@@ -1850,6 +1901,8 @@ __all__ = [
     "refine_root",
     # Integer-relation input-precision guard
     "relation_confidence",
+    # P1 search plumbing item 4
+    "request_cancel",
     # V5-12 — certificate ledger
     "require_certificate",
     # Session-level provenance: claim graph for autoresearch loops
@@ -1863,6 +1916,8 @@ __all__ = [
     "round",
     "routh_hurwitz",
     "rsolve",
+    # P1 search plumbing item 4
+    "run_with_wall_fallback",
     "satisfiable",
     "sensitivity_system",
     "series",
@@ -1876,6 +1931,8 @@ __all__ = [
     "simplify_enabled",
     "simplify_expanded",
     "simplify_log_exp",
+    # P1 search plumbing item 5 — batch/streaming fan-out
+    "simplify_many",
     "simplify_par",
     "simplify_pauli",
     "simplify_redex",

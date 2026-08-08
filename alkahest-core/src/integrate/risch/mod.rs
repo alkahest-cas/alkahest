@@ -280,6 +280,13 @@ pub fn integrate_risch(
             Err(IntegrationError::UnsupportedExtensionDegree(d)) => {
                 return Err(IntegrationError::UnsupportedExtensionDegree(d));
             }
+            Err(e) if e.is_budget() => {
+                // A budget/cancellation trip is never a "this route declined"
+                // signal — propagate it immediately instead of falling
+                // through to sum decomposition, which would keep spending the
+                // budget the caller just told us is exhausted.
+                return Err(e);
+            }
             Err(IntegrationError::NotImplemented(_)) => {
                 // Fall through to sum decomposition below.
             }

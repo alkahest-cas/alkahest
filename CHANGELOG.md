@@ -4,6 +4,46 @@
 
 ### Added
 
+- **Budgets, cooperative cancellation, and a determinism seed** (P1 search
+  plumbing item 4): `alkahest.Budget(wall_ms=..., max_steps=..., seed=...)`
+  and `alkahest.context(budget=...)` push a wall-clock/step budget into a
+  new Rust-side cooperative checkpoint (`alkahest_core::budget`), so a
+  fan-out loop trying many candidate integrals/rewrites can bound one
+  candidate's cost instead of hanging on it. `alkahest.integrate` checks it
+  at its top-level entry and its recursion boundary and raises
+  `BudgetExceededError` (`E-BUDGET-001` wall clock, `E-BUDGET-002` step
+  limit, `E-BUDGET-003` cancelled) rather than running unbounded;
+  `alkahest.simplify` checks it once per rewrite pass and, since it has no
+  error channel, stops early instead of raising (`run_with_wall_fallback`
+  supplements this with a hard deadline via a worker thread when needed).
+  `alkahest.request_cancel()` / `clear_cancel()` / `is_cancelled()` expose a
+  process-wide cancellation flag so an orchestrator thread can stop a heavy
+  call running elsewhere; `alkahest.budget_seed()` exposes the active
+  budget's seed to RNG-consuming samplers for reproducible runs. See
+  [`docs/mdbook/src/budgets.md`](docs/mdbook/src/budgets.md).
+
+- **Batch and streaming evaluation** (`alkahest._batch`, Python-only): `batch_map` /
+  `batch_map_iter` call a function once per item and **never raise** for a single bad
+  element — the exception is captured into a `BatchItem(index, ok, value, error,
+  elapsed_ms)`, with `error["code"]` set to the failing exception's own `E-*` code
+  (`E-BATCH-001` as a fallback for exceptions with none). `batch_map` always returns
+  results in input order, whether or not `parallel=True` fans the calls out over a
+  `ThreadPoolExecutor`; `batch_map_iter` streams in input order when sequential and in
+  completion order when parallel. `integrate_many`, `simplify_many`, and `diff_many` are
+  thin `batch_map` wrappers over the three most common derivation entry points. See
+  [`docs/mdbook/src/batch.md`](docs/mdbook/src/batch.md).
+
+- **`DerivedResult.to_dict` / `.to_json`: versioned, token-efficient result
+  envelopes** (P1 search plumbing item 6). Combines `.value`, `.verification`,
+  `.certificate_status`, and `.steps` into one dict/JSON string with a stable
+  `"kind": "alkahest.derived_result"` discriminator and independent
+  `RESULT_SCHEMA_VERSION` / `STEPS_SCHEMA_VERSION` constants (also exported at
+  module level and as `DerivedResult.SCHEMA_VERSION` /
+  `.STEPS_SCHEMA_VERSION`). `mode="compact"` drops `before`/`after` step text
+  and uses short step keys (`r`/`s`), but never renames, hides, or drops
+  `verification["status"]` and never includes Lean certificate source in
+  either mode. See `docs/mdbook/src/derivations.md`.
+
 - **Python bindings for the parallel simplifiers**: `simplify_redex`,
   `simplify_auto` and `simplify_strategy` join the existing `simplify_par`.
   All take a single expression and return the same result as `simplify`; only

@@ -38,6 +38,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Generator
 
+    from ._budget import Budget
+
 # ---------------------------------------------------------------------------
 # Thread-local state
 # ---------------------------------------------------------------------------
@@ -71,6 +73,7 @@ def context(
     precision: int | None = None,
     assumptions: Any = None,
     require_certificate: bool | None = None,
+    budget: Budget | None = None,
     **extra: Any,
 ) -> Generator[None, None, None]:
     """Thread-local context for Alkahest calls.
@@ -107,6 +110,15 @@ def context(
         :func:`alkahest.require_certificate`; use it to stop a research loop
         from silently accumulating claims it cannot back up. Pass ``False`` in
         an inner block to opt back out.
+    budget : Budget, optional
+        P1 search plumbing item 4. When set, pushes a wall-clock / step
+        budget and a determinism seed into the Rust-side cooperative
+        checkpoint (``alkahest_core::budget``) for the scope of this block.
+        :func:`alkahest.integrate` raises :class:`~alkahest.BudgetExceededError`
+        (``E-BUDGET-*``) if the budget trips; :func:`alkahest.request_cancel`
+        trips it from another thread. Like every other context key, a nested
+        ``context(budget=...)`` shadows this one rather than merging with it —
+        see :class:`~alkahest.Budget` and ``docs/mdbook/src/budgets.md``.
     **extra
         Additional key-value pairs stored in the context and accessible via
         :func:`get_context_value`.
@@ -157,12 +169,24 @@ def context(
         ctx["assumptions"] = assumptions
     if require_certificate is not None:
         ctx["require_certificate"] = require_certificate
+    if budget is not None:
+        ctx["budget"] = budget
     ctx.update(extra)
 
     _state.stack.append(ctx)
+    budget_pushed = False
+    if budget is not None:
+        from . import alkahest as _native
+
+        _native.push_budget(wall_ms=budget.wall_ms, max_steps=budget.max_steps, seed=budget.seed)
+        budget_pushed = True
     try:
         yield
     finally:
+        if budget_pushed:
+            from . import alkahest as _native
+
+            _native.pop_budget()
         _state.stack.pop()
 
 
@@ -240,6 +264,18 @@ def active_domain() -> Any | None:
 def simplify_enabled() -> bool:
     """Return ``True`` if the active context has ``simplify=True``."""
     return bool(get_context_value("simplify", False))
+
+
+def active_budget() -> Any | None:
+    """Return the :class:`~alkahest.Budget` from the innermost active context,
+    or ``None`` if no context set one.
+
+    The budget is already active in the Rust-side cooperative checkpoint
+    while its ``context(budget=...)`` block is open (see :func:`context`);
+    this accessor is for introspection, e.g. a fan-out loop wanting to
+    log/adjust its own remaining budget.
+    """
+    return get_context_value("budget")
 
 
 def active_assumptions() -> Any | None:

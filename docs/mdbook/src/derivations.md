@@ -24,6 +24,13 @@ dr = diff(sin(x**2), x)
 | `.verification` | `dict` | Evidence status, artifact format, external-check status, and side conditions |
 | `.certificate` | `str \| None` | Generated Lean 4 source, when a derivation log exists |
 
+### Methods
+
+| Method | Description |
+|---|---|
+| `.to_dict(mode="full")` | Versioned dict envelope combining `.value`/`.verification`/`.certificate_status`/`.steps`; see [Machine-parseable output](#machine-parseable-output-to_dict--to_json) below |
+| `.to_json(mode="full")` | `json.dumps(self.to_dict(mode=mode))` |
+
 ## Rewrite steps
 
 Each step in `.steps` is a dict with:
@@ -100,6 +107,105 @@ all_steps = simplified.steps + derived.steps
 ```
 
 For operations like `integrate` that internally call `simplify`, the log includes the simplification sub-steps interleaved with the integration steps.
+
+## Machine-parseable output: `to_dict` / `to_json`
+
+Agents pay for every character a call returns. `.steps`, `.verification`, and
+`.certificate_status` are convenient to poke at interactively, but stitching
+them into one payload for logging, RPC, or a context window means writing
+that glue yourself, on every call site, forever. `DerivedResult.to_dict()`
+and `DerivedResult.to_json()` give you the stitched, versioned envelope
+directly:
+
+```python
+dr = diff(sin(x**2), x)
+
+full = dr.to_dict()                     # mode="full" is the default
+compact = dr.to_dict(mode="compact")    # short keys, token-efficient
+json_str = dr.to_json(mode="compact")   # json.dumps(dr.to_dict(mode="compact"))
+```
+
+### Envelope shape (`mode="full"`)
+
+```json
+{
+  "kind": "alkahest.derived_result",
+  "schema_version": 1,
+  "steps_schema_version": 1,
+  "value": "<display string>",
+  "verification": { "status": "...", "evidence": "...", "externally_verified": false, "artifact_format": "...", "side_conditions": [...], "method": "..." },
+  "certificate_status": { "certifiable": true, "reason": "...", "blocking_steps": [] },
+  "steps": [ {"rule": "...", "before": "...", "after": "...", "side_conditions": [...]}, ... ],
+  "has_certificate": true
+}
+```
+
+`verification` and `certificate_status` are exactly the dicts returned by the
+`.verification` and `.certificate_status` getters; `steps` is exactly `.steps`.
+`kind` is a stable discriminator string — useful when logs or RPC payloads
+mix `DerivedResult` envelopes with other structured outputs (e.g. error
+envelopes carrying `E-SUBSYSTEM-NNN` codes).
+
+### Schema versions
+
+Two independent version constants, both starting at `1`:
+
+| Constant | Governs |
+|---|---|
+| `alkahest.RESULT_SCHEMA_VERSION` | The envelope: the set of top-level keys (`kind`, `value`, `verification`, `certificate_status`, `steps`, `has_certificate`, ...) |
+| `alkahest.STEPS_SCHEMA_VERSION` | One entry of `steps`: full-mode field names and the compact-mode short-key mapping |
+
+Also available as `DerivedResult.SCHEMA_VERSION` / `DerivedResult.STEPS_SCHEMA_VERSION`
+class attributes, and documented alongside the field-name contract in
+`alkahest._result_schema` (`STEP_FIELDS`, `STEP_FIELDS_COMPACT`). Either
+constant is bumped independently if its shape ever changes, so pinning
+`schema_version`/`steps_schema_version` in your own parsing code is safe
+across upgrades that don't touch the piece you depend on.
+
+### Compact mode
+
+`mode="compact"` keeps the same top-level envelope shape but shrinks the
+biggest token costs:
+
+- **Steps** use short keys — `r` for `rule`, `s` for `side_conditions` — and
+  **omit `before`/`after` entirely**. Those two expression strings are
+  usually the largest part of a multi-step derivation and the single
+  biggest win for token budget. `s` is itself omitted from a step's dict
+  when that step has no side conditions (the common case).
+- **`verification`** is pruned to `status` and `externally_verified` only.
+  These are the two fields that carry the honesty signal — whether the
+  result is verified, and whether that verification happened out-of-process
+  — so they are never renamed, abbreviated, or dropped in compact mode.
+- **`certificate_status`** is pruned to `certifiable` and `reason`; the
+  `blocking_steps` diagnostic list (which repeats `before`/`after` text) is
+  dropped.
+- **No mode ever includes Lean certificate source text.** `has_certificate`
+  (bool) plus `certificate_status["reason"]` is enough to know whether a
+  certificate exists and, if not, why — without paying for the source. Use
+  the `.certificate` getter when you actually need the Lean source.
+
+```python
+dr.to_dict(mode="compact")
+# {
+#   "kind": "alkahest.derived_result",
+#   "schema_version": 1,
+#   "steps_schema_version": 1,
+#   "value": "...",
+#   "verification": {"status": "certificate_available", "externally_verified": false},
+#   "certificate_status": {"certifiable": true, "reason": "emitted"},
+#   "steps": [{"r": "diff_sin"}, {"r": "sqrt_of_square_positive", "s": ["x > 0"]}],
+#   "has_certificate": true
+# }
+```
+
+Prefer `to_dict(mode="compact")` / `to_json(mode="compact")` over reading
+`.steps` directly in hot loops — batch derivations, autoresearch search
+plumbing, or anywhere you're serialising many `DerivedResult`s and only need
+the rule names, side conditions, and verification status rather than full
+before/after expression text.
+
+An invalid `mode` (anything other than `"full"`/`"compact"`) raises
+`ValueError`.
 
 ## Beyond one call
 

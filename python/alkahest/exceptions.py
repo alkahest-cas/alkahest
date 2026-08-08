@@ -38,6 +38,10 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-PARSE-*                  ParseError  (reserved; parser not yet integrated)
     E-DOMAIN-*                 DomainError  (reserved; Python-only pending Rust impl)
     E-CERT-001                 CertificateUnavailableError  (Python-only; certificate ledger)
+    E-BUDGET-001 … E-BUDGET-003 BudgetExceededError (P1 search plumbing item 4)
+    E-BATCH-001                 (Python-only; alkahest._batch fallback for a
+                                 batch_map/batch_map_iter item whose exception carried no
+                                 .code of its own — see docs/mdbook/src/batch.md)
 """
 
 from __future__ import annotations
@@ -466,6 +470,30 @@ class CertificateUnavailableError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code="E-CERT-001", remediation=remediation, span=span)
+
+
+class BudgetExceededError(AlkahestError):
+    """A :class:`~alkahest.Budget` was exceeded, or cancellation was requested.
+
+    Raised by heavy engines (:func:`alkahest.integrate` today) at a
+    cooperative checkpoint inside the Rust kernel — see
+    ``alkahest_core::budget`` and :mod:`alkahest._budget`. A fine, expected
+    answer for a fan-out search loop, not a crash: ``.code`` distinguishes
+    the three causes:
+
+    - ``E-BUDGET-001`` — the active budget's wall-clock limit elapsed.
+    - ``E-BUDGET-002`` — the active budget's step counter exceeded ``max_steps``.
+    - ``E-BUDGET-003`` — :func:`alkahest.request_cancel` was called and not
+      yet cleared.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-BUDGET-001", remediation=remediation, span=span)
 
 
 class ParseError(AlkahestError):

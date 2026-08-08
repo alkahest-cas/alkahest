@@ -16,7 +16,8 @@ AlkahestError (base)
 ├── SolverError       (E-SOLVE-*)  — polynomial system solving
 ├── JitError          (E-JIT-*)    — LLVM/JIT codegen
 ├── CudaError         (E-CUDA-*)   — CUDA kernel launch or driver
-└── PoolError         (E-POOL-*)   — ExprPool misuse
+├── PoolError         (E-POOL-*)   — ExprPool misuse
+└── BudgetExceededError (E-BUDGET-*) — budget/cancellation trip, see [Budgets](./budgets.md)
 ```
 
 ## Error attributes
@@ -120,6 +121,7 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-PARSE-*` | `ParseError` *(reserved)* | Parser integration — owns `span()` by default |
 | `E-IO-*` | `IoError` *(reserved)* | Checkpoint/serde paths (`PoolPersistError`) |
 | `E-CERT-*` | `CertificateUnavailableError` | A Lean certificate was required but withheld |
+| `E-BUDGET-*` | `BudgetExceededError` | Budget/cancellation trip — see [Budgets, cancellation, and determinism](./budgets.md) |
 
 ### `E-CERT-*` — certificate policy
 
