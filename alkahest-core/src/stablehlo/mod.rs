@@ -25,10 +25,21 @@ use std::collections::HashMap;
 /// Emit a StableHLO MLIR text module for `expr` as a function named `fn_name`.
 ///
 /// `inputs` gives the list of symbolic variables (in order) that become the
-/// function arguments.  Returns the complete MLIR text.
+/// function arguments.  Returns the complete MLIR text, or an **empty string**
+/// when `expr` contains anything with no sound StableHLO encoding.
+///
+/// Returning nothing rather than a partial module is deliberate, and follows
+/// the same rule as the Lean exporter: emit no artifact rather than an
+/// incorrect one. The previous behaviour substituted the constant `0` for any
+/// unsupported function, so `tanh(x)` produced a module that evaluated to zero
+/// everywhere — an exported program is run by another toolchain that will never
+/// compare it back against the source expression.
 pub fn emit_stablehlo(expr: ExprId, inputs: &[ExprId], fn_name: &str, pool: &ExprPool) -> String {
     let mut emitter = Emitter::new(inputs, pool);
     let result_var = emitter.emit_expr(expr, pool);
+    if emitter.unsupported.is_some() {
+        return String::new();
+    }
 
     // Build function signature
     let args: Vec<String> = inputs
@@ -55,6 +66,9 @@ struct Emitter {
     arg_map: HashMap<ExprId, String>,
     body: Vec<String>,
     counter: usize,
+    /// Set when the expression contains something with no sound StableHLO
+    /// encoding. Emission is abandoned rather than completed with a stand-in.
+    unsupported: Option<String>,
 }
 
 impl Emitter {
@@ -67,6 +81,7 @@ impl Emitter {
             arg_map,
             body: Vec::new(),
             counter: 0,
+            unsupported: None,
         }
     }
 
@@ -76,10 +91,21 @@ impl Emitter {
         v
     }
 
+    /// Emit an `f64` constant as a *float* literal.
+    ///
+    /// `{val}` renders `1.0_f64` as `1`, and MLIR rejects a decimal integer
+    /// literal for an `f64` tensor ("unexpected decimal integer"). Every
+    /// expression containing an integer constant — `x**2 + 1` — therefore
+    /// emitted a module that would not parse. `{val:?}` always renders a
+    /// decimal point.
     fn emit_const_f64(&mut self, val: f64) -> String {
+        if !val.is_finite() {
+            self.unsupported = Some(format!("non-finite constant: {val}"));
+            return self.fresh();
+        }
         let v = self.fresh();
         self.body.push(format!(
-            "{v} = stablehlo.constant dense<{val}> : tensor<f64>"
+            "{v} = stablehlo.constant dense<{val:?}> : tensor<f64>"
         ));
         v
     }
@@ -205,17 +231,71 @@ impl Emitter {
                     "sqrt" => self
                         .body
                         .push(format!("{v} = stablehlo.sqrt {} : tensor<f64>", arg_vs[0])),
+                    "tanh" => self
+                        .body
+                        .push(format!("{v} = stablehlo.tanh {} : tensor<f64>", arg_vs[0])),
+                    "abs" => self
+                        .body
+                        .push(format!("{v} = stablehlo.abs {} : tensor<f64>", arg_vs[0])),
+                    // No StableHLO primitive; expand into ones that exist.
+                    "tan" => {
+                        let s_v = self.fresh();
+                        self.body.push(format!(
+                            "{s_v} = stablehlo.sine {} : tensor<f64>",
+                            arg_vs[0]
+                        ));
+                        let c_v = self.fresh();
+                        self.body.push(format!(
+                            "{c_v} = stablehlo.cosine {} : tensor<f64>",
+                            arg_vs[0]
+                        ));
+                        self.body
+                            .push(format!("{v} = stablehlo.divide {s_v}, {c_v} : tensor<f64>"));
+                    }
+                    "sinh" | "cosh" => {
+                        // sinh x = (e^x − e^−x)/2, cosh x = (e^x + e^−x)/2
+                        let ex = self.fresh();
+                        self.body.push(format!(
+                            "{ex} = stablehlo.exponential {} : tensor<f64>",
+                            arg_vs[0]
+                        ));
+                        let neg = self.fresh();
+                        self.body.push(format!(
+                            "{neg} = stablehlo.negate {} : tensor<f64>",
+                            arg_vs[0]
+                        ));
+                        let enx = self.fresh();
+                        self.body
+                            .push(format!("{enx} = stablehlo.exponential {neg} : tensor<f64>"));
+                        let combined = self.fresh();
+                        let op = if name == "sinh" { "subtract" } else { "add" };
+                        self.body.push(format!(
+                            "{combined} = stablehlo.{op} {ex}, {enx} : tensor<f64>"
+                        ));
+                        let two = self.emit_const_f64(2.0);
+                        self.body.push(format!(
+                            "{v} = stablehlo.divide {combined}, {two} : tensor<f64>"
+                        ));
+                    }
                     _ => {
-                        self.body.push(format!("// unsupported function: {name}"));
-                        return self.emit_const_f64(0.0);
+                        // Emitting a stand-in here produced a program that
+                        // *computed the wrong thing*: the old code pushed a
+                        // comment and returned the constant 0, so
+                        // `to_stablehlo(tanh(x))` yielded a module evaluating to
+                        // zero everywhere. An exported artifact is executed by
+                        // another system that will never re-check it against the
+                        // original expression, so a wrong program is worse here
+                        // than anywhere else in the library.
+                        self.unsupported = Some(format!("unsupported function: {name}"));
+                        return self.fresh();
                     }
                 }
                 v
             }
 
             Node::Unknown => {
-                self.body.push("// unknown node type".to_string());
-                self.emit_const_f64(0.0)
+                self.unsupported = Some("unsupported expression node".to_string());
+                self.fresh()
             }
         }
     }
@@ -280,5 +360,94 @@ mod tests {
             "should start with module: {mlir}"
         );
         assert!(mlir.contains("return"), "should have return: {mlir}");
+    }
+}
+
+#[cfg(test)]
+mod emitter_soundness_tests {
+    use super::*;
+    use crate::kernel::Domain;
+
+    /// Float tensors need a float literal.
+    ///
+    /// `{val}` renders `1.0_f64` as `1`, and MLIR rejects a decimal integer for
+    /// an `f64` tensor. Every expression with an integer constant — `x**2 + 1`
+    /// — emitted a module that would not parse, which IREE reports as
+    /// "unexpected decimal integer".
+    #[test]
+    fn integer_constants_emit_float_literals() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.add(vec![pool.mul(vec![x, x]), pool.integer(1_i32)]);
+
+        let src = emit_stablehlo(expr, &[x], "f", &pool);
+        assert!(
+            src.contains("dense<1.0>"),
+            "constant must carry a decimal point, got:\n{src}"
+        );
+        assert!(
+            !src.contains("dense<1>"),
+            "bare integer literal in f64 tensor"
+        );
+    }
+
+    /// An unsupported function must yield *nothing*, not a stand-in.
+    ///
+    /// The emitter used to push a comment and return the constant 0, so
+    /// `to_stablehlo(erf(x))` produced a module evaluating to zero everywhere.
+    /// An exported program is executed by another toolchain that never compares
+    /// it back against the source expression, so a wrong program is worse here
+    /// than anywhere else in the library.
+    #[test]
+    fn unsupported_functions_emit_nothing() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        for name in ["erf", "asin", "atan", "digamma"] {
+            let expr = pool.func(name, vec![x]);
+            let src = emit_stablehlo(expr, &[x], "f", &pool);
+            assert!(
+                src.is_empty(),
+                "{name} emitted a module instead of refusing:\n{src}"
+            );
+        }
+    }
+
+    /// No emitted module may contain a stand-in constant where an operation
+    /// was meant to be — the shape of the old bug, stated directly.
+    #[test]
+    fn no_module_contains_an_unsupported_marker() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        for name in [
+            "sin", "cos", "exp", "log", "sqrt", "tanh", "abs", "tan", "sinh", "cosh",
+        ] {
+            let expr = pool.func(name, vec![x]);
+            let src = emit_stablehlo(expr, &[x], "f", &pool);
+            assert!(!src.is_empty(), "{name} should be emittable");
+            assert!(
+                !src.contains("unsupported"),
+                "{name} emitted an unsupported marker:\n{src}"
+            );
+        }
+    }
+
+    /// Functions with a direct StableHLO primitive use it.
+    #[test]
+    fn direct_primitives_are_used() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        for (name, op) in [("tanh", "stablehlo.tanh"), ("abs", "stablehlo.abs")] {
+            let src = emit_stablehlo(pool.func(name, vec![x]), &[x], "f", &pool);
+            assert!(src.contains(op), "{name} should emit {op}:\n{src}");
+        }
+    }
+
+    /// Non-finite constants have no valid MLIR spelling here; refuse them.
+    #[test]
+    fn non_finite_constants_are_refused() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.add(vec![x, pool.float(f64::INFINITY, 53)]);
+        assert!(emit_stablehlo(expr, &[x], "f", &pool).is_empty());
     }
 }
