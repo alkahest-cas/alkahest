@@ -228,8 +228,20 @@ Most transforming operations (`diff`, `simplify`, `integrate`, `sum_*`, …) ret
 - `.value` — the result expression
 - `.steps` — derivation log (list of rewrite rules applied)
 - `.certificate` — Lean 4 proof term, when available
+- `.to_dict()` / `.to_json()` — versioned machine-parseable envelope; use `mode="compact"` in agent loops
 
 Exceptions: `limit` returns a bare `Expr`, and `series` returns a `Series` (with its own `.polynomial` / `.order` fields). Use `.value` only on `DerivedResult`.
+
+### Search plumbing (agent loops)
+
+| Need | Entry point |
+|---|---|
+| Bound one candidate | `Budget` + `context(budget=…)` → `BudgetExceededError` (`E-BUDGET-*`) |
+| Fan out without aborting | `batch_map` / `integrate_many` / `simplify_many` / `diff_many` |
+| Compact logs | `DerivedResult.to_dict(mode="compact")` |
+| Session provenance | `alkahest.research` claim graphs |
+
+Docs: [Autoresearch / agent loops](https://alkahest-cas.github.io/alkahest/search-plumbing.html).
 
 ---
 
