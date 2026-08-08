@@ -55,6 +55,7 @@ For optional Cargo features (``jit``, ``parallel``, ``cuda``, …) and full deve
    api/ode
    api/solve
    api/codegen
+   api/workload
    api/errors
 
 For the conceptual guide (kernel design, rule engine, e-graph, derivation logs)

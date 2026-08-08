@@ -212,3 +212,10 @@ An invalid `mode` (anything other than `"full"`/`"compact"`) raises
 `DerivedResult` is per-call. To accumulate many results into a citable, serialisable,
 re-verifiable artifact — a DAG of claims with stable IDs, hypotheses, and certificate
 status — see [claim graphs](./claim-graphs.md).
+
+## See also
+
+- [Autoresearch / agent loops](./search-plumbing.md)
+- [Batch](./batch.md) — produce many `DerivedResult`s without aborting on one failure
+- [Budgets](./budgets.md) — bound the call that produced the derivation
+- [Certificate coverage](./certificate-coverage.md) — `certificate_status` in the envelope

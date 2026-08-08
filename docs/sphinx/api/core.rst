@@ -132,26 +132,55 @@ DerivedResult
       with ``status == "certificate_available"`` has generated Lean source but
       has not been checked by Lean in this execution.
 
+   .. method:: to_dict(mode: str = "full") -> dict
+
+      Versioned machine-parseable envelope combining ``value``,
+      ``verification``, ``certificate_status``, and ``steps``.
+
+      :param mode: ``"full"`` (default) or ``"compact"``. Compact mode drops
+         ``before``/``after`` step text and uses short step keys (``r``/``s``),
+         but **never** renames or drops ``verification["status"]`` and never
+         includes Lean certificate source. See the
+         `derivation logs <../derivations.html#machine-parseable-output-to_dict--to_json>`_
+         chapter.
+
+   .. method:: to_json(mode: str = "full") -> str
+
+      ``json.dumps(self.to_dict(mode=mode))``.
+
+   .. attribute:: SCHEMA_VERSION
+   .. attribute:: STEPS_SCHEMA_VERSION
+
+      Class-level integers matching ``alkahest.RESULT_SCHEMA_VERSION`` and
+      ``alkahest.STEPS_SCHEMA_VERSION``.
+
    Example::
 
       dr = diff(sin(x**2), x)
       print(dr.value)   # 2*x*cos(x^2)
       for step in dr.steps:
           print(step['rule'], step['before'], "→", step['after'])
+      print(dr.to_dict(mode="compact")["verification"]["status"])
 
 Context manager
 ---------------
 
-.. function:: context(pool=None, domain="real", simplify=False)
+.. function:: context(pool=None, domain="real", simplify=False, assumptions=None, require_certificate=None, budget=None, **extra)
 
-   Context manager that sets a default pool and configuration.
+   Context manager that sets thread-local defaults for a block.
 
    Inside the context, :func:`symbol` creates symbols in the active pool
-   without passing it explicitly::
+   without passing it explicitly. Optional ``budget=`` pushes a
+   :class:`Budget` for the block (see the
+   `workload API <workload.html>`_ and the
+   `budgets guide <../budgets.html>`_)::
 
       with alkahest.context(pool=pool, simplify=True):
           z = alkahest.symbol("z")
           expr = z**2 + alkahest.sin(z)
+
+      with alkahest.context(pool=pool, budget=alkahest.Budget(wall_ms=50, seed=7)):
+          alkahest.integrate(z**2, z)
 
 .. function:: symbol(name: str, domain: str = "real") -> Expr
 

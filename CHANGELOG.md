@@ -4,6 +4,13 @@
 
 ### Added
 
+- **Docs: autoresearch / search-plumbing guide.** New mdBook chapter
+  [`search-plumbing.md`](docs/mdbook/src/search-plumbing.md) ties budgets,
+  batch APIs, compact `DerivedResult` envelopes, claim graphs, and certificate
+  coverage together; Sphinx gains [`api/workload.rst`](docs/sphinx/api/workload.rst)
+  plus `DerivedResult.to_dict` / `BudgetExceededError` entries. Cross-links from
+  getting-started, intro, README, claim-graphs, batch, and budgets.
+
 - **Budgets, cooperative cancellation, and a determinism seed** (P1 search
   plumbing item 4): `alkahest.Budget(wall_ms=..., max_steps=..., seed=...)`
   and `alkahest.context(budget=...)` push a wall-clock/step budget into a

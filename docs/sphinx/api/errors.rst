@@ -169,6 +169,32 @@ Exception subclasses
           ak.diff(ak.sin(x), x)            # fine — certifies
           ak.integrate(ak.log(x), x)       # raises E-CERT-001
 
+.. exception:: BudgetExceededError
+
+   Code prefix ``E-BUDGET-*``. A cooperative budget or cancellation trip —
+   not a mathematical failure. Raised when an active
+   :class:`~alkahest.Budget` is exceeded (or :func:`~alkahest.request_cancel`
+   was called) at a checkpoint inside an engine that honors budgets
+   (notably :func:`~alkahest.integrate`). See the
+   `budgets guide <../budgets.html>`_ and the
+   `workload API <workload.html>`_.
+
+   - ``E-BUDGET-001`` — wall-clock limit elapsed
+   - ``E-BUDGET-002`` — step limit exceeded
+   - ``E-BUDGET-003`` — cancellation requested
+
+   Example::
+
+      import alkahest as ak
+
+      pool = ak.ExprPool()
+      x = pool.symbol("x")
+      try:
+          with ak.context(pool=pool, budget=ak.Budget(max_steps=0)):
+              ak.integrate(x**2, x)
+      except ak.BudgetExceededError as e:
+          print(e.code)  # E-BUDGET-002
+
 Catching errors by subsystem
 ----------------------------
 

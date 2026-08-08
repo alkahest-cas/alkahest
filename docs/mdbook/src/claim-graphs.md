@@ -212,3 +212,12 @@ print(report.to_markdown())
 runs the full experimental-mathematics loop — high-precision quadrature, `guess_relation`
 for the integer relation, a recorded conjecture, symbolic proof, Lean certificate, JSON
 round trip, and re-verification — and prints the rendered document.
+
+## See also
+
+- [Autoresearch / agent loops](./search-plumbing.md) — how claim graphs fit next to
+  budgets, batch APIs, and compact result envelopes
+- [Budgets](./budgets.md) — bound one candidate so a hard instance cannot stall the session
+- [Batch](./batch.md) — fan out many `DerivedResult` producers without aborting on one failure
+- [Derivation logs](./derivations.md#machine-parseable-output-to_dict--to_json) —
+  `to_dict(mode="compact")` for token-efficient claim payloads

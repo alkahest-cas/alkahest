@@ -164,3 +164,11 @@ except ak.IntegrationError as e:
 
 On the Rust side (`alkahest_core::budget`): `Budget`, `enter`, `BudgetGuard`, `check`,
 `seed`, `is_active`, `request_cancel`, `clear_cancel`, `is_cancelled`, `BudgetError`.
+
+## See also
+
+- [Autoresearch / agent loops](./search-plumbing.md)
+- [Batch and streaming evaluation](./batch.md) — budgets compose with `*_many` /
+  `batch_map`; a trip becomes one failed `BatchItem`, not a killed process
+- [Error handling](./errors.md) — `E-BUDGET-*` in the exception hierarchy
+- [Claim graphs](./claim-graphs.md) — session-level provenance around budgeted calls
