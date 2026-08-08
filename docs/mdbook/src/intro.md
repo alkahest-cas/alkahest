@@ -14,11 +14,13 @@ A general-purpose symbolic math library designed around three axes:
 
 **Ergonomics.** The Python API uses operator overloading for natural expression construction. Results are rich objects with `.value`, `.steps`, and `.certificate` attributes. Error messages carry structured codes, location information, and suggested remediations.
 
+**Agent loops.** Budgets and cancellation, batch APIs that never abort on one bad candidate, versioned compact result envelopes, and session-level [claim graphs](./claim-graphs.md) are first-class — see [Autoresearch / agent loops](./search-plumbing.md).
+
 ## Design principles
 
 **Explicit representations.** The type system distinguishes `UniPoly` (FLINT-backed univariate polynomial), `MultiPoly` (sparse multivariate), `RationalFunction`, and the generic `Expr` tree. Converting between them is an explicit call. There are no silent representation changes hiding performance cliffs.
 
-**Stateless by design.** No global assumption contexts. No hidden caches that change behavior. All context (domains, simplification policy, precision) is passed explicitly or bundled into expression structure. This makes results deterministic and parallelism safe.
+**Stateless by design.** No global assumption contexts. No hidden caches that change behavior. All context (domains, simplification policy, precision, budgets) is passed explicitly or scoped through `context(...)`. This makes results deterministic and parallelism safe.
 
 **Composable transformations.** `trace`, `grad`, `jit`, and `certify` operate on a shared traced representation and stack freely: `jit(grad(f))` compiles a derivative, `jit(grad(grad(f)))` compiles a second derivative.
 

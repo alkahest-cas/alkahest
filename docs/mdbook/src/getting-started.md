@@ -259,6 +259,29 @@ with alkahest.context(pool=pool, simplify=True):
     expr = z**2 + alkahest.sin(z)
 ```
 
+### Agent / autoresearch loops
+
+For a fan-out of candidates under a wall-clock or step budget, with results that
+survive context compaction:
+
+```python
+import alkahest as ak
+
+pool = ak.ExprPool()
+x = pool.symbol("x")
+
+with ak.context(pool=pool, budget=ak.Budget(wall_ms=100, seed=1)):
+    outs = ak.integrate_many([x**2, ak.sin(x)], x)
+    for item in outs:
+        if item.ok:
+            print(item.value.to_dict(mode="compact")["verification"]["status"])
+        else:
+            print(item.error["code"])  # e.g. E-INT-001 or E-BUDGET-001
+```
+
+Full picture: [Autoresearch / agent loops](./search-plumbing.md),
+[Budgets](./budgets.md), [Batch](./batch.md), [Claim graphs](./claim-graphs.md).
+
 ## Running the examples
 
 The `examples/` directory in the Git repository has runnable end-to-end scripts. With `alkahest` installed (`pip install alkahest` or `maturin develop` as above), from the repository root run:

@@ -119,3 +119,22 @@ failed = [(o.index, o.error) for o in outs if not o.ok]
 `KeyboardInterrupt` or `SystemExit` still propagates and stops the batch, since
 swallowing those would make the process unkillable. Everything else — including every
 Alkahest `E-*` error and any exception your own `fn` raises — is captured.
+
+## Combining with budgets
+
+Wrap the batch in `context(budget=…)` so each candidate inherits the same
+cooperative wall/step limit (and optional seed). A trip surfaces as
+`BatchItem(ok=False, error={"code": "E-BUDGET-00x", …})` rather than aborting
+the rest of the batch — see [Budgets](./budgets.md).
+
+```python
+with ak.context(pool=pool, budget=ak.Budget(wall_ms=50, max_steps=10_000, seed=7)):
+    outs = ak.integrate_many(candidates, x, parallel=True)
+```
+
+## See also
+
+- [Autoresearch / agent loops](./search-plumbing.md)
+- [Budgets, cancellation, and determinism](./budgets.md)
+- [Derivation logs — compact envelopes](./derivations.md#machine-parseable-output-to_dict--to_json)
+- [Error handling](./errors.md)
