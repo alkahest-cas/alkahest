@@ -26,6 +26,14 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IntegrationError {
     /// The expression is outside the supported Risch subset.
+    ///
+    /// Also used as a **semver-safe carrier** for budget/cancellation trips
+    /// (see [`IntegrationError::from`] for [`crate::budget::BudgetError`]):
+    /// adding a dedicated `Budget` variant would be a major break on this
+    /// exhaustive enum. Encoded messages start with [`BUDGET_MARKER`]; use
+    /// [`IntegrationError::is_budget`] / [`IntegrationError::budget_code`] to
+    /// distinguish them from genuine "not implemented" declines. Python maps
+    /// these to `BudgetExceededError` (`E-BUDGET-*`).
     NotImplemented(String),
     /// Division by zero would occur (e.g. power-rule with n=-1 on a non-x base).
     DivisionByZero,
@@ -33,16 +41,23 @@ pub enum IntegrationError {
     UnsupportedExtensionDegree(u32),
     /// The integrand provably has no elementary antiderivative (e.g. elliptic integrals).
     NonElementary(String),
-    /// The active [`crate::budget::Budget`] was exceeded, or cancellation was
-    /// requested, at a cooperative checkpoint inside the integration engine.
-    /// See `crate::budget` — P1 search plumbing item 4.
-    Budget(crate::budget::BudgetError),
 }
+
+/// Prefix for [`IntegrationError::NotImplemented`] messages that encode a
+/// [`crate::budget::BudgetError`]. Invisible to casual grepping of user-facing
+/// "not implemented" strings; stripped from [`Display`].
+const BUDGET_MARKER: &str = "[[budget]]";
 
 impl fmt::Display for IntegrationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            IntegrationError::NotImplemented(msg) => write!(f, "integrate: not implemented: {msg}"),
+            IntegrationError::NotImplemented(msg) => {
+                if let Some(rest) = msg.strip_prefix(BUDGET_MARKER) {
+                    write!(f, "integrate: {rest}")
+                } else {
+                    write!(f, "integrate: not implemented: {msg}")
+                }
+            }
             IntegrationError::DivisionByZero => write!(f, "integrate: division by zero"),
             IntegrationError::UnsupportedExtensionDegree(q) => write!(
                 f,
@@ -52,7 +67,6 @@ impl fmt::Display for IntegrationError {
             IntegrationError::NonElementary(msg) => {
                 write!(f, "integrate: no elementary antiderivative exists: {msg}")
             }
-            IntegrationError::Budget(e) => write!(f, "integrate: {e}"),
         }
     }
 }
@@ -61,13 +75,56 @@ impl std::error::Error for IntegrationError {}
 
 impl From<crate::budget::BudgetError> for IntegrationError {
     fn from(e: crate::budget::BudgetError) -> Self {
-        IntegrationError::Budget(e)
+        use crate::errors::AlkahestError;
+        // Encode code + Display body so Python/callers keep E-BUDGET-* without
+        // a new exhaustive-enum variant (cargo-semver-checks major).
+        IntegrationError::NotImplemented(format!("{BUDGET_MARKER}[{}] {e}", e.code()))
     }
 }
 
 impl IntegrationError {
+    /// `true` when this error encodes a budget/cancellation trip rather than a
+    /// genuine "outside the Risch subset" decline.
+    pub fn is_budget(&self) -> bool {
+        matches!(self, IntegrationError::NotImplemented(msg) if msg.starts_with(BUDGET_MARKER))
+    }
+
+    /// The `E-BUDGET-*` code when [`is_budget`](Self::is_budget), else `None`.
+    pub fn budget_code(&self) -> Option<&'static str> {
+        let IntegrationError::NotImplemented(msg) = self else {
+            return None;
+        };
+        let rest = msg.strip_prefix(BUDGET_MARKER)?;
+        if rest.starts_with("[E-BUDGET-001]") {
+            Some("E-BUDGET-001")
+        } else if rest.starts_with("[E-BUDGET-002]") {
+            Some("E-BUDGET-002")
+        } else if rest.starts_with("[E-BUDGET-003]") {
+            Some("E-BUDGET-003")
+        } else {
+            None
+        }
+    }
+
     /// A human-readable remediation hint for the user.
     pub fn remediation(&self) -> Option<&'static str> {
+        if let Some(code) = self.budget_code() {
+            return match code {
+                "E-BUDGET-001" => Some(
+                    "raise Budget(wall_ms=...), or accept a heuristic/numeric result for this \
+                     candidate instead of an exact one",
+                ),
+                "E-BUDGET-002" => Some(
+                    "raise Budget(max_steps=...), or accept a partial/heuristic result for this \
+                     candidate instead of an exact one",
+                ),
+                "E-BUDGET-003" => Some(
+                    "call alkahest.clear_cancel() (Python) or budget::clear_cancel() (Rust) before \
+                     starting the next candidate",
+                ),
+                _ => None,
+            };
+        }
         match self {
             IntegrationError::NotImplemented(_) => Some(
                 "only power, linearity, sin/cos/exp rules and algebraic (sqrt) rules \
@@ -82,10 +139,6 @@ impl IntegrationError {
                 "this integrand has no closed-form antiderivative in terms of elementary \
                  functions; use a numeric integrator or elliptic-integral library",
             ),
-            IntegrationError::Budget(e) => {
-                use crate::errors::AlkahestError;
-                e.remediation()
-            }
         }
     }
 
@@ -97,12 +150,14 @@ impl IntegrationError {
 
 impl crate::errors::AlkahestError for IntegrationError {
     fn code(&self) -> &'static str {
+        if let Some(code) = self.budget_code() {
+            return code;
+        }
         match self {
             IntegrationError::NotImplemented(_) => "E-INT-001",
             IntegrationError::DivisionByZero => "E-INT-002",
             IntegrationError::UnsupportedExtensionDegree(_) => "E-INT-003",
             IntegrationError::NonElementary(_) => "E-INT-004",
-            IntegrationError::Budget(e) => e.code(),
         }
     }
 

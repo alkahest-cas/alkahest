@@ -450,8 +450,13 @@ fn integrate_error_to_py(e: IntegrationError) -> PyErr {
     // A budget/cancellation trip is not an integration failure — raise the
     // dedicated `BudgetExceededError` (E-BUDGET-*) instead of `IntegrationError`
     // so callers can catch it uniformly regardless of which engine tripped it.
-    if let IntegrationError::Budget(inner) = &e {
-        return budget_error_to_py(inner);
+    // (Budget trips are encoded inside `NotImplemented` for Rust semver; see
+    // `IntegrationError::is_budget`.)
+    if e.is_budget() {
+        return Python::with_gil(|py| {
+            let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+            make_structured_err(py, &exc_type, &e)
+        });
     }
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyIntegrationError>();
@@ -459,15 +464,6 @@ fn integrate_error_to_py(e: IntegrationError) -> PyErr {
     })
 }
 
-/// Map a [`alkahest_core::budget::BudgetError`] to Python's
-/// `BudgetExceededError` (`E-BUDGET-001..003`). See `crate::budget` — P1
-/// search plumbing item 4.
-fn budget_error_to_py(e: &alkahest_core::budget::BudgetError) -> PyErr {
-    Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PyBudgetExceededError>();
-        make_structured_err(py, &exc_type, e)
-    })
-}
 
 // ---------------------------------------------------------------------------
 // P1 search plumbing item 4 — budgets, cancellation, determinism
