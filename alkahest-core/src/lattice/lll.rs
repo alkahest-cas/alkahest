@@ -141,6 +141,15 @@ fn gram_schmidt_rows(
     (mu, star, b_norm_sq)
 }
 
+/// True when `|x| > 1/2` exactly, in rational arithmetic.
+///
+/// Deliberately exact rather than a float comparison: the whole point is the
+/// behaviour *at* ±1/2, which is where a float epsilon would decide arbitrarily.
+fn exceeds_half(x: &Rational) -> bool {
+    let two_abs = Rational::from(x * Integer::from(2)).abs();
+    two_abs > 1
+}
+
 fn nearest_integer_rational(x: &Rational) -> Integer {
     Float::with_val(4096u32, x)
         .round()
@@ -188,6 +197,18 @@ fn size_reduce_single(
             continue;
         }
         let mij = &mu[k][j];
+        // LLL's size-reduction condition is `|μ| > 1/2`, *strictly*. Reducing at
+        // exactly ±1/2 does not terminate: `round` takes ±1/2 away from zero, so
+        // subtracting that multiple flips μ to ∓1/2, which rounds back and
+        // reduces again — an endless two-cycle.
+        //
+        // `lll_reduce_rows([[1, 1], [0, 1]])` hung forever on exactly this: μ is
+        // 1/2, the row alternates between `(0,1)` and `(-1,0)`, and the outer
+        // loop's iteration guard never advances because control never leaves the
+        // inner size-reduction loop.
+        if !exceeds_half(mij) {
+            continue;
+        }
         let q = nearest_integer_rational(mij);
         if q == 0 {
             continue;
@@ -234,6 +255,9 @@ fn lll_reduce_once(
     let mut k: usize = 1;
     let mut guard: usize = 0;
     const MAX_LLL_SWAPS: usize = 2_000_000;
+    // Each pass strictly shrinks one coefficient, so a well-behaved basis needs
+    // far fewer than this; the bound only has to be unreachable in practice.
+    const MAX_SIZE_REDUCTIONS_PER_ROW: usize = 100_000;
     loop {
         if k >= n {
             break;
@@ -243,7 +267,21 @@ fn lll_reduce_once(
             return Err(LatticeError::IterationLimit { iterations: guard });
         }
         // Size-reduce row k until stable (against each successive Gram–Schmidt refresh).
+        //
+        // Bounded independently of the outer guard. The outer `guard` counts
+        // *swaps*, so it cannot advance while this loop is spinning — a
+        // non-terminating size reduction hangs the whole call with no error, no
+        // budget and no way for a caller to recover. One documented cycle
+        // (reducing at |μ| = 1/2) is fixed at source in `size_reduce_single`;
+        // this is the backstop that turns any other into a reported failure.
+        let mut inner_guard: usize = 0;
         loop {
+            inner_guard += 1;
+            if inner_guard > MAX_SIZE_REDUCTIONS_PER_ROW {
+                return Err(LatticeError::IterationLimit {
+                    iterations: inner_guard,
+                });
+            }
             let (mu_ref, _, b_norm_sq) = gram_schmidt_rows(&basis);
             if !size_reduce_single(&mut basis, &mu_ref, &b_norm_sq, k) {
                 break;
@@ -355,5 +393,102 @@ mod tests {
             max_row_norm_squared(&reduced) <= max_row_norm_squared(&rows),
             "maximum squared row norm should shrink on this scaffold"
         );
+    }
+}
+
+#[cfg(test)]
+mod size_reduction_termination_tests {
+    use super::*;
+
+    fn rows(v: &[&[i64]]) -> Vec<Vec<Integer>> {
+        v.iter()
+            .map(|r| r.iter().map(|&x| Integer::from(x)).collect())
+            .collect()
+    }
+
+    /// Bases whose size reduction used to spin forever.
+    ///
+    /// Each has some `μ` exactly equal to ±1/2. `round` takes that away from
+    /// zero, subtracting the multiple flips μ to ∓1/2, and the next pass undoes
+    /// the previous one. The outer loop's swap guard never advanced because
+    /// control never left the inner size-reduction loop, so the call hung with
+    /// no error and no budget — for `[[1,1],[0,1]]`, a 2×2 unimodular basis.
+    #[test]
+    fn bases_with_mu_exactly_one_half_terminate() {
+        for basis in [
+            rows(&[&[1, 1], &[0, 1]]),
+            rows(&[&[1, 1], &[1, 2]]),
+            rows(&[&[1, 1], &[1, 0]]),
+            rows(&[&[1, 1], &[2, 1]]),
+            rows(&[&[1, 2, 3], &[4, 5, 6], &[7, 8, 10]]),
+        ] {
+            let reduced = lattice_reduce_rows(&basis).expect("must terminate and succeed");
+            assert_eq!(reduced.len(), basis.len());
+        }
+    }
+
+    /// `|μ| > 1/2` is the reduction condition — exactly 1/2 is already reduced.
+    #[test]
+    fn exceeds_half_is_strict() {
+        let half = Rational::from((1, 2));
+        let neg_half = Rational::from((-1, 2));
+        assert!(!exceeds_half(&half), "1/2 is already size-reduced");
+        assert!(!exceeds_half(&neg_half), "-1/2 is already size-reduced");
+        assert!(exceeds_half(&Rational::from((3, 5))));
+        assert!(exceeds_half(&Rational::from((-3, 5))));
+        assert!(!exceeds_half(&Rational::from((2, 5))));
+        assert!(!exceeds_half(&Rational::from(0)));
+    }
+
+    /// Reduction must preserve the lattice, not merely terminate.
+    ///
+    /// A basis of the *same* lattice has the same absolute determinant; a
+    /// "fix" that returned something quickly but spanned a different lattice
+    /// would pass the termination test above and be far worse than a hang.
+    #[test]
+    fn reduction_preserves_the_determinant() {
+        for basis in [
+            rows(&[&[1, 1], &[0, 1]]),
+            rows(&[&[1, 2], &[3, 4]]),
+            rows(&[&[2, 0], &[0, 3]]),
+            rows(&[&[1, 2, 3], &[4, 5, 6], &[7, 8, 10]]),
+        ] {
+            let reduced = lattice_reduce_rows(&basis).expect("reduces");
+            assert_eq!(
+                det_abs(&reduced),
+                det_abs(&basis),
+                "reduced basis spans a different lattice"
+            );
+        }
+    }
+
+    /// |det| of a square integer matrix, by exact fraction-free elimination.
+    fn det_abs(m: &[Vec<Integer>]) -> Rational {
+        let n = m.len();
+        let mut a: Vec<Vec<Rational>> = m
+            .iter()
+            .map(|r| r.iter().map(Rational::from).collect())
+            .collect();
+        let mut det = Rational::from(1);
+        for i in 0..n {
+            let Some(p) = (i..n).find(|&r| a[r][i] != 0) else {
+                return Rational::from(0);
+            };
+            if p != i {
+                a.swap(i, p);
+                det = -det;
+            }
+            det *= &a[i][i].clone();
+            let inv = a[i][i].clone();
+            for r in (i + 1)..n {
+                let f = Rational::from(&a[r][i] / &inv);
+                let pivot_row: Vec<Rational> = a[i][i..n].to_vec();
+                for (offset, ai) in pivot_row.iter().enumerate() {
+                    let sub = Rational::from(&f * ai);
+                    a[r][i + offset] -= sub;
+                }
+            }
+        }
+        det.abs()
     }
 }

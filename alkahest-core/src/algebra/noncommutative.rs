@@ -17,9 +17,24 @@ pub fn imag_unit_atom(pool: &ExprPool) -> ExprId {
     pool.symbol_commutative("ImagUnit", Domain::Complex, true)
 }
 
+/// Name of a **non-commutative** symbol, or `None`.
+///
+/// The commutativity requirement is load-bearing, not decoration. These product
+/// tables are order-sensitive — `σxσy = iσz` but `σyσx = −iσz` — while a
+/// commutative `Mul` sorts its operands, so `sx*sy` and `sy*sx` are literally
+/// the same expression. Firing the table on that shared form hands back one
+/// answer for two different products, so one of the two readings is always
+/// wrong, with nothing to distinguish it.
+///
+/// Matching by name alone did exactly that for a commutative symbol that
+/// happened to be called `sx` — a plausible name for something unrelated.
 fn symbol_name(expr: ExprId, pool: &ExprPool) -> Option<String> {
     pool.with(expr, |d| match d {
-        ExprData::Symbol { name, .. } => Some(name.clone()),
+        ExprData::Symbol {
+            name,
+            commutative: false,
+            ..
+        } => Some(name.clone()),
         _ => None,
     })
 }
@@ -163,5 +178,67 @@ mod tests {
         let a = p.symbol_commutative("A", Domain::Real, false);
         let b = p.symbol_commutative("B", Domain::Real, false);
         assert_ne!(p.mul(vec![a, b]), p.mul(vec![b, a]));
+    }
+}
+
+#[cfg(test)]
+mod commutativity_guard_tests {
+    use super::*;
+    use crate::simplify::engine::{rules_for_config, simplify_with, SimplifyConfig};
+
+    fn run(expr: ExprId, pool: &ExprPool, extra: Vec<Box<dyn RewriteRule>>) -> ExprId {
+        let mut rules = rules_for_config(&SimplifyConfig::default());
+        rules.extend(extra);
+        simplify_with(expr, pool, &rules, SimplifyConfig::default()).value
+    }
+
+    /// The product tables must not fire on *commutative* symbols.
+    ///
+    /// A commutative `Mul` sorts its operands, so `sx*sy` and `sy*sx` are the
+    /// same expression. `σxσy = iσz` and `σyσx = −iσz` differ in sign, so
+    /// applying the table to that shared form returns one answer for two
+    /// different products — one of the readings is necessarily wrong, and
+    /// nothing in the result says which.
+    ///
+    /// Matching by name alone did exactly that for any commutative symbol that
+    /// happened to be named `sx`.
+    #[test]
+    fn pauli_table_ignores_commutative_symbols() {
+        let pool = ExprPool::new();
+        let sx = pool.symbol_commutative("sx", Domain::Complex, true);
+        let sy = pool.symbol_commutative("sy", Domain::Complex, true);
+        let product = pool.mul(vec![sx, sy]);
+
+        let out = run(product, &pool, pauli_product_rules());
+        assert_eq!(
+            out, product,
+            "Pauli table fired on commutative symbols, where operand order is not recoverable"
+        );
+    }
+
+    #[test]
+    fn clifford_rules_ignore_commutative_symbols() {
+        let pool = ExprPool::new();
+        let e1 = pool.symbol_commutative("cliff_e1", Domain::Real, true);
+        let e2 = pool.symbol_commutative("cliff_e2", Domain::Real, true);
+        let product = pool.mul(vec![e1, e2]);
+
+        let out = run(product, &pool, clifford_orthogonal_rules());
+        assert_eq!(out, product, "Clifford rules fired on commutative symbols");
+    }
+
+    /// The genuine non-commutative path is untouched by the guard.
+    #[test]
+    fn noncommutative_generators_still_reduce() {
+        let pool = ExprPool::new();
+        let sx = pool.symbol_commutative("sx", Domain::Complex, false);
+        let sy = pool.symbol_commutative("sy", Domain::Complex, false);
+
+        let xy = run(pool.mul(vec![sx, sy]), &pool, pauli_product_rules());
+        let yx = run(pool.mul(vec![sy, sx]), &pool, pauli_product_rules());
+        assert_ne!(
+            xy, yx,
+            "sigma_x sigma_y and sigma_y sigma_x must differ in sign"
+        );
     }
 }
