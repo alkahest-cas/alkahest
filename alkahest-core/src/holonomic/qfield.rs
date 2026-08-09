@@ -8,7 +8,7 @@
 //!
 //! Nothing here is approximate: every operation is exact rational arithmetic,
 //! which is what makes the final certificate check in
-//! [`super::zeilberger`] a proof rather than a spot check.
+//! [`super::zeilberger::zeilberger()`] a proof rather than a spot check.
 
 use crate::matrix::normal_form::RatUniPoly;
 use crate::sum::RatFunc;

@@ -9,14 +9,14 @@
 //!   (rational prefactor times `z^k w^n` times a product of
 //!   `Γ(a·n + b·k + c)^e` factors with integer `a, b`) and their exact shift
 //!   ratios `F(n,k+1)/F(n,k)` and `F(n+i,k)/F(n,k)`.
-//! - [`zeilberger`] — Zeilberger's creative-telescoping algorithm: given a
+//! - [`mod@zeilberger`] — Zeilberger's creative-telescoping algorithm: given a
 //!   proper hypergeometric `F(n, k)`, find a P-recursive relation
 //!   `Σ_i a_i(n)·F(n+i,k) = G(n,k+1) − G(n,k)` with `G = R·F` and `R` an
 //!   exact rational-function certificate.
 //!
 //! Every certificate this module returns is checked as an *exact* identity
 //! in `Q(n)(k)` before it is handed back to the caller — see
-//! [`zeilberger::zeilberger`] — so a successful call is a proof, not a
+//! [`zeilberger::zeilberger()`] — so a successful call is a proof, not a
 //! heuristic match.  When the search is inconclusive (order/degree bounds
 //! exhausted) or the input is outside the supported class, the module
 //! refuses via [`HolonomicError`] rather than guessing.

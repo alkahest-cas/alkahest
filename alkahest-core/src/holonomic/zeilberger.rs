@@ -29,7 +29,7 @@
 //!    *polynomial*, linear in the unknowns. Decompose the shift ratio of `W`,
 //!    `ρ(k) = p(k)·D(k)/D(k+1)`, into Gosper normal form
 //!    `ρ = A(k)·C(k+1) / (B(k)·C(k))` over `Q(n)[k]` — the same shifted-gcd
-//!    construction as [`crate::sum::gosper::gosper_normal_form`], lifted to
+//!    construction as `sum::gosper::gosper_normal_form` (private), lifted to
 //!    the field `Q(n)`. (Normal-forming `p` itself instead of `ρ` loses the
 //!    `D` bookkeeping and the equation below has no polynomial solution even
 //!    for `F = C(n,k)`.)
@@ -62,7 +62,7 @@ use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
 use crate::kernel::{ExprId, ExprPool};
 use crate::matrix::normal_form::RatUniPoly;
 
-/// Search bounds for [`zeilberger`].
+/// Search bounds for [`zeilberger()`].
 #[derive(Debug, Clone, Copy)]
 pub struct ZeilbergerOpts {
     /// Largest recurrence order `J` to try (searched from 1 upward).
@@ -100,7 +100,7 @@ fn k_mono(j: usize) -> PolyK {
     PolyK::from_coeffs(coeffs)
 }
 
-/// Generalization of [`crate::sum::gosper::gosper_normal_form`] from `Q` to
+/// Generalization of `sum::gosper::gosper_normal_form` from `Q` to
 /// the field `Q(n)`: writes `p/q = Z·A(k)·C(k+1) / (B(k)·C(k))` with
 /// `gcd(A(k), B(k+h))` a unit for every `h ≥ 0`, `Z` folded into `A`.
 fn gosper_normal_form_qn(mut p: PolyK, mut q: PolyK) -> Option<(PolyK, PolyK, PolyK)> {
