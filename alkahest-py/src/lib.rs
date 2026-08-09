@@ -156,6 +156,11 @@ use alkahest_core::transform::{
     FourierError as CoreFourierError, LaplaceError as CoreLaplaceError,
     ZTransformError as CoreZTransformError,
 };
+// P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+use alkahest_core::holonomic::{
+    zeilberger as core_zeilberger, HolonomicError as CoreHolonomicError,
+    ZeilbergerOpts as CoreZeilbergerOpts,
+};
 // V3-1 — Integer number theory
 use alkahest_core::number_theory::{
     discrete_log as nt_discrete_log, factorint as nt_factorint, isprime as nt_isprime,
@@ -288,6 +293,8 @@ pyo3::create_exception!(alkahest, PyRsolveError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyDiophantineError, PyAlkahestError);
 // P1 search plumbing item 4 — budgets, cancellation, determinism
 pyo3::create_exception!(alkahest, PyBudgetExceededError, PyAlkahestError);
+// P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+pyo3::create_exception!(alkahest, PyHolonomicError, PyAlkahestError);
 
 /// Build a structured exception with `.code`, `.remediation`, `.span` attributes.
 fn make_structured_err<E: AlkahestErrorTrait>(
@@ -4182,6 +4189,136 @@ fn py_verify_wz_pair(
     let pool = f.pool.borrow(py);
     let pair = WzPair { f: f.id, g: g.id };
     Ok(core_verify_wz_pair(&pair, n.id, k.id, &pool.inner))
+}
+
+// ---------------------------------------------------------------------------
+// P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+// ---------------------------------------------------------------------------
+
+fn holonomic_error_to_py(e: CoreHolonomicError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyHolonomicError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+/// A **verified** Zeilberger certificate, returned by :func:`alkahest.zeilberger`.
+///
+/// Carries the recurrence coefficients ``a_0(n), …, a_J(n)`` and the rational
+/// certificate ``R(n, k)`` satisfying, as an exact identity in ``Q(n)(k)``,
+///
+/// ``Σ_i a_i(n)·F(n+i, k) = G(n, k+1) − G(n, k)``  with  ``G = R·F``.
+///
+/// Summing over ``k`` telescopes the right-hand side, so ``S(n) = Σ_k F(n,k)``
+/// satisfies ``Σ_i a_i(n)·S(n+i) = 0``.  The identity is re-checked exactly
+/// before this object is constructed — a returned certificate is a proof, not a
+/// numerical match.
+#[pyclass(name = "ZeilbergerCertificate")]
+struct PyZeilbergerCertificate {
+    order: usize,
+    coeff_ids: Vec<ExprId>,
+    certificate_id: ExprId,
+    pool: Py<PyExprPool>,
+    derivation: String,
+}
+
+#[pymethods]
+impl PyZeilbergerCertificate {
+    /// Recurrence order ``J``; ``len(coeffs) == order + 1``.
+    #[getter]
+    fn order(&self) -> usize {
+        self.order
+    }
+
+    /// ``[a_0(n), …, a_J(n)]`` — polynomial coefficients of the recurrence.
+    #[getter]
+    fn coeffs(&self, py: Python<'_>) -> Vec<PyExpr> {
+        self.coeff_ids
+            .iter()
+            .map(|&id| PyExpr {
+                id,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect()
+    }
+
+    /// ``R(n, k)`` — the rational certificate, with ``G(n,k) = R(n,k)·F(n,k)``.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyExpr {
+        let _ = py;
+        PyExpr {
+            id: self.certificate_id,
+            pool: self.pool.clone_ref(py),
+        }
+    }
+
+    /// Human-readable derivation log for the search that produced this.
+    #[getter]
+    fn derivation(&self) -> String {
+        self.derivation.clone()
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> String {
+        let pool = self.pool.borrow(py);
+        let coeffs: Vec<String> = self
+            .coeff_ids
+            .iter()
+            .map(|&id| pool.inner.display(id).to_string())
+            .collect();
+        format!(
+            "ZeilbergerCertificate(order={}, coeffs=[{}], certificate={})",
+            self.order,
+            coeffs.join(", "),
+            pool.inner.display(self.certificate_id)
+        )
+    }
+}
+
+/// `alkahest.zeilberger(term, n, k, *, max_order=4, max_degree=16) -> ZeilbergerCertificate`
+///
+/// Zeilberger's algorithm (creative telescoping) for a proper hypergeometric
+/// term ``F(n, k)``.  Returns a **verified** certificate: the recurrence
+/// ``Σ_i a_i(n)·F(n+i,k) = ΔG`` with ``G = R·F`` is re-checked as an exact
+/// identity in ``Q(n)(k)`` before it is returned.
+///
+/// Raises :exc:`alkahest.HolonomicError` rather than guessing when ``term`` is
+/// outside the proper hypergeometric class (``E-HOLO-001``) or when the bounded
+/// search is exhausted (``E-HOLO-002``).
+#[pyfunction]
+#[pyo3(name = "zeilberger", signature = (term, n, k, *, max_order = 4, max_degree = 16))]
+fn py_zeilberger(
+    py: Python<'_>,
+    term: PyRef<PyExpr>,
+    n: PyRef<PyExpr>,
+    k: PyRef<PyExpr>,
+    max_order: usize,
+    max_degree: usize,
+) -> PyResult<PyZeilbergerCertificate> {
+    let pool_py = term.pool.clone_ref(py);
+    let opts = CoreZeilbergerOpts {
+        max_order,
+        max_degree,
+    };
+    let (order, coeff_ids, certificate_id, derivation) = {
+        let pool = pool_py.borrow(py);
+        let derived = core_zeilberger(term.id, n.id, k.id, &pool.inner, &opts)
+            .map_err(holonomic_error_to_py)?;
+        let derivation = derived.log.display_with(&pool.inner).to_string();
+        let value = derived.value;
+        (
+            value.order,
+            value.coeffs.clone(),
+            value.certificate,
+            derivation,
+        )
+    };
+    Ok(PyZeilbergerCertificate {
+        order,
+        coeff_ids,
+        certificate_id,
+        pool: pool_py,
+        derivation,
+    })
 }
 
 /// `alkahest.match_pattern(pattern_expr, expr) -> list[dict[str, Expr]]`
@@ -9810,6 +9947,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_solve_linear_recurrence_homogeneous, m)?)?;
     m.add_function(wrap_pyfunction!(py_rsolve, m)?)?;
     m.add_function(wrap_pyfunction!(py_verify_wz_pair, m)?)?;
+    // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+    m.add_class::<PyZeilbergerCertificate>()?;
+    m.add_function(wrap_pyfunction!(py_zeilberger, m)?)?;
     m.add_function(wrap_pyfunction!(match_pattern, m)?)?;
     m.add_function(wrap_pyfunction!(make_rule, m)?)?;
     m.add_function(wrap_pyfunction!(py_subs, m)?)?;
@@ -10071,6 +10211,11 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("CadError", m.py().get_type_bound::<PyCadError>())?;
     m.add("SumError", m.py().get_type_bound::<PySumError>())?;
     m.add("ProductError", m.py().get_type_bound::<PyProductError>())?;
+    // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+    m.add(
+        "HolonomicError",
+        m.py().get_type_bound::<PyHolonomicError>(),
+    )?;
     m.add(
         "NumberTheoryError",
         m.py().get_type_bound::<PyNumberTheoryError>(),
