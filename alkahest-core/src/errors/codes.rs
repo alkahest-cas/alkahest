@@ -182,6 +182,12 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-BUDGET-002", class: "BudgetError", cause: Cause::Resource, remediation: Some("raise Budget(max_steps=...), or accept a partial/heuristic result for this candidate instead of an exact one") },
     ErrorSpec { code: "E-BUDGET-003", class: "BudgetError", cause: Cause::Resource, remediation: Some("call alkahest.clear_cancel() (Python) or budget::clear_cancel() (Rust) before starting the next candidate") },
     // E-DOMAIN — reserved; DomainError is Python-only pending Rust implementation
+    // E-SOS — SosError (P1 item 8: positivity certificates / Positivstellensatz)
+    ErrorSpec { code: "E-SOS-001", class: "SosError", cause: Cause::UserInput,   remediation: Some("positivity certificates are for polynomials in the listed variables; expand or clear denominators first, and pass every symbol that occurs as a variable") },
+    ErrorSpec { code: "E-SOS-002", class: "SosError", cause: Cause::Unsupported, remediation: Some("raise basis_degree (unconstrained) or level (constrained); the search covers the diagonally dominant subcone, so this is not a proof that no SOS decomposition exists — alkahest.decide is the complete (and far more expensive) fallback") },
+    ErrorSpec { code: "E-SOS-003", class: "SosError", cause: Cause::UserInput,   remediation: Some("the witness point in the message satisfies the constraints and makes the target negative; the claim is false as stated") },
+    ErrorSpec { code: "E-SOS-004", class: "SosError", cause: Cause::UserInput,   remediation: Some("pass at least one variable, and keep basis_degree/level within the supported range") },
+    ErrorSpec { code: "E-SOS-005", class: "SosError", cause: Cause::Internal,    remediation: Some("internal: report the target and constraints as a minimal failing example") },
 ];
 
 #[cfg(test)]

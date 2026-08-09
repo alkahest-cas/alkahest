@@ -39,6 +39,7 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-DOMAIN-*                 DomainError  (reserved; Python-only pending Rust impl)
     E-CERT-001                 CertificateUnavailableError  (Python-only; certificate ledger)
     E-BUDGET-001 … E-BUDGET-003 BudgetExceededError (P1 search plumbing item 4)
+    E-SOS-001 … E-SOS-005      SosError (P1 item 8 — positivity certificates)
     E-BATCH-001                 (Python-only; alkahest._batch fallback for a
                                  batch_map/batch_map_iter item whose exception carried no
                                  .code of its own — see docs/mdbook/src/batch.md)
@@ -191,6 +192,30 @@ class SumError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code="E-SUM-001", remediation=remediation, span=span)
+
+
+class SosError(AlkahestError):
+    """A positivity question was not answered with a certificate.
+
+    The three outcomes are deliberately distinct, because conflating them
+    loses information a search loop needs:
+
+    * ``E-SOS-003`` — the target is *definitely* negative somewhere; the
+      message carries a witness point. The claim is false.
+    * ``E-SOS-002`` — no certificate of the searched shape at this degree.
+      This is **not** a proof that none exists; raise the degree, or fall back
+      to the complete (and far more expensive) :func:`alkahest.decide`.
+    * ``E-SOS-001`` / ``E-SOS-004`` — the input was not a polynomial in the
+      given variables, or the call was malformed.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-SOS-001", remediation=remediation, span=span)
 
 
 class ProductError(AlkahestError):

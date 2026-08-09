@@ -66,6 +66,8 @@ Current stable feature surface.
 - Difference equations / `rsolve`: constant-coefficient recurrences with polynomial RHS
 - Symbolic products: definite and indefinite via Γ-ratio telescoping (`product_definite`, `product_indefinite`, `Product`)
 
+- Positivity certificates (`sos_decompose`, `prove_nonneg`): exact rational sum-of-squares and Handelman certificates on basic semialgebraic sets, re-expanded and checked identically before return; distinguishes "certified", "definitely negative (with witness)" and "no certificate at this degree" (`E-SOS-*`)
+
 ## Number theory
 
 - `alkahest.number_theory`: `isprime`, `factorint`, `nextprime`, `totient`, `jacobi_symbol`
