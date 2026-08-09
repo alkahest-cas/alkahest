@@ -39,6 +39,7 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-DOMAIN-*                 DomainError  (reserved; Python-only pending Rust impl)
     E-CERT-001                 CertificateUnavailableError  (Python-only; certificate ledger)
     E-BUDGET-001 … E-BUDGET-003 BudgetExceededError (P1 search plumbing item 4)
+    E-HOLO-001 … E-HOLO-004    HolonomicError (P1 item 7 — creative telescoping)
     E-BATCH-001                 (Python-only; alkahest._batch fallback for a
                                  batch_map/batch_map_iter item whose exception carried no
                                  .code of its own — see docs/mdbook/src/batch.md)
@@ -191,6 +192,26 @@ class SumError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code="E-SUM-001", remediation=remediation, span=span)
+
+
+class HolonomicError(AlkahestError):
+    """Creative telescoping refused: input outside the proper hypergeometric
+    class (``E-HOLO-001``), bounded search exhausted (``E-HOLO-002``), a
+    candidate certificate failed exact verification (``E-HOLO-003``), or the
+    call was malformed (``E-HOLO-004``).
+
+    A refusal here is informative, not a failure: it says the term is not one
+    Zeilberger's algorithm decides at the requested bounds, so a loop can close
+    that branch instead of re-attempting it.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-HOLO-001", remediation=remediation, span=span)
 
 
 class ProductError(AlkahestError):
