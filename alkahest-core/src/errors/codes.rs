@@ -188,6 +188,11 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-SOS-003", class: "SosError", cause: Cause::UserInput,   remediation: Some("the witness point in the message satisfies the constraints and makes the target negative; the claim is false as stated") },
     ErrorSpec { code: "E-SOS-004", class: "SosError", cause: Cause::UserInput,   remediation: Some("pass at least one variable, and keep basis_degree/level within the supported range") },
     ErrorSpec { code: "E-SOS-005", class: "SosError", cause: Cause::Internal,    remediation: Some("internal: report the target and constraints as a minimal failing example") },
+    // E-HOLO — HolonomicError (P1 item 7: creative telescoping / Zeilberger's algorithm)
+    ErrorSpec { code: "E-HOLO-001", class: "HolonomicError", cause: Cause::UserInput,   remediation: Some("rewrite the term as R(n,k)*z**k*w**n*prod(gamma(a*n + b*k + c)**e) with integer a, b and rational c; supported function heads are gamma, factorial, binomial, pochhammer") },
+    ErrorSpec { code: "E-HOLO-002", class: "HolonomicError", cause: Cause::Resource,    remediation: Some("raise max_order and/or max_degree in ZeilbergerOpts; if the term genuinely has no such recurrence within reach, Zeilberger's algorithm does not apply") },
+    ErrorSpec { code: "E-HOLO-003", class: "HolonomicError", cause: Cause::Internal,    remediation: Some("internal: report the term as a minimal failing example") },
+    ErrorSpec { code: "E-HOLO-004", class: "HolonomicError", cause: Cause::UserInput,   remediation: Some("n and k must be distinct symbols; max_order and max_degree must be positive") },
 ];
 
 #[cfg(test)]

@@ -22,6 +22,24 @@
   — which is a statement about the search, not a proof that none exists (the
   Motzkin polynomial refuses here rather than being misreported). See
   [`docs/mdbook/src/positivity.md`](docs/mdbook/src/positivity.md).
+- **Creative telescoping — Zeilberger's algorithm** (P1 mathematics item 7):
+  `alkahest.zeilberger(term, n, k, max_order=…, max_degree=…)` takes a proper
+  hypergeometric term `F(n, k)` and returns a `ZeilbergerCertificate` carrying
+  a P-recursive recurrence `Σ_i a_i(n)·F(n+i,k) = G(n,k+1) − G(n,k)` together
+  with the rational certificate `R` (`G = R·F`) — so `S(n) = Σ_k F(n,k)`
+  satisfies `Σ_i a_i(n)·S(n+i) = 0`. This is the first operation in the CAS
+  that is both a *decision procedure* over its class and a *certificate
+  emitter*, which is what makes discovery→proof automatic in an agent loop
+  rather than heuristic. New `alkahest_core::holonomic` module: exact `Q(n)`
+  and `Q(n)(k)` arithmetic towers, proper-hypergeometric recognition
+  (`gamma`, `factorial`, `binomial`, `pochhammer` heads), and the Gosper-style
+  reduction over `Q(n)`. Every certificate is re-checked as an exact
+  `Q(n)(k)` identity before return; a candidate that fails is discarded, never
+  returned with a caveat. Refuses via `HolonomicError` with stable codes —
+  `E-HOLO-001` (outside the proper hypergeometric class), `E-HOLO-002` (search
+  bounds exhausted), `E-HOLO-003` (candidate failed exact verification),
+  `E-HOLO-004` (malformed call). See
+  [`docs/mdbook/src/telescoping.md`](docs/mdbook/src/telescoping.md).
 
 - **Docs: autoresearch / search-plumbing guide.** New mdBook chapter
   [`search-plumbing.md`](docs/mdbook/src/search-plumbing.md) ties budgets,

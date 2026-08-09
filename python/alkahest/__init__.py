@@ -136,6 +136,8 @@ from .alkahest import (  # noqa: F401
     UniPolyFactorization,
     # V2-7: Polynomial factorization
     UniPolyFactorModP,
+    # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+    ZeilbergerCertificate,
     _build_features,
     _derived_result_context_simplify,
     abs,  # symbolic abs — use alkahest.abs(expr); shadows Python builtin within this module
@@ -267,6 +269,8 @@ from .alkahest import (  # noqa: F401
     verify_wz_pair,
     version,
     voltage_source,
+    # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+    zeilberger,
 )
 from .alkahest import (
     # Phase 15: Symbolic matrices
@@ -326,6 +330,7 @@ from .exceptions import (
     DomainError,
     EigenError,
     FactorError,
+    HolonomicError,
     IntegrationError,
     IoError,
     JitError,
@@ -363,6 +368,7 @@ _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     "DomainError",
     "EigenError",
     "FactorError",
+    "HolonomicError",
     "IntegrationError",
     "IoError",
     "JitError",
@@ -1729,6 +1735,8 @@ __all__ = [
     "GbPoly",
     "GradTracedFn",
     "GroebnerBasis",
+    # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+    "HolonomicError",
     "HybridODE",
     "IntegrationError",
     # V1-16: IoError
@@ -1784,6 +1792,8 @@ __all__ = [
     "UniPoly",
     "UniPolyFactorModP",
     "UniPolyFactorization",
+    # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+    "ZeilbergerCertificate",
     "__version__",
     "abs",
     "acos",
@@ -1987,6 +1997,8 @@ __all__ = [
     "verify_wz_pair",
     "version",
     "voltage_source",
+    # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+    "zeilberger",
 ]
 
 # Drop import-machinery leaks from ``dir(alkahest)`` / autocomplete. Lazy

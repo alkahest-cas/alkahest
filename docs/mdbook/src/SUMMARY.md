@@ -26,4 +26,5 @@
 - [Autoresearch / agent loops](./search-plumbing.md)
   - [Budgets, cancellation, and determinism](./budgets.md)
   - [Batch and streaming evaluation](./batch.md)
+  - [Creative telescoping (Zeilberger)](./telescoping.md)
 - [Stability policy](./stability.md)
