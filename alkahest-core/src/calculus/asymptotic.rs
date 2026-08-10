@@ -160,8 +160,10 @@ impl crate::errors::AlkahestError for AsymptoticError {
                  the function may have an oscillatory or non-power-scale tail"
             }
             AsymptoticError::UnsupportedScale => {
-                "exp/log scale hierarchies and Gamma/Stirling asymptotics are out of scope; \
-                 power-scale (rational/algebraic) and single log/exp peels are supported"
+                "exp/log scale hierarchies and Gamma/Stirling asymptotics are out of scope for \
+                 asymptotic_expand; power-scale (rational/algebraic) and single log/exp peels \
+                 are supported. For the asymptotics of a *sum* use \
+                 experimental.euler_maclaurin, which also reaches Stirling via the sum of log k"
             }
         })
     }
