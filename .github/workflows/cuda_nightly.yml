@@ -19,6 +19,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Linted here rather than in main CI because `cuda` pulls in the LLVM
+      # JIT, which the ordinary runners are not provisioned for.
+      - name: cargo clippy (cuda + groebner-cuda)
+        run: cargo clippy --all-targets --features cuda,groebner-cuda -- -D warnings
+
       - name: Build and run CUDA tests
         env:
           ALKAHEST_GPU_TESTS: "1"

@@ -445,14 +445,6 @@ fn io_error_to_py(e: IoError) -> PyErr {
     })
 }
 
-#[cfg(feature = "groebner-cuda")]
-fn gpu_groebner_error_to_py(e: alkahest_core::experimental::GpuGroebnerError) -> PyErr {
-    Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PySolverError>();
-        make_structured_err(py, &exc_type, &e)
-    })
-}
-
 fn integrate_error_to_py(e: IntegrationError) -> PyErr {
     // A budget/cancellation trip is not an integration failure — raise the
     // dedicated `BudgetExceededError` (E-BUDGET-*) instead of `IntegrationError`

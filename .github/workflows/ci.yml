@@ -79,6 +79,15 @@ jobs:
       - name: cargo clippy (jit feature)
         run: cargo clippy --all-targets --features jit -- -D warnings
 
+      # The CUDA-adjacent features were never linted, so lints accumulated
+      # unnoticed until someone built them on a GPU box. cudarc uses
+      # fallback-dynamic-loading, so this compiles on a runner with no CUDA
+      # toolkit — only `libcuda.so.1` at *runtime* is unavailable, and clippy
+      # never runs anything. The `cuda` feature additionally needs LLVM and is
+      # linted in the GPU nightly instead.
+      - name: cargo clippy (groebner-cuda feature)
+        run: cargo clippy --all-targets --features groebner-cuda -- -D warnings
+
       - name: cargo test
         run: cargo test --all
 
