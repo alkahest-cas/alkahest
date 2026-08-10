@@ -120,6 +120,8 @@ from .alkahest import (  # noqa: F401
     Not,
     Or,
     Port,
+    # P1 item 8 — positivity certificates (SOS / Positivstellensatz)
+    PositivityCertificate,
     # PA-5: Primitive registry
     PrimitiveRegistry,
     RationalFunction,
@@ -214,6 +216,7 @@ from .alkahest import (  # noqa: F401
     poly_normal,
     product_definite,
     product_indefinite,
+    prove_nonneg,
     re,
     real_roots,
     refine_root,
@@ -247,6 +250,7 @@ from .alkahest import (  # noqa: F401
     sin,
     sinh,
     solve_linear_recurrence_homogeneous,
+    sos_decompose,
     sparse_interp,
     sparse_interp_univariate,
     sqrt,
@@ -346,6 +350,7 @@ from .exceptions import (
     RsolveError,
     SeriesError,
     SolverError,
+    SosError,
     SparseGcdError,
     SparseInterpError,
     SumError,
@@ -382,6 +387,8 @@ _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     "RsolveError",
     "SeriesError",
     "SolverError",
+    # P1 item 8 — positivity certificates (SOS / Positivstellensatz)
+    "SosError",
     "SparseGcdError",
     "SparseInterpError",
     "SumError",
@@ -1751,6 +1758,7 @@ __all__ = [
     "ParseError",
     "PoolError",
     "Port",
+    "PositivityCertificate",
     "PrimaryComponent",
     # PA-5
     "PrimitiveRegistry",
@@ -1771,6 +1779,8 @@ __all__ = [
     "Series",
     "SeriesError",
     "SolverError",
+    # P1 item 8 — positivity certificates (SOS / Positivstellensatz)
+    "SosError",
     "SparseGcdError",
     "SparseInterpError",
     "SumError",
@@ -1904,6 +1914,8 @@ __all__ = [
     "primary_decomposition",
     "product_definite",
     "product_indefinite",
+    # P1 item 8 — positivity certificates (SOS / Positivstellensatz)
+    "prove_nonneg",
     "radical",
     "re",
     # V2-4
@@ -1957,6 +1969,8 @@ __all__ = [
     "solve",
     "solve_linear_recurrence_homogeneous",
     "solve_numerical",
+    # P1 item 8 — positivity certificates (SOS / Positivstellensatz)
+    "sos_decompose",
     "sparse_interp",
     "sparse_interp_univariate",
     "sqrt",

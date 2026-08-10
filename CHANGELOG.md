@@ -4,6 +4,24 @@
 
 ### Added
 
+- **Positivity certificates — SOS and Positivstellensatz-lite** (P1 mathematics
+  item 8): `alkahest.sos_decompose(p, vars)` returns an exact rational
+  sum-of-squares decomposition `p = Σ σ_j q_j²`, and
+  `alkahest.prove_nonneg(p, vars, constraints=[...], level=...)` returns a
+  Handelman certificate `p = Σ_α c_α Π g_i^{α_i}` (`c_α ≥ 0`) on a basic
+  semialgebraic set. This is the fast, certificate-producing complement to the
+  complete-but-doubly-exponential `decide`: the output is a short algebraic
+  identity anyone can re-expand, exportable to Lean via
+  `PositivityCertificate.to_lean()`. New `alkahest_core::real::sos` module with
+  its own exact rational simplex (Bland's rule — no floating point anywhere
+  near a certificate), an ℚ multivariate polynomial layer, and a
+  generator-cone Gram search. Every certificate is re-expanded and compared
+  against the target identically before it is returned. The three outcomes are
+  kept distinct on purpose: certified, `E-SOS-003` definitely negative (with a
+  witness point), and `E-SOS-002` no certificate of this shape at this degree
+  — which is a statement about the search, not a proof that none exists (the
+  Motzkin polynomial refuses here rather than being misreported). See
+  [`docs/mdbook/src/positivity.md`](docs/mdbook/src/positivity.md).
 - **Creative telescoping — Zeilberger's algorithm** (P1 mathematics item 7):
   `alkahest.zeilberger(term, n, k, max_order=…, max_degree=…)` takes a proper
   hypergeometric term `F(n, k)` and returns a `ZeilbergerCertificate` carrying

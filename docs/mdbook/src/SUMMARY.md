@@ -15,6 +15,7 @@
 - [Ball arithmetic](./ball-arithmetic.md)
 - [ODE and DAE modeling](./ode-dae.md)
 - [Polynomial system solving](./solving.md)
+- [Positivity certificates (SOS)](./positivity.md)
 - [Interoperability](./interop.md)
 - [Reinforcement learning](./rl.md)
 - [Derivation logs](./derivations.md)

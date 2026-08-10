@@ -156,6 +156,12 @@ use alkahest_core::transform::{
     FourierError as CoreFourierError, LaplaceError as CoreLaplaceError,
     ZTransformError as CoreZTransformError,
 };
+// P1 item 8 — positivity certificates (SOS / Positivstellensatz)
+use alkahest_core::real::sos::{
+    prove_nonneg as core_prove_nonneg, sos_decompose as core_sos_decompose,
+    PositivityCertificate as CorePositivityCertificate, SosError as CoreSosError,
+    SosOpts as CoreSosOpts,
+};
 // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
 use alkahest_core::holonomic::{
     zeilberger as core_zeilberger, HolonomicError as CoreHolonomicError,
@@ -284,6 +290,8 @@ pyo3::create_exception!(alkahest, PyRealRootError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyLatticeError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyPslqError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyCadError, PyAlkahestError);
+// P1 item 8 — positivity certificates (SOS / Positivstellensatz)
+pyo3::create_exception!(alkahest, PySosError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PySumError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyProductError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyNumberTheoryError, PyAlkahestError);
@@ -8068,6 +8076,172 @@ fn py_decide(py: Python<'_>, formula: PyRef<PyExpr>) -> PyResult<(bool, PyObject
     Ok((r.truth, wit))
 }
 
+// ---------------------------------------------------------------------------
+// P1 item 8 — positivity certificates (SOS / Positivstellensatz)
+// ---------------------------------------------------------------------------
+
+fn sos_error_to_py(e: CoreSosError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PySosError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+/// An exact, re-checkable proof that a polynomial is non-negative.
+///
+/// Returned by :func:`alkahest.sos_decompose` and :func:`alkahest.prove_nonneg`.
+/// The identity it carries has already been re-expanded and compared against
+/// the target exactly; :meth:`verify` re-runs that check on demand, so a
+/// downstream consumer never has to trust the search that produced it.
+#[pyclass(name = "PositivityCertificate")]
+struct PyPositivityCertificate {
+    inner: CorePositivityCertificate,
+    pool: Py<PyExprPool>,
+}
+
+#[pymethods]
+impl PyPositivityCertificate {
+    /// ``"sos"``, ``"handelman"`` or ``"putinar"``.
+    #[getter]
+    fn kind(&self) -> String {
+        self.inner.kind.as_str().to_string()
+    }
+
+    /// The basis degree (unconstrained) or Handelman level actually used.
+    #[getter]
+    fn degree(&self) -> u32 {
+        self.inner.degree
+    }
+
+    /// Number of squares in the decomposition.
+    #[getter]
+    fn num_squares(&self) -> usize {
+        self.inner.num_squares()
+    }
+
+    /// The certificate identity, e.g. ``p = 1*(x - y)^2 + 2*(y)^2``.
+    #[getter]
+    fn identity(&self) -> String {
+        self.inner.identity_string()
+    }
+
+    /// The claim being certified, e.g. ``p >= 0 on {g_0 >= 0, g_1 >= 0}``.
+    #[getter]
+    fn claim(&self) -> String {
+        self.inner.claim_string()
+    }
+
+    /// How the search proceeded — the audit trail.
+    #[getter]
+    fn log(&self) -> Vec<String> {
+        self.inner.log.clone()
+    }
+
+    /// The right-hand side of the identity as an :class:`Expr`.
+    #[getter]
+    fn expression(&self, py: Python<'_>) -> PyExpr {
+        let id = {
+            let pool = self.pool.borrow(py);
+            self.inner.to_expr(&pool.inner)
+        };
+        PyExpr {
+            id,
+            pool: self.pool.clone_ref(py),
+        }
+    }
+
+    /// Re-run the exact verification. Always ``True`` for a certificate that
+    /// was returned (the search refuses rather than returning an unverified
+    /// one); exposed so a caller can check independently.
+    fn verify(&self) -> PyResult<bool> {
+        match self.inner.verify() {
+            Ok(()) => Ok(true),
+            Err(why) => Err(sos_error_to_py(CoreSosError::VerificationFailed(why))),
+        }
+    }
+
+    /// Lean 4 rendering of the identity, or ``None`` when it cannot be emitted
+    /// soundly.
+    fn to_lean(&self) -> Option<String> {
+        self.inner.to_lean()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PositivityCertificate(kind={}, degree={}, squares={})",
+            self.inner.kind.as_str(),
+            self.inner.degree,
+            self.inner.num_squares()
+        )
+    }
+}
+
+/// `alkahest.sos_decompose(expr, vars, *, basis_degree=None) -> PositivityCertificate`
+///
+/// Exact rational sum-of-squares decomposition ``p = Σ_j σ_j·q_j²``.
+///
+/// Raises :exc:`alkahest.SosError` rather than guessing: ``E-SOS-003`` with a
+/// witness point when ``p`` is negative somewhere, ``E-SOS-002`` when no
+/// certificate of the searched shape exists at this basis degree (which is
+/// *not* a proof that none exists — see the docs).
+#[pyfunction]
+#[pyo3(name = "sos_decompose", signature = (expr, vars, *, basis_degree = None))]
+fn py_sos_decompose(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    vars: Vec<PyRef<PyExpr>>,
+    basis_degree: Option<u32>,
+) -> PyResult<PyPositivityCertificate> {
+    let pool_py = expr.pool.clone_ref(py);
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+    let opts = CoreSosOpts {
+        basis_degree,
+        ..Default::default()
+    };
+    let inner = {
+        let pool = pool_py.borrow(py);
+        core_sos_decompose(expr.id, &var_ids, &pool.inner, &opts).map_err(sos_error_to_py)?
+    };
+    Ok(PyPositivityCertificate {
+        inner,
+        pool: pool_py,
+    })
+}
+
+/// `alkahest.prove_nonneg(expr, vars, *, constraints=(), basis_degree=None, level=2)`
+///
+/// Prove ``p ≥ 0`` on ``{x : g_i(x) ≥ 0}`` with a Handelman-style certificate
+/// ``p = Σ_α c_α·Π g_i^{α_i}`` (``c_α ≥ 0``). With no constraints this is
+/// :func:`sos_decompose`.
+#[pyfunction]
+#[pyo3(name = "prove_nonneg", signature = (expr, vars, *, constraints = None, basis_degree = None, level = 2))]
+fn py_prove_nonneg(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    vars: Vec<PyRef<PyExpr>>,
+    constraints: Option<Vec<PyRef<PyExpr>>>,
+    basis_degree: Option<u32>,
+    level: u32,
+) -> PyResult<PyPositivityCertificate> {
+    let pool_py = expr.pool.clone_ref(py);
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+    let cons: Vec<ExprId> = constraints
+        .map(|cs| cs.iter().map(|c| c.id).collect())
+        .unwrap_or_default();
+    let opts = CoreSosOpts {
+        basis_degree,
+        level,
+    };
+    let inner = {
+        let pool = pool_py.borrow(py);
+        core_prove_nonneg(expr.id, &cons, &var_ids, &pool.inner, &opts).map_err(sos_error_to_py)?
+    };
+    Ok(PyPositivityCertificate {
+        inner,
+        pool: pool_py,
+    })
+}
+
 /// Brown-style CAD projection polynomials after eliminating ``elim_var``.
 #[pyfunction(name = "cad_project")]
 fn py_cad_project(
@@ -10084,6 +10258,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_exists, m)?)?;
     m.add_function(wrap_pyfunction!(py_decide, m)?)?;
     m.add_function(wrap_pyfunction!(py_cad_project, m)?)?;
+    // P1 item 8 — positivity certificates (SOS / Positivstellensatz)
+    m.add_class::<PyPositivityCertificate>()?;
+    m.add_function(wrap_pyfunction!(py_sos_decompose, m)?)?;
+    m.add_function(wrap_pyfunction!(py_prove_nonneg, m)?)?;
     m.add_function(wrap_pyfunction!(py_cad_lift, m)?)?;
     m.add_function(wrap_pyfunction!(py_routh_hurwitz, m)?)?;
     // V5-1 — Lean 4 certificate exporter
@@ -10201,6 +10379,8 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("LatticeError", m.py().get_type_bound::<PyLatticeError>())?;
     m.add("PslqError", m.py().get_type_bound::<PyPslqError>())?;
     m.add("CadError", m.py().get_type_bound::<PyCadError>())?;
+    // P1 item 8 — positivity certificates (SOS / Positivstellensatz)
+    m.add("SosError", m.py().get_type_bound::<PySosError>())?;
     m.add("SumError", m.py().get_type_bound::<PySumError>())?;
     m.add("ProductError", m.py().get_type_bound::<PyProductError>())?;
     // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
