@@ -103,6 +103,8 @@ from .alkahest import (  # noqa: F401
     Domain,
     # V1-15: EgraphConfig and simplify_egraph_with
     EgraphConfig,
+    # P1 item 9 — rigorous global bounds (Taylor models / validated numerics)
+    Enclosure,
     # Unified exact / f64 / complex / interval evaluation
     EvaluationResult,
     # Phase 20: Hybrid systems
@@ -155,6 +157,7 @@ from .alkahest import (  # noqa: F401
     atanh,
     bessel_j0,
     bessel_j1,
+    bound_on_box,
     cad_lift,
     cad_project,
     # Rational-function cancel/together
@@ -266,6 +269,9 @@ from .alkahest import (  # noqa: F401
     # V5-2: StableHLO/XLA bridge
     to_stablehlo,
     together,
+    verified_integral,
+    verified_no_roots,
+    verified_sign,
     verify_wz_pair,
     version,
     voltage_source,
@@ -354,6 +360,7 @@ from .exceptions import (
     SparseGcdError,
     SparseInterpError,
     SumError,
+    ValidatedError,
 )
 
 _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
@@ -392,6 +399,7 @@ _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     "SparseGcdError",
     "SparseInterpError",
     "SumError",
+    "ValidatedError",
 )
 
 try:
@@ -1723,6 +1731,7 @@ __all__ = [
     "DomainError",
     "EgraphConfig",
     "EigenError",
+    "Enclosure",
     "EvaluationResult",
     # Phase 20
     "Event",
@@ -1792,6 +1801,7 @@ __all__ = [
     "UniPoly",
     "UniPolyFactorModP",
     "UniPolyFactorization",
+    "ValidatedError",
     # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     "ZeilbergerCertificate",
     "__version__",
@@ -1815,6 +1825,7 @@ __all__ = [
     "batch_map_iter",
     "bessel_j0",
     "bessel_j1",
+    "bound_on_box",
     # P1 search plumbing item 4
     "budget_seed",
     "cad_lift",
@@ -1994,6 +2005,9 @@ __all__ = [
     "triangularize",
     "unflatten_exprs",
     "unicode_str",
+    "verified_integral",
+    "verified_no_roots",
+    "verified_sign",
     "verify_wz_pair",
     "version",
     "voltage_source",

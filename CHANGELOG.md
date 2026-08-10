@@ -20,6 +20,26 @@
   is not evaluable at the check points, or no term survives the gate. See
   [`docs/mdbook/src/asymptotics.md`](docs/mdbook/src/asymptotics.md).
 
+- **Rigorous global bounds — Taylor models and validated numerics** (P1
+  mathematics item 9): `alkahest.bound_on_box(expr, box)` returns a rigorous
+  enclosure of the *range* of an expression over an axis-aligned box;
+  `alkahest.verified_integral(expr, var, a, b)` a rigorous enclosure of a
+  definite integral; `alkahest.verified_no_roots` and
+  `alkahest.verified_sign` three-valued (`"true"` / `"false"` /
+  `"undecided"`) predicates. Ball arithmetic already gave rigorous *pointwise*
+  evaluation — this closes the gap to rigorous statements quantified over a
+  region, which is what turns a numeric observation into a theorem. New
+  `alkahest_core::validated` module: Taylor model arithmetic in normalised box
+  coordinates (polynomial part plus rigorously enclosing remainder, so `x - x`
+  cancels symbolically instead of widening to `[-2, 2]`), and Moore–Skelboe
+  branch-and-bound that prunes sub-boxes proven not to contain the extremum.
+  Soundness over tightness throughout: outward rounding everywhere, and
+  exhausting the work budget returns a wide-but-true enclosure with
+  `budget_exhausted=True` rather than an error. Genuine failures refuse with
+  `ValidatedError` (`E-VALIDATED-001` unsupported primitive, `-002` unbound
+  symbol, `-003` singularity in the box, `-004` overflow, `-005` malformed
+  request). See
+  [`docs/mdbook/src/validated-bounds.md`](docs/mdbook/src/validated-bounds.md).
 - **Positivity certificates — SOS and Positivstellensatz-lite** (P1 mathematics
   item 8): `alkahest.sos_decompose(p, vars)` returns an exact rational
   sum-of-squares decomposition `p = Σ σ_j q_j²`, and

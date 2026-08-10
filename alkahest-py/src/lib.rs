@@ -156,6 +156,14 @@ use alkahest_core::transform::{
     FourierError as CoreFourierError, LaplaceError as CoreLaplaceError,
     ZTransformError as CoreZTransformError,
 };
+// P1 item 9 — rigorous global bounds (Taylor models / validated numerics)
+use alkahest_core::validated::bounds::{
+    bound_on_box as core_bound_on_box, verified_integral as core_verified_integral,
+    verified_no_roots as core_verified_no_roots, verified_sign as core_verified_sign,
+    BoundOptions as CoreBoundOptions, IntegralOptions as CoreIntegralOptions,
+    SignPredicate as CoreSignPredicate, Verdict as CoreVerdict,
+};
+use alkahest_core::validated::ValidatedError as CoreValidatedError;
 // P1 item 8 — positivity certificates (SOS / Positivstellensatz)
 use alkahest_core::real::sos::{
     prove_nonneg as core_prove_nonneg, sos_decompose as core_sos_decompose,
@@ -292,6 +300,8 @@ pyo3::create_exception!(alkahest, PyRealRootError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyLatticeError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyPslqError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyCadError, PyAlkahestError);
+// P1 item 9 — rigorous global bounds (Taylor models / validated numerics)
+pyo3::create_exception!(alkahest, PyValidatedError, PyAlkahestError);
 // P1 item 8 — positivity certificates (SOS / Positivstellensatz)
 pyo3::create_exception!(alkahest, PySosError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PySumError, PyAlkahestError);
@@ -8228,6 +8238,17 @@ fn py_decide(py: Python<'_>, formula: PyRef<PyExpr>) -> PyResult<(bool, PyObject
 }
 
 // ---------------------------------------------------------------------------
+// P1 item 9 — rigorous global bounds (Taylor models / validated numerics)
+// ---------------------------------------------------------------------------
+
+fn validated_error_to_py(e: CoreValidatedError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyValidatedError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+// ---------------------------------------------------------------------------
 // P1 item 8 — positivity certificates (SOS / Positivstellensatz)
 // ---------------------------------------------------------------------------
 
@@ -8236,6 +8257,54 @@ fn sos_error_to_py(e: CoreSosError) -> PyErr {
         let exc_type = py.get_type_bound::<PySosError>();
         make_structured_err(py, &exc_type, &e)
     })
+}
+
+fn verdict_str(v: CoreVerdict) -> &'static str {
+    match v {
+        CoreVerdict::True => "true",
+        CoreVerdict::False => "false",
+        CoreVerdict::Undecided => "undecided",
+    }
+}
+
+/// A **rigorous** enclosure: the true value is guaranteed to lie in
+/// ``[lower, upper]``.
+///
+/// Returned by :func:`alkahest.bound_on_box` and
+/// :func:`alkahest.verified_integral`. The bound may be *wide*, but it is
+/// never *wrong* — that is the whole contract. Check
+/// :attr:`budget_exhausted` to see whether it is as tight as you asked for.
+#[pyclass(name = "Enclosure")]
+struct PyEnclosure {
+    #[pyo3(get)]
+    lower: f64,
+    #[pyo3(get)]
+    upper: f64,
+    #[pyo3(get)]
+    budget_exhausted: bool,
+    #[pyo3(get)]
+    subdivisions: usize,
+}
+
+#[pymethods]
+impl PyEnclosure {
+    /// Width of the enclosure.
+    #[getter]
+    fn width(&self) -> f64 {
+        self.upper - self.lower
+    }
+
+    /// True if `v` is inside the rigorous enclosure.
+    fn contains(&self, v: f64) -> bool {
+        self.lower <= v && v <= self.upper
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Enclosure([{}, {}], budget_exhausted={}, subdivisions={})",
+            self.lower, self.upper, self.budget_exhausted, self.subdivisions
+        )
+    }
 }
 
 /// An exact, re-checkable proof that a polynomial is non-negative.
@@ -8325,6 +8394,181 @@ impl PyPositivityCertificate {
             self.inner.num_squares()
         )
     }
+}
+
+fn parse_box(
+    py: Python<'_>,
+    boxes: Vec<(PyRef<PyExpr>, f64, f64)>,
+) -> (Py<PyExprPool>, Vec<(ExprId, f64, f64)>) {
+    let pool = boxes[0].0.pool.clone_ref(py);
+    let out = boxes.iter().map(|(v, lo, hi)| (v.id, *lo, *hi)).collect();
+    (pool, out)
+}
+
+/// `alkahest.bound_on_box(expr, box, *, order=6, prec=128, tol=1e-9, max_subdivisions=2048)`
+///
+/// Rigorous enclosure of the **range** of `expr` over an axis-aligned box,
+/// via Taylor models plus Moore–Skelboe branch-and-bound.
+///
+/// `box` is a list of `(variable, lo, hi)`. The returned
+/// :class:`Enclosure` is a guaranteed outer bound; when the work budget runs
+/// out it is returned anyway with ``budget_exhausted=True`` — wide but true.
+#[pyfunction]
+#[pyo3(name = "bound_on_box", signature = (expr, r#box, *, order = 6, prec = 128, tol = 1e-9, max_subdivisions = 2048))]
+fn py_bound_on_box(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    r#box: Vec<(PyRef<PyExpr>, f64, f64)>,
+    order: usize,
+    prec: u32,
+    tol: f64,
+    max_subdivisions: usize,
+) -> PyResult<PyEnclosure> {
+    if r#box.is_empty() {
+        return Err(PyValueError::new_err(
+            "bound_on_box: the box must constrain at least one variable",
+        ));
+    }
+    let (pool_py, boxes) = parse_box(py, r#box);
+    let opts = CoreBoundOptions {
+        order,
+        prec,
+        tol,
+        max_subdivisions,
+    };
+    let pool = pool_py.borrow(py);
+    let r =
+        core_bound_on_box(expr.id, &pool.inner, &boxes, &opts).map_err(validated_error_to_py)?;
+    Ok(PyEnclosure {
+        lower: r.lower(),
+        upper: r.upper(),
+        budget_exhausted: r.budget_exhausted,
+        subdivisions: r.subdivisions,
+    })
+}
+
+/// `alkahest.verified_integral(expr, var, a, b, *, order=8, prec=128, tol=1e-9, max_subdivisions=4096)`
+///
+/// Rigorous enclosure of ``∫_a^b expr d(var)`` by Taylor-model quadrature.
+///
+/// Unlike :func:`integrate_definite`, this never needs a closed form — and
+/// unlike a floating-point quadrature, the answer is a *theorem*: the true
+/// integral is guaranteed to lie in the returned interval. Refuses on
+/// singular or improper integrands rather than guessing.
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
+#[pyo3(name = "verified_integral", signature = (expr, var, a, b, *, order = 8, prec = 128, tol = 1e-9, max_subdivisions = 4096))]
+fn py_verified_integral(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    var: PyRef<PyExpr>,
+    a: f64,
+    b: f64,
+    order: usize,
+    prec: u32,
+    tol: f64,
+    max_subdivisions: usize,
+) -> PyResult<PyEnclosure> {
+    let pool_py = expr.pool.clone_ref(py);
+    let opts = CoreIntegralOptions {
+        order,
+        prec,
+        tol,
+        max_subdivisions,
+    };
+    let pool = pool_py.borrow(py);
+    let r = core_verified_integral(expr.id, &pool.inner, var.id, a, b, &opts)
+        .map_err(validated_error_to_py)?;
+    Ok(PyEnclosure {
+        lower: r.lower(),
+        upper: r.upper(),
+        budget_exhausted: r.budget_exhausted,
+        subdivisions: r.subdivisions,
+    })
+}
+
+/// `alkahest.verified_no_roots(expr, box, ...) -> "true" | "false" | "undecided"`
+///
+/// Three-valued: ``"true"`` proves `expr` has no root anywhere in the box,
+/// ``"false"`` proves it does, and ``"undecided"`` means neither could be
+/// established within the budget. The third is never collapsed into the
+/// other two.
+#[pyfunction]
+#[pyo3(name = "verified_no_roots", signature = (expr, r#box, *, order = 6, prec = 128, tol = 1e-9, max_subdivisions = 2048))]
+fn py_verified_no_roots(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    r#box: Vec<(PyRef<PyExpr>, f64, f64)>,
+    order: usize,
+    prec: u32,
+    tol: f64,
+    max_subdivisions: usize,
+) -> PyResult<String> {
+    if r#box.is_empty() {
+        return Err(PyValueError::new_err(
+            "verified_no_roots: the box must constrain at least one variable",
+        ));
+    }
+    let (pool_py, boxes) = parse_box(py, r#box);
+    let opts = CoreBoundOptions {
+        order,
+        prec,
+        tol,
+        max_subdivisions,
+    };
+    let pool = pool_py.borrow(py);
+    let v = core_verified_no_roots(expr.id, &pool.inner, &boxes, &opts)
+        .map_err(validated_error_to_py)?;
+    Ok(verdict_str(v).to_string())
+}
+
+/// `alkahest.verified_sign(expr, box, predicate, ...) -> "true" | "false" | "undecided"`
+///
+/// `predicate` is one of ``"positive"``, ``"negative"``, ``"nonnegative"``,
+/// ``"nonpositive"``. A ``"false"`` verdict is itself certified — either the
+/// enclosure proves the predicate fails everywhere, or a rigorously evaluated
+/// point witnesses the failure.
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
+#[pyo3(name = "verified_sign", signature = (expr, r#box, predicate, *, order = 6, prec = 128, tol = 1e-9, max_subdivisions = 2048))]
+fn py_verified_sign(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    r#box: Vec<(PyRef<PyExpr>, f64, f64)>,
+    predicate: &str,
+    order: usize,
+    prec: u32,
+    tol: f64,
+    max_subdivisions: usize,
+) -> PyResult<String> {
+    if r#box.is_empty() {
+        return Err(PyValueError::new_err(
+            "verified_sign: the box must constrain at least one variable",
+        ));
+    }
+    let pred = match predicate {
+        "positive" => CoreSignPredicate::Positive,
+        "negative" => CoreSignPredicate::Negative,
+        "nonnegative" => CoreSignPredicate::NonNegative,
+        "nonpositive" => CoreSignPredicate::NonPositive,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "verified_sign: predicate must be one of 'positive', 'negative', \
+                 'nonnegative', 'nonpositive', got {other:?}"
+            )))
+        }
+    };
+    let (pool_py, boxes) = parse_box(py, r#box);
+    let opts = CoreBoundOptions {
+        order,
+        prec,
+        tol,
+        max_subdivisions,
+    };
+    let pool = pool_py.borrow(py);
+    let v = core_verified_sign(expr.id, &pool.inner, &boxes, pred, &opts)
+        .map_err(validated_error_to_py)?;
+    Ok(verdict_str(v).to_string())
 }
 
 /// `alkahest.sos_decompose(expr, vars, *, basis_degree=None) -> PositivityCertificate`
@@ -10412,6 +10656,12 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_exists, m)?)?;
     m.add_function(wrap_pyfunction!(py_decide, m)?)?;
     m.add_function(wrap_pyfunction!(py_cad_project, m)?)?;
+    // P1 item 9 — rigorous global bounds (Taylor models / validated numerics)
+    m.add_class::<PyEnclosure>()?;
+    m.add_function(wrap_pyfunction!(py_bound_on_box, m)?)?;
+    m.add_function(wrap_pyfunction!(py_verified_integral, m)?)?;
+    m.add_function(wrap_pyfunction!(py_verified_no_roots, m)?)?;
+    m.add_function(wrap_pyfunction!(py_verified_sign, m)?)?;
     // P1 item 8 — positivity certificates (SOS / Positivstellensatz)
     m.add_class::<PyPositivityCertificate>()?;
     m.add_function(wrap_pyfunction!(py_sos_decompose, m)?)?;
@@ -10533,6 +10783,11 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("LatticeError", m.py().get_type_bound::<PyLatticeError>())?;
     m.add("PslqError", m.py().get_type_bound::<PyPslqError>())?;
     m.add("CadError", m.py().get_type_bound::<PyCadError>())?;
+    // P1 item 9 — rigorous global bounds (Taylor models / validated numerics)
+    m.add(
+        "ValidatedError",
+        m.py().get_type_bound::<PyValidatedError>(),
+    )?;
     // P1 item 8 — positivity certificates (SOS / Positivstellensatz)
     m.add("SosError", m.py().get_type_bound::<PySosError>())?;
     m.add("SumError", m.py().get_type_bound::<PySumError>())?;
