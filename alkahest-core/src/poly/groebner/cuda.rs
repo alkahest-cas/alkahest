@@ -447,7 +447,7 @@ impl MacaulayMatrix {
 
             // GPU: eliminate column from all other rows in parallel
             let block: u32 = 256;
-            let grid = ((self.n_rows as u32) + block - 1) / block;
+            let grid = (self.n_rows as u32).div_ceil(block);
             let cfg = LaunchConfig {
                 grid_dim: (grid.max(1), 1, 1),
                 block_dim: (block, 1, 1),
@@ -534,11 +534,11 @@ impl CrtLifter {
                     let cv_mod = cv_abs % &p_int;
                     // Adjust sign
                     let cv_mod = if *cur_val < 0 && cv_mod != 0 {
-                        Integer::from(&p_int - cv_mod)
+                        &p_int - cv_mod
                     } else {
                         cv_mod
                     };
-                    let mut d = Integer::from(&rv - cv_mod);
+                    let mut d = &rv - cv_mod;
                     if d < 0 {
                         d += &p_int;
                     }
@@ -551,7 +551,7 @@ impl CrtLifter {
                     mod_inv(m_mod_u64, p)
                 };
                 let step = Integer::from(&diff * inv_m) % &p_int;
-                let add = Integer::from(&*cur_mod * step);
+                let add = &*cur_mod * step;
                 *cur_val += &add;
                 *cur_mod *= &p_int;
                 // Reduce to centered representation
@@ -606,7 +606,7 @@ impl CrtLifter {
 /// Returns `(upper, basis_lms)` where:
 /// - `upper` is the list of shifted basis elements that serve as reductors,
 /// - `basis_lms` is the set of their leading monomials (used after RREF to
-///    identify which rows are "new" vs. already-basis-covered).
+///   identify which rows are "new" vs. already-basis-covered).
 ///
 /// Termination: each iteration adds one monomial to `covered` (LMs of upper
 /// rows). All new terms introduced have total degree ≤ the monomial being
@@ -636,7 +636,7 @@ fn symbolic_preprocess_upper(
             .filter(|m| !covered.contains(*m))
             .find(|m| {
                 basis.iter().any(|g| {
-                    g.leading_exp(order).map_or(false, |lm| {
+                    g.leading_exp(order).is_some_and(|lm| {
                         lm.len() == m.len() && lm.iter().zip(m.iter()).all(|(a, b)| a <= b)
                     })
                 })
@@ -652,7 +652,7 @@ fn symbolic_preprocess_upper(
         let g = basis
             .iter()
             .find(|g| {
-                g.leading_exp(order).map_or(false, |lm| {
+                g.leading_exp(order).is_some_and(|lm| {
                     lm.len() == m.len() && lm.iter().zip(m.iter()).all(|(a, b)| a <= b)
                 })
             })
@@ -781,7 +781,7 @@ pub fn reduce_batch(
                             return false;
                         }
                         let lm = p.leading_exp(order);
-                        lm.map_or(false, |l| !basis_lms.contains(&l))
+                        lm.is_some_and(|l| !basis_lms.contains(&l))
                     })
                     .map(|p| p.make_monic(order))
                     .collect();
@@ -867,10 +867,10 @@ pub fn compute_groebner_basis_gpu(
             pairs.clear();
             for i in 0..basis.len() {
                 for j in (i + 1)..basis.len() {
-                    if !product_criterion(&basis[i], &basis[j], order) {
-                        if i >= new_start || j >= new_start {
-                            pairs.push((i, j));
-                        }
+                    if !product_criterion(&basis[i], &basis[j], order)
+                        && (i >= new_start || j >= new_start)
+                    {
+                        pairs.push((i, j));
                     }
                 }
             }
@@ -879,7 +879,7 @@ pub fn compute_groebner_basis_gpu(
         }
     }
 
-    Ok(interreduce_gpu(basis, order, device_id)?)
+    interreduce_gpu(basis, order, device_id)
 }
 
 fn product_criterion(f: &GbPoly, g: &GbPoly, order: MonomialOrder) -> bool {
@@ -1012,7 +1012,7 @@ mod tests {
         let mut lifter = CrtLifter::new(1, n_cols, monomials, 1, order);
 
         for &p in &PRIMES[..5] {
-            let mat = MacaulayMatrix::build(&[poly.clone()], order, p).unwrap();
+            let mat = MacaulayMatrix::build(std::slice::from_ref(&poly), order, p).unwrap();
             lifter.add_image(&mat);
         }
 

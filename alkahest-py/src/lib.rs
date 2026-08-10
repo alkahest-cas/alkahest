@@ -164,6 +164,17 @@ use alkahest_core::validated::bounds::{
     SignPredicate as CoreSignPredicate, Verdict as CoreVerdict,
 };
 use alkahest_core::validated::ValidatedError as CoreValidatedError;
+// P1 item 8 — positivity certificates (SOS / Positivstellensatz)
+use alkahest_core::real::sos::{
+    prove_nonneg as core_prove_nonneg, sos_decompose as core_sos_decompose,
+    PositivityCertificate as CorePositivityCertificate, SosError as CoreSosError,
+    SosOpts as CoreSosOpts,
+};
+// P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+use alkahest_core::holonomic::{
+    zeilberger as core_zeilberger, HolonomicError as CoreHolonomicError,
+    ZeilbergerOpts as CoreZeilbergerOpts,
+};
 // V3-1 — Integer number theory
 use alkahest_core::number_theory::{
     discrete_log as nt_discrete_log, factorint as nt_factorint, isprime as nt_isprime,
@@ -289,6 +300,8 @@ pyo3::create_exception!(alkahest, PyPslqError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyCadError, PyAlkahestError);
 // P1 item 9 — rigorous global bounds (Taylor models / validated numerics)
 pyo3::create_exception!(alkahest, PyValidatedError, PyAlkahestError);
+// P1 item 8 — positivity certificates (SOS / Positivstellensatz)
+pyo3::create_exception!(alkahest, PySosError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PySumError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyProductError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyNumberTheoryError, PyAlkahestError);
@@ -298,6 +311,8 @@ pyo3::create_exception!(alkahest, PyRsolveError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyDiophantineError, PyAlkahestError);
 // P1 search plumbing item 4 — budgets, cancellation, determinism
 pyo3::create_exception!(alkahest, PyBudgetExceededError, PyAlkahestError);
+// P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+pyo3::create_exception!(alkahest, PyHolonomicError, PyAlkahestError);
 
 /// Build a structured exception with `.code`, `.remediation`, `.span` attributes.
 fn make_structured_err<E: AlkahestErrorTrait>(
@@ -444,14 +459,6 @@ fn assumption_error_to_py(e: AssumptionError) -> PyErr {
 fn io_error_to_py(e: IoError) -> PyErr {
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyIoError>();
-        make_structured_err(py, &exc_type, &e)
-    })
-}
-
-#[cfg(feature = "groebner-cuda")]
-fn gpu_groebner_error_to_py(e: alkahest_core::experimental::GpuGroebnerError) -> PyErr {
-    Python::with_gil(|py| {
-        let exc_type = py.get_type_bound::<PySolverError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -4192,6 +4199,136 @@ fn py_verify_wz_pair(
     let pool = f.pool.borrow(py);
     let pair = WzPair { f: f.id, g: g.id };
     Ok(core_verify_wz_pair(&pair, n.id, k.id, &pool.inner))
+}
+
+// ---------------------------------------------------------------------------
+// P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+// ---------------------------------------------------------------------------
+
+fn holonomic_error_to_py(e: CoreHolonomicError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyHolonomicError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+/// A **verified** Zeilberger certificate, returned by :func:`alkahest.zeilberger`.
+///
+/// Carries the recurrence coefficients ``a_0(n), …, a_J(n)`` and the rational
+/// certificate ``R(n, k)`` satisfying, as an exact identity in ``Q(n)(k)``,
+///
+/// ``Σ_i a_i(n)·F(n+i, k) = G(n, k+1) − G(n, k)``  with  ``G = R·F``.
+///
+/// Summing over ``k`` telescopes the right-hand side, so ``S(n) = Σ_k F(n,k)``
+/// satisfies ``Σ_i a_i(n)·S(n+i) = 0``.  The identity is re-checked exactly
+/// before this object is constructed — a returned certificate is a proof, not a
+/// numerical match.
+#[pyclass(name = "ZeilbergerCertificate")]
+struct PyZeilbergerCertificate {
+    order: usize,
+    coeff_ids: Vec<ExprId>,
+    certificate_id: ExprId,
+    pool: Py<PyExprPool>,
+    derivation: String,
+}
+
+#[pymethods]
+impl PyZeilbergerCertificate {
+    /// Recurrence order ``J``; ``len(coeffs) == order + 1``.
+    #[getter]
+    fn order(&self) -> usize {
+        self.order
+    }
+
+    /// ``[a_0(n), …, a_J(n)]`` — polynomial coefficients of the recurrence.
+    #[getter]
+    fn coeffs(&self, py: Python<'_>) -> Vec<PyExpr> {
+        self.coeff_ids
+            .iter()
+            .map(|&id| PyExpr {
+                id,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect()
+    }
+
+    /// ``R(n, k)`` — the rational certificate, with ``G(n,k) = R(n,k)·F(n,k)``.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyExpr {
+        let _ = py;
+        PyExpr {
+            id: self.certificate_id,
+            pool: self.pool.clone_ref(py),
+        }
+    }
+
+    /// Human-readable derivation log for the search that produced this.
+    #[getter]
+    fn derivation(&self) -> String {
+        self.derivation.clone()
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> String {
+        let pool = self.pool.borrow(py);
+        let coeffs: Vec<String> = self
+            .coeff_ids
+            .iter()
+            .map(|&id| pool.inner.display(id).to_string())
+            .collect();
+        format!(
+            "ZeilbergerCertificate(order={}, coeffs=[{}], certificate={})",
+            self.order,
+            coeffs.join(", "),
+            pool.inner.display(self.certificate_id)
+        )
+    }
+}
+
+/// `alkahest.zeilberger(term, n, k, *, max_order=4, max_degree=16) -> ZeilbergerCertificate`
+///
+/// Zeilberger's algorithm (creative telescoping) for a proper hypergeometric
+/// term ``F(n, k)``.  Returns a **verified** certificate: the recurrence
+/// ``Σ_i a_i(n)·F(n+i,k) = ΔG`` with ``G = R·F`` is re-checked as an exact
+/// identity in ``Q(n)(k)`` before it is returned.
+///
+/// Raises :exc:`alkahest.HolonomicError` rather than guessing when ``term`` is
+/// outside the proper hypergeometric class (``E-HOLO-001``) or when the bounded
+/// search is exhausted (``E-HOLO-002``).
+#[pyfunction]
+#[pyo3(name = "zeilberger", signature = (term, n, k, *, max_order = 4, max_degree = 16))]
+fn py_zeilberger(
+    py: Python<'_>,
+    term: PyRef<PyExpr>,
+    n: PyRef<PyExpr>,
+    k: PyRef<PyExpr>,
+    max_order: usize,
+    max_degree: usize,
+) -> PyResult<PyZeilbergerCertificate> {
+    let pool_py = term.pool.clone_ref(py);
+    let opts = CoreZeilbergerOpts {
+        max_order,
+        max_degree,
+    };
+    let (order, coeff_ids, certificate_id, derivation) = {
+        let pool = pool_py.borrow(py);
+        let derived = core_zeilberger(term.id, n.id, k.id, &pool.inner, &opts)
+            .map_err(holonomic_error_to_py)?;
+        let derivation = derived.log.display_with(&pool.inner).to_string();
+        let value = derived.value;
+        (
+            value.order,
+            value.coeffs.clone(),
+            value.certificate,
+            derivation,
+        )
+    };
+    Ok(PyZeilbergerCertificate {
+        order,
+        coeff_ids,
+        certificate_id,
+        pool: pool_py,
+        derivation,
+    })
 }
 
 /// `alkahest.match_pattern(pattern_expr, expr) -> list[dict[str, Expr]]`
@@ -7960,6 +8097,17 @@ fn validated_error_to_py(e: CoreValidatedError) -> PyErr {
     })
 }
 
+// ---------------------------------------------------------------------------
+// P1 item 8 — positivity certificates (SOS / Positivstellensatz)
+// ---------------------------------------------------------------------------
+
+fn sos_error_to_py(e: CoreSosError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PySosError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
 fn verdict_str(v: CoreVerdict) -> &'static str {
     match v {
         CoreVerdict::True => "true",
@@ -8004,6 +8152,95 @@ impl PyEnclosure {
         format!(
             "Enclosure([{}, {}], budget_exhausted={}, subdivisions={})",
             self.lower, self.upper, self.budget_exhausted, self.subdivisions
+        )
+    }
+}
+
+/// An exact, re-checkable proof that a polynomial is non-negative.
+///
+/// Returned by :func:`alkahest.sos_decompose` and :func:`alkahest.prove_nonneg`.
+/// The identity it carries has already been re-expanded and compared against
+/// the target exactly; :meth:`verify` re-runs that check on demand, so a
+/// downstream consumer never has to trust the search that produced it.
+#[pyclass(name = "PositivityCertificate")]
+struct PyPositivityCertificate {
+    inner: CorePositivityCertificate,
+    pool: Py<PyExprPool>,
+}
+
+#[pymethods]
+impl PyPositivityCertificate {
+    /// ``"sos"``, ``"handelman"`` or ``"putinar"``.
+    #[getter]
+    fn kind(&self) -> String {
+        self.inner.kind.as_str().to_string()
+    }
+
+    /// The basis degree (unconstrained) or Handelman level actually used.
+    #[getter]
+    fn degree(&self) -> u32 {
+        self.inner.degree
+    }
+
+    /// Number of squares in the decomposition.
+    #[getter]
+    fn num_squares(&self) -> usize {
+        self.inner.num_squares()
+    }
+
+    /// The certificate identity, e.g. ``p = 1*(x - y)^2 + 2*(y)^2``.
+    #[getter]
+    fn identity(&self) -> String {
+        self.inner.identity_string()
+    }
+
+    /// The claim being certified, e.g. ``p >= 0 on {g_0 >= 0, g_1 >= 0}``.
+    #[getter]
+    fn claim(&self) -> String {
+        self.inner.claim_string()
+    }
+
+    /// How the search proceeded — the audit trail.
+    #[getter]
+    fn log(&self) -> Vec<String> {
+        self.inner.log.clone()
+    }
+
+    /// The right-hand side of the identity as an :class:`Expr`.
+    #[getter]
+    fn expression(&self, py: Python<'_>) -> PyExpr {
+        let id = {
+            let pool = self.pool.borrow(py);
+            self.inner.to_expr(&pool.inner)
+        };
+        PyExpr {
+            id,
+            pool: self.pool.clone_ref(py),
+        }
+    }
+
+    /// Re-run the exact verification. Always ``True`` for a certificate that
+    /// was returned (the search refuses rather than returning an unverified
+    /// one); exposed so a caller can check independently.
+    fn verify(&self) -> PyResult<bool> {
+        match self.inner.verify() {
+            Ok(()) => Ok(true),
+            Err(why) => Err(sos_error_to_py(CoreSosError::VerificationFailed(why))),
+        }
+    }
+
+    /// Lean 4 rendering of the identity, or ``None`` when it cannot be emitted
+    /// soundly.
+    fn to_lean(&self) -> Option<String> {
+        self.inner.to_lean()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PositivityCertificate(kind={}, degree={}, squares={})",
+            self.inner.kind.as_str(),
+            self.inner.degree,
+            self.inner.num_squares()
         )
     }
 }
@@ -8181,6 +8418,72 @@ fn py_verified_sign(
     let v = core_verified_sign(expr.id, &pool.inner, &boxes, pred, &opts)
         .map_err(validated_error_to_py)?;
     Ok(verdict_str(v).to_string())
+}
+
+/// `alkahest.sos_decompose(expr, vars, *, basis_degree=None) -> PositivityCertificate`
+///
+/// Exact rational sum-of-squares decomposition ``p = Σ_j σ_j·q_j²``.
+///
+/// Raises :exc:`alkahest.SosError` rather than guessing: ``E-SOS-003`` with a
+/// witness point when ``p`` is negative somewhere, ``E-SOS-002`` when no
+/// certificate of the searched shape exists at this basis degree (which is
+/// *not* a proof that none exists — see the docs).
+#[pyfunction]
+#[pyo3(name = "sos_decompose", signature = (expr, vars, *, basis_degree = None))]
+fn py_sos_decompose(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    vars: Vec<PyRef<PyExpr>>,
+    basis_degree: Option<u32>,
+) -> PyResult<PyPositivityCertificate> {
+    let pool_py = expr.pool.clone_ref(py);
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+    let opts = CoreSosOpts {
+        basis_degree,
+        ..Default::default()
+    };
+    let inner = {
+        let pool = pool_py.borrow(py);
+        core_sos_decompose(expr.id, &var_ids, &pool.inner, &opts).map_err(sos_error_to_py)?
+    };
+    Ok(PyPositivityCertificate {
+        inner,
+        pool: pool_py,
+    })
+}
+
+/// `alkahest.prove_nonneg(expr, vars, *, constraints=(), basis_degree=None, level=2)`
+///
+/// Prove ``p ≥ 0`` on ``{x : g_i(x) ≥ 0}`` with a Handelman-style certificate
+/// ``p = Σ_α c_α·Π g_i^{α_i}`` (``c_α ≥ 0``). With no constraints this is
+/// :func:`sos_decompose`.
+#[pyfunction]
+#[pyo3(name = "prove_nonneg", signature = (expr, vars, *, constraints = None, basis_degree = None, level = 2))]
+fn py_prove_nonneg(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    vars: Vec<PyRef<PyExpr>>,
+    constraints: Option<Vec<PyRef<PyExpr>>>,
+    basis_degree: Option<u32>,
+    level: u32,
+) -> PyResult<PyPositivityCertificate> {
+    let pool_py = expr.pool.clone_ref(py);
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+    let cons: Vec<ExprId> = constraints
+        .map(|cs| cs.iter().map(|c| c.id).collect())
+        .unwrap_or_default();
+    let opts = CoreSosOpts {
+        basis_degree,
+        level,
+    };
+    let inner = {
+        let pool = pool_py.borrow(py);
+        core_prove_nonneg(expr.id, &cons, &var_ids, &pool.inner, &opts).map_err(sos_error_to_py)?
+    };
+    Ok(PyPositivityCertificate {
+        inner,
+        pool: pool_py,
+    })
 }
 
 /// Brown-style CAD projection polynomials after eliminating ``elim_var``.
@@ -10054,6 +10357,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_solve_linear_recurrence_homogeneous, m)?)?;
     m.add_function(wrap_pyfunction!(py_rsolve, m)?)?;
     m.add_function(wrap_pyfunction!(py_verify_wz_pair, m)?)?;
+    // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+    m.add_class::<PyZeilbergerCertificate>()?;
+    m.add_function(wrap_pyfunction!(py_zeilberger, m)?)?;
     m.add_function(wrap_pyfunction!(match_pattern, m)?)?;
     m.add_function(wrap_pyfunction!(make_rule, m)?)?;
     m.add_function(wrap_pyfunction!(py_subs, m)?)?;
@@ -10202,6 +10508,10 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_verified_integral, m)?)?;
     m.add_function(wrap_pyfunction!(py_verified_no_roots, m)?)?;
     m.add_function(wrap_pyfunction!(py_verified_sign, m)?)?;
+    // P1 item 8 — positivity certificates (SOS / Positivstellensatz)
+    m.add_class::<PyPositivityCertificate>()?;
+    m.add_function(wrap_pyfunction!(py_sos_decompose, m)?)?;
+    m.add_function(wrap_pyfunction!(py_prove_nonneg, m)?)?;
     m.add_function(wrap_pyfunction!(py_cad_lift, m)?)?;
     m.add_function(wrap_pyfunction!(py_routh_hurwitz, m)?)?;
     // V5-1 — Lean 4 certificate exporter
@@ -10324,8 +10634,15 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "ValidatedError",
         m.py().get_type_bound::<PyValidatedError>(),
     )?;
+    // P1 item 8 — positivity certificates (SOS / Positivstellensatz)
+    m.add("SosError", m.py().get_type_bound::<PySosError>())?;
     m.add("SumError", m.py().get_type_bound::<PySumError>())?;
     m.add("ProductError", m.py().get_type_bound::<PyProductError>())?;
+    // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+    m.add(
+        "HolonomicError",
+        m.py().get_type_bound::<PyHolonomicError>(),
+    )?;
     m.add(
         "NumberTheoryError",
         m.py().get_type_bound::<PyNumberTheoryError>(),

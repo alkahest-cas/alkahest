@@ -17,6 +17,8 @@ pub mod errors;
 pub mod eval;
 pub mod flint;
 pub mod horner;
+// P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+pub mod holonomic;
 pub mod hybrid;
 pub mod integrate;
 pub mod jit;

@@ -67,6 +67,9 @@ Current stable feature surface.
 - Linear recurrence solving (`solve_linear_recurrence_homogeneous`)
 - Difference equations / `rsolve`: constant-coefficient recurrences with polynomial RHS
 - Symbolic products: definite and indefinite via Γ-ratio telescoping (`product_definite`, `product_indefinite`, `Product`)
+- Creative telescoping / Zeilberger's algorithm (`zeilberger`): P-recursive recurrence for a proper hypergeometric term plus a rational certificate, re-checked as an exact `Q(n)(k)` identity before it is returned; refuses (`E-HOLO-*`) rather than guessing outside the class or beyond the search bounds
+
+- Positivity certificates (`sos_decompose`, `prove_nonneg`): exact rational sum-of-squares and Handelman certificates on basic semialgebraic sets, re-expanded and checked identically before return; distinguishes "certified", "definitely negative (with witness)" and "no certificate at this degree" (`E-SOS-*`)
 
 ## Number theory
 

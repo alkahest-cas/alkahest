@@ -122,6 +122,8 @@ from .alkahest import (  # noqa: F401
     Not,
     Or,
     Port,
+    # P1 item 8 — positivity certificates (SOS / Positivstellensatz)
+    PositivityCertificate,
     # PA-5: Primitive registry
     PrimitiveRegistry,
     RationalFunction,
@@ -136,6 +138,8 @@ from .alkahest import (  # noqa: F401
     UniPolyFactorization,
     # V2-7: Polynomial factorization
     UniPolyFactorModP,
+    # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+    ZeilbergerCertificate,
     _build_features,
     _derived_result_context_simplify,
     abs,  # symbolic abs — use alkahest.abs(expr); shadows Python builtin within this module
@@ -215,6 +219,7 @@ from .alkahest import (  # noqa: F401
     poly_normal,
     product_definite,
     product_indefinite,
+    prove_nonneg,
     re,
     real_roots,
     refine_root,
@@ -248,6 +253,7 @@ from .alkahest import (  # noqa: F401
     sin,
     sinh,
     solve_linear_recurrence_homogeneous,
+    sos_decompose,
     sparse_interp,
     sparse_interp_univariate,
     sqrt,
@@ -269,6 +275,8 @@ from .alkahest import (  # noqa: F401
     verify_wz_pair,
     version,
     voltage_source,
+    # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+    zeilberger,
 )
 from .alkahest import (
     # Phase 15: Symbolic matrices
@@ -328,6 +336,7 @@ from .exceptions import (
     DomainError,
     EigenError,
     FactorError,
+    HolonomicError,
     IntegrationError,
     IoError,
     JitError,
@@ -347,6 +356,7 @@ from .exceptions import (
     RsolveError,
     SeriesError,
     SolverError,
+    SosError,
     SparseGcdError,
     SparseInterpError,
     SumError,
@@ -365,6 +375,7 @@ _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     "DomainError",
     "EigenError",
     "FactorError",
+    "HolonomicError",
     "IntegrationError",
     "IoError",
     "JitError",
@@ -383,6 +394,8 @@ _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     "RsolveError",
     "SeriesError",
     "SolverError",
+    # P1 item 8 — positivity certificates (SOS / Positivstellensatz)
+    "SosError",
     "SparseGcdError",
     "SparseInterpError",
     "SumError",
@@ -1731,6 +1744,8 @@ __all__ = [
     "GbPoly",
     "GradTracedFn",
     "GroebnerBasis",
+    # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+    "HolonomicError",
     "HybridODE",
     "IntegrationError",
     # V1-16: IoError
@@ -1752,6 +1767,7 @@ __all__ = [
     "ParseError",
     "PoolError",
     "Port",
+    "PositivityCertificate",
     "PrimaryComponent",
     # PA-5
     "PrimitiveRegistry",
@@ -1772,6 +1788,8 @@ __all__ = [
     "Series",
     "SeriesError",
     "SolverError",
+    # P1 item 8 — positivity certificates (SOS / Positivstellensatz)
+    "SosError",
     "SparseGcdError",
     "SparseInterpError",
     "SumError",
@@ -1784,6 +1802,8 @@ __all__ = [
     "UniPolyFactorModP",
     "UniPolyFactorization",
     "ValidatedError",
+    # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+    "ZeilbergerCertificate",
     "__version__",
     "abs",
     "acos",
@@ -1905,6 +1925,8 @@ __all__ = [
     "primary_decomposition",
     "product_definite",
     "product_indefinite",
+    # P1 item 8 — positivity certificates (SOS / Positivstellensatz)
+    "prove_nonneg",
     "radical",
     "re",
     # V2-4
@@ -1958,6 +1980,8 @@ __all__ = [
     "solve",
     "solve_linear_recurrence_homogeneous",
     "solve_numerical",
+    # P1 item 8 — positivity certificates (SOS / Positivstellensatz)
+    "sos_decompose",
     "sparse_interp",
     "sparse_interp_univariate",
     "sqrt",
@@ -1987,6 +2011,8 @@ __all__ = [
     "verify_wz_pair",
     "version",
     "voltage_source",
+    # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
+    "zeilberger",
 ]
 
 # Drop import-machinery leaks from ``dir(alkahest)`` / autocomplete. Lazy

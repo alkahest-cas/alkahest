@@ -357,7 +357,7 @@ fn bench_macaulay_reduce() -> Vec<BenchRecord> {
             if v == &0 {
                 0
             } else {
-                (v.significant_bits() as u32).max(1)
+                v.significant_bits().max(1)
             }
         }
         polys

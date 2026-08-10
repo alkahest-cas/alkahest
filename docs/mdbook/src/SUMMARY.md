@@ -16,6 +16,7 @@
   - [Rigorous global bounds](./validated-bounds.md)
 - [ODE and DAE modeling](./ode-dae.md)
 - [Polynomial system solving](./solving.md)
+- [Positivity certificates (SOS)](./positivity.md)
 - [Interoperability](./interop.md)
 - [Reinforcement learning](./rl.md)
 - [Derivation logs](./derivations.md)
@@ -26,4 +27,5 @@
 - [Autoresearch / agent loops](./search-plumbing.md)
   - [Budgets, cancellation, and determinism](./budgets.md)
   - [Batch and streaming evaluation](./batch.md)
+  - [Creative telescoping (Zeilberger)](./telescoping.md)
 - [Stability policy](./stability.md)
