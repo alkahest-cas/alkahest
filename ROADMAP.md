@@ -25,6 +25,21 @@ Items in rough priority order. None are committed to a specific release date.
 - **Higher-degree algebraic Risch** — multiple generators; cbrt and nth-root extensions; full Trager algorithm
 - **Transcendental Risch (Phase 2)** — ✅ **Implemented** (issue #4): polynomial RDE solver, hyperexponential and hyperlogarithmic tower cases, NonElementary certification; remaining gaps: multiple generators, mixed exp+log towers, rational coefficients in RDE (exp(x)/x), full Liouville structure theorem
 
+### Mathematical coverage (regressions / known gaps)
+- **Sparse interpolation: make Zippel oracle cost polynomial, not multiplicative.** The
+  V2-3 acceptance criterion (10-variable, 15-term recovery at ≥ 95% success) is currently
+  **unreachable**. `zippel_helper` / `zippel_helper_multi` recurse so that each level's
+  "oracle" is itself a batched lift calling the level below `t` times, so total oracle
+  calls grow as `∏ tᵢ` down the recursion instead of `Σ`. Measured on the roadmap
+  corpus: 2 vars → 70 calls, 3 → 1,771, 4 → 139,552, 5 → 15,019,900 (75 s); a growth
+  factor of 25 → 79 → 108 per added variable, extrapolating to ~1e17 calls at 10
+  variables. Textbook Zippel is `O(n·t·d)`: each new variable should cost `(d+1)·t`
+  *additional* evaluations by solving for the coefficients of the already-known skeleton
+  via a transposed Vandermonde system, rather than re-deriving them recursively. Until
+  that lands, `tests/test_sparse_interp.py::test_roadmap_10var_15term` is skipped (it
+  consumed the entire 6 h Tier 1b nightly cap and reported nothing) and
+  `test_multivariate_stress_4var` is the regression guard.
+
 ### Infrastructure
 - **Complete Lean certificate coverage** — bring Lean 4 export (rewrite-tagged proof traces and algorithmic witnesses) up to parity with every supported proof-producing operation; track gaps and add regression checks so new algorithms and rules do not land without matching certificate paths or Mathlib theorem hooks.
 - **LLVM JIT + full-feature wheels — PyTorch-style auxiliary index** — keep default PyPI wheels free of the LLVM/inkwell dependency and heavy optional features; publish **`+jit`** (JIT only) and **`+full`** (`jit groebner parallel egraph`) under PEP 440 local versions on a **separate PEP 503 index** (or GitHub Release assets until that index exists) so `pip install alkahest` stays on the small default while `pip install 'alkahest==…+jit'` / `'…+full'` with `--extra-index-url …` opts in. Rationale: if local-version wheels and the plain release were both uploaded to the same PyPI project, many resolvers would treat the local segment as newer and pull the large binary by default.
