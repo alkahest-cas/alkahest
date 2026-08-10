@@ -13,6 +13,7 @@
 - [Transformations](./transformations.md)
 - [Code generation](./codegen.md)
 - [Ball arithmetic](./ball-arithmetic.md)
+  - [Rigorous global bounds](./validated-bounds.md)
 - [ODE and DAE modeling](./ode-dae.md)
 - [Polynomial system solving](./solving.md)
 - [Positivity certificates (SOS)](./positivity.md)
