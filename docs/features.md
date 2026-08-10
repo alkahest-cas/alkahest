@@ -58,6 +58,7 @@ Current stable feature surface.
 - `RootSum` kernel node: first-class symbolic sum over algebraic roots, with differentiation, display (Debug / LaTeX / unicode), persistence (pool format V5), and PyO3 bridge
 - Truncated Taylor and Laurent series (`series`, `Series`)
 - Limits (`limit`, `LimitDirection`): L'Hôpital, local expansions, limits at ±∞
+- Asymptotics of sums (`experimental.euler_maclaurin`): Euler–Maclaurin expansion of `Σ_{k=a}^{n} f(k)` with Bernoulli corrections, numerically gated, returning an `AsymptoticReport` that marks each hypothesis checked or assumed (the additive constant — γ for the harmonic numbers — is fitted, not proved, and labelled as such)
 
 ## Discrete mathematics
 

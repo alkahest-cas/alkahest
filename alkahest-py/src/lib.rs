@@ -167,6 +167,8 @@ use alkahest_core::holonomic::{
     zeilberger as core_zeilberger, HolonomicError as CoreHolonomicError,
     ZeilbergerOpts as CoreZeilbergerOpts,
 };
+// P1 item 10 — asymptotic expansion at scale
+use alkahest_core::calculus::euler_maclaurin::euler_maclaurin as core_euler_maclaurin;
 // V3-1 — Integer number theory
 use alkahest_core::number_theory::{
     discrete_log as nt_discrete_log, factorint as nt_factorint, isprime as nt_isprime,
@@ -4318,6 +4320,155 @@ fn py_zeilberger(
         certificate_id,
         pool: pool_py,
         derivation,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// P1 item 10 — asymptotic expansion at scale
+// ---------------------------------------------------------------------------
+
+/// An asymptotic expansion together with the evidence for it.
+///
+/// `terms` is ordered most-significant first, so the claim is
+/// ``f ~ terms[0] + terms[1] + …``. The remaining fields exist so a caller can
+/// audit *why* it should believe that: which hypotheses were mechanically
+/// checked versus merely assumed, and how the truncated expansion compared
+/// against an independently computed reference.
+#[pyclass(name = "AsymptoticReport")]
+struct PyAsymptoticReport {
+    method: String,
+    term_ids: Vec<ExprId>,
+    rigor: String,
+    hypotheses: Vec<(String, String)>,
+    verification: Vec<(f64, f64, f64, f64)>,
+    derivation: Vec<String>,
+    pool: Py<PyExprPool>,
+}
+
+#[pymethods]
+impl PyAsymptoticReport {
+    /// Name of the method that produced the expansion.
+    #[getter]
+    fn method(&self) -> String {
+        self.method.clone()
+    }
+
+    /// Ordered terms, most significant first.
+    #[getter]
+    fn terms(&self, py: Python<'_>) -> Vec<PyExpr> {
+        self.term_ids
+            .iter()
+            .map(|&id| PyExpr {
+                id,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect()
+    }
+
+    /// The most significant term.
+    #[getter]
+    fn leading(&self, py: Python<'_>) -> Option<PyExpr> {
+        self.term_ids.first().map(|&id| PyExpr {
+            id,
+            pool: self.pool.clone_ref(py),
+        })
+    }
+
+    /// ``"proved"`` or ``"numerically_consistent"`` — how much of the result
+    /// the implemented method actually establishes.
+    #[getter]
+    fn rigor(&self) -> String {
+        self.rigor.clone()
+    }
+
+    /// ``[(status, statement)]`` with status ``"checked"`` or ``"assumed"``.
+    #[getter]
+    fn hypotheses(&self) -> Vec<(String, String)> {
+        self.hypotheses.clone()
+    }
+
+    /// True when every listed hypothesis was mechanically checked.
+    #[getter]
+    fn all_hypotheses_checked(&self) -> bool {
+        self.hypotheses.iter().all(|(s, _)| s == "checked")
+    }
+
+    /// ``[(at, reference, approximation, relative_error)]`` from the gate.
+    #[getter]
+    fn verification(&self) -> Vec<(f64, f64, f64, f64)> {
+        self.verification.clone()
+    }
+
+    /// Worst relative error observed by the numeric gate.
+    #[getter]
+    fn max_relative_error(&self) -> Option<f64> {
+        self.verification
+            .iter()
+            .map(|v| v.3)
+            .fold(None, |acc, e| Some(acc.map_or(e, |a: f64| f64::max(a, e))))
+    }
+
+    /// Ordered, human-readable derivation log.
+    #[getter]
+    fn derivation(&self) -> Vec<String> {
+        self.derivation.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "AsymptoticReport(method={:?}, terms={}, rigor={:?})",
+            self.method,
+            self.term_ids.len(),
+            self.rigor
+        )
+    }
+}
+
+/// `alkahest.euler_maclaurin(summand, k, a, n, *, corrections=2) -> AsymptoticReport`
+///
+/// Asymptotic expansion of ``Σ_{k=a}^{n} f(k)`` as ``n → ∞`` by the
+/// Euler–Maclaurin formula. For ``f(k) = 1/k`` this recovers
+/// ``H_n ~ log n + γ + 1/(2n) − 1/(12n²) + …``.
+///
+/// The additive constant (γ above) is **not** determined by Euler–Maclaurin
+/// from the ``n``-side terms; it is fitted numerically from the exact sum and
+/// the returned report says so — ``rigor`` is ``"numerically_consistent"`` and
+/// the fitted constant appears as an explicitly assumed hypothesis.
+///
+/// Raises :exc:`alkahest.AsymptoticError` rather than guessing when the
+/// summand has no symbolic antiderivative or no term survives the numeric gate.
+#[pyfunction]
+#[pyo3(name = "euler_maclaurin", signature = (summand, k, a, n, *, corrections = 2))]
+fn py_euler_maclaurin(
+    py: Python<'_>,
+    summand: PyRef<PyExpr>,
+    k: PyRef<PyExpr>,
+    a: i64,
+    n: PyRef<PyExpr>,
+    corrections: usize,
+) -> PyResult<PyAsymptoticReport> {
+    let pool_py = summand.pool.clone_ref(py);
+    let r = {
+        let pool = pool_py.borrow(py);
+        core_euler_maclaurin(summand.id, k.id, a, n.id, corrections, &pool.inner)
+            .map_err(asymptotic_error_to_py)?
+    };
+    Ok(PyAsymptoticReport {
+        method: r.method.to_string(),
+        term_ids: r.terms.clone(),
+        rigor: r.rigor.tag().to_string(),
+        hypotheses: r
+            .hypotheses
+            .iter()
+            .map(|h| (h.status.tag().to_string(), h.statement.clone()))
+            .collect(),
+        verification: r
+            .verification
+            .iter()
+            .map(|v| (v.at, v.reference, v.approximation, v.relative_error))
+            .collect(),
+        derivation: r.derivation.clone(),
+        pool: pool_py,
     })
 }
 
@@ -10113,6 +10264,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_solve_linear_recurrence_homogeneous, m)?)?;
     m.add_function(wrap_pyfunction!(py_rsolve, m)?)?;
     m.add_function(wrap_pyfunction!(py_verify_wz_pair, m)?)?;
+    // P1 item 10 — asymptotic expansion at scale
+    m.add_class::<PyAsymptoticReport>()?;
+    m.add_function(wrap_pyfunction!(py_euler_maclaurin, m)?)?;
     // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     m.add_class::<PyZeilbergerCertificate>()?;
     m.add_function(wrap_pyfunction!(py_zeilberger, m)?)?;
