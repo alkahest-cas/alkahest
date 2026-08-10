@@ -10,6 +10,7 @@
   - [Rule engine](./rules.md)
   - [E-graph saturation](./egraph.md)
 - [Calculus](./calculus.md)
+  - [Asymptotics of sums](./asymptotics.md)
 - [Transformations](./transformations.md)
 - [Code generation](./codegen.md)
 - [Ball arithmetic](./ball-arithmetic.md)

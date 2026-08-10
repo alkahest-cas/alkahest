@@ -4,6 +4,22 @@
 
 ### Added
 
+- **Asymptotics of sums — Euler–Maclaurin** (P1 mathematics item 10):
+  `alkahest.experimental.euler_maclaurin(f, k, a, n, corrections=…)` expands
+  `Σ_{k=a}^{n} f(k)` as `n → ∞`, recovering
+  `H_n ~ log n + γ + 1/(2n) − 1/(12n²) + …` for `f = 1/k`. `series` and Gruntz
+  `limit` expand a *function*; this is the sum side, which is how conjectures
+  about growth rates get settled. Returns an `AsymptoticReport` that records
+  not just the terms but **how much is proved**: `rigor`, a per-hypothesis
+  checked/assumed ledger, and the numeric evidence from the `o()`-gate. The
+  additive constant (γ above) is *not* determined by Euler–Maclaurin from the
+  `n`-side terms — it is fitted numerically, and the report says so rather than
+  presenting it as derived. Terms are ordered by magnitude at the check points,
+  so the constant lands below every growing term and above every decaying one.
+  Refuses (`AsymptoticError`) when the summand has no symbolic antiderivative,
+  is not evaluable at the check points, or no term survives the gate. See
+  [`docs/mdbook/src/asymptotics.md`](docs/mdbook/src/asymptotics.md).
+
 - **Rigorous global bounds — Taylor models and validated numerics** (P1
   mathematics item 9): `alkahest.bound_on_box(expr, box)` returns a rigorous
   enclosure of the *range* of an expression over an axis-aligned box;

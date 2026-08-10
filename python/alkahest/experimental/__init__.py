@@ -66,11 +66,15 @@ from alkahest import (
 
 # Calculus / ODE / transform surface (still experimental).
 from alkahest.alkahest import (
+    # P1 item 10 — asymptotic expansion at scale
+    AsymptoticReport,
     Fps,
     OdeTrajectory,
     asymptotic_expand,
     dirac_delta,
     dsolve,
+    # P1 item 10 — asymptotic expansion at scale
+    euler_maclaurin,
     fourier_transform,
     heaviside,
     inverse_fourier_transform,
@@ -98,6 +102,8 @@ with contextlib.suppress(ImportError):
 
 __all__ = [
     "Assumptions",
+    # P1 item 10 — asymptotic expansion at scale
+    "AsymptoticReport",
     "CudaCompiledFn",
     "EvaluationResult",
     "Fps",
@@ -113,6 +119,8 @@ __all__ = [
     "digamma",
     "dirac_delta",
     "dsolve",
+    # P1 item 10 — asymptotic expansion at scale
+    "euler_maclaurin",
     "evaluate",
     "fourier_transform",
     "heaviside",

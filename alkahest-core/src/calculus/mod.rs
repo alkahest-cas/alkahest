@@ -1,6 +1,8 @@
 //! Symbolic calculus utilities — truncated expansions, limits, …
 
 pub mod asymptotic;
+pub mod asymptotic_common;
+pub mod euler_maclaurin;
 pub mod fps;
 pub mod gruntz;
 pub mod limits;
