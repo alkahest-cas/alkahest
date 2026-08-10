@@ -53,6 +53,8 @@ pub mod stablehlo;
 pub mod sum;
 // §3.3 — symbolic integral transforms (Laplace and inverse Laplace)
 pub mod transform;
+// P1 item 9 — rigorous global bounds (Taylor models / validated numerics)
+pub mod validated;
 // Plot — dependency-free SVG / DOT renderers
 pub mod plot;
 

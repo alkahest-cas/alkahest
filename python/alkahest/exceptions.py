@@ -39,6 +39,7 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-DOMAIN-*                 DomainError  (reserved; Python-only pending Rust impl)
     E-CERT-001                 CertificateUnavailableError  (Python-only; certificate ledger)
     E-BUDGET-001 … E-BUDGET-003 BudgetExceededError (P1 search plumbing item 4)
+    E-VALIDATED-001 … E-VALIDATED-005  ValidatedError (P1 item 9 — validated numerics)
     E-BATCH-001                 (Python-only; alkahest._batch fallback for a
                                  batch_map/batch_map_iter item whose exception carried no
                                  .code of its own — see docs/mdbook/src/batch.md)
@@ -191,6 +192,29 @@ class SumError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code="E-SUM-001", remediation=remediation, span=span)
+
+
+class ValidatedError(AlkahestError):
+    """A rigorous bound could not be established, so none is returned.
+
+    Every variant is a refusal, never a guess: an unsupported primitive
+    (``E-VALIDATED-001``), a free symbol with no interval (``E-VALIDATED-002``),
+    a singularity or branch cut inside the box (``E-VALIDATED-003``), an
+    enclosure that overflowed to infinity (``E-VALIDATED-004``), or a malformed
+    request (``E-VALIDATED-005``).
+
+    Note that running out of *budget* is not an error — that returns a wide but
+    still rigorous enclosure with ``budget_exhausted=True``, because a loose
+    true bound is useful and a tight false one is not.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-VALIDATED-001", remediation=remediation, span=span)
 
 
 class ProductError(AlkahestError):
