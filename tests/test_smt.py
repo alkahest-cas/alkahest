@@ -431,8 +431,15 @@ def test_quantified_formulas_are_refused_by_solve(pool):
     assert support.reason == "quantified"
 
 
+@requires_solver
 def test_uncheckable_formula_is_refused_before_the_solver_runs(pool, monkeypatch):
-    """`abs` exports fine but the kernel cannot evaluate it exactly."""
+    """`abs` exports fine but the kernel cannot evaluate it exactly.
+
+    Guarded on a solver because it is about *ordering*: that the exactness
+    probe fires before the solver is invoked. With no solver installed the
+    ``E-SMT-001`` refusal legitimately comes first, so there is no ordering
+    left to observe.
+    """
     x = pool.symbol("x")
     f = pool.gt(pool.func("abs", [x]), pool.integer(1))
     assert "(ite (>= x 0) x (- x))" in ak.to_smtlib(f)
@@ -514,8 +521,13 @@ def test_supported_prefers_the_in_tree_route_for_real_arithmetic(pool):
     x = pool.symbol("x")
     support = smt.supported(pool.ge(x * x, pool.integer(0)))
     assert support.logic in {"QF_LRA", "QF_NRA"}
+    # The recommendation is about which *route* is better, not about what
+    # happens to be installed, so it holds with or without a solver.
     assert support.recommendation == "prefer_in_tree"
-    assert "prove_nonneg" in support.detail
+    if has_solver:
+        # `detail` names the in-tree route only when SMT was actually an
+        # option; with no solver it explains the missing binary instead.
+        assert "prove_nonneg" in support.detail
 
 
 def test_supported_recommends_smt_for_mixed_arithmetic(pool):

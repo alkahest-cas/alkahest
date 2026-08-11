@@ -59,6 +59,10 @@ ci-extras = [
     "mpmath",
     "symengine",
     "wolframclient",
+    # Ships both the Python bindings and a `z3` binary, which is what
+    # alkahest.smt discovers. Without it the SMT bridge's solver round-trip
+    # tests skip, and only the emitter and the refusal paths get exercised.
+    "z3-solver",
 ]
 
 # ── Ruff ─────────────────────────────────────────────────────────────────────
