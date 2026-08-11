@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Sparse interpolation: Zippel oracle cost is now polynomial, not
+  multiplicative.** `sparse_interp` was formulated recursively — interpolate the
+  coefficients of `x₁` as polynomials in the remaining variables, recursively —
+  which makes each level's oracle a batched Vandermonde lift calling the level
+  below `t` times, so black-box evaluations grew as the **product** `∏ tᵢ` down
+  the recursion instead of the sum. Measured on the V2-3 roadmap corpus:
+  70 calls at 2 variables, 1,771 at 3, 139,552 at 4, 15,019,900 at 5 (75 s) —
+  a factor of 25 → 79 → 108 per added variable, extrapolating to ~1e17 at ten,
+  i.e. it never returned. Replaced with Zippel's actual iterative algorithm,
+  which introduces one variable at a time and recovers the coefficients of the
+  *known* skeleton from a transposed Vandermonde system: `O(n·d·T)` calls.
+  The same corpus now takes **34 / 62 / 97 / 139 calls at 2–5 variables and
+  601 for the 10-variable, 15-term roadmap case**, which completes in
+  milliseconds. That acceptance criterion (≥ 95% success over 20 seeds) passes
+  for the first time and its test is un-skipped; a new Rust test asserts the
+  oracle *call count* grows linearly in the variable count, since a functional
+  test alone cannot tell a correct implementation from one that never finishes.
+  `sparse_interp` additionally verifies each candidate against the black box at
+  random points and re-draws its anchors on mismatch, so an unlucky anchor
+  (Zippel's skeleton hypothesis is probabilistic) now produces a refusal rather
+  than a confidently wrong polynomial.
+
 ### Added
 
 - **Asymptotics of sums — Euler–Maclaurin** (P1 mathematics item 10):
