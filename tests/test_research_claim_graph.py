@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import threading
+from dataclasses import replace
 
 import alkahest as ak
 import pytest
@@ -347,6 +348,94 @@ def _graphs(draw):
         graph.add(claim)
         placed.append(claim.id)
     return graph
+
+
+def test_merge_cannot_close_a_cycle():
+    """Re-adding a claim must not be able to make the graph cyclic.
+
+    Claim IDs are content-addressed over the *normalised* statement, so "a" and
+    " a" are different strings with the same ID. Re-adding one takes the merge
+    path, which unions in its dependency edges -- and those can point at claims
+    recorded later, including ones that already depend on it.
+
+    That produced a graph which served fine in memory and serialised fine, but
+    could never be read back: `from_json` topologically sorts and raised
+    CycleError. Found by the round-trip property test below.
+    """
+    graph = ClaimGraph()
+    a = Claim(
+        id=claim_id("a", (), "test"),
+        statement="a",
+        kind="text",
+        method="test",
+        status="unverified",
+    )
+    graph.add(a)
+    b = Claim(
+        id=claim_id("b", (), "test"),
+        statement="b",
+        kind="text",
+        method="test",
+        status="unverified",
+        depends_on=(a.id,),
+    )
+    graph.add(b)
+
+    # " a" normalises to "a", so this merges into `a` and would add a -> b.
+    colliding = Claim(
+        id=claim_id(" a", (), "test"),
+        statement=" a",
+        kind="text",
+        method="test",
+        status="unverified",
+        depends_on=(b.id,),
+    )
+    assert colliding.id == a.id, "precondition: normalisation collapses the IDs"
+
+    with pytest.raises(CycleError) as excinfo:
+        graph.add(colliding)
+    assert a.id in str(excinfo.value)
+    assert b.id in str(excinfo.value)
+
+    # The graph is untouched and still round-trips.
+    assert graph.ids == (a.id, b.id)
+    assert ClaimGraph.from_json(graph.to_json()).to_dict() == graph.to_dict()
+
+
+def test_merge_still_unions_edges_when_acyclic():
+    """The cycle guard must not break legitimate merging."""
+    graph = ClaimGraph()
+    base = Claim(
+        id=claim_id("base", (), "test"),
+        statement="base",
+        kind="text",
+        method="test",
+        status="unverified",
+    )
+    other = Claim(
+        id=claim_id("other", (), "test"),
+        statement="other",
+        kind="text",
+        method="test",
+        status="unverified",
+    )
+    graph.add(base)
+    graph.add(other)
+
+    dependent = Claim(
+        id=claim_id("dependent", (), "test"),
+        statement="dependent",
+        kind="text",
+        method="test",
+        status="unverified",
+        depends_on=(base.id,),
+    )
+    graph.add(dependent)
+    # Re-derive the same claim, now also citing `other` -- acyclic, so allowed.
+    graph.add(replace(dependent, depends_on=(other.id,)))
+
+    assert set(graph[dependent.id].depends_on) == {base.id, other.id}
+    assert ClaimGraph.from_json(graph.to_json()).to_dict() == graph.to_dict()
 
 
 @settings(max_examples=60, deadline=None)
