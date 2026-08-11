@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import inspect
 import json
 import threading
 from contextlib import ExitStack, contextmanager, suppress
@@ -655,6 +656,25 @@ def _run_crosscheck(name: str, args: tuple, kwargs: dict) -> Any:
         return None
     if name not in getattr(_crosscheck, "OPERATIONS", ()):
         return None
+
+    # `check()` has keyword-only parameters of its own (`oracle`, `points`,
+    # `pool`, ...). Forwarding the captured operation's kwargs blindly would let
+    # a same-named argument be swallowed as a cross-check *setting*, so the
+    # comparison would silently run against a different call than the one being
+    # recorded — a wrong "agree" rather than an honest "we could not check
+    # this". Refuse instead. Introspected rather than hard-coded so the guard
+    # cannot drift out of step with `check`'s signature.
+    reserved = {
+        p.name
+        for p in inspect.signature(_crosscheck.check).parameters.values()
+        if p.kind is inspect.Parameter.KEYWORD_ONLY
+    }
+    clashing = sorted(reserved & set(kwargs))
+    if clashing:
+        return _StubCrossCheck(
+            "operation arguments collide with cross-check parameters: " + ", ".join(clashing)
+        )
+
     with _suppress_capture():
         try:
             return _crosscheck.check(name, *args, **kwargs)

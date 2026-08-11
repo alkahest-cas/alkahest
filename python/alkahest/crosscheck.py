@@ -695,7 +695,7 @@ class Oracle(ABC):
         Raises
         ------
         CrossCheckError
-            ``E-XCHECK-003`` when the oracle declines or returns an
+            ``E-XCHECK-004`` when the oracle declines or returns an
             unevaluated form; a refusal is not a divergence.
         """
 
@@ -840,7 +840,7 @@ class SymPyOracle(Oracle):
         if runner is None:
             raise _refuse(
                 f"SymPy oracle has no implementation of {operation!r}",
-                code="E-XCHECK-003",
+                code="E-XCHECK-004",
                 remediation=(
                     "Add it to alkahest.crosscheck._SYMPY_RUNNERS together with a "
                     "comparison rung in OPERATIONS."
@@ -853,7 +853,7 @@ class SymPyOracle(Oracle):
         except Exception as exc:
             raise _refuse(
                 f"SymPy declined {operation}: {type(exc).__name__}: {exc}",
-                code="E-XCHECK-003",
+                code="E-XCHECK-004",
                 remediation=(
                     "The oracle refused. That is not a divergence and is not recorded "
                     "as one; the check reports outcome='incomparable'."
@@ -878,7 +878,7 @@ class SymPyOracle(Oracle):
                 if isinstance(value, sp.Basic) and value.has(*unevaluated):
                     raise _refuse(
                         f"SymPy returned an unevaluated form for {operation}: {value}",
-                        code="E-XCHECK-003",
+                        code="E-XCHECK-004",
                         remediation=(
                             "SymPy did not answer. Reported as 'incomparable' — an "
                             "unevaluated Integral is a refusal and comparing against it "
@@ -1006,7 +1006,7 @@ def _sympy_sum_indefinite(sp: Any, args: Mapping[str, Any]) -> Any:
     if out is None:
         raise _refuse(
             "SymPy's Gosper implementation found no hypergeometric antidifference",
-            code="E-XCHECK-003",
+            code="E-XCHECK-004",
             remediation="A refusal, not a divergence; reported as 'incomparable'.",
         )
     return out
@@ -1654,7 +1654,12 @@ def check(
         reason = {
             "E-XCHECK-001": "untranslatable",
             "E-XCHECK-002": "no_oracle",
-            "E-XCHECK-003": "oracle_refused",
+            # 003 is the caller error "this operation has no comparison rung",
+            # raised before any oracle work; 004 is "the oracle declined". They
+            # were one code, which meant a caller could not tell "I asked for
+            # something unsupported" from "the oracle had nothing to say".
+            "E-XCHECK-003": "unsupported_operation",
+            "E-XCHECK-004": "oracle_refused",
         }.get(str(getattr(exc, "code", "")), "incomparable")
         return CrossCheck(
             operation=operation,
@@ -1698,7 +1703,7 @@ def _compare(
     if not oracle.supports(spec.name):
         raise _refuse(
             f"oracle {oracle.name!r} cannot answer {spec.name!r}",
-            code="E-XCHECK-003",
+            code="E-XCHECK-004",
             remediation="Use a different oracle, or a different operation.",
         )
 

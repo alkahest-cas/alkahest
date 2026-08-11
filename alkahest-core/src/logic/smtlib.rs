@@ -179,6 +179,31 @@ pub struct Requirements {
 }
 
 /// The arithmetic fragment of an SMT-LIB logic name.
+///
+/// # `LIRA` / `NIRA` are solver-facing names, not catalog names
+///
+/// The official SMT-LIB logic catalog (2.7) has no `QF_LIRA`, `QF_NIRA`,
+/// `LIRA`, or `NIRA`: for mixed `Int`/`Real` it stops at `AUFLIRA` /
+/// `AUFNIRA`.  Alkahest emits the `LIRA`/`NIRA` family anyway, deliberately:
+///
+/// * they are what the solvers this bridge drives actually use for the mixed
+///   fragment.  z3 accepts them silently, where an unknown name draws
+///   `ignoring unsupported logic`; Yices documents `QF_LIRA` / `QF_NIRA` among
+///   the names it recognises beyond the official set; SMT-COMP runs `QF_LIRA`
+///   and `QF_NIRA` divisions over SMT-LIB benchmarks.
+/// * the catalog alternatives are strictly worse for what alkahest emits.
+///   `AUFLIRA`/`AUFNIRA` are *quantified* logics that additionally carry arrays
+///   and free function symbols, so naming one for a quantifier-free mixed
+///   formula throws away the `QF_` hint that decides which solver core runs and
+///   claims a much larger fragment than is being used.
+///
+/// Mixed `Int`/`Real` is the capability this bridge exists to add, so the
+/// contract is stated rather than hedged: **the inferred logic name for a mixed
+/// formula is solver-facing, not catalog-standard.**  A consumer that will only
+/// accept catalog names can ask for `AUFLIRA` / `AUFNIRA` explicitly (both are
+/// in [`SUPPORTED_LOGICS`] and are sound supersets of everything emitted here),
+/// or for `ALL`.  `tests/test_smt.py` pins that the installed solver accepts
+/// the names actually emitted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Arith {
     Lia,
@@ -235,43 +260,87 @@ impl Requirements {
 }
 
 /// Every logic name [`to_smtlib`] accepts explicitly, in the order a planner
-/// should read them: quantifier-free first, then quantified, then the catch-all.
+/// should read them: quantifier-free first, then quantified, then the two
+/// catalog logics for mixed `Int`/`Real` (see [`Arith`]), then the catch-all.
 pub const SUPPORTED_LOGICS: &[&str] = &[
     "QF_LIA", "QF_NIA", "QF_LRA", "QF_NRA", "QF_LIRA", "QF_NIRA", "LIA", "NIA", "LRA", "NRA",
-    "LIRA", "NIRA", "ALL",
+    "LIRA", "NIRA", "AUFLIRA", "AUFNIRA", "ALL",
 ];
 
-fn check_logic(requested: &str, req: &Requirements) -> Result<(), SmtLibError> {
-    if requested == "ALL" {
-        return Ok(());
+/// What a logic name permits, on the four axes [`Requirements`] tracks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LogicCaps {
+    quantifiers: bool,
+    nonlinear: bool,
+    ints: bool,
+    reals: bool,
+}
+
+const fn caps(quantifiers: bool, nonlinear: bool, ints: bool, reals: bool) -> LogicCaps {
+    LogicCaps {
+        quantifiers,
+        nonlinear,
+        ints,
+        reals,
     }
-    if !SUPPORTED_LOGICS.contains(&requested) {
+}
+
+/// What every name in [`SUPPORTED_LOGICS`] permits, in the same order.
+///
+/// A table rather than a letter heuristic on the name: `AUFLIRA` is a *linear*
+/// logic that does not start with `L`, so `body.starts_with('L')` would quietly
+/// wave a nonlinear formula through it.
+const LOGIC_CAPS: &[LogicCaps] = &[
+    //   quant  nonlin ints   reals
+    caps(false, false, true, false), // QF_LIA
+    caps(false, true, true, false),  // QF_NIA
+    caps(false, false, false, true), // QF_LRA
+    caps(false, true, false, true),  // QF_NRA
+    caps(false, false, true, true),  // QF_LIRA
+    caps(false, true, true, true),   // QF_NIRA
+    caps(true, false, true, false),  // LIA
+    caps(true, true, true, false),   // NIA
+    caps(true, false, false, true),  // LRA
+    caps(true, true, false, true),   // NRA
+    caps(true, false, true, true),   // LIRA
+    caps(true, true, true, true),    // NIRA
+    // The catalog names for mixed Int/Real.  Both are quantified and also carry
+    // arrays and free function symbols, which alkahest never emits — a superset
+    // is sound, and these are the names a consumer that only knows the official
+    // SMT-LIB catalog will accept.
+    caps(true, false, true, true), // AUFLIRA
+    caps(true, true, true, true),  // AUFNIRA
+    caps(true, true, true, true),  // ALL
+];
+
+/// The fragment `name` denotes, or `None` if [`to_smtlib`] does not accept it.
+fn logic_caps(name: &str) -> Option<LogicCaps> {
+    let index = SUPPORTED_LOGICS.iter().position(|&n| n == name)?;
+    LOGIC_CAPS.get(index).copied()
+}
+
+fn check_logic(requested: &str, req: &Requirements) -> Result<(), SmtLibError> {
+    let Some(caps) = logic_caps(requested) else {
         return Err(SmtLibError::UnsupportedLogic(format!(
             "{requested:?} is not one of {SUPPORTED_LOGICS:?}"
         )));
-    }
-    let quantifier_free = requested.starts_with("QF_");
-    let body = requested.strip_prefix("QF_").unwrap_or(requested);
-    let linear = body.starts_with('L');
-    let has_int = body.contains('I');
-    let has_real = body.contains('R');
-
-    if req.quantifiers && quantifier_free {
+    };
+    if req.quantifiers && !caps.quantifiers {
         return Err(SmtLibError::UnsupportedLogic(format!(
             "formula has quantifiers but {requested:?} is quantifier-free"
         )));
     }
-    if req.nonlinear && linear {
+    if req.nonlinear && !caps.nonlinear {
         return Err(SmtLibError::UnsupportedLogic(format!(
             "formula is nonlinear but {requested:?} is a linear logic"
         )));
     }
-    if req.ints && !has_int {
+    if req.ints && !caps.ints {
         return Err(SmtLibError::UnsupportedLogic(format!(
             "formula has Int-sorted symbols but {requested:?} has no Int sort"
         )));
     }
-    if req.reals && !has_real {
+    if req.reals && !caps.reals {
         return Err(SmtLibError::UnsupportedLogic(format!(
             "formula needs Real arithmetic but {requested:?} has no Real sort"
         )));
@@ -498,7 +567,8 @@ fn has_symbol(id: ExprId, pool: &ExprPool) -> bool {
 
 struct Emitter<'a> {
     pool: &'a ExprPool,
-    /// `to_real` exists only when the script also declares `Int`-sorted symbols.
+    /// Is the script in a `Reals_Ints` logic, where `to_real` exists and an
+    /// `Int` numeral in a `Real` position needs it?  See [`formula_export`].
     use_to_real: bool,
     req: Requirements,
     bound: Vec<String>,
@@ -508,10 +578,10 @@ struct Emitter<'a> {
 impl<'a> Emitter<'a> {
     fn coerce(&self, text: String, from: Sort, to: Sort) -> String {
         match (from, to) {
-            // `to_real` lives in the `Reals_Ints` theory, which the script only
-            // enters when it also declares an `Int`-sorted symbol.  Under plain
-            // `Reals` (QF_LRA / QF_NRA) numerals already *are* `Real`, and
-            // emitting `to_real` there would make the script unparseable.
+            // `to_real` lives in the `Reals_Ints` theory.  Under plain `Reals`
+            // (QF_LRA / QF_NRA) numerals already *are* `Real` and emitting
+            // `to_real` would make the script unparseable; under `Reals_Ints`
+            // they are `Int` and omitting it would rely on mixed-sort sugar.
             (Sort::Int, Sort::Real) => {
                 if self.use_to_real {
                     format!("(to_real {text})")
@@ -640,10 +710,18 @@ impl<'a> Emitter<'a> {
             )));
         }
         let base_has_symbol = has_symbol(base, self.pool);
+        let (base_text, base_sort) = self.term(base)?;
         if k == 0 {
+            // The kernel defines `0^0 = 1`, so the *value* is `1` whatever the
+            // base is — but the base still has to be visited.  Every refusal
+            // this emitter makes (float literals, transcendental heads, complex
+            // domains) is raised by `term`, and `ExprPool::pow` interns
+            // `sin(x)^0` verbatim, so returning early would emit a script for a
+            // formula alkahest cannot translate.  Visiting also records the
+            // base's `Requirements`, which keeps logic selection consistent
+            // with the symbols `collect_symbols_expr` goes on to declare.
             return Ok(("1".to_string(), Sort::Int));
         }
-        let (base_text, base_sort) = self.term(base)?;
         let n = k.unsigned_abs() as usize;
         if n >= 2 && base_has_symbol {
             self.req.nonlinear = true;
@@ -964,7 +1042,16 @@ pub fn formula_export(
 ) -> Result<SmtLibExport, SmtLibError> {
     let mut symbols: BTreeMap<String, (Sort, Domain)> = BTreeMap::new();
     collect_symbols_formula(f, pool, &mut symbols)?;
-    let use_to_real = symbols.values().any(|&(sort, _)| sort == Sort::Int);
+    // `to_real` exists only inside a `Reals_Ints` logic, and there are two ways
+    // to be in one: an `Int`-sorted symbol forces it, or the caller named a
+    // logic that carries both sorts.  Emitting `to_real` outside such a logic
+    // would not parse; *omitting* it inside one would lean on the mixed-sort
+    // sugar that only some logics define, so both cases turn it on.
+    let use_to_real = symbols.values().any(|&(sort, _)| sort == Sort::Int)
+        || opts
+            .logic
+            .and_then(logic_caps)
+            .is_some_and(|c| c.ints && c.reals);
 
     let mut emitter = Emitter {
         pool,
@@ -1114,6 +1201,34 @@ mod tests {
     }
 
     #[test]
+    fn zero_exponent_is_one_but_still_checks_the_base() {
+        // `0^0 = 1` in the kernel, so the value is not in question — but the
+        // base is still translated, and an untranslatable base is a refusal
+        // rather than a silently emitted `1`.
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+
+        let ok = p.pred_eq(p.pow(x, p.integer(0_i32)), p.integer(1_i32));
+        let text = to_smtlib(ok, &p, &opts()).unwrap();
+        assert!(text.contains("(= 1 1)"), "{text}");
+
+        let zero_zero = p.pred_eq(p.pow(p.integer(0_i32), p.integer(0_i32)), p.integer(1_i32));
+        assert!(to_smtlib(zero_zero, &p, &opts()).is_ok());
+
+        let sin_x = p.func("sin", vec![x]);
+        let bad = p.pred_eq(p.pow(sin_x, p.integer(0_i32)), p.integer(1_i32));
+        let err = to_smtlib(bad, &p, &opts()).unwrap_err();
+        assert!(
+            matches!(err, SmtLibError::UnsupportedFunction(_)),
+            "{err:?}"
+        );
+
+        let float_base = p.pred_eq(p.pow(p.float(0.1, 53), p.integer(0_i32)), p.integer(1_i32));
+        let err = to_smtlib(float_base, &p, &opts()).unwrap_err();
+        assert!(matches!(err, SmtLibError::UnsupportedNode(_)), "{err:?}");
+    }
+
+    #[test]
     fn huge_exponent_is_refused_not_expanded() {
         let p = ExprPool::new();
         let x = p.symbol("x", Domain::Real);
@@ -1244,6 +1359,54 @@ mod tests {
         assert!(matches!(err, SmtLibError::UnsupportedLogic(_)), "{err:?}");
         o.logic = Some("QF_NRA");
         assert!(to_smtlib(f, &p, &o).is_ok());
+    }
+
+    #[test]
+    fn every_supported_logic_has_a_capability_entry() {
+        assert_eq!(SUPPORTED_LOGICS.len(), LOGIC_CAPS.len());
+        for name in SUPPORTED_LOGICS {
+            assert!(logic_caps(name).is_some(), "{name} has no LogicCaps entry");
+        }
+        assert_eq!(logic_caps("QF_BV"), None);
+    }
+
+    #[test]
+    fn catalog_mixed_logics_are_accepted_and_still_checked() {
+        // `AUFLIRA`/`AUFNIRA` are the *official* mixed Int/Real names, offered
+        // for a consumer that only accepts the catalog.  `AUFLIRA` is linear
+        // despite not starting with `L`, so a nonlinear formula must still be
+        // refused under it.
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let n = p.symbol("n", Domain::Integer);
+        let linear = p.pred_gt(x, n);
+        let mut o = opts();
+        o.logic = Some("AUFLIRA");
+        let text = to_smtlib(linear, &p, &o).unwrap();
+        assert!(text.contains("(set-logic AUFLIRA)"), "{text}");
+        assert!(text.contains("(> x (to_real n))"), "{text}");
+
+        let nonlinear = p.pred_gt(p.mul(vec![x, n]), p.integer(0_i32));
+        let err = to_smtlib(nonlinear, &p, &o).unwrap_err();
+        assert!(matches!(err, SmtLibError::UnsupportedLogic(_)), "{err:?}");
+        o.logic = Some("AUFNIRA");
+        assert!(to_smtlib(nonlinear, &p, &o).is_ok());
+    }
+
+    #[test]
+    fn a_reals_ints_logic_never_relies_on_mixed_sort_sugar() {
+        // Pure-real formula, but the caller named a logic that carries both
+        // sorts: the numeral is `Int` there and needs lifting.
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let f = p.pred_gt(x, p.integer(0_i32));
+        let mut o = opts();
+        o.logic = Some("ALL");
+        let text = to_smtlib(f, &p, &o).unwrap();
+        assert!(text.contains("(> x (to_real 0))"), "{text}");
+        // ... and never emits it where the theory has no such function.
+        o.logic = Some("QF_LRA");
+        assert!(!to_smtlib(f, &p, &o).unwrap().contains("to_real"));
     }
 
     #[test]

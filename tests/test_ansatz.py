@@ -16,10 +16,12 @@ to zero.
 
 from __future__ import annotations
 
+import itertools
 from fractions import Fraction
 
 import alkahest as ak
 import pytest
+from alkahest import ansatz as ansatz_module
 from alkahest.ansatz import (
     DEFAULT_SEED,
     Ansatz,
@@ -184,6 +186,21 @@ def test_linear_combination_infers_its_variables(pool, x):
     family = linear_combination(pool, [ak.sin(x), ak.cos(x)])
     assert family.names == ("c_0", "c_1")
     assert [str(v) for v in family.vars] == ["x"]
+
+
+def test_reserved_names_do_not_become_independent_variables(pool, x, y):
+    # `reserved=` says "this name is taken", not "this is a variable". Inferring
+    # vars from it would silently change what the fit is asked to prove: the
+    # family below is a combination of sin and cos in x alone, and y is only
+    # kept away from the coefficient names.
+    family = linear_combination(pool, [ak.sin(x), ak.cos(x)], name="rv", reserved=[y])
+    assert [str(v) for v in family.vars] == ["x"]
+    solution = fit(family, family.expr - ak.sin(x))
+    assert solution.status == "exactly_verified"
+    # ... and the reservation still does its own job.
+    with pytest.raises(AnsatzError) as excinfo:
+        linear_combination(pool, [ak.sin(x)], name="k", reserved=[pool.symbol("k_0")])
+    assert excinfo.value.code == "E-ANSATZ-001"
 
 
 def test_max_terms_refuses_before_materialising(pool, x, y):
@@ -518,6 +535,63 @@ def test_collocation_and_derivative_extraction_agree(pool, x, y):
         assert_identical(by_points.expr, by_taylor.expr)
 
 
+def _break_probe_after(monkeypatch, successes: int) -> None:
+    """Make ``_probe`` fail from its *successes*-th call onward, every attempt."""
+    real_probe = ansatz_module._probe
+    calls = itertools.count()
+
+    def flaky(*args, **kwargs):
+        if next(calls) % (successes + 1) == successes:
+            raise ZeroDivisionError("undefined here")
+        return real_probe(*args, **kwargs)
+
+    monkeypatch.setattr(ansatz_module, "_probe", flaky)
+
+
+def test_a_half_built_taylor_system_is_never_returned(pool, x, monkeypatch):
+    # Every base point dies on its second multi-index. The rows that did get
+    # built are not a system anybody asked for, and returning them alongside a
+    # shorter list of multi-indices would misreport which equations exist.
+    family = polynomial(pool, [x], degree=2, name="ht")
+    _break_probe_after(monkeypatch, successes=1)
+    rows, used, skipped = ansatz_module._derivative_rows(
+        family, family.expr - x**2, seed=DEFAULT_SEED, degree_bound=3
+    )
+    assert rows == []
+    assert used == []
+    assert skipped == 8
+
+
+def test_an_unbuildable_taylor_system_is_reported_not_silently_truncated(pool, x, monkeypatch):
+    family = polynomial(pool, [x], degree=2, name="ut")
+    _break_probe_after(monkeypatch, successes=1)
+    with pytest.raises(AnsatzError) as excinfo:
+        fit(family, family.expr - x**2, certify="exact")
+    assert excinfo.value.code == "E-ANSATZ-003"
+    # Worded as the build failure it is, not as a claim about the family.
+    assert "could not extract the Taylor system" in str(excinfo.value)
+
+
+def test_max_points_does_not_shrink_the_taylor_system(pool, x):
+    # max_points caps sample-point *draws*; the Taylor path draws one base
+    # point and derives its equations from the degree bound, so a small cap
+    # must not quietly hand back a smaller (weaker) system.
+    family = polynomial(pool, [x], degree=3, name="mp")
+    residual = family.expr - x**3
+
+    def extraction(solution):
+        return next(s for s in solution.steps if s["rule"] == "ansatz_taylor_extraction")
+
+    uncapped = fit(family, residual, certify="exact")
+    capped = fit(family, residual, certify="exact", max_points=2)
+    assert extraction(capped)["after"] == extraction(uncapped)["after"]
+    assert capped.rank == uncapped.rank == 4
+    assert capped.status == "exactly_verified"
+    assert capped.free == ()
+    # The bound the system actually covers is stated, not implied.
+    assert any("total degree <=" in c for c in extraction(capped)["side_conditions"])
+
+
 # ---------------------------------------------------------------------------
 # Determinism
 # ---------------------------------------------------------------------------
@@ -560,12 +634,38 @@ def test_the_default_seed_is_a_fixed_constant():
     assert isinstance(DEFAULT_SEED, int)
 
 
+@pytest.mark.timeout(120)
+def test_the_sampler_outlives_its_initial_draw_window():
+    # A fixed draw window (-12..12 over 1..4) holds only 65 distinct points in
+    # one variable. Asking for more than that from a stream that rejects
+    # repeats but never widens hangs forever inside next(), which no caller's
+    # attempt counter can interrupt, so this must run rather than wedge.
+    points = list(itertools.islice(ansatz_module._sample_points(1, DEFAULT_SEED), 400))
+    assert len(set(points)) == 400
+    # Determinism is unaffected: the same seed still replays the same stream,
+    # starting from the same first points.
+    again = list(itertools.islice(ansatz_module._sample_points(1, DEFAULT_SEED), 400))
+    assert again == points
+
+
+@pytest.mark.timeout(120)
+def test_a_fit_can_ask_for_more_points_than_the_initial_window_holds(pool, x):
+    # Same hazard reached through the public API: 203 collocation rows in one
+    # variable is more than the un-widened window could ever supply.
+    family = polynomial(pool, [x], degree=2, name="wide")
+    solution = fit(family, family.expr - x**2, oversample=200)
+    assert len(solution.points) == 203
+    assert len(set(solution.points)) == 203
+    assert solution.status == "exactly_verified"
+    assert_identical(solution.expr, x**2)
+
+
 # ---------------------------------------------------------------------------
 # Nonlinear escalation
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not ak.capabilities()["groebner"], reason="needs a groebner build")
+@pytest.mark.skipif(not ak.capabilities().get("groebner", False), reason="needs a groebner build")
 def test_nonlinear_residual_escalates_to_solve(pool, x):
     family = polynomial(pool, [x], degree=0, name="nl")
     unknown = family.unknowns[0]
@@ -575,14 +675,16 @@ def test_nonlinear_residual_escalates_to_solve(pool, x):
     assert solution.status == "exactly_verified"
 
 
-@pytest.mark.skipif(ak.capabilities()["groebner"], reason="only meaningful without groebner")
+@pytest.mark.skipif(
+    ak.capabilities().get("groebner", False), reason="only meaningful without groebner"
+)
 def test_nonlinear_residual_refuses_without_groebner(pool, x):  # pragma: no cover - build gated
     family = polynomial(pool, [x], degree=0, name="nl")
     unknown = family.unknowns[0]
     assert _fit_code(family, unknown * unknown - pool.integer(4)) == "E-ANSATZ-004"
 
 
-@pytest.mark.skipif(not ak.capabilities()["groebner"], reason="needs a groebner build")
+@pytest.mark.skipif(not ak.capabilities().get("groebner", False), reason="needs a groebner build")
 def test_unsatisfiable_nonlinear_residual_is_also_e_ansatz_003(pool, x):
     # c^2 * x = 1 cannot hold at two different sample points at once.
     family = polynomial(pool, [x], degree=0, name="ns")

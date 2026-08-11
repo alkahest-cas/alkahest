@@ -75,7 +75,9 @@ under.free                                    # (d_0,)  — still symbolic in .e
 | `quadratic_form(pool, vars)` | `Σ_{i ≤ j} q_ij · xᵢ xⱼ` | Lyapunov candidates |
 
 Every constructor takes `name=` (the coefficient prefix), `max_terms=` (a hard bound), and
-`reserved=` (extra symbols the coefficients must not collide with).
+`reserved=` (extra symbols the coefficients must not collide with). `reserved=` reserves
+*names* only — it never adds an independent variable, so `linear_combination(pool, basis,
+reserved=[y])` is still a family in the basis's own symbols. Pass `vars=` to say otherwise.
 
 ### Predictable coefficient names
 
@@ -160,7 +162,11 @@ no coefficient collection over a symbolic ring is required.
 
 - `"residual"` (default) — collocation at sample points, then exact back-substitution.
 - `"exact"` — Taylor-coefficient extraction (`∂^α R / α!`), so the *system itself* is exact
-  for polynomial residuals up to `degree_bound`; still back-substituted.
+  for polynomial residuals up to `degree_bound`; still back-substituted. Every multi-index of
+  total degree ≤ `degree_bound` contributes an equation, and the bound that was reached is
+  written into the derivation log — the system is never quietly cut short. `max_points` caps
+  sample-point *draws* and therefore applies to collocation only; `degree_bound` is the knob
+  that sizes this one.
 - `"none"` — no check at all; `status="unverified"` and no re-verification recipe. For hot
   loops that verify downstream, never for anything recorded as a result.
 
@@ -253,7 +259,7 @@ undetermined form is a family, not a candidate. Instantiate first.
 | --- | --- |
 | `E-ANSATZ-001` | A coefficient name collides with a symbol already in play (or an unknown name was passed to `instantiate`). You called it wrong. |
 | `E-ANSATZ-002` | The requested family exceeds `max_terms` / `max_members`. Refused before anything was materialised. |
-| `E-ANSATZ-003` | **No member of this family satisfies the constraints.** A *result*: a closed branch a loop should record. |
+| `E-ANSATZ-003` | **No member of this family satisfies the constraints.** A *result*: a closed branch a loop should record. Also raised when no system could be built at all — the residual, or a derivative of it, is undefined everywhere the sampler looked — in which case the message says so instead of claiming anything about the family. |
 | `E-ANSATZ-004` | The residual is nonlinear in the unknowns and escalating to `solve` needs a `groebner` build, which this is not. |
 
 Only the first two mean "you called it wrong"; the other two are findings. See

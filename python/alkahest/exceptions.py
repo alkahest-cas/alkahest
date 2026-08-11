@@ -46,7 +46,7 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
                                  batch_map/batch_map_iter item whose exception carried no
                                  .code of its own — see docs/mdbook/src/batch.md)
     E-ANSATZ-001 … E-ANSATZ-004 AnsatzError (Python-only; P2 item 1 — conjecture generation)
-    E-XCHECK-001 … E-XCHECK-003 CrossCheckError (Python-only; P2 item 2 — differential testing)
+    E-XCHECK-001 … E-XCHECK-004 CrossCheckError (Python-only; P2 item 2 — differential testing)
     E-SMT-001 … E-SMT-004       SmtError (P2 item 3 — SMT/SAT bridge)
 """
 
@@ -611,7 +611,12 @@ class CrossCheckError(AlkahestError):
       assumption) with no faithful mapping into the oracle's language.
     - ``E-XCHECK-002`` — no oracle is installed. Never reported as agreement;
       see :func:`alkahest.crosscheck.oracles`.
-    - ``E-XCHECK-003`` — the operation has no defined comparison rung.
+    - ``E-XCHECK-003`` — the operation has no defined comparison rung. A caller
+      error, raised before any oracle is consulted.
+    - ``E-XCHECK-004`` — the oracle itself declined: it has no implementation
+      for the operation, raised, or returned an unevaluated form. An
+      environmental outcome rather than a caller error, and **not** a
+      divergence — comparing against a refusal would fabricate one.
     """
 
     def __init__(

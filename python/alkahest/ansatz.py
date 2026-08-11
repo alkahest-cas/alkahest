@@ -113,6 +113,14 @@ DEFAULT_MAX_MEMBERS = 100_000
 #: it (see :func:`alkahest.budget_seed`).
 DEFAULT_SEED = 0x5EED_A115
 
+#: Initial half-width of the sample-point numerator window (coordinates start
+#: out drawn from ``-12..12`` over ``1..4``) and the number of repeats that
+#: widens it. See :func:`_sample_points`: the window has to grow, or the point
+#: set is finite and a caller can ask for more points than exist.
+_SAMPLE_SPAN = 12
+_SAMPLE_DENOMINATORS = 4
+_SAMPLE_REPEATS_BEFORE_WIDENING = 16
+
 
 def _ak() -> Any:
     """Resolve the parent package at call time.
@@ -376,12 +384,31 @@ def _lcg(seed: int) -> Iterator[int]:
 
 
 def _sample_points(n_vars: int, seed: int) -> Iterator[tuple[Fraction, ...]]:
-    """Yield distinct deterministic rational points in ``n_vars`` variables."""
+    """Yield distinct deterministic rational points in ``n_vars`` variables.
+
+    The draw window **grows** as repeats accumulate. A fixed window is a finite
+    set of points (65 of them in one variable), so a caller asking for more
+    points than it holds would spin forever inside ``next()`` once the set was
+    exhausted — and a caller's own attempt counter cannot save it, because that
+    counter is only reached after this generator yields. Widening keeps the
+    stream genuinely infinite; the first points of a given seed are unchanged,
+    so recorded fits still reproduce.
+    """
     stream = _lcg(seed)
     seen: set[tuple[Fraction, ...]] = set()
+    span, denominators, repeats = _SAMPLE_SPAN, _SAMPLE_DENOMINATORS, 0
     while True:
-        point = tuple(Fraction(next(stream) % 25 - 12, 1 + next(stream) % 4) for _ in range(n_vars))
+        point = tuple(
+            Fraction(next(stream) % (2 * span + 1) - span, 1 + next(stream) % denominators)
+            for _ in range(n_vars)
+        )
         if point in seen:
+            repeats += 1
+            if repeats >= _SAMPLE_REPEATS_BEFORE_WIDENING:
+                # A run of repeats means the window is saturating. Doubling it
+                # (and admitting one more denominator) makes the reachable set
+                # grow without bound, so a fresh point always exists.
+                span, denominators, repeats = span * 2, denominators + 1, 0
             continue
         seen.add(point)
         yield point
@@ -903,10 +930,13 @@ def linear_combination(
         basis simply shows up as free parameters in the fit, which is the
         honest answer.
     vars : sequence of Expr, optional
-        Independent variables. Inferred from the basis's free symbols (sorted
-        by name) when omitted.
+        Independent variables. Inferred from the *basis's* free symbols (sorted
+        by name) when omitted — never from ``reserved``, which only reserves
+        names.
     name, max_terms, reserved
-        As :func:`polynomial`.
+        As :func:`polynomial`. ``reserved`` keeps the coefficients from
+        colliding with symbols the basis does not mention; it does not make
+        those symbols variables of the family.
 
     Returns
     -------
@@ -932,9 +962,13 @@ def linear_combination(
     _check_size(len(terms), max_terms, f"linear_combination({len(terms)} basis functions)")
     names = tuple(f"{name}_{i}" for i in range(len(terms)))
     unknowns = tuple(pool.symbol(n) for n in names)
-    symbols = _reserved_from(terms, reserved)
-    _check_collision(names, symbols, name)
+    # The two roles are separate: `reserved=` says "these names are taken", not
+    # "these are variables of the family". Folding it into the inference would
+    # promote a symbol the caller only wanted excluded from coefficient naming
+    # into an independent variable, changing what the fit is asked to prove.
+    _check_collision(names, _reserved_from(terms, reserved), name)
     if vars is None:
+        symbols = _reserved_from(terms, ())
         variables = tuple(symbols[key] for key in sorted(symbols) if symbols[key] is not None)
     else:
         variables = tuple(_value(v) for v in vars)
@@ -1652,7 +1686,6 @@ def _derivative_rows(
     *,
     seed: int,
     degree_bound: int,
-    max_rows: int,
 ) -> tuple[list[list[Any]], list[tuple[Fraction, ...]], int]:
     """Build the system by Taylor-coefficient extraction (``certify="exact"``).
 
@@ -1660,18 +1693,24 @@ def _derivative_rows(
     ``|α| ≤ degree_bound`` contributes one equation. Exact for polynomial
     residuals of that degree — no sampling argument required — at the cost of
     one differentiation per multi-index.
+
+    All-or-nothing on purpose. Every multi-index of the bound is part of the
+    exactness argument, so a run that loses one of them has not built *this*
+    system, it has built a weaker one; that would be exactly the silent
+    degradation the module refuses elsewhere. A base point at which some
+    derivative is undefined is retried at a fresh point, and when no base point
+    works the result is empty and the caller reports the failure.
     """
     ak = _ak()
     pool = ansatz.pool
-    multi = _exponents(len(ansatz.vars), degree_bound)[:max_rows]
+    multi = _exponents(len(ansatz.vars), degree_bound)
     stream = _sample_points(len(ansatz.vars), seed)
     base_point = tuple(Fraction(0) for _ in ansatz.vars)
-    rows: list[list[Any]] = []
-    used: list[tuple[Fraction, ...]] = []
     skipped = 0
-    for attempt in range(8):
+    for _attempt in range(8):
         bindings = {var: _to_expr(pool, value) for var, value in zip(ansatz.vars, base_point)}
-        rows, used = [], []
+        rows: list[list[Any]] = []
+        used: list[tuple[Fraction, ...]] = []
         ok = True
         for alpha in multi:
             derivative = residual
@@ -1679,21 +1718,22 @@ def _derivative_rows(
                 for var, order in zip(ansatz.vars, alpha):
                     for _ in range(order):
                         derivative = _value(ak.diff(derivative, var))
-                rows.append(_probe(pool, derivative, ansatz.unknowns, bindings))
+                row = _probe(pool, derivative, ansatz.unknowns, bindings)
             except _Undefined:
                 ok = False
                 break
             except Exception:
                 ok = False
                 break
+            # Appended together, so `rows` and `used` never disagree about how
+            # much of the system exists.
+            rows.append(row)
             used.append(tuple(Fraction(a) for a in alpha))
         if ok and rows:
             return rows, used, skipped
         skipped += 1
         base_point = next(stream)
-        if attempt == 7:  # pragma: no cover - exhausted
-            break
-    return rows, used, skipped
+    return [], [], skipped
 
 
 def _default_degree_bound(ansatz: Ansatz, wanted: int) -> int:
@@ -1951,9 +1991,15 @@ def fit(
         off the ``rref`` instead of assumed.
     max_points : int, optional
         Cap on sample-point draws, including those skipped for being poles.
+        Applies to collocation only — the ``certify="exact"`` path draws a base
+        point, not a system, so capping *its* equation count here would return
+        a smaller system than the degree bound promises. Size that one with
+        ``degree_bound=``.
     degree_bound : int, optional
-        Multi-index degree for ``certify="exact"``. Defaults to the family's
-        own total degree plus two.
+        Multi-index degree for ``certify="exact"``; every multi-index up to it
+        contributes an equation, and the bound reached is recorded in
+        :attr:`AnsatzSolution.steps`. Defaults to the smallest degree that
+        supplies at least as many equations as the collocation path would use.
     tolerance : float
         Numeric residual below which a non-normalising fit is still reported as
         ``"numerically_checked"`` rather than as a stated failure.
@@ -2029,8 +2075,12 @@ def fit(
 
     bound = _default_degree_bound(ansatz, n_rows) if degree_bound is None else int(degree_bound)
     if certify == "exact":
+        # No `max_points` here: that is a cap on sample-point *draws*, and the
+        # Taylor system has no draws to cap. Slicing the multi-index list with
+        # it would silently return a smaller system than the degree bound
+        # promises; `degree_bound=` is the honest, visible knob for that.
         rows, used, skipped = _derivative_rows(
-            ansatz, target_residual, seed=resolved_seed, degree_bound=bound, max_rows=point_cap
+            ansatz, target_residual, seed=resolved_seed, degree_bound=bound
         )
         method = "taylor_extraction"
     else:
@@ -2053,13 +2103,24 @@ def fit(
                 target_residual,
                 seed=resolved_seed,
                 degree_bound=bound,
-                max_rows=point_cap,
             )
             if exact_rows and _is_exact_system(exact_rows):
                 rows, used, skipped = exact_rows, exact_used, exact_skipped
                 method = "taylor_extraction"
 
     if not rows:
+        if method == "taylor_extraction":
+            raise AnsatzError(
+                "[E-ANSATZ-003] could not extract the Taylor system: some multi-index of "
+                f"degree <= {bound} is undefined at every base point tried, so the family "
+                "cannot be constrained at all",
+                code="E-ANSATZ-003",
+                remediation=(
+                    "a derivative of the residual is undefined wherever the sampler looked; "
+                    "pass a different seed=, lower degree_bound=, use certify='residual', "
+                    "or check the target for a pole"
+                ),
+            )
         raise AnsatzError(
             "[E-ANSATZ-003] could not evaluate the residual at any sample point, so the "
             "family cannot be constrained at all",
@@ -2069,12 +2130,17 @@ def fit(
                 "different seed=, raise max_points=, or check the target for a pole"
             ),
         )
+    conditions = [f"{skipped} point(s) skipped as undefined"] if skipped else []
+    if method == "taylor_extraction":
+        # The system's reach is the degree bound, so state it: a reader must be
+        # able to see which multi-indices were and were not constrained.
+        conditions.append(f"one equation per multi-index of total degree <= {bound}")
     steps.append(
         {
             "rule": f"ansatz_{method}",
             "before": str(target_residual),
             "after": f"{len(rows)} x {width + 1} augmented system over Q",
-            "side_conditions": [f"{skipped} point(s) skipped as undefined"] if skipped else [],
+            "side_conditions": conditions,
         }
     )
 

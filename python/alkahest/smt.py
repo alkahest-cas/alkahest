@@ -353,8 +353,13 @@ class SmtSupport:
     logic : str or None
         The SMT-LIB logic the emitter chose, e.g. ``"QF_NRA"``.
     reason : str
-        Stable reason code: ``"ok"``, ``"outside_fragment"``, ``"quantified"``,
-        or ``"no_solver"``.
+        Stable reason code, and the complete set a caller may branch on:
+        ``"ok"``, ``"outside_fragment"``, ``"quantified"``,
+        ``"not_exactly_checkable"``, or ``"no_solver"``.
+        ``"not_exactly_checkable"`` is the one that is easy to miss: the formula
+        exports fine, but the kernel cannot evaluate it exactly at a rational
+        model (``abs`` is the case you will actually hit), so :func:`solve`
+        refuses it rather than return a ``sat`` it did not check.
     detail : str
         One-sentence human explanation.
     recommendation : str
@@ -363,7 +368,10 @@ class SmtSupport:
         The emitted script, handed back so a caller that goes on to use it does
         not pay for the export twice.
     error : SmtError or None
-        The refusal, when ``exportable`` is ``False``.
+        The refusal :func:`solve` would raise: the export error when
+        ``exportable`` is ``False`` (``reason="outside_fragment"``), or the
+        ``E-SMT-002`` refusal when ``reason`` is ``"not_exactly_checkable"``.
+        ``None`` otherwise — including for ``"quantified"`` and ``"no_solver"``.
     """
 
     supported: bool

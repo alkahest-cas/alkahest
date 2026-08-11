@@ -1569,6 +1569,27 @@ if "solve" not in dir():
 # ---------------------------------------------------------------------------
 
 
+@_functools.lru_cache(maxsize=1)
+def _probe_oracles() -> tuple[tuple[str, str | None], ...]:
+    """Cached view of :func:`alkahest.crosscheck.oracles`.
+
+    Detecting an oracle imports it, which is far more expensive than the rest
+    of :func:`capabilities`. Cached so the cost is paid at most once per
+    process rather than on every contract read.
+    """
+    return tuple(sorted(crosscheck.oracles().items()))
+
+
+@_functools.lru_cache(maxsize=1)
+def _probe_smt_solvers() -> tuple[tuple[str, str | None], ...]:
+    """Cached view of :func:`alkahest.smt.solvers`.
+
+    Detecting a solver executes each found binary to read its version, so this
+    is cached for the same reason as :func:`_probe_oracles`.
+    """
+    return tuple(sorted(smt.solvers().items()))
+
+
 def capabilities() -> dict:
     """Return the versioned agent contract for this installed build.
 
@@ -1576,6 +1597,19 @@ def capabilities() -> dict:
     operation. The ``features`` mapping is authoritative for the installed
     extension; it does not infer availability from project defaults or Python
     fallback functions.
+
+    .. note::
+       ``verification["oracles"]`` and ``verification["smt_solvers"]`` probe
+       the environment: detecting an oracle imports it, and detecting a solver
+       runs its binary to read a version. Both are cached for the life of the
+       process, so the cost lands on the first call and not on later ones —
+       but the first call is not free, and it is not a pure read of build
+       metadata like the rest of this contract.
+
+       Because they are cached, these two keys are a *session-start snapshot*.
+       A tool installed later in the same process will not appear here.
+       :func:`alkahest.smt.solvers` and :func:`alkahest.crosscheck.oracles`
+       re-probe on every call and are the live view.
 
     Returns
     -------
@@ -1650,8 +1684,10 @@ def capabilities() -> dict:
             # too: a missing oracle or solver appears as None rather than being
             # omitted, so an agent can tell "absent" from "not asked about" and
             # can never read a missing checker as agreement.
-            "oracles": crosscheck.oracles(),
-            "smt_solvers": smt.solvers(),
+            # dict(...) per call: the cache holds an immutable tuple, and
+            # callers must not be able to mutate the shared cached value.
+            "oracles": dict(_probe_oracles()),
+            "smt_solvers": dict(_probe_smt_solvers()),
             # Where certificate emission stops, tabulated from observed
             # behaviour. Full table: alkahest.certificate_coverage().
             "coverage": _certificates.coverage_summary(),

@@ -874,12 +874,17 @@ def test_all_exports_exist():
     assert len(module.__all__) == len(set(module.__all__))
 
 
-def test_error_codes_used_are_the_registered_three():
-    """Only ``E-XCHECK-001/002/003`` may be raised from this module."""
+def test_error_codes_used_are_the_registered_four():
+    """Only ``E-XCHECK-001/002/003/004`` may be raised from this module.
+
+    003 and 004 are separate on purpose: 003 is the caller error "this operation
+    has no comparison rung", raised before any oracle is consulted, and 004 is
+    "the oracle declined". Sharing one code left a caller unable to tell the two
+    apart.
+    """
     source = (REPO / "python" / "alkahest" / "crosscheck.py").read_text(encoding="utf-8")
     used = set(re.findall(r'"(E-XCHECK-\d+)"', source))
-    assert used <= {"E-XCHECK-001", "E-XCHECK-002", "E-XCHECK-003"}
-    assert used == {"E-XCHECK-001", "E-XCHECK-002", "E-XCHECK-003"}
+    assert used == {"E-XCHECK-001", "E-XCHECK-002", "E-XCHECK-003", "E-XCHECK-004"}
 
 
 def test_doc_page_exists_and_covers_the_surface():
@@ -894,8 +899,17 @@ def test_module_is_importable_without_touching_sympy():
     """Importing ``alkahest`` must not pull SymPy in — it is an optional dep."""
     source = (REPO / "python" / "alkahest" / "crosscheck.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
+
+    def _is_sympy(name: str | None) -> bool:
+        # Submodules count: `import sympy.abc` and `from sympy.functions import sin`
+        # both import SymPy at module-import time, and an exact == "sympy"
+        # comparison would wave them through.
+        return name is not None and (name == "sympy" or name.startswith("sympy."))
+
     for node in tree.body:  # module level only; lazy imports live inside functions
         assert not isinstance(node, ast.Import) or all(
-            alias.name != "sympy" for alias in node.names
+            not _is_sympy(alias.name) for alias in node.names
         )
-        assert not (isinstance(node, ast.ImportFrom) and node.module == "sympy")
+        # `node.level == 0` keeps a relative `from .sympy_helpers import ...` out
+        # of scope; only absolute imports can reach the real SymPy.
+        assert not (isinstance(node, ast.ImportFrom) and node.level == 0 and _is_sympy(node.module))

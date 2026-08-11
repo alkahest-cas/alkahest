@@ -268,17 +268,28 @@ never quietly passed. Cases carry `found_by` (a seed, or a provenance note) and 
 nobody reads. Cases are added, never silently deleted — an expectation that changes is a
 re-pin with a new `oracle_versions` range, and the old range records what used to be true.
 
+### Visible from the session-start probe
+
+`capabilities()["verification"]` reports the installed oracles and SMT solvers, so an
+agent can see them from the probe it already makes at session start rather than
+importing `alkahest.crosscheck` to find out:
+
+```python
+caps = ak.capabilities()["verification"]
+caps["oracles"]      # {"sympy": "1.14.0"}  — absent oracles appear as None
+caps["smt_solvers"]  # {"z3": "4.13.0", "cvc5": None}
+```
+
+Absent tools are reported **negatively** rather than omitted, so "not installed" stays
+distinguishable from "agreed". Both keys probe the environment — detecting an oracle
+imports it — so they are cached for the life of the process; see the note on
+[`capabilities()`](./python-api.md).
+
 ### Not yet wired
 
-Two pieces are described here and not yet built, deliberately, so the shape is agreed
-before the CI surface grows:
-
-- a nightly workflow that runs `sweep`, prints the seed, and files
-  `SweepReport.to_dict()` as an artifact (SymPy already ships in the `ci-extras`
-  dependency group, so this is a job, not a new dependency);
-- `capabilities()["verification"]["oracles"]`, so an agent can see the installed oracles
-  from the same probe it already makes at session start rather than importing
-  `alkahest.crosscheck` to find out.
+- A nightly workflow that runs `sweep`, prints the seed, and files
+  `SweepReport.to_dict()` as an artifact. SymPy already ships in the `ci-extras`
+  dependency group, so this is a job, not a new dependency.
 
 ## Oracles are a plugin interface
 
@@ -309,7 +320,8 @@ comparator turns that into `incomparable` rather than guessing.
 | --- | --- |
 | `E-XCHECK-001` | A node, a primitive, or an active assumption has no faithful translation. Surfaces as `outcome="incomparable"`, `reason="untranslatable"` |
 | `E-XCHECK-002` | No oracle is installed. Surfaces as `outcome="unavailable"` — **never** as agreement |
-| `E-XCHECK-003` | The operation has no defined comparison rung, or the oracle declined it |
+| `E-XCHECK-003` | The operation has no defined comparison rung — a caller error, raised before any oracle is consulted |
+| `E-XCHECK-004` | The oracle itself declined, raised, or returned an unevaluated form — not a divergence |
 
 An unknown *operation* raises out of `check` rather than becoming an outcome: that is a
 caller mistake, not a property of the mathematics. Untranslatable input and missing

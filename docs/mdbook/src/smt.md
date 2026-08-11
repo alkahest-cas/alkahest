@@ -139,7 +139,30 @@ rather than silently emitting plausible-but-wrong SMT-LIB.
 
 You may name a logic explicitly (`ak.to_smtlib(f, "QF_NRA")`), and one that is **too weak**
 for the formula is an error, not a silent downgrade — sending a nonlinear problem under
-`QF_LRA` would ask a different question than the one you have.
+`QF_LRA` would ask a different question than the one you have. The names accepted are
+`QF_LIA`, `QF_NIA`, `QF_LRA`, `QF_NRA`, `QF_LIRA`, `QF_NIRA`, their quantified forms
+without the `QF_` prefix, `AUFLIRA`, `AUFNIRA`, and `ALL`.
+
+#### The mixed names are solver-facing, not catalog-standard
+
+`QF_LIRA` / `QF_NIRA` / `LIRA` / `NIRA` are **not** in the official SMT-LIB 2.7 logic
+catalog, which stops at `AUFLIRA` / `AUFNIRA` for mixed `Int`/`Real`. Alkahest emits them
+anyway, and that is a deliberate contract rather than an oversight:
+
+- they are the names the solvers this bridge drives actually use for the mixed fragment.
+  z3 accepts them silently (an unrecognised name draws `ignoring unsupported logic`), Yices
+  documents `QF_LIRA` / `QF_NIRA` among the names it recognises beyond the official set,
+  and SMT-COMP runs `QF_LIRA` / `QF_NIRA` divisions over SMT-LIB benchmarks;
+- the catalog alternatives are strictly worse for what is emitted here. `AUFLIRA` /
+  `AUFNIRA` are *quantified* logics that additionally carry arrays and free function
+  symbols, so naming one for a quantifier-free mixed formula discards the `QF_` hint that
+  decides which solver core runs and claims a far larger fragment than is in use.
+
+If you are feeding a consumer that accepts catalog names only, ask for one explicitly:
+`ak.to_smtlib(f, "AUFLIRA")` (linear) or `ak.to_smtlib(f, "AUFNIRA")` (nonlinear) — both are
+sound supersets of everything the emitter produces — or `ALL`. `tests/test_smt.py` pins that
+the installed solver accepts the names alkahest emits, so a regression in that contract
+fails the suite rather than the user's pipeline.
 
 Getting this right is load-bearing, not cosmetic: under `(set-logic QF_NRA)` z3 has no
 `Int` sort at all, and under a `Reals_Ints` logic an integer numeral in a real position
