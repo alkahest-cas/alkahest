@@ -16,6 +16,7 @@ pub mod linear_algebra;
 pub mod normal_form;
 mod smith;
 mod smith_poly;
+mod zero_test;
 
 pub use eigen::{
     characteristic_polynomial_lambda_minus_m, diagonalize, eigenvalues, eigenvectors, EigenError,
@@ -46,9 +47,21 @@ pub struct Matrix {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MatrixError {
-    DimensionMismatch { msg: String },
+    DimensionMismatch {
+        msg: String,
+    },
     NotSquare,
     SingularMatrix,
+    /// The determinant could not be proven zero *or* proven non-zero.
+    ///
+    /// Inverting via the adjugate divides by `det`, so "probably invertible" is
+    /// not good enough: if the determinant is in fact zero the returned inverse
+    /// is meaningless and nothing downstream can tell. See
+    /// the `matrix::zero_test` module.
+    ZeroTestInconclusive {
+        /// The undecided determinant, rendered for diagnosis.
+        entry: String,
+    },
 }
 
 impl fmt::Display for MatrixError {
@@ -57,6 +70,11 @@ impl fmt::Display for MatrixError {
             MatrixError::DimensionMismatch { msg } => write!(f, "dimension mismatch: {msg}"),
             MatrixError::NotSquare => write!(f, "matrix is not square"),
             MatrixError::SingularMatrix => write!(f, "matrix is singular"),
+            MatrixError::ZeroTestInconclusive { entry } => write!(
+                f,
+                "cannot decide whether the determinant `{entry}` is zero; \
+                 refusing to report an inverse that assumes it is not"
+            ),
         }
     }
 }
@@ -69,6 +87,7 @@ impl crate::errors::AlkahestError for MatrixError {
             MatrixError::DimensionMismatch { .. } => "E-MAT-001",
             MatrixError::NotSquare => "E-MAT-002",
             MatrixError::SingularMatrix => "E-MAT-003",
+            MatrixError::ZeroTestInconclusive { .. } => "E-MAT-004",
         }
     }
 
@@ -82,6 +101,9 @@ impl crate::errors::AlkahestError for MatrixError {
             ),
             MatrixError::SingularMatrix => Some(
                 "the matrix has a zero determinant; check your system of equations for linear dependence",
+            ),
+            MatrixError::ZeroTestInconclusive { .. } => Some(
+                "rewrite the entries into a form whose determinant's vanishing is decidable, or substitute concrete values",
             ),
         }
     }

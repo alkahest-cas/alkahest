@@ -12,7 +12,7 @@
 //! 6. Expand the rewritten expression as a Laurent series in ω → 0⁺.
 //! 7. Leading power > 0 → 0; < 0 → ±∞; = 0 → recurse on the coefficient.
 
-use crate::calculus::limits::{limit, LimitDirection, LimitError};
+use crate::calculus::limits::{checkpoint, limit, LimitDirection, LimitError};
 use crate::calculus::series::local_expansion;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::simplify::rules::{CollectExp, ExpPow};
@@ -46,6 +46,7 @@ pub(crate) fn try_gruntz(
     if current >= GRUNTZ_MAX_DEPTH {
         return Ok(None);
     }
+    checkpoint(pool)?;
     GRUNTZ_DEPTH.with(|d| d.set(current + 1));
     let result = gruntz_inner(expr, var, pool);
     GRUNTZ_DEPTH.with(|d| d.set(current));
@@ -253,6 +254,8 @@ fn build_mrv_set(
             if i == j || dominated[i] {
                 continue;
             }
+            // O(n²) sub-limits, each of which can itself be arbitrarily hard.
+            checkpoint(pool)?;
             let h_i = unique[i].1;
             let h_j = unique[j].1;
             if let Ok(Growth::Slower) = compare_growth(h_i, h_j, var, pool) {

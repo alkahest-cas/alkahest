@@ -581,6 +581,20 @@ fn series_error_to_py(e: SeriesError) -> PyErr {
 }
 
 fn limit_error_to_py(e: LimitError) -> PyErr {
+    // The limit engine reports a budget/cancellation trip as `DepthExceeded`
+    // (`LimitError` is an exhaustive public enum, so it cannot carry a
+    // `Budget` variant without a major semver break) and records the cause
+    // out-of-band. Recover it here so a budget trip raises the same
+    // `BudgetExceededError` (`E-BUDGET-*`) every other engine raises, instead
+    // of masquerading as "the limit is too hard".
+    if matches!(e, LimitError::DepthExceeded) {
+        if let Some(b) = alkahest_core::calculus::limits::last_budget_trip() {
+            return Python::with_gil(|py| {
+                let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+                make_structured_err(py, &exc_type, &b)
+            });
+        }
+    }
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyLimitError>();
         make_structured_err(py, &exc_type, &e)

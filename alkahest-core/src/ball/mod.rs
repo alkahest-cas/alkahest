@@ -1009,6 +1009,30 @@ impl IntervalEval {
                     "exp" => Some(x.exp()),
                     "log" => x.log(),
                     "sqrt" => x.sqrt(),
+                    // Every arm below is an already-implemented, outward-rounded
+                    // `ArbBall` kernel that was simply not reachable from an
+                    // expression. Leaving them unwired made `eval` answer `None`
+                    // for `tan(x)` and friends, which callers that read `None`
+                    // as "cannot bound this" — the zero test in
+                    // `crate::matrix`, `crate::validated::bounds` — had to treat
+                    // as a refusal.
+                    "tan" => x.tan(),
+                    "sinh" => Some(x.sinh()),
+                    "cosh" => Some(x.cosh()),
+                    "tanh" => Some(x.tanh()),
+                    "asin" => x.asin(),
+                    "acos" => x.acos(),
+                    "atan" => Some(x.atan()),
+                    "asinh" => Some(x.asinh()),
+                    "acosh" => x.acosh(),
+                    "atanh" => x.atanh(),
+                    "erf" => Some(x.erf()),
+                    "erfc" => Some(x.erfc()),
+                    "abs" => Some(x.abs_ball()),
+                    "floor" => Some(x.floor_ball()),
+                    "ceil" => Some(x.ceil_ball()),
+                    "digamma" => x.digamma(),
+                    "lambert_w" => x.lambert_w0(),
                     _ => None,
                 }
             }

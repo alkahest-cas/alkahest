@@ -569,6 +569,43 @@ class BudgetExceededError(AlkahestError):
         super().__init__(message, code="E-BUDGET-001", remediation=remediation, span=span)
 
 
+class HomotopyError(AlkahestError):
+    """Numerical polynomial continuation failed (V2-14 homotopy solver).
+
+    The native class is registered by the extension as ``PyHomotopyError``;
+    this is the Python-side wrapper used for ``isinstance`` checks, and its
+    absence is what ``scripts/check_error_codes.py`` was reporting.
+
+    - ``E-HOMOTOPY-002`` — the start system has too few paths for the target.
+    - ``E-HOMOTOPY-003`` — path tracking failed for a random gamma.
+    - ``E-HOMOTOPY-004`` — the tracker exhausted its step budget.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-HOMOTOPY-002", remediation=remediation, span=span)
+
+
+class ModularError(AlkahestError):
+    """A modular / CRT reconstruction step failed (``E-MOD-001`` … ``E-MOD-004``).
+
+    As with :class:`HomotopyError`, the native class exists as ``PyModularError``
+    and this wrapper is what makes it catchable by name from Python.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-MOD-001", remediation=remediation, span=span)
+
+
 class AnsatzError(AlkahestError):
     """An ansatz family could not be built, or could not be fitted.
 

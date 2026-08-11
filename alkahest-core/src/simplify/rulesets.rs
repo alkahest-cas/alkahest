@@ -19,7 +19,7 @@ use crate::deriv::log::{DerivationLog, RewriteStep};
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
 use crate::pattern::{Pattern, Substitution};
 use crate::simplify::discrimination_net::{pattern_head, DiscriminationIndex};
-use crate::simplify::rules::{FlattenAdd, FlattenMul, RewriteRule};
+use crate::simplify::rules::{FlattenAdd, FlattenMul, NodeKinds, RewriteRule};
 
 fn one_step(name: &'static str, before: ExprId, after: ExprId) -> DerivationLog {
     let mut log = DerivationLog::new();
@@ -863,12 +863,22 @@ impl RewriteRule for LogOfQuotient {
     }
 }
 
-/// `exp(x) · exp(y) · ⋯ → exp(x + y + ⋯)`.
+/// `c · exp(x) · exp(y) · ⋯ → c · exp(x + y + ⋯)`.
 ///
 /// Unconditionally valid over ℂ (unlike the log product/sum rules).
+///
+/// Non-`exp` factors are carried through untouched, so the rule also fires on
+/// mixed products such as `−1 · exp(a) · exp(a)`.  Those arise constantly in
+/// Gaussian elimination (`row − factor · pivot_row`) and are exactly the shape
+/// whose merged form has to be recognised for the zero test in
+/// [`crate::matrix`] to prove a row dependency (see `matrix::zero_test`).
 pub struct ProductOfExps;
 
 impl RewriteRule for ProductOfExps {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::MUL
+    }
+
     fn name(&self) -> &'static str {
         "product_of_exps"
     }
@@ -878,28 +888,88 @@ impl RewriteRule for ProductOfExps {
             ExprData::Mul(v) if v.len() >= 2 => v,
             _ => return None,
         };
-        let mut args = Vec::with_capacity(factors.len());
+        let mut args = Vec::new();
+        let mut rest = Vec::new();
         for f in factors {
-            let a = func_arg("exp", f, pool)?;
-            args.push(a);
+            match func_arg("exp", f, pool) {
+                Some(a) => args.push(a),
+                None => rest.push(f),
+            }
         }
-        let after = pool.func("exp", vec![pool.add(args)]);
+        // One `exp` factor is already merged; rewriting it would not terminate.
+        if args.len() < 2 {
+            return None;
+        }
+        let merged = pool.func("exp", vec![pool.add(args)]);
+        let after = if rest.is_empty() {
+            merged
+        } else {
+            rest.push(merged);
+            pool.mul(rest)
+        };
+        Some((after, one_step(self.name(), expr, after)))
+    }
+}
+
+/// `exp(x)^n → exp(n·x)` for a literal integer `n`.
+///
+/// Unconditionally valid over ℂ for integer exponents: `exp` is a homomorphism
+/// from `(ℂ, +)` to `(ℂ*, ·)` and integer powers are iterated multiplication,
+/// so no branch is chosen.  Non-integer exponents are left alone — `exp(x)^(1/2)`
+/// and `exp(x/2)` differ by a branch of the square root.
+///
+/// Without this rule `exp(a)²` and `exp(2a)` are two normal forms for the same
+/// function and their difference never collects to `0`, which is what let
+/// `Matrix::rank` report a full-rank verdict for a rank-deficient matrix.
+pub struct PowOfExp;
+
+impl RewriteRule for PowOfExp {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::POW
+    }
+
+    fn name(&self) -> &'static str {
+        "pow_of_exp"
+    }
+
+    fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
+        let ExprData::Pow { base, exp } = pool.get(expr) else {
+            return None;
+        };
+        if !is_integer_literal(exp, pool) {
+            return None;
+        }
+        let inner = func_arg("exp", base, pool)?;
+        let after = pool.func("exp", vec![pool.mul(vec![exp, inner])]);
         Some((after, one_step(self.name(), expr, after)))
     }
 }
 
 /// Return the default log/exp identity rules.
 ///
-/// Includes `log(exp(x))→x` only when `x` is real-valued (see [`LogOfExp`]) and
-/// `exp(x)·exp(y)→exp(x+y)` (valid over ℂ). Branch-cut sensitive rewrites
-/// (`exp(log(x))→x`, `log(x)+log(y)→log(xy)`, `log(a^n)→n·log(a)`,
-/// `log(a/b)→log(a)−log(b)`, `log(ab)→log a+log b`) live exclusively in the
-/// colored e-graph and require matching
+/// Includes `log(exp(x))→x` only when `x` is real-valued (see [`LogOfExp`]),
+/// `exp(x)·exp(y)→exp(x+y)` and `exp(x)^n→exp(n·x)` (both valid over ℂ).
+/// Branch-cut sensitive rewrites (`exp(log(x))→x`, `log(x)+log(y)→log(xy)`,
+/// `log(a^n)→n·log(a)`, `log(a/b)→log(a)−log(b)`, `log(ab)→log a+log b`) live
+/// exclusively in the colored e-graph and require matching
 /// [`crate::simplify::SimplifyConfig::assumptions`] /
 /// [`crate::simplify::AssumptionContext`] facts (or `Domain::Positive`
 /// symbols). Use [`log_exp_rules_safe`] for the empty complex-safe set.
+///
+/// The arithmetic rules from [`crate::simplify::rules_for_config`] are included
+/// after the log/exp rules. They are what actually *collects* the result: with
+/// the log/exp rules alone, `exp(a)·exp(a) − exp(a+a)` normalises to
+/// `exp(a+a) + (−1)·exp(a+a)` and then stops, because nothing in the log/exp
+/// set knows that `X + (−1)·X` is `0`.  Reporting that non-zero was the direct
+/// cause of a wrong `Matrix::rank`.
 pub fn log_exp_rules() -> Vec<Box<dyn RewriteRule>> {
-    vec![Box::new(LogOfExp), Box::new(ProductOfExps)]
+    let mut rules: Vec<Box<dyn RewriteRule>> = vec![
+        Box::new(LogOfExp),
+        Box::new(ProductOfExps),
+        Box::new(PowOfExp),
+    ];
+    rules.extend(crate::simplify::engine::default_rules());
+    rules
 }
 
 /// Log/exp rules that are safe for complex numbers (no branch-cut rewrites).
