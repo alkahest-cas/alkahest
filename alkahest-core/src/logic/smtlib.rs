@@ -261,7 +261,10 @@ impl Requirements {
 
 /// Every logic name [`to_smtlib`] accepts explicitly, in the order a planner
 /// should read them: quantifier-free first, then quantified, then the two
-/// catalog logics for mixed `Int`/`Real` (see [`Arith`]), then the catch-all.
+/// SMT-LIB catalog logics for mixed `Int`/`Real` (`AUFLIRA` / `AUFNIRA` — see
+/// the note on the internal `Arith` type for why the non-catalog `QF_LIRA` and
+/// `QF_NIRA` are still preferred for quantifier-free formulas), then the
+/// catch-all.
 pub const SUPPORTED_LOGICS: &[&str] = &[
     "QF_LIA", "QF_NIA", "QF_LRA", "QF_NRA", "QF_LIRA", "QF_NIRA", "LIA", "NIA", "LRA", "NRA",
     "LIRA", "NIRA", "AUFLIRA", "AUFNIRA", "ALL",
