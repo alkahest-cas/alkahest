@@ -164,6 +164,62 @@ NON_SQUARE = [[1, 2, 3], [4, 5, 6]]
 #: det = (2^30+1)(2^30-1) - 2^60 = -1 exactly; float64 evaluation cancels to 0.0.
 CANCELLING_2X2 = [[2**30 + 1, 2**30], [2**30, 2**30 - 1]]
 
+# --- Transcendental rank traps -------------------------------------------
+# ``exp(a)²`` and ``exp(2a)`` are the same function written two ways.  Any
+# elimination that cannot see that will "clear" a column it has not cleared.
+_A = POOL.symbol("a")
+_EXP_A = ak.exp(_A)
+
+#: Row 2 is exactly ``exp(a)`` × row 1, so the rank is 1 — but only if
+#: ``exp(a)·exp(a) − exp(a+a)`` is recognised as zero.
+EXP_DEPENDENT_ROWS = ak.Matrix(
+    [
+        [_int(1), _EXP_A, _EXP_A],
+        [_EXP_A, _EXP_A * _EXP_A, ak.exp(_A + _A)],
+    ]
+)
+
+#: The control: identical except for the last entry, which breaks the
+#: proportionality, so the rank really is 2.
+EXP_INDEPENDENT_ROWS = ak.Matrix(
+    [
+        [_int(1), _EXP_A, _EXP_A],
+        [_EXP_A, _EXP_A * _EXP_A, _EXP_A],
+    ]
+)
+
+#: ``mystery`` has no differentiation rule, no numeric kernel and no interval
+#: kernel, so ``mystery(a)`` can be neither normalised to zero nor rigorously
+#: enclosed away from it.  Whether it is the zero function is not knowable here,
+#: and column 1 has no other candidate.
+UNDECIDABLE_PIVOT = ak.Matrix(
+    [
+        [POOL.func("mystery", [_A]), _int(0)],
+        [_int(0), _int(0)],
+    ]
+)
+
+
+def _rref_zero_rows(m: ak.Matrix, at: float = 0.7) -> Callable[[], int]:
+    """Answer = how many rows of ``m.rref()`` vanish, sampled at ``a = at``.
+
+    Scored numerically rather than structurally so the case is immune to the
+    form the entries come back in; what it pins down is the only thing that
+    matters — a row of an rref is either identically zero or it is not.  For a
+    rank-deficient matrix the missing zero row reappears as a spurious pivot,
+    which for an augmented system reads as ``0 = 1``: the textbook signature of
+    an inconsistent system, and a false "no solution" verdict for a search loop.
+    """
+
+    def op() -> int:
+        count = 0
+        for row in m.rref().to_list():
+            if all(abs(float(ak.eval_expr(entry, {_A: at}))) < 1e-12 for entry in row):
+                count += 1
+        return count
+
+    return op
+
 
 # ---------------------------------------------------------------------------
 # Reference values (hand-derived; `math` used only to evaluate the closed form)
@@ -1224,6 +1280,59 @@ CASES: list[Case] = [
         op=lambda: _matrix(SINGULAR_2X2).rank(),
         contract=Returns(1),
         verified_by="One independent row.",
+    ),
+    Case(
+        id="matrix_rank_exp_proportional_rows",
+        subsystem="linear_algebra",
+        statement="rank[[1, e^a, e^a], [e^a, e^a·e^a, e^(a+a)]] = 1",
+        op=lambda: EXP_DEPENDENT_ROWS.rank(),
+        contract=Returns(1),
+        verified_by="Row 2 = e^a · row 1 entry by entry: e^a·1 = e^a, e^a·e^a is the (2,2) "
+        "entry verbatim, and e^a·e^a = e^(a+a) by the exponential functional equation "
+        "e^u·e^v = e^(u+v), which is the (2,3) entry. Two proportional rows span a "
+        "1-dimensional row space, so the rank is 1 for every value of a.",
+    ),
+    Case(
+        id="matrix_rref_exp_proportional_rows_has_zero_row",
+        subsystem="linear_algebra",
+        statement="the rref of [[1, e^a, e^a], [e^a, e^a·e^a, e^(a+a)]] has exactly one zero row",
+        op=_rref_zero_rows(EXP_DEPENDENT_ROWS),
+        contract=Returns(1),
+        verified_by="A 2×3 matrix of rank 1 has 2 − 1 = 1 zero row in reduced row echelon "
+        "form. The wrong answer here is 0 zero rows, i.e. a second pivot in the last "
+        "column — read as an augmented system that is the row 0 = 1 of an inconsistent "
+        "one, for a system that is consistent.",
+    ),
+    Case(
+        id="matrix_rank_undecidable_pivot_refuses",
+        subsystem="linear_algebra",
+        statement="rank[[mystery(a), 0], [0, 0]] cannot be stated — mystery(a) may be the "
+        "zero function",
+        op=lambda: UNDECIDABLE_PIVOT.rank(),
+        contract=RefusesOr(),
+        verified_by="The rank is 1 if mystery is not identically zero and 0 if it is. "
+        "mystery is an uninterpreted function symbol, so both readings are consistent with "
+        "everything alkahest knows and neither number is derivable. Deciding whether an "
+        "expression over a transcendental extension vanishes is undecidable in general "
+        "(Richardson 1968), so this class cannot be normalised away — the only honest "
+        "answer is a refusal. Contract is code-agnostic on purpose: what is being pinned "
+        "is that no rank is asserted, not which E-LINALG code says so.",
+        note="This is the pair to matrix_rank_exp_proportional_rows: that case is 'prove "
+        "zero when it is zero', this one is 'do not claim non-zero when you cannot'. A "
+        "library that only did the first would pass that case by pivoting on anything it "
+        "failed to reduce, which is the bug that motivated both.",
+    ),
+    Case(
+        id="matrix_rank_exp_independent_rows",
+        subsystem="linear_algebra",
+        statement="rank[[1, e^a, e^a], [e^a, e^a·e^a, e^a]] = 2",
+        op=lambda: EXP_INDEPENDENT_ROWS.rank(),
+        contract=Returns(2),
+        verified_by="The control for matrix_rank_exp_proportional_rows: only the last entry "
+        "differs. Row 2 − e^a · row 1 = (0, 0, e^a − e^a·e^a) = (0, 0, e^a(1 − e^a)), which "
+        "is not the zero function (it is e·(1−e) ≠ 0 at a = 1), so the rows are independent "
+        "and the rank is 2. A gate made only of 'prove this is zero' cases is passed by a "
+        "library that calls everything zero.",
     ),
     Case(
         id="matrix_determinant_catastrophic_cancellation",

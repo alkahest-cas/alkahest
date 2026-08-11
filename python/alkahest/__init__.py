@@ -342,6 +342,7 @@ from .exceptions import (
     EigenError,
     FactorError,
     HolonomicError,
+    HomotopyError,
     IntegrationError,
     IoError,
     JitError,
@@ -350,6 +351,7 @@ from .exceptions import (
     LinearAlgebraError,
     LinearRecurrenceError,
     MatrixError,
+    ModularError,
     NumberTheoryError,
     OdeError,
     ParseError,
@@ -383,6 +385,7 @@ _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     "EigenError",
     "FactorError",
     "HolonomicError",
+    "HomotopyError",
     "IntegrationError",
     "IoError",
     "JitError",
@@ -391,6 +394,7 @@ _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     "LinearAlgebraError",
     "LinearRecurrenceError",
     "MatrixError",
+    "ModularError",
     "NumberTheoryError",
     "OdeError",
     "PoolError",
@@ -1805,6 +1809,7 @@ __all__ = [
     "GroebnerBasis",
     # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     "HolonomicError",
+    "HomotopyError",
     "HybridODE",
     "IntegrationError",
     # V1-16: IoError
@@ -1817,6 +1822,7 @@ __all__ = [
     # Phase 15
     "Matrix",
     "MatrixError",
+    "ModularError",
     "MultiPoly",
     "MultiPolyFactorization",
     "Not",

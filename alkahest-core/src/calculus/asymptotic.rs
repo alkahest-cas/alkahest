@@ -279,7 +279,7 @@ fn power_scale_terms_raw(
 /// `Add`/`Mul`/`Pow`/elementary `Func`s so the analytic remainder is honestly
 /// Taylor-expandable. `val` is recovered exactly; the analytic part is left
 /// symbolic for [`local_expansion`].
-fn regularize_at_zero(g: ExprId, t: ExprId, pool: &ExprPool) -> Option<(i64, ExprId)> {
+pub(crate) fn regularize_at_zero(g: ExprId, t: ExprId, pool: &ExprPool) -> Option<(i64, ExprId)> {
     let g = simplify(g, pool).value;
     match pool.get(g) {
         // Constants and other-variable atoms: valuation 0.

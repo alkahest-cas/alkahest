@@ -52,6 +52,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-MAT-001", class: "MatrixError", cause: Cause::UserInput, remediation: Some("check that row/column counts agree") },
     ErrorSpec { code: "E-MAT-002", class: "MatrixError", cause: Cause::UserInput, remediation: Some("use pseudo-inverse for rectangular matrices") },
     ErrorSpec { code: "E-MAT-003", class: "MatrixError", cause: Cause::Domain,    remediation: Some("check for linear dependence in the rows/columns") },
+    ErrorSpec { code: "E-MAT-004", class: "MatrixError", cause: Cause::Unsupported, remediation: Some("rewrite the entries into a form whose determinant's vanishing is decidable, or substitute concrete values") },
     // V2-17 — EigenError
     ErrorSpec { code: "E-EIGEN-001", class: "EigenError", cause: Cause::UserInput,   remediation: Some("pass a square n×n matrix") },
     ErrorSpec { code: "E-EIGEN-002", class: "EigenError", cause: Cause::UserInput,   remediation: Some("ensure det(λI−M) is a ℤ-polynomial in the fresh λ variable") },
@@ -70,10 +71,25 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-LINALG-007", class: "LinearAlgebraError", cause: Cause::Unsupported, remediation: Some("use rational entries for Smith-based decompositions") },
     ErrorSpec { code: "E-LINALG-008", class: "LinearAlgebraError", cause: Cause::Domain,      remediation: Some("similarity transform matrix is singular") },
     ErrorSpec { code: "E-LINALG-009", class: "LinearAlgebraError", cause: Cause::UserInput,   remediation: Some("matrix entries must be rational constants") },
+    // Zero-testing over a transcendental extension is not decidable in general, so
+    // elimination can reach an entry it can neither prove zero nor prove non-zero.
+    // Refusing is the point: treating "unknown" as "non-zero" is what produced a
+    // confident wrong rank (and a false inconsistency signature) before this code existed.
+    ErrorSpec { code: "E-LINALG-010", class: "LinearAlgebraError", cause: Cause::Unsupported, remediation: Some("rewrite the entry into a form whose vanishing is decidable, or substitute concrete values for the parameters") },
     // E-ODE — OdeError
     ErrorSpec { code: "E-ODE-001", class: "OdeError", cause: Cause::UserInput,   remediation: Some("number of state variables must equal number of RHS expressions") },
     ErrorSpec { code: "E-ODE-002", class: "OdeError", cause: Cause::UserInput,   remediation: Some("use lower_to_first_order() before passing to a solver") },
     ErrorSpec { code: "E-ODE-003", class: "OdeError", cause: Cause::Unsupported, remediation: Some("check differentiability of all functions in the system") },
+    ErrorSpec { code: "E-ODE-010", class: "DsolveError", cause: Cause::Unsupported, remediation: None },
+    ErrorSpec { code: "E-ODE-011", class: "DsolveError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-ODE-012", class: "DsolveError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-ODE-020", class: "NumericOdeError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-ODE-021", class: "NumericOdeError", cause: Cause::Resource, remediation: None },
+    ErrorSpec { code: "E-ODE-022", class: "NumericOdeError", cause: Cause::Resource, remediation: None },
+    ErrorSpec { code: "E-ODE-023", class: "NumericOdeError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-ODE-024", class: "NumericOdeError", cause: Cause::Unsupported, remediation: None },
+    ErrorSpec { code: "E-ODE-025", class: "NumericOdeError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-ODE-026", class: "NumericOdeError", cause: Cause::UserInput, remediation: None },
     // E-DAE — DaeError
     ErrorSpec { code: "E-DAE-001", class: "DaeError", cause: Cause::Unsupported, remediation: Some("ensure all functions are differentiable before calling pantelides()") },
     ErrorSpec { code: "E-DAE-002", class: "DaeError", cause: Cause::UserInput,   remediation: Some("DAE index exceeds depth-10 limit; reformulate the model") },
@@ -81,6 +97,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // E-DIFFALG — DiffAlgError (V2-13 differential algebra / Rosenfeld–Gröbner)
     ErrorSpec { code: "E-DIFFALG-001", class: "DiffAlgError", cause: Cause::Unsupported, remediation: Some("ensure the DAE is polynomial in its state and derivative symbols") },
     ErrorSpec { code: "E-DIFFALG-002", class: "DiffAlgError", cause: Cause::UserInput,   remediation: Some("declare all jet variables; remove transcendental functions") },
+    ErrorSpec { code: "E-DIFFALG-003", class: "DiffAlgError", cause: Cause::UserInput, remediation: None },
     ErrorSpec { code: "E-SOLVE-001", class: "SolverError", cause: Cause::UserInput,   remediation: Some("ensure all equations are polynomial in the declared variables") },
     ErrorSpec { code: "E-SOLVE-002", class: "SolverError", cause: Cause::Unsupported, remediation: Some("only degree ≤ 2 univariate solving is implemented; Gröbner basis is still returned") },
     ErrorSpec { code: "E-SOLVE-003", class: "SolverError", cause: Cause::UserInput,   remediation: Some("provide one equation per variable") },
@@ -94,6 +111,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-JIT-001", class: "JitError", cause: Cause::Unsupported, remediation: Some("use eval_expr or simplify the expression before JIT") },
     ErrorSpec { code: "E-JIT-002", class: "JitError", cause: Cause::Resource,    remediation: Some("check LLVM 15 installation; run with RUST_LOG=debug for details") },
     ErrorSpec { code: "E-JIT-003", class: "JitError", cause: Cause::Resource,    remediation: Some("ensure LLVM_SYS_150_PREFIX is set correctly") },
+    ErrorSpec { code: "E-JIT-004", class: "JitError", cause: Cause::UserInput, remediation: None },
     // E-CAD — CadError (V2-9 QE / cylindrical decomposition)
     ErrorSpec {
         code: "E-CAD-001",
@@ -204,6 +222,61 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // `scripts/check_error_codes.py`; `E-BATCH-001` in `python/alkahest/_batch.py`
     // is the same precedent.
     ErrorSpec { code: "E-SMT-002", class: "SmtError", cause: Cause::Unsupported, remediation: Some("check alkahest.smt.supported(formula) before exporting; the fragment is polynomial (in)equalities over Int/Real symbols plus boolean structure and quantifiers, and float literals are refused because they are not the exact question they look like") },
+    // Codes raised by alkahest-core that were never registered here. The registry
+    // is the contract `scripts/check_error_codes.py` enforces, so an unregistered
+    // code is an undocumented one. Remediation text is taken from each type's own
+    // `AlkahestError::remediation` impl rather than re-worded, so the two cannot
+    // disagree about what a caller should do.
+    // E-ASYMPT — AsymptoticError
+    ErrorSpec { code: "E-ASYMPT-001", class: "AsymptoticError", cause: Cause::UserInput, remediation: Some("pass n_terms >= 1") },
+    ErrorSpec { code: "E-ASYMPT-002", class: "AsymptoticError", cause: Cause::UserInput, remediation: Some("the function may not be analytic/Laurent-expandable at infinity; try a simpler form or fewer terms") },
+    ErrorSpec { code: "E-ASYMPT-003", class: "AsymptoticError", cause: Cause::UserInput, remediation: Some("ensure all functions are registered primitives with differentiation rules") },
+    ErrorSpec { code: "E-ASYMPT-004", class: "AsymptoticError", cause: Cause::UserInput, remediation: Some("the expansion could not be numerically verified at large x; the function may have an oscillatory or non-power-scale tail") },
+    ErrorSpec { code: "E-ASYMPT-005", class: "AsymptoticError", cause: Cause::Unsupported, remediation: Some("exp/log scale hierarchies and Gamma/Stirling asymptotics are out of scope for asymptotic_expand; power-scale (rational/algebraic) and single log/exp peels are supported. For the asymptotics of a *sum* use experimental.euler_maclaurin, which also reaches Stirling via the sum of log k") },
+    // E-FPS — FpsError
+    ErrorSpec { code: "E-FPS-001", class: "FpsError", cause: Cause::Domain, remediation: None },
+    ErrorSpec { code: "E-FPS-002", class: "FpsError", cause: Cause::Domain, remediation: None },
+    ErrorSpec { code: "E-FPS-003", class: "FpsError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-FPS-004", class: "FpsError", cause: Cause::Domain, remediation: None },
+    ErrorSpec { code: "E-FPS-005", class: "FpsError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-FPS-006", class: "FpsError", cause: Cause::Domain, remediation: None },
+    ErrorSpec { code: "E-FPS-007", class: "FpsError", cause: Cause::UserInput, remediation: None },
+    // E-INTERP — SparseInterpError
+    ErrorSpec { code: "E-INTERP-001", class: "SparseInterpError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-INTERP-002", class: "SparseInterpError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-INTERP-003", class: "SparseInterpError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-INTERP-004", class: "SparseInterpError", cause: Cause::Domain, remediation: None },
+    ErrorSpec { code: "E-INTERP-010", class: "SparseGcdError", cause: Cause::Unsupported, remediation: None },
+    ErrorSpec { code: "E-INTERP-011", class: "SparseGcdError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-INTERP-012", class: "SparseGcdError", cause: Cause::Internal, remediation: None },
+    // E-LIMIT — LimitError
+    ErrorSpec { code: "E-LIMIT-001", class: "LimitError", cause: Cause::UserInput, remediation: Some("increase truncation order indirectly by simplifying the expression, or rewrite using standard limits") },
+    ErrorSpec { code: "E-LIMIT-002", class: "LimitError", cause: Cause::UserInput, remediation: Some("ensure primitives have differentiation rules, or simplify before taking the limit") },
+    ErrorSpec { code: "E-LIMIT-003", class: "LimitError", cause: Cause::UserInput, remediation: Some("use LimitDirection::Plus or Minus matching the desired one-sided approach") },
+    ErrorSpec { code: "E-LIMIT-004", class: "LimitError", cause: Cause::Resource, remediation: Some("try manual algebra (quotient form, cancellations) or split into simpler sub-expressions") },
+    ErrorSpec { code: "E-LIMIT-005", class: "LimitError", cause: Cause::Unsupported, remediation: Some("limit could not be computed — try manual algebra, or the expression may involve oscillation or non-comparable growth not yet handled") },
+    // E-NFM — NormalFormError
+    ErrorSpec { code: "E-NFM-001", class: "NormalFormError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-NFM-002", class: "NormalFormError", cause: Cause::Unsupported, remediation: None },
+    // E-REC — LinearRecurrenceError
+    ErrorSpec { code: "E-REC-001", class: "LinearRecurrenceError", cause: Cause::Unsupported, remediation: None },
+    ErrorSpec { code: "E-REC-002", class: "LinearRecurrenceError", cause: Cause::UserInput, remediation: None },
+    // E-RES — ResultantError
+    ErrorSpec { code: "E-RES-001", class: "ResultantError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-RES-003", class: "ResultantError", cause: Cause::UserInput, remediation: None },
+    // E-ROOT — RealRootError
+    ErrorSpec { code: "E-ROOT-001", class: "RealRootError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-ROOT-002", class: "RealRootError", cause: Cause::Domain, remediation: None },
+    // E-SUM — SumError
+    ErrorSpec { code: "E-SUM-001", class: "SumError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-SUM-002", class: "SumError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-SUM-003", class: "SumError", cause: Cause::UserInput, remediation: None },
+    // E-VALIDATED — ValidatedError
+    ErrorSpec { code: "E-VALIDATED-001", class: "ValidatedError", cause: Cause::Unsupported, remediation: None },
+    ErrorSpec { code: "E-VALIDATED-002", class: "ValidatedError", cause: Cause::UserInput, remediation: None },
+    ErrorSpec { code: "E-VALIDATED-003", class: "ValidatedError", cause: Cause::Domain, remediation: None },
+    ErrorSpec { code: "E-VALIDATED-004", class: "ValidatedError", cause: Cause::Domain, remediation: None },
+    ErrorSpec { code: "E-VALIDATED-005", class: "ValidatedError", cause: Cause::UserInput, remediation: None },
 ];
 
 #[cfg(test)]

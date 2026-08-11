@@ -10,7 +10,7 @@
 #![allow(clippy::needless_range_loop)]
 
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
-use crate::matrix::Matrix;
+use crate::matrix::{zero_test, Matrix};
 use crate::poly::error::ConversionError;
 use crate::poly::unipoly::UniPoly;
 use crate::poly::{factor_univariate_z, FactorError};
@@ -199,7 +199,7 @@ fn symbolic_eigenvalues_2x2(
     let half = pool.rational(rug::Integer::from(1), rug::Integer::from(2));
 
     // Repeated root when the discriminant is exactly zero: λ = trace/2 (mult 2).
-    if expr_is_exactly_zero(pool, disc) {
+    if zero_test::zero_status(pool, disc).is_proven_zero() {
         let lam = simplify(pool.mul(vec![half, trace]), pool).value;
         return Ok(vec![(lam, 2)]);
     }
@@ -307,14 +307,16 @@ fn symbolic_eigenvalues_3x3(
     let neg_shift = simplify(pool.mul(vec![neg_one, a_over_3]), pool).value;
 
     // Fully degenerate depressed cubic t³ = 0 ⇒ triple root at −a/3.
-    if expr_is_exactly_zero(pool, p) && expr_is_exactly_zero(pool, q) {
+    if zero_test::zero_status(pool, p).is_proven_zero()
+        && zero_test::zero_status(pool, q).is_proven_zero()
+    {
         return Ok(vec![(neg_shift, 3)]);
     }
 
     // A = ∛(−q/2 + √Δ),  B = −p/(3A).  For p = 0 the pure cubic t³ + q = 0 has
     // A = ∛(−q) and B = 0, sidestepping the 0/0 in −p/(3A).
     let one_third_exp = pool.rational(rug::Integer::from(1), rug::Integer::from(3));
-    let (a_root, b_root) = if expr_is_exactly_zero(pool, p) {
+    let (a_root, b_root) = if zero_test::zero_status(pool, p).is_proven_zero() {
         let neg_q = simplify(pool.mul(vec![neg_one, q]), pool).value;
         let a_root = simplify(pool.pow(neg_q, one_third_exp), pool).value;
         (a_root, pool.integer(0_i32))
@@ -929,19 +931,47 @@ fn kernel_2x2_column_basis(m: &Matrix, pool: &ExprPool) -> Option<Vec<Matrix>> {
         return Some(Vec::new());
     }
     let neg_one = pool.integer(-1_i32);
-    let (a, b) = if expr_is_exactly_zero(pool, a00) && expr_is_exactly_zero(pool, b01) {
-        if expr_is_exactly_zero(pool, c10) && expr_is_exactly_zero(pool, d11) {
+    // The perpendicular `(−b, a)` is taken from a row that is *not* the zero
+    // row; taking it from a vanishing row would return `(0, 0)`, which is not a
+    // basis vector at all. So each row needs a three-valued verdict, and only
+    // `NonVanishing`/`Vanishing` may be acted on.
+    let (a, b) = match row_is_nonvanishing(pool, a00, b01) {
+        Some(true) => (a00, b01),
+        Some(false) => match row_is_nonvanishing(pool, c10, d11) {
             // Zero matrix — fall through to the general rational/Gauss path,
             // which returns a full 2-dimensional basis.
-            return None;
-        }
-        (c10, d11)
-    } else {
-        (a00, b01)
+            Some(true) => (c10, d11),
+            Some(false) => return None,
+            None => return None,
+        },
+        // Undecided: hand the matrix to the general Gaussian path, which
+        // refuses honestly rather than guessing.
+        None => return None,
     };
     let neg_b = simplify(pool.mul(vec![neg_one, b]), pool).value;
     let col = Matrix::new(vec![vec![neg_b], vec![a]]).ok()?;
     Some(vec![col])
+}
+
+/// Whether the row `(x, y)` is known to be, or known not to be, the zero row.
+///
+/// `Some(true)` needs only *one* entry proven non-zero — the other may well be
+/// undecided, and a row with a proven non-zero entry is not the zero row
+/// whatever that other entry turns out to be. `Some(false)` needs *every* entry
+/// proven zero. `None` is everything in between.
+fn row_is_nonvanishing(pool: &ExprPool, x: ExprId, y: ExprId) -> Option<bool> {
+    use zero_test::ZeroStatus;
+    let statuses = [
+        zero_test::zero_status(pool, x),
+        zero_test::zero_status(pool, y),
+    ];
+    if statuses.contains(&ZeroStatus::NonZero) {
+        return Some(true);
+    }
+    if statuses.iter().all(|s| *s == ZeroStatus::Zero) {
+        return Some(false);
+    }
+    None
 }
 
 pub(crate) fn kernel_column_basis(m: &Matrix, pool: &ExprPool) -> Result<Vec<Matrix>, ()> {
@@ -1396,13 +1426,25 @@ fn gauss_nullspace_expr(m: &Matrix, pool: &ExprPool) -> Result<Vec<Vec<ExprId>>,
         if r_at >= rows {
             break;
         }
+        // Pivot only on an entry *proven* not to vanish identically, and
+        // declare the column pivot-free only when every candidate is proven
+        // zero. An undecided entry aborts: reporting the wrong pivot column
+        // here silently changes the dimension of the nullspace.
         let mut prow = None;
+        let mut undecided = false;
         for rr in r_at..rows {
             let e = simplify(a[rr][c], pool).value;
-            if !expr_is_exactly_zero(pool, e) {
-                prow = Some((rr, e));
-                break;
+            match zero_test::zero_status(pool, e) {
+                zero_test::ZeroStatus::NonZero => {
+                    prow = Some((rr, e));
+                    break;
+                }
+                zero_test::ZeroStatus::Zero => a[rr][c] = pool.integer(0_i32),
+                zero_test::ZeroStatus::Unknown => undecided = true,
             }
+        }
+        if prow.is_none() && undecided {
+            return Err(());
         }
         let Some((pr, piv)) = prow else { continue };
         if pr != r_at {
@@ -1417,7 +1459,9 @@ fn gauss_nullspace_expr(m: &Matrix, pool: &ExprPool) -> Result<Vec<Vec<ExprId>>,
                 continue;
             }
             let f = simplify(a[rr][c], pool).value;
-            if expr_is_exactly_zero(pool, f) {
+            // Skipping is an optimisation only — subtracting `f · pivot_row` is
+            // correct for any `f` — so an undecided factor need not refuse.
+            if zero_test::zero_status(pool, f).is_proven_zero() {
                 continue;
             }
             for cc in 0..cols {
@@ -1452,6 +1496,11 @@ fn gauss_nullspace_expr(m: &Matrix, pool: &ExprPool) -> Result<Vec<Vec<ExprId>>,
     Ok(bases)
 }
 
+/// Structural literal-zero test.
+///
+/// Retained only for the coefficient accumulator, where the slot being tested
+/// is a literal `0` this function itself put there. Every site that decides a
+/// *pivot* uses `zero_test::zero_status` instead.
 fn expr_is_exactly_zero(pool: &ExprPool, e: ExprId) -> bool {
     match pool.get(e) {
         ExprData::Integer(n) => n.0 == 0,

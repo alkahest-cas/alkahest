@@ -9,7 +9,7 @@ use crate::matrix::eigen::{
     m_minus_lambda_scaled,
 };
 use crate::matrix::normal_form::{smith_form_poly, PolyMatrixQ, RatUniPoly};
-use crate::matrix::{Matrix, MatrixError};
+use crate::matrix::{zero_test, Matrix, MatrixError};
 use crate::poly::unipoly::UniPoly;
 use crate::poly::{factor_univariate_z, FactorError};
 use crate::simplify::engine::{simplify, simplify_expanded};
@@ -29,7 +29,22 @@ pub enum LinearAlgebraError {
     NotPositiveDefinite,
     CharPolyConversion(crate::poly::error::ConversionError),
     Factorization(FactorError),
-    UnsupportedIrreducibleDegree { degree: usize },
+    UnsupportedIrreducibleDegree {
+        degree: usize,
+    },
+    /// The entries lie outside the field this routine can work over.
+    ///
+    /// Two ways that happens: a Smith-based decomposition needs rational
+    /// constants and got something else, or elimination reached an entry whose
+    /// vanishing it could not decide — over a transcendental extension that
+    /// question is undecidable in general (see the `matrix::zero_test` module),
+    /// and pivoting on an entry that might be identically zero is what produced
+    /// full-rank verdicts for rank-deficient matrices.
+    ///
+    /// Which of the two it was is available from
+    /// [`take_zero_test_refusal`](crate::matrix::take_zero_test_refusal):
+    /// `Some(..)` means an undecided entry (code `E-LINALG-010`), `None` means
+    /// non-rational entries (code `E-LINALG-007`).
     UnsupportedField,
     SingularTransform,
     NonRationalEntry,
@@ -54,7 +69,9 @@ impl fmt::Display for LinearAlgebraError {
             LinearAlgebraError::UnsupportedField => {
                 write!(
                     f,
-                    "entries must be rational constants for this decomposition"
+                    "matrix entries lie outside the field this routine can work over: \
+                     a Smith-based decomposition needs rational constants, and \
+                     elimination needs entries whose vanishing it can decide"
                 )
             }
             LinearAlgebraError::SingularTransform => {
@@ -100,9 +117,11 @@ impl crate::errors::AlkahestError for LinearAlgebraError {
             LinearAlgebraError::UnsupportedIrreducibleDegree { .. } => {
                 Some("minimal polynomial has an irreducible factor of degree > 2")
             }
-            LinearAlgebraError::UnsupportedField => {
-                Some("use rational or integer entries for Smith-based decompositions")
-            }
+            LinearAlgebraError::UnsupportedField => Some(
+                "use entries this routine can work over: rational or integer entries \
+                 for Smith-based decompositions, and entries whose vanishing is \
+                 decidable for elimination",
+            ),
             LinearAlgebraError::SingularTransform => {
                 Some("the computed similarity matrix is not invertible")
             }
@@ -194,15 +213,9 @@ fn row_echelon_pivots(m: &Matrix, pool: &ExprPool) -> Result<RowEchelonInfo, Lin
         if r_at >= rows {
             break;
         }
-        let mut prow = None;
-        for rr in r_at..rows {
-            let e = simplify(a[rr][c], pool).value;
-            if !expr_is_zero(pool, e) {
-                prow = Some((rr, e));
-                break;
-            }
-        }
-        let Some((pr, piv)) = prow else { continue };
+        let Some((pr, piv)) = find_pivot(&mut a, r_at, rows, c, pool)? else {
+            continue;
+        };
         if pr != r_at {
             a.swap(pr, r_at);
         }
@@ -215,7 +228,10 @@ fn row_echelon_pivots(m: &Matrix, pool: &ExprPool) -> Result<RowEchelonInfo, Lin
                 continue;
             }
             let f = simplify(a[rr][c], pool).value;
-            if expr_is_zero(pool, f) {
+            // Only *skipping* needs a decision here: subtracting `f · pivot_row`
+            // is correct whatever `f` is, so an undecided factor costs work but
+            // never correctness. Refusing here would be gratuitous.
+            if zero_test::zero_status(pool, f).is_proven_zero() {
                 continue;
             }
             for cc in 0..cols {
@@ -233,6 +249,70 @@ fn row_echelon_pivots(m: &Matrix, pool: &ExprPool) -> Result<RowEchelonInfo, Lin
         pivot_row_flags,
         echelon: Matrix::new(a).expect("row echelon grid"),
     })
+}
+
+/// The first row at or below `r_at` whose entry in column `c` is **proven**
+/// non-zero, together with that entry.
+///
+/// Three outcomes, and the middle one is the point of this function:
+///
+/// * `Ok(Some(..))` — a pivot proven not to vanish identically.
+/// * `Ok(None)` — every candidate is proven zero, so the column has no pivot.
+/// * `Err(..)` — no candidate could be proven non-zero and at least one could
+///   not be proven zero either. Reporting `None` would claim a rank deficiency
+///   that has not been established, and picking the undecided entry as a pivot
+///   would claim the opposite; both are silent errors, so the caller is told
+///   instead. See [`inconclusive`] for how that refusal is coded.
+///
+/// Entries proven zero are rewritten to the literal `0` in place, so the
+/// echelon form that comes out shows a cleared column rather than an
+/// unsimplified expression that happens to vanish.
+fn find_pivot(
+    a: &mut [Vec<ExprId>],
+    r_at: usize,
+    rows: usize,
+    c: usize,
+    pool: &ExprPool,
+) -> Result<Option<(usize, ExprId)>, LinearAlgebraError> {
+    let zero = pool.integer(0_i32);
+    let mut undecided: Option<ExprId> = None;
+    for rr in r_at..rows {
+        let e = simplify(a[rr][c], pool).value;
+        match zero_test::zero_status(pool, e) {
+            zero_test::ZeroStatus::NonZero => return Ok(Some((rr, e))),
+            zero_test::ZeroStatus::Zero => a[rr][c] = zero,
+            zero_test::ZeroStatus::Unknown => undecided = undecided.or(Some(e)),
+        }
+    }
+    match undecided {
+        None => Ok(None),
+        Some(e) => Err(inconclusive(pool, e)),
+    }
+}
+
+/// Refuse an entry whose vanishing could not be decided.
+///
+/// [`LinearAlgebraError`] is a public exhaustive enum, so it cannot grow a
+/// dedicated variant without a major semver break. The refusal is reported as
+/// [`LinearAlgebraError::UnsupportedField`] — true as it stands, since the
+/// entry lies in a field this routine cannot decide over — and the entry that
+/// caused it is recorded for
+/// [`take_zero_test_refusal`](crate::matrix::take_zero_test_refusal), which is
+/// how bindings recover the specific `E-LINALG-010`. Same shape as
+/// [`crate::calculus::limits::last_budget_trip`].
+fn inconclusive(pool: &ExprPool, e: ExprId) -> LinearAlgebraError {
+    zero_test::record_refusal(pool, e, zero_test::RefusalSite::Pivot);
+    LinearAlgebraError::UnsupportedField
+}
+
+/// [`LinearAlgebraError::UnsupportedField`] for its other meaning: entries that
+/// are not the rational constants a Smith-based decomposition needs.
+///
+/// Clears any recorded zero-test refusal, so this error is never re-attributed
+/// to an undecided entry left behind by an earlier call on this thread.
+fn unsupported_field() -> LinearAlgebraError {
+    zero_test::forget_refusal();
+    LinearAlgebraError::UnsupportedField
 }
 
 fn rational_row_echelon_pivots(
@@ -371,18 +451,14 @@ fn expr_lu_decomposition(
     let mut l = Matrix::identity(n, pool);
     let mut u = Matrix::zeros(n, cols, pool);
     for k in 0..n.min(cols) {
-        let mut piv_row = k;
-        for r in (k + 1)..n {
-            if !expr_is_zero(pool, a[r][k]) && expr_is_zero(pool, a[piv_row][k]) {
-                piv_row = r;
-            }
-        }
-        if expr_is_zero(pool, a[piv_row][k]) {
+        // Same contract as `find_pivot`: a column is declared pivot-free only
+        // when every candidate is *proven* zero.
+        let Some((piv_row, _)) = find_pivot(&mut a, k, n, k, pool)? else {
             for j in k..cols {
                 u.set(k, j, a[k][j]);
             }
             continue;
-        }
+        };
         if piv_row != k {
             a.swap(piv_row, k);
             perm.swap(piv_row, k);
@@ -438,10 +514,17 @@ pub fn qr_decomposition(
                 .map_err(|_| LinearAlgebraError::KernelFailed)?;
         }
         let rjj = norm_column(&v, pool)?;
-        if expr_is_zero(pool, rjj) {
-            r.set(j, j, pool.integer(0_i32));
-            q_cols.push(Matrix::zeros(n, 1, pool));
-            continue;
+        // `‖v‖ = 0` means column `j` is dependent on the ones before it and Q
+        // gets a zero column; `‖v‖ ≠ 0` means we may divide by it. Guessing
+        // either way silently changes the rank of Q.
+        match zero_test::zero_status(pool, rjj) {
+            zero_test::ZeroStatus::Zero => {
+                r.set(j, j, pool.integer(0_i32));
+                q_cols.push(Matrix::zeros(n, 1, pool));
+                continue;
+            }
+            zero_test::ZeroStatus::NonZero => {}
+            zero_test::ZeroStatus::Unknown => return Err(inconclusive(pool, rjj)),
         }
         r.set(j, j, rjj);
         let inv = simplify(pool.pow(rjj, pool.integer(-1_i32)), pool).value;
@@ -652,7 +735,7 @@ fn lambda_identity_minus_m_poly(
         }
         rows.push(row);
     }
-    PolyMatrixQ::from_nested(rows).map_err(|_| LinearAlgebraError::UnsupportedField)
+    PolyMatrixQ::from_nested(rows).map_err(|_| unsupported_field())
 }
 
 fn expr_to_rat_uni_poly(e: ExprId, pool: &ExprPool) -> Result<RatUniPoly, LinearAlgebraError> {
@@ -687,7 +770,7 @@ fn invariant_factors_from_smith(s: &PolyMatrixQ) -> Result<Vec<RatUniPoly>, Line
         }
     }
     if facs.is_empty() {
-        return Err(LinearAlgebraError::UnsupportedField);
+        return Err(unsupported_field());
     }
     Ok(facs)
 }
@@ -695,7 +778,7 @@ fn invariant_factors_from_smith(s: &PolyMatrixQ) -> Result<Vec<RatUniPoly>, Line
 fn companion_matrix(f: &RatUniPoly, pool: &ExprPool) -> Result<Matrix, LinearAlgebraError> {
     let d = f.degree() as usize;
     if d == 0 {
-        return Err(LinearAlgebraError::UnsupportedField);
+        return Err(unsupported_field());
     }
     let coeffs = f.coeffs.clone();
     let mut c = Matrix::zeros(d, d, pool);
@@ -826,10 +909,15 @@ fn columns_proportional(a: &Matrix, b: &Matrix, pool: &ExprPool) -> bool {
     for r in 0..a.rows {
         let ea = simplify(a.get(r, 0), pool).value;
         let eb = simplify(b.get(r, 0), pool).value;
-        if expr_is_zero(pool, ea) && expr_is_zero(pool, eb) {
+        // A heuristic search over candidate cyclic vectors: an undecided entry
+        // only makes this candidate look unusable, and the caller tries the
+        // next one. No mathematical claim rides on `false` here.
+        let ea_zero = zero_test::zero_status(pool, ea).is_proven_zero();
+        let eb_zero = zero_test::zero_status(pool, eb).is_proven_zero();
+        if ea_zero && eb_zero {
             continue;
         }
-        if expr_is_zero(pool, ea) || expr_is_zero(pool, eb) {
+        if ea_zero || eb_zero {
             return false;
         }
         let cand = simplify(pool.mul(vec![ea, pool.pow(eb, pool.integer(-1_i32))]), pool).value;
@@ -941,8 +1029,13 @@ fn matrix_annihilated_by_uni(
         }
     }
     for e in acc.entries() {
-        if !expr_is_zero(pool, simplify(*e, pool).value) {
-            return Ok(false);
+        let entry = simplify(*e, pool).value;
+        match zero_test::zero_status(pool, entry) {
+            zero_test::ZeroStatus::Zero => {}
+            zero_test::ZeroStatus::NonZero => return Ok(false),
+            // "p(M) might be 0" must not be reported as "p does not annihilate
+            // M": that would return a non-minimal polynomial as the minimal one.
+            zero_test::ZeroStatus::Unknown => return Err(inconclusive(pool, entry)),
         }
     }
     Ok(true)
@@ -1008,14 +1101,19 @@ pub fn matrix_exponential(m: &Matrix, pool: &ExprPool) -> Result<Matrix, LinearA
         .map_err(|_| LinearAlgebraError::KernelFailed)
 }
 
-/// True iff every off-diagonal entry simplifies to exactly zero.
+/// True iff every off-diagonal entry is *proven* zero.
+///
+/// A fast path, not a claim: an undecided off-diagonal entry answers `false`
+/// and `matrix_exponential` falls back to the Jordan route, which is correct
+/// for diagonal matrices too.
 fn is_diagonal(m: &Matrix, pool: &ExprPool) -> bool {
     if m.rows != m.cols {
         return false;
     }
     for r in 0..m.rows {
         for c in 0..m.cols {
-            if r != c && !expr_is_zero(pool, simplify(m.get(r, c), pool).value) {
+            let entry = simplify(m.get(r, c), pool).value;
+            if r != c && !zero_test::zero_status(pool, entry).is_proven_zero() {
                 return false;
             }
         }
@@ -1131,7 +1229,9 @@ pub fn matrix_inverse(m: &Matrix, pool: &ExprPool) -> Result<Matrix, MatrixError
             }
         }
         let Some(pr) = piv else {
-            return Err(MatrixError::SingularMatrix);
+            // Rational entries: zero-testing is exact here, so this is a proven
+            // singularity and never a refusal — see `singular`.
+            return Err(singular());
         };
         if pr != col {
             aug.swap(pr, col);
@@ -1165,8 +1265,12 @@ pub fn matrix_inverse(m: &Matrix, pool: &ExprPool) -> Result<Matrix, MatrixError
 /// symbolic determinant engine (`Matrix::det`) handles arbitrary entries, so this
 /// path supports transfer functions `C(sI−A)⁻¹B+D`, symbolic mass matrices, etc.
 ///
-/// If `det(A)` simplifies to a literal zero the matrix is genuinely singular and
-/// `MatrixError::SingularMatrix` is returned, keeping that error meaningful.
+/// If `det(A)` is proven zero the matrix is genuinely singular; if it can be
+/// proven neither zero nor non-zero, no inverse is reported either, because the
+/// adjugate formula divides by it. Both are
+/// [`MatrixError::SingularMatrix`], whose text states that disjunction; the
+/// second case additionally records a
+/// [`ZeroTestRefusal`](crate::matrix::ZeroTestRefusal) carrying `E-MAT-004`.
 fn symbolic_inverse(m: &Matrix, pool: &ExprPool) -> Result<Matrix, MatrixError> {
     let n = m.rows;
     if n == 0 {
@@ -1176,8 +1280,13 @@ fn symbolic_inverse(m: &Matrix, pool: &ExprPool) -> Result<Matrix, MatrixError> 
     // `1/det` factor in the resulting entries cancels cleanly against expanded
     // cofactor numerators (e.g. so A·A⁻¹ collapses to the identity on simplify).
     let det = simplify_expanded(m.det(pool)?, pool).value;
-    if expr_is_zero(pool, det) {
-        return Err(MatrixError::SingularMatrix);
+    match zero_test::zero_status(pool, det) {
+        zero_test::ZeroStatus::Zero => return Err(singular()),
+        zero_test::ZeroStatus::NonZero => {}
+        zero_test::ZeroStatus::Unknown => {
+            zero_test::record_refusal(pool, det, zero_test::RefusalSite::Determinant);
+            return Err(MatrixError::SingularMatrix);
+        }
     }
     let inv_det = simplify(pool.pow(det, pool.integer(-1_i32)), pool).value;
 
@@ -1202,7 +1311,17 @@ fn symbolic_inverse(m: &Matrix, pool: &ExprPool) -> Result<Matrix, MatrixError> 
         }
         rows.push(row);
     }
-    Matrix::new(rows).map_err(|_| MatrixError::SingularMatrix)
+    Matrix::new(rows).map_err(|_| singular())
+}
+
+/// [`MatrixError::SingularMatrix`] for a *proven* singularity.
+///
+/// Clears any recorded zero-test refusal so a genuinely singular matrix is
+/// never reported with the undecided-determinant code `E-MAT-004`; see
+/// [`inconclusive`] for the other half of the arrangement.
+fn singular() -> MatrixError {
+    zero_test::forget_refusal();
+    MatrixError::SingularMatrix
 }
 
 // ---------------------------------------------------------------------------
@@ -1267,14 +1386,6 @@ fn rational_grid_to_matrix(grid: &[Vec<Rational>], pool: &ExprPool) -> Matrix {
         })
         .collect();
     Matrix::new(rows).expect("rational grid")
-}
-
-fn expr_is_zero(pool: &ExprPool, e: ExprId) -> bool {
-    match pool.get(e) {
-        ExprData::Integer(n) => n.0 == 0,
-        ExprData::Rational(r) => r.0 == 0,
-        _ => false,
-    }
 }
 
 fn dot_columns(a: &Matrix, b: &Matrix, pool: &ExprPool) -> Result<ExprId, LinearAlgebraError> {
@@ -1346,6 +1457,129 @@ mod tests {
         let p = pool();
         let id = Matrix::identity(3, &p);
         assert_eq!(rank(&id, &p).unwrap(), 3);
+    }
+
+    /// `exp(a)²` and `exp(2a)` are the same function written two ways.
+    ///
+    /// Row 2 is `exp(a)` times row 1, so the rank is 1. Before the zero test
+    /// grew a third state this returned 2, and the rref carried a `[0 0 1]`
+    /// row: the signature of an inconsistent system, for a consistent one.
+    #[test]
+    fn rank_sees_through_the_exponential_functional_equation() {
+        let p = pool();
+        let a = p.symbol("a", Domain::Real);
+        let exp_a = p.func("exp", vec![a]);
+        let m = Matrix::new(vec![
+            vec![p.integer(1_i32), exp_a, exp_a],
+            vec![
+                exp_a,
+                p.mul(vec![exp_a, exp_a]),
+                p.func("exp", vec![p.add(vec![a, a])]),
+            ],
+        ])
+        .unwrap();
+        assert_eq!(rank(&m, &p).unwrap(), 1);
+
+        let echelon = rref(&m, &p).unwrap();
+        for c in 0..echelon.cols {
+            assert_eq!(
+                echelon.get(1, c),
+                p.integer(0_i32),
+                "rank-1 matrix must have an all-zero second rref row"
+            );
+        }
+    }
+
+    /// The control: the same matrix with one entry changed really has rank 2,
+    /// so the fix cannot be "call everything zero".
+    #[test]
+    fn rank_still_separates_independent_exponential_rows() {
+        let p = pool();
+        let a = p.symbol("a", Domain::Real);
+        let exp_a = p.func("exp", vec![a]);
+        let m = Matrix::new(vec![
+            vec![p.integer(1_i32), exp_a, exp_a],
+            vec![exp_a, p.mul(vec![exp_a, exp_a]), exp_a],
+        ])
+        .unwrap();
+        assert_eq!(rank(&m, &p).unwrap(), 2);
+    }
+
+    /// An entry nothing can decide must produce a coded refusal, not a rank.
+    #[test]
+    fn rank_refuses_an_undecidable_pivot() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        // `mystery` has no differentiation rule, no numeric kernel and no ball
+        // kernel, so it can be neither normalised to zero nor enclosed away
+        // from it.
+        let opaque = p.func("mystery", vec![x]);
+        let zero = p.integer(0_i32);
+        let m = Matrix::new(vec![vec![opaque, zero], vec![zero, zero]]).unwrap();
+        let err = rank(&m, &p).expect_err("an undecidable pivot must refuse");
+        assert!(
+            matches!(err, LinearAlgebraError::UnsupportedField),
+            "expected a zero-test refusal, got {err:?}"
+        );
+        use crate::errors::AlkahestError;
+        assert!(err.code().starts_with("E-LINALG-"));
+        // The variant is a carrier — the specific cause and its `E-LINALG-010`
+        // travel out of band, which is what the bindings raise.
+        let refusal = crate::matrix::take_zero_test_refusal()
+            .expect("the refusal must be recoverable, or the code is lost");
+        assert_eq!(refusal.code(), "E-LINALG-010");
+        assert!(
+            refusal.entry().contains("mystery"),
+            "refusal should name the undecided entry, got {}",
+            refusal.entry()
+        );
+        assert_eq!(
+            crate::matrix::take_zero_test_refusal(),
+            None,
+            "taking must consume, so one refusal cannot be reported twice"
+        );
+    }
+
+    /// A matrix that is *proven* singular must not borrow the refusal code.
+    #[test]
+    fn a_proven_singularity_is_not_a_zero_test_refusal() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        // Refuse once so there is something stale to pick up...
+        let opaque = p.func("mystery", vec![x]);
+        let zero = p.integer(0_i32);
+        let undecidable = Matrix::new(vec![vec![opaque, zero], vec![zero, zero]]).unwrap();
+        let _ = rank(&undecidable, &p);
+        // ...then invert a matrix whose determinant is exactly 0.
+        let m = Matrix::new(vec![
+            vec![p.integer(1_i32), p.integer(2_i32)],
+            vec![p.integer(2_i32), p.integer(4_i32)],
+        ])
+        .unwrap();
+        assert_eq!(matrix_inverse(&m, &p), Err(MatrixError::SingularMatrix));
+        assert_eq!(
+            crate::matrix::take_zero_test_refusal(),
+            None,
+            "a proven singularity must not be reported as an undecided determinant"
+        );
+    }
+
+    /// An undecidable determinant must refuse *and* be recoverable as E-MAT-004.
+    #[test]
+    fn inverse_refuses_an_undecidable_determinant() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        let opaque = p.func("mystery", vec![x]);
+        let m = Matrix::new(vec![
+            vec![opaque, p.integer(0_i32)],
+            vec![p.integer(0_i32), p.integer(1_i32)],
+        ])
+        .unwrap();
+        assert_eq!(matrix_inverse(&m, &p), Err(MatrixError::SingularMatrix));
+        use crate::errors::AlkahestError;
+        let refusal = crate::matrix::take_zero_test_refusal()
+            .expect("an undecided determinant must record its refusal");
+        assert_eq!(refusal.code(), "E-MAT-004");
     }
 
     #[test]
@@ -1439,8 +1673,8 @@ mod tests {
         let expm = matrix_exponential(&m, &p).unwrap();
         assert_eq!(expm.rows, 2);
         assert_eq!(expm.cols, 2);
-        assert!(!expr_is_zero(&p, expm.get(0, 0)));
-        assert!(!expr_is_zero(&p, expm.get(1, 1)));
+        assert!(!zero_test::zero_status(&p, expm.get(0, 0)).is_proven_zero());
+        assert!(!zero_test::zero_status(&p, expm.get(1, 1)).is_proven_zero());
     }
 
     #[test]
@@ -1586,7 +1820,7 @@ mod tests {
                 )
                 .value;
                 assert!(
-                    expr_is_zero(&p, diff),
+                    zero_test::zero_status(&p, diff).is_proven_zero(),
                     "(A·adj)[{i}][{j}] != det·I[{i}][{j}]: {:?}",
                     p.get(diff)
                 );

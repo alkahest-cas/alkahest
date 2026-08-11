@@ -263,3 +263,63 @@ def test_matrix_hadamard_elementwise():
     with pytest.raises(alkahest.MatrixError) as exc_info:
         a.hadamard(c)
     assert exc_info.value.code == "E-MAT-001"
+
+
+# ---------------------------------------------------------------------------
+# Undecidable zero tests — the refusal has to arrive with its own code
+# ---------------------------------------------------------------------------
+#
+# Both refusals travel on an existing error variant (`UnsupportedField`,
+# `SingularMatrix`), because the Rust enums are public and exhaustive and a new
+# variant is a major semver break. The specific cause rides alongside and the
+# bindings recover it, so these tests are what keeps that recovery honest: if
+# the out-of-band channel is ever dropped, the refusal silently degrades to the
+# carrier's code and only this asserts otherwise.
+
+
+def _undecidable(pool):
+    """A 1×1 quantity nothing can decide: `mystery` has no rule, no numeric
+    kernel and no interval kernel, so it can be neither normalised to zero nor
+    rigorously enclosed away from it."""
+    return pool.func("mystery", [pool.symbol("a")])
+
+
+def test_undecidable_pivot_refuses_with_linalg_code():
+    """A pivot that can be proven neither zero nor non-zero raises E-LINALG-010."""
+    pool = alkahest.ExprPool()
+    zero = pool.integer(0)
+    m = alkahest.Matrix([[_undecidable(pool), zero], [zero, zero]])
+    with pytest.raises(alkahest.LinearAlgebraError) as exc_info:
+        m.rank()
+    assert exc_info.value.code == "E-LINALG-010"
+    assert "mystery" in str(exc_info.value)
+
+
+def test_undecidable_determinant_refuses_with_matrix_code():
+    """An inverse whose determinant cannot be decided raises E-MAT-004.
+
+    Not an inverse divided by a determinant that might be zero, which nothing
+    downstream could tell apart from a real one.
+    """
+    pool = alkahest.ExprPool()
+    zero, one = pool.integer(0), pool.integer(1)
+    m = alkahest.Matrix([[_undecidable(pool), zero], [zero, one]])
+    with pytest.raises(alkahest.MatrixError) as exc_info:
+        m.inverse()
+    assert exc_info.value.code == "E-MAT-004"
+
+
+def test_proven_singular_keeps_its_own_code_after_a_refusal():
+    """A genuinely singular matrix stays E-MAT-003 even right after a refusal.
+
+    The refusal is recorded out of band, so the failure mode this guards is a
+    stale record being picked up by the next unrelated error on the thread.
+    """
+    pool = alkahest.ExprPool()
+    zero = pool.integer(0)
+    with pytest.raises(alkahest.LinearAlgebraError):
+        alkahest.Matrix([[_undecidable(pool), zero], [zero, zero]]).rank()
+    singular = _int_matrix(pool, [[1, 2], [2, 4]])
+    with pytest.raises(alkahest.MatrixError) as exc_info:
+        singular.inverse()
+    assert exc_info.value.code == "E-MAT-003"

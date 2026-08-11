@@ -2,14 +2,17 @@
 //! L'Hôpital iterations, algebraic transforms, and the Gruntz comparability-graph
 //! algorithm for exp-log combinations (V2-16/V2-17).
 
+use crate::budget::BudgetError;
+use crate::calculus::asymptotic::regularize_at_zero;
 use crate::calculus::gruntz::try_gruntz;
-use crate::calculus::series::{local_expansion, LocalExpansion};
+use crate::calculus::series::{enter_coeff_ceiling, local_expansion, LocalExpansion};
 use crate::diff::{diff, DiffError};
 use crate::kernel::pool::POS_INFINITY_SYMBOL;
 use crate::kernel::{subs, ExprData, ExprId, ExprPool};
 use crate::poly::{poly_normal, RationalFunction};
 use crate::simplify::{simplify, simplify_expanded};
 use crate::SeriesError;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -32,7 +35,10 @@ pub enum LimitError {
     Diff(DiffError),
     /// Odd-order pole requires a one-sided direction.
     NeedsOneSided,
-    /// Maximal L'Hôpital / recursion depth exceeded.
+    /// The search ran out of room: the L'Hôpital / recursion depth cap, the
+    /// internal work ceiling ([`limit`]'s termination guard), or the ambient
+    /// [`crate::budget`] — see [`last_budget_trip`] to tell a budget trip from
+    /// the engine's own limits.
     DepthExceeded,
     /// No implemented rule applies (non-comparable growth, oscillation, …).
     Unsupported,
@@ -108,12 +114,173 @@ impl From<DiffError> for LimitError {
 }
 
 // ---------------------------------------------------------------------------
+// Termination guard — cooperative budget checkpoints plus an internal work
+// ceiling, so no search path in this engine can run unboundedly.
+// ---------------------------------------------------------------------------
+
+/// How many *new* expression nodes one top-level [`limit`] call may intern
+/// before the engine gives up with [`LimitError::DepthExceeded`].
+///
+/// The pathological shape this bounds is repeated symbolic differentiation:
+/// [`crate::calculus::series`] builds Taylor coefficients by differentiating
+/// without re-simplifying, so an expression whose derivatives do not close
+/// (nested radicals, in particular) grows by a constant factor per
+/// coefficient. Thirty-two coefficients of `√(x²+x)` rewritten at `t → 0⁺`
+/// is not a slow computation, it is an unfinishable one — the loop ran for
+/// hours with no output. Counting interned nodes rather than iterations
+/// catches that directly, is `O(1)` per checkpoint ([`ExprPool::len`] is a
+/// lock-free counter), and is monotone, so no path can evade it.
+///
+/// Sized with an order of magnitude of headroom: the heaviest limit in the
+/// Rust and Python suites interns ~9k nodes (`x·sin(1/x)` at 0; most are under
+/// 300), while a runaway radical expansion reaches this ceiling in a few
+/// hundred milliseconds.
+const MAX_LIMIT_POOL_GROWTH: usize = 100_000;
+
+thread_local! {
+    /// `pool.len()` when the outermost [`limit`] call on this thread started.
+    /// `None` outside any `limit` call.
+    static WORK_BASELINE: Cell<Option<usize>> = const { Cell::new(None) };
+    /// The [`BudgetError`] that tripped the most recent outermost [`limit`]
+    /// call, if any — see [`last_budget_trip`].
+    static BUDGET_TRIP: Cell<Option<BudgetError>> = const { Cell::new(None) };
+}
+
+/// RAII marker for the outermost [`limit`] frame on this thread.
+///
+/// [`limit`] re-enters itself (Gruntz sub-limits, growth comparisons), and the
+/// work ceiling must bound the *whole* call rather than restart at every
+/// re-entry, so only the outermost frame installs and clears the baseline.
+struct WorkFrame {
+    outermost: bool,
+}
+
+impl Drop for WorkFrame {
+    fn drop(&mut self) {
+        if self.outermost {
+            WORK_BASELINE.with(|c| c.set(None));
+        }
+    }
+}
+
+fn enter_work_frame(pool: &ExprPool) -> WorkFrame {
+    WORK_BASELINE.with(|c| {
+        if c.get().is_some() {
+            return WorkFrame { outermost: false };
+        }
+        c.set(Some(pool.len()));
+        WorkFrame { outermost: true }
+    })
+}
+
+/// `true` once this `limit` call has interned more than
+/// [`MAX_LIMIT_POOL_GROWTH`] nodes.
+fn work_exhausted(pool: &ExprPool) -> bool {
+    WORK_BASELINE.with(|c| match c.get() {
+        Some(base) => pool.len().saturating_sub(base) > MAX_LIMIT_POOL_GROWTH,
+        None => false,
+    })
+}
+
+/// The absolute `pool.len()` ceiling for the current `limit` call, for handing
+/// to [`enter_coeff_ceiling`] so the Taylor-coefficient loop stops at the same
+/// place this engine's own checkpoints do.
+fn coeff_ceiling(pool: &ExprPool) -> usize {
+    WORK_BASELINE.with(|c| {
+        c.get()
+            .unwrap_or_else(|| pool.len())
+            .saturating_add(MAX_LIMIT_POOL_GROWTH)
+    })
+}
+
+/// Cooperative checkpoint for the limit engine: honours [`crate::budget`] and
+/// the internal work ceiling.
+///
+/// Placed on every path that can iterate or recurse — see [`limit_inner`],
+/// [`canonical_polynomial_quotient_in_var`], [`try_expansion_limit`],
+/// [`try_regularized_infinity_limit`] and [`crate::calculus::gruntz`].
+pub(crate) fn checkpoint(pool: &ExprPool) -> Result<(), LimitError> {
+    if let Err(e) = crate::budget::check() {
+        BUDGET_TRIP.with(|c| c.set(Some(e)));
+        return Err(LimitError::DepthExceeded);
+    }
+    if work_exhausted(pool) {
+        return Err(LimitError::DepthExceeded);
+    }
+    Ok(())
+}
+
+/// The [`BudgetError`] that stopped the most recent outermost [`limit`] call on
+/// this thread, or `None` if that call was not stopped by a budget.
+///
+/// [`LimitError`] is an exhaustive public enum, so it cannot grow a `Budget`
+/// variant without a major semver break (the same constraint
+/// [`mod@crate::integrate`] works around by encoding budget trips inside
+/// `NotImplemented`). Limit budget trips are reported as
+/// [`LimitError::DepthExceeded`] — an honest "gave up" — and this function
+/// tells a caller *why* it gave up, so bindings can raise a dedicated
+/// budget-exceeded error carrying the `E-BUDGET-*` code.
+///
+/// Cleared at the start of every outermost `limit` call, so it only ever
+/// describes the call that just returned.
+pub fn last_budget_trip() -> Option<BudgetError> {
+    BUDGET_TRIP.with(|c| c.get())
+}
 
 /// `limit(expr, var, point, dir)` — see [`LimitDirection`].
 ///
 /// `point` may be finite or [`ExprPool::pos_infinity`]. Limits at `-∞` use
 /// `pool.mul(pool.integer(-1), pool.pos_infinity())`.
+///
+/// # Termination
+///
+/// The search is bounded: it honours [`crate::budget`] (wall clock, steps,
+/// [`crate::budget::request_cancel`]) and, with no budget active, an internal
+/// work ceiling. Either way an unsolvable case returns
+/// [`LimitError::DepthExceeded`] rather than running unboundedly; use
+/// [`last_budget_trip`] to tell the two apart.
 pub fn limit(
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    direction: LimitDirection,
+    pool: &ExprPool,
+) -> Result<ExprId, LimitError> {
+    let frame = enter_work_frame(pool);
+    if frame.outermost {
+        BUDGET_TRIP.with(|c| c.set(None));
+    }
+    // Bound the Taylor-coefficient loop in `series` for the whole call, not
+    // just at the boundaries this module can see: a single `local_expansion`
+    // at order 32 is one uninterruptible call from here.
+    let _ceiling = enter_coeff_ceiling(coeff_ceiling(pool));
+
+    limit_body(expr, var, point, direction, pool).map_err(|e| attribute_failure(e, pool))
+}
+
+/// Re-attribute a failed [`limit`] to the resource that actually stopped it.
+///
+/// Every rule in this engine turns a failed sub-problem into "this rule does
+/// not apply" (`Err(_) => Ok(None)`), and the coefficient loop in
+/// [`crate::calculus::series`] simply stops producing terms. So a call that ran
+/// out of budget usually surfaces as `Unsupported` — "no rule worked" — which
+/// is true but useless: it tells the caller to rewrite the problem when what
+/// they need to do is raise the budget. Any failure that coincides with an
+/// exhausted budget, a cancellation, or a blown work ceiling is reported as
+/// [`LimitError::DepthExceeded`], with [`last_budget_trip`] carrying the
+/// `E-BUDGET-*` cause when there was one.
+fn attribute_failure(e: LimitError, pool: &ExprPool) -> LimitError {
+    if BUDGET_TRIP.with(|c| c.get()).is_some() || work_exhausted(pool) {
+        return LimitError::DepthExceeded;
+    }
+    if let Err(b) = crate::budget::check() {
+        BUDGET_TRIP.with(|c| c.set(Some(b)));
+        return LimitError::DepthExceeded;
+    }
+    e
+}
+
+fn limit_body(
     expr: ExprId,
     var: ExprId,
     point: ExprId,
@@ -473,7 +640,11 @@ fn flatten_nested_integer_pow(expr: ExprId, pool: &ExprPool) -> ExprId {
 /// After ``x ↦ 1/t``, common forms are ``Mul(numer, denom^{-1})`` with ``Pow(t,-1)``
 /// sprinkled through both.  Clear those poles by multiplying by ``t^k`` until
 /// numerator and denominator describe an honest polynomial quotient in ``t``.
-fn canonical_polynomial_quotient_in_var(expr: ExprId, t: ExprId, pool: &ExprPool) -> ExprId {
+fn canonical_polynomial_quotient_in_var(
+    expr: ExprId,
+    t: ExprId,
+    pool: &ExprPool,
+) -> Result<ExprId, LimitError> {
     let (n_raw, d_raw) = numerator_denominator(expr, pool);
     let has_trivial_denom = d_raw == pool.integer(1_i32);
     // When d_raw == 1 the expr might still have negative powers of t in a sum (e.g. 1 + t^{-1}).
@@ -482,6 +653,10 @@ fn canonical_polynomial_quotient_in_var(expr: ExprId, t: ExprId, pool: &ExprPool
         if has_trivial_denom && k == 0 {
             continue;
         }
+        // Each pass runs `simplify_expanded` twice on the whole expression, so
+        // a 41-iteration sweep over a large input is long enough to need to be
+        // interruptible even though the loop count itself is bounded.
+        checkpoint(pool)?;
         let tk = pool.pow(t, pool.integer(k));
         let n = simplify_expanded(pool.mul(vec![tk, n_raw]), pool).value;
         let d = simplify_expanded(pool.mul(vec![tk, d_raw]), pool).value;
@@ -492,10 +667,12 @@ fn canonical_polynomial_quotient_in_var(expr: ExprId, t: ExprId, pool: &ExprPool
         if let Ok(rf) = RationalFunction::from_symbolic(n, d, vec![t], pool) {
             let nx = rf.numer.to_expr(pool);
             let dx = rf.denom.to_expr(pool);
-            return simplify(pool.mul(vec![nx, pool.pow(dx, pool.integer(-1_i32))]), pool).value;
+            return Ok(
+                simplify(pool.mul(vec![nx, pool.pow(dx, pool.integer(-1_i32))]), pool).value,
+            );
         }
     }
-    expr
+    Ok(expr)
 }
 
 fn limit_inner(
@@ -511,6 +688,7 @@ fn limit_inner(
     if depth > MAX_DEPTH {
         return Err(LimitError::DepthExceeded);
     }
+    checkpoint(pool)?;
 
     if !depends_on(expr, var, pool) {
         if substitution_is_singular(expr, pool) {
@@ -538,6 +716,17 @@ fn limit_inner(
         }
     }
 
+    // Leading-order route at ±∞ for algebraic/analytic scales, tried before the
+    // plain `x ↦ 1/t` substitution below: that substitution hands the result to
+    // a Taylor expansion, which cannot see through a radical and instead
+    // differentiates it thirty-two times.
+    if is_pos_infinity(point, pool) || is_neg_infinity(point, pool) {
+        let toward_pos = is_pos_infinity(point, pool);
+        if let Some(r) = try_regularized_infinity_limit(expr, var, toward_pos, pool)? {
+            return Ok(r);
+        }
+    }
+
     if is_pos_infinity(point, pool) {
         let t = pool.symbol("__lt_inf", crate::kernel::Domain::Real);
         let inv_t = pool.pow(t, pool.integer(-1_i32));
@@ -545,7 +734,7 @@ fn limit_inner(
         m.insert(var, inv_t);
         let after_subs = subs(expr, &m, pool);
         let after_flatten = flatten_nested_integer_pow(after_subs, pool);
-        let after_canon = canonical_polynomial_quotient_in_var(after_flatten, t, pool);
+        let after_canon = canonical_polynomial_quotient_in_var(after_flatten, t, pool)?;
         let e2 = simplify(after_canon, pool).value;
         return limit_inner(
             e2,
@@ -565,15 +754,12 @@ fn limit_inner(
         ]);
         let mut m = HashMap::new();
         m.insert(var, rep);
-        let e2 = simplify(
-            canonical_polynomial_quotient_in_var(
-                flatten_nested_integer_pow(subs(expr, &m, pool), pool),
-                t,
-                pool,
-            ),
+        let canon = canonical_polynomial_quotient_in_var(
+            flatten_nested_integer_pow(subs(expr, &m, pool), pool),
+            t,
             pool,
-        )
-        .value;
+        )?;
+        let e2 = simplify(canon, pool).value;
         return limit_inner(
             e2,
             t,
@@ -601,6 +787,107 @@ fn limit_inner(
     }
 
     Err(LimitError::Unsupported)
+}
+
+/// True when `expr` contains an algebraic (non-integer-power) head — `sqrt`,
+/// `cbrt`, or a `Pow` with a fractional exponent.
+fn contains_radical(expr: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(expr) {
+        ExprData::Func { name, args } => {
+            name == "sqrt" || name == "cbrt" || args.iter().any(|&a| contains_radical(a, pool))
+        }
+        ExprData::Pow { base, exp } => {
+            matches!(pool.get(exp), ExprData::Rational(_))
+                || contains_radical(base, pool)
+                || contains_radical(exp, pool)
+        }
+        ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().any(|&x| contains_radical(x, pool)),
+        _ => false,
+    }
+}
+
+/// Leading-order limit of an *algebraic* expression at `±∞`.
+///
+/// Substitutes `x ↦ ±1/t` (`t → 0⁺`), regularizes the result structurally as
+/// `f(±1/t) = t^v · u(t)` with `u` analytic and non-vanishing at `t = 0`
+/// ([`regularize_at_zero`], the same valuation calculus
+/// [`crate::calculus::asymptotic`] expands with), and reads the limit off the
+/// leading Taylor coefficient of `u`.
+///
+/// The generic route below — substitute, clear poles, Taylor-expand the whole
+/// thing — cannot see through a radical: for `√(x²+x) − x` it hands
+/// `√(t⁻² + t⁻¹) − t⁻¹` to a 32-term Taylor expansion, and each successive
+/// derivative of a nested radical is a constant factor larger than the last,
+/// so the call never returns. Pulling the pole out of the radical first
+/// (`√(t⁻²(1+t)) = t⁻¹√(1+t)`) leaves `t⁻¹·(√(1+t) − 1)`, whose analytic part
+/// has bounded derivatives — the expansion is then immediate and exact, and
+/// the ∞−∞ cancellation resolves to `1/2` instead of hanging.
+///
+/// Restricted to expressions that actually contain a radical: everything else
+/// is already served by the existing routes, and this keeps their answers
+/// untouched.
+fn try_regularized_infinity_limit(
+    expr: ExprId,
+    var: ExprId,
+    toward_pos: bool,
+    pool: &ExprPool,
+) -> Result<Option<ExprId>, LimitError> {
+    // Escalated rather than fixed: only the first nonzero coefficient of `u`
+    // decides the limit, and every further coefficient costs one more symbolic
+    // derivative. Stopping at the first order that resolves keeps the common
+    // case at three derivatives instead of thirty-two.
+    const ORDERS: [u32; 3] = [4, 10, 24];
+
+    if !contains_radical(expr, pool) {
+        return Ok(None);
+    }
+
+    // `Domain::Positive`: the substituted variable approaches 0 from above, and
+    // `regularize_at_zero`'s `(t^v·u)^e = t^{v·e}·u^e` step is only valid for
+    // `t > 0`.
+    let t = pool.symbol("__lt_reg", crate::kernel::Domain::Positive);
+    let inv_t = pool.pow(t, pool.integer(-1_i32));
+    let rep = if toward_pos {
+        inv_t
+    } else {
+        pool.mul(vec![pool.integer(-1_i32), inv_t])
+    };
+    let mut m = HashMap::new();
+    m.insert(var, rep);
+    let f_of_t = simplify(subs(expr, &m, pool), pool).value;
+
+    let Some((val, analytic)) = regularize_at_zero(f_of_t, t, pool) else {
+        return Ok(None);
+    };
+    let Ok(val) = i32::try_from(val) else {
+        return Ok(None);
+    };
+
+    let zero = pool.integer(0_i32);
+    for order in ORDERS {
+        checkpoint(pool)?;
+        let Ok(exp) = local_expansion(analytic, t, zero, order, pool) else {
+            return Ok(None);
+        };
+        let LocalExpansion {
+            valuation,
+            coeffs,
+            h_expr,
+        } = exp;
+        let Some(total) = val.checked_add(valuation) else {
+            return Ok(None);
+        };
+        let shifted = LocalExpansion {
+            valuation: total,
+            coeffs,
+            h_expr,
+        };
+        // `t → 0⁺`, so even an odd-order pole has a determinate sign.
+        if let Some(r) = expansion_to_limit(shifted, pool, LimitDirection::Plus)? {
+            return Ok(Some(r));
+        }
+    }
+    Ok(None)
 }
 
 fn try_x_log_x_at_zero(
@@ -1160,9 +1447,19 @@ fn try_expansion_limit(
 ) -> Result<Option<ExprId>, LimitError> {
     let exp = match local_expansion(expr, var, point, order, pool) {
         Ok(e) => e,
-        Err(_) => return Ok(None),
+        Err(_) => {
+            checkpoint(pool)?;
+            return Ok(None);
+        }
     };
-    expansion_to_limit(exp, pool, direction)
+    let r = expansion_to_limit(exp, pool, direction)?;
+    if r.is_none() {
+        // The expansion resolved nothing. If that is because the coefficient
+        // loop hit the work ceiling (or a budget) part-way, say so rather than
+        // letting the caller report `Unsupported`.
+        checkpoint(pool)?;
+    }
+    Ok(r)
 }
 
 fn expansion_to_limit(
@@ -1391,12 +1688,158 @@ mod tests {
             p.pow(p.add(vec![p.integer(1), inv]), p.integer(-1)),
         ]);
         let folded = flatten_nested_integer_pow(ex, &p);
-        let canon = canonical_polynomial_quotient_in_var(folded, t, &p);
+        let canon = canonical_polynomial_quotient_in_var(folded, t, &p).unwrap();
         let r = simplify(canon, &p).value;
         let mut m = HashMap::new();
         m.insert(t, p.integer(0));
         let sub = fold_known_reals(simplify(subs(r, &m, &p), &p).value, &p);
         assert_eq!(sub, p.integer(1), "canonical={}", p.display(canon));
+    }
+}
+
+/// Termination: the engine must always come back, with a value or a coded
+/// refusal, and must stop when the ambient budget says so.
+#[cfg(test)]
+mod termination_tests {
+    use super::*;
+    use crate::budget::{self, Budget, BudgetError};
+    use crate::errors::AlkahestError;
+    use crate::kernel::Domain;
+
+    /// `√(x²+x) − x` at `+∞`: an `∞−∞` cancellation whose conjugate is
+    /// `x/(√(x²+x)+x) → 1/2`.
+    ///
+    /// This call did not return at all — the `x ↦ 1/t` substitution handed
+    /// `√(t⁻²+t⁻¹)` to a 32-term Taylor expansion, and each derivative of a
+    /// nested radical is a constant factor larger than the last.
+    #[test]
+    fn sqrt_x_squared_plus_x_minus_x_at_infinity_is_one_half() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let root = p.func("sqrt", vec![p.add(vec![p.pow(x, p.integer(2)), x])]);
+        let ex = simplify(p.add(vec![root, p.mul(vec![p.integer(-1), x])]), &p).value;
+        let r = limit(ex, x, p.pos_infinity(), LimitDirection::Bidirectional, &p).unwrap();
+        assert_eq!(r, p.rational(1, 2), "got {}", p.display(r));
+    }
+
+    /// The same cancellation with other coefficients, and its mirror at `−∞`.
+    #[test]
+    fn algebraic_cancellations_at_infinity() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let neg_inf = p.mul(vec![p.integer(-1), p.pos_infinity()]);
+
+        // √(x²+3x) − x → 3/2
+        let root = p.func(
+            "sqrt",
+            vec![p.add(vec![p.pow(x, p.integer(2)), p.mul(vec![p.integer(3), x])])],
+        );
+        let ex = simplify(p.add(vec![root, p.mul(vec![p.integer(-1), x])]), &p).value;
+        let r = limit(ex, x, p.pos_infinity(), LimitDirection::Bidirectional, &p).unwrap();
+        assert_eq!(r, p.rational(3, 2), "√(x²+3x)−x: {}", p.display(r));
+
+        // √(x²+1) − x → 0
+        let root = p.func(
+            "sqrt",
+            vec![p.add(vec![p.pow(x, p.integer(2)), p.integer(1)])],
+        );
+        let ex = simplify(p.add(vec![root, p.mul(vec![p.integer(-1), x])]), &p).value;
+        let r = limit(ex, x, p.pos_infinity(), LimitDirection::Bidirectional, &p).unwrap();
+        assert_eq!(r, p.integer(0), "√(x²+1)−x: {}", p.display(r));
+
+        // As x → −∞ there is no cancellation: √(x²+x) ~ |x| = −x, so the sum
+        // is ~ −2x → +∞.
+        let root = p.func("sqrt", vec![p.add(vec![p.pow(x, p.integer(2)), x])]);
+        let ex = simplify(p.add(vec![root, p.mul(vec![p.integer(-1), x])]), &p).value;
+        let r = limit(ex, x, neg_inf, LimitDirection::Bidirectional, &p).unwrap();
+        assert_eq!(r, p.pos_infinity(), "√(x²+x)−x at −∞: {}", p.display(r));
+    }
+
+    /// A radical limit the engine cannot solve must still come back — with
+    /// `E-LIMIT-004`, not by running forever — when no budget is active.
+    #[test]
+    fn unsolvable_radical_limit_refuses_within_the_work_ceiling() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        // √(√(x²+x) + x): a half-integer scale the regularizer declines, so
+        // this falls through to the expansion route that used to run away.
+        let inner = p.func("sqrt", vec![p.add(vec![p.pow(x, p.integer(2)), x])]);
+        let ex = p.func("sqrt", vec![p.add(vec![inner, x])]);
+        // No wall-clock assertion here on purpose. Termination *is* the property
+        // under test, and this call returning at all already proves it: before
+        // the work ceiling existed this expression ran effectively forever, so a
+        // regression hangs the test rather than failing a timing bound. An
+        // elapsed() budget would only add flakiness — the AddressSanitizer job
+        // builds with -Z build-std and runs many times slower than a normal
+        // build, and a 30s bound that held locally failed there while the
+        // refusal itself worked correctly.
+        let err = limit(ex, x, p.pos_infinity(), LimitDirection::Bidirectional, &p).unwrap_err();
+        assert!(
+            matches!(err, LimitError::DepthExceeded),
+            "expected a bounded refusal, got {err:?}"
+        );
+        assert_eq!(err.code(), "E-LIMIT-004");
+        // Not a budget trip — the internal ceiling stopped it.
+        assert_eq!(last_budget_trip(), None);
+    }
+
+    /// A step budget stops the search and is reported as a budget trip, so a
+    /// binding can raise `E-BUDGET-002` rather than "this limit is too hard".
+    ///
+    /// Steps and wall clock live on the thread-local budget stack, so this is
+    /// safe to run in parallel with the rest of the suite (unlike the
+    /// process-wide cancellation flag, which `budget`'s own tests serialize).
+    #[test]
+    fn step_budget_stops_a_hard_limit_and_is_attributed() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let inner = p.func("sqrt", vec![p.add(vec![p.pow(x, p.integer(2)), x])]);
+        let ex = p.func("sqrt", vec![p.add(vec![inner, x])]);
+
+        let _guard = budget::enter(Budget::new().with_max_steps(3));
+        let err = limit(ex, x, p.pos_infinity(), LimitDirection::Bidirectional, &p).unwrap_err();
+        assert!(matches!(err, LimitError::DepthExceeded), "{err:?}");
+        assert!(
+            matches!(last_budget_trip(), Some(BudgetError::Steps { .. })),
+            "budget trip not recorded: {:?}",
+            last_budget_trip()
+        );
+    }
+
+    /// A limit that *succeeds* under a generous budget must not be reported as
+    /// a budget trip, and must not leave a stale trip behind for the next call.
+    #[test]
+    fn a_solved_limit_leaves_no_budget_trip() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        {
+            let _guard = budget::enter(Budget::new().with_max_steps(3));
+            let inner = p.func("sqrt", vec![p.add(vec![p.pow(x, p.integer(2)), x])]);
+            let ex = p.func("sqrt", vec![p.add(vec![inner, x])]);
+            assert!(limit(ex, x, p.pos_infinity(), LimitDirection::Bidirectional, &p).is_err());
+            assert!(last_budget_trip().is_some());
+        }
+        let root = p.func("sqrt", vec![p.add(vec![p.pow(x, p.integer(2)), x])]);
+        let ex = simplify(p.add(vec![root, p.mul(vec![p.integer(-1), x])]), &p).value;
+        let r = limit(ex, x, p.pos_infinity(), LimitDirection::Bidirectional, &p).unwrap();
+        assert_eq!(r, p.rational(1, 2));
+        assert_eq!(last_budget_trip(), None, "stale trip left behind");
+    }
+
+    /// The work ceiling bounds a whole `limit` call, not each re-entry: Gruntz
+    /// sub-limits call back into `limit`, and a per-call baseline would reset
+    /// the ceiling every time and never trip.
+    #[test]
+    fn work_baseline_is_installed_once_and_cleared_on_exit() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        assert!(WORK_BASELINE.with(|c| c.get()).is_none());
+        let ex = simplify(p.pow(x, p.integer(2)), &p).value;
+        let _ = limit(ex, x, p.pos_infinity(), LimitDirection::Bidirectional, &p);
+        assert!(
+            WORK_BASELINE.with(|c| c.get()).is_none(),
+            "baseline leaked past the outermost call"
+        );
     }
 }
 

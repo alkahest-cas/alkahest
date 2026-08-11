@@ -55,6 +55,16 @@ a handful of strategic points — not blanket-inserted into every loop:
   `integrate_inner` recursion boundary that u-substitution and the rational-function
   fallback re-enter. A trip here raises `BudgetExceededError` — integration has a
   `Result` return type with a natural place to signal it.
+- **`alkahest.limit`** — at every `limit_inner` recursion boundary, in the Gruntz
+  comparability sweep, in the pole-clearing loop of the `x ↦ 1/t` substitution, and
+  between Taylor coefficients of the local expansion (the loop that can grow without
+  bound on nested radicals). `LimitError` is an exhaustive public enum and cannot grow
+  a `Budget` variant without a major semver break, so a trip is reported internally as
+  `LimitError::DepthExceeded` and the `E-BUDGET-*` cause is recovered out-of-band
+  (`alkahest_core::calculus::limits::last_budget_trip`); the Python binding raises
+  `BudgetExceededError` exactly as `integrate` does. With **no** budget active the
+  same paths are bounded by an internal work ceiling, so an unsolvable limit refuses
+  with `LimitError` / `E-LIMIT-004` instead of running unboundedly.
 - **`alkahest.simplify`** (and `simplify_with`, `simplify_batch`) — once per full
   bottom-up rewrite pass. `simplify` has **no error channel** (`DerivedExpr` isn't a
   `Result`), so a trip here stops further passes early and returns the best value
@@ -120,8 +130,8 @@ Python cannot forcibly kill a thread, so on a timeout the call keeps running in 
 background until it either finishes or reaches a Rust cooperative checkpoint —
 `run_with_wall_fallback` also calls `request_cancel()` on timeout so any checkpoint the
 call reaches asks it to stop. Prefer the Rust cooperative check alone
-(`context(budget=...)`) wherever a call already honors it (`integrate` today); reach for
-this only when you need a hard deadline on a path that doesn't.
+(`context(budget=...)`) wherever a call already honors it (`integrate` and `limit`
+today); reach for this only when you need a hard deadline on a path that doesn't.
 
 ## Error codes
 
@@ -134,9 +144,10 @@ this only when you need a hard deadline on a path that doesn't.
 All three are `Cause::Resource` in the Rust registry (`alkahest_core::errors::codes`) —
 a budget/cancellation trip is an environment/policy limit, not a statement about the
 mathematics, so it is never conflated with e.g. `IntegrationError::NonElementary` (a
-proof that no elementary antiderivative exists). `alkahest.integrate` raises
-`BudgetExceededError` directly rather than wrapping it in `IntegrationError`, so callers
-can catch it uniformly regardless of which engine tripped it:
+proof that no elementary antiderivative exists). `alkahest.integrate` and
+`alkahest.limit` raise `BudgetExceededError` directly rather than wrapping it in
+`IntegrationError` / `LimitError`, so callers can catch it uniformly regardless of which
+engine tripped it:
 
 ```python
 try:

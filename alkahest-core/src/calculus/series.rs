@@ -5,6 +5,7 @@ use crate::flint::FlintPoly;
 use crate::kernel::{subs, Domain, ExprData, ExprId, ExprPool};
 use crate::poly::{RationalFunction, UniPoly};
 use crate::simplify::simplify;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt;
 
@@ -239,6 +240,58 @@ fn unipoly_strip_low(p: &UniPoly, k: u32) -> UniPoly {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Coefficient-loop ceiling
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// Absolute `pool.len()` ceiling for [`taylor_coefficients`], or `None` for
+    /// "compute every coefficient that was asked for".
+    static COEFF_POOL_CEILING: Cell<Option<usize>> = const { Cell::new(None) };
+}
+
+/// RAII installer for the [`taylor_coefficients`] ceiling; restores the
+/// previous value on drop, including on panic-unwind.
+pub(crate) struct CoeffCeiling(Option<usize>);
+
+impl Drop for CoeffCeiling {
+    fn drop(&mut self) {
+        COEFF_POOL_CEILING.with(|c| c.set(self.0));
+    }
+}
+
+/// Stop [`taylor_coefficients`] early once the pool has grown past `ceiling`,
+/// returning the coefficients computed so far.
+///
+/// Only for callers that need a *leading* term rather than a series to a
+/// promised order — [`crate::calculus::limits`] scans for the first nonzero
+/// coefficient, so a short prefix is either enough to answer or an honest "no
+/// answer at this order", never a wrong answer. [`series`] itself installs no
+/// ceiling: truncating there would understate the `O(·)` term, which would be
+/// a lie rather than a refusal.
+///
+/// Successive Taylor coefficients are formed by differentiating *without*
+/// re-simplifying, so for expressions whose derivatives do not close (nested
+/// radicals) each one is a constant factor larger than the last. Without this
+/// the loop is unbounded in both time and memory, and — being a single call —
+/// gives the caller nowhere to place a cancellation checkpoint.
+pub(crate) fn enter_coeff_ceiling(ceiling: usize) -> CoeffCeiling {
+    COEFF_POOL_CEILING.with(|c| {
+        let prev = c.get();
+        c.set(Some(ceiling));
+        CoeffCeiling(prev)
+    })
+}
+
+/// `true` when the installed ceiling has been reached, or the ambient
+/// [`crate::budget`] has been exhausted / cancelled.
+fn coeff_loop_should_stop(pool: &ExprPool) -> bool {
+    match COEFF_POOL_CEILING.with(|c| c.get()) {
+        Some(ceiling) => pool.len() > ceiling || crate::budget::check().is_err(),
+        None => false,
+    }
+}
+
 fn taylor_coefficients(
     mut cur: ExprId,
     xi: ExprId,
@@ -249,6 +302,9 @@ fn taylor_coefficients(
     mapping.insert(xi, pool.integer(0_i32));
     let mut out = Vec::with_capacity(num as usize);
     for k in 0..num {
+        if k > 0 && coeff_loop_should_stop(pool) {
+            break;
+        }
         let ev = subs(cur, &mapping, pool);
         let simp = simplify(ev, pool).value;
         let fc = factorial_u32(k);
