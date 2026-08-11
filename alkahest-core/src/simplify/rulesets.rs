@@ -19,7 +19,7 @@ use crate::deriv::log::{DerivationLog, RewriteStep};
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
 use crate::pattern::{Pattern, Substitution};
 use crate::simplify::discrimination_net::{pattern_head, DiscriminationIndex};
-use crate::simplify::rules::{FlattenAdd, FlattenMul, NodeKinds, RewriteRule};
+use crate::simplify::rules::{FlattenAdd, FlattenMul, NodeKinds, RewriteRule, SubSelf};
 
 fn one_step(name: &'static str, before: ExprId, after: ExprId) -> DerivationLog {
     let mut log = DerivationLog::new();
@@ -956,20 +956,27 @@ impl RewriteRule for PowOfExp {
 /// [`crate::simplify::AssumptionContext`] facts (or `Domain::Positive`
 /// symbols). Use [`log_exp_rules_safe`] for the empty complex-safe set.
 ///
-/// The arithmetic rules from [`crate::simplify::rules_for_config`] are included
-/// after the log/exp rules. They are what actually *collects* the result: with
-/// the log/exp rules alone, `exp(a)·exp(a) − exp(a+a)` normalises to
+/// One arithmetic rule joins them: [`SubSelf`], which *collects* the result.
+/// With the log/exp rules alone, `exp(a)·exp(a) − exp(a+a)` normalises to
 /// `exp(a+a) + (−1)·exp(a+a)` and then stops, because nothing in the log/exp
-/// set knows that `X + (−1)·X` is `0`.  Reporting that non-zero was the direct
-/// cause of a wrong `Matrix::rank`.
+/// set knows that `X + (−1)·X` is `0`. Reporting that non-zero was the direct
+/// cause of a wrong `Matrix::rank`.  `SubSelf` also normalises the exponents
+/// themselves (`a + a → 2·a`), which is what makes the two spellings of the
+/// merged `exp` the same node in the first place.
+///
+/// Deliberately *just* that one rule rather than all of
+/// [`crate::simplify::engine::default_rules`]: the whole default set collects
+/// the same expression, but every extra rule is tried against every node on
+/// every pass, and this set is the hot path of `simplify_log_exp` (an 18%
+/// slowdown on the depth-4 `log(exp(…))` benchmark). Callers who want general
+/// arithmetic have [`crate::simplify::engine::simplify`] for it.
 pub fn log_exp_rules() -> Vec<Box<dyn RewriteRule>> {
-    let mut rules: Vec<Box<dyn RewriteRule>> = vec![
+    vec![
         Box::new(LogOfExp),
         Box::new(ProductOfExps),
         Box::new(PowOfExp),
-    ];
-    rules.extend(crate::simplify::engine::default_rules());
-    rules
+        Box::new(SubSelf),
+    ]
 }
 
 /// Log/exp rules that are safe for complex numbers (no branch-cut rewrites).

@@ -1765,7 +1765,14 @@ mod termination_tests {
         // this falls through to the expansion route that used to run away.
         let inner = p.func("sqrt", vec![p.add(vec![p.pow(x, p.integer(2)), x])]);
         let ex = p.func("sqrt", vec![p.add(vec![inner, x])]);
-        let started = std::time::Instant::now();
+        // No wall-clock assertion here on purpose. Termination *is* the property
+        // under test, and this call returning at all already proves it: before
+        // the work ceiling existed this expression ran effectively forever, so a
+        // regression hangs the test rather than failing a timing bound. An
+        // elapsed() budget would only add flakiness — the AddressSanitizer job
+        // builds with -Z build-std and runs many times slower than a normal
+        // build, and a 30s bound that held locally failed there while the
+        // refusal itself worked correctly.
         let err = limit(ex, x, p.pos_infinity(), LimitDirection::Bidirectional, &p).unwrap_err();
         assert!(
             matches!(err, LimitError::DepthExceeded),
@@ -1774,10 +1781,6 @@ mod termination_tests {
         assert_eq!(err.code(), "E-LIMIT-004");
         // Not a budget trip — the internal ceiling stopped it.
         assert_eq!(last_budget_trip(), None);
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(30),
-            "the work ceiling did not bound the search"
-        );
     }
 
     /// A step budget stops the search and is reported as a budget trip, so a

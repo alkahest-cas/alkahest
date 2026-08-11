@@ -63,7 +63,9 @@ use crate::simplify::engine::{
     simplify, simplify_expanded, simplify_log_exp, simplify_trig_normal_form,
 };
 use rug::{Float, Rational};
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::fmt;
 
 /// Working precision (bits) for the non-vanishing certificate.
 const PROBE_PREC: u32 = 128;
@@ -100,6 +102,140 @@ impl ZeroStatus {
     pub(crate) fn is_proven_zero(self) -> bool {
         matches!(self, ZeroStatus::Zero)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Refusals, reported out of band
+// ---------------------------------------------------------------------------
+
+/// Which routine refused, which fixes the stable code the refusal carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RefusalSite {
+    /// A quantity an elimination-family routine has to decide before it can go
+    /// on: a candidate pivot, a Gram–Schmidt norm, an entry of `p(M)` in the
+    /// minimal-polynomial search — `E-LINALG-010`.
+    Pivot,
+    /// The determinant of a matrix being inverted — `E-MAT-004`.
+    Determinant,
+}
+
+/// A zero test that could be settled neither way, with the code it carries.
+///
+/// # Why this is not an error variant
+///
+/// [`MatrixError`](crate::matrix::MatrixError) and
+/// [`LinearAlgebraError`](crate::matrix::LinearAlgebraError) are public
+/// *exhaustive* enums, so growing either of them a `ZeroTestInconclusive`
+/// variant is a major semver break — and so is marking them `#[non_exhaustive]`
+/// to allow it later. A correctness fix inside a patch release cannot spend a
+/// major version, so the refusal travels out of band instead: the refusing
+/// routine returns the existing variant whose meaning covers the case
+/// (`LinearAlgebraError::UnsupportedField` for a pivot — the entries lie in a
+/// field this routine cannot decide over — and `MatrixError::SingularMatrix`
+/// for a determinant, whose reworded text states exactly the disjunction that
+/// is known), and the real cause is recorded here for
+/// [`take_zero_test_refusal`] to hand to the bindings.
+///
+/// This is the pattern
+/// [`crate::calculus::limits::last_budget_trip`] already uses for budget trips
+/// inside `LimitError::DepthExceeded`, and `integrate` for budget trips inside
+/// `IntegrationError::NotImplemented`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZeroTestRefusal {
+    entry: String,
+    site: RefusalSite,
+}
+
+impl ZeroTestRefusal {
+    /// The expression whose vanishing could not be decided, rendered.
+    pub fn entry(&self) -> &str {
+        &self.entry
+    }
+}
+
+impl fmt::Display for ZeroTestRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.site {
+            RefusalSite::Pivot => write!(
+                f,
+                "cannot decide whether the entry `{}` is zero; refusing rather \
+                 than report a rank, a factorisation or a minimal polynomial \
+                 that silently assumes an answer",
+                self.entry
+            ),
+            RefusalSite::Determinant => write!(
+                f,
+                "cannot decide whether the determinant `{}` is zero; refusing to \
+                 report an inverse that assumes it is not",
+                self.entry
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ZeroTestRefusal {}
+
+impl crate::errors::AlkahestError for ZeroTestRefusal {
+    fn code(&self) -> &'static str {
+        match self.site {
+            RefusalSite::Pivot => "E-LINALG-010",
+            RefusalSite::Determinant => "E-MAT-004",
+        }
+    }
+
+    fn remediation(&self) -> Option<&'static str> {
+        match self.site {
+            RefusalSite::Pivot => Some(
+                "rewrite the entry into a form whose vanishing is decidable, or \
+                 substitute concrete values for the parameters",
+            ),
+            RefusalSite::Determinant => Some(
+                "rewrite the entries into a form whose determinant's vanishing is \
+                 decidable, or substitute concrete values",
+            ),
+        }
+    }
+}
+
+thread_local! {
+    /// The refusal behind the error the current thread is about to return, if
+    /// that error is a zero-test refusal rather than the thing its variant
+    /// usually means.
+    static LAST_REFUSAL: RefCell<Option<ZeroTestRefusal>> = const { RefCell::new(None) };
+}
+
+/// Record `e` as undecided and hand the refusal to the caller to attach to its
+/// own error variant.
+pub(crate) fn record_refusal(pool: &ExprPool, e: ExprId, site: RefusalSite) {
+    let refusal = ZeroTestRefusal {
+        entry: pool.display(e).to_string(),
+        site,
+    };
+    LAST_REFUSAL.with(|c| *c.borrow_mut() = Some(refusal));
+}
+
+/// Drop any recorded refusal.
+///
+/// Called wherever one of the carrier variants is returned for its *original*
+/// meaning — a genuinely singular matrix, entries that are genuinely not
+/// rational — so that error can never be re-attributed to an undecided zero
+/// test left behind by an earlier call on this thread.
+pub(crate) fn forget_refusal() {
+    LAST_REFUSAL.with(|c| *c.borrow_mut() = None);
+}
+
+/// Take the refusal behind the error that just came back, if there was one.
+///
+/// Bindings call this when they see one of the carrier variants
+/// (`LinearAlgebraError::UnsupportedField`, `MatrixError::SingularMatrix`) and
+/// raise the refusal's own `E-LINALG-010` / `E-MAT-004` when it is present, so
+/// a caller still gets the specific code. `Some` means *this* error is a
+/// refusal; `None` means the variant means what it usually means.
+///
+/// Consuming, so one refusal is reported once and cannot leak into a later
+/// unrelated error. Thread-local, like the zero test itself.
+pub fn take_zero_test_refusal() -> Option<ZeroTestRefusal> {
+    LAST_REFUSAL.with(|c| c.borrow_mut().take())
 }
 
 /// How deep the structural tier looks before handing over to the probe.

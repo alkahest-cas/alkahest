@@ -738,6 +738,19 @@ fn pslq_error_to_py(e: PslqError) -> PyErr {
 }
 
 fn matrix_error_to_py(e: MatrixError) -> PyErr {
+    // `SingularMatrix` covers two refusals: a determinant proven zero
+    // (`E-MAT-003`) and one that could be proven neither way (`E-MAT-004`).
+    // `MatrixError` is an exhaustive public enum, so the second cannot have its
+    // own variant without a major semver break; it is recorded out of band
+    // instead — the same arrangement `limit_error_to_py` uses for budget trips.
+    if matches!(e, MatrixError::SingularMatrix) {
+        if let Some(r) = alkahest_core::matrix::take_zero_test_refusal() {
+            return Python::with_gil(|py| {
+                let exc_type = py.get_type_bound::<PyMatrixError>();
+                make_structured_err(py, &exc_type, &r)
+            });
+        }
+    }
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyMatrixError>();
         make_structured_err(py, &exc_type, &e)
@@ -752,6 +765,18 @@ fn eigen_error_to_py(e: EigenError) -> PyErr {
 }
 
 fn linear_algebra_error_to_py(e: LinearAlgebraError) -> PyErr {
+    // `UnsupportedField` covers both "entries are not rational constants"
+    // (`E-LINALG-007`) and "a pivot could be proven neither zero nor non-zero"
+    // (`E-LINALG-010`); see `matrix_error_to_py` for why the second has no
+    // variant of its own.
+    if matches!(e, LinearAlgebraError::UnsupportedField) {
+        if let Some(r) = alkahest_core::matrix::take_zero_test_refusal() {
+            return Python::with_gil(|py| {
+                let exc_type = py.get_type_bound::<PyLinearAlgebraError>();
+                make_structured_err(py, &exc_type, &r)
+            });
+        }
+    }
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyLinearAlgebraError>();
         make_structured_err(py, &exc_type, &e)

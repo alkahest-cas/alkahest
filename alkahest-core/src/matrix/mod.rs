@@ -31,6 +31,7 @@ pub use normal_form::{
     hermite_form, hermite_form_poly, smith_form, smith_form_poly, IntegerMatrix, NormalFormError,
     PolyMatrixQ, RatUniPoly,
 };
+pub use zero_test::{take_zero_test_refusal, ZeroTestRefusal};
 
 // ---------------------------------------------------------------------------
 // Matrix type
@@ -51,17 +52,21 @@ pub enum MatrixError {
         msg: String,
     },
     NotSquare,
-    SingularMatrix,
-    /// The determinant could not be proven zero *or* proven non-zero.
+    /// The matrix cannot be inverted: its determinant is zero, or could not be
+    /// shown to be non-zero.
     ///
     /// Inverting via the adjugate divides by `det`, so "probably invertible" is
-    /// not good enough: if the determinant is in fact zero the returned inverse
-    /// is meaningless and nothing downstream can tell. See
-    /// the `matrix::zero_test` module.
-    ZeroTestInconclusive {
-        /// The undecided determinant, rendered for diagnosis.
-        entry: String,
-    },
+    /// not good enough — if the determinant is in fact zero the returned
+    /// inverse is meaningless and nothing downstream can tell. Over a
+    /// transcendental extension the vanishing question is not always decidable
+    /// (see the `matrix::zero_test` module), so the two cases are both refusals
+    /// and this variant states their disjunction rather than picking one.
+    ///
+    /// Which of the two it was is available from
+    /// [`take_zero_test_refusal`]: `Some(..)` means the determinant was
+    /// undecided (code `E-MAT-004`), `None` means it was proven zero (code
+    /// `E-MAT-003`).
+    SingularMatrix,
 }
 
 impl fmt::Display for MatrixError {
@@ -69,11 +74,9 @@ impl fmt::Display for MatrixError {
         match self {
             MatrixError::DimensionMismatch { msg } => write!(f, "dimension mismatch: {msg}"),
             MatrixError::NotSquare => write!(f, "matrix is not square"),
-            MatrixError::SingularMatrix => write!(f, "matrix is singular"),
-            MatrixError::ZeroTestInconclusive { entry } => write!(
+            MatrixError::SingularMatrix => write!(
                 f,
-                "cannot decide whether the determinant `{entry}` is zero; \
-                 refusing to report an inverse that assumes it is not"
+                "matrix is singular, or its determinant could not be proven non-zero"
             ),
         }
     }
@@ -86,8 +89,10 @@ impl crate::errors::AlkahestError for MatrixError {
         match self {
             MatrixError::DimensionMismatch { .. } => "E-MAT-001",
             MatrixError::NotSquare => "E-MAT-002",
+            // `E-MAT-004` — the undecided-determinant refusal — is carried by
+            // this same variant and read back through
+            // [`take_zero_test_refusal`]; see [`MatrixError::SingularMatrix`].
             MatrixError::SingularMatrix => "E-MAT-003",
-            MatrixError::ZeroTestInconclusive { .. } => "E-MAT-004",
         }
     }
 
@@ -100,10 +105,7 @@ impl crate::errors::AlkahestError for MatrixError {
                 "determinant and inverse require a square matrix; use the pseudo-inverse for rectangular matrices",
             ),
             MatrixError::SingularMatrix => Some(
-                "the matrix has a zero determinant; check your system of equations for linear dependence",
-            ),
-            MatrixError::ZeroTestInconclusive { .. } => Some(
-                "rewrite the entries into a form whose determinant's vanishing is decidable, or substitute concrete values",
+                "check your system of equations for linear dependence; if the entries are symbolic, substitute concrete values for the parameters",
             ),
         }
     }
