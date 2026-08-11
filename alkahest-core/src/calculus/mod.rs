@@ -8,6 +8,7 @@ pub mod gruntz;
 pub mod limits;
 pub mod multilimit;
 pub mod series;
+pub mod singularity;
 
 pub use asymptotic::{asymptotic_expand, AsymptoticError, AsymptoticExpansion, AsymptoticTerm};
 pub use fps::{Fps, FpsError};

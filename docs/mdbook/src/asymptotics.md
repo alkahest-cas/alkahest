@@ -1,4 +1,4 @@
-# Asymptotics of sums (Euler–Maclaurin)
+# Asymptotics at scale
 
 `series` and Gruntz `limit` expand a *function*; `asymptotic_expand` handles the
 power/log/exp scales of a function at infinity. What a loop working on
@@ -78,20 +78,55 @@ the evidence and `r.max_relative_error` summarises it.
 | No term survives the gate | Refuse — emit nothing rather than something unverified |
 | `corrections` above the supported maximum | Refuse |
 
+## Singularity analysis of generating functions
+
+For a rational `f(z)`, the growth of `[zⁿ] f(z)` is governed entirely by the
+singularity of smallest modulus:
+
+```python
+from alkahest.experimental import coefficient_asymptotics
+
+gf = pool.integer(1) / (pool.integer(1) - z - z*z)   # Fibonacci
+r = coefficient_asymptotics(gf, z, n)
+r.terms[0]      # ~ C·φⁿ
+```
+
+A pole `ρ` of multiplicity `m` contributes `C · n^{m-1} · ρ^{-n}`. The *shape*
+— which power of `n`, which exponential base — is exact; the single leading
+constant is obtained from the exact power series by **Richardson
+extrapolation**, and the report says so.
+
+That extrapolation is not a nicety. Reading the constant off a single finite
+index absorbs the subleading term: for `1/(1-z)²`, where `[zⁿ] = n+1` exactly,
+taking `C = a₄₈/48 = 49/48` leaves a permanent 2% bias, so the relative error
+stops shrinking as `n` grows — which is precisely what an asymptotic statement
+must not do. One Richardson step cancels the `1/k` term and recovers `C = 1`.
+
+### What it refuses
+
+The transfer theorem needs a **unique** dominant singularity. `1/(1-z²)` has
+poles at both `+1` and `−1`; its coefficients oscillate (`1,0,1,0,…`) and no
+single power-law term describes them. Rather than reporting one pole as if it
+won, the routine declines — as it does for a complex dominant pole (necessarily
+one of a conjugate pair) and for non-rational input.
+
 ## Scope of this release
 
 Shipped: the Euler–Maclaurin route for `Σ_{k=a}^{n} f(k)`, with Bernoulli
 corrections, magnitude ordering, the numeric gate, and the checked-versus-
 assumed hypothesis ledger in `AsymptoticReport`.
 
+Also shipped: singularity analysis for **rational** generating functions.
+
 Not shipped, and tracked as follow-up (the shared scaffolding —
 `AsymptoticReport`, the gate, exact Bernoulli numbers, rational-function
 extraction and a complex root finder — is already in place for them):
 
+- **Algebraic and log-type generating functions** — the transfer theorem beyond
+  poles (`√(1-4z)` for the Catalan numbers, `log` singularities). Only the
+  rational case ships here.
 - **Sequence asymptotics** from a closed form or a P-recursive recurrence
   (Stirling-based expansions, Poincaré–Perron growth).
-- **Singularity analysis** of generating functions and the transfer theorem for
-  `[z^n] f(z)`.
 - **Laplace / saddle-point / stationary-phase** asymptotics of parameter
   integrals.
 
