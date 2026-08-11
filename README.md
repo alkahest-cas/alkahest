@@ -1,61 +1,52 @@
 # Alkahest
 
-[![CI](https://github.com/alkahest-cas/alkahest/actions/workflows/ci.yml/badge.svg)](https://github.com/alkahest-cas/alkahest/actions/workflows/ci.yml)
-[![cross-platform CI](https://github.com/alkahest-cas/alkahest/actions/workflows/ci-cross.yml/badge.svg)](https://github.com/alkahest-cas/alkahest/actions/workflows/ci-cross.yml)
-[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/alkahest-cas/alkahest?utm_source=badge)
-[![PyPI](https://img.shields.io/pypi/v/alkahest.svg)](https://pypi.org/project/alkahest/)
-[![Crates.io](https://img.shields.io/crates/v/alkahest-cas.svg)](https://crates.io/crates/alkahest-cas)
-[![Docs](https://img.shields.io/badge/docs-online-blue)](https://alkahest-cas.github.io/alkahest/)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg?url=https%3A%2F%2Fdeepwiki.com%2Falkahest-cas%2Falkahest)](https://deepwiki.com/alkahest-cas/alkahest)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+<h3 align="center">
+  <a href="https://pypi.org/project/alkahest/">PyPI</a> •
+  <a href="https://crates.io/crates/alkahest-cas">crates.io</a> •
+  <a href="https://alkahest-cas.github.io/alkahest/">Docs</a> •
+  <a href="https://alkahest-cas.github.io/">Website</a> •
+  <a href="https://app.primeintellect.ai/dashboard/environments/alkahest/alkahest-symbolic-integration">RL environment</a> •
+  <a href="https://alkahest-cas.github.io/playground/">Demo</a>
+</h3>
 
-A high-performance computer algebra system for Python built for both humans and agents. Symbolic operations run orders of magnitude faster than SymPy and can run on modern accelerated hardware. Every computation produces a derivation log; a meaningful subset can export Lean 4 proofs for independent verification.
+Alkahest is a high-performance computer algebra system built for both humans and agents. It is especially well suited for autoresearch agents doing work in pure and applied mathematics. Available as a Python package or a Rust crate.
 
-**Install:** the package is published on [PyPI](https://pypi.org/project/alkahest/); use `pip install alkahest` (**Python 3.9–3.13**). Default wheels ship **Cranelift** CPU JIT (pure Rust, no LLVM). See [Install](#install) for the capability matrix and optional **`+jit`** / **`+full`** Linux wheels (GitHub Releases).
+The main stack is: Rust kernel → FLINT/Arb (polynomials, ball arithmetic) → egglog + colored e-graphs (simplification) → Cranelift/LLVM JIT + MLIR (native and GPU codegen) → PyO3 → Python
 
-**Demo:** try the hosted **[playground](https://alkahest-cas.github.io/playground/)** (WASM in-browser, or bring your own server/Jupyter URL + token), or run [`demo-playground/`](demo-playground/) locally for the full agent and recording stack. See [`demo-playground/README.md`](demo-playground/README.md).
+## Highlights
 
-**Links:** [GitHub](https://github.com/alkahest-cas/alkahest) · [**RL environment**](https://app.primeintellect.ai/dashboard/environments/alkahest/alkahest-symbolic-integration) (`alkahest/alkahest-symbolic-integration` on [Prime Intellect Environments Hub](https://app.primeintellect.ai/dashboard/environments))
-
-**Stack:** Rust kernel → FLINT/Arb (polynomials, ball arithmetic) → vendored egglog + colored e-graphs (simplification) → Cranelift/LLVM JIT + MLIR (native and GPU codegen) → PyO3 → Python
+- **Verifiable by construction.** Every computation produces a derivation log; a meaningful subset can export Lean 4 proofs for independent verification.
+- **520× faster than SymPy** on trig-identity simplification — and 77× faster than Mathematica on the same task ([cross-CAS report](benchmarks/results/report.md)).
+- **~40× faster than SymPy** on 2-variable quadratic systems, via FLINT-backed polynomial arithmetic and a compiled F4 core ([solving guide](docs/mdbook/src/solving.md)).
+- **GPU codegen is a routine operation, not a research project** — 16.2× over the CPU JIT on a 1M-point polynomial evaluation (NVPTX `sm_86`, RTX 3090).
+- **A trained RL environment.** GRPO against the CAS verifier moved `Qwen2.5-1.5B-Instruct` from 11.7% → 15.1% on elementary integrals (+29% relative) with no stored reference answers — the CAS grades every rollout, including honest refusal on non-elementary integrands.
+- **Built for agent loops.** String entry point (`ak.parse`), per-candidate `Budget`s, batched `*_many` fan-out, and compact JSON envelopes for cheap logging.
+- **No silent performance cliffs.** `Expr`, `UniPoly`, `MultiPoly`, `ArbBall` and friends are explicit representations; conversion between them is always an opt-in call.
 
 ---
 
 ## Install
 
-**Requirements:** Python **3.9–3.13** ([PyPI](https://pypi.org/project/alkahest/) `requires-python`).
+Python **3.9–3.13**:
 
 ```bash
 pip install alkahest
+pip install "alkahest[rl]"   # RL environments; Python >= 3.10
 ```
 
-**RL environments** (symbolic integration tasks for Prime Intellect / veRL): Python **≥ 3.10** required.
+Rust users: `alkahest-cas = "2"` — see [Rust crate](#rust-crate).
 
-```bash
-pip install "alkahest[rl]"
-```
-
-See [Reinforcement learning](#reinforcement-learning) and the [RL guide](docs/mdbook/src/rl.md).
-
-For an isolated environment (recommended when juggling versions or building from source):
-
-```bash
-python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-python -m pip install -U pip
-pip install alkahest
-```
-
-Default PyPI wheels include the **vendored egglog** e-graph backend (`egraph`), the **Gröbner solver** (`groebner` — so `alkahest.solve`, Diophantine, homotopy, and related APIs work out of the box), and **Cranelift** Tier-1 CPU JIT (`cranelift`, pure Rust, ~2 MB larger than the interpreter-only baseline). They do **not** include LLVM JIT or `parallel`. For LLVM CPU JIT—or JIT plus parallel F4—use a **PyTorch-style** opt-in **`+jit`** / **`+full`** Linux wheel from [GitHub Releases](#opt-in-linux-wheels-jit-and-full-pytorch-style), not the default PyPI resolver path.
+Default wheels are batteries-included: e-graph simplification, the Gröbner solver (so `alkahest.solve`, Diophantine, and homotopy work out of the box), and the pure-Rust **Cranelift** CPU JIT, with no system LLVM required. They do **not** include LLVM JIT or `parallel` — for those, use a **PyTorch-style** opt-in **`+jit`** / **`+full`** Linux wheel from [GitHub Releases](#opt-in-linux-wheels-jit-and-full-pytorch-style), not the default PyPI resolver path.
 
 ### Install matrix (default vs opt-in wheels)
 
 Probe your environment after install: `alkahest.capabilities()["features"]` and `alkahest.jit_is_available()`.
 
-| Artifact | Where | OS / arch (CI) | Python | `egraph` | `groebner` | Cranelift JIT | LLVM JIT | `parallel` |
-|----------|-------|----------------|--------|----------|------------|---------------|----------|------------|
-| **Default** (`pip install alkahest`) | [PyPI](https://pypi.org/project/alkahest/) | Linux manylinux x86_64; macOS arm64; Windows x86_64 | 3.9–3.13 | yes | yes | yes | no | no |
-| **`+jit`** (`X.Y.Z+jit`) | GitHub Releases only | Linux x86_64 | 3.9–3.13 | yes | yes | no | yes | no |
-| **`+full`** (`X.Y.Z+full`) | GitHub Releases only | Linux x86_64 | 3.9–3.13 | yes | yes | no | yes | yes |
+| Artifact | Where | OS / arch (CI) | Python | Cranelift JIT | LLVM JIT | `parallel` |
+|----------|-------|----------------|--------|---------------|----------|------------|
+| **Default** (`pip install alkahest`) | [PyPI](https://pypi.org/project/alkahest/) | Linux manylinux x86_64; macOS arm64; Windows x86_64 | 3.9–3.13 | yes | no | no |
+| **`+jit`** (`X.Y.Z+jit`) | GitHub Releases only | Linux x86_64 | 3.9–3.13 | no | yes | no |
+| **`+full`** (`X.Y.Z+full`) | GitHub Releases only | Linux x86_64 | 3.9–3.13 | no | yes | yes |
 
 **macOS / Windows:** default PyPI wheels include Cranelift JIT. **`+jit`** and **`+full`** are **not** built in CI (LLVM / MSYS2 constraints); use [building from source](#from-source) with `--features jit` (and `parallel` for F4 parallelism) on those platforms.
 
@@ -206,6 +197,30 @@ More runnable examples live in [`examples/`](examples/) — polynomials, Risch i
 
 ---
 
+## Features
+
+| Area | What you get | Entry points |
+|---|---|---|
+| [Calculus](docs/mdbook/src/calculus.md) | Differentiation, Risch integration (definite and indefinite), limits, series expansion, residues | `diff` · `integrate` · `limit` · `series` · `residue` |
+| [Simplification](docs/mdbook/src/simplification.md) | Rule engine plus [e-graph saturation](docs/mdbook/src/egraph.md), with domain-specific passes instead of one catch-all | `simplify` · `simplify_trig` · `simplify_log_exp` · `simplify_egraph` |
+| Polynomials | FLINT-backed univariate and multivariate arithmetic, factorization over ℤ and 𝔽ₚ, sparse GCD and interpolation, resultants, partial fractions | `UniPoly.factor_z` · `factor_univariate_mod_p` · `gcd_sparse` · `resultant` · `apart` · `cancel` |
+| [Solving](docs/mdbook/src/solving.md) | Gröbner bases (F4), triangular decomposition, primary decomposition, real root isolation via CAD, numerical fallback | `solve` · `real_roots` · `triangularize` · `cad_project` · `primary_decomposition` · `solve_numerical` |
+| Sums and products | Gosper and [Zeilberger creative telescoping](docs/mdbook/src/telescoping.md), WZ pair verification, linear recurrence solving | `sum_indefinite` · `sum_definite` · `zeilberger` · `verify_wz_pair` · `rsolve` |
+| Linear algebra | Symbolic matrices, eigenvalues and eigenvectors, Jacobians, Routh–Hurwitz stability | `Matrix.eigenvals` · `jacobian` · `routh_hurwitz` |
+| [ODEs and DAEs](docs/mdbook/src/ode-dae.md) | Symbolic ODE/DAE systems, Pantelides index reduction, sensitivity and adjoint systems, acausal component modeling | `ODE` · `DAE` · `pantelides` · `dae_index_reduce` · `sensitivity_system` |
+| Number theory | FLINT-backed integer theory, Diophantine equations, LLL lattice reduction, PSLQ integer-relation detection | `number_theory` · `diophantine` · `lattice` · `guess_relation` |
+| [Rigorous numerics](docs/mdbook/src/ball-arithmetic.md) | Arb ball arithmetic — every float carries a proven error bound | `ArbBall` · `interval_eval` · `refine_root` |
+| [Code generation](docs/mdbook/src/codegen.md) | JIT to native CPU code (Cranelift or LLVM), NVPTX GPU kernels, C source, StableHLO, vectorized NumPy | `compile_expr` · `jit` · `numpy_eval` · `emit_c` · `to_stablehlo` |
+| Program transforms | JAX-style `trace` / `grad` / `jit` over Python functions, plus symbolic gradients and forward-mode dual-number AD | `trace_fn` · `grad` · `symbolic_grad` · `diff_forward` |
+| [Verification](docs/mdbook/src/lean-certs.md) | [Derivation logs](docs/mdbook/src/derivations.md) on every result, Lean 4 certificate export, [coverage reporting](docs/mdbook/src/certificate-coverage.md) | `DerivedResult.steps` · `to_lean` · `certifiable` · `certificate_coverage` |
+| [Agent loops](docs/mdbook/src/search-plumbing.md) | String parsing, [budgets and cancellation](docs/mdbook/src/budgets.md), [batched fan-out](docs/mdbook/src/batch.md), [claim graphs](docs/mdbook/src/claim-graphs.md) for session provenance | `parse` · `Budget` · `batch_map` · `research` |
+| Assumptions | Domain-aware reasoning (`x > 0`, ℤ vs ℝ) with a decision procedure over quantified statements | `Assumptions` · `Domain` · `Forall` · `decide` · `satisfiable` |
+| Output | LaTeX, Unicode pretty-printing, plots (2D/3D, implicit, parametric, DAG structure) | `latex` · `unicode_str` · `plot` · `plot3d` · `plot_dag` |
+
+Full listing in the [Python API reference](https://alkahest-cas.github.io/alkahest/python-api.html).
+
+---
+
 ## Expression representations
 
 | Type | Description |
@@ -283,6 +298,7 @@ env = load_environment(difficulty_tier=0, n_train=1000, n_eval=100, adaptive=Tru
 - [`TESTING.md`](TESTING.md) — property-based testing, fuzzing, sanitizers, CI tiers
 - [`BENCHMARKS.md`](BENCHMARKS.md) — criterion and Python benchmark suites
 - [`examples/`](examples/) — runnable end-to-end examples
+- [`demo-playground/`](demo-playground/README.md) — notebook UI, agent chat, and demo recording stack (the hosted [playground](https://alkahest-cas.github.io/playground/) is the WASM build of it)
 - [`LICENSE`](LICENSE) — Apache 2.0 license
 
 ---
