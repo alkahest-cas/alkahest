@@ -4,6 +4,18 @@
 
 ### Fixed
 
+- **Claim graphs: a merge could close a dependency cycle, making the graph
+  unreadable.** Claim IDs are content-addressed over the *normalised*
+  statement, so two textually different statements (`"a"` and `" a"`) share an
+  ID. Re-adding one took `ClaimGraph.add`'s merge path, which unions in its
+  dependency edges — and those can point at claims recorded later, including
+  ones that already depend on it. The resulting graph served fine in memory and
+  serialised fine, then could never be read back: `from_json` topologically
+  sorts and raised `CycleError`. `add` now refuses an edge that would close a
+  cycle, naming both claims, so "a `ClaimGraph` is acyclic" is a real invariant
+  and a JSON round-trip is total. Legitimate acyclic merging is unaffected.
+  Found by the `test_json_round_trip_is_lossless` property test.
+
 - **Sparse interpolation: Zippel oracle cost is now polynomial, not
   multiplicative.** `sparse_interp` was formulated recursively — interpolate the
   coefficients of `x₁` as polynomials in the remaining variables, recursively —
