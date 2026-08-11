@@ -206,6 +206,20 @@ report.summary()     # {'ok': 2, 'numeric_ok': 1, 'skipped': 1}
 print(report.to_markdown())
 ```
 
+## A long session accumulates, by design
+
+Two things grow monotonically for as long as a session is open, and neither is a leak —
+both are the feature working.
+
+- **The claim graph** holds one claim per captured operation, plus one string per capture
+  failure. That is the point of a provenance record, but it means `capture=True` around a
+  million-call sweep builds a million-entry graph in memory. Snapshot with `to_dict()` /
+  `to_markdown()` and start a new session periodically rather than running one session for
+  the life of the process.
+- **The pool** never reclaims, and a session pins one for its whole lifetime. See
+  [`ExprPool` never reclaims](./budgets.md#exprpool-never-reclaims) — a session scoped to
+  one problem, with its own pool, is the pattern that survives a multi-day run.
+
 ## A complete loop
 
 [`examples/pslq_research_loop.py`](https://github.com/alkahest-cas/alkahest/blob/main/examples/pslq_research_loop.py)

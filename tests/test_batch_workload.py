@@ -17,10 +17,23 @@ import pytest
 from alkahest._batch import UNEXPECTED_ERROR_CODE, BatchItem
 from alkahest.exceptions import AlkahestError
 
+#: Far above what the budgeted sweeps below take when they work; a stuck sweep
+#: is a bug, not a slow machine.
+HEAVY_TIMEOUT = 180
+
 
 @pytest.fixture
 def pool():
     return ak.ExprPool()
+
+
+@pytest.fixture(autouse=True)
+def _clear_cancel_before_and_after():
+    """Cancellation is a process-wide flag — never let a failing assertion in
+    one test leave it set for the next test (or the next *file*) to inherit."""
+    ak.clear_cancel()
+    yield
+    ak.clear_cancel()
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +296,164 @@ def test_many_helpers_never_raise_on_a_bad_element(pool):
     assert outs[0].ok
     assert not outs[1].ok
     assert outs[1].error is not None
+
+
+# ---------------------------------------------------------------------------
+# Budgets reach ``parallel=True`` workers
+#
+# Budget frames are thread-local on the Rust side, so `context(budget=...)`
+# used to stop at the thread boundary: a fanned-out sweep ran unbudgeted, and
+# the candidates that a sequential sweep reported as `E-BUDGET-001` came back
+# as `E-INT-001` — the integrator's *mathematical* verdict, which a research
+# loop records as a permanently closed branch. Both harms are tested here: the
+# sweep must stay bounded, and it must say which kind of thing stopped it.
+# ---------------------------------------------------------------------------
+
+
+def _hard_trig_integrand(x, n: int, d: int):
+    """`∫ cos x·sinⁿx/(sin^d x + sin x + 1) dx` — declined by every rule, so it
+    reaches the Weierstrass half-angle route and hands a degree-2n rational
+    function to Rothstein-Trager. Unbudgeted, each of the instances used below
+    runs about 5 s (see ``test_budget.py``); budgeted, each stops in about a
+    budget's worth of time.
+
+    ``d`` was raised from 17 to 31 for 3.8: the ``d=17`` instances now decline
+    in ~200 ms, which is inside the 300 ms budget, so nothing tripped and these
+    tests were asserting a trip that no longer happened. See the rebuilt-ladder
+    note in ``test_budget.py``."""
+    s = ak.sin(x)
+    return ak.cos(x) * s**n / (s**d + s + 1)
+
+
+@pytest.mark.timeout(HEAVY_TIMEOUT)
+def test_parallel_batch_reports_a_budget_trip_as_a_budget_trip(pool):
+    """The headline: `parallel=True` must behave like `parallel=False`.
+
+    Two assertions, and the first is the important one — `E-INT-001` here is a
+    claim that no elementary antiderivative exists, and these integrands were
+    never decided either way. A budget trip is an environment limit and has to
+    be reported as one.
+
+    The elapsed bound is deliberately loose (a bound is the property under
+    test, not a stopwatch reading): unbudgeted these four integrands take
+    minutes, so any factor small enough to catch "the budget never reached the
+    workers" is fine, and 20x leaves room for a loaded box.
+    """
+    x = pool.symbol("x", "real")
+    wall_ms = 300
+    items = [_hard_trig_integrand(x, n, 31) for n in (40, 41, 42, 43)]
+
+    started = time.perf_counter()
+    with ak.context(pool=pool, budget=ak.Budget(wall_ms=wall_ms)):
+        outs = ak.integrate_many(items, x, parallel=True, max_workers=4)
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+
+    codes = [o.error["code"] for o in outs if not o.ok]
+    assert codes == ["E-BUDGET-001"] * len(items), (
+        f"a budget trip must not be reported as a mathematical verdict: {codes}"
+    )
+    assert elapsed_ms < 20 * wall_ms, f"sweep ran {elapsed_ms:.0f} ms against a {wall_ms} ms budget"
+
+
+@pytest.mark.timeout(HEAVY_TIMEOUT)
+def test_parallel_batch_still_reports_a_genuine_decline_as_a_decline(pool):
+    """The control that stops the fix above from being "call everything a
+    budget trip". Under a budget far larger than the work, a candidate the
+    integrator genuinely declines must still come back as `E-INT-001`, and a
+    candidate it can do must still come back with a value."""
+    x = pool.symbol("x", "real")
+    with ak.context(pool=pool, budget=ak.Budget(wall_ms=60_000, max_steps=10_000_000)):
+        outs = ak.integrate_many([ak.log(ak.log(x)), x**2, ak.sin(x)], x, parallel=True)
+
+    assert [o.ok for o in outs] == [False, True, True]
+    assert outs[0].error["code"] == "E-INT-001"
+    assert outs[1].value.value is not None
+
+
+def test_max_steps_reaches_parallel_workers(pool):
+    """No timing involved: `max_steps=0` trips at the first cooperative
+    checkpoint, so every item must report `E-BUDGET-002` — under `parallel=True`
+    exactly as it does sequentially."""
+    x = pool.symbol("x", "real")
+    exprs = [x**n for n in range(1, 5)]
+    with ak.context(pool=pool, budget=ak.Budget(max_steps=0)):
+        sequential = ak.integrate_many(exprs, x)
+        parallel = ak.integrate_many(exprs, x, parallel=True, max_workers=2)
+
+    assert [o.error["code"] for o in sequential] == ["E-BUDGET-002"] * len(exprs)
+    assert [o.error["code"] for o in parallel] == ["E-BUDGET-002"] * len(exprs)
+
+
+def test_max_steps_reaches_streaming_parallel_workers(pool):
+    """`batch_map_iter(parallel=True)` fans out through the same path and must
+    be budgeted too — it is the one a streaming loop actually calls."""
+    x = pool.symbol("x", "real")
+    with ak.context(pool=pool, budget=ak.Budget(max_steps=0)):
+        items = list(ak.batch_map_iter(lambda e: ak.integrate(e, x), [x, x**2], parallel=True))
+    assert {o.index for o in items} == {0, 1}
+    assert [o.error["code"] for o in items] == ["E-BUDGET-002"] * 2
+
+
+def test_seed_reaches_parallel_workers(pool):
+    """`budget_seed()` is what a sampler consults for reproducibility; a worker
+    that reads `None` there silently makes the sweep non-deterministic."""
+    with ak.context(pool=pool, budget=ak.Budget(wall_ms=30_000, seed=7)):
+        outs = ak.batch_map(
+            lambda _: (ak.is_budget_active(), ak.budget_seed()), range(4), parallel=True
+        )
+    assert [o.value for o in outs] == [(True, 7)] * 4
+
+
+def test_parallel_batch_leaves_no_budget_frame_behind(pool):
+    """Push/pop are paired inside each worker task, and the calling thread's
+    own state is untouched — a leaked frame would silently budget unrelated
+    later work on a pooled thread."""
+    with ak.context(pool=pool, budget=ak.Budget(wall_ms=30_000, seed=3)):
+        ak.batch_map(lambda i: i, range(4), parallel=True)
+        assert ak.is_budget_active()
+        assert ak.budget_seed() == 3
+    assert not ak.is_budget_active()
+    assert ak.budget_seed() is None
+
+
+def test_unbudgeted_parallel_batch_stays_unbudgeted(pool):
+    """With no ambient budget, nothing is pushed at all — a sweep that used to
+    run unlimited must not start tripping on an empty frame."""
+    outs = ak.batch_map(lambda _: ak.is_budget_active(), range(3), parallel=True)
+    assert [o.value for o in outs] == [False] * 3
+
+
+@pytest.mark.timeout(HEAVY_TIMEOUT)
+def test_one_workers_budget_trip_does_not_cancel_its_siblings(pool):
+    """Cancellation is process-wide; budget frames are not. Reporting a trip by
+    setting the cancel flag would abort every other in-flight candidate (and
+    every unrelated call in the process) — so a trip must leave the flag alone.
+    """
+    x = pool.symbol("x", "real")
+    with ak.context(pool=pool, budget=ak.Budget(wall_ms=200)):
+        outs = ak.integrate_many(
+            [_hard_trig_integrand(x, 40, 31), _hard_trig_integrand(x, 41, 31)],
+            x,
+            parallel=True,
+            max_workers=2,
+        )
+    assert all(o.error["code"] == "E-BUDGET-001" for o in outs)
+    assert not ak.is_cancelled(), "a budget trip must not set the process-wide cancel flag"
+    # ... and the process is still usable afterwards.
+    assert ak.integrate(x**2, x).value is not None
+
+
+def test_a_cancel_request_does_reach_parallel_workers(pool):
+    """The other half of that distinction: an orchestrator *asking* for a
+    batch-wide abort is honoured, because the flag is process-wide — and it is
+    reported as `E-BUDGET-003`, not as a mathematical verdict."""
+    x = pool.symbol("x", "real")
+    try:
+        ak.request_cancel()
+        outs = ak.integrate_many([x, x**2, x**3], x, parallel=True, max_workers=2)
+    finally:
+        ak.clear_cancel()
+    assert [o.error["code"] for o in outs] == ["E-BUDGET-003"] * 3
 
 
 def test_many_helpers_are_batch_map_over_the_underlying_op(pool):

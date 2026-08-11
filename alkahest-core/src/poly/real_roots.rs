@@ -680,6 +680,122 @@ fn isolate_positive_roots(coeffs: Vec<Integer>) -> Vec<RootInterval> {
 }
 
 // ---------------------------------------------------------------------------
+// Exact rational-root recovery
+// ---------------------------------------------------------------------------
+
+/// Horner evaluation of an integer-coefficient polynomial at a rational point.
+fn eval_coeffs_rational(coeffs: &[Integer], x: &rug::Rational) -> rug::Rational {
+    let mut acc = rug::Rational::from(0);
+    for c in coeffs.iter().rev() {
+        acc *= x;
+        acc += rug::Rational::from((c.clone(), Integer::from(1)));
+    }
+    acc
+}
+
+/// Bisection budget for exact rational-root recovery.
+///
+/// Each halving is one `eval_coeffs_rational`, and the loop stops as soon as
+/// the bracket is narrower than `1/lc`, so this ceiling is only reached for a
+/// bracket that started astronomically wide relative to the leading
+/// coefficient — in which case the interval is left alone and behaviour is
+/// exactly what it was before.
+const RATIONAL_RECOVERY_BISECTIONS: u32 = 512;
+
+/// Leading-coefficient size above which recovery is not attempted.
+///
+/// The search is over multiples of `1/lc`, so its cost is driven by the size of
+/// `lc` rather than by the degree. Beyond this the bracket is returned
+/// unchanged: a loose bracket is a weaker answer, never a wrong one.
+const RATIONAL_RECOVERY_MAX_LC_BITS: u32 = 128;
+
+/// Recover the **exact** rational root inside `iv`, when the root is rational.
+///
+/// [`RootInterval`] documents that an exact rational root `r` is reported as
+/// `lo == hi == r`, and every caller that has to decide something *at* a root
+/// — CAD cell sampling, and therefore [`crate::real::cad::decide`] — depends on
+/// it: a sample set built from bracket endpoints and midpoints contains only
+/// dyadic rationals, so a root like `2/3` is never tested, and a sentence whose
+/// truth turns on that point (`∀x. (3x+2)² > 0`) is decided wrong with no
+/// indication that anything was skipped.
+///
+/// The VAS isolator only delivers `lo == hi` when a root is found exactly at a
+/// Möbius endpoint (`t = 0` or `t = 1`), which happens for dyadic roots and not
+/// in general. This pass closes the gap.
+///
+/// The search is exact, not a heuristic: by the rational-root theorem every
+/// rational root of an integer polynomial has denominator dividing the leading
+/// coefficient `lc`, so once the bracket is narrower than `1/lc` it contains at
+/// most one such rational, and that single candidate is checked by exact
+/// evaluation. `None` means "no rational root here", never "probably not".
+///
+/// `coeffs` must be **squarefree** — bisection needs the sign change that a
+/// simple root guarantees.
+fn exact_rational_root(coeffs: &[Integer], iv: &RootInterval) -> Option<rug::Rational> {
+    if iv.lo == iv.hi {
+        return Some(iv.lo.clone());
+    }
+    let lc = coeffs.last()?.clone().abs();
+    if lc.is_zero() || lc.significant_bits() > RATIONAL_RECOVERY_MAX_LC_BITS {
+        return None;
+    }
+
+    let mut lo = iv.lo.clone();
+    let mut hi = iv.hi.clone();
+    let v_lo = eval_coeffs_rational(coeffs, &lo);
+    let v_hi = eval_coeffs_rational(coeffs, &hi);
+    if v_lo == 0 || v_hi == 0 || (v_lo > 0) == (v_hi > 0) {
+        // Bisection needs a strict sign change across the bracket. A vanishing
+        // endpoint is *not* good enough: neighbouring brackets share endpoints,
+        // so an endpoint root generally belongs to the neighbour, and
+        // collapsing onto it would silently delete the root this bracket was
+        // isolating. Leave the bracket alone — a loose bracket is a weaker
+        // answer, a lost root is a wrong one.
+        return None;
+    }
+    let lo_positive = v_lo > 0;
+
+    // Narrow until at most one multiple of 1/lc can remain inside.
+    let target = rug::Rational::from((Integer::from(1), lc.clone()));
+    for _ in 0..RATIONAL_RECOVERY_BISECTIONS {
+        if hi.clone() - lo.clone() < target {
+            break;
+        }
+        let mid = (lo.clone() + hi.clone()) / rug::Rational::from(2);
+        let v = eval_coeffs_rational(coeffs, &mid);
+        if v == 0 {
+            return Some(mid);
+        }
+        if (v > 0) == lo_positive {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+
+    // Any rational root has denominator dividing `lc`, i.e. is `n/lc` for an
+    // integer `n`. At most two such points survive a bracket this narrow.
+    let scaled_lo = lo * rug::Rational::from((lc.clone(), Integer::from(1)));
+    let scaled_hi = hi * rug::Rational::from((lc.clone(), Integer::from(1)));
+    let (mut n, _) = scaled_lo
+        .numer()
+        .clone()
+        .div_rem_ceil(scaled_lo.denom().clone());
+    let (n_max, _) = scaled_hi
+        .numer()
+        .clone()
+        .div_rem_floor(scaled_hi.denom().clone());
+    while n <= n_max {
+        let candidate = rug::Rational::from((n.clone(), lc.clone()));
+        if eval_coeffs_rational(coeffs, &candidate) == 0 {
+            return Some(candidate);
+        }
+        n += 1;
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // Public entry points
 // ---------------------------------------------------------------------------
 
@@ -756,6 +872,25 @@ pub fn real_roots(poly: &UniPoly) -> Result<Vec<RootInterval>, RealRootError> {
             iv.hi.denom().clone(),
         ));
         result.push(RootInterval::new(neg_lo, neg_hi));
+    }
+
+    // Honour the documented contract: an exact rational root is reported as
+    // `lo == hi == r`. VAS only produces that for roots it happens to land on
+    // (dyadic ones); `2/3` came back as the bracket `[0, 1]`, and CAD's sample
+    // set — bracket endpoints and midpoints, all dyadic — then never tests the
+    // root itself.
+    //
+    // Against `working`, not `sq`: `working` is `sq` with the root at the origin
+    // divided out, and it is the polynomial whose roots these brackets isolate.
+    // Using `sq` made every bracket with `0` as an endpoint collapse onto the
+    // origin, which loses a root outright.
+    for iv in result.iter_mut() {
+        if iv.lo == iv.hi {
+            continue;
+        }
+        if let Some(r) = exact_rational_root(&working, iv) {
+            *iv = RootInterval::new(r.clone(), r);
+        }
     }
 
     result.sort_by(|a, b| a.lo.partial_cmp(&b.lo).unwrap_or(std::cmp::Ordering::Equal));

@@ -19,6 +19,63 @@ use rug::Rational;
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// Why [`kernel_column_basis`] could not produce a basis.
+///
+/// # Why this is not `()`
+///
+/// It used to be. Every caller wrote `map_err(|_| …KernelFailed)`, so by the
+/// time the refusal reached a caller of `nullspace` it said only "could not
+/// compute nullspace basis" (`E-LINALG-002`) — honest, and useless. The two
+/// situations a caller must tell apart are "this matrix is genuinely hard for
+/// the kernel routine" and "one entry's vanishing is undecidable, and
+/// substituting concrete parameters would fix it" (`E-LINALG-010`); the second
+/// is actionable and the first is not. A payload-free error type cannot carry
+/// that distinction across the boundary, so it was lost there.
+///
+/// Widening it costs nothing on the public API: both this type and
+/// [`kernel_column_basis`] are `pub(crate)`.
+///
+/// Exhaustive on purpose. Today elimination has exactly one way to fail, and a
+/// second one must be a deliberate decision at every call site rather than
+/// something a `_ =>` arm quietly absorbs into the vague code again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KernelFailure {
+    /// Elimination reached an entry it could prove neither zero nor non-zero,
+    /// and refused rather than guess a pivot. Carries that entry so the caller
+    /// can record the refusal against its own error variant — see
+    /// [`crate::matrix::zero_test`].
+    Undecidable(ExprId),
+}
+
+/// What the caller already knows about `det(m)` when asking for its kernel.
+///
+/// The 2×2 fast path in [`kernel_column_basis`] returns the perpendicular of a
+/// non-vanishing row, which is the kernel only when the determinant vanishes.
+/// Deciding that from the entries is undecidable in general (see
+/// [`crate::matrix::zero_test`]) — but the callers that hit the hard cases are
+/// not actually asking the question, they already know the answer:
+///
+/// * `eigenvectors` builds `A − λI` for a λ it just obtained as a **root of the
+///   characteristic polynomial**, so `det(A − λI) = 0` is a theorem about the
+///   construction. Re-deriving it means asking the simplifier to drive a pile of
+///   nested radicals to literal `0`, which it often cannot, and a routine that
+///   refused whenever it could not would stop computing perfectly good
+///   eigenvectors.
+/// * `jordan_form` asks for kernels of `(A − λI)^k`, singular for the same
+///   reason.
+/// * `nullspace` is handed an arbitrary matrix and knows nothing.
+///
+/// Passing the knowledge in keeps the gate strict for the one caller that has to
+/// establish singularity, without making the others pay for a question they can
+/// already answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KnownSingular {
+    /// `det(m) = 0` by construction.
+    Yes,
+    /// Nothing is known; the routine must prove it or refuse.
+    No,
+}
+
 /// Errors from eigen-decomposition helpers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EigenError {
@@ -533,11 +590,31 @@ pub fn eigenvectors(
     let mut out = Vec::with_capacity(vals.len());
     for (lambda, mult) in vals {
         let b = m_minus_lambda_scaled(m, lambda, pool);
-        let vecs =
-            kernel_column_basis(&b, pool).map_err(|_| EigenError::KernelComputationFailed)?;
+        // `lambda` came out of `eigenvalues`, i.e. it is a root of the
+        // characteristic polynomial, so `det(A − λI) = 0` holds by construction.
+        let vecs = kernel_column_basis(&b, pool, KnownSingular::Yes)
+            .map_err(|f| kernel_failure_to_eigen(f, pool))?;
         out.push((lambda, mult, vecs));
     }
     Ok(out)
+}
+
+/// Report a [`KernelFailure`] in this module's error vocabulary.
+///
+/// [`EigenError`] is a public exhaustive enum and cannot grow a variant without
+/// a major semver break, so — exactly as
+/// [`LinearAlgebraError::UnsupportedField`](crate::matrix::LinearAlgebraError::UnsupportedField)
+/// does for elimination, and `MatrixError::SingularMatrix` for a determinant —
+/// [`EigenError::KernelComputationFailed`] carries the refusal and the specific
+/// cause travels out of band for
+/// [`take_zero_test_refusal`](crate::matrix::take_zero_test_refusal).
+fn kernel_failure_to_eigen(f: KernelFailure, pool: &ExprPool) -> EigenError {
+    match f {
+        KernelFailure::Undecidable(e) => {
+            zero_test::record_refusal(pool, e, zero_test::RefusalSite::Pivot);
+            EigenError::KernelComputationFailed
+        }
+    }
 }
 
 /// Returns `(P, D)` with `M·P == P·D` (same convention as SymPy: columns of `P` are eigenvectors).
@@ -560,8 +637,14 @@ pub fn diagonalize(m: &Matrix, pool: &ExprPool) -> Result<(Matrix, Matrix), Eige
     if cols.len() != n {
         return Err(EigenError::NonDiagonalizable);
     }
-    let p_mat =
-        concatenate_columns(&cols, pool).map_err(|_| EigenError::KernelComputationFailed)?;
+    // `KernelComputationFailed` for its *original* meaning — the eigenvector
+    // columns do not assemble into a matrix. Clear any zero-test refusal left
+    // on this thread so this error cannot inherit its `E-LINALG-010`; see
+    // [`zero_test::forget_refusal`].
+    let p_mat = concatenate_columns(&cols, pool).map_err(|_| {
+        zero_test::forget_refusal();
+        EigenError::KernelComputationFailed
+    })?;
     // Verify full rank geometrically via det / invertibility later
     let d_mat = diagonal_from_entries(&diag_entries, pool);
     if !columns_match_eigen_relation(m, &p_mat, pool, &diag_entries) {
@@ -904,16 +987,15 @@ pub(crate) fn m_minus_lambda_scaled(m: &Matrix, lambda: ExprId, pool: &ExprPool)
 // Nullspace
 // ---------------------------------------------------------------------------
 
-fn kernel_2x2_column_basis(m: &Matrix, pool: &ExprPool) -> Option<Vec<Matrix>> {
+fn kernel_2x2_column_basis(
+    m: &Matrix,
+    pool: &ExprPool,
+    singular: KnownSingular,
+) -> Option<Vec<Matrix>> {
     let a00 = simplify(m.get(0, 0), pool).value;
     let b01 = simplify(m.get(0, 1), pool).value;
     let c10 = simplify(m.get(1, 0), pool).value;
     let d11 = simplify(m.get(1, 1), pool).value;
-    // Full-rank gate for numeric/rational matrices: if det is a nonzero
-    // constant then the kernel is trivial.  Do *not* use an `M·v = 0` check on
-    // the candidate perpendicular — for symbolic `(A − λI)` that residual only
-    // vanishes after substituting an eigenvalue, so the check would wrongly
-    // drop legitimate eigenspace bases.
     let det = simplify(
         pool.add(vec![
             pool.mul(vec![a00, d11]),
@@ -922,6 +1004,11 @@ fn kernel_2x2_column_basis(m: &Matrix, pool: &ExprPool) -> Option<Vec<Matrix>> {
         pool,
     )
     .value;
+
+    // A determinant that is *literally* a non-zero constant means a trivial
+    // kernel, whatever the caller believes about this matrix. Kept ahead of
+    // everything else so a caller that wrongly claims singularity gets the
+    // honest empty basis rather than a fabricated vector.
     let det_nonzero_const = match pool.get(det) {
         ExprData::Integer(n) => n.0 != 0,
         ExprData::Rational(r) => r.0 != 0,
@@ -929,6 +1016,40 @@ fn kernel_2x2_column_basis(m: &Matrix, pool: &ExprPool) -> Option<Vec<Matrix>> {
     };
     if det_nonzero_const {
         return Some(Vec::new());
+    }
+
+    // Everything below returns the perpendicular of a non-vanishing row, which
+    // is the kernel **only when `det = 0`**. That is a fact about the matrix, so
+    // something has to establish it.
+    //
+    // This gate used to be `det_nonzero_const` alone: a non-literal determinant
+    // fell straight through, i.e. "could not prove `det ≠ 0`" was read as
+    // "`det = 0`". `Matrix([[x, 0], [0, 1]]).nullspace()` therefore returned the
+    // 1-dimensional basis `(0, x)` — for which `M·v = (0, x)` — while `rank()`
+    // on the same matrix correctly said 2, so one call violated rank–nullity
+    // against the other with no exception and no flag. It is the exact mirror of
+    // the `rref` defect that motivated `zero_test`: that one read *unknown* as
+    // non-zero, this one read *unknown* as zero.
+    //
+    // The old comment warned against checking `M·v = 0` on the candidate,
+    // because for a symbolic `A − λI` that residual only vanishes once λ is
+    // substituted — a real hazard, and the reason the check cannot simply be
+    // tightened. The way out is to ask a more precise question rather than a
+    // weaker one: on the eigen path `det(A − λI) = 0` holds *by construction*,
+    // λ being a root of the characteristic polynomial, so the caller states it
+    // ([`KnownSingular::Yes`]) instead of the simplifier trying to rediscover it
+    // from a pile of radicals. Only a caller that genuinely does not know —
+    // `nullspace` on an arbitrary matrix — pays for the zero test.
+    if singular == KnownSingular::No {
+        match zero_test::zero_status(pool, det) {
+            // Generically invertible: the same verdict `rank` pivots on.
+            zero_test::ZeroStatus::NonZero => return Some(Vec::new()),
+            // Provably singular: the perpendicular below really is the kernel.
+            zero_test::ZeroStatus::Zero => {}
+            // Undecided. Hand it to the general Gaussian path, which refuses
+            // with `E-LINALG-010` rather than picking one of the two answers.
+            zero_test::ZeroStatus::Unknown => return None,
+        }
     }
     let neg_one = pool.integer(-1_i32);
     // The perpendicular `(−b, a)` is taken from a row that is *not* the zero
@@ -974,9 +1095,13 @@ fn row_is_nonvanishing(pool: &ExprPool, x: ExprId, y: ExprId) -> Option<bool> {
     None
 }
 
-pub(crate) fn kernel_column_basis(m: &Matrix, pool: &ExprPool) -> Result<Vec<Matrix>, ()> {
+pub(crate) fn kernel_column_basis(
+    m: &Matrix,
+    pool: &ExprPool,
+    singular: KnownSingular,
+) -> Result<Vec<Matrix>, KernelFailure> {
     if m.rows == 2 && m.cols == 2 {
-        if let Some(bas) = kernel_2x2_column_basis(m, pool) {
+        if let Some(bas) = kernel_2x2_column_basis(m, pool, singular) {
             return Ok(bas);
         }
     }
@@ -1409,7 +1534,7 @@ fn qi_nullspace_basis(
 
 // --- Expr Gaussian fallback ---
 
-fn gauss_nullspace_expr(m: &Matrix, pool: &ExprPool) -> Result<Vec<Vec<ExprId>>, ()> {
+fn gauss_nullspace_expr(m: &Matrix, pool: &ExprPool) -> Result<Vec<Vec<ExprId>>, KernelFailure> {
     let rows = m.rows;
     let cols = m.cols;
     let mut a: Vec<Vec<ExprId>> = (0..rows)
@@ -1431,7 +1556,7 @@ fn gauss_nullspace_expr(m: &Matrix, pool: &ExprPool) -> Result<Vec<Vec<ExprId>>,
         // zero. An undecided entry aborts: reporting the wrong pivot column
         // here silently changes the dimension of the nullspace.
         let mut prow = None;
-        let mut undecided = false;
+        let mut undecided: Option<ExprId> = None;
         for rr in r_at..rows {
             let e = simplify(a[rr][c], pool).value;
             match zero_test::zero_status(pool, e) {
@@ -1440,11 +1565,13 @@ fn gauss_nullspace_expr(m: &Matrix, pool: &ExprPool) -> Result<Vec<Vec<ExprId>>,
                     break;
                 }
                 zero_test::ZeroStatus::Zero => a[rr][c] = pool.integer(0_i32),
-                zero_test::ZeroStatus::Unknown => undecided = true,
+                // Keep the *first* undecided entry: it is the one a caller has
+                // to make decidable, and it is deterministic.
+                zero_test::ZeroStatus::Unknown => undecided = undecided.or(Some(e)),
             }
         }
-        if prow.is_none() && undecided {
-            return Err(());
+        if let (None, Some(e)) = (prow, undecided) {
+            return Err(KernelFailure::Undecidable(e));
         }
         let Some((pr, piv)) = prow else { continue };
         if pr != r_at {
@@ -1501,6 +1628,15 @@ fn gauss_nullspace_expr(m: &Matrix, pool: &ExprPool) -> Result<Vec<Vec<ExprId>>,
 /// Retained only for the coefficient accumulator, where the slot being tested
 /// is a literal `0` this function itself put there. Every site that decides a
 /// *pivot* uses `zero_test::zero_status` instead.
+/// Whether `e` is the *literal* zero constant.
+///
+/// The `_ => false` arm is the same shape as the determinant gate above — "not a
+/// literal, so assume the other case" — but here nothing mathematical rides on
+/// it. Its only caller decides between writing `rest` and `slot + rest` into a
+/// coefficient slot, and `0 + rest` equals `rest`; a wrong answer costs an extra
+/// `Add` node and nothing else. Recorded so the next reader auditing this
+/// pattern does not have to work that out twice, or "fix" it into a zero test
+/// that would cost real time on every coefficient.
 fn expr_is_exactly_zero(pool: &ExprPool, e: ExprId) -> bool {
     match pool.get(e) {
         ExprData::Integer(n) => n.0 == 0,

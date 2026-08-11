@@ -758,6 +758,21 @@ fn matrix_error_to_py(e: MatrixError) -> PyErr {
 }
 
 fn eigen_error_to_py(e: EigenError) -> PyErr {
+    // `KernelComputationFailed` reaches Python from two places: the eigenvector
+    // nullspace refused because one entry's vanishing is undecidable
+    // (`E-LINALG-010` — fixable by substituting concrete parameters), or the
+    // computed columns did not assemble (`E-EIGEN-006`). `EigenError` is an
+    // exhaustive public enum, so the first travels out of band exactly as it
+    // does for `nullspace`; see `linear_algebra_error_to_py`. The exception
+    // class stays `EigenError` — only the code and the message get specific.
+    if matches!(e, EigenError::KernelComputationFailed) {
+        if let Some(r) = alkahest_core::matrix::take_zero_test_refusal() {
+            return Python::with_gil(|py| {
+                let exc_type = py.get_type_bound::<PyEigenError>();
+                make_structured_err(py, &exc_type, &r)
+            });
+        }
+    }
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyEigenError>();
         make_structured_err(py, &exc_type, &e)
@@ -3323,6 +3338,22 @@ impl PyRationalFunction {
 // Module
 // ---------------------------------------------------------------------------
 
+/// Integrate, with the GIL **released** for the duration of the core call.
+///
+/// `integrate` is one of the two engines that honour `alkahest.Budget` /
+/// `request_cancel()` (see `docs/mdbook/src/budgets.md`). Holding the GIL for
+/// the whole run made that promise half-true: a watchdog thread calling
+/// `request_cancel()` could not execute a single bytecode until the call it
+/// wanted to cancel had already finished, so only a flag set *before* the call
+/// was ever observed — the opposite of what a fan-out search loop needs.
+///
+/// The idiom is `py_simplify_par`'s, and the safety argument is the same one:
+/// `ExprPool` is `Send + Sync` and interns through a lock-free index, and this
+/// is strictly weaker than what `simplify_par` already does (Rayon workers on
+/// the same pool, concurrently). Nothing under `core_integrate` touches a
+/// `Python` token. The budget itself is thread-local, and `allow_threads` does
+/// not move the work to another thread — it only drops the GIL on this one — so
+/// the active `Budget` frame is still the caller's.
 #[pyfunction]
 #[pyo3(name = "integrate")]
 fn py_integrate(
@@ -3331,8 +3362,12 @@ fn py_integrate(
     var: PyRef<PyExpr>,
 ) -> PyResult<PyDerivedResult> {
     let derived = {
-        let pool = expr.pool.borrow(py);
-        core_integrate(expr.id, var.id, &pool.inner).map_err(integrate_error_to_py)?
+        let pool_ref = expr.pool.borrow(py);
+        // Bind out of the `PyRef` first: it carries a `Python` marker and so is
+        // not `Sync`, but the pool and ids themselves are safe to send.
+        let (id, var_id, pool) = (expr.id, var.id, &pool_ref.inner);
+        py.allow_threads(|| core_integrate(id, var_id, pool))
+            .map_err(integrate_error_to_py)?
     };
     let pool_py = expr.pool.clone_ref(py);
     let mut result = make_derived_result(py, derived, pool_py, None);
@@ -3476,6 +3511,13 @@ fn py_series(
     })
 }
 
+/// Take a limit, with the GIL **released** for the duration of the core call.
+///
+/// `limit` is the other budget-honouring engine; see `py_integrate` for why
+/// holding the GIL made `request_cancel()` unable to reach a running call, and
+/// for the safety argument (identical here — `core_limit` takes `&ExprPool` and
+/// no `Python` token, and the budget/work-ceiling state it uses is thread-local
+/// to *this* thread, which `allow_threads` does not change).
 #[pyfunction]
 #[pyo3(name = "limit", signature = (expr, var, point, dir=None))]
 fn py_limit(
@@ -3488,8 +3530,12 @@ fn py_limit(
     let pool_py = expr.pool.clone_ref(py);
     let d = parse_limit_direction(dir);
     let id = {
-        let pool = pool_py.borrow(py);
-        core_limit(expr.id, var.id, point.id, d, &pool.inner).map_err(limit_error_to_py)?
+        let pool_ref = pool_py.borrow(py);
+        // Bind out of the `PyRef` first: it carries a `Python` marker and so is
+        // not `Sync`, but the pool and ids themselves are safe to send.
+        let (id, var_id, point_id, pool) = (expr.id, var.id, point.id, &pool_ref.inner);
+        py.allow_threads(|| core_limit(id, var_id, point_id, d, pool))
+            .map_err(limit_error_to_py)?
     };
     Ok(PyExpr { id, pool: pool_py })
 }

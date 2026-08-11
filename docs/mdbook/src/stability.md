@@ -6,14 +6,14 @@ Alkahest follows semantic versioning starting at `1.0`.
 
 The stable surface is the API Alkahest commits to maintaining without breaking changes across a major version:
 
-- **Rust:** everything re-exported from `alkahest_core::stable`
+- **Rust:** everything re-exported from `alkahest_cas::stable`
 - **Python:** every name in `alkahest.__all__` at release time
 
 Breaking changes to the stable surface require a major-version bump (e.g. 1.x → 2.0).
 
 ## Experimental surface
 
-- **Rust:** `alkahest_core::experimental::*`, plus anything not in `stable`
+- **Rust:** `alkahest_cas::experimental::*`, plus anything not in `stable`
 - **Python:** `alkahest.experimental.*`, plus anything re-exported from the native module but not in `__all__`
 
 Experimental APIs may change in any minor release. Pin a specific point release if you depend on them.

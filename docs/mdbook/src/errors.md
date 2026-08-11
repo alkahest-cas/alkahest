@@ -10,7 +10,10 @@ AlkahestError (base)
 ├── DomainError       (E-DOMAIN-*) — mathematical side conditions violated
 ├── DiffError         (E-DIFF-*)   — differentiation failed
 ├── IntegrationError  (E-INT-*)    — integration failed
-├── MatrixError       (E-MAT-*)    — linear algebra errors
+├── MatrixError       (E-MAT-*)    — matrix shape / singularity / undecidable determinant
+│   ├── LinearAlgebraError (E-LINALG-*) — elimination, decompositions, canonical forms
+│   └── EigenError         (E-EIGEN-*)  — eigenvalues, eigenvectors, Jordan form
+├── CadError          (E-CAD-*)    — real quantifier elimination, see [Positivity](./positivity.md#decide-refuses-rather-than-guessing)
 ├── OdeError          (E-ODE-*)    — ODE construction or lowering
 ├── DaeError          (E-DAE-*)    — DAE structural analysis
 ├── SolverError       (E-SOLVE-*)  — polynomial system solving
@@ -88,6 +91,54 @@ Raised when a mathematical side condition is violated.
 | `E-SOLVE-002` | High-degree univariate factor (> 2) | Symbolic solution not supported; use numerical solve |
 | `E-SOLVE-003` | Gröbner basis did not terminate | Increase node/iteration limits |
 
+### Refusals: when Alkahest declines to answer
+
+A refusal is not a malfunction. These codes all mean *"I could not establish this, and
+the alternative to saying so is a confident wrong answer"* — the outcome an unattended
+loop must record as **undecided**, never as a negative result.
+
+| Code | Class | What it means |
+|---|---|---|
+| `E-LINALG-010` | `LinearAlgebraError` | An entry's vanishing could be proven neither zero nor non-zero, so `rank` / `rref` / `nullspace` / `eigenvects` / `jordan_form` declined to pick a branch |
+| `E-MAT-004` | `MatrixError` | Same, for a determinant: `inverse()` will not divide by something it cannot show is non-zero |
+| `E-CAD-001` | `CadError` | `decide` is outside its fragment, or the only candidate solutions lie at an irrational boundary point it cannot test exactly |
+| `E-SOS-002` | `SosError` | No positivity certificate of this shape at this degree — a statement about the search, not a proof that none exists |
+| `E-INT-004` | `IntegrationError` | Proven non-elementary. **This one is a verdict, not a refusal** — keep it apart from the rest |
+| `E-BUDGET-001..003` | `BudgetExceededError` | Ran out of the time/steps it was given, or was cancelled |
+
+The three-valued zero test behind `E-LINALG-010` / `E-MAT-004` is new in 3.8. Before it,
+"could not prove `det ≠ 0`" was silently read as "`det = 0`", and `Matrix.nullspace()`
+returned a confident wrong basis for any 2×2 with a symbolic determinant.
+
+```python
+import alkahest as ak
+
+pool = ak.ExprPool()
+a = pool.symbol("a")
+zero, one = pool.integer(0), pool.integer(1)
+
+# `mystery` has no evaluation rule, so its vanishing is genuinely undecidable.
+opaque = pool.func("mystery", [a])
+m = ak.Matrix([[opaque, zero], [zero, one]])
+
+try:
+    m.inverse()
+except ak.MatrixError as e:
+    print(e.code)          # E-MAT-004
+    print(e.remediation)   # substitute concrete values for the parameters
+
+try:
+    ak.Matrix([[opaque, zero], [zero, zero]]).nullspace()
+except ak.LinearAlgebraError as e:
+    print(e.code)          # E-LINALG-010
+```
+
+`LinearAlgebraError` and `EigenError` are both subclasses of `MatrixError`, so
+`except ak.MatrixError` catches all three families; catch the subclass when you want to
+distinguish them. Note that `eigenvects()` raises `EigenError` — with code
+`E-LINALG-010`, because the code identifies *what could not be decided*, not which
+wrapper it surfaced through.
+
 ## Catching errors by code
 
 For programmatic error handling:
@@ -114,7 +165,10 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-DOMAIN-*` | `DomainError` | Side-condition violations (div-by-zero, log of 0, `sqrt` of negative) |
 | `E-DIFF-*` | `DiffError` | Forward/reverse differentiation, unknown derivatives |
 | `E-INT-*` | `IntegrationError` | Symbolic integration (Risch, heuristic, table) |
-| `E-MAT-*` | `MatrixError` | Linear algebra (shape, singular, non-invertible) |
+| `E-MAT-*` | `MatrixError` | Matrix shape, proven-singular, non-invertible, and (`E-MAT-004`) an undecidable determinant |
+| `E-LINALG-*` | `LinearAlgebraError` *(subclass of `MatrixError`)* | Elimination, decompositions, canonical forms; `E-LINALG-010` is the undecidable-entry refusal |
+| `E-EIGEN-*` | `EigenError` *(subclass of `MatrixError`)* | Eigenvalues, eigenvectors, Jordan form, diagonalisation |
+| `E-CAD-*` | `CadError` | Real quantifier elimination — outside the fragment, or an untestable irrational boundary point |
 | `E-ODE-*` | `OdeError` | ODE construction, lowering, event handling |
 | `E-DAE-*` | `DaeError` | DAE structural analysis (Pantelides, index reduction) |
 | `E-SOLVE-*` | `SolverError` | Polynomial system solving, Gröbner basis |

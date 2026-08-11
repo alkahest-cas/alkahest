@@ -110,8 +110,59 @@ pub fn poly_monic(p: &QPoly) -> QPoly {
     poly_scale(&p, &(Rational::from(1) / lc))
 }
 
-/// Monic GCD of `a` and `b` over ℚ (Euclidean algorithm).
+/// Clear denominators: the primitive integer associate of a `ℚ`-polynomial,
+/// as a FLINT `fmpz_poly`.  Scaling by a nonzero rational does not change a
+/// *monic* GCD, so this is lossless for [`poly_gcd`]'s purposes.
+fn qpoly_to_fmpz(p: &[Rational]) -> crate::flint::FlintPoly {
+    let mut l = rug::Integer::from(1);
+    for c in p.iter().filter(|c| **c != 0) {
+        l.lcm_mut(c.denom());
+    }
+    let ints: Vec<rug::Integer> = p
+        .iter()
+        .map(|c| c.numer() * rug::Integer::from(&l / c.denom()))
+        .collect();
+    crate::flint::FlintPoly::from_rug_coefficients(&ints)
+}
+
+/// Monic GCD of `a` and `b` over ℚ.
+///
+/// # Why this goes through FLINT
+///
+/// The obvious implementation — the Euclidean algorithm over `ℚ` — is
+/// quadratic in the *number* of coefficient operations but its coefficients
+/// blow up through the remainder sequence, and every one of those operations is
+/// a canonicalising `rug::Rational` multiply that pays a bignum GCD. Measured
+/// on the degree-80 image that `∫ cos x·sin¹²x/(sin¹⁷x + sin x + 1) dx`
+/// produces after the Weierstrass substitution, the ℚ-Euclid took **11.5 s**;
+/// clearing denominators and handing the integer problem to FLINT's modular
+/// `fmpz_poly_gcd` takes **0.3 s** for a bit-identical answer.
+///
+/// The result is unchanged, not merely equivalent: the monic GCD of two
+/// polynomials over a field is unique, and clearing denominators multiplies
+/// each input by a nonzero rational, which cannot change it.
+/// `poly_gcd_euclid` (crate-internal) remains as the reference implementation and is what the
+/// two agree-on-random-input property tests compare against.
 pub fn poly_gcd(a: &QPoly, b: &QPoly) -> QPoly {
+    let a = trim(a.clone());
+    let b = trim(b.clone());
+    if a.is_empty() {
+        return poly_monic(&b);
+    }
+    if b.is_empty() {
+        return poly_monic(&a);
+    }
+    let g = qpoly_to_fmpz(&a).gcd(&qpoly_to_fmpz(&b));
+    let coeffs: Vec<Rational> = (0..g.length())
+        .map(|i| Rational::from(g.get_coeff_flint(i).to_rug()))
+        .collect();
+    poly_monic(&coeffs)
+}
+
+/// The textbook Euclidean algorithm over `ℚ` — the reference [`poly_gcd`] is
+/// checked against, kept because it needs no FFI and no integer conversion.
+#[cfg(test)]
+pub(crate) fn poly_gcd_euclid(a: &QPoly, b: &QPoly) -> QPoly {
     let mut a = trim(a.clone());
     let mut b = trim(b.clone());
     while !b.is_empty() {
@@ -120,6 +171,36 @@ pub fn poly_gcd(a: &QPoly, b: &QPoly) -> QPoly {
         b = r;
     }
     poly_monic(&a)
+}
+
+/// [`poly_gcd`], but gives up when [`crate::budget`] trips.
+///
+/// # Why a second function instead of a check inside `poly_gcd`
+///
+/// A GCD has no error channel — it returns the polynomial — so a checkpoint
+/// inside it could only *stop early*, and stopping the Euclidean algorithm early
+/// returns a **wrong** GCD. Downstream that is a wrong antiderivative, which is
+/// the one outcome worse than being slow. `poly_gcd` is also public API, so it
+/// cannot grow a `Result` without a major semver break. This variant is
+/// crate-internal, returns `None` rather than a truncated answer, and leaves
+/// every existing caller of `poly_gcd` untouched.
+///
+/// # Why it is worth having
+///
+/// The Euclidean algorithm over ℚ has no modular or fraction-free strategy here,
+/// so the coefficients grow through the remainder sequence. Normalising `A/D` to
+/// lowest terms in [`super::rational_integrate::try_integrate_rational`]
+/// measured **480 ms of a 482 ms call** on the degree-80 image that
+/// `∫ cos x·sin⁴⁰x/(sin¹⁷x + sin x + 1) dx` produces after the Weierstrass
+/// substitution — the last uninterruptible block on that route once the other
+/// checkpoints were in, and the reason a 50 ms budget still took 400 ms.
+/// Checking once per Euclidean step makes the granularity one `poly_divrem`.
+pub(crate) fn poly_gcd_budgeted(a: &QPoly, b: &QPoly) -> Option<QPoly> {
+    // `poly_gcd` now delegates to FLINT, which is a single uninterruptible call
+    // — but one that is orders of magnitude shorter than the ℚ-Euclid it
+    // replaced, so the checkpoint before it is the granularity that matters.
+    crate::budget::check().ok()?;
+    Some(poly_gcd(a, b))
 }
 
 /// Exact division `a / b` (panics in debug if the remainder is nonzero).
@@ -888,6 +969,76 @@ mod tests {
 
     fn rat(n: i64) -> Rational {
         Rational::from(n)
+    }
+
+    // -- poly_gcd: the FLINT route must agree with the reference ℚ-Euclid ----
+
+    /// A cheap deterministic PRNG so this stays a unit test, not a proptest.
+    fn lcg(state: &mut u64) -> i64 {
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1);
+        ((*state >> 33) % 21) as i64 - 10
+    }
+
+    #[test]
+    fn poly_gcd_flint_agrees_with_euclid_on_random_rationals() {
+        let mut s = 0x2545_F491_4F6C_DD1D_u64;
+        for trial in 0..400 {
+            let da = (trial % 7) + 1;
+            let db = (trial % 5) + 1;
+            let mk = |n: usize, s: &mut u64| -> QPoly {
+                let mut p: QPoly = (0..=n)
+                    .map(|_| {
+                        let num = lcg(s);
+                        let den = lcg(s).unsigned_abs().max(1) as i64;
+                        Rational::from((num, den))
+                    })
+                    .collect();
+                if trim(p.clone()).is_empty() {
+                    p = vec![rat(1)];
+                }
+                p
+            };
+            let a = mk(da, &mut s);
+            let b = mk(db, &mut s);
+            // Force a nontrivial common factor half the time.
+            let (a, b) = if trial % 2 == 0 {
+                let c = mk(2, &mut s);
+                (poly_mul(&a, &c), poly_mul(&b, &c))
+            } else {
+                (a, b)
+            };
+            assert_eq!(
+                poly_gcd(&a, &b),
+                poly_gcd_euclid(&a, &b),
+                "trial {trial}: FLINT gcd disagrees with ℚ-Euclid on {a:?}, {b:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn poly_gcd_flint_agrees_with_euclid_on_degenerate_inputs() {
+        let zero: QPoly = Vec::new();
+        let cases: Vec<(QPoly, QPoly)> = vec![
+            (zero.clone(), zero.clone()),
+            (vec![rat(0), rat(0)], zero.clone()),
+            (zero.clone(), vec![rat(3), rat(6)]),
+            (vec![rat(3), rat(6)], zero.clone()),
+            (vec![rat(5)], vec![rat(7)]),
+            (vec![rat(0), rat(1)], vec![rat(0), rat(0), rat(1)]),
+            (
+                vec![Rational::from((1, 3)), Rational::from((2, 5))],
+                vec![Rational::from((7, 11))],
+            ),
+        ];
+        for (a, b) in cases {
+            assert_eq!(
+                poly_gcd(&a, &b),
+                poly_gcd_euclid(&a, &b),
+                "FLINT gcd disagrees with ℚ-Euclid on {a:?}, {b:?}"
+            );
+        }
     }
 
     // ∫ (x-1)/x² · exp(x) dx = exp(x)/x.

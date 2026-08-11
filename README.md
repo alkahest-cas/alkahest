@@ -63,7 +63,7 @@ Probe your environment after install: `alkahest.capabilities()["features"]` and 
 
 ### Opt-in Linux wheels: `+jit` and `+full` (PyTorch-style)
 
-**Why a separate index or direct wheel URL:** feature-heavy wheels use a PEP 440 **local version** (for example `2.0.3+jit` or `2.0.3+full`). Those builds **must not** be mixed into the main PyPI project’s simple API for the same reason PyTorch publishes CUDA wheels on `download.pytorch.org`: otherwise `pip install alkahest` could resolve a `+jit` / `+full` build as “newer” than `2.0.3` and pull LLVM (or a much larger binary) when you wanted the default wheel.
+**Why a separate index or direct wheel URL:** feature-heavy wheels use a PEP 440 **local version** (for example `3.7.0+jit` or `3.7.0+full`). Those builds **must not** be mixed into the main PyPI project’s simple API for the same reason PyTorch publishes CUDA wheels on `download.pytorch.org`: otherwise `pip install alkahest` could resolve a `+jit` / `+full` build as “newer” than `3.7.0` and pull LLVM (or a much larger binary) when you wanted the default wheel.
 
 There is **no** `pip install alkahest[jit]` / `alkahest[full]` that swaps the native extension: **pip extras only add Python dependencies**, not alternate binaries for the same wheel slot.
 
@@ -78,13 +78,13 @@ There is **no** `pip install alkahest[jit]` / `alkahest[full]` that swaps the na
 Direct-install examples (adjust tag and filename after checking the release assets):
 
 ```bash
-pip install "https://github.com/alkahest-cas/alkahest/releases/download/v2.3.1/alkahest-2.3.1+full-cp311-cp311-linux_x86_64.whl"
-pip install "https://github.com/alkahest-cas/alkahest/releases/download/v2.3.1/alkahest-2.3.1+jit-cp311-cp311-linux_x86_64.whl"
+pip install "https://github.com/alkahest-cas/alkahest/releases/download/v3.7.0/alkahest-3.7.0+full-cp311-cp311-linux_x86_64.whl"
+pip install "https://github.com/alkahest-cas/alkahest/releases/download/v3.7.0/alkahest-3.7.0+jit-cp311-cp311-linux_x86_64.whl"
 ```
 
 These wheels vendor LLVM (for JIT) and related `.so` files under `site-packages/alkahest.libs/`. If `import alkahest` fails with a missing `libffi-*.so` or `libLLVM-*.so`, prepend that directory to `LD_LIBRARY_PATH` (or install matching system packages). Release CI uses the same `LD_LIBRARY_PATH` step when smoke-testing wheels.
 
-If your client chokes on `+` in the URL, use percent-encoding (`2.3.1%2Bfull` in the filename segment).
+If your client chokes on `+` in the URL, use percent-encoding (`3.7.0%2Bfull` in the filename segment).
 
 After installing the **default** wheel, `alkahest.jit_is_available()` is `True` (Cranelift). After **`+jit`** or **`+full`**, it is also `True` (LLVM). Gröbner-backed APIs such as `alkahest.solve` are available in **all** wheels since `groebner` became a default feature.
 
@@ -93,7 +93,7 @@ After installing the **default** wheel, `alkahest.jit_is_available()` is `True` 
 **Target layout (roadmap):** a small **extra index** URL (PEP 503) hosting only `+jit` / `+full` wheels, mirroring PyTorch’s `--extra-index-url` workflow:
 
 ```bash
-pip install 'alkahest==2.0.3+full' --extra-index-url https://EXAMPLE/alkahest-extras/simple
+pip install 'alkahest==3.7.0+full' --extra-index-url https://EXAMPLE/alkahest-extras/simple
 ```
 
 ### From source
@@ -131,10 +131,10 @@ Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_pa
 
 ```toml
 [dependencies]
-alkahest-cas = "2"
+alkahest-cas = "3"
 
 # groebner is included by default; add other optional features as needed:
-# alkahest-cas = { version = "2", features = ["parallel", "egraph"] }
+# alkahest-cas = { version = "3", features = ["parallel", "egraph"] }
 ```
 
 **System prerequisites** (same libraries as the Python build — must be present before `cargo build`):
@@ -240,8 +240,83 @@ Exceptions: `limit` returns a bare `Expr`, and `series` returns a `Series` (with
 | Fan out without aborting | `batch_map` / `integrate_many` / `simplify_many` / `diff_many` |
 | Compact logs | `DerivedResult.to_dict(mode="compact")` |
 | Session provenance | `alkahest.research` claim graphs |
+| Propose and fit a parametric family | `alkahest.ansatz` |
+| Differential-test against another CAS | `alkahest.crosscheck` |
+| Hand off a discrete / mixed int-real subproblem | `alkahest.smt` |
 
 Docs: [Autoresearch / agent loops](https://alkahest-cas.github.io/alkahest/search-plumbing.html).
+
+---
+
+## Modules for autoresearch loops
+
+Three submodules new in 3.8, aimed at unattended search. Each has its own chapter in the
+[documentation site](https://alkahest-cas.github.io/alkahest/).
+
+| Module | What it does |
+|---|---|
+| **`alkahest.ansatz`** | Parametric families with named unknown coefficients — `polynomial`, `rational`, `exponential_polynomial`, `linear_combination`, `quadratic_form` — plus `fit` (solve for the coefficients from a residual, with a verification status), `enumerate_family`, and `certify_nonneg`. This is the "guess the shape, let the CAS pin the constants" loop, done once instead of re-improvised per problem. |
+| **`alkahest.crosscheck`** | Differential testing against an external CAS. `check(op, …)` runs one comparison through a ladder of increasingly semantic rungs (syntactic → normalised → numeric → invariant) and reports `agree` / `diverge` / `incomparable` / `unavailable`; `sweep()` generates a seeded corpus of them; `run_frozen_corpus()` replays the pinned cases. A missing oracle is reported as `unavailable`, never as agreement. |
+| **`alkahest.smt`** | SMT-LIB 2 export (`to_smtlib`) and a bridge to z3 / cvc5 (`solve`, `supported`, `solvers`). A `sat` model is lifted to exact rationals and **substituted back and checked in-process**; an `unsat` is reported as `externally_asserted` and is deliberately not counted as machine-checked. Algebraic-number witnesses are refused (`E-SMT-003`) rather than truncated to floats. |
+
+```python
+import alkahest as ak
+
+pool = ak.ExprPool()
+x = pool.symbol("x")
+
+# Fit an ansatz
+from alkahest.ansatz import polynomial, fit
+A = polynomial(pool, [x], degree=2)
+sol = fit(A, A.expr - (x**2 - pool.integer(3) * x + pool.integer(2)))
+print(sol.expr, sol.status)          # (2 + x^2 + (x * -3))  exactly_verified
+
+# Cross-check a result against SymPy
+print(ak.crosscheck.check("integrate", x**2, x).outcome)     # 'agree'
+
+# Ask whether the SMT route applies before paying for it
+print(ak.smt.supported(pool.gt(x, pool.integer(0))).recommendation)   # 'prefer_in_tree'
+```
+
+---
+
+## Known limits
+
+Alkahest is meant to be run unattended, so the limits are documented as prominently as
+the features. These are properties of the design, not open bugs — write the loop around
+them.
+
+- **`ExprPool` never reclaims.** The expression arena is append-only: no `clear`, no
+  refcount, no GC. The only way to free interned nodes is to **drop the whole pool**, and
+  every `Expr` / `Matrix` / `DerivedResult` holds a strong reference to its pool, so
+  keeping one result keeps everything. Growth is roughly 200 bytes per node and linear
+  forever (~2–3.5 KB per `integrate` call) while per-call **latency stays flat** — so a
+  long-running loop on one pool dies by OOM with no slowdown to warn you first. Use **one
+  pool per problem** and carry `to_dict()` envelopes, not live `Expr` handles.
+  [Details](https://alkahest-cas.github.io/alkahest/budgets.html#exprpool-never-reclaims).
+- **`wall_ms` is cooperative and its granularity is one primitive operation.** A call
+  stops at the first checkpoint after the deadline. Past a certain degree that operation
+  is a FLINT call, which no cooperative mechanism can interrupt — a 300 ms budget on a
+  degree-62 integrand returns after ~2 s. Only an OS-level timeout goes below that.
+- **`run_with_wall_fallback` does not bound wall time for an uncooperative callee.** It
+  joins its worker before raising, so it returns when the callee returns:
+  `run_with_wall_fallback(time.sleep, 3.0, budget=Budget(wall_ms=50))` raises after
+  3000 ms. It exists to turn a silent truncation into a coded error, not to contain an
+  unknown callee. Only `integrate` and `limit` currently honour the cooperative budget and
+  release the GIL, so only they can be cancelled while already running.
+- **`decide` refuses rather than answering** in cases it cannot establish. It covers
+  polynomial bodies in ≤ 2 real variables with a ≤ 2-quantifier prefix, and inside that
+  fragment it raises `E-CAD-001` when the only candidate solutions sit at an irrational
+  boundary point that rational sampling cannot test. Same for linear algebra: an entry or
+  determinant whose vanishing is undecidable gives `E-LINALG-010` / `E-MAT-004` instead of
+  a guessed branch. **A refusal means undecided, not false** — a search loop that records
+  it as a negative result closes a branch it never explored.
+- **`Matrix.eigenvals()` can emit casus-irreducibilis cube roots.** These are correct
+  under Alkahest's real cube-root convention — `eval_expr` refuses them honestly and
+  `interval_eval` returns an unbounded ball — but a principal-branch evaluator (SymPy,
+  NumPy) returns a confident number that is *not* an eigenvalue. Evaluate inside Alkahest
+  before exporting a radical expression to another tool.
+  [Details](https://alkahest-cas.github.io/alkahest/interop.html#the-interop-trap-casus-irreducibilis-cube-roots).
 
 ---
 

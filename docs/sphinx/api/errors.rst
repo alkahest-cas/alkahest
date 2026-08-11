@@ -39,6 +39,20 @@ Base class
           print(e.code)          # E-POLY-001
           print(e.remediation)   # "Use Expr directly, or expand sin(x) as a series first"
 
+Refusals versus verdicts
+------------------------
+
+Some codes are **refusals**: Alkahest could not establish the answer, and the
+only alternative to saying so was a confident wrong one. They mean *undecided*,
+never *false*, and an unattended loop that records one as a negative result
+closes a branch it never explored.
+
+Refusals: ``E-CAD-001``, ``E-LINALG-010``, ``E-MAT-004``, ``E-SOS-002``,
+``E-ANSATZ-003``, ``E-SMT-003``, ``E-INT-001``, ``E-BUDGET-001..003``.
+
+Verdicts: ``E-INT-004`` (proven non-elementary), ``E-MAT-003`` (proven
+singular), ``E-EVAL-009`` (undefined at this point).
+
 Exception subclasses
 --------------------
 
@@ -70,8 +84,70 @@ Exception subclasses
 
 .. exception:: MatrixError
 
-   Code prefix ``E-MAT-*``. Linear algebra errors (shape mismatch,
-   singular matrix, non-invertible).
+   Code prefix ``E-MAT-*``. Matrix errors.
+
+   Common codes:
+
+   - ``E-MAT-001`` — shape mismatch
+   - ``E-MAT-002`` — operation requires a square matrix
+   - ``E-MAT-003`` — matrix is **proven** singular
+   - ``E-MAT-004`` — the determinant's vanishing could not be decided; the
+     inverse is refused rather than computed on an unproven assumption
+
+.. exception:: LinearAlgebraError
+
+   Code prefix ``E-LINALG-*``. Subclass of :exc:`MatrixError`. Elimination,
+   decompositions, and canonical forms.
+
+   Common codes:
+
+   - ``E-LINALG-002`` — nullspace elimination failed
+   - ``E-LINALG-004`` — ``minimal_polynomial`` needs symbol-free entries
+   - ``E-LINALG-009`` — ``rational_canonical_form`` needs rational constants
+   - ``E-LINALG-010`` — an entry's vanishing could be proven neither zero nor
+     non-zero, so ``rank`` / ``rref`` / ``nullspace`` / ``eigenvects`` /
+     ``jordan_form`` refused. **This is "undecided", not "singular".**
+
+.. exception:: EigenError
+
+   Code prefix ``E-EIGEN-*``. Subclass of :exc:`MatrixError`. Eigenvalues,
+   eigenvectors, Jordan form. ``E-EIGEN-005`` is a defective matrix passed to
+   ``diagonalize``. Note that ``eigenvects`` surfaces an undecidable entry as
+   an :exc:`EigenError` carrying code ``E-LINALG-010``: the code names what
+   could not be decided, not the wrapper it arrived in.
+
+.. exception:: CadError
+
+   Code prefix ``E-CAD-*``. Real quantifier elimination (:func:`decide`).
+
+   ``E-CAD-001`` is raised when the sentence is outside the supported fragment
+   (polynomial bodies over ℚ, at most two real variables, quantifier prefix of
+   at most two) **or** when the only candidate solutions lie at an irrational
+   boundary point that rational CAD sampling cannot test exactly. It means
+   *undecided*, never *false* — reporting it as a disproof would turn a refusal
+   into a fabricated theorem.
+
+.. exception:: AnsatzError
+
+   Code prefix ``E-ANSATZ-*``. Ansatz family construction and fitting
+   (``alkahest.ansatz``). ``E-ANSATZ-003`` means no member of *this* family
+   satisfies the constraints — a closed branch for that family, not a proof
+   that no such object exists. ``E-ANSATZ-004`` is a residual genuinely
+   nonlinear in the unknowns, which needs the ``groebner`` route.
+
+.. exception:: CrossCheckError
+
+   Code prefix ``E-XCHECK-*``. Cross-CAS differential testing
+   (``alkahest.crosscheck``). ``E-XCHECK-002`` means no oracle is installed —
+   it exists so that a missing oracle can never be mistaken for agreement.
+
+.. exception:: SmtError
+
+   Code prefix ``E-SMT-*``. SMT-LIB export, solver invocation, and model lift
+   (``alkahest.smt``). ``E-SMT-003`` refuses a model containing an algebraic
+   number that cannot be lifted exactly, rather than truncating it to a float;
+   ``E-SMT-004`` means the returned model failed the in-process substitution
+   check.
 
 .. exception:: OdeError
 

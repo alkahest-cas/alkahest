@@ -1527,25 +1527,37 @@ fn weierstrass_rewrite(expr: ExprId, var: ExprId, t: ExprId, pool: &ExprPool) ->
 /// `1/(2+cos x)`); the nicer closed forms for `∫sin²`, `∫sec²`, `∫sin(2x)cos(x)`
 /// are untouched.  Soundness-gated by [`verify_antiderivative`]: the candidate
 /// is returned only when `d/dx result = integrand`, so a wrong antiderivative is
-/// never produced.  Declines cleanly (`None`) when the integrand is not rational
-/// in trig or the `t`-integral does not close.
+/// never produced.  Declines cleanly (`Ok(None)`) when the integrand is not
+/// rational in trig or the `t`-integral does not close.
+///
+/// # Why this returns a `Result`
+///
+/// The `t`-integral is a *whole nested `integrate` call*, and the half-angle
+/// substitution doubles the degree — `∫ 1/(sin⁹x + sin x + 1) dx` becomes a
+/// degree-18 rational function, which measured **110 s** end to end. That inner
+/// call has cooperative checkpoints of its own, but `.ok()?` threw their verdict
+/// away exactly as `try_u_substitution` did, so the budget could not stop the
+/// single most expensive route in the elementary integrator. A budget error now
+/// propagates; a genuine decline still returns `Ok(None)`.
 fn try_weierstrass_rational_trig(
     expr: ExprId,
     var: ExprId,
     pool: &ExprPool,
     log: &mut DerivationLog,
-) -> Option<ExprId> {
+) -> Result<Option<ExprId>, IntegrationError> {
     // Only fire on genuine rational-trig integrands (a trig-containing sum in a
     // denominator); bare/product/power trig keep their nicer dedicated forms.
     if !has_rational_trig_denominator(expr, var, pool) {
-        return None;
+        return Ok(None);
     }
 
     // Fresh half-angle variable t = tan(x/2).
     let t = pool.symbol("__weierstrass_t", crate::kernel::Domain::Real);
 
     // Rewrite the integrand as a rational function of t.
-    let g_body = weierstrass_rewrite(expr, var, t, pool)?;
+    let Some(g_body) = weierstrass_rewrite(expr, var, t, pool) else {
+        return Ok(None);
+    };
 
     // Jacobian: dx = 2/(1+t²) dt.
     let one = pool.integer(1_i32);
@@ -1560,7 +1572,20 @@ fn try_weierstrass_rational_trig(
     // Integrate the rational function in t through the full elementary pipeline.
     // `g` is rational in `t` with no trig of `t`, so this path cannot re-fire and
     // recursion is bounded.
-    let inner = integrate(g, t, pool).ok()?;
+    // This route ends at the `verify_antiderivative` gate below, which can never
+    // accept a `RootSum` (`simplify` makes it an opaque atom and `eval_interp`
+    // cannot evaluate one).  Tell the rational integrator so, and it declines
+    // before paying for the Lazard–Rioboo–Trager number-field GCD instead of
+    // after — same answer, without the dominant cost of this route.
+    let inner = {
+        let _no_root_sum = super::risch::rational_integrate::RootSumSuppressed::enter();
+        match integrate(g, t, pool) {
+            Ok(inner) => inner,
+            // Not this route declining — the caller wants out.
+            Err(e) if e.is_budget() => return Err(e),
+            Err(_) => return Ok(None),
+        }
+    };
 
     // Back-substitute t = tan(x/2).
     let half = pool.rational(1_i32, 2_i32);
@@ -1572,10 +1597,10 @@ fn try_weierstrass_rational_trig(
 
     // Soundness gate: d/dx(result) must equal the original integrand.
     if !verify_antiderivative(result, expr, var, pool) {
-        return None;
+        return Ok(None);
     }
     log.push(RewriteStep::simple("int_weierstrass_trig", expr, result));
-    Some(result)
+    Ok(Some(result))
 }
 
 /// Small explicit table for `∫ 1/cos²(u) = tan(u)/a`, `∫ 1/sin²(u) = −cot(u)/a`
@@ -1795,6 +1820,15 @@ pub(crate) fn integrate_raw(
     pool: &ExprPool,
     log: &mut DerivationLog,
 ) -> Result<ExprId, IntegrationError> {
+    // Cooperative checkpoint. This is the rule engine's dispatcher: it recurses
+    // per summand (sum rule) and per non-constant factor (constant-multiple
+    // rule), and several of the route helpers it tries below — the Weierstrass
+    // half-angle substitution in particular — run a whole nested `integrate`.
+    // Without a check here the only checkpoints on the elementary route were the
+    // two at depth 0, so `∫ f₁ + … + f₈` of eight hard rational terms could not
+    // be stopped between terms at all.
+    crate::budget::check()?;
+
     // Fast-path: ∫ c * x * exp(x) dx = c * exp(x) * (x - 1)
     if let Some(result) = try_x_times_func(expr, var, pool, log) {
         return Ok(result);
@@ -1846,7 +1880,7 @@ pub(crate) fn integrate_raw(
     // integrands they decline (e.g. 1/(2+cos x), 1/(1+sin x)); the nicer closed
     // forms for ∫sin², ∫sec², ∫sin(2x)cos(x) are preserved.  Soundness-gated in
     // the helper.
-    if let Some(result) = try_weierstrass_rational_trig(expr, var, pool, log) {
+    if let Some(result) = try_weierstrass_rational_trig(expr, var, pool, log)? {
         return Ok(result);
     }
 
@@ -2225,6 +2259,12 @@ fn integrate_inner(
             let final_log = log.merge(simplified.log);
             Ok(DerivedExpr::with_log(simplified.value, final_log))
         }
+        // A budget trip travels *as* a `NotImplemented` (see `IntegrationError`'s
+        // carrier note), so it has to be split off ahead of the decline arm —
+        // otherwise the fallbacks below read "the caller wants out" as "the rule
+        // engine declined" and carry on spending the time the caller just asked
+        // to stop spending.
+        Err(e) if e.is_budget() => Err(e),
         Err(IntegrationError::NotImplemented(msg)) => {
             // Risch Gap 3: rational-function integration via Rothstein–Trager.
             // Tried as a fallback so simple cases keep their existing rules.
@@ -2241,6 +2281,12 @@ fn integrate_inner(
                 let final_log = rlog.merge(simplified.log);
                 return Ok(DerivedExpr::with_log(simplified.value, final_log));
             }
+            // `try_integrate_rational` returns a bare `None` both for "not a
+            // rational function" and for "the budget tripped part-way" — it is
+            // public API and cannot grow a `Result` without a major semver break.
+            // Asking here is what turns the second into an honest `E-BUDGET-*`
+            // instead of letting it fall through as a mathematical decline.
+            crate::budget::check()?;
             // Non-linear substitution (derivative-divides heuristic):
             // ∫ f(g(x))·g'(x) dx = ∫ f(u) du with u = g(x).  Tried only after
             // the rules and the rational path have declined, so anything they
@@ -2248,7 +2294,7 @@ fn integrate_inner(
             // returned only when its derivative matches the integrand, so a
             // wrong antiderivative is never produced (a clean decline falls
             // through to the existing error).
-            if let Some(result) = try_u_substitution(expr, var, pool, depth) {
+            if let Some(result) = try_u_substitution(expr, var, pool, depth)? {
                 let simplified = simplify(result, pool);
                 let mut rlog = DerivationLog::new();
                 rlog.push(RewriteStep::simple(
@@ -2763,10 +2809,28 @@ const U_SUBST_MAX_CANDIDATES: usize = 12;
 /// Every candidate result is **soundness-gated**: it is returned only when its
 /// derivative equals the original integrand (structurally, or to ~1e-7 over
 /// several real sample points).  A failing candidate is skipped; if none passes,
-/// the function declines with `None` and the caller reports its existing error.
-fn try_u_substitution(expr: ExprId, var: ExprId, pool: &ExprPool, depth: u32) -> Option<ExprId> {
+/// the function declines with `Ok(None)` and the caller reports its existing
+/// error.
+///
+/// # Why this returns a `Result` and not just an `Option`
+///
+/// A failing candidate is skipped — but a *budget trip* is not a failing
+/// candidate, it is the caller asking the whole call to stop. This loop used to
+/// throw both away identically (`let Ok(inner) = … else { continue }`), which
+/// silently defeated every cooperative checkpoint below the top level: with
+/// `max_steps=2` — enough to clear the two depth-0 checks — a `request_cancel()`
+/// or an exhausted wall clock was discarded and the search moved on to the next
+/// of up to 12 candidates, each of which could take seconds. `integrate` was
+/// therefore only interruptible in its first instants, whatever the binding did
+/// about the GIL. A budget error now propagates; everything else still skips.
+fn try_u_substitution(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    depth: u32,
+) -> Result<Option<ExprId>, IntegrationError> {
     if depth >= U_SUBST_MAX_DEPTH {
-        return None;
+        return Ok(None);
     }
 
     // Try the integrand as written, and a trig-expanded form (tan → sin·cos⁻¹,
@@ -2778,10 +2842,32 @@ fn try_u_substitution(expr: ExprId, var: ExprId, pool: &ExprPool, depth: u32) ->
         variants.push(expanded);
     }
 
+    // `(g, reduced integrand)` pairs already attempted. The two variants
+    // (`expr` and its trig-expanded form) very often reduce to the *same* inner
+    // integral under the same `g` — `∫ cos x·sin¹²x/(sin¹⁷x + sin x + 1) dx`
+    // reaches `∫ u¹²/(u¹⁷ + u + 1) du` from both — and since `u` is
+    // hash-consed, that is literally the same `ExprId`, integrated twice for the
+    // same verdict (measured: 5.6 s + 5.5 s of an 11.1 s call). The pair is the
+    // key rather than the integrand alone because a different `g` back-
+    // substitutes to a different candidate.
+    let mut attempted: std::collections::HashSet<(ExprId, ExprId)> =
+        std::collections::HashSet::new();
+
     for &form in &variants {
         let candidates = collect_usub_candidates(form, var, pool);
 
         for g in candidates.into_iter().take(U_SUBST_MAX_CANDIDATES) {
+            // Cooperative checkpoint at the granularity that actually costs
+            // something: each surviving candidate runs a full recursive
+            // `integrate`, which can take seconds. Checking only at the
+            // recursion boundary below is too late — once a budget has tripped,
+            // `simplify` stops rewriting, so the candidate's quotient no longer
+            // reduces, `is_free_of` rejects it, and it `continue`s without ever
+            // reaching that boundary. The search would then run out of
+            // candidates and report a *decline* for what is really a
+            // cancellation.
+            crate::budget::check()?;
+
             // g must contain var, must not be var itself, and must not be constant.
             if g == var || is_free_of(g, var, pool) {
                 continue;
@@ -2812,10 +2898,24 @@ fn try_u_substitution(expr: ExprId, var: ExprId, pool: &ExprPool, depth: u32) ->
             if !is_free_of(replaced, var, pool) {
                 continue;
             }
+            if !attempted.insert((g, replaced)) {
+                continue; // identical reduced integral, identical verdict
+            }
 
             // Integrate the reduced integrand in u (full pipeline, deeper level).
-            let Ok(inner) = integrate_inner(replaced, u, pool, depth + 1) else {
-                continue;
+            // As in the Weierstrass route, this candidate ends at the
+            // `verify_antiderivative` gate below, which provably cannot accept a
+            // `RootSum` — so suppress the Lazard–Rioboo–Trager number-field GCD
+            // that would build one rather than paying for an answer that is
+            // certain to be rejected.
+            let inner = {
+                let _no_root_sum = super::risch::rational_integrate::RootSumSuppressed::enter();
+                match integrate_inner(replaced, u, pool, depth + 1) {
+                    Ok(inner) => inner,
+                    // Not this candidate declining — the caller wants out.
+                    Err(e) if e.is_budget() => return Err(e),
+                    Err(_) => continue,
+                }
             };
 
             // Back-substitute u ↦ g.
@@ -2825,12 +2925,12 @@ fn try_u_substitution(expr: ExprId, var: ExprId, pool: &ExprPool, depth: u32) ->
 
             // Soundness gate: d/dx(result) must equal the original integrand.
             if verify_antiderivative(result, expr, var, pool) {
-                return Some(result);
+                return Ok(Some(result));
             }
         }
     }
 
-    None
+    Ok(None)
 }
 
 /// Rewrite trigonometric functions in terms of `sin`/`cos` (e.g. `tan → sin·cos⁻¹`)
@@ -3040,6 +3140,111 @@ mod tests {
 
     fn p() -> ExprPool {
         ExprPool::new()
+    }
+
+    /// `∫ cos(x)·sinⁿ(x)/(sin^d(x) + sin x + 1) dx` — declined by every rule, so
+    /// it goes to the two searches that cost real time: the Weierstrass
+    /// half-angle route and, failing that, derivative-divides u-substitution.
+    fn hard_trig_integrand(pool: &ExprPool, x: ExprId, n: i32, d: i32) -> ExprId {
+        let s = pool.func("sin", vec![x]);
+        let c = pool.func("cos", vec![x]);
+        let den = pool.add(vec![pool.pow(s, pool.integer(d)), s, pool.integer(1_i32)]);
+        pool.mul(vec![
+            c,
+            pool.pow(s, pool.integer(n)),
+            pool.pow(den, pool.integer(-1_i32)),
+        ])
+    }
+
+    /// A budget trip inside the u-substitution search must reach the caller.
+    ///
+    /// `try_u_substitution` used to discard every error from its recursive
+    /// `integrate_inner` call — budget trips included — and move on to the next
+    /// of up to twelve candidates, so the checkpoint at the recursion boundary
+    /// did nothing.
+    ///
+    /// Called directly rather than through `integrate`, because which route
+    /// `integrate` picks for a given integrand is not this test's business: the
+    /// claim is about the search, so the search is what gets called.
+    #[test]
+    fn a_budget_trip_inside_u_substitution_propagates() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let e = hard_trig_integrand(&pool, x, 6, 3);
+
+        let _guard = crate::budget::enter(crate::budget::Budget::new().with_max_steps(0));
+        let err = try_u_substitution(e, x, &pool, 0).expect_err("the budget must stop the search");
+        assert!(err.is_budget(), "expected a budget trip, got {err:?}");
+        assert_eq!(err.budget_code(), Some("E-BUDGET-002"));
+    }
+
+    /// Same claim for the Weierstrass half-angle route, which is where a hard
+    /// rational-trig integrand actually spends its seconds: it runs a whole
+    /// nested `integrate` on a doubled-degree rational function, and used to
+    /// throw that call's budget verdict away with `.ok()?`.
+    #[test]
+    fn a_budget_trip_inside_the_weierstrass_route_propagates() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let e = hard_trig_integrand(&pool, x, 6, 3);
+        let mut log = DerivationLog::new();
+
+        let _guard = crate::budget::enter(crate::budget::Budget::new().with_max_steps(0));
+        let err = try_weierstrass_rational_trig(e, x, &pool, &mut log)
+            .expect_err("the budget must stop the route");
+        assert!(err.is_budget(), "expected a budget trip, got {err:?}");
+    }
+
+    /// End to end: a wall budget on the integrand that used to overshoot it by
+    /// more than 10× must come back as a budget trip, not as a mathematical
+    /// decline.
+    ///
+    /// The failure this pins is subtle and was live until the checkpoints went
+    /// in: every route that gave up part-way reported `NotImplemented`, and
+    /// because `NotImplemented` is *also* the budget carrier, a trip could be
+    /// consumed by the next fallback and the caller would be told the integral
+    /// is unsupported when in fact it was never finished. No wall-clock
+    /// assertion here — only which verdict comes back.
+    ///
+    /// `(n, d)` was raised from `(12, 9)` to `(40, 31)` for 3.8: suppressing the
+    /// `RootSum` the two verify-gated routes cannot use took `(12, 9)` from
+    /// 3.7 s to 12 ms, which is inside the 50 ms budget, so the trip this test
+    /// asserts stopped happening for the good reason. `(40, 31)` still costs
+    /// about 5 s unbudgeted.
+    #[test]
+    fn a_wall_budget_stops_the_weierstrass_route_honestly() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let e = hard_trig_integrand(&pool, x, 40, 31);
+
+        let _guard = crate::budget::enter(
+            crate::budget::Budget::new().with_wall(std::time::Duration::from_millis(50)),
+        );
+        let err = integrate(e, x, &pool).expect_err("the budget must stop this call");
+        assert!(
+            err.is_budget(),
+            "a wall-clock trip must be reported as one, not as a decline; got {err:?}"
+        );
+        assert_eq!(err.budget_code(), Some("E-BUDGET-001"));
+    }
+
+    /// The control: the propagation must not turn a *declining* candidate into
+    /// an error. With no budget active the search still runs to its own verdict.
+    #[test]
+    fn u_substitution_still_declines_without_erroring() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let two_x = pool.mul(vec![pool.integer(2_i32), x]);
+        let inner = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(1_i32)]);
+        // ∫ 2x·cos(x²) dx = sin(x²): u-substitution's bread and butter, and the
+        // path where earlier candidates decline before the right one is found.
+        let e = pool.mul(vec![two_x, pool.func("cos", vec![inner])]);
+        let got = integrate(e, x, &pool).expect("u-substitution must still solve this");
+        let expected = pool.func("sin", vec![inner]);
+        assert_eq!(
+            simplify(got.value, &pool).value,
+            simplify(expected, &pool).value
+        );
     }
 
     #[test]

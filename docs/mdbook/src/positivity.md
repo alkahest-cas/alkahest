@@ -1,11 +1,17 @@
 # Positivity certificates (SOS / Positivstellensatz)
 
-`decide` answers real-algebraic questions **completely**, by CAD, and pays
-doubly-exponential cost for that completeness. Most positivity questions that
-actually arise — is this bound valid, is this Lyapunov candidate non-negative,
-is this inequality true on a box — do not need completeness. They need a
-**certificate**: a short algebraic identity that makes the answer checkable by
-anyone, including a proof assistant.
+`decide` answers real-algebraic questions by CAD, and pays doubly-exponential
+cost for it. Most positivity questions that actually arise — is this bound
+valid, is this Lyapunov candidate non-negative, is this inequality true on a
+box — do not need a decision procedure at all. They need a **certificate**: a
+short algebraic identity that makes the answer checkable by anyone, including a
+proof assistant.
+
+> `decide` is **not** complete in this implementation: on some sentences it
+> refuses with `E-CAD-001` rather than answering. See
+> [`decide` refuses rather than guessing](#decide-refuses-rather-than-guessing)
+> below — this changed in 3.8 and it changed because the alternative was
+> answering wrongly.
 
 ```python
 import alkahest as ak
@@ -102,14 +108,74 @@ search that produced the certificate.
 
 | | `sos_decompose` / `prove_nonneg` | `decide` (CAD) |
 |---|---|---|
-| Answers | Non-negativity, with a certificate | Any real-algebraic sentence |
-| Completeness | No — refuses honestly | Yes |
+| Answers | Non-negativity, with a certificate | Real-algebraic sentences in ≤ 2 variables with a ≤ 2-quantifier prefix |
+| Completeness | No — refuses honestly (`E-SOS-002`) | No — refuses honestly (`E-CAD-001`) |
 | Cost | LP in exact rationals | Doubly exponential |
 | Output | Checkable identity, Lean-exportable | Truth value (+ witness) |
 
 The intended pattern is: try the certificate route first because it is cheap
-and its output is citable; fall back to `decide` on `E-SOS-002` when you need
-the complete answer and can afford it.
+and its output is citable; fall back to `decide` on `E-SOS-002` when you need a
+verdict rather than a certificate and can afford the cost. Note that neither
+route is complete, so "both refused" is a real and expected outcome — it means
+*undecided by these methods*, not *false*.
+
+## `decide` refuses rather than guessing
+
+`decide` implements CAD over a **bounded fragment**: purely polynomial bodies over
+ℚ in one or two real variables, with a quantifier prefix of at most two. Outside
+that fragment it raises `CadError` (`E-CAD-001`). Inside it, there is one further
+refusal, and it is the important one.
+
+The CAD sample set is built from rational points — bracket endpoints, refined
+brackets, midpoints. For a **strict** atom (`<`, `>`) that is complete: strict
+solution sets are open, so if a solution exists, a whole interval of rational
+points solves it too. For a **non-strict** atom (`=`, `≠`, `≤`, `≥`) the solution
+set can be a single boundary point, and if that point is irrational it is never in
+the sample set. Concluding "no sample satisfied it, therefore unsatisfiable" would
+then be a claim about a point that was never tested — and via `∀x. φ ≡ ¬∃x. ¬φ`,
+that fabricated `false` becomes a machine-checked-looking proof of a false
+universal theorem.
+
+So when a boundary root has not been shown rational and the body has a non-strict
+atom, `decide` refuses:
+
+```python
+import alkahest as ak
+
+pool = ak.ExprPool()
+x = pool.symbol("x")
+
+# Rational double root: found exactly, so the verdict is real.
+body = pool.gt((pool.integer(3) * x + pool.integer(2)) ** pool.integer(2), pool.integer(0))
+ak.decide(ak.Forall(x, body))        # (False, None) — false at x = -2/3
+
+# Irrational double root at ±sqrt(2): refuses instead of answering.
+irr = pool.gt((x ** pool.integer(2) - pool.integer(2)) ** pool.integer(2), pool.integer(0))
+try:
+    ak.decide(ak.Forall(x, irr))
+except ak.CadError as e:
+    print(e.code)                     # E-CAD-001
+```
+
+Three consequences worth planning for:
+
+- **`E-CAD-001` is "I did not establish this", not "false".** A search loop must not
+  record it as a closed branch. It is the same class of answer as `E-SOS-002`.
+- **Witnesses are verified.** When `decide` reports `(True, {...})` for an
+  existential, the point is substituted back and checked; if it does not satisfy the
+  sentence the witness is reported as `None` rather than as a certificate that fails.
+  `∃x. 3x − 2 = 0` gives `(True, {'x': '2/3'})`; `∃x. x² = 2` gives `(True, None)`,
+  because no rational witness exists and a midpoint of the isolating interval is
+  not one.
+- **Mixed-alternation sentences refuse more often** than same-flavour ones. `∀x∃y. p > 0`
+  is decided through `¬∃x∀y. p ≤ 0`, and De Morgan turns a strict body into a
+  non-strict one, so it can land in the refusal case even though the original body
+  was strict.
+
+If you need an answer where `decide` refuses, the routes are: a positivity
+certificate (above), `alkahest.smt` with a nonlinear-real solver, or rigorous
+numerics ([validated bounds](./validated-bounds.md)) if a *quantified-over-a-box*
+statement is good enough.
 
 ## Scope of this release
 

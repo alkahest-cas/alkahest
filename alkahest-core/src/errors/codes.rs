@@ -75,6 +75,8 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // elimination can reach an entry it can neither prove zero nor prove non-zero.
     // Refusing is the point: treating "unknown" as "non-zero" is what produced a
     // confident wrong rank (and a false inconsistency signature) before this code existed.
+    // Raised through `EigenError` too (`eigenvects`), which shares the elimination it
+    // refuses in; the class below names where the code is defined, not every route.
     ErrorSpec { code: "E-LINALG-010", class: "LinearAlgebraError", cause: Cause::Unsupported, remediation: Some("rewrite the entry into a form whose vanishing is decidable, or substitute concrete values for the parameters") },
     // E-ODE — OdeError
     ErrorSpec { code: "E-ODE-001", class: "OdeError", cause: Cause::UserInput,   remediation: Some("number of state variables must equal number of RHS expressions") },
@@ -117,8 +119,14 @@ pub const REGISTRY: &[ErrorSpec] = &[
         code: "E-CAD-001",
         class: "CadError",
         cause: Cause::Unsupported,
+        // Two distinct causes now share this code, and the remediation has to
+        // cover both: outside the supported fragment (≤ 2 variables, ≤ 2
+        // quantifiers, polynomial atoms), or inside it but undecidable by the
+        // sample points available — a non-strict atom whose only solutions sit
+        // at an irrational boundary. The second is a *refusal to guess*: before
+        // 3.8 that case silently answered, which produced false universals.
         remediation: Some(
-            "use a purely polynomial constraint in one real variable without nested quantifiers; multivariate QE is incremental",
+            "keep to polynomial atoms in at most two real variables with at most two quantifiers; if the sentence is already in that fragment, its solutions may lie only at an irrational boundary point, which cannot be tested exactly — substitute concrete values, use a strict inequality, or hand it to an SMT solver via alkahest.smt",
         ),
     },
     // E-CUDA — CudaError

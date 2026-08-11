@@ -52,7 +52,7 @@ for step in dr.steps:
 A side condition is a predicate that must hold for a rewrite to be sound:
 
 - `Positive(x)` — `x` must be positive (e.g. for `sqrt(x²) → x`)
-- `NonZero(x)` — `x` must be non-zero (e.g. for `x/x → 1`)
+- `NonZero(x)` — `x` must be non-zero (e.g. for `x/x → 1`). For a *symbolic* `x` the rewrite fires and the condition is recorded; for a **literal** zero base it does not fire at all, since `0 · 0⁻¹` has no value ([literal-zero carve-out](./simplification.md#the-literal-zero-carve-out))
 - `Integer(n)` — `n` must be an integer (e.g. for some power rules)
 - `BranchCut(f, x)` — records that `f` may have a branch cut at `x`
 

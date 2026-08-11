@@ -6,7 +6,7 @@
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
 use crate::matrix::eigen::{
     self, characteristic_polynomial_lambda_minus_m, concatenate_columns, kernel_column_basis,
-    m_minus_lambda_scaled,
+    m_minus_lambda_scaled, KernelFailure, KnownSingular,
 };
 use crate::matrix::normal_form::{smith_form_poly, PolyMatrixQ, RatUniPoly};
 use crate::matrix::{zero_test, Matrix, MatrixError};
@@ -137,8 +137,36 @@ impl crate::errors::AlkahestError for LinearAlgebraError {
 // ---------------------------------------------------------------------------
 
 /// Basis of the nullspace (kernel) of `m`, as column vectors.
+///
+/// # Errors
+///
+/// [`LinearAlgebraError::UnsupportedField`] when elimination reached an entry
+/// whose vanishing it could not decide — the same refusal [`rank`] and [`rref`]
+/// make, carrying the specific `E-LINALG-010` through
+/// [`take_zero_test_refusal`](crate::matrix::take_zero_test_refusal). It used
+/// to be reported as the generic [`LinearAlgebraError::KernelFailed`], which
+/// told a caller nothing about the one remediation that works (substitute
+/// concrete values for the parameters).
 pub fn nullspace_basis(m: &Matrix, pool: &ExprPool) -> Result<Vec<Matrix>, LinearAlgebraError> {
-    kernel_column_basis(m, pool).map_err(|()| LinearAlgebraError::KernelFailed)
+    // An arbitrary matrix: nothing is known about its determinant, so the 2×2
+    // fast path has to establish singularity or refuse. See [`KnownSingular`].
+    kernel_column_basis(m, pool, KnownSingular::No).map_err(|f| kernel_failure_to_error(f, pool))
+}
+
+/// Report a [`KernelFailure`] in this module's error vocabulary.
+///
+/// The whole point of [`KernelFailure`] carrying a payload: the undecided entry
+/// survives the boundary, so the refusal keeps its own `E-LINALG-010` instead of
+/// collapsing into [`LinearAlgebraError::KernelFailed`]'s
+/// "could not compute nullspace basis".
+///
+/// [`LinearAlgebraError::KernelFailed`] is *not* a carrier — it has ~30 call
+/// sites and no way to tell which one a stale thread-local refusal belongs to,
+/// so a genuine kernel failure can never pick up this code by accident.
+fn kernel_failure_to_error(f: KernelFailure, pool: &ExprPool) -> LinearAlgebraError {
+    match f {
+        KernelFailure::Undecidable(e) => inconclusive(pool, e),
+    }
 }
 
 /// Rank of `m`.
@@ -625,9 +653,10 @@ pub fn jordan_form(m: &Matrix, pool: &ExprPool) -> Result<(Matrix, Matrix), Line
             pow = pow
                 .mul(&shifted, pool)
                 .map_err(|_| LinearAlgebraError::KernelFailed)?;
+            // `pow` is a power of `A − λI` for an eigenvalue λ, hence singular.
             ker_dims.push(
-                kernel_column_basis(&pow, pool)
-                    .map_err(|_| LinearAlgebraError::KernelFailed)?
+                kernel_column_basis(&pow, pool, KnownSingular::Yes)
+                    .map_err(|f| kernel_failure_to_error(f, pool))?
                     .len(),
             );
         }
@@ -650,8 +679,8 @@ pub fn jordan_form(m: &Matrix, pool: &ExprPool) -> Result<(Matrix, Matrix), Line
                     .mul(&shifted, pool)
                     .map_err(|_| LinearAlgebraError::KernelFailed)?;
             }
-            let bas =
-                kernel_column_basis(&nk, pool).map_err(|_| LinearAlgebraError::KernelFailed)?;
+            let bas = kernel_column_basis(&nk, pool, KnownSingular::Yes)
+                .map_err(|f| kernel_failure_to_error(f, pool))?;
             let v_top = bas.last().ok_or(LinearAlgebraError::KernelFailed)?.clone();
             let mut chain = vec![v_top.clone()];
             let mut cur = v_top;
@@ -1580,6 +1609,225 @@ mod tests {
         let refusal = crate::matrix::take_zero_test_refusal()
             .expect("an undecided determinant must record its refusal");
         assert_eq!(refusal.code(), "E-MAT-004");
+    }
+
+    /// The 2×2 matrix whose only non-zero entry nothing can decide.
+    ///
+    /// Its nullspace is a real question — it is 1- or 2-dimensional depending
+    /// on whether `mystery(x)` vanishes identically — so answering it at all
+    /// would be a guess.
+    fn undecidable_matrix(p: &ExprPool) -> Matrix {
+        let x = p.symbol("x", Domain::Real);
+        let opaque = p.func("mystery", vec![x]);
+        let zero = p.integer(0_i32);
+        Matrix::new(vec![vec![opaque, zero], vec![zero, zero]]).unwrap()
+    }
+
+    /// `nullspace` used to flatten this into `KernelFailed` / `E-LINALG-002`
+    /// ("could not compute nullspace basis"), which cannot be told apart from a
+    /// matrix that is merely hard.
+    #[test]
+    fn nullspace_reports_the_specific_undecidable_entry() {
+        use crate::errors::AlkahestError;
+        let p = pool();
+        let err = nullspace_basis(&undecidable_matrix(&p), &p)
+            .expect_err("an undecidable pivot must refuse");
+        assert!(
+            matches!(err, LinearAlgebraError::UnsupportedField),
+            "expected the zero-test carrier variant, got {err:?}"
+        );
+        let refusal = crate::matrix::take_zero_test_refusal()
+            .expect("the refusal must be recoverable, or the specific code is lost");
+        assert_eq!(refusal.code(), "E-LINALG-010");
+        assert!(
+            refusal.entry().contains("mystery"),
+            "refusal should name the undecided entry, got {}",
+            refusal.entry()
+        );
+    }
+
+    /// `jordan_form` reaches the same elimination and must report the same
+    /// thing: it is the undecided entry that stops it, not the Jordan search.
+    #[test]
+    fn jordan_form_reports_the_specific_undecidable_entry() {
+        use crate::errors::AlkahestError;
+        let p = pool();
+        let err =
+            jordan_form(&undecidable_matrix(&p), &p).expect_err("an undecidable pivot must refuse");
+        assert!(
+            matches!(err, LinearAlgebraError::UnsupportedField),
+            "expected the zero-test carrier variant, got {err:?}"
+        );
+        let refusal = crate::matrix::take_zero_test_refusal()
+            .expect("the refusal must be recoverable, or the specific code is lost");
+        assert_eq!(refusal.code(), "E-LINALG-010");
+    }
+
+    /// `eigenvects` shares the same kernel routine; the refusal must survive
+    /// that boundary too rather than become the vague `E-EIGEN-006`.
+    #[test]
+    fn eigenvectors_report_the_specific_undecidable_entry() {
+        use crate::errors::AlkahestError;
+        let p = pool();
+        let err = eigen::eigenvectors(&undecidable_matrix(&p), &p)
+            .expect_err("an undecidable pivot must refuse");
+        assert_eq!(err, eigen::EigenError::KernelComputationFailed);
+        let refusal = crate::matrix::take_zero_test_refusal()
+            .expect("the refusal must be recoverable, or the specific code is lost");
+        assert_eq!(refusal.code(), "E-LINALG-010");
+    }
+
+    /// A refusal recorded by `nullspace` must not be picked up by the next
+    /// unrelated error — the reason `KernelFailed` was left alone as a carrier
+    /// (~30 call sites, no way to tell which one a stale refusal belongs to).
+    #[test]
+    fn a_nullspace_refusal_is_not_re_attributed_to_a_later_error() {
+        let p = pool();
+        // Refuse once and leave the refusal on the thread: a Rust caller that
+        // never consults it is exactly how a stale one gets there.
+        assert!(nullspace_basis(&undecidable_matrix(&p), &p).is_err());
+        // Now an error whose cause is *proven*, not undecided: det = 0 exactly.
+        let singular = Matrix::new(vec![
+            vec![p.integer(1_i32), p.integer(2_i32)],
+            vec![p.integer(2_i32), p.integer(4_i32)],
+        ])
+        .unwrap();
+        assert_eq!(
+            matrix_inverse(&singular, &p),
+            Err(MatrixError::SingularMatrix)
+        );
+        assert_eq!(
+            crate::matrix::take_zero_test_refusal(),
+            None,
+            "a proven singularity must not inherit the nullspace refusal's code"
+        );
+    }
+
+    /// `M·v = 0` for every returned basis vector, checked symbolically.
+    fn kernel_vectors_are_annihilated(m: &Matrix, basis: &[Matrix], p: &ExprPool) -> bool {
+        basis.iter().all(|v| {
+            let prod = m.mul(v, p).expect("M·v");
+            (0..prod.rows).all(|r| {
+                zero_test::zero_status(p, simplify(prod.get(r, 0), p).value)
+                    == zero_test::ZeroStatus::Zero
+            })
+        })
+    }
+
+    /// A symbolic determinant that cannot be decided must not be *assumed* zero.
+    ///
+    /// The 2×2 fast path returns the perpendicular of a non-vanishing row, which
+    /// is the kernel only when `det = 0`. Its full-rank gate only fired for a
+    /// literal non-zero constant, so any non-literal determinant fell through
+    /// into the rank-1 answer — "could not prove `det ≠ 0`" read as
+    /// "`det = 0`", the mirror of the `rref` defect that motivated `zero_test`.
+    #[test]
+    fn nullspace_refuses_an_undecidable_determinant() {
+        use crate::errors::AlkahestError;
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        let opaque = p.func("mystery", vec![x]);
+        // det = mystery(x): neither provably zero nor provably non-zero.
+        let m = Matrix::new(vec![
+            vec![opaque, p.integer(1_i32)],
+            vec![p.integer(0_i32), p.integer(1_i32)],
+        ])
+        .unwrap();
+        let err = nullspace_basis(&m, &p)
+            .expect_err("an undecidable determinant must refuse, not return the det=0 answer");
+        assert!(matches!(err, LinearAlgebraError::UnsupportedField));
+        let refusal = crate::matrix::take_zero_test_refusal().expect("recoverable refusal");
+        assert_eq!(refusal.code(), "E-LINALG-010");
+        // And it agrees with `rank`, which already refused this matrix.
+        assert!(rank(&m, &p).is_err());
+        let _ = crate::matrix::take_zero_test_refusal();
+    }
+
+    /// A *decidable* non-zero determinant means a trivial kernel — and `rank`
+    /// and `nullspace` must not contradict each other.
+    ///
+    /// `[[x, 0], [0, 1]]` needs no exotic function: `rank` said 2 while
+    /// `nullspace` returned the 1-dimensional `(0, x)`, for which
+    /// `M·v = (0, x) ≠ 0`. Two public calls, 2 + 1 = 3 for a 2-column matrix.
+    #[test]
+    fn a_generically_invertible_symbolic_matrix_has_a_trivial_kernel() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        for m in [
+            Matrix::new(vec![
+                vec![x, p.integer(0_i32)],
+                vec![p.integer(0_i32), p.integer(1_i32)],
+            ])
+            .unwrap(),
+            Matrix::new(vec![
+                vec![x, p.integer(1_i32)],
+                vec![p.integer(0_i32), p.integer(1_i32)],
+            ])
+            .unwrap(),
+            Matrix::new(vec![vec![x, p.integer(0_i32)], vec![p.integer(0_i32), x]]).unwrap(),
+        ] {
+            let basis = nullspace_basis(&m, &p).expect("a generic determinant is decidable");
+            assert!(
+                basis.is_empty(),
+                "det is generically non-zero, so the kernel is trivial; got {} vector(s)",
+                basis.len()
+            );
+            // rank + nullity = number of columns, across the two public calls.
+            assert_eq!(rank(&m, &p).unwrap() + basis.len(), m.cols);
+        }
+    }
+
+    /// The control that keeps the fix from being "refuse everything": a matrix
+    /// that really is singular must still hand back a kernel, and the vectors
+    /// must actually be annihilated.
+    #[test]
+    fn a_genuinely_singular_symbolic_matrix_still_returns_its_kernel() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        for m in [
+            Matrix::new(vec![vec![x, x], vec![x, x]]).unwrap(),
+            Matrix::new(vec![
+                vec![p.integer(1_i32), p.integer(1_i32)],
+                vec![p.integer(1_i32), p.integer(1_i32)],
+            ])
+            .unwrap(),
+            // Rank 1 with a transcendental relation the zero test can prove:
+            // row 2 = exp(a)·row 1.
+            {
+                let a = p.symbol("a", Domain::Real);
+                let ea = p.func("exp", vec![a]);
+                Matrix::new(vec![
+                    vec![p.integer(1_i32), ea],
+                    vec![ea, p.mul(vec![ea, ea])],
+                ])
+                .unwrap()
+            },
+        ] {
+            let basis = nullspace_basis(&m, &p).expect("a provably singular matrix has a kernel");
+            assert_eq!(basis.len(), 1, "rank-1 2×2 has a 1-dimensional kernel");
+            assert!(
+                kernel_vectors_are_annihilated(&m, &basis, &p),
+                "returned basis vector is not in the kernel"
+            );
+            assert_eq!(rank(&m, &p).unwrap() + basis.len(), m.cols);
+        }
+    }
+
+    /// The control: a nullspace the routine *can* compute must leave nothing
+    /// behind for a later error to inherit.
+    #[test]
+    fn a_computable_nullspace_records_no_refusal() {
+        let p = pool();
+        let a = p.symbol("a", Domain::Real);
+        let exp_a = p.func("exp", vec![a]);
+        // Rank 1: row 2 is exp(a) times row 1, and the zero test can prove it.
+        let m = Matrix::new(vec![
+            vec![p.integer(1_i32), exp_a],
+            vec![exp_a, p.mul(vec![exp_a, exp_a])],
+        ])
+        .unwrap();
+        assert_eq!(nullspace_basis(&m, &p).unwrap().len(), 1);
+        assert_eq!(crate::matrix::take_zero_test_refusal(), None);
     }
 
     #[test]

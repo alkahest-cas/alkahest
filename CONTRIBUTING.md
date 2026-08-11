@@ -28,8 +28,16 @@ cargo test --all
 # Python tests (slow sparse_interp roadmap excluded by default; see pytest.ini)
 pytest
 
-# With sanitizers (catches FFI memory bugs)
-RUSTFLAGS="-Zsanitizer=address" cargo +nightly test --target x86_64-unknown-linux-gnu
+# The silent-error gate (its own Tier-1 CI step; a confident wrong answer fails here)
+pytest tests/silent_errors/
+
+# With sanitizers — same invocation CI uses. `-p alkahest-cas` (the package name;
+# `alkahest-core` is only the directory) and `-Z build-std` are both required: without
+# build-std the doc-test/dep binaries link without the ASan runtime and you get
+# "undefined symbol: __asan_init".
+RUSTFLAGS="-Zsanitizer=address" \
+  cargo +nightly test -p alkahest-cas --lib --tests \
+    --target x86_64-unknown-linux-gnu -Z build-std
 ```
 
 See [`TESTING.md`](TESTING.md) for the full testing strategy (fuzzing, oracle cross-validation, CI tiers).
@@ -75,14 +83,21 @@ Rules live in `alkahest-core/src/simplify/`. Each rule is a `RewriteRule` with a
 ## Pull requests
 
 - Keep PRs focused on one item from `ROADMAP.md` or one issue.
-- Tier-1 CI (< 10 min) must be green before review: unit tests, lightweight proptest/hypothesis, clippy, ruff, ASan on FFI tests.
+- Tier-1 CI (< 10 min) must be green before review: unit tests, lightweight proptest/hypothesis, clippy, ruff, the silent-error gate (`pytest tests/silent_errors/`), and ASan scoped to the `alkahest-cas` package. Note what that last one is *not*: it runs `cargo +nightly test -p alkahest-cas`, i.e. the crate **below** the FFI boundary, with `LSAN_OPTIONS=detect_leaks=0`. No sanitizer runs `pytest`, so a leak or UAF that only appears through PyO3 is not caught by CI — see [`TESTING.md` §3](TESTING.md#3-memory-safety--sanitizers).
 - Semver is enforced automatically — `cargo semver-checks` runs on every PR and will fail if a stable API breaks.
-- New stable API additions go into `alkahest_core::stable` and `alkahest.__all__`; experimental additions go into `alkahest_core::experimental` and `alkahest.experimental`.
+- New stable API additions go into `alkahest_cas::stable` and `alkahest.__all__`; experimental additions go into `alkahest_cas::experimental` and `alkahest.experimental`.
 - Add `[skip ci]` at the end of commit messages if changes cannot possibly effect CI.
 
 ## Rust vs Python
 
-### Rust (`alkahest-core`) gets the code when...
+> **Naming.** The directory is `alkahest-core/`; the Cargo **package** it declares is
+> `alkahest-cas`, and the Rust path an external crate uses is `alkahest_cas::`. Inside
+> this workspace `alkahest-py` renames the dependency (`package = "alkahest-cas"`), which
+> is why its sources say `alkahest_core::` — that alias is local to `alkahest-py` and is
+> not what a downstream user writes. Cargo commands take the *package* name:
+> `cargo test -p alkahest-cas`, never `-p alkahest-core`.
+
+### Rust (`alkahest-cas`, in `alkahest-core/`) gets the code when...
 
 1. It is a mathematical operation, data structure, or invariant that any front-end should see identically — e.g. polynomial normalisation, differentiation, matrix inversion, Gröbner basis.
 2. It is on a hot path. Anything that iterates over `ExprId`s, touches coefficient rings, or performs codegen must be Rust.

@@ -24,28 +24,54 @@ OS-level kill. This module is the Python front door for that:
     (yet) check the Rust cooperative budget on every path — most notably
     :func:`alkahest.simplify`, whose ``DerivedExpr`` return type has no error
     channel to raise through, so it only stops early silently. Runs the call
-    on a worker thread and raises :class:`~alkahest.BudgetExceededError` if it
-    doesn't finish within ``budget.wall_ms``. The worker thread is **not**
-    killed — Python has no safe way to do that — so on a timeout the call may
-    keep running in the background until it hits a cooperative checkpoint or
-    finishes. Prefer relying on the Rust cooperative check (via
-    ``context(budget=...)`` alone) wherever it's already wired; reach for this
-    only when you need a hard deadline on a path it doesn't cover.
+    on a worker thread (with ``budget`` entered *on that thread*, since budget
+    frames are thread-local) and raises
+    :class:`~alkahest.BudgetExceededError` when it doesn't finish within
+    ``budget.wall_ms``.
+
+    **It does not bound wall time for a callee that never reaches a
+    cooperative checkpoint.** The worker thread is not killed — Python has no
+    safe way to do that, and abandoning it is worse (see
+    :func:`run_with_wall_fallback` for the full argument) — so the call
+    returns only once the callee returns. Read its docstring before relying
+    on ``wall_ms`` here.
 
 :func:`request_cancel` / :func:`clear_cancel` / :func:`is_cancelled`
     Thin wrappers over the process-wide cancellation flag
     (``alkahest_core::budget``): an orchestrator thread can request that a
     heavy call running on another thread stop *now*.
+
+Thread-local frames vs. the process-wide flag
+---------------------------------------------
+The two mechanisms have deliberately different scopes, and code that fans work
+out over threads has to keep them straight:
+
+* A **budget frame** is *thread-local* (``alkahest_core::budget::STACK``). A
+  worker thread does **not** inherit the frame its parent entered, so work
+  handed to a :class:`~concurrent.futures.ThreadPoolExecutor` runs unbudgeted
+  unless something re-enters the budget on the worker. :func:`capture_budget`
+  and :class:`BudgetHandoff` are that "something" — used by
+  :func:`alkahest.batch_map` and by :func:`run_with_wall_fallback`.
+* The **cancellation flag** is *process-wide* and sticky, so it needs no
+  propagation at all — every thread already sees it. The corollary is that
+  setting it is never a private act: one candidate's timeout cancels every
+  other in-flight call in the process, which is why nothing here sets it
+  except :func:`run_with_wall_fallback` (which joins its worker and then
+  restores the previous value) and callers who ask for it explicitly.
 """
 
 from __future__ import annotations
 
 import concurrent.futures
 import math
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, TypeVar
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from .exceptions import BudgetExceededError
 
 __all__ = [
@@ -142,6 +168,104 @@ def _budget_exceeded(
     return exc
 
 
+@dataclass(frozen=True)
+class BudgetHandoff:
+    """A :class:`Budget` snapshot that can cross a thread boundary.
+
+    Budget frames live on a **thread-local** stack on the Rust side, and the
+    ``BudgetGuard`` that pops one is ``!Send``, so a budget entered on the
+    calling thread is invisible to any worker it fans work out to. A handoff
+    is the transferable form: plain numbers, captured on the calling thread by
+    :func:`capture_budget` and re-entered on the worker by :meth:`applied`.
+
+    The wall limit is carried as an absolute **deadline**, not as a duration.
+    That is what makes a fanned-out batch bounded the same way a sequential
+    one is: every worker re-enters *the remaining time until the shared
+    deadline*, so N items cannot cost N × ``wall_ms`` between them. Once the
+    deadline has passed, later items enter a zero-length budget and trip at
+    their first cooperative checkpoint — exactly what the sequential path
+    does with the caller's own long-running frame.
+
+    Attributes
+    ----------
+    deadline : float or None
+        A :func:`time.perf_counter` value, or ``None`` when the captured
+        budget set no ``wall_ms``.
+    max_steps : int or None
+        Carried through as-is. Note that the Rust step *counter* lives in the
+        frame and is not readable from Python, so each worker gets its own
+        counter starting at zero: under ``parallel=True`` ``max_steps`` is a
+        per-item limit, not a batch-wide one (the wall limit is batch-wide).
+    seed : int or None
+        Carried through so :func:`budget_seed` reads the same value on a
+        worker as it does on the calling thread.
+    """
+
+    deadline: float | None
+    max_steps: int | None
+    seed: int | None
+
+    def remaining_ms(self) -> float | None:
+        """Milliseconds left until :attr:`deadline`, clamped at ``0.0``.
+
+        ``None`` when the captured budget carried no wall limit.
+        """
+        if self.deadline is None:
+            return None
+        return max(0.0, (self.deadline - time.perf_counter()) * 1000.0)
+
+    @contextmanager
+    def applied(self) -> Iterator[None]:
+        """Enter this budget on the *current* thread for the duration of the block.
+
+        Push and pop are paired in a ``finally``, and both happen on the same
+        thread — the invariant ``pop_budget`` needs (the guard stack it pops
+        from is thread-local).
+        """
+        native = _native()
+        native.push_budget(wall_ms=self.remaining_ms(), max_steps=self.max_steps, seed=self.seed)
+        try:
+            yield
+        finally:
+            native.pop_budget()
+
+
+def capture_budget(budget: Budget | None = None) -> BudgetHandoff | None:
+    """Snapshot a budget for hand-off to a worker thread, on the calling thread.
+
+    Parameters
+    ----------
+    budget : Budget, optional
+        The budget to snapshot. Defaults to the one established by the
+        innermost active ``alkahest.context(budget=...)``.
+
+    Returns
+    -------
+    BudgetHandoff or None
+        ``None`` when no budget is active — the caller should then run the
+        work with no frame at all rather than pushing an empty one, so
+        unbudgeted work stays exactly as unbudgeted as it was.
+
+    Notes
+    -----
+    The deadline is measured from **this call**, not from ``context(...)``
+    entry: the Rust frame does not expose its start instant to Python, so a
+    handoff captured some time into a budgeted block gives the worker the full
+    ``wall_ms`` again rather than what is genuinely left. The overshoot is
+    bounded by one ``wall_ms`` for the whole fan-out (not per item), and it is
+    why :func:`alkahest.batch_map` captures at batch entry rather than
+    per-item.
+    """
+    if budget is None:
+        from ._context import active_budget
+
+        budget = active_budget()
+    if budget is None:
+        return None
+    deadline = None if budget.wall_ms is None else time.perf_counter() + budget.wall_ms / 1000.0
+    return BudgetHandoff(deadline=deadline, max_steps=budget.max_steps, seed=budget.seed)
+
+
 def run_with_wall_fallback(
     fn: Callable[..., _T],
     /,
@@ -149,14 +273,45 @@ def run_with_wall_fallback(
     budget: Budget,
     **kwargs: Any,
 ) -> _T:
-    """Run ``fn(*args, **kwargs)``, enforcing ``budget.wall_ms`` even if ``fn``
-    doesn't check the Rust cooperative budget on every path.
+    """Run ``fn(*args, **kwargs)`` under ``budget``, raising ``E-BUDGET-001``
+    when it overruns ``budget.wall_ms`` — but **without** a hard deadline.
 
-    This is a *supplement* to, not a replacement for, entering the budget via
-    ``context(budget=...)`` — call this from inside such a block (or pass a
-    budget that also carries ``max_steps``/``seed``) so cooperative call sites
-    still see it. See the module docstring for why the worker thread is not
-    forcibly stopped on timeout.
+    Read this before relying on it
+    -------------------------------
+    This turns "the callee quietly gave up early" into a raised, coded error,
+    and it re-enters ``budget`` on the worker thread so cooperative
+    checkpoints actually see it. What it does **not** do is return control at
+    ``wall_ms``: the worker is joined before the exception propagates, so for
+    a callee that never reaches a cooperative checkpoint —
+    ``time.sleep(3)``, a single long FLINT call, third-party code —
+    ``Budget(wall_ms=50)`` raises the right error *after the callee finishes*.
+    Three seconds, in that example. The error message reports how long control
+    was actually withheld, so this is visible in a log rather than inferred.
+
+    Why not just abandon the worker and return at the deadline? Because
+    Python cannot kill a thread, so "return early" means leaking a live
+    thread that still holds the GIL in bursts, still allocates into the pool,
+    and cannot be stopped except through the **process-wide** cancellation
+    flag — which would also abort every unrelated in-flight call in the
+    process, and which nobody could then safely clear (clearing it before the
+    orphan observes it is a no-op; leaving it set poisons every subsequent
+    cooperative call). In a multi-day loop that trades a bounded stall for
+    unbounded orphan-thread accumulation plus collateral cancellation. Joining
+    is the honest lesser evil, so it is what this does.
+
+    What *does* bound wall time
+    ---------------------------
+    - ``context(budget=...)`` for engines that check the cooperative budget —
+      :func:`alkahest.integrate` and :func:`alkahest.limit` today. That is the
+      real mechanism; this function is a reporting shim over it.
+    - An OS-level bound — a subprocess with a timeout, or a process-level
+      watchdog — for anything else. Nothing inside one Python process can
+      preempt a thread.
+
+    So: reach for this to get a *raise* out of a cooperatively-budgeted call
+    that would otherwise return a silently-truncated answer (the documented
+    case is :func:`alkahest.simplify`, whose ``DerivedExpr`` return type has
+    no error channel). Do not reach for it to contain an unknown callee.
 
     Parameters
     ----------
@@ -165,14 +320,17 @@ def run_with_wall_fallback(
     *args, **kwargs
         Forwarded to ``fn``.
     budget : Budget
-        If ``budget.wall_ms`` is ``None``, this is equivalent to
-        ``fn(*args, **kwargs)`` — no thread is spawned.
+        Entered on the worker thread for the duration of the call, so
+        ``max_steps`` and ``seed`` reach cooperative call sites too. If
+        ``budget.wall_ms`` is ``None``, this is equivalent to
+        ``fn(*args, **kwargs)`` — no thread is spawned, and the caller's own
+        ambient budget (if any) applies unchanged.
 
     Raises
     ------
     BudgetExceededError
         (``E-BUDGET-001``) if ``fn`` does not return within ``budget.wall_ms``
-        milliseconds.
+        milliseconds. Raised once ``fn`` has actually finished — see above.
 
     Examples
     --------
@@ -183,22 +341,62 @@ def run_with_wall_fallback(
     if budget.wall_ms is None:
         return fn(*args, **kwargs)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        future = pool.submit(fn, *args, **kwargs)
+    # Budget frames are thread-local: without this the worker ran the callee
+    # with *no* budget active, so the only thing that could stop it was the
+    # process-wide cancel flag below. Entering it on the worker is what makes
+    # a cooperative callee stop on its own, promptly, and without touching
+    # global state.
+    handoff = capture_budget(budget)
+
+    def _run_on_worker() -> _T:
+        if handoff is None:  # pragma: no cover - budget.wall_ms is not None here
+            return fn(*args, **kwargs)
+        with handoff.applied():
+            return fn(*args, **kwargs)
+
+    # The cancellation flag is process-wide and sticky, so a timeout here must
+    # not outlive this call: without the restore below, one expired candidate
+    # in a long search loop leaves `CANCELLED` set and *every* subsequent
+    # cooperative call in the process fails with E-BUDGET-003 forever.  Only
+    # restore a flag this call raised — an orchestrator that had already
+    # requested cancellation keeps its request.
+    cancelled_before = is_cancelled()
+    requested_here = False
+    timed_out: concurrent.futures.TimeoutError | None = None
+    started = time.perf_counter()
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        future = pool.submit(_run_on_worker)
         try:
             return future.result(timeout=budget.wall_ms / 1000.0)
         except concurrent.futures.TimeoutError as exc:
-            # Best-effort: ask any cooperative Rust checkpoint the call has
-            # reached (or will reach) to stop, since we can't stop the
-            # Python thread itself.
+            # Belt and braces alongside the worker's own budget frame: it also
+            # reaches checkpoints the frame cannot (Rayon workers the callee
+            # fanned out to, or a callee that shadowed our frame with a nested
+            # `context(budget=...)` of its own).
             request_cancel()
-            raise _budget_exceeded(
-                f"[E-BUDGET-001] budget exceeded: wall-clock limit {budget.wall_ms} ms elapsed",
-                remediation=(
-                    "raise Budget(wall_ms=...), or accept a heuristic/numeric result for this "
-                    "candidate instead of an exact one"
-                ),
-            ) from exc
+            requested_here = True
+            timed_out = exc
+    finally:
+        # `shutdown(wait=True)` — the join this function is honest about, and
+        # the reason the flag can be restored safely: by the time we get here
+        # the call we cancelled has already observed the flag and stopped.
+        pool.shutdown(wait=True)
+        if requested_here and not cancelled_before:
+            clear_cancel()
+
+    blocked_ms = (time.perf_counter() - started) * 1000.0
+    raise _budget_exceeded(
+        f"[E-BUDGET-001] budget exceeded: wall-clock limit {budget.wall_ms} ms elapsed; "
+        f"run_with_wall_fallback returned control after {blocked_ms:.0f} ms "
+        f"(it joins its worker rather than abandoning the thread)",
+        remediation=(
+            "raise Budget(wall_ms=...), or accept a heuristic/numeric result for "
+            "this candidate instead of an exact one; if the overrun above is large, the "
+            "callee does not reach a cooperative checkpoint and only an OS-level timeout "
+            "can bound it -- see docs/mdbook/src/budgets.md"
+        ),
+    ) from timed_out
 
 
 def request_cancel() -> None:

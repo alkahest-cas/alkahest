@@ -174,7 +174,16 @@ Current stable feature surface.
 
 - Structured exception hierarchy with stable codes (`E-POLY-*`, `E-DIFF-*`, etc.)
 - Every exception: `.code`, `.message`, `.remediation`, `.span`
-- Subsystems: ConversionError, DomainError, DiffError, IntegrationError, MatrixError, OdeError, DaeError, JitError, CudaError, PoolError, SolverError, LimitError, SeriesError, ProductError, DiophantineError, NumberTheoryError, EigenError, HomotopyError, DiffAlgError
+- Subsystems: ConversionError, DomainError, DiffError, IntegrationError, MatrixError, LinearAlgebraError, EigenError, CadError, OdeError, DaeError, JitError, CudaError, PoolError, SolverError, SosError, HolonomicError, ValidatedError, LimitError, SeriesError, SumError, ProductError, PslqError, DiophantineError, NumberTheoryError, HomotopyError, DiffAlgError, BudgetExceededError, AnsatzError, CrossCheckError, SmtError, CertificateUnavailableError
+- **Refusals are distinguished from verdicts.** `E-CAD-001`, `E-LINALG-010`, `E-MAT-004`, `E-SOS-002`, `E-ANSATZ-003`, `E-SMT-003` and `E-BUDGET-*` mean *undecided*, not *false*
+
+## Autoresearch modules
+
+- `alkahest.ansatz` — parametric families (`polynomial`, `rational`, `exponential_polynomial`, `linear_combination`, `quadratic_form`) with `fit`, `enumerate_family`, `certify_nonneg`
+- `alkahest.crosscheck` — differential testing against an external CAS oracle: `check`, `sweep`, `run_frozen_corpus`, `to_sympy`, `register_oracle`; a missing oracle reports `unavailable`, never `agree`
+- `alkahest.smt` — SMT-LIB 2 export (`to_smtlib`) and z3/cvc5 bridge (`solve`, `supported`, `solvers`); `sat` models are checked in-process, `unsat` is reported as `externally_asserted`
+- `alkahest.research` — session claim graphs and provenance
+- `Budget` / `context(budget=…)` / `request_cancel` / `batch_map` / `*_many` — bounded, cancellable, non-aborting fan-out
 
 ## Cross-CAS benchmarks
 
