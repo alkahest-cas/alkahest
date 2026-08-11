@@ -14,7 +14,25 @@ dev venv), so every test below imports it lazily via `pytest.importorskip`.
 import time
 
 import pytest
-from alkahest import ExprPool, compile_expr, numpy_eval, numpy_eval_par
+from alkahest import (
+    ExprPool,
+    compile_expr,
+    jit_is_available,
+    numpy_eval,
+    numpy_eval_par,
+)
+
+#: The absolute-speed check below only means anything when an actual JIT
+#: backend compiled the expression. Without one, `compile_expr` falls back to
+#: the tree-walking interpreter, which costs microseconds per point by design
+#: — a build-configuration fact, not the boxing regression this guards against.
+#: The nightly shards build without `cranelift`, so gating here keeps the check
+#: meaningful in Tier 1a (which does build it) instead of failing every night.
+requires_jit = pytest.mark.skipif(
+    not jit_is_available(),
+    reason="absolute-speed check needs a JIT backend; this build has none "
+    "(the buffer-vs-legacy comparison below still runs and is what detects boxing)",
+)
 
 
 def _quadratic_fn():
@@ -117,6 +135,7 @@ class TestPerfSanity:
     O(N) Python-object-boxing regression, not to enforce a specific speed.
     """
 
+    @requires_jit
     def test_buffer_path_faster_than_or_comparable_to_python_loop(self):
         np = pytest.importorskip("numpy")
         f = _quadratic_fn()

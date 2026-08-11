@@ -56,7 +56,9 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install system dependencies
-        run: sudo apt-get install -y libflint-dev llvm-15-dev llvm-15
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libflint-dev llvm-15-dev llvm-15
 
       - name: Create venv and install Python tooling
         run: |
@@ -268,7 +270,9 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install system dependencies
-        run: sudo apt-get install -y libflint-dev llvm-15-dev llvm-15
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libflint-dev llvm-15-dev llvm-15
 
       - name: Create venv and install Python tooling
         run: |
@@ -284,7 +288,12 @@ jobs:
         env:
           PYTHONUNBUFFERED: "1"
         # Undo pytest.ini addopts (-m "not slow") so -m slow can match the roadmap test.
-        run: pytest tests/test_sparse_interp.py -m slow --timeout=0 -v --override-ini="addopts=-v"
+        #
+        # A real per-test timeout, not `--timeout=0`. With the timeout disabled a
+        # single non-terminating test consumed the whole 6 h job cap and the job
+        # reported nothing at all -- every night. A bounded timeout turns that
+        # into a fast, named failure.
+        run: pytest tests/test_sparse_interp.py -m slow --timeout=900 -v --override-ini="addopts=-v"
 
   # ── Tier 2: Nightly integration (cron on main) ─────────────────────────────
   # Split into parallel shards so each GitHub-hosted job stays under the 6 h cap.
@@ -341,7 +350,9 @@ jobs:
           echo "VIRTUAL_ENV=$PWD/.venv" >> $GITHUB_ENV
 
       - name: Install system dependencies
-        run: sudo apt-get install -y libflint-dev llvm-15-dev llvm-15
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libflint-dev llvm-15-dev llvm-15
 
       - name: Cache Cargo registry
         uses: actions/cache@v5
@@ -380,7 +391,7 @@ jobs:
           # Prefer the real binary from llvm-15-tools; the /usr/bin/llvm-symbolizer-15
           # alternative is missing on some Ubuntu noble images, leaving stacks
           # unsymbolized so lsan.supp (mpfr_*/__gmp*) never matches.
-          LSAN_OPTIONS: suppressions=${{ github.workspace }}/lsan.supp:symbolize=1
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/lsan.supp:symbolize=1:fast_unwind_on_malloc=0
         run: |
           for candidate in /usr/lib/llvm-15/bin/llvm-symbolizer /usr/bin/llvm-symbolizer-15 /usr/bin/llvm-symbolizer; do
             if [ -x "$candidate" ]; then
@@ -393,6 +404,14 @@ jobs:
             exit 1
           fi
           echo "Using LLVM_SYMBOLIZER_PATH=$LLVM_SYMBOLIZER_PATH"
+          # The sanitizer runtime reads the symbolizer from the *options string*
+          # (`external_symbolizer_path=`), not from LLVM_SYMBOLIZER_PATH. Without
+          # it every frame is reported as `alkahest_cas+0x...` with no symbol, so
+          # the name-based entries in lsan.supp (`__gmp_default_allocate`,
+          # `mpfr_*`, `flint_*`) match nothing and the intentional GMP/MPFR caches
+          # are reported as leaks. Append it to whatever LSAN_OPTIONS already holds.
+          export LSAN_OPTIONS="${LSAN_OPTIONS}:external_symbolizer_path=$LLVM_SYMBOLIZER_PATH"
+          echo "LSAN_OPTIONS=$LSAN_OPTIONS"
           RUSTFLAGS="-Zsanitizer=leak" \
           cargo +nightly test --workspace --lib --tests \
             --target x86_64-unknown-linux-gnu \
@@ -400,7 +419,11 @@ jobs:
 
       - name: Install Valgrind
         if: matrix.shard == 'valgrind'
-        run: sudo apt-get install -y valgrind
+        # Without `update` the runner's package index is stale and the fetch
+        # 404s ("Unable to fetch some archives"), killing this shard in ~30 s.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y valgrind
 
       - name: Valgrind — Rust/C FFI boundary
         if: matrix.shard == 'valgrind'
@@ -445,11 +468,17 @@ jobs:
         run: |
           maturin develop --manifest-path alkahest-py/Cargo.toml --features "groebner egraph"
           if [ -f tests/test_oracle.py ]; then
-            pytest tests/test_oracle.py -v
+            timeout 45m pytest tests/test_oracle.py -v
           fi
-          cargo bench --all 2>&1 | tee bench.log || true
-          python benchmarks/criterion_to_report.py --output criterion_report.html || true
-          python benchmarks/cas_comparison.py --competitors --output results.jsonl || true
+          # Each of these is individually bounded. Previously the step as a whole
+          # ran until the 6 h job cap and uploaded nothing: `|| true` swallows a
+          # non-zero exit but does nothing about a command that simply never
+          # returns, and `cargo bench --all` over this workspace does not finish.
+          # `timeout ... || true` keeps the shard best-effort *and* bounded, so
+          # the artifact upload below is always reached.
+          timeout 90m cargo bench --all 2>&1 | tee bench.log || true
+          timeout 10m python benchmarks/criterion_to_report.py --output criterion_report.html || true
+          timeout 60m python benchmarks/cas_comparison.py --competitors --output results.jsonl || true
 
       - name: Upload benchmark artifacts
         if: always() && matrix.shard == 'extras'
