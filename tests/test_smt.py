@@ -139,6 +139,30 @@ def test_golden_powers_expand_into_products(pool):
     assert "(>= (* x x x) 8)" in ak.to_smtlib(pool.ge(x**3, pool.integer(8)))
 
 
+def test_golden_negative_power_over_an_int_base_uses_real_division(pool):
+    """`/` is real division in SMT-LIB; `div` is integer division.
+
+    `n^-1` for an integer `n` means the real reciprocal, so both operands are
+    lifted with `to_real`. Emitting a bare `(/ 1 n)` under a Reals_Ints logic
+    would still be real division, but relying on mixed-sort sugar that only some
+    logics define; emitting `div` would silently change the question to integer
+    division. This pins the coercion so neither can creep in.
+    """
+    n = pool.symbol("n", "integer")
+    text = ak.to_smtlib(pool.pred_eq(n ** pool.integer(-1), pool.rational(1, 2)))
+    assert "(/ (to_real 1) (to_real n))" in text
+    assert "div" not in text
+    # Only one sort appears in the source, but the coercion needs Reals_Ints.
+    assert "(set-logic QF_NIRA)" in text
+
+
+def test_golden_negative_power_over_a_real_base_needs_no_coercion(pool):
+    x = pool.symbol("x")
+    text = ak.to_smtlib(pool.pred_eq(x ** pool.integer(-1), pool.rational(1, 2)))
+    assert "(/ 1 x)" in text
+    assert "to_real" not in text
+
+
 def test_golden_piecewise_becomes_ite(pool):
     x = pool.symbol("x")
     pw = ak.piecewise([(pool.gt(x, pool.integer(0)), pool.integer(1))], pool.integer(-1))

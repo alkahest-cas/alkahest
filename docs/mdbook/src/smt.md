@@ -180,7 +180,7 @@ chosen theory requires — and none where they would not parse.
 | `Rational(-1, 3)` | `(/ (- 1) 3)` |
 | `Add` / `Mul` | `(+ …)` / `(* …)` |
 | `Pow(x, 3)` | `(* x x x)` — SMT-LIB 2 has no portable `^` |
-| `Pow(x, -1)` | `(/ 1 x)` |
+| `Pow(x, -1)` | `(/ 1 x)` for a `Real` base; `(/ (to_real 1) (to_real n))` for an `Int` base |
 | `Piecewise` | `(ite c v …)` |
 | `Lt/Le/Gt/Ge/Eq` | `(< …)` / `(<= …)` / `(> …)` / `(>= …)` / `(= …)` |
 | `Ne` | `(not (= …))` |
@@ -190,6 +190,13 @@ chosen theory requires — and none where they would not parse.
 A refined domain travels with its binder under a quantifier: `∀ x:Positive . P` becomes
 `(forall ((x Real)) (=> (> x 0) P))` and the existential takes `(and …)`. Getting that
 backwards would be a soundness bug, so both are written out explicitly in the emitter.
+
+A negative power over an `Int` base is coerced rather than emitted as `(/ 1 n)`, and the
+reason is semantic rather than cosmetic: in SMT-LIB `/` is **real** division and `div` is
+integer division, so `n^-1` for an integer `n` is the real reciprocal the kernel means, not
+integer division. The emitter therefore lifts both operands with `to_real` — which is also
+why such a formula selects a `Reals_Ints` logic even though only one sort appears in the
+source expression.
 
 ### What is refused
 
