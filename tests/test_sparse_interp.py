@@ -252,22 +252,11 @@ class TestMultivariate:
             assert got_c == ref, f"extra term at exp {exp}: got {got_c}, expected {ref}"
 
     @pytest.mark.slow
-    @pytest.mark.skip(
-        reason="ROADMAP target unreachable with the current Zippel recursion: oracle "
-        "calls multiply per variable instead of summing, so this never terminates. "
-        "Measured on this corpus: 2 vars 70 calls, 3 vars 1,771, 4 vars 139,552, "
-        "5 vars 15,019,900 (75 s) -- a growth factor of 25 -> 79 -> 108 per added "
-        "variable, extrapolating to ~1e17 calls at 10 vars. It previously consumed "
-        "the entire 6 h Tier 1b job cap every night and reported nothing. See "
-        "test_multivariate_stress_4var below for the feasible regression guard, and "
-        "ROADMAP.md for the algorithmic fix this needs."
-    )
     def test_roadmap_10var_15term(self):
         """ROADMAP: 10-variable 15-term polynomial, ≥ 95% success over trials.
 
-        Skipped: see the marker. Kept in the suite (rather than deleted) so the
-        roadmap acceptance criterion stays visible and re-enabling it is the
-        natural way to verify a fix to the interpolation recursion.
+        Reachable since the interpolation became iterative: ~600 oracle calls
+        per seed instead of the ~1e17 the old recursive lift required.
         """
         p = 32749
         terms = [
