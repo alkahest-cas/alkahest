@@ -4,6 +4,10 @@
 //! - [`satisfiable`] decides a quantifier-free fragment: conjunctions of
 //!   comparisons between **one** real symbol and a rational constant, plus `Or`
 //!   / `Not` (via NNF on relations).  Other shapes return [`Satisfiability::Unknown`].
+//! - [`smtlib`] exports a [`Formula`] as SMT-LIB 2 text for an external solver
+//!   (P2-3).  `alkahest.smt` drives the solver process from Python.
+
+pub mod smtlib;
 
 use crate::kernel::expr::PredicateKind;
 use crate::kernel::{ExprData, ExprId, ExprPool};
@@ -626,6 +630,20 @@ pub type BoolLit = i32;
 pub type BoolClause = Vec<BoolLit>;
 
 /// Very small DPLL without clause learning. Returns `Some(assign)` or `None` if UNSAT.
+///
+/// # Not an SMT engine (P2-3 design decision D6)
+///
+/// This solves the *propositional* problem it is handed — a CNF clause list over
+/// opaque propositions — and it is sound and complete for that.  It is
+/// deliberately **not** wired into [`smtlib`] or `alkahest.smt` as a fallback
+/// engine, because the only way to reach it from a [`Formula`] is to abstract
+/// each arithmetic atom to a fresh proposition, and that abstraction is sound in
+/// one direction only: it can confirm `unsat`, but it reports `x > 0 ∧ x < 0` as
+/// *sat* with a meaningless model.  Handing that back as a witness — under a
+/// bridge whose entire premise is that every `sat` model is checked exactly —
+/// would be precisely the silent-error shape the bridge exists to prevent.
+/// `alkahest.smt.solve` therefore refuses with `E-SMT-001` when no external
+/// solver is installed rather than degrading to anything in-tree.
 pub fn dpll_sat(clauses: Vec<BoolClause>, n_vars: u32) -> Option<Vec<bool>> {
     fn is_conflict(c: &BoolClause, a: &[Option<bool>]) -> bool {
         c.iter().all(|&lit| {

@@ -334,11 +334,14 @@ def test_capabilities_advertises_only_statuses_it_can_emit(pool):
     assert verification["statuses"] == [
         "certificate_available",
         "exactly_verified",
+        # `smt.solve` emits this for an external `unsat`; see
+        # tests/test_smt.py::test_unsat_is_externally_asserted_and_never_machine_checked
+        "externally_asserted",
         "numerically_checked",
         "unverified",
     ]
     assert "lean_checked" not in verification["statuses"]
-    assert verification["checkers"] == {"lean4": "external"}
+    assert verification["checkers"] == {"lean4": "external", "smt": "external"}
 
     x = pool.symbol("x")
     for result in (

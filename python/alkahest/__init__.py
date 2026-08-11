@@ -6,10 +6,13 @@ from importlib.metadata import version as _meta_version
 
 from . import (
     _certificates,
+    ansatz,  # P2 item 1 — structured ansatz families for conjecture generation
+    crosscheck,  # P2 item 2 — cross-CAS differential testing
     lattice,
     modular,  # noqa: F401 — V2-1: expose alkahest.modular submodule
     number_theory,
     research,  # session-level claim graph (provenance objects)
+    smt,  # P2 item 3 — SMT/SAT bridge
 )
 from ._batch import (
     BatchItem,
@@ -325,11 +328,13 @@ with _suppress(ImportError):
 # have no stub (CadError, …).
 from .exceptions import (
     AlkahestError,
+    AnsatzError,
     AssumptionError,
     BudgetExceededError,
     CadError,
     CertificateUnavailableError,
     ConversionError,
+    CrossCheckError,
     DaeError,
     DiffError,
     DiophantineError,
@@ -355,6 +360,7 @@ from .exceptions import (
     ResultantError,
     RsolveError,
     SeriesError,
+    SmtError,
     SolverError,
     SosError,
     SparseGcdError,
@@ -362,6 +368,7 @@ from .exceptions import (
     SumError,
     ValidatedError,
 )
+from .smt import to_smtlib
 
 _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     "AlkahestError",
@@ -1619,18 +1626,32 @@ def capabilities() -> dict:
         "features": features,
         "primitives": primitive_rows,
         "verification": {
-            # Exactly the statuses `DerivedResult.verification["status"]` can
-            # report. `lean_checked` used to be advertised here and is not in
-            # this list any more: no code path has ever produced it, because
-            # checking is out of process by construction (`checkers` below).
+            # Exactly the statuses a result object's `verification["status"]`
+            # can report — `DerivedResult` for the kernel operations, and
+            # `smt.SmtResult` for the bridge, which is the only producer of
+            # `externally_asserted`. `lean_checked` used to be advertised here
+            # and is not in this list any more: no code path has ever produced
+            # it, because checking is out of process by construction
+            # (`checkers` below). The rule is unchanged — advertise a status
+            # only if some code path can actually emit it.
             "statuses": [
                 "certificate_available",
                 "exactly_verified",
+                # An external SMT solver reported `unsat` and no proof was
+                # checked. Deliberately NOT in research.MACHINE_CHECKED_STATUSES.
+                "externally_asserted",
                 "numerically_checked",
                 "unverified",
             ],
-            "artifacts": {"lean4_source": True},
-            "checkers": {"lean4": "external"},
+            "artifacts": {"lean4_source": True, "smtlib2_script": True},
+            "checkers": {"lean4": "external", "smt": "external"},
+            # Independent implementations available for cross-checking, and
+            # external SMT solvers found on PATH. Both are reported *negatively*
+            # too: a missing oracle or solver appears as None rather than being
+            # omitted, so an agent can tell "absent" from "not asked about" and
+            # can never read a missing checker as agreement.
+            "oracles": crosscheck.oracles(),
+            "smt_solvers": smt.solvers(),
             # Where certificate emission stops, tabulated from observed
             # behaviour. Full table: alkahest.certificate_coverage().
             "coverage": _certificates.coverage_summary(),
@@ -1701,6 +1722,7 @@ __all__ = [
     # Exceptions (V1-3 — stable diagnostic codes)
     "AlkahestError",
     "And",
+    "AnsatzError",
     # Phase 22
     "ArbBall",
     "AssumptionError",
@@ -1721,6 +1743,7 @@ __all__ = [
     "CompiledTracedFn",
     "Component",
     "ConversionError",
+    "CrossCheckError",
     "DaeError",
     "DaeIndexReduction",
     "DerivedResult",
@@ -1787,6 +1810,7 @@ __all__ = [
     "SensitivitySystem",
     "Series",
     "SeriesError",
+    "SmtError",
     "SolverError",
     # P1 item 8 — positivity certificates (SOS / Positivstellensatz)
     "SosError",
@@ -1814,6 +1838,7 @@ __all__ = [
     "active_domain",
     "active_pool",
     "adjoint_system",
+    "ansatz",
     "apart",
     "arg",
     "asin",
@@ -1847,6 +1872,7 @@ __all__ = [
     "context",
     "cos",
     "cosh",
+    "crosscheck",
     "dae_index_reduce",
     # V3-3 — FOFormula / V2-9 CAD
     "decide",
@@ -1976,6 +2002,7 @@ __all__ = [
     # Math functions (core 5)
     "sin",
     "sinh",
+    "smt",
     # V1-4 / V1-16: Polynomial system solver + Gröbner basis (default since 2.3.1)
     "solve",
     "solve_linear_recurrence_homogeneous",
@@ -1996,6 +2023,7 @@ __all__ = [
     "tanh",
     # V5-1
     "to_lean",
+    "to_smtlib",
     # V5-2
     "to_stablehlo",
     "together",

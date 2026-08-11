@@ -109,12 +109,31 @@ def test_capabilities_describes_verification_boundary():
     assert verification["statuses"] == [
         "certificate_available",
         "exactly_verified",
+        # Emitted only by the SMT bridge, for an external `unsat` that carries
+        # no checked proof. It is advertised because `smt.solve` really does
+        # produce it, and it is deliberately absent from
+        # `research.MACHINE_CHECKED_STATUSES`.
+        "externally_asserted",
         "numerically_checked",
         "unverified",
     ]
-    assert verification["artifacts"] == {"lean4_source": True}
-    assert verification["checkers"] == {"lean4": "external"}
+    assert verification["artifacts"] == {"lean4_source": True, "smtlib2_script": True}
+    assert verification["checkers"] == {"lean4": "external", "smt": "external"}
     assert verification["coverage"]["shape_classes"]["certified"] > 0
+
+    # Independent implementations and solvers are reported *negatively* too: an
+    # absent one appears as a falsy value rather than being omitted, so a caller
+    # can never mistake "not installed" for "agreed" or "checked".
+    assert "sympy" in verification["oracles"]
+    assert {"z3", "cvc5"} <= set(verification["smt_solvers"])
+
+
+def test_externally_asserted_is_advertised_because_it_can_be_emitted():
+    """The list must track reality, not intent — pin it to a real emission."""
+    verification = alkahest.capabilities()["verification"]
+    assert alkahest.smt.EXTERNALLY_ASSERTED in verification["statuses"]
+    # ...and it must never count as machine-checked.
+    assert alkahest.smt.EXTERNALLY_ASSERTED not in alkahest.research.MACHINE_CHECKED_STATUSES
 
 
 def test_derived_result_labels_emitted_lean_source_as_unchecked_evidence():

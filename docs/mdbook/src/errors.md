@@ -17,6 +17,9 @@ AlkahestError (base)
 ├── JitError          (E-JIT-*)    — LLVM/JIT codegen
 ├── CudaError         (E-CUDA-*)   — CUDA kernel launch or driver
 ├── PoolError         (E-POOL-*)   — ExprPool misuse
+├── AnsatzError       (E-ANSATZ-*) — ansatz family construction or fitting, see [Ansatz families](./ansatz.md)
+├── CrossCheckError   (E-XCHECK-*) — cross-CAS check could not be posed, see [Cross-CAS testing](./crosscheck.md)
+├── SmtError          (E-SMT-*)    — SMT-LIB export, solver run, or model lift, see [SMT bridge](./smt.md)
 └── BudgetExceededError (E-BUDGET-*) — budget/cancellation trip, see [Budgets](./budgets.md)
 ```
 
@@ -122,6 +125,18 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-IO-*` | `IoError` *(reserved)* | Checkpoint/serde paths (`PoolPersistError`) |
 | `E-CERT-*` | `CertificateUnavailableError` | A Lean certificate was required but withheld |
 | `E-BUDGET-*` | `BudgetExceededError` | Budget/cancellation trip — see [Budgets, cancellation, and determinism](./budgets.md) |
+| `E-ANSATZ-*` | `AnsatzError` | Ansatz family construction and fitting — see [Ansatz families](./ansatz.md) |
+| `E-XCHECK-*` | `CrossCheckError` | Cross-CAS differential testing — see [Cross-CAS testing](./crosscheck.md) |
+| `E-SMT-*` | `SmtError` | SMT-LIB export, solver invocation, model lift — see [SMT bridge](./smt.md) |
+
+Three of these describe outcomes that are **results rather than malfunctions**, and
+the wording of each is deliberate. `E-ANSATZ-003` means *no member of this family
+satisfies the constraints* — for a search loop that is a closed branch worth
+recording, not a failure. `E-XCHECK-002` means no oracle is installed, and exists
+so that a missing oracle can never be mistaken for agreement. `E-SMT-003` refuses
+a model containing an algebraic number that cannot be lifted exactly, rather than
+truncating it to a float — a float witness recorded as an exact one is precisely
+the silent-error shape these subsystems exist to prevent.
 
 ### `E-CERT-*` — certificate policy
 
