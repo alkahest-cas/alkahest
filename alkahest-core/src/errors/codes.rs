@@ -193,6 +193,17 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-HOLO-002", class: "HolonomicError", cause: Cause::Resource,    remediation: Some("raise max_order and/or max_degree in ZeilbergerOpts; if the term genuinely has no such recurrence within reach, Zeilberger's algorithm does not apply") },
     ErrorSpec { code: "E-HOLO-003", class: "HolonomicError", cause: Cause::Internal,    remediation: Some("internal: report the term as a minimal failing example") },
     ErrorSpec { code: "E-HOLO-004", class: "HolonomicError", cause: Cause::UserInput,   remediation: Some("n and k must be distinct symbols; max_order and max_degree must be positive") },
+    // E-SMT — SmtError (P2 item 3: SMT/SAT bridge).
+    //
+    // Only the code Rust actually raises is registered here.  The rest of the
+    // family lives entirely in `python/alkahest/smt.py`, which drives the solver
+    // process: E-SMT-001 (no solver binary on PATH), E-SMT-003 (a model value —
+    // a `root-obj` algebraic number — that cannot be lifted exactly), and
+    // E-SMT-004 (a model that failed exact back-substitution).  Registering a
+    // code no Rust `AlkahestError` impl returns would fail
+    // `scripts/check_error_codes.py`; `E-BATCH-001` in `python/alkahest/_batch.py`
+    // is the same precedent.
+    ErrorSpec { code: "E-SMT-002", class: "SmtError", cause: Cause::Unsupported, remediation: Some("check alkahest.smt.supported(formula) before exporting; the fragment is polynomial (in)equalities over Int/Real symbols plus boolean structure and quantifiers, and float literals are refused because they are not the exact question they look like") },
 ];
 
 #[cfg(test)]

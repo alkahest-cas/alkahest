@@ -4756,6 +4756,62 @@ fn py_to_lean(py: Python<'_>, arg: &Bound<'_, PyAny>) -> PyResult<String> {
 }
 
 // ---------------------------------------------------------------------------
+// P2-3 — SMT-LIB 2 exporter (the export half of the SMT/SAT bridge)
+// ---------------------------------------------------------------------------
+
+fn smtlib_error_to_py(e: alkahest_core::logic::smtlib::SmtLibError) -> PyErr {
+    Python::with_gil(|py| {
+        // Deliberately *not* a dedicated PyO3 exception class: `SmtError` is a
+        // pure-Python class in `alkahest/exceptions.py` and is not in
+        // `_NATIVE_EXCEPTION_OVERLAY`, so a native `PySmtError` would be a
+        // *different* class from the `ak.SmtError` callers write `except` for.
+        // `alkahest/smt.py` re-raises this as `SmtError`, preserving `.code`.
+        let exc_type = py.get_type_bound::<PyAlkahestError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+/// `alkahest.to_smtlib(formula, logic="auto", *, check_sat=True, get_model=True) -> str`
+///
+/// Export a predicate (or quantified) :class:`Expr` as a complete, runnable
+/// SMT-LIB 2 script — the SMT counterpart of :func:`alkahest.to_lean`.
+///
+/// ``logic`` is ``"auto"`` (infer the weakest logic that fits) or one of
+/// ``QF_LIA``, ``QF_NIA``, ``QF_LRA``, ``QF_NRA``, ``QF_LIRA``, ``QF_NIRA``,
+/// their quantified counterparts, or ``ALL``.  A named logic that is too weak
+/// for the formula is an error rather than a downgrade.
+///
+/// Raises with the stable code ``E-SMT-002`` when the formula is outside the
+/// exportable fragment; :func:`alkahest.smt.supported` is the plan-ahead
+/// predicate that answers the same question without raising.
+///
+/// Example::
+///
+///     f = alkahest.And(pool.gt(x * x, pool.integer(2)), pool.lt(x, pool.integer(0)))
+///     print(alkahest.to_smtlib(f))
+#[pyfunction]
+#[pyo3(
+    name = "to_smtlib",
+    signature = (formula, logic = "auto", *, check_sat = true, get_model = true)
+)]
+fn py_to_smtlib(
+    py: Python<'_>,
+    formula: PyRef<PyExpr>,
+    logic: &str,
+    check_sat: bool,
+    get_model: bool,
+) -> PyResult<String> {
+    let pool = formula.pool.borrow(py);
+    let opts = alkahest_core::logic::smtlib::SmtLibOptions {
+        logic: if logic == "auto" { None } else { Some(logic) },
+        check_sat,
+        get_model,
+    };
+    alkahest_core::logic::smtlib::to_smtlib(formula.id, &pool.inner, &opts)
+        .map_err(smtlib_error_to_py)
+}
+
+// ---------------------------------------------------------------------------
 // subs — substitution primitive (R-6)
 // ---------------------------------------------------------------------------
 
@@ -10670,6 +10726,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_routh_hurwitz, m)?)?;
     // V5-1 — Lean 4 certificate exporter
     m.add_function(wrap_pyfunction!(py_to_lean, m)?)?;
+    m.add_function(wrap_pyfunction!(py_to_smtlib, m)?)?;
     // V5-2 — StableHLO/XLA bridge
     m.add_function(wrap_pyfunction!(py_to_stablehlo, m)?)?;
     // V5-3 — NVPTX JIT backend

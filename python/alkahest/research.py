@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import inspect
 import json
 import threading
 from contextlib import ExitStack, contextmanager, suppress
@@ -101,6 +102,9 @@ STATUS_BADGES: dict[str, str] = {
     "exactly_verified": "the kernel proved the symbolic residual is zero",
     "certificate_available": ("Lean 4 source was generated but has NOT been machine-checked"),
     "numerically_checked": "floating-point samples only; evidence, not a proof",
+    "externally_asserted": (
+        "an external solver asserted this; no proof was checked and none was produced"
+    ),
     "unverified": "recorded without verification evidence",
     "refuted": "re-verification contradicted this claim",
 }
@@ -110,6 +114,7 @@ _STATUS_MARK: dict[str, str] = {
     "exactly_verified": "[VERIFIED]",
     "certificate_available": "[CERT ONLY, UNCHECKED]",
     "numerically_checked": "[NUMERIC ONLY]",
+    "externally_asserted": "[EXTERNAL, UNCHECKED]",
     "unverified": "[UNVERIFIED]",
     "refuted": "[REFUTED]",
 }
@@ -603,6 +608,88 @@ class Claim:
             tags=tuple(data.get("tags", ()) or ()),
             notes=data.get("notes"),
         )
+
+
+def _crosscheck_record(cc: Any) -> dict[str, Any] | None:
+    """Flatten a :class:`alkahest.crosscheck.CrossCheck` for storage in a claim.
+
+    Returns ``None`` for ``None`` so callers can pass the value through
+    unconditionally.  Everything stored is a plain JSON-serialisable scalar, and
+    the ``outcome`` key is always present — including for an *unavailable*
+    oracle, which must stay distinguishable from agreement.
+    """
+    if cc is None:
+        return None
+    outcome = str(getattr(cc, "outcome", "incomparable"))
+    record: dict[str, Any] = {
+        "outcome": outcome,
+        "conclusive": bool(getattr(cc, "conclusive", False)),
+        "checked": bool(getattr(cc, "checked", False)),
+    }
+    for attr in ("rung", "rung_name", "reason", "oracle", "oracle_version", "witness"):
+        value = getattr(cc, attr, None)
+        if value is not None:
+            record[attr] = value if isinstance(value, (int, float, bool)) else str(value)
+    divergence = getattr(cc, "divergence", None)
+    if divergence is not None:
+        record["divergence"] = str(divergence)
+    return record
+
+
+def _run_crosscheck(name: str, args: tuple, kwargs: dict) -> Any:
+    """Best-effort cross-check for a captured operation; never raises.
+
+    A cross-check is an optional extra signal, so a failure to *pose* one must
+    not take down the recording of an otherwise good claim.  Any failure is
+    turned into an ``incomparable`` record carrying the reason, which is the
+    honest reading: we learned nothing, as opposed to we agree.
+
+    The whole call runs under :func:`_suppress_capture`.  A cross-check drives
+    ``integrate``/``diff``/``simplify`` to evaluate its comparison rungs, and
+    those are captured operations: without the guard each recorded claim would
+    record the claims generated while checking it, which recurses without
+    terminating.
+    """
+    try:
+        from . import crosscheck as _crosscheck
+    except Exception:  # pragma: no cover - crosscheck is always importable
+        return None
+    if name not in getattr(_crosscheck, "OPERATIONS", ()):
+        return None
+
+    # `check()` has keyword-only parameters of its own (`oracle`, `points`,
+    # `pool`, ...). Forwarding the captured operation's kwargs blindly would let
+    # a same-named argument be swallowed as a cross-check *setting*, so the
+    # comparison would silently run against a different call than the one being
+    # recorded — a wrong "agree" rather than an honest "we could not check
+    # this". Refuse instead. Introspected rather than hard-coded so the guard
+    # cannot drift out of step with `check`'s signature.
+    reserved = {
+        p.name
+        for p in inspect.signature(_crosscheck.check).parameters.values()
+        if p.kind is inspect.Parameter.KEYWORD_ONLY
+    }
+    clashing = sorted(reserved & set(kwargs))
+    if clashing:
+        return _StubCrossCheck(
+            "operation arguments collide with cross-check parameters: " + ", ".join(clashing)
+        )
+
+    with _suppress_capture():
+        try:
+            return _crosscheck.check(name, *args, **kwargs)
+        except Exception as exc:
+            return _StubCrossCheck(f"{type(exc).__name__}: {exc}")
+
+
+@dataclass(frozen=True)
+class _StubCrossCheck:
+    """Stand-in recorded when a cross-check could not even be posed."""
+
+    reason: str
+    outcome: str = "incomparable"
+    conclusive: bool = False
+    checked: bool = False
 
 
 def _jsonable(obj: Any) -> Any:
@@ -1419,12 +1506,21 @@ class ResearchSession:
         normalize: bool = True,
         graph: ClaimGraph | None = None,
         metadata: Mapping[str, Any] | None = None,
+        crosscheck: bool = False,
     ) -> None:
         self.graph = graph if graph is not None else ClaimGraph(title=title)
         self.pool = pool
         self.assumptions = assumptions
         self.capture = bool(capture)
         self.normalize = bool(normalize)
+        #: Run an independent-implementation cross-check as each captured
+        #: operation is recorded (P2-2 design decision D8).  Deliberately a
+        #: *recording-time* policy rather than an ``ak.context`` flag: an oracle
+        #: round-trip costs orders of magnitude more than the kernel call, so it
+        #: belongs at stage-5 frequency (hundreds of claims) and not at stage-2
+        #: frequency (millions of candidates).  It never changes a claim's
+        #: status — see :meth:`record`.
+        self.crosscheck = bool(crosscheck)
         #: Exceptions raised *inside* the capture hook, recorded rather than
         #: swallowed so an incomplete graph is never silently incomplete.
         self.capture_errors: list[str] = []
@@ -1493,6 +1589,7 @@ class ResearchSession:
         notes: str | None = None,
         check: Mapping[str, Any] | None = None,
         arguments: Sequence[str] | None = None,
+        crosscheck: Any = None,
     ) -> Claim:
         """Record a :class:`~alkahest.DerivedResult` (or bare ``Expr``) as a claim.
 
@@ -1526,6 +1623,17 @@ class ResearchSession:
             A re-verification recipe (see :meth:`ClaimGraph.verify`).
         arguments : sequence of str, optional
             Rendered arguments stored in the claim's provenance.
+        crosscheck : CrossCheck, optional
+            An already-computed :class:`alkahest.crosscheck.CrossCheck`,
+            attached to the claim under ``verification["crosscheck"]`` and
+            surfaced as a ``crosscheck:<outcome>`` tag.
+
+            It is **evidence, never a verdict**.  Agreement with an independent
+            implementation does not upgrade the status, and a divergence does
+            not set ``"refuted"`` either: a divergence names two suspects, not
+            one (P2-2 design decision D5), so which side is wrong is for a human
+            or a later check to adjudicate.  The recording layer's honesty
+            invariant — it may never raise confidence — is preserved exactly.
 
         Returns
         -------
@@ -1539,6 +1647,13 @@ class ResearchSession:
             verification = dict(result.verification or {})
             certificate = result.certificate
             derivation = tuple(dict(step) for step in (result.steps or ()))
+        cc_record = _crosscheck_record(crosscheck)
+        extra_tags: tuple[str, ...] = ()
+        if cc_record is not None:
+            verification = dict(verification)
+            verification["crosscheck"] = cc_record
+            extra_tags = (f"crosscheck:{cc_record['outcome']}",)
+
         status = str(verification.get("status", "unverified"))
         evidence = str(verification.get("evidence", "none"))
         certificate_format = verification.get("artifact_format")
@@ -1579,7 +1694,7 @@ class ResearchSession:
             provenance=self._provenance(resolved_method, arguments),
             recorded_at=_utcnow(),
             label=label,
-            tags=tuple(tags),
+            tags=tuple(dict.fromkeys((*tags, *extra_tags))),
             notes=notes,
         )
         stored = self.graph.add(claim)
@@ -1711,6 +1826,7 @@ class ResearchSession:
             sources=sources,
             arguments=rendered,
             check=_infer_check(name, sources, result),
+            crosscheck=_run_crosscheck(name, args, kwargs) if self.crosscheck else None,
         )
 
     def _hypotheses(self) -> tuple[str, ...]:
@@ -1824,6 +1940,7 @@ def session(
     normalize: bool = True,
     graph: ClaimGraph | None = None,
     metadata: Mapping[str, Any] | None = None,
+    crosscheck: bool = False,
 ) -> ResearchSession:
     """Open a research session (see :class:`ResearchSession`).
 
@@ -1843,6 +1960,7 @@ def session(
         normalize=normalize,
         graph=graph,
         metadata=metadata,
+        crosscheck=crosscheck,
     )
 
 

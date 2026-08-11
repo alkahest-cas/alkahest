@@ -45,6 +45,9 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-BATCH-001                 (Python-only; alkahest._batch fallback for a
                                  batch_map/batch_map_iter item whose exception carried no
                                  .code of its own — see docs/mdbook/src/batch.md)
+    E-ANSATZ-001 … E-ANSATZ-004 AnsatzError (Python-only; P2 item 1 — conjecture generation)
+    E-XCHECK-001 … E-XCHECK-004 CrossCheckError (Python-only; P2 item 2 — differential testing)
+    E-SMT-001 … E-SMT-004       SmtError (P2 item 3 — SMT/SAT bridge)
 """
 
 from __future__ import annotations
@@ -564,6 +567,94 @@ class BudgetExceededError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code="E-BUDGET-001", remediation=remediation, span=span)
+
+
+class AnsatzError(AlkahestError):
+    """An ansatz family could not be built, or could not be fitted.
+
+    Raised by :mod:`alkahest.ansatz` (P2 item 1 — conjecture generation).
+    ``.code`` distinguishes the causes, and note that only the first two are
+    "you called it wrong"; the others are *results*:
+
+    - ``E-ANSATZ-001`` — a coefficient symbol name collides with a symbol
+      already interned in the pool, so the fit would silently solve for the
+      wrong thing.
+    - ``E-ANSATZ-002`` — the requested family exceeds ``max_terms``.
+      ``C(n+d, d)`` grows fast; refusing beats materialising it.
+    - ``E-ANSATZ-003`` — the constraints are inconsistent: **no member of this
+      family satisfies them**. For a search loop this is a positive result — a
+      closed branch — not a malfunction.
+    - ``E-ANSATZ-004`` — the residual is nonlinear in the unknowns and the
+      escalation path (:func:`alkahest.solve`) needs a ``groebner`` build,
+      which this one is not.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "E-ANSATZ-001",
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code=code, remediation=remediation, span=span)
+
+
+class CrossCheckError(AlkahestError):
+    """A cross-CAS differential check could not be *posed*, so it was refused.
+
+    Raised by :mod:`alkahest.crosscheck` (P2 item 2). A refusal here always
+    beats a guess: a divergence is only informative if both systems were asked
+    the same question, and a best-effort translation manufactures false
+    divergences, which are worse than no signal at all.
+
+    - ``E-XCHECK-001`` — the expression contains a node (or an active
+      assumption) with no faithful mapping into the oracle's language.
+    - ``E-XCHECK-002`` — no oracle is installed. Never reported as agreement;
+      see :func:`alkahest.crosscheck.oracles`.
+    - ``E-XCHECK-003`` — the operation has no defined comparison rung. A caller
+      error, raised before any oracle is consulted.
+    - ``E-XCHECK-004`` — the oracle itself declined: it has no implementation
+      for the operation, raised, or returned an unevaluated form. An
+      environmental outcome rather than a caller error, and **not** a
+      divergence — comparing against a refusal would fabricate one.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "E-XCHECK-001",
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code=code, remediation=remediation, span=span)
+
+
+class SmtError(AlkahestError):
+    """An SMT-LIB export, solver invocation, or model lift failed.
+
+    Raised by :mod:`alkahest.smt` (P2 item 3).
+
+    - ``E-SMT-001`` — no solver binary was found. Reported as a refusal rather
+      than a silent fallback to the weak interval :func:`alkahest.satisfiable`,
+      which would answer ``Unknown`` and look like the solver had run.
+    - ``E-SMT-002`` — the formula is outside the supported SMT-LIB fragment;
+      check :func:`alkahest.smt.supported` first.
+    - ``E-SMT-003`` — the model contains a value (an ``root-obj`` algebraic
+      number) that cannot yet be lifted **exactly**. Refused rather than
+      truncated to a float: a float witness recorded as an exact one is the
+      silent-error shape this whole subsystem exists to avoid.
+    - ``E-SMT-004`` — a returned model failed back-substitution. The bridge or
+      the solver is broken; this must never be downgraded to a warning.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        code: str = "E-SMT-001",
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code=code, remediation=remediation, span=span)
 
 
 class ParseError(AlkahestError):
