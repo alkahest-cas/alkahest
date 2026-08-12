@@ -1,5 +1,6 @@
 //! Truncated Taylor / Laurent series with symbolic [`crate::kernel::ExprData::BigO`] remainder (V2-15).
 
+use crate::budget::BudgetError;
 use crate::diff::{diff, DiffError};
 use crate::flint::FlintPoly;
 use crate::kernel::{subs, Domain, ExprData, ExprId, ExprPool};
@@ -27,7 +28,13 @@ impl Series {
 pub enum SeriesError {
     /// Differentiation failed while forming Taylor coefficients.
     Diff(DiffError),
-    /// `order` must be positive.
+    /// The requested `order` is not one this call can expand to: it was `0`,
+    /// or the expansion ran past the work ceiling / an active
+    /// [`crate::budget`] before reaching it.
+    ///
+    /// The second reading is the carrier for a *refusal* — see
+    /// [`take_series_refusal`] for which of the two happened, and
+    /// [`SeriesRefusal`] for why the refusal cannot be its own variant.
     InvalidOrder,
 }
 
@@ -35,7 +42,11 @@ impl fmt::Display for SeriesError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SeriesError::Diff(e) => write!(f, "{e}"),
-            SeriesError::InvalidOrder => write!(f, "series order must be >= 1"),
+            SeriesError::InvalidOrder => write!(
+                f,
+                "series order must be >= 1 and reachable: the expansion is not \
+                 available at the order requested"
+            ),
         }
     }
 }
@@ -62,7 +73,11 @@ impl crate::errors::AlkahestError for SeriesError {
             SeriesError::Diff(_) => {
                 Some("ensure all functions are registered primitives with differentiation rules")
             }
-            SeriesError::InvalidOrder => Some("pass order >= 1 (exclusive truncation degree in x)"),
+            SeriesError::InvalidOrder => Some(
+                "pass order >= 1 (exclusive truncation degree in x); if the order was \
+                 already positive the expansion exceeded the work ceiling — ask for a \
+                 lower order, or simplify the expression so its derivatives close",
+            ),
         }
     }
 }
@@ -88,6 +103,20 @@ impl From<DiffError> for SeriesError {
 /// include powers `h^e` with `valuation ≤ e < order` when `valuation ≥ 0`, and
 /// when `valuation < 0` include the polar tail using `order` Taylor coefficients
 /// of the analytic factor `h^{-valuation} · f`.
+///
+/// # Termination
+///
+/// The coefficient loop is bounded: it honours [`crate::budget`] (wall clock,
+/// steps, [`crate::budget::request_cancel`]) and, with no budget active, an
+/// internal work ceiling ([`MAX_SERIES_POOL_GROWTH`]). Coefficients are formed
+/// by repeated differentiation *without* re-simplifying, so an expression whose
+/// derivatives do not close — `√(t⁻² + t⁻¹)` is the standard example — grows by
+/// a constant factor per coefficient and order 32 is not slow but unreachable.
+///
+/// Running out of room is reported as **`Err(SeriesError::InvalidOrder)` with a
+/// [`take_series_refusal`] pending**, never as a shorter series: a truncated
+/// expansion still labelled `O(hᵒʳᵈᵉʳ)` would be a false statement about the
+/// remainder, and that is a lie where a refusal is merely a limitation.
 pub fn series(
     expr: ExprId,
     var: ExprId,
@@ -95,11 +124,22 @@ pub fn series(
     order: u32,
     pool: &ExprPool,
 ) -> Result<Series, SeriesError> {
+    let frame = enter_series_frame();
+    // The ceiling is what makes the loop stoppable at all: `local_expansion` is
+    // one uninterruptible call from here, so there is nowhere else to put a
+    // checkpoint. Unlike `limit`'s, this one refuses instead of settling for
+    // the prefix it managed to compute.
+    let _ceiling = enter_coeff_ceiling(pool.len().saturating_add(MAX_SERIES_POOL_GROWTH));
+
     let LocalExpansion {
         valuation,
         coeffs,
         h_expr,
     } = local_expansion(expr, var, point, order, pool)?;
+
+    if frame.refusal_pending() {
+        return Err(SeriesError::InvalidOrder);
+    }
 
     Ok(assemble_series(&coeffs, valuation, h_expr, order, pool))
 }
@@ -244,10 +284,158 @@ fn unipoly_strip_low(p: &UniPoly, k: u32) -> UniPoly {
 // Coefficient-loop ceiling
 // ---------------------------------------------------------------------------
 
+/// How many *new* expression nodes one top-level [`series`] call may intern
+/// before it refuses.
+///
+/// Measured rather than guessed, with an order of magnitude of headroom: the
+/// heaviest expansions in the Rust and Python suites intern a few thousand nodes
+/// (`sin` at order 24: 125; `√(1+x)` at order 24: 677; `tan` at order 16: 1 564;
+/// `log(1+x)/(1−x)` at order 20: 4 579), while `√(t⁻² + t⁻¹)` at order 32 doubles
+/// per coefficient and reaches this ceiling in a fraction of a second.
+///
+/// Counting interned nodes rather than iterations catches the pathology directly
+/// (it is *size* that explodes, not the iteration count), costs `O(1)` per check
+/// — [`ExprPool::len`] is a lock-free counter — and is monotone, so no path can
+/// evade it.
+pub const MAX_SERIES_POOL_GROWTH: usize = 50_000;
+
 thread_local! {
     /// Absolute `pool.len()` ceiling for [`taylor_coefficients`], or `None` for
     /// "compute every coefficient that was asked for".
     static COEFF_POOL_CEILING: Cell<Option<usize>> = const { Cell::new(None) };
+    /// `true` while a [`series`] call is on the stack, which is the only
+    /// context in which a truncated coefficient loop is a refusal rather than
+    /// the requested behaviour.
+    static IN_SERIES: Cell<bool> = const { Cell::new(false) };
+    /// The refusal behind the [`SeriesError::InvalidOrder`] the current thread
+    /// is about to return, if that error is a work-ceiling trip rather than a
+    /// zero `order`.
+    static LAST_REFUSAL: Cell<Option<SeriesRefusal>> = const { Cell::new(None) };
+}
+
+/// A [`series`] call that could not reach the order it was asked for.
+///
+/// # Why this is not an error variant
+///
+/// [`SeriesError`] is a public *exhaustive* enum, so growing it a `Truncated`
+/// variant is a major semver break — and so is marking it `#[non_exhaustive]`
+/// to allow it later. A correctness fix inside a patch release cannot spend a
+/// major version, so the refusal travels out of band: [`series`] returns
+/// [`SeriesError::InvalidOrder`], whose reworded text states exactly the
+/// disjunction that is known ("the order is not one this call can expand to"),
+/// and the real cause is recorded here for [`take_series_refusal`] to hand to
+/// the bindings, which raise its own `E-SERIES-003` (or the `E-BUDGET-*` of the
+/// budget that tripped).
+///
+/// This is the pattern [`crate::calculus::limits::last_budget_trip`] uses for
+/// budget trips inside `LimitError::DepthExceeded`, and
+/// [`crate::matrix::take_zero_test_refusal`] for undecided zero tests inside
+/// `MatrixError::SingularMatrix`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SeriesRefusal {
+    requested: u32,
+    computed: u32,
+    budget: Option<BudgetError>,
+}
+
+impl SeriesRefusal {
+    /// Number of Taylor coefficients that were asked for.
+    pub fn requested_coefficients(&self) -> u32 {
+        self.requested
+    }
+
+    /// Number of Taylor coefficients that were formed before the loop stopped.
+    ///
+    /// Deliberately *not* returned as a series: `assemble_series` would label it
+    /// `O(h^requested)`, which is a claim about a remainder nobody bounded.
+    pub fn computed_coefficients(&self) -> u32 {
+        self.computed
+    }
+
+    /// The [`BudgetError`] that stopped this expansion, or `None` when it was
+    /// the internal work ceiling.
+    pub fn budget(&self) -> Option<BudgetError> {
+        self.budget
+    }
+}
+
+impl fmt::Display for SeriesRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "series expansion stopped after {} of {} Taylor coefficients ({}); \
+             refusing to return a shorter series labelled with the requested \
+             order, which would understate the O(.) remainder",
+            self.computed,
+            self.requested,
+            match self.budget {
+                Some(b) => format!("budget: {b}"),
+                None => "internal work ceiling".to_string(),
+            }
+        )
+    }
+}
+
+impl std::error::Error for SeriesRefusal {}
+
+impl crate::errors::AlkahestError for SeriesRefusal {
+    fn code(&self) -> &'static str {
+        "E-SERIES-003"
+    }
+
+    fn remediation(&self) -> Option<&'static str> {
+        Some(
+            "ask for a lower order, raise the budget, or rewrite the expression so its \
+             repeated derivatives close (nested radicals grow by a constant factor per \
+             coefficient)",
+        )
+    }
+}
+
+/// RAII marker for the outermost [`series`] frame on this thread.
+pub(crate) struct SeriesFrame {
+    outermost: bool,
+}
+
+impl SeriesFrame {
+    /// Did the coefficient loop stop early during this call?
+    fn refusal_pending(&self) -> bool {
+        LAST_REFUSAL.with(|c| c.get().is_some())
+    }
+}
+
+impl Drop for SeriesFrame {
+    fn drop(&mut self) {
+        if self.outermost {
+            IN_SERIES.with(|c| c.set(false));
+        }
+    }
+}
+
+/// Enter a [`series`] frame, clearing any refusal left by an earlier call so a
+/// pending one always describes the call that just returned.
+fn enter_series_frame() -> SeriesFrame {
+    LAST_REFUSAL.with(|c| c.set(None));
+    IN_SERIES.with(|c| {
+        let already = c.get();
+        c.set(true);
+        SeriesFrame {
+            outermost: !already,
+        }
+    })
+}
+
+/// Take the refusal behind the [`SeriesError::InvalidOrder`] that just came
+/// back, if there was one.
+///
+/// `Some` means the requested order was positive and simply out of reach — the
+/// work ceiling or an active [`crate::budget`] stopped the coefficient loop.
+/// `None` means the variant means what it has always meant: `order == 0`.
+///
+/// Consuming, so one refusal is reported once and cannot leak into a later
+/// unrelated error. Thread-local, like the ceiling itself.
+pub fn take_series_refusal() -> Option<SeriesRefusal> {
+    LAST_REFUSAL.with(|c| c.take())
 }
 
 /// RAII installer for the [`taylor_coefficients`] ceiling; restores the
@@ -263,12 +451,12 @@ impl Drop for CoeffCeiling {
 /// Stop [`taylor_coefficients`] early once the pool has grown past `ceiling`,
 /// returning the coefficients computed so far.
 ///
-/// Only for callers that need a *leading* term rather than a series to a
-/// promised order — [`crate::calculus::limits`] scans for the first nonzero
-/// coefficient, so a short prefix is either enough to answer or an honest "no
-/// answer at this order", never a wrong answer. [`series`] itself installs no
-/// ceiling: truncating there would understate the `O(·)` term, which would be
-/// a lie rather than a refusal.
+/// [`crate::calculus::limits`] scans for the first nonzero coefficient, so a
+/// short prefix is either enough to answer or an honest "no answer at this
+/// order", never a wrong answer, and it simply uses what it got. [`series`]
+/// installs a ceiling too — it has to, or the loop is unbounded — but it treats
+/// a short prefix as a **refusal** ([`take_series_refusal`]): returning it would
+/// understate the `O(·)` term, which would be a lie rather than a limitation.
 ///
 /// Successive Taylor coefficients are formed by differentiating *without*
 /// re-simplifying, so for expressions whose derivatives do not close (nested
@@ -303,6 +491,18 @@ fn taylor_coefficients(
     let mut out = Vec::with_capacity(num as usize);
     for k in 0..num {
         if k > 0 && coeff_loop_should_stop(pool) {
+            // Inside a `series` call this prefix is not an answer — record why,
+            // for `series` to turn into a refusal. Every other caller wants the
+            // prefix, so nothing is recorded for them and no stale refusal is
+            // left behind for the next `take_series_refusal`.
+            if IN_SERIES.with(|c| c.get()) {
+                let refusal = SeriesRefusal {
+                    requested: num,
+                    computed: k,
+                    budget: crate::budget::check().err(),
+                };
+                LAST_REFUSAL.with(|c| c.set(Some(refusal)));
+            }
             break;
         }
         let ev = subs(cur, &mapping, pool);
@@ -507,5 +707,88 @@ mod tests {
         let ix = p.pow(x, p.integer(-1));
         let s = series(ix, x, z, 4, &p).unwrap();
         assert!(contains_big_o(s.expr(), &p));
+    }
+
+    /// `√(t⁻² + t⁻¹)` at order 32 is the runaway shape: each coefficient is
+    /// formed by differentiating the previous one without re-simplifying, and a
+    /// nested radical's derivatives grow by a constant factor, so the loop is
+    /// unfinishable rather than slow (order 13 already takes 0.15 s and the cost
+    /// doubles per order).
+    ///
+    /// The refusal is the assertion. A *short* series would be worse than the
+    /// hang it replaces: `O(t^32)` on nine computed coefficients is a false
+    /// statement about the remainder, and unlike a timeout the caller has no way
+    /// to notice. This test also passes trivially if the expansion is ever made
+    /// to terminate honestly at the full order — see the `is_ok` arm.
+    #[test]
+    fn series_refuses_rather_than_truncating_a_runaway_radical() {
+        use crate::errors::AlkahestError;
+        let p = ExprPool::new();
+        let t = p.symbol("t", Domain::Real);
+        let inner = p.add(vec![p.pow(t, p.integer(-2)), p.pow(t, p.integer(-1))]);
+        let ex = p.func("sqrt", vec![inner]);
+
+        match series(ex, t, p.integer(0), 32, &p) {
+            Ok(_) => {
+                // A future fast path that really reaches order 32 is welcome;
+                // it must not leave a refusal behind.
+                assert_eq!(take_series_refusal(), None);
+            }
+            Err(e) => {
+                assert!(matches!(e, SeriesError::InvalidOrder), "{e:?}");
+                let refusal = take_series_refusal().expect("work-ceiling refusal recorded");
+                assert_eq!(refusal.code(), "E-SERIES-003");
+                assert_eq!(refusal.budget(), None, "no budget was active");
+                assert!(
+                    refusal.computed_coefficients() < refusal.requested_coefficients(),
+                    "{refusal}"
+                );
+            }
+        }
+    }
+
+    /// The carrier variant keeps its original meaning: `order == 0` is a user
+    /// error, not a refusal, and must not leave a refusal pending for the
+    /// bindings to mis-report as `E-SERIES-003`.
+    #[test]
+    fn order_zero_is_a_user_error_not_a_refusal() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let cx = p.func("cos", vec![x]);
+        let err = series(cx, x, p.integer(0), 0, &p).unwrap_err();
+        assert!(matches!(err, SeriesError::InvalidOrder), "{err:?}");
+        assert_eq!(take_series_refusal(), None);
+    }
+
+    /// A budget trip is attributed to the budget, so a binding raises
+    /// `E-BUDGET-*` rather than "this order is unreachable".
+    #[test]
+    fn budget_stops_a_series_and_is_attributed() {
+        use crate::budget::{self, Budget, BudgetError};
+        let p = ExprPool::new();
+        let t = p.symbol("t", Domain::Real);
+        let inner = p.add(vec![p.pow(t, p.integer(-2)), p.pow(t, p.integer(-1))]);
+        let ex = p.func("sqrt", vec![inner]);
+
+        let _guard = budget::enter(Budget::new().with_max_steps(3));
+        let err = series(ex, t, p.integer(0), 32, &p).unwrap_err();
+        assert!(matches!(err, SeriesError::InvalidOrder), "{err:?}");
+        let refusal = take_series_refusal().expect("budget refusal recorded");
+        assert!(
+            matches!(refusal.budget(), Some(BudgetError::Steps { .. })),
+            "{refusal}"
+        );
+    }
+
+    /// The ceiling must not cost coverage: an ordinary high-order expansion of
+    /// a function whose derivatives close still returns, and leaves no refusal.
+    #[test]
+    fn ordinary_high_order_expansion_is_unaffected() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let sx = p.func("sin", vec![x]);
+        let s = series(sx, x, p.integer(0), 24, &p).unwrap();
+        assert!(contains_big_o(s.expr(), &p));
+        assert_eq!(take_series_refusal(), None);
     }
 }

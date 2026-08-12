@@ -36,7 +36,7 @@
 //! rather than the main thread's 8 MiB, so a deep chain used to abort the whole
 //! process with a stack overflow.  The recursion now measures how much stack it
 //! has consumed and continues on a freshly spawned thread with a larger stack
-//! before running out; see [`with_stack_segment`].
+//! before running out (see the private `with_stack_segment` helper).
 //!
 //! # Safety
 //!
@@ -58,7 +58,7 @@ use std::sync::Arc;
 /// Arity threshold above which children are simplified in parallel.
 const PAR_THRESHOLD: usize = 4;
 
-/// Stack size handed to each refill thread (see [`with_stack_segment`]).
+/// Stack size handed to each refill thread by `with_stack_segment`.
 const SEGMENT_STACK_BYTES: usize = 16 * 1024 * 1024;
 
 /// Stack the traversal may consume on a thread it did not create.  Rayon

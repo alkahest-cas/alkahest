@@ -18,6 +18,17 @@
 //! Enabled by `--features groebner-cuda` (implies `groebner` + `cuda`).
 //! The `compute_groebner_basis_gpu` entry point is always available; it
 //! falls back to pure-Rust row reduction when no CUDA device is found.
+//!
+//! # The fallback is reported, not hidden
+//!
+//! Because the fallback exists, "this function is named `..._gpu`" is not
+//! evidence that a GPU ran. Both entry points therefore return a
+//! [`GpuBackendReport`] alongside the polynomials, counting how many mod-p row
+//! reductions executed on each side and carrying the first driver error that
+//! forced a fallback. [`GpuBackendReport::ran_on_gpu`] is the question a
+//! caller actually wants answered; before 3.8 it was unanswerable, since
+//! `device_id: None` and "the driver failed on every prime" produced results
+//! indistinguishable from a real GPU run.
 
 use crate::poly::groebner::ideal::GbPoly;
 use crate::poly::groebner::monomial_order::MonomialOrder;
@@ -159,6 +170,72 @@ impl crate::errors::AlkahestError for GpuGroebnerError {
 }
 
 // ---------------------------------------------------------------------------
+// Where the work actually ran
+// ---------------------------------------------------------------------------
+
+/// Where the mod-p Macaulay row reductions of a run actually executed.
+///
+/// Returned by [`reduce_batch`] and [`compute_groebner_basis_gpu`] so that a
+/// CPU fallback is *observable*. The counts are of individual mod-p row
+/// reductions (one per prime per Macaulay matrix), not of polynomials.
+///
+/// ```rust,ignore
+/// let (basis, backend) = compute_groebner_basis_gpu(gens, order, Some(0))?;
+/// assert!(backend.ran_on_gpu(), "silently reduced on the CPU: {backend:?}");
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GpuBackendReport {
+    /// The device ordinal the caller asked for, or `None` if the caller asked
+    /// for the CPU path outright.
+    pub requested_device: Option<usize>,
+    /// Row reductions that executed on a CUDA device.
+    pub reductions_on_gpu: usize,
+    /// Row reductions that executed on the CPU — either because
+    /// `requested_device` was `None`, or because the GPU attempt failed and
+    /// this one fell back.
+    pub reductions_on_cpu: usize,
+    /// The first GPU failure that forced a fallback, if any. `None` on a run
+    /// with no GPU failures (including a run that never asked for a GPU).
+    pub first_gpu_error: Option<String>,
+}
+
+impl GpuBackendReport {
+    fn new(requested_device: Option<usize>) -> Self {
+        GpuBackendReport {
+            requested_device,
+            ..Default::default()
+        }
+    }
+
+    /// Fold another report (from a nested [`reduce_batch`] call) into this one.
+    fn absorb(&mut self, other: &GpuBackendReport) {
+        self.reductions_on_gpu += other.reductions_on_gpu;
+        self.reductions_on_cpu += other.reductions_on_cpu;
+        if self.first_gpu_error.is_none() {
+            self.first_gpu_error.clone_from(&other.first_gpu_error);
+        }
+    }
+
+    /// True only when at least one row reduction ran on a CUDA device *and*
+    /// none fell back to the CPU.
+    ///
+    /// Deliberately conservative: a run in which the driver died on the first
+    /// prime and every subsequent reduction ran on the CPU is not a GPU run,
+    /// and a run that reduced nothing at all (an empty or trivial ideal) did
+    /// not exercise the GPU either.
+    pub fn ran_on_gpu(&self) -> bool {
+        self.reductions_on_gpu > 0 && self.reductions_on_cpu == 0
+    }
+
+    /// True when any row reduction ran on the CPU. This is `true` for a
+    /// `device_id: None` run, which is the case that used to be
+    /// indistinguishable from a GPU run.
+    pub fn fell_back_to_cpu(&self) -> bool {
+        self.reductions_on_cpu > 0
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Mod-p arithmetic helpers
 // ---------------------------------------------------------------------------
 
@@ -250,7 +327,7 @@ fn rational_reconstruction(a: &Integer, modulus: &Integer) -> Option<Rational> {
 pub struct MacaulayMatrix {
     pub n_rows: usize,
     pub n_cols: usize,
-    /// monomials[col] = exponent vector for that column, sorted descending by `order`.
+    /// `monomials[col]` = exponent vector for that column, sorted descending by `order`.
     pub monomials: Vec<Vec<u32>>,
     /// Row-major data: `data[row * n_cols + col]` is the coefficient mod p.
     pub data: Vec<u64>,
@@ -702,17 +779,21 @@ const PRIMES: &[u64] = &[
 /// Macaulay-matrix row reduction with CRT rational reconstruction.
 ///
 /// Returns the non-zero reduced forms (remainders), equivalent to calling
-/// `reduce(sp, basis, order)` for each sp individually.
+/// `reduce(sp, basis, order)` for each sp individually, paired with a
+/// [`GpuBackendReport`] saying where the row reductions actually ran.
 ///
-/// `device_id` controls which CUDA device to use. Pass `None` to force CPU.
+/// `device_id` controls which CUDA device to use. Pass `None` to force CPU —
+/// in which case the report says so, rather than leaving the caller to assume
+/// from the function's name that a GPU was involved.
 pub fn reduce_batch(
     targets: &[GbPoly],
     basis: &[GbPoly],
     order: MonomialOrder,
     device_id: Option<usize>,
-) -> Result<Vec<GbPoly>, GpuGroebnerError> {
+) -> Result<(Vec<GbPoly>, GpuBackendReport), GpuGroebnerError> {
+    let mut report = GpuBackendReport::new(device_id);
     if targets.is_empty() {
-        return Ok(vec![]);
+        return Ok((vec![], report));
     }
 
     // Build upper (basis multiples) + lower (targets) parts of the Macaulay matrix.
@@ -728,7 +809,10 @@ pub fn reduce_batch(
     let n_rows = all_rows.len();
 
     if n_rows == 0 || all_rows[0].n_vars == 0 {
-        return Ok(targets.iter().filter(|p| !p.is_zero()).cloned().collect());
+        return Ok((
+            targets.iter().filter(|p| !p.is_zero()).cloned().collect(),
+            report,
+        ));
     }
 
     let n_vars = all_rows[0].n_vars;
@@ -757,14 +841,22 @@ pub fn reduce_batch(
 
         if let Some(dev) = device_id {
             match mat.reduce_gpu(dev) {
-                Ok(()) => {}
+                Ok(()) => report.reductions_on_gpu += 1,
                 Err(e) => {
+                    // Still a warning on stderr for interactive use, but the
+                    // machine-readable channel is the report: a caller that
+                    // never reads stderr must still be able to find out.
                     eprintln!("alkahest: GPU row reduction failed ({e}), using CPU fallback");
+                    if report.first_gpu_error.is_none() {
+                        report.first_gpu_error = Some(e.to_string());
+                    }
                     mat.reduce_cpu();
+                    report.reductions_on_cpu += 1;
                 }
             }
         } else {
             mat.reduce_cpu();
+            report.reductions_on_cpu += 1;
         }
 
         lifter.add_image(&mat);
@@ -799,7 +891,7 @@ pub fn reduce_batch(
                 if stable || prime_count >= PRIMES.len() {
                     let mut result = new_elements;
                     result.dedup_by(|a, b| a.terms == b.terms);
-                    return Ok(result);
+                    return Ok((result, report));
                 }
                 prev = Some(new_elements);
             }
@@ -824,11 +916,22 @@ pub fn reduce_batch(
 ///
 /// `device_id` is the CUDA device ordinal (0-indexed). Pass `None` to run
 /// entirely on CPU (useful for testing correctness without a GPU).
+///
+/// # The second return value is not optional reading
+///
+/// This function computes the same basis whether or not a GPU was involved, so
+/// the basis alone cannot tell you which happened: `device_id: None` runs
+/// wholly on the CPU, and a `Some(dev)` run whose driver calls all fail also
+/// runs wholly on the CPU after logging to stderr. The returned
+/// [`GpuBackendReport`] is the only in-band answer — check
+/// [`GpuBackendReport::ran_on_gpu`] before recording a measurement as a GPU
+/// measurement.
 pub fn compute_groebner_basis_gpu(
     generators: Vec<GbPoly>,
     order: MonomialOrder,
     device_id: Option<usize>,
-) -> Result<Vec<GbPoly>, GpuGroebnerError> {
+) -> Result<(Vec<GbPoly>, GpuBackendReport), GpuGroebnerError> {
+    let mut report = GpuBackendReport::new(device_id);
     let mut basis: Vec<GbPoly> = generators
         .into_iter()
         .filter(|g| !g.is_zero())
@@ -836,7 +939,7 @@ pub fn compute_groebner_basis_gpu(
         .collect();
 
     if basis.is_empty() {
-        return Ok(basis);
+        return Ok((basis, report));
     }
 
     let mut pairs: Vec<(usize, usize)> = vec![];
@@ -856,7 +959,8 @@ pub fn compute_groebner_basis_gpu(
             .collect();
 
         if !s_polys.is_empty() {
-            let reduced = reduce_batch(&s_polys, &basis, order, device_id)?;
+            let (reduced, batch_report) = reduce_batch(&s_polys, &basis, order, device_id)?;
+            report.absorb(&batch_report);
             let new_start = basis.len();
             for r in reduced {
                 if !r.is_zero() {
@@ -879,7 +983,9 @@ pub fn compute_groebner_basis_gpu(
         }
     }
 
-    interreduce_gpu(basis, order, device_id)
+    let (basis, interreduce_report) = interreduce_gpu(basis, order, device_id)?;
+    report.absorb(&interreduce_report);
+    Ok((basis, report))
 }
 
 fn product_criterion(f: &GbPoly, g: &GbPoly, order: MonomialOrder) -> bool {
@@ -898,7 +1004,8 @@ fn interreduce_gpu(
     mut basis: Vec<GbPoly>,
     order: MonomialOrder,
     device_id: Option<usize>,
-) -> Result<Vec<GbPoly>, GpuGroebnerError> {
+) -> Result<(Vec<GbPoly>, GpuBackendReport), GpuGroebnerError> {
+    let mut report = GpuBackendReport::new(device_id);
     let mut i = 0;
     while i < basis.len() {
         let others: Vec<GbPoly> = basis
@@ -907,7 +1014,8 @@ fn interreduce_gpu(
             .filter(|&(j, _)| j != i)
             .map(|(_, g)| g.clone())
             .collect();
-        let reduced = reduce_batch(&[basis[i].clone()], &others, order, device_id)?;
+        let (reduced, batch_report) = reduce_batch(&[basis[i].clone()], &others, order, device_id)?;
+        report.absorb(&batch_report);
         let r = reduced
             .into_iter()
             .next()
@@ -919,7 +1027,7 @@ fn interreduce_gpu(
             i += 1;
         }
     }
-    Ok(basis)
+    Ok((basis, report))
 }
 
 // ---------------------------------------------------------------------------
@@ -1027,9 +1135,16 @@ mod tests {
         // (x + y - 1, x - y) → basis contains x - 1/2 and y - 1/2
         let f = poly1(&[(&[1, 0], 1), (&[0, 1], 1), (&[0, 0], -1)]);
         let g = poly1(&[(&[1, 0], 1), (&[0, 1], -1)]);
-        let basis =
+        let (basis, backend) =
             compute_groebner_basis_gpu(vec![f.clone(), g.clone()], MonomialOrder::Lex, None)
                 .expect("gpu groebner failed");
+        // `device_id: None` ran no GPU work and must say so — the fallback is
+        // reported, not inferred from the function's name.
+        assert!(!backend.ran_on_gpu());
+        assert!(backend.fell_back_to_cpu());
+        assert_eq!(backend.reductions_on_gpu, 0);
+        assert_eq!(backend.requested_device, None);
+        assert_eq!(backend.first_gpu_error, None);
         assert!(!basis.is_empty());
         // Verify: original generators reduce to zero mod the computed basis
         let rf = cpu_reduce(&f, &basis, MonomialOrder::Lex);
@@ -1043,9 +1158,10 @@ mod tests {
         // (x^2 - 1, x - 1) → {x - 1}
         let f = poly1(&[(&[2], 1), (&[0], -1)]);
         let g = poly1(&[(&[1], 1), (&[0], -1)]);
-        let basis =
+        let (basis, backend) =
             compute_groebner_basis_gpu(vec![f.clone(), g.clone()], MonomialOrder::Lex, None)
                 .expect("gpu groebner failed");
+        assert!(!backend.ran_on_gpu());
         assert_eq!(basis.len(), 1);
         let rf = cpu_reduce(&f, &basis, MonomialOrder::Lex);
         let rg = cpu_reduce(&g, &basis, MonomialOrder::Lex);
@@ -1058,9 +1174,10 @@ mod tests {
         // x^2 + y^2 - 1 = 0, y - x = 0 → solutions (±√2/2, ±√2/2)
         let f = poly1(&[(&[2, 0], 1), (&[0, 2], 1), (&[0, 0], -1)]);
         let g = poly1(&[(&[0, 1], 1), (&[1, 0], -1)]);
-        let basis =
+        let (basis, backend) =
             compute_groebner_basis_gpu(vec![f.clone(), g.clone()], MonomialOrder::Lex, None)
                 .expect("gpu groebner failed");
+        assert!(!backend.ran_on_gpu());
         assert!(!basis.is_empty());
         let rf = cpu_reduce(&f, &basis, MonomialOrder::Lex);
         let rg = cpu_reduce(&g, &basis, MonomialOrder::Lex);
@@ -1076,8 +1193,9 @@ mod tests {
         let g = poly1(&[(&[1, 0], 1), (&[0, 1], -1)]);
         let order = MonomialOrder::Lex;
 
-        let basis_gpu =
+        let (basis_gpu, backend) =
             compute_groebner_basis_gpu(vec![f.clone(), g.clone()], order, None).unwrap();
+        assert!(!backend.ran_on_gpu(), "no device requested, so no GPU run");
         let basis_cpu = compute_buchberger_basis(vec![f.clone(), g.clone()], order);
 
         // Both bases are Gröbner — each element of one should reduce to 0 mod the other

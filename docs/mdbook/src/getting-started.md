@@ -71,11 +71,13 @@ print(features)
 | Release `+full` | Linux x86_64 | `+jit` profile plus `parallel` |
 
 `jit` and `cranelift` remain compatibility names in this mapping. Prefer
-`llvm_jit` and `cranelift_jit` when selecting a backend explicitly. `cuda` and
-`groebner_cuda` indicate that the extension was compiled with those features;
-they do not claim that a usable GPU is present at runtime. Neither is in any
-published wheel, and `groebner_cuda` changes nothing observable from Python —
-read [GPU support](./gpu.md) before branching on either bit.
+`llvm_jit` and `cranelift_jit` when selecting a backend explicitly. `cuda`
+indicates that the extension was compiled with NVPTX codegen — it guarantees
+that `ak.compile_cuda` and `ak.CudaCompiledFn` exist, but not that a usable GPU
+is present at runtime, and it is in no published wheel. There is **no
+`groebner_cuda` bit**: the GPU Gröbner kernel has no Python binding, so the bit
+was unfalsifiable from Python and was removed in contract v3. Read
+[GPU support](./gpu.md) before branching on `cuda`.
 
 ### Optional: RL environments (`alkahest[rl]`)
 

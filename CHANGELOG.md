@@ -73,6 +73,65 @@ of these is a call whose previous answer was not justified:
 - **`product_definite(term, k, lo, hi)` with `lo > hi` returns `1` even for a
   zero term.** The empty product takes no factors; it previously returned `0`
   for `Π_{k=1}^{0} 0` while returning `1` for `Π_{k=1}^{0} k`.
+- **`capabilities()["contract_version"]` is `3`, and `features` lost two keys:
+  `groebner_cuda` and `numpy`.** Indexing either now raises `KeyError`; use
+  `features.get(name, False)` if you need to span versions. Both were removed
+  rather than wired up because neither was *falsifiable* — no observation a
+  Python caller could make distinguished `True` from `False`:
+  - `groebner_cuda` reported that the CUDA Macaulay-matrix kernel had been
+    compiled in. The string `groebner_cuda` occurred exactly once anywhere in
+    `alkahest-py` — the capability line itself. There was no binding, no
+    `*gpu*` name in the public or the private module, and `GroebnerBasis`
+    exposes only CPU methods. The kernel is unchanged and still reachable from
+    Rust as `alkahest_cas::poly::groebner::compute_groebner_basis_gpu`; if
+    dispatch ever prefers it, the binding lands first and a bit follows it.
+  - `numpy` mapped to a Cargo feature gating the `numpy` crate, which
+    `alkahest-py` never used an item from. The feature and the dependency are
+    both gone. `ak.numpy_eval` and `ak.numpy_eval_par` are unaffected — they go
+    through the buffer protocol and always worked with the bit `False`, which
+    is its value on every wheel ever published.
+
+  An unreachable `True` makes a caller trust something it should not, which is
+  the same class of defect as a silent wrong answer; a bit that correlates with
+  nothing is better removed than left to be misread.
+  `tests/test_agent_contract.py::test_every_advertised_feature_has_an_entry_point`
+  now walks `features` and fails on any key without a named, reachable entry
+  point, so the next one cannot ship.
+- **Rust, `--features groebner-cuda`: `compute_groebner_basis_gpu` and
+  `reduce_batch` return `(polys, GpuBackendReport)` instead of `polys`.** Both
+  fall back to CPU row reduction — when `device_id` is `None`, and when the
+  driver fails — and the basis is identical either way, so a caller previously
+  had no way to tell a GPU run from a CPU one. `GpuBackendReport::ran_on_gpu()`
+  is true only when at least one mod-p reduction ran on a device and none fell
+  back; `reductions_on_gpu`, `reductions_on_cpu` and `first_gpu_error` carry
+  the detail. A compile error on upgrade is the intended failure mode for code
+  that was recording these results as GPU results. Nothing at the Python
+  surface changes: the feature has no binding.
+- **`residue(f, z, point)` refuses a non-constant `point` with
+  `AlkahestError` / `E-RESIDUE-005`** instead of leaking
+  `AttributeError: 'Expr' object has no attribute 'numerator'` from the
+  argument parser. `AttributeError` is not an `AlkahestError`, so
+  `except ak.AlkahestError` missed it entirely. The existing `E-RESIDUE-001..4`
+  refusals are now `AlkahestError`s carrying `.code` and `.remediation` too,
+  rather than bare `ValueError`s with the code glued into the message;
+  `AlkahestError` subclasses `ValueError`, so `except ValueError` still works.
+- **`series` refuses instead of running forever, with `SeriesError` /
+  `E-SERIES-003`.** `series(sqrt(t**-2 + t**-1), t, 0, 32)` never returned:
+  coefficients are formed by repeated differentiation without re-simplifying, so
+  a nested radical's derivatives grow by a constant factor per coefficient and
+  the cost doubles per order. It now honours an active `Budget` (raising
+  `BudgetExceededError`) and, with none, an internal work ceiling. It never
+  returns a *shorter* series: `O(h^order)` on fewer coefficients than were asked
+  for is a false statement about the remainder, which is worse than the refusal.
+  Ordinary expansions are unaffected — the heaviest in the suites intern a few
+  thousand nodes against a ceiling of 50 000.
+- **`simplify_expanded` records a derivation step when its expansion bound stops
+  it** (`expand_pow_limit_reached`, a no-op step naming the power it declined),
+  and the bound itself is now a budget on the number of distributed products
+  rather than a flat exponent cap. `(x+y)**6` and `(x+y+1)**7` now expand where
+  the exponent-only cap refused them while permitting a twenty-term sum to the
+  fourth power; anything above the budget comes back unexpanded *and says so*
+  instead of looking like an expression that was already expanded.
 
 ### Known limits — documented, not fixed
 
@@ -127,9 +186,30 @@ loop fails.
   `#[test]` functions, and `pytest` is never run under a sanitizer. The
   behavioural substitute is the fresh-pool sweep described in
   [`TESTING.md`](TESTING.md#3-memory-safety--sanitizers).
+- **There is no `cuda_device_count()`.** `CudaCompiledFn.call_batch_on(ordinal,
+  …)` selects a device, but the valid range can only be discovered by trying an
+  ordinal and catching `CudaError` (`E-CUDA-003`); the loop that does it is in
+  [`gpu.md`](docs/mdbook/src/gpu.md#discovering-the-valid-device-ordinals). Not
+  added yet on purpose: `cuda` implies LLVM 15 with NVPTX, so such a binding
+  cannot be compiled on an ordinary dev box, no CI job builds the Python
+  extension with either CUDA feature, and exercising it needs a device — it
+  would ship with no verification of any kind, which is the provenance of the
+  capability overclaims fixed above. It belongs in the same change as the
+  missing `maturin develop --features cuda` + `pytest tests/test_cuda.py`
+  nightly step.
 
 ### Fixed
 
+- **`cargo test --features groebner-cuda` could not pass on a machine with no
+  NVIDIA driver**, contradicting the header comment of
+  `alkahest-core/tests/groebner_cuda.rs`. `cudarc` *panics* rather than
+  returning `Err` when `libcuda.so` cannot be `dlopen`ed, so `gpu_available()`
+  — whose entire job is to decide whether the GPU tier can run — aborted three
+  tests instead of skipping them. A missing library and a missing device now
+  both mean *not available*, while `ALKAHEST_GPU_TESTS=1` asserting a device
+  that is not usable still fails hard. The GPU tier additionally asserts
+  `GpuBackendReport::ran_on_gpu()`, so a "GPU test" whose reductions all landed
+  on the CPU fails rather than passing on identical results.
 - **`product_definite` dropped the scale it used to clear denominators.**
   `ratuni_poly_to_univ` multiplies a `ℚ[k]` polynomial through by the LCM of its
   coefficient denominators and never returned that factor, so every index
@@ -213,6 +293,18 @@ loop fails.
   random points and re-draws its anchors on mismatch, so an unlucky anchor
   (Zippel's skeleton hypothesis is probabilistic) now produces a refusal rather
   than a confidently wrong polynomial.
+- **`solve` states the hypotheses a parametric answer rests on.**
+  `solve([a*x - b], [x])` returns `b/a`, which is the solution *for `a ≠ 0`*: at
+  `a = 0` the equation reads `-b = 0`, so there is no solution when `b ≠ 0` and
+  every `x` when `b = 0`, and `b/a` is not even a number there. The
+  generic-parameter reading is deliberate, but a parametric tuple is not a number
+  and is therefore returned **unverified** — nothing substitutes it back — so the
+  hypothesis was the only auditable signal and it was not being given. New
+  `alkahest.solve_side_conditions() -> list[str]` reports the non-vanishing
+  hypotheses the most recent `solve` assumed, in the shape
+  `DerivedResult.verification["side_conditions"]` and
+  `ZeilbergerCertificate.side_conditions` already use. An empty list means the
+  solver *proved* every divisor non-zero: `solve([2*x - b], [x])` reports none.
 ### Added
 
 - **`alkahest.ansatz` — parametric families and coefficient fitting** (P2

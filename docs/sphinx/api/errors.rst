@@ -167,6 +167,19 @@ Exception subclasses
    - ``E-SOLVE-001`` — inconsistent system (no solutions)
    - ``E-SOLVE-002`` — high-degree factor (degree > 2, no symbolic solution)
    - ``E-SOLVE-003`` — Gröbner basis did not converge
+   - ``E-SOLVE-004`` — ``triangularize`` could not extract a triangular set whose
+     ideal contains the input, so it refused rather than return a chain cutting
+     out a larger variety. Travels inside ``E-SOLVE-001`` until the bindings
+     read ``solver::regular_chains::take_triangularize_refusal()``.
+
+.. note::
+
+   ``radical`` and ``primary_decomposition`` refuse rather than return an ideal
+   they cannot certify: ``E-IDEAL-005`` (no certified radical) and
+   ``E-IDEAL-006`` (no certified primary decomposition). Both currently arrive
+   as a plain :class:`ValueError` whose message states the reason; the stable
+   code is available to Rust callers from
+   ``alkahest_cas::ideal::take_ideal_refusal()``.
 
 .. exception:: JitError
 

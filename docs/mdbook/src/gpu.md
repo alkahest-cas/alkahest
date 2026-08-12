@@ -47,7 +47,6 @@ import alkahest as ak
 
 features = ak.capabilities()["features"]
 features["cuda"]           # `--features cuda` was compiled in
-features["groebner_cuda"]  # `--features groebner-cuda` was compiled in
 features["llvm_jit"]       # True on any `cuda` build: `cuda` implies the LLVM backend
 ```
 
@@ -60,7 +59,11 @@ Read these bits precisely — each says **what was linked**, and nothing more:
 - `llvm_jit == True` on a `cuda` build even when *alkahest-py*'s own `jit` feature was
   never named, because `alkahest-core`'s `cuda` feature turns on `jit`. Cranelift and
   LLVM are not mutually exclusive; a CUDA build can link both.
-- `groebner_cuda == True` changes nothing observable from Python. See below.
+
+**There is no `groebner_cuda` bit** (contract v3 and later — `capabilities()["features"]`
+raises `KeyError` for it). It was removed rather than wired up because it was
+*unfalsifiable*: no Python observation distinguished `True` from `False`. See
+[below](#groebner-cuda-is-not-reachable-from-python).
 
 `ak.CudaError` is importable on **every** build, CUDA or not — it is an exception
 class, not an entry point, and code that writes `except ak.CudaError` around a
@@ -88,10 +91,37 @@ out = fn.call_batch([xs, ys])        # list[float], one output per point
 `x` value, not the first point), all of equal length, and returns a Python list with
 one `float` per point. It copies host → device, launches on **device 0**, and copies
 back; a mismatched column count or ragged columns raise `ValueError` before anything
-touches the GPU.
+touches the GPU. `fn.call_batch_on(ordinal, inputs)` is the same call on a chosen
+device.
 
 Pipeline: expression → LLVM IR via inkwell → link `libdevice.10.bc` → internalize and
 DCE → PTX for `sm_86` (Ampere) → loaded through the CUDA driver by `cudarc`.
+
+### Discovering the valid device ordinals
+
+There is **no `ak.cuda_device_count()`**. The only way to find the valid range for
+`call_batch_on` today is to try an ordinal and catch the refusal:
+
+```python
+def device_count(fn, limit=16):
+    """Largest N such that ordinals 0..N-1 accept a launch."""
+    n = 0
+    while n < limit:
+        try:
+            fn.call_batch_on(n, [[0.0]] * fn.n_inputs)
+        except ak.CudaError:   # E-CUDA-003 — no such device
+            return n
+        n += 1
+    return n
+```
+
+That is a workaround, not an API, and it is recorded here rather than fixed because a
+`cuda_device_count` binding could not be verified by anything: `cuda` implies LLVM 15
+with NVPTX, so it cannot even be *compiled* on an ordinary dev box, no CI job builds
+the Python extension with the feature (see below), and running it needs a device. It
+belongs in the same change as the missing `maturin develop --features cuda` nightly
+step — shipping it before that would add exactly the kind of unverified surface that
+produced the capability overclaims this page now documents.
 
 ### Limits worth knowing before you reach for it
 
@@ -129,18 +159,55 @@ But **no shipped code path calls it.** `GroebnerBasis.compute`, `solve`, and
 `alkahest-py` never references the GPU entry point at all. So on a
 `--features groebner-cuda` build:
 
-- `capabilities()["features"]["groebner_cuda"]` is `True`,
 - no Python name appears or disappears,
-- no Python call gets faster.
+- no Python call gets faster,
+- and, since 3.8, **no capability bit claims otherwise.**
 
 This is deliberate rather than accidental — the crossover policy in
 [`docs/symbolic-gpu-benchmarks.md`](https://github.com/alkahest-cas/alkahest/blob/main/docs/symbolic-gpu-benchmarks.md)
 says production dispatch must not prefer the GPU until the benchmark harness says it
-wins, and that wiring does not exist yet. It is recorded here because the bit is
-otherwise unfalsifiable from Python: there is no observation a caller can make that
-distinguishes `groebner_cuda: True` from `False`. Rust users can call
-`alkahest_cas::poly::groebner::compute_groebner_basis_gpu` directly; it falls back to
-CPU row reduction when no device is present.
+wins, and that wiring does not exist yet. Rust users can call
+`alkahest_cas::poly::groebner::compute_groebner_basis_gpu` directly.
+
+### Why the bit was removed rather than wired up
+
+`capabilities()["features"]["groebner_cuda"]` used to report `True` here. It was the
+only occurrence of the string `groebner_cuda` anywhere in `alkahest-py` — there was no
+binding to go with it, no `*gpu*` name in the public or the private module, and
+`GroebnerBasis` exposing only CPU methods. That made it strictly worse than the `cuda`
+overclaim fixed in `d139a46`, which at least had a private route in.
+
+An unreachable `True` is the same class of defect as a silent wrong answer: it makes a
+caller trust something it should not. The two ways out are to add a binding or to drop
+the claim, and dropping it was the right one days before a release — a binding would
+have been new public API that no CI job can build (no job builds the Python extension
+with either CUDA feature; see below) and that nobody without a GPU can run. Adding
+unverifiable surface is how the original defect got in. The bit is gone; the kernel is
+unchanged and still Rust-reachable. If dispatch ever prefers the GPU, the binding lands
+first and a bit follows it.
+
+### `compute_groebner_basis_gpu` now reports where it ran
+
+The Rust entry point falls back to CPU row reduction when no device is present, and it
+used to say nothing about having done so — a `device_id: None` run, a run whose driver
+calls all failed, and a real GPU run returned identical, indistinguishable values. A
+function named `..._gpu` that quietly runs on the CPU is a footgun of exactly the kind
+this release has spent its time eliminating, so both it and `reduce_batch` now return a
+`GpuBackendReport` alongside the polynomials:
+
+```rust
+use alkahest_cas::poly::groebner::{compute_groebner_basis_gpu, MonomialOrder};
+
+let (basis, backend) = compute_groebner_basis_gpu(gens, MonomialOrder::Lex, Some(0))?;
+assert!(backend.ran_on_gpu(), "fell back to the CPU: {backend:?}");
+```
+
+`ran_on_gpu()` is true only when at least one mod-p row reduction executed on a device
+and none fell back; `fell_back_to_cpu()` is its counterpart; `reductions_on_gpu`,
+`reductions_on_cpu` and `first_gpu_error` carry the detail. The stderr warning on
+fallback is still emitted, but it is no longer the only channel. This is a **breaking
+change to the Rust signature** — a compile error on upgrade, which is the correct
+failure mode for a caller who was reading a result as a GPU result.
 
 ## State of testing — read this before trusting the feature
 
@@ -168,6 +235,17 @@ GPU box. Until a `maturin develop --features cuda` + `pytest tests/test_cuda.py`
 is added to the nightly, treat the Python GPU surface as verified by hand and not by
 CI — which is precisely how the `compile_cuda` export gap survived three releases
 while `capabilities()` advertised the feature.
+
+**A second gate that was inspecting nothing.** `cargo test --features groebner-cuda`
+could not pass on a machine with no NVIDIA driver at all, contradicting the header
+comment of `alkahest-core/tests/groebner_cuda.rs`. `cudarc` *panics* rather than
+returning `Err` when `libcuda.so` cannot be `dlopen`ed, so `gpu_available()` — whose
+whole job is to answer "should the GPU tier run?" — aborted the three GPU tests
+instead of skipping them. It now treats a missing library and a missing device alike
+(both mean *not available*), while still failing hard when `ALKAHEST_GPU_TESTS=1`
+asserted a device that is not usable. The `ALKAHEST_GPU_TESTS=1` tier additionally
+asserts `GpuBackendReport::ran_on_gpu()`, so a "GPU test" that silently reduced every
+matrix on the CPU now fails rather than passing on identical results.
 
 ## See also
 

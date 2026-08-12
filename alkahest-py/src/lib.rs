@@ -656,8 +656,58 @@ fn py_is_cancelled() -> bool {
 }
 
 fn series_error_to_py(e: SeriesError) -> PyErr {
+    // The series engine reports "the requested order is out of reach" as
+    // `InvalidOrder` (`SeriesError` is an exhaustive public enum, so it cannot
+    // carry a `Truncated` variant without a major semver break) and records the
+    // cause out of band. Recover it here so a work-ceiling trip raises
+    // `E-SERIES-003` and a budget trip raises the same `BudgetExceededError`
+    // (`E-BUDGET-*`) every other engine raises, instead of masquerading as
+    // "you passed order 0".
+    if matches!(e, SeriesError::InvalidOrder) {
+        if let Some(r) = alkahest_core::calculus::series::take_series_refusal() {
+            return Python::with_gil(|py| match r.budget() {
+                Some(b) => {
+                    let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+                    make_structured_err(py, &exc_type, &b)
+                }
+                None => {
+                    let exc_type = py.get_type_bound::<PySeriesError>();
+                    make_structured_err(py, &exc_type, &r)
+                }
+            });
+        }
+    }
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PySeriesError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+/// Convert a `PrimaryDecompositionError` into a Python exception, recovering a
+/// refusal recorded out of band.
+///
+/// `radical` and `primary_decomposition` report "I cannot certify this" as
+/// `PrimaryDecompositionError::Factorization` (the enum is public and
+/// exhaustive, so it cannot grow a `NotCertifiable` variant without a major
+/// semver break) and record the real reason for `take_ideal_refusal`. Recover
+/// it here so a refusal raises its own `E-IDEAL-005` / `E-IDEAL-006` instead of
+/// an uncoded `ValueError` that autoresearch loops cannot branch on.
+///
+/// `PyAlkahestError` subclasses `ValueError`, so callers catching `ValueError`
+/// are unaffected.
+#[cfg(feature = "groebner")]
+fn ideal_error_to_py(e: alkahest_core::ideal::PrimaryDecompositionError) -> PyErr {
+    use alkahest_core::ideal::PrimaryDecompositionError;
+    if matches!(e, PrimaryDecompositionError::Factorization(_)) {
+        if let Some(r) = alkahest_core::ideal::take_ideal_refusal() {
+            return Python::with_gil(|py| {
+                let exc_type = py.get_type_bound::<PyAlkahestError>();
+                make_structured_err(py, &exc_type, &r)
+            });
+        }
+    }
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyAlkahestError>();
         make_structured_err(py, &exc_type, &e)
     })
 }
@@ -697,7 +747,23 @@ fn parse_limit_direction(dir: Option<&str>) -> CoreLimitDirection {
 /// [`alkahest_core::InterpEvalError`], which is intentionally lightweight
 /// since it's an interpreter-internal detail, not a user-facing subsystem).
 fn domain_error(py: Python<'_>, code: &str, message: String, remediation: &str) -> PyErr {
-    let exc_type = py.get_type_bound::<PyDomainError>();
+    coded_error::<PyDomainError>(py, code, message, remediation)
+}
+
+/// [`domain_error`] for any other exception class in the hierarchy.
+///
+/// Same shape as [`make_structured_err`] — `[CODE] message`, plus `.code`,
+/// `.remediation` and `.span` attributes — for failures raised at the Python
+/// boundary, where there is no Rust error type implementing `AlkahestError` to
+/// hand it. The alternative is letting whatever PyO3 happened to produce
+/// escape, which is how `residue` came to raise a bare `AttributeError`: not
+/// an `AlkahestError`, so invisible to `except ak.AlkahestError`, and carrying
+/// no code for a caller to branch on.
+fn coded_error<E>(py: Python<'_>, code: &str, message: String, remediation: &str) -> PyErr
+where
+    E: pyo3::type_object::PyTypeInfo,
+{
+    let exc_type = py.get_type_bound::<E>();
     let full_msg = format!("[{code}] {message}\nRemediation: {remediation}");
     let exc = exc_type.call1((full_msg,)).unwrap();
     exc.setattr("code", code).ok();
@@ -3514,8 +3580,53 @@ fn py_apart(py: Python<'_>, expr: PyRef<PyExpr>, var: PyRef<PyExpr>) -> PyResult
     Ok(PyExpr { id, pool: pool_py })
 }
 
+/// `ResidueError` has an inherent `code()` but does not implement the
+/// `AlkahestError` trait, so this cannot go through [`make_structured_err`].
+/// It still has to produce an `AlkahestError` subclass carrying `.code`:
+/// raising a bare `ValueError` with the code glued into the message made the
+/// code unreadable except by string-matching. `AlkahestError` subclasses
+/// `ValueError`, so `except ValueError` keeps working.
 fn residue_error_to_py(e: ResidueError) -> PyErr {
-    pyo3::exceptions::PyValueError::new_err(format!("{} ({})", e, e.code()))
+    Python::with_gil(|py| {
+        coded_error::<PyAlkahestError>(
+            py,
+            e.code(),
+            e.to_string(),
+            match e {
+                ResidueError::NotRational => {
+                    "input must be a rational function of the variable over ℚ"
+                }
+                ResidueError::ZeroDenominator => "denominator must be non-zero",
+                ResidueError::PoleOrderTooHigh { .. } => {
+                    "pole order exceeds supported bound; essential singularities are out of scope"
+                }
+                ResidueError::DivisionByZero => {
+                    "division by zero during Laurent coefficient extraction"
+                }
+            },
+        )
+    })
+}
+
+/// `residue(f, z, point)` was handed a `point` that is not an exact constant.
+///
+/// `E-RESIDUE-005` is raised only at the Python boundary — the Rust `residue`
+/// takes an already-parsed `GaussRat` and cannot reach this state — so it is
+/// deliberately absent from `alkahest-core`'s `REGISTRY`, on the same footing
+/// as `E-SMT-001`/`E-SMT-003`/`E-SMT-004` in `alkahest/smt.py` and
+/// `E-BATCH-001` in `alkahest/_batch.py`.
+fn residue_point_error(py: Python<'_>, point: &Bound<'_, PyAny>) -> PyErr {
+    coded_error::<PyAlkahestError>(
+        py,
+        "E-RESIDUE-005",
+        format!(
+            "residue: the point must be an exact constant in ℚ(i), got {}",
+            py_type_name(point)
+        ),
+        "pass an int, a fractions.Fraction, a complex with integral parts, or a \
+         (re, im) pair of rationals. A symbolic Expr is not accepted — residue \
+         evaluates at one point, so substitute a value first",
+    )
 }
 fn rational_from_py(ob: &Bound<'_, PyAny>) -> PyResult<Rational> {
     if let Ok(i) = ob.extract::<i64>() {
@@ -3585,7 +3696,7 @@ fn py_residue(
     point: &Bound<'_, PyAny>,
 ) -> PyResult<PyExpr> {
     let pool_py = expr.pool.clone_ref(py);
-    let gauss = parse_gauss_point(point)?;
+    let gauss = parse_gauss_point(point).map_err(|_| residue_point_error(py, point))?;
     let id = {
         let pool = pool_py.borrow(py);
         guard_depth(&pool.inner, expr.id)?;
@@ -3598,6 +3709,20 @@ fn apart_error_to_py(e: ApartError) -> PyErr {
     pyo3::exceptions::PyValueError::new_err(e.to_string())
 }
 
+/// `alkahest.series(expr, var, point, order) -> Series`
+///
+/// Truncated Taylor / Laurent expansion of *expr* in *var* about *point*, with
+/// an explicit ``O(h^order)`` remainder.
+///
+/// The expansion is **bounded**: it honours an active :class:`alkahest.Budget`
+/// and, with none, an internal work ceiling. Coefficients are formed by
+/// repeated differentiation without re-simplifying, so an expression whose
+/// derivatives do not close (nested radicals, in particular) grows by a
+/// constant factor per coefficient and a high order is unreachable rather than
+/// slow. Running out of room raises :exc:`alkahest.SeriesError` with code
+/// ``E-SERIES-003`` (or :exc:`alkahest.BudgetExceededError` when a budget
+/// stopped it) — never a shorter series, which would wear an ``O(·)`` label
+/// nothing bounded.
 #[pyfunction]
 #[pyo3(name = "series")]
 fn py_series(
@@ -3610,10 +3735,14 @@ fn py_series(
     let pool_py = expr.pool.clone_ref(py);
     let point_id = coerce_substituent(&pool_py, point, py)?;
     let id = {
-        let pool = pool_py.borrow(py);
-        guard_depth(&pool.inner, expr.id)?;
+        let pool_ref = pool_py.borrow(py);
+        guard_depth(&pool_ref.inner, expr.id)?;
         checked_order("series order", order as usize)?;
-        core_series(expr.id, var.id, point_id, order, &pool.inner)
+        // GIL released for the core call, like `limit` and `integrate`: the
+        // coefficient loop honours `Budget`, and a `request_cancel()` from
+        // another Python thread cannot reach it while this one holds the GIL.
+        let (id, var_id, pool) = (expr.id, var.id, &pool_ref.inner);
+        py.allow_threads(|| core_series(id, var_id, point_id, order, pool))
             .map_err(series_error_to_py)?
             .expr()
     };
@@ -6615,6 +6744,24 @@ fn py_jit_is_available() -> bool {
 ///
 /// This reports the installed artifact, not the project defaults or the
 /// availability of Python fallback functions.
+///
+/// # Every key must name something a caller can reach
+///
+/// A capability bit exists so an agent can decide what to use without probing.
+/// That makes an unreachable `true` the same class of defect as a silent wrong
+/// answer, and a bit that correlates with nothing at all only marginally
+/// better. Two keys were dropped in 3.8 for failing that test, and
+/// `tests/test_agent_contract.py::test_every_advertised_feature_has_an_entry_point`
+/// now walks this map and refuses any key without a named entry point:
+///
+/// - `groebner_cuda` reported `--features groebner-cuda`, but the GPU Gröbner
+///   kernel has no PyO3 binding at all — `GroebnerBasis` exposes only CPU
+///   methods and `compute_groebner_basis_gpu` is reachable from Rust only. No
+///   Python observation could distinguish `true` from `false`.
+/// - `numpy` reported a Cargo feature that gated the `numpy` crate, which
+///   this crate never used. `alkahest.numpy_eval` works through the buffer
+///   protocol regardless, so the bit was `false` on every build that shipped
+///   and predicted nothing about NumPy support either way.
 #[pyfunction]
 #[pyo3(name = "_build_features")]
 fn py_build_features() -> std::collections::HashMap<String, bool> {
@@ -6635,9 +6782,9 @@ fn py_build_features() -> std::collections::HashMap<String, bool> {
         ("llvm_jit", cfg!(feature = "jit") || cfg!(feature = "cuda")),
         ("cranelift_jit", cfg!(feature = "cranelift")),
         ("parallel", cfg!(feature = "parallel")),
-        ("numpy", cfg!(feature = "numpy")),
+        // `cuda` stays: it is falsifiable. `true` guarantees `ak.compile_cuda`
+        // and `ak.CudaCompiledFn` exist, `false` guarantees they do not.
         ("cuda", cfg!(feature = "cuda")),
-        ("groebner_cuda", cfg!(feature = "groebner-cuda")),
     ]
     .into_iter()
     .map(|(name, enabled)| (name.to_string(), enabled))
@@ -7272,12 +7419,44 @@ impl PyEvaluationResult {
     }
 }
 
+/// The Python type name of `value`, for error messages. Never fails: a type
+/// whose `__name__` cannot be read is reported as `<unknown>` rather than
+/// replacing the caller's real error with a second one.
+fn py_type_name(value: &Bound<'_, PyAny>) -> String {
+    value
+        .get_type()
+        .name()
+        .map(|n| n.to_string())
+        .unwrap_or_else(|_| "<unknown>".to_string())
+}
+
+/// `str(value.<attr>)`, or `None` if the attribute is missing or unreadable.
+fn attr_as_string(value: &Bound<'_, PyAny>, attr: &str) -> Option<String> {
+    value.getattr(attr).ok()?.str().ok()?.extract().ok()
+}
+
 fn exact_binding(value: &Bound<'_, PyAny>) -> PyResult<Rational> {
     if let Ok(integer) = value.extract::<i64>() {
         return Ok(Rational::from(integer));
     }
-    let numerator: String = value.getattr("numerator")?.str()?.extract()?;
-    let denominator: String = value.getattr("denominator")?.str()?.extract()?;
+    // `value.getattr("numerator")?` used to propagate a bare `AttributeError`
+    // for anything that is neither an int nor a `Fraction` — including an
+    // `Expr`, which is the obvious thing to pass as `residue(f, z, point)`.
+    // That error named this function's implementation rather than the caller's
+    // mistake, and `AttributeError` is not an `AlkahestError`, so it escaped
+    // `except ak.AlkahestError` entirely. Probe instead of propagate.
+    let (numerator, denominator) = match (
+        attr_as_string(value, "numerator"),
+        attr_as_string(value, "denominator"),
+    ) {
+        (Some(n), Some(d)) => (n, d),
+        _ => {
+            return Err(PyTypeError::new_err(format!(
+                "exact bindings must be int or fractions.Fraction, got {}",
+                py_type_name(value)
+            )))
+        }
+    };
     let numerator = Integer::parse(numerator)
         .map_err(|_| PyTypeError::new_err("exact bindings must be int or fractions.Fraction"))?
         .complete();
@@ -9926,8 +10105,7 @@ fn py_primary_decomposition(
         gb_polys.push(gbp);
     }
     drop(pool);
-    let comps = primary_decomposition(gb_polys, MonomialOrder::Lex)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let comps = primary_decomposition(gb_polys, MonomialOrder::Lex).map_err(ideal_error_to_py)?;
     let mut out = Vec::with_capacity(comps.len());
     for c in comps {
         out.push(Py::new(
@@ -9994,8 +10172,7 @@ fn py_ideal_radical(
         gb_polys.push(gbp);
     }
     drop(pool);
-    let gb = core_ideal_radical(gb_polys, MonomialOrder::Lex)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let gb = core_ideal_radical(gb_polys, MonomialOrder::Lex).map_err(ideal_error_to_py)?;
     Py::new(
         py,
         PyGroebnerBasis {
@@ -10349,7 +10526,11 @@ fn py_solve_numerical(
 ///     ``float`` (Groebner with ``numeric=True``, or ``method="homotopy"``).
 ///     Solutions are a *set*: a double root is one entry, not two. Every
 ///     parameter-free tuple has been substituted back into the equations you
-///     passed and could not be shown to violate them.
+///     passed and could not be shown to violate them. A tuple containing a free
+///     parameter is **not** a number and is returned unverified, under the
+///     non-vanishing hypotheses reported by
+///     :func:`alkahest.solve_side_conditions` — ``solve([a*x - b], [x])`` is
+///     ``b/a`` *for* ``a ≠ 0``, and that condition is listed there.
 /// GroebnerBasis
 ///     When ``method="groebner"`` and no finite solution list could be
 ///     produced — usually a positive-dimensional ideal, but also when the
@@ -10376,6 +10557,9 @@ fn py_solve(
     let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
     alkahest_core::check_expr_depths(&pool_py.borrow(py).inner, &eq_ids)
         .map_err(depth_error_to_py)?;
+    // `solve_side_conditions()` must describe *this* call, including the paths
+    // below that never reach the symbolic solver (homotopy, transcendental).
+    reset_solve_side_conditions();
 
     if method == "homotopy" {
         let opts = HomotopyOpts::default();
@@ -10429,7 +10613,12 @@ fn py_solve(
 
     let result = {
         let pool = pool_py.borrow(py);
-        solve_polynomial_system(eq_ids.clone(), var_ids.clone(), &pool.inner)
+        let r = solve_polynomial_system(eq_ids.clone(), var_ids.clone(), &pool.inner);
+        // Whatever the back-substitution had to assume about a parametric
+        // leading coefficient, rendered while the pool is in hand — see
+        // `py_solve_side_conditions`.
+        capture_solve_side_conditions(&pool.inner);
+        r
     };
 
     // B5: `numeric=True` means the caller accepts floats — when Lex back-substitution
@@ -10463,6 +10652,61 @@ fn py_solve(
     }
 
     finite_solutions_to_py(py, result, &pool_py, &var_ids, numeric)
+}
+
+#[cfg(feature = "groebner")]
+thread_local! {
+    /// Hypotheses recorded by the most recent `solve` on this thread, rendered
+    /// against the pool that call used.
+    static SOLVE_SIDE_CONDITIONS: std::cell::RefCell<Vec<String>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Reset both ends of the side-condition channel at the start of a `solve`.
+#[cfg(feature = "groebner")]
+fn reset_solve_side_conditions() {
+    let _ = alkahest_core::solver::take_solve_side_conditions();
+    SOLVE_SIDE_CONDITIONS.with(|c| c.borrow_mut().clear());
+}
+
+/// Render the hypotheses the core solver just assumed, for
+/// [`py_solve_side_conditions`].
+#[cfg(feature = "groebner")]
+fn capture_solve_side_conditions(pool: &alkahest_core::ExprPool) {
+    let rendered: Vec<String> = alkahest_core::solver::take_solve_side_conditions()
+        .iter()
+        .map(|c| c.display_with(pool).to_string())
+        .collect();
+    SOLVE_SIDE_CONDITIONS.with(|c| *c.borrow_mut() = rendered);
+}
+
+/// `alkahest.solve_side_conditions() -> list[str]`
+///
+/// The hypotheses the most recent :func:`alkahest.solve` on this thread
+/// **assumed** in order to return the solutions it did — one string per
+/// condition, e.g. ``"a ≠ 0"``.
+///
+/// ``solve([a*x - b], [x])`` returns ``b/a``, which is the solution *for
+/// ``a ≠ 0``*: at ``a = 0`` the equation reads ``-b = 0``, so there is either no
+/// solution (``b ≠ 0``) or every ``x`` (``b = 0``), and neither of those is
+/// ``b/a``. That generic-parameter reading is deliberate and useful, but a
+/// parametric tuple is not a number, so it is returned **unverified** — nothing
+/// substitutes it back — and the hypothesis is the only signal a caller can
+/// audit.
+///
+/// This mirrors ``DerivedResult.verification["side_conditions"]`` and
+/// :attr:`alkahest.ZeilbergerCertificate.side_conditions`; ``solve`` returns
+/// plain ``dict`` s, which cannot carry the attribute, so it is reported beside
+/// the result instead.
+///
+/// An empty list means the solver *proved* every coefficient it divided by to
+/// be non-zero — not that it did not look. Reset by each ``solve`` call, so
+/// read it before the next one; repeated reads of the same call agree.
+#[cfg(feature = "groebner")]
+#[pyfunction]
+#[pyo3(name = "solve_side_conditions")]
+fn py_solve_side_conditions() -> Vec<String> {
+    SOLVE_SIDE_CONDITIONS.with(|c| c.borrow().clone())
 }
 
 /// Shared formatting for a [`SolutionSet`] result into the Python return shape
@@ -10600,6 +10844,17 @@ fn py_triangularize(
     match result {
         Err(e) => Python::with_gil(|py2| {
             let exc_type = py2.get_type_bound::<PySolverError>();
+            // `triangularize` reports "this needs a splitting decomposition" as
+            // `NotPolynomial` (the enum is public and exhaustive) and records the
+            // real reason out of band. Recover it so the refusal raises its own
+            // `E-SOLVE-004` rather than `E-SOLVE-001`, which means something else
+            // entirely — a genuinely non-polynomial equation.
+            if matches!(e, alkahest_core::SolverError::NotPolynomial(_)) {
+                if let Some(r) = alkahest_core::solver::regular_chains::take_triangularize_refusal()
+                {
+                    return Err(make_structured_err(py2, &exc_type, &r));
+                }
+            }
             Err(make_structured_err(py2, &exc_type, &e))
         }),
         Ok(chains) => {
@@ -11226,6 +11481,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add_function(wrap_pyfunction!(py_solve_numerical, m)?)?;
         m.add_function(wrap_pyfunction!(py_diophantine, m)?)?;
         m.add_function(wrap_pyfunction!(py_solve, m)?)?;
+        m.add_function(wrap_pyfunction!(py_solve_side_conditions, m)?)?;
         m.add_function(wrap_pyfunction!(py_triangularize, m)?)?;
         m.add_function(wrap_pyfunction!(py_primary_decomposition, m)?)?;
         m.add_function(wrap_pyfunction!(py_ideal_radical, m)?)?;

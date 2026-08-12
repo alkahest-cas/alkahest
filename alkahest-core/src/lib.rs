@@ -209,7 +209,10 @@ pub use diffalg::{
     DifferentialRanking, DifferentialRing, RegularDifferentialChain, RosenfeldGroebnerResult,
 };
 #[cfg(feature = "groebner")]
-pub use ideal::{primary_decomposition, radical, PrimaryComponent, PrimaryDecompositionError};
+pub use ideal::{
+    primary_decomposition, radical, take_ideal_refusal, IdealRefusal, PrimaryComponent,
+    PrimaryDecompositionError,
+};
 pub use modular::{
     is_prime, lift_crt, mignotte_bound, rational_reconstruction, reduce_mod, select_lucky_prime,
     ModularError, ModularValue, MultiPolyFp,
@@ -260,7 +263,8 @@ pub mod stable {
     };
     #[cfg(feature = "groebner")]
     pub use crate::ideal::{
-        primary_decomposition, radical, PrimaryComponent, PrimaryDecompositionError,
+        primary_decomposition, radical, take_ideal_refusal, IdealRefusal, PrimaryComponent,
+        PrimaryDecompositionError,
     };
     pub use crate::integrate::{integrate, integrate_definite, IntegrationError};
     pub use crate::jit::{compile, CompileCache, CompiledFn, JitError};
@@ -398,13 +402,13 @@ pub mod experimental {
     #[cfg(feature = "parallel")]
     pub use crate::simplify::redex::{simplify_redex, simplify_redex_with_config};
 
-    #[cfg(feature = "groebner-cuda")]
-    pub use crate::poly::groebner::GpuGroebnerError;
     #[cfg(feature = "groebner")]
     pub use crate::poly::groebner::{
         compute_groebner_basis_f5, fglm, grevlex_staircase, is_zero_dimensional, GbPoly,
         GroebnerBasis, MonomialOrder,
     };
+    #[cfg(feature = "groebner-cuda")]
+    pub use crate::poly::groebner::{GpuBackendReport, GpuGroebnerError};
 
     /// Bounded content-addressed expression pool (RFC 0001). Not used by default
     /// [`crate::ExprPool`]; unit-tested prototype only.

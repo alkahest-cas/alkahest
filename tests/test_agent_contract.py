@@ -1,6 +1,7 @@
 """Machine-readable agent contract tests."""
 
 import alkahest
+import pytest
 
 
 def test_capabilities_reports_installed_build_features():
@@ -8,7 +9,10 @@ def test_capabilities_reports_installed_build_features():
 
     # v2: `verification` gained a generated `coverage` block and dropped the
     # never-emitted `lean_checked` status. See tests/test_certificate_ledger.py.
-    assert caps["contract_version"] == 2
+    # v3: `features` dropped `groebner_cuda` and `numpy` — see
+    # `test_every_advertised_feature_has_an_entry_point` for the rule that
+    # removed them and the invariant that keeps the next one out.
+    assert caps["contract_version"] == 3
     assert {"groebner", "jit", "egraph", "parallel", "features", "primitives", "verification"} <= (
         caps.keys()
     )
@@ -20,10 +24,10 @@ def test_capabilities_reports_installed_build_features():
         "llvm_jit",
         "cranelift_jit",
         "parallel",
-        "numpy",
         "cuda",
-        "groebner_cuda",
     } == caps["features"].keys()
+    assert "groebner_cuda" not in caps["features"]
+    assert "numpy" not in caps["features"]
     assert caps["groebner"] is caps["features"]["groebner"]
     assert caps["egraph"] is caps["features"]["egraph"]
     assert caps["parallel"] is caps["features"]["parallel"]
@@ -174,6 +178,152 @@ def test_advertised_cuda_capability_matches_the_public_namespace():
         f"capabilities() reports cuda={features['cuda']} but the public "
         f"namespace {'exposes' if reachable else 'does not expose'} the CUDA "
         "entry points; the contract and the namespace must agree"
+    )
+
+
+def _probe_egraph():
+    pool = alkahest.ExprPool()
+    x = pool.symbol("x")
+    assert alkahest.simplify_egraph(x + pool.integer(0)).value is not None
+    # The native module's own marker must agree with the reported bit.
+    assert alkahest.alkahest.HAS_EGRAPH is True
+
+
+def _probe_groebner():
+    pool = alkahest.ExprPool()
+    x = pool.symbol("x")
+    assert hasattr(alkahest, "GroebnerBasis")
+    assert alkahest.solve([x * x - pool.integer(1)], [x])
+
+
+def _probe_parallel():
+    # `simplify_par` is *not* a witness: it exists on every build and degrades
+    # to the sequential path when the feature is off, so it cannot tell the
+    # bit apart from its negation. These two methods genuinely appear and
+    # disappear with `--features parallel`.
+    assert hasattr(alkahest.CompiledFn, "call_batch_raw_par")
+    assert hasattr(alkahest.CompiledFn, "call_batch_buffer_par")
+
+
+def _probe_native_jit():
+    assert alkahest.jit_is_available() is True
+    pool = alkahest.ExprPool()
+    x = pool.symbol("x")
+    fn = alkahest.compile_expr(x * x, [x])
+    assert fn([3.0]) == pytest.approx(9.0)
+
+
+def _probe_cuda():
+    assert hasattr(alkahest, "compile_cuda")
+    assert hasattr(alkahest, "CudaCompiledFn")
+    assert "compile_cuda" in alkahest.__all__
+
+
+#: The whole point of a capability contract: an agent reads it once and picks
+#: an operation without probing. That makes every key a promise, so every key
+#: needs a named way to cash it in. `test_every_advertised_feature_has_an_entry_point`
+#: below fails if a bit is added without one — which is what `groebner_cuda`
+#: and `numpy` both lacked.
+_FEATURE_ENTRY_POINTS = {
+    "egraph": _probe_egraph,
+    "groebner": _probe_groebner,
+    "jit": _probe_native_jit,
+    "llvm_jit": _probe_native_jit,
+    "cranelift": _probe_native_jit,
+    "cranelift_jit": _probe_native_jit,
+    "parallel": _probe_parallel,
+    "cuda": _probe_cuda,
+}
+
+#: `(owner, attribute)` pairs that exist if and only if the bit is `True`.
+#: Checked in *both* directions, so this catches a bit reading `True` with the
+#: entry point missing (the `cuda` bug in `d139a46`) *and* a bit reading
+#: `False` on a build that really does have it.
+_FEATURE_EXCLUSIVE_NAMES = {
+    "cuda": (("alkahest", "compile_cuda"), ("alkahest", "CudaCompiledFn")),
+    "parallel": (
+        ("alkahest.CompiledFn", "call_batch_raw_par"),
+        ("alkahest.CompiledFn", "call_batch_buffer_par"),
+    ),
+}
+
+_EXCLUSIVE_OWNERS = {
+    "alkahest": lambda: alkahest,
+    "alkahest.CompiledFn": lambda: alkahest.CompiledFn,
+}
+
+
+def test_every_advertised_feature_has_an_entry_point():
+    """Every `True` bit in `capabilities()["features"]` must be cashable.
+
+    This is the generalisation of the two bugs that motivated contract v3, and
+    would have caught both at once:
+
+    * `groebner_cuda` was `True` on a `--features groebner-cuda` build while
+      the string `groebner_cuda` appeared exactly once anywhere in
+      `alkahest-py` — the capability line itself. No binding, no `*gpu*` name
+      in the public or the private module, and `GroebnerBasis` exposing only
+      CPU methods. Strictly worse than the `cuda` bug fixed in `d139a46`,
+      which at least had a private route in.
+    * `numpy` mapped to a Cargo feature gating a crate `lib.rs` never used,
+      while `ak.numpy_eval` worked perfectly with the bit `False`. It meant
+      nothing and correlated with nothing.
+
+    Both were removed rather than wired up: a bit that reads `False` honestly
+    beats one that reads `True` and lies, and a bit that means nothing at all
+    is better gone than left to be misread. The rule this test enforces is
+    that the decision has to be made *before* a key ships, because the failure
+    mode of getting it wrong is a caller trusting something it should not —
+    the same class of defect as a silent wrong answer.
+    """
+    features = alkahest.capabilities()["features"]
+
+    assert set(_FEATURE_ENTRY_POINTS) == set(features), (
+        "every capability bit needs a named entry point a caller can reach. "
+        f"Undeclared bits: {sorted(set(features) - set(_FEATURE_ENTRY_POINTS))}; "
+        f"stale probes: {sorted(set(_FEATURE_ENTRY_POINTS) - set(features))}. "
+        "Add a probe, or drop the bit."
+    )
+
+    for name, enabled in sorted(features.items()):
+        if enabled:
+            _FEATURE_ENTRY_POINTS[name]()
+
+    for name, exclusive in _FEATURE_EXCLUSIVE_NAMES.items():
+        for owner_name, attr in exclusive:
+            owner = _EXCLUSIVE_OWNERS[owner_name]()
+            present = hasattr(owner, attr)
+            assert present is features[name], (
+                f"capabilities() reports {name}={features[name]} but "
+                f"{owner_name}.{attr} {'exists' if present else 'does not exist'}; "
+                "the contract and the namespace must agree"
+            )
+
+
+def test_removed_capability_bits_stay_removed():
+    """`groebner_cuda` and `numpy` must not reappear without an entry point.
+
+    Re-adding either is a real decision, not a merge accident: it means a
+    Python binding now exists, and this test plus `_FEATURE_ENTRY_POINTS`
+    above must both be updated to say what it is.
+    """
+    features = alkahest.capabilities()["features"]
+    for gone in ("groebner_cuda", "numpy"):
+        assert gone not in features
+        assert features.get(gone, False) is False
+
+    # The GPU Gröbner kernel is still Rust-only, by design: the crossover
+    # policy in docs/symbolic-gpu-benchmarks.md says production dispatch must
+    # not prefer the GPU until the benchmark harness says it wins. If that
+    # changes, the binding lands first and the bit follows it — never the other
+    # way round, which is the order that produced the overclaim.
+    gpu_names = sorted(
+        name for name in set(dir(alkahest)) | set(dir(alkahest.alkahest)) if "gpu" in name.lower()
+    )
+    assert not gpu_names, (
+        f"a GPU entry point appeared ({gpu_names}) without a capability bit "
+        "to advertise it. Add the bit and a probe in _FEATURE_ENTRY_POINTS, or "
+        "keep the binding private."
     )
 
 

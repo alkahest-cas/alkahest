@@ -695,6 +695,209 @@ def _lll_rows_stay_in_the_lattice(
     return _survives_a_panic(op)
 
 
+# ---------------------------------------------------------------------------
+# Ideal-theory helpers (3.8 silent-error hunt #2, findings 16)
+# ---------------------------------------------------------------------------
+
+#: Third variable, for the three-variable monomial-ideal cases.
+_Z = POOL.symbol("z")
+
+
+def _radical_membership(
+    polys: list[ak.Expr], unknowns: list[ak.Expr], probes: list[ak.Expr]
+) -> Callable[[], tuple[bool, ...]]:
+    """Answer = which *probes* the reported √I contains.
+
+    Membership is the only thing a caller can ask a ``GroebnerBasis``, so it is
+    what the contract has to be written against: a radical that does not contain
+    a polynomial whose square it does contain is refuted by its own answers, no
+    oracle needed.
+    """
+
+    def op() -> tuple[bool, ...]:
+        r = ak.radical(polys, unknowns)
+        return tuple(bool(r.contains(p)) for p in probes)
+
+    return op
+
+
+def _component_count(polys: list[ak.Expr], unknowns: list[ak.Expr]) -> Callable[[], int]:
+    """Answer = how many components ``primary_decomposition`` reports."""
+
+    def op() -> int:
+        return len(ak.primary_decomposition(polys, unknowns))
+
+    return op
+
+
+def _associated_primes_survive_a_witness(
+    polys: list[ak.Expr],
+    unknowns: list[ak.Expr],
+    witnesses: list[tuple[ak.Expr, ak.Expr]],
+) -> Callable[[], bool]:
+    """Answer = does every reported ``associated_prime`` pass the definition?
+
+    A prime ``P`` containing ``a·b`` must contain ``a`` or ``b``.  Each witness
+    is such a pair, so a component that holds the product and neither factor is
+    *not* prime — and the field is named ``associated_prime``, so a caller is
+    entitled to treat it as one.  The check is the definition itself, run
+    against the library's own membership test.
+    """
+
+    def op() -> bool:
+        dec = ak.primary_decomposition(polys, unknowns)
+        if not dec:
+            raise ak.SolverError("primary_decomposition returned no components to check")
+        for component in dec:
+            prime = component.associated_prime()
+            for a, b in witnesses:
+                if prime.contains(a * b) and not (prime.contains(a) or prime.contains(b)):
+                    return False
+        return True
+
+    return op
+
+
+def _shortest_chain_length(equations: list[ak.Expr], unknowns: list[ak.Expr]) -> Callable[[], int]:
+    """Answer = the fewest polynomials in any chain ``triangularize`` returns.
+
+    A triangular set cutting out a *finite* set in ``n`` variables needs one
+    polynomial per variable: with fewer, some variable is unconstrained and the
+    chain describes a positive-dimensional set.  The minimum over chains is the
+    number that moves the moment one generator is dropped.
+    """
+
+    def op() -> int:
+        chains = ak.triangularize(equations, unknowns)
+        if not chains:
+            raise ak.SolverError("triangularize reported the unit ideal")
+        return min(len(c.polys()) for c in chains)
+
+    return op
+
+
+# ---------------------------------------------------------------------------
+# Hypotheses and bounds that were reached silently (3.8 pre-release sweep)
+# ---------------------------------------------------------------------------
+
+#: Parameters for the parametric-solve cases.  Free symbols that a `solve` call
+#: does not list as unknowns become parameters, and the answer is then only
+#: claimed "generically" — the whole point of these two cases.
+_A = POOL.symbol("a")
+_B = POOL.symbol("b")
+
+
+def _undisclosed_solve_hypotheses(
+    equations: list[ak.Expr],
+    unknowns: list[ak.Expr],
+    witness: dict[ak.Expr, float],
+    hypothesis_about: ak.Expr,
+) -> Callable[[], float]:
+    """Answer = how many returned coordinates fail at *witness* without being excluded.
+
+    ``solve([a·x − b], [x])`` returns ``b/a``.  That is the solution **for
+    ``a ≠ 0``**: at ``a = 0`` the equation reads ``−b = 0``, so the system has no
+    solution when ``b ≠ 0`` and *every* ``x`` when ``b = 0`` — and ``b/a`` is
+    neither, it is not even a number there.  A parametric tuple is returned
+    unverified by design (there is nothing to substitute back), so stating the
+    hypothesis is the only honest signal available.
+
+    The case is satisfied either way an honest library can behave: state the
+    condition on *hypothesis_about* (:func:`alkahest.solve_side_conditions`), or
+    do not return a tuple that fails at the witness.  Counting unexcluded
+    refuting witnesses keeps the answer a finite number — the coordinate itself
+    does not evaluate there, which is exactly the complaint.
+    """
+
+    def op() -> float:
+        sols = ak.solve(equations, unknowns)
+        if not isinstance(sols, list) or not sols:
+            raise ak.SolverError("solve produced no parametric solution to audit")
+        stated = any(str(hypothesis_about) in str(c) for c in ak.solve_side_conditions())
+        if stated:
+            return 0.0
+        refuting = 0.0
+        for sol in sols:
+            for value in sol.values():
+                if ak.evaluate(value, witness, mode="complex").status != "ok":
+                    refuting += 1.0
+        return refuting
+
+    return op
+
+
+def _solve_states_no_unnecessary_hypothesis(
+    equations: list[ak.Expr],
+    unknowns: list[ak.Expr],
+    env: dict[ak.Expr, float],
+    expected: float,
+) -> Callable[[], float]:
+    """Answer = how many hypotheses ``solve`` reported for an answer that needs none.
+
+    The control for :func:`_undisclosed_solve_hypotheses`: a gate that a stated
+    condition passes must also fail a library that states one unconditionally.
+    ``2x − b = 0`` divides by the literal ``2``, provably non-zero, so the
+    correct number of hypotheses is ``0`` — and the solution itself is still
+    checked at *env*, so "state nothing and solve nothing" does not pass either.
+    """
+
+    def op() -> float:
+        sols = ak.solve(equations, unknowns)
+        if not isinstance(sols, list) or len(sols) != 1:
+            raise ak.SolverError("expected exactly one parametric solution")
+        (sol,) = sols
+        conditions = ak.solve_side_conditions()
+        got = float(ak.eval_expr(next(iter(sol.values())), env))
+        if abs(got - expected) > 1e-9:
+            raise AssertionError(f"solution evaluates to {got}, expected {expected}")
+        return float(len(conditions))
+
+    return op
+
+
+def _undisclosed_expansion_limit(base: ak.Expr, exponent: int) -> Callable[[], float]:
+    """Answer = 1.0 if a bounded expansion no-oped without saying so, else 0.0.
+
+    ``simplify_expanded`` is asked to expand.  When the internal size bound stops
+    it, the *value* it returns is the input — mathematically equal, and so
+    impossible to tell apart from "this is already expanded" or "this cannot be
+    expanded further".  Either the expansion happens, or the derivation log
+    records that a bound was reached; silently doing neither is the defect.
+    """
+
+    def op() -> float:
+        power = base ** _int(exponent)
+        r = ak.simplify_expanded(power)
+        # Compared against plain `simplify`, not against the input: both flatten
+        # `((x+y)+z)` to `(x+y+z)`, so only expansion can separate them.
+        expanded = str(r.value) != str(ak.simplify(power).value)
+        disclosed = any("limit" in step["rule"] for step in r.steps)
+        return 0.0 if (expanded or disclosed) else 1.0
+
+    return op
+
+
+def _expansion_within_the_budget(base: ak.Expr, exponent: int, at: float) -> Callable[[], float]:
+    """Answer = the expanded polynomial's value at *at*.
+
+    The control: a power inside the bound must actually be expanded (not the
+    original ``Pow``), must record **no** limit step — so the disclosure cannot
+    be emitted unconditionally — and must still agree with the input at a sample
+    point, which is what makes "expanded" a claim about form only.
+    """
+
+    def op() -> float:
+        power = base ** _int(exponent)
+        r = ak.simplify_expanded(power)
+        if str(r.value) == str(ak.simplify(power).value):
+            raise AssertionError("a power inside the expansion budget was left unexpanded")
+        if any("limit" in step["rule"] for step in r.steps):
+            raise AssertionError("a limit step was recorded for an expansion that happened")
+        return float(ak.eval_expr(r.value, {X: at}))
+
+    return op
+
+
 CASES: list[Case] = [
     # ── real quantifier elimination ──────────────────────────────────────────
     #
@@ -3175,6 +3378,143 @@ CASES: list[Case] = [
         verified_by="arccos is continuous on [-1,1] and arccos 1 = 0.",
     ),
     # -----------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # Ideal theory: radicals, associated primes, triangular decomposition.
+    #
+    # The shape of the failure these guard against is a routine that cannot
+    # compute the answer returning its *input* instead — √I = I asserted with
+    # nothing behind it, or the ideal itself reported as a primary component.
+    # That is worse than an ordinary wrong number, because the caller reads a
+    # field named `associated_prime` and reasonably takes the name as a
+    # guarantee.
+    # -----------------------------------------------------------------------
+    Case(
+        id="ideal_radical_of_a_square_contains_its_base",
+        subsystem="solving",
+        statement="√⟨(x−y)²⟩ = ⟨x−y⟩, so the radical contains x−y as well as (x−y)²",
+        op=_radical_membership([(X - Y) ** 2], [X, Y], [(X - Y) ** 2, X - Y, Y]),
+        contract=Returns((True, True, False)),
+        verified_by=(
+            "ℚ[x,y]/(x−y) ≅ ℚ[y] is an integral domain, so ⟨x−y⟩ is prime; it contains "
+            "(x−y)², hence √⟨(x−y)²⟩ ⊆ ⟨x−y⟩, and (x−y)² ∈ ⟨(x−y)²⟩ gives the reverse "
+            "containment — the radical is exactly ⟨x−y⟩. y ∉ ⟨x−y⟩ because every element "
+            "of ⟨x−y⟩ vanishes on the line x = y and y does not. No oracle: the answer "
+            "`contains((x−y)²)=True, contains(x−y)=False` is refuted by the definition of "
+            "a radical on its own."
+        ),
+    ),
+    Case(
+        id="ideal_associated_prime_of_a_difference_of_squares_is_prime",
+        subsystem="solving",
+        statement="every associated prime of ⟨x²−y²⟩ must be prime: it holds (x−y)(x+y)",
+        op=_associated_primes_survive_a_witness([X**2 - Y**2], [X, Y], [(X - Y, X + Y)]),
+        contract=Returns(True),
+        verified_by=(
+            "Definition of a prime ideal: ab ∈ P ⇒ a ∈ P or b ∈ P. Here ab = x²−y² lies in "
+            "every component of a decomposition of ⟨x²−y²⟩, so a component holding neither "
+            "x−y nor x+y is not prime. ⟨x²−y²⟩ itself is the failing case: x−y ∉ ⟨x²−y²⟩ by "
+            "degree, and x+y ∉ ⟨x²−y²⟩ likewise. The witness is checked with the library's "
+            "own membership test, so nothing outside alkahest is consulted."
+        ),
+    ),
+    Case(
+        id="ideal_primary_decomposition_of_a_difference_of_squares",
+        subsystem="solving",
+        statement="⟨x²−y²⟩ = ⟨x−y⟩ ∩ ⟨x+y⟩ — two components, and ⟨x²−y²⟩ is not primary",
+        op=_component_count([X**2 - Y**2], [X, Y]),
+        contract=Returns(2),
+        verified_by=(
+            "x−y and x+y are non-associate irreducibles of the UFD ℚ[x,y], so their "
+            "generated ideals are prime and coprime, and ⟨x−y⟩ ∩ ⟨x+y⟩ = ⟨(x−y)(x+y)⟩ = "
+            "⟨x²−y²⟩. Two prime components, neither redundant since neither contains the "
+            "other. ⟨x²−y²⟩ on its own is not primary: (x−y)(x+y) ∈ I, x−y ∉ I, and no "
+            "power of x+y is divisible by x²−y² because x−y is irreducible and not "
+            "associate to x+y."
+        ),
+    ),
+    Case(
+        id="ideal_squarefree_monomial_decomposition_is_irredundant",
+        subsystem="solving",
+        statement="⟨xz, yz⟩ = ⟨z⟩ ∩ ⟨x,y⟩ — a radical ideal has exactly its minimal primes",
+        op=_component_count([X * _Z, Y * _Z], [X, Y, _Z]),
+        contract=Returns(2),
+        verified_by=(
+            "A monomial ideal generated by square-free monomials is radical, so its "
+            "associated primes are exactly its minimal primes. V(xz, yz) = V(z) ∪ V(x,y), "
+            "and ⟨z⟩ ∩ ⟨x,y⟩ = ⟨xz, yz⟩ by the coprime split ⟨J, uv⟩ = ⟨J,u⟩ ∩ ⟨J,v⟩ applied "
+            "twice. A third component ⟨x,z⟩ is provably redundant because it contains ⟨z⟩, "
+            "so intersecting with it changes nothing."
+        ),
+    ),
+    Case(
+        id="solve_triangularize_keeps_both_generators_of_a_two_point_ideal",
+        subsystem="solving",
+        statement="triangularize([x−y−1, y²−2]) must return chains of two polynomials",
+        op=_shortest_chain_length([X - Y - 1, Y**2 - 2], [X, Y]),
+        contract=Returns(2),
+        verified_by=(
+            "{x−y−1, y²−2} is already a reduced lex Gröbner basis, and its variety is the "
+            "two points (1±√2, ±√2) — a zero-dimensional set. A triangular set cutting out "
+            "a finite set in two variables needs one polynomial per variable: a single "
+            "non-constant polynomial in x and y cuts out a curve, so a one-polynomial chain "
+            "cannot describe two points whichever generator was kept."
+        ),
+    ),
+    # Controls: the ideal routines must still *answer* where the mathematics is
+    # within reach, so a library that refused every ideal question could not
+    # pass the four traps above by attrition.
+    Case(
+        id="ideal_control_radical_of_a_monomial_ideal",
+        subsystem="solving",
+        statement="√⟨x², xy⟩ = ⟨x⟩",
+        op=_radical_membership([X**2, X * Y], [X, Y], [X, X * Y, Y]),
+        contract=Returns((True, True, False)),
+        verified_by=(
+            "x² and xy both lie in ⟨x⟩, and ⟨x⟩ is prime (ℚ[x,y]/(x) ≅ ℚ[y] is a domain), "
+            "so √⟨x², xy⟩ ⊆ ⟨x⟩; x² ∈ ⟨x², xy⟩ gives x ∈ √I, so the two are equal. "
+            "y ∉ ⟨x⟩ because y does not vanish on the line x = 0."
+        ),
+    ),
+    Case(
+        id="ideal_control_radical_of_a_zero_dimensional_ideal",
+        subsystem="solving",
+        statement="√⟨x²+y², xy⟩ = ⟨x,y⟩",
+        op=_radical_membership([X**2 + Y**2, X * Y], [X, Y], [X, Y]),
+        contract=Returns((True, True)),
+        verified_by=(
+            "y(x²+y²) − x(xy) = y³ and x(x²+y²) − y(xy) = x³ are both in I, so x and y lie "
+            "in √I; and I ⊆ ⟨x,y⟩ since every generator has zero constant term, so "
+            "√I ⊆ √⟨x,y⟩ = ⟨x,y⟩ (⟨x,y⟩ is maximal, hence prime). The control for the "
+            "radical traps: this ideal is neither monomial nor principal, so a fix that "
+            "simply stopped answering outside those two classes would fail here."
+        ),
+    ),
+    Case(
+        id="ideal_control_primary_decomposition_of_two_points",
+        subsystem="solving",
+        statement="⟨x²−1, y⟩ = ⟨x−1, y⟩ ∩ ⟨x+1, y⟩ — two maximal components",
+        op=_component_count([X**2 - 1, Y], [X, Y]),
+        contract=Returns(2),
+        verified_by=(
+            "V(x²−1, y) = {(1,0), (−1,0)}, two distinct rational points, and the ideal is "
+            "radical because x²−1 is square-free — so it is the intersection of the two "
+            "maximal ideals of those points. The control for the decomposition traps: a "
+            "library that refused every primary decomposition would fail here."
+        ),
+    ),
+    Case(
+        id="solve_control_triangularize_a_linear_system",
+        subsystem="solving",
+        statement="triangularize([x+y−1, x−y]) returns a chain of two polynomials",
+        op=_shortest_chain_length([X + Y - 1, X - Y], [X, Y]),
+        contract=Returns(2),
+        verified_by=(
+            "The system has the single solution (½, ½); its reduced lex basis is "
+            "{x − ½, y − ½}, already triangular with one polynomial per variable. The "
+            "control for the triangularize trap: refusing every system would fail here."
+        ),
+    ),
+    # -----------------------------------------------------------------------
     # Rust panics crossing the FFI boundary.
     #
     # Not silent errors — but `pyo3_runtime.PanicException` inherits
@@ -3197,6 +3537,75 @@ CASES: list[Case] = [
             "Pre-fix this was a Rust panic (RatFn: zero denominator) arriving as "
             "pyo3_runtime.PanicException, a BaseException that `except Exception` does not "
             "catch. The op wraps it so the gate reports the failure instead of dying."
+        ),
+    ),
+    # -----------------------------------------------------------------------
+    # Hypotheses and bounds that were reached silently (3.8 pre-release sweep).
+    #
+    # Neither of these returns a *false* number: the parametric solution is
+    # right for almost every parameter value, and the unexpanded power is equal
+    # to its input.  Both are still answers that claim more than was done — the
+    # shape this corpus exists to catch, one step earlier than a wrong number.
+    # -----------------------------------------------------------------------
+    Case(
+        id="solve_parametric_division_states_its_hypothesis",
+        subsystem="solving",
+        statement="solve([a·x − b], [x]) = b/a holds only for a ≠ 0, and must say so",
+        op=_undisclosed_solve_hypotheses(
+            [_A * X - _B], [X], {_A: 0.0, _B: 1.0}, hypothesis_about=_A
+        ),
+        contract=Returns(0.0),
+        verified_by=(
+            "By hand from the definition: a·x = b has the unique solution b/a when a ≠ 0. "
+            "At a = 0 the equation reads 0·x − b = 0, i.e. −b = 0, so for b ≠ 0 there is no x "
+            "at all and for b = 0 every x is a solution — neither is b/a, which is not defined "
+            "there. The returned tuple is parametric, so it is never substituted back and "
+            "carries no verification of its own; the hypothesis is the only auditable signal."
+        ),
+        note=(
+            "Scored on disclosure, like the zeilberger boundary case: stating a ≠ 0 in "
+            "solve_side_conditions() scores 0, and so would refusing to return b/a at all."
+        ),
+    ),
+    Case(
+        id="solve_control_provable_divisor_states_nothing",
+        subsystem="solving",
+        statement="solve([2x − b], [x]) = b/2 needs no hypothesis — and must state none",
+        op=_solve_states_no_unnecessary_hypothesis([_int(2) * X - _B], [X], {_B: 6.0}, 3.0),
+        contract=Returns(0.0),
+        verified_by=(
+            "2x = b has the solution b/2 for every b: the divisor is the literal 2, which is "
+            "non-zero by inspection, so no side condition is needed. At b = 6 the solution is 3. "
+            "The control for the case above — a library that emits a hypothesis unconditionally "
+            "would pass that one and fail this."
+        ),
+    ),
+    Case(
+        id="expand_power_bound_is_not_a_silent_no_op",
+        subsystem="simplification",
+        statement="simplify_expanded((x+y+z)^9) must expand it or record the bound it hit",
+        op=_undisclosed_expansion_limit(X + Y + _Z, 9),
+        contract=Returns(0.0),
+        verified_by=(
+            "By the multinomial theorem (x+y+z)^9 expands to C(11,2) = 55 distinct monomials, "
+            "so 'already expanded' is false and the returned Pow is not the answer to the "
+            "question asked. Returning the input unchanged is a correct *value* and a "
+            "misleading *result*: .steps is documented as a faithful record of what happened, "
+            "and it recorded nothing at all."
+        ),
+        note="Passes by disclosure (a derivation step) or by doing the expansion.",
+    ),
+    Case(
+        id="expand_control_power_inside_the_budget",
+        subsystem="simplification",
+        statement="simplify_expanded((x+1)^6) = 729 at x = 2, expanded and unremarked",
+        op=_expansion_within_the_budget(X + _int(1), 6, 2.0),
+        contract=Returns(729.0),
+        verified_by=(
+            "(2+1)^6 = 3^6 = 729 by hand; the binomial expansion 1 + 6x + 15x² + 20x³ + 15x⁴ "
+            "+ 6x⁵ + x⁶ at x = 2 gives 1+12+60+160+240+192+64 = 729, so the expanded form must "
+            "agree. The control for the case above: it fails if expansion stops firing, and "
+            "also if a limit step is recorded for an expansion that in fact happened."
         ),
     ),
     Case(

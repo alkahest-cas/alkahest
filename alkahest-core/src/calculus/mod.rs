@@ -14,4 +14,4 @@ pub use asymptotic::{asymptotic_expand, AsymptoticError, AsymptoticExpansion, As
 pub use fps::{Fps, FpsError};
 pub use limits::{limit, LimitDirection, LimitError};
 pub use multilimit::{multilimit, MultiLimit, PathWitness};
-pub use series::{series, Series, SeriesError};
+pub use series::{series, take_series_refusal, Series, SeriesError, SeriesRefusal};

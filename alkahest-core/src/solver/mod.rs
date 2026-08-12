@@ -518,6 +518,60 @@ fn active_solve_vars(poly: &GbPoly, n_solve: usize) -> Vec<usize> {
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// Assumed hypotheses, reported out of band
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    /// Leading coefficients the back-solver divided by without being able to
+    /// prove them non-zero, for the [`solve_polynomial_system`] call in
+    /// progress. De-duplicated, in the order they were assumed.
+    static ASSUMED_NONZERO: std::cell::RefCell<Vec<ExprId>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Record that the solver divided by `lead` without deciding it is non-zero.
+fn assume_nonzero(lead: ExprId) {
+    ASSUMED_NONZERO.with(|c| {
+        let mut v = c.borrow_mut();
+        if !v.contains(&lead) {
+            v.push(lead);
+        }
+    });
+}
+
+/// The hypotheses the solutions from the most recent [`solve_polynomial_system`]
+/// call on this thread rest on, as [`crate::deriv::SideCondition::NonZero`].
+///
+/// `solve([a·x − b], [x])` returns `b/a`, which is the answer **for `a ≠ 0`**:
+/// at `a = 0` the equation is `−b = 0`, so there is either no solution (`b ≠ 0`)
+/// or every `x` (`b = 0`), and neither is `b/a`. The generic-parameter reading
+/// is a deliberate and useful one, but a caller cannot audit an assumption that
+/// is never stated — and a parametric tuple is returned *unverified* by design
+/// (it is not a number, so the post-condition filter has nothing to substitute), so
+/// this is the only honest signal available on that path.
+///
+/// # Why out of band
+///
+/// [`SolutionSet`] is a public *exhaustive* enum and `solve_polynomial_system`'s
+/// return type is public, so neither can grow a conditions field without a major
+/// semver break. The hypotheses therefore travel beside the result, in the shape
+/// `DerivedResult.verification["side_conditions"]` already uses — the same
+/// treatment `zeilberger`'s natural-boundary hypothesis was given, and the same
+/// out-of-band channel as [`crate::matrix::take_zero_test_refusal`].
+///
+/// Consuming, so one call's hypotheses cannot be read as a later call's. Empty
+/// means the solver proved every coefficient it divided by to be non-zero — not
+/// that it did not look.
+pub fn take_solve_side_conditions() -> Vec<crate::deriv::log::SideCondition> {
+    ASSUMED_NONZERO.with(|c| {
+        std::mem::take(&mut *c.borrow_mut())
+            .into_iter()
+            .map(crate::deriv::log::SideCondition::NonZero)
+            .collect()
+    })
+}
+
 /// Can the degree-`d` coefficient be relied on to be non-zero at this partial
 /// assignment?
 ///
@@ -530,18 +584,44 @@ fn active_solve_vars(poly: &GbPoly, n_solve: usize) -> Vec<usize> {
 /// zero on exactly the branch `y = −3/2`.
 ///
 /// A coefficient still mentioning a free parameter is accepted, preserving the
-/// documented generic-parameter reading of `solve([a·x − b], [x]) → b/a`.
-fn leading_is_reliable(lead: ExprId, pool: &ExprPool) -> bool {
+/// documented generic-parameter reading of `solve([a·x − b], [x]) → b/a` — but
+/// it is accepted as an **assumption**, recorded through [`assume_nonzero`] and
+/// reported by [`take_solve_side_conditions`]. The reading is only defensible
+/// while the caller can see what was assumed: `b/a` is the solution for `a ≠ 0`
+/// and is wrong at `a = 0`, where the system has no solution, or every `x`.
+fn leading_is_reliable(lead: ExprId, pool: &ExprPool) -> LeadStatus {
     if let Some(v) = rational_value(lead, pool) {
-        return v != 0;
+        return if v != 0 {
+            LeadStatus::Nonzero
+        } else {
+            LeadStatus::Unusable
+        };
     }
     match verify::CBallEval::default().eval(lead, pool) {
-        Ok(ball) => ball.excludes_zero(),
+        Ok(ball) => {
+            if ball.excludes_zero() {
+                LeadStatus::Nonzero
+            } else {
+                LeadStatus::Unusable
+            }
+        }
         // `Unsupported` is the parametric case; `Undefined` is not a usable
         // coefficient under any reading.
-        Err(verify::VerifyGap::Unsupported) => true,
-        Err(verify::VerifyGap::Undefined) => false,
+        Err(verify::VerifyGap::Unsupported) => LeadStatus::AssumedNonzero,
+        Err(verify::VerifyGap::Undefined) => LeadStatus::Unusable,
     }
+}
+
+/// What [`leading_is_reliable`] could establish about a leading coefficient.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum LeadStatus {
+    /// Proved non-zero — the step is unconditional.
+    Nonzero,
+    /// Not decidable here (it mentions a free parameter): usable only under the
+    /// hypothesis that it does not vanish, which the caller must be told about.
+    AssumedNonzero,
+    /// Zero, or not a usable coefficient under any reading.
+    Unusable,
 }
 
 /// One back-substitution step for one partial assignment: which unknown to
@@ -564,7 +644,7 @@ fn find_step(
     n_solve: usize,
     pool: &ExprPool,
 ) -> Result<Option<(usize, Vec<ExprId>)>, SolverError> {
-    let mut best: Option<(usize, Vec<ExprId>, u32)> = None;
+    let mut best: Option<(usize, Vec<ExprId>, u32, Option<ExprId>)> = None;
     let mut blocked_by_degree: Option<u32> = None;
 
     for g in gens {
@@ -583,20 +663,30 @@ fn find_step(
             blocked_by_degree = Some(blocked_by_degree.map_or(deg, |d: u32| d.min(deg)));
             continue;
         }
-        if best.as_ref().is_some_and(|(_, _, bd)| *bd <= deg) {
+        if best.as_ref().is_some_and(|(_, _, bd, _)| *bd <= deg) {
             continue;
         }
         let coeffs: Vec<ExprId> = (0..=deg)
             .map(|k| extract_coeff_in_var(g, var_idx, k, vars, partial, pool))
             .collect();
-        if !leading_is_reliable(coeffs[deg as usize], pool) {
-            continue;
-        }
-        best = Some((var_idx, coeffs, deg));
+        let lead = coeffs[deg as usize];
+        let assumed = match leading_is_reliable(lead, pool) {
+            LeadStatus::Unusable => continue,
+            LeadStatus::Nonzero => None,
+            LeadStatus::AssumedNonzero => Some(lead),
+        };
+        best = Some((var_idx, coeffs, deg, assumed));
     }
 
     match best {
-        Some((var_idx, coeffs, _)) => Ok(Some((var_idx, coeffs))),
+        // Only the step actually taken contributes a hypothesis: generators
+        // that were examined and passed over divide nothing.
+        Some((var_idx, coeffs, _, assumed)) => {
+            if let Some(lead) = assumed {
+                assume_nonzero(lead);
+            }
+            Ok(Some((var_idx, coeffs)))
+        }
         None => match blocked_by_degree {
             Some(d) => Err(SolverError::HighDegree(d as usize)),
             None => Ok(None),
@@ -823,11 +913,23 @@ fn collect_parameters(equations: &[ExprId], vars: &[ExprId], pool: &ExprPool) ->
 /// coordinates are not numbers (a `0/0` produced by a degenerate division) is
 /// dropped for the same reason, and tuples that denote the same point are
 /// reported once.
+///
+/// # Hypotheses
+///
+/// A *parametric* tuple is not a number and so cannot be checked at all: it is
+/// returned unverified, under whatever non-vanishing assumptions the
+/// back-substitution made about leading coefficients that mention free
+/// parameters.  Those assumptions are not left unsaid — see
+/// [`take_solve_side_conditions`], which must be read before the next call on
+/// this thread.
 pub fn solve_polynomial_system(
     equations: Vec<ExprId>,
     vars: Vec<ExprId>,
     pool: &ExprPool,
 ) -> Result<SolutionSet, SolverError> {
+    // Hypotheses describe *this* call; a caller reading them after it must
+    // never see one left behind by an earlier solve.
+    let _ = take_solve_side_conditions();
     let n_solve = vars.len();
     let params = collect_parameters(&equations, &vars, pool);
     let mut all_vars = vars;
@@ -1235,6 +1337,53 @@ mod tests {
         env.insert(b, 6.0);
         let val = eval_interp(sols[0][0], &env, &pool).expect("eval");
         assert!((val - 3.0).abs() < 1e-10);
+    }
+
+    /// `b/a` is the solution **for `a ≠ 0`**. At `a = 0` the equation reads
+    /// `−b = 0`, which has no solution for `b ≠ 0` and every `x` for `b = 0`;
+    /// the returned tuple is a number for neither. The answer is defensible
+    /// under the generic-parameter reading and indefensible unstated, and a
+    /// parametric tuple is returned unverified, so the hypothesis is the only
+    /// signal the caller gets.
+    #[test]
+    fn a_parametric_division_states_its_non_vanishing_hypothesis() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let a = pool.symbol("a", Domain::Real);
+        let b = pool.symbol("b", Domain::Real);
+        let eq = pool.add(vec![
+            pool.mul(vec![a, x]),
+            pool.mul(vec![pool.integer(-1_i32), b]),
+        ]);
+        let _ = solve_polynomial_system(vec![eq], vec![x], &pool).unwrap();
+
+        let conds = take_solve_side_conditions();
+        assert_eq!(conds.len(), 1, "{conds:?}");
+        let crate::deriv::log::SideCondition::NonZero(id) = conds[0] else {
+            panic!("expected a non-vanishing hypothesis, got {:?}", conds[0]);
+        };
+        assert_eq!(id, a);
+        // Consuming: one call's hypotheses cannot be read as the next call's.
+        assert!(take_solve_side_conditions().is_empty());
+    }
+
+    /// The control: a system whose leading coefficients are *proved* non-zero
+    /// carries no hypothesis. Without this, "state a condition always" would
+    /// pass the test above and say nothing.
+    #[test]
+    fn a_solve_that_proves_its_divisors_states_nothing() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let b = pool.symbol("b", Domain::Real);
+        // 2x − b = 0: the divisor is the literal 2, and b is still a parameter,
+        // so this is the nearest neighbour of the case above.
+        let eq = pool.add(vec![
+            pool.mul(vec![pool.integer(2_i32), x]),
+            pool.mul(vec![pool.integer(-1_i32), b]),
+        ]);
+        let result = solve_polynomial_system(vec![eq], vec![x], &pool).unwrap();
+        assert!(matches!(result, SolutionSet::Finite(ref s) if s.len() == 1));
+        assert!(take_solve_side_conditions().is_empty());
     }
 
     #[test]

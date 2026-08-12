@@ -3,7 +3,7 @@ use super::rules::{
     MulOne, MulZero, PowOne, PowZero, PrimitiveFold, RewriteRule, SqrtInteger, SubSelf,
 };
 use super::rulesets::PatternRuleSet;
-use crate::deriv::log::{DerivationLog, DerivedExpr};
+use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use std::collections::HashMap;
 
@@ -359,12 +359,23 @@ fn is_sorted(args: &[ExprId]) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Simplify `expr` with a custom rule set and config.
+///
+/// With `config.expand` set, a bounded-expansion rule that *declines* — the
+/// power was too large to distribute — contributes a step to the returned log
+/// naming the bound it hit ([`crate::simplify::rules`]'s
+/// `expand_pow_limit_reached`). A rule that fires records a step; one that
+/// silently does nothing leaves `.steps` describing a derivation that is not
+/// what happened, and the caller holding an unexpanded expression with no
+/// indication why.
 pub fn simplify_with(
     expr: ExprId,
     pool: &ExprPool,
     rules: &[Box<dyn RewriteRule>],
     config: SimplifyConfig,
 ) -> DerivedExpr<ExprId> {
+    if config.expand {
+        crate::simplify::rules::clear_expand_limits();
+    }
     let mut current = DerivedExpr::new(expr);
     for _ in 0..config.max_iterations {
         // Cooperative budget checkpoint, once per full bottom-up pass (P1
@@ -390,6 +401,10 @@ pub fn simplify_with(
         current = DerivedExpr::with_log(result.value, merged_log);
     }
 
+    if config.expand {
+        current = DerivedExpr::with_log(current.value, current.log.merge(expand_limit_log()));
+    }
+
     let mut assumptions = config.assumptions;
     // Static symbol domains (e.g. Domain::Positive) authorize the same
     // conditional rewrites as explicit AssumptionContext facts.
@@ -400,6 +415,25 @@ pub fn simplify_with(
         return DerivedExpr::with_log(colored.value, current.log.merge(colored.log));
     }
     current
+}
+
+/// One step per power a bounded-expansion rule declined to unfold in the pass
+/// that just finished.
+///
+/// The step is a no-op rewrite (`before == after`) on purpose: nothing changed,
+/// and that *is* the record. It cannot be emitted from the rule itself —
+/// [`apply_rules`] treats "a rule fired" as "restart the loop", so a step with
+/// an unchanged value there would spin forever.
+pub(crate) fn expand_limit_log() -> DerivationLog {
+    let mut log = DerivationLog::new();
+    for (node, _exp, _summands) in crate::simplify::rules::take_expand_limits() {
+        log.push(RewriteStep::simple(
+            crate::simplify::rules::EXPAND_POW_LIMIT_RULE,
+            node,
+            node,
+        ));
+    }
+    log
 }
 
 /// Simplify `expr` using a [`PatternRuleSet`] (discrimination-net indexed).
@@ -675,6 +709,50 @@ mod tests {
         let expr = pool.mul(vec![inner, pool.integer(1_i32)]);
         let r = simplify(expr, &pool);
         assert_eq!(r.value, x);
+    }
+
+    /// A bounded expansion that declines leaves a step saying so, so `.steps`
+    /// records what happened rather than an empty derivation next to an
+    /// unexpanded answer.
+    #[test]
+    fn declined_expansion_is_recorded_in_the_derivation_log() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let z = pool.symbol("z", Domain::Real);
+        let base = pool.add(vec![x, y, z]);
+        let expr = pool.pow(base, pool.integer(9_i32)); // 3^9 products, over budget
+
+        let r = simplify_expanded(expr, &pool);
+        assert_eq!(r.value, expr, "the expansion really was declined");
+        let limits: Vec<_> = r
+            .log
+            .steps()
+            .iter()
+            .filter(|s| s.rule_name == crate::simplify::rules::EXPAND_POW_LIMIT_RULE)
+            .collect();
+        assert_eq!(limits.len(), 1, "{:?}", r.log.steps());
+        assert_eq!(limits[0].before, expr);
+        assert_eq!(limits[0].after, expr);
+    }
+
+    /// The control: an expansion the budget allows produces no limit step, so
+    /// the note cannot be passed by emitting it unconditionally. `(x+y)⁶` also
+    /// pins the raised bound — the old exponent-only cap refused it.
+    #[test]
+    fn an_expansion_within_the_budget_records_no_limit_step() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let expr = pool.pow(pool.add(vec![x, y]), pool.integer(6_i32));
+
+        let r = simplify_expanded(expr, &pool);
+        assert_ne!(r.value, expr, "(x+y)^6 is inside the budget");
+        assert!(!r
+            .log
+            .steps()
+            .iter()
+            .any(|s| s.rule_name == crate::simplify::rules::EXPAND_POW_LIMIT_RULE));
     }
 
     #[test]

@@ -31,7 +31,9 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-RSOLVE-001 … E-RSOLVE-005 RsolveError (V2-18 difference equations)
     E-DIOPH-001 … E-DIOPH-004 DiophantineError (V2-19)
     E-NT-001 … E-NT-005    NumberTheoryError (V3-1 integer number theory)
-    E-SERIES-001 … E-SERIES-002 SeriesError
+    E-SERIES-001 … E-SERIES-003 SeriesError  (003 = expansion ran past its work
+                                 ceiling / budget before reaching the requested
+                                 order; refused rather than returned short)
     E-LIMIT-001 … E-LIMIT-005 LimitError
     E-CUDA-001  … E-CUDA-006   CudaError
     E-IO-001    … E-IO-009     IoError  (formerly PoolPersistError / E-POOL-*)

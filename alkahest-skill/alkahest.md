@@ -115,8 +115,10 @@ no GPU support. On a `--features cuda` source build, `ak.compile_cuda(expr, [x, 
 returns a `CudaCompiledFn` with `.ptx` / `.n_inputs` / `.call_batch([xs, ys])`; the
 name does not exist otherwise, so branch on
 `ak.capabilities()["features"]["cuda"]` rather than calling it and catching
-`AttributeError`. `features["groebner_cuda"]` reports only that the kernel was
-compiled in — no Python call path uses it, so it never makes `solve` faster.
+`AttributeError`. There is **no** `features["groebner_cuda"]` key: the CUDA
+Macaulay-matrix kernel has no Python binding at all, so the bit could neither
+be confirmed nor refuted from Python and was removed in contract v3. Nothing
+about `solve` changes on a `--features groebner-cuda` build.
 
 ### Rust crate
 

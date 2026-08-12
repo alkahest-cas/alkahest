@@ -1357,15 +1357,79 @@ impl RewriteRule for ExpandMul {
 // product whose factors `collect_mul_factors` may merge (`a·a → a²`) without
 // ever reconstructing the original `(Add)^n`, so the fixed point is reached.
 //
-// The exponent is capped (`MAX_EXPAND_POW_EXP`) so a stray large literal
-// exponent cannot trigger combinatorial blow-up; powers above the cap are left
-// untouched.
+// The work is capped so a stray large literal exponent cannot trigger
+// combinatorial blow-up — but a cap that is silently a no-op is its own defect,
+// so declining is *recorded* (`take_expand_limits`) and surfaces as a step in
+// the derivation log.
 // ---------------------------------------------------------------------------
 
-/// Maximum literal exponent that [`ExpandPow`] will unfold. A binomial squared
-/// is the dominant DCM case; cap at 4 to bound term growth while still covering
-/// realistic hand-entered polynomials.
+/// Exponent below which [`ExpandPow`] always unfolds, whatever the width of the
+/// base.
+///
+/// Historically the *whole* bound: exponent ≤ 4, any number of summands. Kept as
+/// a floor so nothing that expanded before stops expanding, but it is a poor
+/// bound on its own — it permits `(a₁+…+a₂₀)⁴` (160 000 products) while refusing
+/// `(x+y)⁵` (32). [`MAX_EXPAND_POW_PRODUCTS`] is the bound that actually
+/// describes the work.
 const MAX_EXPAND_POW_EXP: u32 = 4;
+
+/// Maximum number of distributed products [`ExpandPow`] will form: a base of
+/// `m` summands raised to `n` produces `mⁿ` of them before like terms are
+/// collected.
+///
+/// Raising the old exponent-only cap was cheap for the shapes that matter — a
+/// binomial now expands to the 12th power (4096 products) where it used to stop
+/// at the 4th, and `(x+y+1)⁷` (2187) where it used to stop at `(x+y+1)⁴`.
+/// Measured on `simplify_expanded` (release build): the whole pass — distribute,
+/// collect, constant-fold — costs 1.2 ms at 64 products, 24 ms at 1024 and
+/// ~100 ms at this budget, i.e. roughly linear in the product count with the
+/// *collection* cost (the `n^5.7` term the 3.8 performance audit measured for
+/// this route) taking over at the top end. That is the reason not to go higher.
+///
+/// Beyond it the honest answer is `poly_normal`, which is `n^2.1` for the same
+/// result; the recorded log step says so rather than leaving the caller with an
+/// unexpanded expression and no explanation.
+const MAX_EXPAND_POW_PRODUCTS: u64 = 4096;
+
+/// How many declined powers one pass will report.  A pass that hits the bound
+/// on hundreds of distinct nodes has said everything useful in the first few,
+/// and the cap bounds the recorder on engines that run rules without draining
+/// it (`simplify_par`'s rayon workers each have their own copy of this
+/// thread-local, and no one collects theirs).
+const MAX_RECORDED_EXPAND_LIMITS: usize = 64;
+
+thread_local! {
+    /// Powers [`ExpandPow`] declined to unfold on this thread, with the size it
+    /// would have taken, newest last and de-duplicated by node.
+    ///
+    /// The engine's contract is `Option<(ExprId, DerivationLog)>` — a rule that
+    /// changes nothing returns `None` and contributes no step, and it cannot
+    /// return a step *with* `before == after` because `apply_rules` would then
+    /// spin on it forever. So the note travels out of band and
+    /// [`crate::simplify::engine::simplify_with`] appends it to the log of the
+    /// pass that declined, which is where `.steps` can show it.
+    static DECLINED_EXPANSIONS: std::cell::RefCell<Vec<(ExprId, u32, usize)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Forget any recorded declines (start of an expanding simplify pass).
+pub(crate) fn clear_expand_limits() {
+    DECLINED_EXPANSIONS.with(|c| c.borrow_mut().clear());
+}
+
+/// Take the powers this pass declined to expand, as `(node, exponent, summands)`.
+pub(crate) fn take_expand_limits() -> Vec<(ExprId, u32, usize)> {
+    DECLINED_EXPANSIONS.with(|c| std::mem::take(&mut *c.borrow_mut()))
+}
+
+/// The rule name carried by the derivation step that reports a declined
+/// expansion. Named for what happened, not for a rewrite that did not.
+pub(crate) const EXPAND_POW_LIMIT_RULE: &str = "expand_pow_limit_reached";
+
+/// Number of distributed products `(m summands)^n` would form, saturating.
+fn expansion_products(summands: usize, exp: u32) -> u64 {
+    (summands as u64).checked_pow(exp).unwrap_or(u64::MAX)
+}
 
 pub struct ExpandPow;
 
@@ -1406,7 +1470,20 @@ impl RewriteRule for ExpandPow {
             return None;
         }
         let n_u32 = n.to_u32()?;
-        if n_u32 > MAX_EXPAND_POW_EXP {
+        if n_u32 > MAX_EXPAND_POW_EXP
+            && expansion_products(summands.len(), n_u32) > MAX_EXPAND_POW_PRODUCTS
+        {
+            // Declining is a decision about *this* expression, and a caller who
+            // asked for expansion and got their input back deserves to be told
+            // which bound stopped it — otherwise the rule is a silent no-op and
+            // `.steps` records a derivation that never mentions the step it
+            // refused to take.
+            DECLINED_EXPANSIONS.with(|c| {
+                let mut v = c.borrow_mut();
+                if v.len() < MAX_RECORDED_EXPAND_LIMITS && !v.iter().any(|&(e, _, _)| e == expr) {
+                    v.push((expr, n_u32, summands.len()));
+                }
+            });
             return None;
         }
 
@@ -1559,6 +1636,43 @@ mod tests {
 
     fn p() -> ExprPool {
         ExprPool::new()
+    }
+
+    // --- ExpandPow bound ---
+
+    /// `(x+y)⁶` is 64 products — well inside the budget, and outside the old
+    /// exponent-only cap of 4, which refused it while happily expanding a
+    /// twenty-term sum to the fourth power (160 000 products).
+    #[test]
+    fn expand_pow_unfolds_past_the_old_exponent_cap_when_the_work_is_small() {
+        let pool = p();
+        clear_expand_limits();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let base = pool.add(vec![x, y]);
+        let expr = pool.pow(base, pool.integer(6_i32));
+        let (after, log) = ExpandPow.apply(expr, &pool).expect("within the budget");
+        assert_ne!(after, expr);
+        assert_eq!(log.steps()[0].rule_name, "expand_pow");
+        assert!(take_expand_limits().is_empty(), "nothing was declined");
+    }
+
+    /// Above the budget the rule still declines — but it says so. The silent
+    /// no-op was the defect: the caller got their input back with no indication
+    /// that a bound, rather than the mathematics, stopped the expansion.
+    #[test]
+    fn expand_pow_records_the_bound_it_declined() {
+        let pool = p();
+        clear_expand_limits();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let z = pool.symbol("z", Domain::Real);
+        let base = pool.add(vec![x, y, z]);
+        let expr = pool.pow(base, pool.integer(9_i32)); // 3^9 = 19 683 products
+        assert!(ExpandPow.apply(expr, &pool).is_none());
+        assert_eq!(take_expand_limits(), vec![(expr, 9, 3)]);
+        // Consuming: the same decline is not reported twice.
+        assert!(take_expand_limits().is_empty());
     }
 
     // --- AddZero ---
