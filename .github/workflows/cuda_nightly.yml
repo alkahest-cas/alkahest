@@ -95,14 +95,31 @@ jobs:
               --test nvptx_gpu --test groebner_cuda
         continue-on-error: false
 
-      - name: Run compute-sanitizer racecheck
+      # Promoted to a gate: it is clean on real hardware (0 hazards, twice, on
+      # 2x RTX 3090), and it was never the false-positive risk the old comment
+      # assumed — but read the coverage note before trusting a green tick here.
+      #
+      # racecheck detects hazards on __shared__ memory, and no kernel in this
+      # workspace uses any: the hand-written `ELIMINATE_ROW_PTX` declares no
+      # `.shared`, `compile_cuda`'s generated PTX declares none, and launches
+      # pass `shared_mem_bytes: 0`. So today this step *cannot* fail, and its
+      # green tick is a statement about the absence of shared memory, not about
+      # the absence of races. It is a gate for the first kernel that introduces
+      # `__shared__` — which is precisely when it starts being able to fail, and
+      # when nobody would think to add it.
+      #
+      # Left enabled rather than deleted because the cost is ~4 s and the
+      # alternative is remembering. Named for what it checks so a reader does
+      # not over-read the result; `continue-on-error: false` so that the day it
+      # does have something to say, it is heard.
+      - name: Run compute-sanitizer racecheck (__shared__ hazards; none today)
         env:
           ALKAHEST_GPU_TESTS: "1"
         run: |
           compute-sanitizer --target-processes all --tool racecheck \
             cargo test --features cuda,groebner-cuda \
               --test nvptx_gpu --test groebner_cuda
-        continue-on-error: true  # racecheck may have false positives
+        continue-on-error: false
 
       - name: Upload sanitizer logs
         if: always()

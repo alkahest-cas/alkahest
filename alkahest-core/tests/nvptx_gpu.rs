@@ -26,7 +26,16 @@ const N_BW: usize = 16 << 20;
 /// remains usable on a developer machine with no GPU. Main CI never builds
 /// these features at all, so this cannot block ordinary PRs.
 fn device_available() -> bool {
-    let device_ok = cudarc::driver::CudaContext::new(0).is_ok();
+    // `catch_unwind` for the same reason as `groebner_cuda.rs::gpu_available`:
+    // `cudarc` *panics* rather than returning `Err` when `libcuda.so` cannot be
+    // dlopen'd at all, which is the state of any machine with no driver. That
+    // fix landed on the Gröbner suite only, so this one still aborted on
+    // exactly the driverless machines the doc comment above promises to
+    // support. Missing library and missing device must both mean "not
+    // available"; only a device *asserted* to exist and not usable is a
+    // failure.
+    let device_ok =
+        std::panic::catch_unwind(|| cudarc::driver::CudaContext::new(0).is_ok()).unwrap_or(false);
     let requested = std::env::var("ALKAHEST_GPU_TESTS").ok().as_deref() == Some("1");
     assert!(
         !requested || device_ok,
@@ -143,7 +152,10 @@ fn nvptx_bandwidth_sin_cos_16m() {
 
 #[test]
 fn nvptx_multi_device_both_3090s() {
-    let n_dev = cudarc::driver::CudaContext::device_count().unwrap_or(0) as usize;
+    // Via the guarded helper rather than `CudaContext::device_count()` direct:
+    // that call panics on a driverless machine for the same dlopen reason as
+    // `CudaContext::new`, so this test aborted where it meant to skip.
+    let n_dev = alkahest_cas::jit::nvptx::cuda_device_count();
     if n_dev < 2 {
         eprintln!("skipped: only {n_dev} CUDA device(s) present");
         return;
@@ -233,5 +245,45 @@ fn nvptx_polynomial_beats_cpu_jit() {
     eprintln!(
         "nvptx_polynomial_1M: {:.2} ms/launch on device 0",
         gpu_time.as_secs_f64() * 1e3
+    );
+}
+
+/// `cuda_device_count` must agree with the ordinals that actually launch.
+///
+/// The point of the function is to answer "which ordinals may I pass to
+/// `call_batch_on`?" without probing by launching and catching `E-CUDA-003`.
+/// That contract is only worth anything if the count and the launches agree,
+/// so this checks both directions: every ordinal below the count runs, and the
+/// first ordinal at the count does not.
+#[test]
+fn cuda_device_count_matches_the_ordinals_that_launch() {
+    if !device_available() {
+        return;
+    }
+    let n = alkahest_cas::jit::nvptx::cuda_device_count();
+    assert!(n > 0, "a device initialised, so the count cannot be zero");
+
+    let pool = ExprPool::new();
+    let x = pool.symbol("x", Domain::Real);
+    let expr = pool.add(vec![pool.mul(vec![x, x]), pool.integer(1)]);
+    let compiled = compile_cuda(expr, &[x], &pool).expect("compile_cuda");
+
+    let xs = [0.0f64, 1.0, -2.5, 4.0];
+    let want = [1.0f64, 2.0, 7.25, 17.0];
+
+    for dev in 0..n {
+        let mut got = vec![0.0f64; xs.len()];
+        compiled
+            .call_batch_on(dev, &[&xs[..]], &mut got)
+            .unwrap_or_else(|e| panic!("ordinal {dev} < count {n} must launch, got {e}"));
+        for (g, w) in got.iter().zip(want.iter()) {
+            assert!((g - w).abs() < 1e-12, "device {dev}: {g} vs {w}");
+        }
+    }
+
+    let mut got = vec![0.0f64; xs.len()];
+    assert!(
+        compiled.call_batch_on(n, &[&xs[..]], &mut got).is_err(),
+        "ordinal {n} == count must not launch"
     );
 }
