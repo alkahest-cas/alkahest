@@ -434,33 +434,32 @@ jobs:
         env:
           RUSTFLAGS: "-C debuginfo=2 -Z dwarf-version=4"
         run: |
-          # `cargo build` does not produce test binaries, so the glob below
-          # matched only .rlib/.d artifacts, `[ -x ]` was false for every one of
-          # them, and this step ran valgrind on *nothing* while reporting
-          # success — no HEAP SUMMARY, no ERROR SUMMARY, green tick. `--no-run`
-          # is what actually links the `alkahest_cas-<hash>` test executables.
+          # Ask cargo which executables it produced instead of globbing a path.
+          # The previous version globbed `target/<triple>/debug/deps/alkahest_cas-*`
+          # after a `cargo build`, which produces no test binaries at all — so the
+          # loop body never ran and the shard reported success having valgrinded
+          # nothing. Switching to `test --no-run` fixed the build but the glob
+          # still missed, because `-Z build-std` does not place them where the
+          # path assumed. `--message-format=json` reports the real paths, so
+          # there is nothing left to drift.
           cargo +nightly test --no-run --all \
-            --target x86_64-unknown-linux-gnu -Z build-std
-          found=0
-          for bin in target/x86_64-unknown-linux-gnu/debug/deps/alkahest_cas-*; do
-            [ -x "$bin" ] && [ ! -d "$bin" ] || continue
-            case "$bin" in *.d|*.rlib|*.rmeta) continue ;; esac
-            found=$((found + 1))
+            --target x86_64-unknown-linux-gnu -Z build-std \
+            --message-format=json > /tmp/cargo-test.json
+          mapfile -t bins < <(
+            jq -r 'select(.profile.test == true) | .executable | select(. != null)' \
+              /tmp/cargo-test.json | grep alkahest_cas
+          )
+          if [ "${#bins[@]}" -eq 0 ]; then
+            echo "::error title=Valgrind ran nothing::cargo reported no alkahest_cas test executables" >&2
+            jq -r 'select(.executable != null) | .executable' /tmp/cargo-test.json >&2 || true
+            exit 1
+          fi
+          for bin in "${bins[@]}"; do
             echo "== valgrind $bin"
             valgrind --leak-check=full --error-exitcode=1 \
               --suppressions=valgrind.supp "$bin" 2>&1
           done
-          # A gate that inspects nothing must fail, not pass. This is the sixth
-          # such gate found this cycle; the others were an unreferenced
-          # check_error_codes.py, a TESTING.md glob naming a package that does
-          # not exist, an ASan job that never runs Python, compute-sanitizer
-          # instrumenting `cargo`, and a euler_maclaurin gate fitted at the
-          # point it scored.
-          if [ "$found" -eq 0 ]; then
-            echo "::error title=Valgrind ran nothing::no alkahest_cas-* test binaries matched" >&2
-            exit 1
-          fi
-          echo "valgrind ran over $found test binar(y|ies)"
+          echo "valgrind ran over ${#bins[@]} test binary/binaries"
 
       - name: Install cargo-afl
         if: matrix.shard == 'fuzz-expr' || matrix.shard == 'fuzz-simplifier'
@@ -487,6 +486,18 @@ jobs:
             # effort, because the env fallback below covers it either way.
             cargo afl system-config || echo "system-config failed; relying on AFL_* fallbacks"
             cargo afl build --manifest-path fuzz/Cargo.toml --bin fuzz_expr_builder
+            # `fuzz/out/` is gitignored, so it does not exist in a fresh
+            # checkout and AFL cannot create a nested path under a missing
+            # parent: it aborted with
+            #   SYSTEM ERROR : Unable to create 'fuzz/out/expr_builder'
+            # *after* clearing the core_pattern hurdle.
+            mkdir -p fuzz/out
+            # A missing seed corpus would make AFL exit instantly, which the
+            # execs_done check would catch — but the message would be obscure.
+            if [ ! -d fuzz/in/expr_builder ] || [ -z "$(ls -A fuzz/in/expr_builder 2>/dev/null)" ]; then
+              echo "::error title=No seed corpus::fuzz/in/expr_builder is missing or empty" >&2
+              exit 1
+            fi
             set +e
             timeout 7200 cargo afl fuzz \
               -i fuzz/in/expr_builder -o fuzz/out/expr_builder \
@@ -532,6 +543,18 @@ jobs:
             # effort, because the env fallback below covers it either way.
             cargo afl system-config || echo "system-config failed; relying on AFL_* fallbacks"
             cargo afl build --manifest-path fuzz/Cargo.toml --bin fuzz_simplifier
+            # `fuzz/out/` is gitignored, so it does not exist in a fresh
+            # checkout and AFL cannot create a nested path under a missing
+            # parent: it aborted with
+            #   SYSTEM ERROR : Unable to create 'fuzz/out/simplifier'
+            # *after* clearing the core_pattern hurdle.
+            mkdir -p fuzz/out
+            # A missing seed corpus would make AFL exit instantly, which the
+            # execs_done check would catch — but the message would be obscure.
+            if [ ! -d fuzz/in/simplifier ] || [ -z "$(ls -A fuzz/in/simplifier 2>/dev/null)" ]; then
+              echo "::error title=No seed corpus::fuzz/in/simplifier is missing or empty" >&2
+              exit 1
+            fi
             set +e
             timeout 7200 cargo afl fuzz \
               -i fuzz/in/simplifier -o fuzz/out/simplifier \
