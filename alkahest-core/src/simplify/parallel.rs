@@ -162,7 +162,13 @@ fn simplify_node_par(
 
         let (current, rule_log) =
             crate::simplify::engine::apply_rules(rebuilt, pool, rules.as_ref());
-        DerivedExpr::with_log(current, child_log.merge(rule_log))
+        // Drain the bounded-expansion declines *here*, on whichever thread just
+        // ran the rules. The record is thread-local, so the sequential path's
+        // trick of draining once per pass in the caller would collect nothing
+        // from a rayon worker — and a decline that reaches no log is exactly the
+        // silent no-op the product budget exists to prevent.
+        let limit_log = crate::simplify::engine::expand_limit_log();
+        DerivedExpr::with_log(current, child_log.merge(rule_log).merge(limit_log))
     });
 
     memo.insert(expr, result.value);
@@ -670,5 +676,41 @@ mod tests {
         let par = simplify_par(expr, &pool);
         let seq = simplify(expr, &pool);
         assert_eq!(par.value, seq.value);
+    }
+
+    /// A declined expansion must reach the log on the parallel path too.
+    ///
+    /// `apply_rules` runs on a rayon worker, and the decline record is
+    /// thread-local, so draining once in the caller (as the sequential pass
+    /// does) collects nothing. Without the per-worker drain this returns the
+    /// power unchanged with an empty log — a silent no-op, which is the exact
+    /// failure the product budget was added to prevent.
+    #[test]
+    fn parallel_expansion_declines_are_recorded() {
+        let pool = p();
+        let vars: Vec<_> = (0..4)
+            .map(|i| pool.symbol(format!("v{i}"), Domain::Complex))
+            .collect();
+        let sum = pool.add(vars.clone());
+        let twelve = pool.integer(12);
+        let big = pool.pow(sum, twelve);
+
+        let config = SimplifyConfig {
+            expand: true,
+            ..SimplifyConfig::default()
+        };
+        let out = simplify_par_with_config(big, &pool, &config);
+
+        assert_eq!(
+            out.value, big,
+            "the power is over budget, so it must not expand"
+        );
+        assert!(
+            out.log
+                .steps()
+                .iter()
+                .any(|s| s.rule_name == crate::simplify::rules::EXPAND_POW_LIMIT_RULE),
+            "the decline must be recorded, not silent"
+        );
     }
 }

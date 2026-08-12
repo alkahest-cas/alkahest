@@ -12,6 +12,13 @@ on:
     - cron: "0 2 * * *"   # 02:00 UTC daily — triggers the nightly job
   workflow_dispatch:        # allow re-running nightly shards after CI fixes
 
+# No job here reads or writes repository state through the API — these are
+# build-and-test jobs only. They do run build scripts and test code from the
+# head of a pull request, so the checkout token is dropped to read-only rather
+# than left at whatever the repository default happens to be.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"

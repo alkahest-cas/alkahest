@@ -128,10 +128,14 @@ with `.code == "E-SERIES-003"` — or `BudgetExceededError` when a budget was wh
 `PrimaryDecompositionError` and `SolverError` are public exhaustive enums that cannot gain
 a variant in a patch release, so the refusal is returned inside an existing variant and the
 real code is available from `ideal::take_ideal_refusal()` /
-`solver::regular_chains::take_triangularize_refusal()`. Until the Python bindings consult
-those, `radical` and `primary_decomposition` raise an uncoded `ValueError` whose message is
-the refusal, and `triangularize` raises `SolverError` labelled `E-SOLVE-001`. The message
-always names the real reason; the `.code` attribute does not yet.
+`solver::regular_chains::take_triangularize_refusal()`. The Python bindings consult both, so
+`radical` and `primary_decomposition` raise `AlkahestError` with `.code == "E-IDEAL-005"` /
+`"E-IDEAL-006"`, and `triangularize` raises `SolverError` with `.code == "E-SOLVE-004"`.
+`AlkahestError` subclasses `ValueError`, so code that catches `ValueError` is unaffected.
+
+The takers are *consuming*, which is what keeps the carrier variant honest: a genuinely
+non-polynomial equation still reports `E-SOLVE-001`, because no refusal is pending for it.
+Both readings of the shared variant stay distinguishable.
 
 The three-valued zero test behind `E-LINALG-010` / `E-MAT-004` is new in 3.8. Before it,
 "could not prove `det ≠ 0`" was silently read as "`det = 0`", and `Matrix.nullspace()`
