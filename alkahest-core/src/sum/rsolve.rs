@@ -314,6 +314,22 @@ fn extract_recurrence(
         simp(pool, pool.mul(vec![s, pool.integer(-1_i32)]))
     };
 
+    // The sequence terms above were re-indexed to lag form: `f(n+o)` became
+    // `f(n−(max_o−o))`, which is the original equation with `n ↦ n − max_o`.
+    // The right-hand side lives in the *same* equation and has to be shifted by
+    // the same amount, or a forward-shift spelling silently solves a different
+    // problem: `f(n+1) − f(n) = n²` became `f(n) − f(n−1) = n²` instead of
+    // `f(n) − f(n−1) = (n−1)²`, and `rsolve` returned `Σ_{j=1}^{n} j²` where the
+    // equation asks for `Σ_{j=0}^{n−1} j²`.
+    let rhs_expr = if max_o == 0 {
+        rhs_expr
+    } else {
+        let shifted_n = simp(pool, pool.add(vec![n, pool.integer(-max_o)]));
+        let mut m = HashMap::new();
+        m.insert(n, shifted_n);
+        simp(pool, subs(rhs_expr, &m, pool))
+    };
+
     if contains_seq(rhs_expr, seq_name, pool) {
         return Err(RsolveError::NotLinearRecurrence(
             "right-hand side still references the sequence".into(),
@@ -779,7 +795,19 @@ fn hom_solution_from_roots(
     }
 }
 
-fn order2_r_exprs(pool: &ExprPool, a_rec: &[Rational]) -> Result<(ExprId, ExprId), RsolveError> {
+/// The two basis solutions of an order-2 constant-coefficient homogeneous
+/// recurrence, as expressions in `n_sym`.
+///
+/// Distinct characteristic roots give `(r₁ⁿ, r₂ⁿ)`. A **repeated** root gives
+/// `(rⁿ, n·rⁿ)` — not `(rⁿ, rⁿ)`, which is the same function twice and presents
+/// a one-parameter family as the general solution of a second-order equation.
+/// `f(n+2) − 4f(n+1) + 4f(n) = 0` used to come back as `C₀·2ⁿ + C₁·2ⁿ`, losing
+/// the `n·2ⁿ` branch that `(n+2)2ⁿ⁺² − 4(n+1)2ⁿ⁺¹ + 4n·2ⁿ = 0` verifies.
+fn order2_basis_exprs(
+    pool: &ExprPool,
+    a_rec: &[Rational],
+    n_sym: ExprId,
+) -> Result<(ExprId, ExprId), RsolveError> {
     let p = char_poly_asc(a_rec);
     if p.degree() != 2 {
         return Err(RsolveError::Unsupported(
@@ -798,6 +826,19 @@ fn order2_r_exprs(pool: &ExprPool, a_rec: &[Rational]) -> Result<(ExprId, ExprId
     if disc < 0 {
         return Err(RsolveError::Unsupported("complex roots".into()));
     }
+    if disc == 0 {
+        let r = -b.clone() / Rational::from(2);
+        if r == 0 {
+            // `f(n) = 0` for every `n ≥ 2`: not a two-parameter family at all.
+            return Err(RsolveError::Unsupported(
+                "degenerate characteristic (double root at 0)".into(),
+            ));
+        }
+        let re = rational_atom(pool, &r);
+        let rn = simp(pool, pool.pow(re, n_sym));
+        let n_rn = simp(pool, pool.mul(vec![n_sym, rn]));
+        return Ok((rn, n_rn));
+    }
     let sqrt_e = sqrt_disc_expr(pool, &disc);
     let neg_b = rational_atom(pool, &(-b.clone()));
     let half = rational_atom(pool, &Rational::from((1, 2)));
@@ -808,7 +849,10 @@ fn order2_r_exprs(pool: &ExprPool, a_rec: &[Rational]) -> Result<(ExprId, ExprId
         pool.add(vec![neg_b, pool.mul(vec![sqrt_e, pool.integer(-1_i32)])]),
     );
     let r2 = simp(pool, pool.mul(vec![half, inner2]));
-    Ok((r1, r2))
+    Ok((
+        simp(pool, pool.pow(r1, n_sym)),
+        simp(pool, pool.pow(r2, n_sym)),
+    ))
 }
 
 fn fresh_constants(pool: &ExprPool, k: usize) -> Vec<ExprId> {
@@ -863,7 +907,7 @@ fn apply_init(
             return Err(RsolveError::InitialMismatch("need two integers".into()));
         }
         let (n0, n1) = (keys[0], keys[1]);
-        let (r1_e, r2_e) = order2_r_exprs(pool, a)?;
+        let (basis0, basis1) = order2_basis_exprs(pool, a, n_sym)?;
         let v0 = *initials.get(&n0).unwrap();
         let v1 = *initials.get(&n1).unwrap();
         let p0 = subs_n_int(pool, particular, n_sym, n0);
@@ -876,10 +920,10 @@ fn apply_init(
             pool,
             pool.add(vec![v1, pool.mul(vec![p1, pool.integer(-1_i32)])]),
         );
-        let a00 = simp(pool, pool.pow(r1_e, pool.integer(n0)));
-        let b00 = simp(pool, pool.pow(r2_e, pool.integer(n0)));
-        let a10 = simp(pool, pool.pow(r1_e, pool.integer(n1)));
-        let b10 = simp(pool, pool.pow(r2_e, pool.integer(n1)));
+        let a00 = subs_n_int(pool, basis0, n_sym, n0);
+        let b00 = subs_n_int(pool, basis1, n_sym, n0);
+        let a10 = subs_n_int(pool, basis0, n_sym, n1);
+        let b10 = subs_n_int(pool, basis1, n_sym, n1);
         let det = simp(
             pool,
             pool.add(vec![
@@ -983,16 +1027,16 @@ pub fn rsolve(
         2 => {
             let c0 = pool.symbol("C0", crate::kernel::Domain::Real);
             let c1 = pool.symbol("C1", crate::kernel::Domain::Real);
-            let (r1, r2) = order2_r_exprs(pool, &a)?;
-            let term0 = if r1 == pool.integer(1_i32) {
+            let (basis0, basis1) = order2_basis_exprs(pool, &a, n)?;
+            let term0 = if basis0 == pool.integer(1_i32) {
                 c0
             } else {
-                simp(pool, pool.mul(vec![c0, pool.pow(r1, n)]))
+                simp(pool, pool.mul(vec![c0, basis0]))
             };
-            let term1 = if r2 == pool.integer(1_i32) {
+            let term1 = if basis1 == pool.integer(1_i32) {
                 c1
             } else {
-                simp(pool, pool.mul(vec![c1, pool.pow(r2, n)]))
+                simp(pool, pool.mul(vec![c1, basis1]))
             };
             let h = simp(pool, pool.add(vec![term0, term1]));
             (h, vec![c0, c1])
@@ -1052,6 +1096,72 @@ mod tests {
         );
         let sol = rsolve(&pool, eq, n, "f", None).expect("rsolve");
         assert!(has_sym(sol, "C0", &pool));
+    }
+
+    /// `f(n+1) − f(n) = n²` with `f(0) = 0` is `Σ_{j=0}^{n−1} j²`, not
+    /// `Σ_{j=1}^{n} j²`. Solving the equation the *lag* spelling would have
+    /// produced, while reading the right-hand side off the forward spelling,
+    /// silently answered the other question.
+    #[test]
+    fn forward_shift_rhs_is_shifted_with_the_sequence_terms() {
+        let pool = ExprPool::new();
+        let n = pool.symbol("n", Domain::Real);
+        let f = |args: Vec<ExprId>| pool.func("f", args);
+        // f(n+1) - f(n) - n^2 = 0
+        let eq = simp(
+            &pool,
+            pool.add(vec![
+                f(vec![pool.add(vec![n, pool.integer(1_i32)])]),
+                pool.mul(vec![f(vec![n]), pool.integer(-1_i32)]),
+                pool.mul(vec![pool.pow(n, pool.integer(2_i32)), pool.integer(-1_i32)]),
+            ]),
+        );
+        let mut init = BTreeMap::new();
+        init.insert(0, pool.integer(0_i32));
+        let sol = rsolve(&pool, eq, n, "f", Some(&init)).expect("rsolve");
+
+        // Iterating the given equation from f(0) = 0: 0, 0, 1, 5, 14, 30, 55.
+        let truth = [0.0_f64, 0.0, 1.0, 5.0, 14.0, 30.0, 55.0];
+        for (ni, &want) in truth.iter().enumerate() {
+            let mut env = HashMap::new();
+            env.insert(n, ni as f64);
+            let v = eval_interp(sol, &env, &pool).expect("eval");
+            assert!((v - want).abs() < 1e-9, "f({ni}) = {v}, want {want}");
+        }
+    }
+
+    /// `f(n+2) − 4f(n+1) + 4f(n) = 0` has the double root `r = 2`, so its
+    /// general solution is `(A + Bn)·2ⁿ`. Returning `C₀·2ⁿ + C₁·2ⁿ` presents a
+    /// one-parameter family as the general solution of a second-order equation,
+    /// and then cannot meet two independent initial conditions.
+    #[test]
+    fn order_two_repeated_root_keeps_both_branches() {
+        let pool = ExprPool::new();
+        let n = pool.symbol("n", Domain::Real);
+        let f = |args: Vec<ExprId>| pool.func("f", args);
+        let eq = simp(
+            &pool,
+            pool.add(vec![
+                f(vec![pool.add(vec![n, pool.integer(2_i32)])]),
+                pool.mul(vec![
+                    f(vec![pool.add(vec![n, pool.integer(1_i32)])]),
+                    pool.integer(-4_i32),
+                ]),
+                pool.mul(vec![f(vec![n]), pool.integer(4_i32)]),
+            ]),
+        );
+        // f(0) = 0, f(1) = 2 selects n·2ⁿ, which the old basis could not express.
+        let mut init = BTreeMap::new();
+        init.insert(0, pool.integer(0_i32));
+        init.insert(1, pool.integer(2_i32));
+        let sol = rsolve(&pool, eq, n, "f", Some(&init)).expect("rsolve");
+        for ni in 0..=8 {
+            let mut env = HashMap::new();
+            env.insert(n, ni as f64);
+            let v = eval_interp(sol, &env, &pool).expect("eval");
+            let want = (ni as f64) * 2.0_f64.powi(ni);
+            assert!((v - want).abs() < 1e-6, "f({ni}) = {v}, want {want}");
+        }
     }
 
     #[test]

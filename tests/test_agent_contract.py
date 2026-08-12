@@ -190,3 +190,56 @@ def test_llvm_jit_bit_tracks_what_is_linked_not_which_flag_was_named():
             'cuda = ["jit", ...]), so llvm_jit cannot be False'
         )
         assert features["jit"]
+
+
+def test_alkahest_error_catches_both_halves_of_the_hierarchy():
+    """`except alkahest.AlkahestError` must catch Rust *and* Python errors.
+
+    The Rust engines raise the native classes; the pure-Python subsystems
+    (`ansatz`, `crosscheck`, `smt`, the batch helpers) raise the wrappers in
+    `alkahest.exceptions`. Those two hierarchies used to be disjoint — the
+    wrappers subclassed a pure-Python base that was not the native one — so the
+    documented "catch anything this library raises" idiom silently missed every
+    Python-layer error, including all three modules added for autoresearch
+    loops. `exceptions.AlkahestError` is now a subclass of the native base,
+    which makes the top-level name a true common ancestor.
+    """
+    from alkahest import exceptions
+
+    pool = alkahest.ExprPool()
+    x = pool.symbol("x")
+
+    caught_native = False
+    try:
+        alkahest.integrate(alkahest.exp(x * x), x)
+    except alkahest.AlkahestError:
+        caught_native = True
+    assert caught_native, "alkahest.AlkahestError missed a natively-raised error"
+
+    caught_python = False
+    try:
+        raise exceptions.AnsatzError("probe")
+    except alkahest.AlkahestError:
+        caught_python = True
+    assert caught_python, "alkahest.AlkahestError missed a Python-layer error"
+
+    assert issubclass(exceptions.AlkahestError, alkahest.AlkahestError)
+
+
+def test_python_only_errors_keep_their_keyword_constructors():
+    """The overlay must not swallow the classes Python code actually raises.
+
+    `AnsatzError`, `CrossCheckError` and `SmtError` are raised from the Python
+    layer with `code=`/`remediation=` keywords; replacing them with a native
+    class would break those call sites.
+    """
+    from alkahest import exceptions
+
+    for cls, expected in (
+        (exceptions.AnsatzError, "E-ANSATZ-"),
+        (exceptions.CrossCheckError, "E-XCHECK-"),
+        (exceptions.SmtError, "E-SMT-"),
+    ):
+        err = cls("probe")
+        assert err.code.startswith(expected)
+        assert isinstance(err, alkahest.AlkahestError)

@@ -5,9 +5,12 @@
 //! for generic dense systems.
 //!
 //! **Polyhedral (BKK):** for 2-variable systems where the mixed volume is below the
-//! Bézout bound (e.g. Katsura family), [`polyhedral`] supplies binomial start systems
-//! and exact start points.  The homotopy `H = (1−t)·G_cell(z) + t·F(z)` is then
-//! tracked with the same Euler-Newton predictor-corrector.
+//! Bézout bound (e.g. Katsura family), [`polyhedral`] is meant to supply binomial start
+//! systems and exact start points, tracked by `H = (1−t)·G_cell(z) + t·F(z)` with the
+//! same Euler-Newton predictor-corrector.  Its mixed-cell enumeration is currently
+//! broken (see the TODO in [`polyhedral`]) and yields no start points, so
+//! [`solve_numerical`] checks the supplied path count against the mixed volume and
+//! falls back to the Bézout start whenever it comes up short.
 //!
 //! Endpoints are Newton-polished in ℝⁿ and checked with a conservative Smale
 //! heuristic plus `ArbBall` enclosures.
@@ -780,12 +783,18 @@ fn dedup(points: &[Vec<f64>], tol: f64) -> Vec<Vec<f64>> {
 /// Total-degree or polyhedral-BKK continuation + polishing + Smale / ArbBall packaging.
 ///
 /// For 2-variable systems where the BKK mixed volume is strictly below the Bézout bound
-/// (e.g. Katsura family), polyhedral homotopy is used automatically.  The path budget
-/// is checked against the mixed volume in that case.  For all other systems, the standard
-/// total-degree (Bézout) start is used.
+/// (e.g. Katsura family), polyhedral homotopy is attempted first; if the mixed-cell
+/// decomposition supplies fewer start points than the mixed volume — as the
+/// [`polyhedral`] module's cell enumeration does today, where it supplies none — the
+/// run falls back to the total-degree (Bézout) start rather than reporting the paths
+/// it could not track as an absence of solutions.  The path budget is checked against
+/// whichever count is used.
 ///
 /// Returns **real projections** whose imaginary tails were negligible; complex
-/// roots with large imaginary part are discarded.
+/// roots with large imaginary part are discarded.  An empty result therefore means
+/// "no real solution was found among the paths that arrived"; if *no* path arrives at
+/// all, `E-HOMOTOPY-004` is raised instead, so an empty list is never a stand-in for a
+/// tracker that failed outright.
 pub fn solve_numerical(
     equations: &[ExprId],
     vars: &[ExprId],
@@ -815,38 +824,62 @@ pub fn solve_numerical(
     let prec = opts.certify_prec_bits;
     const SMALE_THRESH: f64 = 0.125;
     let mut raw: Vec<Vec<f64>> = Vec::new();
+    // A path that never reached `t = 1` yields nothing, and "nothing" is
+    // indistinguishable from "no solution on this path".  Counting the paths
+    // that did arrive is what lets an empty result be told apart from a
+    // tracker that failed everywhere.
+    let mut paths_completed = 0usize;
+    let mut paths_started = 0usize;
+    let mut used_polyhedral = false;
 
     if polyhedral::should_use_polyhedral(&sys) {
-        // BKK bound is strictly below Bézout — use polyhedral mixed-cell starts.
+        // BKK bound is strictly below Bézout — try polyhedral mixed-cell starts.
         let mv = polyhedral::mixed_volume(&sys).unwrap_or(bez);
         if mv > opts.max_bezout_paths {
             return Err(HomotopyError::BezoutTooLarge(mv));
         }
-        for (start_sys, cell_starts) in polyhedral::polyhedral_cell_iter(&sys[0], &sys[1]) {
-            for z0 in cell_starts {
-                let z_end = match track_path_sys(&sys, &start_sys, z0, opts) {
-                    Ok(z) => z,
-                    Err(_) => continue,
-                };
-                if z_end.iter().all(|c| c.im.abs() < 1e-6) {
-                    let xr: Vec<f64> = z_end.iter().map(|c| c.re).collect();
-                    if let Some(xp) = newton_terminal(&sys, xr, opts) {
-                        raw.push(xp);
+        let cells = polyhedral::polyhedral_cell_iter(&sys[0], &sys[1]);
+        let n_starts: usize = cells.iter().map(|(_, s)| s.len()).sum();
+        // A polyhedral run is only a valid substitute for the Bézout run when
+        // it supplies at least `mv` paths; fewer start points cannot reach
+        // every isolated root, and the missing ones would be reported as an
+        // empty solution set — a mathematical claim, not a diagnostic.
+        // `polyhedral_cell_iter` currently supplies *none* (its mixed-cell
+        // criterion selects exactly the edge pairs its binomial solver
+        // rejects; see the module TODO), so this fallback fires every time.
+        if n_starts >= mv && mv > 0 {
+            used_polyhedral = true;
+            for (start_sys, cell_starts) in cells {
+                for z0 in cell_starts {
+                    paths_started += 1;
+                    let z_end = match track_path_sys(&sys, &start_sys, z0, opts) {
+                        Ok(z) => z,
+                        Err(_) => continue,
+                    };
+                    paths_completed += 1;
+                    if z_end.iter().all(|c| c.im.abs() < 1e-6) {
+                        let xr: Vec<f64> = z_end.iter().map(|c| c.re).collect();
+                        if let Some(xp) = newton_terminal(&sys, xr, opts) {
+                            raw.push(xp);
+                        }
                     }
                 }
             }
         }
-    } else {
+    }
+    if !used_polyhedral {
         if bez > opts.max_bezout_paths {
             return Err(HomotopyError::BezoutTooLarge(bez));
         }
         let starts = start_system_roots(&degs);
         let gamma = random_gamma(opts.gamma_angle_seed);
         for z0 in starts {
+            paths_started += 1;
             let z_end = match track_path(gamma, &sys, &degs, z0, opts) {
                 Ok(z) => z,
                 Err(_) => continue,
             };
+            paths_completed += 1;
             if z_end.iter().all(|c| c.im.abs() < 1e-6) {
                 let xr: Vec<f64> = z_end.iter().map(|c| c.re).collect();
                 if let Some(xp) = newton_terminal(&sys, xr, opts) {
@@ -854,6 +887,11 @@ pub fn solve_numerical(
                 }
             }
         }
+    }
+    if paths_started > 0 && paths_completed == 0 {
+        return Err(HomotopyError::TrackerFailed(
+            "no continuation path reached t = 1",
+        ));
     }
     let uniq = dedup(&raw, opts.dedup_tol);
     let mut out = Vec::new();
@@ -911,6 +949,48 @@ mod tests {
         let sols = solve_numerical(&[eq1, eq2], &[x, y], &pool, &opts).expect("solve");
         assert_eq!(sols.len(), 4, "±1 ⊗ ±1");
         assert!(sols.iter().all(|s| s.max_residual_f64 < 1e-8));
+    }
+
+    /// Systems the mixed volume routes away from the Bézout start must still
+    /// produce their solutions.  `x²y − 1, xy² − 2` has MV 3 against a Bézout
+    /// bound of 9, so it takes the polyhedral branch — which supplies no start
+    /// points at all and used to hand back an empty list, i.e. the claim that
+    /// a system with an obvious real solution has none.
+    #[test]
+    fn polyhedral_routed_system_still_finds_its_root() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        // x²y − 1
+        let eq1 = pool.add(vec![
+            pool.mul(vec![pool.pow(x, pool.integer(2)), y]),
+            pool.integer(-1),
+        ]);
+        // xy² − 2
+        let eq2 = pool.add(vec![
+            pool.mul(vec![x, pool.pow(y, pool.integer(2))]),
+            pool.integer(-2),
+        ]);
+        let sys = [
+            expr_to_gbpoly(eq1, &[x, y], &pool).unwrap(),
+            expr_to_gbpoly(eq2, &[x, y], &pool).unwrap(),
+        ];
+        assert!(
+            polyhedral::should_use_polyhedral(&sys),
+            "this system is the polyhedral-routed case the test is about",
+        );
+        let opts = HomotopyOpts::default();
+        let sols = solve_numerical(&[eq1, eq2], &[x, y], &pool, &opts).expect("solve");
+        // x²y = 1 and xy² = 2 ⇒ (x²y)(xy²) = x³y³ = 2 ⇒ xy = 2^{1/3};
+        // dividing xy² by x²y gives y/x = 2, so x = 2^{-1/3}, y = 2^{2/3}.
+        let x0 = 2.0_f64.powf(-1.0 / 3.0);
+        let y0 = 2.0_f64.powf(2.0 / 3.0);
+        assert!(
+            sols.iter()
+                .any(|s| (s.coordinates[0] - x0).abs() < 1e-6
+                    && (s.coordinates[1] - y0).abs() < 1e-6),
+            "expected ({x0}, {y0}) among {sols:?}",
+        );
     }
 
     #[test]

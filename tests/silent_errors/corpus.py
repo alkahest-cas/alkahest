@@ -20,6 +20,7 @@ from fractions import Fraction
 from typing import Any, Callable
 
 import alkahest as ak
+import alkahest.experimental as ex
 import alkahest.number_theory as nt
 
 # ``tests/`` is on sys.path via the root conftest, so the textbook gate's series
@@ -141,6 +142,79 @@ def real_solution_count(equations: list[ak.Expr], unknowns: list[ak.Expr]) -> Ca
     def op() -> int:
         sols = ak.solve(equations, unknowns, domain="real")
         return len(sols)
+
+    return op
+
+
+def solution_count(
+    equations: list[ak.Expr], unknowns: list[ak.Expr], **kwargs: Any
+) -> Callable[[], int]:
+    """Answer = how many solutions ``solve`` reports over ℂ.
+
+    A count is the sharpest single number for a solver: it moves if a spurious
+    tuple is added, if a true one is dropped, and if one root is reported twice.
+    A parametric (``GroebnerBasis``) answer is not a count and is surfaced as a
+    refusal rather than silently scored.
+    """
+
+    def op() -> int:
+        sols = ak.solve(equations, unknowns, **kwargs)
+        if not isinstance(sols, list):
+            raise ak.SolverError("solve returned a parametric ideal, not a solution list")
+        return len(sols)
+
+    return op
+
+
+def numeric_solution_count(equations: list[ak.Expr], unknowns: list[ak.Expr]) -> Callable[[], int]:
+    """Answer = how many returned tuples actually name a point of ℂⁿ.
+
+    An entry whose coordinate is ``0·0⁻¹`` is not a solution and not a
+    refusal either — it is a list entry that looks like an answer.  Counting
+    only the tuples that evaluate keeps the score a number rather than an
+    exception, so the case is scored as the wrong *count* it is.
+    """
+
+    def op() -> int:
+        sols = ak.solve(equations, unknowns)
+        if not isinstance(sols, list):
+            raise ak.SolverError("solve returned a parametric ideal, not a solution list")
+        n = 0
+        for sol in sols:
+            if all(ak.evaluate(sol[v], {}, mode="complex").status == "ok" for v in unknowns):
+                n += 1
+        return n
+
+    return op
+
+
+def max_solution_residual(equations: list[ak.Expr], unknowns: list[ak.Expr]) -> Callable[[], float]:
+    """Answer = max |eq(sol)| over every returned solution and every equation.
+
+    Substitution back into the original system is self-certifying: no oracle is
+    consulted, and any tuple that is not a solution shows up as a residual the
+    solver itself cannot explain away.  A coordinate that is not a number
+    (``0·0⁻¹``) makes ``eval_expr`` raise, which the runner scores as a refusal.
+    """
+
+    def op() -> float:
+        sols = ak.solve(equations, unknowns)
+        if not isinstance(sols, list) or not sols:
+            raise ak.SolverError("solve produced no solution list to substitute back")
+        worst = 0.0
+        for sol in sols:
+            point = {}
+            for v in unknowns:
+                got = ak.evaluate(sol[v], {}, mode="complex")
+                if got.status != "ok":
+                    raise ak.SolverError(f"solution coordinate is not a number: {got.status}")
+                point[v] = complex(got.value)
+            for eq in equations:
+                residual = ak.evaluate(eq, point, mode="complex")
+                if residual.status != "ok":
+                    raise ak.SolverError(f"residual did not evaluate: {residual.status}")
+                worst = max(worst, abs(complex(residual.value)))
+        return worst
 
     return op
 
@@ -409,6 +483,216 @@ def _relation_residual(values: list[int]) -> Callable[[], int]:
         return sum(a * v for a, v in zip(coeffs, values))
 
     return op
+
+
+def _rsolve_residual(equation: ak.Expr, initials: dict[int, ak.Expr]) -> Callable[[], float]:
+    """Answer = the worst residual of ``rsolve``'s answer *in the given equation*.
+
+    Substituting the closed form back into the very equation that was passed in
+    is self-certifying: it needs no oracle, and it is the one property a
+    recurrence solver may never get wrong.  A solver that quietly re-indexes the
+    equation returns the solution of a *different* problem, which is a clean,
+    plausible, wrong sequence.
+    """
+
+    def op() -> float:
+        closed = ak.rsolve(equation, N, "f", initials)
+        residual = ak.simplify(_substitute_sequence(equation, closed)).value
+        return max(abs(float(ak.eval_expr(residual, {N: float(j)}))) for j in range(6))
+
+    return op
+
+
+#: Shifts the recurrence cases are written with.
+_SEQ_SHIFTS = (2, 1, 0, -1, -2)
+
+
+def _seq(shift: int) -> ak.Expr:
+    """``f(n + shift)`` — the term shape ``rsolve`` reads."""
+    return POOL.func("f", [N if shift == 0 else N + _int(shift)])
+
+
+def _substitute_sequence(equation: ak.Expr, closed: ak.Expr) -> ak.Expr:
+    """``equation`` with every ``f(n + c)`` replaced by ``closed`` shifted by c.
+
+    Written against the fixed shift set the recurrence cases are built from
+    (:data:`_SEQ_SHIFTS`, via :func:`_seq`) rather than by walking the expression
+    tree, so the substitution itself stays obviously correct.
+    """
+    out = equation
+    for c in _SEQ_SHIFTS:
+        arg = N if c == 0 else N + _int(c)
+        shifted = closed if c == 0 else ak.subs(closed, {N: arg})
+        out = ak.subs(out, {_seq(c): shifted})
+    return out
+
+
+def _basis_independence(equation: ak.Expr) -> Callable[[], bool]:
+    """Answer = whether ``rsolve``'s *general* solution spans two dimensions.
+
+    The general solution of a second-order linear recurrence is a two-parameter
+    family.  Returning ``C₀·rⁿ + C₁·rⁿ`` for a repeated root looks like one but
+    is not: both basis elements are the same function, so the family is
+    one-dimensional and cannot meet two independent initial conditions.
+    """
+
+    def op() -> bool:
+        general = ak.rsolve(equation, N, "f", None)
+        c0 = POOL.symbol("C0")
+        c1 = POOL.symbol("C1")
+        rows = []
+        for at in (0.0, 1.0):
+            first = ak.eval_expr(general, {c0: 1.0, c1: 0.0, N: at})
+            second = ak.eval_expr(general, {c0: 0.0, c1: 1.0, N: at})
+            rows.append((float(first), float(second)))
+        det = rows[0][0] * rows[1][1] - rows[0][1] * rows[1][0]
+        return abs(det) > 1e-9
+
+    return op
+
+
+def _constant_terms(report: Any) -> list[float]:
+    """The values of every term of an asymptotic expansion that does not move.
+
+    A term with the same value at ``n = 10`` and ``n = 20`` is a constant, and a
+    constant claimed for a sum whose closed form is a polynomial with zero
+    constant term is a fabricated one.
+    """
+    out = []
+    for term in report.terms:
+        lo = float(ak.eval_expr(term, {N: 10.0}))
+        hi = float(ak.eval_expr(term, {N: 20.0}))
+        if abs(lo - hi) <= 1e-9 * max(1.0, abs(lo)):
+            out.append(lo)
+    return out
+
+
+def _binom(top: ak.Expr, bot: ak.Expr) -> ak.Expr:
+    """``C(top, bot)`` as a Γ-quotient, the shape ``zeilberger`` parses."""
+    return ak.gamma(top + _int(1)) / (ak.gamma(bot + _int(1)) * ak.gamma(top - bot + _int(1)))
+
+
+def _zeilberger_sum_recurrence_defect(
+    term: ak.Expr, exact_sum: Callable[[int], Fraction], disclosure_counts: bool
+) -> Callable[[], float]:
+    """Answer = how badly the *sum* recurrence read off the certificate fails.
+
+    Zeilberger verifies ``Σ_i a_i(n)·F(n+i,k) = G(n,k+1) − G(n,k)``, an identity
+    in ``k``.  Summing it gives ``Σ_i a_i(n)·S(n+i) = G(n,k_hi+1) − G(n,k_lo)``,
+    so the familiar homogeneous recurrence needs that boundary difference to
+    vanish — a hypothesis the algorithm does not establish.
+
+    With *disclosure_counts* the case is satisfied either way an honest library
+    can behave: prove the hypothesis (residual genuinely zero) or state it as a
+    side condition on the certificate.  Silently omitting it scores the residual,
+    which is what a caller who trusted the recurrence would inherit.
+    """
+
+    def op() -> float:
+        cert = ak.zeilberger(term, N, K)
+        if disclosure_counts:
+            conditions = getattr(cert, "side_conditions", ())
+            if any("boundary" in str(c).lower() for c in conditions):
+                return 0.0
+        worst = 0.0
+        for ni in range(1, 6):
+            total = Fraction(0)
+            for i, a in enumerate(cert.coeffs):
+                coeff = Fraction(float(ak.eval_expr(a, {N: float(ni)}))).limit_denominator(10**9)
+                total += coeff * exact_sum(ni + i)
+            worst = max(worst, abs(float(total)))
+        return worst
+
+    return op
+
+
+def _sum_binomial_over_k_plus_one(m: int) -> Fraction:
+    """``Σ_{k=0}^{m} C(m,k)/(k+1) = (2^{m+1} − 1)/(m+1)``, by hand."""
+    return sum((Fraction(math.comb(m, j), j + 1) for j in range(m + 1)), Fraction(0))
+
+
+def _sum_binomial_row(m: int) -> Fraction:
+    """``Σ_{k=0}^{m} C(m,k) = 2^m``."""
+    return Fraction(2**m)
+
+
+def _survives_a_panic(fn: Callable[[], Any]) -> Callable[[], Any]:
+    """Wrap *fn* so a Rust panic fails this case instead of killing the run.
+
+    PyO3 turns an escaping Rust panic into ``pyo3_runtime.PanicException``,
+    which inherits ``BaseException``.  That is the whole reason the class
+    matters — a loop's ``except Exception`` does not catch it — but it also
+    means an unwrapped op would take the gate process down with it and no case
+    would be reported at all.  Re-raising as ``RuntimeError`` keeps the failure
+    (scored ``no_answer``: neither an answer nor a refusal) while leaving the
+    rest of the corpus scoreable.
+    """
+
+    def op() -> Any:
+        try:
+            return fn()
+        except Exception:
+            raise
+        except BaseException as exc:  # PanicException is a BaseException — the point
+            raise RuntimeError(
+                f"escaping Rust panic: {type(exc).__module__}.{type(exc).__name__}: {exc}"
+            ) from exc
+
+    return op
+
+
+def _poly(coeffs: list[int]) -> ak.Expr:
+    """``Σ coeffs[i]·xⁱ`` from ascending-degree integer coefficients."""
+    out = _int(0)
+    for i, c in enumerate(coeffs):
+        out = out + _int(c) * X ** _int(i)
+    return out
+
+
+def _subresultant_chain(
+    f_coeffs: list[int], g_coeffs: list[int], samples: tuple[float, ...] = (2.0, 3.0)
+) -> Callable[[], tuple[float, ...]]:
+    """Answer = every subresultant after ``[p, q]``, sampled at fixed points.
+
+    Two sample points rather than one so the *polynomial* is pinned, not just a
+    value: a chain element off by a scalar or by a term shows up at both.
+    """
+
+    def op() -> tuple[float, ...]:
+        chain = ak.subresultant_prs(_poly(f_coeffs), _poly(g_coeffs), X)[2:]
+        return tuple(float(ak.eval_expr(e, {X: s})) for e in chain for s in samples)
+
+    return _survives_a_panic(op)
+
+
+def _lll_rows_stay_in_the_lattice(
+    rows: list[list[int]], generator: list[int]
+) -> Callable[[], bool]:
+    """Answer = does LLL return a basis of the *same* lattice ``ℤ·generator``?
+
+    Every returned row must be an integer multiple of *generator* (nothing left
+    the lattice), the generator itself must still be reachable (nothing was
+    lost), and the row count must be preserved.  Exact integer arithmetic, no
+    reference implementation.
+    """
+
+    def op() -> bool:
+        reduced = ak.lattice.lll_reduce_rows(rows)
+        if len(reduced) != len(rows):
+            return False
+        multiples = []
+        for row in reduced:
+            ratios = {Fraction(v, g) for v, g in zip(row, generator) if g != 0}
+            leftover = any(v != 0 for v, g in zip(row, generator) if g == 0)
+            if leftover or len(ratios) != 1:
+                return False
+            (r,) = ratios
+            if r.denominator != 1:
+                return False
+            multiples.append(abs(r.numerator))
+        return 1 in multiples
+
+    return _survives_a_panic(op)
 
 
 CASES: list[Case] = [
@@ -1183,6 +1467,154 @@ CASES: list[Case] = [
         verified_by="Substituting a returned root back into the equation must give 0; this is "
         "form-independent and catches a solver that returns confident non-roots.",
     ),
+    # -----------------------------------------------------------------------
+    # Solving: the solution *set* — no spurious tuples, no dropped branches,
+    # no root counted twice.  A count is the sharpest single number here: it
+    # moves in all three directions at once.
+    # -----------------------------------------------------------------------
+    Case(
+        id="solve_branch_where_leading_coefficient_vanishes",
+        subsystem="solving",
+        statement="-3x-2xy = 0 ∧ -3y-x² = 0 has three solutions, two of them on the branch "
+        "y = -3/2 where the first equation degenerates",
+        op=solution_count([_int(-3) * X + _int(-2) * X * Y, _int(-3) * Y - X ** _int(2)], [X, Y]),
+        contract=Returns(3),
+        verified_by=(
+            "-3x - 2xy = -x(3 + 2y), so either x = 0 or y = -3/2. x = 0 forces -3y = 0, giving "
+            "(0,0). y = -3/2 satisfies the first equation for every x, and the second then reads "
+            "9/2 - x² = 0, giving x = ±3/√2. Three points: (0,0) and (±3/√2, -3/2). Substituting "
+            "each back gives 0 in both equations — no oracle involved."
+        ),
+    ),
+    Case(
+        id="solve_branch_residual_after_degenerate_split",
+        subsystem="solving",
+        statement="every tuple solve returns for -3x-2xy = 0 ∧ -3y-x² = 0 satisfies both equations",
+        op=max_solution_residual(
+            [_int(-3) * X + _int(-2) * X * Y, _int(-3) * Y - X ** _int(2)], [X, Y]
+        ),
+        contract=Returns(0.0, tol=1e-9),
+        verified_by=(
+            "Substitution back into the stated system is self-certifying. The reported answer "
+            "(0, -3/2) has residual -3y - x² = 9/2 ≠ 0, which needs no oracle to reject."
+        ),
+    ),
+    Case(
+        id="solve_control_circle_meets_line_twice",
+        subsystem="solving",
+        statement="x²+y² = 1 ∧ y = x has exactly two solutions",
+        op=solution_count([X ** _int(2) + Y ** _int(2) - _int(1), Y - X], [X, Y]),
+        contract=Returns(2),
+        verified_by=(
+            "Substituting y = x gives 2x² = 1, so x = ±1/√2 and the points are ±(1/√2, 1/√2). "
+            "The control for solve_branch_where_leading_coefficient_vanishes: a solver that "
+            "refused every two-variable system, or that dropped one root of every quadratic, "
+            "would otherwise pass that case."
+        ),
+    ),
+    Case(
+        id="solve_repeated_root_is_one_solution",
+        subsystem="solving",
+        statement="the solution set of x² = 0 is {0} — one element, not ±√0",
+        op=solution_count([X ** _int(2)], [X]),
+        contract=Returns(1),
+        verified_by=(
+            "x² = 0 ⟺ x = 0. The root has multiplicity two, but solve returns a set and has no "
+            "multiplicity channel, so two entries is a wrong count, not an annotation."
+        ),
+    ),
+    Case(
+        id="solve_control_distinct_roots_are_two_solutions",
+        subsystem="solving",
+        statement="x² = 1 has two distinct solutions",
+        op=solution_count([X ** _int(2) - _int(1)], [X]),
+        contract=Returns(2),
+        verified_by=(
+            "x = ±1, and 1 ≠ -1. The control for solve_repeated_root_is_one_solution: "
+            "de-duplicating on a tolerance that is too loose collapses these two as well."
+        ),
+    ),
+    Case(
+        id="solve_repeated_roots_do_not_multiply_across_variables",
+        subsystem="solving",
+        statement="x² = y² = z² = 0 has the single solution (0,0,0)",
+        op=solution_count(
+            [X ** _int(2), Y ** _int(2), POOL.symbol("z") ** _int(2)],
+            [X, Y, POOL.symbol("z")],
+        ),
+        contract=Returns(1),
+        verified_by=(
+            "Each equation forces its variable to 0, so the variety is the single point "
+            "(0,0,0). A per-variable duplicate multiplies out: 2³ = 8 copies of the origin, "
+            "and 'this system has eight solutions' is a false lemma of exactly the shape a "
+            "combinatorial search makes."
+        ),
+    ),
+    Case(
+        id="solve_control_distinct_roots_do_multiply",
+        subsystem="solving",
+        statement="x² = 1 ∧ y² = 1 has four solutions",
+        op=solution_count([X ** _int(2) - _int(1), Y ** _int(2) - _int(1)], [X, Y]),
+        contract=Returns(4),
+        verified_by=(
+            "The variety is {±1} × {±1}, four points. The control for "
+            "solve_repeated_roots_do_not_multiply_across_variables: a solver that collapsed "
+            "every product of branches to one point would otherwise pass it."
+        ),
+    ),
+    Case(
+        id="solve_undefined_coordinate_is_not_a_solution",
+        subsystem="solving",
+        statement="xy - y = 0 ∧ y - 2x² = 0 has two solutions, and neither coordinate is 0·0⁻¹",
+        op=numeric_solution_count([X * Y - Y, Y - _int(2) * X ** _int(2)], [X, Y]),
+        contract=Returns(2),
+        verified_by=(
+            "y(x-1) = 0 forces y = 0 or x = 1. y = 0 gives 2x² = 0, so (0,0); x = 1 gives "
+            "y = 2, so (1,2). Two points. alkahest listed (0·0⁻¹, 0) — which denotes no number "
+            "at all — in place of (0,0), so only one of its two entries named a point. "
+            "solve_control_circle_meets_line_twice is the control: it fails the moment a "
+            "solver answers with fewer points than a two-variable system has."
+        ),
+    ),
+    Case(
+        id="solve_homotopy_sparse_system_is_not_empty",
+        subsystem="solving",
+        statement="x³ = x ∧ y = x has three real solutions; homotopy must not report none",
+        op=solution_count([X ** _int(3) - X, Y - X], [X, Y], method="homotopy"),
+        contract=Returns(3),
+        verified_by=(
+            "x³ - x = x(x-1)(x+1), so x ∈ {-1, 0, 1} and y = x: the points (-1,-1), (0,0), "
+            "(1,1). All three are non-singular (det J = 3x² - 1 ∈ {-1, 2}), so a continuation "
+            "method has no excuse. An empty list is a claim that the system has no solutions."
+        ),
+    ),
+    Case(
+        id="solve_homotopy_bkk_deficient_system",
+        subsystem="solving",
+        statement="x²y = 1 ∧ xy² = 2 has one real solution (2^{-1/3}, 2^{2/3})",
+        op=solution_count(
+            [X ** _int(2) * Y - _int(1), X * Y ** _int(2) - _int(2)], [X, Y], method="homotopy"
+        ),
+        contract=Returns(1),
+        verified_by=(
+            "Multiplying the two equations gives (xy)³ = 2, so xy = 2^{1/3} over ℝ; dividing "
+            "the second by the first gives y = 2x. Hence 2x² = 2^{1/3}, x = 2^{-1/3}, "
+            "y = 2^{2/3}. Mixed volume 3 against a Bézout bound of 9 puts this system on the "
+            "polyhedral branch, which supplied no continuation paths at all."
+        ),
+    ),
+    Case(
+        id="solve_control_homotopy_no_real_solutions",
+        subsystem="solving",
+        statement="x² = -1 ∧ y = x has no real solutions; homotopy must still say so",
+        op=solution_count([X ** _int(2) + _int(1), Y - X], [X, Y], method="homotopy"),
+        contract=Returns(0),
+        verified_by=(
+            "x² ≥ 0 on ℝ. The control for the two homotopy cases above: the fix for an empty "
+            "list must not be to invent endpoints, and 'no real solutions' has to stay "
+            "expressible."
+        ),
+    ),
     Case(
         id="solve_zero_polynomial",
         subsystem="solving",
@@ -1933,6 +2365,236 @@ CASES: list[Case] = [
         "k=0 would report 120.",
     ),
     # -----------------------------------------------------------------------
+    # The dropped rational scale in `product_definite`, and poles strictly
+    # inside a summation range.  Both were reported in
+    # `temp-alkahest/testing/3.8-silent-error-hunt-2.md` and fixed for 3.8.0.
+    # -----------------------------------------------------------------------
+    Case(
+        id="product_definite_keeps_rational_scale",
+        subsystem="sums_products",
+        statement="Π_{k=1}^{5} 1/2 = 1/32",
+        op=lambda: _num(ak.product_definite(_rat(1, 2), K, _int(1), _int(5))),
+        contract=Returns(1.0 / 32.0, tol=1e-12),
+        verified_by="Five factors of 1/2 multiply to 2^-5 = 1/32, by the definition of a product.",
+    ),
+    Case(
+        id="product_definite_wallis_partial_product",
+        subsystem="sums_products",
+        statement="Π_{k=1}^{6} (2k-1)/(2k) = C(12,6)/4^6 = 924/4096",
+        op=lambda: _num(
+            ak.product_definite(
+                (_int(2) * K - _int(1)) * (_int(2) * K) ** _int(-1), K, _int(1), _int(6)
+            )
+        ),
+        contract=Returns(924.0 / 4096.0, tol=1e-9),
+        verified_by=(
+            "1·3·5·7·9·11 / (2·4·6·8·10·12) = 10395/46080 = 924/4096 = 0.2255859375, multiplied "
+            "out by hand; it is also the standard Π(2k-1)/(2k) = C(2n,n)/4ⁿ at n = 6. alkahest "
+            "returned 14.4375, which is 2⁶ times too large — one factor of the denominator's "
+            "leading coefficient per index, from the scale ratuni_poly_to_univ discarded."
+        ),
+    ),
+    Case(
+        id="product_definite_empty_range_of_a_zero_term",
+        subsystem="sums_products",
+        statement="Π_{k=1}^{0} 0 = 1 — an empty product takes no factors at all",
+        op=lambda: _num(ak.product_definite(_int(0), K, _int(1), _int(0))),
+        contract=Returns(1.0),
+        verified_by=(
+            "The empty product is 1 by universal convention, whatever the term is: no factor is "
+            "ever taken. alkahest returned 0 here while returning 1 for Π_{k=1}^{0} k, so its own "
+            "two answers for the same empty range disagreed — the zero-numerator shortcut ran "
+            "before the empty-range check."
+        ),
+    ),
+    Case(
+        id="product_control_integer_coefficient_ratio",
+        subsystem="sums_products",
+        statement="Π_{k=1}^{4} (k+1)/k = 5 — telescoping, no denominators to clear",
+        op=lambda: _num(ak.product_definite((K + _int(1)) * K ** _int(-1), K, _int(1), _int(4))),
+        contract=Returns(5.0, tol=1e-9),
+        verified_by=(
+            "(2/1)(3/2)(4/3)(5/4) telescopes to 5/1 = 5. The control for the rational-scale "
+            "cases: this one has monic numerator and denominator, so it was already correct "
+            "before the fix and must stay correct after it — a product_definite that started "
+            "refusing every rational term would not pass here."
+        ),
+    ),
+    Case(
+        id="sum_definite_interior_pole_refused",
+        subsystem="sums_products",
+        statement="Σ_{k=1}^{10} 1/((k-3)(k-2)) is undefined — the k=2 and k=3 terms divide by zero",
+        op=lambda: _num(
+            ak.sum_definite(((K - _int(3)) * (K - _int(2))) ** _int(-1), K, _int(1), _int(10))
+        ),
+        contract=RefusesOr(),
+        verified_by=(
+            "The k=2 term is 1/((-1)·0) and the k=3 term is 1/(0·1); neither is a number, so the "
+            "sum has no value. alkahest returned -5/8. Its own docstring promises E-SUM-003 for "
+            "exactly this."
+        ),
+    ),
+    Case(
+        id="sum_definite_interior_pole_negative_lower_bound",
+        subsystem="sums_products",
+        statement="Σ_{k=-2}^{5} 1/(k(k+1)) is undefined — the k=-1 and k=0 terms divide by zero",
+        op=lambda: _num(ak.sum_definite((K * (K + _int(1))) ** _int(-1), K, _int(-2), _int(5))),
+        contract=RefusesOr(),
+        verified_by=(
+            "1/(k(k+1)) at k = -1 is 1/((-1)·0) and at k = 0 is 1/(0·1); both terms of the sum "
+            "are undefined, so the sum is. alkahest returned -2/3 — the telescoped difference "
+            "G(6) - G(-2), which is a perfectly finite number and not the sum of anything."
+        ),
+    ),
+    Case(
+        id="sum_control_pole_below_the_range",
+        subsystem="sums_products",
+        statement="Σ_{k=4}^{10} 1/((k-3)(k-2)) = 1 - 1/8 = 7/8",
+        op=lambda: _num(
+            ak.sum_definite(((K - _int(3)) * (K - _int(2))) ** _int(-1), K, _int(4), _int(10))
+        ),
+        contract=Returns(0.875, tol=1e-12),
+        verified_by=(
+            "1/((k-3)(k-2)) = 1/(k-3) - 1/(k-2), so Σ_{k=4}^{10} telescopes to 1/1 - 1/8 = 7/8; "
+            "adding the seven terms 1/2, 1/6, 1/12, 1/20, 1/30, 1/42, 1/56 by hand gives the "
+            "same. The control for the interior-pole cases: the same integrand with both poles "
+            "just below the range must still be summed, so refusing every 1/((k-a)(k-b)) does "
+            "not pass the gate."
+        ),
+    ),
+    # -----------------------------------------------------------------------
+    # Recurrences.  A recurrence solver's one inviolable property is that its
+    # answer satisfies the equation it was handed; checking that needs no
+    # oracle at all.
+    # -----------------------------------------------------------------------
+    Case(
+        id="rsolve_forward_shift_solves_its_own_equation",
+        subsystem="sums_products",
+        statement="rsolve(f(n+1) - f(n) - n², f(0)=0) must satisfy f(n+1) - f(n) = n²",
+        op=_rsolve_residual(_seq(1) - _seq(0) - N ** _int(2), {0: _int(0)}),
+        contract=Returns(0.0, tol=1e-9),
+        verified_by=(
+            "Iterating the given equation from f(0) = 0 gives 0, 0, 1, 5, 14, 30, i.e. "
+            "f(n) = Σ_{j=0}^{n-1} j² = n³/3 - n²/2 + n/6. alkahest returned n³/3 + n²/2 + n/6, "
+            "whose values are 0, 1, 5, 14, 30 — the solution of f(n+1) - f(n) = (n+1)², a "
+            "different equation. Substituting back into the equation supplied is self-certifying."
+        ),
+    ),
+    Case(
+        id="rsolve_control_lag_shift_spelling",
+        subsystem="sums_products",
+        statement="rsolve(f(n) - f(n-1) - n², f(0)=0) must satisfy f(n) - f(n-1) = n²",
+        op=_rsolve_residual(_seq(0) - _seq(-1) - N ** _int(2), {0: _int(0)}),
+        contract=Returns(0.0, tol=1e-9),
+        verified_by=(
+            "Iterating from f(0) = 0 gives 0, 1, 5, 14, 30, 55 = Σ_{j=1}^{n} j². The control for "
+            "rsolve_forward_shift_solves_its_own_equation: the lag spelling was always handled "
+            "correctly, so a fix that simply started refusing shifted equations would fail here."
+        ),
+    ),
+    Case(
+        id="rsolve_order_two_repeated_root_spans_two_dimensions",
+        subsystem="sums_products",
+        statement="the general solution of f(n+2) - 4f(n+1) + 4f(n) = 0 is a two-parameter family",
+        op=_basis_independence(_seq(2) - _int(4) * _seq(1) + _int(4) * _seq(0)),
+        contract=Returns(True),
+        verified_by=(
+            "r² - 4r + 4 = (r-2)² has the double root 2, so the general solution is (A + Bn)·2ⁿ; "
+            "(n+2)2ⁿ⁺² - 4(n+1)2ⁿ⁺¹ + 4n·2ⁿ = 2ⁿ(4n+8-8n-8+4n) = 0 verifies the second branch by "
+            "hand. alkahest returned C₀·(½(4+√0))ⁿ + C₁·(½(4-√0))ⁿ — the same function twice, a "
+            "one-parameter family presented as the general solution of a second-order equation, "
+            "whose 2×2 initial-condition matrix is singular."
+        ),
+    ),
+    Case(
+        id="rsolve_control_order_two_distinct_roots",
+        subsystem="sums_products",
+        statement="the general solution of f(n+2) - 3f(n+1) + 2f(n) = 0 is a two-parameter family",
+        op=_basis_independence(_seq(2) - _int(3) * _seq(1) + _int(2) * _seq(0)),
+        contract=Returns(True),
+        verified_by=(
+            "r² - 3r + 2 = (r-1)(r-2) has distinct roots, so the basis is {1ⁿ, 2ⁿ} and the "
+            "matrix [[1,1],[1,2]] has determinant 1. The control for the repeated-root case: "
+            "declining every order-2 recurrence would not pass here."
+        ),
+    ),
+    # -----------------------------------------------------------------------
+    # Euler–Maclaurin.  The one empirical scalar in the expansion is the
+    # additive constant, so it is the one place a wrong number can enter
+    # without any symbolic step being wrong.
+    # -----------------------------------------------------------------------
+    Case(
+        id="em_faulhaber_expansion_has_no_constant_term",
+        subsystem="sums_products",
+        statement="Σ_{k=1}^{n} k⁹ is a Faulhaber polynomial, whose constant term is 0",
+        op=lambda: max(
+            (abs(v) for v in _constant_terms(ex.euler_maclaurin(K ** _int(9), K, 1, N))),
+            default=0.0,
+        ),
+        contract=Returns(0.0, tol=1e-9),
+        verified_by=(
+            "Σ_{k=1}^{n} k⁹ = n¹⁰/10 + n⁹/2 + 3n⁸/4 - 7n⁶/10 + n⁴/2 - 3n²/20 (Faulhaber); every "
+            "such polynomial has zero constant term because the sum is empty at n = 0. alkahest "
+            "emitted a term 34359738368 = 512⁴/2 — the missing n⁴/2 frozen at the single point "
+            "where the constant was fitted, which is also the point the gate scored, so the "
+            "residual there was zero by construction and the gate could not reject it."
+        ),
+    ),
+    Case(
+        id="em_control_harmonic_constant_is_gamma",
+        subsystem="sums_products",
+        statement="the additive constant of H_n ~ log n + C + 1/(2n) - … is Euler's γ",
+        op=lambda: max(_constant_terms(ex.euler_maclaurin(K ** _int(-1), K, 1, N)), default=0.0),
+        contract=Returns(0.5772156649015329, tol=1e-8),
+        verified_by=(
+            "γ = 0.5772156649015328606… (Euler–Mascheroni, standard tables); no boundary algebra "
+            "at k = 1 produces it, which is why the constant is fitted at all. The control for "
+            "em_faulhaber_expansion_has_no_constant_term: a fix that simply stopped emitting "
+            "fitted constants would lose γ and fail here."
+        ),
+    ),
+    # -----------------------------------------------------------------------
+    # Zeilberger.  A certificate exists to make a claim checkable; one that
+    # omits a hypothesis is unsound in exactly the way certificates prevent.
+    # -----------------------------------------------------------------------
+    Case(
+        id="zeilberger_sum_recurrence_states_its_boundary_hypothesis",
+        subsystem="sums_products",
+        statement=(
+            "for F = C(n,k)/(k+1) the certificate's recurrence for Σ_k F is inhomogeneous, "
+            "and that must be said"
+        ),
+        op=_zeilberger_sum_recurrence_defect(
+            _binom(N, K) / (K + _int(1)), _sum_binomial_over_k_plus_one, disclosure_counts=True
+        ),
+        contract=Returns(0.0, tol=1e-9),
+        verified_by=(
+            "S(n) = Σ_{k=0}^{n} C(n,k)/(k+1) = (2ⁿ⁺¹-1)/(n+1), summed exactly in Fraction "
+            "arithmetic. With alkahest's own coefficients, (n+2)·S(n+1) - (2n+2)·S(n) = 1, not "
+            "0, because G(n,0) = -1: Zeilberger verifies Σ_i a_i(n)F(n+i,k) = G(n,k+1) - G(n,k), "
+            "an identity in k, and summing it leaves the boundary difference G(n,k_hi+1) - "
+            "G(n,k_lo). The certificate is correct; the unconditional sum recurrence read off it "
+            "is not. Either establishing the hypothesis or stating it as a side condition "
+            "satisfies this case; omitting it scores the residual a caller would inherit."
+        ),
+    ),
+    Case(
+        id="zeilberger_control_binomial_row_sum_recurrence",
+        subsystem="sums_products",
+        statement="for F = C(n,k) the sum recurrence really is homogeneous: S(n+1) - 2S(n) = 0",
+        op=_zeilberger_sum_recurrence_defect(
+            _binom(N, K), _sum_binomial_row, disclosure_counts=False
+        ),
+        contract=Returns(0.0, tol=1e-9),
+        verified_by=(
+            "Σ_k C(n,k) = 2ⁿ, so S(n+1) - 2S(n) = 0 identically — checked here in exact Fraction "
+            "arithmetic at n = 1..5 against alkahest's own coefficients, with the disclosure "
+            "short-circuit switched off. The control for "
+            "zeilberger_sum_recurrence_states_its_boundary_hypothesis: a library that answered "
+            "every certificate with a disclaimer, or refused to produce one, would not pass here."
+        ),
+    ),
+    # -----------------------------------------------------------------------
     # Number theory at 0, 1, negatives, and the pseudoprime traps.
     # -----------------------------------------------------------------------
     Case(
@@ -2299,7 +2961,6 @@ CASES: list[Case] = [
             "must not pass the gate."
         ),
     ),
-    # ── known broken: reported in 3.8-silent-error-hunt-2.md, not yet fixed ──
     Case(
         id="solve_spurious_solution_two_by_two",
         subsystem="solving",
@@ -2315,46 +2976,245 @@ CASES: list[Case] = [
             "gives 1 - y = 0 so (1,1). The solution set is {(0,0), (1,1)}. Substituting alkahest's "
             "third answer (-1, 1) gives x² - xy = 1 + 1 = 2 ≠ 0 — self-certifying, no oracle."
         ),
-        xfail=(
-            "SILENT ERROR: solve returns the spurious tuple (-1, 1) with residual 2, and reports "
-            "four entries for a two-point variety. try_backsolve_generators "
-            "(alkahest-core/src/solver/mod.rs:475) picks one lex-Groebner generator per variable "
-            "and never re-checks the finished assignment against the remaining generators. See "
-            "temp-alkahest/testing/3.8-silent-error-hunt-2.md."
+    ),
+    # -----------------------------------------------------------------------
+    # Elimination: the subresultant chain must *be* the subresultants.
+    #
+    # `subresultant_prs` and `resultant` disagreeing on the same input is its
+    # own proof that one of them is wrong, and no oracle settles it — SymPy's
+    # `resultant` is itself wrong for odd×odd degrees (3.8-silent-error-hunt-2,
+    # finding 12), so every expectation below comes from the Sylvester
+    # determinants directly.
+    # -----------------------------------------------------------------------
+    Case(
+        id="subresultant_chain_ends_at_the_resultant",
+        subsystem="solving",
+        statement="the last element of the subresultant PRS of x²-3x+2 and 2x is Res = 8",
+        op=_subresultant_chain([2, -3, 1], [0, 2]),
+        contract=Returns((8.0, 8.0)),
+        verified_by=(
+            "The Sylvester matrix of x²-3x+2 and 2x is [[1,-3,2],[2,0,0],[0,2,0]]; expanding "
+            "along the second row gives -(2)·det[[-3,2],[2,0]] = -(2)·(-4) = 8. Equivalently "
+            "Res(f, 2x) = 2²·f(0) = 4·2 = 8 by the product formula. alkahest's own resultant() "
+            "says 8 while subresultant_prs said 4 — two answers in one library that cannot both "
+            "be right."
         ),
     ),
     Case(
-        id="sum_definite_interior_pole_refused",
-        subsystem="sums_products",
-        statement="Σ_{k=1}^{10} 1/((k-3)(k-2)) is undefined — the k=2 and k=3 terms divide by zero",
-        op=lambda: _num(
-            ak.sum_definite(((K - _int(3)) * (K - _int(2))) ** _int(-1), K, _int(1), _int(10))
+        id="subresultant_chain_defective_case_is_the_subresultants",
+        subsystem="solving",
+        statement="the chain of 3x³-x and -3x²+2x-3 is S₁ = -24x-18, S₀ = -396",
+        op=_subresultant_chain([0, -1, 0, 3], [-3, 2, -3]),
+        contract=Returns((-66.0, -90.0, -396.0, -396.0)),
+        verified_by=(
+            "By hand from the recurrence with the canonical pseudo-division exponent δ+1 = 2: "
+            "9·(3x³-x) mod (-3x²+2x-3) = -24x-18 and β₁ = (-1)^{δ+1} = 1, so S₁ = -24x-18, "
+            "giving S₁(2) = -66 and S₁(3) = -90. One more step: 576·(-3x²+2x-3) mod (-24x-18) "
+            "= -3564 and β₂ = 9, so S₀ = -396 — which is also the 5×5 Sylvester determinant and "
+            "what resultant() reports. alkahest returned 8x+6 and -44, i.e. S₁/(-3) and S₀/9, "
+            "because FLINT's pseudo-division uses the *minimal* exponent d and the recurrence "
+            "assumed δ+1."
         ),
+    ),
+    Case(
+        id="subresultant_chain_equal_degrees_terminates",
+        subsystem="solving",
+        statement="the chain of 2x²+2x+1 and 2x²+x+1 is S₁ = -2x, S₀ = Res = 2",
+        op=_subresultant_chain([1, 2, 2], [1, 1, 2]),
+        contract=Returns((-4.0, -6.0, 2.0, 2.0)),
+        verified_by=(
+            "g - f = -x exactly (the leading coefficients match), so g mod f = -x with quotient "
+            "1, and Res(f,g) = lc(f)^{deg g - deg(g mod f)}·Res(f, -x) = 2·((-1)²·f(0)) = 2·1 = 2. "
+            "The first pseudo-remainder is 2f mod g = 2x and β₁ = (-1)^{δ+1} = -1 with δ = 0, so "
+            "S₁ = -2x, giving S₁(2) = -4 and S₁(3) = -6."
+        ),
+        note=(
+            "Pre-fix this was not a wrong answer: the missing scale factor made the β division "
+            "inexact, and FLINT's scalar_divexact calls flint_abort — SIGABRT, uncatchable by "
+            "any Python handler, the whole process gone. A regression therefore takes the gate "
+            "down rather than reporting; the Rust unit test "
+            "poly::resultant::tests::sprs_survives_an_inexact_scaling_input is the primary guard."
+        ),
+    ),
+    Case(
+        id="subresultant_control_monic_divisor",
+        subsystem="solving",
+        statement="the chain of x³+x+1 and x²+1 is the single constant S₀ = Res = 1",
+        op=_subresultant_chain([1, 1, 0, 1], [1, 0, 1]),
+        contract=Returns((1.0, 1.0)),
+        verified_by=(
+            "x²+1 has roots ±i, and Res(f,g) = lc(g)^{deg f}·Π_{g(β)=0} f(β) = 1·f(i)·f(-i) = "
+            "(i³+i+1)(-i³-i+1) = (1)(1) = 1 since i³ = -i. lc(g) = 1, so the pseudo-division "
+            "scaling this fix corrects is trivial here and the answer was already right — a fix "
+            "that merely refused, or that rescaled everything, would break this case."
+        ),
+    ),
+    Case(
+        id="subresultant_control_two_step_chain",
+        subsystem="solving",
+        statement="the chain of x⁴-1 and x²+x+1 is S₁ = -x+1, S₀ = Res = 3",
+        op=_subresultant_chain([-1, 0, 0, 0, 1], [1, 1, 1]),
+        contract=Returns((-1.0, -2.0, 3.0, 3.0)),
+        verified_by=(
+            "x²+x+1 has the primitive cube roots of unity ω, ω̄ as roots, and "
+            "Res(f,g) = lc(g)^{deg f}·f(ω)f(ω̄) = (ω⁴-1)(ω̄⁴-1) = (ω-1)(ω̄-1) = "
+            "1 - (ω+ω̄) + 1 = 1+1+1 = 3. A two-element chain with a monic divisor: correct "
+            "before the fix as well, so it holds the fix to changing only what was broken."
+        ),
+    ),
+    # -----------------------------------------------------------------------
+    # Γ at its poles.
+    # -----------------------------------------------------------------------
+    Case(
+        id="gamma_at_a_negative_integer_pole",
+        subsystem="evaluation",
+        statement="Γ(-2) does not exist — Γ has a simple pole at every non-positive integer",
+        op=lambda: float(ak.eval_expr(ak.gamma(_int(-2)), {})),
+        contract=Raises("E-EVAL-009"),
+        verified_by=(
+            "1/Γ is entire with a simple zero at 0, -1, -2, …, so Γ has a pole there and no "
+            "finite value. Alkahest already raised E-EVAL-009 for Γ(0); the reflection formula "
+            "π/(sin(πx)·Γ(1-x)) produced 6.4e15 at x = -2 only because sin(π·(-2.0)) rounds to "
+            "2.45e-16 rather than 0 in binary floating point."
+        ),
+    ),
+    Case(
+        id="gamma_control_negative_half_integer",
+        subsystem="evaluation",
+        statement="Γ(-1/2) = -2√π — a negative argument that is not a pole",
+        op=lambda: float(ak.eval_expr(ak.gamma(_rat(-1, 2)), {})),
+        contract=Returns(-3.5449077018110318, tol=1e-9),
+        verified_by=(
+            "Γ(1/2) = √π and Γ(x+1) = x·Γ(x), so Γ(-1/2) = Γ(1/2)/(-1/2) = -2√π = "
+            "-3.5449077018110318. The control for the pole guard: refusing the whole negative "
+            "half-line would pass the trap above and fail this."
+        ),
+    ),
+    Case(
+        id="product_definite_gamma_ratio_over_a_pole",
+        subsystem="sums_products",
+        statement="Π_{k=1}^{3} (k-5) = (-4)(-3)(-2) = -24",
+        op=lambda: _num(ak.product_definite(K - _int(5), K, _int(1), _int(3))),
+        contract=RefusesOr(-24.0),
+        verified_by=(
+            "Three factors, straight from the definition: (-4)·(-3)·(-2) = -24. Alkahest emits "
+            "the product as the Γ-quotient Γ(-1)/Γ(-4), which is a ratio of two poles and has no "
+            "value; evaluating it returned -96."
+        ),
+        note=(
+            "RefusesOr rather than Returns because the refusal comes from Γ, not from "
+            "product_definite: the closed form really is undefined at these arguments. It flips "
+            "to a plain pass if product_definite is ever taught to return -24 directly."
+        ),
+    ),
+    Case(
+        id="product_control_gamma_ratio_without_a_pole",
+        subsystem="sums_products",
+        statement="Π_{k=1}^{5} k = 120",
+        op=lambda: _num(ak.product_definite(K, K, _int(1), _int(5))),
+        contract=Returns(120.0),
+        verified_by=(
+            "1·2·3·4·5 = 120. The Γ-quotient here is Γ(6)/Γ(1) with no pole in it, so the pole "
+            "guard must stay silent; together with product_control_contains_zero (which needs "
+            "1/Γ(0) = 0) it pins both sides of the guard."
+        ),
+    ),
+    # -----------------------------------------------------------------------
+    # One-sided limits taken from outside the domain.
+    # -----------------------------------------------------------------------
+    Case(
+        id="limit_sqrt_from_the_left_of_zero",
+        subsystem="limits",
+        statement="lim_{x→0⁻} √x does not exist over ℝ — √ is real only for x ≥ 0",
+        op=limit_value(ak.sqrt(X), _int(0), direction="-"),
         contract=RefusesOr(),
         verified_by=(
-            "The k=2 term is 1/((-1)·0) and the k=3 term is 1/(0·1); neither is a number, so the "
-            "sum has no value. alkahest returned -5/8. Its own docstring promises E-SUM-003 for "
-            "exactly this."
-        ),
-        xfail=(
-            "SILENT ERROR: sum_definite tests contains_zero_to_negative_power only on the "
-            "telescoped difference G(hi+1) - G(lo) (alkahest-core/src/sum/mod.rs:181), so a pole "
-            "strictly between the endpoints is invisible and only poles landing exactly on lo or "
-            "hi+1 are caught. See temp-alkahest/testing/3.8-silent-error-hunt-2.md."
+            "√x is real for x ≥ 0 only, so no sequence xₙ ↑ 0 has √xₙ defined and there is "
+            "nothing for the one-sided limit to be. Alkahest returned 0, which is exactly the "
+            "correct answer to the *other* one-sided question — the two are indistinguishable to "
+            "a caller reasoning about domains of definition."
         ),
     ),
     Case(
-        id="product_definite_keeps_rational_scale",
-        subsystem="sums_products",
-        statement="Π_{k=1}^{5} 1/2 = 1/32",
-        op=lambda: _num(ak.product_definite(_rat(1, 2), K, _int(1), _int(5))),
-        contract=Returns(1.0 / 32.0, tol=1e-12),
-        verified_by="Five factors of 1/2 multiply to 2^-5 = 1/32, by the definition of a product.",
-        xfail=(
-            "SILENT ERROR: product_definite returns 1. ratuni_poly_to_univ "
-            "(alkahest-core/src/sum/product.rs:109-144) clears coefficient denominators by "
-            "multiplying through by their LCM and never returns or reapplies that scale, so the "
-            "answer is off by c^(hi-lo+1). See temp-alkahest/testing/3.8-silent-error-hunt-2.md."
+        id="limit_control_sqrt_from_the_right_of_zero",
+        subsystem="limits",
+        statement="lim_{x→0⁺} √x = 0",
+        op=limit_value(ak.sqrt(X), _int(0), direction="+"),
+        contract=Returns(0.0),
+        verified_by="0 ≤ √x ≤ √δ for 0 < x < δ, so the right-hand limit is 0 by squeeze.",
+    ),
+    Case(
+        id="limit_control_sqrt_of_square_from_the_left",
+        subsystem="limits",
+        statement="lim_{x→0⁻} √(x²) = 0 — same head and point, but the left side is in the domain",
+        op=limit_value(ak.sqrt(X**2), _int(0), direction="-"),
+        contract=Returns(0.0),
+        verified_by=(
+            "√(x²) = |x| for every real x, and |x| → 0 from either side. The direct control for "
+            "the domain guard: a guard that fired on `sqrt` approached from the left, rather than "
+            "on the domain, would refuse this."
+        ),
+    ),
+    Case(
+        id="limit_arccos_from_the_right_of_one",
+        subsystem="limits",
+        statement="lim_{x→1⁺} arccos x does not exist over ℝ — arccos is defined only on [-1,1]",
+        op=limit_value(ak.acos(X), _int(1), direction="+"),
+        contract=RefusesOr(),
+        verified_by=(
+            "cos maps ℝ onto [-1,1], so arccos has no real value at any x > 1 and no right "
+            "neighbourhood of 1 lies in its domain. Alkahest returned arccos(1) = 0."
+        ),
+    ),
+    Case(
+        id="limit_control_arccos_from_the_left_of_one",
+        subsystem="limits",
+        statement="lim_{x→1⁻} arccos x = 0",
+        op=limit_value(ak.acos(X), _int(1), direction="-"),
+        contract=Returns(0.0),
+        verified_by="arccos is continuous on [-1,1] and arccos 1 = 0.",
+    ),
+    # -----------------------------------------------------------------------
+    # Rust panics crossing the FFI boundary.
+    #
+    # Not silent errors — but `pyo3_runtime.PanicException` inherits
+    # `BaseException`, so an unattended loop's `except Exception` does not catch
+    # it and the run dies on an input it was supposed to survive.  Scored
+    # `no_answer`: neither an answer nor a refusal.
+    # -----------------------------------------------------------------------
+    Case(
+        id="integrate_radical_of_log_of_zero",
+        subsystem="integration_definite",
+        statement="∫_{-1}^{1} √(log(x-x)) dx has no value — log 0 is undefined",
+        op=_survives_a_panic(definite(ak.sqrt(ak.log(X - X)), POOL.float(-1.0), POOL.float(1.0))),
+        contract=RefusesOr(),
+        verified_by=(
+            "x - x = 0 and log 0 is undefined, so the integrand has no value at any point and "
+            "the integral does not exist. Any finite answer is a lie about a function that does "
+            "not exist."
+        ),
+        note=(
+            "Pre-fix this was a Rust panic (RatFn: zero denominator) arriving as "
+            "pyo3_runtime.PanicException, a BaseException that `except Exception` does not "
+            "catch. The op wraps it so the gate reports the failure instead of dying."
+        ),
+    ),
+    Case(
+        id="lll_rank_deficient_basis_is_answerable",
+        subsystem="linear_algebra",
+        statement="LLL on [[1,2],[2,4]] must return a basis of ℤ·(1,2), not panic",
+        op=_lll_rows_stay_in_the_lattice([[1, 2], [2, 4]], [1, 2]),
+        contract=Returns(True),
+        verified_by=(
+            "(2,4) = 2·(1,2), so the two rows span the rank-1 lattice ℤ·(1,2). Every row LLL "
+            "returns must therefore be an integer multiple of (1,2), and (1,2) itself must still "
+            "be reachable — checked in exact Fraction arithmetic on the returned rows, with no "
+            "reference implementation involved."
+        ),
+        note=(
+            "Pre-fix any rank-deficient basis divided by a zero Gram–Schmidt norm and panicked. "
+            "Scored `no_answer` when that happens, not `silent_error`: the failure mode is a "
+            "dead run, not a wrong number."
         ),
     ),
 ]

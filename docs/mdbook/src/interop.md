@@ -40,7 +40,7 @@ xs = torch.linspace(0, 1, 10_000)
 ys = numpy_eval(f, xs)   # returns a NumPy array
 ```
 
-For GPU tensors, use the `compile_cuda` path (requires `--features cuda`), which accepts device pointers via `call_device_ptrs`.
+For GPU tensors, use the `compile_cuda` path (requires `--features cuda`; see [GPU support](./gpu.md)). Note that its Python `call_batch` takes and returns **host** sequences: a CUDA tensor is copied to the host and back. The zero-copy device-pointer entry point (`call_device_ptrs`) exists in the Rust crate only and has no PyO3 binding.
 
 ## JAX
 
@@ -150,7 +150,7 @@ boundary.** [`alkahest.crosscheck`](./crosscheck.md) reports exactly this situat
 
 ## DLPack
 
-All DLPack-compatible arrays (NumPy, PyTorch, JAX, CuPy) are accepted at the `numpy_eval` and `call_device_ptrs` boundaries. The DLPack conversion is zero-copy for CPU arrays with matching dtypes.
+All DLPack-compatible arrays (NumPy, PyTorch, JAX, CuPy) are accepted at the `numpy_eval` boundary. The DLPack conversion is zero-copy for CPU arrays with matching dtypes; a device array is copied to the host first. There is no device-pointer boundary exposed to Python — `call_device_ptrs` is a Rust-crate API.
 
 ## Exporting C code
 

@@ -172,6 +172,7 @@ use alkahest_core::real::sos::{
 };
 // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
 use alkahest_core::holonomic::{
+    boundary_side_condition as core_boundary_side_condition, boundary_term as core_boundary_term,
     zeilberger as core_zeilberger, HolonomicError as CoreHolonomicError,
     ZeilbergerOpts as CoreZeilbergerOpts,
 };
@@ -4421,15 +4422,29 @@ fn holonomic_error_to_py(e: CoreHolonomicError) -> PyErr {
 ///
 /// ``Σ_i a_i(n)·F(n+i, k) = G(n, k+1) − G(n, k)``  with  ``G = R·F``.
 ///
-/// Summing over ``k`` telescopes the right-hand side, so ``S(n) = Σ_k F(n,k)``
-/// satisfies ``Σ_i a_i(n)·S(n+i) = 0``.  The identity is re-checked exactly
-/// before this object is constructed — a returned certificate is a proof, not a
-/// numerical match.
+/// That identity is re-checked exactly before this object is constructed — a
+/// returned certificate is a proof, not a numerical match.
+///
+/// **It is an identity in ``k``, and only that.**  Summing it over
+/// ``k = k_lo .. k_hi`` telescopes the right-hand side to a *boundary
+/// difference*:
+///
+/// ``Σ_i a_i(n)·S(n+i) = G(n, k_hi+1) − G(n, k_lo)``   for   ``S(n) = Σ_k F(n,k)``.
+///
+/// The familiar homogeneous recurrence ``Σ_i a_i(n)·S(n+i) = 0`` therefore needs
+/// that difference to vanish — the *natural boundary* hypothesis, which
+/// Zeilberger's algorithm does not establish.  It holds in the usual case (``F``
+/// vanishing outside ``0 ≤ k ≤ n``) and fails for e.g. ``F = C(n,k)/(k+1)``,
+/// where ``G(n,0) = −1`` and ``(n+2)·S(n+1) − (2n+2)·S(n) = 1``.
+///
+/// :attr:`side_conditions` states the hypothesis and :attr:`boundary_term`
+/// returns ``G(n,k)`` so a caller can discharge it for their own range.
 #[pyclass(name = "ZeilbergerCertificate")]
 struct PyZeilbergerCertificate {
     order: usize,
     coeff_ids: Vec<ExprId>,
     certificate_id: ExprId,
+    boundary_id: ExprId,
     pool: Py<PyExprPool>,
     derivation: String,
 }
@@ -4464,6 +4479,32 @@ impl PyZeilbergerCertificate {
         }
     }
 
+    /// ``G(n, k) = R(n, k)·F(n, k)`` — the telescoped quantity.
+    ///
+    /// The recurrence for a *sum* over ``k = k_lo .. k_hi`` is
+    /// ``Σ_i a_i(n)·S(n+i) = G(n, k_hi+1) − G(n, k_lo)``; substitute the two
+    /// endpoints here to find out whether that difference vanishes, which is the
+    /// hypothesis listed in :attr:`side_conditions`.
+    #[getter]
+    fn boundary_term(&self, py: Python<'_>) -> PyExpr {
+        let _ = py;
+        PyExpr {
+            id: self.boundary_id,
+            pool: self.pool.clone_ref(py),
+        }
+    }
+
+    /// Hypotheses the certificate does **not** establish, as plain strings.
+    ///
+    /// Mirrors ``DerivedResult.verification["side_conditions"]``: the certificate
+    /// is a proof of the telescoping identity in ``k``, and everything that has
+    /// to be assumed on top of it in order to read off a recurrence for the sum
+    /// is listed here rather than left unsaid.
+    #[getter]
+    fn side_conditions(&self) -> Vec<String> {
+        vec![core_boundary_side_condition().to_string()]
+    }
+
     /// Human-readable derivation log for the search that produced this.
     #[getter]
     fn derivation(&self) -> String {
@@ -4493,6 +4534,14 @@ impl PyZeilbergerCertificate {
 /// ``Σ_i a_i(n)·F(n+i,k) = ΔG`` with ``G = R·F`` is re-checked as an exact
 /// identity in ``Q(n)(k)`` before it is returned.
 ///
+/// The verified statement is that identity in ``k``.  Reading a recurrence for
+/// ``S(n) = Σ_k F(n,k)`` off it additionally requires the boundary difference
+/// ``G(n, k_hi+1) − G(n, k_lo)`` to vanish over the summation range; that
+/// hypothesis is *not* checked here and is reported on the returned object as
+/// :attr:`~alkahest.ZeilbergerCertificate.side_conditions`, with
+/// :attr:`~alkahest.ZeilbergerCertificate.boundary_term` giving the ``G`` needed
+/// to discharge it.
+///
 /// Raises :exc:`alkahest.HolonomicError` rather than guessing when ``term`` is
 /// outside the proper hypergeometric class (``E-HOLO-001``) or when the bounded
 /// search is exhausted (``E-HOLO-002``).
@@ -4511,16 +4560,18 @@ fn py_zeilberger(
         max_order,
         max_degree,
     };
-    let (order, coeff_ids, certificate_id, derivation) = {
+    let (order, coeff_ids, certificate_id, boundary_id, derivation) = {
         let pool = pool_py.borrow(py);
         let derived = core_zeilberger(term.id, n.id, k.id, &pool.inner, &opts)
             .map_err(holonomic_error_to_py)?;
         let derivation = derived.log.display_with(&pool.inner).to_string();
         let value = derived.value;
+        let boundary = core_boundary_term(&value, term.id, &pool.inner);
         (
             value.order,
             value.coeffs.clone(),
             value.certificate,
+            boundary,
             derivation,
         )
     };
@@ -4528,6 +4579,7 @@ fn py_zeilberger(
         order,
         coeff_ids,
         certificate_id,
+        boundary_id,
         pool: pool_py,
         derivation,
     })
@@ -10262,8 +10314,15 @@ fn py_solve_numerical(
 /// list[dict]
 ///     Each dict maps a variable ``Expr`` to ``Expr`` (symbolic Groebner) or
 ///     ``float`` (Groebner with ``numeric=True``, or ``method="homotopy"``).
+///     Solutions are a *set*: a double root is one entry, not two. Every
+///     parameter-free tuple has been substituted back into the equations you
+///     passed and could not be shown to violate them.
 /// GroebnerBasis
-///     When ``method="groebner"`` and the ideal is parametric / not zero-dim finite.
+///     When ``method="groebner"`` and no finite solution list could be
+///     produced — usually a positive-dimensional ideal, but also when the
+///     Lex basis admits no complete triangular elimination in *vars*. It is
+///     "here is the ideal" rather than a claim that the solutions are
+///     infinite.
 #[cfg(feature = "groebner")]
 #[pyfunction]
 #[pyo3(name = "solve", signature = (equations, vars, *, numeric = false, method = "groebner"))]

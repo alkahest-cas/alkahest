@@ -106,9 +106,17 @@ fn rational_to_expr(pool: &ExprPool, r: &Rational) -> ExprId {
     }
 }
 
-fn ratuni_poly_to_univ(p: &RatUniPoly, var: ExprId) -> Result<UniPoly, ProductError> {
+/// A `ℚ[k]` polynomial as an integer-coefficient [`UniPoly`] **plus the scale
+/// that was used to clear denominators**.
+///
+/// The returned pair `(u, c)` satisfies `p(k) = u(k) / c` exactly. Returning `c`
+/// is not optional bookkeeping: `∏_{k=lo}^{hi} p(k)` differs from
+/// `∏_{k=lo}^{hi} u(k)` by `c^{hi−lo+1}`, so a caller that drops it reports an
+/// answer off by a constant factor with no other symptom — `∏_{k=1}^{5} ½` came
+/// back as `1` instead of `2^{-5}`.
+fn ratuni_poly_to_univ(p: &RatUniPoly, var: ExprId) -> Result<(UniPoly, Integer), ProductError> {
     if p.is_zero() {
-        return Ok(UniPoly::zero(var));
+        return Ok((UniPoly::zero(var), Integer::from(1u32)));
     }
     let mut lcm = Integer::from(1u32);
     for c in &p.coeffs {
@@ -140,7 +148,7 @@ fn ratuni_poly_to_univ(p: &RatUniPoly, var: ExprId) -> Result<UniPoly, ProductEr
             fp.set_coeff_flint(i, ci);
         }
     }
-    Ok(UniPoly { var, coeffs: fp })
+    Ok((UniPoly { var, coeffs: fp }, lcm))
 }
 
 fn expr_to_ratfunc(term: ExprId, k: ExprId, pool: &ExprPool) -> Result<RatFunc, ProductError> {
@@ -369,13 +377,11 @@ pub fn product_definite(
     pool: &ExprPool,
 ) -> Result<DerivedExpr<ExprId>, ProductError> {
     let rf = expr_to_ratfunc(term, k, pool)?;
-    if rf.num.is_zero() {
-        let z = simp(pool, pool.integer(0_i32));
-        let mut log = DerivationLog::new();
-        log.push(RewriteStep::simple("product_definite_zero", term, z));
-        return Ok(DerivedExpr::with_log(z, log));
-    }
 
+    // The empty product is `1` by universal convention — *including* for a term
+    // that is identically zero, because no factor is ever taken. The zero test
+    // has to come second or `∏_{k=1}^{0} 0` reports `0` while `∏_{k=1}^{0} k`
+    // reports `1`, for the same empty range.
     if let (Some(lo_i), Some(hi_i)) = (const_i64(pool, lo), const_i64(pool, hi)) {
         if lo_i > hi_i {
             let one = simp(pool, pool.integer(1_i32));
@@ -385,8 +391,15 @@ pub fn product_definite(
         }
     }
 
-    let univ_n = ratuni_poly_to_univ(&rf.num, k)?;
-    let univ_d = ratuni_poly_to_univ(&rf.den, k)?;
+    if rf.num.is_zero() {
+        let z = simp(pool, pool.integer(0_i32));
+        let mut log = DerivationLog::new();
+        log.push(RewriteStep::simple("product_definite_zero", term, z));
+        return Ok(DerivedExpr::with_log(z, log));
+    }
+
+    let (univ_n, scale_n) = ratuni_poly_to_univ(&rf.num, k)?;
+    let (univ_d, scale_d) = ratuni_poly_to_univ(&rf.den, k)?;
     let fac_n = factor_univ(&univ_n)?;
     let fac_d = factor_univ(&univ_d)?;
 
@@ -398,10 +411,25 @@ pub fn product_definite(
 
     let top = definite_side_from_factorization(pool, &fac_n, lo, hi, delta_n)?;
     let bot = definite_side_from_factorization(pool, &fac_d, lo, hi, delta_n)?;
-    let q = simp(
-        pool,
-        pool.mul(vec![top, pool.pow(bot, pool.integer(-1_i32))]),
-    );
+    // `term(k) = (scale_d / scale_n) · univ_n(k) / univ_d(k)` exactly, and the
+    // constant contributes one factor per index, i.e. `c^{hi−lo+1}`.
+    let c = Rational::from((scale_d, scale_n));
+    let q = if c == 1 {
+        simp(
+            pool,
+            pool.mul(vec![top, pool.pow(bot, pool.integer(-1_i32))]),
+        )
+    } else {
+        let c_e = rational_to_expr(pool, &c);
+        simp(
+            pool,
+            pool.mul(vec![
+                pool.pow(c_e, delta_n),
+                top,
+                pool.pow(bot, pool.integer(-1_i32)),
+            ]),
+        )
+    };
     let q = fold_pow_one_bases(pool, q);
 
     let mut log = DerivationLog::new();
@@ -421,16 +449,34 @@ pub fn product_indefinite(
             "indefinite product of zero unsupported".into(),
         ));
     }
-    let fac_n = factor_univ(&ratuni_poly_to_univ(&rf.num, k)?)?;
-    let fac_d = factor_univ(&ratuni_poly_to_univ(&rf.den, k)?)?;
+    let (univ_n, scale_n) = ratuni_poly_to_univ(&rf.num, k)?;
+    let (univ_d, scale_d) = ratuni_poly_to_univ(&rf.den, k)?;
+    let fac_n = factor_univ(&univ_n)?;
+    let fac_d = factor_univ(&univ_d)?;
 
     let top = indefinite_side_from_factorization(pool, &fac_n, k)?;
     let bot = indefinite_side_from_factorization(pool, &fac_d, k)?;
 
-    let q = simp(
-        pool,
-        pool.mul(vec![top, pool.pow(bot, pool.integer(-1_i32))]),
-    );
+    // As in `product_definite`: the denominator-clearing scale is part of the
+    // term. `Z(k) = c^k · Z₀(k)` has ratio `c · Z₀(k+1)/Z₀(k)`, which is the
+    // term, where `c = scale_d / scale_n`.
+    let c = Rational::from((scale_d, scale_n));
+    let q = if c == 1 {
+        simp(
+            pool,
+            pool.mul(vec![top, pool.pow(bot, pool.integer(-1_i32))]),
+        )
+    } else {
+        let c_e = rational_to_expr(pool, &c);
+        simp(
+            pool,
+            pool.mul(vec![
+                pool.pow(c_e, k),
+                top,
+                pool.pow(bot, pool.integer(-1_i32)),
+            ]),
+        )
+    };
 
     let mut log = DerivationLog::new();
     log.push(RewriteStep::simple("product_indefinite", term, q));
@@ -482,6 +528,86 @@ mod tests {
         let lo = pool.integer(5_i32);
         let hi = pool.integer(3_i32);
         let p = product_definite(k, k, lo, hi, &pool).expect("prod");
+        assert_eq!(p.value, pool.integer(1_i32));
+    }
+
+    /// `∏_{k=1}^{5} ½ = 2⁻⁵` and `∏_{k=1}^{5} 1/(2k) = 1/3840`, straight from
+    /// the definition. Both used to come back scaled by a power of the
+    /// denominator-clearing factor that `ratuni_poly_to_univ` threw away.
+    #[test]
+    fn rational_coefficients_keep_their_scale() {
+        let pool = ExprPool::new();
+        let k = pool.symbol("k", Domain::Real);
+        let one = pool.integer(1_i32);
+        let five = pool.integer(5_i32);
+
+        let half = pool.rational(Integer::from(1), Integer::from(2));
+        let p = product_definite(half, k, one, five, &pool).expect("prod");
+        let v = eval_g(p.value, &HashMap::new(), &pool).unwrap();
+        assert!((v - 1.0 / 32.0).abs() < 1e-12, "∏ 1/2 over 5 terms: {v}");
+
+        // 1/(2k): 1/(2·4·6·8·10) = 1/3840.
+        let two_k = simp(&pool, pool.mul(vec![pool.integer(2_i32), k]));
+        let term = simp(&pool, pool.pow(two_k, pool.integer(-1_i32)));
+        let p = product_definite(term, k, one, five, &pool).expect("prod");
+        let v = eval_g(p.value, &HashMap::new(), &pool).unwrap();
+        assert!((v - 1.0 / 3840.0).abs() < 1e-15, "∏ 1/(2k): {v}");
+
+        // Wallis: ∏_{k=1}^{6} (2k−1)/(2k) = C(12,6)/4^6 = 924/4096.
+        let num = simp(
+            &pool,
+            pool.add(vec![
+                pool.mul(vec![pool.integer(2_i32), k]),
+                pool.integer(-1),
+            ]),
+        );
+        let term = simp(
+            &pool,
+            pool.mul(vec![num, pool.pow(two_k, pool.integer(-1_i32))]),
+        );
+        let p = product_definite(term, k, one, pool.integer(6_i32), &pool).expect("prod");
+        let v = eval_g(p.value, &HashMap::new(), &pool).unwrap();
+        let want = 924.0 / 4096.0;
+        assert!((v - want).abs() < 1e-9 * want, "Wallis at n = 6: {v}");
+    }
+
+    /// The multiplicative antiderivative carries the same scale: `Z(k+1)/Z(k)`
+    /// has to be the term, not the term times a constant.
+    #[test]
+    fn indefinite_product_ratio_reproduces_the_term() {
+        let pool = ExprPool::new();
+        let k = pool.symbol("k", Domain::Real);
+        let two_k = simp(&pool, pool.mul(vec![pool.integer(2_i32), k]));
+        let term = simp(&pool, pool.pow(two_k, pool.integer(-1_i32)));
+        let z = product_indefinite(term, k, &pool).expect("prod");
+        for ki in 1..=6 {
+            let at = |x: f64| {
+                let mut env = HashMap::new();
+                env.insert(k, x);
+                eval_g(z.value, &env, &pool).unwrap()
+            };
+            let ratio = at(ki as f64 + 1.0) / at(ki as f64);
+            let want = 1.0 / (2.0 * ki as f64);
+            assert!(
+                (ratio - want).abs() < 1e-9 * want,
+                "k={ki}: Z(k+1)/Z(k) = {ratio}, term = {want}"
+            );
+        }
+    }
+
+    /// The empty product is `1` whatever the term is — including `0`.
+    #[test]
+    fn empty_range_is_one_even_for_a_zero_term() {
+        let pool = ExprPool::new();
+        let k = pool.symbol("k", Domain::Real);
+        let p = product_definite(
+            pool.integer(0_i32),
+            k,
+            pool.integer(1_i32),
+            pool.integer(0_i32),
+            &pool,
+        )
+        .expect("prod");
         assert_eq!(p.value, pool.integer(1_i32));
     }
 

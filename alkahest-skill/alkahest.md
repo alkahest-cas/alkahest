@@ -108,7 +108,15 @@ pip install maturin
 maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel egraph jit groebner"
 ```
 
-Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_par`), `egraph` (vendored egglog backend; **default** in PyPI wheels), `groebner` (Gröbner solver + Diophantine + homotopy; **default** in both the Rust crate and PyPI wheels), `cranelift` (pure-Rust Tier-1 JIT; **shipped in PyPI wheels** but *not* in the Cargo `default` set — pass it explicitly in a source build), `jit` (LLVM JIT), `cuda` (NVPTX codegen).
+Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_par`), `egraph` (vendored egglog backend; **default** in PyPI wheels), `groebner` (Gröbner solver + Diophantine + homotopy; **default** in both the Rust crate and PyPI wheels), `cranelift` (pure-Rust Tier-1 JIT; **shipped in PyPI wheels** but *not* in the Cargo `default` set — pass it explicitly in a source build), `jit` (LLVM JIT), `cuda` (NVPTX codegen — needs LLVM 15 with the NVPTX target), `groebner-cuda` (CUDA Macaulay-matrix kernel — needs only `cudarc`).
+
+**GPU:** neither CUDA feature is in any published wheel, so `pip install alkahest` has
+no GPU support. On a `--features cuda` source build, `ak.compile_cuda(expr, [x, y])`
+returns a `CudaCompiledFn` with `.ptx` / `.n_inputs` / `.call_batch([xs, ys])`; the
+name does not exist otherwise, so branch on
+`ak.capabilities()["features"]["cuda"]` rather than calling it and catching
+`AttributeError`. `features["groebner_cuda"]` reports only that the kernel was
+compiled in — no Python call path uses it, so it never makes `solve` faster.
 
 ### Rust crate
 

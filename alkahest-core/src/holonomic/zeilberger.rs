@@ -8,11 +8,30 @@
 //! ```
 //!
 //! with polynomial coefficients `a_i(n)` (not all zero, `a_J ≢ 0`) and an
-//! exact rational-function certificate `R(n,k)`. Summing both sides over `k`
-//! telescopes the right-hand side, so if `S(n) = Σ_k F(n,k)` then
-//! `Σ_i a_i(n)·S(n+i) = 0`: this is exactly the classical route from
-//! `Σ_k C(n,k) = 2^n` (order 1) to `Σ_k C(n,k)^2 = C(2n,n)` (order 1, higher
-//! degree certificate) and beyond.
+//! exact rational-function certificate `R(n,k)`. That identity — and only that
+//! identity — is what [`zeilberger()`] verifies exactly before returning.
+//!
+//! # The sum recurrence carries a hypothesis
+//!
+//! Summing both sides over `k = κ₀ .. κ₁` telescopes the right-hand side to a
+//! **boundary difference**, not to zero:
+//!
+//! ```text
+//! Σ_i a_i(n)·S(n+i) = G(n, κ₁+1) − G(n, κ₀),    S(n) = Σ_{k=κ₀}^{κ₁} F(n,k)
+//! ```
+//!
+//! `Σ_i a_i(n)·S(n+i) = 0` therefore holds **only when that boundary difference
+//! vanishes** — the *natural boundary* hypothesis, which is what makes the
+//! classical route from `Σ_k C(n,k) = 2ⁿ` to `Σ_k C(n,k)² = C(2n,n)` work: `G`
+//! is a rational multiple of `F`, and `F` vanishes outside `0 ≤ k ≤ n`.
+//!
+//! It is not automatic. For `F(n,k) = C(n,k)/(k+1)` summed over `k = 0..n` the
+//! certificate is correct and `G(n,0) = −1`, so
+//! `(n+2)·S(n+1) − (2n+2)·S(n) = 1`, not `0`; `S(n) = (2ⁿ⁺¹−1)/(n+1)` confirms
+//! it in exact arithmetic. A caller who reads the homogeneous recurrence off a
+//! certificate without checking the boundary gets a false lemma. Use
+//! [`boundary_term`] to obtain `G(n,k)` and evaluate it at the summation
+//! endpoints; [`boundary_side_condition`] states the hypothesis in words.
 //!
 //! # Method
 //!
@@ -82,6 +101,11 @@ impl Default for ZeilbergerOpts {
 
 /// A verified Zeilberger certificate: `Σ_i coeffs[i](n)·F(n+i,k) = ΔG`,
 /// `G(n,k) = certificate(n,k)·F(n,k)`.
+///
+/// The verified content is the **telescoping identity in `k`**. Turning it into
+/// a recurrence for `S(n) = Σ_k F(n,k)` needs the boundary difference
+/// `G(n, κ₁+1) − G(n, κ₀)` to vanish over the summation range; see the module
+/// documentation, [`boundary_term`] and [`boundary_side_condition`].
 #[derive(Debug, Clone)]
 pub struct ZeilbergerResult {
     /// Recurrence order `J`; `coeffs.len() == order + 1`.
@@ -91,6 +115,32 @@ pub struct ZeilbergerResult {
     pub coeffs: Vec<ExprId>,
     /// `R(n,k)` as an expression in `n, k`, with `G(n,k) = R(n,k)·F(n,k)`.
     pub certificate: ExprId,
+}
+
+/// `G(n,k) = R(n,k)·F(n,k)`, the telescoped quantity whose boundary values
+/// decide whether the certificate's recurrence holds for the *sum*.
+///
+/// `term` must be the same `F(n,k)` that was passed to [`zeilberger()`]. The
+/// recurrence for `S(n) = Σ_{k=κ₀}^{κ₁} F(n,k)` is
+/// `Σ_i a_i(n)·S(n+i) = G(n, κ₁+1) − G(n, κ₀)`, so this is exactly what a
+/// caller needs in order to discharge (or refute) the natural-boundary
+/// hypothesis for their own summation range.
+pub fn boundary_term(result: &ZeilbergerResult, term: ExprId, pool: &ExprPool) -> ExprId {
+    crate::simplify::simplify(pool.mul(vec![result.certificate, term]), pool).value
+}
+
+/// The hypothesis that [`ZeilbergerResult`]'s recurrence for the *sum* rests on,
+/// stated so it can be recorded rather than assumed.
+///
+/// Emitted verbatim as a side condition by the Python binding; it is deliberately
+/// a fixed string, because the condition is the same for every certificate and
+/// only the range it is evaluated over changes.
+pub const fn boundary_side_condition() -> &'static str {
+    "the recurrence Σ_i a_i(n)·S(n+i) = 0 for S(n) = Σ_k F(n,k) additionally requires \
+     G(n, k_hi+1) = G(n, k_lo) over the summation range, where G(n,k) = R(n,k)·F(n,k); \
+     Zeilberger verifies the telescoping identity in k, not this boundary condition. \
+     It holds for the usual natural boundary (F vanishing outside 0 <= k <= n) and fails \
+     for e.g. F = C(n,k)/(k+1), where G(n,0) = -1 makes the recurrence inhomogeneous"
 }
 
 /// `k^j` as an element of `Q(n)[k]`.
@@ -488,6 +538,39 @@ mod tests {
                 a0 / a1
             );
         }
+    }
+
+    /// `F(n,k) = C(n,k)/(k+1)` is the counterexample the boundary hypothesis
+    /// exists for: the telescoping certificate is correct, but `G(n,0) = −1`, so
+    /// `Σ_i a_i(n)·S(n+i)` is `1`, not `0`. The boundary term must therefore be
+    /// available to the caller, and it must not vanish here.
+    #[test]
+    fn boundary_term_is_available_and_nonzero_where_the_hypothesis_fails() {
+        let pool = ExprPool::new();
+        let (n, k) = nk(&pool);
+        let kp1 = pool.add(vec![k, pool.integer(1_i32)]);
+        let f = pool.mul(vec![
+            binom(&pool, n, k),
+            pool.pow(kp1, pool.integer(-1_i32)),
+        ]);
+        let opts = ZeilbergerOpts::default();
+        let result = zeilberger(f, n, k, &pool, &opts).expect("certificate");
+        let g = boundary_term(&result.value, f, &pool);
+
+        // G(n, 0) = R(n,0)·F(n,0) = −1 for every n, so the homogeneous sum
+        // recurrence is false and nothing in the certificate said otherwise.
+        let mut m = std::collections::HashMap::new();
+        m.insert(k, pool.integer(0_i32));
+        let g_at_0 = crate::simplify::simplify(crate::kernel::subs(g, &m, &pool), &pool).value;
+        for ni in [2.0_f64, 5.0, 9.0] {
+            let env = std::collections::HashMap::from([(n, ni)]);
+            let v = crate::eval_f64(g_at_0, &pool, &env).expect("G(n,0) evaluates");
+            assert!(
+                (v + 1.0).abs() < 1e-9,
+                "G({ni}, 0) should be -1, got {v} — the boundary difference does not vanish"
+            );
+        }
+        assert!(boundary_side_condition().contains("G(n, k_hi+1) = G(n, k_lo)"));
     }
 
     /// Refuses non-hypergeometric input rather than guessing.

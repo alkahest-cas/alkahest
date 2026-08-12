@@ -169,6 +169,20 @@ pub fn sum_definite(
     m_lower.insert(k, lo);
     let lower = simp(pool, subs(g, &m_lower, pool));
 
+    // A pole of the *summand* strictly between the bounds is invisible in the
+    // telescoped difference — `G(hi+1) − G(lo)` never mentions the interior
+    // indices — so it has to be looked for in the summand itself, the same way
+    // `integrate::engine`'s interior-pole guards look at the integrand rather
+    // than at `F(b) − F(a)`.  `Σ_{k=1}^{10} 1/((k−3)(k−2))` telescoped to a
+    // clean `−5/8` while its `k = 2` and `k = 3` terms divide by zero.
+    if let Some(bad) = interior_undefined_index(term, k, lo, hi, pool) {
+        return Err(SumError::BoundSubstitution(format!(
+            "the summand is undefined at k = {bad}, which lies inside the summation \
+             range: that term of the sum is a division by zero, so the sum has no \
+             value and the telescoped difference G(hi+1) - G(lo) is not it",
+        )));
+    }
+
     let diff = simp(
         pool,
         pool.add(vec![upper, pool.mul(vec![lower, pool.integer(-1_i32)])]),
@@ -190,6 +204,139 @@ pub fn sum_definite(
     let mut log = DerivationLog::new();
     log.push(RewriteStep::simple("gosper_definite_telescope", term, diff));
     Ok(DerivedExpr::with_log(diff, log))
+}
+
+/// Largest number of individual indices [`interior_undefined_index`] will
+/// substitute into when it cannot narrow the candidates structurally.
+///
+/// The structural pass below is exact and range-independent for a summand whose
+/// negative powers are polynomials in `k`, which is every rational summand; this
+/// bound only limits the brute-force fallback used for shapes it cannot parse,
+/// so a very long range with an exotic summand is answered "no opinion" rather
+/// than made slow.
+const MAX_POLE_SCAN: i64 = 2048;
+
+/// `expr` as an `i64` when it is an integer literal.
+fn const_i64(pool: &ExprPool, e: ExprId) -> Option<i64> {
+    match pool.get(e) {
+        crate::kernel::ExprData::Integer(n) => n.0.to_i64(),
+        _ => None,
+    }
+}
+
+/// Collect the bases of every `X^negative` node, i.e. every denominator.
+fn negative_power_bases(expr: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>) {
+    use crate::kernel::ExprData;
+    match pool.get(expr) {
+        ExprData::Pow { base, exp } => {
+            let negative_exp = match pool.get(exp) {
+                ExprData::Integer(n) => n.0 < 0,
+                ExprData::Rational(r) => r.0 < 0,
+                _ => false,
+            };
+            if negative_exp {
+                out.push(base);
+            }
+            negative_power_bases(base, pool, out);
+            negative_power_bases(exp, pool, out);
+        }
+        ExprData::Add(xs) | ExprData::Mul(xs) => {
+            for &x in xs.iter() {
+                negative_power_bases(x, pool, out);
+            }
+        }
+        ExprData::Func { args, .. } => {
+            for &a in args.iter() {
+                negative_power_bases(a, pool, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Integer roots of `p` in `[lo, hi]`, read off its ℤ-factorisation.
+fn integer_roots_in(p: &crate::poly::UniPoly, lo: i64, hi: i64) -> Vec<i64> {
+    let Ok(fac) = p.factor_z() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (fact, _) in &fac.factors {
+        if fact.degree() != 1 {
+            continue;
+        }
+        let coeffs = fact.coefficients();
+        let (Some(b), Some(a)) = (coeffs.first(), coeffs.get(1)) else {
+            continue;
+        };
+        if *a == 0 {
+            continue;
+        }
+        // root = -b/a, an integer only when a divides b.
+        let (q, r) = (-b.clone()).div_rem(a.clone());
+        if r != 0 {
+            continue;
+        }
+        if let Some(root) = q.to_i64() {
+            if root >= lo && root <= hi {
+                out.push(root);
+            }
+        }
+    }
+    out
+}
+
+/// The smallest integer in `[lo, hi]` at which `term` is undefined, when that
+/// can be established; `None` means *no opinion*, never *no pole*.
+///
+/// Refusal must rest on positive evidence, so this returns an index only after
+/// substituting it and seeing an actual `0^{negative}` survive simplification.
+/// Candidates come from the roots of the summand's own denominators, so the cost
+/// does not scale with the length of the range.
+fn interior_undefined_index(
+    term: ExprId,
+    k: ExprId,
+    lo: ExprId,
+    hi: ExprId,
+    pool: &ExprPool,
+) -> Option<i64> {
+    let (lo_i, hi_i) = (const_i64(pool, lo)?, const_i64(pool, hi)?);
+    if lo_i > hi_i {
+        return None;
+    }
+
+    // Simplify first: `(k−2)/(k−2)` is `1`, and the caller asked about the
+    // summand, not about an unreduced spelling of it.
+    let term = simp(pool, term);
+
+    let mut bases = Vec::new();
+    negative_power_bases(term, pool, &mut bases);
+
+    let mut candidates: Vec<i64> = Vec::new();
+    let mut unparsed = false;
+    for base in bases {
+        match crate::poly::UniPoly::from_symbolic_clear_denoms(base, k, pool) {
+            Ok(p) if p.degree() >= 1 => candidates.extend(integer_roots_in(&p, lo_i, hi_i)),
+            // A constant denominator has no root; anything else (a `gamma`, a
+            // `2^k`, a nested quotient) is outside this pass's reach.
+            Ok(_) => {}
+            Err(_) => unparsed = true,
+        }
+    }
+
+    if unparsed && hi_i.saturating_sub(lo_i) < MAX_POLE_SCAN {
+        candidates.extend(lo_i..=hi_i);
+    }
+    candidates.sort_unstable();
+    candidates.dedup();
+
+    for j in candidates {
+        let mut m = HashMap::new();
+        m.insert(k, pool.integer(j));
+        if contains_zero_to_negative_power(simp(pool, subs(term, &m, pool)), pool) {
+            return Some(j);
+        }
+    }
+    None
 }
 
 /// True when `expr` contains a `0^n` node with `n` negative — an unresolved
@@ -366,6 +513,69 @@ mod tests {
         let s = sum_definite(term, k, lo, hi, &pool).expect("Σ 2^k");
         let v = eval_interp(s.value, &HashMap::new(), &pool).expect("eval");
         assert!((v - 63.0).abs() < 1e-9, "got {v}"); // 1+2+4+8+16+32
+    }
+
+    /// A pole of the summand *strictly inside* the range makes the sum
+    /// undefined; the telescoped difference does not know that.
+    #[test]
+    fn interior_pole_is_refused_not_telescoped() {
+        let pool = ExprPool::new();
+        let k = pool.symbol("k", Domain::Real);
+        let i = |v: i32| pool.integer(v);
+
+        // Σ_{k=1}^{10} 1/((k−3)(k−2)) — the k = 2 and k = 3 terms divide by zero.
+        let den = simp(
+            &pool,
+            pool.mul(vec![
+                simp(&pool, pool.add(vec![k, i(-3)])),
+                simp(&pool, pool.add(vec![k, i(-2)])),
+            ]),
+        );
+        let term = simp(&pool, pool.pow(den, i(-1)));
+        let err = sum_definite(term, k, i(1), i(10), &pool).expect_err("must refuse");
+        assert!(matches!(err, SumError::BoundSubstitution(_)));
+        assert_eq!(crate::errors::AlkahestError::code(&err), "E-SUM-003");
+
+        // Σ_{k=−2}^{5} 1/(k(k+1)) — poles at k = −1 and k = 0.
+        let den = simp(
+            &pool,
+            pool.mul(vec![k, simp(&pool, pool.add(vec![k, i(1)]))]),
+        );
+        let term = simp(&pool, pool.pow(den, i(-1)));
+        assert!(sum_definite(term, k, i(-2), i(5), &pool).is_err());
+    }
+
+    /// The nearest convergent neighbours must still evaluate: the guard has to
+    /// fire on a pole, not on the shape.
+    #[test]
+    fn poles_outside_the_range_do_not_block_the_sum() {
+        let pool = ExprPool::new();
+        let k = pool.symbol("k", Domain::Real);
+        let i = |v: i32| pool.integer(v);
+
+        // Σ_{k=1}^{10} 1/(k(k+1)) = 1 − 1/11 = 10/11.
+        let den = simp(
+            &pool,
+            pool.mul(vec![k, simp(&pool, pool.add(vec![k, i(1)]))]),
+        );
+        let term = simp(&pool, pool.pow(den, i(-1)));
+        let s = sum_definite(term, k, i(1), i(10), &pool).expect("no pole in [1, 10]");
+        let v = eval_interp(s.value, &HashMap::new(), &pool).expect("eval");
+        assert!((v - 10.0 / 11.0).abs() < 1e-12, "got {v}");
+
+        // Σ_{k=4}^{10} 1/((k−3)(k−2)): poles at 2 and 3, both below the range.
+        let den = simp(
+            &pool,
+            pool.mul(vec![
+                simp(&pool, pool.add(vec![k, i(-3)])),
+                simp(&pool, pool.add(vec![k, i(-2)])),
+            ]),
+        );
+        let term = simp(&pool, pool.pow(den, i(-1)));
+        let s = sum_definite(term, k, i(4), i(10), &pool).expect("no pole in [4, 10]");
+        let v = eval_interp(s.value, &HashMap::new(), &pool).expect("eval");
+        // Σ_{k=4}^{10} (1/(k−3) − 1/(k−2)) = 1 − 1/8 = 7/8.
+        assert!((v - 0.875).abs() < 1e-12, "got {v}");
     }
 
     #[test]

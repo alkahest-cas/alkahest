@@ -18,7 +18,7 @@ AlkahestError (base)
 ├── DaeError          (E-DAE-*)    — DAE structural analysis
 ├── SolverError       (E-SOLVE-*)  — polynomial system solving
 ├── JitError          (E-JIT-*)    — LLVM/JIT codegen
-├── CudaError         (E-CUDA-*)   — CUDA kernel launch or driver
+├── CudaError         (E-CUDA-*)   — NVPTX compile, kernel launch, or driver, see [GPU support](./gpu.md)
 ├── PoolError         (E-POOL-*)   — ExprPool misuse
 ├── AnsatzError       (E-ANSATZ-*) — ansatz family construction or fitting, see [Ansatz families](./ansatz.md)
 ├── CrossCheckError   (E-XCHECK-*) — cross-CAS check could not be posed, see [Cross-CAS testing](./crosscheck.md)

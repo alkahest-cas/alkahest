@@ -126,6 +126,18 @@ fn gram_schmidt_rows(
     for i in 0..n {
         let mut vip = int_row_as_rat(&basis[i]);
         for j in 0..i {
+            // A rank-deficient basis makes some `b*_j` the zero vector, and the
+            // projection coefficient onto it is `0/0`. There is nothing to
+            // subtract — the zero vector spans nothing — so the projection is
+            // `0`, which is the convention `size_reduce_single` below already
+            // applies. Without this the exact-rational divide panicked
+            // ("division by zero" inside `rug`), and across the FFI boundary a
+            // panic becomes `pyo3_runtime.PanicException`: a `BaseException`
+            // that a caller's `except Exception` does not catch. Any two
+            // dependent rows — `lll_reduce_rows([[1, 2], [2, 4]])` — reached it.
+            if b_norm_sq[j].is_zero() {
+                continue;
+            }
             mu[i][j].assign(&dot_int_rat(&basis[i], &star[j]) / &b_norm_sq[j]);
             for t in 0..ambient {
                 let m = mu[i][j].clone() * star[j][t].clone();
@@ -232,7 +244,13 @@ fn lovasz_ok(b_norm_sq: &[Rational], mu: &[Vec<Rational>], delta: &Rational, k: 
     let bk = &b_norm_sq[k];
     let bkm1 = &b_norm_sq[k - 1];
     if bkm1.is_zero() {
-        return false;
+        // `‖b*_k‖² ≥ (δ − μ²)·0` holds for every `b*_k`, so the condition is
+        // satisfied and `k` must advance. Reporting `false` here forced a swap
+        // that put the zero row back where it came from: `[[1,2],[2,4]]`
+        // oscillated between `[(0,0),(1,2)]` and `[(1,2),(0,0)]` until the
+        // two-million-swap guard fired. Unreachable for a full-rank basis,
+        // where no `b*_j` vanishes.
+        return true;
     }
     let mux = mu[k][k - 1].clone();
     let mux_sq = Rational::from(&mux * &mux);
@@ -367,6 +385,38 @@ mod tests {
         let reduced = lattice_reduce_rows(&rows).unwrap();
         let delta = Rational::from((3u32, 4u32));
         validate_lll_rows(&reduced, &delta).unwrap();
+    }
+
+    #[test]
+    fn rank_deficient_basis_returns_instead_of_panicking() {
+        // Any two dependent rows make some `b*_j` the zero vector, and the
+        // Gram–Schmidt coefficient onto it was computed as `0/0`. The exact
+        // rational divide panicked, and across the FFI boundary a panic becomes
+        // `pyo3_runtime.PanicException` — a `BaseException` an unattended
+        // loop's `except Exception` does not catch.
+        for rows in [
+            vec![
+                vec![Integer::from(1), Integer::from(2)],
+                vec![Integer::from(2), Integer::from(4)],
+            ],
+            vec![
+                vec![Integer::from(0), Integer::from(0)],
+                vec![Integer::from(3), Integer::from(5)],
+            ],
+            vec![
+                vec![Integer::from(1), Integer::from(1), Integer::from(0)],
+                vec![Integer::from(2), Integer::from(2), Integer::from(0)],
+                vec![Integer::from(0), Integer::from(0), Integer::from(7)],
+            ],
+        ] {
+            let reduced = lattice_reduce_rows(&rows);
+            assert!(
+                reduced.is_ok(),
+                "rank-deficient basis must return a value or a coded error, not panic"
+            );
+            let reduced = reduced.unwrap();
+            assert_eq!(reduced.len(), rows.len(), "row count must be preserved");
+        }
     }
 
     #[test]

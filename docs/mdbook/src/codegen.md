@@ -156,13 +156,24 @@ print(mlir_text)  # valid input to mlir-opt / XLA
 
 ## GPU codegen (NVPTX)
 
-With `--features cuda` and an LLVM installation with NVPTX support:
+With `--features cuda` and an LLVM 15 installation with NVPTX support — **not** in any
+published wheel, so `pip install alkahest` never has this. Full detail, including
+build prerequisites, the supported node set, error codes and the state of testing, is
+in [GPU support (CUDA)](./gpu.md).
 
 ```python
 from alkahest import compile_cuda
 
 f_gpu = compile_cuda(expr, [x, y])
-result = f_gpu.call_batch(inputs)   # runs on the first CUDA device
+result = f_gpu.call_batch(inputs)   # runs on CUDA device 0
+```
+
+Guard on the capability bit before reaching for it, since the name does not exist at
+all without the feature:
+
+```python
+if alkahest.capabilities()["features"]["cuda"]:
+    ...
 ```
 
 The GPU compiler:

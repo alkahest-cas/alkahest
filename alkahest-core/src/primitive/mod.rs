@@ -2409,6 +2409,26 @@ pub mod builtins {
             9.984_369_578_019_572e-6,
             1.505_632_735_149_311_6e-7,
         ];
+        // Γ has a simple pole at 0 and at every negative integer, so there is
+        // no value to return there.  The reflection formula below cannot see
+        // that on its own: `sin(π·x)` is computed from `x` *after* rounding π,
+        // so `sin(π · -2.0)` is `2.45e-16` rather than `0` and the quotient
+        // came back as a clean, finite, confidently wrong `6.4e15`.  Only
+        // `Γ(0)` happened to land on an exact zero and error out.
+        //
+        // `∞` is the same answer the reflection formula already produced at
+        // `x = 0` (`π/(0·Γ(1))`), and `eval_f64` rejects any non-finite result
+        // with `E-EVAL-009` — the code `eval_expr(0^-1)` raises — so the pole
+        // is reported through the channel callers already handle.  `∞` rather
+        // than `NaN` because `1/Γ` is *entire* with a zero at each pole, so
+        // `Γ(0)^-1 = 0` is the right value and is what `product_definite`'s
+        // Γ-quotient form relies on for `Π_{k=0}^{5} k = 0`.  The pole is not
+        // signed — the residues alternate — but no sign is ever consumed: any
+        // arithmetic on the value other than taking its reciprocal yields a
+        // non-finite result and refuses.
+        if x <= 0.0 && x.floor() == x {
+            return f64::INFINITY;
+        }
         if x < 0.5 {
             // Reflection: Γ(x)Γ(1-x) = π / sin(πx)
             std::f64::consts::PI / ((std::f64::consts::PI * x).sin() * libm_gamma(1.0 - x))
@@ -2480,6 +2500,41 @@ mod tests {
                 "{name}({input}) = {got}, expected {expected}"
             );
         }
+    }
+
+    #[test]
+    fn gamma_has_no_value_at_the_non_positive_integers() {
+        // Γ has a simple pole at 0, −1, −2, … — `1/Γ` is entire with zeros
+        // exactly there — so no finite value is correct. The reflection formula
+        // `π / (sin(πx)·Γ(1−x))` used to return one anyway: `sin(π · −2.0)`
+        // evaluates to 2.45e-16 rather than 0 in f64, giving Γ(−2) ≈ 6.4e15.
+        // A non-finite result is what `eval_f64` turns into `E-EVAL-009`.
+        let reg = PrimitiveRegistry::default_registry();
+        for x in [0.0, -1.0, -2.0, -3.0, -10.0, -21.0] {
+            let got = reg.numeric_f64("gamma", &[x]).unwrap();
+            assert!(
+                !got.is_finite(),
+                "Γ({x}) returned {got}; the pole has no finite value"
+            );
+            // `1/Γ` is entire and vanishes at every pole, so the reciprocal
+            // stays usable — `Π_{k=0}^{5} k = 0` is read off exactly this.
+            assert_eq!(1.0 / got, 0.0, "1/Γ({x}) should be 0");
+        }
+        // Non-integer negatives are ordinary points and must keep their values:
+        // Γ(−½) = −2√π, Γ(−3/2) = 4√π/3.
+        let half = reg.numeric_f64("gamma", &[-0.5]).unwrap();
+        assert!(
+            (half + 2.0 * std::f64::consts::PI.sqrt()).abs() < 1e-9,
+            "Γ(-1/2) = {half}, expected -2√π"
+        );
+        let three_half = reg.numeric_f64("gamma", &[-1.5]).unwrap();
+        assert!(
+            (three_half - 4.0 * std::f64::consts::PI.sqrt() / 3.0).abs() < 1e-9,
+            "Γ(-3/2) = {three_half}, expected 4√π/3"
+        );
+        // …and the positive side is untouched: Γ(5) = 4! = 24.
+        let five = reg.numeric_f64("gamma", &[5.0]).unwrap();
+        assert!((five - 24.0).abs() < 1e-9, "Γ(5) = {five}, expected 24");
     }
 
     #[test]

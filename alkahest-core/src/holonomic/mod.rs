@@ -12,7 +12,9 @@
 //! - [`mod@zeilberger`] — Zeilberger's creative-telescoping algorithm: given a
 //!   proper hypergeometric `F(n, k)`, find a P-recursive relation
 //!   `Σ_i a_i(n)·F(n+i,k) = G(n,k+1) − G(n,k)` with `G = R·F` and `R` an
-//!   exact rational-function certificate.
+//!   exact rational-function certificate. Deriving a recurrence for the *sum*
+//!   `Σ_k F(n,k)` from it carries a boundary hypothesis that this module states
+//!   rather than assumes — see [`zeilberger::boundary_side_condition`].
 //!
 //! Every certificate this module returns is checked as an *exact* identity
 //! in `Q(n)(k)` before it is handed back to the caller — see
@@ -31,7 +33,9 @@ pub mod zeilberger;
 
 pub use hyperterm::{GammaFactor, ProperTerm};
 pub use qfield::{PolyK, RatK, Rn};
-pub use zeilberger::{zeilberger, ZeilbergerOpts, ZeilbergerResult};
+pub use zeilberger::{
+    boundary_side_condition, boundary_term, zeilberger, ZeilbergerOpts, ZeilbergerResult,
+};
 
 use std::fmt;
 

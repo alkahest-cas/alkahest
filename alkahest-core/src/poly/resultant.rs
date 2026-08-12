@@ -15,8 +15,8 @@
 //! `Polynomial.resultant_eq_zero_iff_common_root`.
 
 use crate::deriv::{DerivationLog, DerivedExpr, RewriteStep};
-use crate::flint::integer::FlintInteger;
 use crate::flint::mpoly::FlintMPolyCtx;
+use crate::flint::FlintPoly;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::poly::error::ConversionError;
 use crate::poly::multipoly::multi_to_flint_pub;
@@ -239,15 +239,36 @@ pub fn resultant(
 /// `Vec<ExprId>`:
 /// `[p, q, S₂, S₃, …, Sₖ]`
 ///
+/// Each element after the first two is a genuine **subresultant**: the entry of
+/// degree `j` is `S_j(p, q)`, the polynomial whose coefficients are the
+/// determinants of the corresponding submatrices of the Sylvester matrix.
+///
 /// The 0th subresultant — the resultant — can be extracted as the last
 /// element that is a constant (degree-0) polynomial, or from
-/// [`resultant`] directly.
+/// [`resultant`] directly.  The two agree; when `gcd(p, q)` is non-constant the
+/// chain terminates early and no degree-0 element is produced, which is the
+/// honest report that the resultant is `0`.
+///
+/// The one corner where no `S_j` exists at all is `deg q = 0`: the chain
+/// `S_j`, `0 ≤ j < deg q`, is empty, so the sequence is just `[p, q]` and the
+/// resultant `lc(q)^{deg p}` must be taken from [`resultant`].
 ///
 /// # Algorithm
 ///
-/// Classical Brown–Collins subresultant algorithm (1971/1967).  Computations
-/// stay in ℤ\[x\]; all coefficient scalings are exact integer divisions
-/// guaranteed by the subresultant theory.
+/// Ducos' formulation of the subresultant chain (Ducos, *Optimizations of the
+/// subresultant algorithm*, JPAA 145 (2000)), which is the Brown–Collins
+/// recurrence written so that the emitted elements are the *regular*
+/// subresultants rather than the raw remainders.  The distinction is not
+/// cosmetic: for a defective sequence (a degree drop of more than one) the raw
+/// Brown–Collins remainder differs from `S_{deg}` by a power of a leading
+/// coefficient, so a sequence built from the remainders alone contradicts
+/// [`resultant`] on its last element.
+///
+/// Computations stay in ℤ\[x\]; every coefficient scaling is an exact integer
+/// division guaranteed by the subresultant theory.  Those divisions are
+/// *checked* rather than assumed: an inexact one would be an internal
+/// contradiction, and it is reported as [`ResultantError::FlintError`] instead
+/// of being handed to a routine that aborts the process.
 ///
 /// # Derivation log
 ///
@@ -267,7 +288,7 @@ pub fn subresultant_prs(
         std::mem::swap(&mut up, &mut uq);
     }
 
-    let prs_polys = sprs_inner(up, uq);
+    let prs_polys = sprs_inner(up, uq).ok_or(ResultantError::FlintError)?;
 
     // Convert each polynomial in the sequence back to a symbolic expression.
     let exprs: Vec<ExprId> = prs_polys
@@ -283,91 +304,18 @@ pub fn subresultant_prs(
 }
 
 // ---------------------------------------------------------------------------
-// Internal: Brown–Collins subresultant PRS
+// Internal: the subresultant chain (Ducos' form of Brown–Collins)
 // ---------------------------------------------------------------------------
 
-/// Classical subresultant PRS (Brown 1971, Collins 1967).
-///
-/// Requires `deg(p) >= deg(q)`.  Returns the sequence `[P, Q, S₂, …, Sₖ]`.
-fn sprs_inner(p: UniPoly, q: UniPoly) -> Vec<UniPoly> {
-    let var = p.var;
-    let mut sequence = vec![p.clone(), q.clone()];
+/// Dense coefficient vector, little-endian (`c[i]` multiplies `xⁱ`), with no
+/// trailing zeros.  The empty vector is the zero polynomial.
+type Coeffs = Vec<rug::Integer>;
 
-    if q.is_zero() {
-        return sequence;
+/// Drop trailing zero coefficients so that `len() - 1` is the degree.
+fn trim(c: &mut Coeffs) {
+    while c.last().is_some_and(|t| *t == 0) {
+        c.pop();
     }
-
-    let m = p.degree();
-    let n = q.degree();
-    if n < 0 {
-        return sequence;
-    }
-
-    // β₁ = (-1)^(m - n + 1)
-    let delta0 = (m - n) as u32;
-    let beta: rug::Integer = if (delta0 + 1) % 2 == 0 {
-        rug::Integer::from(1)
-    } else {
-        rug::Integer::from(-1)
-    };
-
-    let mut beta_cur = beta;
-    let mut psi_cur: rug::Integer = rug::Integer::from(-1);
-
-    let mut a = p;
-    let mut b = q;
-
-    loop {
-        if b.is_zero() {
-            break;
-        }
-
-        let deg_a = a.degree();
-        let deg_b = b.degree();
-        if deg_b < 0 {
-            break;
-        }
-        let delta = (deg_a - deg_b) as u32;
-
-        // Pseudo-remainder: lc(b)^d * a = Q*b + R
-        let (_, r_flint, _d) = a.coeffs.pseudo_divrem(&b.coeffs);
-        if r_flint.is_zero() {
-            break;
-        }
-
-        // S_{i+1} = prem(S_{i-1}, S_i) / β_i  [exact scalar division]
-        let beta_fi = FlintInteger::from_rug(&beta_cur);
-        let c_coeffs = r_flint.scalar_divexact_fmpz(&beta_fi);
-        let c = UniPoly {
-            var,
-            coeffs: c_coeffs,
-        };
-        sequence.push(c.clone());
-
-        // Update ψ: ψ_{i+1} = (-lc(b))^δ / ψ_i^(δ-1)
-        let lc_b_fmpz = b.coeffs.leading_coeff_fmpz();
-        let lc_b = lc_b_fmpz.to_rug();
-        let neg_lc_b: rug::Integer = -lc_b;
-
-        let psi_new = if delta <= 1 {
-            // ψ^0 = 1, so result is just (-lc(b))^δ
-            rug_pow(&neg_lc_b, delta)
-        } else {
-            let num = rug_pow(&neg_lc_b, delta);
-            let den = rug_pow(&psi_cur, delta - 1);
-            rug::Integer::from(num.div_exact_ref(&den))
-        };
-
-        // β_{i+1} = -lc(b) · ψ_{i+1}
-        let beta_new = neg_lc_b * &psi_new;
-
-        a = b;
-        b = c;
-        psi_cur = psi_new;
-        beta_cur = beta_new;
-    }
-
-    sequence
 }
 
 /// Integer exponentiation for [`rug::Integer`] (non-negative exponent).
@@ -380,6 +328,138 @@ fn rug_pow(base: &rug::Integer, exp: u32) -> rug::Integer {
         r *= base;
     }
     r
+}
+
+/// `c · a`.
+fn scalar_mul(a: &Coeffs, c: &rug::Integer) -> Coeffs {
+    if *c == 0 {
+        return Coeffs::new();
+    }
+    a.iter().map(|t| rug::Integer::from(t * c)).collect()
+}
+
+/// `a / c`, or `None` when the division is not exact (or `c = 0`).
+///
+/// Checked rather than assumed: the subresultant theory says every division
+/// this module performs is exact, and FLINT's `scalar_divexact` *aborts the
+/// process* when it is not.  A bug upstream must surface as an error, not as a
+/// `SIGABRT` in the caller's Python process.
+fn scalar_div_exact(a: &Coeffs, c: &rug::Integer) -> Option<Coeffs> {
+    if *c == 0 {
+        return None;
+    }
+    let mut out = Coeffs::with_capacity(a.len());
+    for t in a {
+        if !t.is_divisible(c) {
+            return None;
+        }
+        out.push(rug::Integer::from(t / c));
+    }
+    trim(&mut out);
+    Some(out)
+}
+
+/// Canonical pseudo-remainder: the `R` in `lc(b)^(deg a − deg b + 1) · a = q·b + R`.
+///
+/// The *canonical* exponent `δ+1` matters. FLINT's `fmpz_poly_pseudo_divrem`
+/// returns the **minimal** exponent `d ≤ δ+1` instead, and the subresultant
+/// recurrence is stated for `δ+1`, so using FLINT's remainder unscaled leaves
+/// every element short by `lc(b)^(δ+1−d)`.
+///
+/// Returns `None` if `b` is zero.
+fn pseudo_remainder(a: &Coeffs, b: &Coeffs) -> Option<Coeffs> {
+    let db = b.len().checked_sub(1)?;
+    let lc_b = &b[db];
+    if a.len() <= db {
+        // deg a < deg b: the remainder is `a` itself.
+        return Some(a.clone());
+    }
+    let delta = (a.len() - 1) - db;
+    let mut r = scalar_mul(a, &rug_pow(lc_b, delta as u32 + 1));
+    while r.len() > db {
+        let dr = r.len() - 1;
+        // Exact by construction: pre-scaling by `lc(b)^(δ+1)` leaves every
+        // coefficient after `k` reduction steps divisible by `lc(b)^(δ+1−k)`,
+        // and the loop runs at most `δ+1` steps.  Checked anyway — a truncating
+        // division here would be a wrong polynomial with no symptom, which is
+        // the exact failure mode this module was fixed for.
+        if !r[dr].is_divisible(lc_b) {
+            return None;
+        }
+        let quot = rug::Integer::from(&r[dr] / lc_b);
+        let shift = dr - db;
+        for (i, bi) in b.iter().enumerate() {
+            r[shift + i] -= rug::Integer::from(&quot * bi);
+        }
+        trim(&mut r);
+        if r.is_empty() {
+            break;
+        }
+    }
+    Some(r)
+}
+
+/// The subresultant chain of `p` and `q`, as Ducos states it.
+///
+/// Requires `deg(p) >= deg(q)`.  Returns the sequence `[P, Q, S₂, …, Sₖ]`,
+/// where every element after the first two is a *regular* subresultant: the
+/// element of degree `j` is exactly `S_j(p, q)`, so the last degree-0 element
+/// is `S₀ = Res(p, q)` and agrees with [`resultant`].
+///
+/// Returns `None` if one of the exact divisions the theory guarantees turns out
+/// not to be exact — an internal contradiction, reported rather than aborted.
+fn sprs_inner(p: UniPoly, q: UniPoly) -> Option<Vec<UniPoly>> {
+    let var = p.var;
+    let mut sequence = vec![p.clone(), q.clone()];
+
+    let mut pc = p.coefficients();
+    let mut qc = q.coefficients();
+    trim(&mut pc);
+    trim(&mut qc);
+    // `deg q < 0` (q = 0) or `deg q = 0`: the chain `S_j`, `0 ≤ j < deg q`, is
+    // empty, so there is nothing to append.
+    if qc.len() <= 1 || pc.is_empty() {
+        return Some(sequence);
+    }
+
+    // s = lc(q)^(deg p − deg q);  A = q;  B = prem(p, −q).
+    let mut s = rug_pow(&qc[qc.len() - 1], (pc.len() - qc.len()) as u32);
+    let mut a = qc.clone();
+    let neg_q: Coeffs = qc.iter().map(|t| rug::Integer::from(-t)).collect();
+    let mut b = pseudo_remainder(&pc, &neg_q)?;
+
+    while !b.is_empty() {
+        let d = a.len() - 1;
+        let e = b.len() - 1;
+        let delta = d - e;
+
+        // `B` is the (possibly defective) subresultant `S_{d−1}`.  The regular
+        // one of the same degree is `C = lc(B)^(δ−1) · B / s^(δ−1)`; when the
+        // sequence is normal (δ = 1) the two coincide.
+        let c = if delta > 1 {
+            let scaled = scalar_mul(&b, &rug_pow(&b[e], delta as u32 - 1));
+            scalar_div_exact(&scaled, &rug_pow(&s, delta as u32 - 1))?
+        } else {
+            b.clone()
+        };
+        sequence.push(UniPoly {
+            var,
+            coeffs: FlintPoly::from_rug_coefficients(&c),
+        });
+        if e == 0 {
+            break;
+        }
+
+        // B ← prem(A, −B) / (s^δ · lc(A));  A ← C;  s ← lc(A).
+        let neg_b: Coeffs = b.iter().map(|t| rug::Integer::from(-t)).collect();
+        let rem = pseudo_remainder(&a, &neg_b)?;
+        let divisor = rug_pow(&s, delta as u32) * &a[d];
+        b = scalar_div_exact(&rem, &divisor)?;
+        a = c;
+        s = a[a.len() - 1].clone();
+    }
+
+    Some(sequence)
 }
 
 // ---------------------------------------------------------------------------
@@ -695,6 +775,182 @@ mod tests {
         assert!(
             matches!(err, Err(ResultantError::NotAPolynomial(_))),
             "expected NotAPolynomial error"
+        );
+    }
+
+    // --- subresultant chain: determinantal ground truth ---
+
+    /// Build the symbolic polynomial `Σ c[i]·xⁱ` from little-endian coefficients.
+    fn from_coeffs(p: &ExprPool, x: ExprId, c: &[i64]) -> ExprId {
+        let terms: Vec<ExprId> = c
+            .iter()
+            .enumerate()
+            .filter(|(_, &k)| k != 0)
+            .map(|(i, &k)| {
+                let xi = p.pow(x, p.integer(i as i64));
+                p.mul(vec![p.integer(k), xi])
+            })
+            .collect();
+        if terms.is_empty() {
+            p.integer(0_i32)
+        } else {
+            p.add(terms)
+        }
+    }
+
+    /// Read a PRS element back as little-endian integer coefficients.
+    fn to_coeffs(p: &ExprPool, x: ExprId, e: ExprId) -> Vec<rug::Integer> {
+        let mut c = UniPoly::from_symbolic(e, x, p).unwrap().coefficients();
+        while c.last().is_some_and(|t| *t == 0) {
+            c.pop();
+        }
+        c
+    }
+
+    /// Determinant by Gaussian elimination over ℚ (test-only; the matrices here
+    /// are tiny and this is deliberately a different algorithm from anything in
+    /// the module under test).
+    fn det_rational(mut m: Vec<Vec<rug::Rational>>) -> rug::Rational {
+        let n = m.len();
+        let mut d = rug::Rational::from(1);
+        for i in 0..n {
+            let Some(piv) = (i..n).find(|&r| m[r][i] != 0) else {
+                return rug::Rational::from(0);
+            };
+            if piv != i {
+                m.swap(i, piv);
+                d = -d;
+            }
+            let (head, tail) = m.split_at_mut(i + 1);
+            let pivot_row = &head[i];
+            d *= pivot_row[i].clone();
+            let inv = rug::Rational::from(1) / pivot_row[i].clone();
+            for row in tail.iter_mut() {
+                let f = row[i].clone() * inv.clone();
+                if f == 0 {
+                    continue;
+                }
+                for (cell, pivot) in row[i..n].iter_mut().zip(pivot_row[i..n].iter()) {
+                    *cell -= f.clone() * pivot.clone();
+                }
+            }
+        }
+        d
+    }
+
+    /// `S_j(f, g)` straight from the definition: the coefficient of `x^k` in
+    /// `S_j` is the determinant of the `(m+n−2j)`-square matrix whose rows are
+    /// `x^{n−j−1}f, …, f, x^{m−j−1}g, …, g` taken in the degree columns
+    /// `m+n−j−1, …, j+1` together with the degree-`k` column.
+    ///
+    /// This is the ground truth the chain is checked against — no part of it
+    /// shares code with `sprs_inner`.
+    fn subresultant_by_determinant(f: &[i64], g: &[i64], j: usize) -> Vec<rug::Integer> {
+        let m = f.len() - 1;
+        let n = g.len() - 1;
+        let width = m + n - j; // degrees m+n−j−1 … 0
+        let row_of = |poly: &[i64], sh: usize| -> Vec<rug::Rational> {
+            // Column c holds the coefficient of degree `width−1−c`.
+            (0..width)
+                .map(|c| {
+                    let deg = width - 1 - c;
+                    let k = deg.wrapping_sub(sh);
+                    if deg >= sh && k < poly.len() {
+                        rug::Rational::from(poly[k])
+                    } else {
+                        rug::Rational::from(0)
+                    }
+                })
+                .collect()
+        };
+        let mut rows: Vec<Vec<rug::Rational>> = Vec::new();
+        for sh in (0..n - j).rev() {
+            rows.push(row_of(f, sh));
+        }
+        for sh in (0..m - j).rev() {
+            rows.push(row_of(g, sh));
+        }
+        let size = m + n - 2 * j;
+        assert_eq!(rows.len(), size);
+        let mut out: Vec<rug::Integer> = Vec::new();
+        for k in 0..=j {
+            let mut cols: Vec<usize> = (0..size - 1).collect();
+            cols.push(width - 1 - k);
+            let sub: Vec<Vec<rug::Rational>> = rows
+                .iter()
+                .map(|r| cols.iter().map(|&c| r[c].clone()).collect())
+                .collect();
+            let d = det_rational(sub);
+            assert_eq!(*d.denom(), 1);
+            out.push(d.numer().clone());
+        }
+        while out.last().is_some_and(|t| *t == 0) {
+            out.pop();
+        }
+        out
+    }
+
+    #[test]
+    fn sprs_matches_the_sylvester_determinants() {
+        // Every element of degree `j` in the returned sequence must be exactly
+        // `S_j`, and the last degree-0 element must be `Res(f, g)`.
+        //
+        // The two families below are the ones from the 3.8 silent-error hunt:
+        // `subresultant_prs(x²−3x+2, 2x)` used to end in `4` while `resultant`
+        // said `8`, and `subresultant_prs(3x³−x, −3x²+2x−3)` returned
+        // `8x+6, −44` where the determinants give `−24x−18, −396`.
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let cases: &[(&[i64], &[i64])] = &[
+            (&[2, -3, 1], &[0, 2]),
+            (&[0, -1, 0, 3], &[-3, 2, -3]),
+            (&[1, 2, 2], &[1, 1, 2]),
+            (&[1, 0, 1], &[0, 2]),
+            (&[-2, 0, 0, 3, 2, -1], &[-3, 2, 0, -1, -1]),
+            (&[-2, -3, -1, 3, 3, -1], &[-3, -2, -2, 0, 2]),
+            (&[1, 1, 1, 1], &[2, 0, 3]),
+            (&[-5, 0, 0, 0, 7], &[1, -1, 1]),
+        ];
+        for (f, g) in cases {
+            let pf = from_coeffs(&p, x, f);
+            let pg = from_coeffs(&p, x, g);
+            let seq = subresultant_prs(pf, pg, x, &p).unwrap().value;
+            for &elem in &seq[2..] {
+                let c = to_coeffs(&p, x, elem);
+                let j = c.len() - 1;
+                assert_eq!(
+                    c,
+                    subresultant_by_determinant(f, g, j),
+                    "element of degree {j} is not S_{j} for f={f:?}, g={g:?}"
+                );
+            }
+            // …and the resultant agrees with `resultant`, sign included.
+            let last = to_coeffs(&p, x, *seq.last().unwrap());
+            if last.len() == 1 && seq.len() > 2 {
+                let r = resultant(pf, pg, x, &p).unwrap().value;
+                let expected = match p.get(r) {
+                    ExprData::Integer(n) => n.0.clone(),
+                    other => panic!("resultant was not an integer: {other:?}"),
+                };
+                assert_eq!(last[0], expected, "last PRS element ≠ resultant");
+            }
+        }
+    }
+
+    #[test]
+    fn sprs_survives_an_inexact_scaling_input() {
+        // `subresultant_prs(2x²+2x+1, 2x²+x+1)` used to hand a non-exact
+        // division to FLINT's `scalar_divexact`, which does not raise — it
+        // calls `flint_abort`, taking the whole process down with SIGABRT, so
+        // no `except` of any kind could survive it.
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let f = from_coeffs(&p, x, &[1, 2, 2]);
+        let g = from_coeffs(&p, x, &[1, 1, 2]);
+        let seq = subresultant_prs(f, g, x, &p).unwrap().value;
+        assert_eq!(
+            to_coeffs(&p, x, *seq.last().unwrap()),
+            vec![rug::Integer::from(2)]
         );
     }
 

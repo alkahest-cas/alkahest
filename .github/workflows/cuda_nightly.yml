@@ -29,6 +29,39 @@ jobs:
           ALKAHEST_GPU_TESTS: "1"
         run: cargo test --features cuda,groebner-cuda --no-fail-fast
 
+      # The Python surface of the CUDA feature had never been built by any CI
+      # job: this workflow ran `cargo` only. That is how `ak.compile_cuda` came
+      # to raise AttributeError on a build whose own capabilities() advertised
+      # `cuda: true`, and survived three releases — the Rust tests all passed
+      # the entire time, because the gap was in the re-export, not the kernel.
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Create venv and install Python tooling
+        run: |
+          uv sync --no-install-project --group dev
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+          echo "VIRTUAL_ENV=$PWD/.venv" >> $GITHUB_ENV
+
+      - name: maturin develop (cuda + groebner-cuda)
+        run: maturin develop --manifest-path alkahest-py/Cargo.toml --features "groebner egraph cuda groebner-cuda"
+
+      # ALKAHEST_GPU_TESTS=1 makes the device probe assert rather than skip, so
+      # a missing or broken GPU fails here instead of quietly reporting green.
+      - name: pytest (CUDA surface)
+        env:
+          ALKAHEST_GPU_TESTS: "1"
+        run: pytest tests/test_cuda.py -v
+
+      # The capability contract is only falsifiable on a build that has the
+      # feature; on every other runner these assertions are vacuously true.
+      - name: Capability contract on a real CUDA build
+        run: pytest tests/test_agent_contract.py -v
+
       - name: Run compute-sanitizer memcheck
         env:
           ALKAHEST_GPU_TESTS: "1"

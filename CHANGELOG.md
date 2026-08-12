@@ -5,9 +5,9 @@
 ### Silent errors fixed — do results you already computed need rechecking?
 
 A *silent error* is a confident, plausible, mathematically wrong answer with no
-exception, no `NaN` and no verification flag. Six were found and fixed this
-release. **Four of them shipped in 3.7 or earlier**, so if you have results
-from an affected call, re-run them. The other two were in code added during
+exception, no `NaN` and no verification flag. Eleven were found and fixed this
+release. **Eight of them shipped in 3.7 or earlier**, so if you have results
+from an affected call, re-run them. The other three were in code added during
 this release cycle and never reached a published wheel.
 
 | Affected call | Wrong answer it gave | First shipped in | Recheck? |
@@ -18,6 +18,11 @@ this release cycle and never reached a published wheel.
 | `simplify` / `simplify_egraph` on a product containing `0⁻¹` | `1`, or `0`, depending on the engine — for an expression with no value at all. Reachable from `diff(2/(x − x), x)` | ≤ 3.7 | Yes, if any input could reduce to `0⁻¹` |
 | `decide` on a two-variable sentence true only at an irrational point | `False` for a satisfiable `∃x∃y`, and `True` for its false `∀x∀y` dual | this cycle (2-var `decide` is new) | No published release affected |
 | `batch_map(..., parallel=True)` under `context(budget=…)` | Ran **unbudgeted**, so candidates a sequential sweep reported as `E-BUDGET-001` came back as `E-INT-001` — a *mathematical* verdict | this cycle (batch APIs are new) | No published release affected |
+| `product_definite` on a term with any non-integer coefficient | Off by `c^(hi−lo+1)`: `Π_{k=1}^{5} ½` returned `1` instead of `1/32`, `Π (2k−1)/(2k)` at `n = 6` returned `14.4375` instead of `0.2255859375` | ≤ 3.7 | **Yes** — any `product_definite` / `product_indefinite` result |
+| `sum_definite` where the summand has a pole strictly *between* the bounds | A clean finite number for a sum with an undefined term: `Σ_{k=1}^{10} 1/((k−3)(k−2))` returned `−5/8` | ≤ 3.7 | **Yes** — any `sum_definite` over a range containing a denominator root |
+| `euler_maclaurin` when `corrections` is too small for the summand | A fabricated additive constant — the missing term frozen at the fitting point. `Σ k⁹` at the default `corrections = 2` acquired `34359738368 = 512⁴/2` in a Faulhaber polynomial whose constant term is `0` | this cycle (Euler–Maclaurin is new) | No published release affected |
+| `rsolve` on a **forward-shift** spelling with a non-zero right-hand side | The solution of a *different* equation: `f(n+1) − f(n) = n²` with `f(0) = 0` returned `Σ_{j=1}^{n} j²` instead of `Σ_{j=0}^{n−1} j²` | ≤ 3.7 | **Yes** — any `rsolve` written with `f(n+i)`, `i > 0`, and an inhomogeneous term |
+| `rsolve` / `solve_linear_recurrence_homogeneous` on an order-2 recurrence with a **repeated** characteristic root | `C₀·rⁿ + C₁·rⁿ` — a one-parameter family presented as the general solution of a second-order equation, losing the `n·rⁿ` branch | ≤ 3.7 | **Yes** — check the discriminant of `r² + b r + c` |
 
 Also fixed, and not a silent error but worse for an unattended loop: a Rust
 panic escaped `interval_eval` as `pyo3_runtime.PanicException`, which inherits
@@ -26,10 +31,14 @@ from `BaseException` and therefore slips past `except Exception`. Shipped in
 ball.
 
 The deterministic silent-error gate (`tests/silent_errors/`, Tier-1 CI) now
-scores **0 silent errors out of 166 scored cases** (126 correct, 40 honest
-refusals) across evaluation, integration, limits, linear algebra, number
-theory, real QE, series, simplification, solving, and sums/products. That is a
-statement about the corpus, not a guarantee about the library.
+scores **0 silent errors out of 213 scored cases** across evaluation,
+integration, limits, linear algebra, number theory, real QE, series,
+simplification, solving, and sums/products. Every trap added this cycle was
+re-run against a build with the fix reverted and confirmed to score
+`silent_error` there, and every trap is paired with a **control** — its nearest
+convergent neighbour — so a subsystem cannot pass the gate by refusing
+everything. That is a statement about the corpus, not a guarantee about the
+library.
 
 ### Behaviour changes to plan for
 
@@ -50,6 +59,20 @@ of these is a call whose previous answer was not justified:
 - **`simplify` leaves `0 · 0⁻¹` unevaluated** instead of returning `1` (or `0`).
   A result containing `(0 * 0^-1)` is Alkahest declining to give an
   indeterminate form a value, not a simplifier failure.
+- **`sum_definite` raises `SumError` (`E-SUM-003`) when the summand is undefined
+  at an integer inside `[lo, hi]`**, not only when the pole lands on `lo` or
+  `hi+1`. The refusal names the offending index. Sums whose poles lie outside
+  the range are unaffected: `Σ_{k=4}^{10} 1/((k−3)(k−2))` still returns `7/8`.
+- **`euler_maclaurin` may return a shorter expansion, with no additive
+  constant.** The constant is now fitted at a point outside the gate's check
+  points and re-fitted at a second one; if the two disagree it is not a constant
+  and none is claimed. The report says which way that went in `derivation`, and
+  the `"fitted numerically"` hypothesis is only listed when a fitted constant is
+  actually part of the answer. Genuine constants (`γ`, `ζ(2)`, `½log 2π`, …) are
+  unaffected — they agree across fitting points to 13+ digits.
+- **`product_definite(term, k, lo, hi)` with `lo > hi` returns `1` even for a
+  zero term.** The empty product takes no factors; it previously returned `0`
+  for `Π_{k=1}^{0} 0` while returning `1` for `Π_{k=1}^{0} k`.
 
 ### Known limits — documented, not fixed
 
@@ -107,6 +130,56 @@ loop fails.
 
 ### Fixed
 
+- **`product_definite` dropped the scale it used to clear denominators.**
+  `ratuni_poly_to_univ` multiplies a `ℚ[k]` polynomial through by the LCM of its
+  coefficient denominators and never returned that factor, so every index
+  contributed one spurious copy of it and the answer was off by
+  `c^(hi−lo+1)`. It is called separately on numerator and denominator, so the
+  two cancelled only when they happened to be equal — which is why integer-
+  coefficient products were always right and `Π ½` was not. The scale is now
+  returned and re-applied (`product_indefinite` gets `c^k`, the same factor in
+  antidifference form). A 1936-case sweep over `(a₁k+b₁)/(a₂k+b₂)` against exact
+  `Fraction` arithmetic finds 0 mismatches, down from 26 of 160.
+- **`sum_definite` could not see a pole strictly inside the summation range.**
+  The only check was `contains_zero_to_negative_power` applied to the telescoped
+  difference `G(hi+1) − G(lo)`, which never mentions the interior indices, so
+  only poles landing exactly on an endpoint were caught. The summand itself is
+  now scanned, the same way the definite integrator's interior-pole guards look
+  at the integrand rather than at `F(b) − F(a)`: the integer roots of the
+  summand's own denominators are read off its ℤ-factorisation (so the cost does
+  not grow with the range), each candidate is substituted, and refusal requires
+  seeing an actual `0^{negative}` survive simplification — positive evidence,
+  never a guess.
+- **`euler_maclaurin` fitted its additive constant at the point its own gate
+  scored.** The residual there was then zero by construction, so the `o()`-gate's
+  decay test was satisfied whatever the number was, and any term the expansion
+  was missing came back as a "constant" — `Σ k⁹` acquired `512⁴/2`. The constant
+  is now fitted outside the gate's check points and only emitted if a second fit
+  reproduces it; across the clean battery a genuine constant drifts by ≤ 3.2e-3
+  of itself, a fabricated one by ≥ 0.93.
+- **`rsolve` solved a shifted equation for forward-shift spellings.**
+  `extract_recurrence` re-indexes the sequence terms into lag form (`f(n+o) ↦
+  f(n−(max_o−o))`), which is the original equation with `n ↦ n − max_o`, but left
+  the right-hand side at `n`. The right-hand side is now shifted with them, so
+  `f(n+1) − f(n) = n²` and `f(n) − f(n−1) = (n−1)²` mean the same thing again.
+  The answer is checked by substituting it back into the equation as supplied.
+- **Order-2 recurrences with a repeated characteristic root lost a branch.**
+  `rsolve` returned `C₀·rⁿ + C₁·rⁿ` and `solve_linear_recurrence_homogeneous`
+  divided by `r₁ − r₂ = 0`, producing a closed form containing `0^{-1}` that
+  evaluated nowhere. Both now use the basis `{rⁿ, n·rⁿ}`; order ≥ 3 already
+  handled multiplicity correctly.
+- **A Zeilberger certificate claimed a recurrence for the sum without its
+  boundary hypothesis.** The verified statement is the telescoping identity in
+  `k`; summing it over `k = k_lo..k_hi` leaves the boundary difference
+  `G(n, k_hi+1) − G(n, k_lo)`, and `Σ_i a_i(n)·S(n+i) = 0` holds only when that
+  vanishes. Both the core docs and the Python docstring asserted it
+  unconditionally. It is false for `F = C(n,k)/(k+1)`, where `G(n,0) = −1` and
+  `(n+2)·S(n+1) − (2n+2)·S(n) = 1`. The certificates themselves were and are
+  correct; what was missing was the hypothesis. `ZeilbergerCertificate` now
+  carries `side_conditions` (the hypothesis, in the same spirit as
+  `DerivedResult.verification["side_conditions"]`) and `boundary_term`
+  (`G(n,k) = R(n,k)·F(n,k)`), so a caller can discharge or refute it for their
+  own range.
 - **Claim graphs: a merge could close a dependency cycle, making the graph
   unreadable.** Claim IDs are content-addressed over the *normalised*
   statement, so two textually different statements (`"a"` and `" a"`) share an

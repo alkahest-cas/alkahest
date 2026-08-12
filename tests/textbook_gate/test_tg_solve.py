@@ -99,12 +99,15 @@ def test_solve_quadratic_via_factoring(pool, x):
 
 
 def test_solve_quadratic_repeated_root(pool, x):
-    """x^2 - 4x + 4 = 0 -> x = 2 (double root); the solver returns two
-    syntactically distinct-but-equal-valued entries (both simplify to 2),
-    so we check the count it actually produces rather than assume dedup."""
+    """x^2 - 4x + 4 = 0 -> x = 2, a double root but a one-element solution set.
+
+    ``solve`` returns a set and has no multiplicity channel, so two entries here
+    would be a wrong *count* rather than an annotation — the same reading under
+    which ``real_roots((x-1)**2)`` reports one isolating interval.
+    """
     eqs = [x**2 - pool.integer(4) * x + pool.integer(4)]
     sols = ak.solve(eqs, [x])
-    assert_solutions_satisfy(eqs, [x], sols, expected_count=2)
+    assert_solutions_satisfy(eqs, [x], sols, expected_count=1)
     for sol in sols:
         val = ak.eval_expr(sol[x], {})
         assert abs(val - 2.0) < 1e-9

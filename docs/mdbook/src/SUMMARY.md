@@ -13,6 +13,7 @@
   - [Asymptotics of sums](./asymptotics.md)
 - [Transformations](./transformations.md)
 - [Code generation](./codegen.md)
+  - [GPU support (CUDA)](./gpu.md)
 - [Ball arithmetic](./ball-arithmetic.md)
   - [Rigorous global bounds](./validated-bounds.md)
 - [ODE and DAE modeling](./ode-dae.md)
