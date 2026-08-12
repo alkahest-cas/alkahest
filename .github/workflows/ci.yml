@@ -498,10 +498,22 @@ jobs:
               echo "::error title=No seed corpus::fuzz/in/expr_builder is missing or empty" >&2
               exit 1
             fi
+            # `fuzz/` is excluded from the root workspace (see Cargo.toml), so
+            # `--manifest-path fuzz/Cargo.toml` builds into `fuzz/target/`, not
+            # `target/`. The hardcoded `target/debug/fuzz_expr_builder` produced
+            #   PROGRAM ABORT : Program ... not found or not executable
+            # Resolve it instead of assuming, and say what was built if not.
+            bin=$(find fuzz/target target -type f -name fuzz_expr_builder -perm -u+x 2>/dev/null | head -1)
+            if [ -z "$bin" ]; then
+              echo "::error title=Fuzz binary not found::fuzz_expr_builder was not produced" >&2
+              find fuzz/target target -maxdepth 3 -type f -perm -u+x 2>/dev/null | head -20 >&2
+              exit 1
+            fi
+            echo "fuzzing $bin"
             set +e
             timeout 7200 cargo afl fuzz \
               -i fuzz/in/expr_builder -o fuzz/out/expr_builder \
-              target/debug/fuzz_expr_builder
+              "$bin"
             status=$?
             set -e
             # 124 is `timeout` doing its job after the 2 h cap; 0 means AFL
@@ -555,10 +567,22 @@ jobs:
               echo "::error title=No seed corpus::fuzz/in/simplifier is missing or empty" >&2
               exit 1
             fi
+            # `fuzz/` is excluded from the root workspace (see Cargo.toml), so
+            # `--manifest-path fuzz/Cargo.toml` builds into `fuzz/target/`, not
+            # `target/`. The hardcoded `target/debug/fuzz_simplifier` produced
+            #   PROGRAM ABORT : Program ... not found or not executable
+            # Resolve it instead of assuming, and say what was built if not.
+            bin=$(find fuzz/target target -type f -name fuzz_simplifier -perm -u+x 2>/dev/null | head -1)
+            if [ -z "$bin" ]; then
+              echo "::error title=Fuzz binary not found::fuzz_simplifier was not produced" >&2
+              find fuzz/target target -maxdepth 3 -type f -perm -u+x 2>/dev/null | head -20 >&2
+              exit 1
+            fi
+            echo "fuzzing $bin"
             set +e
             timeout 7200 cargo afl fuzz \
               -i fuzz/in/simplifier -o fuzz/out/simplifier \
-              target/debug/fuzz_simplifier
+              "$bin"
             status=$?
             set -e
             # 124 is `timeout` doing its job after the 2 h cap; 0 means AFL
