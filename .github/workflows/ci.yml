@@ -464,14 +464,24 @@ jobs:
 
       - name: AFL++ fuzzing — expr builder (2 h cap)
         if: matrix.shard == 'fuzz-expr'
+        env:
+          # Lets AFL proceed even if core_pattern could not be changed, instead
+          # of refusing to start. AFL_SKIP_CPUFREQ likewise: the runner exposes
+          # no CPU governor and AFL treats that as fatal.
+          AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES: "1"
+          AFL_SKIP_CPUFREQ: "1"
         run: |
           if [ -f fuzz/src/bin/fuzz_expr_builder.rs ]; then
             # AFL refuses to start unless the kernel core_pattern points at a
             # file rather than a pipe. Without this it printed its instructions,
             # exited non-zero, and `|| true` turned that into a green tick — the
-            # shard "passed" having executed zero test cases. `system-config` is
-            # AFL's own remedy and needs root, which the runner has.
-            sudo cargo afl system-config
+            # shard "passed" having executed zero test cases.
+            #
+            # `system-config` runs sudo *internally* (it says so in the message
+            # AFL prints), so it must NOT be prefixed with sudo: cargo lives in
+            # ~/.cargo/bin, which sudo's secure_path does not include. Best
+            # effort, because the env fallback below covers it either way.
+            cargo afl system-config || echo "system-config failed; relying on AFL_* fallbacks"
             cargo afl build --manifest-path fuzz/Cargo.toml --bin fuzz_expr_builder
             set +e
             timeout 7200 cargo afl fuzz \
@@ -502,14 +512,21 @@ jobs:
 
       - name: AFL++ fuzzing — simplifier (2 h cap)
         if: matrix.shard == 'fuzz-simplifier'
+        env:
+          AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES: "1"
+          AFL_SKIP_CPUFREQ: "1"
         run: |
           if [ -f fuzz/src/bin/fuzz_simplifier.rs ]; then
             # AFL refuses to start unless the kernel core_pattern points at a
             # file rather than a pipe. Without this it printed its instructions,
             # exited non-zero, and `|| true` turned that into a green tick — the
-            # shard "passed" having executed zero test cases. `system-config` is
-            # AFL's own remedy and needs root, which the runner has.
-            sudo cargo afl system-config
+            # shard "passed" having executed zero test cases.
+            #
+            # `system-config` runs sudo *internally* (it says so in the message
+            # AFL prints), so it must NOT be prefixed with sudo: cargo lives in
+            # ~/.cargo/bin, which sudo's secure_path does not include. Best
+            # effort, because the env fallback below covers it either way.
+            cargo afl system-config || echo "system-config failed; relying on AFL_* fallbacks"
             cargo afl build --manifest-path fuzz/Cargo.toml --bin fuzz_simplifier
             set +e
             timeout 7200 cargo afl fuzz \
