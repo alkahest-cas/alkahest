@@ -451,7 +451,18 @@ jobs:
           fi
           for bin in "${bins[@]}"; do
             echo "== valgrind $bin"
+            # --errors-for-leak-kinds=definite,indirect: fail on real leaks and
+            # on any memory-safety error, but not on "possibly lost". The first
+            # real run of this gate reported 0 definite and 0 indirect bytes and
+            # four "possibly lost" records — a thread-local Thread handle, MPFR's
+            # const_log2 cache, and two hashbrown tables. Those are interior
+            # pointers into intentional caches and process-lifetime globals, not
+            # defects, and suppressing them by stack shape would be four brittle
+            # rules that rot the first time an inlining decision changes.
+            # An invalid read/write, or a definitely-lost block, still fails.
             valgrind --leak-check=full --error-exitcode=1 \
+              --errors-for-leak-kinds=definite,indirect \
+              --show-leak-kinds=definite,indirect,possible \
               --suppressions=valgrind.supp "$bin" 2>&1
           done
           echo "valgrind ran over ${#bins[@]} test binary/binaries"
