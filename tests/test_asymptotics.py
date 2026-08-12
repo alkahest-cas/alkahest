@@ -8,7 +8,7 @@ about how much of itself is proved.
 
 import pytest
 from alkahest import ExprPool
-from alkahest.experimental import euler_maclaurin
+from alkahest.experimental import coefficient_asymptotics, euler_maclaurin
 
 
 def _harmonic(n):
@@ -66,6 +66,76 @@ def test_polynomial_sum_is_reproduced_exactly():
     for ni in (10, 50, 200):
         approx = float(ak.evaluate(total, {n: float(ni)}).value)
         assert approx == pytest.approx(ni * (ni + 1) / 2, rel=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Singularity analysis of rational generating functions
+# ---------------------------------------------------------------------------
+
+
+def test_fibonacci_growth_from_its_generating_function():
+    """``1/(1 - z - z²)`` generates the Fibonacci numbers; ``[zⁿ] ~ φⁿ/√5``."""
+    import alkahest as ak
+
+    pool = ak.ExprPool()
+    z, n = pool.symbol("z"), pool.symbol("n")
+    gf = pool.integer(1) / (pool.integer(1) - z - z * z)
+
+    r = coefficient_asymptotics(gf, z, n)
+
+    assert r.method == "singularity-analysis"
+    # [z^n] of this series is F_{n+1}.
+    fibs = [0, 1]
+    while len(fibs) < 45:
+        fibs.append(fibs[-1] + fibs[-2])
+    approx = float(ak.evaluate(r.terms[0], {n: 40.0}).value)
+    assert approx == pytest.approx(float(fibs[41]), rel=1e-6)
+
+
+def test_leading_law_error_shrinks_with_n():
+    """``1/(1-z)²`` has ``[zⁿ] = n+1``; a leading-order ``C·n`` must converge.
+
+    Fitting the constant at one finite index would absorb the subleading term
+    and leave a fixed few-percent bias — an error that stops shrinking is not
+    an asymptotic statement at all.
+    """
+    import alkahest as ak
+
+    pool = ak.ExprPool()
+    z, n = pool.symbol("z"), pool.symbol("n")
+    gf = pool.integer(1) / ((pool.integer(1) - z) * (pool.integer(1) - z))
+
+    r = coefficient_asymptotics(gf, z, n)
+
+    def rel(ni):
+        approx = float(ak.evaluate(r.terms[0], {n: float(ni)}).value)
+        return abs(approx - (ni + 1)) / (ni + 1)
+
+    assert rel(100) < 0.05
+    assert rel(1000) < rel(100) / 2
+
+
+def test_refuses_competing_dominant_singularities():
+    """``1/(1-z²)`` has poles at ±1: the coefficients oscillate, so there is no
+    single power-law term and the routine must decline rather than pick one."""
+    import alkahest as ak
+
+    pool = ak.ExprPool()
+    z, n = pool.symbol("z"), pool.symbol("n")
+    gf = pool.integer(1) / (pool.integer(1) - z * z)
+
+    with pytest.raises(Exception):
+        coefficient_asymptotics(gf, z, n)
+
+
+def test_refuses_non_rational_generating_function():
+    import alkahest as ak
+
+    pool = ak.ExprPool()
+    z, n = pool.symbol("z"), pool.symbol("n")
+
+    with pytest.raises(Exception):
+        coefficient_asymptotics(ak.exp(z), z, n)
 
 
 # ---------------------------------------------------------------------------
@@ -133,4 +203,5 @@ def test_exported_surface():
     import alkahest.experimental as exp
 
     assert "euler_maclaurin" in exp.__all__
+    assert "coefficient_asymptotics" in exp.__all__
     assert "AsymptoticReport" in exp.__all__

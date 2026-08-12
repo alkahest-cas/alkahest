@@ -177,6 +177,7 @@ use alkahest_core::holonomic::{
 };
 // P1 item 10 — asymptotic expansion at scale
 use alkahest_core::calculus::euler_maclaurin::euler_maclaurin as core_euler_maclaurin;
+use alkahest_core::calculus::singularity::coefficient_asymptotics as core_coefficient_asymptotics;
 // V3-1 — Integer number theory
 use alkahest_core::number_theory::{
     discrete_log as nt_discrete_log, factorint as nt_factorint, isprime as nt_isprime,
@@ -4660,6 +4661,49 @@ fn py_euler_maclaurin(
     let r = {
         let pool = pool_py.borrow(py);
         core_euler_maclaurin(summand.id, k.id, a, n.id, corrections, &pool.inner)
+            .map_err(asymptotic_error_to_py)?
+    };
+    Ok(PyAsymptoticReport {
+        method: r.method.to_string(),
+        term_ids: r.terms.clone(),
+        rigor: r.rigor.tag().to_string(),
+        hypotheses: r
+            .hypotheses
+            .iter()
+            .map(|h| (h.status.tag().to_string(), h.statement.clone()))
+            .collect(),
+        verification: r
+            .verification
+            .iter()
+            .map(|v| (v.at, v.reference, v.approximation, v.relative_error))
+            .collect(),
+        derivation: r.derivation.clone(),
+        pool: pool_py,
+    })
+}
+
+/// `alkahest.experimental.coefficient_asymptotics(gf, z, n) -> AsymptoticReport`
+///
+/// Growth of ``[zⁿ] f(z)`` for a rational generating function, by singularity
+/// analysis: the coefficient asymptotics are governed by the pole of smallest
+/// modulus. ``1/(1 - z - z²)`` gives the Fibonacci growth ``φⁿ/√5``.
+///
+/// Declines (:exc:`alkahest.AsymptoticError`) rather than guessing when the
+/// dominant singularity is not unique — several poles of equal modulus make the
+/// coefficients oscillate and no single power-law term describes them — when it
+/// is complex, or when the input is not rational.
+#[pyfunction]
+#[pyo3(name = "coefficient_asymptotics", signature = (gf, z, n))]
+fn py_coefficient_asymptotics(
+    py: Python<'_>,
+    gf: PyRef<PyExpr>,
+    z: PyRef<PyExpr>,
+    n: PyRef<PyExpr>,
+) -> PyResult<PyAsymptoticReport> {
+    let pool_py = gf.pool.clone_ref(py);
+    let r = {
+        let pool = pool_py.borrow(py);
+        core_coefficient_asymptotics(gf.id, z.id, n.id, &pool.inner)
             .map_err(asymptotic_error_to_py)?
     };
     Ok(PyAsymptoticReport {
@@ -10900,6 +10944,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // P1 item 10 — asymptotic expansion at scale
     m.add_class::<PyAsymptoticReport>()?;
     m.add_function(wrap_pyfunction!(py_euler_maclaurin, m)?)?;
+    m.add_function(wrap_pyfunction!(py_coefficient_asymptotics, m)?)?;
     // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     m.add_class::<PyZeilbergerCertificate>()?;
     m.add_function(wrap_pyfunction!(py_zeilberger, m)?)?;

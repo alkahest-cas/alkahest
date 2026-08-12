@@ -105,6 +105,41 @@ loop fails.
   behavioural substitute is the fresh-pool sweep described in
   [`TESTING.md`](TESTING.md#3-memory-safety--sanitizers).
 
+### Fixed
+
+- **Claim graphs: a merge could close a dependency cycle, making the graph
+  unreadable.** Claim IDs are content-addressed over the *normalised*
+  statement, so two textually different statements (`"a"` and `" a"`) share an
+  ID. Re-adding one took `ClaimGraph.add`'s merge path, which unions in its
+  dependency edges — and those can point at claims recorded later, including
+  ones that already depend on it. The resulting graph served fine in memory and
+  serialised fine, then could never be read back: `from_json` topologically
+  sorts and raised `CycleError`. `add` now refuses an edge that would close a
+  cycle, naming both claims, so "a `ClaimGraph` is acyclic" is a real invariant
+  and a JSON round-trip is total. Legitimate acyclic merging is unaffected.
+  Found by the `test_json_round_trip_is_lossless` property test.
+
+- **Sparse interpolation: Zippel oracle cost is now polynomial, not
+  multiplicative.** `sparse_interp` was formulated recursively — interpolate the
+  coefficients of `x₁` as polynomials in the remaining variables, recursively —
+  which makes each level's oracle a batched Vandermonde lift calling the level
+  below `t` times, so black-box evaluations grew as the **product** `∏ tᵢ` down
+  the recursion instead of the sum. Measured on the V2-3 roadmap corpus:
+  70 calls at 2 variables, 1,771 at 3, 139,552 at 4, 15,019,900 at 5 (75 s) —
+  a factor of 25 → 79 → 108 per added variable, extrapolating to ~1e17 at ten,
+  i.e. it never returned. Replaced with Zippel's actual iterative algorithm,
+  which introduces one variable at a time and recovers the coefficients of the
+  *known* skeleton from a transposed Vandermonde system: `O(n·d·T)` calls.
+  The same corpus now takes **34 / 62 / 97 / 139 calls at 2–5 variables and
+  601 for the 10-variable, 15-term roadmap case**, which completes in
+  milliseconds. That acceptance criterion (≥ 95% success over 20 seeds) passes
+  for the first time and its test is un-skipped; a new Rust test asserts the
+  oracle *call count* grows linearly in the variable count, since a functional
+  test alone cannot tell a correct implementation from one that never finishes.
+  `sparse_interp` additionally verifies each candidate against the black box at
+  random points and re-draws its anchors on mismatch, so an unlucky anchor
+  (Zippel's skeleton hypothesis is probabilistic) now produces a refusal rather
+  than a confidently wrong polynomial.
 ### Added
 
 - **`alkahest.ansatz` — parametric families and coefficient fitting** (P2

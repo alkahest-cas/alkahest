@@ -890,6 +890,8 @@ class ClaimGraph:
         ------
         MissingClaimError
             If any dependency is absent from the graph.
+        CycleError
+            If the edge would make the graph cyclic.
         """
         deps = tuple(dict.fromkeys(d for d in claim.depends_on if d != claim.id))
         for dep in deps:
@@ -897,6 +899,7 @@ class ClaimGraph:
                 raise MissingClaimError(
                     f"claim {claim.id!r} depends on {dep!r}, which is not in this graph"
                 )
+        self._reject_cycles(claim.id, deps)
         existing = self._claims.get(claim.id)
         if existing is None:
             stored = replace(claim, depends_on=deps)
@@ -919,6 +922,35 @@ class ClaimGraph:
         for dep in merged_deps:
             self._dependents.setdefault(dep, set()).add(claim.id)
         return stored
+
+    def _reject_cycles(self, claim_id_: str, deps: Sequence[str]) -> None:
+        """Refuse an edge set that would make the graph cyclic.
+
+        A first insertion cannot create a cycle: every dependency must already
+        be present, and nothing depends on the new claim yet. The *merge* path
+        can, though. IDs are content-addressed over the **normalised**
+        statement, so two textually different statements (``"a"`` and ``" a"``)
+        share an ID; re-adding one of them merges its edges into the stored
+        claim, and those edges may point at claims recorded later — including
+        ones that already depend on it.
+
+        The result used to be a graph that served fine in memory, serialised
+        fine, and then could never be read back: :meth:`from_json` topologically
+        sorts and raised :class:`CycleError`. Rejecting the edge here keeps
+        "a ClaimGraph is acyclic" a real invariant, so a round-trip is total.
+        """
+        if claim_id_ not in self._claims:
+            # Fresh insertion: dependencies pre-exist and nothing points here yet.
+            return
+        for dep in deps:
+            if dep == claim_id_:
+                continue
+            # Does `dep` already (transitively) depend on this claim?
+            if claim_id_ in self._walk(dep, lambda i: self._claims[i].depends_on):
+                raise CycleError(
+                    f"claim {claim_id_!r} cannot depend on {dep!r}: "
+                    f"{dep!r} already depends on it, so the edge would close a cycle"
+                )
 
     def _replace_claim(self, claim: Claim) -> None:
         """Overwrite an existing claim in place (edges unchanged)."""

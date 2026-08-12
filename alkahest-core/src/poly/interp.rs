@@ -837,246 +837,40 @@ fn dense_interpolate(vals: &[u64], prime: u64) -> Vec<(u64, u32)> {
 // Multivariate Zippel (recursive)
 // ---------------------------------------------------------------------------
 
-/// One Vandermonde lift applied coherently across `dim` sibling components.
-fn lifted_eval_union(
-    x_pts: &[u64],
-    joint_exps: &[u32],
-    eval_multi: &dyn Fn(&[u64]) -> Vec<u64>,
-    prime: u64,
-    dim: usize,
-    m_count: usize,
-    x_suffix: &[u64],
-) -> Vec<u64> {
-    let mut new_vec = Vec::with_capacity(dim * m_count);
-    for j in 0..dim {
-        let f_vals: Vec<u64> = x_pts
-            .iter()
-            .map(|&xk| {
-                let mut args = vec![xk];
-                args.extend_from_slice(x_suffix);
-                eval_multi(&args).get(j).copied().unwrap_or(0)
-            })
-            .collect();
-        let coeffs = vandermonde_solve(x_pts, joint_exps, &f_vals, prime)
-            .unwrap_or_else(|| vec![0u64; m_count]);
-        debug_assert_eq!(coeffs.len(), m_count);
-        new_vec.extend(coeffs);
-    }
-    new_vec
-}
-
 /// Batched lifting: recover `dim` sibling coefficient polynomials simultaneously.
 /// Each map entry is `sparse exponents → coeff` in the remaining variables only.
 #[allow(clippy::too_many_arguments)] // recursion driver: shared oracle plus dimension bounds
-fn zippel_helper_multi(
-    eval_multi: &dyn Fn(&[u64]) -> Vec<u64>,
-    n_vars: usize,
-    dim: usize,
-    term_bound: usize,
-    degree_bound: u32,
-    prime: u64,
-    g: u64,
-    rng: &mut Xorshift64,
-) -> Result<Vec<BTreeMap<Vec<u32>, u64>>, SparseInterpError> {
-    if dim == 0 {
-        return Ok(vec![]);
-    }
-
-    if n_vars == 0 {
-        let v = eval_multi(&[]);
-        let mut out = Vec::with_capacity(dim);
-        for j in 0..dim {
-            let mut m = BTreeMap::new();
-            let c = *v.get(j).unwrap_or(&0);
-            if c != 0 {
-                m.insert(vec![], c);
-            }
-            out.push(m);
-        }
-        return Ok(out);
-    }
-
-    if n_vars == 1 {
-        let mut out = Vec::with_capacity(dim);
-        for j in 0..dim {
-            let terms = if degree_bound <= term_bound as u32 {
-                let d = degree_bound as usize + 1;
-                let vals: Vec<u64> = (1..=d as u64)
-                    .map(|x| eval_multi(&[x % prime]).get(j).copied().unwrap_or(0))
-                    .collect();
-                dense_interpolate(&vals, prime)
-            } else {
-                bt_univariate(
-                    &|t| eval_multi(&[t]).get(j).copied().unwrap_or(0),
-                    term_bound,
-                    prime,
-                    g,
-                    rng,
-                )?
-            };
-            let mut m = BTreeMap::new();
-            for (c, e) in terms {
-                if c != 0 {
-                    m.insert(vec![e], c);
-                }
-            }
-            out.push(m);
-        }
-        return Ok(out);
-    }
-
-    let a_rest: Vec<u64> = (0..n_vars - 1).map(|_| rng.nonzero(prime)).collect();
-
-    let mut per_comp_skeletons: Vec<Vec<(u64, u32)>> = Vec::with_capacity(dim);
-    for j in 0..dim {
-        let sk = {
-            let f1 = |t: u64| -> u64 {
-                let mut args = vec![t];
-                args.extend_from_slice(&a_rest);
-                eval_multi(&args).get(j).copied().unwrap_or(0)
-            };
-            if degree_bound <= term_bound as u32 {
-                let d = degree_bound as usize + 1;
-                let v: Vec<u64> = (1..=d as u64).map(|x| f1(x % prime)).collect();
-                dense_interpolate(&v, prime)
-            } else {
-                bt_univariate(&f1, term_bound, prime, g, rng)?
-            }
-        };
-        per_comp_skeletons.push(sk);
-    }
-
-    let mut joint_exps: Vec<u32> = Vec::new();
-    for sk in &per_comp_skeletons {
-        for &(_, e) in sk {
-            joint_exps.push(e);
-        }
-    }
-    joint_exps.sort_unstable();
-    joint_exps.dedup();
-    let m_count = joint_exps.len();
-
-    let empty_maps = || (0..dim).map(|_| BTreeMap::new()).collect::<Vec<_>>();
-
-    if m_count == 0 {
-        return Ok(empty_maps());
-    }
-
-    // Fully batched recursion uses vector dimension `dim · |joint|`; union can be
-    // large across many siblings (`dim ≈ term_bound`).  Above this budget fall back to
-    // the classic nested `zippel_helper` lifts — oracle depth improves over the legacy
-    // implementation (shared lift at outer peel) while keeping tests bounded.
-    // Allow large batched lifts for realistic `term_bound` (~20–50); tighter caps
-    // force the scalar fallback whose constant factor dominates on large `n_vars`.
-    let vec_budget = term_bound.saturating_mul(512).clamp(8192usize, 131072usize);
-    if dim.saturating_mul(m_count) > vec_budget {
-        let mut stacked: Vec<BTreeMap<Vec<u32>, u64>> = Vec::with_capacity(dim);
-        for (j, sk) in per_comp_skeletons.iter().enumerate().take(dim) {
-            if sk.is_empty() {
-                stacked.push(BTreeMap::new());
-                continue;
-            }
-            let exps_j: Vec<u32> = sk.iter().map(|(_, e)| *e).collect();
-            let tj = exps_j.len();
-            let mut pts: Vec<u64> = Vec::with_capacity(tj);
-            {
-                let mut used = std::collections::HashSet::new();
-                while pts.len() < tj {
-                    let v = rng.nonzero(prime);
-                    if used.insert(v) {
-                        pts.push(v);
-                    }
-                }
-            }
-            let mut comp_map = BTreeMap::new();
-            for k in 0..tj {
-                let e_cur = exps_j[k];
-                let sub_terms = zippel_helper(
-                    &|x_rest: &[u64]| -> u64 {
-                        let f_vals: Vec<u64> = pts
-                            .iter()
-                            .map(|&xk| {
-                                let mut args = vec![xk];
-                                args.extend_from_slice(x_rest);
-                                eval_multi(&args).get(j).copied().unwrap_or(0)
-                            })
-                            .collect();
-                        vandermonde_solve(&pts, &exps_j, &f_vals, prime)
-                            .map(|v| v[k])
-                            .unwrap_or(0)
-                    },
-                    n_vars - 1,
-                    term_bound,
-                    degree_bound,
-                    prime,
-                    g,
-                    rng,
-                )?;
-                for (mut sub_exp, coeff) in sub_terms {
-                    if coeff != 0 {
-                        let mut full = vec![e_cur];
-                        full.append(&mut sub_exp);
-                        comp_map.insert(full, coeff);
-                    }
-                }
-            }
-            stacked.push(comp_map);
-        }
-        return Ok(stacked);
-    }
-
-    let mut x_pts: Vec<u64> = Vec::with_capacity(m_count);
-    {
-        let mut used = std::collections::HashSet::new();
-        while x_pts.len() < m_count {
-            let v = rng.nonzero(prime);
-            if used.insert(v) {
-                x_pts.push(v);
-            }
-        }
-    }
-
-    let dim_next = dim * m_count;
-    let sub = zippel_helper_multi(
-        &|x_suffix: &[u64]| {
-            lifted_eval_union(
-                &x_pts,
-                &joint_exps,
-                eval_multi,
-                prime,
-                dim,
-                m_count,
-                x_suffix,
-            )
-        },
-        n_vars - 1,
-        dim_next,
-        term_bound,
-        degree_bound,
-        prime,
-        g,
-        rng,
-    )?;
-
-    let mut result: Vec<BTreeMap<Vec<u32>, u64>> = empty_maps();
-    for (j, res_j) in result.iter_mut().enumerate().take(dim) {
-        for (r, &e1) in joint_exps.iter().enumerate().take(m_count) {
-            let slot = j * m_count + r;
-            for (sub_exp, coeff) in &sub[slot] {
-                if *coeff != 0 {
-                    let mut full_exp = vec![e1];
-                    full_exp.extend_from_slice(sub_exp);
-                    res_j.insert(full_exp, *coeff);
-                }
-            }
-        }
-    }
-
-    Ok(result)
-}
-
-/// Recursive Zippel helper.  Returns a map from exponent vectors to
-/// coefficients in `F_p`.
+/// Zippel's sparse interpolation, variable by variable.
+///
+/// # Why this shape
+///
+/// The obvious recursive formulation — "interpolate the coefficients of `x₁`
+/// as polynomials in the remaining variables, recursively" — makes each level's
+/// oracle a *batched lift* that calls the level below `t` times, so the total
+/// number of black-box evaluations grows as the **product** `∏ tᵢ` down the
+/// recursion rather than the sum. Measured on the 10-variable roadmap corpus
+/// that reached 15 million calls at 5 variables and extrapolated to ~1e17 at
+/// ten, i.e. it never terminates.
+///
+/// Zippel's actual algorithm is *iterative* and costs `O(n · d · T)`. It keeps
+/// one interpolant and introduces one variable at a time:
+///
+/// 1. Interpolate `f(x₁, a₂, …, aₙ)` densely in `x₁` at the anchor point.
+///    That fixes the initial skeleton — the set of monomials.
+/// 2. To introduce `x_j`, *assume the skeleton in `x₁…x_{j-1}` is unchanged*
+///    (Zippel's probabilistic hypothesis) and write
+///    `f(x₁…x_j, a_{j+1}…aₙ) = Σᵢ Cᵢ(x_j) · Mᵢ(x₁…x_{j-1})`.
+///    For each of `d+1` values of `x_j`, recover the `S` unknown scalars
+///    `Cᵢ(b_k)` from `S` oracle evaluations by solving one linear system;
+///    then interpolate each `Cᵢ` from its `d+1` values.
+///
+/// Step 2 costs `(d+1)·S` evaluations per variable — *added*, not multiplied.
+/// For the roadmap case (`n=10`, `d=6`, `T=20`) that is ~1400 calls total.
+///
+/// The evaluation points for the already-introduced variables are chosen as
+/// `(s₁^l, …, s_{j-1}^l)` for `l = 1…S`, so the system matrix is a transposed
+/// Vandermonde in the nodes `vᵢ = Mᵢ(s)` and is non-singular exactly when those
+/// nodes are distinct — which is checked, and re-drawn when it fails.
 fn zippel_helper(
     eval: &dyn Fn(&[u64]) -> u64,
     n_vars: usize,
@@ -1096,33 +890,15 @@ fn zippel_helper(
         return Ok(m);
     }
 
-    // --- Base case: univariate ---
-    if n_vars == 1 {
-        // Use dense fallback if degree_bound is small (avoids BSGS overhead).
-        let terms = if degree_bound <= term_bound as u32 {
-            // Dense path: evaluate at degree_bound+1 points.
-            let d = degree_bound as usize + 1;
-            let v: Vec<u64> = (1..=d as u64).map(|x| eval(&[x % prime])).collect();
-            dense_interpolate(&v, prime)
-        } else {
-            bt_univariate(&|t| eval(&[t]), term_bound, prime, g, rng)?
-        };
-        let mut m = BTreeMap::new();
-        for (c, e) in terms {
-            m.insert(vec![e], c);
-        }
-        return Ok(m);
-    }
+    // Anchor values for the variables not yet introduced.
+    let anchors: Vec<u64> = (0..n_vars).map(|_| rng.nonzero(prime)).collect();
 
-    // --- Multivariate Zippel ---
-
-    // Step 1: Evaluate f(x₁, a₂, …, aₙ) for random aᵢ to get x₁-skeleton.
-    let a_rest: Vec<u64> = (0..n_vars - 1).map(|_| rng.nonzero(prime)).collect();
-
-    let skeleton: Vec<(u64, u32)> = {
+    // --- Stage 1: univariate image in x₁ at the anchor point ---
+    let stage1 = {
         let f1 = |t: u64| -> u64 {
-            let mut args = vec![t];
-            args.extend_from_slice(&a_rest);
+            let mut args = Vec::with_capacity(n_vars);
+            args.push(t);
+            args.extend_from_slice(&anchors[1..]);
             eval(&args)
         };
         if degree_bound <= term_bound as u32 {
@@ -1134,60 +910,157 @@ fn zippel_helper(
         }
     };
 
-    if skeleton.is_empty() {
-        return Ok(BTreeMap::new());
+    let mut current: BTreeMap<Vec<u32>, u64> = BTreeMap::new();
+    for (c, e) in stage1 {
+        if c != 0 {
+            current.insert(vec![e], c);
+        }
+    }
+    if n_vars == 1 {
+        return Ok(current);
     }
 
-    let x1_exps: Vec<u32> = skeleton.iter().map(|(_, e)| *e).collect();
-    let t = x1_exps.len();
+    // --- Stages 2..n: introduce one variable at a time ---
+    let d_pts = degree_bound as usize + 1;
+    for j in 1..n_vars {
+        if current.is_empty() {
+            // The image vanished identically at the anchor; nothing to lift.
+            return Ok(BTreeMap::new());
+        }
+        let monomials: Vec<Vec<u32>> = current.keys().cloned().collect();
+        let s_count = monomials.len();
+        if s_count > term_bound {
+            // More monomials than the caller promised: the bound is wrong, and
+            // continuing would silently interpolate the wrong object.
+            return Err(SparseInterpError::SingularSystem);
+        }
 
-    // Step 2: Choose t distinct evaluation points for x₁.
-    let mut x1_pts: Vec<u64> = Vec::with_capacity(t);
-    {
-        let mut used = std::collections::HashSet::new();
-        while x1_pts.len() < t {
-            let v = rng.nonzero(prime);
-            if used.insert(v) {
-                x1_pts.push(v);
+        // Pick s so the Vandermonde nodes vᵢ = Mᵢ(s) are pairwise distinct.
+        let mut nodes: Vec<u64> = Vec::new();
+        let mut s_vals: Vec<u64> = Vec::new();
+        let mut ok = false;
+        for _ in 0..NODE_DRAW_ATTEMPTS {
+            s_vals = (0..j).map(|_| rng.nonzero(prime)).collect();
+            nodes = monomials
+                .iter()
+                .map(|m| {
+                    let mut acc = 1u64;
+                    for (t, &e) in m.iter().enumerate() {
+                        if e > 0 {
+                            acc = mul_mod(acc, pow_mod(s_vals[t], e as u64, prime), prime);
+                        }
+                    }
+                    acc
+                })
+                .collect();
+            let mut seen = std::collections::HashSet::with_capacity(s_count);
+            if nodes.iter().all(|&v| v != 0 && seen.insert(v)) {
+                ok = true;
+                break;
             }
         }
-    }
-
-    // Step 3: batched Vandermonde lift → single recursion (shared oracle).
-    let eval_multi = |x_rest: &[u64]| -> Vec<u64> {
-        let mut f_vals: Vec<u64> = Vec::with_capacity(t);
-        for &xk in &x1_pts {
-            let mut args = vec![xk];
-            args.extend_from_slice(x_rest);
-            f_vals.push(eval(&args));
+        if !ok {
+            return Err(SparseInterpError::SingularSystem);
         }
-        vandermonde_solve(&x1_pts, &x1_exps, &f_vals, prime).unwrap_or_else(|| vec![0u64; t])
-    };
 
-    let sub_maps = zippel_helper_multi(
-        &eval_multi,
-        n_vars - 1,
-        t,
-        term_bound,
-        degree_bound,
-        prime,
-        g,
-        rng,
-    )?;
+        // The system matrix A[l][i] = vᵢ^(l+1) is shared by every x_j point.
+        let matrix: Vec<Vec<u64>> = (1..=s_count)
+            .map(|l| {
+                nodes
+                    .iter()
+                    .map(|&v| pow_mod(v, l as u64, prime))
+                    .collect::<Vec<u64>>()
+            })
+            .collect();
 
-    let mut result: BTreeMap<Vec<u32>, u64> = BTreeMap::new();
-    for j in 0..t {
-        let e1 = x1_exps[j];
-        for (sub_exp, coeff) in &sub_maps[j] {
-            if *coeff != 0 {
-                let mut full_exp = vec![e1];
-                full_exp.extend_from_slice(sub_exp);
-                result.insert(full_exp, *coeff);
+        // Powers of s reused across the (d+1) right-hand sides.
+        let s_powers: Vec<Vec<u64>> = (1..=s_count)
+            .map(|l| {
+                s_vals
+                    .iter()
+                    .map(|&sv| pow_mod(sv, l as u64, prime))
+                    .collect::<Vec<u64>>()
+            })
+            .collect();
+
+        // For each x_j = b_k, recover the S scalars Cᵢ(b_k).
+        let mut coeff_vals: Vec<Vec<u64>> = vec![Vec::with_capacity(d_pts); s_count];
+        for k in 0..d_pts {
+            let b_k = ((k + 1) as u64) % prime;
+            let mut rhs: Vec<u64> = Vec::with_capacity(s_count);
+            for row in s_powers.iter() {
+                let mut args = Vec::with_capacity(n_vars);
+                args.extend_from_slice(row);
+                args.push(b_k);
+                args.extend_from_slice(&anchors[j + 1..]);
+                rhs.push(eval(&args));
+            }
+            let mut mat = matrix.clone();
+            let solved = gaussian_elim(&mut mat, &mut rhs, prime)
+                .ok_or(SparseInterpError::SingularSystem)?;
+            for (i, c) in solved.into_iter().enumerate() {
+                coeff_vals[i].push(c);
             }
         }
+
+        // Interpolate each Cᵢ over the points 1…d+1 and extend the skeleton.
+        let mut next: BTreeMap<Vec<u32>, u64> = BTreeMap::new();
+        for (i, vals) in coeff_vals.iter().enumerate() {
+            for (c, e) in dense_interpolate(vals, prime) {
+                if c != 0 {
+                    let mut exp = monomials[i].clone();
+                    exp.push(e);
+                    next.insert(exp, c);
+                }
+            }
+        }
+        // Monomials whose coefficient polynomial vanished identically drop out;
+        // pad the survivors so every exponent vector has the same length.
+        current = next
+            .into_iter()
+            .map(|(mut exp, c)| {
+                exp.resize(j + 1, 0);
+                (exp, c)
+            })
+            .collect();
     }
 
-    Ok(result)
+    Ok(current)
+}
+
+/// How many times to re-draw `s` looking for distinct Vandermonde nodes.
+const NODE_DRAW_ATTEMPTS: usize = 16;
+
+/// Independent check that a recovered polynomial reproduces the oracle.
+///
+/// Zippel's skeleton hypothesis is probabilistic: an unlucky anchor can drop a
+/// monomial, and the result would then be confidently wrong. Spot-checking
+/// against the black box at random points turns that into a refusal.
+fn verify_against_oracle(
+    terms: &BTreeMap<Vec<u32>, u64>,
+    eval: &dyn Fn(&[u64]) -> u64,
+    n_vars: usize,
+    prime: u64,
+    rng: &mut Xorshift64,
+    checks: usize,
+) -> bool {
+    for _ in 0..checks {
+        let pt: Vec<u64> = (0..n_vars).map(|_| rng.nonzero(prime)).collect();
+        let mut acc = 0u64;
+        for (exp, &c) in terms {
+            let mut term = c % prime;
+            for (i, &e) in exp.iter().enumerate() {
+                if e > 0 {
+                    term = mul_mod(term, pow_mod(pt[i], e as u64, prime), prime);
+                }
+            }
+            acc = add_mod(acc, term, prime);
+        }
+        if acc != eval(&pt) % prime {
+            return false;
+        }
+    }
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -1288,12 +1161,44 @@ pub fn sparse_interpolate(
     let g = primitive_root(prime);
     let mut rng = Xorshift64::new(seed);
 
-    let terms = zippel_helper(eval, n_vars, term_bound, degree_bound, prime, g, &mut rng)?;
+    // Zippel's skeleton hypothesis is probabilistic: an unlucky anchor can make
+    // a monomial's image vanish, and the run would then return a polynomial
+    // that is confidently wrong. Verify each candidate against the black box
+    // and re-draw on mismatch; refuse if every attempt fails, rather than
+    // handing back an unverified answer.
+    let mut last_err = SparseInterpError::SingularSystem;
+    for _ in 0..ANCHOR_ATTEMPTS {
+        match zippel_helper(eval, n_vars, term_bound, degree_bound, prime, g, &mut rng) {
+            Ok(candidate) => {
+                if verify_against_oracle(
+                    &candidate,
+                    eval,
+                    n_vars,
+                    prime,
+                    &mut rng,
+                    ORACLE_VERIFY_POINTS,
+                ) {
+                    return Ok(finish_terms(candidate, vars, prime));
+                }
+                last_err = SparseInterpError::SingularSystem;
+            }
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
+}
 
+/// How many independent anchor draws to try before refusing.
+const ANCHOR_ATTEMPTS: usize = 6;
+
+/// Random points used to check a candidate against the oracle.
+const ORACLE_VERIFY_POINTS: usize = 6;
+
+/// Trim trailing zero exponents and drop zero coefficients.
+fn finish_terms(terms: BTreeMap<Vec<u32>, u64>, vars: Vec<ExprId>, prime: u64) -> MultiPolyFp {
     let trimmed_terms: BTreeMap<Vec<u32>, u64> = terms
         .into_iter()
         .map(|(mut exp, c)| {
-            // Trim trailing zeros in exponent vector.
             while exp.last() == Some(&0) {
                 exp.pop();
             }
@@ -1302,11 +1207,11 @@ pub fn sparse_interpolate(
         .filter(|(_, c)| *c != 0)
         .collect();
 
-    Ok(MultiPolyFp {
+    MultiPolyFp {
         vars,
         modulus: prime,
         terms: trimmed_terms,
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1861,6 +1766,67 @@ mod tests {
         assert_eq!(*result.terms.get(&vec![2, 1]).unwrap_or(&0), 1, "x^2*y");
         assert_eq!(*result.terms.get(&vec![0, 1]).unwrap_or(&0), 5, "5*y");
         assert_eq!(*result.terms.get(&vec![1]).unwrap_or(&0), 2, "2*x");
+    }
+
+    /// The property that matters, and the one that silently regressed before:
+    /// oracle cost must grow **linearly** in the number of variables, not
+    /// multiplicatively down a recursion.
+    ///
+    /// The previous recursive lift needed 70 / 1,771 / 139,552 / 15,019,900
+    /// calls at 2 / 3 / 4 / 5 variables — a factor of ~100 per added variable,
+    /// extrapolating to ~1e17 at ten, i.e. it never returned. Zippel's actual
+    /// cost is `O(n · d · T)`. Without a test on the *call count* a rewrite of
+    /// this file could reintroduce the blow-up and every functional test would
+    /// still pass, just never finish.
+    #[test]
+    fn oracle_cost_is_linear_in_variable_count() {
+        use std::cell::Cell;
+
+        let p = 32749u64;
+        let mut counts = Vec::new();
+        for n in [3usize, 6, 9] {
+            let (_, vs) = vars(n);
+            let calls = Cell::new(0usize);
+            let eval = |pt: &[u64]| {
+                calls.set(calls.get() + 1);
+                // f = Σ_i (i+1)·x_i^2  +  x_0·x_1
+                let mut acc = 0u64;
+                for (i, &v) in pt.iter().enumerate() {
+                    let t = mul_mod((i as u64) + 1, pow_mod(v, 2, p), p);
+                    acc = add_mod(acc, t, p);
+                }
+                add_mod(acc, mul_mod(pt[0], pt[1], p), p)
+            };
+            let result = sparse_interpolate(&eval, vs, 20, 4, p, 7).unwrap();
+            // Sanity: the recovered polynomial is the right one. Exponent keys
+            // have trailing zeros trimmed, so x_0^2 is stored as `[2]`.
+            assert_eq!(
+                *result.terms.get(&vec![2u32]).unwrap_or(&0),
+                1,
+                "x_0^2 at n = {n}"
+            );
+            let mut last_sq = vec![0u32; n];
+            last_sq[n - 1] = 2;
+            assert_eq!(
+                *result.terms.get(&last_sq).unwrap_or(&0),
+                n as u64,
+                "x_{} ^2 at n = {n}",
+                n - 1
+            );
+            counts.push(calls.get());
+        }
+
+        // Linear growth: going 3 → 9 variables (3×) must not cost more than an
+        // order of magnitude. The old code multiplied by ~1e5 over that range.
+        let (c3, c9) = (counts[0], counts[2]);
+        assert!(
+            c9 <= c3 * 10,
+            "oracle calls grew super-linearly: {counts:?} for 3/6/9 variables"
+        );
+        assert!(
+            c9 < 20_000,
+            "oracle calls unexpectedly large: {counts:?} for 3/6/9 variables"
+        );
     }
 
     #[test]

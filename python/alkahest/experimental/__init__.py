@@ -71,9 +71,10 @@ from alkahest.alkahest import (
     Fps,
     OdeTrajectory,
     asymptotic_expand,
+    # P1 item 10 — asymptotic expansion at scale
+    coefficient_asymptotics,
     dirac_delta,
     dsolve,
-    # P1 item 10 — asymptotic expansion at scale
     euler_maclaurin,
     fourier_transform,
     heaviside,
@@ -114,12 +115,13 @@ __all__ = [
     "asymptotic_expand",
     "bessel_j0",
     "bessel_j1",
+    # P1 item 10 — asymptotic expansion at scale
+    "coefficient_asymptotics",
     "compile_cuda",
     "conjugate",
     "digamma",
     "dirac_delta",
     "dsolve",
-    # P1 item 10 — asymptotic expansion at scale
     "euler_maclaurin",
     "evaluate",
     "fourier_transform",
