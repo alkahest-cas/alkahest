@@ -159,6 +159,54 @@ jobs:
         run: pytest --timeout=900 --ignore=tests/silent_errors
 
 
+  # ── AddressSanitizer, as its own job rather than a step inside Tier 1a.
+  #
+  # It was 467s of Tier 1a's ~1000s, which made it half the wait on every PR.
+  # But CI wall-clock is the slowest *job*, not the sum of steps: run in
+  # parallel it costs nothing on the critical path, so the coverage comes back
+  # at PR time and Tier 1a still finishes first. Scoped to `-p alkahest-cas`
+  # here for speed; the nightly `asan` shard runs the whole workspace.
+  asan:
+    name: AddressSanitizer — alkahest-cas
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust nightly (for ASan)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: x86_64-unknown-linux-gnu
+          components: rust-src
+
+      - name: Install system dependencies
+        run: sudo apt-get install -y libflint-dev llvm-15-dev llvm-15
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-asan-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-asan-
+
+      # --lib --tests: doc-test binaries link separately and do not receive the
+      # ASan runtime under -Z build-std ("undefined symbol: __asan_init").
+      # LSAN_OPTIONS=detect_leaks=0: leaks belong to the nightly lsan shard, and
+      # the GMP/rug thread caches are false positives here.
+      - name: cargo test (AddressSanitizer, alkahest-cas only)
+        env:
+          LSAN_OPTIONS: detect_leaks=0
+        run: |
+          RUSTFLAGS="-Zsanitizer=address" \
+          cargo +nightly test -p alkahest-cas --lib --tests \
+            --target x86_64-unknown-linux-gnu \
+            -Z build-std
+
   # ── Wheel smoke: README quickstart + fresh-interpreter parse, against a
   # *built wheel* installed into its own clean venv -- not tier1's
   # `maturin develop` editable install of the source tree, and not pytest's
