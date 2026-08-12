@@ -101,6 +101,21 @@ jobs:
       - name: cargo clippy (groebner-cuda feature)
         run: cargo clippy --all-targets --features groebner-cuda -- -D warnings
 
+      # Linting the feature is not the same as running it. These tests need no
+      # GPU: the ones that do skip themselves, and what remains is the part that
+      # rots silently — the CPU-fallback accounting (`GpuBackendReport` with
+      # `device_id: None` must report `fell_back_to_cpu()`), and the guarantee
+      # that a driverless machine *skips* rather than aborts. `gpu_available()`
+      # used to panic here, because cudarc panics rather than erroring when
+      # `libcuda.so` is absent, so this suite failed on every machine without a
+      # GPU — the exact configuration it claims to support.
+      #
+      # This is not GPU coverage: the GPU-dependent tests skip, and only the
+      # dual-3090 box exercises a real kernel launch. It is the standing gate
+      # against the CUDA paths breaking between those manual runs.
+      - name: cargo test (groebner-cuda feature, no GPU present)
+        run: cargo test --features "groebner groebner-cuda" -p alkahest-cas --test groebner_cuda
+
       - name: cargo test
         run: cargo test --all
 
