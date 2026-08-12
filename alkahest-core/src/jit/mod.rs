@@ -67,7 +67,7 @@ fn registry() -> &'static PrimitiveRegistry {
 #[cfg(feature = "cuda")]
 pub mod nvptx;
 #[cfg(feature = "cuda")]
-pub use nvptx::{compile_cuda, CudaCompiledFn, CudaError};
+pub use nvptx::{compile_cuda, cuda_device_count, CudaCompiledFn, CudaError};
 
 #[cfg(feature = "cranelift")]
 mod cranelift_backend;

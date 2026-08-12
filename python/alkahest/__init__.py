@@ -2212,8 +2212,8 @@ def __getattr__(name: str):
 # native raise. See `tests/test_cuda.py`.
 # ---------------------------------------------------------------------------
 try:  # pragma: no cover - exercised only on CUDA builds
-    from .alkahest import CudaCompiledFn, compile_cuda
+    from .alkahest import CudaCompiledFn, compile_cuda, cuda_device_count
 except ImportError:  # the overwhelmingly common case: no CUDA feature
     pass
 else:
-    __all__ += ["CudaCompiledFn", "compile_cuda"]
+    __all__ += ["CudaCompiledFn", "compile_cuda", "cuda_device_count"]

@@ -9656,6 +9656,25 @@ fn py_compile_cuda(
     Ok(PyCudaCompiledFn { inner: compiled })
 }
 
+/// `alkahest.cuda_device_count() -> int`
+///
+/// Number of CUDA devices visible to this process; `0` when none are.
+///
+/// The valid arguments to :meth:`CudaCompiledFn.call_batch_on` are exactly
+/// ``range(cuda_device_count())``. Without this, the only way to discover the
+/// range was to launch on an ordinal and catch ``E-CUDA-003`` — the workaround
+/// `docs/mdbook/src/gpu.md` had to document while no verified implementation
+/// existed.
+///
+/// Never raises: every "no GPU here" shape (no driver, no device, driver too
+/// old) reports `0`, which is the single answer a caller acts on.
+#[cfg(feature = "cuda")]
+#[pyfunction]
+#[pyo3(name = "cuda_device_count")]
+fn py_cuda_device_count() -> usize {
+    alkahest_core::cuda_device_count()
+}
+
 // ---------------------------------------------------------------------------
 // V5-11 — Gröbner basis
 // ---------------------------------------------------------------------------
@@ -11466,6 +11485,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     {
         m.add_class::<PyCudaCompiledFn>()?;
         m.add_function(wrap_pyfunction!(py_compile_cuda, m)?)?;
+        m.add_function(wrap_pyfunction!(py_cuda_device_count, m)?)?;
     }
     // V5-11 — Gröbner basis / V1-16 — GroebnerBasis.compute
     #[cfg(feature = "groebner")]

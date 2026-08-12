@@ -240,7 +240,11 @@ _FEATURE_ENTRY_POINTS = {
 #: entry point missing (the `cuda` bug in `d139a46`) *and* a bit reading
 #: `False` on a build that really does have it.
 _FEATURE_EXCLUSIVE_NAMES = {
-    "cuda": (("alkahest", "compile_cuda"), ("alkahest", "CudaCompiledFn")),
+    "cuda": (
+        ("alkahest", "compile_cuda"),
+        ("alkahest", "CudaCompiledFn"),
+        ("alkahest", "cuda_device_count"),
+    ),
     "parallel": (
         ("alkahest.CompiledFn", "call_batch_raw_par"),
         ("alkahest.CompiledFn", "call_batch_buffer_par"),

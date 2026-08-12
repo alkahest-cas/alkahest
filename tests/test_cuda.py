@@ -38,9 +38,9 @@ import warnings
 import alkahest as ak
 import pytest
 
-# The two names the native module defines *under* `--features cuda`. Both must
-# be reachable from the public package, or neither.
-CUDA_ENTRY_POINTS = ("CudaCompiledFn", "compile_cuda")
+# The names the native module defines *under* `--features cuda`. All must be
+# reachable from the public package, or none.
+CUDA_ENTRY_POINTS = ("CudaCompiledFn", "compile_cuda", "cuda_device_count")
 
 # `CudaError` is not in that list on purpose: the native module registers it
 # unconditionally, like every other exception class, so it is bound on every
@@ -424,3 +424,53 @@ def test_single_point_batch(pool):
 
     assert len(got) == 1
     assert math.isclose(got[0], 10.0, rel_tol=1e-15)
+
+
+@requires_cuda_build
+def test_device_count_is_answerable_without_probing_by_exception():
+    """The count must be a plain question with a plain answer.
+
+    Before this existed the only way to learn the valid ordinal range was to
+    launch on a guess and catch ``E-CUDA-003`` — the workaround
+    ``docs/mdbook/src/gpu.md`` documented for exactly as long as there was no
+    verified implementation to replace it.
+
+    Never raising is part of the contract: every "no GPU here" shape reports
+    ``0``. A probe that raised on a driverless machine would be unusable in the
+    one place callers most need it.
+    """
+    n = ak.cuda_device_count()
+    assert isinstance(n, int)
+    assert n >= 0
+
+
+@requires_gpu
+def test_device_count_agrees_with_the_ordinals_that_launch(pool):
+    """The count is only worth anything if launches agree with it.
+
+    Checked in both directions: every ordinal below the count runs and returns
+    the same values, and the first ordinal at the count is refused. A count
+    that over-reports sends callers at a device that cannot run; one that
+    under-reports hides hardware they paid for.
+    """
+    n = ak.cuda_device_count()
+    assert n >= 1, "a device answered the probe, so the count cannot be zero"
+
+    x = pool.symbol("x")
+    fn = ak.compile_cuda(x * x + pool.integer(1), [x])
+    pts = [0.0, 1.0, -2.5, 4.0]
+    expected = [1.0, 2.0, 7.25, 17.0]
+
+    first = None
+    for dev in range(n):
+        got = fn.call_batch_on(dev, [pts])
+        assert got == pytest.approx(expected, rel=1e-15)
+        if first is None:
+            first = got
+        else:
+            # Identical PTX on identical hardware: agreement should be exact,
+            # not merely close.
+            assert got == first, f"device {dev} disagreed bitwise with device 0"
+
+    with pytest.raises(ak.CudaError):
+        fn.call_batch_on(n, [pts])

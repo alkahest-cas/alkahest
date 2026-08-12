@@ -87,6 +87,34 @@ impl crate::errors::AlkahestError for CudaError {
     }
 }
 
+/// Number of CUDA devices visible to this process, or `0` when none are.
+///
+/// Answers "which ordinals may I pass to [`CudaCompiledFn::call_batch_on`]?"
+/// without the caller having to probe by launching and catching
+/// `E-CUDA-003`, which is what `docs/mdbook/src/gpu.md` had to recommend
+/// while no verified implementation existed.
+///
+/// Returns `0` rather than an error for every "no GPU here" shape — no
+/// driver, no device, driver too old. The distinction a caller acts on is
+/// "can I use a GPU", and each of those answers it identically; an ordinal
+/// is valid iff it is `< cuda_device_count()`.
+///
+/// `catch_unwind` is load-bearing for the same reason it is in
+/// `groebner_cuda.rs::gpu_available`: `cudarc` *panics* rather than
+/// returning `Err` when `libcuda.so` cannot be dlopen'd at all, which is the
+/// state of any machine with no driver installed. A capability probe that
+/// aborts the process on the exact configuration it exists to report on
+/// would be worse than useless.
+#[cfg(feature = "cuda")]
+pub fn cuda_device_count() -> usize {
+    std::panic::catch_unwind(|| {
+        cudarc::driver::CudaContext::device_count()
+            .map(|n| n.max(0) as usize)
+            .unwrap_or(0)
+    })
+    .unwrap_or(0)
+}
+
 /// A compiled CUDA kernel for evaluating an Alkahest expression on GPU.
 ///
 /// The generated PTX is self-contained (libdevice has been linked in during

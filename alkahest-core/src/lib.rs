@@ -171,7 +171,7 @@ pub use stablehlo::emit_stablehlo;
 
 // V5-3 — NVPTX JIT backend
 #[cfg(feature = "cuda")]
-pub use jit::{compile_cuda, CudaCompiledFn, CudaError};
+pub use jit::{compile_cuda, cuda_device_count, CudaCompiledFn, CudaError};
 
 // Phase 22 — Ball arithmetic
 pub use ball::{AcbBall, ArbBall, IntervalEval, DEFAULT_PREC};
@@ -269,7 +269,7 @@ pub mod stable {
     pub use crate::integrate::{integrate, integrate_definite, IntegrationError};
     pub use crate::jit::{compile, CompileCache, CompiledFn, JitError};
     #[cfg(feature = "cuda")]
-    pub use crate::jit::{compile_cuda, CudaCompiledFn, CudaError};
+    pub use crate::jit::{compile_cuda, cuda_device_count, CudaCompiledFn, CudaError};
     #[allow(deprecated)]
     pub use crate::kernel::pool_persist::PoolPersistError;
     pub use crate::kernel::pool_persist::{load_from, open_persistent, save_to, IoError};

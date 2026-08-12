@@ -337,3 +337,59 @@ fn gpu_macaulay_reduce_kernel() {
         "CPU and GPU row reduction must agree mod p"
     );
 }
+
+/// The error-fallback branch: a device was requested, the driver refused it,
+/// and the run finished on the CPU with the failure recorded.
+///
+/// Distinct from [`assert_no_gpu`], which covers `device_id: None` — that path
+/// never touches the driver, so it leaves `first_gpu_error` empty and exercises
+/// neither the `Err(e)` arm of the `reduce_gpu` dispatch nor the latch that
+/// keeps the *first* error. Those lines had never executed anywhere: a
+/// `reductions_on_gpu` counter stuck at zero would make `ran_on_gpu()`
+/// permanently false and `assert_ran_on_gpu` a gate that could never pass,
+/// while a `first_gpu_error` that never latched would make a fallback
+/// indistinguishable from a clean CPU run — which is the defect the report
+/// exists to expose.
+#[test]
+fn requested_device_that_does_not_exist_falls_back_and_records_why() {
+    if !gpu_available() {
+        return;
+    }
+    // Far past any plausible ordinal on a real host; `CudaContext::new` fails
+    // rather than succeeding on some other card.
+    const ABSENT_DEVICE: usize = 4096;
+
+    let f = poly(&[(&[1, 0], 1), (&[0, 1], 1), (&[0, 0], -1)]);
+    let g = poly(&[(&[1, 0], 1), (&[0, 1], -1)]);
+    let order = MonomialOrder::Lex;
+
+    let (basis, backend) =
+        compute_groebner_basis_gpu(vec![f.clone(), g.clone()], order, Some(ABSENT_DEVICE))
+            .expect("a GPU failure must fall back, not abort the computation");
+
+    assert_eq!(backend.requested_device, Some(ABSENT_DEVICE));
+    assert_eq!(
+        backend.reductions_on_gpu, 0,
+        "nothing can have run on a device that does not exist: {backend:?}"
+    );
+    assert!(backend.reductions_on_cpu > 0, "{backend:?}");
+    assert!(backend.fell_back_to_cpu(), "{backend:?}");
+    assert!(
+        !backend.ran_on_gpu(),
+        "a run that fell back is not a GPU run: {backend:?}"
+    );
+    assert!(
+        backend.first_gpu_error.is_some(),
+        "the driver refusal must be recorded for a caller that never reads \
+         stderr: {backend:?}"
+    );
+
+    // The fallback is only acceptable because the answer is still right.
+    let basis_cpu = compute_groebner_basis(vec![f, g], order);
+    for p in &basis_cpu {
+        assert!(cpu_reduce(p, &basis, order).is_zero());
+    }
+    for p in &basis {
+        assert!(cpu_reduce(p, &basis_cpu, order).is_zero());
+    }
+}

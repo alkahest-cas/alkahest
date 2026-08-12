@@ -55,7 +55,8 @@ Read these bits precisely — each says **what was linked**, and nothing more:
 - `cuda == True` guarantees `ak.compile_cuda` and `ak.CudaCompiledFn` exist and that
   PTX can be emitted on the host. It does **not** promise a GPU: the driver is loaded
   lazily, so a machine with no device compiles happily and fails at `call_batch` with
-  `E-CUDA-003`. The only way to find out is to launch something.
+  `E-CUDA-003`. Ask `ak.cuda_device_count()` — it reports `0` when there is no usable
+  device, and never raises.
 - `llvm_jit == True` on a `cuda` build even when *alkahest-py*'s own `jit` feature was
   never named, because `alkahest-core`'s `cuda` feature turns on `jit`. Cranelift and
   LLVM are not mutually exclusive; a CUDA build can link both.
@@ -99,29 +100,31 @@ DCE → PTX for `sm_86` (Ampere) → loaded through the CUDA driver by `cudarc`.
 
 ### Discovering the valid device ordinals
 
-There is **no `ak.cuda_device_count()`**. The only way to find the valid range for
-`call_batch_on` today is to try an ordinal and catch the refusal:
-
 ```python
-def device_count(fn, limit=16):
-    """Largest N such that ordinals 0..N-1 accept a launch."""
-    n = 0
-    while n < limit:
-        try:
-            fn.call_batch_on(n, [[0.0]] * fn.n_inputs)
-        except ak.CudaError:   # E-CUDA-003 — no such device
-            return n
-        n += 1
-    return n
+n = ak.cuda_device_count()          # 0 when there is no GPU here
+for dev in range(n):
+    fn.call_batch_on(dev, [[0.0]] * fn.n_inputs)
 ```
 
-That is a workaround, not an API, and it is recorded here rather than fixed because a
-`cuda_device_count` binding could not be verified by anything: `cuda` implies LLVM 15
-with NVPTX, so it cannot even be *compiled* on an ordinary dev box, no CI job builds
-the Python extension with the feature (see below), and running it needs a device. It
-belongs in the same change as the missing `maturin develop --features cuda` nightly
-step — shipping it before that would add exactly the kind of unverified surface that
-produced the capability overclaims this page now documents.
+The valid arguments to `call_batch_on` are exactly `range(ak.cuda_device_count())`.
+Both directions are pinned by tests that run on hardware
+(`tests/test_cuda.py::test_device_count_agrees_with_the_ordinals_that_launch` and
+`nvptx_gpu::cuda_device_count_matches_the_ordinals_that_launch`): every ordinal below
+the count launches, and the ordinal *at* the count is refused.
+
+`cuda_device_count()` **never raises**. Every "no GPU here" shape — no driver, no
+device, driver too old — reports `0`, because that is the single answer a caller acts
+on. This matters more than it looks: `cudarc` *panics* rather than returning `Err`
+when `libcuda.so` cannot be `dlopen`'d at all, so a naive binding would abort the
+process on precisely the machines a capability probe exists to report on. The same
+bug bit `groebner_cuda.rs::gpu_available` and `nvptx_gpu.rs::device_available`.
+
+Earlier releases documented a workaround here — launch on an ordinal and catch
+`E-CUDA-003` — because a `cuda_device_count` binding could not be verified by
+anything on an ordinary dev box: `cuda` implies LLVM 15 with NVPTX, so it could not
+even be *compiled*, and no CI job built the Python extension with the feature. It
+shipped once both could be done on real hardware, which is the standard the
+capability overclaims this page documents were failing.
 
 ### Limits worth knowing before you reach for it
 
