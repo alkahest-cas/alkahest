@@ -40,7 +40,13 @@ def test_cranelift_jit_enables_session_jit_flag():
         assert caps["jit"] is True
         assert alkahest.jit_is_available()
         assert features["cranelift"] is True
-        assert not features["llvm_jit"]
+        # The two backends are not mutually exclusive. The shipped wheel is
+        # cranelift-only, but `--features cuda` pulls in `alkahest-core/jit`
+        # and so links LLVM alongside cranelift — a real configuration, built
+        # and tested on GPU hardware. Asserting `not llvm_jit` unconditionally
+        # encoded "cranelift implies no LLVM", which is false there.
+        if not features["cuda"]:
+            assert not features["llvm_jit"]
 
     primitives = alkahest.capabilities()["primitives"]
 
@@ -148,3 +154,39 @@ def test_derived_result_labels_emitted_lean_source_as_unchecked_evidence():
     assert verification["externally_verified"] is False
     assert isinstance(verification["side_conditions"], list)
     assert isinstance(result.certificate, str)
+
+
+def test_advertised_cuda_capability_matches_the_public_namespace():
+    """A capability bit must not advertise an unreachable entry point.
+
+    On a `--features cuda` build the native module defines `compile_cuda`,
+    `CudaCompiledFn` and `CudaError`, but `python/alkahest/__init__.py` never
+    re-exported them: `capabilities()["features"]["cuda"]` said `True` while
+    `ak.compile_cuda` raised `AttributeError`, and the only route in was the
+    private `alkahest.alkahest` module. Found by running the CUDA suite on real
+    hardware, which is the only configuration where the two can disagree.
+    """
+    features = alkahest.capabilities()["features"]
+    reachable = all(
+        hasattr(alkahest, name) for name in ("compile_cuda", "CudaCompiledFn", "CudaError")
+    )
+    assert features["cuda"] == reachable, (
+        f"capabilities() reports cuda={features['cuda']} but the public "
+        f"namespace {'exposes' if reachable else 'does not expose'} the CUDA "
+        "entry points; the contract and the namespace must agree"
+    )
+
+
+def test_llvm_jit_bit_tracks_what_is_linked_not_which_flag_was_named():
+    """`cuda` implies `alkahest-core/jit`, so a CUDA build links LLVM.
+
+    `alkahest-py`'s own `jit` feature can be off while the core's is on, which
+    made `llvm_jit` report `False` on a build that demonstrably emits NVPTX.
+    """
+    features = alkahest.capabilities()["features"]
+    if features["cuda"]:
+        assert features["llvm_jit"], (
+            "a cuda build links the LLVM backend (alkahest-core: "
+            'cuda = ["jit", ...]), so llvm_jit cannot be False'
+        )
+        assert features["jit"]

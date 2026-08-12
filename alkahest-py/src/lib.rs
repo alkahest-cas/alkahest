@@ -6571,9 +6571,16 @@ fn py_build_features() -> std::collections::HashMap<String, bool> {
         ("groebner", cfg!(feature = "groebner")),
         // Retain the Cargo feature names for compatibility and expose
         // backend-specific names so callers need not infer what `jit` means.
-        ("jit", cfg!(feature = "jit")),
+        // `cuda` implies `alkahest-core/jit` (see alkahest-core's Cargo.toml:
+        // `cuda = ["jit", "dep:cudarc"]`), so a build with `--features cuda`
+        // links the LLVM backend even though *this* crate's own `jit` feature
+        // is off. Reporting `cfg!(feature = "jit")` alone therefore said
+        // `llvm_jit: false` on a build that demonstrably emits NVPTX — the
+        // capability contract has to describe what is linked, not which flag
+        // the caller happened to name.
+        ("jit", cfg!(feature = "jit") || cfg!(feature = "cuda")),
         ("cranelift", cfg!(feature = "cranelift")),
-        ("llvm_jit", cfg!(feature = "jit")),
+        ("llvm_jit", cfg!(feature = "jit") || cfg!(feature = "cuda")),
         ("cranelift_jit", cfg!(feature = "cranelift")),
         ("parallel", cfg!(feature = "parallel")),
         ("numpy", cfg!(feature = "numpy")),

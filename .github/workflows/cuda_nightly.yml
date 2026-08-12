@@ -33,7 +33,11 @@ jobs:
         env:
           ALKAHEST_GPU_TESTS: "1"
         run: |
-          compute-sanitizer --tool memcheck \
+          # --target-processes all is load-bearing: the default is
+          # application-only, which instruments `cargo` — a process that makes
+          # no CUDA calls whatsoever. Without it this step emits a banner, no
+          # ERROR SUMMARY, and a green tick while checking nothing.
+          compute-sanitizer --target-processes all --tool memcheck \
             cargo test --features cuda,groebner-cuda --no-fail-fast
         continue-on-error: false
 
@@ -41,7 +45,7 @@ jobs:
         env:
           ALKAHEST_GPU_TESTS: "1"
         run: |
-          compute-sanitizer --tool racecheck \
+          compute-sanitizer --target-processes all --tool racecheck \
             cargo test --features cuda,groebner-cuda
         continue-on-error: true  # racecheck may have false positives
 

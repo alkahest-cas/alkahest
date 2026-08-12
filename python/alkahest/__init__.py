@@ -2102,3 +2102,28 @@ def __getattr__(name: str):
 
         return importlib.import_module(f".{name}", __name__)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+# ---------------------------------------------------------------------------
+# CUDA codegen — present only in a build made with `--features cuda`.
+#
+# The native module defines `compile_cuda`, `CudaCompiledFn` and `CudaError`
+# under that feature, but they were never re-exported here, so on a CUDA build
+# `capabilities()["features"]["cuda"]` reported True while `ak.compile_cuda`
+# raised AttributeError and the only way in was the private
+# `alkahest.alkahest` module. A capability bit that advertises something the
+# public namespace cannot reach is exactly the kind of overclaim the rest of
+# this contract exists to prevent.
+#
+# Appended at runtime rather than listed in the literal `__all__` above,
+# because the names genuinely do not exist in a default (non-CUDA) build and
+# every name in `__all__` must resolve. `scripts/check_api_freeze.py` parses
+# the literal via AST, so this is invisible to it — which is correct: it is an
+# addition, and only on builds that have the feature.
+# ---------------------------------------------------------------------------
+try:  # pragma: no cover - exercised only on CUDA builds
+    from .alkahest import CudaCompiledFn, CudaError, compile_cuda
+except ImportError:  # the overwhelmingly common case: no CUDA feature
+    pass
+else:
+    __all__ += ["CudaCompiledFn", "CudaError", "compile_cuda"]
