@@ -9327,8 +9327,39 @@ impl PyCudaCompiledFn {
     /// ``inputs`` is a list of length ``n_inputs``.  Each entry is a 1-D sequence
     /// of ``N`` values for that variable (column-major / SoA: one array per
     /// symbolic input).  Returns a Python ``list`` of ``N`` outputs.
+    ///
+    /// Equivalent to ``call_batch_on(0, inputs)``.
     #[pyo3(name = "call_batch")]
     fn call_batch_py(&self, inputs: &Bound<'_, PyList>) -> PyResult<Vec<f64>> {
+        self.eval_on_device(0, inputs)
+    }
+
+    /// Evaluate the compiled kernel on a specific CUDA device ordinal.
+    ///
+    /// Same contract as :meth:`call_batch`, which is this method with
+    /// ``device = 0``. The PTX is device-independent — it is generated once and
+    /// each device gets its own lazily-loaded module — so the same
+    /// ``CudaCompiledFn`` can be driven across every device on the host.
+    ///
+    /// `alkahest-core` has always been able to target a chosen device
+    /// (`CudaCompiledFn::call_batch_on`, exercised by
+    /// `nvptx_gpu::nvptx_multi_device_both_3090s`), but the binding only ever
+    /// exposed device 0, so on a multi-GPU host every device but the first was
+    /// unreachable from Python.
+    ///
+    /// Raises :class:`CudaError` if *device* is not a valid ordinal on this
+    /// host.
+    #[pyo3(name = "call_batch_on")]
+    fn call_batch_on_py(&self, device: usize, inputs: &Bound<'_, PyList>) -> PyResult<Vec<f64>> {
+        self.eval_on_device(device, inputs)
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl PyCudaCompiledFn {
+    /// Shared body of `call_batch` / `call_batch_on`: validate the SoA input
+    /// columns, then dispatch to the requested device ordinal.
+    fn eval_on_device(&self, device: usize, inputs: &Bound<'_, PyList>) -> PyResult<Vec<f64>> {
         if inputs.len() != self.inner.n_inputs {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "expected {} input columns, got {}",
@@ -9349,12 +9380,14 @@ impl PyCudaCompiledFn {
         }
         let col_refs: Vec<&[f64]> = cols.iter().map(|c| c.as_slice()).collect();
         let mut out = vec![0.0f64; n_pts];
-        self.inner.call_batch(&col_refs, &mut out).map_err(|e| {
-            Python::with_gil(|py2| {
-                let exc_type = py2.get_type_bound::<PyCudaError>();
-                make_structured_err(py2, &exc_type, &e)
-            })
-        })?;
+        self.inner
+            .call_batch_on(device, &col_refs, &mut out)
+            .map_err(|e| {
+                Python::with_gil(|py2| {
+                    let exc_type = py2.get_type_bound::<PyCudaError>();
+                    make_structured_err(py2, &exc_type, &e)
+                })
+            })?;
         Ok(out)
     }
 }

@@ -29,6 +29,16 @@ jobs:
           ALKAHEST_GPU_TESTS: "1"
         run: cargo test --features cuda,groebner-cuda --no-fail-fast
 
+      # Both sanitizer steps are scoped to the two integration targets that
+      # actually launch kernels. Wrapping the whole `cargo test` instead drags
+      # rustdoc's doc-test runner under the sanitizer, where it segfaults
+      # (SIGSEGV, exit 139) *after* the CUDA suites have passed but *before*
+      # the summary is printed — so racecheck produced no RACECHECK SUMMARY at
+      # all, and with `continue-on-error: true` that looked like a pass.
+      # Scoping costs no coverage: the only GPU work in the workspace lives in
+      # these two targets. The in-`src` unit tests reach `compile_cuda` for PTX
+      # generation only, and `compute_groebner_basis_gpu(.., None)` takes the
+      # `reduce_cpu` path, so neither issues a CUDA API call.
       - name: Run compute-sanitizer memcheck
         env:
           ALKAHEST_GPU_TESTS: "1"
@@ -38,7 +48,8 @@ jobs:
           # no CUDA calls whatsoever. Without it this step emits a banner, no
           # ERROR SUMMARY, and a green tick while checking nothing.
           compute-sanitizer --target-processes all --tool memcheck \
-            cargo test --features cuda,groebner-cuda --no-fail-fast
+            cargo test --features cuda,groebner-cuda --no-fail-fast \
+              --test nvptx_gpu --test groebner_cuda
         continue-on-error: false
 
       - name: Run compute-sanitizer racecheck
@@ -46,7 +57,8 @@ jobs:
           ALKAHEST_GPU_TESTS: "1"
         run: |
           compute-sanitizer --target-processes all --tool racecheck \
-            cargo test --features cuda,groebner-cuda
+            cargo test --features cuda,groebner-cuda \
+              --test nvptx_gpu --test groebner_cuda
         continue-on-error: true  # racecheck may have false positives
 
       - name: Upload sanitizer logs
