@@ -779,19 +779,45 @@ fn isolate_positive_roots(coeffs: Vec<Integer>) -> Vec<RootInterval> {
 // Exact rational-root recovery
 // ---------------------------------------------------------------------------
 
-/// Horner evaluation of an integer-coefficient polynomial at a rational point.
-fn eval_coeffs_rational(coeffs: &[Integer], x: &rug::Rational) -> rug::Rational {
-    let mut acc = rug::Rational::from(0);
+/// Evaluate `p` at a rational point in **integer** arithmetic, preserving sign
+/// and vanishing.
+///
+/// For `x = n/d` in canonical form this returns the homogeneous form
+/// `H(n, d) = Σ cᵢ·nⁱ·d^(deg−i)`, which is exactly `p(x)·d^deg`. A canonical
+/// [`rug::Rational`] has `d > 0`, so `d^deg > 0` and therefore `H` vanishes
+/// precisely when `p(x)` does and otherwise carries the same sign.
+///
+/// Those two facts — vanishing and sign — are all that
+/// [`exact_rational_root`] and [`refine_root`] ever ask of an evaluation, and
+/// getting them this way avoids rational arithmetic entirely. The previous
+/// `rug::Rational` Horner spent three `mpz` GCD canonicalisations and roughly
+/// four allocations *per coefficient*, measured at ~17 800 instructions for a
+/// single degree-8 evaluation — enough to make rational-root recovery cost
+/// half as much again as the whole of `real_roots`. This form is a plain
+/// Horner loop with an `mpz_addmul` and no GCD at all.
+fn eval_coeffs_homogeneous(coeffs: &[Integer], x: &rug::Rational) -> Integer {
+    let n = x.numer();
+    let d = x.denom();
+    let mut acc = Integer::new();
+    // `dp` is `d^k` where `k` counts completed steps, so that the coefficient
+    // `c_{deg−k}` is scaled by `d^k` exactly as the homogeneous form requires.
+    let mut dp = Integer::from(1);
+    let unit_denom = *d == 1;
     for c in coeffs.iter().rev() {
-        acc *= x;
-        acc += rug::Rational::from((c.clone(), Integer::from(1)));
+        acc *= n;
+        if unit_denom {
+            acc += c;
+        } else {
+            acc += c * &dp;
+            dp *= d;
+        }
     }
     acc
 }
 
 /// Bisection budget for exact rational-root recovery.
 ///
-/// Each halving is one `eval_coeffs_rational`, and the loop stops as soon as
+/// Each halving is one polynomial evaluation, and the loop stops as soon as
 /// the bracket is narrower than `1/lc`, so this ceiling is only reached for a
 /// bracket that started astronomically wide relative to the leading
 /// coefficient — in which case the interval is left alone and behaviour is
@@ -838,8 +864,8 @@ fn exact_rational_root(coeffs: &[Integer], iv: &RootInterval) -> Option<rug::Rat
 
     let mut lo = iv.lo.clone();
     let mut hi = iv.hi.clone();
-    let v_lo = eval_coeffs_rational(coeffs, &lo);
-    let v_hi = eval_coeffs_rational(coeffs, &hi);
+    let v_lo = eval_coeffs_homogeneous(coeffs, &lo);
+    let v_hi = eval_coeffs_homogeneous(coeffs, &hi);
     if v_lo == 0 || v_hi == 0 || (v_lo > 0) == (v_hi > 0) {
         // Bisection needs a strict sign change across the bracket. A vanishing
         // endpoint is *not* good enough: neighbouring brackets share endpoints,
@@ -858,7 +884,7 @@ fn exact_rational_root(coeffs: &[Integer], iv: &RootInterval) -> Option<rug::Rat
             break;
         }
         let mid = (lo.clone() + hi.clone()) / rug::Rational::from(2);
-        let v = eval_coeffs_rational(coeffs, &mid);
+        let v = eval_coeffs_homogeneous(coeffs, &mid);
         if v == 0 {
             return Some(mid);
         }
@@ -883,7 +909,7 @@ fn exact_rational_root(coeffs: &[Integer], iv: &RootInterval) -> Option<rug::Rat
         .div_rem_floor(scaled_hi.denom().clone());
     while n <= n_max {
         let candidate = rug::Rational::from((n.clone(), lc.clone()));
-        if eval_coeffs_rational(coeffs, &candidate) == 0 {
+        if eval_coeffs_homogeneous(coeffs, &candidate) == 0 {
             return Some(candidate);
         }
         n += 1;
@@ -1094,11 +1120,11 @@ pub fn refine_root(poly: &UniPoly, interval: &RootInterval, prec: u32) -> ArbBal
     let coeffs: Vec<Integer> = poly.coefficients();
     let mut lo = interval.lo.clone();
     let mut hi = interval.hi.clone();
-    let mut f_lo = eval_coeffs_rational(&coeffs, &lo);
+    let mut f_lo = eval_coeffs_homogeneous(&coeffs, &lo);
     if f_lo == 0 {
         return ball_covering(&lo, &lo, prec);
     }
-    let f_hi = eval_coeffs_rational(&coeffs, &hi);
+    let f_hi = eval_coeffs_homogeneous(&coeffs, &hi);
     if f_hi == 0 {
         return ball_covering(&hi, &hi, prec);
     }
@@ -1115,7 +1141,7 @@ pub fn refine_root(poly: &UniPoly, interval: &RootInterval, prec: u32) -> ArbBal
             break;
         }
         let mid = rug::Rational::from(&lo + &hi) / 2u32;
-        let f_mid = eval_coeffs_rational(&coeffs, &mid);
+        let f_mid = eval_coeffs_homogeneous(&coeffs, &mid);
         if f_mid == 0 {
             return ball_covering(&mid, &mid, prec);
         }
@@ -1348,6 +1374,41 @@ mod tests {
                 w[0],
                 w[1]
             );
+        }
+    }
+
+    #[test]
+    fn homogeneous_eval_agrees_with_rational_eval_on_sign_and_zero() {
+        // The whole point of `eval_coeffs_homogeneous` is that it is a drop-in
+        // replacement wherever only the sign and the vanishing of `p(x)` are
+        // consulted.  Check that against exact rational evaluation.
+        let rational_eval = |coeffs: &[Integer], x: &rug::Rational| -> rug::Rational {
+            let mut acc = rug::Rational::from(0);
+            for c in coeffs.iter().rev() {
+                acc *= x;
+                acc += rug::Rational::from((c.clone(), Integer::from(1)));
+            }
+            acc
+        };
+        let polys: [&[i64]; 4] = [
+            &[-540, 804, -325, 25],         // roots 6/5, 9/5, 10
+            &[-1, -1, 0, 0, 0, 0, 0, 0, 1], // x⁸ − x − 1
+            &[640, -248, 24],               // roots 5, 16/3
+            &[1, 0, 1],                     // no real root
+        ];
+        for p in polys {
+            let coeffs: Vec<Integer> = p.iter().map(|v| Integer::from(*v)).collect();
+            for num in -25i64..=25 {
+                for den in 1i64..=12 {
+                    let x = rug::Rational::from((num, den));
+                    let h = eval_coeffs_homogeneous(&coeffs, &x);
+                    let r = rational_eval(&coeffs, &x);
+                    assert_eq!(h == 0, r == 0, "vanishing disagrees at {x} for {p:?}");
+                    if h != 0 {
+                        assert_eq!(h > 0, r > 0, "sign disagrees at {x} for {p:?}");
+                    }
+                }
+            }
         }
     }
 
