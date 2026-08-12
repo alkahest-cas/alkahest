@@ -153,17 +153,17 @@ impl fmt::Display for RootInterval {
 
 /// Count sign variations in the non-zero coefficients (Descartes' rule of signs).
 fn sign_variations(coeffs: &[Integer]) -> usize {
-    let nonzero: Vec<&Integer> = coeffs.iter().filter(|c| **c != 0).collect();
-    if nonzero.len() < 2 {
-        return 0;
-    }
     let mut count = 0;
-    for w in nonzero.windows(2) {
-        let pos0 = *w[0] > 0;
-        let pos1 = *w[1] > 0;
-        if pos0 != pos1 {
+    let mut prev: Option<bool> = None;
+    for c in coeffs {
+        if *c == 0 {
+            continue;
+        }
+        let pos = *c > 0;
+        if prev.is_some_and(|p| p != pos) {
             count += 1;
         }
+        prev = Some(pos);
     }
     count
 }
@@ -174,14 +174,24 @@ fn sign_variations(coeffs: &[Integer]) -> usize {
 /// `c[j] += c[j+1]`.
 fn taylor_shift_by_1(coeffs: &[Integer]) -> Vec<Integer> {
     let mut c: Vec<Integer> = coeffs.to_vec();
+    taylor_shift_by_1_in_place(&mut c);
+    c
+}
+
+/// In-place `p(x + 1)`.
+///
+/// The accumulation is done through a `split_at_mut` pair rather than
+/// `c[j] += c[j + 1].clone()`: the clone allocated and freed a fresh `mpz` on
+/// every one of the O(n²) inner steps, which dominated the cost of this
+/// function for the small coefficients typical of a VAS frame.
+fn taylor_shift_by_1_in_place(c: &mut [Integer]) {
     let n = c.len();
     for i in 0..n.saturating_sub(1) {
         for j in (i..n - 1).rev() {
-            let cjp1 = c[j + 1].clone();
-            c[j] += cjp1;
+            let (left, right) = c.split_at_mut(j + 1);
+            left[j] += &right[0];
         }
     }
-    c
 }
 
 /// Compute `p(x + k)` for a non-negative integer `k`.
@@ -191,10 +201,13 @@ fn taylor_shift_by(coeffs: &[Integer], k: u64) -> Vec<Integer> {
     }
     let mut c = coeffs.to_vec();
     let n = c.len();
+    let ki = Integer::from(k);
     for i in 0..n.saturating_sub(1) {
         for j in (i..n - 1).rev() {
-            let delta = c[j + 1].clone() * k;
-            c[j] += delta;
+            let (left, right) = c.split_at_mut(j + 1);
+            // Fused multiply-add (`mpz_addmul`); the previous form built and
+            // dropped a temporary `Integer` on every inner step.
+            left[j] += &right[0] * &ki;
         }
     }
     c
@@ -404,15 +417,30 @@ fn no_root_in_open_interval(coeffs: &[Integer], k: u64) -> bool {
     if k == 0 {
         return true;
     }
-    let mut scaled: Vec<Integer> = Vec::with_capacity(coeffs.len());
-    let mut power = Integer::from(1);
-    let ki = Integer::from(k);
-    for c in coeffs {
-        scaled.push(c.clone() * power.clone());
-        power *= &ki;
+    let n = coeffs.len();
+    if n < 2 {
+        return true;
     }
-    let shifted = taylor_shift_by_1(&reverse_coeffs(&scaled));
-    sign_variations(&shifted) == 0
+    // Build `reverse(p(k·u))` directly: index `i` of the result is
+    // `coeffs[n−1−i] · k^(n−1−i)`. Scaling and reversing were two separate
+    // passes, each allocating a full vector of `Integer` clones.
+    let mut c: Vec<Integer> = vec![Integer::new(); n];
+    let ki = Integer::from(k);
+    let mut power = Integer::from(1);
+    for (j, coef) in coeffs.iter().enumerate() {
+        c[n - 1 - j] = Integer::from(coef * &power);
+        if j + 1 < n {
+            power *= &ki;
+        }
+    }
+    // If the reversed, scaled coefficients already have no sign variation then
+    // `p(k·u)` has no positive root at all, so `(0, k)` is empty and the O(n²)
+    // shift can be skipped outright.
+    if sign_variations(&c) == 0 {
+        return true;
+    }
+    taylor_shift_by_1_in_place(&mut c);
+    sign_variations(&c) == 0
 }
 
 /// Integer lower bound on the smallest positive root of `p`.
@@ -435,9 +463,14 @@ fn no_root_in_open_interval(coeffs: &[Integer], k: u64) -> bool {
 /// `T₆` lost four of its six roots the same way.
 ///
 /// The sign search is kept as a *proposal* (it is cheap and usually right)
-/// and halved until Descartes certifies it, so the returned bound is sound by
-/// construction while the common case still costs one extra test.
-fn cf_lower_bound_floor(coeffs: &[Integer]) -> u64 {
+/// and halved until it is certified, so the returned bound is sound by
+/// construction.
+///
+/// `sign_var` must be `sign_variations(coeffs)`, which the caller has already
+/// computed. It lets most proposals be certified by a counting argument that
+/// costs nothing, leaving the explicit Descartes test — the expensive part —
+/// only for `sign_var ≥ 3`. See the comment at the certification step.
+fn cf_lower_bound_floor(coeffs: &[Integer], sign_var: usize) -> u64 {
     if coeffs.is_empty() {
         return 0;
     }
@@ -501,11 +534,29 @@ fn cf_lower_bound_floor(coeffs: &[Integer]) -> u64 {
         }
     }
 
-    // Certify the proposal, halving until Descartes proves the interval empty.
-    // `k = 0` is trivially certified, so this always terminates with a sound
-    // answer.
-    while lo >= 1 && !no_root_in_open_interval(coeffs, lo) {
-        lo /= 2;
+    // Certify the proposal, halving until it is proved sound. `k = 0` is
+    // trivially certified, so this always terminates with a sound answer.
+    //
+    // At this point the search has established, for the proposed `lo ≥ 1`:
+    //   * `p(0)` and `p(lo)` are both non-zero and share a sign, so the number
+    //     of roots in `(0, lo)` counted with multiplicity is **even** — the
+    //     very fact the old code mistook for "zero";
+    //   * `p(lo+1)` is zero or has the opposite sign, so `(lo, lo+1]` contains
+    //     at least **one** root counted with multiplicity.
+    //
+    // Descartes bounds the total number of positive roots, with multiplicity,
+    // by `sign_var`. So if `(0, lo)` were non-empty it would hold at least two
+    // roots, and with the one in `(lo, lo+1]` the total would be at least
+    // three. For `sign_var ≤ 2` that is a contradiction, and the proposal is
+    // certified with no further work.
+    //
+    // Only `sign_var ≥ 3` needs the explicit test, which is exactly the regime
+    // of the polynomials that used to lose roots: `25x³ − 325x² + 804x − 540`
+    // and Chebyshev `T₆` both have three sign variations.
+    if sign_var > 2 {
+        while lo >= 1 && !no_root_in_open_interval(coeffs, lo) {
+            lo /= 2;
+        }
     }
 
     lo
@@ -659,7 +710,7 @@ fn isolate_positive_roots(coeffs: Vec<Integer>) -> Vec<RootInterval> {
         // ---- VAS CF step: shift by integer lower bound k ----------------------
         frame.just_deflated = false; // reset flag before bisection
 
-        let k = cf_lower_bound_floor(&frame.poly);
+        let k = cf_lower_bound_floor(&frame.poly, v);
         if k >= 1 {
             let new_p = taylor_shift_by(&frame.poly, k);
             let ki = Integer::from(k);
@@ -1298,6 +1349,53 @@ mod tests {
                 w[1]
             );
         }
+    }
+
+    #[test]
+    fn real_roots_three_rational_roots_kept() {
+        // 25x³ − 325x² + 804x − 540 = 25(x − 6/5)(x − 9/5)(x − 10).
+        //
+        // The polynomial is negative at every integer from 0 to 9, so the
+        // `cf_lower_bound_floor` sign search proposes k = 9 and shifting by it
+        // would step past both 6/5 and 9/5.  Three sign variations, so the
+        // proposal is not covered by the counting argument and the explicit
+        // Descartes certification must reject it down to k = 1.
+        let poly = make_poly(&[-540, 804, -325, 25]);
+        let roots = real_roots(&poly).unwrap();
+        assert_eq!(roots.len(), 3, "25(x−6/5)(x−9/5)(x−10) has 3 real roots");
+    }
+
+    #[test]
+    fn real_roots_chebyshev_t6_all_six() {
+        // T₆(x) = 32x⁶ − 48x⁴ + 18x² − 1; 6 roots in (−1, 1).  Also three sign
+        // variations, and used to report only 2.
+        let poly = make_poly(&[-1, 0, 18, 0, -48, 0, 32]);
+        let roots = real_roots(&poly).unwrap();
+        assert_eq!(roots.len(), 6, "T₆ has 6 real roots");
+        for r in &roots {
+            assert!(r.lo >= -1);
+            assert!(r.hi <= 1);
+        }
+    }
+
+    #[test]
+    fn cf_lower_bound_is_certified_for_high_sign_variation() {
+        // Guard the counting argument itself: for the 25x³ polynomial the
+        // sign search alone proposes 9, and the certified bound must be 1.
+        let coeffs: Vec<Integer> = [-540, 804, -325, 25]
+            .iter()
+            .map(|v| Integer::from(*v))
+            .collect();
+        let v = sign_variations(&coeffs);
+        assert_eq!(v, 3, "this polynomial has three sign variations");
+        assert_eq!(
+            cf_lower_bound_floor(&coeffs, v),
+            1,
+            "certification must reject the uncertified proposal k = 9"
+        );
+        // And the test it relies on agrees: there *is* a root below 9.
+        assert!(!no_root_in_open_interval(&coeffs, 9));
+        assert!(no_root_in_open_interval(&coeffs, 1));
     }
 
     #[test]
