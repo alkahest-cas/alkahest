@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 3.8.0 — 2026-08-12
 
 ### Silent errors fixed — do results you already computed need rechecking?
 

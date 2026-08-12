@@ -49,7 +49,7 @@ ak.jit_is_available()
 
 Since 3.6.0 the default wheel already has a JIT (Cranelift), so `+jit` / `+full` now buy you only the **LLVM** backend and (for `+full`) parallel F4 — not "JIT vs no JIT". Most agent code does not need them.
 
-**Why a separate index or direct wheel URL:** feature-heavy wheels use a PEP 440 **local version** (for example `3.7.0+jit` or `3.7.0+full`). Those builds **must not** be mixed into the main PyPI project’s simple API for the same reason PyTorch publishes CUDA wheels on `download.pytorch.org`: otherwise `pip install alkahest` could resolve a `+jit` / `+full` build as “newer” than `3.7.0` and pull LLVM (or a much larger binary) when you wanted the default wheel.
+**Why a separate index or direct wheel URL:** feature-heavy wheels use a PEP 440 **local version** (for example `3.8.0+jit` or `3.8.0+full`). Those builds **must not** be mixed into the main PyPI project’s simple API for the same reason PyTorch publishes CUDA wheels on `download.pytorch.org`: otherwise `pip install alkahest` could resolve a `+jit` / `+full` build as “newer” than `3.8.0` and pull LLVM (or a much larger binary) when you wanted the default wheel.
 
 There is **no** `pip install alkahest[jit]` / `alkahest[full]` that swaps the native extension: **pip extras only add Python dependencies**, not alternate binaries for the same wheel slot.
 
@@ -63,13 +63,13 @@ There is **no** `pip install alkahest[jit]` / `alkahest[full]` that swaps the na
 Direct-install examples (adjust tag and filename after checking the release assets):
 
 ```bash
-pip install "https://github.com/alkahest-cas/alkahest/releases/download/v3.7.0/alkahest-3.7.0+full-cp311-cp311-linux_x86_64.whl"
-pip install "https://github.com/alkahest-cas/alkahest/releases/download/v3.7.0/alkahest-3.7.0+jit-cp311-cp311-linux_x86_64.whl"
+pip install "https://github.com/alkahest-cas/alkahest/releases/download/v3.8.0/alkahest-3.8.0+full-cp311-cp311-linux_x86_64.whl"
+pip install "https://github.com/alkahest-cas/alkahest/releases/download/v3.8.0/alkahest-3.8.0+jit-cp311-cp311-linux_x86_64.whl"
 ```
 
 These wheels vendor LLVM (for JIT) and related `.so` files under `site-packages/alkahest.libs/`. If `import alkahest` fails with a missing `libffi-*.so` or `libLLVM-*.so`, prepend that directory to `LD_LIBRARY_PATH` (or install matching system packages).
 
-If your client chokes on `+` in the URL, use percent-encoding (`3.7.0%2Bfull` in the filename segment).
+If your client chokes on `+` in the URL, use percent-encoding (`3.8.0%2Bfull` in the filename segment).
 
 After installing `+jit` or `+full`, `capabilities()["features"]["llvm_jit"]` should be `True` (`jit_is_available()` is already `True` on the default wheel via Cranelift, so it does not distinguish the builds — check `llvm_jit` / `parallel` instead). Gröbner-backed APIs such as `alkahest.solve` are available in **all** wheels (including the default PyPI wheel) since `groebner` became a default feature.
 
@@ -78,7 +78,7 @@ After installing `+jit` or `+full`, `capabilities()["features"]["llvm_jit"]` sho
 **Target layout (roadmap):** a small **extra index** URL (PEP 503) hosting only `+jit` / `+full` wheels, mirroring PyTorch’s `--extra-index-url` workflow:
 
 ```bash
-pip install 'alkahest==3.7.0+full' --extra-index-url https://EXAMPLE/alkahest-extras/simple
+pip install 'alkahest==3.8.0+full' --extra-index-url https://EXAMPLE/alkahest-extras/simple
 ```
 
 ### From source
@@ -227,7 +227,7 @@ yourself if you need the proof checked.
 |---|---|
 | `diff` | Yes — chain rule, log/sqrt/tan, quotient |
 | `integrate` (indefinite) | Yes |
-| `integrate` (definite) | Yes, **since 3.7.0** (Mathlib FTC / interval-integral lemmas) |
+| `integrate` (definite) | Yes, **since 3.8.0** (Mathlib FTC / interval-integral lemmas) |
 | exp/log identities | Yes, assumption-gated |
 
 Certificates that do not typecheck are **withheld** rather than emitted broken, so
@@ -704,7 +704,7 @@ R.to_list()       # list[list[Expr]]
 ### Arithmetic
 
 `*` is the **matrix product** (SymPy convention), not elementwise — use `hadamard`
-for elementwise. Since 3.7.0:
+for elementwise. Since 3.8.0:
 
 ```python
 A * B             # matrix product (same as A.multiply(B))
@@ -801,7 +801,7 @@ code `E-LINALG-010` (the code names what could not be decided, not the wrapper).
    calling it repeatedly on the *same* matrix grows the pool by ~1.9 KB each time. Cache
    the result.
 
-Symbolic eigenvalues are closed-form for 2×2 and, since 3.7.0, for parametric 3×3
+Symbolic eigenvalues are closed-form for 2×2 and, since 3.8.0, for parametric 3×3
 matrices whose characteristic polynomial is an irreducible cubic (Cardano /
 trigonometric path).
 
@@ -871,7 +871,7 @@ Other experimental exports worth knowing: `asymptotic_expand`, `multilimit`,
 `series_solve`, `residue`, `heaviside`, `dirac_delta`, `Fps`, `to_jax`.
 
 Transform round-trips are supported but not total — inverse Laplace covers
-repeated irreducible quadratic poles and sinh/cosh forms as of 3.7.0. Literal
+repeated irreducible quadratic poles and sinh/cosh forms as of 3.8.0. Literal
 negative Heaviside/Dirac shifts (`θ(t+a)`, `δ(t+a)` with `a > 0`) are **refused**
 with `E-TRANSFORM-001` rather than silently applying the wrong unilateral formula.
 
