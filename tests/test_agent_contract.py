@@ -243,3 +243,42 @@ def test_python_only_errors_keep_their_keyword_constructors():
         err = cls("probe")
         assert err.code.startswith(expected)
         assert isinstance(err, alkahest.AlkahestError)
+
+
+def test_cuda_kernels_are_reachable_on_every_device_not_just_zero():
+    """Device selection must be reachable from Python, not only from Rust.
+
+    `alkahest-core` has always had `CudaCompiledFn::call_batch_on(ordinal, ..)`
+    — `nvptx_gpu::nvptx_multi_device_both_3090s` drives both cards through it —
+    but the binding exposed only `call_batch`, hardwired to device 0. On a
+    multi-GPU host every device but the first was therefore unreachable from
+    Python, which is the same shape of gap as `cuda` advertising an entry point
+    the public namespace could not reach.
+
+    Asserts agreement rather than mere reachability: the PTX is
+    device-independent, so the same kernel on a different card must return the
+    identical bit pattern, not merely a close one.
+    """
+    if not alkahest.capabilities()["features"]["cuda"]:
+        import pytest
+
+        pytest.skip("not a cuda build")
+
+    pool = alkahest.ExprPool()
+    x = pool.symbol("x")
+    fn = alkahest.compile_cuda(x * x + pool.integer(1), [x])
+
+    assert hasattr(fn, "call_batch_on"), "no way to select a CUDA device from Python"
+
+    pts = [0.0, 1.0, -2.5, 1e8, 1e-8]
+    on_zero = fn.call_batch_on(0, [pts])
+    assert on_zero == fn.call_batch([pts]), "call_batch must equal call_batch_on(0, ..)"
+
+    # Second device only if the host has one; single-GPU CI must still pass.
+    try:
+        on_one = fn.call_batch_on(1, [pts])
+    except alkahest.CudaError:
+        return
+    assert on_one == on_zero, (
+        f"identical PTX on a second device returned different values: {on_one} vs {on_zero}"
+    )
