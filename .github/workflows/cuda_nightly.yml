@@ -2,9 +2,19 @@
 # Runs memcheck and racecheck on CUDA tests. Requires self-hosted GPU runner.
 name: CUDA Nightly (compute-sanitizer)
 
+# NOT SCHEDULED. This job targets `[self-hosted, gpu-3090]`, and no such runner
+# is registered — a scheduled run does not fail, it queues forever, so the
+# schedule produced a permanently pending job on `main` and no signal either
+# way. `workflow_dispatch` is kept so it can be run the moment a GPU runner
+# exists, and the file is kept because it is the specification for running
+# these suites: an agent on a GPU box follows it step for step.
+#
+# Until a runner is registered, the CUDA surface is verified by hand on GPU
+# hardware. As of 3.8.0 that run passed: 17 Rust CUDA tests, 17/17 in
+# `tests/test_cuda.py`, memcheck and racecheck clean, and GPU/CPU agreement
+# within 0-2 ulp checked against numpy's own ufuncs (not `numpy_eval`, which
+# shares the Cranelift backend and is therefore not an independent oracle).
 on:
-  schedule:
-    - cron: '0 2 * * *'  # 02:00 UTC daily
   workflow_dispatch:
 
 jobs:
