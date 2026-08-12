@@ -430,12 +430,33 @@ jobs:
         env:
           RUSTFLAGS: "-C debuginfo=2 -Z dwarf-version=4"
         run: |
-          cargo +nightly build --all --target x86_64-unknown-linux-gnu -Z build-std
+          # `cargo build` does not produce test binaries, so the glob below
+          # matched only .rlib/.d artifacts, `[ -x ]` was false for every one of
+          # them, and this step ran valgrind on *nothing* while reporting
+          # success — no HEAP SUMMARY, no ERROR SUMMARY, green tick. `--no-run`
+          # is what actually links the `alkahest_cas-<hash>` test executables.
+          cargo +nightly test --no-run --all \
+            --target x86_64-unknown-linux-gnu -Z build-std
+          found=0
           for bin in target/x86_64-unknown-linux-gnu/debug/deps/alkahest_cas-*; do
-            [ -x "$bin" ] || continue
+            [ -x "$bin" ] && [ ! -d "$bin" ] || continue
+            case "$bin" in *.d|*.rlib|*.rmeta) continue ;; esac
+            found=$((found + 1))
+            echo "== valgrind $bin"
             valgrind --leak-check=full --error-exitcode=1 \
               --suppressions=valgrind.supp "$bin" 2>&1
           done
+          # A gate that inspects nothing must fail, not pass. This is the sixth
+          # such gate found this cycle; the others were an unreferenced
+          # check_error_codes.py, a TESTING.md glob naming a package that does
+          # not exist, an ASan job that never runs Python, compute-sanitizer
+          # instrumenting `cargo`, and a euler_maclaurin gate fitted at the
+          # point it scored.
+          if [ "$found" -eq 0 ]; then
+            echo "::error title=Valgrind ran nothing::no alkahest_cas-* test binaries matched" >&2
+            exit 1
+          fi
+          echo "valgrind ran over $found test binar(y|ies)"
 
       - name: Install cargo-afl
         if: matrix.shard == 'fuzz-expr' || matrix.shard == 'fuzz-simplifier'
@@ -445,20 +466,76 @@ jobs:
         if: matrix.shard == 'fuzz-expr'
         run: |
           if [ -f fuzz/src/bin/fuzz_expr_builder.rs ]; then
+            # AFL refuses to start unless the kernel core_pattern points at a
+            # file rather than a pipe. Without this it printed its instructions,
+            # exited non-zero, and `|| true` turned that into a green tick — the
+            # shard "passed" having executed zero test cases. `system-config` is
+            # AFL's own remedy and needs root, which the runner has.
+            sudo cargo afl system-config
             cargo afl build --manifest-path fuzz/Cargo.toml --bin fuzz_expr_builder
+            set +e
             timeout 7200 cargo afl fuzz \
               -i fuzz/in/expr_builder -o fuzz/out/expr_builder \
-              target/debug/fuzz_expr_builder || true
+              target/debug/fuzz_expr_builder
+            status=$?
+            set -e
+            # 124 is `timeout` doing its job after the 2 h cap; 0 means AFL
+            # chose to stop. Anything else is a real failure and must not be
+            # swallowed.
+            if [ "$status" -ne 124 ] && [ "$status" -ne 0 ]; then
+              echo "::error title=AFL exited abnormally::status $status" >&2
+              exit "$status"
+            fi
+            # A fuzzer that ran zero executions is not a passing fuzz job.
+            stats=fuzz/out/expr_builder/default/fuzzer_stats
+            if [ ! -f "$stats" ]; then
+              echo "::error title=AFL produced no stats::$stats missing" >&2
+              exit 1
+            fi
+            execs=$(awk '/^execs_done/ {print $3}' "$stats")
+            echo "AFL executions: $execs"
+            if [ -z "$execs" ] || [ "$execs" -eq 0 ]; then
+              echo "::error title=AFL executed nothing::execs_done=$execs" >&2
+              exit 1
+            fi
           fi
 
       - name: AFL++ fuzzing — simplifier (2 h cap)
         if: matrix.shard == 'fuzz-simplifier'
         run: |
           if [ -f fuzz/src/bin/fuzz_simplifier.rs ]; then
+            # AFL refuses to start unless the kernel core_pattern points at a
+            # file rather than a pipe. Without this it printed its instructions,
+            # exited non-zero, and `|| true` turned that into a green tick — the
+            # shard "passed" having executed zero test cases. `system-config` is
+            # AFL's own remedy and needs root, which the runner has.
+            sudo cargo afl system-config
             cargo afl build --manifest-path fuzz/Cargo.toml --bin fuzz_simplifier
+            set +e
             timeout 7200 cargo afl fuzz \
               -i fuzz/in/simplifier -o fuzz/out/simplifier \
-              target/debug/fuzz_simplifier || true
+              target/debug/fuzz_simplifier
+            status=$?
+            set -e
+            # 124 is `timeout` doing its job after the 2 h cap; 0 means AFL
+            # chose to stop. Anything else is a real failure and must not be
+            # swallowed.
+            if [ "$status" -ne 124 ] && [ "$status" -ne 0 ]; then
+              echo "::error title=AFL exited abnormally::status $status" >&2
+              exit "$status"
+            fi
+            # A fuzzer that ran zero executions is not a passing fuzz job.
+            stats=fuzz/out/simplifier/default/fuzzer_stats
+            if [ ! -f "$stats" ]; then
+              echo "::error title=AFL produced no stats::$stats missing" >&2
+              exit 1
+            fi
+            execs=$(awk '/^execs_done/ {print $3}' "$stats")
+            echo "AFL executions: $execs"
+            if [ -z "$execs" ] || [ "$execs" -eq 0 ]; then
+              echo "::error title=AFL executed nothing::execs_done=$execs" >&2
+              exit 1
+            fi
           fi
 
       - name: Oracle + benches + cross-CAS + artifact upload
