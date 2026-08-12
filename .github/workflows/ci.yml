@@ -269,10 +269,15 @@ jobs:
   # ── Tier 1b: slow Python integration (roadmap-level sparse_interp)
   # Runs on the nightly schedule only so push/PR CI stays fast; run locally with:
   #   pytest tests/test_sparse_interp.py -m slow --timeout=0 -v --override-ini="addopts=-v"
+  # Runs on PRs as well as nightly. It was nightly-only because the
+  # sparse_interp roadmap case took long enough to matter; #292 replaced the
+  # recursive formulation with Zippel's iterative algorithm and the whole job is
+  # now about a minute, of which the tests are half a second. Running in
+  # parallel it costs nothing on the critical path, and it guards the oracle
+  # call-count property — the thing a regression there would silently undo.
   tier1-python-slow:
     name: Tier 1b — Python slow tests
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v6
@@ -492,6 +497,19 @@ jobs:
             jq -r 'select(.profile.test == true) | .executable | select(. != null)' \
               /tmp/cargo-test.json | grep alkahest_cas
           )
+          # Scope to the FFI boundary this step is named for. Valgrinding every
+          # unit test in a -Z build-std debug build took 2h49m of the 6h budget
+          # on its first real run, which ties up a runner for most of a night to
+          # re-check pure-Rust logic the other shards already cover. The tests
+          # that actually cross into GMP/MPFR/FLINT are the ones worth the 20-50x
+          # slowdown.
+          #
+          # libtest takes filters as separate positional arguments and matches
+          # them as substrings, not as one regex — a single "a|b" argument would
+          # match nothing, run zero tests, and report clean. Set
+          # ALKAHEST_VALGRIND_FILTER (space separated) to override, or empty for
+          # a full sweep.
+          read -r -a filters <<< "${ALKAHEST_VALGRIND_FILTER-ball:: flint rug number_theory:: lattice:: validated::}"
           if [ "${#bins[@]}" -eq 0 ]; then
             echo "::error title=Valgrind ran nothing::cargo reported no alkahest_cas test executables" >&2
             jq -r 'select(.executable != null) | .executable' /tmp/cargo-test.json >&2 || true
@@ -508,10 +526,19 @@ jobs:
             # defects, and suppressing them by stack shape would be four brittle
             # rules that rot the first time an inlining decision changes.
             # An invalid read/write, or a definitely-lost block, still fails.
+            # Tee so the run can be asserted on: a filter that matches nothing
+            # would execute zero tests and valgrind would report a clean bill,
+            # which is precisely the shape of gate this shard just stopped being.
             valgrind --leak-check=full --error-exitcode=1 \
               --errors-for-leak-kinds=definite,indirect \
               --show-leak-kinds=definite,indirect,possible \
-              --suppressions=valgrind.supp "$bin" 2>&1
+              --suppressions=valgrind.supp "$bin" "${filters[@]}" 2>&1 | tee /tmp/vg-out.txt
+            ran=$(grep -oE '^test result: ok\. [0-9]+ passed' /tmp/vg-out.txt | grep -oE '[0-9]+' | head -1)
+            echo "tests executed under valgrind: ${ran:-0}"
+            if [ -z "$ran" ] || [ "$ran" -eq 0 ]; then
+              echo "::error title=Valgrind executed no tests::filter matched nothing in $bin" >&2
+              exit 1
+            fi
           done
           echo "valgrind ran over ${#bins[@]} test binary/binaries"
 
