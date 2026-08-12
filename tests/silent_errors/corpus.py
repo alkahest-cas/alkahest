@@ -166,7 +166,10 @@ def _witness_residual(sentence: ak.Expr, body: ak.Expr) -> float:
     """
     _truth, witness = ak.decide(sentence)
     if not witness:
-        raise ak.CadError("decide reported no witness", code="E-CAD-001")
+        # No `code=` kwarg: `CadError.__init__` does not take one, and passing it
+        # raised `TypeError`, which the runner scores `no_answer` (a corpus bug)
+        # instead of the intended honest refusal.
+        raise ak.CadError("decide reported no witness (E-CAD-001)")
     value = Fraction(witness[str(X)])
     return abs(float(ak.eval_expr(body, {X: float(value)})))
 
@@ -314,6 +317,98 @@ def _sin_log_pair(x: float) -> float:
 
 HAND = "hand derivation from the definition"
 CALCULUS = "first-course calculus fact, re-derived by hand"
+
+
+# ---------------------------------------------------------------------------
+# Round-two helpers (3.8 silent-error hunt #2)
+# ---------------------------------------------------------------------------
+
+#: A free *parameter*, distinct from the integration variable ``X``.
+_A_PARAM = POOL.symbol("aparam")
+
+
+def parametric_definite(
+    integrand: ak.Expr, lo: ak.Expr, hi: ak.Expr, at: float
+) -> Callable[[], float]:
+    """Answer = ∫_lo^hi integrand dx, with the parameter ``aparam`` set to *at*.
+
+    A parametric answer must be scored at a concrete parameter value, not left
+    symbolic: an expression with an unbound symbol fails ``eval_expr`` and would
+    score as a *refusal*, hiding the very thing under test.  The library's
+    contract here is that the closed form is returned unconditionally, so
+    substituting afterwards is exactly what a caller does with it.
+    """
+
+    def op() -> float:
+        r = ak.integrate(integrand, X, lo, hi)
+        return float(ak.eval_expr(r.value, {_A_PARAM: at}))
+
+    return op
+
+
+def _real_root_count(coeffs: list[int]) -> Callable[[], int]:
+    """Answer = how many real-root intervals ``real_roots`` reports.
+
+    *coeffs* is in ascending degree order.
+    """
+
+    def op() -> int:
+        expr = _int(0)
+        for i, c in enumerate(coeffs):
+            expr = expr + _int(c) * X ** _int(i)
+        return len(ak.real_roots(expr, X))
+
+    return op
+
+
+def _refined_ball_brackets_root(coeffs: list[int], index: int) -> Callable[[], bool]:
+    """Answer = does ``refine_root``'s ball actually contain a root?
+
+    Checked in exact ``Fraction`` arithmetic on the ball's own endpoints: the
+    polynomial must vanish at one of them or change sign across them.  This is
+    the only thing the word "rigorous" can mean for an enclosure, and it needs
+    no reference value — the root itself may be irrational.
+    """
+
+    def op() -> bool:
+        expr = _int(0)
+        for i, c in enumerate(coeffs):
+            expr = expr + _int(c) * X ** _int(i)
+        ball = ak.refine_root(expr, ak.real_roots(expr, X)[index], X)
+        mid, rad = Fraction(ball.mid), Fraction(ball.rad)
+
+        def value_at(t: Fraction) -> Fraction:
+            return sum((Fraction(c) * t**i for i, c in enumerate(coeffs)), Fraction(0))
+
+        lo_v, hi_v = value_at(mid - rad), value_at(mid + rad)
+        return lo_v == 0 or hi_v == 0 or (lo_v > 0) != (hi_v > 0)
+
+    return op
+
+
+def _enclosure_contains(expr: ak.Expr, lo: float, hi: float, truth: float) -> Callable[[], bool]:
+    """Answer = does the *validated* enclosure of ``expr`` over the box contain
+    the value it claims to enclose?"""
+
+    def op() -> bool:
+        enc = ak.bound_on_box(expr, [(X, lo, hi)])
+        return bool(enc.lower <= truth <= enc.upper)
+
+    return op
+
+
+def _relation_residual(values: list[int]) -> Callable[[], int]:
+    """Answer = the *exact* integer residual ``Σ aᵢ·valuesᵢ`` of the relation
+    ``guess_relation`` reports.  Zero, or nothing at all, are the only honest
+    answers; any other integer means the reported "relation" is not one."""
+
+    def op() -> int:
+        coeffs = ak.guess_relation(values)
+        if coeffs is None:
+            raise ak.PslqError("guess_relation reported no relation")
+        return sum(a * v for a, v in zip(coeffs, values))
+
+    return op
 
 
 CASES: list[Case] = [
@@ -1979,6 +2074,288 @@ CASES: list[Case] = [
         op=lambda: nt.nextprime(1),
         contract=Returns(2),
         verified_by="2 is the smallest prime.",
+    ),
+    # ── 3.8 round two ───────────────────────────────────────────────────────
+    #
+    # Every guard in `integrate_definite` binds only the integration variable,
+    # so one free *parameter* in the integrand switched all of them off and the
+    # FTC difference was returned as if it held for every parameter value.
+    Case(
+        id="int_pole_interior_with_symbolic_parameter",
+        subsystem="integration_definite",
+        statement=(
+            "∫_{-1}^{1} (x-a)^-2 dx diverges for every a in (-1,1); at a=0 it is the archetype"
+        ),
+        op=parametric_definite((X - _A_PARAM) ** _int(-2), _int(-1), _int(1), 0.0),
+        contract=Raises("E-INT-001"),
+        verified_by=(
+            "(x-a)^-2 >= 0 wherever it is defined, and for |a| < 1 the double pole at x=a is "
+            "strictly inside, so the integral is +inf. The FTC difference -1/(1-a) - 1/(1+a) is "
+            "negative there; at a=0 it is exactly the -2 that README.md names as the archetype. "
+            "A negative value for a non-negative integrand needs no oracle."
+        ),
+    ),
+    Case(
+        id="int_control_parametric_no_pole",
+        subsystem="integration_definite",
+        statement="∫_0^1 a·x² dx = a/3, a parametric integral with no pole anywhere",
+        op=parametric_definite(_A_PARAM * X ** _int(2), _int(0), _int(1), 3.0),
+        contract=Returns(1.0),
+        verified_by=(
+            "∫_0^1 x² dx = 1/3 by the power rule, so the answer is a/3 = 1 at a = 3. The control "
+            "for int_pole_interior_with_symbolic_parameter: the parametric guard must refuse "
+            "poles, not parameters."
+        ),
+    ),
+    Case(
+        id="int_tan_squared_across_pole",
+        subsystem="integration_definite",
+        statement="∫_0^2 tan²x dx diverges (double pole at π/2 ≈ 1.5708, strictly interior)",
+        op=definite(ak.tan(X) ** _int(2), _int(0), _int(2)),
+        contract=Raises("E-INT-001"),
+        verified_by=(
+            "tan²x >= 0 everywhere it is defined and π/2 < 2, so the integral is +inf. The FTC "
+            "difference tan(2) - 2 = -4.185 is negative. Internally decisive too: tan² = sec² - 1, "
+            "and ∫_0^2 sec²x dx was already refused, so the two answers cannot both stand."
+        ),
+    ),
+    Case(
+        id="int_tan_squared_grid_lands_on_pole",
+        subsystem="integration_definite",
+        statement="∫_0^π tan²x dx diverges — and here the sampling grid falls on the pole itself",
+        op=definite(ak.tan(X) ** _int(2), POOL.float(0.0, 53), POOL.float(math.pi, 53)),
+        contract=Raises("E-INT-001"),
+        verified_by=(
+            "tan²x >= 0 and π/2 is interior, so the integral is +inf; alkahest returned -π. A "
+            "separate cause from int_tan_squared_across_pole: on [0, π] coarse sample 128 of 257 "
+            "falls within 1e-5 of π/2, so the blow-up had already happened before refinement and "
+            "a growth test measured against the coarse *maximum* could not fire."
+        ),
+    ),
+    Case(
+        id="int_control_bounded_trig_over_period",
+        subsystem="integration_definite",
+        statement="∫_0^π cos²x dx = π/2 — a bounded trig integrand over the same interval",
+        op=definite(ak.cos(X) ** _int(2), POOL.float(0.0, 53), POOL.float(math.pi, 53)),
+        contract=Returns(math.pi / 2, tol=1e-12),
+        verified_by=(
+            "cos²x = (1 + cos 2x)/2, and ∫_0^π cos 2x dx = 0, so the value is π/2. The control for "
+            "the two tan cases: the pole scan must not start refusing every trig integrand on "
+            "[0, π] just because one of them has a pole there."
+        ),
+    ),
+    Case(
+        id="int_weierstrass_jump_across_pi",
+        subsystem="integration_definite",
+        statement=(
+            "∫_0^{3.2} dx/(cos x - 3)² = 0.4202: bounded integrand, but the half-angle "
+            "antiderivative jumps at π"
+        ),
+        op=definite((ak.cos(X) - _int(3)) ** _int(-2), POOL.float(0.0, 53), POOL.float(3.2, 53)),
+        contract=RefusesOr(0.42017177259447200),
+        verified_by=(
+            "1/(cos x - 3)² is continuous with values in [1/16, 1/4] on [0, 3.2], so the integral "
+            "lies in [0.2, 0.8] — a negative answer is impossible. Value from mpmath.quad at "
+            "dps=30, anchored by the closed form ∫_0^π dx/(3-cos x)² = 3π/8^{3/2} = "
+            "0.4165202754523468, "
+            "which the same quadrature reproduces to 20 digits. alkahest returned -0.41287, the "
+            "Weierstrass-substitution error: tan(x/2) blows up at x = π, inside the interval."
+        ),
+    ),
+    Case(
+        id="int_control_weierstrass_below_pi",
+        subsystem="integration_definite",
+        statement="∫_0^3 dx/(cos x - 3)² = 0.40766 — same integrand, interval stops short of π",
+        op=definite((ak.cos(X) - _int(3)) ** _int(-2), POOL.float(0.0, 53), POOL.float(3.0, 53)),
+        contract=Returns(0.40765593108334156, tol=1e-9),
+        verified_by=(
+            "mpmath.quad at dps=30, anchored by ∫_0^π dx/(3-cos x)² = 3π/8^{3/2}: the [0,3] value "
+            "must be slightly below it and the [0,3.2] value slightly above, since the integrand "
+            "is positive. The control for int_weierstrass_jump_across_pi — the jump guard must "
+            "refuse intervals that cross π, not the whole (a + b·cos x) family."
+        ),
+    ),
+    # ── root isolation ──────────────────────────────────────────────────────
+    #
+    # `real_roots` is load-bearing under `decide`, `solve` and the integrator's
+    # own interior-pole detector, so a dropped root is inherited everywhere.
+    Case(
+        id="real_roots_three_rational_roots_kept",
+        subsystem="solving",
+        statement="25x³ - 325x² + 804x - 540 = 25(x - 6/5)(x - 9/5)(x - 10) has three real roots",
+        op=_real_root_count([-540, 804, -325, 25]),
+        contract=Returns(3),
+        verified_by=(
+            "Expanding 25(x - 6/5)(x - 9/5)(x - 10) gives the stated coefficients, and exact "
+            "rational evaluation confirms p(6/5) = p(9/5) = p(10) = 0. alkahest reported only "
+            "x = 10: the continued-fraction lower bound assumed 'p(k) has the sign of p(0) ⇒ no "
+            "root below k', which is false when the count below k is even."
+        ),
+    ),
+    Case(
+        id="real_roots_chebyshev_t6_all_six",
+        subsystem="solving",
+        statement="the Chebyshev polynomial T₆ = 32x⁶ - 48x⁴ + 18x² - 1 has six real roots",
+        op=_real_root_count([-1, 0, 18, 0, -48, 0, 32]),
+        contract=Returns(6),
+        verified_by=(
+            "T₆(cos θ) = cos 6θ, so the roots are cos((2k+1)π/12) for k = 0..5 — six distinct "
+            "values in (-1, 1). alkahest reported two."
+        ),
+    ),
+    Case(
+        id="refine_root_ball_brackets_sqrt_two",
+        subsystem="solving",
+        statement="refine_root's ball for x² - 2 must actually contain √2",
+        op=_refined_ball_brackets_root([-2, 0, 1], 1),
+        contract=Returns(True),
+        verified_by=(
+            "Checked in exact Fraction arithmetic on the ball's own endpoints: x² - 2 must vanish "
+            "at one of them or change sign across them. alkahest returned mid = 1.414213562373095, "
+            "rad = 1.11e-16, for which (mid + rad)² - 2 = -4.06e-17 < 0 — the entire ball lies "
+            "strictly below √2, so it does not contain the root it claims to enclose."
+        ),
+    ),
+    Case(
+        id="refine_root_ball_brackets_large_coefficients",
+        subsystem="solving",
+        statement=(
+            "refine_root must not report a zero-radius ball at a non-root of "
+            "10⁹x³ - 1414213562x² - 2·10⁹x + 2828427124"
+        ),
+        op=_refined_ball_brackets_root([2828427124, -2000000000, -1414213562, 1000000000], 2),
+        contract=Returns(True),
+        verified_by=(
+            "The polynomial is (10⁹x - 1414213562)(x² - 2), so the third bracket isolates √2. "
+            "alkahest returned an *exact* (radius-0) ball at 1.4142135620573204, where the "
+            "polynomial is -5.12e-11 ≠ 0 in exact arithmetic: the f64 Horner sign test is "
+            "unreliable at these coefficient sizes and the bracket collapsed onto its endpoint."
+        ),
+    ),
+    # ── validated bounds ────────────────────────────────────────────────────
+    #
+    # An enclosure that does not contain the value it encloses is the one thing
+    # a "validated" subsystem may never do: downstream it is not a wrong number
+    # but a false theorem.
+    Case(
+        id="validated_cos_enclosure_contains_cos_one",
+        subsystem="evaluation",
+        statement="the validated enclosure of cos x at x = 1 must contain cos 1 = 0.5403…",
+        op=_enclosure_contains(ak.cos(X), 1.0, 1.0, math.cos(1.0)),
+        contract=Returns(True),
+        verified_by=(
+            "cos 1 = 0.5403023058681398 (math.cos, and alkahest's own interval_eval agrees). "
+            "bound_on_box returned [-0.5403023058681398, -0.5403023058681397]: the Taylor-model "
+            "evaluator negated every cosine coefficient while leaving the symmetric remainder "
+            "bound alone, so the enclosure came back tight, confident and sign-flipped."
+        ),
+    ),
+    Case(
+        id="validated_no_roots_respects_a_real_root",
+        subsystem="evaluation",
+        statement="cos x - 0.9 has a root at arccos(0.9) = 0.4510 ∈ [0,1], so 'no roots' is false",
+        op=lambda: ak.verified_no_roots(ak.cos(X) - POOL.float(0.9, 53), [(X, 0.0, 1.0)]),
+        contract=RefusesOr("false"),
+        verified_by=(
+            "arccos(0.9) = 0.45102681179626236 lies in [0,1] and cos is continuous, so a root "
+            "certainly exists there. alkahest answered 'true' — a machine-checked-looking proof "
+            "of a false theorem, not merely a wrong number."
+        ),
+    ),
+    Case(
+        id="validated_control_sin_enclosure",
+        subsystem="evaluation",
+        statement="the validated enclosure of sin x at x = 1 contains sin 1 = 0.8415…",
+        op=_enclosure_contains(ak.sin(X), 1.0, 1.0, math.sin(1.0)),
+        contract=Returns(True),
+        verified_by=(
+            "sin 1 = 0.8414709848078965 (math.sin). The control for the cos cases: sin was always "
+            "correct, so a gate that simply stopped trusting the Taylor-model path would not pass."
+        ),
+    ),
+    # ── integer relations ───────────────────────────────────────────────────
+    Case(
+        id="pslq_exact_integer_inputs_are_not_rounded",
+        subsystem="number_theory",
+        statement="guess_relation([2⁶⁰+1, 2⁶⁰, 1]) must report a relation that actually holds",
+        op=_relation_residual([2**60 + 1, 2**60, 1]),
+        contract=Returns(0),
+        verified_by=(
+            "-(2⁶⁰+1) + 2⁶⁰ + 1 = 0 exactly, so [-1, 1, 1] is a relation. alkahest returned "
+            "[-1, 1, 0], whose residual over the values supplied is -1, and relation_confidence "
+            "called it credible with available_digits = inf: the binding extracted every Python "
+            "int through f64 first, discarding the low bit that the guard then assumed was exact."
+        ),
+    ),
+    Case(
+        id="pslq_control_small_rational_relation",
+        subsystem="number_theory",
+        statement="guess_relation([1, 2, 3]) must find a genuine relation among exact integers",
+        op=_relation_residual([1, 2, 3]),
+        contract=Returns(0),
+        verified_by=(
+            "1, 2, 3 are integers, so integer relations certainly exist (e.g. [1, 1, -1]). The "
+            "control for pslq_exact_integer_inputs_are_not_rounded: refusing every integer input "
+            "must not pass the gate."
+        ),
+    ),
+    # ── known broken: reported in 3.8-silent-error-hunt-2.md, not yet fixed ──
+    Case(
+        id="solve_spurious_solution_two_by_two",
+        subsystem="solving",
+        statement="solve([x²-xy, xy-y]) must not report (-1, 1), which satisfies neither equation",
+        op=lambda: max(
+            abs(float(ak.eval_expr(eq, {X: _num(sol[X]), Y: _num(sol[Y])})))
+            for sol in ak.solve([X ** _int(2) - X * Y, X * Y - Y], [X, Y])
+            for eq in (X ** _int(2) - X * Y, X * Y - Y)
+        ),
+        contract=Returns(0.0, tol=1e-9),
+        verified_by=(
+            "xy - y = y(x-1) = 0 forces y = 0 or x = 1; y = 0 gives x² = 0 so (0,0), and x = 1 "
+            "gives 1 - y = 0 so (1,1). The solution set is {(0,0), (1,1)}. Substituting alkahest's "
+            "third answer (-1, 1) gives x² - xy = 1 + 1 = 2 ≠ 0 — self-certifying, no oracle."
+        ),
+        xfail=(
+            "SILENT ERROR: solve returns the spurious tuple (-1, 1) with residual 2, and reports "
+            "four entries for a two-point variety. try_backsolve_generators "
+            "(alkahest-core/src/solver/mod.rs:475) picks one lex-Groebner generator per variable "
+            "and never re-checks the finished assignment against the remaining generators. See "
+            "temp-alkahest/testing/3.8-silent-error-hunt-2.md."
+        ),
+    ),
+    Case(
+        id="sum_definite_interior_pole_refused",
+        subsystem="sums_products",
+        statement="Σ_{k=1}^{10} 1/((k-3)(k-2)) is undefined — the k=2 and k=3 terms divide by zero",
+        op=lambda: _num(
+            ak.sum_definite(((K - _int(3)) * (K - _int(2))) ** _int(-1), K, _int(1), _int(10))
+        ),
+        contract=RefusesOr(),
+        verified_by=(
+            "The k=2 term is 1/((-1)·0) and the k=3 term is 1/(0·1); neither is a number, so the "
+            "sum has no value. alkahest returned -5/8. Its own docstring promises E-SUM-003 for "
+            "exactly this."
+        ),
+        xfail=(
+            "SILENT ERROR: sum_definite tests contains_zero_to_negative_power only on the "
+            "telescoped difference G(hi+1) - G(lo) (alkahest-core/src/sum/mod.rs:181), so a pole "
+            "strictly between the endpoints is invisible and only poles landing exactly on lo or "
+            "hi+1 are caught. See temp-alkahest/testing/3.8-silent-error-hunt-2.md."
+        ),
+    ),
+    Case(
+        id="product_definite_keeps_rational_scale",
+        subsystem="sums_products",
+        statement="Π_{k=1}^{5} 1/2 = 1/32",
+        op=lambda: _num(ak.product_definite(_rat(1, 2), K, _int(1), _int(5))),
+        contract=Returns(1.0 / 32.0, tol=1e-12),
+        verified_by="Five factors of 1/2 multiply to 2^-5 = 1/32, by the definition of a product.",
+        xfail=(
+            "SILENT ERROR: product_definite returns 1. ratuni_poly_to_univ "
+            "(alkahest-core/src/sum/product.rs:109-144) clears coefficient denominators by "
+            "multiplying through by their LCM and never returns or reapplies that scale, so the "
+            "answer is off by c^(hi-lo+1). See temp-alkahest/testing/3.8-silent-error-hunt-2.md."
+        ),
     ),
 ]
 

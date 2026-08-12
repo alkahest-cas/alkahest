@@ -392,13 +392,51 @@ fn squarefree_part(coeffs: &[Integer]) -> Vec<Integer> {
 // VAS CF lower bound
 // ---------------------------------------------------------------------------
 
+/// Descartes' rule of signs applied to the open interval `(0, k)`.
+///
+/// Substituting `x = k·u` maps `(0, k)` onto `(0, 1)`, and the usual test for
+/// `(0, 1)` is `(1+t)ⁿ·p(1/(1+t))`, i.e. reverse the coefficients and Taylor
+/// shift by 1. The number of roots in `(0, k)` is at most the number of sign
+/// variations of the result, so a count of **zero is a proof** that there is
+/// no root there. A non-zero count proves nothing either way, which is why
+/// the caller only ever uses `true`.
+fn no_root_in_open_interval(coeffs: &[Integer], k: u64) -> bool {
+    if k == 0 {
+        return true;
+    }
+    let mut scaled: Vec<Integer> = Vec::with_capacity(coeffs.len());
+    let mut power = Integer::from(1);
+    let ki = Integer::from(k);
+    for c in coeffs {
+        scaled.push(c.clone() * power.clone());
+        power *= &ki;
+    }
+    let shifted = taylor_shift_by_1(&reverse_coeffs(&scaled));
+    sign_variations(&shifted) == 0
+}
+
 /// Integer lower bound on the smallest positive root of `p`.
 ///
-/// Uses a doubling-then-binary-search over integer evaluation points.
+/// Uses a doubling-then-binary-search over integer evaluation points, then
+/// **certifies** the candidate with Descartes' rule before returning it.
 /// Precondition: `p(0) ≠ 0` (no root at the origin).
-/// Returns the largest integer `k ≥ 1` such that `p(k)` has the same sign
-/// as `p(0)` (implying all positive roots are `> k`), or `0` if the
-/// smallest positive root is in `(0, 1]`.
+/// Returns an integer `k ≥ 1` for which `p` is proved to have no root in
+/// `(0, k)`, or `0` when no such bound could be certified.
+///
+/// The sign search alone is not sound, and returning its answer directly is
+/// how [`real_roots`] used to lose roots. Its stated rule — "`p(k)` has the
+/// same sign as `p(0)`, implying all positive roots are `> k`" — is false:
+/// equal signs at `0` and `k` imply an *even* number of roots in `(0, k)`,
+/// which may be two rather than none. For `25x³ − 325x² + 804x − 540 =
+/// 25(x − 6/5)(x − 9/5)(x − 10)` the polynomial is negative at every integer
+/// from 0 to 9, so the search returned `k = 9`, [`isolate_positive_roots`]
+/// shifted the frame past both `6/5` and `9/5`, and `real_roots` reported a
+/// single root where there are three — with no error and no flag. Chebyshev
+/// `T₆` lost four of its six roots the same way.
+///
+/// The sign search is kept as a *proposal* (it is cheap and usually right)
+/// and halved until Descartes certifies it, so the returned bound is sound by
+/// construction while the common case still costs one extra test.
 fn cf_lower_bound_floor(coeffs: &[Integer]) -> u64 {
     if coeffs.is_empty() {
         return 0;
@@ -461,6 +499,13 @@ fn cf_lower_bound_floor(coeffs: &[Integer]) -> u64 {
         } else {
             lo = mid;
         }
+    }
+
+    // Certify the proposal, halving until Descartes proves the interval empty.
+    // `k = 0` is trivially certified, so this always terminates with a sound
+    // answer.
+    while lo >= 1 && !no_root_in_open_interval(coeffs, lo) {
+        lo /= 2;
     }
 
     lo
@@ -919,30 +964,111 @@ pub fn real_roots_symbolic(
     real_roots(&poly)
 }
 
+/// The smallest `f64` strictly greater than `v`, for finite `v ≥ 0`.
+fn next_up_nonneg(v: f64) -> f64 {
+    if !v.is_finite() {
+        return v;
+    }
+    if v == 0.0 {
+        return f64::from_bits(1);
+    }
+    f64::from_bits(v.to_bits() + 1)
+}
+
+/// Smallest `f64` that is `≥ r`, for a non-negative rational `r`.
+///
+/// `Rational::to_f64` rounds to nearest, which can land *below* `r` — and a
+/// radius rounded down is a ball that does not contain what it claims to.
+fn round_up_f64(r: &rug::Rational) -> f64 {
+    let v = r.to_f64();
+    if !v.is_finite() {
+        return v;
+    }
+    match rug::Rational::from_f64(v) {
+        Some(back) if back >= *r => v,
+        _ => next_up_nonneg(v),
+    }
+}
+
+/// Build a ball that provably contains every point of the exact rational
+/// interval `[lo, hi]`.
+///
+/// Both the midpoint and the radius are `f64`, so both are rounded; the
+/// midpoint may round either way, and the radius is therefore measured
+/// *against the rounded midpoint* and then rounded **up**.
+fn ball_covering(lo: &rug::Rational, hi: &rug::Rational, prec: u32) -> ArbBall {
+    let mid_rat = rug::Rational::from(lo + hi) / 2u32;
+    let center = mid_rat.to_f64();
+    let Some(center_rat) = rug::Rational::from_f64(center) else {
+        return ArbBall::infinity(prec.max(53));
+    };
+    let left = rug::Rational::from(&center_rat - lo);
+    let right = rug::Rational::from(hi - &center_rat);
+    let rad_rat = if left > right { left } else { right };
+    let radius = if rad_rat <= 0 {
+        0.0
+    } else {
+        round_up_f64(&rad_rat)
+    };
+    ArbBall::from_midpoint_radius(center, radius, prec.max(53))
+}
+
 /// Narrow a [`RootInterval`] to at least `prec` bits of precision.
 ///
-/// Uses bisection with floating-point Horner evaluation.  For exact roots
-/// (`lo == hi`), returns a zero-radius [`ArbBall`].
+/// Bisection is performed in **exact rational arithmetic**, and the returned
+/// ball is rounded outwards, so it genuinely contains the root — which is what
+/// every caller of a "rigorous enclosure" is entitled to assume.
+///
+/// The previous implementation did neither, and both shortcuts were
+/// observable. It bisected with an `f64` Horner evaluation, so for
+/// `(10⁹x − 1414213562)(x² − 2)` the sign test `f_lo * f_mid <= 0` was wrong at
+/// every step, `hi` collapsed onto `lo`, and the result was an *exact*
+/// (zero-radius) ball at `1.41421356205…`, which is not a root of anything —
+/// the root in that bracket is `√2`. And even when the bracket was right, the
+/// ball was built as `mid = (lo+hi)/2`, `rad = (hi-lo)/2` with round-to-nearest
+/// on both, so for `x² − 2` it returned `mid = 1.414213562373095`,
+/// `rad = 1.11e-16` whose upper end `mid + rad` is still strictly below `√2`:
+/// `(mid + rad)² − 2 = −4.06e-17 < 0` in exact arithmetic. `contains(√2)` was
+/// `false` for the ball that was supposed to enclose `√2`.
+///
+/// For an exact rational root (`lo == hi`) the radius covers the rounding of
+/// that rational to `f64`, which is zero only when the rational is itself
+/// representable — `6/5` is not.
 pub fn refine_root(poly: &UniPoly, interval: &RootInterval, prec: u32) -> ArbBall {
+    let prec = prec.max(53);
     if interval.lo == interval.hi {
-        return ArbBall::from_midpoint_radius(interval.lo.to_f64(), 0.0, prec.max(53));
+        return ball_covering(&interval.lo, &interval.hi, prec);
     }
 
-    let coeffs_f64: Vec<f64> = poly.coefficients().iter().map(|c| c.to_f64()).collect();
-    let eval = |x: f64| -> f64 { coeffs_f64.iter().rev().fold(0.0_f64, |acc, &c| acc * x + c) };
+    let coeffs: Vec<Integer> = poly.coefficients();
+    let mut lo = interval.lo.clone();
+    let mut hi = interval.hi.clone();
+    let mut f_lo = eval_coeffs_rational(&coeffs, &lo);
+    if f_lo == 0 {
+        return ball_covering(&lo, &lo, prec);
+    }
+    let f_hi = eval_coeffs_rational(&coeffs, &hi);
+    if f_hi == 0 {
+        return ball_covering(&hi, &hi, prec);
+    }
+    // Without a strict sign change there is nothing to bisect against; return
+    // the bracket as given rather than narrowing onto an arbitrary endpoint.
+    if (f_lo > 0) == (f_hi > 0) {
+        return ball_covering(&lo, &hi, prec);
+    }
 
-    let target_width = 2.0_f64.powi(-(prec as i32));
-    let mut lo = interval.lo.to_f64();
-    let mut hi = interval.hi.to_f64();
-    let mut f_lo = eval(lo);
-
-    for _ in 0..300 {
-        if hi - lo <= target_width {
+    let target_width = rug::Rational::from((Integer::from(1), Integer::from(1) << prec));
+    let steps = (prec as usize + 2).saturating_mul(2).min(4096);
+    for _ in 0..steps {
+        if rug::Rational::from(&hi - &lo) <= target_width {
             break;
         }
-        let mid = (lo + hi) / 2.0;
-        let f_mid = eval(mid);
-        if f_lo * f_mid <= 0.0 {
+        let mid = rug::Rational::from(&lo + &hi) / 2u32;
+        let f_mid = eval_coeffs_rational(&coeffs, &mid);
+        if f_mid == 0 {
+            return ball_covering(&mid, &mid, prec);
+        }
+        if (f_lo > 0) != (f_mid > 0) {
             hi = mid;
         } else {
             lo = mid;
@@ -950,9 +1076,7 @@ pub fn refine_root(poly: &UniPoly, interval: &RootInterval, prec: u32) -> ArbBal
         }
     }
 
-    let center = (lo + hi) / 2.0;
-    let radius = (hi - lo) / 2.0;
-    ArbBall::from_midpoint_radius(center, radius, prec.max(53))
+    ball_covering(&lo, &hi, prec)
 }
 
 // ---------------------------------------------------------------------------

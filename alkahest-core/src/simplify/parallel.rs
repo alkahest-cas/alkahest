@@ -203,19 +203,32 @@ fn with_stack_segment<R: Send>(f: impl FnOnce() -> R + Send) -> R {
 
 /// Stack bytes consumed on this thread since the current segment began.
 ///
-/// Uses the address of a local as a stack-depth probe; the first probe on a
-/// thread establishes the baseline.  Stacks grow downwards on every platform
-/// this crate targets, and the subtraction is saturating, so a platform where
-/// they do not simply reports 0 and never refills.
+/// Uses the address of a local as a stack-depth probe.  Stacks grow downwards
+/// on every platform this crate targets, so a *smaller* address means deeper.
+///
+/// The baseline is re-established whenever the probe lands at or above it.
+/// That matters because Rayon reuses its workers: the baseline used to be
+/// latched on a thread's first probe and never revisited, so a worker that
+/// happened to take its first `simplify_par` task from deep inside a call
+/// chain kept that deep address as its baseline forever.  Every later task on
+/// that worker started *above* the stale baseline, `saturating_sub` floored
+/// the difference at 0, and the traversal read its own stack usage as zero no
+/// matter how deep it went — so it never refilled, and ran off the end of the
+/// worker's 2 MiB stack.  A stack overflow aborts the process, which is
+/// precisely what this machinery exists to prevent.
+///
+/// Re-baselining upwards is always safe: an address above the current
+/// baseline means the frames that baseline was measured against have already
+/// returned, so it describes a stack that no longer exists.
 fn stack_used() -> usize {
     let probe = 0u8;
     let here = &probe as *const u8 as usize;
     SEGMENT_BASE.with(|base| {
-        if base.get() == 0 {
+        if base.get() == 0 || here >= base.get() {
             base.set(here);
             0
         } else {
-            base.get().saturating_sub(here)
+            base.get() - here
         }
     })
 }
@@ -588,6 +601,50 @@ mod tests {
             .unwrap();
         let par = tp.install(|| simplify_par(deep, &pool));
         assert_eq!(par.value, x);
+    }
+
+    /// Burn `frames` stack frames, then report `stack_used()` from the bottom.
+    #[inline(never)]
+    fn probe_at_depth(frames: u32) -> usize {
+        // A real local keeps the frame from being optimised to nothing.
+        let mut pad = [0u8; 256];
+        pad[0] = frames as u8;
+        std::hint::black_box(&pad);
+        if frames == 0 {
+            stack_used()
+        } else {
+            probe_at_depth(frames - 1)
+        }
+    }
+
+    /// `SEGMENT_BASE` used to be latched on a thread's first probe and never
+    /// revisited.  Rayon reuses its workers, so a worker whose first task
+    /// probed from deep in a call chain kept that deep address forever; every
+    /// later task started above it, `saturating_sub` floored the result at 0,
+    /// and the traversal believed it was using no stack however deep it went.
+    /// It therefore never refilled and eventually overflowed the worker's
+    /// 2 MiB stack — an abort, not an error.
+    ///
+    /// Asserted here rather than by actually overflowing a stack: a
+    /// regression must fail this test, not kill the test process.
+    #[test]
+    fn stack_probe_rebaselines_after_unwinding() {
+        // Task 1: latch a baseline from deep in a call chain, then unwind.
+        let deep = probe_at_depth(400);
+        assert_eq!(deep, 0, "the first probe on a thread establishes the base");
+
+        // Task 2 on the same (reused) thread, starting near the top of the
+        // stack.  This must re-baseline...
+        assert_eq!(stack_used(), 0, "a probe above the old base must re-base");
+
+        // ...so that going deeper than *this* point is now measurable.  With
+        // the stale baseline still in place this read 0, which is exactly the
+        // under-read that let the traversal run off the end of the stack.
+        let used = probe_at_depth(64);
+        assert!(
+            used > 0,
+            "stack usage under-read as {used} after re-baselining"
+        );
     }
 
     /// At a depth both paths can handle, the results must still agree.

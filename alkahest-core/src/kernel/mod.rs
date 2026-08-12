@@ -1,3 +1,4 @@
+pub mod depth;
 pub mod display;
 pub mod domain;
 pub mod eval_const;
@@ -9,6 +10,7 @@ pub mod pool_persist;
 mod proptests;
 pub mod subs;
 
+pub use depth::{check_expr_depth, check_expr_depths, DepthLimitError, MAX_EXPR_DEPTH};
 pub use display::{render_latex, render_unicode};
 pub use domain::Domain;
 pub use eval_const::{try_expr_f64, try_predicate_bool, try_predicate_bool_from_expr};

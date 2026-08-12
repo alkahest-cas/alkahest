@@ -575,7 +575,19 @@ impl TaylorModel {
         let (s, co) = (c.sin(), c.cos());
         let mut a = Vec::with_capacity(self.order + 1);
         for k in 0..=self.order {
-            // dᵏ/dxᵏ sin = sin, cos, -sin, -cos ; cos shifts by one.
+            // dᵏ/dxᵏ sin = sin, cos, -sin, -cos ; cos shifts by one, because
+            // cos⁽ᵏ⁾ = sin⁽ᵏ⁺¹⁾. The `(k+1) % 4` phase *is* that shift and
+            // already yields the cosine derivative — `k = 0` gives `cos(m₀)`,
+            // `k = 1` gives `-sin(m₀)`. A further `-base` for the cosine
+            // branch (present until 3.8) negated the whole polynomial while
+            // leaving the symmetric remainder bound untouched, so every
+            // "validated" cosine came back tight, confident and sign-flipped:
+            // `bound_on_box(cos x, x ∈ [1,1])` returned `[-0.54030…, -0.54030…]`
+            // for `cos 1 = +0.54030…`, an enclosure that does not contain the
+            // value it encloses. Downstream that is a false theorem, not just a
+            // wrong number — `verified_no_roots(cos x - 0.9, [0,1])` answered
+            // `true` although `arccos(0.9) = 0.451 ∈ [0,1]`. `sin²+cos² = 1` is
+            // invariant under the flip, which is why the existing test passed.
             let phase = if is_sin { k % 4 } else { (k + 1) % 4 };
             let base = match phase {
                 0 => s.clone(),
@@ -583,7 +595,6 @@ impl TaylorModel {
                 2 => -s.clone(),
                 _ => -co.clone(),
             };
-            let base = if is_sin { base } else { -base };
             a.push(Self::div_ball(&base, &Self::factorial(k, self.prec))?);
         }
         // |sin^{(p+1)}| ≤ 1 and |cos^{(p+1)}| ≤ 1 everywhere.
@@ -1045,6 +1056,29 @@ mod tests {
     fn range_of(expr: ExprId, pool: &ExprPool, b: &[(ExprId, f64, f64)], order: usize) -> ArbBall {
         let boxes: Vec<_> = b.iter().map(|(v, lo, hi)| (*v, f(*lo), f(*hi))).collect();
         taylor_range(expr, pool, &boxes, order, P).unwrap()
+    }
+
+    /// A validated enclosure that does not contain the value it encloses is the
+    /// worst failure this module can have, and `sin²+cos²=1` cannot see a sign
+    /// flip. Pin the *value*, at a degenerate box, against the hand constant.
+    #[test]
+    fn cos_enclosure_contains_cos_of_the_point() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        for point in [1.0_f64, 0.0, 2.5, -1.25, 3.5] {
+            let expected = point.cos();
+            let r = range_of(pool.func("cos", vec![x]), &pool, &[(x, point, point)], 6);
+            // A degenerate box gives a tight ball; the tolerance only absorbs
+            // the last f64 ulp, and a sign flip misses it by ~2·|cos(point)|.
+            assert!(
+                (r.mid_f64() - expected).abs() < 1e-12 && r.rad_f64() < 1e-12,
+                "cos({point}) = {expected} but the enclosure is {r:?}"
+            );
+        }
+        // …and over a genuine box: cos is ≥ cos(1) > 0 on [0, 1].
+        let r = range_of(pool.func("cos", vec![x]), &pool, &[(x, 0.0, 1.0)], 8);
+        assert!(r.lo() > 0.0, "cos > 0 on [0,1] but enclosure is {r:?}");
+        assert!(r.hi() >= 1.0, "cos(0) = 1 must be enclosed, got {r:?}");
     }
 
     #[test]

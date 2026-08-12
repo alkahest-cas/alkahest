@@ -78,9 +78,10 @@ pub use integrate::{
 };
 #[allow(deprecated)]
 pub use kernel::{
-    expr_contains_noncommutative_symbol, load_from, mult_tree_is_commutative, open_persistent,
-    render_latex, render_unicode, save_to, subs, Domain, ExprData, ExprDisplay, ExprId, ExprPool,
-    IoError, PoolPersistError,
+    check_expr_depth, check_expr_depths, expr_contains_noncommutative_symbol, load_from,
+    mult_tree_is_commutative, open_persistent, render_latex, render_unicode, save_to, subs,
+    DepthLimitError, Domain, ExprData, ExprDisplay, ExprId, ExprPool, IoError, PoolPersistError,
+    MAX_EXPR_DEPTH,
 };
 pub use logic::{
     dpll_sat, formula_from_expr, satisfiable, BoolClause, BoolLit, Formula, LogicError,
@@ -269,8 +270,9 @@ pub mod stable {
     pub use crate::kernel::pool_persist::PoolPersistError;
     pub use crate::kernel::pool_persist::{load_from, open_persistent, save_to, IoError};
     pub use crate::kernel::{
-        expr_contains_noncommutative_symbol, mult_tree_is_commutative, render_latex,
-        render_unicode, subs, Domain, ExprData, ExprDisplay, ExprId, ExprPool,
+        check_expr_depth, check_expr_depths, expr_contains_noncommutative_symbol,
+        mult_tree_is_commutative, render_latex, render_unicode, subs, DepthLimitError, Domain,
+        ExprData, ExprDisplay, ExprId, ExprPool, MAX_EXPR_DEPTH,
     };
     pub use crate::lattice::{
         lattice_reduce_rows, lattice_reduce_rows_with_delta, validate_lll_rows, LatticeError,

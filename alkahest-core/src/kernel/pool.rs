@@ -92,6 +92,18 @@ struct Node {
     /// here from the children's cached flags — O(arity) — instead of by
     /// walking the whole subtree on every query.
     mult_commutative: bool,
+    /// Length of the longest root-to-leaf path in this subtree; a leaf is 1.
+    ///
+    /// Computed exactly like `mult_commutative` — once, at intern time, from
+    /// the children's cached values — so [`ExprPool::depth`] is a single array
+    /// read.  Recomputing it on demand is not an option: the pool is a DAG, so
+    /// an unmemoised depth walk is exponential in the sharing, and a memoised
+    /// one allocates a map per query.  Saturating, so a pathological expression
+    /// pins at `u32::MAX` instead of wrapping to a small value.
+    ///
+    /// This is what lets every recursive consumer refuse a too-deep expression
+    /// in O(1) rather than discovering the problem by overflowing the stack.
+    depth: u32,
 }
 
 pub struct ExprPool {
@@ -153,10 +165,42 @@ impl ExprPool {
     /// so their flags are just array reads.
     fn make_node(&self, data: ExprData) -> Node {
         let mult_commutative = self.compute_mult_commutative(&data);
+        let depth = self.compute_depth(&data);
         Node {
             data,
             mult_commutative,
+            depth,
         }
+    }
+
+    /// One level of the depth recurrence: `1 + max(child depths)`, reading each
+    /// child's cached depth rather than descending into it.
+    fn compute_depth(&self, data: &ExprData) -> u32 {
+        let child = |c: ExprId| self.depth(c);
+        let deepest = match data {
+            ExprData::Symbol { .. }
+            | ExprData::Integer(_)
+            | ExprData::Rational(_)
+            | ExprData::Float(_) => 0,
+            ExprData::Add(args) | ExprData::Mul(args) => {
+                args.iter().copied().map(child).max().unwrap_or(0)
+            }
+            ExprData::Pow { base, exp } => child(*base).max(child(*exp)),
+            ExprData::Func { args, .. } => args.iter().copied().map(child).max().unwrap_or(0),
+            ExprData::Piecewise { branches, default } => branches
+                .iter()
+                .map(|&(c, v)| child(c).max(child(v)))
+                .max()
+                .unwrap_or(0)
+                .max(child(*default)),
+            ExprData::Predicate { args, .. } => args.iter().copied().map(child).max().unwrap_or(0),
+            ExprData::Forall { var, body } | ExprData::Exists { var, body } => {
+                child(*var).max(child(*body))
+            }
+            ExprData::BigO(inner) => child(*inner),
+            ExprData::RootSum { poly, body, .. } => child(*poly).max(child(*body)),
+        };
+        deepest.saturating_add(1)
     }
 
     /// One level of the `mult_tree_is_commutative` recurrence, reading each
@@ -185,6 +229,18 @@ impl ExprPool {
     /// multiplication.  O(1): the flag was computed when `id` was interned.
     pub fn is_mult_commutative(&self, id: ExprId) -> bool {
         self.node(id).mult_commutative
+    }
+
+    /// Length of the longest root-to-leaf path in the subtree rooted at `id`.
+    ///
+    /// A leaf (symbol or number) has depth 1.  O(1): the value was computed
+    /// when `id` was interned.  Saturates at [`u32::MAX`].
+    ///
+    /// Every recursive consumer of an expression uses this to decline a tree
+    /// too deep for the stack — see
+    /// [`crate::kernel::depth::check_expr_depth`].
+    pub fn depth(&self, id: ExprId) -> u32 {
+        self.node(id).depth
     }
 
     fn node(&self, id: ExprId) -> &Node {
