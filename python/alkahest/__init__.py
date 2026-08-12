@@ -317,6 +317,7 @@ with _suppress(ImportError):
         rosenfeld_groebner,
         solve,
         solve_numerical,
+        solve_side_conditions,
         triangularize,
     )
 
@@ -335,6 +336,7 @@ from .exceptions import (
     CertificateUnavailableError,
     ConversionError,
     CrossCheckError,
+    CudaError,
     DaeError,
     DepthLimitError,
     DiffError,
@@ -379,6 +381,11 @@ _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     "BudgetExceededError",
     "CadError",
     "ConversionError",
+    # Registered unconditionally by the native module (it is an exception class,
+    # not a GPU entry point), so it is overlaid on every build — including the
+    # wheels with no CUDA support, where it is simply never raised. Catching it
+    # must work in code written against the default wheel and run on a CUDA one.
+    "CudaError",
     "DaeError",
     "DepthLimitError",
     "DiffError",
@@ -1061,6 +1068,21 @@ def series(expr, var, point, order):
     Returns
     -------
     Series
+
+    Notes
+    -----
+    The expansion is **bounded**: it honours an active :class:`Budget` and, with
+    none, an internal work ceiling.  Coefficients are formed by repeated
+    differentiation without re-simplifying, so an expression whose derivatives
+    do not close — a nested radical such as ``sqrt(t**-2 + t**-1)`` — grows by a
+    constant factor per coefficient, and a high *order* is unreachable rather
+    than merely slow.
+
+    Running out of room raises :exc:`SeriesError` with code ``E-SERIES-003``
+    (or :exc:`BudgetExceededError` when a budget stopped it).  It never returns
+    a *shorter* series: the ``O(h**order)`` term is a claim about the remainder,
+    and attaching it to fewer coefficients than were asked for would be a false
+    one that no caller could audit.
     """
     return _native_series(_coerce_expr(expr), _coerce_expr(var), _coerce_expr(point), order)
 
@@ -1169,7 +1191,18 @@ _native_product_definite = product_definite
 
 
 def product_definite(expr, k, lo, hi):
-    """Definite symbolic product of *expr* for *k* from *lo* to *hi* (inclusive)."""
+    """Definite symbolic product of *expr* for *k* from *lo* to *hi* (inclusive).
+
+    Supports ``q ∈ ℚ(k)`` whose numerator and denominator split into ℤ-linear
+    factors; the result is emitted as a ratio of ``gamma`` values times integer
+    powers.  Anything outside that class raises ``ProductError``
+    (``E-PROD-001``…``E-PROD-003``) rather than being approximated.
+
+    **Empty range.** ``hi < lo`` gives ``1``, the empty product, *whatever the
+    term is* — including a term that is identically zero, since no factor is
+    ever taken.  (Note this differs from :func:`sum_definite`, which follows the
+    reversal convention for ``hi < lo`` rather than treating it as empty.)
+    """
     return _maybe_context_simplify(
         _native_product_definite(
             _coerce_expr(expr),
@@ -1184,7 +1217,20 @@ _native_rsolve = rsolve
 
 
 def rsolve(equation, n, seq_name, initials=None):
-    """Solve a linear recurrence; *equation* may be :class:`DerivedResult`."""
+    """Solve a linear recurrence; *equation* may be :class:`DerivedResult`.
+
+    *equation* is read as ``equation == 0`` and may be written with either
+    spelling of the shift — ``f(n+1) - f(n) - n**2`` and
+    ``f(n) - f(n-1) - (n-1)**2`` are the *same* equation and give the same
+    answer.  Both are solved as stated: the right-hand side is re-indexed
+    together with the sequence terms, so substituting the result back into the
+    equation you wrote reproduces it.
+
+    Without *initials* the general solution is returned with fresh symbols
+    ``C0``, ``C1``, ….  For an order-2 equation with a repeated characteristic
+    root the basis is ``{r**n, n*r**n}``, so the family really is
+    two-parameter and two independent initial conditions can be met.
+    """
     return _native_rsolve(_coerce_expr(equation), _coerce_expr(n), seq_name, initials)
 
 
@@ -1557,6 +1603,13 @@ if "solve" not in dir():
             "See alkahest.solve.__doc__ for details."
         )
 
+    def solve_side_conditions(*_args, **_kwargs):
+        """Hypotheses of the last solve (groebner feature missing from this build)."""
+        raise ImportError(
+            "alkahest.solve_side_conditions is unavailable — groebner feature missing. "
+            "See alkahest.solve.__doc__ for details."
+        )
+
     class GroebnerBasis:
         """Gröbner basis type (groebner feature missing from this build).
 
@@ -1623,7 +1676,9 @@ def capabilities() -> dict:
         ``contract_version`` identifies this schema. ``groebner``, ``jit``,
         ``egraph``, and ``parallel`` are compatibility feature booleans.
         ``features`` contains installed Cargo features and explicit
-        ``llvm_jit`` / ``cranelift_jit`` backend flags; ``primitives`` is
+        ``llvm_jit`` / ``cranelift_jit`` backend flags — every key names
+        something a caller can actually reach, which is why v3 drops
+        ``groebner_cuda`` and ``numpy`` (see below); ``primitives`` is
         deterministic per-primitive implementation coverage, and
         ``verification`` describes available evidence artifacts and checkers.
         ``verification["coverage"]`` summarises the generated certificate
@@ -1634,6 +1689,25 @@ def capabilities() -> dict:
         ``jordan_form``, ``minimal_polynomial``, LU/QR/Cholesky, etc.) is available
         on :class:`Matrix`; unsupported inputs raise :class:`LinearAlgebraError`
         with stable ``E-LINALG-*`` codes.
+
+    Notes
+    -----
+    **Contract v3 removed two ``features`` keys.** Code that indexes
+    ``caps["features"]["groebner_cuda"]`` or ``["numpy"]`` now raises
+    ``KeyError``; use ``.get(name, False)`` if you must span versions, and
+    gate on ``contract_version`` when the distinction matters.
+
+    Both were removed rather than wired up because neither was *falsifiable*.
+    ``groebner_cuda`` reported that the GPU Gröbner kernel was compiled in,
+    but that kernel has no Python binding at all — ``GroebnerBasis.compute``,
+    :func:`solve` and :func:`triangularize` run on the CPU whatever it said,
+    so no observation a caller could make distinguished ``True`` from
+    ``False``. ``numpy`` reported a Cargo feature gating a crate the
+    extension never used; :func:`numpy_eval` goes through the buffer
+    protocol and works identically with the bit ``False``, which is its value
+    on every build ever shipped. A bit that reads ``False`` honestly is
+    better than one that reads ``True`` and lies, and a bit that correlates
+    with nothing is better removed than left to be misread.
 
     Example
     -------
@@ -1656,7 +1730,11 @@ def capabilities() -> dict:
     for row in primitive_rows:
         row["lean_theorem"] = row["name"] in _certifiable_primitives
     return {
-        "contract_version": 2,
+        # v3: `features` dropped `groebner_cuda` and `numpy`, neither of which
+        # named a reachable entry point. Same rule that dropped the
+        # never-emitted `lean_checked` verification status in v2 — advertise a
+        # bit only when some observation can tell it apart from its negation.
+        "contract_version": 3,
         # Compatibility keys: report what this extension was compiled with,
         # even where a Python-level fallback exists.
         "groebner": features["groebner"],
@@ -1786,6 +1864,7 @@ __all__ = [
     "Component",
     "ConversionError",
     "CrossCheckError",
+    "CudaError",
     "DaeError",
     "DaeIndexReduction",
     "DepthLimitError",
@@ -2052,6 +2131,8 @@ __all__ = [
     "solve",
     "solve_linear_recurrence_homogeneous",
     "solve_numerical",
+    # The non-vanishing hypotheses `solve` assumed for a parametric answer
+    "solve_side_conditions",
     # P1 item 8 — positivity certificates (SOS / Positivstellensatz)
     "sos_decompose",
     "sparse_interp",
@@ -2102,3 +2183,37 @@ def __getattr__(name: str):
 
         return importlib.import_module(f".{name}", __name__)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+# ---------------------------------------------------------------------------
+# CUDA codegen — present only in a build made with `--features cuda`.
+#
+# The native module defines `compile_cuda` and `CudaCompiledFn` under that
+# feature, but they were never re-exported here, so on a CUDA build
+# `capabilities()["features"]["cuda"]` reported True while `ak.compile_cuda`
+# raised AttributeError and the only way in was the private
+# `alkahest.alkahest` module. A capability bit that advertises something the
+# public namespace cannot reach is exactly the kind of overclaim the rest of
+# this contract exists to prevent.
+#
+# Appended at runtime rather than listed in the literal `__all__` above,
+# because the names genuinely do not exist in a default (non-CUDA) build and
+# every name in `__all__` must resolve. `scripts/check_api_freeze.py` parses
+# the literal via AST, so this is invisible to it — which is correct: it is an
+# addition, and only on builds that have the feature.
+#
+# `CudaError` is deliberately *not* handled here: the native module registers
+# it unconditionally (it is an exception class, not a GPU entry point), so it
+# is bound with the rest of the hierarchy above and is importable on every
+# build. Bundling it into this feature-gated import is what made
+# `alkahest.CudaError` raise AttributeError on the shipped wheel while
+# `alkahest.exceptions.CudaError` existed as a *different, non-identical*
+# class — so `except alkahest.exceptions.CudaError` would not have caught a
+# native raise. See `tests/test_cuda.py`.
+# ---------------------------------------------------------------------------
+try:  # pragma: no cover - exercised only on CUDA builds
+    from .alkahest import CudaCompiledFn, compile_cuda
+except ImportError:  # the overwhelmingly common case: no CUDA feature
+    pass
+else:
+    __all__ += ["CudaCompiledFn", "compile_cuda"]

@@ -2,9 +2,19 @@
 # Runs memcheck and racecheck on CUDA tests. Requires self-hosted GPU runner.
 name: CUDA Nightly (compute-sanitizer)
 
+# NOT SCHEDULED. This job targets `[self-hosted, gpu-3090]`, and no such runner
+# is registered — a scheduled run does not fail, it queues forever, so the
+# schedule produced a permanently pending job on `main` and no signal either
+# way. `workflow_dispatch` is kept so it can be run the moment a GPU runner
+# exists, and the file is kept because it is the specification for running
+# these suites: an agent on a GPU box follows it step for step.
+#
+# Until a runner is registered, the CUDA surface is verified by hand on GPU
+# hardware. As of 3.8.0 that run passed: 17 Rust CUDA tests, 17/17 in
+# `tests/test_cuda.py`, memcheck and racecheck clean, and GPU/CPU agreement
+# within 0-2 ulp checked against numpy's own ufuncs (not `numpy_eval`, which
+# shares the Cranelift backend and is therefore not an independent oracle).
 on:
-  schedule:
-    - cron: '0 2 * * *'  # 02:00 UTC daily
   workflow_dispatch:
 
 jobs:
@@ -29,20 +39,69 @@ jobs:
           ALKAHEST_GPU_TESTS: "1"
         run: cargo test --features cuda,groebner-cuda --no-fail-fast
 
+      # The Python surface of the CUDA feature had never been built by any CI
+      # job: this workflow ran `cargo` only. That is how `ak.compile_cuda` came
+      # to raise AttributeError on a build whose own capabilities() advertised
+      # `cuda: true`, and survived three releases — the Rust tests all passed
+      # the entire time, because the gap was in the re-export, not the kernel.
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Create venv and install Python tooling
+        run: |
+          uv sync --no-install-project --group dev
+          echo "$PWD/.venv/bin" >> $GITHUB_PATH
+          echo "VIRTUAL_ENV=$PWD/.venv" >> $GITHUB_ENV
+
+      - name: maturin develop (cuda + groebner-cuda)
+        run: maturin develop --manifest-path alkahest-py/Cargo.toml --features "groebner egraph cuda groebner-cuda"
+
+      # ALKAHEST_GPU_TESTS=1 makes the device probe assert rather than skip, so
+      # a missing or broken GPU fails here instead of quietly reporting green.
+      - name: pytest (CUDA surface)
+        env:
+          ALKAHEST_GPU_TESTS: "1"
+        run: pytest tests/test_cuda.py -v
+
+      # The capability contract is only falsifiable on a build that has the
+      # feature; on every other runner these assertions are vacuously true.
+      - name: Capability contract on a real CUDA build
+        run: pytest tests/test_agent_contract.py -v
+
+      # Both sanitizer steps are scoped to the two integration targets that
+      # actually launch kernels. Wrapping the whole `cargo test` instead drags
+      # rustdoc's doc-test runner under the sanitizer, where it segfaults
+      # (SIGSEGV, exit 139) *after* the CUDA suites have passed but *before*
+      # the summary is printed — so racecheck produced no RACECHECK SUMMARY at
+      # all, and with `continue-on-error: true` that looked like a pass.
+      # Scoping costs no coverage: the only GPU work in the workspace lives in
+      # these two targets. The in-`src` unit tests reach `compile_cuda` for PTX
+      # generation only, and `compute_groebner_basis_gpu(.., None)` takes the
+      # `reduce_cpu` path, so neither issues a CUDA API call.
       - name: Run compute-sanitizer memcheck
         env:
           ALKAHEST_GPU_TESTS: "1"
         run: |
-          compute-sanitizer --tool memcheck \
-            cargo test --features cuda,groebner-cuda --no-fail-fast
+          # --target-processes all is load-bearing: the default is
+          # application-only, which instruments `cargo` — a process that makes
+          # no CUDA calls whatsoever. Without it this step emits a banner, no
+          # ERROR SUMMARY, and a green tick while checking nothing.
+          compute-sanitizer --target-processes all --tool memcheck \
+            cargo test --features cuda,groebner-cuda --no-fail-fast \
+              --test nvptx_gpu --test groebner_cuda
         continue-on-error: false
 
       - name: Run compute-sanitizer racecheck
         env:
           ALKAHEST_GPU_TESTS: "1"
         run: |
-          compute-sanitizer --tool racecheck \
-            cargo test --features cuda,groebner-cuda
+          compute-sanitizer --target-processes all --tool racecheck \
+            cargo test --features cuda,groebner-cuda \
+              --test nvptx_gpu --test groebner_cuda
         continue-on-error: true  # racecheck may have false positives
 
       - name: Upload sanitizer logs

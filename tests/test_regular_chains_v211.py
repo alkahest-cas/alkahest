@@ -42,3 +42,36 @@ def test_groebner_basis_compute_still_importable():
     from alkahest import GroebnerBasis
 
     _ = GroebnerBasis.compute([x - y, x**2 - pool.integer(1)], [x, y])
+
+
+def test_triangularize_refusal_carries_e_solve_004():
+    """A chain that would under-determine the system refuses, with its own code."""
+    pool = ExprPool()
+    x, y, z = pool.symbol("x"), pool.symbol("y"), pool.symbol("z")
+    # <xy, xz> needs a splitting decomposition into [x] and [y, z]; extraction
+    # alone would return a chain cutting out a larger variety than the input.
+    with pytest.raises(ValueError) as ei:
+        alkahest.triangularize([x * y, x * z], [x, y, z])
+    assert getattr(ei.value, "code", None) == "E-SOLVE-004"
+
+
+def test_genuine_non_polynomial_is_not_reattributed_to_the_refusal():
+    """The out-of-band code must not leak onto an unrelated `NotPolynomial`.
+
+    Both travel through the same enum variant, so a stale or unconditionally
+    read refusal would relabel this as E-SOLVE-004.
+    """
+    pool = ExprPool()
+    x, y = pool.symbol("x"), pool.symbol("y")
+    with pytest.raises(ValueError) as ei:
+        alkahest.triangularize([alkahest.sin(x) - y, y - pool.integer(1)], [x, y])
+    assert getattr(ei.value, "code", None) == "E-SOLVE-001"
+
+
+def test_triangularize_keeps_both_generators():
+    """Regression: the main-variable pick was inverted and discarded generators."""
+    pool = ExprPool()
+    x, y = pool.symbol("x"), pool.symbol("y")
+    chains = alkahest.triangularize([x - y - pool.integer(1), y**2 - pool.integer(2)], [x, y])
+    assert len(chains) == 1
+    assert len(chains[0].polys()) == 2

@@ -107,6 +107,9 @@ pub fn simplify_redex_with_config(
     pool: &ExprPool,
     config: &SimplifyConfig,
 ) -> DerivedExpr<ExprId> {
+    if config.expand {
+        crate::simplify::rules::clear_expand_limits();
+    }
     let rules = rules_for_config(config);
     let mut current = expr;
     let mut full_log = DerivationLog::new();
@@ -118,6 +121,12 @@ pub fn simplify_redex_with_config(
             break;
         }
         current = value;
+    }
+
+    if config.expand {
+        // Same as `simplify_with`: a bound that stopped an expansion is part of
+        // what happened, and belongs in the log rather than nowhere.
+        full_log = full_log.merge(crate::simplify::engine::expand_limit_log());
     }
 
     // Assumption-driven (colored e-graph) pass, mirroring `simplify_with`.
@@ -422,6 +431,29 @@ mod tests {
         let expr = pool.add(args);
         let expected = pool.integer(210_i32);
         assert_eq!(simplify_redex(expr, &pool).value, expected);
+    }
+
+    /// The redex engine reports a declined expansion the same way
+    /// `simplify_with` does — the bound is a fact about the pass, not about
+    /// which engine ran it.
+    #[test]
+    fn expand_limit_is_recorded_by_the_redex_engine() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let z = pool.symbol("z", Domain::Real);
+        let expr = pool.pow(pool.add(vec![x, y, z]), pool.integer(9_i32));
+        let config = SimplifyConfig {
+            expand: true,
+            ..Default::default()
+        };
+        let r = simplify_redex_with_config(expr, &pool, &config);
+        assert_eq!(r.value, expr);
+        assert!(r
+            .log
+            .steps()
+            .iter()
+            .any(|s| s.rule_name == crate::simplify::rules::EXPAND_POW_LIMIT_RULE));
     }
 
     #[test]

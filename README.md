@@ -18,7 +18,7 @@ The main stack is: Rust kernel → FLINT/Arb (polynomials, ball arithmetic) → 
 - **Verifiable by construction.** Every computation produces a derivation log; a meaningful subset can export Lean 4 proofs for independent verification.
 - **520× faster than SymPy** on trig-identity simplification — and 77× faster than Mathematica on the same task ([cross-CAS report](benchmarks/results/report.md)).
 - **~40× faster than SymPy** on 2-variable quadratic systems, via FLINT-backed polynomial arithmetic and a compiled F4 core ([solving guide](docs/mdbook/src/solving.md)).
-- **GPU codegen is a routine operation, not a research project** — 16.2× over the CPU JIT on a 1M-point polynomial evaluation (NVPTX `sm_86`, RTX 3090).
+- **GPU codegen is a routine operation, not a research project** — 16.2× over the CPU JIT on a 1M-point polynomial evaluation (NVPTX `sm_86`, RTX 3090). Requires a source build with `--features cuda`; the PyPI wheel has no GPU support ([GPU guide](docs/mdbook/src/gpu.md)).
 - **A trained RL environment.** GRPO against the CAS verifier moved `Qwen2.5-1.5B-Instruct` from 11.7% → 15.1% on elementary integrals (+29% relative) with no stored reference answers — the CAS grades every rollout, including honest refusal on non-elementary integrands.
 - **Built for agent loops.** String entry point (`ak.parse`), per-candidate `Budget`s, batched `*_many` fan-out, and compact JSON envelopes for cheap logging.
 - **No silent performance cliffs.** `Expr`, `UniPoly`, `MultiPoly`, `ArbBall` and friends are explicit representations; conversion between them is always an opt-in call.
@@ -54,7 +54,7 @@ Probe your environment after install: `alkahest.capabilities()["features"]` and 
 
 ### Opt-in Linux wheels: `+jit` and `+full` (PyTorch-style)
 
-**Why a separate index or direct wheel URL:** feature-heavy wheels use a PEP 440 **local version** (for example `3.7.0+jit` or `3.7.0+full`). Those builds **must not** be mixed into the main PyPI project’s simple API for the same reason PyTorch publishes CUDA wheels on `download.pytorch.org`: otherwise `pip install alkahest` could resolve a `+jit` / `+full` build as “newer” than `3.7.0` and pull LLVM (or a much larger binary) when you wanted the default wheel.
+**Why a separate index or direct wheel URL:** feature-heavy wheels use a PEP 440 **local version** (for example `3.8.0+jit` or `3.8.0+full`). Those builds **must not** be mixed into the main PyPI project’s simple API for the same reason PyTorch publishes CUDA wheels on `download.pytorch.org`: otherwise `pip install alkahest` could resolve a `+jit` / `+full` build as “newer” than `3.8.0` and pull LLVM (or a much larger binary) when you wanted the default wheel.
 
 There is **no** `pip install alkahest[jit]` / `alkahest[full]` that swaps the native extension: **pip extras only add Python dependencies**, not alternate binaries for the same wheel slot.
 
@@ -69,13 +69,13 @@ There is **no** `pip install alkahest[jit]` / `alkahest[full]` that swaps the na
 Direct-install examples (adjust tag and filename after checking the release assets):
 
 ```bash
-pip install "https://github.com/alkahest-cas/alkahest/releases/download/v3.7.0/alkahest-3.7.0+full-cp311-cp311-linux_x86_64.whl"
-pip install "https://github.com/alkahest-cas/alkahest/releases/download/v3.7.0/alkahest-3.7.0+jit-cp311-cp311-linux_x86_64.whl"
+pip install "https://github.com/alkahest-cas/alkahest/releases/download/v3.8.0/alkahest-3.8.0+full-cp311-cp311-linux_x86_64.whl"
+pip install "https://github.com/alkahest-cas/alkahest/releases/download/v3.8.0/alkahest-3.8.0+jit-cp311-cp311-linux_x86_64.whl"
 ```
 
 These wheels vendor LLVM (for JIT) and related `.so` files under `site-packages/alkahest.libs/`. If `import alkahest` fails with a missing `libffi-*.so` or `libLLVM-*.so`, prepend that directory to `LD_LIBRARY_PATH` (or install matching system packages). Release CI uses the same `LD_LIBRARY_PATH` step when smoke-testing wheels.
 
-If your client chokes on `+` in the URL, use percent-encoding (`3.7.0%2Bfull` in the filename segment).
+If your client chokes on `+` in the URL, use percent-encoding (`3.8.0%2Bfull` in the filename segment).
 
 After installing the **default** wheel, `alkahest.jit_is_available()` is `True` (Cranelift). After **`+jit`** or **`+full`**, it is also `True` (LLVM). Gröbner-backed APIs such as `alkahest.solve` are available in **all** wheels since `groebner` became a default feature.
 
@@ -84,7 +84,7 @@ After installing the **default** wheel, `alkahest.jit_is_available()` is `True` 
 **Target layout (roadmap):** a small **extra index** URL (PEP 503) hosting only `+jit` / `+full` wheels, mirroring PyTorch’s `--extra-index-url` workflow:
 
 ```bash
-pip install 'alkahest==3.7.0+full' --extra-index-url https://EXAMPLE/alkahest-extras/simple
+pip install 'alkahest==3.8.0+full' --extra-index-url https://EXAMPLE/alkahest-extras/simple
 ```
 
 ### From source
@@ -114,7 +114,7 @@ pip install maturin
 maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel egraph jit groebner"
 ```
 
-Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_par`), `egraph` (vendored egglog backend; **default** in PyPI wheels), `groebner` (Gröbner solver + Diophantine + homotopy; **default** in both the Rust crate and PyPI wheels), `cranelift` (pure-Rust Tier-1 JIT), `jit` (LLVM JIT), `cuda` (NVPTX codegen).
+Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_par`), `egraph` (vendored egglog backend; **default** in PyPI wheels), `groebner` (Gröbner solver + Diophantine + homotopy; **default** in both the Rust crate and PyPI wheels), `cranelift` (pure-Rust Tier-1 JIT), `jit` (LLVM JIT), `cuda` (NVPTX codegen — needs LLVM 15 with the NVPTX target; adds `compile_cuda`), `groebner-cuda` (CUDA Macaulay-matrix kernel — needs only `cudarc`, and is a Rust-crate entry point that no Python call reaches). Neither GPU feature is in any published wheel: see the [GPU guide](docs/mdbook/src/gpu.md).
 
 ### Rust crate
 
@@ -210,7 +210,7 @@ More runnable examples live in [`examples/`](examples/) — polynomials, Risch i
 | [ODEs and DAEs](docs/mdbook/src/ode-dae.md) | Symbolic ODE/DAE systems, Pantelides index reduction, sensitivity and adjoint systems, acausal component modeling | `ODE` · `DAE` · `pantelides` · `dae_index_reduce` · `sensitivity_system` |
 | Number theory | FLINT-backed integer theory, Diophantine equations, LLL lattice reduction, PSLQ integer-relation detection | `number_theory` · `diophantine` · `lattice` · `guess_relation` |
 | [Rigorous numerics](docs/mdbook/src/ball-arithmetic.md) | Arb ball arithmetic — every float carries a proven error bound | `ArbBall` · `interval_eval` · `refine_root` |
-| [Code generation](docs/mdbook/src/codegen.md) | JIT to native CPU code (Cranelift or LLVM), NVPTX GPU kernels, C source, StableHLO, vectorized NumPy | `compile_expr` · `jit` · `numpy_eval` · `emit_c` · `to_stablehlo` |
+| [Code generation](docs/mdbook/src/codegen.md) | JIT to native CPU code (Cranelift or LLVM), [NVPTX GPU kernels](docs/mdbook/src/gpu.md), C source, StableHLO, vectorized NumPy | `compile_expr` · `jit` · `numpy_eval` · `emit_c` · `to_stablehlo` · `compile_cuda` |
 | Program transforms | JAX-style `trace` / `grad` / `jit` over Python functions, plus symbolic gradients and forward-mode dual-number AD | `trace_fn` · `grad` · `symbolic_grad` · `diff_forward` |
 | [Verification](docs/mdbook/src/lean-certs.md) | [Derivation logs](docs/mdbook/src/derivations.md) on every result, Lean 4 certificate export, [coverage reporting](docs/mdbook/src/certificate-coverage.md) | `DerivedResult.steps` · `to_lean` · `certifiable` · `certificate_coverage` |
 | [Agent loops](docs/mdbook/src/search-plumbing.md) | String parsing, [budgets and cancellation](docs/mdbook/src/budgets.md), [batched fan-out](docs/mdbook/src/batch.md), [claim graphs](docs/mdbook/src/claim-graphs.md) for session provenance | `parse` · `Budget` · `batch_map` · `research` |

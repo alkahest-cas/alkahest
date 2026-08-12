@@ -334,25 +334,29 @@ def test_parallel_batch_reports_a_budget_trip_as_a_budget_trip(pool):
     never decided either way. A budget trip is an environment limit and has to
     be reported as one.
 
-    The elapsed bound is deliberately loose (a bound is the property under
-    test, not a stopwatch reading): unbudgeted these four integrands take
-    minutes, so any factor small enough to catch "the budget never reached the
-    workers" is fine, and 20x leaves room for a loaded box.
+    There is deliberately **no** wall-clock assertion. The property under test
+    is that the budget reaches the workers, and the returned *code* already
+    proves that: an unbudgeted sweep of these four integrands runs for minutes
+    and ends in `E-INT-001`, so `E-BUDGET-001` on every item cannot be produced
+    without the budget having been enforced inside each worker.
+
+    A 20x elapsed bound was tried and removed: it failed under concurrent build
+    load while the behaviour was perfectly correct, which is the same flaky
+    pattern removed from the SMT and limit suites this cycle. A timing bound
+    here adds no information the code does not already carry, and subtracts
+    reliability. `@pytest.mark.timeout` is the backstop for a genuine hang.
     """
     x = pool.symbol("x", "real")
     wall_ms = 300
     items = [_hard_trig_integrand(x, n, 31) for n in (40, 41, 42, 43)]
 
-    started = time.perf_counter()
     with ak.context(pool=pool, budget=ak.Budget(wall_ms=wall_ms)):
         outs = ak.integrate_many(items, x, parallel=True, max_workers=4)
-    elapsed_ms = (time.perf_counter() - started) * 1000.0
 
     codes = [o.error["code"] for o in outs if not o.ok]
     assert codes == ["E-BUDGET-001"] * len(items), (
         f"a budget trip must not be reported as a mathematical verdict: {codes}"
     )
-    assert elapsed_ms < 20 * wall_ms, f"sweep ran {elapsed_ms:.0f} ms against a {wall_ms} ms budget"
 
 
 @pytest.mark.timeout(HEAVY_TIMEOUT)

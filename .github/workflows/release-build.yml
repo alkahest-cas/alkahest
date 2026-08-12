@@ -77,11 +77,12 @@ jobs:
           print(ak.simplify_egraph(x + 0).value)
           assert hasattr(ak, 'solve'), 'expected groebner APIs in default wheel'
           f = ak.capabilities()["features"]
+          # `numpy` and `groebner_cuda` are deliberately absent (contract v3):
+          # neither named anything a Python caller could reach.
           assert f == {
               "egraph": True, "groebner": True, "jit": False,
               "cranelift": True, "llvm_jit": False, "cranelift_jit": True,
-              "parallel": False, "numpy": False, "cuda": False,
-              "groebner_cuda": False,
+              "parallel": False, "cuda": False,
           }
           assert ak.jit_is_available(), "expected Cranelift JIT in default wheel"
           print('default wheel ok (groebner + cranelift)')

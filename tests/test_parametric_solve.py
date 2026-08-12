@@ -75,3 +75,47 @@ def test_nonparametric_solve_still_works(pool):
     assert len(sols) == 1
     assert float(ak.eval_expr(sols[0][x], {})) == pytest.approx(0.5)
     assert float(ak.eval_expr(sols[0][y], {})) == pytest.approx(0.5)
+
+
+# ---------------------------------------------------------------------------
+# The hypothesis behind a parametric answer.
+#
+# `b/a` is the solution of `a·x = b` **for a ≠ 0**. At `a = 0` the equation
+# reads `−b = 0`: no solution when `b ≠ 0`, every `x` when `b = 0`. A parametric
+# tuple is not a number, so nothing substitutes it back and it is returned
+# unverified — which makes the stated hypothesis the only auditable signal.
+# ---------------------------------------------------------------------------
+
+
+def test_parametric_division_reports_its_non_vanishing_hypothesis(pool):
+    x = pool.symbol("x")
+    a = pool.symbol("a")
+    b = pool.symbol("b")
+    ak.solve([a * x - b], [x])
+    conditions = ak.solve_side_conditions()
+    assert conditions == ["a ≠ 0"], conditions
+    # Reading it again describes the same call, not an empty list.
+    assert ak.solve_side_conditions() == ["a ≠ 0"]
+
+
+def test_a_provable_divisor_reports_no_hypothesis(pool):
+    """The control: `2x − b = 0` divides by the literal 2, so there is nothing
+    to assume. A solver that emitted a condition unconditionally would say as
+    little as one that never emits any."""
+    x = pool.symbol("x")
+    b = pool.symbol("b")
+    sols = ak.solve([2 * x - b], [x])
+    assert float(ak.eval_expr(sols[0][x], {b: 6.0})) == pytest.approx(3.0)
+    assert ak.solve_side_conditions() == []
+
+
+def test_hypotheses_do_not_leak_from_an_earlier_solve(pool):
+    """Each call resets the channel, including on paths that never reach the
+    symbolic solver."""
+    x = pool.symbol("x")
+    a = pool.symbol("a")
+    b = pool.symbol("b")
+    ak.solve([a * x - b], [x])
+    assert ak.solve_side_conditions() == ["a ≠ 0"]
+    ak.solve([x**2 - 4], [x])
+    assert ak.solve_side_conditions() == []

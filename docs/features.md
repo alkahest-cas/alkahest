@@ -84,7 +84,7 @@ Current stable feature surface.
 
 - Gröbner basis: Buchberger F4 with product-criterion pruning
 - Parallel F4 S-polynomial reduction via Rayon (`--features parallel`)
-- CUDA Macaulay-matrix row reduction (`--features groebner-cuda`)
+- CUDA Macaulay-matrix row reduction (`--features groebner-cuda`) — a Rust-crate entry point (`compute_groebner_basis_gpu`); **not** wired into `solve`/`GroebnerBasis.compute`, so it accelerates nothing from Python
 - Monomial orders: Lex, GrLex, GRevLex
 - `solve` — symbolic solution of polynomial systems (exact symbolic output)
 - Regular chains / triangular decomposition (`triangularize`, `RegularChain`)
@@ -108,7 +108,7 @@ Current stable feature surface.
 - `CompileCache` — memoize compiled functions keyed by `(ExprId, input variables)`; Python `CompileCache` class
 - Bulk column-major batch evaluation (`CompiledFn::call_bulk` / `call_batch`; native `alkahest_eval_bulk` when JIT backends are enabled)
 - LLVM JIT for native CPU code (`--features jit`; `+jit` / `+full` release wheels)
-- NVPTX (CUDA GPU) codegen for `sm_86` (`--features cuda`, 16.2× over CPU on RTX 3090)
+- NVPTX (CUDA GPU) codegen for `sm_86` via `compile_cuda` (`--features cuda`, 16.2× over CPU on RTX 3090; source build only — no published wheel carries it)
 - Custom `alkahest` MLIR dialect with three lowering targets: ArithMath, StableHLO, LLVM
 - `to_stablehlo` — emit textual StableHLO MLIR for XLA/JAX
 - DAG-aware memoization on hot recursive paths (simplify, diff, integrate, interpreter eval)

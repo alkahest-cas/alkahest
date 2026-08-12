@@ -43,6 +43,14 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // E-SERIES — SeriesError (V2-15 truncated expansions)
     ErrorSpec { code: "E-SERIES-001", class: "SeriesError", cause: Cause::Unsupported, remediation: Some("ensure all functions are registered primitives with differentiation rules") },
     ErrorSpec { code: "E-SERIES-002", class: "SeriesError", cause: Cause::UserInput,   remediation: Some("pass order >= 1 (exclusive truncation degree in x)") },
+    // A `series` call that ran past its work ceiling (or an active budget) before
+    // reaching the requested order. Refusing is the point: coefficients are formed by
+    // repeated differentiation without re-simplifying, so a nested radical grows by a
+    // constant factor per coefficient, and returning the prefix under the requested
+    // `O(h^order)` label would understate the remainder rather than admit the miss.
+    // Carried out of band on `SeriesError::InvalidOrder` (exhaustive public enum) —
+    // see `calculus::series::take_series_refusal`.
+    ErrorSpec { code: "E-SERIES-003", class: "SeriesRefusal", cause: Cause::Resource,  remediation: Some("ask for a lower order, raise the budget, or rewrite the expression so its repeated derivatives close") },
     // E-INT — IntegrationError
     ErrorSpec { code: "E-INT-001", class: "IntegrationError", cause: Cause::Unsupported, remediation: Some("use a numeric integrator for arbitrary functions") },
     ErrorSpec { code: "E-INT-002", class: "IntegrationError", cause: Cause::Domain,      remediation: None },
@@ -103,8 +111,26 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-SOLVE-001", class: "SolverError", cause: Cause::UserInput,   remediation: Some("ensure all equations are polynomial in the declared variables") },
     ErrorSpec { code: "E-SOLVE-002", class: "SolverError", cause: Cause::Unsupported, remediation: Some("only degree ≤ 2 univariate solving is implemented; Gröbner basis is still returned") },
     ErrorSpec { code: "E-SOLVE-003", class: "SolverError", cause: Cause::UserInput,   remediation: Some("provide one equation per variable") },
+    // `triangularize` extracts one polynomial per main variable, so two basis
+    // generators sharing a main variable lose one of them and the chain describes
+    // a larger variety than the input system.  Splitting on the initials
+    // (Lazard–Kalkbrener) is what would decompose those ideals; refusing is the
+    // point until it exists.  Travels inside `SolverError::NotPolynomial` — see
+    // `solver::regular_chains::TriangularizeRefusal`.
+    ErrorSpec { code: "E-SOLVE-004", class: "TriangularizeRefusal", cause: Cause::Unsupported, remediation: Some("this ideal needs a splitting triangular decomposition (Lazard–Kalkbrener on the initials), which is not implemented; use GroebnerBasis::compute or primary_decomposition instead") },
     ErrorSpec { code: "E-SOLVE-010", class: "SolverError", cause: Cause::Resource,    remediation: Some("check GPU availability; pass device_id=None to fall back to CPU") },
     ErrorSpec { code: "E-SOLVE-011", class: "SolverError", cause: Cause::Resource,    remediation: Some("CRT reconstruction failed; try adding more equations or use CPU path") },
+    // E-IDEAL — PrimaryDecompositionError (ideal/primary.rs) and IdealRefusal
+    ErrorSpec { code: "E-IDEAL-001", class: "PrimaryDecompositionError", cause: Cause::UserInput,   remediation: Some("pass at least one generator") },
+    ErrorSpec { code: "E-IDEAL-002", class: "PrimaryDecompositionError", cause: Cause::UserInput,   remediation: Some("all generators must be polynomials in the same variable list") },
+    ErrorSpec { code: "E-IDEAL-003", class: "PrimaryDecompositionError", cause: Cause::Resource,    remediation: Some("the saturation split recursed past its depth limit; simplify the generating set") },
+    ErrorSpec { code: "E-IDEAL-004", class: "PrimaryDecompositionError", cause: Cause::Internal,    remediation: Some("report the generating set as a minimal failing example") },
+    // √I over an arbitrary ideal needs Gianni–Trager–Zacharias (or a
+    // characteristic-set method).  Only monomial, principal and zero-dimensional
+    // ideals are certified; outside those, returning the input unchanged would be
+    // asserting √I = I with no justification, so the routine refuses instead.
+    ErrorSpec { code: "E-IDEAL-005", class: "IdealRefusal", cause: Cause::Unsupported, remediation: Some("radical is certified for monomial, principal and zero-dimensional ideals; intersect the associated primes of a primary decomposition if one is available") },
+    ErrorSpec { code: "E-IDEAL-006", class: "IdealRefusal", cause: Cause::Unsupported, remediation: Some("primary decomposition is certified for monomial and principal ideals, for saturation/CRT splits of them, and for shape-position zero-dimensional ideals; no general algorithm is implemented") },
     // E-HOMOTOPY — HomotopyError (V2-14 numerical algebraic geometry)
     ErrorSpec { code: "E-HOMOTOPY-002", class: "HomotopyError", cause: Cause::Unsupported, remediation: Some("raise HomotopyOpts.max_bezout_paths or use mixed-volume continuation for deficient systems") },
     ErrorSpec { code: "E-HOMOTOPY-003", class: "HomotopyError", cause: Cause::Resource,    remediation: Some("try HomotopyOpts.gamma_angle_seed or rescale equations") },

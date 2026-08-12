@@ -16,8 +16,9 @@ use std::collections::BTreeMap;
 
 use super::{expr_to_gbpoly, SolverError};
 
-/// A triangular set extracted from a lex Gröbner basis: polynomials ordered by
-/// increasing recursive main variable (see [`main_variable_recursive`]).
+/// A triangular set extracted from a lex Gröbner basis: at most one polynomial
+/// per recursive main variable (see [`main_variable_recursive`]), stored in
+/// increasing variable index — that is, from the lex-greatest variable down.
 #[derive(Debug, Clone)]
 pub struct RegularChain {
     pub n_vars: usize,
@@ -35,13 +36,26 @@ impl RegularChain {
     }
 }
 
-/// Largest variable index that appears with positive total degree (recursive main variable).
+/// The **recursive main variable** of `poly`: the greatest variable, in the
+/// ambient ordering, that occurs with positive degree.
+///
+/// Variables are indexed in *decreasing* rank — index `0` is the lex-greatest
+/// variable, index `n − 1` the lex-least, which is the layout
+/// [`crate::solver::expr_to_gbpoly`] builds and the one the bottom-univariate
+/// split assumes when it calls `n − 1` "the bottom". The main variable is
+/// therefore the **smallest** occurring index.
+///
+/// This returned the *largest* index until 3.8. Under that reading every
+/// generator mentioning a low-ranked variable was filed in the same slot of
+/// [`extract_regular_chain_from_basis`], and the min-degree tie-break dropped
+/// the rest: `[x − y − 1, y² − 2]` — already a reduced lex basis of a two-point
+/// ideal — came back as the single chain `[x − y − 1]`, which cuts out a curve.
 pub fn main_variable_recursive(poly: &GbPoly) -> Option<usize> {
     let mut best: Option<usize> = None;
     for exp in poly.terms.keys() {
         for (i, &e) in exp.iter().enumerate() {
             if e > 0 {
-                best = Some(best.map_or(i, |b| b.max(i)));
+                best = Some(best.map_or(i, |b| b.min(i)));
             }
         }
     }
@@ -73,6 +87,15 @@ fn is_unit_ideal(gens: &[GbPoly], n_vars: usize) -> bool {
 
 /// From a Gröbner basis, pick one polynomial per recursive main variable — the
 /// one of minimal degree in that variable among candidates.
+///
+/// This is a *selection*, not a decomposition: when two basis elements share a
+/// main variable only one survives, so `⟨chain⟩` can be strictly smaller than
+/// the ideal and `V(chain)` strictly larger than `V(I)`. Every polynomial kept
+/// is a basis element, so `⟨chain⟩ ⊆ I` always holds — which is what
+/// [`crate::solver::solve_polynomial_system`] relies on when it uses the chain
+/// as a source of *candidate* solutions that its own post-condition filter then
+/// checks. [`triangularize`], whose output is the answer rather than a
+/// candidate list, verifies the reverse containment and refuses without it.
 pub fn extract_regular_chain_from_basis(
     gens: &[GbPoly],
     n_vars: usize,
@@ -220,16 +243,44 @@ fn split_chain_at_bottom_univariate(
     }
 }
 
+/// True iff `⟨chain⟩ ⊇ I`, i.e. every generator of the input basis reduces to
+/// zero modulo the chain.
+///
+/// This is the soundness direction that matters: with it, `V(chain) ⊆ V(I)`, so
+/// the chain cannot describe points the input system does not have. Without it
+/// the chain cuts out a *larger* set than the system — a curve where the answer
+/// is two points — which is exactly the failure `main_variable_recursive`'s
+/// reversed ordering used to produce.
+fn chain_contains_ideal(chain: &RegularChain, gb_gens: &[GbPoly]) -> bool {
+    if chain.polys.is_empty() {
+        return gb_gens.iter().all(|g| g.is_zero());
+    }
+    let chain_gb = GroebnerBasis::compute(chain.polys.clone(), MonomialOrder::Lex);
+    gb_gens.iter().all(|g| chain_gb.contains(g))
+}
+
 /// Kalkbrener / Lazard style triangular decomposition: compute a lex Gröbner basis,
 /// extract a recursive main-variable chain, then split along square-free factors of
 /// the bottom univariate when possible (V2-7).
 ///
 /// Returns an empty list when the ideal is the whole ring (`⟨1⟩`).
+///
+/// # Refusals
+///
+/// Chain extraction keeps one polynomial per main variable, so a basis with two
+/// generators sharing a main variable — `⟨xy, xz⟩` is the smallest example —
+/// loses one of them and the surviving chain describes a larger variety than
+/// the input system. Splitting on general initials (Lazard–Kalkbrener) is what
+/// would decompose those ideals properly, and is not implemented. Rather than
+/// return the under-determined chain, this function checks `⟨chain⟩ ⊇ I` for
+/// every chain it is about to return and refuses when the check fails; see
+/// [`TriangularizeRefusal`] for the code that refusal carries.
 pub fn triangularize(
     equations: Vec<ExprId>,
     vars: Vec<ExprId>,
     pool: &ExprPool,
 ) -> Result<Vec<RegularChain>, SolverError> {
+    forget_triangularize_refusal();
     let n_vars = vars.len();
     if n_vars == 0 {
         return Ok(vec![]);
@@ -249,7 +300,120 @@ pub fn triangularize(
     }
 
     let chain = extract_regular_chain_from_basis(gens, n_vars, MonomialOrder::Lex);
-    split_chain_at_bottom_univariate(chain, last_var)
+    let chains = split_chain_at_bottom_univariate(chain, last_var)?;
+
+    for c in &chains {
+        if !chain_contains_ideal(c, gens) {
+            return Err(refuse_triangularize(gens.len(), c.polys.len()));
+        }
+    }
+    Ok(chains)
+}
+
+// ---------------------------------------------------------------------------
+// Refusals, reported out of band
+// ---------------------------------------------------------------------------
+
+/// `triangularize` declined because the chain it extracted is not a triangular
+/// decomposition of the input ideal.
+///
+/// # Why this is not an error variant
+///
+/// [`SolverError`] is a public *exhaustive* enum, so growing it a
+/// `NotTriangularizable` variant is a major semver break — and so is marking it
+/// `#[non_exhaustive]` to allow one later. A correctness fix inside a patch
+/// release cannot spend a major version, so the refusal travels out of band:
+/// [`triangularize`] returns `SolverError::NotPolynomial`, which this module
+/// already uses as its generic carrier (the FLINT failure path of the
+/// bottom-univariate split reports through it too), with a message that names
+/// the real reason, and the stable `E-SOLVE-004` code is recorded here for
+/// [`take_triangularize_refusal`] to hand to the bindings.
+///
+/// This is the pattern
+/// [`crate::matrix::take_zero_test_refusal`] uses for undecided zero tests
+/// inside `LinearAlgebraError::UnsupportedField`, and
+/// [`crate::calculus::limits::last_budget_trip`] for budget trips inside
+/// `LimitError::DepthExceeded`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TriangularizeRefusal {
+    basis_len: usize,
+    chain_len: usize,
+}
+
+impl TriangularizeRefusal {
+    /// How many generators the lex basis had.
+    pub fn basis_len(&self) -> usize {
+        self.basis_len
+    }
+
+    /// How many polynomials the extracted chain kept.
+    pub fn chain_len(&self) -> usize {
+        self.chain_len
+    }
+}
+
+impl std::fmt::Display for TriangularizeRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "triangularize: the {} lex basis generators do not extract to a \
+             triangular set — the {}-polynomial chain does not generate an ideal \
+             containing them, so it cuts out a larger variety than the input \
+             system; refusing rather than returning an under-determined chain",
+            self.basis_len, self.chain_len
+        )
+    }
+}
+
+impl std::error::Error for TriangularizeRefusal {}
+
+impl crate::errors::AlkahestError for TriangularizeRefusal {
+    fn code(&self) -> &'static str {
+        "E-SOLVE-004"
+    }
+
+    fn remediation(&self) -> Option<&'static str> {
+        Some(
+            "this ideal needs a splitting triangular decomposition (Lazard–Kalkbrener \
+             on the initials), which is not implemented; use GroebnerBasis::compute or \
+             primary_decomposition instead",
+        )
+    }
+}
+
+thread_local! {
+    /// The refusal behind the `SolverError::NotPolynomial` the current thread is
+    /// about to return, when that variant is a carrier rather than what it
+    /// usually means.
+    static LAST_TRIANGULARIZE_REFUSAL: std::cell::RefCell<Option<TriangularizeRefusal>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Drop any recorded refusal, so a later unrelated `NotPolynomial` — a genuinely
+/// non-polynomial equation, say — can never be re-attributed to it.
+fn forget_triangularize_refusal() {
+    LAST_TRIANGULARIZE_REFUSAL.with(|c| *c.borrow_mut() = None);
+}
+
+fn refuse_triangularize(basis_len: usize, chain_len: usize) -> SolverError {
+    let refusal = TriangularizeRefusal {
+        basis_len,
+        chain_len,
+    };
+    let message = refusal.to_string();
+    LAST_TRIANGULARIZE_REFUSAL.with(|c| *c.borrow_mut() = Some(refusal));
+    SolverError::NotPolynomial(message)
+}
+
+/// Take the refusal behind the error that just came back, if there was one.
+///
+/// Bindings call this when [`triangularize`] returns
+/// `SolverError::NotPolynomial` and raise the refusal's own `E-SOLVE-004` when
+/// it is present, so the caller still gets the specific code. `Some` means
+/// *this* error is a refusal; `None` means the variant means what it usually
+/// means. Consuming, so one refusal is reported once; thread-local.
+pub fn take_triangularize_refusal() -> Option<TriangularizeRefusal> {
+    LAST_TRIANGULARIZE_REFUSAL.with(|c| c.borrow_mut().take())
 }
 
 #[cfg(test)]
@@ -268,6 +432,69 @@ mod tests {
         let chains = triangularize(vec![eq1, eq2], vec![x, y], &pool).unwrap();
         assert_eq!(chains.len(), 1);
         assert!(!chains[0].is_empty());
+    }
+
+    #[test]
+    fn main_variable_is_the_lex_greatest_occurring() {
+        // x - y in vars [x, y]: x is lex-greatest, so the main variable is 0.
+        let p = GbPoly {
+            terms: [
+                (vec![1u32, 0], Rational::from(1)),
+                (vec![0, 1], Rational::from(-1)),
+            ]
+            .into_iter()
+            .collect(),
+            n_vars: 2,
+        };
+        assert_eq!(main_variable_recursive(&p), Some(0));
+    }
+
+    #[test]
+    fn triangularize_keeps_every_generator_of_a_two_point_ideal() {
+        // {x - y - 1, y² - 2} is already a reduced lex basis; its variety is the
+        // two points (1 ± √2, ±√2).  A one-polynomial chain in two variables
+        // cuts out a curve, so it cannot be the answer whichever poly is kept.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let eq1 = pool.add(vec![
+            x,
+            pool.mul(vec![pool.integer(-1), y]),
+            pool.integer(-1),
+        ]);
+        let eq2 = pool.add(vec![pool.pow(y, pool.integer(2)), pool.integer(-2)]);
+        let chains = triangularize(vec![eq1, eq2], vec![x, y], &pool).unwrap();
+        assert_eq!(chains.len(), 1);
+        assert_eq!(chains[0].len(), 2, "both generators must survive");
+        let mains: Vec<Option<usize>> = chains[0]
+            .polys
+            .iter()
+            .map(main_variable_recursive)
+            .collect();
+        assert_eq!(mains, vec![Some(0), Some(1)], "one poly per main variable");
+    }
+
+    #[test]
+    fn triangularize_refuses_rather_than_drop_a_generator() {
+        // ⟨xy, xz⟩ = ⟨x⟩ ∩ ⟨y, z⟩ needs a *split*; both generators have main
+        // variable x, so extraction can only keep one and ⟨xy⟩ ⊉ ⟨xy, xz⟩.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let z = pool.symbol("z", Domain::Real);
+        let err = triangularize(
+            vec![pool.mul(vec![x, y]), pool.mul(vec![x, z])],
+            vec![x, y, z],
+            &pool,
+        )
+        .expect_err("must refuse rather than return a chain missing xz");
+        assert!(matches!(err, SolverError::NotPolynomial(_)));
+        let refusal = take_triangularize_refusal().expect("refusal recorded out of band");
+        assert_eq!(crate::errors::AlkahestError::code(&refusal), "E-SOLVE-004");
+        assert_eq!(refusal.basis_len(), 2);
+        assert_eq!(refusal.chain_len(), 1);
+        // Consuming: a second take must not re-report it.
+        assert_eq!(take_triangularize_refusal(), None);
     }
 
     #[test]

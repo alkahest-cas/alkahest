@@ -39,7 +39,7 @@ pub mod f4 {
 
 pub use buchberger::compute_buchberger_basis;
 #[cfg(feature = "groebner-cuda")]
-pub use cuda::{compute_groebner_basis_gpu, GpuGroebnerError, MacaulayMatrix};
+pub use cuda::{compute_groebner_basis_gpu, GpuBackendReport, GpuGroebnerError, MacaulayMatrix};
 pub use f5::compute_groebner_basis_f5;
 pub use fglm::{fglm, grevlex_staircase, is_zero_dimensional};
 pub use ideal::GbPoly;

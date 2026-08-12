@@ -14,7 +14,11 @@ default = ["egraph", "groebner"]
 egraph = ["alkahest-core/egraph"]
 jit = ["alkahest-core/jit"]
 cranelift = ["alkahest-core/cranelift"]
-numpy = ["dep:numpy"]
+# There is deliberately no `numpy` feature. It gated the `numpy` crate, which
+# this crate never used a single item from, and `capabilities()` reported it as
+# a capability that therefore meant nothing: `alkahest.numpy_eval` works on the
+# default (feature-off) build because it goes through the buffer protocol on
+# `CompiledFn.call_batch_into`, which needs no NumPy binding at all.
 parallel = ["alkahest-core/parallel"]
 groebner = ["alkahest-core/groebner"]
 groebner-cuda = ["alkahest-core/groebner-cuda"]
@@ -23,7 +27,6 @@ cuda = ["alkahest-core/cuda"]
 [dependencies]
 alkahest-core = { path = "../alkahest-core", package = "alkahest-cas" }
 pyo3.workspace = true
-numpy = { version = "0.21", optional = true }
 rug = { version = "1", features = ["integer", "rational"] }
 
 [dev-dependencies]

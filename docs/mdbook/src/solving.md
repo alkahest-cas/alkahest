@@ -75,9 +75,13 @@ Supported orders: `Lex` (lexicographic), `GrLex` (graded lexicographic), `GRevLe
 
 With `--features "groebner parallel"`, Gröbner basis computation uses Rayon for parallel S-polynomial reduction via the F4 algorithm.
 
-### GPU-accelerated Macaulay matrix (groebner-cuda)
+### GPU-accelerated Macaulay matrix (groebner-cuda) — Rust only, not wired into the solver
 
-With `--features "groebner-cuda"`, the mod-p row reduction of the Macaulay matrix is offloaded to CUDA. Multi-prime CRT lifts reconstruct rational coefficients. Falls back to pure-Rust when no CUDA device is present.
+`--features "groebner-cuda"` compiles a CUDA kernel for the mod-p row reduction of the Macaulay matrix, with multi-prime CRT lifts reconstructing rational coefficients, and falls back to pure-Rust row reduction when no CUDA device is present.
+
+**It does not accelerate anything on this page.** `GroebnerBasis.compute`, `solve` and `triangularize` run Buchberger/F4 on the CPU regardless; the GPU routine is reachable only as the Rust function `alkahest_cas::poly::groebner::compute_groebner_basis_gpu`, and production dispatch deliberately does not prefer it until the [benchmark harness](https://github.com/alkahest-cas/alkahest/blob/main/docs/symbolic-gpu-benchmarks.md) says it wins. There is correspondingly **no `capabilities()["features"]["groebner_cuda"]` bit** — it used to exist and report that the kernel had been compiled in, which no Python observation could confirm or refute, so 3.8 removed it. See [GPU support](./gpu.md#groebner-cuda-is-not-reachable-from-python).
+
+Because the Rust entry point falls back to CPU row reduction when no device is present, it returns a `GpuBackendReport` alongside the basis: `let (basis, backend) = compute_groebner_basis_gpu(gens, order, Some(0))?;` and `backend.ran_on_gpu()` is the only way to tell a real GPU run from a fallback, since the basis is identical either way.
 
 ## Elimination ideals
 

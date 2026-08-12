@@ -1,12 +1,23 @@
 name: CI
 
 on:
+    # `release/**` is included because a release branch accumulates merges that
+    # would otherwise reach a tag with no CI at all: `pull_request` runs did not
+    # fire for a PR based on `release/3.8.0`, and push only covered `main`, so
+    # everything merged there was verified by local gates alone.
   push:
-    branches: [main]
+    branches: [main, 'release/**']
   pull_request:
   schedule:
     - cron: "0 2 * * *"   # 02:00 UTC daily — triggers the nightly job
   workflow_dispatch:        # allow re-running nightly shards after CI fixes
+
+# No job here reads or writes repository state through the API — these are
+# build-and-test jobs only. They do run build scripts and test code from the
+# head of a pull request, so the checkout token is dropped to read-only rather
+# than left at whatever the repository default happens to be.
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -154,30 +165,54 @@ jobs:
           PYTHONUNBUFFERED: "1"
         run: pytest --timeout=900 --ignore=tests/silent_errors
 
+
+  # ── AddressSanitizer, as its own job rather than a step inside Tier 1a.
+  #
+  # It was 467s of Tier 1a's ~1000s, which made it half the wait on every PR.
+  # But CI wall-clock is the slowest *job*, not the sum of steps: run in
+  # parallel it costs nothing on the critical path, so the coverage comes back
+  # at PR time and Tier 1a still finishes first. Scoped to `-p alkahest-cas`
+  # here for speed; the nightly `asan` shard runs the whole workspace.
+  asan:
+    name: AddressSanitizer — alkahest-cas
+    runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v6
+
       - name: Install Rust nightly (for ASan)
         uses: dtolnay/rust-toolchain@nightly
         with:
           targets: x86_64-unknown-linux-gnu
           components: rust-src
 
-      # Scope to alkahest-cas: full-workspace + sanitizer + build-std often exceeds
-      # runner wall-clock with little log output (looks "stuck"). MLIR/Python ASan
-      # stays uninstrumented here; TSAN/LSan still cover the workspace on schedule.
+      - name: Install system dependencies
+        run: sudo apt-get install -y libflint-dev llvm-15-dev llvm-15
+
+      - name: Cache Cargo registry
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-asan-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-asan-
+
+      # --lib --tests: doc-test binaries link separately and do not receive the
+      # ASan runtime under -Z build-std ("undefined symbol: __asan_init").
+      # LSAN_OPTIONS=detect_leaks=0: leaks belong to the nightly lsan shard, and
+      # the GMP/rug thread caches are false positives here.
       - name: cargo test (AddressSanitizer, alkahest-cas only)
-        # --lib --tests: skip doc tests — doc-test binaries link separately and
-        # don't receive the ASan runtime when built via -Z build-std, causing
-        # "undefined symbol: __asan_init" linker errors.  Unit + integration
-        # tests are the meaningful targets for buffer-overflow detection anyway.
-        # LSAN_OPTIONS=detect_leaks=0: suppress GMP/rug thread-cache false positives.
         env:
           LSAN_OPTIONS: detect_leaks=0
         run: |
-          echo "::group::ASan build + test (alkahest-cas)"
           RUSTFLAGS="-Zsanitizer=address" \
           cargo +nightly test -p alkahest-cas --lib --tests \
             --target x86_64-unknown-linux-gnu \
             -Z build-std
-          echo "::endgroup::"
 
   # ── Wheel smoke: README quickstart + fresh-interpreter parse, against a
   # *built wheel* installed into its own clean venv -- not tier1's
@@ -241,10 +276,15 @@ jobs:
   # ── Tier 1b: slow Python integration (roadmap-level sparse_interp)
   # Runs on the nightly schedule only so push/PR CI stays fast; run locally with:
   #   pytest tests/test_sparse_interp.py -m slow --timeout=0 -v --override-ini="addopts=-v"
+  # Runs on PRs as well as nightly. It was nightly-only because the
+  # sparse_interp roadmap case took long enough to matter; #292 replaced the
+  # recursive formulation with Zippel's iterative algorithm and the whole job is
+  # now about a minute, of which the tests are half a second. Running in
+  # parallel it costs nothing on the critical path, and it guards the oracle
+  # call-count property — the thing a regression there would silently undo.
   tier1-python-slow:
     name: Tier 1b — Python slow tests
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 360
     steps:
       - uses: actions/checkout@v6
@@ -306,6 +346,7 @@ jobs:
       fail-fast: false
       matrix:
         shard:
+          - asan
           - proptest
           - hypothesis
           - tsan
@@ -327,8 +368,8 @@ jobs:
 
       - name: Install Rust nightly
         if: >-
-          matrix.shard == 'tsan' || matrix.shard == 'lsan' ||
-          matrix.shard == 'valgrind'
+          matrix.shard == 'asan' || matrix.shard == 'tsan' ||
+          matrix.shard == 'lsan' || matrix.shard == 'valgrind'
         uses: dtolnay/rust-toolchain@nightly
         with:
           targets: x86_64-unknown-linux-gnu
@@ -417,6 +458,24 @@ jobs:
             --target x86_64-unknown-linux-gnu \
             -Z build-std
 
+      # Moved out of Tier 1a, where it was 467s of a ~1000s job — nearly half
+      # the time a contributor waits on a PR — for a check whose value is depth
+      # rather than immediacy. Nightly can also afford the *whole workspace*
+      # rather than the `-p alkahest-cas` subset Tier 1a was scoped to.
+      - name: cargo test (AddressSanitizer)
+        if: matrix.shard == 'asan'
+        # --lib --tests: doc-test binaries link separately and do not receive the
+        # ASan runtime under -Z build-std ("undefined symbol: __asan_init").
+        # LSAN_OPTIONS=detect_leaks=0: leaks are the `lsan` shard's job, and the
+        # GMP/rug thread caches are false positives here.
+        env:
+          LSAN_OPTIONS: detect_leaks=0
+        run: |
+          RUSTFLAGS="-Zsanitizer=address" \
+          cargo +nightly test --workspace --lib --tests \
+            --target x86_64-unknown-linux-gnu \
+            -Z build-std
+
       - name: Install Valgrind
         if: matrix.shard == 'valgrind'
         # Without `update` the runner's package index is stale and the fetch
@@ -430,12 +489,65 @@ jobs:
         env:
           RUSTFLAGS: "-C debuginfo=2 -Z dwarf-version=4"
         run: |
-          cargo +nightly build --all --target x86_64-unknown-linux-gnu -Z build-std
-          for bin in target/x86_64-unknown-linux-gnu/debug/deps/alkahest_cas-*; do
-            [ -x "$bin" ] || continue
+          # Ask cargo which executables it produced instead of globbing a path.
+          # The previous version globbed `target/<triple>/debug/deps/alkahest_cas-*`
+          # after a `cargo build`, which produces no test binaries at all — so the
+          # loop body never ran and the shard reported success having valgrinded
+          # nothing. Switching to `test --no-run` fixed the build but the glob
+          # still missed, because `-Z build-std` does not place them where the
+          # path assumed. `--message-format=json` reports the real paths, so
+          # there is nothing left to drift.
+          cargo +nightly test --no-run --all \
+            --target x86_64-unknown-linux-gnu -Z build-std \
+            --message-format=json > /tmp/cargo-test.json
+          mapfile -t bins < <(
+            jq -r 'select(.profile.test == true) | .executable | select(. != null)' \
+              /tmp/cargo-test.json | grep alkahest_cas
+          )
+          # Scope to the FFI boundary this step is named for. Valgrinding every
+          # unit test in a -Z build-std debug build took 2h49m of the 6h budget
+          # on its first real run, which ties up a runner for most of a night to
+          # re-check pure-Rust logic the other shards already cover. The tests
+          # that actually cross into GMP/MPFR/FLINT are the ones worth the 20-50x
+          # slowdown.
+          #
+          # libtest takes filters as separate positional arguments and matches
+          # them as substrings, not as one regex — a single "a|b" argument would
+          # match nothing, run zero tests, and report clean. Set
+          # ALKAHEST_VALGRIND_FILTER (space separated) to override, or empty for
+          # a full sweep.
+          read -r -a filters <<< "${ALKAHEST_VALGRIND_FILTER-ball:: flint rug number_theory:: lattice:: validated::}"
+          if [ "${#bins[@]}" -eq 0 ]; then
+            echo "::error title=Valgrind ran nothing::cargo reported no alkahest_cas test executables" >&2
+            jq -r 'select(.executable != null) | .executable' /tmp/cargo-test.json >&2 || true
+            exit 1
+          fi
+          for bin in "${bins[@]}"; do
+            echo "== valgrind $bin"
+            # --errors-for-leak-kinds=definite,indirect: fail on real leaks and
+            # on any memory-safety error, but not on "possibly lost". The first
+            # real run of this gate reported 0 definite and 0 indirect bytes and
+            # four "possibly lost" records — a thread-local Thread handle, MPFR's
+            # const_log2 cache, and two hashbrown tables. Those are interior
+            # pointers into intentional caches and process-lifetime globals, not
+            # defects, and suppressing them by stack shape would be four brittle
+            # rules that rot the first time an inlining decision changes.
+            # An invalid read/write, or a definitely-lost block, still fails.
+            # Tee so the run can be asserted on: a filter that matches nothing
+            # would execute zero tests and valgrind would report a clean bill,
+            # which is precisely the shape of gate this shard just stopped being.
             valgrind --leak-check=full --error-exitcode=1 \
-              --suppressions=valgrind.supp "$bin" 2>&1
+              --errors-for-leak-kinds=definite,indirect \
+              --show-leak-kinds=definite,indirect,possible \
+              --suppressions=valgrind.supp "$bin" "${filters[@]}" 2>&1 | tee /tmp/vg-out.txt
+            ran=$(grep -oE '^test result: ok\. [0-9]+ passed' /tmp/vg-out.txt | grep -oE '[0-9]+' | head -1)
+            echo "tests executed under valgrind: ${ran:-0}"
+            if [ -z "$ran" ] || [ "$ran" -eq 0 ]; then
+              echo "::error title=Valgrind executed no tests::filter matched nothing in $bin" >&2
+              exit 1
+            fi
           done
+          echo "valgrind ran over ${#bins[@]} test binary/binaries"
 
       - name: Install cargo-afl
         if: matrix.shard == 'fuzz-expr' || matrix.shard == 'fuzz-simplifier'
@@ -443,22 +555,143 @@ jobs:
 
       - name: AFL++ fuzzing — expr builder (2 h cap)
         if: matrix.shard == 'fuzz-expr'
+        env:
+          # Lets AFL proceed even if core_pattern could not be changed, instead
+          # of refusing to start. AFL_SKIP_CPUFREQ likewise: the runner exposes
+          # no CPU governor and AFL treats that as fatal.
+          AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES: "1"
+          AFL_SKIP_CPUFREQ: "1"
         run: |
           if [ -f fuzz/src/bin/fuzz_expr_builder.rs ]; then
+            # AFL refuses to start unless the kernel core_pattern points at a
+            # file rather than a pipe. Without this it printed its instructions,
+            # exited non-zero, and `|| true` turned that into a green tick — the
+            # shard "passed" having executed zero test cases.
+            #
+            # `system-config` runs sudo *internally* (it says so in the message
+            # AFL prints), so it must NOT be prefixed with sudo: cargo lives in
+            # ~/.cargo/bin, which sudo's secure_path does not include. Best
+            # effort, because the env fallback below covers it either way.
+            cargo afl system-config || echo "system-config failed; relying on AFL_* fallbacks"
             cargo afl build --manifest-path fuzz/Cargo.toml --bin fuzz_expr_builder
+            # `fuzz/out/` is gitignored, so it does not exist in a fresh
+            # checkout and AFL cannot create a nested path under a missing
+            # parent: it aborted with
+            #   SYSTEM ERROR : Unable to create 'fuzz/out/expr_builder'
+            # *after* clearing the core_pattern hurdle.
+            mkdir -p fuzz/out
+            # A missing seed corpus would make AFL exit instantly, which the
+            # execs_done check would catch — but the message would be obscure.
+            if [ ! -d fuzz/in/expr_builder ] || [ -z "$(ls -A fuzz/in/expr_builder 2>/dev/null)" ]; then
+              echo "::error title=No seed corpus::fuzz/in/expr_builder is missing or empty" >&2
+              exit 1
+            fi
+            # `fuzz/` is excluded from the root workspace (see Cargo.toml), so
+            # `--manifest-path fuzz/Cargo.toml` builds into `fuzz/target/`, not
+            # `target/`. The hardcoded `target/debug/fuzz_expr_builder` produced
+            #   PROGRAM ABORT : Program ... not found or not executable
+            # Resolve it instead of assuming, and say what was built if not.
+            bin=$(find fuzz/target target -type f -name fuzz_expr_builder -perm -u+x 2>/dev/null | head -1)
+            if [ -z "$bin" ]; then
+              echo "::error title=Fuzz binary not found::fuzz_expr_builder was not produced" >&2
+              find fuzz/target target -maxdepth 3 -type f -perm -u+x 2>/dev/null | head -20 >&2
+              exit 1
+            fi
+            echo "fuzzing $bin"
+            set +e
             timeout 7200 cargo afl fuzz \
               -i fuzz/in/expr_builder -o fuzz/out/expr_builder \
-              target/debug/fuzz_expr_builder || true
+              "$bin"
+            status=$?
+            set -e
+            # 124 is `timeout` doing its job after the 2 h cap; 0 means AFL
+            # chose to stop. Anything else is a real failure and must not be
+            # swallowed.
+            if [ "$status" -ne 124 ] && [ "$status" -ne 0 ]; then
+              echo "::error title=AFL exited abnormally::status $status" >&2
+              exit "$status"
+            fi
+            # A fuzzer that ran zero executions is not a passing fuzz job.
+            stats=fuzz/out/expr_builder/default/fuzzer_stats
+            if [ ! -f "$stats" ]; then
+              echo "::error title=AFL produced no stats::$stats missing" >&2
+              exit 1
+            fi
+            execs=$(awk '/^execs_done/ {print $3}' "$stats")
+            echo "AFL executions: $execs"
+            if [ -z "$execs" ] || [ "$execs" -eq 0 ]; then
+              echo "::error title=AFL executed nothing::execs_done=$execs" >&2
+              exit 1
+            fi
           fi
 
       - name: AFL++ fuzzing — simplifier (2 h cap)
         if: matrix.shard == 'fuzz-simplifier'
+        env:
+          AFL_I_DONT_CARE_ABOUT_MISSING_CRASHES: "1"
+          AFL_SKIP_CPUFREQ: "1"
         run: |
           if [ -f fuzz/src/bin/fuzz_simplifier.rs ]; then
+            # AFL refuses to start unless the kernel core_pattern points at a
+            # file rather than a pipe. Without this it printed its instructions,
+            # exited non-zero, and `|| true` turned that into a green tick — the
+            # shard "passed" having executed zero test cases.
+            #
+            # `system-config` runs sudo *internally* (it says so in the message
+            # AFL prints), so it must NOT be prefixed with sudo: cargo lives in
+            # ~/.cargo/bin, which sudo's secure_path does not include. Best
+            # effort, because the env fallback below covers it either way.
+            cargo afl system-config || echo "system-config failed; relying on AFL_* fallbacks"
             cargo afl build --manifest-path fuzz/Cargo.toml --bin fuzz_simplifier
+            # `fuzz/out/` is gitignored, so it does not exist in a fresh
+            # checkout and AFL cannot create a nested path under a missing
+            # parent: it aborted with
+            #   SYSTEM ERROR : Unable to create 'fuzz/out/simplifier'
+            # *after* clearing the core_pattern hurdle.
+            mkdir -p fuzz/out
+            # A missing seed corpus would make AFL exit instantly, which the
+            # execs_done check would catch — but the message would be obscure.
+            if [ ! -d fuzz/in/simplifier ] || [ -z "$(ls -A fuzz/in/simplifier 2>/dev/null)" ]; then
+              echo "::error title=No seed corpus::fuzz/in/simplifier is missing or empty" >&2
+              exit 1
+            fi
+            # `fuzz/` is excluded from the root workspace (see Cargo.toml), so
+            # `--manifest-path fuzz/Cargo.toml` builds into `fuzz/target/`, not
+            # `target/`. The hardcoded `target/debug/fuzz_simplifier` produced
+            #   PROGRAM ABORT : Program ... not found or not executable
+            # Resolve it instead of assuming, and say what was built if not.
+            bin=$(find fuzz/target target -type f -name fuzz_simplifier -perm -u+x 2>/dev/null | head -1)
+            if [ -z "$bin" ]; then
+              echo "::error title=Fuzz binary not found::fuzz_simplifier was not produced" >&2
+              find fuzz/target target -maxdepth 3 -type f -perm -u+x 2>/dev/null | head -20 >&2
+              exit 1
+            fi
+            echo "fuzzing $bin"
+            set +e
             timeout 7200 cargo afl fuzz \
               -i fuzz/in/simplifier -o fuzz/out/simplifier \
-              target/debug/fuzz_simplifier || true
+              "$bin"
+            status=$?
+            set -e
+            # 124 is `timeout` doing its job after the 2 h cap; 0 means AFL
+            # chose to stop. Anything else is a real failure and must not be
+            # swallowed.
+            if [ "$status" -ne 124 ] && [ "$status" -ne 0 ]; then
+              echo "::error title=AFL exited abnormally::status $status" >&2
+              exit "$status"
+            fi
+            # A fuzzer that ran zero executions is not a passing fuzz job.
+            stats=fuzz/out/simplifier/default/fuzzer_stats
+            if [ ! -f "$stats" ]; then
+              echo "::error title=AFL produced no stats::$stats missing" >&2
+              exit 1
+            fi
+            execs=$(awk '/^execs_done/ {print $3}' "$stats")
+            echo "AFL executions: $execs"
+            if [ -z "$execs" ] || [ "$execs" -eq 0 ]; then
+              echo "::error title=AFL executed nothing::execs_done=$execs" >&2
+              exit 1
+            fi
           fi
 
       - name: Oracle + benches + cross-CAS + artifact upload

@@ -22,14 +22,14 @@ cert.coeffs         # [a_0(n), a_1(n)] — here proportional to [-2, 1]
 cert.certificate    # R(n, k)
 ```
 
-The result says: with `S(n) = Σ_k F(n,k)`,
+The result says: with `S(n) = Σ_{k=k_lo}^{k_hi} F(n,k)`,
 
 ```text
-Σ_i a_i(n)·S(n+i) = 0
+Σ_i a_i(n)·S(n+i) = G(n, k_hi+1) − G(n, k_lo)
 ```
 
-Here that reads `S(n+1) − 2·S(n) = 0`, which together with `S(0) = 1` gives
-`Σ_k C(n,k) = 2^n`.
+and that boundary difference vanishes here, so the recurrence reads
+`S(n+1) − 2·S(n) = 0`, which together with `S(0) = 1` gives `Σ_k C(n,k) = 2^n`.
 
 ## What the certificate asserts
 
@@ -40,11 +40,39 @@ The returned `certificate` is a rational function `R(n, k)` such that, with
 Σ_i a_i(n)·F(n+i, k) = G(n, k+1) − G(n, k)
 ```
 
-holds **identically**. Summing over `k` telescopes the right-hand side to zero
-(over a range where the boundary terms vanish), which is what licenses the
-recurrence for `S(n)`. Because the identity is a rational-function identity, a
-reader — or a referee, or another CAS — can verify it by clearing denominators
-and expanding, with no reference to how it was found.
+holds **identically**. That identity in `k` is the whole of what is verified.
+Because it is a rational-function identity, a reader — or a referee, or another
+CAS — can check it by clearing denominators and expanding, with no reference to
+how it was found.
+
+## The boundary hypothesis is yours to discharge
+
+Summing that identity over `k = k_lo .. k_hi` telescopes the right-hand side to
+`G(n, k_hi+1) − G(n, k_lo)` — a *boundary difference*, not zero. The familiar
+homogeneous recurrence for `S(n)` therefore holds only when that difference
+vanishes: the **natural boundary** hypothesis, which Zeilberger's algorithm does
+not establish and which `zeilberger` does not check.
+
+It holds in the usual case, where `F` vanishes outside `0 ≤ k ≤ n`, and that
+covers every classical identity in this chapter. It fails, for instance, for
+`F(n,k) = C(n,k)/(k+1)`: there `G(n,0) = −1`, and the true relation is
+`(n+2)·S(n+1) − (2n+2)·S(n) = 1`, not `0`. Reading the homogeneous recurrence
+off the certificate there gives a false lemma.
+
+The certificate carries what you need to settle it:
+
+```python
+cert.side_conditions   # the hypothesis, stated
+cert.boundary_term     # G(n, k) = R(n, k)·F(n, k)
+
+# Substitute your own summation endpoints and check the difference is 0.
+g_at_lo = ak.simplify(ak.subs(cert.boundary_term, {k: pool.integer(0)})).value
+```
+
+`side_conditions` is a `list[str]`, the same shape as
+`DerivedResult.verification["side_conditions"]`: things the result depends on
+that were assumed rather than proved. An empty list would be a claim; this one
+is never empty.
 
 ## Verification is not optional
 

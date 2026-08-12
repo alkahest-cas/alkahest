@@ -7,7 +7,9 @@
 
 #![cfg(feature = "groebner-cuda")]
 
-use alkahest_cas::poly::groebner::cuda::{compute_groebner_basis_gpu, MacaulayMatrix};
+use alkahest_cas::poly::groebner::cuda::{
+    compute_groebner_basis_gpu, GpuBackendReport, MacaulayMatrix,
+};
 use alkahest_cas::poly::groebner::f4::compute_groebner_basis;
 use alkahest_cas::poly::groebner::ideal::GbPoly;
 use alkahest_cas::poly::groebner::monomial_order::MonomialOrder;
@@ -49,13 +51,47 @@ fn poly(terms: &[(&[u32], i64)]) -> GbPoly {
 /// `groebner-cuda` features — so failing here cannot hold up ordinary PRs.
 fn gpu_available() -> bool {
     let requested = std::env::var("ALKAHEST_GPU_TESTS").ok().as_deref() == Some("1");
-    let device_ok = cudarc::driver::CudaContext::new(0).is_ok();
+    // `cudarc` *panics* (rather than returning `Err`) when `libcuda.so` cannot
+    // be dlopen'd at all, which is the state of any machine with no driver
+    // installed. Without the `catch_unwind` this helper aborted the three GPU
+    // tests on exactly the machines its own doc comment promises to support,
+    // so `cargo test --features groebner-cuda` could not pass off a GPU box.
+    // Missing library and missing device must both mean "not available"; only
+    // a device that was *asserted* to exist and is not usable is a failure.
+    let device_ok =
+        std::panic::catch_unwind(|| cudarc::driver::CudaContext::new(0).is_ok()).unwrap_or(false);
     assert!(
         !requested || device_ok,
         "ALKAHEST_GPU_TESTS=1 asserts a CUDA device is present, but none could be \
          initialised. Refusing to report success for GPU tests that cannot run."
     );
     requested && device_ok
+}
+
+/// Pin the invariant that a `device_id: None` run reports itself as CPU-only.
+///
+/// The basis is identical either way, so without this the CPU-fallback tests
+/// would pass just as happily against a backend report that lied.
+fn assert_no_gpu(backend: &GpuBackendReport) {
+    assert_eq!(backend.requested_device, None);
+    assert_eq!(backend.reductions_on_gpu, 0);
+    assert_eq!(backend.first_gpu_error, None);
+    assert!(
+        !backend.ran_on_gpu(),
+        "no device was requested: {backend:?}"
+    );
+    assert!(backend.fell_back_to_cpu(), "{backend:?}");
+}
+
+/// The counterpart for the `ALKAHEST_GPU_TESTS=1` tier: a test that claims to
+/// exercise the GPU must fail if every row reduction silently landed on the
+/// CPU. This is the assertion whose absence let a `Some(0)` run whose driver
+/// calls all failed report success — the results are correct either way.
+fn assert_ran_on_gpu(backend: &GpuBackendReport) {
+    assert!(
+        backend.ran_on_gpu(),
+        "asked for device 0 but the run did not stay on the GPU: {backend:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -67,8 +103,10 @@ fn linear_system_two_vars() {
     // x + y - 1, x - y  →  solutions x=1/2, y=1/2
     let f = poly(&[(&[1, 0], 1), (&[0, 1], 1), (&[0, 0], -1)]);
     let g = poly(&[(&[1, 0], 1), (&[0, 1], -1)]);
-    let basis = compute_groebner_basis_gpu(vec![f.clone(), g.clone()], MonomialOrder::Lex, None)
-        .expect("groebner failed");
+    let (basis, backend) =
+        compute_groebner_basis_gpu(vec![f.clone(), g.clone()], MonomialOrder::Lex, None)
+            .expect("groebner failed");
+    assert_no_gpu(&backend);
     assert!(!basis.is_empty(), "basis should not be empty");
     assert!(cpu_reduce(&f, &basis, MonomialOrder::Lex).is_zero());
     assert!(cpu_reduce(&g, &basis, MonomialOrder::Lex).is_zero());
@@ -79,8 +117,10 @@ fn x_squared_minus_1() {
     // (x^2 - 1, x - 1) should give a size-1 basis {x - 1}
     let f = poly(&[(&[2], 1), (&[0], -1)]);
     let g = poly(&[(&[1], 1), (&[0], -1)]);
-    let basis = compute_groebner_basis_gpu(vec![f.clone(), g.clone()], MonomialOrder::Lex, None)
-        .expect("groebner failed");
+    let (basis, backend) =
+        compute_groebner_basis_gpu(vec![f.clone(), g.clone()], MonomialOrder::Lex, None)
+            .expect("groebner failed");
+    assert_no_gpu(&backend);
     assert_eq!(basis.len(), 1);
     assert!(cpu_reduce(&f, &basis, MonomialOrder::Lex).is_zero());
     assert!(cpu_reduce(&g, &basis, MonomialOrder::Lex).is_zero());
@@ -91,8 +131,10 @@ fn circle_line_intersection() {
     // x^2 + y^2 - 1 = 0, y - x = 0  →  two solutions (±√2/2, ±√2/2)
     let f = poly(&[(&[2, 0], 1), (&[0, 2], 1), (&[0, 0], -1)]);
     let g = poly(&[(&[0, 1], 1), (&[1, 0], -1)]);
-    let basis = compute_groebner_basis_gpu(vec![f.clone(), g.clone()], MonomialOrder::Lex, None)
-        .expect("groebner failed");
+    let (basis, backend) =
+        compute_groebner_basis_gpu(vec![f.clone(), g.clone()], MonomialOrder::Lex, None)
+            .expect("groebner failed");
+    assert_no_gpu(&backend);
     assert!(!basis.is_empty());
     assert!(
         cpu_reduce(&f, &basis, MonomialOrder::Lex).is_zero(),
@@ -109,8 +151,10 @@ fn parabola_line() {
     // y - x^2 = 0, y - x = 0  →  x^2 - x = 0, so x=0 or x=1
     let f = poly(&[(&[0, 1], 1), (&[2, 0], -1)]);
     let g = poly(&[(&[0, 1], 1), (&[1, 0], -1)]);
-    let basis = compute_groebner_basis_gpu(vec![f.clone(), g.clone()], MonomialOrder::Lex, None)
-        .expect("groebner failed");
+    let (basis, backend) =
+        compute_groebner_basis_gpu(vec![f.clone(), g.clone()], MonomialOrder::Lex, None)
+            .expect("groebner failed");
+    assert_no_gpu(&backend);
     assert!(!basis.is_empty());
     assert!(cpu_reduce(&f, &basis, MonomialOrder::Lex).is_zero());
     assert!(cpu_reduce(&g, &basis, MonomialOrder::Lex).is_zero());
@@ -121,8 +165,9 @@ fn inconsistent_system_gives_unit_basis() {
     // (x, x - 1) — inconsistent; Gröbner basis should contain a non-zero constant
     let f = poly(&[(&[1, 0], 1)]);
     let g = poly(&[(&[1, 0], 1), (&[0, 0], -1)]);
-    let basis =
+    let (basis, backend) =
         compute_groebner_basis_gpu(vec![f, g], MonomialOrder::Lex, None).expect("groebner failed");
+    assert_no_gpu(&backend);
     // The basis for the unit ideal contains 1 (or an element with no free variables)
     let has_constant = basis.iter().any(|b| {
         b.terms.len() == 1
@@ -142,7 +187,9 @@ fn agrees_with_pure_rust_f4_lex() {
     let g = poly(&[(&[0, 1], 1), (&[1, 0], -1)]); // y - x
     let order = MonomialOrder::Lex;
 
-    let basis_gpu = compute_groebner_basis_gpu(vec![f.clone(), g.clone()], order, None).unwrap();
+    let (basis_gpu, backend) =
+        compute_groebner_basis_gpu(vec![f.clone(), g.clone()], order, None).unwrap();
+    assert_no_gpu(&backend);
     let basis_cpu = compute_groebner_basis(vec![f.clone(), g.clone()], order);
 
     // Mutual containment check
@@ -168,8 +215,9 @@ fn agrees_with_pure_rust_f4_grevlex() {
     let h = poly(&[(&[0, 1, 0], 1), (&[0, 0, 1], -1)]);
     let order = MonomialOrder::GRevLex;
 
-    let basis_gpu =
+    let (basis_gpu, backend) =
         compute_groebner_basis_gpu(vec![f.clone(), g.clone(), h.clone()], order, None).unwrap();
+    assert_no_gpu(&backend);
     let basis_cpu = compute_groebner_basis(vec![f.clone(), g.clone(), h.clone()], order);
 
     for p in &basis_cpu {
@@ -226,8 +274,10 @@ fn gpu_linear_system_matches_cpu() {
     let g = poly(&[(&[1, 0], 1), (&[0, 1], -1)]);
     let order = MonomialOrder::Lex;
 
-    let basis_gpu = compute_groebner_basis_gpu(vec![f.clone(), g.clone()], order, Some(0))
-        .expect("GPU groebner failed");
+    let (basis_gpu, backend) =
+        compute_groebner_basis_gpu(vec![f.clone(), g.clone()], order, Some(0))
+            .expect("GPU groebner failed");
+    assert_ran_on_gpu(&backend);
     let basis_cpu = compute_groebner_basis(vec![f.clone(), g.clone()], order);
 
     for p in &basis_cpu {
@@ -247,7 +297,9 @@ fn gpu_circle_line_matches_cpu() {
     let g = poly(&[(&[0, 1], 1), (&[1, 0], -1)]);
     let order = MonomialOrder::GRevLex;
 
-    let basis_gpu = compute_groebner_basis_gpu(vec![f.clone(), g.clone()], order, Some(0)).unwrap();
+    let (basis_gpu, backend) =
+        compute_groebner_basis_gpu(vec![f.clone(), g.clone()], order, Some(0)).unwrap();
+    assert_ran_on_gpu(&backend);
     let basis_cpu = compute_groebner_basis(vec![f.clone(), g.clone()], order);
 
     for p in &basis_cpu {

@@ -13,8 +13,12 @@ name: ci-cross
 on:
   pull_request:
     branches: [main]
+    # `release/**` is included because a release branch accumulates merges that
+    # would otherwise reach a tag with no CI at all: `pull_request` runs did not
+    # fire for a PR based on `release/3.8.0`, and push only covered `main`, so
+    # everything merged there was verified by local gates alone.
   push:
-    branches: [main]
+    branches: [main, 'release/**']
 
 env:
   CARGO_TERM_COLOR: always

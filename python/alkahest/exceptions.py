@@ -31,7 +31,9 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-RSOLVE-001 … E-RSOLVE-005 RsolveError (V2-18 difference equations)
     E-DIOPH-001 … E-DIOPH-004 DiophantineError (V2-19)
     E-NT-001 … E-NT-005    NumberTheoryError (V3-1 integer number theory)
-    E-SERIES-001 … E-SERIES-002 SeriesError
+    E-SERIES-001 … E-SERIES-003 SeriesError  (003 = expansion ran past its work
+                                 ceiling / budget before reaching the requested
+                                 order; refused rather than returned short)
     E-LIMIT-001 … E-LIMIT-005 LimitError
     E-CUDA-001  … E-CUDA-006   CudaError
     E-IO-001    … E-IO-009     IoError  (formerly PoolPersistError / E-POOL-*)
@@ -55,9 +57,26 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
 
 from __future__ import annotations
 
+try:  # The compiled extension imports no Python modules, so this cannot cycle.
+    from .alkahest import AlkahestError as _NativeAlkahestError
+except ImportError:  # pragma: no cover - pure-Python fallback (no extension)
+    _NativeAlkahestError = Exception
 
-class AlkahestError(Exception):
+
+class AlkahestError(_NativeAlkahestError):
     """Base class for all alkahest errors.
+
+    Inherits the **native** base class registered by the extension. That is
+    load-bearing rather than cosmetic: the Rust engines raise the native
+    classes, the pure-Python subsystems (``ansatz``, ``crosscheck``, ``smt``,
+    the batch helpers) raise the wrappers below, and before this the two
+    hierarchies were disjoint. ``except alkahest.AlkahestError`` — the
+    documented way to catch anything this library raises — therefore caught
+    the Rust half and silently missed the Python half.
+
+    Subclasses keep their keyword constructors: only the message is forwarded
+    to the native base, whose ``__init__`` is ``BaseException``'s and takes
+    positional arguments only.
 
     Attributes
     ----------

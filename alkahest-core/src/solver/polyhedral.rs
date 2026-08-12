@@ -392,6 +392,15 @@ pub(crate) fn polyhedral_starts_2d(poly1: &GbPoly, poly2: &GbPoly) -> (Vec<[C64;
 /// (`[GbPoly; 2]`) and the list of start points in ℂ² (`Vec<Vec<C64>>`).
 ///
 /// Called by `solve_numerical` when polyhedral homotopy is used.
+///
+/// **Currently returns an empty list for every input.**  The cell criterion
+/// below keeps edge pairs whose edge vectors are parallel, and
+/// [`solve_binomial_cell`] returns nothing for exactly those pairs (its
+/// determinant is that same cross product), so no start point can ever be
+/// produced.  See the TODO on `polyhedral_starts_smoke` for what a correct
+/// implementation needs.  `solve_numerical` compares the number of start
+/// points against the mixed volume and falls back to the Bézout start, so this
+/// deficiency costs paths, not solutions.
 pub(crate) fn polyhedral_cell_iter(
     poly1: &GbPoly,
     poly2: &GbPoly,

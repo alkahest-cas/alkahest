@@ -18,7 +18,7 @@ AlkahestError (base)
 ├── DaeError          (E-DAE-*)    — DAE structural analysis
 ├── SolverError       (E-SOLVE-*)  — polynomial system solving
 ├── JitError          (E-JIT-*)    — LLVM/JIT codegen
-├── CudaError         (E-CUDA-*)   — CUDA kernel launch or driver
+├── CudaError         (E-CUDA-*)   — NVPTX compile, kernel launch, or driver, see [GPU support](./gpu.md)
 ├── PoolError         (E-POOL-*)   — ExprPool misuse
 ├── AnsatzError       (E-ANSATZ-*) — ansatz family construction or fitting, see [Ansatz families](./ansatz.md)
 ├── CrossCheckError   (E-XCHECK-*) — cross-CAS check could not be posed, see [Cross-CAS testing](./crosscheck.md)
@@ -91,6 +91,15 @@ Raised when a mathematical side condition is violated.
 | `E-SOLVE-002` | High-degree univariate factor (> 2) | Symbolic solution not supported; use numerical solve |
 | `E-SOLVE-003` | Gröbner basis did not terminate | Increase node/iteration limits |
 
+### PrimaryDecompositionError (E-IDEAL-*)
+
+| Code | Cause | Remediation |
+|---|---|---|
+| `E-IDEAL-001` | No generators supplied | Pass at least one generator |
+| `E-IDEAL-002` | Generators disagree on the variable list | Use one variable list for every generator |
+| `E-IDEAL-003` | Saturation split exceeded its recursion depth | Simplify the generating set |
+| `E-IDEAL-004` | FLINT could not factor a generator | Report the generating set as a minimal failing example |
+
 ### Refusals: when Alkahest declines to answer
 
 A refusal is not a malfunction. These codes all mean *"I could not establish this, and
@@ -103,8 +112,30 @@ loop must record as **undecided**, never as a negative result.
 | `E-MAT-004` | `MatrixError` | Same, for a determinant: `inverse()` will not divide by something it cannot show is non-zero |
 | `E-CAD-001` | `CadError` | `decide` is outside its fragment, or the only candidate solutions lie at an irrational boundary point it cannot test exactly |
 | `E-SOS-002` | `SosError` | No positivity certificate of this shape at this degree — a statement about the search, not a proof that none exists |
+| `E-IDEAL-005` | `IdealRefusal` | `radical` cannot certify `√I` for this ideal. Only monomial, principal and zero-dimensional ideals — and anything whose primary decomposition is certified — are answered; the alternative is asserting `√I = I` with nothing behind it |
+| `E-IDEAL-006` | `IdealRefusal` | `primary_decomposition` reached a component it cannot show is primary, so it will not report the ideal itself with an unjustified `associated_prime` |
+| `E-SOLVE-004` | `TriangularizeRefusal` | `triangularize` extracted a chain that does not generate an ideal containing the input, i.e. one that cuts out a larger variety than the system. Splitting on the initials (Lazard–Kalkbrener) is not implemented |
+| `E-SERIES-003` | `SeriesError` | `series` ran past its work ceiling (or an active `Budget`) before reaching the requested order. Coefficients are formed by repeated differentiation without re-simplifying, so a nested radical's derivatives grow by a constant factor each time; a *shorter* series would carry an `O(h^order)` label nothing bounded |
 | `E-INT-004` | `IntegrationError` | Proven non-elementary. **This one is a verdict, not a refusal** — keep it apart from the rest |
 | `E-BUDGET-001..003` | `BudgetExceededError` | Ran out of the time/steps it was given, or was cancelled |
+
+`E-SERIES-003` travels out of band for the same reason (`SeriesError` is exhaustive) but *is*
+wired into the bindings: `series` returns `SeriesError::InvalidOrder` with
+`calculus::series::take_series_refusal()` pending, and the Python layer raises `SeriesError`
+with `.code == "E-SERIES-003"` — or `BudgetExceededError` when a budget was what stopped it.
+
+`E-IDEAL-005`, `E-IDEAL-006` and `E-SOLVE-004` are new in 3.8 and travel **out of band**:
+`PrimaryDecompositionError` and `SolverError` are public exhaustive enums that cannot gain
+a variant in a patch release, so the refusal is returned inside an existing variant and the
+real code is available from `ideal::take_ideal_refusal()` /
+`solver::regular_chains::take_triangularize_refusal()`. The Python bindings consult both, so
+`radical` and `primary_decomposition` raise `AlkahestError` with `.code == "E-IDEAL-005"` /
+`"E-IDEAL-006"`, and `triangularize` raises `SolverError` with `.code == "E-SOLVE-004"`.
+`AlkahestError` subclasses `ValueError`, so code that catches `ValueError` is unaffected.
+
+The takers are *consuming*, which is what keeps the carrier variant honest: a genuinely
+non-polynomial equation still reports `E-SOLVE-001`, because no refusal is pending for it.
+Both readings of the shared variant stay distinguishable.
 
 The three-valued zero test behind `E-LINALG-010` / `E-MAT-004` is new in 3.8. Before it,
 "could not prove `det ≠ 0`" was silently read as "`det = 0`", and `Matrix.nullspace()`
@@ -182,6 +213,15 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-ANSATZ-*` | `AnsatzError` | Ansatz family construction and fitting — see [Ansatz families](./ansatz.md) |
 | `E-XCHECK-*` | `CrossCheckError` | Cross-CAS differential testing — see [Cross-CAS testing](./crosscheck.md) |
 | `E-SMT-*` | `SmtError` | SMT-LIB export, solver invocation, model lift — see [SMT bridge](./smt.md) |
+| `E-RESIDUE-*` | `AlkahestError` | `residue` — not a rational function, zero denominator, pole order out of range, or (`E-RESIDUE-005`) a point that is not an exact constant in ℚ(i) |
+
+`E-RESIDUE-005` is raised only at the Python boundary — the Rust `residue` takes an
+already-parsed point and cannot reach that state — so it is deliberately absent from
+`alkahest-core`'s `REGISTRY`, on the same footing as `E-SMT-001`/`003`/`004` in
+`alkahest/smt.py` and `E-BATCH-001` in `alkahest/_batch.py`. It exists because
+`residue(f, z, a)` with a symbolic `a` reads perfectly well and used to escape as a
+bare `AttributeError` naming an attribute of the implementation, which is not an
+`AlkahestError` and so was invisible to `except ak.AlkahestError`.
 
 Three of these describe outcomes that are **results rather than malfunctions**, and
 the wording of each is deliberate. `E-ANSATZ-003` means *no member of this family

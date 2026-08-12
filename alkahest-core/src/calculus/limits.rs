@@ -300,10 +300,79 @@ fn limit_body(
     if contains_zero_to_negative_power(result, pool) {
         return Err(LimitError::Unsupported);
     }
+    if approach_side_is_outside_the_domain(expr, var, point, direction, pool) {
+        return Err(LimitError::Unsupported);
+    }
     if numeric_evidence_contradicts(expr, var, point, direction, result, pool) {
         return Err(LimitError::Unsupported);
     }
     Ok(result)
+}
+
+/// True when `expr` takes no real value anywhere on the side the caller asked
+/// about, so the one-sided limit does not exist over ℝ.
+///
+/// `lim_{x→0⁻} √x` came back as `0`. It is not that the value is hard to pin
+/// down: `√x` is undefined at *every* point of every left neighbourhood of `0`,
+/// so there is no sequence to take a limit along and the question has no answer
+/// over the reals. Same for `lim_{x→1⁺} arccos x`. A `0` there is the kind of
+/// answer a loop reasoning about domains of definition inherits and cannot
+/// audit — it looks exactly like the (correct) `lim_{x→0⁺} √x = 0`.
+///
+/// The evidence required is positive and cheap:
+///
+/// * every sampled offset on the approach side evaluates to `NaN` — the
+///   interpreter *ran* and the result was not a real number, as opposed to
+///   returning `None` because it did not recognise the expression; and
+/// * the mirror point on the opposite side evaluates to a finite real, which
+///   witnesses that this expression is within the interpreter's vocabulary and
+///   that the `NaN`s are therefore facts about the function's domain.
+///
+/// `±inf` deliberately does **not** count: `lim_{x→0⁻} 1/x = −∞` is a pole, not
+/// a domain boundary, and the answer `−∞` is correct.
+///
+/// Two-sided limits are left alone. There the usual convention takes the limit
+/// relative to the domain, under which `lim_{x→0} √x = 0` is defensible; a
+/// caller who writes `dir="-"` has asked a question that convention does not
+/// cover.
+fn approach_side_is_outside_the_domain(
+    expr: ExprId,
+    var: ExprId,
+    point: ExprId,
+    direction: LimitDirection,
+    pool: &ExprPool,
+) -> bool {
+    let sign = match direction {
+        LimitDirection::Plus => 1.0,
+        LimitDirection::Minus => -1.0,
+        LimitDirection::Bidirectional => return false,
+    };
+    // A polynomial is defined on the whole line; so is anything whose samples
+    // would be meaningless because a second symbol is unbound.
+    if is_polynomial_in(expr, var, pool) || has_free_symbol_besides(expr, var, pool) {
+        return false;
+    }
+    let Some(at) = constant_f64(point, pool) else {
+        return false;
+    };
+
+    let mut env: HashMap<ExprId, f64> = HashMap::with_capacity(1);
+    let mut sample = |offset: f64| -> Option<f64> {
+        env.insert(var, at + offset);
+        crate::jit::eval_interp(expr, &env, pool)
+    };
+
+    for offset in APPROACH_OFFSETS {
+        match sample(sign * offset) {
+            Some(v) if v.is_nan() => {}
+            // Evaluable and real, or not evaluable at all: no verdict.
+            _ => return false,
+        }
+    }
+    // The witness that the expression itself is evaluable.
+    APPROACH_OFFSETS
+        .iter()
+        .any(|&offset| sample(-sign * offset).is_some_and(|v| v.is_finite()))
 }
 
 /// Offsets used to sample a function as it approaches a finite point.
@@ -1578,6 +1647,43 @@ mod tests {
         .value;
         let r = limit(ex, x, p.integer(0_i32), LimitDirection::Bidirectional, &p).unwrap();
         assert_eq!(r, p.integer(1_i32));
+    }
+
+    #[test]
+    fn one_sided_limit_off_the_domain_is_refused() {
+        // √x is undefined at every point of every left neighbourhood of 0, so
+        // there is no sequence along which to take `lim_{x→0⁻} √x` and the
+        // question has no answer over ℝ. It used to return `√0 = 0` —
+        // indistinguishable from the correct `lim_{x→0⁺} √x = 0`.
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let ex = simplify(p.func("sqrt", vec![x]), &p).value;
+        assert!(
+            limit(ex, x, p.integer(0_i32), LimitDirection::Minus, &p).is_err(),
+            "√x has no left-hand limit at 0 over ℝ"
+        );
+        // The control: from the right the limit exists and is 0.
+        let r = limit(ex, x, p.integer(0_i32), LimitDirection::Plus, &p).unwrap();
+        assert_eq!(constant_f64(r, &p), Some(0.0), "got {}", p.display(r));
+
+        // arccos is undefined to the right of 1, for the same reason.
+        let ac = simplify(p.func("acos", vec![x]), &p).value;
+        assert!(
+            limit(ac, x, p.integer(1_i32), LimitDirection::Plus, &p).is_err(),
+            "arccos has no right-hand limit at 1 over ℝ"
+        );
+
+        // …and a pole is *not* a domain boundary: 1/x is perfectly well
+        // defined to the left of 0 and the one-sided limit is −∞.
+        let inv = simplify(p.pow(x, p.integer(-1_i32)), &p).value;
+        assert!(
+            limit(inv, x, p.integer(0_i32), LimitDirection::Minus, &p).is_ok(),
+            "lim_{{x→0⁻}} 1/x = −∞ must survive"
+        );
+        // √(x²) is defined on both sides; nothing to refuse.
+        let sq = simplify(p.func("sqrt", vec![p.pow(x, p.integer(2_i32))]), &p).value;
+        let r = limit(sq, x, p.integer(0_i32), LimitDirection::Minus, &p).unwrap();
+        assert_eq!(constant_f64(r, &p), Some(0.0), "got {}", p.display(r));
     }
 
     #[test]

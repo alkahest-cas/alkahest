@@ -51,7 +51,7 @@ use super::exp_case::build_rational;
 use super::number_field::{
     gdegree, gext_gcd, gpoly_divrem, gpoly_mul, gtrim, CoeffField, Quotient,
 };
-use super::poly_rde::{contains_subexpr, expr_to_qpoly, is_free_of_var, poly_deriv};
+use super::poly_rde::{contains_subexpr, expr_to_qpoly, is_free_of_var, poly_deriv, QPoly};
 use super::radical_ext::RadicalExt;
 use super::tower::find_generators;
 use super::tower_field::{solve_tower_rde_generic, ExpTowerField, LogTowerField, TExpr};
@@ -72,6 +72,23 @@ pub fn try_integrate_radical_over_exp(
     pool: &ExprPool,
 ) -> Option<Result<DerivedExpr<ExprId>, IntegrationError>> {
     try_integrate_radical_over_transcendental(expr, var, pool)
+}
+
+/// `Dt = h′/h` for a log tower generator `t = log(h)`, or `None` when `h` is
+/// identically zero.
+///
+/// An integrand can spell `log(0)`: `√(log(x − x))` reaches here with an empty
+/// `h_poly`, and [`RatFn::new`] *panics* on a zero denominator. Crossing the
+/// FFI boundary that panic arrives as `pyo3_runtime.PanicException`, which
+/// inherits `BaseException` and therefore slips past a caller's
+/// `except Exception` and kills an unattended run. A generator that is
+/// identically zero is not a log tower at all, so decline the shape and let
+/// ordinary dispatch refuse the integral through the usual coded error.
+fn log_generator_derivative(h_poly: QPoly) -> Option<RatFn> {
+    if h_poly.iter().all(|c| *c == 0) {
+        return None;
+    }
+    Some(RatFn::new(poly_deriv(&h_poly), h_poly))
 }
 
 /// Public entry: try to integrate a radical whose radicand involves a single
@@ -102,7 +119,7 @@ pub fn try_integrate_radical_over_transcendental(
         let h = g.argument();
         let t_gen = pool.func("log", vec![h]);
         let h_poly = expr_to_qpoly(h, var, pool)?;
-        let dh_over_h = RatFn::new(poly_deriv(&h_poly), h_poly);
+        let dh_over_h = log_generator_derivative(h_poly)?;
         let field = LogTowerField::new(dh_over_h);
         integrate_radical_over_tower(&field, t_gen, expr, n, a_expr, var, pool)
     } else {
@@ -183,7 +200,7 @@ pub fn try_integrate_exp_times_radical_over_tower(
         let h = inner.argument();
         let t_gen = pool.func("log", vec![h]);
         let h_poly = expr_to_qpoly(h, var, pool)?;
-        let dh_over_h = RatFn::new(poly_deriv(&h_poly), h_poly);
+        let dh_over_h = log_generator_derivative(h_poly)?;
         let field = LogTowerField::new(dh_over_h);
         integrate_exp_times_radical(
             &field, t_gen, exp_eta, eta_prime, expr, n, a_expr, var, pool,

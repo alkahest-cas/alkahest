@@ -1,13 +1,13 @@
 # Changelog
 
-## Unreleased
+## 3.8.0 — 2026-08-12
 
 ### Silent errors fixed — do results you already computed need rechecking?
 
 A *silent error* is a confident, plausible, mathematically wrong answer with no
-exception, no `NaN` and no verification flag. Six were found and fixed this
-release. **Four of them shipped in 3.7 or earlier**, so if you have results
-from an affected call, re-run them. The other two were in code added during
+exception, no `NaN` and no verification flag. Eleven were found and fixed this
+release. **Eight of them shipped in 3.7 or earlier**, so if you have results
+from an affected call, re-run them. The other three were in code added during
 this release cycle and never reached a published wheel.
 
 | Affected call | Wrong answer it gave | First shipped in | Recheck? |
@@ -18,6 +18,11 @@ this release cycle and never reached a published wheel.
 | `simplify` / `simplify_egraph` on a product containing `0⁻¹` | `1`, or `0`, depending on the engine — for an expression with no value at all. Reachable from `diff(2/(x − x), x)` | ≤ 3.7 | Yes, if any input could reduce to `0⁻¹` |
 | `decide` on a two-variable sentence true only at an irrational point | `False` for a satisfiable `∃x∃y`, and `True` for its false `∀x∀y` dual | this cycle (2-var `decide` is new) | No published release affected |
 | `batch_map(..., parallel=True)` under `context(budget=…)` | Ran **unbudgeted**, so candidates a sequential sweep reported as `E-BUDGET-001` came back as `E-INT-001` — a *mathematical* verdict | this cycle (batch APIs are new) | No published release affected |
+| `product_definite` on a term with any non-integer coefficient | Off by `c^(hi−lo+1)`: `Π_{k=1}^{5} ½` returned `1` instead of `1/32`, `Π (2k−1)/(2k)` at `n = 6` returned `14.4375` instead of `0.2255859375` | ≤ 3.7 | **Yes** — any `product_definite` / `product_indefinite` result |
+| `sum_definite` where the summand has a pole strictly *between* the bounds | A clean finite number for a sum with an undefined term: `Σ_{k=1}^{10} 1/((k−3)(k−2))` returned `−5/8` | ≤ 3.7 | **Yes** — any `sum_definite` over a range containing a denominator root |
+| `euler_maclaurin` when `corrections` is too small for the summand | A fabricated additive constant — the missing term frozen at the fitting point. `Σ k⁹` at the default `corrections = 2` acquired `34359738368 = 512⁴/2` in a Faulhaber polynomial whose constant term is `0` | this cycle (Euler–Maclaurin is new) | No published release affected |
+| `rsolve` on a **forward-shift** spelling with a non-zero right-hand side | The solution of a *different* equation: `f(n+1) − f(n) = n²` with `f(0) = 0` returned `Σ_{j=1}^{n} j²` instead of `Σ_{j=0}^{n−1} j²` | ≤ 3.7 | **Yes** — any `rsolve` written with `f(n+i)`, `i > 0`, and an inhomogeneous term |
+| `rsolve` / `solve_linear_recurrence_homogeneous` on an order-2 recurrence with a **repeated** characteristic root | `C₀·rⁿ + C₁·rⁿ` — a one-parameter family presented as the general solution of a second-order equation, losing the `n·rⁿ` branch | ≤ 3.7 | **Yes** — check the discriminant of `r² + b r + c` |
 
 Also fixed, and not a silent error but worse for an unattended loop: a Rust
 panic escaped `interval_eval` as `pyo3_runtime.PanicException`, which inherits
@@ -26,10 +31,14 @@ from `BaseException` and therefore slips past `except Exception`. Shipped in
 ball.
 
 The deterministic silent-error gate (`tests/silent_errors/`, Tier-1 CI) now
-scores **0 silent errors out of 166 scored cases** (126 correct, 40 honest
-refusals) across evaluation, integration, limits, linear algebra, number
-theory, real QE, series, simplification, solving, and sums/products. That is a
-statement about the corpus, not a guarantee about the library.
+scores **0 silent errors out of 213 scored cases** across evaluation,
+integration, limits, linear algebra, number theory, real QE, series,
+simplification, solving, and sums/products. Every trap added this cycle was
+re-run against a build with the fix reverted and confirmed to score
+`silent_error` there, and every trap is paired with a **control** — its nearest
+convergent neighbour — so a subsystem cannot pass the gate by refusing
+everything. That is a statement about the corpus, not a guarantee about the
+library.
 
 ### Behaviour changes to plan for
 
@@ -50,6 +59,79 @@ of these is a call whose previous answer was not justified:
 - **`simplify` leaves `0 · 0⁻¹` unevaluated** instead of returning `1` (or `0`).
   A result containing `(0 * 0^-1)` is Alkahest declining to give an
   indeterminate form a value, not a simplifier failure.
+- **`sum_definite` raises `SumError` (`E-SUM-003`) when the summand is undefined
+  at an integer inside `[lo, hi]`**, not only when the pole lands on `lo` or
+  `hi+1`. The refusal names the offending index. Sums whose poles lie outside
+  the range are unaffected: `Σ_{k=4}^{10} 1/((k−3)(k−2))` still returns `7/8`.
+- **`euler_maclaurin` may return a shorter expansion, with no additive
+  constant.** The constant is now fitted at a point outside the gate's check
+  points and re-fitted at a second one; if the two disagree it is not a constant
+  and none is claimed. The report says which way that went in `derivation`, and
+  the `"fitted numerically"` hypothesis is only listed when a fitted constant is
+  actually part of the answer. Genuine constants (`γ`, `ζ(2)`, `½log 2π`, …) are
+  unaffected — they agree across fitting points to 13+ digits.
+- **`product_definite(term, k, lo, hi)` with `lo > hi` returns `1` even for a
+  zero term.** The empty product takes no factors; it previously returned `0`
+  for `Π_{k=1}^{0} 0` while returning `1` for `Π_{k=1}^{0} k`.
+- **`capabilities()["contract_version"]` is `3`, and `features` lost two keys:
+  `groebner_cuda` and `numpy`.** Indexing either now raises `KeyError`; use
+  `features.get(name, False)` if you need to span versions. Both were removed
+  rather than wired up because neither was *falsifiable* — no observation a
+  Python caller could make distinguished `True` from `False`:
+  - `groebner_cuda` reported that the CUDA Macaulay-matrix kernel had been
+    compiled in. The string `groebner_cuda` occurred exactly once anywhere in
+    `alkahest-py` — the capability line itself. There was no binding, no
+    `*gpu*` name in the public or the private module, and `GroebnerBasis`
+    exposes only CPU methods. The kernel is unchanged and still reachable from
+    Rust as `alkahest_cas::poly::groebner::compute_groebner_basis_gpu`; if
+    dispatch ever prefers it, the binding lands first and a bit follows it.
+  - `numpy` mapped to a Cargo feature gating the `numpy` crate, which
+    `alkahest-py` never used an item from. The feature and the dependency are
+    both gone. `ak.numpy_eval` and `ak.numpy_eval_par` are unaffected — they go
+    through the buffer protocol and always worked with the bit `False`, which
+    is its value on every wheel ever published.
+
+  An unreachable `True` makes a caller trust something it should not, which is
+  the same class of defect as a silent wrong answer; a bit that correlates with
+  nothing is better removed than left to be misread.
+  `tests/test_agent_contract.py::test_every_advertised_feature_has_an_entry_point`
+  now walks `features` and fails on any key without a named, reachable entry
+  point, so the next one cannot ship.
+- **Rust, `--features groebner-cuda`: `compute_groebner_basis_gpu` and
+  `reduce_batch` return `(polys, GpuBackendReport)` instead of `polys`.** Both
+  fall back to CPU row reduction — when `device_id` is `None`, and when the
+  driver fails — and the basis is identical either way, so a caller previously
+  had no way to tell a GPU run from a CPU one. `GpuBackendReport::ran_on_gpu()`
+  is true only when at least one mod-p reduction ran on a device and none fell
+  back; `reductions_on_gpu`, `reductions_on_cpu` and `first_gpu_error` carry
+  the detail. A compile error on upgrade is the intended failure mode for code
+  that was recording these results as GPU results. Nothing at the Python
+  surface changes: the feature has no binding.
+- **`residue(f, z, point)` refuses a non-constant `point` with
+  `AlkahestError` / `E-RESIDUE-005`** instead of leaking
+  `AttributeError: 'Expr' object has no attribute 'numerator'` from the
+  argument parser. `AttributeError` is not an `AlkahestError`, so
+  `except ak.AlkahestError` missed it entirely. The existing `E-RESIDUE-001..4`
+  refusals are now `AlkahestError`s carrying `.code` and `.remediation` too,
+  rather than bare `ValueError`s with the code glued into the message;
+  `AlkahestError` subclasses `ValueError`, so `except ValueError` still works.
+- **`series` refuses instead of running forever, with `SeriesError` /
+  `E-SERIES-003`.** `series(sqrt(t**-2 + t**-1), t, 0, 32)` never returned:
+  coefficients are formed by repeated differentiation without re-simplifying, so
+  a nested radical's derivatives grow by a constant factor per coefficient and
+  the cost doubles per order. It now honours an active `Budget` (raising
+  `BudgetExceededError`) and, with none, an internal work ceiling. It never
+  returns a *shorter* series: `O(h^order)` on fewer coefficients than were asked
+  for is a false statement about the remainder, which is worse than the refusal.
+  Ordinary expansions are unaffected — the heaviest in the suites intern a few
+  thousand nodes against a ceiling of 50 000.
+- **`simplify_expanded` records a derivation step when its expansion bound stops
+  it** (`expand_pow_limit_reached`, a no-op step naming the power it declined),
+  and the bound itself is now a budget on the number of distributed products
+  rather than a flat exponent cap. `(x+y)**6` and `(x+y+1)**7` now expand where
+  the exponent-only cap refused them while permitting a twenty-term sum to the
+  fourth power; anything above the budget comes back unexpanded *and says so*
+  instead of looking like an expression that was already expanded.
 
 ### Known limits — documented, not fixed
 
@@ -104,9 +186,80 @@ loop fails.
   `#[test]` functions, and `pytest` is never run under a sanitizer. The
   behavioural substitute is the fresh-pool sweep described in
   [`TESTING.md`](TESTING.md#3-memory-safety--sanitizers).
+- **There is no `cuda_device_count()`.** `CudaCompiledFn.call_batch_on(ordinal,
+  …)` selects a device, but the valid range can only be discovered by trying an
+  ordinal and catching `CudaError` (`E-CUDA-003`); the loop that does it is in
+  [`gpu.md`](docs/mdbook/src/gpu.md#discovering-the-valid-device-ordinals). Not
+  added yet on purpose: `cuda` implies LLVM 15 with NVPTX, so such a binding
+  cannot be compiled on an ordinary dev box, no CI job builds the Python
+  extension with either CUDA feature, and exercising it needs a device — it
+  would ship with no verification of any kind, which is the provenance of the
+  capability overclaims fixed above. It belongs in the same change as the
+  missing `maturin develop --features cuda` + `pytest tests/test_cuda.py`
+  nightly step.
 
 ### Fixed
 
+- **`cargo test --features groebner-cuda` could not pass on a machine with no
+  NVIDIA driver**, contradicting the header comment of
+  `alkahest-core/tests/groebner_cuda.rs`. `cudarc` *panics* rather than
+  returning `Err` when `libcuda.so` cannot be `dlopen`ed, so `gpu_available()`
+  — whose entire job is to decide whether the GPU tier can run — aborted three
+  tests instead of skipping them. A missing library and a missing device now
+  both mean *not available*, while `ALKAHEST_GPU_TESTS=1` asserting a device
+  that is not usable still fails hard. The GPU tier additionally asserts
+  `GpuBackendReport::ran_on_gpu()`, so a "GPU test" whose reductions all landed
+  on the CPU fails rather than passing on identical results.
+- **`product_definite` dropped the scale it used to clear denominators.**
+  `ratuni_poly_to_univ` multiplies a `ℚ[k]` polynomial through by the LCM of its
+  coefficient denominators and never returned that factor, so every index
+  contributed one spurious copy of it and the answer was off by
+  `c^(hi−lo+1)`. It is called separately on numerator and denominator, so the
+  two cancelled only when they happened to be equal — which is why integer-
+  coefficient products were always right and `Π ½` was not. The scale is now
+  returned and re-applied (`product_indefinite` gets `c^k`, the same factor in
+  antidifference form). A 1936-case sweep over `(a₁k+b₁)/(a₂k+b₂)` against exact
+  `Fraction` arithmetic finds 0 mismatches, down from 26 of 160.
+- **`sum_definite` could not see a pole strictly inside the summation range.**
+  The only check was `contains_zero_to_negative_power` applied to the telescoped
+  difference `G(hi+1) − G(lo)`, which never mentions the interior indices, so
+  only poles landing exactly on an endpoint were caught. The summand itself is
+  now scanned, the same way the definite integrator's interior-pole guards look
+  at the integrand rather than at `F(b) − F(a)`: the integer roots of the
+  summand's own denominators are read off its ℤ-factorisation (so the cost does
+  not grow with the range), each candidate is substituted, and refusal requires
+  seeing an actual `0^{negative}` survive simplification — positive evidence,
+  never a guess.
+- **`euler_maclaurin` fitted its additive constant at the point its own gate
+  scored.** The residual there was then zero by construction, so the `o()`-gate's
+  decay test was satisfied whatever the number was, and any term the expansion
+  was missing came back as a "constant" — `Σ k⁹` acquired `512⁴/2`. The constant
+  is now fitted outside the gate's check points and only emitted if a second fit
+  reproduces it; across the clean battery a genuine constant drifts by ≤ 3.2e-3
+  of itself, a fabricated one by ≥ 0.93.
+- **`rsolve` solved a shifted equation for forward-shift spellings.**
+  `extract_recurrence` re-indexes the sequence terms into lag form (`f(n+o) ↦
+  f(n−(max_o−o))`), which is the original equation with `n ↦ n − max_o`, but left
+  the right-hand side at `n`. The right-hand side is now shifted with them, so
+  `f(n+1) − f(n) = n²` and `f(n) − f(n−1) = (n−1)²` mean the same thing again.
+  The answer is checked by substituting it back into the equation as supplied.
+- **Order-2 recurrences with a repeated characteristic root lost a branch.**
+  `rsolve` returned `C₀·rⁿ + C₁·rⁿ` and `solve_linear_recurrence_homogeneous`
+  divided by `r₁ − r₂ = 0`, producing a closed form containing `0^{-1}` that
+  evaluated nowhere. Both now use the basis `{rⁿ, n·rⁿ}`; order ≥ 3 already
+  handled multiplicity correctly.
+- **A Zeilberger certificate claimed a recurrence for the sum without its
+  boundary hypothesis.** The verified statement is the telescoping identity in
+  `k`; summing it over `k = k_lo..k_hi` leaves the boundary difference
+  `G(n, k_hi+1) − G(n, k_lo)`, and `Σ_i a_i(n)·S(n+i) = 0` holds only when that
+  vanishes. Both the core docs and the Python docstring asserted it
+  unconditionally. It is false for `F = C(n,k)/(k+1)`, where `G(n,0) = −1` and
+  `(n+2)·S(n+1) − (2n+2)·S(n) = 1`. The certificates themselves were and are
+  correct; what was missing was the hypothesis. `ZeilbergerCertificate` now
+  carries `side_conditions` (the hypothesis, in the same spirit as
+  `DerivedResult.verification["side_conditions"]`) and `boundary_term`
+  (`G(n,k) = R(n,k)·F(n,k)`), so a caller can discharge or refute it for their
+  own range.
 - **Claim graphs: a merge could close a dependency cycle, making the graph
   unreadable.** Claim IDs are content-addressed over the *normalised*
   statement, so two textually different statements (`"a"` and `" a"`) share an
@@ -140,6 +293,18 @@ loop fails.
   random points and re-draws its anchors on mismatch, so an unlucky anchor
   (Zippel's skeleton hypothesis is probabilistic) now produces a refusal rather
   than a confidently wrong polynomial.
+- **`solve` states the hypotheses a parametric answer rests on.**
+  `solve([a*x - b], [x])` returns `b/a`, which is the solution *for `a ≠ 0`*: at
+  `a = 0` the equation reads `-b = 0`, so there is no solution when `b ≠ 0` and
+  every `x` when `b = 0`, and `b/a` is not even a number there. The
+  generic-parameter reading is deliberate, but a parametric tuple is not a number
+  and is therefore returned **unverified** — nothing substitutes it back — so the
+  hypothesis was the only auditable signal and it was not being given. New
+  `alkahest.solve_side_conditions() -> list[str]` reports the non-vanishing
+  hypotheses the most recent `solve` assumed, in the shape
+  `DerivedResult.verification["side_conditions"]` and
+  `ZeilbergerCertificate.side_conditions` already use. An empty list means the
+  solver *proved* every divisor non-zero: `solve([2*x - b], [x])` reports none.
 ### Added
 
 - **`alkahest.ansatz` — parametric families and coefficient fitting** (P2
