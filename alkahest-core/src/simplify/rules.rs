@@ -153,6 +153,65 @@ fn is_one(expr: ExprId, pool: &ExprPool) -> bool {
     integer_is(expr, pool, 1)
 }
 
+/// Whether `expr` is a literal `0` raised to a literal **negative** power.
+///
+/// `0^(-1)` — and every `0^(-n)`, `0^(-p/q)` — is division by zero, so it has
+/// no value under any convention. A product containing such a factor is
+/// therefore undefined too, and must not be folded to `0` (by `mul_zero` /
+/// `const_fold`) or to `1` (by `collect_mul_factors` cancelling the negative
+/// exponent against a positive one). `simplify(0^-1)` already leaves the power
+/// alone; these guards make the surrounding product agree with it.
+///
+/// Only *literal* zero bases are recognised. Deciding whether an arbitrary
+/// symbolic base vanishes is what [`crate::matrix::zero_test::zero_status`]
+/// is for, and it costs several `ArbBall` evaluations at 128 bits — far too
+/// much for a predicate on the hot `Mul` rewrite path. Because the engine
+/// simplifies strictly bottom-up (`simplify_children` before the node itself),
+/// any base the simplifier *can* reduce to zero — `x - x`, `sin(0)`,
+/// `0 * y` — is already the literal `0` node by the time these rules see the
+/// product, so the literal test covers those too. For a base that is not
+/// provably zero, cancelling `b · b⁻¹ → 1` asserts `b ≠ 0`, which is the
+/// library's documented convention (`simplify_control_cancel_x_over_x`).
+fn is_zero_to_negative_power(expr: ExprId, pool: &ExprPool) -> bool {
+    let parts = pool.with(expr, |data| match data {
+        ExprData::Pow { base, exp } => Some((*base, *exp)),
+        _ => None,
+    });
+    match parts {
+        Some((base, exp)) => is_zero(base, pool) && is_negative_literal(exp, pool),
+        None => false,
+    }
+}
+
+/// Whether `expr` is, or is a product containing, a literal `0` to a negative
+/// literal power — i.e. whether `expr` is undefined for that reason.
+///
+/// Only the top level and its immediate `Mul` factors are inspected: the
+/// simplifier normalises bottom-up and flattens `Mul` nodes, so an undefined
+/// factor of a product is a direct child by the time a `Mul`/`Add` rule sees
+/// it. Callers use this to decline a rewrite, so a missed deeper occurrence
+/// costs nothing beyond the existing behaviour.
+fn has_zero_to_negative_power_factor(expr: ExprId, pool: &ExprPool) -> bool {
+    if is_zero_to_negative_power(expr, pool) {
+        return true;
+    }
+    pool.with(expr, |data| match data {
+        ExprData::Mul(args) => args.clone(),
+        _ => Vec::new(),
+    })
+    .into_iter()
+    .any(|a| is_zero_to_negative_power(a, pool))
+}
+
+/// Whether `expr` is a negative `Integer` or `Rational` literal.
+fn is_negative_literal(expr: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |data| match data {
+        ExprData::Integer(n) => n.0 < 0,
+        ExprData::Rational(r) => r.0 < 0,
+        _ => false,
+    })
+}
+
 pub(crate) fn one_step(name: &'static str, before: ExprId, after: ExprId) -> DerivationLog {
     let mut log = DerivationLog::new();
     log.push(RewriteStep::simple(name, before, after));
@@ -376,18 +435,7 @@ impl RewriteRule for MulZero {
         // literal `0^(negative)` factor is itself undefined (division by
         // zero), so the product is indeterminate, not `0`. This is the
         // n=0 boundary of `0 * x^(-1)` being indeterminate at x=0.
-        let has_zero_to_neg_pow = args.iter().any(|&a| {
-            match pool.with(a, |d| match d {
-                ExprData::Pow { base, exp } => Some((*base, *exp)),
-                _ => None,
-            }) {
-                Some((base, exp)) => {
-                    is_zero(base, pool) && as_integer(exp, pool).is_some_and(|e| e < 0)
-                }
-                None => false,
-            }
-        });
-        if has_zero_to_neg_pow {
+        if args.iter().any(|&a| is_zero_to_negative_power(a, pool)) {
             return None;
         }
         let after = pool.integer(0_i32);
@@ -632,6 +680,15 @@ impl RewriteRule for ConstFold {
                     }
                 }
                 let after = if prod == 0 {
+                    // Same guard as `mul_zero`: `0 * 0^(-1) * 5` is
+                    // undefined, not `0`. The undefined factor is never
+                    // numeric, so it lands in `non_numeric`.
+                    if non_numeric
+                        .iter()
+                        .any(|&a| is_zero_to_negative_power(a, pool))
+                    {
+                        return None;
+                    }
                     pool.integer(0_i32)
                 } else if non_numeric.is_empty() {
                     intern_rational(prod, pool)
@@ -922,6 +979,22 @@ impl RewriteRule for SubSelf {
             return None;
         }
 
+        // Dropping a term whose integer coefficient sums to `0` asserts that
+        // the term's remaining factor is a *number* — `0 · u = 0` is false
+        // when `u` is undefined. `diff(2/(x - x), x)` lands here as
+        // `(0 · 0⁻¹) + (2 · −1 · 0 · 0⁻²)`, where both coefficients are the
+        // literal `0` that came out of the numerator, and dropping both
+        // reported a derivative of `0` for an expression that has none.
+        // Only checked when something actually cancels, so ordinary
+        // `x - x → 0` collection is untouched.
+        if any_zero
+            && coeff_map
+                .iter()
+                .any(|(base, c)| *c == 0 && has_zero_to_negative_power_factor(*base, pool))
+        {
+            return None;
+        }
+
         // Build new args
         let mut new_args: Vec<ExprId> = vec![];
         let mut seen: HashSet<ExprId> = HashSet::new();
@@ -984,6 +1057,19 @@ impl RewriteRule for DivSelf {
             }
         }
         if exp_pairs.len() < 2 {
+            return None;
+        }
+
+        // Summing exponents of a common base is `b^k · b^m = b^(k+m)`, an
+        // identity that fails for `b = 0` as soon as one exponent is
+        // negative: `0^1 · 0^(-1)` is `0 · (1/0)`, undefined, while the
+        // merged `0^0` would be `1`. `simplify(0^-1)` already declines to
+        // give the undefined power a value; decline here too rather than
+        // invent one for the product. The literal check is one sign test per
+        // factor plus an `O(1)` node probe on the (rare) negative ones — see
+        // `is_zero_to_negative_power` for why a full three-valued zero test
+        // is not affordable on this path.
+        if exp_pairs.iter().any(|(e, b)| *e < 0 && is_zero(*b, pool)) {
             return None;
         }
 
@@ -1520,6 +1606,87 @@ mod tests {
         let expr = pool.mul(vec![x, zero]);
         let (result, _) = MulZero.apply(expr, &pool).unwrap();
         assert_eq!(result, pool.integer(0_i32));
+    }
+
+    // --- division by a literal zero: `0 · 0^(-1)` has no value ---
+    //
+    // `0^(-1)` is division by zero, so every product containing it is
+    // undefined. `simplify(0^-1)` already leaves the power alone and
+    // `eval_expr(0^-1)` raises `E-EVAL-009`; these check that the surrounding
+    // product agrees instead of collapsing to `1` (exponent collection) or to
+    // `0` (absorption / constant folding).
+
+    /// `0 · 0^(-1)` — the exponents sum to `0`, but `0^0 = 1` is not the value
+    /// of `0 · (1/0)`.
+    #[test]
+    fn div_self_does_not_cancel_a_literal_zero_base() {
+        let pool = p();
+        let zero = pool.integer(0_i32);
+        let inv_zero = pool.pow(zero, pool.integer(-1_i32));
+        let expr = pool.mul(vec![zero, inv_zero]);
+        assert!(DivSelf.apply(expr, &pool).is_none());
+        assert_eq!(super::super::engine::simplify(expr, &pool).value, expr);
+    }
+
+    /// The same product with a spectator factor takes the constant-folding
+    /// route (`prod == 0`) instead of the exponent-collecting one.
+    #[test]
+    fn const_fold_does_not_absorb_a_literal_zero_reciprocal() {
+        let pool = p();
+        let zero = pool.integer(0_i32);
+        let inv_zero = pool.pow(zero, pool.integer(-1_i32));
+        let expr = pool.mul(vec![pool.integer(5_i32), inv_zero, zero]);
+        assert!(ConstFold.apply(expr, &pool).is_none());
+        assert!(MulZero.apply(expr, &pool).is_none());
+    }
+
+    /// `(0 · 0^-1) + (0 · 0^-2)` — both integer coefficients are `0`, but a
+    /// term is only droppable when its remaining factor is a number. This is
+    /// the shape `diff(2/(x - x), x)` produces.
+    #[test]
+    fn sub_self_does_not_drop_an_undefined_term_with_zero_coefficient() {
+        let pool = p();
+        let zero = pool.integer(0_i32);
+        let inv_zero = pool.pow(zero, pool.integer(-1_i32));
+        let inv_zero_sq = pool.pow(zero, pool.integer(-2_i32));
+        let expr = pool.add(vec![
+            pool.mul(vec![zero, inv_zero]),
+            pool.mul(vec![zero, inv_zero_sq]),
+        ]);
+        assert!(SubSelf.apply(expr, &pool).is_none());
+    }
+
+    /// A rational negative exponent is division by zero just the same.
+    #[test]
+    fn mul_zero_does_not_absorb_a_rational_negative_zero_power() {
+        let pool = p();
+        let zero = pool.integer(0_i32);
+        let root = pool.pow(zero, pool.rational(-1_i32, 2_u32));
+        let expr = pool.mul(vec![zero, root]);
+        assert!(MulZero.apply(expr, &pool).is_none());
+    }
+
+    /// The guards are keyed on a *literal* zero base only: a symbolic base
+    /// still cancels, which is the library's documented convention.
+    #[test]
+    fn div_self_still_cancels_a_symbolic_base() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let inv_x = pool.pow(x, pool.integer(-1_i32));
+        let expr = pool.mul(vec![x, inv_x]);
+        let (result, _) = DivSelf.apply(expr, &pool).unwrap();
+        assert_eq!(result, pool.integer(1_i32));
+    }
+
+    /// …and `0 · x` still absorbs: the guard must not switch absorption off.
+    #[test]
+    fn mul_zero_still_absorbs_a_symbolic_factor() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let zero = pool.integer(0_i32);
+        let expr = pool.mul(vec![zero, x]);
+        let (result, _) = MulZero.apply(expr, &pool).unwrap();
+        assert_eq!(result, zero);
     }
 
     // --- PowOne ---

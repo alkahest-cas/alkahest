@@ -32,6 +32,17 @@ Everything here is **pure Python** composed from primitives that are already fas
 feature. The one path that needs Gröbner — a residual genuinely nonlinear in the unknowns
 — refuses with `E-ANSATZ-004` rather than degrading silently.
 
+Two limits that follow from the primitives it is built on:
+
+- `Matrix.rref` uses the three-valued zero test, so a fit whose coefficient matrix
+  contains an entry that can be proven neither zero nor non-zero refuses with
+  `E-LINALG-010` rather than picking a pivot. Substituting concrete values for the
+  parameters is the remedy.
+- **Enumerating a family costs pool.** `enumerate_family` and repeated `fit` calls intern
+  every candidate permanently — `ExprPool` never reclaims. Build the pool inside the
+  enumeration and drop it per family, or the search grows linearly and without bound.
+  See [`ExprPool` never reclaims](./budgets.md#exprpool-never-reclaims).
+
 ## Honesty invariants
 
 **Solving may be heuristic; checking is exact.** The linear system is built by

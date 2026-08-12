@@ -3,7 +3,8 @@
 //! Provides a dense `Matrix` of `ExprId` values together with:
 //! - arithmetic (`+`, `-`, `*`)
 //! - `transpose()`
-//! - `det()` (Bareiss integer-preserving elimination)
+//! - `det()` (Bareiss fraction-free elimination when every entry is numeric,
+//!   cofactor expansion when any entry is symbolic)
 //! - `jacobian(f_vec, x_vec, pool)` — the `m×n` matrix `∂f_i/∂x_j`
 
 use crate::diff::diff;
@@ -16,7 +17,7 @@ pub mod linear_algebra;
 pub mod normal_form;
 mod smith;
 mod smith_poly;
-mod zero_test;
+pub(crate) mod zero_test;
 
 pub use eigen::{
     characteristic_polynomial_lambda_minus_m, diagonalize, eigenvalues, eigenvectors, EigenError,
@@ -294,7 +295,75 @@ impl Matrix {
         }
     }
 
-    /// Determinant using Bareiss algorithm (exact over integers, symbolic otherwise).
+    /// Every entry as an exact rational, or `None` if any entry is not a
+    /// numeric literal.
+    fn numeric_entries(&self, pool: &ExprPool) -> Option<Vec<rug::Rational>> {
+        self.data
+            .iter()
+            .map(|&e| {
+                pool.with(e, |d| match d {
+                    crate::kernel::ExprData::Integer(i) => Some(rug::Rational::from(i.0.clone())),
+                    crate::kernel::ExprData::Rational(r) => Some(r.0.clone()),
+                    _ => None,
+                })
+            })
+            .collect()
+    }
+
+    /// Determinant of a matrix whose entries are all numeric literals, by
+    /// Bareiss fraction-free elimination.
+    ///
+    /// `O(n³)` ring operations, against the `O(n!)` of the cofactor expansion
+    /// in [`det`](Matrix::det) — measured on integer matrices as 2.7 ms at
+    /// `n = 6`, 148 ms at `n = 8` and 1.42 s at `n = 9` before, against 3.5 ms
+    /// for SymPy at `n = 9`. The value is exact and identical either way, so
+    /// this is purely a route change.
+    fn det_numeric(&self, pool: &ExprPool) -> Option<ExprId> {
+        let n = self.rows;
+        let mut m = self.numeric_entries(pool)?;
+        let at = |i: usize, j: usize| i * n + j;
+        let mut prev = rug::Rational::from(1);
+        let mut sign = 1i32;
+        for k in 0..n.saturating_sub(1) {
+            if m[at(k, k)] == 0 {
+                // Pivot: swap in a row below with a nonzero entry in column k.
+                let Some(r) = (k + 1..n).find(|&r| m[at(r, k)] != 0) else {
+                    return Some(pool.integer(0_i32)); // singular
+                };
+                for j in 0..n {
+                    m.swap(at(k, j), at(r, j));
+                }
+                sign = -sign;
+            }
+            for i in k + 1..n {
+                for j in k + 1..n {
+                    // Bareiss: the division is exact over any integral domain.
+                    let v = (m[at(i, j)].clone() * m[at(k, k)].clone()
+                        - m[at(i, k)].clone() * m[at(k, j)].clone())
+                        / prev.clone();
+                    m[at(i, j)] = v;
+                }
+            }
+            prev = m[at(k, k)].clone();
+        }
+        let mut d = m[at(n - 1, n - 1)].clone();
+        if sign < 0 {
+            d = -d;
+        }
+        Some(if *d.denom() == 1 {
+            pool.integer(d.numer().clone())
+        } else {
+            pool.rational(d.numer().clone(), d.denom().clone())
+        })
+    }
+
+    /// Determinant.
+    ///
+    /// All-numeric matrices take the `O(n³)` Bareiss route in
+    /// `det_numeric` (private); symbolic entries fall back to
+    /// cofactor expansion along the first row, which is `O(n!)` and is the
+    /// reason symbolic determinants beyond about `n = 7` are impractical (see
+    /// `temp-alkahest/testing/3.8-performance-audit.md`).
     pub fn det(&self, pool: &ExprPool) -> Result<ExprId, MatrixError> {
         if self.rows != self.cols {
             return Err(MatrixError::NotSquare);
@@ -305,6 +374,11 @@ impl Matrix {
         }
         if n == 1 {
             return Ok(self.get(0, 0));
+        }
+        if n >= 3 {
+            if let Some(d) = self.det_numeric(pool) {
+                return Ok(d);
+            }
         }
         if n == 2 {
             // ad - bc
@@ -519,6 +593,104 @@ mod tests {
 
     fn p() -> ExprPool {
         ExprPool::new()
+    }
+
+    /// The `O(n!)` cofactor expansion the numeric route replaced, kept here as
+    /// the reference the fast path is checked against.
+    fn det_cofactor(m: &Matrix, pool: &ExprPool) -> ExprId {
+        let n = m.rows;
+        if n == 1 {
+            return m.get(0, 0);
+        }
+        let mut terms: Vec<ExprId> = Vec::new();
+        for j in 0..n {
+            let minor = m.minor(0, j);
+            let minor_det = det_cofactor(&minor, pool);
+            let sign = if j % 2 == 0 {
+                pool.integer(1_i32)
+            } else {
+                pool.integer(-1_i32)
+            };
+            terms.push(pool.mul(vec![sign, m.get(0, j), minor_det]));
+        }
+        simplify(pool.add(terms), pool).value
+    }
+
+    #[test]
+    fn numeric_det_agrees_with_cofactor_expansion() {
+        let pool = p();
+        let mut state = 0x2545_F491_4F6C_DD1D_u64;
+        let mut rnd = |m: i64| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            ((state >> 33) % (2 * m as u64 + 1)) as i64 - m
+        };
+        for n in 3..=6usize {
+            for trial in 0..12 {
+                // Integer entries, plus a rational-entry and a singular case.
+                let data: Vec<ExprId> = (0..n * n)
+                    .map(|k| match trial % 3 {
+                        0 => pool.integer(rnd(9)),
+                        1 => pool.rational(rug::Integer::from(rnd(9)), rug::Integer::from(7)),
+                        _ => pool.integer(if k < n { 0_i32 } else { rnd(9) as i32 }),
+                    })
+                    .collect();
+                let rows: Vec<Vec<ExprId>> = data.chunks(n).map(|c| c.to_vec()).collect();
+                let m = Matrix::new(rows).expect("square");
+                assert_eq!(
+                    m.det(&pool).expect("square"),
+                    det_cofactor(&m, &pool),
+                    "n={n} trial={trial}: numeric Bareiss disagrees with cofactor expansion"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn numeric_det_handles_a_zero_pivot_and_a_singular_matrix() {
+        let pool = p();
+        // Leading zero pivot but nonsingular: det = -1·(0·1 − 1·1)·… → -1.
+        let m = Matrix::new(vec![
+            vec![
+                pool.integer(0_i32),
+                pool.integer(1_i32),
+                pool.integer(0_i32),
+            ],
+            vec![
+                pool.integer(1_i32),
+                pool.integer(0_i32),
+                pool.integer(0_i32),
+            ],
+            vec![
+                pool.integer(0_i32),
+                pool.integer(0_i32),
+                pool.integer(1_i32),
+            ],
+        ])
+        .expect("square");
+        assert_eq!(m.det(&pool).unwrap(), pool.integer(-1_i32));
+
+        // A zero row is singular.
+        let z = Matrix::new(vec![
+            vec![
+                pool.integer(0_i32),
+                pool.integer(0_i32),
+                pool.integer(0_i32),
+            ],
+            vec![
+                pool.integer(1_i32),
+                pool.integer(2_i32),
+                pool.integer(3_i32),
+            ],
+            vec![
+                pool.integer(4_i32),
+                pool.integer(5_i32),
+                pool.integer(7_i32),
+            ],
+        ])
+        .expect("square");
+        assert_eq!(z.det(&pool).unwrap(), pool.integer(0_i32));
     }
 
     #[test]

@@ -230,17 +230,27 @@ useful as a bug report if the run that found something can be reproduced exactly
 [budget](./budgets.md), so a nightly job and a local reproduction share one knob.
 `SweepReport.to_dict()` is JSON-serialisable and suitable for filing as a CI artifact.
 
-**Neither side of a check is bounded, and this module does not pretend otherwise.** The
-heavy engines hold the GIL, so a non-terminating call cannot be timed out from Python — a
-worker thread cannot be stopped, and abandoning one wedges the interpreter just the same.
-At this commit `limit(sqrt(x**2 + x) - x, x, oo)` is one such call. So:
+**Give each sweep its own pool.** A `sweep` interns thousands of generated expressions,
+and `check` costs on the order of 8 KB of pool per call — the highest of any entry point,
+because it builds both sides plus the comparison. `ExprPool` never reclaims, so a nightly
+job that reuses one module-scope pool across runs grows without bound; construct the pool
+inside the sweep's scope and drop it afterwards. (SymPy's own global cache also warms up
+to a few MB and then stops; that part is bounded.) See
+[`ExprPool` never reclaims](./budgets.md#exprpool-never-reclaims).
+
+**Neither side of a check is bounded, and this module does not pretend otherwise.** Most
+heavy engines hold the GIL, so a non-terminating call in one of them cannot be timed out
+from Python — a worker thread cannot be stopped, and abandoning one wedges the
+interpreter just the same. SymPy is no better placed. So:
 
 - run the nightly job under an **OS-level timeout**;
 - wrap the sweep in `context(budget=…)` for the engines that *are* cooperative
-  (`integrate`, and best-effort `simplify` — see [Budgets](./budgets.md)), where a trip
-  surfaces as `reason="alkahest_refused"` with an `E-BUDGET-00x` code, which is a fine
-  answer;
-- `SWEEP_OPERATIONS` deliberately excludes `limit` for this reason.
+  (`integrate` and `limit`, and best-effort `simplify` — see [Budgets](./budgets.md)),
+  where a trip surfaces as `reason="alkahest_refused"` with an `E-BUDGET-00x` code, which
+  is a fine answer. Those two also release the GIL for their core call, so
+  `request_cancel()` from a watchdog thread reaches one that is already running;
+- `SWEEP_OPERATIONS` still excludes `limit`, now only because the comparator for it is
+  weaker than for the three it does cover — not because the call cannot be bounded.
 
 ### Tier 2 — the frozen corpus
 

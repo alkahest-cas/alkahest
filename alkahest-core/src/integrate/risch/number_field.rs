@@ -462,6 +462,12 @@ impl<F: CoeffField> Quotient<F> {
         }
         let mut quot = vec![Self::elem_zero(); (ad - bd + 1) as usize];
         loop {
+            // Cooperative checkpoint, once per elimination step. Each step is a
+            // full `K`-multiplication per coefficient of `b`, over ℚ-coefficients
+            // that grow as the Euclidean remainder sequence goes on, so a single
+            // `kpoly_divrem` on a degree-18 minimal polynomial is seconds of
+            // uninterruptible work — see `kpoly_gcd`.
+            crate::budget::check().ok()?;
             let rd = self.kdeg(&r);
             if rd < bd {
                 break;
@@ -483,10 +489,28 @@ impl<F: CoeffField> Quotient<F> {
     }
 
     /// Monic (in `x`) GCD of two quotient-polynomials.
+    ///
+    /// # Cost, and why it checks the budget
+    ///
+    /// This is the Euclidean algorithm over `K = ℚ[t]/Q(t)` with no modular or
+    /// fraction-free strategy, so the ℚ-coefficients grow through the remainder
+    /// sequence. It is the log-argument step of Lazard–Rioboo–Trager
+    /// (`rational_integrate::alg_log_argument`), and on a degree-18 minimal
+    /// polynomial — what `∫ 1/(sin⁹x + sin x + 1) dx` produces after the
+    /// Weierstrass substitution — one call measured **3996 ms of a 4046 ms
+    /// integral**, i.e. 98.7% of the whole thing, in a single uninterruptible
+    /// stretch. That is why `Budget(wall_ms=300)` used to overshoot by more than
+    /// 10×, and why it kept getting worse with degree.
+    ///
+    /// Returns `None` when the budget trips, which the callers already treat as
+    /// "this route declines"; `integrate_inner` re-checks the budget immediately
+    /// afterwards and turns it into the honest `E-BUDGET-*`. Bailing rather than
+    /// widening the return type keeps this public signature intact.
     pub fn kpoly_gcd(&self, a: &[GPoly<F>], b: &[GPoly<F>]) -> Option<Vec<GPoly<F>>> {
         let mut a = self.kpoly_trim(a.to_vec());
         let mut b = self.kpoly_trim(b.to_vec());
         while self.kdeg(&b) >= 0 {
+            crate::budget::check().ok()?;
             let (_, rem) = self.kpoly_divrem(&a, &b)?;
             a = b;
             b = rem;

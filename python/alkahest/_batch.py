@@ -42,6 +42,35 @@ throughout, ``parallel=True`` mainly helps when *fn* itself does I/O or
 otherwise yields the GIL)::
 
     outs = ak.batch_map(ak.simplify, candidates, parallel=True)
+
+Budgets under ``parallel=True``
+-------------------------------
+Budget frames are **thread-local** on the Rust side, so an ambient
+``context(budget=...)`` does not reach a worker on its own — a fanned-out
+sweep used to run completely unbudgeted, and (worse) a candidate that would
+have reported ``E-BUDGET-001`` sequentially came back with the integrator's
+*mathematical* verdict ``E-INT-001`` instead, which a research loop records
+as a permanently closed branch. Both paths here therefore capture the active
+budget on the calling thread (:func:`alkahest._budget.capture_budget`) and
+re-enter it inside every worker task, so ``parallel=True`` reports the same
+code as ``parallel=False``. See :class:`~alkahest._budget.BudgetHandoff` for
+what "the same budget" means for each field:
+
+* ``wall_ms`` is a **batch-wide deadline**, captured once at the
+  ``batch_map`` call, exactly as a sequential sweep shares the caller's one
+  frame. Items still running when it passes trip at their next cooperative
+  checkpoint; items not yet started trip at their first.
+* ``max_steps`` becomes **per item** — the Rust step counter lives in the
+  frame and is not readable from Python, so each worker counts from zero.
+* ``seed`` is identical on every worker, so :func:`alkahest.budget_seed`
+  reads the same value there as on the calling thread.
+
+Cancellation needs no propagation: ``request_cancel()`` sets a process-wide
+flag every thread already sees, so a caller can abort a whole in-flight sweep
+with it (every item then reports ``E-BUDGET-003``). The converse is
+deliberate too — **one item tripping its budget never cancels its siblings**.
+Nothing in this module sets the flag; a trip is recorded on the item that
+tripped and the rest of the sweep runs out its shared deadline.
 """
 
 from __future__ import annotations
@@ -51,8 +80,12 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from ._budget import capture_budget
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Callable, Iterable, Iterator
+
+    from ._budget import BudgetHandoff
 
 __all__ = [
     "UNEXPECTED_ERROR_CODE",
@@ -129,16 +162,32 @@ def _describe_exception(exc: Exception) -> dict[str, Any]:
     }
 
 
-def _invoke(fn: Callable[..., Any], item: Any, index: int, kwargs: dict[str, Any]) -> BatchItem:
+def _invoke(
+    fn: Callable[..., Any],
+    item: Any,
+    index: int,
+    kwargs: dict[str, Any],
+    budget: BudgetHandoff | None = None,
+) -> BatchItem:
     """Run ``fn(item, **kwargs)``, turning any :class:`Exception` into a :class:`BatchItem`.
 
     Deliberately catches ``Exception`` rather than ``BaseException``: a
     ``KeyboardInterrupt`` (or ``SystemExit``) must still propagate and stop
     the batch, since swallowing those would make the process unkillable.
+
+    *budget* is the caller's budget, captured on the calling thread by
+    :func:`~alkahest._budget.capture_budget` and re-entered here. It is
+    ``None`` on the sequential path (the caller's own frame is already active
+    on this thread — re-entering would restart its step counter) and whenever
+    no budget is active at all.
     """
     start = time.perf_counter()
     try:
-        value = fn(item, **kwargs)
+        if budget is None:
+            value = fn(item, **kwargs)
+        else:
+            with budget.applied():
+                value = fn(item, **kwargs)
     except Exception as exc:  # intentional: never abort the batch for one bad element
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         error = _describe_exception(exc)
@@ -171,7 +220,11 @@ def batch_map(
         true. Useful when *fn* releases the GIL for some or all of its work
         (I/O, or a Rust call that calls ``py.allow_threads``); on pure
         Python, GIL-bound work it will not speed anything up, but it also
-        will not make anything incorrect — order is preserved either way.
+        will not make anything incorrect — order is preserved either way,
+        and the ambient ``context(budget=...)`` is re-entered inside each
+        worker so a trip is reported as ``E-BUDGET-00x`` on the item that
+        tripped, exactly as it would be sequentially (see the module
+        docstring for the per-field semantics).
     max_workers : int, optional
         Forwarded to :class:`~concurrent.futures.ThreadPoolExecutor`. Ignored
         when ``parallel=False``.
@@ -200,11 +253,13 @@ def batch_map(
     if not parallel:
         return [_invoke(fn, item, i, kwargs) for i, item in enumerate(materialized)]
 
+    handoff = capture_budget()
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         # Submit in input order and collect in the same order so the return
         # type stays ``list[BatchItem]`` (no ``None`` placeholders for ty).
         futures = [
-            executor.submit(_invoke, fn, item, i, kwargs) for i, item in enumerate(materialized)
+            executor.submit(_invoke, fn, item, i, kwargs, handoff)
+            for i, item in enumerate(materialized)
         ]
         return [future.result() for future in futures]
 
@@ -262,9 +317,11 @@ def batch_map_iter(
             yield _invoke(fn, item, i, kwargs)
         return
 
+    handoff = capture_budget()
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         pending = {
-            executor.submit(_invoke, fn, item, i, kwargs) for i, item in enumerate(materialized)
+            executor.submit(_invoke, fn, item, i, kwargs, handoff)
+            for i, item in enumerate(materialized)
         }
         while pending:
             done, pending = wait(pending, return_when=FIRST_COMPLETED)

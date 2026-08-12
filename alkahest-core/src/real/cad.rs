@@ -750,22 +750,48 @@ fn decide_exists_univariate(
 
     // Algebraic equality literals are rarely satisfied exactly at purely rational samples;
     // use isolating intervals of squarefree Eq-polynomial factors with gcd-based Eq checks.
+    let mut untested_algebraic_boundary = false;
     for p_focus in eq_polynomials_for_sampling(pool, &phi, var)? {
         let sf = p_focus.squarefree_part();
         if sf.is_zero() {
             continue;
         }
         for iv in real_roots(&sf)? {
+            if iv.lo != iv.hi {
+                untested_algebraic_boundary = true;
+            }
             if eval_qf_formula_on_iv(pool, var, &phi, &iv, &sf)? {
+                // The witness is the *root* in `iv`, which is irrational
+                // whenever the bracket has not collapsed — and the bracket
+                // midpoint is then not a witness at all. `∃x. 3x − 2 = 0` used
+                // to come back with `x = 1/2`, which fails the very equation it
+                // is offered as a solution to. Report a witness only when it
+                // survives the same check any caller would apply.
                 let mid = iv_midpoint(&iv.lo, &iv.hi);
-                let mut wm = HashMap::new();
-                wm.insert(var, mid);
+                let witness = if eval_qf_formula(pool, var, &phi, &mid)? {
+                    let mut wm = HashMap::new();
+                    wm.insert(var, mid);
+                    Some(wm)
+                } else {
+                    None
+                };
                 return Ok(QeResult {
                     truth: true,
-                    witness: Some(wm),
+                    witness,
                 });
             }
         }
+    }
+
+    // Nothing satisfied the formula at any sampled point. That is only a *proof*
+    // of unsatisfiability if the sample set met every cell — including the
+    // zero-dimensional cells at the roots themselves, which are reachable only
+    // when the root is an exact rational. With an irrational root and a
+    // non-strict atom, the one point that could have satisfied the formula was
+    // never tested, and answering `false` here is how `∀x. (x² − 2)² > 0` came
+    // back `true`: a machine-checked-looking proof of a false theorem. Refuse.
+    if untested_algebraic_boundary && body_has_boundary_atom(&phi) {
+        return Err(CadError::Unsupported(ALGEBRAIC_BOUNDARY_MSG));
     }
 
     Ok(QeResult {
@@ -773,6 +799,11 @@ fn decide_exists_univariate(
         witness: None,
     })
 }
+
+const ALGEBRAIC_BOUNDARY_MSG: &str = "the formula has a non-strict atom (=, <=, >=) whose only \
+    possible solutions are roots of an irrational algebraic number; deciding it needs \
+    algebraic-number CAD lifting (full CAD). Refusing rather than reporting an unsatisfiability \
+    that was never checked at that point";
 
 fn decide_closed_qf(pool: &ExprPool, phi: Formula) -> Result<QeResult, CadError> {
     if !free_vars_formula(&phi, pool).is_empty() {
@@ -919,11 +950,58 @@ fn decide_two_var(
     }
 }
 
-fn body_has_eq_or_ne(f: &Formula) -> bool {
+/// Does `f` (in NNF) contain an atom whose truth can turn on a single boundary
+/// point — `=`, `≤` or `≥`?
+///
+/// Strict atoms (`<`, `>`, `≠`) have *open* solution sets: if one is satisfiable
+/// at all it is satisfiable on a whole interval, so the open-cell sampling in
+/// [`decide_exists_univariate`] is complete for them and a bracket that never
+/// lands on a root costs nothing. A non-strict atom can be satisfied at nothing
+/// but a root (`x² ≤ 0` holds only at `x = 0`), and then the root itself has to
+/// be in the sample set or the search is incomplete.
+fn body_has_boundary_atom(f: &Formula) -> bool {
     match f {
-        Formula::Atom { kind, .. } => matches!(kind, PredicateKind::Eq | PredicateKind::Ne),
-        Formula::And(a, b) | Formula::Or(a, b) => body_has_eq_or_ne(a) || body_has_eq_or_ne(b),
-        Formula::Not(x) => body_has_eq_or_ne(x),
+        Formula::Atom { kind, .. } => matches!(
+            kind,
+            PredicateKind::Eq | PredicateKind::Le | PredicateKind::Ge
+        ),
+        Formula::And(a, b) | Formula::Or(a, b) => {
+            body_has_boundary_atom(a) || body_has_boundary_atom(b)
+        }
+        Formula::Not(x) => body_has_boundary_atom(x),
+        _ => false,
+    }
+}
+
+/// Does `f` (in NNF) contain an atom that is not strict — `=`, `≠`, `≤` or `≥`?
+///
+/// The two-variable analogue of [`body_has_boundary_atom`], and the guard for
+/// [`project_and_sample_x`]'s `ambiguous_irrational_root`. `≤`/`≥` are the
+/// reason it exists: the original guard tested `=`/`≠` only, so
+/// `∃x∃y. (x² − 2)² + y² ≤ 0` — true at `(±√2, 0)` and nowhere else — was
+/// answered `false`, and its dual `∀x∀y. (x² − 2)² + y² > 0` came back `true`.
+/// That is the *same* completeness gap that
+/// [`decide_exists_univariate`] closes one dimension down: an atom whose
+/// solution set can be a single boundary point needs that point in the sample
+/// set, and no rational sample ever lands on an irrational projection root.
+///
+/// `≠` is kept in the set even though its solution set is open (so open-cell
+/// sampling is already complete for it): the pre-existing guard refused on it,
+/// and loosening a refusal is the one direction in which a change here could
+/// introduce an unsound answer.
+///
+/// Strict atoms (`<`, `>`) have open solution sets, so the open-cell midpoints
+/// are complete for them and no refusal is warranted.
+fn body_has_nonstrict_atom(f: &Formula) -> bool {
+    match f {
+        Formula::Atom { kind, .. } => matches!(
+            kind,
+            PredicateKind::Eq | PredicateKind::Ne | PredicateKind::Le | PredicateKind::Ge
+        ),
+        Formula::And(a, b) | Formula::Or(a, b) => {
+            body_has_nonstrict_atom(a) || body_has_nonstrict_atom(b)
+        }
+        Formula::Not(x) => body_has_nonstrict_atom(x),
         _ => false,
     }
 }
@@ -1046,7 +1124,7 @@ fn project_and_sample_x(
     })
 }
 
-const IRRATIONAL_ROOT_MSG: &str = "an equality/inequation atom combined with an irrational \
+const IRRATIONAL_ROOT_MSG: &str = "a non-strict atom (=, /=, <=, >=) combined with an irrational \
     projection root of the eliminated variable would require algebraic-number CAD lifting \
     (full CAD); refusing to guess rather than risk an unsound answer";
 
@@ -1059,9 +1137,9 @@ const IRRATIONAL_ROOT_MSG: &str = "an equality/inequation atom combined with an 
 /// by [`decide_exists_univariate`] (including its own algebraic-root handling for
 /// `y`). If no witness is found and every projection root sampled was rational,
 /// the cell decomposition is complete and `false` is sound. If some projection
-/// root is irrational *and* `body` contains an equality/inequation atom, the
-/// cell at that exact root cannot be tested rationally, so we report
-/// `Unsupported` rather than risk a false negative.
+/// root is irrational *and* `body` contains a non-strict atom (see
+/// [`body_has_nonstrict_atom`]), the cell at that exact root cannot be tested
+/// rationally, so we report `Unsupported` rather than risk a false negative.
 fn decide_exists_exists(
     pool: &ExprPool,
     x: ExprId,
@@ -1087,7 +1165,7 @@ fn decide_exists_exists(
             });
         }
     }
-    if cells.ambiguous_irrational_root && body_has_eq_or_ne(&body) {
+    if cells.ambiguous_irrational_root && body_has_nonstrict_atom(&body) {
         return Err(CadError::Unsupported(IRRATIONAL_ROOT_MSG));
     }
     Ok(QeResult {
@@ -1120,7 +1198,7 @@ fn decide_exists_forall(
             });
         }
     }
-    if cells.ambiguous_irrational_root && body_has_eq_or_ne(&body) {
+    if cells.ambiguous_irrational_root && body_has_nonstrict_atom(&body) {
         return Err(CadError::Unsupported(IRRATIONAL_ROOT_MSG));
     }
     Ok(QeResult {
@@ -1280,7 +1358,73 @@ mod tests {
         };
         let r = decide(&f, &p).unwrap();
         assert!(r.truth);
-        assert!(r.witness.is_some());
+        // `√2` is not rational, so there is no rational witness to report. This
+        // used to assert `witness.is_some()` and passed on the isolating
+        // interval's midpoint — a "solution" of `x² = 2` that is not one. A
+        // witness is a certificate; a wrong one is worse than none.
+        assert!(r.witness.is_none());
+    }
+
+    /// Every witness `decide` reports must satisfy the sentence it witnesses.
+    ///
+    /// `∃x. 3x − 2 = 0` has the rational solution `2/3`. Before exact
+    /// rational-root recovery in `real_roots`, the isolating bracket stayed at
+    /// `[0, 1]` and the reported witness was its midpoint `1/2`, which fails the
+    /// equation outright.
+    #[test]
+    fn exists_witness_satisfies_the_equation() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let lhs = p.add(vec![p.mul(vec![p.integer(3_i32), x]), p.integer(-2_i32)]);
+        let body = p.pred_eq(lhs, p.integer(0_i32));
+        let f = Formula::Exists {
+            var: x,
+            body: Box::new(formula_from_expr(body, &p).unwrap()),
+        };
+        let r = decide(&f, &p).unwrap();
+        assert!(r.truth);
+        let w = r
+            .witness
+            .expect("2/3 is rational, so a witness is reportable");
+        assert_eq!(w[&x], rug::Rational::from((2, 3)));
+    }
+
+    /// `∀x. (3x + 2)² > 0` is **false**: the square vanishes at `x = −2/3`.
+    ///
+    /// The CAD sample set is built from bracket endpoints and midpoints, all
+    /// dyadic, so `−2/3` was never tested and the sentence came back `true` —
+    /// a proof of a false theorem. Exact rational-root recovery puts the root
+    /// itself in the sample set.
+    #[test]
+    fn forall_square_positive_is_false_at_a_non_dyadic_root() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let inner = p.add(vec![p.mul(vec![p.integer(3_i32), x]), p.integer(2_i32)]);
+        let body = p.pred_gt(p.pow(inner, p.integer(2_i32)), p.integer(0_i32));
+        let f = Formula::Forall {
+            var: x,
+            body: Box::new(formula_from_expr(body, &p).unwrap()),
+        };
+        assert!(!decide(&f, &p).unwrap().truth);
+    }
+
+    /// The same sentence with an *irrational* touching root is refused, not
+    /// answered. `∀x. (x² − 2)² > 0` is false (at `±√2`), and no rational
+    /// sample can show it; the honest answer is `Unsupported`.
+    #[test]
+    fn forall_square_positive_refuses_at_an_irrational_root() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let inner = p.add(vec![p.pow(x, p.integer(2_i32)), p.integer(-2_i32)]);
+        let body = p.pred_gt(p.pow(inner, p.integer(2_i32)), p.integer(0_i32));
+        let f = Formula::Forall {
+            var: x,
+            body: Box::new(formula_from_expr(body, &p).unwrap()),
+        };
+        assert!(matches!(
+            decide(&f, &p),
+            Err(CadError::Unsupported(ALGEBRAIC_BOUNDARY_MSG))
+        ));
     }
 
     #[test]
@@ -1594,5 +1738,121 @@ mod sample_point_completeness_tests {
             "bracket collapsed onto the endpoint root -1 instead of isolating its own root"
         );
         assert!(lo > -2, "bracket did not tighten at all");
+    }
+
+    // -----------------------------------------------------------------------
+    // The same completeness gap, two variables up.
+    //
+    // `project_and_sample_x` flags an irrational projection root as untested,
+    // but the flag only escalated to a refusal for `=` / `≠` atoms, so `≤`/`≥`
+    // still reported an unsatisfiability that was never checked at the one
+    // point that could have satisfied it.
+    // -----------------------------------------------------------------------
+
+    /// `(x² − 2)² + y²`, non-negative and zero exactly at `(±√2, 0)`.
+    fn touching_at_sqrt_two(pool: &ExprPool, x: ExprId, y: ExprId) -> ExprId {
+        let inner = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(-2_i32)]);
+        pool.add(vec![
+            pool.pow(inner, pool.integer(2_i32)),
+            pool.pow(y, pool.integer(2_i32)),
+        ])
+    }
+
+    /// `∃x∃y. (x²−2)² + y² ≤ 0` is **true** at `(√2, 0)`; no rational sample
+    /// can exhibit it, so the only sound answers are `true` and a refusal.
+    #[test]
+    fn two_var_nonstrict_boundary_at_an_irrational_root_is_not_denied() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let lhs = touching_at_sqrt_two(&pool, x, y);
+        let body = atom(PredicateKind::Le, lhs, pool.integer(0_i32));
+        let f = Formula::Exists {
+            var: x,
+            body: Box::new(Formula::Exists {
+                var: y,
+                body: Box::new(body),
+            }),
+        };
+        match decide(&f, &pool) {
+            Ok(r) => assert!(
+                r.truth,
+                "`exists x exists y. (x^2-2)^2 + y^2 <= 0` is true at (sqrt 2, 0)"
+            ),
+            Err(e) => assert_eq!(e.code(), "E-CAD-001"),
+        }
+    }
+
+    /// The dual: `∀x∀y. (x²−2)² + y² > 0` is **false**, and a `true` here is a
+    /// machine-checked-looking proof of a false theorem.
+    #[test]
+    fn two_var_universal_over_an_irrational_root_is_not_proved() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let lhs = touching_at_sqrt_two(&pool, x, y);
+        let body = atom(PredicateKind::Gt, lhs, pool.integer(0_i32));
+        let f = Formula::Forall {
+            var: x,
+            body: Box::new(Formula::Forall {
+                var: y,
+                body: Box::new(body),
+            }),
+        };
+        match decide(&f, &pool) {
+            Ok(r) => assert!(
+                !r.truth,
+                "`forall x forall y. (x^2-2)^2 + y^2 > 0` is false at (sqrt 2, 0)"
+            ),
+            Err(e) => assert_eq!(e.code(), "E-CAD-001"),
+        }
+    }
+
+    /// The control that the guard is not a blanket refusal of `≤`: the same
+    /// polynomial shifted up by 1 is never `≤ 0`, and that `false` is sound
+    /// because no boundary cell exists at all.
+    #[test]
+    fn two_var_nonstrict_unsatisfiable_still_decides_false() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let lhs = pool.add(vec![touching_at_sqrt_two(&pool, x, y), pool.integer(1_i32)]);
+        let body = atom(PredicateKind::Le, lhs, pool.integer(0_i32));
+        let f = Formula::Exists {
+            var: x,
+            body: Box::new(Formula::Exists {
+                var: y,
+                body: Box::new(body),
+            }),
+        };
+        let r = decide(&f, &pool).expect("two squares plus one is decidable");
+        assert!(!r.truth, "two squares plus 1 is never <= 0");
+    }
+
+    /// The control that a *rational* boundary point is still found: the same
+    /// shape with the double root at `x = 2/3` must come back `true`.
+    #[test]
+    fn two_var_nonstrict_boundary_at_a_rational_root_is_found() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let inner = pool.add(vec![
+            pool.mul(vec![pool.integer(3_i32), x]),
+            pool.integer(-2_i32),
+        ]);
+        let lhs = pool.add(vec![
+            pool.pow(inner, pool.integer(2_i32)),
+            pool.pow(y, pool.integer(2_i32)),
+        ]);
+        let body = atom(PredicateKind::Le, lhs, pool.integer(0_i32));
+        let f = Formula::Exists {
+            var: x,
+            body: Box::new(Formula::Exists {
+                var: y,
+                body: Box::new(body),
+            }),
+        };
+        let r = decide(&f, &pool).expect("a rational boundary point is reachable");
+        assert!(r.truth, "(3x-2)^2 + y^2 <= 0 holds at (2/3, 0)");
     }
 }

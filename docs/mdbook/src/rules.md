@@ -47,7 +47,7 @@ The rule sets loaded by `simplify` and the domain-specific simplifiers are:
 
 | Function | Rules |
 |---|---|
-| `simplify` | Arithmetic identities, constant folding, polynomial normalization |
+| `simplify` | Arithmetic identities, constant folding, polynomial normalization — with one carve-out: no rule folds a product that contains a **literal zero raised to a negative power**, because `0 · 0⁻¹` has no value ([details](./simplification.md#the-literal-zero-carve-out)) |
 | `simplify_trig` | Pythagorean identity, double-angle and half-angle formulas |
 | `simplify_log_exp` | Log/exp cancellation (branch-cut safe subset) |
 | `simplify_expanded` | Distributive expansion, like-term collection |

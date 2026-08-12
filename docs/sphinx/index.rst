@@ -25,8 +25,8 @@ source with ``maturin``.
 .. code-block:: toml
 
    [dependencies]
-   alkahest-cas = "2"
-   # alkahest-cas = { version = "2", features = ["groebner", "parallel", "egraph"] }
+   alkahest-cas = "3"
+   # alkahest-cas = { version = "3", features = ["groebner", "parallel", "egraph"] }
 
 Requires ``libflint-dev`` / ``libgmp-dev`` / ``libmpfr-dev`` at build time (``apt-get`` or
 ``brew install flint``). See `docs.rs/alkahest-cas <https://docs.rs/alkahest-cas>`_ for the
@@ -56,6 +56,7 @@ For optional Cargo features (``jit``, ``parallel``, ``cuda``, …) and full deve
    api/solve
    api/codegen
    api/workload
+   api/autoresearch
    api/errors
 
 For the conceptual guide (kernel design, rule engine, e-graph, derivation logs)

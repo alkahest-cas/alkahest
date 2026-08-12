@@ -50,8 +50,53 @@ use super::poly_rde::{
     qpoly_to_expr, rational_to_expr, trim, QPoly,
 };
 use super::rational_rde::{
-    expr_to_qrational, poly_div_exact, poly_divrem, poly_gcd, poly_monic, poly_sub,
+    expr_to_qrational, poly_div_exact, poly_divrem, poly_gcd, poly_gcd_budgeted, poly_monic,
+    poly_sub,
 };
+
+// ---------------------------------------------------------------------------
+// "A RootSum answer would be thrown away" — see `RootSumSuppressed`
+// ---------------------------------------------------------------------------
+
+std::thread_local! {
+    /// Whether a `RootSum` in the result is usable by the *caller*.
+    static ROOT_SUM_USABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Scope guard declaring that the caller will gate this integration through
+/// [`crate::integrate::verify_antiderivative_status`], which **provably cannot
+/// accept** a candidate containing a [`crate::kernel::ExprData::RootSum`]:
+///
+/// * the exact arm simplifies `d/dx(candidate) − integrand` and asks whether it
+///   is zero, but `simplify` replaces every `RootSum` with an *opaque atom*
+///   (`simplify/egraph.rs`), so a residual containing one never reduces to 0;
+/// * the numeric arm evaluates with `jit::eval_interp`, which has no `RootSum`
+///   arm at all and returns `None`.
+///
+/// So when this guard is active, building the `RootSum` is pure waste — and its
+/// Lazard–Rioboo–Trager log argument is a number-field GCD that dominates the
+/// whole integration (measured: 3.72 s of a 3.74 s `∫ cos·sin¹²/(sin⁹+sin+1)`,
+/// all of it discarded). Declining early returns exactly the same `None` the
+/// caller would have reached after paying for it.
+pub(crate) struct RootSumSuppressed(bool);
+
+impl RootSumSuppressed {
+    /// Suppress `RootSum` results until the returned guard is dropped.
+    pub(crate) fn enter() -> Self {
+        Self(ROOT_SUM_USABLE.with(|c| c.replace(false)))
+    }
+}
+
+impl Drop for RootSumSuppressed {
+    fn drop(&mut self) {
+        ROOT_SUM_USABLE.with(|c| c.set(self.0));
+    }
+}
+
+/// Whether emitting a `RootSum` is worth the work on this thread.
+fn root_sum_usable() -> bool {
+    ROOT_SUM_USABLE.with(|c| c.get())
+}
 
 /// Attempt to integrate `expr` as a rational function of `var`.
 ///
@@ -59,7 +104,19 @@ use super::rational_rde::{
 /// the Rothstein–Trager path succeeds, or `None` when `expr` is not a rational
 /// function or falls outside the supported subset (see module docs), so the
 /// caller can fall back to its existing behaviour.
+///
+/// # Budget
+///
+/// Also returns `None` when [`crate::budget`] trips at one of the stage
+/// boundaries below. This route is where a hard rational integrand spends its
+/// time — measured at 4.0 s for the degree-18 denominator that
+/// `∫ cos x·sin¹²x/(sin⁹x + sin x + 1) dx` reaches through the Weierstrass
+/// substitution — so without these it was one uninterruptible block.
+/// `integrate_inner` re-checks the budget straight after calling this and
+/// reports `E-BUDGET-*`, so a bail-out is never mistaken for a mathematical
+/// decline.
 pub fn try_integrate_rational(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    crate::budget::check().ok()?;
     let (a, d) = expr_to_qrational(expr, var, pool)?;
     let a = trim(a);
     let d = trim(d);
@@ -74,7 +131,9 @@ pub fn try_integrate_rational(expr: ExprId, var: ExprId, pool: &ExprPool) -> Opt
     let lc_inv = Rational::from(1) / d[degree(&d) as usize].clone();
     let d = poly_scale(&d, &lc_inv);
     let a = poly_scale(&a, &lc_inv);
-    let g = poly_gcd(&a, &d);
+    // The dominant cost of this whole route on a high-degree integrand; see
+    // `poly_gcd_budgeted` for the measurement.
+    let g = poly_gcd_budgeted(&a, &d)?;
     let a = poly_div_exact(&a, &g);
     let d = poly_monic(&poly_div_exact(&d, &g));
     if degree(&d) < 1 {
@@ -94,13 +153,14 @@ pub fn try_integrate_rational(expr: ExprId, var: ExprId, pool: &ExprPool) -> Opt
     if !r.is_empty() {
         // Hermite reduction: split R/D into a rational part (added directly) plus a
         // proper fraction H/Drad with a *squarefree* denominator for the log part.
+        crate::budget::check().ok()?;
         let (rational_terms, h, drad) = hermite_reduce(&r, &d, var, pool)?;
         terms.extend(rational_terms);
 
         let h = trim(h);
         if !h.is_empty() {
             // Reduce H/Drad and apply Rothstein–Trager to the squarefree remainder.
-            let g = poly_gcd(&h, &drad);
+            let g = poly_gcd_budgeted(&h, &drad)?;
             let h = poly_div_exact(&h, &g);
             let drad = poly_monic(&poly_div_exact(&drad, &g));
             if degree(&drad) >= 1 {
@@ -108,9 +168,13 @@ pub fn try_integrate_rational(expr: ExprId, var: ExprId, pool: &ExprPool) -> Opt
                 // Rothstein–Trager for rational residues; otherwise fall back to a
                 // partial-fraction pass that emits log + arctan for irreducible
                 // quadratic factors.
+                crate::budget::check().ok()?;
                 let logs = match rothstein_trager(&h, &drad, &dprime, var, pool) {
                     Some(logs) => logs,
-                    None => partial_fraction_log_arctan(&h, &drad, var, pool)?,
+                    None => {
+                        crate::budget::check().ok()?;
+                        partial_fraction_log_arctan(&h, &drad, var, pool)?
+                    }
                 };
                 terms.extend(logs);
             }
@@ -531,6 +595,10 @@ fn partial_fraction_log_arctan(
     let mut terms: Vec<ExprId> = Vec::new();
 
     for (p, n) in factors.iter().zip(nums.iter()) {
+        // Cooperative checkpoint per irreducible factor: the degree-≥3 arm below
+        // runs a number-field GCD whose cost grows sharply with that factor's
+        // degree, so this is the coarsest bound worth having on the loop.
+        crate::budget::check().ok()?;
         let n = trim(n.clone());
         if n.is_empty() {
             continue;
@@ -620,7 +688,13 @@ fn partial_fraction_log_arctan(
                             }
                         }
                         _ => {
-                            // RootSum(Q, t, t·log(S(t,x))).
+                            // RootSum(Q, t, t·log(S(t,x))).  The log argument is
+                            // a number-field GCD and by far the most expensive
+                            // step here, so skip it outright when the caller has
+                            // told us a `RootSum` cannot be used.
+                            if !root_sum_usable() {
+                                return None;
+                            }
                             let s_expr = alg_log_argument(&n, &pp, p, qf, var, rvar, pool)?;
                             let body = pool.mul(vec![rvar, pool.func("log", vec![s_expr])]);
                             let q_expr = qpoly_to_expr(qf, rvar, pool);

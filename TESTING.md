@@ -70,11 +70,22 @@ CI caps each fuzz job at **2 hours** (`timeout 7200`); locally you can stop anyt
 
 Because this project relies heavily on C libraries (GMP, FLINT) and exposes pointers to Python via PyO3, securing the Foreign Function Interface (FFI) is critical.
 
-### Sanitizers (ASan, LSan, UBSan)
+### Sanitizers (ASan, LSan, TSan)
 We compile our Rust test suite using LLVM sanitizers to catch memory violations instantly.
 * **AddressSanitizer (ASan)**: Catches Out-of-Bounds accesses and Use-After-Free errors (especially critical when Python drops an object that Rust/C still expects).
 * **LeakSanitizer (LSan)**: Ensures FLINT/GMP memory allocations are properly dropped.
-* **UndefinedBehaviorSanitizer (UBSan)**: Catches unaligned pointers and integer overflows.
+* **ThreadSanitizer (TSan)**: Catches data races across the Rayon/`parallel` paths.
+
+> **UndefinedBehaviorSanitizer is *not* run.** `-Zsanitizer=undefined` appears nowhere
+> in this repository or in `.github/workflows/ci.yml`. If you want UB coverage you have
+> to add it yourself; do not assume it is already gating anything.
+
+> **The package is named `alkahest-cas`, not `alkahest-core`.** `alkahest-core/` is the
+> *directory*; `-p alkahest-core` matches no package and the test binaries are named
+> `alkahest_cas-*`. A `for bin in …/alkahest_core-*` loop expands to a literal that does
+> not exist, the `[ -x "$bin" ] || continue` guard skips it, and the command **exits 0
+> having checked nothing** — which is how the wrong name survived here for as long as it
+> did.
 
 *Running with Sanitizers (requires Rust **nightly** + `rust-src`):*
 ```bash
@@ -82,15 +93,24 @@ rustup toolchain install nightly
 rustup component add rust-src --toolchain nightly
 ```
 
-**AddressSanitizer** — Tier 1 CI scopes this to `alkahest-core` only (full workspace + `build-std` is slow and easy to hit runner limits); locally you can match CI or widen:
+**AddressSanitizer** — Tier 1 CI scopes this to the `alkahest-cas` package only (full workspace + `build-std` is slow and easy to hit runner limits); locally you can match CI or widen:
 ```bash
 RUSTFLAGS="-Zsanitizer=address" \
-  cargo +nightly test -p alkahest-core --lib --tests \
+  cargo +nightly test -p alkahest-cas --lib --tests \
     --target x86_64-unknown-linux-gnu \
     -Z build-std
 # Optional: suppress known GMP/FLINT leak noise while debugging other issues:
 #   LSAN_OPTIONS=detect_leaks=0
 ```
+
+**Known gap — no sanitizer sees a Python-facing path.** The PR-gating ASan job sets
+`LSAN_OPTIONS: detect_leaks=0`, so it is not a leak check. The nightly LSan shard is
+`--workspace`, but `alkahest-py` is a `cdylib` with zero `#[test]` functions, so no
+CPython interpreter is ever started under it, and the Valgrind shard globs Rust test
+binaries only. **`pytest` is never run under any sanitizer.** Until that changes, the
+substitute check for the Python surface is a behavioural one: run N iterations of an
+entry point on a *fresh* `ExprPool` per iteration and assert resident memory stays flat
+(see [Budgets → pool lifetime](docs/mdbook/src/budgets.md#exprpool-never-reclaims)).
 
 **ThreadSanitizer** — nightly `tsan` shard:
 ```bash
@@ -121,7 +141,9 @@ sudo apt-get install -y valgrind   # or your OS equivalent
 export RUSTFLAGS="-C debuginfo=2 -Z dwarf-version=4"
 cargo +nightly build --workspace --target x86_64-unknown-linux-gnu -Z build-std
 
-for bin in target/x86_64-unknown-linux-gnu/debug/deps/alkahest_core-*; do
+# The crate's test binaries are `alkahest_cas-*` (package `alkahest-cas`).
+# `alkahest_core-*` matches nothing and the guard below turns that into a silent pass.
+for bin in target/x86_64-unknown-linux-gnu/debug/deps/alkahest_cas-*; do
   [ -x "$bin" ] || continue
   valgrind --leak-check=full --error-exitcode=1 \
     --suppressions=valgrind.supp "$bin"
@@ -147,7 +169,7 @@ Given the computational expense of fuzzing and PBT, our GitHub Actions / CI pipe
 
 ### Tier 1: Push / PR Checks (fast path)
 * **Triggers**: Push or PR to `main` (not the scheduled cron).
-* **Typical contents**: `cargo fmt`, `clippy`, `cargo test --workspace`, `ruff`, `pytest` (defaults in `pytest.ini` exclude `@pytest.mark.slow`), ASan on `alkahest-core`, CodSpeed micro-benchmarks (`.github/workflows/codspeed.yml`), etc. (see `.github/workflows/ci.yml`).
+* **Typical contents**: `cargo fmt`, `clippy`, `cargo test --workspace`, `ruff`, `pytest` (defaults in `pytest.ini` exclude `@pytest.mark.slow`), ASan on the `alkahest-cas` package (**below** the FFI boundary — the PyO3 layer is not instrumented, and `detect_leaks` is off), the deterministic silent-error gate (`tests/silent_errors/`), CodSpeed micro-benchmarks (`.github/workflows/codspeed.yml`), etc. (see `.github/workflows/ci.yml`).
 
 ### Tier 1b: Slow Python (sparse interpolation roadmap)
 * **Triggers**: Same nightly **schedule** as Tier 2 (not on every push — keeps default CI fast).

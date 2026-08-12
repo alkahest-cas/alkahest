@@ -93,7 +93,60 @@ mlir_text = to_stablehlo(expr, [x, y], fn_name="my_kernel")
 
 ## SymPy interop
 
-Alkahest does not import SymPy at runtime. The integration is one-way for validation: the test oracle in `tests/test_oracle.py` uses SymPy as a ground truth reference. The recommended pattern for mixed workflows is to convert to/from string representation.
+Alkahest's kernel does not import SymPy. Two supported bridges exist on top of it:
+`alkahest.crosscheck.to_sympy` translates an `Expr` into a SymPy expression, and
+[`alkahest.crosscheck`](./crosscheck.md) drives SymPy as a differential-testing oracle.
+The test oracle in `tests/test_oracle.py` uses SymPy as a ground-truth reference. For
+ad-hoc mixed workflows, converting through the string representation is fine.
+
+### The interop trap: casus-irreducibilis cube roots
+
+Read this before round-tripping a symbolic result into another CAS. **An expression can
+be correct in Alkahest and evaluate to a wrong number somewhere else**, because the two
+systems do not agree on which branch a cube root denotes.
+
+`Matrix.eigenvals()` on a 3×3 with an irreducible cubic characteristic polynomial and
+three real roots returns the Cardano form, and in the *casus irreducibilis* one of the
+cube-root radicands is negative:
+
+```python
+import alkahest as ak
+
+pool = ak.ExprPool()
+I = pool.integer
+M = ak.Matrix.from_rows([[I(2), I(0), I(-2)], [I(2), I(0), I(-1)], [I(1), I(1), I(2)]])
+
+for value in M.eigenvals():
+    print(value)
+# two conjugate-looking siblings, then:
+# (4/3 + (sqrt(298/27) + -89/27)^(1/3) + (-89/27 + (-1 * sqrt(298/27)))^(1/3))
+```
+
+That expression denotes the eigenvalue **under the real cube-root convention**. Alkahest
+is consistent about this and honest at the boundary: `eval_expr` on it refuses with
+`E-EVAL-009`, and `interval_eval` returns `ArbBall(1.629231 ± inf)` — an enclosure that
+is true and useless, rather than a number that is neither.
+
+Hand the *same* expression to a principal-branch evaluator — SymPy, NumPy, most
+calculators — and `(negative)^(1/3)` takes the principal complex root instead. You get a
+confident number back, and it is not an eigenvalue. In one sweep of 720 random integer
+matrices, 14 produced eigenvalues of this shape.
+
+So, when a loop exports symbolic results to another tool:
+
+- Prefer transporting a **verified numeric enclosure** (`refine_root`, `interval_eval`,
+  `bound_on_box`) rather than a radical expression, whenever the consumer only needs a
+  number.
+- If you must transport the expression, evaluate it in Alkahest **first**. A refusal
+  (`E-EVAL-009`, or an infinite ball) is the signal that the expression is branch-sensitive
+  and must not be handed over as-is.
+- Never treat "the other tool produced a float" as confirmation. Substitute the value back
+  into the characteristic polynomial (or whatever defined it) and check the residual.
+
+This is the general shape of the hazard, not a quirk of `eigenvals`: **an honest refusal
+inside Alkahest becomes somebody else's silent error the moment the expression crosses the
+boundary.** [`alkahest.crosscheck`](./crosscheck.md) reports exactly this situation as
+`incomparable` rather than `diverge`, for the same reason.
 
 ## DLPack
 

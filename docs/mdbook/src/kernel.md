@@ -69,6 +69,19 @@ Available domains: `real`, `positive`, `nonnegative`, `integer`, `complex`. The 
 
 `ExprId` is a 32-bit index into the pool's internal arena. It is `Copy`, `Send`, and `Sync`. Cloning an `ExprId` is free. No reference counting is needed because the pool owns all nodes; expressions are not freed until the pool is dropped.
 
+> **That last clause is a hard limit, not an implementation detail.** The arena is
+> **append-only**: there is no `clear`, no `truncate`, no refcount and no GC, so nothing
+> is ever reclaimed while the pool is alive, and the storage cannot shrink. A distinct
+> expression costs roughly 200 bytes of resident memory per node, permanently. A loop
+> that builds a module-scope pool once and then calls into it forever grows linearly and
+> without bound, at flat per-call latency — so it OOMs with no slowdown to warn you
+> first. Every `Expr`, `Matrix`, `Series` and `DerivedResult` holds a strong reference to
+> its pool, so retaining one result retains the whole history.
+>
+> The supported pattern for unattended work is **one pool per problem**, dropped when the
+> problem is done: see
+> [Budgets → `ExprPool` never reclaims](./budgets.md#exprpool-never-reclaims).
+
 The kernel is designed with parallelism as a first-class property. All kernel types are `Send + Sync`. The simplification and differentiation passes can run concurrently on disjoint `ExprId`s from the same pool.
 
 ## Interning cost model
@@ -81,4 +94,6 @@ Interning a new node requires:
 
 Step 4 (the common case in a running computation) is a single hash lookup plus a pointer load. The arena uses bump allocation, so step 3 is also fast.
 
-The memory benchmark group in `alkahest-core/benches/alkahest_bench.rs` verifies that rebuilding an identical expression tree does not grow the pool.
+The memory benchmark group in `alkahest-core/benches/alkahest_bench.rs` verifies that rebuilding an *identical* expression tree does not grow the pool. Note the scope of that guarantee: it covers repeated work, not new work. A stream of *distinct* inputs grows the pool by every node it interns, and none of it comes back — see the warning under [ExprId and memory](#exprid-and-memory).
+
+One documented exception to "identical input does not grow the pool": `Matrix.eigenvals()` interns a fresh gensym per call, so it grows by about 1.9 KB per call even on the same matrix. Cache its result rather than recomputing.

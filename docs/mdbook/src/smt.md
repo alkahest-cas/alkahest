@@ -93,9 +93,13 @@ support.script           # the emitted script, so you don't pay for it twice
 
 - **`prefer_in_tree`** for real arithmetic with no integer variables (`QF_LRA` / `QF_NRA`).
   [`prove_nonneg` / `sos_decompose`](./positivity.md) return a `PositivityCertificate` that
-  composes with `to_lean`; `decide` is complete. z3's `nlsat` returns an answer and **no
-  artifact**. Reach for SMT here as a *fallback* when the in-tree route refuses or exceeds
-  its budget.
+  composes with `to_lean`, and `decide` returns a verdict plus a verified witness. z3's
+  `nlsat` returns an answer and **no artifact**. Reach for SMT here as a *fallback* when
+  the in-tree route refuses or exceeds its budget — and note that it genuinely does
+  refuse: `decide` is not complete, it raises `E-CAD-001` outside its fragment and on
+  sentences whose only solutions sit at an irrational boundary point
+  ([details](./positivity.md#decide-refuses-rather-than-guessing)). `nlsat` is complete
+  over the reals and is the right escalation when that happens.
 - **`smt`** for anything with integer variables — mixed integer/real/boolean is the
   genuinely new capability, and neither CAD nor `diophantine` covers it.
 
@@ -284,7 +288,10 @@ arrives only after paying for the solver run reads like a bug in the solver.
 
 For the same reason `solve` takes **quantifier-free formulas only**. `to_smtlib` exports
 quantified ones happily — export it and drive the solver yourself, or use
-`alkahest.decide` for real quantifier elimination (see [Positivity certificates](./positivity.md)).
+`alkahest.decide` for real quantifier elimination within its fragment (≤ 2 variables,
+≤ 2-quantifier prefix, polynomial bodies, and refusing rather than guessing at irrational
+boundary points — see
+[`decide` refuses rather than guessing](./positivity.md#decide-refuses-rather-than-guessing)).
 
 ## Budgets
 
@@ -323,7 +330,7 @@ claim.machine_checked  # True only for the checked sat case
   liability the project has to defend, in a problem class that is not Alkahest's.
 - **No unsat-proof checking.** See the first asymmetry above; the status vocabulary is
   honest about it rather than papering over it.
-- **`dpll_sat` is not wired in.** `alkahest_core::logic::dpll_sat` remains a standalone CNF
+- **`dpll_sat` is not wired in.** `alkahest_cas::logic::dpll_sat` remains a standalone CNF
   utility, sound and complete for the propositional problem it is *handed*, and it is
   deliberately not an engine behind this bridge. The only route from a `Formula` to it is
   to abstract each arithmetic atom to a fresh proposition, and that abstraction is sound in
@@ -342,7 +349,7 @@ claim.machine_checked  # True only for the checked sat case
 | `E-SMT-004` | Python driver | A model failed back-substitution. Always raised, never warned. |
 | `E-BUDGET-001` | Python driver | The solver hit `Budget.wall_ms`. |
 
-Only `E-SMT-002` appears in `alkahest_core::errors::codes::REGISTRY`, because it is the only
+Only `E-SMT-002` appears in `alkahest_cas::errors::codes::REGISTRY`, because it is the only
 one Rust raises; `scripts/check_error_codes.py` requires the registry and the Rust
 `AlkahestError` impls to agree exactly, so codes raised only from Python stay out of it
 (`E-BATCH-001` in `alkahest/_batch.py` is the same precedent).

@@ -75,6 +75,8 @@ pub const REGISTRY: &[ErrorSpec] = &[
     // elimination can reach an entry it can neither prove zero nor prove non-zero.
     // Refusing is the point: treating "unknown" as "non-zero" is what produced a
     // confident wrong rank (and a false inconsistency signature) before this code existed.
+    // Raised through `EigenError` too (`eigenvects`), which shares the elimination it
+    // refuses in; the class below names where the code is defined, not every route.
     ErrorSpec { code: "E-LINALG-010", class: "LinearAlgebraError", cause: Cause::Unsupported, remediation: Some("rewrite the entry into a form whose vanishing is decidable, or substitute concrete values for the parameters") },
     // E-ODE — OdeError
     ErrorSpec { code: "E-ODE-001", class: "OdeError", cause: Cause::UserInput,   remediation: Some("number of state variables must equal number of RHS expressions") },
@@ -117,8 +119,14 @@ pub const REGISTRY: &[ErrorSpec] = &[
         code: "E-CAD-001",
         class: "CadError",
         cause: Cause::Unsupported,
+        // Two distinct causes now share this code, and the remediation has to
+        // cover both: outside the supported fragment (≤ 2 variables, ≤ 2
+        // quantifiers, polynomial atoms), or inside it but undecidable by the
+        // sample points available — a non-strict atom whose only solutions sit
+        // at an irrational boundary. The second is a *refusal to guess*: before
+        // 3.8 that case silently answered, which produced false universals.
         remediation: Some(
-            "use a purely polynomial constraint in one real variable without nested quantifiers; multivariate QE is incremental",
+            "keep to polynomial atoms in at most two real variables with at most two quantifiers; if the sentence is already in that fragment, its solutions may lie only at an irrational boundary point, which cannot be tested exactly — substitute concrete values, use a strict inequality, or hand it to an SMT solver via alkahest.smt",
         ),
     },
     // E-CUDA — CudaError
@@ -180,6 +188,7 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-PARSE-001", class: "ParseError", cause: Cause::UserInput,   remediation: Some("only ASCII arithmetic expressions are supported") },
     ErrorSpec { code: "E-PARSE-002", class: "ParseError", cause: Cause::UserInput,   remediation: Some("check parentheses and operator placement") },
     ErrorSpec { code: "E-PARSE-003", class: "ParseError", cause: Cause::UserInput,   remediation: Some("use a known function: sin, cos, tan, sinh, cosh, tanh, asin, acos, atan, atan2, exp, log, sqrt, abs, sign, floor, ceil, round, erf, erfc, gamma, lambert_w, digamma, bessel_j0, bessel_j1") },
+    ErrorSpec { code: "E-PARSE-004", class: "ParseError", cause: Cause::Resource,    remediation: Some("flatten the expression — deeply nested parentheses, prefix signs or function calls exceed the parser's recursion budget") },
     ErrorSpec { code: "E-EVAL-001", class: "EvalError", cause: Cause::UserInput,   remediation: Some("bind every free symbol before evaluation") },
     ErrorSpec { code: "E-EVAL-002", class: "EvalError", cause: Cause::UserInput,   remediation: Some("use mode='f64' or 'complex' for float literals") },
     ErrorSpec { code: "E-EVAL-003", class: "EvalError", cause: Cause::UserInput,   remediation: Some("only integer exponents are supported in exact mode") },
@@ -199,6 +208,10 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-BUDGET-001", class: "BudgetError", cause: Cause::Resource, remediation: Some("raise Budget(wall_ms=...), or accept a heuristic/numeric result for this candidate instead of an exact one") },
     ErrorSpec { code: "E-BUDGET-002", class: "BudgetError", cause: Cause::Resource, remediation: Some("raise Budget(max_steps=...), or accept a partial/heuristic result for this candidate instead of an exact one") },
     ErrorSpec { code: "E-BUDGET-003", class: "BudgetError", cause: Cause::Resource, remediation: Some("call alkahest.clear_cancel() (Python) or budget::clear_cancel() (Rust) before starting the next candidate") },
+    // E-DEPTH — DepthLimitError (expression nesting ceiling; see kernel::depth).
+    // Resource, not UserInput: the expression is well-formed, we decline to
+    // recurse over it because a native stack overflow would kill the process.
+    ErrorSpec { code: "E-DEPTH-001", class: "DepthLimitError", cause: Cause::Resource, remediation: Some("rebuild the expression with less nesting (a balanced n-ary Add is shallow where a chain of binary ones is not), or process it in smaller pieces") },
     // E-DOMAIN — reserved; DomainError is Python-only pending Rust implementation
     // E-SOS — SosError (P1 item 8: positivity certificates / Positivstellensatz)
     ErrorSpec { code: "E-SOS-001", class: "SosError", cause: Cause::UserInput,   remediation: Some("positivity certificates are for polynomials in the listed variables; expand or clear denominators first, and pass every symbol that occurs as a variable") },

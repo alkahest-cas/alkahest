@@ -2528,11 +2528,13 @@ class SweepReport:
 #: Operations the default sweep exercises. Chosen so the *comparator* is what
 #: gets stressed — every one of these has a rung 4 or a rigorous rung 3.
 #:
-#: ``limit`` is deliberately absent, and the reason is worth recording: at this
-#: commit ``limit(sqrt(x**2 + x) - x, x, oo)`` does not terminate, and because
-#: the kernel holds the GIL throughout there is no in-process way to bound it —
-#: a worker thread cannot be stopped, and an abandoned one wedges the
-#: interpreter just the same. See :func:`sweep` for what to do about that.
+#: ``limit`` is deliberately absent. The original reason — the call could run
+#: away and the kernel held the GIL throughout, so nothing in-process could
+#: bound it — no longer holds: ``limit`` now has cooperative checkpoints and an
+#: internal work ceiling, and its binding releases the GIL, so
+#: ``context(budget=...)`` and ``request_cancel()`` both reach it. What is left
+#: is that its comparator is weaker than the three below, which is a reason to
+#: promote findings by hand rather than to sweep it randomly.
 SWEEP_OPERATIONS = ("diff", "integrate", "simplify")
 
 

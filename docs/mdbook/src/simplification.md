@@ -71,6 +71,37 @@ simplifier and record `NonZero` side conditions in the derivation log. The
 colored pass runs after ordinary rule simplification and preserves repeated
 terms and factors.
 
+### The literal-zero carve-out
+
+`b · b⁻¹ → 1` is a documented convention for a symbolic base, but it is not a
+convention anybody holds when the base is the literal integer `0`: `0⁻¹` is division
+by zero, so `0 · 0⁻¹` is the indeterminate form `0 · ∞` and has no value. Through 3.7
+`simplify` returned `1` for it, `simplify_egraph` returned `0`, and
+`simplify(5 · 0⁻¹ · 0)` returned `0` — three answers that were their own proof that at
+least two were wrong. As of 3.8 all of them decline:
+
+```python
+import alkahest as ak
+
+pool = ak.ExprPool()
+Z = pool.integer(0)
+undefined = Z * Z ** pool.integer(-1)
+
+ak.simplify(undefined).value          # (0 * 0^-1) — left alone
+ak.simplify_egraph(undefined).value   # (0 * 0^-1) — same
+ak.simplify(pool.integer(5) * Z ** pool.integer(-1) * Z).value   # (0 * 0^-1 * 5)
+```
+
+The guard tests for a **literal** zero base. Because the rule engine normalises
+strictly bottom-up, that also covers every base the simplifier can itself reduce to
+zero — `x - x` included, so `diff(2/(x - x), x)` no longer reports `1` for a function
+whose domain is empty. A base that *is* zero but not provably so keeps the
+`b · b⁻¹ → 1` convention: deciding it would need a three-valued zero test on the `Mul`
+rewrite path, which costs several 128-bit ball evaluations per node.
+
+Unaffected controls, so you can see the boundary: `x · x⁻¹ → 1`, `0 · x → 0`, and
+`2x − 2x → 0` all still fire.
+
 ### Parallel simplification
 
 ```python
@@ -112,7 +143,7 @@ wide node to fork on and runs essentially sequentially. At one thread the level
 scheduler is faster on every shape measured. Reproduce with
 `cargo run --release --features parallel --example simplify_three_way`.
 
-Both are `experimental`: `alkahest_core::experimental::{simplify_par, simplify_redex}`.
+Both are `experimental`: `alkahest_cas::experimental::{simplify_par, simplify_redex}`.
 
 ## E-graph simplification
 

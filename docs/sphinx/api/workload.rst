@@ -22,13 +22,24 @@ Budgets
 
    Entered with ``context(budget=...)``. Trips raise
    :exc:`BudgetExceededError` (``E-BUDGET-001`` wall, ``E-BUDGET-002`` steps,
-   ``E-BUDGET-003`` cancelled) from engines that check cooperatively
-   (notably :func:`integrate`).
+   ``E-BUDGET-003`` cancelled) from engines that check cooperatively —
+   :func:`integrate` and :func:`limit`. :func:`simplify` has no error channel
+   and stops early instead of raising. Gröbner bases and homotopy continuation
+   do not check the budget at all.
+
+   ``wall_ms`` is **cooperative**: the call stops at the first checkpoint
+   after the deadline. The granularity is one primitive polynomial operation,
+   and on a high-degree input that operation can be an uninterruptible FLINT
+   call. Budgets are **thread-local**; the cancellation flag is process-wide.
 
 .. function:: request_cancel()
 
    Set the process-wide cancellation flag so cooperative checkpoints return
-   ``E-BUDGET-003``.
+   ``E-BUDGET-003``. Because :func:`integrate` and :func:`limit` release the
+   GIL around their core call, this reaches one of them that is **already
+   running** — a watchdog thread can stop a call in flight, not only one that
+   has not started. No other engine releases the GIL, so none of the others
+   can be cancelled mid-call.
 
 .. function:: clear_cancel()
 
@@ -49,10 +60,27 @@ Budgets
 
 .. function:: run_with_wall_fallback(fn, *args, budget=None, **kwargs)
 
-   Python-layer wall-clock fallback for callables that cannot raise
-   :exc:`BudgetExceededError` through their own return type (e.g.
-   :func:`simplify`). Prefer ``context(budget=...)`` for engines that already
-   honor Rust cooperative checkpoints.
+   Runs ``fn`` on a worker thread with ``budget`` entered on that thread, and
+   raises :exc:`BudgetExceededError` (``E-BUDGET-001``) when it overruns
+   ``wall_ms``. Its purpose is to turn a callable that cannot raise through its
+   own return type (e.g. :func:`simplify`, which truncates silently) into a
+   coded error.
+
+   .. warning::
+
+      **It does not bound wall time for an uncooperative callee.** It joins its
+      worker before the exception propagates, so it returns control when the
+      callee returns, not at ``wall_ms``::
+
+          run_with_wall_fallback(time.sleep, 3.0, budget=Budget(wall_ms=50))
+          # raises E-BUDGET-001 after 3000 ms
+
+      The message reports the real elapsed time for exactly this reason. Python
+      cannot kill a thread, and abandoning one would leak a live thread that
+      still allocates into the pool and can only be stopped through the
+      process-wide cancel flag. Prefer ``context(budget=...)`` for engines that
+      honor the cooperative checkpoints, and an **OS-level timeout**
+      (subprocess or process watchdog) for anything else.
 
 Batch evaluation
 ----------------
@@ -75,6 +103,19 @@ Batch evaluation
 
    Call ``fn(item, **kwargs)`` for every item. **Never raises** for a single
    bad element. Always returns results in **input order**.
+
+   The active budget is propagated into ``parallel=True`` workers: a Rust
+   budget frame is thread-local, so ``batch_map`` snapshots the caller's budget
+   and re-enters it inside each worker task. ``wall_ms`` remains a single
+   sweep-wide deadline (captured at the ``batch_map`` call, not at
+   ``context(budget=...)`` entry); ``max_steps`` becomes **per item**, because
+   the Rust step counter is not readable from Python. Without this, a fanned-out
+   sweep ran unbudgeted and reported ``E-INT-001`` — a mathematical verdict —
+   where a sequential sweep reported ``E-BUDGET-001``.
+
+   One item tripping its budget never cancels its siblings; ``batch_map`` never
+   sets the process-wide cancel flag. :func:`request_cancel` does abort every
+   in-flight worker, by design.
 
 .. function:: batch_map_iter(fn, items, *, parallel=False, max_workers=None, **kwargs)
 

@@ -51,7 +51,7 @@ use crate::kernel::{Domain, ExprId, ExprPool};
 pub struct ParseError {
     pub message: String,
     pub span: Option<(usize, usize)>,
-    code_idx: u8, // 1 = E-PARSE-001, 2 = E-PARSE-002, 3 = E-PARSE-003
+    code_idx: u8, // 1 = E-PARSE-001, 2 = E-PARSE-002, 3 = E-PARSE-003, 4 = E-PARSE-004
 }
 
 impl ParseError {
@@ -78,6 +78,16 @@ impl ParseError {
             code_idx: 3,
         }
     }
+
+    /// Input nested more deeply than the recursive-descent parser's stack
+    /// budget allows — see [`MAX_PARSE_DEPTH`].
+    fn too_deep(msg: impl Into<String>, span: (usize, usize)) -> Self {
+        ParseError {
+            message: msg.into(),
+            span: Some(span),
+            code_idx: 4,
+        }
+    }
 }
 
 impl std::fmt::Display for ParseError {
@@ -97,6 +107,7 @@ impl AlkahestError for ParseError {
         match self.code_idx {
             1 => "E-PARSE-001",
             2 => "E-PARSE-002",
+            4 => "E-PARSE-004",
             _ => "E-PARSE-003",
         }
     }
@@ -105,6 +116,7 @@ impl AlkahestError for ParseError {
         match self.code_idx {
             1 => Some("only ASCII arithmetic expressions are supported"),
             2 => Some("check parentheses and operator placement"),
+            4 => Some("flatten the expression — deeply nested parentheses, prefix signs or function calls exceed the parser's recursion budget"),
             _ => Some("use a known function: sin, cos, tan, sec, csc, cot, sinh, cosh, tanh, sech, csch, coth, asin, acos, atan, asinh, acosh, atanh, atan2, exp, log, sqrt, abs, sign, floor, ceil, round, erf, erfc, gamma, lambert_w"),
         }
     }
@@ -329,11 +341,26 @@ fn reciprocal_base(name: &str) -> Option<&'static str> {
 // Parser
 // ---------------------------------------------------------------------------
 
+/// Deepest grammatical nesting [`parse`] will accept.
+///
+/// The parser is recursive descent, so `"((((…x…))))"` or `"sin(sin(sin(…)))"`
+/// costs native stack frames per level and overflows — a `SIGSEGV`, not an
+/// error — long before it runs out of input.  This cap is the parser's
+/// counterpart to [`crate::kernel::depth::MAX_EXPR_DEPTH`]; it has to be
+/// counted separately because the overflow happens *before* any node is
+/// interned, so there is no cached node depth to consult yet.
+///
+/// Deliberately equal to `MAX_EXPR_DEPTH`: text that parses should be text
+/// whose result can then be simplified and printed.
+const MAX_PARSE_DEPTH: u32 = crate::kernel::depth::MAX_EXPR_DEPTH;
+
 struct Parser<'a> {
     tokens: Vec<Token>,
     pos: usize,
     pool: &'a ExprPool,
     symbols: &'a mut HashMap<String, ExprId>,
+    /// Grammatical nesting depth of the production currently being parsed.
+    depth: u32,
 }
 
 impl<'a> Parser<'a> {
@@ -347,6 +374,7 @@ impl<'a> Parser<'a> {
             pos: 0,
             pool,
             symbols,
+            depth: 0,
         }
     }
 
@@ -383,6 +411,24 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self, rbp: u8) -> Result<ExprId, ParseError> {
+        // Every nested production — a parenthesis, a prefix minus, a function
+        // argument — re-enters here, so this is the one place that has to count
+        // to keep the recursion off the end of the stack.
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            let offset = self.peek().offset;
+            self.depth -= 1;
+            return Err(ParseError::too_deep(
+                format!("expression nesting exceeds the limit of {MAX_PARSE_DEPTH}"),
+                (offset, offset + 1),
+            ));
+        }
+        let result = self.parse_expr_inner(rbp);
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_expr_inner(&mut self, rbp: u8) -> Result<ExprId, ParseError> {
         let tok = self.advance();
         let mut left = self.nud(tok)?;
         loop {
@@ -673,6 +719,77 @@ mod tests {
         let e = parse("sin(x)", &pool, &mut syms).unwrap();
         let expected = pool.func("sin", vec![x]);
         assert_eq!(e, expected);
+    }
+
+    /// Refuse `src` and return the code, from a thread with room to reach the
+    /// cap.
+    ///
+    /// [`MAX_PARSE_DEPTH`] is sized for the shipped **release** build on the
+    /// usual 8 MiB stack.  A `cargo test` worker gets 2 MiB and debug frames
+    /// are several times larger, so a debug run overflows before the cap is
+    /// reached — the test would then abort the whole runner, which is exactly
+    /// the outcome this feature exists to prevent.  64 MiB covers both.
+    fn parse_code_on_big_stack(src: String) -> &'static str {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || {
+                let pool = ExprPool::new();
+                let mut syms = HashMap::new();
+                parse(&src, &pool, &mut syms)
+                    .err()
+                    .map(|e| e.code())
+                    .unwrap_or("OK")
+            })
+            .expect("spawn")
+            .join()
+            .expect("deep parse must return, not overflow the stack")
+    }
+
+    /// Recursive descent costs native stack frames per nesting level, so
+    /// `"((((…x…))))"` used to overflow the stack — a `SIGSEGV` that kills the
+    /// process, with no error for the caller to catch.  Just past the limit is
+    /// used deliberately: a regression must fail this test, not crash the test
+    /// runner.
+    #[test]
+    fn deeply_nested_parentheses_are_refused_not_fatal() {
+        let n = (MAX_PARSE_DEPTH + 8) as usize;
+        let src = format!("{}x{}", "(".repeat(n), ")".repeat(n));
+        assert_eq!(parse_code_on_big_stack(src), "E-PARSE-004");
+    }
+
+    /// Prefix operators and function calls re-enter the same production, so
+    /// they must be counted too.
+    #[test]
+    fn deeply_nested_prefix_and_calls_are_refused() {
+        let n = (MAX_PARSE_DEPTH + 8) as usize;
+        assert_eq!(
+            parse_code_on_big_stack(format!("{}x", "-".repeat(n))),
+            "E-PARSE-004"
+        );
+        assert_eq!(
+            parse_code_on_big_stack(format!("{}x{}", "sin(".repeat(n), ")".repeat(n))),
+            "E-PARSE-004"
+        );
+    }
+
+    /// One level under the cap must still parse, so the limit is a real
+    /// boundary and not merely "everything deep fails".
+    #[test]
+    fn just_under_the_parse_cap_still_parses() {
+        let n = (MAX_PARSE_DEPTH - 2) as usize;
+        assert_eq!(
+            parse_code_on_big_stack(format!("{}x{}", "(".repeat(n), ")".repeat(n))),
+            "OK"
+        );
+    }
+
+    /// A long *flat* sum is not nesting and must still parse: the cap counts
+    /// depth, not length.
+    #[test]
+    fn a_long_flat_sum_is_not_nesting() {
+        let (pool, _x, mut syms) = pool_and_x();
+        let src = vec!["x"; 20_000].join("+");
+        parse(&src, &pool, &mut syms).expect("a flat sum has depth 1 per term");
     }
 
     #[test]

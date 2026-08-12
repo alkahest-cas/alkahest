@@ -48,6 +48,9 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-ANSATZ-001 … E-ANSATZ-004 AnsatzError (Python-only; P2 item 1 — conjecture generation)
     E-XCHECK-001 … E-XCHECK-004 CrossCheckError (Python-only; P2 item 2 — differential testing)
     E-SMT-001 … E-SMT-004       SmtError (P2 item 3 — SMT/SAT bridge)
+    E-DEPTH-001                 DepthLimitError (expression nesting ceiling — see
+                                 alkahest_core::kernel::depth; refuses rather than
+                                 letting a recursive walk overflow the native stack)
 """
 
 from __future__ import annotations
@@ -125,6 +128,30 @@ class AssumptionError(AlkahestError):
         span: tuple[int, int] | None = None,
     ):
         super().__init__(message, code="E-SIMPLIFY-001", remediation=remediation, span=span)
+
+
+class DepthLimitError(AlkahestError):
+    """An expression was too deeply nested to walk by recursion.
+
+    Alkahest processes expressions by structural recursion, and a native stack
+    overflow is a ``SIGSEGV`` rather than an exception — it would kill the
+    interpreter outright, with no traceback for a caller to log.  Past a
+    measured ceiling the operation therefore declines instead, which is
+    something ``except Exception`` can actually catch.
+
+    Depth is *nesting*, not size.  ``pool.add([t1, ..., t100000])`` has depth 2
+    and is fine; ``t1 + t2 + ... + t100000`` written with repeated ``+`` builds
+    100 000 nested binary ``Add`` nodes and is not.  Building the wide form, or
+    splitting the work into subexpressions, is the fix.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-DEPTH-001", remediation=remediation, span=span)
 
 
 class DiffError(AlkahestError):

@@ -196,6 +196,7 @@ you reach for `.value`:
 | `.verification` | `dict` | Evidence status, emitted artifact format, external-check status, and side conditions |
 | `.certificate` | `str \| None` | Generated Lean 4 `.lean` source; generation is not Lean proof checking |
 | `to_lean(result)` | `str` | Same as `.certificate`; also accepts `Expr` (runs `simplify` first) |
+| `.to_dict(mode=…)` / `.to_json(mode=…)` | `dict` / `str` | Versioned envelope with a `"kind": "alkahest.derived_result"` discriminator. `mode="compact"` drops step `before`/`after` text and shortens keys, but **never** hides `verification["status"]` and never includes Lean source. Use this to carry a result out of a pool's lifetime, and in agent context windows. |
 
 ```python
 caps = ak.capabilities()
@@ -405,7 +406,7 @@ For asymptotics and multivariate limits, see `experimental.asymptotic_expand` an
 ## Logic and real quantifier elimination
 
 ```python
-from alkahest import And, Or, Not, Exists, Forall, decide, satisfiable
+from alkahest import And, Or, Not, Exists, Forall, decide, satisfiable, CadError
 
 # Predicates come from the pool, not Python comparison operators
 pos = pool.gt(x, pool.integer(0))
@@ -419,10 +420,55 @@ satisfiable(And(pos, lt1))     # {'x': '1/2'} — witness as a rational string
 
 decide(Forall(x, pool.ge(x**2, pool.integer(0))))   # (True, None)
 # decide takes ONE bound symbol (not a list) and returns (truth, witness_or_none)
+# ...OR RAISES CadError. See below — this is not an optional detail.
 
 # Cylindrical algebraic decomposition primitives
 from alkahest import cad_project, cad_lift
 ```
+
+### `decide` is NOT complete — it refuses (`E-CAD-001`)
+
+Always wrap `decide` in `try/except ak.CadError`. It covers polynomial bodies over ℚ in
+**at most two real variables** with a quantifier prefix of **at most two**; anything
+outside that raises `E-CAD-001`. Inside the fragment there is a second refusal that
+matters more:
+
+The CAD sample set is made of rational points. For a **strict** atom (`<`, `>`) that is
+complete, because strict solution sets are open. For a **non-strict** atom (`=`, `≠`,
+`≤`, `≥`) the solution set can be a single boundary point, and if that point is
+irrational it is never sampled. Rather than report an unsatisfiability it never checked
+there — which via `∀x. φ ≡ ¬∃x. ¬φ` would become a proof of a *false universal theorem* —
+`decide` refuses.
+
+```python
+# rational double root at x = -2/3: found exactly, real verdict
+body = pool.gt((pool.integer(3)*x + pool.integer(2))**pool.integer(2), pool.integer(0))
+decide(Forall(x, body))                      # (False, None)
+
+# irrational double root at ±sqrt(2): refuses
+irr = pool.gt((x**pool.integer(2) - pool.integer(2))**pool.integer(2), pool.integer(0))
+try:
+    decide(Forall(x, irr))
+except CadError as e:
+    print(e.code)                            # E-CAD-001
+```
+
+Rules for agents:
+
+- **`E-CAD-001` means "undecided", never "false".** Do not report it to the user as a
+  disproof, and do not record it as a closed branch in a search.
+- **Witnesses are verified.** `(True, {...})` means the point was substituted back and
+  checked. `∃x. 3x−2=0` → `(True, {'x': '2/3'})`; `∃x. x²=2` → `(True, None)`, because no
+  *rational* witness exists. A `None` witness with a `True` verdict is normal, not a bug.
+- **Mixed alternation refuses more often.** `∀x∃y. p > 0` is decided via `¬∃x∀y. p ≤ 0`,
+  and De Morgan turns a strict body non-strict.
+- **Both 3.7 bugs here were silent errors.** Through 3.7, `∀x. (3x+2)² > 0` returned
+  `True` (it is false at `x = −2/3`), and existential witnesses were interval midpoints
+  that did not satisfy the sentence. If you have `decide` results from 3.7, re-run them.
+
+Escalation when `decide` refuses: `sos_decompose` / `prove_nonneg` for a positivity
+certificate, `alkahest.smt` (z3's `nlsat` is complete over the reals), or
+`bound_on_box` / `verified_sign` if a rigorous statement over a box is enough.
 
 ---
 
@@ -674,11 +720,11 @@ A.hadamard(B)     # elementwise product
 ```python
 R.det()                   # symbolic determinant
 R.trace()                 # Expr
-R.rank()                  # int
+R.rank()                  # int  (may raise E-LINALG-010 — see below)
 R.transpose()             # Matrix
-R.inverse()               # Matrix (raises MatrixError if singular)
+R.inverse()               # Matrix (E-MAT-003 if proven singular, E-MAT-004 if undecidable)
 R.rref()                  # list[list[Expr]] — reduced row echelon form
-R.nullspace()             # basis of the kernel
+R.nullspace()             # basis of the kernel (may raise E-LINALG-010)
 R.column_space(), R.row_space()
 
 R.eigenvals()             # dict: eigenvalue Expr → algebraic multiplicity
@@ -691,7 +737,7 @@ R.matrix_exp()            # symbolic matrix exponential
 R.simplify()              # simplify every entry
 ```
 
-Three methods have narrower domains than the rest and raise rather than guess —
+Some methods have narrower domains than the rest and raise rather than guess —
 handle the error instead of assuming they apply:
 
 | Method | Raises when | Code |
@@ -699,10 +745,61 @@ handle the error instead of assuming they apply:
 | `diagonalize()` | matrix is defective (fewer independent eigenvectors than the multiplicity) | `E-EIGEN-005` |
 | `minimal_polynomial()` | entries contain free symbols | `E-LINALG-004` |
 | `rational_canonical_form()` | any entry is not a rational constant | `E-LINALG-009` |
+| `rank()`, `rref()`, `nullspace()`, `eigenvects()`, `jordan_form()` | an entry's vanishing can be proven **neither** zero nor non-zero | `E-LINALG-010` |
+| `inverse()` | the determinant's vanishing cannot be decided | `E-MAT-004` |
 
 So `minimal_polynomial` and `rational_canonical_form` are **numeric-matrix only**;
 for symbolic matrices use `characteristic_polynomial_lambda_minus_m` or
 `jordan_form`.
+
+### The three-valued zero test (new in 3.8)
+
+Elimination needs to know whether a pivot is zero. Alkahest's answer is three-valued —
+*proven zero*, *proven non-zero*, *undecidable* — and the third case **refuses**:
+
+```python
+import alkahest as ak
+
+pool = ak.ExprPool()
+a = pool.symbol("a")
+zero, one = pool.integer(0), pool.integer(1)
+opaque = pool.func("mystery", [a])           # no eval rule → vanishing undecidable
+
+try:
+    ak.Matrix([[opaque, zero], [zero, zero]]).nullspace()
+except ak.LinearAlgebraError as e:
+    print(e.code)          # E-LINALG-010
+    print(e.remediation)   # substitute concrete values for the parameters
+
+try:
+    ak.Matrix([[opaque, zero], [zero, one]]).inverse()
+except ak.MatrixError as e:
+    print(e.code)          # E-MAT-004
+```
+
+Before 3.8, "could not prove `det ≠ 0`" was read as "`det = 0`", and `nullspace()`
+returned a **confident wrong basis** for any 2×2 with a symbolic determinant. If you
+have results computed with 3.7 that came from `nullspace` on symbolic entries, recheck
+them: verify `M @ v == 0` numerically rather than trusting the dimension.
+
+`LinearAlgebraError` and `EigenError` are subclasses of `MatrixError`, so
+`except ak.MatrixError` catches all three; `eigenvects()` raises `EigenError` carrying
+code `E-LINALG-010` (the code names what could not be decided, not the wrapper).
+
+### `eigenvals()` — two traps
+
+1. **Casus irreducibilis.** For a 3×3 with an irreducible cubic characteristic
+   polynomial and three real roots, `eigenvals()` returns the Cardano form, in which one
+   cube root has a **negative radicand**. That expression is correct under the *real*
+   cube-root convention; Alkahest is consistent about it and refuses to evaluate it
+   (`eval_expr` → `E-EVAL-009`, `interval_eval` → an unbounded ball). Hand the same
+   expression to SymPy/NumPy and the **principal** branch is taken instead: you get a
+   confident number that is not an eigenvalue. Never export a radical eigenvalue to
+   another tool without evaluating it in Alkahest first; prefer exporting a verified
+   numeric enclosure (`refine_root`, `interval_eval`).
+2. **It is not idempotent in memory.** `eigenvals()` interns a fresh gensym per call, so
+   calling it repeatedly on the *same* matrix grows the pool by ~1.9 KB each time. Cache
+   the result.
 
 Symbolic eigenvalues are closed-form for 2×2 and, since 3.7.0, for parametric 3×3
 matrices whose characteristic polynomial is an irreducible cubic (Cardano /
@@ -818,6 +915,157 @@ ak.get_context_value("any_key")
 
 ---
 
+## Budgets, cancellation, and determinism
+
+Use these whenever you write a loop that calls Alkahest many times. A `Budget` is an
+immutable `(wall_ms, max_steps, seed)` triple pushed by `context(budget=…)`.
+
+```python
+import alkahest as ak
+
+with ak.context(pool=pool, budget=ak.Budget(wall_ms=300, max_steps=50_000, seed=7)):
+    try:
+        r = ak.integrate(hard_expr, x)
+    except ak.BudgetExceededError as e:
+        e.code      # E-BUDGET-001 wall clock | -002 max_steps | -003 cancelled
+        # deprioritise this candidate; DO NOT record it as "no antiderivative"
+
+ak.request_cancel()      # process-wide flag, e.g. from a watchdog thread
+ak.is_cancelled()        # read it
+ak.clear_cancel()        # always clear it in a finally:
+ak.budget_seed()         # the active budget's seed, for reproducible sampling
+ak.active_budget(), ak.is_budget_active()
+```
+
+What actually honours a budget today: **`integrate` and `limit`** (they raise
+`BudgetExceededError`) and **`simplify`** (no error channel — it stops early and returns
+the best value so far, silently). Gröbner bases, homotopy continuation and the other
+heavy primitives do **not** check it yet.
+
+`integrate` and `limit` also **release the GIL** around their core call, so
+`request_cancel()` from another thread reaches one that is already running. Nothing else
+does, so a running Gröbner basis cannot be cancelled.
+
+Three limits to state plainly, because they change what you should write:
+
+1. **`wall_ms` is cooperative.** The call stops at the first checkpoint *after* the
+   deadline. Typical overshoot is a small additive term (a `wall_ms=300` budget trips at
+   ~320 ms), but the granularity is one primitive polynomial operation, and on a
+   high-degree integrand that operation is a **FLINT** call which nothing can interrupt —
+   there a 300 ms budget can return after ~2 s.
+2. **`run_with_wall_fallback` does not bound wall time for an uncooperative callee.** It
+   joins its worker before raising, so it returns when the callee returns.
+   `ak.run_with_wall_fallback(time.sleep, 3.0, budget=ak.Budget(wall_ms=50))` raises
+   `E-BUDGET-001` after **3000 ms**. Use it to turn `simplify`'s silent truncation into a
+   coded error, not to contain an unknown callee. The only hard bound is an **OS-level
+   timeout** (subprocess / process watchdog).
+3. **Budget frames are thread-local; the cancel flag is process-wide.** A
+   `ThreadPoolExecutor` you create yourself runs unbudgeted unless you re-enter the budget
+   inside the worker. `batch_map` does that for you.
+
+## Batch fan-out (`batch_map`, `*_many`)
+
+```python
+from alkahest import batch_map, batch_map_iter, integrate_many, simplify_many, diff_many
+
+outs = ak.integrate_many([x**2, ak.log(ak.log(x)), ak.sin(x)], x, parallel=True)
+for item in outs:                 # BatchItem(index, ok, value, error, elapsed_ms)
+    if item.ok:
+        use(item.value)           # a DerivedResult
+    elif item.error["code"].startswith("E-BUDGET-"):
+        requeue(item.index)       # resource limit — undecided
+    else:
+        close(item.index, item.error)   # a verdict about the mathematics
+```
+
+- **A batch never raises for one bad element** and never drops a slot; the exception is
+  captured into `item.error` with the failing exception's own `E-*` code
+  (`E-BATCH-001` when it has none).
+- `batch_map` returns in **input order** either way. `batch_map_iter` streams in input
+  order when sequential, completion order when `parallel=True`.
+- Under `parallel=True` the active budget is snapshotted and re-entered in each worker.
+  `wall_ms` stays one sweep-wide deadline; `max_steps` becomes **per item**.
+- One item tripping its budget never cancels its siblings. `request_cancel()` does cancel
+  everything in the process — that is the point of it being process-wide.
+
+## Autoresearch modules: `ansatz`, `crosscheck`, `smt`
+
+All three are `alkahest.<name>`; they resolve on attribute access, no separate import
+needed.
+
+```python
+# --- alkahest.ansatz: guess a shape, let the CAS pin the constants ---
+from alkahest.ansatz import polynomial, rational, exponential_polynomial, \
+    linear_combination, quadratic_form, fit, enumerate_family, certify_nonneg
+
+A = polynomial(pool, [x], degree=2)          # c_0 + c_1*x + c_2*x^2
+sol = fit(A, A.expr - (x**2 - pool.integer(3)*x + pool.integer(2)))
+sol.expr          # (2 + x^2 + (x * -3))
+sol.status        # 'exactly_verified'
+sol.rank, sol.free, sol.assignment, sol.residual, sol.certificate
+# No member of the family fits -> AnsatzError E-ANSATZ-003.  That is a CLOSED BRANCH
+# for this family, not a proof that no such object exists.
+
+# --- alkahest.crosscheck: differential-test against another CAS (SymPy) ---
+c = ak.crosscheck.check("integrate", x**2, x)
+c.outcome        # 'agree' | 'diverge' | 'incomparable' | 'unavailable'
+report = ak.crosscheck.sweep(cases=50, seed=7)   # seeded, reproducible
+report.summary()
+ak.crosscheck.oracles()          # which oracles are installed
+ak.crosscheck.to_sympy(expr)     # one-way translation
+# 'unavailable' = no oracle installed. It is NEVER reported as agreement.
+# SWEEP_OPERATIONS is ('diff', 'integrate', 'simplify') — narrower than OPERATIONS.
+
+# --- alkahest.smt: hand a discrete / mixed int-real subproblem to z3 or cvc5 ---
+n = pool.symbol("n", "integer")
+f = ak.And(pool.gt(x, n), pool.lt(x * x, pool.integer(10)))
+ak.smt.supported(f).recommendation    # 'smt' | 'prefer_in_tree' — ask BEFORE solving
+print(ak.to_smtlib(f))                # SMT-LIB 2 text; works with no solver installed
+res = ak.smt.solve(f, budget=ak.Budget(wall_ms=5000))
+res.status        # 'sat' | 'unsat' | 'unknown'
+res.model         # exact Fractions — substituted back and checked in-process
+```
+
+Trust rules for `smt`, which an agent must not blur:
+
+- **`sat` is checked** (`verification["status"] == "exactly_verified"`): the model was
+  substituted back and evaluated exactly. A model that fails raises `E-SMT-004`.
+- **`unsat` is `externally_asserted`** — nothing in Alkahest verified it, and it is
+  deliberately excluded from `research.MACHINE_CHECKED_STATUSES`. Report it as "z3 says
+  unsat", not as proved.
+- **Algebraic-number witnesses are refused** (`E-SMT-003`) rather than converted to
+  floats. Do not work around this by evaluating the `root-obj` yourself.
+- `smt.solve` takes **quantifier-free** formulas; `to_smtlib` exports quantified ones.
+
+## Memory: `ExprPool` never reclaims
+
+There is no `clear`, no refcount and no GC. **The only way to free interned nodes is to
+drop the whole pool**, and every `Expr` / `Matrix` / `Series` / `DerivedResult` holds a
+strong reference to its pool — so keeping one result keeps every node ever interned.
+
+Growth on a shared pool is linear and unbounded (~200 bytes/node; ~2–3.5 KB per
+`integrate` call) while per-call **latency stays flat**, so a long loop OOMs with no
+slowdown to warn you. There is no `len()` on `ExprPool`, so you cannot watch it either.
+
+Write loops like this:
+
+```python
+for problem in problems:
+    pool = ak.ExprPool()                      # fresh pool per problem
+    x = pool.symbol("x")
+    with ak.context(pool=pool, budget=ak.Budget(wall_ms=500)):
+        r = ak.integrate(build(pool, problem), x)
+    record(r.to_dict(mode="compact"))         # a plain dict outlives the pool
+    del pool, x, r                            # dropping the pool reclaims everything
+```
+
+Never carry a live `Expr` between iterations — `to_dict()` / `to_json()` / `str()` exist
+partly for this. One operation grows even on identical input: `Matrix.eigenvals()`
+(fresh gensym per call, ~1.9 KB); cache it. And the LLVM (`+jit` / `+full`) JIT leaks an
+LLVM context per compile, so do not compile in a loop under those wheels.
+
+---
+
 ## Error handling
 
 All errors inherit `AlkahestError` and carry `.code`, `.remediation`, `.span`.
@@ -825,17 +1073,34 @@ All errors inherit `AlkahestError` and carry `.code`, `.remediation`, `.span`.
 | Exception | Code prefix | Trigger |
 |-----------|-------------|---------|
 | `ConversionError` | `E-POLY-*` | Expression is not polynomial |
+| `DomainError` | `E-DOMAIN-*`, `E-EVAL-*` | Side condition violated; `E-EVAL-009` = undefined at this point |
 | `DiffError` | `E-DIFF-*` | Differentiation failed |
-| `IntegrationError` | `E-INT-*` | No elementary antiderivative |
-| `MatrixError` | `E-MAT-*` | Dimension mismatch, singular |
+| `IntegrationError` | `E-INT-*` | No integration rule (`E-INT-001`); proven non-elementary (`E-INT-004`) |
+| `LimitError` | `E-LIMIT-*` | Limit could not be established |
+| `SeriesError` | `E-SERIES-*` | Series expansion failed |
+| `MatrixError` | `E-MAT-*` | Shape mismatch, proven singular (`E-MAT-003`), **undecidable determinant (`E-MAT-004`)** |
+| `LinearAlgebraError` | `E-LINALG-*` | *Subclass of `MatrixError`.* Elimination / decompositions; **undecidable entry (`E-LINALG-010`)** |
+| `EigenError` | `E-EIGEN-*` | *Subclass of `MatrixError`.* Eigen/Jordan; defective matrix (`E-EIGEN-005`) |
+| `CadError` | `E-CAD-*` | **`decide` refused** — outside the fragment, or an untestable irrational boundary point |
+| `SosError` | `E-SOS-*` | No positivity certificate of this shape/degree (`E-SOS-002`) |
+| `HolonomicError` | `E-HOLO-*` | `zeilberger` outside the proper-hypergeometric class |
+| `ValidatedError` | `E-VALIDATED-*` | Rigorous-bounds request unsupported / singular / malformed |
 | `OdeError` | `E-ODE-*` | ODE construction failed |
 | `DaeError` | `E-DAE-*` | DAE index reduction failed |
 | `JitError` | `E-JIT-*` | JIT compilation failed |
 | `SolverError` | `E-SOLVE-*` | Polynomial solver failed |
+| `SumError` / `ProductError` | `E-SUM-*` / `E-PROD-*` | Summation / product failed |
+| `PslqError` | `E-PSLQ-*` | Integer relation not justified by the input precision (`E-PSLQ-004`) |
 | `IoError` | `E-IO-*` | Pool checkpoint I/O |
+| `PoolError` | `E-POOL-*` | Cross-pool or closed-pool misuse |
 | `NumberTheoryError` | `E-NT-*` | Invalid input to number-theory helpers |
 | `ParseError` | `E-PARSE-*` | String parse failures |
 | `RsolveError` | `E-RSOLVE-*` | Recurrence / `rsolve` failures |
+| `BudgetExceededError` | `E-BUDGET-*` | `001` wall clock, `002` `max_steps`, `003` cancelled |
+| `AnsatzError` | `E-ANSATZ-*` | Family construction or fitting; `003` = no member fits |
+| `CrossCheckError` | `E-XCHECK-*` | Check could not be posed; `002` = no oracle installed |
+| `SmtError` | `E-SMT-*` | Export/solver/model-lift; `003` = algebraic witness, `004` = model failed the check |
+| `CertificateUnavailableError` | `E-CERT-*` | A Lean certificate was required but withheld |
 
 ```python
 from alkahest import ConversionError, IntegrationError
@@ -847,6 +1112,21 @@ except ConversionError as e:
                            # "E-POLY-001" is a different case: unexpected symbol
     print(e.remediation)   # human-readable fix hint
 ```
+
+### Refusal vs verdict — the distinction that matters most
+
+Some codes are **refusals**: "I could not establish this, and the alternative to saying
+so is a confident wrong answer." Others are **verdicts** about the mathematics. Never
+report a refusal to the user as a negative result, and never record one as a closed
+branch in a search.
+
+| Refusals (⇒ *undecided*) | Verdicts (⇒ a real answer) |
+|---|---|
+| `E-CAD-001`, `E-LINALG-010`, `E-MAT-004`, `E-SOS-002`, `E-ANSATZ-003`, `E-SMT-003`, `E-INT-001`, `E-LIMIT-003/005`, `E-BUDGET-001..003` | `E-INT-004` (proven non-elementary), `E-MAT-003` (proven singular), `E-EVAL-009` (undefined at this point), an `unsat` from `smt` (but only as *externally asserted*) |
+
+When Alkahest refuses, say so precisely: *"Alkahest declined to decide this (E-CAD-001);
+it is not a disproof."* Then offer an escalation route rather than substituting an
+unverified answer from elsewhere.
 
 ---
 
@@ -1036,3 +1316,9 @@ reg.coverage_report_markdown()  # same, rendered as a Markdown table
 10. **Symbols from different pools are incompatible.** Keep one pool per computation graph.
 11. **`plot*` functions detect the backend automatically.** Never import matplotlib/plotly in user code just to call `ak.plot` — let alkahest dispatch. Use `backend="plotly"` or `backend="matplotlib"` to force one. Use `plot_svg` when no plotting library is available.
 12. **`plot_dag` returns a `graphviz.Source` if the `graphviz` package is installed, otherwise a raw DOT string.** Call `.render()` or `.view()` on the returned object, or pipe the string to `dot -Tpng`.
+13. **A refusal is not a negative result.** `E-CAD-001`, `E-LINALG-010`, `E-MAT-004`, `E-SOS-002`, `E-ANSATZ-003`, `E-SMT-003` and every `E-BUDGET-*` mean *undecided by this route*. Say so explicitly; do not paraphrase them as "false", "no solution exists", or "not possible". See [Refusal vs verdict](#refusal-vs-verdict--the-distinction-that-matters-most).
+14. **`decide` can raise.** Always `try/except ak.CadError`. It is not complete: ≤ 2 variables, ≤ 2 quantifiers, and it refuses at irrational boundary points.
+15. **One pool per problem in any loop.** `ExprPool` never reclaims and holding any `Expr` pins the whole pool. Carry `to_dict(mode="compact")` between iterations, not live expressions.
+16. **Bound long calls with `context(budget=…)`, not `run_with_wall_fallback`.** The latter joins its worker and so does not bound wall time for an uncooperative callee. Only `integrate` and `limit` honour the cooperative budget and release the GIL.
+17. **Do not export radical results to another CAS without evaluating them here first.** Casus-irreducibilis cube roots from `eigenvals()` are correct in Alkahest and wrong under a principal-branch evaluator. An `E-EVAL-009` or an infinite ball is the signal not to export as-is.
+18. **`0 · 0⁻¹` is left unevaluated on purpose** (since 3.8). If you see `(0 * 0^-1)` in a result, that is Alkahest declining to give an indeterminate form a value — not a simplifier failure to work around.

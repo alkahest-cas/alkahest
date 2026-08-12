@@ -323,3 +323,35 @@ def test_proven_singular_keeps_its_own_code_after_a_refusal():
     with pytest.raises(alkahest.MatrixError) as exc_info:
         singular.inverse()
     assert exc_info.value.code == "E-MAT-003"
+
+
+@pytest.mark.parametrize("op", ["nullspace", "eigenvects", "jordan_form"])
+def test_undecidable_entry_keeps_its_code_through_the_kernel_routines(op):
+    """`nullspace`, `eigenvects` and `jordan_form` share one elimination.
+
+    All three used to flatten an undecidable entry into their own generic
+    "kernel failed" verdict — `E-LINALG-002` ("could not compute nullspace
+    basis") or `E-EIGEN-006` — because the routine they share returned an error
+    with no payload, so the reason died at that boundary. A caller could not
+    tell "this matrix is hard for the kernel routine" (nothing to be done) from
+    "one entry's vanishing is undecidable" (substitute concrete parameters and
+    it works).
+    """
+    pool = alkahest.ExprPool()
+    zero = pool.integer(0)
+    m = alkahest.Matrix([[_undecidable(pool), zero], [zero, zero]])
+    with pytest.raises(alkahest.AlkahestError) as exc_info:
+        getattr(m, op)()
+    assert exc_info.value.code == "E-LINALG-010"
+    assert "mystery" in str(exc_info.value)
+    assert exc_info.value.remediation
+
+
+def test_a_computable_nullspace_is_still_computed():
+    """The control: refusing everything would pass the test above and be
+    useless. A rank-1 symbolic matrix must still give a 1-dimensional kernel."""
+    pool = alkahest.ExprPool()
+    a = pool.symbol("a")
+    exp_a = alkahest.exp(a)
+    m = alkahest.Matrix([[pool.integer(1), exp_a], [exp_a, exp_a * exp_a]])
+    assert len(m.nullspace()) == 1

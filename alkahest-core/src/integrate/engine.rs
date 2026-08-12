@@ -1527,25 +1527,37 @@ fn weierstrass_rewrite(expr: ExprId, var: ExprId, t: ExprId, pool: &ExprPool) ->
 /// `1/(2+cos x)`); the nicer closed forms for `∫sin²`, `∫sec²`, `∫sin(2x)cos(x)`
 /// are untouched.  Soundness-gated by [`verify_antiderivative`]: the candidate
 /// is returned only when `d/dx result = integrand`, so a wrong antiderivative is
-/// never produced.  Declines cleanly (`None`) when the integrand is not rational
-/// in trig or the `t`-integral does not close.
+/// never produced.  Declines cleanly (`Ok(None)`) when the integrand is not
+/// rational in trig or the `t`-integral does not close.
+///
+/// # Why this returns a `Result`
+///
+/// The `t`-integral is a *whole nested `integrate` call*, and the half-angle
+/// substitution doubles the degree — `∫ 1/(sin⁹x + sin x + 1) dx` becomes a
+/// degree-18 rational function, which measured **110 s** end to end. That inner
+/// call has cooperative checkpoints of its own, but `.ok()?` threw their verdict
+/// away exactly as `try_u_substitution` did, so the budget could not stop the
+/// single most expensive route in the elementary integrator. A budget error now
+/// propagates; a genuine decline still returns `Ok(None)`.
 fn try_weierstrass_rational_trig(
     expr: ExprId,
     var: ExprId,
     pool: &ExprPool,
     log: &mut DerivationLog,
-) -> Option<ExprId> {
+) -> Result<Option<ExprId>, IntegrationError> {
     // Only fire on genuine rational-trig integrands (a trig-containing sum in a
     // denominator); bare/product/power trig keep their nicer dedicated forms.
     if !has_rational_trig_denominator(expr, var, pool) {
-        return None;
+        return Ok(None);
     }
 
     // Fresh half-angle variable t = tan(x/2).
     let t = pool.symbol("__weierstrass_t", crate::kernel::Domain::Real);
 
     // Rewrite the integrand as a rational function of t.
-    let g_body = weierstrass_rewrite(expr, var, t, pool)?;
+    let Some(g_body) = weierstrass_rewrite(expr, var, t, pool) else {
+        return Ok(None);
+    };
 
     // Jacobian: dx = 2/(1+t²) dt.
     let one = pool.integer(1_i32);
@@ -1560,7 +1572,20 @@ fn try_weierstrass_rational_trig(
     // Integrate the rational function in t through the full elementary pipeline.
     // `g` is rational in `t` with no trig of `t`, so this path cannot re-fire and
     // recursion is bounded.
-    let inner = integrate(g, t, pool).ok()?;
+    // This route ends at the `verify_antiderivative` gate below, which can never
+    // accept a `RootSum` (`simplify` makes it an opaque atom and `eval_interp`
+    // cannot evaluate one).  Tell the rational integrator so, and it declines
+    // before paying for the Lazard–Rioboo–Trager number-field GCD instead of
+    // after — same answer, without the dominant cost of this route.
+    let inner = {
+        let _no_root_sum = super::risch::rational_integrate::RootSumSuppressed::enter();
+        match integrate(g, t, pool) {
+            Ok(inner) => inner,
+            // Not this route declining — the caller wants out.
+            Err(e) if e.is_budget() => return Err(e),
+            Err(_) => return Ok(None),
+        }
+    };
 
     // Back-substitute t = tan(x/2).
     let half = pool.rational(1_i32, 2_i32);
@@ -1572,10 +1597,10 @@ fn try_weierstrass_rational_trig(
 
     // Soundness gate: d/dx(result) must equal the original integrand.
     if !verify_antiderivative(result, expr, var, pool) {
-        return None;
+        return Ok(None);
     }
     log.push(RewriteStep::simple("int_weierstrass_trig", expr, result));
-    Some(result)
+    Ok(Some(result))
 }
 
 /// Small explicit table for `∫ 1/cos²(u) = tan(u)/a`, `∫ 1/sin²(u) = −cot(u)/a`
@@ -1795,6 +1820,15 @@ pub(crate) fn integrate_raw(
     pool: &ExprPool,
     log: &mut DerivationLog,
 ) -> Result<ExprId, IntegrationError> {
+    // Cooperative checkpoint. This is the rule engine's dispatcher: it recurses
+    // per summand (sum rule) and per non-constant factor (constant-multiple
+    // rule), and several of the route helpers it tries below — the Weierstrass
+    // half-angle substitution in particular — run a whole nested `integrate`.
+    // Without a check here the only checkpoints on the elementary route were the
+    // two at depth 0, so `∫ f₁ + … + f₈` of eight hard rational terms could not
+    // be stopped between terms at all.
+    crate::budget::check()?;
+
     // Fast-path: ∫ c * x * exp(x) dx = c * exp(x) * (x - 1)
     if let Some(result) = try_x_times_func(expr, var, pool, log) {
         return Ok(result);
@@ -1846,7 +1880,7 @@ pub(crate) fn integrate_raw(
     // integrands they decline (e.g. 1/(2+cos x), 1/(1+sin x)); the nicer closed
     // forms for ∫sin², ∫sec², ∫sin(2x)cos(x) are preserved.  Soundness-gated in
     // the helper.
-    if let Some(result) = try_weierstrass_rational_trig(expr, var, pool, log) {
+    if let Some(result) = try_weierstrass_rational_trig(expr, var, pool, log)? {
         return Ok(result);
     }
 
@@ -2225,6 +2259,12 @@ fn integrate_inner(
             let final_log = log.merge(simplified.log);
             Ok(DerivedExpr::with_log(simplified.value, final_log))
         }
+        // A budget trip travels *as* a `NotImplemented` (see `IntegrationError`'s
+        // carrier note), so it has to be split off ahead of the decline arm —
+        // otherwise the fallbacks below read "the caller wants out" as "the rule
+        // engine declined" and carry on spending the time the caller just asked
+        // to stop spending.
+        Err(e) if e.is_budget() => Err(e),
         Err(IntegrationError::NotImplemented(msg)) => {
             // Risch Gap 3: rational-function integration via Rothstein–Trager.
             // Tried as a fallback so simple cases keep their existing rules.
@@ -2241,6 +2281,12 @@ fn integrate_inner(
                 let final_log = rlog.merge(simplified.log);
                 return Ok(DerivedExpr::with_log(simplified.value, final_log));
             }
+            // `try_integrate_rational` returns a bare `None` both for "not a
+            // rational function" and for "the budget tripped part-way" — it is
+            // public API and cannot grow a `Result` without a major semver break.
+            // Asking here is what turns the second into an honest `E-BUDGET-*`
+            // instead of letting it fall through as a mathematical decline.
+            crate::budget::check()?;
             // Non-linear substitution (derivative-divides heuristic):
             // ∫ f(g(x))·g'(x) dx = ∫ f(u) du with u = g(x).  Tried only after
             // the rules and the rational path have declined, so anything they
@@ -2248,7 +2294,7 @@ fn integrate_inner(
             // returned only when its derivative matches the integrand, so a
             // wrong antiderivative is never produced (a clean decline falls
             // through to the existing error).
-            if let Some(result) = try_u_substitution(expr, var, pool, depth) {
+            if let Some(result) = try_u_substitution(expr, var, pool, depth)? {
                 let simplified = simplify(result, pool);
                 let mut rlog = DerivationLog::new();
                 rlog.push(RewriteStep::simple(
@@ -2320,8 +2366,28 @@ pub fn integrate_definite(
         return Err(IntegrationError::NotImplemented(reason));
     }
 
+    // Both checks above bind only `var`, so a free *parameter* in the integrand
+    // turns each of them off — `interior_singularity` cannot build an integer
+    // polynomial from a parametric denominator, and every numeric sample fails
+    // with an unbound symbol. The FTC difference was then returned as though it
+    // held for all parameter values, when for some of them the integral
+    // diverges.
+    if let Some(reason) = parametric_interior_singularity(expr, var, lower, upper, pool) {
+        return Err(IntegrationError::NotImplemented(reason));
+    }
+
     let antideriv = integrate(expr, var, pool)?;
     let f = antideriv.value;
+
+    // The FTC needs `F` continuous on `[lower, upper]`, and none of the checks
+    // above look at `F` at all — they look at the integrand. A bounded, smooth,
+    // strictly positive integrand can still have an antiderivative that jumps
+    // inside the interval, and then `F(b) - F(a)` is not the integral. The
+    // Weierstrass substitution manufactures exactly that: every
+    // `∫ dx/(a + b·cos x)` picks up a `tan(x/2)`, which jumps at `x = π`.
+    if let Some(reason) = antiderivative_jump(f, expr, var, lower, upper, pool) {
+        return Err(IntegrationError::NotImplemented(reason));
+    }
 
     // F(upper) and F(lower). For a finite bound this is plain substitution; for
     // `±∞` (V2-16's canonical pos_infinity, or its negation) substitution would
@@ -2392,9 +2458,22 @@ const POLE_SCAN_SAMPLES: usize = 257;
 /// Bisection refinements applied to a candidate blow-up.
 const POLE_SCAN_REFINEMENTS: usize = 60;
 /// The refined magnitude must exceed this before a pole is declared.
-const POLE_SCAN_MAGNITUDE: f64 = 1e30;
-/// …and must have grown by at least this factor during refinement, so an
+///
+/// It cannot be much higher. `1/x` reaches only `1e16` before the nearest
+/// probe runs out of `f64` resolution, so a threshold of `1e30` — the value
+/// this held until 3.8 — is unreachable for every *simple* pole and the scan
+/// could only ever see double poles. `∫_1^5 tan x dx` was returned as
+/// `0.644` (its Cauchy principal value) for a divergent integral because of it.
+const POLE_SCAN_MAGNITUDE: f64 = 1e13;
+/// …and must exceed this multiple of the integrand's *typical* magnitude, so an
 /// integrand that is merely large everywhere is never mistaken for a pole.
+///
+/// The baseline is the **median** of the coarse samples, not their maximum.
+/// With the maximum, a grid point landing essentially on the pole defeats the
+/// test — the "growth" has already happened before refinement starts. That is
+/// not a corner case: on `[0, π]` sample 128 of 257 falls within `1e-5` of
+/// `π/2`, which is exactly why `∫_0^π tan²x dx` came back as `-π`, a negative
+/// number for a non-negative integrand.
 const POLE_SCAN_GROWTH: f64 = 1e12;
 /// Fraction of the interval width excluded at each end.  Endpoint singularities
 /// are a different (and often convergent) story — `∫_0^1 log x dx = -1` is
@@ -2420,12 +2499,30 @@ const POLE_SCAN_MARGIN: f64 = 1e-3;
 // into the sampling loop.  Since this function's whole job is to decide whether
 // an integral is safe to evaluate, failing open on NaN is exactly the bug it
 // exists to prevent.
-#[allow(clippy::neg_cmp_op_on_partial_ord)]
 fn numeric_interior_singularity(
     integrand: ExprId,
     var: ExprId,
     lower: ExprId,
     upper: ExprId,
+    pool: &ExprPool,
+) -> Option<String> {
+    numeric_interior_singularity_at(integrand, var, lower, upper, &HashMap::new(), pool)
+}
+
+/// [`numeric_interior_singularity`] with the integrand's free *parameters*
+/// pinned to concrete values by `params`.
+///
+/// The scan itself is unchanged; only the environment the integrand is
+/// evaluated in gains the extra bindings. See
+/// [`parametric_interior_singularity`] for why a pole found at one parameter
+/// value is enough to refuse an answer returned for all of them.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+fn numeric_interior_singularity_at(
+    integrand: ExprId,
+    var: ExprId,
+    lower: ExprId,
+    upper: ExprId,
+    params: &HashMap<ExprId, f64>,
     pool: &ExprPool,
 ) -> Option<String> {
     let (a, b) = (numeric_bound(lower, pool)?, numeric_bound(upper, pool)?);
@@ -2439,23 +2536,29 @@ fn numeric_interior_singularity(
         return None;
     }
 
+    // Sample through the tree-walking interpreter, not `eval::eval_f64`: the
+    // latter knows only `sin`, `cos`, `exp`, `log` and `sqrt`, so every sample
+    // of an integrand mentioning `tan` (or `abs`, `sinh`, `atan`, …) failed and
+    // the scan reported "no opinion" for the whole family. `∫_0^2 sec²x dx` was
+    // refused while `∫_0^2 tan²x dx` — the same function minus 1 — returned
+    // `tan 2 - 2 = -4.19`, a negative number for a non-negative integrand whose
+    // integral diverges. `eval_interp` covers the primitive vocabulary the
+    // integrator itself works over.
     let at = |t: f64| -> Option<f64> {
-        let mut bindings = HashMap::new();
+        let mut bindings = params.clone();
         bindings.insert(var, t);
-        crate::eval::eval_f64(integrand, pool, &bindings)
-            .ok()
-            .filter(|v| v.is_finite())
+        crate::jit::eval_interp(integrand, &bindings, pool).filter(|v| v.is_finite())
     };
 
     // Coarse scan for the largest magnitude on the grid.
     let scan_width = scan_hi - scan_lo;
-    let mut evaluated = 0usize;
+    let mut magnitudes: Vec<f64> = Vec::with_capacity(POLE_SCAN_SAMPLES);
     let mut center = f64::NAN;
     let mut m0 = 0.0f64;
     for i in 0..POLE_SCAN_SAMPLES {
         let t = scan_lo + scan_width * (i as f64 + 0.5) / POLE_SCAN_SAMPLES as f64;
         if let Some(v) = at(t) {
-            evaluated += 1;
+            magnitudes.push(v.abs());
             if v.abs() > m0 {
                 m0 = v.abs();
                 center = t;
@@ -2464,9 +2567,12 @@ fn numeric_interior_singularity(
     }
     // Nothing evaluated: the integrand is outside the numeric evaluator's
     // vocabulary, so this check has no opinion.
-    if evaluated == 0 || !center.is_finite() || m0 <= 0.0 {
+    if magnitudes.is_empty() || !center.is_finite() || m0 <= 0.0 {
         return None;
     }
+    // Typical magnitude on the interval — the baseline the blow-up has to beat.
+    magnitudes.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let baseline = magnitudes[magnitudes.len() / 2].max(f64::MIN_POSITIVE);
 
     // Refine: keep shrinking a bracket around the running maximum.
     let mut half = scan_width / POLE_SCAN_SAMPLES as f64;
@@ -2499,7 +2605,7 @@ fn numeric_interior_singularity(
         half = step;
     }
 
-    if peak > POLE_SCAN_MAGNITUDE && peak > POLE_SCAN_GROWTH * m0 {
+    if peak > POLE_SCAN_MAGNITUDE && peak > POLE_SCAN_GROWTH * baseline {
         return Some(format!(
             "improper integral: the integrand blows up at {} ≈ {}, strictly inside the \
              interval of integration [{}, {}] (|integrand| exceeds {:e} there). The \
@@ -2513,6 +2619,304 @@ fn numeric_interior_singularity(
         ));
     }
     None
+}
+
+/// Maximum number of free parameters a parametric pole scan will handle.
+///
+/// Beyond this the assignment grid is not worth its cost, and the scan simply
+/// has no opinion — exactly as it does for an integrand the evaluator cannot
+/// handle.
+const POLE_SCAN_MAX_PARAMS: usize = 4;
+
+/// Number of assignments tried per parameter in a parametric pole scan.
+const POLE_SCAN_PARAM_VALUES: usize = 11;
+
+/// Free symbols of `expr` other than `var`, in first-seen order.
+///
+/// `∞` is excluded: it is the canonical bound marker, not a parameter, and it
+/// is never a value the numeric evaluator could bind.
+fn free_parameters(expr: ExprId, var: ExprId, pool: &ExprPool) -> Vec<ExprId> {
+    fn walk(e: ExprId, var: ExprId, inf: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>) {
+        if e == var || e == inf {
+            return;
+        }
+        match pool.get(e) {
+            ExprData::Symbol { .. } => {
+                if !out.contains(&e) {
+                    out.push(e);
+                }
+            }
+            ExprData::Add(xs) | ExprData::Mul(xs) => {
+                for x in xs {
+                    walk(x, var, inf, pool, out);
+                }
+            }
+            ExprData::Pow { base, exp } => {
+                walk(base, var, inf, pool, out);
+                walk(exp, var, inf, pool, out);
+            }
+            ExprData::Func { args, .. } => {
+                for a in args {
+                    walk(a, var, inf, pool, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(expr, var, pool.pos_infinity(), pool, &mut out);
+    out
+}
+
+/// Candidate values for a free parameter when scanning `[lo, hi]` for a pole.
+///
+/// Poles whose *location* is set by a parameter (`1/(x-a)²`, `1/(a·x-1)²`) sit
+/// inside the interval only for parameter values related to the interval
+/// itself, so the grid mixes points spread across `[lo, hi]` with a handful of
+/// generic small magnitudes. The offsets are deliberately not round fractions:
+/// a parameter landing *exactly* on a grid sample makes the integrand
+/// non-finite there, which the scan discards rather than reports.
+fn pole_scan_parameter_values(lo: f64, hi: f64) -> Vec<f64> {
+    let width = hi - lo;
+    let mut values = vec![
+        lo + 0.137 * width,
+        lo + 0.371 * width,
+        lo + 0.613 * width,
+        lo + 0.859 * width,
+    ];
+    values.extend_from_slice(&[-2.13, -1.07, -0.43, 0.43, 1.07, 2.13, 3.71]);
+    debug_assert_eq!(values.len(), POLE_SCAN_PARAM_VALUES);
+    values
+}
+
+/// Detect an interior pole that appears for *some* real value of the
+/// integrand's free parameters.
+///
+/// [`numeric_interior_singularity`] binds only the integration variable, so an
+/// integrand carrying any other free symbol evaluates to nothing at every
+/// sample and the scan silently switches itself off. `∫_0^2 sec²x dx` is
+/// correctly refused, while `∫_0^2 a·sec²x dx` returned `a·tan 2` — a
+/// *negative* number, at `a = 1`, for the very integrand the plain scan exists
+/// to catch. `∫_{-1}^{1} (x-a)^{-2} dx` is the same failure through the exact
+/// route: `interior_singularity` needs integer coefficients, so a parametric
+/// denominator falls through and the FTC difference is returned as if it held
+/// for every `a`, including the `|a| < 1` where the integral diverges.
+///
+/// The result is reported for *all* parameter values, so exhibiting one real
+/// value at which the integral is improper is enough to refuse it: the answer
+/// carries no side condition that would exclude that value. Refusal is
+/// therefore justified by the same blow-up evidence the plain scan uses — the
+/// magnitude and growth thresholds mean no bounded integrand can trigger it —
+/// and finding nothing simply falls through to the previous behaviour.
+fn parametric_interior_singularity(
+    integrand: ExprId,
+    var: ExprId,
+    lower: ExprId,
+    upper: ExprId,
+    pool: &ExprPool,
+) -> Option<String> {
+    let params = free_parameters(integrand, var, pool);
+    if params.is_empty() || params.len() > POLE_SCAN_MAX_PARAMS {
+        return None;
+    }
+    let (a, b) = (numeric_bound(lower, pool)?, numeric_bound(upper, pool)?);
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    let grid = pole_scan_parameter_values(lo, hi);
+
+    // The assignment set is deliberately linear, not the full product: the
+    // *diagonal* (every parameter at the same grid value, which is what finds
+    // the pole of `1/(x-a-b)²`), plus each parameter swept alone with the
+    // others held at a fixed non-degenerate value (which finds the pole of
+    // `1/(x-a)²` however many other parameters ride along). A full grid would
+    // be `11^n` scans for no extra coverage of the shapes that actually occur.
+    const HELD: f64 = 1.07;
+    let n = params.len();
+    let mut assignments: Vec<Vec<f64>> = grid.iter().map(|v| vec![*v; n]).collect();
+    if n > 1 {
+        for i in 0..n {
+            for v in &grid {
+                let mut row = vec![HELD; n];
+                row[i] = *v;
+                assignments.push(row);
+            }
+        }
+    }
+
+    for assignment in assignments {
+        let bindings: HashMap<ExprId, f64> = params
+            .iter()
+            .copied()
+            .zip(assignment.iter().copied())
+            .collect();
+        if let Some(reason) =
+            numeric_interior_singularity_at(integrand, var, lower, upper, &bindings, pool)
+        {
+            let at = params
+                .iter()
+                .zip(assignment.iter())
+                .map(|(p, v)| format!("{} = {}", pool.display(*p), v))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Some(format!(
+                "{reason}. This holds at {at}; the answer would be returned for every value \
+                 of {}, so it is refused rather than stated without the side condition that \
+                 keeps the pole outside [{}, {}]",
+                params
+                    .iter()
+                    .map(|p| pool.display(*p).to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                lo,
+                hi,
+            ));
+        }
+    }
+    None
+}
+
+/// Cells the antiderivative is sampled over when looking for a jump.
+const JUMP_SCAN_CELLS: usize = 257;
+/// Sub-samples per cell used to estimate `sup |f|` on that cell.
+const JUMP_SCAN_SUBSAMPLES: usize = 9;
+/// A cell is *suspicious* once `|ΔF|` exceeds this multiple of `h·sup|f|`.
+///
+/// The mean value theorem gives `|ΔF| = h·|f(ξ)| ≤ h·sup|f|` wherever `F` is
+/// differentiable, so the true value is `≤ 1`; the margin absorbs `sup|f|`
+/// being *sampled* rather than computed.
+const JUMP_SUSPICION_RATIO: f64 = 8.0;
+/// Bisections applied to the most suspicious cell.
+const JUMP_REFINEMENTS: usize = 50;
+/// A jump is declared only once the ratio has grown past this.
+///
+/// This is what separates a genuine discontinuity from a narrow spike. Around
+/// a jump, `|ΔF|` tends to the jump height while `h·sup|f|` tends to zero, so
+/// the ratio grows like `1/h`. Around a spike — however tall — `F` is still
+/// continuous, `|ΔF|` shrinks with the cell, and the ratio stays bounded.
+const JUMP_CONFIRM_RATIO: f64 = 1e6;
+
+/// Detect a jump discontinuity of the antiderivative `f` strictly inside
+/// `(lower, upper)`, which makes `F(b) − F(a)` not the value of the integral.
+///
+/// This is the failure the other two guards structurally cannot see: they look
+/// at the *integrand*, and here the integrand is perfectly well behaved.
+/// `∫_0^{3.2} dx/(cos x − 3)` — integrand between `1/16` and `1/4`, so the
+/// integral is between `0.2` and `0.8` — returned `−0.413`, because the
+/// half-angle antiderivative carries a `tan(x/2)` that jumps at `x = π`. Over a
+/// full period the same mechanism returns `0`: `∫_0^{2π} dx/(2 + cos x)` came
+/// back as `−8e-17` where the value is `2π/√3 ≈ 3.63`.
+///
+/// Returns `None` — no opinion — whenever the question cannot be decided:
+/// symbolic bounds, free parameters, or an `F` the interpreter cannot
+/// evaluate. Refusal requires positive evidence, never absence of it.
+// `!(width > 0.0)` and `!(bound > 0.0)` are NaN-safe bail-outs, exactly as in
+// `numeric_interior_singularity`: they are *true* for NaN and correctly abandon
+// the scan, whereas clippy's suggested `width <= 0.0` is false for NaN and would
+// let a degenerate cell through into the ratio test.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+fn antiderivative_jump(
+    f: ExprId,
+    integrand: ExprId,
+    var: ExprId,
+    lower: ExprId,
+    upper: ExprId,
+    pool: &ExprPool,
+) -> Option<String> {
+    if !free_parameters(f, var, pool).is_empty()
+        || !free_parameters(integrand, var, pool).is_empty()
+    {
+        return None;
+    }
+    let (a, b) = (numeric_bound(lower, pool)?, numeric_bound(upper, pool)?);
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    let width = hi - lo;
+    if !(width > 0.0) || !width.is_finite() {
+        return None;
+    }
+
+    let at = |e: ExprId, t: f64| -> Option<f64> {
+        let mut bindings = HashMap::new();
+        bindings.insert(var, t);
+        crate::jit::eval_interp(e, &bindings, pool).filter(|v| v.is_finite())
+    };
+    // `sup |integrand|` over `[c0, c1]`, sampled. `None` when nothing on the
+    // cell evaluates, which makes the cell undecidable rather than suspicious.
+    let sup_f = |c0: f64, c1: f64| -> Option<f64> {
+        let mut m: Option<f64> = None;
+        for j in 0..JUMP_SCAN_SUBSAMPLES {
+            let t = c0 + (c1 - c0) * (j as f64) / ((JUMP_SCAN_SUBSAMPLES - 1) as f64);
+            if let Some(v) = at(integrand, t) {
+                m = Some(m.map_or(v.abs(), |cur: f64| cur.max(v.abs())));
+            }
+        }
+        m
+    };
+    // `|ΔF| / (h · sup|f|)` on `[c0, c1]`, together with `|ΔF|`.
+    let ratio = |c0: f64, c1: f64| -> Option<(f64, f64)> {
+        let (f0, f1) = (at(f, c0)?, at(f, c1)?);
+        let jump = (f1 - f0).abs();
+        let bound = (c1 - c0).abs() * sup_f(c0, c1)?;
+        if !(bound > 0.0) || !bound.is_finite() || !jump.is_finite() {
+            return None;
+        }
+        Some((jump / bound, jump))
+    };
+
+    // Coarse pass: find the most suspicious cell.
+    let mut worst = 0.0_f64;
+    let mut cell = (f64::NAN, f64::NAN);
+    for i in 0..JUMP_SCAN_CELLS {
+        let c0 = lo + width * (i as f64) / (JUMP_SCAN_CELLS as f64);
+        let c1 = lo + width * ((i + 1) as f64) / (JUMP_SCAN_CELLS as f64);
+        if let Some((r, _)) = ratio(c0, c1) {
+            if r > worst {
+                worst = r;
+                cell = (c0, c1);
+            }
+        }
+    }
+    if worst < JUMP_SUSPICION_RATIO || !cell.0.is_finite() {
+        return None;
+    }
+
+    // Refine: keep the half carrying the larger `|ΔF|`. A jump keeps its
+    // height while the cell shrinks; a spike does not.
+    let (mut c0, mut c1) = cell;
+    let mut best = worst;
+    for _ in 0..JUMP_REFINEMENTS {
+        let mid = 0.5 * (c0 + c1);
+        if !(c0 < mid && mid < c1) {
+            break;
+        }
+        let left = ratio(c0, mid);
+        let right = ratio(mid, c1);
+        let take_left = match (&left, &right) {
+            (Some((_, jl)), Some((_, jr))) => jl >= jr,
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => break,
+        };
+        let (nc0, nc1) = if take_left { (c0, mid) } else { (mid, c1) };
+        let Some((r, _)) = ratio(nc0, nc1) else { break };
+        c0 = nc0;
+        c1 = nc1;
+        best = best.max(r);
+    }
+
+    (best > JUMP_CONFIRM_RATIO).then(|| {
+        format!(
+            "improper application of the fundamental theorem: the antiderivative {} is \
+             discontinuous at {} ≈ {}, strictly inside [{}, {}] (its increment there exceeds \
+             the integrand's own bound by a factor of {:.3e}, and grows as the bracket \
+             shrinks). F(b) - F(a) therefore skips the jump and is not the value of this \
+             integral",
+            pool.display(f),
+            pool.display(var),
+            0.5 * (c0 + c1),
+            lo,
+            hi,
+            best,
+        )
+    })
 }
 
 /// Split `expr` into `(numerator, denominator)` by collecting factors carrying a
@@ -2763,10 +3167,28 @@ const U_SUBST_MAX_CANDIDATES: usize = 12;
 /// Every candidate result is **soundness-gated**: it is returned only when its
 /// derivative equals the original integrand (structurally, or to ~1e-7 over
 /// several real sample points).  A failing candidate is skipped; if none passes,
-/// the function declines with `None` and the caller reports its existing error.
-fn try_u_substitution(expr: ExprId, var: ExprId, pool: &ExprPool, depth: u32) -> Option<ExprId> {
+/// the function declines with `Ok(None)` and the caller reports its existing
+/// error.
+///
+/// # Why this returns a `Result` and not just an `Option`
+///
+/// A failing candidate is skipped — but a *budget trip* is not a failing
+/// candidate, it is the caller asking the whole call to stop. This loop used to
+/// throw both away identically (`let Ok(inner) = … else { continue }`), which
+/// silently defeated every cooperative checkpoint below the top level: with
+/// `max_steps=2` — enough to clear the two depth-0 checks — a `request_cancel()`
+/// or an exhausted wall clock was discarded and the search moved on to the next
+/// of up to 12 candidates, each of which could take seconds. `integrate` was
+/// therefore only interruptible in its first instants, whatever the binding did
+/// about the GIL. A budget error now propagates; everything else still skips.
+fn try_u_substitution(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+    depth: u32,
+) -> Result<Option<ExprId>, IntegrationError> {
     if depth >= U_SUBST_MAX_DEPTH {
-        return None;
+        return Ok(None);
     }
 
     // Try the integrand as written, and a trig-expanded form (tan → sin·cos⁻¹,
@@ -2778,10 +3200,32 @@ fn try_u_substitution(expr: ExprId, var: ExprId, pool: &ExprPool, depth: u32) ->
         variants.push(expanded);
     }
 
+    // `(g, reduced integrand)` pairs already attempted. The two variants
+    // (`expr` and its trig-expanded form) very often reduce to the *same* inner
+    // integral under the same `g` — `∫ cos x·sin¹²x/(sin¹⁷x + sin x + 1) dx`
+    // reaches `∫ u¹²/(u¹⁷ + u + 1) du` from both — and since `u` is
+    // hash-consed, that is literally the same `ExprId`, integrated twice for the
+    // same verdict (measured: 5.6 s + 5.5 s of an 11.1 s call). The pair is the
+    // key rather than the integrand alone because a different `g` back-
+    // substitutes to a different candidate.
+    let mut attempted: std::collections::HashSet<(ExprId, ExprId)> =
+        std::collections::HashSet::new();
+
     for &form in &variants {
         let candidates = collect_usub_candidates(form, var, pool);
 
         for g in candidates.into_iter().take(U_SUBST_MAX_CANDIDATES) {
+            // Cooperative checkpoint at the granularity that actually costs
+            // something: each surviving candidate runs a full recursive
+            // `integrate`, which can take seconds. Checking only at the
+            // recursion boundary below is too late — once a budget has tripped,
+            // `simplify` stops rewriting, so the candidate's quotient no longer
+            // reduces, `is_free_of` rejects it, and it `continue`s without ever
+            // reaching that boundary. The search would then run out of
+            // candidates and report a *decline* for what is really a
+            // cancellation.
+            crate::budget::check()?;
+
             // g must contain var, must not be var itself, and must not be constant.
             if g == var || is_free_of(g, var, pool) {
                 continue;
@@ -2812,10 +3256,24 @@ fn try_u_substitution(expr: ExprId, var: ExprId, pool: &ExprPool, depth: u32) ->
             if !is_free_of(replaced, var, pool) {
                 continue;
             }
+            if !attempted.insert((g, replaced)) {
+                continue; // identical reduced integral, identical verdict
+            }
 
             // Integrate the reduced integrand in u (full pipeline, deeper level).
-            let Ok(inner) = integrate_inner(replaced, u, pool, depth + 1) else {
-                continue;
+            // As in the Weierstrass route, this candidate ends at the
+            // `verify_antiderivative` gate below, which provably cannot accept a
+            // `RootSum` — so suppress the Lazard–Rioboo–Trager number-field GCD
+            // that would build one rather than paying for an answer that is
+            // certain to be rejected.
+            let inner = {
+                let _no_root_sum = super::risch::rational_integrate::RootSumSuppressed::enter();
+                match integrate_inner(replaced, u, pool, depth + 1) {
+                    Ok(inner) => inner,
+                    // Not this candidate declining — the caller wants out.
+                    Err(e) if e.is_budget() => return Err(e),
+                    Err(_) => continue,
+                }
             };
 
             // Back-substitute u ↦ g.
@@ -2825,12 +3283,12 @@ fn try_u_substitution(expr: ExprId, var: ExprId, pool: &ExprPool, depth: u32) ->
 
             // Soundness gate: d/dx(result) must equal the original integrand.
             if verify_antiderivative(result, expr, var, pool) {
-                return Some(result);
+                return Ok(Some(result));
             }
         }
     }
 
-    None
+    Ok(None)
 }
 
 /// Rewrite trigonometric functions in terms of `sin`/`cos` (e.g. `tan → sin·cos⁻¹`)
@@ -3040,6 +3498,111 @@ mod tests {
 
     fn p() -> ExprPool {
         ExprPool::new()
+    }
+
+    /// `∫ cos(x)·sinⁿ(x)/(sin^d(x) + sin x + 1) dx` — declined by every rule, so
+    /// it goes to the two searches that cost real time: the Weierstrass
+    /// half-angle route and, failing that, derivative-divides u-substitution.
+    fn hard_trig_integrand(pool: &ExprPool, x: ExprId, n: i32, d: i32) -> ExprId {
+        let s = pool.func("sin", vec![x]);
+        let c = pool.func("cos", vec![x]);
+        let den = pool.add(vec![pool.pow(s, pool.integer(d)), s, pool.integer(1_i32)]);
+        pool.mul(vec![
+            c,
+            pool.pow(s, pool.integer(n)),
+            pool.pow(den, pool.integer(-1_i32)),
+        ])
+    }
+
+    /// A budget trip inside the u-substitution search must reach the caller.
+    ///
+    /// `try_u_substitution` used to discard every error from its recursive
+    /// `integrate_inner` call — budget trips included — and move on to the next
+    /// of up to twelve candidates, so the checkpoint at the recursion boundary
+    /// did nothing.
+    ///
+    /// Called directly rather than through `integrate`, because which route
+    /// `integrate` picks for a given integrand is not this test's business: the
+    /// claim is about the search, so the search is what gets called.
+    #[test]
+    fn a_budget_trip_inside_u_substitution_propagates() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let e = hard_trig_integrand(&pool, x, 6, 3);
+
+        let _guard = crate::budget::enter(crate::budget::Budget::new().with_max_steps(0));
+        let err = try_u_substitution(e, x, &pool, 0).expect_err("the budget must stop the search");
+        assert!(err.is_budget(), "expected a budget trip, got {err:?}");
+        assert_eq!(err.budget_code(), Some("E-BUDGET-002"));
+    }
+
+    /// Same claim for the Weierstrass half-angle route, which is where a hard
+    /// rational-trig integrand actually spends its seconds: it runs a whole
+    /// nested `integrate` on a doubled-degree rational function, and used to
+    /// throw that call's budget verdict away with `.ok()?`.
+    #[test]
+    fn a_budget_trip_inside_the_weierstrass_route_propagates() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let e = hard_trig_integrand(&pool, x, 6, 3);
+        let mut log = DerivationLog::new();
+
+        let _guard = crate::budget::enter(crate::budget::Budget::new().with_max_steps(0));
+        let err = try_weierstrass_rational_trig(e, x, &pool, &mut log)
+            .expect_err("the budget must stop the route");
+        assert!(err.is_budget(), "expected a budget trip, got {err:?}");
+    }
+
+    /// End to end: a wall budget on the integrand that used to overshoot it by
+    /// more than 10× must come back as a budget trip, not as a mathematical
+    /// decline.
+    ///
+    /// The failure this pins is subtle and was live until the checkpoints went
+    /// in: every route that gave up part-way reported `NotImplemented`, and
+    /// because `NotImplemented` is *also* the budget carrier, a trip could be
+    /// consumed by the next fallback and the caller would be told the integral
+    /// is unsupported when in fact it was never finished. No wall-clock
+    /// assertion here — only which verdict comes back.
+    ///
+    /// `(n, d)` was raised from `(12, 9)` to `(40, 31)` for 3.8: suppressing the
+    /// `RootSum` the two verify-gated routes cannot use took `(12, 9)` from
+    /// 3.7 s to 12 ms, which is inside the 50 ms budget, so the trip this test
+    /// asserts stopped happening for the good reason. `(40, 31)` still costs
+    /// about 5 s unbudgeted.
+    #[test]
+    fn a_wall_budget_stops_the_weierstrass_route_honestly() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let e = hard_trig_integrand(&pool, x, 40, 31);
+
+        let _guard = crate::budget::enter(
+            crate::budget::Budget::new().with_wall(std::time::Duration::from_millis(50)),
+        );
+        let err = integrate(e, x, &pool).expect_err("the budget must stop this call");
+        assert!(
+            err.is_budget(),
+            "a wall-clock trip must be reported as one, not as a decline; got {err:?}"
+        );
+        assert_eq!(err.budget_code(), Some("E-BUDGET-001"));
+    }
+
+    /// The control: the propagation must not turn a *declining* candidate into
+    /// an error. With no budget active the search still runs to its own verdict.
+    #[test]
+    fn u_substitution_still_declines_without_erroring() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let two_x = pool.mul(vec![pool.integer(2_i32), x]);
+        let inner = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(1_i32)]);
+        // ∫ 2x·cos(x²) dx = sin(x²): u-substitution's bread and butter, and the
+        // path where earlier candidates decline before the right one is found.
+        let e = pool.mul(vec![two_x, pool.func("cos", vec![inner])]);
+        let got = integrate(e, x, &pool).expect("u-substitution must still solve this");
+        let expected = pool.func("sin", vec![inner]);
+        assert_eq!(
+            simplify(got.value, &pool).value,
+            simplify(expected, &pool).value
+        );
     }
 
     #[test]

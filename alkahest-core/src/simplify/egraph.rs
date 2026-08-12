@@ -247,6 +247,84 @@ mod backend {
         }
     }
 
+    /// Whether `expr` has a subterm `b^k` with a negative literal exponent `k`
+    /// and a base `b` that is *provably* zero — i.e. a division by zero.
+    ///
+    /// The e-graph cannot be trusted with such a term. Its `shrink` ruleset
+    /// contains both `(Mul ?x (Num 0)) → (Num 0)` and
+    /// `(Mul ?x (Pow ?x (Num -1))) → (Num 1)`, and on `0 · 0⁻¹` *both* fire —
+    /// so `(Num 0)` and `(Num 1)` are unioned into one e-class and the
+    /// extractor picks whichever is cheaper. That is not a wrong rewrite that
+    /// could be patched away: an e-graph has no way to carry the side
+    /// condition `?x ≠ 0` that makes cancellation valid, and the union it
+    /// performs is `0 = 1`, which poisons every other e-class in the run.
+    ///
+    /// So the whole call is handed to the rule engine instead, which now
+    /// leaves the undefined product alone. This mirrors the existing
+    /// non-commutative bail-out immediately above it.
+    ///
+    /// The zero test is the three-valued
+    /// [`crate::matrix::zero_test::zero_status`], so `(x - x)⁻¹` is caught as
+    /// well as the literal `0⁻¹`; only a *proven* zero bails out, leaving the
+    /// documented `b · b⁻¹ → 1` convention intact for every base that is not.
+    /// Its cost is irrelevant here — this runs once per `simplify_egraph`
+    /// call, against building and saturating an entire egglog program — and
+    /// literal and symbol bases are settled without calling it at all.
+    fn has_provably_zero_denominator(expr: ExprId, pool: &ExprPool) -> bool {
+        let mut visited = std::collections::HashSet::new();
+        count_dag_nodes_rec(expr, pool, &mut visited);
+        visited
+            .into_iter()
+            .any(|node| is_zero_denominator(node, pool))
+    }
+
+    fn is_zero_denominator(node: ExprId, pool: &ExprPool) -> bool {
+        let Some((base, exp)) = pool.with(node, |d| match d {
+            ExprData::Pow { base, exp } => Some((*base, *exp)),
+            _ => None,
+        }) else {
+            return false;
+        };
+        let negative_exponent = pool.with(exp, |d| match d {
+            ExprData::Integer(n) => n.0 < 0,
+            ExprData::Rational(r) => r.0 < 0,
+            ExprData::Float(f) => f.inner < 0.0,
+            _ => false,
+        });
+        if !negative_exponent {
+            return false;
+        }
+        // Settle the easy bases without the general zero test.
+        enum Quick {
+            Zero,
+            NonZero,
+            Ask,
+        }
+        let quick = pool.with(base, |d| match d {
+            ExprData::Integer(n) => {
+                if n.0 == 0 {
+                    Quick::Zero
+                } else {
+                    Quick::NonZero
+                }
+            }
+            ExprData::Rational(_) | ExprData::Symbol { .. } => Quick::NonZero,
+            ExprData::Float(f) => {
+                if f.inner == 0.0 {
+                    Quick::Zero
+                } else {
+                    Quick::NonZero
+                }
+            }
+            _ => Quick::Ask,
+        });
+        match quick {
+            Quick::Zero => true,
+            Quick::NonZero => false,
+            Quick::Ask => crate::matrix::zero_test::zero_status(pool, base).is_proven_zero(),
+        }
+    }
+
     fn egglog_program(expr_str: &str, config: &super::EgraphConfig) -> String {
         // node_limit is enforced as a pre-saturation DAG-size check in
         // simplify_egraph_impl; egglog 0.4 does not expose a per-run node cap.
@@ -853,6 +931,13 @@ mod backend {
         use crate::kernel::expr_props::expr_contains_noncommutative_symbol;
 
         if expr_contains_noncommutative_symbol(pool, expr) {
+            return super::super::engine::simplify(expr, pool);
+        }
+
+        // `0⁻¹` in the e-graph makes `(Num 0)` and `(Num 1)` the same e-class
+        // (see `has_provably_zero_denominator`); hand it to the rule engine,
+        // which leaves the undefined product unevaluated.
+        if has_provably_zero_denominator(expr, pool) {
             return super::super::engine::simplify(expr, pool);
         }
 

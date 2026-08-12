@@ -2,6 +2,109 @@
 
 ## Unreleased
 
+### Silent errors fixed — do results you already computed need rechecking?
+
+A *silent error* is a confident, plausible, mathematically wrong answer with no
+exception, no `NaN` and no verification flag. Six were found and fixed this
+release. **Four of them shipped in 3.7 or earlier**, so if you have results
+from an affected call, re-run them. The other two were in code added during
+this release cycle and never reached a published wheel.
+
+| Affected call | Wrong answer it gave | First shipped in | Recheck? |
+|---|---|---|---|
+| `decide(Forall(x, φ))` where the counterexample is a rational root whose denominator is **not a power of two** | `True` for a **false** universal theorem, e.g. `∀x. (3x+2)² > 0` (false at `x = −2/3`) | ≤ 3.7 | **Yes** — any `decide` verdict |
+| `decide(Exists(x, φ))` with an `=` atom | `(True, witness)` where the witness does **not** satisfy the sentence, e.g. `∃x. 3x−2 = 0 → x = 1/2` | ≤ 3.7 | **Yes** — any cited witness |
+| `Matrix.nullspace()` on a 2×2 with a symbolic determinant | A confident wrong kernel basis; `[[x,0],[0,1]]` returned `(0, x)`, for which `M·v ≠ 0` | 3.7 | **Yes** — verify `M·v = 0` numerically |
+| `simplify` / `simplify_egraph` on a product containing `0⁻¹` | `1`, or `0`, depending on the engine — for an expression with no value at all. Reachable from `diff(2/(x − x), x)` | ≤ 3.7 | Yes, if any input could reduce to `0⁻¹` |
+| `decide` on a two-variable sentence true only at an irrational point | `False` for a satisfiable `∃x∃y`, and `True` for its false `∀x∀y` dual | this cycle (2-var `decide` is new) | No published release affected |
+| `batch_map(..., parallel=True)` under `context(budget=…)` | Ran **unbudgeted**, so candidates a sequential sweep reported as `E-BUDGET-001` came back as `E-INT-001` — a *mathematical* verdict | this cycle (batch APIs are new) | No published release affected |
+
+Also fixed, and not a silent error but worse for an unattended loop: a Rust
+panic escaped `interval_eval` as `pyo3_runtime.PanicException`, which inherits
+from `BaseException` and therefore slips past `except Exception`. Shipped in
+3.7 — a loop that survived everything else died on `x^(3/2)` over a negative
+ball.
+
+The deterministic silent-error gate (`tests/silent_errors/`, Tier-1 CI) now
+scores **0 silent errors out of 166 scored cases** (126 correct, 40 honest
+refusals) across evaluation, integration, limits, linear algebra, number
+theory, real QE, series, simplification, solving, and sums/products. That is a
+statement about the corpus, not a guarantee about the library.
+
+### Behaviour changes to plan for
+
+Fixing a silent error means some calls that used to return now refuse. Every one
+of these is a call whose previous answer was not justified:
+
+- **`decide` raises `CadError` (`E-CAD-001`) where it used to answer**, whenever
+  the formula has a non-strict atom (`=`, `≠`, `≤`, `≥`) and a boundary root has
+  not been shown rational. This includes mixed-alternation sentences that route
+  through De Morgan — `∀x∃y. p > 0` becomes `¬∃x∀y. p ≤ 0`, and the negation
+  makes a strict body non-strict. `decide` is **not** a complete decision
+  procedure in this implementation; treat `E-CAD-001` as *undecided*, never as
+  *false*.
+- **`rank`, `rref`, `nullspace`, `eigenvects`, `jordan_form` raise
+  `E-LINALG-010`, and `inverse` raises the new `E-MAT-004`**, when an entry's or
+  the determinant's vanishing can be decided neither way. Previously "could not
+  prove non-zero" was silently read as "zero".
+- **`simplify` leaves `0 · 0⁻¹` unevaluated** instead of returning `1` (or `0`).
+  A result containing `(0 * 0^-1)` is Alkahest declining to give an
+  indeterminate form a value, not a simplifier failure.
+
+### Known limits — documented, not fixed
+
+These are properties of the design as it stands. They are called out here
+because 3.8 is aimed at long unattended loops, and each of them is a way such a
+loop fails.
+
+- **`ExprPool` never reclaims.** The arena is append-only: no `clear`, no
+  refcount, no GC, and the storage cannot shrink. The only way to free interned
+  nodes is to **drop the whole pool** — and every `Expr`, `Matrix`, `Series` and
+  `DerivedResult` holds a *strong* reference to its pool, so retaining one
+  interesting result retains everything. Growth on a shared pool is linear and
+  unbounded (~200 bytes/node; measured ~2 KB per `integrate` call over 20 000
+  calls, 0 B/call with a fresh pool per iteration) while per-call latency stays
+  **flat**, so the failure mode is a clean OOM with no slowdown to warn you
+  first. `ExprPool` also exposes no `__len__` or `stats()`, so the growth is not
+  observable from Python. The supported pattern is **one pool per problem**,
+  documented in [`budgets.md`](docs/mdbook/src/budgets.md#exprpool-never-reclaims).
+- **`run_with_wall_fallback` does not bound wall time for an uncooperative
+  callee.** It joins its worker before the exception propagates, so it returns
+  when the callee returns: `run_with_wall_fallback(time.sleep, 3.0,
+  budget=Budget(wall_ms=50))` raises `E-BUDGET-001` after 3000 ms, and the
+  message reports the real elapsed time so this shows up in a log rather than
+  being inferred later. Python cannot kill a thread, and abandoning one would
+  leak a live thread that still allocates into the pool and can only be stopped
+  through the process-wide cancel flag. Only an **OS-level bound** (subprocess,
+  process watchdog) is a hard deadline.
+- **`wall_ms` granularity is one primitive operation, and FLINT calls cannot be
+  interrupted.** After the checkpoint work above the overshoot is a small
+  additive term (1.0–1.2×), but past a certain degree a single operation is a
+  FLINT factorisation or resultant — one foreign-function call, ~2 s on a
+  degree-62 integrand, which no cooperative mechanism can stop part-way.
+- **`Matrix.eigenvals()` grows the pool on identical input** (~1.9 KB/call,
+  measured over 20 000 calls on the same 2×2 integer matrix): it interns a fresh
+  `__eigen_lambda_N` gensym per call. Every other Python-facing entry point
+  measured is flat on repeated input. Cache eigenvalue results.
+- **`Matrix.eigenvals()` can emit casus-irreducibilis cube roots** — correct
+  under Alkahest's real cube-root convention (and honestly refused by
+  `eval_expr` with `E-EVAL-009`, with `interval_eval` returning an unbounded
+  ball) but evaluated on the **principal** branch by SymPy, NumPy and most other
+  tools, which return a confident number that is not an eigenvalue. 14 of 720
+  random integer matrices produced one. An honest refusal here becomes somebody
+  else's silent error the moment the expression crosses the boundary, so
+  evaluate inside Alkahest before exporting, or export a verified numeric
+  enclosure instead. See [`interop.md`](docs/mdbook/src/interop.md).
+- **The LLVM JIT leaks an LLVM `Context` per compile** (`Box::leak`, on the
+  error paths as well as the success path). Feature-gated behind `jit`, so
+  default PyPI wheels (Cranelift) are unaffected; do not compile in a loop under
+  a `+jit` / `+full` wheel.
+- **No sanitizer covers any Python-facing path.** The PR-gating ASan job runs
+  with `detect_leaks=0`, the nightly LSan shard cannot reach a `cdylib` with no
+  `#[test]` functions, and `pytest` is never run under a sanitizer. The
+  behavioural substitute is the fresh-pool sweep described in
+  [`TESTING.md`](TESTING.md#3-memory-safety--sanitizers).
+
 ### Fixed
 
 - **Claim graphs: a merge could close a dependency cycle, making the graph
@@ -37,8 +140,72 @@
   random points and re-draws its anchors on mismatch, so an unlucky anchor
   (Zippel's skeleton hypothesis is probabilistic) now produces a refusal rather
   than a confidently wrong polynomial.
-
 ### Added
+
+- **`alkahest.ansatz` — parametric families and coefficient fitting** (P2
+  autoresearch item 1). "Guess the shape, let the CAS pin the constants" is the
+  most common move in experimental mathematics and everybody re-improvises the
+  plumbing for it. `ansatz.polynomial`, `.rational`, `.exponential_polynomial`,
+  `.linear_combination` and `.quadratic_form` build an `Ansatz` — an object
+  rather than a bare `Expr`, because a bare expression loses the distinction
+  between an *unknown coefficient* and an *independent variable*, and every
+  downstream step needs it. `ansatz.fit(A, residual)` solves for the
+  coefficients and returns an `AnsatzSolution` carrying `expr`, `assignment`,
+  `rank`, `free`, `residual`, `points` and a `status` — `fit` reports
+  `exactly_verified` only when the residual is symbolically zero, never on the
+  strength of the collocation points alone (`certify="residual" | "exact" |
+  "none"`). `enumerate_family` walks a coefficient grid for conjecture
+  generation; `certify_nonneg` hands a fitted candidate to `sos_decompose`.
+  Pure Python over primitives that are already fast in Rust (`Matrix.rref`,
+  `simplify`, `subs`), so it works without the `groebner` feature; a residual
+  genuinely nonlinear in the unknowns refuses with `E-ANSATZ-004` rather than
+  degrading silently, and *no member of this family fits* is `E-ANSATZ-003` —
+  a closed branch for that family, deliberately not phrased as a proof that no
+  such object exists. See
+  [`docs/mdbook/src/ansatz.md`](docs/mdbook/src/ansatz.md).
+
+- **`alkahest.crosscheck` — cross-CAS differential testing** (P2 autoresearch
+  item 2). A loop that only checks itself finds the bugs it already knows
+  about. `crosscheck.check(op, …)` runs one comparison against an external
+  oracle (SymPy today; `register_oracle` takes others) through a ladder of
+  four rungs — syntactic, symbolic, rigorous-numeric, invariant — and reports
+  `agree` / `diverge` / `incomparable` / `unavailable`. The rungs exist because
+  most apparent disagreements are not disagreements: two antiderivatives differ
+  by a constant, two simplifiers pick different normal forms. Only the
+  invariant rung (differentiate the antiderivative, substitute the solution
+  back, telescope the antidifference) settles those, and an operation that has
+  no invariant stops at rung 3 rather than pretending. **A missing oracle is
+  `unavailable`, never `agree`** (`E-XCHECK-002`) — the one failure mode that
+  would quietly turn the whole module into a no-op. `sweep(cases=…, seed=…)`
+  generates a seeded corpus and prints its seed in `summary()` always, because
+  a sweep is only useful as a bug report if the run that found something can be
+  reproduced; the seed defaults to `budget_seed()`, so a nightly job and a
+  local reproduction share one knob. `run_frozen_corpus()` replays 9 pinned
+  cases whose expected outcome is recorded with the reason. See
+  [`docs/mdbook/src/crosscheck.md`](docs/mdbook/src/crosscheck.md).
+
+- **`alkahest.smt` — SMT-LIB 2 export and a z3/cvc5 bridge** (P2 autoresearch
+  item 3). Discrete and mixed integer/real/boolean subproblems are not
+  Alkahest's problem class, and the fastest way to make it worse would be to
+  pretend otherwise. `to_smtlib` emits a complete runnable script (the emitter
+  lives in Rust next to `Formula`, with no `_ =>` arm anywhere in it, so a
+  kernel node added later fails to compile rather than silently emitting
+  plausible-but-wrong SMT-LIB); `smt.solve` runs an installed solver and reads
+  the answer back. The trust asymmetry is the design: a **`sat` model is lifted
+  to exact rationals and substituted back and checked in-process**
+  (`exactly_verified`; a model that fails raises `E-SMT-004`), while **`unsat`
+  is reported as `externally_asserted`** and is deliberately excluded from
+  `research.MACHINE_CHECKED_STATUSES`, because consuming an unsat proof is a
+  different project. Decimal literals are parsed from the *string*, so `0.1`
+  becomes `Fraction(1, 10)` and never the nearest binary double; an algebraic
+  witness (`root-obj`) is refused with `E-SMT-003` rather than evaluated to a
+  float, since a float witness recorded as an exact one is precisely the silent
+  error the bridge exists to prevent. `smt.supported(f)` answers "would this
+  route work, and should I take it" *before* any solver runs, and recommends
+  `prefer_in_tree` for real arithmetic with no integer variables — the in-tree
+  routes produce artifacts, `nlsat` produces only an answer. `solve` takes
+  quantifier-free formulas; `to_smtlib` exports quantified ones. See
+  [`docs/mdbook/src/smt.md`](docs/mdbook/src/smt.md).
 
 - **Asymptotics of sums — Euler–Maclaurin** (P1 mathematics item 10):
   `alkahest.experimental.euler_maclaurin(f, k, a, n, corrections=…)` expands
@@ -187,10 +354,229 @@
 
 ### Fixes
 
+- **`decide` proved false universal theorems** (silent error; shipped in 3.7).
+  `∀x. (3x+2)² > 0` returned `(True, None)`. It is false at `x = −2/3`, exactly:
+  `9·(4/9) + 12·(−2/3) + 4 = 0`, and `0 > 0` is false. No approximation appears
+  anywhere in that argument, and `decide` is the engine behind every stability
+  proof and bound check, so a false `True` here is a machine-checked-looking
+  proof of a false theorem. Sweeping `∀x. (a·x − b)² > 0` over `a ∈ 1..9`,
+  `b ∈ −6..6` gave a clean rule: the verdict was wrong **exactly when the double
+  root `b/a` in lowest terms has a denominator that is not a power of two** —
+  which is why `x² > 0` and `(x−1)² > 0`, the two cases already in the corpus,
+  passed. The bug lived one denominator to the right of every existing test.
+  Two layers, and the deeper one was a broken documented contract:
+  `RootInterval` promises `lo == hi == r` for an exact rational root `r`, but
+  the VAS isolator only recorded an exact root when the transformed polynomial
+  vanished at a Möbius endpoint, which happens for dyadic roots and not in
+  general (`real_roots(3x − 2, x)` returned the open bracket `(0, 1)`). CAD then
+  built its sample set from rational bracket endpoints and midpoints and
+  concluded `false` when none satisfied the formula — sound for a *strict* atom,
+  whose solution set is open, but not for a non-strict one, whose solution set
+  can be the single untested root; `∀x. φ` goes through `¬∃x. ¬φ`, so the missed
+  witness became a `True` universal. Fixed exactly, not heuristically: by the
+  rational-root theorem every rational root of an integer polynomial has
+  denominator dividing the leading coefficient, so once a bracket is bisected
+  below width `1/lc` it contains at most one such rational and exact rational
+  evaluation settles it — `None` means "no rational root here", never "probably
+  not". (Bisection requires a strict sign change and refuses to collapse onto a
+  vanishing *endpoint*: neighbouring brackets share endpoints, and collapsing
+  onto one deletes the root the bracket was isolating.) Where the boundary root
+  is genuinely irrational the sample set is incomplete and nothing can fix that
+  by sampling, so `decide` now refuses with `E-CAD-001` rather than fabricating
+  a `false`. A randomised differential test against a `sympy.real_roots`
+  multiplicity analysis found **18 wrong verdicts in the first 150 random
+  polynomials** before the fix and **0 in 1 000** after.
+- **`decide` returned existential witnesses that do not satisfy the sentence**
+  (silent error; shipped in 3.7). `∃x. 3x − 2 = 0` returned
+  `(True, {'x': '1/2'})`, and `3·(1/2) − 2 = −1/2 ≠ 0`. The verdict was right;
+  the certificate was false — and a witness is the one part of an answer that
+  looks like it needs no trust, so it is exactly the artefact a loop cites
+  downstream. The `Eq`-interval fallback proved satisfiability on an isolating
+  interval and then reported the interval **midpoint**. It now runs the same
+  check any caller would (`eval_qf_formula` at the reported point) and reports
+  `witness=None` rather than a point that fails. With the exact-rational-root
+  recovery above in place the true witness is usually reported outright:
+  `∃x. 3x − 2 = 0` → `(True, {'x': '2/3'})`, while `∃x. x² = 2` → `(True, None)`
+  because no rational witness exists. Two existing tests that asserted the bogus
+  witness are corrected with the reason spelled out.
+- **A Rust panic escaped `interval_eval` as a `BaseException`** (shipped in 3.7).
+  `interval_eval(x**Rational(3,2), {x: ArbBall(-3.3, 0.0)})` panicked at
+  `ball/mod.rs` and surfaced as `pyo3_runtime.PanicException`, which inherits
+  from `BaseException` — so a loop's `except Exception` handler did not catch it
+  and the run died on an input it was supposed to survive. Not a silent error,
+  but for multi-day unattended operation arguably worse than one. `ArbBall::pow_f`
+  guarded a negative base with `!exp.is_exact()`, but `x^(3/2)` arrives as an
+  *exact* point ball at 1.5, `(−3.3)^1.5` is `NaN`, and the corner-ordering
+  `partial_cmp(...).unwrap()` then panicked; the same shape existed in
+  `ArbBall::Div` via `∞/∞`, reachable from `(x^(3/2))^-2`. A negative base now
+  requires an exact **integer** exponent, and both `pow_f` and `Div` check the
+  corner set for `NaN`, returning the existing "no enclosure" answers. 306
+  panicking expressions in the first fuzz run; **0** after, across 7 200
+  expressions × 14 points.
+- **`run_with_wall_fallback` poisoned the whole process on timeout.**
+  `request_cancel()` sets a process-wide, sticky flag, and
+  `run_with_wall_fallback` never cleared it — so one expired candidate, the exact
+  event the API exists to handle, made every subsequent cooperative call in the
+  process fail with `E-BUDGET-003` forever. A multi-day loop would have died at
+  its first slow integral and then reported a cancellation storm that was really
+  one timeout. The executor is now wrapped in `try/finally` and the flag restored
+  *after* `ThreadPoolExecutor.__exit__` has joined the worker (so the cancelled
+  call has already observed it), and only when this call was the one that raised
+  it — an orchestrator with its own outstanding `request_cancel()` keeps its
+  request. Survives 20 of 20 timeout+work cycles. Two regression tests in
+  `tests/test_budget.py`. *(Introduced during this release cycle; no published
+  release is affected.)*
+- **`batch_map(parallel=True)` ran completely unbudgeted.** `BudgetGuard` is
+  `!Send` and the budget frame stack is thread-local, so `context(budget=…)` had
+  no effect on work fanned out over a `ThreadPoolExecutor`: measured, the main
+  thread saw the budget and all four workers saw `False`. For unattended
+  operation that is the safety mechanism silently not applying — and worse than
+  simply "slower", because the candidates a sequential sweep reported as
+  `E-BUDGET-001` came back from a parallel one as `E-INT-001`, the integrator's
+  verdict that *no elementary antiderivative exists*. A loop records that as a
+  permanently closed branch when nothing was decided. `batch_map` now snapshots
+  the active budget on the calling thread and re-enters it inside every worker
+  task, and `run_with_wall_fallback` likewise enters its `budget` argument on the
+  worker thread it spawns. The semantics are documented rather than fudged:
+  `wall_ms` stays a single sweep-wide deadline (captured at the `batch_map` call,
+  since Python cannot read the frame's start instant), while `max_steps` becomes
+  **per item**, because the Rust step counter lives in the frame and is not
+  readable from Python. One item tripping its budget never cancels its siblings;
+  `request_cancel()` still reaches every worker, because the flag is process-wide.
+  *(Introduced during this release cycle; no published release is affected.)*
+- **`simplify` gave `0 · 0⁻¹` a value** (silent error; shipped in 3.7). `0⁻¹` is division by
+  zero, so `0 · 0⁻¹` is the indeterminate form `0·∞` and has no value under any
+  convention — but `simplify` returned `1`, `simplify_egraph` returned `0`, and
+  `simplify(5 · 0⁻¹ · 0)` returned `0`, so the three answers were their own
+  proof that at least two of them were wrong. The rest of the library was
+  already right: `eval_expr(0⁻¹)` raises `E-EVAL-009` and `simplify(0⁻¹)` leaves
+  the power unevaluated. Four rules were each collapsing the surrounding
+  product on their own: `collect_mul_factors` summed the exponents of a common
+  base (`0¹ · 0⁻¹ → 0⁰ → 1`), which is `b^k·b^m = b^(k+m)` — an identity that
+  needs `b ≠ 0` the moment one exponent is negative; `const_fold` absorbed the
+  product to `0` because one factor was the literal zero; `collect_add_terms`
+  dropped a summand whose integer coefficient was `0` without checking that the
+  surviving factor was a *number*; and the e-graph's shrink ruleset contains
+  both `(Mul ?x (Num 0)) → (Num 0)` and `(Mul ?x (Pow ?x (Num -1))) → (Num 1)`,
+  so on this input it unioned `0` and `1` into one e-class. All four now decline.
+  Reachable without writing `0⁻¹` by hand: `diff(2/(x - x), x)` returned `1` for
+  a function whose domain is empty; it now returns an expression that
+  `eval_expr` refuses. Scope, stated plainly: the guards test for a **literal**
+  zero base, which — because the rule engine normalises strictly bottom-up —
+  also covers every base the simplifier can reduce to zero, `x - x` included. A
+  base that is zero but not provably so keeps the documented `b · b⁻¹ → 1`
+  convention: a three-valued `zero_status` on the `Mul` rewrite path costs
+  several 128-bit ball evaluations per node, which this path cannot afford.
+  `simplify_egraph` is the exception — it hands the whole call to the rule
+  engine when it finds a provably-zero denominator, and uses the full
+  `zero_status` to decide that, because building and saturating an egglog
+  program dwarfs the test. No measurable cost on
+  `bench_codspeed.py::test_log_exp_simplify_depth4` (paired A/B over 20
+  interleaved runs: median −0.8%, inside the ±13% noise of the machine).
+  Nine cases added to the silent-error corpus, four of them controls that
+  `x · x⁻¹ → 1`, `0 · x → 0`, `2x − 2x → 0` and the e-graph engine itself still
+  work.
+- **`decide` could deny a two-variable statement that is true only at an
+  irrational point** (silent error; two-variable `decide` is new in this cycle,
+  so no published release is affected). The univariate completeness guard shipped
+  earlier in this release refuses rather than report an unsatisfiability it
+  never checked at a boundary root; the two-variable path had the same guard but
+  keyed on `=` / `≠` atoms only, so `≤` and `≥` still fell through.
+  `∃x∃y. (x²−2)² + y² ≤ 0` — true at `(±√2, 0)`, where both squares vanish, and
+  false everywhere else — came back `False`, and its dual
+  `∀x∀y. (x²−2)² + y² > 0` came back `True`, a machine-checked-looking proof of
+  a false theorem. `project_and_sample_x` already flagged the untested
+  irrational projection root; the flag now escalates for every non-strict atom,
+  matching `body_has_boundary_atom` one dimension down. Strict atoms are
+  unaffected: their solution sets are open, so the open-cell midpoints are
+  complete for them. Both sentences now refuse with `E-CAD-001`. The cost is
+  more refusals in the mixed-alternation cases, which route through De Morgan
+  and so present a negated (hence non-strict) body: `∀x∃y. p > 0` becomes
+  `¬∃x∀y. p ≤ 0` and refuses where it used to answer. Five corpus cases and
+  four Rust unit tests, including the controls that a *rational* boundary point
+  is still found (`∃x∃y. (3x−2)² + y² ≤ 0` → `True` at `(2/3, 0)`) and that a
+  genuinely unsatisfiable `≤` still decides `False`.
+- **`Matrix.nullspace()` returned a confident wrong basis for any 2×2 with a
+  symbolic determinant** (silent error; shipped in 3.7). The 2×2 fast path
+  returns the perpendicular of a non-vanishing row, which is the kernel *only*
+  when `det = 0`, and its full-rank gate recognised only a **literal** non-zero
+  constant. Every non-literal determinant fell through into the rank-1 answer —
+  "could not prove `det ≠ 0`" read as "`det = 0`", the exact mirror of the `rref`
+  defect that motivated the three-valued zero test. `[[x, 0], [0, 1]]` returned
+  the basis `(0, x)`, for which `M·v = (0, x) ≠ 0`, while `rank()` on the same
+  matrix said 2 — two public calls making 2 + 1 = 3 for a 2-column matrix. No
+  exotic function was needed to trigger it. The gate now uses the three-valued
+  `zero_status`: proven non-zero → trivial kernel, proven zero → the
+  perpendicular, undecidable → refuse with `E-LINALG-010`, matching what `rank`
+  already did. The eigen paths (`eigenvects`, `jordan_form`, `matrix_exp`) are
+  untouched: `det(A − λI) = 0` holds there *by construction* — λ is a root of the
+  characteristic polynomial — so the caller states it via the new
+  `KnownSingular` parameter rather than asking the simplifier to rediscover it
+  from nested radicals, which it often cannot. Four cases added to the
+  silent-error corpus, including a control that a genuinely rank-1 symbolic
+  matrix still returns its kernel and one that checks `M·v = 0` numerically
+  rather than just the dimension.
+- **`nullspace`, `eigenvects` and `jordan_form` reported an undecidable entry
+  with a vague code.** All three share one elimination routine, whose error
+  type carried no payload (`Result<_, ()>`), so the specific refusal —
+  "one entry's vanishing could be proven neither way, substitute concrete
+  parameters and it works" (`E-LINALG-010`) — died at that boundary and came
+  back as the generic `E-LINALG-002` / `E-EIGEN-006` "could not compute
+  nullspace basis". The routine is `pub(crate)`, so widening its error type
+  costs nothing on the public API (`cargo semver-checks` agrees). A *genuine*
+  kernel failure still reports `E-LINALG-002` and can never inherit a previous
+  refusal's code — `KernelFailed` is deliberately not an out-of-band carrier.
+- **`Budget(wall_ms=…)` overshot `integrate` by an unbounded factor.** The
+  checkpoints existed; the seconds were being spent between them. A 300 ms
+  budget on `∫ cos x·sinⁿx/(sin⁹x + sin x + 1) dx` returned after 2–4 s, and the
+  same family at degree 40 never returned at all — it had to be killed from
+  outside the process. Measured rather than guessed: 98.7% of one such call was
+  a single number-field Euclidean GCD (`alg_log_argument` → `kpoly_gcd`), and
+  the residue after fixing that was a single ℚ[x] GCD normalising `A/D` to
+  lowest terms (480 ms of a 482 ms call). Both Euclidean loops now check the
+  budget per step, `integrate_raw` checks on entry (so a *sum* is bounded
+  between summands), and the rational route checks at each stage boundary.
+  The same ladder now overshoots by 1.0–1.2×, and the degree-40 case returns in
+  317 ms. Because a GCD has no error channel and stopping one early returns a
+  *wrong* GCD, the budgeted variants return `None` rather than a truncated
+  answer, and the public `poly_gcd` / `NumberField::kpoly_gcd` signatures are
+  unchanged. What remains is documented in `docs/mdbook/src/budgets.md`: the
+  granularity is one primitive polynomial operation, and past a certain degree
+  that is a FLINT call, which no cooperative mechanism can interrupt.
+- **`request_cancel()` could not reach a running `integrate` or `limit`.**
+  Two independent causes. The bindings held the GIL for the whole call, so a
+  watchdog thread could not execute a single bytecode until the operation it
+  wanted to cancel had already finished — only a flag set *before* the call was
+  ever observed, which is the opposite of what a fan-out search loop needs.
+  Both now release the GIL around the core call, using the idiom `simplify_par`
+  already established. And `integrate`'s u-substitution search discarded every
+  error from its recursive call, budget trips included, so it moved on to the
+  next of up to twelve candidates instead of stopping; a budget error now
+  propagates, and the search checks the budget once per candidate — the
+  granularity where the seconds actually go.
 - **Docs: `simplify_par` was documented with a signature it never had.** Both
   the Sphinx API page and the mdbook chapter showed it taking a list of
   expressions and returning a list; it takes one expression and returns one
   `DerivedResult`, and the documented call raises `TypeError`.
+- **Docs: the documented local Valgrind command checked nothing.** `TESTING.md`
+  globbed `target/.../deps/alkahest_core-*` and `CONTRIBUTING.md` /`TESTING.md`
+  said `cargo test -p alkahest-core`, but the package is named **`alkahest-cas`**
+  (`alkahest-core/` is only the directory). The glob matched zero binaries, the
+  `[ -x "$bin" ] || continue` guard skipped the empty expansion, and the loop
+  **exited 0 having run Valgrind on nothing**. Both are corrected, with a note
+  on the naming so it does not come back. Also corrected in the same pass:
+  `TESTING.md` claimed UndefinedBehaviorSanitizer coverage
+  (`-Zsanitizer=undefined` appears nowhere in the repo), and `CONTRIBUTING.md`
+  claimed Tier-1 CI runs "ASan on FFI tests" when that job is scoped to the crate
+  *below* the FFI boundary and runs with `detect_leaks=0`.
+- **Docs: `Matrix.inv()` and `M[i, j]` do not exist.** The Sphinx matrix page
+  documented both; the methods are `inverse()` and `get(i, j)`, and `Matrix` is
+  not subscriptable. The same page attributed the singular-matrix refusal to
+  `E-MAT-001` (shape mismatch) rather than `E-MAT-003`.
+- **Docs: the Rust crate path was wrong throughout.** Guide pages wrote
+  `alkahest_core::…`, which is the *workspace-local alias* `alkahest-py` gives
+  the dependency. A downstream crate writes `alkahest_cas::…`; corrected in the
+  mdBook chapters, `ARCHITECTURE.md` and `CONTRIBUTING.md`.
 - **Withhold Lean certificates for Basel-family infinite sums.** The
   `basel_zeta_even` derivation step had no Mathlib proof and fell through to
   the default `by ring_nf; simp` tactic, emitting false equalities (e.g.
@@ -222,7 +608,7 @@
   converted once via `np.ascontiguousarray(..., dtype=np.float64)`, never
   via `.tolist()`.
 
-### Additions
+### Additions — earlier in this cycle
 
 - **`decide` now handles two real variables with a quantifier prefix of
   length ≤ 2** (`alkahest_core::real::cad`), not just the single-variable
@@ -294,7 +680,7 @@
   `y · cos x`) and any addend outside the certifiable base fragment still
   withhold the *entire* certificate, never a partial one.
 
-### Fixes
+### Fixes — earlier in this cycle
 
 - **`alkahest.SumError` now actually catches native summation errors.**
   `sum_definite` / `sum_indefinite` raise the native `E-SUM-*` exception, but

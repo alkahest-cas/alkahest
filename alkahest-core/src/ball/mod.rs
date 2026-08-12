@@ -283,14 +283,21 @@ impl std::ops::Div for ArbBall {
             Float::with_val(prec, self.hi() / lo_rhs.clone()),
             Float::with_val(prec, self.hi() / hi_rhs.clone()),
         ];
+        // `∞/∞` is NaN, so an unbounded operand makes the corner ordering
+        // partial and `partial_cmp(...).unwrap()` panics. `None` is the
+        // interface's existing "no enclosure" answer; a panic here crosses the
+        // FFI boundary as a `BaseException` that `except Exception` misses.
+        if corners.iter().any(|c| c.is_nan()) {
+            return None;
+        }
         let min = corners
             .iter()
-            .min_by(|a, b| a.partial_cmp(b).unwrap())
+            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap()
             .clone();
         let max = corners
             .iter()
-            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap()
             .clone();
         let sum = Float::with_val(prec, &min + &max);
@@ -336,7 +343,13 @@ impl ArbBall {
         let prec = self.prec;
         let lo = self.lo();
         let hi = self.hi();
-        if lo < 0 && !exp.is_exact() {
+        // A negative base only has a real power for an *integer* exponent.
+        // `is_exact` alone is not that test: `x^(3/2)` arrives here as an exact
+        // point ball at 1.5, `(-3.3)^1.5` is NaN, and the corner comparison
+        // below then unwrapped a `None` from `partial_cmp` and panicked — a
+        // Rust panic crossing the FFI boundary, which is a `BaseException` an
+        // `except Exception` handler does not catch.
+        if lo < 0 && !(exp.is_exact() && exp.lo().is_integer()) {
             return ArbBall::infinity(prec); // complex result possible
         }
         // Conservative bound via corner evaluation
@@ -346,14 +359,20 @@ impl ArbBall {
             Float::with_val(prec, hi.clone().pow(exp.lo())),
             Float::with_val(prec, hi.clone().pow(exp.hi())),
         ];
+        // Defence in depth: any remaining NaN corner (an overflow, or a base
+        // interval straddling zero with a negative exponent) makes the ordering
+        // partial, and `partial_cmp(...).unwrap()` would panic on it.
+        if corners.iter().any(|c| c.is_nan()) {
+            return ArbBall::infinity(prec);
+        }
         let min = corners
             .iter()
-            .min_by(|a, b| a.partial_cmp(b).unwrap())
+            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap()
             .clone();
         let max = corners
             .iter()
-            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap()
             .clone();
         let sum = Float::with_val(prec, &min + &max);

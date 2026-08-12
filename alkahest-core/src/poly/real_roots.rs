@@ -153,17 +153,17 @@ impl fmt::Display for RootInterval {
 
 /// Count sign variations in the non-zero coefficients (Descartes' rule of signs).
 fn sign_variations(coeffs: &[Integer]) -> usize {
-    let nonzero: Vec<&Integer> = coeffs.iter().filter(|c| **c != 0).collect();
-    if nonzero.len() < 2 {
-        return 0;
-    }
     let mut count = 0;
-    for w in nonzero.windows(2) {
-        let pos0 = *w[0] > 0;
-        let pos1 = *w[1] > 0;
-        if pos0 != pos1 {
+    let mut prev: Option<bool> = None;
+    for c in coeffs {
+        if *c == 0 {
+            continue;
+        }
+        let pos = *c > 0;
+        if prev.is_some_and(|p| p != pos) {
             count += 1;
         }
+        prev = Some(pos);
     }
     count
 }
@@ -174,14 +174,24 @@ fn sign_variations(coeffs: &[Integer]) -> usize {
 /// `c[j] += c[j+1]`.
 fn taylor_shift_by_1(coeffs: &[Integer]) -> Vec<Integer> {
     let mut c: Vec<Integer> = coeffs.to_vec();
+    taylor_shift_by_1_in_place(&mut c);
+    c
+}
+
+/// In-place `p(x + 1)`.
+///
+/// The accumulation is done through a `split_at_mut` pair rather than
+/// `c[j] += c[j + 1].clone()`: the clone allocated and freed a fresh `mpz` on
+/// every one of the O(n²) inner steps, which dominated the cost of this
+/// function for the small coefficients typical of a VAS frame.
+fn taylor_shift_by_1_in_place(c: &mut [Integer]) {
     let n = c.len();
     for i in 0..n.saturating_sub(1) {
         for j in (i..n - 1).rev() {
-            let cjp1 = c[j + 1].clone();
-            c[j] += cjp1;
+            let (left, right) = c.split_at_mut(j + 1);
+            left[j] += &right[0];
         }
     }
-    c
 }
 
 /// Compute `p(x + k)` for a non-negative integer `k`.
@@ -191,10 +201,13 @@ fn taylor_shift_by(coeffs: &[Integer], k: u64) -> Vec<Integer> {
     }
     let mut c = coeffs.to_vec();
     let n = c.len();
+    let ki = Integer::from(k);
     for i in 0..n.saturating_sub(1) {
         for j in (i..n - 1).rev() {
-            let delta = c[j + 1].clone() * k;
-            c[j] += delta;
+            let (left, right) = c.split_at_mut(j + 1);
+            // Fused multiply-add (`mpz_addmul`); the previous form built and
+            // dropped a temporary `Integer` on every inner step.
+            left[j] += &right[0] * &ki;
         }
     }
     c
@@ -392,14 +405,72 @@ fn squarefree_part(coeffs: &[Integer]) -> Vec<Integer> {
 // VAS CF lower bound
 // ---------------------------------------------------------------------------
 
+/// Descartes' rule of signs applied to the open interval `(0, k)`.
+///
+/// Substituting `x = k·u` maps `(0, k)` onto `(0, 1)`, and the usual test for
+/// `(0, 1)` is `(1+t)ⁿ·p(1/(1+t))`, i.e. reverse the coefficients and Taylor
+/// shift by 1. The number of roots in `(0, k)` is at most the number of sign
+/// variations of the result, so a count of **zero is a proof** that there is
+/// no root there. A non-zero count proves nothing either way, which is why
+/// the caller only ever uses `true`.
+fn no_root_in_open_interval(coeffs: &[Integer], k: u64) -> bool {
+    if k == 0 {
+        return true;
+    }
+    let n = coeffs.len();
+    if n < 2 {
+        return true;
+    }
+    // Build `reverse(p(k·u))` directly: index `i` of the result is
+    // `coeffs[n−1−i] · k^(n−1−i)`. Scaling and reversing were two separate
+    // passes, each allocating a full vector of `Integer` clones.
+    let mut c: Vec<Integer> = vec![Integer::new(); n];
+    let ki = Integer::from(k);
+    let mut power = Integer::from(1);
+    for (j, coef) in coeffs.iter().enumerate() {
+        c[n - 1 - j] = Integer::from(coef * &power);
+        if j + 1 < n {
+            power *= &ki;
+        }
+    }
+    // If the reversed, scaled coefficients already have no sign variation then
+    // `p(k·u)` has no positive root at all, so `(0, k)` is empty and the O(n²)
+    // shift can be skipped outright.
+    if sign_variations(&c) == 0 {
+        return true;
+    }
+    taylor_shift_by_1_in_place(&mut c);
+    sign_variations(&c) == 0
+}
+
 /// Integer lower bound on the smallest positive root of `p`.
 ///
-/// Uses a doubling-then-binary-search over integer evaluation points.
+/// Uses a doubling-then-binary-search over integer evaluation points, then
+/// **certifies** the candidate with Descartes' rule before returning it.
 /// Precondition: `p(0) ≠ 0` (no root at the origin).
-/// Returns the largest integer `k ≥ 1` such that `p(k)` has the same sign
-/// as `p(0)` (implying all positive roots are `> k`), or `0` if the
-/// smallest positive root is in `(0, 1]`.
-fn cf_lower_bound_floor(coeffs: &[Integer]) -> u64 {
+/// Returns an integer `k ≥ 1` for which `p` is proved to have no root in
+/// `(0, k)`, or `0` when no such bound could be certified.
+///
+/// The sign search alone is not sound, and returning its answer directly is
+/// how [`real_roots`] used to lose roots. Its stated rule — "`p(k)` has the
+/// same sign as `p(0)`, implying all positive roots are `> k`" — is false:
+/// equal signs at `0` and `k` imply an *even* number of roots in `(0, k)`,
+/// which may be two rather than none. For `25x³ − 325x² + 804x − 540 =
+/// 25(x − 6/5)(x − 9/5)(x − 10)` the polynomial is negative at every integer
+/// from 0 to 9, so the search returned `k = 9`, [`isolate_positive_roots`]
+/// shifted the frame past both `6/5` and `9/5`, and `real_roots` reported a
+/// single root where there are three — with no error and no flag. Chebyshev
+/// `T₆` lost four of its six roots the same way.
+///
+/// The sign search is kept as a *proposal* (it is cheap and usually right)
+/// and halved until it is certified, so the returned bound is sound by
+/// construction.
+///
+/// `sign_var` must be `sign_variations(coeffs)`, which the caller has already
+/// computed. It lets most proposals be certified by a counting argument that
+/// costs nothing, leaving the explicit Descartes test — the expensive part —
+/// only for `sign_var ≥ 3`. See the comment at the certification step.
+fn cf_lower_bound_floor(coeffs: &[Integer], sign_var: usize) -> u64 {
     if coeffs.is_empty() {
         return 0;
     }
@@ -460,6 +531,31 @@ fn cf_lower_bound_floor(coeffs: &[Integer]) -> u64 {
             hi = mid;
         } else {
             lo = mid;
+        }
+    }
+
+    // Certify the proposal, halving until it is proved sound. `k = 0` is
+    // trivially certified, so this always terminates with a sound answer.
+    //
+    // At this point the search has established, for the proposed `lo ≥ 1`:
+    //   * `p(0)` and `p(lo)` are both non-zero and share a sign, so the number
+    //     of roots in `(0, lo)` counted with multiplicity is **even** — the
+    //     very fact the old code mistook for "zero";
+    //   * `p(lo+1)` is zero or has the opposite sign, so `(lo, lo+1]` contains
+    //     at least **one** root counted with multiplicity.
+    //
+    // Descartes bounds the total number of positive roots, with multiplicity,
+    // by `sign_var`. So if `(0, lo)` were non-empty it would hold at least two
+    // roots, and with the one in `(lo, lo+1]` the total would be at least
+    // three. For `sign_var ≤ 2` that is a contradiction, and the proposal is
+    // certified with no further work.
+    //
+    // Only `sign_var ≥ 3` needs the explicit test, which is exactly the regime
+    // of the polynomials that used to lose roots: `25x³ − 325x² + 804x − 540`
+    // and Chebyshev `T₆` both have three sign variations.
+    if sign_var > 2 {
+        while lo >= 1 && !no_root_in_open_interval(coeffs, lo) {
+            lo /= 2;
         }
     }
 
@@ -614,7 +710,7 @@ fn isolate_positive_roots(coeffs: Vec<Integer>) -> Vec<RootInterval> {
         // ---- VAS CF step: shift by integer lower bound k ----------------------
         frame.just_deflated = false; // reset flag before bisection
 
-        let k = cf_lower_bound_floor(&frame.poly);
+        let k = cf_lower_bound_floor(&frame.poly, v);
         if k >= 1 {
             let new_p = taylor_shift_by(&frame.poly, k);
             let ki = Integer::from(k);
@@ -677,6 +773,148 @@ fn isolate_positive_roots(coeffs: Vec<Integer>) -> Vec<RootInterval> {
     }
 
     result
+}
+
+// ---------------------------------------------------------------------------
+// Exact rational-root recovery
+// ---------------------------------------------------------------------------
+
+/// Evaluate `p` at a rational point in **integer** arithmetic, preserving sign
+/// and vanishing.
+///
+/// For `x = n/d` in canonical form this returns the homogeneous form
+/// `H(n, d) = Σ cᵢ·nⁱ·d^(deg−i)`, which is exactly `p(x)·d^deg`. A canonical
+/// [`rug::Rational`] has `d > 0`, so `d^deg > 0` and therefore `H` vanishes
+/// precisely when `p(x)` does and otherwise carries the same sign.
+///
+/// Those two facts — vanishing and sign — are all that
+/// [`exact_rational_root`] and [`refine_root`] ever ask of an evaluation, and
+/// getting them this way avoids rational arithmetic entirely. The previous
+/// `rug::Rational` Horner spent three `mpz` GCD canonicalisations and roughly
+/// four allocations *per coefficient*, measured at ~17 800 instructions for a
+/// single degree-8 evaluation — enough to make rational-root recovery cost
+/// half as much again as the whole of `real_roots`. This form is a plain
+/// Horner loop with an `mpz_addmul` and no GCD at all.
+fn eval_coeffs_homogeneous(coeffs: &[Integer], x: &rug::Rational) -> Integer {
+    let n = x.numer();
+    let d = x.denom();
+    let mut acc = Integer::new();
+    // `dp` is `d^k` where `k` counts completed steps, so that the coefficient
+    // `c_{deg−k}` is scaled by `d^k` exactly as the homogeneous form requires.
+    let mut dp = Integer::from(1);
+    let unit_denom = *d == 1;
+    for c in coeffs.iter().rev() {
+        acc *= n;
+        if unit_denom {
+            acc += c;
+        } else {
+            acc += c * &dp;
+            dp *= d;
+        }
+    }
+    acc
+}
+
+/// Bisection budget for exact rational-root recovery.
+///
+/// Each halving is one polynomial evaluation, and the loop stops as soon as
+/// the bracket is narrower than `1/lc`, so this ceiling is only reached for a
+/// bracket that started astronomically wide relative to the leading
+/// coefficient — in which case the interval is left alone and behaviour is
+/// exactly what it was before.
+const RATIONAL_RECOVERY_BISECTIONS: u32 = 512;
+
+/// Leading-coefficient size above which recovery is not attempted.
+///
+/// The search is over multiples of `1/lc`, so its cost is driven by the size of
+/// `lc` rather than by the degree. Beyond this the bracket is returned
+/// unchanged: a loose bracket is a weaker answer, never a wrong one.
+const RATIONAL_RECOVERY_MAX_LC_BITS: u32 = 128;
+
+/// Recover the **exact** rational root inside `iv`, when the root is rational.
+///
+/// [`RootInterval`] documents that an exact rational root `r` is reported as
+/// `lo == hi == r`, and every caller that has to decide something *at* a root
+/// — CAD cell sampling, and therefore [`crate::real::cad::decide`] — depends on
+/// it: a sample set built from bracket endpoints and midpoints contains only
+/// dyadic rationals, so a root like `2/3` is never tested, and a sentence whose
+/// truth turns on that point (`∀x. (3x+2)² > 0`) is decided wrong with no
+/// indication that anything was skipped.
+///
+/// The VAS isolator only delivers `lo == hi` when a root is found exactly at a
+/// Möbius endpoint (`t = 0` or `t = 1`), which happens for dyadic roots and not
+/// in general. This pass closes the gap.
+///
+/// The search is exact, not a heuristic: by the rational-root theorem every
+/// rational root of an integer polynomial has denominator dividing the leading
+/// coefficient `lc`, so once the bracket is narrower than `1/lc` it contains at
+/// most one such rational, and that single candidate is checked by exact
+/// evaluation. `None` means "no rational root here", never "probably not".
+///
+/// `coeffs` must be **squarefree** — bisection needs the sign change that a
+/// simple root guarantees.
+fn exact_rational_root(coeffs: &[Integer], iv: &RootInterval) -> Option<rug::Rational> {
+    if iv.lo == iv.hi {
+        return Some(iv.lo.clone());
+    }
+    let lc = coeffs.last()?.clone().abs();
+    if lc.is_zero() || lc.significant_bits() > RATIONAL_RECOVERY_MAX_LC_BITS {
+        return None;
+    }
+
+    let mut lo = iv.lo.clone();
+    let mut hi = iv.hi.clone();
+    let v_lo = eval_coeffs_homogeneous(coeffs, &lo);
+    let v_hi = eval_coeffs_homogeneous(coeffs, &hi);
+    if v_lo == 0 || v_hi == 0 || (v_lo > 0) == (v_hi > 0) {
+        // Bisection needs a strict sign change across the bracket. A vanishing
+        // endpoint is *not* good enough: neighbouring brackets share endpoints,
+        // so an endpoint root generally belongs to the neighbour, and
+        // collapsing onto it would silently delete the root this bracket was
+        // isolating. Leave the bracket alone — a loose bracket is a weaker
+        // answer, a lost root is a wrong one.
+        return None;
+    }
+    let lo_positive = v_lo > 0;
+
+    // Narrow until at most one multiple of 1/lc can remain inside.
+    let target = rug::Rational::from((Integer::from(1), lc.clone()));
+    for _ in 0..RATIONAL_RECOVERY_BISECTIONS {
+        if hi.clone() - lo.clone() < target {
+            break;
+        }
+        let mid = (lo.clone() + hi.clone()) / rug::Rational::from(2);
+        let v = eval_coeffs_homogeneous(coeffs, &mid);
+        if v == 0 {
+            return Some(mid);
+        }
+        if (v > 0) == lo_positive {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+
+    // Any rational root has denominator dividing `lc`, i.e. is `n/lc` for an
+    // integer `n`. At most two such points survive a bracket this narrow.
+    let scaled_lo = lo * rug::Rational::from((lc.clone(), Integer::from(1)));
+    let scaled_hi = hi * rug::Rational::from((lc.clone(), Integer::from(1)));
+    let (mut n, _) = scaled_lo
+        .numer()
+        .clone()
+        .div_rem_ceil(scaled_lo.denom().clone());
+    let (n_max, _) = scaled_hi
+        .numer()
+        .clone()
+        .div_rem_floor(scaled_hi.denom().clone());
+    while n <= n_max {
+        let candidate = rug::Rational::from((n.clone(), lc.clone()));
+        if eval_coeffs_homogeneous(coeffs, &candidate) == 0 {
+            return Some(candidate);
+        }
+        n += 1;
+    }
+    None
 }
 
 // ---------------------------------------------------------------------------
@@ -758,6 +996,25 @@ pub fn real_roots(poly: &UniPoly) -> Result<Vec<RootInterval>, RealRootError> {
         result.push(RootInterval::new(neg_lo, neg_hi));
     }
 
+    // Honour the documented contract: an exact rational root is reported as
+    // `lo == hi == r`. VAS only produces that for roots it happens to land on
+    // (dyadic ones); `2/3` came back as the bracket `[0, 1]`, and CAD's sample
+    // set — bracket endpoints and midpoints, all dyadic — then never tests the
+    // root itself.
+    //
+    // Against `working`, not `sq`: `working` is `sq` with the root at the origin
+    // divided out, and it is the polynomial whose roots these brackets isolate.
+    // Using `sq` made every bracket with `0` as an endpoint collapse onto the
+    // origin, which loses a root outright.
+    for iv in result.iter_mut() {
+        if iv.lo == iv.hi {
+            continue;
+        }
+        if let Some(r) = exact_rational_root(&working, iv) {
+            *iv = RootInterval::new(r.clone(), r);
+        }
+    }
+
     result.sort_by(|a, b| a.lo.partial_cmp(&b.lo).unwrap_or(std::cmp::Ordering::Equal));
     Ok(result)
 }
@@ -784,30 +1041,111 @@ pub fn real_roots_symbolic(
     real_roots(&poly)
 }
 
+/// The smallest `f64` strictly greater than `v`, for finite `v ≥ 0`.
+fn next_up_nonneg(v: f64) -> f64 {
+    if !v.is_finite() {
+        return v;
+    }
+    if v == 0.0 {
+        return f64::from_bits(1);
+    }
+    f64::from_bits(v.to_bits() + 1)
+}
+
+/// Smallest `f64` that is `≥ r`, for a non-negative rational `r`.
+///
+/// `Rational::to_f64` rounds to nearest, which can land *below* `r` — and a
+/// radius rounded down is a ball that does not contain what it claims to.
+fn round_up_f64(r: &rug::Rational) -> f64 {
+    let v = r.to_f64();
+    if !v.is_finite() {
+        return v;
+    }
+    match rug::Rational::from_f64(v) {
+        Some(back) if back >= *r => v,
+        _ => next_up_nonneg(v),
+    }
+}
+
+/// Build a ball that provably contains every point of the exact rational
+/// interval `[lo, hi]`.
+///
+/// Both the midpoint and the radius are `f64`, so both are rounded; the
+/// midpoint may round either way, and the radius is therefore measured
+/// *against the rounded midpoint* and then rounded **up**.
+fn ball_covering(lo: &rug::Rational, hi: &rug::Rational, prec: u32) -> ArbBall {
+    let mid_rat = rug::Rational::from(lo + hi) / 2u32;
+    let center = mid_rat.to_f64();
+    let Some(center_rat) = rug::Rational::from_f64(center) else {
+        return ArbBall::infinity(prec.max(53));
+    };
+    let left = rug::Rational::from(&center_rat - lo);
+    let right = rug::Rational::from(hi - &center_rat);
+    let rad_rat = if left > right { left } else { right };
+    let radius = if rad_rat <= 0 {
+        0.0
+    } else {
+        round_up_f64(&rad_rat)
+    };
+    ArbBall::from_midpoint_radius(center, radius, prec.max(53))
+}
+
 /// Narrow a [`RootInterval`] to at least `prec` bits of precision.
 ///
-/// Uses bisection with floating-point Horner evaluation.  For exact roots
-/// (`lo == hi`), returns a zero-radius [`ArbBall`].
+/// Bisection is performed in **exact rational arithmetic**, and the returned
+/// ball is rounded outwards, so it genuinely contains the root — which is what
+/// every caller of a "rigorous enclosure" is entitled to assume.
+///
+/// The previous implementation did neither, and both shortcuts were
+/// observable. It bisected with an `f64` Horner evaluation, so for
+/// `(10⁹x − 1414213562)(x² − 2)` the sign test `f_lo * f_mid <= 0` was wrong at
+/// every step, `hi` collapsed onto `lo`, and the result was an *exact*
+/// (zero-radius) ball at `1.41421356205…`, which is not a root of anything —
+/// the root in that bracket is `√2`. And even when the bracket was right, the
+/// ball was built as `mid = (lo+hi)/2`, `rad = (hi-lo)/2` with round-to-nearest
+/// on both, so for `x² − 2` it returned `mid = 1.414213562373095`,
+/// `rad = 1.11e-16` whose upper end `mid + rad` is still strictly below `√2`:
+/// `(mid + rad)² − 2 = −4.06e-17 < 0` in exact arithmetic. `contains(√2)` was
+/// `false` for the ball that was supposed to enclose `√2`.
+///
+/// For an exact rational root (`lo == hi`) the radius covers the rounding of
+/// that rational to `f64`, which is zero only when the rational is itself
+/// representable — `6/5` is not.
 pub fn refine_root(poly: &UniPoly, interval: &RootInterval, prec: u32) -> ArbBall {
+    let prec = prec.max(53);
     if interval.lo == interval.hi {
-        return ArbBall::from_midpoint_radius(interval.lo.to_f64(), 0.0, prec.max(53));
+        return ball_covering(&interval.lo, &interval.hi, prec);
     }
 
-    let coeffs_f64: Vec<f64> = poly.coefficients().iter().map(|c| c.to_f64()).collect();
-    let eval = |x: f64| -> f64 { coeffs_f64.iter().rev().fold(0.0_f64, |acc, &c| acc * x + c) };
+    let coeffs: Vec<Integer> = poly.coefficients();
+    let mut lo = interval.lo.clone();
+    let mut hi = interval.hi.clone();
+    let mut f_lo = eval_coeffs_homogeneous(&coeffs, &lo);
+    if f_lo == 0 {
+        return ball_covering(&lo, &lo, prec);
+    }
+    let f_hi = eval_coeffs_homogeneous(&coeffs, &hi);
+    if f_hi == 0 {
+        return ball_covering(&hi, &hi, prec);
+    }
+    // Without a strict sign change there is nothing to bisect against; return
+    // the bracket as given rather than narrowing onto an arbitrary endpoint.
+    if (f_lo > 0) == (f_hi > 0) {
+        return ball_covering(&lo, &hi, prec);
+    }
 
-    let target_width = 2.0_f64.powi(-(prec as i32));
-    let mut lo = interval.lo.to_f64();
-    let mut hi = interval.hi.to_f64();
-    let mut f_lo = eval(lo);
-
-    for _ in 0..300 {
-        if hi - lo <= target_width {
+    let target_width = rug::Rational::from((Integer::from(1), Integer::from(1) << prec));
+    let steps = (prec as usize + 2).saturating_mul(2).min(4096);
+    for _ in 0..steps {
+        if rug::Rational::from(&hi - &lo) <= target_width {
             break;
         }
-        let mid = (lo + hi) / 2.0;
-        let f_mid = eval(mid);
-        if f_lo * f_mid <= 0.0 {
+        let mid = rug::Rational::from(&lo + &hi) / 2u32;
+        let f_mid = eval_coeffs_homogeneous(&coeffs, &mid);
+        if f_mid == 0 {
+            return ball_covering(&mid, &mid, prec);
+        }
+        if (f_lo > 0) != (f_mid > 0) {
             hi = mid;
         } else {
             lo = mid;
@@ -815,9 +1153,7 @@ pub fn refine_root(poly: &UniPoly, interval: &RootInterval, prec: u32) -> ArbBal
         }
     }
 
-    let center = (lo + hi) / 2.0;
-    let radius = (hi - lo) / 2.0;
-    ArbBall::from_midpoint_radius(center, radius, prec.max(53))
+    ball_covering(&lo, &hi, prec)
 }
 
 // ---------------------------------------------------------------------------
@@ -1039,6 +1375,88 @@ mod tests {
                 w[1]
             );
         }
+    }
+
+    #[test]
+    fn homogeneous_eval_agrees_with_rational_eval_on_sign_and_zero() {
+        // The whole point of `eval_coeffs_homogeneous` is that it is a drop-in
+        // replacement wherever only the sign and the vanishing of `p(x)` are
+        // consulted.  Check that against exact rational evaluation.
+        let rational_eval = |coeffs: &[Integer], x: &rug::Rational| -> rug::Rational {
+            let mut acc = rug::Rational::from(0);
+            for c in coeffs.iter().rev() {
+                acc *= x;
+                acc += rug::Rational::from((c.clone(), Integer::from(1)));
+            }
+            acc
+        };
+        let polys: [&[i64]; 4] = [
+            &[-540, 804, -325, 25],         // roots 6/5, 9/5, 10
+            &[-1, -1, 0, 0, 0, 0, 0, 0, 1], // x⁸ − x − 1
+            &[640, -248, 24],               // roots 5, 16/3
+            &[1, 0, 1],                     // no real root
+        ];
+        for p in polys {
+            let coeffs: Vec<Integer> = p.iter().map(|v| Integer::from(*v)).collect();
+            for num in -25i64..=25 {
+                for den in 1i64..=12 {
+                    let x = rug::Rational::from((num, den));
+                    let h = eval_coeffs_homogeneous(&coeffs, &x);
+                    let r = rational_eval(&coeffs, &x);
+                    assert_eq!(h == 0, r == 0, "vanishing disagrees at {x} for {p:?}");
+                    if h != 0 {
+                        assert_eq!(h > 0, r > 0, "sign disagrees at {x} for {p:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn real_roots_three_rational_roots_kept() {
+        // 25x³ − 325x² + 804x − 540 = 25(x − 6/5)(x − 9/5)(x − 10).
+        //
+        // The polynomial is negative at every integer from 0 to 9, so the
+        // `cf_lower_bound_floor` sign search proposes k = 9 and shifting by it
+        // would step past both 6/5 and 9/5.  Three sign variations, so the
+        // proposal is not covered by the counting argument and the explicit
+        // Descartes certification must reject it down to k = 1.
+        let poly = make_poly(&[-540, 804, -325, 25]);
+        let roots = real_roots(&poly).unwrap();
+        assert_eq!(roots.len(), 3, "25(x−6/5)(x−9/5)(x−10) has 3 real roots");
+    }
+
+    #[test]
+    fn real_roots_chebyshev_t6_all_six() {
+        // T₆(x) = 32x⁶ − 48x⁴ + 18x² − 1; 6 roots in (−1, 1).  Also three sign
+        // variations, and used to report only 2.
+        let poly = make_poly(&[-1, 0, 18, 0, -48, 0, 32]);
+        let roots = real_roots(&poly).unwrap();
+        assert_eq!(roots.len(), 6, "T₆ has 6 real roots");
+        for r in &roots {
+            assert!(r.lo >= -1);
+            assert!(r.hi <= 1);
+        }
+    }
+
+    #[test]
+    fn cf_lower_bound_is_certified_for_high_sign_variation() {
+        // Guard the counting argument itself: for the 25x³ polynomial the
+        // sign search alone proposes 9, and the certified bound must be 1.
+        let coeffs: Vec<Integer> = [-540, 804, -325, 25]
+            .iter()
+            .map(|v| Integer::from(*v))
+            .collect();
+        let v = sign_variations(&coeffs);
+        assert_eq!(v, 3, "this polynomial has three sign variations");
+        assert_eq!(
+            cf_lower_bound_floor(&coeffs, v),
+            1,
+            "certification must reject the uncertified proposal k = 9"
+        );
+        // And the test it relies on agrees: there *is* a root below 9.
+        assert!(!no_root_in_open_interval(&coeffs, 9));
+        assert!(no_root_in_open_interval(&coeffs, 1));
     }
 
     #[test]

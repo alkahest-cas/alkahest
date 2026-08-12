@@ -66,9 +66,9 @@ def batch_map_iter(fn, items, *, parallel=False, max_workers=None, **kwargs) -> 
 ```
 
 Both call `fn(item, **kwargs)` once per item. `parallel=True` fans the calls out over a
-`concurrent.futures.ThreadPoolExecutor`; some Alkahest hot paths (the parallel
-simplifiers, NumPy evaluation) release the GIL for their native work, so a thread pool
-can genuinely overlap them. For calls that hold the GIL throughout, `parallel=True`
+`concurrent.futures.ThreadPoolExecutor`; some Alkahest hot paths (`integrate`, `limit`,
+the parallel simplifiers, NumPy evaluation) release the GIL for their native work, so a
+thread pool can genuinely overlap them. For calls that hold the GIL throughout, `parallel=True`
 mainly helps when `fn` itself does I/O or otherwise yields the GIL — it never makes
 anything *incorrect*, only sometimes not faster.
 
@@ -131,6 +131,62 @@ the rest of the batch — see [Budgets](./budgets.md).
 with ak.context(pool=pool, budget=ak.Budget(wall_ms=50, max_steps=10_000, seed=7)):
     outs = ak.integrate_many(candidates, x, parallel=True)
 ```
+
+This works under `parallel=True` as well as `parallel=False`, but the two are not
+identical field-for-field, because a Rust budget frame lives on a **thread-local**
+stack and a worker thread does not inherit its parent's. `batch_map` therefore
+snapshots the active budget on the calling thread and re-enters it inside every
+worker task:
+
+| Field | `parallel=False` | `parallel=True` |
+|---|---|---|
+| `wall_ms` | one deadline for the whole sweep (the caller's frame) | one deadline for the whole sweep, captured at the `batch_map` call |
+| `max_steps` | one counter for the whole sweep | **per item** — the Rust step counter lives in the frame and is not readable from Python, so each worker counts from zero |
+| `seed` | same value everywhere | same value everywhere |
+
+The `wall_ms` deadline is captured when `batch_map` is called, not when
+`context(budget=…)` was entered — Python cannot read the frame's start instant — so
+a batch launched partway through a budgeted block gets the full `wall_ms` again.
+That is one budget's worth of slack for the whole fan-out, not per item.
+
+### A budget trip is not a mathematical verdict
+
+This is the reason the propagation matters more than the speed-up. Before it, a
+fanned-out sweep ran completely unbudgeted, and the candidates a sequential sweep
+reported as `E-BUDGET-001` came back as `E-INT-001` instead — the integrator's
+verdict that *no elementary antiderivative exists*. A research loop records that as
+a permanently closed branch, when in truth nothing was decided and the machine
+merely ran out of the time it was given. `E-BUDGET-00x` is `Cause::Resource`; keep
+the two apart when you interpret a `BatchItem`:
+
+```python
+for item in outs:
+    if item.ok:
+        accept(item.value)
+    elif item.error["code"].startswith("E-BUDGET-"):
+        requeue(item.index)          # ran out of budget — undecided, try again with more
+    else:
+        close(item.index, item.error)  # a real verdict about the mathematics
+```
+
+### Cancellation across a batch
+
+`request_cancel()` needs no propagation — the flag is process-wide, so every worker
+already sees it and a caller can abort a whole in-flight sweep with it (each item
+then reports `E-BUDGET-003`). The converse is deliberate: **one item tripping its
+budget never cancels its siblings.** `batch_map` never sets the flag itself; the
+trip is recorded on the item that tripped, and the rest of the sweep runs out the
+shared deadline.
+
+### One pool for the batch, not for the process
+
+A batch shares one `ExprPool` across all its items, which is right — the whole point is
+that the items are related. What is *not* right is reusing that pool for the next batch,
+and the next: `ExprPool` never reclaims, so a driver that keeps one module-scope pool and
+runs `batch_map` in a loop grows linearly and forever at flat latency. Construct the pool
+per batch and drop it, and carry `item.value.to_dict(mode="compact")` forward rather than
+the `DerivedResult` itself (holding one pins the whole pool). See
+[`ExprPool` never reclaims](./budgets.md#exprpool-never-reclaims).
 
 ## See also
 
