@@ -47,6 +47,37 @@ if TYPE_CHECKING:
 _state = local()
 
 
+def _note_frame_pushed() -> None:
+    """Tell the native layer a context frame went on the stack.
+
+    `pool.symbol()` has to know whether a `context(domain=...)` is open, and
+    asking this module through the FFI on every symbol costs ~2 µs — enough to
+    make symbol interning 4.6x slower, since almost every call happens with no
+    context at all. The native side keeps a count of live frames so it can skip
+    the call entirely in that common case; this stack stays the only source of
+    truth for what the frames *contain*.
+
+    Best-effort: if the extension is not importable, the native side simply
+    never takes its fast path and reads the stack as before.
+    """
+    try:
+        from . import alkahest as _native
+
+        _native._note_context_push()
+    except Exception:  # pragma: no cover - extension always present in practice
+        pass
+
+
+def _note_frame_popped() -> None:
+    """Counterpart to :func:`_note_frame_pushed`; called from a ``finally``."""
+    try:
+        from . import alkahest as _native
+
+        _native._note_context_pop()
+    except Exception:  # pragma: no cover
+        pass
+
+
 def _get() -> dict[str, Any]:
     """Return the current context dict (empty if none is active)."""
     if not hasattr(_state, "stack") or not _state.stack:
@@ -179,6 +210,7 @@ def context(
     ctx.update(extra)
 
     _state.stack.append(ctx)
+    _note_frame_pushed()
     budget_pushed = False
     if budget is not None:
         from . import alkahest as _native
@@ -193,6 +225,7 @@ def context(
 
             _native.pop_budget()
         _state.stack.pop()
+        _note_frame_popped()
 
 
 @contextmanager
@@ -209,10 +242,12 @@ def _overlay(**overrides: Any) -> Generator[None, None, None]:
     ctx = dict(_get())
     ctx.update(overrides)
     _state.stack.append(ctx)
+    _note_frame_pushed()
     try:
         yield
     finally:
         _state.stack.pop()
+        _note_frame_popped()
 
 
 # ---------------------------------------------------------------------------

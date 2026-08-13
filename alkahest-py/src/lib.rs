@@ -101,6 +101,7 @@ use alkahest_core::pattern::{
 };
 #[cfg(feature = "cuda")]
 use alkahest_core::{compile_cuda as core_compile_cuda, CudaCompiledFn as CoreCudaCompiledFn};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 // V2-1 — Modular / CRT framework
 use alkahest_core::deriv::RewriteStep;
@@ -531,12 +532,54 @@ fn parse_domain_arg(ob: Option<&Bound<'_, PyAny>>) -> PyResult<Domain> {
 /// non-domain value in the frame — degrades to `None`, i.e. the historical
 /// `Domain::Real` default.
 fn ambient_domain(py: Python<'_>) -> Option<Domain> {
+    // Fast path. `pool.symbol` is a hot path — interning is measured directly
+    // by `bench_codspeed.py::test_intern_symbol_cached` — and calling into
+    // Python to ask for the ambient domain costs ~2 µs per symbol, which made
+    // that benchmark 4.6x slower when this lookup was unconditional.
+    //
+    // `ACTIVE_CONTEXT_FRAMES` counts frames pushed by `alkahest._context`
+    // across *all* threads, so it is deliberately conservative: it can say
+    // "somebody, somewhere, has a context open" and send a thread that has no
+    // context of its own down the slow path, but it can never report zero while
+    // a frame is live. Zero therefore means no `context()` or `_overlay()`
+    // block is open anywhere and the answer is `None` without touching Python.
+    // The stack itself stays the single source of truth — this counts frames,
+    // it does not mirror their contents.
+    if ACTIVE_CONTEXT_FRAMES.load(Ordering::Acquire) == 0 {
+        return None;
+    }
     let module = py.import_bound("alkahest._context").ok()?;
     let value = module.call_method0("active_domain").ok()?;
     if value.is_none() {
         return None;
     }
     parse_domain_arg(Some(&value)).ok()
+}
+
+/// Number of live `alkahest._context` frames, across every thread.
+///
+/// Maintained by `_note_context_push` / `_note_context_pop`, which
+/// `alkahest._context` calls at the four places it mutates its stack (both
+/// `context()` and `_overlay()`, each popping in a `finally`). Only ever read
+/// as "is this zero", so an over-count costs a slow path and never a wrong
+/// answer.
+static ACTIVE_CONTEXT_FRAMES: AtomicUsize = AtomicUsize::new(0);
+
+/// Record that `alkahest._context` pushed a frame. See [`ACTIVE_CONTEXT_FRAMES`].
+#[pyfunction]
+#[pyo3(name = "_note_context_push")]
+fn py_note_context_push() {
+    ACTIVE_CONTEXT_FRAMES.fetch_add(1, Ordering::Release);
+}
+
+/// Record that `alkahest._context` popped a frame. Saturates at zero so an
+/// unbalanced pop cannot wrap the counter into a permanently non-zero state.
+#[pyfunction]
+#[pyo3(name = "_note_context_pop")]
+fn py_note_context_pop() {
+    let _ = ACTIVE_CONTEXT_FRAMES.fetch_update(Ordering::Release, Ordering::Acquire, |n| {
+        Some(n.saturating_sub(1))
+    });
 }
 
 /// `parse_domain_arg`, but an absent/`None` argument falls back to the ambient
@@ -11712,6 +11755,8 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.py().get_type_bound::<PyBudgetExceededError>(),
     )?;
     m.add_function(wrap_pyfunction!(py_push_budget, m)?)?;
+    m.add_function(wrap_pyfunction!(py_note_context_push, m)?)?;
+    m.add_function(wrap_pyfunction!(py_note_context_pop, m)?)?;
     m.add_function(wrap_pyfunction!(py_pop_budget, m)?)?;
     m.add_function(wrap_pyfunction!(py_is_budget_active, m)?)?;
     m.add_function(wrap_pyfunction!(py_budget_seed, m)?)?;

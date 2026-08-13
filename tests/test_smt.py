@@ -15,8 +15,10 @@ Three tiers, deliberately separated:
 
 from __future__ import annotations
 
+import contextlib
 import re
 import subprocess
+import threading
 from fractions import Fraction
 from pathlib import Path
 
@@ -530,6 +532,55 @@ def test_explicit_domain_argument_beats_the_ambient_one(pool):
         script = ak.to_smtlib(pool.gt(r * r, pool.integer(2)))
     assert "(declare-fun r () Real)" in script
     assert "(set-logic QF_NRA)" in script
+
+
+def test_ambient_domain_is_restored_when_a_context_exits_by_exception(pool):
+    """The native fast path counts live frames; an exception must still clear it.
+
+    `pool.symbol` skips the (expensive) lookup into `alkahest._context` when no
+    context frame is open anywhere. If a frame leaked on the exception path the
+    counter would never return to zero, and every later `pool.symbol` would pay
+    for a lookup — or worse, a *stale* frame would keep answering `Int`.
+    """
+    with contextlib.suppress(RuntimeError), ak.context(pool=pool, domain=ak.Domain.Integer):
+        raise RuntimeError("boom")
+
+    x = pool.symbol("x")
+    assert "(declare-fun x () Real)" in ak.to_smtlib(pool.gt(x, pool.integer(0)))
+
+
+def test_an_open_context_on_one_thread_does_not_leak_into_another(pool):
+    """The frame counter is global; the stack it guards is thread-local.
+
+    A context open on this thread must not make another thread's `pool.symbol`
+    produce `Int`. The counter is deliberately conservative — it only ever says
+    "somebody has a context", sending the other thread down the slow path, which
+    then reads its own (empty) stack and correctly answers `Real`.
+    """
+    seen: list[str] = []
+
+    def worker() -> None:
+        p = ak.ExprPool()
+        z = p.symbol("z")
+        seen.append(ak.to_smtlib(p.gt(z, p.integer(0))))
+
+    with ak.context(pool=pool, domain=ak.Domain.Integer):
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join(timeout=60)
+
+    assert seen, "worker thread did not finish"
+    assert "(declare-fun z () Real)" in seen[0]
+
+
+def test_overlay_frames_are_seen_by_pool_symbol(pool):
+    """`_overlay` pushes frames `context()` never sees; the fast path must count them."""
+    from alkahest import _context
+
+    with _context._overlay(domain=ak.Domain.Integer):
+        x = pool.symbol("x")
+        script = ak.to_smtlib(pool.gt(x, pool.integer(0)))
+    assert "(declare-fun x () Int)" in script
 
 
 @requires_solver
