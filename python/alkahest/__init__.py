@@ -1629,7 +1629,7 @@ if "solve" not in dir():
 
 
 @_functools.lru_cache(maxsize=1)
-def _probe_oracles() -> tuple[tuple[str, str | None], ...]:
+def _probe_oracles() -> "tuple[tuple[str, str | None], ...]":
     """Cached view of :func:`alkahest.crosscheck.oracles`.
 
     Detecting an oracle imports it, which is far more expensive than the rest
@@ -1640,7 +1640,7 @@ def _probe_oracles() -> tuple[tuple[str, str | None], ...]:
 
 
 @_functools.lru_cache(maxsize=1)
-def _probe_smt_solvers() -> tuple[tuple[str, str | None], ...]:
+def _probe_smt_solvers() -> "tuple[tuple[str, str | None], ...]":
     """Cached view of :func:`alkahest.smt.solvers`.
 
     Detecting a solver executes each found binary to read its version, so this
