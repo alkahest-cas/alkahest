@@ -33,8 +33,15 @@ cranelift = [
     "dep:cranelift-native",
 ]
 parallel = ["dep:rayon", "dep:dashmap"]
-# Phase 29: use libflint3-dev (FLINT ≥ 3.0) for ArbBall when available.
-# Falls back to MPFR by default; flip this on Ubuntu 24.04 where libflint3-dev ships.
+# Phase 29: use FLINT >= 3.0's Arb types for ArbBall when available; ArbBall
+# itself falls back to MPFR when this is off.
+#
+# NOTE: this does NOT make FLINT optional. A system FLINT is required by every
+# build of this crate — `src/flint/` is compiled unconditionally, `UniPoly`
+# stores a `FlintPoly`, and factorization, resultants, normal forms and
+# `number_theory` all call FLINT with no pure-Rust fallback. The feature (and
+# the separate `flint3` cfg that `build.rs` auto-detects) selects which FLINT
+# *version's* API to call, nothing more. See `build.rs`.
 flint3 = []
 # V5-11: Gröbner basis computation (F4-style over ℚ)
 groebner = []

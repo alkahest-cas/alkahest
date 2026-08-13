@@ -116,8 +116,25 @@ pub struct ExprPool {
     index: Mutex<PoolIndex>,
 }
 
-unsafe impl Send for ExprPool {}
-unsafe impl Sync for ExprPool {}
+// `ExprPool` is `Send + Sync` *by inference*, not by assertion.
+//
+// This used to be `unsafe impl Send for ExprPool {}` / `unsafe impl Sync`, and
+// nothing about the type ever needed it: every field is already `Send + Sync`
+// (`boxcar::Vec<Node>` where `Node: Send + Sync`, `DashMap` under `parallel`,
+// `Mutex<PoolIndex>` without it).  An unconditional `unsafe impl` on a type that
+// derives the traits anyway is strictly worse than nothing, because it also
+// *silences the check for the future*: add an `Rc`, a `Cell`, or a raw pointer
+// to `ExprPool`, `Node` or `ExprData` and the compiler would have gone on
+// certifying the pool as shareable across rayon workers and across
+// `Python::allow_threads` — the exact boundary the pool is handed over most
+// often.  The static assertion below re-arms that check: it costs nothing at
+// run time and fails the build the moment a non-thread-safe field appears.
+const _: () = {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<ExprPool>();
+    assert_send_sync::<Node>();
+    assert_send_sync::<ExprData>();
+};
 
 impl ExprPool {
     pub fn new() -> Self {

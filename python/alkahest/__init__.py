@@ -1,5 +1,7 @@
 import functools as _functools
 import math
+import numbers as _numbers
+import sys as _sys
 from contextlib import suppress as _suppress
 from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from importlib.metadata import version as _meta_version
@@ -439,6 +441,70 @@ except _PackageNotFoundError:
     __version__ = "unknown"
 
 
+def _batch_array_advice(caller):
+    """The one thing every wrong call of :func:`numpy_eval` has in common."""
+    return (
+        "arrays are passed as separate positional arguments, one per input variable "
+        f"— {caller}(f, xs, ys), not {caller}(f, [xs, ys])"
+    )
+
+
+def _batch_n_inputs(compiled_fn, caller):
+    """Arity of *compiled_fn*, or a ``TypeError`` naming the object that works.
+
+    ``numpy_eval`` takes the :class:`CompiledFn` from :func:`compile_expr`, not
+    the :class:`Expr` it was compiled from. Passing the ``Expr`` used to escape
+    as a bare ``AttributeError: 'builtins.Expr' object has no attribute
+    'n_inputs'``, which names an implementation detail instead of the fix.
+    """
+    n_inputs = getattr(compiled_fn, "n_inputs", None)
+    if isinstance(n_inputs, int):
+        return n_inputs
+    if isinstance(compiled_fn, Expr):
+        hint = (
+            f"compile it first — f = compile_expr(expr, [x, y]) — and pass f: {caller}(f, xs, ys)"
+        )
+    elif callable(compiled_fn):
+        hint = (
+            "a Python callable is not a compiled function; build one with "
+            f"compile_expr(expr, args) and pass it: {caller}(f, xs, ys)"
+        )
+    else:
+        hint = "compiled functions come from compile_expr(expr, args) or CompileCache.get(...)"
+    raise TypeError(
+        f"{caller}() takes a CompiledFn as its first argument, got "
+        f"{type(compiled_fn).__name__}; {hint}"
+    )
+
+
+def _check_batch_arity(compiled_fn, arrays, caller):
+    """Validate the vararg convention, teaching it when it is broken."""
+    n_inputs = _batch_n_inputs(compiled_fn, caller)
+    if len(arrays) == n_inputs and arrays:
+        return n_inputs
+    detail = (
+        f"{caller}() expected {n_inputs} input array(s) — one per input variable "
+        f"of the compiled function — and got {len(arrays)}"
+    )
+    if not arrays and n_inputs == 0:
+        raise ValueError(f"{detail}: a compiled function of no inputs has nothing to vectorise")
+    if len(arrays) == 1 and n_inputs != 1:
+        first = arrays[0]
+        if isinstance(first, (list, tuple)) and len(first) == n_inputs:
+            raise ValueError(
+                f"{detail}: the {n_inputs} arrays arrived packed in a single "
+                f"{type(first).__name__}, which counts as one argument. "
+                f"{_batch_array_advice(caller)}; unpack with {caller}(f, *arrays)"
+            )
+        shape = getattr(first, "shape", None)
+        if isinstance(shape, tuple) and len(shape) == 2 and shape[0] == n_inputs:
+            raise ValueError(
+                f"{detail}: a {shape[0]}×{shape[1]} array is one argument, not {shape[0]}. "
+                f"{_batch_array_advice(caller)}; unpack the rows with {caller}(f, *arr)"
+            )
+    raise ValueError(f"{detail}. {_batch_array_advice(caller)}")
+
+
 def numpy_eval(compiled_fn, *arrays):
     """Vectorised evaluation of a :class:`CompiledFn` over arrays.
 
@@ -452,39 +518,61 @@ def numpy_eval(compiled_fn, *arrays):
     is what previously made this path dramatically slower than it needed to
     be for large arrays.
 
+    Calling convention
+    ------------------
+    Two things are easy to get wrong, and both now raise an error that says so:
+
+    * the first argument is the **compiled** function, not the expression —
+      ``f = compile_expr(expr, [x, y])``, then ``numpy_eval(f, xs, ys)``;
+    * the arrays are **separate positional arguments**, one per input variable
+      — ``numpy_eval(f, xs, ys)``, *not* ``numpy_eval(f, [xs, ys])``.
+
+    (:meth:`CompiledFn.__call__` goes the other way: it evaluates a single
+    point, and takes that point as one sequence — ``f([1.0, 2.0])``.)
+
     Parameters
     ----------
     compiled_fn : CompiledFn
-        A compiled function returned by :func:`compile_expr`.
+        A compiled function returned by :func:`compile_expr` or
+        :class:`CompileCache`.  **Not** an :class:`Expr`, and not a traced
+        Python function.
     *arrays : array-like
-        One array per input variable.  All arrays must have the same number
-        of elements.  Accepts NumPy arrays, PyTorch CPU tensors, JAX arrays,
-        CuPy arrays (host copy made), or anything with ``__dlpack__`` or
-        ``__array__``.
+        One array per input variable, passed as separate positional
+        arguments.  All arrays must have the same number of elements.
+        Accepts NumPy arrays, PyTorch CPU tensors, JAX arrays, CuPy arrays
+        (host copy made), or anything with ``__dlpack__`` or ``__array__``.
 
     Returns
     -------
     numpy.ndarray
         Output values with the same shape as the first input array.
 
+    Raises
+    ------
+    TypeError
+        *compiled_fn* is not a compiled function — most often an ``Expr`` that
+        has not been through :func:`compile_expr`.
+    ValueError
+        The number of arrays does not match the compiled function's arity,
+        including the common case of one list holding all of them.
+
     Example
     -------
     >>> import numpy as np
     >>> import alkahest
     >>> p = alkahest.ExprPool()
-    >>> x = p.symbol("x")
-    >>> f = alkahest.compile_expr(x ** 2, [x])
+    >>> x, y = p.symbol("x"), p.symbol("y")
+    >>> f = alkahest.compile_expr(x ** 2 + y, [x, y])
     >>> xs = np.linspace(0, 1, 1_000_000)
-    >>> ys = alkahest.numpy_eval(f, xs)   # vectorised native batch eval
+    >>> ys = np.linspace(1, 2, 1_000_000)
+    >>> out = alkahest.numpy_eval(f, xs, ys)     # one argument per variable
     """
     try:
         import numpy as np
     except ImportError as exc:
         raise ImportError("numpy_eval requires NumPy.  Install it with: pip install numpy") from exc
 
-    n_vars = compiled_fn.n_inputs
-    if len(arrays) != n_vars:
-        raise ValueError(f"expected {n_vars} input array(s), got {len(arrays)}")
+    _check_batch_arity(compiled_fn, arrays, "numpy_eval")
 
     # Use DLPack-aware conversion for each input.
     first_raw = np.asarray(arrays[0])
@@ -516,11 +604,13 @@ def numpy_eval_par(compiled_fn, *arrays):
     ----------
     compiled_fn : CompiledFn
         A compiled function returned by :func:`compile_expr` or
-        :class:`CompileCache`.
+        :class:`CompileCache` — not an :class:`Expr`.
     *arrays : array-like
-        One array per input variable.  All arrays must have the same number
-        of elements.  Accepts NumPy arrays, PyTorch CPU tensors, JAX arrays,
-        or anything with ``__dlpack__`` or ``__array__``.
+        One array per input variable, passed as separate positional arguments
+        (``numpy_eval_par(f, xs, ys)``, not ``numpy_eval_par(f, [xs, ys])``).
+        All arrays must have the same number of elements.  Accepts NumPy
+        arrays, PyTorch CPU tensors, JAX arrays, or anything with
+        ``__dlpack__`` or ``__array__``.
 
     Returns
     -------
@@ -542,6 +632,10 @@ def numpy_eval_par(compiled_fn, *arrays):
     >>> xs = np.linspace(0, 1, 10_000_000)
     >>> ys = alkahest.numpy_eval_par(f, xs)   # multi-core evaluation
     """
+    # Validate here rather than after the fallback, so a misuse is reported
+    # against the entry point the caller actually used.
+    _check_batch_arity(compiled_fn, arrays, "numpy_eval_par")
+
     # Use the parallel path if a parallel native method is available (parallel feature).
     has_parallel_path = hasattr(compiled_fn, "call_batch_buffer_par") or hasattr(
         compiled_fn, "call_batch_raw_par"
@@ -555,10 +649,6 @@ def numpy_eval_par(compiled_fn, *arrays):
         raise ImportError(
             "numpy_eval_par requires NumPy.  Install it with: pip install numpy"
         ) from exc
-
-    n_vars = compiled_fn.n_inputs
-    if len(arrays) != n_vars:
-        raise ValueError(f"expected {n_vars} input array(s), got {len(arrays)}")
 
     first_raw = np.asarray(arrays[0])
     out_shape = first_raw.shape if first_raw.ndim > 0 else ()
@@ -1249,23 +1339,99 @@ _BITS_PER_DIGIT = 3.321928094887362
 #: The engine's own minimum working precision (``E-PSLQ-003``).
 _MIN_ENGINE_BITS = 64
 
+#: Spare digits a relation must have left over before it is called credible.
+#:
+#: ``consumed <= available`` alone is not a gate: the relation PSLQ returns is
+#: the *smallest* one the input precision can buy, so a purchasable relation
+#: lands just under the bound rather than over it. The three spurious relations
+#: in ``temp-alkahest/testing/autoresearch-issues-2026-08-13.md`` all sat 5–8
+#: digits under it. Ten spare digits means the relation is ~10¹⁰ times more
+#: exact than a purchased one would be, which is the usual experimental-
+#: mathematics rule of thumb. Override with ``margin_digits=``.
+_DEFAULT_MARGIN_DIGITS = 10.0
 
-def _supplied_bits(value) -> float:
+
+def _supplied_bits(value) -> "tuple[float | None, str]":
     """How much precision *value* is *known* to carry, in bits.
 
-    Only ``float`` is constrained. A float is 53 bits of mantissa no matter how
-    it is printed, and that is knowable with certainty.
+    Returns ``(bits, source)``. ``bits is None`` means **unknown** — the value
+    may be exact or may be a truncation, and nothing about the object says
+    which. That is not the same as exact, and conflating the two is what made
+    :func:`relation_confidence` a gate that could not fail.
 
-    Everything else is reported as exact, deliberately. A decimal string is
-    exactly the rational it spells — ``"1"`` is one, not "one to one significant
-    figure" — so a relation among supplied strings is a true statement about the
-    values supplied. Whether those values are the constants the caller *meant*
-    is not something this library can know, and guessing would refuse honest
-    exact-rational searches like ``["1", "2", "3"]``.
+    ============================  ==================================
+    Input                         Verdict
+    ============================  ==================================
+    ``float``                     53 bits, whatever it is printed as
+    ``mpmath.mpf``                its context's working precision
+    ``int``, ``Fraction``         exact
+    ``str``, ``Decimal``, other   unknown
+    ============================  ==================================
+
+    A decimal string is the case that matters. ``"3.14159265358979"`` is a
+    perfectly exact rational *and* the way every PSLQ caller spells a truncated
+    numerical constant; the string cannot distinguish the two, so neither can
+    this function. Pass ``digits=`` / ``precision_bits=`` to declare which.
     """
     if isinstance(value, float):
-        return float(_FLOAT_SIGNIFICAND_BITS)
-    return math.inf
+        return float(_FLOAT_SIGNIFICAND_BITS), "float"
+    mpmath = _sys.modules.get("mpmath")
+    if mpmath is not None:
+        mpf = getattr(mpmath, "mpf", None)
+        if mpf is not None and isinstance(value, mpf):
+            context = getattr(value, "context", None) or getattr(mpmath, "mp", None)
+            prec = getattr(context, "prec", None)
+            return (float(prec) if prec else float(_FLOAT_SIGNIFICAND_BITS)), "mpmath"
+    if isinstance(value, _numbers.Rational):
+        # An int or a Fraction *is* the rational it spells; there is no
+        # truncation for it to be hiding.
+        return math.inf, "exact"
+    return None, "unknown"
+
+
+def _relation_available_digits(constants, digits=None, precision_bits=None):
+    """Decimal digits of precision the inputs are *known* to carry.
+
+    Returns ``(available_digits, source, ceiling)``, where ``available_digits``
+    is ``None`` when the precision is unknown. An explicit ``digits`` /
+    ``precision_bits`` declaration is a *cap*, not an override: declaring 200
+    digits for a ``float`` still yields ~16, because the type cannot hold more.
+
+    ``ceiling`` is what is knowable even when ``available_digits`` is ``None``.
+    Available precision is a ``min`` over the inputs, so a single member of
+    known precision bounds the whole set from above however unknown its
+    neighbours are: mixing a ``float`` into a list of decimal strings caps the
+    search at ~16 digits no matter what the strings carry. Keeping that bound
+    lets a relation that already exceeds it be *refuted* rather than shrugged
+    at, which is the whole point of the gate.
+    """
+    if digits is not None and precision_bits is not None:
+        raise ValueError("pass digits= or precision_bits=, not both")
+    declared = None
+    if precision_bits is not None:
+        declared = float(precision_bits) / _BITS_PER_DIGIT
+    elif digits is not None:
+        declared = float(digits)
+    if declared is not None and declared <= 0:
+        raise ValueError("the declared input precision must be positive")
+
+    inferred_bits = math.inf
+    source = "exact"
+    unknown = False
+    for c in constants:
+        bits, kind = _supplied_bits(c)
+        if bits is None:
+            unknown = True
+        elif bits < inferred_bits:
+            inferred_bits = bits
+            source = kind
+    inferred = inferred_bits / _BITS_PER_DIGIT
+
+    if declared is None:
+        return (None, "unknown", inferred) if unknown else (inferred, source, inferred)
+    if declared < inferred:
+        return declared, "declared", declared
+    return inferred, source, inferred
 
 
 class _RelationPrecisionError(PslqError):
@@ -1282,29 +1448,27 @@ class _RelationPrecisionError(PslqError):
         self.remediation = remediation
 
 
-def _relation_is_credible(constants, coeffs) -> tuple[bool, float, float]:
+def _relation_is_credible(constants, coeffs, digits=None, precision_bits=None, margin_digits=None):
     """Judge a *found* relation against the precision its inputs actually have.
 
     This is the standard experimental-mathematics criterion, and it uses
     evidence rather than guessing what the caller meant. Pinning down `n`
     coefficients of magnitude `H` consumes about `n·log10(H)` digits of
-    agreement. If that exceeds the digits the inputs carry, the relation was
-    *purchasable* from the available precision and is evidence of nothing.
+    agreement. If that (plus a safety margin) exceeds the digits the inputs
+    carry, the relation was *purchasable* from the available precision and is
+    evidence of nothing.
 
-    Only ``float`` inputs constrain anything — see :func:`_supplied_bits`. With
-    exact inputs there is nothing to be sceptical of: the relation holds of the
-    values supplied, exactly.
+    ``credible`` is ``None`` — *unknown*, never ``True`` — when the inputs'
+    precision cannot be established; see :func:`_supplied_bits`. Unknown is not
+    a licence to give up, though: when some input's precision *is* known it
+    bounds the whole set (precision is a ``min``), so a relation that already
+    exceeds that bound is refuted outright rather than reported as unknown.
 
-    Returns ``(credible, available_digits, consumed_digits)``.
+    Returns ``(credible, available_digits, consumed_digits, margin_digits,
+    source)``.
     """
-    supplied = math.inf
-    for c in constants:
-        bits = _supplied_bits(c)
-        if bits < supplied:
-            supplied = bits
-    if not math.isfinite(supplied):
-        return True, math.inf, 0.0
-    available = supplied / _BITS_PER_DIGIT
+    available, source, ceiling = _relation_available_digits(constants, digits, precision_bits)
+    margin = _DEFAULT_MARGIN_DIGITS if margin_digits is None else float(margin_digits)
     # NB: `abs`/`min`/`max` in this module's namespace are the *symbolic*
     # constructors, so the builtins are unavailable here.
     biggest = 1
@@ -1313,37 +1477,96 @@ def _relation_is_credible(constants, coeffs) -> tuple[bool, float, float]:
         if magnitude > biggest:
             biggest = magnitude
     consumed = len(coeffs) * math.log10(biggest) if biggest > 1 else 0.0
-    return consumed <= available, available, consumed
+    if available is None:
+        # Some input's precision is unknown, so we cannot say how much room the
+        # relation has. We can still say it has none: `ceiling` is a genuine
+        # upper bound on the available precision, and unknown neighbours can
+        # only drag the `min` lower, never raise it.
+        if consumed + margin > ceiling:
+            return False, None, consumed, margin, source
+        return None, None, consumed, margin, source
+    return consumed + margin <= available, available, consumed, margin, source
 
 
-def relation_confidence(constants, coeffs) -> dict:
+def relation_confidence(
+    constants, coeffs, *, digits=None, precision_bits=None, margin_digits=None
+) -> dict:
     """Judge a found relation against the precision its inputs actually carry.
 
     Pinning down ``n`` coefficients of magnitude ``H`` takes about
     ``n·log10(H)`` digits of agreement. When that exceeds the digits the inputs
     have, the relation was *purchasable* from the available precision — the
     search would have found something whatever the constants were — and it is
-    evidence of nothing.
+    evidence of nothing. Because PSLQ returns the *smallest* relation the
+    precision can buy, a purchased one lands just under the bound rather than
+    over it, so a relation must clear it by ``margin_digits`` (default 10) to
+    count as credible.
 
-    Only ``float`` inputs constrain anything (53 bits, ~16 digits, however they
-    are printed). Decimal strings and ints are exactly the values they spell, so
-    a relation among them holds exactly and there is nothing to be sceptical of.
+    **The input's precision has to be knowable, and usually it is not.** A
+    ``float`` is 53 bits however it is printed, and an ``mpmath.mpf`` reports
+    its working precision, so those are judged. ``int`` and ``Fraction`` are
+    exactly the rationals they spell, so precision cannot be the reason a
+    relation among them is spurious. A **decimal string** — the way every
+    high-precision constant reaches this library — is *unknown*: the digits
+    ``"3.14159265358979"`` are equally the exact rational 314159265358979/10¹⁴
+    and π truncated to 15 places, and nothing in the string says which. Pass
+    ``digits=`` (decimal) or ``precision_bits=`` (binary) to say how many of
+    them are trustworthy; a declaration is a cap, so declaring 200 digits for a
+    ``float`` still yields ~16.
 
-    Returns ``available_digits``, ``consumed_digits``, ``spare_digits`` and
-    ``credible``.
+    Returns a dict:
+
+    ``credible``
+        ``True``, ``False``, or ``None`` for *unknown* — the precision of the
+        inputs could not be established, so no judgement was made. ``None`` is
+        never a pass: treat it as "not yet checked" and re-run with ``digits=``.
+        A relation can still be refuted (``False``) with the precision unknown,
+        when one input whose precision *is* known already rules it out — a
+        single ``float`` among decimal strings caps the whole search at ~16
+        digits, since available precision is a ``min`` over the inputs.
+    ``available_digits``
+        Digits the inputs are known to carry (``inf`` for exact inputs),
+        or ``None`` when unknown.
+    ``consumed_digits``
+        Digits of agreement the relation costs, ``n·log10(H)``.
+    ``spare_digits``
+        ``available - consumed``, or ``None`` when unknown.
+    ``margin_digits``
+        Spare digits demanded of a credible relation.
+    ``precision_source``
+        Where ``available_digits`` came from: ``"float"``, ``"mpmath"``,
+        ``"exact"``, ``"declared"``, or ``"unknown"``.
 
     >>> import alkahest as ak
     >>> ak.relation_confidence([1.0, 2.0, 3.0], [1, 1, -1])["credible"]
     True
     >>> ak.relation_confidence([0.1, 0.2, 0.7], [60771139, 67263243, 11653676])["credible"]
     False
+
+    A decimal string is not judged at all until its precision is declared, and
+    a ten-digit-per-coefficient relation does not survive a 20-digit
+    declaration — it is exactly what 20 digits can buy:
+
+    >>> pi_20 = "3.1415926535897932385"
+    >>> e_20 = "2.7182818284590452354"
+    >>> big = [5144503108, -5945642943]
+    >>> print(ak.relation_confidence([pi_20, e_20], big)["credible"])
+    None
+    >>> ak.relation_confidence([pi_20, e_20], big, digits=20)["credible"]
+    False
+    >>> ak.relation_confidence([pi_20, e_20], big, digits=60)["credible"]
+    True
     """
-    credible, available, consumed = _relation_is_credible(constants, coeffs)
+    credible, available, consumed, margin, source = _relation_is_credible(
+        constants, coeffs, digits, precision_bits, margin_digits
+    )
     return {
         "available_digits": available,
         "consumed_digits": consumed,
-        "spare_digits": available - consumed,
+        "spare_digits": None if available is None else available - consumed,
+        "margin_digits": margin,
         "credible": credible,
+        "precision_source": source,
     }
 
 
@@ -1370,18 +1593,28 @@ def guess_relation(constants, precision_bits=664, max_abs_coeff=None, check_prec
     still come back: ``[1.0, 2.0, 3.0]`` needs almost no precision to pin down
     and is returned normally. See :func:`relation_confidence` for the numbers.
 
+    **The guard can only fire on inputs whose precision is knowable** — floats
+    and ``mpmath.mpf`` values. A decimal string may be exact or may be a
+    truncation, so a relation among strings is returned *unjudged*, not
+    endorsed. When the strings are truncations of a numerical computation, put
+    the result through
+    :func:`relation_confidence(constants, coeffs, digits=…)
+    <relation_confidence>` with the number of digits they are actually accurate
+    to; that is where a purchasable relation gets caught.
+
     Pass ``check_precision=False`` to accept a relation among the supplied
     values themselves.
     """
     coeffs = _native_guess_relation(constants, precision_bits, max_abs_coeff)
     if coeffs is None or not check_precision:
         return coeffs
-    credible, available, consumed = _relation_is_credible(constants, coeffs)
-    if not credible:
+    credible, available, consumed, margin, _source = _relation_is_credible(constants, coeffs)
+    if credible is False:
         raise _RelationPrecisionError(
             f"the relation {coeffs} needs ~{consumed:.0f} digits of agreement to pin "
-            f"down, but the inputs carry only ~{available:.0f}; a relation this size is "
-            "purchasable from the available precision and is evidence of nothing",
+            f"down (plus a {margin:.0f}-digit margin), but the inputs carry only "
+            f"~{available:.0f}; a relation this size is purchasable from the available "
+            "precision and is evidence of nothing",
             (
                 "supply the constants as high-precision decimal strings — a float "
                 f"carries only ~{_FLOAT_SIGNIFICAND_BITS} bits (~{available:.0f} digits) "

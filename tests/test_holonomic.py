@@ -8,6 +8,7 @@ decide, and the boundaries at which it must refuse rather than guess.
 """
 
 import math
+import time
 
 import alkahest as ak
 import pytest
@@ -75,6 +76,147 @@ def test_recurrence_is_satisfied_by_the_actual_sum():
         assert total == pytest.approx(0.0, abs=1e-6 * max(1.0, abs(s(ni + len(a) - 1))))
 
 
+def test_order_two_identity_is_decided_at_the_default_bounds():
+    """``Σ_k (−1)^k C(n,k)³`` (Dixon) at the *shipped defaults*.
+
+    Regression test for the search strategy.  ``max_order`` / ``max_degree`` are
+    upper bounds, so an identity that needs order 2 must be found at whatever
+    bound the caller passes, at the cost of the order-2 search — not at the cost
+    of the whole degree sweep at order 1, where no relation exists.  When that
+    was the search order, every order ≥ 2 identity (Dixon, Franel, Apéry) was
+    unreachable at the defaults while taking seconds at ``max_degree=4``.
+
+    The wall-clock bound is deliberately loose: the failure mode it guards is
+    minutes-to-never, not a few hundred milliseconds either way.
+    """
+    pool = ak.ExprPool()
+    n = pool.symbol("n")
+    k = pool.symbol("k")
+    binom = _binomial(pool, n, k)
+    term = pool.integer(-1) ** k * binom * binom * binom
+
+    started = time.monotonic()
+    cert = ak.zeilberger(term, n, k)  # default max_order / max_degree
+    elapsed = time.monotonic() - started
+
+    assert cert.order == 2
+    assert elapsed < 60.0, f"took {elapsed:.1f}s at the default bounds"
+
+    def s(m):
+        return sum((-1) ** j * math.comb(m, j) ** 3 for j in range(m + 1))
+
+    for ni in range(2, 8):
+        a = _eval_coeffs(cert, n, ni)
+        total = sum(a[i] * s(ni + i) for i in range(len(a)))
+        scale = max([1.0] + [abs(a[i] * s(ni + i)) for i in range(len(a))])
+        assert total == pytest.approx(0.0, abs=1e-6 * scale)
+
+
+def test_franel_is_decided_quickly_at_the_default_bounds():
+    """``Σ_k C(n,k)³`` (Franel) at the shipped defaults, under a wall clock.
+
+    Regression test for the *post-search* cost, which is a different failure
+    from the one above: the search reaches (order 2, degree 3) in a fifth of a
+    second, and the exact ``Q(n)(k)`` work that follows it — normalising the
+    certificate and re-verifying the identity — used to take ~29 s, all of it a
+    Euclidean remainder sequence over ``Q(n)`` swelling its own coefficients.
+    Doing that gcd in ``Z[n][k]`` instead makes it milliseconds.
+
+    Nothing about verification is relaxed to get there: the certificate is still
+    checked as an exact identity before it is returned, which is why this test
+    also re-checks the recurrence against the actual sum.  The bound is loose on
+    purpose — it guards a two-orders-of-magnitude regression, not jitter.
+    """
+    pool = ak.ExprPool()
+    n = pool.symbol("n")
+    k = pool.symbol("k")
+    binom = _binomial(pool, n, k)
+    term = binom * binom * binom
+
+    started = time.monotonic()
+    cert = ak.zeilberger(term, n, k)  # default max_order / max_degree
+    elapsed = time.monotonic() - started
+
+    assert cert.order == 2
+    assert elapsed < 10.0, f"Franel took {elapsed:.1f}s at the default bounds"
+
+    def s(m):
+        return sum(math.comb(m, j) ** 3 for j in range(m + 1))
+
+    for ni in range(2, 8):
+        a = _eval_coeffs(cert, n, ni)
+        total = sum(a[i] * s(ni + i) for i in range(len(a)))
+        scale = max([1.0] + [abs(a[i] * s(ni + i)) for i in range(len(a))])
+        assert total == pytest.approx(0.0, abs=1e-6 * scale)
+
+
+def test_apery_returns_aperys_recurrence():
+    """``Σ_k C(n,k)²·C(n+k,k)²`` must reproduce Apéry's recurrence exactly.
+
+    ``(n+1)³·S(n) − (34n³+153n²+231n+117)·S(n+1) + (n+2)³·S(n+2) = 0`` — the
+    recurrence behind the irrationality of ζ(3).  It is asserted coefficient by
+    coefficient (not just "some verified relation"), because this is the value
+    that pins the ``Q(n)`` normalisation down to one representative: a faster
+    gcd that returned a different multiple would show up right here.
+    """
+    pool = ak.ExprPool()
+    n = pool.symbol("n")
+    k = pool.symbol("k")
+    binom_nk = _binomial(pool, n, k)
+    binom_npk = _binomial(pool, n + k, k)
+    term = binom_nk * binom_nk * binom_npk * binom_npk
+
+    started = time.monotonic()
+    cert = ak.zeilberger(term, n, k)
+    elapsed = time.monotonic() - started
+
+    assert cert.order == 2
+    assert elapsed < 10.0, f"Apéry took {elapsed:.1f}s at the default bounds"
+
+    def want(ni):
+        return [
+            (ni + 1) ** 3,
+            -(34 * ni**3 + 153 * ni**2 + 231 * ni + 117),
+            (ni + 2) ** 3,
+        ]
+
+    for ni in (2.0, 5.0, 9.0):
+        got = _eval_coeffs(cert, n, ni)
+        expected = want(ni)
+        # Coefficients are only defined up to one common scale.
+        scale = got[2] / expected[2]
+        assert scale != 0.0
+        for g, e in zip(got, expected):
+            assert g == pytest.approx(e * scale, rel=1e-12)
+
+
+def test_raising_the_bounds_does_not_slow_down_an_easy_input():
+    """Bounds are bounds: a wider search must not cost more on an easy term.
+
+    ``Σ_k C(n,k)`` is decided at order 1, degree 0.  Quadrupling both bounds
+    used to multiply the work (the old search started its degree sweep at the
+    bound); now it must be free, so the two calls stay within a small factor of
+    each other and return the same order.
+    """
+    pool = ak.ExprPool()
+    n = pool.symbol("n")
+    k = pool.symbol("k")
+    term = _binomial(pool, n, k)
+
+    started = time.monotonic()
+    tight = ak.zeilberger(term, n, k, max_order=1, max_degree=2)
+    tight_elapsed = time.monotonic() - started
+
+    started = time.monotonic()
+    wide = ak.zeilberger(term, n, k, max_order=4, max_degree=64)
+    wide_elapsed = time.monotonic() - started
+
+    assert wide.order == tight.order == 1
+    assert wide_elapsed < max(5.0, 20.0 * tight_elapsed), (
+        f"wide bounds cost {wide_elapsed:.3f}s vs {tight_elapsed:.3f}s tight"
+    )
+
+
 def test_certificate_is_returned_and_nontrivial():
     pool = ak.ExprPool()
     n = pool.symbol("n")
@@ -122,9 +264,88 @@ def test_certificate_telescopes_the_summand_numerically():
             assert lhs == pytest.approx(rhs, rel=1e-9, abs=1e-9)
 
 
+def _a357558_summand(pool, n, k, minus_one):
+    """``(−1)^(n+k)·k·C(n,k)·C(n+k,k)²`` — OEIS A357558's summand.
+
+    ``minus_one`` is the caller's spelling of the constant −1.
+    """
+    binom_nk = _binomial(pool, n, k)
+    binom_npk = _binomial(pool, n + k, k)
+    return minus_one ** (n + k) * k * binom_nk * binom_npk * binom_npk
+
+
+def _cert_text(cert):
+    return (str(cert.certificate), [str(c) for c in cert.coeffs])
+
+
+def test_constant_base_is_folded_not_refused():
+    """``(-one)**(n+k)`` must work exactly like ``pool.integer(-1)**(n+k)``.
+
+    The pool does no arithmetic at construction, so ``-one`` (with
+    ``one = pool.integer(1)``) is the node ``Mul(1, -1)``, not the literal −1.
+    The hypergeometric parser used to demand a *literal* rational base and
+    refused this as E-HOLO-001 "not a proper hypergeometric term" — a refusal
+    that reads as a capability limit even though ``1 * -1`` is the rational −1.
+    """
+    pool = ak.ExprPool()
+    n = pool.symbol("n")
+    k = pool.symbol("k")
+    one = pool.integer(1)
+
+    folded = ak.zeilberger(_a357558_summand(pool, n, k, -one), n, k, max_order=3)
+    literal = ak.zeilberger(_a357558_summand(pool, n, k, pool.integer(-1)), n, k, max_order=3)
+
+    assert folded.order == literal.order == 2
+    assert _cert_text(folded) == _cert_text(literal)
+
+
+def test_a357558_recurrence_is_satisfied_by_the_actual_sum():
+    """End-to-end on the OEIS target that this refusal made look impossible."""
+    pool = ak.ExprPool()
+    n = pool.symbol("n")
+    k = pool.symbol("k")
+    one = pool.integer(1)
+
+    started = time.monotonic()
+    cert = ak.zeilberger(_a357558_summand(pool, n, k, -one), n, k, max_order=3)
+    elapsed = time.monotonic() - started
+
+    assert cert.order == 2
+    assert elapsed < 60.0, f"took {elapsed:.1f}s"
+
+    def s(m):
+        return sum(
+            (-1) ** (m + j) * j * math.comb(m, j) * math.comb(m + j, j) ** 2 for j in range(m + 1)
+        )
+
+    for ni in range(2, 8):
+        a = _eval_coeffs(cert, n, ni)
+        total = sum(a[i] * s(ni + i) for i in range(len(a)))
+        scale = max([1.0] + [abs(a[i] * s(ni + i)) for i in range(len(a))])
+        assert total == pytest.approx(0.0, abs=1e-6 * scale)
+
+
 # ---------------------------------------------------------------------------
 # Refusals — a refusal is an informative answer, not a failure
 # ---------------------------------------------------------------------------
+
+
+def test_refuses_symbolic_and_zero_bases_under_a_symbolic_exponent():
+    """Folding constants must not widen the accepted class.
+
+    ``x^k`` is genuinely symbolic, and ``(1 - 1)^(n+k)`` folds to ``0`` raised
+    to a symbolic power; both are still outside the proper hypergeometric class.
+    """
+    pool = ak.ExprPool()
+    n = pool.symbol("n")
+    k = pool.symbol("k")
+    x = pool.symbol("x")
+    one = pool.integer(1)
+
+    for term in (x**k, (2 * x) ** k, (one - one) ** (n + k), (one * one - one) ** k):
+        with pytest.raises(ak.HolonomicError) as excinfo:
+            ak.zeilberger(term * _binomial(pool, n, k), n, k)
+        assert excinfo.value.code == "E-HOLO-001"
 
 
 def test_refuses_non_hypergeometric_input():

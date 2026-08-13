@@ -31,7 +31,7 @@ from `BaseException` and therefore slips past `except Exception`. Shipped in
 ball.
 
 The deterministic silent-error gate (`tests/silent_errors/`, Tier-1 CI) now
-scores **0 silent errors out of 213 scored cases** across evaluation,
+scores **0 silent errors out of 241 scored cases** across evaluation,
 integration, limits, linear algebra, number theory, real QE, series,
 simplification, solving, and sums/products. Every trap added this cycle was
 re-run against a build with the fix reverted and confirmed to score
@@ -132,6 +132,49 @@ of these is a call whose previous answer was not justified:
   the exponent-only cap refused them while permitting a twenty-term sum to the
   fourth power; anything above the budget comes back unexpanded *and says so*
   instead of looking like an expression that was already expanded.
+- **`relation_confidence` returns `credible: None` — *unknown* — for inputs
+  whose precision it cannot establish, where it used to return `True`.** It
+  judged only `float` inputs, on the premise that "decimal strings and ints are
+  exactly the values they spell, so a relation among them holds exactly". That
+  premise is false for the one way PSLQ is actually driven: a high-precision
+  decimal string standing for a **truncated** numerical value. So on the input
+  an experimental-mathematics loop produces, the gate passed everything —
+  including three relations found during the 2026-08-13 autoresearch run that
+  re-evaluation at 60 digits refutes. A gate that cannot fail is worse than no
+  gate, because loop authors wire it into promotion logic. Now: `float` is 53
+  bits as before, `mpmath.mpf` reports its working precision, `int` and
+  `Fraction` are exact, and everything else — decimal strings included — is
+  `None` until the caller declares `digits=` or `precision_bits=` (a cap, not an
+  override: declaring 200 digits for a `float` still yields ~16). A relation must
+  also clear the available precision by `margin_digits` (default 10) rather than
+  merely fitting inside it, because PSLQ returns the *smallest* relation the
+  precision can buy, so a purchased one lands just under the old bound rather
+  than over it; all three of the run's spurious relations were 5–8 digits under
+  it. The verdict dict gains `margin_digits` and `precision_source`, and
+  `available_digits` / `spare_digits` are `None` when the verdict is. **If you
+  branch on `credible`, treat `None` as "not checked" — `if verdict["credible"]`
+  is the correct polarity, `is not False` is not.** `guess_relation` is
+  unchanged for decimal strings: an unjudgeable input is returned unjudged, never
+  refused, and `E-PSLQ-004` still fires on float inputs. Unknown precision does
+  not disable the gate, either: available precision is a `min` over the inputs,
+  so one input whose precision *is* known bounds the whole set, and a relation
+  already too expensive for that bound comes back `False` even while
+  `available_digits` stays `None` — a single `float` among decimal strings caps
+  the search at ~16 digits however many digits the strings carry.
+- **`pool.symbol("x")` now takes its domain from the ambient
+  `alkahest.context(domain=...)`**, falling back to `Domain.Real` only outside a
+  context block; an explicit `domain=` argument still wins. It previously
+  ignored the context entirely, while the documented `alkahest.symbol("x")` —
+  which is a thin wrapper that resolves the context and forwards it — did not.
+  The two constructors sit side by side and only one consulted the domain, so
+  building an integer problem through the pool silently emitted
+  `(set-logic QF_NRA)` and `Real` sorts, and `solve()` answered the *real
+  relaxation*: an Erdős–Straus instance came back `sat` with `z = 252/13` while
+  `status`, `verification.status` (`exactly_verified`) and `supported().reason`
+  (`ok`) all stayed green, because the model does satisfy the formula as
+  emitted. Nothing was unsound; the question being answered had changed. Code
+  that relied on pool symbols being `Real` inside an integer context should pass
+  `domain="real"` explicitly.
 
 ### Known limits — documented, not fixed
 
@@ -200,6 +243,199 @@ loop fails.
 
 ### Fixed
 
+- **`zeilberger` no longer refuses a constant base just because it is not
+  already a literal.** `(-one)**(n+k)`, with `one = pool.integer(1)`, builds the
+  node `Mul(1, -1)` — the pool does no arithmetic at construction — and the
+  proper-hypergeometric parser demanded a *literal* rational base, so it raised
+  `E-HOLO-001` *"not a proper hypergeometric term: power with symbolic exponent
+  needs a rational base, got (1 * -1)"*. `1 * -1` **is** the rational −1, and
+  the same summand written `pool.integer(-1)**(n+k)` was decided in 0.4 s. That
+  made a spelling look like a capability limit: an autoresearch run recorded the
+  OEIS targets A357558 and A357559 (`Σ (−1)^(n+k)·k·C(n,k)·C(n+k,k)²` and its
+  `k³` sibling) as outside Alkahest's reach when both in fact yield an order-2
+  recurrence. The base is now constant-folded first — `Mul`/`Add`/integer-`Pow`
+  towers over integer and rational literals, e.g. `1 * -1`, `2/4`, `(-2)^3`,
+  `3 - 4` — under the parser's existing depth bound and a new bit-width budget
+  on folded values, so a nest like `((2^32)^32)^32` is refused rather than
+  evaluated. What counts as a proper hypergeometric term is otherwise unchanged:
+  a genuinely symbolic base is still refused, and a base that folds to `0` still
+  refuses as `0` raised to a symbolic power.
+- **`SmtResult.verification` now carries the emitted sorts alongside the
+  status.** The logic and the sorts decide *which question was solved* — `Int`
+  versus `Real` is `QF_NIA` versus `QF_NRA` and hence an integer problem versus
+  its real relaxation — but they were reachable only via `SmtResult.logic` and a
+  separately-called `supported()`, neither of which a loop recording `status`
+  will look at. `verification` gains `sorts` (`{"x": "Int", ...}`) next to
+  `logic` and `status` on all three statuses, with a new `SmtResult.sorts`
+  property to read it back, so the sorts survive being recorded into a claim
+  graph rather than having to be re-derived.
+- **`E-SMT-002` now says how to fix a quantified formula.** `solve()` correctly
+  refuses explicitly quantified input, but "does there exist x, y, z such that…"
+  is the natural way to write a satisfiability question and `Exists` is exported
+  at top level, so the refusal was landing on the obvious spelling without
+  saying that free variables in a sat query are already implicitly existential.
+  When the formula is a prefix of `Exists` over a quantifier-free body, the
+  message now leads with dropping the quantifiers and passing the body, and
+  names the bound variables; under a `Forall`, where that rewrite is invalid, it
+  says so instead. `supported()` gives the same guidance. The quantifiers are
+  **not** stripped automatically: `solve()` back-substitutes its model against
+  the formula it was given, and rewriting it silently would answer about a
+  different expression.
+- **A source build without FLINT now fails immediately, with an install hint,
+  instead of at link time.** `alkahest-core/build.rs` probes for a linkable
+  FLINT (library file in any search directory, `cc -print-file-name`, headers /
+  pkg-config, `ldconfig`) and, finding none, stops with the package name for
+  every common platform rather than letting the build run to completion and die
+  in `rust-lld: error: unable to find library -lflint`. **FLINT remains a hard
+  requirement and `cargo:rustc-link-lib=flint` remains unconditional** — that is
+  now documented at the emit site, in `flint/mod.rs` and in the `flint3` feature
+  comment, because it looks gateable and is not: `src/flint/` is compiled
+  unconditionally, `UniPoly` *is* a `FlintPoly`, and factorization, resultants,
+  normal forms and `number_theory` call FLINT with no pure-Rust fallback.
+  Gating the link behind `cfg(flint3)` was measured: it produces a `cdylib` with
+  68 undefined FLINT symbols that links cleanly and then fails at
+  `import alkahest` with `undefined symbol: nmod_poly_init` — a worse failure,
+  later.
+- **New `FLINT_LIB_DIR` / `FLINT_INCLUDE_DIR` build-time overrides.** They add a
+  link search path and feed FLINT version detection, so a FLINT built into a
+  user-local prefix — no root, no system package — is both linkable and
+  correctly identified as FLINT 3. Verified end to end on a host with no system
+  FLINT: `FLINT_LIB_DIR=$PREFIX/lib FLINT_INCLUDE_DIR=$PREFIX/include cargo
+  build -p alkahest-py --release --features "parallel egraph cranelift groebner"`
+  succeeds against a locally built FLINT 3.2.2. `ALKAHEST_SKIP_FLINT_CHECK=1`
+  bypasses the probe; `DOCS_RS` skips it automatically, since rustdoc never
+  links.
+- **`fmpz_mat_struct` layout detection read the wrong header.** The probe looked
+  for a `stride` field in `flint/fmpz_mat.h`, but FLINT 3 declares the struct in
+  `flint/fmpz_types.h` — so *every* FLINT 3 was reported as the older
+  `rows: **fmpz` layout, whatever it actually used. Both fields are
+  pointer-sized, so this is not a size mismatch: on a FLINT that uses `stride` it
+  would have made `FlintMat` dereference an integer as a pointer. The probe now
+  extracts the `fmpz_mat_struct` typedef body from either header and skips a
+  header that does not contain the declaration, rather than reading its absence
+  as "no stride field". The version fallback (used only when no header is found)
+  moved from "3.1+ is stride" to "3.5+ is stride"; FLINT 3.2.2 is confirmed to
+  still use `rows`.
+- **`E-SOS-002` now says "undecided, not a refutation" in the message itself.**
+  The text was accurate and specific but could be read as "not SOS", which for a
+  search loop is a wrongly closed branch — and a wrongly closed branch is
+  invisible, since nothing downstream ever contradicts it. The message and the
+  registered remediation now say to record it as `unknown`, and state that the
+  diagonally dominant cone is a *strict subset* of the SOS cone, so refusal is
+  compatible with `p` being SOS. All the original specifics (the basis degree,
+  `raise basis_degree`, the Motzkin caveat, `decide` as the fallback) are kept.
+  The corresponding sections of `positivity.md`, `errors.md` and the agent skill
+  spell out the three worlds that produce `E-SOS-002` and note that `E-SOS-003`,
+  which carries a witness point, is the only SOS *refutation*.
+- **`parallel` now ships in the default PyPI wheel, on every platform.** It was
+  the one feature whose absence was *silent*: `numpy_eval_par` and
+  `simplify_par` exist in every build and quietly fall back to their sequential
+  counterparts, so benchmarking `numpy_eval_par` against `numpy_eval` on a PyPI
+  wheel timed one code path twice — and the only build that had threads was a
+  Linux-only `+full` wheel from GitHub Releases, so no macOS or Windows user
+  could obtain them from any wheel at all. `release-build.yml` now builds the
+  default wheel with `egraph groebner cranelift parallel` on Linux
+  (manylinux_2_28), macOS arm64 and Windows (MinGW); `+jit` gains `parallel`
+  too, so no opt-in wheel is a silent downgrade from the default one. rayon and
+  dashmap are pure Rust with no system dependency, and `ci-cross.yml` was
+  already building `parallel` on both macos-14 and windows-2022, so this adds
+  no toolchain requirement. `ci.yml`'s "PyPI-parity" `maturin develop` and the
+  `wheel-smoke` job build it too, so the binary PR CI tests is once again the
+  binary users install.
+
+  `capabilities()["features"]["parallel"]` remains the way to check, because
+  `parallel` is still not a Cargo *default*: a source build that does not ask
+  for it gets the silent single-threaded aliases. `README.md`,
+  `getting-started.md`, `codegen.md`, `interop.md`, `features.md` and the agent
+  skill say so at each `*_par` entry point.
+
+  **`+full` gains `cranelift`, making it the only wheel with both JIT
+  backends.** Moving `parallel` into the default wheel briefly left `+full` with
+  a feature set identical to `+jit`'s — `parallel` had been the entire
+  distinction, and `groebner`/`egraph` are Cargo defaults, so naming them added
+  nothing — which would have shipped two byte-identical wheels under different
+  names. `+full` is now a strict superset of the default wheel, which is what
+  its name promises, and its smoke test asserts both backends so the variants
+  cannot silently converge again.
+
+- **ThreadSanitizer was never given the parallel code to sanitize.** The nightly
+  `tsan` shard ran `cargo +nightly test --workspace` with *default* features, so
+  rayon and dashmap were not compiled in at all: `ExprPool`'s index was a plain
+  `Mutex<HashMap>`, `simplify_par` / `simplify_redex` / `simplify_auto` and
+  `CompiledFn::call_batch_par` did not exist, and F4 reduced sequentially. The
+  shard was reporting a clean bill for code it had never seen — and per
+  `CONTRIBUTING.md` no sanitizer runs `pytest`, so nothing covered the PyO3
+  boundary either. It now builds with `--features parallel`.
+
+  **The nightly `asan` shard had the same blind spot and is fixed the same
+  way.** AddressSanitizer was checking memory safety on a build with no
+  concurrent code compiled into it — precisely the code whose memory safety is
+  hardest to get right. It now runs `--features parallel` too. Only the nightly
+  shard: Tier 1a's ASan job stays as it is, so the PR critical path does not
+  grow.
+
+  New `alkahest-core/tests/parallel_stress.rs` gives that shard something to
+  sanitize, from real OS threads rather than Rayon's own pool: concurrent
+  interning checked against a single-threaded node-count baseline (a lost
+  `DashMap::entry` race would show up as duplicate nodes, i.e. structural
+  equality quietly ceasing to imply id equality), lock-free `ExprPool::with`
+  reads against a growing `boxcar::Vec`, concurrent `simplify_par` /
+  `simplify_redex` on one shared pool, interning *while* a GIL-free
+  `simplify_par` walks the same pool, and nested `call_batch_par`. New
+  `tests/test_parallel_threadsafety.py` covers the same shapes above the FFI
+  boundary, where `ExprPool` is a plain sendable `#[pyclass]` and
+  `py_simplify_par` holds a `PyRef` borrow across `Python::allow_threads`.
+
+  Both suites are clean, under TSan and without. Two TSan findings, neither a
+  defect in the parallel paths: a reported data race whose two stacks are
+  entirely inside `crossbeam_epoch`/`crossbeam_deque` (epoch-based reclamation
+  uses an asymmetric `membarrier` barrier that TSan cannot model) — suppressed
+  by name in a new `tsan.supp`, deliberately narrow so a genuine race in one of
+  our Rayon closures still fails the shard; and a SIGSEGV that is a stack
+  overflow, not memory corruption, because `with_stack_segment`'s governor
+  refills at 512 KiB against Rayon's default 2 MiB worker stack and TSan's
+  instrumented frames do not fit that margin. The shard sets
+  `RUST_MIN_STACK=33554432`; it does not reproduce in an uninstrumented build.
+
+- **Documented that a `CompiledFn` is pinned to the thread that compiled it.**
+  Surfaced while writing the tests above: `PyCompiledFn` is
+  `#[pyclass(unsendable)]`, so using a `compile_expr` result from another
+  `threading.Thread` raises
+  `pyo3_runtime.PanicException: alkahest::PyCompiledFn is unsendable, but sent
+  to another thread`. Behaviour is unchanged and the check is a safety net — it
+  fires before anything unsound happens — but it becomes much easier to hit now
+  that `parallel` ships by default and the obvious misuse is to compile once and
+  fan the handle out over a thread pool. Two details make it sharper than an
+  ordinary error, and both are now in `codegen.md` and the agent skill: it has
+  nothing to do with `parallel` (plain `numpy_eval` is refused identically), and
+  `PanicException` derives from `BaseException`, not `Exception`, so a worker
+  wrapped in a bare `except Exception:` will not catch it. Compile per thread;
+  `ExprPool` and `Expr` are shareable.
+
+- **`unsafe impl Send for ExprPool` / `unsafe impl Sync for ExprPool` removed.**
+  They were unnecessary in both builds — every field already derives the traits
+  (`boxcar::Vec<Node>`, `DashMap` under `parallel`, `Mutex<PoolIndex>` without
+  it) — and an unconditional `unsafe impl` on a type that qualifies anyway is
+  worse than nothing, because it also silences the check *for the future*: add
+  an `Rc`, a `Cell` or a raw pointer to `ExprPool`, `Node` or `ExprData` and the
+  compiler would have gone on certifying the pool as shareable across Rayon
+  workers and across `Python::allow_threads`. Replaced with a `const _` static
+  assertion that the three types are `Send + Sync`, which costs nothing at run
+  time and now fails the build instead.
+- **`numpy_eval` now explains its calling convention instead of describing the
+  symptom.** Passing the `Expr` rather than the `CompiledFn` raised
+  `AttributeError: 'builtins.Expr' object has no attribute 'n_inputs'`, which
+  names an implementation detail; it is now a `TypeError` saying to compile the
+  expression first. Passing the arrays packed in one list — `numpy_eval(f, [a,
+  b])` — raised `ValueError: expected 2 input array(s), got 1`, true but not
+  actionable; the `ValueError` now says that arrays are separate positional
+  arguments and to unpack with `numpy_eval(f, *arrays)`, and recognises a 2-D
+  array whose first axis matches the arity as the same mistake. `numpy_eval_par`
+  validates identically, and against its own name rather than the name of the
+  function it falls back to. `CompiledFn.__call__` — which goes the *other* way,
+  taking one point as a single sequence — answers `f(1.0, 2.0)` and `f(1.0)`
+  with that convention and a pointer to `numpy_eval` for batches. Exception
+  types are unchanged.
 - **`cargo test --features groebner-cuda` could not pass on a machine with no
   NVIDIA driver**, contradicting the header comment of
   `alkahest-core/tests/groebner_cuda.rs`. `cudarc` *panics* rather than
@@ -754,6 +990,47 @@ loop fails.
 
 ### Performance
 
+- **`zeilberger`'s exact `Q(n)(k)` post-processing no longer swells its own
+  coefficients.** With the search fixed (below), what was left was entirely
+  after it: on `Σ_k C(n,k)³` the search reached `(order 2, degree 3)` in 0.22 s
+  and the run then spent ~29 s normalising the certificate and re-verifying it.
+  The cause was `PolyK::gcd` — a textbook Euclidean remainder sequence over the
+  *field* `Q(n)`, whose coefficients are rational functions in `n`: every
+  division step adds numerator and denominator degrees and no step ever removes
+  content, the classic intermediate-expression-swell blowup, and
+  `RatK::normalize` ran it on every normalisation. The gcd now leaves the field
+  and runs **Brown's subresultant PRS in `Z[n][k]`** (Collins 1967, Brown 1971;
+  Knuth TAOCP 2 § 4.6.1), with both cofactors divided out in the same integral
+  domain, and `Q[n]` gcds (`rn_mul` / `rn_add` / `rn_inv`, which cancel
+  crosswise now rather than reducing the full cross-multiplied product) go
+  through the same subresultant sequence over `Z[n]`. At the shipped defaults,
+  measured before and after on one machine: `Σ (−1)^k C(n,k)³` **1.6 s →
+  0.11 s** (15×), `Σ_k C(n,k)³` **56 s → 0.07 s** (800×),
+  `Σ_k C(n,k)²C(n+k,k)²` **16.5 s → 0.05 s** (330×, and still Apéry's
+  recurrence coefficient for coefficient). Two OEIS targets that timed out past 300 s at certificate
+  degree ≥ 3 are now decided: **A357510** `Σ k·C(n,k)²·C(n+k,k)²` and
+  **A357512** `Σ k⁵·C(n,k)²·C(n+k,k)²` both yield a verified order-3 recurrence
+  in under a second. This is a change of algorithm, not of contract: a monic
+  gcd is unique, so every certificate is the same one as before, and every
+  certificate is still checked as an exact `Q(n)(k)` identity before it is
+  returned — nothing here is probabilistic and no verification was weakened.
+- **`zeilberger`'s `max_order` / `max_degree` are now upper bounds instead of
+  starting points.** The search used to sweep certificate degrees
+  `d = 0..=max_degree` at order 1 before ever trying order 2, and a single
+  degree probe gets ~3× more expensive per degree step (measured on
+  `Σ (−1)^k C(n,k)³`: 0.7 ms at `d = 0`, 0.6 s at `d = 7`, 84 s at `d = 12`).
+  Every order ≥ 2 identity — Dixon, Franel, Apéry — therefore ran for minutes
+  or never at the shipped defaults while being seconds away at `max_degree=4`,
+  i.e. **raising the bound made easy inputs slower rather than admitting harder
+  ones**. The `(order, degree)` grid is now visited by iterative deepening,
+  cheapest estimated probe first (one extra order is priced at three extra
+  degrees, which is what the measurements say), and the first *verified*
+  relation is returned. `Σ (−1)^k C(n,k)³` at the defaults goes from >400 s
+  (killed) to **0.67 s**; `Σ_k C(n,k)³` from >400 s (killed) to ~31 s. Nothing
+  is skipped — the plan still visits every pair inside the bounds, so an
+  exhausted search costs what it always did — and verification is unchanged: a
+  candidate that fails the exact `Q(n)(k)` check is still discarded, never
+  returned.
 - **`numpy_eval` / `numpy_eval_par` no longer round-trip through a Python
   list of floats.** The previous implementation converted every NumPy array
   to a flat Python list via `.tolist()` before crossing into Rust

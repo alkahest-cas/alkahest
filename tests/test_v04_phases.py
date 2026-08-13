@@ -259,6 +259,81 @@ class TestBatchEval:
         assert np.allclose(ys, expected, atol=1e-8)
 
 
+class TestNumpyEvalCallingConvention:
+    """The two argument conventions that meet at `numpy_eval` are easy to swap.
+
+    Each wrong spelling used to raise something true but unhelpful — an
+    `AttributeError` naming `n_inputs`, or an arity `ValueError` describing the
+    symptom — so the error had to say what the right call looks like.
+    """
+
+    def _two_var_fn(self):
+        p = pool()
+        x = p.symbol("x")
+        y = p.symbol("y")
+        return compile_expr(x**2 + y, [x, y])
+
+    def test_an_expr_is_told_to_compile_itself(self):
+        pytest.importorskip("numpy")
+        import numpy as np
+
+        p = pool()
+        x = p.symbol("x")
+        with pytest.raises(TypeError) as excinfo:
+            numpy_eval(x**2, np.array([1.0]))
+        message = str(excinfo.value)
+        assert "CompiledFn" in message
+        assert "compile_expr" in message
+        assert "n_inputs" not in message
+
+    def test_arrays_packed_in_one_list_teach_the_vararg_convention(self):
+        pytest.importorskip("numpy")
+        import numpy as np
+
+        f = self._two_var_fn()
+        xs, ys = np.array([1.0, 2.0]), np.array([3.0, 4.0])
+        with pytest.raises(ValueError) as excinfo:
+            numpy_eval(f, [xs, ys])
+        message = str(excinfo.value)
+        assert "separate positional arguments" in message
+        assert "numpy_eval(f, *arrays)" in message
+
+    def test_a_2d_array_teaches_the_same_convention(self):
+        pytest.importorskip("numpy")
+        import numpy as np
+
+        f = self._two_var_fn()
+        with pytest.raises(ValueError) as excinfo:
+            numpy_eval(f, np.array([[1.0, 2.0], [3.0, 4.0]]))
+        assert "separate positional arguments" in str(excinfo.value)
+
+    def test_the_right_spelling_still_works(self):
+        pytest.importorskip("numpy")
+        import numpy as np
+
+        f = self._two_var_fn()
+        arrays = [np.array([1.0, 2.0]), np.array([3.0, 4.0])]
+        assert np.allclose(numpy_eval(f, *arrays), [4.0, 8.0])
+
+    def test_compiled_fn_call_takes_one_sequence_not_positional_scalars(self):
+        f = self._two_var_fn()
+        assert f([1.0, 3.0]) == pytest.approx(4.0)
+        with pytest.raises(TypeError) as excinfo:
+            f(1.0, 3.0)
+        message = str(excinfo.value)
+        assert "single sequence" in message
+        assert "numpy_eval" in message
+
+    def test_compiled_fn_call_rejects_a_bare_float(self):
+        p = pool()
+        x = p.symbol("x")
+        f = compile_expr(x**2, [x])
+        with pytest.raises(TypeError) as excinfo:
+            f(3.0)
+        assert "single sequence" in str(excinfo.value)
+        assert f([3.0]) == pytest.approx(9.0)
+
+
 # ===========================================================================
 # P-26 — collect_like_terms
 # ===========================================================================

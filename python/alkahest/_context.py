@@ -84,8 +84,13 @@ def context(
         Default expression pool used by ``alkahest.symbol`` and other
         pool-aware helpers when called without an explicit ``pool`` argument.
     domain : str or Domain, optional
-        Default domain for ``alkahest.symbol(name)`` calls that omit ``domain``
-        (e.g. ``"real"``, ``Domain.Integer``).
+        Default domain for symbol construction that omits ``domain`` — both
+        ``alkahest.symbol(name)`` and ``pool.symbol(name)`` (e.g. ``"real"``,
+        ``Domain.Integer``).  The two agree deliberately: the domain picks the
+        SMT-LIB sort (``Int`` vs ``Real``), so a constructor that ignored it
+        would change the question ``alkahest.smt.solve`` answers without
+        changing any status a caller reads.  Pass an explicit ``domain=`` to
+        either constructor to override the block.
     simplify : bool
         When ``True``, :func:`diff`, :func:`integrate`, :func:`sum_indefinite`,
         :func:`sum_definite`, :func:`product_indefinite`, and
@@ -217,6 +222,9 @@ def _overlay(**overrides: Any) -> Generator[None, None, None]:
 
 def symbol(name: str, *, pool: Any = None, domain: Any = None, commutative: bool = True) -> Any:
     """Create a symbol, inferring *pool* and *domain* from the active context.
+
+    ``pool.symbol(name)`` infers the domain from the same context, so the two
+    constructors agree; this one additionally infers the *pool*.
 
     Parameters
     ----------

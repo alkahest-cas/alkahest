@@ -74,7 +74,16 @@ Because this project relies heavily on C libraries (GMP, FLINT) and exposes poin
 We compile our Rust test suite using LLVM sanitizers to catch memory violations instantly.
 * **AddressSanitizer (ASan)**: Catches Out-of-Bounds accesses and Use-After-Free errors (especially critical when Python drops an object that Rust/C still expects).
 * **LeakSanitizer (LSan)**: Ensures FLINT/GMP memory allocations are properly dropped.
-* **ThreadSanitizer (TSan)**: Catches data races across the Rayon/`parallel` paths.
+* **ThreadSanitizer (TSan)**: Catches data races across the Rayon/`parallel` paths. It
+  now runs `--features parallel`; until 3.8.0 it did **not**, which meant `rayon` and
+  `dashmap` were not compiled into the binary it sanitized at all — `ExprPool`'s index
+  was a plain `Mutex<HashMap>`, the `simplify_*_par` entry points and
+  `CompiledFn::call_batch_par` did not exist, and the shard was reporting clean on code
+  it had never seen. `alkahest-core/tests/parallel_stress.rs` is written for this shard:
+  concurrent interning against a single-threaded node-count baseline, lock-free reads
+  against a growing `boxcar::Vec`, concurrent `simplify_par` / `simplify_redex` on one
+  shared pool, and nested `call_batch_par`, all from real OS threads rather than Rayon's
+  own pool.
 
 > **UndefinedBehaviorSanitizer is *not* run.** `-Zsanitizer=undefined` appears nowhere
 > in this repository or in `.github/workflows/ci.yml`. If you want UB coverage you have
@@ -112,13 +121,44 @@ substitute check for the Python surface is a behavioural one: run N iterations o
 entry point on a *fresh* `ExprPool` per iteration and assert resident memory stays flat
 (see [Budgets → pool lifetime](docs/mdbook/src/budgets.md#exprpool-never-reclaims)).
 
-**ThreadSanitizer** — nightly `tsan` shard:
+The same gap applies to *concurrency*, and matters more since `parallel` became a
+default-wheel feature: `ExprPool` is a plain sendable `#[pyclass]`, and `py_simplify_par`
+holds a `PyRef` borrow across `Python::allow_threads` while `&ExprPool` escapes into a
+Rayon pool — none of which any sanitizer job constructs.
+`tests/test_parallel_threadsafety.py` is the behavioural substitute: shared pool across
+`threading.Thread`s, concurrent `simplify_par` / `simplify_redex` / `simplify_auto` /
+`numpy_eval_par`, each asserted against the answer a lone caller gets. It proves
+agreement, not absence of races; the race detection lives in the Rust `tsan` shard.
+
+**ThreadSanitizer** — nightly `tsan` shard. Both environment variables are load-bearing;
+without them the shard is red for reasons that are not races:
 ```bash
+export TSAN_OPTIONS="suppressions=$PWD/tsan.supp"
+# TSan inflates every stack frame, and `simplify/parallel.rs`'s stack governor is
+# calibrated against Rayon's default 2 MiB worker stack. Without this you get a bare
+# SIGSEGV — a stack overflow, not memory corruption; it does not reproduce
+# uninstrumented.
+export RUST_MIN_STACK=33554432
+
 RUSTFLAGS="-Zsanitizer=thread" \
   cargo +nightly test --workspace --lib --tests \
+    --features parallel \
     --target x86_64-unknown-linux-gnu \
     -Z build-std
 ```
+
+`tsan.supp` suppresses `crossbeam_epoch` / `crossbeam_deque` only. Epoch-based
+reclamation synchronises with an asymmetric `membarrier(2)` barrier that TSan cannot
+model, so it reports a race between a reclaimer's `free` and a reader's relaxed load,
+with rayon/crossbeam frames on both sides and no Alkahest frame anywhere. The
+suppression is deliberately narrow: a real race inside one of our Rayon closures still
+fails the shard. **Nothing with an `alkahest_cas` frame belongs in that file** — fix the
+code instead.
+
+The Python-side counterpart is `tests/test_parallel_threadsafety.py`, which drives the
+same shapes through PyO3 (shared `ExprPool` across `threading.Thread`s, concurrent
+`simplify_par` / `numpy_eval_par`). It is *not* run under a sanitizer — see the known
+gap above — so it is an invariant test, not a race detector.
 
 **LeakSanitizer** — nightly `lsan` shard; use the repo suppression file and a symbolizer (paths may differ on your distro):
 ```bash

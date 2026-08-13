@@ -43,14 +43,39 @@ wrong by collapsing:
 |---|---|---|
 | `PositivityCertificate` | **Proved** non-negative, with a checkable witness | Record it; cite it |
 | `SosError` `E-SOS-003` | **Proved not** non-negative — a witness point is in the message | The conjecture is false; kill the branch |
-| `SosError` `E-SOS-002` | **Undecided**: no certificate of this shape at this degree | Raise the degree, or fall back to `decide` |
+| `SosError` `E-SOS-002` | **Undecided**: no certificate of this shape at this degree | Record `unknown`; raise the degree, or fall back to `decide` |
+
+> **`E-SOS-002` must be recorded as `unknown`, never as "not SOS".**
+> It reports that *this* search — the LP-representable subcone described below,
+> at *this* `basis_degree` (or `level`) — found nothing. Three different worlds
+> produce it and the error cannot tell them apart: `p` is SOS but its Gram
+> matrix lies outside the subcone; `p` is SOS only at a higher basis degree;
+> `p` is non-negative but genuinely not SOS. A loop that maps `E-SOS-002` to
+> "the conjecture is false" or "`p` is not a sum of squares" closes a branch on
+> evidence that does not support it, and a wrongly closed branch is invisible —
+> nothing downstream will ever contradict it. Only `E-SOS-003` is a refutation,
+> and it carries a witness point.
 
 `E-SOS-002` is *not* a claim that the polynomial is not a sum of squares, and
 certainly not that it is negative. The canonical example is the **Motzkin
 polynomial** `x⁴y² + x²y⁴ − 3x²y² + 1`, which is non-negative everywhere but
 provably not a sum of squares. Asked to decompose it, this module refuses with
 `E-SOS-002` — it does not report it as negative, and it does not invent a
-decomposition.
+decomposition. Choi–Lam and Robinson refuse the same way, and for the same
+reason: **the refusal is a property of the search, not of the polynomial.**
+
+The three-way branch a loop should write:
+
+```python
+try:
+    cert = ak.sos_decompose(p, [x, y])
+    verdict, evidence = "nonneg", cert    # proved, with a checkable identity
+except ak.SosError as e:
+    if e.code == "E-SOS-003":
+        verdict, evidence = "negative", str(e)   # refuted; witness point in the message
+    else:
+        verdict, evidence = "unknown", str(e)    # E-SOS-002 lands here — leave the branch open
+```
 
 ## What the search actually covers
 

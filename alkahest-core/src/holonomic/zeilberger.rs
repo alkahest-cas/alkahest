@@ -56,11 +56,14 @@
 //!    identity `A(k)·X(k+1) − B(k−1)·X(k) = C(k)·N(k)`, linear in the unknowns
 //!    `{a_i}` and the coefficients of `X`, with
 //!    `G(n,k) = R(n,k)·F(n,k)`, `R = B(k−1)·X(k) / (C(k)·D(k))`.
-//! 4. For increasing order `J = 1, 2, …` and certificate degree `d = 0, 1,
-//!    …`, normalize the leading recurrence coefficient `a_J = 1` and solve
-//!    the resulting linear system **over the field `Q(n)`** (Gaussian
-//!    elimination with `Q(n)`-valued pivots) for the remaining `a_i` and the
-//!    coefficients of `X`.
+//! 4. For a candidate order `J` and certificate degree `d`, normalize the
+//!    leading recurrence coefficient `a_J = 1` and solve the resulting linear
+//!    system **over the field `Q(n)`** (Gaussian elimination with
+//!    `Q(n)`-valued pivots) for the remaining `a_i` and the coefficients of
+//!    `X`. The `(J, d)` pairs are visited by **iterative deepening**, cheapest
+//!    estimated cost first (see [`search_plan`]), so `max_order` and
+//!    `max_degree` are genuine upper bounds: raising them admits harder inputs
+//!    without slowing down inputs that are decided early.
 //! 5. [`super::qfield::clear_denominators`] turns the solved `a_i(n) ∈ Q(n)`
 //!    into an integer-content-primitive polynomial family sharing one common
 //!    scale `S(n)`; `R` is rescaled by the same `S(n)` (a `k`-independent
@@ -82,11 +85,16 @@ use crate::kernel::{ExprId, ExprPool};
 use crate::matrix::normal_form::RatUniPoly;
 
 /// Search bounds for [`zeilberger()`].
+///
+/// Both fields are upper *bounds*, not starting points: the search deepens
+/// through the `(order, degree)` grid cheapest-first (see [`search_plan`]), so
+/// raising either one only widens what can be found — it does not make an input
+/// that was already decided any slower.
 #[derive(Debug, Clone, Copy)]
 pub struct ZeilbergerOpts {
-    /// Largest recurrence order `J` to try (searched from 1 upward).
+    /// Largest recurrence order `J` to try; orders are searched from 1 upward.
     pub max_order: usize,
-    /// Largest certificate-polynomial degree (in `k`) to try per order.
+    /// Largest certificate-polynomial degree (in `k`) to try, per order.
     pub max_degree: usize,
 }
 
@@ -337,8 +345,137 @@ fn try_solve(
     Some((x_coeffs, lam_below))
 }
 
+/// Everything the search needs for one recurrence order that does *not* depend
+/// on the certificate degree `d`.
+///
+/// Built once per order and reused by every degree the iterative deepening
+/// later revisits that order at: the shift quotients, the common denominator
+/// `D(k)` and the Gosper normal form are all `d`-independent, and recomputing
+/// them per degree would make the interleaved search pay for itself many times
+/// over.
+struct OrderState {
+    /// `c_i(n,k) = F(n+i,k)/F(n,k)` for `i = 0..=order`.
+    c: Vec<RatK>,
+    /// `D(k)`, the common denominator of the `c_i`.
+    dden: PolyK,
+    /// `A(k)` from the Gosper normal form of `ρ(k) = p(k)·D(k)/D(k+1)`.
+    aa: PolyK,
+    /// `B(k−1)`, i.e. the `B` of the normal form shifted for the key equation.
+    b_eq: PolyK,
+    /// `C(k)` from the Gosper normal form.
+    cc: PolyK,
+    /// `C(k)·C_i(k)` — the basis the unknown `a_i` multiply in the key equation.
+    c_ci: Vec<PolyK>,
+}
+
+/// Degree-independent setup for one recurrence order.
+///
+/// `Ok(None)` means this order is structurally unusable (a degenerate common
+/// denominator or a shift ratio with no Gosper normal form) and the search
+/// should skip it, as opposed to `Err`, which aborts because the input is not a
+/// proper hypergeometric term at all.
+fn order_state(
+    f: &ProperTerm,
+    p: &RatK,
+    order: usize,
+) -> Result<Option<OrderState>, HolonomicError> {
+    let c: Vec<RatK> = (0..=order as i64)
+        .map(|i| f.ratio_n(i))
+        .collect::<Result<_, _>>()?;
+
+    // `D(k)`: a common denominator of the shift quotients `c_i`, over
+    // `Q(n)[k]` and independent of the unknown `a_i`. Working with
+    // `W(n,k) = F(n,k)/D(k)` is what keeps the Gosper equation polynomial:
+    // `Σ_i a_i·F(n+i,k) = N(k)·W(n,k)` with `N = Σ_i a_i·C_i` polynomial
+    // and linear in the unknowns.
+    let mut dden = PolyK::one();
+    for ci in &c {
+        dden = PolyK::lcm(&dden, &ci.den);
+    }
+    if dden.is_zero() {
+        return Ok(None);
+    }
+    // `C_i(k) = D(k)·c_i(k) ∈ Q(n)[k]` — polynomial by construction of `D`.
+    let ci_polys: Option<Vec<PolyK>> = c
+        .iter()
+        .map(|ci| PolyK::exact_div(&dden.mul(&ci.num), &ci.den))
+        .collect();
+    let Some(ci_polys) = ci_polys else {
+        return Ok(None);
+    };
+
+    // Gosper normal form of the shift ratio of `W`, *not* of `p`:
+    // `ρ(k) = W(k+1)/W(k) = p(k)·D(k)/D(k+1) = A(k)·C(k+1) / (B(k)·C(k))`.
+    // Normal-forming `p` alone would drop the `D` bookkeeping and the
+    // resulting equation would have no polynomial solution even for
+    // `F = C(n,k)`.
+    let rho_num = p.num.mul(&dden);
+    let rho_den = p.den.mul(&dden.shift_k(1));
+    let Some((aa, bb, cc)) = gosper_normal_form_qn(rho_num, rho_den) else {
+        return Ok(None);
+    };
+    let b_eq = bb.shift_k(-1);
+
+    // Gosper's key equation for the term `N(k)·W(k)`:
+    //     A(k)·X(k+1) − B(k−1)·X(k) = C(k)·N(k),
+    // so the right-hand basis the unknown `a_i` multiply is `C(k)·C_i(k)`.
+    let c_ci: Vec<PolyK> = ci_polys.iter().map(|q| cc.mul(q)).collect();
+
+    Ok(Some(OrderState {
+        c,
+        dden,
+        aa,
+        b_eq,
+        cc,
+        c_ci,
+    }))
+}
+
+/// How many certificate-degree steps one extra recurrence order is worth when
+/// the search decides what to try next.
+///
+/// Measured, not guessed: on `Σ (−1)^k C(n,k)³` one `try_solve` probe costs
+/// ≈ 3× more per unit of `d` (0.7 ms at `d = 0`, 0.6 s at `d = 7`, 84 s at
+/// `d = 12`) and ≈ 30× more per unit of `order` at fixed `d` — and `30 ≈ 3³`.
+/// So `order + 1` costs about what `d + 3` costs, and sweeping the frontier
+/// `3·(order−1) + d = t` keeps every probe in one pass at comparable cost.
+const ORDER_COST_IN_DEGREE_STEPS: usize = 3;
+
+/// The `(order, degree)` pairs to probe, cheapest estimated cost first.
+///
+/// Every pair in `1..=max_order × 0..=max_degree` appears exactly once, so an
+/// exhausted search does the same work it always did; only the *order of
+/// visits* changes, which is what makes the bounds bounds rather than starting
+/// points. Ties (equal estimated cost) go to the lower recurrence order.
+///
+/// The one deliberate trade-off: a term whose order-1 certificate needs a much
+/// higher degree than its order-2 one (`d₁ > d₂ + 3`) now gets the order-2
+/// relation, where the old order-major sweep would have insisted on order 1.
+/// Both are verified relations; the old preference was for the sharper one at
+/// a cost — minutes, or never — that made the whole search unusable in
+/// practice.
+fn search_plan(max_order: usize, max_degree: usize) -> Vec<(usize, usize)> {
+    let max_budget = ORDER_COST_IN_DEGREE_STEPS * (max_order - 1) + max_degree;
+    let mut plan = Vec::with_capacity(max_order * (max_degree + 1));
+    for budget in 0..=max_budget {
+        for order in 1..=max_order {
+            let spent = ORDER_COST_IN_DEGREE_STEPS * (order - 1);
+            if let Some(d) = budget.checked_sub(spent) {
+                if d <= max_degree {
+                    plan.push((order, d));
+                }
+            }
+        }
+    }
+    plan
+}
+
 /// Zeilberger's algorithm: find a verified P-recursive relation for a
 /// proper hypergeometric term `F(n, k)` (see module docs).
+///
+/// `opts.max_order` and `opts.max_degree` are *bounds*, not starting points:
+/// the search deepens through them (see below), so raising them permits harder
+/// inputs without making easy ones more expensive.
 ///
 /// Refuses with [`HolonomicError`] rather than guessing when `term` is not
 /// a proper hypergeometric term in `(n, k)`, or when the bounded search in
@@ -363,113 +500,97 @@ pub fn zeilberger(
 
     let f = ProperTerm::parse(term, n, k, pool)?;
     let p = f.ratio_k()?;
-    for order in 1..=opts.max_order {
-        let c: Vec<RatK> = (0..=order as i64)
-            .map(|i| f.ratio_n(i))
-            .collect::<Result<_, _>>()?;
 
-        // `D(k)`: a common denominator of the shift quotients `c_i`, over
-        // `Q(n)[k]` and independent of the unknown `a_i`. Working with
-        // `W(n,k) = F(n,k)/D(k)` is what keeps the Gosper equation polynomial:
-        // `Σ_i a_i·F(n+i,k) = N(k)·W(n,k)` with `N = Σ_i a_i·C_i` polynomial
-        // and linear in the unknowns.
-        let mut dden = PolyK::one();
-        for ci in &c {
-            dden = PolyK::lcm(&dden, &ci.den);
+    // Iterative deepening over the `(order, degree)` grid, cheapest probe first
+    // (see [`search_plan`]), instead of the degree sweep nested inside the order
+    // loop this used to be.
+    //
+    // The old nesting ran the entire `d = 0..=max_degree` sweep at order 1 before
+    // it ever tried order 2, and a probe's cost grows roughly like `3^d` (Dixon,
+    // order 1: 0.7 ms at `d = 0`, 0.6 s at `d = 7`, 84 s at `d = 12` — the `Q(n)`
+    // Gaussian elimination widens *and* its rational-function entries grow with
+    // `d`). So for the order ≥ 2 identities — Dixon, Franel, Apéry — the tail of
+    // a hopeless order-1 sweep swamped everything, and `max_degree` acted as a
+    // starting point: raising it made easy inputs catastrophically slower rather
+    // than merely admitting harder ones. Deepening makes both `max_order` and
+    // `max_degree` genuine upper bounds that cost nothing on inputs decided early.
+    //
+    // Nothing is skipped: the plan still visits every `(order, degree)` pair, so
+    // an exhausted search does exactly the work it did before, and a relation
+    // reachable within the old bounds is still reachable within the new ones.
+    let mut states: Vec<Option<OrderState>> = Vec::with_capacity(opts.max_order);
+    for (order, d) in search_plan(opts.max_order, opts.max_degree) {
+        // `OrderState` is degree-independent, so each order is set up once no
+        // matter how often the deepening returns to it.
+        while states.len() < order {
+            states.push(order_state(&f, &p, states.len() + 1)?);
         }
-        if dden.is_zero() {
+        let Some(state) = &states[order - 1] else {
             continue;
-        }
-        // `C_i(k) = D(k)·c_i(k) ∈ Q(n)[k]` — polynomial by construction of `D`.
-        let ci_polys: Option<Vec<PolyK>> = c
-            .iter()
-            .map(|ci| PolyK::exact_div(&dden.mul(&ci.num), &ci.den))
-            .collect();
-        let Some(ci_polys) = ci_polys else {
+        };
+
+        let Some((x_coeffs, lam_below)) = try_solve(&state.aa, &state.b_eq, &state.c_ci, order, d)
+        else {
             continue;
         };
 
-        // Gosper normal form of the shift ratio of `W`, *not* of `p`:
-        // `ρ(k) = W(k+1)/W(k) = p(k)·D(k)/D(k+1) = A(k)·C(k+1) / (B(k)·C(k))`.
-        // Normal-forming `p` alone would drop the `D` bookkeeping and the
-        // resulting equation would have no polynomial solution even for
-        // `F = C(n,k)`.
-        let rho_num = p.num.mul(&dden);
-        let rho_den = p.den.mul(&dden.shift_k(1));
-        let Some((aa, bb, cc)) = gosper_normal_form_qn(rho_num, rho_den) else {
-            continue;
-        };
-        let b_eq = bb.shift_k(-1);
+        let mut lam_full = lam_below;
+        lam_full.push(rn_one()); // a_order = 1
 
-        // Gosper's key equation for the term `N(k)·W(k)`:
-        //     A(k)·X(k+1) − B(k−1)·X(k) = C(k)·N(k),
-        // so the right-hand basis the unknown `a_i` multiply is `C(k)·C_i(k)`.
-        let c_ci: Vec<PolyK> = ci_polys.iter().map(|q| cc.mul(q)).collect();
-
-        for d in 0..=opts.max_degree {
-            let Some((x_coeffs, lam_below)) = try_solve(&aa, &b_eq, &c_ci, order, d) else {
-                continue;
-            };
-
-            let mut lam_full = lam_below;
-            lam_full.push(rn_one()); // a_order = 1
-
-            let x_poly = PolyK::from_coeffs(x_coeffs);
-            // `G(k) = (B(k−1)·X(k) / C(k))·W(k) = R(k)·F(n,k)` with
-            // `R(k) = B(k−1)·X(k) / (C(k)·D(k))`.
-            let r_pre = RatK {
-                num: b_eq.mul(&x_poly),
-                den: cc.mul(&dden),
-            }
-            .normalize();
-
-            let a_int: Vec<RatUniPoly> = clear_denominators(&lam_full);
-            if a_int.iter().all(|p| p.is_zero()) {
-                continue;
-            }
-            let scale = rn_poly(a_int[order].clone());
-            if rn_is_zero(&scale) {
-                continue;
-            }
-            let r_final = RatK {
-                num: r_pre.num.scale(&scale),
-                den: r_pre.den.clone(),
-            }
-            .normalize();
-
-            // Exact verification: Σ_i a_i(n)·c_i(n,k) ?= R(n,k+1)·p(n,k) − R(n,k).
-            let mut lhs = RatK::zero();
-            for (i, ci) in c.iter().enumerate() {
-                let ai = RatK::from_rn(rn_poly(a_int[i].clone()));
-                lhs = lhs.add(&ai.mul(ci));
-            }
-            let rhs_check = r_final.shift_k(1).mul(&p).sub(&r_final);
-            if !lhs.sub(&rhs_check).is_zero() {
-                // Refuse silently and keep searching: never return an
-                // unverified certificate.
-                continue;
-            }
-
-            let coeffs_expr: Vec<ExprId> =
-                a_int.iter().map(|p| ratuni_to_expr(pool, n, p)).collect();
-            let certificate_expr = ratk_to_expr(pool, n, k, &r_final);
-
-            let mut log = DerivationLog::new();
-            log.push(RewriteStep::simple(
-                "zeilberger_certificate",
-                term,
-                certificate_expr,
-            ));
-
-            return Ok(DerivedExpr::with_log(
-                ZeilbergerResult {
-                    order,
-                    coeffs: coeffs_expr,
-                    certificate: certificate_expr,
-                },
-                log,
-            ));
+        let x_poly = PolyK::from_coeffs(x_coeffs);
+        // `G(k) = (B(k−1)·X(k) / C(k))·W(k) = R(k)·F(n,k)` with
+        // `R(k) = B(k−1)·X(k) / (C(k)·D(k))`.
+        let r_pre = RatK {
+            num: state.b_eq.mul(&x_poly),
+            den: state.cc.mul(&state.dden),
         }
+        .normalize();
+
+        let a_int: Vec<RatUniPoly> = clear_denominators(&lam_full);
+        if a_int.iter().all(|p| p.is_zero()) {
+            continue;
+        }
+        let scale = rn_poly(a_int[order].clone());
+        if rn_is_zero(&scale) {
+            continue;
+        }
+        let r_final = RatK {
+            num: r_pre.num.scale(&scale),
+            den: r_pre.den.clone(),
+        }
+        .normalize();
+
+        // Exact verification: Σ_i a_i(n)·c_i(n,k) ?= R(n,k+1)·p(n,k) − R(n,k).
+        let mut lhs = RatK::zero();
+        for (i, ci) in state.c.iter().enumerate() {
+            let ai = RatK::from_rn(rn_poly(a_int[i].clone()));
+            lhs = lhs.add(&ai.mul(ci));
+        }
+        let rhs_check = r_final.shift_k(1).mul(&p).sub(&r_final);
+        if !lhs.sub(&rhs_check).is_zero() {
+            // Refuse silently and keep searching: never return an
+            // unverified certificate.
+            continue;
+        }
+
+        let coeffs_expr: Vec<ExprId> = a_int.iter().map(|p| ratuni_to_expr(pool, n, p)).collect();
+        let certificate_expr = ratk_to_expr(pool, n, k, &r_final);
+
+        let mut log = DerivationLog::new();
+        log.push(RewriteStep::simple(
+            "zeilberger_certificate",
+            term,
+            certificate_expr,
+        ));
+
+        return Ok(DerivedExpr::with_log(
+            ZeilbergerResult {
+                order,
+                coeffs: coeffs_expr,
+                certificate: certificate_expr,
+            },
+            log,
+        ));
     }
 
     Err(HolonomicError::SearchExhausted(format!(
@@ -571,6 +692,189 @@ mod tests {
             );
         }
         assert!(boundary_side_condition().contains("G(n, k_hi+1) = G(n, k_lo)"));
+    }
+
+    /// `Σ_k C(n,k)³` and `Σ_k (−1)^k C(n,k)³` summed against the recurrence the
+    /// certificate claims — the end-to-end check that the coefficients describe
+    /// the sum they were derived for, independent of the certificate machinery.
+    fn assert_annihilates(coeffs: &[f64], s: impl Fn(u64) -> f64, ni: u64, what: &str) {
+        let total: f64 = coeffs
+            .iter()
+            .enumerate()
+            .map(|(i, ai)| ai * s(ni + i as u64))
+            .sum();
+        let scale = coeffs
+            .iter()
+            .enumerate()
+            .map(|(i, ai)| (ai * s(ni + i as u64)).abs())
+            .fold(1.0_f64, f64::max);
+        assert!(
+            total.abs() < 1e-6 * scale,
+            "{what}: recurrence must annihilate S(n) at n = {ni}, got {total}"
+        );
+    }
+
+    fn coeffs_at(r: &ZeilbergerResult, n: ExprId, pool: &ExprPool, ni: u64) -> Vec<f64> {
+        let env = std::collections::HashMap::from([(n, ni as f64)]);
+        r.coeffs
+            .iter()
+            .map(|&e| crate::eval_f64(e, pool, &env).expect("a_i(n) evaluates"))
+            .collect()
+    }
+
+    /// `C(n,k)` as an `f64`.
+    fn binom_f64(m: u64, j: u64) -> f64 {
+        (1..=j).fold(1.0_f64, |acc, t| acc * (m - t + 1) as f64 / t as f64)
+    }
+
+    /// Dixon: `Σ_k (−1)^k C(n,k)³` needs order 2, and it must be decided **at the
+    /// default bounds**.
+    ///
+    /// Regression test for the search order. With the degree loop nested inside
+    /// the order loop this ran the whole `d = 0..=max_degree` sweep at order 1 —
+    /// where no relation exists at any degree, and where the last few degrees cost
+    /// minutes each — before it ever tried order 2. Every order ≥ 2 identity was
+    /// therefore unreachable at the shipped defaults while being seconds away at
+    /// `max_degree = 4`, i.e. `max_degree` behaved as a starting point rather than
+    /// a bound. If that regresses, this test does not fail subtly: it hangs.
+    #[test]
+    fn dixon_order_two_is_reachable_at_default_bounds() {
+        let pool = ExprPool::new();
+        let (n, k) = nk(&pool);
+        let c = binom(&pool, n, k);
+        let sign = pool.pow(pool.integer(-1_i32), k);
+        let f = pool.mul(vec![sign, c, c, c]);
+
+        let start = std::time::Instant::now();
+        let result = zeilberger(f, n, k, &pool, &ZeilbergerOpts::default())
+            .expect("Dixon must be decided at the default bounds");
+        println!(
+            "dixon: order {} in {:?}",
+            result.value.order,
+            start.elapsed()
+        );
+
+        let r = &result.value;
+        assert_eq!(
+            r.order, 2,
+            "Σ_k (−1)^k C(n,k)³ satisfies an order-2 relation"
+        );
+        assert_eq!(r.coeffs.len(), 3);
+
+        // S(n) = Σ_k (−1)^k C(n,k)³ — the natural boundary applies (F vanishes
+        // outside 0 ≤ k ≤ n), so the homogeneous recurrence must hold.
+        let s = |m: u64| -> f64 {
+            (0..=m)
+                .map(|j| {
+                    let b = binom_f64(m, j);
+                    if j % 2 == 0 {
+                        b * b * b
+                    } else {
+                        -(b * b * b)
+                    }
+                })
+                .sum()
+        };
+        for ni in 2_u64..8 {
+            assert_annihilates(&coeffs_at(r, n, &pool, ni), s, ni, "dixon");
+        }
+    }
+
+    /// Franel: `Σ_k C(n,k)³`, the same regression as Dixon but on the heavier of
+    /// the two terms — and the wall-clock regression for the post-search
+    /// normalisation.
+    ///
+    /// This used to be `#[ignore]`d at ~30 s, of which the search was 0.22 s and
+    /// everything else was `RatK::normalize` running a Euclidean remainder
+    /// sequence over `Q(n)` (`r_pre`, `r_final`, and the re-verification, ~10 s
+    /// each). With the gcd done in `Z[n][k]` instead it is well under a second,
+    /// so the test runs by default and asserts a bound that only the old
+    /// coefficient blowup can breach. The bound is deliberately loose: the
+    /// failure mode it guards against is two orders of magnitude, not a factor
+    /// of two. Verification is unchanged — the certificate is still checked as
+    /// an exact `Q(n)(k)` identity before it is returned.
+    #[test]
+    fn franel_order_two_is_reachable_at_default_bounds() {
+        let pool = ExprPool::new();
+        let (n, k) = nk(&pool);
+        let c = binom(&pool, n, k);
+        let f = pool.mul(vec![c, c, c]);
+
+        let start = std::time::Instant::now();
+        let result = zeilberger(f, n, k, &pool, &ZeilbergerOpts::default())
+            .expect("Franel must be decided at the default bounds");
+        let elapsed = start.elapsed();
+        println!("franel: order {} in {:?}", result.value.order, elapsed);
+        assert!(
+            elapsed < std::time::Duration::from_secs(10),
+            "Franel took {elapsed:?} at the default bounds — the exact Q(n)(k) \
+             post-processing has regressed to the coefficient blowup it used to have"
+        );
+
+        let r = &result.value;
+        assert_eq!(r.order, 2, "Σ_k C(n,k)³ satisfies an order-2 recurrence");
+        assert_eq!(r.coeffs.len(), 3);
+
+        let s = |m: u64| -> f64 {
+            (0..=m)
+                .map(|j| {
+                    let b = binom_f64(m, j);
+                    b * b * b
+                })
+                .sum()
+        };
+        for ni in 2_u64..7 {
+            assert_annihilates(&coeffs_at(r, n, &pool, ni), s, ni, "franel");
+        }
+    }
+
+    /// The deepening plan is a *reordering* of the grid, not a subset of it: it
+    /// must visit every `(order, degree)` pair inside the caller's bounds exactly
+    /// once (no gap could hide a relation, no repeat could waste a probe) and
+    /// never step outside them.
+    #[test]
+    fn search_plan_is_a_permutation_of_the_bounded_grid() {
+        for max_order in 1..6usize {
+            for max_degree in 1..20usize {
+                let plan = search_plan(max_order, max_degree);
+                let mut sorted = plan.clone();
+                sorted.sort_unstable();
+                sorted.dedup();
+                assert_eq!(
+                    sorted.len(),
+                    plan.len(),
+                    "no pair may be probed twice ({max_order}, {max_degree})"
+                );
+                assert_eq!(
+                    plan.len(),
+                    max_order * (max_degree + 1),
+                    "every pair in the bounds must be probed ({max_order}, {max_degree})"
+                );
+                assert!(
+                    plan.iter()
+                        .all(|&(o, d)| (1..=max_order).contains(&o) && d <= max_degree),
+                    "the plan must stay inside the caller's bounds"
+                );
+            }
+        }
+    }
+
+    /// Cheap probes come first, and a tie goes to the lower order — that is the
+    /// whole content of the deepening, so it is asserted rather than implied.
+    #[test]
+    fn search_plan_visits_cheap_probes_first() {
+        let plan = search_plan(3, 8);
+        let cost = |&(o, d): &(usize, usize)| ORDER_COST_IN_DEGREE_STEPS * (o - 1) + d;
+        assert!(
+            plan.windows(2).all(|w| cost(&w[0]) <= cost(&w[1])),
+            "probes must be visited in nondecreasing estimated cost: {plan:?}"
+        );
+        assert_eq!(plan[0], (1, 0), "the cheapest probe is order 1, degree 0");
+        // The first four probes stay at order 1: an order-1 relation of low
+        // degree is still found before anything of higher order, as before.
+        assert_eq!(&plan[..4], &[(1, 0), (1, 1), (1, 2), (1, 3)]);
+        // …and order 2 enters exactly when it becomes competitive.
+        assert_eq!(plan[4], (2, 0));
     }
 
     /// Refuses non-hypergeometric input rather than guessing.

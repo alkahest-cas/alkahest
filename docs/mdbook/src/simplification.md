@@ -114,9 +114,11 @@ simplify_strategy(expr) # "fork_join" | "level_scheduled" | "sequential"
 ```
 
 Each takes a single expression and returns the same result as `simplify`; only
-the schedule differs. Builds without `--features parallel` — including the
-default PyPI wheel — fall back to the sequential path, so all four are always
-callable, and `simplify_strategy` then reports `"sequential"`.
+the schedule differs. Published wheels are built with `--features parallel`, so
+all three schedulers are real there. `parallel` is not a Cargo *default*,
+though: a source build that omits it falls back to the sequential path, so all
+four remain callable and `simplify_strategy` then reports `"sequential"` — which
+is the way to tell the two situations apart.
 
 Neither parallel scheduler dominates:
 

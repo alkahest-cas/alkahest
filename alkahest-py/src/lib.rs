@@ -521,6 +521,38 @@ fn parse_domain_arg(ob: Option<&Bound<'_, PyAny>>) -> PyResult<Domain> {
     ))
 }
 
+/// The domain set by the innermost ``alkahest.context(domain=...)`` frame, if any.
+///
+/// Read back out of the Python thread-local rather than mirrored in a Rust
+/// thread-local on purpose: `alkahest._context` owns the context stack (it also
+/// has `_overlay`, which pushes frames `context()` never sees), so a second copy
+/// of the state here could silently disagree with what `active_domain()` reports.
+/// Any failure to reach it — the pure-Python layer not importable, a
+/// non-domain value in the frame — degrades to `None`, i.e. the historical
+/// `Domain::Real` default.
+fn ambient_domain(py: Python<'_>) -> Option<Domain> {
+    let module = py.import_bound("alkahest._context").ok()?;
+    let value = module.call_method0("active_domain").ok()?;
+    if value.is_none() {
+        return None;
+    }
+    parse_domain_arg(Some(&value)).ok()
+}
+
+/// `parse_domain_arg`, but an absent/`None` argument falls back to the ambient
+/// `alkahest.context(domain=...)` before falling back to [`Domain::Real`].
+///
+/// This is what makes `pool.symbol("x")` and `alkahest.symbol("x")` agree on the
+/// sort inside a `context(domain=...)` block; they used to disagree, and the
+/// disagreement was invisible until an SMT export declared `Real` where the
+/// caller had asked for `Int`.
+fn resolve_domain_arg(py: Python<'_>, ob: Option<&Bound<'_, PyAny>>) -> PyResult<Domain> {
+    match ob.filter(|o| !o.is_none()) {
+        Some(explicit) => parse_domain_arg(Some(explicit)),
+        None => Ok(ambient_domain(py).unwrap_or(Domain::Real)),
+    }
+}
+
 fn py_int_decimal(v: &Bound<'_, PyAny>) -> PyResult<String> {
     v.str()?.extract::<String>()
 }
@@ -984,6 +1016,14 @@ impl PyExprPool {
         false
     }
 
+    /// Free symbol. ``domain`` defaults to the ambient
+    /// ``alkahest.context(domain=...)`` and only then to ``Domain.Real``.
+    ///
+    /// The fallback exists because the domain is not decoration: it picks the
+    /// SMT-LIB sort (``Int`` vs ``Real``) and hence the logic (``QF_NIA`` vs
+    /// ``QF_NRA``), so a pool symbol built inside a ``domain=Domain.Integer``
+    /// block used to change the question being asked without changing any
+    /// status a caller reads. Pass ``domain="real"`` explicitly to opt out.
     #[pyo3(signature = (name, domain=None, commutative=None))]
     fn symbol(
         slf: PyRef<'_, Self>,
@@ -992,7 +1032,7 @@ impl PyExprPool {
         commutative: Option<bool>,
     ) -> PyResult<PyExpr> {
         let commutative = commutative.unwrap_or(true);
-        let dom = parse_domain_arg(domain)?;
+        let dom = resolve_domain_arg(slf.py(), domain)?;
         let id = slf.inner.symbol_commutative(name, dom, commutative);
         let pool: Py<PyExprPool> = slf.into();
         Ok(PyExpr { id, pool })
@@ -4676,6 +4716,12 @@ impl PyZeilbergerCertificate {
 /// :attr:`~alkahest.ZeilbergerCertificate.boundary_term` giving the ``G`` needed
 /// to discharge it.
 ///
+/// ``max_order`` and ``max_degree`` are upper **bounds**, not starting points.
+/// The search visits the ``(order, degree)`` grid by iterative deepening,
+/// cheapest candidate first, and returns the first relation that passes exact
+/// verification — so raising either bound widens what can be found without
+/// slowing down an input that was already decided at a low order and degree.
+///
 /// Raises :exc:`alkahest.HolonomicError` rather than guessing when ``term`` is
 /// outside the proper hypergeometric class (``E-HOLO-001``) or when the bounded
 /// search is exhausted (``E-HOLO-002``).
@@ -6847,12 +6893,40 @@ struct PyCompiledFn {
 
 #[pymethods]
 impl PyCompiledFn {
-    /// Call the compiled function with a list of float inputs.
-    fn __call__(&self, inputs: Vec<f64>) -> PyResult<f64> {
-        if inputs.len() != self.inner.n_inputs {
-            return Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "expected {} inputs, got {}",
-                self.inner.n_inputs,
+    /// Evaluate at **one point**, given as a single sequence of floats.
+    ///
+    /// `f([1.0, 2.0])` — one argument holding every input value, not one
+    /// argument per input. To evaluate over arrays of points instead, use
+    /// `alkahest.numpy_eval(f, xs, ys)`, which takes the arrays as separate
+    /// positional arguments.
+    #[pyo3(signature = (*args))]
+    fn __call__(&self, args: &Bound<'_, PyTuple>) -> PyResult<f64> {
+        let n = self.inner.n_inputs;
+        // Spelled as *args so that `f(1.0, 2.0)` — the natural guess — is
+        // answered with the convention rather than with PyO3's arity message.
+        if args.len() != 1 {
+            return Err(PyTypeError::new_err(format!(
+                "CompiledFn takes one argument: the {n} input value(s) as a single sequence, \
+                 e.g. f([1.0, 2.0]) — got {} positional arguments. To evaluate over arrays of \
+                 points use alkahest.numpy_eval(f, xs, ys), which does take one argument per \
+                 input variable.",
+                args.len()
+            )));
+        }
+        let arg = args.get_item(0)?;
+        let inputs: Vec<f64> = arg.extract().map_err(|_| {
+            PyTypeError::new_err(format!(
+                "CompiledFn takes the {n} input value(s) as a single sequence, e.g. f([1.0, 2.0]); \
+                 got {}. To evaluate over arrays of points use alkahest.numpy_eval(f, xs, ys).",
+                py_type_name(&arg)
+            ))
+        })?;
+        if inputs.len() != n {
+            return Err(PyValueError::new_err(format!(
+                "expected {} inputs, got {}; CompiledFn evaluates one point per call — the \
+                 sequence holds one value per input variable, not one point per element (use \
+                 alkahest.numpy_eval(f, xs, ys) for a batch)",
+                n,
                 inputs.len()
             )));
         }

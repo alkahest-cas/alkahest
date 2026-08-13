@@ -51,7 +51,7 @@ jobs:
           command: build
           # Explicit CPython list — --find-interpreter also picks up PyPy and
           # Python 3.14, which PyO3 0.21 cannot target.
-          args: --release --strip --out dist --features egraph,groebner,cranelift --interpreter python3.9 python3.10 python3.11 python3.12 python3.13
+          args: --release --strip --out dist --features egraph,groebner,cranelift,parallel --interpreter python3.9 python3.10 python3.11 python3.12 python3.13
           manylinux: "2_28"
           before-script-linux: |
             dnf install -y epel-release || true
@@ -82,10 +82,10 @@ jobs:
           assert f == {
               "egraph": True, "groebner": True, "jit": False,
               "cranelift": True, "llvm_jit": False, "cranelift_jit": True,
-              "parallel": False, "cuda": False,
+              "parallel": True, "cuda": False,
           }
           assert ak.jit_is_available(), "expected Cranelift JIT in default wheel"
-          print('default wheel ok (groebner + cranelift)')
+          print('default wheel ok (groebner + cranelift + parallel)')
           PY
 
       # Real user-perspective check: the capability-flag smoke test above already
@@ -163,8 +163,13 @@ jobs:
       - name: Install maturin
         run: pip install maturin
 
+      # `parallel` is included so this wheel is never a *downgrade* from the
+      # default PyPI wheel, which now ships it. Before, installing +jit to gain
+      # the LLVM backend silently cost you threads — and `*_par` would have gone
+      # on working, just sequentially, with no warning. The only remaining delta
+      # against the default wheel is llvm_jit instead of cranelift_jit.
       - name: Build JIT wheel
-        run: maturin build --release --strip --features "jit egraph" --out dist
+        run: maturin build --release --strip --features "jit egraph parallel" --out dist
 
       # Maturin/auditwheel vendors deps under site-packages/alkahest.libs/. Transitive
       # loads (e.g. libLLVM → libffi with hashed soname) need that dir on LD_LIBRARY_PATH
@@ -176,7 +181,7 @@ jobs:
           if [ -n "$SITE_LIBS" ]; then
             export LD_LIBRARY_PATH="${SITE_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           fi
-          python -c "import alkahest as ak; caps = ak.capabilities(); assert caps['features']['llvm_jit'] and not caps['features']['parallel'], 'expected LLVM-only JIT in +jit wheel'"
+          python -c "import alkahest as ak; caps = ak.capabilities(); f = caps['features']; assert f['llvm_jit'] and not f['cranelift_jit'], 'expected LLVM-only JIT in +jit wheel'; assert f['parallel'], '+jit must not drop parallel relative to the default wheel'"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -185,6 +190,11 @@ jobs:
 
   # Full optional stack (JIT + groebner + parallel + egraph): PEP 440 local version X.Y.Z+full.
   # Same non-PyPI / GitHub Release policy as +jit (see build-linux-jit). Linux x86_64 only in CI.
+  #
+  # Moving `parallel` into the default wheel briefly made this variant's feature
+  # set identical to +jit's — two names for one build. Resolved by giving +full
+  # `cranelift` as well, so it is the only wheel carrying *both* JIT backends and
+  # a strict superset of every other wheel, which is what its name promises.
   build-linux-full:
     name: wheels (+full) / ubuntu-22.04 / py${{ matrix.python }}
     runs-on: ubuntu-22.04
@@ -234,10 +244,17 @@ jobs:
       - name: Install maturin
         run: pip install maturin
 
+      # `+full` earns its name by being a strict superset of every other wheel:
+      # the only build carrying *both* JIT backends. Until `parallel` moved into
+      # the default wheel, `parallel` was this variant's entire distinction from
+      # `+jit`; afterwards the two resolved to an identical feature set
+      # (`groebner` and `egraph` are defaults in alkahest-py, so naming them
+      # here adds nothing), and the release would have shipped two byte-identical
+      # wheels under different names. `cranelift` is what makes it distinct again.
       - name: Build +full wheel
         run: >-
           maturin build --release --strip
-          --features "jit groebner parallel egraph"
+          --features "jit cranelift groebner parallel egraph"
           --out dist
 
       - name: Smoke test (+full)
@@ -247,7 +264,7 @@ jobs:
           if [ -n "$SITE_LIBS" ]; then
             export LD_LIBRARY_PATH="${SITE_LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
           fi
-          python -c "import alkahest as ak; caps = ak.capabilities(); assert caps['features']['llvm_jit'] and caps['features']['parallel']; assert hasattr(ak, 'solve'), 'expected groebner APIs in +full wheel'"
+          python -c "import alkahest as ak; caps = ak.capabilities(); f = caps['features']; assert f['llvm_jit'] and f['cranelift_jit'], 'expected BOTH JIT backends in +full wheel'; assert f['parallel'] and f['egraph']; assert hasattr(ak, 'solve'), 'expected groebner APIs in +full wheel'"
 
       - uses: actions/upload-artifact@v7
         with:
@@ -310,9 +327,16 @@ jobs:
       - name: Install maturin
         run: pip install maturin
 
+      # Feature set must stay identical to build-linux's: this is the same
+      # default PyPI wheel, and `parallel` in particular has to be on every
+      # platform or `capabilities()["features"]["parallel"]` means something
+      # different depending on where the user installed from. rayon + dashmap
+      # are pure Rust with no system dependency, and ci-cross.yml already builds
+      # `parallel` on both macos-14 and windows-2022 (MinGW), so this adds no
+      # new toolchain requirement to either runner.
       - name: Build wheel (macOS)
         if: runner.os == 'macOS'
-        run: maturin build --release --strip --features "egraph groebner cranelift" --out dist
+        run: maturin build --release --strip --features "egraph groebner cranelift parallel" --out dist
 
       - name: Build wheel (Windows)
         if: runner.os == 'Windows'
@@ -322,7 +346,7 @@ jobs:
         # build script's `sh -c "configure ..."` couldn't find the compiler.
         shell: msys2 {0}
         run: |
-          maturin build --release --strip --features "egraph groebner cranelift" --target x86_64-pc-windows-gnu --out dist
+          maturin build --release --strip --features "egraph groebner cranelift parallel" --target x86_64-pc-windows-gnu --out dist
 
       - name: Repair wheel with delvewheel (Windows)
         if: runner.os == 'Windows'
@@ -345,7 +369,7 @@ jobs:
       - name: Smoke test
         run: |
           pip install --no-index --find-links dist alkahest
-          python -c "import alkahest; p = alkahest.ExprPool(); x = p.symbol('x'); print(alkahest.simplify(x + 0)); caps = alkahest.capabilities(); f = caps['features']; assert f['egraph'] and f['groebner'] and f['cranelift_jit']; assert not f['llvm_jit'] and not f['parallel']; assert caps['jit'] and alkahest.jit_is_available()"
+          python -c "import alkahest; p = alkahest.ExprPool(); x = p.symbol('x'); print(alkahest.simplify(x + 0)); caps = alkahest.capabilities(); f = caps['features']; assert f['egraph'] and f['groebner'] and f['cranelift_jit'] and f['parallel']; assert not f['llvm_jit']; assert caps['jit'] and alkahest.jit_is_available()"
 
       # See build-linux's identical step: catches the class of bug (B1, B6)
       # that only reproduces against a real wheel install in a fresh

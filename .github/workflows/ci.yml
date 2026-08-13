@@ -133,11 +133,16 @@ jobs:
       - name: ruff format --check
         run: ruff format --check python/ tests/
 
+      # These are the exact features release-build.yml gives the default PyPI
+      # wheel. Keep the two lists in lockstep: the whole point of this step is
+      # that the pytest run below exercises the same binary users get, and
+      # `parallel` is the feature where a mismatch is invisible — the `*_par`
+      # entry points exist either way and just stop being parallel.
       - name: maturin develop (PyPI-parity features)
-        run: maturin develop --manifest-path alkahest-py/Cargo.toml --features "groebner egraph cranelift"
+        run: maturin develop --manifest-path alkahest-py/Cargo.toml --features "groebner egraph cranelift parallel"
 
-      - name: Cranelift capability smoke test
-        run: python -c "import alkahest as ak; f = ak.capabilities()['features']; assert f['cranelift_jit'] and not f['llvm_jit'] and not f['parallel']; assert ak.jit_is_available()"
+      - name: Capability smoke test (default-wheel parity)
+        run: python -c "import alkahest as ak; f = ak.capabilities()['features']; assert f['cranelift_jit'] and f['parallel'] and not f['llvm_jit']; assert ak.jit_is_available()"
 
       - name: ty check
         run: ty check python/alkahest/
@@ -277,7 +282,7 @@ jobs:
           .venv-build/bin/pip install -q -U pip maturin
           .venv-build/bin/maturin build --release --strip \
             --manifest-path alkahest-py/Cargo.toml \
-            --features "egraph groebner cranelift" \
+            --features "egraph groebner cranelift parallel" \
             --out dist
 
       - name: Install wheel into a clean venv
@@ -433,11 +438,51 @@ jobs:
           maturin develop --manifest-path alkahest-py/Cargo.toml --features "groebner egraph"
           pytest tests/
 
+      # `--features parallel` is the whole point of this shard and was missing.
+      # Without it `rayon` and `dashmap` are not even compiled in: `ExprPool`'s
+      # index is a plain `Mutex<HashMap>`, `simplify_par` / `simplify_redex` /
+      # `simplify_auto` do not exist, `CompiledFn::call_batch_par` does not
+      # exist, and F4 reduces sequentially. ThreadSanitizer was therefore
+      # running over a build with essentially no concurrency in it and
+      # reporting a clean bill for code it had never seen — while `parallel`
+      # ships in the default PyPI wheel.
+      #
+      # `alkahest-core/tests/parallel_stress.rs` exists to give this shard
+      # something to sanitize: it drives concurrent interning, concurrent
+      # `simplify_par` / `simplify_redex` on one shared pool, and nested
+      # `call_batch_par` from real OS threads. `egraph` is left off — it pulls
+      # in egglog, which is single-threaded here and only lengthens the build.
       - name: ThreadSanitizer
         if: matrix.shard == 'tsan'
+        env:
+          # TSan instrumentation inflates every stack frame, and the parallel
+          # simplifier's stack governor (`with_stack_segment` in
+          # `simplify/parallel.rs`) is calibrated against Rayon's *default*
+          # 2 MiB worker stack: it refills at 512 KiB used, which leaves ample
+          # room for an uninstrumented frame and not enough for an instrumented
+          # one. Without this the shard dies with a bare SIGSEGV — a stack
+          # overflow, not a race, and one that does not reproduce in a normal
+          # build (`cargo test --workspace --release --features parallel` is
+          # green). `RUST_MIN_STACK` is what `std::thread`'s default stack size
+          # reads, so it reaches the Rayon workers.
+          RUST_MIN_STACK: "33554432"
+          TSAN_OPTIONS: suppressions=${{ github.workspace }}/tsan.supp
         run: |
+          # Name-based suppressions only match a *symbolized* stack — the same
+          # trap the lsan shard hit, where unsymbolized `alkahest_cas+0x…`
+          # frames made every entry in lsan.supp dead. The sanitizer runtime
+          # takes the symbolizer from the options string, not from
+          # LLVM_SYMBOLIZER_PATH, so append it there.
+          for candidate in /usr/lib/llvm-15/bin/llvm-symbolizer /usr/bin/llvm-symbolizer-15 /usr/bin/llvm-symbolizer; do
+            if [ -x "$candidate" ]; then
+              export TSAN_OPTIONS="${TSAN_OPTIONS}:external_symbolizer_path=$candidate"
+              break
+            fi
+          done
+          echo "TSAN_OPTIONS=$TSAN_OPTIONS"
           RUSTFLAGS="-Zsanitizer=thread" \
           cargo +nightly test --workspace --lib --tests \
+            --features parallel \
             --target x86_64-unknown-linux-gnu \
             -Z build-std
 
@@ -483,11 +528,21 @@ jobs:
         # ASan runtime under -Z build-std ("undefined symbol: __asan_init").
         # LSAN_OPTIONS=detect_leaks=0: leaks are the `lsan` shard's job, and the
         # GMP/rug thread caches are false positives here.
+        #
+        # `--features parallel` for the same reason the `tsan` shard needs it:
+        # `parallel` is not a default feature, so without it rayon and dashmap
+        # are not compiled in and the sharded `ExprPool`, `simplify_par` and
+        # `call_batch_par` do not exist. ASan was checking memory safety on a
+        # build with no concurrent code in it, which is exactly the code whose
+        # memory safety is hardest to get right. Nightly-only: this shard is
+        # already off the PR critical path, so the extra build cost is free
+        # where it would not be in Tier 1a.
         env:
           LSAN_OPTIONS: detect_leaks=0
         run: |
           RUSTFLAGS="-Zsanitizer=address" \
           cargo +nightly test --workspace --lib --tests \
+            --features parallel \
             --target x86_64-unknown-linux-gnu \
             -Z build-std
 

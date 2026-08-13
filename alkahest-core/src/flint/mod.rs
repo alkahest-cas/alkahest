@@ -1,10 +1,23 @@
 //! Layer 0 — Foundation bindings to FLINT (Fast Library for Number Theory).
 //!
-//! **Design decision (v0.1):** We link against the system-installed FLINT
-//! 2.8.4 (`libflint-dev`) rather than using a bundled source build.
-//! Rationale: system FLINT coexists cleanly with the `rug`/`gmp-mpfr-sys`
-//! dependency (no duplicate GMP symbols); build times stay short; FLINT 2.8.4
-//! covers all Phase 2 requirements (`fmpz_t`, `fmpz_poly_t`).
+//! **Design decision (v0.1):** We link against a system-installed FLINT
+//! (`libflint-dev` / `flint-devel` / `brew install flint`, ≥ 2.9) rather than
+//! using a bundled source build. Rationale: system FLINT coexists cleanly with
+//! the `rug`/`gmp-mpfr-sys` dependency (no duplicate GMP symbols) and build
+//! times stay short.
+//!
+//! **This module is not optional and is not feature-gated.** It is declared
+//! unconditionally from `lib.rs`; [`crate::poly::UniPoly`] stores a
+//! [`FlintPoly`], and `poly::factor`, `poly::resultant`, `matrix::normal_form`,
+//! `ideal::primary` and `number_theory` call FLINT directly. There is no
+//! pure-Rust or MPFR-only fallback for any of it, so a build without FLINT is
+//! not a supported configuration — `build.rs` refuses it up front rather than
+//! producing a shared object with undefined symbols. The `flint3` feature and
+//! the `flint3` / `flint3_stride` cfgs choose which FLINT *version's* ABI to
+//! use; they do not make the dependency optional.
+//!
+//! Set `FLINT_LIB_DIR` / `FLINT_INCLUDE_DIR` to build against a FLINT in a
+//! non-standard (e.g. user-local, root-free) prefix.
 //!
 //! TODO(flint3): Before v0.5 (verified computation / IntervalValue), migrate to
 //! FLINT 3.x.  FLINT 3.0 absorbed the Arb library, making `arb_t`/`acb_t` ball

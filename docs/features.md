@@ -124,7 +124,7 @@ Current stable feature surface.
 
 - `compile_expr` + `eval_expr` for scalar evaluation
 - `numpy_eval` for vectorised batch evaluation (NumPy, PyTorch, JAX arrays)
-- `numpy_eval_par` for multi-core batch evaluation (`--features parallel`; falls back to `numpy_eval`)
+- `numpy_eval_par` for multi-core batch evaluation — enabled in every published wheel. Requires `--features parallel` in a source build; without it this is a silent alias for `numpy_eval` (correct results, no speedup). Check `capabilities()["features"]["parallel"]`
 - DLPack support for zero-copy interop
 - `to_jax` — register a symbolic expression as a JAX primitive with JVP and vmap rules
 
