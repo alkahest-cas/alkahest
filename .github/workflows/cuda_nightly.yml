@@ -92,7 +92,9 @@ jobs:
           # ERROR SUMMARY, and a green tick while checking nothing.
           compute-sanitizer --target-processes all --tool memcheck \
             cargo test --features cuda,groebner-cuda --no-fail-fast \
-              --test nvptx_gpu --test groebner_cuda
+              --test nvptx_gpu --test groebner_cuda \
+              -- --skip requested_device_that_does_not_exist_falls_back_and_records_why \
+                 --skip cuda_device_count_matches_the_ordinals_that_launch
         continue-on-error: false
 
       # Promoted to a gate: it is clean on real hardware (0 hazards, twice, on
@@ -118,7 +120,55 @@ jobs:
         run: |
           compute-sanitizer --target-processes all --tool racecheck \
             cargo test --features cuda,groebner-cuda \
-              --test nvptx_gpu --test groebner_cuda
+              --test nvptx_gpu --test groebner_cuda \
+              -- --skip requested_device_that_does_not_exist_falls_back_and_records_why \
+                 --skip cuda_device_count_matches_the_ordinals_that_launch
+        continue-on-error: false
+
+      # initcheck earns its gate the way memcheck did — by being made to fail.
+      # Copying only half the input buffer while allocating all of it (so every
+      # access stays in bounds and memcheck stays silent) turned
+      # `ERROR SUMMARY: 0 errors` into 524288, every one of them reported at
+      # `alkahest_eval+0x...`: the generated kernel, by name and offset. It is
+      # reading kernel instructions, and it has real coverage here because both
+      # kernels read global memory the host is responsible for filling.
+      - name: Run compute-sanitizer initcheck (uninitialised __global__ reads)
+        env:
+          ALKAHEST_GPU_TESTS: "1"
+        run: |
+          compute-sanitizer --target-processes all --tool initcheck \
+            cargo test --features cuda,groebner-cuda \
+              --test nvptx_gpu --test groebner_cuda \
+              -- --skip requested_device_that_does_not_exist_falls_back_and_records_why \
+                 --skip cuda_device_count_matches_the_ordinals_that_launch
+        continue-on-error: false
+
+      # synccheck is in the same position as racecheck, and the honest summary
+      # is that it could not be validated. It detects barrier and warp-sync
+      # misuse, and no kernel here emits a single `bar.sync`: not the
+      # hand-written `ELIMINATE_ROW_PTX`, not `compile_cuda`'s output.
+      #
+      # Unlike memcheck and initcheck, no positive control could make it report.
+      # Injecting a divergent `bar.sync 0` produced nothing — since Volta,
+      # exited threads are not required to participate, so that is not actually
+      # a violation — and neither did `bar.warp.sync -1` with threads branched
+      # away. What *is* established is that the tool attaches: with no kernel
+      # launched it says "Target application terminated before first
+      # instrumented API call" and prints no summary, so its `0 errors` on a
+      # real run distinguishes "ran, found nothing" from "never ran".
+      #
+      # Kept on the same terms as racecheck: named for its scope, enabled so it
+      # has teeth for the first kernel that synchronises. Until then a green
+      # tick here means "no barriers", nothing more.
+      - name: Run compute-sanitizer synccheck (barrier misuse; no barriers today)
+        env:
+          ALKAHEST_GPU_TESTS: "1"
+        run: |
+          compute-sanitizer --target-processes all --tool synccheck \
+            cargo test --features cuda,groebner-cuda \
+              --test nvptx_gpu --test groebner_cuda \
+              -- --skip requested_device_that_does_not_exist_falls_back_and_records_why \
+                 --skip cuda_device_count_matches_the_ordinals_that_launch
         continue-on-error: false
 
       - name: Upload sanitizer logs
