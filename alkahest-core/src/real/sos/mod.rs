@@ -128,9 +128,11 @@ impl crate::errors::AlkahestError for SosError {
                  clear denominators first, and pass every symbol that occurs as a variable"
             }
             SosError::NoCertificate(_) => {
-                "raise basis_degree (unconstrained) or level (constrained); the search covers the \
-                 diagonally dominant subcone, so this is not a proof that no SOS decomposition \
-                 exists — alkahest.decide is the complete (and far more expensive) fallback"
+                "record this as unknown, not as a closed branch: raise basis_degree \
+                 (unconstrained) or level (constrained); the search covers the diagonally \
+                 dominant subcone, so this is not a proof that no SOS decomposition exists, \
+                 and still less that the inequality is false — alkahest.decide is the \
+                 complete (and far more expensive) fallback"
             }
             SosError::Negative(_) => {
                 "the witness point in the message satisfies the constraints and makes the target \
@@ -296,9 +298,11 @@ pub fn sos_decompose(
 
     let Some(sos) = gram::dsos_search(&target, basis_deg) else {
         return Err(SosError::NoCertificate(format!(
-            "no diagonally dominant Gram matrix over the degree-{basis_deg} monomial basis; \
-             raise basis_degree, or note that p may be non-negative without being SOS \
-             (e.g. the Motzkin polynomial)"
+            "undecided, not a refutation — no diagonally dominant Gram matrix over the \
+             degree-{basis_deg} monomial basis, and that cone is a strict subset of the SOS \
+             cone, so p may still be SOS. Raise basis_degree, fall back to alkahest.decide, \
+             or note that p may be non-negative without being SOS (e.g. the Motzkin \
+             polynomial). Record this as unknown, not as a closed branch"
         )));
     };
 
@@ -409,9 +413,10 @@ pub fn prove_nonneg(
         LpStatus::Optimal(w) => w,
         _ => {
             return Err(SosError::NoCertificate(format!(
-                "no non-negative combination of constraint products up to level {} reproduces the \
-                 target; raise level, or the claim may need a Putinar-style certificate with \
-                 SOS (not merely non-negative constant) multipliers",
+                "undecided, not a refutation — no non-negative combination of constraint \
+                 products up to level {} reproduces the target. Raise level, or the claim may \
+                 need a Putinar-style certificate with SOS (not merely non-negative constant) \
+                 multipliers. Record this as unknown, not as a closed branch",
                 opts.level
             )));
         }

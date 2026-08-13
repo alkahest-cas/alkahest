@@ -102,7 +102,42 @@ from alkahest import numpy_eval_par
 ys = numpy_eval_par(f, xs)   # same API as numpy_eval; multi-core
 ```
 
-If the extension was built without `parallel`, `numpy_eval_par` transparently falls back to `numpy_eval`.
+> **`numpy_eval_par` is only parallel when the extension was built with
+> `parallel`.** Every published wheel is — but `parallel` is not a Cargo
+> *default*, so a source build that omits it gets a silent no-op alias:
+> `numpy_eval_par` falls back to `numpy_eval` with the same correct result, the
+> same single-threaded throughput, and no warning. Timing the two against each
+> other on such a build measures one code path twice.
+>
+> ```python
+> import alkahest as ak
+> ak.capabilities()["features"]["parallel"]   # True on PyPI wheels
+> ```
+>
+> If that prints `False`, rebuild with `--features parallel` — see
+> [Getting started](./getting-started.md#install).
+
+### A `CompiledFn` belongs to the thread that compiled it
+
+`numpy_eval_par` fans out internally, so you do not need threads of your own to
+use it. If you add them anyway, **compile inside each thread**: the object
+returned by `compile_expr` owns JIT code pages and a backend handle, and is
+pinned to its creating thread. Touching it from another one is refused:
+
+```python
+f = compile_expr(expr, [x])          # thread A
+threading.Thread(target=lambda: numpy_eval(f, xs)).start()
+# pyo3_runtime.PanicException: alkahest::PyCompiledFn is unsendable,
+#                              but sent to another thread
+```
+
+Two things to know about that refusal. It has nothing to do with `parallel` —
+plain `numpy_eval` is refused identically. And `PanicException` derives from
+`BaseException`, *not* `Exception`, so a worker wrapped in a bare
+`except Exception:` will not catch it and the thread will die silently.
+
+`ExprPool` and `Expr` have no such restriction: share the pool, build
+expressions anywhere, and call `compile_expr` per thread.
 
 ## Horner-form emission
 

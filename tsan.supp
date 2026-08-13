@@ -1,0 +1,31 @@
+# ThreadSanitizer suppressions for the nightly `tsan` shard.
+#
+# Scope discipline, same as lsan.supp: every entry here names a *third-party*
+# synchronisation primitive that ThreadSanitizer cannot model, never a frame in
+# `alkahest_cas`. If a report has an Alkahest frame in it, it does not belong in
+# this file — fix the code.
+#
+# ---------------------------------------------------------------------------
+# crossbeam-epoch (reached via crossbeam-deque → rayon's work-stealing deques)
+# ---------------------------------------------------------------------------
+# Epoch-based reclamation coordinates the reader (`Guard`) and the reclaimer
+# (`Global::collect` → `try_advance` → `Bag::drop` → `free`) with
+# `atomic::fence(SeqCst)` plus, on Linux, an *asymmetric* barrier (a
+# `membarrier(2)` syscall, or the `mprotect` fallback) issued on the reclaiming
+# side only. ThreadSanitizer models neither: it sees the reclaimer's `free` and
+# a reader's relaxed `Atomic::load` of the same word with no happens-before edge
+# it can account for, and reports a race.
+#
+# The reports observed here are entirely inside crossbeam/rayon — the two stacks
+# are `rayon_core::registry::main_loop → WorkerThread::steal →
+# crossbeam_epoch::pin → Global::collect` on both sides, with no Alkahest frame
+# anywhere. This is a long-standing known limitation (crossbeam-rs/crossbeam
+# has carried it for years), not a defect in the parallel simplifier: with these
+# suppressed, `alkahest-core/tests/parallel_stress.rs` — which drives concurrent
+# `ExprPool` interning, concurrent `simplify_par` / `simplify_redex` on one
+# shared pool, and nested `call_batch_par` from real OS threads — runs clean.
+#
+# Deliberately narrow: only the epoch/deque machinery, so a genuine race in a
+# Rayon closure of ours still fails the shard.
+race:crossbeam_epoch::
+race:crossbeam_deque::

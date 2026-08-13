@@ -114,11 +114,29 @@ about the input and the branch can be closed for good.
 
 ## Cost and bounds
 
-`max_order` (default 4) and `max_degree` (default 16) bound the search. The
-algorithm tries order `J = 1, 2, …` and, for each, certificate degrees
-`d = 0, 1, …`, solving a linear system over `Q(n)` at every `(J, d)` pair. Cost
-grows quickly in both, and a term with no recurrence within the bounds pays the
-full search before refusing. Set the bounds to what you can afford:
+`max_order` (default 4) and `max_degree` (default 16) bound the search. Solving
+the linear system over `Q(n)` at one `(J, d)` pair gets rapidly more expensive as
+either grows — measured on `Σ (−1)^k C(n,k)³` at order 1, a single probe goes
+from 0.7 ms at `d = 0` to 0.6 s at `d = 7` to 84 s at `d = 12`, and one extra
+order costs about what three extra degrees cost.
+
+**Both are upper bounds, not starting points.** The `(J, d)` pairs are visited by
+iterative deepening, cheapest estimated candidate first, and the first relation
+that passes exact verification is returned. Raising a bound therefore widens the
+reach without moving where the search starts — `Σ (−1)^k C(n,k)³` is decided at
+order 2 in 0.8 s at the defaults and 0.6 s at `max_order=6, max_degree=64`
+(a hand-tuned `max_order=2, max_degree=4` costs 0.2 s, because a tight bound
+also truncates the cheap probes the deepening would interleave first):
+
+```python
+# Same answer, same order of magnitude — the bounds are not a starting point.
+cert = ak.zeilberger(F, n, k)                            # defaults
+cert = ak.zeilberger(F, n, k, max_order=6, max_degree=64)
+```
+
+What the bounds *do* control is the price of a refusal: a term with no recurrence
+inside them pays the full grid before raising `E-HOLO-002`. Set them to the
+largest search you are willing to wait through when the answer is "no".
 
 ```python
 cert = ak.zeilberger(F, n, k, max_order=2, max_degree=6)

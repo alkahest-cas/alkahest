@@ -245,8 +245,11 @@ fn parse_rec(
                     ))
                 });
             }
-            // c^(α·n + β·k + γ) with rational c
-            let Some(c) = as_rational(base, pool) else {
+            // c^(α·n + β·k + γ) with rational c.  The base only has to *be* a
+            // rational — it need not already be a literal — so constant
+            // sub-expressions such as `1 * -1` are folded first (see
+            // `as_rational_folded`).
+            let Some(c) = as_rational_folded(base, pool, 0) else {
                 return Err(HolonomicError::NotProperHypergeometric(format!(
                     "power with symbolic exponent needs a rational base, got {}",
                     pool.display(base)
@@ -389,10 +392,78 @@ pub fn as_ratk(expr: ExprId, n: ExprId, k: ExprId, pool: &ExprPool, depth: usize
     }
 }
 
-fn as_rational(expr: ExprId, pool: &ExprPool) -> Option<Rational> {
+/// Largest bit width accepted for a constant produced by *folding*.
+///
+/// Literals are taken as they come — this only bounds the intermediate values
+/// `as_rational_folded` computes, so a nest such as `((2^32)^32)^32` is refused
+/// instead of being evaluated.
+const MAX_FOLD_BITS: u32 = 4096;
+
+fn fold_fits(q: &Rational) -> bool {
+    q.numer().significant_bits() <= MAX_FOLD_BITS && q.denom().significant_bits() <= MAX_FOLD_BITS
+}
+
+/// Evaluate a *constant* expression to an exact rational.
+///
+/// The pool is a plain hash-cons: it does no arithmetic at construction time,
+/// so a caller that writes `-1` as `pool.integer(1) * pool.integer(-1)` hands
+/// us a `Mul` node rather than the literal. That is still the rational `-1`,
+/// and refusing it read as "not a proper hypergeometric term" — a capability
+/// limit — rather than a spelling the parser had not folded. So `Mul`, `Add`
+/// and integer-`Pow` combinations of integer/rational literals are folded here.
+/// (`Neg`, `Sub` and `Div` need no cases of their own: the pool encodes them as
+/// `Mul` by `-1` and `Pow` by `-1`.)
+///
+/// Anything with a free variable in it — or a `Float`, or a function call —
+/// still yields `None`, so what counts as a proper hypergeometric term is
+/// unchanged: only constants that were always constants are newly recognised.
+/// A base that folds to `0` returns `Some(0)` so that the caller's existing
+/// `c == 0` check rejects it.
+fn as_rational_folded(expr: ExprId, pool: &ExprPool, depth: usize) -> Option<Rational> {
+    if depth > MAX_PARSE_DEPTH {
+        return None;
+    }
     match pool.get(expr) {
         ExprData::Integer(i) => Some(Rational::from(i.0.clone())),
         ExprData::Rational(r) => Some(r.0.clone()),
+        ExprData::Add(args) => {
+            let mut acc = Rational::from(0);
+            for a in args {
+                acc += as_rational_folded(a, pool, depth + 1)?;
+                if !fold_fits(&acc) {
+                    return None;
+                }
+            }
+            Some(acc)
+        }
+        ExprData::Mul(args) => {
+            let mut acc = Rational::from(1);
+            for a in args {
+                acc *= as_rational_folded(a, pool, depth + 1)?;
+                if !fold_fits(&acc) {
+                    return None;
+                }
+            }
+            Some(acc)
+        }
+        ExprData::Pow { base, exp } => {
+            let e = as_i32(exp, pool)?;
+            if e.unsigned_abs() > MAX_POW as u32 {
+                return None;
+            }
+            let b = as_rational_folded(base, pool, depth + 1)?;
+            // Budget the result *before* computing it.
+            let bits = b
+                .numer()
+                .significant_bits()
+                .max(b.denom().significant_bits());
+            if bits.checked_mul(e.unsigned_abs())? > MAX_FOLD_BITS {
+                return None;
+            }
+            // `rat_pow` refuses `0` raised to a negative power.
+            let r = rat_pow(&b, e)?;
+            fold_fits(&r).then_some(r)
+        }
         _ => None,
     }
 }
@@ -668,6 +739,124 @@ mod tests {
         assert_eq!(t.w, Rational::from(2));
         assert!(t.ratio_k().unwrap().eq_ratk(&RatK::from_rn(rn_int(-1))));
         assert!(t.ratio_n(1).unwrap().eq_ratk(&RatK::from_rn(rn_int(2))));
+    }
+
+    /// `(1 * -1)^(n+k)` is the rational `-1`, spelled the way a caller gets it
+    /// from `(-one)**(n+k)`. It used to be refused as "not a proper
+    /// hypergeometric term", which reads as a capability limit.
+    #[test]
+    fn constant_base_is_folded_before_it_is_refused() {
+        let pool = ExprPool::new();
+        let (n, k) = nk(&pool);
+        let exp = pool.add(vec![n, k]);
+        let folded = pool.pow(
+            pool.mul(vec![pool.integer(1_i32), pool.integer(-1_i32)]),
+            exp,
+        );
+        let literal = pool.pow(pool.integer(-1_i32), exp);
+
+        let t = ProperTerm::parse(folded, n, k, &pool).expect("parse (1 * -1)^(n+k)");
+        let want = ProperTerm::parse(literal, n, k, &pool).expect("parse (-1)^(n+k)");
+        assert_eq!(t.z, Rational::from(-1));
+        assert_eq!(t.w, Rational::from(-1));
+        assert_eq!(t.z, want.z);
+        assert_eq!(t.w, want.w);
+        assert!(t.ratio_k().unwrap().eq_ratk(&want.ratio_k().unwrap()));
+        assert!(t.ratio_n(1).unwrap().eq_ratk(&want.ratio_n(1).unwrap()));
+    }
+
+    #[test]
+    fn folded_bases_cover_the_arithmetic_forms() {
+        let pool = ExprPool::new();
+        let (n, k) = nk(&pool);
+        let m1 = pool.integer(-1_i32);
+        let cases: Vec<(ExprId, Rational)> = vec![
+            // -(1)
+            (pool.mul(vec![m1, pool.integer(1_i32)]), Rational::from(-1)),
+            // 2/4
+            (
+                pool.mul(vec![pool.integer(2_i32), pool.pow(pool.integer(4_i32), m1)]),
+                Rational::from((1, 2)),
+            ),
+            // (-2)^3
+            (
+                pool.pow(pool.integer(-2_i32), pool.integer(3_i32)),
+                Rational::from(-8),
+            ),
+            // 3 - 4
+            (
+                pool.add(vec![
+                    pool.integer(3_i32),
+                    pool.mul(vec![pool.integer(4_i32), m1]),
+                ]),
+                Rational::from(-1),
+            ),
+            // (1/2) * 3 + 1  = 5/2
+            (
+                pool.add(vec![
+                    pool.mul(vec![pool.rational(1, 2), pool.integer(3_i32)]),
+                    pool.integer(1_i32),
+                ]),
+                Rational::from((5, 2)),
+            ),
+        ];
+        for (base, want) in cases {
+            let t = ProperTerm::parse(pool.pow(base, k), n, k, &pool)
+                .unwrap_or_else(|e| panic!("parse {}^k: {e}", pool.display(base)));
+            assert_eq!(t.z, want, "base {}", pool.display(base));
+            assert_eq!(t.w, Rational::from(1));
+        }
+    }
+
+    /// Folding must not widen the class: a base that folds to zero, and a base
+    /// that is genuinely symbolic, are both still refused.
+    #[test]
+    fn folded_zero_and_symbolic_bases_are_still_refused() {
+        let pool = ExprPool::new();
+        let (n, k) = nk(&pool);
+        let exp = pool.add(vec![n, k]);
+
+        // 1 - 1 folds to 0, which must hit the `0^symbolic` check.
+        let zero = pool.add(vec![
+            pool.integer(1_i32),
+            pool.mul(vec![pool.integer(1_i32), pool.integer(-1_i32)]),
+        ]);
+        let err = ProperTerm::parse(pool.pow(zero, exp), n, k, &pool)
+            .expect_err("0 raised to a symbolic power must be refused");
+        assert!(
+            err.to_string().contains("0 raised to a symbolic power"),
+            "got {err}"
+        );
+
+        // A symbolic base stays symbolic no matter how much constant folding runs.
+        let x = pool.symbol("x", Domain::Real);
+        for base in [
+            x,
+            pool.mul(vec![pool.integer(2_i32), x]),
+            pool.add(vec![x, pool.integer(1_i32)]),
+            n,
+            pool.mul(vec![n, pool.integer(-1_i32)]),
+        ] {
+            assert!(
+                ProperTerm::parse(pool.pow(base, exp), n, k, &pool).is_err(),
+                "symbolic base {} must be refused",
+                pool.display(base)
+            );
+        }
+    }
+
+    /// Folding is bounded: a tower that would evaluate to an astronomically
+    /// large constant is refused rather than computed.
+    #[test]
+    fn folding_does_not_evaluate_huge_towers() {
+        let pool = ExprPool::new();
+        let (n, k) = nk(&pool);
+        let e32 = pool.integer(32_i32);
+        let mut base = pool.integer(1_000_003_i32);
+        for _ in 0..8 {
+            base = pool.pow(base, e32);
+        }
+        assert!(ProperTerm::parse(pool.pow(base, k), n, k, &pool).is_err());
     }
 
     #[test]

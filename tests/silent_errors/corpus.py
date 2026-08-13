@@ -485,6 +485,32 @@ def _relation_residual(values: list[int]) -> Callable[[], int]:
     return op
 
 
+#: Eight 20-digit decimal strings and the relation ``guess_relation`` returned
+#: over eight such constants during the 2026-08-13 autoresearch run
+#: (``temp-alkahest/testing/autoresearch-issues-2026-08-13.md`` §2).
+#: Re-evaluating that relation at 60 digits gives 3.59e-14 — it is noise bought
+#: with 20 digits, and ``relation_confidence`` called it credible.  Only the
+#: *count* of constants and the declared precision enter the verdict, so these
+#: stand in for the run's values at the same length.
+_PURCHASED_20_DIGIT_CONSTANTS = [f"1.{str(k + 1) * 20}"[:22] for k in range(8)]
+_PURCHASED_20_DIGIT_COEFFS = [-19, -13, 28, 1, 26, -11, 20, -65]
+
+#: ``relation_confidence``'s three-valued verdict as a word, so that *unknown*
+#: is scored as its own answer rather than collapsing into a truthy pass.
+_CONFIDENCE_WORD = {True: "credible", False: "purchasable", None: "unknown"}
+
+
+def _relation_verdict(constants: list, coeffs: list, **kwargs: Any) -> Callable[[], str]:
+    """Answer = ``relation_confidence``'s verdict on a *found* relation:
+    ``"credible"``, ``"purchasable"``, or ``"unknown"`` when the inputs' own
+    precision is not knowable."""
+
+    def op() -> str:
+        return _CONFIDENCE_WORD[ak.relation_confidence(constants, coeffs, **kwargs)["credible"]]
+
+    return op
+
+
 def _rsolve_residual(equation: ak.Expr, initials: dict[int, ak.Expr]) -> Callable[[], float]:
     """Answer = the worst residual of ``rsolve``'s answer *in the given equation*.
 
@@ -3162,6 +3188,57 @@ CASES: list[Case] = [
             "1, 2, 3 are integers, so integer relations certainly exist (e.g. [1, 1, -1]). The "
             "control for pslq_exact_integer_inputs_are_not_rounded: refusing every integer input "
             "must not pass the gate."
+        ),
+    ),
+    Case(
+        id="pslq_confidence_declared_precision_refutes_a_purchased_relation",
+        subsystem="number_theory",
+        statement=(
+            "relation_confidence must not call 8 coefficients of size ≤ 65 credible when the "
+            "inputs carry 20 digits"
+        ),
+        op=_relation_verdict(_PURCHASED_20_DIGIT_CONSTANTS, _PURCHASED_20_DIGIT_COEFFS, digits=20),
+        contract=Returns("purchasable"),
+        verified_by=(
+            "A counting argument, independent of alkahest: there are ~H^n = 65^8 ≈ 10^14.5 integer "
+            "vectors with |aᵢ| ≤ 65, and the smallest |Σ aᵢcᵢ| among them is ~10^-14.5 for *any* 8 "
+            "constants. At 20 digits such a vector is therefore always findable and is evidence of "
+            "nothing. These are the coefficients guess_relation returned on 2026-08-13 over 8 "
+            "constants at 20 digits; re-evaluating that relation at 60 digits gives 3.59e-14, the "
+            "noise floor the counting argument predicts, not the ~1e-20 a true relation would give."
+        ),
+    ),
+    Case(
+        id="pslq_confidence_unknown_precision_is_not_a_pass",
+        subsystem="number_theory",
+        statement=(
+            "relation_confidence must answer 'unknown', not 'credible', when the inputs are "
+            "decimal strings of undeclared accuracy"
+        ),
+        op=_relation_verdict(_PURCHASED_20_DIGIT_CONSTANTS, _PURCHASED_20_DIGIT_COEFFS),
+        contract=Returns("unknown"),
+        verified_by=(
+            "A decimal string is both an exact rational and the way a truncated constant is "
+            "spelled, and the string does not say which — so no verdict is derivable from it. The "
+            "old contract assumed exact and answered 'credible' for every relation among strings, "
+            "which is the input a PSLQ loop actually produces."
+        ),
+        note="The gate's own shape: 'unknown' is the honest answer, and must not read as a pass.",
+    ),
+    Case(
+        id="pslq_control_confidence_credible_at_full_precision",
+        subsystem="number_theory",
+        statement=(
+            "relation_confidence must still call the same relation credible when the inputs "
+            "carry 200 digits"
+        ),
+        op=_relation_verdict(_PURCHASED_20_DIGIT_CONSTANTS, _PURCHASED_20_DIGIT_COEFFS, digits=200),
+        contract=Returns("credible"),
+        verified_by=(
+            "The control for the two cases above: 8 coefficients of size ≤ 65 cost ~14.5 digits, "
+            "so 200 digits of agreement is ~185 digits more than the relation could have been "
+            "bought with. A gate that answered 'purchasable' here would be passing by refusing "
+            "everything."
         ),
     ),
     Case(

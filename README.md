@@ -36,7 +36,7 @@ pip install "alkahest[rl]"   # RL environments; Python >= 3.10
 
 Rust users: `alkahest-cas = "2"` — see [Rust crate](#rust-crate).
 
-Default wheels are batteries-included: e-graph simplification, the Gröbner solver (so `alkahest.solve`, Diophantine, and homotopy work out of the box), and the pure-Rust **Cranelift** CPU JIT, with no system LLVM required. They do **not** include LLVM JIT or `parallel` — for those, use a **PyTorch-style** opt-in **`+jit`** / **`+full`** Linux wheel from [GitHub Releases](#opt-in-linux-wheels-jit-and-full-pytorch-style), not the default PyPI resolver path.
+Default wheels are batteries-included: e-graph simplification, the Gröbner solver (so `alkahest.solve`, Diophantine, and homotopy work out of the box), the pure-Rust **Cranelift** CPU JIT with no system LLVM required, and **`parallel`** — the Rayon-backed multi-core paths (`numpy_eval_par`, `simplify_par`, parallel F4 reduction, sharded `ExprPool`). They do **not** include the **LLVM** JIT; for that, use a **PyTorch-style** opt-in **`+jit`** / **`+full`** Linux wheel from [GitHub Releases](#opt-in-linux-wheels-jit-and-full-pytorch-style), not the default PyPI resolver path.
 
 ### Install matrix (default vs opt-in wheels)
 
@@ -44,11 +44,18 @@ Probe your environment after install: `alkahest.capabilities()["features"]` and 
 
 | Artifact | Where | OS / arch (CI) | Python | Cranelift JIT | LLVM JIT | `parallel` |
 |----------|-------|----------------|--------|---------------|----------|------------|
-| **Default** (`pip install alkahest`) | [PyPI](https://pypi.org/project/alkahest/) | Linux manylinux x86_64; macOS arm64; Windows x86_64 | 3.9–3.13 | yes | no | no |
-| **`+jit`** (`X.Y.Z+jit`) | GitHub Releases only | Linux x86_64 | 3.9–3.13 | no | yes | no |
-| **`+full`** (`X.Y.Z+full`) | GitHub Releases only | Linux x86_64 | 3.9–3.13 | no | yes | yes |
+| **Default** (`pip install alkahest`) | [PyPI](https://pypi.org/project/alkahest/) | Linux manylinux x86_64; macOS arm64; Windows x86_64 | 3.9–3.13 | yes | no | yes |
+| **`+jit`** (`X.Y.Z+jit`) | GitHub Releases only | Linux x86_64 | 3.9–3.13 | no | yes | yes |
+| **`+full`** (`X.Y.Z+full`) | GitHub Releases only | Linux x86_64 | 3.9–3.13 | yes | yes | yes |
 
-**macOS / Windows:** default PyPI wheels include Cranelift JIT. **`+jit`** and **`+full`** are **not** built in CI (LLVM / MSYS2 constraints); use [building from source](#from-source) with `--features jit` (and `parallel` for F4 parallelism) on those platforms.
+> **`parallel` ships in the default PyPI wheel** on all three platforms, so `numpy_eval_par` and `simplify_par` really do use multiple cores out of the box. Its state is still worth *checking* rather than assuming, because it is the one feature whose absence is silent: those entry points exist in every build and fall back to `numpy_eval` / `simplify` — same correct answer, no speedup, no warning — if you are on a source build that did not enable it.
+>
+> ```python
+> import alkahest as ak
+> ak.capabilities()["features"]["parallel"]   # True on wheels; source builds need --features parallel
+> ```
+
+**macOS / Windows:** default PyPI wheels include Cranelift JIT and `parallel`. **`+jit`** and **`+full`** are **not** built in CI (LLVM / MSYS2 constraints); use [building from source](#from-source) with `--features jit` on those platforms if you need the LLVM backend.
 
 **Linux LLVM wheels** vendor LLVM and related `.so` files under `site-packages/alkahest.libs/`. If `import alkahest` fails with a missing `libffi-*.so` or `libLLVM-*.so`, prepend that directory to `LD_LIBRARY_PATH`.
 
@@ -62,9 +69,9 @@ There is **no** `pip install alkahest[jit]` / `alkahest[full]` that swaps the na
 
 | Local version | Cargo features | When to use |
 |---------------|----------------|-------------|
-| *(default PyPI)* | `egraph groebner cranelift` | Cranelift CPU JIT on all published platforms; no system LLVM. |
-| `+jit` | `egraph groebner jit` | LLVM CPU JIT (Linux only in CI; larger than default; no Cranelift). |
-| `+full` | `egraph groebner jit parallel` | LLVM JIT plus parallel F4 S-polynomial reduction (largest wheel; Linux only in CI). |
+| *(default PyPI)* | `egraph groebner cranelift parallel` | Cranelift CPU JIT and multi-core paths on all published platforms; no system LLVM. |
+| `+jit` | `egraph groebner jit parallel` | LLVM CPU JIT instead of Cranelift (Linux only in CI; larger than default). |
+| `+full` | `egraph groebner jit cranelift parallel` | The only wheel carrying **both** JIT backends, and a strict superset of the default wheel. Pick it over `+jit` if you want LLVM *and* Cranelift in one build. |
 
 Direct-install examples (adjust tag and filename after checking the release assets):
 
@@ -77,7 +84,7 @@ These wheels vendor LLVM (for JIT) and related `.so` files under `site-packages/
 
 If your client chokes on `+` in the URL, use percent-encoding (`3.8.0%2Bfull` in the filename segment).
 
-After installing the **default** wheel, `alkahest.jit_is_available()` is `True` (Cranelift). After **`+jit`** or **`+full`**, it is also `True` (LLVM). Gröbner-backed APIs such as `alkahest.solve` are available in **all** wheels since `groebner` became a default feature.
+After installing the **default** wheel, `alkahest.jit_is_available()` is `True` (Cranelift). After **`+jit`** it is also `True` (LLVM, in place of Cranelift); **`+full`** carries both backends. Gröbner-backed APIs such as `alkahest.solve` are available in **all** wheels since `groebner` became a default feature.
 
 *See the [install matrix](#install-matrix-default-vs-opt-in-wheels) for per-platform coverage.*
 
@@ -89,7 +96,7 @@ pip install 'alkahest==3.8.0+full' --extra-index-url https://EXAMPLE/alkahest-ex
 
 ### From source
 
-Required to enable optional features (`jit`, `cuda`, `parallel`) or for development. The `groebner` and `egraph` features are already built into default wheels; a source build inherits them automatically. Prerequisites:
+Required to enable optional features (`jit`, `cuda`) or for development. The `groebner` and `egraph` features are already built into default wheels; a source build inherits them automatically. `cranelift` and `parallel` are **not** Cargo defaults, so a source build that omits them gets a wheel weaker than PyPI's — pass `--features "parallel egraph cranelift groebner"` to match it. Prerequisites:
 
 - **Rust** stable ≥ 1.76 and nightly:
   ```bash
@@ -98,7 +105,19 @@ Required to enable optional features (`jit`, `cuda`, `parallel`) or for developm
   ```
 - **uv** (recommended Python tool manager): `curl -LsSf https://astral.sh/uv/install.sh | sh`
 - **LLVM 15**: `apt install llvm-15 libllvm15 llvm-15-dev` / `brew install llvm@15`
-- **FLINT ≥ 2.9** (includes GMP and MPFR): `apt install libflint-dev` / `brew install flint`
+- **FLINT ≥ 2.9** (3.x recommended; pulls in GMP and MPFR): `apt install libflint-dev` (Debian/Ubuntu) · `dnf install flint-devel` (Fedora/RHEL) · `pacman -S flint` (Arch) · `brew install flint` (macOS) · `pacman -S mingw-w64-x86_64-flint` (MSYS2) · `conda install -c conda-forge libflint`
+
+  **FLINT is mandatory, not optional.** There is no FLINT-free source build: `UniPoly` *is* a FLINT polynomial, and factorization, resultants, Hermite/Smith normal forms and `number_theory` all call FLINT directly, with no pure-Rust fallback. The `flint3` Cargo feature selects which FLINT *version's* API to call; it does not make the dependency optional. `build.rs` fails fast with an install hint when it cannot find FLINT, rather than letting the build die at link time.
+
+  **No root?** Build FLINT into a user-local prefix and point the build at it — no system package needed:
+
+  ```bash
+  FLINT_LIB_DIR=$PREFIX/lib FLINT_INCLUDE_DIR=$PREFIX/include \
+    maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel egraph cranelift groebner"
+  # then at run time: export LD_LIBRARY_PATH=$PREFIX/lib   (DYLD_LIBRARY_PATH on macOS)
+  ```
+
+  Both variables are also used for FLINT version detection, so a locally built FLINT 3 is recognised as FLINT 3. `ALKAHEST_SKIP_FLINT_CHECK=1` bypasses the presence probe if FLINT is reachable by a route it does not cover. If you do not need a source build at all, the prebuilt PyPI wheels already have FLINT linked in.
 
 ```bash
 # Install dev tools (maturin, pytest, ruff, ty, …) without building the Rust extension:

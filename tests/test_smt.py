@@ -15,8 +15,10 @@ Three tiers, deliberately separated:
 
 from __future__ import annotations
 
+import contextlib
 import re
 import subprocess
+import threading
 from fractions import Fraction
 from pathlib import Path
 
@@ -454,6 +456,170 @@ def test_quantified_formulas_are_refused_by_solve(pool):
     assert support.exportable
     assert not support.supported
     assert support.reason == "quantified"
+
+
+def test_existential_prefix_refusal_says_to_drop_the_quantifiers(pool):
+    """The refusal is correct; the remediation must name the one-line fix.
+
+    "Does there exist x, y, z such that ..." is the natural way to *write* the
+    question and ``Exists`` is exported at top level, so this is the first
+    refusal a caller hits. Saying only "quantifier-free formulas only" leaves
+    them to guess that deleting the quantifiers is not just allowed but exactly
+    equivalent.
+    """
+    x, y, z = pool.symbol("x"), pool.symbol("y"), pool.symbol("z")
+    body = pool.gt(x * y * z, pool.integer(0))
+    f = ak.Exists(x, ak.Exists(y, ak.Exists(z, body)))
+
+    with pytest.raises(ak.SmtError) as exc:
+        smt.solve(f)
+    remediation = exc.value.remediation or ""
+    assert "drop the quantifiers" in remediation
+    assert "implicitly existentially quantified" in remediation
+    # It names the variables it is talking about rather than speaking in general.
+    for name in ("x", "y", "z"):
+        assert name in remediation
+    # And it does not offer to do the rewrite silently.
+    assert "will not strip the quantifiers for you" in remediation
+    # `supported()` carries the same guidance, so a plan-ahead caller sees it too.
+    assert "drop the quantifiers" in smt.supported(f).detail
+
+
+def test_forall_refusal_does_not_suggest_dropping_the_quantifiers(pool):
+    """The rewrite is valid only for an existential prefix; do not over-promise."""
+    x, y = pool.symbol("x"), pool.symbol("y")
+    f = ak.Forall(x, ak.Exists(y, pool.gt(y, x)))
+    with pytest.raises(ak.SmtError) as exc:
+        smt.solve(f)
+    remediation = exc.value.remediation or ""
+    assert "not available under a Forall" in remediation
+    # No claim about *this* formula's bound variables, since it is not a prefix.
+    assert not remediation.startswith("drop the quantifiers")
+
+
+# ---------------------------------------------------------------------------
+# 2b. The ambient domain reaches the emitted sorts
+# ---------------------------------------------------------------------------
+
+
+def test_pool_symbol_takes_the_ambient_domain(pool):
+    """``pool.symbol`` and ``ak.symbol`` must agree inside ``context(domain=…)``.
+
+    They used to disagree, and the disagreement was invisible: ``pool.symbol``
+    always produced a ``Domain.Real`` symbol, so an integer feasibility question
+    built that way was emitted as ``QF_NRA`` over ``Real`` and silently answered
+    as its real relaxation while ``ak.active_domain()`` still said ``integer``.
+    """
+    with ak.context(pool=pool, domain=ak.Domain.Integer):
+        x = pool.symbol("x")
+        y = ak.symbol("y")
+        script = ak.to_smtlib(pool.pred_eq(x * y, pool.integer(6)))
+    assert "(set-logic QF_NIA)" in script
+    assert "(declare-fun x () Int)" in script
+    assert "(declare-fun y () Int)" in script
+
+
+def test_pool_symbol_default_outside_a_context_is_still_real(pool):
+    """No context, no change: the historical ``Domain.Real`` default stands."""
+    x = pool.symbol("x")
+    assert "(declare-fun x () Real)" in ak.to_smtlib(pool.gt(x, pool.integer(0)))
+
+
+def test_explicit_domain_argument_beats_the_ambient_one(pool):
+    """The opt-out has to exist, or the context becomes a trap in the other direction."""
+    with ak.context(pool=pool, domain=ak.Domain.Integer):
+        r = pool.symbol("r", "real")
+        script = ak.to_smtlib(pool.gt(r * r, pool.integer(2)))
+    assert "(declare-fun r () Real)" in script
+    assert "(set-logic QF_NRA)" in script
+
+
+def test_ambient_domain_is_restored_when_a_context_exits_by_exception(pool):
+    """The native fast path counts live frames; an exception must still clear it.
+
+    `pool.symbol` skips the (expensive) lookup into `alkahest._context` when no
+    context frame is open anywhere. If a frame leaked on the exception path the
+    counter would never return to zero, and every later `pool.symbol` would pay
+    for a lookup — or worse, a *stale* frame would keep answering `Int`.
+    """
+    with contextlib.suppress(RuntimeError), ak.context(pool=pool, domain=ak.Domain.Integer):
+        raise RuntimeError("boom")
+
+    x = pool.symbol("x")
+    assert "(declare-fun x () Real)" in ak.to_smtlib(pool.gt(x, pool.integer(0)))
+
+
+def test_an_open_context_on_one_thread_does_not_leak_into_another(pool):
+    """The frame counter is global; the stack it guards is thread-local.
+
+    A context open on this thread must not make another thread's `pool.symbol`
+    produce `Int`. The counter is deliberately conservative — it only ever says
+    "somebody has a context", sending the other thread down the slow path, which
+    then reads its own (empty) stack and correctly answers `Real`.
+    """
+    seen: list[str] = []
+
+    def worker() -> None:
+        p = ak.ExprPool()
+        z = p.symbol("z")
+        seen.append(ak.to_smtlib(p.gt(z, p.integer(0))))
+
+    with ak.context(pool=pool, domain=ak.Domain.Integer):
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join(timeout=60)
+
+    assert seen, "worker thread did not finish"
+    assert "(declare-fun z () Real)" in seen[0]
+
+
+def test_overlay_frames_are_seen_by_pool_symbol(pool):
+    """`_overlay` pushes frames `context()` never sees; the fast path must count them."""
+    from alkahest import _context
+
+    with _context._overlay(domain=ak.Domain.Integer):
+        x = pool.symbol("x")
+        script = ak.to_smtlib(pool.gt(x, pool.integer(0)))
+    assert "(declare-fun x () Int)" in script
+
+
+@requires_solver
+def test_integer_context_via_pool_symbol_yields_an_integer_model(pool):
+    """The end-to-end shape of the trap: an Erdos-Straus instance, built with
+    ``pool.symbol`` only, must come back with integers rather than ``252/13``."""
+    with ak.context(pool=pool, domain=ak.Domain.Integer):
+        x, y, z = pool.symbol("x"), pool.symbol("y"), pool.symbol("z")
+        one = pool.integer(1)
+        f = ak.And(
+            pool.pred_eq(pool.integer(4) * x * y * z, pool.integer(5) * (y * z + x * z + x * y)),
+            ak.And(pool.ge(x, one), ak.And(pool.ge(y, one), pool.ge(z, one))),
+        )
+        result = smt.solve(f, budget=BUDGET)
+    assert result.status == "sat"
+    assert result.logic == "QF_NIA"
+    assert result.sorts == {"x": "Int", "y": "Int", "z": "Int"}
+    assert all(v.denominator == 1 for v in result.model.values())
+    assert Fraction(4, 5) == sum(Fraction(1, int(result.model[n])) for n in ("x", "y", "z"))
+
+
+@requires_solver
+def test_verification_carries_the_logic_and_sorts_that_were_sent(pool):
+    """``status`` says the answer was checked; ``sorts`` says which question it
+    answered, and only the second distinguishes an integer problem from its real
+    relaxation. Both statuses are ``exactly_verified``, so ``sorts`` has to be
+    somewhere a caller reading ``verification`` will actually see it."""
+    n = pool.symbol("n", "integer")
+    r = pool.symbol("r", "real")
+    result = smt.solve(
+        ak.And(pool.gt(n, pool.integer(2)), pool.lt(r * r, pool.integer(2))), budget=BUDGET
+    )
+    assert result.verification["logic"] == result.logic
+    assert result.verification["sorts"] == {"n": "Int", "r": "Real"}
+    assert result.sorts == result.verification["sorts"]
+    # It survives the trip into a claim graph, which is where a loop reads it.
+    with research.session(title="sorts travel") as session:
+        claim = session.record(result, statement="feasible", method="smt.solve")
+    assert claim.verification["sorts"] == {"n": "Int", "r": "Real"}
 
 
 @requires_solver

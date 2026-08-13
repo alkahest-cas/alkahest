@@ -34,20 +34,21 @@ python -m pip install -U pip
 pip install alkahest
 ```
 
-Default PyPI wheels (Linux, macOS, Windows) ship the **vendored egglog** e-graph backend (`egraph`), the **Gröbner solver** (`groebner` — so `alkahest.solve`, Diophantine, homotopy and related APIs work out of the box), and the **Cranelift JIT** (`cranelift`, since 3.6.0 — so `jit_is_available()` is `True` on a plain `pip install alkahest`). They do **not** include LLVM JIT (`jit`) or `parallel`. For native LLVM CPU JIT—or LLVM JIT plus parallel F4—use a **PyTorch-style** opt-in wheel (separate artifact / index), not the default PyPI resolver path.
+Default PyPI wheels (Linux, macOS, Windows) ship the **vendored egglog** e-graph backend (`egraph`), the **Gröbner solver** (`groebner` — so `alkahest.solve`, Diophantine, homotopy and related APIs work out of the box), the **Cranelift JIT** (`cranelift`, since 3.6.0 — so `jit_is_available()` is `True` on a plain `pip install alkahest`), and **`parallel`** (since 3.8.0 — the sharded `ExprPool`, parallel F4, and the `*_par` entry points are genuinely multi-core). They do **not** include the LLVM JIT (`jit`); for that use a **PyTorch-style** opt-in wheel (separate artifact / index), not the default PyPI resolver path.
 
-Note that the Cargo `default` feature set (`egraph`, `groebner`) is narrower than what release CI builds into the published wheels (`egraph`, `groebner`, `cranelift`). A plain `cargo build` or `maturin develop` therefore has **no** JIT unless you pass `--features cranelift`. Never infer the active feature set from the version number — probe it:
+Note that the Cargo `default` feature set (`egraph`, `groebner`) is narrower than what release CI builds into the published wheels (`egraph`, `groebner`, `cranelift`, `parallel`). A plain `cargo build` or `maturin develop` therefore has **no** JIT and **no** threads unless you pass `--features "cranelift parallel"`. Never infer the active feature set from the version number — probe it:
 
 ```python
 import alkahest as ak
 caps = ak.capabilities()
 caps["features"]["cranelift_jit"]   # True on default wheels, False in a bare source build
+caps["features"]["parallel"]        # likewise
 ak.jit_is_available()
 ```
 
 ### Opt-in Linux wheels: `+jit` and `+full` (PyTorch-style)
 
-Since 3.6.0 the default wheel already has a JIT (Cranelift), so `+jit` / `+full` now buy you only the **LLVM** backend and (for `+full`) parallel F4 — not "JIT vs no JIT". Most agent code does not need them.
+Since 3.6.0 the default wheel already has a JIT (Cranelift), and since 3.8.0 it also has `parallel`, so `+jit` / `+full` now buy you only the **LLVM** backend — not "JIT vs no JIT" and no longer "threads vs no threads". Most agent code does not need them.
 
 **Why a separate index or direct wheel URL:** feature-heavy wheels use a PEP 440 **local version** (for example `3.8.0+jit` or `3.8.0+full`). Those builds **must not** be mixed into the main PyPI project’s simple API for the same reason PyTorch publishes CUDA wheels on `download.pytorch.org`: otherwise `pip install alkahest` could resolve a `+jit` / `+full` build as “newer” than `3.8.0` and pull LLVM (or a much larger binary) when you wanted the default wheel.
 
@@ -57,8 +58,8 @@ There is **no** `pip install alkahest[jit]` / `alkahest[full]` that swaps the na
 
 | Local version | Cargo features | When to use |
 |---------------|----------------|-------------|
-| `+jit` | `egraph groebner jit` | LLVM CPU JIT (smaller than `+full`; groebner/egraph are already in default wheels). |
-| `+full` | `egraph groebner jit parallel` | JIT plus parallel F4 S-polynomial reduction (largest wheel; groebner already in default). |
+| `+jit` | `egraph groebner jit parallel` | LLVM CPU JIT in place of Cranelift; everything else matches the default wheel. |
+| `+full` | `egraph groebner jit parallel` | Identical to `+jit` since `parallel` moved into the default wheel. |
 
 Direct-install examples (adjust tag and filename after checking the release assets):
 
@@ -71,7 +72,7 @@ These wheels vendor LLVM (for JIT) and related `.so` files under `site-packages/
 
 If your client chokes on `+` in the URL, use percent-encoding (`3.8.0%2Bfull` in the filename segment).
 
-After installing `+jit` or `+full`, `capabilities()["features"]["llvm_jit"]` should be `True` (`jit_is_available()` is already `True` on the default wheel via Cranelift, so it does not distinguish the builds — check `llvm_jit` / `parallel` instead). Gröbner-backed APIs such as `alkahest.solve` are available in **all** wheels (including the default PyPI wheel) since `groebner` became a default feature.
+After installing `+jit` or `+full`, `capabilities()["features"]["llvm_jit"]` should be `True` (`jit_is_available()` is already `True` on the default wheel via Cranelift, so it does not distinguish the builds — check `llvm_jit`, which is the only remaining difference; `parallel` is `True` in all three). Gröbner-backed APIs such as `alkahest.solve` are available in **all** wheels (including the default PyPI wheel) since `groebner` became a default feature.
 
 *macOS and Windows `+jit` / `+full` wheels are not produced in CI yet (LLVM / MSYS2 constraints); use [building from source](#from-source) there.*
 
@@ -159,7 +160,7 @@ features = caps["features"]  # includes llvm_jit, cranelift_jit, cuda, and paral
 
 pool = ak.ExprPool()
 x = pool.symbol("x", ak.Domain.Real)   # or domain="real"
-y = pool.symbol("y")
+y = pool.symbol("y")   # ambient context(domain=…) if one is open, else Domain.Real
 
 expr = x**2 + 1          # int literals in +, -, *, **, / are fine
 half = pool.rational(1, 2)  # exact rationals need pool.rational
@@ -480,6 +481,14 @@ Escalation when `decide` refuses: `sos_decompose` / `prove_nonneg` for a positiv
 certificate, `alkahest.smt` (z3's `nlsat` is complete over the reals), or
 `bound_on_box` / `verified_sign` if a rigorous statement over a box is enough.
 
+**`E-SOS-002` from that escalation is `unknown`, not "not SOS".** The SOS search covers
+an LP-representable subcone of the PSD cone at one `basis_degree` (one `level` for
+Handelman), so a refusal is compatible with `p` being SOS outside that subcone, SOS at a
+higher degree, *or* non-negative without being SOS (Motzkin, Choi–Lam, Robinson all
+refuse this way). Retry with a higher `basis_degree` / `level`, or fall back to `decide`
+or `smt`; do not report it as a disproof and do not close the branch. `E-SOS-003` — which
+carries a witness point where `p < 0` — is the only SOS refutation.
+
 ---
 
 ## Substitution and pattern matching
@@ -601,8 +610,32 @@ from alkahest import numpy_eval, numpy_eval_par
 
 xs = np.linspace(0, 1, 1_000_000)
 ys = numpy_eval(f, xs)        # ndarray; much faster than a Python loop
-ys = numpy_eval_par(f, xs)    # multi-core when built with --features parallel
+ys = numpy_eval_par(f, xs)    # multi-core; requires the parallel feature (on in every wheel)
 ```
+
+**`parallel` is `True` in the default PyPI wheel** (Linux, macOS and Windows), so `*_par`
+really is multi-core there. But it is not a Cargo *default*: on a source build that did
+not pass `--features parallel`, every `*_par` entry point (`numpy_eval_par`,
+`simplify_par`) still exists and silently falls back to its single-threaded counterpart —
+correct results, **no speedup**, no warning. Never claim a parallel speedup, and never
+benchmark `*_par` against its sequential twin, without checking first:
+
+```python
+ak.capabilities()["features"]["parallel"]   # True on PyPI wheels
+```
+
+If it is `False`, you are on a source build; rebuild with `--features parallel`.
+
+**A `CompiledFn` cannot cross threads.** `compile_expr` returns an object pinned to
+its creating thread (it owns JIT code pages), so calling `numpy_eval` *or*
+`numpy_eval_par` on it from another `threading.Thread` raises
+`pyo3_runtime.PanicException: ... is unsendable, but sent to another thread`. This is
+not about `parallel` — plain `numpy_eval` is refused the same way — and
+`PanicException` derives from `BaseException`, not `Exception`, so a worker wrapped in
+`except Exception:` will not catch it. Call `compile_expr` inside each thread. The
+`ExprPool` and the expressions themselves are shareable; only the compiled function is
+not. `numpy_eval_par` already fans out internally, so in most cases you do not want
+threads of your own at all.
 
 ---
 
@@ -1045,7 +1078,21 @@ Trust rules for `smt`, which an agent must not blur:
   unsat", not as proved.
 - **Algebraic-number witnesses are refused** (`E-SMT-003`) rather than converted to
   floats. Do not work around this by evaluating the `root-obj` yourself.
+- **Read `res.sorts` before `res.status`.** `status` says the answer was checked; `sorts`
+  (`{'n': 'Int', 'x': 'Real'}`, mirrored into `res.verification`) says *which question*
+  was answered. A symbol built without an integer domain is declared `Real`, which turns
+  an integer feasibility question into its real relaxation — and that relaxation's model
+  is a genuine model of the formula as emitted, so it back-substitutes cleanly and reports
+  `sat` / `exactly_verified` all the same. No status field distinguishes the two.
+  Set the domain per symbol (`pool.symbol("n", "integer")`) or ambiently
+  (`with ak.context(pool=pool, domain=ak.Domain.Integer):` — since 3.8 `pool.symbol` picks
+  that up too, so it agrees with `ak.symbol`).
 - `smt.solve` takes **quantifier-free** formulas; `to_smtlib` exports quantified ones.
+  If you wrote the question as `Exists(x, Exists(y, body))`, **pass `body`**: a sat query
+  already asks whether some assignment satisfies the formula, so the free variables of
+  `body` are implicitly existentially quantified and the model is the witness. The two ask
+  `solve` the same question; the `E-SMT-002` refusal is only about the wrapper. This does
+  not extend to `Forall` (or an `Exists` beneath one) — export it or use `decide`.
 
 ## Memory: `ExprPool` never reclaims
 
@@ -1092,7 +1139,7 @@ All errors inherit `AlkahestError` and carry `.code`, `.remediation`, `.span`.
 | `LinearAlgebraError` | `E-LINALG-*` | *Subclass of `MatrixError`.* Elimination / decompositions; **undecidable entry (`E-LINALG-010`)** |
 | `EigenError` | `E-EIGEN-*` | *Subclass of `MatrixError`.* Eigen/Jordan; defective matrix (`E-EIGEN-005`) |
 | `CadError` | `E-CAD-*` | **`decide` refused** — outside the fragment, or an untestable irrational boundary point |
-| `SosError` | `E-SOS-*` | No positivity certificate of this shape/degree (`E-SOS-002`) |
+| `SosError` | `E-SOS-*` | No positivity certificate of this shape/degree (`E-SOS-002` — **a refusal: record `unknown`, not "not SOS"**); proved negative with a witness point (`E-SOS-003` — the only SOS verdict) |
 | `HolonomicError` | `E-HOLO-*` | `zeilberger` outside the proper-hypergeometric class |
 | `ValidatedError` | `E-VALIDATED-*` | Rigorous-bounds request unsupported / singular / malformed |
 | `OdeError` | `E-ODE-*` | ODE construction failed |
@@ -1322,7 +1369,7 @@ reg.coverage_report_markdown()  # same, rendered as a Markdown table
 6. **`solve` / Gröbner-side APIs are available in all PyPI wheels.** The `groebner` Cargo feature is a default since 2.3.1 — no feature flag or `ImportError` guard needed. Default PyPI wheels also include egglog (`HAS_EGRAPH` is typically `True`); use `simplify_egraph` when rule-based simplification is insufficient.
 7. **`trace` requires a pool argument.** Use `@alkahest.trace(pool)` (or `trace_fn(fn, pool)`). `@alkahest.trace` alone is invalid.
 8. **`grad` ≠ `symbolic_grad`.** `symbolic_grad(expr, [x, y])` → `list[Expr]`. `grad(traced_fn)` → `GradTracedFn` (needs `@trace(pool)` first). `jit` accepts `TracedFn` or `GradTracedFn`.
-9. **`numpy_eval` expects a `CompiledFn`** (from `compile_expr`), not a `TracedFn`.
+9. **`numpy_eval` expects a `CompiledFn`** (from `compile_expr`), not an `Expr` and not a `TracedFn` — and the arrays are **separate positional arguments**, one per input variable: `numpy_eval(f, xs, ys)`, never `numpy_eval(f, [xs, ys])`. `CompiledFn.__call__` is the opposite: one point as one sequence, `f([1.0, 2.0])`.
 10. **Symbols from different pools are incompatible.** Keep one pool per computation graph.
 11. **`plot*` functions detect the backend automatically.** Never import matplotlib/plotly in user code just to call `ak.plot` — let alkahest dispatch. Use `backend="plotly"` or `backend="matplotlib"` to force one. Use `plot_svg` when no plotting library is available.
 12. **`plot_dag` returns a `graphviz.Source` if the `graphviz` package is installed, otherwise a raw DOT string.** Call `.render()` or `.view()` on the returned object, or pipe the string to `dot -Tpng`.
@@ -1332,3 +1379,4 @@ reg.coverage_report_markdown()  # same, rendered as a Markdown table
 16. **Bound long calls with `context(budget=…)`, not `run_with_wall_fallback`.** The latter joins its worker and so does not bound wall time for an uncooperative callee. Only `integrate` and `limit` honour the cooperative budget and release the GIL.
 17. **Do not export radical results to another CAS without evaluating them here first.** Casus-irreducibilis cube roots from `eigenvals()` are correct in Alkahest and wrong under a principal-branch evaluator. An `E-EVAL-009` or an infinite ball is the signal not to export as-is.
 18. **`0 · 0⁻¹` is left unevaluated on purpose** (since 3.8). If you see `(0 * 0^-1)` in a result, that is Alkahest declining to give an indeterminate form a value — not a simplifier failure to work around.
+19. **`relation_confidence` answers `None` when it cannot see the input precision** (since 3.8), which is the normal case: a decimal string may be an exact rational or a truncated constant, and nothing in it says which. `None` means *not checked*, never *passed* — branch on `if verdict["credible"]:`, not `is not False`. To get a real verdict on a `guess_relation` result computed from truncated decimal strings, pass the digits you trust: `relation_confidence(constants, coeffs, digits=60)`. Only `float` and `mpmath.mpf` inputs are judged without a declaration.

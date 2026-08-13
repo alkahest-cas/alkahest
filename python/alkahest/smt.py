@@ -432,6 +432,60 @@ def _is_quantified(formula: Any) -> bool:
     return any(expr.node()[0] in ("forall", "exists") for expr in _walk_exprs(formula))
 
 
+def _existential_prefix(formula: Any) -> list[str]:
+    """Names bound by a leading run of ``Exists`` over a quantifier-free body.
+
+    Empty when the formula is not of that shape — including ``Exists`` under a
+    ``Forall``, or a ``Forall`` anywhere, where "just drop the quantifiers" is
+    *not* a meaning-preserving rewrite and must not be suggested.
+    """
+    names: list[str] = []
+    node = formula.node() if hasattr(formula, "node") else None
+    while node is not None and node[0] == "exists":
+        bound = node[1].node()
+        names.append(bound[1] if bound[0] == "symbol" else str(node[1]))
+        formula = node[2]
+        node = formula.node()
+    if not names or _is_quantified(formula):
+        return []
+    return names
+
+
+def _quantifier_remediation(formula: Any) -> str:
+    """Remediation for the ``E-SMT-002`` quantified refusal.
+
+    Leads with the rewrite that actually fixes the common case, because the
+    natural way to *write* "does there exist x, y, z such that…" is
+    ``Exists(x, Exists(y, Exists(z, body)))`` and the fix — delete them — is not
+    something a caller guesses from "quantifier-free formulas only".
+    """
+    bound = _existential_prefix(formula)
+    if bound:
+        listed = ", ".join(bound)
+        lead = (
+            "drop the quantifiers and pass the body. This formula is nothing but a chain of "
+            f"Exists over {listed} wrapping a quantifier-free body, and solve() asks a "
+            f"satisfiability question, so {listed} are *already* implicitly existentially "
+            "quantified as free variables of the body. The two ask solve() exactly the same "
+            f"question, and the sat model it returns is the witness for {listed}. If you "
+            "want the quantified formula itself, "
+        )
+    else:
+        lead = (
+            "if the formula is a prefix of Exists over a quantifier-free body, drop the "
+            "quantifiers and pass the body: free variables in a sat query are implicitly "
+            "existentially quantified, so the two ask solve() the same question. That "
+            "rewrite is not available under a Forall (or for an Exists beneath one) — there, "
+        )
+    return lead + (
+        "use alkahest.to_smtlib to export it and drive the solver yourself, or "
+        "alkahest.decide for real quantifier elimination. solve() will not strip the "
+        "quantifiers for you: it guarantees that every sat model is back-substituted and "
+        "checked exactly against the formula it was given, and a model for a quantified "
+        "formula binds nothing that can be checked"
+    )
+
+
 #: Probe assignments used to decide whether a formula can be checked exactly.
 #: A fixed list rather than a sample, so the verdict is deterministic; several
 #: points because a single one can land on a pole (``1/x`` at ``0``) and say
@@ -558,11 +612,8 @@ def supported(formula: Any, *, solver: str = "auto") -> SmtSupport:
             logic=logic,
             reason="quantified",
             detail=(
-                "to_smtlib exports this, but solve() takes quantifier-free formulas only: "
-                "it guarantees every sat model is back-substituted and checked exactly "
-                "in-process, and a model for a quantified formula binds nothing that can be "
-                "checked. Export it and drive the solver yourself, or use alkahest.decide "
-                "for real quantifier elimination"
+                "to_smtlib exports this, but solve() takes quantifier-free formulas only. "
+                + _quantifier_remediation(formula)
             ),
             recommendation=recommendation,
             script=script,
@@ -897,7 +948,20 @@ class SmtResult:
     verification : dict
         ``DerivedResult``-shaped: ``status`` is ``exactly_verified`` for a
         checked ``sat`` model, :data:`EXTERNALLY_ASSERTED` for ``unsat``, and
-        ``unverified`` for ``unknown``.
+        ``unverified`` for ``unknown``.  It also carries ``logic`` and
+        ``sorts`` — see :attr:`sorts`, and read them before you read
+        ``status``: ``status`` tells you the answer was checked, ``sorts``
+        tells you *which question* was answered.
+    sorts : dict[str, str]
+        Symbol name → the SMT-LIB sort it was declared with, ``"Int"`` or
+        ``"Real"``, read back out of the script that was actually sent.
+        This is the difference between an integer feasibility question and its
+        real relaxation, and nothing in :attr:`status` or :attr:`verification`
+        ``["status"]`` distinguishes the two: a model of the relaxation is a
+        genuine model of the formula as emitted, so it verifies exactly and
+        reports ``sat`` / ``exactly_verified`` either way.  A symbol lands in
+        ``Real`` whenever it was built without an integer domain — check here
+        rather than assume.
     badge : str
         The unflattering one-line rendering of ``verification["status"]``.
     reason_unknown : str or None
@@ -927,6 +991,15 @@ class SmtResult:
     def certificate(self) -> str:
         """The SMT-LIB script.  An artifact, explicitly *not* a checked proof."""
         return self.smtlib
+
+    @property
+    def sorts(self) -> dict[str, str]:
+        """Symbol name → declared SMT-LIB sort (``"Int"`` / ``"Real"``).
+
+        Recovered from :attr:`verification` so it survives serialisation into a
+        ``ResearchSession`` record, where the ``smtlib`` text may not.
+        """
+        return dict(self.verification.get("sorts", {}))
 
     @property
     def badge(self) -> str:
@@ -1030,6 +1103,14 @@ def solve(
         fine with :func:`to_smtlib` but are refused here (``E-SMT-002``): this
         function guarantees that every ``sat`` model is checked exactly
         in-process, and there is nothing to check for a quantified model.
+
+        If you wrote the question as ``Exists(x, Exists(y, body))``, pass
+        ``body``: a sat query already asks whether *some* assignment satisfies
+        the formula, so the free variables of ``body`` are implicitly
+        existentially quantified and the returned model is the witness.  The
+        quantifiers are not stripped for you — that would silently answer about
+        a different expression than the one handed in — and the rewrite is not
+        valid under a :func:`~alkahest.Forall` anyway.
     solver : str
         ``"auto"`` (first installed, in :data:`SOLVERS` order) or a name.
     logic : str
@@ -1076,12 +1157,7 @@ def solve(
         raise SmtError(
             "[E-SMT-002] solve() takes quantifier-free formulas only; this one is quantified",
             code="E-SMT-002",
-            remediation=(
-                "solve() guarantees that every sat model is back-substituted and checked "
-                "exactly in-process, and a model for a quantified formula binds nothing "
-                "that can be checked. Use alkahest.to_smtlib to export it and drive the "
-                "solver yourself, or alkahest.decide for real quantifier elimination"
-            ),
+            remediation=_quantifier_remediation(formula),
         )
     spec, path = _resolve_solver(solver)
     script = to_smtlib(formula, logic)
@@ -1128,7 +1204,8 @@ def solve(
         _verify_model(formula, script, model, engine)
         model_exprs = _intern_model(model, pool)
 
-    verification = _verification_for(status, engine, reason_unknown, logic_used)
+    sorts = _declared_sorts(script)
+    verification = _verification_for(status, engine, reason_unknown, logic_used, sorts)
     return SmtResult(
         status=status,
         model=model,
@@ -1257,7 +1334,7 @@ def _intern_model(model: Mapping[str, Fraction], pool: Any) -> dict[str, Any]:
 
 
 def _verification_for(
-    status: str, engine: str, reason_unknown: str | None, logic: str
+    status: str, engine: str, reason_unknown: str | None, logic: str, sorts: dict[str, str]
 ) -> dict[str, Any]:
     if status == "sat":
         return {
@@ -1267,6 +1344,7 @@ def _verification_for(
             "method": "smt_model_check",
             "engine": engine,
             "logic": logic,
+            "sorts": dict(sorts),
             "artifact_format": "smtlib2",
             "side_conditions": [],
         }
@@ -1278,6 +1356,7 @@ def _verification_for(
             "method": "smt_solver",
             "engine": engine,
             "logic": logic,
+            "sorts": dict(sorts),
             "artifact_format": "smtlib2",
             # Stated in the record itself, so a reader who never looks up the
             # badge still cannot mistake this for a proof.
@@ -1294,6 +1373,7 @@ def _verification_for(
         "method": "smt_solver",
         "engine": engine,
         "logic": logic,
+        "sorts": dict(sorts),
         "artifact_format": "smtlib2",
         "reason_unknown": reason_unknown,
         "side_conditions": [],

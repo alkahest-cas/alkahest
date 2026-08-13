@@ -247,8 +247,9 @@ all the world like a solver had run and found nothing.
 | `model_exprs` | the same values interned into a pool, when one was passed or is active |
 | `engine` | which solver answered, and at what version |
 | `logic` | the logic that was sent |
+| `sorts` | symbol name → the sort it was declared with, `"Int"` or `"Real"` |
 | `smtlib` / `certificate` | the script that was sent — an artifact, not a checked proof |
-| `verification` | `DerivedResult`-shaped, so `ResearchSession.record` takes it unchanged |
+| `verification` | `DerivedResult`-shaped, so `ResearchSession.record` takes it unchanged; also carries `logic` and `sorts` |
 | `badge` | the honest one-line rendering of the status |
 | `machine_checked` | `True` only when a checker ran **in this process** |
 | `reason_unknown` | the solver's own explanation, on `unknown` |
@@ -263,6 +264,37 @@ carries no reference to its pool; `model_exprs` is populated when `solve(..., po
 given one or `alkahest.context(pool=…)` is active. The `Fraction` map is always present and
 always the thing that was checked, so nothing about the guarantee depends on ambient
 context.
+
+### Read `sorts` before you read `status`
+
+`status` tells you the answer was checked. `sorts` tells you **which question** was
+answered — and no status field distinguishes the two:
+
+```python
+result.sorts        # {'x': 'Int', 'y': 'Int', 'z': 'Int'}  — integer feasibility
+result.sorts        # {'x': 'Real', 'y': 'Real', 'z': 'Real'} — the real relaxation
+```
+
+A symbol declared `Real` where you meant `Int` turns an integer feasibility question into
+its real relaxation. That is not a soundness bug — the model *does* satisfy the formula as
+emitted, so it back-substitutes cleanly and reports `status='sat'` with
+`verification['status'] == 'exactly_verified'` — but it answers a strictly weaker question.
+`z = 252/13` is a perfectly good real witness and a useless integer one. Since every status
+field stays green either way, `sorts` (mirrored into `verification` so it survives
+recording into a claim graph) is the field that tells you.
+
+The sort comes from the symbol's domain, and both symbol constructors now agree about it:
+
+```python
+with ak.context(pool=pool, domain=ak.Domain.Integer):
+    x = ak.symbol("x")            # Int
+    y = pool.symbol("y")          # Int — takes the ambient domain too
+    z = pool.symbol("z", "real")  # Real — explicit argument still wins
+```
+
+Before this, `pool.symbol` ignored the ambient `domain` and always produced a `Real` symbol,
+so the two constructors silently disagreed. Outside a `context(domain=…)` block the default
+is unchanged: `Domain.Real`, hence `Real`.
 
 ### How a `sat` model is checked
 
@@ -286,11 +318,41 @@ runs — for a formula the kernel cannot evaluate exactly (`E-SMT-002`, reason
 `to_smtlib` handles it, but `evaluate(..., mode="exact")` does not, and a refusal that
 arrives only after paying for the solver run reads like a bug in the solver.
 
-For the same reason `solve` takes **quantifier-free formulas only**. `to_smtlib` exports
-quantified ones happily — export it and drive the solver yourself, or use
-`alkahest.decide` for real quantifier elimination within its fragment (≤ 2 variables,
-≤ 2-quantifier prefix, polynomial bodies, and refusing rather than guessing at irrational
-boundary points — see
+For the same reason `solve` takes **quantifier-free formulas only** (`E-SMT-002`, reason
+`quantified`). `to_smtlib` exports quantified ones happily.
+
+### "Does there exist x, y, z such that…" — drop the quantifiers
+
+`Exists` is exported at top level and wrapping the question in it is the natural way to
+*write* it, so this is the refusal you are most likely to hit first:
+
+```python
+f = ak.Exists(x, ak.Exists(y, ak.Exists(z, body)))
+ak.smt.solve(f)
+# [E-SMT-002] solve() takes quantifier-free formulas only; this one is quantified
+```
+
+**The fix is to delete them and pass `body`.** `solve` asks a *satisfiability* question, so
+the free variables of `body` are already implicitly existentially quantified: `∃x∃y∃z. body`
+and `body` ask `solve` the same question, and the `sat` model is the witness for `x`, `y`,
+`z`. Nothing is lost by dropping them.
+
+```python
+result = ak.smt.solve(body)     # same question, and now it answers
+result.model                    # {'x': Fraction(...), 'y': …, 'z': …} — the witness
+```
+
+This works only for a **prefix of `Exists` over a quantifier-free body**. Under a `Forall`
+— or for an `Exists` beneath one — the rewrite is not meaning-preserving and there is
+nothing to strip. `solve` does not strip the prefix for you either: its guarantee is that
+every `sat` model is back-substituted and checked exactly against *the formula it was
+given*, and silently answering about a different expression than the one handed in is the
+kind of substitution this bridge exists to avoid.
+
+For a genuinely quantified question, export it with `to_smtlib` and drive the solver
+yourself, or use `alkahest.decide` for real quantifier elimination within its fragment
+(≤ 2 variables, ≤ 2-quantifier prefix, polynomial bodies, and refusing rather than guessing
+at irrational boundary points — see
 [`decide` refuses rather than guessing](./positivity.md#decide-refuses-rather-than-guessing)).
 
 ## Budgets

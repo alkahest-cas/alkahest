@@ -25,6 +25,18 @@ purchasable from the available precision and is evidence of nothing.
 Testing the result rather than guessing the caller's intent is what lets
 `[1.0, 2.0, 3.0]` keep working: that relation costs almost no precision to pin
 down, so it is returned normally even though the inputs are floats.
+
+`relation_confidence` used to answer this question for *every* input type, on
+the premise that "decimal strings and ints are exactly the values they spell".
+That premise is false for the one way PSLQ is actually driven — a decimal string
+standing for a truncated numerical value — so the gate returned
+``credible: True`` unconditionally on the input an experimental-mathematics loop
+produces, including for three relations that re-evaluation at 60 digits refutes
+(``temp-alkahest/testing/autoresearch-issues-2026-08-13.md`` §2). A gate that
+cannot fail is worse than no gate, because loop authors wire it into promotion
+logic. It now answers ``credible: None`` — *unknown* — unless the input's
+precision is knowable (``float``, ``mpmath.mpf``) or declared (``digits=`` /
+``precision_bits=``).
 """
 
 from __future__ import annotations
@@ -45,6 +57,25 @@ TWO_SQRT2_60 = "2.82842712474619009760337744841939615713934375075389613682602"
 
 #: 60 digits is ~199 bits; search below that so the guard is satisfied.
 BITS_60_DIGITS = 190
+
+#: The three relations `guess_relation` returned during the 2026-08-13
+#: autoresearch run that re-evaluation at 60 digits refutes, with the number of
+#: constants and the digits of input precision each was bought with.
+#: `relation_confidence` called every one of them ``credible: True``.
+#:
+#: Only the *count* of constants and the declared precision enter the verdict,
+#: so the constants themselves are stand-ins of the right length; the run's
+#: actual values are in the report.
+SPURIOUS_RELATIONS = [
+    (8, 20, [-19, -13, 28, 1, 26, -11, 20, -65]),
+    (10, 25, [-46, 21, -24, -40, -25, 8, 31, 40, 14, 5]),
+    (10, 20, [-18, -7, 2, -8, 1, -4, 4, 2, -1, 24]),
+]
+
+
+def _decimal_strings(n: int, digits: int) -> list[str]:
+    """*n* distinct decimal strings carrying *digits* significant figures."""
+    return [f"1.{str(k + 1) * digits}"[: digits + 2] for k in range(n)]
 
 
 class TestRefusesUnderprecisedInput:
@@ -114,15 +145,131 @@ class TestOptOutAndReporting:
         assert verdict["credible"] is False
         assert verdict["available_digits"] == pytest.approx(16.0, abs=0.5)
         assert verdict["consumed_digits"] > verdict["available_digits"]
+        assert verdict["precision_source"] == "float"
 
     def test_relation_confidence_accepts_a_cheap_relation(self):
         verdict = ak.relation_confidence([1.0, 2.0, 3.0], [1, 1, -1])
         assert verdict["credible"] is True
         assert verdict["spare_digits"] > 0
 
-    def test_exact_inputs_are_never_doubted(self):
-        """Strings and ints spell exact rationals, so a relation among them holds."""
-        for constants in ([PI_60, E_60], [1, 2, 3], ["1", "2", "3"]):
-            verdict = ak.relation_confidence(constants, [10**9, -(10**9), 1])
-            assert verdict["credible"] is True
-            assert verdict["available_digits"] == math.inf
+    def test_exact_inputs_are_not_doubted_on_precision_grounds(self):
+        """An int *is* the rational it spells, so precision cannot be the fault."""
+        verdict = ak.relation_confidence([1, 2, 3], [10**9, -(10**9), 1])
+        assert verdict["credible"] is True
+        assert verdict["available_digits"] == math.inf
+        assert verdict["precision_source"] == "exact"
+
+
+class TestUnknownPrecisionIsNotAPass:
+    """A decimal string may be exact or may be a truncation; nothing says which.
+
+    The old contract assumed exact and answered ``credible: True``. The new one
+    answers ``None`` and makes the caller say how many digits are trustworthy.
+    """
+
+    def test_decimal_strings_are_not_judged(self):
+        verdict = ak.relation_confidence([PI_60, E_60], [10**9, -(10**9), 1])
+        assert verdict["credible"] is None
+        assert verdict["available_digits"] is None
+        assert verdict["spare_digits"] is None
+        assert verdict["precision_source"] == "unknown"
+
+    @pytest.mark.parametrize(("n", "digits", "coeffs"), SPURIOUS_RELATIONS)
+    def test_the_spurious_relations_are_no_longer_called_credible(self, n, digits, coeffs):
+        """The three relations from the 2026-08-13 run, as they were produced.
+
+        Each was returned by ``guess_relation`` over `n` decimal strings of
+        `digits` digits, and each is refuted by re-evaluation at 60 digits. The
+        old gate called all three ``credible: True``.
+        """
+        constants = _decimal_strings(n, digits)
+        assert ak.relation_confidence(constants, coeffs)["credible"] is None
+
+    @pytest.mark.parametrize(("n", "digits", "coeffs"), SPURIOUS_RELATIONS)
+    def test_declaring_the_precision_refutes_them(self, n, digits, coeffs):
+        """Told what the strings are worth, the gate fails — which is the point."""
+        constants = _decimal_strings(n, digits)
+        verdict = ak.relation_confidence(constants, coeffs, digits=digits)
+        assert verdict["credible"] is False
+        assert verdict["available_digits"] == pytest.approx(float(digits))
+        assert verdict["precision_source"] == "declared"
+
+    @pytest.mark.parametrize(("n", "digits", "coeffs"), SPURIOUS_RELATIONS)
+    def test_the_same_relations_survive_at_200_digits(self, n, digits, coeffs):
+        """Not a gate that refuses everything: 200 digits justifies all three."""
+        constants = _decimal_strings(n, digits)
+        assert ak.relation_confidence(constants, coeffs, digits=200)["credible"] is True
+
+    def test_precision_bits_is_the_binary_spelling(self):
+        verdict = ak.relation_confidence([PI_60, E_60], [1, -1], precision_bits=664)
+        assert verdict["available_digits"] == pytest.approx(200.0, abs=0.5)
+        assert verdict["credible"] is True
+
+    def test_digits_and_precision_bits_are_mutually_exclusive(self):
+        with pytest.raises(ValueError):
+            ak.relation_confidence([PI_60, E_60], [1, -1], digits=60, precision_bits=199)
+
+    def test_a_declaration_is_a_cap_not_an_override(self):
+        """A float cannot hold 200 digits however loudly the caller declares it."""
+        verdict = ak.relation_confidence([0.1, 0.2, 0.7], [1, 1, -1], digits=200)
+        assert verdict["available_digits"] == pytest.approx(16.0, abs=0.5)
+        assert verdict["precision_source"] == "float"
+
+    def test_the_margin_is_what_catches_a_purchased_relation(self):
+        """PSLQ returns the *smallest* relation the precision buys, so a
+        purchased one lands just under ``consumed <= available`` rather than
+        over it. ``margin_digits=0`` is the old, toothless criterion."""
+        n, digits, coeffs = SPURIOUS_RELATIONS[0]
+        constants = _decimal_strings(n, digits)
+        assert ak.relation_confidence(constants, coeffs, digits=digits)["credible"] is False
+        raw = ak.relation_confidence(constants, coeffs, digits=digits, margin_digits=0)
+        assert raw["credible"] is True
+        assert raw["consumed_digits"] < raw["available_digits"]
+
+    def test_mpmath_values_carry_their_working_precision(self):
+        mpmath = pytest.importorskip("mpmath")
+        with mpmath.workprec(80):  # ~24 digits
+            constants = [+mpmath.pi, +mpmath.e]
+            verdict = ak.relation_confidence(constants, [5144503108, -5945642943])
+            assert verdict["precision_source"] == "mpmath"
+            assert verdict["available_digits"] == pytest.approx(24.1, abs=0.5)
+            assert verdict["credible"] is False
+            assert ak.relation_confidence(constants, [1, -1])["credible"] is True
+
+    def test_one_known_input_can_refute_without_the_rest_being_known(self):
+        """Unknown is not a licence to give up.
+
+        Available precision is a ``min`` over the inputs, so a single ``float``
+        among decimal strings caps the whole search at ~16 digits however many
+        digits the strings carry. A relation that already costs more than that
+        is refutable outright — reporting ``None`` here would be the same
+        can't-fail shrug the gate was rewritten to remove.
+        """
+        expensive = [5144503108, -5945642943]  # ~19.5 digits, over the float cap
+        verdict = ak.relation_confidence([0.1, PI_60], expensive)
+        assert verdict["credible"] is False
+        # Still honest about *how much* room there was: unknowable.
+        assert verdict["available_digits"] is None
+        assert verdict["spare_digits"] is None
+        assert verdict["precision_source"] == "unknown"
+
+    def test_a_known_input_only_refutes_when_it_actually_rules_the_relation_out(self):
+        """The converse guard: the shortcut must not manufacture verdicts.
+
+        The same mixed inputs with cheap coefficients stay ``None`` — 16 digits
+        does not rule this relation out, and the strings' precision is still
+        unknown, so no judgement is available either way.
+        """
+        verdict = ak.relation_confidence([0.1, PI_60], [1, -1])
+        assert verdict["credible"] is None
+        assert verdict["precision_source"] == "unknown"
+
+    def test_guess_relation_still_returns_unjudged_string_relations(self):
+        """Unknown precision must not become a refusal either — only a refusal
+        to *endorse*. `guess_relation` is unchanged for decimal strings."""
+        coeffs = ak.guess_relation([SQRT2_60, TWO_SQRT2_60], precision_bits=BITS_60_DIGITS)
+        assert coeffs is not None
+        assert ak.relation_confidence([SQRT2_60, TWO_SQRT2_60], coeffs)["credible"] is None
+        assert (
+            ak.relation_confidence([SQRT2_60, TWO_SQRT2_60], coeffs, digits=60)["credible"] is True
+        )

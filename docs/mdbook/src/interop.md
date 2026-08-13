@@ -20,7 +20,23 @@ xs = np.linspace(0, 2 * np.pi, 1_000_000)
 ys = numpy_eval(f, xs)   # returns a NumPy array, shape (1_000_000,)
 ```
 
-Inputs are converted to `f64` arrays via DLPack or `__array__`. The call is vectorised through `CompiledFn.call_batch_buffer` in Rust: each array is read via the buffer protocol in one bulk copy (no per-element Python `float` boxing, no `.tolist()`), the native call runs with the GIL released, and the result is written directly into a preallocated output array — no Python loop, and no intermediate Python list on either side. `numpy_eval_par` (requires `--features parallel`) additionally distributes points across CPU cores via Rayon.
+Two argument conventions meet here, and mixing them up is the most common way
+this call fails:
+
+```python
+f = compile_expr(x ** 2 + y, [x, y])   # a CompiledFn — numpy_eval takes this, not the Expr
+
+numpy_eval(f, xs, ys)                  # ✓ one positional argument per input variable
+numpy_eval(f, [xs, ys])                # ✗ ValueError — that is one argument, not two
+f([1.0, 2.0])                          # ✓ CompiledFn evaluates ONE point, given as one sequence
+f(1.0, 2.0)                            # ✗ TypeError
+```
+
+Both wrong spellings raise an error naming the right one. `numpy_eval(expr, xs)`
+— the expression instead of the compiled function — is a `TypeError` telling you
+to call `compile_expr` first.
+
+Inputs are converted to `f64` arrays via DLPack or `__array__`. The call is vectorised through `CompiledFn.call_batch_buffer` in Rust: each array is read via the buffer protocol in one bulk copy (no per-element Python `float` boxing, no `.tolist()`), the native call runs with the GIL released, and the result is written directly into a preallocated output array — no Python loop, and no intermediate Python list on either side. `numpy_eval_par` additionally distributes points across CPU cores via Rayon — but **only when the extension was built with `--features parallel`**. Every published wheel is; `parallel` is not a Cargo default, so a source build that omits it gets a silent alias for `numpy_eval`: same result, no speedup, no warning. Check `capabilities()["features"]["parallel"]` before attributing a timing to it; see [Getting started](./getting-started.md#install).
 
 ### Array protocol
 

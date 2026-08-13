@@ -2,10 +2,16 @@ name: ci-cross
 
 # V1-10: Windows + macOS CI parity.
 #
-# macOS-14 (Apple Silicon): full feature set (parallel, egraph, jit) + Python tests.
-# windows-2022 (GNU toolchain via MSYS2): parallel + egraph.
+# macOS-14 (Apple Silicon): full feature set (parallel, egraph, cranelift, jit) + Python tests.
+# windows-2022 (GNU toolchain via MSYS2): parallel + egraph + cranelift.
 #   jit excluded on Windows: inkwell pins LLVM 15; MSYS2 currently ships LLVM 17+.
 #   Revisit when inkwell adds an LLVM 17 feature flag.
+#
+# `cranelift` is in both rows because `cranelift parallel` together is exactly
+# what the default PyPI wheel is built with on these two platforms. Each half
+# was covered before and the combination was not, so the only place it got
+# compiled for macOS/Windows was the release job itself — which runs on tags,
+# i.e. after the point where a build failure is cheap to fix.
 #
 # Windows cargo steps use `shell: msys2 {0}` so bundled GMP/MPFR builds and
 # the MinGW toolchain are on PATH (same rationale as `release.yml`).
@@ -35,7 +41,7 @@ jobs:
         include:
           - os: macos-14
             rust_toolchain: stable
-            features: "parallel egraph jit"
+            features: "parallel egraph cranelift jit"
             python: true
           # MSVC host Rust + gnu target matches `release.yml` wheel builds.
           # Native `*-windows-gnu` rustc makes HOST==TARGET so gmp-mpfr-sys runs
@@ -43,7 +49,7 @@ jobs:
           # skips those upstream tests while still compiling the same artefact.
           - os: windows-2022
             rust_toolchain: stable
-            features: "parallel egraph"
+            features: "parallel egraph cranelift"
             python: false
 
     steps:

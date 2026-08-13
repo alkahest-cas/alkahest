@@ -98,9 +98,23 @@ def run_loop() -> ClaimGraph:
     log_two = Decimal(2).ln()
 
     # -- stage 2: integer-relation detection ------------------------------
-    relation = ak.guess_relation([str(integral), str(log_two)], 180, 10_000)
+    constants = [str(integral), str(log_two)]
+    relation = ak.guess_relation(constants, 180, 10_000)
     if relation is None:
         raise SystemExit("no integer relation found; nothing to conjecture")
+
+    # These are decimal strings, so `relation_confidence` cannot tell an exact
+    # rational from a truncation on its own and answers `credible: None`.  Only
+    # this loop knows the strings are quadrature output good to DIGITS places,
+    # so only this loop can declare it.  Without the declaration there is no
+    # verdict to promote on -- and `None` is not a pass.
+    confidence = ak.relation_confidence(constants, relation, digits=DIGITS)
+    if not confidence["credible"]:
+        raise SystemExit(
+            f"relation {relation} costs ~{confidence['consumed_digits']:.0f} digits to pin "
+            f"down and only {DIGITS} were computed: purchasable from the available "
+            "precision, so it is evidence of nothing"
+        )
 
     pool = ak.ExprPool()
     x = pool.symbol("x")
