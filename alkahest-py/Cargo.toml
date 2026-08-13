@@ -24,6 +24,10 @@ groebner = ["alkahest-core/groebner"]
 groebner-cuda = ["alkahest-core/groebner-cuda"]
 cuda = ["alkahest-core/cuda"]
 
+[build-dependencies]
+# Only to re-export PyO3's cfgs (Py_LIMITED_API / Py_3_11) — see build.rs.
+pyo3-build-config = "0.21"
+
 [dependencies]
 alkahest-core = { path = "../alkahest-core", package = "alkahest-cas" }
 pyo3.workspace = true

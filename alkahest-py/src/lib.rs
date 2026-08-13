@@ -186,6 +186,11 @@ use alkahest_core::number_theory::{
     totient as nt_totient, NumberTheoryError as CoreNumberTheoryError,
     QuadraticDirichlet as CoreQuadraticDirichlet,
 };
+// The buffer protocol is not in the stable ABI before 3.11, and PyO3 gates
+// `pyo3::buffer` on exactly this cfg. The Python layer already falls back to
+// `call_batch_raw` when these methods are absent (see `_dlpack._call_batch`),
+// so a limited-API 3.9/3.10 build loses the bulk-copy fast path and nothing else.
+#[cfg(any(not(Py_LIMITED_API), Py_3_11))]
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -6964,6 +6969,7 @@ impl PyCompiledFn {
     /// This is the method used internally by :func:`alkahest.numpy_eval`;
     /// most callers should use that helper rather than calling this
     /// directly.
+    #[cfg(any(not(Py_LIMITED_API), Py_3_11))]
     fn call_batch_buffer(
         &self,
         py: Python<'_>,
@@ -6990,7 +6996,7 @@ impl PyCompiledFn {
     /// duration of the native call.
     ///
     /// Used internally by :func:`alkahest.numpy_eval_par`.
-    #[cfg(feature = "parallel")]
+    #[cfg(all(feature = "parallel", any(not(Py_LIMITED_API), Py_3_11)))]
     fn call_batch_buffer_par(
         &self,
         py: Python<'_>,
@@ -7018,6 +7024,7 @@ impl PyCompiledFn {
 /// Copies each input buffer into an owned `Vec<f64>` via a single
 /// `PyBuffer::to_vec` bulk copy (no per-element Python object boxing), after
 /// validating shapes so the native `call_batch` call is safe.
+#[cfg(any(not(Py_LIMITED_API), Py_3_11))]
 fn extract_batch_columns(
     inputs: &[PyBuffer<f64>],
     n_inputs: usize,

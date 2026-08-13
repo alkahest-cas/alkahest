@@ -50,6 +50,7 @@ version = "3.8.0"
 dependencies = [
  "alkahest-cas",
  "pyo3",
+ "pyo3-build-config",
  "rug",
 ]
 

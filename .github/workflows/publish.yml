@@ -27,10 +27,45 @@ jobs:
             ~/.cargo/git
           key: ${{ runner.os }}-cargo-publish-${{ hashFiles('Cargo.lock') }}
 
+      # A tag can legitimately be re-cut — a release-blocking bug found after
+      # tagging is exactly when it happens, and crates.io versions are immutable,
+      # so the second run would fail on "crate version already uploaded". That
+      # red says "the release broke" when the truth is "this half already
+      # succeeded", which is how a failing job stops being read. Skip instead.
+      - name: Is this version already on crates.io?
+        id: published
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="alkahest-cas"))')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # The sparse index, not the web API: api/v1 returns 403 to unattended
+          # clients under the crates.io data-access policy. A `curl -sf` against
+          # it fails, which reads as "not published" — the guard would then do
+          # exactly the thing it exists to prevent. Ask the endpoint built for
+          # programmatic use, and treat a failed *lookup* as fatal rather than
+          # as an answer.
+          if ! curl -sSfL -H 'User-Agent: alkahest-release-ci' \
+                 https://index.crates.io/al/ka/alkahest-cas -o /tmp/index.json; then
+            echo "::error title=crates.io index unreachable::Cannot tell whether $version is published; refusing to guess." >&2
+            exit 1
+          fi
+          if python3 -c "
+          import json, sys
+          vs = {json.loads(l)['vers'] for l in open('/tmp/index.json') if l.strip()}
+          sys.exit(0 if '$version' in vs else 1)"; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Skipping crates.io publish::alkahest-cas $version is already published; nothing to do."
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Dry-run check
+        if: steps.published.outputs.already != 'true'
         run: cargo publish --dry-run -p alkahest-cas
 
       - name: Publish
+        if: steps.published.outputs.already != 'true'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish -p alkahest-cas
