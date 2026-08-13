@@ -61,7 +61,7 @@
 //!    system **over the field `Q(n)`** (Gaussian elimination with
 //!    `Q(n)`-valued pivots) for the remaining `a_i` and the coefficients of
 //!    `X`. The `(J, d)` pairs are visited by **iterative deepening**, cheapest
-//!    estimated cost first (see [`search_plan`]), so `max_order` and
+//!    estimated cost first (see the private `search_plan`), so `max_order` and
 //!    `max_degree` are genuine upper bounds: raising them admits harder inputs
 //!    without slowing down inputs that are decided early.
 //! 5. [`super::qfield::clear_denominators`] turns the solved `a_i(n) ∈ Q(n)`
@@ -87,7 +87,8 @@ use crate::matrix::normal_form::RatUniPoly;
 /// Search bounds for [`zeilberger()`].
 ///
 /// Both fields are upper *bounds*, not starting points: the search deepens
-/// through the `(order, degree)` grid cheapest-first (see [`search_plan`]), so
+/// through the `(order, degree)` grid cheapest-first (see the private
+/// `search_plan`), so
 /// raising either one only widens what can be found — it does not make an input
 /// that was already decided any slower.
 #[derive(Debug, Clone, Copy)]

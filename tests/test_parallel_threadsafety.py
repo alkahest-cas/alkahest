@@ -25,7 +25,6 @@ if anything here is wrong.
 
 import threading
 
-import numpy as np
 import pytest
 from alkahest import (
     ExprPool,
@@ -207,6 +206,7 @@ class TestNumpyEvalParAcrossThreads:
         shared, so this also exercises concurrent interning underneath
         `compile_expr`.
         """
+        np = pytest.importorskip("numpy")
         p = ExprPool()
         x = p.symbol("x", "real")
         expr = build_shape(p, x, 1)
@@ -248,6 +248,7 @@ class TestNumpyEvalParAcrossThreads:
         Compile per thread (as the test above does); expressions and the
         `ExprPool` itself are shareable.
         """
+        np = pytest.importorskip("numpy")
         p = ExprPool()
         x = p.symbol("x", "real")
         f = compile_expr(build_shape(p, x, 1), [x])
