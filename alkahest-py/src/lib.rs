@@ -9349,6 +9349,124 @@ fn parse_box(
     (pool, out)
 }
 
+/// Whether the validated-bounds subsystem can bound an expression at all.
+///
+/// Returned by :func:`alkahest.bounds_supported`. Truthy exactly when every
+/// construct in the expression has a rigorous Taylor-model rule, so it drops
+/// into ``if ak.bounds_supported(f):``.
+///
+/// Attributes
+/// ----------
+/// supported : bool
+///     The verdict. ``bool(self)`` is the same value.
+/// blocker : str or None
+///     The evaluator's own description of the **first** construct it has no
+///     rule for (``"function `bessel_j0`"``), or ``None`` when supported.
+/// functions : list of str
+///     Every function in the expression with no Taylor-model rule, sorted.
+///     Empty when ``supported`` is ``True`` — and possibly empty when it is
+///     ``False``, if the blocker is a node kind rather than a function.
+/// detail : str
+///     One-sentence human explanation.
+#[pyclass(name = "BoundsSupport", frozen)]
+struct PyBoundsSupport {
+    #[pyo3(get)]
+    supported: bool,
+    #[pyo3(get)]
+    blocker: Option<String>,
+    #[pyo3(get)]
+    functions: Vec<String>,
+    #[pyo3(get)]
+    detail: String,
+}
+
+#[pymethods]
+impl PyBoundsSupport {
+    fn __bool__(&self) -> bool {
+        self.supported
+    }
+
+    /// The verdict as a plain dict, for logging and JSON.
+    fn as_dict(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let d = PyDict::new_bound(py);
+        d.set_item("supported", self.supported)?;
+        d.set_item("blocker", self.blocker.clone())?;
+        d.set_item("functions", self.functions.clone())?;
+        d.set_item("detail", &self.detail)?;
+        Ok(d.into_py(py))
+    }
+
+    fn __repr__(&self) -> String {
+        match &self.blocker {
+            None => "BoundsSupport(supported=True)".to_string(),
+            Some(what) => format!("BoundsSupport(supported=False, blocker={what:?})"),
+        }
+    }
+}
+
+/// `alkahest.bounds_supported(expr) -> BoundsSupport`
+///
+/// Can the validated-bounds subsystem bound this expression at all?
+///
+/// :func:`bound_on_box`, :func:`verified_integral`, :func:`verified_no_roots`
+/// and :func:`verified_sign` all evaluate through the same Taylor-model
+/// evaluator, and it refuses any construct it has no rigorous rule for with
+/// ``E-VALIDATED-001``. This answers that question *without running the
+/// bound*, so a planning loop can pick a certifiable route instead of
+/// discovering the boundary by hitting it.
+///
+/// The answer is produced by running the real evaluator on a probe box, so it
+/// cannot drift from what :func:`bound_on_box` does. The same information per
+/// primitive is the ``taylor_model`` flag in
+/// ``capabilities()["primitives"]``.
+///
+/// **What it does not promise.** ``True`` means no ``E-VALIDATED-001``. A
+/// supported function can still be refused on a *particular box* for a
+/// domain violation (``E-VALIDATED-003``, e.g. ``log`` on ``[-2, -1]``) or a
+/// non-finite enclosure (``E-VALIDATED-004``) — those depend on the box, not
+/// on the expression, so no box-free predicate can rule them out.
+///
+/// Note this is a different question from :func:`alkahest.certifiable`, which
+/// asks whether an operation emits a **Lean** certificate. A rigorous
+/// enclosure is not a Lean proof term, and the validated subsystem is not in
+/// the certificate ledger; conflating the two under one predicate would make
+/// a ``True`` mean two different kinds of evidence.
+///
+/// Examples
+/// --------
+/// >>> import alkahest as ak
+/// >>> p = ak.ExprPool(); x = p.symbol("x")
+/// >>> bool(ak.bounds_supported(ak.sin(x) * ak.exp(x)))
+/// True
+/// >>> answer = ak.bounds_supported(ak.bessel_j0(x))
+/// >>> bool(answer), answer.functions
+/// (False, ['bessel_j0'])
+#[pyfunction]
+#[pyo3(name = "bounds_supported")]
+fn py_bounds_supported(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyBoundsSupport> {
+    guard_expr_depth(py, &expr)?;
+    let pool_py = expr.pool.clone_ref(py);
+    let pool = pool_py.borrow(py);
+    let blocker = alkahest_core::taylor_model_refusal(expr.id, &pool.inner);
+    let functions = alkahest_core::taylor_model_blockers(expr.id, &pool.inner);
+    let detail = match &blocker {
+        None => "every construct has a rigorous Taylor-model rule; the validated-bounds \
+                 entry points will not refuse this expression with E-VALIDATED-001 (a \
+                 particular box may still hit a domain violation)"
+            .to_string(),
+        Some(what) => format!(
+            "the validated-bounds subsystem has no rigorous Taylor-model rule for \
+             {what}; bound_on_box would refuse with E-VALIDATED-001"
+        ),
+    };
+    Ok(PyBoundsSupport {
+        supported: blocker.is_none(),
+        blocker,
+        functions,
+        detail,
+    })
+}
+
 /// `alkahest.bound_on_box(expr, box, *, order=6, prec=128, tol=1e-9, max_subdivisions=2048)`
 ///
 /// Rigorous enclosure of the **range** of `expr` over an axis-aligned box,
@@ -9503,6 +9621,21 @@ fn py_verified_no_roots(
 /// ``"nonpositive"``. A ``"false"`` verdict is itself certified — either the
 /// enclosure proves the predicate fails everywhere, or a rigorously evaluated
 /// point witnesses the failure.
+///
+/// An inequality that is **tight at an endpoint** of the box is still decided.
+/// Subdivision alone cannot do it — where the margin vanishes, every enclosure
+/// of the range straddles zero — so the box is split: a collar at the endpoint
+/// is handled by a truncated Taylor expansion with a proven Lagrange remainder,
+/// the rest by branch-and-bound. That covers the classical sharp trigonometric
+/// inequalities (Cusa–Huygens, Mitrinović–Adamović, Wilker, Huygens, Jordan) on
+/// boxes reaching ``x = 0``. Tightness in the *interior* is not covered and
+/// stays ``"undecided"``.
+///
+/// ``tol`` sets the tolerance of the *enclosure*, not of the verdict: it is an
+/// absolute width, so it does not bound how close to zero the answer may be.
+/// Once the enclosure has been computed, the search is re-run with the sign
+/// itself as the stopping rule, which is what decides an inequality whose
+/// margin is narrower than ``tol``.
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
 #[pyo3(name = "verified_sign", signature = (expr, r#box, predicate, *, order = 6, prec = 128, tol = 1e-9, max_subdivisions = 2048))]
@@ -9756,6 +9889,7 @@ impl PyPrimitiveRegistry {
             ("numeric_ball", caps.contains(Capabilities::NUMERIC_BALL)),
             ("lower_llvm", caps.contains(Capabilities::LOWER_LLVM)),
             ("lean_theorem", caps.contains(Capabilities::LEAN_THEOREM)),
+            ("taylor_model", caps.contains(Capabilities::TAYLOR_MODEL)),
         ]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -9810,6 +9944,15 @@ impl PyPrimitiveRegistry {
                         (
                             "lean_theorem",
                             caps.contains(Capabilities::LEAN_THEOREM).into_py(py),
+                        ),
+                        // Not implied by `numeric_ball`: ball arithmetic is
+                        // pointwise, a Taylor model needs a rule with a
+                        // rigorous remainder. Derived by running the
+                        // validated evaluator, so it cannot drift from what
+                        // `bound_on_box` actually accepts.
+                        (
+                            "taylor_model",
+                            caps.contains(Capabilities::TAYLOR_MODEL).into_py(py),
                         ),
                     ]
                     .into_iter()
@@ -12351,6 +12494,8 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_cad_project, m)?)?;
     // P1 item 9 — rigorous global bounds (Taylor models / validated numerics)
     m.add_class::<PyEnclosure>()?;
+    m.add_class::<PyBoundsSupport>()?;
+    m.add_function(wrap_pyfunction!(py_bounds_supported, m)?)?;
     m.add_function(wrap_pyfunction!(py_bound_on_box, m)?)?;
     m.add_function(wrap_pyfunction!(py_verified_integral, m)?)?;
     m.add_function(wrap_pyfunction!(py_verified_no_roots, m)?)?;

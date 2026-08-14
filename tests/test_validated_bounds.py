@@ -425,3 +425,187 @@ def test_enclosure_repr_and_helpers():
     assert r.width >= 1.0
     assert r.subdivisions >= 0
     assert isinstance(r.budget_exhausted, bool)
+
+
+# ---------------------------------------------------------------------------
+# Inequalities that are tight where the box ends
+#
+# The classical trigonometric inequalities are asymptotically tight as x -> 0.
+# Subdivision alone provably cannot certify them there: wherever the margin goes
+# to zero, every enclosure of the range straddles zero however fine the boxes
+# get. `verified_sign` therefore splits -- a truncated Taylor expansion with a
+# proven Lagrange remainder on a collar at the endpoint, branch-and-bound on the
+# rest -- and the two pieces share their join point, so nothing is left out.
+#
+# The soundness half of this section matters more than the reach half: a `true`
+# is a certificate, so every "must not be true" case below is load-bearing.
+# ---------------------------------------------------------------------------
+
+
+_CLASSICAL_NAMES = ("cusa_huygens", "huygens", "mitrinovic_adamovic", "wilker")
+
+
+def _classical(pool, x):
+    """The four classical inequalities, cleared of denominators.
+
+    Each is stated as `f(x) >= 0` on `(0, pi/2)`, tight as `x -> 0`:
+
+    * Cusa-Huygens        `sin x / x < (2 + cos x) / 3`
+    * Mitrinovic-Adamovic `(sin x / x)^3 > cos x`
+    * Wilker              `(sin x / x)^2 + tan x / x > 2`
+    * Huygens             `2 sin x / x + tan x / x > 3`
+
+    Wilker and Huygens are multiplied through by `x^2 cos x` and `x cos x`,
+    which are positive on the open interval, so the sign is unchanged.
+    """
+    return {
+        "cusa_huygens": x * (pool.integer(2) + ak.cos(x)) - pool.integer(3) * ak.sin(x),
+        "mitrinovic_adamovic": ak.sin(x) ** 3 - x**3 * ak.cos(x),
+        "wilker": ak.sin(x) ** 2 * ak.cos(x) + x * ak.sin(x) - pool.integer(2) * x**2 * ak.cos(x),
+        "huygens": pool.integer(2) * ak.sin(x) * ak.cos(x)
+        + ak.sin(x)
+        - pool.integer(3) * x * ak.cos(x),
+    }
+
+
+@pytest.mark.parametrize("name", _CLASSICAL_NAMES)
+@pytest.mark.parametrize("lo", [0.0, 0.01, 0.1])
+def test_classical_trig_inequalities_are_certified_up_to_the_tight_endpoint(name, lo):
+    """All four, including at `x = 0` itself where the margin vanishes."""
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+
+    assert ak.verified_sign(_classical(pool, x)[name], _box(x, lo, 1.5), "nonnegative") == "true"
+
+
+def test_jordan_inequality_with_an_exactly_rational_bound():
+    """`sin x >= (2/pi) x`, stated exactly.
+
+    `pi` is a plain symbol here, so the constant is rationalised instead:
+    `636619772368/10^12 > 2/pi`, which makes `D sin x - N x >= 0` *stronger*
+    than Jordan's inequality on the same interval. It is tight at `x = 0`.
+    """
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+    f = ak.sin(x) * pool.integer(10**12) - pool.integer(636619772368) * x
+
+    assert ak.verified_sign(f, _box(x, 0.0, 1.5), "nonnegative") == "true"
+
+
+def test_jordan_with_too_large_a_constant_is_refuted_at_the_far_endpoint():
+    """The same constant on `[0, pi/2]`, where `N/D > 2/pi` makes it false."""
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+    f = ak.sin(x) * pool.integer(10**12) - pool.integer(636619772368) * x
+
+    assert ak.verified_sign(f, _box(x, 0.0, math.pi / 2), "nonnegative") == "false"
+
+
+@pytest.mark.parametrize("name", _CLASSICAL_NAMES)
+def test_reversing_a_tight_inequality_never_certifies_it(name):
+    """The reverse of each is false, and tight at the same endpoint.
+
+    This is the control that makes the endpoint machinery falsifiable: a sign
+    error in the series argument would show up here as a `true`.
+    """
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+    reversed_f = pool.integer(-1) * _classical(pool, x)[name]
+
+    assert ak.verified_sign(reversed_f, _box(x, 0.0, 1.5), "nonnegative") != "true"
+
+
+def test_false_only_in_a_tiny_neighbourhood_of_the_endpoint_is_not_certified():
+    """`x^3 - x^2/1000` is negative exactly on `(0, 1/1000)`.
+
+    The violation is invisible to endpoint and centre sampling and is far
+    narrower than the default tolerance, so nothing but the endpoint expansion
+    can see it at all. It must never come back `true`.
+    """
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+    f = x**3 - pool.rational(1, 1000) * x**2
+
+    assert ak.verified_sign(f, _box(x, 0.0, 1.5), "nonnegative") != "true"
+
+
+def test_a_strict_inequality_is_false_where_the_function_vanishes_exactly():
+    """`x^2 > 0` fails at `x = 0`; `x^2 >= 0` holds."""
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+
+    assert ak.verified_sign(x**2, _box(x, 0.0, 1.0), "positive") == "false"
+    assert ak.verified_sign(x**2, _box(x, 0.0, 1.0), "nonnegative") == "true"
+
+
+def test_tightness_away_from_an_endpoint_stays_undecided():
+    """A margin that vanishes in the *interior* is still out of reach.
+
+    `(x - 7/10)^2 (x + 1)` is non-negative on `[0, 3/2]` and touches zero at
+    `x = 7/10`. The endpoint expansion does not apply there, and the honest
+    answer remains `undecided` -- it must not be upgraded to a wrong `true`.
+    """
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+    f = (x - pool.rational(7, 10)) ** 2 * (x + pool.integer(1))
+
+    assert ak.verified_sign(f, _box(x, 0.0, 1.5), "nonnegative") == "undecided"
+
+
+def test_a_shallow_interior_dip_is_never_certified_true():
+    """`(x - 7/10)^2 - 10^-6` dips below zero only near `x = 7/10`."""
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+    f = (x - pool.rational(7, 10)) ** 2 - pool.rational(1, 10**6)
+
+    assert ak.verified_sign(f, _box(x, 0.0, 1.5), "nonnegative") != "true"
+
+
+# ---------------------------------------------------------------------------
+# Termination: a tolerance the search cannot reach
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "digits",
+    [3, 6, 9, 12],
+)
+def test_verified_sign_terminates_for_any_size_of_rational_constant(digits):
+    """Rationalising a constant to more digits must not change the cost class.
+
+    Before the fix, `N/D` at 12 digits ran for over 300 s while 9 digits took
+    0.08 s: a sub-box bisected down to the width floor was pushed back onto the
+    active list and immediately re-selected, so the loop spun without ever
+    consuming its subdivision budget. Three extra digits were enough to push the
+    tolerance out of reach and trigger it.
+    """
+    import time
+
+    d = 10**digits
+    n = int(0.636619772368 * d)
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+    f = ak.sin(x) * pool.integer(d) - pool.integer(n) * x
+
+    start = time.monotonic()
+    verdict = ak.verified_sign(f, _box(x, 0.0, 1.5), "nonnegative")
+    elapsed = time.monotonic() - start
+
+    assert verdict in ("true", "false", "undecided")
+    assert elapsed < 60.0, f"{digits} digits took {elapsed:.1f}s"
+
+
+def test_bound_on_box_terminates_when_the_tolerance_is_unreachable():
+    """`tol` below what the width floor can deliver must stop, not spin."""
+    import time
+
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+    f = ak.sin(x) * pool.integer(10**12) - pool.integer(636619772368) * x
+
+    start = time.monotonic()
+    r = ak.bound_on_box(f, _box(x, 0.0, 1.5), tol=1e-40)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 60.0, f"took {elapsed:.1f}s"
+    assert r.lower <= 0.0 <= r.upper

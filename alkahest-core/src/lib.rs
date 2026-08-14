@@ -222,7 +222,10 @@ pub use number_theory::{
     discrete_log, factorint, isprime, jacobi_symbol, nextprime, nthroot_mod, totient,
     NumberTheoryError, QuadraticDirichlet,
 };
-pub use primitive::{Capabilities, CoverageReport, CoverageRow, Primitive, PrimitiveRegistry};
+pub use primitive::{
+    taylor_model_blockers, taylor_model_refusal, taylor_model_supports, taylor_model_supports_call,
+    Capabilities, CoverageReport, CoverageRow, Primitive, PrimitiveRegistry,
+};
 #[cfg(feature = "groebner")]
 pub use solver::{
     diophantine, expr_to_gbpoly, extract_regular_chain_from_basis, gbpoly_to_expr,
@@ -310,7 +313,10 @@ pub mod stable {
         ResultantError, RootInterval, SparseGcdError, SparseInterpError, UniPoly,
         UniPolyFactorModP, UniPolyFactorization,
     };
-    pub use crate::primitive::{Primitive, PrimitiveRegistry};
+    pub use crate::primitive::{
+        taylor_model_blockers, taylor_model_refusal, taylor_model_supports,
+        taylor_model_supports_call, Primitive, PrimitiveRegistry,
+    };
     pub use crate::real::{
         cad_lift, cad_project, decide, decide_expr, routh_hurwitz, CadError, QeResult, RouthHurwitz,
     };

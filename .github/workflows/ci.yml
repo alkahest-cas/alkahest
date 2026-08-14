@@ -537,8 +537,20 @@ jobs:
         # memory safety is hardest to get right. Nightly-only: this shard is
         # already off the PR critical path, so the extra build cost is free
         # where it would not be in Tier 1a.
+        #
+        # RUST_MIN_STACK for the same reason the `tsan` shard sets it, and it is
+        # load-bearing here too: the 2026-08-14 nightly — the first ASan run to
+        # see the parallel code — died with
+        # `AddressSanitizer: stack-overflow ... T1601`, on a rayon worker rather
+        # than the main thread. It is not corruption. `simplify::dispatch`'s
+        # stack governor refills at 512 KiB, ASan's instrumented frames are far
+        # fatter than the uninstrumented ones that margin was tuned for, and
+        # rayon workers start from a 2 MiB default rather than the main thread's
+        # 8 MiB. Raising the worker stack fixes it deterministically and it does
+        # not reproduce uninstrumented.
         env:
           LSAN_OPTIONS: detect_leaks=0
+          RUST_MIN_STACK: "33554432"
         run: |
           RUSTFLAGS="-Zsanitizer=address" \
           cargo +nightly test --workspace --lib --tests \

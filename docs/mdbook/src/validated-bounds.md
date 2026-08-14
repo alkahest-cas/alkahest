@@ -115,11 +115,89 @@ The last row is the honest limit. A double root never changes sign, so no
 witness pair exists; `"undecided"` is the answer, and it is not upgraded to
 `"false"` on the strength of an enclosure that merely touches zero.
 
+### Inequalities that are tight at an endpoint
+
+The interesting inequalities are usually the sharp ones, and sharp means the
+margin goes to zero somewhere. Subdivision alone cannot certify those: where the
+margin vanishes, every enclosure of the range straddles zero however fine the
+boxes get.
+
+Two separate things are done about it. `tol` is an **absolute** width, so it is
+the wrong stopping rule for a sign question — an expression whose minimum is
+`10⁻¹³` meets a `1e-9` tolerance while its enclosure still straddles zero.
+`verified_sign` therefore re-runs the search with the sign itself as the goal,
+refining while the bound straddles zero rather than to a fixed width. And where
+the margin genuinely reaches zero, the box is **split**: a collar `[a, a+δ]` at
+the endpoint is handled by a truncated Taylor expansion with a proven Lagrange
+remainder, the rest by ordinary branch-and-bound. The pieces are closed and
+share the join point, so their union is the original box.
+
+```python
+x = pool.symbol("x")
+# Cusa–Huygens, denominator cleared: x(2 + cos x) − 3 sin x ≥ 0, tight at x = 0
+f = x * (pool.integer(2) + ak.cos(x)) - pool.integer(3) * ak.sin(x)
+ak.verified_sign(f, [(x, 0.0, 1.5)], "nonnegative")   # "true"
+```
+
+Mitrinović–Adamović, Wilker, Huygens and Jordan's inequality behave the same
+way. The remainder is *proven*, not assumed: a Taylor coefficient counts as zero
+only when substitution and `simplify` land on a literal integer `0` — no numeric
+enclosure can prove a value is zero — and the tail is bounded by
+`sup|g⁽ᵐ⁾|/m!` enclosed over the whole collar, with analyticity certified by
+requiring every derivative up to `g⁽ᵐ⁾` to enclose successfully there.
+
+The limits are worth knowing:
+
+| Case | Verdict | Why |
+|---|---|---|
+| tight at an endpoint of the box | `"true"` | the expansion applies there |
+| leading coefficient proven negative | `"false"` | `g < 0` just inside the endpoint |
+| `"positive"` where `g` provably vanishes | `"false"` | a strict claim fails at that point |
+| tight in the **interior** | `"undecided"` | the expansion does not apply |
+
+`(x − 7/10)²(x + 1)` on `[0, 3/2]` is non-negative and touches zero in the
+middle; it stays `"undecided"` rather than being upgraded on the strength of an
+enclosure that merely touches zero.
+
+## Which functions are covered — ask before you build the workload
+
+Taylor models reach the **elementary fragment**: `exp`, `log`, `sqrt`, `sin`,
+`cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `abs`, plus
+arithmetic and integer/rational powers. Every special function is outside it —
+`erf`, `erfc`, `bessel_j0`, `bessel_j1`, `digamma`, `lambert_w`, `gamma`, the
+elliptic integrals, `floor`, `ceil`, `acosh`, `asinh` — and so is any
+two-argument function such as `atan2`.
+
+That boundary is queryable, so a search loop can choose a certifiable route
+instead of discovering it by hitting `E-VALIDATED-001`:
+
+```python
+ak.bounds_supported(ak.sin(x) * ak.exp(x))     # truthy
+answer = ak.bounds_supported(ak.bessel_j0(x))
+bool(answer), answer.functions                  # (False, ['bessel_j0'])
+answer.blocker                                  # "function `bessel_j0`"
+
+# Per primitive, in the agent contract:
+{row["name"] for row in ak.capabilities()["primitives"] if row["taylor_model"]}
+```
+
+**`numeric_ball` is not this flag.** It reports pointwise ball arithmetic,
+which `erf`, `bessel_j0`, `digamma` and `floor` all have; a Taylor model
+additionally needs a rule with a rigorous Lagrange remainder, which they do
+not. Both bits are honest — they answer different questions. `taylor_model`
+and `bounds_supported` are derived by *running* the Taylor evaluator, not from
+a maintained list, so neither can drift from what `bound_on_box` accepts.
+
+A `True` answer means "will not be refused with `E-VALIDATED-001`". It is not
+a promise of success: a covered function can still hit a domain violation or
+an infinite enclosure on a *particular* box, which is a property of the box
+and not of the expression.
+
 ## Refusals
 
 | Code | Meaning |
 |---|---|
-| `E-VALIDATED-001` | No rigorous Taylor model rule for some primitive in the expression |
+| `E-VALIDATED-001` | No rigorous Taylor model rule for some primitive in the expression (ask `bounds_supported` first — see above) |
 | `E-VALIDATED-002` | A free symbol has no interval in the box |
 | `E-VALIDATED-003` | A singularity or branch cut inside the box (e.g. `1/x` over a box containing 0) |
 | `E-VALIDATED-004` | An enclosure overflowed to infinity |

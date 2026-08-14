@@ -50,6 +50,12 @@ use crate::kernel::{ExprId, ExprPool};
 use std::collections::HashMap;
 use std::fmt;
 
+pub mod taylor_support;
+
+pub use taylor_support::{
+    taylor_model_blockers, taylor_model_refusal, taylor_model_supports, taylor_model_supports_call,
+};
+
 // ---------------------------------------------------------------------------
 // Capability flags
 // ---------------------------------------------------------------------------
@@ -65,6 +71,18 @@ bitflags::bitflags! {
         const NUMERIC_BALL  = 1 << 4;
         const LOWER_LLVM    = 1 << 5;
         const LEAN_THEOREM  = 1 << 6;
+        /// The validated-bounds subsystem ([`crate::validated`]) has a
+        /// rigorous Taylor-model rule for this primitive, so
+        /// `bound_on_box` / `verified_integral` / `verified_no_roots` /
+        /// `verified_sign` will not refuse it with `E-VALIDATED-001`.
+        ///
+        /// **This is not implied by `NUMERIC_BALL`, and does not imply it.**
+        /// Pointwise ball arithmetic and a Taylor model with a rigorous
+        /// remainder are different pieces of work: `erf`, `bessel_j0`,
+        /// `digamma`, `floor`, … have the former and not the latter. The bit
+        /// is derived by running the evaluator (see
+        /// [`taylor_support`]), never from a list.
+        const TAYLOR_MODEL  = 1 << 7;
     }
 }
 
@@ -78,6 +96,7 @@ impl fmt::Display for Capabilities {
             (Capabilities::NUMERIC_BALL, "numeric_ball"),
             (Capabilities::LOWER_LLVM, "lower_llvm"),
             (Capabilities::LEAN_THEOREM, "lean"),
+            (Capabilities::TAYLOR_MODEL, "taylor_model"),
         ];
         let present: Vec<&str> = names
             .iter()
@@ -182,8 +201,8 @@ pub struct CoverageReport {
 impl CoverageReport {
     /// Render as a Markdown table (suitable for CI PR comments or docs).
     pub fn to_markdown(&self) -> String {
-        let header = "| Primitive | simplify | diff_fwd | diff_rev | numeric_f64 | numeric_ball | lower_llvm | lean |\n\
-                      |---|---|---|---|---|---|---|---|";
+        let header = "| Primitive | simplify | diff_fwd | diff_rev | numeric_f64 | numeric_ball | lower_llvm | lean | taylor_model |\n\
+                      |---|---|---|---|---|---|---|---|---|";
         let rows: Vec<String> = self
             .rows
             .iter()
@@ -196,7 +215,7 @@ impl CoverageReport {
                     }
                 };
                 format!(
-                    "| {} | {} | {} | {} | {} | {} | {} | {} |",
+                    "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
                     r.name,
                     tick(Capabilities::SIMPLIFY),
                     tick(Capabilities::DIFF_FORWARD),
@@ -205,6 +224,7 @@ impl CoverageReport {
                     tick(Capabilities::NUMERIC_BALL),
                     tick(Capabilities::LOWER_LLVM),
                     tick(Capabilities::LEAN_THEOREM),
+                    tick(Capabilities::TAYLOR_MODEL),
                 )
             })
             .collect();
@@ -261,7 +281,7 @@ impl PrimitiveRegistry {
     pub fn capabilities(&self, name: &str) -> Capabilities {
         self.map
             .get(name)
-            .map(|e| e.caps)
+            .map(|e| with_taylor_model(name, e.caps))
             .unwrap_or(Capabilities::empty())
     }
 
@@ -273,7 +293,7 @@ impl PrimitiveRegistry {
             .iter()
             .map(|(name, e)| CoverageRow {
                 name: name.to_string(),
-                caps: e.caps,
+                caps: with_taylor_model(name, e.caps),
             })
             .collect();
         rows.sort_by(|a, b| a.name.cmp(&b.name));
@@ -372,7 +392,9 @@ impl PrimitiveRegistry {
 
     /// Iterate over all registered (name, capabilities) pairs.
     pub fn iter(&self) -> impl Iterator<Item = (&str, Capabilities)> {
-        self.map.iter().map(|(k, e)| (*k, e.caps))
+        self.map
+            .iter()
+            .map(|(k, e)| (*k, with_taylor_model(k, e.caps)))
     }
 }
 
@@ -453,7 +475,33 @@ fn probe_caps(p: &dyn Primitive) -> Capabilities {
     if p.lean_theorem().is_some() {
         caps |= Capabilities::LEAN_THEOREM;
     }
+    // NB: `TAYLOR_MODEL` is deliberately *not* probed here — see
+    // `with_taylor_model`. Probing it at registration cost every caller that
+    // builds a registry, which `default_registry()` does on hot paths.
     caps
+}
+
+/// Add [`Capabilities::TAYLOR_MODEL`] to a primitive's stored capabilities.
+///
+/// This bit is resolved when the capabilities are *read*, not when the
+/// primitive is registered. It is not a slot on the `Primitive` trait: the
+/// validated-bounds subsystem keeps its own per-function rules in
+/// `validated::taylor`, and a primitive cannot self-report whether one exists
+/// without that claim being able to drift — so the answer comes from asking
+/// the evaluator (memoised, see `taylor_support`).
+///
+/// Asking it at registration time made `PrimitiveRegistry::register` pay a
+/// probe per primitive, and `default_registry()` is rebuilt on hot paths such
+/// as `diff` and `series` — it cost `series(sin x, 12)` roughly 30% steady
+/// state and ~4 ms on the first construction in a process. Reading is rare
+/// (`capabilities()`, `bounds_supported`, the coverage report), so the cost
+/// belongs here.
+fn with_taylor_model(name: &str, caps: Capabilities) -> Capabilities {
+    if taylor_support::taylor_model_supports(name) {
+        caps | Capabilities::TAYLOR_MODEL
+    } else {
+        caps
+    }
 }
 
 // ---------------------------------------------------------------------------

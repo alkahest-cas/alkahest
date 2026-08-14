@@ -806,11 +806,23 @@ mod tests {
             .expect("Franel must be decided at the default bounds");
         let elapsed = start.elapsed();
         println!("franel: order {} in {:?}", result.value.order, elapsed);
-        assert!(
-            elapsed < std::time::Duration::from_secs(10),
-            "Franel took {elapsed:?} at the default bounds — the exact Q(n)(k) \
-             post-processing has regressed to the coefficient blowup it used to have"
-        );
+        // The wall-clock guard is meaningful only in an uninstrumented release
+        // build. Under a sanitizer it is not: the nightly `lsan` shard runs a
+        // debug build with LeakSanitizer, where the whole lib suite takes ~23
+        // minutes and this test breached a 10 s bound while the thing it guards
+        // — the Z[n][k] gcd — was perfectly healthy. A timing assertion that
+        // fails for the instrumentation rather than the regression is a flaky
+        // test, so it is skipped there; the correctness assertions below always
+        // run, in every configuration.
+        // `debug_assertions` is the discriminator: every sanitizer shard builds
+        // in debug, and the release run this guard is written for does not.
+        if !cfg!(debug_assertions) {
+            assert!(
+                elapsed < std::time::Duration::from_secs(10),
+                "Franel took {elapsed:?} at the default bounds — the exact Q(n)(k) \
+                 post-processing has regressed to the coefficient blowup it used to have"
+            );
+        }
 
         let r = &result.value;
         assert_eq!(r.order, 2, "Σ_k C(n,k)³ satisfies an order-2 recurrence");

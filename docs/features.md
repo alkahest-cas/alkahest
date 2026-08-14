@@ -61,7 +61,7 @@ Current stable feature surface.
 - Coefficient asymptotics of rational generating functions (`experimental.coefficient_asymptotics`): singularity analysis with the leading constant by Richardson extrapolation; declines when the dominant singularity is not unique (equal-modulus poles make the coefficients oscillate)
 - Asymptotics of sums (`experimental.euler_maclaurin`): Euler–Maclaurin expansion of `Σ_{k=a}^{n} f(k)` with Bernoulli corrections, numerically gated, returning an `AsymptoticReport` that marks each hypothesis checked or assumed (the additive constant — γ for the harmonic numbers — is fitted, not proved, and labelled as such)
 
-- Validated numerics (`bound_on_box`, `verified_integral`, `verified_no_roots`, `verified_sign`): Taylor models over a box with Moore–Skelboe branch-and-bound; rigorous range enclosures, definite-integral enclosures and three-valued (`true`/`false`/`undecided`) predicates. Sound before tight — a wide bound is returned rather than a wrong one, and unbounded cases refuse (`E-VALIDATED-*`)
+- Validated numerics (`bound_on_box`, `verified_integral`, `verified_no_roots`, `verified_sign`): Taylor models over a box with Moore–Skelboe branch-and-bound; rigorous range enclosures, definite-integral enclosures and three-valued (`true`/`false`/`undecided`) predicates. Sound before tight — a wide bound is returned rather than a wrong one, and unbounded cases refuse (`E-VALIDATED-*`). Coverage is the elementary fragment and is queryable before you commit to a route: `bounds_supported(expr)`, and `taylor_model` per primitive in `capabilities()["primitives"]` (not `numeric_ball`, which is pointwise ball arithmetic and reaches further)
 
 ## Discrete mathematics
 
