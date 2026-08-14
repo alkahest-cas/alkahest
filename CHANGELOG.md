@@ -1,137 +1,20 @@
 # Changelog
 
-## 3.8.0 — 2026-08-12
+## 3.9.0 — 2026-08-14
 
-### Silent errors fixed — do results you already computed need rechecking?
+Everything in this section landed **after `v3.8.0` was tagged and published**,
+so none of it is in the released 3.8.0 wheel. It is the result of acting on a
+trial autoresearch run: fifteen logged issues, of which this release fixes
+fourteen (issue #6 was expectation-setting, not a defect, and issue #10 is
+reduced but not closed — see below).
 
-A *silent error* is a confident, plausible, mathematically wrong answer with no
-exception, no `NaN` and no verification flag. Eleven were found and fixed this
-release. **Eight of them shipped in 3.7 or earlier**, so if you have results
-from an affected call, re-run them. The other three were in code added during
-this release cycle and never reached a published wheel.
-
-| Affected call | Wrong answer it gave | First shipped in | Recheck? |
-|---|---|---|---|
-| `decide(Forall(x, φ))` where the counterexample is a rational root whose denominator is **not a power of two** | `True` for a **false** universal theorem, e.g. `∀x. (3x+2)² > 0` (false at `x = −2/3`) | ≤ 3.7 | **Yes** — any `decide` verdict |
-| `decide(Exists(x, φ))` with an `=` atom | `(True, witness)` where the witness does **not** satisfy the sentence, e.g. `∃x. 3x−2 = 0 → x = 1/2` | ≤ 3.7 | **Yes** — any cited witness |
-| `Matrix.nullspace()` on a 2×2 with a symbolic determinant | A confident wrong kernel basis; `[[x,0],[0,1]]` returned `(0, x)`, for which `M·v ≠ 0` | 3.7 | **Yes** — verify `M·v = 0` numerically |
-| `simplify` / `simplify_egraph` on a product containing `0⁻¹` | `1`, or `0`, depending on the engine — for an expression with no value at all. Reachable from `diff(2/(x − x), x)` | ≤ 3.7 | Yes, if any input could reduce to `0⁻¹` |
-| `decide` on a two-variable sentence true only at an irrational point | `False` for a satisfiable `∃x∃y`, and `True` for its false `∀x∀y` dual | this cycle (2-var `decide` is new) | No published release affected |
-| `batch_map(..., parallel=True)` under `context(budget=…)` | Ran **unbudgeted**, so candidates a sequential sweep reported as `E-BUDGET-001` came back as `E-INT-001` — a *mathematical* verdict | this cycle (batch APIs are new) | No published release affected |
-| `product_definite` on a term with any non-integer coefficient | Off by `c^(hi−lo+1)`: `Π_{k=1}^{5} ½` returned `1` instead of `1/32`, `Π (2k−1)/(2k)` at `n = 6` returned `14.4375` instead of `0.2255859375` | ≤ 3.7 | **Yes** — any `product_definite` / `product_indefinite` result |
-| `sum_definite` where the summand has a pole strictly *between* the bounds | A clean finite number for a sum with an undefined term: `Σ_{k=1}^{10} 1/((k−3)(k−2))` returned `−5/8` | ≤ 3.7 | **Yes** — any `sum_definite` over a range containing a denominator root |
-| `euler_maclaurin` when `corrections` is too small for the summand | A fabricated additive constant — the missing term frozen at the fitting point. `Σ k⁹` at the default `corrections = 2` acquired `34359738368 = 512⁴/2` in a Faulhaber polynomial whose constant term is `0` | this cycle (Euler–Maclaurin is new) | No published release affected |
-| `rsolve` on a **forward-shift** spelling with a non-zero right-hand side | The solution of a *different* equation: `f(n+1) − f(n) = n²` with `f(0) = 0` returned `Σ_{j=1}^{n} j²` instead of `Σ_{j=0}^{n−1} j²` | ≤ 3.7 | **Yes** — any `rsolve` written with `f(n+i)`, `i > 0`, and an inhomogeneous term |
-| `rsolve` / `solve_linear_recurrence_homogeneous` on an order-2 recurrence with a **repeated** characteristic root | `C₀·rⁿ + C₁·rⁿ` — a one-parameter family presented as the general solution of a second-order equation, losing the `n·rⁿ` branch | ≤ 3.7 | **Yes** — check the discriminant of `r² + b r + c` |
-
-Also fixed, and not a silent error but worse for an unattended loop: a Rust
-panic escaped `interval_eval` as `pyo3_runtime.PanicException`, which inherits
-from `BaseException` and therefore slips past `except Exception`. Shipped in
-3.7 — a loop that survived everything else died on `x^(3/2)` over a negative
-ball.
-
-The deterministic silent-error gate (`tests/silent_errors/`, Tier-1 CI) now
-scores **0 silent errors out of 241 scored cases** across evaluation,
-integration, limits, linear algebra, number theory, real QE, series,
-simplification, solving, and sums/products. Every trap added this cycle was
-re-run against a build with the fix reverted and confirmed to score
-`silent_error` there, and every trap is paired with a **control** — its nearest
-convergent neighbour — so a subsystem cannot pass the gate by refusing
-everything. That is a statement about the corpus, not a guarantee about the
-library.
+**Upgrading from 3.8.0 is not transparent.** Two changes need a read before you
+upgrade: `relation_confidence` now returns a *tri-state* verdict, and seventeen
+zero-argument accessors became properties, which is a hard break with no alias.
+Both are detailed under *Behaviour changes to plan for*.
 
 ### Behaviour changes to plan for
 
-Fixing a silent error means some calls that used to return now refuse. Every one
-of these is a call whose previous answer was not justified:
-
-- **`decide` raises `CadError` (`E-CAD-001`) where it used to answer**, whenever
-  the formula has a non-strict atom (`=`, `≠`, `≤`, `≥`) and a boundary root has
-  not been shown rational. This includes mixed-alternation sentences that route
-  through De Morgan — `∀x∃y. p > 0` becomes `¬∃x∀y. p ≤ 0`, and the negation
-  makes a strict body non-strict. `decide` is **not** a complete decision
-  procedure in this implementation; treat `E-CAD-001` as *undecided*, never as
-  *false*.
-- **`rank`, `rref`, `nullspace`, `eigenvects`, `jordan_form` raise
-  `E-LINALG-010`, and `inverse` raises the new `E-MAT-004`**, when an entry's or
-  the determinant's vanishing can be decided neither way. Previously "could not
-  prove non-zero" was silently read as "zero".
-- **`simplify` leaves `0 · 0⁻¹` unevaluated** instead of returning `1` (or `0`).
-  A result containing `(0 * 0^-1)` is Alkahest declining to give an
-  indeterminate form a value, not a simplifier failure.
-- **`sum_definite` raises `SumError` (`E-SUM-003`) when the summand is undefined
-  at an integer inside `[lo, hi]`**, not only when the pole lands on `lo` or
-  `hi+1`. The refusal names the offending index. Sums whose poles lie outside
-  the range are unaffected: `Σ_{k=4}^{10} 1/((k−3)(k−2))` still returns `7/8`.
-- **`euler_maclaurin` may return a shorter expansion, with no additive
-  constant.** The constant is now fitted at a point outside the gate's check
-  points and re-fitted at a second one; if the two disagree it is not a constant
-  and none is claimed. The report says which way that went in `derivation`, and
-  the `"fitted numerically"` hypothesis is only listed when a fitted constant is
-  actually part of the answer. Genuine constants (`γ`, `ζ(2)`, `½log 2π`, …) are
-  unaffected — they agree across fitting points to 13+ digits.
-- **`product_definite(term, k, lo, hi)` with `lo > hi` returns `1` even for a
-  zero term.** The empty product takes no factors; it previously returned `0`
-  for `Π_{k=1}^{0} 0` while returning `1` for `Π_{k=1}^{0} k`.
-- **`capabilities()["contract_version"]` is `3`, and `features` lost two keys:
-  `groebner_cuda` and `numpy`.** Indexing either now raises `KeyError`; use
-  `features.get(name, False)` if you need to span versions. Both were removed
-  rather than wired up because neither was *falsifiable* — no observation a
-  Python caller could make distinguished `True` from `False`:
-  - `groebner_cuda` reported that the CUDA Macaulay-matrix kernel had been
-    compiled in. The string `groebner_cuda` occurred exactly once anywhere in
-    `alkahest-py` — the capability line itself. There was no binding, no
-    `*gpu*` name in the public or the private module, and `GroebnerBasis`
-    exposes only CPU methods. The kernel is unchanged and still reachable from
-    Rust as `alkahest_cas::poly::groebner::compute_groebner_basis_gpu`; if
-    dispatch ever prefers it, the binding lands first and a bit follows it.
-  - `numpy` mapped to a Cargo feature gating the `numpy` crate, which
-    `alkahest-py` never used an item from. The feature and the dependency are
-    both gone. `ak.numpy_eval` and `ak.numpy_eval_par` are unaffected — they go
-    through the buffer protocol and always worked with the bit `False`, which
-    is its value on every wheel ever published.
-
-  An unreachable `True` makes a caller trust something it should not, which is
-  the same class of defect as a silent wrong answer; a bit that correlates with
-  nothing is better removed than left to be misread.
-  `tests/test_agent_contract.py::test_every_advertised_feature_has_an_entry_point`
-  now walks `features` and fails on any key without a named, reachable entry
-  point, so the next one cannot ship.
-- **Rust, `--features groebner-cuda`: `compute_groebner_basis_gpu` and
-  `reduce_batch` return `(polys, GpuBackendReport)` instead of `polys`.** Both
-  fall back to CPU row reduction — when `device_id` is `None`, and when the
-  driver fails — and the basis is identical either way, so a caller previously
-  had no way to tell a GPU run from a CPU one. `GpuBackendReport::ran_on_gpu()`
-  is true only when at least one mod-p reduction ran on a device and none fell
-  back; `reductions_on_gpu`, `reductions_on_cpu` and `first_gpu_error` carry
-  the detail. A compile error on upgrade is the intended failure mode for code
-  that was recording these results as GPU results. Nothing at the Python
-  surface changes: the feature has no binding.
-- **`residue(f, z, point)` refuses a non-constant `point` with
-  `AlkahestError` / `E-RESIDUE-005`** instead of leaking
-  `AttributeError: 'Expr' object has no attribute 'numerator'` from the
-  argument parser. `AttributeError` is not an `AlkahestError`, so
-  `except ak.AlkahestError` missed it entirely. The existing `E-RESIDUE-001..4`
-  refusals are now `AlkahestError`s carrying `.code` and `.remediation` too,
-  rather than bare `ValueError`s with the code glued into the message;
-  `AlkahestError` subclasses `ValueError`, so `except ValueError` still works.
-- **`series` refuses instead of running forever, with `SeriesError` /
-  `E-SERIES-003`.** `series(sqrt(t**-2 + t**-1), t, 0, 32)` never returned:
-  coefficients are formed by repeated differentiation without re-simplifying, so
-  a nested radical's derivatives grow by a constant factor per coefficient and
-  the cost doubles per order. It now honours an active `Budget` (raising
-  `BudgetExceededError`) and, with none, an internal work ceiling. It never
-  returns a *shorter* series: `O(h^order)` on fewer coefficients than were asked
-  for is a false statement about the remainder, which is worse than the refusal.
-  Ordinary expansions are unaffected — the heaviest in the suites intern a few
-  thousand nodes against a ceiling of 50 000.
-- **`simplify_expanded` records a derivation step when its expansion bound stops
-  it** (`expand_pow_limit_reached`, a no-op step naming the power it declined),
-  and the bound itself is now a budget on the number of distributed products
-  rather than a flat exponent cap. `(x+y)**6` and `(x+y+1)**7` now expand where
-  the exponent-only cap refused them while permitting a twenty-term sum to the
-  fourth power; anything above the budget comes back unexpanded *and says so*
-  instead of looking like an expression that was already expanded.
 - **`relation_confidence` returns `credible: None` — *unknown* — for inputs
   whose precision it cannot establish, where it used to return `True`.** It
   judged only `float` inputs, on the premise that "decimal strings and ints are
@@ -223,71 +106,6 @@ of these is a call whose previous answer was not justified:
   exact SOS identity check). `tests/test_accessor_convention.py` pins the
   converted set and scans `alkahest-py/src/lib.rs` for new offenders, so the
   inconsistency cannot creep back.
-
-### Known limits — documented, not fixed
-
-These are properties of the design as it stands. They are called out here
-because 3.8 is aimed at long unattended loops, and each of them is a way such a
-loop fails.
-
-- **`ExprPool` never reclaims.** The arena is append-only: no `clear`, no
-  refcount, no GC, and the storage cannot shrink. The only way to free interned
-  nodes is to **drop the whole pool** — and every `Expr`, `Matrix`, `Series` and
-  `DerivedResult` holds a *strong* reference to its pool, so retaining one
-  interesting result retains everything. Growth on a shared pool is linear and
-  unbounded (~200 bytes/node; measured ~2 KB per `integrate` call over 20 000
-  calls, 0 B/call with a fresh pool per iteration) while per-call latency stays
-  **flat**, so the failure mode is a clean OOM with no slowdown to warn you
-  first. `ExprPool` also exposes no `__len__` or `stats()`, so the growth is not
-  observable from Python. The supported pattern is **one pool per problem**,
-  documented in [`budgets.md`](docs/mdbook/src/budgets.md#exprpool-never-reclaims).
-- **`run_with_wall_fallback` does not bound wall time for an uncooperative
-  callee.** It joins its worker before the exception propagates, so it returns
-  when the callee returns: `run_with_wall_fallback(time.sleep, 3.0,
-  budget=Budget(wall_ms=50))` raises `E-BUDGET-001` after 3000 ms, and the
-  message reports the real elapsed time so this shows up in a log rather than
-  being inferred later. Python cannot kill a thread, and abandoning one would
-  leak a live thread that still allocates into the pool and can only be stopped
-  through the process-wide cancel flag. Only an **OS-level bound** (subprocess,
-  process watchdog) is a hard deadline.
-- **`wall_ms` granularity is one primitive operation, and FLINT calls cannot be
-  interrupted.** After the checkpoint work above the overshoot is a small
-  additive term (1.0–1.2×), but past a certain degree a single operation is a
-  FLINT factorisation or resultant — one foreign-function call, ~2 s on a
-  degree-62 integrand, which no cooperative mechanism can stop part-way.
-- **`Matrix.eigenvals()` grows the pool on identical input** (~1.9 KB/call,
-  measured over 20 000 calls on the same 2×2 integer matrix): it interns a fresh
-  `__eigen_lambda_N` gensym per call. Every other Python-facing entry point
-  measured is flat on repeated input. Cache eigenvalue results.
-- **`Matrix.eigenvals()` can emit casus-irreducibilis cube roots** — correct
-  under Alkahest's real cube-root convention (and honestly refused by
-  `eval_expr` with `E-EVAL-009`, with `interval_eval` returning an unbounded
-  ball) but evaluated on the **principal** branch by SymPy, NumPy and most other
-  tools, which return a confident number that is not an eigenvalue. 14 of 720
-  random integer matrices produced one. An honest refusal here becomes somebody
-  else's silent error the moment the expression crosses the boundary, so
-  evaluate inside Alkahest before exporting, or export a verified numeric
-  enclosure instead. See [`interop.md`](docs/mdbook/src/interop.md).
-- **The LLVM JIT leaks an LLVM `Context` per compile** (`Box::leak`, on the
-  error paths as well as the success path). Feature-gated behind `jit`, so
-  default PyPI wheels (Cranelift) are unaffected; do not compile in a loop under
-  a `+jit` / `+full` wheel.
-- **No sanitizer covers any Python-facing path.** The PR-gating ASan job runs
-  with `detect_leaks=0`, the nightly LSan shard cannot reach a `cdylib` with no
-  `#[test]` functions, and `pytest` is never run under a sanitizer. The
-  behavioural substitute is the fresh-pool sweep described in
-  [`TESTING.md`](TESTING.md#3-memory-safety--sanitizers).
-- **There is no `cuda_device_count()`.** `CudaCompiledFn.call_batch_on(ordinal,
-  …)` selects a device, but the valid range can only be discovered by trying an
-  ordinal and catching `CudaError` (`E-CUDA-003`); the loop that does it is in
-  [`gpu.md`](docs/mdbook/src/gpu.md#discovering-the-valid-device-ordinals). Not
-  added yet on purpose: `cuda` implies LLVM 15 with NVPTX, so such a binding
-  cannot be compiled on an ordinary dev box, no CI job builds the Python
-  extension with either CUDA feature, and exercising it needs a device — it
-  would ship with no verification of any kind, which is the provenance of the
-  capability overclaims fixed above. It belongs in the same change as the
-  missing `maturin develop --features cuda` + `pytest tests/test_cuda.py`
-  nightly step.
 
 ### Fixed
 
@@ -551,6 +369,309 @@ loop fails.
   taking one point as a single sequence — answers `f(1.0, 2.0)` and `f(1.0)`
   with that convention and a pointer to `numpy_eval` for batches. Exception
   types are unchanged.
+
+### Added
+
+- **Gröbner results can be read back — `GbPoly.to_expr`, iteration over a
+  `GroebnerBasis`, and `expr_to_gbpoly`.** Everything that returned a basis
+  returned a handle nobody could open. `GbPoly` exposed only `is_zero` and
+  `n_vars`; `GroebnerBasis` exposed only its own constructors plus `reduce` and
+  `contains`, and `reduce` took a `GbPoly` that no exported function could
+  build — `expr_to_gbpoly`, named in `compute_raw`'s own docstring, was never
+  registered on the module. So `rosenfeld_groebner(...).final_basis()`,
+  `triangularize(...)`, `primary_decomposition(...)` and a parametric `solve`
+  all handed back objects whose only readable property was how many generators
+  they had. Differential elimination was write-only: the input–output equations
+  it computes could not be looked at, which is the whole of structural
+  identifiability.
+
+  Now: `alkahest.expr_to_gbpoly(expr, vars)` converts in, `GbPoly.to_expr()`
+  converts back out, and `GbPoly.terms()` gives `(exponent tuple, exact
+  int/Fraction)` pairs. A `GroebnerBasis` is a sequence — `len()`, indexing,
+  iteration — with `polynomials()`, `to_exprs()`, `variables()` and an `order`
+  property. `reduce()` now accepts an `Expr` as well as a `GbPoly`, so the
+  membership and reduction API is reachable from expressions alone.
+  `GroebnerBasis.eliminate(vars)` is bound too — the mdbook and Sphinx pages
+  had documented it for releases, but it existed only in Rust, so the
+  implicitization example on the solving page could not run.
+
+  The part that needed a real fix rather than an accessor is the **variable
+  ordering**. A `GbPoly` stores exponent vectors, not names, so a basis without
+  its variable list cannot be read at all — and `rosenfeld_groebner` discovered
+  its jet variables internally (`t`, `x`, `dx/dt`, `ddx/dt/dt`, …) and threw
+  them away. Every object that hands out a `GbPoly` now carries that list:
+  `RosenfeldGroebnerResult.variables()`, `GroebnerBasis.variables()`,
+  `RegularChain.variables()`, and for a parametric `solve` the solve variables
+  *followed by the free parameters*, which is the order the exponent vectors
+  were actually built in. Asking for an `Expr` with too few variables named
+  raises `ValueError` rather than silently misreading exponent slots.
+
+  New in Rust: `alkahest_cas::gbpoly_to_expr`, `GroebnerBasis::order()`,
+  `MonomialOrder::as_str()`, `solver::collect_parameters`, and
+  `rosenfeld_groebner_ranked` / `dae_index_reduce_ranked`, which return the
+  `DifferentialRanking` alongside the result (the existing entry points are
+  unchanged wrappers, so no struct gained a field).
+
+- **`DAE` can be read: `equations()`, `variables()`, `derivatives()`,
+  `time_var`, `index`.** It previously exposed `n_equations` and `n_variables`
+  and nothing else, so a prolonged system that reported six variables for a
+  two-variable input gave no way to find out what any of them were.
+  `pantelides` sets `index` on the DAE it returns — the number of
+  differentiation rounds — and the equations it appended, plus the higher jets
+  (`ddx/dt/dt`, …) they introduced, are now visible in `equations()` and
+  `derivatives()`.
+
+### Performance
+
+- **`zeilberger`'s exact `Q(n)(k)` post-processing no longer swells its own
+  coefficients.** With the search fixed (below), what was left was entirely
+  after it: on `Σ_k C(n,k)³` the search reached `(order 2, degree 3)` in 0.22 s
+  and the run then spent ~29 s normalising the certificate and re-verifying it.
+  The cause was `PolyK::gcd` — a textbook Euclidean remainder sequence over the
+  *field* `Q(n)`, whose coefficients are rational functions in `n`: every
+  division step adds numerator and denominator degrees and no step ever removes
+  content, the classic intermediate-expression-swell blowup, and
+  `RatK::normalize` ran it on every normalisation. The gcd now leaves the field
+  and runs **Brown's subresultant PRS in `Z[n][k]`** (Collins 1967, Brown 1971;
+  Knuth TAOCP 2 § 4.6.1), with both cofactors divided out in the same integral
+  domain, and `Q[n]` gcds (`rn_mul` / `rn_add` / `rn_inv`, which cancel
+  crosswise now rather than reducing the full cross-multiplied product) go
+  through the same subresultant sequence over `Z[n]`. At the shipped defaults,
+  measured before and after on one machine: `Σ (−1)^k C(n,k)³` **1.6 s →
+  0.11 s** (15×), `Σ_k C(n,k)³` **56 s → 0.07 s** (800×),
+  `Σ_k C(n,k)²C(n+k,k)²` **16.5 s → 0.05 s** (330×, and still Apéry's
+  recurrence coefficient for coefficient). Two OEIS targets that timed out past 300 s at certificate
+  degree ≥ 3 are now decided: **A357510** `Σ k·C(n,k)²·C(n+k,k)²` and
+  **A357512** `Σ k⁵·C(n,k)²·C(n+k,k)²` both yield a verified order-3 recurrence
+  in under a second. This is a change of algorithm, not of contract: a monic
+  gcd is unique, so every certificate is the same one as before, and every
+  certificate is still checked as an exact `Q(n)(k)` identity before it is
+  returned — nothing here is probabilistic and no verification was weakened.
+- **`zeilberger`'s `max_order` / `max_degree` are now upper bounds instead of
+  starting points.** The search used to sweep certificate degrees
+  `d = 0..=max_degree` at order 1 before ever trying order 2, and a single
+  degree probe gets ~3× more expensive per degree step (measured on
+  `Σ (−1)^k C(n,k)³`: 0.7 ms at `d = 0`, 0.6 s at `d = 7`, 84 s at `d = 12`).
+  Every order ≥ 2 identity — Dixon, Franel, Apéry — therefore ran for minutes
+  or never at the shipped defaults while being seconds away at `max_degree=4`,
+  i.e. **raising the bound made easy inputs slower rather than admitting harder
+  ones**. The `(order, degree)` grid is now visited by iterative deepening,
+  cheapest estimated probe first (one extra order is priced at three extra
+  degrees, which is what the measurements say), and the first *verified*
+  relation is returned. `Σ (−1)^k C(n,k)³` at the defaults goes from >400 s
+  (killed) to **0.67 s**; `Σ_k C(n,k)³` from >400 s (killed) to ~31 s. Nothing
+  is skipped — the plan still visits every pair inside the bounds, so an
+  exhausted search costs what it always did — and verification is unchanged: a
+  candidate that fails the exact `Q(n)(k)` check is still discarded, never
+  returned.
+
+### Testing
+
+- The deterministic silent-error gate grew from **213 to 241 scored cases**
+  (`tests/silent_errors/`), still at **0 silent errors**. The new cases cover the
+  PSLQ precision verdict as a *word* rather than a truthy value, so an `unknown`
+  verdict cannot silently collapse into a pass.
+
+## 3.8.0 — 2026-08-12
+
+### Silent errors fixed — do results you already computed need rechecking?
+
+A *silent error* is a confident, plausible, mathematically wrong answer with no
+exception, no `NaN` and no verification flag. Eleven were found and fixed this
+release. **Eight of them shipped in 3.7 or earlier**, so if you have results
+from an affected call, re-run them. The other three were in code added during
+this release cycle and never reached a published wheel.
+
+| Affected call | Wrong answer it gave | First shipped in | Recheck? |
+|---|---|---|---|
+| `decide(Forall(x, φ))` where the counterexample is a rational root whose denominator is **not a power of two** | `True` for a **false** universal theorem, e.g. `∀x. (3x+2)² > 0` (false at `x = −2/3`) | ≤ 3.7 | **Yes** — any `decide` verdict |
+| `decide(Exists(x, φ))` with an `=` atom | `(True, witness)` where the witness does **not** satisfy the sentence, e.g. `∃x. 3x−2 = 0 → x = 1/2` | ≤ 3.7 | **Yes** — any cited witness |
+| `Matrix.nullspace()` on a 2×2 with a symbolic determinant | A confident wrong kernel basis; `[[x,0],[0,1]]` returned `(0, x)`, for which `M·v ≠ 0` | 3.7 | **Yes** — verify `M·v = 0` numerically |
+| `simplify` / `simplify_egraph` on a product containing `0⁻¹` | `1`, or `0`, depending on the engine — for an expression with no value at all. Reachable from `diff(2/(x − x), x)` | ≤ 3.7 | Yes, if any input could reduce to `0⁻¹` |
+| `decide` on a two-variable sentence true only at an irrational point | `False` for a satisfiable `∃x∃y`, and `True` for its false `∀x∀y` dual | this cycle (2-var `decide` is new) | No published release affected |
+| `batch_map(..., parallel=True)` under `context(budget=…)` | Ran **unbudgeted**, so candidates a sequential sweep reported as `E-BUDGET-001` came back as `E-INT-001` — a *mathematical* verdict | this cycle (batch APIs are new) | No published release affected |
+| `product_definite` on a term with any non-integer coefficient | Off by `c^(hi−lo+1)`: `Π_{k=1}^{5} ½` returned `1` instead of `1/32`, `Π (2k−1)/(2k)` at `n = 6` returned `14.4375` instead of `0.2255859375` | ≤ 3.7 | **Yes** — any `product_definite` / `product_indefinite` result |
+| `sum_definite` where the summand has a pole strictly *between* the bounds | A clean finite number for a sum with an undefined term: `Σ_{k=1}^{10} 1/((k−3)(k−2))` returned `−5/8` | ≤ 3.7 | **Yes** — any `sum_definite` over a range containing a denominator root |
+| `euler_maclaurin` when `corrections` is too small for the summand | A fabricated additive constant — the missing term frozen at the fitting point. `Σ k⁹` at the default `corrections = 2` acquired `34359738368 = 512⁴/2` in a Faulhaber polynomial whose constant term is `0` | this cycle (Euler–Maclaurin is new) | No published release affected |
+| `rsolve` on a **forward-shift** spelling with a non-zero right-hand side | The solution of a *different* equation: `f(n+1) − f(n) = n²` with `f(0) = 0` returned `Σ_{j=1}^{n} j²` instead of `Σ_{j=0}^{n−1} j²` | ≤ 3.7 | **Yes** — any `rsolve` written with `f(n+i)`, `i > 0`, and an inhomogeneous term |
+| `rsolve` / `solve_linear_recurrence_homogeneous` on an order-2 recurrence with a **repeated** characteristic root | `C₀·rⁿ + C₁·rⁿ` — a one-parameter family presented as the general solution of a second-order equation, losing the `n·rⁿ` branch | ≤ 3.7 | **Yes** — check the discriminant of `r² + b r + c` |
+
+Also fixed, and not a silent error but worse for an unattended loop: a Rust
+panic escaped `interval_eval` as `pyo3_runtime.PanicException`, which inherits
+from `BaseException` and therefore slips past `except Exception`. Shipped in
+3.7 — a loop that survived everything else died on `x^(3/2)` over a negative
+ball.
+
+The deterministic silent-error gate (`tests/silent_errors/`, Tier-1 CI) now
+scores **0 silent errors out of 213 scored cases** across evaluation,
+integration, limits, linear algebra, number theory, real QE, series,
+simplification, solving, and sums/products. Every trap added this cycle was
+re-run against a build with the fix reverted and confirmed to score
+`silent_error` there, and every trap is paired with a **control** — its nearest
+convergent neighbour — so a subsystem cannot pass the gate by refusing
+everything. That is a statement about the corpus, not a guarantee about the
+library.
+
+### Behaviour changes to plan for
+
+Fixing a silent error means some calls that used to return now refuse. Every one
+of these is a call whose previous answer was not justified:
+
+- **`decide` raises `CadError` (`E-CAD-001`) where it used to answer**, whenever
+  the formula has a non-strict atom (`=`, `≠`, `≤`, `≥`) and a boundary root has
+  not been shown rational. This includes mixed-alternation sentences that route
+  through De Morgan — `∀x∃y. p > 0` becomes `¬∃x∀y. p ≤ 0`, and the negation
+  makes a strict body non-strict. `decide` is **not** a complete decision
+  procedure in this implementation; treat `E-CAD-001` as *undecided*, never as
+  *false*.
+- **`rank`, `rref`, `nullspace`, `eigenvects`, `jordan_form` raise
+  `E-LINALG-010`, and `inverse` raises the new `E-MAT-004`**, when an entry's or
+  the determinant's vanishing can be decided neither way. Previously "could not
+  prove non-zero" was silently read as "zero".
+- **`simplify` leaves `0 · 0⁻¹` unevaluated** instead of returning `1` (or `0`).
+  A result containing `(0 * 0^-1)` is Alkahest declining to give an
+  indeterminate form a value, not a simplifier failure.
+- **`sum_definite` raises `SumError` (`E-SUM-003`) when the summand is undefined
+  at an integer inside `[lo, hi]`**, not only when the pole lands on `lo` or
+  `hi+1`. The refusal names the offending index. Sums whose poles lie outside
+  the range are unaffected: `Σ_{k=4}^{10} 1/((k−3)(k−2))` still returns `7/8`.
+- **`euler_maclaurin` may return a shorter expansion, with no additive
+  constant.** The constant is now fitted at a point outside the gate's check
+  points and re-fitted at a second one; if the two disagree it is not a constant
+  and none is claimed. The report says which way that went in `derivation`, and
+  the `"fitted numerically"` hypothesis is only listed when a fitted constant is
+  actually part of the answer. Genuine constants (`γ`, `ζ(2)`, `½log 2π`, …) are
+  unaffected — they agree across fitting points to 13+ digits.
+- **`product_definite(term, k, lo, hi)` with `lo > hi` returns `1` even for a
+  zero term.** The empty product takes no factors; it previously returned `0`
+  for `Π_{k=1}^{0} 0` while returning `1` for `Π_{k=1}^{0} k`.
+- **`capabilities()["contract_version"]` is `3`, and `features` lost two keys:
+  `groebner_cuda` and `numpy`.** Indexing either now raises `KeyError`; use
+  `features.get(name, False)` if you need to span versions. Both were removed
+  rather than wired up because neither was *falsifiable* — no observation a
+  Python caller could make distinguished `True` from `False`:
+  - `groebner_cuda` reported that the CUDA Macaulay-matrix kernel had been
+    compiled in. The string `groebner_cuda` occurred exactly once anywhere in
+    `alkahest-py` — the capability line itself. There was no binding, no
+    `*gpu*` name in the public or the private module, and `GroebnerBasis`
+    exposes only CPU methods. The kernel is unchanged and still reachable from
+    Rust as `alkahest_cas::poly::groebner::compute_groebner_basis_gpu`; if
+    dispatch ever prefers it, the binding lands first and a bit follows it.
+  - `numpy` mapped to a Cargo feature gating the `numpy` crate, which
+    `alkahest-py` never used an item from. The feature and the dependency are
+    both gone. `ak.numpy_eval` and `ak.numpy_eval_par` are unaffected — they go
+    through the buffer protocol and always worked with the bit `False`, which
+    is its value on every wheel ever published.
+
+  An unreachable `True` makes a caller trust something it should not, which is
+  the same class of defect as a silent wrong answer; a bit that correlates with
+  nothing is better removed than left to be misread.
+  `tests/test_agent_contract.py::test_every_advertised_feature_has_an_entry_point`
+  now walks `features` and fails on any key without a named, reachable entry
+  point, so the next one cannot ship.
+- **Rust, `--features groebner-cuda`: `compute_groebner_basis_gpu` and
+  `reduce_batch` return `(polys, GpuBackendReport)` instead of `polys`.** Both
+  fall back to CPU row reduction — when `device_id` is `None`, and when the
+  driver fails — and the basis is identical either way, so a caller previously
+  had no way to tell a GPU run from a CPU one. `GpuBackendReport::ran_on_gpu()`
+  is true only when at least one mod-p reduction ran on a device and none fell
+  back; `reductions_on_gpu`, `reductions_on_cpu` and `first_gpu_error` carry
+  the detail. A compile error on upgrade is the intended failure mode for code
+  that was recording these results as GPU results. Nothing at the Python
+  surface changes: the feature has no binding.
+- **`residue(f, z, point)` refuses a non-constant `point` with
+  `AlkahestError` / `E-RESIDUE-005`** instead of leaking
+  `AttributeError: 'Expr' object has no attribute 'numerator'` from the
+  argument parser. `AttributeError` is not an `AlkahestError`, so
+  `except ak.AlkahestError` missed it entirely. The existing `E-RESIDUE-001..4`
+  refusals are now `AlkahestError`s carrying `.code` and `.remediation` too,
+  rather than bare `ValueError`s with the code glued into the message;
+  `AlkahestError` subclasses `ValueError`, so `except ValueError` still works.
+- **`series` refuses instead of running forever, with `SeriesError` /
+  `E-SERIES-003`.** `series(sqrt(t**-2 + t**-1), t, 0, 32)` never returned:
+  coefficients are formed by repeated differentiation without re-simplifying, so
+  a nested radical's derivatives grow by a constant factor per coefficient and
+  the cost doubles per order. It now honours an active `Budget` (raising
+  `BudgetExceededError`) and, with none, an internal work ceiling. It never
+  returns a *shorter* series: `O(h^order)` on fewer coefficients than were asked
+  for is a false statement about the remainder, which is worse than the refusal.
+  Ordinary expansions are unaffected — the heaviest in the suites intern a few
+  thousand nodes against a ceiling of 50 000.
+- **`simplify_expanded` records a derivation step when its expansion bound stops
+  it** (`expand_pow_limit_reached`, a no-op step naming the power it declined),
+  and the bound itself is now a budget on the number of distributed products
+  rather than a flat exponent cap. `(x+y)**6` and `(x+y+1)**7` now expand where
+  the exponent-only cap refused them while permitting a twenty-term sum to the
+  fourth power; anything above the budget comes back unexpanded *and says so*
+  instead of looking like an expression that was already expanded.
+
+### Known limits — documented, not fixed
+
+These are properties of the design as it stands. They are called out here
+because 3.8 is aimed at long unattended loops, and each of them is a way such a
+loop fails.
+
+- **`ExprPool` never reclaims.** The arena is append-only: no `clear`, no
+  refcount, no GC, and the storage cannot shrink. The only way to free interned
+  nodes is to **drop the whole pool** — and every `Expr`, `Matrix`, `Series` and
+  `DerivedResult` holds a *strong* reference to its pool, so retaining one
+  interesting result retains everything. Growth on a shared pool is linear and
+  unbounded (~200 bytes/node; measured ~2 KB per `integrate` call over 20 000
+  calls, 0 B/call with a fresh pool per iteration) while per-call latency stays
+  **flat**, so the failure mode is a clean OOM with no slowdown to warn you
+  first. `ExprPool` also exposes no `__len__` or `stats()`, so the growth is not
+  observable from Python. The supported pattern is **one pool per problem**,
+  documented in [`budgets.md`](docs/mdbook/src/budgets.md#exprpool-never-reclaims).
+- **`run_with_wall_fallback` does not bound wall time for an uncooperative
+  callee.** It joins its worker before the exception propagates, so it returns
+  when the callee returns: `run_with_wall_fallback(time.sleep, 3.0,
+  budget=Budget(wall_ms=50))` raises `E-BUDGET-001` after 3000 ms, and the
+  message reports the real elapsed time so this shows up in a log rather than
+  being inferred later. Python cannot kill a thread, and abandoning one would
+  leak a live thread that still allocates into the pool and can only be stopped
+  through the process-wide cancel flag. Only an **OS-level bound** (subprocess,
+  process watchdog) is a hard deadline.
+- **`wall_ms` granularity is one primitive operation, and FLINT calls cannot be
+  interrupted.** After the checkpoint work above the overshoot is a small
+  additive term (1.0–1.2×), but past a certain degree a single operation is a
+  FLINT factorisation or resultant — one foreign-function call, ~2 s on a
+  degree-62 integrand, which no cooperative mechanism can stop part-way.
+- **`Matrix.eigenvals()` grows the pool on identical input** (~1.9 KB/call,
+  measured over 20 000 calls on the same 2×2 integer matrix): it interns a fresh
+  `__eigen_lambda_N` gensym per call. Every other Python-facing entry point
+  measured is flat on repeated input. Cache eigenvalue results.
+- **`Matrix.eigenvals()` can emit casus-irreducibilis cube roots** — correct
+  under Alkahest's real cube-root convention (and honestly refused by
+  `eval_expr` with `E-EVAL-009`, with `interval_eval` returning an unbounded
+  ball) but evaluated on the **principal** branch by SymPy, NumPy and most other
+  tools, which return a confident number that is not an eigenvalue. 14 of 720
+  random integer matrices produced one. An honest refusal here becomes somebody
+  else's silent error the moment the expression crosses the boundary, so
+  evaluate inside Alkahest before exporting, or export a verified numeric
+  enclosure instead. See [`interop.md`](docs/mdbook/src/interop.md).
+- **The LLVM JIT leaks an LLVM `Context` per compile** (`Box::leak`, on the
+  error paths as well as the success path). Feature-gated behind `jit`, so
+  default PyPI wheels (Cranelift) are unaffected; do not compile in a loop under
+  a `+jit` / `+full` wheel.
+- **No sanitizer covers any Python-facing path.** The PR-gating ASan job runs
+  with `detect_leaks=0`, the nightly LSan shard cannot reach a `cdylib` with no
+  `#[test]` functions, and `pytest` is never run under a sanitizer. The
+  behavioural substitute is the fresh-pool sweep described in
+  [`TESTING.md`](TESTING.md#3-memory-safety--sanitizers).
+- **There is no `cuda_device_count()`.** `CudaCompiledFn.call_batch_on(ordinal,
+  …)` selects a device, but the valid range can only be discovered by trying an
+  ordinal and catching `CudaError` (`E-CUDA-003`); the loop that does it is in
+  [`gpu.md`](docs/mdbook/src/gpu.md#discovering-the-valid-device-ordinals). Not
+  added yet on purpose: `cuda` implies LLVM 15 with NVPTX, so such a binding
+  cannot be compiled on an ordinary dev box, no CI job builds the Python
+  extension with either CUDA feature, and exercising it needs a device — it
+  would ship with no verification of any kind, which is the provenance of the
+  capability overclaims fixed above. It belongs in the same change as the
+  missing `maturin develop --features cuda` + `pytest tests/test_cuda.py`
+  nightly step.
+
+### Fixed
+
 - **`cargo test --features groebner-cuda` could not pass on a machine with no
   NVIDIA driver**, contradicting the header comment of
   `alkahest-core/tests/groebner_cuda.rs`. `cudarc` *panics* rather than
@@ -657,55 +778,6 @@ loop fails.
   `ZeilbergerCertificate.side_conditions` already use. An empty list means the
   solver *proved* every divisor non-zero: `solve([2*x - b], [x])` reports none.
 ### Added
-
-- **Gröbner results can be read back — `GbPoly.to_expr`, iteration over a
-  `GroebnerBasis`, and `expr_to_gbpoly`.** Everything that returned a basis
-  returned a handle nobody could open. `GbPoly` exposed only `is_zero` and
-  `n_vars`; `GroebnerBasis` exposed only its own constructors plus `reduce` and
-  `contains`, and `reduce` took a `GbPoly` that no exported function could
-  build — `expr_to_gbpoly`, named in `compute_raw`'s own docstring, was never
-  registered on the module. So `rosenfeld_groebner(...).final_basis()`,
-  `triangularize(...)`, `primary_decomposition(...)` and a parametric `solve`
-  all handed back objects whose only readable property was how many generators
-  they had. Differential elimination was write-only: the input–output equations
-  it computes could not be looked at, which is the whole of structural
-  identifiability.
-
-  Now: `alkahest.expr_to_gbpoly(expr, vars)` converts in, `GbPoly.to_expr()`
-  converts back out, and `GbPoly.terms()` gives `(exponent tuple, exact
-  int/Fraction)` pairs. A `GroebnerBasis` is a sequence — `len()`, indexing,
-  iteration — with `polynomials()`, `to_exprs()`, `variables()` and an `order`
-  property. `reduce()` now accepts an `Expr` as well as a `GbPoly`, so the
-  membership and reduction API is reachable from expressions alone.
-  `GroebnerBasis.eliminate(vars)` is bound too — the mdbook and Sphinx pages
-  had documented it for releases, but it existed only in Rust, so the
-  implicitization example on the solving page could not run.
-
-  The part that needed a real fix rather than an accessor is the **variable
-  ordering**. A `GbPoly` stores exponent vectors, not names, so a basis without
-  its variable list cannot be read at all — and `rosenfeld_groebner` discovered
-  its jet variables internally (`t`, `x`, `dx/dt`, `ddx/dt/dt`, …) and threw
-  them away. Every object that hands out a `GbPoly` now carries that list:
-  `RosenfeldGroebnerResult.variables()`, `GroebnerBasis.variables()`,
-  `RegularChain.variables()`, and for a parametric `solve` the solve variables
-  *followed by the free parameters*, which is the order the exponent vectors
-  were actually built in. Asking for an `Expr` with too few variables named
-  raises `ValueError` rather than silently misreading exponent slots.
-
-  New in Rust: `alkahest_cas::gbpoly_to_expr`, `GroebnerBasis::order()`,
-  `MonomialOrder::as_str()`, `solver::collect_parameters`, and
-  `rosenfeld_groebner_ranked` / `dae_index_reduce_ranked`, which return the
-  `DifferentialRanking` alongside the result (the existing entry points are
-  unchanged wrappers, so no struct gained a field).
-
-- **`DAE` can be read: `equations()`, `variables()`, `derivatives()`,
-  `time_var`, `index`.** It previously exposed `n_equations` and `n_variables`
-  and nothing else, so a prolonged system that reported six variables for a
-  two-variable input gave no way to find out what any of them were.
-  `pantelides` sets `index` on the DAE it returns — the number of
-  differentiation rounds — and the equations it appended, plus the higher jets
-  (`ddx/dt/dt`, …) they introduced, are now visible in `equations()` and
-  `derivatives()`.
 
 - **`alkahest.ansatz` — parametric families and coefficient fitting** (P2
   autoresearch item 1). "Guess the shape, let the CAS pin the constants" is the
@@ -1154,47 +1226,6 @@ loop fails.
 
 ### Performance
 
-- **`zeilberger`'s exact `Q(n)(k)` post-processing no longer swells its own
-  coefficients.** With the search fixed (below), what was left was entirely
-  after it: on `Σ_k C(n,k)³` the search reached `(order 2, degree 3)` in 0.22 s
-  and the run then spent ~29 s normalising the certificate and re-verifying it.
-  The cause was `PolyK::gcd` — a textbook Euclidean remainder sequence over the
-  *field* `Q(n)`, whose coefficients are rational functions in `n`: every
-  division step adds numerator and denominator degrees and no step ever removes
-  content, the classic intermediate-expression-swell blowup, and
-  `RatK::normalize` ran it on every normalisation. The gcd now leaves the field
-  and runs **Brown's subresultant PRS in `Z[n][k]`** (Collins 1967, Brown 1971;
-  Knuth TAOCP 2 § 4.6.1), with both cofactors divided out in the same integral
-  domain, and `Q[n]` gcds (`rn_mul` / `rn_add` / `rn_inv`, which cancel
-  crosswise now rather than reducing the full cross-multiplied product) go
-  through the same subresultant sequence over `Z[n]`. At the shipped defaults,
-  measured before and after on one machine: `Σ (−1)^k C(n,k)³` **1.6 s →
-  0.11 s** (15×), `Σ_k C(n,k)³` **56 s → 0.07 s** (800×),
-  `Σ_k C(n,k)²C(n+k,k)²` **16.5 s → 0.05 s** (330×, and still Apéry's
-  recurrence coefficient for coefficient). Two OEIS targets that timed out past 300 s at certificate
-  degree ≥ 3 are now decided: **A357510** `Σ k·C(n,k)²·C(n+k,k)²` and
-  **A357512** `Σ k⁵·C(n,k)²·C(n+k,k)²` both yield a verified order-3 recurrence
-  in under a second. This is a change of algorithm, not of contract: a monic
-  gcd is unique, so every certificate is the same one as before, and every
-  certificate is still checked as an exact `Q(n)(k)` identity before it is
-  returned — nothing here is probabilistic and no verification was weakened.
-- **`zeilberger`'s `max_order` / `max_degree` are now upper bounds instead of
-  starting points.** The search used to sweep certificate degrees
-  `d = 0..=max_degree` at order 1 before ever trying order 2, and a single
-  degree probe gets ~3× more expensive per degree step (measured on
-  `Σ (−1)^k C(n,k)³`: 0.7 ms at `d = 0`, 0.6 s at `d = 7`, 84 s at `d = 12`).
-  Every order ≥ 2 identity — Dixon, Franel, Apéry — therefore ran for minutes
-  or never at the shipped defaults while being seconds away at `max_degree=4`,
-  i.e. **raising the bound made easy inputs slower rather than admitting harder
-  ones**. The `(order, degree)` grid is now visited by iterative deepening,
-  cheapest estimated probe first (one extra order is priced at three extra
-  degrees, which is what the measurements say), and the first *verified*
-  relation is returned. `Σ (−1)^k C(n,k)³` at the defaults goes from >400 s
-  (killed) to **0.67 s**; `Σ_k C(n,k)³` from >400 s (killed) to ~31 s. Nothing
-  is skipped — the plan still visits every pair inside the bounds, so an
-  exhausted search costs what it always did — and verification is unchanged: a
-  candidate that fails the exact `Q(n)(k)` check is still discarded, never
-  returned.
 - **`numpy_eval` / `numpy_eval_par` no longer round-trip through a Python
   list of floats.** The previous implementation converted every NumPy array
   to a flat Python list via `.tolist()` before crossing into Rust

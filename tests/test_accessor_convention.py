@@ -9,7 +9,7 @@ The rule (see CONTRIBUTING.md § "Accessors: property or method?"):
 Two guards live here:
 
 ``test_converted_accessors_are_properties``
-    Pins the accessors converted in 3.8.0.  Runs against the *installed*
+    Pins the accessors converted in 3.9.0.  Runs against the *installed*
     extension, so it also catches a wheel built from stale sources.
 
 ``test_no_zero_arg_scalar_accessor_is_a_method``
@@ -31,7 +31,7 @@ import alkahest.alkahest as _native
 import pytest
 
 # --------------------------------------------------------------------------
-# Part 1 — the accessors converted in 3.8.0 stay properties
+# Part 1 — the accessors converted in 3.9.0 stay properties
 # --------------------------------------------------------------------------
 
 CONVERTED_ACCESSORS = [
@@ -54,7 +54,7 @@ CONVERTED_ACCESSORS = [
     ("MultiPolyFp", "total_degree"),
 ]
 
-# Accessors that were already properties before 3.8.0 and must stay that way —
+# Accessors that were already properties before 3.9.0 and must stay that way —
 # the convention is only useful if it holds in both directions.
 PRE_EXISTING_PROPERTIES = [
     ("Enclosure", "lower"),
