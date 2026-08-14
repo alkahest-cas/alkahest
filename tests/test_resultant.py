@@ -147,7 +147,7 @@ class TestResultantBivariate:
         # Convert the result to UniPoly in x and check coefficients.
         res_poly = UniPoly.from_symbolic(res_expr, x)
         coeffs = res_poly.coefficients()
-        assert res_poly.degree() == 2, f"expected degree 2, got {res_poly.degree()}"
+        assert res_poly.degree == 2, f"expected degree 2, got {res_poly.degree}"
         # Coefficients in ascending order: [-1, 0, 2]
         assert coeffs[0] == -1, f"constant term should be -1, got {coeffs[0]}"
         assert coeffs[2] == 2, f"leading coeff should be 2, got {coeffs[2]}"
@@ -218,8 +218,8 @@ class TestSubresultantPRS:
         seq = subresultant_prs(p_expr, q_expr, x)
         last = seq[-1]
         last_poly = UniPoly.from_symbolic(last, x)
-        assert last_poly.degree() == 1, (
-            f"last element should be degree 1 (matching gcd), got {last_poly.degree()}"
+        assert last_poly.degree == 1, (
+            f"last element should be degree 1 (matching gcd), got {last_poly.degree}"
         )
 
     def test_prs_coprime_terminates_at_constant(self):
@@ -232,8 +232,8 @@ class TestSubresultantPRS:
         assert len(seq) >= 2
         last = seq[-1]
         last_poly = UniPoly.from_symbolic(last, x)
-        assert last_poly.degree() == 0, (
-            f"last element of coprime PRS should be degree 0, got {last_poly.degree()}"
+        assert last_poly.degree == 0, (
+            f"last element of coprime PRS should be degree 0, got {last_poly.degree}"
         )
 
     def test_prs_consistent_with_resultant(self):

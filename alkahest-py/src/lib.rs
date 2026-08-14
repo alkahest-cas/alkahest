@@ -3251,10 +3251,14 @@ impl PyUniPoly {
         self.inner.coefficients_i64()
     }
 
+    /// Degree of the polynomial (`-1` for the zero polynomial).
+    #[getter]
     fn degree(&self) -> i64 {
         self.inner.degree()
     }
 
+    /// True if this is the zero polynomial.
+    #[getter]
     fn is_zero(&self) -> bool {
         self.inner.is_zero()
     }
@@ -3354,10 +3358,14 @@ impl PyMultiPoly {
             .map_err(conv_error_to_py)
     }
 
+    /// True if this is the zero polynomial.
+    #[getter]
     fn is_zero(&self) -> bool {
         self.inner.is_zero()
     }
 
+    /// Highest total degree over all terms (`0` for the zero polynomial).
+    #[getter]
     fn total_degree(&self) -> u32 {
         self.inner.total_degree()
     }
@@ -3519,6 +3527,8 @@ impl PyRationalFunction {
             .map_err(conv_error_to_py)
     }
 
+    /// True if the numerator is the zero polynomial.
+    #[getter]
     fn is_zero(&self) -> bool {
         self.inner.is_zero()
     }
@@ -4021,6 +4031,8 @@ impl PyOdeTrajectory {
         PyList::new_bound(py, rows).into_py(py)
     }
 
+    /// The final time point, or ``None`` for an empty trajectory.
+    #[getter]
     fn t_final(&self) -> Option<f64> {
         self.inner.t_final()
     }
@@ -6197,6 +6209,8 @@ impl PyODE {
         }
     }
 
+    /// Number of state variables (the order of the system).
+    #[getter]
     fn order(&self) -> usize {
         self.inner.order()
     }
@@ -6414,9 +6428,14 @@ impl PyDAE {
         }
     }
 
+    /// Number of equations in the system.
+    #[getter]
     fn n_equations(&self) -> usize {
         self.inner.n_equations()
     }
+
+    /// Number of dependent variables in the system.
+    #[getter]
     fn n_variables(&self) -> usize {
         self.inner.n_variables()
     }
@@ -6523,6 +6542,8 @@ impl PyHybridODE {
         }
     }
 
+    /// Number of registered discrete events.
+    #[getter]
     fn n_events(&self) -> usize {
         self.inner.events.len()
     }
@@ -6601,11 +6622,13 @@ impl PyComponent {
     }
 
     /// Number of constitutive equations contributed by this component.
+    #[getter]
     fn n_equations(&self) -> usize {
         self.inner.equations.len()
     }
 
     /// Number of external connection ports.
+    #[getter]
     fn n_ports(&self) -> usize {
         self.inner.ports.len()
     }
@@ -7375,6 +7398,8 @@ impl PyArbBall {
         self.inner.contains(v)
     }
 
+    /// True if the ball has zero radius (a single exact value).
+    #[getter]
     fn is_exact(&self) -> bool {
         self.inner.is_exact()
     }
@@ -9818,10 +9843,14 @@ struct PyGbPoly {
 #[cfg(feature = "groebner")]
 #[pymethods]
 impl PyGbPoly {
+    /// True if this is the zero polynomial.
+    #[getter]
     fn is_zero(&self) -> bool {
         self.inner.is_zero()
     }
 
+    /// Number of variables in the ambient ring.
+    #[getter]
     fn n_vars(&self) -> usize {
         self.inner.n_vars
     }
@@ -11024,10 +11053,14 @@ struct PyMultiPolyFp {
 
 #[pymethods]
 impl PyMultiPolyFp {
+    /// True if this is the zero polynomial.
+    #[getter]
     fn is_zero(&self) -> bool {
         self.inner.is_zero()
     }
 
+    /// Highest total degree over all terms (`0` for the zero polynomial).
+    #[getter]
     fn total_degree(&self) -> u32 {
         self.inner.total_degree()
     }

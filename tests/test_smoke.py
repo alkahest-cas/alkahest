@@ -228,7 +228,7 @@ def test_unipoly_degree():
     p = pool()
     x = p.symbol("x")
     poly = UniPoly.from_symbolic(x**3 + p.integer(-2) * x + p.integer(1), x)
-    assert poly.degree() == 3
+    assert poly.degree == 3
 
 
 def test_unipoly_gcd():
@@ -245,7 +245,7 @@ def test_multipoly_total_degree():
     x = p.symbol("x")
     y = p.symbol("y")
     mp = MultiPoly.from_symbolic(x**2 * y + x * y**2, [x, y])
-    assert mp.total_degree() == 3
+    assert mp.total_degree == 3
 
 
 def test_rational_function_normalization():

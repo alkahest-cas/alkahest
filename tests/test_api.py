@@ -311,11 +311,11 @@ class TestUniPoly:
 
     def test_degree(self):
         p = self._make([0, 0, 1])
-        assert p.degree() == 2
+        assert p.degree == 2
 
     def test_is_zero(self):
         p = self._make([0])
-        assert p.is_zero()
+        assert p.is_zero
 
     def test_add(self):
         p = self._make([1, 2])
@@ -363,12 +363,12 @@ class TestMultiPoly:
         x, y = self.x, self.y
         expr = x * y
         p = MultiPoly.from_symbolic(expr, [x, y])
-        assert not p.is_zero()
-        assert p.total_degree() == 2
+        assert not p.is_zero
+        assert p.total_degree == 2
 
     def test_is_zero(self):
         p = MultiPoly.from_symbolic(self.pool.integer(0), [self.x])
-        assert p.is_zero()
+        assert p.is_zero
 
     def test_repr_str(self):
         x, y = self.x, self.y

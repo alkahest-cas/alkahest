@@ -175,6 +175,54 @@ of these is a call whose previous answer was not justified:
   emitted. Nothing was unsound; the question being answered had changed. Code
   that relied on pool symbols being `Real` inside an integer context should pass
   `domain="real"` explicitly.
+- **Seventeen zero-argument scalar accessors became properties — drop the
+  `()`.** There was no rule a caller could predict: `Enclosure.width` and
+  `RegularChain.n_vars` were properties while `DAE.n_equations()` and
+  `MultiPoly.total_degree()` were methods, so the same shape of question was
+  asked two different ways depending on the class. The convention now is: **a
+  zero-argument, O(1), non-allocating accessor returning a scalar or a flag is a
+  property; anything that returns a collection, allocates, or does real work is
+  a method.** No compatibility alias is provided, deliberately — an accessor
+  that answers to both forms leaves the ambiguity in place. Migration is
+  mechanical:
+
+  | Before | After |
+  |---|---|
+  | `UniPoly.degree()` | `UniPoly.degree` |
+  | `UniPoly.is_zero()` | `UniPoly.is_zero` |
+  | `MultiPoly.is_zero()` | `MultiPoly.is_zero` |
+  | `MultiPoly.total_degree()` | `MultiPoly.total_degree` |
+  | `MultiPolyFp.is_zero()` | `MultiPolyFp.is_zero` |
+  | `MultiPolyFp.total_degree()` | `MultiPolyFp.total_degree` |
+  | `RationalFunction.is_zero()` | `RationalFunction.is_zero` |
+  | `GbPoly.is_zero()` | `GbPoly.is_zero` |
+  | `GbPoly.n_vars()` | `GbPoly.n_vars` |
+  | `ODE.order()` | `ODE.order` |
+  | `DAE.n_equations()` | `DAE.n_equations` |
+  | `DAE.n_variables()` | `DAE.n_variables` |
+  | `HybridODE.n_events()` | `HybridODE.n_events` |
+  | `Component.n_equations()` | `Component.n_equations` |
+  | `Component.n_ports()` | `Component.n_ports` |
+  | `OdeTrajectory.t_final()` | `OdeTrajectory.t_final` |
+  | `ArbBall.is_exact()` | `ArbBall.is_exact` |
+
+  **Calling the old form now raises `TypeError: 'int' object is not callable`
+  (or `'bool'`, `'float'`), which is loud. The reverse mistake is not.**
+  Writing `if dae.n_equations:` against a *pre*-3.8.0 build silently reads a
+  bound method, which is always truthy, and `f"{dae.n_equations}"` formats as
+  `<built-in method ...>`; so grep for these names rather than waiting for a
+  traceback. Accessors that were *already* properties (`Enclosure.lower`,
+  `.upper`, `.width`, `.subdivisions`, `Matrix.rows`, `.cols`,
+  `RegularChain.n_vars`, `RosenfeldGroebnerResult.consistent`, `.truncated`,
+  `ArbBall.mid`, `.rad`, `.lo`, `.hi`, …) are unchanged; they were already
+  correct under the rule, as were the collection-returning methods that sit
+  beside them (`RegularChain.polys()`, `RosenfeldGroebnerResult.final_basis()`).
+  Three zero-argument scalar calls stay methods because they do real work rather
+  than read a field: `Matrix.rank()` (Gaussian elimination), `ODE.is_autonomous()`
+  (walks every RHS expression) and `PositivityCertificate.verify()` (re-runs the
+  exact SOS identity check). `tests/test_accessor_convention.py` pins the
+  converted set and scans `alkahest-py/src/lib.rs` for new offenders, so the
+  inconsistency cannot creep back.
 
 ### Known limits — documented, not fixed
 

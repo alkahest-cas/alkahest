@@ -35,21 +35,21 @@ class TestReduceMod:
         fp = modular.reduce_mod(poly, 5)
         assert isinstance(fp, MultiPolyFp)
         assert fp.modulus == 5
-        assert not fp.is_zero()
+        assert not fp.is_zero
 
     def test_negative_coeff(self):
         # -3x mod 7 → 4x
         poly, _pool, _x, _y = make_poly(lambda p, x, y: p.integer(-3) * x)
         fp = modular.reduce_mod(poly, 7)
         assert fp.modulus == 7
-        assert not fp.is_zero()
+        assert not fp.is_zero
 
     def test_vanishing_term(self):
         # 5x + 7 mod 5 → 2 (x term vanishes)
         poly, _pool, _x, _y = make_poly(lambda p, x, y: p.integer(5) * x + p.integer(7))
         fp = modular.reduce_mod(poly, 5)
         # degree falls (x^1 term is gone) — the result is just the constant 2
-        assert fp.total_degree() == 0
+        assert fp.total_degree == 0
 
     def test_zero_poly(self):
         pool = alkahest.ExprPool()
@@ -58,7 +58,7 @@ class TestReduceMod:
         zero = pool.integer(0)
         poly = MultiPoly.from_symbolic(zero, [x, y])
         fp = modular.reduce_mod(poly, 7)
-        assert fp.is_zero()
+        assert fp.is_zero
 
     def test_invalid_modulus_composite(self):
         poly, *_ = make_poly(lambda p, x, y: x)
@@ -89,7 +89,7 @@ class TestReduceMod:
         x2 = x**2
         poly = MultiPoly.from_symbolic(x2 + x + pool.integer(1), [x, y])
         fp = modular.reduce_mod(poly, 5)
-        assert fp.total_degree() == 2
+        assert fp.total_degree == 2
 
 
 # ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@ def test_unipoly_factor_quadratic():
     assert len(fac.factor_list()) == 2
     for base, exp in fac.factor_list():
         assert exp == 1
-        assert base.degree() == 1
+        assert base.degree == 1
     assert fac.verification == {
         "status": "exactly_verified",
         "evidence": "factor_product",

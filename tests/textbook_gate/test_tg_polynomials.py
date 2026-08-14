@@ -14,7 +14,7 @@ file never compares against alkahest's printed normal form. Instead:
   compared back to the original polynomial's coefficients.
 - ``MultiPoly``: has no coefficient accessor, so equality is checked via
   arithmetic: build a *reference* ``MultiPoly`` from a known expression,
-  subtract, and assert ``.is_zero()`` — this only depends on ``MultiPoly``'s
+  subtract, and assert ``.is_zero`` — this only depends on ``MultiPoly``'s
   own (canonical, content-addressed) arithmetic, not on any printed form.
 - ``real_roots``: each analytic root is checked against exactly one returned
   bracketing interval (``lo``/``hi``), with a small epsilon tolerance.
@@ -94,7 +94,7 @@ def test_unipoly_factor_x4_minus_1(pool, x):
     factors = fz.factor_list()
     assert fz.unit == "1"
     assert len(factors) == 3
-    degrees = sorted(f.degree() for f, _ in factors)
+    degrees = sorted(f.degree for f, _ in factors)
     assert degrees == [1, 1, 2]
     assert all(m == 1 for _, m in factors)
     _assert_factorization_reconstructs(p, [-1, 0, 0, 0, 1])
@@ -107,7 +107,7 @@ def test_unipoly_factor_x3_minus_x_three_linear_factors(pool, x):
     factors = fz.factor_list()
     assert fz.unit == "1"
     assert len(factors) == 3
-    assert all(f.degree() == 1 and m == 1 for f, m in factors)
+    assert all(f.degree == 1 and m == 1 for f, m in factors)
     _assert_factorization_reconstructs(p, [0, -1, 0, 1])
 
 
@@ -120,7 +120,7 @@ def test_unipoly_factor_x2_plus_1_irreducible_over_z(pool, x):
     assert fz.unit == "1"
     assert len(factors) == 1
     factor, multiplicity = factors[0]
-    assert factor.degree() == 2
+    assert factor.degree == 2
     assert multiplicity == 1
     assert factor.coefficients() == [1, 0, 1]
 
@@ -132,7 +132,7 @@ def test_unipoly_factor_cubic_rational_root_plus_irreducible_quadratic(pool, x):
     factors = fz.factor_list()
     assert fz.unit == "1"
     assert len(factors) == 2
-    degrees = sorted(f.degree() for f, _ in factors)
+    degrees = sorted(f.degree for f, _ in factors)
     assert degrees == [1, 2]
     assert all(m == 1 for _, m in factors)
     _assert_factorization_reconstructs(p, [-2, 1, -2, 1])
@@ -145,7 +145,7 @@ def test_unipoly_factor_repeated_linear_factor(pool, x):
     factors = fz.factor_list()
     assert fz.unit == "1"
     assert len(factors) == 2
-    assert all(f.degree() == 1 for f, _ in factors)
+    assert all(f.degree == 1 for f, _ in factors)
     multiplicities = sorted(m for _, m in factors)
     assert multiplicities == [1, 2]
     _assert_factorization_reconstructs(p, [3, -5, 1, 1])
@@ -159,15 +159,15 @@ def test_unipoly_factor_quartic_four_linear_factors(pool, x):
     factors = fz.factor_list()
     assert fz.unit == "1"
     assert len(factors) == 4
-    assert all(f.degree() == 1 and m == 1 for f, m in factors)
+    assert all(f.degree == 1 and m == 1 for f, m in factors)
     _assert_factorization_reconstructs(p, [4, 0, -5, 0, 1])
 
 
 def test_unipoly_degree_and_coefficients_roundtrip(pool, x):
-    """Sanity check: from_coefficients/.degree()/.coefficients() round-trip
+    """Sanity check: from_coefficients/.degree/.coefficients() round-trip
     exactly for a simple polynomial (2x^3 - 7 = 2x^3 + 0x^2 + 0x - 7)."""
     p = _unipoly(pool, x, [-7, 0, 0, 2])
-    assert p.degree() == 3
+    assert p.degree == 3
     assert p.coefficients() == [-7, 0, 0, 2]
 
 
@@ -179,7 +179,7 @@ def test_unipoly_gcd_shared_linear_factor(pool, x):
     a = _unipoly(pool, x, [-1, 0, 1])  # x^2 - 1 = (x-1)(x+1)
     b = _unipoly(pool, x, [2, -3, 1])  # x^2 - 3x + 2 = (x-1)(x-2)
     g = a.gcd(b)
-    assert g.degree() == 1
+    assert g.degree == 1
     # coefficients are only defined up to a unit; normalize so the constant
     # term's sign matches (x - 1) has coefficients [-1, 1]
     coeffs = g.coefficients()
@@ -194,7 +194,7 @@ def test_unipoly_gcd_shared_quadratic_factor(pool, x):
     a = _unipoly(pool, x, _convolve(common, [-5, 1]))
     b = _unipoly(pool, x, _convolve(common, [7, 1]))
     g = a.gcd(b)
-    assert g.degree() == 2
+    assert g.degree == 2
     coeffs = g.coefficients()
     if coeffs[-1] < 0:
         coeffs = [-c for c in coeffs]
@@ -206,7 +206,7 @@ def test_unipoly_gcd_coprime_polys_is_constant(pool, x):
     a = _unipoly(pool, x, [-1, 1])
     b = _unipoly(pool, x, [-2, 1])
     g = a.gcd(b)
-    assert g.degree() == 0
+    assert g.degree == 0
 
 
 # --- ak.real_roots ---------------------------------------------------------
@@ -261,31 +261,31 @@ def test_real_roots_no_real_roots(pool, x):
     assert len(roots) == 0
 
 
-# --- MultiPoly.total_degree() ---------------------------------------------
+# --- MultiPoly.total_degree ---------------------------------------------
 
 
 def test_multipoly_total_degree_binomial_cube(pool, x, y):
     """(x+y)^3 has total degree 3."""
     mp = ak.MultiPoly.from_symbolic((x + y) ** 3, [x, y])
-    assert mp.total_degree() == 3
+    assert mp.total_degree == 3
 
 
 def test_multipoly_total_degree_trinomial_square(pool, x, y, z):
     """(x+y+z)^2 has total degree 2."""
     mp = ak.MultiPoly.from_symbolic((x + y + z) ** 2, [x, y, z])
-    assert mp.total_degree() == 2
+    assert mp.total_degree == 2
 
 
 def test_multipoly_total_degree_mixed(pool, x, y):
     """x^2*y + y^3 -- both monomials have total degree 3."""
     mp = ak.MultiPoly.from_symbolic(x**2 * y + y**3, [x, y])
-    assert mp.total_degree() == 3
+    assert mp.total_degree == 3
 
 
 def test_multipoly_total_degree_linear(pool, x, y):
     """x + 2y + 1 has total degree 1."""
     mp = ak.MultiPoly.from_symbolic(x + pool.integer(2) * y + pool.integer(1), [x, y])
-    assert mp.total_degree() == 1
+    assert mp.total_degree == 1
 
 
 # --- MultiPoly.gcd() --------------------------------------------------------
@@ -294,7 +294,7 @@ def test_multipoly_total_degree_linear(pool, x, y):
 def _assert_multipoly_equal(a: ak.MultiPoly, b: ak.MultiPoly) -> None:
     """Compare two MultiPoly values via arithmetic (no coefficient accessor
     exists): subtract and check the result is the zero polynomial."""
-    assert (a - b).is_zero()
+    assert (a - b).is_zero
 
 
 def test_multipoly_gcd_shared_linear_factor(pool, x, y):
@@ -303,7 +303,7 @@ def test_multipoly_gcd_shared_linear_factor(pool, x, y):
     b = ak.MultiPoly.from_symbolic((x + y) * (x + pool.integer(2) * y), [x, y])
     g = a.gcd(b)
     expected = ak.MultiPoly.from_symbolic(x + y, [x, y])
-    assert g.total_degree() == 1
+    assert g.total_degree == 1
     _assert_multipoly_equal(g, expected)
 
 
@@ -313,7 +313,7 @@ def test_multipoly_gcd_shared_trivariate_factor(pool, x, y, z):
     b = ak.MultiPoly.from_symbolic((x + y + z) * (y + z), [x, y, z])
     g = a.gcd(b)
     expected = ak.MultiPoly.from_symbolic(x + y + z, [x, y, z])
-    assert g.total_degree() == 1
+    assert g.total_degree == 1
     _assert_multipoly_equal(g, expected)
 
 
@@ -322,7 +322,7 @@ def test_multipoly_gcd_coprime_is_constant(pool, x, y):
     a = ak.MultiPoly.from_symbolic(x, [x, y])
     b = ak.MultiPoly.from_symbolic(y, [x, y])
     g = a.gcd(b)
-    assert g.total_degree() == 0
+    assert g.total_degree == 0
 
 
 # --- MultiPoly.factor_z() ---------------------------------------------------
@@ -334,7 +334,7 @@ def test_multipoly_factor_z_difference_of_squares(pool, x, y):
     fz = mp.factor_z()
     factors = fz.factor_list()
     assert len(factors) == 2
-    assert all(f.total_degree() == 1 and m == 1 for f, m in factors)
+    assert all(f.total_degree == 1 and m == 1 for f, m in factors)
 
     # reconstruct the product and check it matches the original (up to unit)
     product = None

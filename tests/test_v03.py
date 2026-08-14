@@ -244,7 +244,7 @@ class TestODE:
     def test_create_simple(self):
         # dx/dt = x
         ode = ODE.new([self.x], [self.x], self.t)
-        assert ode.order() == 1
+        assert ode.order == 1
 
     def test_autonomous(self):
         ode = ODE.new([self.x], [self.x], self.t)
@@ -265,7 +265,7 @@ class TestODE:
         one = self.pool.integer(1)
         ode2 = ode.with_ic(self.x, one)
         # Should not raise; order unchanged
-        assert ode2.order() == 1
+        assert ode2.order == 1
 
     def test_state_vars(self):
         ode = ODE.new([self.x], [self.x], self.t)
@@ -294,17 +294,17 @@ class TestLowerToFirstOrder:
 
     def test_first_order_passthrough(self):
         ode = lower_to_first_order(self.x, self.x, 1, self.t)
-        assert ode.order() == 1
+        assert ode.order == 1
 
     def test_second_order_harmonic_oscillator(self):
         # x'' = -x
         neg_x = self.pool.integer(-1) * self.x
         ode = lower_to_first_order(self.x, neg_x, 2, self.t)
-        assert ode.order() == 2
+        assert ode.order == 2
 
     def test_third_order_produces_3_states(self):
         ode = lower_to_first_order(self.x, self.pool.integer(0), 3, self.t)
-        assert ode.order() == 3
+        assert ode.order == 3
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -323,8 +323,8 @@ class TestDAE:
         neg_x = self.pool.integer(-1) * self.x
         eq = self.dx + neg_x  # dx/dt - x = 0
         dae = DAE.new([eq], [self.x], [self.dx], self.t)
-        assert dae.n_equations() == 1
-        assert dae.n_variables() == 1
+        assert dae.n_equations == 1
+        assert dae.n_variables == 1
 
     def test_pantelides_ode_no_steps(self):
         neg_x = self.pool.integer(-1) * self.x
@@ -332,7 +332,7 @@ class TestDAE:
         dae = DAE.new([eq], [self.x], [self.dx], self.t)
         reduced = pantelides(dae)
         # An ODE needs 0 differentiation steps
-        assert reduced.n_equations() >= 1
+        assert reduced.n_equations >= 1
 
     def test_pantelides_returns_dae(self):
         neg_x = self.pool.integer(-1) * self.x
@@ -363,15 +363,15 @@ class TestAcausal:
         sys = AcausalSystem(self.pool)
         dae = sys.flatten(self.t)
         # Empty system → empty DAE
-        assert dae.n_equations() == 0
+        assert dae.n_equations == 0
 
     def test_component_accessible_from_dict(self):
         R = self.pool.symbol("R")
         comp = resistor("R1", R)["component"]
         assert isinstance(comp, Component)
         assert comp.name == "R1"
-        assert comp.n_equations() == 1
-        assert comp.n_ports() == 2
+        assert comp.n_equations == 1
+        assert comp.n_ports == 2
         port = comp.port("R1.p")
         assert port is not None
         assert port.name == "R1.p"
@@ -408,8 +408,8 @@ class TestAcausal:
 
         dae = sys.flatten(self.t)
         # 1 (source) + 1 (resistor) + 2 (capacitor) + 2*3 (connections) = 10
-        assert dae.n_equations() == 10
-        assert dae.n_variables() > 0
+        assert dae.n_equations == 10
+        assert dae.n_variables > 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -433,14 +433,14 @@ class TestSensitivity:
         assert sys.original_dim == 1
         assert sys.n_params == 1
         # Extended ODE has y + 1 sensitivity state
-        assert sys.extended_ode.order() == 2
+        assert sys.extended_ode.order == 2
 
     def test_sensitivity_constant(self):
         # dy/dt = p, param = p → dS/dt = 1
         p = self.pool.symbol("p")
         ode = ODE.new([self.y], [p], self.t)
         sys = sensitivity_system(ode, [p])
-        assert sys.extended_ode.order() == 2
+        assert sys.extended_ode.order == 2
         # The sensitivity RHS should be 1
         s_rhs = sys.extended_ode.rhs()[1]
         assert str(s_rhs) == "1"
@@ -451,7 +451,7 @@ class TestSensitivity:
         ode = ODE.new([self.y], [rhs], self.t)
         sys = sensitivity_system(ode, [self.a, b])
         assert sys.n_params == 2
-        assert sys.extended_ode.order() == 3
+        assert sys.extended_ode.order == 3
 
     def test_adjoint_system(self):
         # dy/dt = -y, objective ∂g/∂y = 1
@@ -459,7 +459,7 @@ class TestSensitivity:
         ode = ODE.new([self.y], [neg_y], self.t)
         one = self.pool.integer(1)
         adj = adjoint_system(ode, [one])
-        assert adj.order() == 1
+        assert adj.order == 1
         # dλ/dt = λ (adjoint of -y system)
         lam = adj.state_vars()[0]
         assert str(adj.rhs()[0]) == str(lam)
@@ -487,7 +487,7 @@ class TestHybrid:
 
     def test_create_hybrid(self):
         h = self._bouncing_ball()
-        assert h.n_events() == 1
+        assert h.n_events == 1
 
     def test_guards(self):
         h = self._bouncing_ball()
@@ -513,7 +513,7 @@ class TestHybrid:
     def test_no_events(self):
         ode = ODE.new([self.y], [self.v], self.t)
         h = HybridODE.new(ode)
-        assert h.n_events() == 0
+        assert h.n_events == 0
         assert h.guards() == []
 
     def test_multiple_events(self):
@@ -521,7 +521,7 @@ class TestHybrid:
         ev1 = Event.new("ev1", self.y, [])
         ev2 = Event.new("ev2", self.v, [])
         h = HybridODE.new(ode).add_event(ev1).add_event(ev2)
-        assert h.n_events() == 2
+        assert h.n_events == 2
         guards = h.guards()
         assert str(guards[0]) == str(self.y)
         assert str(guards[1]) == str(self.v)
