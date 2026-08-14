@@ -9204,6 +9204,18 @@ fn py_bound_on_box(
 /// unlike a floating-point quadrature, the answer is a *theorem*: the true
 /// integral is guaranteed to lie in the returned interval. Refuses on
 /// singular or improper integrands rather than guessing.
+///
+/// A **removable** singularity is not a refusal: an integrand written as
+/// ``N(x)/D(x)`` with ``N(p) = D(p) = 0`` and ``D'(p) != 0`` — ``log(1+x)/x``
+/// on ``[0, 1]``, ``sin(x)/x`` on ``[-1, 1]`` — is enclosed via Cauchy's mean
+/// value theorem, and the value returned is the integral of the continuous
+/// extension. The two zeros are checked *symbolically*, so a genuine pole is
+/// never mistaken for a removable one.
+///
+/// A singularity that is integrable but not removable (``-log(x)`` on
+/// ``[0, 1]``, ``1/sqrt(1-x*x)`` on ``[0, 1]``) is still refused: the integral
+/// exists, but no rigorous enclosure of the *integrand* does. The
+/// :class:`ValidatedError` message says which of the two situations it is.
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
 #[pyo3(name = "verified_integral", signature = (expr, var, a, b, *, order = 8, prec = 128, tol = 1e-9, max_subdivisions = 4096))]
@@ -9244,6 +9256,19 @@ fn py_verified_integral(
 /// ``"false"`` proves it does, and ``"undecided"`` means neither could be
 /// established within the budget. The third is never collapsed into the
 /// other two.
+///
+/// ``"false"`` is certified by the intermediate value theorem: the box is
+/// first proven free of poles and branch cuts (so `expr` is continuous on it),
+/// then the box is subdivided until two points are found at which `expr` is
+/// rigorously proven to have opposite signs. A box is convex, so the segment
+/// joining them stays inside it and `expr` must vanish somewhere along it.
+/// Because the two points need not be the box's own endpoints, an even number
+/// of roots no longer defeats the test — ``x*x - 2`` on ``[-2, 2]`` is
+/// ``"false"``.
+///
+/// A root that never produces a sign change — a double root such as
+/// ``(x-1)**2`` — stays ``"undecided"``: no witness exists, and none is
+/// invented.
 #[pyfunction]
 #[pyo3(name = "verified_no_roots", signature = (expr, r#box, *, order = 6, prec = 128, tol = 1e-9, max_subdivisions = 2048))]
 fn py_verified_no_roots(

@@ -111,6 +111,126 @@ def test_verified_integral_is_an_enclosure_not_an_estimate():
 
 
 # ---------------------------------------------------------------------------
+# Removable singularities: the integrand is singular, the integral is not
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("build", "a", "b", "exact", "label"),
+    [
+        (
+            lambda pool, x: ak.log(pool.integer(1) + x) / x,
+            0.0,
+            1.0,
+            math.pi**2 / 12,
+            "log(1+x)/x",
+        ),
+        (lambda pool, x: ak.sin(x) / x, -1.0, 1.0, 1.8921661407343664, "sin(x)/x"),
+        (lambda pool, x: ak.sin(x) / x, 0.0, 1.0, 0.9460830703671832, "sin(x)/x on [0,1]"),
+        (
+            lambda pool, x: (ak.exp(x) - pool.integer(1)) / x,
+            0.0,
+            1.0,
+            1.3179021514544038,
+            "(exp(x)-1)/x",
+        ),
+        (
+            lambda pool, x: (pool.integer(1) - ak.cos(x)) / x,
+            0.0,
+            1.0,
+            0.23981174200056,
+            "(1-cos x)/x = Cin(1)",
+        ),
+    ],
+)
+def test_removable_singularity_encloses_the_exact_value(build, a, b, exact, label):
+    """The enclosure has to *bracket* the truth — returning one is worthless
+    if it is wrong. These integrands are all undefined at a point of the
+    interval and extend continuously across it."""
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+
+    r = ak.verified_integral(build(pool, x), x, a, b)
+
+    assert r.lower <= exact <= r.upper, f"{label}: {exact} not in [{r.lower}, {r.upper}]"
+    assert r.width < 1e-6, f"{label}: enclosure width {r.width}"
+
+
+def test_removable_branch_agrees_with_ordinary_quadrature_on_the_regular_part():
+    """Splitting the interval so that only one half touches the singularity
+    must not move the answer: a biased removable branch would show up here."""
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+    f = ak.log(pool.integer(1) + x) / x
+
+    whole = ak.verified_integral(f, x, 0.0, 1.0)
+    left = ak.verified_integral(f, x, 0.0, 0.25)
+    right = ak.verified_integral(f, x, 0.25, 1.0)
+
+    assert whole.lower <= left.upper + right.upper
+    assert whole.upper >= left.lower + right.lower
+
+
+def test_a_genuine_pole_is_still_refused():
+    """`1/x` on [-1,1]: the numerator does not vanish, so nothing is removable."""
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+
+    with pytest.raises(ak.ValidatedError) as excinfo:
+        ak.verified_integral(pool.integer(1) / x, x, -1.0, 1.0)
+
+    assert excinfo.value.code == "E-VALIDATED-003"
+
+
+def test_a_double_pole_with_a_simple_numerator_zero_is_still_refused():
+    """`sin(x)/x**2 ~ 1/x` does not converge; the numerator's zero is only
+    order 1 against the denominator's order 2, and `D' = 2x` vanishes."""
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+
+    with pytest.raises(ak.ValidatedError):
+        ak.verified_integral(ak.sin(x) / (x * x), x, -1.0, 1.0)
+
+
+def test_a_second_order_removable_singularity_is_refused_not_guessed():
+    """`(1-cos x)/x**2` really is removable (it tends to 1/2), but the proof
+    needs a *second*-order argument: `D' = 2x` vanishes at 0, so Cauchy's mean
+    value theorem does not apply and the enclosure is declined rather than
+    stretched to fit."""
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+
+    with pytest.raises(ak.ValidatedError):
+        ak.verified_integral((pool.integer(1) - ak.cos(x)) / (x * x), x, 0.0, 1.0)
+
+
+@pytest.mark.parametrize(
+    ("build", "a", "b", "label"),
+    [
+        (lambda pool, x: -ak.log(x), 0.0, 1.0, "-log x"),
+        (lambda pool, x: ak.log(x) * ak.log(x), 0.0, 1.0, "(log x)^2"),
+        (lambda pool, x: ak.exp(x * ak.log(x)), 0.0, 1.0, "x^x"),
+    ],
+)
+def test_integrable_but_not_removable_singularities_refuse_with_an_honest_message(
+    build, a, b, label
+):
+    """These integrals all exist. What does not exist is a rigorous enclosure
+    of the *integrand*, and the error text must say which of the two it means
+    rather than implying the integral is undefined."""
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+
+    with pytest.raises(ak.ValidatedError) as excinfo:
+        ak.verified_integral(build(pool, x), x, a, b)
+
+    message = str(excinfo.value)
+    assert "integrand is singular" in message, f"{label}: {message}"
+    assert "integrable singularity" in message, f"{label}: {message}"
+    assert excinfo.value.remediation
+
+
+# ---------------------------------------------------------------------------
 # Three-valued predicates — the third value is never collapsed
 # ---------------------------------------------------------------------------
 
@@ -122,6 +242,94 @@ def test_no_roots_verified_true():
     f = (x - pool.integer(5)) * (x - pool.integer(5)) + pool.integer(1)
 
     assert ak.verified_no_roots(f, _box(x, 0.0, 1.0)) == "true"
+
+
+@pytest.mark.parametrize(
+    ("lo", "hi", "roots"),
+    [
+        (-2.0, 0.0, "1 root, endpoint signs + -> -"),
+        (0.0, 2.0, "1 root, endpoint signs - -> +"),
+        (1.3, 1.5, "1 root, endpoint signs - -> +"),
+        (-2.0, 2.0, "2 roots, endpoint signs + -> +"),
+        (-10.0, 10.0, "2 roots, endpoint signs + -> +"),
+    ],
+)
+def test_no_roots_false_whatever_the_root_count(lo, hi, roots):
+    """`x**2 - 2` has provable roots on every one of these boxes. An even
+    number of them used to defeat the test, because only the box's *own*
+    endpoints were checked for a sign change."""
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+
+    assert ak.verified_no_roots(x * x - pool.integer(2), [(x, lo, hi)]) == "false", roots
+
+
+def test_no_roots_false_when_the_roots_hide_behind_a_positive_factor():
+    """`(x**2-2)(x**2+1)` has the same two roots; the second factor never
+    vanishes and never changes the sign pattern at the endpoints."""
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+    f = (x * x - pool.integer(2)) * (x * x + pool.integer(1))
+
+    assert ak.verified_no_roots(f, [(x, -2.0, 2.0)]) == "false"
+
+
+def test_no_roots_false_across_a_multivariate_box():
+    """A box is convex, so two points of opposite proven sign certify a root
+    anywhere in it — `x - y` is +2 at (1,-1) and -2 at (-1,1)."""
+    pool = ak.ExprPool()
+    x, y = pool.symbol("x"), pool.symbol("y")
+
+    assert ak.verified_no_roots(x - y, [(x, -1.0, 1.0), (y, -1.0, 1.0)]) == "false"
+
+
+@pytest.mark.parametrize(
+    ("build", "lo", "hi"),
+    [
+        (lambda pool, x: x * x + pool.integer(1), -10.0, 10.0),
+        (lambda pool, x: x * x + pool.integer(2), -2.0, 2.0),
+        (lambda pool, x: ak.exp(x), -5.0, 5.0),
+        (
+            lambda pool, x: (x - pool.integer(5)) * (x - pool.integer(5)) + pool.integer(1),
+            0.0,
+            1.0,
+        ),
+    ],
+)
+def test_no_roots_true_cases_stay_true(build, lo, hi):
+    """The existence search must never be able to turn a proven `"true"` into
+    anything else — it only runs once the enclosure already contains zero."""
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+
+    assert ak.verified_no_roots(build(pool, x), [(x, lo, hi)]) == "true"
+
+
+@pytest.mark.parametrize(
+    ("build", "lo", "hi", "why"),
+    [
+        (
+            lambda pool, x: (x - pool.integer(1)) * (x - pool.integer(1)),
+            0.0,
+            2.0,
+            "double root at x=1: no sign change anywhere",
+        ),
+        (
+            lambda pool, x: (x * x - pool.integer(1)) * (x * x - pool.integer(1)),
+            -2.0,
+            2.0,
+            "two double roots at x=+-1",
+        ),
+    ],
+)
+def test_a_root_that_cannot_be_witnessed_stays_undecided(build, lo, hi, why):
+    """These expressions *do* have roots in the box, but they never change
+    sign, so no intermediate-value witness exists. `"undecided"` is the honest
+    answer; reporting `"false"` here would be a guess dressed as a proof."""
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+
+    assert ak.verified_no_roots(build(pool, x), [(x, lo, hi)]) == "undecided", why
 
 
 def test_sign_positive_verified_true():

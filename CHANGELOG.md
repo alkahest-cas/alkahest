@@ -243,6 +243,73 @@ loop fails.
 
 ### Fixed
 
+- **`verified_no_roots` could not prove a root *exists* past an even root
+  count.** The `"false"` direction fired only when a sign change was visible at
+  the box's own endpoints, so any even number of roots defeated it however
+  obvious they were: `x²−2` on `[-2, 0]` was `"false"`, but the same expression
+  on `[-2, 2]` — which contains *both* roots — was `"undecided"`, as were
+  `[-10, 10]` and `(x²−2)(x²+1)` on `[-2, 2]`. The machinery to settle it was
+  already running; one bisection of `[-2, 2]` makes each half answer
+  immediately. The `"false"` direction now searches for its two witness points
+  by subdividing the box, and the intermediate-value argument is stated over the
+  box rather than over an interval: a box is convex, so two points at which the
+  expression is *rigorously proven* to have opposite signs certify a root on the
+  segment joining them, which stays inside the box. That also lifts the test to
+  several variables — `x − y` on `[-1, 1]²` is now `"false"` where it used to be
+  `"undecided"`. Continuity, which the argument needs, is exactly what the
+  full-box enclosure succeeding already certifies. **Nothing was weakened to buy
+  this**: a root that never produces a sign change — a double root like
+  `(x−1)²` on `[0, 2]`, or `(x²−1)²` on `[-2, 2]` — still answers
+  `"undecided"`, because no witness pair exists and none is invented.
+- **`verified_integral` refused removable singularities.** Taylor-model
+  quadrature raised `E-VALIDATED-003` on any sub-interval where the reciprocal's
+  enclosure contained zero, which put `∫₀¹ ln(1+x)/x dx = π²/12` out of reach
+  even though nothing about that integral is singular — only the expression as
+  written is, and the integrand extends continuously to 1 at `x = 0`. An
+  integrand that splits as `N(x)/D(x)` with `N(p) = D(p) = 0` at a point `p` of
+  the offending sub-interval is now enclosed through **Cauchy's mean value
+  theorem** instead: `N(x)/D(x) = N′(ξ)/D′(ξ)` for some `ξ` in the sub-interval,
+  so the piece is bounded by an enclosure of `N′/D′`, which is regular. The
+  value returned is the integral of the continuous extension.
+  `∫₀¹ ln(1+x)/x`, `∫_{-1}^{1} sin(x)/x`, `∫₀¹ (eˣ−1)/x` and
+  `∫₀¹ (1−cos x)/x` now come back as enclosures that bracket `π²/12`,
+  `2·Si(1)`, `Σ 1/(n·n!)` and `Cin(1)` to better than `10⁻⁹` wide.
+  Three guards keep a genuine pole out: the two zeros are established
+  **symbolically** (substitute the exact rational `p`, simplify, require a
+  literal zero — no numeric enclosure can prove a value is exactly zero, so none
+  is asked to), `D′` must be certified non-vanishing on the sub-interval, and
+  `N` and `D` must each enclose successfully over it, which is what certifies
+  they are analytic and hence that the symbolic derivatives are the real ones.
+  `1/x`, `sin(x)/x²` and `(x−p)²/(x−p)³` on boxes containing the pole are all
+  still refused.
+- **A `verified_integral` refusal now says whether the *integral* fails to exist
+  or only the enclosure of the *integrand* does.** An integrable singularity
+  that is not removable — `∫₀¹ −ln x dx = 1`, `∫₀¹ (ln x)² dx = 2`,
+  `∫₀¹ dx/√(1−x²) = π/2`, `∫₀¹ xˣ dx`, `∫₀¹ ln(x)·ln(1−x) dx` — is still
+  refused, because no rigorous bound on the singular tail can be derived from
+  the expression alone today. But the `E-VALIDATED-003` message now names the
+  location (left endpoint, right endpoint or interior, with the approximate
+  coordinate), reports the underlying cause, and states explicitly that an
+  integrable singularity still has a finite integral that this routine cannot
+  certify. Widening an enclosure to make those cases "pass" would have broken
+  the contract that makes the module worth using, so they refuse honestly
+  instead.
+- **The ODE/DAE guide documented an API that does not exist.**
+  [`docs/mdbook/src/ode-dae.md`](docs/mdbook/src/ode-dae.md) showed keyword
+  constructors — `ODE(state=…, derivatives=…, independent=…)`,
+  `DAE(equations=…, variables=…, independent=…)` — and a one-argument
+  `lower_to_first_order(higher_order_ode)`, none of which were ever real: the
+  actual calls are `DAE.new(equations, variables, derivatives, time_var)` with
+  derivatives as *separate symbols* like `pool.symbol("dx/dt")`, and
+  `lower_to_first_order(var, rhs, order, time_var)`. It also printed
+  `reduced.differentiated` on the `pantelides` result, which the returned `DAE`
+  does not have. Following the page failed on its first line, and it was the
+  only documentation there was, because `DAE.new`, `ODE.new`,
+  `rosenfeld_groebner` and the `RosenfeldGroebnerResult` accessors had no
+  docstrings at all. The page is rewritten around calls that run — every block
+  is executed by `tests/test_docs_ode_dae.py` — those docstrings now exist,
+  `reduced.index` works as documented (`DAE.index` is exposed), and
+  `.differentiated` is gone rather than faked.
 - **`zeilberger` no longer refuses a constant base just because it is not
   already a literal.** `(-one)**(n+k)`, with `one = pool.integer(1)`, builds the
   node `Mul(1, -1)` — the pool does no arithmetic at construction — and the
