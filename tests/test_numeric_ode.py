@@ -67,7 +67,9 @@ class TestOdeTrajectory:
         traj = ex.ode_integrate_rk4(ode, [1.0], 0.0, 0.5, h=0.1)
         assert hasattr(traj, "t")
         assert hasattr(traj, "y")
-        assert callable(traj.t_final)
+        # `t_final` is a property (a scalar read); `y_final` is a method (it
+        # allocates a list). See CONTRIBUTING.md "Accessors: property or method?".
+        assert not callable(traj.t_final)
         assert callable(traj.y_final)
 
     def test_trajectory_len(self):
@@ -85,7 +87,7 @@ class TestOdeTrajectory:
     def test_t_final_approx_t_end(self):
         ode = make_exp_ode()
         traj = ex.ode_integrate_rk4(ode, [1.0], 0.0, 1.0, h=0.1)
-        assert traj.t_final() == pytest.approx(1.0, abs=1e-10)
+        assert traj.t_final == pytest.approx(1.0, abs=1e-10)
 
     def test_y_initial_matches_ic(self):
         ode = make_harmonic_ode()

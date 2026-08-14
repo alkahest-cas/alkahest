@@ -103,6 +103,14 @@ impl GroebnerBasis {
         &self.generators
     }
 
+    /// The monomial order the generators were reduced under.
+    ///
+    /// Needed to interpret leading terms of [`Self::generators`] and to build a
+    /// compatible polynomial before calling [`Self::reduce`].
+    pub fn order(&self) -> MonomialOrder {
+        self.order
+    }
+
     /// Reduce a polynomial by this basis. Returns the remainder.
     pub fn reduce(&self, p: &GbPoly) -> GbPoly {
         reduce(p, &self.generators, self.order)

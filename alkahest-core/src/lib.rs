@@ -204,9 +204,10 @@ pub use lean::{
 // V2-1 — Modular / CRT framework
 #[cfg(feature = "groebner")]
 pub use diffalg::{
-    dae_index_reduce, rosenfeld_groebner, rosenfeld_groebner_algebraic,
-    rosenfeld_groebner_with_options, DaeIndexReduction, DiffAlgError, DifferentialIdeal,
-    DifferentialRanking, DifferentialRing, RegularDifferentialChain, RosenfeldGroebnerResult,
+    dae_index_reduce, dae_index_reduce_ranked, rosenfeld_groebner, rosenfeld_groebner_algebraic,
+    rosenfeld_groebner_ranked, rosenfeld_groebner_with_options, DaeIndexReduction, DiffAlgError,
+    DifferentialIdeal, DifferentialRanking, DifferentialRing, RegularDifferentialChain,
+    RosenfeldGroebnerResult,
 };
 #[cfg(feature = "groebner")]
 pub use ideal::{
@@ -224,10 +225,10 @@ pub use number_theory::{
 pub use primitive::{Capabilities, CoverageReport, CoverageRow, Primitive, PrimitiveRegistry};
 #[cfg(feature = "groebner")]
 pub use solver::{
-    diophantine, expr_to_gbpoly, extract_regular_chain_from_basis, main_variable_recursive,
-    solve_numerical, solve_polynomial_system, solve_transcendental, triangularize, CertifiedPoint,
-    DiophantineError, DiophantineSolution, HomotopyError, HomotopyOpts, RegularChain, Solution,
-    SolutionSet, SolverError, TranscendentalOutcome,
+    diophantine, expr_to_gbpoly, extract_regular_chain_from_basis, gbpoly_to_expr,
+    main_variable_recursive, solve_numerical, solve_polynomial_system, solve_transcendental,
+    triangularize, CertifiedPoint, DiophantineError, DiophantineSolution, HomotopyError,
+    HomotopyOpts, RegularChain, Solution, SolutionSet, SolverError, TranscendentalOutcome,
 };
 
 pub fn version() -> &'static str {
@@ -252,9 +253,10 @@ pub mod stable {
     pub use crate::diff::{diff, diff_forward, grad, DiffError};
     #[cfg(feature = "groebner")]
     pub use crate::diffalg::{
-        dae_index_reduce, rosenfeld_groebner, rosenfeld_groebner_algebraic,
-        rosenfeld_groebner_with_options, DaeIndexReduction, DiffAlgError, DifferentialIdeal,
-        DifferentialRanking, DifferentialRing, RegularDifferentialChain, RosenfeldGroebnerResult,
+        dae_index_reduce, dae_index_reduce_ranked, rosenfeld_groebner,
+        rosenfeld_groebner_algebraic, rosenfeld_groebner_ranked, rosenfeld_groebner_with_options,
+        DaeIndexReduction, DiffAlgError, DifferentialIdeal, DifferentialRanking, DifferentialRing,
+        RegularDifferentialChain, RosenfeldGroebnerResult,
     };
     pub use crate::errors::AlkahestError;
     pub use crate::eval::{
@@ -319,10 +321,10 @@ pub mod stable {
     };
     #[cfg(feature = "groebner")]
     pub use crate::solver::{
-        diophantine, expr_to_gbpoly, extract_regular_chain_from_basis, main_variable_recursive,
-        solve_numerical, solve_polynomial_system, triangularize, CertifiedPoint, DiophantineError,
-        DiophantineSolution, HomotopyError, HomotopyOpts, RegularChain, Solution, SolutionSet,
-        SolverError,
+        diophantine, expr_to_gbpoly, extract_regular_chain_from_basis, gbpoly_to_expr,
+        main_variable_recursive, solve_numerical, solve_polynomial_system, triangularize,
+        CertifiedPoint, DiophantineError, DiophantineSolution, HomotopyError, HomotopyOpts,
+        RegularChain, Solution, SolutionSet, SolverError,
     };
     pub use crate::stablehlo::emit_stablehlo;
     pub use crate::sum::{

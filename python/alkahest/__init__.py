@@ -314,6 +314,7 @@ with _suppress(ImportError):
         RosenfeldGroebnerResult,
         dae_index_reduce,
         diophantine,
+        expr_to_gbpoly,
         primary_decomposition,
         radical,
         rosenfeld_groebner,
@@ -1843,6 +1844,13 @@ if "solve" not in dir():
             "See alkahest.solve.__doc__ for details."
         )
 
+    def expr_to_gbpoly(*_args, **_kwargs):
+        """Expr → GbPoly conversion (groebner feature missing from this build)."""
+        raise ImportError(
+            "alkahest.expr_to_gbpoly is unavailable — groebner feature missing. "
+            "See alkahest.solve.__doc__ for details."
+        )
+
     class GroebnerBasis:
         """Gröbner basis type (groebner feature missing from this build).
 
@@ -2253,6 +2261,8 @@ __all__ = [
     "eval_expr",
     "evaluate",
     "exp",
+    # V1-16 — Expr ↔ GbPoly round trip
+    "expr_to_gbpoly",
     "factor_univariate_mod_p",
     "flatten_exprs",
     "floor",

@@ -402,8 +402,8 @@ class TestSparseGcd:
         g = _mp(x + pool.integer(1), [x])
         h = gcd_sparse(f, g, term_bound=2, degree_bound=2)
         # Primitive 1 has total_degree 0
-        assert h.total_degree() == 0, f"GCD of coprime polys should be constant, got {h}"
-        assert not h.is_zero(), "GCD should be 1 (non-zero constant)"
+        assert h.total_degree == 0, f"GCD of coprime polys should be constant, got {h}"
+        assert not h.is_zero, "GCD should be 1 (non-zero constant)"
 
     def test_univariate_identical_primitive_part(self):
         """gcd(2f, 2f) = primitive_part(f)."""
@@ -424,8 +424,8 @@ class TestSparseGcd:
         g = _mp((x + y) * (x + pool.integer(1)), [x, y])
         h = gcd_sparse(f, g, term_bound=3, degree_bound=2)
         ref = f.gcd(g)
-        assert h.total_degree() == ref.total_degree(), (
-            f"sparse GCD total_degree {h.total_degree()} != FLINT {ref.total_degree()}"
+        assert h.total_degree == ref.total_degree, (
+            f"sparse GCD total_degree {h.total_degree} != FLINT {ref.total_degree}"
         )
         assert str(h) == str(ref), f"bivariate sparse GCD {h} != FLINT {ref}"
 
@@ -437,8 +437,8 @@ class TestSparseGcd:
         f = _mp(x, [x, y])
         g = _mp(y, [x, y])
         h = gcd_sparse(f, g, term_bound=2, degree_bound=2)
-        assert h.total_degree() == 0, f"gcd(x,y) should be constant, got {h}"
-        assert not h.is_zero(), "GCD should be 1 (non-zero)"
+        assert h.total_degree == 0, f"gcd(x,y) should be constant, got {h}"
+        assert not h.is_zero, "GCD should be 1 (non-zero)"
 
     def test_incompatible_vars_raises(self):
         """Different variable lists must raise SparseGcdError."""

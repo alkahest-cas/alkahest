@@ -190,7 +190,7 @@ class TestArbBall:
 
     def test_default_exact(self):
         b = ArbBall(2.0)
-        assert b.is_exact()
+        assert b.is_exact
 
     def test_contains_midpoint(self):
         b = ArbBall(3.0, 0.5)

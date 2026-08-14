@@ -49,7 +49,7 @@ class TestRationalFunctionArithmetic:
         r1 = self.rf(self.x, self.one)
         r2 = self.rf(self.x, self.one)
         result = r1 - r2
-        assert result.is_zero()
+        assert result.is_zero
 
     def test_div(self):
         # (x/1) / (x/1) = 1
@@ -65,7 +65,7 @@ class TestRationalFunctionArithmetic:
         ba = self.rf(two_expr, x_expr)
         result = ab * ba
         # Should reduce to 1 or at least is not zero
-        assert not result.is_zero()
+        assert not result.is_zero
 
 
 # ---------------------------------------------------------------------------

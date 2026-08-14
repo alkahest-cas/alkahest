@@ -20,7 +20,7 @@ def main():
     expr = x ** 3 + pool.integer(-2) * x + pool.integer(1)
     p = UniPoly.from_symbolic(expr, x)
     print(f"p      = {p}")
-    print(f"degree = {p.degree()}")
+    print(f"degree = {p.degree}")
     print(f"coeffs = {p.coefficients()}")
 
     # GCD: gcd(x^2 - 1, x - 1) = x - 1
@@ -46,7 +46,7 @@ def main():
     expr2 = x2y_expr + xy2_expr + pool.integer(-1)
     mp = MultiPoly.from_symbolic(expr2, [x, y])
     print(f"mp            = {mp}")
-    print(f"total_degree  = {mp.total_degree()}")
+    print(f"total_degree  = {mp.total_degree}")
     print(f"int_content   = {mp.integer_content()}")
 
     # Bivariate addition

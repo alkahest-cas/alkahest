@@ -3251,10 +3251,14 @@ impl PyUniPoly {
         self.inner.coefficients_i64()
     }
 
+    /// Degree of the polynomial (`-1` for the zero polynomial).
+    #[getter]
     fn degree(&self) -> i64 {
         self.inner.degree()
     }
 
+    /// True if this is the zero polynomial.
+    #[getter]
     fn is_zero(&self) -> bool {
         self.inner.is_zero()
     }
@@ -3354,10 +3358,14 @@ impl PyMultiPoly {
             .map_err(conv_error_to_py)
     }
 
+    /// True if this is the zero polynomial.
+    #[getter]
     fn is_zero(&self) -> bool {
         self.inner.is_zero()
     }
 
+    /// Highest total degree over all terms (`0` for the zero polynomial).
+    #[getter]
     fn total_degree(&self) -> u32 {
         self.inner.total_degree()
     }
@@ -3519,6 +3527,8 @@ impl PyRationalFunction {
             .map_err(conv_error_to_py)
     }
 
+    /// True if the numerator is the zero polynomial.
+    #[getter]
     fn is_zero(&self) -> bool {
         self.inner.is_zero()
     }
@@ -4021,6 +4031,8 @@ impl PyOdeTrajectory {
         PyList::new_bound(py, rows).into_py(py)
     }
 
+    /// The final time point, or ``None`` for an empty trajectory.
+    #[getter]
     fn t_final(&self) -> Option<f64> {
         self.inner.t_final()
     }
@@ -6170,6 +6182,26 @@ impl PyODE {
         PyODE::new(py, state_vars, rhs, time_var)
     }
 
+    /// Build an explicit first-order system ``d(state_vars)/dt = rhs``.
+    ///
+    /// Parameters
+    /// ----------
+    /// state_vars : list[Expr]
+    ///     Symbolic state variables.
+    /// rhs : list[Expr]
+    ///     Right-hand sides, one per state variable and in the same order.
+    /// time_var : Expr
+    ///     The independent variable.
+    ///
+    /// All three arguments are **positional**; there are no keyword forms.
+    /// ``ODE(state_vars, rhs, time_var)`` is accepted as a synonym.
+    /// For an implicit or constrained system use :class:`DAE` instead, and for
+    /// a scalar higher-order equation use :func:`lower_to_first_order`.
+    ///
+    /// Example::
+    ///
+    ///     # Harmonic oscillator as a first-order system: x' = v, v' = -x
+    ///     ode = alkahest.ODE.new([x, v], [v, -x], t)
     #[staticmethod]
     fn new(
         py: Python<'_>,
@@ -6197,6 +6229,8 @@ impl PyODE {
         }
     }
 
+    /// Number of state variables (the order of the system).
+    #[getter]
     fn order(&self) -> usize {
         self.inner.order()
     }
@@ -6255,7 +6289,34 @@ impl PyODE {
     }
 }
 
-/// `alkahest.lower_to_first_order(var, rhs, order, time_var)` — lower a scalar ODE to first-order.
+/// `alkahest.lower_to_first_order(var, rhs, order, time_var)` — lower a scalar
+/// higher-order ODE to an equivalent first-order system.
+///
+/// Takes the *pieces* of the equation, not an :class:`ODE` object: the scalar
+/// unknown, the right-hand side, the order of the derivative on the left, and
+/// the independent variable.  All four are required and positional.
+///
+/// Parameters
+/// ----------
+/// var : Expr
+///     The scalar unknown, e.g. ``x``.
+/// rhs : Expr
+///     Right-hand side of ``d^order(var)/dt^order = rhs``.
+/// order : int
+///     Order of the equation (``2`` for ``x''``).
+/// time_var : Expr
+///     The independent variable.
+///
+/// Returns
+/// -------
+/// ODE
+///     A first-order system whose state is ``[var, var', …, var^(order-1)]``.
+///
+/// Example::
+///
+///     # x'' = -4x  →  [x' = x', (x')' = -4x]
+///     ode = alkahest.lower_to_first_order(x, -4 * x, 2, t)
+///     ode.order          # 2
 #[pyfunction]
 #[pyo3(name = "lower_to_first_order")]
 fn py_lower_to_first_order(
@@ -6387,6 +6448,22 @@ fn py_adjoint_system(
 ///     The independent time variable.
 ///
 /// Use :func:`pantelides` to reduce the differential index before simulation.
+///
+/// Attributes
+/// ----------
+/// n_equations : int
+/// n_variables : int
+/// time_var : Expr
+/// index : int | None
+///     Differentiation index, set by :func:`pantelides` on the DAE it
+///     returns; ``None`` on a DAE that has not been index-reduced.
+///
+/// Example::
+///
+///     p = alkahest.ExprPool()
+///     t, x, dx = p.symbol("t"), p.symbol("x"), p.symbol("dx/dt")
+///     dae = alkahest.DAE.new([dx - x], [x], [dx], t)   # x' = x
+///     dae.equations()      # [-x + dx/dt]
 #[pyclass(name = "DAE")]
 struct PyDAE {
     inner: DAE,
@@ -6395,6 +6472,32 @@ struct PyDAE {
 
 #[pymethods]
 impl PyDAE {
+    /// Build a DAE from implicit equations.
+    ///
+    /// Parameters
+    /// ----------
+    /// equations : list[Expr]
+    ///     Implicit equations, each meaning ``g = 0``.  Write ``x' = f`` as
+    ///     ``dx - f``, using a *separate symbol* for the derivative.
+    /// variables : list[Expr]
+    ///     Dependent variables (state and algebraic).
+    /// derivatives : list[Expr]
+    ///     Symbol standing for the time derivative of ``variables[i]``, e.g.
+    ///     ``pool.symbol("dx/dt")``.  Alkahest does not parse the name; the
+    ///     positional pairing is what makes it a derivative.
+    /// time_var : Expr
+    ///     The independent variable.
+    ///
+    /// Example::
+    ///
+    ///     # Pendulum in Cartesian coordinates (index 3):
+    ///     #   x' = u,  u' = -lam*x,  x**2 + y**2 - 1 = 0
+    ///     dae = alkahest.DAE.new(
+    ///         [dx - u, du + lam * x, x**2 + y**2 - one],
+    ///         [x, u, lam],
+    ///         [dx, du, dlam],
+    ///         t,
+    ///     )
     #[staticmethod]
     fn new(
         py: Python<'_>,
@@ -6414,11 +6517,77 @@ impl PyDAE {
         }
     }
 
+    /// Number of equations in the system.
+    #[getter]
     fn n_equations(&self) -> usize {
         self.inner.n_equations()
     }
+
+    /// Number of dependent variables in the system.
+    #[getter]
     fn n_variables(&self) -> usize {
         self.inner.n_variables()
+    }
+
+    /// The independent (time) variable.
+    #[getter]
+    fn time_var(&self, py: Python<'_>) -> PyExpr {
+        PyExpr {
+            id: self.inner.time_var,
+            pool: self.pool.clone_ref(py),
+        }
+    }
+
+    /// Differentiation index, or ``None`` if it has not been computed.
+    ///
+    /// :func:`pantelides` sets it on the DAE it returns: `0` means the input
+    /// already had a perfect structural matching, `k` means `k` rounds of
+    /// differentiation were needed.
+    #[getter]
+    fn index(&self) -> Option<usize> {
+        self.inner.index
+    }
+
+    /// The implicit equations, each meaning ``g = 0``.
+    ///
+    /// After :func:`pantelides` or :func:`rosenfeld_groebner` this is how you
+    /// see which equations were added by differentiation.
+    fn equations(&self, py: Python<'_>) -> Vec<PyExpr> {
+        self.inner
+            .equations
+            .iter()
+            .map(|&id| PyExpr {
+                id,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect()
+    }
+
+    /// The dependent variables, parallel to :meth:`derivatives`.
+    fn variables(&self, py: Python<'_>) -> Vec<PyExpr> {
+        self.inner
+            .variables
+            .iter()
+            .map(|&id| PyExpr {
+                id,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect()
+    }
+
+    /// The derivative symbols: ``derivatives()[i]`` is ``d(variables()[i])/dt``.
+    ///
+    /// Index reduction appends higher jets here (``d2x/dt2``, …), so this is
+    /// how the extra variables of a prolonged system get names.
+    fn derivatives(&self, py: Python<'_>) -> Vec<PyExpr> {
+        self.inner
+            .derivatives
+            .iter()
+            .map(|&id| PyExpr {
+                id,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect()
     }
 
     fn __repr__(&self, py: Python<'_>) -> String {
@@ -6427,7 +6596,29 @@ impl PyDAE {
     }
 }
 
-/// `alkahest.pantelides(dae)` — apply the Pantelides index-reduction algorithm.
+/// `alkahest.pantelides(dae)` — structural index reduction of a DAE.
+///
+/// Repeatedly differentiates the equations that a maximum bipartite matching
+/// leaves unmatched, until every equation is matched to a variable, and
+/// returns the **reduced** :class:`DAE` — not a report object.
+///
+/// The reduced system has more equations and more derivative jets than the
+/// input; read them with :meth:`DAE.equations` and :meth:`DAE.derivatives`.
+/// :attr:`DAE.index` on the result is the number of differentiation rounds it
+/// took (``0`` = the input already matched).
+///
+/// Raises `ValueError` (`E-DAE-002`) if the index exceeds 10 — try
+/// :func:`dae_index_reduce`, which falls back to :func:`rosenfeld_groebner`.
+///
+/// This is a *structural* algorithm: it looks at which variables occur in
+/// which equations, not at whether the coefficients actually make the system
+/// solvable.
+///
+/// Example::
+///
+///     reduced = alkahest.pantelides(dae)
+///     reduced.index            # differentiation rounds used
+///     reduced.equations()      # original equations plus the differentiated ones
 #[pyfunction]
 #[pyo3(name = "pantelides")]
 fn py_pantelides(py: Python<'_>, dae: PyRef<PyDAE>) -> PyResult<PyDAE> {
@@ -6523,6 +6714,8 @@ impl PyHybridODE {
         }
     }
 
+    /// Number of registered discrete events.
+    #[getter]
     fn n_events(&self) -> usize {
         self.inner.events.len()
     }
@@ -6601,11 +6794,13 @@ impl PyComponent {
     }
 
     /// Number of constitutive equations contributed by this component.
+    #[getter]
     fn n_equations(&self) -> usize {
         self.inner.equations.len()
     }
 
     /// Number of external connection ports.
+    #[getter]
     fn n_ports(&self) -> usize {
         self.inner.ports.len()
     }
@@ -7375,6 +7570,8 @@ impl PyArbBall {
         self.inner.contains(v)
     }
 
+    /// True if the ball has zero radius (a single exact value).
+    #[getter]
     fn is_exact(&self) -> bool {
         self.inner.is_exact()
     }
@@ -9204,6 +9401,18 @@ fn py_bound_on_box(
 /// unlike a floating-point quadrature, the answer is a *theorem*: the true
 /// integral is guaranteed to lie in the returned interval. Refuses on
 /// singular or improper integrands rather than guessing.
+///
+/// A **removable** singularity is not a refusal: an integrand written as
+/// ``N(x)/D(x)`` with ``N(p) = D(p) = 0`` and ``D'(p) != 0`` — ``log(1+x)/x``
+/// on ``[0, 1]``, ``sin(x)/x`` on ``[-1, 1]`` — is enclosed via Cauchy's mean
+/// value theorem, and the value returned is the integral of the continuous
+/// extension. The two zeros are checked *symbolically*, so a genuine pole is
+/// never mistaken for a removable one.
+///
+/// A singularity that is integrable but not removable (``-log(x)`` on
+/// ``[0, 1]``, ``1/sqrt(1-x*x)`` on ``[0, 1]``) is still refused: the integral
+/// exists, but no rigorous enclosure of the *integrand* does. The
+/// :class:`ValidatedError` message says which of the two situations it is.
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
 #[pyo3(name = "verified_integral", signature = (expr, var, a, b, *, order = 8, prec = 128, tol = 1e-9, max_subdivisions = 4096))]
@@ -9244,6 +9453,19 @@ fn py_verified_integral(
 /// ``"false"`` proves it does, and ``"undecided"`` means neither could be
 /// established within the budget. The third is never collapsed into the
 /// other two.
+///
+/// ``"false"`` is certified by the intermediate value theorem: the box is
+/// first proven free of poles and branch cuts (so `expr` is continuous on it),
+/// then the box is subdivided until two points are found at which `expr` is
+/// rigorously proven to have opposite signs. A box is convex, so the segment
+/// joining them stays inside it and `expr` must vanish somewhere along it.
+/// Because the two points need not be the box's own endpoints, an even number
+/// of roots no longer defeats the test — ``x*x - 2`` on ``[-2, 2]`` is
+/// ``"false"``.
+///
+/// A root that never produces a sign change — a double root such as
+/// ``(x-1)**2`` — stays ``"undecided"``: no witness exists, and none is
+/// invented.
 #[pyfunction]
 #[pyo3(name = "verified_no_roots", signature = (expr, r#box, *, order = 6, prec = 128, tol = 1e-9, max_subdivisions = 2048))]
 fn py_verified_no_roots(
@@ -9805,25 +10027,168 @@ fn py_cuda_device_count() -> usize {
 
 #[cfg(feature = "groebner")]
 use alkahest_core::{
-    dae_index_reduce, expr_to_gbpoly, primary_decomposition, radical as core_ideal_radical,
-    rosenfeld_groebner_with_options, DaeIndexReduction, GbPoly, GroebnerBasis, MonomialOrder,
+    dae_index_reduce_ranked, expr_to_gbpoly, gbpoly_to_expr, primary_decomposition,
+    radical as core_ideal_radical, rosenfeld_groebner_ranked, DaeIndexReduction, GbPoly,
+    GroebnerBasis, MonomialOrder,
 };
 
+/// A sparse multivariate polynomial over ℚ, as used by the Gröbner machinery.
+///
+/// A `GbPoly` stores exponent *vectors*, not variable names, so reading one
+/// back needs the variable list its exponent slots refer to.  Polynomials
+/// handed out by Alkahest carry that list with them (see :meth:`variables`),
+/// so :meth:`to_expr` normally takes no arguments; pass `vars` explicitly only
+/// for a polynomial built against a different list.
+///
+/// Attributes
+/// ----------
+/// is_zero : bool
+/// n_vars : int
+/// n_terms : int
 #[cfg(feature = "groebner")]
 #[pyclass(name = "GbPoly")]
 struct PyGbPoly {
     inner: GbPoly,
+    /// Pool that `var_ids` belong to, when the variable context is known.
+    pool: Option<Py<PyExprPool>>,
+    /// Variables in the order used for exponent vectors.
+    var_ids: Vec<ExprId>,
+}
+
+#[cfg(feature = "groebner")]
+impl PyGbPoly {
+    /// Wrap a core polynomial together with the variable context that names
+    /// its exponent slots.
+    fn with_ctx(
+        py: Python<'_>,
+        inner: GbPoly,
+        pool: Option<&Py<PyExprPool>>,
+        var_ids: &[ExprId],
+    ) -> PyGbPoly {
+        PyGbPoly {
+            inner,
+            pool: pool.map(|p| p.clone_ref(py)),
+            var_ids: var_ids.to_vec(),
+        }
+    }
+}
+
+/// Resolve the `(pool, var_ids)` pair for an `Expr` conversion: an explicit
+/// `vars` argument wins, otherwise the stored context, otherwise an error.
+#[cfg(feature = "groebner")]
+fn resolve_gb_ctx(
+    py: Python<'_>,
+    stored_pool: Option<&Py<PyExprPool>>,
+    stored_vars: &[ExprId],
+    vars: Option<Vec<PyRef<PyExpr>>>,
+    what: &str,
+) -> PyResult<(Py<PyExprPool>, Vec<ExprId>)> {
+    match vars {
+        Some(v) if !v.is_empty() => Ok((v[0].pool.clone_ref(py), v.iter().map(|e| e.id).collect())),
+        _ => match stored_pool {
+            Some(p) => Ok((p.clone_ref(py), stored_vars.to_vec())),
+            None => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "{what} carries no variable context; pass vars=[...] naming exponent slots 0, 1, …"
+            ))),
+        },
+    }
 }
 
 #[cfg(feature = "groebner")]
 #[pymethods]
 impl PyGbPoly {
+    /// True if this is the zero polynomial.
+    #[getter]
     fn is_zero(&self) -> bool {
         self.inner.is_zero()
     }
 
+    /// Number of variables in the ambient ring.
+    #[getter]
     fn n_vars(&self) -> usize {
         self.inner.n_vars
+    }
+
+    /// Number of non-zero terms.
+    #[getter]
+    fn n_terms(&self) -> usize {
+        self.inner.terms.len()
+    }
+
+    /// The variables naming this polynomial's exponent slots, in order.
+    ///
+    /// Empty when the polynomial carries no variable context — see
+    /// :meth:`to_expr`.
+    fn variables(&self, py: Python<'_>) -> Vec<PyExpr> {
+        match &self.pool {
+            None => vec![],
+            Some(pool) => self
+                .var_ids
+                .iter()
+                .map(|&id| PyExpr {
+                    id,
+                    pool: pool.clone_ref(py),
+                })
+                .collect(),
+        }
+    }
+
+    /// The terms as ``(exponents, coefficient)`` pairs.
+    ///
+    /// `exponents` is a tuple of `int` parallel to :meth:`variables`;
+    /// `coefficient` is an exact Python `int` or `fractions.Fraction`.
+    /// Terms come in ascending exponent-vector order.
+    ///
+    /// Example::
+    ///
+    ///     p = alkahest.expr_to_gbpoly(x**2 - 3*y, [x, y])
+    ///     p.terms()   # [((0, 1), -3), ((2, 0), 1)]
+    fn terms(&self, py: Python<'_>) -> PyResult<Vec<(PyObject, PyObject)>> {
+        let mut out = Vec::with_capacity(self.inner.terms.len());
+        for (exp, coeff) in &self.inner.terms {
+            let exps = pyo3::types::PyTuple::new_bound(py, exp.iter().map(|&e| e as u64));
+            out.push((exps.into_py(py), rational_to_py(py, coeff)?));
+        }
+        Ok(out)
+    }
+
+    /// Convert back to an :class:`Expr`.
+    ///
+    /// Parameters
+    /// ----------
+    /// vars : list[Expr], optional
+    ///     Variables naming exponent slots 0, 1, ….  Defaults to
+    ///     :meth:`variables`, which is what you want for a polynomial that came
+    ///     out of a :class:`GroebnerBasis`, a :class:`RegularChain` or
+    ///     :func:`rosenfeld_groebner`.
+    ///
+    /// Raises
+    /// ------
+    /// ValueError
+    ///     If no variable context is available, or `vars` names fewer variables
+    ///     than the polynomial actually uses.
+    ///
+    /// Example::
+    ///
+    ///     gb = alkahest.GroebnerBasis.compute([x**2 - y, x - y], [x, y])
+    ///     [g.to_expr() for g in gb]
+    #[pyo3(signature = (vars=None))]
+    fn to_expr(&self, py: Python<'_>, vars: Option<Vec<PyRef<PyExpr>>>) -> PyResult<PyExpr> {
+        let (pool_py, var_ids) =
+            resolve_gb_ctx(py, self.pool.as_ref(), &self.var_ids, vars, "GbPoly")?;
+        let id = {
+            let pool = pool_py.borrow(py);
+            gbpoly_to_expr(&self.inner, &var_ids, &pool.inner)
+        };
+        match id {
+            Some(id) => Ok(PyExpr { id, pool: pool_py }),
+            None => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "GbPoly is over {} variables but only {} were named; \
+                 pass the full vars list it was built with",
+                self.inner.n_vars,
+                var_ids.len()
+            ))),
+        }
     }
 
     fn __repr__(&self) -> String {
@@ -9831,6 +10196,68 @@ impl PyGbPoly {
     }
 }
 
+/// `alkahest.expr_to_gbpoly(expr, vars)` — convert a polynomial :class:`Expr`
+/// into the :class:`GbPoly` representation.
+///
+/// The inverse of :meth:`GbPoly.to_expr`.  Exponent slot `i` of the result
+/// refers to ``vars[i]``, and the polynomial remembers `vars`, so it can be fed
+/// straight to :meth:`GroebnerBasis.reduce`, :meth:`GroebnerBasis.contains` or
+/// :meth:`GroebnerBasis.compute_raw`.
+///
+/// Raises `ValueError` if *expr* is not polynomial in *vars* — a free symbol
+/// outside *vars*, a negative or symbolic exponent, or a transcendental call.
+///
+/// Example::
+///
+///     p = alkahest.expr_to_gbpoly(x**2 + y**2 - pool.integer(1), [x, y])
+///     gb = alkahest.GroebnerBasis.compute_raw([p])
+#[cfg(feature = "groebner")]
+#[pyfunction]
+#[pyo3(name = "expr_to_gbpoly", signature = (expr, vars))]
+fn py_expr_to_gbpoly(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    vars: Vec<PyRef<PyExpr>>,
+) -> PyResult<PyGbPoly> {
+    if vars.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "expr_to_gbpoly requires at least one variable",
+        ));
+    }
+    let pool_py = expr.pool.clone_ref(py);
+    let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+    let inner = {
+        let pool = pool_py.borrow(py);
+        expr_to_gbpoly(expr.id, &var_ids, &pool.inner)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?
+    };
+    Ok(PyGbPoly {
+        inner,
+        pool: Some(pool_py),
+        var_ids,
+    })
+}
+
+/// A computed Gröbner basis for a polynomial ideal.
+///
+/// The basis is a **sequence**: it supports `len()`, integer indexing and
+/// iteration, yielding its generators as :class:`GbPoly`.  Read the generators
+/// back as expressions with :meth:`to_exprs`, or one at a time with
+/// :meth:`GbPoly.to_expr` — that is how an elimination ideal (a ``"lex"`` basis,
+/// or the differential elimination performed by :func:`rosenfeld_groebner`) is
+/// turned into readable relations.
+///
+/// Attributes
+/// ----------
+/// order : str
+///     Monomial order the generators are reduced under: ``"lex"``, ``"grlex"``
+///     or ``"grevlex"``.
+///
+/// Example::
+///
+///     gb = alkahest.GroebnerBasis.compute([x**2 + y**2 - one, x - y], [x, y])
+///     len(gb)                     # number of generators
+///     [g.to_expr() for g in gb]   # generators as Expr
 #[cfg(feature = "groebner")]
 #[pyclass(name = "GroebnerBasis")]
 struct PyGroebnerBasis {
@@ -9840,6 +10267,35 @@ struct PyGroebnerBasis {
     pool: Option<Py<PyExprPool>>,
     /// Variables in the order used for exponent vectors — populated by `compute()`.
     var_ids: Vec<ExprId>,
+}
+
+#[cfg(feature = "groebner")]
+impl PyGroebnerBasis {
+    /// A generator wrapped with this basis's variable context.
+    fn wrap(&self, py: Python<'_>, p: GbPoly) -> PyGbPoly {
+        PyGbPoly::with_ctx(py, p, self.pool.as_ref(), &self.var_ids)
+    }
+
+    /// Accept a `GbPoly` as-is, or convert an `Expr` using this basis's
+    /// variable ordering.
+    fn coerce_to_gbpoly(&self, py: Python<'_>, p: &Bound<'_, PyAny>) -> PyResult<GbPoly> {
+        if let Ok(gbp) = p.downcast::<PyGbPoly>() {
+            return Ok(gbp.borrow().inner.clone());
+        }
+        if let Ok(expr) = p.downcast::<PyExpr>() {
+            let pool_py = self.pool.as_ref().ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "GroebnerBasis has no variable context; use GroebnerBasis.compute() to build one that accepts Expr, or pass a GbPoly from expr_to_gbpoly()",
+                )
+            })?;
+            let pool = pool_py.borrow(py);
+            return expr_to_gbpoly(expr.borrow().id, &self.var_ids, &pool.inner)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()));
+        }
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected a GbPoly or an Expr",
+        ))
+    }
 }
 
 #[cfg(feature = "groebner")]
@@ -9939,8 +10395,13 @@ impl PyGroebnerBasis {
     }
 
     /// Low-level entry point that accepts already-converted ``GbPoly`` objects,
-    /// bypassing the ``expr_to_gbpoly`` conversion. Useful when the polynomial
-    /// representation is already known (e.g., from ``MultiPoly`` reconstruction).
+    /// bypassing the :func:`expr_to_gbpoly` conversion. Useful when the
+    /// polynomial representation is already known (e.g., from ``MultiPoly``
+    /// reconstruction).
+    ///
+    /// The variable context of the *first* input polynomial, if it has one, is
+    /// carried onto the resulting basis, so a basis built from
+    /// :func:`expr_to_gbpoly` output stays readable via :meth:`to_exprs`.
     ///
     /// Parameters
     /// ----------
@@ -9952,6 +10413,7 @@ impl PyGroebnerBasis {
     #[staticmethod]
     #[pyo3(signature = (gb_polys, order=None))]
     fn compute_raw(
+        py: Python<'_>,
         gb_polys: Vec<PyRef<PyGbPoly>>,
         order: Option<&str>,
     ) -> PyResult<PyGroebnerBasis> {
@@ -9960,6 +10422,8 @@ impl PyGroebnerBasis {
                 "GroebnerBasis.compute_raw requires at least one GbPoly",
             ));
         }
+        let pool = gb_polys[0].pool.as_ref().map(|p| p.clone_ref(py));
+        let var_ids = gb_polys[0].var_ids.clone();
         let raw: Vec<GbPoly> = gb_polys.iter().map(|p| p.inner.clone()).collect();
         let parsed_order = order
             .and_then(MonomialOrder::from_str)
@@ -9970,42 +10434,175 @@ impl PyGroebnerBasis {
         };
         Ok(PyGroebnerBasis {
             inner,
-            pool: None,
-            var_ids: vec![],
+            pool,
+            var_ids,
         })
     }
 
-    fn reduce(&self, p: PyRef<PyGbPoly>) -> PyGbPoly {
-        PyGbPoly {
-            inner: self.inner.reduce(&p.inner),
+    /// The monomial order the generators are reduced under.
+    #[getter]
+    fn order(&self) -> &'static str {
+        self.inner.order().as_str()
+    }
+
+    /// The elimination ideal `I ∩ k[remaining vars]`, as a `GroebnerBasis`.
+    ///
+    /// Drops every generator whose support mentions one of *vars*.  Under a
+    /// ``"lex"`` basis with the eliminated variables ordered **first**, what is
+    /// left is a Gröbner basis for the elimination ideal — the relations among
+    /// the remaining variables alone.  Read them with :meth:`to_exprs`.
+    ///
+    /// The basis must know its variable ordering; *vars* must be among
+    /// :meth:`variables`.
+    ///
+    /// This is the implicitization move: parametrize a curve or surface, then
+    /// eliminate the parameters.
+    ///
+    /// Example::
+    ///
+    ///     # Implicitize (t, t**2): eliminate t from {x - t, y - t**2}
+    ///     gb = alkahest.GroebnerBasis.compute([x - t, y - t**2], [t, x, y])
+    ///     gb.eliminate([t]).to_exprs()   # [((y * -1) + x^2)]  i.e. y = x**2
+    fn eliminate(&self, py: Python<'_>, vars: Vec<PyRef<PyExpr>>) -> PyResult<PyGroebnerBasis> {
+        if self.pool.is_none() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "GroebnerBasis has no variable context; use GroebnerBasis.compute() to build one that can eliminate",
+            ));
         }
+        let mut indices = Vec::with_capacity(vars.len());
+        for v in &vars {
+            match self.var_ids.iter().position(|&id| id == v.id) {
+                Some(i) => indices.push(i),
+                None => {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "eliminate() was given a variable this basis is not written over; \
+                         see GroebnerBasis.variables()",
+                    ))
+                }
+            }
+        }
+        Ok(PyGroebnerBasis {
+            inner: self.inner.eliminate(&indices),
+            pool: self.pool.as_ref().map(|p| p.clone_ref(py)),
+            var_ids: self.var_ids.clone(),
+        })
+    }
+
+    /// The variables naming exponent slots 0, 1, … of the generators.
+    ///
+    /// Empty when the basis carries no variable context (a basis built by
+    /// :meth:`compute_raw` from context-free polynomials).
+    fn variables(&self, py: Python<'_>) -> Vec<PyExpr> {
+        match &self.pool {
+            None => vec![],
+            Some(pool) => self
+                .var_ids
+                .iter()
+                .map(|&id| PyExpr {
+                    id,
+                    pool: pool.clone_ref(py),
+                })
+                .collect(),
+        }
+    }
+
+    /// The basis generators as :class:`GbPoly`, interreduced and monic.
+    ///
+    /// Equivalent to ``list(basis)``.
+    fn polynomials(&self, py: Python<'_>) -> Vec<PyGbPoly> {
+        self.inner
+            .generators()
+            .iter()
+            .map(|p| self.wrap(py, p.clone()))
+            .collect()
+    }
+
+    /// The basis generators as :class:`Expr`, each meaning ``g = 0``.
+    ///
+    /// This is the read path for elimination: with a ``"lex"`` basis, the
+    /// generators free of the eliminated variables are the eliminated
+    /// relations.
+    ///
+    /// Parameters
+    /// ----------
+    /// vars : list[Expr], optional
+    ///     Override the stored variable ordering — see :meth:`GbPoly.to_expr`.
+    ///
+    /// Example::
+    ///
+    ///     gb = alkahest.GroebnerBasis.compute([x**2 + y**2 - one, x - y], [x, y])
+    ///     gb.to_exprs()
+    #[pyo3(signature = (vars=None))]
+    fn to_exprs(&self, py: Python<'_>, vars: Option<Vec<PyRef<PyExpr>>>) -> PyResult<Vec<PyExpr>> {
+        let (pool_py, var_ids) =
+            resolve_gb_ctx(py, self.pool.as_ref(), &self.var_ids, vars, "GroebnerBasis")?;
+        let ids: Option<Vec<ExprId>> = {
+            let pool = pool_py.borrow(py);
+            self.inner
+                .generators()
+                .iter()
+                .map(|g| gbpoly_to_expr(g, &var_ids, &pool.inner))
+                .collect()
+        };
+        match ids {
+            Some(ids) => Ok(ids
+                .into_iter()
+                .map(|id| PyExpr {
+                    id,
+                    pool: pool_py.clone_ref(py),
+                })
+                .collect()),
+            None => Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "basis is over more variables than the {} named; \
+                 pass the full vars list it was built with",
+                var_ids.len()
+            ))),
+        }
+    }
+
+    /// Reduce a polynomial modulo this basis and return the remainder.
+    ///
+    /// Accepts a :class:`GbPoly` or an :class:`Expr`; passing an ``Expr``
+    /// requires the basis to know its variable ordering (see
+    /// :meth:`variables`).  The remainder is a :class:`GbPoly` — call
+    /// :meth:`GbPoly.to_expr` on it to read it back.  It is zero exactly when
+    /// :meth:`contains` is true.
+    fn reduce(&self, py: Python<'_>, p: &Bound<'_, PyAny>) -> PyResult<PyGbPoly> {
+        let poly = self.coerce_to_gbpoly(py, p)?;
+        Ok(self.wrap(py, self.inner.reduce(&poly)))
     }
 
     /// Test membership.  Accepts either a ``GbPoly`` or an ``Expr``; when
     /// passing an ``Expr`` the basis must have been created via ``compute()``
     /// so that the variable order is known.
     fn contains(&self, py: Python<'_>, p: &Bound<'_, PyAny>) -> PyResult<bool> {
-        if let Ok(gbp) = p.downcast::<PyGbPoly>() {
-            return Ok(self.inner.contains(&gbp.borrow().inner));
-        }
-        if let Ok(expr) = p.downcast::<PyExpr>() {
-            let pool_py = self.pool.as_ref().ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err(
-                    "GroebnerBasis has no variable context; use GroebnerBasis.compute() to build one that accepts Expr",
-                )
-            })?;
-            let pool = pool_py.borrow(py);
-            let gbp = expr_to_gbpoly(expr.borrow().id, &self.var_ids, &pool.inner)
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-            return Ok(self.inner.contains(&gbp));
-        }
-        Err(pyo3::exceptions::PyTypeError::new_err(
-            "contains() expects a GbPoly or an Expr",
-        ))
+        let poly = self.coerce_to_gbpoly(py, p)?;
+        Ok(self.inner.contains(&poly))
     }
 
     fn __len__(&self) -> usize {
         self.inner.len()
+    }
+
+    /// Generator `i` as a :class:`GbPoly`; negative indices count from the end.
+    fn __getitem__(&self, py: Python<'_>, index: isize) -> PyResult<PyGbPoly> {
+        let n = self.inner.len() as isize;
+        let i = if index < 0 { index + n } else { index };
+        if i < 0 || i >= n {
+            return Err(pyo3::exceptions::PyIndexError::new_err(
+                "GroebnerBasis index out of range",
+            ));
+        }
+        Ok(self.wrap(py, self.inner.generators()[i as usize].clone()))
+    }
+
+    /// Iterate over the generators as :class:`GbPoly`.
+    fn __iter__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let list = pyo3::types::PyList::empty_bound(py);
+        for p in self.inner.generators() {
+            list.append(Py::new(py, self.wrap(py, p.clone()))?)?;
+        }
+        Ok(list.as_any().iter()?.into_py(py))
     }
 
     fn __repr__(&self) -> String {
@@ -10020,7 +10617,23 @@ fn py_monomial_order_for_dae(order: Option<&str>) -> MonomialOrder {
         .unwrap_or(MonomialOrder::GRevLex)
 }
 
-/// V2-13 — Rosenfeld–Gröbner-style differential elimination result.
+/// V2-13 — result of Rosenfeld–Gröbner-style differential elimination.
+///
+/// Returned by :func:`rosenfeld_groebner`.  The eliminated relations are in
+/// :meth:`final_basis`; read them with ``result.final_basis().to_exprs()``.
+///
+/// Attributes
+/// ----------
+/// consistent : bool
+///     ``False`` iff the unit ideal was reached — the system has no common
+///     jet solution over ℚ, i.e. the equations are contradictory.
+/// truncated : bool
+///     ``True`` if prolongation stopped at ``max_prolong_rounds`` rather than
+///     because the differential chain saturated.  A truncated basis is a
+///     *sound* set of consequences of the system but need not be complete, so
+///     "not in the basis" does not mean "not a consequence".
+/// prolongation_rounds : int
+///     Number of prolongation rounds that contributed new relations.
 #[cfg(feature = "groebner")]
 #[pyclass(name = "RosenfeldGroebnerResult")]
 struct PyRosenfeldGroebnerResult {
@@ -10033,11 +10646,15 @@ struct PyRosenfeldGroebnerResult {
     working_dae: DAE,
     final_basis: Option<GroebnerBasis>,
     pool: Py<PyExprPool>,
+    /// Jet variables indexing the exponent vectors of `final_basis`.
+    var_ids: Vec<ExprId>,
 }
 
 #[cfg(feature = "groebner")]
 #[pymethods]
 impl PyRosenfeldGroebnerResult {
+    /// The prolonged :class:`DAE`: the input system plus the derivative jets
+    /// introduced while differentiating it.
     fn working_dae(&self, py: Python<'_>) -> PyDAE {
         PyDAE {
             inner: self.working_dae.clone(),
@@ -10045,6 +10662,33 @@ impl PyRosenfeldGroebnerResult {
         }
     }
 
+    /// The jet variables indexing the basis, in exponent-slot order.
+    ///
+    /// These are the symbols the elimination actually ran over — the time
+    /// variable, the declared states and derivatives, and every higher jet
+    /// (``d2x/dt2``, …) introduced by prolongation.
+    fn variables(&self, py: Python<'_>) -> Vec<PyExpr> {
+        self.var_ids
+            .iter()
+            .map(|&id| PyExpr {
+                id,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect()
+    }
+
+    /// The saturated Gröbner basis, or ``None`` when the system is
+    /// inconsistent.
+    ///
+    /// The returned :class:`GroebnerBasis` knows its variable ordering, so
+    /// ``final_basis().to_exprs()`` gives the eliminated relations as
+    /// :class:`Expr`.
+    ///
+    /// Example::
+    ///
+    ///     r = alkahest.rosenfeld_groebner(dae, max_prolong_rounds=1)
+    ///     for eq in r.final_basis().to_exprs():
+    ///         print(eq, "= 0")
     fn final_basis(&self, py: Python<'_>) -> PyResult<Option<Py<PyGroebnerBasis>>> {
         match &self.final_basis {
             None => Ok(None),
@@ -10053,7 +10697,7 @@ impl PyRosenfeldGroebnerResult {
                 PyGroebnerBasis {
                     inner: gb.clone(),
                     pool: Some(self.pool.clone_ref(py)),
-                    var_ids: vec![],
+                    var_ids: self.var_ids.clone(),
                 },
             )?)),
         }
@@ -10072,6 +10716,8 @@ impl PyRosenfeldGroebnerResult {
 struct PyDaeIndexReduction {
     inner: DaeIndexReduction,
     pool: Py<PyExprPool>,
+    /// Jet variables for the Gröbner fallback; empty when Pantelides won.
+    var_ids: Vec<ExprId>,
 }
 
 #[cfg(feature = "groebner")]
@@ -10110,6 +10756,7 @@ impl PyDaeIndexReduction {
                     working_dae: r.working_dae.clone(),
                     final_basis: r.final_basis.clone(),
                     pool: self.pool.clone_ref(py),
+                    var_ids: self.var_ids.clone(),
                 },
             )
             .ok(),
@@ -10128,6 +10775,39 @@ impl PyDaeIndexReduction {
     }
 }
 
+/// `alkahest.rosenfeld_groebner(dae, order=None, max_prolong_rounds=None)` —
+/// Rosenfeld–Gröbner-style differential elimination.
+///
+/// Prolongs the system (differentiates each equation, introducing higher jets
+/// as new indeterminates) and computes a Gröbner basis after each round, until
+/// differentiating adds nothing new to the ideal or the round budget runs out.
+/// The basis is the set of *algebraic consequences* of the differential
+/// system — the input–output relations elimination is after.
+///
+/// Parameters
+/// ----------
+/// dae : DAE
+///     The system, polynomial in its variables and derivative symbols.
+/// order : str, optional
+///     Monomial order — ``"grevlex"`` (default), ``"grlex"`` or ``"lex"``.
+///     Use ``"lex"`` when you want elimination-ordered generators.
+/// max_prolong_rounds : int, optional
+///     Prolongation budget (default 8).  Nonlinear jets often do not saturate
+///     in finitely many algebraic steps, so hitting the budget is normal and
+///     sets :attr:`RosenfeldGroebnerResult.truncated`.
+///
+/// Returns
+/// -------
+/// RosenfeldGroebnerResult
+///     Read the relations with ``result.final_basis().to_exprs()``.
+///
+/// Example::
+///
+///     t, x, dx = p.symbol("t"), p.symbol("x"), p.symbol("dx/dt")
+///     dae = alkahest.DAE.new([dx - x], [x], [dx], t)
+///     r = alkahest.rosenfeld_groebner(dae, max_prolong_rounds=1)
+///     r.consistent                      # True
+///     r.final_basis().to_exprs()        # the eliminated relations, as Expr
 #[cfg(feature = "groebner")]
 #[pyfunction]
 #[pyo3(name = "rosenfeld_groebner", signature = (dae, order=None, max_prolong_rounds=None))]
@@ -10140,14 +10820,14 @@ fn py_rosenfeld_groebner(
     let pool_py = dae.pool.clone_ref(py);
     let r = {
         let pool = pool_py.borrow(py);
-        rosenfeld_groebner_with_options(
+        rosenfeld_groebner_ranked(
             &dae.inner,
             &pool.inner,
             py_monomial_order_for_dae(order),
             max_prolong_rounds.unwrap_or(8),
         )
     };
-    let r = r.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let (r, ranking) = r.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
     Ok(PyRosenfeldGroebnerResult {
         consistent: r.consistent,
         truncated: r.truncated,
@@ -10155,6 +10835,7 @@ fn py_rosenfeld_groebner(
         working_dae: r.working_dae,
         final_basis: r.final_basis,
         pool: pool_py,
+        var_ids: ranking.vars,
     })
 }
 
@@ -10167,14 +10848,16 @@ fn py_dae_index_reduce(
     order: Option<&str>,
 ) -> PyResult<PyDaeIndexReduction> {
     let pool_py = dae.pool.clone_ref(py);
-    let inner = {
+    let out = {
         let pool = pool_py.borrow(py);
-        dae_index_reduce(&dae.inner, &pool.inner, py_monomial_order_for_dae(order))
+        dae_index_reduce_ranked(&dae.inner, &pool.inner, py_monomial_order_for_dae(order))
     };
-    let inner = inner.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    let (inner, ranking) =
+        out.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
     Ok(PyDaeIndexReduction {
         inner,
         pool: pool_py,
+        var_ids: ranking.map(|r| r.vars).unwrap_or_default(),
     })
 }
 
@@ -10750,7 +11433,7 @@ fn py_solve(
             let solutions: Vec<Vec<ExprId>> = values.into_iter().map(|v| vec![v]).collect();
             let result: Result<SolutionSet, alkahest_core::SolverError> =
                 Ok(SolutionSet::Finite(solutions));
-            return finite_solutions_to_py(py, result, &pool_py, &var_ids, numeric);
+            return finite_solutions_to_py(py, result, &pool_py, &var_ids, &var_ids, numeric);
         }
     }
 
@@ -10794,7 +11477,20 @@ fn py_solve(
         }
     }
 
-    finite_solutions_to_py(py, result, &pool_py, &var_ids, numeric)
+    // A `Parametric` basis is indexed by the solve variables *followed by* the
+    // free parameters — the same concatenation `solve_polynomial_system` builds
+    // its exponent vectors from. Without it the returned basis cannot be read.
+    let basis_var_ids: Vec<ExprId> = {
+        let pool = pool_py.borrow(py);
+        let mut all = var_ids.clone();
+        all.extend(alkahest_core::solver::collect_parameters(
+            &eq_ids,
+            &var_ids,
+            &pool.inner,
+        ));
+        all
+    };
+    finite_solutions_to_py(py, result, &pool_py, &var_ids, &basis_var_ids, numeric)
 }
 
 #[cfg(feature = "groebner")]
@@ -10860,6 +11556,7 @@ fn finite_solutions_to_py(
     result: Result<SolutionSet, alkahest_core::SolverError>,
     pool_py: &Py<PyExprPool>,
     var_ids: &[ExprId],
+    basis_var_ids: &[ExprId],
     numeric: bool,
 ) -> PyResult<PyObject> {
     match result {
@@ -10870,8 +11567,8 @@ fn finite_solutions_to_py(
         Ok(SolutionSet::NoSolution) => Ok(pyo3::types::PyList::empty_bound(py).into()),
         Ok(SolutionSet::Parametric(gb)) => Ok(PyGroebnerBasis {
             inner: gb,
-            pool: None,
-            var_ids: vec![],
+            pool: Some(pool_py.clone_ref(py)),
+            var_ids: basis_var_ids.to_vec(),
         }
         .into_py(py)),
         Ok(SolutionSet::Finite(solutions)) => {
@@ -10926,9 +11623,17 @@ fn finite_solutions_to_py(
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "groebner")]
+/// One triangular component of a decomposition, as returned by
+/// :func:`triangularize`.
+///
+/// The component's polynomials are :class:`GbPoly`; each carries the variable
+/// ordering :func:`triangularize` was called with, so ``p.to_expr()`` reads it
+/// back as an :class:`Expr`.
 #[pyclass(name = "RegularChain")]
 struct PyRegularChain {
     inner: RegularChain,
+    pool: Option<Py<PyExprPool>>,
+    var_ids: Vec<ExprId>,
 }
 
 #[cfg(feature = "groebner")]
@@ -10940,12 +11645,58 @@ impl PyRegularChain {
     }
 
     /// Gröbner-style polynomial tiles (``GbPoly``), ascending by main variable.
-    fn polys(&self) -> Vec<PyGbPoly> {
+    ///
+    /// Each tile knows the variables it is written over, so
+    /// ``[p.to_expr() for p in chain.polys()]`` gives the triangular system as
+    /// :class:`Expr` (see :meth:`to_exprs`).
+    fn polys(&self, py: Python<'_>) -> Vec<PyGbPoly> {
         self.inner
             .polys
             .iter()
-            .map(|p| PyGbPoly { inner: p.clone() })
+            .map(|p| PyGbPoly::with_ctx(py, p.clone(), self.pool.as_ref(), &self.var_ids))
             .collect()
+    }
+
+    /// The variables the chain is written over, in exponent-slot order.
+    fn variables(&self, py: Python<'_>) -> Vec<PyExpr> {
+        match &self.pool {
+            None => vec![],
+            Some(pool) => self
+                .var_ids
+                .iter()
+                .map(|&id| PyExpr {
+                    id,
+                    pool: pool.clone_ref(py),
+                })
+                .collect(),
+        }
+    }
+
+    /// The triangular system as :class:`Expr`, each meaning ``p = 0``.
+    fn to_exprs(&self, py: Python<'_>) -> PyResult<Vec<PyExpr>> {
+        let (pool_py, var_ids) =
+            resolve_gb_ctx(py, self.pool.as_ref(), &self.var_ids, None, "RegularChain")?;
+        let ids: Option<Vec<ExprId>> = {
+            let pool = pool_py.borrow(py);
+            self.inner
+                .polys
+                .iter()
+                .map(|p| gbpoly_to_expr(p, &var_ids, &pool.inner))
+                .collect()
+        };
+        ids.map(|ids| {
+            ids.into_iter()
+                .map(|id| PyExpr {
+                    id,
+                    pool: pool_py.clone_ref(py),
+                })
+                .collect()
+        })
+        .ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(
+                "regular chain is over more variables than were named",
+            )
+        })
     }
 
     fn __len__(&self) -> usize {
@@ -10981,7 +11732,7 @@ fn py_triangularize(
 
     let result = {
         let pool = pool_py.borrow(py);
-        triangularize(eq_ids, var_ids, &pool.inner)
+        triangularize(eq_ids, var_ids.clone(), &pool.inner)
     };
 
     match result {
@@ -11003,7 +11754,14 @@ fn py_triangularize(
         Ok(chains) => {
             let list = pyo3::types::PyList::empty_bound(py);
             for chain in chains {
-                list.append(PyRegularChain { inner: chain }.into_py(py))?;
+                list.append(
+                    PyRegularChain {
+                        inner: chain,
+                        pool: Some(pool_py.clone_ref(py)),
+                        var_ids: var_ids.clone(),
+                    }
+                    .into_py(py),
+                )?;
             }
             Ok(list.into())
         }
@@ -11024,10 +11782,14 @@ struct PyMultiPolyFp {
 
 #[pymethods]
 impl PyMultiPolyFp {
+    /// True if this is the zero polynomial.
+    #[getter]
     fn is_zero(&self) -> bool {
         self.inner.is_zero()
     }
 
+    /// Highest total degree over all terms (`0` for the zero polynomial).
+    #[getter]
     fn total_degree(&self) -> u32 {
         self.inner.total_degree()
     }
@@ -11631,6 +12393,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add_function(wrap_pyfunction!(py_ideal_radical, m)?)?;
         m.add_function(wrap_pyfunction!(py_rosenfeld_groebner, m)?)?;
         m.add_function(wrap_pyfunction!(py_dae_index_reduce, m)?)?;
+        m.add_function(wrap_pyfunction!(py_expr_to_gbpoly, m)?)?;
     }
     // V2-2 — Resultants and subresultant PRS
     m.add_function(wrap_pyfunction!(py_resultant, m)?)?;

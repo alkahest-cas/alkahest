@@ -69,7 +69,7 @@ p = ak.UniPoly.from_symbolic(
 )
 
 print(p)                # x^2+2*x+1
-print(p.degree())       # 2
+print(p.degree)         # 2
 print(p.coefficients()) # [1, 2, 1]
 ```
 
@@ -95,7 +95,7 @@ x2m1 = ak.UniPoly.from_symbolic(
 )
 g = x2m1.gcd(xm1)
 print(g)          # x-1
-print(g.degree()) # 1
+print(g.degree)   # 1
 ```
 
 GCD is computed by FLINT's `fmpz_poly_gcd` and is normalised to a positive
@@ -128,7 +128,7 @@ a = ak.MultiPoly.from_symbolic(
     pool,
 )
 print(a)               # x1^2 + x0x1 + x0^2
-print(a.total_degree()) # 2
+print(a.total_degree)   # 2
 ```
 
 ### Integer content

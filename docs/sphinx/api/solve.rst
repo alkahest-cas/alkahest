@@ -62,31 +62,84 @@ GroebnerBasis
 
    A Gröbner basis for a polynomial ideal.
 
-   .. classmethod:: compute(polys: list[Expr], vars: list[Expr], order: str = "GRevLex") -> GroebnerBasis
+   A basis is a sequence: ``len(gb)``, ``gb[i]`` and iteration all yield its
+   generators as :class:`GbPoly`.
+
+   .. classmethod:: compute(polys: list[Expr], vars: list[Expr], order: str = "lex") -> GroebnerBasis
 
       Compute a Gröbner basis using the F4 algorithm.
 
-      :param order: Monomial order — ``"Lex"``, ``"GrLex"``, or ``"GRevLex"``.
-         Use ``"Lex"`` for elimination; ``"GRevLex"`` is generally fastest.
+      :param order: Monomial order — ``"lex"`` (default), ``"grlex"``, or
+         ``"grevlex"``. Use ``"lex"`` for elimination; ``"grevlex"`` is
+         generally fastest. For ``"lex"`` on a zero-dimensional ideal the
+         grevlex-then-FGLM strategy is used automatically.
 
-      Computes the basis using the F4 algorithm with product-criterion pruning.
+   .. attribute:: order
 
-   .. method:: reduce(expr: Expr) -> Expr
+      The monomial order the generators are reduced under, as a string.
 
-      Reduce *expr* modulo the ideal.
+   .. method:: variables() -> list[Expr]
 
-   .. method:: contains(expr: Expr) -> bool
+      The variables naming exponent slots 0, 1, … of the generators.
+
+   .. method:: polynomials() -> list[GbPoly]
+
+      The generators. Equivalent to ``list(gb)``.
+
+   .. method:: to_exprs(vars: list[Expr] | None = None) -> list[Expr]
+
+      The generators as expressions, each meaning ``g = 0``. This is the read
+      path for elimination results.
+
+   .. method:: reduce(p: GbPoly | Expr) -> GbPoly
+
+      Reduce *p* modulo the ideal and return the remainder. Call
+      :meth:`GbPoly.to_expr` on it to read it back; it is zero exactly when
+      :meth:`contains` is true.
+
+   .. method:: contains(p: GbPoly | Expr) -> bool
 
       Test ideal membership.
 
    .. method:: eliminate(vars: list[Expr]) -> GroebnerBasis
 
-      Compute the elimination ideal by removing generators that involve
-      the specified variables.
+      The elimination ideal ``I ∩ k[remaining vars]``: drops every generator
+      whose support mentions one of *vars*. Under a ``"lex"`` basis with the
+      eliminated variables ordered **first**, what is left is a Gröbner basis
+      for that ideal.
 
       Useful for implicitization of parametric curves and surfaces.
 
 .. class:: GbPoly
 
-   A polynomial element of a Gröbner basis computation, with rational
-   coefficients represented as FLINT rationals.
+   A sparse multivariate polynomial over ℚ, as used by the Gröbner machinery.
+   It stores exponent *vectors*, so reading one back needs the variable list
+   its slots refer to — polynomials Alkahest hands out carry that list.
+
+   .. attribute:: is_zero
+   .. attribute:: n_vars
+   .. attribute:: n_terms
+
+   .. method:: variables() -> list[Expr]
+
+      The variables naming this polynomial's exponent slots, in order.
+
+   .. method:: terms() -> list[tuple[tuple[int, ...], int | Fraction]]
+
+      ``(exponents, coefficient)`` pairs, in ascending exponent-vector order.
+      Coefficients are exact.
+
+   .. method:: to_expr(vars: list[Expr] | None = None) -> Expr
+
+      Convert back to an :class:`Expr`. Defaults to :meth:`variables`; raises
+      ``ValueError`` if *vars* names fewer variables than the polynomial uses.
+
+.. function:: expr_to_gbpoly(expr: Expr, vars: list[Expr]) -> GbPoly
+
+   Convert a polynomial expression into the :class:`GbPoly` representation —
+   the inverse of :meth:`GbPoly.to_expr`. Exponent slot ``i`` refers to
+   ``vars[i]``, and the result remembers *vars*, so it can be passed straight
+   to :meth:`GroebnerBasis.reduce`, :meth:`GroebnerBasis.contains` or
+   ``GroebnerBasis.compute_raw``.
+
+   Raises ``ValueError`` if *expr* is not polynomial in *vars*.
