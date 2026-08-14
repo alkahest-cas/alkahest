@@ -863,8 +863,9 @@ fn describe_singularity(
 /// `[0, 1]`, `sin(x)/x` on `[-1, 1]` — has no rigorous Taylor model at `p`
 /// (the reciprocal's enclosure contains zero) even though nothing about the
 /// integral is singular. Such a sub-interval is enclosed through Cauchy's mean
-/// value theorem instead, from an enclosure of `N'/D'`; see
-/// [`RemovableQuotient::piece`] for the argument. The vanishing of `N` and `D`
+/// value theorem instead: `N(x)/D(x) = N'(ξ)/D'(ξ)` for some `ξ` in the
+/// sub-interval, so an enclosure `R` of `N'/D'` there — which is perfectly
+/// regular — gives `∫_J N/D dx ∈ |J| · R`. The vanishing of `N` and `D`
 /// at `p` is checked *symbolically* — a numeric enclosure cannot prove a value
 /// is exactly zero — and `D'` must be certified non-vanishing on the
 /// sub-interval, so a genuine pole is never mistaken for a removable one. The
