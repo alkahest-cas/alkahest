@@ -48,6 +48,19 @@ class Certifiability:
     def __bool__(self) -> bool: ...
     def as_dict(self) -> dict[str, object]: ...
 
+class BoundsSupport:
+    """Verdict from :func:`bounds_supported` — truthy iff every construct in
+    the expression has a rigorous Taylor-model rule."""
+
+    supported: bool
+    blocker: str | None
+    functions: list[str]
+    detail: str
+
+    def __bool__(self) -> bool: ...
+    def as_dict(self) -> dict[str, object]: ...
+
+def bounds_supported(expr: Expr) -> BoundsSupport: ...
 def certifiable(
     op: str | object,
     *args: object,

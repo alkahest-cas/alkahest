@@ -65,6 +65,11 @@ def test_cranelift_jit_enables_session_jit_flag():
         "numeric_ball",
         "lower_llvm",
         "lean_theorem",
+        # Validated-bounds coverage. Distinct from `numeric_ball`, which is
+        # pointwise ball arithmetic and does *not* imply a Taylor-model rule —
+        # see tests/test_taylor_model_coverage.py, which cross-checks this bit
+        # against `bound_on_box` for every primitive.
+        "taylor_model",
     } == primitives[0].keys()
 
 

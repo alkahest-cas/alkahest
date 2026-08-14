@@ -127,6 +127,55 @@ Both are detailed under *Behaviour changes to plan for*.
   this**: a root that never produces a sign change — a double root like
   `(x−1)²` on `[0, 2]`, or `(x²−1)²` on `[-2, 2]` — still answers
   `"undecided"`, because no witness pair exists and none is invented.
+- **`verified_sign` could hang on a rational constant with enough digits.**
+  `sin(x)·D − N·x ≥ 0` on `[0, 3/2]` took 0.05 s at `N/D = 636/1000`, 0.08 s at
+  nine digits, and **over 300 s at twelve** — three extra digits turned
+  milliseconds into a hang. The cause was neither exact rational arithmetic nor
+  repeated conversion but a **non-terminating loop** in the branch-and-bound:
+  a sub-box bisected down to the width floor was pushed back onto the active
+  list, immediately re-selected as the smallest key with nothing changed, and
+  the loop spun *without ever consuming its subdivision budget* — which is why
+  capping `max_subdivisions` at 64 did not help. It only triggered once `tol`
+  became unreachable, and `tol` is an **absolute** width: at `D = 10¹²` the
+  function is of order `10¹¹`, so the default `1e-9` asks for twenty digits and
+  the floor arrives first. Nine digits happened to converge just above the
+  floor, twelve just below. Boxes that reach the floor are now retired out of
+  the active list, their keys still folded into the final bound, so the search
+  always makes progress. Cost is now flat in the size of the constant: 0.33 s at
+  three digits through 0.47 s at sixteen.
+- **Inequalities that are tight at an endpoint no longer stay `"undecided"`.**
+  Cusa–Huygens, Mitrinović–Adamović, Wilker and Huygens were `"true"` on
+  `[0.1, 1.5]` but `"undecided"` on `[0.01, 1.5]` and at `x = 0` — precisely the
+  point that makes them worth stating. Two independent things were in the way.
+  First, `tol` was also the wrong *stopping rule* for a sign question: on
+  `[0.01, 1.5]` the true minimum of the Cusa–Huygens form is `1.7·10⁻¹³`, so the
+  search met the `1e-9` tolerance and stopped with an enclosure that still
+  straddled zero. `verified_sign` now re-runs the search with the sign itself as
+  the goal, refining while the running bound straddles zero instead of to an
+  absolute width. Second, where the margin genuinely *vanishes* no subdivision
+  can ever help, so the box is split: a collar `[a, a+δ]` at the endpoint is
+  handled by a truncated Taylor expansion there, and the rest by the usual
+  branch-and-bound. The two pieces are closed and share the join point `δ`, so
+  their union is the original box with no gap. All four are now `"true"` on
+  `[0, 1.5]`, as is Jordan's inequality stated exactly as
+  `10¹²·sin x − 636619772368·x ≥ 0`.
+  **The remainder is proven, not assumed.** Coefficients `c_k = g⁽ᵏ⁾(a)/k!` are
+  accepted as *zero* only when substitution followed by `simplify` lands on the
+  literal integer `0` — no numeric enclosure can prove a value is zero, and none
+  is asked to — cross-checked against ball arithmetic, and the tail is a
+  Lagrange remainder `|R(t)| ≤ t^m·sup|g⁽ᵐ⁾|/m!` whose sup is a rigorous
+  enclosure over the whole collar. Analyticity, which Taylor's theorem needs, is
+  certified by requiring every derivative `g … g⁽ᵐ⁾` to enclose successfully
+  there. With `c_0 … c_{j−1}` proven zero, `g(a+t) ≥ t^j·[c_j − T(δ)]` and
+  `t^j ≥ 0` finishes it. **Nothing was traded for the extra reach**: a margin
+  that vanishes in the *interior* — `(x − 7/10)²(x + 1)` on `[0, 3/2]` — is
+  still `"undecided"`, because the expansion does not apply there. A leading
+  coefficient proven *negative* now returns `"false"` rather than `"undecided"`,
+  which settles cases no sampling could see: `x³ − x²/1000` is negative only on
+  `(0, 1/1000)`, and each of the four inequalities reversed is refuted at the
+  same endpoint where the original is certified. A strict `"positive"` query is
+  `"false"` where the expression is proven to vanish exactly, so `x² > 0` on
+  `[0, 1]` is `"false"` while `x² ≥ 0` is `"true"`.
 - **`verified_integral` refused removable singularities.** Taylor-model
   quadrature raised `E-VALIDATED-003` on any sub-interval where the reciprocal's
   enclosure contained zero, which put `∫₀¹ ln(1+x)/x dx = π²/12` out of reach
@@ -371,6 +420,58 @@ Both are detailed under *Behaviour changes to plan for*.
   types are unchanged.
 
 ### Added
+
+- **Validated-bounds coverage is queryable: `bounds_supported(expr)` and a
+  `taylor_model` bit in `capabilities()["primitives"]`.** The only
+  per-function coverage flag the agent contract exposed was `numeric_ball`,
+  and it is not the flag that governs `bound_on_box` / `verified_integral` /
+  `verified_no_roots` / `verified_sign`. Ball arithmetic is *pointwise*; a
+  Taylor model needs a rule with a rigorous Lagrange remainder, and ten
+  primitives have the first without the second — `erf`, `erfc`, `bessel_j0`,
+  `bessel_j1`, `digamma`, `lambert_w`, `acosh`, `asinh`, `floor`, `ceil`. So
+  `numeric_ball` said `True` for `bessel_j0` and every bound over a box died
+  on `E-VALIDATED-001`. The boundary was enforced correctly and could not be
+  found ahead of time, which is how a planning loop loses a whole designed
+  workload (Turán-type inequalities for Bessel functions, in the 2026-08-13
+  autoresearch run) to a route it could have ruled out for free.
+
+  `taylor_model` reports it per primitive — `True` for the elementary
+  fragment (`exp`, `log`, `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`,
+  `atan`, `sinh`, `cosh`, `tanh`, `abs`) and `False` for every special
+  function. `ak.bounds_supported(expr)` asks for a whole expression, without
+  running the bound: it is truthy when nothing in the expression will be
+  refused as unsupported, and carries `.blocker` (the evaluator's own
+  description of the first construct it has no rule for) and `.functions`
+  (every blocking function, so a substitution can be planned in one round
+  rather than found one at a time).
+
+  **Neither is a maintained list.** Both are derived by running the real
+  Taylor evaluator on a probe expression and asking whether it refuses with
+  `E-VALIDATED-001` — a second hand-written table is how `numeric_ball` came
+  to be read as coverage in the first place, and would have been a worse
+  outcome than no flag at all. `tests/test_taylor_model_coverage.py`
+  re-derives the bit the only other way there is, by calling `bound_on_box`
+  on every registered primitive, and fails if the two ever disagree.
+
+  `numeric_ball` itself is *accurate* and stays as it is: those ten
+  primitives really do have Arb ball arithmetic. It answers a different
+  question, and now says so next to a flag that answers this one. A `True`
+  from either means "not `E-VALIDATED-001`" — a covered function can still be
+  refused on a particular box for a domain violation (`E-VALIDATED-003`) or a
+  non-finite enclosure (`-004`), which no box-free predicate can rule out.
+
+  This is deliberately *not* folded into `certifiable`, which asks whether an
+  operation emits a **Lean** certificate and answers from the certificate
+  ledger. A rigorous enclosure is not a Lean proof term and the validated
+  subsystem has no ledger rows; one predicate returning `True` for two kinds
+  of evidence would be a worse contract than two predicates.
+
+  New in Rust: `alkahest_cas::{taylor_model_refusal, taylor_model_blockers,
+  taylor_model_supports, taylor_model_supports_call}` and
+  `Capabilities::TAYLOR_MODEL` (also a `taylor_model` column in
+  `CoverageReport::to_markdown`). `capabilities()["contract_version"]` stays
+  `3`: the row gained a key and lost none, which is the same additive rule
+  the `__all__` freeze check applies.
 
 - **Gröbner results can be read back — `GbPoly.to_expr`, iteration over a
   `GroebnerBasis`, and `expr_to_gbpoly`.** Everything that returned a basis

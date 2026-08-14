@@ -99,6 +99,8 @@ from .alkahest import (  # noqa: F401
     ArbBall,
     # Explicit positive/nonzero refinement for conservative simplification
     Assumptions,
+    # Verdict from `bounds_supported` — see `Enclosure` below
+    BoundsSupport,
     CompileCache,
     # Phase 21: JIT compiled evaluation
     CompiledFn,
@@ -163,6 +165,8 @@ from .alkahest import (  # noqa: F401
     bessel_j0,
     bessel_j1,
     bound_on_box,
+    # Is the validated-bounds subsystem even reachable for this expression?
+    bounds_supported,
     cad_lift,
     cad_project,
     # Rational-function cancel/together
@@ -1926,6 +1930,20 @@ def capabilities() -> dict:
         ledger (:func:`certificate_coverage`), which is also where each
         primitive's ``lean_theorem`` bit comes from — so the capability bits
         and the coverage table cannot disagree.
+
+        Each ``primitives`` row also carries ``taylor_model``: whether the
+        validated-bounds subsystem (:func:`bound_on_box`,
+        :func:`verified_integral`, :func:`verified_no_roots`,
+        :func:`verified_sign`) has a rigorous Taylor-model rule for it, i.e.
+        whether those entry points can bound it at all. **It is a different
+        question from ``numeric_ball``**, which is pointwise ball arithmetic
+        and is ``True`` for `erf`, `bessel_j0`, `digamma` and `floor` —
+        none of which can be bounded over a box. Reading the latter as
+        coverage is what made the boundary invisible before 3.9.0. The bit is
+        derived by running the Taylor evaluator, so it cannot drift from what
+        `bound_on_box` accepts; :func:`bounds_supported` asks the same
+        question for a whole expression.
+
         Symbolic linear algebra (``Matrix.rref``, ``rank``, ``nullspace``,
         ``jordan_form``, ``minimal_polynomial``, LU/QR/Cholesky, etc.) is available
         on :class:`Matrix`; unsupported inputs raise :class:`LinearAlgebraError`
@@ -2090,6 +2108,8 @@ __all__ = [
     "Assumptions",
     # P1 search plumbing items 4–5 — budgets + batch/streaming fan-out
     "BatchItem",
+    # Verdict from `bounds_supported`
+    "BoundsSupport",
     "Budget",
     "BudgetExceededError",
     "CadError",
@@ -2216,6 +2236,7 @@ __all__ = [
     "bessel_j0",
     "bessel_j1",
     "bound_on_box",
+    "bounds_supported",
     # P1 search plumbing item 4
     "budget_seed",
     "cad_lift",

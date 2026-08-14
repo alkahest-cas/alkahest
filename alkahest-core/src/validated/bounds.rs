@@ -28,7 +28,9 @@
 //!   omitting that piece of the domain from the answer.
 
 use super::taylor::{taylor_range, TaylorContext, MAX_ORDER};
-use super::{contains_zero, from_bounds, from_float, is_finite, lb, ub, width, ValidatedError};
+use super::{
+    contains_zero, from_bounds, from_float, is_finite, lb, mag, ub, width, ValidatedError,
+};
 use crate::ball::ArbBall;
 use crate::diff::diff;
 use crate::kernel::subs::subs;
@@ -249,10 +251,22 @@ fn bound_on_fboxes(
     }
     let prec = opts.prec;
 
-    let (lo_bound, used_lo, exhausted_lo) =
-        extremum_search(expr, pool, boxes0, opts, Extremum::Min)?;
-    let (hi_bound, used_hi, exhausted_hi) =
-        extremum_search(expr, pool, boxes0, opts, Extremum::Max)?;
+    let (lo_bound, used_lo, exhausted_lo) = extremum_search(
+        expr,
+        pool,
+        boxes0,
+        opts,
+        Extremum::Min,
+        SearchGoal::Tolerance,
+    )?;
+    let (hi_bound, used_hi, exhausted_hi) = extremum_search(
+        expr,
+        pool,
+        boxes0,
+        opts,
+        Extremum::Max,
+        SearchGoal::Tolerance,
+    )?;
 
     let enclosure = from_bounds(&lo_bound, &hi_bound, prec);
     if !is_finite(&enclosure) {
@@ -274,6 +288,25 @@ enum Extremum {
     Max,
 }
 
+/// What makes an [`extremum_search`] pass stop early.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SearchGoal {
+    /// Stop once the extremum is pinned down to within `opts.tol`.
+    Tolerance,
+    /// Stop once the running rigorous bound is proven strictly positive in the
+    /// signed view — i.e. `min f > 0` for [`Extremum::Min`], `max f < 0` for
+    /// [`Extremum::Max`].
+    ///
+    /// `tol` is the wrong stopping rule for a sign question, because it is an
+    /// **absolute** width. On an expression whose extremum is closer to zero
+    /// than `tol`, the tolerance test fires while the enclosure still straddles
+    /// zero, and the predicate can only answer `Undecided` — the search stopped
+    /// on a criterion unrelated to the question being asked. Under this goal
+    /// the pass instead refines until the sign is settled, or until the work
+    /// budget or the width floor stops it.
+    DecideSign,
+}
+
 /// Moore–Skelboe branch-and-bound for one end of the range.
 ///
 /// Returns `(bound, subdivisions, budget_exhausted)` where `bound` is a
@@ -286,6 +319,7 @@ fn extremum_search(
     boxes0: &[FBox],
     opts: &BoundOptions,
     which: Extremum,
+    goal: SearchGoal,
 ) -> Result<(Float, usize, bool)> {
     let prec = opts.prec;
     let floor = max_dim_width(boxes0, prec) * 2f64.powi(-SINGULARITY_BISECTION_LIMIT);
@@ -309,9 +343,23 @@ fn extremum_search(
     // Active list of (lower bound of signed range, box). `best_ub` is the best
     // proven upper bound on the signed extremum, from any box seen so far.
     let mut active: Vec<(Float, Vec<FBox>)> = Vec::new();
+    // Smallest key among boxes that have been bisected down to `floor` and so
+    // can never be refined again. Such a box must leave `active`: pushing it
+    // back would make it the argmin again on the very next iteration with
+    // nothing changed, and the loop would spin forever without consuming any
+    // budget. Only the key is kept, which is all the final bound needs.
+    let mut retired: Option<Float> = None;
     let mut best_ub: Option<Float> = None;
     let mut subdivisions = 0usize;
     let mut exhausted = false;
+
+    // Running minimum of two optional keys.
+    let keep_min = |cur: Option<Float>, k: Float| -> Option<Float> {
+        Some(match cur {
+            Some(c) if c <= k => c,
+            _ => k,
+        })
+    };
 
     let seed = evaluate_box(expr, pool, boxes0, opts, floor, prec)?;
     match seed {
@@ -329,16 +377,34 @@ fn extremum_search(
     while let Some(idx) = argmin_key(&active) {
         let (key, b) = active.swap_remove(idx);
 
+        // Rigorous lower bound on the signed extremum as things stand: `key` is
+        // the smallest key still active, and no retired box holds anything
+        // smaller than `retired`.
+        let overall = match &retired {
+            Some(r) if r < &key => r.clone(),
+            _ => key.clone(),
+        };
+
+        if goal == SearchGoal::DecideSign && overall > 0 {
+            // `min f > 0` (or, in the signed view of a Max pass, `max f < 0`).
+            // The sign question is settled and no amount of further refinement
+            // can unsettle it.
+            active.push((key, b));
+            break;
+        }
+
         // Prune: this box cannot contain the extremum.
         if let Some(ub_best) = &best_ub {
             if &key > ub_best {
                 continue;
             }
             // Converged: the uncertainty in the extremum is within tol.
-            let gap = Float::with_val(prec, ub_best - &key);
-            if gap <= tol_f {
-                active.push((key, b));
-                break;
+            if goal == SearchGoal::Tolerance {
+                let gap = Float::with_val(prec, ub_best - &overall);
+                if gap <= tol_f {
+                    active.push((key, b));
+                    break;
+                }
             }
         }
 
@@ -348,16 +414,8 @@ fn extremum_search(
             break;
         }
         if max_dim_width(&b, prec) <= floor {
-            // Cannot refine further; keep it as-is so its bound still counts.
-            active.push((key, b));
-            // Everything else is either pruned or equally unrefinable.
-            let stuck = active
-                .iter()
-                .all(|(_, bx)| max_dim_width(bx, prec) <= floor);
-            if stuck {
-                exhausted = true;
-                break;
-            }
+            // Cannot refine further: retire it, so the loop makes progress.
+            retired = keep_min(retired, key);
             continue;
         }
 
@@ -380,21 +438,25 @@ fn extremum_search(
         }
     }
 
-    // The rigorous bound on the signed extremum is the smallest lower bound
-    // still active (pruned boxes provably cannot beat `best_ub`).
+    // Every point of the original box lies in an active box, a retired box, or
+    // a pruned one — and a pruned box provably cannot beat `best_ub`. So the
+    // smallest key over active ∪ retired is a rigorous bound on the signed
+    // extremum, whenever the loop happened to stop.
     let mut bound = active
         .iter()
         .map(|(k, _)| k.clone())
-        .fold(None::<Float>, |acc, k| {
-            Some(match acc {
-                Some(cur) if cur <= k => cur,
-                _ => k,
-            })
-        })
+        .chain(retired.clone())
+        .fold(None::<Float>, keep_min)
         .or_else(|| best_ub.clone())
         .ok_or_else(|| ValidatedError::InvalidInput {
             what: "no enclosure was produced".into(),
         })?;
+
+    // Retiring every remaining box means the search ran out of width, not that
+    // it converged — the old `stuck` case, reported the same way.
+    if active.is_empty() && retired.is_some() {
+        exhausted = true;
+    }
 
     if let Some(ub_best) = &best_ub {
         if &bound > ub_best {
@@ -1327,7 +1389,50 @@ pub fn verified_sign(
         return Ok(Verdict::False);
     }
 
+    // The search above stopped on `tol`, which is an absolute width and so says
+    // nothing about the sign. Re-run it with the sign as the stopping rule: it
+    // keeps refining while the running bound still straddles zero, which is
+    // what decides an inequality whose margin is narrower than `tol`.
+    let strictly_signed = match predicate {
+        // `min f > 0` proves `f > 0` everywhere, hence also `f >= 0`.
+        SignPredicate::Positive | SignPredicate::NonNegative => {
+            sign_targeted_bound(expr, pool, boxes, opts, Extremum::Min)? > 0
+        }
+        SignPredicate::Negative | SignPredicate::NonPositive => {
+            sign_targeted_bound(expr, pool, boxes, opts, Extremum::Max)? < 0
+        }
+    };
+    if strictly_signed {
+        return Ok(Verdict::True);
+    }
+
+    // Still undecided, which is what a margin that *vanishes* at an endpoint
+    // always looks like to a subdivision search. Try the series argument, which
+    // is the only one of the two that can reach a tight endpoint at all.
+    if let Some(v) = endpoint_series_verdict(expr, pool, boxes, predicate, opts) {
+        return Ok(v);
+    }
+
     Ok(Verdict::Undecided)
+}
+
+/// Rigorous one-sided bound computed with [`SearchGoal::DecideSign`]: a lower
+/// bound on `min f` for [`Extremum::Min`], an upper bound on `max f` for
+/// [`Extremum::Max`].
+fn sign_targeted_bound(
+    expr: ExprId,
+    pool: &ExprPool,
+    boxes: &[(ExprId, f64, f64)],
+    opts: &BoundOptions,
+    which: Extremum,
+) -> Result<Float> {
+    let prec = opts.prec;
+    let boxes0: Vec<FBox> = boxes
+        .iter()
+        .map(|(v, lo, hi)| (*v, Float::with_val(prec, lo), Float::with_val(prec, hi)))
+        .collect();
+    let (bound, _, _) = extremum_search(expr, pool, &boxes0, opts, which, SearchGoal::DecideSign)?;
+    Ok(bound)
 }
 
 /// Rigorously evaluate `expr` at a handful of points of the box (corners and
@@ -1392,6 +1497,374 @@ fn violates_at_some_sample(
         }
     }
     Ok(false)
+}
+
+// ---------------------------------------------------------------------------
+// Endpoint series proof — inequalities that are tight where the box ends
+// ---------------------------------------------------------------------------
+
+/// Highest derivative order the endpoint expansion will search for the first
+/// coefficient that is not proven to vanish.
+const MAX_VANISHING_ORDER: usize = 16;
+
+/// Taylor terms kept past the leading one before the Lagrange remainder takes
+/// over. Three gives the halving loop room to work while keeping the number of
+/// symbolic derivatives — and so their size — small.
+const SERIES_TAIL_TERMS: usize = 3;
+
+/// Halvings of the candidate sub-interval tried while looking for one on which
+/// the series argument closes.
+const SERIES_HALVINGS: u32 = 240;
+
+/// A rigorously bounded Taylor expansion of `g` at one endpoint of the box.
+///
+/// Write `p` for the endpoint and `s = ±1` for the direction pointing into the
+/// box. This describes `h(t) = g(p + s·t)` on `t ∈ [0, span]`:
+///
+/// ```text
+/// h(t) = Σ_{k<m} c_k t^k + R(t),          |R(t)| ≤ rem · t^m
+/// ```
+///
+/// where `c_0 … c_{j-1}` are **proven** to be exactly zero, `cj` encloses
+/// `c_j`, and `tail[k-j-1]` encloses `|c_k|` for `j < k < m`.
+struct EndpointSeries {
+    /// Index of the first coefficient not proven to be exactly zero.
+    j: usize,
+    /// Truncation order.
+    m: usize,
+    /// Enclosure of the leading coefficient `c_j`.
+    cj: ArbBall,
+    /// Enclosures of `|c_{j+1}| … |c_{m-1}|`.
+    tail: Vec<ArbBall>,
+    /// Enclosure of the Lagrange constant `sup|g^{(m)}| / m!` over the whole
+    /// candidate interval.
+    rem: ArbBall,
+    /// Width of the box, rounded **down**: the largest collar the certificate
+    /// covers, and the starting point of the halving sequence.
+    span: Float,
+}
+
+/// Build the endpoint expansion of `g` at `p`, looking a distance `span` into
+/// the box in direction `inward` (`+1` for a left endpoint, `-1` for a right
+/// one).
+///
+/// # Why the result is rigorous
+///
+/// Two separate facts are established, by two different mechanisms:
+///
+/// * **The vanishing coefficients really are zero.** `c_k = s^k g^{(k)}(p)/k!`
+///   is accepted as zero only when [`vanishes_exactly`] — substitution followed
+///   by `simplify`, checked to land on the literal integer `0` — says so. A
+///   numeric enclosure can never prove a value is zero, and none is used for
+///   that here. As elsewhere in this module the symbolic verdict is
+///   cross-checked against ball arithmetic, and a disagreement (which would
+///   mean a simplifier bug) abandons the expansion rather than building on it.
+/// * **The remainder really is bounded.** `bound_on_fboxes` is run on every
+///   derivative `g, g', …, g^{(m)}` over the closed candidate interval. Those
+///   calls succeed only if each is analytic throughout — [`super::taylor`]
+///   refuses otherwise — which is exactly the hypothesis of Taylor's theorem
+///   with Lagrange remainder on that interval. `rem` is then an outward-rounded
+///   bound on `sup|g^{(m)}|/m!` there, so `|R(t)| ≤ rem·t^m` holds for every
+///   `t` in the interval, and a fortiori on any sub-interval `[0, δ]` of it.
+///   This is a *proven* remainder, not a truncation assumed to be small.
+///
+/// Returns `None` — never an error — whenever any step declines. The series
+/// argument is an extra attempt layered on top of the subdivision search, so
+/// its failure must leave the caller's verdict at `Undecided`, not turn it into
+/// a refusal.
+fn expand_at_endpoint(
+    g: ExprId,
+    pool: &ExprPool,
+    var: ExprId,
+    ilo: &Float,
+    ihi: &Float,
+    inward: i32,
+    opts: &BoundOptions,
+) -> Option<EndpointSeries> {
+    let prec = opts.prec;
+    // Expand at whichever end `inward` points away from.
+    let p = if inward > 0 { ilo } else { ihi };
+    // Rounded **down**, so `p ± span` can never leave the box and every `δ` the
+    // halving loop considers names a collar the analyticity certificate below
+    // actually covers.
+    let span = Float::with_val_round(prec, ihi - ilo, Round::Down).0;
+    if span <= 0 {
+        return None;
+    }
+
+    // Successive symbolic derivatives, simplified at each step to keep them
+    // from growing.
+    let mut derivs: Vec<ExprId> = vec![g];
+    let extend = |derivs: &mut Vec<ExprId>| -> bool {
+        let last = *derivs.last().expect("derivs is never empty");
+        match diff(last, var, pool) {
+            Ok(d) => {
+                derivs.push(simplify(d.value, pool).value);
+                true
+            }
+            Err(_) => false,
+        }
+    };
+
+    // Locate `j`, the first coefficient not proven to vanish at `p`.
+    let mut found = None;
+    for k in 0..=MAX_VANISHING_ORDER {
+        if k > 0 && !extend(&mut derivs) {
+            return None;
+        }
+        if vanishes_exactly(derivs[k], pool, var, p) {
+            // `simplify` claims an exact zero; ball arithmetic must agree.
+            if !enclosure_admits_zero(derivs[k], pool, var, p, opts.order, prec) {
+                return None;
+            }
+            continue;
+        }
+        found = Some(k);
+        break;
+    }
+    let j = found?;
+
+    let m = j + 1 + SERIES_TAIL_TERMS;
+    while derivs.len() <= m {
+        if !extend(&mut derivs) {
+            return None;
+        }
+    }
+
+    // Analyticity certificate for Taylor's theorem, plus the sup bound feeding
+    // the Lagrange remainder. Both are taken over the *whole* box, so they hold
+    // on every collar the halving loop can propose.
+    let interval = vec![(var, ilo.clone(), ihi.clone())];
+    let mut sup_m = None;
+    for (k, &d) in derivs.iter().enumerate().take(m + 1) {
+        let r = bound_on_fboxes(d, pool, &interval, opts).ok()?;
+        if !is_finite(r.enclosure()) {
+            return None;
+        }
+        if k == m {
+            sup_m = Some(mag(r.enclosure()));
+        }
+    }
+
+    // Exact factorials (20! < 2^62, so these are exact at working precision).
+    let mut fact = vec![Float::with_val(prec, 1)];
+    for k in 1..=m {
+        let next = Float::with_val(prec, &fact[k - 1] * k as u32);
+        fact.push(next);
+    }
+
+    let point = vec![(var, p.clone(), p.clone())];
+    let at_point = |k: usize| taylor_range(derivs[k], pool, &point, opts.order, prec).ok();
+
+    // c_j = s^j · g^{(j)}(p) / j!
+    let mut cj = (at_point(j)? / from_float(&fact[j], prec))?;
+    if inward < 0 && j % 2 == 1 {
+        cj = -cj;
+    }
+    if !is_finite(&cj) {
+        return None;
+    }
+
+    // |c_k| for j < k < m — the sign is irrelevant, so `s` does not enter.
+    let mut tail = Vec::with_capacity(m - j - 1);
+    for (k, fk) in fact.iter().enumerate().take(m).skip(j + 1) {
+        let b = (at_point(k)?.abs_ball() / from_float(fk, prec))?;
+        if !is_finite(&b) {
+            return None;
+        }
+        tail.push(b);
+    }
+
+    let rem = (from_float(&sup_m?, prec) / from_float(&fact[m], prec))?;
+    if !is_finite(&rem) {
+        return None;
+    }
+
+    Some(EndpointSeries {
+        j,
+        m,
+        cj,
+        tail,
+        rem,
+        span,
+    })
+}
+
+impl EndpointSeries {
+    /// Upper bound on the tail `Σ_{j<k<m} |c_k| δ^{k-j} + rem · δ^{m-j}`.
+    ///
+    /// Every term carries a non-negative power of `δ ≥ 0`, and the whole sum is
+    /// accumulated in ball arithmetic, so `ub` of the result dominates the true
+    /// tail for every `t ∈ [0, δ]`.
+    fn tail_bound(&self, delta: &Float, prec: u32) -> Float {
+        let d = from_float(delta, prec);
+        let mut acc = ArbBall::from_f64(0.0, prec);
+        for (i, c) in self.tail.iter().enumerate() {
+            acc = acc + c.clone() * d.powi((i + 1) as i64);
+        }
+        acc = acc + self.rem.clone() * d.powi((self.m - self.j) as i64);
+        ub(&acc)
+    }
+
+    /// The largest `δ` of the halving sequence starting at `span` on which
+    /// `h(t)` is proven to keep the sign of `c_j` throughout `t ∈ [0, δ]`,
+    /// together with that sign (`true` for positive).
+    ///
+    /// # The argument
+    ///
+    /// With `c_0 … c_{j-1}` proven zero,
+    ///
+    /// ```text
+    /// h(t) = c_j t^j + Σ_{j<k<m} c_k t^k + R(t)
+    ///      ≥ t^j · [ c_j − Σ_{j<k<m} |c_k| t^{k-j} − rem · t^{m-j} ]
+    ///      ≥ t^j · [ c_j − tail_bound(δ) ]                for t ∈ [0, δ]
+    /// ```
+    ///
+    /// using `t ≥ 0` twice: once to factor `t^j ≥ 0` out without flipping the
+    /// inequality, and once for `t^{k-j} ≤ δ^{k-j}` (every exponent there is
+    /// `≥ 1`). So a proven `c_j > tail_bound(δ)` gives `h ≥ 0` on `[0, δ]`, and
+    /// symmetrically a proven `c_j < −tail_bound(δ)` gives `h ≤ 0` there, with
+    /// `h < 0` for `t > 0`.
+    fn reach(&self, prec: u32) -> Option<(Float, bool)> {
+        let (lo, hi) = (lb(&self.cj), ub(&self.cj));
+        // Only a *proven* sign for the leading coefficient is usable.
+        let (positive, margin) = if lo > 0 {
+            (true, lo)
+        } else if hi < 0 {
+            (false, Float::with_val(prec, -hi))
+        } else {
+            return None;
+        };
+
+        let mut delta = self.span.clone();
+        for _ in 0..SERIES_HALVINGS {
+            if margin > self.tail_bound(&delta, prec) {
+                return Some((delta, positive));
+            }
+            delta = Float::with_val(prec, &delta / 2u32);
+            if delta <= 0 {
+                break;
+            }
+        }
+        None
+    }
+}
+
+/// Try to settle a sign predicate whose margin vanishes at an endpoint of the
+/// box, by splitting it into series-proved collars at the ends and an ordinary
+/// branch-and-bound in the middle.
+///
+/// Subdivision alone provably cannot do this: where the margin goes to zero,
+/// every enclosure of the range straddles zero no matter how fine the boxes
+/// get, so the honest verdict from that machinery is always `Undecided`. The
+/// standard remedy, and the one used here, is a truncated Taylor expansion at
+/// the endpoint with a rigorous remainder — see [`expand_at_endpoint`] for why
+/// the remainder is proven rather than assumed, and [`EndpointSeries::reach`]
+/// for the positivity argument.
+///
+/// # Composition
+///
+/// The three pieces are `[a, a+δₗ]`, `[a+δₗ, b−δᵣ]` and `[b−δᵣ, b]`. They are
+/// closed and share their endpoints, so their union is exactly `[a, b]` with no
+/// gap — in particular the join points themselves are covered twice, never
+/// zero times. A collar is only claimed when its own expansion closed, and the
+/// middle is only claimed when the subdivision search proves a strict sign
+/// there; `True` is returned only if every piece that exists is proven. If the
+/// collars already meet or overlap there is no middle piece to prove.
+///
+/// Restricted to one dimension, since the expansion is in a single variable.
+fn endpoint_series_verdict(
+    expr: ExprId,
+    pool: &ExprPool,
+    boxes: &[(ExprId, f64, f64)],
+    predicate: SignPredicate,
+    opts: &BoundOptions,
+) -> Option<Verdict> {
+    if boxes.len() != 1 {
+        return None;
+    }
+    let (var, lo, hi) = boxes[0];
+    if lo >= hi || !lo.is_finite() || !hi.is_finite() {
+        return None;
+    }
+    let prec = opts.prec;
+
+    // Reduce every predicate to a statement about `g ≥ 0` / `g > 0`.
+    let g = match predicate {
+        SignPredicate::NonNegative | SignPredicate::Positive => expr,
+        SignPredicate::NonPositive | SignPredicate::Negative => {
+            pool.mul(vec![pool.integer(-1_i32), expr])
+        }
+    };
+    let strict = matches!(predicate, SignPredicate::Positive | SignPredicate::Negative);
+
+    let a = Float::with_val(prec, lo);
+    let b = Float::with_val(prec, hi);
+
+    let left = expand_at_endpoint(g, pool, var, &a, &b, 1, opts);
+    let right = expand_at_endpoint(g, pool, var, &a, &b, -1, opts);
+
+    // A leading coefficient proven *negative* at an endpoint disproves the
+    // predicate outright: `h(t) < 0` for every `t ∈ (0, δ]`, and those points
+    // are in the box.
+    for s in [&left, &right].into_iter().flatten() {
+        if let Some((_, false)) = s.reach(prec) {
+            return Some(Verdict::False);
+        }
+    }
+
+    // `j ≥ 1` means `g` was *proven* to be exactly zero at that endpoint, which
+    // is a point of the box — so a strict inequality fails there.
+    if strict
+        && [&left, &right]
+            .iter()
+            .any(|e| e.as_ref().is_some_and(|s| s.j >= 1))
+    {
+        return Some(Verdict::False);
+    }
+
+    let collar = |e: &Option<EndpointSeries>| -> Option<Float> {
+        e.as_ref()
+            .and_then(|s| s.reach(prec))
+            .filter(|(_, positive)| *positive)
+            .map(|(d, _)| d)
+    };
+    let dl = collar(&left);
+    let dr = collar(&right);
+    if dl.is_none() && dr.is_none() {
+        return None;
+    }
+
+    // The join points are rounded **into** the collars — `a+δₗ` down, `b−δᵣ` up
+    // — so the middle piece can only overlap what the series already proved,
+    // never leave a sliver between them uncovered. Rounding the other way would
+    // open a gap narrower than an ulp, and a gap is a hole in the proof however
+    // narrow it is.
+    let mlo = dl.map_or_else(
+        || a.clone(),
+        |d| Float::with_val_round(prec, &a + &d, Round::Down).0,
+    );
+    let mhi = dr.map_or_else(
+        || b.clone(),
+        |d| Float::with_val_round(prec, &b - &d, Round::Up).0,
+    );
+
+    // The collars already cover the box; nothing left to prove.
+    if mlo >= mhi {
+        return Some(Verdict::True);
+    }
+
+    let middle = vec![(var, mlo, mhi)];
+    let bound = extremum_search(
+        g,
+        pool,
+        &middle,
+        opts,
+        Extremum::Min,
+        SearchGoal::DecideSign,
+    )
+    .ok()?;
+    (bound.0 > 0).then_some(Verdict::True)
 }
 
 #[cfg(test)]
@@ -2019,5 +2492,177 @@ mod tests {
                 r
             );
         }
+    }
+
+    // ── endpoint-tight inequalities ─────────────────────────────────────
+
+    /// `x·(2 + cos x) − 3·sin x` — Cusa–Huygens with the denominator cleared.
+    /// Non-negative on `[0, π/2)` and tight as `x → 0`, where it vanishes to
+    /// fifth order.
+    fn cusa_huygens(pool: &ExprPool, x: ExprId) -> ExprId {
+        let two_plus_cos = pool.add(vec![pool.integer(2_i32), pool.func("cos", vec![x])]);
+        sub(
+            pool,
+            pool.mul(vec![x, two_plus_cos]),
+            pool.mul(vec![pool.integer(3_i32), pool.func("sin", vec![x])]),
+        )
+    }
+
+    #[test]
+    fn tight_at_the_endpoint_is_certified_by_the_series_split() {
+        // Subdivision alone can never do this: at x = 0 the margin is zero, so
+        // every enclosure of the range straddles zero however fine the boxes.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let v = verified_sign(
+            cusa_huygens(&pool, x),
+            &pool,
+            &[(x, 0.0, 1.5)],
+            SignPredicate::NonNegative,
+            &opts(),
+        )
+        .unwrap();
+        assert_eq!(v, Verdict::True);
+    }
+
+    #[test]
+    fn reversing_a_tight_inequality_is_refuted_not_certified() {
+        // The control for the above: a sign error in the series argument would
+        // surface here as a `True`.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let reversed = pool.mul(vec![pool.integer(-1_i32), cusa_huygens(&pool, x)]);
+        let v = verified_sign(
+            reversed,
+            &pool,
+            &[(x, 0.0, 1.5)],
+            SignPredicate::NonNegative,
+            &opts(),
+        )
+        .unwrap();
+        assert_eq!(v, Verdict::False);
+    }
+
+    #[test]
+    fn a_violation_only_next_to_the_endpoint_is_never_certified() {
+        // `x^3 − x^2/1000` is negative exactly on (0, 1/1000): invisible to
+        // endpoint and centre sampling, and far narrower than `tol`.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let e = sub(
+            &pool,
+            pool.pow(x, pool.integer(3_i32)),
+            pool.mul(vec![
+                pool.rational(1_i32, 1000_i32),
+                pool.pow(x, pool.integer(2_i32)),
+            ]),
+        );
+        let v = verified_sign(
+            e,
+            &pool,
+            &[(x, 0.0, 1.5)],
+            SignPredicate::NonNegative,
+            &opts(),
+        )
+        .unwrap();
+        assert_ne!(v, Verdict::True);
+    }
+
+    #[test]
+    fn tightness_in_the_interior_is_still_out_of_reach() {
+        // `(x − 7/10)^2 · (x + 1)` is non-negative and touches zero at an
+        // interior point. The endpoint expansion does not apply, and the
+        // honest answer stays Undecided rather than becoming a wrong True.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let shifted = sub(&pool, x, pool.rational(7_i32, 10_i32));
+        let e = pool.mul(vec![
+            shifted,
+            shifted,
+            pool.add(vec![x, pool.integer(1_i32)]),
+        ]);
+        let v = verified_sign(
+            e,
+            &pool,
+            &[(x, 0.0, 1.5)],
+            SignPredicate::NonNegative,
+            &opts(),
+        )
+        .unwrap();
+        assert_eq!(v, Verdict::Undecided);
+    }
+
+    #[test]
+    fn strict_positivity_is_false_where_the_function_vanishes_exactly() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let e = pool.mul(vec![x, x]);
+        assert_eq!(
+            verified_sign(e, &pool, &[(x, 0.0, 1.0)], SignPredicate::Positive, &opts()).unwrap(),
+            Verdict::False
+        );
+        assert_eq!(
+            verified_sign(
+                e,
+                &pool,
+                &[(x, 0.0, 1.0)],
+                SignPredicate::NonNegative,
+                &opts()
+            )
+            .unwrap(),
+            Verdict::True
+        );
+    }
+
+    // ── termination ─────────────────────────────────────────────────────
+
+    #[test]
+    fn an_unreachable_tolerance_terminates_instead_of_spinning() {
+        // Regression: a sub-box bisected down to the width floor used to be
+        // pushed back onto the active list and immediately re-selected, so the
+        // loop spun without ever consuming its subdivision budget. It only
+        // showed up once `tol` was out of reach — which a large rational
+        // coefficient arranges, because `tol` is an *absolute* width.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let e = sub(
+            &pool,
+            pool.mul(vec![
+                pool.integer(1_000_000_000_000_i64),
+                pool.func("sin", vec![x]),
+            ]),
+            pool.mul(vec![pool.integer(636_619_772_368_i64), x]),
+        );
+        let tight = BoundOptions {
+            tol: 1e-40,
+            ..opts()
+        };
+        let r = bound_on_box(e, &pool, &[(x, 0.0, 1.5)], &tight).unwrap();
+        assert!(r.lower() <= 0.0 && r.upper() >= 0.0, "{r:?}");
+    }
+
+    #[test]
+    fn a_sharp_rational_constant_is_certified_rather_than_timing_out() {
+        // `10^12·sin x − 636619772368·x >= 0` on [0, 3/2]: Jordan's inequality
+        // with 2/π rationalised to twelve digits, tight at x = 0.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let e = sub(
+            &pool,
+            pool.mul(vec![
+                pool.integer(1_000_000_000_000_i64),
+                pool.func("sin", vec![x]),
+            ]),
+            pool.mul(vec![pool.integer(636_619_772_368_i64), x]),
+        );
+        let v = verified_sign(
+            e,
+            &pool,
+            &[(x, 0.0, 1.5)],
+            SignPredicate::NonNegative,
+            &opts(),
+        )
+        .unwrap();
+        assert_eq!(v, Verdict::True);
     }
 }

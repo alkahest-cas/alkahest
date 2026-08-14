@@ -481,6 +481,26 @@ Escalation when `decide` refuses: `sos_decompose` / `prove_nonneg` for a positiv
 certificate, `alkahest.smt` (z3's `nlsat` is complete over the reals), or
 `bound_on_box` / `verified_sign` if a rigorous statement over a box is enough.
 
+**Check that route before you build the workload: `ak.bounds_supported(expr)`.** The
+validated-bounds entry points (`bound_on_box`, `verified_integral`,
+`verified_no_roots`, `verified_sign`) reach the elementary fragment only — `sin`, `cos`,
+`tan`, `exp`, `log`, `sqrt`, `abs`, the inverse-trig and hyperbolic functions — and
+refuse everything else with `E-VALIDATED-001`. Every special function is outside it:
+`erf`, `bessel_j0/j1`, `digamma`, `lambert_w`, `gamma`, the elliptic integrals,
+`floor`/`ceil`, and the two-argument `atan2`. **`capabilities()["primitives"][i]`
+carries this as `taylor_model`; do not read `numeric_ball` as the coverage flag** — it
+is pointwise ball arithmetic, it is `True` for `erf` and `bessel_j0`, and it says
+nothing about whether a bound can be certified. `bounds_supported` answers for a whole
+expression without running anything, and names the blocking functions:
+
+```python
+answer = ak.bounds_supported(ak.bessel_j0(x) * x)
+bool(answer), answer.functions   # (False, ['bessel_j0'])
+```
+
+A `True` means "not `E-VALIDATED-001`"; a bad box can still refuse with
+`E-VALIDATED-003` (domain violation) or `-004` (non-finite enclosure).
+
 **`E-SOS-002` from that escalation is `unknown`, not "not SOS".** The SOS search covers
 an LP-representable subcone of the PSD cone at one `basis_degree` (one `level` for
 Handelman), so a refusal is compatible with `p` being SOS outside that subcone, SOS at a
