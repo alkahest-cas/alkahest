@@ -74,6 +74,15 @@ impl MonomialOrder {
             _ => None,
         }
     }
+
+    /// The canonical name, round-tripping through [`Self::from_str`].
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MonomialOrder::Lex => "lex",
+            MonomialOrder::GrLex => "grlex",
+            MonomialOrder::GRevLex => "grevlex",
+        }
+    }
 }
 
 #[cfg(test)]

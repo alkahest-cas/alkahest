@@ -44,4 +44,4 @@ def test_dae_index_reduce_prefers_pantelides():
     assert out.used_pantelides is True
     assert out.used_rosenfeld_groebner is False
     reduced = alkahest.pantelides(dae)
-    assert out.dae().n_equations() == reduced.n_equations()
+    assert out.dae().n_equations == reduced.n_equations

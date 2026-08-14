@@ -42,7 +42,7 @@ from alkahest import UniPoly
 # x^3 - 2x + 1
 p = UniPoly.from_symbolic(x**3 + pool.integer(-2) * x + pool.integer(1), x)
 
-print(p.degree())        # 3
+print(p.degree)          # 3
 print(p.coefficients())  # [1, -2, 0, 1]  (constant first)
 print(p.leading_coeff()) # 1
 
@@ -71,7 +71,7 @@ from alkahest import MultiPoly
 expr = x**2 * y + x * y**2 + pool.integer(-1)
 mp = MultiPoly.from_symbolic(expr, [x, y])
 
-print(mp.total_degree())     # 3
+print(mp.total_degree)       # 3
 print(mp.integer_content())  # 1
 
 # Arithmetic

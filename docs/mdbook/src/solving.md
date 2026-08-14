@@ -53,18 +53,52 @@ Pass `numeric=True` to return float values directly: `solve(eqs, vars, numeric=T
 A `GroebnerBasis` can be constructed directly for ideal-theoretic operations:
 
 ```python
-from alkahest import GroebnerBasis, GbPoly
+from alkahest import GroebnerBasis
 
-# Compute a Gröbner basis under GrLex order
+# Compute a Gröbner basis (lex by default)
 polys = [x**2 + y**2 - pool.integer(1), x - y]
 gb = GroebnerBasis.compute(polys, [x, y])
 
 # Check ideal membership
 print(gb.contains(x - pool.rational(1, 2)))  # False
 
-# Reduce a polynomial modulo the ideal
+# Reduce a polynomial modulo the ideal — the remainder is a GbPoly
 reduced = gb.reduce(x**3 + y**3)
+print(reduced.to_expr())                     # y
 ```
+
+### Reading a basis
+
+A `GroebnerBasis` is a sequence of `GbPoly`, and each `GbPoly` converts back to an `Expr`. This is how you read an elimination result — the generators of a `Lex` basis that are free of the eliminated variables *are* the eliminated relations:
+
+```python
+len(gb)                       # 2 — number of generators
+gb.order                      # "lex"
+gb.variables()                # [x, y] — what exponent slots 0, 1 refer to
+
+for g in gb:
+    print(g.to_expr(), "= 0")
+# (y^2 + -1/2) = 0
+# (x + (y * -1)) = 0
+
+gb.to_exprs()                 # the same list in one call
+gb[0].terms()                 # [((0, 0), Fraction(-1, 2)), ((0, 2), 1)]
+```
+
+`terms()` gives `(exponent tuple, coefficient)` pairs with the coefficient as an exact Python `int` or `fractions.Fraction`; the exponent tuple is parallel to `variables()`.
+
+The conversion runs the other way with `expr_to_gbpoly`, which is what `reduce` and `contains` accept alongside plain `Expr`:
+
+```python
+from alkahest import expr_to_gbpoly
+
+p = expr_to_gbpoly(x**2 + y**2 - pool.integer(1), [x, y])
+p.n_terms                     # 3
+gb.contains(p)                # True
+GroebnerBasis.compute_raw([p])
+```
+
+A `GbPoly` stores exponent vectors, not names, so converting one back needs the variable list its slots refer to. Every basis Alkahest hands out carries that list — including the ones from `solve` (solve variables followed by the free parameters), `triangularize` and `rosenfeld_groebner` — so `to_expr()` normally takes no arguments. Naming too few variables raises `ValueError` rather than quietly misreading the exponent slots.
 
 
 ### Monomial orders
@@ -85,14 +119,18 @@ Because the Rust entry point falls back to CPU row reduction when no device is p
 
 ## Elimination ideals
 
-`GroebnerBasis.eliminate` computes the elimination ideal by dropping generators involving specified variables:
+`GroebnerBasis.eliminate` computes the elimination ideal `I ∩ k[remaining vars]` by dropping every generator whose support mentions one of the given variables. Under a `lex` basis with the eliminated variables ordered **first**, what is left is a Gröbner basis for that ideal:
 
 ```python
-# Eliminate y to get a univariate ideal in x
-x_ideal = gb.eliminate([y])
+# Implicitize the parametric curve (t, t**2): eliminate the parameter t.
+gb = GroebnerBasis.compute([x - t, y - t**2], [t, x, y])
+gb.to_exprs()                      # [(t + (x * -1)), ((y * -1) + x^2)]
+
+implicit = gb.eliminate([t])
+implicit.to_exprs()                # [((y * -1) + x^2)]  —  y = x**2
 ```
 
-This is the algebraic geometry operation underlying implicitization of parametric curves and surfaces.
+Note the variable order passed to `compute`: `t` comes first, so `lex` eliminates it. `eliminate` requires the basis to know its variables (`gb.variables()`), and rejects a variable it is not written over.
 
 ## Performance
 

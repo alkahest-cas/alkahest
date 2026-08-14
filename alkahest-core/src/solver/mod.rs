@@ -278,6 +278,54 @@ fn expr_to_gbpoly_rec(
 }
 
 // ---------------------------------------------------------------------------
+// GbPoly → Expr conversion
+// ---------------------------------------------------------------------------
+
+/// Rebuild an `Expr` from a [`GbPoly`] — the inverse of [`expr_to_gbpoly`].
+///
+/// `vars` must be the same variable list, in the same order, that produced the
+/// polynomial's exponent vectors: exponent slot `i` names `vars[i]`.
+///
+/// Returns `None` when `vars` is too short to name every variable the
+/// polynomial actually uses; silently mis-naming exponent slots would be worse
+/// than refusing.  The zero polynomial converts to the integer `0`.
+pub fn gbpoly_to_expr(poly: &GbPoly, vars: &[ExprId], pool: &ExprPool) -> Option<ExprId> {
+    let mut terms: Vec<ExprId> = Vec::with_capacity(poly.terms.len());
+    for (exp, coeff) in &poly.terms {
+        if *coeff == 0 {
+            continue;
+        }
+        let mut factors: Vec<ExprId> = Vec::new();
+        for (i, &e) in exp.iter().enumerate() {
+            if e == 0 {
+                continue;
+            }
+            let v = *vars.get(i)?;
+            factors.push(if e == 1 {
+                v
+            } else {
+                pool.pow(v, pool.integer(e))
+            });
+        }
+        // Keep an explicit coefficient factor unless it is a bare `1` in front
+        // of at least one variable.
+        if factors.is_empty() || *coeff != 1 {
+            factors.insert(0, rational_to_expr(coeff, pool));
+        }
+        terms.push(if factors.len() == 1 {
+            factors[0]
+        } else {
+            pool.mul(factors)
+        });
+    }
+    Some(match terms.len() {
+        0 => pool.integer(0),
+        1 => terms[0],
+        _ => pool.add(terms),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // ExprId builders
 // ---------------------------------------------------------------------------
 
@@ -878,7 +926,12 @@ fn refine_solutions(
 
 /// Free symbols in `equations` that are not among the declared solve `vars`,
 /// in stable [`ExprId`] order (via [`collect_free_vars`]'s `BTreeSet`).
-fn collect_parameters(equations: &[ExprId], vars: &[ExprId], pool: &ExprPool) -> Vec<ExprId> {
+///
+/// [`solve_polynomial_system`] appends these after `vars`, and the resulting
+/// concatenation is the exponent-vector ordering of any
+/// [`SolutionSet::Parametric`] basis it returns — so a caller that wants to
+/// read that basis back with [`gbpoly_to_expr`] needs this list.
+pub fn collect_parameters(equations: &[ExprId], vars: &[ExprId], pool: &ExprPool) -> Vec<ExprId> {
     let declared: BTreeSet<ExprId> = vars.iter().copied().collect();
     let mut params = BTreeSet::new();
     for &eq in equations {
@@ -1019,6 +1072,99 @@ mod tests {
                 (x - ex).abs() < tol && (y - ey).abs() < tol
             })
         })
+    }
+
+    /// `expr_to_gbpoly` ∘ `gbpoly_to_expr` is the identity on the canonical
+    /// side: an `Expr` rebuilt from a polynomial converts back to the same
+    /// polynomial.
+    #[test]
+    fn gbpoly_expr_round_trip() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let vars = vec![x, y];
+
+        // 3/2·x²y − y + 7
+        let expr = pool.add(vec![
+            pool.mul(vec![
+                pool.rational(3_i32, 2_i32),
+                pool.pow(x, pool.integer(2_i32)),
+                y,
+            ]),
+            pool.mul(vec![pool.integer(-1_i32), y]),
+            pool.integer(7_i32),
+        ]);
+
+        let p = expr_to_gbpoly(expr, &vars, &pool).unwrap();
+        let back = gbpoly_to_expr(&p, &vars, &pool).expect("named every variable");
+        let p2 = expr_to_gbpoly(back, &vars, &pool).unwrap();
+
+        assert_eq!(p.n_vars, p2.n_vars);
+        assert_eq!(p.terms, p2.terms);
+    }
+
+    #[test]
+    fn gbpoly_to_expr_zero_and_constant() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+
+        let zero = GbPoly::zero(1);
+        assert_eq!(
+            gbpoly_to_expr(&zero, &[x], &pool),
+            Some(pool.integer(0_i32))
+        );
+
+        let five = GbPoly::constant(Rational::from(5), 1);
+        assert_eq!(
+            gbpoly_to_expr(&five, &[x], &pool),
+            Some(pool.integer(5_i32))
+        );
+    }
+
+    /// A short `vars` list must refuse rather than silently rename exponent
+    /// slots — a wrong-but-plausible polynomial is the worst outcome here.
+    #[test]
+    fn gbpoly_to_expr_refuses_a_short_variable_list() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+
+        let p = expr_to_gbpoly(pool.mul(vec![x, y]), &[x, y], &pool).unwrap();
+
+        assert_eq!(gbpoly_to_expr(&p, &[x], &pool), None);
+        assert!(gbpoly_to_expr(&p, &[x, y], &pool).is_some());
+    }
+
+    /// The Gröbner basis of an ideal must survive being read out as `Expr` and
+    /// fed back in — otherwise elimination results cannot be reused.
+    #[test]
+    fn basis_generators_round_trip_through_expr() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let vars = vec![x, y];
+        let neg_one = pool.integer(-1_i32);
+
+        // x² + y² − 1, x − y
+        let circle = pool.add(vec![
+            pool.pow(x, pool.integer(2_i32)),
+            pool.pow(y, pool.integer(2_i32)),
+            neg_one,
+        ]);
+        let line = pool.add(vec![x, pool.mul(vec![neg_one, y])]);
+
+        let gens = vec![
+            expr_to_gbpoly(circle, &vars, &pool).unwrap(),
+            expr_to_gbpoly(line, &vars, &pool).unwrap(),
+        ];
+        let gb = GroebnerBasis::compute_lex(gens);
+        assert_eq!(gb.order(), MonomialOrder::Lex);
+
+        for g in gb.generators() {
+            let e = gbpoly_to_expr(g, &vars, &pool).expect("named every variable");
+            let reparsed = expr_to_gbpoly(e, &vars, &pool).unwrap();
+            assert!(gb.contains(&reparsed), "generator left the ideal");
+        }
     }
 
     #[test]

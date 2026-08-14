@@ -518,7 +518,7 @@ from alkahest import UniPoly, MultiPoly, RationalFunction
 
 # Dense univariate polynomial
 p = UniPoly.from_symbolic(x**3 + pool.integer(-2)*x + pool.integer(1), x)
-p.degree()         # 3
+p.degree           # 3
 p.coefficients()   # [1, -2, 0, 1]  (constant first)
 # `UniPoly` has no numeric-eval method.  Its full surface is:
 #   from_symbolic, from_coefficients, coefficients, degree, is_zero, gcd, factor_z
@@ -532,7 +532,7 @@ a.gcd(b)           # x - 1
 
 # Sparse multivariate polynomial (over ℤ)
 mp = MultiPoly.from_symbolic(x**2 * y + x * y**2, [x, y])
-mp.total_degree()  # 3
+mp.total_degree    # 3
 
 # Rational function (GCD-normalized automatically)
 rf = RationalFunction.from_symbolic(x**2 + pool.integer(-1), x + pool.integer(-1), [x])
@@ -866,7 +866,7 @@ y = pool.symbol("y")
 k = pool.symbol("k")
 
 ode = ODE.new([y], [pool.integer(-1)*k*y], t)
-ode.order()
+ode.order
 ode.is_autonomous()
 ode.state_vars()
 ode.rhs()

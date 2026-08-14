@@ -175,6 +175,54 @@ of these is a call whose previous answer was not justified:
   emitted. Nothing was unsound; the question being answered had changed. Code
   that relied on pool symbols being `Real` inside an integer context should pass
   `domain="real"` explicitly.
+- **Seventeen zero-argument scalar accessors became properties — drop the
+  `()`.** There was no rule a caller could predict: `Enclosure.width` and
+  `RegularChain.n_vars` were properties while `DAE.n_equations()` and
+  `MultiPoly.total_degree()` were methods, so the same shape of question was
+  asked two different ways depending on the class. The convention now is: **a
+  zero-argument, O(1), non-allocating accessor returning a scalar or a flag is a
+  property; anything that returns a collection, allocates, or does real work is
+  a method.** No compatibility alias is provided, deliberately — an accessor
+  that answers to both forms leaves the ambiguity in place. Migration is
+  mechanical:
+
+  | Before | After |
+  |---|---|
+  | `UniPoly.degree()` | `UniPoly.degree` |
+  | `UniPoly.is_zero()` | `UniPoly.is_zero` |
+  | `MultiPoly.is_zero()` | `MultiPoly.is_zero` |
+  | `MultiPoly.total_degree()` | `MultiPoly.total_degree` |
+  | `MultiPolyFp.is_zero()` | `MultiPolyFp.is_zero` |
+  | `MultiPolyFp.total_degree()` | `MultiPolyFp.total_degree` |
+  | `RationalFunction.is_zero()` | `RationalFunction.is_zero` |
+  | `GbPoly.is_zero()` | `GbPoly.is_zero` |
+  | `GbPoly.n_vars()` | `GbPoly.n_vars` |
+  | `ODE.order()` | `ODE.order` |
+  | `DAE.n_equations()` | `DAE.n_equations` |
+  | `DAE.n_variables()` | `DAE.n_variables` |
+  | `HybridODE.n_events()` | `HybridODE.n_events` |
+  | `Component.n_equations()` | `Component.n_equations` |
+  | `Component.n_ports()` | `Component.n_ports` |
+  | `OdeTrajectory.t_final()` | `OdeTrajectory.t_final` |
+  | `ArbBall.is_exact()` | `ArbBall.is_exact` |
+
+  **Calling the old form now raises `TypeError: 'int' object is not callable`
+  (or `'bool'`, `'float'`), which is loud. The reverse mistake is not.**
+  Writing `if dae.n_equations:` against a *pre*-3.8.0 build silently reads a
+  bound method, which is always truthy, and `f"{dae.n_equations}"` formats as
+  `<built-in method ...>`; so grep for these names rather than waiting for a
+  traceback. Accessors that were *already* properties (`Enclosure.lower`,
+  `.upper`, `.width`, `.subdivisions`, `Matrix.rows`, `.cols`,
+  `RegularChain.n_vars`, `RosenfeldGroebnerResult.consistent`, `.truncated`,
+  `ArbBall.mid`, `.rad`, `.lo`, `.hi`, …) are unchanged; they were already
+  correct under the rule, as were the collection-returning methods that sit
+  beside them (`RegularChain.polys()`, `RosenfeldGroebnerResult.final_basis()`).
+  Three zero-argument scalar calls stay methods because they do real work rather
+  than read a field: `Matrix.rank()` (Gaussian elimination), `ODE.is_autonomous()`
+  (walks every RHS expression) and `PositivityCertificate.verify()` (re-runs the
+  exact SOS identity check). `tests/test_accessor_convention.py` pins the
+  converted set and scans `alkahest-py/src/lib.rs` for new offenders, so the
+  inconsistency cannot creep back.
 
 ### Known limits — documented, not fixed
 
@@ -609,6 +657,55 @@ loop fails.
   `ZeilbergerCertificate.side_conditions` already use. An empty list means the
   solver *proved* every divisor non-zero: `solve([2*x - b], [x])` reports none.
 ### Added
+
+- **Gröbner results can be read back — `GbPoly.to_expr`, iteration over a
+  `GroebnerBasis`, and `expr_to_gbpoly`.** Everything that returned a basis
+  returned a handle nobody could open. `GbPoly` exposed only `is_zero` and
+  `n_vars`; `GroebnerBasis` exposed only its own constructors plus `reduce` and
+  `contains`, and `reduce` took a `GbPoly` that no exported function could
+  build — `expr_to_gbpoly`, named in `compute_raw`'s own docstring, was never
+  registered on the module. So `rosenfeld_groebner(...).final_basis()`,
+  `triangularize(...)`, `primary_decomposition(...)` and a parametric `solve`
+  all handed back objects whose only readable property was how many generators
+  they had. Differential elimination was write-only: the input–output equations
+  it computes could not be looked at, which is the whole of structural
+  identifiability.
+
+  Now: `alkahest.expr_to_gbpoly(expr, vars)` converts in, `GbPoly.to_expr()`
+  converts back out, and `GbPoly.terms()` gives `(exponent tuple, exact
+  int/Fraction)` pairs. A `GroebnerBasis` is a sequence — `len()`, indexing,
+  iteration — with `polynomials()`, `to_exprs()`, `variables()` and an `order`
+  property. `reduce()` now accepts an `Expr` as well as a `GbPoly`, so the
+  membership and reduction API is reachable from expressions alone.
+  `GroebnerBasis.eliminate(vars)` is bound too — the mdbook and Sphinx pages
+  had documented it for releases, but it existed only in Rust, so the
+  implicitization example on the solving page could not run.
+
+  The part that needed a real fix rather than an accessor is the **variable
+  ordering**. A `GbPoly` stores exponent vectors, not names, so a basis without
+  its variable list cannot be read at all — and `rosenfeld_groebner` discovered
+  its jet variables internally (`t`, `x`, `dx/dt`, `ddx/dt/dt`, …) and threw
+  them away. Every object that hands out a `GbPoly` now carries that list:
+  `RosenfeldGroebnerResult.variables()`, `GroebnerBasis.variables()`,
+  `RegularChain.variables()`, and for a parametric `solve` the solve variables
+  *followed by the free parameters*, which is the order the exponent vectors
+  were actually built in. Asking for an `Expr` with too few variables named
+  raises `ValueError` rather than silently misreading exponent slots.
+
+  New in Rust: `alkahest_cas::gbpoly_to_expr`, `GroebnerBasis::order()`,
+  `MonomialOrder::as_str()`, `solver::collect_parameters`, and
+  `rosenfeld_groebner_ranked` / `dae_index_reduce_ranked`, which return the
+  `DifferentialRanking` alongside the result (the existing entry points are
+  unchanged wrappers, so no struct gained a field).
+
+- **`DAE` can be read: `equations()`, `variables()`, `derivatives()`,
+  `time_var`, `index`.** It previously exposed `n_equations` and `n_variables`
+  and nothing else, so a prolonged system that reported six variables for a
+  two-variable input gave no way to find out what any of them were.
+  `pantelides` sets `index` on the DAE it returns — the number of
+  differentiation rounds — and the equations it appended, plus the higher jets
+  (`ddx/dt/dt`, …) they introduced, are now visible in `equations()` and
+  `derivatives()`.
 
 - **`alkahest.ansatz` — parametric families and coefficient fitting** (P2
   autoresearch item 1). "Guess the shape, let the CAS pin the constants" is the

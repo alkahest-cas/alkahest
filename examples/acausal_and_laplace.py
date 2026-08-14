@@ -60,8 +60,8 @@ def part1_acausal_rc_circuit() -> None:
 
     dae = sys.flatten(t)
 
-    print(f"\nFlattened DAE: {dae.n_equations()} equations, "
-          f"{dae.n_variables()} variables")
+    print(f"\nFlattened DAE: {dae.n_equations} equations, "
+          f"{dae.n_variables} variables")
     print(dae)
 
 

@@ -80,6 +80,31 @@ Rules live in `alkahest-core/src/simplify/`. Each rule is a `RewriteRule` with a
 - Add the rule to the appropriate rule set (`arithmetic_rules`, `trig_rules`, `log_exp_rules_safe`, etc.).
 - Add a proptest case verifying the rule is idempotent: `simplify(simplify(expr)) == simplify(expr)`.
 
+## Accessors: property or method?
+
+One rule, applied to every `#[pymethods]` entry in `alkahest-py/src/lib.rs`:
+
+> **A zero-argument, O(1), non-allocating accessor that returns a scalar or a flag is a `#[getter]` (a Python property). Anything that returns a collection, allocates, or does real work is a method.**
+
+```rust
+#[getter]                            // property: reads a field, cannot fail
+fn n_equations(&self) -> usize { self.inner.n_equations() }
+
+fn polys(&self) -> Vec<PyGbPoly> { … }   // method: allocates a collection
+fn rank(&self, py: Python<'_>) -> PyResult<usize> { … }  // method: real work, can fail
+```
+
+A property and a method sitting side by side on the same class is not in itself a problem — `RegularChain.n_vars` (property) next to `RegularChain.polys()` (method) is exactly what the rule asks for. What the rule rules out is the *same* kind of question being asked two different ways on two different classes, which is what made the surface unpredictable before 3.8.0.
+
+Why the split falls there:
+
+- A property that can raise, block, or take a noticeable amount of time is a trap — the caller reads `x.rank` as a field access. Real work stays behind parentheses.
+- A method that returns a scalar is the more dangerous mistake in the other direction: `if x.n_equations:` on a bound method is always `True` and `f"{x.n_equations}"` prints `<built-in method …>`. Neither raises. Converting these was the whole point of the 3.8.0 sweep.
+
+`tests/test_accessor_convention.py` enforces this. It pins the converted accessors at runtime and statically scans `alkahest-py/src/lib.rs` for zero-argument scalar-returning methods; if a new one is genuinely doing real work, add it to `REAL_WORK_EXEMPTIONS` there with a one-line reason. A handful of pre-3.8.0 getters return small collections (`AsymptoticReport.terms`, `CertifiedSolution.coordinates`, `PositivityCertificate.log`, …); they are grandfathered, not precedent.
+
+Changing an existing accessor's form is a **breaking change**: record it in `CHANGELOG.md` under the release's "Behaviour changes to plan for" with a before/after line, and update every caller in `tests/`, `examples/`, `benchmarks/`, `docs/mdbook/`, `alkahest-skill/alkahest.md` and the `.pyi` stubs.
+
 ## Pull requests
 
 - Keep PRs focused on one item from `ROADMAP.md` or one issue.

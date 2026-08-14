@@ -240,6 +240,22 @@ pub fn rosenfeld_groebner_with_options(
     order: MonomialOrder,
     max_prolong_rounds: usize,
 ) -> Result<RosenfeldGroebnerResult, DiffAlgError> {
+    rosenfeld_groebner_ranked(dae, pool, order, max_prolong_rounds).map(|(result, _)| result)
+}
+
+/// [`rosenfeld_groebner_with_options`] plus the jet [`DifferentialRanking`] that
+/// indexes the exponent vectors of [`RosenfeldGroebnerResult::final_basis`].
+///
+/// The elimination result is unreadable without this: a [`GbPoly`] stores only
+/// exponent vectors, so `ranking.vars[i]` is what exponent slot `i` refers to.
+/// Pair it with [`crate::solver::gbpoly_to_expr`] to recover the input–output
+/// equations as [`ExprId`]s.
+pub fn rosenfeld_groebner_ranked(
+    dae: &DAE,
+    pool: &ExprPool,
+    order: MonomialOrder,
+    max_prolong_rounds: usize,
+) -> Result<(RosenfeldGroebnerResult, DifferentialRanking), DiffAlgError> {
     if dae.equations.is_empty() {
         return Err(DiffAlgError::EmptySystem);
     }
@@ -256,14 +272,17 @@ pub fn rosenfeld_groebner_with_options(
     for round in 0..max_prolong_rounds {
         let gb = GroebnerBasis::compute(active.clone(), order);
         if is_unit_ideal_gb(&gb) {
-            return Ok(RosenfeldGroebnerResult {
-                consistent: false,
-                chains: vec![],
-                working_dae: work,
-                final_basis: None,
-                prolongation_rounds,
-                truncated: false,
-            });
+            return Ok((
+                RosenfeldGroebnerResult {
+                    consistent: false,
+                    chains: vec![],
+                    working_dae: work,
+                    final_basis: None,
+                    prolongation_rounds,
+                    truncated: false,
+                },
+                DifferentialRanking { vars },
+            ));
         }
 
         let mut next_prolong = Vec::with_capacity(prolong_exprs.len());
@@ -305,14 +324,17 @@ pub fn rosenfeld_groebner_with_options(
             } else {
                 vec![]
             };
-            return Ok(RosenfeldGroebnerResult {
-                consistent,
-                chains,
-                working_dae: work,
-                final_basis: if consistent { Some(final_basis) } else { None },
-                prolongation_rounds,
-                truncated: false,
-            });
+            return Ok((
+                RosenfeldGroebnerResult {
+                    consistent,
+                    chains,
+                    working_dae: work,
+                    final_basis: if consistent { Some(final_basis) } else { None },
+                    prolongation_rounds,
+                    truncated: false,
+                },
+                DifferentialRanking { vars },
+            ));
         }
 
         active.extend(to_add);
@@ -328,33 +350,39 @@ pub fn rosenfeld_groebner_with_options(
             } else {
                 vec![]
             };
-            return Ok(RosenfeldGroebnerResult {
-                consistent,
-                chains,
-                working_dae: work,
-                final_basis: if consistent { Some(final_basis) } else { None },
-                prolongation_rounds,
-                truncated: true,
-            });
+            return Ok((
+                RosenfeldGroebnerResult {
+                    consistent,
+                    chains,
+                    working_dae: work,
+                    final_basis: if consistent { Some(final_basis) } else { None },
+                    prolongation_rounds,
+                    truncated: true,
+                },
+                DifferentialRanking { vars },
+            ));
         }
     }
 
     let final_basis = GroebnerBasis::compute(active, order);
     let consistent = !is_unit_ideal_gb(&final_basis);
-    Ok(RosenfeldGroebnerResult {
-        consistent,
-        chains: if consistent {
-            vec![RegularDifferentialChain {
-                basis: final_basis.clone(),
-            }]
-        } else {
-            vec![]
+    Ok((
+        RosenfeldGroebnerResult {
+            consistent,
+            chains: if consistent {
+                vec![RegularDifferentialChain {
+                    basis: final_basis.clone(),
+                }]
+            } else {
+                vec![]
+            },
+            working_dae: work,
+            final_basis: if consistent { Some(final_basis) } else { None },
+            prolongation_rounds,
+            truncated: true,
         },
-        working_dae: work,
-        final_basis: if consistent { Some(final_basis) } else { None },
-        prolongation_rounds,
-        truncated: true,
-    })
+        DifferentialRanking { vars },
+    ))
 }
 
 /// Calls [`rosenfeld_groebner_with_options`] with the default maximum prolongation rounds.
@@ -372,16 +400,29 @@ pub fn dae_index_reduce(
     pool: &ExprPool,
     order: MonomialOrder,
 ) -> Result<DaeIndexReduction, DaeError> {
+    dae_index_reduce_ranked(dae, pool, order).map(|(r, _)| r)
+}
+
+/// [`dae_index_reduce`] plus the jet [`DifferentialRanking`] for the Gröbner
+/// fallback — `None` when Pantelides succeeded and no basis was built.
+pub fn dae_index_reduce_ranked(
+    dae: &DAE,
+    pool: &ExprPool,
+    order: MonomialOrder,
+) -> Result<(DaeIndexReduction, Option<DifferentialRanking>), DaeError> {
     match pantelides(dae, pool) {
-        Ok(p) => Ok(DaeIndexReduction::Pantelides(p)),
+        Ok(p) => Ok((DaeIndexReduction::Pantelides(p), None)),
         Err(DaeError::IndexTooHigh) => {
-            let r = rosenfeld_groebner(dae, pool, order).map_err(|e| match e {
-                DiffAlgError::DiffError(s) | DiffAlgError::NotPolynomial(s) => {
-                    DaeError::DiffError(s)
-                }
-                DiffAlgError::EmptySystem => DaeError::StructurallyInconsistent,
-            })?;
-            Ok(DaeIndexReduction::Rosenfeld(r))
+            let (r, ranking) =
+                rosenfeld_groebner_ranked(dae, pool, order, DEFAULT_MAX_PROLONG_ROUNDS).map_err(
+                    |e| match e {
+                        DiffAlgError::DiffError(s) | DiffAlgError::NotPolynomial(s) => {
+                            DaeError::DiffError(s)
+                        }
+                        DiffAlgError::EmptySystem => DaeError::StructurallyInconsistent,
+                    },
+                )?;
+            Ok((DaeIndexReduction::Rosenfeld(r), Some(ranking)))
         }
         Err(e) => Err(e),
     }

@@ -39,7 +39,7 @@ y = pool.symbol("y")
 ode_decay = ODE.new([y], [pool.integer(-1) * y], t)
 
 print(f"ODE        : {ode_decay}")
-print(f"order      : {ode_decay.order()}")
+print(f"order      : {ode_decay.order}")
 print(f"autonomous : {ode_decay.is_autonomous()}")
 print(f"state_vars : {ode_decay.state_vars()}")
 print(f"rhs        : {ode_decay.rhs()}")
@@ -66,7 +66,7 @@ ode_harmonic = lower_to_first_order(x, pool.integer(-1) * omega2 * x, 2, t)
 print(f"Lowered ODE:")
 print(f"  state_vars  : {ode_harmonic.state_vars()}")
 print(f"  rhs         : {ode_harmonic.rhs()}")
-print(f"  order       : {ode_harmonic.order()}")
+print(f"  order       : {ode_harmonic.order}")
 
 # ---------------------------------------------------------------------------
 # 3. Parametric ODE + forward sensitivity analysis

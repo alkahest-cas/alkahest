@@ -34,7 +34,7 @@ expr  = pool.add([xsq, two_x, one])
 
 p = ak.UniPoly.from_symbolic(expr, x, pool)
 print(f"p = {p}")                             # x^2+2*x+1
-print(f"  degree : {p.degree()}")             # 2
+print(f"  degree : {p.degree}")               # 2
 print(f"  coeffs : {p.coefficients()}")       # [1, 2, 1]  (ascending degree)
 
 # q = x + 1
@@ -62,7 +62,7 @@ x2m1 = ak.UniPoly.from_symbolic(
     pool.add([pool.pow(x, pool.integer(2)), pool.integer(-1)]), x, pool
 )
 g = x2m1.gcd(xm1)
-print(f"\ngcd(x^2-1, x-1) = {g}  (degree {g.degree()})")
+print(f"\ngcd(x^2-1, x-1) = {g}  (degree {g.degree})")
 
 # ---------------------------------------------------------------------------
 # MultiPoly demo
@@ -84,7 +84,7 @@ expr_a = pool2.add([
 ])
 a = ak.MultiPoly.from_symbolic(expr_a, [x2, y2], pool2)
 print(f"a = x^2 + xy + y^2 = {a}")
-print(f"  total_degree    : {a.total_degree()}")    # 2
+print(f"  total_degree    : {a.total_degree}")      # 2
 print(f"  integer_content : {a.integer_content()}")  # 1
 
 # 6x + 4  →  content = 2
