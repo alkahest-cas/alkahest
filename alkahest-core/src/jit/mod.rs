@@ -544,10 +544,7 @@ pub fn compile_jit_only(
     pool: &ExprPool,
 ) -> Result<CompiledFn, JitError> {
     #[cfg(feature = "cranelift")]
-    match cranelift_backend::compile_cranelift(expr, inputs, pool) {
-        Ok(f) => return Ok(f),
-        Err(e) => return Err(e),
-    }
+    return cranelift_backend::compile_cranelift(expr, inputs, pool);
 
     #[cfg(all(feature = "jit", not(feature = "cranelift")))]
     return compile_llvm(expr, inputs, pool);

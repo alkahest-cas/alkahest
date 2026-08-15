@@ -140,13 +140,17 @@ def main():
             pool.integer(3) * x + pool.integer(2) * sqrt(p_q4), x)
 
     # -----------------------------------------------------------------------
-    section("5. NonElementary guard — elliptic integrals")
+    section("5. NonElementary guard — hyperelliptic integrals")
     # -----------------------------------------------------------------------
 
+    # Genus 1 (deg P = 3) is no longer a decline: it comes back in terms of
+    # the elliptic-integral primitives, e.g.
+    #   ∫ sqrt(x³+1) dx → (2/5)·x·sqrt(x³+1) + (3/5)·3^(-1/4)·EllipticF(…)
+    # The guard now fires for genus ≥ 2, where no such reduction exists.
     pool = ExprPool(); x = pool.symbol("x")
-    p_ell = x ** 3 + pool.integer(1)
+    p_ell = x ** 5 + x + pool.integer(1)
     s_ell = sqrt(p_ell)
-    print(f"\n[∫ sqrt(x³+1) dx  — should raise NonElementary]")
+    print(f"\n[∫ sqrt(x⁵+x+1) dx  — should raise NonElementary]")
     display(pool, "f", s_ell)
     try:
         integrate(s_ell, x)

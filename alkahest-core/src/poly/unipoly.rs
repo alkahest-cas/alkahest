@@ -388,6 +388,12 @@ impl UniPoly {
             .collect()
     }
 
+    /// Leading (highest-degree) coefficient, exact. `0` for the zero
+    /// polynomial, matching `degree() == -1` there.
+    pub fn leading_coeff(&self) -> rug::Integer {
+        self.coeffs.leading_coeff_fmpz().to_rug()
+    }
+
     pub fn degree(&self) -> i64 {
         self.coeffs.degree()
     }
@@ -650,6 +656,26 @@ mod tests {
         let expr = p.add(vec![xsq, two_x, one]);
         let poly = UniPoly::from_symbolic(expr, x, &p).unwrap();
         assert_eq!(poly.coefficients_i64(), vec![1, 2, 1]);
+    }
+
+    #[test]
+    fn leading_coeff_is_exact_and_zero_for_the_zero_polynomial() {
+        let (p, x) = pool_and_var();
+        // 3*x^2 + 1
+        let xsq = p.pow(x, p.integer(2_i32));
+        let expr = p.add(vec![p.mul(vec![p.integer(3_i32), xsq]), p.integer(1_i32)]);
+        let poly = UniPoly::from_symbolic(expr, x, &p).unwrap();
+        assert_eq!(poly.leading_coeff(), rug::Integer::from(3));
+
+        // Beyond i64, where `coefficients_i64` truncates.
+        let big: rug::Integer = rug::Integer::from(1) << 100;
+        let big_expr = p.mul(vec![p.integer(big.clone()), xsq]);
+        let big_poly = UniPoly::from_symbolic(big_expr, x, &p).unwrap();
+        assert_eq!(big_poly.leading_coeff(), big);
+
+        let zero = UniPoly::from_symbolic(p.integer(0_i32), x, &p).unwrap();
+        assert_eq!(zero.degree(), -1);
+        assert_eq!(zero.leading_coeff(), rug::Integer::ZERO);
     }
 
     #[test]

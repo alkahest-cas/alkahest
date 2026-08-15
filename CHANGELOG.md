@@ -109,6 +109,33 @@ Both are detailed under *Behaviour changes to plan for*.
 
 ### Fixed
 
+- **Interval evaluation refused `bessel_j0` / `bessel_j1`, and its Bessel ball
+  kernel was not an enclosure.** `evaluate(bessel_j0(x), {x: ArbBall(...)},
+  mode="interval")` came back `status="unsupported"` with `E-EVAL-010` even
+  though both functions have rigorous ball kernels and `capabilities()` reported
+  `numeric_ball: True` for both. The evaluator carried its own hand-written
+  match over function names — the third such list in this area — and these two
+  had simply never been added to it. It no longer has one: every `Func` node is
+  now dispatched through the primitive registry, so the set of functions
+  interval evaluation accepts **is** the set the registry advertises a
+  `numeric_ball` kernel for, by construction rather than by agreement. Auditing
+  the two sets against each other also turned up the gap in the other direction:
+  `atanh` had a ball kernel and did *not* advertise it, because the capability
+  probe tested ball kernels at `1.0` only and `atanh`'s domain is the open
+  interval `(-1, 1)` — it declined the sole probe point and lost a bit it had
+  earned, while keeping `numeric_f64` because that probe already tried `0.5`.
+  Ball kernels are now probed at the same points as `f64` ones. Wrong-arity
+  calls are declined rather than silently bounding the first argument
+  (`sin(x, y)` was `sin(x)`), which the generic dispatch made reachable.
+
+  **`ArbBall::bessel_jn` was separately unsound and is rewritten.** It hulled
+  `Jₙ(lo)` and `Jₙ(hi)`, which is only an enclosure for a *monotone* function —
+  `J₀` on `[-1, 1]` has equal endpoints (`≈ 0.7652`), so the hull collapsed to a
+  point that excluded `J₀(0) = 1`, the function's own maximum. It is now a
+  midpoint evaluation plus a mean-value bound with `L = 1`, which is rigorous at
+  every order: `|Jₙ| ≤ 1` for all real `x`, and `J₀′ = −J₁`,
+  `Jₙ′ = (Jₙ₋₁ − Jₙ₊₁)/2`, so `|Jₙ′| ≤ 1`. A randomised sweep samples the true
+  function inside 200 random intervals and checks nothing escapes the enclosure.
 - **`verified_no_roots` could not prove a root *exists* past an even root
   count.** The `"false"` direction fired only when a sign change was visible at
   the box's own endpoints, so any even number of roots defeated it however
@@ -124,9 +151,31 @@ Both are detailed under *Behaviour changes to plan for*.
   several variables — `x − y` on `[-1, 1]²` is now `"false"` where it used to be
   `"undecided"`. Continuity, which the argument needs, is exactly what the
   full-box enclosure succeeding already certifies. **Nothing was weakened to buy
-  this**: a root that never produces a sign change — a double root like
-  `(x−1)²` on `[0, 2]`, or `(x²−1)²` on `[-2, 2]` — still answers
-  `"undecided"`, because no witness pair exists and none is invented.
+  this**: a root that never produces a sign change and never lands on a point the
+  search can *prove* is a root — a double root like `(x−1/3)²` on `[0, 2]`, or
+  `(x²−1)²` on `[-2, 2]` — still answers `"undecided"`, because no witness pair
+  exists and none is invented.
+- **`verified_no_roots` could not see a root sitting exactly on a box
+  endpoint.** `x` on `[0, 1]` and `x−1` on `[0, 1]` both came back
+  `"undecided"`, as did `sin(x)` on `[0, 1]` and `log(x)` on `[1, 2]`. The
+  sign-change search above provably cannot settle them — `x` is non-negative
+  everywhere on `[0, 1]`, so the negative witness it looks for does not exist to
+  be found, however long it runs. But no search is needed: the box is **closed**,
+  so a point of it at which the expression is *proven* to be zero is a root in
+  the box, full stop. `"false"` is now returned when either of two independent
+  proofs is in hand — the existing sign change, or a point whose value is pinned
+  to zero. That also settles a root of even multiplicity that lands on a point
+  the search visits (`(x−1)²` on `[0, 1]` and on `[0, 2]`, and the multivariate
+  `(x−½)² + (y−½)²` on `[0, 1]²`), which a sign change can never reach.
+  **The certificate is not weakened**: a value is pinned to zero only by a
+  degenerate `[0, 0]` enclosure — an enclosure is a superset of the value, so
+  `[0, 0]` forces it — or by substituting the point's exact rational coordinates
+  and simplifying to the literal `0`, cross-checked against the enclosure exactly
+  as the removable-singularity path already is. An enclosure that merely
+  *contains* zero proves nothing and is not used: `exp(x) − 1 + 10⁻⁴⁰` on
+  `[0, 1]` has no root at all, but its value at `x = 0` is far below the width of
+  any enclosure computable there, and it stays `"undecided"` rather than being
+  claimed either way.
 - **`verified_sign` could hang on a rational constant with enough digits.**
   `sin(x)·D − N·x ≥ 0` on `[0, 3/2]` took 0.05 s at `N/D = 636/1000`, 0.08 s at
   nine digits, and **over 300 s at twelve** — three extra digits turned
@@ -418,6 +467,50 @@ Both are detailed under *Behaviour changes to plan for*.
   taking one point as a single sequence — answers `f(1.0, 2.0)` and `f(1.0)`
   with that convention and a pointer to `numpy_eval` for batches. Exception
   types are unchanged.
+- **The Cranelift backend was never linted, and had stopped being clean.**
+  `ci.yml` ran `cargo clippy -- -D warnings` for default / `egraph` /
+  `parallel` / `jit` / `groebner-cuda` but not for `cranelift`, so three
+  warnings accumulated in code that ships in the **default PyPI wheel** — and
+  `CONTRIBUTING.md` tells contributors to run `--all-features`, which therefore
+  failed on a clean checkout. A `cargo clippy (cranelift feature)` step now runs
+  alongside the others; it needs no system LLVM, because the backend is pure
+  Rust. The three lints are fixed rather than suppressed: `emit_eval_body` took
+  nine positional arguments and now takes an `EvalTarget` (root node, inputs,
+  pool) and an `InputLayout` enum (`Scalar { ptr }` / `Batch { ptr, point_idx,
+  n_points }`) — which also makes the half-specified batch layout a point index
+  with no point count, previously two independent `Option`s — unrepresentable;
+  and the two `return`s in `compile_jit_only`'s cranelift arm collapse to the
+  one-line `return` the other backends' arms already use.
+- **`docs/mdbook/src/representations.md` documented a method that does not
+  exist, and five outputs that are not what the code prints.** The page showed
+  `p.leading_coeff()` on `UniPoly`, which had no leading-coefficient accessor at
+  all (it now has one — see *Added*); `sparse_interp_univariate(..., T=3)` and
+  `sparse_interp(..., T=2, D=5)`, whose parameters are `term_bound` and
+  `degree_bound`; and `p.to_symbolic(pool)`, under the claim that "all
+  specialized types can be converted back to a generic `Expr`" — no polynomial
+  type exposes a symbolic conversion to Python, so that whole section was
+  fiction. Every code block on the page is now executed against the built
+  extension, and the `# output` comments match what `print` actually emits
+  (`MultiPoly` prints in ascending exponent-vector order, an `ArbBall` prints as
+  `midpoint ± radius` rather than as an interval, and
+  `sparse_interp_univariate` returns a list of `(coefficient, exponent)` pairs
+  rather than a `MultiPolyFp`). The round-trip section now shows the conversion
+  that does exist, `GbPoly.to_expr()`, and says plainly that `UniPoly`,
+  `MultiPoly` and `RationalFunction` have none.
+- **Four `examples/` scripts had rotted against the 3.9.0 API**, two of them
+  *silently* — they exited 0 while printing the wrong thing.
+  `phase3_polynomials.py` died at line 30 on `ExprPool.pow`, which no longer
+  exists on the Python side (use `a ** b`), and then on the trailing `pool`
+  argument that `UniPoly` / `MultiPoly` / `RationalFunction.from_symbolic` no
+  longer take, and on `UniPoly.pow(3)`. `agent_workflow.py` called `round()` on
+  the exact symbolic solutions `solve` now returns, and passes `numeric=True`.
+  The two silent ones: `risch_integration.py` claimed a non-elementary refusal
+  for `∫√(x³+1)dx`, which is genus 1 and now returns `EllipticF`, so the guard
+  moved to a genus-2 integrand that still raises `E-INT-004`; and
+  `lean_certificates.py` printed an empty Lean export, because `to_lean` withholds
+  a vacuous `e = e := rfl` when the simplifier found no rewrite. All 17 example
+  scripts now run end to end. `examples/` is not covered by CI's ruff or pytest,
+  which is why this went unnoticed.
 
 ### Added
 
@@ -426,9 +519,10 @@ Both are detailed under *Behaviour changes to plan for*.
   per-function coverage flag the agent contract exposed was `numeric_ball`,
   and it is not the flag that governs `bound_on_box` / `verified_integral` /
   `verified_no_roots` / `verified_sign`. Ball arithmetic is *pointwise*; a
-  Taylor model needs a rule with a rigorous Lagrange remainder, and ten
+  Taylor model needs a rule with a rigorous Lagrange remainder, and eleven
   primitives have the first without the second — `erf`, `erfc`, `bessel_j0`,
-  `bessel_j1`, `digamma`, `lambert_w`, `acosh`, `asinh`, `floor`, `ceil`. So
+  `bessel_j1`, `digamma`, `lambert_w`, `acosh`, `asinh`, `atanh`, `floor`,
+  `ceil`. So
   `numeric_ball` said `True` for `bessel_j0` and every bound over a box died
   on `E-VALIDATED-001`. The boundary was enforced correctly and could not be
   found ahead of time, which is how a planning loop loses a whole designed
@@ -453,7 +547,7 @@ Both are detailed under *Behaviour changes to plan for*.
   re-derives the bit the only other way there is, by calling `bound_on_box`
   on every registered primitive, and fails if the two ever disagree.
 
-  `numeric_ball` itself is *accurate* and stays as it is: those ten
+  `numeric_ball` itself is *accurate* and stays as it is: those eleven
   primitives really do have Arb ball arithmetic. It answers a different
   question, and now says so next to a flag that answers this one. A `True`
   from either means "not `E-VALIDATED-001`" — a covered function can still be
@@ -521,6 +615,14 @@ Both are detailed under *Behaviour changes to plan for*.
   differentiation rounds — and the equations it appended, plus the higher jets
   (`ddx/dt/dt`, …) they introduced, are now visible in `equations()` and
   `derivatives()`.
+- **`UniPoly.leading_coeff`** — the leading (highest-degree) coefficient, `0`
+  for the zero polynomial so it pairs with `degree == -1`. A **property**, per
+  the accessor convention: it is a single FLINT coefficient read. It is also
+  *exact*, returned as a Python `int` of any size, which `coefficients()` is
+  not — that one is `i64` and truncates silently, so `3x² + 1` scaled by `2¹⁰⁰`
+  reports a leading coefficient of `1` through the list and the true value
+  through this accessor. Documented in `representations.md`, which had been
+  showing a `leading_coeff()` *method* that never existed.
 
 ### Performance
 
@@ -572,6 +674,23 @@ Both are detailed under *Behaviour changes to plan for*.
   (`tests/silent_errors/`), still at **0 silent errors**. The new cases cover the
   PSLQ precision verdict as a *word* rather than a truthy value, so an `unknown`
   verdict cannot silently collapse into a pass.
+- **`test_run_with_wall_fallback_bounds_a_cooperative_callee` no longer fails
+  because the box is busy.** Its bound read `elapsed_ms < 20 * 300` against a
+  call that measurably costs 2.7–5.3 s of work when it is behaving — a 13%
+  margin — so it went red repeatedly during saturated parallel runs and always
+  passed in isolation, which is the pattern that teaches people to ignore red.
+  The bound is now on **process CPU time**, which tracks the work the callee
+  actually did rather than the time the harness spent waiting for it. Wall time
+  here is `wall_ms` — a real-time timer, which does not stretch — plus the join
+  of a still-running worker, and only that second term was being measured
+  against load. Idle vs. 24 spinners on 12 cores: wall 5.3 s → 24.9 s (4× over
+  the old bound, a guaranteed failure), CPU 5.3 s → 8.8 s against a 60 s
+  ceiling. The
+  property is unchanged and still enforced from both ends — a callee that stops
+  seeing the budget burns CPU without limit and trips the assertion, and one
+  that stops coming back at all trips the `timeout(120)` marker — plus the test
+  now also pins that the call ended on the fallback's own join rather than on
+  some other check that raises the same code.
 
 ## 3.8.0 — 2026-08-12
 

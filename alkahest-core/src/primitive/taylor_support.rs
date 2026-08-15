@@ -287,9 +287,13 @@ mod tests {
                 continue;
             }
             differing += 1;
-            let arg = [ArbBall::from_f64(1.0, 128)];
+            // Two probe points, because no single one is inside every domain:
+            // `acosh` needs `x ≥ 1` and `atanh` needs `|x| < 1`. Declining an
+            // out-of-domain argument is not the failure under test.
             assert!(
-                reg.numeric_ball(name, &arg).is_some(),
+                [1.0_f64, 0.5].into_iter().any(|v| reg
+                    .numeric_ball(name, &[ArbBall::from_f64(v, 128)])
+                    .is_some()),
                 "`{name}` advertises numeric_ball but has none"
             );
         }
