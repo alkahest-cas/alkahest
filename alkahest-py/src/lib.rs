@@ -187,8 +187,8 @@ use alkahest_core::holonomic::qzeil::{
 };
 // M6 — modular / p-adic evaluation of holonomic sequences
 use alkahest_core::holonomic::modular::{
-    binomial_mod as core_binomial_mod, ModularEvaluation as CoreModularEvaluation,
-    ModularRecurrence as CoreModularRecurrence,
+    binomial_mod as core_binomial_mod, ModularError as CoreHolonomicModularError,
+    ModularEvaluation as CoreModularEvaluation, ModularRecurrence as CoreModularRecurrence,
 };
 // M5 — recurrence -> asymptotics (Poincaré–Perron)
 use alkahest_core::holonomic::asymptotics::{
@@ -4712,6 +4712,20 @@ fn py_verify_wz_pair(
 // ---------------------------------------------------------------------------
 
 fn holonomic_error_to_py(e: CoreHolonomicError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyHolonomicError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+/// Modular-evaluation errors, raised as the *same* Python `HolonomicError`.
+///
+/// `ModularError` is a separate Rust enum only because `HolonomicError` is
+/// public and exhaustive, so adding variants to it is a major-version break.
+/// The Python surface deliberately does not reflect that split: the codes
+/// (`E-HOLO-006`/`007`/`008`) and the exception class are what a caller
+/// catches, and both are unchanged.
+fn holonomic_modular_error_to_py(e: CoreHolonomicModularError) -> PyErr {
     Python::with_gil(|py| {
         let exc_type = py.get_type_bound::<PyHolonomicError>();
         make_structured_err(py, &exc_type, &e)
@@ -13552,8 +13566,8 @@ impl PyModularRecurrence {
         for (j, item) in initial.iter()?.enumerate() {
             inits.push(exact_rational_from_py(&item?, &format!("initial[{j}]"))?);
         }
-        let inner =
-            CoreModularRecurrence::new(polys, rhs, inits, start).map_err(holonomic_error_to_py)?;
+        let inner = CoreModularRecurrence::new(polys, rhs, inits, start)
+            .map_err(holonomic_modular_error_to_py)?;
         Ok(Self { inner })
     }
 
@@ -13624,7 +13638,9 @@ impl PyModularRecurrence {
     ///     as a ``p``-adic integer, ``E-HOLO-008`` when the working precision
     ///     the singular steps demand is past the machine-word backend.
     fn value_mod(&self, n: i64, p: u64, k: u32) -> PyResult<u64> {
-        self.inner.value_mod(n, p, k).map_err(holonomic_error_to_py)
+        self.inner
+            .value_mod(n, p, k)
+            .map_err(holonomic_modular_error_to_py)
     }
 
     /// ``[S(n) mod p**k for n in indices]``, in **one** forward pass.
@@ -13637,7 +13653,7 @@ impl PyModularRecurrence {
         let evaluation = self
             .inner
             .evaluate(&sorted, p, k)
-            .map_err(holonomic_error_to_py)?;
+            .map_err(holonomic_modular_error_to_py)?;
         Ok(back
             .iter()
             .map(|&slot| evaluation.residues()[slot])
@@ -13652,7 +13668,7 @@ impl PyModularRecurrence {
             inner: self
                 .inner
                 .evaluate(&sorted, p, k)
-                .map_err(holonomic_error_to_py)?,
+                .map_err(holonomic_modular_error_to_py)?,
         })
     }
 
@@ -13712,7 +13728,7 @@ fn sorted_unique_with_index(indices: &[i64]) -> (Vec<i64>, Vec<usize>) {
 #[pyfunction]
 #[pyo3(name = "binomial_mod", signature = (a, b, p, k))]
 fn py_binomial_mod(a: u64, b: i128, p: u64, k: u32) -> PyResult<u64> {
-    core_binomial_mod(a, b, p, k).map_err(holonomic_error_to_py)
+    core_binomial_mod(a, b, p, k).map_err(holonomic_modular_error_to_py)
 }
 
 #[pymodule]

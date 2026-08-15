@@ -41,7 +41,7 @@
 //!    integer arithmetic at the (rare) indices where the residue alone cannot
 //!    decide `v`. If `a_J(n) = 0` exactly, the recurrence does not determine
 //!    `S(n+J)` at all and the call refuses
-//!    ([`HolonomicError::PAdicallyUndetermined`], `E-HOLO-007`).
+//!    ([`ModularError::PAdicallyUndetermined`], `E-HOLO-007`).
 //! 2. The total loss `L = Σ v` is known before a single sequence value is
 //!    computed, so the forward pass runs at *working* precision `K = k + L`.
 //!    Each singular step divides numerator and denominator by `p^v`, costing
@@ -54,8 +54,8 @@
 //!    This is not hypothetical — the harmonic numbers are holonomic and
 //!    `H_p = H_{p−1} + 1/p` has `v_p = −1`.
 //! 4. If `k + L` needs a modulus past the machine-word backend, or `p` is not
-//!    prime, the call refuses ([`HolonomicError::ModulusUnsupported`],
-//!    `E-HOLO-006`, and [`HolonomicError::WorkLimitExceeded`], `E-HOLO-008`).
+//!    prime, the call refuses ([`ModularError::ModulusUnsupported`],
+//!    `E-HOLO-006`, and [`ModularError::WorkLimitExceeded`], `E-HOLO-008`).
 //!
 //! The one thing that never happens is a returned residue that is wrong.
 //!
@@ -74,6 +74,94 @@ use rug::ops::RemRounding;
 use rug::Integer;
 
 use super::HolonomicError;
+
+/// Errors specific to modular evaluation.
+///
+/// A separate enum rather than three more variants on [`HolonomicError`],
+/// which is public and *exhaustive*: adding to it is a major-version break
+/// (`cargo semver-checks` fails on `enum_variant_added`, and a downstream
+/// `match` without a wildcard stops compiling). [`super::qzeil::QHolonomicError`]
+/// is the same pattern. Both surface to Python as `HolonomicError` carrying
+/// their own `E-HOLO-*` code, so a Python caller sees no difference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModularError {
+    /// The modulus is not a prime power this subsystem can work over: the base
+    /// is composite, the exponent is zero, or `p^k` is past the machine-word
+    /// backend's ceiling.
+    ModulusUnsupported(String),
+    /// A step of the recurrence does not determine the next term as a `p`-adic
+    /// integer: the leading coefficient vanishes identically at that index, or
+    /// the numerator's `p`-adic valuation is below the leading coefficient's.
+    /// See the module docs for how singular indices are handled when they
+    /// *are* determined.
+    PAdicallyUndetermined(String),
+    /// The computation is well posed but past a resource budget — a working
+    /// precision the machine-word modulus cannot hold, or a `binomial_mod`
+    /// whose cost is dominated by a pass over `1 … p−1`.
+    WorkLimitExceeded(String),
+    /// Malformed call, forwarded from [`ModularError::InvalidInput`] so the
+    /// modular entry points have a single error type.
+    InvalidInput(String),
+}
+
+impl fmt::Display for ModularError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ModularError::ModulusUnsupported(s) => write!(f, "holonomic: unsupported modulus: {s}"),
+            ModularError::PAdicallyUndetermined(s) => {
+                write!(f, "holonomic: not determined p-adically: {s}")
+            }
+            ModularError::WorkLimitExceeded(s) => {
+                write!(f, "holonomic: work limit exceeded: {s}")
+            }
+            ModularError::InvalidInput(s) => write!(f, "holonomic: invalid input: {s}"),
+        }
+    }
+}
+
+impl std::error::Error for ModularError {}
+
+impl From<HolonomicError> for ModularError {
+    fn from(e: HolonomicError) -> Self {
+        match e {
+            HolonomicError::InvalidInput(s) => ModularError::InvalidInput(s),
+            other => ModularError::InvalidInput(other.to_string()),
+        }
+    }
+}
+
+impl crate::errors::AlkahestError for ModularError {
+    fn code(&self) -> &'static str {
+        match self {
+            ModularError::ModulusUnsupported(_) => "E-HOLO-006",
+            ModularError::PAdicallyUndetermined(_) => "E-HOLO-007",
+            ModularError::WorkLimitExceeded(_) => "E-HOLO-008",
+            ModularError::InvalidInput(_) => "E-HOLO-004",
+        }
+    }
+
+    fn remediation(&self) -> Option<&'static str> {
+        Some(match self {
+            ModularError::ModulusUnsupported(_) => {
+                "the modulus must be p**k with p prime, k >= 1 and p**k < 2**62; for a \
+                 composite modulus, evaluate at each prime power and recombine by CRT"
+            }
+            ModularError::PAdicallyUndetermined(_) => {
+                "no modulus repairs this: the recurrence itself leaves Z_p at that index. \
+                 Supply more initial terms so the evaluation starts past it, use a \
+                 recurrence whose leading coefficient does not vanish there, or accept \
+                 that the sequence is not p-integral and rescale it"
+            }
+            ModularError::WorkLimitExceeded(_) => {
+                "lower k, use a smaller prime, or ask for an index the recurrence reaches \
+                 without crossing so many singular steps"
+            }
+            ModularError::InvalidInput(_) => {
+                "n and k must be distinct symbols; max_order and max_degree must be positive"
+            }
+        })
+    }
+}
 
 /// Largest modulus the machine-word backend accepts.
 ///
@@ -333,9 +421,9 @@ impl ModularRecurrence {
         rhs: Vec<Integer>,
         initial: Vec<(Integer, Integer)>,
         start: i64,
-    ) -> Result<Self, HolonomicError> {
+    ) -> Result<Self, ModularError> {
         if coeffs.len() < 2 {
-            return Err(HolonomicError::InvalidInput(format!(
+            return Err(ModularError::InvalidInput(format!(
                 "a recurrence needs at least one shift: got {} coefficient \
                  polynomials, so the order would be {}",
                 coeffs.len(),
@@ -344,14 +432,14 @@ impl ModularRecurrence {
         }
         let order = coeffs.len() - 1;
         if coeffs.iter().any(|c| c.is_empty()) {
-            return Err(HolonomicError::InvalidInput(
+            return Err(ModularError::InvalidInput(
                 "every coefficient polynomial needs at least one coefficient; \
                  use [0] for a coefficient that is identically zero"
                     .into(),
             ));
         }
         if coeffs[order].iter().all(|c| *c == 0) {
-            return Err(HolonomicError::InvalidInput(format!(
+            return Err(ModularError::InvalidInput(format!(
                 "the leading coefficient a_{order}(n) is the zero polynomial, so \
                  the relation never determines S(n+{order}); drop the trailing \
                  coefficient and use the order-{} recurrence it really is",
@@ -359,7 +447,7 @@ impl ModularRecurrence {
             )));
         }
         if initial.len() != order {
-            return Err(HolonomicError::InvalidInput(format!(
+            return Err(ModularError::InvalidInput(format!(
                 "an order-{order} recurrence needs exactly {order} initial values, \
                  got {}",
                 initial.len()
@@ -368,7 +456,7 @@ impl ModularRecurrence {
         let mut normalised = Vec::with_capacity(order);
         for (j, (num, den)) in initial.into_iter().enumerate() {
             if den == 0 {
-                return Err(HolonomicError::InvalidInput(format!(
+                return Err(ModularError::InvalidInput(format!(
                     "initial value {j} has a zero denominator"
                 )));
             }
@@ -451,7 +539,7 @@ impl ModularRecurrence {
     /// // A(p−1) ≡ 1 (mod p³) for p = 13 — the Apéry supercongruence.
     /// assert_eq!(rec.value_mod(12, 13, 3).unwrap(), 1);
     /// ```
-    pub fn value_mod(&self, target: i64, p: u64, k: u32) -> Result<u64, HolonomicError> {
+    pub fn value_mod(&self, target: i64, p: u64, k: u32) -> Result<u64, ModularError> {
         Ok(self.evaluate(&[target], p, k)?.residues[0])
     }
 
@@ -465,23 +553,23 @@ impl ModularRecurrence {
         targets: &[i64],
         p: u64,
         k: u32,
-    ) -> Result<ModularEvaluation, HolonomicError> {
+    ) -> Result<ModularEvaluation, ModularError> {
         self.check_modulus(p, k)?;
         if targets.is_empty() {
-            return Err(HolonomicError::InvalidInput(
+            return Err(ModularError::InvalidInput(
                 "no target indices were given".into(),
             ));
         }
         for w in targets.windows(2) {
             if w[1] <= w[0] {
-                return Err(HolonomicError::InvalidInput(format!(
+                return Err(ModularError::InvalidInput(format!(
                     "target indices must be strictly increasing, got {} after {}",
                     w[1], w[0]
                 )));
             }
         }
         if targets[0] < self.start {
-            return Err(HolonomicError::InvalidInput(format!(
+            return Err(ModularError::InvalidInput(format!(
                 "target index {} is below start = {}; the recurrence is only run \
                  forwards",
                 targets[0], self.start
@@ -500,7 +588,7 @@ impl ModularRecurrence {
             .ok_or_else(|| precision_overflow(p, k, loss))?;
         let modulus_k = prime_power(p, k).ok_or_else(|| unsupported_modulus(p, k))?;
         let working_modulus = prime_power(p, working).ok_or_else(|| {
-            HolonomicError::WorkLimitExceeded(format!(
+            ModularError::WorkLimitExceeded(format!(
                 "the {n_singular} singular step(s) cost {loss} digits of p-adic \
                  precision, so answering to p^{k} needs a working modulus of \
                  {p}^{working}, which is past the machine-word backend's ceiling \
@@ -522,16 +610,16 @@ impl ModularRecurrence {
         })
     }
 
-    fn check_modulus(&self, p: u64, k: u32) -> Result<(), HolonomicError> {
+    fn check_modulus(&self, p: u64, k: u32) -> Result<(), ModularError> {
         if k == 0 {
-            return Err(HolonomicError::ModulusUnsupported(
+            return Err(ModularError::ModulusUnsupported(
                 "precision k must be at least 1; p^0 = 1 has one residue and \
                  says nothing"
                     .into(),
             ));
         }
         if p < 2 || !crate::modular::is_prime(p) {
-            return Err(HolonomicError::ModulusUnsupported(format!(
+            return Err(ModularError::ModulusUnsupported(format!(
                 "{p} is not prime; the lifting argument this module rests on \
                  needs a prime power modulus, and v_p is not defined otherwise"
             )));
@@ -553,7 +641,7 @@ impl ModularRecurrence {
         n_steps: u64,
         p: u64,
         k: u32,
-    ) -> Result<(u32, Vec<i64>, u64), HolonomicError> {
+    ) -> Result<(u32, Vec<i64>, u64), ModularError> {
         if n_steps == 0 {
             return Ok((0, Vec::new(), 0));
         }
@@ -585,7 +673,7 @@ impl ModularRecurrence {
             }
         }
         let loss = u32::try_from(loss).map_err(|_| {
-            HolonomicError::WorkLimitExceeded(format!(
+            ModularError::WorkLimitExceeded(format!(
                 "the singular steps of this recurrence cost {loss} digits of \
                  p-adic precision at p = {p}, far past any workable modulus"
             ))
@@ -594,10 +682,10 @@ impl ModularRecurrence {
     }
 
     /// `v_p(a_J(n))` computed over `ℤ`, for the indices a residue cannot decide.
-    fn exact_leading_valuation(&self, n: i64, p: u64) -> Result<u32, HolonomicError> {
+    fn exact_leading_valuation(&self, n: i64, p: u64) -> Result<u32, ModularError> {
         let value = horner_exact(&self.coeffs[self.order()], n);
         if value == 0 {
-            return Err(HolonomicError::PAdicallyUndetermined(format!(
+            return Err(ModularError::PAdicallyUndetermined(format!(
                 "the leading coefficient a_{}(n) vanishes at n = {n}, so the \
                  recurrence does not determine S({}) from the terms before it — \
                  no modulus can repair that",
@@ -625,7 +713,7 @@ impl ModularRecurrence {
         working: u32,
         modulus: u64,
         modulus_k: u64,
-    ) -> Result<Vec<u64>, HolonomicError> {
+    ) -> Result<Vec<u64>, ModularError> {
         let order = self.order();
         let reduced: Vec<Vec<u64>> = self
             .coeffs
@@ -643,7 +731,7 @@ impl ModularRecurrence {
         for (num, den) in &self.initial {
             let d = reduce_integer(den, modulus);
             let inv = inv_mod(d, modulus).ok_or_else(|| {
-                HolonomicError::PAdicallyUndetermined(format!(
+                ModularError::PAdicallyUndetermined(format!(
                     "initial value {num}/{den} has a denominator divisible by \
                      {p}, so it is not a p-adic integer and has no residue mod \
                      {p}^{working}"
@@ -691,7 +779,7 @@ impl ModularRecurrence {
                 } else {
                     let pv = plan.prime_powers[slot];
                     if numerator % pv != 0 {
-                        return Err(HolonomicError::PAdicallyUndetermined(format!(
+                        return Err(ModularError::PAdicallyUndetermined(format!(
                             "at n = {n} the leading coefficient a_{order}(n) has \
                              v_{p} = {v} but the numerator has v_{p} = {}, so \
                              S({}) is not a p-adic integer and has no residue mod \
@@ -725,7 +813,7 @@ impl ModularRecurrence {
         // rather than assumed, and a violation refuses instead of returning a
         // residue that is short of the precision it claims.
         if precision < k {
-            return Err(HolonomicError::CertificateVerificationFailed(format!(
+            return Err(ModularError::PAdicallyUndetermined(format!(
                 "the forward pass ended with {precision} digits of p-adic \
                  precision at p = {p}, below the {k} the leading-coefficient \
                  scan budgeted for; please report this recurrence"
@@ -748,7 +836,7 @@ impl ModularRecurrence {
         p: u64,
         working: u32,
         modulus: u64,
-    ) -> Result<StepPlan, HolonomicError> {
+    ) -> Result<StepPlan, ModularError> {
         let mut valuations = Vec::with_capacity(chunk);
         let mut prime_powers = Vec::with_capacity(chunk);
         let mut units = Vec::with_capacity(chunk);
@@ -761,7 +849,7 @@ impl ModularRecurrence {
                 // individual `v` is strictly below it. Refuse rather than
                 // divide by a `p^v` that the modulus cannot represent, which is
                 // exactly the silent-garbage path this module exists to close.
-                return Err(HolonomicError::CertificateVerificationFailed(format!(
+                return Err(ModularError::PAdicallyUndetermined(format!(
                     "the leading coefficient at n = {n} is 0 mod {p}^{working} \
                      even though the scan budgeted a finite valuation for it; \
                      please report this recurrence"
@@ -781,7 +869,7 @@ impl ModularRecurrence {
             prefix.push(acc);
         }
         let mut running = inv_mod(prefix[chunk], modulus).ok_or_else(|| {
-            HolonomicError::PAdicallyUndetermined(format!(
+            ModularError::PAdicallyUndetermined(format!(
                 "the unit part of a leading coefficient near n = {first_index} is \
                  not invertible mod {p}^{working}; this is an internal invariant \
                  violation, please report it"
@@ -812,15 +900,15 @@ fn scan_precision(p: u64, k: u32) -> u32 {
     e
 }
 
-fn unsupported_modulus(p: u64, k: u32) -> HolonomicError {
-    HolonomicError::ModulusUnsupported(format!(
+fn unsupported_modulus(p: u64, k: u32) -> ModularError {
+    ModularError::ModulusUnsupported(format!(
         "{p}^{k} does not fit the machine-word backend, whose ceiling is 2^62; \
          reduce k, or use a smaller prime"
     ))
 }
 
-fn precision_overflow(p: u64, k: u32, loss: u32) -> HolonomicError {
-    HolonomicError::WorkLimitExceeded(format!(
+fn precision_overflow(p: u64, k: u32, loss: u32) -> ModularError {
+    ModularError::WorkLimitExceeded(format!(
         "the singular steps cost {loss} digits of p-adic precision, so answering \
          to {p}^{k} would need a working precision of {k} + {loss}, which \
          overflows"
@@ -897,16 +985,16 @@ fn horner_exact(coeffs: &[Integer], x: i64) -> Integer {
 /// assert_eq!(binomial_mod(1_000_000, 500_000, 7, 4).unwrap(), 0);
 /// assert_eq!(binomial_mod(5, 9, 7, 4).unwrap(), 0);
 /// ```
-pub fn binomial_mod(a: u64, b: i128, p: u64, k: u32) -> Result<u64, HolonomicError> {
+pub fn binomial_mod(a: u64, b: i128, p: u64, k: u32) -> Result<u64, ModularError> {
     if k == 0 {
-        return Err(HolonomicError::ModulusUnsupported(
+        return Err(ModularError::ModulusUnsupported(
             "precision k must be at least 1; p^0 = 1 has one residue and says \
              nothing"
                 .into(),
         ));
     }
     if p < 2 || !crate::modular::is_prime(p) {
-        return Err(HolonomicError::ModulusUnsupported(format!(
+        return Err(ModularError::ModulusUnsupported(format!(
             "{p} is not prime; binomial_mod needs a prime power modulus"
         )));
     }
@@ -941,7 +1029,7 @@ pub fn binomial_mod(a: u64, b: i128, p: u64, k: u32) -> Result<u64, HolonomicErr
     let kk = k as u128;
     let work = (p as u128) * (kk * kk * kk + kk * levels as u128);
     if work > BINOMIAL_WORK_BUDGET {
-        return Err(HolonomicError::WorkLimitExceeded(format!(
+        return Err(ModularError::WorkLimitExceeded(format!(
             "binomial({a}, {b}) mod {p}^{k} needs about {work} unit operations, \
              past the budget of {BINOMIAL_WORK_BUDGET}; the cost is O(p·k³), so \
              lower k or p"
@@ -964,7 +1052,7 @@ pub fn binomial_mod(a: u64, b: i128, p: u64, k: u32) -> Result<u64, HolonomicErr
         cj /= p;
     }
     let inverse = inv_mod(denominator, m).ok_or_else(|| {
-        HolonomicError::CertificateVerificationFailed(format!(
+        ModularError::PAdicallyUndetermined(format!(
             "the p-free part of a factorial came out non-invertible mod {p}^{k}; \
              this is an internal invariant violation, please report \
              binomial({a}, {b}) mod {p}^{k}"
