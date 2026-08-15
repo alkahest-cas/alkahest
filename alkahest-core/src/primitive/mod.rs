@@ -78,9 +78,10 @@ bitflags::bitflags! {
         ///
         /// **This is not implied by `NUMERIC_BALL`, and does not imply it.**
         /// Pointwise ball arithmetic and a Taylor model with a rigorous
-        /// remainder are different pieces of work: `erf`, `bessel_j0`,
-        /// `digamma`, `floor`, … have the former and not the latter. The bit
-        /// is derived by running the evaluator (see
+        /// remainder are different pieces of work: `floor` and `ceil` have the
+        /// former and not the latter, and `bessel_j0`, `digamma`,
+        /// `lambert_w` and four more were in that position until 3.9.0. The
+        /// bit is derived by running the evaluator (see
         /// [`taylor_support`]), never from a list.
         const TAYLOR_MODEL  = 1 << 7;
     }
@@ -2438,6 +2439,13 @@ pub mod builtins {
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
             Some(libm_gamma(args[0]))
+        }
+
+        /// Only for `x > 0`: the enclosure rests on `Γ` being convex there
+        /// (see [`ArbBall::gamma`]), and the reflection formula that would
+        /// carry it between the poles on the negative axis is not written.
+        fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
+            unary(args)?.gamma()
         }
 
         // NOTE: no `lean_theorem` override — `gamma` isn't even wired into

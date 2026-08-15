@@ -76,6 +76,7 @@ from ._result_schema import (
     STEP_FIELDS_COMPACT,
     STEPS_SCHEMA_VERSION,
 )
+from ._supercongruence import CongruenceSweep, supercongruence_sweep
 from ._transform import (
     CompiledGradTracedFn,
     CompiledTracedFn,
@@ -122,6 +123,9 @@ from .alkahest import (  # noqa: F401
     ExprPool,
     Forall,
     HybridODE,
+    # M6 — modular / p-adic evaluation of holonomic sequences
+    ModularEvaluation,
+    ModularRecurrence,
     # Polynomial types
     MultiPoly,
     MultiPolyFactorization,
@@ -165,6 +169,8 @@ from .alkahest import (  # noqa: F401
     atanh,
     bessel_j0,
     bessel_j1,
+    # M6 — binomial(a, b) mod p**k (Lucas / Granville)
+    binomial_mod,
     bound_on_box,
     # Is the validated-bounds subsystem even reachable for this expression?
     bounds_supported,
@@ -1937,10 +1943,11 @@ def capabilities() -> dict:
         :func:`verified_integral`, :func:`verified_no_roots`,
         :func:`verified_sign`) has a rigorous Taylor-model rule for it, i.e.
         whether those entry points can bound it at all. **It is a different
-        question from ``numeric_ball``**, which is pointwise ball arithmetic
-        and is ``True`` for `erf`, `bessel_j0`, `digamma` and `floor` —
-        none of which can be bounded over a box. Reading the latter as
-        coverage is what made the boundary invisible before 3.9.0. The bit is
+        question from ``numeric_ball``**, which is pointwise ball arithmetic:
+        it is ``True`` for `floor` and `ceil`, neither of which can be bounded
+        over a box, and it was ``True`` for `erf`, `bessel_j0`, `digamma` and
+        six more before 3.9.0 gave them Taylor-model rules. Reading the latter
+        as coverage is what made the boundary invisible. The bit is
         derived by running the Taylor evaluator, so it cannot drift from what
         `bound_on_box` accepts; :func:`bounds_supported` asks the same
         question for a whole expression.
@@ -2124,6 +2131,8 @@ __all__ = [
     "CompiledGradTracedFn",
     "CompiledTracedFn",
     "Component",
+    # M6 — modular / p-adic evaluation of holonomic sequences
+    "CongruenceSweep",
     "ConversionError",
     "CrossCheckError",
     "CudaError",
@@ -2169,6 +2178,9 @@ __all__ = [
     "Matrix",
     "MatrixError",
     "ModularError",
+    # M6 — modular / p-adic evaluation of holonomic sequences
+    "ModularEvaluation",
+    "ModularRecurrence",
     "MultiPoly",
     "MultiPolyFactorization",
     "Not",
@@ -2238,6 +2250,8 @@ __all__ = [
     "batch_map_iter",
     "bessel_j0",
     "bessel_j1",
+    # M6 — binomial(a, b) mod p**k (Lucas / Granville)
+    "binomial_mod",
     "bound_on_box",
     "bounds_supported",
     # P1 search plumbing item 4
@@ -2411,6 +2425,8 @@ __all__ = [
     "subs",
     "sum_definite",
     "sum_indefinite",
+    # M6 — supercongruence sweeps over a modular recurrence
+    "supercongruence_sweep",
     "symbol",
     "symbolic_grad",
     # V1-12: expanded primitives

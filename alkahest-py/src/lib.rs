@@ -179,6 +179,23 @@ use alkahest_core::holonomic::{
     OrderSearch as CoreOrderSearch, ZeilbergerOpts as CoreZeilbergerOpts,
     ZeilbergerResult as CoreZeilbergerResult,
 };
+// M4(b) — q-analogue creative telescoping (q-Zeilberger)
+use alkahest_core::holonomic::qzeil::{
+    q_zeilberger as core_q_zeilberger, QBoundaryStatus as CoreQBoundaryStatus,
+    QCertificate as CoreQCertificate, QHolonomicError as CoreQHolonomicError,
+    QZeilbergerOpts as CoreQZeilbergerOpts,
+};
+// M6 — modular / p-adic evaluation of holonomic sequences
+use alkahest_core::holonomic::modular::{
+    binomial_mod as core_binomial_mod, ModularEvaluation as CoreModularEvaluation,
+    ModularRecurrence as CoreModularRecurrence,
+};
+// M5 — recurrence -> asymptotics (Poincaré–Perron)
+use alkahest_core::holonomic::asymptotics::{
+    asymptotics_from_recurrence as core_asymptotics_from_recurrence,
+    ConnectionConstant as CoreConnectionConstant,
+    RecurrenceAsymptotics as CoreRecurrenceAsymptotics,
+};
 // P1 item 10 — asymptotic expansion at scale
 use alkahest_core::calculus::euler_maclaurin::euler_maclaurin as core_euler_maclaurin;
 use alkahest_core::calculus::singularity::coefficient_asymptotics as core_coefficient_asymptotics;
@@ -5155,6 +5172,271 @@ fn py_zeilberger(
 }
 
 // ---------------------------------------------------------------------------
+// M4(b) — q-analogue creative telescoping (q-Zeilberger)
+// ---------------------------------------------------------------------------
+
+/// A **verified** ``q``-Zeilberger certificate, from
+/// :func:`alkahest.experimental.q_zeilberger`.
+///
+/// The recurrence ``Σ_i a_i(q**n)·F(n+i,k) = G(n,k+1) − G(n,k)`` with
+/// ``G = R·F`` is re-checked as an exact identity in ``Q(q)(q**n)(q**k)``
+/// before this object is constructed, exactly as the classical
+/// :class:`~alkahest.ZeilbergerCertificate` is.
+///
+/// **The verdict on the sum is two-valued here**, not three:
+/// :attr:`boundary` is ``"vanishes"`` (proved: ``Σ_i a_i(q**n)·S(n+i) = 0``
+/// for ``S(n) = Σ_{k ∈ Z} F(n,k)``, a finite sum over the proved
+/// :attr:`support` window) or ``"unknown"`` (nothing may be claimed about the
+/// sum). There is no ``"nonzero"`` arm: an inhomogeneity ``b(n)`` for a
+/// ``q``-sum needs endpoint values that are not rational in ``q**n``, and an
+/// unproved ``b(n)`` would be worse than none.
+///
+/// ``q`` is treated as **transcendental** throughout. A verdict is an identity
+/// in ``Q(q)``; it does not license specialising ``q`` to a root of unity,
+/// which is a separate step with its own hypotheses.
+#[pyclass(name = "QZeilbergerCertificate")]
+struct PyQZeilbergerCertificate {
+    order: usize,
+    order_is_minimal: bool,
+    probes: usize,
+    coeff_ids: Vec<ExprId>,
+    certificate_id: ExprId,
+    pool: Py<PyExprPool>,
+    derivation: String,
+    q_id: ExprId,
+    cert: CoreQCertificate,
+    n_min: i64,
+}
+
+#[pymethods]
+impl PyQZeilbergerCertificate {
+    /// Recurrence order ``J``; ``len(coeffs) == order + 1``.
+    #[getter]
+    fn order(&self) -> usize {
+        self.order
+    }
+
+    /// Whether the search **established** that no lower-order relation exists.
+    ///
+    /// ``False`` means *not established*, never "a lower order exists" — the
+    /// same convention as the classical certificate's.
+    #[getter]
+    fn order_is_minimal(&self) -> bool {
+        self.order_is_minimal
+    }
+
+    /// How many ``(order, degree)`` probes the search made.
+    #[getter]
+    fn probes(&self) -> usize {
+        self.probes
+    }
+
+    /// ``[a_0, …, a_J]`` — the recurrence coefficients, as expressions in
+    /// ``q`` and ``q**n``.
+    #[getter]
+    fn coeffs(&self, py: Python<'_>) -> Vec<PyExpr> {
+        self.coeff_ids
+            .iter()
+            .map(|&id| PyExpr {
+                id,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect()
+    }
+
+    /// ``R`` — the rational certificate, with ``G(n,k) = R·F(n,k)``.
+    #[getter]
+    fn certificate(&self, py: Python<'_>) -> PyExpr {
+        PyExpr {
+            id: self.certificate_id,
+            pool: self.pool.clone_ref(py),
+        }
+    }
+
+    /// ``"vanishes"`` or ``"unknown"`` — whether a recurrence for the *sum*
+    /// follows from this certificate.
+    #[getter]
+    fn boundary(&self) -> &'static str {
+        self.cert.boundary.tag()
+    }
+
+    /// Whether a recurrence for the sum may be read off at all.
+    #[getter]
+    fn implies_sum_recurrence(&self) -> bool {
+        self.cert.boundary.implies_sum_recurrence()
+    }
+
+    /// Why the boundary verdict came out as it did, in one sentence.
+    #[getter]
+    fn boundary_reason(&self) -> String {
+        match &self.cert.boundary {
+            CoreQBoundaryStatus::Vanishes { n_min, .. } => format!(
+                "the summand was proved to have finite support in k and to be finite at every \
+                 integer k, so the sum over all integer k obeys the homogeneous recurrence for \
+                 every n >= {n_min}"
+            ),
+            CoreQBoundaryStatus::Unknown { reason } => reason.clone(),
+        }
+    }
+
+    /// The proved support window ``(lo, hi)`` in ``k`` as strings in ``n``, or
+    /// ``None`` when the verdict is ``"unknown"`` or the window is not a single
+    /// affine bound on each side.
+    ///
+    /// ``S(n) = Σ_{k ∈ Z} F(n,k)`` is the sum the verdict is about, and this is
+    /// the finite range it equals: the summand was proved to vanish outside it.
+    #[getter]
+    fn support(&self) -> Option<(String, String)> {
+        match &self.cert.boundary {
+            CoreQBoundaryStatus::Vanishes { support, .. } => support.clone(),
+            CoreQBoundaryStatus::Unknown { .. } => None,
+        }
+    }
+
+    /// Hypotheses the certificate does **not** establish, as plain strings.
+    #[getter]
+    fn side_conditions(&self) -> Vec<String> {
+        self.cert.boundary.side_conditions()
+    }
+
+    /// Human-readable derivation log.
+    #[getter]
+    fn derivation(&self) -> String {
+        self.derivation.clone()
+    }
+
+    /// ``S(n0) = Σ_{k ∈ Z} F(n0, k)`` as an exact polynomial in ``q``.
+    ///
+    /// Computed from the definition of the ``q``-Pochhammer symbol, **not**
+    /// through the shift quotients the search used — which is what makes
+    /// checking the returned recurrence against these values an independent
+    /// check rather than a restatement of the certificate.
+    ///
+    /// Raises :exc:`alkahest.HolonomicError` when the support window is not
+    /// established, since then the sum is not a finite sum to evaluate.
+    fn sum_term(&self, py: Python<'_>, n0: i64) -> PyResult<PyExpr> {
+        let pool = self.pool.borrow(py);
+        let value = self
+            .cert
+            .term
+            .sum_at(n0, self.n_min)
+            .map_err(q_holonomic_error_to_py)?;
+        let id = alkahest_core::holonomic::hyperterm::rn_to_expr(&pool.inner, self.q_id, &value);
+        let id = alkahest_core::simplify::simplify(id, &pool.inner).value;
+        Ok(PyExpr {
+            id,
+            pool: self.pool.clone_ref(py),
+        })
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> String {
+        let pool = self.pool.borrow(py);
+        let coeffs: Vec<String> = self
+            .coeff_ids
+            .iter()
+            .map(|&id| pool.inner.display(id).to_string())
+            .collect();
+        format!(
+            "QZeilbergerCertificate(order={}{}, boundary={}, coeffs=[{}])",
+            self.order,
+            if self.order_is_minimal {
+                " [minimal]"
+            } else {
+                ""
+            },
+            self.cert.boundary.tag(),
+            coeffs.join(", ")
+        )
+    }
+}
+
+fn q_holonomic_error_to_py(e: CoreQHolonomicError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyHolonomicError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+/// `alkahest.experimental.q_zeilberger(term, q, n, k, *, max_order=3, max_degree=6, minimal=False, n_min=0) -> QZeilbergerCertificate`
+///
+/// ``q``-Zeilberger's algorithm: a **verified** ``q``-recurrence for a
+/// ``q``-hypergeometric term ``F(n, k)``, plus a verdict on whether it carries
+/// over to the sum.
+///
+/// The supported class, enforced by the parser rather than assumed:
+///
+/// ```text
+/// F(n,k) = R(q**n, q**k) · z**k · w**n · q**(A*k² + B*n*k + C*n² + D*k + E*n)
+///          · Π_j qpochhammer(u_j, d_j, v_j)**e_j
+/// ```
+///
+/// written with the function heads ``pool.func("qbinomial", [N, K])`` (the
+/// Gaussian binomial) and ``pool.func("qpochhammer", [u, d, v])`` (meaning
+/// ``(q**u; q**d)_v``), powers of ``q`` whose exponent is a degree-≤2
+/// polynomial in ``n`` and ``k``, powers with a base free of ``n`` and ``k``,
+/// and any rational function of ``q``, ``q**n``, ``q**k``.
+///
+/// Anything else raises :exc:`alkahest.HolonomicError` rather than being
+/// answered: ``E-HOLO-020`` outside the class (a bare ``n`` or ``k``, a
+/// ``gamma``, a ``sin``), ``E-HOLO-021`` when the bounded search is exhausted,
+/// ``E-HOLO-023`` for a malformed call, and ``E-HOLO-024`` for an input that
+/// looks like the class but whose shift quotient is not rational — the
+/// canonical case being a ``q``-Pochhammer whose first argument shifts by
+/// something its base does not divide, e.g. ``(q; q**2)_k`` under ``k ↦ k+1``.
+///
+/// ``n_min`` is the smallest ``n`` the boundary verdict is asserted for; it
+/// defaults to ``0`` and is echoed in
+/// :attr:`~alkahest.experimental.QZeilbergerCertificate.side_conditions`.
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
+#[pyo3(
+    name = "q_zeilberger",
+    signature = (term, q, n, k, *, max_order = 3, max_degree = 6, minimal = false, n_min = 0)
+)]
+fn py_q_zeilberger(
+    py: Python<'_>,
+    term: PyRef<PyExpr>,
+    q: PyRef<PyExpr>,
+    n: PyRef<PyExpr>,
+    k: PyRef<PyExpr>,
+    max_order: usize,
+    max_degree: usize,
+    minimal: bool,
+    n_min: i64,
+) -> PyResult<PyQZeilbergerCertificate> {
+    let pool_py = term.pool.clone_ref(py);
+    let opts = CoreQZeilbergerOpts {
+        max_order,
+        max_degree,
+        search: if minimal {
+            CoreOrderSearch::MinimalOrder
+        } else {
+            CoreOrderSearch::CostOrdered
+        },
+        n_min,
+    };
+    let (cert, derivation) = {
+        let pool = pool_py.borrow(py);
+        let derived = core_q_zeilberger(term.id, q.id, n.id, k.id, &pool.inner, &opts)
+            .map_err(q_holonomic_error_to_py)?;
+        let derivation = derived.log.display_with(&pool.inner).to_string();
+        (derived.value, derivation)
+    };
+    Ok(PyQZeilbergerCertificate {
+        order: cert.report.result.order,
+        order_is_minimal: cert.report.order_is_minimal,
+        probes: cert.report.probes,
+        coeff_ids: cert.report.result.coeffs.clone(),
+        certificate_id: cert.report.result.certificate,
+        pool: pool_py,
+        derivation,
+        q_id: q.id,
+        cert,
+        n_min,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // P1 item 10 — asymptotic expansion at scale
 // ---------------------------------------------------------------------------
 
@@ -5342,6 +5624,450 @@ fn py_coefficient_asymptotics(
             .map(|v| (v.at, v.reference, v.approximation, v.relative_error))
             .collect(),
         derivation: r.derivation.clone(),
+        pool: pool_py,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// M5 — recurrence -> asymptotics (Poincaré–Perron)
+// ---------------------------------------------------------------------------
+
+/// Asymptotics of a P-recursive sequence, read off its recurrence.
+///
+/// Returned by :func:`alkahest.experimental.asymptotics_from_recurrence`.  The
+/// object is arranged around one distinction, because it is the distinction a
+/// research loop gets wrong:
+///
+/// * **Derived** — :attr:`growth_rate`, :attr:`polynomial_exponent`,
+///   :meth:`roots`, :attr:`verdict`.  These are functions of the coefficient
+///   polynomials and of nothing else: Poincaré–Perron applied to the
+///   characteristic polynomial.  When the root is rational they are available
+///   *exactly* as :attr:`growth_rate_exact` and
+///   :attr:`polynomial_exponent_exact`.
+/// * **Fitted** — :attr:`connection_constant`, and only that.  `C` in
+///   ``u(n) ~ C·ρⁿ·n^α`` is determined by the initial conditions, not by the
+///   recurrence, so it is extrapolated numerically from the exact terms.
+///   :attr:`connection_constant_converged` says whether the extrapolation
+///   agreed with a second one from a smaller range, and
+///   :attr:`connection_constant_drift` says by how much.
+///
+/// :meth:`evidence` returns both halves as a dict for logging next to a result,
+/// and :meth:`report` returns the family's usual
+/// :class:`~alkahest.experimental.AsymptoticReport` with the hypotheses, the
+/// numeric corroboration and the derivation log.
+#[pyclass(name = "RecurrenceAsymptotics")]
+struct PyRecurrenceAsymptotics {
+    inner: CoreRecurrenceAsymptotics,
+    growth_rate_exact_id: Option<ExprId>,
+    polynomial_exponent_exact_id: Option<ExprId>,
+    pool: Py<PyExprPool>,
+}
+
+#[pymethods]
+impl PyRecurrenceAsymptotics {
+    /// Recurrence order ``J``.
+    #[getter]
+    fn order(&self) -> usize {
+        self.inner.characteristic.order
+    }
+
+    /// ``D`` — the largest degree among the coefficient polynomials.
+    #[getter]
+    fn coefficient_degree(&self) -> usize {
+        self.inner.characteristic.coefficient_degree
+    }
+
+    /// ``"single_dominant_root"``, ``"equal_modulus_roots"``,
+    /// ``"repeated_dominant_root"``, ``"degenerate_leading_coefficient"`` or
+    /// ``"eventually_zero"``.
+    ///
+    /// Only the first gives a growth law.  The others are the hypotheses of
+    /// Poincaré–Perron failing, reported rather than assumed away: equal-modulus
+    /// roots make the solutions oscillate, and answering with one of them would
+    /// be a wrong answer with a confident face on it.
+    #[getter]
+    fn verdict(&self) -> &'static str {
+        self.inner.characteristic.verdict.tag()
+    }
+
+    /// One sentence saying what :attr:`verdict` means for the caller.
+    #[getter]
+    fn verdict_reason(&self) -> String {
+        self.inner.characteristic.verdict.explanation()
+    }
+
+    /// ``ρ`` — the dominant characteristic root, or ``None``.
+    ///
+    /// **Derived.**  ``None`` exactly when :attr:`verdict` is not
+    /// ``"single_dominant_root"``.
+    #[getter]
+    fn growth_rate(&self) -> Option<f64> {
+        self.inner.characteristic.growth_rate
+    }
+
+    /// ``ρ`` as an exact rational :class:`~alkahest.Expr`, when it is one.
+    ///
+    /// ``None`` means "not a rational number, or not established" — Apéry's
+    /// ``17 + 12√2`` is real and simple and has no entry here.
+    #[getter]
+    fn growth_rate_exact(&self, py: Python<'_>) -> Option<PyExpr> {
+        self.growth_rate_exact_id.map(|id| PyExpr {
+            id,
+            pool: self.pool.clone_ref(py),
+        })
+    }
+
+    /// ``α`` in ``u(n) ~ C·ρⁿ·n^α``, or ``None``.
+    ///
+    /// **Derived**, from ``α = −χ₁(ρ)/(ρ·χ'(ρ))``.  ``-0.5`` for the central
+    /// binomial coefficients, ``-1.5`` for Catalan, Motzkin and Apéry.
+    #[getter]
+    fn polynomial_exponent(&self) -> Option<f64> {
+        self.inner.characteristic.polynomial_exponent
+    }
+
+    /// ``α`` as an exact rational :class:`~alkahest.Expr`, when ``ρ`` is
+    /// rational (then so is ``α``).
+    #[getter]
+    fn polynomial_exponent_exact(&self, py: Python<'_>) -> Option<PyExpr> {
+        self.polynomial_exponent_exact_id.map(|id| PyExpr {
+            id,
+            pool: self.pool.clone_ref(py),
+        })
+    }
+
+    /// ``C`` — **fitted**, never derived.  ``None`` when it was not fitted.
+    ///
+    /// Read :attr:`connection_constant_converged` before quoting it.  A value
+    /// with ``converged`` ``False`` is evidence about the fit, not a result.
+    #[getter]
+    fn connection_constant(&self) -> Option<f64> {
+        self.inner.connection.map(|c| c.value)
+    }
+
+    /// Whether the connection constant agreed with a second extrapolation from
+    /// a smaller range of indices.
+    #[getter]
+    fn connection_constant_converged(&self) -> bool {
+        self.inner.connection.is_some_and(|c| c.converged)
+    }
+
+    /// How far the two extrapolations of ``C`` differ, relative to their size.
+    #[getter]
+    fn connection_constant_drift(&self) -> Option<f64> {
+        self.inner.connection.map(|c| c.relative_drift)
+    }
+
+    /// Largest index the connection constant was fitted at.
+    #[getter]
+    fn connection_constant_fitted_at(&self) -> Option<i64> {
+        self.inner.connection.map(|c| c.fitted_at)
+    }
+
+    /// Whether the supplied terms were seen to follow the *dominant* root.
+    ///
+    /// ``None`` when no terms were supplied.  Poincaré's conclusion is that
+    /// ``u(n+1)/u(n)`` tends to *some* characteristic root; ``False`` is the
+    /// real answer that the sequence's dominant component vanishes, as it does
+    /// for the constant solution of ``u(n+2) = 3u(n+1) − 2u(n)``.
+    #[getter]
+    fn follows_dominant_root(&self) -> Option<bool> {
+        self.inner.follows_dominant_root
+    }
+
+    /// ``C·ρⁿ·n^α`` as an :class:`~alkahest.Expr`, or ``None``.
+    ///
+    /// Present only when the verdict gave a single law, the terms followed the
+    /// dominant root, the constant converged and the result passed the numeric
+    /// gate.  The constant inside it is fitted — see
+    /// :attr:`connection_constant`.
+    #[getter]
+    fn leading_term(&self, py: Python<'_>) -> Option<PyExpr> {
+        self.inner.leading_term.map(|id| PyExpr {
+            id,
+            pool: self.pool.clone_ref(py),
+        })
+    }
+
+    /// Whether the enumeration of integer zeros of the leading coefficient was
+    /// exhaustive.
+    #[getter]
+    fn singular_indices_complete(&self) -> bool {
+        self.inner.characteristic.singular_indices_complete
+    }
+
+    /// Worst relative error observed by the numeric gate.
+    #[getter]
+    fn max_relative_error(&self) -> Option<f64> {
+        self.inner.max_relative_error()
+    }
+
+    /// Every root of the characteristic polynomial, modulus-descending.
+    ///
+    /// ``[(re, im, modulus, multiplicity)]``.  The multiplicity is **exact** —
+    /// it comes from the squarefree decomposition of ``χ`` over ``ℚ``, not from
+    /// clustering the numeric roots.
+    fn roots(&self) -> Vec<(f64, f64, f64, usize)> {
+        self.inner
+            .characteristic
+            .roots
+            .iter()
+            .map(|r| (r.re, r.im, r.modulus, r.multiplicity))
+            .collect()
+    }
+
+    /// Integer ``n ≥ start`` at which the leading coefficient vanishes.
+    ///
+    /// Poincaré–Perron needs it non-zero for large ``n``; since it is a
+    /// polynomial there are finitely many exceptions and the theorem applies
+    /// beyond the largest.  See :attr:`singular_indices_complete`.
+    fn singular_indices(&self) -> Vec<i64> {
+        self.inner.characteristic.singular_indices.clone()
+    }
+
+    /// The derived and the fitted halves, as a dict, for logging next to a
+    /// result.
+    ///
+    /// Sibling of :meth:`alkahest.GuessedRecurrence.evidence`.  ``derived``
+    /// holds what follows from the recurrence, ``fitted`` holds the connection
+    /// constant and how well it converged; a loop that records this cannot
+    /// later mistake one for the other.
+    fn evidence(&self, py: Python<'_>) -> PyResult<Py<PyDict>> {
+        let out = PyDict::new_bound(py);
+
+        let derived = PyDict::new_bound(py);
+        derived.set_item("order", self.inner.characteristic.order)?;
+        derived.set_item("verdict", self.inner.characteristic.verdict.tag())?;
+        derived.set_item("growth_rate", self.inner.characteristic.growth_rate)?;
+        derived.set_item(
+            "polynomial_exponent",
+            self.inner.characteristic.polynomial_exponent,
+        )?;
+        derived.set_item("roots", self.roots())?;
+        derived.set_item("singular_indices", self.singular_indices())?;
+        out.set_item("derived", derived)?;
+
+        let fitted = PyDict::new_bound(py);
+        fitted.set_item("connection_constant", self.connection_constant())?;
+        fitted.set_item("converged", self.connection_constant_converged())?;
+        fitted.set_item("relative_drift", self.connection_constant_drift())?;
+        fitted.set_item("fitted_at", self.connection_constant_fitted_at())?;
+        fitted.set_item(
+            "refit_at",
+            self.inner
+                .connection
+                .map(|c: CoreConnectionConstant| c.refit_at),
+        )?;
+        out.set_item("fitted", fitted)?;
+
+        out.set_item("follows_dominant_root", self.inner.follows_dominant_root)?;
+        out.set_item("max_relative_error", self.max_relative_error())?;
+        Ok(out.unbind())
+    }
+
+    /// The result as the asymptotics family's usual
+    /// :class:`~alkahest.experimental.AsymptoticReport`.
+    ///
+    /// This is where the hypotheses, the numeric corroboration and the
+    /// derivation log live, so there is exactly one place to read them from.
+    /// ``terms`` is empty when :attr:`leading_term` is ``None``; ``rigor`` is
+    /// always ``"numerically_consistent"``, because the modulus separation is
+    /// decided numerically and the constant is fitted.
+    fn report(&self, py: Python<'_>) -> PyAsymptoticReport {
+        let r = self.inner.report();
+        PyAsymptoticReport {
+            method: r.method.to_string(),
+            term_ids: r.terms.clone(),
+            rigor: r.rigor.tag().to_string(),
+            hypotheses: r
+                .hypotheses
+                .iter()
+                .map(|h| (h.status.tag().to_string(), h.statement.clone()))
+                .collect(),
+            verification: r
+                .verification
+                .iter()
+                .map(|v| (v.at, v.reference, v.approximation, v.relative_error))
+                .collect(),
+            derivation: r.derivation.clone(),
+            pool: self.pool.clone_ref(py),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        let verdict = self.inner.characteristic.verdict.tag();
+        match self.inner.characteristic.growth_rate {
+            Some(rho) => format!(
+                "RecurrenceAsymptotics(verdict={verdict:?}, growth_rate={rho}, \
+                 polynomial_exponent={}, connection_constant={} [fitted])",
+                self.inner
+                    .characteristic
+                    .polynomial_exponent
+                    .map_or_else(|| "None".to_string(), |a| a.to_string()),
+                self.connection_constant()
+                    .map_or_else(|| "None".to_string(), |c| c.to_string()),
+            ),
+            None => format!("RecurrenceAsymptotics(verdict={verdict:?}, no growth law)"),
+        }
+    }
+}
+
+/// One recurrence coefficient: an `Expr` in `n`, or ascending integer
+/// coefficients of a polynomial in `n`.
+///
+/// The second form exists for `GuessedRecurrence.coeffs`, whose entries are
+/// arbitrary-size Python ints. Routing them through `big_integer_from_py` keeps
+/// them exact; building the same polynomial with Python arithmetic
+/// (`c * n**j`) silently turns anything past 2⁵³ into a float, which for a
+/// recurrence fitted to `(2n)!`-scale terms is most of them.
+fn coerce_recurrence_coefficient(
+    py: Python<'_>,
+    pool_py: &Py<PyExprPool>,
+    n: ExprId,
+    v: &Bound<'_, PyAny>,
+    which: usize,
+) -> PyResult<ExprId> {
+    if let Ok(e) = v.extract::<PyRef<PyExpr>>() {
+        if !e.pool.is(pool_py) {
+            return Err(pool_mismatch_err());
+        }
+        return Ok(e.id);
+    }
+    let bad_shape = || {
+        PyTypeError::new_err(format!(
+            "coeffs[{which}] must be an alkahest Expr or a sequence of integers \
+             (ascending coefficients of a polynomial in n), got {}",
+            v.get_type()
+        ))
+    };
+    // A `str` iterates as characters, so `extract::<Vec<_>>()` would accept one
+    // and then fail deep inside the integer parse with a message about the
+    // wrong thing.
+    if v.is_instance_of::<pyo3::types::PyString>() || v.is_instance_of::<pyo3::types::PyBytes>() {
+        return Err(bad_shape());
+    }
+    let items: Vec<Bound<'_, PyAny>> = v.extract().map_err(|_| bad_shape())?;
+    let pool = pool_py.borrow(py);
+    let mut terms: Vec<ExprId> = Vec::new();
+    for (j, item) in items.iter().enumerate() {
+        if item.is_instance_of::<pyo3::types::PyFloat>() {
+            return Err(PyTypeError::new_err(format!(
+                "coeffs[{which}][{j}] is a float; a recurrence coefficient must be an exact \
+                 integer — the characteristic polynomial is computed in exact arithmetic and \
+                 a rounded coefficient describes a different recurrence"
+            )));
+        }
+        let c = big_integer_from_py(item)?;
+        if c == 0 {
+            continue;
+        }
+        let lit = pool.inner.integer(c);
+        terms.push(if j == 0 {
+            lit
+        } else {
+            let power = pool.inner.pow(n, pool.inner.integer(j as i64));
+            pool.inner.mul(vec![lit, power])
+        });
+    }
+    Ok(if terms.is_empty() {
+        pool.inner.integer(0_i32)
+    } else {
+        core_simplify(pool.inner.add(terms), &pool.inner).value
+    })
+}
+
+/// One sequence term: a Python int, or a `(numerator, denominator)` pair.
+///
+/// A `float` is refused rather than converted, for the reason
+/// `guess_holonomic` refuses one: `0.1` is not one tenth, and the arithmetic
+/// downstream of here is exact and would happily fit a growth law to a
+/// different sequence.
+fn coerce_sequence_term(v: &Bound<'_, PyAny>, which: usize) -> PyResult<rug::Rational> {
+    if v.is_instance_of::<pyo3::types::PyFloat>() {
+        return Err(PyTypeError::new_err(format!(
+            "terms[{which}] is a float; sequence terms must be exact (an int, or a \
+             (numerator, denominator) pair) — a growth law fitted to rounded terms is a \
+             growth law for a different sequence"
+        )));
+    }
+    if let Ok((num, den)) = v.extract::<(Bound<'_, PyAny>, Bound<'_, PyAny>)>() {
+        let (num, den) = (big_integer_from_py(&num)?, big_integer_from_py(&den)?);
+        if den == 0 {
+            return Err(pyo3::exceptions::PyZeroDivisionError::new_err(format!(
+                "terms[{which}] has a zero denominator"
+            )));
+        }
+        return Ok(rug::Rational::from((num, den)));
+    }
+    Ok(rug::Rational::from(big_integer_from_py(v)?))
+}
+
+/// `alkahest.experimental.asymptotics_from_recurrence(coeffs, n, *, terms=None, start=0)`
+///
+/// Growth of the sequence satisfying ``Σ_i coeffs[i](n)·u(n+i) = 0``, by
+/// Poincaré–Perron.  ``coeffs`` are the coefficient polynomials ``p_0 … p_J``,
+/// each an ``Expr`` in ``n`` or a sequence of ascending integer coefficients;
+/// ``terms`` are the exact leading terms with ``terms[0] = u(start)``.
+///
+/// The growth rate ``ρ`` and the polynomial exponent ``α`` are **derived** from
+/// the recurrence.  The connection constant ``C`` in ``u(n) ~ C·ρⁿ·n^α`` is
+/// **not** — it depends on the initial conditions — so it is extrapolated
+/// numerically from the terms and reported separately, the way
+/// :func:`~alkahest.experimental.euler_maclaurin` reports its additive
+/// constant.  Pass no terms and you still get ``ρ``, ``α`` and the roots.
+///
+/// A degenerate case is *reported*, not refused and not papered over:
+/// equal-modulus roots, a repeated dominant root, a leading coefficient whose
+/// top-degree part vanishes, or an eventually-zero sequence each set
+/// :attr:`~alkahest.experimental.RecurrenceAsymptotics.verdict` and leave
+/// ``growth_rate`` as ``None``.
+///
+/// Raises :exc:`alkahest.AsymptoticError` only for malformed input: fewer than
+/// two coefficients, a coefficient that is not a polynomial in ``n`` over
+/// ``ℚ``, or a characteristic polynomial all of whose roots are zero.
+#[pyfunction]
+#[pyo3(
+    name = "asymptotics_from_recurrence",
+    signature = (coeffs, n, *, terms = None, start = 0)
+)]
+fn py_asymptotics_from_recurrence(
+    py: Python<'_>,
+    coeffs: Vec<Bound<'_, PyAny>>,
+    n: PyRef<PyExpr>,
+    terms: Option<Vec<Bound<'_, PyAny>>>,
+    start: i64,
+) -> PyResult<PyRecurrenceAsymptotics> {
+    let pool_py = n.pool.clone_ref(py);
+    let mut coeff_ids = Vec::with_capacity(coeffs.len());
+    for (i, c) in coeffs.iter().enumerate() {
+        coeff_ids.push(coerce_recurrence_coefficient(py, &pool_py, n.id, c, i)?);
+    }
+    let mut exact_terms = Vec::new();
+    for (i, t) in terms.unwrap_or_default().iter().enumerate() {
+        exact_terms.push(coerce_sequence_term(t, i)?);
+    }
+
+    let (inner, growth_rate_exact_id, polynomial_exponent_exact_id) = {
+        let pool = pool_py.borrow(py);
+        let inner =
+            core_asymptotics_from_recurrence(&coeff_ids, n.id, &exact_terms, start, &pool.inner)
+                .map_err(asymptotic_error_to_py)?;
+        let rho = inner
+            .characteristic
+            .growth_rate_exact
+            .as_ref()
+            .map(|q| pool.inner.rational(q.numer().clone(), q.denom().clone()));
+        let alpha = inner
+            .characteristic
+            .polynomial_exponent_exact
+            .as_ref()
+            .map(|q| pool.inner.rational(q.numer().clone(), q.denom().clone()));
+        (inner, rho, alpha)
+    };
+    Ok(PyRecurrenceAsymptotics {
+        inner,
+        growth_rate_exact_id,
+        polynomial_exponent_exact_id,
         pool: pool_py,
     })
 }
@@ -12648,6 +13374,347 @@ fn py_plot_dot(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<String> {
     Ok(alkahest_core::render_dot(&pool_ref.inner, expr.id))
 }
 
+// ---------------------------------------------------------------------------
+// M6 — modular / p-adic evaluation of holonomic sequences
+// ---------------------------------------------------------------------------
+
+/// The result of evaluating a :class:`alkahest.ModularRecurrence`, with the
+/// evidence that makes its residues trustworthy.
+///
+/// :attr:`singular_indices` is the field to read when a residue is surprising:
+/// it lists the steps where the recurrence's leading coefficient was not a
+/// unit mod ``p`` and the working precision had to absorb the loss.
+#[pyclass(name = "ModularEvaluation")]
+struct PyModularEvaluation {
+    inner: CoreModularEvaluation,
+}
+
+#[pymethods]
+impl PyModularEvaluation {
+    /// The prime the evaluation ran at.
+    #[getter]
+    fn prime(&self) -> u64 {
+        self.inner.prime()
+    }
+
+    /// ``k`` — the precision that was asked for, and delivered.
+    #[getter]
+    fn precision(&self) -> u32 {
+        self.inner.precision()
+    }
+
+    /// ``K >= k`` — the precision the forward pass actually ran at.
+    ///
+    /// ``working_precision - precision`` is the total ``p``-adic precision lost
+    /// to singular steps, and is ``0`` for a recurrence whose leading
+    /// coefficient is a unit throughout.
+    #[getter]
+    fn working_precision(&self) -> u32 {
+        self.inner.working_precision()
+    }
+
+    /// ``p**k``.
+    #[getter]
+    fn modulus(&self) -> u64 {
+        self.inner.modulus()
+    }
+
+    /// How many singular steps there were, in total.
+    #[getter]
+    fn n_singular(&self) -> u64 {
+        self.inner.n_singular()
+    }
+
+    /// How many forward steps the evaluation took.
+    #[getter]
+    fn steps(&self) -> u64 {
+        self.inner.steps()
+    }
+
+    /// The residues, one per requested index, each in ``[0, p**k)``.
+    fn residues(&self) -> Vec<u64> {
+        self.inner.residues().to_vec()
+    }
+
+    /// Indices ``n`` where ``p`` divides the leading coefficient ``a_J(n)``.
+    ///
+    /// Truncated to the first 64; :attr:`n_singular` is the full count.
+    fn singular_indices(&self) -> Vec<i64> {
+        self.inner.singular_indices().to_vec()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ModularEvaluation(residues={:?}, prime={}, precision={}, \
+             working_precision={}, n_singular={}, steps={})",
+            self.inner.residues(),
+            self.inner.prime(),
+            self.inner.precision(),
+            self.inner.working_precision(),
+            self.inner.n_singular(),
+            self.inner.steps()
+        )
+    }
+}
+
+/// Read one initial value as an exact rational ``(numerator, denominator)``.
+///
+/// ``int`` and :class:`fractions.Fraction` both carry ``.numerator`` /
+/// ``.denominator``, so both work and nothing else does — in particular a
+/// ``float`` is refused rather than converted. ``0.1`` is not one tenth, and a
+/// sequence started from a binary approximation of the value you meant is a
+/// different sequence, silently, because everything downstream is exact.
+fn exact_rational_from_py(value: &Bound<'_, PyAny>, where_: &str) -> PyResult<(Integer, Integer)> {
+    let (num, den) = match (value.getattr("numerator"), value.getattr("denominator")) {
+        (Ok(n), Ok(d)) => (n, d),
+        _ => {
+            return Err(PyTypeError::new_err(format!(
+                "{where_} must be an exact rational (int or fractions.Fraction), \
+                 got {}; a float cannot be one, and evaluating a recurrence from \
+                 rounded initial values evaluates a different sequence",
+                value.get_type().name()?
+            )))
+        }
+    };
+    Ok((big_integer_from_py(&num)?, big_integer_from_py(&den)?))
+}
+
+fn integer_poly_from_py(value: &Bound<'_, PyAny>, where_: &str) -> PyResult<Vec<Integer>> {
+    let mut out = Vec::new();
+    for (i, item) in value.iter()?.enumerate() {
+        let item = item?;
+        out.push(big_integer_from_py(&item).map_err(|_| {
+            PyTypeError::new_err(format!(
+                "{where_}[{i}] must be an int; coefficient polynomials are over Z, \
+                 so clear denominators through the whole relation first"
+            ))
+        })?);
+    }
+    Ok(out)
+}
+
+/// A P-recursive recurrence prepared for evaluation modulo prime powers.
+///
+/// Holds ``Σ_{i=0}^{J} a_i(n)·S(n+i) = b(n)`` with integer polynomial
+/// coefficients, plus the ``J`` initial values ``S(start) … S(start+J-1)``.
+/// Nothing about ``p`` is fixed at construction, so one object serves an entire
+/// supercongruence sweep.
+///
+/// ``coeffs[i]`` is ``a_i`` written **lowest-degree coefficient first** — the
+/// same convention as :attr:`alkahest.GuessedRecurrence.coeffs`, so a fitted
+/// recurrence is handed straight over.
+///
+/// Why this is Rust and not Python: it is exact modular arithmetic in a hot
+/// loop over machine words, and the `p`-adic precision accounting that makes a
+/// singular index safe has to happen inside that loop. Per ``CONTRIBUTING.md``
+/// § *Rust vs Python*, points 2 and 5 of the Rust column.
+///
+/// **The recurrence is a hypothesis about your sequence.** This class checks
+/// that it is well formed and that every forward step is determined
+/// ``p``-adically; it cannot check that your sequence satisfies it. Certify
+/// with :func:`alkahest.zeilberger`, or fit and confirm with
+/// :func:`alkahest.guess_holonomic`.
+///
+/// >>> import alkahest as ak
+/// >>> # Apéry A005259: (n+2)³A(n+2) = (34n³+153n²+231n+117)A(n+1) − (n+1)³A(n)
+/// >>> apery = ak.ModularRecurrence(
+/// ...     [[1, 3, 3, 1], [-117, -231, -153, -34], [8, 12, 6, 1]],
+/// ...     [1, 5],
+/// ... )
+/// >>> apery.value_mod(12, 13, 3)              # A(p−1) ≡ 1 (mod p³), p = 13
+/// 1
+/// >>> apery.value_mod(10006, 10007, 3)        # …and at p = 10007, in ~5 ms
+/// 1
+#[pyclass(name = "ModularRecurrence")]
+struct PyModularRecurrence {
+    inner: CoreModularRecurrence,
+}
+
+#[pymethods]
+impl PyModularRecurrence {
+    #[new]
+    #[pyo3(signature = (coeffs, initial, *, rhs = None, start = 0))]
+    fn new(
+        coeffs: &Bound<'_, PyAny>,
+        initial: &Bound<'_, PyAny>,
+        rhs: Option<&Bound<'_, PyAny>>,
+        start: i64,
+    ) -> PyResult<Self> {
+        let mut polys = Vec::new();
+        for (i, item) in coeffs.iter()?.enumerate() {
+            polys.push(integer_poly_from_py(&item?, &format!("coeffs[{i}]"))?);
+        }
+        let rhs = match rhs {
+            Some(r) => integer_poly_from_py(r, "rhs")?,
+            None => Vec::new(),
+        };
+        let mut inits = Vec::new();
+        for (j, item) in initial.iter()?.enumerate() {
+            inits.push(exact_rational_from_py(&item?, &format!("initial[{j}]"))?);
+        }
+        let inner =
+            CoreModularRecurrence::new(polys, rhs, inits, start).map_err(holonomic_error_to_py)?;
+        Ok(Self { inner })
+    }
+
+    /// Recurrence order ``J``; ``len(coeffs()) == order + 1``.
+    #[getter]
+    fn order(&self) -> usize {
+        self.inner.order()
+    }
+
+    /// Largest degree of any coefficient polynomial, the right-hand side
+    /// included.
+    #[getter]
+    fn degree(&self) -> usize {
+        self.inner.degree()
+    }
+
+    /// Index ``n`` that ``initial[0]`` belongs to.
+    #[getter]
+    fn start(&self) -> i64 {
+        self.inner.start()
+    }
+
+    /// Whether ``b(n)`` is identically zero.
+    #[getter]
+    fn is_homogeneous(&self) -> bool {
+        self.inner.is_homogeneous()
+    }
+
+    /// ``[a_0, …, a_J]``, each a list of exact ints, lowest degree first.
+    fn coeffs(&self, py: Python<'_>) -> PyResult<Vec<Vec<PyObject>>> {
+        self.inner
+            .coefficients()
+            .iter()
+            .map(|poly| integers_to_py(py, poly))
+            .collect()
+    }
+
+    /// ``b(n)`` as a list of exact ints, lowest degree first; ``[]`` when
+    /// homogeneous.
+    fn rhs(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+        integers_to_py(py, self.inner.inhomogeneity())
+    }
+
+    /// ``[S(start), …, S(start+J-1)]`` as ints or :class:`fractions.Fraction`.
+    fn initial(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+        let int_cls = py.get_type_bound::<PyInt>();
+        let fraction_cls = py.import_bound("fractions")?.getattr("Fraction")?;
+        self.inner
+            .initial_values()
+            .iter()
+            .map(|(num, den)| {
+                let n = int_cls.call1((num.to_string(),))?;
+                if *den == 1 {
+                    Ok(n.into_py(py))
+                } else {
+                    let d = int_cls.call1((den.to_string(),))?;
+                    Ok(fraction_cls.call1((n, d))?.into_py(py))
+                }
+            })
+            .collect()
+    }
+
+    /// ``S(n) mod p**k``, computed from the recurrence without ever forming
+    /// ``S(n)`` over the integers.
+    ///
+    /// :raises HolonomicError: ``E-HOLO-006`` when ``p**k`` is not a supported
+    ///     modulus, ``E-HOLO-007`` when a step does not determine the next term
+    ///     as a ``p``-adic integer, ``E-HOLO-008`` when the working precision
+    ///     the singular steps demand is past the machine-word backend.
+    fn value_mod(&self, n: i64, p: u64, k: u32) -> PyResult<u64> {
+        self.inner.value_mod(n, p, k).map_err(holonomic_error_to_py)
+    }
+
+    /// ``[S(n) mod p**k for n in indices]``, in **one** forward pass.
+    ///
+    /// The indices are sorted internally and the residues come back in the
+    /// order they were asked for, so evaluating a scattered set of indices
+    /// costs one run to the largest of them rather than one run each.
+    fn values_mod(&self, indices: Vec<i64>, p: u64, k: u32) -> PyResult<Vec<u64>> {
+        let (sorted, back) = sorted_unique_with_index(&indices);
+        let evaluation = self
+            .inner
+            .evaluate(&sorted, p, k)
+            .map_err(holonomic_error_to_py)?;
+        Ok(back
+            .iter()
+            .map(|&slot| evaluation.residues()[slot])
+            .collect())
+    }
+
+    /// Like :meth:`values_mod`, but returns the full
+    /// :class:`alkahest.ModularEvaluation` with its precision accounting.
+    fn evaluate(&self, indices: Vec<i64>, p: u64, k: u32) -> PyResult<PyModularEvaluation> {
+        let (sorted, _) = sorted_unique_with_index(&indices);
+        Ok(PyModularEvaluation {
+            inner: self
+                .inner
+                .evaluate(&sorted, p, k)
+                .map_err(holonomic_error_to_py)?,
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ModularRecurrence(order={}, degree={}, start={}, homogeneous={})",
+            self.inner.order(),
+            self.inner.degree(),
+            self.inner.start(),
+            self.inner.is_homogeneous()
+        )
+    }
+}
+
+fn integers_to_py(py: Python<'_>, values: &[Integer]) -> PyResult<Vec<PyObject>> {
+    let int_cls = py.get_type_bound::<PyInt>();
+    values
+        .iter()
+        .map(|c| Ok(int_cls.call1((c.to_string(),))?.into_py(py)))
+        .collect()
+}
+
+/// Sort and de-duplicate, returning the sorted indices and, for each original
+/// position, the slot it landed in.
+fn sorted_unique_with_index(indices: &[i64]) -> (Vec<i64>, Vec<usize>) {
+    let mut sorted: Vec<i64> = indices.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let back = indices
+        .iter()
+        .map(|n| sorted.partition_point(|s| s < n))
+        .collect();
+    (sorted, back)
+}
+
+/// ``binomial(a, b) mod p**k``, exactly, for ``p`` prime.
+///
+/// Uses the Andrew Granville / Davis–Webb factorisation of ``n!`` into its
+/// ``p``-free part, which at ``k = 1`` is Lucas' theorem exactly. The cost is
+/// ``O(p·k³ + log_p(a)·p·k)`` and does not grow with ``a`` beyond the
+/// logarithm, so ``a`` far larger than ``p`` is the ordinary case rather than
+/// the hard one.
+///
+/// ``b < 0`` and ``b > a`` are not errors: the binomial coefficient is ``0``.
+///
+/// :raises HolonomicError: ``E-HOLO-006`` when ``p`` is not prime, ``k < 1``,
+///     or ``p**k >= 2**62``; ``E-HOLO-008`` when the work budget would be
+///     exceeded.
+///
+/// >>> import alkahest as ak
+/// >>> ak.binomial_mod(2 * 11 - 1, 10, 11, 3)   # Wolstenholme
+/// 1
+/// >>> ak.binomial_mod(1_000_000, 3, 7, 4)
+/// 2261
+/// >>> ak.binomial_mod(5, 9, 7, 4)
+/// 0
+#[pyfunction]
+#[pyo3(name = "binomial_mod", signature = (a, b, p, k))]
+fn py_binomial_mod(a: u64, b: i128, p: u64, k: u32) -> PyResult<u64> {
+    core_binomial_mod(a, b, p, k).map_err(holonomic_error_to_py)
+}
+
 #[pymodule]
 fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
@@ -12684,6 +13751,16 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     m.add_class::<PyZeilbergerCertificate>()?;
     m.add_function(wrap_pyfunction!(py_zeilberger, m)?)?;
+    // M4(b) — q-analogue creative telescoping
+    m.add_class::<PyQZeilbergerCertificate>()?;
+    m.add_function(wrap_pyfunction!(py_q_zeilberger, m)?)?;
+    // M6 — modular / p-adic evaluation of holonomic sequences
+    m.add_class::<PyModularRecurrence>()?;
+    m.add_class::<PyModularEvaluation>()?;
+    m.add_function(wrap_pyfunction!(py_binomial_mod, m)?)?;
+    // M5 — recurrence -> asymptotics (Poincaré–Perron)
+    m.add_class::<PyRecurrenceAsymptotics>()?;
+    m.add_function(wrap_pyfunction!(py_asymptotics_from_recurrence, m)?)?;
     m.add_function(wrap_pyfunction!(match_pattern, m)?)?;
     m.add_function(wrap_pyfunction!(make_rule, m)?)?;
     m.add_function(wrap_pyfunction!(py_subs, m)?)?;

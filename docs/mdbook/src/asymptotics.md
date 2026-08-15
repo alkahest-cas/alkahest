@@ -110,13 +110,94 @@ single power-law term describes them. Rather than reporting one pole as if it
 won, the routine declines — as it does for a complex dominant pole (necessarily
 one of a conjugate pair) and for non-rational input.
 
+## From a recurrence: Poincaré–Perron
+
+A certified recurrence already determines how fast its sequence grows, so after
+`zeilberger` or `guess_holonomic` the growth law is one call away:
+
+```python
+from alkahest import ExprPool
+from alkahest.experimental import asymptotics_from_recurrence
+
+pool = ExprPool()
+n = pool.symbol("n")
+
+# (n+1)·u(n+1) − (4n+2)·u(n) = 0 — the central binomial coefficients.
+r = asymptotics_from_recurrence([(-2, -4), (1, 1)], n, terms=[1])
+
+r.growth_rate_exact          # 4          — derived
+r.polynomial_exponent_exact  # -1/2       — derived
+r.connection_constant        # 0.5641895… — fitted; this is 1/√π
+r.verdict                    # "single_dominant_root"
+```
+
+`rec` may be a `ZeilbergerCertificate`, a `GuessedRecurrence`, or a plain list of
+coefficient polynomials `[p_0, …, p_J]` for `Σ_i p_i(n)·u(n+i) = 0`; each `p_i`
+is an `Expr` in `n` or a tuple of ascending integer coefficients.
+
+### What is derived and what is fitted
+
+Write `D = max_i deg p_i`, take the coefficient of `n^D` in each `p_i` to build
+the characteristic polynomial `χ(t) = Σ_i a_i tⁱ`, and the coefficient of
+`n^{D-1}` to build `χ₁`. Poincaré's theorem says the sequence grows like a root
+of `χ`; Perron's refinement pins the polynomial factor:
+
+```text
+u(n) ~ C · ρⁿ · n^α,     α = −χ₁(ρ) / (ρ · χ'(ρ))
+```
+
+`ρ` and `α` are functions of the recurrence and of nothing else, and when `ρ` is
+rational both are available exactly. **`C` is not.** It is determined by the
+initial conditions, so it is extrapolated numerically from the exact terms —
+run forward from the recurrence in exact rational arithmetic — and reported on
+its own, with `connection_constant_converged` and `connection_constant_drift`
+from a second extrapolation over a smaller range of indices. `evidence()` splits
+the two:
+
+```python
+r.evidence()["derived"]["growth_rate"]         # 4.0
+r.evidence()["fitted"]["connection_constant"]  # 0.5641895…
+r.evidence()["fitted"]["relative_drift"]       # 2.5e-10
+```
+
+This is the same discipline `euler_maclaurin` applies to its additive constant,
+for the same reason: no amount of algebra on the recurrence produces `1/√π`.
+
+### What it refuses to answer
+
+The theorem needs the roots of `χ` to have distinct moduli and the leading
+coefficient to be eventually non-zero. When they do not hold, `verdict` says so
+and `growth_rate` is `None` — a growth rate is never invented:
+
+| `verdict` | what went wrong |
+|---|---|
+| `equal_modulus_roots` | `u(n+2) = 4u(n)` has roots `±2`; the solutions oscillate |
+| `repeated_dominant_root` | `χ'(ρ) = 0`, so the exponent formula does not apply |
+| `degenerate_leading_coefficient` | `deg χ < J` — a root at infinity, outside the theorem |
+| `eventually_zero` | the sequence is zero from some index on |
+
+Multiplicity is exact — it comes from the squarefree decomposition of `χ` over
+`ℚ`, not from clustering the numeric roots. That is not fussiness: A359643's
+characteristic polynomial is `(t−1)³·(27t−283)`, whose triple root is real and
+sits well below the dominant one, and a tolerance that merged them would refuse
+a case the theory handles perfectly.
+
+One more hypothesis is easy to miss. Poincaré's conclusion is that `u(n+1)/u(n)`
+tends to *some* root, not necessarily the largest. `u(n+2) = 3u(n+1) − 2u(n)`
+with `u(0) = u(1) = 1` is the constant sequence, and its component along the
+dominant root `2` is zero. With terms supplied that is detected and reported as
+`follows_dominant_root == False`; without them it is an explicitly *assumed*
+hypothesis in `report().hypotheses`.
+
 ## Scope of this release
 
 Shipped: the Euler–Maclaurin route for `Σ_{k=a}^{n} f(k)`, with Bernoulli
 corrections, magnitude ordering, the numeric gate, and the checked-versus-
 assumed hypothesis ledger in `AsymptoticReport`.
 
-Also shipped: singularity analysis for **rational** generating functions.
+Also shipped: singularity analysis for **rational** generating functions, and
+Poincaré–Perron growth from a P-recursive recurrence
+(`asymptotics_from_recurrence`).
 
 Not shipped, and tracked as follow-up (the shared scaffolding —
 `AsymptoticReport`, the gate, exact Bernoulli numbers, rational-function
@@ -125,8 +206,13 @@ extraction and a complex root finder — is already in place for them):
 - **Algebraic and log-type generating functions** — the transfer theorem beyond
   poles (`√(1-4z)` for the Catalan numbers, `log` singularities). Only the
   rational case ships here.
-- **Sequence asymptotics** from a closed form or a P-recursive recurrence
-  (Stirling-based expansions, Poincaré–Perron growth).
+- **Sequence asymptotics from a closed form** — Stirling-based expansions of a
+  ratio of factorials. The recurrence route ships (above); the closed-form one
+  does not.
+- **Full Birkhoff–Trjitzinsky asymptotics** — the cases
+  `asymptotics_from_recurrence` reports and declines to answer: equal-modulus
+  roots, a repeated dominant root, and the degenerate leading coefficient that
+  produces `ρⁿ·n^{cn}` growth.
 - **Laplace / saddle-point / stationary-phase** asymptotics of parameter
   integrals.
 

@@ -43,7 +43,8 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-BUDGET-001 … E-BUDGET-003 BudgetExceededError (P1 search plumbing item 4)
     E-VALIDATED-001 … E-VALIDATED-005  ValidatedError (P1 item 9 — validated numerics)
     E-SOS-001 … E-SOS-005      SosError (P1 item 8 — positivity certificates)
-    E-HOLO-001 … E-HOLO-005    HolonomicError (P1 item 7 — creative telescoping;
+    E-HOLO-001 … E-HOLO-008    HolonomicError (P1 item 7 — creative telescoping,
+                                 plus M6 — modular / p-adic evaluation;
                                  005 = a guessed recurrence the terms cannot
                                  confirm, raised from Python, so it is absent
                                  from the Rust REGISTRY as E-PSLQ-004 is)
@@ -302,6 +303,13 @@ class HolonomicError(AlkahestError):
     was malformed (``E-HOLO-004``), or a guessed recurrence is not supported by
     the terms supplied (``E-HOLO-005``).
 
+    M6 added three more, all from modular / ``p``-adic evaluation
+    (:class:`alkahest.ModularRecurrence`, :func:`alkahest.binomial_mod`): the
+    modulus is not a prime power the backend supports (``E-HOLO-006``), a step
+    of the recurrence does not determine its next term as a ``p``-adic integer
+    (``E-HOLO-007``), or the working precision the singular steps demand is
+    past a machine-word modulus (``E-HOLO-008``).
+
     A refusal here is informative, not a failure: it says the term is not one
     Zeilberger's algorithm decides at the requested bounds, so a loop can close
     that branch instead of re-attempting it.
@@ -310,7 +318,8 @@ class HolonomicError(AlkahestError):
     :func:`alkahest.guess_holonomic` and means *the data could not answer* —
     too few terms to test every candidate in bounds, or a fit with no surplus
     equations to confirm it. Recording it as "this sequence has no recurrence"
-    closes a branch that was never explored.
+    closes a branch that was never explored. ``E-HOLO-008`` is the same shape:
+    a resource ceiling, not a mathematical verdict.
     """
 
     def __init__(

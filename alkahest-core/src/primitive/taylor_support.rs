@@ -6,10 +6,12 @@
 //! slot.  Pointwise ball arithmetic gives an enclosure of `f` at a ball; a
 //! Taylor model additionally needs a polynomial expansion with a rigorous
 //! Lagrange remainder, which is written per function in
-//! [`crate::validated::taylor`].  The two sets differ: `bessel_j0`,
-//! `digamma`, `lambert_w`, `floor`, … all have real ball arithmetic (via Arb)
-//! and no Taylor-model rule, so `bound_on_box` refuses them with
-//! `E-VALIDATED-001`.
+//! [`crate::validated::taylor`].  The two sets differ: `floor` and `ceil` have
+//! real ball arithmetic and no Taylor-model rule (they are not
+//! differentiable), so `bound_on_box` refuses them with `E-VALIDATED-001`.
+//! The gap used to be much wider — `bessel_j0`, `bessel_j1`, `digamma`,
+//! `lambert_w` were all on the wrong side of it until 3.9.0 — which is
+//! exactly why the flag is derived rather than listed.
 //!
 //! Before this module the boundary was only discoverable by hitting it. The
 //! flag exposed here closes that gap **without introducing a second list to
@@ -26,13 +28,14 @@
 //! use alkahest_cas::primitive::{taylor_model_refusal, taylor_model_supports};
 //!
 //! assert!(taylor_model_supports("sin"));
-//! // Real ball arithmetic, no Taylor-model rule:
-//! assert!(!taylor_model_supports("bessel_j0"));
+//! // Real ball arithmetic, no Taylor-model rule — `floor` is not
+//! // differentiable, so there is nothing to expand.
+//! assert!(!taylor_model_supports("floor"));
 //!
 //! let pool = ExprPool::new();
 //! let x = pool.symbol("x", Domain::Real);
 //! assert!(taylor_model_refusal(pool.func("sin", vec![x]), &pool).is_none());
-//! assert!(taylor_model_refusal(pool.func("bessel_j0", vec![x]), &pool).is_some());
+//! assert!(taylor_model_refusal(pool.func("floor", vec![x]), &pool).is_some());
 //! ```
 
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
@@ -288,9 +291,8 @@ mod tests {
             }
             differing += 1;
             // Two probe points, because no single one is inside every
-            // domain — `lambert_w` needs `x ≥ -1/e` and `digamma` has poles at
-            // the non-positive integers. Declining an out-of-domain argument
-            // is not the failure under test.
+            // domain. Declining an out-of-domain argument is not the failure
+            // under test.
             assert!(
                 [1.0_f64, 0.5].into_iter().any(|v| reg
                     .numeric_ball(name, &[ArbBall::from_f64(v, 128)])
@@ -308,13 +310,40 @@ mod tests {
     fn refusal_names_the_blocking_function() {
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
-        let e = pool.mul(vec![x, pool.func("bessel_j0", vec![x])]);
-        let what = taylor_model_refusal(e, &pool).expect("bessel_j0 has no Taylor rule");
-        assert!(what.contains("bessel_j0"), "{what}");
-        assert_eq!(
-            taylor_model_blockers(e, &pool),
-            vec!["bessel_j0".to_string()]
-        );
+        let e = pool.mul(vec![x, pool.func("floor", vec![x])]);
+        let what = taylor_model_refusal(e, &pool).expect("floor has no Taylor rule");
+        assert!(what.contains("floor"), "{what}");
+        assert_eq!(taylor_model_blockers(e, &pool), vec!["floor".to_string()]);
+    }
+
+    /// The names M7 moved across the boundary in 3.9.0, pinned individually.
+    /// Losing one of these silently is a coverage regression a planner's route
+    /// depends on, and the derived flag makes that possible in one direction
+    /// (delete the rule) even though it makes drift impossible in the other.
+    #[test]
+    fn the_special_function_rules_are_reachable() {
+        for name in [
+            "asinh",
+            "acosh",
+            "atanh",
+            "erf",
+            "erfc",
+            "bessel_j0",
+            "bessel_j1",
+            "digamma",
+            "gamma",
+            "lambert_w",
+        ] {
+            assert!(taylor_model_supports(name), "`{name}` lost its rule");
+        }
+        // …and the two that must stay out.
+        for name in ["floor", "ceil"] {
+            assert!(
+                !taylor_model_supports(name),
+                "`{name}` is not differentiable; a Taylor rule for it would \
+                 advertise coverage it cannot deliver"
+            );
+        }
     }
 
     #[test]
@@ -346,7 +375,7 @@ mod tests {
         let pool = ExprPool::new();
         let two = pool.integer(2_i32);
         assert!(taylor_model_refusal(pool.func("sin", vec![two]), &pool).is_none());
-        assert!(taylor_model_refusal(pool.func("bessel_j0", vec![two]), &pool).is_some());
+        assert!(taylor_model_refusal(pool.func("floor", vec![two]), &pool).is_some());
     }
 
     #[test]
@@ -360,7 +389,7 @@ mod tests {
     /// The cached answer is the freshly probed answer.
     #[test]
     fn cache_is_transparent() {
-        for name in ["sin", "erf", "sqrt", "digamma", "bessel_j0"] {
+        for name in ["sin", "erf", "sqrt", "digamma", "bessel_j0", "floor"] {
             let cached = taylor_model_supports_call(name, 1);
             assert_eq!(cached, probe_call(name, 1), "{name}");
             assert_eq!(cached, taylor_model_supports_call(name, 1), "{name}");

@@ -710,29 +710,139 @@ impl ArbBall {
         b
     }
 
+    /// Re-round an arbitrary `Float` into a ball at this precision, outward.
+    ///
+    /// `add_rounding_error` alone is only valid for a `mid` that was *computed*
+    /// at `prec`; a value carried in at higher precision has to have the
+    /// truncation itself absorbed first.
+    fn from_point(v: &Float, prec: u32) -> Self {
+        let mid = Float::with_val(prec, v);
+        let rad = Float::with_val(prec, Float::with_val(prec + 32, v - &mid).abs());
+        let mut b = ArbBall { mid, rad, prec };
+        b.add_rounding_error();
+        b
+    }
+
+    /// Enclosure of `[lo, hi]`, rounding outward.  `lo <= hi` is the caller's
+    /// business; a swapped pair yields the same (still enclosing) ball.
+    fn from_endpoints(lo: &Float, hi: &Float, prec: u32) -> Self {
+        let mid = Float::with_val(prec, Float::with_val(prec + 32, lo + hi) / 2u32);
+        let mut rad = Float::with_val(prec, Float::with_val(prec + 32, hi - lo) / 2u32).abs();
+        // `add_rounding_error` alone bumps by `|mid|·2⁻ᵖʳᵉᶜ`, which does not
+        // cover the rounding of `rad` itself on a ball whose radius dwarfs its
+        // midpoint (`[-1, 1+ε]` has `|mid| ≈ ε/2` and `rad ≈ 1`). Bump by the
+        // ball's whole magnitude instead, so both roundings are absorbed.
+        let mut bump = Float::with_val(prec, Float::with_val(prec, mid.abs_ref()) + &rad);
+        bump >>= prec.saturating_sub(2);
+        rad += bump;
+        let mut b = ArbBall { mid, rad, prec };
+        b.add_rounding_error();
+        b
+    }
+
     /// Principal-branch Lambert W₀.  Domain: `x ≥ −1/e`.
+    ///
+    /// # Why this does not simply hull two `f64` evaluations
+    ///
+    /// It used to.  `crate::special::lambert_w0` is an `f64` Halley iteration,
+    /// so its answer carries ~10⁻¹⁶ of error, while the ball this built claimed
+    /// a radius of `|mid|·2⁻ᵖʳᵉᶜ` — 5·10⁻⁴⁰ at the default 128 bits.  On the
+    /// degenerate ball `[1, 1]` that is an enclosure of width 10⁻³⁹ centred
+    /// 3·10⁻¹⁷ away from `W₀(1) = 0.567143290409783873…`: an interval that does
+    /// not contain the value it encloses, which is the one failure mode a
+    /// certificate subsystem cannot have.
+    ///
+    /// # What replaces it
+    ///
+    /// `W₀` is the inverse of `g(w) = w·eʷ` on `w ≥ −1`, where `g` is strictly
+    /// increasing (`g′(w) = (1+w)eʷ > 0` for `w > −1`).  Monotonicity turns a
+    /// bound on `W₀` into a *checkable* statement about `g`:
+    ///
+    /// ```text
+    /// for v, u ≥ −1:   g(v) ≤ x  ⟹  W₀(x) ≥ v,      g(u) ≥ x  ⟹  W₀(x) ≤ u.
+    /// ```
+    ///
+    /// So the iteration below is only ever a *guess*: the returned bracket is
+    /// certified afterwards by evaluating `g` in ball arithmetic at the two
+    /// candidate endpoints and checking those two inequalities outward.  A
+    /// wrong or badly converged guess can only widen the answer, never
+    /// invalidate it.  `W₀ ≥ −1` holds on the whole principal branch by
+    /// definition, so `−1` is always available as a fallback lower bound.
+    ///
+    /// The enclosure over a ball is then `[low(lo), high(hi)]` — an endpoint
+    /// hull, which is valid **here** precisely because `W₀` is monotone on its
+    /// domain (contrast [`ArbBall::bessel_jn`], where it was not).
     pub fn lambert_w0(&self) -> Option<Self> {
-        let em = crate::special::lambert_w0_domain_min();
-        if self.lo().to_f64() < em - 1e-15 {
+        let prec = self.prec;
+        let (low, _) = lambert_w0_bracket(&self.lo(), prec)?;
+        let (_, high) = lambert_w0_bracket(&self.hi(), prec)?;
+        Some(ArbBall::from_endpoints(&low, &high, prec))
+    }
+
+    /// `Γ(x)` for a ball lying strictly inside `(0, ∞)`.  `None` otherwise —
+    /// `Γ` has poles at every non-positive integer, and the reflection formula
+    /// that would cover the gaps between them is not implemented here.
+    ///
+    /// # Enclosure
+    ///
+    /// `Γ″(x) = ∫₀^∞ t^{x−1}(ln t)² e^{−t} dt > 0` on `(0, ∞)`, so `Γ` is
+    /// **convex** there.  That gives both ends of the enclosure without any
+    /// monotonicity assumption:
+    ///
+    /// * a convex function on `[a, b]` attains its maximum at an endpoint, so
+    ///   `max Γ = max(Γ(a), Γ(b))`;
+    /// * a convex function lies above each of its tangents, so with
+    ///   `Γ′ = ψ·Γ` both `T_a(x) = Γ(a) + Γ(a)ψ(a)(x−a)` and
+    ///   `T_b(x) = Γ(b) + Γ(b)ψ(b)(x−b)` are lower bounds on all of `[a, b]`,
+    ///   and each is minimised over `[a, b]` at one of the two endpoints.
+    ///
+    /// The larger of the two tangent minima is kept, floored at `0` because
+    /// `Γ > 0` on `(0, ∞)`.  Both bounds are exact in the limit `b → a`, so a
+    /// subdivided box converges; neither assumes `Γ` is monotone, which it is
+    /// not (its minimum sits at `x ≈ 1.4616`, inside the range that matters).
+    pub fn gamma(&self) -> Option<Self> {
+        let prec = self.prec;
+        let a = self.lo();
+        let b = self.hi();
+        if !(a.is_finite() && b.is_finite()) || a <= 0 {
             return None;
         }
-        let prec = self.prec;
-        let w_lo = crate::special::lambert_w0(self.lo().to_f64())?;
-        let w_hi = crate::special::lambert_w0(self.hi().to_f64())?;
-        let lo = Float::with_val(prec, w_lo);
-        let hi = Float::with_val(prec, w_hi);
-        let sum = Float::with_val(prec, &lo + &hi);
-        let diff = Float::with_val(prec, &hi - &lo);
-        let mut b = ArbBall {
-            mid: sum / 2_f64,
-            rad: diff / 2_f64,
-            prec,
+        let work = prec + 32;
+        let ga = ArbBall::from_point(&Float::with_val(work, &a).gamma(), prec);
+        let gb = ArbBall::from_point(&Float::with_val(work, &b).gamma(), prec);
+        let mut psi_a = Float::with_val(work, &a);
+        psi_a.digamma_mut();
+        let mut psi_b = Float::with_val(work, &b);
+        psi_b.digamma_mut();
+        let width = ArbBall::from_point(&Float::with_val(work, &b - &a), prec);
+
+        // max: convexity puts it at an endpoint.
+        let upper = {
+            let (x, y) = (ga.hi(), gb.hi());
+            if x > y {
+                x
+            } else {
+                y
+            }
         };
-        // Endpoints are rounded to `prec`; without this a ball built from an
-        // exact input reports `rad == 0`, falsely claiming an irrational result
-        // is exactly representable.
-        b.add_rounding_error();
-        Some(b)
+        // min: each tangent line is a lower bound for Γ on all of [a, b], and
+        // a line is minimised over an interval at one of its endpoints —
+        // `T_a(a) = Γ(a)` and `T_a(b)`, `T_b(b) = Γ(b)` and `T_b(a)`.  The
+        // *largest* of the two per-line minima is the sharpest bound that
+        // follows.  `min(Γ(a), Γ(b))` on its own would not be a lower bound at
+        // all: Γ dips below both endpoints whenever the box straddles 1.4616.
+        let ta_far = ga.clone() + ga.clone() * ArbBall::from_point(&psi_a, prec) * width.clone();
+        let tb_far = gb.clone() - gb.clone() * ArbBall::from_point(&psi_b, prec) * width;
+        let line_min = |near: Float, far: Float| if near < far { near } else { far };
+        let from_a = line_min(ga.lo(), ta_far.lo());
+        let from_b = line_min(gb.lo(), tb_far.lo());
+        let mut lower = if from_a > from_b { from_a } else { from_b };
+        // Γ > 0 on (0, ∞), so a tangent bound that has gone negative on a wide
+        // box is superseded by 0.
+        if lower < 0 {
+            lower = Float::new(prec);
+        }
+        Some(ArbBall::from_endpoints(&lower, &upper, prec))
     }
 
     /// Digamma ψ(x).  Returns `None` when the ball contains a non-positive
@@ -850,6 +960,124 @@ impl ArbBall {
         b.add_rounding_error();
         b
     }
+}
+
+/// A certified bracket `(low, high)` with `low ≤ W₀(x) ≤ high`, or `None` when
+/// `x` is outside the principal branch's domain `x ≥ −1/e`.
+///
+/// The certificate is the monotonicity of `g(w) = w·eʷ` on `w ≥ −1`, spelled
+/// out on [`ArbBall::lambert_w0`]: a candidate `v ≥ −1` is admitted as a lower
+/// bound exactly when `g(v) ≤ x` is *proved* by an outward ball evaluation of
+/// `g`, and likewise `u` as an upper bound when `g(u) ≥ x`.  Nothing about how
+/// the candidates were produced enters the argument, so the Newton iteration
+/// that produces them needs no error analysis of its own.
+///
+/// There is no `−1/e` constant anywhere here, and deliberately so: for
+/// `x < −1/e` no `u ≥ −1` satisfies `g(u) ≥ x`… — rather, *every* `u` does
+/// (the minimum of `g` is `−1/e > x`), but then no `v` satisfies `g(v) ≤ x`,
+/// and the lower search falls through to `−1`, whose own check `g(−1) ≤ x`
+/// fails.  The domain test is therefore the bracket search itself, which
+/// cannot disagree with the arithmetic the way a rounded literal can.
+fn lambert_w0_bracket(x: &Float, prec: u32) -> Option<(Float, Float)> {
+    if !x.is_finite() {
+        return None;
+    }
+    let work = prec + 64;
+    let minus_one = Float::with_val(work, -1);
+
+    // Guess.  `f64` when the argument fits, the large-`x` asymptote otherwise;
+    // either way this is only a starting point for the certified search below.
+    let xf = x.to_f64();
+    let mut w = match (xf.is_finite(), crate::special::lambert_w0(xf)) {
+        (true, Some(v)) if v.is_finite() => Float::with_val(work, v),
+        _ if *x > 1 => {
+            let l = Float::with_val(work, x).ln();
+            let ll = Float::with_val(work, l.clone().ln());
+            l - ll
+        }
+        _ => Float::with_val(work, 0),
+    };
+    // Newton on g(w) − x.  Quadratic away from the branch point, and merely
+    // slow (never wrong) at it, because the outcome is checked afterwards.
+    for _ in 0..48 {
+        let ew = Float::with_val(work, w.clone().exp());
+        let num = Float::with_val(work, Float::with_val(work, &w * &ew) - x);
+        let den = Float::with_val(work, &ew * Float::with_val(work, &w + 1u32));
+        if den == 0 || !den.is_finite() {
+            break;
+        }
+        let step = Float::with_val(work, &num / &den);
+        if !step.is_finite() {
+            break;
+        }
+        let next = Float::with_val(work, &w - &step);
+        w = if next < minus_one {
+            // Never leave the principal branch: the midpoint towards −1 keeps
+            // the iterate admissible without stalling.
+            Float::with_val(work, &w + &minus_one) / 2u32
+        } else {
+            next
+        };
+        if step.is_zero() {
+            break;
+        }
+    }
+
+    // `g` evaluated outward, so `hi`/`lo` of the result are rigorous.
+    let g = |v: &Float| -> ArbBall {
+        let vb = ArbBall::from_point(v, work);
+        vb.clone() * vb.exp()
+    };
+    let xb = ArbBall::from_point(x, work);
+    let (x_lo, x_hi) = (xb.lo(), xb.hi());
+
+    // Widen from a plausible accuracy until each side is certified.  The
+    // starting step is the working-precision ulp of the guess; 400 doublings
+    // reach any representable magnitude.
+    let mut unit = Float::with_val(work, w.clone().abs() + 1u32);
+    unit >>= work.saturating_sub(4);
+
+    let mut low: Option<Float> = None;
+    let mut delta = unit.clone();
+    for _ in 0..400 {
+        let mut v = Float::with_val(work, &w - &delta);
+        if v < minus_one {
+            v = minus_one.clone();
+        }
+        if g(&v).hi() <= x_lo {
+            low = Some(v);
+            break;
+        }
+        if v == minus_one {
+            break;
+        }
+        delta *= 2u32;
+    }
+    // `W₀ ≥ −1` on the whole principal branch, so `−1` is available as a
+    // fallback — but *only* once `g(−1) = −1/e ≤ x` has been proved, which is
+    // exactly the domain condition.  Accepting `−1` without that check would
+    // hand back a bracket for a value that does not exist.
+    let low = match low {
+        Some(v) => v,
+        None if g(&minus_one).hi() <= x_lo => minus_one.clone(),
+        None => return None,
+    };
+
+    let mut high: Option<Float> = None;
+    let mut delta = unit;
+    for _ in 0..400 {
+        let u = Float::with_val(work, &w + &delta);
+        if u >= minus_one && g(&u).lo() >= x_hi {
+            high = Some(u);
+            break;
+        }
+        delta *= 2u32;
+    }
+    let high = high?;
+    Some((
+        Float::with_val(prec, ArbBall::from_point(&low, prec).lo()),
+        Float::with_val(prec, ArbBall::from_point(&high, prec).hi()),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1467,5 +1695,139 @@ mod rounding_soundness_tests {
             "radius {} is far above the 2^-prec scale",
             b.rad
         );
+    }
+}
+
+#[cfg(test)]
+mod special_kernel_tests {
+    use super::*;
+
+    const P: u32 = 128;
+
+    /// `W₀` at a point, against a value known to more digits than the ball
+    /// claims.  This is the failure the certified bracket replaces: the old
+    /// `f64` kernel returned a radius of 10⁻³⁹ around a midpoint 3·10⁻¹⁷ away
+    /// from the truth, so the enclosure excluded its own value.
+    #[test]
+    fn lambert_w0_encloses_high_precision_values() {
+        // W₀(1) = Ω, the omega constant, to 40 digits.
+        let omega = Float::with_val(
+            256,
+            Float::parse("0.5671432904097838729999686622103555497538").unwrap(),
+        );
+        let b = ArbBall::from_f64(1.0, P).lambert_w0().unwrap();
+        assert!(
+            b.lo() <= omega && omega <= b.hi(),
+            "W₀(1) = {omega} escaped [{}, {}]",
+            b.lo(),
+            b.hi()
+        );
+        assert!(b.rad_f64() < 1e-30, "rad = {}", b.rad_f64());
+
+        // W₀(e) = 1 exactly.
+        let e = Float::with_val(P, 1u32).exp();
+        let b = ArbBall {
+            mid: e,
+            rad: Float::new(P),
+            prec: P,
+        }
+        .lambert_w0()
+        .unwrap();
+        assert!(b.contains(1.0), "W₀(e) must enclose 1, got {b}");
+        assert!(b.rad_f64() < 1e-30);
+    }
+
+    /// `W₀(x)·e^{W₀(x)} = x` checked *through the enclosure*: every point of
+    /// the returned ball is a candidate, so the identity has to hold for the
+    /// ball as a whole.
+    #[test]
+    fn lambert_w0_enclosure_satisfies_its_defining_equation() {
+        for x in [-0.3, -0.1, 0.0, 0.25, 1.0, 2.5, 10.0, 1e3, 1e10] {
+            let xb = ArbBall::from_f64(x, P);
+            let w = xb.lambert_w0().unwrap_or_else(|| panic!("W₀({x}) refused"));
+            let g = w.clone() * w.exp();
+            assert!(g.contains(x), "W₀({x}) enclosure gives g = {g}, not {x}");
+        }
+    }
+
+    /// Off-domain arguments refuse rather than answer.
+    #[test]
+    fn lambert_w0_refuses_below_the_branch_point() {
+        for x in [-0.5, -0.4, -0.37, -1.0, -1e6] {
+            assert!(
+                ArbBall::from_f64(x, P).lambert_w0().is_none(),
+                "W₀({x}) is not real but was answered"
+            );
+        }
+    }
+
+    /// Over a genuine box, and monotonically: `W₀` increases, so the enclosure
+    /// must bracket both endpoint values and everything between.
+    #[test]
+    fn lambert_w0_over_a_box_brackets_interior_points() {
+        let b = ArbBall::from_midpoint_radius(1.5, 1.0, P)
+            .lambert_w0()
+            .unwrap();
+        for k in 0..=50 {
+            let x = 0.5 + 2.0 * (k as f64) / 50.0;
+            let w = crate::special::lambert_w0(x).unwrap();
+            assert!(
+                b.lo().to_f64() - 1e-12 <= w && w <= b.hi().to_f64() + 1e-12,
+                "W₀({x}) = {w} escaped {b}"
+            );
+        }
+    }
+
+    /// Γ over boxes, including one straddling the minimum at x ≈ 1.4616 where
+    /// an endpoint hull would be wrong in the same way `bessel_jn`'s was.
+    #[test]
+    fn gamma_brackets_dense_samples() {
+        for (lo, hi) in [
+            (0.5_f64, 0.6_f64),
+            (1.0, 2.0),
+            (1.4, 1.5),
+            (0.25, 3.0),
+            (4.0, 4.25),
+            (9.0, 10.0),
+            (0.01, 0.02),
+        ] {
+            let b = ArbBall::from_endpoints(&Float::with_val(P, lo), &Float::with_val(P, hi), P)
+                .gamma()
+                .unwrap_or_else(|| panic!("Γ on [{lo},{hi}] refused"));
+            for k in 0..=100 {
+                let t = lo + (hi - lo) * (k as f64) / 100.0;
+                let truth = Float::with_val(P + 64, t).gamma();
+                assert!(
+                    b.lo() <= truth && truth <= b.hi(),
+                    "Γ({t}) = {truth} escaped [{}, {}]",
+                    b.lo(),
+                    b.hi()
+                );
+            }
+        }
+    }
+
+    /// The minimum of Γ sits *inside* [1, 2]: max(Γ(1), Γ(2)) = 1 is the top
+    /// of the range, and a hull of the endpoints would collapse to the single
+    /// point 1 and miss Γ(1.4616) = 0.8856.
+    #[test]
+    fn gamma_does_not_assume_monotonicity() {
+        let b = ArbBall::from_endpoints(&Float::with_val(P, 1.0), &Float::with_val(P, 2.0), P)
+            .gamma()
+            .unwrap();
+        assert!(b.lo() < 0.8857, "lower bound {} misses the minimum", b.lo());
+        assert!(b.hi() >= 1.0, "upper bound {} misses Γ(1) = 1", b.hi());
+    }
+
+    #[test]
+    fn gamma_refuses_non_positive_boxes() {
+        for (lo, hi) in [(-1.0_f64, 1.0_f64), (0.0, 1.0), (-3.0, -2.0), (-0.5, -0.4)] {
+            assert!(
+                ArbBall::from_endpoints(&Float::with_val(P, lo), &Float::with_val(P, hi), P)
+                    .gamma()
+                    .is_none(),
+                "Γ on [{lo},{hi}] should refuse"
+            );
+        }
     }
 }

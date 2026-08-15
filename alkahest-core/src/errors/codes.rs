@@ -250,6 +250,19 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-HOLO-002", class: "HolonomicError", cause: Cause::Resource,    remediation: Some("raise max_order and/or max_degree in ZeilbergerOpts; if the term genuinely has no such recurrence within reach, Zeilberger's algorithm does not apply") },
     ErrorSpec { code: "E-HOLO-003", class: "HolonomicError", cause: Cause::Internal,    remediation: Some("internal: report the term as a minimal failing example") },
     ErrorSpec { code: "E-HOLO-004", class: "HolonomicError", cause: Cause::UserInput,   remediation: Some("n and k must be distinct symbols; max_order and max_degree must be positive") },
+    // E-HOLO-005 is Python-only (`python/alkahest/_guess_holonomic.py`): a fit
+    // the supplied terms cannot support. Registering a code no Rust
+    // `AlkahestError` impl returns would fail `scripts/check_error_codes.py`.
+    ErrorSpec { code: "E-HOLO-006", class: "HolonomicError", cause: Cause::UserInput,   remediation: Some("the modulus must be p**k with p prime, k >= 1 and p**k < 2**62; for a composite modulus, evaluate at each prime power and recombine by CRT") },
+    ErrorSpec { code: "E-HOLO-007", class: "HolonomicError", cause: Cause::UserInput,   remediation: Some("no modulus repairs this: the recurrence itself leaves Z_p at that index. Supply more initial terms so the evaluation starts past it, use a recurrence whose leading coefficient does not vanish there, or accept that the sequence is not p-integral and rescale it") },
+    ErrorSpec { code: "E-HOLO-008", class: "HolonomicError", cause: Cause::Resource,    remediation: Some("lower k, use a smaller prime, or ask for an index the recurrence reaches without crossing so many singular steps") },
+    // E-HOLO-02x — QHolonomicError (M4b: q-analogue creative telescoping). A
+    // separate block so a caller can tell which of the two engines refused.
+    ErrorSpec { code: "E-HOLO-020", class: "HolonomicError", cause: Cause::UserInput,   remediation: Some("write the summand with qbinomial(N, K), qpochhammer(u, d, v), powers of q with a degree-2 exponent in n and k, and rational functions of q, q**n and q**k; a bare n or k outside an exponent is not q-hypergeometric") },
+    ErrorSpec { code: "E-HOLO-021", class: "HolonomicError", cause: Cause::Resource,    remediation: Some("raise max_order and/or max_degree; if the sum genuinely satisfies no such q-recurrence, q-Zeilberger does not apply") },
+    ErrorSpec { code: "E-HOLO-022", class: "HolonomicError", cause: Cause::Internal,    remediation: Some("internal: report the term as a minimal failing example") },
+    ErrorSpec { code: "E-HOLO-023", class: "HolonomicError", cause: Cause::UserInput,   remediation: Some("q, n and k must be three distinct symbols; max_order and max_degree must be at least 1; a q-Pochhammer base step must be at least 1") },
+    ErrorSpec { code: "E-HOLO-024", class: "HolonomicError", cause: Cause::Unsupported, remediation: Some("the term is q-hypergeometric in shape but its shift quotient is not a rational function of q**n and q**k — e.g. (q; q**2)_k shifted in k. No algorithm in this family applies; close the branch") },
     // E-SMT — SmtError (P2 item 3: SMT/SAT bridge).
     //
     // Only the code Rust actually raises is registered here.  The rest of the

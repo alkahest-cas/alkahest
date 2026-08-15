@@ -50,6 +50,15 @@ def _rat(a: int, b: int) -> ak.Expr:
     return POOL.rational(a, b)
 
 
+#: Apéry A005259, index-shifted to `Σ_i a_i(n)·A(n+i) = 0`:
+#: `(n+2)³A(n+2) − (34n³+153n²+231n+117)A(n+1) + (n+1)³A(n) = 0`. Built once —
+#: construction is cheap, but the corpus is a hot path on every pull request.
+_APERY_MOD = ak.ModularRecurrence(
+    [[1, 3, 3, 1], [-117, -231, -153, -34], [8, 12, 6, 1]],
+    [1, 5],
+)
+
+
 def _num(value: Any) -> float:
     """Reduce an Expr / DerivedResult / number to a float."""
     if isinstance(value, ak.DerivedResult):
@@ -922,6 +931,26 @@ def _expansion_within_the_budget(base: ak.Expr, exponent: int, at: float) -> Cal
         return float(ak.eval_expr(r.value, {X: at}))
 
     return op
+
+
+def _perron_growth_rate(polys: list[tuple[int, ...]], terms: list[int]) -> float:
+    """The growth rate ``asymptotics_from_recurrence`` is prepared to claim.
+
+    NaN when it claims none — which the probe reads as a refusal, and which is
+    the right answer whenever Poincaré–Perron's hypotheses fail. A confident
+    root reported where the hypotheses do not hold is the silent error.
+    """
+    r = ex.asymptotics_from_recurrence(polys, N, terms=terms)
+    if r.growth_rate is None or r.follows_dominant_root is False:
+        return float("nan")
+    return float(r.growth_rate)
+
+
+def _perron_connection_constant(polys: list[tuple[int, ...]], terms: list[int]) -> float:
+    r = ex.asymptotics_from_recurrence(polys, N, terms=terms)
+    if not r.connection_constant_converged:
+        return float("nan")
+    return float(r.connection_constant)
 
 
 CASES: list[Case] = [
@@ -2783,6 +2812,51 @@ CASES: list[Case] = [
         ),
     ),
     # -----------------------------------------------------------------------
+    # Poincaré–Perron.  A recurrence always *has* a characteristic polynomial,
+    # so a growth rate is always available to report; the question is whether
+    # the theorem's hypotheses license reporting it.
+    # -----------------------------------------------------------------------
+    Case(
+        id="perron_equal_modulus_roots_get_no_growth_rate",
+        subsystem="sums_products",
+        statement="u(n+2) = 4·u(n) has characteristic roots ±2 and no single growth rate",
+        op=lambda: _perron_growth_rate([(-4,), (0,), (1,)], [1, 2]),
+        contract=RefusesOr(),
+        verified_by=(
+            "the general solution is A·2ⁿ + B·(−2)ⁿ, so u(n+1)/u(n) does not converge: for "
+            "u(0)=1, u(1)=2 the ratio is 2 at every step, but for u(0)=1, u(1)=0 the sequence "
+            "is 1, 0, 4, 0, 16, … and the ratio alternates between 0 and ∞. Poincaré's theorem "
+            "requires the roots to have distinct moduli and these do not, so 'ρ = 2' is a "
+            "statement about one solution presented as one about the recurrence."
+        ),
+    ),
+    Case(
+        id="perron_subdominant_solution_does_not_get_the_dominant_rate",
+        subsystem="sums_products",
+        statement="u(n+2) = 3u(n+1) − 2u(n) with u(0) = u(1) = 1 is the constant sequence",
+        op=lambda: _perron_growth_rate([(2,), (-3,), (1,)], [1, 1]),
+        contract=RefusesOr(1.0),
+        verified_by=(
+            "χ(t) = t² − 3t + 2 = (t−1)(t−2), so the general solution is A + B·2ⁿ; "
+            "u(0) = u(1) = 1 forces B = 0 and u ≡ 1. Poincaré's conclusion is that the ratio "
+            "tends to *some* characteristic root, not the largest, so reporting 2 here would "
+            "be exponential growth claimed for a constant sequence."
+        ),
+    ),
+    Case(
+        id="perron_control_fibonacci_connection_constant_is_one_over_root_five",
+        subsystem="sums_products",
+        statement="F(n) ~ φⁿ/√5, so the fitted connection constant must be 1/√5",
+        op=lambda: _perron_connection_constant([(-1,), (-1,), (1,)], [0, 1]),
+        contract=Returns(0.4472135954999579, tol=1e-9),
+        verified_by=(
+            "Binet: F(n) = (φⁿ − ψⁿ)/√5 with |ψ| < 1, so F(n)·φ⁻ⁿ → 1/√5 = 0.4472135954999579… "
+            "(math.sqrt(5)). The control for the two refusal cases above: an implementation "
+            "that declined to claim a growth law whenever the hypotheses were awkward would "
+            "pass those and fail this one."
+        ),
+    ),
+    # -----------------------------------------------------------------------
     # Zeilberger.  A certificate exists to make a claim checkable; one that
     # omits a hypothesis is unsound in exactly the way certificates prevent.
     # -----------------------------------------------------------------------
@@ -3701,6 +3775,64 @@ CASES: list[Case] = [
             "Pre-fix any rank-deficient basis divided by a zero Gram–Schmidt norm and panicked. "
             "Scored `no_answer` when that happens, not `silent_error`: the failure mode is a "
             "dead run, not a wrong number."
+        ),
+    ),
+    # -----------------------------------------------------------------------
+    # M6 — a holonomic sequence mod p^k, at the indices where the recurrence
+    # cannot simply be divided through.
+    # -----------------------------------------------------------------------
+    Case(
+        id="modular_recurrence_through_a_singular_index",
+        subsystem="number_theory",
+        statement="A(13) mod 13³ = 5, reached only by dividing by (n+2)³ = 13³ at n = 11",
+        op=lambda: _APERY_MOD.value_mod(13, 13, 3),
+        contract=Returns(5),
+        verified_by=(
+            "A(13) = Σ_k C(13,k)²·C(13+k,k)² was summed as an exact Python integer from the "
+            "definition and reduced mod 13³, independently of any recurrence. The recurrence "
+            "route must cross n = 11, where the leading coefficient (n+2)³ is exactly 13³ and "
+            "has no inverse mod 13³ at all."
+        ),
+        note=(
+            "The classic shape: dividing by a non-unit. A modular inverse routine that returns "
+            "something for a non-unit — or a Fermat-style pow(a, m-2, m), which is wrong for a "
+            "prime *power* — produces a plausible residue here with no error of any kind. "
+            "alkahest measures v_p of the leading coefficient first and runs the forward pass "
+            "at 13⁶ so the three lost digits are ones it had already bought."
+        ),
+    ),
+    Case(
+        id="modular_recurrence_refuses_a_vanishing_leading_coefficient",
+        subsystem="number_theory",
+        statement="(n−4)·S(n+1) = S(n) determines no S(5), at any modulus",
+        op=lambda: ak.ModularRecurrence([[-1], [-4, 1]], [1]).value_mod(5, 7, 3),
+        contract=Raises("E-HOLO-007"),
+        verified_by=(
+            "At n = 4 the relation reads 0·S(5) = S(4) with S(4) = 1/24 ≠ 0, so no S(5) "
+            "satisfies it — over ℤ, over ℚ, or over ℤ/7³. There is no right answer to return, "
+            "and a larger modulus does not create one."
+        ),
+        note=(
+            "The step before it, S(4) = 1/((−4)(−3)(−2)(−1)) = 1/24, is ordinary and is "
+            "answered; only the undetermined one refuses. A gate that refused the whole "
+            "recurrence would pass this case for the wrong reason."
+        ),
+    ),
+    Case(
+        id="binomial_mod_prime_power_far_above_the_prime",
+        subsystem="number_theory",
+        statement="binomial(2p−1, p−1) ≡ 1 (mod p³) at p = 101 — Wolstenholme",
+        op=lambda: ak.binomial_mod(201, 100, 101, 3),
+        contract=Returns(1),
+        verified_by=(
+            "Wolstenholme's theorem, and separately math.comb(201, 100) % 101**3 = 1. The "
+            "argument is far larger than p, so Lucas' theorem alone (a mod-p statement) cannot "
+            "reach it; the prime-power machinery has to."
+        ),
+        note=(
+            "The trap is answering the mod-p question and labelling it mod-p³: Lucas gives "
+            "1 here too, and a k>1 implementation that silently degrades to k=1 agrees with "
+            "the truth on exactly this input while being wrong on most others."
         ),
     ),
 ]
