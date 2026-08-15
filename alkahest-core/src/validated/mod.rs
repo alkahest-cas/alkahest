@@ -154,7 +154,7 @@ impl AlkahestError for ValidatedError {
     fn remediation(&self) -> Option<&'static str> {
         match self {
             ValidatedError::Unsupported { .. } => Some(
-                "rewrite the expression using +, -, *, /, integer powers, exp, log, sqrt, sin, cos, tan, asin, acos, atan, sinh, cosh or tanh; piecewise and non-smooth nodes cannot be Taylor-modelled",
+                "rewrite the expression using +, -, *, /, integer powers, exp, log, sqrt, sin, cos, tan, asin, acos, atan, sinh, cosh, tanh, asinh, acosh, atanh, erf or erfc; piecewise and non-smooth nodes cannot be Taylor-modelled",
             ),
             ValidatedError::UnboundSymbol { .. } => {
                 Some("give every free symbol an interval in the box argument")

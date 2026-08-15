@@ -484,13 +484,14 @@ certificate, `alkahest.smt` (z3's `nlsat` is complete over the reals), or
 **Check that route before you build the workload: `ak.bounds_supported(expr)`.** The
 validated-bounds entry points (`bound_on_box`, `verified_integral`,
 `verified_no_roots`, `verified_sign`) reach the elementary fragment only — `sin`, `cos`,
-`tan`, `exp`, `log`, `sqrt`, `abs`, the inverse-trig and hyperbolic functions — and
-refuse everything else with `E-VALIDATED-001`. Every special function is outside it:
-`erf`, `bessel_j0/j1`, `digamma`, `lambert_w`, `gamma`, the elliptic integrals,
-`floor`/`ceil`, and the two-argument `atan2`. **`capabilities()["primitives"][i]`
-carries this as `taylor_model`; do not read `numeric_ball` as the coverage flag** — it
-is pointwise ball arithmetic, it is `True` for `erf` and `bessel_j0`, and it says
-nothing about whether a bound can be certified. `bounds_supported` answers for a whole
+`tan`, `exp`, `log`, `sqrt`, `abs`, the inverse-trig and hyperbolic functions
+(including `asinh`/`acosh`/`atanh`), plus `erf` and `erfc` — and refuse everything else
+with `E-VALIDATED-001`: `bessel_j0/j1`, `digamma`, `lambert_w`, `gamma`, the elliptic
+integrals, `floor`/`ceil`, and the two-argument `atan2`.
+**`capabilities()["primitives"][i]` carries this as `taylor_model`; do not read
+`numeric_ball` as the coverage flag** — it is pointwise ball arithmetic, it is `True`
+for `bessel_j0` and `digamma`, and it says nothing about whether a bound can be
+certified. `bounds_supported` answers for a whole
 expression without running anything, and names the blocking functions:
 
 ```python
@@ -1160,7 +1161,7 @@ All errors inherit `AlkahestError` and carry `.code`, `.remediation`, `.span`.
 | `EigenError` | `E-EIGEN-*` | *Subclass of `MatrixError`.* Eigen/Jordan; defective matrix (`E-EIGEN-005`) |
 | `CadError` | `E-CAD-*` | **`decide` refused** — outside the fragment, or an untestable irrational boundary point |
 | `SosError` | `E-SOS-*` | No positivity certificate of this shape/degree (`E-SOS-002` — **a refusal: record `unknown`, not "not SOS"**); proved negative with a witness point (`E-SOS-003` — the only SOS verdict) |
-| `HolonomicError` | `E-HOLO-*` | `zeilberger` outside the proper-hypergeometric class |
+| `HolonomicError` | `E-HOLO-*` | `zeilberger` outside the proper-hypergeometric class; `guess_holonomic` given too few terms to confirm a fit (`E-HOLO-005` — **a refusal: record `unknown`, not "no recurrence"**) |
 | `ValidatedError` | `E-VALIDATED-*` | Rigorous-bounds request unsupported / singular / malformed |
 | `OdeError` | `E-ODE-*` | ODE construction failed |
 | `DaeError` | `E-DAE-*` | DAE index reduction failed |
@@ -1400,3 +1401,7 @@ reg.coverage_report_markdown()  # same, rendered as a Markdown table
 17. **Do not export radical results to another CAS without evaluating them here first.** Casus-irreducibilis cube roots from `eigenvals()` are correct in Alkahest and wrong under a principal-branch evaluator. An `E-EVAL-009` or an infinite ball is the signal not to export as-is.
 18. **`0 · 0⁻¹` is left unevaluated on purpose** (since 3.8). If you see `(0 * 0^-1)` in a result, that is Alkahest declining to give an indeterminate form a value — not a simplifier failure to work around.
 19. **`relation_confidence` answers `None` when it cannot see the input precision** (since 3.8), which is the normal case: a decimal string may be an exact rational or a truncated constant, and nothing in it says which. `None` means *not checked*, never *passed* — branch on `if verdict["credible"]:`, not `is not False`. To get a real verdict on a `guess_relation` result computed from truncated decimal strings, pass the digits you trust: `relation_confidence(constants, coeffs, digits=60)`. Only `float` and `mpmath.mpf` inputs are judged without a declaration.
+20. **`zeilberger` does not claim its order is minimal** (since 3.9). The search visits `(order, degree)` cheapest-first, so it can reach a cheap order-2 probe before an expensive order-1 one; `cert.order_is_minimal` is `False` to say *not established*, never "a lower order exists". Pass `minimal=True` for an order-ascending search that does establish it — it costs the low-order sweep the default plan skips (Franel at `max_degree=16`: 0.23 s → 9.7 s), so claim minimality against the smallest `max_degree` you are willing to state.
+21. **`guess_holonomic` returns `None` only for a swept grid** (since 3.9). It fits a P-recursive recurrence to exact `int`/`Fraction` terms, but only where the terms *over-determine* the ansatz — twice the unknowns by default — and reports `surplus_terms`, the equations that confirmed the fit without being needed. Too few terms to test the whole grid is `E-HOLO-005`, a refusal, not `None`; recording it as "not holonomic" closes a branch that was never explored. `float` terms are refused outright.
+
+22. **A `zeilberger` certificate is about the *summand*; `cert.boundary` is what makes it about the *sum*** (since 3.9). `"vanishes"` licenses the homogeneous `Σ_i a_i(n)·S(n+i) = 0`; `"nonzero"` licenses the inhomogeneous `Σ_i a_i(n)·S(n+i) = b(n)` with `b(n)` in `cert.boundary_rhs` — a result, not a refusal; `"unknown"` licenses **nothing** about the sum, and recording the recurrence anyway is how a verified certificate becomes a false theorem (it did, on OEIS A279013). The verdict is about the range in `cert.limits`, which defaults to `k = 0..n` and is echoed back rather than inferred — pass `limits=(k_lo, k_hi)` when you are summing over anything else, because truncating a sum by one term generally flips `"vanishes"` to `"nonzero"`. `cert.boundary_at(k_lo, k_hi)` asks about another range without re-running the search.

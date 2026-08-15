@@ -38,6 +38,32 @@ class TestExprPool:
         half = pool.rational(1, 2)
         assert half is not None
 
+    def test_rational_accepts_ints_of_any_size(self):
+        """`rational` must match `integer`, which has always taken bignums.
+
+        It used to take `i64` directly, so `pool.rational(factorial(30), 7)`
+        raised `OverflowError: Python int too large to convert to C long` while
+        `pool.integer(factorial(30))` was fine. Factorial- and binomial-scale
+        numerators are ordinary here — exact linear algebra over Q hits them
+        immediately — and the kernel's `ExprPool::rational` already accepted
+        them; only the binding was narrow.
+        """
+        import math
+
+        pool = ExprPool()
+        big = math.factorial(30)
+        assert pool.integer(big) is not None
+        # 7 divides 30!, so this reduces to an exact integer.
+        assert str(pool.rational(big, 7)) == str(big // 7)
+        # A denominator that does not divide out stays a ratio.
+        assert str(pool.rational(2**70, 3)) == f"{2**70}/3"
+        assert str(pool.rational(3, 4)) == "3/4"
+
+    def test_rational_refuses_a_zero_denominator(self):
+        pool = ExprPool()
+        with pytest.raises(ZeroDivisionError):
+            pool.rational(1, 0)
+
     def test_float(self):
         pool = ExprPool()
         pi = pool.float(3.14159, 53)

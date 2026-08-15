@@ -109,6 +109,72 @@ Both are detailed under *Behaviour changes to plan for*.
 
 ### Fixed
 
+- **A verified Zeilberger certificate could imply a *false* recurrence for the
+  sum, and nothing in the result distinguished that case from a correct one.**
+  This is the only defect logged in the 2026-08-13 autoresearch run that could
+  make a loop report a theorem that is not one; everything else was a refusal, a
+  slowdown or a discoverability gap. Zeilberger's algorithm proves
+  `Σ_i a_i(n)·F(n+i,k) = ΔG`, an identity about the **summand**; a recurrence
+  for `S(n) = Σ_k F(n,k)` needs a boundary term to vanish, which is a separate
+  statement. On OEIS A279013, `a(n) = Σ_{k=0}^{n} C(2k,k)/(k+1)·C(2n−1,n−k)`,
+  `zeilberger` returned a verified order-2 certificate in 0.1 s whose
+  homogeneous recurrence fails against the real sequence (2, 8, 35, 161, 768,
+  3773) at the very first term. It was caught only by a harness that carried an
+  independent numeric check against OEIS data — every signal reachable through
+  the API said "proved".
+
+  The information was not missing: `side_conditions` already named the exact
+  condition and even gave a counterexample. It was **invariant** — the same
+  string for a correct and an incorrect case — so nothing a loop reads could
+  tell them apart. `zeilberger` now computes a verdict.
+  `ZeilbergerCertificate.boundary` is `"vanishes"` (proved; the homogeneous
+  recurrence holds for the sum), `"nonzero"` (proved; the **inhomogeneous**
+  `Σ_i a_i(n)·S(n+i) = b(n)` holds, with `b(n)` in `boundary_rhs`) or
+  `"unknown"` (neither; nothing may be claimed about the sum).
+  `boundary_reason`, `implies_sum_recurrence`, `limits` and `boundary_at(k_lo,
+  k_hi)` come with it, and `side_conditions` now varies with the verdict.
+  A279013 comes back `"nonzero"` with a `b(n)` that reproduces the sequence
+  exactly; Franel, Dixon, Apéry and the binomial row sum come back `"vanishes"`.
+
+  **`"vanishes"` is a proof, not a numeric check.** Each endpoint of `G` is
+  evaluated by exact order counting in `Q(n)` — the multiplicity of the endpoint
+  as a root of the certificate's numerator and denominator, deflated exactly,
+  plus `−e` for every `Γ(a·n+b·k+c)^e` factor whose argument lands on a
+  non-positive integer there, with the `(−1)^m/(m!·b)` residue carried exactly so
+  that a pole cancelling a zero still gives the right finite value. A strictly
+  positive total order *is* an exact zero; a negative one means `G` is unbounded
+  at the endpoint and is reported `"unknown"`. Terms are then collected into
+  hypergeometric similarity classes (`Γ(x+1) = x·Γ(x)` worked off until every
+  argument is `a·n + c` with `c ∈ [0,1)`) and `"vanishes"` requires every
+  collected coefficient to be the zero element of `Q(n)`. No floating point,
+  interval or sampled value can produce it. Symmetrically `"nonzero"` requires a
+  *witness* — an integer `n₀` with `b(n₀) ≠ 0` in exact rational arithmetic —
+  so sampling that finds only zeros yields `"unknown"`, never `"vanishes"`.
+
+  **The summation range is now part of the call**, because getting it wrong
+  silently is the whole bug. `zeilberger(..., limits=(k_lo, k_hi))` takes it,
+  each endpoint an `Expr` or an `int`; it defaults to `(0, n)` — the `Σ_{k=0}^n`
+  convention the classical identities and the OEIS formula field use — and the
+  range actually used is echoed back on `cert.limits`, so the assumption is on
+  the record rather than inferred from the summand. The verdict is about that
+  range and changes with it: A361712's certificate is `"vanishes"` over
+  `k = 0..n` and `"nonzero"` over the `k = 0..n-1` that OEIS truncates to.
+  A range the analysis cannot place — endpoints that are not integer-affine in
+  `n` — is `"unknown"`, never `"vanishes"`. `boundary_at(k_lo, k_hi)` re-decides
+  for another range without re-running the search.
+
+  Getting this right needed one piece the issue report did not mention: when the
+  limits move with `n`, `Σ_{k=0}^{n} F(n+i,k)` is **not** `S(n+i)`. For
+  `Σ_{k=0}^{n} C(n,k) = 2ⁿ` the telescoped difference alone is `−1`, and it is
+  the missing term `C(n+1,n+1) = 1` that cancels it — a verdict computed from the
+  endpoints alone reports `"nonzero"` on a textbook identity. The full
+  `b(n) = G(n,k_hi+1) − G(n,k_lo) + Σ_i a_i(n)·D_i(n)`, with `D_i` the finitely
+  many values of `F` between the range at `n` and the range at `n+i`, is what is
+  decided. New core module `holonomic::boundary` (`BoundaryStatus`,
+  `boundary_status`, `natural_limits`); `zeilberger()`'s own signature is
+  unchanged and the core function returns `Unknown` rather than guessing when no
+  limits are supplied.
+
 - **Interval evaluation refused `bessel_j0` / `bessel_j1`, and its Bessel ball
   kernel was not an enclosure.** `evaluate(bessel_j0(x), {x: ArbBall(...)},
   mode="interval")` came back `status="unsupported"` with `E-EVAL-010` even
@@ -513,6 +579,143 @@ Both are detailed under *Behaviour changes to plan for*.
   which is why this went unnoticed.
 
 ### Added
+
+- **Validated bounds reach five more functions: `asinh`, `acosh`, `atanh`,
+  `erf`, `erfc`.** `bound_on_box` — and everything built on it,
+  `verified_sign`, `verified_no_roots`, `verified_integral` — covered exactly
+  13 elementary primitives and refused these five with `E-VALIDATED-001` even
+  though `numeric_ball` reported `True` for all of them. The gap was not an
+  oversight about ball arithmetic; a Taylor model needs a per-function rule
+  with a *rigorous* remainder, and there was none. There is now, and each one
+  is a proof rather than an estimate:
+
+  - `asinh` uses `aₖ = b_{k-1}/k` from the exact point recurrence for
+    `(1+x²)^{-1/2}` and the remainder bound
+    `1/[(p+1)(1+ξ²)^{(p+1)/2}]`, which follows from
+    `Σⱼ C(n,j)AⱼA_{n-j} = n!` for `Aⱼ = (2j-1)!!/2ʲ` — the same bound `atan`
+    already used, arrived at the same way.
+  - `acosh` uses the matching recurrence for `(x²-1)^{-1/2}`. Every term of
+    its Leibniz expansion carries the sign `(-1)ⁿ`, so no cancellation is
+    available to exploit and `|v⁽ⁿ⁾(x)| ≤ n!(x-1)^{-(n+1)}`, decreasing in
+    `x`; the supremum therefore sits at the low end of the enclosure.
+  - `atanh` expands `(1-x²)^{-1} = ½[(1-x)^{-1} + (1+x)^{-1}]` in closed
+    form and bounds the two poles' contributions separately, each at its own
+    maximising endpoint.
+  - `erf` expands the Gaussian by its Hermite recurrence and bounds
+    `|(e^{-z²})⁽ⁿ⁾|/n!` by a Cauchy estimate on a circle of radius `r`,
+    using the *exact* minimum of `Re(z²)` on that circle rather than a
+    triangle-inequality proxy. The bound holds for **every** `r > 0`, so the
+    `r` the rule picks is a tightness choice that cannot affect soundness.
+    `erfc` is `1 - erf`.
+
+  All three inverse hyperbolics carry their branch's domain and refuse
+  outside it with `E-VALIDATED-003` rather than returning a number: `acosh`
+  needs the whole enclosure strictly above `1`, `atanh` needs it strictly
+  inside `(-1, 1)` — **both** ends, so `[0.5, 2]` is refused rather than
+  bounded off-domain — and a box that merely *touches* a boundary is refused
+  too, because the derivative is unbounded there. `asinh`, `erf` and `erfc`
+  are entire and never refuse on domain grounds; `asinh` in particular is
+  expanded directly rather than through `log(x + √(1+x²))`, which loses the
+  argument to cancellation for `x ≪ 0`.
+
+  Each rule also computes a second, independent bound on the same remainder —
+  a geometric bound on the series tail inside the disc of convergence — and
+  keeps whichever is smaller. The Lagrange form takes the supremum of
+  `|f⁽ᵖ⁺¹⁾|` over the *whole* argument enclosure, which near a singularity
+  dwarfs the coefficients at the centre: on `atanh` over `[-0.5, 0.5]` at
+  order 10 it gives `9.1e-2` where the tail bound gives `8.9e-5`.
+
+  `capabilities()["primitives"][i]["taylor_model"]` and `bounds_supported`
+  pick all five up with no edit — both are derived by running the evaluator,
+  which is what that design was for. The set they report is now 18 names;
+  `bessel_j0`, `bessel_j1`, `digamma`, `lambert_w`, `floor` and `ceil` remain
+  outside it. `floor`/`ceil` are not an oversight and are not planned: they
+  are not differentiable, so on a box containing an integer no Taylor model
+  exists, and on one that does not they are a constant.
+
+- **`guess_holonomic(terms, max_order, max_degree)` — the guessing half of
+  *guess then prove*, with the guard that makes a fit mean something.** Alkahest
+  shipped the proving half only (`zeilberger`), so the 2026-08-13 autoresearch
+  run hand-rolled a fitter out of `Matrix.nullspace` and exact rationals in
+  ~30 lines; it recovered Motzkin's recurrence from 21 terms, and every loop
+  since has rewritten it. The rewrite is not the problem — the guard is. A
+  recurrence of order `J` with degree-`D` coefficients has `U = (J+1)(D+1)`
+  unknowns, and a homogeneous system in `U` unknowns has a nonzero solution the
+  moment it has fewer than `U` independent equations, *whatever the numbers
+  are*. An unguarded fitter therefore returns a recurrence for every input it
+  is ever shown, and a hand-rolled one has nothing to say about which of those
+  answers is evidence.
+
+  So a candidate is fitted only where the terms **over-determine** it: at least
+  `U + min_surplus` equations, `min_surplus` defaulting to `U` itself. The
+  result carries `surplus_terms` (equations that were not needed and agreed
+  anyway), `equations_used`, `dimension`, `untested_candidates` and
+  `confirmed`, plus `evidence()` for logging the lot — `untested_candidates` is
+  the minimality caveat, `0` when the returned order really is the smallest that
+  fits anywhere in the bounds. Motzkin from 21 terms comes back order 2, degree 1,
+  confirmed by 14 surplus equations; the same recurrence from the 7 terms that
+  merely *determine* it is refused (`E-HOLO-005`), because that fit exists for
+  any seven numbers.
+
+  **`None` means the grid was swept and nothing fit.** If some `(order, degree)`
+  candidate had to be skipped for lack of terms, the call refuses with
+  `E-HOLO-005` and says how many terms the cheapest skipped candidate needs,
+  rather than returning a negative for a question it never asked — 60 primes
+  give an honest `None`, 40 primes give a refusal. This is the
+  `relation_confidence` discipline for sequences, and it is deliberately the
+  same shape: `check_evidence=False` is the escape hatch, in the role
+  `check_precision=False` plays on `guess_relation`.
+
+  Exact throughout: Python `int` of any size and `fractions.Fraction`;
+  a `float` term is refused, not rounded. `holds_for(more_terms)` re-checks
+  exactly against data the fit never saw and `to_exprs(pool, n)` hands the
+  coefficient polynomials back to the expression layer, so a guess can be
+  compared with a `ZeilbergerCertificate` coefficient for coefficient. Pure
+  Python (`alkahest.guess_holonomic`, `alkahest.GuessedRecurrence`), because the
+  one mathematical step is `Matrix.nullspace`, which was already in the kernel
+  and already exact — everything on top is composition, validation and evidence
+  bookkeeping, which is the Python column of `CONTRIBUTING.md` § *Rust vs
+  Python* line by line, and the part where being easy to audit matters more than
+  being fast.
+
+- **`zeilberger` now says whether its order is minimal, and `minimal=True`
+  makes it so.** The certified order is usually the publishable part — the one
+  novel result of the 2026-08-13 run (OEIS A359643) was interesting *precisely*
+  because the certified order was 4 where OEIS recorded a guessed 5. But nothing
+  in 3.9.0 established minimality, and the natural assumption that an ascending
+  search gives it for free is **false for this search**: since the iterative
+  deepening added earlier in this cycle, the `(order, degree)` grid is visited
+  cheapest-estimated-cost-first (weight `3·(J−1) + d`), which is exactly what
+  took Dixon, Franel and Apéry from timeout to sub-second. Cheapest-first is not
+  order-ascending, so the plan can reach a cheap order-2 probe long before an
+  expensive order-1 one, and a returned order 2 does **not** rule out order 1.
+
+  `ZeilbergerCertificate.order_is_minimal` reports it, computed from the probes
+  that actually happened rather than from the mode, so it cannot drift away from
+  what the search did. `False` means **not established**, never "a lower order
+  exists" — a lower-order relation that had been found would have been the one
+  returned. It is `True` for free at order 1, and `True` whenever the
+  cost-ordered plan happened to spend every lower order first, which it does at
+  narrow `max_degree`.
+
+  `zeilberger(..., minimal=True)` walks the grid order-major instead — every
+  degree `0..max_degree` at order `J` refused before order `J+1` is tried — so a
+  returned order really is the least one reachable within `max_degree`. Same
+  bounds, same exact `Q(n)(k)` verification, same certificate; only what was
+  ruled out differs. **The default is unchanged and stays fast**, deliberately:
+  the price of minimality is the whole hopeless low-order sweep, and it is
+  charged against `max_degree`, which is the bound minimality is claimed
+  relative to. Measured, `max_order=4`, default → `minimal=True`: Franel
+  0.23 s → 0.23 s at `max_degree=6` (the default was already minimal there),
+  0.56 s at 8, **9.7 s at 16**; Apéry 0.08 s → 0.11 s at 6, 0.29 s at 8,
+  **13.1 s at 16**. The default column is flat in `max_degree` and the
+  `minimal=True` column is not, which is the whole trade in one line. The sweep
+  grows like `3^d`, so the useful move
+  is to claim minimality against the smallest `max_degree` you are willing to
+  state rather than against the default. In Rust the same thing is
+  `holonomic::zeilberger_search` with `OrderSearch::MinimalOrder`, returning a
+  `ZeilbergerSearchReport`; `zeilberger()` keeps its signature and its
+  cost-ordered behaviour exactly.
 
 - **Validated-bounds coverage is queryable: `bounds_supported(expr)` and a
   `taylor_model` bit in `capabilities()["primitives"]`.** The only

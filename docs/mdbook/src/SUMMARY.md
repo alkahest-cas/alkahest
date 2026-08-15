@@ -30,6 +30,7 @@
   - [Budgets, cancellation, and determinism](./budgets.md)
   - [Batch and streaming evaluation](./batch.md)
   - [Creative telescoping (Zeilberger)](./telescoping.md)
+  - [Guessing recurrences](./guessing.md)
   - [Ansatz families and conjecture generation](./ansatz.md)
   - [Cross-CAS differential testing](./crosscheck.md)
   - [SMT/SAT bridge](./smt.md)

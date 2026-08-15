@@ -14,7 +14,16 @@
 //!   `Σ_i a_i(n)·F(n+i,k) = G(n,k+1) − G(n,k)` with `G = R·F` and `R` an
 //!   exact rational-function certificate. Deriving a recurrence for the *sum*
 //!   `Σ_k F(n,k)` from it carries a boundary hypothesis that this module states
-//!   rather than assumes — see [`zeilberger::boundary_side_condition`].
+//!   rather than assumes — see [`zeilberger::boundary_side_condition`]. The
+//!   order it returns is likewise not claimed to be minimal unless the search
+//!   established it: see [`zeilberger::OrderSearch`] and
+//!   [`zeilberger::ZeilbergerSearchReport::order_is_minimal`].
+//! - [`boundary`] — *deciding* that boundary hypothesis over a stated summation
+//!   range, three-valued: [`boundary::BoundaryStatus::Vanishes`] (the
+//!   homogeneous recurrence holds for the sum),
+//!   [`boundary::BoundaryStatus::Nonzero`] (the inhomogeneous one does, with the
+//!   boundary term explicit) or [`boundary::BoundaryStatus::Unknown`] (nothing
+//!   may be claimed about the sum).
 //!
 //! Every certificate this module returns is checked as an *exact* identity
 //! in `Q(n)(k)` before it is handed back to the caller — see
@@ -23,18 +32,23 @@
 //! exhausted) or the input is outside the supported class, the module
 //! refuses via [`HolonomicError`] rather than guessing.
 //!
-//! Ore-operator closure (`ore.rs`) and recurrence/ODE guessing from finite
-//! data (`guess.rs`) are tracked as follow-up work and are not part of this
-//! module yet; see `ROADMAP.md` (P1 item 7).
+//! Ore-operator closure (`ore.rs`) and ODE guessing from a power series are
+//! tracked as follow-up work and are not part of this module yet; see
+//! `ROADMAP.md` (P1 item 7). *Recurrence* guessing from finite data ships as
+//! `alkahest.guess_holonomic` on the Python side, where the only mathematical
+//! step is an exact nullspace the kernel already provides.
 
+pub mod boundary;
 pub mod hyperterm;
 pub mod qfield;
 pub mod zeilberger;
 
+pub use boundary::{boundary_status, natural_limits, BoundaryStatus};
 pub use hyperterm::{GammaFactor, ProperTerm};
 pub use qfield::{PolyK, RatK, Rn};
 pub use zeilberger::{
-    boundary_side_condition, boundary_term, zeilberger, ZeilbergerOpts, ZeilbergerResult,
+    boundary_side_condition, boundary_term, zeilberger, zeilberger_search, OrderSearch,
+    ZeilbergerOpts, ZeilbergerResult, ZeilbergerSearchReport,
 };
 
 use std::fmt;
