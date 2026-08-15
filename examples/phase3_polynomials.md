@@ -41,10 +41,11 @@ x = pool.symbol("x")
 two = pool.integer(2)
 
 # x^2 + 2x + 1
-expr = pool.add([pool.pow(x, two), pool.mul([two, x]), pool.integer(1)])
+expr = pool.add([x ** two, pool.mul([two, x]), pool.integer(1)])
 ```
 
-Available builders: `symbol`, `integer`, `add`, `mul`, `pow`.
+Available builders: `symbol`, `integer`, `add`, `mul`; powers are written with
+the `**` operator on an `Expr`.
 
 ---
 
@@ -61,11 +62,10 @@ x    = pool.symbol("x")
 
 # x^2 + 2x + 1
 p = ak.UniPoly.from_symbolic(
-    pool.add([pool.pow(x, pool.integer(2)),
+    pool.add([x ** 2,
               pool.mul([pool.integer(2), x]),
               pool.integer(1)]),
     x,
-    pool,
 )
 
 print(p)                # x^2+2*x+1
@@ -78,20 +78,20 @@ print(p.coefficients()) # [1, 2, 1]
 All four operations are implemented via FLINT:
 
 ```python
-xp1 = ak.UniPoly.from_symbolic(pool.add([x, pool.integer(1)]), x, pool)
-xm1 = ak.UniPoly.from_symbolic(pool.add([x, pool.integer(-1)]), x, pool)
+xp1 = ak.UniPoly.from_symbolic(pool.add([x, pool.integer(1)]), x)
+xm1 = ak.UniPoly.from_symbolic(pool.add([x, pool.integer(-1)]), x)
 
 print(xp1 + xm1)   # 2*x
 print(xp1 - xm1)   # 2
 print(xp1 * xm1)   # x^2-1
-print(xp1.pow(3))  # x^3+3*x^2+3*x+1
+print(xp1 ** 3)    # x^3+3*x^2+3*x+1
 ```
 
 ### GCD
 
 ```python
 x2m1 = ak.UniPoly.from_symbolic(
-    pool.add([pool.pow(x, pool.integer(2)), pool.integer(-1)]), x, pool
+    pool.add([x ** 2, pool.integer(-1)]), x
 )
 g = x2m1.gcd(xm1)
 print(g)          # x-1
@@ -109,8 +109,9 @@ leading coefficient.
 `rug::Integer` coefficient.  The variable ordering is fixed at construction
 time by the `vars` list.
 
-> **Display note:** variable names in the string representation use
-> positional labels (`x0`, `x1`, …) matching the index in `vars`.
+> **Display note:** the string representation uses the symbol names from the
+> pool, and prints terms in the monomial order of the representation rather
+> than the order they were written in.
 
 ### Construction
 
@@ -121,13 +122,12 @@ y    = pool.symbol("y")
 
 # x^2 + xy + y^2
 a = ak.MultiPoly.from_symbolic(
-    pool.add([pool.pow(x, pool.integer(2)),
+    pool.add([x ** 2,
               pool.mul([x, y]),
-              pool.pow(y, pool.integer(2))]),
-    [x, y],   # variable ordering: x=x0, y=x1
-    pool,
+              y ** 2]),
+    [x, y],   # variable ordering
 )
-print(a)               # x1^2 + x0x1 + x0^2
+print(a)                # y^2 + xy + x^2
 print(a.total_degree)   # 2
 ```
 
@@ -140,7 +140,7 @@ the *primitive part*.
 # 6x + 4  →  content = 2,  primitive part = 3x + 2
 b = ak.MultiPoly.from_symbolic(
     pool.add([pool.mul([pool.integer(6), x]), pool.integer(4)]),
-    [x, y], pool,
+    [x, y],
 )
 print(b.integer_content())  # 2
 ```
@@ -148,11 +148,11 @@ print(b.integer_content())  # 2
 ### Arithmetic
 
 ```python
-c = ak.MultiPoly.from_symbolic(pool.add([x, y]), [x, y], pool)
-d = ak.MultiPoly.from_symbolic(pool.add([x, pool.integer(-1)]), [x, y], pool)
+c = ak.MultiPoly.from_symbolic(pool.add([x, y]), [x, y])
+d = ak.MultiPoly.from_symbolic(pool.add([x, pool.integer(-1)]), [x, y])
 
-print(c + d)  # 2x + y - 1
-print(c * d)  # x^2 + xy - x - y
+print(c + d)  # -1 + y + 2x
+print(c * d)  # -y - x + xy + x^2
 ```
 
 ---
@@ -178,19 +178,18 @@ rf = ak.RationalFunction.from_symbolic(
     pool.mul([pool.integer(6), x]),   # numerator
     pool.integer(4),                   # denominator
     [x, y],
-    pool,
 )
-print(rf)          # (3x0) / (2)
-print(rf.numer())  # 3x0
+print(rf)          # (3x) / (2)
+print(rf.numer())  # 3x
 print(rf.denom())  # 2
 
 # Denominator 1 is elided
-rf2 = ak.RationalFunction.from_symbolic(x, pool.integer(1), [x, y], pool)
-print(rf2)   # x0
+rf2 = ak.RationalFunction.from_symbolic(x, pool.integer(1), [x, y])
+print(rf2)   # x
 
 # Sign normalisation: denom leading coefficient is always positive
-rf3 = ak.RationalFunction.from_symbolic(x, pool.integer(-2), [x, y], pool)
-print(rf3)   # (-x0) / (2)
+rf3 = ak.RationalFunction.from_symbolic(x, pool.integer(-2), [x, y])
+print(rf3)   # (-x) / (2)
 ```
 
 ---
@@ -213,7 +212,7 @@ x    = pool.symbol("x")
 y    = pool.symbol("y")
 
 try:
-    ak.UniPoly.from_symbolic(pool.add([x, y]), x, pool)
+    ak.UniPoly.from_symbolic(pool.add([x, y]), x)
 except ValueError as e:
     print(e)   # unexpected free symbol 'y' ...
 ```

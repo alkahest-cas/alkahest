@@ -144,9 +144,12 @@ print("5. Polynomial System Solver")
 print("=" * 62)
 
 # Circle–line intersection: x² + y² = 1, y = x
+# `numeric=True` evaluates the exact roots to floats; drop it to get the
+# symbolic (radical) solutions back instead.
 solutions = solve(
     [x**2 + y**2 + pool.integer(-1), y + pool.integer(-1)*x],
-    [x, y]
+    [x, y],
+    numeric=True,
 )
 print(f"Circle ∩ line (x²+y²=1, y=x):")
 for s in solutions:
@@ -165,7 +168,8 @@ for s in solutions:
 # Linear system
 linear_soln = solve(
     [x + y + pool.integer(-3), x + pool.integer(-1)*y + pool.integer(-1)],
-    [x, y]
+    [x, y],
+    numeric=True,
 )
 print(f"\nx+y=3, x-y=1 → {[{str(k): round(v,4) for k,v in s.items()} for s in linear_soln]}")
 

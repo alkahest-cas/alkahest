@@ -317,6 +317,39 @@ class TestUniPoly:
         p = self._make([0])
         assert p.is_zero
 
+    def test_leading_coeff(self):
+        # 3x^2 + 2x + 1 -> 3
+        assert self._make([1, 2, 3]).leading_coeff == 3
+        # The zero polynomial has no leading term; 0 pairs with degree == -1.
+        zero = self._make([0])
+        assert zero.leading_coeff == 0
+        assert zero.degree == -1
+
+    def test_coefficients_are_exact_beyond_i64(self):
+        """Neither accessor may truncate a coefficient past 64 bits.
+
+        `coefficients()` used to go through `coefficients_i64()`, which does not
+        saturate — it returned `0`. So `2**100 * x**2 + 1` came back as
+        `[1, 0, 0]`: a quadratic reading as the constant `1`, with no exception
+        and no flag. Reachable from ordinary use, since `factor_z`, resultants
+        and pseudo-division all grow coefficients past 64 bits.
+        """
+        pool, x = self.pool, self.x
+        big = 2**100 + 1
+        p = UniPoly.from_symbolic(pool.integer(big) * x**2 + pool.integer(1), x)
+
+        assert p.leading_coeff == big
+        assert isinstance(p.leading_coeff, int)
+        assert p.coefficients() == [1, 0, big]
+        assert all(isinstance(c, int) for c in p.coefficients())
+        # The two accessors must agree — the bug was that they did not.
+        assert p.coefficients()[-1] == p.leading_coeff
+
+    def test_coefficients_unchanged_for_small_values(self):
+        """The exact path must not perturb the ordinary case."""
+        assert self._make([-5, 3, 1]).coefficients() == [-5, 3, 1]
+        assert self._make([0]).coefficients() in ([], [0])
+
     def test_add(self):
         p = self._make([1, 2])
         q = self._make([3, 4])

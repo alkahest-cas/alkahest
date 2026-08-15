@@ -434,10 +434,18 @@ fn probe_caps(p: &dyn Primitive) -> Capabilities {
         }
     }
 
-    let ball1 = [ArbBall::from_f64(1.0, 128)];
-    let ball2 = [ArbBall::from_f64(1.0, 128), ArbBall::from_f64(2.0, 128)];
-    if p.numeric_ball(&ball1).is_some() || p.numeric_ball(&ball2).is_some() {
-        caps |= Capabilities::NUMERIC_BALL;
+    // The *same* probe sets as `numeric_f64`, deliberately: a primitive whose
+    // two kernels cover the same domain must not be reported as having one and
+    // not the other. Probing balls at `1.0` alone did exactly that to `atanh`,
+    // whose domain is the open interval `(-1, 1)` — it declined the probe point
+    // and lost a `numeric_ball` bit it had earned, while keeping `numeric_f64`
+    // because that probe already tried `0.5`.
+    for args in probe_f64_sets {
+        let balls: Vec<ArbBall> = args.iter().map(|&v| ArbBall::from_f64(v, 128)).collect();
+        if p.numeric_ball(&balls).is_some() {
+            caps |= Capabilities::NUMERIC_BALL;
+            break;
+        }
     }
 
     // diff_forward / diff_reverse / simplify: probe with a fresh pool
@@ -514,6 +522,22 @@ pub mod builtins {
     use crate::kernel::expr::ExprData;
     use crate::kernel::{ExprId, ExprPool};
 
+    /// The single argument of a unary primitive, or `None` if the caller
+    /// supplied a different number of them.
+    ///
+    /// `numeric_ball` is dispatched generically — [`crate::ball::IntervalEval`]
+    /// hands the registry whatever argument list the `Func` node carries — so a
+    /// unary kernel that reached for `args[0]` unconditionally would answer
+    /// `sin(x, y)` with `sin(x)`: a *confidently wrong* rigorous enclosure, the
+    /// one failure mode this subsystem must not have. Declining the arity is
+    /// the honest answer, and it costs the caller only an `E-EVAL-010`.
+    fn unary(args: &[ArbBall]) -> Option<&ArbBall> {
+        match args {
+            [only] => Some(only),
+            _ => None,
+        }
+    }
+
     macro_rules! symbolic_complex_primitive {
         ($type:ident, $name:literal) => {
             pub struct $type;
@@ -568,7 +592,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            Some(args[0].sin())
+            Some(unary(args)?.sin())
         }
 
         fn lean_theorem(&self) -> Option<&'static str> {
@@ -614,7 +638,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            Some(args[0].cos())
+            Some(unary(args)?.cos())
         }
 
         fn lean_theorem(&self) -> Option<&'static str> {
@@ -658,7 +682,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            Some(args[0].exp())
+            Some(unary(args)?.exp())
         }
 
         fn lean_theorem(&self) -> Option<&'static str> {
@@ -703,7 +727,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            args[0].log()
+            unary(args)?.log()
         }
 
         fn lean_theorem(&self) -> Option<&'static str> {
@@ -758,7 +782,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            args[0].sqrt()
+            unary(args)?.sqrt()
         }
 
         fn lean_theorem(&self) -> Option<&'static str> {
@@ -812,7 +836,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            args[0].tan()
+            unary(args)?.tan()
         }
 
         fn lean_theorem(&self) -> Option<&'static str> {
@@ -861,7 +885,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            Some(args[0].sinh())
+            Some(unary(args)?.sinh())
         }
 
         // NOTE: no `lean_theorem` override — see the `tan` primitive above
@@ -904,7 +928,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            Some(args[0].cosh())
+            Some(unary(args)?.cosh())
         }
 
         // NOTE: no `lean_theorem` override — see the `tan` primitive above
@@ -956,7 +980,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            Some(args[0].tanh())
+            Some(unary(args)?.tanh())
         }
 
         // NOTE: no `lean_theorem` override — see the `tan` primitive above
@@ -1010,7 +1034,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            args[0].asin()
+            unary(args)?.asin()
         }
     }
 
@@ -1063,7 +1087,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            args[0].acos()
+            unary(args)?.acos()
         }
     }
 
@@ -1110,7 +1134,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            Some(args[0].atan())
+            Some(unary(args)?.atan())
         }
 
         // NOTE: no `lean_theorem` override — see the `tan` primitive above
@@ -1162,7 +1186,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            Some(args[0].asinh())
+            Some(unary(args)?.asinh())
         }
 
         // NOTE: no `lean_theorem` override — see the `tan` primitive above
@@ -1214,7 +1238,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            args[0].acosh()
+            unary(args)?.acosh()
         }
 
         // NOTE: no `lean_theorem` override — see the `tan` primitive above
@@ -1264,7 +1288,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            args[0].atanh()
+            unary(args)?.atanh()
         }
 
         // NOTE: no `lean_theorem` override — see the `tan` primitive above
@@ -1314,7 +1338,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            Some(args[0].erf())
+            Some(unary(args)?.erf())
         }
     }
 
@@ -1360,7 +1384,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            Some(args[0].erfc())
+            Some(unary(args)?.erfc())
         }
     }
 
@@ -1918,7 +1942,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            Some(args[0].abs_ball())
+            Some(unary(args)?.abs_ball())
         }
     }
 
@@ -2030,7 +2054,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            Some(args[0].floor_ball())
+            Some(unary(args)?.floor_ball())
         }
     }
 
@@ -2052,7 +2076,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            Some(args[0].ceil_ball())
+            Some(unary(args)?.ceil_ball())
         }
     }
 
@@ -2185,11 +2209,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            if args.len() == 1 {
-                args[0].lambert_w0()
-            } else {
-                None
-            }
+            unary(args)?.lambert_w0()
         }
     }
 
@@ -2223,11 +2243,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            if args.len() == 1 {
-                args[0].digamma()
-            } else {
-                None
-            }
+            unary(args)?.digamma()
         }
     }
 
@@ -2271,11 +2287,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            if args.len() == 1 {
-                Some(args[0].bessel_jn(0))
-            } else {
-                None
-            }
+            Some(unary(args)?.bessel_jn(0))
         }
     }
 
@@ -2323,11 +2335,7 @@ pub mod builtins {
         }
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
-            if args.len() == 1 {
-                Some(args[0].bessel_jn(1))
-            } else {
-                None
-            }
+            Some(unary(args)?.bessel_jn(1))
         }
     }
 

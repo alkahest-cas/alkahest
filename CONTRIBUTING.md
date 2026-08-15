@@ -46,13 +46,21 @@ See [`TESTING.md`](TESTING.md) for the full testing strategy (fuzzing, oracle cr
 
 ```bash
 cargo fmt --all
-cargo clippy --all --all-features -- -D warnings
+# One pass per feature set, which is what CI runs. `--all-features` is not the
+# same thing and is not a substitute: it needs LLVM (`jit`) and the CUDA toolkit
+# (`cuda`), so on a machine without them it fails to build rather than reporting
+# lints, and the feature sets that *do* build stop being checked.
+for f in "" egraph parallel cranelift jit groebner-cuda; do
+  cargo clippy --all-targets ${f:+--features $f} -- -D warnings
+done
 uv run ruff check python/ tests/ --fix
 uv run ruff format python/ tests/
 uv run ty check python/alkahest/
 ```
 
-CI enforces all of the above on every PR.
+CI enforces all of the above on every PR. Ruff and `ty` are scoped to `python/`
+and `tests/` — `examples/`, `benchmarks/` and `scripts/` are not linted or run
+by CI, so changes to a public API have to be swept through them by hand.
 
 ## Adding a new mathematical primitive
 

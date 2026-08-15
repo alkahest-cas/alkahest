@@ -661,17 +661,35 @@ fn split_quotient(expr: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
 /// singularity test has to go through the symbolic path; anything short of an
 /// exact zero is treated as "not removable", which is the safe direction.
 fn vanishes_exactly(expr: ExprId, pool: &ExprPool, var: ExprId, at: &Float) -> bool {
-    let Some(rational) = at.to_rational() else {
-        return false;
-    };
-    let (n, d) = rational.into_numer_denom();
-    let point = if d == 1 {
-        pool.integer(n)
-    } else {
-        pool.rational(n, d)
-    };
+    vanishes_exactly_at(expr, pool, &[(var, at.clone(), at.clone())])
+}
+
+/// `expr` with **every** variable of the degenerate box `point` replaced by its
+/// exact rational coordinate, simplified.
+///
+/// Returns `true` only when the result is the literal integer (or rational)
+/// zero — a symbolic proof that `expr` vanishes at that point, of the same kind
+/// [`vanishes_exactly`] provides in one dimension. A `Float` coordinate is a
+/// binary rational and converts exactly, so nothing is rounded on the way in;
+/// a coordinate whose interval is not degenerate names a set rather than a
+/// point and is declined.
+fn vanishes_exactly_at(expr: ExprId, pool: &ExprPool, point: &[FBox]) -> bool {
     let mut mapping = HashMap::new();
-    mapping.insert(var, point);
+    for (var, lo, hi) in point {
+        if lo != hi {
+            return false;
+        }
+        let Some(rational) = lo.to_rational() else {
+            return false;
+        };
+        let (n, d) = rational.into_numer_denom();
+        let value = if d == 1 {
+            pool.integer(n)
+        } else {
+            pool.rational(n, d)
+        };
+        mapping.insert(*var, value);
+    }
     let substituted = subs(expr, &mapping, pool);
     let reduced = simplify(substituted, pool).value;
     match pool.get(reduced) {
@@ -1120,23 +1138,85 @@ impl SignWitnesses {
     }
 }
 
-/// Rigorously evaluate `expr` at one point of the box and report its sign, or
-/// `None` when the enclosure straddles zero or the evaluation refused.
+/// True only for the degenerate enclosure `[0, 0]`.
+///
+/// An enclosure is a superset of the value it describes, so `[0, 0]` — and
+/// *only* `[0, 0]` — pins that value to zero. An enclosure that merely
+/// *contains* zero proves nothing about whether the value is zero, which is why
+/// this is a two-sided test on the outward-rounded [`lb`]/[`ub`] rather than
+/// [`contains_zero`].
+fn is_exact_zero(b: &ArbBall) -> bool {
+    lb(b) == 0 && ub(b) == 0
+}
+
+/// What a rigorous evaluation at a single point of the box established there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PointOutcome {
+    /// The value at that point is **proven** to be exactly zero, so the point
+    /// is a root — and being a point of the (closed) box, it is a root *in* the
+    /// box.
+    Zero,
+    /// The value is proven strictly positive (`true`) or strictly negative
+    /// (`false`).
+    Sign(bool),
+    /// Nothing was proven: the enclosure straddles zero without pinning it, or
+    /// the evaluation refused.
+    Unknown,
+}
+
+/// Rigorously evaluate `expr` at one point of the box and report what that
+/// proves.
 ///
 /// The point is passed as a degenerate box, so the Taylor model collapses to a
 /// ball evaluation and the sign test goes through [`lb`]/[`ub`], which round
 /// outward. A reported sign is therefore a proof, never a rounding artefact.
-fn point_sign(
+///
+/// [`PointOutcome::Zero`] is likewise only ever a proof, by one of two routes:
+///
+/// * the enclosure is the degenerate interval `[0, 0]`, which forces the value
+///   it encloses to be zero — this settles the exactly-representable cases
+///   (`x` at `0`, `x − 1` at `1`, `(x − 1)²` at `1`, `sin x` at `0`), where the
+///   arithmetic is exact and no rounding term is ever added because every
+///   intermediate midpoint is zero; or
+/// * substituting the point's exact rational coordinates and simplifying lands
+///   on the literal `0` — the same symbolic argument the removable-singularity
+///   path already relies on, and the only kind of argument that can prove a
+///   transcendental combination such as `exp(x) − 1` vanishes at `0`, where the
+///   enclosure is `[-ε, ε]` and can never be tightened to a point.
+///
+/// The symbolic route is cross-checked against the enclosure exactly as
+/// [`enclosure_admits_zero`] does elsewhere: a `simplify` that claims an exact
+/// zero which outward-rounded ball arithmetic contradicts would be a simplifier
+/// bug, and the safe response is to prove nothing rather than to certify on top
+/// of it. That check is free here — reaching it means [`determined_sign`]
+/// already declined, which is precisely `contains_zero`.
+///
+/// `symbolic` selects whether the second route is attempted. It substitutes and
+/// simplifies, which interns a fresh copy of `expr` in the pool, so callers
+/// that run this once per bisection leave it off; the box's own distinguished
+/// points — endpoints, corners, centre — are where a root "sitting on the box"
+/// can be, and they are a fixed, small set.
+fn point_outcome(
     expr: ExprId,
     pool: &ExprPool,
     point: &[FBox],
     order: usize,
     prec: u32,
-) -> Option<bool> {
-    match taylor_range(expr, pool, point, order, prec) {
-        Ok(r) => determined_sign(&r),
-        Err(_) => None,
+    symbolic: bool,
+) -> PointOutcome {
+    let Ok(r) = taylor_range(expr, pool, point, order, prec) else {
+        return PointOutcome::Unknown;
+    };
+    if let Some(s) = determined_sign(&r) {
+        return PointOutcome::Sign(s);
     }
+    if is_exact_zero(&r) {
+        return PointOutcome::Zero;
+    }
+    if symbolic && contains_zero(&r) && vanishes_exactly_at(expr, pool, point) {
+        return PointOutcome::Zero;
+    }
+    PointOutcome::Unknown
 }
 
 /// Degenerate boxes for the centre, the per-axis endpoints and (in low
@@ -1186,10 +1266,22 @@ fn seed_points(boxes0: &[FBox], prec: u32) -> Vec<Vec<FBox>> {
         .collect()
 }
 
-/// Search for a proof that `expr` has a root in the box, by finding one point
-/// where it is provably positive and one where it is provably negative.
+/// Search for a proof that `expr` has a root in the box.
 ///
-/// # Why this is a proof
+/// Two independent proofs are looked for, and either one suffices:
+///
+/// 1. **A point proven to be a root.** The box is closed, so a point of it at
+///    which `expr` is *proven* zero — by a degenerate `[0, 0]` enclosure or by
+///    exact symbolic substitution, see [`point_outcome`] — is a root in the
+///    box, full stop. No continuity argument, no sign change, and no relation
+///    between that point and any other is needed. This is what settles a root
+///    sitting exactly on an endpoint (`x` on `[0, 1]`), where the function has
+///    one sign throughout the interior and the search below provably cannot
+///    find a witness pair, and what settles a root of even multiplicity that a
+///    sign change cannot see either (`(x − 1)²` on `[0, 1]`).
+/// 2. **A sign change**, described next.
+///
+/// # Why the sign-change route is a proof
 ///
 /// The caller must already have obtained a successful [`bound_on_box`] over
 /// the same box. That is the continuity certificate: the branch-and-bound
@@ -1228,9 +1320,15 @@ fn root_exists_witness(
     let mut w = SignWitnesses::default();
 
     for point in seed_points(boxes0, prec) {
-        w.record(point_sign(expr, pool, &point, order, prec));
-        if w.both() {
-            return true;
+        match point_outcome(expr, pool, &point, order, prec, true) {
+            PointOutcome::Zero => return true,
+            PointOutcome::Sign(s) => {
+                w.record(Some(s));
+                if w.both() {
+                    return true;
+                }
+            }
+            PointOutcome::Unknown => {}
         }
     }
 
@@ -1255,6 +1353,12 @@ fn root_exists_witness(
                 }
                 continue;
             }
+            // An enclosure of the *range* over a whole sub-box that is the
+            // degenerate `[0, 0]` proves `expr` vanishes identically there, and
+            // the sub-box is non-empty — so every one of its points is a root.
+            if is_exact_zero(&r) {
+                return true;
+            }
         }
 
         let centre: Vec<FBox> = b
@@ -1264,9 +1368,15 @@ fn root_exists_witness(
                 (*v, m.clone(), m)
             })
             .collect();
-        w.record(point_sign(expr, pool, &centre, order, prec));
-        if w.both() {
-            return true;
+        match point_outcome(expr, pool, &centre, order, prec, false) {
+            PointOutcome::Zero => return true,
+            PointOutcome::Sign(s) => {
+                w.record(Some(s));
+                if w.both() {
+                    return true;
+                }
+            }
+            PointOutcome::Unknown => {}
         }
 
         if max_dim_width(&b, prec) <= floor {
@@ -1286,20 +1396,29 @@ fn root_exists_witness(
 /// - [`Verdict::True`] when the rigorous range enclosure of `expr` over the
 ///   whole box does not contain zero — `expr` is certified to have no root
 ///   anywhere in the box.
-/// - [`Verdict::False`] when the box is proven free of poles/branch cuts (the
-///   full-box enclosure succeeded, so `expr` is continuous on the box) *and*
-///   two points of the box are found at which `expr` is rigorously proven to
-///   have opposite signs — a root is then certified to exist by the
-///   intermediate value theorem along the segment joining them, which stays in
-///   the box because a box is convex. The points are looked for by subdividing
-///   the box, so an even number of roots no longer defeats the test: `x² − 2`
-///   on `[-2, 2]` has two roots and two positive endpoints, and is settled at
-///   the first bisection.
-/// - [`Verdict::Undecided`] otherwise: the enclosure straddles zero and the
-///   search found no pair of opposite-signed points within the budget. This is
-///   the honest answer for a root that never produces a sign change at all —
-///   a double root such as `(x − 1)²` — and it is never collapsed into either
-///   of the other two verdicts.
+/// - [`Verdict::False`] when a root is *certified to exist* in the box, by
+///   either of two independent arguments (see [`root_exists_witness`]):
+///   - **a point of the box proven to be a root** — its value pinned to zero by
+///     a degenerate `[0, 0]` enclosure or by exact symbolic substitution. The
+///     box is closed, so this covers a root sitting exactly on an endpoint
+///     (`x` on `[0, 1]`, `x − 1` on `[0, 1]`) and a root of even multiplicity
+///     that produces no sign change at all (`(x − 1)²` on `[0, 1]`); or
+///   - **a sign change**: the box is proven free of poles/branch cuts (the
+///     full-box enclosure succeeded, so `expr` is continuous on the box) *and*
+///     two points of the box are found at which `expr` is rigorously proven to
+///     have opposite signs — a root then exists by the intermediate value
+///     theorem along the segment joining them, which stays in the box because
+///     a box is convex. The points are looked for by subdividing the box, so
+///     an even number of roots does not defeat the test: `x² − 2` on `[-2, 2]`
+///     has two roots and two positive endpoints, and is settled at the first
+///     bisection.
+/// - [`Verdict::Undecided`] otherwise: the enclosure straddles zero, no point
+///   of the box was *proven* to be a root, and the search found no pair of
+///   opposite-signed points within the budget. An enclosure that merely
+///   *contains* zero is never enough — a value known only to lie in `[-ε, ε]`
+///   is not a proven root — so a function that grazes zero to within the
+///   working precision without provably touching it stays `Undecided`, and it
+///   is never collapsed into either of the other two verdicts.
 ///
 /// Propagates a [`ValidatedError`] (refuses) exactly when
 /// [`bound_on_box`] would: unsupported primitives, unbound symbols, or a
@@ -2290,10 +2409,40 @@ mod tests {
 
     #[test]
     fn no_roots_undecided_for_a_multivariate_tangential_zero() {
-        // (x-1/2)² + (y-1/2)² is zero at exactly one point of [0,1]² and
+        // (x-1/3)² + (y-1/3)² is zero at exactly one point of [0,1]² and
         // positive everywhere else, so no sign-change witness can exist. The
         // enclosure straddles zero, so `True` is unavailable too: `Undecided`
         // is the only honest answer and must not collapse either way.
+        //
+        // The zero sits at a point no search this module performs can name —
+        // seed points and bisection midpoints are all dyadic — so the
+        // point-root proof cannot reach it either. That is deliberate: it is
+        // what keeps this test about the *absence* of a proof rather than
+        // about arithmetic luck. When the tangential zero does land on a point
+        // the search visits, the honest verdict changes; see
+        // `no_roots_false_for_a_tangential_zero_at_a_point_the_search_visits`.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let third = pool.rational(1_i32, 3_i32);
+        let dx = sub(&pool, x, third);
+        let dy = sub(&pool, y, third);
+        let e = pool.add(vec![pool.mul(vec![dx, dx]), pool.mul(vec![dy, dy])]);
+        let cheap = BoundOptions {
+            max_subdivisions: 64,
+            ..opts()
+        };
+        let v = verified_no_roots(e, &pool, &[(x, 0.0, 1.0), (y, 0.0, 1.0)], &cheap).unwrap();
+        assert_eq!(v, Verdict::Undecided);
+    }
+
+    /// The same shape, with its single zero at the centre of the box — a point
+    /// the seed sweep evaluates. Substituting `x = y = 1/2` and simplifying
+    /// lands on the literal `0`, which *proves* the value there is zero, and
+    /// the centre is a point of the box. `False` is then a certificate, not the
+    /// guess the sign-change search would have had to make.
+    #[test]
+    fn no_roots_false_for_a_tangential_zero_at_a_point_the_search_visits() {
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
         let y = pool.symbol("y", Domain::Real);
@@ -2306,7 +2455,7 @@ mod tests {
             ..opts()
         };
         let v = verified_no_roots(e, &pool, &[(x, 0.0, 1.0), (y, 0.0, 1.0)], &cheap).unwrap();
-        assert_eq!(v, Verdict::Undecided);
+        assert_eq!(v, Verdict::False);
     }
 
     /// `x² - 2` on every box from the issue-13 table, plus the product that
@@ -2335,6 +2484,123 @@ mod tests {
         }
     }
 
+    /// A root sitting exactly *on* an endpoint of the box.
+    ///
+    /// Subdivision provably cannot settle these: `x` on `[0, 1]` is
+    /// non-negative throughout, so no negative witness exists anywhere in the
+    /// box and the IVT search must come back empty however long it runs. The
+    /// proof is not a search at all — the box is closed, `x = 0` is a point of
+    /// it, and `0` is exactly zero there.
+    #[test]
+    fn no_roots_false_for_a_root_on_a_box_endpoint() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        for (expr, lo, hi, label) in [
+            (x, 0.0, 1.0, "x on [0,1] (root at the left endpoint)"),
+            (
+                sub(&pool, x, pool.integer(1_i32)),
+                0.0,
+                1.0,
+                "x-1 on [0,1] (root at the right endpoint)",
+            ),
+            (
+                pool.func("sin", vec![x]),
+                0.0,
+                1.0,
+                "sin on [0,1] (root at the left endpoint)",
+            ),
+            (
+                pool.func("log", vec![x]),
+                1.0,
+                2.0,
+                "log on [1,2] (root at the left endpoint)",
+            ),
+            (
+                sub(&pool, pool.func("exp", vec![x]), pool.integer(1_i32)),
+                0.0,
+                1.0,
+                "exp-1 on [0,1] (root at the left endpoint)",
+            ),
+        ] {
+            let v = verified_no_roots(expr, &pool, &[(x, lo, hi)], &opts()).unwrap();
+            assert_eq!(v, Verdict::False, "{label}");
+        }
+    }
+
+    /// The other direction, and the one that keeps `False` a certificate: an
+    /// enclosure at an endpoint that merely *straddles* zero proves nothing.
+    ///
+    /// `exp(x) − 1 + 10⁻⁴⁰` is strictly positive on `[0, 1]` — it has no root
+    /// at all — but its value at `x = 0` is `10⁻⁴⁰`, far below the `2⁻¹²⁸`-scale
+    /// width of the enclosure there, so the enclosure contains zero. `True` is
+    /// therefore out of reach, and `False` must **not** be claimed: containing
+    /// zero is not being zero. `Undecided` is the only sound answer.
+    #[test]
+    fn no_roots_undecided_when_the_endpoint_enclosure_only_straddles_zero() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        // 10^40, written out so the test does not depend on an integer-power
+        // helper.
+        let ten_to_40 =
+            rug::Integer::from_str_radix("10000000000000000000000000000000000000000", 10).unwrap();
+        let tiny = pool.rational(rug::Integer::from(1), ten_to_40);
+        let e = pool.add(vec![pool.func("exp", vec![x]), pool.integer(-1_i32), tiny]);
+        let v = verified_no_roots(e, &pool, &[(x, 0.0, 1.0)], &opts()).unwrap();
+        assert_eq!(v, Verdict::Undecided);
+    }
+
+    /// Randomised sweep over expressions whose roots are known exactly.
+    ///
+    /// Every box endpoint and every root is a multiple of 1/4, so roots land on
+    /// endpoints, on bisection midpoints and strictly between them — the three
+    /// cases the two proof routes divide up. The assertion is one-sided in each
+    /// direction and is the whole contract: `True` may only be returned when
+    /// there is genuinely no root in the closed box, `False` only when there
+    /// genuinely is one. `Undecided` is always permitted.
+    #[test]
+    fn no_roots_verdict_is_never_wrong_on_a_randomised_sweep() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = move |n: i64| -> i64 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 33) as i64 % n
+        };
+        let cheap = BoundOptions {
+            max_subdivisions: 64,
+            tol: 1e-6,
+            ..opts()
+        };
+
+        for _ in 0..120 {
+            // Roots and box endpoints on the same quarter-integer grid.
+            let (r1, r2) = (next(17) - 8, next(17) - 8);
+            let lo_q = next(17) - 8;
+            let hi_q = lo_q + 1 + next(8);
+            let (lo, hi) = (lo_q as f64 / 4.0, hi_q as f64 / 4.0);
+
+            let d1 = sub(&pool, x, pool.rational(r1, 4_i64));
+            let d2 = sub(&pool, x, pool.rational(r2, 4_i64));
+            for (expr, roots) in [(d1, vec![r1]), (pool.mul(vec![d1, d2]), vec![r1, r2])] {
+                let has_root = roots.iter().any(|r| *r >= lo_q && *r <= hi_q);
+                let v = verified_no_roots(expr, &pool, &[(x, lo, hi)], &cheap).unwrap();
+                match v {
+                    Verdict::True => assert!(
+                        !has_root,
+                        "certified root-free but roots {roots:?}/4 are in [{lo}, {hi}]"
+                    ),
+                    Verdict::False => assert!(
+                        has_root,
+                        "certified a root but roots {roots:?}/4 are outside [{lo}, {hi}]"
+                    ),
+                    Verdict::Undecided => {}
+                }
+            }
+        }
+    }
+
     #[test]
     fn no_roots_stays_true_where_it_was_true() {
         // The witness search must never be reached when the enclosure already
@@ -2354,16 +2620,37 @@ mod tests {
 
     #[test]
     fn no_roots_undecided_for_a_double_root_that_cannot_be_witnessed() {
-        // (x-1)² has a genuine root at x = 1 inside [0,2], but it never
+        // (x-1/3)² has a genuine root at x = 1/3 inside [0,2], but it never
         // changes sign, so no IVT witness exists and none may be invented:
-        // turning this into `False` would be a lucky guess, not a proof.
-        // `True` is also unavailable (the enclosure contains zero).
+        // turning this into `False` on the strength of the search having got
+        // *close* would be a lucky guess, not a proof. `True` is also
+        // unavailable (the enclosure contains zero). The root is at a
+        // non-dyadic point, so no seed point or bisection midpoint ever lands
+        // on it and the point-root proof cannot fire either.
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let d = sub(&pool, x, pool.rational(1_i32, 3_i32));
+        let e = pool.mul(vec![d, d]);
+        let v = verified_no_roots(e, &pool, &[(x, 0.0, 2.0)], &opts()).unwrap();
+        assert_eq!(v, Verdict::Undecided);
+    }
+
+    /// The same double root, this time at a point the seed sweep visits.
+    /// A root of even multiplicity produces no sign change anywhere, so the
+    /// IVT search provably cannot settle it — but `(1-1)² = 0` is an exact
+    /// symbolic identity at a point of the box, which settles it outright.
+    #[test]
+    fn no_roots_false_for_a_double_root_proven_at_a_point() {
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
         let d = sub(&pool, x, pool.integer(1_i32));
         let e = pool.mul(vec![d, d]);
-        let v = verified_no_roots(e, &pool, &[(x, 0.0, 2.0)], &opts()).unwrap();
-        assert_eq!(v, Verdict::Undecided);
+        // x = 1 is the centre of [0, 2] and the right endpoint of [0, 1]:
+        // interior and boundary alike are points of the closed box.
+        for (lo, hi) in [(0.0, 2.0), (0.0, 1.0), (1.0, 3.0)] {
+            let v = verified_no_roots(e, &pool, &[(x, lo, hi)], &opts()).unwrap();
+            assert_eq!(v, Verdict::False, "(x-1)^2 on [{lo}, {hi}]");
+        }
     }
 
     #[test]

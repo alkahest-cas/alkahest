@@ -18,6 +18,14 @@ import pytest
 #: call is a bug, not a slow machine.
 HEAVY_TIMEOUT = 120
 
+#: Ceiling on the **CPU** time a bounded cooperative callee may burn, in
+#: milliseconds.  See
+#: ``test_run_with_wall_fallback_bounds_a_cooperative_callee`` for why the bound
+#: is measured in CPU time rather than wall-clock time.  Measured cost of that
+#: case on a 12-core box: 2.7-5.3 s idle, 8.8 s under 2x oversubscription, so
+#: this leaves ~7x headroom against a saturated machine.
+COOPERATIVE_CALLEE_CPU_BOUND_MS = 60_000
+
 
 @pytest.fixture
 def pool() -> ak.ExprPool:
@@ -551,15 +559,39 @@ def test_run_with_wall_fallback_bounds_a_cooperative_callee(pool, x):
     cooperative checkpoint stops on its own budget rather than only on the
     global cancel flag. Unbudgeted this integrand does not come back at all
     (see ``test_wall_budget_stops_a_hard_trig_integral``); the loose bound is
-    the property under test."""
+    the property under test.
+
+    The bound is on **CPU** time, not wall-clock time. It used to read
+    ``elapsed_ms < 20 * 300`` against a call that measurably costs 2.7-5.3 s
+    when it works -- a 13% margin -- so the test went red whenever the machine
+    was busy, which is a fact about the box and not about the property. Wall
+    time here is ``wall_ms`` (a real-time timer, so it does not stretch) plus
+    the join of a worker that is still running, and contention inflates that
+    second term without the callee doing any more work. Measured on one box,
+    idle vs. 24 spinners on 12 cores: wall 5.3 s -> 24.9 s (4x over the old
+    bound, a guaranteed failure), CPU 5.3 s -> 8.8 s. CPU time is not perfectly
+    load-free -- contention costs some real cycles -- but it tracks the work
+    done rather than the waiting, which is the thing under test, and it leaves
+    real headroom under ``COOPERATIVE_CALLEE_CPU_BOUND_MS``.
+
+    The property is still enforced from both ends: a callee that stops seeing
+    the budget burns CPU without limit and trips the assertion, and one that
+    stops coming back at all trips the ``timeout`` marker above.
+    """
     s = ak.sin(x)
     hard = ak.cos(x) * s**60 / (s**31 + s + 1)
-    started = time.perf_counter()
+    cpu_started = time.process_time()
     with pytest.raises(ak.BudgetExceededError) as excinfo:
         ak.run_with_wall_fallback(ak.integrate, hard, x, budget=ak.Budget(wall_ms=300))
-    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    cpu_ms = (time.process_time() - cpu_started) * 1000.0
     assert excinfo.value.code == "E-BUDGET-001"
-    assert elapsed_ms < 20 * 300
+    # The call ended on the wall-clock fallback's own join, not on some other
+    # budget check that happens to raise the same code.
+    assert "returned control after" in str(excinfo.value)
+    assert cpu_ms < COOPERATIVE_CALLEE_CPU_BOUND_MS, (
+        f"the callee burned {cpu_ms:.0f} ms of CPU against a 300 ms budget: the "
+        "wall-clock fallback is no longer bounding a cooperative callee"
+    )
 
 
 @pytest.mark.timeout(HEAVY_TIMEOUT)

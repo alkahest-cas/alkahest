@@ -3247,8 +3247,38 @@ impl PyUniPoly {
         })
     }
 
-    fn coefficients(&self) -> Vec<i64> {
-        self.inner.coefficients_i64()
+    /// Coefficients in ascending degree order, as exact Python `int`s.
+    ///
+    /// Lossless for coefficients of any size. This used to go through
+    /// `coefficients_i64()`, which does not merely saturate — it returned `0`
+    /// for anything past `i64`, so `2**100 * x**2 + 1` came back as
+    /// `[1, 0, 0]`: a quadratic reading as the constant `1`, with no exception
+    /// and no flag. That is exactly the silent-error class this project gates
+    /// against, and it is reachable from ordinary use, since `factor_z`,
+    /// resultants and pseudo-division all grow coefficients past 64 bits.
+    fn coefficients(&self, py: Python<'_>) -> PyResult<Vec<PyObject>> {
+        let int_cls = py.get_type_bound::<PyInt>();
+        self.inner
+            .coefficients()
+            .into_iter()
+            .map(|c| Ok(int_cls.call1((c.to_string(),))?.into_py(py)))
+            .collect()
+    }
+
+    /// Leading (highest-degree) coefficient, as an exact Python `int`.
+    ///
+    /// `0` for the zero polynomial, matching `degree == -1` there.  Lossless
+    /// for coefficients of any size, as `coefficients()` also now is — so both
+    /// are safe on the output of `factor_z`, resultants and pseudo-division,
+    /// where the coefficients grow past 64 bits.
+    ///
+    /// A property, not a method: it is a single FLINT coefficient read.
+    #[getter]
+    fn leading_coeff(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let int_cls = py.get_type_bound::<PyInt>();
+        Ok(int_cls
+            .call1((self.inner.leading_coeff().to_string(),))?
+            .into_py(py))
     }
 
     /// Degree of the polynomial (`-1` for the zero polynomial).

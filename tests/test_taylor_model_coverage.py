@@ -76,10 +76,15 @@ def test_taylor_model_flag_agrees_with_bound_on_box(row):
 def test_the_flag_is_not_a_restatement_of_numeric_ball():
     """The bug this fixes: `numeric_ball` was read as the coverage flag.
 
-    `numeric_ball` is *not* wrong for these ten — they really do have Arb ball
-    arithmetic (`alkahest-core/src/primitive/taylor_support.rs` pins that in
-    Rust). It answers a different question, which is why reading it as the
+    `numeric_ball` is *not* wrong for these eleven — they really do have Arb
+    ball arithmetic (`alkahest-core/src/primitive/taylor_support.rs` pins that
+    in Rust). It answers a different question, which is why reading it as the
     validated-bounds coverage bit cost a whole workload.
+
+    `atanh` joined the set when the capability probe stopped testing ball
+    kernels at `1.0` only: its domain is the open interval `(-1, 1)`, so it
+    declined the sole probe point and lost a bit it had earned, while keeping
+    `numeric_f64` because that probe already tried `0.5`.
     """
     rows = {row["name"]: row for row in _primitive_rows()}
     ball_only = {
@@ -88,6 +93,7 @@ def test_the_flag_is_not_a_restatement_of_numeric_ball():
     assert ball_only == {
         "acosh",
         "asinh",
+        "atanh",
         "bessel_j0",
         "bessel_j1",
         "ceil",

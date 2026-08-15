@@ -64,9 +64,11 @@
 
 use crate::kernel::expr::PredicateKind;
 use crate::kernel::{ExprData, ExprId, ExprPool};
+use crate::primitive::PrimitiveRegistry;
 use rug::{ops::Pow, Float};
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::OnceLock;
 
 // ---------------------------------------------------------------------------
 // Precision constant
@@ -765,20 +767,35 @@ impl ArbBall {
     }
 
     /// Bessel function of the first kind Jₙ(x) for integer order `n`.
+    ///
+    /// # Why this is midpoint + Lipschitz rather than an endpoint hull
+    ///
+    /// Jₙ oscillates, so `hull(Jₙ(lo), Jₙ(hi))` is **not** an enclosure of its
+    /// range: on `[-1, 1]` the two endpoints agree (`J₀(±1) ≈ 0.7652`) and the
+    /// hull collapses to a point that excludes `J₀(0) = 1`. An endpoint hull is
+    /// only valid for a monotone function, which every other kernel here that
+    /// uses one (`exp`, `log`, `sqrt`, `tanh`, the inverse trig family,
+    /// `digamma` between its poles, `floor`, `ceil`) is on its stated domain.
+    ///
+    /// The mean value theorem gives a sound enclosure instead:
+    /// `|Jₙ(x) − Jₙ(m)| ≤ L·|x − m|` with `L = sup|Jₙ′|`. For every integer `n`
+    /// and every real `x`, `|Jₙ(x)| ≤ 1`; with `J₀′ = −J₁` and
+    /// `Jₙ′ = (Jₙ₋₁ − Jₙ₊₁)/2` for `n ≥ 1` that yields `|Jₙ′| ≤ 1`, so `L = 1`
+    /// is rigorous at every order (and `J₋ₙ = (−1)ⁿ Jₙ` covers negative `n`).
+    /// The bound is loose — the true suprema are ≈ 0.582 for `J₀` and ≈ 0.582
+    /// for `J₁` — but it is a *bound*, which the hull was not.
     pub fn bessel_jn(&self, n: i32) -> Self {
         let prec = self.prec;
-        let mut flo = Float::with_val(prec, self.lo().to_f64());
-        flo.jn_mut(n);
-        let mut fhi = Float::with_val(prec, self.hi().to_f64());
-        fhi.jn_mut(n);
-        let sum = Float::with_val(prec, &flo + &fhi);
-        let diff = Float::with_val(prec, &fhi - &flo);
+        // Evaluate at the midpoint at full working precision (MPFR's `jn` is
+        // correctly rounded, so the error is under half an ulp and is absorbed
+        // by `add_rounding_error` below).
+        let mut mid = Float::with_val(prec, &self.mid);
+        mid.jn_mut(n);
         let mut b = ArbBall {
-            mid: sum / 2_f64,
-            rad: diff / 2_f64,
+            mid,
+            rad: self.rad.clone(),
             prec,
         };
-        // Endpoints are rounded to `prec`; see `exp`.
         b.add_rounding_error();
         b
     }
@@ -883,6 +900,19 @@ impl fmt::Display for AcbBall {
 // ---------------------------------------------------------------------------
 // IntervalEval — expression evaluator using ArbBall
 // ---------------------------------------------------------------------------
+
+/// Lazily-initialised, process-wide [`PrimitiveRegistry`] used to evaluate
+/// `ExprData::Func` nodes.
+///
+/// Building the registry probes every primitive's capability bundle, which is
+/// far too much work to repeat per `Func` node; the same singleton pattern is
+/// used by the JIT's tree-walking interpreter (`crate::jit::registry`).
+/// Construction cannot re-enter this function: `probe_caps` calls
+/// `numeric_ball` on the primitives directly, never through `IntervalEval`.
+fn registry() -> &'static PrimitiveRegistry {
+    static REGISTRY: OnceLock<PrimitiveRegistry> = OnceLock::new();
+    REGISTRY.get_or_init(PrimitiveRegistry::default_registry)
+}
 
 /// Evaluates a symbolic expression using rigorous ball arithmetic.
 ///
@@ -1020,40 +1050,24 @@ impl IntervalEval {
                 }
                 Some(b.pow_f(&e))
             }
-            ExprData::Func { name, args } if args.len() == 1 => {
-                let x = self.eval_node(args[0], pool)?;
-                match name.as_str() {
-                    "sin" => Some(x.sin()),
-                    "cos" => Some(x.cos()),
-                    "exp" => Some(x.exp()),
-                    "log" => x.log(),
-                    "sqrt" => x.sqrt(),
-                    // Every arm below is an already-implemented, outward-rounded
-                    // `ArbBall` kernel that was simply not reachable from an
-                    // expression. Leaving them unwired made `eval` answer `None`
-                    // for `tan(x)` and friends, which callers that read `None`
-                    // as "cannot bound this" — the zero test in
-                    // `crate::matrix`, `crate::validated::bounds` — had to treat
-                    // as a refusal.
-                    "tan" => x.tan(),
-                    "sinh" => Some(x.sinh()),
-                    "cosh" => Some(x.cosh()),
-                    "tanh" => Some(x.tanh()),
-                    "asin" => x.asin(),
-                    "acos" => x.acos(),
-                    "atan" => Some(x.atan()),
-                    "asinh" => Some(x.asinh()),
-                    "acosh" => x.acosh(),
-                    "atanh" => x.atanh(),
-                    "erf" => Some(x.erf()),
-                    "erfc" => Some(x.erfc()),
-                    "abs" => Some(x.abs_ball()),
-                    "floor" => Some(x.floor_ball()),
-                    "ceil" => Some(x.ceil_ball()),
-                    "digamma" => x.digamma(),
-                    "lambert_w" => x.lambert_w0(),
-                    _ => None,
+            // Every `Func` node is dispatched through the primitive registry's
+            // `numeric_ball` slot, so the set of functions interval evaluation
+            // accepts *is* the set the registry advertises as
+            // `Capabilities::NUMERIC_BALL` — by construction, not by
+            // agreement. The hand-written match this replaces had drifted:
+            // `bessel_j0`/`bessel_j1` had outward-rounded ball kernels and a
+            // `numeric_ball: true` capability bit, and were still refused here
+            // with `E-EVAL-010` for no reason anyone had recorded.
+            //
+            // Arity is the primitive's own business: each kernel declines an
+            // argument list it does not have a rule for (see `builtins::unary`),
+            // which is what makes dispatching the whole list safe.
+            ExprData::Func { name, args } if !args.is_empty() => {
+                let mut vals = Vec::with_capacity(args.len());
+                for &a in &args {
+                    vals.push(self.eval_node(a, pool)?);
                 }
+                registry().numeric_ball(&name, &vals)
             }
             ExprData::Piecewise { branches, default } => {
                 for (c, v) in branches {
@@ -1250,6 +1264,80 @@ mod tests {
         assert!(r.rad_f64() < 1e-30, "rad={}", r.rad_f64());
     }
 
+    /// The dispatch is *derived* from the registry, so this cannot drift the
+    /// way the hand-written match did. Pin it anyway: the property that used to
+    /// be violated (a primitive advertising `numeric_ball` that interval
+    /// evaluation refuses) is the whole point, and a future refactor that
+    /// reintroduces a list here fails this test rather than a user's proof.
+    #[test]
+    fn interval_eval_accepts_every_primitive_that_advertises_numeric_ball() {
+        use crate::primitive::{Capabilities, PrimitiveRegistry};
+        let reg = PrimitiveRegistry::default_registry();
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        // No single probe point is in every kernel's domain — `acosh` needs
+        // `x ≥ 1` and `atanh` needs `|x| < 1` — so a primitive counts as
+        // reachable if *some* probe evaluates. A domain refusal is a different
+        // answer from "I have no rule for this name", and only the second is
+        // the coverage gap under test.
+        let probes = [1.5_f64, 0.5];
+        let refused: Vec<String> = reg
+            .iter()
+            .filter(|(_, caps)| caps.contains(Capabilities::NUMERIC_BALL))
+            .filter(|(name, _)| {
+                let call = pool.func(*name, vec![x]);
+                probes.iter().all(|&probe| {
+                    let mut ev = IntervalEval::new(128);
+                    ev.bind(x, ArbBall::from_f64(probe, 128));
+                    ev.eval(call, &pool).is_none()
+                })
+            })
+            .map(|(name, _)| name.to_string())
+            .collect();
+        assert!(
+            refused.is_empty(),
+            "these primitives advertise numeric_ball but interval evaluation \
+             refuses them: {refused:?}"
+        );
+    }
+
+    /// The two the audit was opened for, pinned by name and by value.
+    #[test]
+    fn interval_eval_evaluates_bessel() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let mut ev = IntervalEval::new(128);
+        ev.bind(x, ArbBall::from_f64(1.0, 128));
+        let j0 = ev.eval(pool.func("bessel_j0", vec![x]), &pool).unwrap();
+        let j1 = ev.eval(pool.func("bessel_j1", vec![x]), &pool).unwrap();
+        // The enclosure at an exact point is far tighter than an `f64` literal,
+        // so compare midpoints rather than asking it to `contain` one.
+        assert!(
+            (j0.mid_f64() - 0.765_197_686_557_966_5).abs() < 1e-15,
+            "J0(1) = {j0}"
+        );
+        assert!(
+            (j1.mid_f64() - 0.440_050_585_744_933_5).abs() < 1e-15,
+            "J1(1) = {j1}"
+        );
+        assert!(j0.rad_f64() < 1e-30 && j1.rad_f64() < 1e-30);
+    }
+
+    /// A unary kernel handed the wrong number of arguments must decline, not
+    /// quietly bound the first one: a rigorous enclosure of the wrong function
+    /// is the worst answer this module can give.
+    #[test]
+    fn interval_eval_refuses_a_unary_primitive_at_the_wrong_arity() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let mut ev = IntervalEval::new(128);
+        ev.bind(x, ArbBall::from_f64(1.0, 128));
+        ev.bind(y, ArbBall::from_f64(2.0, 128));
+        assert!(ev.eval(pool.func("sin", vec![x, y]), &pool).is_none());
+        assert!(ev.eval(pool.func("sin", vec![]), &pool).is_none());
+    }
+
     #[test]
     fn acb_modulus() {
         // |3 + 4i| = 5
@@ -1300,6 +1388,60 @@ mod rounding_soundness_tests {
             zero_radius.is_empty(),
             "these ops claim an irrational result is exact: {zero_radius:?}"
         );
+    }
+
+    /// Jₙ oscillates, so the endpoint hull `bessel_jn` used to take was not an
+    /// enclosure: on `[-1, 1]` both endpoints give `J₀(±1) ≈ 0.7652`, the hull
+    /// collapsed to that point, and `J₀(0) = 1` — the maximum of the function —
+    /// fell outside the "rigorous" ball.
+    #[test]
+    fn bessel_encloses_an_interior_extremum() {
+        let b = ArbBall::from_midpoint_radius(0.0, 1.0, PREC); // [-1, 1]
+        let j0 = b.bessel_jn(0);
+        assert!(j0.contains(1.0), "J0 on [-1,1] misses its maximum: {j0}");
+        assert!(j0.contains(0.7651976865579666), "{j0}");
+
+        // Same failure one period out, where the endpoints straddle a zero
+        // rather than a peak.
+        let b = ArbBall::from_midpoint_radius(3.0, 1.0, PREC); // [2, 4]
+        let j1 = b.bessel_jn(1);
+        for x in [2.0_f64, 2.5, 3.0, 3.5, 4.0] {
+            let mut v = Float::with_val(PREC, x);
+            v.jn_mut(1);
+            assert!(j1.contains(v.to_f64()), "J1({x}) outside {j1}");
+        }
+    }
+
+    /// Randomised enclosure check: sampling the true function inside the ball
+    /// must never escape the reported enclosure.
+    #[test]
+    fn bessel_enclosure_holds_on_random_intervals() {
+        let mut seed = 0x2545_F491_4F6C_DD1D_u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..200 {
+            let centre = (next() - 0.5) * 40.0;
+            let radius = next() * 5.0;
+            for n in [0_i32, 1] {
+                let ball = ArbBall::from_midpoint_radius(centre, radius, PREC);
+                let out = ball.bessel_jn(n);
+                for k in 0..=20 {
+                    let x = centre - radius + 2.0 * radius * (k as f64 / 20.0);
+                    let mut v = Float::with_val(PREC, x);
+                    v.jn_mut(n);
+                    assert!(
+                        out.contains(v.to_f64()),
+                        "J{n}({x}) = {v} escapes {out} for [{}, {}]",
+                        centre - radius,
+                        centre + radius
+                    );
+                }
+            }
+        }
     }
 
     /// The radius must stay at the working-precision scale, not balloon.

@@ -309,10 +309,10 @@ def test_no_roots_true_cases_stay_true(build, lo, hi):
     ("build", "lo", "hi", "why"),
     [
         (
-            lambda pool, x: (x - pool.integer(1)) * (x - pool.integer(1)),
+            lambda pool, x: (x - pool.rational(1, 3)) * (x - pool.rational(1, 3)),
             0.0,
             2.0,
-            "double root at x=1: no sign change anywhere",
+            "double root at x=1/3: no sign change anywhere",
         ),
         (
             lambda pool, x: (x * x - pool.integer(1)) * (x * x - pool.integer(1)),
@@ -324,12 +324,65 @@ def test_no_roots_true_cases_stay_true(build, lo, hi):
 )
 def test_a_root_that_cannot_be_witnessed_stays_undecided(build, lo, hi, why):
     """These expressions *do* have roots in the box, but they never change
-    sign, so no intermediate-value witness exists. `"undecided"` is the honest
-    answer; reporting `"false"` here would be a guess dressed as a proof."""
+    sign, so no intermediate-value witness exists, and no point the search
+    evaluates is *proven* to be a root either — the search only ever visits
+    endpoints, corners and repeated midpoints, all of which are dyadic.
+    `"undecided"` is the honest answer; reporting `"false"` here would be a
+    guess dressed as a proof."""
     pool = ak.ExprPool()
     x = pool.symbol("x")
 
     assert ak.verified_no_roots(build(pool, x), [(x, lo, hi)]) == "undecided", why
+
+
+@pytest.mark.parametrize(
+    ("build", "lo", "hi", "why"),
+    [
+        (lambda pool, x: x, 0.0, 1.0, "root at the left endpoint"),
+        (lambda pool, x: x - pool.integer(1), 0.0, 1.0, "root at the right endpoint"),
+        (lambda pool, x: ak.sin(x), 0.0, 1.0, "sin vanishes at the left endpoint"),
+        (lambda pool, x: ak.log(x), 1.0, 2.0, "log vanishes at the left endpoint"),
+        (lambda pool, x: ak.exp(x) - pool.integer(1), 0.0, 1.0, "exp-1 at the left endpoint"),
+        (
+            lambda pool, x: (x - pool.integer(1)) * (x - pool.integer(1)),
+            0.0,
+            1.0,
+            "double root at the right endpoint",
+        ),
+        (
+            lambda pool, x: (x - pool.integer(1)) * (x - pool.integer(1)),
+            0.0,
+            2.0,
+            "double root at the centre, which is a point of the box too",
+        ),
+    ],
+)
+def test_a_root_on_the_box_boundary_is_proven(build, lo, hi, why):
+    """The box is closed, so a point of it at which the function is *proven*
+    zero is a root in the box — no continuity argument and no sign change
+    required. Subdivision alone can never settle these: `x` on [0,1] is
+    non-negative throughout, so a negative witness does not exist to be found.
+    """
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+
+    assert ak.verified_no_roots(build(pool, x), [(x, lo, hi)]) == "false", why
+
+
+def test_an_endpoint_enclosure_that_only_straddles_zero_stays_undecided():
+    """The soundness side of the same coin. `exp(x) - 1 + 10**-40` is strictly
+    positive on [0,1] — it has no root at all — but its value at x=0 is far
+    below the width of any enclosure computable there, so the enclosure
+    contains zero. Containing zero is not being zero: `"false"` would be a
+    false certificate, and `"true"` is out of reach, so `"undecided"` is the
+    only sound answer."""
+    pool = ak.ExprPool()
+    x = pool.symbol("x")
+    # 10**-40 as an exact power; `pool.rational` takes C longs, and 10**40
+    # does not fit in one.
+    f = ak.exp(x) - pool.integer(1) + pool.integer(10) ** pool.integer(-40)
+
+    assert ak.verified_no_roots(f, _box(x, 0.0, 1.0)) == "undecided"
 
 
 def test_sign_positive_verified_true():

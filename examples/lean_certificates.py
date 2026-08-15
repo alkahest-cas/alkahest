@@ -16,7 +16,10 @@ def main():
     x = pool.symbol("x")
 
     print("=== Lean export from expressions ===")
-    lean_expr = ak.to_lean(x**2 + pool.integer(1))
+    # `to_lean(expr)` simplifies first and certifies the resulting derivation
+    # log; it returns "" when the simplifier had nothing to rewrite (an
+    # already-normal expression has no theorem to state), so give it one.
+    lean_expr = ak.to_lean(x**2 + pool.integer(1) + pool.integer(0))
     print(lean_expr[:120] + ("…" if len(lean_expr) > 120 else ""))
 
     print("\n=== Lean certificate on diff (deriv goals) ===")

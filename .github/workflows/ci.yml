@@ -89,6 +89,12 @@ jobs:
       - name: cargo clippy (parallel feature)
         run: cargo clippy --all-targets --features parallel -- -D warnings
 
+      # `cranelift` ships in the default PyPI wheel (PR #299) but had no clippy
+      # step, so three lints accumulated in code every wheel user runs. It needs
+      # no system LLVM — the backend is pure Rust — so it lints anywhere.
+      - name: cargo clippy (cranelift feature)
+        run: cargo clippy --all-targets --features cranelift -- -D warnings
+
       - name: cargo clippy (jit feature)
         run: cargo clippy --all-targets --features jit -- -D warnings
 

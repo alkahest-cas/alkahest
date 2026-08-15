@@ -224,52 +224,75 @@ fn codegen_node(
 // Load input variables into the values map (scalar or batch layout)
 // ---------------------------------------------------------------------------
 
+/// What is being compiled: the root node, its input variables, and the pool
+/// they all live in.  These three always travel together, so they are passed
+/// as one value rather than as three positional arguments.
+#[derive(Clone, Copy)]
+struct EvalTarget<'a> {
+    expr: ExprId,
+    inputs: &'a [ExprId],
+    pool: &'a ExprPool,
+}
+
+/// Where the emitted body reads variable `i` from.
+///
+/// The scalar entry point reads it at `ptr[i]`; the bulk entry point reads it
+/// at `ptr[i * n_points + point_idx]`.  Modelling this as an enum instead of
+/// three loose `Option`s makes the half-specified batch layout (a point index
+/// with no point count, or vice versa) unrepresentable.
+#[derive(Clone, Copy)]
+enum InputLayout {
+    /// One point, variables contiguous from `ptr`.
+    Scalar { ptr: cranelift_codegen::ir::Value },
+    /// `n_points` points, variable-major; emitted inside the bulk loop body.
+    Batch {
+        ptr: cranelift_codegen::ir::Value,
+        point_idx: cranelift_codegen::ir::Value,
+        n_points: cranelift_codegen::ir::Value,
+    },
+}
+
 fn load_input_vars(
     builder: &mut FunctionBuilder,
-    inputs_ptr: cranelift_codegen::ir::Value,
     inputs: &[ExprId],
     values: &mut HashMap<ExprId, cranelift_codegen::ir::Value>,
-    point_idx: Option<cranelift_codegen::ir::Value>,
-    n_points: Option<cranelift_codegen::ir::Value>,
+    layout: InputLayout,
 ) {
     for (i, &var) in inputs.iter().enumerate() {
-        let val = if let (Some(idx), Some(n_pts)) = (point_idx, n_points) {
-            let var_i = builder.ins().iconst(types::I64, i as i64);
-            let stride = builder.ins().imul(var_i, n_pts);
-            let elem = builder.ins().iadd(stride, idx);
-            let byte_off = builder.ins().imul_imm(elem, 8);
-            let addr = builder.ins().iadd(inputs_ptr, byte_off);
-            builder.ins().load(types::F64, MemFlags::trusted(), addr, 0)
-        } else {
-            let byte_offset = (i * std::mem::size_of::<f64>()) as i32;
-            builder
-                .ins()
-                .load(types::F64, MemFlags::trusted(), inputs_ptr, byte_offset)
+        let val = match layout {
+            InputLayout::Batch {
+                ptr,
+                point_idx,
+                n_points,
+            } => {
+                let var_i = builder.ins().iconst(types::I64, i as i64);
+                let stride = builder.ins().imul(var_i, n_points);
+                let elem = builder.ins().iadd(stride, point_idx);
+                let byte_off = builder.ins().imul_imm(elem, 8);
+                let addr = builder.ins().iadd(ptr, byte_off);
+                builder.ins().load(types::F64, MemFlags::trusted(), addr, 0)
+            }
+            InputLayout::Scalar { ptr } => {
+                let byte_offset = (i * std::mem::size_of::<f64>()) as i32;
+                builder
+                    .ins()
+                    .load(types::F64, MemFlags::trusted(), ptr, byte_offset)
+            }
         };
         values.insert(var, val);
     }
 }
 
 fn emit_eval_body(
-    expr: ExprId,
-    inputs: &[ExprId],
-    pool: &ExprPool,
+    target: EvalTarget<'_>,
     builder: &mut FunctionBuilder,
     module: &mut JITModule,
     math: &MathFuncIds,
-    inputs_ptr: cranelift_codegen::ir::Value,
-    point_idx: Option<cranelift_codegen::ir::Value>,
-    n_points: Option<cranelift_codegen::ir::Value>,
+    layout: InputLayout,
 ) -> Result<cranelift_codegen::ir::Value, JitError> {
+    let EvalTarget { expr, inputs, pool } = target;
     let mut values: HashMap<ExprId, cranelift_codegen::ir::Value> = HashMap::new();
-    load_input_vars(
-        builder,
-        inputs_ptr,
-        inputs,
-        &mut values,
-        point_idx,
-        n_points,
-    );
+    load_input_vars(builder, inputs, &mut values, layout);
     let topo = topo_sort(expr, pool);
     for &node in &topo {
         if values.contains_key(&node) {
@@ -297,6 +320,10 @@ pub fn compile_cranelift(
     inputs: &[ExprId],
     pool: &ExprPool,
 ) -> Result<CompiledFn, JitError> {
+    // Both entry points below emit the same DAG against the same pool; only the
+    // input layout differs.
+    let target = EvalTarget { expr, inputs, pool };
+
     // ------------------------------------------------------------------
     // 1. ISA — native host architecture, speed optimised
     // ------------------------------------------------------------------
@@ -409,15 +436,11 @@ pub fn compile_cranelift(
         builder.seal_block(block);
         let inputs_ptr = builder.block_params(block)[0];
         let result = emit_eval_body(
-            expr,
-            inputs,
-            pool,
+            target,
             &mut builder,
             &mut module,
             &math,
-            inputs_ptr,
-            None,
-            None,
+            InputLayout::Scalar { ptr: inputs_ptr },
         )?;
         builder.ins().return_(&[result]);
         builder.finalize();
@@ -471,15 +494,15 @@ pub fn compile_cranelift(
 
         builder.switch_to_block(loop_body);
         let result = emit_eval_body(
-            expr,
-            inputs,
-            pool,
+            target,
             &mut builder,
             &mut module,
             &math,
-            bulk_inputs_ptr,
-            Some(loop_idx),
-            Some(bulk_n_points),
+            InputLayout::Batch {
+                ptr: bulk_inputs_ptr,
+                point_idx: loop_idx,
+                n_points: bulk_n_points,
+            },
         )?;
         let out_byte_off = builder.ins().imul_imm(loop_idx, 8);
         let out_addr = builder.ins().iadd(bulk_outputs_ptr, out_byte_off);
