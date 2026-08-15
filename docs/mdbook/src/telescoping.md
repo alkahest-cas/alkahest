@@ -302,6 +302,97 @@ A fitted recurrence is a conjecture, and the number that says how much of one is
 `surplus_terms`. See [Guessing recurrences](guessing.md) for the guard and what
 it refuses.
 
+## The `q`-analogue (`alkahest.experimental.q_zeilberger`)
+
+`q`-hypergeometric sums — Gaussian binomials `[n;k]_q`, `q`-Pochhammer symbols
+`(a;q)_n` — are not proper hypergeometric terms in `(n,k)`, so `zeilberger`
+refuses them (correctly) with `E-HOLO-001`. `q_zeilberger` is the `q`-shifted
+twin of the same algorithm, and the same discipline: the certificate is
+re-checked as an exact identity in `Q(q)(qⁿ)(q^k)` before it is returned.
+
+```python
+import alkahest as ak
+from alkahest.experimental import q_zeilberger, qbinomial
+
+pool = ak.ExprPool()
+q, n, k = pool.symbol("q"), pool.symbol("n"), pool.symbol("k")
+
+# Σ_k [n;k]_q² · q^{k²} = [2n;n]_q  — the q-analogue of Σ_k C(n,k)² = C(2n,n).
+b = qbinomial(pool, n, k)
+cert = q_zeilberger(b * b * q ** (k * k), q, n, k)
+
+cert.order            # 1
+cert.boundary         # "vanishes"
+cert.support          # ("0", "n") — where the summand is proved to live
+cert.sum_term(3)      # the exact q-series value S(3), a polynomial in q
+```
+
+`sum_term(n0)` is the part worth reaching for. It evaluates the sum from the
+*definition* of the `q`-Pochhammer symbol, not through the shift quotients the
+search used, so checking `Σ_i a_i(qⁿ)·S(n+i) = 0` against it is an independent
+check of the returned recurrence rather than a restatement of the certificate.
+
+### What it accepts
+
+```text
+F(n,k) = R(qⁿ, q^k) · z^k · w^n · q^{A·k² + B·n·k + C·n² + D·k + E·n}
+         · Π_j (q^{u_j}; q^{d_j})_{v_j}^{e_j}
+```
+
+with `u_j`, `v_j` integer-affine in `n, k`. Written as an expression: the heads
+`qbinomial(N, K)` and `qpochhammer(u, d, v)` (meaning `(q^u; q^d)_v`), powers of
+`q` whose exponent is a degree-≤2 polynomial in `n` and `k`, powers with a base
+free of `n` and `k`, and any rational function of `q`, `qⁿ`, `q^k`. Half-integer
+quadratic coefficients are fine — `q^{k(k−1)/2}` is not rational in `q^k` but
+all of its shift quotients are, which is the property the algorithm needs.
+
+| Code | Meaning | What a loop should do |
+|---|---|---|
+| `E-HOLO-020` | Not a `q`-hypergeometric term | Close this branch |
+| `E-HOLO-021` | Search bounds exhausted | Raise `max_order` / `max_degree` and retry |
+| `E-HOLO-022` | A candidate failed exact verification | Report as a bug with the term |
+| `E-HOLO-023` | Malformed call (`q`, `n`, `k` not distinct; non-positive bounds) | Fix the call |
+| `E-HOLO-024` | In the shape of the class, outside it in substance | Close this branch |
+
+`E-HOLO-024` is the interesting one. `(q^k; q²)_n` shifted in `k` moves its
+first argument by `1`, which the base `q²` does not divide, so the shift
+quotient is an *infinite* product and no algorithm in this family applies. That
+is a permanent answer about the input, like `E-HOLO-020`, not a budget problem.
+
+### The boundary verdict is two-valued here
+
+`cert.boundary` is `"vanishes"` or `"unknown"` — there is no `"nonzero"` arm.
+The sum it is about is `S(n) = Σ_{k ∈ Z} F(n,k)`, which the analysis also proves
+is a *finite* sum, over the window in `cert.support`. Fixing the range at all of
+`Z` is what makes the proof short: the range does not move with `n`, so there are
+no `D_i` correction terms, and `"vanishes"` follows from two structural facts
+about the summand alone — that it vanishes outside an affine window in `k`, and
+that it is finite at every integer `k`.
+
+The certificate is **not** evaluated at an endpoint, and that is deliberate
+rather than lucky: `R` genuinely has poles at integer `k` — on the summand above
+it has a double pole exactly where the summand has a double zero, and
+`G(n, n+1)` is a finite *non-zero* limit of `0·∞`. What the proof does instead is
+find one `k` far to the right that is past both the window and the (finitely
+many) poles, where `G = R·0 = 0` with no indeterminacy, and then induct
+downwards on `G(n,k) = G(n,k+1) − Σ_i a_i(qⁿ)·F(n+i,k)`, whose right-hand side
+the support analysis has already shown is finite everywhere. That gives every
+`G` a finite value, poles included, without evaluating the product at one; `G`
+is then constant and zero beyond the window at both ends, and the sum over `Z`
+telescopes to zero. (Read analytically at generic `q` with `0 < |q| < 1`; the
+conclusion is an identity between rational functions of `q` that holds on an
+open set, so it holds in `Q(q)`.)
+
+What is *not* implemented is the inhomogeneous arm: computing `b(n)` for a
+`q`-sum needs endpoint values of `G` that are not rational in `qⁿ`, so a
+summand whose support the analysis cannot bound gets `"unknown"` and **no**
+claim about its sum, not a guessed inhomogeneity.
+
+One more caveat, and it is on every verdict's `side_conditions`: `q` is treated
+as **transcendental**. Everything here is an identity in `Q(q)`. Specialising
+`q` to a root of unity — which is what the `q`-supercongruence literature does —
+is a separate step with its own hypotheses, and this engine does not take it.
+
 ## Method
 
 The implementation is the standard Gosper-style reduction (Petkovšek–Wilf–
@@ -328,8 +419,13 @@ over the field `Q(n)` rather than `Q`:
 Shipped: Zeilberger's algorithm with exact certificate verification, the
 `Q(n)` / `Q(n)(k)` arithmetic tower it rests on, proper-hypergeometric
 recognition, the three-valued boundary verdict over a stated summation range,
-explicit minimal-order certification, and `guess_holonomic` — recurrence
-guessing from finite data.
+explicit minimal-order certification, `guess_holonomic` — recurrence guessing
+from finite data — and the `q`-analogue `q_zeilberger` over
+`Q(q)(qⁿ)(q^k)` with its own two-valued boundary verdict.
+
+Not shipped on the `q` side: multivariate (`q`-)telescoping, an inhomogeneous
+boundary arm, and specialisation of `q` to a root of unity. A `q`-sum whose
+support cannot be bounded is answered `"unknown"`, never guessed.
 
 Not yet shipped, and tracked as follow-up work: Ore-operator closure properties
 for D-finite functions (sums and products of holonomic objects) and the

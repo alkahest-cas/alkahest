@@ -4,16 +4,17 @@
 governs the validated-bounds subsystem, and used to be the only per-function
 coverage bit exposed. Ball arithmetic is pointwise; a Taylor model needs a
 rule with a rigorous remainder, written per function in
-`alkahest-core/src/validated/taylor.rs`. Six primitives — `bessel_j0`,
-`bessel_j1`, `digamma`, `lambert_w`, `floor`, `ceil` — have real Arb ball
-arithmetic and no Taylor-model rule, so `bound_on_box` refuses them with
-`E-VALIDATED-001` while `numeric_ball` says ``True``. That boundary was
-correct at runtime and invisible beforehand.
+`alkahest-core/src/validated/taylor.rs`. When this file was written six
+primitives — `bessel_j0`, `bessel_j1`, `digamma`, `lambert_w`, `floor`,
+`ceil` — had real ball arithmetic and no Taylor-model rule, so `bound_on_box`
+refused them with `E-VALIDATED-001` while `numeric_ball` said ``True``. That
+boundary was correct at runtime and invisible beforehand.
 
-3.9.0 moved five names across it — `asinh`, `acosh`, `atanh`, `erf`, `erfc`
-now have rules — which is the case these tests were written for: the sets
-below are the only thing that had to change, because the flag itself is
-derived from the evaluator.
+3.9.0 moved ten names across it. First `asinh`, `acosh`, `atanh`, `erf`,
+`erfc`; then `bessel_j0`, `bessel_j1`, `digamma`, `lambert_w` and `gamma`,
+which finished the M7 list (`gamma` gained a ball kernel at the same time —
+it had neither before). Each time the sets below were the only thing that had
+to change, because the flag itself is derived from the evaluator.
 
 The whole point of these tests is that the *new* flag cannot repeat that
 mistake. `taylor_model` is derived by running the real evaluator (see
@@ -81,35 +82,32 @@ def test_taylor_model_flag_agrees_with_bound_on_box(row):
 def test_the_flag_is_not_a_restatement_of_numeric_ball():
     """The bug this fixes: `numeric_ball` was read as the coverage flag.
 
-    `numeric_ball` is *not* wrong for these six — they really do have Arb ball
-    arithmetic (`alkahest-core/src/primitive/taylor_support.rs` pins that in
-    Rust). It answers a different question, which is why reading it as the
+    `numeric_ball` is *not* wrong for the primitives that carry it without a
+    Taylor rule — they really do have ball arithmetic
+    (`alkahest-core/src/primitive/taylor_support.rs` pins that in Rust). It
+    answers a different question, which is why reading it as the
     validated-bounds coverage bit cost a whole workload.
 
-    What is left is what is genuinely hard to bound rigorously, not what
-    nobody got round to: `bessel_j0`/`bessel_j1` oscillate (the same property
-    that made an endpoint-hull ball kernel unsound), `digamma` and
-    `lambert_w` need remainder analysis nobody has written down here, and
-    `floor`/`ceil` are not differentiable — on a box straddling an integer no
-    Taylor model exists at all, and on one that does not they are a constant,
-    which is not a fact a Taylor rule is needed to discover.
+    What is left is `floor`/`ceil`, and they are left on purpose. They are not
+    differentiable: on a box straddling an integer no Taylor model exists at
+    all, and on one that does not they are a constant, which is not a fact a
+    Taylor rule is needed to discover. A sound rule is writable — refuse any
+    box containing an integer — but subdivision cannot shrink a
+    jump-straddling box, so `taylor_model: True` would tell a planner the
+    function is covered when it fails on most boxes.
     """
     rows = {row["name"]: row for row in _primitive_rows()}
     ball_only = {
         name for name, row in rows.items() if row["numeric_ball"] and not row["taylor_model"]
     }
-    assert ball_only == {
-        "bessel_j0",
-        "bessel_j1",
-        "ceil",
-        "digamma",
-        "floor",
-        "lambert_w",
-    }
+    assert ball_only == {"ceil", "floor"}
 
 
-def test_supported_set_is_the_elementary_fragment():
+def test_supported_set_is_the_elementary_plus_special_fragment():
     """A pin on the boundary as it stands, so a change to it is deliberate.
+
+    Twenty-three names: the elementary fragment, plus the special functions
+    M7 called for — the Bessel pair, `digamma`, `gamma` and `lambert_w`.
 
     Widening this set is a feature (add the rule, then add the name here);
     narrowing it silently would be a regression an agent's plan depends on.
@@ -123,11 +121,16 @@ def test_supported_set_is_the_elementary_fragment():
         "asinh",
         "atan",
         "atanh",
+        "bessel_j0",
+        "bessel_j1",
         "cos",
         "cosh",
+        "digamma",
         "erf",
         "erfc",
         "exp",
+        "gamma",
+        "lambert_w",
         "log",
         "sin",
         "sinh",
@@ -161,8 +164,9 @@ def test_bounds_supported_matches_bound_on_box_on_composite_expressions():
         x * ak.atanh(x / 4),
         ak.sin(x) + ak.digamma(x),
         ak.atan2(x, y),
-        ak.gamma(x),
+        ak.gamma(x) * ak.lambert_w(x),
         ak.floor(x) + ak.ceil(x),
+        pool.func("EllipticK", [x]),
         ak.tanh(x * y) - ak.log(x + 3),
     ]
     box = [(x, 0.25, 0.5), (y, 0.25, 0.5)]
@@ -179,12 +183,12 @@ def test_bounds_supported_matches_bound_on_box_on_composite_expressions():
 def test_bounds_supported_names_every_blocking_function():
     pool = ak.ExprPool()
     x = pool.symbol("x")
-    answer = ak.bounds_supported(ak.bessel_j0(x) + ak.digamma(x) + ak.sin(x))
+    answer = ak.bounds_supported(ak.floor(x) + pool.func("EllipticK", [x]) + ak.sin(x))
 
     assert not answer
     assert answer.supported is False
-    assert answer.functions == ["bessel_j0", "digamma"]
-    assert "bessel_j0" in answer.blocker
+    assert answer.functions == ["EllipticK", "floor"]
+    assert "floor" in answer.blocker or "EllipticK" in answer.blocker
     assert _UNSUPPORTED in answer.detail
 
 
@@ -228,8 +232,8 @@ def test_arity_is_part_of_the_question():
 
 def test_constant_expressions_are_classified_too():
     pool = ak.ExprPool()
-    assert ak.bounds_supported(ak.sin(pool.integer(2)))
-    assert not ak.bounds_supported(ak.bessel_j0(pool.integer(2)))
+    assert ak.bounds_supported(ak.bessel_j0(pool.integer(2)))
+    assert not ak.bounds_supported(ak.floor(pool.integer(2)))
 
 
 def test_bounds_support_surface():
@@ -239,12 +243,12 @@ def test_bounds_support_surface():
     for name in ("bounds_supported", "BoundsSupport"):
         assert name in ak.__all__, name
 
-    answer = ak.bounds_supported(ak.bessel_j0(x))
+    answer = ak.bounds_supported(ak.floor(x))
     assert isinstance(answer, ak.BoundsSupport)
     assert "BoundsSupport(" in repr(answer)
     assert answer.as_dict() == {
         "supported": False,
         "blocker": answer.blocker,
-        "functions": ["bessel_j0"],
+        "functions": ["floor"],
         "detail": answer.detail,
     }

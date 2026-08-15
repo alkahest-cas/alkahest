@@ -580,6 +580,140 @@ Both are detailed under *Behaviour changes to plan for*.
 
 ### Added
 
+- **Modular / `p`-adic evaluation of holonomic sequences: `ModularRecurrence`,
+  `binomial_mod`, `supercongruence_sweep`** (M6). A supercongruence claim such
+  as `A(p−1) ≡ 1 (mod p³)` is checked by evaluating a P-recursive sequence at
+  one index per prime, over a range of primes. Alkahest had the *proving* half
+  of that workload (`zeilberger`, `guess_holonomic`, the boundary verdict) and
+  none of the evidence half: there was no way to evaluate a holonomic sequence
+  modulo `p^k`, so every sweep ran outside the library in Python big-integer
+  arithmetic, where `A(p−1)` is an integer with `Θ(p)` digits that gets touched
+  `Θ(p)` times. Now:
+
+  - `ModularRecurrence(coeffs, initial, *, rhs=None, start=0)` runs
+    `Σ_i a_i(n)·S(n+i) = b(n)` forward in `Z/p^K` — `O(N)` machine-word
+    multiplications and `O(1)` memory, whatever the size of `S(N)` over `Z`.
+    `coeffs[i]` is lowest-degree-first, the same convention
+    `GuessedRecurrence.coeffs` already uses, so a fitted recurrence is handed
+    straight over. `value_mod(n, p, k)`, `values_mod(indices, p, k)` (one
+    forward pass for a scattered index set) and `evaluate(...)`, which returns
+    a `ModularEvaluation` carrying the precision accounting. Coefficients and
+    initial values are arbitrary-precision, and initial values may be
+    `fractions.Fraction`, so harmonic-number-style sequences work.
+  - `binomial_mod(a, b, p, k)` — the Andrew Granville / Davis–Webb
+    factorisation of `n!` into its `p`-free part, which at `k = 1` *is* Lucas'
+    theorem. `O(p·k³ + log_p(a)·p·k)`, so `a` far larger than `p` is the
+    ordinary case rather than the hard one; the `p`-free factorial is taken by
+    a product tree over blocks of `p` consecutive integers rather than term by
+    term, which is what keeps `p^k` out of the cost.
+  - `supercongruence_sweep(recurrence, primes, k, *, index=…, expect=…)` →
+    `CongruenceSweep`, with `holds`, `counterexamples()`, the histogram of
+    `v_p(LHS − RHS)` in `valuations()`, and `sharp` — `True` when some prime
+    achieves exactly `v_p = k`, i.e. when the modulus in the conjecture is best
+    possible and `p^(k+1)` is false.
+
+  **Singular indices are the part that had to be got right.** Stepping forward
+  means dividing by the leading coefficient `a_J(n)`, which need not be a unit
+  mod `p`: for the Apéry recurrence `a_2(n) = (n+2)³`, the index `n = p−2` is
+  exactly the one a sweep crosses when it asks for `A(p)` instead of `A(p−1)`.
+  A first pass computes `v_p(a_J(n))` at every step — falling back to exact
+  integer arithmetic at the rare index a residue cannot decide — so the total
+  precision loss `L` is known *before* the first sequence value exists, and the
+  forward pass runs at working precision `k + L`. The division by `p^v` is
+  checked, not assumed. Three new codes, and no path that returns a residue it
+  cannot justify: `E-HOLO-006` (the modulus is not a prime power the
+  machine-word backend supports), `E-HOLO-007` (a step does not determine its
+  next term as a `p`-adic integer — the leading coefficient vanishes
+  identically there, or the sequence leaves `Z_p`, as `H_p = H_{p−1} + 1/p`
+  does), `E-HOLO-008` (`k + L` needs a modulus past `2^62`). The last is a
+  real limit rather than a formality: reaching `A(199)` at `p = 5` crosses 40
+  singular steps costing three digits each, and 120 digits of `5` is past any
+  64-bit modulus, so that call refuses instead of answering.
+
+  Measured on Apéry `A(p−1) mod p⁴` for the 237 primes below 1500: 95 ms,
+  against 632 ms for iterating the recurrence exactly and reducing, and 3.47 s
+  for the incremental-binomial sum the research harness uses today. The gap
+  widens with the range, both exact routes being quadratic in `p` — at the 428
+  primes below 3000 it is 270 ms against 4.7 s and 50 s.
+
+- **`q`-analogue creative telescoping: `experimental.q_zeilberger`** (M4b).
+  `q`-hypergeometric sums — Gaussian binomials `[n;k]_q`, `q`-Pochhammer
+  symbols — are not proper hypergeometric terms in `(n,k)`, so `zeilberger`
+  refused every one of them with `E-HOLO-001` and the whole `q`-literature was
+  out of reach. `q_zeilberger` is the same algorithm read in the `q`-shift: with
+  `x = qⁿ`, `y = q^k`, `k ↦ k+1` is `y ↦ q·y`, which is an automorphism of
+  `Q(q)(x)(y)` exactly as `k ↦ k+1` is one of `Q(n)(k)`, so the Gosper normal
+  form, the key equation `A(y)·X(q·y) − B(y/q)·X(y) = C(y)·N(y)` and the
+  coefficient-comparison linear system all carry over. The bottom two levels of
+  the coefficient tower are the *existing* `qfield` code re-read (`Q(v)` and
+  `Q(v)(w)` naming their variables `q` and `x`), so only the third level, `y`,
+  is new arithmetic.
+
+  The discipline is unchanged: the pair `(a_i, R)` is substituted back and
+  checked as an exact identity in `Q(q)(qⁿ)(q^k)` before it is returned, and a
+  candidate that fails is discarded rather than returned with a caveat.
+  Verified end to end on `Σ_k [n;k]_q²·q^{k²} = [2n;n]_q` (the `q`-Vandermonde
+  convolution at `m = r = n`, i.e. the `q`-analogue of `Σ_k C(n,k)² = C(2n,n)`),
+  which comes out as the order-1 relation
+  `(1 − q^{n+1})·S(n+1) = (1 + q^{n+1})(1 − q^{2n+1})·S(n)` in ~0.2 s; also on
+  the Galois numbers `Σ_k [n;k]_q` (order 2) and the alternating
+  `Σ_k (−1)^k q^{k(k−1)/2}[n;k]_q = 0`.
+
+  `QZeilbergerCertificate.sum_term(n0)` returns `S(n0)` as an exact polynomial
+  in `q`, computed from the *definition* of the `q`-Pochhammer symbol and never
+  through the shift quotients the search used. That is what the tests check the
+  returned recurrence against, and it is the check that matters: the A279013
+  failure this release's boundary work came from was a certificate that
+  re-verified perfectly while implying a false recurrence for the sum, and only
+  an independent look at the actual terms catches that.
+
+  **The boundary verdict is two-valued here — `"vanishes"` or `"unknown"`, with
+  no `"nonzero"` arm — and the sum it is about is `S(n) = Σ_{k ∈ Z} F(n,k)`.**
+  Fixing the range at all of `Z` is what makes the proof short: the range does
+  not move with `n`, so the `D_i` correction terms the classical
+  `boundary_status` needs do not arise, and `"vanishes"` follows from two
+  structural facts about the summand alone — that it vanishes outside an affine
+  window in `k`, and that it is finite at every integer `k`. Both are decided by
+  reading off when a `q`-Pochhammer factor is `1 − q⁰` (exactly zero) or has one
+  inside the reciprocal product a negative length denotes (exactly infinite),
+  which is a linear condition on `(n,k)` plus a divisibility, settled by
+  Fourier–Motzkin over the rationals; rational-empty implies integer-empty, so a
+  region proved empty is a proof and not a sample. What it does *not* do is
+  evaluate the certificate at an endpoint, and that is the load-bearing part:
+  `R` really does have poles at integer `k` — on the `q`-Vandermonde summand a
+  double pole exactly where the summand has a double zero, making `G(n,n+1)` a
+  finite *non-zero* limit of `0·∞` — so a proof that multiplied the two values
+  there would be wrong. Instead it takes one `k` past both the window and the
+  finitely many poles, where `G = R·0 = 0` unambiguously, and inducts downwards
+  through `G(n,k) = G(n,k+1) − Σ_i a_i(qⁿ)·F(n+i,k)`, whose right-hand side the
+  support analysis has already shown finite everywhere. The window is reported on
+  `.support` so the caller knows which finite sum the verdict is about
+  (`("0", "n")` for the `q`-Vandermonde summand). An inhomogeneous `b(n)` is
+  *not* computed: it needs endpoint values of `G` that are not rational in `qⁿ`,
+  so a summand whose support cannot be bounded gets `"unknown"` and no claim
+  about its sum at all — `1/(q;q)_{n−k}` telescopes perfectly well and has no
+  `Z`-sum, and the verdict says exactly that.
+
+  **`q` is treated as transcendental**, and every verdict says so in
+  `side_conditions`. These are identities in `Q(q)`; specialising `q` to a root
+  of unity — which is what `q`-supercongruence work does — is a separate step
+  with its own hypotheses that this engine does not take.
+
+  Refusals are coded and disjoint from the classical engine's, so a caller can
+  tell which one declined: `E-HOLO-020` outside the class (a bare `n` or `k`, a
+  `gamma`, a `sin`), `E-HOLO-021` bounds exhausted, `E-HOLO-022` a candidate
+  that failed verification, `E-HOLO-023` a malformed call, and `E-HOLO-024` for
+  an input in the *shape* of the class whose shift quotient is not rational —
+  the canonical case being `(q^k; q²)_n` under `k ↦ k+1`, where the first
+  argument moves by `1` and the base `q²` does not divide it, making the
+  quotient an infinite product. Like `E-HOLO-020` and unlike `E-HOLO-021`, that
+  is a permanent answer about the input.
+
+  New: `alkahest.experimental.q_zeilberger`,
+  `alkahest.experimental.QZeilbergerCertificate`, and the two term builders
+  `qbinomial(pool, N, K)` and `qpochhammer(pool, u, d, v)`. Experimental, so
+  the surface may change; the mathematics it refuses to guess at will not.
+
 - **Validated bounds reach five more functions: `asinh`, `acosh`, `atanh`,
   `erf`, `erfc`.** `bound_on_box` — and everything built on it,
   `verified_sign`, `verified_no_roots`, `verified_integral` — covered exactly
@@ -627,11 +761,78 @@ Both are detailed under *Behaviour changes to plan for*.
 
   `capabilities()["primitives"][i]["taylor_model"]` and `bounds_supported`
   pick all five up with no edit — both are derived by running the evaluator,
-  which is what that design was for. The set they report is now 18 names;
-  `bessel_j0`, `bessel_j1`, `digamma`, `lambert_w`, `floor` and `ceil` remain
-  outside it. `floor`/`ceil` are not an oversight and are not planned: they
-  are not differentiable, so on a box containing an integer no Taylor model
-  exists, and on one that does not they are a constant.
+  which is what that design was for.
+
+- **…and five more after them: `bessel_j0`, `bessel_j1`, `digamma`, `gamma`,
+  `lambert_w`.** That completes the M7 list and takes validated bounds from 13
+  primitives to **23**. The two Bessel functions are the ones worth reading
+  about: they *oscillate*, which is the property that made 3.8's ball kernel
+  for them unsound (it hulled the two endpoint values, so on `[-1, 1]` it
+  excluded `J₀(0) = 1`, the function's own maximum). Nothing in the rules
+  below assumes monotonicity of anything.
+
+  - `bessel_j0` / `bessel_j1` get both halves from one identity. Iterating
+    `2Jν′ = J_{ν−1} − J_{ν+1}` by Pascal's rule gives
+    `Jν⁽ⁿ⁾ = 2⁻ⁿ Σⱼ (−1)ʲ C(n,j) J_{ν−n+2j}`, which is the coefficient
+    formula; feeding `|J_m(x)| ≤ 1` (from `J_m(x) = (1/π)∫₀^π cos(mθ − x sin θ)
+    dθ`) into the same line collapses the binomials against the `2⁻ⁿ` and
+    yields `|Jν⁽ⁿ⁾| ≤ 1` for **every** order, which is exactly the remainder
+    `sin` and `cos` already use. Entire, so no box refuses on domain grounds.
+    A Cauchy estimate against the entire-function growth
+    (`|Jν(z)| ≤ |z/2|^ν e^{|Im z|}/ν!`) is available and was tried; minimised
+    over the circle radius it is a factor `√(2πn)` *worse*, so it is not used.
+  - `digamma` expands with `aₖ = (−1)^{k+1} ζ(k+1, m₀)`, the Hurwitz zeta
+    being what `ψ`'s Taylor coefficients literally are. The remainder is
+    `ζ(p+2, ξ)`, which every term of shows is decreasing in `ξ`, so its
+    supremum is at the low end of the enclosure, where
+    `ζ(s, L) ≤ L^{-s} + L^{1-s}/(s−1)` by comparing the sum to its integral.
+  - `gamma` had **no ball arithmetic at all** before this release, let alone a
+    Taylor rule. Coefficients come from `Γ′ = ψΓ` as the convolution
+    `c_{n+1} = (1/(n+1)) Σⱼ dⱼ c_{n−j}` over the same `ψ` coefficients. The
+    remainder is Cauchy's estimate, closed by two facts from the Euler
+    integral: `|Γ(u+iv)| ≤ Γ(u)` for `u > 0`, and `Γ″ > 0` on `(0, ∞)` so `Γ`
+    is convex and its maximum over an interval is at an endpoint. Every circle
+    radius gives a valid bound, so the candidates the rule tries are a
+    tightness choice only.
+  - `lambert_w` uses the classical closed form
+    `W₀⁽ⁿ⁾ = e^{−nw} pₙ(w)/(1+w)^{2n−1}` with `pₙ` carried as exact integers,
+    and bounds each of the three factors by its own proved monotonicity in
+    `w`, over a panelled split of the `w` range so the three maxima are not
+    all taken at the same end.
+
+  `Γ` and `ψ` refuse anything reaching `0` with `E-VALIDATED-003` — the strips
+  between the negative poles are analytic but are not covered, since both the
+  coefficients and the remainder are written for the positive axis. `W₀`
+  refuses at and left of `−1/e`, where it has a square-root branch point and
+  every derivative is unbounded; that guard is not a comparison against a
+  rounded `−1/e` but the failure of the certified bracket itself.
+
+  The Hurwitz zeta underneath `ψ` and `Γ` is Euler–Maclaurin after 100 exact
+  terms, with exact rational Bernoulli numbers from their own recurrence and a
+  remainder of twice the first omitted term — the factor 2 covering both
+  standard forms of the Euler–Maclaurin remainder so the bound does not depend
+  on which convention is quoted. It is cross-checked in tests against MPFR's
+  Riemann `ζ(s)` at `a = 1` and against `ζ(s,a) − ζ(s,a+1) = a^{-s}` at
+  arbitrary `a`.
+
+  The reported set is now 23 names. `floor` and `ceil` are the only two left
+  with ball arithmetic and no Taylor rule, and that is deliberate rather than
+  pending: they are not differentiable, so on a box containing an integer no
+  Taylor model exists, and on one that does not they are a constant. The four
+  elliptic integrals still have neither ball arithmetic nor a Taylor rule.
+
+- **`ArbBall::lambert_w0` was unsound; `ArbBall::gamma` is new.** The Lambert
+  kernel hulled two `f64` evaluations — ~10⁻¹⁶ of error — inside a ball whose
+  radius it set to `|mid|·2⁻ᵖʳᵉᶜ`, 5·10⁻⁴⁰ at the default 128 bits. On the
+  degenerate ball `[1, 1]` that is an enclosure of width 10⁻³⁹ centred
+  3·10⁻¹⁷ from `W₀(1)`: an interval that does not contain the value it
+  encloses. It is now a Newton *guess* whose bracket is certified afterwards by
+  evaluating `g(w) = w·eʷ` in ball arithmetic at both candidate endpoints —
+  `g` is strictly increasing on `w ≥ −1`, so `g(v) ≤ x` proves `W₀(x) ≥ v` and
+  `g(u) ≥ x` proves `W₀(x) ≤ u`, and how the candidates were produced never
+  enters the argument. `ArbBall::gamma` uses convexity for both ends: the
+  maximum of a convex function on `[a, b]` is at an endpoint, and each of its
+  two tangent lines is a lower bound everywhere on the interval.
 
 - **`guess_holonomic(terms, max_order, max_degree)` — the guessing half of
   *guess then prove*, with the guard that makes a fit mean something.** Alkahest
@@ -717,6 +918,66 @@ Both are detailed under *Behaviour changes to plan for*.
   `ZeilbergerSearchReport`; `zeilberger()` keeps its signature and its
   cost-ordered behaviour exactly.
 
+- **A certified recurrence now answers the next question: how fast does the
+  sequence grow?** `alkahest.experimental.asymptotics_from_recurrence(rec, n,
+  terms=…)` takes what `zeilberger` or `guess_holonomic` just produced — or a
+  bare list of coefficient polynomials — and returns
+  `RecurrenceAsymptotics`. Until now the asymptotics family
+  (`asymptotic_expand`, `euler_maclaurin`, `coefficient_asymptotics`) and the
+  holonomic subsystem did not compose at all, so every loop that certified a
+  recurrence stopped one step short of the growth law the recurrence already
+  determines.
+
+  **The derived half and the fitted half are separate fields, because the
+  constant is the part that is usually hard and is exactly the part a loop is
+  tempted to overclaim.** Poincaré–Perron gives the growth rate `ρ` (a root of
+  the characteristic polynomial `χ(t) = Σᵢ [n^D]pᵢ · tⁱ`) and the polynomial
+  exponent `α = −χ₁(ρ)/(ρ·χ'(ρ))` in `u(n) ~ C·ρⁿ·n^α`; both are functions of
+  the coefficient polynomials and nothing else, and both come out **exact** as
+  `growth_rate_exact` / `polynomial_exponent_exact` when the root is rational.
+  The connection constant `C` does *not* follow from the recurrence — it is
+  determined by the initial conditions — so it is extrapolated numerically from
+  the exact terms, exposed only as `connection_constant`, and carries
+  `connection_constant_converged` and `connection_constant_drift` from a second,
+  independent extrapolation over a smaller index range. `evidence()` returns the
+  two halves under separate `derived` / `fitted` keys, and `report()` is the
+  family's usual `AsymptoticReport`, whose `rigor` here is always
+  `numerically_consistent` and whose hypotheses name the fitted constant as
+  `assumed`. This is the discipline `euler_maclaurin` uses for the `γ` in
+  `H_n ~ log n + γ + …`, applied to the same kind of quantity.
+
+  Measured against sequences whose asymptotics are known independently: the
+  fitted constant reproduces `1/√5` for Fibonacci to `1.8e-14` (the control —
+  it is the one case where `C` is derivable), `1/√π` for the central binomial
+  coefficients to `3.6e-11` and for Catalan to `8.4e-9`, `3√3/(2√π)` for
+  Motzkin to `7.9e-8`, and `(1+√2)²/(2^{9/4}π^{3/2})` for Apéry to `5.5e-11`.
+  For **OEIS A359643** — the one novel result of the 2026-08-13 run — the
+  order-4 recurrence gives `ρ = 283/27` and `α = −1/2` exactly and fits
+  `C = √(283/3)/(2^{7/2}√π)` to `1.7e-10`, i.e. the whole of the entry's
+  `a(n) ~ 283^(n+1/2)/(2^(7/2)·√(πn)·3^(3n+1/2))`.
+
+  **Poincaré–Perron's hypotheses are stated and checked, not assumed.** Each way
+  they fail gets its own `verdict` and no growth rate at all, rather than one of
+  the roots reported as though it had won: `equal_modulus_roots` (`u(n+2) =
+  4u(n)` has roots `±2` and its solutions oscillate), `repeated_dominant_root`
+  (`χ'(ρ) = 0`, so the exponent formula does not apply), and
+  `degenerate_leading_coefficient` (`deg χ < J`, a root at infinity, outside the
+  theorem). Root multiplicity is **exact** — it comes from the squarefree
+  decomposition of `χ` over `ℚ`, not from clustering numeric roots, which
+  matters because A359643's `χ = (t−1)³·(27t−283)` has a triple root that is not
+  the dominant one and a tolerance-based test would refuse the case. A leading
+  coefficient vanishing at finitely many `n` is a reported side condition
+  (`singular_indices`), not a refusal. And because Poincaré's conclusion is only
+  that `u(n+1)/u(n)` tends to *some* root, a sequence whose dominant component
+  is zero — the constant solution of `u(n+2) = 3u(n+1) − 2u(n)`, say — is caught
+  and reported as `follows_dominant_root == False` instead of being handed the
+  generic solution's growth rate. The sequence is run forward in exact rational
+  arithmetic for that reason: `f64` iteration is attracted to the dominant
+  solution and would manufacture the component the check exists to look for.
+
+  In Rust: `holonomic::asymptotics_from_recurrence`, with
+  `CharacteristicAnalysis`, `ConnectionConstant` and `PerronVerdict`.
+
 - **Validated-bounds coverage is queryable: `bounds_supported(expr)` and a
   `taylor_model` bit in `capabilities()["primitives"]`.** The only
   per-function coverage flag the agent contract exposed was `numeric_ball`,
@@ -732,10 +993,14 @@ Both are detailed under *Behaviour changes to plan for*.
   workload (Turán-type inequalities for Bessel functions, in the 2026-08-13
   autoresearch run) to a route it could have ruled out for free.
 
-  `taylor_model` reports it per primitive — `True` for the elementary
-  fragment (`exp`, `log`, `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`,
-  `atan`, `sinh`, `cosh`, `tanh`, `abs`) and `False` for every special
-  function. `ak.bounds_supported(expr)` asks for a whole expression, without
+  `taylor_model` reports it per primitive. When the flag was added that was
+  `True` for the elementary fragment (`exp`, `log`, `sqrt`, `sin`, `cos`,
+  `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `abs`) and `False`
+  for every special function; by the time 3.9.0 shipped the two rounds of
+  Taylor-model rules above had moved ten of those names across, leaving only
+  `floor` and `ceil` with ball arithmetic and no rule. The flag needed no edit
+  for either round, which is the point of deriving it.
+  `ak.bounds_supported(expr)` asks for a whole expression, without
   running the bound: it is truthy when nothing in the expression will be
   refused as unsupported, and carries `.blocker` (the evaluator's own
   description of the first construct it has no rule for) and `.functions`
@@ -751,7 +1016,7 @@ Both are detailed under *Behaviour changes to plan for*.
   on every registered primitive, and fails if the two ever disagree.
 
   `numeric_ball` itself is *accurate* and stays as it is: those eleven
-  primitives really do have Arb ball arithmetic. It answers a different
+  primitives really did have ball arithmetic. It answers a different
   question, and now says so next to a flag that answers this one. A `True`
   from either means "not `E-VALIDATED-001`" — a covered function can still be
   refused on a particular box for a domain violation (`E-VALIDATED-003`) or a

@@ -24,8 +24,9 @@ use super::{
 };
 use crate::ball::ArbBall;
 use crate::kernel::{ExprData, ExprId, ExprPool};
-use rug::{Complete, Float, Integer};
+use rug::{Complete, Float, Integer, Rational};
 use std::collections::{BTreeMap, HashMap};
+use std::sync::OnceLock;
 
 type Result<T> = std::result::Result<T, ValidatedError>;
 
@@ -35,6 +36,47 @@ pub type MultiIndex = Vec<u32>;
 /// Highest Taylor order accepted.  Beyond this the coefficient count and the
 /// `(p+1)!` remainder scaling stop buying accuracy.
 pub const MAX_ORDER: usize = 24;
+
+/// `B_n / n!` as an exact rational, for the Euler–Maclaurin corrections in
+/// `hurwitz_zeta_ints`.
+///
+/// The Bernoulli numbers themselves come from the elementary recurrence
+/// `Σ_{j=0}^{m} C(m+1, j)·B_j = 0` (`m ≥ 1`), i.e.
+/// `B_m = −(1/(m+1))·Σ_{j<m} C(m+1, j)·B_j`, with `B₀ = 1` — the convention
+/// with `B₁ = −½`, which the recurrence produces on its own.  Everything is
+/// rational arithmetic, so these are *exact*: nothing about the remainder
+/// bound rests on a tabulated decimal.
+///
+/// Computed once and memoised; `BERNOULLI_MAX` covers twice the Euler–Maclaurin
+/// term cap plus the two extra indices the error bound reads.
+fn bernoulli_over_factorial(n: usize) -> Rational {
+    /// Highest Bernoulli index tabulated.
+    const BERNOULLI_MAX: usize = 96;
+    static TABLE: OnceLock<Vec<Rational>> = OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        let mut b: Vec<Rational> = Vec::with_capacity(BERNOULLI_MAX + 1);
+        b.push(Rational::from(1));
+        for m in 1..=BERNOULLI_MAX {
+            let mut acc = Rational::new();
+            for (j, bj) in b.iter().enumerate().take(m) {
+                let c = Integer::from(m as u32 + 1).binomial(j as u32);
+                acc += Rational::from(c) * bj;
+            }
+            acc /= Integer::from(m as u32 + 1);
+            b.push(-acc);
+        }
+        // Divide through by n! once, here, so the caller never handles the
+        // (astronomically large) numerator and denominator separately.
+        b.into_iter()
+            .enumerate()
+            .map(|(n, bn)| bn / Integer::factorial(n as u32).complete())
+            .collect()
+    });
+    table
+        .get(n)
+        .cloned()
+        .unwrap_or_else(|| unreachable!("Bernoulli index {n} exceeds the table"))
+}
 
 /// `v > 0`, with NaN answering **false**.
 ///
@@ -1368,6 +1410,708 @@ impl TaylorModel {
         Ok(one.sub(&self.erf()?))
     }
 
+    /// `C·q^{p+1}/(1−q)` — the tail `Σ_{k>p} |aₖ|·|δ|ᵏ` of a series whose
+    /// coefficients admit a **geometric** majorant `|aₖ| ≤ C/ρᵏ`, with
+    /// `q = |δ|/ρ`.
+    ///
+    /// Sibling of [`TaylorModel::series_tail`], which majorises by `1/(kρᵏ)`
+    /// instead; the extra `1/k` there is not available for every function, and
+    /// where it is not this is the bound that applies.  `t ↦ t^{p+1}/(1−t)` is
+    /// increasing on `[0,1)`, so rounding `q` **up** and `1−q` **down** rounds
+    /// the result up.  `None` when `q ≥ 1` — outside the disc of convergence
+    /// the majorant says nothing and the caller must fall back on Lagrange.
+    fn geometric_tail(
+        c: &ArbBall,
+        delta_mag: &Float,
+        rho_lo: &Float,
+        p1: usize,
+        prec: u32,
+    ) -> Option<Float> {
+        if !strictly_positive(rho_lo) || !delta_mag.is_finite() {
+            return None;
+        }
+        let q = ub(&Self::div_ball(&from_float(delta_mag, prec), &from_float(rho_lo, prec)).ok()?);
+        let one_minus_q = lb(&(ArbBall::from_f64(1.0, prec) - from_float(&q, prec)));
+        if !strictly_positive(&one_minus_q) {
+            return None;
+        }
+        let num = from_float(&q, prec).powi(p1 as i64) * symmetric(&mag(c), prec);
+        let out = ub(&Self::div_ball(&num, &from_float(&one_minus_q, prec)).ok()?);
+        out.is_finite().then_some(out)
+    }
+
+    // ── Bessel Jν ────────────────────────────────────────────────────────
+
+    /// `Jν(self)` for integer order `ν ≥ 0`.  Entire, so there is no domain
+    /// guard.
+    ///
+    /// **Both the coefficients and the remainder come from one identity.**
+    /// The three-term derivative relation
+    /// `2·Jν′(x) = J_{ν−1}(x) − J_{ν+1}(x)` (and `J₀′ = −J₁`, its `ν = 0`
+    /// case, since `J₋₁ = −J₁`) iterates by Pascal's rule into
+    ///
+    /// ```text
+    /// Jν⁽ⁿ⁾(x) = 2⁻ⁿ · Σ_{j=0}^{n} (−1)ʲ · C(n,j) · J_{ν−n+2j}(x).
+    /// ```
+    ///
+    /// *Induction.*  True at `n = 0`.  Differentiating the `n`-th line term by
+    /// term and applying `2Jμ′ = J_{μ−1} − J_{μ+1}` to each `J_{ν−n+2j}`
+    /// produces `2^{−(n+1)} Σ_j (−1)ʲ C(n,j) [J_{ν−n−1+2j} − J_{ν−n+1+2j}]`;
+    /// re-indexing the second sum by `j → j−1` merges the two into
+    /// `Σ_j (−1)ʲ [C(n,j) + C(n,j−1)] J_{ν−(n+1)+2j}`, and
+    /// `C(n,j) + C(n,j−1) = C(n+1,j)`. ∎
+    ///
+    /// **Remainder.**  For every integer `m` and every real `x`,
+    ///
+    /// ```text
+    /// J_m(x) = (1/π)·∫₀^π cos(mθ − x·sin θ) dθ    ⟹    |J_m(x)| ≤ 1,
+    /// ```
+    ///
+    /// the integrand being a cosine and the interval having length `π`.  Put
+    /// that into the identity above: the binomial coefficients sum to `2ⁿ`,
+    /// which the `2⁻ⁿ` exactly cancels, so
+    ///
+    /// ```text
+    /// |Jν⁽ⁿ⁾(x)| ≤ 1        for every real x and every order n,
+    /// ```
+    ///
+    /// and hence `|Jν⁽ᵖ⁺¹⁾(ξ)|/(p+1)! ≤ 1/(p+1)!` uniformly — the same
+    /// remainder `sin` and `cos` get, for the same reason (a uniform bound on
+    /// *every* derivative), and with no appeal to monotonicity anywhere.  That
+    /// last point is what makes this sound where the endpoint hull in
+    /// [`crate::ball::ArbBall::bessel_jn`] was not: `Jν` oscillates, and
+    /// nothing here supposes otherwise.
+    ///
+    /// A Cauchy estimate against the entire-function growth
+    /// (`|Jν(z)| ≤ |z/2|^ν e^{|Im z|}/ν!` from the Poisson integral) is also
+    /// available but is never sharper: minimised over the circle radius it
+    /// gives `≈ √(2πn)/n!`, a factor `√(2πn)` *worse* than the bound above.
+    /// So this rule uses the elementary one alone.
+    pub fn bessel_j(&self, nu: i32) -> Result<Self> {
+        self.check_finite("bessel argument")?;
+        let (m0, delta) = self.center_split();
+        let d = delta.range();
+        let arg = from_float(&m0, self.prec) + d.clone();
+        if !is_finite(&arg) {
+            return Err(ValidatedError::NotFinite {
+                what: "bessel argument".into(),
+            });
+        }
+        let p = self.order;
+        // J_{ν−p} … J_{ν+p}, each correctly rounded by MPFR and then
+        // re-rounded outward into a ball.
+        let work = self.prec + 32;
+        let jvals: Vec<ArbBall> = (0..=2 * p)
+            .map(|i| {
+                let order = nu - (p as i32) + (i as i32);
+                let mut v = Float::with_val(work, &m0);
+                v.jn_mut(order);
+                from_float(&v, self.prec)
+            })
+            .collect();
+
+        let mut a = Vec::with_capacity(p + 1);
+        for k in 0..=p {
+            let mut acc = ArbBall::from_f64(0.0, self.prec);
+            for j in 0..=k {
+                let binom = Integer::from(k).binomial(j as u32);
+                let term = ArbBall::from_integer(&binom, self.prec) * jvals[p - k + 2 * j].clone();
+                acc = if j % 2 == 0 { acc + term } else { acc - term };
+            }
+            // 2ᵏ·k! — exact, so the division only costs the ball's own
+            // rounding.
+            let scale = ArbBall::from_integer(
+                &((Integer::from(1) << (k as u32)) * Integer::factorial(k as u32).complete()),
+                self.prec,
+            );
+            a.push(Self::div_ball(&acc, &scale)?);
+        }
+
+        let fact = Self::factorial(self.order + 1, self.prec);
+        let scale = Self::div_ball(&ArbBall::from_f64(1.0, self.prec), &fact)?;
+        let radius = ub(&(scale
+            * ArbBall {
+                mid: delta.delta_pow(&d),
+                rad: Float::new(self.prec),
+                prec: self.prec,
+            }));
+        let out = delta.compose(&a, &radius);
+        out.check_finite("bessel result")?;
+        Ok(out)
+    }
+
+    // ── digamma / gamma ──────────────────────────────────────────────────
+
+    /// `ζ(s, a) = Σ_{k≥0} (a+k)^{-s}` for every integer `s` in `2..=s_max`,
+    /// as rigorous balls, for real `a > 0`.  Index `i` holds `s = i + 2`.
+    ///
+    /// The Hurwitz zeta is what the Taylor coefficients of `ψ` (and, through
+    /// `ψ`, of `Γ`) *are*: `ψ⁽ᵏ⁾(a) = (−1)^{k+1}·k!·ζ(k+1, a)`.  Direct
+    /// summation is hopeless — the tail of `ζ(2, a)` decays like `1/N` — so
+    /// this is Euler–Maclaurin applied to the tail after `SHIFT` exact terms.
+    ///
+    /// With `A = a + SHIFT` and `f(t) = (a+t)^{-s}`, whose derivatives are
+    /// `f⁽ʲ⁾(t) = (−1)ʲ·(s)_j·(a+t)^{−s−j}`:
+    ///
+    /// ```text
+    /// ζ(s,a) = Σ_{k<SHIFT} (a+k)^{-s}
+    ///        + A^{1-s}/(s-1)                       [ ∫_SHIFT^∞ f ]
+    ///        + A^{-s}/2                            [ ½·f(SHIFT)  ]
+    ///        + Σ_{k=1}^{K} (B_{2k}/(2k)!)·(s)_{2k-1}·A^{1-s-2k}
+    ///        + R_K.
+    /// ```
+    ///
+    /// **The remainder.**  `R_K` is an integral of the periodic Bernoulli
+    /// function against `f⁽²ᴷ⁺²⁾`.  Two facts bound it without any appeal to
+    /// tabulated constants: `max_{[0,1]} |B_{2m}(u)| = |B_{2m}|` (immediate
+    /// from the Fourier series `B̃_{2m}(u) = (−1)^{m+1}·2·(2m)!·(2π)^{−2m}·
+    /// Σ_{j≥1} cos(2πju)/j^{2m}`, whose terms all peak together at `u = 0`),
+    /// and `f⁽²ᴷ⁺²⁾` has one sign on `[SHIFT, ∞)` so `∫|f⁽²ᴷ⁺²⁾| =
+    /// |f⁽²ᴷ⁺¹⁾(SHIFT)|`.  Hence
+    ///
+    /// ```text
+    /// |R_K| ≤ 2·(|B_{2K+2}|/(2K+2)!)·(s)_{2K+1}·A^{−s−2K−1},
+    /// ```
+    ///
+    /// i.e. **twice the first omitted term**.  The factor 2 is deliberate
+    /// slack: the two standard forms of the Euler–Maclaurin remainder differ
+    /// by whether `B̃_{2m}` or `B̃_{2m} − B_{2m}` appears, and `2|B_{2m}|`
+    /// dominates both, so the bound holds under either convention rather than
+    /// depending on which one is quoted.  The series is asymptotic, so the
+    /// loop stops at the first term that is small enough *or* that stops
+    /// shrinking, and reports twice that term as the radius.
+    fn hurwitz_zeta_ints(a: &ArbBall, s_max: usize, prec: u32) -> Result<Vec<ArbBall>> {
+        /// Exact terms taken before the asymptotic tail.  100 puts `A ≥ 100`,
+        /// where the correction terms fall off by roughly `(2π·100)⁻²` each.
+        const SHIFT: usize = 100;
+        /// Cap on Euler–Maclaurin terms; the series diverges eventually, and
+        /// the loop normally stops long before this.
+        const MAX_TERMS: usize = 40;
+
+        let a_lo = lb(a);
+        if !strictly_positive(&a_lo) {
+            return Err(ValidatedError::DomainViolation {
+                what: "Hurwitz zeta needs a strictly positive second argument".into(),
+            });
+        }
+        let one = ArbBall::from_f64(1.0, prec);
+        let big = a.clone() + ArbBall::from_f64(SHIFT as f64, prec);
+        let inv_big = Self::div_ball(&one, &big)?;
+        let inv_big2 = inv_big.clone() * inv_big.clone();
+        // Accumulate every head sum in one pass over `k`: `(a+k)^{-s}` for
+        // consecutive `s` is one multiplication apart, so this costs one
+        // division and `s_max` multiplications per term rather than a fresh
+        // binary exponentiation for each `(k, s)` pair.
+        let count = s_max.saturating_sub(1);
+        let mut heads = vec![ArbBall::from_f64(0.0, prec); count];
+        for k in 0..SHIFT {
+            let t = a.clone() + ArbBall::from_f64(k as f64, prec);
+            let inv = Self::div_ball(&one, &t)?;
+            let mut pw = inv.clone() * inv.clone();
+            for head in heads.iter_mut() {
+                *head = head.clone() + pw.clone();
+                pw = pw * inv.clone();
+            }
+        }
+
+        let mut out = Vec::with_capacity(count);
+        let mut a_neg_s = inv_big.clone() * inv_big.clone();
+        for s in 2..=s_max {
+            let head = heads[s - 2].clone();
+            if s > 2 {
+                a_neg_s = a_neg_s.clone() * inv_big.clone();
+            }
+            let a_neg_s = a_neg_s.clone();
+            let integral = Self::div_ball(
+                &(a_neg_s.clone() * big.clone()),
+                &ArbBall::from_f64((s - 1) as f64, prec),
+            )?;
+            let half = Self::div_ball(&a_neg_s, &ArbBall::from_f64(2.0, prec))?;
+            let mut acc = head + integral + half;
+
+            // termₖ = (B_{2k}/(2k)!)·(s)_{2k-1}·A^{1-s-2k}.
+            //         `poch` is (s)_{2k-1}, `pow` is A^{1-s-2k}.
+            // k = 1: (s)_1 = s and A^{1-s-2} = A^{-(s+1)}; each step multiplies
+            // the Pochhammer by two more factors and the power by A^{-2}.
+            let mut poch = Integer::from(s as u32);
+            let mut pow = inv_big.powi((s + 1) as i64);
+            // A term below this fraction of the partial sum is past the
+            // working precision, so there is nothing left to gain by adding it.
+            let mut small = mag(&acc);
+            small >>= prec.saturating_sub(4);
+            let mut prev: Option<Float> = None;
+            let mut radius = Float::new(prec);
+            for k in 1..=MAX_TERMS {
+                if k > 1 {
+                    // (s)_{2k-1} = (s)_{2k-3}·(s+2k-3)·(s+2k-2)
+                    poch *= Integer::from(s + 2 * k - 3);
+                    poch *= Integer::from(s + 2 * k - 2);
+                    pow = pow.clone() * inv_big2.clone();
+                }
+                let term = ArbBall::from_rational(&bernoulli_over_factorial(2 * k), prec)
+                    * ArbBall::from_integer(&poch, prec)
+                    * pow.clone();
+                let tm = mag(&term);
+                let stop_small = tm <= small;
+                let stop_diverging = prev.as_ref().is_some_and(|p| &tm >= p);
+                if stop_small || stop_diverging || k == MAX_TERMS {
+                    radius = ub(&(symmetric(&tm, prec) * ArbBall::from_f64(2.0, prec)));
+                    break;
+                }
+                acc = acc + term;
+                prev = Some(tm);
+            }
+            acc.rad += radius;
+            if !is_finite(&acc) {
+                return Err(ValidatedError::NotFinite {
+                    what: format!("ζ({s}, a)"),
+                });
+            }
+            out.push(acc);
+        }
+        Ok(out)
+    }
+
+    /// `digamma(self)`.  Refuses unless the argument enclosure lies strictly
+    /// inside `(0, ∞)`.
+    ///
+    /// **Domain.**  `ψ` has a simple pole at every non-positive integer, and
+    /// between two of them the coefficient machinery below (a Hurwitz zeta
+    /// summed over `a, a+1, a+2, …`) does not converge at all, so the guard is
+    /// `lb(arg) > 0` and nothing weaker.  A box like `[−2.5, −2.1]` sits
+    /// between poles and *is* a domain of analyticity, but it is refused
+    /// rather than answered by a reflection formula nobody has written here.
+    ///
+    /// **Coefficients.**  `ψ⁽ᵏ⁾(x) = (−1)^{k+1}·k!·ζ(k+1, x)` — differentiate
+    /// `ψ(x) = −γ + Σ_{n≥0} [1/(n+1) − 1/(x+n)]` termwise, which is legitimate
+    /// because the differentiated series converges locally uniformly on
+    /// `x > 0`.  So `aₖ = ψ⁽ᵏ⁾(m₀)/k! = (−1)^{k+1}·ζ(k+1, m₀)` exactly, with
+    /// no recurrence and no cancellation, and `a₀ = ψ(m₀)` from MPFR.
+    ///
+    /// **Remainder.**  Two bounds, whichever is smaller:
+    ///
+    /// * *Lagrange.*  `|ψ⁽ᵖ⁺¹⁾(ξ)|/(p+1)! = ζ(p+2, ξ)`, and `ζ(s, ξ)` is
+    ///   manifestly decreasing in `ξ` (every term `(ξ+k)^{-s}` is), so its
+    ///   supremum over the enclosure sits at the lower endpoint `L`.  There
+    ///   `ζ(s, L) ≤ L^{-s} + ∫₀^∞ (L+t)^{-s} dt = L^{-s} + L^{1-s}/(s−1)`,
+    ///   comparing `(L+k)^{-s} ≤ ∫_{k-1}^{k}(L+t)^{-s} dt` term by term.  With
+    ///   `s = p+2` that is `L^{-(p+2)} + L^{-(p+1)}/(p+1)`.
+    /// * *Geometric tail.*  The same estimate gives
+    ///   `|aₖ| = ζ(k+1, m₀) ≤ m₀^{-(k+1)} + m₀^{-k}/k ≤ C·m₀^{-k}` with
+    ///   `C = 1/m₀ + 1/(p+1)` for every `k ≥ p+1`, so
+    ///   `geometric_tail` applies with `ρ = m₀` — the distance
+    ///   from `m₀` to the pole at the origin, which is exactly the radius of
+    ///   convergence.
+    ///
+    /// Neither uses monotonicity of `ψ` itself; the second bound's `ρ` is a
+    /// statement about where the poles are, not about the shape of the graph.
+    pub fn digamma(&self) -> Result<Self> {
+        self.check_finite("digamma argument")?;
+        let (m0, delta) = self.center_split();
+        let d = delta.range();
+        let arg = from_float(&m0, self.prec) + d.clone();
+        let arg_lo = lb(&arg);
+        if !strictly_positive(&arg_lo) {
+            return Err(ValidatedError::DomainViolation {
+                what: "digamma of an argument whose enclosure reaches 0 or below (poles sit at every non-positive integer)".into(),
+            });
+        }
+        let c = from_float(&m0, self.prec);
+        let p1 = self.order + 1;
+        let mut a = Vec::with_capacity(p1);
+        let mut psi = Float::with_val(self.prec + 32, &m0);
+        psi.digamma_mut();
+        a.push(from_float(&psi, self.prec));
+        if self.order >= 1 {
+            let zetas = Self::hurwitz_zeta_ints(&c, self.order + 1, self.prec)?;
+            for k in 1..=self.order {
+                let z = zetas[k - 1].clone();
+                a.push(if k % 2 == 1 { z } else { -z });
+            }
+        }
+
+        // Lagrange: ζ(p+2, L) ≤ L^{-(p+2)} + L^{-(p+1)}/(p+1).
+        let lo_ball = from_float(&arg_lo, self.prec);
+        let one = ArbBall::from_f64(1.0, self.prec);
+        let sup = Self::div_ball(&one, &lo_ball.powi((p1 + 1) as i64))?
+            + Self::div_ball(
+                &one,
+                &(lo_ball.powi(p1 as i64) * ArbBall::from_f64(p1 as f64, self.prec)),
+            )?;
+        let lagrange = ub(&(sup
+            * ArbBall {
+                mid: delta.delta_pow(&d),
+                rad: Float::new(self.prec),
+                prec: self.prec,
+            }));
+        // Geometric tail with ρ = m₀ and C = 1/m₀ + 1/(p+1).
+        let tail = (|| {
+            let cc = Self::div_ball(&one, &c).ok()?
+                + Self::div_ball(&one, &ArbBall::from_f64(p1 as f64, self.prec)).ok()?;
+            Self::geometric_tail(&cc, &mag(&d), &lb(&c), p1, self.prec)
+        })();
+        let radius = Self::tighter(lagrange, tail);
+        let out = delta.compose(&a, &radius);
+        out.check_finite("digamma result")?;
+        Ok(out)
+    }
+
+    /// Upper bound on `max_{|z−x| = r} |Γ(z)|` for real `x` ranging over
+    /// `[lo, hi]`, valid whenever `lo − r > 0`.
+    ///
+    /// Two elementary facts, both from the Euler integral:
+    ///
+    /// * `|Γ(u+iv)| = |∫₀^∞ t^{u−1+iv} e^{−t} dt| ≤ ∫₀^∞ t^{u−1} e^{−t} dt
+    ///   = Γ(u)` for `u > 0`, because `|t^{iv}| = 1` on `t > 0`;
+    /// * `Γ″(u) = ∫₀^∞ t^{u−1}(ln t)² e^{−t} dt > 0`, so `Γ` is **convex** on
+    ///   `(0, ∞)` and its maximum over an interval is at an endpoint.
+    ///
+    /// A point of a circle `|z − x| = r` with `x ∈ [lo, hi]` has
+    /// `Re z ∈ [lo − r, hi + r]`, so `|Γ(z)| ≤ max(Γ(lo−r), Γ(hi+r))`.  No
+    /// monotonicity of `Γ` is assumed — it has a minimum at `x ≈ 1.4616`, and
+    /// convexity is what covers a box straddling it.
+    fn gamma_circle_bound(lo: &Float, hi: &Float, r: &Float, prec: u32) -> Option<ArbBall> {
+        let work = prec + 32;
+        // `lo − r` **rounded down** and `hi + r` **rounded up**: the strip
+        // whose maximum is being taken has to contain the true one, and a
+        // round-to-nearest here would shave an ulp off the end where Γ is
+        // steepest, which is the one direction a certificate must not move in.
+        let rb = from_float(r, work);
+        let left = lb(&(from_float(lo, work) - rb.clone()));
+        if !matches!(left.partial_cmp(&0), Some(std::cmp::Ordering::Greater)) {
+            return None;
+        }
+        let right = ub(&(from_float(hi, work) + rb));
+        let ga = from_float(&Float::with_val(work, left).gamma(), prec);
+        let gb = from_float(&Float::with_val(work, right).gamma(), prec);
+        let out = if ub(&ga) > ub(&gb) { ga } else { gb };
+        is_finite(&out).then_some(out)
+    }
+
+    /// `gamma(self)`.  Refuses unless the argument enclosure lies strictly
+    /// inside `(0, ∞)`.
+    ///
+    /// **Domain.**  `Γ` has a pole at every non-positive integer.  On the
+    /// strips between them it is analytic, but both the coefficients (via
+    /// `ψ`, hence via a Hurwitz zeta needing `a > 0`) and the remainder (via
+    /// `|Γ(u+iv)| ≤ Γ(u)`, needing `u > 0`) are written for the positive axis
+    /// only, so anything reaching `0` is refused.
+    ///
+    /// **Coefficients.**  From `Γ′ = ψ·Γ`, Leibniz gives
+    /// `Γ⁽ⁿ⁺¹⁾ = Σ_{j=0}^{n} C(n,j)·ψ⁽ʲ⁾·Γ⁽ⁿ⁻ʲ⁾`; dividing by `(n+1)!` turns
+    /// the binomials into a plain convolution of Taylor coefficients,
+    ///
+    /// ```text
+    /// c_{n+1} = (1/(n+1))·Σ_{j=0}^{n} d_j · c_{n−j},
+    /// ```
+    ///
+    /// with `cₖ = Γ⁽ᵏ⁾(m₀)/k!`, `c₀ = Γ(m₀)`, and `dⱼ = ψ⁽ʲ⁾(m₀)/j!` — which
+    /// is `d₀ = ψ(m₀)` and `dⱼ = (−1)^{j+1} ζ(j+1, m₀)`, the very numbers
+    /// [`TaylorModel::digamma`] expands with.  This is an identity between
+    /// derivatives at the single point `m₀`, so ball arithmetic runs it
+    /// without any interval widening.
+    ///
+    /// **Remainder.**  `Γ` is analytic on `Re z > 0`, so Cauchy's estimate
+    /// holds for every radius `r` with `L − r > 0`:
+    ///
+    /// ```text
+    /// |Γ⁽ᵖ⁺¹⁾(ξ)|/(p+1)!  ≤  max_{|z−ξ|=r} |Γ(z)| / r^{p+1}
+    ///                     ≤  max(Γ(L−r), Γ(U+r)) / r^{p+1},
+    /// ```
+    ///
+    /// by `gamma_circle_bound`.  **Every `r` gives a valid
+    /// bound**, so the candidates tried below are a tightness choice only and
+    /// cannot make the result unsound.  The same estimate at the expansion
+    /// point, `|cₖ| ≤ max(Γ(m₀−r), Γ(m₀+r))/rᵏ`, feeds
+    /// `geometric_tail`; that form is usually several orders
+    /// tighter because it never takes a supremum over the whole enclosure.
+    /// The smallest of all of them is kept, and a minimum of valid upper
+    /// bounds is a valid upper bound.
+    pub fn gamma(&self) -> Result<Self> {
+        self.check_finite("gamma argument")?;
+        let (m0, delta) = self.center_split();
+        let d = delta.range();
+        let arg = from_float(&m0, self.prec) + d.clone();
+        let arg_lo = lb(&arg);
+        let arg_hi = ub(&arg);
+        if !strictly_positive(&arg_lo) {
+            return Err(ValidatedError::DomainViolation {
+                what: "gamma of an argument whose enclosure reaches 0 or below (poles sit at every non-positive integer)".into(),
+            });
+        }
+        let prec = self.prec;
+        let c = from_float(&m0, prec);
+        let p = self.order;
+        let p1 = p + 1;
+
+        // dⱼ = ψ⁽ʲ⁾(m₀)/j!, j = 0..p−1 (the convolution only ever reads that far).
+        let mut dvec = Vec::with_capacity(p.max(1));
+        let mut psi = Float::with_val(prec + 32, &m0);
+        psi.digamma_mut();
+        dvec.push(from_float(&psi, prec));
+        if p >= 1 {
+            let zetas = Self::hurwitz_zeta_ints(&c, p.max(2), prec)?;
+            for j in 1..p {
+                let z = zetas[j - 1].clone();
+                dvec.push(if j % 2 == 1 { z } else { -z });
+            }
+        }
+        let mut a = Vec::with_capacity(p + 1);
+        a.push(from_float(&Float::with_val(prec + 32, &m0).gamma(), prec));
+        for n in 0..p {
+            let mut acc = ArbBall::from_f64(0.0, prec);
+            for j in 0..=n {
+                acc = acc + dvec[j].clone() * a[n - j].clone();
+            }
+            a.push(Self::div_ball(
+                &acc,
+                &ArbBall::from_f64((n + 1) as f64, prec),
+            )?);
+        }
+
+        let dmag = mag(&d);
+        let delta_pow = ArbBall {
+            mid: delta.delta_pow(&d),
+            rad: Float::new(prec),
+            prec,
+        };
+        let mut best: Option<Float> = None;
+        let mut keep = |cand: Option<Float>| {
+            if let Some(v) = cand {
+                if v.is_finite() && (best.is_none() || best.as_ref().is_some_and(|b| &v < b)) {
+                    best = Some(v);
+                }
+            }
+        };
+        // Radii as fractions of the distance to the pole at the origin. The
+        // Lagrange form needs r < L; the tail form needs |δ| < r < m₀.
+        for frac in [0.99_f64, 0.9, 0.75, 0.5, 0.25, 0.1] {
+            let r_lag = Float::with_val(prec, &arg_lo * frac);
+            if let Some(m) = Self::gamma_circle_bound(&arg_lo, &arg_hi, &r_lag, prec) {
+                let denom = from_float(&r_lag, prec).powi(p1 as i64);
+                if let Ok(scale) = Self::div_ball(&m, &denom) {
+                    keep(Some(ub(&(scale * delta_pow.clone()))));
+                }
+            }
+            let r_tail = Float::with_val(prec, &m0 * frac);
+            if let Some(m) = Self::gamma_circle_bound(&m0, &m0, &r_tail, prec) {
+                keep(Self::geometric_tail(&m, &dmag, &r_tail, p1, prec));
+            }
+        }
+        let radius = best.ok_or_else(|| ValidatedError::NotFinite {
+            what: "gamma remainder bound".into(),
+        })?;
+        let out = delta.compose(&a, &radius);
+        out.check_finite("gamma result")?;
+        Ok(out)
+    }
+
+    // ── Lambert W ────────────────────────────────────────────────────────
+
+    /// `lambert_w(self)` — the principal branch `W₀`.  Refuses unless the
+    /// argument enclosure lies strictly above `−1/e`.
+    ///
+    /// **Domain.**  `W₀` is real on `[−1/e, ∞)` and has a square-root branch
+    /// point at `−1/e`, where every derivative is unbounded, so no Taylor
+    /// remainder exists there.  The guard is not a comparison against a
+    /// rounded `−1/e`: it is `W₀(L) > −1`, checked on the *certified* bracket
+    /// from [`crate::ball::ArbBall::lambert_w0`], which refuses on its own for
+    /// any argument left of the branch point.
+    ///
+    /// **Coefficients.**  Writing `w = W₀(x)`, `x = w·eʷ` gives
+    /// `dx/dw = (1+w)eʷ` and hence `W₀′ = e^{−w}/(1+w)`.  Induction on that
+    /// yields the classical closed form
+    ///
+    /// ```text
+    /// W₀⁽ⁿ⁾(x) = e^{−n·w} · pₙ(w) / (1+w)^{2n−1},
+    /// p₁ = 1,   p_{n+1}(w) = (1+w)·pₙ′(w) − (n·w + 3n − 1)·pₙ(w),
+    /// ```
+    ///
+    /// with `pₙ` a polynomial of degree `n−1` and **integer** coefficients (so
+    /// they are computed exactly here, not in floating point).  *Proof of the
+    /// step*: differentiate the `n`-th expression with respect to `x` by the
+    /// chain rule, multiplying by `dw/dx = e^{−w}/(1+w)`; collecting the three
+    /// resulting terms over the common denominator `(1+w)^{2n+1}` gives
+    /// exactly the stated recurrence. ∎
+    ///
+    /// **Remainder.**  With `wL = W₀(L)` and `wU = W₀(U)` — and `W₀` is
+    /// increasing, because `W₀′ = e^{−w}/(1+w) > 0` for `w > −1`, so `w`
+    /// ranges over `[wL, wU]` as `ξ` ranges over `[L, U]` — every factor of
+    /// the closed form is bounded separately:
+    ///
+    /// * `e^{−(p+1)w} ≤ e^{−(p+1)·wL}`, since it decreases in `w`;
+    /// * `(1+w)^{2p+1} ≥ (1+wL)^{2p+1}`, since `1+w > 0` and it increases;
+    /// * `|p_{p+1}(w)| ≤ Σ_j |coefficient_j| · max(|wL|, |wU|)^j`, the
+    ///   triangle inequality — no cancellation is claimed — or the ball
+    ///   -arithmetic Horner value of `p_{p+1}` over the same range, whichever
+    ///   is smaller; both enclose it, so the minimum does too.
+    ///
+    /// The three are monotone in *opposite* directions, so evaluating them all
+    /// at `wL` is very loose over a wide range.  The `w` range is therefore
+    /// split into panels and the largest panel bound kept, each panel using
+    /// its own left end — which is what the two monotonicity facts above
+    /// license.  A finer split can only shrink the answer, so the panel count
+    /// is a tightness knob and not a soundness one; the panel boundaries are
+    /// forced to `wL` and `wU` at the ends so no sliver of the range escapes
+    /// the supremum.
+    ///
+    /// This is the loosest of the rules near its boundary, and honestly so:
+    /// `W₀⁽ⁿ⁾` really does blow up like `(x + 1/e)^{1/2−n}` at the branch
+    /// point, so a single un-subdivided model on `[−0.36, −0.3]` is useless
+    /// while `bound_on_box` converges on the true range in 39 subdivisions.
+    ///
+    /// The three combine to a bound on `|W₀⁽ᵖ⁺¹⁾(ξ)|/(p+1)!` valid for every
+    /// `ξ` in the enclosure at once, which is what a Lagrange remainder needs.
+    /// Each bound is a monotonicity statement about an *explicit elementary
+    /// factor*, proved on the spot; none is an assumption about `W₀`.
+    pub fn lambert_w(&self) -> Result<Self> {
+        self.check_finite("lambert_w argument")?;
+        let (m0, delta) = self.center_split();
+        let d = delta.range();
+        let arg = from_float(&m0, self.prec) + d.clone();
+        if !is_finite(&arg) {
+            return Err(ValidatedError::NotFinite {
+                what: "lambert_w argument".into(),
+            });
+        }
+        let prec = self.prec;
+        let domain_err = || {
+            ValidatedError::DomainViolation {
+            what: "lambert_w of an argument whose enclosure reaches -1/e or below (the principal branch has a branch point there, where every derivative is unbounded)".into(),
+        }
+        };
+        let w_range = arg.lambert_w0().ok_or_else(domain_err)?;
+        let w_lo = lb(&w_range);
+        let w_hi = ub(&w_range);
+        // `1 + W₀(L) > 0` strictly: at the branch point it is 0 and the
+        // closed form below divides by its (2n−1)-st power.
+        let one_plus_lo = lb(&(from_float(&w_lo, prec) + ArbBall::from_f64(1.0, prec)));
+        if !strictly_positive(&one_plus_lo) {
+            return Err(domain_err());
+        }
+        let w0 = from_float(&m0, prec).lambert_w0().ok_or_else(domain_err)?;
+
+        // pₙ, exact integer coefficients, low degree first.
+        let p = self.order;
+        let mut polys: Vec<Vec<Integer>> = Vec::with_capacity(p + 2);
+        polys.push(vec![Integer::from(1)]); // p₁
+        for n in 1..=p {
+            let prev = &polys[n - 1];
+            // (1+w)·p′ − (n·w + 3n − 1)·p
+            let deg = prev.len();
+            let mut next = vec![Integer::new(); deg + 1];
+            for (j, cj) in prev.iter().enumerate() {
+                if j >= 1 {
+                    // (1+w)·(j·c_j·w^{j-1}) = j·c_j·w^{j-1} + j·c_j·w^j
+                    let t = Integer::from(j as u32) * cj.clone();
+                    next[j - 1] += t.clone();
+                    next[j] += t;
+                }
+                // −(n·w + 3n − 1)·c_j·w^j
+                next[j] -= Integer::from(3 * n as u32 - 1) * cj.clone();
+                next[j + 1] -= Integer::from(n as u32) * cj.clone();
+            }
+            while next.len() > 1 && next.last().is_some_and(|c| c.is_zero()) {
+                next.pop();
+            }
+            polys.push(next);
+        }
+
+        let one = ArbBall::from_f64(1.0, prec);
+        let mut a = Vec::with_capacity(p + 1);
+        a.push(w0.clone());
+        let e_neg_w = (-w0.clone()).exp();
+        let one_plus_w = one.clone() + w0.clone();
+        for n in 1..=p {
+            let mut pv = ArbBall::from_f64(0.0, prec);
+            for (j, cj) in polys[n - 1].iter().enumerate() {
+                pv = pv + ArbBall::from_integer(cj, prec) * w0.powi(j as i64);
+            }
+            let num = e_neg_w.powi(n as i64) * pv;
+            let den = one_plus_w.powi((2 * n - 1) as i64) * Self::factorial(n, prec);
+            a.push(Self::div_ball(&num, &den)?);
+        }
+
+        // Lagrange bound at order p+1.
+        //
+        // The three factors of the closed form are each monotone in `w`, but
+        // in *different directions*, so bounding all of them at `wL` at once
+        // is very loose over a wide `w` range.  Splitting `[wL, wU]` into
+        // panels and taking the largest panel bound removes that: on a panel
+        // `[wa, wb]` the same three monotonicity facts give
+        // `e^{-(p+1)w} ≤ e^{-(p+1)wa}`, `(1+w)^{2p+1} ≥ (1+wa)^{2p+1}` and
+        // `|p_{p+1}(w)| ≤ min(Σ|c_j|·max(|wa|,|wb|)^j, |p_{p+1}([wa,wb])|)`,
+        // the second `|·|` being ball-arithmetic Horner over the panel, which
+        // keeps the coefficients' sign structure where the triangle inequality
+        // throws it away.  Both are enclosures of the same quantity, so the
+        // smaller is still one.  A finer split can only shrink the answer, so
+        // the panel count is a tightness knob and not a soundness one.
+        const PANELS: usize = 48;
+        let p1 = p + 1;
+        let fact_p1 = Self::factorial(p1, prec);
+        let width = ub(&(from_float(&w_hi, prec) - from_float(&w_lo, prec)));
+        // Panel boundaries.  The two *ends* are forced to `w_lo` and `w_hi`
+        // exactly and consecutive panels share a boundary, so the union is
+        // `[w_lo, w_hi]` whatever the interior boundaries round to — a sliver
+        // left uncovered at either end would be a hole in the supremum.
+        let boundary = |i: usize| -> Float {
+            if i == 0 {
+                w_lo.clone()
+            } else if i >= PANELS {
+                w_hi.clone()
+            } else {
+                Float::with_val(
+                    prec,
+                    &w_lo + Float::with_val(prec, &width * (i as f64 / PANELS as f64)),
+                )
+            }
+        };
+        let mut sup = ArbBall::from_f64(0.0, prec);
+        for i in 0..PANELS {
+            let (u, v) = (boundary(i), boundary(i + 1));
+            // `wa` is the panel's *left* end, which is what the two monotone
+            // factors below are evaluated at; take the minimum so a
+            // non-monotone rounding of the interior boundaries cannot put it
+            // above a point of the panel.
+            let (wa, wb) = if u <= v { (u, v) } else { (v, u) };
+            let span = from_bounds(&wa, &wb, prec);
+            let amax = mag(&span);
+            let amax_b = from_float(&amax, prec);
+            let mut psum = ArbBall::from_f64(0.0, prec);
+            for (j, cj) in polys[p].iter().enumerate() {
+                let abs = Integer::from(cj.abs_ref());
+                psum = psum + ArbBall::from_integer(&abs, prec) * amax_b.powi(j as i64);
+            }
+            let mut horner = ArbBall::from_f64(0.0, prec);
+            for cj in polys[p].iter().rev() {
+                horner = horner * span.clone() + ArbBall::from_integer(cj, prec);
+            }
+            let pbound = {
+                let h = mag(&horner);
+                let t = mag(&psum);
+                symmetric(if h < t { &h } else { &t }, prec)
+            };
+            // `1 + wa > 0` follows from `1 + wL > 0`, checked above.
+            let base = from_float(&wa, prec);
+            let num = (-base.clone() * ArbBall::from_f64(p1 as f64, prec)).exp() * pbound;
+            let den =
+                (ArbBall::from_f64(1.0, prec) + base).powi((2 * p1 - 1) as i64) * fact_p1.clone();
+            let cand = Self::div_ball(&num, &den)?;
+            if mag(&cand) > mag(&sup) {
+                sup = symmetric(&mag(&cand), prec);
+            }
+        }
+        let radius = ub(&(sup
+            * ArbBall {
+                mid: delta.delta_pow(&d),
+                rad: Float::new(prec),
+                prec,
+            }));
+        let out = delta.compose(&a, &radius);
+        out.check_finite("lambert_w result")?;
+        Ok(out)
+    }
+
     /// `self^e` for a real constant exponent, via `exp(e · log(self))`.
     /// Requires a strictly positive base.
     pub fn pow_const(&self, e: &ArbBall) -> Result<Self> {
@@ -1606,6 +2350,11 @@ impl<'a> TaylorContext<'a> {
                     "atanh" => x.atanh(),
                     "erf" => x.erf(),
                     "erfc" => x.erfc(),
+                    "bessel_j0" => x.bessel_j(0),
+                    "bessel_j1" => x.bessel_j(1),
+                    "digamma" => x.digamma(),
+                    "gamma" => x.gamma(),
+                    "lambert_w" => x.lambert_w(),
                     "abs" => x.abs(),
                     other => Err(ValidatedError::Unsupported {
                         what: format!("function `{other}`"),
@@ -2292,12 +3041,552 @@ mod tests {
         assert!(truth <= r.hi() && -truth.clone() >= r.lo(), "{r:?}");
     }
 
+    // ── Bessel / digamma / gamma / Lambert W ─────────────────────────────
+
+    /// A deterministic LCG.  The randomised sweeps want *breadth* of box
+    /// shapes, and a fixed seed reproduces a failure exactly.
+    fn lcg(seed: u64) -> impl FnMut() -> f64 {
+        let mut state = seed;
+        move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((state >> 11) as f64) / ((1u64 << 53) as f64)
+        }
+    }
+
+    /// The true value at `t`, at `P + 64` bits — far beyond the enclosure's
+    /// own radius, so a containment failure here is the enclosure's fault and
+    /// not the reference's.
+    ///
+    /// `lambert_w` is deliberately absent: MPFR has no `W`, and re-running the
+    /// same Newton iteration the kernel uses would test nothing.  It is
+    /// checked instead through its defining equation — see
+    /// `lambert_w_encloses_by_its_defining_equation`.
+    fn ref_special(name: &str, t: &Float) -> Float {
+        let v = Float::with_val(P + 64, t);
+        match name {
+            "digamma" => {
+                let mut w = v;
+                w.digamma_mut();
+                w
+            }
+            "gamma" => v.gamma(),
+            "bessel_j0" => v.jn(0),
+            "bessel_j1" => v.jn(1),
+            _ => unreachable!("no reference for `{name}`"),
+        }
+    }
+
+    fn assert_special_encloses(name: &str, r: &ArbBall, t: &Float, ctx: &str) {
+        let truth = ref_special(name, t);
+        assert!(
+            r.lo() <= truth && truth <= r.hi(),
+            "{name}({t}) = {truth} escaped [{}, {}] {ctx}",
+            r.lo(),
+            r.hi()
+        );
+    }
+
+    /// Containment over hand-picked boxes, including ones that run right up to
+    /// a domain boundary (`digamma`/`gamma` towards the pole at 0) and ones
+    /// spanning several oscillations of `J₀`/`J₁`, where an endpoint-hull
+    /// argument would fail outright.
+    #[test]
+    fn special_rules_enclose_dense_samples() {
+        let cases: [(&str, &[(f64, f64)]); 4] = [
+            (
+                "bessel_j0",
+                &[
+                    (-1.0, 1.0),
+                    (0.0, 0.0),
+                    (2.0, 3.0),
+                    (-6.0, 6.0),
+                    (10.0, 12.0),
+                    (-20.0, -19.5),
+                    (2.404, 2.405), // straddles the first zero of J₀
+                ],
+            ),
+            (
+                "bessel_j1",
+                &[
+                    (-1.0, 1.0),
+                    (0.0, 0.5),
+                    (3.8, 3.84), // straddles the first positive zero of J₁
+                    (-5.0, 5.0),
+                    (15.0, 16.0),
+                ],
+            ),
+            (
+                "digamma",
+                &[
+                    (1.0, 2.0),
+                    (0.25, 0.5),
+                    (0.001, 0.0011),
+                    (5.0, 9.0),
+                    (100.0, 101.0),
+                    (1.4, 1.5), // straddles the zero of ψ
+                ],
+            ),
+            (
+                "gamma",
+                &[
+                    (1.0, 2.0),
+                    (0.5, 0.75),
+                    (0.01, 0.02),
+                    (1.4, 1.5), // straddles the minimum of Γ
+                    (3.0, 4.0),
+                    (7.0, 7.5),
+                ],
+            ),
+        ];
+        for (name, boxes) in cases {
+            for &(lo, hi) in boxes {
+                let r = tm_range(name, lo, hi, 8)
+                    .unwrap_or_else(|e| panic!("{name} on [{lo},{hi}]: {e}"));
+                for t in samples(lo, hi, 200) {
+                    assert_special_encloses(name, &r, &t, &format!("on [{lo},{hi}]"));
+                }
+            }
+        }
+    }
+
+    /// Degenerate boxes: pin the *value*, which no containment sweep over a
+    /// wide box can guarantee to catch.  The radius bound also pins that the
+    /// Hurwitz-zeta coefficients really are computed to working precision
+    /// rather than to whatever the Euler–Maclaurin truncation happened to give.
+    #[test]
+    fn special_point_values_are_pinned() {
+        let cases: [(&str, &[f64]); 4] = [
+            ("bessel_j0", &[0.0, 1.0, -1.0, 2.5, 7.25, -13.5]),
+            ("bessel_j1", &[0.0, 1.0, -2.0, 4.75, 11.0]),
+            ("digamma", &[0.5, 1.0, 2.0, 3.75, 40.0, 0.01]),
+            ("gamma", &[0.5, 1.0, 1.4616, 2.0, 6.5, 0.02]),
+        ];
+        for (name, points) in cases {
+            for &p in points {
+                let r = tm_range(name, p, p, 6).unwrap_or_else(|e| panic!("{name}({p}): {e}"));
+                let t = Float::with_val(P, p);
+                assert_special_encloses(name, &r, &t, "at a degenerate box");
+                let rel = r.rad_f64() / (1.0 + r.mid_f64().abs());
+                assert!(
+                    rel < 1e-25,
+                    "{name}({p}) should be a point evaluation, relative radius {rel}"
+                );
+            }
+        }
+    }
+
+    /// `W₀` has no MPFR reference, so containment is checked through the
+    /// equation that *defines* it: `g(w) = w·eʷ` is strictly increasing on
+    /// `w > −1`, so `W₀(t) ∈ [lo, hi]` **iff** `g(lo) ≤ t ≤ g(hi)`.  That uses
+    /// nothing but `exp`, and in particular no part of the code under test.
+    #[test]
+    fn lambert_w_encloses_by_its_defining_equation() {
+        // `W₀(t) ∈ [lo, hi]` ⟺ `g(lo) ≤ t ≤ g(hi)`, but only for `lo, hi ≥ −1`
+        // where `g` is increasing.  An enclosure reaching below `−1` covers
+        // the whole branch on that side and needs no check; one whose *upper*
+        // end is below `−1` is a genuine escape, since `W₀ ≥ −1` always.
+        let brackets = |r: &ArbBall, t: &Float| -> bool {
+            let g = |w: &Float| -> Float {
+                let e = Float::with_val(P + 64, w).exp();
+                Float::with_val(P + 64, w) * e
+            };
+            let minus_one = Float::with_val(P + 64, -1);
+            let below = r.lo() <= minus_one || g(&r.lo()) <= *t;
+            let above = r.hi() >= minus_one && g(&r.hi()) >= *t;
+            below && above
+        };
+        for &(lo, hi) in &[
+            (0.0_f64, 1.0_f64),
+            (-0.3, 0.0),
+            (1.0, 2.0),
+            (-0.36, -0.35),
+            (10.0, 20.0),
+            (1e4, 1e5),
+            (0.5, 0.5),
+            (-0.2, 0.8),
+        ] {
+            let r = tm_range("lambert_w", lo, hi, 8)
+                .unwrap_or_else(|e| panic!("lambert_w on [{lo},{hi}]: {e}"));
+            for t in samples(lo, hi, 200) {
+                assert!(
+                    brackets(&r, &t),
+                    "W₀({t}) escaped [{}, {}] on [{lo},{hi}]",
+                    r.lo(),
+                    r.hi()
+                );
+            }
+        }
+    }
+
+    /// Off-domain and boundary-touching boxes refuse with a *domain*
+    /// violation, not with "no such rule".
+    #[test]
+    fn special_rules_refuse_off_domain_boxes() {
+        for (name, lo, hi) in [
+            // digamma / gamma: poles at 0, −1, −2, …
+            ("digamma", 0.0, 1.0),
+            ("digamma", -0.5, 0.5),
+            ("digamma", -3.0, -2.0), // between poles, but still refused
+            ("digamma", -1.0, -1.0),
+            ("gamma", 0.0, 1.0),
+            ("gamma", -0.5, 0.5),
+            ("gamma", -2.5, -2.4),
+            ("gamma", -4.0, -1.0),
+            // lambert_w: the principal branch starts at −1/e ≈ −0.36788.
+            ("lambert_w", -1.0, 1.0),
+            ("lambert_w", -0.5, -0.4),
+            ("lambert_w", -0.4, 0.0),
+            ("lambert_w", -1e6, -1e5),
+        ] {
+            match tm_range(name, lo, hi, 6) {
+                Ok(r) => panic!("{name} on [{lo},{hi}] is off-domain but returned {r}"),
+                Err(e) => assert_eq!(
+                    crate::errors::AlkahestError::code(&e),
+                    "E-VALIDATED-003",
+                    "{name} on [{lo},{hi}] refused with the wrong error: {e}"
+                ),
+            }
+        }
+    }
+
+    /// `J₀`/`J₁` are entire: no box may refuse on domain grounds, including
+    /// wide boxes spanning many oscillations and boxes centred on a zero.
+    #[test]
+    fn bessel_never_refuses_on_domain_grounds() {
+        for name in ["bessel_j0", "bessel_j1"] {
+            for (lo, hi) in [
+                (-1.0, 1.0),
+                (0.0, 0.0),
+                (-40.0, 40.0),
+                (2.404_825, 2.404_825),
+                (-100.0, -99.0),
+            ] {
+                let r = tm_range(name, lo, hi, 6)
+                    .unwrap_or_else(|e| panic!("{name} on [{lo},{hi}] refused: {e}"));
+                for t in samples(lo, hi, 30) {
+                    assert_special_encloses(name, &r, &t, &format!("on [{lo},{hi}]"));
+                }
+            }
+        }
+    }
+
+    /// The enclosure a *hull* would have produced is excluded explicitly: on
+    /// `[-1, 1]` the endpoints of `J₀` agree at 0.7651977 and the maximum
+    /// `J₀(0) = 1` sits strictly inside.  This is the exact configuration that
+    /// made the ball kernel unsound in 3.8.
+    #[test]
+    fn bessel_covers_the_interior_maximum_a_hull_would_miss() {
+        let r = tm_range("bessel_j0", -1.0, 1.0, 10).unwrap();
+        assert!(
+            r.hi() >= 1.0,
+            "J₀(0) = 1 must be enclosed by the bound over [-1,1], got {r}"
+        );
+        assert!(r.lo() <= 0.7651, "the endpoint value escaped: {r}");
+        // …and the bound is not merely true: J₀ ranges over [0.7652, 1] there.
+        assert!(width_of(&r) < 0.5, "enclosure width {}", width_of(&r));
+    }
+
+    /// The enclosures have to be usable, not merely true: measured against the
+    /// width of the true range on the box.
+    #[test]
+    fn special_enclosures_are_tight() {
+        for (name, lo, hi) in [
+            ("bessel_j0", 2.0, 2.5),
+            ("bessel_j1", 1.0, 1.5),
+            ("digamma", 1.0, 1.5),
+            ("digamma", 4.0, 5.0),
+            ("gamma", 1.0, 1.5),
+            ("gamma", 3.0, 3.5),
+        ] {
+            let r = tm_range(name, lo, hi, 12).unwrap();
+            let mut span = f64::NEG_INFINITY;
+            let mut lowest = f64::INFINITY;
+            for t in samples(lo, hi, 64) {
+                let v = ref_special(name, &t).to_f64();
+                span = span.max(v);
+                lowest = lowest.min(v);
+            }
+            let true_width = span - lowest;
+            assert!(
+                width_of(&r) <= 2.0 * true_width + 1e-12,
+                "{name} on [{lo},{hi}]: enclosure width {} against a true range of {true_width}",
+                width_of(&r)
+            );
+        }
+    }
+
+    /// Randomised sweep: 200 boxes per function, each checked for containment
+    /// of 40 densely sampled true values.  Every escape is a soundness bug.
+    #[test]
+    fn special_rules_random_box_sweep() {
+        let mut next = lcg(0x51ED_2701_C0FF);
+        for name in ["bessel_j0", "bessel_j1", "digamma", "gamma"] {
+            let mut checked = 0usize;
+            for _ in 0..200 {
+                let (lo, hi) = match name {
+                    // Entire: anywhere on ℝ, widths from a point to wide.
+                    "bessel_j0" | "bessel_j1" => {
+                        let c = (next() - 0.5) * 40.0;
+                        let w = next().powi(3) * 3.0;
+                        (c - w, c + w)
+                    }
+                    // Poles at 0, −1, …: strictly positive by construction,
+                    // with the pole at the origin approached but never met.
+                    "digamma" => {
+                        let lo = next().powi(4) * 20.0 + 1e-3;
+                        let w = next().powi(3) * 2.0;
+                        (lo, lo + w)
+                    }
+                    _ => {
+                        let lo = next().powi(4) * 8.0 + 1e-2;
+                        let w = next().powi(3) * 1.5;
+                        (lo, lo + w)
+                    }
+                };
+                let r = match tm_range(name, lo, hi, 8) {
+                    Ok(r) => r,
+                    // A refusal is always sound; the refusal *reasons* are
+                    // pinned by `special_rules_refuse_off_domain_boxes`.
+                    Err(_) => continue,
+                };
+                checked += 1;
+                for t in samples(lo, hi, 40) {
+                    assert_special_encloses(name, &r, &t, &format!("on [{lo}, {hi}]"));
+                }
+            }
+            assert!(
+                checked > 100,
+                "{name}: only {checked}/200 boxes produced a bound — the sweep is not exercising the rule"
+            );
+        }
+    }
+
+    /// The same sweep for `W₀`, through its defining equation.
+    #[test]
+    fn lambert_w_random_box_sweep() {
+        let mut next = lcg(0x11A3_B0C7_5E11);
+        // `W₀(t) ∈ [lo, hi]` ⟺ `g(lo) ≤ t ≤ g(hi)`, but only for `lo, hi ≥ −1`
+        // where `g` is increasing.  An enclosure reaching below `−1` covers
+        // the whole branch on that side and needs no check; one whose *upper*
+        // end is below `−1` is a genuine escape, since `W₀ ≥ −1` always.
+        let brackets = |r: &ArbBall, t: &Float| -> bool {
+            let g = |w: &Float| -> Float {
+                let e = Float::with_val(P + 64, w).exp();
+                Float::with_val(P + 64, w) * e
+            };
+            let minus_one = Float::with_val(P + 64, -1);
+            let below = r.lo() <= minus_one || g(&r.lo()) <= *t;
+            let above = r.hi() >= minus_one && g(&r.hi()) >= *t;
+            below && above
+        };
+        let mut checked = 0usize;
+        for _ in 0..200 {
+            // Strictly right of −1/e by construction; the offset is drawn on a
+            // quartic so most boxes crowd the branch point, which is where a
+            // remainder bound is hardest.
+            let lo = -0.367_879_441_171_442 + next().powi(4) * 30.0 + 1e-4;
+            let w = next().powi(3) * (lo + 0.367_879_441_171_442).min(2.0);
+            let (lo, hi) = (lo, lo + w);
+            let r = match tm_range("lambert_w", lo, hi, 8) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            checked += 1;
+            for t in samples(lo, hi, 40) {
+                assert!(
+                    brackets(&r, &t),
+                    "W₀({t}) escaped [{}, {}] on [{lo}, {hi}]",
+                    r.lo(),
+                    r.hi()
+                );
+            }
+        }
+        assert!(checked > 100, "only {checked}/200 boxes produced a bound");
+    }
+
+    /// The Hurwitz zeta the `digamma`/`gamma` coefficients are built from,
+    /// against two independent references: MPFR's Riemann `ζ(s)` at `a = 1`,
+    /// and the functional equation `ζ(s,a) − ζ(s,a+1) = a^{-s}` at arbitrary
+    /// `a`.  A sign error in the Euler–Maclaurin corrections cannot survive
+    /// either — the second in particular compares two evaluations whose
+    /// correction terms differ.
+    #[test]
+    fn hurwitz_zeta_matches_independent_references() {
+        let prec = 160u32;
+        let s_max = 26usize;
+        let one = ArbBall::from_f64(1.0, prec);
+        let at_one = TaylorModel::hurwitz_zeta_ints(&one, s_max, prec).unwrap();
+        for (i, z) in at_one.iter().enumerate() {
+            let s = i + 2;
+            let truth = Float::with_val(prec + 64, s as u32).zeta();
+            assert!(
+                z.lo() <= truth && truth <= z.hi(),
+                "ζ({s}) = {truth} escaped [{}, {}]",
+                z.lo(),
+                z.hi()
+            );
+            assert!(z.rad_f64() < 1e-40, "ζ({s}) radius {}", z.rad_f64());
+        }
+
+        for a in [0.25_f64, 0.5, 1.5, 3.0, 7.75, 60.0] {
+            let ab = ArbBall::from_f64(a, prec);
+            let bb = ArbBall::from_f64(a + 1.0, prec);
+            let za = TaylorModel::hurwitz_zeta_ints(&ab, s_max, prec).unwrap();
+            let zb = TaylorModel::hurwitz_zeta_ints(&bb, s_max, prec).unwrap();
+            for (i, (x, y)) in za.iter().zip(&zb).enumerate() {
+                let s = i + 2;
+                let diff = x.clone() - y.clone();
+                let expect = Float::with_val(
+                    prec + 64,
+                    Float::with_val(prec + 64, 1)
+                        / rug::ops::Pow::pow(Float::with_val(prec + 64, a), s as u32),
+                );
+                assert!(
+                    diff.lo() <= expect && expect <= diff.hi(),
+                    "ζ({s},{a}) − ζ({s},{}) should be {expect}, got [{}, {}]",
+                    a + 1.0,
+                    diff.lo(),
+                    diff.hi()
+                );
+            }
+        }
+    }
+
+    /// The identities that tie the new rules to the rest of the algebra.
+    /// These sit *next to* the containment tests, never instead of them: a
+    /// functional equation is invariant under exactly the kind of sign flip
+    /// that a containment check catches.
+    #[test]
+    fn special_rules_satisfy_their_functional_equations() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+
+        // Γ(x+1) = x·Γ(x)
+        let shifted = pool.func("gamma", vec![pool.add(vec![x, pool.integer(1_i32)])]);
+        let scaled = pool.mul(vec![x, pool.func("gamma", vec![x])]);
+        let diff = sub(&pool, shifted, scaled);
+        let r = range_of(diff, &pool, &[(x, 1.0, 2.0)], 12);
+        assert!(r.contains(0.0), "Γ(x+1) − xΓ(x) should vanish, got {r:?}");
+        assert!(r.rad_f64() < 1e-3, "…and tightly: {r:?}");
+
+        // ψ(x+1) = ψ(x) + 1/x
+        let lhs = pool.func("digamma", vec![pool.add(vec![x, pool.integer(1_i32)])]);
+        let rhs = pool.add(vec![
+            pool.func("digamma", vec![x]),
+            pool.pow(x, pool.integer(-1_i32)),
+        ]);
+        let r = range_of(sub(&pool, lhs, rhs), &pool, &[(x, 1.0, 2.0)], 12);
+        assert!(r.contains(0.0), "ψ(x+1) − ψ(x) − 1/x: {r:?}");
+        assert!(r.rad_f64() < 1e-3, "…and tightly: {r:?}");
+
+        // W(x)·e^{W(x)} = x
+        let w = pool.func("lambert_w", vec![x]);
+        let e = pool.mul(vec![w, pool.func("exp", vec![w])]);
+        let r = range_of(sub(&pool, e, x), &pool, &[(x, 0.5, 1.5)], 12);
+        assert!(r.contains(0.0), "W·e^W − x: {r:?}");
+        assert!(r.rad_f64() < 1e-2, "…and tightly: {r:?}");
+
+        // J₀′ = −J₁, checked as J₀(x)² + J₁(x)² ≤ 1 (Bessel's own bound) plus
+        // the ODE x·J₀″ + J₀′ + x·J₀ = 0 is not expressible here; instead pin
+        // the recurrence-free fact that both stay inside [−1, 1].
+        for name in ["bessel_j0", "bessel_j1"] {
+            let r = range_of(pool.func(name, vec![x]), &pool, &[(x, -30.0, 30.0)], 4);
+            assert!(
+                r.lo() <= 1.0 && r.hi() >= -1.0,
+                "{name} enclosure {r:?} is inconsistent with |J| ≤ 1"
+            );
+        }
+    }
+
+    /// The rules compose with the rest of the algebra and over several
+    /// variables, which is what makes them Taylor models rather than point
+    /// evaluators.
+    #[test]
+    fn special_rules_compose() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        // J₀(x² + y) on [0,1]×[1,2]
+        let arg = pool.add(vec![pool.mul(vec![x, x]), y]);
+        let r = range_of(
+            pool.func("bessel_j0", vec![arg]),
+            &pool,
+            &[(x, 0.0, 1.0), (y, 1.0, 2.0)],
+            8,
+        );
+        for i in 0..=20 {
+            for j in 0..=20 {
+                let a = Float::with_val(P + 64, i as f64 / 20.0);
+                let b = Float::with_val(P + 64, 1.0 + j as f64 / 20.0);
+                let truth = (a.clone() * a + b).jn(0);
+                assert!(
+                    r.lo() <= truth && truth <= r.hi(),
+                    "J₀(x²+y) escaped {r:?} at ({i},{j})"
+                );
+            }
+        }
+        // Γ(x)·ψ(x) on [1.5, 2.5]
+        let e = pool.mul(vec![
+            pool.func("gamma", vec![x]),
+            pool.func("digamma", vec![x]),
+        ]);
+        let r = range_of(e, &pool, &[(x, 1.5, 2.5)], 10);
+        for t in samples(1.5, 2.5, 50) {
+            let mut psi = Float::with_val(P + 64, &t);
+            psi.digamma_mut();
+            let truth = Float::with_val(P + 64, &t).gamma() * psi;
+            assert!(
+                r.lo() <= truth && truth <= r.hi(),
+                "Γψ({t}) = {truth} escaped {r:?}"
+            );
+        }
+    }
+
+    /// Order and precision are both free parameters of the enclosure; sweep
+    /// them, because the remainder scales in the first and the coefficient
+    /// accuracy in the second, and a bound that is only correct at the default
+    /// settings is not a bound.
+    #[test]
+    fn special_rules_hold_across_orders_and_precisions() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let mut checked = 0usize;
+        for name in ["bessel_j0", "bessel_j1", "digamma", "gamma"] {
+            for &(lo, hi) in &[(1.25_f64, 1.75_f64), (0.5, 0.75), (3.0, 3.5)] {
+                for order in [1usize, 2, 5, 11, 24] {
+                    for prec in [32u32, 64, 128, 256] {
+                        let e = pool.func(name, vec![x]);
+                        let boxes = vec![(x, Float::with_val(prec, lo), Float::with_val(prec, hi))];
+                        let Ok(r) = taylor_range(e, &pool, &boxes, order, prec) else {
+                            continue;
+                        };
+                        checked += 1;
+                        for t in samples(lo, hi, 12) {
+                            assert_special_encloses(
+                                name,
+                                &r,
+                                &t,
+                                &format!("on [{lo},{hi}] at order {order}, prec {prec}"),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            checked > 100,
+            "only {checked} configurations produced a bound"
+        );
+    }
+
     #[test]
     fn unsupported_function_refuses() {
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
-        let e = pool.func("gamma", vec![x]);
-        let boxes = vec![(x, f(1.0), f(2.0))];
+        let e = pool.func("EllipticK", vec![x]);
+        let boxes = vec![(x, f(0.1), f(0.2))];
         let err = taylor_range(e, &pool, &boxes, 6, P).unwrap_err();
         assert_eq!(crate::errors::AlkahestError::code(&err), "E-VALIDATED-001");
     }

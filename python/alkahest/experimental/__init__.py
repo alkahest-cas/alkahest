@@ -33,8 +33,19 @@ Calculus / ODE / transform surface:
 - :func:`z_transform` / :func:`inverse_z_transform` (#159)
 - :func:`multilimit` — two-variable limits (#156)
 - :func:`asymptotic_expand` — asymptotic expansion at infinity (#161)
+- :func:`asymptotics_from_recurrence` — Poincaré–Perron growth of a P-recursive
+  sequence, with the derived growth rate/exponent kept apart from the fitted
+  connection constant (M5)
 - :func:`series_solve` — power-series / Frobenius ODE solutions (#160)
 - :class:`Fps` — lazy formal power series over ℚ (#155)
+
+``q``-analogue creative telescoping (M4b):
+- :func:`q_zeilberger` / :class:`QZeilbergerCertificate` — ``q``-Zeilberger for
+  ``q``-hypergeometric sums (Gaussian binomials, ``q``-Pochhammer symbols),
+  with the certificate re-checked as an exact identity in ``Q(q)(q**n)(q**k)``
+  and a two-valued verdict on whether it carries over to the sum
+- :func:`qbinomial`, :func:`qpochhammer` — builders for the two function heads
+  the engine recognises
 
 Numeric ODE integrators (Phase 16b):
 - :func:`ode_integrate_rk4` — fixed-step 4th-order Runge–Kutta integrator
@@ -64,12 +75,24 @@ from alkahest import (
     to_stablehlo,
 )
 
+# M4(b) — q-analogue creative telescoping.  The engine is in the kernel; the
+# two term builders are sugar over `pool.func`.
+from alkahest._qterm import qbinomial, qpochhammer
+
+# M5 — recurrence -> asymptotics.  The dispatch over the three shapes a
+# recurrence arrives in is Python; the mathematics is in the kernel.
+from alkahest._recurrence_asymptotics import (
+    RecurrenceAsymptotics,
+    asymptotics_from_recurrence,
+)
+
 # Calculus / ODE / transform surface (still experimental).
 from alkahest.alkahest import (
     # P1 item 10 — asymptotic expansion at scale
     AsymptoticReport,
     Fps,
     OdeTrajectory,
+    QZeilbergerCertificate,
     asymptotic_expand,
     # P1 item 10 — asymptotic expansion at scale
     coefficient_asymptotics,
@@ -85,6 +108,7 @@ from alkahest.alkahest import (
     multilimit,
     ode_integrate_rk4,
     ode_integrate_rk45,
+    q_zeilberger,
     series_solve,
     z_transform,
 )
@@ -111,8 +135,14 @@ __all__ = [
     "GbPoly",
     "GroebnerBasis",
     "OdeTrajectory",
+    # M4(b) — q-analogue creative telescoping
+    "QZeilbergerCertificate",
+    # M5 — recurrence -> asymptotics
+    "RecurrenceAsymptotics",
     "arg",
     "asymptotic_expand",
+    # M5 — recurrence -> asymptotics
+    "asymptotics_from_recurrence",
     "bessel_j0",
     "bessel_j1",
     # P1 item 10 — asymptotic expansion at scale
@@ -135,6 +165,10 @@ __all__ = [
     "multilimit",
     "ode_integrate_rk4",
     "ode_integrate_rk45",
+    # M4(b) — q-analogue creative telescoping
+    "q_zeilberger",
+    "qbinomial",
+    "qpochhammer",
     "re",
     "residue",
     "series_solve",

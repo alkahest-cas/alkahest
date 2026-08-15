@@ -78,9 +78,10 @@ bitflags::bitflags! {
         ///
         /// **This is not implied by `NUMERIC_BALL`, and does not imply it.**
         /// Pointwise ball arithmetic and a Taylor model with a rigorous
-        /// remainder are different pieces of work: `erf`, `bessel_j0`,
-        /// `digamma`, `floor`, … have the former and not the latter. The bit
-        /// is derived by running the evaluator (see
+        /// remainder are different pieces of work: `floor` and `ceil` have the
+        /// former and not the latter, and `bessel_j0`, `digamma`,
+        /// `lambert_w` and four more were in that position until 3.9.0. The
+        /// bit is derived by running the evaluator (see
         /// [`taylor_support`]), never from a list.
         const TAYLOR_MODEL  = 1 << 7;
     }
@@ -300,7 +301,7 @@ impl PrimitiveRegistry {
     pub fn capabilities(&self, name: &str) -> Capabilities {
         self.map
             .get(name)
-            .map(|e| with_taylor_model(name, e.caps))
+            .map(|e| with_lazy_caps(name, e.caps, &*e.primitive))
             .unwrap_or(Capabilities::empty())
     }
 
@@ -312,7 +313,7 @@ impl PrimitiveRegistry {
             .iter()
             .map(|(name, e)| CoverageRow {
                 name: name.to_string(),
-                caps: with_taylor_model(name, e.caps),
+                caps: with_lazy_caps(name, e.caps, &*e.primitive),
             })
             .collect();
         rows.sort_by(|a, b| a.name.cmp(&b.name));
@@ -436,7 +437,7 @@ impl PrimitiveRegistry {
     pub fn iter(&self) -> impl Iterator<Item = (&str, Capabilities)> {
         self.map
             .iter()
-            .map(|(k, e)| (*k, with_taylor_model(k, e.caps)))
+            .map(|(k, e)| (*k, with_lazy_caps(k, e.caps, &*e.primitive)))
     }
 }
 
@@ -482,13 +483,11 @@ fn probe_caps(p: &dyn Primitive) -> Capabilities {
     // whose domain is the open interval `(-1, 1)` — it declined the probe point
     // and lost a `numeric_ball` bit it had earned, while keeping `numeric_f64`
     // because that probe already tried `0.5`.
-    for args in probe_f64_sets {
-        let balls: Vec<ArbBall> = args.iter().map(|&v| ArbBall::from_f64(v, 128)).collect();
-        if p.numeric_ball(&balls).is_some() {
-            caps |= Capabilities::NUMERIC_BALL;
-            break;
-        }
-    }
+    // NB: `NUMERIC_BALL` is resolved on *read*, not here — see
+    // `ball_supported`. Probing it means running each primitive's real ball
+    // kernel, and once `gamma`, `bessel_j*` and `lambert_w` had one those are
+    // genuine MPFR evaluations: registry construction went from ~400us to
+    // ~767us, on a path `default_registry()` reaches from `diff` and `series`.
 
     // diff_forward / diff_reverse / simplify: probe with a fresh pool
     let pool = ExprPool::new();
@@ -549,6 +548,56 @@ fn probe_caps(p: &dyn Primitive) -> Capabilities {
 fn with_taylor_model(name: &str, caps: Capabilities) -> Capabilities {
     if taylor_support::taylor_model_supports(name) {
         caps | Capabilities::TAYLOR_MODEL
+    } else {
+        caps
+    }
+}
+
+/// Does this primitive's ball kernel accept some probe argument list?
+///
+/// Memoised, and deliberately *not* computed at registration: the probe runs
+/// the real kernel, so for `gamma`, `bessel_j0/j1` and `lambert_w` it is an
+/// arbitrary-precision evaluation rather than a cheap `Option` check. Doing it
+/// per primitive per `PrimitiveRegistry::register` doubled construction cost
+/// when those kernels landed in 3.9.0 (~400us -> ~767us), which shows up on
+/// every path that builds a registry — `diff` and `series` among them. Reads
+/// of the bit (`capabilities()`, the coverage report) are rare by comparison.
+///
+/// Same probe points as `numeric_f64`, which is what lets `atanh` keep the bit
+/// its domain `(-1, 1)` would otherwise cost it at the `1.0` probe.
+fn ball_supported(name: &str, p: &dyn Primitive) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{OnceLock, RwLock};
+    static MEMO: OnceLock<RwLock<HashMap<String, bool>>> = OnceLock::new();
+    let memo = MEMO.get_or_init(|| RwLock::new(HashMap::new()));
+    if let Some(&hit) = memo.read().expect("ball probe memo poisoned").get(name) {
+        return hit;
+    }
+    let probe_f64_sets: [&[f64]; 6] = [
+        &[1.0],
+        &[1.0, 2.0],
+        &[1.0, 2.0, 3.0],
+        &[0.5],
+        &[0.5, 0.3],
+        &[0.2, 0.3, 0.4],
+    ];
+    let answer = probe_f64_sets.iter().any(|args| {
+        let balls: Vec<ArbBall> = args.iter().map(|&v| ArbBall::from_f64(v, 128)).collect();
+        p.numeric_ball(&balls).is_some()
+    });
+    memo.write()
+        .expect("ball probe memo poisoned")
+        .insert(name.to_string(), answer);
+    answer
+}
+
+/// The capability bits that are resolved when they are read rather than when
+/// the primitive is registered: [`Capabilities::TAYLOR_MODEL`] and
+/// [`Capabilities::NUMERIC_BALL`].
+fn with_lazy_caps(name: &str, caps: Capabilities, p: &dyn Primitive) -> Capabilities {
+    let caps = with_taylor_model(name, caps);
+    if ball_supported(name, p) {
+        caps | Capabilities::NUMERIC_BALL
     } else {
         caps
     }
@@ -2438,6 +2487,13 @@ pub mod builtins {
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
             Some(libm_gamma(args[0]))
+        }
+
+        /// Only for `x > 0`: the enclosure rests on `Γ` being convex there
+        /// (see [`ArbBall::gamma`]), and the reflection formula that would
+        /// carry it between the poles on the negative axis is not written.
+        fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
+            unary(args)?.gamma()
         }
 
         // NOTE: no `lean_theorem` override — `gamma` isn't even wired into

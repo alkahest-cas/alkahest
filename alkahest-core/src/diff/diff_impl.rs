@@ -102,6 +102,22 @@ pub fn diff(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<DerivedExpr<Ex
 // Core recursive differentiation (no simplification)
 // ---------------------------------------------------------------------------
 
+/// The primitive registry used for derivative dispatch.
+///
+/// A singleton built with `dispatch_registry`, for two reasons. It was
+/// previously `default_registry()` called *inside* the recursive walk, so every
+/// `Func` node rebuilt all 41 primitives — and `default_registry` additionally
+/// probes each one's capability bundle, work this path never reads: it only
+/// calls `diff_forward` and treats `None` as "unknown function". Adding a ball
+/// kernel for `gamma` in 3.9.0 made that probe measurably more expensive and
+/// surfaced as a ~14% regression on `test_series_sin_order12`, which
+/// differentiates.
+fn diff_registry() -> &'static crate::primitive::PrimitiveRegistry {
+    static REGISTRY: std::sync::OnceLock<crate::primitive::PrimitiveRegistry> =
+        std::sync::OnceLock::new();
+    REGISTRY.get_or_init(crate::primitive::PrimitiveRegistry::dispatch_registry)
+}
+
 #[inline]
 fn diff_poly_try_univariate_fastpath(
     expr: ExprId,
@@ -359,7 +375,7 @@ fn diff_raw(
                 }
                 other => {
                     // Fall back to PrimitiveRegistry for V1-12 primitives
-                    let reg = crate::primitive::PrimitiveRegistry::default_registry();
+                    let reg = diff_registry();
                     if let Some(d) = reg.diff_forward(other, &[f], var, pool) {
                         log.push(RewriteStep::simple("diff_primitive_registry", expr, d));
                         d
@@ -383,7 +399,7 @@ fn diff_raw(
                 let da = diff_raw(a, var, pool, memo)?;
                 log = log.merge(da.log);
             }
-            let reg = crate::primitive::PrimitiveRegistry::default_registry();
+            let reg = diff_registry();
             if let Some(d) = reg.diff_forward(&name, &args, var, pool) {
                 log.push(RewriteStep::simple("diff_primitive_registry", expr, d));
                 memo.insert(expr, d);

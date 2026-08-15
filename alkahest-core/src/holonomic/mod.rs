@@ -24,6 +24,22 @@
 //!   [`boundary::BoundaryStatus::Nonzero`] (the inhomogeneous one does, with the
 //!   boundary term explicit) or [`boundary::BoundaryStatus::Unknown`] (nothing
 //!   may be claimed about the sum).
+//! - [`modular`] — evaluation of a P-recursive sequence *modulo `p^k`* directly
+//!   from its recurrence, plus `binomial(a, b) mod p^k`. This is the evidence
+//!   half of supercongruence work: reduce first and iterate in `ℤ/p^K`, rather
+//!   than computing `S(N)` over `ℤ` and reducing a number with `Θ(N)` digits.
+//!   Indices where the leading coefficient is not a unit mod `p` are handled by
+//!   lifting to a higher working precision — never by dividing anyway.
+//! - [`asymptotics`] — the natural *second* question after a certified
+//!   recurrence: how fast does the sequence grow? Poincaré–Perron reads the
+//!   growth rate `ρ` and the polynomial exponent `α` in `u(n) ~ C·ρⁿ·n^α`
+//!   straight off the coefficient polynomials. The connection constant `C` does
+//!   **not** follow from them — it depends on the initial conditions — so it is
+//!   fitted from the terms and reported separately as
+//!   [`asymptotics::ConnectionConstant`], never mixed in with the derived half.
+//!   Equal-modulus roots, a repeated dominant root, a degenerate leading
+//!   coefficient and an eventually-zero sequence each get their own
+//!   [`asymptotics::PerronVerdict`] rather than a confident wrong number.
 //!
 //! Every certificate this module returns is checked as an *exact* identity
 //! in `Q(n)(k)` before it is handed back to the caller — see
@@ -38,14 +54,26 @@
 //! `alkahest.guess_holonomic` on the Python side, where the only mathematical
 //! step is an exact nullspace the kernel already provides.
 
+pub mod asymptotics;
 pub mod boundary;
 pub mod hyperterm;
+pub mod modular;
 pub mod qfield;
+pub mod qzeil;
 pub mod zeilberger;
 
+pub use asymptotics::{
+    asymptotics_from_recurrence, CharacteristicAnalysis, CharacteristicRoot, ConnectionConstant,
+    PerronVerdict, RecurrenceAsymptotics,
+};
 pub use boundary::{boundary_status, natural_limits, BoundaryStatus};
 pub use hyperterm::{GammaFactor, ProperTerm};
+pub use modular::{binomial_mod, ModularError, ModularEvaluation, ModularRecurrence};
 pub use qfield::{PolyK, RatK, Rn};
+pub use qzeil::{
+    q_boundary_status, q_zeilberger, QBoundaryStatus, QCertificate, QHolonomicError, QProperTerm,
+    QZeilbergerOpts, QZeilbergerReport, QZeilbergerResult,
+};
 pub use zeilberger::{
     boundary_side_condition, boundary_term, zeilberger, zeilberger_search, OrderSearch,
     ZeilbergerOpts, ZeilbergerResult, ZeilbergerSearchReport,
@@ -72,6 +100,14 @@ pub enum HolonomicError {
     /// Malformed call (e.g. `n` and `k` not distinct, non-positive bounds).
     InvalidInput(String),
 }
+
+// NB: `HolonomicError` is public and *exhaustive*, so a new variant is a
+// major-version break — a downstream `match` without a wildcard stops
+// compiling, and `cargo semver-checks` fails the PR. The modular subsystem's
+// errors therefore live in their own [`modular::ModularError`], the same shape
+// `qzeil::QHolonomicError` uses. Both still surface to Python as
+// `HolonomicError` with their own `E-HOLO-*` codes, so nothing changes for a
+// Python caller; it is only the Rust enum that stays closed.
 
 impl fmt::Display for HolonomicError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
