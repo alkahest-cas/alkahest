@@ -1397,7 +1397,7 @@ fn root_exists_witness(
 ///   whole box does not contain zero — `expr` is certified to have no root
 ///   anywhere in the box.
 /// - [`Verdict::False`] when a root is *certified to exist* in the box, by
-///   either of two independent arguments (see [`root_exists_witness`]):
+///   either of two independent arguments (see the private `root_exists_witness`):
 ///   - **a point of the box proven to be a root** — its value pinned to zero by
 ///     a degenerate `[0, 0]` enclosure or by exact symbolic substitution. The
 ///     box is closed, so this covers a root sitting exactly on an endpoint

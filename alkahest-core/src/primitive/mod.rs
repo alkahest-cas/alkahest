@@ -271,6 +271,25 @@ impl PrimitiveRegistry {
         self.map.insert(name, Entry { primitive: p, caps });
     }
 
+    /// Register without probing capabilities.
+    ///
+    /// For registries used purely to *dispatch* — where the caller invokes a
+    /// slot such as `numeric_ball` and takes `None` as "unsupported" — the
+    /// probed bits are never read, and probing 41 primitives across six
+    /// argument shapes costs ~1.2 ms of one-time work on whatever call happens
+    /// to touch the registry first. `capabilities()` on such a registry reports
+    /// `empty()`; use [`Self::default_registry`] if you need the bits.
+    pub fn register_unprobed(&mut self, p: Box<dyn Primitive>) {
+        let name = p.name();
+        self.map.insert(
+            name,
+            Entry {
+                primitive: p,
+                caps: Capabilities::empty(),
+            },
+        );
+    }
+
     /// Look up a primitive by name.
     pub fn get(&self, name: &str) -> Option<&dyn Primitive> {
         self.map.get(name).map(|e| &*e.primitive)
@@ -339,50 +358,73 @@ impl PrimitiveRegistry {
 
     /// Return a registry pre-populated with Alkahest's built-in primitives.
     pub fn default_registry() -> Self {
+        Self::build(true)
+    }
+
+    /// Every built-in primitive, registered without capability probing.
+    ///
+    /// Same dispatch behaviour as [`Self::default_registry`] — identical names,
+    /// identical primitives — but `capabilities()` reports `empty()`. Use it
+    /// when you only call a primitive slot and treat `None` as unsupported.
+    pub fn dispatch_registry() -> Self {
+        Self::build(false)
+    }
+
+    fn build(probe: bool) -> Self {
         let mut reg = Self::new();
-        reg.register(Box::new(builtins::SinPrimitive));
-        reg.register(Box::new(builtins::CosPrimitive));
-        reg.register(Box::new(builtins::ExpPrimitive));
-        reg.register(Box::new(builtins::LogPrimitive));
-        reg.register(Box::new(builtins::SqrtPrimitive));
+        reg.register_unprobed(Box::new(builtins::SinPrimitive));
+        reg.register_unprobed(Box::new(builtins::CosPrimitive));
+        reg.register_unprobed(Box::new(builtins::ExpPrimitive));
+        reg.register_unprobed(Box::new(builtins::LogPrimitive));
+        reg.register_unprobed(Box::new(builtins::SqrtPrimitive));
         // V1-12: expanded registry
-        reg.register(Box::new(builtins::TanPrimitive));
-        reg.register(Box::new(builtins::SinhPrimitive));
-        reg.register(Box::new(builtins::CoshPrimitive));
-        reg.register(Box::new(builtins::TanhPrimitive));
-        reg.register(Box::new(builtins::AsinPrimitive));
-        reg.register(Box::new(builtins::AcosPrimitive));
-        reg.register(Box::new(builtins::AtanPrimitive));
-        reg.register(Box::new(builtins::AsinhPrimitive));
-        reg.register(Box::new(builtins::AcoshPrimitive));
-        reg.register(Box::new(builtins::AtanhPrimitive));
-        reg.register(Box::new(builtins::ErfPrimitive));
-        reg.register(Box::new(builtins::ErfcPrimitive));
+        reg.register_unprobed(Box::new(builtins::TanPrimitive));
+        reg.register_unprobed(Box::new(builtins::SinhPrimitive));
+        reg.register_unprobed(Box::new(builtins::CoshPrimitive));
+        reg.register_unprobed(Box::new(builtins::TanhPrimitive));
+        reg.register_unprobed(Box::new(builtins::AsinPrimitive));
+        reg.register_unprobed(Box::new(builtins::AcosPrimitive));
+        reg.register_unprobed(Box::new(builtins::AtanPrimitive));
+        reg.register_unprobed(Box::new(builtins::AsinhPrimitive));
+        reg.register_unprobed(Box::new(builtins::AcoshPrimitive));
+        reg.register_unprobed(Box::new(builtins::AtanhPrimitive));
+        reg.register_unprobed(Box::new(builtins::ErfPrimitive));
+        reg.register_unprobed(Box::new(builtins::ErfcPrimitive));
         // Elliptic special functions (parameter convention m = k²).
-        reg.register(Box::new(builtins::EllipticKPrimitive));
-        reg.register(Box::new(builtins::EllipticEPrimitive));
-        reg.register(Box::new(builtins::EllipticFPrimitive));
-        reg.register(Box::new(builtins::EllipticPiPrimitive));
-        reg.register(Box::new(builtins::AbsPrimitive));
-        reg.register(Box::new(builtins::SignPrimitive));
-        reg.register(Box::new(builtins::HeavisidePrimitive));
-        reg.register(Box::new(builtins::DiracDeltaPrimitive));
-        reg.register(Box::new(builtins::FloorPrimitive));
-        reg.register(Box::new(builtins::CeilPrimitive));
-        reg.register(Box::new(builtins::RoundPrimitive));
-        reg.register(Box::new(builtins::Atan2Primitive));
-        reg.register(Box::new(builtins::GammaPrimitive));
-        reg.register(Box::new(builtins::LambertWPrimitive));
-        reg.register(Box::new(builtins::DigammaPrimitive));
-        reg.register(Box::new(builtins::BesselJ0Primitive));
-        reg.register(Box::new(builtins::BesselJ1Primitive));
-        reg.register(Box::new(builtins::MinPrimitive));
-        reg.register(Box::new(builtins::MaxPrimitive));
-        reg.register(Box::new(builtins::ConjugatePrimitive));
-        reg.register(Box::new(builtins::RePrimitive));
-        reg.register(Box::new(builtins::ImPrimitive));
-        reg.register(Box::new(builtins::ArgPrimitive));
+        reg.register_unprobed(Box::new(builtins::EllipticKPrimitive));
+        reg.register_unprobed(Box::new(builtins::EllipticEPrimitive));
+        reg.register_unprobed(Box::new(builtins::EllipticFPrimitive));
+        reg.register_unprobed(Box::new(builtins::EllipticPiPrimitive));
+        reg.register_unprobed(Box::new(builtins::AbsPrimitive));
+        reg.register_unprobed(Box::new(builtins::SignPrimitive));
+        reg.register_unprobed(Box::new(builtins::HeavisidePrimitive));
+        reg.register_unprobed(Box::new(builtins::DiracDeltaPrimitive));
+        reg.register_unprobed(Box::new(builtins::FloorPrimitive));
+        reg.register_unprobed(Box::new(builtins::CeilPrimitive));
+        reg.register_unprobed(Box::new(builtins::RoundPrimitive));
+        reg.register_unprobed(Box::new(builtins::Atan2Primitive));
+        reg.register_unprobed(Box::new(builtins::GammaPrimitive));
+        reg.register_unprobed(Box::new(builtins::LambertWPrimitive));
+        reg.register_unprobed(Box::new(builtins::DigammaPrimitive));
+        reg.register_unprobed(Box::new(builtins::BesselJ0Primitive));
+        reg.register_unprobed(Box::new(builtins::BesselJ1Primitive));
+        reg.register_unprobed(Box::new(builtins::MinPrimitive));
+        reg.register_unprobed(Box::new(builtins::MaxPrimitive));
+        reg.register_unprobed(Box::new(builtins::ConjugatePrimitive));
+        reg.register_unprobed(Box::new(builtins::RePrimitive));
+        reg.register_unprobed(Box::new(builtins::ImPrimitive));
+        reg.register_unprobed(Box::new(builtins::ArgPrimitive));
+        if probe {
+            reg.probe_all();
+        }
         reg
+    }
+
+    /// Fill in every entry's capability bits, probing each primitive.
+    fn probe_all(&mut self) {
+        for entry in self.map.values_mut() {
+            entry.caps = probe_caps(&*entry.primitive);
+        }
     }
 
     /// Returns true if a primitive with this name is registered.

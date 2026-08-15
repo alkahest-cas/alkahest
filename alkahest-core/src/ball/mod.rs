@@ -904,14 +904,24 @@ impl fmt::Display for AcbBall {
 /// Lazily-initialised, process-wide [`PrimitiveRegistry`] used to evaluate
 /// `ExprData::Func` nodes.
 ///
-/// Building the registry probes every primitive's capability bundle, which is
-/// far too much work to repeat per `Func` node; the same singleton pattern is
-/// used by the JIT's tree-walking interpreter (`crate::jit::registry`).
-/// Construction cannot re-enter this function: `probe_caps` calls
-/// `numeric_ball` on the primitives directly, never through `IntervalEval`.
+/// A singleton, because building it is far too much work to repeat per `Func`
+/// node; the same pattern is used by the JIT's tree-walking interpreter
+/// (`crate::jit::registry`).
+///
+/// `dispatch_registry`, not `default_registry`: this path calls `numeric_ball`
+/// on the primitive and treats `None` as unsupported, so it never reads a
+/// capability bit — and probing 41 primitives across six argument shapes cost
+/// ~1.2 ms of one-time work on whichever call touched the registry first,
+/// against 0.02 ms steady state. That is invisible to a wall-clock test and
+/// very visible to an instruction-counting one, which is how CodSpeed caught it
+/// as a 24x regression on `test_ball_sin_cos_eps1e2`.
+///
+/// The anti-drift guarantee is unchanged, and in fact stronger: the set of
+/// functions accepted here is the set whose `numeric_ball` kernel returns
+/// `Some`, which is ground truth rather than a probed summary of it.
 fn registry() -> &'static PrimitiveRegistry {
     static REGISTRY: OnceLock<PrimitiveRegistry> = OnceLock::new();
-    REGISTRY.get_or_init(PrimitiveRegistry::default_registry)
+    REGISTRY.get_or_init(PrimitiveRegistry::dispatch_registry)
 }
 
 /// Evaluates a symbolic expression using rigorous ball arithmetic.
