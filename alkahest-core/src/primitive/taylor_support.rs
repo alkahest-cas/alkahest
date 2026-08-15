@@ -6,9 +6,9 @@
 //! slot.  Pointwise ball arithmetic gives an enclosure of `f` at a ball; a
 //! Taylor model additionally needs a polynomial expansion with a rigorous
 //! Lagrange remainder, which is written per function in
-//! [`crate::validated::taylor`].  The two sets differ: `erf`, `bessel_j0`,
-//! `digamma`, `floor`, … all have real ball arithmetic (via Arb) and no
-//! Taylor-model rule, so `bound_on_box` refuses them with
+//! [`crate::validated::taylor`].  The two sets differ: `bessel_j0`,
+//! `digamma`, `lambert_w`, `floor`, … all have real ball arithmetic (via Arb)
+//! and no Taylor-model rule, so `bound_on_box` refuses them with
 //! `E-VALIDATED-001`.
 //!
 //! Before this module the boundary was only discoverable by hitting it. The
@@ -32,7 +32,7 @@
 //! let pool = ExprPool::new();
 //! let x = pool.symbol("x", Domain::Real);
 //! assert!(taylor_model_refusal(pool.func("sin", vec![x]), &pool).is_none());
-//! assert!(taylor_model_refusal(pool.func("erf", vec![x]), &pool).is_some());
+//! assert!(taylor_model_refusal(pool.func("bessel_j0", vec![x]), &pool).is_some());
 //! ```
 
 use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
@@ -287,9 +287,10 @@ mod tests {
                 continue;
             }
             differing += 1;
-            // Two probe points, because no single one is inside every domain:
-            // `acosh` needs `x ≥ 1` and `atanh` needs `|x| < 1`. Declining an
-            // out-of-domain argument is not the failure under test.
+            // Two probe points, because no single one is inside every
+            // domain — `lambert_w` needs `x ≥ -1/e` and `digamma` has poles at
+            // the non-positive integers. Declining an out-of-domain argument
+            // is not the failure under test.
             assert!(
                 [1.0_f64, 0.5].into_iter().any(|v| reg
                     .numeric_ball(name, &[ArbBall::from_f64(v, 128)])
@@ -345,7 +346,7 @@ mod tests {
         let pool = ExprPool::new();
         let two = pool.integer(2_i32);
         assert!(taylor_model_refusal(pool.func("sin", vec![two]), &pool).is_none());
-        assert!(taylor_model_refusal(pool.func("erf", vec![two]), &pool).is_some());
+        assert!(taylor_model_refusal(pool.func("bessel_j0", vec![two]), &pool).is_some());
     }
 
     #[test]
@@ -359,7 +360,7 @@ mod tests {
     /// The cached answer is the freshly probed answer.
     #[test]
     fn cache_is_transparent() {
-        for name in ["sin", "erf", "sqrt", "digamma"] {
+        for name in ["sin", "erf", "sqrt", "digamma", "bessel_j0"] {
             let cached = taylor_model_supports_call(name, 1);
             assert_eq!(cached, probe_call(name, 1), "{name}");
             assert_eq!(cached, taylor_model_supports_call(name, 1), "{name}");

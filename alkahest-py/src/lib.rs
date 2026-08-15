@@ -173,9 +173,11 @@ use alkahest_core::real::sos::{
 };
 // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
 use alkahest_core::holonomic::{
-    boundary_side_condition as core_boundary_side_condition, boundary_term as core_boundary_term,
-    zeilberger as core_zeilberger, HolonomicError as CoreHolonomicError,
-    ZeilbergerOpts as CoreZeilbergerOpts,
+    boundary_status as core_boundary_status, boundary_term as core_boundary_term,
+    natural_limits as core_natural_limits, zeilberger_search as core_zeilberger_search,
+    BoundaryStatus as CoreBoundaryStatus, HolonomicError as CoreHolonomicError,
+    OrderSearch as CoreOrderSearch, ZeilbergerOpts as CoreZeilbergerOpts,
+    ZeilbergerResult as CoreZeilbergerResult,
 };
 // P1 item 10 — asymptotic expansion at scale
 use alkahest_core::calculus::euler_maclaurin::euler_maclaurin as core_euler_maclaurin;
@@ -291,14 +293,27 @@ fn checked_prec(prec: u32) -> PyResult<u32> {
 
 /// Parse a Python ``int`` (any size) into an interned integer expression.
 fn integer_into_pool(pool: &ExprPool, n: &Bound<'_, PyAny>) -> PyResult<ExprId> {
+    Ok(pool.integer(big_integer_from_py(n)?))
+}
+
+/// A Python int of any size as an exact `rug::Integer`.
+///
+/// `extract::<i64>()` first for the common case, then the decimal string, which
+/// is what makes arbitrary precision work. `pool.integer` has accepted bignums
+/// this way for a long time; `pool.rational` did not, and took `i64` directly —
+/// so `pool.rational(math.factorial(30), 7)` raised `OverflowError: Python int
+/// too large to convert to C long` while `pool.integer(math.factorial(30))` was
+/// fine. Factorial- and binomial-scale numerators are ordinary in this domain,
+/// and the kernel's `ExprPool::rational` already takes `impl Into<rug::Integer>`
+/// — only the binding was narrow.
+fn big_integer_from_py(n: &Bound<'_, PyAny>) -> PyResult<Integer> {
     if let Ok(v) = n.extract::<i64>() {
-        return Ok(pool.integer(v));
+        return Ok(Integer::from(v));
     }
     let s = n.str()?.to_string();
-    let z = Integer::parse(&s).map_err(|_| {
+    Integer::parse(&s).map(Integer::from).map_err(|_| {
         PyOverflowError::new_err(format!("integer literal out of range or invalid: {s}"))
-    })?;
-    Ok(pool.integer(z))
+    })
 }
 
 fn pool_mismatch_err() -> PyErr {
@@ -1097,10 +1112,22 @@ impl PyExprPool {
         Ok(PyExpr { id, pool })
     }
 
-    fn rational(slf: PyRef<'_, Self>, p: i64, q: i64) -> PyExpr {
-        let id = slf.inner.rational(p, q);
+    /// Exact rational `p/q`. Both take Python ints of any size, as
+    /// [`integer`] does — see `big_integer_from_py`.
+    fn rational(
+        slf: PyRef<'_, Self>,
+        p: &Bound<'_, PyAny>,
+        q: &Bound<'_, PyAny>,
+    ) -> PyResult<PyExpr> {
+        let (num, den) = (big_integer_from_py(p)?, big_integer_from_py(q)?);
+        if den == 0 {
+            return Err(pyo3::exceptions::PyZeroDivisionError::new_err(
+                "pool.rational(p, q) needs a non-zero denominator",
+            ));
+        }
+        let id = slf.inner.rational(num, den);
         let pool: Py<PyExprPool> = slf.into();
-        PyExpr { id, pool }
+        Ok(PyExpr { id, pool })
     }
 
     /// Apply a named primitive or symbolic function: ``pool.func("sin", [x])``, ``pool.func("f", [n])``.
@@ -4684,36 +4711,70 @@ fn holonomic_error_to_py(e: CoreHolonomicError) -> PyErr {
 /// That identity is re-checked exactly before this object is constructed — a
 /// returned certificate is a proof, not a numerical match.
 ///
-/// **It is an identity in ``k``, and only that.**  Summing it over
-/// ``k = k_lo .. k_hi`` telescopes the right-hand side to a *boundary
-/// difference*:
+/// **It is an identity in ``k``, and only that.**  A recurrence for the *sum*
+/// ``S(n) = Σ_{k=k_lo}^{k_hi} F(n,k)`` is a second statement, and it is decided
+/// separately over the range in :attr:`limits` — see :attr:`boundary`, which is
+/// ``"vanishes"``, ``"nonzero"`` or ``"unknown"``:
 ///
-/// ``Σ_i a_i(n)·S(n+i) = G(n, k_hi+1) − G(n, k_lo)``   for   ``S(n) = Σ_k F(n,k)``.
+/// * ``"vanishes"`` — proved; ``Σ_i a_i(n)·S(n+i) = 0`` holds for the sum.
+/// * ``"nonzero"`` — proved; the recurrence is the **inhomogeneous**
+///   ``Σ_i a_i(n)·S(n+i) = b(n)`` with ``b(n)`` returned as
+///   :attr:`boundary_rhs`.  Still a theorem, just not the homogeneous one.
+/// * ``"unknown"`` — neither was established.  **Nothing** follows about the
+///   sum; :attr:`boundary_reason` says what stopped the proof.
 ///
-/// The familiar homogeneous recurrence ``Σ_i a_i(n)·S(n+i) = 0`` therefore needs
-/// that difference to vanish — the *natural boundary* hypothesis, which
-/// Zeilberger's algorithm does not establish.  It holds in the usual case (``F``
-/// vanishing outside ``0 ≤ k ≤ n``) and fails for e.g. ``F = C(n,k)/(k+1)``,
-/// where ``G(n,0) = −1`` and ``(n+2)·S(n+1) − (2n+2)·S(n) = 1``.
-///
-/// :attr:`side_conditions` states the hypothesis and :attr:`boundary_term`
-/// returns ``G(n,k)`` so a caller can discharge it for their own range.
+/// The distinction is not cosmetic.  For ``Σ_{k=0}^{n} C(n,k)/(k+1)`` the
+/// certificate is perfectly valid and the homogeneous recurrence is *false* —
+/// the true relation is ``(n+2)·S(n+1) − (2n+2)·S(n) = 1``.  Reading a
+/// recurrence off a certificate without this verdict is how a valid certificate
+/// becomes a false theorem.
 #[pyclass(name = "ZeilbergerCertificate")]
 struct PyZeilbergerCertificate {
     order: usize,
+    order_is_minimal: bool,
     coeff_ids: Vec<ExprId>,
     certificate_id: ExprId,
     boundary_id: ExprId,
     pool: Py<PyExprPool>,
     derivation: String,
+    /// Kept so that :meth:`boundary_at` can re-decide the hypothesis over a
+    /// different range without re-running the search.
+    result: CoreZeilbergerResult,
+    term_id: ExprId,
+    n_id: ExprId,
+    k_id: ExprId,
+    limits: (ExprId, ExprId),
+    status: CoreBoundaryStatus,
 }
 
 #[pymethods]
 impl PyZeilbergerCertificate {
     /// Recurrence order ``J``; ``len(coeffs) == order + 1``.
+    ///
+    /// Minimal only when :attr:`order_is_minimal` says so — the default search
+    /// does not establish it.
     #[getter]
     fn order(&self) -> usize {
         self.order
+    }
+
+    /// Whether the search **established** that no lower-order relation exists.
+    ///
+    /// ``True`` means every order below :attr:`order` was refused at every
+    /// certificate degree up to ``max_degree``.  ``False`` means *not
+    /// established* — never "a lower order exists", since a lower-order
+    /// relation that had been found would have been returned instead.
+    ///
+    /// The default search visits the ``(order, degree)`` grid cheapest-first,
+    /// so it can reach a cheap order-2 probe before an expensive order-1 one;
+    /// an order-2 result therefore does not rule out order 1 and this flag is
+    /// ``False``.  It is ``True`` for order 1 (nothing is lower) and whenever
+    /// the cost-ordered plan happened to exhaust every lower order first.  Pass
+    /// ``minimal=True`` to :func:`alkahest.zeilberger` to search
+    /// order-ascending and get the claim, at the cost of the low-order sweep.
+    #[getter]
+    fn order_is_minimal(&self) -> bool {
+        self.order_is_minimal
     }
 
     /// ``[a_0(n), …, a_J(n)]`` — polynomial coefficients of the recurrence.
@@ -4753,15 +4814,151 @@ impl PyZeilbergerCertificate {
         }
     }
 
+    /// The summation range the boundary verdict is about, as
+    /// ``(k_lo, k_hi)``.
+    ///
+    /// It defaults to ``(0, n)`` — the ``Σ_{k=0}^{n}`` convention the classical
+    /// identities and the OEIS formula field use — and is echoed here so the
+    /// assumption is on the record rather than silent.  A caller summing over
+    /// anything else passes ``limits=`` and gets a verdict about *that* range.
+    #[getter]
+    fn limits(&self, py: Python<'_>) -> (PyExpr, PyExpr) {
+        (
+            PyExpr {
+                id: self.limits.0,
+                pool: self.pool.clone_ref(py),
+            },
+            PyExpr {
+                id: self.limits.1,
+                pool: self.pool.clone_ref(py),
+            },
+        )
+    }
+
+    /// ``"vanishes"``, ``"nonzero"`` or ``"unknown"`` — whether a recurrence for
+    /// the *sum* over :attr:`limits` follows from this certificate, and which.
+    ///
+    /// See the class documentation for what each verdict licenses.  Only
+    /// ``"unknown"`` means *no* statement about the sum may be made.
+    #[getter]
+    fn boundary(&self) -> &'static str {
+        self.status.tag()
+    }
+
+    /// ``b(n)`` in ``Σ_i a_i(n)·S(n+i) = b(n)``, or ``None``.
+    ///
+    /// Present exactly when :attr:`boundary` is ``"nonzero"``.  When the verdict
+    /// is ``"vanishes"`` the right-hand side is ``0`` and this is ``None``;
+    /// when it is ``"unknown"`` there is no recurrence for the sum to write down.
+    #[getter]
+    fn boundary_rhs(&self, py: Python<'_>) -> Option<PyExpr> {
+        match &self.status {
+            CoreBoundaryStatus::Nonzero { rhs, .. } => Some(PyExpr {
+                id: *rhs,
+                pool: self.pool.clone_ref(py),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Why the boundary verdict came out as it did, in one sentence.
+    ///
+    /// For ``"unknown"`` this is what stopped the proof — "the limits were not
+    /// supplied", "the certificate has a pole at the endpoint" — which is what
+    /// tells a caller whether to retry with a better range or close the branch.
+    #[getter]
+    fn boundary_reason(&self) -> String {
+        match &self.status {
+            CoreBoundaryStatus::Vanishes => {
+                "the boundary difference was proved to vanish in exact arithmetic".to_string()
+            }
+            CoreBoundaryStatus::Nonzero { witness_n, .. } => format!(
+                "the boundary difference is not identically zero: b({witness_n}) != 0 in exact \
+                 arithmetic"
+            ),
+            CoreBoundaryStatus::Unknown { reason } => reason.clone(),
+        }
+    }
+
+    /// Whether a recurrence for the sum may be read off at all.
+    ///
+    /// ``True`` for ``"vanishes"`` (homogeneous) and ``"nonzero"``
+    /// (inhomogeneous, with :attr:`boundary_rhs`), ``False`` for ``"unknown"``.
+    #[getter]
+    fn implies_sum_recurrence(&self) -> bool {
+        self.status.implies_sum_recurrence()
+    }
+
+    /// Re-decide the boundary hypothesis over a different summation range.
+    ///
+    /// Returns a ``dict`` with the same four keys as the attributes above —
+    /// ``boundary``, ``rhs``, ``reason``, ``side_conditions`` — without
+    /// re-running the search, which is the expensive half.  Use it to ask what
+    /// the *same* certificate says about ``k = 0..n-1`` as well as ``k = 0..n``.
+    #[pyo3(signature = (k_lo, k_hi))]
+    fn boundary_at(
+        &self,
+        py: Python<'_>,
+        k_lo: &Bound<'_, PyAny>,
+        k_hi: &Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyDict>> {
+        let lo = coerce_limit(py, &self.pool, k_lo, "k_lo")?;
+        let hi = coerce_limit(py, &self.pool, k_hi, "k_hi")?;
+        let (status, range) = {
+            let pool = self.pool.borrow(py);
+            let status = core_boundary_status(
+                &self.result,
+                self.term_id,
+                self.n_id,
+                self.k_id,
+                Some((lo, hi)),
+                &pool.inner,
+            );
+            let range = format_range(&pool.inner, lo, hi);
+            (status, range)
+        };
+        let out = PyDict::new_bound(py);
+        out.set_item("boundary", status.tag())?;
+        let rhs = match &status {
+            CoreBoundaryStatus::Nonzero { rhs, .. } => Some(Py::new(
+                py,
+                PyExpr {
+                    id: *rhs,
+                    pool: self.pool.clone_ref(py),
+                },
+            )?),
+            _ => None,
+        };
+        out.set_item("rhs", rhs)?;
+        out.set_item(
+            "reason",
+            match &status {
+                CoreBoundaryStatus::Vanishes => {
+                    "the boundary difference was proved to vanish in exact arithmetic".to_string()
+                }
+                CoreBoundaryStatus::Nonzero { witness_n, .. } => {
+                    format!("the boundary difference is not identically zero: b({witness_n}) != 0")
+                }
+                CoreBoundaryStatus::Unknown { reason } => reason.clone(),
+            },
+        )?;
+        out.set_item("side_conditions", status.side_conditions(&range))?;
+        Ok(out.unbind())
+    }
+
     /// Hypotheses the certificate does **not** establish, as plain strings.
     ///
-    /// Mirrors ``DerivedResult.verification["side_conditions"]``: the certificate
-    /// is a proof of the telescoping identity in ``k``, and everything that has
-    /// to be assumed on top of it in order to read off a recurrence for the sum
-    /// is listed here rather than left unsaid.
+    /// Mirrors ``DerivedResult.verification["side_conditions"]``.  This tracks
+    /// :attr:`boundary`: a discharged hypothesis, a refuted one and an open one
+    /// read differently, so a loop that only looks at this list still cannot
+    /// mistake the three.  It is never empty — even a proved boundary is a
+    /// statement about the ``n`` at which everything involved is defined, and a
+    /// permanent record of which range was assumed.
     #[getter]
-    fn side_conditions(&self) -> Vec<String> {
-        vec![core_boundary_side_condition().to_string()]
+    fn side_conditions(&self, py: Python<'_>) -> Vec<String> {
+        let pool = self.pool.borrow(py);
+        let range = format_range(&pool.inner, self.limits.0, self.limits.1);
+        self.status.side_conditions(&range)
     }
 
     /// Human-readable derivation log for the search that produced this.
@@ -4778,28 +4975,70 @@ impl PyZeilbergerCertificate {
             .map(|&id| pool.inner.display(id).to_string())
             .collect();
         format!(
-            "ZeilbergerCertificate(order={}, coeffs=[{}], certificate={})",
+            "ZeilbergerCertificate(order={}{}, boundary={}, coeffs=[{}], certificate={})",
             self.order,
+            if self.order_is_minimal {
+                " [minimal]"
+            } else {
+                ""
+            },
+            self.status.tag(),
             coeffs.join(", "),
             pool.inner.display(self.certificate_id)
         )
     }
 }
 
-/// `alkahest.zeilberger(term, n, k, *, max_order=4, max_degree=16) -> ZeilbergerCertificate`
+/// A summation limit written as an `Expr` or as a plain Python `int`.
+fn coerce_limit(
+    py: Python<'_>,
+    pool_py: &Py<PyExprPool>,
+    v: &Bound<'_, PyAny>,
+    which: &str,
+) -> PyResult<ExprId> {
+    if let Ok(e) = v.extract::<PyRef<PyExpr>>() {
+        return Ok(e.id);
+    }
+    if let Ok(i) = v.extract::<i64>() {
+        let pool = pool_py.borrow(py);
+        return Ok(pool.inner.integer(i));
+    }
+    Err(PyTypeError::new_err(format!(
+        "{which} must be an alkahest Expr or an int, got {}",
+        v.get_type()
+    )))
+}
+
+fn format_range(pool: &ExprPool, lo: ExprId, hi: ExprId) -> String {
+    format!("k = {}..{}", pool.display(lo), pool.display(hi))
+}
+
+/// `alkahest.zeilberger(term, n, k, *, limits=None, max_order=4, max_degree=16, minimal=False) -> ZeilbergerCertificate`
 ///
 /// Zeilberger's algorithm (creative telescoping) for a proper hypergeometric
 /// term ``F(n, k)``.  Returns a **verified** certificate: the recurrence
 /// ``Σ_i a_i(n)·F(n+i,k) = ΔG`` with ``G = R·F`` is re-checked as an exact
 /// identity in ``Q(n)(k)`` before it is returned.
 ///
-/// The verified statement is that identity in ``k``.  Reading a recurrence for
-/// ``S(n) = Σ_k F(n,k)`` off it additionally requires the boundary difference
-/// ``G(n, k_hi+1) − G(n, k_lo)`` to vanish over the summation range; that
-/// hypothesis is *not* checked here and is reported on the returned object as
-/// :attr:`~alkahest.ZeilbergerCertificate.side_conditions`, with
-/// :attr:`~alkahest.ZeilbergerCertificate.boundary_term` giving the ``G`` needed
-/// to discharge it.
+/// The verified statement is that identity in ``k``.  A recurrence for the
+/// **sum** ``S(n) = Σ_{k=k_lo}^{k_hi} F(n,k)`` is a separate claim, and it is
+/// decided here rather than left to the caller:
+/// :attr:`~alkahest.ZeilbergerCertificate.boundary` is ``"vanishes"`` (the
+/// homogeneous recurrence holds), ``"nonzero"`` (the inhomogeneous one does,
+/// with ``b(n)`` in
+/// :attr:`~alkahest.ZeilbergerCertificate.boundary_rhs`) or ``"unknown"``
+/// (nothing follows about the sum).
+///
+/// ``limits`` is the summation range as ``(k_lo, k_hi)``, each an ``Expr`` or an
+/// ``int``.  It **defaults to** ``(0, n)`` — ``Σ_{k=0}^{n}``, the convention the
+/// classical identities and the OEIS formula field use — and the range actually
+/// used is echoed back on
+/// :attr:`~alkahest.ZeilbergerCertificate.limits`, so the assumption is on the
+/// record rather than silent.  The verdict is about *that* range and changes
+/// with it: truncating ``Σ_{k=0}^{n}`` to ``Σ_{k=0}^{n-1}`` generally turns
+/// ``"vanishes"`` into ``"nonzero"``.  A range this analysis cannot place —
+/// endpoints that are not integer-affine in ``n`` — is ``"unknown"``, never
+/// ``"vanishes"``.
 ///
 /// ``max_order`` and ``max_degree`` are upper **bounds**, not starting points.
 /// The search visits the ``(order, degree)`` grid by iterative deepening,
@@ -4807,46 +5046,111 @@ impl PyZeilbergerCertificate {
 /// verification — so raising either bound widens what can be found without
 /// slowing down an input that was already decided at a low order and degree.
 ///
+/// **The order it returns is not claimed to be minimal.**  Cheapest-first means
+/// a cheap order-2 probe can be reached before an expensive order-1 one, so an
+/// order-2 result does not rule out an order-1 relation;
+/// :attr:`~alkahest.ZeilbergerCertificate.order_is_minimal` is ``False`` to say
+/// so rather than leaving it to be assumed.  Pass ``minimal=True`` to search
+/// **order-ascending** instead — every degree ``0..=max_degree`` at order ``J``
+/// is refused before order ``J+1`` is tried — which makes a returned order
+/// genuinely minimal and sets the flag.  That is the hopeless low-order sweep
+/// the default plan exists to avoid, and it costs accordingly; ask for it when
+/// minimality is the result, not as a habit.
+///
 /// Raises :exc:`alkahest.HolonomicError` rather than guessing when ``term`` is
 /// outside the proper hypergeometric class (``E-HOLO-001``) or when the bounded
 /// search is exhausted (``E-HOLO-002``).
+// Eight parameters, of which five are keyword-only with defaults on the Python
+// side. `clippy::too_many_arguments` is about call sites that have to remember
+// an order; this signature has none, so collapsing it into an options struct
+// would only put a Rust shape between the caller and the keywords they type.
+#[allow(clippy::too_many_arguments)]
 #[pyfunction]
-#[pyo3(name = "zeilberger", signature = (term, n, k, *, max_order = 4, max_degree = 16))]
+#[pyo3(
+    name = "zeilberger",
+    signature = (term, n, k, *, limits = None, max_order = 4, max_degree = 16, minimal = false)
+)]
 fn py_zeilberger(
     py: Python<'_>,
     term: PyRef<PyExpr>,
     n: PyRef<PyExpr>,
     k: PyRef<PyExpr>,
+    limits: Option<(Bound<'_, PyAny>, Bound<'_, PyAny>)>,
     max_order: usize,
     max_degree: usize,
+    minimal: bool,
 ) -> PyResult<PyZeilbergerCertificate> {
     let pool_py = term.pool.clone_ref(py);
     let opts = CoreZeilbergerOpts {
         max_order,
         max_degree,
     };
-    let (order, coeff_ids, certificate_id, boundary_id, derivation) = {
+    let search = if minimal {
+        CoreOrderSearch::MinimalOrder
+    } else {
+        CoreOrderSearch::CostOrdered
+    };
+    // The default is stated, not inferred: `Σ_{k=0}^{n}`, echoed back on the
+    // result so a caller summing over something else sees the mismatch.
+    let limits = match limits {
+        Some((lo, hi)) => (
+            coerce_limit(py, &pool_py, &lo, "limits[0]")?,
+            coerce_limit(py, &pool_py, &hi, "limits[1]")?,
+        ),
+        None => {
+            let pool = pool_py.borrow(py);
+            core_natural_limits(n.id, &pool.inner)
+        }
+    };
+    let (
+        order,
+        order_is_minimal,
+        coeff_ids,
+        certificate_id,
+        boundary_id,
+        derivation,
+        result,
+        status,
+    ) = {
         let pool = pool_py.borrow(py);
-        let derived = core_zeilberger(term.id, n.id, k.id, &pool.inner, &opts)
+        let derived = core_zeilberger_search(term.id, n.id, k.id, &pool.inner, &opts, search)
             .map_err(holonomic_error_to_py)?;
         let derivation = derived.log.display_with(&pool.inner).to_string();
-        let value = derived.value;
-        let boundary = core_boundary_term(&value, term.id, &pool.inner);
+        let report = derived.value;
+        let boundary = core_boundary_term(&report.result, term.id, &pool.inner);
+        let status = core_boundary_status(
+            &report.result,
+            term.id,
+            n.id,
+            k.id,
+            Some(limits),
+            &pool.inner,
+        );
         (
-            value.order,
-            value.coeffs.clone(),
-            value.certificate,
+            report.result.order,
+            report.order_is_minimal,
+            report.result.coeffs.clone(),
+            report.result.certificate,
             boundary,
             derivation,
+            report.result,
+            status,
         )
     };
     Ok(PyZeilbergerCertificate {
         order,
+        order_is_minimal,
         coeff_ids,
         certificate_id,
         boundary_id,
         pool: pool_py,
         derivation,
+        result,
+        term_id: term.id,
+        n_id: n.id,
+        k_id: k.id,
+        limits,
+        status,
     })
 }
 

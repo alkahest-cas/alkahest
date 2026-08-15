@@ -29,9 +29,14 @@
 //! certificate is correct and `G(n,0) = −1`, so
 //! `(n+2)·S(n+1) − (2n+2)·S(n) = 1`, not `0`; `S(n) = (2ⁿ⁺¹−1)/(n+1)` confirms
 //! it in exact arithmetic. A caller who reads the homogeneous recurrence off a
-//! certificate without checking the boundary gets a false lemma. Use
-//! [`boundary_term`] to obtain `G(n,k)` and evaluate it at the summation
-//! endpoints; [`boundary_side_condition`] states the hypothesis in words.
+//! certificate without checking the boundary gets a false lemma.
+//!
+//! **[`super::boundary::boundary_status`] decides it** over a stated summation
+//! range, three-valued: proved to vanish, proved nonzero (with the
+//! inhomogeneity `b(n)` explicit), or undecided — in which case nothing about
+//! the sum may be claimed. [`boundary_term`] still returns `G(n,k)` for a caller
+//! who would rather discharge the hypothesis by hand, and
+//! [`boundary_side_condition`] states it in words.
 //!
 //! # Method
 //!
@@ -63,7 +68,11 @@
 //!    `X`. The `(J, d)` pairs are visited by **iterative deepening**, cheapest
 //!    estimated cost first (see the private `search_plan`), so `max_order` and
 //!    `max_degree` are genuine upper bounds: raising them admits harder inputs
-//!    without slowing down inputs that are decided early.
+//!    without slowing down inputs that are decided early. Cheapest-first is
+//!    *not* order-ascending, so the order it returns is not minimal unless the
+//!    search happened to establish it — see [`OrderSearch`] and
+//!    [`ZeilbergerSearchReport::order_is_minimal`], and use
+//!    [`OrderSearch::MinimalOrder`] when minimality is the claim being made.
 //! 5. [`super::qfield::clear_denominators`] turns the solved `a_i(n) ∈ Q(n)`
 //!    into an integer-content-primitive polynomial family sharing one common
 //!    scale `S(n)`; `R` is rescaled by the same `S(n)` (a `k`-independent
@@ -91,6 +100,10 @@ use crate::matrix::normal_form::RatUniPoly;
 /// `search_plan`), so
 /// raising either one only widens what can be found — it does not make an input
 /// that was already decided any slower.
+///
+/// Under [`OrderSearch::MinimalOrder`] that stops being true of `max_degree`,
+/// necessarily: it is the bound minimality is claimed *against*, so the whole
+/// sweep up to it has to happen at every order below the answer.
 #[derive(Debug, Clone, Copy)]
 pub struct ZeilbergerOpts {
     /// Largest recurrence order `J` to try; orders are searched from 1 upward.
@@ -139,11 +152,14 @@ pub fn boundary_term(result: &ZeilbergerResult, term: ExprId, pool: &ExprPool) -
 }
 
 /// The hypothesis that [`ZeilbergerResult`]'s recurrence for the *sum* rests on,
-/// stated so it can be recorded rather than assumed.
+/// stated in words, for a caller who wants to record it without deciding it.
 ///
-/// Emitted verbatim as a side condition by the Python binding; it is deliberately
-/// a fixed string, because the condition is the same for every certificate and
-/// only the range it is evaluated over changes.
+/// It is a fixed string, which is precisely why it is no longer what the Python
+/// binding reports: an invariant caveat reads identically for a case where the
+/// hypothesis holds and one where it fails, so nothing that only reads it can
+/// tell the two apart. [`super::boundary::boundary_status`] computes a verdict
+/// instead, and [`super::boundary::BoundaryStatus::side_conditions`] is what the
+/// binding emits.
 pub const fn boundary_side_condition() -> &'static str {
     "the recurrence Σ_i a_i(n)·S(n+i) = 0 for S(n) = Σ_k F(n,k) additionally requires \
      G(n, k_hi+1) = G(n, k_lo) over the summation range, where G(n,k) = R(n,k)·F(n,k); \
@@ -442,28 +458,102 @@ fn order_state(
 /// `3·(order−1) + d = t` keeps every probe in one pass at comparable cost.
 const ORDER_COST_IN_DEGREE_STEPS: usize = 3;
 
-/// The `(order, degree)` pairs to probe, cheapest estimated cost first.
+/// How [`zeilberger_search`] walks the `(order, degree)` grid.
 ///
-/// Every pair in `1..=max_order × 0..=max_degree` appears exactly once, so an
-/// exhausted search does the same work it always did; only the *order of
-/// visits* changes, which is what makes the bounds bounds rather than starting
-/// points. Ties (equal estimated cost) go to the lower recurrence order.
+/// The two modes answer different questions, and the difference is not a
+/// tuning knob: [`OrderSearch::CostOrdered`] answers *is there a verified
+/// relation within these bounds*, [`OrderSearch::MinimalOrder`] answers *what
+/// is the least order of any relation within these bounds*. Only the second
+/// one can report [`ZeilbergerSearchReport::order_is_minimal`] as `true` in
+/// general, and only the first one is fast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OrderSearch {
+    /// Cheapest-estimated-cost-first, the default and what
+    /// [`zeilberger()`] uses.
+    ///
+    /// A returned order `J > 1` does **not** establish that no order-`J−1`
+    /// relation exists: the plan may reach a cheap high-order probe before an
+    /// expensive low-order one, which is exactly what makes Dixon, Franel and
+    /// Apéry decidable at the default bounds at all.
+    #[default]
+    CostOrdered,
+    /// Order-ascending: every degree `0..=max_degree` at order `J` is probed
+    /// and rejected before order `J+1` is tried at all.
+    ///
+    /// A returned order is therefore genuinely the least one reachable within
+    /// `max_degree`. The price is the whole hopeless low-order sweep the
+    /// cost-ordered plan exists to avoid — on Franel and Apéry that is the
+    /// difference between sub-second and tens of seconds (see the module
+    /// tests). Ask for it when minimality is the result you want to publish,
+    /// not as a default.
+    MinimalOrder,
+}
+
+/// A [`ZeilbergerResult`] together with what the search that produced it does
+/// and does not establish.
 ///
+/// Returned by [`zeilberger_search`]; [`zeilberger()`] drops it to the bare
+/// result for callers that do not care.
+#[derive(Debug, Clone)]
+pub struct ZeilbergerSearchReport {
+    /// The verified certificate.
+    pub result: ZeilbergerResult,
+    /// `true` **only** when the search established that no relation of lower
+    /// order exists at any degree `0..=max_degree`.
+    ///
+    /// `false` means *not established*, never *a lower order exists* — a
+    /// lower-order relation that had been found would have been returned
+    /// instead. Under [`OrderSearch::CostOrdered`] this is `true` for order 1
+    /// (nothing is lower) and whenever the cost-ordered plan happened to
+    /// exhaust every lower order first, and `false` otherwise; under
+    /// [`OrderSearch::MinimalOrder`] it is always `true`.
+    ///
+    /// It is computed from the probes actually made, not from the mode, so it
+    /// cannot drift away from what the search did.
+    pub order_is_minimal: bool,
+    /// How many `(order, degree)` probes the search made, the successful one
+    /// included. This is the cost measure the two [`OrderSearch`] modes differ
+    /// in; the tests use it to pin the difference.
+    pub probes: usize,
+}
+
+/// The `(order, degree)` pairs to probe, in the order `search` asks for.
+///
+/// Every pair in `1..=max_order × 0..=max_degree` appears exactly once under
+/// either mode, so an exhausted search does the same work it always did; only
+/// the *order of visits* changes, which is what makes the bounds bounds rather
+/// than starting points.
+///
+/// [`OrderSearch::CostOrdered`] sweeps the frontier `3·(order−1) + d = t`,
+/// cheapest estimated cost first, ties going to the lower recurrence order.
 /// The one deliberate trade-off: a term whose order-1 certificate needs a much
-/// higher degree than its order-2 one (`d₁ > d₂ + 3`) now gets the order-2
-/// relation, where the old order-major sweep would have insisted on order 1.
-/// Both are verified relations; the old preference was for the sharper one at
-/// a cost — minutes, or never — that made the whole search unusable in
-/// practice.
-fn search_plan(max_order: usize, max_degree: usize) -> Vec<(usize, usize)> {
-    let max_budget = ORDER_COST_IN_DEGREE_STEPS * (max_order - 1) + max_degree;
+/// higher degree than its order-2 one (`d₁ > d₂ + 3`) gets the order-2
+/// relation, where an order-major sweep would have insisted on order 1. Both
+/// are verified relations; the preference for the sharper one cost minutes, or
+/// never, and made the whole search unusable in practice.
+///
+/// [`OrderSearch::MinimalOrder`] is that order-major sweep, restored as an
+/// opt-in for callers who need the sharper answer and will pay for it.
+fn search_plan(max_order: usize, max_degree: usize, search: OrderSearch) -> Vec<(usize, usize)> {
     let mut plan = Vec::with_capacity(max_order * (max_degree + 1));
-    for budget in 0..=max_budget {
-        for order in 1..=max_order {
-            let spent = ORDER_COST_IN_DEGREE_STEPS * (order - 1);
-            if let Some(d) = budget.checked_sub(spent) {
-                if d <= max_degree {
+    match search {
+        OrderSearch::MinimalOrder => {
+            for order in 1..=max_order {
+                for d in 0..=max_degree {
                     plan.push((order, d));
+                }
+            }
+        }
+        OrderSearch::CostOrdered => {
+            let max_budget = ORDER_COST_IN_DEGREE_STEPS * (max_order - 1) + max_degree;
+            for budget in 0..=max_budget {
+                for order in 1..=max_order {
+                    let spent = ORDER_COST_IN_DEGREE_STEPS * (order - 1);
+                    if let Some(d) = budget.checked_sub(spent) {
+                        if d <= max_degree {
+                            plan.push((order, d));
+                        }
+                    }
                 }
             }
         }
@@ -481,6 +571,12 @@ fn search_plan(max_order: usize, max_degree: usize) -> Vec<(usize, usize)> {
 /// Refuses with [`HolonomicError`] rather than guessing when `term` is not
 /// a proper hypergeometric term in `(n, k)`, or when the bounded search in
 /// `opts` finds no certificate that passes exact verification.
+///
+/// **The returned order is not claimed to be minimal.** The cost-ordered plan
+/// can reach a cheap high-order probe before an expensive low-order one, so an
+/// order-2 result does not rule out an order-1 relation. Use
+/// [`zeilberger_search`] with [`OrderSearch::MinimalOrder`] when that matters;
+/// its report says so explicitly rather than leaving it to be assumed.
 pub fn zeilberger(
     term: ExprId,
     n: ExprId,
@@ -488,6 +584,25 @@ pub fn zeilberger(
     pool: &ExprPool,
     opts: &ZeilbergerOpts,
 ) -> Result<DerivedExpr<ZeilbergerResult>, HolonomicError> {
+    zeilberger_search(term, n, k, pool, opts, OrderSearch::CostOrdered)
+        .map(|d| d.map(|report| report.result))
+}
+
+/// [`zeilberger()`] with the grid traversal chosen by the caller, reporting
+/// whether the order it returns is known to be minimal.
+///
+/// `search` decides the traversal only. What counts as a result — an exactly
+/// re-verified `Q(n)(k)` identity — and the bounds in `opts` are the same
+/// either way, and so is the boundary hypothesis a *sum* recurrence rests on
+/// (see the module docs).
+pub fn zeilberger_search(
+    term: ExprId,
+    n: ExprId,
+    k: ExprId,
+    pool: &ExprPool,
+    opts: &ZeilbergerOpts,
+    search: OrderSearch,
+) -> Result<DerivedExpr<ZeilbergerSearchReport>, HolonomicError> {
     if n == k {
         return Err(HolonomicError::InvalidInput(
             "the outer index n and the summation index k must be distinct symbols".into(),
@@ -519,8 +634,22 @@ pub fn zeilberger(
     // Nothing is skipped: the plan still visits every `(order, degree)` pair, so
     // an exhausted search does exactly the work it did before, and a relation
     // reachable within the old bounds is still reachable within the new ones.
+    //
+    // `OrderSearch::MinimalOrder` opts out of exactly that reordering, walking
+    // the grid order-major so a returned order is the least one reachable
+    // within `max_degree` — paying the hopeless low-order sweep to buy the
+    // claim. Which mode ran is not what `order_is_minimal` is read off, though:
+    // `degrees_failed` below counts the probes that actually happened, so the
+    // flag stays true to the search even if the plan changes again.
     let mut states: Vec<Option<OrderState>> = Vec::with_capacity(opts.max_order);
-    for (order, d) in search_plan(opts.max_order, opts.max_degree) {
+    let mut degrees_failed = vec![0usize; opts.max_order];
+    for (order, d) in search_plan(opts.max_order, opts.max_degree, search) {
+        // Counted before the probe rather than after, because every path out of
+        // this body other than `return` is a failure at `(order, d)` — and the
+        // minimality test below only ever reads *lower* orders, which are
+        // finished by then. `probes` is the same tally summed over the orders,
+        // so the two can never disagree about what the search did.
+        degrees_failed[order - 1] += 1;
         // `OrderState` is degree-independent, so each order is set up once no
         // matter how often the deepening returns to it.
         while states.len() < order {
@@ -584,11 +713,22 @@ pub fn zeilberger(
             certificate_expr,
         ));
 
+        // Minimal exactly when every strictly lower order was probed at every
+        // degree in bounds and none of them yielded a verified certificate.
+        // Vacuously true at order 1. Under `MinimalOrder` the plan guarantees
+        // it; under `CostOrdered` it is usually false for order > 1, which is
+        // the honest answer and the reason this flag exists.
+        let order_is_minimal = (1..order).all(|j| degrees_failed[j - 1] == opts.max_degree + 1);
+
         return Ok(DerivedExpr::with_log(
-            ZeilbergerResult {
-                order,
-                coeffs: coeffs_expr,
-                certificate: certificate_expr,
+            ZeilbergerSearchReport {
+                result: ZeilbergerResult {
+                    order,
+                    coeffs: coeffs_expr,
+                    certificate: certificate_expr,
+                },
+                order_is_minimal,
+                probes: degrees_failed.iter().sum(),
             },
             log,
         ));
@@ -845,38 +985,48 @@ mod tests {
     /// must visit every `(order, degree)` pair inside the caller's bounds exactly
     /// once (no gap could hide a relation, no repeat could waste a probe) and
     /// never step outside them.
+    ///
+    /// Both traversals are held to it: `MinimalOrder` buys its sharper claim by
+    /// *reordering* the same grid, not by probing more of it, so an exhausted
+    /// search costs the same either way and only a decided one differs.
     #[test]
     fn search_plan_is_a_permutation_of_the_bounded_grid() {
-        for max_order in 1..6usize {
-            for max_degree in 1..20usize {
-                let plan = search_plan(max_order, max_degree);
-                let mut sorted = plan.clone();
-                sorted.sort_unstable();
-                sorted.dedup();
-                assert_eq!(
-                    sorted.len(),
-                    plan.len(),
-                    "no pair may be probed twice ({max_order}, {max_degree})"
-                );
-                assert_eq!(
-                    plan.len(),
-                    max_order * (max_degree + 1),
-                    "every pair in the bounds must be probed ({max_order}, {max_degree})"
-                );
-                assert!(
-                    plan.iter()
-                        .all(|&(o, d)| (1..=max_order).contains(&o) && d <= max_degree),
-                    "the plan must stay inside the caller's bounds"
-                );
+        for search in [OrderSearch::CostOrdered, OrderSearch::MinimalOrder] {
+            for max_order in 1..6usize {
+                for max_degree in 1..20usize {
+                    assert_plan_is_a_permutation(max_order, max_degree, search);
+                }
             }
         }
+    }
+
+    fn assert_plan_is_a_permutation(max_order: usize, max_degree: usize, search: OrderSearch) {
+        let plan = search_plan(max_order, max_degree, search);
+        let mut sorted = plan.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            plan.len(),
+            "no pair may be probed twice ({max_order}, {max_degree}, {search:?})"
+        );
+        assert_eq!(
+            plan.len(),
+            max_order * (max_degree + 1),
+            "every pair in the bounds must be probed ({max_order}, {max_degree}, {search:?})"
+        );
+        assert!(
+            plan.iter()
+                .all(|&(o, d)| (1..=max_order).contains(&o) && d <= max_degree),
+            "the plan must stay inside the caller's bounds ({search:?})"
+        );
     }
 
     /// Cheap probes come first, and a tie goes to the lower order — that is the
     /// whole content of the deepening, so it is asserted rather than implied.
     #[test]
     fn search_plan_visits_cheap_probes_first() {
-        let plan = search_plan(3, 8);
+        let plan = search_plan(3, 8, OrderSearch::CostOrdered);
         let cost = |&(o, d): &(usize, usize)| ORDER_COST_IN_DEGREE_STEPS * (o - 1) + d;
         assert!(
             plan.windows(2).all(|w| cost(&w[0]) <= cost(&w[1])),
@@ -888,6 +1038,131 @@ mod tests {
         assert_eq!(&plan[..4], &[(1, 0), (1, 1), (1, 2), (1, 3)]);
         // …and order 2 enters exactly when it becomes competitive.
         assert_eq!(plan[4], (2, 0));
+    }
+
+    /// The reason `MinimalOrder` can claim minimality at all: it does not reach
+    /// order `J+1` until every degree in bounds at order `J` has been refused.
+    ///
+    /// This is the property `order_is_minimal` is derived from, asserted on the
+    /// plan directly so a regression shows up here rather than as a flag that
+    /// quietly starts lying.
+    #[test]
+    fn minimal_order_plan_exhausts_each_order_before_the_next() {
+        let plan = search_plan(3, 8, OrderSearch::MinimalOrder);
+        assert!(
+            plan.windows(2)
+                .all(|w| w[0].0 < w[1].0 || (w[0].0 == w[1].0 && w[0].1 < w[1].1)),
+            "order-major, degree-ascending within an order: {plan:?}"
+        );
+        assert_eq!(&plan[..3], &[(1, 0), (1, 1), (1, 2)]);
+        // Order 2 starts only once all nine degrees at order 1 are spent.
+        assert_eq!(plan[9], (2, 0));
+    }
+
+    /// Order 1 needs no search to be minimal, and the default plan says so.
+    ///
+    /// Σ_k C(n,k) = 2ⁿ is decided at `(1, 0)`, the first probe under either
+    /// traversal; nothing is lower than order 1, so the flag is `true` without
+    /// the cost-ordered plan having to establish anything.
+    #[test]
+    fn order_one_is_minimal_under_the_default_plan() {
+        let pool = ExprPool::new();
+        let (n, k) = nk(&pool);
+        let f = binom(&pool, n, k);
+        let report = zeilberger_search(
+            f,
+            n,
+            k,
+            &pool,
+            &ZeilbergerOpts::default(),
+            OrderSearch::CostOrdered,
+        )
+        .expect("certificate");
+        assert_eq!(report.value.result.order, 1);
+        assert!(
+            report.value.order_is_minimal,
+            "order 1 is minimal by definition"
+        );
+        assert_eq!(report.value.probes, 1, "decided by the very first probe");
+    }
+
+    /// The honesty requirement, stated as a test: on Dixon the default plan
+    /// returns order 2 **without** claiming it is minimal, because it reaches
+    /// `(2, 0)` after only four of the seventeen order-1 probes in bounds.
+    ///
+    /// The premise that an ascending search makes minimality free is false for
+    /// this plan, and this is where that would be caught. `MinimalOrder` on the
+    /// same input does establish it — at a cost the test measures rather than
+    /// assumes.
+    #[test]
+    fn default_plan_does_not_claim_minimality_it_has_not_established() {
+        let pool = ExprPool::new();
+        let (n, k) = nk(&pool);
+        let c = binom(&pool, n, k);
+        let sign = pool.pow(pool.integer(-1_i32), k);
+        let f = pool.mul(vec![sign, c, c, c]);
+
+        let opts = ZeilbergerOpts::default();
+        let fast = zeilberger_search(f, n, k, &pool, &opts, OrderSearch::CostOrdered)
+            .expect("Dixon is decided at the default bounds");
+        assert_eq!(fast.value.result.order, 2);
+        assert!(
+            !fast.value.order_is_minimal,
+            "the cost-ordered plan skipped order-1 degrees 4..=16, so it cannot \
+             claim order 2 is minimal — and must not"
+        );
+        assert!(
+            fast.value.probes <= opts.max_degree,
+            "the whole point of the cost-ordered plan is that it decides Dixon \
+             long before the order-1 sweep is done, got {} probes",
+            fast.value.probes
+        );
+    }
+
+    /// `MinimalOrder` at bounds it can afford: Dixon really has no order-1
+    /// relation of certificate degree ≤ 4, so the order-2 answer is minimal
+    /// there and the flag says so.
+    ///
+    /// `max_degree` is 4 rather than the default 16 because the order-1 sweep is
+    /// what minimality costs and it grows like `3^d` — the point of the test is
+    /// the flag, not the wall clock. A caller who needs minimality against a
+    /// wider degree bound pays that bound; see the release notes for the
+    /// measured Franel/Apéry numbers.
+    #[test]
+    fn minimal_mode_establishes_minimality() {
+        let pool = ExprPool::new();
+        let (n, k) = nk(&pool);
+        let c = binom(&pool, n, k);
+        let sign = pool.pow(pool.integer(-1_i32), k);
+        let f = pool.mul(vec![sign, c, c, c]);
+
+        let opts = ZeilbergerOpts {
+            max_order: 4,
+            max_degree: 4,
+        };
+        let start = std::time::Instant::now();
+        let sharp = zeilberger_search(f, n, k, &pool, &opts, OrderSearch::MinimalOrder)
+            .expect("Dixon is decided order-ascending at max_degree = 4");
+        println!(
+            "dixon (minimal): order {} in {:?} after {} probes",
+            sharp.value.result.order,
+            start.elapsed(),
+            sharp.value.probes
+        );
+        assert_eq!(sharp.value.result.order, 2);
+        assert!(
+            sharp.value.order_is_minimal,
+            "every order-1 degree in bounds was refused, so order 2 is minimal"
+        );
+        // All five order-1 degrees, then (2,0) and (2,1).
+        assert!(
+            sharp.value.probes > opts.max_degree,
+            "minimality is bought with the full low-order sweep, got {} probes",
+            sharp.value.probes
+        );
+        // Same relation, sharper claim: the certificate is still verified
+        // exactly, so this is not a second, weaker code path.
+        assert_eq!(sharp.value.result.coeffs.len(), 3);
     }
 
     /// Refuses non-hypergeometric input rather than guessing.

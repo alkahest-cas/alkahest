@@ -50,6 +50,7 @@ from ._context import (
     symbol,
 )
 from ._dlpack import _call_batch, _to_numpy
+from ._guess_holonomic import GuessedRecurrence, guess_holonomic
 from ._parse import parse
 from ._plot import (
     plot,
@@ -2150,6 +2151,8 @@ __all__ = [
     "GbPoly",
     "GradTracedFn",
     "GroebnerBasis",
+    # M2 — the guessing half of "guess then prove"
+    "GuessedRecurrence",
     # P1 item 7 — creative telescoping / holonomic (D-finite) machinery
     "HolonomicError",
     "HomotopyError",
@@ -2291,6 +2294,8 @@ __all__ = [
     "gcd_sparse",
     "get_context_value",
     "grad",
+    # M2 — fit a P-recursive recurrence to a sequence, guarded
+    "guess_holonomic",
     # V2-6
     "guess_relation",
     # Phase 24

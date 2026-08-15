@@ -162,11 +162,18 @@ enclosure that merely touches zero.
 ## Which functions are covered — ask before you build the workload
 
 Taylor models reach the **elementary fragment**: `exp`, `log`, `sqrt`, `sin`,
-`cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `abs`, plus
-arithmetic and integer/rational powers. Every special function is outside it —
-`erf`, `erfc`, `bessel_j0`, `bessel_j1`, `digamma`, `lambert_w`, `gamma`, the
-elliptic integrals, `floor`, `ceil`, `acosh`, `asinh` — and so is any
-two-argument function such as `atan2`.
+`cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `asinh`,
+`acosh`, `atanh`, `abs`, plus arithmetic and integer/rational powers — and,
+since 3.9.0, `erf` and `erfc`. Outside it are `bessel_j0`, `bessel_j1`,
+`digamma`, `lambert_w`, `gamma`, the elliptic integrals, `floor` and `ceil`,
+and so is any two-argument function such as `atan2`.
+
+The three inverse hyperbolics carry the domain restriction their branch has:
+`acosh` needs the whole box strictly above `1` and `atanh` needs it strictly
+inside `(-1, 1)`. A box that only *touches* the boundary is refused with
+`E-VALIDATED-003`, because the derivative is unbounded there and no Taylor
+remainder exists — that is a statement about the box, not about coverage, so
+`bounds_supported` still answers `True`.
 
 That boundary is queryable, so a search loop can choose a certifiable route
 instead of discovering it by hitting `E-VALIDATED-001`:
@@ -182,7 +189,7 @@ answer.blocker                                  # "function `bessel_j0`"
 ```
 
 **`numeric_ball` is not this flag.** It reports pointwise ball arithmetic,
-which `erf`, `bessel_j0`, `digamma` and `floor` all have; a Taylor model
+which `bessel_j0`, `digamma`, `lambert_w` and `floor` all have; a Taylor model
 additionally needs a rule with a rigorous Lagrange remainder, which they do
 not. Both bits are honest — they answer different questions. `taylor_model`
 and `bounds_supported` are derived by *running* the Taylor evaluator, not from

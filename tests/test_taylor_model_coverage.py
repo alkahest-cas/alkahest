@@ -4,11 +4,16 @@
 governs the validated-bounds subsystem, and used to be the only per-function
 coverage bit exposed. Ball arithmetic is pointwise; a Taylor model needs a
 rule with a rigorous remainder, written per function in
-`alkahest-core/src/validated/taylor.rs`. Ten primitives — `erf`, `erfc`,
-`bessel_j0`, `bessel_j1`, `digamma`, `lambert_w`, `acosh`, `asinh`, `floor`,
-`ceil` — have real Arb ball arithmetic and no Taylor-model rule, so
-`bound_on_box` refuses them with `E-VALIDATED-001` while `numeric_ball` says
-``True``. That boundary was correct at runtime and invisible beforehand.
+`alkahest-core/src/validated/taylor.rs`. Six primitives — `bessel_j0`,
+`bessel_j1`, `digamma`, `lambert_w`, `floor`, `ceil` — have real Arb ball
+arithmetic and no Taylor-model rule, so `bound_on_box` refuses them with
+`E-VALIDATED-001` while `numeric_ball` says ``True``. That boundary was
+correct at runtime and invisible beforehand.
+
+3.9.0 moved five names across it — `asinh`, `acosh`, `atanh`, `erf`, `erfc`
+now have rules — which is the case these tests were written for: the sets
+below are the only thing that had to change, because the flag itself is
+derived from the evaluator.
 
 The whole point of these tests is that the *new* flag cannot repeat that
 mistake. `taylor_model` is derived by running the real evaluator (see
@@ -76,30 +81,28 @@ def test_taylor_model_flag_agrees_with_bound_on_box(row):
 def test_the_flag_is_not_a_restatement_of_numeric_ball():
     """The bug this fixes: `numeric_ball` was read as the coverage flag.
 
-    `numeric_ball` is *not* wrong for these eleven — they really do have Arb
-    ball arithmetic (`alkahest-core/src/primitive/taylor_support.rs` pins that
-    in Rust). It answers a different question, which is why reading it as the
+    `numeric_ball` is *not* wrong for these six — they really do have Arb ball
+    arithmetic (`alkahest-core/src/primitive/taylor_support.rs` pins that in
+    Rust). It answers a different question, which is why reading it as the
     validated-bounds coverage bit cost a whole workload.
 
-    `atanh` joined the set when the capability probe stopped testing ball
-    kernels at `1.0` only: its domain is the open interval `(-1, 1)`, so it
-    declined the sole probe point and lost a bit it had earned, while keeping
-    `numeric_f64` because that probe already tried `0.5`.
+    What is left is what is genuinely hard to bound rigorously, not what
+    nobody got round to: `bessel_j0`/`bessel_j1` oscillate (the same property
+    that made an endpoint-hull ball kernel unsound), `digamma` and
+    `lambert_w` need remainder analysis nobody has written down here, and
+    `floor`/`ceil` are not differentiable — on a box straddling an integer no
+    Taylor model exists at all, and on one that does not they are a constant,
+    which is not a fact a Taylor rule is needed to discover.
     """
     rows = {row["name"]: row for row in _primitive_rows()}
     ball_only = {
         name for name, row in rows.items() if row["numeric_ball"] and not row["taylor_model"]
     }
     assert ball_only == {
-        "acosh",
-        "asinh",
-        "atanh",
         "bessel_j0",
         "bessel_j1",
         "ceil",
         "digamma",
-        "erf",
-        "erfc",
         "floor",
         "lambert_w",
     }
@@ -115,10 +118,15 @@ def test_supported_set_is_the_elementary_fragment():
     assert supported == {
         "abs",
         "acos",
+        "acosh",
         "asin",
+        "asinh",
         "atan",
+        "atanh",
         "cos",
         "cosh",
+        "erf",
+        "erfc",
         "exp",
         "log",
         "sin",
@@ -150,6 +158,7 @@ def test_bounds_supported_matches_bound_on_box_on_composite_expressions():
         ak.sqrt(x + 1) / (x + 2),
         ak.bessel_j0(x),
         x * ak.erf(x),
+        x * ak.atanh(x / 4),
         ak.sin(x) + ak.digamma(x),
         ak.atan2(x, y),
         ak.gamma(x),
@@ -170,11 +179,11 @@ def test_bounds_supported_matches_bound_on_box_on_composite_expressions():
 def test_bounds_supported_names_every_blocking_function():
     pool = ak.ExprPool()
     x = pool.symbol("x")
-    answer = ak.bounds_supported(ak.bessel_j0(x) + ak.erf(x) + ak.sin(x))
+    answer = ak.bounds_supported(ak.bessel_j0(x) + ak.digamma(x) + ak.sin(x))
 
     assert not answer
     assert answer.supported is False
-    assert answer.functions == ["bessel_j0", "erf"]
+    assert answer.functions == ["bessel_j0", "digamma"]
     assert "bessel_j0" in answer.blocker
     assert _UNSUPPORTED in answer.detail
 
@@ -182,7 +191,7 @@ def test_bounds_supported_names_every_blocking_function():
 def test_bounds_supported_is_truthy_and_quiet_when_everything_is_covered():
     pool = ak.ExprPool()
     x = pool.symbol("x")
-    answer = ak.bounds_supported(ak.sin(x) ** 2 + ak.cosh(x))
+    answer = ak.bounds_supported(ak.sin(x) ** 2 + ak.cosh(x) + ak.erf(x))
 
     assert answer
     assert answer.blocker is None
@@ -220,7 +229,7 @@ def test_arity_is_part_of_the_question():
 def test_constant_expressions_are_classified_too():
     pool = ak.ExprPool()
     assert ak.bounds_supported(ak.sin(pool.integer(2)))
-    assert not ak.bounds_supported(ak.erf(pool.integer(2)))
+    assert not ak.bounds_supported(ak.bessel_j0(pool.integer(2)))
 
 
 def test_bounds_support_surface():
@@ -230,12 +239,12 @@ def test_bounds_support_surface():
     for name in ("bounds_supported", "BoundsSupport"):
         assert name in ak.__all__, name
 
-    answer = ak.bounds_supported(ak.erf(x))
+    answer = ak.bounds_supported(ak.bessel_j0(x))
     assert isinstance(answer, ak.BoundsSupport)
     assert "BoundsSupport(" in repr(answer)
     assert answer.as_dict() == {
         "supported": False,
         "blocker": answer.blocker,
-        "functions": ["erf"],
+        "functions": ["bessel_j0"],
         "detail": answer.detail,
     }

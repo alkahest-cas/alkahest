@@ -43,7 +43,10 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-BUDGET-001 … E-BUDGET-003 BudgetExceededError (P1 search plumbing item 4)
     E-VALIDATED-001 … E-VALIDATED-005  ValidatedError (P1 item 9 — validated numerics)
     E-SOS-001 … E-SOS-005      SosError (P1 item 8 — positivity certificates)
-    E-HOLO-001 … E-HOLO-004    HolonomicError (P1 item 7 — creative telescoping)
+    E-HOLO-001 … E-HOLO-005    HolonomicError (P1 item 7 — creative telescoping;
+                                 005 = a guessed recurrence the terms cannot
+                                 confirm, raised from Python, so it is absent
+                                 from the Rust REGISTRY as E-PSLQ-004 is)
     E-BATCH-001                 (Python-only; alkahest._batch fallback for a
                                  batch_map/batch_map_iter item whose exception carried no
                                  .code of its own — see docs/mdbook/src/batch.md)
@@ -295,12 +298,19 @@ class SosError(AlkahestError):
 class HolonomicError(AlkahestError):
     """Creative telescoping refused: input outside the proper hypergeometric
     class (``E-HOLO-001``), bounded search exhausted (``E-HOLO-002``), a
-    candidate certificate failed exact verification (``E-HOLO-003``), or the
-    call was malformed (``E-HOLO-004``).
+    candidate certificate failed exact verification (``E-HOLO-003``), the call
+    was malformed (``E-HOLO-004``), or a guessed recurrence is not supported by
+    the terms supplied (``E-HOLO-005``).
 
     A refusal here is informative, not a failure: it says the term is not one
     Zeilberger's algorithm decides at the requested bounds, so a loop can close
     that branch instead of re-attempting it.
+
+    ``E-HOLO-005`` is the one exception to "close that branch". It comes from
+    :func:`alkahest.guess_holonomic` and means *the data could not answer* —
+    too few terms to test every candidate in bounds, or a fit with no surplus
+    equations to confirm it. Recording it as "this sequence has no recurrence"
+    closes a branch that was never explored.
     """
 
     def __init__(
