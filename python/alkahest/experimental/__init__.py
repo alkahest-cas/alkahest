@@ -57,6 +57,25 @@ Calculus / ODE / transform surface:
   arithmetic works over, exposed so a caller can redo the divisibility check
   by hand
 
+Double-sum (Apagodu–Zeilberger) creative telescoping (M4):
+- :func:`telescope2d` / :class:`Telescoping2dCertificate` — creative
+  telescoping for a proper hypergeometric term ``F(n,j,k)`` with **two** bound
+  indices, generalizing :func:`alkahest.zeilberger` from one summation index
+  to two: finds ``a_0(n), …, a_J(n)`` and two rational certificates ``c_1,
+  c_2`` with ``Σ_i a_i(n)·F(n+i,j,k) = Δ_j(c_1·F) + Δ_k(c_2·F)``, re-checked
+  as an exact identity in ``Q(n,j,k)`` before being returned
+- :meth:`~alkahest.experimental.Telescoping2dCertificate.boundary_status` —
+  the two-dimensional boundary/corner analysis: the boundary of a rectangle
+  is **four one-dimensional strip sums**, not four corner evaluations (read
+  the Rust module docs, ``alkahest_cas::holonomic::telescoping2d::boundary``,
+  for the derivation). Only **constant** (not ``n``-dependent) rectangles are
+  supported, and only a sufficient "each strip vanishes pointwise" criterion
+  is checked — real, stated restrictions, not unfinished polish
+- This is a genuinely scoped-down engine: proper hypergeometric summands
+  only, no more than two bound indices, no general Wegschaider reduction, a
+  bounded-degree ansatz search rather than a minimal 2-D Gosper normal form.
+  See the Rust module docs for the complete, honest limitations list
+
 Novelty filtering (:mod:`alkahest.experimental.novelty`):
 - :class:`RecurrenceClaim` — a recurrence in a normal form two presentations
   of the same fact share, plus a stable ``claim_hash`` to dedupe on
@@ -120,6 +139,7 @@ from alkahest.alkahest import (
     OdeTrajectory,
     QRootOfUnitySpecialization,
     QZeilbergerCertificate,
+    Telescoping2dCertificate,
     asymptotic_expand,
     # P1 item 10 — asymptotic expansion at scale
     coefficient_asymptotics,
@@ -138,6 +158,7 @@ from alkahest.alkahest import (
     ode_integrate_rk45,
     q_zeilberger,
     series_solve,
+    telescope2d,
     z_transform,
 )
 
@@ -200,6 +221,8 @@ __all__ = [
     "RecurrenceAsymptotics",
     # M11 — novelty filtering
     "RecurrenceClaim",
+    # M4 — double-sum (Apagodu-Zeilberger) creative telescoping
+    "Telescoping2dCertificate",
     "arg",
     "asymptotic_expand",
     # M5 — recurrence -> asymptotics
@@ -241,6 +264,8 @@ __all__ = [
     "residue",
     "series_solve",
     "solve",
+    # M4 — double-sum (Apagodu-Zeilberger) creative telescoping
+    "telescope2d",
     "to_jax",
     "to_lean",
     "to_stablehlo",

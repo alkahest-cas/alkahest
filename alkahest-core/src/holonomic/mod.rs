@@ -48,6 +48,15 @@
 //! exhausted) or the input is outside the supported class, the module
 //! refuses via [`HolonomicError`] rather than guessing.
 //!
+//! - [`telescoping2d`] — the double-sum (two bound indices) generalization of
+//!   Zeilberger's algorithm, Apagodu–Zeilberger by undetermined coefficients:
+//!   given a proper hypergeometric `F(n,j,k)`, finds `Σ_i a_i(n)·F(n+i,j,k) =
+//!   Δ_j G_1 + Δ_k G_2` with two rational certificates. Its own module docs
+//!   spell out, in detail, why the boundary of a rectangle is four
+//!   one-dimensional strip sums rather than four corner evaluations, and the
+//!   honest limitations of its fixed-denominator ansatz and constant-range
+//!   boundary analysis.
+//!
 //! Ore-operator closure (`ore.rs`) and ODE guessing from a power series are
 //! tracked as follow-up work and are not part of this module yet; see
 //! `ROADMAP.md` (P1 item 7). *Recurrence* guessing from finite data ships as
@@ -60,6 +69,7 @@ pub mod hyperterm;
 pub mod modular;
 pub mod qfield;
 pub mod qzeil;
+pub mod telescoping2d;
 pub mod zeilberger;
 
 pub use asymptotics::{
@@ -75,6 +85,10 @@ pub use qzeil::{
     CycloElem, CycloField, QBoundaryStatus, QCertificate, QHolonomicError, QProperTerm,
     QRootOfUnitySpecialization, QRootOfUnityStatus, QZeilbergerOpts, QZeilbergerReport,
     QZeilbergerResult,
+};
+pub use telescoping2d::{
+    boundary_status_2d, telescope2d, telescope2d_search, BoundaryStatus2d, Telescoping2dError,
+    Telescoping2dOpts, Telescoping2dResult,
 };
 pub use zeilberger::{
     boundary_side_condition, boundary_term, zeilberger, zeilberger_search, OrderSearch,
