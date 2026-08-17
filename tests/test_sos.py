@@ -102,12 +102,12 @@ def test_negative_polynomial_yields_a_witness_not_a_shrug():
     assert "< 0" in str(excinfo.value)
 
 
-def test_motzkin_refuses_without_claiming_negativity():
-    """The Motzkin polynomial is non-negative but not a sum of squares.
-
-    The one thing the implementation must not do is call it negative. It has to
-    come back with E-SOS-002 — "no certificate of this shape" — which is an
-    honest statement about the search, not about the polynomial.
+def test_motzkin_certifies_via_a_multiplier():
+    """The Motzkin polynomial is non-negative but not a sum of squares
+    *itself* — the textbook example (Hilbert 1888) of that phenomenon.
+    Multiplying by (x^2+y^2) is classically known to fix it (Reznick's
+    theorem), and `sos_decompose` finds that certificate by searching for a
+    multiplier automatically: the call succeeds, it does not refuse.
     """
     pool = ak.ExprPool()
     x, y = pool.symbol("x"), pool.symbol("y")
@@ -119,12 +119,21 @@ def test_motzkin_refuses_without_claiming_negativity():
         + pool.integer(1)
     )
 
-    with pytest.raises(ak.SosError) as excinfo:
-        ak.sos_decompose(p, [x, y])
+    cert = ak.sos_decompose(p, [x, y])
 
-    assert excinfo.value.code == "E-SOS-002"
-    # The remediation must tell an agent that this is not a proof of non-SOS.
-    assert "decide" in excinfo.value.remediation
+    assert cert.kind == "sos"
+    # `verify()` re-expands the identity exactly in Q and confirms it holds —
+    # the real soundness argument, not a numeric search's own confidence.
+    assert cert.verify() is True
+    # The identity is `(target) * (multiplier) = rhs` for a multiplier
+    # certificate, which `identity` renders as two parenthesised factors on
+    # the left of `=` — distinct from a direct certificate's plain `target =
+    # rhs`. This is the only Python-level signal that a multiplier was used
+    # (there is no separate `.multiplier` accessor at this surface).
+    assert cert.identity.count("=") == 1
+    lhs, _rhs = cert.identity.split("=", 1)
+    assert lhs.strip().startswith("(")
+    assert lhs.count(")") >= 2
 
 
 def test_non_polynomial_is_refused():
