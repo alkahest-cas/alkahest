@@ -458,6 +458,104 @@ the integer `v` with `Φ_d(q)^v` dividing `S(n+i)` and `Φ_d(q)^{v+1}` not — s
 `q`-supercongruence asserts, decided exactly rather than checked at finitely
 many numeric points.
 
+## Double-sum telescoping (`alkahest.experimental.telescope2d`)
+
+Everything above is a single sum over one index `k`. `telescope2d` is the
+Apagodu–Zeilberger generalization to **two** bound indices: given a proper
+hypergeometric `F(n, j, k)` — hypergeometric in each of `n`, `j`, `k`
+individually, the direct generalization of the class `zeilberger` decides —
+it finds `a_0(n), …, a_J(n)` (not all zero) and *two* rational certificates
+`c_1, c_2 ∈ Q(n,j,k)` such that
+
+```text
+Σ_i a_i(n)·F(n+i,j,k) = Δ_j(c_1·F) + Δ_k(c_2·F)
+```
+
+checked as an exact identity in `Q(n,j,k)` before it is ever returned, the
+same non-negotiable discipline as the single-sum engine.
+
+```python
+import alkahest as ak
+from alkahest.experimental import telescope2d
+
+pool = ak.ExprPool()
+n, j, k = pool.symbol("n"), pool.symbol("j"), pool.symbol("k")
+
+def binom(top, bot):
+    one = pool.integer(1)
+    return ak.gamma(top + one) / (ak.gamma(bot + one) * ak.gamma(top - bot + one))
+
+# F(n,j,k) = C(n,j)*C(j,k) — a genuinely non-separable double sum:
+# C(j,k) couples to the *outer* sum's own index j.
+f = binom(n, j) * binom(j, k)
+cert = telescope2d(f, n, j, k)
+cert.order          # 1
+cert.coeffs          # [3, -1]  ->  S(n+1) = 3*S(n)
+```
+
+`Σ_k C(j,k) = 2^j`, so `S(n) = Σ_j C(n,j)·2^j = 3ⁿ` by the binomial
+theorem — exactly what the order-1 relation says, and this is checked in
+the test suite by direct exact summation (`Fraction`/`Rational`, never
+floats) against the actual double sum, not just against the telescoping
+identity.
+
+### Method: undetermined coefficients, not a 2-D Gosper reduction
+
+There is no standard two-dimensional analogue of Gosper's normal form for a
+general proper hypergeometric `F(n,j,k)`, so unlike the single-sum engine
+this does not attempt one. It follows Apagodu–Zeilberger directly: posit a
+certificate ansatz of bounded polynomial degree over a *fixed*,
+search-independent denominator built from `F`'s own shift-ratio
+denominators, clear it, and solve the resulting linear system by Gaussian
+elimination over `Q`. The denominator is **not** just the raw denominator of
+the ratio being telescoped in that direction — a certificate built from a
+product of two single-sum WZ pairs needs a factor from the *other*
+direction's `n`-shift ratio too (`c_1 ∝ R_A(n,j)·B(n+1,k)/B(n,k)` for
+`F = A(n,j)·B(n,k)`) — which is why the ansatz denominator for `c_1` is
+`D_j·∏_i D_{n,i}`, not just `D_j`.
+
+### The boundary is four strip sums, not four corner evaluations
+
+`cert.boundary_status(j_lo, j_hi, k_lo, k_hi)` decides whether the
+telescoping identity above implies a recurrence for
+`S(n) = Σ_{j=j_lo}^{j_hi} Σ_{k=k_lo}^{k_hi} F(n,j,k)`. Telescoping each
+difference operator over its own index gives
+
+```text
+Σ_i a_i(n)·S(n+i)
+  = Σ_k [G_1(n,j_hi+1,k) − G_1(n,j_lo,k)]
+  + Σ_j [G_2(n,j,k_hi+1) − G_2(n,j,k_lo)]
+```
+
+**four one-dimensional sums along the rectangle's edges**, not four
+corner-point evaluations — the naive generalisation of the 1-D endpoint
+story is simply the wrong formula. Summing a strip in closed form is in
+general its own creative-telescoping problem, so this version proves the
+**sufficient** (not necessary) condition that each strip is identically the
+zero function of its remaining free variable, via the same `1/Γ`
+non-positive-integer-argument identity the single-sum boundary analysis
+uses — checked on `F`'s own gamma factors (the natural-boundary case) or on
+the certificate's own numerator (the classical-WZ-certificate case, e.g. a
+certificate proportional to `k` that vanishes at `k = 0` even though `F`
+itself does not).
+
+Two restrictions are real, not unfinished polish:
+
+* **Only constant (not `n`-dependent) rectangles are supported.** The
+  single-sum engine's `b(n)` formula has a `D_i(n)` correction term
+  precisely because summing `F(n+i, k)` over `k`'s range *at `n`* is not
+  what `S(n+i)` means when the range moves with `n`; the 2-D case needs the
+  same correction, doubled for two independently moving bounds, and this
+  version does not implement it. For a natural `n`-dependent range like
+  `j = 0..n`, pick a fixed bound safely larger than any `n` you check and
+  let `F`'s own combinatorial vanishing do the rest — exactly what the
+  example above does with `boundary_status(0, 40, 0, 40)`.
+* **No inhomogeneous boundary term.** `boundary_status` is three-valued in
+  shape (`"vanishes"` / `"nonzero"` / `"unknown"`, matching the single-sum
+  engine), but this version never produces `"nonzero"`: an unresolved strip
+  is always `"unknown"`, never guessed as zero and never resolved to an
+  explicit `b(n)`.
+
 ## Method
 
 The implementation is the standard Gosper-style reduction (Petkovšek–Wilf–
@@ -486,9 +584,11 @@ Shipped: Zeilberger's algorithm with exact certificate verification, the
 recognition, the three-valued boundary verdict over a stated summation range,
 explicit minimal-order certification, `guess_holonomic` — recurrence guessing
 from finite data — the `q`-analogue `q_zeilberger` over `Q(q)(qⁿ)(q^k)` with
-its own two-valued boundary verdict, and `specialize_at_root_of_unity` — the
+its own two-valued boundary verdict, `specialize_at_root_of_unity` — the
 step from a `Q(q)` identity to `q = ζ_d`, decided exactly in the cyclotomic
-field `Q(ζ_d)` with its own three-valued verdict.
+field `Q(ζ_d)` with its own three-valued verdict — and `telescope2d`, the
+Apagodu–Zeilberger generalization to **two** bound indices, with its own
+2-D boundary analysis (four strip sums, not four corner evaluations).
 
 Not shipped on the `q` side: multivariate (`q`-)telescoping and an
 inhomogeneous boundary arm. A `q`-sum whose support cannot be bounded is
@@ -498,6 +598,13 @@ single certificate at a single `(d, n)` pair — it is the mechanical step the
 the wider congruence statements (e.g. uniform-in-`n` supercongruences, or
 `p`-adic statements not phrased as `Φ_d`-adic valuations) that literature
 contains.
+
+Not shipped on the double-sum side: more than two bound indices, arbitrary
+rational (not proper hypergeometric) summands — i.e. no general Wegschaider
+reduction — a minimal 2-D Gosper certificate denominator (the ansatz uses a
+fixed, larger-than-necessary one built from `F`'s own shift ratios), an
+`n`-dependent rectangle in the boundary analysis, and an inhomogeneous
+(`"nonzero"`) boundary verdict.
 
 Not yet shipped, and tracked as follow-up work: Ore-operator closure properties
 for D-finite functions (sums and products of holonomic objects) and the
