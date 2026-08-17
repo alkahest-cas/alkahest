@@ -109,6 +109,34 @@ impl PositivityCertificate {
         self.vars.len()
     }
 
+    /// A Reznick-style multiplier `σ = (x_1² + … + x_n²)^N`, present exactly
+    /// when the certificate proves `target ≥ 0` indirectly via `target·σ =
+    /// Σ terms` rather than directly via `target = Σ terms`. `None` for a
+    /// direct certificate (the only kind before 3.10.0).
+    ///
+    /// Not stored: derived here by literally re-deriving `N` (trying every
+    /// `N` up to the search's own budget and checking `target·(Σxᵢ²)^N ==`
+    /// the re-expanded identity) rather than trusted from whatever the search
+    /// that produced this certificate happened to remember — the same
+    /// "recompute, never trust the search" discipline [`Self::verify`]
+    /// already applies to everything else in this type, extended one step
+    /// further so this struct's field set never needs to record which route
+    /// a certificate took, only the identity it proves.
+    pub fn multiplier(&self) -> Option<RatPoly> {
+        let rhs = self.expand();
+        if self.target == rhs {
+            return None;
+        }
+        let sigma_base = RatPoly::sum_of_squares(self.nvars());
+        for n in 1..=super::MAX_MULTIPLIER_POWER {
+            let sigma = sigma_base.pow(n);
+            if self.target.mul(&sigma) == rhs {
+                return Some(sigma);
+            }
+        }
+        None
+    }
+
     /// Expand the right-hand side of the certificate identity, exactly.
     pub fn expand(&self) -> RatPoly {
         let n = self.vars.len();
@@ -126,8 +154,14 @@ impl PositivityCertificate {
     /// Exact verification.  Returns `Ok(())` only if
     ///
     /// 1. every constraint index is in range,
-    /// 2. every SOS weight is non-negative, and
-    /// 3. the re-expanded right-hand side is *identically* the target.
+    /// 2. every SOS weight is non-negative,
+    /// 3. the re-expanded right-hand side is *identically* `target` (direct
+    ///    certificates) or *identically* `target · multiplier` (multiplier
+    ///    certificates — see [`Self::multiplier`]), and
+    /// 4. for a multiplier certificate, `multiplier` really is `(x_1² + … +
+    ///    x_n²)^N` for some `N` (recomputed here, not trusted from the
+    ///    search) and `target` is non-negative at the origin, the one point
+    ///    `multiplier` cannot rule out.
     ///
     /// This is called on every path that returns a certificate; a failure here
     /// is a bug in the search, never something the caller sees as a success.
@@ -145,16 +179,56 @@ impl PositivityCertificate {
                 return Err("certificate contains a negative sum-of-squares weight".to_string());
             }
         }
-        let lhs = &self.target;
         let rhs = self.expand();
-        if *lhs == rhs {
-            Ok(())
-        } else {
-            let diff = lhs.sub(&rhs);
-            Err(format!(
-                "certificate does not re-expand to the target; residual = {}",
-                diff.display(&self.var_names)
-            ))
+        match self.multiplier() {
+            None => {
+                if self.target == rhs {
+                    Ok(())
+                } else {
+                    let diff = self.target.sub(&rhs);
+                    Err(format!(
+                        "certificate does not re-expand to the target; residual = {}",
+                        diff.display(&self.var_names)
+                    ))
+                }
+            }
+            Some(sigma) => {
+                let lhs = self.target.mul(&sigma);
+                if lhs != rhs {
+                    let diff = lhs.sub(&rhs);
+                    return Err(format!(
+                        "certificate does not re-expand to target·multiplier; residual = {}",
+                        diff.display(&self.var_names)
+                    ));
+                }
+                let deg = sigma.total_degree();
+                if deg % 2 != 0 {
+                    return Err(
+                        "multiplier has odd degree, so it cannot be a power of a sum \
+                                 of squares"
+                            .to_string(),
+                    );
+                }
+                let n = deg / 2;
+                let expected = RatPoly::sum_of_squares(self.nvars()).pow(n);
+                if sigma != expected {
+                    return Err(
+                        "multiplier is not recognised as (x_1^2 + ... + x_n^2)^N for \
+                                 any N, so its non-negativity is not established by this \
+                                 checker"
+                            .to_string(),
+                    );
+                }
+                let origin = vec![Rational::from(0); self.nvars()];
+                if self.target.eval(&origin) < 0 {
+                    return Err(
+                        "target is negative at the origin, the one point the multiplier \
+                         (x_1^2 + ... + x_n^2)^N cannot rule out"
+                            .to_string(),
+                    );
+                }
+                Ok(())
+            }
         }
     }
 
@@ -218,8 +292,18 @@ impl PositivityCertificate {
             parts.join(" + ")
         };
         // Render the whole identity, not just its right-hand side: the point of
-        // a certificate is that a reader can check `target = rhs` by expanding.
-        format!("{} = {}", self.target.display(&self.var_names), rhs)
+        // a certificate is that a reader can check `target = rhs` (or
+        // `target * multiplier = rhs`, for a multiplier certificate) by
+        // expanding.
+        match self.multiplier() {
+            None => format!("{} = {}", self.target.display(&self.var_names), rhs),
+            Some(sigma) => format!(
+                "({}) * ({}) = {}",
+                self.target.display(&self.var_names),
+                sigma.display(&self.var_names),
+                rhs
+            ),
+        }
     }
 
     /// Description of the statement the certificate proves.
@@ -276,7 +360,9 @@ impl PositivityCertificate {
         ));
         out.push_str(&format!("-- {}\n\n", self.claim_string()));
 
-        if self.constraints.is_empty() {
+        if let Some(sigma) = self.multiplier() {
+            out.push_str(&self.lean_multiplier_block(&binders, &target, &rhs, &sigma));
+        } else if self.constraints.is_empty() {
             out.push_str(&format!(
                 "theorem alkahest_sos_identity {binders}:\n    {target} = {rhs} := by\n  ring\n\n"
             ));
@@ -304,6 +390,81 @@ impl PositivityCertificate {
             ));
         }
         Some(out)
+    }
+
+    /// Lean rendering for a multiplier certificate: `target ≥ 0` follows
+    /// from `σ·target = rhs ≥ 0` away from the origin (where `σ > 0`), and
+    /// from a direct numeric check at the origin (where `σ` vanishes).
+    /// `σ = (x_1² + … + x_n²)^power` by construction — [`Self::verify`] has
+    /// already confirmed this exactly, so the factored form used here is
+    /// not an extra trust assumption.
+    fn lean_multiplier_block(
+        &self,
+        binders: &str,
+        target: &str,
+        rhs: &str,
+        sigma: &RatPoly,
+    ) -> String {
+        let names = &self.var_names;
+        let n = names.len();
+        let power = sigma.total_degree() / 2;
+        let sum_sq: String = names
+            .iter()
+            .map(|nm| format!("{nm} ^ 2"))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        let sigma_factored = if power == 1 {
+            format!("({sum_sq})")
+        } else {
+            format!("({sum_sq}) ^ {power}")
+        };
+        let args = names.join(" ");
+
+        let mut out = String::new();
+        out.push_str(&format!(
+            "theorem alkahest_multiplier_factor {binders}:\n\
+             \x20   {sigma_factored} * ({target}) = {rhs} := by\n  ring\n\n"
+        ));
+
+        let body = if n == 1 {
+            let x = &names[0];
+            format!(
+                "by_cases hz : {x} = 0\n\
+                 \x20 · subst hz\n\
+                 \x20   norm_num\n\
+                 \x20 · have hs : (0 : ℝ) < {sigma_factored} := by positivity\n\
+                 \x20   nlinarith [alkahest_multiplier_factor {args}, hs]\n"
+            )
+        } else {
+            let conj: String = names
+                .iter()
+                .map(|nm| format!("{nm} = 0"))
+                .collect::<Vec<_>>()
+                .join(" ∧ ");
+            let obtain: String = (1..=n)
+                .map(|i| format!("h{i}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let substs: String = (1..=n)
+                .map(|i| format!("subst h{i}"))
+                .collect::<Vec<_>>()
+                .join("\n    ");
+            format!(
+                "by_cases hz : {conj}\n\
+                 \x20 · obtain ⟨{obtain}⟩ := hz\n\
+                 \x20   {substs}\n\
+                 \x20   norm_num\n\
+                 \x20 · have hs : (0 : ℝ) < {sigma_factored} := by\n\
+                 \x20     {}\n\
+                 \x20   nlinarith [alkahest_multiplier_factor {args}, hs]\n",
+                lean_case_split(n, "hz")
+            )
+        };
+
+        out.push_str(&format!(
+            "theorem alkahest_nonneg {binders}:\n    (0 : ℝ) ≤ {target} := by\n  {body}"
+        ));
+        out
     }
 
     fn lean_rhs(&self) -> String {
@@ -351,6 +512,23 @@ impl PositivityCertificate {
         hints.sort();
         hints.dedup();
         hints.join(", ")
+    }
+}
+
+/// Nested `rcases … with … | …` on `¬(x_1 = 0 ∧ … ∧ x_remaining = 0)`,
+/// closing every branch with `positivity` once a single `x_i ≠ 0` is in
+/// context — the strict-positivity goal each branch discharges is always a
+/// sum of squares containing that term.
+fn lean_case_split(remaining: usize, hz: &str) -> String {
+    if remaining <= 1 {
+        "positivity".to_string()
+    } else {
+        format!(
+            "rcases not_and_or.mp {hz} with h0 | hz'\n\
+             \x20       · positivity\n\
+             \x20       · {}",
+            lean_case_split(remaining - 1, "hz'")
+        )
     }
 }
 

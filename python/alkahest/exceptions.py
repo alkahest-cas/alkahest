@@ -671,6 +671,33 @@ class ModularError(AlkahestError):
         super().__init__(message, code="E-MOD-001", remediation=remediation, span=span)
 
 
+class ParamGroebnerError(AlkahestError):
+    """A Gröbner basis over ``Q(params)`` refused or was called wrongly (M9).
+
+    Raised by :class:`~alkahest.experimental.ParametricGroebnerBasis` and by
+    ``GroebnerBasis.compute(..., params=[...])``.  The native class exists as
+    ``PyParamGroebnerError``; this wrapper is what makes it catchable by name.
+
+    - ``E-PARAMGB-001`` — no generators were supplied.
+    - ``E-PARAMGB-002`` — the generators disagree on the variable/parameter
+      lists.
+    - ``E-PARAMGB-003`` — a specialisation was given the wrong number of values.
+    - ``E-PARAMGB-004`` — **a result, not a malfunction.** The requested
+      parameter point is on the degeneracy locus: one of the conditions the
+      basis assumed vanishes there, so the generic basis says nothing about it.
+      Read ``ParametricGroebnerBasis.conditions()`` to see which hypersurfaces
+      those are, or compute over ℚ directly at that point.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        remediation: str | None = None,
+        span: tuple[int, int] | None = None,
+    ):
+        super().__init__(message, code="E-PARAMGB-004", remediation=remediation, span=span)
+
+
 class AnsatzError(AlkahestError):
     """An ansatz family could not be built, or could not be fitted.
 

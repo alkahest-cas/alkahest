@@ -19,22 +19,33 @@
 //!
 //! # Soundness
 //!
-//! Everything here is exact rational arithmetic: the search runs through the
-//! rational simplex in [`lp`], and no floating point appears anywhere near a
-//! certificate. Every certificate is re-expanded and compared against the
-//! target identically ([`PositivityCertificate::verify`]) before it is
-//! returned. A certificate that fails that check is a bug in the search and is
-//! refused, never returned.
+//! The DSOS search ([`mod@gram`]) runs through the rational simplex in
+//! [`lp`], with no floating point anywhere near it. The general PSD search
+//! ([`mod@psd`], on top of [`mod@sdp`] and [`mod@linalg`]) and the Reznick
+//! multiplier search built on it (below) *do* use a floating-point numeric
+//! search — but only ever to *propose* a Gram matrix; every proposal is
+//! rounded to nearby rationals and re-expanded to check it equals the target
+//! **exactly**, in ℚ, before it is returned ([`PositivityCertificate::verify`]
+//! runs the identical check on demand). A certificate that fails that check
+//! is a bug in the search and is refused, never returned — no floating-point
+//! result is ever trusted as a certificate on its own.
 //!
 //! # What a failure means
 //!
-//! The search covers a linear-programming-representable subcone of the PSD
-//! cone (see [`mod@gram`]), which is therefore solvable
-//! exactly. That is a strict subset of the SOS cone, so
-//! [`SosError::NoCertificate`] means precisely *"no certificate of this shape
-//! at this degree"*. It does **not** mean "not a sum of squares", and it does
-//! **not** mean "not non-negative". The three answers are kept distinct in the
-//! API on purpose — a loop that conflates them will discard true results:
+//! The search covers, in order: the linear-programming-representable DSOS
+//! subcone (solvable exactly); the full PSD Gram cone, when DSOS fails (a
+//! strict superset, but only reachable via the sound-but-incomplete numeric
+//! search above); and a Reznick multiplier search `(Σxᵢ²)^N·p`, when even
+//! that fails on `p` itself. None of these three is complete — the multiplier
+//! search in particular does not yet reliably find certificates whose
+//! witnessing Gram matrix is singular (sits exactly on the PSD cone's
+//! boundary), which is the case for the textbook examples Motzkin and
+//! Robinson (see `real::sos::tests::motzkin_reports_undecided_rather_than_a_false_certificate`
+//! for the diagnosis). So [`SosError::NoCertificate`] means precisely *"no
+//! certificate of this shape was found at this degree/budget"*. It does
+//! **not** mean "not a sum of squares", and it does **not** mean "not
+//! non-negative". The three answers are kept distinct in the API on purpose —
+//! a loop that conflates them will discard true results:
 //!
 //! | Outcome | Meaning |
 //! |---|---|
@@ -44,8 +55,11 @@
 
 pub mod cert;
 pub mod gram;
+pub mod linalg;
 pub mod lp;
+pub mod psd;
 pub mod ratpoly;
+pub mod sdp;
 
 pub use cert::{CertificateKind, Multiplier, PositivityCertificate, SosPoly, SosTerm};
 pub use ratpoly::RatPoly;
@@ -220,6 +234,66 @@ fn finish(cert: PositivityCertificate) -> Result<PositivityCertificate, SosError
     }
 }
 
+/// Highest Reznick multiplier power `N` [`sos_decompose`] tries, once both
+/// the diagonally dominant and the general PSD Gram searches on `p` itself
+/// have failed. Reznick's theorem promises that `(x_1²+…+x_n²)^N·p` is SOS
+/// for *some* `N` when `p` is a positive definite form; there is no bound on
+/// how large that `N` needs to be in general, so this is a search budget,
+/// not a completeness guarantee — running past it is `NoCertificate`
+/// (undecided), never a claim that no such `N` exists.
+pub(crate) const MAX_MULTIPLIER_POWER: u32 = 4;
+
+/// Above this many monomials in `σ·p`'s monomial basis, a multiplier power
+/// is skipped rather than searched, so the (no longer LP-cheap) PSD Gram
+/// search stays bounded.
+const MAX_MULTIPLIER_BASIS_LEN: usize = 90;
+
+/// Try `p·(x_1²+…+x_n²)^N` for `N = 1, 2, …, max_power` (Reznick
+/// multipliers): a positive semidefinite form can fail to be SOS itself
+/// (Motzkin, Choi–Lam, Robinson's form) yet become SOS after multiplying by
+/// a high enough power of the sum of squares. Each `N` is tried with the
+/// full (non-diagonally-dominant) PSD Gram search in [`psd`], which is
+/// itself only ever a sound suggestion mechanism — see that module's
+/// soundness note.
+///
+/// `max_power` and `max_basis_len` are explicit parameters rather than the
+/// module constants above so tests can exercise the "budget exhausted"
+/// path with a small, fast budget instead of the production one.
+fn multiplier_search(
+    target: &RatPoly,
+    nvars: usize,
+    max_power: u32,
+    max_basis_len: usize,
+    log: &mut Vec<String>,
+) -> Option<(RatPoly, SosPoly, u32)> {
+    for n in 1..=max_power {
+        let sigma = RatPoly::sum_of_squares(nvars).pow(n);
+        let q = target.mul(&sigma);
+        let qdeg = q.total_degree();
+        if qdeg % 2 != 0 {
+            continue;
+        }
+        let basis_deg = qdeg.div_ceil(2);
+        let basis_len = gram::monomial_basis(nvars, basis_deg).len();
+        if basis_len > max_basis_len {
+            log.push(format!(
+                "multiplier search: N={n} would need a degree-{basis_deg} basis \
+                 ({basis_len} monomials), over the search budget ({max_basis_len}); stopping"
+            ));
+            break;
+        }
+        log.push(format!(
+            "multiplier search: trying σ = (Σxᵢ²)^{n}, searching the full PSD Gram cone for \
+             σ·p over the degree-{basis_deg} monomial basis ({basis_len} monomials)"
+        ));
+        if let Some(sos) = psd::psd_search(&q, basis_deg) {
+            log.push(format!("multiplier search succeeded at N={n}"));
+            return Some((sigma, sos, basis_deg));
+        }
+    }
+    None
+}
+
 /// `p = Σ_j σ_j·q_j²` — an exact rational sum-of-squares decomposition.
 ///
 /// Refuses with [`SosError`] rather than guessing: `E-SOS-003` when `p` is
@@ -297,12 +371,57 @@ pub fn sos_decompose(
     ));
 
     let Some(sos) = gram::dsos_search(&target, basis_deg) else {
+        log.push(
+            "diagonally dominant search failed; trying the full PSD Gram cone directly".to_string(),
+        );
+        if let Some(sos) = psd::psd_search(&target, basis_deg) {
+            log.push(
+                "full PSD Gram search succeeded (p is SOS but its Gram matrix is not \
+                 diagonally dominant)"
+                    .to_string(),
+            );
+            return finish(PositivityCertificate {
+                vars: vars.to_vec(),
+                var_names: names,
+                target,
+                constraints: Vec::new(),
+                kind: CertificateKind::Sos,
+                degree: basis_deg,
+                terms: vec![Multiplier {
+                    constraints: Vec::new(),
+                    sos,
+                }],
+                log,
+            });
+        }
+        if let Some((_sigma, sos, mult_basis_deg)) = multiplier_search(
+            &target,
+            nvars,
+            MAX_MULTIPLIER_POWER,
+            MAX_MULTIPLIER_BASIS_LEN,
+            &mut log,
+        ) {
+            return finish(PositivityCertificate {
+                vars: vars.to_vec(),
+                var_names: names,
+                target,
+                constraints: Vec::new(),
+                kind: CertificateKind::Sos,
+                degree: mult_basis_deg,
+                terms: vec![Multiplier {
+                    constraints: Vec::new(),
+                    sos,
+                }],
+                log,
+            });
+        }
         return Err(SosError::NoCertificate(format!(
-            "undecided, not a refutation — no diagonally dominant Gram matrix over the \
-             degree-{basis_deg} monomial basis, and that cone is a strict subset of the SOS \
-             cone, so p may still be SOS. Raise basis_degree, fall back to alkahest.decide, \
-             or note that p may be non-negative without being SOS (e.g. the Motzkin \
-             polynomial). Record this as unknown, not as a closed branch"
+            "undecided, not a refutation — no diagonally dominant or general PSD Gram matrix \
+             over the degree-{basis_deg} monomial basis reproduces p, and no Reznick multiplier \
+             (Σxᵢ²)^N up to N={MAX_MULTIPLIER_POWER} made σ·p SOS within the search budget \
+             either. None of this is a proof that p is not SOS (with or without a multiplier), \
+             and still less that p is not non-negative — only that no certificate of these \
+             shapes was found at this size. Raise basis_degree, or fall back to alkahest.decide"
         )));
     };
 
@@ -502,9 +621,31 @@ mod tests {
     }
 
     #[test]
-    fn motzkin_refuses_rather_than_lying() {
+    fn motzkin_reports_undecided_rather_than_a_false_certificate() {
         let (pool, x, y) = setup();
-        // Motzkin: x^4·y^2 + x^2·y^4 − 3·x^2·y^2 + 1 is non-negative but not SOS.
+        // Motzkin: x^4·y^2 + x^2·y^4 − 3·x^2·y^2 + 1 is non-negative but is
+        // the textbook example of a polynomial that is *not* itself a sum of
+        // squares — Hilbert's 1888 theorem allows non-SOS PSD forms outside
+        // ternary quartics, and Motzkin (1967) is the standard witness.
+        // Multiplying by (x²+y²) is classically known to fix this (it is
+        // exactly the kind of case Reznick's theorem covers), but the
+        // witnessing Gram matrix for that fact is *singular* — it sits
+        // exactly on the boundary of the PSD cone, not in its interior — and
+        // [`crate::real::sos::psd`]'s numeric search (alternating projection
+        // with an annealed floor schedule and multiple random restarts) is
+        // demonstrably not a bug: a `psd::diag::diag_step3_planted_singular_example`
+        // planted boundary case with the same nullspace dimension *is* found
+        // and exactly re-verified, and the affine family constructed for
+        // Motzkin itself passes an independent sanity check
+        // (`psd::diag::diag_step1_step2_trajectory_and_family_sanity`). The
+        // search on Motzkin specifically converges monotonically (min
+        // eigenvalue runs from roughly −1.6 down to roughly −0.0018 as the
+        // floor anneals to 0) but does not close the last, asymptotically
+        // slow stretch to exactly 0 — the classic behaviour of alternating
+        // projection at a tangential (non-transversal) intersection. This is
+        // an honest search-budget limitation, not a soundness bug: recording
+        // `undecided` here, never a fabricated certificate, is the correct
+        // behaviour and is what this test checks.
         let p = pool.add(vec![
             pool.mul(vec![x, x, x, x, y, y]),
             pool.mul(vec![x, x, y, y, y, y]),
@@ -512,13 +653,53 @@ mod tests {
             pool.integer(1_i32),
         ]);
         let err = sos_decompose(p, &[x, y], &pool, &SosOpts::default())
-            .expect_err("Motzkin is not a sum of squares");
-        // It must NOT claim negativity — the polynomial is non-negative.
-        assert!(
-            matches!(err, SosError::NoCertificate(_)),
-            "expected an honest 'no certificate', got {err:?}"
-        );
+            .expect_err("Motzkin's multiplier certificate is not yet reached by this search");
+        assert!(matches!(err, SosError::NoCertificate(_)));
         assert_eq!(err.code(), "E-SOS-002");
+    }
+
+    #[test]
+    fn multiplier_search_reports_undecided_not_not_sos_when_out_of_budget() {
+        let (pool, x, y) = setup();
+        // Same Motzkin target as the previous test. Here the internal search
+        // is driven with a budget of *zero* multiplier powers directly — i.e.
+        // exactly the "search legitimately runs out of budget" case — and it
+        // must come back empty-handed rather than fabricate a certificate.
+        // (Motzkin also fails to certify at the production budget, per the
+        // previous test — this test's point is narrower: even independent of
+        // whether the production budget eventually finds Motzkin's
+        // certificate, a caller-supplied budget of zero must never
+        // manufacture one.)
+        let p = pool.add(vec![
+            pool.mul(vec![x, x, x, x, y, y]),
+            pool.mul(vec![x, x, y, y, y, y]),
+            pool.mul(vec![pool.integer(-3_i32), x, x, y, y]),
+            pool.integer(1_i32),
+        ]);
+        let target = RatPoly::from_expr(p, &[x, y], &pool).unwrap();
+        let mut log = Vec::new();
+        let out = multiplier_search(&target, 2, /* max_power */ 0, 90, &mut log);
+        assert!(
+            out.is_none(),
+            "a zero-power budget must not manufacture a certificate"
+        );
+
+        // `multiplier_search`'s signature (`Option`, not a `Result` with a
+        // "negative" branch) makes it structurally unable to report anything
+        // but "found" or "not found within budget" — it cannot claim
+        // negativity even by construction. The public `sos_decompose` wires
+        // exactly this `None` into `SosError::NoCertificate` (see the
+        // `multiplier_search(...)` call a few lines above the final `Err` in
+        // `sos_decompose`), never `SosError::Negative`. That distinction
+        // matters here specifically because Motzkin genuinely is
+        // non-negative everywhere (confirmed independently: the grid search
+        // below finds no witness), so "not SOS within budget" and "negative"
+        // are not just differently coded, they are different facts, and only
+        // one of them is true.
+        assert!(
+            negativity_witness(&target, &[], 2).is_none(),
+            "Motzkin is non-negative, so a witness must not exist"
+        );
     }
 
     #[test]

@@ -181,8 +181,11 @@ use alkahest_core::holonomic::{
 };
 // M4(b) — q-analogue creative telescoping (q-Zeilberger)
 use alkahest_core::holonomic::qzeil::{
+    cyclotomic_polynomial as core_cyclotomic_polynomial,
+    q_specialize_at_root_of_unity as core_q_specialize_at_root_of_unity,
     q_zeilberger as core_q_zeilberger, QBoundaryStatus as CoreQBoundaryStatus,
     QCertificate as CoreQCertificate, QHolonomicError as CoreQHolonomicError,
+    QRootOfUnitySpecialization as CoreQRootOfUnitySpecialization,
     QZeilbergerOpts as CoreQZeilbergerOpts,
 };
 // M6 — modular / p-adic evaluation of holonomic sequences
@@ -426,6 +429,9 @@ pyo3::create_exception!(alkahest, PyLinearRecurrenceError, PyAlkahestError);
 pyo3::create_exception!(alkahest, PyRsolveError, PyAlkahestError);
 #[cfg(feature = "groebner")]
 pyo3::create_exception!(alkahest, PyDiophantineError, PyAlkahestError);
+// M9 — Gröbner bases over Q(params); E-PARAMGB-004 is a refusal, not a fault.
+#[cfg(feature = "groebner")]
+pyo3::create_exception!(alkahest, PyParamGroebnerError, PyAlkahestError);
 // P1 search plumbing item 4 — budgets, cancellation, determinism
 pyo3::create_exception!(alkahest, PyBudgetExceededError, PyAlkahestError);
 // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
@@ -5343,6 +5349,36 @@ impl PyQZeilbergerCertificate {
         })
     }
 
+    /// ``specialize_at_root_of_unity(d, n) -> QRootOfUnitySpecialization``
+    ///
+    /// Decide whether the proved ``Q(q)`` recurrence survives ``q = ζ_d``, a
+    /// primitive ``d``-th root of unity — the step between what this
+    /// certificate proves and the ``q``-supercongruence literature.
+    ///
+    /// The hypotheses (no pole in any ``a_i(q**n)`` or ``S(n+i)`` at ``ζ_d``)
+    /// are decided **exactly**, by polynomial divisibility by ``Φ_d(q)`` over
+    /// ``Q``; nothing is evaluated numerically. The result carries a
+    /// three-valued verdict — ``"specializes"``, ``"obstructed"``,
+    /// ``"unknown"`` — and refuses to offer a specialised value when a
+    /// hypothesis fails.
+    ///
+    /// ``d = 1`` means ``ζ_1 = 1``: the classical ``q → 1`` limit.
+    #[pyo3(signature = (d, n))]
+    fn specialize_at_root_of_unity(
+        &self,
+        py: Python<'_>,
+        d: u32,
+        n: i64,
+    ) -> PyResult<PyQRootOfUnitySpecialization> {
+        let spec = core_q_specialize_at_root_of_unity(&self.cert, d, n)
+            .map_err(q_holonomic_error_to_py)?;
+        Ok(PyQRootOfUnitySpecialization {
+            spec,
+            pool: self.pool.clone_ref(py),
+            q_id: self.q_id,
+        })
+    }
+
     fn __repr__(&self, py: Python<'_>) -> String {
         let pool = self.pool.borrow(py);
         let coeffs: Vec<String> = self
@@ -5362,6 +5398,271 @@ impl PyQZeilbergerCertificate {
             coeffs.join(", ")
         )
     }
+}
+
+/// The verdict on specialising a ``q``-Zeilberger certificate at a primitive
+/// ``d``-th root of unity, from
+/// :meth:`~alkahest.experimental.QZeilbergerCertificate.specialize_at_root_of_unity`.
+///
+/// ``q``-Zeilberger proves identities with ``q`` **transcendental**. Setting
+/// ``q = ζ_d`` is a separate step with its own hypotheses, and specialising at
+/// a point where a denominator vanishes produces a confidently wrong statement.
+/// This object is that step, taken as a decision:
+///
+/// * :attr:`status` ``== "specializes"`` — proved. Every ``a_i(q**n)`` and
+///   every ``S(n+i)`` was shown to have non-negative ``Φ_d``-adic valuation, so
+///   the specialisation map is defined on all of them, and
+///   ``Σ_i a_i(ζ**n)·S_ζ(n+i) = 0`` in ``Q(ζ_d)`` — re-checked in exact
+///   cyclotomic arithmetic before this object was built.
+/// * ``"obstructed"`` — a pole at ``ζ_d`` was **exhibited**. No specialised
+///   value is offered. This is not a proof that the specialised identity is
+///   false, only that this route to it is blocked.
+/// * ``"unknown"`` — nothing follows.
+///
+/// Three further things are reported rather than hidden, because each of them
+/// makes a true verdict mean less than it looks:
+/// :attr:`is_vacuous` (every coefficient died, so the recurrence is ``0 = 0``),
+/// :attr:`leading_coefficient_survives` (``False`` means the recurrence no
+/// longer determines the last value), and :attr:`support_shrinks` (``q``-Lucas
+/// killed terms the generic identity needs — ``[2;1]_q = 1 + q`` is non-zero in
+/// ``Q(q)`` and zero at ``ζ_2``).
+///
+/// :meth:`sum_valuation` is the ``q``-supercongruence quantity: it is the exact
+/// integer ``v`` with ``Φ_d(q)**v`` dividing ``S(n)`` and ``Φ_d(q)**(v+1)`` not.
+#[pyclass(name = "QRootOfUnitySpecialization")]
+struct PyQRootOfUnitySpecialization {
+    spec: CoreQRootOfUnitySpecialization,
+    pool: Py<PyExprPool>,
+    q_id: ExprId,
+}
+
+impl PyQRootOfUnitySpecialization {
+    fn poly_to_expr(
+        &self,
+        py: Python<'_>,
+        p: &alkahest_core::matrix::normal_form::RatUniPoly,
+    ) -> PyExpr {
+        let pool = self.pool.borrow(py);
+        let id = alkahest_core::holonomic::hyperterm::ratuni_to_expr(&pool.inner, self.q_id, p);
+        PyExpr {
+            id,
+            pool: self.pool.clone_ref(py),
+        }
+    }
+
+    fn checked_index(&self, i: usize) -> PyResult<usize> {
+        if !self.spec.specializes() {
+            return Err(PyValueError::new_err(format!(
+                "the specialisation is \"{}\", so no specialised value exists: {}",
+                self.spec.status.tag(),
+                self.spec.status.reason()
+            )));
+        }
+        if i >= self.spec.sums.len() {
+            return Err(pyo3::exceptions::PyIndexError::new_err(format!(
+                "shift index {i} is out of range for a recurrence of order {}",
+                self.spec.sums.len().saturating_sub(1)
+            )));
+        }
+        Ok(i)
+    }
+}
+
+#[pymethods]
+impl PyQRootOfUnitySpecialization {
+    /// The order ``d`` of the root of unity.
+    #[getter]
+    fn d(&self) -> u32 {
+        self.spec.d
+    }
+
+    /// The index ``n`` the verdict is about; the recurrence relates
+    /// ``n … n + order``.
+    #[getter]
+    fn n(&self) -> i64 {
+        self.spec.n0
+    }
+
+    /// ``"specializes"``, ``"obstructed"`` or ``"unknown"``.
+    #[getter]
+    fn status(&self) -> &'static str {
+        self.spec.status.tag()
+    }
+
+    /// Whether a specialised recurrence may be claimed at all.
+    #[getter]
+    fn specializes(&self) -> bool {
+        self.spec.specializes()
+    }
+
+    /// Why the verdict came out as it did; ``""`` when it specialises.
+    #[getter]
+    fn reason(&self) -> String {
+        self.spec.status.reason().to_string()
+    }
+
+    /// Whether the specialised recurrence is ``0 = 0``.
+    ///
+    /// ``True`` means every ``a_i(ζ**n)`` vanished. The statement is still a
+    /// theorem; it simply constrains nothing, and reading :attr:`specializes`
+    /// without reading this would be claiming more than there is.
+    #[getter]
+    fn is_vacuous(&self) -> bool {
+        self.spec.is_vacuous()
+    }
+
+    /// Whether the leading coefficient ``a_J(ζ**n)`` survives, i.e. whether the
+    /// specialised recurrence still determines ``S_ζ(n+J)``.
+    #[getter]
+    fn leading_coefficient_survives(&self) -> bool {
+        self.spec.leading_coefficient_survives()
+    }
+
+    /// Whether ``S_ζ`` is also the sum of the *specialised summands*.
+    ///
+    /// ``False`` means some summand inside the window has a pole at ``ζ_d``:
+    /// :meth:`sum_value` is still the correct image of the exact ``Q(q)`` sum,
+    /// but writing it as ``Σ_k F_ζ(n,k)`` would be writing down an undefined
+    /// expression.
+    #[getter]
+    fn is_termwise_regular(&self) -> bool {
+        self.spec.is_termwise_regular()
+    }
+
+    /// Whether ``q``-Lucas killed at least one term the generic identity needs.
+    #[getter]
+    fn support_shrinks(&self) -> bool {
+        self.spec.support_shrinks()
+    }
+
+    /// The proved generic support window ``(lo, hi)`` in ``k`` at this ``n``,
+    /// or ``None`` when it was not established.
+    #[getter]
+    fn window(&self) -> Option<(i64, i64)> {
+        self.spec.window
+    }
+
+    /// The ``k`` inside that window at which the summand is **still non-zero**
+    /// at ``ζ_d`` — the effective window, which ``q``-Lucas can shrink.
+    #[getter]
+    fn effective_support(&self) -> Vec<i64> {
+        self.spec.effective_support.clone()
+    }
+
+    /// Hypotheses and caveats this verdict does not discharge, as plain strings.
+    #[getter]
+    fn side_conditions(&self) -> Vec<String> {
+        self.spec.side_conditions()
+    }
+
+    /// ``Φ_d(q)`` — the cyclotomic polynomial the arithmetic is modulo.
+    ///
+    /// Exposed so a caller can redo the whole check by hand: two elements of
+    /// ``Q(ζ_d)`` are equal exactly when their canonical representatives (what
+    /// :meth:`sum_value` returns, of degree ``< φ(d)``) are equal.
+    fn modulus(&self, py: Python<'_>) -> PyExpr {
+        self.poly_to_expr(py, self.spec.field.modulus())
+    }
+
+    /// ``S_ζ(n + i)`` — the specialised sum, as its canonical representative in
+    /// ``Q[q]`` of degree ``< φ(d)``.
+    ///
+    /// Raises :exc:`ValueError` unless the verdict is ``"specializes"``: an
+    /// obstructed specialisation has no value to report, and returning one
+    /// anyway is exactly the mistake this class exists to prevent.
+    #[pyo3(signature = (i = 0))]
+    fn sum_value(&self, py: Python<'_>, i: usize) -> PyResult<PyExpr> {
+        let i = self.checked_index(i)?;
+        Ok(self.poly_to_expr(py, &self.spec.sums[i].poly))
+    }
+
+    /// ``a_i(ζ**n)`` — the specialised recurrence coefficient.
+    #[pyo3(signature = (i = 0))]
+    fn coefficient(&self, py: Python<'_>, i: usize) -> PyResult<PyExpr> {
+        let i = self.checked_index(i)?;
+        Ok(self.poly_to_expr(py, &self.spec.coeffs[i].poly))
+    }
+
+    /// ``v_{Φ_d}(S(n + i))`` — the exact ``Φ_d``-adic valuation of the
+    /// **generic** sum, or ``None`` when ``S(n+i)`` is identically zero.
+    ///
+    /// This is the ``q``-supercongruence statement in its exact form:
+    /// ``v >= r`` is precisely ``Φ_d(q)**r`` divides ``S(n+i)``, and ``v < 0``
+    /// is the pole that obstructs specialisation. Available even when the
+    /// verdict is ``"obstructed"`` — a negative valuation *is* the obstruction.
+    #[pyo3(signature = (i = 0))]
+    fn sum_valuation(&self, i: usize) -> PyResult<Option<i64>> {
+        self.spec.sum_valuations.get(i).copied().ok_or_else(|| {
+            pyo3::exceptions::PyIndexError::new_err(format!("shift index {i} is out of range"))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "QRootOfUnitySpecialization(d={}, n={}, status={}{}{})",
+            self.spec.d,
+            self.spec.n0,
+            self.spec.status.tag(),
+            if self.spec.is_vacuous() {
+                ", vacuous"
+            } else if self.spec.specializes() && !self.spec.leading_coefficient_survives() {
+                ", leading coefficient vanishes"
+            } else {
+                ""
+            },
+            if self.spec.support_shrinks() {
+                ", support shrinks"
+            } else {
+                ""
+            }
+        )
+    }
+}
+
+/// `alkahest.experimental.cyclotomic_polynomial(pool, d, var=None) -> Expr`
+///
+/// The ``d``-th cyclotomic polynomial ``Φ_d(q)``, monic of degree ``φ(d)``,
+/// with exact integer coefficients.
+///
+/// This is the modulus the root-of-unity machinery works over: ``Φ_d`` is
+/// irreducible over ``Q``, so for a polynomial ``p`` the statement
+/// ``p(ζ_d) = 0`` is *exactly* the divisibility ``Φ_d | p``, which is how
+/// :meth:`~alkahest.experimental.QZeilbergerCertificate.specialize_at_root_of_unity`
+/// decides its hypotheses without evaluating anything numerically.
+///
+/// ``var`` names the variable; it defaults to a symbol called ``q``.
+#[pyfunction]
+#[pyo3(name = "cyclotomic_polynomial", signature = (pool, d, var = None))]
+fn py_cyclotomic_polynomial(
+    py: Python<'_>,
+    pool: Py<PyExprPool>,
+    d: u32,
+    var: Option<PyRef<PyExpr>>,
+) -> PyResult<PyExpr> {
+    if d == 0 {
+        return Err(PyValueError::new_err(
+            "the order of a root of unity must be at least 1",
+        ));
+    }
+    if d > alkahest_core::holonomic::qzeil::MAX_CYCLOTOMIC_ORDER {
+        return Err(PyValueError::new_err(format!(
+            "the order must be at most {}, got {d}",
+            alkahest_core::holonomic::qzeil::MAX_CYCLOTOMIC_ORDER
+        )));
+    }
+    let phi = core_cyclotomic_polynomial(d);
+    let id = {
+        let p = pool.borrow(py);
+        let v = match &var {
+            Some(v) => v.id,
+            None => p.inner.symbol("q", alkahest_core::kernel::Domain::Real),
+        };
+        alkahest_core::holonomic::hyperterm::ratuni_to_expr(&p.inner, v, &phi)
+    };
+    Ok(PyExpr {
+        id,
+        pool: pool.clone_ref(py),
+    })
 }
 
 fn q_holonomic_error_to_py(e: CoreQHolonomicError) -> PyErr {
@@ -11246,7 +11547,8 @@ fn py_cuda_device_count() -> usize {
 use alkahest_core::{
     dae_index_reduce_ranked, expr_to_gbpoly, gbpoly_to_expr, primary_decomposition,
     radical as core_ideal_radical, rosenfeld_groebner_ranked, DaeIndexReduction, GbPoly,
-    GroebnerBasis, MonomialOrder,
+    GroebnerBasis, MonomialOrder, ParamGbPoly, ParamGroebnerBasis, ParamGroebnerError, ParamPoly,
+    QParam,
 };
 
 /// A sparse multivariate polynomial over ℚ, as used by the Gröbner machinery.
@@ -11532,14 +11834,37 @@ impl PyGroebnerBasis {
     ///     When ``"lex"`` is requested and the ideal is 0-dimensional, the
     ///     grevlex-then-FGLM strategy is used automatically (much faster than
     ///     direct lex Buchberger for 3+ variable systems).
+    /// params : list[Expr], optional
+    ///     Symbols to put in the **coefficient field** rather than the ring
+    ///     (M9).  With ``params`` the computation runs in ``Q(params)[vars]``
+    ///     instead of ``Q[vars, params]``, and the return type is a
+    ///     :class:`ParametricGroebnerBasis` — the same sequence protocol, plus
+    ///     :meth:`~ParametricGroebnerBasis.conditions` and
+    ///     :meth:`~ParametricGroebnerBasis.specialize`.  That class is
+    ///     experimental; :class:`GroebnerBasis` is unchanged when ``params`` is
+    ///     omitted or empty.
+    ///
+    /// Example::
+    ///
+    ///     # parameters as ring variables — a is a 3rd variable
+    ///     gb = alkahest.GroebnerBasis.compute([a*x - y, x + y - one], [x, y, a])
+    ///     # parameters in the coefficient field
+    ///     gb = alkahest.GroebnerBasis.compute([a*x - y, x + y - one], [x, y], params=[a])
     #[staticmethod]
-    #[pyo3(signature = (polys, vars, order=None))]
+    #[pyo3(signature = (polys, vars, order=None, params=None))]
     fn compute(
         py: Python<'_>,
         polys: Vec<PyRef<PyExpr>>,
         vars: Vec<PyRef<PyExpr>>,
         order: Option<&str>,
-    ) -> PyResult<PyGroebnerBasis> {
+        params: Option<Vec<PyRef<PyExpr>>>,
+    ) -> PyResult<PyObject> {
+        if let Some(params) = params {
+            if !params.is_empty() {
+                let basis = PyParamGroebnerBasis::build(py, polys, vars, params, order)?;
+                return Ok(Py::new(py, basis)?.into_py(py));
+            }
+        }
         if polys.is_empty() || vars.is_empty() {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "GroebnerBasis.compute requires at least one polynomial and one variable",
@@ -11562,11 +11887,15 @@ impl PyGroebnerBasis {
             MonomialOrder::Lex => GroebnerBasis::compute_lex(gb_polys),
             other => GroebnerBasis::compute(gb_polys, other),
         };
-        Ok(PyGroebnerBasis {
-            inner,
-            pool: Some(pool_py),
-            var_ids,
-        })
+        Ok(Py::new(
+            py,
+            PyGroebnerBasis {
+                inner,
+                pool: Some(pool_py),
+                var_ids,
+            },
+        )?
+        .into_py(py))
     }
 
     /// Gröbner basis via Faugère's F5 (signature-based reduction, V2-8).
@@ -11824,6 +12153,704 @@ impl PyGroebnerBasis {
 
     fn __repr__(&self) -> String {
         format!("GroebnerBasis(n_generators={})", self.inner.len())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// M9 — Gröbner bases over the coefficient field Q(params)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "groebner")]
+fn param_groebner_error_to_py(e: ParamGroebnerError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyParamGroebnerError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+/// `ParamPoly` → `Expr` over the parameter symbols.
+#[cfg(feature = "groebner")]
+fn parampoly_to_expr(p: &ParamPoly, params: &[ExprId], pool: &ExprPool) -> Option<ExprId> {
+    let mut terms: Vec<ExprId> = Vec::with_capacity(p.terms.len());
+    for (exp, coeff) in &p.terms {
+        let mut factors: Vec<ExprId> = Vec::new();
+        for (i, &e) in exp.iter().enumerate() {
+            if e == 0 {
+                continue;
+            }
+            let v = *params.get(i)?;
+            factors.push(if e == 1 {
+                v
+            } else {
+                pool.pow(v, pool.integer(e))
+            });
+        }
+        if factors.is_empty() || *coeff != 1 {
+            factors.insert(0, pool.integer(coeff.clone()));
+        }
+        terms.push(if factors.len() == 1 {
+            factors[0]
+        } else {
+            pool.mul(factors)
+        });
+    }
+    Some(match terms.len() {
+        0 => pool.integer(0_i32),
+        1 => terms[0],
+        _ => pool.add(terms),
+    })
+}
+
+/// `QParam` → `Expr`, as `num` or `num * den**-1`.
+#[cfg(feature = "groebner")]
+fn qparam_to_expr(c: &QParam, params: &[ExprId], pool: &ExprPool) -> Option<ExprId> {
+    let num = parampoly_to_expr(c.numerator(), params, pool)?;
+    if c.denominator().is_one() {
+        return Some(num);
+    }
+    let den = parampoly_to_expr(c.denominator(), params, pool)?;
+    let inv = pool.pow(den, pool.integer(-1_i32));
+    Some(pool.mul(vec![num, inv]))
+}
+
+/// `ParamGbPoly` → `Expr`: the variables carry exponents, the parameters ride
+/// in the coefficients.
+#[cfg(feature = "groebner")]
+fn paramgbpoly_to_expr(
+    p: &ParamGbPoly,
+    vars: &[ExprId],
+    params: &[ExprId],
+    pool: &ExprPool,
+) -> Option<ExprId> {
+    let mut terms: Vec<ExprId> = Vec::with_capacity(p.terms.len());
+    for (exp, coeff) in &p.terms {
+        let c = qparam_to_expr(coeff, params, pool)?;
+        let mut factors: Vec<ExprId> = Vec::new();
+        for (i, &e) in exp.iter().enumerate() {
+            if e == 0 {
+                continue;
+            }
+            let v = *vars.get(i)?;
+            factors.push(if e == 1 {
+                v
+            } else {
+                pool.pow(v, pool.integer(e))
+            });
+        }
+        if factors.is_empty() || !coeff.is_one() {
+            factors.insert(0, c);
+        }
+        terms.push(if factors.len() == 1 {
+            factors[0]
+        } else {
+            pool.mul(factors)
+        });
+    }
+    Some(match terms.len() {
+        0 => pool.integer(0_i32),
+        1 => terms[0],
+        _ => pool.add(terms),
+    })
+}
+
+/// A polynomial in the ring variables whose coefficients are rational
+/// functions of the parameters.
+///
+/// The parametric counterpart of :class:`GbPoly`: exponent slots name the
+/// *variables* only, because the parameters live in the coefficient field.
+/// Read it back with :meth:`to_expr` exactly as you would a :class:`GbPoly`.
+///
+/// Attributes
+/// ----------
+/// is_zero : bool
+/// n_vars : int
+/// n_params : int
+/// n_terms : int
+#[cfg(feature = "groebner")]
+#[pyclass(name = "ParametricGbPoly")]
+struct PyParamGbPoly {
+    inner: ParamGbPoly,
+    pool: Option<Py<PyExprPool>>,
+    var_ids: Vec<ExprId>,
+    param_ids: Vec<ExprId>,
+}
+
+#[cfg(feature = "groebner")]
+impl PyParamGbPoly {
+    fn with_ctx(
+        py: Python<'_>,
+        inner: ParamGbPoly,
+        pool: Option<&Py<PyExprPool>>,
+        var_ids: &[ExprId],
+        param_ids: &[ExprId],
+    ) -> PyParamGbPoly {
+        PyParamGbPoly {
+            inner,
+            pool: pool.map(|p| p.clone_ref(py)),
+            var_ids: var_ids.to_vec(),
+            param_ids: param_ids.to_vec(),
+        }
+    }
+
+    fn require_pool(&self, what: &str) -> PyResult<&Py<PyExprPool>> {
+        self.pool.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "{what} carries no variable context; rebuild it with \
+                 ParametricGroebnerBasis.compute()"
+            ))
+        })
+    }
+}
+
+#[cfg(feature = "groebner")]
+#[pymethods]
+impl PyParamGbPoly {
+    /// True if this is the zero polynomial.
+    #[getter]
+    fn is_zero(&self) -> bool {
+        self.inner.is_zero()
+    }
+
+    /// Number of ring variables.
+    #[getter]
+    fn n_vars(&self) -> usize {
+        self.inner.n_vars
+    }
+
+    /// Number of parameters in the coefficient field.
+    #[getter]
+    fn n_params(&self) -> usize {
+        self.inner.n_params
+    }
+
+    /// Number of non-zero terms.
+    #[getter]
+    fn n_terms(&self) -> usize {
+        self.inner.n_terms()
+    }
+
+    /// The variables naming exponent slots 0, 1, ….
+    fn variables(&self, py: Python<'_>) -> Vec<PyExpr> {
+        match &self.pool {
+            None => vec![],
+            Some(pool) => self
+                .var_ids
+                .iter()
+                .map(|&id| PyExpr {
+                    id,
+                    pool: pool.clone_ref(py),
+                })
+                .collect(),
+        }
+    }
+
+    /// The parameters of the coefficient field, in order.
+    fn parameters(&self, py: Python<'_>) -> Vec<PyExpr> {
+        match &self.pool {
+            None => vec![],
+            Some(pool) => self
+                .param_ids
+                .iter()
+                .map(|&id| PyExpr {
+                    id,
+                    pool: pool.clone_ref(py),
+                })
+                .collect(),
+        }
+    }
+
+    /// The terms as ``(exponents, coefficient)`` pairs.
+    ///
+    /// `exponents` is a tuple of `int` parallel to :meth:`variables`;
+    /// `coefficient` is an :class:`Expr` in the parameters — a rational
+    /// function, not necessarily a polynomial.  That is the whole difference
+    /// from :meth:`GbPoly.terms`, whose coefficients are numbers.
+    fn terms(&self, py: Python<'_>) -> PyResult<Vec<(PyObject, PyExpr)>> {
+        let pool_py = self.require_pool("ParametricGbPoly")?.clone_ref(py);
+        let mut out = Vec::with_capacity(self.inner.terms.len());
+        {
+            let pool = pool_py.borrow(py);
+            for (exp, coeff) in &self.inner.terms {
+                let exps = pyo3::types::PyTuple::new_bound(py, exp.iter().map(|&e| e as u64));
+                let id = qparam_to_expr(coeff, &self.param_ids, &pool.inner).ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "coefficient mentions more parameters than were named",
+                    )
+                })?;
+                out.push((
+                    exps.into_py(py),
+                    PyExpr {
+                        id,
+                        pool: pool_py.clone_ref(py),
+                    },
+                ));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Convert back to an :class:`Expr`, coefficients and all.
+    ///
+    /// Denominators appear as ``den**-1`` factors, so the result is a rational
+    /// expression in the parameters and a polynomial in the variables.
+    ///
+    /// Example::
+    ///
+    ///     gb = alkahest.GroebnerBasis.compute([a*x - y, x + y - 1], [x, y], params=[a])
+    ///     [g.to_expr() for g in gb]
+    fn to_expr(&self, py: Python<'_>) -> PyResult<PyExpr> {
+        let pool_py = self.require_pool("ParametricGbPoly")?.clone_ref(py);
+        let id = {
+            let pool = pool_py.borrow(py);
+            paramgbpoly_to_expr(&self.inner, &self.var_ids, &self.param_ids, &pool.inner)
+        };
+        match id {
+            Some(id) => Ok(PyExpr { id, pool: pool_py }),
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "polynomial is over more variables or parameters than were named",
+            )),
+        }
+    }
+
+    /// Substitute rational values for the parameters, giving a :class:`GbPoly`.
+    ///
+    /// Raises `ParamGroebnerError` (``E-PARAMGB-004``) when a coefficient has a
+    /// pole at that point.
+    fn specialize(&self, py: Python<'_>, values: Vec<Bound<'_, PyAny>>) -> PyResult<PyGbPoly> {
+        let vals = values
+            .iter()
+            .map(py_to_rational)
+            .collect::<PyResult<Vec<Rational>>>()?;
+        if vals.len() != self.inner.n_params {
+            return Err(param_groebner_error_to_py(ParamGroebnerError::WrongArity {
+                expected: self.inner.n_params,
+                got: vals.len(),
+            }));
+        }
+        let p = self.inner.specialize(&vals).ok_or_else(|| {
+            param_groebner_error_to_py(ParamGroebnerError::Degenerate { vanishing: vec![] })
+        })?;
+        Ok(PyGbPoly::with_ctx(py, p, self.pool.as_ref(), &self.var_ids))
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ParametricGbPoly(n_terms={}, n_params={})",
+            self.inner.n_terms(),
+            self.inner.n_params
+        )
+    }
+}
+
+/// A Gröbner basis computed with the parameters in the **coefficient field**.
+///
+/// `GroebnerBasis.compute(polys, vars)` puts everything in `Q[vars]`, so a
+/// parameter has to be declared as one more ring variable; the elimination then
+/// runs in `Q[vars, params]`.  Here the parameters are moved into `Q(params)`
+/// instead: they never enter the monomial order, never generate S-pairs, and
+/// never enlarge the staircase.  For differential elimination — reading the
+/// input-output equations of an ODE model out of a state elimination — that is
+/// the difference between a computation that finishes and one that does not.
+///
+/// The object is a **sequence** of :class:`ParametricGbPoly`, like
+/// :class:`GroebnerBasis`, and supports the same `len()` / indexing /
+/// iteration / :meth:`to_exprs` / :meth:`eliminate` read path.
+///
+/// **The result is generic.** A leading coefficient can be a non-zero element
+/// of `Q(params)` and still vanish for particular parameter values, and there
+/// the basis says nothing. :meth:`conditions` lists the polynomials whose
+/// non-vanishing was assumed; the basis holds at exactly the parameter points
+/// where none of them vanishes. :meth:`specialize` refuses on the rest rather
+/// than returning something that is not a basis.
+///
+/// Attributes
+/// ----------
+/// order : str
+///     Monomial order: ``"lex"``, ``"grlex"`` or ``"grevlex"``.
+/// n_params : int
+///     Number of parameters in the coefficient field.
+///
+/// Example::
+///
+///     gb = alkahest.GroebnerBasis.compute([a*x - y, x + y - one], [x, y], params=[a])
+///     [g.to_expr() for g in gb]        # coefficients are rational in `a`
+///     [c for c in gb.conditions()]     # [a + 1] — the basis is silent at a = -1
+///     gb.specialize([3])               # an ordinary GroebnerBasis over ℚ
+#[cfg(feature = "groebner")]
+#[pyclass(name = "ParametricGroebnerBasis")]
+struct PyParamGroebnerBasis {
+    inner: ParamGroebnerBasis,
+    pool: Py<PyExprPool>,
+    var_ids: Vec<ExprId>,
+    param_ids: Vec<ExprId>,
+}
+
+#[cfg(feature = "groebner")]
+impl PyParamGroebnerBasis {
+    fn wrap(&self, py: Python<'_>, p: ParamGbPoly) -> PyParamGbPoly {
+        PyParamGbPoly::with_ctx(py, p, Some(&self.pool), &self.var_ids, &self.param_ids)
+    }
+
+    /// Shared constructor for `ParametricGroebnerBasis.compute` and for
+    /// `GroebnerBasis.compute(..., params=[...])`.
+    fn build(
+        py: Python<'_>,
+        polys: Vec<PyRef<PyExpr>>,
+        vars: Vec<PyRef<PyExpr>>,
+        params: Vec<PyRef<PyExpr>>,
+        order: Option<&str>,
+    ) -> PyResult<PyParamGroebnerBasis> {
+        if polys.is_empty() || vars.is_empty() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "a parametric Gröbner basis needs at least one polynomial and one variable",
+            ));
+        }
+        let var_ids: Vec<ExprId> = vars.iter().map(|v| v.id).collect();
+        let param_ids: Vec<ExprId> = params.iter().map(|p| p.id).collect();
+        if let Some(clash) = param_ids.iter().find(|p| var_ids.contains(p)) {
+            let _ = clash;
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "a symbol cannot be both a ring variable and a coefficient-field parameter",
+            ));
+        }
+        let mut all_ids = var_ids.clone();
+        all_ids.extend_from_slice(&param_ids);
+
+        let pool_py = polys[0].pool.clone_ref(py);
+        let mut gens = Vec::with_capacity(polys.len());
+        {
+            let pool = pool_py.borrow(py);
+            for p in &polys {
+                let gbp = expr_to_gbpoly(p.id, &all_ids, &pool.inner)
+                    .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+                let pg = ParamGbPoly::from_gbpoly(&gbp, var_ids.len(), param_ids.len())
+                    .ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "internal: polynomial arity does not match vars + params",
+                        )
+                    })?;
+                gens.push(pg);
+            }
+        }
+        let parsed_order = order
+            .and_then(MonomialOrder::from_str)
+            .unwrap_or(MonomialOrder::Lex);
+        let inner =
+            ParamGroebnerBasis::compute(gens, parsed_order).map_err(param_groebner_error_to_py)?;
+        Ok(PyParamGroebnerBasis {
+            inner,
+            pool: pool_py,
+            var_ids,
+            param_ids,
+        })
+    }
+
+    fn rational_values(&self, values: &[Bound<'_, PyAny>]) -> PyResult<Vec<Rational>> {
+        let vals = values
+            .iter()
+            .map(py_to_rational)
+            .collect::<PyResult<Vec<Rational>>>()?;
+        if vals.len() != self.inner.n_params() {
+            return Err(param_groebner_error_to_py(ParamGroebnerError::WrongArity {
+                expected: self.inner.n_params(),
+                got: vals.len(),
+            }));
+        }
+        Ok(vals)
+    }
+}
+
+#[cfg(feature = "groebner")]
+#[pymethods]
+impl PyParamGroebnerBasis {
+    /// Compute a Gröbner basis in ``Q(params)[vars]``.
+    ///
+    /// Parameters
+    /// ----------
+    /// polys : list[Expr]
+    ///     Polynomial expressions, each meaning ``p = 0``.  They must be
+    ///     polynomial in *vars* and in *params*.
+    /// vars : list[Expr]
+    ///     The ring variables — the ones the monomial order sees.
+    /// params : list[Expr]
+    ///     Symbols to place in the coefficient field.  Must be disjoint from
+    ///     *vars*.
+    /// order : str, optional
+    ///     ``"lex"`` (default), ``"grevlex"`` or ``"grlex"``.  Lex is what
+    ///     elimination needs: order the variables to eliminate first.
+    #[staticmethod]
+    #[pyo3(signature = (polys, vars, params, order=None))]
+    fn compute(
+        py: Python<'_>,
+        polys: Vec<PyRef<PyExpr>>,
+        vars: Vec<PyRef<PyExpr>>,
+        params: Vec<PyRef<PyExpr>>,
+        order: Option<&str>,
+    ) -> PyResult<PyParamGroebnerBasis> {
+        PyParamGroebnerBasis::build(py, polys, vars, params, order)
+    }
+
+    /// The monomial order the generators are reduced under.
+    #[getter]
+    fn order(&self) -> &'static str {
+        self.inner.order().as_str()
+    }
+
+    /// Number of parameters in the coefficient field.
+    #[getter]
+    fn n_params(&self) -> usize {
+        self.inner.n_params()
+    }
+
+    /// The ring variables naming exponent slots 0, 1, ….
+    fn variables(&self, py: Python<'_>) -> Vec<PyExpr> {
+        self.var_ids
+            .iter()
+            .map(|&id| PyExpr {
+                id,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect()
+    }
+
+    /// The parameters of the coefficient field, in order.
+    fn parameters(&self, py: Python<'_>) -> Vec<PyExpr> {
+        self.param_ids
+            .iter()
+            .map(|&id| PyExpr {
+                id,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect()
+    }
+
+    /// The polynomials in the parameters whose non-vanishing this basis
+    /// assumed, as :class:`Expr`.
+    ///
+    /// Each is irreducible, primitive and has a positive leading coefficient.
+    /// The basis is valid at exactly the parameter points where **none** of
+    /// them vanishes; the degeneracy locus is the union of the hypersurfaces
+    /// they cut out.  An empty list means the basis holds everywhere.
+    ///
+    /// The list is *sufficient, not necessary* — a point on the locus may still
+    /// be fine, but this computation cannot see that, and the honest report is
+    /// the hypothesis it actually used.
+    ///
+    /// Example::
+    ///
+    ///     gb = alkahest.GroebnerBasis.compute([a*x - y, x + y - one], [x, y], params=[a])
+    ///     [str(c) for c in gb.conditions()]   # ['a + 1']
+    fn conditions(&self, py: Python<'_>) -> PyResult<Vec<PyExpr>> {
+        let pool = self.pool.borrow(py);
+        let mut out = Vec::with_capacity(self.inner.conditions().len());
+        for c in self.inner.conditions() {
+            let id = parampoly_to_expr(c, &self.param_ids, &pool.inner).ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "condition mentions more parameters than were named",
+                )
+            })?;
+            out.push(PyExpr {
+                id,
+                pool: self.pool.clone_ref(py),
+            });
+        }
+        Ok(out)
+    }
+
+    /// The conditions that vanish at *values* — empty exactly when the basis
+    /// applies at that parameter point.
+    fn vanishing_conditions(
+        &self,
+        py: Python<'_>,
+        values: Vec<Bound<'_, PyAny>>,
+    ) -> PyResult<Vec<PyExpr>> {
+        let vals = self.rational_values(&values)?;
+        let pool = self.pool.borrow(py);
+        let mut out = Vec::new();
+        for c in self.inner.vanishing_conditions(&vals) {
+            let id = parampoly_to_expr(&c, &self.param_ids, &pool.inner).ok_or_else(|| {
+                pyo3::exceptions::PyValueError::new_err(
+                    "condition mentions more parameters than were named",
+                )
+            })?;
+            out.push(PyExpr {
+                id,
+                pool: self.pool.clone_ref(py),
+            });
+        }
+        Ok(out)
+    }
+
+    /// True when *values* lies off the degeneracy locus.
+    fn is_regular_at(&self, values: Vec<Bound<'_, PyAny>>) -> PyResult<bool> {
+        let vals = self.rational_values(&values)?;
+        Ok(self.inner.is_regular_at(&vals))
+    }
+
+    /// Substitute rational values for the parameters, giving an ordinary
+    /// :class:`GroebnerBasis` over ℚ.
+    ///
+    /// Off the degeneracy locus the result is exactly what
+    /// :meth:`GroebnerBasis.compute` would return for the specialised system.
+    /// On it, this raises `ParamGroebnerError` with ``.code ==
+    /// "E-PARAMGB-004"`` rather than handing back something that is not a
+    /// basis — check first with :meth:`is_regular_at` if that is a normal
+    /// outcome for your caller.
+    fn specialize(
+        &self,
+        py: Python<'_>,
+        values: Vec<Bound<'_, PyAny>>,
+    ) -> PyResult<PyGroebnerBasis> {
+        let vals = self.rational_values(&values)?;
+        let gens = self
+            .inner
+            .specialize(&vals)
+            .map_err(param_groebner_error_to_py)?;
+        Ok(PyGroebnerBasis {
+            inner: GroebnerBasis::from_generators(gens, self.inner.order()),
+            pool: Some(self.pool.clone_ref(py)),
+            var_ids: self.var_ids.clone(),
+        })
+    }
+
+    /// The elimination ideal `I ∩ Q(params)[remaining vars]`.
+    ///
+    /// Same contract as :meth:`GroebnerBasis.eliminate`: under a ``"lex"``
+    /// basis with the eliminated variables ordered **first**, the generators
+    /// free of them generate the elimination ideal.  The conditions travel with
+    /// the result — eliminating does not make the hypotheses go away.
+    fn eliminate(
+        &self,
+        py: Python<'_>,
+        vars: Vec<PyRef<PyExpr>>,
+    ) -> PyResult<PyParamGroebnerBasis> {
+        let mut indices = Vec::with_capacity(vars.len());
+        for v in &vars {
+            match self.var_ids.iter().position(|&id| id == v.id) {
+                Some(i) => indices.push(i),
+                None => {
+                    return Err(pyo3::exceptions::PyValueError::new_err(
+                        "eliminate() was given a symbol this basis is not written over; \
+                         parameters cannot be eliminated — they are in the coefficient field",
+                    ))
+                }
+            }
+        }
+        Ok(PyParamGroebnerBasis {
+            inner: self.inner.eliminate(&indices),
+            pool: self.pool.clone_ref(py),
+            var_ids: self.var_ids.clone(),
+            param_ids: self.param_ids.clone(),
+        })
+    }
+
+    /// The generators as :class:`ParametricGbPoly`. Equivalent to ``list(basis)``.
+    fn polynomials(&self, py: Python<'_>) -> Vec<PyParamGbPoly> {
+        self.inner
+            .generators()
+            .iter()
+            .map(|p| self.wrap(py, p.clone()))
+            .collect()
+    }
+
+    /// The generators as :class:`Expr`, each meaning ``g = 0``.
+    fn to_exprs(&self, py: Python<'_>) -> PyResult<Vec<PyExpr>> {
+        let ids: Option<Vec<ExprId>> = {
+            let pool = self.pool.borrow(py);
+            self.inner
+                .generators()
+                .iter()
+                .map(|g| paramgbpoly_to_expr(g, &self.var_ids, &self.param_ids, &pool.inner))
+                .collect()
+        };
+        match ids {
+            Some(ids) => Ok(ids
+                .into_iter()
+                .map(|id| PyExpr {
+                    id,
+                    pool: self.pool.clone_ref(py),
+                })
+                .collect()),
+            None => Err(pyo3::exceptions::PyValueError::new_err(
+                "basis is over more variables or parameters than were named",
+            )),
+        }
+    }
+
+    /// Reduce a polynomial modulo this basis; the remainder is a
+    /// :class:`ParametricGbPoly`.
+    ///
+    /// Accepts a :class:`ParametricGbPoly` or an :class:`Expr`.
+    fn reduce(&self, py: Python<'_>, p: &Bound<'_, PyAny>) -> PyResult<PyParamGbPoly> {
+        let poly = self.coerce(py, p)?;
+        Ok(self.wrap(py, self.inner.reduce(&poly)))
+    }
+
+    /// Ideal membership: true exactly when :meth:`reduce` gives zero.
+    fn contains(&self, py: Python<'_>, p: &Bound<'_, PyAny>) -> PyResult<bool> {
+        let poly = self.coerce(py, p)?;
+        Ok(self.inner.contains(&poly))
+    }
+
+    fn __len__(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Generator `i`; negative indices count from the end.
+    fn __getitem__(&self, py: Python<'_>, index: isize) -> PyResult<PyParamGbPoly> {
+        let n = self.inner.len() as isize;
+        let i = if index < 0 { index + n } else { index };
+        if i < 0 || i >= n {
+            return Err(pyo3::exceptions::PyIndexError::new_err(
+                "ParametricGroebnerBasis index out of range",
+            ));
+        }
+        Ok(self.wrap(py, self.inner.generators()[i as usize].clone()))
+    }
+
+    /// Iterate over the generators.
+    fn __iter__(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let list = pyo3::types::PyList::empty_bound(py);
+        for p in self.inner.generators() {
+            list.append(Py::new(py, self.wrap(py, p.clone()))?)?;
+        }
+        Ok(list.as_any().iter()?.into_py(py))
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ParametricGroebnerBasis(n_generators={}, n_params={}, n_conditions={})",
+            self.inner.len(),
+            self.inner.n_params(),
+            self.inner.conditions().len()
+        )
+    }
+}
+
+#[cfg(feature = "groebner")]
+impl PyParamGroebnerBasis {
+    /// Accept a `ParametricGbPoly` as-is, or convert an `Expr` against this
+    /// basis's variable and parameter lists.
+    fn coerce(&self, py: Python<'_>, p: &Bound<'_, PyAny>) -> PyResult<ParamGbPoly> {
+        if let Ok(pg) = p.downcast::<PyParamGbPoly>() {
+            return Ok(pg.borrow().inner.clone());
+        }
+        if let Ok(expr) = p.downcast::<PyExpr>() {
+            let mut all_ids = self.var_ids.clone();
+            all_ids.extend_from_slice(&self.param_ids);
+            let pool = self.pool.borrow(py);
+            let gbp = expr_to_gbpoly(expr.borrow().id, &all_ids, &pool.inner)
+                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+            return ParamGbPoly::from_gbpoly(&gbp, self.var_ids.len(), self.param_ids.len())
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "internal: polynomial arity does not match vars + params",
+                    )
+                });
+        }
+        Err(pyo3::exceptions::PyTypeError::new_err(
+            "expected a ParametricGbPoly or an Expr",
+        ))
     }
 }
 
@@ -13769,7 +14796,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_zeilberger, m)?)?;
     // M4(b) — q-analogue creative telescoping
     m.add_class::<PyQZeilbergerCertificate>()?;
+    m.add_class::<PyQRootOfUnitySpecialization>()?;
     m.add_function(wrap_pyfunction!(py_q_zeilberger, m)?)?;
+    m.add_function(wrap_pyfunction!(py_cyclotomic_polynomial, m)?)?;
     // M6 — modular / p-adic evaluation of holonomic sequences
     m.add_class::<PyModularRecurrence>()?;
     m.add_class::<PyModularEvaluation>()?;
@@ -13950,6 +14979,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     {
         m.add_class::<PyGbPoly>()?;
         m.add_class::<PyGroebnerBasis>()?;
+        // M9 — coefficient fields for elimination
+        m.add_class::<PyParamGbPoly>()?;
+        m.add_class::<PyParamGroebnerBasis>()?;
         m.add_class::<PyRosenfeldGroebnerResult>()?;
         m.add_class::<PyDaeIndexReduction>()?;
         m.add_class::<PyPrimaryComponent>()?;
@@ -14083,6 +15115,11 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "DiophantineError",
         m.py().get_type_bound::<PyDiophantineError>(),
+    )?;
+    #[cfg(feature = "groebner")]
+    m.add(
+        "ParamGroebnerError",
+        m.py().get_type_bound::<PyParamGroebnerError>(),
     )?;
     // P1 search plumbing item 4 — budgets, cancellation, determinism
     m.add(

@@ -5,6 +5,9 @@
 //! - Sugar selection strategy: process pair with minimum sugar degree first, break ties by lcm degree
 //! - Incremental basis update: each new element is added before selecting the next pair
 //!
+//! The pair machinery itself is in `super::pairs` (private — internal to this
+//! module), shared with the `Q(params)` engine in [`super::parametric`].
+//!
 //! Reference: Becker & Weispfenning (1993) "Gröbner Bases", Algorithm 6.5 (GROEBNERNEWS2),
 //! Gebauer & Möller (1988) "On an Installation of Buchberger's Algorithm",
 //! and Giovini et al. (1991) "One Sugar Cube, Please" for the sugar selection strategy.
@@ -13,178 +16,8 @@ use std::collections::BinaryHeap;
 
 use crate::poly::groebner::ideal::GbPoly;
 use crate::poly::groebner::monomial_order::MonomialOrder;
+use crate::poly::groebner::pairs::{update_pairs, CriticalPair};
 use crate::poly::groebner::reduce::{reduce, s_polynomial};
-
-// ---------------------------------------------------------------------------
-// Monomial helpers
-// ---------------------------------------------------------------------------
-
-#[inline]
-fn lcm_exp(a: &[u32], b: &[u32]) -> Vec<u32> {
-    a.iter().zip(b.iter()).map(|(&x, &y)| x.max(y)).collect()
-}
-
-/// True if every component of `a` ≤ corresponding component of `b`.
-#[inline]
-fn monomial_divides(a: &[u32], b: &[u32]) -> bool {
-    a.iter().zip(b.iter()).all(|(ai, bi)| ai <= bi)
-}
-
-/// Total degree of an exponent vector.
-#[inline]
-fn total_deg(e: &[u32]) -> u32 {
-    e.iter().sum()
-}
-
-// ---------------------------------------------------------------------------
-// Critical pair with sugar-ordered comparison (min-heap)
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct CriticalPair {
-    /// Sugar degree of the pair: lcm_deg + max(ecart_i, ecart_j).
-    /// Primary sort key — the "sugar" selection strategy (Giovini et al. 1991).
-    /// For homogeneous systems this equals lcm_deg; for inhomogeneous ones it
-    /// avoids the late-sugar blowup that the normal strategy suffers.
-    sugar_deg: u32,
-    /// Total degree of lcm(LM(basis[i]), LM(basis[j])) — secondary sort key.
-    lcm_deg: u32,
-    lcm_exp: Vec<u32>,
-    i: usize,
-    j: usize,
-}
-
-impl Ord for CriticalPair {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        // Reverse ordering so BinaryHeap (max-heap) acts as a min-heap.
-        other
-            .sugar_deg
-            .cmp(&self.sugar_deg)
-            .then_with(|| other.lcm_deg.cmp(&self.lcm_deg))
-            .then_with(|| self.i.cmp(&other.i))
-            .then_with(|| self.j.cmp(&other.j))
-    }
-}
-impl PartialOrd for CriticalPair {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Gebauer-Möller pair update
-// ---------------------------------------------------------------------------
-
-/// Update the critical pair list when `basis[new_idx]` is added to the basis.
-///
-/// Applies:
-/// - **Criterion M**: Among new pairs (g, h), keep only those whose lcm is
-///   not strictly divisible by the lcm of another candidate pair.
-/// - **Criterion F**: Discard old pairs (g1, g2) where lm(h) | lcm(lm(g1), lm(g2))
-///   and the pair is truly covered (the two equality conditions from B&W §6.5).
-///
-/// `basis_sugar[k]` = max total degree of any term in `basis[k]` (the sugar).
-fn update_pairs(
-    basis: &[GbPoly],
-    basis_sugar: &[u32],
-    pairs: &mut Vec<CriticalPair>,
-    new_idx: usize,
-    order: MonomialOrder,
-) {
-    let lh = match basis[new_idx].leading_exp(order) {
-        Some(e) => e,
-        None => return,
-    };
-    let lh_deg = total_deg(&lh);
-    let ecart_h = basis_sugar[new_idx].saturating_sub(lh_deg);
-
-    // -----------------------------------------------------------------------
-    // Step 1: build candidate pairs (g, h), filtered by product criterion.
-    // -----------------------------------------------------------------------
-    struct Cand {
-        g_idx: usize,
-        lcm: Vec<u32>,
-        ecart_g: u32,
-    }
-
-    let candidates: Vec<Cand> = (0..new_idx)
-        .filter_map(|g_idx| {
-            let lg = basis[g_idx].leading_exp(order)?;
-            // Product criterion: coprime LMs ⟹ S-poly = 0, skip.
-            if lh.iter().zip(lg.iter()).all(|(&a, &b)| a == 0 || b == 0) {
-                return None;
-            }
-            let ecart_g = basis_sugar[g_idx].saturating_sub(total_deg(&lg));
-            Some(Cand {
-                g_idx,
-                lcm: lcm_exp(&lh, &lg),
-                ecart_g,
-            })
-        })
-        .collect();
-
-    // -----------------------------------------------------------------------
-    // Step 2: Criterion M — keep only minimal candidates.
-    // Discard (g, h) if ∃ (g', h) ∈ candidates with g' ≠ g and
-    //   lcm(g', h) strictly divides lcm(g, h).
-    // -----------------------------------------------------------------------
-    let c_min: Vec<&Cand> = candidates
-        .iter()
-        .filter(|ci| {
-            !candidates.iter().any(|cj| {
-                cj.g_idx != ci.g_idx && monomial_divides(&cj.lcm, &ci.lcm) && cj.lcm != ci.lcm
-            })
-        })
-        .collect();
-
-    // -----------------------------------------------------------------------
-    // Step 3: Criterion F — remove old pairs subsumed by h.
-    // Discard (g1, g2) ∈ pairs if:
-    //   lm(h) | lcm(g1, g2)
-    //   AND lcm(g1, h) ≠ lcm(g1, g2)    [g1 is not the "cover witness"]
-    //   AND lcm(g2, h) ≠ lcm(g1, g2)    [g2 is not the "cover witness"]
-    // The equality conditions prevent incorrectly discarding pairs whose
-    // chain-criterion witness is itself degenerate (B&W §6.5).
-    // -----------------------------------------------------------------------
-    pairs.retain(|p| {
-        let lg1 = match basis[p.i].leading_exp(order) {
-            Some(e) => e,
-            None => return false,
-        };
-        let lg2 = match basis[p.j].leading_exp(order) {
-            Some(e) => e,
-            None => return false,
-        };
-        let lcm_12 = lcm_exp(&lg1, &lg2);
-
-        if !monomial_divides(&lh, &lcm_12) {
-            return true; // lm(h) doesn't divide — keep
-        }
-        if lcm_exp(&lg1, &lh) == lcm_12 {
-            return true; // g1 is the witness — keep (pair is not truly covered)
-        }
-        if lcm_exp(&lg2, &lh) == lcm_12 {
-            return true; // g2 is the witness — keep
-        }
-        false // discard: h truly subverts this pair
-    });
-
-    // -----------------------------------------------------------------------
-    // Step 4: add minimal candidates to the pair list with sugar degrees.
-    // Sugar of pair (g, h) with lcm L = deg(L) + max(ecart(g), ecart(h)).
-    // -----------------------------------------------------------------------
-    for c in c_min {
-        let lcm_deg = total_deg(&c.lcm);
-        let sugar_deg = lcm_deg + c.ecart_g.max(ecart_h);
-        pairs.push(CriticalPair {
-            sugar_deg,
-            lcm_deg,
-            lcm_exp: c.lcm.clone(),
-            i: c.g_idx,
-            j: new_idx,
-        });
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Main algorithm
@@ -207,15 +40,23 @@ pub fn compute_buchberger_basis(generators: Vec<GbPoly>, order: MonomialOrder) -
 
     let mut basis: Vec<GbPoly> = Vec::with_capacity(initial.len() * 2);
     let mut basis_sugar: Vec<u32> = Vec::with_capacity(initial.len() * 2);
+    // Leading exponents, kept in step with `basis`.  Every element pushed here
+    // is non-zero (the generators were filtered and reductions are only added
+    // when they do not vanish), so `leading_exp` always yields a value.
+    let mut basis_lead: Vec<Vec<u32>> = Vec::with_capacity(initial.len() * 2);
     let mut pair_vec: Vec<CriticalPair> = Vec::new();
 
     // Add initial generators one by one, applying GM update after each.
     for gen in initial {
         let sugar = gen.sugar();
+        let Some(lead) = gen.leading_exp(order) else {
+            continue;
+        };
         let new_idx = basis.len();
         basis.push(gen);
         basis_sugar.push(sugar);
-        update_pairs(&basis, &basis_sugar, &mut pair_vec, new_idx, order);
+        basis_lead.push(lead);
+        update_pairs(&basis_lead, &basis_sugar, &mut pair_vec, new_idx);
     }
 
     // Build min-heap (CriticalPair::Ord is reversed for min-heap behaviour).
@@ -228,13 +69,17 @@ pub fn compute_buchberger_basis(generators: Vec<GbPoly>, order: MonomialOrder) -
         if !r.is_zero() {
             let r = r.make_monic(order);
             let sugar = r.sugar();
+            let Some(lead) = r.leading_exp(order) else {
+                continue;
+            };
             let new_idx = basis.len();
             basis.push(r);
             basis_sugar.push(sugar);
+            basis_lead.push(lead);
 
             // Flatten heap → apply GM update → rebuild heap.
             let mut pv: Vec<CriticalPair> = heap.into_vec();
-            update_pairs(&basis, &basis_sugar, &mut pv, new_idx, order);
+            update_pairs(&basis_lead, &basis_sugar, &mut pv, new_idx);
             heap = BinaryHeap::from(pv);
         }
     }

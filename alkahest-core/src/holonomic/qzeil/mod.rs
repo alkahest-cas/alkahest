@@ -108,10 +108,16 @@
 //! `n ≥ n_min` at which the coefficients `a_i(qⁿ)` are defined, and `q` is
 //! generic (see above).
 
+pub mod cyclotomic;
 pub mod field;
+pub mod rootofunity;
 pub mod search;
 pub mod term;
 
+pub use cyclotomic::{cyclotomic_polynomial, CycloElem, CycloField, MAX_CYCLOTOMIC_ORDER};
+pub use rootofunity::{
+    q_specialize_at_root_of_unity, QRootOfUnitySpecialization, QRootOfUnityStatus,
+};
 pub use search::{q_zeilberger_on_term, QZeilbergerOpts, QZeilbergerReport, QZeilbergerResult};
 pub use term::{QProperTerm, QSupport};
 
@@ -447,11 +453,12 @@ impl QProperTerm {
         Some(acc)
     }
 
-    /// `S(n₀) = Σ_{k ∈ Z} F(n₀, k)` as an exact element of `Q(q)`.
+    /// The proved support window in `k` at a concrete `n₀`: integers
+    /// `lo ≤ k ≤ hi` outside which `F(n₀, k)` was **proved** to be exactly `0`.
     ///
-    /// Uses the proved support window, so this is a finite sum whose value is a
-    /// theorem about the whole `Z`-sum, not a truncation.
-    pub fn sum_at(&self, n0: i64, n_min: i64) -> Result<Rn, QHolonomicError> {
+    /// Refuses rather than guessing when the window was not established, or
+    /// when it is wider than the evaluation limit.
+    pub fn window_at(&self, n0: i64, n_min: i64) -> Result<(i64, i64), QHolonomicError> {
         let s = self.support(0, n_min);
         if !s.finite || !s.bounded_above || !s.bounded_below {
             return Err(QHolonomicError::Unsupported(format!(
@@ -473,6 +480,15 @@ impl QProperTerm {
                 hi_v - lo_v
             )));
         }
+        Ok((lo_v, hi_v))
+    }
+
+    /// `S(n₀) = Σ_{k ∈ Z} F(n₀, k)` as an exact element of `Q(q)`.
+    ///
+    /// Uses the proved support window, so this is a finite sum whose value is a
+    /// theorem about the whole `Z`-sum, not a truncation.
+    pub fn sum_at(&self, n0: i64, n_min: i64) -> Result<Rn, QHolonomicError> {
+        let (lo_v, hi_v) = self.window_at(n0, n_min)?;
         let mut acc = crate::holonomic::qfield::rn_zero();
         for k0 in lo_v..=hi_v {
             let v = self.value_at(n0, k0).ok_or_else(|| {

@@ -323,6 +323,13 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-SUM-001", class: "SumError", cause: Cause::UserInput, remediation: None },
     ErrorSpec { code: "E-SUM-002", class: "SumError", cause: Cause::UserInput, remediation: None },
     ErrorSpec { code: "E-SUM-003", class: "SumError", cause: Cause::UserInput, remediation: None },
+    // E-PARAMGB — ParamGroebnerError (M9, Gröbner bases over Q(params))
+    ErrorSpec { code: "E-PARAMGB-001", class: "ParamGroebnerError", cause: Cause::UserInput,   remediation: Some("pass at least one polynomial") },
+    ErrorSpec { code: "E-PARAMGB-002", class: "ParamGroebnerError", cause: Cause::UserInput,   remediation: Some("build every generator against the same variable and parameter lists") },
+    ErrorSpec { code: "E-PARAMGB-003", class: "ParamGroebnerError", cause: Cause::UserInput,   remediation: Some("supply exactly one value per parameter, in the parameter list's order") },
+    // Not a malfunction: the basis is a *generic* one, and this is it saying so
+    // at a point where it does not apply, rather than specialising anyway.
+    ErrorSpec { code: "E-PARAMGB-004", class: "ParamGroebnerError", cause: Cause::Domain,      remediation: Some("compute the basis directly over ℚ at that parameter point, or move the vanishing factors into the generators and recompute") },
     // E-VALIDATED — ValidatedError
     ErrorSpec { code: "E-VALIDATED-001", class: "ValidatedError", cause: Cause::Unsupported, remediation: None },
     ErrorSpec { code: "E-VALIDATED-002", class: "ValidatedError", cause: Cause::UserInput, remediation: None },

@@ -371,6 +371,7 @@ from .exceptions import (
     ModularError,
     NumberTheoryError,
     OdeError,
+    ParamGroebnerError,
     ParseError,
     PoolError,
     ProductError,
@@ -420,6 +421,9 @@ _NATIVE_EXCEPTION_OVERLAY: tuple[str, ...] = (
     "ModularError",
     "NumberTheoryError",
     "OdeError",
+    # M9 — only on `groebner` builds; the overlay skips what the module does
+    # not define, so catching it still works on a wheel without the feature.
+    "ParamGroebnerError",
     "PoolError",
     "ProductError",
     "PslqError",
@@ -2187,6 +2191,8 @@ __all__ = [
     "NumberTheoryError",
     "OdeError",
     "Or",
+    # M9 — coefficient fields for elimination
+    "ParamGroebnerError",
     "ParseError",
     "PoolError",
     "Port",

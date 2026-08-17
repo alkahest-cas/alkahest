@@ -95,6 +95,7 @@ Current stable feature surface.
 - Regular chains / triangular decomposition (`triangularize`, `RegularChain`)
 - Primary decomposition and radical (`primary_decomposition`, `radical`)
 - Differential algebra / Rosenfeld–Gröbner for polynomial DAEs (`rosenfeld_groebner`)
+- Gröbner bases over the coefficient field `Q(params)` (`GroebnerBasis.compute(polys, vars, params=[...])`, experimental `ParametricGroebnerBasis` / `ParametricGbPoly`) — parameters live in the coefficients, not the ring, so they never enter the monomial order or generate S-pairs; the basis is generic and reports the parameter hypersurfaces (`conditions()`) it assumed non-zero
 - Numerical algebraic geometry: total-degree homotopy continuation with Smale certification (`solve_numerical`, `CertifiedSolution`)
 - Eigenvalues, eigenvectors, diagonalization for symbolic matrices (`eigenvals`, `eigenvects`, `diagonalize`)
 

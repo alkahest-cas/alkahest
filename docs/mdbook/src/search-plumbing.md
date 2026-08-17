@@ -15,6 +15,7 @@ to the mathematics:
 | Propose a parametric family and fit it | `alkahest.ansatz` (`polynomial`, `rational`, `fit`, …) | [Ansatz families](./ansatz.md) |
 | Differential-test a result against another CAS | `alkahest.crosscheck` (`check`, `sweep`) | [Cross-CAS testing](./crosscheck.md) |
 | Hand a discrete / mixed int-real subproblem to a solver | `alkahest.smt` (`to_smtlib`, `solve`, `supported`) | [SMT bridge](./smt.md) |
+| Ask whether a fitted recurrence is already in OEIS before calling it new | `alkahest.experimental.novelty` (`RecurrenceClaim`, `check_novelty`) | [Novelty filtering](./novelty.md) |
 
 A minimal loop shape:
 

@@ -47,6 +47,20 @@ impl RatPoly {
         RatPoly::constant(nvars, Rational::from(1))
     }
 
+    /// `x_1² + … + x_nvars²` — the building block of the Reznick multiplier
+    /// family `(x_1² + … + x_nvars²)^N`. Zero only at the origin and strictly
+    /// positive everywhere else, which is exactly what the multiplier
+    /// certificate's verification argument needs.
+    pub fn sum_of_squares(nvars: usize) -> Self {
+        let mut p = RatPoly::zero(nvars);
+        for i in 0..nvars {
+            let mut e = vec![0u32; nvars];
+            e[i] = 2;
+            p.terms.insert(e, Rational::from(1));
+        }
+        p
+    }
+
     /// `coeff * x^exps`.
     pub fn monomial(nvars: usize, exps: Exponents, coeff: Rational) -> Self {
         debug_assert_eq!(exps.len(), nvars);
@@ -82,6 +96,22 @@ impl RatPoly {
                 }
             }
             _ => None,
+        }
+    }
+
+    /// `Some(d)` iff every term has total degree exactly `d` (a form). The
+    /// zero polynomial is homogeneous of every degree, so it is reported
+    /// homogeneous of degree `0` (harmless: callers only use this to decide
+    /// whether a *non-trivial* degree restriction on a monomial basis is
+    /// still complete, and a zero target is handled separately everywhere
+    /// upstream of that decision).
+    pub fn is_homogeneous(&self) -> Option<u32> {
+        let mut degs = self.terms.keys().map(|e| e.iter().sum::<u32>());
+        let first = degs.next().unwrap_or(0);
+        if degs.all(|d| d == first) {
+            Some(first)
+        } else {
+            None
         }
     }
 
