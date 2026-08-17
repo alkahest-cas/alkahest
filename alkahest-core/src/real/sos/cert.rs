@@ -100,18 +100,6 @@ pub struct PositivityCertificate {
     pub degree: u32,
     /// Terms of the identity; `terms[k]` is `(Π g_i) · σ_k`.
     pub terms: Vec<Multiplier>,
-    /// A Reznick-style multiplier `σ = (x_1² + … + x_n²)^N`, present exactly
-    /// when the certificate proves `target ≥ 0` indirectly via `target·σ =
-    /// Σ terms` rather than directly via `target = Σ terms`. `None` for a
-    /// direct certificate (the only kind before 3.10.0).
-    ///
-    /// `σ` vanishes only at the origin and is strictly positive everywhere
-    /// else, so `target·σ = Σ terms ≥ 0` gives `target ≥ 0` away from the
-    /// origin for free; [`Self::verify`] additionally checks `target(0) ≥
-    /// 0` directly to close the one point `σ` cannot see, and confirms `σ`
-    /// really is a power of the sum of squares rather than trusting the
-    /// search that produced it.
-    pub multiplier: Option<RatPoly>,
     /// Human-readable audit trail: how the search proceeded.
     pub log: Vec<String>,
 }
@@ -119,6 +107,34 @@ pub struct PositivityCertificate {
 impl PositivityCertificate {
     pub fn nvars(&self) -> usize {
         self.vars.len()
+    }
+
+    /// A Reznick-style multiplier `σ = (x_1² + … + x_n²)^N`, present exactly
+    /// when the certificate proves `target ≥ 0` indirectly via `target·σ =
+    /// Σ terms` rather than directly via `target = Σ terms`. `None` for a
+    /// direct certificate (the only kind before 3.10.0).
+    ///
+    /// Not stored: derived here by literally re-deriving `N` (trying every
+    /// `N` up to the search's own budget and checking `target·(Σxᵢ²)^N ==`
+    /// the re-expanded identity) rather than trusted from whatever the search
+    /// that produced this certificate happened to remember — the same
+    /// "recompute, never trust the search" discipline [`Self::verify`]
+    /// already applies to everything else in this type, extended one step
+    /// further so this struct's field set never needs to record which route
+    /// a certificate took, only the identity it proves.
+    pub fn multiplier(&self) -> Option<RatPoly> {
+        let rhs = self.expand();
+        if self.target == rhs {
+            return None;
+        }
+        let sigma_base = RatPoly::sum_of_squares(self.nvars());
+        for n in 1..=super::MAX_MULTIPLIER_POWER {
+            let sigma = sigma_base.pow(n);
+            if self.target.mul(&sigma) == rhs {
+                return Some(sigma);
+            }
+        }
+        None
     }
 
     /// Expand the right-hand side of the certificate identity, exactly.
@@ -164,7 +180,7 @@ impl PositivityCertificate {
             }
         }
         let rhs = self.expand();
-        match &self.multiplier {
+        match self.multiplier() {
             None => {
                 if self.target == rhs {
                     Ok(())
@@ -177,7 +193,7 @@ impl PositivityCertificate {
                 }
             }
             Some(sigma) => {
-                let lhs = self.target.mul(sigma);
+                let lhs = self.target.mul(&sigma);
                 if lhs != rhs {
                     let diff = lhs.sub(&rhs);
                     return Err(format!(
@@ -195,7 +211,7 @@ impl PositivityCertificate {
                 }
                 let n = deg / 2;
                 let expected = RatPoly::sum_of_squares(self.nvars()).pow(n);
-                if *sigma != expected {
+                if sigma != expected {
                     return Err(
                         "multiplier is not recognised as (x_1^2 + ... + x_n^2)^N for \
                                  any N, so its non-negativity is not established by this \
@@ -279,7 +295,7 @@ impl PositivityCertificate {
         // a certificate is that a reader can check `target = rhs` (or
         // `target * multiplier = rhs`, for a multiplier certificate) by
         // expanding.
-        match &self.multiplier {
+        match self.multiplier() {
             None => format!("{} = {}", self.target.display(&self.var_names), rhs),
             Some(sigma) => format!(
                 "({}) * ({}) = {}",
@@ -344,8 +360,8 @@ impl PositivityCertificate {
         ));
         out.push_str(&format!("-- {}\n\n", self.claim_string()));
 
-        if let Some(sigma) = &self.multiplier {
-            out.push_str(&self.lean_multiplier_block(&binders, &target, &rhs, sigma));
+        if let Some(sigma) = self.multiplier() {
+            out.push_str(&self.lean_multiplier_block(&binders, &target, &rhs, &sigma));
         } else if self.constraints.is_empty() {
             out.push_str(&format!(
                 "theorem alkahest_sos_identity {binders}:\n    {target} = {rhs} := by\n  ring\n\n"
@@ -569,7 +585,6 @@ mod tests {
                 constraints: vec![],
                 sos,
             }],
-            multiplier: None,
             log: vec![],
         }
     }

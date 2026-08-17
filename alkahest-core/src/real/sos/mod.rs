@@ -241,7 +241,7 @@ fn finish(cert: PositivityCertificate) -> Result<PositivityCertificate, SosError
 /// how large that `N` needs to be in general, so this is a search budget,
 /// not a completeness guarantee — running past it is `NoCertificate`
 /// (undecided), never a claim that no such `N` exists.
-const MAX_MULTIPLIER_POWER: u32 = 4;
+pub(crate) const MAX_MULTIPLIER_POWER: u32 = 4;
 
 /// Above this many monomials in `σ·p`'s monomial basis, a multiplier power
 /// is skipped rather than searched, so the (no longer LP-cheap) PSD Gram
@@ -336,7 +336,6 @@ pub fn sos_decompose(
                 constraints: Vec::new(),
                 sos,
             }],
-            multiplier: None,
             log,
         });
     }
@@ -392,11 +391,10 @@ pub fn sos_decompose(
                     constraints: Vec::new(),
                     sos,
                 }],
-                multiplier: None,
                 log,
             });
         }
-        if let Some((sigma, sos, mult_basis_deg)) = multiplier_search(
+        if let Some((_sigma, sos, mult_basis_deg)) = multiplier_search(
             &target,
             nvars,
             MAX_MULTIPLIER_POWER,
@@ -414,7 +412,6 @@ pub fn sos_decompose(
                     constraints: Vec::new(),
                     sos,
                 }],
-                multiplier: Some(sigma),
                 log,
             });
         }
@@ -439,7 +436,6 @@ pub fn sos_decompose(
             constraints: Vec::new(),
             sos,
         }],
-        multiplier: None,
         log,
     })
 }
@@ -566,7 +562,6 @@ pub fn prove_nonneg(
         kind: CertificateKind::Handelman,
         degree: opts.level,
         terms,
-        multiplier: None,
         log: vec![format!(
             "Handelman search over {} constraint products up to level {}",
             products.len(),
