@@ -1,5 +1,77 @@
 # Changelog
 
+## Unreleased
+
+- **`telescope2d` generalizes from two bound indices to an arbitrary `m ≥ 1`:
+  `experimental.telescope_md`** (M4 extension). `telescope2d(term, n, j, k)`
+  only ever reached exactly two bound indices; the underlying ansatz search
+  and boundary/face analysis are now implemented for general `m`, with
+  `telescope2d` itself unchanged in behavior (it is now a thin `m = 2`
+  wrapper over the general engine, not a separate implementation) and a new
+  `telescope_md(term, n, [x_1, …, x_m])` for `m ≠ 2` — including `m = 1`,
+  which degenerates cleanly to a single-sum-shaped search, and `m ≥ 3`,
+  genuinely new. Same scope as before, generalized: proper hypergeometric
+  summands only (no broader rational-summand class, no sum of several
+  hypergeometric terms), a fixed (non-minimal) certificate denominator built
+  from `F`'s own shift-ratio denominators rather than a minimal multivariate
+  Gosper normal form, and constant-box-only boundary analysis. **Not
+  attempted**: a genuine minimal Gosper-style certificate denominator (the
+  roadmap's stated remaining-gap item 3) — real algorithm-design work, not an
+  engineering extension of what already exists here.
+
+  **The boundary is `2m` face sums, not `2^m` corner evaluations** — the
+  `m = 2` module's "four strip sums, not four corners" result, generalized:
+  summing the telescoping identity over an `m`-dimensional box gives `2m`
+  sums, each over an `(m − 1)`-dimensional face where one bound index is
+  fixed to a boundary value, not `2^m` point evaluations at the box's
+  corners. The same sufficient (not necessary) "face vanishes pointwise"
+  criterion the `m = 2` module used — a dominant `1/Γ` zero among `F`'s own
+  gamma factors, or the certificate's own numerator vanishing there — carries
+  over unchanged in kind: fix one axis to a constant and check that a gamma
+  factor's argument no longer depends on `n` or any *other* bound index.
+
+  **Resource ceilings, added after this generalization surfaced a real
+  scaling cliff.** The linear system a probe builds has one equation per
+  distinct monomial and one unknown per certificate-numerator box
+  coefficient; both dimensions grow with `m` and the certificate degree
+  bound far faster than the degree numbers suggest, and `rational_nullspace`
+  is a plain dense `O(rows · cols²)` exact-rational Gaussian elimination.
+  Profiling a genuinely coupled `m = 3` example
+  (`C(n,x)·C(x,y)·C(y,z)`) at degree bounds that work fine at `m = 2` found a
+  ≈10 000-row, 245-unknown system whose elimination step alone took ≈47
+  seconds *per probe*, and the next certificate-degree step up (770 unknowns)
+  was still running after several minutes — genuine `O(rows·cols²)`
+  arithmetic cost on a correctly-posed system, not a bug or an infinite loop,
+  but exactly the kind of resource cliff a caller needs protecting from.
+  `holonomic::telescoping2d::search::MAX_ANSATZ_UNKNOWNS` now refuses any
+  single probe above 400 unknowns outright, and
+  `MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS` caps the total work spent on probes
+  at or above 150 unknowns to 300 across one whole search call — so a search
+  with no certificate in reach cannot be made to pay the same expensive
+  elimination over and over across every `(order, a_degree)` combination
+  tried. Neither ceiling touches the `m = 2` search, whose default probes
+  never exceed ≈140 unknowns. A search that hits a ceiling reports
+  `SearchExhausted` naming the ceiling explicitly, never a false certificate
+  and never a silent hang.
+
+  Verified on the 4-category multinomial coefficient
+  `F(n,x,y,z) = n!/(x!y!z!(n−x−y−z)!)` (via `factorial`, not a
+  product-of-binomials encoding, to avoid the redundant cancelling-gamma-
+  factor pairs a naive `C(n,x)·C(n−x,y)·C(n−x−y,z)` encoding would carry) — a
+  genuinely non-separable `m = 3` sum (all three bound indices interact
+  through the shared `n − x − y − z` term) whose closed form,
+  `Σ_{x,y,z} F = 4ⁿ` (the multinomial theorem), is checked by direct exact
+  summation (`rug::Rational`, never floats) against the returned recurrence,
+  plus the `4ⁿ`-decoupled fixed-support variant where the boundary genuinely
+  is `n`-independent and `Vanishes` is provided rather than refused. A
+  regression test pins the original scaling-cliff example
+  (`C(n,x)·C(x,y)·C(y,z)` at `order ≤ 2`, `cert_degree ≤ 3`) to now return a
+  bounded, ceiling-cited refusal rather than run unboundedly.
+
+  New: `alkahest.experimental.telescope_md`,
+  `alkahest.experimental.TelescopingMdCertificate`. Experimental, same
+  refusal codes as `telescope2d` (`E-HOLO-040`/`041`/`042`).
+
 ## 3.9.0 — 2026-08-14
 
 Everything in this section landed **after `v3.8.0` was tagged and published**,

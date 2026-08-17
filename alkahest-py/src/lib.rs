@@ -190,9 +190,11 @@ use alkahest_core::holonomic::qzeil::{
 };
 // M4 — double-sum (Apagodu–Zeilberger) creative telescoping
 use alkahest_core::holonomic::telescoping2d::{
-    boundary_status_2d as core_boundary_status_2d, telescope2d_search as core_telescope2d_search,
+    boundary_status_2d as core_boundary_status_2d, boundary_status_md as core_boundary_status_md,
+    telescope2d_search as core_telescope2d_search, telescope_md_search as core_telescope_md_search,
     Telescoping2dError as CoreTelescoping2dError, Telescoping2dOpts as CoreTelescoping2dOpts,
-    Telescoping2dResult as CoreTelescoping2dResult,
+    Telescoping2dResult as CoreTelescoping2dResult, TelescopingMdOpts as CoreTelescopingMdOpts,
+    TelescopingMdResult as CoreTelescopingMdResult,
 };
 // M6 — modular / p-adic evaluation of holonomic sequences
 use alkahest_core::holonomic::modular::{
@@ -5980,6 +5982,225 @@ fn py_telescope2d(
         n_id: n.id,
         j_id: j.id,
         k_id: k.id,
+        result,
+    })
+}
+
+/// A **verified** `m`-bound-index creative-telescoping certificate, returned
+/// by :func:`alkahest.experimental.telescope_md`. The general form of
+/// :class:`Telescoping2dCertificate` (`m = 2` is that class's special case,
+/// unchanged and still returned by :func:`~alkahest.experimental.telescope2d`
+/// itself).
+///
+/// Carries the recurrence coefficients ``a_0(n), …, a_J(n)`` and `m` rational
+/// certificates ``c_1, …, c_m`` satisfying, as an exact identity in
+/// ``Q(n, x_1, …, x_m)``, ``Σ_i a_i(n)·F(n+i,x) = Σ_t Δ_t(c_t·F)``. That
+/// identity is re-checked exactly before this object is constructed. It says
+/// nothing on its own about the `m`-fold sum over a stated box — call
+/// :meth:`boundary_status` to decide that, separately.
+///
+/// See the Rust module docs (``alkahest_cas::holonomic::telescoping2d``) for
+/// the complete, honestly-stated scope: proper hypergeometric summands only,
+/// no general Wegschaider reduction, a fixed (non-minimal) certificate
+/// denominator, constant-box-only boundary analysis, and the resource
+/// ceilings (`MAX_ANSATZ_UNKNOWNS`, `MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS`)
+/// that keep a search with no certificate in reach a fast, honest refusal
+/// rather than an unbounded computation.
+#[pyclass(name = "TelescopingMdCertificate")]
+struct PyTelescopingMdCertificate {
+    order: usize,
+    coeff_ids: Vec<ExprId>,
+    cert_ids: Vec<ExprId>,
+    pool: Py<PyExprPool>,
+    term_id: ExprId,
+    n_id: ExprId,
+    index_ids: Vec<ExprId>,
+    result: CoreTelescopingMdResult,
+}
+
+#[pymethods]
+impl PyTelescopingMdCertificate {
+    /// Recurrence order ``J``; ``len(coeffs()) == order + 1``.
+    #[getter]
+    fn order(&self) -> usize {
+        self.order
+    }
+
+    /// ``[a_0(n), …, a_J(n)]`` — polynomial coefficients of the recurrence.
+    fn coeffs(&self, py: Python<'_>) -> Vec<PyExpr> {
+        self.coeff_ids
+            .iter()
+            .map(|&id| PyExpr {
+                id,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect()
+    }
+
+    /// ``[c_1(n,x), …, c_m(n,x)]``, one per bound index in the order they
+    /// were supplied to :func:`~alkahest.experimental.telescope_md`.
+    fn certs(&self, py: Python<'_>) -> Vec<PyExpr> {
+        self.cert_ids
+            .iter()
+            .map(|&id| PyExpr {
+                id,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect()
+    }
+
+    /// Decide the boundary hypothesis for the `m`-fold sum
+    /// ``S(n) = Σ_{x_1} … Σ_{x_m} F(n,x)`` over the box
+    /// ``x_t = limits[t][0] .. limits[t][1]``.
+    ///
+    /// ``limits`` must have exactly one ``(lo, hi)`` pair per bound index,
+    /// in the same order they were supplied to
+    /// :func:`~alkahest.experimental.telescope_md`; each bound is an
+    /// **integer constant** (``Expr`` or plain ``int``), never an expression
+    /// in ``n`` — see the Rust module docs for
+    /// ``telescoping2d::boundary`` for why, and for the standard workaround
+    /// when the natural range is `n`-dependent.
+    ///
+    /// Returns a ``dict`` with keys ``status`` (``"vanishes"``, ``"nonzero"``
+    /// or ``"unknown"`` — though this version never produces ``"nonzero"``,
+    /// see the class docs), ``implies_sum_recurrence`` and
+    /// ``side_conditions``.
+    #[pyo3(signature = (limits))]
+    fn boundary_status(
+        &self,
+        py: Python<'_>,
+        limits: Vec<(Bound<'_, PyAny>, Bound<'_, PyAny>)>,
+    ) -> PyResult<Py<PyDict>> {
+        if limits.len() != self.index_ids.len() {
+            return Err(PyValueError::new_err(format!(
+                "expected {} (lo, hi) limit pairs, one per bound index, got {}",
+                self.index_ids.len(),
+                limits.len()
+            )));
+        }
+        let mut coerced: Vec<(ExprId, ExprId)> = Vec::with_capacity(limits.len());
+        for (i, (lo, hi)) in limits.iter().enumerate() {
+            let lo_id = coerce_limit(py, &self.pool, lo, &format!("limits[{i}][0]"))?;
+            let hi_id = coerce_limit(py, &self.pool, hi, &format!("limits[{i}][1]"))?;
+            coerced.push((lo_id, hi_id));
+        }
+        let (status, ranges) = {
+            let pool = self.pool.borrow(py);
+            let status = core_boundary_status_md(
+                &self.result,
+                self.term_id,
+                self.n_id,
+                &self.index_ids,
+                &coerced,
+                &pool.inner,
+            );
+            let ranges: Vec<String> = self
+                .index_ids
+                .iter()
+                .zip(coerced.iter())
+                .map(|(&idx, &(lo, hi))| {
+                    format!(
+                        "{} = {}..{}",
+                        pool.inner.display(idx),
+                        pool.inner.display(lo),
+                        pool.inner.display(hi)
+                    )
+                })
+                .collect();
+            (status, ranges)
+        };
+        let out = PyDict::new_bound(py);
+        out.set_item("status", status.tag())?;
+        out.set_item("implies_sum_recurrence", status.implies_sum_recurrence())?;
+        out.set_item("side_conditions", status.side_conditions(&ranges))?;
+        Ok(out.unbind())
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> String {
+        let pool = self.pool.borrow(py);
+        let coeffs: Vec<String> = self
+            .coeff_ids
+            .iter()
+            .map(|&id| pool.inner.display(id).to_string())
+            .collect();
+        let certs: Vec<String> = self
+            .cert_ids
+            .iter()
+            .map(|&id| pool.inner.display(id).to_string())
+            .collect();
+        format!(
+            "TelescopingMdCertificate(order={}, coeffs=[{}], certs=[{}])",
+            self.order,
+            coeffs.join(", "),
+            certs.join(", ")
+        )
+    }
+}
+
+/// `alkahest.experimental.telescope_md(term, n, indices, *, max_order=2, max_a_degree=2, max_cert_degree=2) -> TelescopingMdCertificate`
+///
+/// Creative telescoping (Apagodu–Zeilberger) for a proper hypergeometric term
+/// ``F(n, x_1, …, x_m)`` with an arbitrary number `m ≥ 1` of bound indices —
+/// the general form of :func:`telescope2d` (`m = 2`), which remains the
+/// semver-stable special case with its own dedicated function. Returns a
+/// **verified** certificate: the identity
+/// ``Σ_i a_i(n)·F(n+i,x) = Σ_t Δ_t(c_t·F)`` is re-checked exactly in
+/// ``Q(n,x_1,…,x_m)`` before it is returned.
+///
+/// ``indices`` is the list of bound-index symbols ``[x_1, …, x_m]``, in the
+/// order the returned certificate's ``certs()`` and any
+/// :meth:`~alkahest.experimental.TelescopingMdCertificate.boundary_status`
+/// call use. The supported summand class, the certificate ansatz's degree
+/// budget, the fixed (non-minimal) certificate denominator and the
+/// constant-box-only boundary analysis are exactly :func:`telescope2d`'s,
+/// generalized from two indices to `m`; see the Rust module docs
+/// (``alkahest_cas::holonomic::telescoping2d``) for the complete, honestly-
+/// stated scope, including the resource ceilings that keep a search with no
+/// certificate in reach a fast refusal rather than an unbounded computation
+/// as `m` or `max_cert_degree` grow — raising `m` or the certificate degree
+/// bound grows the search space (and the risk of hitting those ceilings)
+/// much faster than in the two-index case.
+///
+/// Raises :exc:`alkahest.HolonomicError` (``E-HOLO-040`` outside the
+/// supported class, ``E-HOLO-041`` when the bounded search is exhausted —
+/// including when a resource ceiling, not genuine non-existence, is the
+/// reason — ``E-HOLO-042`` for a malformed call, e.g. an empty ``indices``
+/// or a repeated symbol) rather than guessing.
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
+#[pyo3(
+    name = "telescope_md",
+    signature = (term, n, indices, *, max_order = 2, max_a_degree = 2, max_cert_degree = 2)
+)]
+fn py_telescope_md(
+    py: Python<'_>,
+    term: PyRef<PyExpr>,
+    n: PyRef<PyExpr>,
+    indices: Vec<PyRef<PyExpr>>,
+    max_order: usize,
+    max_a_degree: usize,
+    max_cert_degree: usize,
+) -> PyResult<PyTelescopingMdCertificate> {
+    let pool_py = term.pool.clone_ref(py);
+    let index_ids: Vec<ExprId> = indices.iter().map(|e| e.id).collect();
+    let opts = CoreTelescopingMdOpts {
+        max_order,
+        max_a_degree,
+        max_cert_degree,
+    };
+    let result = {
+        let pool = pool_py.borrow(py);
+        core_telescope_md_search(term.id, n.id, &index_ids, &pool.inner, &opts)
+            .map_err(telescoping2d_error_to_py)?
+    };
+    Ok(PyTelescopingMdCertificate {
+        order: result.order,
+        coeff_ids: result.coeffs.clone(),
+        cert_ids: result.certs.clone(),
+        pool: pool_py,
+        term_id: term.id,
+        n_id: n.id,
+        index_ids,
         result,
     })
 }
@@ -15035,6 +15256,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     // M4 — double-sum (Apagodu–Zeilberger) creative telescoping
     m.add_class::<PyTelescoping2dCertificate>()?;
     m.add_function(wrap_pyfunction!(py_telescope2d, m)?)?;
+    // M4 extension — arbitrary-m-bound-index generalization
+    m.add_class::<PyTelescopingMdCertificate>()?;
+    m.add_function(wrap_pyfunction!(py_telescope_md, m)?)?;
     // M6 — modular / p-adic evaluation of holonomic sequences
     m.add_class::<PyModularRecurrence>()?;
     m.add_class::<PyModularEvaluation>()?;

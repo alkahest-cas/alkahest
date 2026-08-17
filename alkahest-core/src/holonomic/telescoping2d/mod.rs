@@ -1,99 +1,156 @@
-//! Double-sum creative telescoping (Apagodu–Zeilberger) for proper
-//! hypergeometric terms `F(n, j, k)`.
+//! Multi-sum creative telescoping (Apagodu–Zeilberger) for proper
+//! hypergeometric terms `F(n, x_1, …, x_m)` with `m ≥ 1` bound indices.
 //!
 //! # Scope
 //!
 //! This is the multivariate generalization of `super::zeilberger` from one
-//! bound index (`k`) to two (`j`, `k`). It targets exactly the concrete goal
-//! named in the roadmap: **double sums over proper hypergeometric summands**
-//! — `F(n+1,j,k)/F(n,j,k)`, `F(n,j+1,k)/F(n,j,k)`, `F(n,j,k+1)/F(n,j,k)` all
-//! rational functions, the same shape [`super::hyperterm::ProperTerm`]
-//! recognizes for one index, generalized to three. It does **not** implement
-//! full Wegschaider-style reduction (arbitrary rational summands, arbitrary
-//! many indices) — that is a substantially larger undertaking and out of
-//! scope here; see the honest-limitations list below.
+//! bound index (`k`) to an arbitrary number `m` of them. It targets exactly
+//! the concrete goal named in the roadmap: **multi-sums over proper
+//! hypergeometric summands** — every shift ratio `F(…,x_t+1,…)/F(…,x_t,…)` a
+//! rational function, the same shape [`super::hyperterm::ProperTerm`]
+//! recognizes for one index, generalized to `m + 1`. It does **not**
+//! implement full Wegschaider-style reduction (arbitrary *rational*
+//! summands, or a minimal Gosper-style certificate denominator) — that
+//! remains a substantially larger undertaking and out of scope here; see the
+//! honest-limitations list below.
 //!
-//! Given `F(n,j,k)`, [`telescope2d`] searches for a recurrence order `J`,
-//! polynomial coefficients `a_0(n), …, a_J(n)` (not all zero) and two
-//! rational certificates `c_1, c_2 ∈ Q(n,j,k)` such that
+//! The two-bound-index case (`telescope2d`, `Telescoping2dResult`,
+//! `boundary_status_2d`, `BoundaryStatus2d`) is the module's original,
+//! semver-stable public surface and is unchanged in behavior. As of this
+//! extension it is a thin wrapper around the general `m`-index engine
+//! ([`telescope_md`], [`search::TelescopingMdResult`],
+//! [`boundary::boundary_status_md`], [`boundary::BoundaryStatusMd`]), which
+//! is the new public surface for `m ≠ 2` (including `m = 1`, degenerating to
+//! the classical single-sum shape, and `m ≥ 3`, genuinely new).
+//!
+//! Given `F(n,x_1,…,x_m)`, [`telescope_md`] searches for a recurrence order
+//! `J`, polynomial coefficients `a_0(n), …, a_J(n)` (not all zero) and `m`
+//! rational certificates `c_1, …, c_m ∈ Q(n,x)` such that
 //!
 //! ```text
-//! Σ_i a_i(n)·F(n+i,j,k) = Δ_j G_1(n,j,k) + Δ_k G_2(n,j,k),
-//! G_1 = c_1·F,  G_2 = c_2·F
+//! Σ_i a_i(n)·F(n+i,x) = Σ_t Δ_t G_t(n,x),   G_t = c_t·F
 //! ```
 //!
-//! — proving a recurrence for `S(n) = Σ_j Σ_k F(n,j,k)` once the *boundary*
-//! of the rectangle it is summed over is discharged (see [`boundary`]; the
-//! telescoping identity above says nothing about the sum on its own, exactly
-//! as in the single-index case).
+//! — proving a recurrence for `S(n) = Σ_{x_1} … Σ_{x_m} F(n,x)` once the
+//! *boundary* of the box it is summed over is discharged (see [`boundary`];
+//! the telescoping identity above says nothing about the sum on its own,
+//! exactly as in the single-index case).
 //!
 //! # Method: Apagodu–Zeilberger by undetermined coefficients
 //!
-//! There is no standard two-dimensional analogue of Gosper's normal form for
-//! a general proper hypergeometric `F(n,j,k)`, so — unlike the single-sum
-//! engine — this module does not attempt one. It follows the
+//! There is no standard multivariate analogue of Gosper's normal form for a
+//! general proper hypergeometric `F(n,x_1,…,x_m)`, so — unlike the
+//! single-sum engine — this module does not attempt one. It follows the
 //! Apagodu–Zeilberger presentation directly: posit a certificate ansatz of
 //! bounded polynomial degree over a *fixed* (ansatz-independent) denominator
 //! built from `F`'s own shift-ratio denominators, clear it, and solve the
 //! resulting *linear* system by Gaussian elimination over `Q`. See the
 //! `search` submodule for the full derivation and the specific, stated
 //! limitation this buys (the fixed denominator is not always the minimal one
-//! a genuine 2-D Gosper reduction would find).
+//! a genuine multivariate Gosper reduction would find).
 //!
 //! # Module layout
 //!
-//! - `poly` — plain sparse `Q[n,j,k]` / `Q(n,j,k)` arithmetic. Deliberately
-//!   simpler than `super::qfield`'s `Q(n)[k]` tower: the ansatz search never
-//!   needs a gcd, only linear algebra over a fixed denominator, so there is
-//!   no normal-form machinery here to get wrong.
-//! - `term` — `F(n,j,k)` recognition and exact shift ratios, the 3-index
-//!   generalization of `super::hyperterm`.
+//! - `poly` — plain sparse `Q[n,x_1,…,x_m]` / `Q(n,x_1,…,x_m)` arithmetic for
+//!   an arbitrary number of axes. Deliberately simpler than `super::qfield`'s
+//!   `Q(n)[k]` tower: the ansatz search never needs a gcd, only linear
+//!   algebra over a fixed denominator, so there is no normal-form machinery
+//!   here to get wrong.
+//! - `term` — `F(n,x_1,…,x_m)` recognition and exact shift ratios, the
+//!   `(m+1)`-index generalization of `super::hyperterm`.
 //! - `search` — the ansatz search itself, kept strictly separate from
 //!   verification: every candidate is re-derived and checked as an exact
-//!   `Q(n,j,k)` identity (see `search::verify_certificate`) before it is ever
-//!   returned, independent of how the search found it.
-//! - [`boundary`] — the 2-D boundary/corner analysis, on its own so a
-//!   returned certificate is checkable without reference to how it was
-//!   produced. Read its module docs first: the boundary of a rectangle is
-//!   **four one-dimensional strip sums**, not four corner-point evaluations,
-//!   and getting that distinction right is the substance of the module.
+//!   `Q(n,x)` identity (see `search::verify_certificate_md`) before it is
+//!   ever returned, independent of how the search found it.
+//! - [`boundary`] — the `m`-dimensional boundary/face analysis, on its own so
+//!   a returned certificate is checkable without reference to how it was
+//!   produced. Read its module docs first: the boundary of a box is **`2m`
+//!   `(m-1)`-dimensional face sums**, not `2^m` corner-point evaluations, and
+//!   getting that distinction right is the substance of the module.
 //!
 //! # Honest limitations (read before relying on this)
 //!
-//! - **Summands**: proper hypergeometric in `(n,j,k)` only — rational
-//!   prefactor times `z_j^j·z_k^k·w^n` times `Γ(a·n+b·j+c·k+d)^e` factors,
-//!   `a,b,c ∈ Z`. No more than two bound indices.
-//! - **Certificate ansatz**: bounded box degree in each of `n,j,k`
-//!   independently ([`Telescoping2dOpts`]), searched by plain
-//!   ascending nested loops — not the cost-ordered iterative deepening
-//!   `super::zeilberger` uses, so raising the bounds is not free the way it
-//!   is there.
+//! - **Summands**: proper hypergeometric in `(n,x_1,…,x_m)` only — rational
+//!   prefactor times `∏_t z_t^{x_t}·w^n` times `Γ(a·n+Σ_t b_t·x_t+d)^e`
+//!   factors, `a,b_t ∈ Z`. **No genuinely broader summand class is
+//!   supported**: a rational prefactor beyond what a ratio of the module's
+//!   own gamma factors already produces, a *sum* of several proper
+//!   hypergeometric terms, or a mixed radix/`q`-analogue combination are all
+//!   refused as [`Telescoping2dError::NotProperHypergeometric`], not
+//!   approximated.
+//! - **Bound index count**: arbitrary `m ≥ 1` via [`telescope_md`] /
+//!   [`search::telescope_md_search`] (`m = 2` — [`telescope2d`] — is the
+//!   original, semver-stable special case; `m = 1` degenerates cleanly to a
+//!   single-sum-shaped search, exercised by this module's own tests). Raising
+//!   `m` grows the ansatz search space fast — a certificate's numerator
+//!   spans a box of `(max_cert_degree + 1)^(m+1)` unknowns *per* certificate,
+//!   and there are `m` certificates — so higher `m` needs correspondingly
+//!   patient degree bounds; the search still only ever returns an exactly
+//!   re-verified certificate, never a false one, when bounds run out.
+//! - **Resource ceilings on the linear solve**: `rational_nullspace`'s exact
+//!   Gaussian elimination is `O(rows · cols²)` over unbounded-precision
+//!   rationals, and both dimensions grow with `m` and `cert_degree` well
+//!   past what the degree numbers alone suggest — at `m = 3`,
+//!   `cert_degree = 2` already means a ≈10 000-row, 245-unknown system whose
+//!   elimination step alone measured ≈47 seconds *per probe*, and
+//!   `cert_degree = 3` (770 unknowns) was still running after several
+//!   minutes. This is genuine arithmetic cost on a real linear system, not a
+//!   bug or an infinite loop, but a caller still needs protection from it:
+//!   `search::MAX_ANSATZ_UNKNOWNS` refuses outright any single probe whose
+//!   unknown count would exceed `400` (comfortably above every worked
+//!   example this module ships, including the `m = 3` multinomial-
+//!   coefficient example's `245`), and
+//!   `search::MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS` caps the *total* work
+//!   spent across every probe at or above 150 unknowns in one search call to
+//!   `300` — capping the number of genuinely expensive elimination attempts
+//!   to about one, regardless of how large `max_order` / `max_a_degree` /
+//!   `max_cert_degree` are, so a caller whose input has no certificate
+//!   within reach at all cannot be made to pay that cost over and over
+//!   across every `(order, a_degree)` combination tried. Both ceilings are
+//!   checked with cheap arithmetic before any polynomial construction for
+//!   the affected probe begins, and a probe skipped this way is reported
+//!   exactly like one the linear algebra found nothing for — except
+//!   [`Telescoping2dError::SearchExhausted`]'s message says explicitly when
+//!   a ceiling, not genuine non-existence, is why nothing was found, so
+//!   raising the search bounds further is not silently misrepresented as a
+//!   path to success. Neither ceiling affects the `m = 2` case: its default
+//!   search never builds a probe past ≈140 unknowns.
+//! - **Certificate ansatz**: bounded box degree in each of `n,x_1,…,x_m`
+//!   independently ([`Telescoping2dOpts`] / [`search::TelescopingMdOpts`]),
+//!   searched by plain ascending nested loops — not the cost-ordered
+//!   iterative deepening `super::zeilberger` uses, so raising the bounds is
+//!   not free the way it is there.
 //! - **Certificate denominator**: fixed from `F`'s raw (un-reduced) shift-
-//!   ratio denominators, not a minimal 2-D Gosper normal form. Sufficient for
-//!   the "binomial-type" examples this module is tested against; not proven
+//!   ratio denominators, not a minimal Gosper normal form. Sufficient for the
+//!   "binomial-type" examples this module is tested against; not proven
 //!   sufficient in general. A search that finds nothing reports
-//!   [`telescope2d_search`]'s `SearchExhausted`, never a false
-//!   certificate.
-//! - **Boundary**: only rectangles with **constant** (not `n`-dependent)
-//!   limits are supported, and only the sufficient "each strip vanishes
-//!   pointwise" criterion is checked — see [`boundary`]'s module docs for
-//!   why both are real restrictions and not just unfinished polish, and for
-//!   the natural workaround (`n`-independent bounds larger than the true
-//!   combinatorial support) that the worked example below uses.
-//! - **No explicit nonzero boundary term**: [`boundary::BoundaryStatus2d`] is
-//!   three-valued in shape (matching [`super::boundary::BoundaryStatus`]),
-//!   but this version never *produces*
-//!   [`boundary::BoundaryStatus2d::Nonzero`] — an unresolved boundary is
-//!   always [`boundary::BoundaryStatus2d::Unknown`], not an inhomogeneous
-//!   recurrence with an explicit `b(n)`.
+//!   `SearchExhausted`, never a false certificate. A genuine minimal
+//!   Gosper-style denominator (the roadmap's stated remaining-gap item 3) was
+//!   not attempted in this extension — see the crate-level changelog entry
+//!   for why (a real algorithm-design problem, not an engineering extension
+//!   of what is here).
+//! - **Boundary**: only boxes with **constant** (not `n`-dependent) limits
+//!   are supported, and only the sufficient "each face vanishes pointwise"
+//!   criterion is checked — see [`boundary`]'s module docs for why both are
+//!   real restrictions and not just unfinished polish, and for the natural
+//!   workaround (`n`-independent bounds larger than the true combinatorial
+//!   support) that the worked examples below use.
+//! - **No explicit nonzero boundary term**: [`boundary::BoundaryStatus2d`]
+//!   and [`boundary::BoundaryStatusMd`] are three-valued in shape (matching
+//!   [`super::boundary::BoundaryStatus`]), but neither version ever
+//!   *produces* their `Nonzero` variant — an unresolved boundary is always
+//!   `Unknown`, not an inhomogeneous recurrence with an explicit `b(n)`.
 
 pub mod boundary;
 mod poly;
 mod search;
 mod term;
 
-pub use boundary::{boundary_status_2d, BoundaryStatus2d};
-pub use search::{telescope2d_search, Telescoping2dOpts, Telescoping2dResult};
+pub use boundary::{boundary_status_2d, boundary_status_md, BoundaryStatus2d, BoundaryStatusMd};
+pub use search::{
+    telescope2d_search, telescope_md_search, Telescoping2dOpts, Telescoping2dResult,
+    TelescopingMdOpts, TelescopingMdResult,
+};
 
 use std::fmt;
 
@@ -155,7 +212,10 @@ impl crate::errors::AlkahestError for Telescoping2dError {
                  a certificate denominator this module's fixed-denominator ansatz cannot \
                  represent — this method does not apply"
             }
-            Telescoping2dError::InvalidInput(_) => "n, j and k must be three distinct symbols",
+            Telescoping2dError::InvalidInput(_) => {
+                "n and every bound index must be pairwise distinct symbols, and at least one \
+                 bound index must be supplied"
+            }
         })
     }
 }
@@ -171,6 +231,19 @@ pub fn telescope2d(
     pool: &crate::kernel::ExprPool,
 ) -> Result<Telescoping2dResult, Telescoping2dError> {
     telescope2d_search(term, n, j, k, pool, &Telescoping2dOpts::default())
+}
+
+/// Top-level entry point for `m ≥ 1` bound indices: search for and verify a
+/// creative-telescoping certificate for `term = F(n, indices[0], …,
+/// indices[m-1])`, with the default search bounds
+/// ([`TelescopingMdOpts::default`]).
+pub fn telescope_md(
+    term: crate::kernel::ExprId,
+    n: crate::kernel::ExprId,
+    indices: &[crate::kernel::ExprId],
+    pool: &crate::kernel::ExprPool,
+) -> Result<TelescopingMdResult, Telescoping2dError> {
+    search::telescope_md_search(term, n, indices, pool, &TelescopingMdOpts::default())
 }
 
 #[cfg(test)]
@@ -255,7 +328,7 @@ mod tests {
             assert_eq!(s(ni), rug::Rational::from(Integer::from(4).pow(ni as u32)));
         }
 
-        assert_annihilates(&result, n, &pool, &s, 0, 5);
+        assert_annihilates(&result.coeffs, n, &pool, &s, 0, 5);
     }
 
     /// **Genuinely non-separable worked example**: `F(n,j,k) = C(n,j)*C(j,k)`
@@ -292,7 +365,7 @@ mod tests {
             assert_eq!(s(ni), rug::Rational::from(Integer::from(3).pow(ni as u32)));
         }
 
-        assert_annihilates(&result, n, &pool, &s, 0, 5);
+        assert_annihilates(&result.coeffs, n, &pool, &s, 0, 5);
 
         // What `boundary.rs` can and cannot certify here, and why: `C(n,j)`'s
         // true support grows with `n` (it is non-zero for every `0 <= j <=
@@ -359,7 +432,7 @@ mod tests {
                 rug::Rational::from(Integer::from(2).pow(ni as u32) * Integer::from(3).pow(10))
             );
         }
-        assert_annihilates(&result, n, &pool, &s, 0, 5);
+        assert_annihilates(&result.coeffs, n, &pool, &s, 0, 5);
 
         let lo = pool.integer(0_i32);
         let hi = pool.integer(15_i32);
@@ -373,9 +446,11 @@ mod tests {
 
     /// `Σ_i a_i(n)·S(n+i) = 0` for `n = lo..=hi`, using the *exact* rational
     /// values `s` computes — never floats — for the sum itself, and reading
-    /// the (small-integer) recurrence coefficients back exactly.
+    /// the (small-integer) recurrence coefficients back exactly. Takes the
+    /// coefficient list directly (rather than a whole `Telescoping2dResult`)
+    /// so it is shared between the `m = 2` and general-`m` worked examples.
     fn assert_annihilates(
-        result: &Telescoping2dResult,
+        coeffs: &[ExprId],
         n: ExprId,
         pool: &ExprPool,
         s: &dyn Fn(i64) -> rug::Rational,
@@ -384,7 +459,7 @@ mod tests {
     ) {
         for ni in lo..=hi {
             let mut total = rug::Rational::from(0);
-            for (i, &c) in result.coeffs.iter().enumerate() {
+            for (i, &c) in coeffs.iter().enumerate() {
                 let ai = coeff_at_n(pool, c, n, ni + i as i64);
                 total += ai * s(ni + i as i64);
             }
@@ -407,5 +482,269 @@ mod tests {
             Telescoping2dError::NotProperHypergeometric(_)
         ));
         assert_eq!(crate::errors::AlkahestError::code(&err), "E-HOLO-040");
+    }
+
+    /// Exact `n!/(x!y!z!(n-x-y-z)!)` — the multinomial coefficient
+    /// (4-category composition of `n`) computed via the equivalent
+    /// nested-binomial product `C(n,x)·C(n-x,y)·C(n-x-y,z)`, which is `0`
+    /// whenever `x+y+z > n`, matching the symbolic term's own `1/Γ` vanishing
+    /// there. This is an independent check function — it does not reuse any
+    /// part of the solver.
+    fn multinom_i(n: i64, x: i64, y: i64, z: i64) -> Integer {
+        if x < 0 || y < 0 || z < 0 || x + y + z > n {
+            return Integer::from(0);
+        }
+        binom_i(n, x) * binom_i(n - x, y) * binom_i(n - x - y, z)
+    }
+
+    /// **Genuinely non-separable `m = 3` worked example**:
+    /// `F(n,x,y,z) = n!/(x!·y!·z!·(n-x-y-z)!)`, the multinomial coefficient
+    /// counting compositions of `n` into 4 labeled parts — built directly
+    /// from `factorial`, not as a product of binomials, so the parser sees
+    /// exactly 5 gamma factors (`Γ(n+1)`, `1/Γ(x+1)`, `1/Γ(y+1)`,
+    /// `1/Γ(z+1)`, `1/Γ(n-x-y-z+1)`) rather than the redundant 9 a naive
+    /// `C(n,x)·C(n-x,y)·C(n-x-y,z)` encoding would carry (two of that
+    /// encoding's factors are exact inverses of each other but this module's
+    /// unreduced `Rat3`/`RatM` arithmetic never cancels them, so picking the
+    /// simpler encoding is a real, deliberate choice — not cosmetic). All
+    /// three bound indices interact through the shared `n-x-y-z` term, so
+    /// this is not a product of independent-variable pieces: it genuinely
+    /// exercises the `m`-index generalization of the ansatz search (three
+    /// non-trivial, mutually coupled certificates) and the boundary module's
+    /// `2m = 6`-face analysis, not just the `m = 2` machinery run twice.
+    ///
+    /// `Σ_{x,y,z} n!/(x!y!z!(n-x-y-z)!) = 4^n` by the multinomial theorem
+    /// (the number of length-`n` strings over a 4-letter alphabet, grouped by
+    /// letter counts) — a genuine closed form, checked here by direct exact
+    /// summation over a box safely larger than the true support, not
+    /// assumed.
+    #[test]
+    fn multinomial_matches_known_closed_form() {
+        let pool = ExprPool::new();
+        let n = pool.symbol("n", Domain::Real);
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let z = pool.symbol("z", Domain::Real);
+        let rest = pool.add(vec![
+            n,
+            pool.mul(vec![x, pool.integer(-1_i32)]),
+            pool.mul(vec![y, pool.integer(-1_i32)]),
+            pool.mul(vec![z, pool.integer(-1_i32)]),
+        ]);
+        let inv_fact = |e: ExprId| pool.pow(pool.func("factorial", vec![e]), pool.integer(-1_i32));
+        let f = pool.mul(vec![
+            pool.func("factorial", vec![n]),
+            inv_fact(x),
+            inv_fact(y),
+            inv_fact(z),
+            inv_fact(rest),
+        ]);
+        let opts = TelescopingMdOpts {
+            max_order: 1,
+            max_a_degree: 1,
+            max_cert_degree: 2,
+        };
+        let result = search::telescope_md_search(f, n, &[x, y, z], &pool, &opts)
+            .expect("certificate for the 4-category multinomial coefficient");
+        assert_eq!(result.certs.len(), 3);
+
+        // Exact rational cross-check against real summed values: sum
+        // F(n,x,y,z) exactly over x,y,z = 0..15 (safely beyond the true
+        // support for n <= 6) and confirm it equals 4^n, then confirm the
+        // returned recurrence annihilates that exact sequence.
+        let s = |ni: i64| -> rug::Rational {
+            let mut acc = Integer::from(0);
+            for xx in 0..=15 {
+                for yy in 0..=15 {
+                    for zz in 0..=15 {
+                        acc += multinom_i(ni, xx, yy, zz);
+                    }
+                }
+            }
+            rug::Rational::from(acc)
+        };
+        for ni in 0..=6 {
+            assert_eq!(s(ni), rug::Rational::from(Integer::from(4).pow(ni as u32)));
+        }
+        assert_annihilates(&result.coeffs, n, &pool, &s, 0, 4);
+
+        // The true support (x+y+z <= n) grows with n, exactly as in the m=2
+        // non-separable example, so a constant box cannot soundly dominate
+        // it for every symbolic n: the boundary analysis must correctly
+        // refuse `Vanishes` here, not guess it.
+        let lo = pool.integer(0_i32);
+        let hi = pool.integer(15_i32);
+        let status = boundary_status_md(
+            &result,
+            f,
+            n,
+            &[x, y, z],
+            &[(lo, hi), (lo, hi), (lo, hi)],
+            &pool,
+        );
+        assert_eq!(
+            status.tag(),
+            "unknown",
+            "a constant box cannot soundly certify Vanishes when the true support grows with \
+             n; got {status:?}"
+        );
+    }
+
+    /// The same non-separable multinomial coupling as above, but with the
+    /// `n`-dependence factored out into a decoupled `4^n` (so the `(x,y,z)`
+    /// support is a genuine constant, independent of `n`) — the case where
+    /// the `m`-dimensional constant-box boundary analysis *can* certify
+    /// `Vanishes` for a real, non-separable triple sum.
+    ///
+    /// `F(n,x,y,z) = 4^n·10!/(x!y!z!(10-x-y-z)!)`; the `(x,y,z)` part sums to
+    /// `4^10` (the worked example above, at `n=10`), so
+    /// `S(n) = 4^n·4^10 = 4^(n+10)` — checked exactly, and the natural
+    /// boundary (the multinomial vanishes combinatorially outside `x+y+z <=
+    /// 10`, for *every* `n`, since none of the three bounds depend on `n`)
+    /// should be provably `Vanishes`.
+    #[test]
+    fn multinomial_fixed_support_boundary_vanishes() {
+        let pool = ExprPool::new();
+        let n = pool.symbol("n", Domain::Real);
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let z = pool.symbol("z", Domain::Real);
+        let four_n = pool.pow(pool.integer(4_i32), n);
+        let ten = pool.integer(10_i32);
+        let rest = pool.add(vec![
+            ten,
+            pool.mul(vec![x, pool.integer(-1_i32)]),
+            pool.mul(vec![y, pool.integer(-1_i32)]),
+            pool.mul(vec![z, pool.integer(-1_i32)]),
+        ]);
+        let inv_fact = |e: ExprId| pool.pow(pool.func("factorial", vec![e]), pool.integer(-1_i32));
+        let f = pool.mul(vec![
+            four_n,
+            pool.func("factorial", vec![ten]),
+            inv_fact(x),
+            inv_fact(y),
+            inv_fact(z),
+            inv_fact(rest),
+        ]);
+        let opts = TelescopingMdOpts {
+            max_order: 1,
+            max_a_degree: 1,
+            max_cert_degree: 2,
+        };
+        let result = search::telescope_md_search(f, n, &[x, y, z], &pool, &opts)
+            .expect("certificate for 4^n*10!/(x!y!z!(10-x-y-z)!)");
+
+        let inner: Integer = {
+            let mut acc = Integer::from(0);
+            for xx in 0..=10 {
+                for yy in 0..=10 {
+                    for zz in 0..=10 {
+                        acc += multinom_i(10, xx, yy, zz);
+                    }
+                }
+            }
+            acc
+        };
+        assert_eq!(inner, Integer::from(4).pow(10));
+        let s = |ni: i64| -> rug::Rational {
+            rug::Rational::from(inner.clone() * Integer::from(4).pow(ni.max(0) as u32))
+        };
+        for ni in 0..=6 {
+            assert_eq!(
+                s(ni),
+                rug::Rational::from(Integer::from(4).pow(ni as u32) * Integer::from(4).pow(10))
+            );
+        }
+        assert_annihilates(&result.coeffs, n, &pool, &s, 0, 4);
+
+        let lo = pool.integer(0_i32);
+        let hi = pool.integer(15_i32);
+        let status = boundary_status_md(
+            &result,
+            f,
+            n,
+            &[x, y, z],
+            &[(lo, hi), (lo, hi), (lo, hi)],
+            &pool,
+        );
+        assert_eq!(
+            status.tag(),
+            "vanishes",
+            "expected the natural (n-independent) boundary to vanish, got {status:?}"
+        );
+    }
+
+    /// `m = 1` sanity check: `telescope_md` with a single bound index should
+    /// find the same kind of certificate the classical single-sum engine
+    /// would, on the simplest possible input.
+    #[test]
+    fn telescope_md_single_index_smoke_test() {
+        let pool = ExprPool::new();
+        let n = pool.symbol("n", Domain::Real);
+        let k = pool.symbol("k", Domain::Real);
+        let f = pool.func("binomial", vec![n, k]);
+        let result = telescope_md(f, n, &[k], &pool).expect("certificate for C(n,k)");
+        assert_eq!(result.certs.len(), 1);
+    }
+
+    /// Regression test for the two resource ceilings in `search`
+    /// (`MAX_ANSATZ_UNKNOWNS`, the per-probe ceiling, and
+    /// `MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS`, the whole-search budget that
+    /// stops the *same* expensive probe size from being retried across every
+    /// `(order, a_degree)` combination): the triple-binomial-chain example
+    /// (`C(n,x)*C(x,y)*C(y,z)`) at the original, larger degree bounds this
+    /// test is named for was the case that, before these ceilings existed,
+    /// drove the search loop through several *repeated* multi-minute-or-worse
+    /// exact-rational Gaussian eliminations (`m = 3`, `cert_degree = 3` alone
+    /// needs 770 unknowns and a ≈15 000-row linear system; even the
+    /// `cert_degree = 2` step below that took ≈47 seconds *per probe*, and
+    /// the search loop would otherwise retry it for every one of six
+    /// `(order, a_degree)` combinations — see `MAX_ANSATZ_UNKNOWNS`'s and
+    /// `MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS`'s docs for the measurements).
+    /// This must now come back **bounded** — capped to roughly one expensive
+    /// elimination attempt, not six or more — with an honest
+    /// `SearchExhausted` naming the ceilings as the reason, not hang and not
+    /// silently under-search. The wall-clock bound here is deliberately loose
+    /// (this project's own standing practice for CI-flakiness — see
+    /// AGENTS.md, and this specific assertion needs extra slack since the
+    /// cumulative budget still permits one genuinely slow ≈30–50 second
+    /// elimination): its only job is to distinguish "bounded to about one
+    /// expensive attempt" from "unboundedly retries the same expensive
+    /// probe," not to pin an exact latency.
+    #[test]
+    fn chained_product_at_original_bounds_refuses_fast_via_resource_ceiling() {
+        let pool = ExprPool::new();
+        let n = pool.symbol("n", Domain::Real);
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let z = pool.symbol("z", Domain::Real);
+        let f = pool.mul(vec![
+            pool.func("binomial", vec![n, x]),
+            pool.func("binomial", vec![x, y]),
+            pool.func("binomial", vec![y, z]),
+        ]);
+        let opts = TelescopingMdOpts {
+            max_order: 2,
+            max_a_degree: 2,
+            max_cert_degree: 3,
+        };
+        let start = std::time::Instant::now();
+        let err = search::telescope_md_search(f, n, &[x, y, z], &pool, &opts)
+            .expect_err("this combination must be refused via the resource ceiling, not solved");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_secs() < 180,
+            "expected a bounded refusal (roughly one expensive elimination, not several), took \
+             {elapsed:?}"
+        );
+        assert!(matches!(err, Telescoping2dError::SearchExhausted(_)));
+        let Telescoping2dError::SearchExhausted(msg) = &err else {
+            unreachable!()
+        };
+        assert!(
+            msg.contains("MAX_ANSATZ_UNKNOWNS"),
+            "expected the SearchExhausted message to name the resource ceiling as the reason, \
+             got: {msg}"
+        );
     }
 }

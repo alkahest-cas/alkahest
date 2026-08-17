@@ -71,10 +71,32 @@ Double-sum (Apagodu–Zeilberger) creative telescoping (M4):
   for the derivation). Only **constant** (not ``n``-dependent) rectangles are
   supported, and only a sufficient "each strip vanishes pointwise" criterion
   is checked — real, stated restrictions, not unfinished polish
+- :func:`telescope_md` / :class:`TelescopingMdCertificate` (since 3.10) — the
+  general form of :func:`telescope2d` for an arbitrary number ``m >= 1`` of
+  bound indices, not just two: ``telescope_md(term, n, [x_1, ..., x_m])``
+  finds ``m`` rational certificates ``c_1, ..., c_m`` with
+  ``Σ_i a_i(n)·F(n+i,x) = Σ_t Δ_t(c_t·F)``, and
+  :meth:`~alkahest.experimental.TelescopingMdCertificate.boundary_status`
+  decides the box-sum boundary (``2m`` face sums, the ``m``-dimensional
+  generalization of the four-strip-sum result, **not** ``2**m`` corner
+  evaluations). Same proper-hypergeometric-only, fixed-denominator,
+  constant-box-only scope as ``telescope2d`` — no genuinely broader summand
+  class. Raising ``m`` or ``max_cert_degree`` grows the ansatz search space
+  fast (a certificate numerator is a box of
+  ``(max_cert_degree + 1)**(m + 1)`` unknowns, and there are ``m`` of them),
+  so this module also enforces two resource ceilings on the underlying exact
+  linear solve — a single search probe is refused outright above 400
+  unknowns, and the total work spent on probes at or above 150 unknowns in
+  one search call is capped to 300 — so a search with no certificate in
+  reach at all comes back as a fast, honest ``SearchExhausted`` (naming the
+  ceiling when that, not genuine non-existence, is why) rather than running
+  unboundedly long. See the Rust module docs
+  (``alkahest_cas::holonomic::telescoping2d``) for the complete, honestly-
+  stated scope and the exact ceiling values
 - This is a genuinely scoped-down engine: proper hypergeometric summands
-  only, no more than two bound indices, no general Wegschaider reduction, a
-  bounded-degree ansatz search rather than a minimal 2-D Gosper normal form.
-  See the Rust module docs for the complete, honest limitations list
+  only, no general Wegschaider reduction, a bounded-degree ansatz search
+  rather than a minimal Gosper normal form. See the Rust module docs for the
+  complete, honest limitations list
 
 Novelty filtering (:mod:`alkahest.experimental.novelty`):
 - :class:`RecurrenceClaim` — a recurrence in a normal form two presentations
@@ -140,6 +162,7 @@ from alkahest.alkahest import (
     QRootOfUnitySpecialization,
     QZeilbergerCertificate,
     Telescoping2dCertificate,
+    TelescopingMdCertificate,
     asymptotic_expand,
     # P1 item 10 — asymptotic expansion at scale
     coefficient_asymptotics,
@@ -159,6 +182,7 @@ from alkahest.alkahest import (
     q_zeilberger,
     series_solve,
     telescope2d,
+    telescope_md,
     z_transform,
 )
 
@@ -223,6 +247,7 @@ __all__ = [
     "RecurrenceClaim",
     # M4 — double-sum (Apagodu-Zeilberger) creative telescoping
     "Telescoping2dCertificate",
+    "TelescopingMdCertificate",
     "arg",
     "asymptotic_expand",
     # M5 — recurrence -> asymptotics
@@ -266,6 +291,7 @@ __all__ = [
     "solve",
     # M4 — double-sum (Apagodu-Zeilberger) creative telescoping
     "telescope2d",
+    "telescope_md",
     "to_jax",
     "to_lean",
     "to_stablehlo",
