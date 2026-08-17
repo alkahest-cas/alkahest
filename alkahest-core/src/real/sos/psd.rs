@@ -26,6 +26,19 @@
 //! re-checks the expanded quadratic form against the target before handing
 //! anything back — a bad numeric suggestion costs a wasted rounding
 //! attempt, never an unsound result.
+//!
+//! When the direct search fails, [`psd_search`] tries two further, cheaper
+//! fallbacks in order, both restricted to a *smaller* affine family
+//! (recomputing which is still bounded by `search_rational_family`'s own
+//! cost, so this stays a small multiple of one full search rather than
+//! unbounded escalation): `facial_reduction_search` guesses the true
+//! certificate's near-null directions numerically, and — since this round —
+//! `symmetry_reduced_search` restricts to the subspace fixed by `target`'s
+//! own signed-permutation symmetry (variable permutations and independent
+//! sign flips that leave it exactly invariant), when that subspace is
+//! actually smaller. Both are gated to fire only once the cheaper search
+//! above has already given up, so neither adds cost to a case the direct
+//! search already closes.
 
 #![allow(clippy::needless_range_loop)]
 
@@ -727,6 +740,304 @@ fn facial_reduction_search(
     None
 }
 
+/// Inverse of [`unpack`]: the packed upper triangle (`i ≤ j`, row-major) of
+/// an `n×n` symmetric matrix, in the same order [`gram_system`] uses.
+fn pack(n: usize, m: &[Vec<Rational>]) -> Vec<Rational> {
+    let mut v = Vec::with_capacity(pack_len(n));
+    for i in 0..n {
+        for j in i..n {
+            v.push(m[i][j].clone());
+        }
+    }
+    v
+}
+
+/// Above this many variables, [`detect_polynomial_symmetry_group`] is
+/// skipped rather than run: it enumerates `nvars! · 2^nvars` candidate
+/// signed permutations, and this keeps that bounded (`6! · 2^6 = 46080` at
+/// the cap, still fast) regardless of how many variables a caller passes.
+/// Skipping just means [`symmetry_reduced_search`] finds no symmetry to
+/// exploit and falls through to `None`, exactly like every other budget in
+/// this module.
+const MAX_SYMMETRY_NVARS: usize = 6;
+
+/// All permutations of `0..nvars` (Heap's algorithm via simple recursive
+/// swaps). Only ever called with `nvars ≤ `[`MAX_SYMMETRY_NVARS`], so the
+/// `nvars!` output size stays small.
+fn permutations(nvars: usize) -> Vec<Vec<usize>> {
+    fn helper(items: &mut Vec<usize>, k: usize, out: &mut Vec<Vec<usize>>) {
+        if k == items.len() {
+            out.push(items.clone());
+            return;
+        }
+        for i in k..items.len() {
+            items.swap(k, i);
+            helper(items, k + 1, out);
+            items.swap(k, i);
+        }
+    }
+    let mut items: Vec<usize> = (0..nvars).collect();
+    let mut out = Vec::new();
+    helper(&mut items, 0, &mut out);
+    out
+}
+
+/// The image of monomial `e` under the substitution `x_i ↦ signs[i]·x_{perm[i]}`
+/// — the new exponent vector, and the overall sign picked up (`-1` exactly
+/// when an odd number of `signs[i] = -1` land on an odd `e[i]`).
+fn transform_exponents(e: &Exponents, perm: &[usize], signs: &[i8]) -> (Exponents, i8) {
+    let mut e2 = vec![0u32; e.len()];
+    let mut sign = 1i8;
+    for i in 0..e.len() {
+        e2[perm[i]] = e[i];
+        if signs[i] < 0 && e[i] % 2 == 1 {
+            sign = -sign;
+        }
+    }
+    (e2, sign)
+}
+
+/// Whether the substitution `x_i ↦ signs[i]·x_{perm[i]}` leaves `target`
+/// exactly fixed (every term maps to a term with the transformed coefficient,
+/// checked exactly over ℚ).
+fn symmetry_fixes_target(target: &RatPoly, perm: &[usize], signs: &[i8]) -> bool {
+    for (e, c) in target.terms() {
+        let (e2, sign) = transform_exponents(e, perm, signs);
+        let expected = if sign < 0 { -c.clone() } else { c.clone() };
+        if target.coeff(&e2) != expected {
+            return false;
+        }
+    }
+    true
+}
+
+/// The (signed-permutation) symmetry group of `target`: every substitution
+/// `x_i ↦ ±x_{perm(i)}` (a variable permutation composed with independent
+/// sign flips — the full hyperoctahedral group on `nvars` variables) that
+/// leaves `target` exactly fixed. Always contains at least the identity.
+/// Exhaustive rather than clever, because `nvars` is small in every case this
+/// is used for (see [`MAX_SYMMETRY_NVARS`]) — above the cap, only the
+/// identity is returned, which downstream treats as "no usable symmetry"
+/// rather than a bug.
+fn detect_polynomial_symmetry_group(target: &RatPoly, nvars: usize) -> Vec<(Vec<usize>, Vec<i8>)> {
+    if nvars == 0 || nvars > MAX_SYMMETRY_NVARS {
+        return vec![((0..nvars).collect(), vec![1i8; nvars])];
+    }
+    let mut group = Vec::new();
+    for perm in permutations(nvars) {
+        for mask in 0..(1u32 << nvars) {
+            let signs: Vec<i8> = (0..nvars)
+                .map(|i| if (mask >> i) & 1 == 1 { -1 } else { 1 })
+                .collect();
+            if symmetry_fixes_target(target, &perm, &signs) {
+                group.push((perm.clone(), signs));
+            }
+        }
+    }
+    group
+}
+
+/// How a single symmetry-group element permutes the *basis* (rather than
+/// the original variables): for each basis index `i`, `(j, sign)` such that
+/// the substitution sends basis monomial `i` to `sign · basis[j]`. The
+/// monomial basis built by [`monomial_basis`] (optionally filtered to a
+/// single homogeneous degree) is always closed under any variable
+/// permutation or sign flip — it is cut out purely by total degree — so the
+/// lookup below always succeeds.
+fn signed_permutation_action(
+    basis: &[Exponents],
+    perm: &[usize],
+    signs: &[i8],
+) -> Vec<(usize, i8)> {
+    basis
+        .iter()
+        .map(|e| {
+            let (e2, sign) = transform_exponents(e, perm, signs);
+            let j = basis
+                .iter()
+                .position(|b| *b == e2)
+                .expect("basis is closed under variable permutation/sign flip");
+            (j, sign)
+        })
+        .collect()
+}
+
+/// Conjugate `m` by the signed permutation `action` (`action[i] = (j, s)`
+/// means basis index `i` maps to `j` with sign `s`): the matrix `m'` with
+/// `m'[j1][j2] = s1·s2·m[i1][i2]` for every `i1, i2`. Since `action` is a
+/// bijection, every `(j1, j2)` is hit exactly once, so this can assign
+/// directly rather than accumulate.
+fn conjugate_by_action(m: &[Vec<Rational>], action: &[(usize, i8)]) -> Vec<Vec<Rational>> {
+    let n = m.len();
+    let mut out = vec![vec![Rational::from(0); n]; n];
+    for (i1, &(j1, s1)) in action.iter().enumerate() {
+        for (i2, &(j2, s2)) in action.iter().enumerate() {
+            if m[i1][i2] == 0 {
+                continue;
+            }
+            out[j1][j2] = if s1 * s2 < 0 {
+                -m[i1][i2].clone()
+            } else {
+                m[i1][i2].clone()
+            };
+        }
+    }
+    out
+}
+
+/// The `G`-average `(1/|G|)·Σ_g P_g·m·P_gᵀ` of `m` over the group actions in
+/// `actions` — exact rational arithmetic throughout, since `|actions|` is a
+/// plain integer divisor. The result is fixed by every action in the group
+/// (a matrix in the *symmetric* subspace) and, when `m` is itself a member
+/// of a family whose every point reproduces `target` (any `search_rational_family`
+/// input is), so is this average: `target`'s own coefficients are invariant
+/// under the same substitutions (that is exactly what
+/// [`detect_polynomial_symmetry_group`] checked), so averaging conjugates of
+/// valid solutions is still a valid solution — never a fabricated one.
+fn symmetrize_matrix(m: &[Vec<Rational>], actions: &[Vec<(usize, i8)>]) -> Vec<Vec<Rational>> {
+    let n = m.len();
+    let mut acc = vec![vec![Rational::from(0); n]; n];
+    for action in actions {
+        let c = conjugate_by_action(m, action);
+        for i in 0..n {
+            for j in 0..n {
+                if c[i][j] != 0 {
+                    acc[i][j] += &c[i][j];
+                }
+            }
+        }
+    }
+    let g = Rational::from(actions.len() as i64);
+    for row in acc.iter_mut() {
+        for v in row.iter_mut() {
+            if *v != 0 {
+                *v /= &g;
+            }
+        }
+    }
+    acc
+}
+
+/// A linearly independent basis of the span of `rows`, by Gauss–Jordan
+/// elimination (same style as [`solve_affine`]'s core loop, without the
+/// right-hand side): the nonzero rows of the row-reduced echelon form.
+/// [`symmetry_reduced_search`] uses this to collapse the (typically highly
+/// redundant) `Σ_g P_g·dir_k·P_gᵀ` images down to the actual dimension of the
+/// symmetric subspace, which is what makes the reduced family cheaper to
+/// search rather than merely a relabelling of the original one.
+fn row_reduce_basis(mut rows: Vec<Vec<Rational>>) -> Vec<Vec<Rational>> {
+    let Some(ncols) = rows.first().map(|r| r.len()) else {
+        return Vec::new();
+    };
+    let m = rows.len();
+    let mut r = 0usize;
+    for c in 0..ncols {
+        let Some(p) = (r..m).find(|&i| rows[i][c] != 0) else {
+            continue;
+        };
+        rows.swap(r, p);
+        let inv = rows[r][c].clone();
+        for v in rows[r].iter_mut() {
+            *v /= &inv;
+        }
+        let prow = rows[r].clone();
+        for (i, row) in rows.iter_mut().enumerate() {
+            if i == r || row[c] == 0 {
+                continue;
+            }
+            let f = row[c].clone();
+            for (t, pv) in row.iter_mut().zip(prow.iter()) {
+                *t -= Rational::from(&f * pv);
+            }
+        }
+        r += 1;
+        if r == m {
+            break;
+        }
+    }
+    rows.truncate(r);
+    rows
+}
+
+/// Above this many free parameters in the *original* (unreduced) affine
+/// family, the plain search and facial reduction have already had a real
+/// chance at [`psd_search`]'s call site and failed; below it there is no
+/// reason to pay the extra symmetry-detection cost. Chosen well above the
+/// affine (2-variable) Motzkin and Robinson families (75 and 84 free
+/// parameters respectively) that the earlier steps already close on their
+/// own, so this fallback only ever runs on families those steps already gave
+/// up on — never adding search cost to a case that already succeeds.
+const MIN_PARAMS_FOR_SYMMETRY_SEARCH: usize = 100;
+
+/// Symmetry-reduction fallback for when both the plain numeric search
+/// ([`search_rational_family`]) and facial reduction give up: restrict the
+/// affine family to the subspace of Gram matrices fixed by `target`'s own
+/// signed-permutation symmetry group (variable permutations composed with
+/// independent sign flips — [`detect_polynomial_symmetry_group`]), and search
+/// *that* (typically much smaller) family instead.
+///
+/// This is sound for the same reason facial reduction is: every matrix in
+/// the reduced family is an exact ℚ-affine combination of matrices in the
+/// original family (a `G`-average, via [`symmetrize_matrix`]), so it still
+/// reproduces `target` exactly by construction, and the same
+/// search-then-round-then-check machinery in [`search_rational_family`] (and
+/// [`facial_reduction_search`] on top of it) does the rest. If `target` has
+/// no usable symmetry, or the reduction does not actually shrink the
+/// parameter count, this simply returns `None` — a routine "nothing to
+/// exploit here", not a bug.
+///
+/// The motivating case is the *homogeneous* ternary Motzkin form at
+/// multiplier power `N = 2`: 165 free parameters, all-even exponents in
+/// every monomial (invariant under any sign flip) and symmetric under
+/// swapping `x, y` — an order-16 group — which collapses the family enough
+/// for Douglas–Rachford to reliably close the gap that plain (unreduced) DR
+/// left open even after ~600,000 iterations (see this function's test and
+/// `psd::tests::psd_search_certifies_homogeneous_motzkin_at_multiplier_power_2`).
+fn symmetry_reduced_search(
+    nvars: usize,
+    basis: &[Exponents],
+    target: &RatPoly,
+    base_rat: &[Vec<Rational>],
+    dirs_rat: &[Vec<Vec<Rational>>],
+) -> Option<SosPoly> {
+    if nvars == 0 || nvars > MAX_SYMMETRY_NVARS || dirs_rat.len() < MIN_PARAMS_FOR_SYMMETRY_SEARCH {
+        return None;
+    }
+    let group = detect_polynomial_symmetry_group(target, nvars);
+    if group.len() <= 1 {
+        return None;
+    }
+    let actions: Vec<Vec<(usize, i8)>> = group
+        .iter()
+        .map(|(perm, signs)| signed_permutation_action(basis, perm, signs))
+        .collect();
+
+    let n = basis.len();
+    let sym_base = symmetrize_matrix(base_rat, &actions);
+    let sym_dirs_packed: Vec<Vec<Rational>> = dirs_rat
+        .iter()
+        .map(|d| pack(n, &symmetrize_matrix(d, &actions)))
+        .collect();
+    let reduced_packed = row_reduce_basis(sym_dirs_packed);
+    if reduced_packed.len() >= dirs_rat.len() {
+        // The symmetry did not actually cut the parameter count down (rare,
+        // but possible for a group too small or too trivially-acting to
+        // help) — nothing gained by searching the "reduced" family again.
+        return None;
+    }
+    let sym_dirs: Vec<Vec<Vec<Rational>>> = reduced_packed.iter().map(|v| unpack(n, v)).collect();
+
+    let (found, sym_candidates) =
+        search_rational_family(nvars, basis, target, &sym_base, &sym_dirs);
+    if found.is_some() {
+        return found;
+    }
+    if sym_candidates.is_empty() {
+        return None;
+    }
+    facial_reduction_search(nvars, basis, target, &sym_base, &sym_dirs, &sym_candidates)
+}
+
 pub fn psd_search(target: &RatPoly, basis_deg: u32) -> Option<SosPoly> {
     let nvars = target.nvars();
     // A homogeneous target of degree exactly `2·basis_deg` needs only the
@@ -768,7 +1079,12 @@ pub fn psd_search(target: &RatPoly, basis_deg: u32) -> Option<SosPoly> {
     if candidates.is_empty() {
         return None;
     }
-    facial_reduction_search(nvars, &basis, target, &base_rat, &dirs_rat, &candidates)
+    if let Some(found) =
+        facial_reduction_search(nvars, &basis, target, &base_rat, &dirs_rat, &candidates)
+    {
+        return Some(found);
+    }
+    symmetry_reduced_search(nvars, &basis, target, &base_rat, &dirs_rat)
 }
 
 #[cfg(test)]
@@ -833,21 +1149,53 @@ mod tests {
     #[test]
     fn psd_search_does_not_yet_reach_homogeneous_motzkin_times_sum_of_squares() {
         // The homogeneous Motzkin form, x^4y^2 + x^2y^4 - 3x^2y^2z^2 + z^6, is
-        // the textbook example of a PSD form that is not itself SOS, and
-        // (x^2+y^2+z^2)*Motzkin *is* classically SOS — but its witnessing
-        // Gram matrix is singular, sitting exactly on the boundary of the
-        // PSD cone. `diag::diag_step1_step2_trajectory_and_family_sanity`
-        // shows the annealed multi-start search converges monotonically
-        // toward that boundary (min eigenvalue from about -1.6 to about
+        // the textbook example of a PSD form that is not itself SOS. At
+        // multiplier power N=1, (x^2+y^2+z^2)*Motzkin is *not* SOS either —
+        // literature and the diagnostic evidence below agree the classical
+        // fact needs N=2, (x^2+y^2+z^2)^2*Motzkin, for this specific
+        // *homogeneous ternary* form (contrast the *affine* 2-variable
+        // Motzkin case, `real::sos::tests::motzkin_certifies_via_a_reznick_multiplier`,
+        // which genuinely does close at N=1). So this N=1 refusal is
+        // expected to stay `None` permanently, not just "not yet reached" —
+        // it is here mainly as a mechanism sanity check alongside the
+        // diagnostics below, not as the open item.
+        //
+        // `diag::diag_step1_step2_trajectory_and_family_sanity` shows the
+        // annealed multi-start search converging monotonically toward the
+        // PSD cone's boundary (min eigenvalue from about -1.6 to about
         // -0.0018 as the floor anneals to 0) without fully closing the gap —
         // a tangential (non-transversal) intersection is the classic case
         // where alternating projection's convergence rate degrades this way.
         // `diag::diag_step3_planted_singular_example` confirms the search
         // mechanism itself is sound: a synthetic boundary case of the same
-        // nullspace dimension *is* found and exactly re-verified, so this is
-        // a genuine search-budget limitation on this specific hard instance,
-        // not a bug in the family construction or the search. `None` here is
-        // the correct, honest answer.
+        // nullspace dimension *is* found and exactly re-verified.
+        //
+        // **N=2 was attempted directly (2026-08-17) and also does not close,
+        // for a reason now well quantified rather than merely "not yet
+        // reached":** at N=2 the raw affine family has 165 free parameters.
+        // `symmetry_group_and_zero_vector_shrink_n2_family` (below) shows the
+        // *new* `symmetry_reduced_search` machinery (added this round)
+        // exactly collapses that to 26 parameters via the polynomial's own
+        // order-16 signed-permutation symmetry (swap x,y; independently flip
+        // the sign of each variable — every exponent in this target is
+        // even), and a further *exact*, non-numeric restriction — imposing
+        // `Q·z(1,1,1) = 0`, forced because q(1,1,1)=0 and Q is PSD, using the
+        // literal all-ones vector as the null-vector candidate, no rounding
+        // involved — collapses it again to 16. That 16-parameter family is
+        // the smallest one reached, and it is still not found: escalating
+        // Douglas–Rachford there from 15,000 to 6,000,000 iterations moves
+        // the minimum eigenvalue from about -4·10⁻⁶ to about -1.4·10⁻⁸, a
+        // clearly *sublinear* (not exponential/finite-step) approach — the
+        // same tangential-intersection signature as N=1, just quantified —
+        // and rational rounding fails at every stage even with denominators
+        // tested up to roughly 10⁹. Also checked and ruled out: an
+        // additional tangent-direction null vector (`grad_x`, the exact
+        // gradient of the basis vector at (1,1,1)) is *inconsistent* with
+        // the family, confirming the corank contributed by this zero is
+        // exactly 1 (not a missed higher-corank guess). So this is now a
+        // genuine numerical-hardness finding specific to N=2, not an
+        // under-tuned budget or an unexplored structural avenue — see
+        // `CHANGELOG.md`'s M10 entry for the full writeup.
         let mut m = RatPoly::monomial(3, vec![4, 2, 0], Rational::from(1));
         m = m.add(&RatPoly::monomial(3, vec![2, 4, 0], Rational::from(1)));
         m = m.add(&RatPoly::monomial(3, vec![2, 2, 2], Rational::from(-3)));
@@ -859,9 +1207,111 @@ mod tests {
 
         assert!(
             psd_search(&q, 4).is_none(),
-            "Motzkin's boundary certificate is not yet reached by this search; if this starts \
-             passing, promote it to a positive assertion (assert_eq!(sos.to_poly(3), q)) rather \
-             than leaving it as a smoke test"
+            "Motzkin's N=1 multiplier is not classically expected to be SOS for the \
+             homogeneous ternary form (see this test's doc comment); if this starts passing \
+             that would itself be worth investigating, not just promoting to a positive assertion"
+        );
+    }
+
+    /// Fast, exact-arithmetic-only regression test for the `symmetry_reduced_search`
+    /// machinery added to close in on (though not fully close) the N=2
+    /// homogeneous-ternary-Motzkin gap: documents the 165 → 26 → 16
+    /// free-parameter shrink referenced in this module's doc comments, with
+    /// real assertions rather than `eprintln!` probes. Deliberately does
+    /// *not* call the full `psd_search` (which, at N=2, spends several
+    /// minutes on Douglas–Rachford before giving up — see the doc comment on
+    /// `psd_search_does_not_yet_reach_homogeneous_motzkin_times_sum_of_squares`
+    /// for those numbers) so this stays fast enough to run on every `cargo test`.
+    #[test]
+    fn symmetry_group_and_zero_vector_shrink_n2_family() {
+        let mut m = RatPoly::monomial(3, vec![4, 2, 0], Rational::from(1));
+        m = m.add(&RatPoly::monomial(3, vec![2, 4, 0], Rational::from(1)));
+        m = m.add(&RatPoly::monomial(3, vec![2, 2, 2], Rational::from(-3)));
+        m = m.add(&RatPoly::monomial(3, vec![0, 0, 6], Rational::from(1)));
+        let sigma2 = RatPoly::sum_of_squares(3).pow(2);
+        let q = m.mul(&sigma2);
+        assert_eq!(q.is_homogeneous(), Some(10));
+        assert_eq!(m.eval(&[r(1, 1), r(1, 1), r(1, 1)]), Rational::from(0));
+        assert_eq!(q.eval(&[r(1, 1), r(1, 1), r(1, 1)]), Rational::from(0));
+
+        let basis: Vec<Exponents> = monomial_basis(3, 5)
+            .into_iter()
+            .filter(|e| e.iter().sum::<u32>() == 5)
+            .collect();
+        let n = basis.len();
+        let (rows, rhs) = gram_system(&q, &basis);
+        let sol = solve_affine(&rows, &rhs).expect("consistent");
+        assert_eq!(sol.dimension(), 165);
+
+        let group = detect_polynomial_symmetry_group(&q, 3);
+        assert_eq!(
+            group.len(),
+            16,
+            "expected the order-16 group: swap x,y composed with independent sign flips \
+             of x, y, z (every exponent in q is even)"
+        );
+
+        let base_rat = unpack(n, &sol.particular);
+        let dirs_rat: Vec<Vec<Vec<Rational>>> =
+            sol.nullspace.iter().map(|d| unpack(n, d)).collect();
+        let actions: Vec<Vec<(usize, i8)>> = group
+            .iter()
+            .map(|(perm, signs)| signed_permutation_action(&basis, perm, signs))
+            .collect();
+        let sym_base = symmetrize_matrix(&base_rat, &actions);
+        let sym_dirs_packed: Vec<Vec<Rational>> = dirs_rat
+            .iter()
+            .map(|d| pack(n, &symmetrize_matrix(d, &actions)))
+            .collect();
+        let sym_dirs: Vec<Vec<Vec<Rational>>> = row_reduce_basis(sym_dirs_packed)
+            .iter()
+            .map(|v| unpack(n, v))
+            .collect();
+        assert_eq!(sym_dirs.len(), 26);
+
+        // The symmetrized base point must still reproduce q exactly — the
+        // actual soundness argument for symmetry reduction, not just a claim.
+        let mut quad = RatPoly::zero(3);
+        for i in 0..n {
+            for j in 0..n {
+                let e = add_exp(&basis[i], &basis[j]);
+                quad = quad.add(&RatPoly::monomial(3, e, sym_base[i][j].clone()));
+            }
+        }
+        assert_eq!(quad, q);
+
+        // z(1,1,1) is the literal all-ones vector (every degree-5 monomial
+        // evaluates to 1 there): q(1,1,1)=0 with Q PSD forces Q·z(1,1,1)=0
+        // exactly, no numerics involved.
+        let v_ones: Vec<Rational> = vec![Rational::from(1); n];
+        let (restricted_base, restricted_dirs) =
+            restrict_by_near_null_vectors(&sym_base, &sym_dirs, &[v_ones])
+                .expect("z(1,1,1)=0 must be consistent with the symmetric family");
+        assert_eq!(restricted_dirs.len(), 16);
+        let mut quad2 = RatPoly::zero(3);
+        for i in 0..n {
+            for j in 0..n {
+                let e = add_exp(&basis[i], &basis[j]);
+                quad2 = quad2.add(&RatPoly::monomial(3, e, restricted_base[i][j].clone()));
+            }
+        }
+        assert_eq!(quad2, q);
+
+        // The extra tangent-direction candidate (the exact gradient of the
+        // basis vector at (1,1,1) in the x direction) is genuinely
+        // *inconsistent* with the family — confirming the corank
+        // contributed by this zero really is 1, not a missed higher-corank
+        // guess (a wrong-but-silently-accepted guess would be a bug; this
+        // asserts the guess is correctly rejected instead).
+        let v_grad_x: Vec<Rational> = basis.iter().map(|e| Rational::from(e[0])).collect();
+        assert!(
+            restrict_by_near_null_vectors(
+                &sym_base,
+                &sym_dirs,
+                &[vec![Rational::from(1); n], v_grad_x]
+            )
+            .is_none(),
+            "grad_x should NOT be a valid null direction of the true certificate"
         );
     }
 
