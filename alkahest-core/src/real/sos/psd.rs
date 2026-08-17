@@ -33,7 +33,7 @@ use super::cert::SosPoly;
 use super::gram::monomial_basis;
 use super::linalg::{psd_decompose, solve_affine};
 use super::ratpoly::{Exponents, RatPoly};
-use super::sdp::{min_eigenvalue, Family};
+use super::sdp::{min_eigenvalue, smallest_magnitude_eigenvectors, Family};
 use rug::Rational;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -307,9 +307,49 @@ const ROUNDING_CANDIDATES: usize = 6;
 /// this keeps that bounded regardless of how large a monomial basis the
 /// caller asks for. A skip here returns `None` — "not found within
 /// budget", not "not SOS" — exactly like every other budget in this module.
-const MAX_FREE_PARAMETERS: usize = 110;
+const MAX_FREE_PARAMETERS: usize = 200;
 
-/// Run the annealing schedule from a single starting point.
+/// Over-relaxation parameters tried for the Douglas–Rachford polish, in
+/// increasing order of overshoot. `1.0` is plain (non-relaxed)
+/// Douglas–Rachford; the larger value is the standard mitigation for a
+/// stall at a shallow tangential approach to the intersection (see
+/// `Family::douglas_rachford_from`'s doc comment). Kept to two values
+/// deliberately: [`DR_ITERS`] below is what actually closes the gap on hard
+/// (boundary-only) instances — see its doc comment — and that only stays
+/// affordable across [`DR_POLISH_CANDIDATES`] starting points *and* several
+/// facial-reduction attempts ([`FACIAL_SEARCH_BUDGET`]) if the spread here
+/// is kept small.
+const DR_LAMBDAS: &[f64] = &[1.0];
+
+/// Iterations run per Douglas–Rachford attempt. Reflections make *some*
+/// progress every iteration on a boundary-only (tangential) intersection,
+/// but the rate is still only sublinear there — a diagnostic run on the
+/// homogeneous Motzkin family (165 free parameters) needed on the order of
+/// `10^4` iterations to bring the minimum eigenvalue from `~-2·10⁻³` (where
+/// the alternating-projection annealing schedule alone stalls) down to
+/// `~-5·10⁻⁶`, which is close enough that rational rounding at
+/// [`DENOM_CAPS`]'s larger denominators reliably lands exactly on the true
+/// (small-denominator) certificate. This is run only on the best few
+/// annealed candidates (see [`DR_POLISH_CANDIDATES`]), not every start, to
+/// keep that cost affordable.
+const DR_ITERS: usize = 15_000;
+
+/// How many of the (cheap, alternating-projection-only) annealed candidates
+/// get the expensive Douglas–Rachford polish. Bounded well below the total
+/// number of starts multistart annealing tries — see [`DR_ITERS`] for why
+/// the polish itself is not cheap — since a candidate's annealed minimum
+/// eigenvalue is already a good proxy for whether it is worth polishing:
+/// the polish improves a near-feasible point, it does not rescue a
+/// genuinely bad one.
+const DR_POLISH_CANDIDATES: usize = 2;
+
+/// Run the alternating-projection annealing schedule from a single starting
+/// point. This alone reaches most cases outright, and gets *close* even on
+/// the hard boundary-only ones (on the homogeneous Motzkin case
+/// specifically, `diag::diag_step1_step2_trajectory_and_family_sanity`
+/// shows it running the minimum eigenvalue from about −1.6 to about
+/// −0.0018 and no further) — closing that last "close but stalled" stretch
+/// is what the Douglas–Rachford polish in [`multistart_anneal`] is for.
 fn anneal_from(family: &Family, start: Vec<f64>) -> Vec<f64> {
     let mut t = start;
     for &floor in FLOOR_SCHEDULE {
@@ -321,13 +361,27 @@ fn anneal_from(family: &Family, start: Vec<f64>) -> Vec<f64> {
 }
 
 /// Try the annealing schedule from several starting points — the
-/// deterministic `t = 0`, plus a handful of random restarts — and return
-/// every result reached, best (highest minimum eigenvalue of `family.at(t)`)
-/// first. See [`FLOOR_SCHEDULE`]'s and [`RANDOM_RESTARTS`]'s doc comments
-/// for why both are needed: annealing handles boundary-only intersections
-/// that a fixed floor stalls on, and multiple starts hedge against any
-/// single trajectory converging to a merely-locally-nearest pair when the
-/// family and the PSD cone do intersect elsewhere.
+/// deterministic `t = 0`, plus a handful of random restarts — then hand the
+/// best few results to a deep Douglas–Rachford polish (see
+/// `Family::douglas_rachford_from` and [`DR_ITERS`]'s doc comment), and
+/// return every result reached, best (highest minimum eigenvalue of
+/// `family.at(t)`) first.
+///
+/// See [`FLOOR_SCHEDULE`]'s and [`RANDOM_RESTARTS`]'s doc comments for why
+/// both annealing and multiple starts are needed: annealing handles
+/// boundary-only intersections that a fixed floor stalls on, and multiple
+/// starts hedge against any single trajectory converging to a merely
+/// locally-nearest pair when the family and the PSD cone do intersect
+/// elsewhere. The Douglas–Rachford polish is applied only to the best few
+/// annealed candidates, not every start — it is the standard reflection-based
+/// upgrade for exactly the "close but stalled" signature annealing alone
+/// leaves on a *tangential* (non-transversal) intersection (a singular
+/// witnessing Gram matrix — the case for tight certificates like Motzkin's),
+/// but running it to the depth that actually closes such a gap ([`DR_ITERS`])
+/// is too expensive to spend on every start indiscriminately; a candidate's
+/// annealed eigenvalue is already a good proxy for which ones are worth it.
+/// Polishing can never make a candidate worse — its own annealed point is
+/// always kept as a floor.
 fn multistart_anneal(family: &Family, dim: usize) -> Vec<Vec<f64>> {
     let mut starts: Vec<Vec<f64>> = vec![vec![0.0; dim]];
     let mut rng = SplitMix64::new(0xC0FFEE_D15EA5E5);
@@ -345,6 +399,19 @@ fn multistart_anneal(family: &Family, dim: usize) -> Vec<Vec<f64>> {
         })
         .collect();
     results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    for (eig, t) in results.iter_mut().take(DR_POLISH_CANDIDATES) {
+        for &lambda in DR_LAMBDAS {
+            if let Some(cand) = family.douglas_rachford_from(t.clone(), 0.0, lambda, DR_ITERS) {
+                let cand_eig = min_eigenvalue(&family.at(&cand));
+                if cand_eig > *eig {
+                    *eig = cand_eig;
+                    *t = cand;
+                }
+            }
+        }
+    }
+    results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     results.into_iter().map(|(_, t)| t).collect()
 }
 
@@ -360,6 +427,306 @@ fn multistart_anneal(family: &Family, dim: usize) -> Vec<Vec<f64>> {
 /// always sound: the returned [`SosPoly`] is checked to expand back to
 /// exactly `p` before it is returned, using the same exact rational
 /// arithmetic as everywhere else in this subsystem.
+/// Build `base + Σ t_k·dirs[k]` exactly, for a rational affine family whose
+/// members are already unpacked `n×n` matrices (as opposed to
+/// `linalg::AffineSolution::at`, which works in the packed upper-triangle
+/// representation `gram_system` uses).
+fn rat_family_at(
+    base: &[Vec<Rational>],
+    dirs: &[Vec<Vec<Rational>>],
+    t: &[Rational],
+) -> Vec<Vec<Rational>> {
+    let n = base.len();
+    let mut q = base.to_vec();
+    for (tk, dir) in t.iter().zip(dirs.iter()) {
+        if *tk == 0 {
+            continue;
+        }
+        for i in 0..n {
+            for j in 0..n {
+                if dir[i][j] != 0 {
+                    q[i][j] += Rational::from(tk * &dir[i][j]);
+                }
+            }
+        }
+    }
+    q
+}
+
+/// Search the exact rational affine family `base_rat + Σ t_k·dirs_rat[k]`
+/// (already unpacked `n×n` matrices) for a point that is both PSD and
+/// reproduces `target` over `basis` — the shared core of [`psd_search`],
+/// factored out so [`facial_reduction_search`] can run it again on a
+/// *smaller* family without duplicating the numeric-search/rounding logic.
+///
+/// Returns the certificate if found, together with the best numeric
+/// candidate matrices tried (nearest-to-feasible first) regardless of
+/// whether a certificate was found — [`facial_reduction_search`] reads
+/// near-null eigenvectors off those candidates, so they are worth handing
+/// back even from a `None` result.
+fn search_rational_family(
+    nvars: usize,
+    basis: &[Exponents],
+    target: &RatPoly,
+    base_rat: &[Vec<Rational>],
+    dirs_rat: &[Vec<Vec<Rational>>],
+) -> (Option<SosPoly>, Vec<Vec<Vec<f64>>>) {
+    let try_point = |t: &[Rational]| -> Option<SosPoly> {
+        let q = rat_family_at(base_rat, dirs_rat, t);
+        let decomp = psd_decompose(&q)?;
+        let mut sos = SosPoly::default();
+        for (d, v) in decomp {
+            if d <= 0 {
+                continue;
+            }
+            let mut square = RatPoly::zero(nvars);
+            for (u, c) in v.iter().enumerate() {
+                if *c != 0 {
+                    square = square.add(&RatPoly::monomial(nvars, basis[u].clone(), c.clone()));
+                }
+            }
+            sos.push(d, square);
+        }
+        // Defense in depth: the affine parametrisation guarantees this by
+        // construction, but the certificate returned here is re-verified
+        // once more at the call site (`PositivityCertificate::verify`), and
+        // this module never hands back something it has not itself checked.
+        if sos.to_poly(nvars) == *target {
+            Some(sos)
+        } else {
+            None
+        }
+    };
+
+    // No freedom at all: the unique solution is the only candidate.
+    if dirs_rat.is_empty() {
+        return (try_point(&[]), Vec::new());
+    }
+    if dirs_rat.len() > MAX_FREE_PARAMETERS {
+        return (None, Vec::new());
+    }
+
+    let base: Vec<Vec<f64>> = base_rat
+        .iter()
+        .map(|row| row.iter().map(rat_to_f64).collect())
+        .collect();
+    let dirs: Vec<Vec<Vec<f64>>> = dirs_rat
+        .iter()
+        .map(|dir| {
+            dir.iter()
+                .map(|row| row.iter().map(rat_to_f64).collect())
+                .collect()
+        })
+        .collect();
+    // Search in an orthonormal basis of the same directions — see
+    // `orthonormalize`'s doc comment for why the raw nullspace basis makes
+    // the alternating projection stall in practice.
+    let (ortho_dirs, r) = orthonormalize(&dirs);
+    let family = Family::new(base, ortho_dirs);
+    let dim = dirs.len();
+
+    let candidates = multistart_anneal(&family, dim);
+    let candidate_matrices: Vec<Vec<Vec<f64>>> = candidates.iter().map(|s| family.at(s)).collect();
+
+    for s in candidates.iter().take(ROUNDING_CANDIDATES) {
+        let Some(t) = back_substitute_upper(&r, s) else {
+            continue;
+        };
+        for &max_den in DENOM_CAPS {
+            let t_rat: Option<Vec<Rational>> =
+                t.iter().map(|x| round_to_rational(*x, max_den)).collect();
+            let Some(t_rat) = t_rat else { continue };
+            if let Some(sos) = try_point(&t_rat) {
+                return (Some(sos), candidate_matrices);
+            }
+        }
+    }
+    (None, candidate_matrices)
+}
+
+/// Number of near-null eigenvector directions imposed at once, tried in
+/// increasing order — the guessed *corank* of the true certificate's
+/// witnessing Gram matrix.
+const FACIAL_CORANK_GUESSES: &[usize] = &[1, 2, 3];
+
+/// Denominator caps tried when rounding a near-null eigenvector to an exact
+/// rational direction. Coarser than [`DENOM_CAPS`]: facial reduction is a
+/// *guess* at the true certificate's nullspace, and a wrong guess is cheap
+/// to detect (`solve_affine`, or the final exact re-expansion check, simply
+/// finds nothing) — so there is no benefit in trying many denominators here,
+/// and [`DENOM_CAPS`]'s full spread is tried on the *reduced* family once a
+/// guess produces one.
+const FACIAL_DENOM_CAPS: &[i64] = &[64, 4096];
+
+/// How many of the best numeric candidates (matrices) to read near-null
+/// directions off of.
+const FACIAL_CANDIDATES: usize = 2;
+
+/// Total number of reduced-family searches [`facial_reduction_search`] will
+/// actually run (across every candidate/corank/denominator combination
+/// tried) — each one reruns the full numeric search machinery on a smaller
+/// family, so this bounds the added cost to a small multiple of one
+/// [`search_rational_family`] call, regardless of how many guesses are
+/// considered.
+const FACIAL_SEARCH_BUDGET: usize = 3;
+
+/// Given a rational vector `v` — a *guessed* near-null direction of the
+/// affine family's true PSD certificate — impose `Q(t)·v = 0` on the family
+/// `base_rat + Σ t_k·dirs_rat[k]`, and return the resulting (generally
+/// smaller) affine family in the same unpacked `n×n`-matrix representation.
+/// `None` means the guess is inconsistent with the family — a routine "try
+/// a different guess" outcome, not a bug: `dirs_rat`'s directions already
+/// satisfy `z^T Q z = target` for any `t` by construction, and imposing
+/// `Q(t)·v = 0` only ever cuts that same solution set down (to the sub-family
+/// where a specific vector actually is a nullspace direction), never
+/// enlarges or corrupts it — so any family this returns still reproduces
+/// `target` exactly, for the same reason the original one does.
+#[allow(clippy::type_complexity)]
+fn restrict_by_near_null_vectors(
+    base_rat: &[Vec<Rational>],
+    dirs_rat: &[Vec<Vec<Rational>>],
+    vs: &[Vec<Rational>],
+) -> Option<(Vec<Vec<Rational>>, Vec<Vec<Vec<Rational>>>)> {
+    let n = base_rat.len();
+    let dim = dirs_rat.len();
+    let mut rows = Vec::with_capacity(vs.len() * n);
+    let mut rhs = Vec::with_capacity(vs.len() * n);
+    for v in vs {
+        for i in 0..n {
+            let mut row = vec![Rational::from(0); dim];
+            for (k, dir) in dirs_rat.iter().enumerate() {
+                let mut acc = Rational::from(0);
+                for j in 0..n {
+                    if dir[i][j] != 0 && v[j] != 0 {
+                        acc += Rational::from(&dir[i][j] * &v[j]);
+                    }
+                }
+                row[k] = acc;
+            }
+            let mut b = Rational::from(0);
+            for j in 0..n {
+                if base_rat[i][j] != 0 && v[j] != 0 {
+                    b += Rational::from(&base_rat[i][j] * &v[j]);
+                }
+            }
+            rows.push(row);
+            rhs.push(-b);
+        }
+    }
+    let sol = solve_affine(&rows, &rhs)?;
+
+    let mut new_base = base_rat.to_vec();
+    for (k, tk) in sol.particular.iter().enumerate() {
+        if *tk == 0 {
+            continue;
+        }
+        for i in 0..n {
+            for j in 0..n {
+                if dirs_rat[k][i][j] != 0 {
+                    new_base[i][j] += Rational::from(tk * &dirs_rat[k][i][j]);
+                }
+            }
+        }
+    }
+    let mut new_dirs = Vec::with_capacity(sol.nullspace.len());
+    for coeffs in &sol.nullspace {
+        let mut nd = vec![vec![Rational::from(0); n]; n];
+        for (k, ck) in coeffs.iter().enumerate() {
+            if *ck == 0 {
+                continue;
+            }
+            for i in 0..n {
+                for j in 0..n {
+                    if dirs_rat[k][i][j] != 0 {
+                        nd[i][j] += Rational::from(ck * &dirs_rat[k][i][j]);
+                    }
+                }
+            }
+        }
+        new_dirs.push(nd);
+    }
+    Some((new_base, new_dirs))
+}
+
+/// Facial-reduction fallback for when [`search_rational_family`]'s direct
+/// numeric search gets *close* to a PSD point but never lands one that
+/// survives exact rational rounding — the textbook signature of a
+/// boundary-only (singular) witnessing Gram matrix, which is exactly what
+/// makes both plain alternating projection and Douglas–Rachford converge
+/// only asymptotically rather than in finitely many steps (see the module
+/// doc and `Family::douglas_rachford_from`'s doc comment).
+///
+/// The fix, rather than searching harder in the same (degenerate) family, is
+/// to search a *smaller* one: read the near-null eigenvector directions off
+/// the best numeric candidates found so far (`smallest_magnitude_eigenvectors`),
+/// round each to an exact rational, and impose it as an exact `Q(t)·v = 0`
+/// constraint. If the guess is right, this restricts the family to (an
+/// affine reparametrisation of) the face of the PSD cone the true
+/// certificate actually lives on, where the intersection with the reduced
+/// family is far less degenerate — and the same search-then-round-then-check
+/// machinery in [`search_rational_family`] is run again on that smaller
+/// family, this time with a real chance of landing exactly on it. If the
+/// guess is wrong, `restrict_by_near_null_vectors` (or the reduced family's
+/// own exact check) simply comes back empty and the next guess is tried —
+/// every path through this function is either an exact rational identity or
+/// nothing, never a fabricated certificate.
+#[allow(clippy::too_many_arguments)]
+fn facial_reduction_search(
+    nvars: usize,
+    basis: &[Exponents],
+    target: &RatPoly,
+    base_rat: &[Vec<Rational>],
+    dirs_rat: &[Vec<Vec<Rational>>],
+    candidates: &[Vec<Vec<f64>>],
+) -> Option<SosPoly> {
+    let max_corank = *FACIAL_CORANK_GUESSES.iter().max().unwrap_or(&0);
+    let mut budget = FACIAL_SEARCH_BUDGET;
+    for q_best in candidates.iter().take(FACIAL_CANDIDATES) {
+        let near_null = smallest_magnitude_eigenvectors(q_best, max_corank);
+        for &corank in FACIAL_CORANK_GUESSES {
+            if budget == 0 {
+                return None;
+            }
+            if corank > near_null.len() {
+                continue;
+            }
+            for &max_den in FACIAL_DENOM_CAPS {
+                let vs: Option<Vec<Vec<Rational>>> = near_null[..corank]
+                    .iter()
+                    .map(|v| {
+                        v.iter()
+                            .map(|&x| round_to_rational(x, max_den))
+                            .collect::<Option<Vec<_>>>()
+                    })
+                    .collect();
+                let Some(vs) = vs else { continue };
+                let Some((new_base, new_dirs)) =
+                    restrict_by_near_null_vectors(base_rat, dirs_rat, &vs)
+                else {
+                    continue;
+                };
+                if new_dirs.len() >= dirs_rat.len() {
+                    // The guess added no real constraint (rare, but possible
+                    // if the rounded vector happens to be in the common
+                    // nullspace of every direction) — searching the
+                    // "reduced" family again would just repeat work.
+                    continue;
+                }
+                if budget == 0 {
+                    return None;
+                }
+                budget -= 1;
+                let (found, _deeper) =
+                    search_rational_family(nvars, basis, target, &new_base, &new_dirs);
+                if found.is_some() {
+                    return found;
+                }
+            }
+        }
+    }
+    None
+}
+
 pub fn psd_search(target: &RatPoly, basis_deg: u32) -> Option<SosPoly> {
     let nvars = target.nvars();
     // A homogeneous target of degree exactly `2·basis_deg` needs only the
@@ -391,80 +758,17 @@ pub fn psd_search(target: &RatPoly, basis_deg: u32) -> Option<SosPoly> {
     let (rows, rhs) = gram_system(target, &basis);
     let sol = solve_affine(&rows, &rhs)?;
 
-    let try_point = |t: &[Rational]| -> Option<SosPoly> {
-        let packed = sol.at(t);
-        let q = unpack(n, &packed);
-        let decomp = psd_decompose(&q)?;
-        let mut sos = SosPoly::default();
-        for (d, v) in decomp {
-            if d <= 0 {
-                continue;
-            }
-            let mut square = RatPoly::zero(nvars);
-            for (u, c) in v.iter().enumerate() {
-                if *c != 0 {
-                    square = square.add(&RatPoly::monomial(nvars, basis[u].clone(), c.clone()));
-                }
-            }
-            sos.push(d, square);
-        }
-        // Defense in depth: the affine parametrisation guarantees this by
-        // construction, but the certificate returned here is re-verified
-        // once more at the call site (`PositivityCertificate::verify`), and
-        // this module never hands back something it has not itself checked.
-        if sos.to_poly(nvars) == *target {
-            Some(sos)
-        } else {
-            None
-        }
-    };
+    let base_rat = unpack(n, &sol.particular);
+    let dirs_rat: Vec<Vec<Vec<Rational>>> = sol.nullspace.iter().map(|d| unpack(n, d)).collect();
 
-    // No freedom at all: the unique solution is the only candidate.
-    if sol.dimension() == 0 {
-        return try_point(&[]);
+    let (found, candidates) = search_rational_family(nvars, &basis, target, &base_rat, &dirs_rat);
+    if found.is_some() {
+        return found;
     }
-    if sol.dimension() > MAX_FREE_PARAMETERS {
+    if candidates.is_empty() {
         return None;
     }
-
-    let base: Vec<Vec<f64>> = unpack(n, &sol.particular)
-        .iter()
-        .map(|row| row.iter().map(rat_to_f64).collect())
-        .collect();
-    let dirs: Vec<Vec<Vec<f64>>> = sol
-        .nullspace
-        .iter()
-        .map(|dir| {
-            unpack(n, dir)
-                .iter()
-                .map(|row| row.iter().map(rat_to_f64).collect())
-                .collect()
-        })
-        .collect();
-    // Search in an orthonormal basis of the same directions — see
-    // `orthonormalize`'s doc comment for why the raw nullspace basis makes
-    // the alternating projection stall in practice.
-    let (ortho_dirs, r) = orthonormalize(&dirs);
-    let family = Family::new(base, ortho_dirs);
-    let dim = dirs.len();
-
-    for s in multistart_anneal(&family, dim)
-        .into_iter()
-        .take(ROUNDING_CANDIDATES)
-    {
-        let Some(t) = back_substitute_upper(&r, &s) else {
-            continue;
-        };
-        for &max_den in DENOM_CAPS {
-            let t_rat: Option<Vec<Rational>> =
-                t.iter().map(|x| round_to_rational(*x, max_den)).collect();
-            let Some(t_rat) = t_rat else { continue };
-            if let Some(sos) = try_point(&t_rat) {
-                return Some(sos);
-            }
-        }
-    }
-    None
+    facial_reduction_search(nvars, &basis, target, &base_rat, &dirs_rat, &candidates)
 }
 
 #[cfg(test)]
@@ -559,6 +863,41 @@ mod tests {
              passing, promote it to a positive assertion (assert_eq!(sos.to_poly(3), q)) rather \
              than leaving it as a smoke test"
         );
+    }
+
+    #[test]
+    fn psd_search_certifies_robinsons_form_with_a_reznick_multiplier() {
+        // Robinson's form: x^6+y^6+z^6 - (x^4y^2+x^2y^4+y^4z^2+y^2z^4+x^4z^2+x^2z^4) + 3x^2y^2z^2.
+        // A second textbook PSD-not-SOS example (distinct from Motzkin) whose
+        // multiplier certificate the Douglas-Rachford / facial-reduction
+        // search below now reaches. Direct search (no multiplier) still
+        // fails, as it must: Robinson's form is genuinely not SOS itself.
+        let mono = |ex: Vec<u32>, c: i64| RatPoly::monomial(3, ex, Rational::from(c));
+        let mut r = mono(vec![6, 0, 0], 1);
+        r = r.add(&mono(vec![0, 6, 0], 1));
+        r = r.add(&mono(vec![0, 0, 6], 1));
+        r = r.add(&mono(vec![4, 2, 0], -1));
+        r = r.add(&mono(vec![2, 4, 0], -1));
+        r = r.add(&mono(vec![0, 4, 2], -1));
+        r = r.add(&mono(vec![0, 2, 4], -1));
+        r = r.add(&mono(vec![4, 0, 2], -1));
+        r = r.add(&mono(vec![2, 0, 4], -1));
+        r = r.add(&mono(vec![2, 2, 2], 3));
+        assert_eq!(r.is_homogeneous(), Some(6));
+
+        assert!(
+            psd_search(&r, 3).is_none(),
+            "Robinson's form is not itself SOS, so a direct (unmultiplied) search must refuse"
+        );
+
+        let sigma = RatPoly::sum_of_squares(3);
+        let q = r.mul(&sigma);
+        assert_eq!(q.is_homogeneous(), Some(8));
+        let sos = psd_search(&q, 4)
+            .expect("(x^2+y^2+z^2)*Robinson is a classical SOS example; the search should find it");
+        // Exact re-expansion, over the rationals — the actual soundness
+        // argument, not the numeric search that proposed it.
+        assert_eq!(sos.to_poly(3), q);
     }
 }
 
