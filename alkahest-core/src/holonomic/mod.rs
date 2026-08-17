@@ -71,8 +71,10 @@ pub use hyperterm::{GammaFactor, ProperTerm};
 pub use modular::{binomial_mod, ModularError, ModularEvaluation, ModularRecurrence};
 pub use qfield::{PolyK, RatK, Rn};
 pub use qzeil::{
-    q_boundary_status, q_zeilberger, QBoundaryStatus, QCertificate, QHolonomicError, QProperTerm,
-    QZeilbergerOpts, QZeilbergerReport, QZeilbergerResult,
+    cyclotomic_polynomial, q_boundary_status, q_specialize_at_root_of_unity, q_zeilberger,
+    CycloElem, CycloField, QBoundaryStatus, QCertificate, QHolonomicError, QProperTerm,
+    QRootOfUnitySpecialization, QRootOfUnityStatus, QZeilbergerOpts, QZeilbergerReport,
+    QZeilbergerResult,
 };
 pub use zeilberger::{
     boundary_side_condition, boundary_term, zeilberger, zeilberger_search, OrderSearch,

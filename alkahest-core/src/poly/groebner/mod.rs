@@ -29,6 +29,9 @@ pub mod f5;
 pub mod fglm;
 pub mod ideal;
 pub mod monomial_order;
+mod pairs;
+pub mod parametric;
+pub mod paramfield;
 pub mod reduce;
 
 // Keep f4 as a thin re-export so any external crate that depended on the old
@@ -44,6 +47,8 @@ pub use f5::compute_groebner_basis_f5;
 pub use fglm::{fglm, grevlex_staircase, is_zero_dimensional};
 pub use ideal::GbPoly;
 pub use monomial_order::MonomialOrder;
+pub use parametric::{ParamGbPoly, ParamGroebnerBasis, ParamGroebnerError};
+pub use paramfield::{ParamPoly, QParam};
 pub use reduce::reduce;
 
 /// A computed Gröbner basis.
@@ -57,6 +62,18 @@ impl GroebnerBasis {
     /// Compute a Gröbner basis for the given generators under the given order.
     pub fn compute(gens: Vec<GbPoly>, order: MonomialOrder) -> Self {
         let generators = compute_buchberger_basis(gens, order);
+        GroebnerBasis { generators, order }
+    }
+
+    /// Wrap an already-computed set of generators, without recomputing.
+    ///
+    /// The caller asserts that `generators` really is a Gröbner basis under
+    /// `order`; nothing here checks it.  This exists so that the specialisation
+    /// of a [`parametric::ParamGroebnerBasis`] — which is a Gröbner basis by
+    /// [`parametric::ParamGroebnerBasis::specialize`]'s contract — can be
+    /// handed back as an ordinary [`GroebnerBasis`] instead of being recomputed
+    /// from scratch.
+    pub fn from_generators(generators: Vec<GbPoly>, order: MonomialOrder) -> Self {
         GroebnerBasis { generators, order }
     }
 

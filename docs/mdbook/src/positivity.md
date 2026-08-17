@@ -82,30 +82,52 @@ except ak.SosError as e:
 A sum-of-squares decomposition `p = zᵀQz` over the monomial basis `z` exists
 iff there is a **positive semidefinite** Gram matrix `Q` matching `p`'s
 coefficients. Deciding general PSD feasibility is a semidefinite programme,
-and no floating-point SDP solver is allowed anywhere near a certificate here —
-a rounded `Q` is not a proof.
+and no floating-point SDP solver is ever trusted with a certificate here — a
+rounded `Q` is not a proof.
 
-So the search covers a **linear-programming-representable subcone**: the
-non-negative combinations of squares of a fixed generator set,
+The search tries three things, in order, before refusing:
 
-```text
-(e_i)²,    (a·e_i ± b·e_j)²   for small coprime (a, b)
-```
+1. **The diagonally-dominant (DSOS) subcone** — non-negative combinations of
+   squares of a fixed generator set, `(e_i)²` and `(a·e_i ± b·e_j)²` for small
+   coprime `(a, b)`, solved with the exact rational simplex in `real::sos::lp`
+   (Bland's rule, so termination is unconditional and there are no epsilon
+   tolerances). Every generator is *literally a square*, so a feasible point
+   is sound by construction — but the cone is a strict subset of the SOS
+   cone: diagonal dominance is not invariant under scaling the basis, so a
+   perfect square as ordinary as `(x/2 + 1/3)²` has a Gram matrix — its only
+   one — that is PSD but not DD.
+2. **The full PSD Gram cone**, when DSOS fails (`real::sos::psd::psd_search`).
+   This subsumes DSOS but is not free: it leans on a floating-point search
+   (Jacobi eigendecomposition, PSD-cone projection, an annealed schedule of
+   shrinking eigenvalue floors with several random restarts —
+   `real::sos::sdp`) to *propose* a Gram matrix, which is then rounded to
+   nearby rationals and re-expanded to check it equals `p` exactly before
+   anything is returned. A `Some` here is always sound regardless of what the
+   numeric search converged to; a `None` means only "the search did not turn
+   up a certificate", never "not SOS".
+3. **A Reznick multiplier search**, when even step 2 fails on `p` itself:
+   tries `(x_1²+…+x_n²)^N·p` for `N = 1..4` and reruns step 2 on the product.
+   Some positive-definite forms are not SOS at all (Hilbert 1888 — this is
+   what Motzkin's polynomial witnesses), but Reznick's theorem guarantees
+   `(Σxᵢ²)^N·p` is SOS for *some* `N`; the search does not know `N` in advance
+   and reports budget exhaustion honestly rather than a disproof.
 
-solved with the exact rational simplex in `real::sos::lp` (Bland's rule, so
-termination is unconditional and there are no epsilon tolerances). Every
-generator is *literally a square*, so any feasible point is a sound certificate
-by construction.
+`E-SOS-002` at the end of all three is phrased as a statement about the
+search, not the polynomial — the search's incompleteness, at any step.
 
-The `(1,1)` case alone is the classical diagonally-dominant (DSOS) cone. It is
-not enough on its own: diagonal dominance is not invariant under scaling the
-basis, so a perfect square as ordinary as `(x/2 + 1/3)²` has a Gram matrix —
-its only one — that is PSD but not DD. The extra ratios widen the cone enough
-to catch these while keeping the problem an LP.
-
-The cone is still a strict subset of the SOS cone, which is exactly why
-`E-SOS-002` is phrased as a statement about the search rather than about the
-polynomial.
+**A known, diagnosed gap in step 3:** Motzkin's polynomial and Robinson's
+form — the textbook PSD-not-SOS examples — are not yet certified even with a
+multiplier, because their witnessing Gram matrices are *singular*, sitting
+exactly on the boundary of the PSD cone rather than its interior. The
+annealed search converges toward that boundary (monotonically, confirmed by a
+diagnostic trajectory) but does not reliably close the last, asymptotically
+slow stretch — the textbook behaviour of alternating projection at a
+tangential (non-transversal) intersection. This was checked to be a
+convergence limitation and not a bug in the search machinery: an independent
+sanity check confirms the affine Gram-matrix family is constructed correctly,
+and a synthetic planted example with a singular Gram matrix of the same size
+*is* found and exactly re-verified. The tests for Motzkin record `undecided`
+rather than a false certificate.
 
 ## Constrained certificates
 
@@ -204,10 +226,18 @@ statement is good enough.
 
 ## Scope of this release
 
-Shipped: exact rational SOS over the generator cone above, Handelman
-certificates on basic semialgebraic sets, exact verification, and Lean export.
+Shipped: exact rational SOS over the DSOS generator cone, a general PSD Gram
+search (floating-point proposal, exact rational verification) for cases DSOS
+alone refuses, a Reznick multiplier search (`(Σxᵢ²)^N·p` for `N ≤ 4`) on top
+of that, Handelman certificates on basic semialgebraic sets, exact
+verification, and Lean export.
 
-Not yet shipped: full SDP-based SOS (which needs an exact or rationally-rounded
-semidefinite solver), and Putinar-style certificates with genuine SOS — rather
-than non-negative constant — multipliers. `CertificateKind::Putinar` exists in
-the certificate type so those can be added without a shape change.
+Not yet shipped: reliable certification of the hardest classical
+boundary-case examples (Motzkin, Robinson — see above; the multiplier search
+finds them for neither, diagnosed as an alternating-projection convergence
+limitation at a tangential PSD-cone intersection, not a soundness gap), a
+proper interior-point or facial-reduction-based solver that would close that
+gap, and Putinar-style certificates with genuine SOS — rather than
+non-negative constant — multipliers on the *constraints*.
+`CertificateKind::Putinar` exists in the certificate type so those can be
+added without a shape change.

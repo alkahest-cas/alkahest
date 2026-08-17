@@ -391,7 +391,72 @@ claim about its sum, not a guessed inhomogeneity.
 One more caveat, and it is on every verdict's `side_conditions`: `q` is treated
 as **transcendental**. Everything here is an identity in `Q(q)`. Specialising
 `q` to a root of unity — which is what the `q`-supercongruence literature does —
-is a separate step with its own hypotheses, and this engine does not take it.
+is a separate step with its own hypotheses.
+
+### Specialising at a root of unity (`specialize_at_root_of_unity`)
+
+A proved `Q(q)` recurrence does not, by itself, license setting `q = ζ_d` for a
+primitive `d`-th root of unity: a coefficient or a sum value can have a pole
+there, and specialising anyway is exactly the `q`-analogue of the A279013
+failure mode — a certificate that re-checks perfectly while the specialised
+claim is false. `QZeilbergerCertificate.specialize_at_root_of_unity(d, n)`
+takes that step as a **decision**, not an assumption:
+
+```python
+from alkahest.experimental import cyclotomic_polynomial, q_zeilberger, qbinomial
+
+pool = ak.ExprPool()
+q, n, k = pool.symbol("q"), pool.symbol("n"), pool.symbol("k")
+b = qbinomial(pool, n, k)
+cert = q_zeilberger(b * b * q ** (k * k), q, n, k)
+
+spec = cert.specialize_at_root_of_unity(3, 2)  # q = zeta_3, at n = 2
+spec.status                       # "specializes" / "obstructed" / "unknown"
+spec.sum_value(0)                 # S_zeta(2), the canonical rep in Q[q]/(Phi_3)
+spec.sum_valuation(0)             # the exact Phi_3-adic valuation of S(2)
+spec.modulus()                    # Phi_3(q) = q^2 + q + 1, exposed for a by-hand check
+```
+
+The hypotheses — no pole in any coefficient `a_i(qⁿ)` or sum value `S(n+i)` at
+`ζ_d` — are decided **exactly**, by polynomial divisibility by `Φ_d(q)` over
+`Q` in the cyclotomic field `Q(ζ_d) = Q[q]/(Φ_d(q))`; nothing is evaluated
+numerically at any stage. `Φ_d` is irreducible over `Q`, so "does `p` vanish at
+`ζ_d`" is exactly "does `Φ_d` divide `p`", which is what makes the valuation —
+and therefore the decision — exact rather than approximate. `cyclotomic_polynomial(pool, d)`
+returns `Φ_d(q)` directly, so a caller can redo the whole check by hand.
+
+`status` is three-valued, and the three are not interchangeable:
+
+* **`"specializes"`** — proved: every coefficient and every sum value has
+  non-negative `Φ_d`-adic valuation, so the specialisation map is defined on
+  all of them, and the specialised identity was re-checked as an exact
+  statement in `Q(ζ_d)` before being returned. Three further things are
+  reported on this verdict rather than folded into it, because each of them
+  makes a true verdict mean less than it looks:
+  * `is_vacuous` — every coefficient died at `ζ_d` (the `q → 1` limit at
+    `d = 1` is always like this), so the recurrence is `0 = 0`. Still a
+    theorem; it constrains nothing.
+  * `leading_coefficient_survives` — `False` means the specialised recurrence
+    no longer determines the last value from the earlier ones, even though it
+    is not vacuous.
+  * `support_shrinks` / `effective_support` — the `q`-Lucas phenomenon:
+    `[2;1]_q = 1 + q` is non-zero in `Q(q)` and zero at `ζ_2`, so the
+    surviving window at a root of unity can be a strict subset of the generic
+    one. It can never grow.
+* **`"obstructed"`** — a pole at `ζ_d` was **exhibited**: some coefficient or
+  sum value has negative `Φ_d`-adic valuation (available via `sum_valuation`
+  even on this verdict, since a negative valuation *is* the obstruction).
+  Nothing is offered — `sum_value` and `coefficient` raise — and this is not a
+  claim that the specialised identity is false, only that this route to it is
+  blocked.
+* **`"unknown"`** — the generic boundary verdict was already `"unknown"`, so
+  there is no proved `Q(q)` statement to specialise in the first place.
+
+`sum_valuation(i)` is the `q`-supercongruence content in its exact form: it is
+the integer `v` with `Φ_d(q)^v` dividing `S(n+i)` and `Φ_d(q)^{v+1}` not — so
+`v ≥ r` is precisely the divisibility statement `Φ_d(q)^r | S(n)` that a
+`q`-supercongruence asserts, decided exactly rather than checked at finitely
+many numeric points.
 
 ## Method
 
@@ -420,12 +485,19 @@ Shipped: Zeilberger's algorithm with exact certificate verification, the
 `Q(n)` / `Q(n)(k)` arithmetic tower it rests on, proper-hypergeometric
 recognition, the three-valued boundary verdict over a stated summation range,
 explicit minimal-order certification, `guess_holonomic` — recurrence guessing
-from finite data — and the `q`-analogue `q_zeilberger` over
-`Q(q)(qⁿ)(q^k)` with its own two-valued boundary verdict.
+from finite data — the `q`-analogue `q_zeilberger` over `Q(q)(qⁿ)(q^k)` with
+its own two-valued boundary verdict, and `specialize_at_root_of_unity` — the
+step from a `Q(q)` identity to `q = ζ_d`, decided exactly in the cyclotomic
+field `Q(ζ_d)` with its own three-valued verdict.
 
-Not shipped on the `q` side: multivariate (`q`-)telescoping, an inhomogeneous
-boundary arm, and specialisation of `q` to a root of unity. A `q`-sum whose
-support cannot be bounded is answered `"unknown"`, never guessed.
+Not shipped on the `q` side: multivariate (`q`-)telescoping and an
+inhomogeneous boundary arm. A `q`-sum whose support cannot be bounded is
+answered `"unknown"`, never guessed. Root-of-unity specialisation covers a
+single certificate at a single `(d, n)` pair — it is the mechanical step the
+`q`-supercongruence literature needs, not a search over `d` or a prover for
+the wider congruence statements (e.g. uniform-in-`n` supercongruences, or
+`p`-adic statements not phrased as `Φ_d`-adic valuations) that literature
+contains.
 
 Not yet shipped, and tracked as follow-up work: Ore-operator closure properties
 for D-finite functions (sums and products of holonomic objects) and the

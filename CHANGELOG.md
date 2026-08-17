@@ -714,6 +714,65 @@ Both are detailed under *Behaviour changes to plan for*.
   `qbinomial(pool, N, K)` and `qpochhammer(pool, u, d, v)`. Experimental, so
   the surface may change; the mathematics it refuses to guess at will not.
 
+- **Root-of-unity specialisation for `q_zeilberger`:
+  `QZeilbergerCertificate.specialize_at_root_of_unity`** (M4). `q_zeilberger`
+  proves identities in `Q(q)` with `q` transcendental and said, in every
+  verdict's `side_conditions`, that specialising `q` to a root of unity — the
+  step the `q`-supercongruence literature actually needs — was a separate step
+  this engine did not take. It now does, and takes it as a three-valued
+  **decision** rather than an assumption, because doing it unconditionally is
+  the `q`-analogue of the A279013 failure mode transplanted to a new
+  subsystem: a certificate that is perfectly valid in `Q(q)` and would
+  silently produce a false statement if evaluated at a point where a
+  coefficient or a sum value has a pole.
+
+  The arithmetic underneath (`alkahest_core::holonomic::qzeil::cyclotomic`) is
+  exact throughout: `Φ_d(q)`, the `d`-th cyclotomic polynomial, is built from
+  `q^d − 1 = ∏_{e∣d} Φ_e(q)` by exact polynomial division over `Q`; `Q(ζ_d) =
+  Q[q]/(Φ_d(q))` is the residue field, with inversion by the extended
+  Euclidean algorithm (total on non-zero elements because `Φ_d` is irreducible
+  over `Q`); and "does `p` vanish at `ζ_d`" is decided as "does `Φ_d` divide
+  `p`" — a divisibility question over `Q`, never a floating-point evaluation.
+  The same machinery gives the exact `Φ_d`-adic valuation of any element of
+  `Q(q)`, which is the `q`-supercongruence statement in its precise form:
+  `v ≥ r` is exactly `Φ_d(q)^r ∣ S(n)`.
+
+  `spec = cert.specialize_at_root_of_unity(d, n)` returns a
+  `QRootOfUnitySpecialization` whose `status` is `"specializes"` (every
+  coefficient and every sum value proved to have non-negative `Φ_d`-adic
+  valuation, so the specialisation map is defined on all of them, and the
+  specialised identity was re-checked as an exact statement in `Q(ζ_d)` before
+  being returned), `"obstructed"` (a pole at `ζ_d` was **exhibited** — no
+  specialised value is offered, and this is a proof the route is blocked, not
+  that the specialised identity is false), or `"unknown"` (the generic
+  boundary verdict was already `"unknown"`). Three further conditions are
+  reported on a `"specializes"` verdict rather than folded into it:
+  `is_vacuous` (every coefficient died — always true at `d = 1`, the `q → 1`
+  limit — so the recurrence is `0 = 0`, still a theorem but an empty one),
+  `leading_coefficient_survives` (`False` means the specialised recurrence no
+  longer determines the last value from the earlier ones), and
+  `support_shrinks` / `effective_support` (the `q`-Lucas phenomenon —
+  `[2;1]_q = 1 + q` is non-zero in `Q(q)` and zero at `ζ_2`, so the surviving
+  window at a root of unity can be a strict subset of the generic one, though
+  it can never grow, since a ring homomorphism sends the generic zero
+  summands to zero).
+
+  Verified end to end on `Σ_k [n;k]_q²·q^{k²} = [2n;n]_q` specialised at every
+  `ζ_d` for `d = 1..6`: the returned value checked against a Gaussian binomial
+  built independently by the Pascal recurrence directly in `Q(ζ_d)`, against
+  the closed form `[2n;n]_{ζ_d}` predicted by the `q`-Lucas theorem from the
+  base-`d` digits of `2n` and `n`, and — at the Python surface — against the
+  same sum recomputed in floating-point `complex` arithmetic at the actual
+  numeric root of unity `e^{2πi/d}`, evaluated by walking the returned
+  expression's node tree by hand rather than through anything under test. Two
+  refusals are exercised concretely rather than merely asserted: a genuine
+  pole at `ζ_3` (obstructed at every `n` tested, never silently specialised)
+  and the support-shrinks case above.
+
+  New: `QZeilbergerCertificate.specialize_at_root_of_unity`,
+  `alkahest.experimental.QRootOfUnitySpecialization`,
+  `alkahest.experimental.cyclotomic_polynomial`. Experimental.
+
 - **Validated bounds reach five more functions: `asinh`, `acosh`, `atanh`,
   `erf`, `erfc`.** `bound_on_box` — and everything built on it,
   `verified_sign`, `verified_no_roots`, `verified_integral` — covered exactly
@@ -1091,6 +1150,183 @@ Both are detailed under *Behaviour changes to plan for*.
   reports a leading coefficient of `1` through the list and the true value
   through this accessor. Documented in `representations.md`, which had been
   showing a `leading_coeff()` *method* that never existed.
+
+- **Gröbner bases over the coefficient field `Q(params)`: `GroebnerBasis.compute(polys, vars,
+  params=[...])`, `experimental.ParametricGroebnerBasis` / `ParametricGbPoly`**
+  (M9). Eliminating states from an ODE model's jet equations needs the rate
+  constants to *not* enter the monomial order — computed over `Q[states, Y,
+  params]` they are ordinary ring variables and generate S-pairs like any
+  other, which is exactly the growth the elimination does not need. With
+  `params=[...]` the same Buchberger engine (identical Gebauer–Möller pair
+  management from `poly::groebner::pairs`, shared with the ℚ engine so a
+  specialisation keeps every leading monomial and the whole pair schedule)
+  runs over `Q(params)[vars]` instead: the parameters live in the
+  coefficients as elements of `QParam`, a canonical, reduced fraction of
+  sparse `ParamPoly`s (FLINT's `fmpz_mpoly_gcd` — a Hensel/Zippel hybrid, not
+  a hand-rolled Euclidean gcd, which is exactly the swelling `holonomic::qfield`
+  exists to avoid one variable further in) rather than ring monomials.
+
+  Measured on a catenary compartmental model (linear ODE chain, output the
+  first compartment, `n+1` derivatives eliminating `n` states down to the
+  input–output relation): at `n = 4` states / 7 rate constants, the
+  parametric route computes in 0.27s against 4.2s direct (both `Lex`,
+  `--release`) — roughly 15× — and returns 5 total basis generators against
+  25; at `n = 5` states / 9 rate constants the parametric route finishes in
+  6.9s while the direct `Q[states, Y, params]` computation had not finished
+  after 240s (>34× and counting). Numbers are wall-clock on one machine, not
+  a guaranteed ratio — the point is the qualitative shape (S-pairs among the
+  parameters are the cost the direct route pays and the parametric route
+  never generates), not the specific multiplier.
+
+  **The result is generic, and says so.** A leading coefficient in
+  `Q(params)` can be a non-zero rational function of the parameters and still
+  vanish at a particular parameter point, and there the basis the algorithm
+  built is not the basis the same algorithm would have built over ℚ at that
+  point. Every such assumption is logged as it happens — an inversion
+  contributes its numerator and its denominator, an input coefficient
+  contributes its denominator — and `conditions()` reports the union,
+  factored into irreducible, primitive hypersurfaces so "wrong somewhere on
+  this degree-12 surface" reads as a list of conditions rather than one
+  opaque polynomial. `specialize(values)` substitutes and refuses with
+  `ParamGroebnerError` (`E-PARAMGB-004`) on the locus rather than returning
+  something that is not a basis; `is_regular_at` / `vanishing_conditions`
+  check first. The set is sufficient, not necessary by construction — on the
+  worked linear system `{a·x − y, x + y − 1}`, `a = -1` is a real
+  disagreement (the direct basis over ℚ there is the unit ideal, not the
+  2-generator triangular basis the generic formula predicts), while `a = 0`
+  is flagged (the algorithm inverts `a` to make `a·x − y` monic) but the
+  direct computation at `a = 0` agrees with the `a → 0` limit of the generic
+  answer exactly — a refusal, not a wrong answer, on the conservative side of
+  the report.
+
+  Reads back the same way `GbPoly` does: `ParametricGbPoly.to_expr` /
+  `.terms()`, `ParametricGroebnerBasis.to_exprs()`, `.conditions()` as
+  `Expr`, and `.specialize(...)` returns an ordinary `GroebnerBasis` whose
+  generators are `GbPoly` — the same read path issue #11 was about, so
+  nothing here is write-only. `eliminate` has the same `Lex`-with-eliminated-
+  variables-first contract as `GroebnerBasis.eliminate`, and refuses to
+  eliminate a coefficient-field parameter (there is nothing to eliminate — it
+  was never a ring variable) rather than silently ignoring the request.
+  Errors: `E-PARAMGB-001` no generators, `E-PARAMGB-002` generators disagree
+  on the variable/parameter shape, `E-PARAMGB-003` wrong specialisation
+  arity, `E-PARAMGB-004` degenerate point (a result, not a malfunction — see
+  above). New: `alkahest.experimental.ParametricGbPoly`,
+  `ParametricGroebnerBasis`, `ParamGroebnerError`. Experimental; requires
+  `--features groebner`. Tests: Rust `poly::groebner::parametric` and
+  `poly::groebner::paramfield` (19 unit tests), Python
+  `tests/test_parametric_groebner.py`, including a
+  structural-identifiability worked example (two-compartment linear ODE
+  model, states eliminated with rate constants in `Q(params)`, the recovered
+  input–output relation checked against the model's characteristic
+  polynomial `y'' − tr(M)·y' + det(M)·y = 0` at several parameter points).
+
+- **Novelty filtering against OEIS: `experimental.novelty`** (M11). A search
+  loop over this library can rediscover a known identity within the hour, and
+  nothing before this told the difference between "produced 400 certified
+  recurrences" and "produced three that nobody had". `RecurrenceClaim` puts a
+  P-recursive relation into normal form — rescaling, sign flips, index shifts,
+  a different clearing of denominators and a common polynomial factor are all
+  quotiented out, so `(n+1)·u(n+1) − (4n+2)·u(n) = 0` and the same relation
+  scaled by −2 and stated about `u(n+7)` hash equal via `claim_hash`, while
+  genuinely different recurrences do not collide. `check_novelty(claim,
+  sources, terms=…)` checks a claim against one or more sources — `OeisCache`
+  offline (file-backed, the committed test fixture format) or `OeisWeb` when
+  explicitly opted into (never constructed by default, serves from cache
+  first, rate-limited, degrades to `unavailable` rather than raising when the
+  network is unreachable) — and returns a `NoveltyVerdict`.
+
+  **`NoveltyVerdict.found` is three-valued**, in the manner of
+  `relation_confidence`'s tri-state `credible` and `GuessedRecurrence.confirmed`:
+  `True` a source states the claim, `False` the sources searched do not state
+  it (not "novel" — "not found in the one place looked"), `None` no source
+  could answer. There is no `novel` attribute anywhere in the module, and
+  `bool(verdict)` raises rather than reading `True`, because `if
+  check_novelty(...):` is the exact sentence this module exists to prevent.
+  `NoveltyVerdict.report()` carries the scope of the search — entries
+  examined, statements compared, statements a parser could not use — so a
+  negative's coverage is visible next to it. `RecurrenceClaim.from_text`
+  parses OEIS's own prose formula lines by recursive descent over
+  `+ - * / ^ ( )`, `n` and `a(n±k)`, refusing (returning `None`, never
+  guessing) anything it does not model — a sum, a generating function, a
+  reference to another sequence, an inhomogeneous relation — and every parsed
+  line is re-checked against the entry's own data before it can produce a
+  match, since a formula line is prose from a third party and the parser is
+  the weakest link in the chain. No test in the repository requires the
+  network: the offline path runs against `tests/data/oeis_novelty_fixture.json`,
+  a cache recorded once from oeis.org (© The OEIS Foundation Inc., CC
+  BY-NC-SA 4.0) and committed, exercising the four sequences this project
+  already certifies recurrences for (Apéry, Motzkin, Catalan, central
+  binomial) plus the session's own novel result (A359643, which OEIS records
+  only as an unproved conjecture — the distinction `hedged` exists to keep
+  separate from a proof).
+
+- **`sos_decompose` searches the general PSD Gram cone and Reznick
+  multipliers, not just diagonal dominance** (M10). `sos_decompose` already
+  covered the diagonally dominant subcone (`gram::dsos_search`) — fast, but a
+  strict subset of SOS, so it refused things that genuinely are SOS just not
+  DSOS. It now falls back, when DSOS fails, to searching the *entire* PSD
+  Gram cone (`real::sos::psd::psd_search`) over the same monomial basis, and
+  — when even that fails on `p` itself — to a Positivstellensatz-lite
+  multiplier search: trying `(x_1²+…+x_n²)^N·p` for `N = 1..4`
+  (`MAX_MULTIPLIER_POWER`) and searching the PSD Gram cone of the product, up
+  to a monomial-count budget (`MAX_MULTIPLIER_BASIS_LEN`). This is the
+  standard route past DSOS's and even plain-SOS's incompleteness: some
+  positive-definite forms are not SOS at all (Hilbert 1888), but Reznick's
+  theorem guarantees `(Σxᵢ²)^N·p` is SOS for *some* `N` — the search just
+  does not know `N` in advance and is honest when it runs out of budget
+  before finding it (`multiplier_search_reports_undecided_not_not_sos_when_out_of_budget`):
+  `SosError::NoCertificate` (`E-SOS-002`), never a claim that no certificate
+  exists or that `p` is not SOS.
+
+  The PSD Gram search underneath (`real::sos::psd`, `real::sos::sdp`,
+  `real::sos::linalg` — an exact rational affine-system solver that reports
+  free parameters on underdetermined systems, a Jacobi eigendecomposition,
+  and a PSD-cone projection) is a floating-point *suggestion* mechanism only:
+  it proposes a Gram matrix numerically, rounds it to nearby rationals, and
+  the rounded result is re-expanded and compared against the target with
+  exact rational arithmetic before anything is returned — a `Some` here is
+  always sound regardless of what the numeric search actually converged to,
+  the same discipline the rest of this module already applies. The search
+  itself anneals a shrinking sequence of eigenvalue floors with several
+  random restarts (`psd::FLOOR_SCHEDULE`, `psd::multistart_anneal`) rather
+  than a single fixed-floor pass, specifically because the certificates this
+  feature exists for are frequently *tight* — the witnessing Gram matrix is
+  PSD but singular, sitting exactly on the boundary of the PSD cone rather
+  than its interior, which a plain fixed-floor search reliably stalls short
+  of.
+
+  **Honest gap, not a silent one:** the hardest classical textbook examples —
+  Motzkin's polynomial (`x⁴y²+x²y⁴−3x²y²+1`, PSD but not SOS; classically SOS
+  after multiplying by `x²+y²`) and Robinson's form — are *not* yet
+  certified by this search, and the tests say so directly
+  (`motzkin_reports_undecided_rather_than_a_false_certificate`,
+  `psd_search_does_not_yet_reach_homogeneous_motzkin_times_sum_of_squares`)
+  rather than asserting a false positive. This was diagnosed, not merely
+  observed: a diagnostic trajectory
+  (`psd::diag::diag_step1_step2_trajectory_and_family_sanity`) shows the
+  annealed search converging *monotonically* toward Motzkin's boundary
+  certificate (minimum eigenvalue running from roughly `−1.6` to roughly
+  `−0.0018` as the floor anneals to `0`) without fully closing the last,
+  asymptotically slow stretch to exactly `0` — the textbook signature of
+  alternating projection at a tangential (non-transversal) set intersection,
+  a known hard case for this class of method, not a bug. That the mechanism
+  itself is sound was checked independently two ways: an exact sanity check
+  that the affine Gram-matrix family constructed for Motzkin really does
+  reproduce the target polynomial at an arbitrary rational point in the
+  family, and a synthetic planted rank-deficient PSD example of the same
+  nullspace dimension (`psd::diag::diag_step3_planted_singular_example`),
+  which *is* found and exactly re-verified. Recording `undecided` on Motzkin
+  and Robinson is the correct behaviour for now, not a workaround; escaping
+  a tangential intersection reliably (e.g. Douglas–Rachford with
+  over-relaxation, or a facial-reduction preprocessing step) is future work.
+
+  Everything reachable today is exact end to end: `verify()` re-expands
+  every returned certificate with exact rational arithmetic, `to_lean()`
+  emits a sorry-free Lean sketch, and `PositivityCertificate.multiplier` is
+  populated exactly when the certificate needed one (`None` for a direct SOS
+  decomposition). No new public API surface — `sos_decompose` and
+  `PositivityCertificate` are unchanged in shape; this is entirely a
+  strengthening of what the existing search covers before it refuses.
 
 ### Performance
 

@@ -46,6 +46,32 @@ Calculus / ODE / transform surface:
   and a two-valued verdict on whether it carries over to the sum
 - :func:`qbinomial`, :func:`qpochhammer` — builders for the two function heads
   the engine recognises
+- :meth:`~alkahest.experimental.QZeilbergerCertificate.specialize_at_root_of_unity`
+  / :class:`QRootOfUnitySpecialization` (M4) — the step from a ``Q(q)``
+  identity to ``q = ζ_d``, a primitive ``d``-th root of unity: the
+  ``q``-supercongruence literature. Pole and vanishing hypotheses are decided
+  exactly by polynomial divisibility by ``Φ_d(q)`` over ``Q``, never
+  numerically, and the verdict is three-valued (``"specializes"``,
+  ``"obstructed"``, ``"unknown"``) rather than a silent specialisation
+- :func:`cyclotomic_polynomial` — ``Φ_d(q)``, the modulus the root-of-unity
+  arithmetic works over, exposed so a caller can redo the divisibility check
+  by hand
+
+Novelty filtering (:mod:`alkahest.experimental.novelty`):
+- :class:`RecurrenceClaim` — a recurrence in a normal form two presentations
+  of the same fact share, plus a stable ``claim_hash`` to dedupe on
+- :func:`check_novelty` / :class:`NoveltyVerdict` — was this claim already
+  written down? Three-valued, and a negative is never reported as "novel"
+- :class:`OeisCache` (offline, the tested path) and :class:`OeisWeb` (opt-in
+  network) as sources
+
+Coefficient fields for elimination (M9):
+- :class:`ParametricGroebnerBasis` / :class:`ParametricGbPoly` — a Gröbner
+  basis in ``Q(params)[vars]`` rather than ``Q[vars, params]``, reachable as
+  ``GroebnerBasis.compute(polys, vars, params=[...])``.  The basis is generic,
+  so it reports the hypersurfaces its leading coefficients assumed non-zero
+  (``conditions()``) and refuses to ``specialize()`` on them instead of
+  returning something that is not a basis
 
 Numeric ODE integrators (Phase 16b):
 - :func:`ode_integrate_rk4` — fixed-step 4th-order Runge–Kutta integrator
@@ -92,10 +118,12 @@ from alkahest.alkahest import (
     AsymptoticReport,
     Fps,
     OdeTrajectory,
+    QRootOfUnitySpecialization,
     QZeilbergerCertificate,
     asymptotic_expand,
     # P1 item 10 — asymptotic expansion at scale
     coefficient_asymptotics,
+    cyclotomic_polynomial,
     dirac_delta,
     dsolve,
     euler_maclaurin,
@@ -113,6 +141,20 @@ from alkahest.alkahest import (
     z_transform,
 )
 
+# M11 — novelty filtering.  Claim normalisation, a stable hash, and a lookup
+# whose negative is never reported as "novel".  Pure Python by CONTRIBUTING's
+# rule: HTTP, JSON, and parsing a third party's prose.
+from alkahest.experimental import novelty
+from alkahest.experimental.novelty import (
+    NoveltyMatch,
+    NoveltyVerdict,
+    OeisCache,
+    OeisEntry,
+    OeisWeb,
+    RecurrenceClaim,
+    check_novelty,
+)
+
 with contextlib.suppress(ImportError):
     from alkahest import to_lean
 
@@ -121,6 +163,11 @@ with contextlib.suppress(ImportError):
 
 with contextlib.suppress(ImportError):
     from alkahest import GbPoly, GroebnerBasis, solve
+
+# M9 — Gröbner bases over the coefficient field Q(params).  Registered by the
+# extension only on `groebner` builds, hence the suppressed import.
+with contextlib.suppress(ImportError):
+    from alkahest.alkahest import ParametricGbPoly, ParametricGroebnerBasis
 
 with contextlib.suppress(ImportError):
     from alkahest.alkahest import CudaCompiledFn, compile_cuda
@@ -134,21 +181,39 @@ __all__ = [
     "Fps",
     "GbPoly",
     "GroebnerBasis",
+    # M11 — novelty filtering
+    "NoveltyMatch",
+    "NoveltyVerdict",
     "OdeTrajectory",
+    # M11 — novelty filtering
+    "OeisCache",
+    "OeisEntry",
+    "OeisWeb",
+    # M9 — coefficient fields for elimination
+    "ParametricGbPoly",
+    "ParametricGroebnerBasis",
+    # M4 — root-of-unity specialisation
+    "QRootOfUnitySpecialization",
     # M4(b) — q-analogue creative telescoping
     "QZeilbergerCertificate",
     # M5 — recurrence -> asymptotics
     "RecurrenceAsymptotics",
+    # M11 — novelty filtering
+    "RecurrenceClaim",
     "arg",
     "asymptotic_expand",
     # M5 — recurrence -> asymptotics
     "asymptotics_from_recurrence",
     "bessel_j0",
     "bessel_j1",
+    # M11 — novelty filtering
+    "check_novelty",
     # P1 item 10 — asymptotic expansion at scale
     "coefficient_asymptotics",
     "compile_cuda",
     "conjugate",
+    # M4 — root-of-unity specialisation
+    "cyclotomic_polynomial",
     "digamma",
     "dirac_delta",
     "dsolve",
@@ -163,6 +228,9 @@ __all__ = [
     "lambert_w",
     "laplace_transform",
     "multilimit",
+    # M11 — novelty filtering (the module itself, for `novelty.RecordedRecurrence`
+    # and the status tables)
+    "novelty",
     "ode_integrate_rk4",
     "ode_integrate_rk45",
     # M4(b) — q-analogue creative telescoping

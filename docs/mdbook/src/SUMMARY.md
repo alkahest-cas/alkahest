@@ -32,6 +32,7 @@
   - [Creative telescoping (Zeilberger)](./telescoping.md)
   - [Guessing recurrences](./guessing.md)
   - [Supercongruences: sequences modulo p^k](./supercongruences.md)
+  - [Novelty filtering against OEIS](./novelty.md)
   - [Ansatz families and conjecture generation](./ansatz.md)
   - [Cross-CAS differential testing](./crosscheck.md)
   - [SMT/SAT bridge](./smt.md)

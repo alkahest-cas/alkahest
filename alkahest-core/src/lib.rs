@@ -190,6 +190,9 @@ pub use poly::groebner::{
     compute_groebner_basis_f5, fglm, grevlex_staircase, is_zero_dimensional, GbPoly, GroebnerBasis,
     MonomialOrder,
 };
+// M9 — coefficient fields for elimination
+#[cfg(feature = "groebner")]
+pub use poly::groebner::{ParamGbPoly, ParamGroebnerBasis, ParamGroebnerError, ParamPoly, QParam};
 
 // P1 search plumbing item 4 — budgets, cancellation, determinism
 pub use budget::{
@@ -382,6 +385,12 @@ pub mod experimental {
         SeriesSolution,
     };
     pub use crate::plot::{render_dot, render_svg, render_svg_opts};
+    /// M9 — Gröbner bases over the coefficient field `Q(params)`, with the
+    /// specialisation hypotheses reported rather than assumed.
+    #[cfg(feature = "groebner")]
+    pub use crate::poly::groebner::{
+        ParamGbPoly, ParamGroebnerBasis, ParamGroebnerError, ParamPoly, QParam,
+    };
     pub use crate::poly::{
         gcd_sparse_modular, residue, sparse_interpolate, sparse_interpolate_univariate, GaussRat,
         ResidueError, SparseGcdError, SparseInterpError,

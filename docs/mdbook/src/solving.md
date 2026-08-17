@@ -132,6 +132,38 @@ implicit.to_exprs()                # [((y * -1) + x^2)]  —  y = x**2
 
 Note the variable order passed to `compute`: `t` comes first, so `lex` eliminates it. `eliminate` requires the basis to know its variables (`gb.variables()`), and rejects a variable it is not written over.
 
+## Coefficient fields: `Q(params)` instead of `Q[vars, params]`
+
+`GroebnerBasis.compute(polys, vars, params=[...])` moves the listed symbols into the **coefficient field** `Q(params)` instead of the polynomial ring. They never enter the monomial order and never generate S-pairs, which is the difference between eliminating states from `Q[states, Y, params]` and from `Q(params)[states, Y]` — the parameter count no longer inflates the staircase.
+
+```python
+from alkahest import GroebnerBasis
+
+# a lives in the coefficient field Q(a), not the ring Q[x, y, a]
+gb = GroebnerBasis.compute([a*x - y, x + y - one], [x, y], params=[a])
+type(gb)                      # ParametricGroebnerBasis
+[g.to_expr() for g in gb]     # coefficients are rational functions of a
+```
+
+Measured on a catenary compartmental ODE model (a linear chain of `n` states, output the first compartment, eliminating the states from the jet equations down to the input–output relation): at `n = 4` states / 7 rate constants the parametric route runs in 0.27s against 4.2s putting the rate constants in the ring (`Lex`, `--release`, ~15×) and leaves 5 total basis generators against 25; at `n = 5` states / 9 rate constants the parametric route finishes in 6.9s while the direct computation had not finished after 240s. These are wall-clock numbers on one machine, illustrating the shape of the difference (S-pairs among the parameters are exactly what the ring route pays for and the coefficient-field route never generates) rather than a promised ratio.
+
+**The result is generic.** A leading coefficient in `Q(params)` can be a non-zero rational function of the parameters and still vanish at a specific parameter point, and there the basis this computation built is not the one the same algorithm would build over ℚ at that point:
+
+```python
+gb.conditions()               # [a + 1] — the basis says nothing at a = -1
+gb.is_regular_at([3])         # True
+gb.is_regular_at([-1])        # False
+
+gb.specialize([3])            # an ordinary GroebnerBasis over Q
+gb.specialize([-1])           # raises ParamGroebnerError, code "E-PARAMGB-004"
+```
+
+`conditions()` lists the hypersurfaces the computation assumed non-vanishing — every leading-coefficient inversion contributes its numerator and denominator, every input coefficient contributes its denominator — factored into irreducible, primitive pieces so the report is a list of conditions rather than one opaque polynomial in many parameters. The list is **sufficient, not necessary**: it can flag a point that turns out fine (a removable coincidence the bookkeeping cannot see), but it never misses a point where the generic basis is genuinely wrong. `specialize` refuses on the flagged locus with `ParamGroebnerError` (`E-PARAMGB-004`) rather than returning something that is not a basis; check `is_regular_at` first if a degenerate point is a normal outcome for your caller.
+
+The read path matches `GroebnerBasis`: the object is a sequence of `ParametricGbPoly`, each with `to_expr()` / `terms()`, and the basis itself has `to_exprs()`, `eliminate(vars)` (same `Lex`-with-eliminated-variables-first contract, refuses to eliminate a coefficient-field parameter since there is nothing to eliminate), `reduce`, and `contains`. `GroebnerBasis.compute(..., params=None)` or `params=[]` is the unmodified `Q[vars]` path; `ParametricGroebnerBasis.compute(polys, vars, params, order=None)` is the equivalent direct constructor in `alkahest.experimental`.
+
+This surface is experimental (`alkahest.experimental.ParametricGroebnerBasis` / `ParametricGbPoly`) and requires `--features groebner`.
+
 ## Performance
 
 On the `solve_circle_line` benchmark (2-variable quadratic system), Alkahest is approximately **40× faster** than SymPy due to the FLINT-backed polynomial arithmetic and the compiled F4 core.
