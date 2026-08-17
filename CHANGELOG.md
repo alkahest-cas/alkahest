@@ -1295,38 +1295,48 @@ Both are detailed under *Behaviour changes to plan for*.
   than its interior, which a plain fixed-floor search reliably stalls short
   of.
 
-  **Honest gap, not a silent one:** the hardest classical textbook examples —
-  Motzkin's polynomial (`x⁴y²+x²y⁴−3x²y²+1`, PSD but not SOS; classically SOS
-  after multiplying by `x²+y²`) and Robinson's form — are *not* yet
-  certified by this search, and the tests say so directly
-  (`motzkin_reports_undecided_rather_than_a_false_certificate`,
-  `psd_search_does_not_yet_reach_homogeneous_motzkin_times_sum_of_squares`)
-  rather than asserting a false positive. This was diagnosed, not merely
-  observed: a diagnostic trajectory
-  (`psd::diag::diag_step1_step2_trajectory_and_family_sanity`) shows the
-  annealed search converging *monotonically* toward Motzkin's boundary
-  certificate (minimum eigenvalue running from roughly `−1.6` to roughly
-  `−0.0018` as the floor anneals to `0`) without fully closing the last,
-  asymptotically slow stretch to exactly `0` — the textbook signature of
-  alternating projection at a tangential (non-transversal) set intersection,
-  a known hard case for this class of method, not a bug. That the mechanism
-  itself is sound was checked independently two ways: an exact sanity check
-  that the affine Gram-matrix family constructed for Motzkin really does
-  reproduce the target polynomial at an arbitrary rational point in the
-  family, and a synthetic planted rank-deficient PSD example of the same
-  nullspace dimension (`psd::diag::diag_step3_planted_singular_example`),
-  which *is* found and exactly re-verified. Recording `undecided` on Motzkin
-  and Robinson is the correct behaviour for now, not a workaround; escaping
-  a tangential intersection reliably (e.g. Douglas–Rachford with
-  over-relaxation, or a facial-reduction preprocessing step) is future work.
+  **Motzkin and Robinson now both certify — the gap that motivated this
+  feature is closed, though not unconditionally.** The first version of this
+  search (annealed alternating projection with several random restarts)
+  reliably fell short of both classical textbook examples: a diagnostic
+  trajectory (`psd::diag::diag_step1_step2_trajectory_and_family_sanity`)
+  showed it converging *monotonically* toward Motzkin's boundary certificate
+  (minimum eigenvalue running from roughly `−1.6` to roughly `−0.0018` as the
+  floor annealed to `0`) without ever closing the last, asymptotically slow
+  stretch to exactly `0` — the textbook signature of alternating projection
+  stalling at a *tangential* (non-transversal) set intersection, which is
+  exactly what a *singular* witnessing Gram matrix (sitting on the PSD cone's
+  boundary rather than its interior) produces. The search now also tries
+  Douglas–Rachford splitting with over-relaxation
+  (`sdp::Family::douglas_rachford_from`) and a facial-reduction step
+  (`psd::facial_reduction_search`) — both are standard escapes for exactly
+  this stall — and with them, both `(x²+y²)·Motzkin(x,y)` (the affine,
+  2-variable case, found via the full `sos_decompose` multiplier search, not
+  just a hand-fed pre-multiplied target) and `(x²+y²+z²)·Robinson(x,y,z)`
+  (via `psd_search` directly) are found and exactly re-verified —
+  `real::sos::tests::motzkin_certifies_via_a_reznick_multiplier` and
+  `psd::tests::psd_search_certifies_robinsons_form_with_a_reznick_multiplier`
+  check the identities by hand, independent of the search that proposed them.
+
+  **What's still open:** the homogeneous 3-variable form of Motzkin,
+  `(x²+y²+z²)·(x⁴y²+x²y⁴−3x²y²z²+z⁶)`, still is not found
+  (`psd::tests::psd_search_does_not_yet_reach_homogeneous_motzkin_times_sum_of_squares`)
+  — a larger nullspace than the affine 2-variable case, and evidently still
+  hard enough for even Douglas–Rachford and facial reduction as currently
+  tuned. So a boundary-only certificate is not guaranteed to be found in
+  general; `E-SOS-002` still means "not found within this search", never "not
+  SOS" or "not non-negative".
 
   Everything reachable today is exact end to end: `verify()` re-expands
   every returned certificate with exact rational arithmetic, `to_lean()`
-  emits a sorry-free Lean sketch, and `PositivityCertificate.multiplier` is
+  emits a sorry-free Lean sketch, and `PositivityCertificate.multiplier()` is
   populated exactly when the certificate needed one (`None` for a direct SOS
-  decomposition). No new public API surface — `sos_decompose` and
-  `PositivityCertificate` are unchanged in shape; this is entirely a
-  strengthening of what the existing search covers before it refuses.
+  decomposition — a method rather than a field, since adding a field to this
+  already fully-public, exhaustively-constructible struct is a semver break
+  regardless of the field's own visibility; see the method's own doc comment).
+  No new public API surface — `sos_decompose` and `PositivityCertificate` are
+  unchanged in shape; this is entirely a strengthening of what the existing
+  search covers before it refuses.
 
 ### Performance
 

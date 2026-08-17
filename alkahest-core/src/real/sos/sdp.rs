@@ -110,11 +110,48 @@ pub fn min_eigenvalue(q: &[Vec<f64>]) -> f64 {
     vals.into_iter().fold(f64::INFINITY, f64::min)
 }
 
+/// The `k` eigenvectors of `q` (symmetric) whose eigenvalues have the
+/// smallest *magnitude*, nearest-to-zero first.
+///
+/// Used by `super::psd::facial_reduction_search` to guess the nullspace of
+/// a nearby singular PSD matrix from a numeric near-feasible point: when a
+/// witnessing Gram matrix is singular (the boundary-only intersections that
+/// make plain alternating projection or Douglas–Rachford converge only
+/// asymptotically — see `Family::douglas_rachford_from`'s doc comment), the
+/// eigenvectors of a near-optimal numeric point with the smallest-magnitude
+/// eigenvalues are a good numeric proxy for the true certificate's exact
+/// null directions, even while the numeric search has not yet closed the
+/// last stretch to an exact zero eigenvalue.
+pub fn smallest_magnitude_eigenvectors(q: &[Vec<f64>], k: usize) -> Vec<Vec<f64>> {
+    let (vals, vecs) = jacobi_eigen(q);
+    let mut idx: Vec<usize> = (0..vals.len()).collect();
+    idx.sort_by(|&a, &b| {
+        vals[a]
+            .abs()
+            .partial_cmp(&vals[b].abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    idx.into_iter().take(k).map(|i| vecs[i].clone()).collect()
+}
+
 fn dot(a: &[Vec<f64>], b: &[Vec<f64>]) -> f64 {
     a.iter()
         .zip(b.iter())
         .map(|(ra, rb)| ra.iter().zip(rb.iter()).map(|(x, y)| x * y).sum::<f64>())
         .sum()
+}
+
+/// Elementwise `alpha·a + beta·b` for two matrices of the same shape.
+fn mat_combo(alpha: f64, a: &[Vec<f64>], beta: f64, b: &[Vec<f64>]) -> Vec<Vec<f64>> {
+    a.iter()
+        .zip(b.iter())
+        .map(|(ra, rb)| {
+            ra.iter()
+                .zip(rb.iter())
+                .map(|(x, y)| alpha * x + beta * y)
+                .collect()
+        })
+        .collect()
 }
 
 /// Solve a small symmetric positive definite system by Cholesky.
@@ -254,6 +291,89 @@ impl Family {
             return None;
         }
         Some(t)
+    }
+
+    /// Douglas–Rachford splitting between `{Q : Q ⪰ floor·I}` and this
+    /// affine family, with over-relaxation parameter `lambda`.
+    ///
+    /// [`Self::search_from`] (plain alternating projection) only ever
+    /// *projects* onto each set in turn, and is well known to converge
+    /// arbitrarily slowly — stalling asymptotically close to, but short of,
+    /// the true intersection — when the two sets meet **tangentially**
+    /// (non-transversally): exactly the situation when the witnessing Gram
+    /// matrix is singular, i.e. sits on the relative boundary of the PSD
+    /// cone rather than its interior. That is the textbook case for tight
+    /// SOS certificates such as Motzkin's, and is what
+    /// `super::psd::diag::diag_step1_step2_trajectory_and_family_sanity`
+    /// shows happening in practice (min eigenvalue creeping from about −1.6
+    /// to about −0.0018 and no further as the floor is annealed to 0).
+    ///
+    /// Douglas–Rachford instead *reflects* through each set
+    /// (`R = 2·P − id`) rather than merely projecting, and combines the two
+    /// reflections:
+    ///
+    /// ```text
+    /// Q_{k+1} = Q_k + λ·(P_psd(R_family(Q_k)) − P_family(Q_k))
+    /// ```
+    ///
+    /// which is the standard Lions–Mercier (1979) splitting; `λ = 1` is
+    /// plain (non-relaxed) Douglas–Rachford, and `λ ∈ (1, 2)` is
+    /// over-relaxation, which gives the iterate room to overshoot past a
+    /// shallow tangential approach instead of creeping toward it — the
+    /// standard reason Douglas–Rachford (over-relaxed or not) is the usual
+    /// upgrade path from alternating projection for exactly this failure
+    /// mode in the convex-feasibility and semidefinite-programming
+    /// literature (see e.g. Bauschke & Combettes on reflection methods, or
+    /// Douglas–Rachford applied directly to semidefinite feasibility
+    /// problems).
+    ///
+    /// Unlike [`Self::search_from`], the iterate here is an *ambient*
+    /// symmetric matrix, not necessarily a point of the family — both
+    /// `P_family` (via `parameters_of`) and `P_psd` (via `project_psd`)
+    /// accept any symmetric matrix as input, which is what
+    /// lets the reflections be taken at all. The parameter vector returned
+    /// is `P_family` of the final iterate. As with [`Self::search_from`],
+    /// convergence is not guaranteed and not required: the result is a
+    /// **suggestion**, checked exactly by the caller, never trusted here.
+    pub fn douglas_rachford_from(
+        &self,
+        start: Vec<f64>,
+        floor: f64,
+        lambda: f64,
+        iters: usize,
+    ) -> Option<Vec<f64>> {
+        let mut q = self.at(&start);
+        for _ in 0..iters {
+            let pa_t = self.parameters_of(&q)?;
+            let pa = self.at(&pa_t);
+            // Reflect through the affine family: R_family(q) = 2·pa − q.
+            let r_family = mat_combo(2.0, &pa, -1.0, &q);
+            let pb = project_psd(&r_family, floor);
+            // q_{k+1} = q + λ·(pb − pa).
+            let step = mat_combo(1.0, &pb, -1.0, &pa);
+            let q_next = mat_combo(1.0, &q, lambda, &step);
+
+            // Track movement of the *iterate itself* (`q`), not the shadow
+            // sequence `P_family(q)`: the shadow can go numerically static
+            // for a stretch (or even cycle) while `q` is still moving, which
+            // would make an early exit keyed on the shadow declare
+            // convergence falsely.
+            let moved: f64 = q_next
+                .iter()
+                .zip(q.iter())
+                .flat_map(|(ra, rb)| ra.iter().zip(rb.iter()))
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0, f64::max);
+            q = q_next;
+            if moved < 1e-13 {
+                break;
+            }
+        }
+        let final_t = self.parameters_of(&q)?;
+        if final_t.iter().any(|v| !v.is_finite()) {
+            return None;
+        }
+        Some(final_t)
     }
 }
 

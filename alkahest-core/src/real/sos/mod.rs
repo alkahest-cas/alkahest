@@ -36,12 +36,20 @@
 //! subcone (solvable exactly); the full PSD Gram cone, when DSOS fails (a
 //! strict superset, but only reachable via the sound-but-incomplete numeric
 //! search above); and a Reznick multiplier search `(Σxᵢ²)^N·p`, when even
-//! that fails on `p` itself. None of these three is complete — the multiplier
-//! search in particular does not yet reliably find certificates whose
-//! witnessing Gram matrix is singular (sits exactly on the PSD cone's
-//! boundary), which is the case for the textbook examples Motzkin and
-//! Robinson (see `real::sos::tests::motzkin_reports_undecided_rather_than_a_false_certificate`
-//! for the diagnosis). So [`SosError::NoCertificate`] means precisely *"no
+//! that fails on `p` itself. None of these three is complete — a certificate
+//! of a given shape may exist at a higher degree/budget than was searched, or
+//! not exist in that shape at all, and `sos_decompose` cannot tell those
+//! apart. The multiplier search specifically had to add Douglas–Rachford
+//! splitting and facial reduction alongside its original annealed
+//! alternating-projection search (see `real::sos::sdp::Family::douglas_rachford_from`
+//! and `real::sos::psd`'s `facial_reduction_search`) because certificates
+//! whose witnessing Gram matrix is *singular* — sitting exactly on the PSD
+//! cone's boundary, as for the textbook examples Motzkin and Robinson — are a
+//! well-known hard case for plain alternating projection (see
+//! `real::sos::tests::motzkin_certifies_via_a_reznick_multiplier` for the
+//! worked diagnosis); both of those examples are covered by the current
+//! search, but a boundary-only certificate at some other degree is not
+//! guaranteed to be. So [`SosError::NoCertificate`] means precisely *"no
 //! certificate of this shape was found at this degree/budget"*. It does
 //! **not** mean "not a sum of squares", and it does **not** mean "not
 //! non-negative". The three answers are kept distinct in the API on purpose —
@@ -621,55 +629,63 @@ mod tests {
     }
 
     #[test]
-    fn motzkin_reports_undecided_rather_than_a_false_certificate() {
+    fn motzkin_certifies_via_a_reznick_multiplier() {
         let (pool, x, y) = setup();
         // Motzkin: x^4·y^2 + x^2·y^4 − 3·x^2·y^2 + 1 is non-negative but is
         // the textbook example of a polynomial that is *not* itself a sum of
         // squares — Hilbert's 1888 theorem allows non-SOS PSD forms outside
         // ternary quartics, and Motzkin (1967) is the standard witness.
         // Multiplying by (x²+y²) is classically known to fix this (it is
-        // exactly the kind of case Reznick's theorem covers), but the
-        // witnessing Gram matrix for that fact is *singular* — it sits
-        // exactly on the boundary of the PSD cone, not in its interior — and
-        // [`crate::real::sos::psd`]'s numeric search (alternating projection
-        // with an annealed floor schedule and multiple random restarts) is
-        // demonstrably not a bug: a `psd::diag::diag_step3_planted_singular_example`
-        // planted boundary case with the same nullspace dimension *is* found
-        // and exactly re-verified, and the affine family constructed for
-        // Motzkin itself passes an independent sanity check
-        // (`psd::diag::diag_step1_step2_trajectory_and_family_sanity`). The
-        // search on Motzkin specifically converges monotonically (min
-        // eigenvalue runs from roughly −1.6 down to roughly −0.0018 as the
-        // floor anneals to 0) but does not close the last, asymptotically
-        // slow stretch to exactly 0 — the classic behaviour of alternating
-        // projection at a tangential (non-transversal) intersection. This is
-        // an honest search-budget limitation, not a soundness bug: recording
-        // `undecided` here, never a fabricated certificate, is the correct
-        // behaviour and is what this test checks.
+        // exactly the kind of case Reznick's theorem covers). The witnessing
+        // Gram matrix for that fact is *singular* — it sits exactly on the
+        // boundary of the PSD cone, not in its interior — which is why a
+        // plain annealed alternating-projection search (the first version of
+        // this feature) could get arbitrarily close (min eigenvalue from
+        // roughly −1.6 down to roughly −0.0018 as its floor annealed to 0)
+        // without ever closing the gap: the textbook symptom of a tangential
+        // (non-transversal) set intersection. `real::sos::psd`'s search now
+        // also tries Douglas–Rachford splitting and facial reduction, either
+        // of which is known to escape exactly this kind of stall, and it
+        // finds Motzkin's certificate here.
         let p = pool.add(vec![
             pool.mul(vec![x, x, x, x, y, y]),
             pool.mul(vec![x, x, y, y, y, y]),
             pool.mul(vec![pool.integer(-3_i32), x, x, y, y]),
             pool.integer(1_i32),
         ]);
-        let err = sos_decompose(p, &[x, y], &pool, &SosOpts::default())
-            .expect_err("Motzkin's multiplier certificate is not yet reached by this search");
-        assert!(matches!(err, SosError::NoCertificate(_)));
-        assert_eq!(err.code(), "E-SOS-002");
+        let cert =
+            sos_decompose(p, &[x, y], &pool, &SosOpts::default()).expect("Motzkin now certifies");
+        assert_eq!(cert.kind, CertificateKind::Sos);
+        let sigma = cert
+            .multiplier()
+            .expect("Motzkin is not itself SOS, so this must be a multiplier certificate");
+        // The exact identity actually checked: σ·p = Σ c_i q_i², in ℚ — the
+        // real soundness argument, independent of whatever the numeric
+        // search that proposed it actually converged to.
+        assert_eq!(sigma.mul(&cert.target), cert.expand());
+        cert.verify().expect("re-verifies exactly end to end");
+
+        // Composes with to_lean: a self-contained, sorry-free Lean sketch.
+        let lean = cert
+            .to_lean()
+            .expect("multiplier certificates emit Lean too");
+        assert!(!lean.contains("sorry"));
+        assert!(!lean.contains("admit"));
+        assert!(lean.contains("alkahest_multiplier_factor"));
+        assert!(lean.contains("ring"));
     }
 
     #[test]
     fn multiplier_search_reports_undecided_not_not_sos_when_out_of_budget() {
         let (pool, x, y) = setup();
-        // Same Motzkin target as the previous test. Here the internal search
-        // is driven with a budget of *zero* multiplier powers directly — i.e.
-        // exactly the "search legitimately runs out of budget" case — and it
-        // must come back empty-handed rather than fabricate a certificate.
-        // (Motzkin also fails to certify at the production budget, per the
-        // previous test — this test's point is narrower: even independent of
-        // whether the production budget eventually finds Motzkin's
-        // certificate, a caller-supplied budget of zero must never
-        // manufacture one.)
+        // Same Motzkin target as the previous test, which now certifies at
+        // the production budget. Here the internal search is instead driven
+        // with a budget of *zero* multiplier powers directly — i.e. exactly
+        // the "search legitimately runs out of budget" case — and it must
+        // come back empty-handed rather than fabricate a certificate. This
+        // test's point is narrower than the previous one: independent of
+        // whether the production budget finds a given target's certificate,
+        // a caller-supplied budget of zero must never manufacture one.
         let p = pool.add(vec![
             pool.mul(vec![x, x, x, x, y, y]),
             pool.mul(vec![x, x, y, y, y, y]),

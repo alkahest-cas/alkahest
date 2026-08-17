@@ -57,12 +57,20 @@ wrong by collapsing:
 > and it carries a witness point.
 
 `E-SOS-002` is *not* a claim that the polynomial is not a sum of squares, and
-certainly not that it is negative. The canonical example is the **Motzkin
-polynomial** `x⁴y² + x²y⁴ − 3x²y² + 1`, which is non-negative everywhere but
-provably not a sum of squares. Asked to decompose it, this module refuses with
-`E-SOS-002` — it does not report it as negative, and it does not invent a
-decomposition. Choi–Lam and Robinson refuse the same way, and for the same
-reason: **the refusal is a property of the search, not of the polynomial.**
+certainly not that it is negative. The canonical illustration is the
+**Motzkin polynomial** `x⁴y² + x²y⁴ − 3x²y² + 1`, which is non-negative
+everywhere but provably not a sum of squares *itself* — asked to decompose it
+*directly* (no multiplier), this module refuses with `E-SOS-002`, correctly:
+it does not report it as negative, and it does not invent a decomposition.
+`sos_decompose`'s full pipeline does not stop there, though (see "What the
+search actually covers" below) — it also tries multiplying by a power of
+`x²+y²` before giving up, and that succeeds for Motzkin, so the *end-to-end*
+call returns a certificate, not a refusal. The homogeneous 3-variable form of
+Motzkin still refuses even through the full pipeline (multiplier search
+included) — that is the actual reachable illustration of a genuine
+`E-SOS-002` from this module today: **the refusal is a property of the
+search, not of the polynomial**, and which polynomials it applies to shifts
+as the search grows more complete.
 
 The three-way branch a loop should write:
 
@@ -115,19 +123,28 @@ The search tries three things, in order, before refusing:
 `E-SOS-002` at the end of all three is phrased as a statement about the
 search, not the polynomial — the search's incompleteness, at any step.
 
-**A known, diagnosed gap in step 3:** Motzkin's polynomial and Robinson's
-form — the textbook PSD-not-SOS examples — are not yet certified even with a
-multiplier, because their witnessing Gram matrices are *singular*, sitting
-exactly on the boundary of the PSD cone rather than its interior. The
-annealed search converges toward that boundary (monotonically, confirmed by a
-diagnostic trajectory) but does not reliably close the last, asymptotically
-slow stretch — the textbook behaviour of alternating projection at a
-tangential (non-transversal) intersection. This was checked to be a
-convergence limitation and not a bug in the search machinery: an independent
-sanity check confirms the affine Gram-matrix family is constructed correctly,
-and a synthetic planted example with a singular Gram matrix of the same size
-*is* found and exactly re-verified. The tests for Motzkin record `undecided`
-rather than a false certificate.
+**Step 3's search has to work harder than plain alternating projection**,
+because the multiplier certificates it exists for are frequently *tight* —
+Motzkin's polynomial and Robinson's form (the textbook PSD-not-SOS examples)
+both have witnessing Gram matrices that are *singular*, sitting exactly on
+the boundary of the PSD cone rather than its interior. A first version of
+this search (annealed alternating projection with several random restarts)
+converged toward that boundary monotonically (confirmed by a diagnostic
+trajectory) but never reliably closed the last, asymptotically slow stretch —
+the textbook behaviour of alternating projection at a tangential
+(non-transversal) set intersection. The search now also tries
+Douglas–Rachford splitting with over-relaxation and a facial-reduction step —
+both standard escapes for exactly this stall — and with them, both
+`(x²+y²)·Motzkin(x,y)` and `(x²+y²+z²)·Robinson(x,y,z)` are found and
+exactly re-verified. **What's still open:** the *homogeneous 3-variable*
+form of Motzkin, `(x²+y²+z²)·(x⁴y²+x²y⁴−3x²y²z²+z⁶)`, is not — a larger
+nullspace than the affine 2-variable case, and still hard enough for the
+current search as tuned. This was checked to be a genuine, scoped search
+limitation and not a bug in the machinery: an independent sanity check
+confirms the affine Gram-matrix family is constructed correctly, and a
+synthetic planted example with a singular Gram matrix of the same size *is*
+found and exactly re-verified. The remaining test for the 3-variable
+Motzkin form records `undecided` rather than a false certificate.
 
 ## Constrained certificates
 
@@ -228,16 +245,18 @@ statement is good enough.
 
 Shipped: exact rational SOS over the DSOS generator cone, a general PSD Gram
 search (floating-point proposal, exact rational verification) for cases DSOS
-alone refuses, a Reznick multiplier search (`(Σxᵢ²)^N·p` for `N ≤ 4`) on top
-of that, Handelman certificates on basic semialgebraic sets, exact
-verification, and Lean export.
+alone refuses — with Douglas–Rachford splitting and a facial-reduction step
+alongside the original annealed alternating projection, specifically so
+boundary-only (singular Gram matrix) certificates are reachable — a Reznick
+multiplier search (`(Σxᵢ²)^N·p` for `N ≤ 4`) on top of that (finds both
+Motzkin's polynomial and Robinson's form), Handelman certificates on basic
+semialgebraic sets, exact verification, and Lean export.
 
-Not yet shipped: reliable certification of the hardest classical
-boundary-case examples (Motzkin, Robinson — see above; the multiplier search
-finds them for neither, diagnosed as an alternating-projection convergence
-limitation at a tangential PSD-cone intersection, not a soundness gap), a
-proper interior-point or facial-reduction-based solver that would close that
-gap, and Putinar-style certificates with genuine SOS — rather than
-non-negative constant — multipliers on the *constraints*.
-`CertificateKind::Putinar` exists in the certificate type so those can be
-added without a shape change.
+Not yet shipped: reliable certification of *every* boundary-case example —
+the homogeneous 3-variable form of Motzkin specifically is still out of
+reach (see above), so this is a real but narrower gap than "Motzkin doesn't
+certify" was in the prior release — a proper interior-point solver that
+would close it more systematically, and Putinar-style certificates with
+genuine SOS — rather than non-negative constant — multipliers on the
+*constraints*. `CertificateKind::Putinar` exists in the certificate type so
+those can be added without a shape change.
