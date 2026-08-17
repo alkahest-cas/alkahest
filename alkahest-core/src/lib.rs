@@ -362,6 +362,10 @@ pub mod experimental {
         eval_complex_f64, eval_exact_rational, eval_f64, eval_interval, evaluate, ComplexF64,
         EvalError, EvalMode, EvalValue, UnsupportedReason,
     };
+    pub use crate::holonomic::{
+        boundary_status_2d, telescope2d, telescope2d_search, BoundaryStatus2d, Telescoping2dError,
+        Telescoping2dOpts, Telescoping2dResult,
+    };
     pub use crate::horner::{emit_expr_c, emit_expr_c_vec, emit_horner_c, horner, EmitCError};
     pub use crate::hybrid::{Event, GuardStructure, HybridODE};
     pub use crate::lean::emit_lean_expr as emit_lean;

@@ -773,6 +773,83 @@ Both are detailed under *Behaviour changes to plan for*.
   `alkahest.experimental.QRootOfUnitySpecialization`,
   `alkahest.experimental.cyclotomic_polynomial`. Experimental.
 
+- **Double-sum creative telescoping: `experimental.telescope2d`** (M4).
+  Everything `zeilberger`/`q_zeilberger` reach is a single sum over one
+  index; `telescope2d` is the Apagodu–Zeilberger generalization to **two**
+  bound indices — `F(n,j,k)` proper hypergeometric in each of `n`, `j`, `k`
+  — finding `a_0(n), …, a_J(n)` (not all zero) and *two* rational
+  certificates `c_1, c_2 ∈ Q(n,j,k)` with
+  `Σ_i a_i(n)·F(n+i,j,k) = Δ_j(c_1·F) + Δ_k(c_2·F)`, re-checked as an exact
+  identity in `Q(n,j,k)` — never trusted from the search — before being
+  returned. This is a genuinely scoped-down piece of a much larger problem
+  (full Wegschaider reduction is arbitrary rational summands over arbitrarily
+  many indices), not a claim to have closed it: see the honest-limitations
+  list in `alkahest_cas::holonomic::telescoping2d`'s module docs.
+
+  **Method.** There is no standard 2-D analogue of Gosper's normal form for a
+  general proper hypergeometric `F(n,j,k)`, so unlike the single-sum engine
+  this is undetermined coefficients, not a normal-form reduction: the
+  certificate ansatz `c_1 = P_1(n,j,k)/E_1`, `c_2 = P_2(n,j,k)/E_2` uses a
+  *fixed*, search-independent denominator built from `F`'s own shift-ratio
+  denominators — and, critically, **not just the raw denominator of the
+  ratio being telescoped in that direction**. A certificate built from a
+  product of two single-sum WZ pairs needs a factor from the *other*
+  direction's `n`-shift ratio too (`c_1 ∝ R_A(n,j)·B(n+1,k)/B(n,k)` for
+  `F = A(n,j)·B(n,k)`), which is why `E_1 := D_j·∏_i D_{n,i}` and
+  symmetrically for `E_2`. Clearing that denominator turns the identity into
+  one linear system over `Q`, solved by plain Gaussian elimination (nullspace,
+  not a fixed right-hand side, since the leading `a_J(n)` is not normalized to
+  a constant up front) — reusing nothing from `qfield`'s `Q(n)[k]` tower,
+  because a fixed-denominator linear ansatz never needs that tower's gcd
+  machinery; a new, deliberately simpler sparse `Q[n,j,k]` polynomial ring
+  covers everything the search needs (`holonomic::telescoping2d::poly`).
+
+  **The boundary is four strip sums, not four corner evaluations** — the
+  single most important thing to get right at two dimensions, and the
+  subject of its own module (`holonomic::telescoping2d::boundary`) kept
+  strictly apart from the search so a returned certificate is checkable
+  without reference to how it was found. Telescoping
+  `Σ_j Σ_k [Δ_j G_1 + Δ_k G_2]` over a rectangle gives
+  `Σ_k[G_1(j_hi+1,k) − G_1(j_lo,k)] + Σ_j[G_2(j,k_hi+1) − G_2(j,k_lo)]` —
+  four *one-dimensional sums* along the rectangle's edges. Summing a strip in
+  closed form is in general its own creative-telescoping problem, so this
+  version proves the **sufficient** (not necessary) condition that each strip
+  is identically the zero function of its remaining free variable — via the
+  same `1/Γ` non-positive-integer-argument identity the single-sum engine's
+  order counting uses, checked either on `F`'s own gamma factors (the natural
+  boundary) or on the certificate's own numerator (the classical-WZ-style
+  case, e.g. a certificate `∝ k` that is zero at `k = 0` even though `F`
+  itself is not). It is honestly conservative: only **constant** (not
+  `n`-dependent) rectangles are supported — the `n`-dependent-range case
+  needs the same `D_i(n)` correction-term bookkeeping
+  `holonomic::boundary`'s `b(n)` formula has, doubled for two independently
+  moving bounds, and this version does not implement it — and an unresolved
+  strip is reported `"unknown"`, never guessed. `BoundaryStatus2d::Nonzero`
+  exists in the type for parity with the single-sum engine's three-valued
+  discipline but is not yet produced by any code path: an inhomogeneous
+  boundary term needs closed-form strip summation this version does not
+  attempt.
+
+  Verified on `S(n) = Σ_j Σ_k C(n,j)·C(j,k)`, a genuinely **non-separable**
+  double sum (`C(j,k)` couples to the outer sum's own index `j`, so it is not
+  a product of two independent single-index sums) with a known closed form,
+  `S(n) = 3ⁿ` by the binomial theorem — checked by direct exact summation
+  (`rug::Rational`, not floats) against the returned order-1 recurrence, and
+  again on `2ⁿ·C(10,j)·C(j,k)` (the same non-separable coupling with the `n`
+  dependence factored out, so the boundary genuinely is `n`-independent and
+  `Vanishes` is provided rather than refused) — plus the separable-product
+  fallback case (`C(n,j)·C(n,k)`, `S(n) = 4ⁿ`) the task's own scoping note
+  flags as a weaker test, kept in the suite explicitly labeled as such since
+  it does not exercise the corner-term logic.
+
+  New: `alkahest.experimental.telescope2d`,
+  `alkahest.experimental.Telescoping2dCertificate`. Experimental — the ansatz
+  degree budgets, the fixed-denominator choice and the constant-rectangle
+  boundary restriction are all real, stated limitations of this first cut,
+  not polish left for later. Refusals: `E-HOLO-040` outside the proper
+  hypergeometric class, `E-HOLO-041` when the bounded search is exhausted,
+  `E-HOLO-042` for a malformed call.
+
 - **Validated bounds reach five more functions: `asinh`, `acosh`, `atanh`,
   `erf`, `erfc`.** `bound_on_box` — and everything built on it,
   `verified_sign`, `verified_no_roots`, `verified_integral` — covered exactly

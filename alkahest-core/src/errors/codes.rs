@@ -263,6 +263,12 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-HOLO-022", class: "HolonomicError", cause: Cause::Internal,    remediation: Some("internal: report the term as a minimal failing example") },
     ErrorSpec { code: "E-HOLO-023", class: "HolonomicError", cause: Cause::UserInput,   remediation: Some("q, n and k must be three distinct symbols; max_order and max_degree must be at least 1; a q-Pochhammer base step must be at least 1") },
     ErrorSpec { code: "E-HOLO-024", class: "HolonomicError", cause: Cause::Unsupported, remediation: Some("the term is q-hypergeometric in shape but its shift quotient is not a rational function of q**n and q**k — e.g. (q; q**2)_k shifted in k. No algorithm in this family applies; close the branch") },
+    // E-HOLO-04x — Telescoping2dError (M4: double-sum / Apagodu-Zeilberger
+    // creative telescoping). A separate block so a caller can tell which of
+    // the three engines refused.
+    ErrorSpec { code: "E-HOLO-040", class: "HolonomicError", cause: Cause::UserInput,   remediation: Some("rewrite the term as R(n,j,k)*z1**j*z2**k*w**n*prod(gamma(a*n+b*j+c*k+d)**e) with integer a, b, c; supported function heads are gamma, factorial, binomial, pochhammer") },
+    ErrorSpec { code: "E-HOLO-041", class: "HolonomicError", cause: Cause::Resource,    remediation: Some("raise max_order, max_a_degree and/or max_cert_degree in Telescoping2dOpts; if the term genuinely has no such double-sum certificate within reach — or needs a certificate denominator this module's fixed-denominator ansatz cannot represent — this method does not apply") },
+    ErrorSpec { code: "E-HOLO-042", class: "HolonomicError", cause: Cause::UserInput,   remediation: Some("n, j and k must be three distinct symbols") },
     // E-SMT — SmtError (P2 item 3: SMT/SAT bridge).
     //
     // Only the code Rust actually raises is registered here.  The rest of the

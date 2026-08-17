@@ -188,6 +188,12 @@ use alkahest_core::holonomic::qzeil::{
     QRootOfUnitySpecialization as CoreQRootOfUnitySpecialization,
     QZeilbergerOpts as CoreQZeilbergerOpts,
 };
+// M4 — double-sum (Apagodu–Zeilberger) creative telescoping
+use alkahest_core::holonomic::telescoping2d::{
+    boundary_status_2d as core_boundary_status_2d, telescope2d_search as core_telescope2d_search,
+    Telescoping2dError as CoreTelescoping2dError, Telescoping2dOpts as CoreTelescoping2dOpts,
+    Telescoping2dResult as CoreTelescoping2dResult,
+};
 // M6 — modular / p-adic evaluation of holonomic sequences
 use alkahest_core::holonomic::modular::{
     binomial_mod as core_binomial_mod, ModularError as CoreHolonomicModularError,
@@ -5748,6 +5754,233 @@ fn py_q_zeilberger(
         q_id: q.id,
         cert,
         n_min,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// M4 — double-sum (Apagodu–Zeilberger) creative telescoping
+// ---------------------------------------------------------------------------
+
+fn telescoping2d_error_to_py(e: CoreTelescoping2dError) -> PyErr {
+    Python::with_gil(|py| {
+        let exc_type = py.get_type_bound::<PyHolonomicError>();
+        make_structured_err(py, &exc_type, &e)
+    })
+}
+
+fn format_rect_range(pool: &ExprPool, lo: ExprId, hi: ExprId, var: &str) -> String {
+    format!("{var} = {}..{}", pool.display(lo), pool.display(hi))
+}
+
+/// A **verified** double-sum creative-telescoping certificate, returned by
+/// :func:`alkahest.experimental.telescope2d`.
+///
+/// Carries the recurrence coefficients ``a_0(n), …, a_J(n)`` and two rational
+/// certificates ``cert1``, ``cert2`` satisfying, as an exact identity in
+/// ``Q(n,j,k)``,
+///
+/// ``Σ_i a_i(n)·F(n+i,j,k) = Δ_j G_1 + Δ_k G_2``,
+/// ``G_1 = cert1·F``, ``G_2 = cert2·F``.
+///
+/// That identity is re-checked exactly before this object is constructed. It
+/// says nothing on its own about ``S(n) = Σ_j Σ_k F(n,j,k)`` over a stated
+/// rectangle — call :meth:`boundary_status` to decide that, separately, the
+/// same three-valued discipline as :class:`~alkahest.ZeilbergerCertificate`
+/// uses for the single-sum case.
+///
+/// This is a genuinely scoped-down engine, not a full Wegschaider reduction:
+/// see the module docs in ``alkahest_cas::holonomic::telescoping2d`` (Rust)
+/// for exactly what proper hypergeometric class, ansatz degree budget,
+/// certificate-denominator ansatz and boundary restrictions (constant
+/// rectangles only) it operates under.
+#[pyclass(name = "Telescoping2dCertificate")]
+struct PyTelescoping2dCertificate {
+    order: usize,
+    coeff_ids: Vec<ExprId>,
+    cert1_id: ExprId,
+    cert2_id: ExprId,
+    pool: Py<PyExprPool>,
+    term_id: ExprId,
+    n_id: ExprId,
+    j_id: ExprId,
+    k_id: ExprId,
+    result: CoreTelescoping2dResult,
+}
+
+#[pymethods]
+impl PyTelescoping2dCertificate {
+    /// Recurrence order ``J``; ``len(coeffs) == order + 1``.
+    #[getter]
+    fn order(&self) -> usize {
+        self.order
+    }
+
+    /// ``[a_0(n), …, a_J(n)]`` — polynomial coefficients of the recurrence.
+    #[getter]
+    fn coeffs(&self, py: Python<'_>) -> Vec<PyExpr> {
+        self.coeff_ids
+            .iter()
+            .map(|&id| PyExpr {
+                id,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect()
+    }
+
+    /// ``c_1(n,j,k)``, with ``G_1 = c_1·F``.
+    #[getter]
+    fn cert1(&self, py: Python<'_>) -> PyExpr {
+        let _ = py;
+        PyExpr {
+            id: self.cert1_id,
+            pool: self.pool.clone_ref(py),
+        }
+    }
+
+    /// ``c_2(n,j,k)``, with ``G_2 = c_2·F``.
+    #[getter]
+    fn cert2(&self, py: Python<'_>) -> PyExpr {
+        let _ = py;
+        PyExpr {
+            id: self.cert2_id,
+            pool: self.pool.clone_ref(py),
+        }
+    }
+
+    /// Decide the boundary hypothesis for the double sum
+    /// ``S(n) = Σ_{j=j_lo}^{j_hi} Σ_{k=k_lo}^{k_hi} F(n,j,k)``.
+    ///
+    /// ``j_lo, j_hi, k_lo, k_hi`` must be **integer constants** (``Expr`` or
+    /// plain ``int``) — not expressions in ``n``. This is a real limitation,
+    /// not unfinished polish: see the Rust module docs for
+    /// ``telescoping2d::boundary`` for why, and for the standard workaround
+    /// (a fixed bound safely larger than the true combinatorial support) when
+    /// the natural range is `n`-dependent, e.g. ``j = 0..n``.
+    ///
+    /// Returns a ``dict`` with keys ``status`` (``"vanishes"``, ``"nonzero"``
+    /// or ``"unknown"`` — though this version never produces ``"nonzero"``,
+    /// see the class docs), ``implies_sum_recurrence`` and
+    /// ``side_conditions``.
+    #[pyo3(signature = (j_lo, j_hi, k_lo, k_hi))]
+    fn boundary_status(
+        &self,
+        py: Python<'_>,
+        j_lo: &Bound<'_, PyAny>,
+        j_hi: &Bound<'_, PyAny>,
+        k_lo: &Bound<'_, PyAny>,
+        k_hi: &Bound<'_, PyAny>,
+    ) -> PyResult<Py<PyDict>> {
+        let jlo = coerce_limit(py, &self.pool, j_lo, "j_lo")?;
+        let jhi = coerce_limit(py, &self.pool, j_hi, "j_hi")?;
+        let klo = coerce_limit(py, &self.pool, k_lo, "k_lo")?;
+        let khi = coerce_limit(py, &self.pool, k_hi, "k_hi")?;
+        let (status, j_range, k_range) = {
+            let pool = self.pool.borrow(py);
+            let status = core_boundary_status_2d(
+                &self.result,
+                self.term_id,
+                self.n_id,
+                self.j_id,
+                self.k_id,
+                (jlo, jhi),
+                (klo, khi),
+                &pool.inner,
+            );
+            (
+                status,
+                format_rect_range(&pool.inner, jlo, jhi, "j"),
+                format_rect_range(&pool.inner, klo, khi, "k"),
+            )
+        };
+        let out = PyDict::new_bound(py);
+        out.set_item("status", status.tag())?;
+        out.set_item("implies_sum_recurrence", status.implies_sum_recurrence())?;
+        out.set_item(
+            "side_conditions",
+            status.side_conditions(&j_range, &k_range),
+        )?;
+        Ok(out.unbind())
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> String {
+        let pool = self.pool.borrow(py);
+        let coeffs: Vec<String> = self
+            .coeff_ids
+            .iter()
+            .map(|&id| pool.inner.display(id).to_string())
+            .collect();
+        format!(
+            "Telescoping2dCertificate(order={}, coeffs=[{}], cert1={}, cert2={})",
+            self.order,
+            coeffs.join(", "),
+            pool.inner.display(self.cert1_id),
+            pool.inner.display(self.cert2_id)
+        )
+    }
+}
+
+/// `alkahest.experimental.telescope2d(term, n, j, k, *, max_order=2, max_a_degree=2, max_cert_degree=3) -> Telescoping2dCertificate`
+///
+/// Double-sum creative telescoping (Apagodu–Zeilberger) for a proper
+/// hypergeometric term ``F(n, j, k)`` — the two-bound-index generalization of
+/// :func:`alkahest.zeilberger`. Returns a **verified** certificate: the
+/// identity ``Σ_i a_i(n)·F(n+i,j,k) = Δ_j G_1 + Δ_k G_2`` is re-checked
+/// exactly in ``Q(n,j,k)`` before it is returned.
+///
+/// The supported class: rational prefactor times ``z_j**j·z_k**k·w**n`` times
+/// ``gamma(a*n+b*j+c*k+d)**e`` factors with integer ``a, b, c`` (also reached
+/// via ``factorial``, ``binomial``, ``pochhammer``) — exactly
+/// :func:`alkahest.zeilberger`'s class, generalized from two indices to
+/// three. No more than two bound indices, and no general Wegschaider
+/// reduction; see the class docs and the Rust module docs
+/// (``alkahest_cas::holonomic::telescoping2d``) for the full, honestly-stated
+/// scope.
+///
+/// ``max_order``, ``max_a_degree`` (degree bound on each ``a_i(n)``) and
+/// ``max_cert_degree`` (box degree bound, in each of ``n, j, k``
+/// independently, on the two certificate numerators) are genuine upper
+/// bounds on a plain ascending search — raising them admits harder inputs.
+/// Raises :exc:`alkahest.HolonomicError` (``E-HOLO-040`` outside the
+/// supported class, ``E-HOLO-041`` when the bounded search is exhausted,
+/// ``E-HOLO-042`` for a malformed call) rather than guessing.
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
+#[pyo3(
+    name = "telescope2d",
+    signature = (term, n, j, k, *, max_order = 2, max_a_degree = 2, max_cert_degree = 3)
+)]
+fn py_telescope2d(
+    py: Python<'_>,
+    term: PyRef<PyExpr>,
+    n: PyRef<PyExpr>,
+    j: PyRef<PyExpr>,
+    k: PyRef<PyExpr>,
+    max_order: usize,
+    max_a_degree: usize,
+    max_cert_degree: usize,
+) -> PyResult<PyTelescoping2dCertificate> {
+    let pool_py = term.pool.clone_ref(py);
+    let opts = CoreTelescoping2dOpts {
+        max_order,
+        max_a_degree,
+        max_cert_degree,
+    };
+    let result = {
+        let pool = pool_py.borrow(py);
+        core_telescope2d_search(term.id, n.id, j.id, k.id, &pool.inner, &opts)
+            .map_err(telescoping2d_error_to_py)?
+    };
+    Ok(PyTelescoping2dCertificate {
+        order: result.order,
+        coeff_ids: result.coeffs.clone(),
+        cert1_id: result.cert1,
+        cert2_id: result.cert2,
+        pool: pool_py,
+        term_id: term.id,
+        n_id: n.id,
+        j_id: j.id,
+        k_id: k.id,
+        result,
     })
 }
 
@@ -14799,6 +15032,9 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyQRootOfUnitySpecialization>()?;
     m.add_function(wrap_pyfunction!(py_q_zeilberger, m)?)?;
     m.add_function(wrap_pyfunction!(py_cyclotomic_polynomial, m)?)?;
+    // M4 — double-sum (Apagodu–Zeilberger) creative telescoping
+    m.add_class::<PyTelescoping2dCertificate>()?;
+    m.add_function(wrap_pyfunction!(py_telescope2d, m)?)?;
     // M6 — modular / p-adic evaluation of holonomic sequences
     m.add_class::<PyModularRecurrence>()?;
     m.add_class::<PyModularEvaluation>()?;
