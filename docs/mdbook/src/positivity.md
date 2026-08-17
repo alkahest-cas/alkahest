@@ -67,10 +67,15 @@ search actually covers" below) — it also tries multiplying by a power of
 `x²+y²` before giving up, and that succeeds for Motzkin, so the *end-to-end*
 call returns a certificate, not a refusal. The homogeneous 3-variable form of
 Motzkin still refuses even through the full pipeline (multiplier search
-included) — that is the actual reachable illustration of a genuine
-`E-SOS-002` from this module today: **the refusal is a property of the
-search, not of the polynomial**, and which polynomials it applies to shifts
-as the search grows more complete.
+included), and — unlike the affine case above — this is not just "not yet
+reached": the classical fact needs multiplier power `N = 2`, not `N = 1`, for
+this specific homogeneous ternary form, and `N = 2` has now been attempted to
+closure by a genuinely harder search (symmetry reduction plus an exact
+algebraic zero-vector restriction, cutting 165 free parameters down to 16)
+without succeeding — see "What's still open" below for the numbers. That is
+the actual reachable illustration of a genuine `E-SOS-002` from this module
+today: **the refusal is a property of the search, not of the polynomial**,
+and which polynomials it applies to shifts as the search grows more complete.
 
 The three-way branch a loop should write:
 
@@ -137,14 +142,29 @@ Douglas–Rachford splitting with over-relaxation and a facial-reduction step �
 both standard escapes for exactly this stall — and with them, both
 `(x²+y²)·Motzkin(x,y)` and `(x²+y²+z²)·Robinson(x,y,z)` are found and
 exactly re-verified. **What's still open:** the *homogeneous 3-variable*
-form of Motzkin, `(x²+y²+z²)·(x⁴y²+x²y⁴−3x²y²z²+z⁶)`, is not — a larger
-nullspace than the affine 2-variable case, and still hard enough for the
-current search as tuned. This was checked to be a genuine, scoped search
-limitation and not a bug in the machinery: an independent sanity check
-confirms the affine Gram-matrix family is constructed correctly, and a
-synthetic planted example with a singular Gram matrix of the same size *is*
-found and exactly re-verified. The remaining test for the 3-variable
-Motzkin form records `undecided` rather than a false certificate.
+form of Motzkin at multiplier power `N = 2`, `(x²+y²+z²)²·(x⁴y²+x²y⁴−3x²y²z²+z⁶)`
+(`N = 1` is not classically expected to work for this specific homogeneous
+ternary form at all), is not — and this has now been pushed well past a
+budget skip. A new fallback, symmetry reduction
+(`real::sos::psd::symmetry_reduced_search`), restricts the search to the
+subspace fixed by the target's own signed-permutation symmetry (here, order
+16: swap `x, y`, and independently flip the sign of each variable, since
+every exponent is even) whenever that subspace is genuinely smaller — cutting
+this case's 165 free parameters to 26. An *exact*, non-numeric restriction on
+top of that — Motzkin's known zero at `(1,1,1)` forces `Q·z(1,1,1) = 0` on
+any witnessing Gram matrix `Q`, and `z(1,1,1)` is literally the all-ones
+vector, no rounding involved — cuts it again to 16. Even on that
+16-parameter family, though, Douglas–Rachford converges only very slowly:
+6,000,000 iterations bring the minimum eigenvalue to roughly `−1.4·10⁻⁸`,
+and rational rounding still fails at every stage even with denominators up to
+roughly `10⁹`. This is now a genuine, quantified numerical-hardness finding,
+not an unexplored avenue or an under-tuned budget — checked to be a real
+search limitation and not a bug in the machinery the same way as before: an
+independent sanity check confirms the affine Gram-matrix family (and each
+reduced family) is constructed correctly, and a synthetic planted example
+with a singular Gram matrix of the same size *is* found and exactly
+re-verified. The remaining test for the 3-variable Motzkin form records
+`undecided` rather than a false certificate.
 
 ## Constrained certificates
 

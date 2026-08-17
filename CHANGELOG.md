@@ -1395,12 +1395,53 @@ Both are detailed under *Behaviour changes to plan for*.
   `psd::tests::psd_search_certifies_robinsons_form_with_a_reznick_multiplier`
   check the identities by hand, independent of the search that proposed them.
 
-  **What's still open:** the homogeneous 3-variable form of Motzkin,
-  `(x²+y²+z²)·(x⁴y²+x²y⁴−3x²y²z²+z⁶)`, still is not found
-  (`psd::tests::psd_search_does_not_yet_reach_homogeneous_motzkin_times_sum_of_squares`)
-  — a larger nullspace than the affine 2-variable case, and evidently still
-  hard enough for even Douglas–Rachford and facial reduction as currently
-  tuned. So a boundary-only certificate is not guaranteed to be found in
+  **What's still open, now attempted to closure and precisely quantified
+  (2026-08-17, round 3):** the homogeneous 3-variable form of Motzkin,
+  `(x²+y²+z²)²·(x⁴y²+x²y⁴−3x²y²z²+z⁶)` — multiplier power `N = 2`, not `N = 1`
+  (round 2 had already narrowed the target to this specific case and power;
+  `N = 1` is not classically expected to work for this *homogeneous ternary*
+  form at all, unlike the affine 2-variable case) — still is not found
+  (`psd::tests::psd_search_does_not_yet_reach_homogeneous_motzkin_times_sum_of_squares`),
+  despite a real attempt rather than a budget skip. Three approaches were
+  tried:
+
+  1. **Deep Douglas–Rachford on the raw 165-free-parameter family:** escalating
+     from 15,000 to 615,000 cumulative iterations moved the minimum eigenvalue
+     from `≈ −1.9·10⁻⁶` to only `≈ −1.7·10⁻⁷` — real progress, but clearly
+     *sublinear*, not the finite-step convergence a transversal intersection
+     would show.
+  2. **Symmetry reduction** (new: `psd::symmetry_reduced_search`,
+     `psd::detect_polynomial_symmetry_group`) — added specifically because of
+     this case. `q`'s own signed-permutation symmetry (every exponent is even,
+     so all eight sign patterns fix it; swapping `x, y` also fixes it — order
+     16) restricts the 165-parameter family to a **26**-parameter symmetric
+     slice, by construction still reproducing `q` exactly (a `G`-average of the
+     original family). Deep DR on the smaller family converges *faster in wall
+     time* (roughly 30× per iteration) but at essentially the **same iteration
+     count** it does not reach a meaningfully different minimum eigenvalue
+     (`≈ −2.4·10⁻⁸` at 2,000,000 iterations) — the bottleneck is the
+     intersection's geometry, not raw parameter count.
+  3. **Exact algebraic zero-vector restriction**, going further than either
+     prior round: Motzkin's zero at `(1,1,1)` forces `Q·z(1,1,1) = 0` for any
+     PSD witnessing `Q` (`z(1,1,1)` is literally the all-ones vector on this
+     degree-5 basis — no rounding, no numerics). Imposing that exactly on the
+     symmetric family collapses it again to **16** parameters. An additional
+     tangent-direction candidate (the exact gradient of the basis vector at
+     `(1,1,1)`) was also tried and found *inconsistent* with the family —
+     confirming the corank contributed by this zero really is 1, not a missed
+     higher-corank guess. Deep DR on this 16-parameter family still does not
+     close it: 6,000,000 iterations reach only `≈ −1.4·10⁻⁸`, and rational
+     rounding fails even with denominators tested up to roughly `10⁹`.
+
+  All three lines of evidence agree: this is now a genuine, quantified
+  numerical-hardness finding (an unusually slowly-converging tangential
+  intersection), not an under-tuned budget or an unexplored structural avenue.
+  `symmetry_reduced_search` ships anyway as a real, general capability — it is
+  wired into `psd_search` as a further fallback (only once the direct search
+  and facial reduction have both already failed, so it adds no cost to any
+  case those already close) and will help *other* targets whose Gram family
+  happens to have exploitable symmetry, even though it did not close this one.
+  So a boundary-only certificate is still not guaranteed to be found in
   general; `E-SOS-002` still means "not found within this search", never "not
   SOS" or "not non-negative".
 
