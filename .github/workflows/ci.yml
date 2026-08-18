@@ -203,7 +203,14 @@ jobs:
     name: AddressSanitizer — alkahest-cas
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule'
-    timeout-minutes: 60
+    # 90, not 60: with M10's Douglas-Rachford SOS certificate tests
+    # (real::sos::psd, ~8.5 min under ASan) alongside M4's own suite, the full
+    # `-p alkahest-cas --lib --tests` run measured ~48 min under ASan
+    # instrumentation plus ~12 min of nightly-toolchain build-std setup,
+    # landing right at the old 60-minute ceiling and getting cancelled
+    # (not failed) mid-run. 90 gives real margin over the measured ~60 min
+    # total, not just clearing it exactly.
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v6

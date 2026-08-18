@@ -1,65 +1,135 @@
 //! The Apagodu–Zeilberger ansatz search: given a proper hypergeometric
-//! `F(n,j,k)`, find `a_0(n), …, a_J(n)` (not all zero) and two rational
-//! certificates `c_1, c_2 ∈ Q(n,j,k)` such that
+//! `F(n, x_1, …, x_m)` with `m ≥ 1` bound indices, find `a_0(n), …, a_J(n)`
+//! (not all zero) and `m` rational certificates `c_1, …, c_m ∈ Q(n,x)` such
+//! that
 //!
 //! ```text
-//! Σ_i a_i(n)·F(n+i,j,k) = Δ_j G_1 + Δ_k G_2,   G_1 = c_1·F,  G_2 = c_2·F
+//! Σ_i a_i(n)·F(n+i,x) = Σ_t Δ_t G_t,   G_t = c_t·F
 //! ```
 //!
-//! # Method — undetermined coefficients, not a 2-D Gosper normal form
+//! # Method — undetermined coefficients, not a Gosper normal form
 //!
 //! The single-sum engine ([`super::super::zeilberger`]) puts the shift ratio
 //! of `F` into *Gosper normal form* before solving, which is what lets it
-//! search a smaller ansatz efficiently. There is no standard two-dimensional
-//! analogue of that normal form for a general proper hypergeometric `F(n,j,k)`
-//! — this is exactly why Apagodu–Zeilberger's method (unlike single-index
-//! Zeilberger) is usually presented as an undetermined-coefficients search:
-//! posit a certificate of bounded degree over a *fixed* denominator, clear
-//! it, and solve the resulting linear system.
+//! search a smaller ansatz efficiently. There is no standard multivariate
+//! analogue of that normal form for a general proper hypergeometric
+//! `F(n,x_1,…,x_m)` — this is exactly why Apagodu–Zeilberger's method (unlike
+//! single-index Zeilberger) is usually presented as an undetermined-
+//! coefficients search: posit a certificate of bounded degree over a *fixed*
+//! denominator, clear it, and solve the resulting linear system.
 //!
-//! Concretely: divide the target identity by `F(n,j,k)`. Writing
-//! `ρ_j(n,j,k) = F(n,j+1,k)/F(n,j,k) = N_j/D_j` and
-//! `ρ_k(n,j,k) = F(n,j,k+1)/F(n,j,k) = N_k/D_k` (both known rational
-//! functions, computed exactly by [`super::term::ProperTerm3`]), and taking
-//! the certificate ansatz `c_1 = P_1(n,j,k)/D_j(n,j,k)`,
-//! `c_2 = P_2(n,j,k)/D_k(n,j,k)` with `P_1, P_2` polynomials of bounded
-//! degree, the identity becomes, after multiplying through by the (known,
-//! ansatz-independent) common denominator
+//! Concretely: divide the target identity by `F(n,x)`. Writing
+//! `ρ_t(n,x) = F(…,x_t+1,…)/F(…,x_t,…) = N_t/D_t` (a known rational function,
+//! computed exactly by [`super::term::ProperTermM`]) for each bound axis `t`,
+//! and taking the certificate ansatz `c_t = P_t(n,x)/E_t(n,x)` with `P_t` a
+//! polynomial of bounded *box* degree and `E_t := D_t · (∏_i D_{n,i})` (see
+//! below for why the denominator is not just `D_t` alone), the identity
+//! becomes, after multiplying through by a common denominator built from the
+//! `E_t` and their axis-`t` shifts, a **polynomial** identity in
+//! `Q[n,x_1,…,x_m]`, linear in the unknown coefficients of
+//! `a_i(n) = Σ_p α_{i,p}·n^p` and of every `P_t`. Matching coefficients of
+//! every monomial gives one linear equation per monomial;
+//! [`solve_ansatz_md`] assembles that system and takes its nullspace over `Q`
+//! by plain Gaussian elimination (see [`rational_nullspace`]).
 //!
-//! ```text
-//! D_total = (∏_i D_{n,i}) · D_j(n,j,k)·D_j(n,j+1,k) · D_k(n,j,k)·D_k(n,j,k+1)
-//! ```
+//! `E_t`'s `D_t` factor (the *raw*, un-reduced denominator of `ρ_t`) is not
+//! the minimal possible certificate denominator in general — a genuine
+//! multivariate Gosper reduction would sometimes need a smaller one after
+//! cancelling a shift-equivalent factor between `N_t` and a shifted `D_t`
+//! (exactly what the single-sum engine's `C(k)` factor exists to supply).
+//! This module does **not** compute that reduction. For the ordinary
+//! "binomial-type" sums this targets, the shift ratios are already close to
+//! normal form, so the raw denominator is already sufficient — but this is a
+//! property of the *examples*, not a theorem the code establishes. When it is
+//! not sufficient, the bounded search below simply finds nothing and reports
+//! [`Telescoping2dError::SearchExhausted`]; it never claims a false
+//! certificate, because every candidate is re-verified from scratch (see
+//! [`verify_certificate_md`]) before it is returned.
 //!
-//! a **polynomial** identity in `Q[n,j,k]`, linear in the unknown
-//! coefficients of `a_i(n) = Σ_p α_{i,p}·n^p` and of `P_1, P_2`. Matching
-//! coefficients of every monomial `n^s·j^q·k^r` gives one linear equation per
-//! monomial; [`solve_ansatz`] assembles that system and takes its nullspace
-//! over `Q` by plain Gaussian elimination (see [`rational_nullspace`]).
+//! # From two bound indices to `m`
 //!
-//! `D_j(n,j,k)` (the *raw*, un-reduced denominator of `ρ_j`) is not the
-//! minimal possible certificate denominator in general — a genuine 2-D Gosper
-//! reduction would sometimes need a smaller one after cancelling a
-//! shift-equivalent factor between `N_j` and a shifted `D_j` (exactly what
-//! the single-sum engine's `C(k)` factor exists to supply). This module does
-//! **not** compute that reduction. For the ordinary "binomial-type" double
-//! sums this targets, the shift ratios are already close to normal form
-//! (`gcd(N_j(j), D_j(j+h))` is a unit for every `h ≥ 0` in the examples this
-//! module is tested against), so the raw denominator is already sufficient —
-//! but this is a property of the *examples*, not a theorem the code
-//! establishes. When it is not sufficient, the bounded search below simply
-//! finds nothing and reports [`Telescoping2dError::SearchExhausted`]; it
-//! never claims a false certificate, because every candidate is re-verified
-//! from scratch (see [`verify_certificate`]) before it is returned.
+//! The `m = 2` case (`telescope2d_search`) is now a thin wrapper around the
+//! general `telescope_md_search`: it converts `Telescoping2dOpts` to
+//! [`TelescopingMdOpts`], calls the general search with `indices = [j, k]`,
+//! and repackages the two-certificate result as [`Telescoping2dResult`]. The
+//! two-index public API's behavior (including its error variants and search
+//! order) is unchanged by this — it is now derived from, rather than
+//! duplicating, the general path.
 
-use super::poly::{Axis, Poly3, Rat3};
-use super::term::ProperTerm3;
+use super::poly::{Axis, PolyM, RatM, AXIS_N};
+use super::term::ProperTermM;
 use super::Telescoping2dError;
 use crate::kernel::{ExprId, ExprPool};
 use rug::{Integer, Rational};
+
+/// Upper bound on the total unknown count (`a_i(n)` coefficients plus every
+/// certificate numerator's box coefficients, summed) a single
+/// `(order, a_degree, cert_degree)` probe is allowed to build a linear system
+/// for, checked *before* any polynomial arithmetic for that probe begins.
+///
+/// This exists because [`rational_nullspace`]'s plain dense Gaussian
+/// elimination is `O(rows · cols²)` over exact (unbounded) `Rational`
+/// coefficients, and both `rows` (one equation per distinct monomial in
+/// `n, x_1, …, x_m` appearing anywhere in the cleared identity) and `cols`
+/// (`total`, this bound's subject) grow with `m` and `cert_degree` far
+/// faster than the box-degree numbers themselves suggest — see this crate's
+/// own measurements: at `m = 3`, `cert_degree = 2` already means `rows ≈
+/// 10 000`, `cols = 245`, and a single probe's elimination step alone took
+/// **≈ 47 seconds**; `cert_degree = 3` (`cols = 770`) was still running
+/// after several minutes when profiled. This is genuine `O(rows·cols²)`
+/// arithmetic cost on a real, correctly-posed linear system — not a bug, an
+/// infinite loop, or unbounded coefficient blowup — but it is exactly the
+/// kind of input-dependent resource cliff a caller must be protected from by
+/// a fast, honest refusal rather than an unbounded hang. `400` is
+/// calibrated to comfortably admit every worked example this module ships
+/// with (the largest, the `m = 3` multinomial-coefficient example, needs
+/// `cols = 245`) while excluding the next box-degree step up at `m = 3`
+/// (`cols = 770`), which is the one that was actually observed to run
+/// unacceptably long. A probe whose unknown count would exceed this is
+/// skipped — reported as no candidate at that `(a_degree, cert_degree)`,
+/// exactly like a probe the linear algebra genuinely found nothing for — and
+/// [`telescope_md_search`]'s final [`Telescoping2dError::SearchExhausted`]
+/// message says so explicitly when at least one probe was skipped for this
+/// reason, so a caller sees a fast, clearly-explained refusal instead of a
+/// silent guess about whether raising the bounds would even help.
+const MAX_ANSATZ_UNKNOWNS: usize = 400;
+
+/// A probe's own unknown count must reach this before it counts against
+/// [`MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS`] at all. Below this, a probe is
+/// "cheap" by construction (this crate's own `m = 2` default search never
+/// exceeds ~140 unknowns for any probe it tries — see the constant's own
+/// docs) and is exempted from the cumulative accounting entirely, so this
+/// budget cannot regress the existing two-index search in any way.
+const LARGE_PROBE_THRESHOLD: usize = 150;
+
+/// A single probe under [`MAX_ANSATZ_UNKNOWNS`] can still be individually
+/// slow (the `m = 3` multinomial-coefficient worked example's `cols = 245`
+/// probe takes ≈ 30 seconds) — tolerable *once*, but
+/// [`telescope_md_search`]'s outer loop tries every `(order, a_degree,
+/// cert_degree)` combination, and nothing about `total`'s formula depends
+/// much on `a_degree` or `order`, so a caller whose input has no certificate
+/// at all would otherwise pay that same ≈ 30–50 second cost again for *every*
+/// `a_degree` and `order` value tried — six repeats of the exact scenario
+/// that motivated [`MAX_ANSATZ_UNKNOWNS`] in the first place, for the
+/// triple-binomial-chain example that was this ceiling's original motivating
+/// case (see `mod.rs`'s
+/// `chained_product_at_original_bounds_refuses_fast_via_resource_ceiling`
+/// regression test). This is a running budget across the *whole* search
+/// call: every probe with `total >= LARGE_PROBE_THRESHOLD` that is actually
+/// attempted adds its `total` to a running sum, and once that sum would
+/// exceed this bound, every further large probe is skipped for the rest of
+/// the search — capping the number of genuinely expensive elimination
+/// attempts to about one or two, regardless of how large the caller's
+/// `max_order` / `max_a_degree` / `max_cert_degree` are. `300` admits
+/// exactly one probe the size of the multinomial example (`245`) before
+/// refusing further ones of that size.
+const MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS: usize = 300;
+
 use std::collections::BTreeMap;
 
-/// Search bounds for [`telescope2d`](super::telescope2d). All three are
-/// genuine upper bounds — the search tries every combination
+/// Search bounds for [`telescope2d`](super::telescope2d) and
+/// [`telescope_md`](super::telescope_md). All three are genuine upper
+/// bounds — the search tries every combination
 /// `1..=max_order × 0..=max_a_degree × 0..=max_cert_degree` in ascending
 /// order (cheapest first in each axis), so raising them only admits harder
 /// inputs.
@@ -69,8 +139,8 @@ use std::collections::BTreeMap;
 /// three loops are simply nested, ascending. That is a real scope
 /// simplification, not an oversight — the point of the cost-ordered plan in
 /// the single-sum engine is to make expensive high-degree probes at low
-/// order not block a cheap high-order solution; the double-sum ansatz here
-/// does not yet have that tuning.
+/// order not block a cheap high-order solution; the ansatz here does not yet
+/// have that tuning.
 #[derive(Debug, Clone, Copy)]
 pub struct Telescoping2dOpts {
     /// Largest recurrence order `J`; orders are tried from 1 upward.
@@ -92,11 +162,45 @@ impl Default for Telescoping2dOpts {
     }
 }
 
-/// A verified double-sum creative-telescoping certificate.
+/// Search bounds for [`telescope_md_search`], the `m`-bound-index
+/// generalization of [`Telescoping2dOpts`]. Same fields, same search
+/// discipline (see that struct's docs); `max_cert_degree` bounds the box
+/// degree of each `P_t` in **every** one of the `m + 1` variables
+/// independently, so the per-certificate unknown count is
+/// `(max_cert_degree + 1)^(m + 1)` — raising `max_cert_degree` gets
+/// expensive fast as `m` grows, more so than in the two-index case.
+#[derive(Debug, Clone, Copy)]
+pub struct TelescopingMdOpts {
+    pub max_order: usize,
+    pub max_a_degree: usize,
+    pub max_cert_degree: usize,
+}
+
+impl Default for TelescopingMdOpts {
+    fn default() -> Self {
+        TelescopingMdOpts {
+            max_order: 2,
+            max_a_degree: 2,
+            max_cert_degree: 2,
+        }
+    }
+}
+
+impl From<Telescoping2dOpts> for TelescopingMdOpts {
+    fn from(o: Telescoping2dOpts) -> Self {
+        TelescopingMdOpts {
+            max_order: o.max_order,
+            max_a_degree: o.max_a_degree,
+            max_cert_degree: o.max_cert_degree,
+        }
+    }
+}
+
+/// A verified double-sum creative-telescoping certificate (`m = 2`).
 ///
 /// The verified content is the identity
 /// `Σ_i a_i(n)·F(n+i,j,k) = Δ_j G_1 + Δ_k G_2` with `G_1 = cert1·F`,
-/// `G_2 = cert2·F` — checked exactly in `Q(n,j,k)` by `verify_certificate`
+/// `G_2 = cert2·F` — checked exactly in `Q(n,j,k)` by `verify_certificate_md`
 /// before this is ever constructed. Turning it into a recurrence for
 /// `S(n) = Σ_j Σ_k F(n,j,k)` over a stated range is a separate step; see
 /// [`super::boundary`].
@@ -114,18 +218,37 @@ pub struct Telescoping2dResult {
     pub cert2: ExprId,
 }
 
-/// Internal (pre-`ExprId`) form of a candidate, kept in algebraic form so
-/// [`verify_certificate`] can re-check it without any expression-pool
-/// round-trip.
-struct Candidate {
-    order: usize,
-    a: Vec<Poly3>, // a_i(n), i = 0..=order, degree only in the N axis
-    c1: Rat3,
-    c2: Rat3,
+/// A verified `m`-bound-index creative-telescoping certificate, the general
+/// form of [`Telescoping2dResult`] (which is `certs.len() == 2` repackaged).
+///
+/// The verified content is `Σ_i a_i(n)·F(n+i,x) = Σ_t Δ_t(c_t·F)` — checked
+/// exactly in `Q(n,x_1,…,x_m)` before this is ever constructed. See
+/// [`super::boundary::boundary_status_md`] for turning it into a recurrence
+/// for the `m`-fold sum over a stated box.
+#[derive(Debug, Clone)]
+pub struct TelescopingMdResult {
+    pub order: usize,
+    /// `a_0(n), …, a_J(n)`.
+    pub coeffs: Vec<ExprId>,
+    /// `c_1(n,x), …, c_m(n,x)`, one per bound index, in the order the caller
+    /// supplied `indices`. `G_t = certs[t-1]·F`.
+    pub certs: Vec<ExprId>,
 }
 
-/// Apagodu–Zeilberger search: find and verify a double-sum certificate for
-/// `term`, a proper hypergeometric `F(n,j,k)`.
+/// Internal (pre-`ExprId`) form of a candidate, kept in algebraic form so
+/// [`verify_certificate_md`] can re-check it without any expression-pool
+/// round-trip.
+struct CandidateMd {
+    order: usize,
+    a: Vec<PolyM>,    // a_i(n), i = 0..=order, degree only in the N axis
+    certs: Vec<RatM>, // one per bound index
+}
+
+/// Apagodu–Zeilberger search for the `m = 2` case: find and verify a
+/// double-sum certificate for `term`, a proper hypergeometric `F(n,j,k)`.
+///
+/// A thin wrapper around [`telescope_md_search`] with `indices = [j, k]` —
+/// see the module docs.
 pub fn telescope2d_search(
     term: ExprId,
     n: ExprId,
@@ -134,9 +257,41 @@ pub fn telescope2d_search(
     pool: &ExprPool,
     opts: &Telescoping2dOpts,
 ) -> Result<Telescoping2dResult, Telescoping2dError> {
-    if n == j || n == k || j == k {
+    let md_opts: TelescopingMdOpts = (*opts).into();
+    let r = telescope_md_search(term, n, &[j, k], pool, &md_opts)?;
+    debug_assert_eq!(r.certs.len(), 2);
+    Ok(Telescoping2dResult {
+        order: r.order,
+        coeffs: r.coeffs,
+        cert1: r.certs[0],
+        cert2: r.certs[1],
+    })
+}
+
+/// Apagodu–Zeilberger search for general `m ≥ 1`: find and verify a
+/// creative-telescoping certificate for `term`, a proper hypergeometric
+/// `F(n, x_1, …, x_m)` with `indices = [x_1, …, x_m]`.
+///
+/// See the module docs (`telescoping2d::search`) for the method, and the honest limitations
+/// list in `mod.rs`: this covers the same proper-hypergeometric-only,
+/// fixed-denominator-ansatz, box-degree-search scope the `m = 2` engine has,
+/// generalized to arbitrary `m` — it is **not** a broader class of summand.
+pub fn telescope_md_search(
+    term: ExprId,
+    n: ExprId,
+    indices: &[ExprId],
+    pool: &ExprPool,
+    opts: &TelescopingMdOpts,
+) -> Result<TelescopingMdResult, Telescoping2dError> {
+    let m = indices.len();
+    if m == 0 {
         return Err(Telescoping2dError::InvalidInput(
-            "n, j and k must be three distinct symbols".into(),
+            "at least one bound index is required".into(),
+        ));
+    }
+    if indices.contains(&n) || has_duplicate(indices) {
+        return Err(Telescoping2dError::InvalidInput(
+            "n and every bound index must be pairwise distinct symbols".into(),
         ));
     }
     if opts.max_order == 0 {
@@ -144,23 +299,28 @@ pub fn telescope2d_search(
             "max_order must be at least 1".into(),
         ));
     }
+    let num_axes = m + 1;
 
-    let f = ProperTerm3::parse(term, n, j, k, pool)?;
-    let rho_j = f.ratio_axis(Axis::J, 1)?;
-    let rho_k = f.ratio_axis(Axis::K, 1)?;
-    if rho_j.den.is_zero() || rho_k.den.is_zero() {
-        return Err(Telescoping2dError::NotProperHypergeometric(
-            "shift ratio has a zero denominator".into(),
-        ));
+    let f = ProperTermM::parse(term, n, indices, pool)?;
+    let mut rhos: Vec<RatM> = Vec::with_capacity(m);
+    for t in 0..m {
+        let r = f.ratio_axis(t + 1, 1)?;
+        if r.den.is_zero() {
+            return Err(Telescoping2dError::NotProperHypergeometric(
+                "shift ratio has a zero denominator".into(),
+            ));
+        }
+        rhos.push(r);
     }
 
+    let mut skipped_for_budget = false;
+    let mut cumulative_large_unknowns: usize = 0;
+
     for order in 1..=opts.max_order {
-        // The `i = 0..=order` shift ratios in `n` do not depend on the
-        // degree budgets, so they are computed once per order.
         let mut nn = Vec::with_capacity(order + 1);
         let mut dn = Vec::with_capacity(order + 1);
         for i in 0..=order as i64 {
-            let r = f.ratio_axis(Axis::N, i)?;
+            let r = f.ratio_axis(AXIS_N, i)?;
             if r.den.is_zero() {
                 return Err(Telescoping2dError::NotProperHypergeometric(
                     "shift ratio in n has a zero denominator".into(),
@@ -172,11 +332,40 @@ pub fn telescope2d_search(
 
         for a_degree in 0..=opts.max_a_degree {
             for cert_degree in 0..=opts.max_cert_degree {
+                // Cheap, purely arithmetic pre-check — see MAX_ANSATZ_UNKNOWNS'
+                // docs — before any polynomial construction or linear-system
+                // assembly for this probe begins.
+                let box_len = cert_degree + 1;
+                let Some(cert_box_count) = box_len.checked_pow(num_axes as u32) else {
+                    skipped_for_budget = true;
+                    continue;
+                };
+                let a_count = (order + 1) * (a_degree + 1);
+                let total = a_count.saturating_add(m.saturating_mul(cert_box_count));
+                if total > MAX_ANSATZ_UNKNOWNS {
+                    skipped_for_budget = true;
+                    continue;
+                }
+                // See MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS' docs: a probe
+                // large enough to be individually slow also counts against a
+                // running total-search budget, so a caller cannot pay that
+                // same cost over and over across every (order, a_degree)
+                // combination when no certificate exists at all.
+                if total >= LARGE_PROBE_THRESHOLD {
+                    if cumulative_large_unknowns.saturating_add(total)
+                        > MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS
+                    {
+                        skipped_for_budget = true;
+                        continue;
+                    }
+                    cumulative_large_unknowns += total;
+                }
+
                 if let Some(cand) =
-                    solve_ansatz(order, a_degree, cert_degree, &nn, &dn, &rho_j, &rho_k)?
+                    solve_ansatz_md(order, m, a_degree, cert_degree, &nn, &dn, &rhos, num_axes)?
                 {
-                    if verify_certificate(&f, &cand) {
-                        return Ok(finish(cand, n, j, k, pool));
+                    if verify_certificate_md(&f, &cand) {
+                        return Ok(finish_md(cand, n, indices, pool));
                     }
                     // A genuine implementation bug, not a user-facing error:
                     // never happens for a correct construction, but refusing
@@ -187,9 +376,23 @@ pub fn telescope2d_search(
         }
     }
 
+    let budget_note = if skipped_for_budget {
+        format!(
+            " (at least one (order, a_degree, cert_degree) combination within these bounds was \
+             skipped without being attempted, refused by this module's resource ceilings \
+             (MAX_ANSATZ_UNKNOWNS = {MAX_ANSATZ_UNKNOWNS} unknowns for any single probe; \
+             MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS = {MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS} total \
+             across every probe at or above {LARGE_PROBE_THRESHOLD} unknowns in one search call) \
+             rather than attempted and left to run arbitrarily long — raising max_cert_degree or \
+             the bound-index count further will only make this worse, not better)"
+        )
+    } else {
+        String::new()
+    };
     Err(Telescoping2dError::SearchExhausted(format!(
-        "no verified double-sum certificate of order <= {} was found for {} \
-         within a_degree <= {} and certificate degree <= {}",
+        "no verified {}-index certificate of order <= {} was found for {} \
+         within a_degree <= {} and certificate degree <= {}{budget_note}",
+        m,
         opts.max_order,
         pool.display(term),
         opts.max_a_degree,
@@ -197,46 +400,64 @@ pub fn telescope2d_search(
     )))
 }
 
+fn has_duplicate(xs: &[ExprId]) -> bool {
+    for i in 0..xs.len() {
+        for j in (i + 1)..xs.len() {
+            if xs[i] == xs[j] {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn flatten(exps: &[usize], box_len: usize) -> usize {
+    exps.iter().fold(0, |acc, &x| acc * box_len + x)
+}
+
+fn unflatten(mut combo: usize, num_axes: usize, box_len: usize) -> Vec<usize> {
+    let mut exps = vec![0usize; num_axes];
+    for idx in (0..num_axes).rev() {
+        exps[idx] = combo % box_len;
+        combo /= box_len;
+    }
+    exps
+}
+
+fn monomial_m(exps: &[usize], c: Rational, num_axes: usize) -> PolyM {
+    let mut p = PolyM::constant(c, num_axes);
+    for (axis, &e) in exps.iter().enumerate() {
+        if e > 0 {
+            p = p.mul(&PolyM::var(axis, num_axes).pow_u32(e as u32));
+        }
+    }
+    p
+}
+
 /// Build and solve the linear system for one `(order, a_degree, cert_degree)`
 /// probe. `Ok(None)` means the system has no solution with a non-trivial
 /// leading coefficient — not an error, just this probe failing.
 #[allow(clippy::too_many_arguments)]
-// `p`, `q`, `r` below double as monomial exponents (via `idx_p1`/`idx_p2`)
-// and as indices into the memoized `(j+1)^q`/`(k+1)^r` power tables, so
-// clippy's "use an iterator instead" rewrite does not apply cleanly.
-#[allow(clippy::needless_range_loop)]
-fn solve_ansatz(
+fn solve_ansatz_md(
     order: usize,
+    m: usize,
     a_degree: usize,
     cert_degree: usize,
-    nn: &[Poly3],
-    dn: &[Poly3],
-    rho_j: &Rat3,
-    rho_k: &Rat3,
-) -> Result<Option<Candidate>, Telescoping2dError> {
-    let dj = &rho_j.den;
-    let nj = &rho_j.num;
-    let dk = &rho_k.den;
-    let nk = &rho_k.num;
+    nn: &[PolyM],
+    dn: &[PolyM],
+    rhos: &[RatM],
+    num_axes: usize,
+) -> Result<Option<CandidateMd>, Telescoping2dError> {
+    let ds: Vec<&PolyM> = rhos.iter().map(|r| &r.den).collect();
+    let ns_: Vec<&PolyM> = rhos.iter().map(|r| &r.num).collect();
 
-    // The certificate denominators are *not* just the raw `D_j`/`D_k` of the
-    // single ratio being telescoped: a certificate built from a product of
-    // two single-sum WZ pairs (see the worked "separable" example in
-    // `mod.rs`) needs a factor from the *other* direction's `n`-shift ratio
-    // too — e.g. `c_1 = R_A(n,j)·[B(n+1,k)/B(n,k)]` for `F = A(n,j)·B(n,k)`,
-    // whose denominator is not a function of `j` alone. So the ansatz here
-    // is `c_1 = P_1 / E_1`, `E_1 := D_j · (∏_i D_{n,i})`, and symmetrically
-    // for `c_2` with `D_k`. This is still just a *fixed, ansatz-independent*
-    // denominator (no gcd, no minimality claim) — see the module docs — just
-    // a bigger one than the raw single-ratio denominator alone, chosen to be
-    // sufficient for the worked examples this module is tested against.
-    let mut dnfull = Poly3::one();
+    let mut dnfull = PolyM::one(num_axes);
     for d in dn {
         dnfull = dnfull.mul(d);
     }
-    let mut dnfull_excl: Vec<Poly3> = Vec::with_capacity(order + 1);
+    let mut dnfull_excl: Vec<PolyM> = Vec::with_capacity(order + 1);
     for i in 0..=order {
-        let mut p = Poly3::one();
+        let mut p = PolyM::one(num_axes);
         for (idx, d) in dn.iter().enumerate() {
             if idx != i {
                 p = p.mul(d);
@@ -245,43 +466,60 @@ fn solve_ansatz(
         dnfull_excl.push(p);
     }
 
-    let e1 = dj.mul(&dnfull);
-    let e1s = e1.shift(Axis::J, 1);
-    let e2 = dk.mul(&dnfull);
-    let e2s = e2.shift(Axis::K, 1);
-
-    // `Mn_i = D_total / D_{n,i}`, built by replacing `E_1`'s copy of
-    // `D_{n,i}` with the `i`-excluded product (any one of `D_total`'s four
-    // redundant copies of `D_{n,i}` may be the one "removed" — they are all
-    // equal, so the result is the same polynomial either way).
-    let mut mn: Vec<Poly3> = Vec::with_capacity(order + 1);
-    for excl in &dnfull_excl {
-        let e1_excl_i = dj.mul(excl);
-        mn.push(e1_excl_i.mul(&e1s).mul(dj).mul(&e2).mul(&e2s).mul(dk));
+    // e[t] = D_t * dnfull ; es[t] = shift(e[t], axis = t+1, 1). This is
+    // exactly the m=2 module's `e1`/`e2`/`e1s`/`e2s`, generalized.
+    let mut e: Vec<PolyM> = Vec::with_capacity(m);
+    let mut es: Vec<PolyM> = Vec::with_capacity(m);
+    for (t, d) in ds.iter().enumerate().take(m) {
+        let et = d.mul(&dnfull);
+        let ets = et.shift(t + 1, 1);
+        e.push(et);
+        es.push(ets);
     }
-    let mj = e2.mul(&e2s).mul(dk);
-    let mk = e1.mul(&e1s).mul(dj);
+    // block[t] = e[t] * es[t] * D_t — the m=2 module's `e1*e1s*dj`/`e2*e2s*dk`.
+    let block: Vec<PolyM> = (0..m).map(|t| e[t].mul(&es[t]).mul(ds[t])).collect();
 
-    // Unknown layout: a_{i,p} for i=0..=order, p=0..=a_degree; then P1
-    // coefficients over the box n<=cert_degree, j<=cert_degree, k<=cert_degree;
-    // then P2 coefficients over the same box.
+    // mn[i]: the multiplier for a_i(n)'s column, built as `D_total / D_{n,i}`
+    // by replacing exactly one of the two `dnfull` copies inside `block[0]`
+    // with `dnfull_excl[i]` (any one of `D_total`'s `2m` redundant copies of
+    // `D_{n,i}` may be the one "removed" — always using axis 0's block for
+    // this, mirroring the m=2 module's asymmetric-but-valid choice of always
+    // using `e1`/`e1s`/`dj`).
+    let mut mn: Vec<PolyM> = Vec::with_capacity(order + 1);
+    for excl in &dnfull_excl {
+        let mut p = ds[0].mul(excl).mul(&es[0]).mul(ds[0]);
+        for blk in block.iter().skip(1) {
+            p = p.mul(blk);
+        }
+        mn.push(p);
+    }
+    // mt[t]: the multiplier for P_t's columns, `D_total / block[t]` — the
+    // product of every *other* axis's block.
+    let mut mt: Vec<PolyM> = Vec::with_capacity(m);
+    for t in 0..m {
+        let mut p = PolyM::one(num_axes);
+        for (tp, blk) in block.iter().enumerate() {
+            if tp != t {
+                p = p.mul(blk);
+            }
+        }
+        mt.push(p);
+    }
+
     let na = a_degree + 1;
     let box_len = cert_degree + 1;
-    let cert_count = box_len * box_len * box_len;
+    let cert_box_count = box_len.pow(num_axes as u32);
     let a_count = (order + 1) * na;
-    let total = a_count + 2 * cert_count;
+    let total = a_count + m * cert_box_count;
 
     let idx_a = |i: usize, p: usize| i * na + p;
-    let idx_p1 = |p: usize, q: usize, r: usize| a_count + (p * box_len + q) * box_len + r;
-    let idx_p2 =
-        |p: usize, q: usize, r: usize| a_count + cert_count + (p * box_len + q) * box_len + r;
+    let idx_cert = |t: usize, exps: &[usize]| a_count + t * cert_box_count + flatten(exps, box_len);
 
-    // Monomial -> row (dense-in-practice sparse map of coefficient vectors).
-    let mut rows: BTreeMap<(u32, u32, u32), Vec<Rational>> = BTreeMap::new();
-    let mut add_contribution = |mono: &BTreeMap<(u32, u32, u32), Rational>, col: usize| {
+    let mut rows: BTreeMap<Vec<u32>, Vec<Rational>> = BTreeMap::new();
+    let mut add_contribution = |mono: &BTreeMap<Vec<u32>, Rational>, col: usize| {
         for (exp, c) in mono {
             let row = rows
-                .entry(*exp)
+                .entry(exp.clone())
                 .or_insert_with(|| vec![Rational::from(0); total]);
             row[col] += c.clone();
         }
@@ -289,71 +527,82 @@ fn solve_ansatz(
 
     for i in 0..=order {
         for p in 0..=a_degree {
-            let basis = Poly3::var(Axis::N)
+            let basis = PolyM::var(AXIS_N, num_axes)
                 .pow_u32(p as u32)
                 .mul(&nn[i])
                 .mul(&mn[i]);
             add_contribution(&basis.terms, idx_a(i, p));
         }
     }
-    // Memoized (j+1)^q and (k+1)^r.
-    let mut jp1_pow: Vec<Poly3> = Vec::with_capacity(box_len);
-    let mut kp1_pow: Vec<Poly3> = Vec::with_capacity(box_len);
-    {
-        let jp1 = Poly3::var(Axis::J).add(&Poly3::one());
-        let kp1 = Poly3::var(Axis::K).add(&Poly3::one());
-        let mut acc_j = Poly3::one();
-        let mut acc_k = Poly3::one();
-        for _ in 0..box_len {
-            jp1_pow.push(acc_j.clone());
-            kp1_pow.push(acc_k.clone());
-            acc_j = acc_j.mul(&jp1);
-            acc_k = acc_k.mul(&kp1);
-        }
-    }
-    for p in 0..=cert_degree {
-        let np = Poly3::var(Axis::N).pow_u32(p as u32);
-        for q in 0..=cert_degree {
-            for r in 0..=cert_degree {
-                let kr = Poly3::var(Axis::K).pow_u32(r as u32);
-                // P1(n,j+1,k) term: n^p (j+1)^q k^r ; P1(n,j,k) term: n^p j^q k^r.
-                // P1(n,j+1,k)*Nj*E1 - P1(n,j,k)*E1s*Dj, times Mj — see the
-                // derivation in the module docs: this is
-                // `[c1(j+1)*rho_j - c1(j)] * (E1*E1s*Dj) * Mj`.
-                let mono_shift = np.mul(&jp1_pow[q]).mul(&kr);
-                let mono_plain = np.mul(&Poly3::var(Axis::J).pow_u32(q as u32)).mul(&kr);
-                let basis1 = mono_shift
-                    .mul(nj)
-                    .mul(&e1)
-                    .sub(&mono_plain.mul(&e1s).mul(dj))
-                    .mul(&mj)
-                    .neg();
-                add_contribution(&basis1.terms, idx_p1(p, q, r));
 
-                let jq = Poly3::var(Axis::J).pow_u32(q as u32);
-                let mono_shift_k = np.mul(&jq).mul(&kp1_pow[r]);
-                let mono_plain_k = np.mul(&jq).mul(&kr);
-                let basis2 = mono_shift_k
-                    .mul(nk)
-                    .mul(&e2)
-                    .sub(&mono_plain_k.mul(&e2s).mul(dk))
-                    .mul(&mk)
-                    .neg();
-                add_contribution(&basis2.terms, idx_p2(p, q, r));
+    // Memoized plain (`x_t^q`) and shifted (`(x_t+1)^q`) powers, per bound
+    // axis, for q = 0..=cert_degree; and plain `n^p` powers.
+    let mut plain_pow: Vec<Vec<PolyM>> = Vec::with_capacity(m);
+    let mut shift_pow: Vec<Vec<PolyM>> = Vec::with_capacity(m);
+    for t in 0..m {
+        let axis = t + 1;
+        let xv = PolyM::var(axis, num_axes);
+        let xv1 = xv.add(&PolyM::one(num_axes));
+        let mut pp = Vec::with_capacity(box_len);
+        let mut sp = Vec::with_capacity(box_len);
+        let mut accp = PolyM::one(num_axes);
+        let mut accs = PolyM::one(num_axes);
+        for _ in 0..box_len {
+            pp.push(accp.clone());
+            sp.push(accs.clone());
+            accp = accp.mul(&xv);
+            accs = accs.mul(&xv1);
+        }
+        plain_pow.push(pp);
+        shift_pow.push(sp);
+    }
+    let n_pow: Vec<PolyM> = {
+        let nv = PolyM::var(AXIS_N, num_axes);
+        let mut acc = PolyM::one(num_axes);
+        let mut v = Vec::with_capacity(box_len);
+        for _ in 0..box_len {
+            v.push(acc.clone());
+            acc = acc.mul(&nv);
+        }
+        v
+    };
+
+    let total_combos = box_len.pow(num_axes as u32);
+    for combo in 0..total_combos {
+        let exps = unflatten(combo, num_axes, box_len);
+        let p = exps[0];
+        let np = n_pow[p].clone();
+        for t in 0..m {
+            let mut mono_shift = np.clone();
+            let mut mono_plain = np.clone();
+            for tp in 0..m {
+                let q = exps[tp + 1];
+                mono_plain = mono_plain.mul(&plain_pow[tp][q]);
+                mono_shift = mono_shift.mul(if tp == t {
+                    &shift_pow[tp][q]
+                } else {
+                    &plain_pow[tp][q]
+                });
             }
+            // [c_t(x_t+1)*rho_t - c_t] * (D_total/block[t]) — see the module
+            // docs derivation, generalizing the m=2 module's `basis1`/`basis2`.
+            let basis = mono_shift
+                .mul(ns_[t])
+                .mul(&e[t])
+                .sub(&mono_plain.mul(&es[t]).mul(ds[t]))
+                .mul(&mt[t])
+                .neg();
+            add_contribution(&basis.terms, idx_cert(t, &exps));
         }
     }
 
     let matrix: Vec<Vec<Rational>> = rows.into_values().collect();
-    let basis = rational_nullspace(matrix, total);
-    if basis.is_empty() {
+    let basis_vecs = rational_nullspace(matrix, total);
+    if basis_vecs.is_empty() {
         return Ok(None);
     }
 
-    for vec in &basis {
-        // Reject a basis vector whose top a_order(n) is identically zero:
-        // that is really a lower-order (or no) relation, and returning it
-        // under this `order` would misreport the recurrence's order.
+    for vec in &basis_vecs {
         let top_nonzero = (0..na).any(|p| vec[idx_a(order, p)] != 0);
         if !top_nonzero {
             continue;
@@ -363,60 +612,45 @@ fn solve_ansatz(
 
         let mut a = Vec::with_capacity(order + 1);
         for i in 0..=order {
-            let mut p = Poly3::zero();
+            let mut poly = PolyM::zero();
             for pw in 0..=a_degree {
                 let c = scaled[idx_a(i, pw)].clone();
                 if c != 0 {
-                    p = p.add(&Poly3::var(Axis::N).pow_u32(pw as u32).scale(&c));
+                    poly = poly.add(&PolyM::var(AXIS_N, num_axes).pow_u32(pw as u32).scale(&c));
                 }
             }
-            a.push(p);
+            a.push(poly);
         }
-        let mut p1 = Poly3::zero();
-        let mut p2 = Poly3::zero();
-        for p in 0..=cert_degree {
-            for q in 0..=cert_degree {
-                for r in 0..=cert_degree {
-                    let c1c = scaled[idx_p1(p, q, r)].clone();
-                    if c1c != 0 {
-                        p1 = p1.add(&monomial3(p as u32, q as u32, r as u32, c1c));
-                    }
-                    let c2c = scaled[idx_p2(p, q, r)].clone();
-                    if c2c != 0 {
-                        p2 = p2.add(&monomial3(p as u32, q as u32, r as u32, c2c));
-                    }
+
+        let mut certs_num: Vec<PolyM> = vec![PolyM::zero(); m];
+        for combo in 0..total_combos {
+            let exps = unflatten(combo, num_axes, box_len);
+            for (t, cn) in certs_num.iter_mut().enumerate() {
+                let c = scaled[idx_cert(t, &exps)].clone();
+                if c != 0 {
+                    *cn = cn.add(&monomial_m(&exps, c, num_axes));
                 }
             }
         }
-        let c1 = Rat3 {
-            num: p1,
-            den: e1.clone(),
-        };
-        let c2 = Rat3 {
-            num: p2,
-            den: e2.clone(),
-        };
-        return Ok(Some(Candidate { order, a, c1, c2 }));
+        let certs: Vec<RatM> = (0..m)
+            .map(|t| RatM {
+                num: certs_num[t].clone(),
+                den: e[t].clone(),
+            })
+            .collect();
+        return Ok(Some(CandidateMd { order, a, certs }));
     }
     Ok(None)
 }
 
-fn monomial3(en: u32, ej: u32, ek: u32, c: Rational) -> Poly3 {
-    Poly3::var(Axis::N)
-        .pow_u32(en)
-        .mul(&Poly3::var(Axis::J).pow_u32(ej))
-        .mul(&Poly3::var(Axis::K).pow_u32(ek))
-        .scale(&c)
-}
-
 /// Scale a flat family of rationals to integer, content-1 (up to sign) —
 /// the same principle as [`super::super::qfield::make_primitive`], applied
-/// to one combined vector spanning `a_i(n)` *and* both certificate
-/// numerators, because a homogeneous linear relation stays a solution under
+/// to one combined vector spanning `a_i(n)` *and* every certificate
+/// numerator, because a homogeneous linear relation stays a solution under
 /// any single overall rescaling. Kept local rather than reusing
 /// `make_primitive` because that helper is specialized to a family of
-/// single-variable `RatUniPoly`s; here the family spans three different
-/// polynomial rings (one univariate, two trivariate) sharing only their
+/// single-variable `RatUniPoly`s; here the family spans `1 + m` different
+/// polynomial rings (one univariate, `m` multivariate) sharing only their
 /// scalar coefficients.
 fn primitive_scale_rationals(v: &mut [Rational]) {
     let mut den_lcm = Integer::from(1);
@@ -448,10 +682,6 @@ fn primitive_scale_rationals(v: &mut [Rational]) {
 
 /// Nullspace basis of `mat` (rows = equations, `ncols` unknowns) over `Q`, by
 /// plain Gaussian elimination to row-echelon form.
-// The pivot column `col` bounds the range read/written below; a plain slice
-// iterator would need to skip a variable, non-slice-aligned prefix on both
-// `mat[row]` and every other row simultaneously, so the index form is
-// clearer here than clippy's suggested rewrite.
 #[allow(clippy::needless_range_loop)]
 fn rational_nullspace(mut mat: Vec<Vec<Rational>>, ncols: usize) -> Vec<Vec<Rational>> {
     let nrows = mat.len();
@@ -511,39 +741,43 @@ fn rational_nullspace(mut mat: Vec<Vec<Rational>>, ncols: usize) -> Vec<Vec<Rati
 /// trusting the linear-algebra search that produced `cand`. This mirrors
 /// `zeilberger()`'s own final check and `PositivityCertificate::verify`'s
 /// discipline: a candidate only becomes a result after this passes.
-fn verify_certificate(f: &ProperTerm3, cand: &Candidate) -> bool {
-    let mut lhs = Rat3::zero();
+fn verify_certificate_md(f: &ProperTermM, cand: &CandidateMd) -> bool {
+    let num_axes = f.m + 1;
+    let mut lhs = RatM::from_rational(Rational::from(0), num_axes);
     for (i, ai) in cand.a.iter().enumerate() {
-        let Ok(ratio) = f.ratio_axis(Axis::N, i as i64) else {
+        let Ok(ratio) = f.ratio_axis(AXIS_N, i as i64) else {
             return false;
         };
-        lhs = lhs.add(&Rat3::from_poly(ai.clone()).mul(&ratio));
+        lhs = lhs.add(&RatM::from_poly(ai.clone(), num_axes).mul(&ratio));
     }
-    let Ok(rho_j) = f.ratio_axis(Axis::J, 1) else {
-        return false;
-    };
-    let Ok(rho_k) = f.ratio_axis(Axis::K, 1) else {
-        return false;
-    };
-    let g1_delta = cand.c1.shift(Axis::J, 1).mul(&rho_j).sub(&cand.c1);
-    let g2_delta = cand.c2.shift(Axis::K, 1).mul(&rho_k).sub(&cand.c2);
-    let rhs = g1_delta.add(&g2_delta);
+    let mut rhs = RatM::from_rational(Rational::from(0), num_axes);
+    for (t, cert_t) in cand.certs.iter().enumerate() {
+        let axis: Axis = t + 1;
+        let Ok(rho_t) = f.ratio_axis(axis, 1) else {
+            return false;
+        };
+        let g_delta = cert_t.shift(axis, 1).mul(&rho_t).sub(cert_t);
+        rhs = rhs.add(&g_delta);
+    }
     lhs.eq_rat(&rhs)
 }
 
-fn finish(
-    cand: Candidate,
+fn finish_md(
+    cand: CandidateMd,
     n: ExprId,
-    j: ExprId,
-    k: ExprId,
+    indices: &[ExprId],
     pool: &ExprPool,
-) -> Telescoping2dResult {
-    let coeffs = cand.a.iter().map(|p| p.to_expr(pool, n, j, k)).collect();
-    Telescoping2dResult {
+) -> TelescopingMdResult {
+    let coeffs = cand.a.iter().map(|p| p.to_expr(pool, n, indices)).collect();
+    let certs = cand
+        .certs
+        .iter()
+        .map(|c| c.to_expr(pool, n, indices))
+        .collect();
+    TelescopingMdResult {
         order: cand.order,
         coeffs,
-        cert1: cand.c1.to_expr(pool, n, j, k),
-        cert2: cand.c2.to_expr(pool, n, j, k),
+        certs,
     }
 }
 
@@ -589,5 +823,31 @@ mod tests {
         let err =
             telescope2d_search(n, n, n, n, &pool, &opts).expect_err("n, j, k must be distinct");
         assert!(matches!(err, Telescoping2dError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn md_refuses_zero_indices() {
+        let pool = ExprPool::new();
+        let n = pool.symbol("n", Domain::Real);
+        let opts = TelescopingMdOpts::default();
+        let err = telescope_md_search(n, n, &[], &pool, &opts)
+            .expect_err("at least one bound index required");
+        assert!(matches!(err, Telescoping2dError::InvalidInput(_)));
+    }
+
+    /// `m = 1` should degenerate cleanly to the same shape as the classical
+    /// single-sum engine's easiest examples: `F(n,k) = C(n,k)`, order-1
+    /// certificate, `Σ_k C(n,k) = 2^n`.
+    #[test]
+    fn md_single_index_matches_classical_binomial_sum() {
+        let pool = ExprPool::new();
+        let n = pool.symbol("n", Domain::Real);
+        let k = pool.symbol("k", Domain::Real);
+        let f = binom(&pool, n, k);
+        let opts = TelescopingMdOpts::default();
+        let result = telescope_md_search(f, n, &[k], &pool, &opts)
+            .expect("a certificate should be found for C(n,k)");
+        assert_eq!(result.certs.len(), 1);
+        assert!(result.order >= 1);
     }
 }

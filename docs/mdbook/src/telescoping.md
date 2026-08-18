@@ -556,6 +556,88 @@ Two restrictions are real, not unfinished polish:
   is always `"unknown"`, never guessed as zero and never resolved to an
   explicit `b(n)`.
 
+## Multi-sum telescoping for `m ≥ 1` bound indices (`alkahest.experimental.telescope_md`)
+
+`telescope2d` reaches exactly two bound indices. `telescope_md` is the same
+engine generalized to an arbitrary number `m ≥ 1` — `m = 1` degenerates
+cleanly to a single-sum-shaped search, `m = 2` behaves identically to
+`telescope2d` (which is now a thin wrapper over the general engine, not a
+separate implementation), and `m ≥ 3` is genuinely new capability. Given a
+proper hypergeometric `F(n, x_1, …, x_m)`, it finds `a_0(n), …, a_J(n)` and
+`m` rational certificates `c_1, …, c_m` such that
+
+```text
+Σ_i a_i(n)·F(n+i,x) = Σ_t Δ_t(c_t·F)
+```
+
+checked as an exact identity in `Q(n,x_1,…,x_m)` before it is ever returned —
+same discipline, same fixed (non-minimal) denominator ansatz, generalized
+from two axes to `m + 1`.
+
+```python
+import alkahest as ak
+from alkahest.experimental import telescope_md
+
+pool = ak.ExprPool()
+n, x, y, z = pool.symbol("n"), pool.symbol("x"), pool.symbol("y"), pool.symbol("z")
+
+def factorial(e):
+    return ak.gamma(e + pool.integer(1))
+
+# F(n,x,y,z) = n! / (x! y! z! (n-x-y-z)!) — the 4-category multinomial
+# coefficient, genuinely non-separable: all three bound indices interact
+# through the shared (n-x-y-z) term.
+rest = n - x - y - z
+f = factorial(n) / (factorial(x) * factorial(y) * factorial(z) * factorial(rest))
+cert = telescope_md(f, n, [x, y, z])
+cert.order          # 1
+cert.coeffs()        # [-4, 1]  ->  S(n+1) = 4*S(n)
+cert.certs()          # [c_1, c_2, c_3]
+```
+
+`Σ_{x,y,z} F = 4ⁿ` by the multinomial theorem (the number of length-`n`
+strings over a 4-letter alphabet, grouped by letter counts) — exactly what
+the order-1 relation says, checked in the test suite by direct exact
+summation against the actual sum, not just against the telescoping identity.
+
+### The boundary is `2m` face sums, not `2^m` corner evaluations
+
+`cert.boundary_status([(lo_1, hi_1), …, (lo_m, hi_m)])` generalizes
+`telescope2d`'s "four strip sums, not four corners" result: telescoping an
+`m`-dimensional box gives `2m` sums, each over an `(m − 1)`-dimensional
+**face** where one bound index is fixed to a boundary value — not `2^m`
+point evaluations at the box's corners. The same sufficient (not necessary)
+pointwise-vanishing criterion applies, generalized mechanically: fix one axis
+to a constant and check that a gamma factor's argument no longer depends on
+`n` or on any *other* bound index.
+
+### A real scaling cliff, and the resource ceilings that bound it
+
+Raising `m` or the certificate degree bound grows the ansatz search space far
+faster than the numbers suggest: a certificate numerator spans a box of
+`(max_cert_degree + 1)^(m+1)` unknowns, and there are `m` certificates. Worse,
+the underlying exact linear solve (`rational_nullspace`) is a plain dense
+`O(rows · cols²)` Gaussian elimination over unbounded-precision rationals,
+and both dimensions grow with `m` and the degree bound well past what the box
+size alone implies. Measured directly: at `m = 3`, certificate degree 2 means
+a ≈10,000-row, 245-unknown system whose elimination step alone took ≈47
+seconds *per probe*; certificate degree 3 (770 unknowns) was still running
+after several minutes. This is genuine arithmetic cost on a real,
+correctly-posed linear system — not a bug, an infinite loop, or unbounded
+coefficient blowup — but a caller still needs protection from it, since the
+search tries every `(order, a_degree, cert_degree)` combination within the
+stated bounds and would otherwise pay that same cost repeatedly. Two ceilings
+apply: a single probe above 400 total unknowns is refused outright, and the
+total work spent on probes at or above 150 unknowns is capped to 300 across
+one whole search call — capping the number of genuinely expensive
+elimination attempts to about one, regardless of how large `max_order` /
+`max_a_degree` / `max_cert_degree` are. Neither ceiling touches the `m = 2`
+search, whose default probes never exceed ≈140 unknowns. A search that hits
+a ceiling still reports `SearchExhausted`, exactly like one that genuinely
+found nothing — except the message says explicitly when a ceiling, not
+genuine non-existence, is the reason, so raising the bounds further is not
+silently misrepresented as a path to success.
+
 ## Method
 
 The implementation is the standard Gosper-style reduction (Petkovšek–Wilf–
@@ -586,9 +668,14 @@ explicit minimal-order certification, `guess_holonomic` — recurrence guessing
 from finite data — the `q`-analogue `q_zeilberger` over `Q(q)(qⁿ)(q^k)` with
 its own two-valued boundary verdict, `specialize_at_root_of_unity` — the
 step from a `Q(q)` identity to `q = ζ_d`, decided exactly in the cyclotomic
-field `Q(ζ_d)` with its own three-valued verdict — and `telescope2d`, the
+field `Q(ζ_d)` with its own three-valued verdict — `telescope2d`, the
 Apagodu–Zeilberger generalization to **two** bound indices, with its own
-2-D boundary analysis (four strip sums, not four corner evaluations).
+2-D boundary analysis (four strip sums, not four corner evaluations) — and
+`telescope_md`, the further generalization to an arbitrary number `m ≥ 1` of
+bound indices, with the `m`-dimensional boundary analysis (`2m` face sums,
+not `2^m` corner evaluations) and the two resource ceilings that keep a
+search with no certificate in reach a fast, honest refusal rather than an
+unbounded computation as `m` or the certificate degree bound grow.
 
 Not shipped on the `q` side: multivariate (`q`-)telescoping and an
 inhomogeneous boundary arm. A `q`-sum whose support cannot be bounded is
@@ -599,12 +686,16 @@ the wider congruence statements (e.g. uniform-in-`n` supercongruences, or
 `p`-adic statements not phrased as `Φ_d`-adic valuations) that literature
 contains.
 
-Not shipped on the double-sum side: more than two bound indices, arbitrary
-rational (not proper hypergeometric) summands — i.e. no general Wegschaider
-reduction — a minimal 2-D Gosper certificate denominator (the ansatz uses a
-fixed, larger-than-necessary one built from `F`'s own shift ratios), an
-`n`-dependent rectangle in the boundary analysis, and an inhomogeneous
-(`"nonzero"`) boundary verdict.
+Not shipped on the multi-sum side: arbitrary rational (not proper
+hypergeometric) summands, or a sum of several proper hypergeometric terms —
+i.e. no general Wegschaider reduction — a minimal multivariate Gosper
+certificate denominator (the ansatz uses a fixed, larger-than-necessary one
+built from `F`'s own shift ratios), an `n`-dependent box in the boundary
+analysis, and an inhomogeneous (`"nonzero"`) boundary verdict. The bound-index
+count itself is no longer capped at two (`telescope_md` reaches any `m ≥ 1`),
+but the search's two resource ceilings mean a caller cannot simply raise `m`
+or the certificate degree bound without limit and expect the search to keep
+running longer — past a point it refuses fast instead.
 
 Not yet shipped, and tracked as follow-up work: Ore-operator closure properties
 for D-finite functions (sums and products of holonomic objects) and the
