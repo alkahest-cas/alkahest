@@ -12029,10 +12029,10 @@ fn py_cuda_device_count() -> usize {
 
 #[cfg(feature = "groebner")]
 use alkahest_core::{
-    dae_index_reduce_ranked, expr_to_gbpoly, gbpoly_to_expr, primary_decomposition,
-    radical as core_ideal_radical, rosenfeld_groebner_ranked, DaeIndexReduction, GbPoly,
-    GroebnerBasis, MonomialOrder, ParamGbPoly, ParamGroebnerBasis, ParamGroebnerError, ParamPoly,
-    QParam,
+    dae_index_reduce_ranked, expr_to_gbpoly, expr_to_param_gbpoly, gbpoly_to_expr,
+    primary_decomposition, radical as core_ideal_radical, rosenfeld_groebner_parametric,
+    rosenfeld_groebner_ranked, DaeIndexReduction, GbPoly, GroebnerBasis, MonomialOrder,
+    ParamGbPoly, ParamGroebnerBasis, ParamGroebnerError, ParamPoly, ParametricProlongOpts, QParam,
 };
 
 /// A sparse multivariate polynomial over ℚ, as used by the Gröbner machinery.
@@ -12997,22 +12997,15 @@ impl PyParamGroebnerBasis {
                 "a symbol cannot be both a ring variable and a coefficient-field parameter",
             ));
         }
-        let mut all_ids = var_ids.clone();
-        all_ids.extend_from_slice(&param_ids);
-
         let pool_py = polys[0].pool.clone_ref(py);
         let mut gens = Vec::with_capacity(polys.len());
         {
             let pool = pool_py.borrow(py);
             for p in &polys {
-                let gbp = expr_to_gbpoly(p.id, &all_ids, &pool.inner)
+                // Rational in the parameters is fine — that is the coefficient
+                // field.  Only a denominator in a *ring variable* is refused.
+                let pg = expr_to_param_gbpoly(p.id, &var_ids, &param_ids, &pool.inner)
                     .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-                let pg = ParamGbPoly::from_gbpoly(&gbp, var_ids.len(), param_ids.len())
-                    .ok_or_else(|| {
-                        pyo3::exceptions::PyValueError::new_err(
-                            "internal: polynomial arity does not match vars + params",
-                        )
-                    })?;
                 gens.push(pg);
             }
         }
@@ -13180,16 +13173,44 @@ impl PyParamGroebnerBasis {
     /// "E-PARAMGB-004"`` rather than handing back something that is not a
     /// basis — check first with :meth:`is_regular_at` if that is a normal
     /// outcome for your caller.
+    ///
+    /// Parameters
+    /// ----------
+    /// values : list
+    ///     One rational value per parameter, in :meth:`parameters` order.
+    /// verify : bool, optional
+    ///     When the point is on the locus, re-solve the specialised system over
+    ///     ℚ and compare, instead of refusing on :meth:`conditions` alone.
+    ///     :meth:`conditions` is sufficient but not necessary — most of it is
+    ///     leading coefficients that were inverted inside the Buchberger loop
+    ///     and then cancelled — so on small-integer parameter grids **a quarter
+    ///     to a half of the refusals are unnecessary**, dominated by parameters
+    ///     equal to exactly 0.  With ``verify=True`` those points return a
+    ///     basis; genuinely degenerate points still raise ``E-PARAMGB-004``.
+    ///     The default is ``False`` because verification costs a second Gröbner
+    ///     basis over ℚ.  It changes only *completeness* — the refusals were
+    ///     never unsound.
+    ///
+    /// Example::
+    ///
+    ///     gb = alkahest.GroebnerBasis.compute([a*x - y, c*x + d*y - one],
+    ///                                         [x, y], params=[a, c, d])
+    ///     gb.specialize([0, 1, 1])                  # E-PARAMGB-004
+    ///     gb.specialize([0, 1, 1], verify=True)     # a GroebnerBasis
+    #[pyo3(signature = (values, verify=false))]
     fn specialize(
         &self,
         py: Python<'_>,
         values: Vec<Bound<'_, PyAny>>,
+        verify: bool,
     ) -> PyResult<PyGroebnerBasis> {
         let vals = self.rational_values(&values)?;
-        let gens = self
-            .inner
-            .specialize(&vals)
-            .map_err(param_groebner_error_to_py)?;
+        let gens = if verify {
+            self.inner.specialize_verified(&vals)
+        } else {
+            self.inner.specialize(&vals)
+        }
+        .map_err(param_groebner_error_to_py)?;
         Ok(PyGroebnerBasis {
             inner: GroebnerBasis::from_generators(gens, self.inner.order()),
             pool: Some(self.pool.clone_ref(py)),
@@ -13264,16 +13285,55 @@ impl PyParamGroebnerBasis {
     /// Reduce a polynomial modulo this basis; the remainder is a
     /// :class:`ParametricGbPoly`.
     ///
-    /// Accepts a :class:`ParametricGbPoly` or an :class:`Expr`.
+    /// Accepts a :class:`ParametricGbPoly` or an :class:`Expr`.  The `Expr` may
+    /// be **rational in the parameters** — a ``den**-1`` factor is an ordinary
+    /// element of the coefficient field ``Q(params)``, not a non-polynomial —
+    /// so this basis's own :meth:`to_exprs` output is valid input.  Only a
+    /// denominator in a *ring variable* is refused.
     fn reduce(&self, py: Python<'_>, p: &Bound<'_, PyAny>) -> PyResult<PyParamGbPoly> {
         let poly = self.coerce(py, p)?;
         Ok(self.wrap(py, self.inner.reduce(&poly)))
     }
 
     /// Ideal membership: true exactly when :meth:`reduce` gives zero.
+    ///
+    /// Same input contract as :meth:`reduce`; in particular
+    /// ``gb.contains(gb.to_exprs()[i])`` is true for every ``i``.
+    ///
+    /// Example::
+    ///
+    ///     gb = alkahest.GroebnerBasis.compute([a*x - one], [x], params=[a])
+    ///     gb.to_exprs()                    # ['(x + (-1 * a^-1))']
+    ///     gb.contains(gb.to_exprs()[0])    # True
     fn contains(&self, py: Python<'_>, p: &Bound<'_, PyAny>) -> PyResult<bool> {
         let poly = self.coerce(py, p)?;
         Ok(self.inner.contains(&poly))
+    }
+
+    /// True when every generator of *other* lies in this ideal, i.e.
+    /// ``<other> ⊆ <self>`` in ``Q(params)[vars]``.
+    ///
+    /// Returns ``False`` when the two bases are written over different numbers
+    /// of variables or parameters — there is no shared ring to compare them in.
+    fn contains_ideal(&self, other: PyRef<PyParamGroebnerBasis>) -> bool {
+        self.inner.contains_ideal(&other.inner)
+    }
+
+    /// True when *other* generates the **same ideal** of ``Q(params)[vars]``.
+    ///
+    /// This is exact, not generic: reduction over ``Q(params)`` only ever
+    /// divides by non-zero field elements, so neither basis's
+    /// :meth:`conditions` enters the answer.  Those conditions still bound what
+    /// each basis says about a *specialised* parameter point — equal ideals
+    /// over the fraction field can specialise differently on the locus.
+    ///
+    /// Example::
+    ///
+    ///     g1 = alkahest.GroebnerBasis.compute([a*x - one], [x], params=[a])
+    ///     g2 = alkahest.GroebnerBasis.compute([a*a*x - a], [x], params=[a])
+    ///     g1.equals_ideal(g2)              # True
+    fn equals_ideal(&self, other: PyRef<PyParamGroebnerBasis>) -> bool {
+        self.inner.equals_ideal(&other.inner)
     }
 
     fn __len__(&self) -> usize {
@@ -13320,17 +13380,17 @@ impl PyParamGroebnerBasis {
             return Ok(pg.borrow().inner.clone());
         }
         if let Ok(expr) = p.downcast::<PyExpr>() {
-            let mut all_ids = self.var_ids.clone();
-            all_ids.extend_from_slice(&self.param_ids);
             let pool = self.pool.borrow(py);
-            let gbp = expr_to_gbpoly(expr.borrow().id, &all_ids, &pool.inner)
-                .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-            return ParamGbPoly::from_gbpoly(&gbp, self.var_ids.len(), self.param_ids.len())
-                .ok_or_else(|| {
-                    pyo3::exceptions::PyValueError::new_err(
-                        "internal: polynomial arity does not match vars + params",
-                    )
-                });
+            // Over `Q(params)` a `den**-1` factor in the parameters is an
+            // ordinary coefficient, not a non-polynomial — so this accepts the
+            // basis's own `to_exprs()` output, which always carries them.
+            return expr_to_param_gbpoly(
+                expr.borrow().id,
+                &self.var_ids,
+                &self.param_ids,
+                &pool.inner,
+            )
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()));
         }
         Err(pyo3::exceptions::PyTypeError::new_err(
             "expected a ParametricGbPoly or an Expr",
@@ -13503,6 +13563,123 @@ impl PyDaeIndexReduction {
     }
 }
 
+/// M9 × V2-13 — result of a **parametric** differential elimination.
+///
+/// Returned by :func:`rosenfeld_groebner` when ``params`` is given.  Same shape
+/// as :class:`RosenfeldGroebnerResult`, except that :meth:`final_basis` is a
+/// :class:`ParametricGroebnerBasis` over ``Q(params)`` — so it carries
+/// :meth:`~ParametricGroebnerBasis.conditions` and
+/// :meth:`~ParametricGroebnerBasis.specialize`, and the parameters never enter
+/// the monomial order.
+///
+/// Attributes
+/// ----------
+/// consistent : bool
+///     ``False`` iff the unit ideal was reached over ``Q(params)``.
+/// truncated : bool
+///     ``True`` if prolongation stopped on the budget or on ``minimal=True``
+///     rather than because differentiating stopped adding relations.  A
+///     truncated basis is a *sound* set of consequences of the system but need
+///     not be complete.
+/// prolongation_rounds : int
+///     Number of prolongation rounds that contributed new relations.
+/// minimal_prolongation_rounds : int or None
+///     The lowest round count at which the elimination ideal with respect to
+///     ``eliminate`` was non-empty; ``None`` when no round was informative or
+///     no ``eliminate`` list was given.  **Scope:** this is "the first round
+///     that leaves a generator after elimination", not a theorem — for
+///     multi-output models the criterion is known to be wrong, because one
+///     output can become informative several rounds before the others.  Treat
+///     it as a cost signal, not a certificate.
+#[cfg(feature = "groebner")]
+#[pyclass(name = "ParametricRosenfeldGroebnerResult")]
+struct PyParametricRosenfeldResult {
+    #[pyo3(get)]
+    consistent: bool,
+    #[pyo3(get)]
+    truncated: bool,
+    #[pyo3(get)]
+    prolongation_rounds: usize,
+    #[pyo3(get)]
+    minimal_prolongation_rounds: Option<usize>,
+    working_dae: DAE,
+    final_basis: Option<ParamGroebnerBasis>,
+    pool: Py<PyExprPool>,
+    var_ids: Vec<ExprId>,
+    param_ids: Vec<ExprId>,
+}
+
+#[cfg(feature = "groebner")]
+#[pymethods]
+impl PyParametricRosenfeldResult {
+    /// The prolonged :class:`DAE`: the input system plus every derivative jet
+    /// introduced while differentiating it.
+    fn working_dae(&self, py: Python<'_>) -> PyDAE {
+        PyDAE {
+            inner: self.working_dae.clone(),
+            pool: self.pool.clone_ref(py),
+        }
+    }
+
+    /// The jet variables indexing the basis, in exponent-slot order.
+    ///
+    /// The parameters are **not** here — they are in the coefficient field.
+    fn variables(&self, py: Python<'_>) -> Vec<PyExpr> {
+        self.var_ids
+            .iter()
+            .map(|&id| PyExpr {
+                id,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect()
+    }
+
+    /// The parameters of the coefficient field, in order.
+    fn parameters(&self, py: Python<'_>) -> Vec<PyExpr> {
+        self.param_ids
+            .iter()
+            .map(|&id| PyExpr {
+                id,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect()
+    }
+
+    /// The saturated :class:`ParametricGroebnerBasis`, or ``None`` when the
+    /// system is inconsistent.
+    ///
+    /// Example::
+    ///
+    ///     r = alkahest.rosenfeld_groebner(dae, params=[a], eliminate=[x])
+    ///     io = r.final_basis().eliminate([x, dx])
+    ///     [str(e) for e in io.to_exprs()]
+    fn final_basis(&self, py: Python<'_>) -> PyResult<Option<Py<PyParamGroebnerBasis>>> {
+        match &self.final_basis {
+            None => Ok(None),
+            Some(gb) => Ok(Some(Py::new(
+                py,
+                PyParamGroebnerBasis {
+                    inner: gb.clone(),
+                    pool: self.pool.clone_ref(py),
+                    var_ids: self.var_ids.clone(),
+                    param_ids: self.param_ids.clone(),
+                },
+            )?)),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "ParametricRosenfeldGroebnerResult(consistent={}, truncated={}, \
+             prolongation_rounds={}, minimal_prolongation_rounds={:?})",
+            self.consistent,
+            self.truncated,
+            self.prolongation_rounds,
+            self.minimal_prolongation_rounds
+        )
+    }
+}
+
 /// `alkahest.rosenfeld_groebner(dae, order=None, max_prolong_rounds=None)` —
 /// Rosenfeld–Gröbner-style differential elimination.
 ///
@@ -13523,11 +13700,47 @@ impl PyDaeIndexReduction {
 ///     Prolongation budget (default 8).  Nonlinear jets often do not saturate
 ///     in finitely many algebraic steps, so hitting the budget is normal and
 ///     sets :attr:`RosenfeldGroebnerResult.truncated`.
+/// params : list[Expr], optional
+///     Symbols to put in the **coefficient field** ``Q(params)`` rather than in
+///     the ring (M9).  Without this every free symbol is a ring variable, so a
+///     model parameter enlarges the monomial order, the pair schedule and the
+///     staircase — which is the difference between eliminating states from
+///     ``Q[states, jets, params]`` and from ``Q(params)[states, jets]``.  With
+///     ``params`` the return type is
+///     :class:`ParametricRosenfeldGroebnerResult` and the basis is
+///     :class:`ParametricGroebnerBasis`; without it nothing changes.
+///
+///     The parameters must not be DAE variables, derivatives or the time
+///     variable.
+/// eliminate : list[Expr], optional
+///     Variables the caller intends to eliminate — typically the unobserved
+///     states.  Their whole jet chain goes with them: naming ``x`` also names
+///     ``dx/dt``, ``d2x/dt2``, … as prolongation introduces them.  Supplying
+///     this makes :attr:`ParametricRosenfeldGroebnerResult.minimal_prolongation_rounds`
+///     available and enables the over-prolongation warning.  Requires
+///     ``params``.
+/// minimal : bool, optional
+///     Stop at the first prolongation round whose elimination ideal with
+///     respect to ``eliminate`` is non-empty, instead of prolonging to the
+///     budget.  One prolongation too many is expensive out of all proportion —
+///     on SIR it is 0.002 s and one 4-term relation against 20.9 s and thirteen
+///     generators of up to 233 terms — and the over-supplied result is correct,
+///     so nothing else signals it.  Requires ``eliminate``.
+///
+///     Not a minimality guarantee: see
+///     :attr:`ParametricRosenfeldGroebnerResult.minimal_prolongation_rounds`
+///     for the scope, in particular for multi-output models.
 ///
 /// Returns
 /// -------
-/// RosenfeldGroebnerResult
+/// RosenfeldGroebnerResult or ParametricRosenfeldGroebnerResult
 ///     Read the relations with ``result.final_basis().to_exprs()``.
+///
+/// Warns
+/// -----
+/// UserWarning
+///     When ``eliminate`` is given, the elimination ideal was already non-empty
+///     at an earlier round, and ``minimal`` was not set.
 ///
 /// Example::
 ///
@@ -13536,15 +13749,115 @@ impl PyDaeIndexReduction {
 ///     r = alkahest.rosenfeld_groebner(dae, max_prolong_rounds=1)
 ///     r.consistent                      # True
 ///     r.final_basis().to_exprs()        # the eliminated relations, as Expr
+///
+///     # a is a coefficient, not a fourth ring variable
+///     dae = alkahest.DAE.new([dx - a*x], [x], [dx], t)
+///     r = alkahest.rosenfeld_groebner(dae, params=[a], max_prolong_rounds=1)
+///     r.final_basis().conditions()
 #[cfg(feature = "groebner")]
 #[pyfunction]
-#[pyo3(name = "rosenfeld_groebner", signature = (dae, order=None, max_prolong_rounds=None))]
+#[pyo3(
+    name = "rosenfeld_groebner",
+    signature = (dae, order=None, max_prolong_rounds=None, params=None, eliminate=None, minimal=false)
+)]
 fn py_rosenfeld_groebner(
     py: Python<'_>,
     dae: PyRef<PyDAE>,
     order: Option<&str>,
     max_prolong_rounds: Option<usize>,
-) -> PyResult<PyRosenfeldGroebnerResult> {
+    params: Option<Vec<PyRef<PyExpr>>>,
+    eliminate: Option<Vec<PyRef<PyExpr>>>,
+    minimal: bool,
+) -> PyResult<PyObject> {
+    let param_ids: Vec<ExprId> = params
+        .as_ref()
+        .map(|ps| ps.iter().map(|p| p.id).collect())
+        .unwrap_or_default();
+    let eliminate_ids: Vec<ExprId> = eliminate
+        .as_ref()
+        .map(|es| es.iter().map(|e| e.id).collect())
+        .unwrap_or_default();
+
+    if param_ids.is_empty() {
+        if !eliminate_ids.is_empty() || minimal {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "eliminate= and minimal= are only available on the parametric path; \
+                 pass params=[...] as well",
+            ));
+        }
+        return py_rosenfeld_groebner_plain(py, dae, order, max_prolong_rounds);
+    }
+    if minimal && eliminate_ids.is_empty() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "minimal=True needs eliminate=[...]: there is no notion of an informative \
+             prolongation round without knowing which variables are being eliminated",
+        ));
+    }
+
+    let pool_py = dae.pool.clone_ref(py);
+    let requested_rounds = max_prolong_rounds.unwrap_or(8);
+    let out = {
+        let pool = pool_py.borrow(py);
+        rosenfeld_groebner_parametric(
+            &dae.inner,
+            &pool.inner,
+            &param_ids,
+            ParametricProlongOpts {
+                order: py_monomial_order_for_dae(order),
+                max_prolong_rounds: requested_rounds,
+                eliminate: &eliminate_ids,
+                minimal,
+            },
+        )
+    };
+    let (r, ranking) = out.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+
+    // The blow-up from one prolongation too many is silent otherwise: the
+    // answer is correct, just enormously more expensive.
+    if !minimal {
+        if let Some(m) = r.minimal_prolongation_rounds {
+            if m < r.prolongation_rounds {
+                let msg = format!(
+                    "rosenfeld_groebner prolonged {} rounds, but the elimination ideal was \
+                     already non-empty after {m}; the extra rounds are correct but can cost \
+                     orders of magnitude. Pass minimal=True to stop at the first informative \
+                     round (see minimal_prolongation_rounds for its scope).",
+                    r.prolongation_rounds
+                );
+                pyo3::PyErr::warn_bound(
+                    py,
+                    &py.get_type_bound::<pyo3::exceptions::PyUserWarning>(),
+                    &msg,
+                    1,
+                )?;
+            }
+        }
+    }
+
+    Ok(Py::new(
+        py,
+        PyParametricRosenfeldResult {
+            consistent: r.consistent,
+            truncated: r.truncated,
+            prolongation_rounds: r.prolongation_rounds,
+            minimal_prolongation_rounds: r.minimal_prolongation_rounds,
+            working_dae: r.working_dae,
+            final_basis: r.final_basis,
+            pool: pool_py,
+            var_ids: ranking.vars,
+            param_ids,
+        },
+    )?
+    .into_py(py))
+}
+
+#[cfg(feature = "groebner")]
+fn py_rosenfeld_groebner_plain(
+    py: Python<'_>,
+    dae: PyRef<PyDAE>,
+    order: Option<&str>,
+    max_prolong_rounds: Option<usize>,
+) -> PyResult<PyObject> {
     let pool_py = dae.pool.clone_ref(py);
     let r = {
         let pool = pool_py.borrow(py);
@@ -13556,15 +13869,19 @@ fn py_rosenfeld_groebner(
         )
     };
     let (r, ranking) = r.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-    Ok(PyRosenfeldGroebnerResult {
-        consistent: r.consistent,
-        truncated: r.truncated,
-        prolongation_rounds: r.prolongation_rounds,
-        working_dae: r.working_dae,
-        final_basis: r.final_basis,
-        pool: pool_py,
-        var_ids: ranking.vars,
-    })
+    Ok(Py::new(
+        py,
+        PyRosenfeldGroebnerResult {
+            consistent: r.consistent,
+            truncated: r.truncated,
+            prolongation_rounds: r.prolongation_rounds,
+            working_dae: r.working_dae,
+            final_basis: r.final_basis,
+            pool: pool_py,
+            var_ids: ranking.vars,
+        },
+    )?
+    .into_py(py))
 }
 
 #[cfg(feature = "groebner")]
@@ -15473,6 +15790,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add_class::<PyParamGbPoly>()?;
         m.add_class::<PyParamGroebnerBasis>()?;
         m.add_class::<PyRosenfeldGroebnerResult>()?;
+        m.add_class::<PyParametricRosenfeldResult>()?;
         m.add_class::<PyDaeIndexReduction>()?;
         m.add_class::<PyPrimaryComponent>()?;
         m.add_class::<PyRegularChain>()?;

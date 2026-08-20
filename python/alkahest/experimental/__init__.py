@@ -114,7 +114,14 @@ Coefficient fields for elimination (M9):
   ``GroebnerBasis.compute(polys, vars, params=[...])``.  The basis is generic,
   so it reports the hypersurfaces its leading coefficients assumed non-zero
   (``conditions()``) and refuses to ``specialize()`` on them instead of
-  returning something that is not a basis
+  returning something that is not a basis — or, with ``specialize(pt,
+  verify=True)``, re-solves at the point and refuses only if the refusal was
+  really necessary
+- :class:`ParametricRosenfeldGroebnerResult` — differential elimination with
+  the parameters in the coefficient field, from
+  ``rosenfeld_groebner(dae, params=[...])``; with ``eliminate=[...]`` it also
+  reports the first prolongation round that was informative, and warns when
+  more rounds were taken than that
 
 Numeric ODE integrators (Phase 16b):
 - :func:`ode_integrate_rk4` — fixed-step 4th-order Runge–Kutta integrator
@@ -215,7 +222,11 @@ with contextlib.suppress(ImportError):
 # M9 — Gröbner bases over the coefficient field Q(params).  Registered by the
 # extension only on `groebner` builds, hence the suppressed import.
 with contextlib.suppress(ImportError):
-    from alkahest.alkahest import ParametricGbPoly, ParametricGroebnerBasis
+    from alkahest.alkahest import (
+        ParametricGbPoly,
+        ParametricGroebnerBasis,
+        ParametricRosenfeldGroebnerResult,
+    )
 
 with contextlib.suppress(ImportError):
     from alkahest.alkahest import CudaCompiledFn, compile_cuda
@@ -240,6 +251,7 @@ __all__ = [
     # M9 — coefficient fields for elimination
     "ParametricGbPoly",
     "ParametricGroebnerBasis",
+    "ParametricRosenfeldGroebnerResult",
     # M11 — novelty filtering
     "QRecurrenceClaim",
     # M4 — root-of-unity specialisation

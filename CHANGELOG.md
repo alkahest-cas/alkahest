@@ -2,6 +2,69 @@
 
 ## Unreleased
 
+- **The parametric Gröbner surface (M9) accepts its own output, checks a
+  refusal before making it, and composes with differential elimination.**
+  Five defects from the 2026-08-19 autoresearch run, plus two prolongation
+  bugs found while wiring the fourth:
+
+  - **`ParametricGroebnerBasis.contains` / `.reduce` accept input that is
+    rational in the parameters.** The basis lives in `Q(params)[vars]`, so its
+    generators carry `den**-1` factors by construction — and the membership
+    entry points routed them through the denominator-free `Expr → GbPoly`
+    conversion and refused with *"negative exponent -1 in polynomial"*. The
+    trivially-true `gb.contains(gb.to_exprs()[i])` could not be run, and
+    neither could the question a loop actually needs. A denominator in a *ring
+    variable* is still refused. New `equals_ideal` / `contains_ideal` answer
+    "do these two parametric bases generate the same ideal?" — exactly, over
+    the fraction field, with neither basis's `conditions()` entering the
+    answer.
+  - **`specialize(values, verify=True)`** re-solves the specialised system
+    over ℚ and compares, instead of refusing on the recorded conditions alone.
+    `conditions()` is sufficient but not necessary — most of it is leading
+    coefficients that were inverted inside the Buchberger loop and then
+    cancelled — so **a quarter to a half of refusals on small-integer grids
+    are unnecessary**, dominated by parameters equal to exactly 0 (`{-2..2}`
+    52 %, `{-2,-1,1,2}` 25 %, `{-3..3}` 58 %). Over eight systems on
+    `{-2..2}`: 646 refusals, 334 now returned, 239 genuine poles and 73
+    necessary still refused. The refusals were separately verified *sound*
+    (1,930 regular points, zero disagreements), so this closes a completeness
+    gap, not a correctness one; the default stays `False` because verifying
+    costs a second Gröbner basis over ℚ.
+  - **`rosenfeld_groebner(dae, params=[...])`** runs the prolongation loop
+    over `Q(params)` and returns a `ParametricRosenfeldGroebnerResult` whose
+    `final_basis()` is a `ParametricGroebnerBasis`. It previously raised
+    `TypeError`: the differential-elimination surface did not compose with M9
+    at all, so every model had to be prolonged by hand.
+  - **`eliminate=[...]` and `minimal=True`**, and a `UserWarning` when neither
+    was used but an earlier round would have done. One prolongation too many
+    is expensive out of all proportion — on SIR, stopping at the first
+    informative round is 0.03 s and one 4-term relation, one round further
+    does not finish in ten minutes — and the over-supplied answer is
+    *correct*, so nothing else signalled it. `minimal_prolongation_rounds`
+    reports the first informative round; its scope is documented, and it is
+    **known to be wrong for multi-output models**, so it is a cost signal, not
+    a certificate.
+  - **Prolongation no longer emits relations the system does not imply.** Two
+    causes, both reachable from `rosenfeld_groebner` on any system where one
+    equation mentions another's derivative: a promoted derivative had its
+    contribution counted twice (once from its own state pair, once from the
+    pair the previous round added), and a jet that was never promoted had its
+    contribution dropped entirely, because the next differentiation treated it
+    as a constant. On `R' = I, I' = -I` the two together forced `I = 0`. The
+    jet ranking is also append-only across rounds now: it was recomputed each
+    round, so a jet reachable only through the previous round's equations
+    could drop out and shift every later exponent slot under polynomials that
+    had already been padded.
+  - **The docs say which structural identifiability this decides.** An
+    IO-elimination route answers **multi-experiment** identifiability, by
+    Ovchinnikov–Pillay–Pogudin–Scanlon, *Computing all identifiable functions
+    of parameters for ODE models* (arXiv:2004.07774), Theorem 19 — which is
+    why it can call a model globally identifiable where a single-experiment
+    tool such as SIAN reports "locally, not globally". Stated with the
+    hypothesis it needs: Theorem 19 requires the IO equations to be the
+    characteristic presentation of `I_Σ ∩ C(θ){y,u}`, and an algebraic lex
+    elimination at a hand-picked finite jet order is not guaranteed to be one.
+
 <<<<<<< HEAD
 - **The M11 novelty filter reads more of what OEIS actually writes, pages its
   searches, can represent a `q`-recurrence, and cross-checks the terms it is

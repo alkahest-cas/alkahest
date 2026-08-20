@@ -34,12 +34,21 @@ pub fn extend_derivative_state_vectors(
 ) {
     for (j, _) in variables.clone().iter().enumerate() {
         let deriv = derivatives[j];
-        if structurally_depends(new_eq, deriv, pool) && !variables.contains(&deriv) {
-            let d2_name = pool.with(deriv, |d| match d {
-                ExprData::Symbol { name, .. } => format!("d{name}/dt"),
-                _ => "d?/dt".to_string(),
-            });
-            let d2 = pool.symbol(&d2_name, Domain::Real);
+        if variables.contains(&deriv) {
+            continue;
+        }
+        let d2_name = pool.with(deriv, |d| match d {
+            ExprData::Symbol { name, .. } => format!("d{name}/dt"),
+            _ => "d?/dt".to_string(),
+        });
+        let d2 = pool.symbol(&d2_name, Domain::Real);
+        // `deriv` becomes a state when the equation mentions it — or when it
+        // mentions `d(deriv)/dt`, which means `deriv` has *already* been
+        // differentiated once.  Without the second test the chain stops: the
+        // jet is in the equation but has no successor, so the next
+        // differentiation treats it as a constant and drops its contribution,
+        // asserting a relation the system does not imply.
+        if structurally_depends(new_eq, deriv, pool) || structurally_depends(new_eq, d2, pool) {
             variables.push(deriv);
             derivatives.push(d2);
         }
@@ -342,8 +351,19 @@ pub(crate) fn differentiate_equation(
             let term = pool.mul(vec![dg_dyi, deriv]);
             terms.push(term);
         }
-        // Also differentiate w.r.t. the derivative (for higher-index terms)
-        let dg_ddyi = diff(equation, deriv, pool)?.value;
+        // Also differentiate w.r.t. the derivative (for higher-index terms) —
+        // but only when `deriv` has not itself been promoted to the state
+        // vector.  Once it has, its own `(deriv, d²y_i)` pair contributes
+        // exactly this term via the branch above, and emitting it here too
+        // doubles it.  Prolongation promotes derivatives as it goes, so this
+        // fires from the very first round on any system where one equation
+        // mentions another's derivative.
+        let already_a_state = variables.contains(&deriv);
+        let dg_ddyi = if already_a_state {
+            pool.integer(0_i32)
+        } else {
+            diff(equation, deriv, pool)?.value
+        };
         if dg_ddyi != pool.integer(0_i32) {
             // d(dy_i/dt)/dt is a new symbol — use the naming convention
             let d2_name = pool.with(deriv, |d| match d {
