@@ -50,7 +50,12 @@ from ._context import (
     symbol,
 )
 from ._dlpack import _call_batch, _to_numpy
-from ._guess_holonomic import GuessedRecurrence, guess_holonomic
+from ._guess_holonomic import (
+    GUESS_STATUS_MEANINGS,
+    GUESS_STATUSES,
+    GuessedRecurrence,
+    guess_holonomic,
+)
 from ._parse import parse
 from ._plot import (
     plot,
@@ -2215,6 +2220,10 @@ del _entry_point
 __all__ = [
     # Phase 17
     "DAE",
+    # M2 — the vocabulary GuessedRecurrence.status is drawn from
+    "GUESS_STATUSES",
+    "GUESS_STATUS_MEANINGS",
+    # Phase 17
     "HAS_EGRAPH",
     # Phase 16
     "ODE",

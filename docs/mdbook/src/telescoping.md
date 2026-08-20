@@ -256,6 +256,12 @@ exact verification, same certificate — only what was ruled out along the way
 differs. The flag is computed from the probes that actually happened rather than
 from the mode, so it cannot drift away from what the search did.
 
+**What it establishes is minimality at certificate degree `≤ max_degree`**, not
+minimality outright. A lower-order relation whose certificate needs a higher
+degree than the bound was never probed, and order–degree trade-offs are a real
+phenomenon in creative telescoping — so quote the bound alongside the claim, and
+raise it when minimality is the result being published.
+
 The price is the whole hopeless low-order sweep the default plan exists to
 avoid, and it is charged against `max_degree` because that is the bound
 minimality is claimed relative to. Measured on this machine at `max_order=4`:

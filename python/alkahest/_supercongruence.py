@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from .alkahest import HolonomicError as _HolonomicError
 from .alkahest import ModularRecurrence
+from .number_theory import isprime as _isprime
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from collections.abc import Iterable
@@ -43,8 +44,18 @@ __all__ = ["CongruenceSweep", "supercongruence_sweep"]
 
 #: Refusals that are a fact about one prime, not about the call. These are
 #: recorded in :meth:`CongruenceSweep.skipped` and the sweep carries on;
-#: everything else (a composite base, a malformed recurrence) propagates.
-_PER_PRIME_REFUSALS = frozenset({"E-HOLO-007", "E-HOLO-008"})
+#: everything else (a malformed recurrence, a bad index) propagates.
+#:
+#: ``E-HOLO-006`` is one of them because the two ways to earn it are not alike.
+#: A composite base is a fact about the *call*, and the sweep rules that out
+#: itself before evaluating anything (see :func:`supercongruence_sweep`), so
+#: the only ``E-HOLO-006`` that can reach the loop is ``p**k`` past the
+#: machine-word ceiling — the same "this prime is out of reach of this backend"
+#: that ``E-HOLO-008`` is, and it gets the same treatment. Letting it propagate
+#: destroyed every residue already computed and left the caller to work out the
+#: per-``k`` cap ``int((2**62) ** (1 / (k + 1)))`` by hand, which is exactly the
+#: accounting :meth:`CongruenceSweep.skipped` exists to do.
+_PER_PRIME_REFUSALS = frozenset({"E-HOLO-006", "E-HOLO-007", "E-HOLO-008"})
 
 
 class CongruenceSweep:
@@ -153,12 +164,14 @@ class CongruenceSweep:
         """``[(p, reason)]`` for primes the evaluation refused.
 
         A refusal is *undecided*, not *satisfied*: a sweep that silently
-        dropped these would be reporting a range it never covered. The two
-        causes are a run of singular indices demanding more working precision
-        than a machine-word modulus can hold (``E-HOLO-008``) and a sequence
-        that is not ``p``-integral at that prime (``E-HOLO-007``). A refusal
-        about the *call* — a composite base, a malformed recurrence — is not
-        skipped, it is raised.
+        dropped these would be reporting a range it never covered. The three
+        causes are all "this backend cannot reach this prime": ``p**(k+extra)``
+        past the machine-word ceiling of ``2**62`` (``E-HOLO-006``), a run of
+        singular indices demanding more working precision than a machine-word
+        modulus can hold (``E-HOLO-008``), and a sequence that is not
+        ``p``-integral there (``E-HOLO-007``). A refusal about the *call* — a
+        composite in *primes*, a malformed recurrence — is not skipped, it is
+        raised.
         """
         return list(self._skipped)
 
@@ -177,6 +190,31 @@ def _as_callable(value: Any, name: str) -> Callable[[int], int]:
     if isinstance(value, int):
         return lambda _p, _v=value: _v
     raise TypeError(f"{name} must be an int or a callable of p, got {type(value).__name__}")
+
+
+def _require_prime(p: Any) -> None:
+    """Refuse a composite in *primes* before any residue is computed.
+
+    The kernel refuses it too, with the same ``E-HOLO-006``, but it does so
+    from inside the loop where this module can no longer tell that refusal
+    apart from "this prime is past the machine-word ceiling" — which is a fact
+    about one prime and belongs in :meth:`CongruenceSweep.skipped`. Deciding
+    the *call*-level half here is what lets the other half be skipped rather
+    than fatal. The message is the kernel's, so the two cannot drift.
+    """
+    if isinstance(p, int) and p >= 2 and _isprime(p):
+        return
+    error = _HolonomicError(
+        f"holonomic: unsupported modulus: {p} is not prime; the lifting "
+        "argument this module rests on needs a prime power modulus, and v_p "
+        "is not defined otherwise"
+    )
+    error.code = "E-HOLO-006"
+    error.remediation = (
+        "the modulus must be p**k with p prime, k >= 1 and p**k < 2**62; for a "
+        "composite modulus, evaluate at each prime power and recombine by CRT"
+    )
+    raise error
 
 
 def supercongruence_sweep(
@@ -199,10 +237,13 @@ def supercongruence_sweep(
 
     :param recurrence: the sequence, as a
         :class:`alkahest.ModularRecurrence`.
-    :param primes: the primes to test. Not checked for primality here — the
-        evaluation checks, and a composite raises ``HolonomicError``
-        (``E-HOLO-006``) rather than being skipped, because a sweep that
-        silently drops its inputs reports a range it did not cover.
+    :param primes: the primes to test. Checked for primality here, and a
+        composite raises ``HolonomicError`` (``E-HOLO-006``) rather than being
+        skipped, because a sweep that silently drops its inputs reports a range
+        it did not cover. The check is up front so that the *other*
+        ``E-HOLO-006`` — ``p**(k + extra_precision)`` past the machine-word
+        ceiling, a fact about one prime rather than about the call — can be
+        recorded in :meth:`CongruenceSweep.skipped` and the sweep continue.
     :param k: the claimed exponent. ``a(p-1) ≡ 1 (mod p**4)`` is ``k=4``.
     :param index: ``p -> n``, the index to evaluate at. Defaults to ``p - 1``,
         which is the shape of nearly every Apéry-like supercongruence.
@@ -249,14 +290,18 @@ def supercongruence_sweep(
     skipped: list[tuple[int, str]] = []
 
     for p in primes:
+        # The one `E-HOLO-006` that is a fact about the *call* rather than
+        # about one prime, decided here rather than left to the evaluation, so
+        # that the code can be skipped below without a list of composites
+        # coming back `holds=True` over zero primes — the sweep lying about a
+        # range it never covered.
+        _require_prime(p)
         modulus = p**precision
         try:
             value = recurrence.value_mod(index_of(p), p, precision)
         except _HolonomicError as exc:
             # A refusal about *this prime* is recorded and reported; a refusal
-            # about the call itself is re-raised. Skipping `E-HOLO-006` would
-            # let a list of composites come back `holds=True` over zero primes,
-            # which is the sweep lying about a range it never covered.
+            # about the call itself is re-raised.
             if getattr(exc, "code", None) not in _PER_PRIME_REFUSALS:
                 raise
             skipped.append((p, str(exc)))
