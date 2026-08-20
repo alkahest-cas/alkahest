@@ -238,6 +238,80 @@ def test_refuses_lines_it_does_not_understand(line: str) -> None:
     assert RecurrenceClaim.from_text(line) is None
 
 
+def test_a_shift_gap_is_not_closed_by_the_parser() -> None:
+    """``from_text`` must not compact a sparse shift map into a dense window.
+
+    ``_parse_relation`` returns ``{shift: coefficient}``, and the constructor
+    reads its list *positionally*.  Handing it the values at the sorted keys
+    closed every gap, so ``a(n) = a(n-1) + a(n-3)`` and
+    ``a(n) = a(n-2) + a(n-4)`` were both read as Fibonacci — the same
+    ``claim_hash``, verbatim.  Measured over 377 live OEIS entries this lost
+    21% of parsed statements to the data guard; it never forged a claim,
+    because a mangled reading has to reproduce the entry's own terms to be
+    indexed, but a false red is still a loss.
+    """
+    fibonacci = RecurrenceClaim.from_text("a(n) = a(n-1) + a(n-2)")
+    gapped = {
+        # u(n+3) - u(n+2) - u(n) = 0: a gap at n-2.
+        "a(n) = a(n-1) + a(n-3)": RecurrenceClaim([(-1,), (0,), (-1,), (1,)]),
+        # u(n+4) - u(n+2) - u(n) = 0: gaps at n-1 and n-3.
+        "a(n) = a(n-2) + a(n-4)": RecurrenceClaim([(-1,), (0,), (-1,), (0,), (1,)]),
+        # u(n+2) - 2u(n) = 0: a gap at n-1.
+        "a(n) = 2*a(n-2)": RecurrenceClaim([(-2,), (0,), (1,)]),
+    }
+    for line, expected in gapped.items():
+        parsed = RecurrenceClaim.from_text(line)
+        assert parsed is not None, line
+        assert parsed.claim_hash == expected.claim_hash, line
+        assert parsed.claim_hash != fibonacci.claim_hash, line
+        assert parsed.order == expected.order, line
+    # Distinct gapped lines stay distinct from each other, too.
+    hashes = {RecurrenceClaim.from_text(line).claim_hash for line in gapped}
+    assert len(hashes) == len(gapped)
+
+
+def test_a_gapped_recurrence_confirms_against_its_own_data() -> None:
+    """The false red the gap collapse caused, end to end.
+
+    Padovan-like: a(n) = a(n-1) + a(n-3).  Read as Fibonacci it does not
+    reproduce the entry's terms, so the data guard threw the whole statement
+    away rather than record a wrong one.
+    """
+    terms = [1, 1, 1]
+    while len(terms) < 16:
+        terms.append(terms[-1] + terms[-3])
+    entry = OeisEntry("A000930", terms=terms, statements=["a(n) = a(n-1) + a(n-3)."])
+    recurrences = entry.recurrences()
+    assert len(recurrences) == 1
+    assert entry.unusable_statements() == ()
+    assert recurrences[0].claim.order == 3
+
+
+def test_hedges_oeis_actually_writes_are_recognised() -> None:
+    """ "Conjecture" is not the only way a contributor says "unproved"."""
+    hedged = [
+        "It appears that a(n) = a(n-1) + a(n-2).",
+        "It seems that a(n) = 2*a(n-1).",
+        "Probably a(n) = a(n-1) + a(n-3).",
+        "This is believed to hold: a(n) = a(n-1) + a(n-2).",
+        "Presumably a(n) = a(n-1) + a(n-2).",
+        "Observed: a(n) = a(n-1) + a(n-2).",
+        "a(n) = a(n-1) + a(n-2), verified up to n = 1000.",
+        # The four that already worked, so widening cannot have dropped them.
+        "Conjecture: a(n) = a(n-1) + a(n-2).",
+        "Empirical g.f.: a(n) = a(n-1) + a(n-2).",
+        "Apparently a(n) = a(n-1) + a(n-2).",
+        "Unproved: a(n) = a(n-1) + a(n-2).",
+    ]
+    for line in hedged:
+        assert novelty._HEDGE_RE.search(line), line
+    for line in [
+        "D-finite with recurrence: n*a(n) + 2*(1-2*n)*a(n-1)=0.",
+        "a(n) = a(n-1) + a(n-2).",
+    ]:
+        assert not novelty._HEDGE_RE.search(line), line
+
+
 def test_a_parsed_recurrence_is_checked_against_the_entrys_own_data() -> None:
     """A line that does not reproduce the entry's terms is not indexed.
 
