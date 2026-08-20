@@ -18,6 +18,11 @@ Three pieces, in order:
    (:class:`OeisCache` offline, :class:`OeisWeb` when explicitly opted into),
    returning a :class:`NoveltyVerdict`.
 
+:class:`QRecurrenceClaim` is (1) and (2) for a ``q``-recurrence, whose
+coefficients are Laurent polynomials in ``q`` and ``q^n`` and so are not
+polynomials in ``n`` at all. No source here can state one, which
+:func:`check_novelty` reports as *unavailable* rather than as a negative.
+
 What a negative verdict is allowed to claim
 -------------------------------------------
 
@@ -33,6 +38,15 @@ therefore three-valued in the manner of :func:`alkahest.relation_confidence`'s
   whether it states it as a theorem or as a conjecture).
 * ``False`` — the sources searched do not state it. Not "novel".
 * ``None``  — no source could answer. Never a pass.
+
+Two things feed that honesty and are easy to get wrong, so they are stated
+here as well as at their definitions. A ``terms=`` search of OEIS is **paged**:
+``fmt=json`` returns at most ten results with no total count, so a full page is
+not an exhaustive answer and :class:`OeisWeb` keeps asking until it sees a short
+one or gives up and says ``exhaustive=False``. And the *terms* a caller looks a
+claim up by are **checked against the claim** — a claim that does not reproduce
+them was never about the sequence that was searched for, and
+:attr:`NoveltyVerdict.terms_check` says so.
 
 There is deliberately no ``novel`` attribute anywhere in this module, and
 ``bool(verdict)`` raises rather than silently reading ``True``, because
@@ -63,8 +77,10 @@ Being a good citizen against oeis.org
 :class:`OeisWeb` is opt-in, never constructed by default, serves from its cache
 before it touches the network, sleeps between requests, and returns
 ``unavailable`` rather than raising when the network is not there. **No test in
-this repository requires the network**; the offline path is
-:class:`OeisCache`, whose fixtures are recorded once and committed. OEIS data
+this repository requires the network**: the offline path is :class:`OeisCache`,
+whose fixtures are recorded once and committed, and the two tests that do
+construct an :class:`OeisWeb` — for the paging in :meth:`OeisWeb.lookup` —
+replace its transport with recorded pages. OEIS data
 is © The OEIS Foundation Inc., licensed CC BY-NC-SA 4.0 — a cache written by
 this module records that in the file.
 """
@@ -90,11 +106,13 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 __all__ = [
     "NOVELTY_STATUSES",
     "STATUS_MEANINGS",
+    "TERMS_CHECKS",
     "NoveltyMatch",
     "NoveltyVerdict",
     "OeisCache",
     "OeisEntry",
     "OeisWeb",
+    "QRecurrenceClaim",
     "RecordedRecurrence",
     "RecurrenceClaim",
     "SourceAnswer",
@@ -120,8 +138,12 @@ STATUS_MEANINGS = {
     "unavailable": ("no source could answer; nothing was established either way"),
 }
 
+#: Every answer :attr:`NoveltyVerdict.terms_check` can give.
+TERMS_CHECKS = ("holds", "fails", "not_checked")
+
 #: Trailing windows of the entry's own data a parsed recurrence must satisfy
-#: before it is believed to be what the formula line meant.
+#: before it is believed to be what the formula line meant.  The same rule
+#: re-checks the caller's own claim against the terms it looked it up by.
 _MIN_CONFIRMATIONS = 3
 
 # ---------------------------------------------------------------------------
@@ -236,6 +258,173 @@ def _p_text(a: tuple) -> str:
             parts.append(f"-{monomial}")
         else:
             parts.append(f"{c}*{monomial}")
+    body = parts[0]
+    for part in parts[1:]:
+        body += f" - {part[1:]}" if part.startswith("-") else f" + {part}"
+    return body
+
+
+# ---------------------------------------------------------------------------
+# Laurent polynomials over ℚ in two variables, `q` and `Q = q^n`.
+#
+# This is what a `q`-recurrence coefficient is: `q_zeilberger` returns
+# `1 + q*q^n - q*q^(2*n) - q^2*q^(3*n)`, which is neither a polynomial in `n`
+# nor one in `q` alone.  A term is a dict entry `(i, j) -> c` for `c*q^i*Q^j`,
+# with `i` and `j` allowed to be negative; the zero polynomial is `{}`.
+# ---------------------------------------------------------------------------
+
+
+def _q_trim(terms: dict) -> dict:
+    return {m: c for m, c in terms.items() if c}
+
+
+def _q_add(a: dict, b: dict) -> dict:
+    out = dict(a)
+    for m, c in b.items():
+        out[m] = out.get(m, Fraction(0)) + c
+    return _q_trim(out)
+
+
+def _q_mul(a: dict, b: dict) -> dict:
+    out: dict = {}
+    for (i, j), x in a.items():
+        for (k, e), y in b.items():
+            m = (i + k, j + e)
+            out[m] = out.get(m, Fraction(0)) + x * y
+    return _q_trim(out)
+
+
+def _q_pow(a: dict, e: int) -> dict:
+    out = {(0, 0): Fraction(1)}
+    for _ in range(e):
+        out = _q_mul(out, a)
+    return out
+
+
+def _q_substitute_shift(a: dict, s: int) -> dict:
+    """``a`` with ``n → n + s``, i.e. ``Q → q^s·Q``."""
+    if s == 0:
+        return dict(a)
+    return {(i + s * j, j): c for (i, j), c in a.items()}
+
+
+def _q_monomial_content(polys: Sequence[dict]) -> tuple:
+    """The largest ``(q^i, Q^j)`` dividing every term of every polynomial."""
+    live = [m for p in polys for m in p]
+    if not live:
+        return (0, 0)
+    return (min(i for i, _ in live), min(j for _, j in live))
+
+
+def _q_columns(a: dict) -> list:
+    """*a* as a polynomial in ``Q`` whose coefficients are polynomials in ``q``.
+
+    Requires non-negative exponents — divide the monomial content out first.
+    A list indexed by the power of ``Q``, each entry a ``_p_*`` tuple.
+    """
+    if not a:
+        return []
+    columns: list = [()] * (max(j for _, j in a) + 1)
+    for (i, j), c in a.items():
+        column = list(columns[j]) + [Fraction(0)] * (i + 1 - len(columns[j]))
+        column[i] += c
+        columns[j] = _trim(column)
+    return columns
+
+
+def _q_from_columns(columns: Sequence[tuple]) -> dict:
+    return _q_trim(
+        {(i, j): c for j, column in enumerate(columns) for i, c in enumerate(column) if c}
+    )
+
+
+def _q_col_trim(columns: Sequence[tuple]) -> list:
+    out = list(columns)
+    while out and not out[-1]:
+        out.pop()
+    return out
+
+
+def _q_col_content(columns: Sequence[tuple]) -> tuple:
+    common: tuple = ()
+    for column in columns:
+        common = _p_gcd(common, column)
+    return common
+
+
+def _q_col_primitive(columns: Sequence[tuple]) -> list:
+    common = _q_col_content(columns)
+    if not common:
+        return list(columns)
+    return [_p_divmod(column, common)[0] for column in columns]
+
+
+def _q_col_prem(a: Sequence[tuple], b: Sequence[tuple]) -> list:
+    """Pseudo-remainder of *a* by *b* in ``ℚ[q][Q]``."""
+    rem = _q_col_trim(a)
+    b = _q_col_trim(b)
+    while rem and len(rem) >= len(b):
+        shift = len(rem) - len(b)
+        lead_a, lead_b = rem[-1], b[-1]
+        scaled = [_p_mul(c, lead_b) for c in rem]
+        for i, c in enumerate(b):
+            scaled[shift + i] = _p_sub(scaled[shift + i], _p_mul(lead_a, c))
+        rem = _q_col_trim(scaled)
+    return rem
+
+
+def _q_col_gcd(a: Sequence[tuple], b: Sequence[tuple]) -> list:
+    """gcd in ``ℚ[q][Q]`` by the primitive Euclidean algorithm."""
+    a, b = _q_col_trim(a), _q_col_trim(b)
+    if not a:
+        return list(b)
+    if not b:
+        return list(a)
+    content = _p_gcd(_q_col_content(a), _q_col_content(b))
+    a, b = _q_col_primitive(a), _q_col_primitive(b)
+    while b:
+        a, b = b, _q_col_primitive(_q_col_prem(a, b))
+    return [_p_mul(column, content) for column in a]
+
+
+def _q_col_divexact(a: Sequence[tuple], b: Sequence[tuple]) -> list | None:
+    """``a / b`` in ``ℚ[q][Q]`` when it is exact, else ``None``."""
+    rem = _q_col_trim(a)
+    b = _q_col_trim(b)
+    quotient: list = [()] * max(1, len(rem) - len(b) + 1)
+    while rem and len(rem) >= len(b):
+        shift = len(rem) - len(b)
+        factor, residue = _p_divmod(rem[-1], b[-1])
+        if residue or not factor:
+            return None
+        quotient[shift] = factor
+        scaled = list(rem)
+        for i, c in enumerate(b):
+            scaled[shift + i] = _p_sub(scaled[shift + i], _p_mul(factor, c))
+        rem = _q_col_trim(scaled)
+    return None if rem else _q_col_trim(quotient)
+
+
+def _q_text(a: dict) -> str:
+    """Canonical text for a ``q``-coefficient: descending in ``q^n``, then ``q``."""
+    if not a:
+        return "0"
+    parts = []
+    for i, j in sorted(a, key=lambda m: (m[1], m[0]), reverse=True):
+        c = a[(i, j)]
+        factors = []
+        if i:
+            factors.append("q" if i == 1 else f"q^{i}")
+        if j:
+            factors.append("q^n" if j == 1 else f"q^({j}*n)")
+        if not factors:
+            parts.append(str(c))
+        elif c == 1:
+            parts.append("*".join(factors))
+        elif c == -1:
+            parts.append("-" + "*".join(factors))
+        else:
+            parts.append("*".join([str(c), *factors]))
     body = parts[0]
     for part in parts[1:]:
         body += f" - {part[1:]}" if part.startswith("-") else f" + {part}"
@@ -396,9 +585,10 @@ def _poly_from_expr(expr: Any, var: str) -> tuple:
         return _trim((Fraction(int(node[1]), int(node[2])),))
     if head == "symbol":
         if node[1] != var:
+            hint = " — a q-recurrence is a QRecurrenceClaim, not this one" if node[1] == "q" else ""
             raise ValueError(
                 f"coefficient mentions the symbol {node[1]!r}, but a recurrence "
-                f"coefficient must be a polynomial in {var!r} alone"
+                f"coefficient must be a polynomial in {var!r} alone{hint}"
             )
         return (Fraction(0), Fraction(1))
     if head == "add":
@@ -523,19 +713,29 @@ class RecurrenceClaim:
         return cls(list(rec) if coeffs is None else list(coeffs), var=var)
 
     @classmethod
-    def from_text(cls, text: str) -> RecurrenceClaim | None:
+    def from_text(cls, text: str, *, names: Sequence[str] = ()) -> RecurrenceClaim | None:
         """Parse one prose formula line, e.g. an OEIS ``a(n) = …`` statement.
 
+        The sequence may be written ``a(n)``, as any single letter (``F(n) =
+        F(n-1) + F(n-2)`` is how A000045 states the Fibonacci recurrence, in its
+        *name*), or under any identifier in *names* — pass the entry's own
+        A-number there so a line that spells it out is read as being about
+        itself. Whichever is used, **one** line may only name one sequence: a
+        relation between two of them is not a recurrence for either.
+
         Returns ``None`` — never a guess — when the line is not a homogeneous
-        linear recurrence with polynomial coefficients in the single sequence
-        ``a``: a sum, a generating function, a nonlinear relation, a reference
-        to another sequence, an inhomogeneous relation, or a statement the
-        parser simply does not cover. Callers that need to know how often that
-        happened should count the ``None``s; :meth:`NoveltyVerdict.report`
-        does.
+        linear recurrence with polynomial coefficients in a single sequence: a
+        sum, a generating function, a nonlinear relation, a reference to another
+        sequence, an inhomogeneous relation, or a statement the parser simply
+        does not cover. Callers that need to know how often that happened should
+        count the ``None``s; :meth:`NoveltyVerdict.report` does.
+
+        :param names: extra identifiers that denote the sequence the line is
+            about, e.g. ``names=("A000045",)``.
         """
+        own = frozenset({"a", *names})
         try:
-            relation = _parse_relation(text)
+            relation = _parse_relation(text, own)
         except _Unsupported:
             return None
         if relation is None:
@@ -544,6 +744,16 @@ class RecurrenceClaim:
             return cls([relation[j] for j in sorted(relation)], offset=min(relation))
         except ValueError:
             return None
+
+    @property
+    def claim_kind(self) -> str:
+        """``"recurrence"`` — what a source must be able to state to match this.
+
+        See :class:`QRecurrenceClaim`, whose kind is ``"q-recurrence"``; a
+        source that cannot state a kind is ``unavailable`` for it, never
+        ``not_found``.
+        """
+        return "recurrence"
 
     @property
     def order(self) -> int:
@@ -646,6 +856,292 @@ class RecurrenceClaim:
 
 
 # ---------------------------------------------------------------------------
+# The `q`-analogue of the claim.
+# ---------------------------------------------------------------------------
+
+
+def _q_exponent(expr: Any, var: str) -> tuple | None:
+    """``(d, c)`` for an exponent ``d + c·n`` with integer ``d`` and ``c``."""
+    try:
+        poly = _poly_from_expr(expr, var)
+    except (ValueError, _Unsupported):
+        return None
+    if len(poly) > 2:
+        return None
+    padded = [poly[i] if i < len(poly) else Fraction(0) for i in range(2)]
+    if any(c.denominator != 1 for c in padded):
+        return None
+    return int(padded[0]), int(padded[1])
+
+
+def _qpoly_from_expr(expr: Any, qname: str, var: str) -> tuple:
+    """``(numerator, denominator)`` in ``ℚ[q^±1, Q^±1]``, ``Q = q^n``, exactly."""
+    node = expr.node()
+    head = node[0]
+    one = {(0, 0): Fraction(1)}
+    if head == "integer":
+        return _q_trim({(0, 0): Fraction(int(node[1]))}), one
+    if head == "rational":
+        return _q_trim({(0, 0): Fraction(int(node[1]), int(node[2]))}), one
+    if head == "symbol":
+        if node[1] == qname:
+            return {(1, 0): Fraction(1)}, one
+        raise ValueError(
+            f"coefficient mentions the symbol {node[1]!r}, but a q-recurrence "
+            f"coefficient must be a rational function of {qname!r} and "
+            f"{qname}^{var}"
+        )
+    if head == "add":
+        num: dict = {}
+        den = one
+        for child in node[1]:
+            other_num, other_den = _qpoly_from_expr(child, qname, var)
+            num = _q_add(_q_mul(num, other_den), _q_mul(other_num, den))
+            den = _q_mul(den, other_den)
+        return num, den
+    if head == "mul":
+        num, den = one, one
+        for child in node[1]:
+            other_num, other_den = _qpoly_from_expr(child, qname, var)
+            num, den = _q_mul(num, other_num), _q_mul(den, other_den)
+        return num, den
+    if head == "pow":
+        exponent = _q_exponent(node[2], var)
+        if exponent is None:
+            raise ValueError(
+                f"{expr} is not a rational function of {qname!r} and {qname}^{var}: "
+                f"an exponent must be an integer or an integer multiple of {var!r}"
+            )
+        offset, slope = exponent
+        base = node[1].node()
+        if slope:
+            if base[0] != "symbol" or base[1] != qname:
+                raise ValueError(
+                    f"{expr} raises something other than {qname!r} to a power in {var}"
+                )
+            return {(offset, slope): Fraction(1)}, one
+        num, den = _qpoly_from_expr(node[1], qname, var)
+        if offset < 0:
+            num, den, offset = den, num, -offset
+        if not num:
+            raise ValueError(f"{expr} divides by zero")
+        return _q_pow(num, offset), _q_pow(den, offset)
+    raise ValueError(f"{expr} is not a rational function of {qname!r} and {qname}^{var}")
+
+
+def _q_coerce(value: Any, qname: str | None, var: str | None) -> tuple:
+    """One ``q``-coefficient, from an ``Expr`` or a ``{(i, j): rational}`` map."""
+    if hasattr(value, "node"):
+        if qname is None or var is None:
+            raise TypeError(
+                "coefficients given as Expr need both index variables: pass "
+                "var=n (the index) and q=q (the base), the two symbols a "
+                "q-recurrence coefficient is built from"
+            )
+        return _qpoly_from_expr(value, qname, var)
+    one = {(0, 0): Fraction(1)}
+    if isinstance(value, (int, Fraction)):
+        return _q_trim({(0, 0): Fraction(value)}), one
+    return _q_trim({(int(i), int(j)): Fraction(c) for (i, j), c in dict(value).items()}), one
+
+
+def _q_normalise(shifts: dict) -> tuple:
+    """Put ``Σ_j c_j(q, q^n)·u(n+j) = 0`` into normal form.
+
+    The steps are those of :func:`_normalise`, read in ``ℚ[q^±1, Q^±1]``
+    instead of ``ℚ[n]``: clear the coefficients' denominators, move the window
+    to ``u(n)`` — which acts on the coefficients, since ``n → n − low`` sends
+    ``Q`` to ``q^{−low}·Q`` — divide out the common monomial and the common
+    polynomial factor, clear rational denominators and the integer content, and
+    fix the sign.
+    """
+    keys = sorted(shifts)
+    numerators = {}
+    for j in keys:
+        product = shifts[j][0]
+        for k in keys:
+            if k != j:
+                product = _q_mul(product, shifts[k][1])
+        numerators[j] = product
+    live = {j: p for j, p in numerators.items() if p}
+    if len(live) < 2:
+        raise ValueError(
+            "a q-recurrence claim needs at least two sequence terms with "
+            f"nonzero coefficients, got {len(live)}"
+        )
+    low, high = min(live), max(live)
+    polys = [_q_substitute_shift(live.get(low + i, {}), -low) for i in range(high - low + 1)]
+    shift_i, shift_j = _q_monomial_content(polys)
+    polys = [{(i - shift_i, j - shift_j): c for (i, j), c in p.items()} for p in polys]
+    columns = [_q_columns(p) for p in polys]
+    common: list = []
+    for column in columns:
+        common = _q_col_gcd(common, column)
+    if len(common) > 1 or (common and len(common[0]) > 1):
+        divided = [_q_col_divexact(column, common) for column in columns]
+        if all(d is not None for d in divided):
+            columns = divided
+    polys = [_q_from_columns(column) for column in columns]
+    multiplier = 1
+    for p in polys:
+        for c in p.values():
+            multiplier = multiplier * c.denominator // gcd(multiplier, c.denominator)
+    integral = [{m: int(c * multiplier) for m, c in p.items()} for p in polys]
+    content = 0
+    for p in integral:
+        for c in p.values():
+            content = gcd(content, abs(c))
+    if content > 1:
+        integral = [{m: c // content for m, c in p.items()} for p in integral]
+    for p in integral:
+        if not p:
+            continue
+        if p[max(p, key=lambda m: (m[1], m[0]))] < 0:
+            integral = [{m: -c for m, c in other.items()} for other in integral]
+        break
+    return tuple(
+        tuple(sorted(p.items(), key=lambda item: (item[0][1], item[0][0]))) for p in integral
+    )
+
+
+class QRecurrenceClaim:
+    """A ``q``-recurrence, in a normal form two presentations share.
+
+    The claim is ``Σ_i c_i(q, q^n)·u(n+i) = 0`` — what
+    :func:`alkahest.experimental.q_zeilberger` produces, whose coefficients are
+    Laurent polynomials in ``q`` and ``q^n`` over ``ℚ`` and are therefore not
+    polynomials in ``n`` at all. :class:`RecurrenceClaim` refuses them
+    (*"coefficient mentions the symbol 'q'"*), which left every ``q``-result
+    with no route into :func:`check_novelty`; this is that route.
+
+    Coefficients may be given as :class:`alkahest.Expr` (pass both ``var=n`` and
+    ``q=q``) or as ``{(i, j): rational}`` maps, where ``(i, j)`` is the monomial
+    ``q^i·(q^n)^j`` and either exponent may be negative. Rational functions are
+    accepted and cleared; the normal form is always Laurent-polynomial.
+
+    What the normal form quotients out is exactly what :attr:`RecurrenceClaim`
+    quotients out, read over ``ℚ[q^±1, (q^n)^±1]``: scale, index shift — which
+    here acts on the coefficients, because ``n → n+1`` sends ``q^n`` to
+    ``q·q^n`` — a common monomial or polynomial factor, and zero padding.
+
+    :attr:`claim_hash` is tagged ``q-recurrence/1`` where
+    :class:`RecurrenceClaim`'s is tagged ``recurrence/1``, so the two can share
+    a ``set`` without colliding even when the coefficients look alike.
+
+    **No source in this module can state a ``q``-recurrence.** OEIS indexes
+    integer sequences, and the formula parser reads ``ℚ[n]`` coefficients only,
+    so :func:`check_novelty` reports every OEIS source as *unavailable* for a
+    claim of this kind rather than manufacturing a ``not_found`` out of a
+    search that could not have matched. What the class is good for today is the
+    other half of the job: a stable content address a loop can dedupe its own
+    ``q``-output with.
+
+    >>> from alkahest.experimental.novelty import QRecurrenceClaim
+    >>> # (1 - q^n)·u(n) - u(n+1) = 0
+    >>> a = QRecurrenceClaim([{(0, 0): 1, (0, 1): -1}, {(0, 0): -1}])
+    >>> # the same relation about u(n+3), scaled by -2q
+    >>> b = QRecurrenceClaim(
+    ...     [{(1, 0): -2, (4, 1): 2}, {(1, 0): 2}], offset=3)
+    >>> a.claim_hash == b.claim_hash
+    True
+    >>> a.order, a.degree, a.q_degree
+    (1, 1, 0)
+    """
+
+    __slots__ = ("_coefficients", "_hash", "_normal_form")
+
+    def __init__(
+        self,
+        coefficients: Sequence[Any],
+        *,
+        offset: int = 0,
+        var: Any = None,
+        q: Any = None,
+    ):
+        """
+        :param coefficients: ``[c_0, …, c_J]``, the coefficient of ``u(n+offset+i)``.
+            Each an :class:`alkahest.Expr` in *var* and *q*, or a
+            ``{(i, j): rational}`` map for ``Σ c_ij·q^i·(q^n)^j``.
+        :param offset: index of the first coefficient's shift.
+        :param var: the index symbol, required for ``Expr`` coefficients.
+        :param q: the base symbol, required for ``Expr`` coefficients.
+        :raises ValueError: when fewer than two coefficients are nonzero.
+        """
+        name = None if var is None else (var if isinstance(var, str) else var.node()[1])
+        base = None if q is None else (q if isinstance(q, str) else q.node()[1])
+        shifts = {offset + i: _q_coerce(c, base, name) for i, c in enumerate(coefficients)}
+        self._coefficients = _q_normalise(shifts)
+        self._normal_form = "q-recurrence/1 " + " + ".join(
+            f"({_q_text({m: Fraction(c) for m, c in p})})*u(n+{i})"
+            for i, p in enumerate(self._coefficients)
+        )
+        self._hash = _claim_id(self._normal_form, method="q-recurrence")
+
+    @classmethod
+    def from_recurrence(cls, rec: Any, var: Any = None, q: Any = None) -> QRecurrenceClaim:
+        """From a :class:`~alkahest.QZeilbergerCertificate` or a coefficient list.
+
+        Duck-typed on ``.coeffs``, exactly as
+        :meth:`RecurrenceClaim.from_recurrence` is. Both *var* and *q* are
+        required when the coefficients are expressions.
+        """
+        coeffs = getattr(rec, "coeffs", None)
+        return cls(list(rec) if coeffs is None else list(coeffs), var=var, q=q)
+
+    @property
+    def claim_kind(self) -> str:
+        """``"q-recurrence"`` — what a source must be able to state to match this."""
+        return "q-recurrence"
+
+    @property
+    def order(self) -> int:
+        """``J`` — the span of the window in normal form."""
+        return len(self._coefficients) - 1
+
+    @property
+    def degree(self) -> int:
+        """Largest power of ``q^n`` in any coefficient in normal form."""
+        return max((max(j for (_, j), _ in p) for p in self._coefficients if p), default=0)
+
+    @property
+    def q_degree(self) -> int:
+        """Largest power of ``q`` alone in any coefficient in normal form."""
+        return max((max(i for (i, _), _ in p) for p in self._coefficients if p), default=0)
+
+    @property
+    def normal_form(self) -> str:
+        """The canonical text the hash is taken of, tagged ``q-recurrence/1``."""
+        return self._normal_form
+
+    @property
+    def claim_hash(self) -> str:
+        """Content address of :attr:`normal_form`, e.g. ``'clm_9f1c0b2a7d4e5f60'``."""
+        return self._hash
+
+    def coefficients(self) -> tuple:
+        """``(c_0, …, c_J)`` in normal form.
+
+        Each is a tuple of ``((i, j), coefficient)`` pairs for
+        ``coefficient·q^i·(q^n)^j``, ascending in ``j`` then ``i``.
+        """
+        return self._coefficients
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, QRecurrenceClaim):
+            return NotImplemented
+        return self._normal_form == other._normal_form
+
+    def __hash__(self) -> int:
+        return hash(self._normal_form)
+
+    def __repr__(self) -> str:
+        return (
+            f"QRecurrenceClaim(order={self.order}, degree={self.degree}, "
+            f"q_degree={self.q_degree}, claim_hash={self._hash!r})"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Parsing prose formula lines.
 # ---------------------------------------------------------------------------
 
@@ -654,7 +1150,14 @@ _OPERATORS = frozenset("+-*/^")
 _OPENERS = frozenset("([{")
 _CLOSERS = frozenset(")]}")
 #: A statement worth handing to the parser at all: it mentions a shifted term.
-_LOOKS_LIKE_RECURRENCE = re.compile(r"a\(\s*n\s*[-+]\s*\d+\s*\)")
+#: OEIS does not only write ``a(n-1)``. An entry's own definition line names the
+#: sequence after the objects it counts — ``F(n) = F(n-1) + F(n-2)`` is the whole
+#: content of A000045's name — so any single letter counts as a candidate here.
+#: Which of them the parser will accept as a term of *this* sequence is decided
+#: in :class:`_Parser`, not here. An ``A123456(n-1)`` cross-reference is
+#: deliberately *not* a candidate on its own: over the 377-entry sample this
+#: module was measured against it added 256 lines and not one parse.
+_LOOKS_LIKE_RECURRENCE = re.compile(r"\b[A-Za-z]\(\s*n\s*[-+]\s*\d+\s*\)")
 #: OEIS's own hedges. An entry that marks a formula this way is telling you the
 #: recurrence was fitted and never proved — which is the whole reason a novelty
 #: filter over OEIS is worth anything.
@@ -672,17 +1175,34 @@ def _is_word(token: str) -> bool:
     return token[0].isalpha() or token[0] == "_"
 
 
-class _Parser:
-    """Recursive descent over ``+ - * / ^ ( )``, integers, ``n`` and ``a(n±k)``.
+#: Identifiers that may denote *the* sequence a line is about, beyond ``a`` and
+#: whatever the caller adds: any single letter, because OEIS names a sequence
+#: after what it counts (``F`` for Fibonacci, ``L`` for Lucas, ``T``, ``b``).
+#: A multi-letter identifier is never one of these, which is what keeps
+#: ``floor``, ``sqrt``, ``binomial``, ``Sum`` and ``A123456`` out.
+def _is_sequence_name(token: str, own: frozenset) -> bool:
+    return token in own or (len(token) == 1 and token.isalpha())
 
-    Everything else — another sequence's ``A123456(n)``, ``Sum_{…}``, a symbol
+
+class _Parser:
+    """Recursive descent over ``+ - * / ^ ( )``, integers, ``n`` and ``F(n±k)``.
+
+    Everything else — a function that is not a sequence, ``Sum_{…}``, a symbol
     that is not the index — raises :class:`_Unsupported`. Refusing is the point:
     a parser that guesses at prose invents claims that were never made.
+
+    The sequence identifiers a parse used are collected in :attr:`names`, and
+    :func:`_parse_relation` refuses the line unless they all denote the same
+    sequence — so ``a(n) = a(n-1) + A002026(n-1)`` is still refused, and so is
+    ``F(n) = L(n-1) + L(n-2)``, while ``F(n) = F(n-1) + F(n-2)`` is read.
     """
 
-    def __init__(self, tokens: Sequence[str]):
+    def __init__(self, tokens: Sequence[str], own: frozenset = frozenset({"a"})):
         self.tokens = tokens
         self.pos = 0
+        self.own = own
+        #: Sequence identifiers this parse applied to an index.
+        self.names: set = set()
 
     def peek(self) -> str | None:
         return self.tokens[self.pos] if self.pos < len(self.tokens) else None
@@ -698,12 +1218,37 @@ class _Parser:
 
     def term(self) -> _Form:
         node = self.factor()
-        while self.peek() in ("*", "/"):
-            op = self.tokens[self.pos]
-            self.pos += 1
-            rhs = self.factor()
-            node = node * rhs if op == "*" else node / rhs
-        return node
+        while True:
+            if self.peek() in ("*", "/"):
+                op = self.tokens[self.pos]
+                self.pos += 1
+                node = node * self.factor() if op == "*" else node / self.factor()
+            elif self._starts_factor():
+                # Juxtaposition is multiplication: `2a(n-2)`, `(n+1)a(n-1)`.
+                # OEIS's machine-written "D-finite with recurrence" lines always
+                # spell the `*` out, but the hand-written ones do not.
+                node = node * self.factor()
+            else:
+                return node
+
+    def _starts_factor(self) -> bool:
+        """Whether an implicit ``*`` may be read before the next token.
+
+        Only a bracket, a number or a sequence application counts. A bare word
+        never does — ``a(n) = a(n-1) + a(n-2) for n > 2`` must end at ``for``
+        rather than read ``for`` as a factor, and a bare ``n`` is excluded for
+        the same reason: ``, n > 2`` is prose, not a coefficient.
+        """
+        token = self.peek()
+        if token is None:
+            return False
+        if token == "(" or token.isdigit():
+            return True
+        return (
+            _is_sequence_name(token, self.own)
+            and self.pos + 1 < len(self.tokens)
+            and self.tokens[self.pos + 1] == "("
+        )
 
     def factor(self) -> _Form:
         if self.peek() in ("+", "-"):
@@ -732,7 +1277,7 @@ class _Parser:
             return _Form.constant(Fraction(int(token)))
         if token == "n":
             return _Form.variable()
-        if token == "a":
+        if _is_sequence_name(token, self.own):
             if self.peek() != "(":
                 raise _Unsupported("sequence name not applied to an index")
             self.pos += 1
@@ -740,6 +1285,7 @@ class _Parser:
             if self.peek() != ")":
                 raise _Unsupported("unbalanced parenthesis in a sequence index")
             self.pos += 1
+            self.names.add(token)
             return _Form.sequence_term(_shift_of(index))
         raise _Unsupported(f"unsupported token {token!r}")
 
@@ -778,13 +1324,14 @@ def _top_level_equals(tokens: Sequence[str]) -> int | None:
     return None
 
 
-def _parse_all(tokens: Sequence[str]) -> _Form | None:
-    parser = _Parser(tokens)
+def _parse_all(tokens: Sequence[str], own: frozenset) -> tuple | None:
+    """``(form, sequence identifiers used)`` for a whole token run, or ``None``."""
+    parser = _Parser(tokens, own)
     try:
         form = parser.expression()
     except _Unsupported:
         return None
-    return form if parser.pos == len(tokens) else None
+    return (form, parser.names) if parser.pos == len(tokens) else None
 
 
 def _boundary_ok(token: str | None) -> bool:
@@ -804,8 +1351,12 @@ def _boundary_ok(token: str | None) -> bool:
     return _is_word(token) or token in {".", ",", ";", ":", "=", "!"}
 
 
-def _parse_relation(text: str) -> dict | None:
-    """``{shift: coefficient polynomial}`` for a prose linear recurrence, or ``None``."""
+def _parse_relation(text: str, own: frozenset = frozenset({"a"})) -> dict | None:
+    """``{shift: coefficient polynomial}`` for a prose linear recurrence, or ``None``.
+
+    *own* is the set of identifiers known to name the sequence the line is about
+    — ``a`` always, plus the entry's own A-number when there is one.
+    """
     tokens = _tokenise(_clean(text))
     split = _top_level_equals(tokens)
     if split is None:
@@ -814,7 +1365,7 @@ def _parse_relation(text: str) -> dict | None:
     for start in range(split):
         if not _boundary_ok(tokens[start - 1] if start else None):
             continue
-        lhs = _parse_all(tokens[start:split])
+        lhs = _parse_all(tokens[start:split], own)
         if lhs is not None:
             break
     if lhs is None:
@@ -823,12 +1374,17 @@ def _parse_relation(text: str) -> dict | None:
     for stop in range(len(tokens), split, -1):
         if not _boundary_ok(tokens[stop] if stop < len(tokens) else None):
             continue
-        rhs = _parse_all(tokens[split + 1 : stop])
+        rhs = _parse_all(tokens[split + 1 : stop], own)
         if rhs is not None:
             break
     if rhs is None:
         return None
-    form = lhs - rhs
+    used = lhs[1] | rhs[1]
+    if len(used) > 1 and not used <= own:
+        # Two different sequences in one relation: `a(n) = a(n-1) + A002026(n-1)`
+        # is a statement about two sequences, not a recurrence for either.
+        return None
+    form = lhs[0] - rhs[0]
     if form.poly:
         # Inhomogeneous: `a(n) = a(n-1) + 1` is a different kind of claim and
         # is not silently truncated into a homogeneous one.
@@ -876,9 +1432,11 @@ class OeisEntry:
     def from_oeis_json(cls, payload: dict) -> OeisEntry:
         """From one element of ``https://oeis.org/search?…&fmt=json``.
 
-        Only the formula and comment lines that mention a shifted ``a(n±k)``
+        Only the formula and comment lines that mention a shifted sequence term
         are kept: the rest cannot state a recurrence, and a cache that keeps
-        them is a cache nobody commits.
+        them is a cache nobody commits. The entry's ``name`` is stored whole and
+        scanned as a candidate line in its own right — see
+        :meth:`candidate_lines`.
         """
         offset = 0
         raw_offset = str(payload.get("offset", "0")).split(",")[0].strip()
@@ -902,11 +1460,25 @@ class OeisEntry:
             "statements": list(self.statements),
         }
 
+    def candidate_lines(self) -> tuple:
+        """Every line that may state a recurrence: the name, then the statements.
+
+        The **name** is here because that is where OEIS puts the recurrence for
+        the entries that are defined by one: A000045's whole name is *"Fibonacci
+        numbers: F(n) = F(n-1) + F(n-2) with F(0) = 0 and F(1) = 1"*, and a
+        filter that reads only the formula lines cannot find the Fibonacci
+        recurrence in the Fibonacci entry.
+        """
+        name = self.name.strip()
+        if name and _LOOKS_LIKE_RECURRENCE.search(name):
+            return (name, *self.statements)
+        return self.statements
+
     def _scanned(self) -> tuple:
         if self._scan is None:
             usable, unusable = [], []
-            for statement in self.statements:
-                claim = RecurrenceClaim.from_text(statement)
+            for statement in self.candidate_lines():
+                claim = RecurrenceClaim.from_text(statement, names=(self.id,))
                 if claim is None:
                     unusable.append(statement)
                     continue
@@ -933,7 +1505,7 @@ class OeisEntry:
         return self._scanned()[0]
 
     def unusable_statements(self) -> tuple:
-        """Lines that mention ``a(n±k)`` but could not be turned into a claim.
+        """Candidate lines that could not be turned into a claim.
 
         Either the parser does not cover them or they failed the check against
         the entry's own data. They are counted into
@@ -990,6 +1562,13 @@ class OeisCache:
         "Integer Sequences (https://oeis.org), (c) The OEIS Foundation Inc., "
         "licensed CC BY-NC-SA 4.0."
     )
+
+    #: The kinds of claim this source is able to state at all. OEIS indexes
+    #: integer sequences and the formula parser reads ``ℚ[n]`` coefficients, so
+    #: a :class:`QRecurrenceClaim` is not something a search here could match —
+    #: :func:`check_novelty` reads this and reports *unavailable* rather than
+    #: turning a search that could not match into a ``not_found``.
+    CLAIM_KINDS: ClassVar[tuple] = ("recurrence",)
 
     def __init__(self, path: Any = None):
         """:param path: a JSON file to load, if it exists."""
@@ -1129,12 +1708,29 @@ class OeisWeb:
     not there — so an offline run degrades to ``unavailable``, which is the
     honest verdict, rather than to an exception or, far worse, to a negative.
 
-    No test in this repository constructs one. Record a fixture once::
+    **A ``terms=`` search is paged, an ``ids=`` lookup is not.** ``fmt=json``
+    answers a search with a bare list of at most :data:`PAGE_SIZE` results and
+    no total count, so a single full page is not evidence that there is nothing
+    else: the search continues at ``&start=`` until a short page comes back
+    (there is no more) or *max_results* is reached (there may be, and the
+    answer says :attr:`SourceAnswer.exhaustive` is ``False``, which
+    :func:`check_novelty` turns into ``unavailable`` rather than ``not_found``).
+    An ``id:A…`` query asks for named entries and gets exactly them, so it is
+    exhaustive after one request.
+
+    No test in this repository points one at the network. Record a fixture once::
 
         web = OeisWeb(cache=OeisCache())
         web.lookup(ids=["A005259"])
         web.cache.save("tests/data/oeis_novelty_fixture.json")
     """
+
+    #: Results one ``fmt=json`` request returns. OEIS's own page size; the JSON
+    #: form carries no total count, so this is the only signal a search is over.
+    PAGE_SIZE: ClassVar[int] = 10
+
+    #: As :attr:`OeisCache.CLAIM_KINDS` — the same encyclopaedia, live.
+    CLAIM_KINDS: ClassVar[tuple] = ("recurrence",)
 
     #: Shared across instances so several sources cannot bypass the interval.
     _last_request: ClassVar[list] = [0.0]
@@ -1146,7 +1742,7 @@ class OeisWeb:
         min_interval: float = 1.0,
         timeout: float = 30.0,
         user_agent: str = "alkahest-novelty/1.0 (+https://github.com/alkahest-cas/alkahest)",
-        max_results: int = 10,
+        max_results: int = 50,
     ):
         self.cache = cache if cache is not None else OeisCache()
         self.min_interval = float(min_interval)
@@ -1175,7 +1771,7 @@ class OeisWeb:
         )
         if not query:
             return None
-        payload = self._fetch(query)
+        payload, complete = self._fetch_all(query, paged=not ids)
         if payload is None:
             return cached
         entries = []
@@ -1186,15 +1782,50 @@ class OeisWeb:
                 continue
             self.cache.add(entry)
             entries.append(entry)
-        self.cache.record_query(terms=terms, ids=ids, found=[e.id for e in entries])
-        return SourceAnswer(tuple(entries), exhaustive=True)
+        exhaustive = complete and len(payload) <= self.max_results
+        if exhaustive:
+            # Only a complete answer may be recorded as one: the cache reads a
+            # recorded query as "OEIS returned exactly this", and a truncated
+            # page list stored under that key would turn into a false negative
+            # on every later offline run.
+            self.cache.record_query(terms=terms, ids=ids, found=[e.id for e in entries])
+        return SourceAnswer(tuple(entries), exhaustive=exhaustive)
 
-    def _fetch(self, query: str) -> list | None:
+    def _fetch_all(self, query: str, *, paged: bool) -> tuple:
+        """``(rows, complete)`` for *query*; ``(None, False)`` if nothing arrived.
+
+        ``complete`` is ``True`` only when OEIS has been seen to run out of
+        results — a page shorter than :data:`PAGE_SIZE`, or a page that repeats
+        entries already collected (OEIS clamps ``start`` past the end rather
+        than returning nothing). Stopping at *max_results* instead gives
+        ``False``, and so does a request that fails partway through.
+        """
+        rows: list = []
+        seen: set = set()
+        start = 0
+        while True:
+            page = self._fetch(query, start=start)
+            if page is None:
+                return (rows, False) if rows else (None, False)
+            numbered = [(raw, raw.get("number") if isinstance(raw, dict) else None) for raw in page]
+            fresh = [raw for raw, number in numbered if number is None or number not in seen]
+            seen.update(number for _, number in numbered if number is not None)
+            rows.extend(fresh)
+            if not paged or len(page) < self.PAGE_SIZE or not fresh:
+                return rows, True
+            start += len(page)
+            if len(rows) >= self.max_results:
+                return rows, False
+
+    def _fetch(self, query: str, *, start: int = 0) -> list | None:
         self.last_error = None
         wait = self.min_interval - (time.monotonic() - self._last_request[0])
         if wait > 0:
             time.sleep(wait)
-        url = "https://oeis.org/search?" + urllib.parse.urlencode({"q": query, "fmt": "json"})
+        parameters: dict = {"q": query, "fmt": "json"}
+        if start:
+            parameters["start"] = start
+        url = "https://oeis.org/search?" + urllib.parse.urlencode(parameters)
         request = urllib.request.Request(url, headers={"User-Agent": self.user_agent})
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as handle:
@@ -1254,6 +1885,7 @@ class NoveltyVerdict:
         "_entries",
         "_matches",
         "_statements",
+        "_terms_check",
         "_unavailable",
         "_unusable",
     )
@@ -1268,6 +1900,7 @@ class NoveltyVerdict:
         entries: int,
         statements: int,
         unusable: int,
+        terms_check: str = "not_checked",
     ):
         self._claim_hash = claim_hash
         self._matches = tuple(matches)
@@ -1276,6 +1909,7 @@ class NoveltyVerdict:
         self._entries = entries
         self._statements = statements
         self._unusable = unusable
+        self._terms_check = terms_check
 
     @property
     def status(self) -> str:
@@ -1336,6 +1970,27 @@ class NoveltyVerdict:
         return self._unusable
 
     @property
+    def terms_check(self) -> str:
+        """Whether the claim survived the terms it was looked up by.
+
+        One of :data:`TERMS_CHECKS`. ``check_novelty(claim, …, terms=…)`` uses
+        *terms* twice: to identify the sequence to a source, and — since the
+        two are supposed to be about the same sequence — to re-check the claim
+        itself, on the same lenient trailing-window rule a source's own formula
+        line has to pass (:meth:`RecurrenceClaim.confirmations`).
+
+        * ``"holds"`` — the claim reproduces those terms.
+        * ``"fails"`` — it does not. **The lookup was then about a different
+          sequence from the claim**, so nothing it returned bears on the claim;
+          either the claim is wrong, the terms are, or *start* is (see
+          :meth:`RecurrenceClaim.holds_for` for what *start* must denote).
+        * ``"not_checked"`` — no *terms* were given, there were too few of them
+          to fill one window, or the claim is of a kind integer terms cannot
+          check (:class:`QRecurrenceClaim`).
+        """
+        return self._terms_check
+
+    @property
     def means(self) -> str:
         """The one-line gloss of :attr:`status` from :data:`STATUS_MEANINGS`."""
         return STATUS_MEANINGS[self.status]
@@ -1372,6 +2027,7 @@ class NoveltyVerdict:
             "entries_examined": self._entries,
             "statements_compared": self._statements,
             "statements_unusable": self._unusable,
+            "terms_check": self._terms_check,
         }
 
     def __bool__(self) -> bool:
@@ -1385,41 +2041,54 @@ class NoveltyVerdict:
         )
 
     def __repr__(self) -> str:
+        disagreement = ", terms_check='fails'" if self._terms_check == "fails" else ""
         return (
             f"NoveltyVerdict(status={self.status!r}, matches={len(self._matches)}, "
             f"entries_examined={self._entries}, sources_consulted="
-            f"{list(self._consulted)})"
+            f"{list(self._consulted)}{disagreement})"
         )
 
 
 def check_novelty(
-    claim: RecurrenceClaim,
+    claim: RecurrenceClaim | QRecurrenceClaim,
     sources: Sequence[Any],
     *,
     terms: Sequence[int] | None = None,
     ids: Sequence[str] | None = None,
+    start: int = 0,
 ) -> NoveltyVerdict:
     """Look *claim* up in *sources* and report what was found.
 
     :param claim: the normalised claim — build it with
         :meth:`RecurrenceClaim.from_recurrence` from a
         :class:`~alkahest.ZeilbergerCertificate` or a
-        :class:`~alkahest.GuessedRecurrence`.
+        :class:`~alkahest.GuessedRecurrence`, or with
+        :meth:`QRecurrenceClaim.from_recurrence` from a
+        :class:`~alkahest.QZeilbergerCertificate`.
     :param sources: objects with a ``name`` and a
         ``lookup(*, terms=None, ids=None)`` returning a :class:`SourceAnswer`
         or ``None``. :class:`OeisCache` offline, :class:`OeisWeb` live.
         **There is no default**: a check with no source returns
         ``unavailable``, and this module will not quietly reach for the network
-        on your behalf.
+        on your behalf. A source may declare a ``CLAIM_KINDS`` tuple; one that
+        cannot state ``claim.claim_kind`` is reported *unavailable* for it,
+        because a search that could not have matched is not a negative.
     :param terms: exact leading terms of the sequence, to identify it. Give
         enough that the identification is not accidental — ten is plenty for a
-        sequence that grows.
+        sequence that grows. They are **also checked against the claim**: see
+        :attr:`NoveltyVerdict.terms_check`, and *start* below.
     :param ids: source-specific identifiers to check instead, e.g.
         ``["A005259"]``.
+    :param start: the true index of ``terms[0]``, for that cross-check only —
+        it is never sent to a source. Exactly the parameter of
+        :meth:`RecurrenceClaim.holds_for`, and exactly as load-bearing: a
+        recurrence with polynomial coefficients evaluated at the wrong ``n``
+        confirms nothing, so a wrong *start* shows up as
+        ``terms_check == "fails"``.
 
     :returns: a :class:`NoveltyVerdict`. Never raises for a missing source or a
         dead network; those are ``unavailable``.
-    :raises TypeError: when *claim* is not a :class:`RecurrenceClaim`.
+    :raises TypeError: when *claim* is not a claim type of this module.
     :raises ValueError: when neither *terms* nor *ids* is given.
 
     >>> from alkahest.experimental.novelty import (
@@ -1440,22 +2109,28 @@ def check_novelty(
     >>> check_novelty(claim, [], terms=[1, 2, 6, 20]).found is None
     True
     """
-    if not isinstance(claim, RecurrenceClaim):
+    if not isinstance(claim, (RecurrenceClaim, QRecurrenceClaim)):
         raise TypeError(
-            "claim must be a RecurrenceClaim; build one with "
-            "RecurrenceClaim.from_recurrence(certificate, var=n) so that what "
-            "is looked up is the normal form, not one presentation of it"
+            "claim must be a RecurrenceClaim or a QRecurrenceClaim; build one "
+            "with RecurrenceClaim.from_recurrence(certificate, var=n) so that "
+            "what is looked up is the normal form, not one presentation of it"
         )
     if not terms and not ids:
         raise ValueError(
             "give terms= (the sequence's leading terms) or ids= (source "
             "identifiers); there is nothing to look up otherwise"
         )
+    terms_check = _cross_check_terms(claim, terms, start)
     matches, consulted, unavailable = [], [], []
     seen_entries: dict = {}
     statements = unusable = 0
     for source in sources:
         name = getattr(source, "name", type(source).__name__)
+        if claim.claim_kind not in getattr(source, "CLAIM_KINDS", ("recurrence",)):
+            # The source cannot state a claim of this kind at all, so its
+            # silence is not evidence of anything.
+            unavailable.append(name)
+            continue
         answer = source.lookup(terms=terms, ids=ids)
         if answer is None or not answer.exhaustive:
             unavailable.append(name)
@@ -1487,4 +2162,27 @@ def check_novelty(
         entries=len(seen_entries),
         statements=statements,
         unusable=unusable,
+        terms_check=terms_check,
     )
+
+
+def _cross_check_terms(claim: Any, terms: Sequence[int] | None, start: int) -> str:
+    """Re-check *claim* against the terms it is being looked up by.
+
+    ``terms`` drives the search; it is also, by construction, a statement about
+    the same sequence the claim is about, so the two can be held against each
+    other for free. The rule is the lenient one a source's own formula line has
+    to pass in :meth:`OeisEntry.recurrences`: the trailing windows must confirm,
+    because a recurrence is routinely stated only for ``n`` past some initial
+    segment.
+    """
+    if not terms or not isinstance(claim, RecurrenceClaim):
+        return "not_checked"
+    windows = len(terms) - claim.order
+    if windows <= 0:
+        return "not_checked"
+    try:
+        confirmations = claim.confirmations(terms, start=start)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return "not_checked"
+    return "holds" if confirmations >= min(_MIN_CONFIRMATIONS, windows) else "fails"

@@ -2,15 +2,21 @@
 
 Nothing here touches the network. The OEIS half runs against
 ``tests/data/oeis_novelty_fixture.json``, a cache recorded once from
-https://oeis.org (© The OEIS Foundation Inc., CC BY-NC-SA 4.0) and committed;
-:class:`~alkahest.experimental.novelty.OeisWeb` is never constructed by a test.
+https://oeis.org (© The OEIS Foundation Inc., CC BY-NC-SA 4.0) and committed.
 To re-record it::
 
     from alkahest.experimental.novelty import OeisCache, OeisWeb
-    web = OeisWeb(cache=OeisCache(), min_interval=1.5, max_results=8)
+    web = OeisWeb(cache=OeisCache(), min_interval=1.5)
     for terms in (...):        # the exact term lists the tests query with
         web.lookup(terms=terms)
+    web.lookup(ids=["A000045"])
     web.cache.save("tests/data/oeis_novelty_fixture.json")
+
+:class:`~alkahest.experimental.novelty.OeisWeb` *is* constructed, by the paging
+tests only, and never with a live transport: ``urlopen`` is replaced with one
+that serves :data:`PAGING_FIXTURE`, the recorded raw pages, so that what a full
+result page means — and does not mean — is covered offline like everything
+else.
 
 The recorded queries matter as much as the recorded entries: a cache that only
 stores hits cannot tell "OEIS was asked and had nothing" from "nobody asked",
@@ -20,7 +26,9 @@ prevent.
 
 from __future__ import annotations
 
+import json
 import math
+import urllib.parse
 from fractions import Fraction
 from pathlib import Path
 
@@ -31,11 +39,18 @@ from alkahest.experimental.novelty import (
     NoveltyVerdict,
     OeisCache,
     OeisEntry,
+    OeisWeb,
+    QRecurrenceClaim,
     RecurrenceClaim,
     check_novelty,
 )
 
 FIXTURE = Path(__file__).resolve().parent / "data" / "oeis_novelty_fixture.json"
+#: Raw `search?...&fmt=json` pages, keyed `"query|start"`, recorded once from
+#: oeis.org.  `OeisWeb` is exercised against these through a fake transport, so
+#: the paging behaviour is tested without the network the module promises never
+#: to need.
+PAGING_FIXTURE = Path(__file__).resolve().parent / "data" / "oeis_paging_fixture.json"
 
 # ---------------------------------------------------------------------------
 # The sequences this project has already certified recurrences for, computed
@@ -471,6 +486,7 @@ def test_report_carries_the_scope_of_the_search(cache: OeisCache) -> None:
         "entries_examined",
         "statements_compared",
         "statements_unusable",
+        "terms_check",
     }
     assert report["sources_consulted"] == ["oeis-cache"]
     # OEIS says a great deal this parser cannot read, and the count of what it
@@ -520,7 +536,14 @@ def test_web_source_is_opt_in_and_never_default() -> None:
 def test_experimental_exports() -> None:
     from alkahest import experimental
 
-    for name in ("RecurrenceClaim", "NoveltyVerdict", "OeisCache", "OeisWeb", "check_novelty"):
+    for name in (
+        "RecurrenceClaim",
+        "QRecurrenceClaim",
+        "NoveltyVerdict",
+        "OeisCache",
+        "OeisWeb",
+        "check_novelty",
+    ):
         assert name in experimental.__all__
         assert hasattr(experimental, name)
     assert "novelty" in experimental.__all__
@@ -530,7 +553,11 @@ def test_experimental_exports() -> None:
 def test_accessor_convention_holds_for_the_new_types() -> None:
     """Zero-argument O(1) scalars are properties; collections are methods."""
     for cls, scalars, collections in (
-        (RecurrenceClaim, ("order", "degree", "normal_form", "claim_hash"), ("coefficients",)),
+        (
+            RecurrenceClaim,
+            ("order", "degree", "normal_form", "claim_hash", "claim_kind"),
+            ("coefficients",),
+        ),
         (
             NoveltyVerdict,
             (
@@ -542,11 +569,21 @@ def test_accessor_convention_holds_for_the_new_types() -> None:
                 "statements_compared",
                 "statements_unusable",
                 "means",
+                "terms_check",
             ),
             ("matches", "sources_consulted", "sources_unavailable", "report"),
         ),
+        (
+            QRecurrenceClaim,
+            ("order", "degree", "q_degree", "normal_form", "claim_hash", "claim_kind"),
+            ("coefficients",),
+        ),
         (OeisCache, ("name", "n_entries", "n_queries"), ("lookup", "save", "load", "add")),
-        (OeisEntry, (), ("recurrences", "unusable_statements", "to_json")),
+        (
+            OeisEntry,
+            (),
+            ("recurrences", "unusable_statements", "candidate_lines", "to_json"),
+        ),
     ):
         for name in scalars:
             assert isinstance(inspect_static(cls, name), property), f"{cls.__name__}.{name}"
@@ -559,3 +596,331 @@ def inspect_static(cls: type, name: str) -> object:
     import inspect
 
     return inspect.getattr_static(cls, name)
+
+
+# ---------------------------------------------------------------------------
+# 6. The coverage the filter actually has (issues #23, #24, #25, #26q).
+# ---------------------------------------------------------------------------
+
+#: The Fibonacci recurrence, `u(n+2) = u(n+1) + u(n)`, as a claim.
+FIBONACCI = ((-1,), (-1,), (1,))
+
+
+def test_the_fibonacci_recurrence_is_found_in_the_fibonacci_entry(cache: OeisCache) -> None:
+    """#24. A filter that cannot find this clears almost anything.
+
+    A000045 states its recurrence in its **name** — ``Fibonacci numbers: F(n) =
+    F(n-1) + F(n-2)`` — and nowhere in the formula lines the parser used to be
+    pointed at, so the whole entry came back with zero usable statements and the
+    verdict was ``not_found``: "not in the sources searched", read by a loop
+    author as novelty.
+    """
+    claim = RecurrenceClaim(FIBONACCI)
+    verdict = check_novelty(claim, [cache], ids=["A000045"])
+    assert verdict.status == "recorded", verdict.report()
+    assert verdict.found is True
+    assert verdict.hedged is False, "the name of an entry is not a conjecture"
+    assert verdict.statements_compared > 0
+    assert {m.entry for m in verdict.matches()} == {"A000045"}
+    assert any(m.statement.startswith("Fibonacci numbers:") for m in verdict.matches())
+
+
+def test_the_name_of_an_entry_is_a_candidate_line(cache: OeisCache) -> None:
+    entry = cache.lookup(ids=["A000045"]).entries[0]
+    assert entry.candidate_lines()[0] == entry.name
+    assert entry.candidate_lines()[1:] == entry.statements
+    assert RecurrenceClaim.from_text(entry.name).claim_hash == RecurrenceClaim(FIBONACCI).claim_hash
+
+    # A name that states nothing is not turned into a candidate.
+    plain = OeisEntry("A000027", "The positive integers.", terms=list(range(1, 20)))
+    assert plain.candidate_lines() == ()
+
+
+@pytest.mark.parametrize(
+    ("line", "why"),
+    [
+        (
+            "Fibonacci numbers: F(n) = F(n-1) + F(n-2) with F(0) = 0 and F(1) = 1.",
+            "the sequence under the letter it is named for, in an entry's name",
+        ),
+        ("a(n) = 2a(n-2) + a(n-3), n > 2.", "implicit multiplication"),
+        ("L(n) = L(n-1) + L(n-2).", "another single letter"),
+        ("a(n) = a(n-1) + A000045(n-2).", "the entry's own A-number spelled out"),
+    ],
+)
+def test_parses_the_other_notations_oeis_uses(line: str, why: str) -> None:
+    assert RecurrenceClaim.from_text(line, names=("A000045",)) is not None, why
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Two sequences in one relation is not a recurrence for either of them,
+        # whichever way they are spelled.
+        "F(n) = L(n-1) + L(n-2).",
+        "a(n) = a(n-1) + A002026(n-1). - _R. J. Mathar_, Jul 25 2017",
+        "a(n) = 2a(n-1) + 3b(n-2).",
+        # A function that is not a sequence must not become one.
+        "a(n) = floor(a(n-1)*phi).",
+        # Two indices is a triangle, not a sequence; `A(x)` is a generating
+        # function, and `x` is not the running index.
+        "T(n,k) = T(n-1,k) + T(n-1,k-1).",
+        "A(x) = 1 + x*A(x)^2.",
+    ],
+)
+def test_the_widened_parser_still_refuses_what_it_should(line: str) -> None:
+    assert RecurrenceClaim.from_text(line, names=("A000045",)) is None, line
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        # Prose after the formula is prose, not a factor: reading `n > 2` as an
+        # implicit multiplication would invent `(a(n-1) + a(n-2))*n`, a claim
+        # nobody made, and reading `for` as one would invent a different one.
+        "a(n) = a(n-1) + a(n-2) for n > 2, with a(0) = 0.",
+        "a(n) = a(n-1) + a(n-2), n >= 2.",
+        "F(n) = F(n-1) + F(n-2) with F(0) = 0 and F(1) = 1.",
+    ],
+)
+def test_implicit_multiplication_does_not_swallow_the_prose_after_a_formula(line: str) -> None:
+    claim = RecurrenceClaim.from_text(line)
+    assert claim is not None, line
+    assert claim.claim_hash == RecurrenceClaim(FIBONACCI).claim_hash, claim.normal_form
+
+
+def test_a_single_letter_sequence_is_still_held_to_the_entrys_own_data() -> None:
+    """The letter is not trusted; the data is.
+
+    ``b(n) = b(n-1) + b(n-2)`` in a comment may be about an auxiliary sequence,
+    so what licenses indexing it is the same thing that licenses an ``a(n)``
+    line: it has to reproduce the terms the entry ships with.
+    """
+    line = "Let b(n) = b(n-1) + b(n-2), with b(0) = 0, b(1) = 1."
+    fibonacci = OeisEntry("A000045", terms=[0, 1, 1, 2, 3, 5, 8, 13, 21, 34], statements=[line])
+    assert len(fibonacci.recurrences()) == 1
+
+    elsewhere = OeisEntry("A000079", terms=[1, 2, 4, 8, 16, 32, 64, 128], statements=[line])
+    assert elsewhere.recurrences() == ()
+    assert len(elsewhere.unusable_statements()) == 1
+
+
+# ---------------------------------------------------------------------------
+# Paging (#23), against recorded pages through a fake transport.
+# ---------------------------------------------------------------------------
+
+
+class _RecordedResponse:
+    """The two methods :class:`OeisWeb` uses of a ``urlopen`` result."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> _RecordedResponse:
+        return self
+
+    def __exit__(self, *exception: object) -> bool:
+        return False
+
+
+@pytest.fixture
+def oeis_transport(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Serve :data:`PAGING_FIXTURE`; return the list of ``"query|start"`` asked for."""
+    pages = json.loads(PAGING_FIXTURE.read_text(encoding="utf-8"))["pages"]
+    asked: list[str] = []
+
+    def urlopen(request: object, timeout: float | None = None) -> _RecordedResponse:
+        parameters = urllib.parse.parse_qs(urllib.parse.urlparse(request.full_url).query)
+        key = f"{parameters['q'][0]}|{int(parameters.get('start', ['0'])[0])}"
+        asked.append(key)
+        assert key in pages, f"no page recorded for {key!r}; re-record the fixture"
+        return _RecordedResponse(json.dumps(pages[key]).encode("utf-8"))
+
+    monkeypatch.setattr(novelty.urllib.request, "urlopen", urlopen)
+    return asked
+
+
+def test_a_terms_search_is_paged_and_one_full_page_is_not_exhaustive(
+    oeis_transport: list[str],
+) -> None:
+    """#23. ``fmt=json`` sends ten results and no count, so ten is not "all"."""
+    web = OeisWeb(cache=OeisCache(), min_interval=0.0, max_results=15)
+    answer = web.lookup(terms=[1, 1, 2, 3, 5, 8, 13])
+    assert oeis_transport == ["1,1,2,3,5,8,13|0", "1,1,2,3,5,8,13|10"], (
+        "a full first page must be followed by `&start=10`"
+    )
+    assert answer.exhaustive is False, "OEIS never said these were all of them"
+    assert len(answer.entries) == 15
+
+    # And the partial answer must not be recorded as a complete one, or every
+    # later offline run would read it as a licence to say `not_found`.
+    assert web.cache.lookup(terms=[1, 1, 2, 3, 5, 8, 13]).exhaustive is False
+
+
+def test_an_ids_lookup_stays_exhaustive_after_one_request(oeis_transport: list[str]) -> None:
+    """The other direction of #23: ``id:A…`` asks for named entries and gets them."""
+    web = OeisWeb(cache=OeisCache(), min_interval=0.0)
+    answer = web.lookup(ids=["A000045"])
+    assert oeis_transport == ["id:A000045|0"], "an identifier lookup is not paged"
+    assert answer.exhaustive is True
+    assert [entry.id for entry in answer.entries] == ["A000045"]
+    assert web.cache.lookup(ids=["A000045"]).exhaustive is True
+
+
+def test_a_terms_search_that_runs_out_of_results_is_exhaustive(
+    oeis_transport: list[str],
+) -> None:
+    """A short page *is* the end of the search, and may be recorded as one."""
+    web = OeisWeb(cache=OeisCache(), min_interval=0.0)
+    terms = apery(10)
+    answer = web.lookup(terms=terms)
+    assert oeis_transport == [",".join(str(t) for t in terms) + "|0"]
+    assert answer.exhaustive is True
+    assert [entry.id for entry in answer.entries] == ["A005259"]
+    assert web.cache.lookup(terms=terms).exhaustive is True
+
+
+def test_a_paged_out_search_is_unavailable_and_never_a_negative(
+    oeis_transport: list[str],
+) -> None:
+    """The whole point of #23: it collapsed ``unavailable`` into ``not_found``."""
+    web = OeisWeb(cache=OeisCache(), min_interval=0.0, max_results=15)
+    absent = RecurrenceClaim([(3, 3), (5, 2), (-4, -1)])
+    verdict = check_novelty(absent, [web], terms=[1, 1, 2, 3, 5, 8, 13])
+    assert verdict.matches() == ()
+    assert verdict.status == "unavailable"
+    assert verdict.found is None
+    assert verdict.sources_unavailable() == ("oeis",)
+
+
+# ---------------------------------------------------------------------------
+# `q`-recurrences (#25).
+# ---------------------------------------------------------------------------
+
+#: `(1 - q^n)·u(n) - u(n+1) = 0`, written five ways.  `(i, j)` is `q^i·(q^n)^j`.
+Q_PRESENTATIONS = {
+    "as stated": ([{(0, 0): 1, (0, 1): -1}, {(0, 0): -1}], 0),
+    "scaled by -2*q^5*(q^n)^2": ([{(5, 2): -2, (5, 3): 2}, {(5, 2): 2}], 0),
+    "times the polynomial 1 + q*q^n": (
+        [{(0, 0): 1, (1, 1): 1, (0, 1): -1, (1, 2): -1}, {(0, 0): -1, (1, 1): -1}],
+        0,
+    ),
+    "stated about u(n+3), scaled by -2q": ([{(1, 0): -2, (4, 1): 2}, {(1, 0): 2}], 3),
+    "stated about u(n-3), scaled by 3, padded": (
+        [{}, {(0, 0): 3, (-3, 1): -3}, {(0, 0): -3}, {}],
+        -4,
+    ),
+}
+
+
+@pytest.mark.parametrize("label", sorted(Q_PRESENTATIONS))
+def test_presentations_of_one_q_recurrence_hash_equal(label: str) -> None:
+    """#25. The claim type M4's `q` half had no route into.
+
+    The index shift is the interesting one: ``n → n+1`` sends ``q^n`` to
+    ``q·q^n``, so re-indexing a `q`-recurrence rewrites its coefficients rather
+    than leaving them alone.
+    """
+    reference = QRecurrenceClaim(*Q_PRESENTATIONS["as stated"][:1])
+    coefficients, offset = Q_PRESENTATIONS[label]
+    claim = QRecurrenceClaim(coefficients, offset=offset)
+    assert claim.claim_hash == reference.claim_hash, (
+        f"{label!r} normalised to {claim.normal_form!r}, not {reference.normal_form!r}"
+    )
+    assert claim == reference
+
+
+def test_a_q_claim_accepts_rational_coefficients_and_expressions() -> None:
+    pool = ak.ExprPool()
+    one = pool.integer(1)
+    n, q = pool.symbol("n"), pool.symbol("q")
+    power = q**n
+    denominator = one + q * power
+    claim = QRecurrenceClaim([(one - power) / denominator, -one / denominator], var=n, q=q)
+    assert claim.claim_hash == QRecurrenceClaim(*Q_PRESENTATIONS["as stated"][:1]).claim_hash
+    assert claim.normal_form == "q-recurrence/1 (q^n - 1)*u(n+0) + (1)*u(n+1)"
+    assert (claim.order, claim.degree, claim.q_degree) == (1, 1, 0)
+
+
+def test_a_q_certificate_becomes_a_claim() -> None:
+    """The exact call that used to raise ``coefficient mentions the symbol 'q'``."""
+    from alkahest.experimental import q_zeilberger, qbinomial
+
+    pool = ak.ExprPool()
+    n, k, q = pool.symbol("n"), pool.symbol("k"), pool.symbol("q")
+    binomial = qbinomial(pool, n, k)
+    certificate = q_zeilberger(binomial * binomial * q ** (k * k), q, n, k)
+
+    with pytest.raises(ValueError, match="QRecurrenceClaim"):
+        RecurrenceClaim.from_recurrence(certificate, var=n)
+
+    claim = QRecurrenceClaim.from_recurrence(certificate, var=n, q=q)
+    assert claim.order == 1
+    assert claim.claim_kind == "q-recurrence"
+    assert claim.normal_form.startswith("q-recurrence/1 ")
+    assert claim.claim_hash.startswith("clm_")
+
+
+def test_a_q_claim_does_not_collide_with_an_ordinary_one() -> None:
+    ordinary = RecurrenceClaim([(1,), (-1,)])  # u(n+1) = u(n)
+    q_analogue = QRecurrenceClaim([{(0, 0): 1}, {(0, 0): -1}])
+    assert ordinary.normal_form.startswith("recurrence/1 ")
+    assert q_analogue.normal_form.startswith("q-recurrence/1 ")
+    assert ordinary.claim_hash != q_analogue.claim_hash
+    assert len({ordinary, q_analogue}) == 2
+    assert ordinary != q_analogue
+
+
+def test_a_source_that_cannot_state_a_q_recurrence_is_unavailable_for_one(
+    cache: OeisCache,
+) -> None:
+    """Not ``not_found``: a search that could not have matched is not a negative."""
+    claim = QRecurrenceClaim([{(0, 0): 1, (0, 1): -1}, {(0, 0): -1}])
+    verdict = check_novelty(claim, [cache], terms=[1, 2, 6, 20, 70, 252, 924, 3432])
+    assert verdict.status == "unavailable"
+    assert verdict.found is None
+    assert verdict.sources_consulted() == ()
+    assert verdict.sources_unavailable() == ("oeis-cache",)
+    assert verdict.terms_check == "not_checked"
+    assert verdict.claim_hash == claim.claim_hash
+
+
+# ---------------------------------------------------------------------------
+# The `terms` cross-check (#26q).
+# ---------------------------------------------------------------------------
+
+
+def test_terms_are_checked_against_the_claim_not_only_used_to_search(
+    cache: OeisCache,
+) -> None:
+    """#26q. *terms* said which sequence; the claim has to be about it."""
+    claim = RecurrenceClaim([(-2, -4), (1, 1)])  # (n+1)u(n+1) = (4n+2)u(n)
+
+    agrees = check_novelty(claim, [cache], terms=central_binomial(12))
+    assert agrees.terms_check == "holds"
+    assert agrees.report()["terms_check"] == "holds"
+    assert agrees.status == "recorded"
+
+    # The central binomial recurrence, looked up by the Motzkin numbers: the
+    # search was about one sequence and the claim about another, and saying so
+    # is the difference between a report and a silently misleading `not_found`.
+    disagrees = check_novelty(claim, [cache], terms=motzkin(12))
+    assert disagrees.terms_check == "fails"
+    assert disagrees.report()["terms_check"] == "fails"
+    assert "terms_check='fails'" in repr(disagrees)
+    assert disagrees.terms_check in novelty.TERMS_CHECKS
+
+    # Nothing to check it against is not a failure.
+    assert check_novelty(claim, [cache], ids=["A000984"]).terms_check == "not_checked"
+    assert check_novelty(claim, [cache], terms=[1]).terms_check == "not_checked"
+
+
+def test_the_terms_cross_check_reads_start_the_way_holds_for_does(cache: OeisCache) -> None:
+    """The one way an honest caller can trip it, and the knob that fixes it."""
+    claim = RecurrenceClaim([(-2, -4), (1, 1)])
+    padded = [99, *central_binomial(12)]
+    assert check_novelty(claim, [cache], terms=padded, start=0).terms_check == "fails"
+    assert check_novelty(claim, [cache], terms=padded, start=-1).terms_check == "holds"

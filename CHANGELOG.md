@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+- **The M11 novelty filter reads more of what OEIS actually writes, pages its
+  searches, can represent a `q`-recurrence, and cross-checks the terms it is
+  given** (`alkahest.experimental.novelty`). Four false-red / coverage
+  defects, all found by pointing the filter at the Fibonacci recurrence and
+  watching it come back `not_found` against A000045:
+
+  - **The recurrence in an entry's *name* is now read.** A000045's whole name
+    is *"Fibonacci numbers: F(n) = F(n-1) + F(n-2) with F(0) = 0 and
+    F(1) = 1"*, which the parser was never pointed at; the entry produced 25
+    candidate lines, **0 usable**, and a `not_found` verdict for its own
+    recurrence. `OeisEntry.candidate_lines()` now puts the name first, any
+    single letter may name the sequence (`F`, `L`, `T`, `b`), an identifier
+    passed as `RecurrenceClaim.from_text(..., names=…)` may too — the entry's
+    own A-number is passed automatically — and juxtaposition is read as
+    multiplication (`2a(n-2)`). One line may still name only **one** sequence,
+    so `a(n) = a(n-1) + A002026(n-1)` is refused as before, and a parsed line
+    is still only indexed once it reproduces the entry's own terms. Measured
+    over a 377-entry live sample: **156 → 252** lines parsed, **121 → 195**
+    usable statements, **114 → 174** entries with at least one.
+  - **A `terms=` search is paged; a full first page is no longer reported as
+    exhaustive.** `fmt=json` returns at most ten results and no total count,
+    so `OeisWeb` claimed `exhaustive=True` after one page and every negative
+    became a `not_found` — collapsing the `unavailable` half of the tri-state
+    the module exists to provide. It now continues at `&start=` until a short
+    page arrives (exhaustive, and recorded in the cache as a complete answer)
+    or `max_results` is reached (`exhaustive=False`, **not** recorded, and
+    `check_novelty` reports `unavailable`). `max_results` defaults to 50, five
+    pages. An `id:A…` lookup is *not* paged and stays exhaustive after one
+    request, which was always correct.
+  - **`QRecurrenceClaim`** — normal form, `claim_hash` and equality for
+    `Σ_i c_i(q, q^n)·u(n+i) = 0`, with coefficients in `ℚ(q, q^n)` cleared to
+    Laurent polynomials. `RecurrenceClaim` refused these outright
+    (*"coefficient mentions the symbol 'q'"*), so no `q_zeilberger` result had
+    any route to the promotion gate. Scale, index shift — which acts on the
+    coefficients, since `n → n+1` sends `q^n` to `q·q^n` — a common monomial
+    or polynomial factor, and zero padding are quotiented out. The normal form
+    is tagged `q-recurrence/1` against `recurrence/1`, so the hash spaces do
+    not collide. No source here can *state* a `q`-recurrence, so
+    `check_novelty` reports OEIS sources as `unavailable` for one rather than
+    manufacturing a negative; sources may declare what they can state with a
+    `CLAIM_KINDS` tuple.
+  - **`terms=` is checked against the claim**, not only used to drive the
+    search. `NoveltyVerdict.terms_check` reads `"holds"`, `"fails"` or
+    `"not_checked"`, on the same lenient trailing-window rule a source's own
+    formula line has to pass, and appears in `report()`. A `"fails"` means the
+    lookup was about a different sequence from the claim. `check_novelty` takes
+    `start=`, meaning exactly what `RecurrenceClaim.holds_for`'s `start` means;
+    it is never sent to a source.
+
 - **`telescope2d` generalizes from two bound indices to an arbitrary `m ≥ 1`:
   `experimental.telescope_md`** (M4 extension). `telescope2d(term, n, j, k)`
   only ever reached exactly two bound indices; the underlying ansatz search

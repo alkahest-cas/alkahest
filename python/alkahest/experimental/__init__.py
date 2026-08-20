@@ -101,6 +101,8 @@ Double-sum (Apagodu–Zeilberger) creative telescoping (M4):
 Novelty filtering (:mod:`alkahest.experimental.novelty`):
 - :class:`RecurrenceClaim` — a recurrence in a normal form two presentations
   of the same fact share, plus a stable ``claim_hash`` to dedupe on
+- :class:`QRecurrenceClaim` — the same for a ``q``-recurrence, whose
+  coefficients live in ``Q(q, q^n)`` rather than ``Q[n]``
 - :func:`check_novelty` / :class:`NoveltyVerdict` — was this claim already
   written down? Three-valued, and a negative is never reported as "novel"
 - :class:`OeisCache` (offline, the tested path) and :class:`OeisWeb` (opt-in
@@ -196,6 +198,7 @@ from alkahest.experimental.novelty import (
     OeisCache,
     OeisEntry,
     OeisWeb,
+    QRecurrenceClaim,
     RecurrenceClaim,
     check_novelty,
 )
@@ -237,6 +240,8 @@ __all__ = [
     # M9 — coefficient fields for elimination
     "ParametricGbPoly",
     "ParametricGroebnerBasis",
+    # M11 — novelty filtering
+    "QRecurrenceClaim",
     # M4 — root-of-unity specialisation
     "QRootOfUnitySpecialization",
     # M4(b) — q-analogue creative telescoping
