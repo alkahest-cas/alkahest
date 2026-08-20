@@ -135,6 +135,18 @@ r.verdict                    # "single_dominant_root"
 coefficient polynomials `[p_0, …, p_J]` for `Σ_i p_i(n)·u(n+i) = 0`; each `p_i`
 is an `Expr` in `n` or a tuple of ascending integer coefficients.
 
+**`n` is optional, and leaving it out is the safe way to call this.**
+Expressions from two pools cannot meet, so a certificate's coefficients combine
+only with the certificate's own `cert.n` — a symbol made in a fresh pool for the
+occasion is a pool mismatch (`E-POOL-001`), not an answer. Omitted, `n` is taken
+from `rec` when `rec` has one, and from a pool made here when the coefficients
+are plain integers, as they are for a `GuessedRecurrence`:
+
+```python
+asymptotics_from_recurrence(cert, terms=[1, 2])            # uses cert.n
+asymptotics_from_recurrence(guess, terms=motzkin[:2])      # fresh pool
+```
+
 ### What is derived and what is fitted
 
 Write `D = max_i deg p_i`, take the coefficient of `n^D` in each `p_i` to build

@@ -2,6 +2,71 @@
 
 ## Unreleased
 
+- **`guess_holonomic` reports the leading coefficient's roots inside the data,
+  and its verdict is three-valued.** A single wrong term in an otherwise
+  order-2/degree-1 sequence was fitted, at the *default* `max_degree = 4`, by
+  multiplying the true operator by the cubic that vanishes at exactly the three
+  indices whose equations the typo breaks — and came back `confirmed=True` with
+  `dimension` 1, 55 surplus equations and no untested candidates. The returned
+  relation is not unsound: it satisfies every equation the terms supplied, and
+  it holds on the *clean* sequence too, being a left multiple of the true
+  operator, so no re-check can catch it. What it is not is the sequence's
+  recurrence, and the tell is that its leading coefficient has roots inside the
+  data, where every coefficient vanishes at once, the equation reads `0 = 0`
+  and the fit was therefore unconstrained.
+
+  `GuessedRecurrence.singular_indices` is now a first-class field carrying
+  exactly those indices — the same name and meaning as
+  `ModularEvaluation.singular_indices`, with the difference that a modular
+  evaluation must refuse (`E-HOLO-007`) where a fit can be returned and
+  flagged. `GuessedRecurrence.status` names the verdict from the closed
+  vocabulary `GUESS_STATUSES` (`"confirmed"`, `"singular"`,
+  `"underdetermined"`, `"unconfirmed"`), glossed by `GUESS_STATUS_MEANINGS` and
+  by `.means`, in the shape `experimental.NoveltyVerdict.status` uses.
+  `confirmed` is correspondingly `True` / `False` / `None` rather than a bare
+  boolean, the discipline `relation_confidence`'s `credible` already had:
+  `False` is *the data says nothing about this fit*, `None` is *the relation
+  holds and is still not the sequence's recurrence*, and only `True` is a
+  result. Two typos at `max_degree=8` produce six roots, so the field is a
+  diagnostic rather than a flag. The guard is unchanged in the direction it was
+  built for: ten non-P-recursive sequences (primes, partitions, Bell, `σ`, `τ`,
+  `π` digits, pseudorandom, two Beatty sequences, digit sums) still answer
+  `None` after a full sweep, and too few terms still raises `E-HOLO-005`.
+
+- **`guess_holonomic` returns the solution space instead of refusing when
+  `dimension > 1`.** A probe wider than the sequence's annihilator makes the
+  terms admit several independent relations, which used to raise and make the
+  whole `(order, degree)` cell unusable — it closed OEIS A277060 entirely,
+  though `zeilberger` decides it immediately. `GuessedRecurrence.basis` now
+  carries every independent relation (`basis[0]` is `coeffs`), the result comes
+  back with `status == "underdetermined"` and `confirmed is None`, and only a
+  fit that consumed its own evidence is still refused.
+
+- **`supercongruence_sweep` records `E-HOLO-006` in `skipped()` instead of
+  raising it out of the sweep.** `p**(k + extra_precision)` past the
+  machine-word ceiling of `2**62` is a fact about one prime — the same "out of
+  reach of this backend" that `E-HOLO-008` was already recorded for — and
+  letting it propagate destroyed every residue already computed, leaving the
+  caller to pre-filter the prime list by `int((2**62) ** (1 / (k + 1)))` by
+  hand. The *other* `E-HOLO-006`, a composite in `primes`, is a fact about the
+  call and still raises; it is now decided up front, before any evaluation, so
+  that the two halves can be told apart.
+
+- **`experimental.asymptotics_from_recurrence` derives its index symbol.** `n`
+  is now optional: it is taken from `ZeilbergerCertificate.n` (a new getter)
+  when *rec* is a certificate, and from a pool created on the spot when the
+  coefficients are plain integers, as they are for a `GuessedRecurrence`.
+  Passing a symbol from a foreign pool used to surface as an uncoded
+  `PoolError` from several frames inside the coefficient walk; it is now
+  `E-POOL-001` naming the argument and the fix.
+
+- **`zeilberger(minimal=True)` is documented as minimal at certificate degree
+  `<= max_degree`**, which is what it establishes, rather than "genuinely
+  minimal". A lower-order relation whose certificate needs a higher degree than
+  the bound is never probed, and order–degree trade-offs are real in creative
+  telescoping. Documentation only — a sweep of seven families found no
+  counterexample and the behaviour is unchanged.
+
 - **`telescope2d` generalizes from two bound indices to an arbitrary `m ≥ 1`:
   `experimental.telescope_md`** (M4 extension). `telescope2d(term, n, j, k)`
   only ever reached exactly two bound indices; the underlying ansatz search

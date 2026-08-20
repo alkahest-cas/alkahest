@@ -4803,12 +4803,19 @@ impl PyZeilbergerCertificate {
         self.order
     }
 
-    /// Whether the search **established** that no lower-order relation exists.
+    /// Whether the search **established** that no lower-order relation exists
+    /// *at certificate degree* ``<= max_degree``.
     ///
     /// ``True`` means every order below :attr:`order` was refused at every
     /// certificate degree up to ``max_degree``.  ``False`` means *not
     /// established* — never "a lower order exists", since a lower-order
     /// relation that had been found would have been returned instead.
+    ///
+    /// The degree bound is part of the claim and not a detail: a lower-order
+    /// relation whose certificate needs a degree above ``max_degree`` was
+    /// never probed, so ``True`` is minimality within the grid that was swept
+    /// rather than minimality for the summand.  Order–degree trade-offs are a
+    /// real phenomenon here, so state the bound alongside the flag.
     ///
     /// The default search visits the ``(order, degree)`` grid cheapest-first,
     /// so it can reach a cheap order-2 probe before an expensive order-1 one;
@@ -4832,6 +4839,22 @@ impl PyZeilbergerCertificate {
                 pool: self.pool.clone_ref(py),
             })
             .collect()
+    }
+
+    /// The index symbol ``n`` the coefficient polynomials are written in.
+    ///
+    /// The symbol *this* certificate was built with, out of *this*
+    /// certificate's :class:`ExprPool` — the only ``n`` that can be combined
+    /// with :attr:`coeffs`, since expressions from two pools cannot meet.
+    /// Anything downstream that needs the index variable should take it from
+    /// here rather than make one of its own; that is why ``n`` is optional on
+    /// :func:`alkahest.experimental.asymptotics_from_recurrence`.
+    #[getter]
+    fn n(&self, py: Python<'_>) -> PyExpr {
+        PyExpr {
+            id: self.n_id,
+            pool: self.pool.clone_ref(py),
+        }
     }
 
     /// ``R(n, k)`` — the rational certificate, with ``G(n,k) = R(n,k)·F(n,k)``.
@@ -5097,9 +5120,16 @@ fn format_range(pool: &ExprPool, lo: ExprId, hi: ExprId) -> String {
 /// :attr:`~alkahest.ZeilbergerCertificate.order_is_minimal` is ``False`` to say
 /// so rather than leaving it to be assumed.  Pass ``minimal=True`` to search
 /// **order-ascending** instead — every degree ``0..=max_degree`` at order ``J``
-/// is refused before order ``J+1`` is tried — which makes a returned order
-/// genuinely minimal and sets the flag.  That is the hopeless low-order sweep
-/// the default plan exists to avoid, and it costs accordingly; ask for it when
+/// is refused before order ``J+1`` is tried — and the flag is set.
+///
+/// What that establishes is **minimality at certificate degree
+/// ``<= max_degree``**, not minimality outright: a lower-order relation whose
+/// certificate needs a higher degree than the bound is never probed, and
+/// order–degree trade-offs are real in creative telescoping.  So
+/// ``order_is_minimal`` is a statement about the grid that was swept, and
+/// ``max_degree`` is part of it — raise the bound if the minimality is what
+/// the caller is after.  Order-ascending is the hopeless low-order sweep the
+/// default plan exists to avoid, and it costs accordingly; ask for it when
 /// minimality is the result, not as a habit.
 ///
 /// Raises :exc:`alkahest.HolonomicError` rather than guessing when ``term`` is
