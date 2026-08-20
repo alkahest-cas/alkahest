@@ -19,7 +19,10 @@ Canonical code ranges — authoritative source is ``alkahest_core::errors::codes
     E-SOLVE-010 … E-SOLVE-011  SolverError  (GPU Gröbner)
     E-JIT-001   … E-JIT-003    JitError
     E-LAT-001 … E-LAT-004      LatticeError
-    E-PSLQ-001 … E-PSLQ-004    PslqError  (004 = input precision below requested)
+    E-PSLQ-001 … E-PSLQ-005    PslqError  (004 = input precision below requested,
+                                 005 = the relation is false for the exact rationals
+                                 supplied; both raised from Python, so both are absent
+                                 from the Rust REGISTRY)
     E-CAD-001                  CadError
     E-ROOT-001 … E-ROOT-002    RealRootError (V2-4 VAS real root isolation)
     E-RES-001 … E-RES-003      ResultantError (V2-2)
@@ -431,7 +434,9 @@ class PslqError(AlkahestError):
     """Integer-relation heuristic failed (input, coefficient bound, or lattice step).
 
     ``E-PSLQ-004`` is raised when the supplied constants carry less precision
-    than the search requests — see :func:`alkahest.guess_relation`.
+    than the relation found needs, and ``E-PSLQ-005`` when the constants are
+    exact rationals and the relation is simply false for them — see
+    :func:`alkahest.guess_relation`.
     """
 
     def __init__(

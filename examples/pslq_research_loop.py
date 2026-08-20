@@ -99,15 +99,17 @@ def run_loop() -> ClaimGraph:
 
     # -- stage 2: integer-relation detection ------------------------------
     constants = [str(integral), str(log_two)]
-    relation = ak.guess_relation(constants, 180, 10_000)
+    # These are decimal strings, so nothing in them tells an exact rational from
+    # a truncation, and both `guess_relation` and `relation_confidence` answer
+    # "unknown" on their own.  Only this loop knows the strings are quadrature
+    # output good to DIGITS places, so only this loop can declare it -- `digits=`
+    # is that declaration, and `180` is the width of the search, not a claim
+    # about the data.  Without it the search cannot refuse, and `None` is not a
+    # pass.
+    relation = ak.guess_relation(constants, 180, 10_000, digits=DIGITS)
     if relation is None:
         raise SystemExit("no integer relation found; nothing to conjecture")
 
-    # These are decimal strings, so `relation_confidence` cannot tell an exact
-    # rational from a truncation on its own and answers `credible: None`.  Only
-    # this loop knows the strings are quadrature output good to DIGITS places,
-    # so only this loop can declare it.  Without the declaration there is no
-    # verdict to promote on -- and `None` is not a pass.
     confidence = ak.relation_confidence(constants, relation, digits=DIGITS)
     if not confidence["credible"]:
         raise SystemExit(
