@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **Every printer emitted `(-1)^n` as `-1^n`, which re-reads as `-(1^n)`.** A
+  negative power base was rendered without parentheses by all three exported
+  forms — `str`/`repr`, `latex` and `unicode_str` — so `str((-1)**n)` was
+  `'-1^n'`, which sympy, Python's own `eval`, LaTeX **and `alkahest.parse`**
+  all correctly read as `-(1^n) = -1`, not `(-1)^n`. Nothing internal was
+  wrong: `(-1)^4` evaluated to `1` all along; only the exported text lied, and
+  it lied in exactly the place it does the most damage — an `M1` boundary
+  result handed out for external checking. `b(n) = -16·(-2)^n` printed as
+  `-16 * -2^n`, worth `-64` at `n = 2` inside alkahest and `+16` once
+  re-parsed, which is enough to make an audit harness report a correct engine
+  as unsound. The printers now parenthesise any base that does not bind
+  tighter than `^`: a negative literal (unary minus binds looser than `^`,
+  matching `BP_UNARY` in the parser) and, in the LaTeX and Unicode renderers,
+  a fraction — `\left(\frac{1}{2}\right)^n`, `(3/7)^(n)`. Bases that were
+  already unambiguous are untouched (`2^n`, `x^n`, `½^(n)`), as are negative
+  *exponents* (`x^-1`), where a leading `-` cannot be misread because `^` is
+  right-associative. `alkahest.parse` itself was **not** changed: it was
+  applying standard precedence correctly to the bad string it was given.
+
 - **`telescope2d` generalizes from two bound indices to an arbitrary `m ≥ 1`:
   `experimental.telescope_md`** (M4 extension). `telescope2d(term, n, j, k)`
   only ever reached exactly two bound indices; the underlying ansatz search
