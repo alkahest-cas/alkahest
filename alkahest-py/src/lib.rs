@@ -173,11 +173,11 @@ use alkahest_core::real::sos::{
 };
 // P1 item 7 — creative telescoping / holonomic (D-finite) machinery
 use alkahest_core::holonomic::{
-    boundary_status as core_boundary_status, boundary_term as core_boundary_term,
+    boundary_term as core_boundary_term, boundary_verdict as core_boundary_verdict,
     natural_limits as core_natural_limits, zeilberger_search as core_zeilberger_search,
-    BoundaryStatus as CoreBoundaryStatus, HolonomicError as CoreHolonomicError,
-    OrderSearch as CoreOrderSearch, ZeilbergerOpts as CoreZeilbergerOpts,
-    ZeilbergerResult as CoreZeilbergerResult,
+    BoundaryStatus as CoreBoundaryStatus, BoundaryVerdict as CoreBoundaryVerdict,
+    HolonomicError as CoreHolonomicError, OrderSearch as CoreOrderSearch,
+    ZeilbergerOpts as CoreZeilbergerOpts, ZeilbergerResult as CoreZeilbergerResult,
 };
 // M4(b) — q-analogue creative telescoping (q-Zeilberger)
 use alkahest_core::holonomic::qzeil::{
@@ -4773,6 +4773,13 @@ fn holonomic_modular_error_to_py(e: CoreHolonomicModularError) -> PyErr {
 /// the true relation is ``(n+2)·S(n+1) − (2n+2)·S(n) = 1``.  Reading a
 /// recurrence off a certificate without this verdict is how a valid certificate
 /// becomes a false theorem.
+///
+/// A verdict is also not a statement about every ``n``.  The range in
+/// :attr:`limits` need not *be* a range at every ``n`` — ``k = 3..n−3`` runs
+/// backwards at ``n = 3, 4`` — and the telescoping needs ``G = R·F`` to be
+/// finite at every integer ``k`` in it.  :attr:`boundary_valid_from` and
+/// :attr:`certificate_poles` carry those two bounds, rather than leaving a bare
+/// ``b(n)`` with an implied "for every ``n``" attached to it.
 #[pyclass(name = "ZeilbergerCertificate")]
 struct PyZeilbergerCertificate {
     order: usize,
@@ -4789,7 +4796,7 @@ struct PyZeilbergerCertificate {
     n_id: ExprId,
     k_id: ExprId,
     limits: (ExprId, ExprId),
-    status: CoreBoundaryStatus,
+    verdict: CoreBoundaryVerdict,
 }
 
 #[pymethods]
@@ -4910,7 +4917,51 @@ impl PyZeilbergerCertificate {
     /// ``"unknown"`` means *no* statement about the sum may be made.
     #[getter]
     fn boundary(&self) -> &'static str {
-        self.status.tag()
+        self.verdict.tag()
+    }
+
+    /// The smallest ``n`` this verdict is claimed for, or ``None``.
+    ///
+    /// A verdict is a statement about ``S(n)``, and the range in :attr:`limits`
+    /// is not a range at every ``n``: ``k = 3..n−3`` runs *backwards* at
+    /// ``n = 3`` and ``n = 4``, where a sum over it is ``0`` under one reading
+    /// and a signed sum under the other.  The relation is false there, so those
+    /// ``n`` are excluded instead of being claimed — this attribute is where the
+    /// exclusion is recorded, and ``None`` means none was needed.
+    ///
+    /// It is a bound on ``n``, not a promise about it: the standing conditions
+    /// in :attr:`side_conditions` still apply above it, and it only says
+    /// anything next to a verdict — when :attr:`boundary` is ``"unknown"``
+    /// nothing is claimed at any ``n`` regardless of what this holds.
+    #[getter]
+    fn boundary_valid_from(&self) -> Option<i64> {
+        self.verdict.valid_from
+    }
+
+    /// Integer points ``k`` inside :attr:`limits` where the telescoping breaks,
+    /// as expressions in ``n``.
+    ///
+    /// ``G(n,k) = R(n,k)·F(n,k)`` has to be finite at every integer ``k`` in the
+    /// range for ``Σ_k (G(n,k+1) − G(n,k))`` to collapse to the two endpoints.
+    /// A pole of the certificate at an interior point — ``k = (n+3)/2`` for
+    /// ``C(n,k)/(n−2k+1)`` over ``k = 0..n``, an integer for every odd ``n`` —
+    /// breaks it in the *middle* of the sum, where no boundary value can see it.
+    /// Poles of the summand itself, which leave ``S(n)`` undefined, are listed
+    /// here too.
+    ///
+    /// Non-empty implies :attr:`boundary` is ``"unknown"``.  Empty is not a
+    /// proof that there are none: locations with a denominator past ``4``, or
+    /// that only enter the range for large ``n``, are not searched for.
+    #[getter]
+    fn certificate_poles(&self, py: Python<'_>) -> Vec<PyExpr> {
+        self.verdict
+            .certificate_poles
+            .iter()
+            .map(|&id| PyExpr {
+                id,
+                pool: self.pool.clone_ref(py),
+            })
+            .collect()
     }
 
     /// ``b(n)`` in ``Σ_i a_i(n)·S(n+i) = b(n)``, or ``None``.
@@ -4920,7 +4971,7 @@ impl PyZeilbergerCertificate {
     /// when it is ``"unknown"`` there is no recurrence for the sum to write down.
     #[getter]
     fn boundary_rhs(&self, py: Python<'_>) -> Option<PyExpr> {
-        match &self.status {
+        match &self.verdict.status {
             CoreBoundaryStatus::Nonzero { rhs, .. } => Some(PyExpr {
                 id: *rhs,
                 pool: self.pool.clone_ref(py),
@@ -4936,7 +4987,7 @@ impl PyZeilbergerCertificate {
     /// tells a caller whether to retry with a better range or close the branch.
     #[getter]
     fn boundary_reason(&self) -> String {
-        match &self.status {
+        match &self.verdict.status {
             CoreBoundaryStatus::Vanishes => {
                 "the boundary difference was proved to vanish in exact arithmetic".to_string()
             }
@@ -4954,15 +5005,16 @@ impl PyZeilbergerCertificate {
     /// (inhomogeneous, with :attr:`boundary_rhs`), ``False`` for ``"unknown"``.
     #[getter]
     fn implies_sum_recurrence(&self) -> bool {
-        self.status.implies_sum_recurrence()
+        self.verdict.implies_sum_recurrence()
     }
 
     /// Re-decide the boundary hypothesis over a different summation range.
     ///
-    /// Returns a ``dict`` with the same four keys as the attributes above —
-    /// ``boundary``, ``rhs``, ``reason``, ``side_conditions`` — without
-    /// re-running the search, which is the expensive half.  Use it to ask what
-    /// the *same* certificate says about ``k = 0..n-1`` as well as ``k = 0..n``.
+    /// Returns a ``dict`` with the same keys as the attributes above —
+    /// ``boundary``, ``rhs``, ``reason``, ``valid_from``, ``certificate_poles``,
+    /// ``side_conditions`` — without re-running the search, which is the
+    /// expensive half.  Use it to ask what the *same* certificate says about
+    /// ``k = 0..n-1`` as well as ``k = 0..n``.
     #[pyo3(signature = (k_lo, k_hi))]
     fn boundary_at(
         &self,
@@ -4972,9 +5024,9 @@ impl PyZeilbergerCertificate {
     ) -> PyResult<Py<PyDict>> {
         let lo = coerce_limit(py, &self.pool, k_lo, "k_lo")?;
         let hi = coerce_limit(py, &self.pool, k_hi, "k_hi")?;
-        let (status, range) = {
+        let (verdict, conditions) = {
             let pool = self.pool.borrow(py);
-            let status = core_boundary_status(
+            let verdict = core_boundary_verdict(
                 &self.result,
                 self.term_id,
                 self.n_id,
@@ -4983,11 +5035,12 @@ impl PyZeilbergerCertificate {
                 &pool.inner,
             );
             let range = format_range(&pool.inner, lo, hi);
-            (status, range)
+            let conditions = verdict.side_conditions(&range, &pool.inner);
+            (verdict, conditions)
         };
         let out = PyDict::new_bound(py);
-        out.set_item("boundary", status.tag())?;
-        let rhs = match &status {
+        out.set_item("boundary", verdict.tag())?;
+        let rhs = match &verdict.status {
             CoreBoundaryStatus::Nonzero { rhs, .. } => Some(Py::new(
                 py,
                 PyExpr {
@@ -5000,7 +5053,7 @@ impl PyZeilbergerCertificate {
         out.set_item("rhs", rhs)?;
         out.set_item(
             "reason",
-            match &status {
+            match &verdict.status {
                 CoreBoundaryStatus::Vanishes => {
                     "the boundary difference was proved to vanish in exact arithmetic".to_string()
                 }
@@ -5010,7 +5063,22 @@ impl PyZeilbergerCertificate {
                 CoreBoundaryStatus::Unknown { reason } => reason.clone(),
             },
         )?;
-        out.set_item("side_conditions", status.side_conditions(&range))?;
+        out.set_item("valid_from", verdict.valid_from)?;
+        let poles: Vec<Py<PyExpr>> = verdict
+            .certificate_poles
+            .iter()
+            .map(|&id| {
+                Py::new(
+                    py,
+                    PyExpr {
+                        id,
+                        pool: self.pool.clone_ref(py),
+                    },
+                )
+            })
+            .collect::<PyResult<_>>()?;
+        out.set_item("certificate_poles", poles)?;
+        out.set_item("side_conditions", conditions)?;
         Ok(out.unbind())
     }
 
@@ -5026,7 +5094,7 @@ impl PyZeilbergerCertificate {
     fn side_conditions(&self, py: Python<'_>) -> Vec<String> {
         let pool = self.pool.borrow(py);
         let range = format_range(&pool.inner, self.limits.0, self.limits.1);
-        self.status.side_conditions(&range)
+        self.verdict.side_conditions(&range, &pool.inner)
     }
 
     /// Human-readable derivation log for the search that produced this.
@@ -5050,7 +5118,7 @@ impl PyZeilbergerCertificate {
             } else {
                 ""
             },
-            self.status.tag(),
+            self.verdict.tag(),
             coeffs.join(", "),
             pool.inner.display(self.certificate_id)
         )
@@ -5193,7 +5261,7 @@ fn py_zeilberger(
         let derivation = derived.log.display_with(&pool.inner).to_string();
         let report = derived.value;
         let boundary = core_boundary_term(&report.result, term.id, &pool.inner);
-        let status = core_boundary_status(
+        let status = core_boundary_verdict(
             &report.result,
             term.id,
             n.id,
@@ -5225,7 +5293,7 @@ fn py_zeilberger(
         n_id: n.id,
         k_id: k.id,
         limits,
-        status,
+        verdict: status,
     })
 }
 

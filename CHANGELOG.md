@@ -2,7 +2,6 @@
 
 ## Unreleased
 
-<<<<<<< HEAD
 - **The M11 novelty filter reads more of what OEIS actually writes, pages its
   searches, can represent a `q`-recurrence, and cross-checks the terms it is
   given** (`alkahest.experimental.novelty`). Four false-red / coverage
@@ -91,7 +90,6 @@
   vectors, so the cost is `n·log10(2H+1)`; a 40-term ±1 relation now costs ~19
   digits instead of 0. `E-PSLQ-*` codes are documented in
   `docs/mdbook/src/errors.md` for the first time (item 26o).
-=======
 - **`guess_holonomic` reports the leading coefficient's roots inside the data,
   and its verdict is three-valued.** A single wrong term in an otherwise
   order-2/degree-1 sequence was fitted, at the *default* `max_degree = 4`, by
@@ -156,7 +154,45 @@
   the bound is never probed, and order–degree trade-offs are real in creative
   telescoping. Documentation only — a sweep of seven families found no
   counterexample and the behaviour is unchanged.
->>>>>>> fix/holonomic-guess
+- **A Zeilberger `boundary` verdict now carries the `n` it is a theorem on**
+  (`ZeilbergerCertificate.boundary_valid_from`, `.certificate_poles`). The
+  verdict was a bare tag with an implied "for every `n`" attached to it, and
+  that quantifier was false in two ways.
+
+  **Empty ranges.** `F = C(n,k)²` over `limits=(5, 3)` — an empty range, so
+  every `S(n)` is `0` — returned `boundary="nonzero"`,
+  `implies_sum_recurrence=True` and a degree-9 `b(n)` whose residual
+  `Σ_i a_i(n)·S(n+i) − b(n)` ran `4, 107, 800, 2725, 2450, −23716, −162288` at
+  `n = 3..9`: a valid certificate implying a false recurrence for the sum, the
+  same class of defect the verdict was built to close. The cause is that
+  `κ₁ < κ₀ − 1` makes the declared range run *backwards*, where a sum is `0`
+  under the "empty sum" reading and a signed sum under the reversed-sum one,
+  and every piece of the boundary analysis silently used the second. The
+  realistic form is `n`-dependent and worse: `limits=(3, n−3)` is empty at
+  `n = 3, 4` and a range afterwards, so the returned `b(n)` was wrong at
+  exactly the `n` a loop reaches first. Such a verdict is now returned *with*
+  its domain — `boundary_valid_from == 5` — and a range that is backwards at
+  every `n` (or at every large `n`) is `"unknown"`. `κ₁ = κ₀ − 1` (`k = 0..−1`,
+  `k = n+1..n`), the one empty range both readings agree is `0`, keeps its
+  `"vanishes"`, which is what the two treatments disagreeing was.
+
+  **Interior poles.** `C(n,k)/(n−2k+1)` over `k = 0..n` returned
+  `"vanishes"` although `S(n)` is undefined for every odd `n` *and* the
+  certificate itself has a pole at `k = (n+3)/2`, an integer strictly inside
+  the range — so the telescoping `Σ_k (G(n,k+1) − G(n,k))` breaks in the middle
+  of the sum, where neither boundary value can see it. Those points are now
+  searched for, reported in `certificate_poles` as expressions in `n`, and the
+  verdict is `"unknown"` when there are any. The same closes
+  `C(n,k)/(k−3)` over `k = 0..n`, whose sum does not exist for `n ≥ 3`.
+
+  The Rust `holonomic::boundary_status` keeps its signature and fails safe: a
+  verdict that is false at some `n ≥ 0` comes back as `Unknown` naming the
+  restriction, and the new `holonomic::boundary_verdict` returns the same
+  verdict with `BoundaryVerdict::valid_from` and
+  `BoundaryVerdict::certificate_poles`. Verdicts that were already right are
+  unchanged, including the `0·∞` endpoint continuation `C(n,k)/(n−k+1)` over
+  `k = 0..n` (a certificate pole exactly at `k = k_hi+1`, cancelled by a zero of
+  the summand) and negative-slope lower limits.
 
 - **`telescope2d` generalizes from two bound indices to an arbitrary `m ≥ 1`:
   `experimental.telescope_md`** (M4 extension). `telescope2d(term, n, j, k)`
