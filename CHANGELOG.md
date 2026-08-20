@@ -50,6 +50,46 @@
     lookup was about a different sequence from the claim. `check_novelty` takes
     `start=`, meaning exactly what `RecurrenceClaim.holds_for`'s `start` means;
     it is never sent to a source.
+- **The PSLQ trust gate read the input's *type*, and four value-preserving
+  conversions changed the type without changing the value** (2026-08-19
+  autoresearch run, issue #4). 3.9.0 made `relation_confidence` tri-state and
+  wired `E-PSLQ-004` into `guess_relation`, but `_supplied_bits` classified by
+  type, so `guess_relation([float(pi), float(e), float(log 2)])` refused while
+  `guess_relation([mpf(x) for x in the same floats])` returned the very relation
+  the release was written to refuse — `[-60771139, 67263243, 11653676]`, true
+  residual `3.8e8` — with `credible=True` and 277 "spare" digits. Three fixes:
+
+  - **`mpmath.mpf` is now *unknown* precision, not its context's `prec`.** It
+    reported `value.context.prec`, which is the *ambient* `mp.dps` at the moment
+    of asking rather than a property of the value: the same objects judged before
+    and after an unrelated `mp.dps = 300` got opposite verdicts. Nor is accuracy
+    recoverable from the object — every `mpf` is exactly a dyadic rational — so
+    the mantissa-bitcount fix is wrong (it reports 0.30 digits for `mpf(1),
+    mpf(2), mpf(3)` and refutes the true relation `[1, 1, -1]`). An `mpf` is now
+    treated exactly as a decimal string is: unjudged unless the caller declares
+    `digits=`.
+  - **Exact inputs are now *evaluated* rather than assumed.** `available_digits`
+    is `inf` on the `exact` branch, so no affordability test could ever fire and
+    `credible=True` was unfalsifiable there — `Fraction(str(x))`,
+    `Fraction(Decimal(repr(x)))` and a 20-digit `nstr` truncation all reached it
+    with a relation that is *false for the very numbers supplied*. For `int` and
+    `Fraction` constants `Σ aᵢ·cᵢ` is now computed in exact `Fraction`
+    arithmetic; a nonzero residual refutes the relation (new `exact_residual` key
+    on `relation_confidence`'s dict) and `guess_relation` raises the new
+    **`E-PSLQ-005`**, which is a refutation rather than a precision complaint.
+  - **`guess_relation` gained the `digits=` escape hatch it was missing.**
+    `digits=` rescued `relation_confidence`, but on `guess_relation`
+    `precision_bits` means the width of the *search*, so the entry point that
+    raises `E-PSLQ-004` had no way for a caller who genuinely knows their input
+    precision to be judged at all. `guess_relation(constants, digits=…)` is
+    keyword-only and additive.
+
+  Also fixed (item 26n): the cost formula `n·log10(H)` collapses to 0 at `H = 1`,
+  so a relation with unit coefficients was free however many constants it spanned.
+  A relation with coefficients bounded by `H` selects one of `(2H+1)ⁿ` integer
+  vectors, so the cost is `n·log10(2H+1)`; a 40-term ±1 relation now costs ~19
+  digits instead of 0. `E-PSLQ-*` codes are documented in
+  `docs/mdbook/src/errors.md` for the first time (item 26o).
 
 - **`telescope2d` generalizes from two bound indices to an arbitrary `m ≥ 1`:
   `experimental.telescope_md`** (M4 extension). `telescope2d(term, n, j, k)`
