@@ -211,6 +211,82 @@
   *exponents* (`x^-1`), where a leading `-` cannot be misread because `^` is
   right-associative. `alkahest.parse` itself was **not** changed: it was
   applying standard precedence correctly to the bad string it was given.
+- **`sos_decompose` now certifies the homogeneous ternary Motzkin form and
+  Choi–Lam at multiplier power `N = 1`, via a half-Newton-polytope reduction
+  — and retracts the claim that it could not.** The previous round recorded,
+  as its closing M10 finding, that `(x²+y²+z²)·Motzkin_hom` is not SOS and
+  that the classical fact needs `N = 2`, and pinned that with a *passing*
+  test named `psd_search_does_not_yet_reach_…` whose comment said the `N = 1`
+  refusal was "expected to stay `None` permanently". **The premise was
+  false.** `(x²+y²+z²)(x⁴y²+x²y⁴−3x²y²z²+z⁶) = (½x³y+xy³−3⁄2xyz²)² +
+  ¾(x³y−xyz²)² + (xy²z−xz³)² + (x²yz−yz³)² + (x²y²−z⁴)²` — this identity is
+  the reason Motzkin is the standard example of a PSD non-SOS form that
+  becomes SOS after one multiplication by `Σxᵢ²`. The claim had propagated
+  into `docs/mdbook/src/positivity.md`, `alkahest-skill/alkahest.md` and this
+  file; all are corrected, and the test is now stated in the positive
+  direction (`psd_search_certifies_homogeneous_motzkin_times_sum_of_squares_at_n1`)
+  so a regression is a failure rather than a confirmation.
+
+  **What was actually missing was a dimension reduction, not iterations.**
+  `psd_search` now restricts the Gram basis to the lattice points of
+  `½·Newton(p)` (`psd::half_newton_reduce`) before searching. Reznick's
+  theorem says the support of every square in every SOS decomposition of `p`
+  already lies there, so the restriction is *complete*, not heuristic — and
+  it cuts `σ·Motzkin_hom`'s degree-4 ternary basis from 15 monomials to 9,
+  its affine family from 75 free parameters to 18. That is the difference
+  between a numeric solution landing ≈ 0.96 away from the true certificate in
+  parameter space (so no rounding recovers it) and landing on it exactly.
+  Note what it is not: on both bases the certificate is the unique PSD point
+  of the family, rank 5, minimum eigenvalue exactly 0, so `λ_min` is a
+  misleading progress metric here and more Douglas–Rachford does not help
+  (4× the budget on the unreduced family still fails to round). Robinson's
+  form, whose Newton polytope is already full (15 → 15), is unaffected —
+  asserted as a guard case in
+  `psd::tests::half_newton_reduction_is_a_no_op_when_the_polytope_is_already_full`.
+  Measured on one host, same load, `psd_search` alone: `σ·Motzkin_hom` at
+  `N = 1` went from a 123.0 s refusal to a 3.7 s certificate, `σ·Choi–Lam`
+  from a 549.6 s refusal to a 21.1 s certificate; `σ·Robinson` is unchanged
+  at 54.0 s → 50.2 s, still a certificate.
+
+- **`E-SOS-002` now reports what the search actually did, so a budget that
+  fired is distinguishable from a search that came up empty.** Three separate
+  ceilings could previously convert "we did not look" into a verdict that
+  reads like "we looked and found nothing", all producing the same instant
+  `E-SOS-002` with nothing logged:
+
+  - `psd::MAX_FREE_PARAMETERS` (200) dropped whole affine families silently.
+    For the Horn/C₅ copositivity form this meant *no multiplier power was
+    ever searched at all* (its `N = 1` family has 420 free parameters), so
+    its refusal was not a search result. The ceiling now logs a line marked
+    `NOT SEARCHED` naming the family size and the ceiling, and the refusal
+    message carries the whole trace. It is also applied *before*
+    `solve_affine` rather than after, using `pack_len(n) − rows` as a lower
+    bound on the family's dimension — C₇'s `N = 1` was paying for a
+    924 × 3570 exact rational Gauss–Jordan whose result was thrown away.
+    End to end, C₇'s refusal went from 1294.0 s to 783.6 s and from a bare
+    message to a trace naming every power that ran and every one that did
+    not; the Horn form's went from 37.7 s to 43.9 s, likewise with a trace.
+  - `MAX_MULTIPLIER_BASIS_LEN` (90) was compared against the *unreduced*
+    `monomial_basis` count, which is not the basis that gets searched. C₇'s
+    `N = 1` was rejected at 120 > 90 though its real basis is 84. The
+    comparison now uses `psd::searched_basis_len`, and the log reports both
+    numbers.
+  - The refusal text said "no Reznick multiplier … up to `N = 4` made `σ·p`
+    SOS within the search budget", which reads as if four powers had been
+    tried. It now says "that was actually searched", and the appended trace
+    names each power and whether it ran.
+
+- **`SosOpts::basis_degree` now reaches the multiplier search.**
+  `multiplier_search` derived its basis degree from `deg(σ·p)` alone and
+  never read the option, so the multiplier path was bit-identical at every
+  setting — while `E-SOS-002`'s remediation told callers to raise it. The
+  option is now a floor on that path (a basis below `⌈deg(σ·p)/2⌉` cannot
+  reproduce `σ·p`'s top-degree terms, so it can only be raised, not lowered).
+
+- **Fixed a doc comment on `psd::symmetry_reduced_search`** that claimed
+  Douglas–Rachford "reliably closes the gap" on the homogeneous Motzkin
+  family and cited `psd::tests::psd_search_certifies_homogeneous_motzkin_at_multiplier_power_2`,
+  a test that has never existed.
 
 - **`telescope2d` generalizes from two bound indices to an arbitrary `m ≥ 1`:
   `experimental.telescope_md`** (M4 extension). `telescope2d(term, n, j, k)`
@@ -1677,6 +1753,26 @@ Both are detailed under *Behaviour changes to plan for*.
   `psd::tests::psd_search_certifies_robinsons_form_with_a_reznick_multiplier`
   check the identities by hand, independent of the search that proposed them.
 
+  > **RETRACTED 2026-08-20 — the premise of the block below is false.** It
+  > claims the homogeneous ternary Motzkin form needs multiplier power
+  > `N = 2` and that `N = 1` "is not classically expected to work … at all".
+  > `(x²+y²+z²)·(x⁴y²+x²y⁴−3x²y²z²+z⁶)` **is** a sum of squares:
+  >
+  > ```text
+  > = (½x³y+xy³−3⁄2xyz²)² + ¾(x³y−xyz²)² + (xy²z−xz³)² + (x²yz−yz³)² + (x²y²−z⁴)²
+  > ```
+  >
+  > which is exactly why Motzkin is the standard example of a PSD non-SOS
+  > form that becomes SOS after one factor of `Σxᵢ²`. The measurements below
+  > are real; the diagnosis attached to them was not, and the round of
+  > engineering they motivated was aimed at a problem that does not exist.
+  > The real defect was a missing half-Newton-polytope reduction — see the
+  > Unreleased entry. The test cited below asserted the wrong mathematics and
+  > passed; it has been replaced by its contrapositive,
+  > `psd::tests::psd_search_certifies_homogeneous_motzkin_times_sum_of_squares_at_n1`.
+  > Kept here, struck through in spirit, because a retraction that deletes
+  > the claim leaves nothing to warn the next reader off re-deriving it.
+
   **What's still open, now attempted to closure and precisely quantified
   (2026-08-17, round 3):** the homogeneous 3-variable form of Motzkin,
   `(x²+y²+z²)²·(x⁴y²+x²y⁴−3x²y²z²+z⁶)` — multiplier power `N = 2`, not `N = 1`
@@ -1718,6 +1814,11 @@ Both are detailed under *Behaviour changes to plan for*.
   All three lines of evidence agree: this is now a genuine, quantified
   numerical-hardness finding (an unusually slowly-converging tangential
   intersection), not an under-tuned budget or an unexplored structural avenue.
+  *(2026-08-20: the measurements hold; the conclusion does not. The three
+  approaches were all applied to `N = 2`, which was never the right power,
+  and the tangential-intersection diagnosis does not explain the `N = 1`
+  refusal either — the cyclic AM-GM sextic has the identical geometry and
+  certifies on the unreduced family. See the retraction above.)*
   `symmetry_reduced_search` ships anyway as a real, general capability — it is
   wired into `psd_search` as a further fallback (only once the direct search
   and facial reduction have both already failed, so it adds no cost to any
