@@ -208,8 +208,9 @@ pub use lean::{
 #[cfg(feature = "groebner")]
 pub use diffalg::{
     dae_index_reduce, dae_index_reduce_ranked, rosenfeld_groebner, rosenfeld_groebner_algebraic,
-    rosenfeld_groebner_ranked, rosenfeld_groebner_with_options, DaeIndexReduction, DiffAlgError,
-    DifferentialIdeal, DifferentialRanking, DifferentialRing, RegularDifferentialChain,
+    rosenfeld_groebner_parametric, rosenfeld_groebner_ranked, rosenfeld_groebner_with_options,
+    DaeIndexReduction, DiffAlgError, DifferentialIdeal, DifferentialRanking, DifferentialRing,
+    ParametricProlongOpts, ParametricRosenfeldResult, RegularDifferentialChain,
     RosenfeldGroebnerResult,
 };
 #[cfg(feature = "groebner")]
@@ -231,10 +232,11 @@ pub use primitive::{
 };
 #[cfg(feature = "groebner")]
 pub use solver::{
-    diophantine, expr_to_gbpoly, extract_regular_chain_from_basis, gbpoly_to_expr,
-    main_variable_recursive, solve_numerical, solve_polynomial_system, solve_transcendental,
-    triangularize, CertifiedPoint, DiophantineError, DiophantineSolution, HomotopyError,
-    HomotopyOpts, RegularChain, Solution, SolutionSet, SolverError, TranscendentalOutcome,
+    diophantine, expr_to_gbpoly, expr_to_param_gbpoly, extract_regular_chain_from_basis,
+    gbpoly_to_expr, main_variable_recursive, solve_numerical, solve_polynomial_system,
+    solve_transcendental, triangularize, CertifiedPoint, DiophantineError, DiophantineSolution,
+    HomotopyError, HomotopyOpts, RegularChain, Solution, SolutionSet, SolverError,
+    TranscendentalOutcome,
 };
 
 pub fn version() -> &'static str {

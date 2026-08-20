@@ -133,6 +133,10 @@ result.variables()   # [t, x, dx/dt, ddx/dt/dt] — jets, in exponent-slot order
 
 `final_basis()` returns `None` when `consistent` is `False`.
 
+### Model parameters in the coefficient field
+
+By default every free symbol is a ring variable, so a model parameter enlarges the monomial order, the pair schedule and the staircase. `rosenfeld_groebner(dae, params=[...])` moves the listed symbols into `Q(params)` instead and returns a `ParametricRosenfeldGroebnerResult` whose `final_basis()` is a `ParametricGroebnerBasis`. With `eliminate=[...]` (the unobserved states, jet chains included) it also reports `minimal_prolongation_rounds` and warns when it prolonged past it, because one prolongation too many costs orders of magnitude for the same relation. See [Coefficient fields](./solving.md#differential-elimination-with-the-parameters-in-qparams) for the full surface, the scope of "minimal", and — where this is used for structural identifiability — which identifiability it decides (multi-experiment, by Ovchinnikov–Pillay–Pogudin–Scanlon Theorem 19).
+
 ## Sensitivity analysis
 
 Sensitivity analysis computes how solutions depend on parameters. `sensitivity_system(ode, params)` augments the state with `∂x/∂p`; `adjoint_system(ode, objective_grad)` takes the gradient of the objective with respect to the state, as a list parallel to `ode.state_vars()`:

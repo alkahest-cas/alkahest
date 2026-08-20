@@ -22,9 +22,11 @@ use crate::dae::{
 };
 use crate::errors::AlkahestError;
 use crate::kernel::{ExprData, ExprId, ExprPool};
-use crate::poly::groebner::{GbPoly, GroebnerBasis, MonomialOrder};
-use crate::solver::expr_to_gbpoly;
+use crate::poly::groebner::{
+    GbPoly, GroebnerBasis, MonomialOrder, ParamGbPoly, ParamGroebnerBasis, ParamGroebnerError,
+};
 use crate::solver::SolverError;
+use crate::solver::{expr_to_gbpoly, expr_to_param_gbpoly};
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
@@ -203,6 +205,24 @@ fn vars_for_dae(dae: &DAE, scratch: &[ExprId], pool: &ExprPool) -> Vec<ExprId> {
     out
 }
 
+/// Append every symbol of `fresh` that `vars` does not already name.
+///
+/// Prolongation pads existing polynomials by extending their exponent vectors,
+/// which is only meaningful if slot `i` keeps naming the same symbol from round
+/// to round.  Recomputing the ranking from scratch does **not** guarantee that:
+/// a jet reached only through the previous round's equations drops out of the
+/// next round's scratch set, every later slot shifts down by one, and the
+/// padded polynomials silently start asserting relations about other variables.
+/// Merging instead of replacing keeps the ranking append-only, which is what
+/// [`pad_gbpoly`] assumes.
+fn merge_vars(vars: &mut Vec<ExprId>, fresh: Vec<ExprId>) {
+    for v in fresh {
+        if !vars.contains(&v) {
+            vars.push(v);
+        }
+    }
+}
+
 fn polys_from_equations(
     eqs: &[ExprId],
     vars: &[ExprId],
@@ -299,7 +319,7 @@ pub fn rosenfeld_groebner_ranked(
             .copied()
             .chain(prolong_exprs.iter().copied())
             .collect();
-        vars = vars_for_dae(&work, &scratch, pool);
+        merge_vars(&mut vars, vars_for_dae(&work, &scratch, pool));
         let n = vars.len();
         for p in &mut active {
             *p = pad_gbpoly(p, n);
@@ -383,6 +403,380 @@ pub fn rosenfeld_groebner_ranked(
         },
         DifferentialRanking { vars },
     ))
+}
+
+// ---------------------------------------------------------------------------
+// M9 × V2-13 — differential elimination with the parameters in Q(params)
+// ---------------------------------------------------------------------------
+
+/// Knobs for [`rosenfeld_groebner_parametric`].
+#[derive(Clone, Copy, Debug)]
+pub struct ParametricProlongOpts<'a> {
+    /// Monomial order for each round's basis.  `Lex` with the variables to
+    /// eliminate ordered first is what elimination needs.
+    pub order: MonomialOrder,
+    /// Prolongation budget — the number of formal time derivatives taken.
+    pub max_prolong_rounds: usize,
+    /// The variables the caller intends to eliminate, e.g. the unobserved
+    /// states of an ODE model.  Their whole jet chain is eliminated with them:
+    /// naming `x` also names `dx/dt`, `d2x/dt2`, … as they appear.
+    ///
+    /// Empty disables both the informativeness check and [`Self::minimal`].
+    pub eliminate: &'a [ExprId],
+    /// Stop at the **first** prolongation round whose elimination ideal is
+    /// non-trivial, instead of prolonging to the budget.
+    ///
+    /// See [`ParametricRosenfeldResult::minimal_prolongation_rounds`] for the
+    /// scope of "first informative" — it is not a guarantee of minimality.
+    pub minimal: bool,
+}
+
+impl Default for ParametricProlongOpts<'_> {
+    fn default() -> Self {
+        ParametricProlongOpts {
+            order: MonomialOrder::Lex,
+            max_prolong_rounds: DEFAULT_MAX_PROLONG_ROUNDS,
+            eliminate: &[],
+            minimal: false,
+        }
+    }
+}
+
+/// Result of [`rosenfeld_groebner_parametric`].
+#[derive(Clone, Debug)]
+pub struct ParametricRosenfeldResult {
+    /// `false` iff the unit ideal was reached over `Q(params)`.
+    pub consistent: bool,
+    /// `true` if prolongation stopped on the budget, or on `minimal`, rather
+    /// than because differentiating stopped adding relations.  A truncated
+    /// basis is a sound set of consequences but need not be complete.
+    pub truncated: bool,
+    /// Number of prolongation rounds that contributed new relations.
+    pub prolongation_rounds: usize,
+    /// The prolonged [`DAE`]: the input plus every jet introduced.
+    pub working_dae: DAE,
+    /// The saturated basis over `Q(params)`, or `None` when inconsistent.
+    pub final_basis: Option<ParamGroebnerBasis>,
+    /// The lowest round count at which the elimination ideal with respect to
+    /// [`ParametricProlongOpts::eliminate`] was non-empty, or `None` when no
+    /// round was informative or no `eliminate` list was given.
+    ///
+    /// **Scope.** This is "the first round at which eliminating those variables
+    /// leaves a generator", not a theorem about the differential ideal.  For a
+    /// single-output model it coincides with the jet order the input–output
+    /// relation needs; **for multi-output models the criterion is known to be
+    /// wrong**, because one output can become informative several rounds before
+    /// the others and the truncated basis then misses their relations.  Treat
+    /// it as a cost signal, not a certificate.
+    ///
+    /// It matters because the cost is not gentle: on the SIR model one extra
+    /// prolongation past the informative round takes the elimination from a
+    /// single 4-term generator to thirteen generators of up to 233 terms with
+    /// 30-digit rational-function coefficients — four orders of magnitude of
+    /// time, for the same relation.
+    pub minimal_prolongation_rounds: Option<usize>,
+}
+
+fn param_err_to_diffalg(e: ParamGroebnerError) -> DiffAlgError {
+    DiffAlgError::NotPolynomial(e.to_string())
+}
+
+fn is_unit_ideal_param(gb: &ParamGroebnerBasis) -> bool {
+    gb.generators().iter().any(|g| {
+        g.terms.len() == 1
+            && g.terms
+                .keys()
+                .next()
+                .is_some_and(|e| e.iter().all(|&x| x == 0))
+    })
+}
+
+/// The exponent slots of `vars` naming `roots` or any jet descended from one.
+///
+/// `dae.variables[i]` differentiates to `dae.derivatives[i]`, so following that
+/// map to a fixed point turns "eliminate `x`" into "eliminate `x`, `dx/dt`,
+/// `d2x/dt2`, …" — which is what a caller eliminating a state means.
+fn jet_closure_slots(dae: &DAE, vars: &[ExprId], roots: &[ExprId]) -> Vec<usize> {
+    let mut closed: HashSet<ExprId> = roots.iter().copied().collect();
+    loop {
+        let mut grew = false;
+        for (i, v) in dae.variables.iter().enumerate() {
+            if closed.contains(v) {
+                if let Some(&d) = dae.derivatives.get(i) {
+                    grew |= closed.insert(d);
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    vars.iter()
+        .enumerate()
+        .filter(|(_, v)| closed.contains(v))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// True when at least one generator is free of every slot in `slots` — i.e. the
+/// elimination ideal is non-trivial.
+fn param_elimination_is_informative(gb: &ParamGroebnerBasis, slots: &[usize]) -> bool {
+    gb.generators().iter().any(|g| {
+        !g.terms
+            .keys()
+            .any(|e| slots.iter().any(|&i| e.get(i).copied().unwrap_or(0) > 0))
+    })
+}
+
+/// The jet chain `v, dv, d²v, …` of a state, `depth` derivatives deep, using
+/// the same `d{name}/dt` naming convention prolongation itself uses.
+fn jet_chain(v: ExprId, dv: ExprId, depth: usize, pool: &ExprPool) -> Vec<ExprId> {
+    let mut out = vec![v, dv];
+    let mut cur = dv;
+    for _ in 0..depth {
+        let name = pool.with(cur, |d| match d {
+            ExprData::Symbol { name, .. } => format!("d{name}/dt"),
+            _ => "d?/dt".to_string(),
+        });
+        cur = pool.symbol(&name, crate::kernel::Domain::Real);
+        out.push(cur);
+    }
+    out
+}
+
+/// A ranking with the whole jet tower laid out up front, eliminated states
+/// first.
+///
+/// Two things need this.  Elimination by generator filtering is only valid
+/// under a lex order that ranks the eliminated variables *above* the rest, and
+/// [`vars_for_dae`] interleaves states with outputs instead.  And the ranking
+/// has to be append-only across rounds for [`pad_param_gbpoly`] to mean
+/// anything, which it cannot be if new jets of an eliminated state keep having
+/// to be inserted in front of the outputs.  Laying the tower out to the
+/// prolongation depth settles both; the jets that never get used are unused
+/// variables in the ring, which cost nothing but a slot.
+fn ranked_jet_vars(
+    dae: &DAE,
+    eliminate: &[ExprId],
+    params: &[ExprId],
+    depth: usize,
+    pool: &ExprPool,
+) -> Vec<ExprId> {
+    let mut elim_first: Vec<ExprId> = Vec::new();
+    let mut rest: Vec<ExprId> = Vec::new();
+    for (i, &v) in dae.variables.iter().enumerate() {
+        let Some(&dv) = dae.derivatives.get(i) else {
+            continue;
+        };
+        let chain = jet_chain(v, dv, depth, pool);
+        if eliminate.contains(&v) {
+            elim_first.extend(chain);
+        } else {
+            rest.extend(chain);
+        }
+    }
+    let mut out: Vec<ExprId> = vec![dae.time_var];
+    for v in elim_first.into_iter().chain(rest) {
+        if !params.contains(&v) && !out.contains(&v) {
+            out.push(v);
+        }
+    }
+    out
+}
+
+fn param_vars_for_dae(
+    dae: &DAE,
+    scratch: &[ExprId],
+    params: &[ExprId],
+    pool: &ExprPool,
+) -> Vec<ExprId> {
+    vars_for_dae(dae, scratch, pool)
+        .into_iter()
+        .filter(|v| !params.contains(v))
+        .collect()
+}
+
+fn pad_param_gbpoly(p: &ParamGbPoly, new_n: usize) -> ParamGbPoly {
+    if new_n == p.n_vars {
+        return p.clone();
+    }
+    assert!(new_n > p.n_vars);
+    let pad = new_n - p.n_vars;
+    ParamGbPoly {
+        terms: p
+            .terms
+            .iter()
+            .map(|(e, c)| {
+                let mut e = e.clone();
+                e.extend(std::iter::repeat(0u32).take(pad));
+                (e, c.clone())
+            })
+            .collect(),
+        n_vars: new_n,
+        n_params: p.n_params,
+    }
+}
+
+/// Rosenfeld-style prolongation with `params` in the **coefficient field**
+/// `Q(params)` rather than as extra ring variables (M9 × V2-13).
+///
+/// [`rosenfeld_groebner_ranked`] puts every free symbol in the ring, so a model
+/// parameter enlarges the monomial order, the pair schedule and the staircase.
+/// Here the parameters are moved into the coefficients, which is the difference
+/// between eliminating states from `Q[states, jets, params]` and from
+/// `Q(params)[states, jets]` — the computation the input–output relations of an
+/// ODE model actually need.
+///
+/// The returned basis is **generic** in the parameters, exactly as
+/// [`ParamGroebnerBasis`] describes: read
+/// [`ParamGroebnerBasis::conditions`] for the hypotheses it used.
+///
+/// `params` must be disjoint from the DAE's variables, derivatives and time
+/// variable; a parameter listed there is dropped from the ring, so it must not
+/// be one of the unknowns.
+pub fn rosenfeld_groebner_parametric(
+    dae: &DAE,
+    pool: &ExprPool,
+    params: &[ExprId],
+    opts: ParametricProlongOpts<'_>,
+) -> Result<(ParametricRosenfeldResult, DifferentialRanking), DiffAlgError> {
+    if dae.equations.is_empty() {
+        return Err(DiffAlgError::EmptySystem);
+    }
+
+    let source_eqs = dae.equations.clone();
+    let mut work = dae.clone();
+    let mut scratch: Vec<ExprId> = source_eqs.clone();
+    let mut vars = if opts.eliminate.is_empty() {
+        param_vars_for_dae(&work, &scratch, params, pool)
+    } else {
+        let mut v = ranked_jet_vars(
+            &work,
+            opts.eliminate,
+            params,
+            opts.max_prolong_rounds + 1,
+            pool,
+        );
+        merge_vars(&mut v, param_vars_for_dae(&work, &scratch, params, pool));
+        v
+    };
+    let mut active: Vec<ParamGbPoly> = work
+        .equations
+        .iter()
+        .map(|&eq| expr_to_param_gbpoly(eq, &vars, params, pool).map_err(solver_err_to_diffalg))
+        .collect::<Result<_, _>>()?;
+
+    let mut prolong_exprs = source_eqs.clone();
+    let mut minimal_prolongation_rounds: Option<usize> = None;
+
+    // The budget counts prolongations, so `max + 1` bases get computed: one for
+    // the unprolonged system and one after each round.
+    for round in 0..=opts.max_prolong_rounds {
+        let gb = ParamGroebnerBasis::compute(active.clone(), opts.order)
+            .map_err(param_err_to_diffalg)?;
+
+        if is_unit_ideal_param(&gb) {
+            return Ok((
+                ParametricRosenfeldResult {
+                    consistent: false,
+                    truncated: false,
+                    prolongation_rounds: round,
+                    working_dae: work,
+                    final_basis: None,
+                    minimal_prolongation_rounds,
+                },
+                DifferentialRanking { vars },
+            ));
+        }
+
+        if !opts.eliminate.is_empty() {
+            let slots = jet_closure_slots(&work, &vars, opts.eliminate);
+            if minimal_prolongation_rounds.is_none()
+                && param_elimination_is_informative(&gb, &slots)
+            {
+                minimal_prolongation_rounds = Some(round);
+                if opts.minimal {
+                    return Ok((
+                        ParametricRosenfeldResult {
+                            consistent: true,
+                            truncated: true,
+                            prolongation_rounds: round,
+                            working_dae: work,
+                            final_basis: Some(gb),
+                            minimal_prolongation_rounds,
+                        },
+                        DifferentialRanking { vars },
+                    ));
+                }
+            }
+        }
+
+        if round == opts.max_prolong_rounds {
+            return Ok((
+                ParametricRosenfeldResult {
+                    consistent: true,
+                    truncated: true,
+                    prolongation_rounds: round,
+                    working_dae: work,
+                    final_basis: Some(gb),
+                    minimal_prolongation_rounds,
+                },
+                DifferentialRanking { vars },
+            ));
+        }
+
+        let mut next_prolong = Vec::with_capacity(prolong_exprs.len());
+        for &eq in &prolong_exprs {
+            let d_eq =
+                differentiate_equation(eq, &work.variables, &work.derivatives, work.time_var, pool)
+                    .map_err(|e| DiffAlgError::DiffError(e.to_string()))?;
+            extend_dae_for_derivative_symbols(&mut work, d_eq, pool);
+            next_prolong.push(d_eq);
+        }
+        prolong_exprs = next_prolong;
+        scratch = source_eqs
+            .iter()
+            .copied()
+            .chain(prolong_exprs.iter().copied())
+            .collect();
+        let old_n = vars.len();
+        merge_vars(&mut vars, param_vars_for_dae(&work, &scratch, params, pool));
+        let n = vars.len();
+        for p in &mut active {
+            *p = pad_param_gbpoly(p, n);
+        }
+        // The previous round's basis is still a basis over the wider ring, so
+        // the new relations can be tested against it without recomputing.
+        let gb_check = gb.extend_vars(n - old_n);
+
+        let mut to_add: Vec<ParamGbPoly> = Vec::new();
+        for &d_eq in &prolong_exprs {
+            let p =
+                expr_to_param_gbpoly(d_eq, &vars, params, pool).map_err(solver_err_to_diffalg)?;
+            if !gb_check.contains(&p) {
+                to_add.push(p);
+            }
+        }
+
+        if to_add.is_empty() {
+            // Saturated: differentiating adds nothing the ideal did not have.
+            return Ok((
+                ParametricRosenfeldResult {
+                    consistent: true,
+                    truncated: false,
+                    prolongation_rounds: round,
+                    working_dae: work,
+                    final_basis: Some(gb_check),
+                    minimal_prolongation_rounds,
+                },
+                DifferentialRanking { vars },
+            ));
+        }
+
+        active.extend(to_add);
+    }
+
+    unreachable!("the `round == max_prolong_rounds` arm returns")
 }
 
 /// Calls [`rosenfeld_groebner_with_options`] with the default maximum prolongation rounds.
@@ -479,6 +873,155 @@ mod tests {
         let dae = DAE::new(vec![eq1, eq2], vec![y], vec![dy], t);
         let r = rosenfeld_groebner(&dae, &p, MonomialOrder::Lex).unwrap();
         assert!(!r.consistent);
+    }
+
+    /// Prolongation used to emit relations the system does not imply.
+    ///
+    /// Two independent causes, both visible on `R' = I, I' = -I` after two
+    /// rounds:
+    ///
+    /// * a state whose derivative had already been promoted got its
+    ///   contribution counted twice — once from its own `(I, I')` pair and once
+    ///   from the `(I', I'')` pair the previous round added; and
+    /// * a jet that was *not* promoted got its contribution dropped entirely,
+    ///   because the next differentiation treated it as a constant.  `I''`
+    ///   reaches the equations through `R`'s chain without `R'` ever appearing
+    ///   in one, so `R'` never became a state and the chain stopped there.
+    ///
+    /// The first inflates a coefficient, the second deletes a term; together
+    /// they collapsed the second prolongation of `R' = I` into `-2·I'' = 0`,
+    /// which forces `I = 0` — a relation about a decaying exponential that is
+    /// simply false.
+    #[test]
+    fn prolongation_does_not_invent_relations() {
+        let p = pool();
+        let t = p.symbol("t", Domain::Real);
+        let i = p.symbol("I", Domain::Real);
+        let r_ = p.symbol("R", Domain::Real);
+        let di = p.symbol("dI/dt", Domain::Real);
+        let dr = p.symbol("dR/dt", Domain::Real);
+        // R' = I, I' = -I.
+        let eq1 = p.add(vec![dr, p.mul(vec![p.integer(-1), i])]);
+        let eq2 = p.add(vec![di, i]);
+        let dae = DAE::new(vec![eq1, eq2], vec![r_, i], vec![dr, di], t);
+
+        let (res, ranking) = rosenfeld_groebner_ranked(&dae, &p, MonomialOrder::Lex, 2).unwrap();
+        assert!(res.consistent);
+        let gb = res.final_basis.expect("consistent");
+
+        // The genuine consequence.
+        let d2i = p.symbol("ddI/dt/dt", Domain::Real);
+        let truth = p.add(vec![d2i, p.mul(vec![p.integer(-1), i])]);
+        let truth_poly = expr_to_gbpoly(truth, &ranking.vars, &p).unwrap();
+        assert!(gb.contains(&truth_poly), "I'' - I is a consequence");
+
+        // Nothing forces the state to vanish identically.
+        for false_claim in [i, di, d2i] {
+            let q = expr_to_gbpoly(false_claim, &ranking.vars, &p).unwrap();
+            assert!(
+                !gb.contains(&q),
+                "prolongation asserted a jet of the state vanishes identically"
+            );
+        }
+    }
+
+    /// The jet ranking has to be append-only across prolongation rounds.
+    ///
+    /// It used to be recomputed from scratch each round, and
+    /// [`vars_for_dae`] appends the symbols it scrapes out of the equations
+    /// *after* the declared jets — so introducing `d²x/dt²` pushed the trailing
+    /// parameter `a` one slot to the right, under polynomials that had already
+    /// been padded on the assumption that slot `i` still meant what it meant
+    /// last round.  On `x' = a·x`, one prolongation, that silently turned the
+    /// input equation into a relation about `d²x/dt²` and lost it from the
+    /// basis entirely.
+    #[test]
+    fn the_jet_ranking_is_append_only() {
+        let p = pool();
+        let t = p.symbol("t", Domain::Real);
+        let x = p.symbol("x", Domain::Real);
+        let dx = p.symbol("dx/dt", Domain::Real);
+        let a = p.symbol("a", Domain::Real);
+        // x' = a·x, with `a` an ordinary ring variable (no params here).
+        let eq = p.add(vec![dx, p.mul(vec![p.integer(-1), a, x])]);
+        let dae = DAE::new(vec![eq], vec![x], vec![dx], t);
+
+        let (res, ranking) =
+            rosenfeld_groebner_ranked(&dae, &p, MonomialOrder::GRevLex, 1).unwrap();
+        let gb = res.final_basis.expect("consistent");
+
+        // The system's own equation is a consequence of itself.
+        let src = expr_to_gbpoly(eq, &ranking.vars, &p).unwrap();
+        assert!(gb.contains(&src), "the input equation left the ideal");
+
+        // ...and x·x'' - x' is not: it would need a·x = 1.
+        let d2x = p.symbol("ddx/dt/dt", Domain::Real);
+        let bogus = p.add(vec![p.mul(vec![x, d2x]), p.mul(vec![p.integer(-1), dx])]);
+        let q = expr_to_gbpoly(bogus, &ranking.vars, &p).unwrap();
+        assert!(
+            !gb.contains(&q),
+            "a shifted exponent slot invented a relation"
+        );
+    }
+
+    /// The parametric route reads the input–output relation of an ODE model
+    /// straight out of the DAE, with the rate constant in `Q(a)` rather than as
+    /// a fourth ring variable (2026-08-19 issue #16).
+    #[test]
+    fn parametric_prolongation_yields_the_io_relation() {
+        let p = pool();
+        let t = p.symbol("t", Domain::Real);
+        let x = p.symbol("x", Domain::Real);
+        let y = p.symbol("y", Domain::Real);
+        let dx = p.symbol("dx/dt", Domain::Real);
+        let dy = p.symbol("dy/dt", Domain::Real);
+        let a = p.symbol("a", Domain::Real);
+        // x' = -a·x, y = x  =>  y' + a·y = 0.
+        let eq1 = p.add(vec![dx, p.mul(vec![a, x])]);
+        let eq2 = p.add(vec![y, p.mul(vec![p.integer(-1), x])]);
+        let dae = DAE::new(vec![eq1, eq2], vec![x, y], vec![dx, dy], t);
+
+        let (r, ranking) = rosenfeld_groebner_parametric(
+            &dae,
+            &p,
+            &[a],
+            ParametricProlongOpts {
+                order: MonomialOrder::Lex,
+                max_prolong_rounds: 3,
+                eliminate: &[x],
+                minimal: true,
+            },
+        )
+        .unwrap();
+
+        // One derivative of the output is enough, not three.
+        assert_eq!(r.minimal_prolongation_rounds, Some(1));
+        assert_eq!(r.prolongation_rounds, 1);
+        assert!(
+            !ranking.vars.contains(&a),
+            "`a` must not be a ring variable"
+        );
+
+        let gb = r.final_basis.expect("consistent");
+        let state_slots: Vec<usize> = ranking
+            .vars
+            .iter()
+            .enumerate()
+            .filter(|(_, &v)| {
+                let name = p.with(v, |d| match d {
+                    ExprData::Symbol { name, .. } => name.clone(),
+                    _ => String::new(),
+                });
+                name.trim_start_matches('d').split('/').next() == Some("x")
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let io = gb.eliminate(&state_slots);
+        assert_eq!(io.len(), 1);
+
+        let relation = p.add(vec![dy, p.mul(vec![a, y])]);
+        let q = expr_to_param_gbpoly(relation, &ranking.vars, &[a], &p).unwrap();
+        assert!(io.contains(&q), "y' + a·y = 0 is the input–output relation");
     }
 
     #[test]
