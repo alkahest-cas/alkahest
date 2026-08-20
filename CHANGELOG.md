@@ -2,6 +2,81 @@
 
 ## Unreleased
 
+- **`verified_integral` refused bounded, continuous integrands and called them
+  "singular".** `asin` and `acos` on `[0, 1]`, `sqrt(1 - x²)` on `[0, 1]`,
+  `sqrt(x)`, `xˣ`, `(1 - cos x)/x²` and `(x - 1)/log x` on `[0, 1]` all came
+  back `E-VALIDATED-003` — "the integrand is singular at the right endpoint" —
+  which for `asin`, whose value there is `π/2`, was not a conservative
+  approximation but a false statement. The refusal was a hard cliff, identical
+  across `order ∈ {2,…,24}` × `prec ∈ {64,…,512}` × `tol ∈ {1e-9,…,1}` ×
+  `max_subdivisions ∈ {64,…,1e5}`, and one ulp wide: backing the endpoint off
+  by `1e-8` succeeded in every case.
+
+  The cause is that every Taylor-model rule needs a derivative bound, and
+  `asin`, `sqrt`, `log` and the reciprocal have none at the end of their
+  domain, so no model exists on the last panel however far it is bisected. A
+  panel where the model fails but the integrand is *bounded* is now closed with
+  a derivative-free `width × range` bound instead. The range comes from
+  directed-rounding interval arithmetic over the extended reals
+  (`validated::interval`): endpoints stay exact, so `1 - x²` on `[1-h, 1]`
+  evaluates to `[0, …]` on the nose rather than dipping below `sqrt`'s domain,
+  and `log([0, h]) = [-∞, log h]` composes with the factor that tames it so
+  that `xˣ = exp(x·log x) ∈ [0, 1]` comes out bounded. Independently, the
+  removable-singularity argument now **iterates** Cauchy's mean value theorem,
+  which is what `(1 - cos x)/x²` needs (`D' = 2x` vanishes where `D = x²` does;
+  only `D'' = 2` is bounded away from zero).
+
+  Genuinely unbounded integrands have no bounded range and still refuse:
+  `-log x`, `(log x)²`, `1/√x`, `1/√(1-x²)`, `log x · log(1-x)` on `[0, 1]`,
+  and `1/x` and `sin(x)/x²` across zero. The refusal message no longer calls a
+  finite integrand singular — it names the Taylor rule that stopped, says the
+  range fallback found nothing bounded either, and keeps the existing
+  distinction between "no enclosure of the integrand exists" and "the integral
+  does not exist". A 1209-enclosure containment fuzz against mpmath found no
+  soundness failure, and the classical-integral audit goes from 28 enclosed /
+  12 refused to 33 enclosed / 7 refused with no enclosure missing its closed
+  form.
+
+- **`verified_sign` was not monotone in the box: a strictly smaller box could
+  lose a verdict the larger one had.** The collar the endpoint-series argument
+  plants is only strong when the box endpoint *is* the point the inequality is
+  tight at. Backing off by `δ` makes the leading coefficient `g(δ)`, which for
+  Cusa–Huygens (`g ~ x⁵/60`) cannot beat its own evaluation noise or the linear
+  term of the tail bound. The measured effect was a dead band of left endpoints
+  from about `1e-300` to `1e-9` answering `"undecided"`, sandwiched between
+  `"true"` at `0` and `"true"` from `1e-6` up — so shrinking a box could lose a
+  proof. An `"undecided"` one-dimensional box that stops short of `x = 0` is
+  now retried with the collar planted at `0`; `"true"` on the larger box
+  implies `"true"` on the box asked about, and only `"true"` is taken from the
+  retry. Cusa–Huygens, Mitrinović–Adamović, Wilker and Huygens are now `"true"`
+  across the whole band. Tightness at a point other than `0` still shows the
+  effect, and `verified_sign`'s documentation now says so and says what to do
+  about it.
+
+- **`verified_sign`, `verified_no_roots`, `verified_integral` and
+  `bound_on_box` were uninterruptible from Python.** A `verified_sign` on
+  `tan` with large integer coefficients ran 109.9 s, and a `signal.setitimer`
+  around it did not fire until the call had already returned (a 60 s timer
+  fired at 182.8 s). Releasing the GIL is not enough on its own: CPython runs a
+  Python-level signal handler only in the main thread and only between
+  bytecodes. The four entry points now run the native call on a scoped worker
+  thread while the calling thread polls `PyErr_CheckSignals` every 25 ms; a
+  pending signal sets the cooperative cancellation flag, and the searches check
+  it at every subdivision and wind down exactly as an exhausted
+  `max_subdivisions` does — wider answer, sooner, never a wrong one. A 3 s
+  timer now fires at 3 s. `alkahest_core::budget::request_cancel` and an
+  active `Budget` reach the same checkpoint for direct Rust callers.
+
+- **The validated-bounds docs still listed five functions as uncovered that
+  3.9.0 had covered.** `bounds_supported`'s docstring example claimed
+  `bessel_j0` answers `(False, ['bessel_j0'])`; the real answer is
+  `(True, [])`, and `docs/mdbook/src/validated-bounds.md` likewise listed
+  `bessel_j0`, `bessel_j1`, `digamma`, `lambert_w` and `gamma` as outside
+  Taylor-model coverage. All five were verified against the build and both
+  places corrected, with the example moved to `floor`, which really has no
+  Taylor-model rule. A test now asserts the live answer for all seven covered
+  functions so the prose cannot drift again unnoticed.
+
 - **`telescope2d` generalizes from two bound indices to an arbitrary `m ≥ 1`:
   `experimental.telescope_md`** (M4 extension). `telescope2d(term, n, j, k)`
   only ever reached exactly two bound indices; the underlying ansatz search
