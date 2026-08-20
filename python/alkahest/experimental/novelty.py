@@ -740,8 +740,13 @@ class RecurrenceClaim:
             return None
         if relation is None:
             return None
+        # The window must be filled densely: ``relation`` is a sparse map from
+        # shift to coefficient and the constructor reads its list positionally,
+        # so handing it the values at the *sorted* keys would close every gap
+        # and read ``a(n) = a(n-1) + a(n-3)`` as ``a(n) = a(n-1) + a(n-2)``.
+        low, high = min(relation), max(relation)
         try:
-            return cls([relation[j] for j in sorted(relation)], offset=min(relation))
+            return cls([relation.get(j, ()) for j in range(low, high + 1)], offset=low)
         except ValueError:
             return None
 
@@ -1161,8 +1166,18 @@ _LOOKS_LIKE_RECURRENCE = re.compile(r"\b[A-Za-z]\(\s*n\s*[-+]\s*\d+\s*\)")
 #: OEIS's own hedges. An entry that marks a formula this way is telling you the
 #: recurrence was fitted and never proved — which is the whole reason a novelty
 #: filter over OEIS is worth anything.
+#:
+#: Deliberately wider than the obvious four words: contributors write "It appears
+#: that", "seems that", "Probably", "believed to hold" and "verified up to n=1000"
+#: as often as they write "conjecture", and every one of those is the same
+#: statement about the same epistemic status. Missing one silently promotes a
+#: fitted formula to an unqualified one.
 _HEDGE_RE = re.compile(
-    r"\b(conjectur\w*|empirical\w*|apparently|seems? to|guessed|unproved|unproven)\b",
+    r"\b("
+    r"conjectur\w*|empirical\w*|apparently|appears?|seems?|probabl\w+|"
+    r"believ\w+|presumab\w+|observ\w+|guessed|unproved|unproven|"
+    r"(checked|verified) (up )?(to|for)"
+    r")\b",
     re.IGNORECASE,
 )
 
