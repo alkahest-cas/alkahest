@@ -11365,9 +11365,11 @@ impl PyBoundsSupport {
 /// >>> p = ak.ExprPool(); x = p.symbol("x")
 /// >>> bool(ak.bounds_supported(ak.sin(x) * ak.exp(x)))
 /// True
-/// >>> answer = ak.bounds_supported(ak.bessel_j0(x))
+/// >>> bool(ak.bounds_supported(ak.bessel_j0(x)))   # covered since 3.9.0
+/// True
+/// >>> answer = ak.bounds_supported(ak.floor(x))
 /// >>> bool(answer), answer.functions
-/// (False, ['bessel_j0'])
+/// (False, ['floor'])
 #[pyfunction]
 #[pyo3(name = "bounds_supported")]
 fn py_bounds_supported(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyBoundsSupport> {
@@ -11392,6 +11394,77 @@ fn py_bounds_supported(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyBounds
         functions,
         detail,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Interruptible native calls (validated-bounds entry points)
+// ---------------------------------------------------------------------------
+
+/// How often the calling thread comes back for the GIL to look for signals.
+const INTERRUPT_POLL: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Run a long native call so that `KeyboardInterrupt`, `signal.setitimer` and
+/// friends actually fire while it is running.
+///
+/// `py.allow_threads` alone is not enough, and it is worth being precise about
+/// why. CPython runs a Python-level signal handler only in the **main thread**,
+/// and only when that thread is executing bytecode. A handler installed by
+/// `signal.signal` therefore cannot run while the main thread is inside a Rust
+/// call — with or without the GIL held — so a `setitimer(60)` around a
+/// three-minute `verified_sign` fired at three minutes, which is not a timeout.
+///
+/// So the work is moved to a scoped worker thread and the calling thread stays
+/// in a poll loop, reacquiring the GIL every [`INTERRUPT_POLL`] just long
+/// enough to call `PyErr_CheckSignals`. When that raises, the process-wide
+/// cooperative cancellation flag is set; the searches in
+/// `alkahest_core::validated::bounds` check it at every subdivision and wind
+/// down the way an exhausted `max_subdivisions` does, so the worker returns
+/// promptly with a wider-but-sound answer, which is then discarded in favour of
+/// the Python exception.
+///
+/// Two consequences worth stating rather than leaving to be discovered:
+///
+/// * `std::thread::scope` joins the worker before returning, so the borrow of
+///   the `ExprPool` cannot outlive the call and no work is left running behind
+///   the caller's back.
+/// * The work runs on another thread, so a thread-local
+///   `alkahest_core::budget::Budget` frame pushed by `ak.context(...)` is not
+///   visible to it. Cancellation is a process-wide atomic and does cross.
+fn run_interruptible<T, F>(py: Python<'_>, f: F) -> PyResult<T>
+where
+    F: FnOnce() -> T + Send,
+    T: Send,
+{
+    // Preserve a cancellation the caller had already requested: clearing one we
+    // did not set would silently resurrect somebody else's abandoned search.
+    let preset = alkahest_core::budget::is_cancelled();
+    let mut interrupt: Option<PyErr> = None;
+    let value = py.allow_threads(|| {
+        std::thread::scope(|scope| {
+            let handle = scope.spawn(f);
+            while !handle.is_finished() {
+                std::thread::sleep(INTERRUPT_POLL);
+                if interrupt.is_some() {
+                    continue;
+                }
+                if let Err(e) = Python::with_gil(|py| py.check_signals()) {
+                    interrupt = Some(e);
+                    alkahest_core::budget::request_cancel();
+                }
+            }
+            handle.join()
+        })
+    });
+    if interrupt.is_some() && !preset {
+        alkahest_core::budget::clear_cancel();
+    }
+    let value = value.map_err(|_| {
+        pyo3::exceptions::PyRuntimeError::new_err("the validated-bounds worker thread panicked")
+    })?;
+    match interrupt {
+        Some(e) => Err(e),
+        None => Ok(value),
+    }
 }
 
 /// `alkahest.bound_on_box(expr, box, *, order=6, prec=128, tol=1e-9, max_subdivisions=2048)`
@@ -11428,8 +11501,9 @@ fn py_bound_on_box(
         max_subdivisions,
     };
     let pool = pool_py.borrow(py);
-    let r =
-        core_bound_on_box(expr.id, &pool.inner, &boxes, &opts).map_err(validated_error_to_py)?;
+    let (id, inner) = (expr.id, &pool.inner);
+    let r = run_interruptible(py, || core_bound_on_box(id, inner, &boxes, &opts))?
+        .map_err(validated_error_to_py)?;
     Ok(PyEnclosure {
         lower: r.lower(),
         upper: r.upper(),
@@ -11448,16 +11522,30 @@ fn py_bound_on_box(
 /// singular or improper integrands rather than guessing.
 ///
 /// A **removable** singularity is not a refusal: an integrand written as
-/// ``N(x)/D(x)`` with ``N(p) = D(p) = 0`` and ``D'(p) != 0`` — ``log(1+x)/x``
-/// on ``[0, 1]``, ``sin(x)/x`` on ``[-1, 1]`` — is enclosed via Cauchy's mean
-/// value theorem, and the value returned is the integral of the continuous
-/// extension. The two zeros are checked *symbolically*, so a genuine pole is
-/// never mistaken for a removable one.
+/// ``N(x)/D(x)`` whose two halves vanish at the same point ``p``, to the same
+/// order, with some ``D**(d)(p) != 0`` — ``log(1+x)/x`` on ``[0, 1]``,
+/// ``sin(x)/x`` on ``[-1, 1]``, ``(1-cos(x))/(x*x)`` on ``[0, 1]`` — is
+/// enclosed via Cauchy's mean value theorem, iterated as many times as the
+/// order of the zero requires, and the value returned is the integral of the
+/// continuous extension. The zeros are checked *symbolically*, so a genuine
+/// pole is never mistaken for a removable one.
 ///
-/// A singularity that is integrable but not removable (``-log(x)`` on
-/// ``[0, 1]``, ``1/sqrt(1-x*x)`` on ``[0, 1]``) is still refused: the integral
-/// exists, but no rigorous enclosure of the *integrand* does. The
-/// :class:`ValidatedError` message says which of the two situations it is.
+/// A **bounded** integrand whose Taylor model runs out of *domain* rather than
+/// out of function is not a refusal either. ``asin`` and ``acos`` on
+/// ``[0, 1]``, ``sqrt(1 - x*x)`` on ``[0, 1]``, ``sqrt(x)`` and ``x**x`` on
+/// ``[0, 1]`` are all finite and continuous on the closed interval, but the
+/// Taylor rule needs a derivative bound it does not have at the end of the
+/// domain, so no model exists on the last panel however far it is bisected.
+/// That panel is closed with a ``width * range`` bound computed by interval
+/// arithmetic, which needs no derivative. The panel is of order ``2**-60`` of
+/// the interval by then, so the crude bound costs essentially nothing.
+///
+/// An **unbounded** integrand is still refused, whether or not the integral
+/// converges (``-log(x)`` on ``[0, 1]``, ``1/sqrt(1-x*x)`` on ``[0, 1]``): the
+/// integral exists, but no rigorous enclosure of the *integrand* does, and no
+/// bounded range exists either. The :exc:`ValidatedError` message names the
+/// Taylor rule that stopped and where, and does not claim the integral fails
+/// to exist.
 #[allow(clippy::too_many_arguments)]
 #[pyfunction]
 #[pyo3(name = "verified_integral", signature = (expr, var, a, b, *, order = 8, prec = 128, tol = 1e-9, max_subdivisions = 4096))]
@@ -11482,8 +11570,11 @@ fn py_verified_integral(
         max_subdivisions,
     };
     let pool = pool_py.borrow(py);
-    let r = core_verified_integral(expr.id, &pool.inner, var.id, a, b, &opts)
-        .map_err(validated_error_to_py)?;
+    let (id, var_id, inner) = (expr.id, var.id, &pool.inner);
+    let r = run_interruptible(py, || {
+        core_verified_integral(id, inner, var_id, a, b, &opts)
+    })?
+    .map_err(validated_error_to_py)?;
     Ok(PyEnclosure {
         lower: r.lower(),
         upper: r.upper(),
@@ -11537,7 +11628,8 @@ fn py_verified_no_roots(
         max_subdivisions,
     };
     let pool = pool_py.borrow(py);
-    let v = core_verified_no_roots(expr.id, &pool.inner, &boxes, &opts)
+    let (id, inner) = (expr.id, &pool.inner);
+    let v = run_interruptible(py, || core_verified_no_roots(id, inner, &boxes, &opts))?
         .map_err(validated_error_to_py)?;
     Ok(verdict_str(v).to_string())
 }
@@ -11557,6 +11649,16 @@ fn py_verified_no_roots(
 /// inequalities (Cusa–Huygens, Mitrinović–Adamović, Wilker, Huygens, Jordan) on
 /// boxes reaching ``x = 0``. Tightness in the *interior* is not covered and
 /// stays ``"undecided"``.
+///
+/// ``"undecided"`` is **not monotone in the box**: it is a search verdict, not
+/// a logical one, and a box that stops just short of the point an inequality is
+/// tight at gets a much weaker collar than one that reaches it. A box that
+/// stops short of ``x = 0`` is retried with the collar planted at ``0`` — a
+/// ``"true"`` on the larger box implies ``"true"`` on the box asked about — so
+/// the classical inequalities decide on ``[1e-12, pi/2]`` as well as on
+/// ``[0, pi/2]``. For a statement tight somewhere else the effect remains: on
+/// ``"undecided"``, try the *larger* box whose endpoint is the tight point
+/// before concluding the statement is out of reach.
 ///
 /// ``tol`` sets the tolerance of the *enclosure*, not of the verdict: it is an
 /// absolute width, so it does not bound how close to zero the answer may be.
@@ -11603,7 +11705,8 @@ fn py_verified_sign(
         max_subdivisions,
     };
     let pool = pool_py.borrow(py);
-    let v = core_verified_sign(expr.id, &pool.inner, &boxes, pred, &opts)
+    let (id, inner) = (expr.id, &pool.inner);
+    let v = run_interruptible(py, || core_verified_sign(id, inner, &boxes, pred, &opts))?
         .map_err(validated_error_to_py)?;
     Ok(verdict_str(v).to_string())
 }

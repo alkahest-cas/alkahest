@@ -18,15 +18,22 @@
 //!   enough to prove either case — it is never conflated with `False`.
 //! * [`verified_integral`] integrates the **continuous extension** of the
 //!   integrand across a *removable* singularity `N(x)/D(x)` with
-//!   `N(p) = D(p) = 0` and `D'` non-vanishing — the enclosure there comes
-//!   from Cauchy's mean value theorem, not from ignoring the singular point.
-//!   Genuine (non-removable) singularities are still refused.
+//!   `N⁽ᵏ⁾(p) = D⁽ᵏ⁾(p) = 0` up to the order at which `D` stops vanishing —
+//!   the enclosure there comes from Cauchy's mean value theorem, iterated,
+//!   not from ignoring the singular point. Genuine (non-removable)
+//!   singularities are still refused.
+//! * A sub-interval on which the Taylor model runs out of *domain* rather
+//!   than out of function — `asin` at `x = 1`, `sqrt` at `x = 0`, where the
+//!   integrand is finite but some derivative is not — is closed with a
+//!   derivative-free `width × range` bound (see [`super::interval`]).
+//!   Unbounded integrands have no bounded range and are still refused.
 //! * A sub-box that cannot be bounded rigorously (branch cut, pole, or
 //!   domain violation persisting after the box has been bisected far below
 //!   the scale of the original box) causes the whole call to **refuse**
 //!   with the underlying [`super::ValidatedError`], rather than silently
 //!   omitting that piece of the domain from the answer.
 
+use super::interval::panel_integral;
 use super::taylor::{taylor_range, TaylorContext, MAX_ORDER};
 use super::{
     contains_zero, from_bounds, from_float, is_finite, lb, mag, ub, width, ValidatedError,
@@ -157,6 +164,22 @@ fn split_widest(boxes: &[FBox], prec: u32) -> (Vec<FBox>, Vec<FBox>) {
     b1[best] = (*v, lo.clone(), mid.clone());
     b2[best] = (*v, mid, hi.clone());
     (b1, b2)
+}
+
+/// Cooperative stop request: [`crate::budget::request_cancel`] on any thread,
+/// or an active [`crate::budget::Budget`] that has run out.
+///
+/// The searches here are the slowest entry points in the crate — a
+/// `verified_sign` on a target with large integer coefficients can run for
+/// minutes — and until this existed there was no way to stop one short of
+/// killing the process. Every caller of this treats a stop exactly as it
+/// treats an exhausted `max_subdivisions`: it stops *refining* and reports
+/// what it already has, flagged `budget_exhausted`. So a cancelled search
+/// never invents a tighter bound, never upgrades a verdict, and never drops a
+/// piece of the domain from an integral — it only gives back a wider answer,
+/// sooner.
+fn stop_requested() -> bool {
+    crate::budget::check().is_err()
 }
 
 fn is_recoverable_domain_issue(e: &ValidatedError) -> bool {
@@ -408,7 +431,7 @@ fn extremum_search(
             }
         }
 
-        if subdivisions >= opts.max_subdivisions {
+        if subdivisions >= opts.max_subdivisions || stop_requested() {
             exhausted = true;
             active.push((key, b));
             break;
@@ -738,14 +761,23 @@ fn point_value(
     r.mid.is_finite().then(|| r.mid.clone())
 }
 
-/// The ingredients of the L'Hôpital enclosure for an integrand written as a
-/// quotient: `N`, `D`, `D'`, and the mean-value quotient `N'/D'`.
+/// How many times the mean-value argument may be iterated before giving up.
+///
+/// One step handles a simple `0/0` (`sin(x)/x`); `k` steps handle a zero of
+/// order `k` in the denominator (`(1 - cos x)/x²` needs two, since `D' = 2x`
+/// vanishes at the same point `D` does). Each step costs a symbolic derivative
+/// of both halves and a `bound_on_fboxes` over the panel, and the derivatives
+/// grow, so the ceiling is deliberately low.
+const MAX_LHOPITAL_ORDER: usize = 4;
+
+/// The ingredients of the iterated L'Hôpital enclosure for an integrand
+/// written as a quotient: the successive derivative pairs
+/// `(N⁽ᵏ⁾, D⁽ᵏ⁾)` together with each mean-value quotient `N⁽ᵏ⁾/D⁽ᵏ⁾`.
 struct RemovableQuotient {
     num: ExprId,
     den: ExprId,
-    dden: ExprId,
-    /// `N' · (D')⁻¹`.
-    ratio: ExprId,
+    /// `(N⁽ᵏ⁾, D⁽ᵏ⁾, N⁽ᵏ⁾ · (D⁽ᵏ⁾)⁻¹)` for `k = 1 ..= MAX_LHOPITAL_ORDER`.
+    levels: Vec<(ExprId, ExprId, ExprId)>,
 }
 
 impl RemovableQuotient {
@@ -754,15 +786,22 @@ impl RemovableQuotient {
     /// here asserts that a removable singularity exists.
     fn detect(expr: ExprId, pool: &ExprPool, var: ExprId) -> Option<Self> {
         let (num, den) = split_quotient(expr, pool)?;
-        let dnum = diff(num, var, pool).ok()?.value;
-        let dden = diff(den, var, pool).ok()?.value;
-        let ratio = pool.mul(vec![dnum, pool.pow(dden, pool.integer(-1_i32))]);
-        Some(RemovableQuotient {
-            num,
-            den,
-            dden,
-            ratio,
-        })
+        let mut levels = Vec::with_capacity(MAX_LHOPITAL_ORDER);
+        let (mut n, mut d) = (num, den);
+        for _ in 0..MAX_LHOPITAL_ORDER {
+            // Simplified at each step, as `expand_at_endpoint` does, or the
+            // fourth derivative of a quotient is unusable in size.
+            n = simplify(diff(n, var, pool).ok()?.value, pool).value;
+            d = simplify(diff(d, var, pool).ok()?.value, pool).value;
+            let ratio = pool.mul(vec![n, pool.pow(d, pool.integer(-1_i32))]);
+            levels.push((n, d, ratio));
+        }
+        Some(RemovableQuotient { num, den, levels })
+    }
+
+    /// `D'`, the first denominator derivative — the one Newton's method uses.
+    fn dden(&self) -> ExprId {
+        self.levels[0].1
     }
 
     /// Newton iterates of `D` inside `[lo, hi]`, as *candidate* locations for
@@ -790,7 +829,7 @@ impl RemovableQuotient {
             let Some(f) = point_value(self.den, pool, var, &z, order, prec) else {
                 break;
             };
-            let Some(df) = point_value(self.dden, pool, var, &z, order, prec) else {
+            let Some(df) = point_value(self.dden(), pool, var, &z, order, prec) else {
                 break;
             };
             if df.is_zero() || !df.is_finite() {
@@ -823,17 +862,23 @@ impl RemovableQuotient {
     ///    the analytic interior of the primitive's domain. Analytic implies
     ///    differentiable, so the symbolic derivatives `N'`, `D'` really are the
     ///    derivatives of `N`, `D` on `J`.
-    /// 2. `D'` has no zero on `J` (its enclosure excludes zero). Hence `D` is
-    ///    strictly monotone on `J`, so `p` is its *only* zero there and
-    ///    `D(x) ≠ 0` for every other `x ∈ J`.
-    /// 3. `R` is a rigorous enclosure of the range of `N'/D'` over `J`.
+    /// 2. The first `d` for which `D⁽ᵈ⁾` has no zero on `J` (its enclosure
+    ///    excludes zero), with `N⁽ᵏ⁾(p) = D⁽ᵏ⁾(p) = 0` proven *exactly* for
+    ///    every `k < d`, and `N⁽ᵏ⁾`, `D⁽ᵏ⁾` analytic on `J` for every `k ≤ d`.
+    /// 3. `R` is a rigorous enclosure of the range of `N⁽ᵈ⁾/D⁽ᵈ⁾` over `J`.
     ///
-    /// Cauchy's mean value theorem then gives, for every `x ∈ J \ {p}`, some
-    /// `ξ` strictly between `p` and `x` with
-    /// `(N(x) − N(p))·D'(ξ) = (D(x) − D(p))·N'(ξ)`; since `N(p) = D(p) = 0`,
-    /// `D(x) ≠ 0` and `D'(ξ) ≠ 0`, this is `N(x)/D(x) = N'(ξ)/D'(ξ) ∈ R`.
-    /// So the integrand is bounded by `R` on `J` minus a single point, and
-    /// `∫_J N/D dx ∈ (hi − lo)·R`.
+    /// Cauchy's mean value theorem, applied `d` times, then gives for every
+    /// `x ∈ J \ {p}` a point `ξ` strictly between `p` and `x` with
+    /// `N(x)/D(x) = N⁽ᵈ⁾(ξ)/D⁽ᵈ⁾(ξ) ∈ R`. For `d = 1` that is the one step
+    /// `(N(x) − N(p))·D'(ξ) = (D(x) − D(p))·N'(ξ)` with `N(p) = D(p) = 0`; each
+    /// further step needs the two facts the loop checks, namely that the level
+    /// above vanishes at `p` and that `D⁽ᵈ⁾ ≠ 0` on `J`. The latter also
+    /// supplies every non-vanishing hypothesis the chain uses: by Taylor with
+    /// Lagrange remainder, `D⁽ᵏ⁾(y) = D⁽ᵈ⁾(η)·(y − p)^{d−k}/(d − k)!` for some
+    /// `η ∈ J`, which is non-zero for every `y ∈ J \ {p}` and every `k < d`.
+    ///
+    /// Two steps are what `(1 − cos x)/x²` needs: `D' = 2x` vanishes at the
+    /// same point `D = x²` does, and only `D'' = 2` is bounded away from zero.
     ///
     /// Note what is being integrated: the integrand is *undefined* at `p`, and
     /// the value returned is the integral of its continuous extension (which
@@ -862,40 +907,57 @@ impl RemovableQuotient {
         // the last of those is what reaches a singularity sitting at a point
         // the dyadic bisection grid never visits. A singularity at a point that
         // no candidate names exactly is simply refused.
+        let vanishes_at = |e: ExprId, p: &Float| {
+            vanishes_exactly(e, pool, var, p)
+                && enclosure_admits_zero(e, pool, var, p, opts.order, prec)
+        };
         let mut candidates = vec![lo.clone(), hi.clone(), midpoint(lo, hi, prec)];
         candidates.extend(self.newton_candidates(pool, var, lo, hi, opts));
-        candidates.iter().find(|p| {
-            vanishes_exactly(self.den, pool, var, p)
-                && vanishes_exactly(self.num, pool, var, p)
-                && enclosure_admits_zero(self.den, pool, var, p, opts.order, prec)
-                && enclosure_admits_zero(self.num, pool, var, p, opts.order, prec)
-        })?;
+        let p = candidates
+            .iter()
+            .find(|p| vanishes_at(self.den, p) && vanishes_at(self.num, p))?
+            .clone();
 
         let j = vec![(var, lo.clone(), hi.clone())];
         // (1) N and D analytic on J.
         bound_on_fboxes(self.num, pool, &j, &bopts).ok()?;
         bound_on_fboxes(self.den, pool, &j, &bopts).ok()?;
-        // (2) D' non-vanishing on J.
-        let dd = bound_on_fboxes(self.dden, pool, &j, &bopts).ok()?;
-        if contains_zero(dd.enclosure()) {
-            return None;
-        }
-        // (3) the mean-value quotient.
-        let r = bound_on_fboxes(self.ratio, pool, &j, &bopts).ok()?;
 
-        let w = Float::with_val(prec, hi - lo);
-        let piece = from_float(&w, prec) * r.enclosure().clone();
-        if !is_finite(&piece) {
-            return None;
+        // (2) Descend to the first level whose denominator is bounded away
+        // from zero on J, requiring both halves of every level passed over to
+        // vanish exactly at `p` — otherwise the chain of mean value theorems
+        // has no next link and the answer is a refusal, not a guess.
+        for &(nk, dk, ratio) in &self.levels {
+            bound_on_fboxes(nk, pool, &j, &bopts).ok()?;
+            let dd = bound_on_fboxes(dk, pool, &j, &bopts).ok()?;
+            if !contains_zero(dd.enclosure()) {
+                // (3) the mean-value quotient at this level.
+                let r = bound_on_fboxes(ratio, pool, &j, &bopts).ok()?;
+                let w = Float::with_val(prec, hi - lo);
+                let piece = from_float(&w, prec) * r.enclosure().clone();
+                return is_finite(&piece).then_some(piece);
+            }
+            if !(vanishes_at(nk, &p) && vanishes_at(dk, &p)) {
+                return None;
+            }
         }
-        Some(piece)
+        None
     }
 }
 
-/// Turn a refusal that survived bisection into a message that says *what* is
-/// singular and *where*, and that distinguishes "no rigorous enclosure of the
-/// integrand exists here" from "the integral does not exist".
-fn describe_singularity(
+/// Turn a refusal that survived bisection into a message that says which rule
+/// gave up and *where*, without asserting anything about the integrand that has
+/// not been established.
+///
+/// The distinction matters and used to be got wrong: a Taylor-model rule
+/// stopping at its domain boundary is a fact about the *rule*, and a message
+/// that reports it as "the integrand is singular here" is simply false for
+/// `asin` at `x = 1`, where the integrand takes the perfectly finite value
+/// `π/2`. Those cases no longer reach this function at all — the `width ×
+/// range` fallback closes them — so what is left is genuinely a case where no
+/// bounded enclosure of the integrand could be produced by any available rule,
+/// which is still not the same claim as "the integral does not exist".
+fn describe_refusal(
     cause: ValidatedError,
     lo: &Float,
     hi: &Float,
@@ -915,12 +977,20 @@ fn describe_singularity(
     let at = midpoint(lo, hi, lo.prec()).to_f64();
     ValidatedError::DomainViolation {
         what: format!(
-            "the integrand is singular at {where_} x ≈ {at:e} ({what}). \
-             This is a statement about the *integrand*, not about the integral: \
-             an integrable singularity still has a finite integral, which this \
-             routine cannot certify. Removable singularities written as N(x)/D(x) \
-             with N(p) = D(p) = 0 exactly and D'(p) ≠ 0 are handled automatically \
-             (their continuous extension is integrated); this one is not of that form"
+            "no rigorous enclosure of the integrand could be built near {where_} \
+             x ≈ {at:e}. The Taylor-model rule that stopped there was: {what}; \
+             and the derivative-free fallback (width × range over the sub-interval, \
+             by interval arithmetic) found no *bounded* range there either, which \
+             is what a genuine pole or an unbounded integrable singularity looks \
+             like. A bounded integrand whose Taylor model merely runs out of \
+             domain — asin or sqrt at the end of its domain — is closed by that \
+             fallback and never reaches this message. Quotients N(x)/D(x) whose \
+             two halves vanish exactly at the same point, to the same order, with \
+             some D⁽ᵈ⁾ non-vanishing, are handled by an iterated Cauchy mean value \
+             theorem (their continuous extension is integrated); this one is not \
+             of that form. None of this says the integral fails to exist: an \
+             integrable singularity such as -log(x) on [0, 1] has a finite \
+             integral that this routine still cannot certify"
         ),
     }
 }
@@ -945,24 +1015,40 @@ fn describe_singularity(
 /// integral is singular. Such a sub-interval is enclosed through Cauchy's mean
 /// value theorem instead: `N(x)/D(x) = N'(ξ)/D'(ξ)` for some `ξ` in the
 /// sub-interval, so an enclosure `R` of `N'/D'` there — which is perfectly
-/// regular — gives `∫_J N/D dx ∈ |J| · R`. The vanishing of `N` and `D`
-/// at `p` is checked *symbolically* — a numeric enclosure cannot prove a value
-/// is exactly zero — and `D'` must be certified non-vanishing on the
-/// sub-interval, so a genuine pole is never mistaken for a removable one. The
-/// number returned is the integral of the continuous extension.
+/// regular — gives `∫_J N/D dx ∈ |J| · R`. When `D'` vanishes at `p` too the
+/// step is repeated, up to a small fixed depth, which is what covers a
+/// higher-order removable singularity such as `(1 - cos x)/x²`. The vanishing
+/// of `N⁽ᵏ⁾` and `D⁽ᵏ⁾` at `p` is checked *symbolically* — a numeric enclosure
+/// cannot prove a value is exactly zero — and some `D⁽ᵈ⁾` must be certified
+/// non-vanishing on the sub-interval, so a genuine pole is never mistaken for a
+/// removable one. The number returned is the integral of the continuous
+/// extension.
+///
+/// # Bounded integrands at a domain boundary
+///
+/// `asin` on `[0, 1]`, `sqrt(1 - x²)` on `[0, 1]`, `sqrt(x)` on `[0, 1]`,
+/// `xˣ` on `[0, 1]` are all bounded and continuous on the closed interval, but
+/// the Taylor-model rule for `asin`/`sqrt`/`log` needs a derivative bound and
+/// has none at the end of its domain, so no model exists on the last panel
+/// however far it is bisected. Those panels are closed with a `width × range`
+/// bound instead, the range computed by directed-rounding interval arithmetic
+/// ([`super::interval`]) — the one enclosure that needs no derivative. The
+/// panel is tiny by then, so the crude bound costs essentially nothing in
+/// width. An integrand that is genuinely unbounded on the panel has no bounded
+/// range, so this never converts a refusal into an unsound answer.
 ///
 /// Refuses (does not guess) when:
 /// - `a` or `b` is non-finite (infinite-limit improper integrals are not
 ///   supported — there is no box to Taylor-expand over),
 /// - `a > b`,
-/// - the integrand has a singularity in `[a, b]` that is not removable in the
-///   above sense (e.g. `1/sqrt(x)` on `[0, 1]`, or the *integrable* endpoint
-///   singularity of `-log(x)` on `[0, 1]`) — subdivision is tried first in
-///   case the domain violation is only a boundary artefact of a coarse box,
-///   but a persistent one refuses with a [`ValidatedError`] that names the
-///   location and distinguishes "the integrand is singular here" from "the
-///   integral does not exist", rather than silently skipping the offending
-///   piece.
+/// - the integrand has a singularity in `[a, b]` that is neither removable in
+///   the above sense nor bounded (e.g. `1/sqrt(x)` on `[0, 1]`, or the
+///   *integrable* endpoint singularity of `-log(x)` on `[0, 1]`) — subdivision
+///   is tried first in case the domain violation is only a boundary artefact of
+///   a coarse box, but a persistent one refuses with a [`ValidatedError`] that
+///   names the location and the rule that stopped, and distinguishes "no
+///   enclosure of the integrand could be built here" from "the integral does
+///   not exist", rather than silently skipping the offending piece.
 pub fn verified_integral(
     expr: ExprId,
     pool: &ExprPool,
@@ -1008,8 +1094,15 @@ pub fn verified_integral(
     // Structural `N/D` analysis of the integrand, built at most once and only
     // if a sub-interval actually refuses.
     let mut removable: Option<Option<RemovableQuotient>> = None;
+    // Sticky, so the wind-down is uniform: once a stop has been seen every
+    // remaining panel is accepted as-is rather than refined, and the loop
+    // drains the stack instead of abandoning it. Abandoning it would leave
+    // part of `[a, b]` out of the sum, which is the one thing this routine
+    // must never do.
+    let mut stopped = false;
 
     while let Some((lo, hi)) = stack.pop() {
+        stopped = stopped || stop_requested();
         let piece_w = Float::with_val(prec, &hi - &lo);
         let piece_tol = Float::with_val(
             prec,
@@ -1027,16 +1120,55 @@ pub fn verified_integral(
                     .as_ref();
                 match q.and_then(|q| q.piece(pool, var, &lo, &hi, opts)) {
                     Some(piece) => Ok(piece),
-                    None => Err(e),
+                    // Failing that, close the panel the crude way: `width ×
+                    // range`, with the range computed by directed-rounding
+                    // interval arithmetic (see [`super::interval`]). That needs
+                    // no derivative, so it survives exactly the domain
+                    // *boundaries* where the Taylor rules stop — `asin` at
+                    // `x = 1`, `sqrt` at `x = 0` — while an integrand that is
+                    // genuinely unbounded on the panel still has no bounded
+                    // range and still refuses. The piece it returns is wide, so
+                    // the loop below keeps bisecting it like any other; only
+                    // the very last panel ends up carrying a crude bound.
+                    None => match panel_integral(expr, pool, var, &lo, &hi, prec) {
+                        Some(piece) => Ok(piece),
+                        None => Err(e),
+                    },
                 }
             }
             Err(e) => return Err(e),
         };
 
         match outcome {
-            Ok(piece) => {
-                let w = width(&piece);
-                if w <= piece_tol || subdivisions >= opts.max_subdivisions {
+            Ok(mut piece) => {
+                let mut w = width(&piece);
+                if w > piece_tol {
+                    // The Taylor model is about to be judged too wide here.
+                    // A `width × range` bound needs no derivative, so next to a
+                    // domain boundary — where the Taylor remainder blows up
+                    // even though a model still exists — it is routinely the
+                    // better of the two. They enclose the same integral, so
+                    // keeping the narrower is sound, and it saves every
+                    // bisection the wider one would otherwise have cost.
+                    if let Some(alt) = panel_integral(expr, pool, var, &lo, &hi, prec) {
+                        let aw = width(&alt);
+                        if aw < w {
+                            piece = alt;
+                            w = aw;
+                        }
+                    }
+                }
+                // `floor` is the same depth limit the refusal path uses: a
+                // panel that has already been bisected 2^-60 of the way down
+                // contributes less than the accumulated rounding of the sum, so
+                // splitting it again cannot buy accuracy — it only spends
+                // budget that the rest of the interval still needs. Without
+                // this the depth-first descent into a boundary the crude
+                // fallback keeps closing (`xˣ` at `x = 0`) runs away, exhausts
+                // `max_subdivisions` before the search ever returns to the
+                // right-hand panels, and leaves *those* wide.
+                let at_floor = piece_w.to_f64_round(Round::Up) <= floor;
+                if w <= piece_tol || subdivisions >= opts.max_subdivisions || at_floor || stopped {
                     if w > piece_tol {
                         exhausted = true;
                     }
@@ -1053,8 +1185,8 @@ pub fn verified_integral(
             }
             Err(e) => {
                 let w = piece_w.to_f64_round(Round::Up);
-                if subdivisions >= opts.max_subdivisions || w <= floor {
-                    return Err(describe_singularity(e, &lo, &hi, &a_f, &b_f));
+                if subdivisions >= opts.max_subdivisions || w <= floor || stopped {
+                    return Err(describe_refusal(e, &lo, &hi, &a_f, &b_f));
                 }
                 subdivisions += 1;
                 let mid = midpoint(&lo, &hi, prec);
@@ -1337,7 +1469,7 @@ fn root_exists_witness(
     let mut budget = opts.max_subdivisions;
 
     while let Some(b) = queue.pop_front() {
-        if budget == 0 {
+        if budget == 0 || stop_requested() {
             break;
         }
         budget -= 1;
@@ -1468,6 +1600,20 @@ pub enum SignPredicate {
 /// predicate holds everywhere on the box, [`Verdict::False`] when the
 /// enclosure proves it is violated somewhere, and [`Verdict::Undecided`]
 /// when the enclosure straddles the boundary needed to decide either way.
+///
+/// # `Undecided` is not monotone in the box
+///
+/// `True` on a box logically implies `True` on every sub-box, but this is a
+/// *search*, and the search does not have that property: an inequality tight at
+/// a point `p` is decided by a series collar planted at `p`, and a box whose
+/// endpoint sits a little way off `p` gets a much weaker collar (see
+/// `widened_to_tight_point`). For `p = 0` — where every classical sharp
+/// trigonometric inequality is tight — that gap is closed by retrying on the
+/// box grown out to `0`, so `[δ, b]` now decides whenever `[0, b]` does. For a
+/// tight point anywhere else the effect remains: if `[a, b]` comes back
+/// `Undecided`, it is worth trying a *larger* box whose endpoint is the point
+/// the inequality is tight at, rather than concluding the statement is out of
+/// reach.
 pub fn verified_sign(
     expr: ExprId,
     pool: &ExprPool,
@@ -1525,6 +1671,13 @@ pub fn verified_sign(
         return Ok(Verdict::True);
     }
 
+    // The two series attempts below each cost a run of symbolic derivatives, so
+    // a stop request is honoured before starting them rather than only inside
+    // their enclosures.
+    if stop_requested() {
+        return Ok(Verdict::Undecided);
+    }
+
     // Still undecided, which is what a margin that *vanishes* at an endpoint
     // always looks like to a subdivision search. Try the series argument, which
     // is the only one of the two that can reach a tight endpoint at all.
@@ -1532,7 +1685,69 @@ pub fn verified_sign(
         return Ok(v);
     }
 
+    // Last: the same series argument on a box *enlarged* to the tight point the
+    // caller stopped just short of. See `widened_to_tight_point` for why this
+    // is here and why only `True` may be taken from it.
+    if !stop_requested() {
+        if let Some(wider) = widened_to_tight_point(boxes) {
+            if let Some(Verdict::True) =
+                endpoint_series_verdict(expr, pool, &wider, predicate, opts)
+            {
+                return Ok(Verdict::True);
+            }
+        }
+    }
+
     Ok(Verdict::Undecided)
+}
+
+/// The box grown outward to `x = 0` on whichever side is nearest it, or `None`
+/// when the box already reaches it (or is not one-dimensional).
+///
+/// # Why
+///
+/// The collar argument of [`endpoint_series_verdict`] expands `g` at the box's
+/// own endpoint `p`, and its strength comes from the *leading* coefficient
+/// `c_j` being provably signed while the ones below it are provably zero. When
+/// `p` is the point at which the inequality is tight — `x = 0` for every
+/// classical sharp trigonometric inequality — `simplify` proves `g(0) = g'(0) =
+/// … = 0` symbolically, `j` is the true order of vanishing, and `c_j` is an
+/// `O(1)` number.
+///
+/// Back the box off that point by `δ` and the picture inverts. Nothing vanishes
+/// exactly at `δ` any more, so `j = 0` and `c_0 = g(δ) ≈ δ^j·(leading)` — a
+/// number that has to beat both the cancellation noise of evaluating `g` near a
+/// zero of order `j` and the `|c_1|·δ` term of the tail bound. For
+/// Cusa–Huygens, `g ~ x⁵/60`, and that fails for every `δ` between roughly
+/// `10⁻³⁰⁰` and `10⁻⁹`, while succeeding both at `δ = 0` and from `10⁻⁶` up.
+/// The measured consequence is a **dead band**: `[0, π/2]` is `True`,
+/// `[10⁻¹², π/2]` — a strictly *smaller* box, so a strictly weaker claim — is
+/// `Undecided`.
+///
+/// A verdict that a smaller box can lose is a bad thing to hand a search loop,
+/// which will read `Undecided` as "out of reach" and stop. Since `True` on a
+/// superset implies `True` on the box, retrying on the enlarged box is sound
+/// and restores monotonicity across the band. Only `True` may be taken from it:
+/// `False` on a superset says nothing about the subset, and is discarded.
+///
+/// `0` is the only candidate. It is where these inequalities are tight in
+/// practice, and enlarging to an arbitrary nearby point would be a search
+/// rather than a retry. A statement tight at some other point still shows the
+/// non-monotonicity, which [`verified_sign`]'s documentation now records.
+fn widened_to_tight_point(boxes: &[(ExprId, f64, f64)]) -> Option<Vec<(ExprId, f64, f64)>> {
+    let &[(var, lo, hi)] = boxes else {
+        return None;
+    };
+    if !(lo.is_finite() && hi.is_finite()) || lo >= hi {
+        return None;
+    }
+    if lo > 0.0 {
+        Some(vec![(var, 0.0, hi)])
+    } else if hi < 0.0 {
+        Some(vec![(var, lo, 0.0)])
+    } else {
+        None
+    }
 }
 
 /// Rigorous one-sided bound computed with [`SearchGoal::DecideSign`]: a lower
@@ -2301,6 +2516,199 @@ mod tests {
         let e = div(&pool, pool.integer(1_i32), x);
         let err = verified_integral(e, &pool, x, -1.0, 1.0, &iopts()).unwrap_err();
         assert_eq!(crate::errors::AlkahestError::code(&err), "E-VALIDATED-003");
+    }
+
+    // ── verified_integral: bounded integrands at a domain boundary ─────
+
+    /// Every row of the table in the 2026-08-19 audit's issue #11, plus the
+    /// control that already worked. Each integrand is bounded and continuous on
+    /// the closed interval, and each was refused as "singular" — which for
+    /// `asin`, whose value at the offending endpoint is `π/2`, was simply
+    /// false. Reference values are mpmath at 40 dps.
+    #[test]
+    fn bounded_integrands_at_a_domain_boundary_are_enclosed() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let one = pool.integer(1_i32);
+        let log_x = pool.func("log", vec![x]);
+        let cases: Vec<(&str, ExprId, f64)> = vec![
+            (
+                "asin",
+                pool.func("asin", vec![x]),
+                std::f64::consts::FRAC_PI_2 - 1.0,
+            ),
+            ("acos", pool.func("acos", vec![x]), 1.0),
+            (
+                "sqrt(1-x^2)",
+                pool.func("sqrt", vec![sub(&pool, one, pool.mul(vec![x, x]))]),
+                std::f64::consts::FRAC_PI_4,
+            ),
+            ("sqrt(x)", pool.func("sqrt", vec![x]), 2.0 / 3.0),
+            (
+                "x^x",
+                pool.func("exp", vec![pool.mul(vec![x, log_x])]),
+                0.783_430_510_712_134_4,
+            ),
+            (
+                "(1-cos x)/x^2",
+                div(
+                    &pool,
+                    sub(&pool, one, pool.func("cos", vec![x])),
+                    pool.pow(x, pool.integer(2_i32)),
+                ),
+                0.486_385_376_235_322_7,
+            ),
+            (
+                "(x-1)/log x",
+                div(&pool, sub(&pool, x, one), log_x),
+                std::f64::consts::LN_2,
+            ),
+            (
+                "sin(x)/x",
+                div(&pool, pool.func("sin", vec![x]), x),
+                0.946_083_070_367_183,
+            ),
+        ];
+        for (label, e, truth) in cases {
+            let r = verified_integral(e, &pool, x, 0.0, 1.0, &iopts())
+                .unwrap_or_else(|err| panic!("{label}: {err}"));
+            assert!(
+                r.lower() <= truth && truth <= r.upper(),
+                "{label}: [{}, {}] misses {truth}",
+                r.lower(),
+                r.upper()
+            );
+            assert!(
+                r.upper() - r.lower() < 1e-3,
+                "{label}: enclosure too wide: {}",
+                r.upper() - r.lower()
+            );
+        }
+    }
+
+    /// The fallback fires exactly where the Taylor model runs out of domain, so
+    /// what has to keep working is the refusal for an *unbounded* integrand at
+    /// the very same boundary. `sqrt(1-x²)` and `1/sqrt(1-x²)` both stop the
+    /// `sqrt` rule at `x = 1`; only the first has a bounded range there.
+    #[test]
+    fn the_bounded_fallback_does_not_swallow_an_unbounded_integrand() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let one = pool.integer(1_i32);
+        let inner = sub(&pool, one, pool.mul(vec![x, x]));
+        let root = pool.func("sqrt", vec![inner]);
+
+        assert!(verified_integral(root, &pool, x, 0.0, 1.0, &iopts()).is_ok());
+        let err =
+            verified_integral(div(&pool, one, root), &pool, x, 0.0, 1.0, &iopts()).unwrap_err();
+        assert_eq!(crate::errors::AlkahestError::code(&err), "E-VALIDATED-003");
+    }
+
+    /// The refusal message must not describe a Taylor rule running out of
+    /// domain as the *integrand* being singular, and must name the rule.
+    #[test]
+    fn the_refusal_names_the_rule_rather_than_calling_the_integrand_singular() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let e = pool.mul(vec![pool.integer(-1_i32), pool.func("log", vec![x])]);
+        let err = verified_integral(e, &pool, x, 0.0, 1.0, &iopts()).unwrap_err();
+        let message = err.to_string();
+        assert!(!message.contains("the integrand is singular"), "{message}");
+        assert!(
+            message.contains("no rigorous enclosure of the integrand"),
+            "{message}"
+        );
+        assert!(message.contains("log"), "{message}");
+    }
+
+    // ── verified_sign: monotone in the box ─────────────────────────────
+
+    /// `[δ, b] ⊂ [0, b]` is a strictly weaker claim, so it must not be harder
+    /// to decide. Before the widened retry, every `δ` from about `1e-300` to
+    /// `1e-9` came back `Undecided` while `δ = 0` was `True`.
+    #[test]
+    fn shrinking_the_box_does_not_lose_a_tight_endpoint_verdict() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        // Cusa–Huygens, denominators cleared: x(2 + cos x) − 3 sin x ≥ 0.
+        let e = sub(
+            &pool,
+            pool.mul(vec![
+                x,
+                pool.add(vec![pool.integer(2_i32), pool.func("cos", vec![x])]),
+            ]),
+            pool.mul(vec![pool.integer(3_i32), pool.func("sin", vec![x])]),
+        );
+        for lo in [0.0, 1e-30, 1e-12] {
+            let v = verified_sign(
+                e,
+                &pool,
+                &[(x, lo, 1.5)],
+                SignPredicate::NonNegative,
+                &opts(),
+            )
+            .unwrap();
+            assert_eq!(v, Verdict::True, "lo = {lo:e}");
+        }
+    }
+
+    /// Only `True` may be taken from the enlarged box: a `False` there says
+    /// nothing about the sub-box that was actually asked about.
+    #[test]
+    fn the_widened_retry_never_manufactures_a_false() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let e = sub(&pool, x, pool.rational(1, 2));
+        assert_eq!(
+            verified_sign(
+                e,
+                &pool,
+                &[(x, 0.0, 1.0)],
+                SignPredicate::NonNegative,
+                &opts()
+            )
+            .unwrap(),
+            Verdict::False
+        );
+        assert_eq!(
+            verified_sign(
+                e,
+                &pool,
+                &[(x, 0.6, 1.0)],
+                SignPredicate::NonNegative,
+                &opts()
+            )
+            .unwrap(),
+            Verdict::True
+        );
+    }
+
+    /// A stop request must halt the search promptly and degrade to the same
+    /// wide-but-sound answer an exhausted subdivision budget gives — never to a
+    /// wrong one.
+    ///
+    /// Driven through a thread-local [`crate::budget::Budget`] rather than
+    /// [`crate::budget::request_cancel`]: cancellation is a process-wide flag,
+    /// and `cargo test` runs these in parallel, so setting it here would stop
+    /// every other search in the binary as a side effect. Both reach the same
+    /// checkpoint.
+    #[test]
+    fn a_stopped_search_halts_and_stays_sound() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let e = pool.mul(vec![x, sub(&pool, pool.integer(1_i32), x)]);
+        let tiny = BoundOptions {
+            tol: 1e-30, // unreachable, so only the stop can end the search
+            ..opts()
+        };
+        let r = {
+            let _guard = crate::budget::enter(crate::budget::Budget::new().with_max_steps(3));
+            bound_on_box(e, &pool, &[(x, 0.0, 1.0)], &tiny).unwrap()
+        };
+        assert!(r.budget_exhausted);
+        assert!(r.subdivisions < 32, "did not stop early: {r:?}");
+        // x(1-x) has true range [0, 1/4]; a stopped search still encloses it.
+        assert!(r.lower() <= 0.0 && r.upper() >= 0.25, "{r:?}");
     }
 
     #[test]

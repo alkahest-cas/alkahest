@@ -159,13 +159,34 @@ The limits are worth knowing:
 middle; it stays `"undecided"` rather than being upgraded on the strength of an
 enclosure that merely touches zero.
 
+### `"undecided"` is not monotone in the box
+
+`"true"` on a box *logically* implies `"true"` on every sub-box, but this is a
+search and the search does not have that property. The collar is planted at the
+box's own endpoint, and its strength comes from `simplify` proving the low-order
+Taylor coefficients there exactly zero. Back the box off the tight point by a
+whisker and nothing vanishes exactly any more: the leading coefficient becomes
+`g(δ)`, a number that has to beat both the cancellation noise of evaluating `g`
+near a zero of order `j` and the linear term of the tail bound. For Cusa–Huygens
+(`g ~ x⁵/60`) that failed for every left endpoint between about `10⁻³⁰⁰` and
+`10⁻⁹`, while `[0, π/2]` and `[10⁻⁶, π/2]` both came back `"true"` — a dead band
+in the middle of two `"true"` regions.
+
+An `"undecided"` box that stops short of `x = 0` is therefore retried with the
+collar planted at `0` — `"true"` on the larger box implies `"true"` on the
+box asked about, so the retry is sound, and only `"true"` is taken from it. That
+closes the band for the classical inequalities, all of which are tight at `0`.
+A statement tight at some *other* point still shows the effect: if `[a, b]`
+comes back `"undecided"`, try the larger box whose endpoint is the point the
+inequality is tight at before concluding it is out of reach.
+
 ## Which functions are covered — ask before you build the workload
 
 Taylor models reach the **elementary fragment**: `exp`, `log`, `sqrt`, `sin`,
 `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `asinh`,
 `acosh`, `atanh`, `abs`, plus arithmetic and integer/rational powers — and,
-since 3.9.0, `erf` and `erfc`. Outside it are `bessel_j0`, `bessel_j1`,
-`digamma`, `lambert_w`, `gamma`, the elliptic integrals, `floor` and `ceil`,
+since 3.9.0, `erf`, `erfc`, `bessel_j0`, `bessel_j1`, `digamma`, `gamma` and
+`lambert_w`. Outside it are the elliptic integrals, `floor`, `ceil` and `sign`,
 and so is any two-argument function such as `atan2`.
 
 The three inverse hyperbolics carry the domain restriction their branch has:
@@ -180,20 +201,21 @@ instead of discovering it by hitting `E-VALIDATED-001`:
 
 ```python
 ak.bounds_supported(ak.sin(x) * ak.exp(x))     # truthy
-answer = ak.bounds_supported(ak.bessel_j0(x))
-bool(answer), answer.functions                  # (False, ['bessel_j0'])
-answer.blocker                                  # "function `bessel_j0`"
+ak.bounds_supported(ak.bessel_j0(x))           # truthy since 3.9.0
+answer = ak.bounds_supported(ak.floor(x))
+bool(answer), answer.functions                  # (False, ['floor'])
+answer.blocker                                  # "function `floor`"
 
 # Per primitive, in the agent contract:
 {row["name"] for row in ak.capabilities()["primitives"] if row["taylor_model"]}
 ```
 
 **`numeric_ball` is not this flag.** It reports pointwise ball arithmetic,
-which `bessel_j0`, `digamma`, `lambert_w` and `floor` all have; a Taylor model
-additionally needs a rule with a rigorous Lagrange remainder, which they do
-not. Both bits are honest — they answer different questions. `taylor_model`
-and `bounds_supported` are derived by *running* the Taylor evaluator, not from
-a maintained list, so neither can drift from what `bound_on_box` accepts.
+which `floor` and `ceil` have; a Taylor model additionally needs a rule with a
+rigorous Lagrange remainder, which a step function cannot have. Both bits are
+honest — they answer different questions. `taylor_model` and
+`bounds_supported` are derived by *running* the Taylor evaluator, not from a
+maintained list, so neither can drift from what `bound_on_box` accepts.
 
 A `True` answer means "will not be refused with `E-VALIDATED-001`". It is not
 a promise of success: a covered function can still hit a domain violation or
@@ -234,15 +256,24 @@ N(p) = D(p) = 0,  D' ≠ 0 on J   ⟹   ∀ x ∈ J\{p} :  N(x)/D(x) = N'(ξ)/D'
 so the piece is bounded by an enclosure of `N'/D'`, which is perfectly regular.
 The number returned is the integral of the continuous extension.
 
+When `D'` vanishes at `p` as well, the step is **repeated** — up to a small
+fixed depth — provided `N'` vanishes there too. That is what covers a
+higher-order removable singularity such as `(1 − cos x)/x²`, whose value at
+`x = 0` is `1/2` but whose denominator has a double zero: only `D'' = 2` is
+bounded away from zero, and `N''/D'' = cos(x)/2` is the quotient that gets
+enclosed.
+
 Three guards keep this from swallowing a genuine pole:
 
-- `N(p) = 0` and `D(p) = 0` are established **symbolically** (substitute the
-  exact rational `p`, simplify, require a literal zero). No numeric enclosure
-  can prove a value is exactly zero, so none is asked to.
-- `D'` must be *certified non-vanishing* on the sub-interval. That is what fails
-  for `sin(x)/x²`, where the denominator has a double zero and the integral does
-  not converge.
-- `N` and `D` must each have a successful enclosure over the whole
+- `N⁽ᵏ⁾(p) = 0` and `D⁽ᵏ⁾(p) = 0` are established **symbolically** at every
+  level the descent passes (substitute the exact rational `p`, simplify,
+  require a literal zero). No numeric enclosure can prove a value is exactly
+  zero, so none is asked to.
+- Some `D⁽ᵈ⁾` must be *certified non-vanishing* on the sub-interval. That is
+  what fails for `sin(x)/x²`: `D' = 2x` vanishes at `0` but `N' = cos x` does
+  not, so the descent stops with nothing proven — as it must, since the
+  integral does not converge.
+- `N⁽ᵏ⁾` and `D⁽ᵏ⁾` must each have a successful enclosure over the whole
   sub-interval, which certifies they are analytic — and hence that the symbolic
   derivatives really are their derivatives.
 
@@ -252,20 +283,51 @@ ak.verified_integral(ak.sin(x) / x, x, -1.0, 1.0)                   # ≈ 1.8921
 ak.verified_integral(pool.integer(1) / x, x, -1.0, 1.0)             # refuses: N(0) ≠ 0
 ```
 
+## Bounded integrands whose Taylor model runs out of domain
+
+`asin` on `[0, 1]` is bounded and continuous on the closed interval —
+`asin(1) = π/2` — but the Taylor rule for `asin` needs a bound on
+`1/√(1−x²)`, and there is none at `x = 1`. Bisecting does not help: every
+sub-interval that still touches `1` refuses, however narrow. The same happens
+for `√x` and `xˣ` at `x = 0`.
+
+Those panels are closed with a **`width × range`** bound instead. A range needs
+no derivative, so it survives the domain boundary, and it is computed by
+directed-rounding interval arithmetic over the extended reals — which is what
+lets `log([0, h]) = [−∞, log h]` be composed with the factor that tames it, so
+`xˣ = exp(x·log x) ∈ [0, 1]` comes out bounded. By the time a panel needs this
+it has been bisected down to a width of order `2⁻⁶⁰` of the interval, so the
+crude bound costs essentially nothing in accuracy.
+
+The soundness argument is that an integrand which is genuinely unbounded on the
+panel has no bounded range either, so the fallback still refuses on it. Nothing
+is clamped into a domain it is not proven to be in: `√` and `log` of an
+interval whose lower endpoint is *strictly* negative are refused, and only a
+closed endpoint sitting exactly on the domain boundary is accepted.
+
+| Integral | Value | Status |
+|---|---|---|
+| `∫₀¹ asin(x) dx` | `π/2 − 1` | enclosed (`width × range` on the last panel) |
+| `∫₀¹ √(1−x²) dx` | `π/4` | enclosed, same |
+| `∫₀¹ √x dx` | `2/3` | enclosed, same |
+| `∫₀¹ xˣ dx` | 0.78343… | enclosed, same |
+| `∫₀¹ (x−1)/ln x dx` | `ln 2` | enclosed — removable at `1`, bounded at `0` |
+| `∫₀¹ (1−cos x)/x² dx` | 0.48638… | enclosed (order-2 removable) |
+
 ### What is still refused
 
-An **integrable but non-removable** singularity is refused, and the message says
-so rather than implying the integral does not exist:
+An **unbounded** integrand is refused, whether or not the integral converges,
+and the message names the rule that stopped rather than implying the integral
+does not exist:
 
 | Integral | Value | Status |
 |---|---|---|
 | `∫₀¹ ln(1+x)/x dx` | `π²/12` | enclosed (removable) |
 | `∫_{-1}^{1} sin(x)/x dx` | `2·Si(1)` | enclosed (removable) |
-| `∫₀¹ −ln x dx` | 1 | refused — `log` enclosure reaches 0, not a `0/0` quotient |
+| `∫₀¹ −ln x dx` | 1 | refused — unbounded at `0`, and not a `0/0` quotient |
 | `∫₀¹ (ln x)² dx` | 2 | refused, same reason |
-| `∫₀¹ dx/√(1−x²) dx` | `π/2` | refused — endpoint singularity, numerator does not vanish |
-| `∫₀¹ xˣ dx` | 0.78343… | refused — `log` enclosure reaches 0 |
-| `∫₀¹ ln(x)·ln(1−x) dx` | `2 − π²/6` | refused — singular at both ends |
+| `∫₀¹ dx/√(1−x²) dx` | `π/2` | refused — unbounded at `1`, numerator does not vanish |
+| `∫₀¹ ln(x)·ln(1−x) dx` | `2 − π²/6` | refused — unbounded at both ends |
 
 These need an integrable-tail bound or a singularity-removing substitution,
 neither of which can be derived rigorously from the expression alone today. The
