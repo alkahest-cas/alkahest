@@ -234,6 +234,12 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-BUDGET-001", class: "BudgetError", cause: Cause::Resource, remediation: Some("raise Budget(wall_ms=...), or accept a heuristic/numeric result for this candidate instead of an exact one") },
     ErrorSpec { code: "E-BUDGET-002", class: "BudgetError", cause: Cause::Resource, remediation: Some("raise Budget(max_steps=...), or accept a partial/heuristic result for this candidate instead of an exact one") },
     ErrorSpec { code: "E-BUDGET-003", class: "BudgetError", cause: Cause::Resource, remediation: Some("call alkahest.clear_cancel() (Python) or budget::clear_cancel() (Rust) before starting the next candidate") },
+    // E-BUDGET-004/005 — BudgetTrip. Carried on `BudgetTrip`, not `BudgetError`:
+    // the latter is an exhaustive public enum, so a `Memory` variant would be a
+    // major semver break. 005 fires with no budget active — it is the guard that
+    // turns GMP's `abort()` under a `ulimit -v` into a catchable refusal.
+    ErrorSpec { code: "E-BUDGET-004", class: "BudgetError", cause: Cause::Resource, remediation: Some("raise Budget(max_bytes=...), or ask for a smaller problem (fewer unknowns, a lower order/degree) — the exact coefficients, not the shape of the system, are what grew") },
+    ErrorSpec { code: "E-BUDGET-005", class: "BudgetError", cause: Cause::Resource, remediation: Some("raise the process address-space limit (ulimit -v, or the container/cgroup memory limit), or ask for a smaller problem — this refusal replaces the uncatchable abort that would otherwise follow") },
     // E-DEPTH — DepthLimitError (expression nesting ceiling; see kernel::depth).
     // Resource, not UserInput: the expression is well-formed, we decline to
     // recurse over it because a native stack overflow would kill the process.

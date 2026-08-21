@@ -468,6 +468,14 @@ impl IPoly {
     fn pow_usize(&self, e: usize) -> Self {
         let mut acc = IPoly::one();
         for _ in 0..e {
+            // Subresultant PRS raises the leading coefficient to `delta`, and
+            // `delta` grows with the degree gap, so one call here can be the
+            // whole runtime of a gcd. Bailing leaves a *wrong* power, which
+            // `BiPoly::gcd` never uses: its own loop-top check fires on the
+            // next iteration and returns `1`.
+            if gcd_should_stop(ipoly_bits(&acc)) {
+                return acc;
+            }
             acc = acc.mul(self);
         }
         acc
@@ -568,6 +576,13 @@ impl IPoly {
         let lb = b.lc();
         let mut e = (r.degree() - db + 1) as usize;
         while !r.is_zero() && r.degree() >= db {
+            // `r` is left partially reduced when this fires, which would be a
+            // wrong remainder — but the only caller is `BiPoly::gcd`, which
+            // re-checks the flag before using it and returns `1` instead. See
+            // `GcdStop`.
+            if gcd_should_stop(ipoly_bits(&r)) {
+                return r;
+            }
             let shift = (r.degree() - db) as usize;
             let lr = r.lc();
             r = r.scale_int(&lb).sub(&b.shift_pow(shift).scale_int(&lr));
@@ -582,6 +597,9 @@ impl IPoly {
     /// gcd in `Z[n]` by subresultant PRS, normalized to a positive leading
     /// coefficient (`0` only when both inputs are `0`).
     fn gcd(a: &Self, b: &Self) -> Self {
+        if gcd_should_stop(0) {
+            return IPoly::one();
+        }
         let mut x = a.clone().trim();
         let mut y = b.clone().trim();
         if x.is_zero() {
@@ -604,8 +622,16 @@ impl IPoly {
         let mut g = Integer::from(1);
         let mut h = Integer::from(1);
         loop {
+            // Same contract as `BiPoly::gcd`: `1` is the safe degenerate
+            // answer, so a stopped gcd costs a cancellation, never soundness.
+            if gcd_should_stop(ipoly_bits(&x).saturating_add(ipoly_bits(&y))) {
+                return IPoly::one();
+            }
             let delta = (x.degree() - y.degree()) as usize;
             let r = IPoly::pseudo_rem(&x, &y);
+            if gcd_stopped() {
+                return IPoly::one();
+            }
             if r.is_zero() {
                 break;
             }
@@ -795,6 +821,11 @@ impl BiPoly {
         let lb = b.lc();
         let mut e = (r.degree() - db + 1) as usize;
         while !r.is_zero() && r.degree() >= db {
+            // See `IPoly::pseudo_rem`: a stopped remainder is wrong, and
+            // `BiPoly::gcd` re-checks the flag before it is used.
+            if gcd_should_stop(bipoly_bits(&r)) {
+                return r;
+            }
             let shift = (r.degree() - db) as usize;
             let lr = r.lc();
             r = r.scale(&lb).sub(&b.shift_pow(shift).scale(&lr));
@@ -809,6 +840,9 @@ impl BiPoly {
     /// gcd in `Z[n][k]` by Brown's subresultant PRS (content handled
     /// separately, as the algorithm requires primitive inputs).
     fn gcd(a: &Self, b: &Self) -> Self {
+        if gcd_should_stop(0) {
+            return BiPoly::one();
+        }
         let mut x = a.clone().trim();
         let mut y = b.clone().trim();
         if x.is_zero() {
@@ -831,8 +865,18 @@ impl BiPoly {
         let mut g = IPoly::one();
         let mut h = IPoly::one();
         loop {
+            // `1` is the safe degenerate answer: `RatK::normalize`'s caller
+            // treats a unit gcd as "nothing to cancel" and leaves the
+            // representation alone, so a stopped gcd costs readability, never
+            // correctness.
+            if gcd_should_stop(bipoly_bits(&x).saturating_add(bipoly_bits(&y))) {
+                return BiPoly::one();
+            }
             let delta = (x.degree() - y.degree()) as usize;
             let r = BiPoly::pseudo_rem(&x, &y);
+            if gcd_stopped() {
+                return BiPoly::one();
+            }
             if r.is_zero() {
                 break;
             }
@@ -857,6 +901,189 @@ impl BiPoly {
         }
         y.primitive_part().scale(&d)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Cooperative stop for the Z[n][k] gcd
+// ---------------------------------------------------------------------------
+
+/// Total bit-length one operand of [`BiPoly::gcd`] may reach before the gcd
+/// gives up.
+///
+/// The subresultant PRS is where a *small* system spends minutes: degrees fall
+/// on every step while the integer coefficients grow, so every ceiling phrased
+/// in degrees or unknown-counts — which is every ceiling the search layers
+/// above have — is blind to it. 2^20 bits (128 KB of integers across one gcd
+/// operand pair) is far above anything the working cases in this crate's tests
+/// reach and still bounds the pathological ones: `Σ_k [2n;k]_q` crosses it
+/// while its *degrees* are still in the twenties, where `Σ_k [n;k]_q` decides
+/// in half a second without coming near it.
+const MAX_GCD_BITS: u64 = 1 << 20;
+
+/// Why the `Z[n][k]` gcd stopped early, if it did.
+#[derive(Clone, Copy, Debug)]
+pub enum GcdStop {
+    /// An active [`crate::budget`] stopped it.
+    Budget(crate::budget::BudgetTrip),
+    /// An operand passed [`MAX_GCD_BITS`]; the payload is the size it reached.
+    Size(u64),
+    /// The active [`GcdWorkScope`] passed [`MAX_GCD_WORK`] units of work.
+    Work(u64),
+}
+
+thread_local! {
+    static GCD_STOP: std::cell::Cell<Option<GcdStop>> = const { std::cell::Cell::new(None) };
+    static GCD_WORK: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Subresultant-PRS *work* — gcd invocations plus PRS steps — that one
+/// [`GcdWorkScope`] may spend in this module.
+///
+/// The bit-length ceiling above catches *one* object growing without bound;
+/// this catches the other shape of the same problem, which is the one
+/// `Σ_k [2n;k]_q` has: thousands of individually unremarkable gcds, each
+/// triggered by one `Q(q)(x)` multiplication, adding up to minutes with no
+/// single object ever looking large. The same idea as `modular.rs`'s
+/// `BINOMIAL_WORK_BUDGET`.
+const MAX_GCD_WORK: u64 = 2_000_000;
+
+/// An opt-in scope for the [`MAX_GCD_WORK`] and [`MAX_GCD_BITS`] ceilings.
+///
+/// Outside every scope both are **inert**, so an engine that has not asked for
+/// them is bit-for-bit unaffected: `RatK` is shared by the classical
+/// Zeilberger search, the boundary analysis and the hypergeometric-term
+/// parser, and silently changing what those normalise is not a change this
+/// module gets to make on their behalf.
+///
+/// Scopes nest by save/restore rather than by combining, matching
+/// [`crate::budget`]'s frames.
+pub struct GcdWorkScope {
+    prev: Option<u64>,
+}
+
+impl Drop for GcdWorkScope {
+    fn drop(&mut self) {
+        let prev = self.prev;
+        GCD_WORK.with(|c| c.set(prev));
+        // A stop is meaningful only inside the scope that produced it. Leaving
+        // one set would disable cancellation in `RatK` for every *later* call
+        // on this thread — including engines that never opted in — and an
+        // un-normalised `Q(n)(k)` grows without bound, so the leak would show
+        // up as the next unrelated call hanging.
+        clear_gcd_stop();
+    }
+}
+
+/// Enter a [`GcdWorkScope`]; the ceilings apply until the guard is dropped.
+pub fn enter_gcd_work_scope() -> GcdWorkScope {
+    clear_gcd_stop();
+    let prev = GCD_WORK.with(|c| c.replace(Some(0)));
+    GcdWorkScope { prev }
+}
+
+/// Work spent in the innermost active [`GcdWorkScope`], or `0` outside one.
+pub fn gcd_work() -> u64 {
+    GCD_WORK.with(|c| c.get().unwrap_or(0))
+}
+
+/// Clear any recorded gcd stop. Call before a unit of work whose result you
+/// intend to check with [`take_gcd_stop`].
+pub fn clear_gcd_stop() {
+    GCD_STOP.with(|c| c.set(None));
+}
+
+/// Take (and clear) the gcd stop recorded on this thread, if any.
+pub fn take_gcd_stop() -> Option<GcdStop> {
+    GCD_STOP.with(|c| c.take())
+}
+
+/// `true` when a gcd on this thread has already given up — see [`GcdStop`].
+pub fn gcd_stop_pending() -> bool {
+    gcd_stopped()
+}
+
+fn gcd_stopped() -> bool {
+    GCD_STOP.with(|c| {
+        let v = c.get();
+        c.set(v);
+        v.is_some()
+    })
+}
+
+fn note_gcd_stop(s: GcdStop) {
+    GCD_STOP.with(|c| c.set(Some(s)));
+}
+
+/// `true` when a [`GcdWorkScope`] is active, i.e. when the ceilings apply.
+fn ceilings_active() -> bool {
+    GCD_WORK.with(|c| c.get().is_some())
+}
+
+/// Count one unit of gcd work; `true` when the ceiling has been passed.
+/// Always `false` outside a [`GcdWorkScope`].
+fn spend_gcd_work() -> bool {
+    GCD_WORK.with(|c| match c.get() {
+        None => false,
+        Some(n) => {
+            let n = n.saturating_add(1);
+            c.set(Some(n));
+            n > MAX_GCD_WORK
+        }
+    })
+}
+
+/// `true` when this gcd should give up, recording why.
+///
+/// Everything here is gated on an active [`GcdWorkScope`]: outside one the
+/// function is a single thread-local load and returns `false`, so `RatK`
+/// arithmetic in engines that have not opted in is untouched — including the
+/// budget check, whose caller has its own checkpoints and does not need this
+/// one to bail on its behalf.
+///
+/// `bits` is the current operand size, or `0` at a call boundary where there
+/// is nothing to measure yet.
+fn gcd_should_stop(bits: u64) -> bool {
+    if !ceilings_active() {
+        return false;
+    }
+    if gcd_stopped() {
+        return true;
+    }
+    if spend_gcd_work() {
+        note_gcd_stop(GcdStop::Work(gcd_work()));
+        return true;
+    }
+    if let Err(t) = crate::budget::check_all() {
+        note_gcd_stop(GcdStop::Budget(t));
+        return true;
+    }
+    if bits > MAX_GCD_BITS {
+        note_gcd_stop(GcdStop::Size(bits));
+        return true;
+    }
+    false
+}
+
+/// Total bit-length of every coefficient of a `Z[n]` polynomial.
+fn ipoly_bits(p: &IPoly) -> u64 {
+    p.c.iter()
+        .map(|z| u64::from(z.significant_bits()) + 1)
+        .sum()
+}
+
+/// Total bit-length of every integer coefficient of `p`.
+///
+/// The measure the ceiling is phrased in, because "how many limbs is this"
+/// is the quantity that predicts both the time and the memory, and neither
+/// the degree in `k` nor the degree in `n` does.
+fn bipoly_bits(p: &BiPoly) -> u64 {
+    p.c.iter()
+        .map(|q| {
+            q.c.iter()
+                .map(|z| u64::from(z.significant_bits()) + 1)
+                .sum::<u64>()
+        })
+        .sum()
 }
 
 /// `p` rewritten as `(α / dn(n)) · B(n, k)` with `B ∈ Z[n][k]` and `α ∈ Q`.

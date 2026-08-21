@@ -36,13 +36,71 @@
 //!    as the classical module's, and it is the only thing that makes a returned
 //!    result a proof.
 
-use super::field::{clear_denominators_x, qq_pow, PolyX, PolyY, RatX, RatY};
+use super::field::{
+    clear_denominators_x, clear_field_refusal, qq_pow, ratx_terms, take_field_refusal,
+    FieldRefusal, PolyX, PolyY, RatX, RatY, MAX_FIELD_ELEMENT_TERMS,
+};
 use super::term::QProperTerm;
 use super::QHolonomicError;
 use crate::holonomic::hyperterm::rn_to_expr;
-use crate::holonomic::qfield::{clear_denominators, rn_div, rn_is_zero, rn_poly, Rn};
+use crate::holonomic::qfield::{
+    clear_denominators, clear_gcd_stop, enter_gcd_work_scope, rn_div, rn_is_zero, rn_poly,
+    take_gcd_stop, GcdStop, Rn,
+};
 use crate::holonomic::zeilberger::OrderSearch;
 use crate::kernel::{ExprId, ExprPool};
+
+// ---------------------------------------------------------------------------
+// Resource ceilings
+// ---------------------------------------------------------------------------
+//
+// `telescope_md` has had ceilings since it was written; this module was
+// written *after* the 2026-08-13 report on `zeilberger`'s unbounded search and
+// still had none, so at its own documented defaults a class-legal summand
+// (`Σ_k [2n;k]_q`) ran for eight minutes with no output and had to be killed.
+// The two below bound the two things that can grow, and they are deliberately
+// different in kind, because the cost of this search is fragile in the *input*
+// and only partly in the knobs:
+//
+//   * the **shape** of the linear system — equations × unknowns — which
+//     `max_order`/`max_degree` already influence but do not bound, because the
+//     equation count comes from the degree of the key equation, not from the
+//     caller's `max_degree`; and
+//   * the **size of the numbers** in it, which nothing about the shape
+//     predicts. `Σ_k [n;k]_q` and `Σ_k [2n;k]_q` present systems of similar
+//     shape; only the second one's coefficients explode.
+//
+// Both refuse a probe *before* it is attempted (or, for the size ceiling, the
+// moment an entry crosses the line) and are reported in the exhaustion message
+// so that a refusal is never mistaken for "the grid was covered and nothing
+// was found" — see `SearchExhausted`'s text at the end of
+// `q_zeilberger_on_term`.
+
+/// Largest linear system, in cells (equations × unknowns), that one
+/// `(order, degree)` probe may assemble.
+///
+/// The system is `n_eq × n_var` over `Q(q)(x)`, and elimination is
+/// `O(n_eq · n_var²)` *field* operations, each of which is a rational-function
+/// arithmetic operation, not a machine one. 4 000 cells covers every probe the
+/// module's own test suite makes by a wide margin (the largest is under 400).
+const MAX_SYSTEM_CELLS: usize = 4_000;
+
+/// Largest total across every probe of one search call, so that a caller
+/// cannot pay the per-probe ceiling once for each of `max_order × max_degree`
+/// combinations.
+const MAX_CUMULATIVE_SYSTEM_CELLS: usize = 20_000;
+
+/// The outcome of one `(order, degree)` probe.
+enum Probe {
+    /// `(X coefficients, a_0..a_{order−1})`.
+    Solved(Vec<RatX>, Vec<RatX>),
+    /// The system has no solution of this shape — an ordinary miss.
+    NoSolution,
+    /// Refused by a resource ceiling before (or during) the solve. Distinct
+    /// from [`Probe::NoSolution`] on purpose: it must not be reported as
+    /// evidence that no certificate of this shape exists.
+    Refused,
+}
 
 /// Everything [`super::q_zeilberger`] takes beyond the term itself.
 ///
@@ -168,10 +226,18 @@ fn q_gosper_normal_form(mut p: PolyY, mut r: PolyY) -> Option<(PolyY, PolyY, Pol
 }
 
 /// Gaussian elimination over the field `Q(q)(x)`.
-fn field_solve(mut mat: Vec<Vec<RatX>>, mut rhs: Vec<RatX>) -> Option<Vec<RatX>> {
+///
+/// `Ok(None)` is an ordinary "no solution"; `Err` is a refusal — either an
+/// active [`crate::budget`] (wall clock, steps, memory) or
+/// [`MAX_FIELD_ELEMENT_TERMS`], the ceiling on how big one field element may
+/// grow. Both must stay distinguishable from "no solution" all the way out.
+fn field_solve(
+    mut mat: Vec<Vec<RatX>>,
+    mut rhs: Vec<RatX>,
+) -> Result<Option<Vec<RatX>>, QHolonomicError> {
     let nrows = mat.len();
     if nrows == 0 {
-        return Some(vec![]);
+        return Ok(Some(vec![]));
     }
     let ncols = mat[0].len();
     let mut row = 0;
@@ -179,12 +245,15 @@ fn field_solve(mut mat: Vec<Vec<RatX>>, mut rhs: Vec<RatX>) -> Option<Vec<RatX>>
         if row >= nrows {
             break;
         }
+        checkpoint()?;
         let Some(pr) = (row..nrows).find(|&r| !mat[r][col].is_zero()) else {
             continue;
         };
         mat.swap(row, pr);
         rhs.swap(row, pr);
-        let inv = mat[row][col].inv()?;
+        let Some(inv) = mat[row][col].inv() else {
+            return Ok(None);
+        };
         for entry in mat[row].iter_mut().skip(col) {
             *entry = entry.mul(&inv);
         }
@@ -199,8 +268,14 @@ fn field_solve(mut mat: Vec<Vec<RatX>>, mut rhs: Vec<RatX>) -> Option<Vec<RatX>>
             if v.is_zero() {
                 continue;
             }
+            // Per row, not per pivot: it is the entries, not the shape, that
+            // grow here.
+            checkpoint()?;
             for (entry, pivot) in mat[r].iter_mut().zip(pivot_row.iter()).skip(col) {
                 *entry = entry.sub(&pivot.mul(&v));
+                if ratx_terms(entry) > MAX_FIELD_ELEMENT_TERMS {
+                    return Err(size_ceiling_error(ratx_terms(entry)));
+                }
             }
             rhs[r] = rhs[r].sub(&pivot_rhs.mul(&v));
         }
@@ -208,20 +283,63 @@ fn field_solve(mut mat: Vec<Vec<RatX>>, mut rhs: Vec<RatX>) -> Option<Vec<RatX>>
     }
     for (r, mrow) in mat.iter().enumerate() {
         if mrow.iter().all(RatX::is_zero) && !rhs[r].is_zero() {
-            return None;
+            return Ok(None);
         }
     }
     let mut sol = vec![RatX::zero(); ncols];
     for r in (0..nrows).rev() {
         if let Some(j) = mat[r].iter().position(|e| !e.is_zero()) {
+            checkpoint()?;
             let mut sum = rhs[r].clone();
             for cidx in (j + 1)..ncols {
                 sum = sum.sub(&mat[r][cidx].mul(&sol[cidx]));
             }
-            sol[j] = sum.div(&mat[r][j])?;
+            let Some(q) = sum.div(&mat[r][j]) else {
+                return Ok(None);
+            };
+            sol[j] = q;
         }
     }
-    Some(sol)
+    Ok(Some(sol))
+}
+
+/// Turn a [`crate::budget`] trip into this module's exhaustive error type,
+/// recording the real cause out of band for the bindings to raise as
+/// `BudgetExceededError` — see [`crate::budget::record_trip`].
+fn trip_to_error(trip: crate::budget::BudgetTrip) -> QHolonomicError {
+    use crate::errors::AlkahestError;
+    crate::budget::record_trip(trip);
+    QHolonomicError::SearchExhausted(format!(
+        "the q-Zeilberger search was stopped before it finished, and no certificate was found \
+         up to that point — this is NOT a statement that none exists: {} [{}]",
+        trip,
+        trip.code()
+    ))
+}
+
+/// Cooperative checkpoint: wall clock, steps, cancellation, and the memory
+/// ceilings of [`crate::budget::memory`]. Before this existed, `q_zeilberger`
+/// honoured no budget at all — `Budget(wall_ms=...)` did not stop it.
+fn checkpoint() -> Result<(), QHolonomicError> {
+    crate::budget::check_all().map_err(trip_to_error)
+}
+
+/// Marker error for a [`MAX_FIELD_ELEMENT_TERMS`] trip.
+///
+/// Carried as `SearchExhausted` because `QHolonomicError` is public and
+/// exhaustive; the caller recognises it by [`is_size_ceiling`] and reports the
+/// probe as [`Probe::Refused`], never as "no solution".
+fn size_ceiling_error(terms: usize) -> QHolonomicError {
+    QHolonomicError::SearchExhausted(format!(
+        "{SIZE_CEILING_TAG}: a coefficient of the linear system reached {terms} rational \
+         numbers, past this module's MAX_FIELD_ELEMENT_TERMS = {MAX_FIELD_ELEMENT_TERMS}"
+    ))
+}
+
+const SIZE_CEILING_TAG: &str = "q-Zeilberger field-element ceiling";
+
+fn is_size_ceiling(e: &QHolonomicError) -> bool {
+    matches!(e, QHolonomicError::SearchExhausted(m) if m.starts_with(SIZE_CEILING_TAG))
 }
 
 /// Solve `A(y)·X(q·y) − B(y/q)·X(y) = C(y)·N(y)` for a degree-`d` `X` and the
@@ -232,7 +350,8 @@ fn try_solve(
     c_ci: &[PolyY],
     order: usize,
     d: usize,
-) -> Option<(Vec<RatX>, Vec<RatX>)> {
+    cumulative_cells: &mut usize,
+) -> Result<Probe, QHolonomicError> {
     let mut bx: Vec<PolyY> = Vec::with_capacity(d + 1);
     for j in 0..=d {
         let yj = y_mono(j);
@@ -248,6 +367,18 @@ fn try_solve(
     let n_eq = (max_deg.max(0) as usize) + 1;
     let n_var = (d + 1) + order;
 
+    // Shape ceilings, both purely arithmetic and both *before* the system is
+    // assembled: `n_eq` comes from the degree of the key equation, so it is
+    // not bounded by the caller's `max_degree`.
+    let cells = n_eq.saturating_mul(n_var);
+    if cells > MAX_SYSTEM_CELLS {
+        return Ok(Probe::Refused);
+    }
+    if cumulative_cells.saturating_add(cells) > MAX_CUMULATIVE_SYSTEM_CELLS {
+        return Ok(Probe::Refused);
+    }
+    *cumulative_cells += cells;
+
     let mut mat = vec![vec![RatX::zero(); n_var]; n_eq];
     let mut rhs = vec![RatX::zero(); n_eq];
     for (m, row) in mat.iter_mut().enumerate() {
@@ -260,8 +391,13 @@ fn try_solve(
         rhs[m] = c_ci[order].coeff(m);
     }
 
-    let sol = field_solve(mat, rhs)?;
-    Some((sol[..=d].to_vec(), sol[(d + 1)..].to_vec()))
+    let sol = match field_solve(mat, rhs) {
+        Ok(Some(sol)) => sol,
+        Ok(None) => return Ok(Probe::NoSolution),
+        Err(e) if is_size_ceiling(&e) => return Ok(Probe::Refused),
+        Err(e) => return Err(e),
+    };
+    Ok(Probe::Solved(sol[..=d].to_vec(), sol[(d + 1)..].to_vec()))
 }
 
 /// Rescale a `Q(q)[x]` family by one common element of `Q(q)` so that every
@@ -389,21 +525,71 @@ pub fn q_zeilberger_on_term(
             "max_order and max_degree must both be at least 1".into(),
         ));
     }
+    // Only this call's trip may be attributed to this call.
+    crate::budget::clear_trip();
+    // The `Z[q][x]` gcd under every `Q(q)(x)` operation is bounded for the
+    // whole search, not per probe: once the ceiling is reached, the remaining
+    // probes refuse immediately instead of each paying it again.
+    let _gcd_scope = enter_gcd_work_scope();
     let p = f.ratio_k()?;
 
     let mut states: Vec<Option<OrderState>> = Vec::with_capacity(opts.max_order);
     let mut degrees_failed = vec![0usize; opts.max_order];
+    let mut cumulative_cells: usize = 0;
+    let mut refused_by_ceiling = false;
+    // `PolyY::gcd` (via `RatY::normalize`) is infallible by signature, so it
+    // reports a ceiling or budget stop out of band; this expands to the `?`,
+    // `continue` and flag update that every heavy step below needs, without
+    // threading a `Result` through the whole coefficient tower.
+    macro_rules! bail_on_field_refusal {
+        () => {
+            match take_field_refusal() {
+                None => {}
+                Some(FieldRefusal::Budget(t)) => return Err(trip_to_error(t)),
+                Some(FieldRefusal::SizeCeiling(_)) => {
+                    refused_by_ceiling = true;
+                    continue;
+                }
+            }
+            match take_gcd_stop() {
+                None => {}
+                Some(GcdStop::Budget(t)) => return Err(trip_to_error(t)),
+                Some(GcdStop::Size(_)) | Some(GcdStop::Work(_)) => {
+                    refused_by_ceiling = true;
+                    continue;
+                }
+            }
+        };
+    }
     for (order, d) in search_plan(opts.max_order, opts.max_degree, opts.search) {
         degrees_failed[order - 1] += 1;
+        checkpoint()?;
+        clear_field_refusal();
+        clear_gcd_stop();
         while states.len() < order {
             states.push(order_state(f, &p, states.len() + 1)?);
         }
         let Some(state) = &states[order - 1] else {
             continue;
         };
-        let Some((x_coeffs, lam_below)) = try_solve(&state.aa, &state.b_eq, &state.c_ci, order, d)
-        else {
-            continue;
+        let probe = try_solve(
+            &state.aa,
+            &state.b_eq,
+            &state.c_ci,
+            order,
+            d,
+            &mut cumulative_cells,
+        )?;
+        // A ceiling that fired inside the solve makes this probe a refusal,
+        // not a miss — checked before the `NoSolution` arm can swallow it.
+        bail_on_field_refusal!();
+        let (x_coeffs, lam_below) = match probe {
+            Probe::Solved(x, lam) => (x, lam),
+            Probe::NoSolution => continue,
+            Probe::Refused => {
+                refused_by_ceiling = true;
+                continue;
+            }
         };
 
         let mut lam_full = lam_below;
@@ -416,6 +602,7 @@ pub fn q_zeilberger_on_term(
         }
         .normalize();
 
+        bail_on_field_refusal!();
         let (a_int, scale) = clear_denominators_x(&lam_full);
         if a_int.iter().all(PolyX::is_zero) || a_int[order].is_zero() {
             continue;
@@ -433,6 +620,7 @@ pub fn q_zeilberger_on_term(
         // (`q^{n+1} − 1`) rather than as quotients (`qⁿ − 1/q`). The scale is
         // one common element of `Q(q)`, and it multiplies the certificate too,
         // so the identity is untouched — and it is re-verified below either way.
+        bail_on_field_refusal!();
         let a_int = primitive_family(&a_int)
             .map(|(family, s)| {
                 r_final = r_final.mul(&RatY::from_ratx(RatX::from_rn(s)));
@@ -446,6 +634,7 @@ pub fn q_zeilberger_on_term(
         for (i, ci) in state.c.iter().enumerate() {
             lhs = lhs.add(&RatY::from_ratx(RatX::from_poly(a_int[i].clone())).mul(ci));
         }
+        bail_on_field_refusal!();
         let rhs_check = r_final.qshift_y(1).mul(&p).sub(&r_final);
         if !lhs.sub(&rhs_check).is_zero() {
             continue;
@@ -454,6 +643,7 @@ pub fn q_zeilberger_on_term(
         // Rendered forms are simplified once, here: the builders emit
         // `1*q^n + -1` shapes that are correct but unreadable, and a caller
         // reading `a_1` off a returned certificate should not have to.
+        bail_on_field_refusal!();
         let simp = |e: ExprId| crate::simplify::simplify(e, pool).value;
         let coeffs: Vec<ExprId> = a_int
             .iter()
@@ -475,8 +665,22 @@ pub fn q_zeilberger_on_term(
         });
     }
 
+    let ceiling_note = if refused_by_ceiling {
+        format!(
+            " (at least one (order, degree) combination within these bounds was refused by this \
+             module's resource ceilings rather than attempted — MAX_SYSTEM_CELLS = \
+             {MAX_SYSTEM_CELLS} equations x unknowns for any single probe, \
+             MAX_CUMULATIVE_SYSTEM_CELLS = {MAX_CUMULATIVE_SYSTEM_CELLS} across the whole \
+             search, MAX_FIELD_ELEMENT_TERMS = {MAX_FIELD_ELEMENT_TERMS} rational numbers in \
+             any one coefficient of the linear system; so this is NOT a statement that no \
+             q-recurrence exists within these bounds)"
+        )
+    } else {
+        String::new()
+    };
     Err(QHolonomicError::SearchExhausted(format!(
-        "no verified q-recurrence of order <= {} with certificate degree <= {} in q^k was found",
+        "no verified q-recurrence of order <= {} with certificate degree <= {} in q^k was \
+         found{ceiling_note}",
         opts.max_order, opts.max_degree
     )))
 }
