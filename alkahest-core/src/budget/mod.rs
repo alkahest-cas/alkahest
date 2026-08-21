@@ -51,12 +51,31 @@
 //! | `E-BUDGET-001` | [`BudgetError::WallClock`] | wall-clock deadline elapsed |
 //! | `E-BUDGET-002` | [`BudgetError::Steps`]     | step counter exceeded `max_steps` |
 //! | `E-BUDGET-003` | [`BudgetError::Cancelled`] | [`request_cancel`] was called |
+//!
+//! Memory ceilings are reported through [`BudgetTrip`] rather than
+//! [`BudgetError`]: `BudgetError` is a public *exhaustive* enum, so growing it
+//! a `Memory` variant is a major semver break. [`check_all`] returns
+//! [`BudgetTrip`], which wraps a [`BudgetError`] or carries one of the two
+//! memory refusals:
+//!
+//! | Code           | Variant                       | Cause             |
+//! |----------------|-------------------------------|-------------------|
+//! | `E-BUDGET-004` | [`BudgetTrip::Memory`]        | the active budget's `max_bytes` ceiling |
+//! | `E-BUDGET-005` | [`BudgetTrip::AddressSpace`]  | the process is about to exhaust `RLIMIT_AS` |
+//!
+//! See [`mod@memory`] for why the memory ceiling is enforced at these
+//! checkpoints rather than inside a fallible allocator (GMP does not have
+//! one, and a Rust `panic!` may not cross a C frame).
 
 use crate::errors::AlkahestError;
 use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+pub mod memory;
+
+pub use memory::{gmp_live_bytes, install as install_memory_accounting};
 
 // ---------------------------------------------------------------------------
 // Budget
@@ -112,6 +131,13 @@ struct Frame {
     max_steps: Option<u64>,
     steps: Cell<u64>,
     seed: Option<u64>,
+    /// Ceiling on GMP bytes held live by this block, from
+    /// [`enter_with_memory`].
+    max_bytes: Option<u64>,
+    /// GMP live-byte total when this frame was pushed, so `max_bytes` measures
+    /// *this block's* appetite rather than whatever the process was already
+    /// holding.
+    bytes_at_entry: u64,
 }
 
 thread_local! {
@@ -148,12 +174,33 @@ impl Drop for BudgetGuard {
 /// frame (matching the non-merging nesting semantics of
 /// `alkahest.context(...)` on the Python side).
 pub fn enter(budget: Budget) -> BudgetGuard {
+    enter_with_memory(budget, None)
+}
+
+/// [`enter`], plus a ceiling on the GMP memory the guarded block may hold
+/// live (see [`mod@memory`]); `None` imposes no ceiling.
+///
+/// # Why this is not a `Budget` field
+///
+/// [`Budget`] has only public fields and is not `#[non_exhaustive]`, so every
+/// caller may build one with a struct literal — and adding a field to such a
+/// struct is a major semver break (`cargo semver-checks`'
+/// `constructible_struct_adds_field`). A free function is additive, so the
+/// memory ceiling travels beside the budget instead of inside it. The Python
+/// binding still spells it `Budget(max_bytes=...)`, because a `@dataclass`
+/// with a defaulted trailing field *is* additive there.
+pub fn enter_with_memory(budget: Budget, max_bytes: Option<u64>) -> BudgetGuard {
+    if max_bytes.is_some() {
+        memory::install();
+    }
     let frame = Frame {
         start: Instant::now(),
         wall: budget.wall,
         max_steps: budget.max_steps,
         steps: Cell::new(0),
         seed: budget.seed,
+        max_bytes,
+        bytes_at_entry: memory::gmp_live_bytes(),
     };
     STACK.with(|s| s.borrow_mut().push(frame));
     BudgetGuard {
@@ -170,6 +217,25 @@ pub fn is_active() -> bool {
 /// no budget is active or the active budget did not set one.
 pub fn seed() -> Option<u64> {
     STACK.with(|s| s.borrow().last().and_then(|f| f.seed))
+}
+
+/// The `max_bytes` ceiling of the innermost active budget frame, or `None`.
+pub fn max_bytes() -> Option<u64> {
+    STACK.with(|s| s.borrow().last().and_then(|f| f.max_bytes))
+}
+
+/// GMP bytes held live *by the innermost active budget frame* — the total now,
+/// less the total when that frame was entered.
+///
+/// Zero when no budget is active. Saturating: a block allocated before the
+/// frame was entered and freed inside it would otherwise underflow.
+pub fn bytes_used() -> u64 {
+    STACK.with(|s| {
+        s.borrow()
+            .last()
+            .map(|f| memory::gmp_live_bytes().saturating_sub(f.bytes_at_entry))
+            .unwrap_or(0)
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +320,175 @@ pub fn check() -> Result<(), BudgetError> {
 }
 
 // ---------------------------------------------------------------------------
+// Memory checkpoints
+// ---------------------------------------------------------------------------
+
+/// How often [`check_memory`] pays for a `/proc/self/statm` read.
+///
+/// The per-frame `max_bytes` ceiling is a pair of atomic loads and is checked
+/// every time; the address-space probe is a file read (a few microseconds), so
+/// it runs on every `PROBE_INTERVAL`-th call — often enough that a pivot loop
+/// cannot climb a whole [`memory::reserve_bytes`] between probes, rarely
+/// enough not to show up in a profile.
+const PROBE_INTERVAL: u32 = 16;
+
+/// How many probe intervals' worth of *observed* growth the address-space
+/// guard keeps in reserve, on top of [`memory::reserve_bytes`].
+///
+/// A flat reserve alone is a bet that no probe interval can cross it, and that
+/// bet is wrong for a solve whose matrix entries double: under a 900 MB
+/// `ulimit -v` the m = 4 multinomial was seen to add 26 MB between two
+/// consecutive probes. Scaling the reserve by the growth actually observed
+/// makes the guard tighten exactly when the workload accelerates, and stay out
+/// of the way when it does not — which matters, because the import alone maps
+/// ~600 MB of address space, so a large flat reserve would refuse work that
+/// fits.
+const GROWTH_RESERVE_FACTOR: u64 = 4;
+
+thread_local! {
+    static PROBE_TICK: Cell<u32> = const { Cell::new(0) };
+    /// Address space mapped at the previous probe, for the growth term above.
+    /// `0` means "no history yet on this thread".
+    static LAST_VSZ: Cell<u64> = const { Cell::new(0) };
+    /// The trip behind the engine-specific error the current thread is about
+    /// to return — see [`record_trip`].
+    static LAST_TRIP: Cell<Option<BudgetTrip>> = const { Cell::new(None) };
+}
+
+/// [`check`] *and* the memory ceilings — the checkpoint a heavy exact-
+/// arithmetic loop should call.
+///
+/// Returns [`BudgetTrip::Budget`] for the wall/step/cancel cases (so an
+/// existing `check` call site can be upgraded without changing what it
+/// reports) and [`BudgetTrip::Memory`] / [`BudgetTrip::AddressSpace`] for the
+/// memory ones.
+pub fn check_all() -> Result<(), BudgetTrip> {
+    check()?;
+    check_memory()
+}
+
+/// The memory half of [`check_all`], without the wall/step/cancel checks.
+pub fn check_memory() -> Result<(), BudgetTrip> {
+    let framed = STACK.with(|s| {
+        let stack = s.borrow();
+        stack.last().and_then(|f| {
+            f.max_bytes.map(|limit| {
+                (
+                    limit,
+                    memory::gmp_live_bytes().saturating_sub(f.bytes_at_entry),
+                )
+            })
+        })
+    });
+    if let Some((limit, used)) = framed {
+        if used > limit {
+            return Err(BudgetTrip::Memory { limit, used });
+        }
+    }
+    if memory::address_space_limit().is_some() {
+        let probe = PROBE_TICK.with(|t| {
+            let n = t.get().wrapping_add(1);
+            t.set(n);
+            n % PROBE_INTERVAL == 1
+        });
+        if probe {
+            if let (Some(limit), Some(used)) =
+                (memory::address_space_limit(), memory::address_space_used())
+            {
+                let prev = LAST_VSZ.with(|c| c.replace(used));
+                let growth = if prev == 0 {
+                    0
+                } else {
+                    used.saturating_sub(prev)
+                };
+                let reserve =
+                    memory::reserve_bytes(limit).max(growth.saturating_mul(GROWTH_RESERVE_FACTOR));
+                if used.saturating_add(reserve) >= limit {
+                    return Err(BudgetTrip::AddressSpace {
+                        limit,
+                        used,
+                        reserve,
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Pre-flight check for a caller that is about to allocate `bytes` in one go.
+///
+/// Unlike [`check_memory`] this always pays for the address-space probe: a
+/// site that can name its allocation size up front is exactly the site where
+/// one step can cross the whole reserve, so it is worth a syscall to refuse
+/// *before* the allocation rather than after the next checkpoint.
+pub fn check_alloc(bytes: u64) -> Result<(), BudgetTrip> {
+    check()?;
+    let framed = STACK.with(|s| {
+        let stack = s.borrow();
+        stack.last().and_then(|f| {
+            f.max_bytes.map(|limit| {
+                (
+                    limit,
+                    memory::gmp_live_bytes().saturating_sub(f.bytes_at_entry),
+                )
+            })
+        })
+    });
+    if let Some((limit, used)) = framed {
+        if used.saturating_add(bytes) > limit {
+            return Err(BudgetTrip::Memory {
+                limit,
+                used: used.saturating_add(bytes),
+            });
+        }
+    }
+    if let (Some(limit), Some(used)) = (memory::address_space_limit(), memory::address_space_used())
+    {
+        let projected = used.saturating_add(bytes);
+        let reserve = memory::reserve_bytes(limit);
+        if projected.saturating_add(reserve) >= limit {
+            return Err(BudgetTrip::AddressSpace {
+                limit,
+                used: projected,
+                reserve,
+            });
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Out-of-band trip reporting
+// ---------------------------------------------------------------------------
+
+/// Record the trip that is about to be reported as an engine-specific error.
+///
+/// Engines whose error enums are public and exhaustive (`HolonomicError`,
+/// `Telescoping2dError`, `SosError`, …) cannot grow a `Budget` variant without
+/// a major semver break, so they return their own "gave up" variant and leave
+/// the real cause here for the bindings to pick up with [`take_trip`] — the
+/// pattern [`crate::calculus::limits::last_budget_trip`] established for
+/// wall-clock trips inside `LimitError::DepthExceeded`.
+///
+/// Call [`clear_trip`] at the outermost entry of such an engine so a stale
+/// trip from an earlier call can never be attributed to this one.
+pub fn record_trip(trip: BudgetTrip) {
+    LAST_TRIP.with(|c| c.set(Some(trip)));
+}
+
+/// Take (and clear) the trip recorded by [`record_trip`] on this thread.
+pub fn take_trip() -> Option<BudgetTrip> {
+    LAST_TRIP.with(|c| c.take())
+}
+
+/// Clear any recorded trip. Call at the outermost entry of an engine that
+/// reports trips out of band.
+pub fn clear_trip() {
+    LAST_TRIP.with(|c| c.set(None));
+}
+
+// ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
 
@@ -312,6 +547,116 @@ impl AlkahestError for BudgetError {
             BudgetError::Cancelled => Some(
                 "call alkahest.clear_cancel() (Python) or budget::clear_cancel() (Rust) before \
                  starting the next candidate",
+            ),
+        }
+    }
+}
+
+/// Why a [`check_all`] checkpoint stopped a call.
+///
+/// # Why this is not a `BudgetError` variant
+///
+/// [`BudgetError`] is a public *exhaustive* enum: adding `Memory` to it is a
+/// major semver break, and so is marking it `#[non_exhaustive]` to allow one
+/// later. This enum is new, so it can be `#[non_exhaustive]` from birth and
+/// grow without breaking anyone; [`From<BudgetError>`] keeps the two in one
+/// `?`-chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BudgetTrip {
+    /// A wall-clock, step, or cancellation trip — see [`BudgetError`].
+    Budget(BudgetError),
+    /// The active budget's `max_bytes` ceiling was reached
+    /// ([`enter_with_memory`], `Budget(max_bytes=...)` in Python).
+    Memory {
+        /// The ceiling, in bytes.
+        limit: u64,
+        /// GMP bytes held live by the guarded block when it tripped.
+        used: u64,
+    },
+    /// The process is within [`memory::reserve_bytes`] of its `RLIMIT_AS`, so
+    /// the next large allocation would `abort()` inside GMP or the Rust
+    /// allocator rather than fail.
+    ///
+    /// Unlike [`BudgetTrip::Memory`] this fires with **no budget active**: the
+    /// operator who set `ulimit -v` (or a container memory limit) already said
+    /// how much the process may have, and refusing inside that number is
+    /// strictly better than dying at it.
+    AddressSpace {
+        /// The process's soft `RLIMIT_AS`, in bytes.
+        limit: u64,
+        /// Address space mapped by the process when it tripped, in bytes.
+        used: u64,
+        /// Headroom the guard was keeping below `limit` — the flat reserve of
+        /// [`memory::reserve_bytes`], widened by the growth observed between
+        /// the last two probes.
+        reserve: u64,
+    },
+}
+
+impl From<BudgetError> for BudgetTrip {
+    fn from(e: BudgetError) -> Self {
+        BudgetTrip::Budget(e)
+    }
+}
+
+impl BudgetTrip {
+    /// The [`BudgetError`] behind a wall/step/cancel trip, or `None` for a
+    /// memory trip.
+    pub fn budget_error(&self) -> Option<BudgetError> {
+        match self {
+            BudgetTrip::Budget(e) => Some(*e),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for BudgetTrip {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BudgetTrip::Budget(e) => e.fmt(f),
+            BudgetTrip::Memory { limit, used } => write!(
+                f,
+                "budget exceeded: exact-arithmetic memory limit {limit} bytes reached \
+                 ({used} bytes held live)"
+            ),
+            BudgetTrip::AddressSpace {
+                limit,
+                used,
+                reserve,
+            } => write!(
+                f,
+                "budget exceeded: refusing before the process address-space limit \
+                 ({used} of {limit} bytes mapped, reserve {reserve} bytes) — the allocation \
+                 that would follow cannot fail safely, GMP and the Rust allocator both abort"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for BudgetTrip {}
+
+impl AlkahestError for BudgetTrip {
+    fn code(&self) -> &'static str {
+        match self {
+            BudgetTrip::Budget(e) => e.code(),
+            BudgetTrip::Memory { .. } => "E-BUDGET-004",
+            BudgetTrip::AddressSpace { .. } => "E-BUDGET-005",
+        }
+    }
+
+    fn remediation(&self) -> Option<&'static str> {
+        match self {
+            BudgetTrip::Budget(e) => e.remediation(),
+            BudgetTrip::Memory { .. } => Some(
+                "raise Budget(max_bytes=...), or ask for a smaller problem (fewer unknowns, \
+                 a lower order/degree) — the exact coefficients, not the shape of the system, \
+                 are what grew",
+            ),
+            BudgetTrip::AddressSpace { .. } => Some(
+                "raise the process address-space limit (ulimit -v, or the container/cgroup \
+                 memory limit), or ask for a smaller problem — this refusal replaces the \
+                 uncatchable abort that would otherwise follow",
             ),
         }
     }
@@ -452,6 +797,111 @@ mod tests {
         let _guard = enter(Budget::new().with_max_steps(1_000_000));
         request_cancel();
         assert_eq!(check().unwrap_err(), BudgetError::Cancelled);
+    }
+
+    /// ~8 MB of GMP limbs, well clear of the 1 MiB ceiling the memory tests
+    /// set and of any noise from tests running in parallel (the GMP live-byte
+    /// total is process-wide by necessity — see `memory::gmp_live_bytes`).
+    fn big_gmp_integer() -> rug::Integer {
+        let mut z = rug::Integer::from(1);
+        z <<= 64_000_000;
+        z
+    }
+
+    #[test]
+    fn memory_budget_trips_when_gmp_memory_passes_max_bytes() {
+        let _serial = serial();
+        let _guard = enter_with_memory(Budget::new(), Some(1 << 20));
+        assert!(
+            check_all().is_ok(),
+            "an empty frame must not trip before anything is allocated"
+        );
+        let z = big_gmp_integer();
+        let err = check_all().unwrap_err();
+        assert_eq!(err.code(), "E-BUDGET-004");
+        assert!(
+            matches!(err, BudgetTrip::Memory { limit, used } if limit == 1 << 20 && used > limit),
+            "{err:?}"
+        );
+        drop(z);
+    }
+
+    #[test]
+    fn a_generous_memory_budget_does_not_trip() {
+        let _serial = serial();
+        // 1 TiB: nothing this process can allocate reaches it, so this pins
+        // that the ceiling is a ceiling and not an unconditional refusal.
+        let _guard = enter_with_memory(Budget::new(), Some(1 << 40));
+        let z = big_gmp_integer();
+        assert!(check_all().is_ok());
+        drop(z);
+    }
+
+    #[test]
+    fn check_alloc_refuses_before_the_allocation_is_made() {
+        let _serial = serial();
+        let _guard = enter_with_memory(Budget::new(), Some(1 << 20));
+        // The refusal is entirely pre-flight — this frame has allocated
+        // nothing — which is the whole point: GMP has no failure path to take
+        // once it has been asked for the memory.
+        let err = check_alloc(4 << 20).unwrap_err();
+        assert_eq!(err.code(), "E-BUDGET-004");
+        // The reported `used` is the *projected* total, i.e. it accounts for
+        // the allocation that has not happened. Not asserted exactly: GMP's
+        // live-byte total is process-wide (its allocation hooks are), so a
+        // test running in parallel can contribute to this frame's delta.
+        assert!(
+            matches!(err, BudgetTrip::Memory { used, .. } if used >= 4 << 20),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn max_bytes_is_visible_and_scoped_to_its_frame() {
+        let _serial = serial();
+        assert_eq!(max_bytes(), None);
+        {
+            let _guard = enter_with_memory(Budget::new(), Some(4096));
+            assert_eq!(max_bytes(), Some(4096));
+            // A plain `enter` shadows it, matching the non-merging nesting of
+            // every other budget field.
+            let _inner = enter(Budget::new());
+            assert_eq!(max_bytes(), None);
+        }
+        assert_eq!(max_bytes(), None);
+    }
+
+    #[test]
+    fn trips_round_trip_through_the_out_of_band_carrier() {
+        let _serial = serial();
+        clear_trip();
+        assert_eq!(take_trip(), None);
+        record_trip(BudgetTrip::Memory { limit: 1, used: 2 });
+        let taken = take_trip().expect("recorded");
+        assert_eq!(taken.code(), "E-BUDGET-004");
+        // Taking clears, so a later unrelated error cannot inherit it.
+        assert_eq!(take_trip(), None);
+    }
+
+    #[test]
+    fn budget_trip_codes_have_remediation() {
+        for trip in [
+            BudgetTrip::Budget(BudgetError::Cancelled),
+            BudgetTrip::Memory { limit: 1, used: 2 },
+            BudgetTrip::AddressSpace {
+                limit: 3,
+                used: 2,
+                reserve: 1,
+            },
+        ] {
+            assert!(trip.code().starts_with("E-BUDGET-"));
+            assert!(trip.remediation().is_some());
+            assert!(!trip.to_string().is_empty());
+        }
+        assert_eq!(
+            BudgetTrip::from(BudgetError::Cancelled).budget_error(),
+            Some(BudgetError::Cancelled)
+        );
     }
 
     #[test]

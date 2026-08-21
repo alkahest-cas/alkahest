@@ -138,7 +138,7 @@ loop must record as **undecided**, never as a negative result.
 | `E-PSLQ-004` | `PslqError` | `guess_relation` found an integer relation the inputs' precision cannot justify — pinning down `n` coefficients bounded by `H` costs about `n·log10(2H+1)` digits of agreement, and the inputs do not carry that many. **Record it as `undecided`, not as "no relation exists":** the same constants at higher precision may well admit one. `relation_confidence` reports the same judgement as data, including a three-valued `credible` whose `None` means *the inputs' precision is not knowable*, never a pass |
 | `E-PSLQ-005` | `PslqError` | The constants are exact rationals and `Σ aᵢ·cᵢ` is not zero in exact arithmetic. **This one is a verdict, not a refusal** — the relation is refuted for the numbers supplied |
 | `E-INT-004` | `IntegrationError` | Proven non-elementary. **This one is a verdict, not a refusal** — keep it apart from the rest |
-| `E-BUDGET-001..003` | `BudgetExceededError` | Ran out of the time/steps it was given, or was cancelled |
+| `E-BUDGET-001..005` | `BudgetExceededError` | Ran out of the time, steps or memory it was given, was cancelled, or is about to exhaust the process address-space limit |
 
 `E-SERIES-003` travels out of band for the same reason (`SeriesError` is exhaustive) but *is*
 wired into the bindings: `series` returns `SeriesError::InvalidOrder` with

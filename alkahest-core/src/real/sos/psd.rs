@@ -482,6 +482,12 @@ const DR_POLISH_CANDIDATES: usize = 2;
 fn anneal_from(family: &Family, start: Vec<f64>) -> Vec<f64> {
     let mut t = start;
     for &floor in FLOOR_SCHEDULE {
+        // Returning the best point so far is always safe: these are only
+        // *candidates*, and every one of them is re-verified exactly before it
+        // can become a certificate.
+        if !super::budget_ok() {
+            return t;
+        }
         if let Some(next) = family.search_from(t.clone(), floor, 150) {
             t = next;
         }
@@ -530,6 +536,9 @@ fn multistart_anneal(family: &Family, dim: usize) -> Vec<Vec<f64>> {
     results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
     for (eig, t) in results.iter_mut().take(DR_POLISH_CANDIDATES) {
+        if !super::budget_ok() {
+            break;
+        }
         for &lambda in DR_LAMBDAS {
             if let Some(cand) = family.douglas_rachford_from(t.clone(), 0.0, lambda, DR_ITERS) {
                 let cand_eig = min_eigenvalue(&family.at(&cand));
@@ -665,6 +674,9 @@ fn search_rational_family(
     let candidate_matrices: Vec<Vec<Vec<f64>>> = candidates.iter().map(|s| family.at(s)).collect();
 
     for s in candidates.iter().take(ROUNDING_CANDIDATES) {
+        if !super::budget_ok() {
+            return (None, candidate_matrices);
+        }
         let Some(t) = back_substitute_upper(&r, s) else {
             continue;
         };

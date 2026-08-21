@@ -999,7 +999,15 @@ ak.get_context_value("any_key")
 ## Budgets, cancellation, and determinism
 
 Use these whenever you write a loop that calls Alkahest many times. A `Budget` is an
-immutable `(wall_ms, max_steps, seed)` triple pushed by `context(budget=…)`.
+immutable `(wall_ms, max_steps, seed, max_bytes)` tuple pushed by `context(budget=…)`.
+
+`max_bytes` is the memory analogue of `wall_ms`, and it is the one you cannot skip in an
+unattended loop: without it, an exact-rational computation that outgrows the machine is
+**not catchable at all** — GMP prints `GNU MP: Cannot allocate memory` and calls
+`abort()`, so the whole interpreter dies and every result it was holding is lost, not
+just the offending call. Alkahest additionally refuses (`E-BUDGET-005`) when the process
+is about to exhaust a finite `RLIMIT_AS` (`ulimit -v`, a container limit), with or
+without a budget.
 
 ```python
 import alkahest as ak
@@ -1009,6 +1017,7 @@ with ak.context(pool=pool, budget=ak.Budget(wall_ms=300, max_steps=50_000, seed=
         r = ak.integrate(hard_expr, x)
     except ak.BudgetExceededError as e:
         e.code      # E-BUDGET-001 wall clock | -002 max_steps | -003 cancelled
+                    #             -004 max_bytes | -005 process address-space limit
         # deprioritise this candidate; DO NOT record it as "no antiderivative"
 
 ak.request_cancel()      # process-wide flag, e.g. from a watchdog thread

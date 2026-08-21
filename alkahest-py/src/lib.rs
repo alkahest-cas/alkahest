@@ -709,8 +709,13 @@ thread_local! {
 /// both around its `with` block.
 #[pyfunction]
 #[pyo3(name = "push_budget")]
-#[pyo3(signature = (wall_ms=None, max_steps=None, seed=None))]
-fn py_push_budget(wall_ms: Option<f64>, max_steps: Option<u64>, seed: Option<u64>) -> PyResult<()> {
+#[pyo3(signature = (wall_ms=None, max_steps=None, seed=None, max_bytes=None))]
+fn py_push_budget(
+    wall_ms: Option<f64>,
+    max_steps: Option<u64>,
+    seed: Option<u64>,
+    max_bytes: Option<u64>,
+) -> PyResult<()> {
     let mut budget = alkahest_core::budget::Budget::new();
     if let Some(ms) = wall_ms {
         // `Duration::from_secs_f64` panics above `u64::MAX` seconds, and
@@ -727,7 +732,11 @@ fn py_push_budget(wall_ms: Option<f64>, max_steps: Option<u64>, seed: Option<u64
     }
     budget.max_steps = max_steps;
     budget.seed = seed;
-    let guard = alkahest_core::budget::enter(budget);
+    // `max_bytes` travels beside the budget rather than inside it: the Rust
+    // `Budget` has only public fields and is not `#[non_exhaustive]`, so
+    // growing it a field is a major semver break (see
+    // `alkahest_core::budget::enter_with_memory`).
+    let guard = alkahest_core::budget::enter_with_memory(budget, max_bytes);
     PY_BUDGET_GUARDS.with(|g| g.borrow_mut().push(guard));
     Ok(())
 }
@@ -758,6 +767,26 @@ fn py_is_budget_active() -> bool {
 #[pyo3(name = "budget_seed")]
 fn py_budget_seed() -> Option<u64> {
     alkahest_core::budget::seed()
+}
+
+/// Bytes of GMP (exact integer/rational) memory held live by the innermost
+/// active budget frame — what `Budget(max_bytes=...)` is measured against.
+///
+/// Deliberately *not* in `alkahest.__all__`: it exists so a caller (and the
+/// regression tests) can see what the ceiling is counting, not as a promise
+/// about how exact arithmetic allocates.
+#[pyfunction]
+#[pyo3(name = "budget_bytes_used")]
+fn py_budget_bytes_used() -> u64 {
+    alkahest_core::budget::bytes_used()
+}
+
+/// Total bytes of GMP memory live in this process, or `0` when accounting is
+/// not installed. See `py_budget_bytes_used`.
+#[pyfunction]
+#[pyo3(name = "gmp_live_bytes")]
+fn py_gmp_live_bytes() -> u64 {
+    alkahest_core::budget::gmp_live_bytes()
 }
 
 /// Request cancellation of the current cooperative operation(s), process-wide.
@@ -4727,9 +4756,28 @@ fn py_verify_wz_pair(
 
 fn holonomic_error_to_py(e: CoreHolonomicError) -> PyErr {
     Python::with_gil(|py| {
+        if let Some(err) = budget_trip_to_py(py) {
+            return err;
+        }
         let exc_type = py.get_type_bound::<PyHolonomicError>();
         make_structured_err(py, &exc_type, &e)
     })
+}
+
+/// `BudgetExceededError` for a call that an `alkahest_core::budget`
+/// checkpoint stopped, or `None` if no trip was recorded on this thread.
+///
+/// Engines whose error enums are public and exhaustive (`HolonomicError`,
+/// `Telescoping2dError`, `SosError`, …) cannot grow a `Budget` variant without
+/// a major semver break, so they return their own "gave up" variant and leave
+/// the real cause in `budget::take_trip()`. Recovering it here is what keeps a
+/// resource stop **distinguishable** from a search that genuinely covered its
+/// grid: a loop that read `E-HOLO-041` or `E-SOS-002` as "no certificate
+/// exists" would record a false negative.
+fn budget_trip_to_py(py: Python<'_>) -> Option<PyErr> {
+    let trip = alkahest_core::budget::take_trip()?;
+    let exc_type = py.get_type_bound::<PyBudgetExceededError>();
+    Some(make_structured_err(py, &exc_type, &trip))
 }
 
 /// Modular-evaluation errors, raised as the *same* Python `HolonomicError`.
@@ -5773,6 +5821,9 @@ fn py_cyclotomic_polynomial(
 
 fn q_holonomic_error_to_py(e: CoreQHolonomicError) -> PyErr {
     Python::with_gil(|py| {
+        if let Some(err) = budget_trip_to_py(py) {
+            return err;
+        }
         let exc_type = py.get_type_bound::<PyHolonomicError>();
         make_structured_err(py, &exc_type, &e)
     })
@@ -5863,6 +5914,9 @@ fn py_q_zeilberger(
 
 fn telescoping2d_error_to_py(e: CoreTelescoping2dError) -> PyErr {
     Python::with_gil(|py| {
+        if let Some(err) = budget_trip_to_py(py) {
+            return err;
+        }
         let exc_type = py.get_type_bound::<PyHolonomicError>();
         make_structured_err(py, &exc_type, &e)
     })
@@ -11125,6 +11179,12 @@ fn validated_error_to_py(e: CoreValidatedError) -> PyErr {
 
 fn sos_error_to_py(e: CoreSosError) -> PyErr {
     Python::with_gil(|py| {
+        // Before `SosError`: `E-SOS-002` already conflates "exhausted" with
+        // "not attempted", and a loop that reads a budget stop as "not SOS"
+        // records a false negative. See `budget_trip_to_py`.
+        if let Some(err) = budget_trip_to_py(py) {
+            return err;
+        }
         let exc_type = py.get_type_bound::<PySosError>();
         make_structured_err(py, &exc_type, &e)
     })
@@ -15732,6 +15792,13 @@ fn py_binomial_mod(a: u64, b: i128, p: u64, k: u32) -> PyResult<u64> {
 
 #[pymodule]
 fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // Before anything in this module can reach GMP: install the allocation
+    // accounting that `Budget(max_bytes=...)` and the address-space guard are
+    // measured against. Idempotent, and cheap enough to be unconditional —
+    // two relaxed atomics per GMP allocation. Without it an exact-rational
+    // solve that outgrows the machine `abort()`s the interpreter with
+    // `GNU MP: Cannot allocate memory`, which no `except` clause can catch.
+    alkahest_core::budget::install_memory_accounting();
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(py_derived_result_context_simplify, m)?)?;
     m.add_function(wrap_pyfunction!(py_simplify, m)?)?;
@@ -16111,6 +16178,8 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_pop_budget, m)?)?;
     m.add_function(wrap_pyfunction!(py_is_budget_active, m)?)?;
     m.add_function(wrap_pyfunction!(py_budget_seed, m)?)?;
+    m.add_function(wrap_pyfunction!(py_budget_bytes_used, m)?)?;
+    m.add_function(wrap_pyfunction!(py_gmp_live_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(py_request_cancel, m)?)?;
     m.add_function(wrap_pyfunction!(py_clear_cancel, m)?)?;
     m.add_function(wrap_pyfunction!(py_is_cancelled, m)?)?;

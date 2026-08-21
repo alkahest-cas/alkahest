@@ -296,6 +296,26 @@ pub(crate) const MAX_MULTIPLIER_POWER: u32 = 4;
 /// search stays bounded.
 const MAX_MULTIPLIER_BASIS_LEN: usize = 90;
 
+/// Cooperative checkpoint for the positivity search: `false` means stop.
+///
+/// The search layer is `Option`-shaped throughout (`multiplier_search`,
+/// `psd_search`, `dsos_search` all return `Option`), deliberately — it is
+/// structurally unable to report anything but "found" or "not found". That
+/// makes a budget stop indistinguishable from an exhausted search at this
+/// level, and `E-SOS-002` already says "record this as unknown, not as a
+/// closed branch". So the trip is recorded out of band and the *bindings*
+/// raise `BudgetExceededError` instead of `SosError`, which is the one thing
+/// that keeps an unattended loop from filing a timeout as a false negative.
+pub(crate) fn budget_ok() -> bool {
+    match crate::budget::check_all() {
+        Ok(()) => true,
+        Err(trip) => {
+            crate::budget::record_trip(trip);
+            false
+        }
+    }
+}
+
 /// Try `p·(x_1²+…+x_n²)^N` for `N = 1, 2, …, max_power` (Reznick
 /// multipliers): a positive semidefinite form can fail to be SOS itself
 /// (Motzkin, Choi–Lam, Robinson's form) yet become SOS after multiplying by
@@ -322,6 +342,9 @@ fn multiplier_search(
     log: &mut Vec<String>,
 ) -> Option<(RatPoly, SosPoly, u32)> {
     for n in 1..=max_power {
+        if !budget_ok() {
+            return None;
+        }
         let sigma = RatPoly::sum_of_squares(nvars).pow(n);
         let q = target.mul(&sigma);
         let qdeg = q.total_degree();
@@ -383,6 +406,8 @@ pub fn sos_decompose(
             "at least one variable is required".into(),
         ));
     }
+    // Only this call's trip may be attributed to this call.
+    crate::budget::clear_trip();
     let names = var_names(vars, pool);
     let target = RatPoly::from_expr(expr, vars, pool).map_err(SosError::NotPolynomial)?;
     let nvars = vars.len();
@@ -564,6 +589,7 @@ pub fn prove_nonneg(
     if constraints.is_empty() {
         return sos_decompose(expr, vars, pool, opts);
     }
+    crate::budget::clear_trip();
     if vars.is_empty() {
         return Err(SosError::InvalidInput(
             "at least one variable is required".into(),
@@ -670,6 +696,44 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let y = pool.symbol("y", Domain::Real);
         (pool, x, y)
+    }
+
+    /// The Motzkin form `x⁴y² + x²y⁴ − 3x²y²z² + z⁶`: non-negative, not SOS,
+    /// and the case 2026-08-19 item 26d measured at **418.5 s inside a
+    /// `Budget(wall_ms=3000)`** — 140x over, ending in `E-SOS-002`.
+    ///
+    /// `E-SOS-002` says "record this as unknown, not as a closed branch", but
+    /// an unattended loop that reads a *timeout* as "not SOS" files a false
+    /// negative. So the budget stop must stay distinguishable: the search still
+    /// returns `NoCertificate`, and the trip is recorded out of band for the
+    /// bindings to raise as `BudgetExceededError`.
+    fn motzkin(pool: &ExprPool, x: ExprId, y: ExprId, z: ExprId) -> ExprId {
+        let sq = |e: ExprId| pool.mul(vec![e, e]);
+        pool.add(vec![
+            pool.mul(vec![sq(sq(x)), sq(y)]),
+            pool.mul(vec![sq(x), sq(sq(y))]),
+            pool.mul(vec![pool.integer(-3_i32), sq(x), sq(y), sq(z)]),
+            sq(sq(z)),
+        ])
+    }
+
+    #[test]
+    fn sos_decompose_honours_a_wall_budget() {
+        let (pool, x, y) = setup();
+        let z = pool.symbol("z", Domain::Real);
+        let p = motzkin(&pool, x, y, z);
+        let _guard = crate::budget::enter(
+            crate::budget::Budget::new().with_wall(std::time::Duration::from_millis(200)),
+        );
+        let start = std::time::Instant::now();
+        let err = sos_decompose(p, &[x, y, z], &pool, &SosOpts::default())
+            .expect_err("no SOS certificate exists for the Motzkin form");
+        // Loose by two orders of magnitude against the 418.5 s that a 3 s
+        // budget used to buy: this asserts the budget is consulted at all.
+        assert!(start.elapsed().as_secs() < 60, "budget was not consulted");
+        assert!(matches!(err, SosError::NoCertificate(_)), "{err:?}");
+        let trip = crate::budget::take_trip().expect("the budget trip must be recorded");
+        assert_eq!(trip.code(), "E-BUDGET-001");
     }
 
     #[test]
