@@ -116,6 +116,45 @@ pub enum SosError {
     VerificationFailed(String),
 }
 
+/// Separates the human-readable half of a [`SosError::NoCertificate`]
+/// message from the trace of what the search actually did. Stable: callers
+/// split on it via [`SosError::search_trace`].
+const SEARCH_TRACE_MARKER: &str = "what the search actually did:";
+
+impl SosError {
+    /// The trace of what the certificate search actually did, one step per
+    /// line, or `None` for errors that carry no trace.
+    ///
+    /// `E-SOS-002` covers three materially different situations — a search
+    /// that ran and was exhausted, a search that ran up to an iteration or
+    /// rounding budget, and a basis or multiplier power that was **never
+    /// searched at all** because it was over a size ceiling — and the code
+    /// alone cannot distinguish them. Reading the trace can; so can
+    /// [`Self::hit_a_search_ceiling`], which is the single question most
+    /// callers actually have.
+    pub fn search_trace(&self) -> Option<&str> {
+        match self {
+            SosError::NoCertificate(msg) => msg
+                .split_once(SEARCH_TRACE_MARKER)
+                .map(|(_, trace)| trace.trim_start_matches('\n')),
+            _ => None,
+        }
+    }
+
+    /// Did a size ceiling stop some part of the search from running at all?
+    ///
+    /// `true` means the refusal is *weaker* than an exhausted search: at
+    /// least one basis or multiplier power was skipped without being looked
+    /// at, so "no certificate was found" does not even mean "everything in
+    /// scope was tried". Never a reason to record a positive verdict either
+    /// way — `E-SOS-002` is `unknown` in all cases — but a caller escalating
+    /// to a more expensive method should know which kind of refusal it got.
+    pub fn hit_a_search_ceiling(&self) -> bool {
+        self.search_trace()
+            .is_some_and(|trace| trace.contains("NOT SEARCHED"))
+    }
+}
+
 impl fmt::Display for SosError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -150,11 +189,12 @@ impl crate::errors::AlkahestError for SosError {
                  clear denominators first, and pass every symbol that occurs as a variable"
             }
             SosError::NoCertificate(_) => {
-                "record this as unknown, not as a closed branch: raise basis_degree \
-                 (unconstrained) or level (constrained); the search covers the diagonally \
-                 dominant subcone, so this is not a proof that no SOS decomposition exists, \
-                 and still less that the inequality is false — alkahest.decide is the \
-                 complete (and far more expensive) fallback"
+                "record this as unknown, not as a closed branch: read the 'what the search \
+                 actually did' trace in the message first — a line marked NOT SEARCHED is a \
+                 size ceiling that fired, not a search that came up empty — then raise \
+                 basis_degree (unconstrained) or level (constrained); this is not a proof \
+                 that no SOS decomposition exists, and still less that the inequality is \
+                 false — alkahest.decide is the complete (and far more expensive) fallback"
             }
             SosError::Negative(_) => {
                 "the witness point in the message satisfies the constraints and makes the target \
@@ -256,6 +296,26 @@ pub(crate) const MAX_MULTIPLIER_POWER: u32 = 4;
 /// search stays bounded.
 const MAX_MULTIPLIER_BASIS_LEN: usize = 90;
 
+/// Cooperative checkpoint for the positivity search: `false` means stop.
+///
+/// The search layer is `Option`-shaped throughout (`multiplier_search`,
+/// `psd_search`, `dsos_search` all return `Option`), deliberately — it is
+/// structurally unable to report anything but "found" or "not found". That
+/// makes a budget stop indistinguishable from an exhausted search at this
+/// level, and `E-SOS-002` already says "record this as unknown, not as a
+/// closed branch". So the trip is recorded out of band and the *bindings*
+/// raise `BudgetExceededError` instead of `SosError`, which is the one thing
+/// that keeps an unattended loop from filing a timeout as a false negative.
+pub(crate) fn budget_ok() -> bool {
+    match crate::budget::check_all() {
+        Ok(()) => true,
+        Err(trip) => {
+            crate::budget::record_trip(trip);
+            false
+        }
+    }
+}
+
 /// Try `p·(x_1²+…+x_n²)^N` for `N = 1, 2, …, max_power` (Reznick
 /// multipliers): a positive semidefinite form can fail to be SOS itself
 /// (Motzkin, Choi–Lam, Robinson's form) yet become SOS after multiplying by
@@ -267,37 +327,65 @@ const MAX_MULTIPLIER_BASIS_LEN: usize = 90;
 /// `max_power` and `max_basis_len` are explicit parameters rather than the
 /// module constants above so tests can exercise the "budget exhausted"
 /// path with a small, fast budget instead of the production one.
+///
+/// `basis_degree` is the caller's `SosOpts::basis_degree`. `None` uses the
+/// smallest basis that can possibly work for `σ·p` (`⌈deg(σ·p)/2⌉`); a
+/// larger value genuinely widens the basis searched here. It used to be
+/// ignored outright on this path, which made `E-SOS-002`'s advice to raise
+/// `basis_degree` inert in exactly the case where that error fires most.
 fn multiplier_search(
     target: &RatPoly,
     nvars: usize,
     max_power: u32,
     max_basis_len: usize,
+    basis_degree: Option<u32>,
     log: &mut Vec<String>,
 ) -> Option<(RatPoly, SosPoly, u32)> {
     for n in 1..=max_power {
+        if !budget_ok() {
+            return None;
+        }
         let sigma = RatPoly::sum_of_squares(nvars).pow(n);
         let q = target.mul(&sigma);
         let qdeg = q.total_degree();
         if qdeg % 2 != 0 {
             continue;
         }
-        let basis_deg = qdeg.div_ceil(2);
-        let basis_len = gram::monomial_basis(nvars, basis_deg).len();
+        let min_basis_deg = qdeg.div_ceil(2);
+        // A basis below ⌈deg(σ·p)/2⌉ cannot reproduce σ·p's top-degree
+        // terms at all, so the caller's request is a floor to raise to, not
+        // a ceiling to clamp at.
+        let basis_deg = basis_degree.unwrap_or(min_basis_deg).max(min_basis_deg);
+        // Budget against the basis actually searched, not the raw
+        // `monomial_basis` count: `psd_search` applies both the homogeneity
+        // restriction and the half-Newton-polytope reduction before it
+        // searches anything, and comparing the *unreduced* count against the
+        // budget rejects powers whose real basis is well inside it (C₇'s
+        // N=1, for instance: 120 raw, 84 real, against a budget of 90).
+        let raw_len = gram::monomial_basis(nvars, basis_deg).len();
+        let basis_len = psd::searched_basis_len(&q, basis_deg);
         if basis_len > max_basis_len {
             log.push(format!(
-                "multiplier search: N={n} would need a degree-{basis_deg} basis \
-                 ({basis_len} monomials), over the search budget ({max_basis_len}); stopping"
+                "multiplier search: N={n} NOT SEARCHED — σ·p would need a degree-{basis_deg} \
+                 basis of {basis_len} monomials ({raw_len} before the homogeneity and \
+                 half-Newton reductions), over the search budget of {max_basis_len}; stopping \
+                 here, so no multiplier power from N={n} up was searched at all"
             ));
             break;
         }
         log.push(format!(
             "multiplier search: trying σ = (Σxᵢ²)^{n}, searching the full PSD Gram cone for \
-             σ·p over the degree-{basis_deg} monomial basis ({basis_len} monomials)"
+             σ·p over the degree-{basis_deg} monomial basis ({basis_len} monomials, {raw_len} \
+             before reduction)"
         ));
-        if let Some(sos) = psd::psd_search(&q, basis_deg) {
+        if let Some(sos) = psd::psd_search_logged(&q, basis_deg, log) {
             log.push(format!("multiplier search succeeded at N={n}"));
             return Some((sigma, sos, basis_deg));
         }
+        log.push(format!(
+            "multiplier search: N={n} produced no certificate (see the lines above for what \
+             ran at this power and what was skipped)"
+        ));
     }
     None
 }
@@ -318,6 +406,8 @@ pub fn sos_decompose(
             "at least one variable is required".into(),
         ));
     }
+    // Only this call's trip may be attributed to this call.
+    crate::budget::clear_trip();
     let names = var_names(vars, pool);
     let target = RatPoly::from_expr(expr, vars, pool).map_err(SosError::NotPolynomial)?;
     let nvars = vars.len();
@@ -382,7 +472,7 @@ pub fn sos_decompose(
         log.push(
             "diagonally dominant search failed; trying the full PSD Gram cone directly".to_string(),
         );
-        if let Some(sos) = psd::psd_search(&target, basis_deg) {
+        if let Some(sos) = psd::psd_search_logged(&target, basis_deg, &mut log) {
             log.push(
                 "full PSD Gram search succeeded (p is SOS but its Gram matrix is not \
                  diagonally dominant)"
@@ -407,6 +497,7 @@ pub fn sos_decompose(
             nvars,
             MAX_MULTIPLIER_POWER,
             MAX_MULTIPLIER_BASIS_LEN,
+            opts.basis_degree,
             &mut log,
         ) {
             return finish(PositivityCertificate {
@@ -423,13 +514,28 @@ pub fn sos_decompose(
                 log,
             });
         }
+        // The trace is not decoration: `None` out of the searches above
+        // covers "searched and exhausted", "searched up to a budget" and
+        // "never searched at all" (a multiplier power skipped for basis
+        // size, or an affine family over `psd`'s free-parameter ceiling),
+        // and the bare error code cannot tell those apart. Reporting which
+        // multiplier powers actually ran — and which were skipped, with the
+        // reason — is the difference between "we looked and found nothing"
+        // and "we did not look".
+        let trace = log
+            .iter()
+            .map(|line| format!("\n  - {line}"))
+            .collect::<String>();
         return Err(SosError::NoCertificate(format!(
             "undecided, not a refutation — no diagonally dominant or general PSD Gram matrix \
              over the degree-{basis_deg} monomial basis reproduces p, and no Reznick multiplier \
-             (Σxᵢ²)^N up to N={MAX_MULTIPLIER_POWER} made σ·p SOS within the search budget \
+             (Σxᵢ²)^N up to N={MAX_MULTIPLIER_POWER} that was actually searched made σ·p SOS \
              either. None of this is a proof that p is not SOS (with or without a multiplier), \
              and still less that p is not non-negative — only that no certificate of these \
-             shapes was found at this size. Raise basis_degree, or fall back to alkahest.decide"
+             shapes was found at this size. Read the trace below before treating this as \
+             exhaustive: a line marked NOT SEARCHED is a budget that fired, not a search that \
+             came up empty. Raise basis_degree, or fall back to alkahest.decide.\
+             \n{SEARCH_TRACE_MARKER}{trace}"
         )));
     };
 
@@ -483,6 +589,7 @@ pub fn prove_nonneg(
     if constraints.is_empty() {
         return sos_decompose(expr, vars, pool, opts);
     }
+    crate::budget::clear_trip();
     if vars.is_empty() {
         return Err(SosError::InvalidInput(
             "at least one variable is required".into(),
@@ -591,6 +698,44 @@ mod tests {
         (pool, x, y)
     }
 
+    /// The Motzkin form `x⁴y² + x²y⁴ − 3x²y²z² + z⁶`: non-negative, not SOS,
+    /// and the case 2026-08-19 item 26d measured at **418.5 s inside a
+    /// `Budget(wall_ms=3000)`** — 140x over, ending in `E-SOS-002`.
+    ///
+    /// `E-SOS-002` says "record this as unknown, not as a closed branch", but
+    /// an unattended loop that reads a *timeout* as "not SOS" files a false
+    /// negative. So the budget stop must stay distinguishable: the search still
+    /// returns `NoCertificate`, and the trip is recorded out of band for the
+    /// bindings to raise as `BudgetExceededError`.
+    fn motzkin(pool: &ExprPool, x: ExprId, y: ExprId, z: ExprId) -> ExprId {
+        let sq = |e: ExprId| pool.mul(vec![e, e]);
+        pool.add(vec![
+            pool.mul(vec![sq(sq(x)), sq(y)]),
+            pool.mul(vec![sq(x), sq(sq(y))]),
+            pool.mul(vec![pool.integer(-3_i32), sq(x), sq(y), sq(z)]),
+            sq(sq(z)),
+        ])
+    }
+
+    #[test]
+    fn sos_decompose_honours_a_wall_budget() {
+        let (pool, x, y) = setup();
+        let z = pool.symbol("z", Domain::Real);
+        let p = motzkin(&pool, x, y, z);
+        let _guard = crate::budget::enter(
+            crate::budget::Budget::new().with_wall(std::time::Duration::from_millis(200)),
+        );
+        let start = std::time::Instant::now();
+        let err = sos_decompose(p, &[x, y, z], &pool, &SosOpts::default())
+            .expect_err("no SOS certificate exists for the Motzkin form");
+        // Loose by two orders of magnitude against the 418.5 s that a 3 s
+        // budget used to buy: this asserts the budget is consulted at all.
+        assert!(start.elapsed().as_secs() < 60, "budget was not consulted");
+        assert!(matches!(err, SosError::NoCertificate(_)), "{err:?}");
+        let trip = crate::budget::take_trip().expect("the budget trip must be recorded");
+        assert_eq!(trip.code(), "E-BUDGET-001");
+    }
+
     #[test]
     fn perfect_square_is_certified() {
         let (pool, x, y) = setup();
@@ -694,7 +839,7 @@ mod tests {
         ]);
         let target = RatPoly::from_expr(p, &[x, y], &pool).unwrap();
         let mut log = Vec::new();
-        let out = multiplier_search(&target, 2, /* max_power */ 0, 90, &mut log);
+        let out = multiplier_search(&target, 2, /* max_power */ 0, 90, None, &mut log);
         assert!(
             out.is_none(),
             "a zero-power budget must not manufacture a certificate"
@@ -715,6 +860,180 @@ mod tests {
         assert!(
             negativity_witness(&target, &[], 2).is_none(),
             "Motzkin is non-negative, so a witness must not exist"
+        );
+    }
+
+    /// The C₇ copositivity form: `Σ_ij M_ij x_i² x_j²` with
+    /// `M = 3·(I + A(C₇)) − J`, `A(C₇)` the adjacency matrix of the 7-cycle.
+    /// A 7-variable quartic that is non-negative but not SOS.
+    fn c7_copositivity_form() -> RatPoly {
+        let n = 7usize;
+        let adj = |i: usize, j: usize| -> i64 {
+            let d = (i + n - j) % n;
+            i64::from(d == 1 || d == n - 1)
+        };
+        let mut p = RatPoly::zero(n);
+        for i in 0..n {
+            for j in 0..n {
+                let m = 3 * (i64::from(i == j) + adj(i, j)) - 1;
+                if m == 0 {
+                    continue;
+                }
+                let mut e = vec![0u32; n];
+                e[i] += 2;
+                e[j] += 2;
+                p = p.add(&RatPoly::monomial(n, e, Rational::from(m)));
+            }
+        }
+        p
+    }
+
+    #[test]
+    fn the_multiplier_budget_uses_the_basis_actually_searched() {
+        // `MAX_MULTIPLIER_BASIS_LEN` used to be compared against the *raw*
+        // `monomial_basis` count, which is not the basis `psd_search`
+        // searches: it applies a homogeneity restriction and a
+        // half-Newton-polytope reduction first. For C₇'s N=1 multiplier that
+        // is the difference between 120 (rejected, "over the search budget")
+        // and the 84 monomials really at stake (inside the budget of 90) —
+        // so the power was skipped on a number that never described the
+        // search, and the log reported a size the search never used.
+        let p = c7_copositivity_form();
+        let q = p.mul(&RatPoly::sum_of_squares(7));
+        assert_eq!(gram::monomial_basis(7, 3).len(), 120);
+        assert!(gram::monomial_basis(7, 3).len() > MAX_MULTIPLIER_BASIS_LEN);
+        assert_eq!(psd::searched_basis_len(&q, 3), 84);
+        assert!(psd::searched_basis_len(&q, 3) <= MAX_MULTIPLIER_BASIS_LEN);
+
+        let mut log = Vec::new();
+        let out = multiplier_search(&p, 7, 1, MAX_MULTIPLIER_BASIS_LEN, None, &mut log);
+        assert!(out.is_none(), "C₇'s N=1 certificate is still out of reach");
+        let tried = log
+            .iter()
+            .find(|l| l.contains("trying σ"))
+            .unwrap_or_else(|| panic!("N=1 must no longer be rejected on basis size: {log:?}"));
+        assert!(
+            tried.contains("84 monomials") && tried.contains("120 before reduction"),
+            "the log must report the searched size, with the raw one for context: {tried}"
+        );
+    }
+
+    #[test]
+    fn a_refusal_reports_which_multiplier_powers_were_actually_searched() {
+        // The Horn form (copositivity of the Horn matrix, `Σ_ij H_ij x_i²
+        // x_j²`): non-negative, not SOS, and — as `E-SOS-002` used to present
+        // it — "no Reznick multiplier up to N=4 made σ·p SOS", which reads as
+        // if four multiplier powers had been tried. In fact *no* multiplier
+        // power is searched here at all: N=1's affine family has 420 free
+        // parameters, over `psd`'s ceiling, and the higher powers are over
+        // the basis-length budget. The refusal is the same either way; what
+        // must not be the same is what it claims to have done.
+        let (pool, _x, _y) = setup();
+        let vars: Vec<ExprId> = (0..5)
+            .map(|i| pool.symbol(format!("h{i}"), Domain::Real))
+            .collect();
+        let h = [
+            [1, -1, 1, 1, -1],
+            [-1, 1, -1, 1, 1],
+            [1, -1, 1, -1, 1],
+            [1, 1, -1, 1, -1],
+            [-1, 1, 1, -1, 1],
+        ];
+        let mut terms = Vec::new();
+        for i in 0..5 {
+            for j in 0..5 {
+                terms.push(pool.mul(vec![
+                    pool.integer(h[i][j]),
+                    vars[i],
+                    vars[i],
+                    vars[j],
+                    vars[j],
+                ]));
+            }
+        }
+        let p = pool.add(terms);
+
+        let err = sos_decompose(p, &vars, &pool, &SosOpts::default()).expect_err("still refused");
+        assert_eq!(err.code(), "E-SOS-002");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("what the search actually did:"),
+            "the refusal must carry a trace of what ran: {msg}"
+        );
+        assert!(
+            msg.contains("NOT SEARCHED"),
+            "a budget that fired must be reported as such, not folded into the same \
+             undifferentiated refusal an exhausted search produces: {msg}"
+        );
+        assert!(
+            msg.contains("that was actually searched"),
+            "the message must not imply multiplier powers were tried when they were not: {msg}"
+        );
+
+        // The same distinction, reachable without string-scraping.
+        let trace = err.search_trace().expect("NoCertificate carries a trace");
+        assert!(trace.contains("NOT SEARCHED"));
+        assert!(
+            err.hit_a_search_ceiling(),
+            "this refusal is weaker than an exhausted search and must say so"
+        );
+
+        // …and the counterpart: an error with no trace does not pretend to
+        // have one, and a refusal is never silently upgraded to a refutation.
+        let neg = SosError::Negative("witness".into());
+        assert!(neg.search_trace().is_none());
+        assert!(!neg.hit_a_search_ceiling());
+    }
+
+    #[test]
+    fn basis_degree_is_not_ignored_on_the_multiplier_path() {
+        // `multiplier_search` derived its basis degree from `deg(σ·p)` alone
+        // and never read `opts.basis_degree`, so the multiplier path was
+        // bit-identical at every setting — while `E-SOS-002`'s remediation
+        // told callers to raise `basis_degree`. Raising it now genuinely
+        // widens the basis searched on this path.
+        let (pool, x, y) = setup();
+        let p = pool.add(vec![
+            pool.mul(vec![x, x, x, x, y, y]),
+            pool.mul(vec![x, x, y, y, y, y]),
+            pool.mul(vec![pool.integer(-3_i32), x, x, y, y]),
+            pool.integer(1_i32),
+        ]);
+        let target = RatPoly::from_expr(p, &[x, y], &pool).unwrap();
+
+        let mut default_log = Vec::new();
+        multiplier_search(
+            &target,
+            2,
+            1,
+            MAX_MULTIPLIER_BASIS_LEN,
+            None,
+            &mut default_log,
+        );
+        let mut raised_log = Vec::new();
+        multiplier_search(
+            &target,
+            2,
+            1,
+            MAX_MULTIPLIER_BASIS_LEN,
+            Some(5),
+            &mut raised_log,
+        );
+        let degree_of = |log: &[String]| -> String {
+            log.iter()
+                .find(|l| l.contains("trying σ"))
+                .expect("N=1 is searched either way")
+                .split("degree-")
+                .nth(1)
+                .and_then(|t| t.split(' ').next())
+                .expect("the log names the basis degree")
+                .to_string()
+        };
+        assert_eq!(degree_of(&default_log), "4");
+        assert_eq!(
+            degree_of(&raised_log),
+            "5",
+            "basis_degree must reach the multiplier path, or E-SOS-002 must stop recommending it"
         );
     }
 

@@ -32,7 +32,8 @@ def _exact(pool, n, expr, ni):
     the whole check stays in exact arithmetic — no float ever sees a value that
     a verdict depends on.
     """
-    return Fraction(str(ak.simplify(ak.subs(expr, {n: pool.integer(ni)})).value))
+    # `simplify` may hand back a parenthesised atom, e.g. "(20)".
+    return Fraction(str(ak.simplify(ak.subs(expr, {n: pool.integer(ni)})).value).strip("()"))
 
 
 def _residual(pool, n, cert, s, ni):
@@ -335,5 +336,157 @@ def test_boundary_at_does_not_disturb_the_certificate():
         "boundary",
         "rhs",
         "reason",
+        "valid_from",
+        "certificate_poles",
         "side_conditions",
     }
+    # The domain travels with the verdict here too, not only on the attribute.
+    assert cert.boundary_at(0, n)["valid_from"] == cert.boundary_valid_from
+    assert cert.boundary_at(3, n - pool.integer(3))["valid_from"] == 5
+
+
+# ---------------------------------------------------------------------------
+# The domain the verdict is claimed on
+# ---------------------------------------------------------------------------
+
+
+def test_a_backwards_range_is_not_a_recurrence():
+    """``k = 5..3`` is empty, so every ``S(n)`` is ``0``.
+
+    The engine used to answer ``"nonzero"`` here with a degree-9 ``b(n)`` whose
+    residual ran ``4, 107, 800, 2725, …`` — a valid certificate implying a false
+    recurrence, which is the failure the whole verdict exists to prevent.  There
+    is no ``n`` at which the relation holds, so there is nothing to claim.
+    """
+    pool = ak.ExprPool()
+    n, k = pool.symbol("n"), pool.symbol("k")
+    b = _binomial(pool, n, k)
+
+    for lo, hi in [(5, 3), (3, 1), (2, 0), (4, 2)]:
+        cert = ak.zeilberger(b * b, n, k, limits=(lo, hi))
+        assert cert.boundary == "unknown", f"k = {lo}..{hi}: {cert.boundary_reason}"
+        assert not cert.implies_sum_recurrence
+        assert cert.boundary_rhs is None
+        # Nothing is claimed at any n, so the bound has nothing to bound.
+        assert cert.boundary_valid_from is None
+        assert "backwards" in cert.boundary_reason
+
+
+def test_an_n_dependent_range_that_starts_empty_carries_its_domain():
+    """``k = 3..n−3`` is the realistic form: empty at ``n = 3, 4``, a range after.
+
+    The verdict is a theorem for ``n ≥ 5`` and false below it, so it is returned
+    *with* that bound rather than discarded or over-claimed.  Both halves are
+    checked against the actual sum.
+    """
+    pool = ak.ExprPool()
+    n, k = pool.symbol("n"), pool.symbol("k")
+    three = pool.integer(3)
+    cert = ak.zeilberger(_binomial(pool, n, k), n, k, limits=(three, n - three))
+
+    assert cert.boundary_valid_from == 5
+    assert cert.boundary == "nonzero", cert.boundary_reason
+    assert any("n >= 5" in s for s in cert.side_conditions)
+
+    def s(m):
+        return sum(math.comb(m, j) for j in range(3, m - 3 + 1))
+
+    # A theorem from n = 5 on ...
+    for ni in range(5, 10):
+        assert _residual(pool, n, cert, s, ni) == _exact(pool, n, cert.boundary_rhs, ni)
+    # ... and false below it, which is exactly what the bound says.
+    for ni in (3, 4):
+        assert s(ni) == 0
+        assert _residual(pool, n, cert, s, ni) != _exact(pool, n, cert.boundary_rhs, ni)
+
+
+def test_an_exactly_empty_range_is_still_a_proved_zero():
+    """``k = 0..−1`` and ``k = n+1..n`` are empty too — and were always right.
+
+    ``κ₁ = κ₀ − 1`` is the one empty range both readings agree is ``0``, and the
+    telescoping handles it, so it keeps its ``"vanishes"``.  The old behaviour
+    was inconsistent in this pair's favour; the fix must not swap which half is
+    wrong.
+    """
+    pool = ak.ExprPool()
+    n, k = pool.symbol("n"), pool.symbol("k")
+    b = _binomial(pool, n, k)
+    one = pool.integer(1)
+
+    for limits in [(0, -1), (n + one, n)]:
+        cert = ak.zeilberger(b * b, n, k, limits=limits)
+        assert cert.boundary == "vanishes", cert.boundary_reason
+        assert cert.implies_sum_recurrence
+        assert cert.boundary_valid_from is None
+        assert cert.certificate_poles == []
+
+
+# ---------------------------------------------------------------------------
+# Poles inside the range
+# ---------------------------------------------------------------------------
+
+
+def test_an_interior_certificate_pole_is_reported():
+    """``C(n,k)/(n−2k+1)`` over ``k = 0..n``.
+
+    ``S(n)`` is undefined for every odd ``n`` — the summand has a pole at
+    ``k = (n+1)/2`` — *and* the certificate has one at ``k = (n+3)/2``, an
+    integer strictly inside the range.  The telescoping breaks in the middle of
+    the sum, where no boundary value can see it; the verdict was ``"vanishes"``.
+    """
+    pool = ak.ExprPool()
+    n, k = pool.symbol("n"), pool.symbol("k")
+    one = pool.integer(1)
+    cert = ak.zeilberger(_binomial(pool, n, k) / (n - pool.integer(2) * k + one), n, k)
+
+    assert cert.boundary == "unknown", cert.boundary_reason
+    assert not cert.implies_sum_recurrence
+    poles = [str(p) for p in cert.certificate_poles]
+    assert poles, "the poles must be reported, not just the refusal"
+    assert all("1/2" in p for p in poles), poles
+    assert any("interior" in s for s in cert.side_conditions)
+
+    # The sum really is undefined at the odd n, which is what the pole says.
+    for m in (3, 5, 7):
+        assert (m - 2 * ((m + 1) // 2) + 1) == 0
+
+
+def test_a_summand_pole_inside_the_range_is_reported():
+    """``C(n,k)/(k−3)`` over ``k = 0..n``: ``S(n)`` does not exist for ``n ≥ 3``.
+
+    The old answer was ``"vanishes"`` with ``implies_sum_recurrence`` — the same
+    strings a genuine theorem gets.
+    """
+    pool = ak.ExprPool()
+    n, k = pool.symbol("n"), pool.symbol("k")
+    cert = ak.zeilberger(_binomial(pool, n, k) / (k - pool.integer(3)), n, k)
+
+    assert cert.boundary == "unknown", cert.boundary_reason
+    assert not cert.implies_sum_recurrence
+    assert [str(p) for p in cert.certificate_poles] == ["3"]
+
+
+def test_verdicts_that_were_already_right_are_left_alone():
+    """Guards, so that refusing empty ranges and interior poles cannot spread.
+
+    ``k = −n..n`` is honestly ``"unknown"``, ``k = −n..0`` is a real
+    ``"nonzero"``, and ``C(n,k)/(n−k+1)`` over ``k = 0..n`` has a certificate
+    pole *exactly* at ``k = k_hi+1`` that a zero of the summand cancels — a
+    ``0·∞`` endpoint the analysis resolves rather than refuses.
+    """
+    pool = ak.ExprPool()
+    n, k = pool.symbol("n"), pool.symbol("k")
+    one = pool.integer(1)
+    b = _binomial(pool, n, k)
+
+    assert ak.zeilberger(b * b, n, k, limits=(-n, n)).boundary == "unknown"
+
+    half = ak.zeilberger(b, n, k, limits=(-n, 0))
+    assert half.boundary == "nonzero", half.boundary_reason
+
+    cont = ak.zeilberger(b / (n - k + one), n, k)
+    assert cont.boundary == "nonzero", cont.boundary_reason
+    assert cont.certificate_poles == []
+    s = lambda m: sum(Fraction(math.comb(m, j), m - j + 1) for j in range(m + 1))  # noqa: E731
+    for ni in range(2, 7):
+        assert _residual(pool, n, cont, s, ni) == _exact(pool, n, cont.boundary_rhs, ni)

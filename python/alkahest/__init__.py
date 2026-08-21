@@ -1,8 +1,8 @@
 import functools as _functools
 import math
 import numbers as _numbers
-import sys as _sys
 from contextlib import suppress as _suppress
+from fractions import Fraction as _Fraction
 from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from importlib.metadata import version as _meta_version
 
@@ -50,7 +50,12 @@ from ._context import (
     symbol,
 )
 from ._dlpack import _call_batch, _to_numpy
-from ._guess_holonomic import GuessedRecurrence, guess_holonomic
+from ._guess_holonomic import (
+    GUESS_STATUS_MEANINGS,
+    GUESS_STATUSES,
+    GuessedRecurrence,
+    guess_holonomic,
+)
 from ._parse import parse
 from ._plot import (
     plot,
@@ -1375,34 +1380,57 @@ def _supplied_bits(value) -> "tuple[float | None, str]":
     which. That is not the same as exact, and conflating the two is what made
     :func:`relation_confidence` a gate that could not fail.
 
-    ============================  ==================================
-    Input                         Verdict
-    ============================  ==================================
-    ``float``                     53 bits, whatever it is printed as
-    ``mpmath.mpf``                its context's working precision
-    ``int``, ``Fraction``         exact
-    ``str``, ``Decimal``, other   unknown
-    ============================  ==================================
+    ==================================  ==================================
+    Input                               Verdict
+    ==================================  ==================================
+    ``float``                           53 bits, whatever it is printed as
+    ``int``, ``Fraction``               exact
+    ``mpmath.mpf``, ``str``, other      unknown
+    ==================================  ==================================
 
     A decimal string is the case that matters. ``"3.14159265358979"`` is a
     perfectly exact rational *and* the way every PSLQ caller spells a truncated
     numerical constant; the string cannot distinguish the two, so neither can
     this function. Pass ``digits=`` / ``precision_bits=`` to declare which.
+
+    **An ``mpmath.mpf`` is the same case wearing a type.** It reports
+    ``value.context.prec`` — the *ambient* working precision at the moment it is
+    asked, not a property of the value — so a set of ``mpf`` objects computed at
+    16 digits and judged after an unrelated ``mp.dps = 300`` claimed 301 digits
+    and blessed the very relation this guard exists to refuse
+    (``temp-alkahest/testing/autoresearch-issues-2026-08-19.md`` §4). Nor is the
+    accuracy recoverable from the object: every ``mpf`` is *exactly* a dyadic
+    rational, so ``mpf(1)`` and a 300-digit ``mpf`` of π are equally "exact" and
+    equally silent about how many of their digits mean anything. Unknown is the
+    only honest verdict, and ``digits=`` is how a caller who knows better says
+    so — the same decision this gate already makes for a decimal string.
     """
     if isinstance(value, float):
         return float(_FLOAT_SIGNIFICAND_BITS), "float"
-    mpmath = _sys.modules.get("mpmath")
-    if mpmath is not None:
-        mpf = getattr(mpmath, "mpf", None)
-        if mpf is not None and isinstance(value, mpf):
-            context = getattr(value, "context", None) or getattr(mpmath, "mp", None)
-            prec = getattr(context, "prec", None)
-            return (float(prec) if prec else float(_FLOAT_SIGNIFICAND_BITS)), "mpmath"
     if isinstance(value, _numbers.Rational):
         # An int or a Fraction *is* the rational it spells; there is no
         # truncation for it to be hiding.
         return math.inf, "exact"
     return None, "unknown"
+
+
+def _exact_residual(constants, coeffs):
+    """``Σ aᵢ·cᵢ`` as an exact :class:`~fractions.Fraction`, or ``None``.
+
+    ``None`` means at least one constant is not an exact rational, so the sum
+    would be an approximation of an approximation and could not refute anything.
+    A ``float`` and an ``mpmath.mpf`` are *representable* as exact dyadic
+    rationals but are not exact *values*: a nonzero residual is what a genuine
+    relation among rounded inputs looks like, so they are deliberately excluded.
+    """
+    if len(coeffs) != len(constants):
+        return None
+    total = _Fraction(0)
+    for coefficient, constant in zip(coeffs, constants):
+        if not isinstance(constant, _numbers.Rational):
+            return None
+        total += _Fraction(coefficient) * _Fraction(constant)
+    return total
 
 
 def _relation_available_digits(constants, digits=None, precision_bits=None):
@@ -1464,15 +1492,29 @@ class _RelationPrecisionError(PslqError):
         self.remediation = remediation
 
 
+class _RelationFalseError(PslqError):
+    """``E-PSLQ-005`` — the relation is false for the exact values supplied.
+
+    Distinct from ``E-PSLQ-004``: nothing here is short of precision. The inputs
+    are exact rationals and ``Σ aᵢ·cᵢ`` was evaluated in exact arithmetic and is
+    not zero, so the relation is refuted rather than merely unaffordable.
+    """
+
+    def __init__(self, message: str, remediation: str):
+        super().__init__(message)
+        self.code = "E-PSLQ-005"
+        self.remediation = remediation
+
+
 def _relation_is_credible(constants, coeffs, digits=None, precision_bits=None, margin_digits=None):
     """Judge a *found* relation against the precision its inputs actually have.
 
     This is the standard experimental-mathematics criterion, and it uses
     evidence rather than guessing what the caller meant. Pinning down `n`
-    coefficients of magnitude `H` consumes about `n·log10(H)` digits of
-    agreement. If that (plus a safety margin) exceeds the digits the inputs
-    carry, the relation was *purchasable* from the available precision and is
-    evidence of nothing.
+    coefficients bounded by `H` picks one of the `(2H+1)ⁿ` integer vectors in
+    that box, so it consumes about `n·log10(2H+1)` digits of agreement. If that
+    (plus a safety margin) exceeds the digits the inputs carry, the relation was
+    *purchasable* from the available precision and is evidence of nothing.
 
     ``credible`` is ``None`` — *unknown*, never ``True`` — when the inputs'
     precision cannot be established; see :func:`_supplied_bits`. Unknown is not
@@ -1480,9 +1522,15 @@ def _relation_is_credible(constants, coeffs, digits=None, precision_bits=None, m
     bounds the whole set (precision is a ``min``), so a relation that already
     exceeds that bound is refuted outright rather than reported as unknown.
 
+    Exact inputs are the mirror image: precision is infinite, so no affordability
+    test can ever fire and ``credible`` was unconditionally ``True`` — the one
+    branch of this gate that could not fail. It is now decided by *evaluating*
+    the relation in exact arithmetic, which is what "exact" was always claiming.
+
     Returns ``(credible, available_digits, consumed_digits, margin_digits,
-    source)``.
+    source, exact_residual)``.
     """
+    constants = tuple(constants)
     available, source, ceiling = _relation_available_digits(constants, digits, precision_bits)
     margin = _DEFAULT_MARGIN_DIGITS if margin_digits is None else float(margin_digits)
     # NB: `abs`/`min`/`max` in this module's namespace are the *symbolic*
@@ -1492,16 +1540,31 @@ def _relation_is_credible(constants, coeffs, digits=None, precision_bits=None, m
         magnitude = -a if a < 0 else a
         if magnitude > biggest:
             biggest = magnitude
-    consumed = len(coeffs) * math.log10(biggest) if biggest > 1 else 0.0
+    # `(2H+1)ⁿ` vectors, not `Hⁿ`: coefficients run over ±H *and zero*, and the
+    # `Hⁿ` spelling collapses to 0 digits at `H = 1`, calling every relation with
+    # unit coefficients free whatever its length
+    # (``autoresearch-issues-2026-08-19.md`` item 26n).
+    consumed = len(coeffs) * math.log10(2 * biggest + 1)
+    residual = None
+    if source == "exact":
+        # `available` is infinite here, so the affordability test below is
+        # vacuous — `credible` would be `True` for *any* coefficients, including
+        # a relation that is simply false for the numbers supplied.
+        # `Fraction(str(float(pi)))` and friends reached exactly that branch
+        # (``autoresearch-issues-2026-08-19.md`` §4). Precision cannot be the
+        # fault for an exact input, but arithmetic can be, so check it.
+        residual = _exact_residual(constants, coeffs)
+        if residual is not None and residual != 0:
+            return False, available, consumed, margin, source, residual
     if available is None:
         # Some input's precision is unknown, so we cannot say how much room the
         # relation has. We can still say it has none: `ceiling` is a genuine
         # upper bound on the available precision, and unknown neighbours can
         # only drag the `min` lower, never raise it.
         if consumed + margin > ceiling:
-            return False, None, consumed, margin, source
-        return None, None, consumed, margin, source
-    return consumed + margin <= available, available, consumed, margin, source
+            return False, None, consumed, margin, source, residual
+        return None, None, consumed, margin, source, residual
+    return consumed + margin <= available, available, consumed, margin, source, residual
 
 
 def relation_confidence(
@@ -1509,25 +1572,29 @@ def relation_confidence(
 ) -> dict:
     """Judge a found relation against the precision its inputs actually carry.
 
-    Pinning down ``n`` coefficients of magnitude ``H`` takes about
-    ``n·log10(H)`` digits of agreement. When that exceeds the digits the inputs
-    have, the relation was *purchasable* from the available precision — the
-    search would have found something whatever the constants were — and it is
-    evidence of nothing. Because PSLQ returns the *smallest* relation the
+    Pinning down ``n`` coefficients bounded by ``H`` selects one of the
+    ``(2H+1)ⁿ`` integer vectors in that box, so it takes about
+    ``n·log10(2H+1)`` digits of agreement. When that exceeds the digits the
+    inputs have, the relation was *purchasable* from the available precision —
+    the search would have found something whatever the constants were — and it
+    is evidence of nothing. Because PSLQ returns the *smallest* relation the
     precision can buy, a purchased one lands just under the bound rather than
     over it, so a relation must clear it by ``margin_digits`` (default 10) to
     count as credible.
 
     **The input's precision has to be knowable, and usually it is not.** A
-    ``float`` is 53 bits however it is printed, and an ``mpmath.mpf`` reports
-    its working precision, so those are judged. ``int`` and ``Fraction`` are
-    exactly the rationals they spell, so precision cannot be the reason a
-    relation among them is spurious. A **decimal string** — the way every
-    high-precision constant reaches this library — is *unknown*: the digits
-    ``"3.14159265358979"`` are equally the exact rational 314159265358979/10¹⁴
-    and π truncated to 15 places, and nothing in the string says which. Pass
-    ``digits=`` (decimal) or ``precision_bits=`` (binary) to say how many of
-    them are trustworthy; a declaration is a cap, so declaring 200 digits for a
+    ``float`` is 53 bits however it is printed, so it is judged. ``int`` and
+    ``Fraction`` are exactly the rationals they spell, so precision cannot be
+    the reason a relation among them is spurious — instead the relation itself
+    is evaluated (see ``exact_residual`` below). A **decimal string** — the way
+    every high-precision constant reaches this library — is *unknown*: the
+    digits ``"3.14159265358979"`` are equally the exact rational
+    314159265358979/10¹⁴ and π truncated to 15 places, and nothing in the string
+    says which. An ``mpmath.mpf`` is unknown for the same reason: it reports the
+    *ambient* ``mp.dps`` at the moment it is asked rather than anything about
+    itself, and its accuracy is not recoverable from the object. Pass
+    ``digits=`` (decimal) or ``precision_bits=`` (binary) to say how many digits
+    are trustworthy; a declaration is a cap, so declaring 200 digits for a
     ``float`` still yields ~16.
 
     Returns a dict:
@@ -1544,19 +1611,39 @@ def relation_confidence(
         Digits the inputs are known to carry (``inf`` for exact inputs),
         or ``None`` when unknown.
     ``consumed_digits``
-        Digits of agreement the relation costs, ``n·log10(H)``.
+        Digits of agreement the relation costs, ``n·log10(2H+1)``.
     ``spare_digits``
         ``available - consumed``, or ``None`` when unknown.
     ``margin_digits``
         Spare digits demanded of a credible relation.
     ``precision_source``
-        Where ``available_digits`` came from: ``"float"``, ``"mpmath"``,
-        ``"exact"``, ``"declared"``, or ``"unknown"``.
+        Where ``available_digits`` came from: ``"float"``, ``"exact"``,
+        ``"declared"``, or ``"unknown"``.
+    ``exact_residual``
+        ``Σ aᵢ·cᵢ`` as an exact :class:`~fractions.Fraction` when every constant
+        is an exact rational and no precision was declared, otherwise ``None``.
+        A nonzero value **refutes** the relation, and is the one way
+        ``credible`` can be ``False`` while ``available_digits`` is ``inf``:
+        nothing is short of precision, the relation is just false.
+
+    Note what ``credible: True`` means on the exact branch: the relation holds
+    for **the numbers supplied**. If those numbers are rounded stand-ins for
+    something else — ``Fraction(*float(pi).as_integer_ratio())`` is exactly the
+    double, not π — then so is the verdict, and no gate reading only the
+    constants can tell. Declare ``digits=`` when they are stand-ins; that is
+    what turns them back into approximations with a precision to be judged.
 
     >>> import alkahest as ak
     >>> ak.relation_confidence([1.0, 2.0, 3.0], [1, 1, -1])["credible"]
     True
     >>> ak.relation_confidence([0.1, 0.2, 0.7], [60771139, 67263243, 11653676])["credible"]
+    False
+
+    Exact inputs are judged by evaluating the relation, not by counting digits:
+
+    >>> ak.relation_confidence([1, 2, 3], [1, 1, -1])["credible"]
+    True
+    >>> ak.relation_confidence([1, 2, 3], [1, 1, 1])["credible"]
     False
 
     A decimal string is not judged at all until its precision is declared, and
@@ -1573,7 +1660,7 @@ def relation_confidence(
     >>> ak.relation_confidence([pi_20, e_20], big, digits=60)["credible"]
     True
     """
-    credible, available, consumed, margin, source = _relation_is_credible(
+    credible, available, consumed, margin, source, residual = _relation_is_credible(
         constants, coeffs, digits, precision_bits, margin_digits
     )
     return {
@@ -1583,15 +1670,19 @@ def relation_confidence(
         "margin_digits": margin,
         "credible": credible,
         "precision_source": source,
+        "exact_residual": residual,
     }
 
 
-def guess_relation(constants, precision_bits=664, max_abs_coeff=None, check_precision=True):
+def guess_relation(
+    constants, precision_bits=664, max_abs_coeff=None, check_precision=True, *, digits=None
+):
     """Search for integers ``aᵢ`` with ``Σ aᵢ·constantsᵢ ≈ 0``.
 
     Raises :class:`PslqError` (``E-PSLQ-004``) when the relation found is larger
     than the inputs' precision can justify, rather than returning a number that
-    is an artifact of how the inputs were written.
+    is an artifact of how the inputs were written, and ``E-PSLQ-005`` when the
+    inputs are exact rationals and the relation is simply false for them.
 
     Passing ``float`` values — 53 bits, ~16 digits — while searching at the
     664-bit default zero-pads them into exact rationals, among which exact
@@ -1609,14 +1700,23 @@ def guess_relation(constants, precision_bits=664, max_abs_coeff=None, check_prec
     still come back: ``[1.0, 2.0, 3.0]`` needs almost no precision to pin down
     and is returned normally. See :func:`relation_confidence` for the numbers.
 
-    **The guard can only fire on inputs whose precision is knowable** — floats
-    and ``mpmath.mpf`` values. A decimal string may be exact or may be a
-    truncation, so a relation among strings is returned *unjudged*, not
-    endorsed. When the strings are truncations of a numerical computation, put
-    the result through
-    :func:`relation_confidence(constants, coeffs, digits=…)
-    <relation_confidence>` with the number of digits they are actually accurate
-    to; that is where a purchasable relation gets caught.
+    **The guard can only fire on inputs whose precision is knowable** — floats,
+    exact rationals, and anything the caller declares with ``digits=``. A
+    decimal string or an ``mpmath.mpf`` may be exact or may be a truncation, so
+    a relation among them is returned *unjudged*, not endorsed.
+
+    ``digits=`` is the escape hatch, and is what a caller who *knows* the
+    accuracy of their inputs should reach for. Note that ``precision_bits`` is
+    the width of the *search*, not a claim about the data; ``digits=`` declares
+    how many decimal digits of the constants are trustworthy, exactly as in
+    :func:`relation_confidence`::
+
+        guess_relation([mpf(x) for x in floats], digits=16)   # raises E-PSLQ-004
+        guess_relation(two_hundred_digit_strings, digits=200) # judged, and passes
+
+    Without it, a relation among strings or ``mpf`` values comes back unjudged;
+    put such a result through :func:`relation_confidence(constants, coeffs,
+    digits=…) <relation_confidence>` if you prefer a verdict to an exception.
 
     Pass ``check_precision=False`` to accept a relation among the supplied
     values themselves.
@@ -1624,21 +1724,41 @@ def guess_relation(constants, precision_bits=664, max_abs_coeff=None, check_prec
     coeffs = _native_guess_relation(constants, precision_bits, max_abs_coeff)
     if coeffs is None or not check_precision:
         return coeffs
-    credible, available, consumed, margin, _source = _relation_is_credible(constants, coeffs)
-    if credible is False:
-        raise _RelationPrecisionError(
-            f"the relation {coeffs} needs ~{consumed:.0f} digits of agreement to pin "
-            f"down (plus a {margin:.0f}-digit margin), but the inputs carry only "
-            f"~{available:.0f}; a relation this size is purchasable from the available "
-            "precision and is evidence of nothing",
+    credible, available, consumed, margin, _source, residual = _relation_is_credible(
+        constants, coeffs, digits=digits
+    )
+    if credible is not False:
+        return coeffs
+    if residual is not None and residual != 0:
+        raise _RelationFalseError(
+            f"the relation {coeffs} is false for the values supplied: evaluated in exact "
+            f"rational arithmetic, Σ aᵢ·cᵢ = {float(residual):.6g}, not 0. The constants are "
+            "exact rationals, so this is not a shortfall of precision — the relation simply "
+            "does not hold for them",
             (
-                "supply the constants as high-precision decimal strings — a float "
-                f"carries only ~{_FLOAT_SIGNIFICAND_BITS} bits (~{available:.0f} digits) "
-                "however it is printed; pass check_precision=False to accept a relation "
-                "among the supplied values themselves"
+                "if the constants are truncations of a numerical computation rather than the "
+                "values you mean, declare the accuracy they really carry with digits=, or "
+                "supply more of them; pass check_precision=False to accept the relation "
+                "unjudged"
             ),
         )
-    return coeffs
+    if available is None:
+        # Refuted by the *ceiling* — one input's precision bounded the whole
+        # set even though another's is unknown; report the bound, not "None".
+        available = _relation_available_digits(constants, digits)[2]
+    raise _RelationPrecisionError(
+        f"the relation {coeffs} needs ~{consumed:.0f} digits of agreement to pin "
+        f"down (plus a {margin:.0f}-digit margin), but the inputs carry only "
+        f"~{available:.0f}; a relation this size is purchasable from the available "
+        "precision and is evidence of nothing",
+        (
+            "supply the constants as high-precision decimal strings — a float "
+            f"carries only ~{_FLOAT_SIGNIFICAND_BITS} bits "
+            f"(~{_FLOAT_SIGNIFICAND_BITS / _BITS_PER_DIGIT:.0f} digits) however it is "
+            "printed — and declare their accuracy with digits=; pass check_precision=False "
+            "to accept a relation among the supplied values themselves"
+        ),
+    )
 
 
 _native_poly_normal = poly_normal
@@ -2100,6 +2220,10 @@ del _entry_point
 __all__ = [
     # Phase 17
     "DAE",
+    # M2 — the vocabulary GuessedRecurrence.status is drawn from
+    "GUESS_STATUSES",
+    "GUESS_STATUS_MEANINGS",
+    # Phase 17
     "HAS_EGRAPH",
     # Phase 16
     "ODE",

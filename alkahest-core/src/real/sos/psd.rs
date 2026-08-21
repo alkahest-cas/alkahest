@@ -45,6 +45,7 @@
 use super::cert::SosPoly;
 use super::gram::monomial_basis;
 use super::linalg::{psd_decompose, solve_affine};
+use super::lp::{Lp, LpStatus, Rel};
 use super::ratpoly::{Exponents, RatPoly};
 use super::sdp::{min_eigenvalue, smallest_magnitude_eigenvectors, Family};
 use rug::Rational;
@@ -150,6 +151,92 @@ fn gram_system(target: &RatPoly, basis: &[Exponents]) -> (Vec<Vec<Rational>>, Ve
         out_rhs.push(target.coeff(e));
     }
     (out_rows, out_rhs)
+}
+
+/// Above this much work — candidate basis monomials × support monomials of
+/// the target — the half-Newton-polytope reduction below is skipped rather
+/// than run: each candidate costs one exact-rational LP feasibility solve
+/// whose column count is the support size, so this keeps the reduction's own
+/// cost bounded no matter how large a basis the caller asks for. Skipping
+/// only ever leaves the basis *wider* than necessary, so it can cost search
+/// time but can never cost soundness or a certificate that would otherwise
+/// have been found.
+const MAX_NEWTON_REDUCTION_WORK: usize = 400_000;
+
+/// Is `point` in the convex hull of `support`? Decided exactly, over ℚ, by
+/// the same rational simplex the DSOS search uses: the hull membership
+/// `point = Σ λ_i·support[i]`, `λ ≥ 0`, `Σ λ_i = 1` is a linear feasibility
+/// programme verbatim.
+///
+/// A pivot-budget exhaustion (defensive; Bland's rule makes it unreachable)
+/// is reported as `true` — "keep this monomial" — so an unexpected LP
+/// outcome can only ever widen the basis, never narrow it wrongly.
+fn in_convex_hull(support: &[Exponents], point: &[u32]) -> bool {
+    let mut lp = Lp::new(support.len());
+    for k in 0..point.len() {
+        let row: Vec<Rational> = support.iter().map(|s| Rational::from(s[k])).collect();
+        lp.constrain(row, Rel::Eq, Rational::from(point[k]));
+    }
+    lp.constrain(
+        vec![Rational::from(1); support.len()],
+        Rel::Eq,
+        Rational::from(1),
+    );
+    !matches!(lp.solve(), LpStatus::Infeasible)
+}
+
+/// Restrict `basis` to the lattice points of `½·Newton(target)`.
+///
+/// Reznick's theorem (1978): if `p = Σ_i q_i²` then `Newton(q_i) ⊆
+/// ½·Newton(p)` for **every** `i`. So every SOS decomposition of `p` is
+/// already expressible over the monomials of `½·Newton(p)`, and dropping the
+/// rest cannot lose a certificate — this is an exact, complete reduction,
+/// not a heuristic narrowing, and that is what makes it safe to apply
+/// unconditionally rather than as a fallback.
+///
+/// It matters because the numeric search's cost and its *accuracy* both
+/// scale with the free-parameter count, and the free-parameter count scales
+/// quadratically with the basis size. On `(x²+y²+z²)·Motzkin_hom` this cuts
+/// the degree-4 ternary basis from 15 monomials to 9, which is the
+/// difference between a 75-parameter affine family whose numeric solution
+/// lands ~0.96 away from the true certificate in parameter space (and so
+/// never rounds onto it) and an 18-parameter family that lands on it
+/// exactly. Note that this is a *dimension* reduction and nothing else: the
+/// certificate is the unique PSD point of the affine family on both bases,
+/// with the same rank and the same zero minimum eigenvalue, so `λ_min` alone
+/// does not reveal the difference — distance in parameter space does.
+///
+/// Forms whose Newton polytope already fills the simplex — Robinson's form
+/// times `σ`, for instance, where 15 monomials reduce to 15 — come back
+/// unchanged, which is exactly right: there is nothing to remove.
+fn half_newton_reduce(target: &RatPoly, basis: Vec<Exponents>) -> Vec<Exponents> {
+    let support: Vec<Exponents> = target.terms().keys().cloned().collect();
+    if support.is_empty() || basis.is_empty() {
+        return basis;
+    }
+    if basis.len().saturating_mul(support.len()) > MAX_NEWTON_REDUCTION_WORK {
+        return basis;
+    }
+    let nvars = support[0].len();
+    // Cheap coordinate-wise bounding box of Newton(target): a point outside
+    // it cannot be in the hull, and this rejects most of the discarded
+    // monomials without an LP solve at all.
+    let mut hi = vec![0u32; nvars];
+    for s in &support {
+        for k in 0..nvars {
+            hi[k] = hi[k].max(s[k]);
+        }
+    }
+    basis
+        .into_iter()
+        .filter(|e| {
+            let doubled: Vec<u32> = e.iter().map(|c| 2 * c).collect();
+            if (0..nvars).any(|k| doubled[k] > hi[k]) {
+                return false;
+            }
+            in_convex_hull(&support, &doubled)
+        })
+        .collect()
 }
 
 fn rat_to_f64(r: &Rational) -> f64 {
@@ -322,6 +409,35 @@ const ROUNDING_CANDIDATES: usize = 6;
 /// budget", not "not SOS" — exactly like every other budget in this module.
 const MAX_FREE_PARAMETERS: usize = 200;
 
+/// How [`MAX_FREE_PARAMETERS`] reports itself. Never silently: this ceiling
+/// returns `None` *without searching at all*, which is a categorically
+/// different thing from a search that ran and came up empty, and a caller
+/// that cannot tell them apart will read "we did not look" as "we looked and
+/// found nothing". `at_least` distinguishes the pre-solve estimate (a lower
+/// bound on the dimension) from the exact post-solve count.
+fn ceiling_note(basis_len: usize, free_params: usize, at_least: bool) -> String {
+    let qualifier = if at_least { "at least " } else { "" };
+    format!(
+        "PSD Gram search: NOT SEARCHED — the affine Gram family over this {basis_len}-monomial \
+         basis has {qualifier}{free_params} free parameters, above the numeric-search ceiling of \
+         {MAX_FREE_PARAMETERS}; no search was attempted at this basis, so this is a budget that \
+         fired, not a search that came up empty"
+    )
+}
+
+/// Number of rows [`gram_system`] would build for `target` over `basis` —
+/// one per monomial occurring on either side — without building the (large,
+/// exact-rational) system itself.
+fn row_count(target: &RatPoly, basis: &[Exponents]) -> usize {
+    let mut exps: BTreeSet<Exponents> = target.terms().keys().cloned().collect();
+    for i in 0..basis.len() {
+        for j in i..basis.len() {
+            exps.insert(add_exp(&basis[i], &basis[j]));
+        }
+    }
+    exps.len()
+}
+
 /// Over-relaxation parameters tried for the Douglas–Rachford polish, in
 /// increasing order of overshoot. `1.0` is plain (non-relaxed)
 /// Douglas–Rachford; the larger value is the standard mitigation for a
@@ -366,6 +482,12 @@ const DR_POLISH_CANDIDATES: usize = 2;
 fn anneal_from(family: &Family, start: Vec<f64>) -> Vec<f64> {
     let mut t = start;
     for &floor in FLOOR_SCHEDULE {
+        // Returning the best point so far is always safe: these are only
+        // *candidates*, and every one of them is re-verified exactly before it
+        // can become a certificate.
+        if !super::budget_ok() {
+            return t;
+        }
         if let Some(next) = family.search_from(t.clone(), floor, 150) {
             t = next;
         }
@@ -414,6 +536,9 @@ fn multistart_anneal(family: &Family, dim: usize) -> Vec<Vec<f64>> {
     results.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
     for (eig, t) in results.iter_mut().take(DR_POLISH_CANDIDATES) {
+        if !super::budget_ok() {
+            break;
+        }
         for &lambda in DR_LAMBDAS {
             if let Some(cand) = family.douglas_rachford_from(t.clone(), 0.0, lambda, DR_ITERS) {
                 let cand_eig = min_eigenvalue(&family.at(&cand));
@@ -483,6 +608,7 @@ fn search_rational_family(
     target: &RatPoly,
     base_rat: &[Vec<Rational>],
     dirs_rat: &[Vec<Vec<Rational>>],
+    log: &mut Vec<String>,
 ) -> (Option<SosPoly>, Vec<Vec<Vec<f64>>>) {
     let try_point = |t: &[Rational]| -> Option<SosPoly> {
         let q = rat_family_at(base_rat, dirs_rat, t);
@@ -516,8 +642,14 @@ fn search_rational_family(
         return (try_point(&[]), Vec::new());
     }
     if dirs_rat.len() > MAX_FREE_PARAMETERS {
+        log.push(ceiling_note(basis.len(), dirs_rat.len(), false));
         return (None, Vec::new());
     }
+    log.push(format!(
+        "PSD Gram search: searching a {}-parameter affine family over a {}-monomial basis",
+        dirs_rat.len(),
+        basis.len()
+    ));
 
     let base: Vec<Vec<f64>> = base_rat
         .iter()
@@ -542,6 +674,9 @@ fn search_rational_family(
     let candidate_matrices: Vec<Vec<Vec<f64>>> = candidates.iter().map(|s| family.at(s)).collect();
 
     for s in candidates.iter().take(ROUNDING_CANDIDATES) {
+        if !super::budget_ok() {
+            return (None, candidate_matrices);
+        }
         let Some(t) = back_substitute_upper(&r, s) else {
             continue;
         };
@@ -691,6 +826,7 @@ fn facial_reduction_search(
     base_rat: &[Vec<Rational>],
     dirs_rat: &[Vec<Vec<Rational>>],
     candidates: &[Vec<Vec<f64>>],
+    log: &mut Vec<String>,
 ) -> Option<SosPoly> {
     let max_corank = *FACIAL_CORANK_GUESSES.iter().max().unwrap_or(&0);
     let mut budget = FACIAL_SEARCH_BUDGET;
@@ -730,7 +866,7 @@ fn facial_reduction_search(
                 }
                 budget -= 1;
                 let (found, _deeper) =
-                    search_rational_family(nvars, basis, target, &new_base, &new_dirs);
+                    search_rational_family(nvars, basis, target, &new_base, &new_dirs, log);
                 if found.is_some() {
                     return found;
                 }
@@ -986,19 +1122,25 @@ const MIN_PARAMS_FOR_SYMMETRY_SEARCH: usize = 100;
 /// parameter count, this simply returns `None` — a routine "nothing to
 /// exploit here", not a bug.
 ///
-/// The motivating case is the *homogeneous* ternary Motzkin form at
+/// The motivating case was the *homogeneous* ternary Motzkin form at
 /// multiplier power `N = 2`: 165 free parameters, all-even exponents in
 /// every monomial (invariant under any sign flip) and symmetric under
-/// swapping `x, y` — an order-16 group — which collapses the family enough
-/// for Douglas–Rachford to reliably close the gap that plain (unreduced) DR
-/// left open even after ~600,000 iterations (see this function's test and
-/// `psd::tests::psd_search_certifies_homogeneous_motzkin_at_multiplier_power_2`).
+/// swapping `x, y` — an order-16 group — which collapses the family to 26
+/// parameters (see `tests::symmetry_group_and_zero_vector_shrink_n2_family`,
+/// which asserts that shrink exactly). **That motivation was based on a
+/// false premise** and is recorded here only so it is not re-derived: the
+/// homogeneous ternary Motzkin form is SOS at `N = 1`, not `N = 2`, and it
+/// is `half_newton_reduce` — a plain dimension reduction — that closes it,
+/// not any amount of extra Douglas–Rachford. This fallback is *not* known to
+/// close any case on its own; it is retained because it is cheap, sound, and
+/// only ever runs after everything else has already given up.
 fn symmetry_reduced_search(
     nvars: usize,
     basis: &[Exponents],
     target: &RatPoly,
     base_rat: &[Vec<Rational>],
     dirs_rat: &[Vec<Vec<Rational>>],
+    log: &mut Vec<String>,
 ) -> Option<SosPoly> {
     if nvars == 0 || nvars > MAX_SYMMETRY_NVARS || dirs_rat.len() < MIN_PARAMS_FOR_SYMMETRY_SEARCH {
         return None;
@@ -1028,35 +1170,47 @@ fn symmetry_reduced_search(
     let sym_dirs: Vec<Vec<Vec<Rational>>> = reduced_packed.iter().map(|v| unpack(n, v)).collect();
 
     let (found, sym_candidates) =
-        search_rational_family(nvars, basis, target, &sym_base, &sym_dirs);
+        search_rational_family(nvars, basis, target, &sym_base, &sym_dirs, log);
     if found.is_some() {
         return found;
     }
     if sym_candidates.is_empty() {
         return None;
     }
-    facial_reduction_search(nvars, basis, target, &sym_base, &sym_dirs, &sym_candidates)
+    facial_reduction_search(
+        nvars,
+        basis,
+        target,
+        &sym_base,
+        &sym_dirs,
+        &sym_candidates,
+        log,
+    )
 }
 
-pub fn psd_search(target: &RatPoly, basis_deg: u32) -> Option<SosPoly> {
+/// [`psd_search`], but also appending a human-readable trace of what the
+/// search actually did to `log`.
+///
+/// The trace exists because `None` out of this module covers three
+/// materially different situations — the search ran and was exhausted, the
+/// search ran and hit an iteration/rounding budget, and *the search never
+/// ran at all* because the family was over [`MAX_FREE_PARAMETERS`] — and a
+/// bare `None` (or the `E-SOS-002` it turns into) cannot distinguish them.
+/// [`super::sos_decompose`] folds this trace into the error message so that
+/// distinction reaches the caller.
+pub fn psd_search_logged(
+    target: &RatPoly,
+    basis_deg: u32,
+    log: &mut Vec<String>,
+) -> Option<SosPoly> {
     let nvars = target.nvars();
-    // A homogeneous target of degree exactly `2·basis_deg` needs only the
-    // monomials of degree *exactly* `basis_deg` in its Gram basis — mixing in
-    // lower-degree monomials can only ever contribute to coefficients the
-    // target does not have, since every product of two basis monomials of
-    // unequal degree still sums to `2·basis_deg` only when *both* already
-    // have degree `basis_deg`. This is standard (Blekherman–Parrilo–Thomas,
-    // Prop. 3.29): a homogeneous SOS decomposition can always be taken with
-    // homogeneous summands. Restricting here is not just an optimisation —
-    // the search is numeric, and a smaller basis is the difference between
-    // "converges" and "not within budget" on cases like Motzkin.
-    let basis: Vec<Exponents> = match target.is_homogeneous() {
-        Some(d) if d == 2 * basis_deg => monomial_basis(nvars, basis_deg)
-            .into_iter()
-            .filter(|e| e.iter().sum::<u32>() == basis_deg)
-            .collect(),
-        _ => monomial_basis(nvars, basis_deg),
-    };
+    let (basis, homogeneous_len) = restricted_basis(target, basis_deg);
+    if basis.len() < homogeneous_len {
+        log.push(format!(
+            "half-Newton-polytope reduction: {homogeneous_len} → {} monomials in the Gram basis",
+            basis.len()
+        ));
+    }
     let n = basis.len();
     if n == 0 {
         return if target.is_zero() {
@@ -1066,25 +1220,97 @@ pub fn psd_search(target: &RatPoly, basis_deg: u32) -> Option<SosPoly> {
         };
     }
 
+    // Apply the free-parameter ceiling *before* the exact nullspace solve,
+    // not after it: `solve_affine` is a rational Gauss–Jordan on a
+    // `rows × pack_len(n)` matrix and on a family this large costs far more
+    // than the search that is then skipped anyway (C₇'s N=1 multiplier is a
+    // 924 × 3570 exact solve, thrown away immediately). The rank of the
+    // coefficient-matching system is at most its row count, so
+    // `pack_len(n) − rows` is a *lower* bound on the family's dimension —
+    // when even that exceeds the ceiling the search provably cannot run.
+    let min_free = pack_len(n).saturating_sub(row_count(target, &basis));
+    if min_free > MAX_FREE_PARAMETERS {
+        log.push(ceiling_note(n, min_free, true));
+        return None;
+    }
+
     let (rows, rhs) = gram_system(target, &basis);
     let sol = solve_affine(&rows, &rhs)?;
 
     let base_rat = unpack(n, &sol.particular);
     let dirs_rat: Vec<Vec<Vec<Rational>>> = sol.nullspace.iter().map(|d| unpack(n, d)).collect();
 
-    let (found, candidates) = search_rational_family(nvars, &basis, target, &base_rat, &dirs_rat);
+    let (found, candidates) =
+        search_rational_family(nvars, &basis, target, &base_rat, &dirs_rat, log);
     if found.is_some() {
         return found;
     }
     if candidates.is_empty() {
         return None;
     }
-    if let Some(found) =
-        facial_reduction_search(nvars, &basis, target, &base_rat, &dirs_rat, &candidates)
-    {
+    if let Some(found) = facial_reduction_search(
+        nvars,
+        &basis,
+        target,
+        &base_rat,
+        &dirs_rat,
+        &candidates,
+        log,
+    ) {
         return Some(found);
     }
-    symmetry_reduced_search(nvars, &basis, target, &base_rat, &dirs_rat)
+    symmetry_reduced_search(nvars, &basis, target, &base_rat, &dirs_rat, log)
+}
+
+/// Search the full PSD-Gram cone for an exact rational sum-of-squares
+/// decomposition of `target`, discarding the diagnostic trace. See
+/// [`psd_search_logged`] for the variant that keeps it.
+pub fn psd_search(target: &RatPoly, basis_deg: u32) -> Option<SosPoly> {
+    let mut log = Vec::new();
+    psd_search_logged(target, basis_deg, &mut log)
+}
+
+/// The monomial basis [`psd_search_logged`] will actually search for
+/// `target` at `basis_deg`, plus the size it had before the
+/// half-Newton-polytope reduction.
+///
+/// A homogeneous target of degree exactly `2·basis_deg` needs only the
+/// monomials of degree *exactly* `basis_deg` in its Gram basis — mixing in
+/// lower-degree monomials can only ever contribute to coefficients the
+/// target does not have, since every product of two basis monomials of
+/// unequal degree still sums to `2·basis_deg` only when *both* already have
+/// degree `basis_deg`. This is standard (Blekherman–Parrilo–Thomas,
+/// Prop. 3.29): a homogeneous SOS decomposition can always be taken with
+/// homogeneous summands. Then [`half_newton_reduce`] drops whatever survives
+/// that but still lies outside `½·Newton(target)`. Neither step is only an
+/// optimisation — the search is numeric, and the parameter count (quadratic
+/// in the basis size) is the difference between "rounds onto the exact
+/// certificate" and "lands 0.96 away from it".
+fn restricted_basis(target: &RatPoly, basis_deg: u32) -> (Vec<Exponents>, usize) {
+    let nvars = target.nvars();
+    let basis: Vec<Exponents> = match target.is_homogeneous() {
+        Some(d) if d == 2 * basis_deg => monomial_basis(nvars, basis_deg)
+            .into_iter()
+            .filter(|e| e.iter().sum::<u32>() == basis_deg)
+            .collect(),
+        _ => monomial_basis(nvars, basis_deg),
+    };
+    let homogeneous_len = basis.len();
+    (half_newton_reduce(target, basis), homogeneous_len)
+}
+
+/// Size of the monomial basis [`psd_search_logged`] will actually search for
+/// `target` at `basis_deg`.
+///
+/// Exposed so [`super::multiplier_search`] can budget against the size it is
+/// really going to search rather than the raw `monomial_basis` count: those
+/// two differ by nearly 4× on realistic targets (a degree-4 ternary basis is
+/// 35 monomials raw, 15 after the homogeneity restriction, 9 after the
+/// Newton reduction on `σ·Motzkin`), and budgeting against the raw number
+/// rejects multiplier powers whose real basis is comfortably inside the
+/// budget.
+pub fn searched_basis_len(target: &RatPoly, basis_deg: u32) -> usize {
+    restricted_basis(target, basis_deg).0.len()
 }
 
 #[cfg(test)]
@@ -1147,55 +1373,37 @@ mod tests {
     }
 
     #[test]
-    fn psd_search_does_not_yet_reach_homogeneous_motzkin_times_sum_of_squares() {
+    fn psd_search_certifies_homogeneous_motzkin_times_sum_of_squares_at_n1() {
         // The homogeneous Motzkin form, x^4y^2 + x^2y^4 - 3x^2y^2z^2 + z^6, is
-        // the textbook example of a PSD form that is not itself SOS. At
-        // multiplier power N=1, (x^2+y^2+z^2)*Motzkin is *not* SOS either —
-        // literature and the diagnostic evidence below agree the classical
-        // fact needs N=2, (x^2+y^2+z^2)^2*Motzkin, for this specific
-        // *homogeneous ternary* form (contrast the *affine* 2-variable
-        // Motzkin case, `real::sos::tests::motzkin_certifies_via_a_reznick_multiplier`,
-        // which genuinely does close at N=1). So this N=1 refusal is
-        // expected to stay `None` permanently, not just "not yet reached" —
-        // it is here mainly as a mechanism sanity check alongside the
-        // diagnostics below, not as the open item.
+        // the textbook example of a PSD form that is not itself SOS — and it
+        // is the textbook example precisely *because* multiplying it by
+        // σ = x^2+y^2+z^2 makes it SOS. The classical identity, exact over ℚ:
         //
-        // `diag::diag_step1_step2_trajectory_and_family_sanity` shows the
-        // annealed multi-start search converging monotonically toward the
-        // PSD cone's boundary (min eigenvalue from about -1.6 to about
-        // -0.0018 as the floor anneals to 0) without fully closing the gap —
-        // a tangential (non-transversal) intersection is the classic case
-        // where alternating projection's convergence rate degrades this way.
-        // `diag::diag_step3_planted_singular_example` confirms the search
-        // mechanism itself is sound: a synthetic boundary case of the same
-        // nullspace dimension *is* found and exactly re-verified.
+        //   σ·Motzkin = (½x³y + xy³ − 3⁄2xyz²)² + ¾(x³y − xyz²)²
+        //             + (xy²z − xz³)² + (x²yz − yz³)² + (x²y² − z⁴)²
         //
-        // **N=2 was attempted directly (2026-08-17) and also does not close,
-        // for a reason now well quantified rather than merely "not yet
-        // reached":** at N=2 the raw affine family has 165 free parameters.
-        // `symmetry_group_and_zero_vector_shrink_n2_family` (below) shows the
-        // *new* `symmetry_reduced_search` machinery (added this round)
-        // exactly collapses that to 26 parameters via the polynomial's own
-        // order-16 signed-permutation symmetry (swap x,y; independently flip
-        // the sign of each variable — every exponent in this target is
-        // even), and a further *exact*, non-numeric restriction — imposing
-        // `Q·z(1,1,1) = 0`, forced because q(1,1,1)=0 and Q is PSD, using the
-        // literal all-ones vector as the null-vector candidate, no rounding
-        // involved — collapses it again to 16. That 16-parameter family is
-        // the smallest one reached, and it is still not found: escalating
-        // Douglas–Rachford there from 15,000 to 6,000,000 iterations moves
-        // the minimum eigenvalue from about -4·10⁻⁶ to about -1.4·10⁻⁸, a
-        // clearly *sublinear* (not exponential/finite-step) approach — the
-        // same tangential-intersection signature as N=1, just quantified —
-        // and rational rounding fails at every stage even with denominators
-        // tested up to roughly 10⁹. Also checked and ruled out: an
-        // additional tangent-direction null vector (`grad_x`, the exact
-        // gradient of the basis vector at (1,1,1)) is *inconsistent* with
-        // the family, confirming the corank contributed by this zero is
-        // exactly 1 (not a missed higher-corank guess). So this is now a
-        // genuine numerical-hardness finding specific to N=2, not an
-        // under-tuned budget or an unexplored structural avenue — see
-        // `CHANGELOG.md`'s M10 entry for the full writeup.
+        // so `N = 1` suffices. This test used to be its own negation —
+        // `psd_search_does_not_yet_reach_...`, asserting `is_none()` and
+        // *passing*, with a comment claiming the classical fact needs N=2 and
+        // that "this N=1 refusal is expected to stay `None` permanently". That
+        // claim was simply false (the identity above expands to zero
+        // difference; re-check it in any CAS), and the green test pinned the
+        // search bug that produced the refusal. It is stated in the positive
+        // direction now so that a regression is a failure rather than a
+        // confirmation.
+        //
+        // What was actually missing was the half-Newton-polytope reduction
+        // (`half_newton_reduce`): σ·Motzkin's degree-4 ternary basis is 15
+        // monomials, only 9 of which lie in ½·Newton(σ·Motzkin), and the
+        // 75-parameter family over the unreduced basis puts the numeric
+        // search ~0.96 away from the true point in parameter space — far too
+        // far to round onto it — while the 18-parameter family over the
+        // reduced basis lands on it exactly. Note this is a *dimension*
+        // effect, not a conditioning one: on both bases the certificate is
+        // the unique PSD point of the affine family, rank 5, with minimum
+        // eigenvalue exactly 0, so λ_min does not distinguish them and more
+        // Douglas–Rachford iterations do not help (4× the budget on the
+        // unreduced family still fails to round).
         let mut m = RatPoly::monomial(3, vec![4, 2, 0], Rational::from(1));
         m = m.add(&RatPoly::monomial(3, vec![2, 4, 0], Rational::from(1)));
         m = m.add(&RatPoly::monomial(3, vec![2, 2, 2], Rational::from(-3)));
@@ -1205,23 +1413,146 @@ mod tests {
         let q = m.mul(&sigma);
         assert_eq!(q.is_homogeneous(), Some(8));
 
+        // The reduction itself, asserted rather than assumed: 15 → 9.
+        let (reduced, homogeneous_len) = restricted_basis(&q, 4);
+        assert_eq!(homogeneous_len, 15);
+        assert_eq!(reduced.len(), 9);
+
+        let sos = psd_search(&q, 4).expect(
+            "(x^2+y^2+z^2)·Motzkin_hom is a sum of squares at N=1 — the classical fact that \
+             makes Motzkin the standard PSD-not-SOS example — so the search must find a \
+             certificate here",
+        );
+        // Exact re-expansion over ℚ: the soundness argument, independent of
+        // whatever the numeric search converged to.
+        assert_eq!(sos.to_poly(3), q);
+    }
+
+    #[test]
+    fn psd_search_certifies_choi_lam_times_sum_of_squares_at_n1() {
+        // The Choi–Lam form, x²y² + y²z² + z²x² + w⁴ − 4xyzw: a quaternary
+        // quartic that is PSD but not SOS, and (like Motzkin) becomes SOS
+        // after one multiplication by σ = Σxᵢ². Four variables, so the
+        // degree-3 basis is 20 monomials before the Newton reduction and 16
+        // after; the corresponding drop in free parameters is what makes the
+        // search land on the certificate.
+        let mono = |ex: Vec<u32>, c: i64| RatPoly::monomial(4, ex, Rational::from(c));
+        let mut cl = mono(vec![2, 2, 0, 0], 1);
+        cl = cl.add(&mono(vec![0, 2, 2, 0], 1));
+        cl = cl.add(&mono(vec![2, 0, 2, 0], 1));
+        cl = cl.add(&mono(vec![0, 0, 0, 4], 1));
+        cl = cl.add(&mono(vec![1, 1, 1, 1], -4));
+        assert_eq!(cl.is_homogeneous(), Some(4));
+
+        let q = cl.mul(&RatPoly::sum_of_squares(4));
+        assert_eq!(q.is_homogeneous(), Some(6));
+        let sos = psd_search(&q, 3)
+            .expect("(Σxᵢ²)·Choi–Lam is SOS at N=1; the search should find a certificate");
+        assert_eq!(sos.to_poly(4), q);
+    }
+
+    #[test]
+    fn half_newton_reduction_is_a_no_op_when_the_polytope_is_already_full() {
+        // Robinson's form times σ is the guard case for `half_newton_reduce`:
+        // its Newton polytope fills the degree-8 simplex, so *no* monomial of
+        // the degree-4 basis is outside ½·Newton, and the reduction must
+        // return all 15 — a reduction that trimmed anything here would be
+        // dropping monomials a real certificate needs.
+        let mono = |ex: Vec<u32>, c: i64| RatPoly::monomial(3, ex, Rational::from(c));
+        let mut r = mono(vec![6, 0, 0], 1);
+        r = r.add(&mono(vec![0, 6, 0], 1));
+        r = r.add(&mono(vec![0, 0, 6], 1));
+        r = r.add(&mono(vec![4, 2, 0], -1));
+        r = r.add(&mono(vec![2, 4, 0], -1));
+        r = r.add(&mono(vec![0, 4, 2], -1));
+        r = r.add(&mono(vec![0, 2, 4], -1));
+        r = r.add(&mono(vec![4, 0, 2], -1));
+        r = r.add(&mono(vec![2, 0, 4], -1));
+        r = r.add(&mono(vec![2, 2, 2], 3));
+        let q = r.mul(&RatPoly::sum_of_squares(3));
+        let (reduced, homogeneous_len) = restricted_basis(&q, 4);
+        assert_eq!(homogeneous_len, 15);
+        assert_eq!(reduced.len(), 15, "Robinson admits no Newton reduction");
+
+        // Same check on the direct (unmultiplied) sextic, and on a target
+        // where the reduction genuinely bites, so this test pins both
+        // directions rather than only the no-op one.
+        let (reduced_direct, direct_len) = restricted_basis(&r, 3);
+        assert_eq!((direct_len, reduced_direct.len()), (10, 10));
+
+        // The cyclic AM-GM sextic x⁴y²+y⁴z²+z⁴x²−3x²y²z², times σ: the same
+        // 15 → 9 profile as Motzkin.
+        let mut c = mono(vec![4, 2, 0], 1);
+        c = c.add(&mono(vec![0, 4, 2], 1));
+        c = c.add(&mono(vec![2, 0, 4], 1));
+        c = c.add(&mono(vec![2, 2, 2], -3));
+        let (reduced_cyclic, cyclic_len) = restricted_basis(&c.mul(&RatPoly::sum_of_squares(3)), 4);
+        assert_eq!((cyclic_len, reduced_cyclic.len()), (15, 9));
+    }
+
+    #[test]
+    fn the_free_parameter_ceiling_is_reported_not_silently_dropped() {
+        // x⁸ + y⁸ + z⁸ + 1 is a sum of squares by inspection. Searched over
+        // the degree-4 basis its affine Gram family still has 465 free
+        // parameters — above `MAX_FREE_PARAMETERS` — so `psd_search` gives up
+        // *without running any search at all*. That is a legitimate budget,
+        // but it used to be indistinguishable from an exhausted search: the
+        // same instant `None`, and nothing recorded. The point of this test
+        // is not the `None` (which is unchanged behaviour) but that the
+        // ceiling is now *reported*.
+        let mono = |ex: Vec<u32>, c: i64| RatPoly::monomial(3, ex, Rational::from(c));
+        let mut p = mono(vec![8, 0, 0], 1);
+        p = p.add(&mono(vec![0, 8, 0], 1));
+        p = p.add(&mono(vec![0, 0, 8], 1));
+        p = p.add(&mono(vec![0, 0, 0], 1));
+
+        let mut log = Vec::new();
+        assert!(psd_search_logged(&p, 4, &mut log).is_none());
+        let ceiling = log
+            .iter()
+            .find(|l| l.contains("NOT SEARCHED"))
+            .unwrap_or_else(|| panic!("the free-parameter ceiling must be logged; got {log:?}"));
         assert!(
-            psd_search(&q, 4).is_none(),
-            "Motzkin's N=1 multiplier is not classically expected to be SOS for the \
-             homogeneous ternary form (see this test's doc comment); if this starts passing \
-             that would itself be worth investigating, not just promoting to a positive assertion"
+            ceiling.contains("465") && ceiling.contains(&MAX_FREE_PARAMETERS.to_string()),
+            "the ceiling report must name both the family size and the ceiling: {ceiling}"
+        );
+        assert!(
+            !log.iter().any(|l| l.contains("searching a")),
+            "nothing was searched, so nothing may claim to have searched: {log:?}"
         );
     }
 
-    /// Fast, exact-arithmetic-only regression test for the `symmetry_reduced_search`
-    /// machinery added to close in on (though not fully close) the N=2
-    /// homogeneous-ternary-Motzkin gap: documents the 165 → 26 → 16
+    #[test]
+    fn a_search_that_really_runs_says_so() {
+        // The counterpart to the test above: when a search does run, the log
+        // says *searched*, so the two outcomes are distinguishable in the
+        // trace and not only in the (identical) `None`/`Some`.
+        let mut p = RatPoly::monomial(2, vec![4, 0], Rational::from(1));
+        p = p.add(&RatPoly::monomial(2, vec![0, 4], Rational::from(1)));
+        p = p.add(&RatPoly::monomial(2, vec![2, 2], Rational::from(2)));
+        let mut log = Vec::new();
+        assert!(psd_search_logged(&p, 2, &mut log).is_some());
+        assert!(
+            log.iter().any(|l| l.contains("searching a")),
+            "a search that runs must record that it ran: {log:?}"
+        );
+        assert!(!log.iter().any(|l| l.contains("NOT SEARCHED")));
+    }
+
+    /// Fast, exact-arithmetic-only regression test for the
+    /// `symmetry_reduced_search` machinery: documents the 165 → 26 → 16
     /// free-parameter shrink referenced in this module's doc comments, with
     /// real assertions rather than `eprintln!` probes. Deliberately does
-    /// *not* call the full `psd_search` (which, at N=2, spends several
-    /// minutes on Douglas–Rachford before giving up — see the doc comment on
-    /// `psd_search_does_not_yet_reach_homogeneous_motzkin_times_sum_of_squares`
-    /// for those numbers) so this stays fast enough to run on every `cargo test`.
+    /// *not* call the full `psd_search` (which at `N = 2` spends several
+    /// minutes on Douglas–Rachford before giving up) so this stays fast
+    /// enough to run on every `cargo test`.
+    ///
+    /// The `N = 2` family is exercised here purely because it is a large,
+    /// highly symmetric family that makes the reduction machinery easy to
+    /// assert on. It is **not** the multiplier power this target needs — the
+    /// homogeneous ternary Motzkin form is SOS at `N = 1`, and
+    /// `psd_search_certifies_homogeneous_motzkin_times_sum_of_squares_at_n1`
+    /// is where that is checked.
     #[test]
     fn symmetry_group_and_zero_vector_shrink_n2_family() {
         let mut m = RatPoly::monomial(3, vec![4, 2, 0], Rational::from(1));

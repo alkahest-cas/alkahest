@@ -473,6 +473,74 @@ def test_repr_does_not_leak_rust_option_syntax():
     assert "fitted" in text
 
 
+# ---------------------------------------------------------------------------
+# The index symbol: derived rather than demanded
+# ---------------------------------------------------------------------------
+
+
+def test_n_is_optional_for_a_certificate_that_carries_its_own():
+    """``asymptotics_from_recurrence(cert)`` — no pool bookkeeping at all.
+
+    A certificate's coefficients live in the certificate's pool and can be
+    combined with nothing else, so requiring the caller to supply a matching
+    ``n`` was requiring them to reconstruct something ``cert`` already had.
+    """
+    pool = ak.ExprPool()
+    n, k = pool.symbol("n"), pool.symbol("k")
+    one = pool.integer(1)
+    binomial = ak.gamma(n + one) / (ak.gamma(k + one) * ak.gamma(n - k + one))
+    cert = ak.zeilberger(binomial, n, k)
+
+    assert cert.n == n
+    r = asymptotics_from_recurrence(cert, terms=[1, 2])
+    assert str(r.growth_rate_exact) == "2"
+    assert r.polynomial_exponent == 0.0
+
+
+def test_n_is_optional_when_the_coefficients_are_plain_integers():
+    """A ``GuessedRecurrence`` belongs to no pool, so one is made for it."""
+    motzkin = [
+        1, 1, 2, 4, 9, 21, 51, 127, 323, 835, 2188,
+        5798, 15511, 41835, 113634, 310572, 853467,
+        2356779, 6536382, 18199284, 50852019,
+    ]  # fmt: skip
+    r = asymptotics_from_recurrence(ak.guess_holonomic(motzkin), terms=motzkin[:2])
+    assert str(r.growth_rate_exact) == "3"
+
+    raw = asymptotics_from_recurrence(CENTRAL_BINOMIAL, terms=[1])
+    assert raw.growth_rate == 4.0
+
+
+def test_a_foreign_n_is_a_coded_error_naming_the_argument():
+    """The bare pool mismatch said nothing about which argument was wrong.
+
+    It arrived from several frames inside the coefficient walk as an
+    uncoded ``PoolError``, with no hint that ``rec`` was carrying the right
+    symbol all along.
+    """
+    pool = ak.ExprPool()
+    n, k = pool.symbol("n"), pool.symbol("k")
+    one = pool.integer(1)
+    binomial = ak.gamma(n + one) / (ak.gamma(k + one) * ak.gamma(n - k + one))
+    cert = ak.zeilberger(binomial, n, k)
+
+    with pytest.raises(ak.PoolError) as excinfo:
+        asymptotics_from_recurrence(cert, _n(), terms=[1, 2])
+    assert excinfo.value.code == "E-POOL-001"
+    assert "different ExprPool" in str(excinfo.value)
+    assert "rec.n" in excinfo.value.remediation
+
+
+def test_omitting_n_on_raw_expressions_says_why_it_cannot_be_derived():
+    """A bare list of ``Expr`` cannot name its own index variable."""
+    pool = ak.ExprPool()
+    n = pool.symbol("n")
+    with pytest.raises(ak.PoolError) as excinfo:
+        asymptotics_from_recurrence([n * pool.integer(-2), n], terms=[1])
+    assert excinfo.value.code == "E-POOL-001"
+    assert "n must be given" in str(excinfo.value)
+
+
 def test_docstring_examples():
     import alkahest._recurrence_asymptotics as module
 

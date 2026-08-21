@@ -963,9 +963,19 @@ def test_result_records_into_a_claim_graph_with_an_honest_status(pool):
         sat = smt.solve(
             ak.And(pool.gt(x, pool.integer(0)), pool.lt(x, pool.integer(2))), budget=BUDGET
         )
-        claim = session.record(sat, statement="0 < x < 2 is satisfiable", method="smt.solve")
+        # Recorded as itself, the claim *is* the formula the model was checked
+        # against, so the machine-checked status carries over.
+        claim = session.record(sat, method="smt.solve")
         assert claim.status == "exactly_verified"
         assert claim.machine_checked is True
+
+        # Re-worded into prose, it is not: nothing relates "0 < x < 2 is
+        # satisfiable" to the formula z3 was handed, so the status drops to
+        # "asserted" and the result's own status is kept where it belongs.
+        reworded = session.record(sat, statement="0 < x < 2 is satisfiable", method="smt.solve")
+        assert reworded.status == "asserted"
+        assert reworded.machine_checked is False
+        assert reworded.verification["result_status"] == "exactly_verified"
 
         unsat = smt.solve(
             ak.And(pool.gt(x, pool.integer(0)), pool.lt(x, pool.integer(0))), budget=BUDGET

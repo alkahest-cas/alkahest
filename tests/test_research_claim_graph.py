@@ -608,3 +608,248 @@ def test_renderers_handle_an_empty_graph():
     graph = ClaimGraph(title="Nothing yet")
     assert "No claims recorded" in graph.to_markdown()
     assert graph.to_latex().startswith("\\documentclass")
+
+
+# ---------------------------------------------------------------------------
+# Trust boundaries the re-verification pass has to hold
+# ---------------------------------------------------------------------------
+
+
+def _identity_claim(name: str, lhs: str, rhs: str) -> Claim:
+    return Claim(
+        id=claim_id(name, (), "test"),
+        statement=name,
+        kind="text",
+        method="test",
+        status="unverified",
+        check={"kind": "identity", "lhs": lhs, "rhs": rhs},
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "lhs", "rhs"),
+    [
+        # True on the diagonal x = y, false everywhere else. This is the
+        # commonest bug class there is: a symmetry error between two variables.
+        ("sin(x)cos(y) = sin(y)cos(x)", "sin(x)*cos(y)", "sin(y)*cos(x)"),
+        ("x + y = 2x", "x + y", "2*x"),
+        ("x*y = x^2", "x*y", "x^2"),
+    ],
+)
+def test_verify_refutes_an_identity_that_only_holds_on_the_diagonal(name, lhs, rhs):
+    """Free symbols must not all be bound to the same sample value.
+
+    Binding every symbol to one value put the evaluation on ``x = y = z``,
+    where each of these is true, so all three came back ``numeric_ok`` with
+    ``|residual| <= 0`` and ``report.ok``.
+    """
+    graph = ClaimGraph()
+    graph.add(_identity_claim(name, lhs, rhs))
+    report = graph.verify()
+    assert report.summary() == {"failed": 1}
+    assert not report.ok
+    assert graph.claims[0].status == "refuted"
+
+
+def test_verify_still_accepts_a_genuine_multivariate_identity():
+    """Offsetting the symbols must not manufacture a false red."""
+    graph = ClaimGraph()
+    graph.add(_identity_claim("(x+y)^2 expanded", "(x + y)^2", "x^2 + 2*x*y + y^2"))
+    report = graph.verify()
+    assert report.outcomes[0].outcome in {"ok", "numeric_ok"}
+    assert report.ok
+    assert graph.claims[0].status == "unverified"
+
+
+def test_numeric_ok_detail_does_not_claim_independent_points():
+    """The detail string used to read "over 3 sample point(s)" alone."""
+    graph = ClaimGraph()
+    graph.add(_identity_claim("sin^2 + cos^2 = 1", "sin(x)^2 + cos(x)^2 - 1", "0"))
+    report = graph.verify()
+    outcome = report.outcomes[0]
+    assert outcome.outcome in {"ok", "numeric_ok"}
+    if outcome.outcome == "numeric_ok":
+        assert "of 3 sample point(s)" in outcome.detail
+        assert "free symbols at distinct values" in outcome.detail
+        assert "not a proof" in outcome.detail
+
+
+def test_a_sample_outside_the_domain_is_skipped_not_counted_against_the_claim():
+    """An offset can leave a domain; that point is skipped, not read as a failure.
+
+    ``log(x - 5)`` is undefined at every default sample, so nothing evaluates
+    and the honest answer is ``inconclusive`` — never ``failed``, and never a
+    ``numeric_ok`` that silently rested on zero points.
+    """
+    graph = ClaimGraph()
+    graph.add(_identity_claim("log(x-5) = log(x-5) + 1", "log(x - 5)", "log(x - 5) + 1"))
+    report = graph.verify()
+    assert report.outcomes[0].outcome == "inconclusive"
+    assert "no numeric sample" in report.outcomes[0].detail
+    assert graph.claims[0].status == "unverified"
+
+
+def _relation_claim(name: str, constants, coefficients, **extra) -> Claim:
+    check = {"kind": "numeric_relation", "constants": constants, "coefficients": coefficients}
+    check.update(extra)
+    return Claim(
+        id=claim_id(name, (), "test"),
+        statement=name,
+        kind="text",
+        method="guess_relation",
+        status="unverified",
+        check=check,
+    )
+
+
+#: alpha is the root of 5144503108 x^2 - 5945642943 x + 1 near 1.1557, so
+#: 5144503108*alpha^2 - 5945642943*alpha + 1 = 0 exactly. At 60 digits the true
+#: residual is 6.7e-52; narrowed to float it is 9.5e-7.
+_ALPHA = "1.15572734962273134279187535795567192711118619980130442852708"
+_ALPHA_SQUARED = "1.33570570666598308927592305767244172500786340378426566550083"
+
+
+def test_verify_does_not_refute_an_exact_relation_given_at_60_digits():
+    """Casting 60-digit decimal strings to float refuted a true relation.
+
+    ``mark_refuted=True`` is the default, so this was the one place in the
+    graph machinery where ``verify()`` actively destroyed a true claim.
+    """
+    graph = ClaimGraph()
+    graph.add(
+        _relation_claim(
+            "5144503108 a^2 - 5945642943 a + 1 = 0",
+            [_ALPHA_SQUARED, _ALPHA, "1"],
+            [5144503108, -5945642943, 1],
+        )
+    )
+    report = graph.verify()
+    assert report.outcomes[0].outcome == "numeric_ok"
+    assert report.ok
+    assert graph.claims[0].status == "unverified"
+    assert "supplied precision" in report.outcomes[0].detail
+
+
+def test_verify_refutes_a_relation_a_float_would_round_to_zero():
+    """The mirror: an exact residual of 1 that double precision cannot see."""
+    graph = ClaimGraph()
+    graph.add(
+        _relation_claim(
+            "10^18 - 10^18 * 0.999999999999999999 = 0",
+            ["1", "0.999999999999999999"],
+            [10**18, -(10**18)],
+        )
+    )
+    report = graph.verify()
+    assert report.outcomes[0].outcome == "failed"
+    assert graph.claims[0].status == "refuted"
+
+
+def test_relation_at_too_few_digits_is_inconclusive_not_refuted():
+    """Six digits cannot decide a 1e-8 tolerance, and saying so is the answer."""
+    graph = ClaimGraph()
+    graph.add(
+        _relation_claim(
+            "pi - e - 0.423311 = 0",
+            ["3.141593", "2.718282", "0.423311"],
+            [1, -1, -1],
+        )
+    )
+    report = graph.verify()
+    assert report.outcomes[0].outcome == "inconclusive"
+    assert report.ok
+    assert graph.claims[0].status == "unverified"
+
+
+def test_relation_tolerance_key_is_the_precision_escape_hatch():
+    graph = ClaimGraph()
+    graph.add(
+        _relation_claim(
+            "pi - e - 0.423311 = 0 to 1e-5",
+            ["3.141593", "2.718282", "0.423311"],
+            [1, -1, -1],
+            tolerance=1e-5,
+        )
+    )
+    assert graph.verify().outcomes[0].outcome == "numeric_ok"
+
+
+def test_re_recording_a_statement_attaches_a_check_recipe_it_lacked():
+    """The one supported way to link a statement to its evidence was a no-op.
+
+    Recorded bare and then recorded again *with* a recipe, ``verify()``
+    reported ``skipped``; recorded the other way round the same pair yielded
+    ``refuted``.  It must not depend on the order.
+    """
+    recipe = {"kind": "identity", "lhs": "x + y", "rhs": "2*x"}
+    bare = _claim("x + y = 2 x")
+    with_check = replace(bare, check=recipe)
+    for order in ((bare, with_check), (with_check, bare)):
+        graph = ClaimGraph()
+        for claim in order:
+            graph.add(claim)
+        assert graph.claims[0].check == recipe
+        report = graph.verify()
+        assert report.summary() == {"failed": 1}
+        assert graph.claims[0].status == "refuted"
+
+
+def test_an_attached_recipe_is_never_overwritten_by_a_later_record():
+    first = replace(_claim("x = x"), check={"kind": "identity", "lhs": "x", "rhs": "x"})
+    second = replace(first, check={"kind": "identity", "lhs": "x", "rhs": "x + 1"})
+    graph = ClaimGraph()
+    graph.add(first)
+    graph.add(second)
+    assert graph.claims[0].check == {"kind": "identity", "lhs": "x", "rhs": "x"}
+
+
+# ---------------------------------------------------------------------------
+# A caller-supplied statement is not what the machine checked
+# ---------------------------------------------------------------------------
+
+
+def test_a_reworded_statement_does_not_inherit_a_machine_checked_status(pool):
+    """``record(result, statement="0 = 1")`` used to report ``[VERIFIED]``."""
+    x = pool.symbol("x")
+    with session(pool=pool) as s:
+        result = ak.integrate(ak.sin(x), x)
+        assert result.verification["status"] in MACHINE_CHECKED_STATUSES
+        claim = s.record(result, statement="0 = 1")
+    assert claim.status == "asserted"
+    assert claim.machine_checked is False
+    assert claim.mark == "[ASSERTED, UNCHECKED]"
+    assert s.graph.machine_checkable() == ()
+    # Nothing about the result itself is lost.
+    assert claim.verification["result_status"] == "exactly_verified"
+    assert claim.verification["statement_source"] == "caller"
+    assert "nothing checked that the statement is what was checked" in claim.badge
+
+
+def test_a_check_recipe_re_establishes_the_link_to_the_statement(pool):
+    x = pool.symbol("x")
+    with session(pool=pool) as s:
+        result = ak.integrate(ak.sin(x), x)
+        claim = s.record(
+            result,
+            statement="the antiderivative of sin is -cos",
+            check={
+                "kind": "antiderivative",
+                "integrand": "sin(x)",
+                "var": "x",
+                "antiderivative": "-cos(x)",
+            },
+        )
+    assert claim.status == "exactly_verified"
+    assert claim.machine_checked is True
+    assert s.graph.verify().ok
+
+
+def test_captured_operations_keep_their_machine_checked_status(pool):
+    """The gate is about caller prose, not the assertion the engine renders."""
+    x = pool.symbol("x")
+    with session(pool=pool, capture=True) as s:
+        ak.integrate(ak.cos(x), x)
+    claim = s.graph.claims[0]
+    assert claim.statement == "integral(cos(x), dx) = sin(x)"
+    assert claim.status == "exactly_verified"
+    assert claim.machine_checked is True

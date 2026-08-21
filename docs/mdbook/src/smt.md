@@ -379,11 +379,30 @@ a real answer ("I could not decide this"), distinct from a resource verdict.
 ```python
 with ak.research.session(title="mixed feasibility", pool=pool) as s:
     result = ak.smt.solve(f, budget=ak.Budget(wall_ms=5000))
-    claim = s.record(result, statement="the system is feasible", method="smt.solve")
+    claim = s.record(result, method="smt.solve")
 
+claim.statement        # the formula itself — the thing the model was checked against
 claim.status           # 'exactly_verified' for sat, 'externally_asserted' for unsat
 claim.machine_checked  # True only for the checked sat case
 ```
+
+Record it **as itself**, as above. A `statement=` argument is free text and nothing
+relates it to the formula the solver was handed, so a re-worded claim does not inherit
+the machine-checked status:
+
+```python
+claim = s.record(result, statement="the system is feasible", method="smt.solve")
+
+claim.status                            # 'asserted', not 'exactly_verified'
+claim.machine_checked                   # False
+claim.verification["result_status"]     # 'exactly_verified' — the *result* was checked
+```
+
+`"the system is feasible"` may well be the right English for `f`, but that is a
+translation nobody checked, and `machine_checked` is read by tooling as "a machine
+verified this sentence". To keep the status on a re-worded claim, attach the `check`
+recipe that re-establishes the link and let
+[`ClaimGraph.verify()`](./claim-graphs.md) run it.
 
 ## What is *not* here, and why
 

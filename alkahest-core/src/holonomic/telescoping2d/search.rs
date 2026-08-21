@@ -92,7 +92,7 @@ use rug::{Integer, Rational};
 /// message says so explicitly when at least one probe was skipped for this
 /// reason, so a caller sees a fast, clearly-explained refusal instead of a
 /// silent guess about whether raising the bounds would even help.
-const MAX_ANSATZ_UNKNOWNS: usize = 400;
+pub(crate) const MAX_ANSATZ_UNKNOWNS: usize = 400;
 
 /// A probe's own unknown count must reach this before it counts against
 /// [`MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS`] at all. Below this, a probe is
@@ -100,7 +100,7 @@ const MAX_ANSATZ_UNKNOWNS: usize = 400;
 /// exceeds ~140 unknowns for any probe it tries — see the constant's own
 /// docs) and is exempted from the cumulative accounting entirely, so this
 /// budget cannot regress the existing two-index search in any way.
-const LARGE_PROBE_THRESHOLD: usize = 150;
+pub(crate) const LARGE_PROBE_THRESHOLD: usize = 150;
 
 /// A single probe under [`MAX_ANSATZ_UNKNOWNS`] can still be individually
 /// slow (the `m = 3` multinomial-coefficient worked example's `cols = 245`
@@ -123,7 +123,7 @@ const LARGE_PROBE_THRESHOLD: usize = 150;
 /// `max_order` / `max_a_degree` / `max_cert_degree` are. `300` admits
 /// exactly one probe the size of the multinomial example (`245`) before
 /// refusing further ones of that size.
-const MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS: usize = 300;
+pub(crate) const MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS: usize = 300;
 
 use std::collections::BTreeMap;
 
@@ -268,6 +268,66 @@ pub fn telescope2d_search(
     })
 }
 
+/// Turn a [`crate::budget`] trip into this module's exhaustive error type,
+/// recording the real cause out of band for the bindings.
+///
+/// [`Telescoping2dError`] is public and exhaustive, so it cannot grow a
+/// `Budget` variant without a major semver break; the trip is left in
+/// [`crate::budget::take_trip`] and the message says plainly that the search
+/// was *stopped*, never that it was completed. A caller must be able to tell a
+/// budget stop from a search that genuinely covered its grid.
+fn trip_to_error(trip: crate::budget::BudgetTrip) -> Telescoping2dError {
+    use crate::errors::AlkahestError;
+    crate::budget::record_trip(trip);
+    Telescoping2dError::SearchExhausted(format!(
+        "the multi-index telescoping search was stopped before it finished, and no certificate \
+         was found up to that point — this is NOT a statement that none exists: {} [{}]",
+        trip,
+        trip.code()
+    ))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Unknowns spent on probes at or above [`LARGE_PROBE_THRESHOLD`] that the
+    /// ceilings actually let through.
+    ///
+    /// This is exactly what [`MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS`] bounds, so
+    /// it is what the regression test asserts on — a deterministic quantity
+    /// rather than a wall-clock bound, which on a loaded machine measures the
+    /// machine and not the ceiling. Cheap probes are excluded deliberately:
+    /// they are not what the ceilings exist to stop.
+    static LARGE_PROBE_UNKNOWNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn large_probe_unknowns() -> usize {
+    LARGE_PROBE_UNKNOWNS.with(|c| c.get())
+}
+
+#[allow(unused_variables)]
+fn note_probe_attempted(unknowns: usize) {
+    #[cfg(test)]
+    if unknowns >= LARGE_PROBE_THRESHOLD {
+        LARGE_PROBE_UNKNOWNS.with(|c| c.set(c.get() + unknowns));
+    }
+}
+
+fn reset_probes_attempted() {
+    #[cfg(test)]
+    LARGE_PROBE_UNKNOWNS.with(|c| c.set(0));
+}
+
+/// Cooperative checkpoint: wall clock, steps, cancellation, and the memory
+/// ceilings of [`crate::budget::memory`].
+///
+/// Called at the head of every probe and inside the exact-rational elimination
+/// — the two places where this module can run for minutes and, at `m = 4`,
+/// where GMP used to `abort()` the whole process rather than refuse.
+fn checkpoint() -> Result<(), Telescoping2dError> {
+    crate::budget::check_all().map_err(trip_to_error)
+}
+
 /// Apagodu–Zeilberger search for general `m ≥ 1`: find and verify a
 /// creative-telescoping certificate for `term`, a proper hypergeometric
 /// `F(n, x_1, …, x_m)` with `indices = [x_1, …, x_m]`.
@@ -300,6 +360,9 @@ pub fn telescope_md_search(
         ));
     }
     let num_axes = m + 1;
+    // Only this call's trip may be attributed to this call.
+    crate::budget::clear_trip();
+    reset_probes_attempted();
 
     let f = ProperTermM::parse(term, n, indices, pool)?;
     let mut rhos: Vec<RatM> = Vec::with_capacity(m);
@@ -361,6 +424,8 @@ pub fn telescope_md_search(
                     cumulative_large_unknowns += total;
                 }
 
+                checkpoint()?;
+                note_probe_attempted(total);
                 if let Some(cand) =
                     solve_ansatz_md(order, m, a_degree, cert_degree, &nn, &dn, &rhos, num_axes)?
                 {
@@ -569,6 +634,7 @@ fn solve_ansatz_md(
 
     let total_combos = box_len.pow(num_axes as u32);
     for combo in 0..total_combos {
+        checkpoint()?;
         let exps = unflatten(combo, num_axes, box_len);
         let p = exps[0];
         let np = n_pow[p].clone();
@@ -597,7 +663,7 @@ fn solve_ansatz_md(
     }
 
     let matrix: Vec<Vec<Rational>> = rows.into_values().collect();
-    let basis_vecs = rational_nullspace(matrix, total);
+    let basis_vecs = rational_nullspace(matrix, total)?;
     if basis_vecs.is_empty() {
         return Ok(None);
     }
@@ -683,7 +749,10 @@ fn primitive_scale_rationals(v: &mut [Rational]) {
 /// Nullspace basis of `mat` (rows = equations, `ncols` unknowns) over `Q`, by
 /// plain Gaussian elimination to row-echelon form.
 #[allow(clippy::needless_range_loop)]
-fn rational_nullspace(mut mat: Vec<Vec<Rational>>, ncols: usize) -> Vec<Vec<Rational>> {
+fn rational_nullspace(
+    mut mat: Vec<Vec<Rational>>,
+    ncols: usize,
+) -> Result<Vec<Vec<Rational>>, Telescoping2dError> {
     let nrows = mat.len();
     let mut pivot_cols: Vec<usize> = Vec::new();
     let mut row = 0;
@@ -691,6 +760,7 @@ fn rational_nullspace(mut mat: Vec<Vec<Rational>>, ncols: usize) -> Vec<Vec<Rati
         if row >= nrows {
             break;
         }
+        checkpoint()?;
         let Some(pr) = (row..nrows).find(|&r| mat[r][col] != 0) else {
             continue;
         };
@@ -707,6 +777,10 @@ fn rational_nullspace(mut mat: Vec<Vec<Rational>>, ncols: usize) -> Vec<Vec<Rati
             if factor == 0 {
                 continue;
             }
+            // Per *row*, not just per pivot: this is the loop whose entries
+            // grow — the shape of the system is fixed here, the size of its
+            // rationals is not, and that is what exhausts memory.
+            checkpoint()?;
             for c in col..ncols {
                 let sub = factor.clone() * mat[row][c].clone();
                 mat[r][c] -= sub;
@@ -734,7 +808,7 @@ fn rational_nullspace(mut mat: Vec<Vec<Rational>>, ncols: usize) -> Vec<Vec<Rati
         }
         basis.push(v);
     }
-    basis
+    Ok(basis)
 }
 
 /// Re-derive and check the telescoping identity **from scratch** — never

@@ -115,6 +115,47 @@ echoed back*, not inferred from the summand, so a caller summing over something
 else can see the mismatch. And a range the analysis cannot place — endpoints
 that are not integer-affine in `n` — is `"unknown"`, never `"vanishes"`.
 
+### The range is not a range at every `n`
+
+A declared range can be *empty*, and an empty range is where a verdict most
+easily stops being true. `k = 3..n−3` runs backwards at `n = 3` and `n = 4`: a
+sum over it is `0` under the "empty sum" reading and a signed sum under the
+reversed-sum one, and a `b(n)` that is correct from `n = 5` on is simply wrong
+below it. A loop that declares a range which happens to be empty for its first
+few `n` is an ordinary thing to write.
+
+So a verdict carries the `n` it is claimed for:
+
+```python
+cert = ak.zeilberger(F, n, k, limits=(3, n - pool.integer(3)))
+cert.boundary               # "nonzero"
+cert.boundary_valid_from    # 5 — the relation is FALSE at n = 3, 4
+```
+
+`boundary_valid_from` is `None` when nothing is excluded on that ground, and the
+range that is backwards at *every* `n` — `k = 5..3` — is `"unknown"`: there is
+no domain left to claim it on. The one empty range that keeps a verdict is
+`k_hi = k_lo − 1` (`k = n+1..n`), which both readings agree is `0`.
+
+### The telescoping has to survive the interior
+
+`Σ_k (G(n,k+1) − G(n,k))` collapses to the two endpoints only if `G = R·F` is
+finite at every integer `k` in between. A pole of the *certificate* at an
+interior point breaks it in the middle of the sum, where no boundary value can
+see it. `cert.certificate_poles` reports those points, as expressions in `n`:
+
+```python
+cert = ak.zeilberger(C(n, k) / (n - 2*k + one), n, k)   # k = 0..n
+cert.boundary            # "unknown"
+[str(p) for p in cert.certificate_poles]
+# k = (n+1)/2 — a pole of the summand, so S(n) is undefined for odd n — and
+# k = (n+3)/2, a pole of the certificate strictly inside the range
+```
+
+A non-empty `certificate_poles` always means `"unknown"`. An empty one is not a
+proof that there are none: the search covers locations `k = (p·n + q)/c` with
+`c ≤ 4` that are inside the range for large `n`.
+
 ### What `"vanishes"` is worth
 
 It is a proof, not a numeric check. Each endpoint of `G` is evaluated by exact
@@ -255,6 +296,12 @@ cert.order_is_minimal   # True — every degree ≤ 6 at every lower order was r
 exact verification, same certificate — only what was ruled out along the way
 differs. The flag is computed from the probes that actually happened rather than
 from the mode, so it cannot drift away from what the search did.
+
+**What it establishes is minimality at certificate degree `≤ max_degree`**, not
+minimality outright. A lower-order relation whose certificate needs a higher
+degree than the bound was never probed, and order–degree trade-offs are a real
+phenomenon in creative telescoping — so quote the bound alongside the claim, and
+raise it when minimality is the result being published.
 
 The price is the whole hopeless low-order sweep the default plan exists to
 avoid, and it is charged against `max_degree` because that is the bound

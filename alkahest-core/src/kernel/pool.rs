@@ -544,6 +544,25 @@ fn fmt_pow_atom(id: ExprId, pool: &ExprPool) -> String {
     }
 }
 
+/// Format a power *base*.
+///
+/// Everything [`fmt_pow_atom`] wraps needs wrapping here too, plus any literal
+/// that renders with a leading `-`: unary minus binds looser than `^` in this
+/// crate's own parser (`BP_UNARY` < `BP_POW` in `parse.rs`), in Python and in
+/// sympy, so `-1^n` re-reads as `-(1^n)`.  Only `(-1)^n` round-trips.
+///
+/// The exponent side deliberately keeps the bare form (`x^-1`): `^` is
+/// right-associative and unary minus binds looser than it, so a `-` there is
+/// already unambiguous.
+fn fmt_pow_base(id: ExprId, pool: &ExprPool) -> String {
+    let s = fmt_pow_atom(id, pool);
+    if s.starts_with('-') {
+        format!("({s})")
+    } else {
+        s
+    }
+}
+
 fn fmt_data(data: &ExprData, pool: &ExprPool, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     match data {
         ExprData::Symbol { name, .. } => write!(f, "{}", name),
@@ -573,7 +592,7 @@ fn fmt_data(data: &ExprData, pool: &ExprPool, f: &mut fmt::Formatter<'_>) -> fmt
         ExprData::Pow { base, exp } => {
             // Parenthesize compound bases/exponents so `x^(1/2)^3` cannot be
             // misread as `x^1 / 2^3`. Prefer `(x^(1/2))^3`.
-            let base_s = fmt_pow_atom(*base, pool);
+            let base_s = fmt_pow_base(*base, pool);
             let exp_s = fmt_pow_atom(*exp, pool);
             write!(f, "{base_s}^{exp_s}")
         }
@@ -829,6 +848,39 @@ mod tests {
         let one = p.integer(1_i32);
         let expr = p.add(vec![xsq, one]);
         assert_eq!(p.display(expr).to_string(), "(x^2 + 1)");
+    }
+
+    /// A negative power base must be parenthesised: `-1^n` re-reads as
+    /// `-(1^n)` in this crate's own parser, in Python and in sympy.
+    #[test]
+    fn display_negative_pow_base_is_parenthesised() {
+        let p = pool();
+        let n = p.symbol("n", Domain::Real);
+        let m1 = p.integer(-1_i32);
+        assert_eq!(p.display(p.pow(m1, n)).to_string(), "(-1)^n");
+        let m2 = p.integer(-2_i32);
+        assert_eq!(p.display(p.pow(m2, n)).to_string(), "(-2)^n");
+        let half = p.rational(-1, 2);
+        assert_eq!(p.display(p.pow(half, n)).to_string(), "(-1/2)^n");
+        // …including under a negative exponent, whose bare `-` is unambiguous.
+        let m3 = p.integer(-3_i32);
+        assert_eq!(p.display(p.pow(m2, m3)).to_string(), "(-2)^-3");
+        // …and inside a product, the `b(n) = -16 * (-2)^n` boundary shape.
+        // `mul` orders its arguments canonically, hence the factor order here.
+        let m16 = p.integer(-16_i32);
+        let prod = p.mul(vec![m16, p.pow(m2, n)]);
+        assert_eq!(p.display(prod).to_string(), "((-2)^n * -16)");
+    }
+
+    /// A non-negative atom keeps the bare form — no gratuitous parentheses.
+    #[test]
+    fn display_positive_pow_base_is_bare() {
+        let p = pool();
+        let n = p.symbol("n", Domain::Real);
+        let two = p.integer(2_i32);
+        assert_eq!(p.display(p.pow(two, n)).to_string(), "2^n");
+        let x = p.symbol("x", Domain::Real);
+        assert_eq!(p.display(p.pow(x, n)).to_string(), "x^n");
     }
 
     // --- send + sync: compile-time check ---

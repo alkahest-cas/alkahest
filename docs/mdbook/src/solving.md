@@ -160,9 +160,76 @@ gb.specialize([-1])           # raises ParamGroebnerError, code "E-PARAMGB-004"
 
 `conditions()` lists the hypersurfaces the computation assumed non-vanishing — every leading-coefficient inversion contributes its numerator and denominator, every input coefficient contributes its denominator — factored into irreducible, primitive pieces so the report is a list of conditions rather than one opaque polynomial in many parameters. The list is **sufficient, not necessary**: it can flag a point that turns out fine (a removable coincidence the bookkeeping cannot see), but it never misses a point where the generic basis is genuinely wrong. `specialize` refuses on the flagged locus with `ParamGroebnerError` (`E-PARAMGB-004`) rather than returning something that is not a basis; check `is_regular_at` first if a degenerate point is a normal outcome for your caller.
 
-The read path matches `GroebnerBasis`: the object is a sequence of `ParametricGbPoly`, each with `to_expr()` / `terms()`, and the basis itself has `to_exprs()`, `eliminate(vars)` (same `Lex`-with-eliminated-variables-first contract, refuses to eliminate a coefficient-field parameter since there is nothing to eliminate), `reduce`, and `contains`. `GroebnerBasis.compute(..., params=None)` or `params=[]` is the unmodified `Q[vars]` path; `ParametricGroebnerBasis.compute(polys, vars, params, order=None)` is the equivalent direct constructor in `alkahest.experimental`.
+### `specialize(values, verify=True)`
 
-This surface is experimental (`alkahest.experimental.ParametricGroebnerBasis` / `ParametricGbPoly`) and requires `--features groebner`.
+Most of what `conditions()` lists are leading coefficients that were inverted somewhere inside the Buchberger loop and then cancelled, so a large share of the points it excludes are ordinary. Measured over eight parametric systems on the small-integer box `{-2..2}`: 646 refusals, of which 239 are genuine poles, 73 are necessary, and **334 are unnecessary**. The fraction is box-dependent and dominated by parameters equal to exactly 0 — `{-2..2}` gives 52%, `{-2,-1,1,2}` gives 25%, `{-3..3}` gives 58% — so the honest headline is **a quarter to a half of refusals on small-integer grids**, not a single number.
+
+```python
+gb = GroebnerBasis.compute([a*x + b*y - one, c*x + d*y - one], [x, y],
+                           params=[a, b, c, d])
+gb.conditions()                          # [c, a*d - b*c, a]
+
+gb.specialize([0, 1, 1, 1])              # E-PARAMGB-004: a = 0 is on the locus
+gb.specialize([0, 1, 1, 1], verify=True) # [x, y - 1] — the refusal was unnecessary
+gb.specialize([1, 1, 2, 2], verify=True) # still E-PARAMGB-004: a*d - b*c = 0
+```
+
+`verify=True` re-solves the specialised system over ℚ and compares it with the specialised generic basis, instead of deciding on the recorded conditions alone. It is strictly more complete and never less sound: the refusals were separately checked to be *sound* (1,930 regular points across three sweeps, zero disagreements between `specialize` and the basis computed directly at the point), so this closes a completeness gap, not a correctness one. It is off by default because on the locus it pays for a second Gröbner basis over ℚ.
+
+### Feeding a parametric basis back in
+
+`reduce` and `contains` accept input that is **rational in the parameters**. A `den**-1` factor is an ordinary element of `Q(params)`, not a non-polynomial, so a basis accepts its own `to_exprs()` output — only a denominator in a *ring variable* is refused:
+
+```python
+gb = GroebnerBasis.compute([a*x - one], [x], params=[a])
+gb.to_exprs()                            # ['(x + (-1 * a^-1))']
+gb.contains(gb.to_exprs()[0])            # True
+```
+
+`equals_ideal` answers the question that needs: do two parametric bases generate the same ideal of `Q(params)[vars]`?
+
+```python
+g1 = GroebnerBasis.compute([a*x - one], [x], params=[a])
+g2 = GroebnerBasis.compute([a*a*x - a], [x], params=[a])
+g1.equals_ideal(g2)                      # True
+g1.contains_ideal(g2)                    # True  — one direction only
+```
+
+This is exact, not generic: reduction over `Q(params)` only ever divides by non-zero field elements, so neither basis's `conditions()` enters the answer. Those conditions still bound what each basis says about a *specialised* parameter point — equal ideals over the fraction field can specialise differently on the locus. Bases over different numbers of variables or parameters compare `False`; there is no shared ring.
+
+The read path matches `GroebnerBasis`: the object is a sequence of `ParametricGbPoly`, each with `to_expr()` / `terms()`, and the basis itself has `to_exprs()`, `eliminate(vars)` (same `Lex`-with-eliminated-variables-first contract, refuses to eliminate a coefficient-field parameter since there is nothing to eliminate), `reduce`, `contains`, `contains_ideal` and `equals_ideal`. `GroebnerBasis.compute(..., params=None)` or `params=[]` is the unmodified `Q[vars]` path; `ParametricGroebnerBasis.compute(polys, vars, params, order=None)` is the equivalent direct constructor in `alkahest.experimental`.
+
+### Differential elimination with the parameters in `Q(params)`
+
+`rosenfeld_groebner(dae, params=[...])` runs the prolongation loop of [Rosenfeld–Gröbner](./ode-dae.md) over `Q(params)` instead of putting the model parameters in the ring, and returns a `ParametricRosenfeldGroebnerResult` whose `final_basis()` is a `ParametricGroebnerBasis`. That is the input–output relation of an ODE model computed end to end, rather than prolonged by hand:
+
+```python
+# SIR:  S' = -b*S*I,  I' = b*S*I - g*I,  R' = g*I,  y0 = I
+dae = DAE.new([dS + b*S*I, dI - b*S*I + g*I, dR - g*I, y0 - I],
+              [S, I, R, y0], [dS, dI, dR, dy0], t)
+
+r = rosenfeld_groebner(dae, params=[b, g], eliminate=[S, I, R],
+                       minimal=True, order="lex")
+r.minimal_prolongation_rounds            # 2
+states = ("S", "I", "R")
+io = r.final_basis().eliminate([v for v in r.variables()
+                                if str(v).lstrip("d").split("/")[0] in states])
+io.to_exprs()                            # y0*y0'' - y0'^2 + b*y0^2*y0' + b*g*y0^3, over Q(b,g)
+```
+
+`eliminate=[...]` names the variables the caller intends to eliminate — typically the unobserved states. Their whole jet chain goes with them (`x` also names `dx/dt`, `d2x/dt2`, …), and the ranking is built with those jets first so the `Lex` elimination contract holds.
+
+**One prolongation too many is expensive out of all proportion.** On the SIR model above, stopping at the first informative round costs 0.03 s and gives one 4-term relation; prolonging one round further does not finish in ten minutes. The over-supplied answer is *correct*, just enormously more expensive, so nothing else signals it. `minimal=True` stops at the first informative round; without it, a run that prolonged past one emits a `UserWarning` naming the round it could have stopped at, and `minimal_prolongation_rounds` records it either way.
+
+**Scope of "minimal".** `minimal_prolongation_rounds` is "the first round at which eliminating those variables leaves a generator", not a theorem about the differential ideal. For a single-output model it coincides with the jet order the input–output relation needs; **for multi-output models the criterion is known to be wrong**, because one output can become informative several rounds before the others and the truncated basis then misses their relations. Treat it as a cost signal, not a certificate — and note that a `minimal=True` result is always flagged `truncated`.
+
+### Which structural identifiability this decides
+
+Where this pipeline is used for structural identifiability, it answers **multi-experiment** identifiability, not single-experiment: by Ovchinnikov–Pillay–Pogudin–Scanlon, [*Computing all identifiable functions of parameters for ODE models*](https://arxiv.org/abs/2004.07774), Theorem 19, a function of the parameters is multi-experiment identifiable iff it is input–output identifiable, for general rational systems. That is why an IO-elimination route can call a model globally identifiable where a single-experiment tool such as SIAN reports "locally, not globally" — both verdicts are right, about different questions.
+
+**Hypothesis, not a guarantee.** Theorem 19 requires the input–output equations to be the *characteristic presentation* of `I_Σ ∩ C(θ){y,u}`. An algebraic lex elimination at a hand-picked finite jet order — what the surface above does — is not guaranteed to produce one. So "this is a multi-experiment tool" holds under that standard; where it fails, the computed field can be a proper subfield of the identifiable one.
+
+This surface is experimental (`alkahest.experimental.ParametricGroebnerBasis` / `ParametricGbPoly` / `ParametricRosenfeldGroebnerResult`) and requires `--features groebner`.
 
 ## Performance
 

@@ -52,6 +52,7 @@ use crate::errors::AlkahestError;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::poly::collect_free_vars;
 use crate::poly::groebner::{GbPoly, GroebnerBasis, MonomialOrder};
+use crate::poly::groebner::{ParamGbPoly, ParamPoly, QParam};
 use rug::ops::Pow;
 use rug::Rational;
 use std::collections::{BTreeMap, BTreeSet};
@@ -267,6 +268,162 @@ fn expr_to_gbpoly_rec(
                     "symbolic or non-integer exponent".to_string(),
                 )),
             }
+        }
+        Node::Func(name) => Err(SolverError::NotPolynomial(format!(
+            "function '{name}' is not a polynomial"
+        ))),
+        Node::Other => Err(SolverError::NotPolynomial(
+            "unsupported expression node".to_string(),
+        )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Expr → ParamGbPoly conversion (M9)
+// ---------------------------------------------------------------------------
+
+/// Convert an `Expr` to a [`ParamGbPoly`] over `Q(params)[vars]`.
+///
+/// The expression must be *polynomial in `vars`* and *rational in `params`*.
+/// That second half is the difference from [`expr_to_gbpoly`], which refuses
+/// any negative exponent: here a negative power whose base is free of `vars` is
+/// just a denominator in the coefficient field, which is exactly where the
+/// parameters live.  Without it a parametric basis cannot be fed its own
+/// [`crate::poly::groebner::ParamGroebnerBasis::generators`] back — those carry
+/// `den^-1` factors by construction.
+///
+/// Exponent slot `i` names `vars[i]`; parameter slot `j` names `params[j]`.
+/// `vars` and `params` must be disjoint; a symbol in neither list is an error,
+/// as it is for [`expr_to_gbpoly`].
+pub fn expr_to_param_gbpoly(
+    expr: ExprId,
+    vars: &[ExprId],
+    params: &[ExprId],
+    pool: &ExprPool,
+) -> Result<ParamGbPoly, SolverError> {
+    expr_to_param_gbpoly_rec(expr, vars, params, pool)
+}
+
+fn param_constant(c: QParam, n_vars: usize, n_params: usize) -> ParamGbPoly {
+    let mut p = ParamGbPoly::zero(n_vars, n_params);
+    if !c.is_zero() {
+        p.terms.insert(vec![0u32; n_vars], c);
+    }
+    p
+}
+
+fn expr_to_param_gbpoly_rec(
+    expr: ExprId,
+    vars: &[ExprId],
+    params: &[ExprId],
+    pool: &ExprPool,
+) -> Result<ParamGbPoly, SolverError> {
+    let (n_vars, n_params) = (vars.len(), params.len());
+    if let Some(idx) = vars.iter().position(|&v| v == expr) {
+        let mut exp = vec![0u32; n_vars];
+        exp[idx] = 1;
+        let mut p = ParamGbPoly::zero(n_vars, n_params);
+        p.terms.insert(exp, QParam::one(n_params));
+        return Ok(p);
+    }
+    if let Some(idx) = params.iter().position(|&p| p == expr) {
+        let c = QParam::from_poly(ParamPoly::var(idx, n_params));
+        return Ok(param_constant(c, n_vars, n_params));
+    }
+
+    enum Node {
+        IntConst(rug::Integer),
+        RatConst(Rational),
+        FloatConst(f64),
+        FreeSymbol(String),
+        Add(Vec<ExprId>),
+        Mul(Vec<ExprId>),
+        Pow(ExprId, ExprId),
+        Func(String),
+        Other,
+    }
+
+    let node = pool.with(expr, |data| match data {
+        ExprData::Integer(n) => Node::IntConst(n.0.clone()),
+        ExprData::Rational(r) => Node::RatConst(r.0.clone()),
+        ExprData::Float(f) => Node::FloatConst(f.inner.to_f64()),
+        ExprData::Symbol { name, .. } => Node::FreeSymbol(name.clone()),
+        ExprData::Add(args) => Node::Add(args.clone()),
+        ExprData::Mul(args) => Node::Mul(args.clone()),
+        ExprData::Pow { base, exp } => Node::Pow(*base, *exp),
+        ExprData::Func { name, .. } => Node::Func(name.clone()),
+        _ => Node::Other,
+    });
+
+    let rational_const = |r: Rational| {
+        Ok(param_constant(
+            QParam::from_rational(&r, n_params),
+            n_vars,
+            n_params,
+        ))
+    };
+
+    match node {
+        Node::IntConst(n) => rational_const(Rational::from(n)),
+        Node::RatConst(r) => rational_const(r),
+        Node::FloatConst(v) => rational_const(Rational::from_f64(v).unwrap_or_else(|| 0.into())),
+        Node::FreeSymbol(name) => Err(SolverError::NotPolynomial(format!(
+            "free symbol '{name}' is neither a ring variable nor a parameter"
+        ))),
+        Node::Add(args) => {
+            let mut acc = ParamGbPoly::zero(n_vars, n_params);
+            for a in args {
+                acc = acc.add(&expr_to_param_gbpoly_rec(a, vars, params, pool)?);
+            }
+            Ok(acc)
+        }
+        Node::Mul(args) => {
+            let mut acc = param_constant(QParam::one(n_params), n_vars, n_params);
+            for a in args {
+                acc = acc.mul(&expr_to_param_gbpoly_rec(a, vars, params, pool)?);
+            }
+            Ok(acc)
+        }
+        Node::Pow(base, exp_id) => {
+            let exp_node = pool.with(exp_id, |d| match d {
+                ExprData::Integer(n) => n.0.to_i64(),
+                _ => None,
+            });
+            let Some(n_val) = exp_node else {
+                return Err(SolverError::NotPolynomial(
+                    "symbolic or non-integer exponent".to_string(),
+                ));
+            };
+            let base_poly = expr_to_param_gbpoly_rec(base, vars, params, pool)?;
+            let (base_poly, k) = if n_val < 0 {
+                // A denominator is only admissible in the coefficient field.
+                let Some(c) = base_poly.as_coeff() else {
+                    return Err(SolverError::NotPolynomial(format!(
+                        "negative exponent {n_val} on a ring variable; only the \
+                         coefficient field Q(params) admits denominators"
+                    )));
+                };
+                let Some(inv) = c.inv() else {
+                    return Err(SolverError::NotPolynomial(
+                        "negative exponent on zero".to_string(),
+                    ));
+                };
+                (param_constant(inv, n_vars, n_params), n_val.unsigned_abs())
+            } else {
+                (base_poly, n_val as u64)
+            };
+            let mut result = param_constant(QParam::one(n_params), n_vars, n_params);
+            let mut cur = base_poly;
+            let mut rem = k;
+            while rem > 0 {
+                if rem & 1 == 1 {
+                    result = result.mul(&cur);
+                }
+                let cur2 = cur.clone();
+                cur = cur.mul(&cur2);
+                rem >>= 1;
+            }
+            Ok(result)
         }
         Node::Func(name) => Err(SolverError::NotPolynomial(format!(
             "function '{name}' is not a polynomial"
