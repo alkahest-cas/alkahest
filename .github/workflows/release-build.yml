@@ -109,22 +109,30 @@ jobs:
   # LLVM JIT: separate wheels with PEP 440 local version X.Y.Z+jit (PyTorch-style).
   # Not uploaded to main PyPI — avoids pip preferring +jit over the default release.
   #
-  # Built natively on ubuntu-22.04 (not manylinux Docker) because llvm-15-dev is
+  # Built natively on ubuntu-24.04 (not manylinux Docker) because llvm-21-dev is
   # available via apt there, whereas the AlmaLinux 8 manylinux_2_28 image has no
-  # pre-packaged LLVM 15 and building from source takes 30+ min on a 2-core runner.
+  # pre-packaged LLVM 21 and building from source takes 30+ min on a 2-core runner.
+  # 24.04 (not 22.04) because jammy's universe stops at llvm-15-dev; noble carries
+  # llvm-21-dev. This raises these wheels' glibc floor from 2.35 to 2.39 — acceptable
+  # only because they are linux_x86_64-tagged, GitHub-Release-only, never on PyPI.
   # JIT wheels are only attached to GitHub Releases (never PyPI), so the linux_x86_64
   # tag (vs manylinux) is acceptable for this advanced use-case wheel.
   build-linux-jit:
-    name: wheels (JIT) / ubuntu-22.04 / py${{ matrix.python }}
-    runs-on: ubuntu-22.04
+    name: wheels (JIT) / ubuntu-24.04 / py${{ matrix.python }}
+    runs-on: ubuntu-24.04
     if: github.event_name != 'pull_request' || github.event.pull_request.merged
     strategy:
       fail-fast: false
       matrix:
         python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     env:
+      # No LLVM_SYS_211_PREFIX here on purpose: `setup-llvm` writes the real
+      # prefix (/usr/lib/llvm-21) to $GITHUB_ENV, and a workflow-file `env:`
+      # would override it. The old `/usr` was only ever correct because
+      # llvm-15-dev came from jammy's universe, which populates /usr/bin via
+      # alternatives; the apt.llvm.org debs put llvm-config solely at
+      # /usr/lib/llvm-21/bin and ship nothing directly in /usr/bin.
       PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
-      LLVM_SYS_150_PREFIX: /usr
     steps:
       - uses: actions/checkout@v6
         with:
@@ -137,7 +145,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Install system deps
-        run: sudo apt-get install -y libflint-dev llvm-15-dev
+        run: sudo apt-get install -y libflint-dev
+
+      - name: Set up LLVM 21 (for the jit feature)
+        uses: ./.github/actions/setup-llvm
 
       - name: Use JIT local version in pyproject.toml
         run: |
@@ -185,7 +196,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: wheels-ubuntu-22.04-jit-py${{ matrix.python }}
+          name: wheels-ubuntu-24.04-jit-py${{ matrix.python }}
           path: dist/*.whl
 
   # Full optional stack (JIT + groebner + parallel + egraph): PEP 440 local version X.Y.Z+full.
@@ -196,16 +207,23 @@ jobs:
   # `cranelift` as well, so it is the only wheel carrying *both* JIT backends and
   # a strict superset of every other wheel, which is what its name promises.
   build-linux-full:
-    name: wheels (+full) / ubuntu-22.04 / py${{ matrix.python }}
-    runs-on: ubuntu-22.04
+    # ubuntu-24.04 for the same reason as build-linux-jit: this variant carries the
+    # LLVM JIT backend, and llvm-21-dev is not in jammy's universe.
+    name: wheels (+full) / ubuntu-24.04 / py${{ matrix.python }}
+    runs-on: ubuntu-24.04
     if: github.event_name != 'pull_request' || github.event.pull_request.merged
     strategy:
       fail-fast: false
       matrix:
         python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
     env:
+      # No LLVM_SYS_211_PREFIX here on purpose: `setup-llvm` writes the real
+      # prefix (/usr/lib/llvm-21) to $GITHUB_ENV, and a workflow-file `env:`
+      # would override it. The old `/usr` was only ever correct because
+      # llvm-15-dev came from jammy's universe, which populates /usr/bin via
+      # alternatives; the apt.llvm.org debs put llvm-config solely at
+      # /usr/lib/llvm-21/bin and ship nothing directly in /usr/bin.
       PYO3_USE_ABI3_FORWARD_COMPATIBILITY: "1"
-      LLVM_SYS_150_PREFIX: /usr
     steps:
       - uses: actions/checkout@v6
         with:
@@ -218,7 +236,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Install system deps
-        run: sudo apt-get install -y libflint-dev llvm-15-dev
+        run: sudo apt-get install -y libflint-dev
+
+      - name: Set up LLVM 21 (for the jit feature)
+        uses: ./.github/actions/setup-llvm
 
       - name: Use +full local version in pyproject.toml
         run: |
@@ -268,7 +289,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: wheels-ubuntu-22.04-full-py${{ matrix.python }}
+          name: wheels-ubuntu-24.04-full-py${{ matrix.python }}
           path: dist/*.whl
 
   build-wheels:
@@ -460,7 +481,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          pattern: wheels-ubuntu-22.04-*-py*
+          pattern: wheels-ubuntu-24.04-*-py*
           path: dist-extras
           merge-multiple: true
       - uses: softprops/action-gh-release@v3

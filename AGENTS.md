@@ -28,7 +28,18 @@ pip install maturin
 maturin develop --release
 
 # With optional features (groebner required for solve/diophantine/homotopy)
-maturin develop --release --features "parallel egraph cranelift jit groebner"
+maturin develop --release --features "parallel egraph cranelift groebner"
+
+# `jit` (the LLVM backend) is deliberately NOT in the line above. It needs LLVM 21
+# dev headers and FLINT's prefix on the environment, and `cranelift` already
+# provides a JIT with no system dependencies — so putting `jit` in the headline
+# build made a fresh contributor's first command fail on an LLVM error.
+# To build it, install LLVM 21 (`apt install llvm-21-dev` / `brew install llvm@21`)
+# and set the prefix explicitly:
+#   LLVM_SYS_211_PREFIX=/usr/lib/llvm-21 \
+#   maturin develop --release --features "parallel egraph cranelift jit groebner"
+# If FLINT is not on the default search path, `FLINT_LIB_DIR` / `FLINT_INCLUDE_DIR`
+# must be set too — the build script names them, but only after it has failed.
 ```
 
 ## Testing

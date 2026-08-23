@@ -14,14 +14,14 @@ readme        = "../README.md"
 
 [package.metadata.docs.rs]
 # Build docs with feature-gated APIs visible; jit omitted because
-# docs.rs does not have LLVM 15 headers available.
+# docs.rs does not have LLVM 21 headers available.
 features      = ["egraph", "groebner", "parallel"]
 rustdoc-args  = ["--cfg", "docsrs"]
 
 [features]
 default = ["groebner"]
 egraph = ["dep:egglog"]
-# Requires LLVM 15 dev headers (llvm-15-dev / llvm@15) at compile time.
+# Requires LLVM 21 dev headers (llvm-21-dev / llvm@21) at compile time.
 jit   = ["dep:inkwell"]
 # Pure-Rust Tier-1 JIT: ~10× faster compile than LLVM, ~10–20% slower code.
 # Enables JIT in the default PyPI wheel without a system LLVM install.
@@ -46,7 +46,7 @@ flint3 = []
 # V5-11: Gröbner basis computation (F4-style over ℚ)
 groebner = []
 # V1-1: production NVPTX JIT backend. Implies `jit` for the inkwell-based
-# codegen. Requires LLVM 15 with the NVPTX target (`llc --version | grep nvptx`)
+# codegen. Requires LLVM 21 with the NVPTX target (`llc --version | grep nvptx`)
 # at build time and libcuda.so.1 at runtime. cudarc uses dynamic loading so the
 # feature builds even on machines without CUDA installed.
 cuda = ["jit", "dep:cudarc"]
@@ -70,7 +70,7 @@ gmp-mpfr-sys = { version = "1", features = ["force-cross"] }
 # lock file transitively via gmp-mpfr-sys.
 libc = "0.2"
 egglog  = { version = "0.4", optional = true }
-inkwell = { version = "0.9", features = ["llvm15-0-prefer-dynamic"], optional = true }
+inkwell = { version = "0.9", features = ["llvm21-1-prefer-dynamic"], optional = true }
 cranelift-jit      = { version = "0.132", optional = true }
 cranelift-codegen  = { version = "0.132", optional = true }
 cranelift-frontend = { version = "0.132", optional = true }
