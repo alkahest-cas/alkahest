@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+- **The LLVM JIT backend moves from LLVM 15 to LLVM 21.** This is a build-environment
+  break, not an API break: no public Rust or Python signature changes, and
+  `cargo semver-checks` reports no semver update required.
+
+  - **inkwell was never the constraint.** inkwell 0.9 — already the pinned version —
+    carries feature flags for LLVM 11 through 22. The version was one feature string,
+    `llvm15-0-prefer-dynamic`. (inkwell 0.10 would gain nothing: it supports 12–22,
+    i.e. it *drops* 11 rather than adding anything newer.)
+  - **CI installs LLVM 21 from `apt.llvm.org`.** Ubuntu 24.04's universe stops at
+    `llvm-19-dev`, so a new `.github/actions/setup-llvm` composite action adds the
+    upstream repository and exports `LLVM_SYS_211_PREFIX`. It is an action rather than
+    nine copies because nine jobs across five workflows build the `jit` feature. macOS
+    pins `brew install llvm@21`, since Homebrew's unversioned `llvm` is already 22.
+    LLVM 21 is also what RHEL 10 ships (`/usr/lib64/llvm21`), so a distro `llvm-devel`
+    gives a contributor the right version with no extra repository.
+  - **The NVPTX libdevice cleanup now uses the new pass manager.** LLVM 17 removed the
+    legacy `PassManager`, so `--features cuda` did not merely warn on LLVM 21 — it
+    failed to compile with four `no method named add_*_pass` errors.
+    `run_libdevice_cleanup_passes` is rewritten onto `Module::run_passes` with the same
+    four passes in the same order. **Verified on 2× RTX 3090 hardware:**
+    `scripts/verify_cuda_on_gpu.sh` 9/9, `compute-sanitizer` memcheck / racecheck /
+    initcheck / synccheck all `ERROR SUMMARY: 0`, and a 14-kernel PTX diff against an
+    LLVM 15 build of the same tree gives **896/896 bit-for-bit identical device
+    results**, the same set of out-of-line libdevice functions, zero `__nv_*` or
+    `tanh` survivors, and 2–12 % *fewer* instructions. With the cleanup disabled, all
+    14 kernels fail `ptxas` on LLVM 21 with the documented
+    `llvm.nvvm.tanh.approx.f32` parse error — so the hazard is live on 21 and this
+    pipeline is what removes it. Note nothing in CI builds `cuda`; that verification
+    is a manual GPU-box step.
+  - **The `+jit` and `+full` release wheels move from `ubuntu-22.04` to `ubuntu-24.04`.**
+    This raises those two wheels' glibc floor from 2.35 to 2.39. They are
+    `linux_x86_64`-tagged and attached to GitHub Releases only, never PyPI; the default
+    PyPI wheel is unaffected and stays on 22.04. The `attach-optional-linux-wheels`
+    artifact glob is updated to match, which would otherwise have silently stopped
+    matching anything.
+  - `AGENTS.md`'s headline build line no longer includes `jit`. It required LLVM dev
+    headers that the line never mentioned, so a fresh contributor's first command failed
+    on an LLVM error; `cranelift` already provides a JIT with no system dependencies.
+    The `jit` invocation is documented beneath it with the prefix variable spelled out.
+
 - **The parametric Gröbner surface (M9) accepts its own output, checks a
   refusal before making it, and composes with differential elimination.**
   Five defects from the 2026-08-19 autoresearch run, plus two prolongation

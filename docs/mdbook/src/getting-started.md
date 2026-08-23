@@ -129,7 +129,7 @@ This adds `verifiers` and `datasets`. Environment code ships in the main wheel u
 
 For optional Cargo features (`jit`, `parallel`, `cuda`, …), GPU/NVPTX, or development, build the PyO3 extension with [maturin](https://github.com/PyO3/maturin). The `groebner` and `egraph` features are default and included automatically.
 
-Prerequisites (typical): **Rust** stable (≥ 1.76) and nightly, **LLVM 15** (only for `--features jit`), **FLINT** (≥ 2.9, 3.x recommended; pulls in GMP/MPFR). See the repository `README` for distro-specific package names.
+Prerequisites (typical): **Rust** stable (≥ 1.76) and nightly, **LLVM 21** (only for `--features jit`), **FLINT** (≥ 2.9, 3.x recommended; pulls in GMP/MPFR). See the repository `README` for distro-specific package names.
 
 > **FLINT is a hard requirement of every source build.** There is no FLINT-free
 > configuration: `UniPoly` is a FLINT polynomial, and factorization, resultants,
@@ -199,7 +199,7 @@ sudo apt-get install -y libflint-dev libgmp-dev libmpfr-dev
 brew install flint
 ```
 
-The `jit` feature additionally requires **LLVM 15 dev headers** (`llvm-15-dev` / `brew install llvm@15`).
+The `jit` feature additionally requires **LLVM 21 dev headers** (`llvm-21-dev` / `brew install llvm@21`).
 
 A self-contained runnable example is in [`examples/rust_quickstart/`](https://github.com/alkahest-cas/alkahest/tree/main/examples/rust_quickstart).
 

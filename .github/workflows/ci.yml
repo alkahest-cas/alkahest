@@ -69,7 +69,10 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libflint-dev llvm-15-dev llvm-15
+          sudo apt-get install -y libflint-dev
+
+      - name: Set up LLVM 21 (for the jit feature)
+        uses: ./.github/actions/setup-llvm
 
       - name: Create venv and install Python tooling
         run: |
@@ -222,7 +225,10 @@ jobs:
           components: rust-src
 
       - name: Install system dependencies
-        run: sudo apt-get install -y libflint-dev llvm-15-dev llvm-15
+        run: sudo apt-get install -y libflint-dev
+
+      - name: Set up LLVM 21 (for the jit feature)
+        uses: ./.github/actions/setup-llvm
 
       - name: Cache Cargo registry
         uses: actions/cache@v5
@@ -345,7 +351,10 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libflint-dev llvm-15-dev llvm-15
+          sudo apt-get install -y libflint-dev
+
+      - name: Set up LLVM 21 (for the jit feature)
+        uses: ./.github/actions/setup-llvm
 
       - name: Create venv and install Python tooling
         run: |
@@ -426,7 +435,10 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libflint-dev llvm-15-dev llvm-15
+          sudo apt-get install -y libflint-dev
+
+      - name: Set up LLVM 21 (for the jit feature)
+        uses: ./.github/actions/setup-llvm
 
       - name: Cache Cargo registry
         uses: actions/cache@v5
@@ -486,7 +498,7 @@ jobs:
           # frames made every entry in lsan.supp dead. The sanitizer runtime
           # takes the symbolizer from the options string, not from
           # LLVM_SYMBOLIZER_PATH, so append it there.
-          for candidate in /usr/lib/llvm-15/bin/llvm-symbolizer /usr/bin/llvm-symbolizer-15 /usr/bin/llvm-symbolizer; do
+          for candidate in /usr/lib/llvm-21/bin/llvm-symbolizer /usr/bin/llvm-symbolizer-21 /usr/bin/llvm-symbolizer; do
             if [ -x "$candidate" ]; then
               export TSAN_OPTIONS="${TSAN_OPTIONS}:external_symbolizer_path=$candidate"
               break
@@ -502,12 +514,12 @@ jobs:
       - name: LeakSanitizer
         if: matrix.shard == 'lsan'
         env:
-          # Prefer the real binary from llvm-15-tools; the /usr/bin/llvm-symbolizer-15
+          # Prefer the real binary from llvm-21-tools; the /usr/bin/llvm-symbolizer-21
           # alternative is missing on some Ubuntu noble images, leaving stacks
           # unsymbolized so lsan.supp (mpfr_*/__gmp*) never matches.
           LSAN_OPTIONS: suppressions=${{ github.workspace }}/lsan.supp:symbolize=1:fast_unwind_on_malloc=0
         run: |
-          for candidate in /usr/lib/llvm-15/bin/llvm-symbolizer /usr/bin/llvm-symbolizer-15 /usr/bin/llvm-symbolizer; do
+          for candidate in /usr/lib/llvm-21/bin/llvm-symbolizer /usr/bin/llvm-symbolizer-21 /usr/bin/llvm-symbolizer; do
             if [ -x "$candidate" ]; then
               export LLVM_SYMBOLIZER_PATH="$candidate"
               break

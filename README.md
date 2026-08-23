@@ -104,7 +104,8 @@ Required to enable optional features (`jit`, `cuda`) or for development. The `gr
   rustup toolchain install nightly
   ```
 - **uv** (recommended Python tool manager): `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- **LLVM 15**: `apt install llvm-15 libllvm15 llvm-15-dev` / `brew install llvm@15`
+- **LLVM 21**: `apt install llvm-21 libllvm21 llvm-21-dev` / `brew install llvm@21`
+  (`apt install llvm-21-dev` needs the upstream repository on Debian/Ubuntu (`apt.llvm.org`; Ubuntu 24.04's own universe stops at 19) — `https://apt.llvm.org/llvm.sh 21` sets it up. Fedora/RHEL 10 ship it as `llvm-devel`.)
 - **FLINT ≥ 2.9** (3.x recommended; pulls in GMP and MPFR): `apt install libflint-dev` (Debian/Ubuntu) · `dnf install flint-devel` (Fedora/RHEL) · `pacman -S flint` (Arch) · `brew install flint` (macOS) · `pacman -S mingw-w64-x86_64-flint` (MSYS2) · `conda install -c conda-forge libflint`
 
   **FLINT is mandatory, not optional.** There is no FLINT-free source build: `UniPoly` *is* a FLINT polynomial, and factorization, resultants, Hermite/Smith normal forms and `number_theory` all call FLINT directly, with no pure-Rust fallback. The `flint3` Cargo feature selects which FLINT *version's* API to call; it does not make the dependency optional. `build.rs` fails fast with an install hint when it cannot find FLINT, rather than letting the build die at link time.
@@ -133,7 +134,7 @@ pip install maturin
 maturin develop --manifest-path alkahest-py/Cargo.toml --release --features "parallel egraph jit groebner"
 ```
 
-Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_par`), `egraph` (vendored egglog backend; **default** in PyPI wheels), `groebner` (Gröbner solver + Diophantine + homotopy; **default** in both the Rust crate and PyPI wheels), `cranelift` (pure-Rust Tier-1 JIT), `jit` (LLVM JIT), `cuda` (NVPTX codegen — needs LLVM 15 with the NVPTX target; adds `compile_cuda`), `groebner-cuda` (CUDA Macaulay-matrix kernel — needs only `cudarc`, and is a Rust-crate entry point that no Python call reaches). Neither GPU feature is in any published wheel: see the [GPU guide](docs/mdbook/src/gpu.md).
+Optional Cargo features: `parallel` (sharded pool + parallel F4 + `numpy_eval_par`), `egraph` (vendored egglog backend; **default** in PyPI wheels), `groebner` (Gröbner solver + Diophantine + homotopy; **default** in both the Rust crate and PyPI wheels), `cranelift` (pure-Rust Tier-1 JIT), `jit` (LLVM JIT), `cuda` (NVPTX codegen — needs LLVM 21 with the NVPTX target; adds `compile_cuda`), `groebner-cuda` (CUDA Macaulay-matrix kernel — needs only `cudarc`, and is a Rust-crate entry point that no Python call reaches). Neither GPU feature is in any published wheel: see the [GPU guide](docs/mdbook/src/gpu.md).
 
 ### Rust crate
 
@@ -157,7 +158,7 @@ sudo apt-get install -y libflint-dev libgmp-dev libmpfr-dev
 brew install flint
 ```
 
-The `jit` feature additionally requires LLVM 15 dev headers (`apt install llvm-15-dev` / `brew install llvm@15`). A self-contained runnable example is in [`examples/rust_quickstart/`](examples/rust_quickstart/).
+The `jit` feature additionally requires LLVM 21 dev headers (`apt install llvm-21-dev` / `brew install llvm@21`). A self-contained runnable example is in [`examples/rust_quickstart/`](examples/rust_quickstart/).
 
 ---
 

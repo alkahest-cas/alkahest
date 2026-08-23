@@ -60,7 +60,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Install system deps (rustdoc)
-        run: sudo apt-get install -y libflint-dev llvm-15-dev
+        run: sudo apt-get install -y libflint-dev
+
+      - name: Set up LLVM 21 (for the jit feature)
+        uses: ./.github/actions/setup-llvm
 
       - name: Build rustdoc (Rust API)
         run: cargo doc --workspace --no-deps

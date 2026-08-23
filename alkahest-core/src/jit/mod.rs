@@ -140,7 +140,7 @@ pub enum JitError {
     ///
     /// Returned when `compile_jit_only` is called on a build that was not
     /// compiled with `--features jit`.  Use `eval_expr` for interpreted
-    /// evaluation or rebuild with `--features jit` and LLVM 15 installed.
+    /// evaluation or rebuild with `--features jit` and LLVM 21 installed.
     NotAvailable(String),
 }
 
@@ -176,11 +176,11 @@ impl crate::errors::AlkahestError for JitError {
                 "check LLVM/Cranelift installation; run with RUST_LOG=debug for details",
             ),
             JitError::LlvmInitError(_) => Some(
-                "rebuild with --features cranelift (pure Rust) or ensure LLVM 15 is installed and \
-                 LLVM_SYS_150_PREFIX is set correctly",
+                "rebuild with --features cranelift (pure Rust) or ensure LLVM 21 is installed and \
+                 LLVM_SYS_211_PREFIX is set correctly",
             ),
             JitError::NotAvailable(_) => Some(
-                "rebuild with --features cranelift (no system deps) or --features jit (LLVM 15), \
+                "rebuild with --features cranelift (no system deps) or --features jit (LLVM 21), \
                  or use eval_expr() for the interpreter path",
             ),
         }
