@@ -352,6 +352,36 @@ pub fn decompose_wrt_exp(
     }
 }
 
+/// Is a [`decompose_wrt_exp`] result a **genuine Laurent decomposition**?
+///
+/// [`extract_exp_factor`] peels integer powers of `exp_gen` off a product and
+/// dumps every *other* factor into the coefficient — without checking that what
+/// is left is free of `exp_gen`.  So `θ/(θ+1)` decomposes as
+/// `(coefficient = (θ+1)⁻¹, k = 1)`: syntactically a monomial `c·θ¹`, but with a
+/// coefficient that does **not** live in the base field `K`.
+///
+/// That distinction is not cosmetic.  Every theorem the exp case relies on —
+/// "for `k ≠ 0`, `∫ cₖ·tᵏ` is elementary iff the Risch DE `v' + k·η'·v = cₖ` has
+/// a solution `v ∈ K`", and hence every `NonElementary` certificate derived from
+/// an unsolvable RDE — is stated for a *Laurent polynomial* `Σ cₖ tᵏ` with
+/// `cₖ ∈ K` (Bronstein 2005, §5.3, Thm 5.3.1).  A genuine rational function of
+/// `t` needs Hermite reduction plus a Rothstein–Trager residue reduction over
+/// `K[t]` (§5.6), which can contribute **new logarithms** the RDE never sees.
+/// Applying the Laurent theorem to a fake decomposition therefore certifies
+/// elementary integrands as non-elementary — e.g. `∫ eˣ·e^(eˣ)/(e^(eˣ)+1) dx`,
+/// which is `log(e^(eˣ)+1)`.
+///
+/// Returns `true` only when every coefficient is free of `exp_gen`.
+pub fn is_laurent_decomposition(
+    exp_terms: &[(ExprId, i64)],
+    exp_gen: ExprId,
+    pool: &ExprPool,
+) -> bool {
+    exp_terms
+        .iter()
+        .all(|(coeff, _)| is_free_of_generator(*coeff, exp_gen, pool))
+}
+
 // ---------------------------------------------------------------------------
 // Expression decomposition for the log tower
 // ---------------------------------------------------------------------------
@@ -576,17 +606,23 @@ fn is_one(expr: ExprId, pool: &ExprPool) -> bool {
 
 /// Returns true if `expr` syntactically does not involve `log_gen`.
 fn is_free_of_log(expr: ExprId, log_gen: ExprId, pool: &ExprPool) -> bool {
-    if expr == log_gen {
+    is_free_of_generator(expr, log_gen, pool)
+}
+
+/// Returns true if `expr` syntactically does not involve the tower generator
+/// `gen` (exp or log) anywhere inside it.
+pub fn is_free_of_generator(expr: ExprId, gen: ExprId, pool: &ExprPool) -> bool {
+    if expr == gen {
         return false;
     }
     match pool.get(expr) {
         ExprData::Add(args) | ExprData::Mul(args) => {
-            args.iter().all(|&a| is_free_of_log(a, log_gen, pool))
+            args.iter().all(|&a| is_free_of_generator(a, gen, pool))
         }
         ExprData::Pow { base, exp } => {
-            is_free_of_log(base, log_gen, pool) && is_free_of_log(exp, log_gen, pool)
+            is_free_of_generator(base, gen, pool) && is_free_of_generator(exp, gen, pool)
         }
-        ExprData::Func { ref args, .. } => args.iter().all(|&a| is_free_of_log(a, log_gen, pool)),
+        ExprData::Func { ref args, .. } => args.iter().all(|&a| is_free_of_generator(a, gen, pool)),
         _ => true,
     }
 }

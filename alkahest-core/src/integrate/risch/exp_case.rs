@@ -142,6 +142,34 @@ pub fn integrate_exp_tower(
         return Ok(int_rational);
     }
 
+    // ---------------------------------------------------------------------
+    // Soundness gate: the decomposition must be a *genuine* Laurent polynomial
+    // Σ cₖ·tᵏ with every cₖ in the base field K (i.e. free of t).
+    //
+    // `extract_exp_factor` peels integer powers of t off a product and puts
+    // everything else in the coefficient, so `t/(t+1)` arrives here spelled as
+    // the monomial `(t+1)⁻¹·t¹` — a "coefficient" that is not in K at all.
+    // Every certificate below (`v' + k·η'·v = c` unsolvable ⇒ non-elementary)
+    // is a theorem about Laurent polynomials only (Bronstein §5.3): a genuine
+    // rational function of t needs Hermite reduction + a Rothstein–Trager
+    // residue reduction over K[t] (§5.6), which can produce **new logarithms**
+    // the RDE never sees.  Certifying from the RDE alone here is exactly how
+    // ∫ eˣ·e^(eˣ)/(e^(eˣ)+1) dx = log(e^(eˣ)+1) was reported non-elementary.
+    //
+    // We do not have that reduction, so decline honestly and let the rest of
+    // the pipeline (u-substitution) try.
+    // ---------------------------------------------------------------------
+    if !super::tower::is_laurent_decomposition(&exp_terms, exp_gen, pool) {
+        return Err(IntegrationError::NotImplemented(format!(
+            "∫ {} dx is a rational function of the generator {} (not a Laurent \
+             polynomial in it); Hermite reduction + Rothstein–Trager residue \
+             reduction over K[t] (Bronstein §5.6) is not implemented, so this \
+             integral is undecided — not certified non-elementary",
+            pool.display(expr),
+            pool.display(exp_gen),
+        )));
+    }
+
     // Compute η'(x) = dη/dx once.
     let deta_expr = differentiate_poly(eta, var, pool)?;
 
@@ -379,25 +407,12 @@ fn try_transcendental_eta_v1(
         };
 
         if c_rest_simplified != k_deta_simplified {
-            // v=1 check failed.
+            // v = 1 is not a solution.  Decide the term properly.
             //
-            // Hermite-reduction certificate: if c_rest is rational (not
-            // polynomial) in θ_inner, the derivation D maps every simple pole
-            // 1/(θ-α) to a double pole (α-Dα)/(θ-α)², which cannot be
-            // cancelled by any rational v ∈ ℚ(x)(θ_inner) → NonElementary.
-            if c_is_rational_in_theta(c_rest, deta_simplified, pool) {
-                return Err(IntegrationError::NonElementary(format!(
-                    "∫ {} · exp(kη) dx: coefficient is rational (not polynomial) \
-                     in the inner exp generator; non-elementary by Hermite \
-                     reduction / pole-order argument (Bronstein §6.2)",
-                    pool.display(*c_expr),
-                )));
-            }
-
-            // Try the lower-tower polynomial cascade: write c_rest as a
-            // polynomial in θ_inner and solve the RDE level by level over ℚ(x).
+            // 1. Laurent coefficient over the base field → the forced cascade
+            //    is a *complete* decision procedure (solve or certify).
             let exp_k_eta = build_exp_k_eta(k, eta, exp_gen, pool);
-            match lower_tower_poly_cascade(
+            match lower_tower_laurent_cascade(
                 c_rest,
                 k,
                 deta_simplified,
@@ -413,15 +428,34 @@ fn try_transcendental_eta_v1(
                     continue;
                 }
                 Some(Err(e)) => return Err(e),
-                None => {
-                    return Err(IntegrationError::NotImplemented(format!(
-                        "exponent derivative η'(x) = {} is transcendental and \
-                         the lower-tower polynomial cascade did not apply for {}",
-                        pool.display(deta_expr),
-                        pool.display(*c_expr),
-                    )))
-                }
+                None => {}
             }
+
+            // 2. Genuine rational function of θ_inner.  Certify *only* the
+            //    simple-pole case, where "no rational solution" is proved
+            //    rather than assumed; everything else is undecided.
+            if c_has_simple_pole_in_theta(c_rest, deta_simplified, var, pool) {
+                return Err(IntegrationError::NonElementary(format!(
+                    "∫ {} · exp(kη) dx: the coefficient has a simple pole in the \
+                     inner exp generator {}, so the Risch DE D(v)+k·θ·v = c has \
+                     no solution in ℚ(x)(θ) (a solution would have to be regular \
+                     there, but then the left-hand side is regular and c is not); \
+                     with k ≠ 0 no new logarithm can arise either, so the \
+                     integral is not elementary (Bronstein §5.3, §6.1)",
+                    pool.display(*c_expr),
+                    pool.display(deta_simplified),
+                )));
+            }
+
+            return Err(IntegrationError::NotImplemented(format!(
+                "exponent derivative η'(x) = {} is transcendental and neither the \
+                 lower-tower Laurent cascade nor the simple-pole criterion \
+                 applies to {}; the integral is undecided — Hermite reduction \
+                 and Rothstein–Trager over the tower (Bronstein §5.6) would be \
+                 needed to settle it",
+                pool.display(deta_expr),
+                pool.display(*c_expr),
+            )));
         }
 
         // v = 1 is a solution: ∫ k·η'·exp(kη) dx = exp(kη).
@@ -447,65 +481,159 @@ fn try_transcendental_eta_v1(
 }
 
 // ---------------------------------------------------------------------------
-// Gap B — rational-in-θ NonElementary certification (Hermite reduction)
+// Gap B — rational-in-θ NonElementary certification (simple-pole argument)
 // ---------------------------------------------------------------------------
 
-/// Returns `true` when `c_rest` is *rational* (not polynomial) in `theta_inner`.
+/// Does `c` have a **simple pole** in `θ_inner` at a normal irreducible?
 ///
-/// For the Risch DE `D(v) + k·θ·v = c` with `θ = exp(x)` (so `D(θ) = θ`),
-/// the derivation `D` maps any simple pole `1/(θ-α)` (α ∈ ℚ(x)) to a double
-/// pole `(α-Dα)/(θ-α)²`.  Since `Dα ≠ α` for α ∈ ℚ(x) \ {0} (α would need
-/// to satisfy `Dα = α`, i.e. α = C·exp(x), which is transcendental), the
-/// double pole cannot be cancelled by any rational v.  Hence no rational
-/// solution exists → the integral is non-elementary.
+/// This is the *only* shape for which "c is rational in θ_inner" is by itself a
+/// proof that the Risch DE `D(v) + k·θ_inner·v = c` has no solution `v ∈ K`,
+/// `K = ℚ(x)(θ_inner)`.  The argument (Bronstein 2005 §6.1, `RdeNormalDenominator`):
 ///
-/// The check detects the three patterns that make c rational in θ_inner:
-/// 1. `rational_part` from `decompose_wrt_exp` still contains θ_inner.
-/// 2. Any exp-term has a negative power of θ_inner (e.g. `c · θ_inner^{-1}`).
-/// 3. Any exp-term coefficient itself contains θ_inner (e.g. `(θ_inner+1)^{-1}`
-///    as the coefficient of θ_inner^1).
-fn c_is_rational_in_theta(c_rest: ExprId, theta_inner: ExprId, pool: &ExprPool) -> bool {
-    use super::tower::decompose_wrt_exp;
-    let (c0, exp_terms) = decompose_wrt_exp(c_rest, theta_inner, pool);
-    if contains_subexpr(c0, theta_inner, pool) {
-        return true;
+/// * `θ_inner = exp(g)` with `D(θ_inner) = θ_inner`, so for any irreducible
+///   `r ∈ ℚ(x)[θ_inner]` with `r ∤ θ_inner` we have `gcd(r, D r) = 1` — `r` is
+///   *normal*, and `D` maps `θ_inner`-polynomials to `θ_inner`-polynomials.
+/// * If `v ∈ K` is regular at `r`, so are `D(v)` and `k·θ_inner·v`; hence the
+///   whole left-hand side is regular at `r`.
+/// * Therefore a solution `v` must satisfy `ν_r(v) = ν_r(c) − 1`.  When
+///   `ν_r(c) = −1` this forces `ν_r(v) ≥ 0`, i.e. `v` regular at `r`, and then
+///   the left-hand side is regular while `c` is not — contradiction.  **No
+///   solution exists**, and since `k ≠ 0` no new logarithm can appear either
+///   (Bronstein §5.3: for `k ≠ 0`, `∫ c·tᵏ` is elementary iff the RDE is
+///   solvable), so the integral is genuinely non-elementary.
+///
+/// The old version of this predicate certified on *any* denominator in
+/// `θ_inner`, and — worse — used `contains_subexpr`, which reports `true` for a
+/// coefficient mentioning the **outer** generator (`exp(exp(x))` syntactically
+/// contains `exp(x)`).  That is how `∫ eˣ·e^(eˣ)/(e^(eˣ)+1) dx = log(e^(eˣ)+1)`
+/// came back certified non-elementary.  Neither premise is checked any more:
+/// this function parses `c` into `ℚ(x)(θ_inner)` and demands a squarefree
+/// denominator (⇒ every pole is simple).  A higher-order pole (`ν_r(c) ≤ −2`)
+/// leaves room for a solution and is *not* certified.
+fn c_has_simple_pole_in_theta(
+    c_rest: ExprId,
+    theta_inner: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> bool {
+    use super::alg_field::{RatFn, RationalFunctionField};
+    use super::number_field::{gdegree, gext_gcd, CoeffField};
+    use super::tower_field::ExpTowerField;
+    use super::tower_integrate::expr_to_texpr;
+
+    // `θ_inner` must be a hyperexponential monomial with `D(θ_inner) = θ_inner`
+    // (that is the derivation `expr_to_texpr`/`ExpTowerField` are set up for
+    // below, with η' = 1).
+    if !matches!(pool.get(theta_inner),
+        crate::kernel::ExprData::Func { ref name, ref args } if name == "exp" && args.len() == 1)
+    {
+        return false;
     }
-    for (coeff, j) in &exp_terms {
-        if *j < 0 {
-            return true;
-        }
-        if contains_subexpr(*coeff, theta_inner, pool) {
-            return true;
-        }
+    match crate::diff::diff(theta_inner, var, pool) {
+        Ok(d) if simplify(d.value, pool).value == theta_inner => {}
+        _ => return false,
     }
-    false
+
+    let field = ExpTowerField::new(RatFn::int(1));
+    let Some(c) = expr_to_texpr(&field, c_rest, var, theta_inner, pool) else {
+        return false; // not a rational function of θ_inner over ℚ(x)
+    };
+
+    // Strip the special monomial `t` from the denominator: `den = t^a · d(t)`
+    // with `d(0) ≠ 0`.  Poles at `t` itself are the Laurent case, decided
+    // completely by `lower_tower_laurent_cascade`; they are not certified here.
+    let f = RationalFunctionField;
+    let mut d = c.denom().clone();
+    while !d.is_empty() && f.is_zero(&d[0]) {
+        d.remove(0);
+    }
+    if gdegree(&f, &d) < 1 {
+        return false; // pure Laurent — nothing to certify from a pole
+    }
+
+    // Squarefree ⇔ gcd(d, dd/dt) is a unit.  Squarefree and coprime to the
+    // numerator (TExpr is canonical) ⇒ every pole of `c` is simple.
+    let dd: Vec<RatFn> = d
+        .iter()
+        .enumerate()
+        .skip(1)
+        .map(|(i, ci)| f.mul(ci, &RatFn::int(i as i64)))
+        .collect();
+    let (g, _, _) = gext_gcd(&f, &d, &dd);
+    gdegree(&f, &g) == 0
 }
 
 // ---------------------------------------------------------------------------
-// Gap B (nested exp) — lower-tower polynomial cascade
+// Gap B (nested exp) — lower-tower Laurent cascade (complete decision)
 // ---------------------------------------------------------------------------
 
-/// Solve `D(v) + k·θ_inner·v = c` for `v ∈ ℚ(x)[θ_inner]` by a top-down
-/// cascade when `c` is a polynomial in `θ_inner = deta_simplified` with
-/// ℚ(x) coefficients.
+/// Was a symbolic residual provably zero, provably non-zero, or undecided?
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Residual {
+    Zero,
+    NonZero,
+    Undecided,
+}
+
+/// Decide whether `e` is zero, exactly.
 ///
-/// **Algorithm** (Bronstein §5, specialised to θ_inner self-derivative):
+/// The cascade below turns "the residual is non-zero" into a `NonElementary`
+/// certificate, so a simplifier that merely *fails* to collapse an expression to
+/// `0` must never be read as a proof that it is non-zero.  We therefore only
+/// answer `NonZero` when `e` parses as a rational function of `var` with a
+/// non-empty numerator — an exact test.
+fn classify_residual(e: ExprId, var: ExprId, pool: &ExprPool) -> Residual {
+    let s = simplify(e, pool).value;
+    if is_zero(s, pool) {
+        return Residual::Zero;
+    }
+    match expr_to_qrational(s, var, pool) {
+        Some((num, _)) => {
+            if trim(num).is_empty() {
+                Residual::Zero
+            } else {
+                Residual::NonZero
+            }
+        }
+        None => Residual::Undecided,
+    }
+}
+
+/// Solve `D(v) + k·θ·v = c` for `v ∈ ℚ(x)[θ, θ⁻¹]` (`θ = θ_inner = exp(g)` with
+/// `D(θ) = θ`) by the forced top-down cascade — a **complete decision** whenever
+/// `c` is a Laurent polynomial in `θ` over the base field.
 ///
-/// Since `D(θ_inner^j) = j·θ_inner^j` (valid when θ_inner = exp(g) with g' = 1,
-/// i.e. θ_inner = exp(x)), writing `v = Σ vⱼ·θ_inner^j` and `c = Σ cⱼ·θ_inner^j`
-/// gives:
+/// **Why the cascade decides.**  Write `c = Σ_{j=L}^{U} cⱼ θʲ` (`c_L, c_U ≠ 0`)
+/// and `v = Σ_{j=M}^{N} vⱼ θʲ`.  Comparing coefficients of `θʲ` in
+/// `D(v) + k·θ·v = c` gives
 ///
 /// ```text
-///   θ_inner^N  :  k·v_{N-1} = c_N              → v_{N-1} = c_N/k
-///   θ_inner^n  :  (vₙ′+n·vₙ) + k·vₙ₋₁ = cₙ   → vₙ₋₁ = (cₙ−vₙ′−n·vₙ)/k
-///   θ_inner^0  :  v₀′ = c₀                      (consistency)
+///   vⱼ′ + j·vⱼ + k·vⱼ₋₁ = cⱼ           for every j ∈ ℤ.
 /// ```
 ///
-/// If `c ∈ ℚ(x)` (no θ_inner component) → `NonElementary`.
-/// If the consistency check fails → `None` (caller falls through to `NotImplemented`).
-/// On success → `Some(Ok(antiderivative))`.
+/// * **`v` cannot have a pole outside `θ`.**  For a normal irreducible
+///   `r ∤ θ`, a pole of `v` of order `m ≥ 1` gives `ν_r(D v) = −(m+1)` while
+///   `ν_r(k θ v) = −m`, so `ν_r(c) = −(m+1) ≤ −2`; `c` is `r`-regular, so
+///   `m = 0`.  Hence `v` is a Laurent polynomial too.
+/// * **Top.** At `j = N+1` the relation reads `k·v_N = c_{N+1}`, so `N ≤ U−1`
+///   and `v_{U−1} = c_U/k` — no freedom.
+/// * **Bottom.** At `j = M` it reads `v_M′ + M·v_M = c_M`.  For `M < L` this is
+///   `v_M′ = −M·v_M`, whose only solutions are `C·exp(−Mx)`, which lie in the
+///   base field only for `M = 0` (constants).  Hence `M ≥ B := min(L, 0)`.
+/// * The homogeneous equation `D(v) + kθv = 0` has only `v = 0` (same top
+///   argument with `c = 0`), so the solution is **unique** when it exists.
+///
+/// So: run the recursion `vⱼ₋₁ = (cⱼ − vⱼ′ − j·vⱼ)/k` from `j = U` down to
+/// `j = B`, starting from `v_U = 0`.  The integral is elementary **iff** the
+/// last value produced, `v_{B−1}`, is zero.  A non-zero `v_{B−1}` is a proof
+/// that the RDE has no solution in `K`, and since `k ≠ 0` no new logarithm can
+/// arise either (Bronstein §5.3), so the integral really is non-elementary.
+///
+/// Returns `None` when the hypotheses do not hold (θ not self-derivative, the
+/// decomposition is not Laurent over the base field, or the residual cannot be
+/// decided exactly) — the caller then declines rather than certifying.
 #[allow(clippy::too_many_arguments)]
-fn lower_tower_poly_cascade(
+fn lower_tower_laurent_cascade(
     c_rest: ExprId,
     k: i64,
     theta_inner: ExprId, // simplified η' (must be an exp-type expression)
@@ -516,92 +644,95 @@ fn lower_tower_poly_cascade(
     pool: &ExprPool,
     log: &mut DerivationLog,
 ) -> Option<Result<ExprId, IntegrationError>> {
-    use super::tower::decompose_wrt_exp;
+    use super::tower::{decompose_wrt_exp, is_free_of_generator};
+    use std::collections::BTreeMap;
 
-    // θ_inner must be an exp expression so that D(θ_inner^j) = j·θ_inner^j.
-    // (More precisely: θ_inner = exp(x) so D(exp(x)) = exp(x) = θ_inner.)
-    // Check that θ_inner is exp(x) specifically (exponent derivative = self).
-    let inner_eta = match pool.get(theta_inner) {
-        crate::kernel::ExprData::Func { ref name, ref args }
-            if name == "exp" && args.len() == 1 =>
-        {
-            args[0]
-        }
-        _ => return None, // θ_inner is not an exp — cascade doesn't apply.
-    };
-    // Require the inner exponent's derivative to be θ_inner itself.
-    // i.e., D(inner_eta) = θ_inner.  For inner_eta = x this is 1, but
-    // we actually need D(exp(inner_eta)) = exp(inner_eta); just check it.
+    if k == 0 {
+        return None;
+    }
+
+    // θ_inner must be an exp expression with D(θ_inner) = θ_inner, so that
+    // D(θ_innerʲ) = j·θ_innerʲ.
+    if !matches!(pool.get(theta_inner),
+        crate::kernel::ExprData::Func { ref name, ref args } if name == "exp" && args.len() == 1)
+    {
+        return None;
+    }
     let d_inner = match crate::diff::diff(theta_inner, var, pool) {
         Ok(d) => simplify(d.value, pool).value,
         Err(_) => return None,
     };
     if d_inner != theta_inner {
-        // D(exp(inner_eta)) ≠ exp(inner_eta) → the cascade formula is wrong.
         return None;
     }
-    let _ = inner_eta;
 
-    // Decompose c_rest = c₀ + Σⱼ cⱼ·θ_inner^j.
+    // Decompose c_rest = c₀ + Σⱼ cⱼ·θ_innerʲ (j may be negative).
     let (c0, exp_terms) = decompose_wrt_exp(c_rest, theta_inner, pool);
 
-    if exp_terms.is_empty() {
-        // c ∈ ℚ(x): no θ_inner factor.  The degree bound argument shows no
-        // polynomial solution in θ_inner exists → non-elementary.
-        return Some(Err(IntegrationError::NonElementary(format!(
-            "∫ {} · exp(kη) dx: coefficient has no inner-tower exp factor; \
-             non-elementary by degree bound (Bronstein §5)",
-            pool.display(c_expr),
-        ))));
+    // The decomposition must be a *genuine* Laurent one: every coefficient in
+    // the base field, i.e. free of θ_inner.  Otherwise `c` is a rational
+    // function of θ_inner and the coefficient recursion above does not apply.
+    if !is_free_of_generator(c0, theta_inner, pool)
+        || !exp_terms
+            .iter()
+            .all(|(coeff, _)| is_free_of_generator(*coeff, theta_inner, pool))
+    {
+        return None;
     }
 
-    // Find the maximum degree in θ_inner.
-    let cap_n = exp_terms.iter().map(|(_, j)| *j).max().unwrap_or(0);
-    if cap_n <= 0 {
-        return None; // Safety: shouldn't happen, but don't crash.
-    }
-    let cap_n = cap_n as usize;
-
-    // Build coefficient array c[0..=cap_n].
     let zero = pool.integer(0_i32);
-    let mut c_coeffs: Vec<ExprId> = vec![zero; cap_n + 1];
-    c_coeffs[0] = c0;
+
+    // Collect the coefficients by index, summing repeats.
+    let mut c_coeffs: BTreeMap<i64, ExprId> = BTreeMap::new();
+    let push = |j: i64, e: ExprId, map: &mut BTreeMap<i64, ExprId>| {
+        let merged = match map.get(&j) {
+            Some(&old) => pool.add(vec![old, e]),
+            None => e,
+        };
+        map.insert(j, simplify(merged, pool).value);
+    };
+    if !is_zero(c0, pool) {
+        push(0, c0, &mut c_coeffs);
+    }
     for (coeff, j) in &exp_terms {
-        let j = *j;
-        if j >= 1 && (j as usize) <= cap_n {
-            let old = c_coeffs[j as usize];
-            let combined = if is_zero(old, pool) {
-                *coeff
-            } else {
-                pool.add(vec![old, *coeff])
-            };
-            c_coeffs[j as usize] = simplify(combined, pool).value;
-        }
+        push(*j, *coeff, &mut c_coeffs);
+    }
+    c_coeffs.retain(|_, e| !is_zero(*e, pool));
+    if c_coeffs.is_empty() {
+        return None; // c ≡ 0 — not our business (the v=1 test already ran)
     }
 
-    // v has degree cap_n − 1 in θ_inner.
-    let mut v_coeffs: Vec<ExprId> = vec![zero; cap_n]; // v[0..cap_n-1]
+    let upper = *c_coeffs.keys().next_back().unwrap();
+    let lower = *c_coeffs.keys().next().unwrap();
+    let bottom = lower.min(0);
 
-    // Top: v[cap_n-1] = c[cap_n] / k.
-    let c_top = simplify(c_coeffs[cap_n], pool).value;
-    v_coeffs[cap_n - 1] = if k == 1 {
-        c_top
-    } else {
-        let k_inv = pool.pow(pool.integer(k as i32), pool.integer(-1_i32));
-        simplify(pool.mul(vec![c_top, k_inv]), pool).value
+    // Guard against a pathological span blowing up the symbolic recursion.
+    const MAX_LAURENT_SPAN: i64 = 64;
+    if upper - bottom > MAX_LAURENT_SPAN {
+        return None;
+    }
+
+    let k_inv = pool.pow(pool.integer(k as i32), pool.integer(-1_i32));
+    let scale = |e: ExprId| -> ExprId {
+        if k == 1 {
+            simplify(e, pool).value
+        } else {
+            simplify(pool.mul(vec![e, k_inv]), pool).value
+        }
     };
+    let neg1 = pool.integer(-1_i32);
 
-    // Cascade downwards: v[j-1] = (c[j] - D(v[j]) - j·v[j]) / k.
-    for j in (1..cap_n).rev() {
-        let vj = v_coeffs[j];
-        let dvj = match crate::diff::diff(vj, var, pool) {
+    // vⱼ₋₁ = (cⱼ − D(vⱼ) − j·vⱼ)/k, from j = upper down to j = bottom.
+    let mut v_coeffs: BTreeMap<i64, ExprId> = BTreeMap::new();
+    let mut v_j = zero; // v_upper = 0
+    let mut residual = zero;
+    for j in (bottom..=upper).rev() {
+        let dvj = match crate::diff::diff(v_j, var, pool) {
             Ok(d) => simplify(d.value, pool).value,
             Err(_) => return None,
         };
-        let j_vj = simplify(pool.mul(vec![pool.integer(j as i32), vj]), pool).value;
-        let cj = simplify(c_coeffs[j], pool).value;
-        // num = c[j] - D(v[j]) - j·v[j]
-        let neg1 = pool.integer(-1_i32);
+        let j_vj = simplify(pool.mul(vec![pool.integer(j as i32), v_j]), pool).value;
+        let cj = *c_coeffs.get(&j).unwrap_or(&zero);
         let num = simplify(
             pool.add(vec![
                 cj,
@@ -611,60 +742,57 @@ fn lower_tower_poly_cascade(
             pool,
         )
         .value;
-        v_coeffs[j - 1] = if k == 1 {
-            num
+        let v_next = scale(num);
+        if j - 1 >= bottom {
+            v_coeffs.insert(j - 1, v_next);
         } else {
-            let k_inv = pool.pow(pool.integer(k as i32), pool.integer(-1_i32));
-            simplify(pool.mul(vec![num, k_inv]), pool).value
-        };
+            residual = v_next; // v_{bottom−1} must vanish
+        }
+        v_j = v_next;
     }
 
-    // Consistency check: D(v[0]) = c[0].
-    let dv0 = match crate::diff::diff(v_coeffs[0], var, pool) {
-        Ok(d) => simplify(d.value, pool).value,
-        Err(_) => return None,
-    };
-    let residual = simplify(
-        pool.add(vec![dv0, pool.mul(vec![pool.integer(-1_i32), c_coeffs[0]])]),
-        pool,
-    )
-    .value;
-    if !is_zero(residual, pool) {
-        // Polynomial cascade fails: by the denominator-bound theorem for the
-        // hyperexponential Risch DE (Bronstein §6.2), when c is polynomial in
-        // θ_inner the denominator of v must also be polynomial (i.e., v ∈ ℚ(x)[θ_inner]).
-        // Since no polynomial solution exists, there is no rational solution either
-        // → the integral is certified non-elementary.
-        return Some(Err(IntegrationError::NonElementary(format!(
-            "∫ {} · exp(kη) dx: lower-tower cascade consistency check failed; \
-             non-elementary by denominator bound (Bronstein §6.2)",
-            pool.display(c_expr),
-        ))));
+    match classify_residual(residual, var, pool) {
+        Residual::Zero => {}
+        Residual::NonZero => {
+            // Proof: the forced solution does not terminate, so the Risch DE
+            // `D(v) + k·θ·v = c` has no solution in K, and with k ≠ 0 that is
+            // exactly non-elementarity (Bronstein §5.3).
+            return Some(Err(IntegrationError::NonElementary(format!(
+                "∫ {} · exp(kη) dx: the Risch DE D(v) + {k}·θ·v = c over \
+                 ℚ(x)(θ), θ = {}, has no Laurent solution — the forced \
+                 coefficient recursion leaves the non-zero residual {} at \
+                 degree {}; with k ≠ 0 no new logarithm can arise either, so \
+                 the integral is not elementary (Bronstein §5.3, §6.1)",
+                pool.display(c_expr),
+                pool.display(theta_inner),
+                pool.display(simplify(residual, pool).value),
+                bottom - 1,
+            ))));
+        }
+        Residual::Undecided => return None,
     }
 
-    // Build v = Σ v[j] · θ_inner^j.
+    // Build v = Σ vⱼ·θ_innerʲ over the produced indices.
     let mut v_terms: Vec<ExprId> = Vec::new();
-    for (j, &vj) in v_coeffs.iter().enumerate() {
+    for (&j, &vj) in v_coeffs.iter() {
         let vj_s = simplify(vj, pool).value;
         if is_zero(vj_s, pool) {
             continue;
         }
-        let theta_j = match j {
-            0 => vj_s,
-            1 => {
-                if is_one(vj_s, pool) {
-                    theta_inner
-                } else {
-                    pool.mul(vec![vj_s, theta_inner])
-                }
+        let theta_j = if j == 0 {
+            vj_s
+        } else if j == 1 {
+            if is_one(vj_s, pool) {
+                theta_inner
+            } else {
+                pool.mul(vec![vj_s, theta_inner])
             }
-            _ => {
-                let theta_pow = pool.pow(theta_inner, pool.integer(j as i32));
-                if is_one(vj_s, pool) {
-                    theta_pow
-                } else {
-                    pool.mul(vec![vj_s, theta_pow])
-                }
+        } else {
+            let theta_pow = pool.pow(theta_inner, pool.integer(j as i32));
+            if is_one(vj_s, pool) {
+                theta_pow
+            } else {
+                pool.mul(vec![vj_s, theta_pow])
             }
         };
         v_terms.push(theta_j);

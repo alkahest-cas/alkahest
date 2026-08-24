@@ -22,7 +22,8 @@
 //! | `log(h)/√p(x)` via log tower | `log(x)/√x` | ✓ (lower-tower delegation, Gap C) |
 //! | `√p(x)·log(h)`, p ∈ ℚ\[x\] | `√x·log(x)` | ✓ (algebraic base-field, Gap C) |
 //! | `c(x,exp(x))·exp(exp(x))`, c poly in exp(x) | `exp(x)²·exp(exp(x))` | ✓ (lower-tower cascade, Gap B) |
-//! | `c(x)·exp(exp(x))`, c ∈ ℚ(x) | `x·exp(exp(x))` | ✗ NonElementary (degree bound) |
+//! | `c(x)·exp(exp(x))`, c ∈ ℚ(x) | `x·exp(exp(x))` | ✗ NonElementary (Laurent cascade) |
+//! | `A(exp(exp(x)))/B(exp(exp(x)))`, deg B ≥ 1 | `eˣe^(eˣ)/(e^(eˣ)+1)` | ✓ via derivative-divides / else `NotImplemented` |
 //! | `1/(x+α)^n·log(x+α)`, α ∈ ℚ(√d) | `1/(x+√2)²·log(x+√2)` | ✓ (K-rational base, Gap E) |
 //! | `sin(x)/x`, `exp(x)/x` | Ei, Si functions | ✗ (NonElementary) |
 //! | `exp(1/x)` alone | essential singularity | ✗ (NonElementary) |
@@ -57,11 +58,26 @@
 //! - **Algebraic × exp: degree ≥ 3 only.** `try_sqrt_poly_rde` (in `exp_case`)
 //!   handles quadratic algebraic coefficients (`√p(x)·exp(η)`).  Higher-degree
 //!   algebraic extensions (e.g. `∛(p(x))·exp(η)`) are not yet supported.
-//! - **Nested exp towers — complete for ℚ(x)(exp(x)).**  The lower-tower cascade
-//!   handles polynomial c(x, exp(x)).  Rational c (denominator in exp(x)) is
-//!   certified NonElementary by the Hermite/pole-order argument: `D` maps any
-//!   simple pole `1/(θ-α)` (α ∈ ℚ(x)) to a double pole `(α-Dα)/(θ-α)²`;
-//!   since `Dα ≠ α` for α ∈ ℚ(x), no rational solution to the Risch DE exists.
+//! - **Nested exp towers — Laurent coefficients only.**  For an integrand
+//!   `Σ cₖ(x, exp(x))·exp(exp(x))ᵏ` whose coefficients are *Laurent polynomials*
+//!   in the inner generator, the forced coefficient cascade
+//!   ([`exp_case::lower_tower_laurent_cascade`]) is a **complete decision**: it
+//!   either returns the antiderivative or proves the Risch DE has no solution in
+//!   `ℚ(x)(exp(x))`, which for `k ≠ 0` is exactly non-elementarity (Bronstein
+//!   §5.3).  For a coefficient that is a genuine *rational function* of the
+//!   inner generator, only the **simple-pole** case is certified (a solution
+//!   would have to be regular at that pole, but then the left-hand side is
+//!   regular and `c` is not — Bronstein §6.1 `RdeNormalDenominator`); a
+//!   higher-order pole is left `NotImplemented`.
+//! - **Rational functions *of the outer generator* are not decided.**  When the
+//!   integrand is `A(t)/B(t)` with `deg B ≥ 1` in the outer generator `t` — e.g.
+//!   `eˣ·e^(eˣ)/(e^(eˣ)+1)` — the Laurent theory above does not apply at all,
+//!   because the antiderivative may contain **new logarithms over the tower**
+//!   (here `log(e^(eˣ)+1)`) that no Risch DE can see.  Deciding these needs
+//!   Hermite reduction plus a Rothstein–Trager residue reduction over `K[t]`
+//!   (Bronstein §5.6), which is not implemented; such integrands are declined
+//!   with `NotImplemented`, never certified.  Simple `D(u)/uⁿ` shapes are still
+//!   closed by the elementary pipeline's derivative-divides substitution.
 //! - **Log tower: K-rational base field, Hermite-reducible cases only.**
 //!   `integrate_base` now tries K-rational antidifferentiation (Gap E) via
 //!   `solve_rational_rde_k` with f=0.  This handles coefficients in ℚ(√d)(x) whose
