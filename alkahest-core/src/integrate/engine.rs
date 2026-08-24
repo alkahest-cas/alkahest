@@ -2124,6 +2124,14 @@ pub(crate) fn integrate_raw(
 ///    `log^n` for `n ≥ 2`, or `poly·log`) → `risch` engine.
 /// 3. **Rule-based** fallback for simpler cases already in the table.
 ///
+/// Steps 1 and 2 are *soft*: an [`IntegrationError::NotImplemented`] from a
+/// sub-engine is a decline and falls through to the next stage, so an integrand
+/// carrying an exp/log/radical generator still reaches `try_log_derivative`, the
+/// rule engine, Rothstein–Trager and the derivative-divides u-substitution.  A
+/// budget trip and an [`IntegrationError::NonElementary`] verdict both
+/// short-circuit; if nothing downstream succeeds, the sub-engine's original
+/// diagnostic is the error the caller sees.
+///
 /// # Supported operations (rule-based)
 ///
 /// | Input              | Result                      | Rule                    |
@@ -2192,14 +2200,50 @@ pub fn integrate(
     // algebraic route in that case so the integrand falls through to the rule
     // engine and the derivative-divides u-substitution (which resolves the
     // `f(x)·f'(x)` sub-integrals produced by the inverse-trig IBP reduction).
+    //
+    // A `NotImplemented` from a sub-engine is a *decline*, not a verdict: the
+    // structural pre-checks above only say "this integrand has an algebraic /
+    // transcendental generator", not "only that engine could ever solve it".
+    // Returning the decline straight to the caller used to make the whole
+    // downstream pipeline (`try_log_derivative`, the rule engine, Rothstein–
+    // Trager, derivative-divides u-substitution) unreachable for *every*
+    // integrand carrying an exp/log/radical generator — so `∫ 1/(x·log x) dx`
+    // failed while the algebraically identical `∫ x⁻¹·log(x)⁻¹ dx` succeeded.
+    // Instead we remember the sub-engine's diagnostic and fall through; if
+    // nothing downstream succeeds, that original message is what the caller
+    // sees (see `decline` below), so a specific Risch diagnostic is never
+    // degraded into a generic one.
+    //
+    // This cannot produce a wrong answer: every downstream path is soundness
+    // gated (`try_u_substitution` verifies `d/dx F = f`, `try_log_derivative`
+    // fires only on an exact `h'/h` match, Rothstein–Trager is exact).
+    let mut declined: Option<IntegrationError> = None;
+
     if has_algebraic && !has_transcendental && !contains_inverse_trig(expr, pool) {
-        return super::algebraic::integrate_algebraic(expr, var, pool);
+        match super::algebraic::integrate_algebraic(expr, var, pool) {
+            Ok(result) => return Ok(result),
+            // A budget trip travels *as* a `NotImplemented` (see the carrier
+            // note on `IntegrationError`), so it must be split off ahead of the
+            // decline arm — otherwise "the caller asked to stop spending" turns
+            // into "keep spending" on the whole downstream pipeline.
+            Err(e) if e.is_budget() => return Err(e),
+            // `NonElementary` is a mathematical verdict, not a decline: no
+            // fallback can overturn it, and re-deriving it downstream would
+            // risk the weaker `NotImplemented` replacing a proof.
+            Err(e @ IntegrationError::NotImplemented(_)) => declined = Some(e),
+            Err(other) => return Err(other),
+        }
     }
 
     // V2+: Route transcendental Risch cases (exp polynomial, log powers, etc.)
     // Also covers mixed algebraic+transcendental (has_algebraic && has_transcendental).
     if has_transcendental {
-        return super::risch::integrate_risch(expr, var, pool);
+        match super::risch::integrate_risch(expr, var, pool) {
+            Ok(result) => return Ok(result),
+            Err(e) if e.is_budget() => return Err(e),
+            Err(e @ IntegrationError::NotImplemented(_)) => declined = Some(e),
+            Err(other) => return Err(other),
+        }
     }
 
     // Logarithmic-derivative rule: ∫ (h'/h)·log(h)^n dx (single-generator log
@@ -2229,7 +2273,17 @@ pub fn integrate(
         return Err(IntegrationError::NonElementary(reason));
     }
 
-    integrate_inner(expr, var, pool, 0)
+    match integrate_inner(expr, var, pool, 0) {
+        Ok(result) => Ok(result),
+        // Preserve the sub-engine's own diagnostic when it declined earlier and
+        // nothing downstream could close the integral either — the Risch /
+        // algebraic message ("coefficient … is not a polynomial …") says far
+        // more than the rule engine's generic decline.  Budget trips and
+        // `NonElementary` keep their own error untouched.
+        Err(e) if e.is_budget() => Err(e),
+        Err(e @ IntegrationError::NotImplemented(_)) => Err(declined.unwrap_or(e)),
+        Err(other) => Err(other),
+    }
 }
 
 /// Internal entry point that runs the full elementary pipeline — rule engine,
@@ -5682,5 +5736,85 @@ mod tests {
             pool.pow(x, pool.integer(-1_i32)),
         ]);
         assert!(integrate(f, x, &pool).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Router fall-through: a sub-engine `NotImplemented` is a decline, not a
+    // verdict — but a `NonElementary` proof and a budget trip still short-circuit
+    // -----------------------------------------------------------------------
+
+    /// Parse `src` (with `x` bound) and integrate it.
+    fn integrate_src(src: &str, x: ExprId, pool: &ExprPool) -> Result<ExprId, IntegrationError> {
+        let mut syms = HashMap::from([("x".to_owned(), x)]);
+        let f = crate::parse::parse(src, pool, &mut syms).expect("parse");
+        integrate(f, x, pool).map(|r| r.value)
+    }
+
+    #[test]
+    fn nonelementary_is_never_downgraded_by_the_fall_through() {
+        // The router falls through to the elementary pipeline when the Risch /
+        // algebraic engine returns `NotImplemented`.  A `NonElementary` *proof*
+        // must not take that path: the fallbacks would run out of options and
+        // report the weaker `E-INT-001`, turning a theorem into a shrug.
+        use crate::errors::AlkahestError;
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for src in [
+            "exp(x^2)",  // Risch DE has no rational solution
+            "exp(-x^2)", //
+            "exp(x)/x",  // Ei
+            "sin(x)/x",  // Si
+            "cos(x)/x",  // Ci
+            "1/log(x)",  // li
+        ] {
+            match integrate_src(src, x, &pool) {
+                Ok(v) => panic!(
+                    "∫ {src} dx must stay non-elementary, got {}",
+                    pool.display(v)
+                ),
+                Err(e) => assert_eq!(
+                    e.code(),
+                    "E-INT-004",
+                    "∫ {src} dx should certify NonElementary, got: {e}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn budget_trip_is_not_read_as_a_sub_engine_decline() {
+        // A budget trip travels *as* a `NotImplemented` (see the carrier note on
+        // `IntegrationError`).  Both places the router now inspects a
+        // sub-engine's error have to split it off first: otherwise "the caller
+        // asked to stop spending" is read as "the Risch engine declined" and the
+        // whole fallback pipeline runs anyway — and, worse, the trip surfaces as
+        // a *mathematical* verdict.
+        //
+        // `∫ eˣ/(eˣ+1) dx` is the shape that exercises it end to end: the Risch
+        // exp tower declines, the decline is remembered, and the answer is then
+        // found by the budget-checking u-substitution search.  Under a budget the
+        // only two acceptable outcomes are "finished" and "E-BUDGET-*".
+        use crate::budget::{enter, Budget};
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let e = pool.func("exp", vec![x]);
+        let f = pool.mul(vec![
+            e,
+            pool.pow(pool.add(vec![e, pool.integer(1_i32)]), pool.integer(-1_i32)),
+        ]);
+        assert!(
+            integrate(f, x, &pool).is_ok(),
+            "unbudgeted control must succeed"
+        );
+        for steps in 1_u64..=24 {
+            let _guard = enter(Budget::new().with_max_steps(steps));
+            if let Err(err) = integrate(f, x, &pool) {
+                assert!(
+                    err.is_budget(),
+                    "a {steps}-step budget produced a mathematical verdict instead \
+                     of an E-BUDGET-* trip: {err}"
+                );
+            }
+        }
     }
 }
