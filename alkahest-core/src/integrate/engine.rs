@@ -2225,8 +2225,8 @@ pub fn integrate(
     // failed while the algebraically identical `∫ x⁻¹·log(x)⁻¹ dx` succeeded.
     // Instead we remember the sub-engine's diagnostic and fall through; if
     // nothing downstream succeeds, that original message is what the caller
-    // sees (see `decline` below), so a specific Risch diagnostic is never
-    // degraded into a generic one.
+    // sees (see `declined` at the tail of this function), so a specific Risch
+    // diagnostic is never degraded into a generic one.
     //
     // This cannot produce a wrong answer: every downstream path is soundness
     // gated (`try_u_substitution` verifies `d/dx F = f`, `try_log_derivative`
