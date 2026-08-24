@@ -29,13 +29,29 @@
 //! residues are exactly the Ei/Li-type logarithmic part the exp tower cannot
 //! express).
 //!
-//! The homogeneous equation `v' + f·v = 0` has no nonzero rational solution when
-//! `f ≠ 0` (its solutions are `const·exp(−∫f)`), so the rational solution is
-//! unique — extra unknowns in an over-sized ansatz are forced to zero, and a
-//! final substitution check guards against an under-sized degree bound.
+//! A final substitution check guards the positive direction; the negative
+//! direction is guarded by the type — see below.
+//!
+//! ## When `f` has poles: the resonance, and why the answer is three-valued
+//!
+//! The `E = gcd(B, B')` bound above is exact **only because `f` is a
+//! polynomial**.  For [`solve_rational_rde_generalized_checked`], where
+//! `f ∈ ℚ(x)` may itself have poles, it is not: at a *simple* pole of `f` with
+//! residue `ρ ∈ ℤ_{>0}`, the leading terms of `v'` and `f·v` cancel and `v`
+//! acquires a pole of order `ρ` at a point `c` is regular at.  `v' + (2/x+1)·v = 1`
+//! (which is `∫x²eˣ`) has `c = 1`, so `B = E = 1`, yet its solution
+//! `v = (x²−2x+2)/x²` has a double pole at `0`.  The fix is
+//! `resonant_denominator` (below), which carries the pole-order argument in full.
+//!
+//! Because a *missing* solution and a *nonexistent* solution are different
+//! claims — and only the second may license a non-elementarity certificate —
+//! the solvers return the three-valued [`RdeOutcome`] rather than an `Option`.
+//! The `Option`-returning entry points are retained as shims and documented as
+//! unsafe to conclude from.
 //!
 //! References:
-//!   - Bronstein (2005). *Symbolic Integration I*, §6.1 (RischDE, normal part).
+//!   - Bronstein (2005). *Symbolic Integration I*, §6.1 (RischDE, normal part;
+//!     `WeakNormalizer`, `RdeNormalDenominator`).
 //!   - SymPy `sympy/integrals/rde.py` (`bound_degree`, `spde`, `no_cancel_*`).
 
 use rug::Rational;
@@ -310,29 +326,146 @@ pub(crate) fn numerator_degree_bound(deg_b: i64, deg_c: i64, deg_e: i64, deg_f: 
     (deg_e.max(0) + poly_part.max(deg_f.max(0)) + 2).max(0) as usize
 }
 
-/// Solve `v' + f·v = c_num/c_den` for `v ∈ ℚ(x)`.
+/// Reason a rational Risch DE solve **declined** to reach a verdict.
 ///
-/// `f` is a polynomial (the exp-tower coefficient `k·η'`).  Returns the solution
-/// as a reduced `(numerator, denominator)` pair, or `None` if no rational
-/// solution exists (which certifies a non-elementary integral in the exp tower).
-pub fn solve_rational_rde(f: &QPoly, c_num: &QPoly, c_den: &QPoly) -> Option<(QPoly, QPoly)> {
+/// A decline is never a mathematical statement about the equation: it records
+/// only that the method's ansatz, denominator bound or search budget was not
+/// provably sufficient.  Callers must map it to
+/// `IntegrationError::NotImplemented` (`E-INT-001`) and **never** to
+/// `NonElementary` (`E-INT-004`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RdeDecline {
+    /// A supplied denominator was the zero polynomial.
+    MalformedInput,
+    /// Locating the positive-integer residues of `f` — the resonance analysis
+    /// that fixes the denominator bound — would need a search past the
+    /// internal cap `MAX_RESONANCE_SEARCH`.
+    ResonanceSearchTooLarge,
+    /// The linear system implied by the bounds would exceed the internal cap
+    /// `MAX_RDE_UNKNOWNS` on the number of unknowns.
+    AnsatzTooLarge,
+    /// The linear system was consistent but the reconstructed `v` failed the
+    /// exact substitution check.  Unreachable barring a bug in the setup; it is
+    /// surfaced as a decline so an internal inconsistency can never be
+    /// laundered into a certificate.
+    VerificationFailed,
+}
+
+impl core::fmt::Display for RdeDecline {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            RdeDecline::MalformedInput => write!(f, "malformed input (zero denominator)"),
+            RdeDecline::ResonanceSearchTooLarge => write!(
+                f,
+                "the integer-residue search needed for the denominator bound exceeds \
+                 the internal cap"
+            ),
+            RdeDecline::AnsatzTooLarge => {
+                write!(f, "the RDE ansatz exceeds the internal size cap")
+            }
+            RdeDecline::VerificationFailed => write!(
+                f,
+                "the candidate solution failed the exact substitution check"
+            ),
+        }
+    }
+}
+
+/// Three-valued outcome of a rational Risch DE solve.
+///
+/// The two-valued `Option` this replaces conflated *"proved there is no
+/// rational solution"* with *"my ansatz did not find one"*.  Only the first of
+/// those may license a `NonElementary` certificate; callers that turn the
+/// second into one emit a wrong theorem.  The distinction is carried in the
+/// type so that it cannot be dropped by accident.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RdeOutcome {
+    /// A rational solution `v = num/den`, reduced and verified by exact
+    /// substitution.
+    Solved {
+        /// Numerator of `v` (lowest terms).
+        num: QPoly,
+        /// Denominator of `v` (lowest terms, monic).
+        den: QPoly,
+    },
+    /// **Proved**: no `v ∈ ℚ(x)` satisfies the equation.  The denominator bound
+    /// and the degree bound used were both complete, and the resulting linear
+    /// system over ℚ is inconsistent.  This — and only this — may be reported
+    /// as `NonElementary`.
+    NoRationalSolution,
+    /// Nothing may be concluded; see [`RdeDecline`].
+    Declined(RdeDecline),
+}
+
+impl RdeOutcome {
+    /// The solution, if one was found and verified.
+    pub fn solution(self) -> Option<(QPoly, QPoly)> {
+        match self {
+            RdeOutcome::Solved { num, den } => Some((num, den)),
+            _ => None,
+        }
+    }
+
+    /// Whether this outcome is a *proof* that no rational solution exists.
+    ///
+    /// The only predicate a caller may use to license a non-elementarity
+    /// certificate.
+    pub fn proves_no_solution(&self) -> bool {
+        matches!(self, RdeOutcome::NoRationalSolution)
+    }
+
+    /// Whether this outcome is a decline (nothing may be concluded).
+    pub fn is_declined(&self) -> bool {
+        matches!(self, RdeOutcome::Declined(_))
+    }
+}
+
+/// Cap on the positive-integer residue search in [`resonant_denominator`].
+///
+/// The search is `O(k_max)` monic GCDs; a caller cannot make it unbounded by
+/// handing over an `f` with a huge residue — past this the solver declines.
+const MAX_RESONANCE_SEARCH: i64 = 1024;
+
+/// Cap on the number of unknowns in the linear system (`deg N + 1`).
+///
+/// Gaussian elimination over `rug::Rational` is `O(rows·cols²)` with bignum
+/// coefficients; a runaway denominator bound must decline rather than wedge the
+/// process.  Every worked example in the integrator stays far below this.
+const MAX_RDE_UNKNOWNS: usize = 512;
+
+/// Solve `v' + f·v = c_num/c_den` for `v ∈ ℚ(x)`, `f` a **polynomial**.
+///
+/// `f` is a polynomial (the exp-tower coefficient `k·η'`), so `f` has no finite
+/// poles and the classical Bronstein §6.1 denominator bound `E = gcd(B, B')`
+/// (`B` = denominator of `c`) is *complete*: see [`solve_rational_rde_checked`]
+/// for the pole-order argument.  Both bounds used here are therefore provable,
+/// and an inconsistent linear system is a genuine non-existence proof.
+pub fn solve_rational_rde_checked(f: &QPoly, c_num: &QPoly, c_den: &QPoly) -> RdeOutcome {
     let c_num = trim(c_num.clone());
     let c_den = trim(c_den.clone());
 
     // c = 0 → v = 0.
     if c_num.is_empty() {
-        return Some((poly_zero(), poly_one()));
+        return RdeOutcome::Solved {
+            num: poly_zero(),
+            den: poly_one(),
+        };
     }
     if c_den.is_empty() {
-        return None; // division by zero — malformed input
+        return RdeOutcome::Declined(RdeDecline::MalformedInput);
     }
 
     // Reduce c = C/B to lowest terms with B monic.
     let g = poly_gcd(&c_num, &c_den);
     let big_c = poly_div_exact(&c_num, &g);
-    let b_raw = poly_div_exact(&c_den, &g);
+    let b_raw = trim(poly_div_exact(&c_den, &g));
     // Scale so that B is monic, applying the same scale to C.
     let bd = degree(&b_raw);
+    if bd < 0 {
+        return RdeOutcome::Declined(RdeDecline::MalformedInput);
+    }
     let scale = Rational::from(1) / b_raw[bd as usize].clone();
     let big_b = poly_scale(&b_raw, &scale);
     let big_c = poly_scale(&big_c, &scale);
@@ -357,6 +490,9 @@ pub fn solve_rational_rde(f: &QPoly, c_num: &QPoly, c_den: &QPoly) -> Option<(QP
     let deg_f = degree(f).max(0);
     let dbound = numerator_degree_bound(deg_b, deg_c, deg_e, deg_f);
     let cols = dbound + 1; // unknowns n_0..n_dbound
+    if cols > MAX_RDE_UNKNOWNS {
+        return RdeOutcome::Declined(RdeDecline::AnsatzTooLarge);
+    }
 
     // Maximum degree appearing in the identity.
     let max_deg = (degree(&gef) + dbound as i64)
@@ -383,7 +519,12 @@ pub fn solve_rational_rde(f: &QPoly, c_num: &QPoly, c_den: &QPoly) -> Option<(QP
     }
     let rhs: Vec<Rational> = (0..n_rows).map(|d| coeff(&target, d as i64)).collect();
 
-    let solution = solve_linear_system(mat, rhs, cols)?;
+    // `solve_linear_system` returns `None` **only** for an inconsistent system
+    // (free variables are set to zero, so rank deficiency is not a refusal).
+    // With both bounds proved complete, that is a non-existence proof.
+    let Some(solution) = solve_linear_system(mat, rhs, cols) else {
+        return RdeOutcome::NoRationalSolution;
+    };
     let n_poly = trim(solution);
 
     // Verify: (N'E − N E' + f N E)·B == C·E²   (i.e. v'+f v == C/B with v=N/E).
@@ -397,120 +538,371 @@ pub fn solve_rational_rde(f: &QPoly, c_num: &QPoly, c_den: &QPoly) -> Option<(QP
     );
     let rhs_check = poly_mul(&big_c, &poly_mul(&e_poly, &e_poly));
     if !polys_equal(&lhs, &rhs_check) {
-        return None;
+        return RdeOutcome::Declined(RdeDecline::VerificationFailed);
     }
 
     // Reduce v = N/E to lowest terms.
     if n_poly.is_empty() {
-        return Some((poly_zero(), poly_one()));
+        return RdeOutcome::Solved {
+            num: poly_zero(),
+            den: poly_one(),
+        };
     }
     let gve = poly_gcd(&n_poly, &e_poly);
     let num = poly_div_exact(&n_poly, &gve);
     let den = poly_monic(&poly_div_exact(&e_poly, &gve));
-    Some((num, den))
+    RdeOutcome::Solved { num, den }
+}
+
+/// Solve `v' + f·v = c_num/c_den` for `v ∈ ℚ(x)`.
+///
+/// `f` is a polynomial (the exp-tower coefficient `k·η'`).  Returns the solution
+/// as a reduced `(numerator, denominator)` pair, or `None`.
+///
+/// # `None` is not a proof
+///
+/// This two-valued shim cannot distinguish *"no rational solution exists"* from
+/// *"the solver declined"*.  Use [`solve_rational_rde_checked`] — which returns
+/// [`RdeOutcome`] — whenever the answer feeds a non-elementarity certificate.
+pub fn solve_rational_rde(f: &QPoly, c_num: &QPoly, c_den: &QPoly) -> Option<(QPoly, QPoly)> {
+    solve_rational_rde_checked(f, c_num, c_den).solution()
 }
 
 // ---------------------------------------------------------------------------
 // Generalized rational RDE: f ∈ ℚ(x)  (Risch Gap F — rational exponents)
 // ---------------------------------------------------------------------------
 
-/// Solve `v' + f·v = c_num/c_den` for `v ∈ ℚ(x)` where `f = f_num/f_den` is
-/// a **rational** function (not necessarily a polynomial).
+/// Extended Euclid over ℚ: `(g, s, t)` with `s·a + t·b = g` and `g` monic.
 ///
-/// When `f_den` is a constant this delegates to [`solve_rational_rde`].
-/// Otherwise it uses the generalized identity
+/// Returns all-zero for `a = b = 0`.
+fn poly_ext_gcd(a: &QPoly, b: &QPoly) -> (QPoly, QPoly, QPoly) {
+    let mut r0 = trim(a.clone());
+    let mut r1 = trim(b.clone());
+    let mut s0 = poly_one();
+    let mut s1 = poly_zero();
+    let mut t0 = poly_zero();
+    let mut t1 = poly_one();
+    while !r1.is_empty() {
+        let (q, r) = poly_divrem(&r0, &r1);
+        let s2 = poly_sub(&s0, &poly_mul(&q, &s1));
+        let t2 = poly_sub(&t0, &poly_mul(&q, &t1));
+        r0 = r1;
+        r1 = trim(r);
+        s0 = s1;
+        s1 = s2;
+        t0 = t1;
+        t1 = t2;
+    }
+    let d = degree(&r0);
+    if d < 0 {
+        return (poly_zero(), poly_zero(), poly_zero());
+    }
+    let inv = Rational::from(1) / r0[d as usize].clone();
+    (
+        poly_scale(&r0, &inv),
+        poly_scale(&s0, &inv),
+        poly_scale(&t0, &inv),
+    )
+}
+
+/// The product of the irreducible factors of `d` occurring with multiplicity
+/// **exactly one** — Bronstein §6.1's `d₁` in `WeakNormalizer`.
+///
+/// Its roots are precisely the *simple* poles of a reduced `a/d`; every other
+/// pole has order `≥ 2`.
+fn multiplicity_one_part(d: &QPoly) -> QPoly {
+    let g = poly_gcd(d, &poly_deriv(d)); // Π p_i^{m_i − 1}
+    let d_star = poly_div_exact(d, &g); // Π p_i         (the radical)
+    poly_div_exact(&d_star, &poly_gcd(&d_star, &g)) // Π_{m_i = 1} p_i
+}
+
+/// A bound on `|ρ|` over all residues `ρ` of `f = A/B` at the *simple* poles
+/// enumerated by `d1`, given `β ≡ A·(d₁'·W)⁻¹ (mod d₁)` (`W = B/d₁`).
+///
+/// The residue at a root `α` of `d₁` is `β(α)`, and those values are exactly
+/// the eigenvalues of multiplication-by-`β` on the ℚ-algebra `ℚ[x]/(d₁)`.  The
+/// spectral radius of a matrix is bounded by its maximum absolute row sum, so
+/// building that matrix gives a certified ceiling for the integer search.
+fn residue_magnitude_bound(beta: &QPoly, d1: &QPoly) -> Rational {
+    let dd = degree(d1).max(0) as usize;
+    let mut rows = vec![Rational::from(0); dd];
+    let mut cols = vec![Rational::from(0); dd];
+    // Column j is (β·x^j) mod d₁; accumulate |entry| into its row and column.
+    let mut col = poly_divrem(beta, d1).1;
+    for c in cols.iter_mut() {
+        for (i, cell) in col.iter().enumerate() {
+            if i < dd {
+                let a = cell.clone().abs();
+                rows[i] += a.clone();
+                *c += a;
+            }
+        }
+        // Advance to the next column: multiply by x, reduce mod d₁.
+        let mut shifted = vec![Rational::from(0)];
+        shifted.extend(col.iter().cloned());
+        col = poly_divrem(&trim(shifted), d1).1;
+    }
+    let max = |v: Vec<Rational>| {
+        v.into_iter()
+            .fold(Rational::from(0), |m, r| if r > m { r } else { m })
+    };
+    // ρ(M) ≤ ‖M‖_∞ and ρ(M) ≤ ‖M‖_1, so the smaller is still a certified bound.
+    let (r, c) = (max(rows), max(cols));
+    if r < c {
+        r
+    } else {
+        c
+    }
+}
+
+/// The **resonant denominator** of `f = A/B` (lowest terms, `B` monic): the
+/// extra denominator a rational solution of `v' + f·v = c` may acquire from the
+/// poles of `f` alone, independently of `c`.
+///
+/// # The pole-order argument
+///
+/// Let `α` be a point, `m = ord` of the pole of `f` there, `p` the pole order
+/// of `c`, and `ν = ord_α(v)` for a rational solution `v`.
+///
+/// * `m = 0` (`f` regular): `ord(v') = ν−1` and `ord(f·v) ≥ ν`, so no
+///   cancellation — `ord(c) = ν−1`, i.e. `v` has pole order `max(p−1, 0)`.
+/// * `m ≥ 2`: `ord(f·v) = ν−m < ν−1`, again no cancellation — `ν = ord(c)+m`,
+///   i.e. `v` has pole order `max(p−m, 0) ≤ max(p−1, 0)`.
+/// * `m = 1` with residue `ρ`: `v'` and `f·v` both have order `ν−1` and their
+///   leading coefficients sum to `(ν+ρ)·a`.  Unless `ν = −ρ` the previous case
+///   applies; when `ν = −ρ` they cancel and `v` may have a pole of order `ρ` at
+///   a point where `c` is *regular*.  A pole needs `ν < 0`, so this **resonance**
+///   requires `ρ ∈ ℤ_{>0}`.
+///
+/// The first two bullets are exactly what `E = gcd(D, D')` (`D` = denominator of
+/// `c`) already covers; the third is what this function supplies.  Multiplying
+/// the two gives a *complete* denominator bound — over-sized in general (it
+/// allows `p−1+ρ` where `max(p−1, ρ)` would do), which costs unknowns but never
+/// solutions.
+///
+/// # Finding the resonances
+///
+/// The simple poles of `f` are the roots of `d₁`, the multiplicity-one part of
+/// `B` ([`multiplicity_one_part`]); with `W = B/d₁` the residue at a root `α`
+/// of `d₁` is `A(α)/(d₁'(α)·W(α))`.  So the points with residue exactly `k` are
+/// the roots of `gcd(d₁, A − k·d₁'·W)`, and the answer is
+/// `∏_k gcd(d₁, A − k·d₁'·W)^k` over the positive integers `k`.  This is
+/// Bronstein §6.1's `WeakNormalizer` with the Rothstein–Trager resultant
+/// replaced by an eigenvalue bound (see [`residue_magnitude_bound`]) plus a
+/// direct GCD test — the same set of `k`, without a bivariate resultant.
+fn resonant_denominator(big_a: &QPoly, big_b: &QPoly) -> Result<QPoly, RdeDecline> {
+    let d1 = multiplicity_one_part(big_b);
+    if degree(&d1) < 1 {
+        return Ok(poly_one()); // no simple poles → no resonance
+    }
+    let w = poly_div_exact(big_b, &d1);
+    let d1p = poly_deriv(&d1);
+    let denom = poly_mul(&d1p, &w); // d₁'·W, invertible mod d₁
+
+    // β ≡ A·(d₁'·W)⁻¹ (mod d₁): the residue element of ℚ[x]/(d₁).
+    let (g, s, _) = poly_ext_gcd(&denom, &d1);
+    if degree(&g) != 0 {
+        // d₁ is squarefree and coprime to W, so d₁'·W is a unit mod d₁ and this
+        // is unreachable.  Decline rather than assume.
+        return Err(RdeDecline::VerificationFailed);
+    }
+    let beta = poly_divrem(&poly_mul(big_a, &s), &d1).1;
+
+    let bound = residue_magnitude_bound(&beta, &d1);
+    let k_max = bound.floor().numer().to_i64().unwrap_or(i64::MAX);
+    if k_max > MAX_RESONANCE_SEARCH {
+        return Err(RdeDecline::ResonanceSearchTooLarge);
+    }
+
+    let mut q = poly_one();
+    for k in 1..=k_max.max(0) {
+        let probe = poly_sub(big_a, &poly_scale(&denom, &Rational::from(k)));
+        let gk = poly_gcd(&d1, &probe);
+        if degree(&gk) >= 1 {
+            q = poly_mul(&q, &poly_pow(&gk, k as u32));
+        }
+    }
+    Ok(poly_monic(&q))
+}
+
+/// Bound on `deg_∞ v = deg(num v) − deg(den v)` for a solution of
+/// `v' + f·v = c`, from the same valuation argument applied at infinity.
+///
+/// With `v ~ a·x^δ`, `deg(v') = δ−1` (`δ ≠ 0`) or `≤ δ−2` (`δ = 0`), and
+/// `deg(f·v) = φ + δ` where `φ = deg f`:
+///
+/// * `φ ≥ 0`: `f·v` strictly dominates `v'`, so `γ = φ + δ` exactly.
+/// * `φ ≤ −2`: `v'` strictly dominates, so `δ = γ+1` (or `δ = 0`).
+/// * `φ = −1`: both have degree `δ−1` with leading coefficients summing to
+///   `(δ + ρ_∞)·a`, `ρ_∞ = lc(A)/lc(B)`.  Non-resonant gives `δ = γ+1`; the
+///   resonance `δ = −ρ_∞` is the extra candidate, and needs `ρ_∞ ∈ ℤ`.
+///
+/// `None` when the resonant candidate does not fit in an `i64` (the caller
+/// declines).
+fn infinity_degree_bound(deg_a: i64, deg_b: i64, lc_a: &Rational, gamma: i64) -> Option<i64> {
+    if deg_a < 0 {
+        return Some((gamma + 1).max(0)); // f = 0
+    }
+    let phi = deg_a - deg_b;
+    let delta = if phi >= 0 {
+        gamma - phi
+    } else if phi == -1 {
+        // ρ_∞ = lc(A)/lc(B) = lc(A) since B is monic here.
+        let resonant = if lc_a.is_integer() {
+            -lc_a.numer().to_i64()?
+        } else {
+            i64::MIN
+        };
+        (gamma + 1).max(resonant)
+    } else {
+        gamma + 1
+    };
+    Some(delta.max(0))
+}
+
+/// Solve `v' + f·v = c_num/c_den` for `v ∈ ℚ(x)` where `f = f_num/f_den` is a
+/// **rational** function (not necessarily a polynomial), returning the
+/// three-valued [`RdeOutcome`].
+///
+/// # Bounds
+///
+/// Write `f = A/B` and `c = C/D` in lowest terms with `B`, `D` monic.  The
+/// ansatz is `v = N/Q` with
+///
 /// ```text
-///   B_f · G · (N'·E − N·E') + A · G · E · N = B_f · C · E
+///   Q = E · q,     E = gcd(D, D'),     q = resonant denominator of f
 /// ```
-/// where `f = A/B_f` (lowest terms, `B_f` monic), `c = C/D` (lowest terms,
-/// `D` monic), `E = gcd(D, D')`, `G = D/E`.  Substituting `v = N/E` and
-/// clearing denominators yields this polynomial identity, which is linear in
-/// the coefficients of `N`.  The degree bound for `N` is
-/// `deg(B_f) + deg(E) + deg(C) + 2` (generous).
 ///
-/// Returns the reduced `(numerator, denominator)` of `v`, or `None` when no
-/// rational solution exists (certifying a non-elementary integral).
+/// where `q` comes from `resonant_denominator` — the poles `f` can force into
+/// `v` at points `c` knows nothing about.  `E` alone (the classical Bronstein
+/// §6.1 bound, correct when `f` is a *polynomial*) is **not** complete for
+/// rational `f`: `v' + (2/x + 1)·v = 1` has `c = 1`, hence `E = 1`, yet the
+/// solution `v = (x²−2x+2)/x²` has a double pole at `0`.
 ///
-/// References: Bronstein (2005) §5.4, §6.1.
-pub fn solve_rational_rde_generalized(
+/// The degree of `N` is bounded by `deg Q + δ` with `δ` from
+/// `infinity_degree_bound`.  Both bounds are proved complete, so an
+/// inconsistent linear system is [`RdeOutcome::NoRationalSolution`] — a genuine
+/// non-existence proof.  Everything the analysis cannot cover (a residue search
+/// or an ansatz past the internal caps) is [`RdeOutcome::Declined`].
+///
+/// Substituting `v = N/Q` and clearing `B·D·Q²` gives the identity that is
+/// linear in the coefficients of `N`:
+///
+/// ```text
+///   (B·D·Q)·N' + (A·D·Q − B·D·Q')·N = C·B·Q².
+/// ```
+///
+/// References: Bronstein (2005) §5.4, §6.1 (`WeakNormalizer`,
+/// `RdeNormalDenominator`).
+pub fn solve_rational_rde_generalized_checked(
     f_num: &QPoly,
     f_den: &QPoly,
     c_num: &QPoly,
     c_den: &QPoly,
-) -> Option<(QPoly, QPoly)> {
+) -> RdeOutcome {
     let f_den_t = trim(f_den.clone());
     let f_num_t = trim(f_num.clone());
 
     // Degenerate: f_den = 0 is undefined input.
     if f_den_t.is_empty() {
-        return None;
+        return RdeOutcome::Declined(RdeDecline::MalformedInput);
     }
 
-    // When f_den is a constant, f is a polynomial: scale and use the fast path.
+    // f = 0: no poles at all, straight to the polynomial-coefficient path.
+    // (Handled before the constant-denominator test, whose `f_den_t[0]` would
+    // be the zero coefficient of e.g. `f_den = x`.)
+    if f_num_t.is_empty() {
+        return solve_rational_rde_checked(&poly_zero(), c_num, c_den);
+    }
+
+    // f is a polynomial (constant denominator): the no-finite-poles path, where
+    // E = gcd(B, B') is already complete.
     if degree(&f_den_t) == 0 {
         let scale = Rational::from(1) / f_den_t[0].clone();
         let f_poly = poly_scale(&f_num_t, &scale);
-        return solve_rational_rde(&f_poly, c_num, c_den);
+        return solve_rational_rde_checked(&f_poly, c_num, c_den);
     }
 
-    // Reduce f = A / B_f (lowest terms, B_f monic).
+    // Reduce f = A / B (lowest terms, B monic).
     let gf = poly_gcd(&f_num_t, &f_den_t);
     let a_raw = poly_div_exact(&f_num_t, &gf);
-    let bf_raw = poly_div_exact(&f_den_t, &gf);
-    let bf_d = degree(&bf_raw);
-    debug_assert!(bf_d > 0, "f_den should have positive degree here");
-    let bf_lc_inv = Rational::from(1) / bf_raw[bf_d as usize].clone();
-    let big_a = poly_scale(&a_raw, &bf_lc_inv);
-    let big_bf = poly_scale(&bf_raw, &bf_lc_inv);
+    let b_raw = poly_div_exact(&f_den_t, &gf);
+    let b_raw = trim(b_raw);
+    let a_raw = trim(a_raw);
+    let b_d = degree(&b_raw);
+    if b_d <= 0 {
+        // f collapsed to a polynomial (or a malformed zero) after reduction.
+        if b_d < 0 {
+            return RdeOutcome::Declined(RdeDecline::MalformedInput);
+        }
+        let scale = Rational::from(1) / b_raw[0].clone();
+        let f_poly = poly_scale(&a_raw, &scale);
+        return solve_rational_rde_checked(&f_poly, c_num, c_den);
+    }
+    let b_lc_inv = Rational::from(1) / b_raw[b_d as usize].clone();
+    let big_a = poly_scale(&a_raw, &b_lc_inv);
+    let big_b = poly_scale(&b_raw, &b_lc_inv);
 
     // Reduce c = C / D (lowest terms, D monic).
     let c_num_t = trim(c_num.clone());
     let c_den_t = trim(c_den.clone());
     if c_num_t.is_empty() {
-        return Some((poly_zero(), poly_one()));
+        return RdeOutcome::Solved {
+            num: poly_zero(),
+            den: poly_one(),
+        };
     }
     if c_den_t.is_empty() {
-        return None; // c_den = 0: malformed
+        return RdeOutcome::Declined(RdeDecline::MalformedInput);
     }
     let gc = poly_gcd(&c_num_t, &c_den_t);
     let big_c_raw = poly_div_exact(&c_num_t, &gc);
-    let d_raw = poly_div_exact(&c_den_t, &gc);
+    let d_raw = trim(poly_div_exact(&c_den_t, &gc));
     let d_d = degree(&d_raw);
-    let d_lc_inv = if d_d >= 0 {
-        Rational::from(1) / d_raw[d_d as usize].clone()
-    } else {
-        Rational::from(1)
-    };
+    if d_d < 0 {
+        return RdeOutcome::Declined(RdeDecline::MalformedInput);
+    }
+    let d_lc_inv = Rational::from(1) / d_raw[d_d as usize].clone();
     let big_d = poly_scale(&d_raw, &d_lc_inv);
     let big_c = poly_scale(&big_c_raw, &d_lc_inv);
 
-    // Denominator bound: E = gcd(D, D'),  G = D / E.
-    let dprime = poly_deriv(&big_d);
-    let e_poly = poly_gcd(&big_d, &dprime);
-    let g_poly = poly_div_exact(&big_d, &e_poly);
-    let eprime = poly_deriv(&e_poly);
+    // Complete denominator bound: Q = gcd(D, D') · (resonant part of f).
+    let e_poly = poly_gcd(&big_d, &poly_deriv(&big_d));
+    let q_res = match resonant_denominator(&big_a, &big_b) {
+        Ok(q) => q,
+        Err(reason) => return RdeOutcome::Declined(reason),
+    };
+    let big_q = poly_monic(&poly_mul(&e_poly, &q_res));
+    let q_prime = poly_deriv(&big_q);
 
-    // Precompute the polynomial combinations that appear in the identity
-    //   B_f·G·(N'·E − N·E') + A·G·E·N = B_f·C·E.
-    let ge = poly_mul(&g_poly, &e_poly); // G · E
-    let bfg = poly_mul(&big_bf, &g_poly); // B_f · G
-    let bfge = poly_mul(&bfg, &e_poly); // B_f · G · E  (for the N' term)
-    let bfgep = poly_mul(&bfg, &eprime); // B_f · G · E' (for the −N term)
-    let age = poly_mul(&big_a, &ge); // A · G · E      (for the +N term)
-    let target = poly_mul(&poly_mul(&big_bf, &big_c), &e_poly); // B_f · C · E
-
-    // Degree bound for N (generous: accounts for cancellation in leading terms).
-    let deg_bf = degree(&big_bf).max(0) as usize;
-    let deg_e = degree(&e_poly).max(0) as usize;
-    let deg_c = degree(&big_c).max(0) as usize;
-    let deg_target = degree(&target).max(0) as usize;
-    let dbound = (deg_bf + deg_e + deg_c + 2).max(deg_target + 1);
+    // Degree bound for N: deg Q + deg_∞ v.
+    let gamma = degree(&big_c) - degree(&big_d);
+    let deg_a = degree(&big_a);
+    debug_assert!(deg_a >= 0, "A is nonzero: f_num was checked nonempty");
+    let lc_a = big_a
+        .get(deg_a.max(0) as usize)
+        .cloned()
+        .unwrap_or_else(|| Rational::from(0));
+    let Some(delta) = infinity_degree_bound(deg_a, degree(&big_b), &lc_a, gamma) else {
+        return RdeOutcome::Declined(RdeDecline::AnsatzTooLarge);
+    };
+    let dbound = (degree(&big_q) + delta).max(0) as usize;
     let cols = dbound + 1;
+    if cols > MAX_RDE_UNKNOWNS {
+        return RdeOutcome::Declined(RdeDecline::AnsatzTooLarge);
+    }
 
-    // Maximum degree of any term in the identity.
-    let max_deg = (degree(&bfge) + dbound as i64)
-        .max(degree(&bfgep) + dbound as i64)
-        .max(degree(&age) + dbound as i64)
+    // The identity  (B·D·Q)·N' + (A·D·Q − B·D·Q')·N = C·B·Q².
+    let bd = poly_mul(&big_b, &big_d);
+    let u_mul = poly_mul(&bd, &big_q); // multiplier of N'
+    let v_mul = poly_sub(
+        &poly_mul(&poly_mul(&big_a, &big_d), &big_q),
+        &poly_mul(&bd, &q_prime),
+    ); // multiplier of N
+    let target = poly_mul(&poly_mul(&big_c, &big_b), &poly_mul(&big_q, &big_q));
+
+    let max_deg = (degree(&u_mul) + dbound as i64 - 1)
+        .max(degree(&v_mul) + dbound as i64)
         .max(degree(&target))
         .max(0) as usize;
     let n_rows = max_deg + 1;
@@ -521,41 +913,58 @@ pub fn solve_rational_rde_generalized(
         let d = d as i64;
         for (j, cell) in row.iter_mut().enumerate() {
             let jj = j as i64;
-            // [B_f·G·E · N']_d  = j · (B_f·G·E)[d−j+1]
-            let mut v = Rational::from(jj) * coeff(&bfge, d - jj + 1);
-            // −[B_f·G·E' · N]_d = −(B_f·G·E')[d−j]
-            v -= coeff(&bfgep, d - jj);
-            // +[A·G·E · N]_d    = (A·G·E)[d−j]
-            v += coeff(&age, d - jj);
-            *cell = v;
+            // [U · N']_d = j · U[d−j+1];   [V · N]_d = V[d−j].
+            *cell = Rational::from(jj) * coeff(&u_mul, d - jj + 1) + coeff(&v_mul, d - jj);
         }
     }
     let rhs: Vec<Rational> = (0..n_rows).map(|d| coeff(&target, d as i64)).collect();
 
-    let solution = solve_linear_system(mat, rhs, cols)?;
+    // Inconsistent system ⇒ no `N` of the bounded shape ⇒ (both bounds being
+    // complete) no rational solution at all.
+    let Some(solution) = solve_linear_system(mat, rhs, cols) else {
+        return RdeOutcome::NoRationalSolution;
+    };
     let n_poly = trim(solution);
 
-    // Verify: B_f·G·(N'·E − N·E') + A·G·E·N == B_f·C·E.
-    let np = poly_deriv(&n_poly);
+    // Verify by exact substitution.
     let lhs = poly_add(
-        &poly_mul(
-            &bfg,
-            &poly_sub(&poly_mul(&np, &e_poly), &poly_mul(&n_poly, &eprime)),
-        ),
-        &poly_mul(&age, &n_poly),
+        &poly_mul(&u_mul, &poly_deriv(&n_poly)),
+        &poly_mul(&v_mul, &n_poly),
     );
     if !polys_equal(&lhs, &target) {
-        return None;
+        return RdeOutcome::Declined(RdeDecline::VerificationFailed);
     }
 
-    // Reduce v = N / E to lowest terms.
+    // Reduce v = N / Q to lowest terms.
     if n_poly.is_empty() {
-        return Some((poly_zero(), poly_one()));
+        return RdeOutcome::Solved {
+            num: poly_zero(),
+            den: poly_one(),
+        };
     }
-    let gve = poly_gcd(&n_poly, &e_poly);
-    let num = poly_div_exact(&n_poly, &gve);
-    let den = poly_monic(&poly_div_exact(&e_poly, &gve));
-    Some((num, den))
+    let gvq = poly_gcd(&n_poly, &big_q);
+    let num = poly_div_exact(&n_poly, &gvq);
+    let den = poly_monic(&poly_div_exact(&big_q, &gvq));
+    RdeOutcome::Solved { num, den }
+}
+
+/// Solve `v' + f·v = c_num/c_den` for `v ∈ ℚ(x)` with rational `f = f_num/f_den`.
+///
+/// Returns the reduced `(numerator, denominator)` of `v`, or `None`.
+///
+/// # `None` is not a proof
+///
+/// This two-valued shim collapses *"proved there is no rational solution"* and
+/// *"the solver declined"* into the same `None`.  Turning that `None` into a
+/// non-elementarity certificate is a soundness bug; use
+/// [`solve_rational_rde_generalized_checked`] and match on [`RdeOutcome`].
+pub fn solve_rational_rde_generalized(
+    f_num: &QPoly,
+    f_den: &QPoly,
+    c_num: &QPoly,
+    c_den: &QPoly,
+) -> Option<(QPoly, QPoly)> {
+    solve_rational_rde_generalized_checked(f_num, f_den, c_num, c_den).solution()
 }
 
 // ---------------------------------------------------------------------------
@@ -1335,6 +1744,162 @@ mod tests {
             trim(vd.clone()),
             poly_one(),
             "denominator should be 1, got {vd:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Resonant poles of `f`: the denominator of `v` is not bounded by `c` alone
+    // -----------------------------------------------------------------------
+
+    /// Assert `v = num/den` really solves `v' + (f_num/f_den)·v = c_num/c_den`,
+    /// by exact polynomial identity — not by comparing against an expected
+    /// display form.
+    ///
+    /// `v' + f·v = c`  ⟺  `f_den·c_den·(num'·den − num·den') + f_num·c_den·num·den
+    ///                      = c_num·f_den·den²`.
+    fn assert_solves(
+        f_num: &QPoly,
+        f_den: &QPoly,
+        c_num: &QPoly,
+        c_den: &QPoly,
+        num: &QPoly,
+        den: &QPoly,
+    ) {
+        let lhs = poly_add(
+            &poly_mul(
+                &poly_mul(f_den, c_den),
+                &poly_sub(
+                    &poly_mul(&poly_deriv(num), den),
+                    &poly_mul(num, &poly_deriv(den)),
+                ),
+            ),
+            &poly_mul(&poly_mul(f_num, c_den), &poly_mul(num, den)),
+        );
+        let rhs = poly_mul(&poly_mul(c_num, f_den), &poly_mul(den, den));
+        assert!(
+            polys_equal(&lhs, &rhs),
+            "v = ({num:?})/({den:?}) does not satisfy the RDE"
+        );
+    }
+
+    /// `v' + (1/x + 1)·v = 1` — the RDE behind `∫ x·eˣ dx = (x−1)·eˣ`.
+    ///
+    /// `c = 1`, so the classical `E = gcd(D, D')` bound admits only *polynomial*
+    /// `v`; the true solution `v = (x−1)/x` has a simple pole at `0`, forced by
+    /// `f`'s residue `1` there.  Before the resonance analysis this returned
+    /// `None`, which the exp-tower caller turned into a false `E-INT-004`.
+    #[test]
+    fn gen_rde_resonant_simple_pole_kappa1() {
+        let f_num = vec![rat(1), rat(1)]; // 1 + x   (f = 1/x + 1)
+        let f_den = vec![rat(0), rat(1)]; // x
+        let c_num = poly_one();
+        let c_den = poly_one();
+        let (vn, vd) = match solve_rational_rde_generalized_checked(&f_num, &f_den, &c_num, &c_den)
+        {
+            RdeOutcome::Solved { num, den } => (num, den),
+            other => panic!("expected v = (x−1)/x, got {other:?}"),
+        };
+        assert_eq!(trim(vn.clone()), vec![rat(-1), rat(1)], "numerator ≠ x−1");
+        assert_eq!(trim(vd.clone()), vec![rat(0), rat(1)], "denominator ≠ x");
+        assert_solves(&f_num, &f_den, &c_num, &c_den, &vn, &vd);
+    }
+
+    /// `v' + (2/x + 1)·v = 1` — the RDE behind `∫ x²·eˣ dx = (x²−2x+2)·eˣ`.
+    /// Residue `2` at `0` ⇒ `v` has a *double* pole there.
+    #[test]
+    fn gen_rde_resonant_simple_pole_kappa2() {
+        let f_num = vec![rat(2), rat(1)]; // 2 + x   (f = 2/x + 1)
+        let f_den = vec![rat(0), rat(1)]; // x
+        let c_num = poly_one();
+        let c_den = poly_one();
+        let (vn, vd) = match solve_rational_rde_generalized_checked(&f_num, &f_den, &c_num, &c_den)
+        {
+            RdeOutcome::Solved { num, den } => (num, den),
+            other => panic!("expected v = (x²−2x+2)/x², got {other:?}"),
+        };
+        assert_eq!(
+            trim(vn.clone()),
+            vec![rat(2), rat(-2), rat(1)],
+            "numerator ≠ x²−2x+2"
+        );
+        assert_eq!(
+            trim(vd.clone()),
+            vec![rat(0), rat(0), rat(1)],
+            "denominator ≠ x²"
+        );
+        assert_solves(&f_num, &f_den, &c_num, &c_den, &vn, &vd);
+    }
+
+    /// The resonant poles need not be rational: `f = 2x/(x²+1) + 1` has residue
+    /// `1` at each of `±i`, and `∫ (x²+1)·eˣ dx = (x²−2x+3)·eˣ` needs
+    /// `v = (x²−2x+3)/(x²+1)`.  This is the case a rational-root test on the
+    /// residue would miss and the GCD formulation catches.
+    #[test]
+    fn gen_rde_resonant_pole_irrational() {
+        // f = (x² + 2x + 1)/(x² + 1).
+        let f_num = vec![rat(1), rat(2), rat(1)];
+        let f_den = vec![rat(1), rat(0), rat(1)];
+        let c_num = poly_one();
+        let c_den = poly_one();
+        let (vn, vd) = match solve_rational_rde_generalized_checked(&f_num, &f_den, &c_num, &c_den)
+        {
+            RdeOutcome::Solved { num, den } => (num, den),
+            other => panic!("expected v = (x²−2x+3)/(x²+1), got {other:?}"),
+        };
+        assert_eq!(trim(vn.clone()), vec![rat(3), rat(-2), rat(1)]);
+        assert_eq!(trim(vd.clone()), vec![rat(1), rat(0), rat(1)]);
+        assert_solves(&f_num, &f_den, &c_num, &c_den, &vn, &vd);
+    }
+
+    /// A *negative* residue is not a resonance (a pole of `v` needs `ν < 0`,
+    /// i.e. `ρ = −ν > 0`), so `∫ eˣ/x dx = Ei(x)` stays proved non-elementary.
+    /// This is the guard that the wider denominator bound has not turned an
+    /// honest `NoRationalSolution` into a decline.
+    #[test]
+    fn gen_rde_negative_residue_still_proves_no_solution() {
+        // f = 1 − 1/x = (x − 1)/x.
+        let f_num = vec![rat(-1), rat(1)];
+        let f_den = vec![rat(0), rat(1)];
+        let out = solve_rational_rde_generalized_checked(&f_num, &f_den, &poly_one(), &poly_one());
+        assert_eq!(
+            out,
+            RdeOutcome::NoRationalSolution,
+            "∫ eˣ/x dx must stay *proved* non-elementary"
+        );
+        assert!(out.proves_no_solution());
+    }
+
+    /// A residue past the internal search cap must **decline**, never certify.
+    /// `f = 1 + 4000/x` has residue `4000` at `0`; the honest answer is
+    /// `Declined`, and `proves_no_solution()` must be false.
+    #[test]
+    fn gen_rde_huge_residue_declines_rather_than_certifies() {
+        let f_num = vec![rat(4000), rat(1)]; // 4000 + x
+        let f_den = vec![rat(0), rat(1)]; // x
+        let out = solve_rational_rde_generalized_checked(&f_num, &f_den, &poly_one(), &poly_one());
+        assert!(
+            out.is_declined(),
+            "a residue past the cap must decline; got {out:?}"
+        );
+        assert!(
+            !out.proves_no_solution(),
+            "a decline must never license a NonElementary certificate"
+        );
+        // The two-valued shim collapses this to `None` — which is exactly why
+        // callers must not read `None` as a proof.
+        assert!(solve_rational_rde_generalized(&f_num, &f_den, &poly_one(), &poly_one()).is_none());
+    }
+
+    /// The polynomial-`f` entry point keeps its (already sound) proof strength:
+    /// `∫ eˣ/x` restated as `v' + v = 1/x`.
+    #[test]
+    fn poly_rde_checked_proves_no_solution() {
+        let f = poly_one(); // f = 1
+        let c_num = poly_one();
+        let c_den = vec![rat(0), rat(1)]; // 1/x
+        assert_eq!(
+            solve_rational_rde_checked(&f, &c_num, &c_den),
+            RdeOutcome::NoRationalSolution
         );
     }
 
