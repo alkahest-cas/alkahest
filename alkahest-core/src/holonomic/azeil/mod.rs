@@ -22,7 +22,7 @@
 //! | shift `k → k+1`, `Δ_k` | derivation `D_x` |
 //! | proper hypergeometric term | hyperexponential term ([`mod@hyperexp`]) |
 //! | Gosper's algorithm | differential Gosper (`dgosper`) |
-//! | [`super::boundary`] | `boundary` |
+//! | [`mod@super::boundary`] | [`mod@boundary`] |
 //!
 //! # Module layout
 //!
@@ -37,7 +37,7 @@
 //! - `dgosper` — the indefinite case: decide whether `∫F dx = R·F` for a
 //!   rational `R`, and return it. This is `J = 0` with `a_0` normalised to `1`.
 //! - [`mod@search`] — [`almkvist_zeilberger`] itself, ascending in `J` from `0`.
-//! - `boundary` — the continuous analogue of [`super::boundary`]: deciding
+//! - [`mod@boundary`] — the continuous analogue of [`mod@super::boundary`]: deciding
 //!   whether `[R·F]_a^b` vanishes, so that the certificate becomes a recurrence
 //!   for `f(n) = ∫_a^b F(n,x) dx` rather than a statement about the integrand
 //!   alone.
@@ -54,9 +54,9 @@
 //! The certificate says nothing about it: `R·F` is a perfectly good
 //! antiderivative of the left-hand side whether or not it happens to vanish at
 //! the limits, and whether or not the integral converges there at all.
-//! `boundary::integral_boundary_status` decides it three-valued, in the same
+//! [`boundary::integral_boundary_status`] decides it three-valued, in the same
 //! discipline as the discrete module — see its docs, and do not read
-//! `boundary::IntegralBoundaryStatus::Unknown` as a vanishing boundary.
+//! [`boundary::IntegralBoundaryStatus::Unknown`] as a vanishing boundary.
 //!
 //! # Honest limitations (read before relying on this)
 //!
@@ -95,9 +95,9 @@
 //!   not the cost-ordered iterative deepening [`mod@super::zeilberger`] uses, so
 //!   raising `max_degree` is not free the way it is there.
 //! - **Boundary**: only constant (`n`-independent) limits are analysed, and
-//!   only the endpoint kinds `boundary` documents. Convergence conditions on
+//!   only the endpoint kinds [`mod@boundary`] documents. Convergence conditions on
 //!   `n` are *reported*, not silently assumed — see
-//!   `boundary::IntegralBoundaryStatus::side_conditions`.
+//!   [`boundary::IntegralBoundaryStatus::side_conditions`].
 //! - **Rust-internal**: there is no PyO3 binding for any of this yet.
 //!
 //! Every certificate returned by any entry point in this module has been
@@ -105,11 +105,13 @@
 //! [`super::zeilberger::zeilberger()`] does. A successful call is a proof; an
 //! unverifiable candidate is discarded and the search continues.
 
+pub mod boundary;
 pub mod dgosper;
 pub mod hyperexp;
 pub mod rde;
 pub mod search;
 
+pub use boundary::{integral_boundary_status, IntegralBoundaryStatus, IntegrationLimit};
 pub use dgosper::{dgosper, dgosper_term};
 pub use hyperexp::{hyperexp_log_derivative, HyperExpTerm, PowerFactor};
 pub use search::{almkvist_zeilberger, integrand_antiderivative, AzResult};

@@ -74,8 +74,9 @@ pub mod telescoping2d;
 pub mod zeilberger;
 
 pub use azeil::{
-    almkvist_zeilberger, dgosper, hyperexp_log_derivative, AzOpts, AzResult, DiffTelescopingError,
-    HyperExpTerm, PowerFactor,
+    almkvist_zeilberger, dgosper, hyperexp_log_derivative, integral_boundary_status, AzOpts,
+    AzResult, DiffTelescopingError, HyperExpTerm, IntegralBoundaryStatus, IntegrationLimit,
+    PowerFactor,
 };
 
 pub use asymptotics::{

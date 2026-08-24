@@ -41,7 +41,7 @@
 //! **integrand**. Integrating it over `[a,b]` gives
 //! `Σ_i a_i(n)·f(n+i) = [R·F]_a^b`, so the homogeneous recurrence for
 //! `f(n) = ∫_a^b F dx` needs that boundary term to vanish, which is
-//! `super::boundary`'s question and not this one's. `∫_0^1 x^n dx` is the
+//! [`mod@super::boundary`]'s question and not this one's. `∫_0^1 x^n dx` is the
 //! one-line reminder: the certificate is `R = x/(n+1)` at order `0`, and
 //! `[R·F]_0^1 = 1/(n+1) ≠ 0`, so "the certificate exists" and "the integral
 //! satisfies the homogeneous relation" are genuinely different statements.
@@ -60,7 +60,7 @@ use crate::matrix::normal_form::RatUniPoly;
 ///
 /// The verified content is the **telescoping identity in `x`**. Turning it into
 /// a recurrence for `f(n) = ∫_a^b F(n,x) dx` needs `[R·F]_a^b` to vanish; see
-/// the module docs and `super::boundary`.
+/// the module docs and [`mod@super::boundary`].
 #[derive(Debug, Clone)]
 pub struct AzResult {
     /// Recurrence order `J`; `coeffs.len() == order + 1`.
@@ -87,7 +87,7 @@ pub struct AzResult {
 /// [`almkvist_zeilberger`]. The recurrence for `f(n) = ∫_a^b F(n,x) dx` is
 /// `Σ_i a_i(n)·f(n+i) = G(n,b) − G(n,a)`, so this is exactly what a caller
 /// needs in order to discharge (or refute) the boundary hypothesis for their
-/// own limits by hand — `super::boundary` does it mechanically.
+/// own limits by hand — [`mod@super::boundary`] does it mechanically.
 pub fn integrand_antiderivative(result: &AzResult, term: ExprId, pool: &ExprPool) -> ExprId {
     crate::simplify::simplify(pool.mul(vec![result.certificate, term]), pool).value
 }
