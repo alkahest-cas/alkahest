@@ -105,9 +105,46 @@
 //! [`super::zeilberger::zeilberger()`] does. A successful call is a proof; an
 //! unverifiable candidate is discarded and the search continues.
 
+pub mod dgosper;
 pub mod hyperexp;
+pub mod rde;
 
+pub use dgosper::{dgosper, dgosper_term};
 pub use hyperexp::{hyperexp_log_derivative, HyperExpTerm, PowerFactor};
+
+/// Search bounds for the continuous engine.
+///
+/// All three are upper *bounds*, not starting points: the search walks the
+/// `(order, κ, degree)` grid from the cheapest corner, so raising any of them
+/// only widens what can be found. Unlike [`mod@super::zeilberger`]'s
+/// cost-ordered deepening, though, the walk here is plain ascending nested
+/// loops, so raising `max_degree` genuinely does cost more on an input that
+/// has no certificate at all.
+#[derive(Debug, Clone, Copy)]
+pub struct AzOpts {
+    /// Largest recurrence order `J` to try. Orders are searched from `0`
+    /// upward, so a returned order is the least one reachable within the other
+    /// two bounds. Ignored by [`dgosper()`], where the order is `0` by
+    /// definition.
+    pub max_order: usize,
+    /// Largest degree in `x` of the certificate numerator `P`.
+    pub max_degree: usize,
+    /// Largest power `κ` of `θ`'s denominator admitted in the certificate
+    /// denominator `D^κ·B`. See [`mod@rde`] for what this bound is and is not:
+    /// the denominator's *support* is forced, only its multiplicity is
+    /// searched.
+    pub max_den_power: usize,
+}
+
+impl Default for AzOpts {
+    fn default() -> Self {
+        AzOpts {
+            max_order: 4,
+            max_degree: 12,
+            max_den_power: 3,
+        }
+    }
+}
 
 use std::fmt;
 

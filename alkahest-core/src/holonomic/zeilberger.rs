@@ -239,7 +239,12 @@ fn gosper_normal_form_qn(mut p: PolyK, mut q: PolyK) -> Option<(PolyK, PolyK, Po
 /// structure as `sum::gosper::rational_gaussian_solve`, generalized to `Rn`
 /// pivots/division. A zero column is a free variable, set to zero. Returns
 /// `None` when the system is inconsistent.
-fn field_gaussian_solve(mut mat: Vec<Vec<Rn>>, mut rhs: Vec<Rn>) -> Option<Vec<Rn>> {
+///
+/// Shared with the continuous engine ([`super::azeil::rde`]): the linear
+/// algebra an undetermined-coefficients ansatz needs is the same whether the
+/// unknowns come from Gosper's key equation or from a parametric Risch
+/// differential equation, and there is no reason for two copies of it.
+pub(super) fn field_gaussian_solve(mut mat: Vec<Vec<Rn>>, mut rhs: Vec<Rn>) -> Option<Vec<Rn>> {
     let nrows = mat.len();
     if nrows == 0 {
         return Some(vec![]);
