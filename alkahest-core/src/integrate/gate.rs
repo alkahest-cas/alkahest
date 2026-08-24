@@ -87,6 +87,16 @@
 //!   elliptic block with a *constant* modulus produces an elementary residual
 //!   — but a candidate that keeps a special function in its derivative gets
 //!   [`Verdict::SampledOnly`], explicitly, never a silent pass.
+//! * **A candidate with an interior removable singularity is only covered
+//!   around it.**  The enclosure tier bounds the residual *as written*.  If
+//!   the candidate contains a `1/S(x)` whose `S` vanishes somewhere inside a
+//!   box — which happens even when the residual's true value there is
+//!   perfectly finite — `bound_on_box` refuses on that box.  The gate halves
+//!   and retries, so the certified coverage is the box *minus a
+//!   neighbourhood of the written singularity*, and the gap is visible in the
+//!   `boxes` list.  It is not filled in silently.  (The `∫dx/√(x⁴+1)`
+//!   reduction is a live example: it certifies `[0, 2.2]`, `[−2.2, −1.1]` and
+//!   `[−0.55, 0]`, and leaves `(−1.1, −0.55)` uncovered.)
 //! * **The `f64` tier can be defeated by catastrophic cancellation.**  A
 //!   residual whose true value is `1e-9` and whose evaluation error is `1e-8`
 //!   is indistinguishable from zero at these tolerances.  This is exactly the

@@ -1160,7 +1160,11 @@ fn gate_boxes(p_coeffs: &[f64]) -> Vec<(f64, f64)> {
             boxes.push((mid - 1.0, mid + 1.0));
         }
     }
-    boxes.sort_by(|a, b| (b.1 - b.0).partial_cmp(&(a.1 - a.0)).unwrap());
+    boxes.sort_by(|a, b| {
+        (b.1 - b.0)
+            .partial_cmp(&(a.1 - a.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     boxes
 }
 

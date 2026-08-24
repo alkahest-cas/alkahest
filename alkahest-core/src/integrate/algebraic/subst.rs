@@ -250,7 +250,11 @@ fn domain_boxes(samples: &[f64], in_domain: &dyn Fn(f64) -> bool) -> Vec<(f64, f
     if let Some((lo, hi)) = run.take() {
         push_box(&mut boxes, lo, hi);
     }
-    boxes.sort_by(|a: &(f64, f64), b: &(f64, f64)| (b.1 - b.0).partial_cmp(&(a.1 - a.0)).unwrap());
+    boxes.sort_by(|a: &(f64, f64), b: &(f64, f64)| {
+        (b.1 - b.0)
+            .partial_cmp(&(a.1 - a.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     boxes.truncate(3);
     boxes
 }
