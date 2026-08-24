@@ -901,10 +901,11 @@ fn needs_log_risch_inner(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
         ExprData::Pow { base, exp } => {
             // log(h)^n for n ≥ 2: needs Risch.
             if let ExprData::Func { ref name, ref args } = pool.get(base) {
-                if name == "log" && args.len() == 1 {
-                    if super::tower::literal_integer(exp, pool).is_some_and(|n| n >= 2) {
-                        return true;
-                    }
+                if name == "log"
+                    && args.len() == 1
+                    && super::tower::literal_integer(exp, pool).is_some_and(|n| n >= 2)
+                {
+                    return true;
                 }
             }
             // `(a·b)^n` (integer n) is the same function as `a^n·b^n`, and the
