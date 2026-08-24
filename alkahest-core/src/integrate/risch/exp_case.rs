@@ -65,10 +65,30 @@ use super::poly_rde::{
     solve_poly_rde_k, split_const_factor, trim, QPoly,
 };
 use super::rational_rde::{
-    expr_to_qrational, poly_gcd, poly_sub, solve_rational_rde, solve_rational_rde_generalized,
-    solve_rational_rde_k,
+    expr_to_qrational, poly_gcd, poly_sub, solve_rational_rde_checked,
+    solve_rational_rde_generalized_checked, solve_rational_rde_k, RdeDecline, RdeOutcome,
 };
 use super::tower::{decompose_wrt_exp, poly_degree, TowerLevel};
+
+/// Turn a Risch-DE **decline** into an `E-INT-001` "not implemented".
+///
+/// A decline says the solver's ansatz or bounds were not provably sufficient —
+/// it is not a statement about the integrand, so it must never become
+/// `NonElementary` (`E-INT-004`).  See [`RdeOutcome`].
+fn rde_declined(reason: &RdeDecline, what: &str) -> IntegrationError {
+    IntegrationError::NotImplemented(format!(
+        "the Risch differential equation for {what} could not be decided: {reason}"
+    ))
+}
+
+/// Human-readable description of the integral one exp-tower RDE stands for.
+fn rde_context(c_expr: ExprId, k: i64, eta: ExprId, pool: &ExprPool) -> String {
+    format!(
+        "∫ {} · exp(η)^{k} dx (η = {})",
+        pool.display(c_expr),
+        pool.display(eta)
+    )
+}
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -242,8 +262,11 @@ fn integrate_exp_tower_rational_eta(
 
         // Polynomial coefficient → polynomial-ansatz generalised RDE.
         if let Some(c_poly) = expr_to_qpoly(c_rest, var, pool) {
-            match solve_rational_rde_generalized(&f_num, &f_den, &c_poly, &poly_one()) {
-                Some((v_num, v_den)) => {
+            match solve_rational_rde_generalized_checked(&f_num, &f_den, &c_poly, &poly_one()) {
+                RdeOutcome::Solved {
+                    num: v_num,
+                    den: v_den,
+                } => {
                     let v_expr = build_rational(&v_num, &v_den, var, pool);
                     let core = build_v_times_exp(v_expr, exp_k_eta, pool);
                     let result = apply_const(k_const, core, pool);
@@ -255,14 +278,20 @@ fn integrate_exp_tower_rational_eta(
                     result_terms.push(result);
                     continue;
                 }
-                None => return Err(non_elementary()),
+                RdeOutcome::NoRationalSolution => return Err(non_elementary()),
+                RdeOutcome::Declined(reason) => {
+                    return Err(rde_declined(&reason, &rde_context(*c_expr, k, eta, pool)))
+                }
             }
         }
 
         // Rational coefficient → rational-ansatz generalised RDE.
         if let Some((c_num, c_den)) = expr_to_qrational(c_rest, var, pool) {
-            match solve_rational_rde_generalized(&f_num, &f_den, &c_num, &c_den) {
-                Some((v_num, v_den)) => {
+            match solve_rational_rde_generalized_checked(&f_num, &f_den, &c_num, &c_den) {
+                RdeOutcome::Solved {
+                    num: v_num,
+                    den: v_den,
+                } => {
                     let v_expr = build_rational(&v_num, &v_den, var, pool);
                     let core = build_v_times_exp(v_expr, exp_k_eta, pool);
                     let result = apply_const(k_const, core, pool);
@@ -274,7 +303,10 @@ fn integrate_exp_tower_rational_eta(
                     result_terms.push(result);
                     continue;
                 }
-                None => return Err(non_elementary()),
+                RdeOutcome::NoRationalSolution => return Err(non_elementary()),
+                RdeOutcome::Declined(reason) => {
+                    return Err(rde_declined(&reason, &rde_context(*c_expr, k, eta, pool)))
+                }
             }
         }
 
@@ -715,8 +747,11 @@ fn integrate_single_exp_term(
     if let Some((c_num, c_den)) = expr_to_qrational(c_rest, var, pool) {
         // f = k·η' is a polynomial in the exp tower.
         let f = poly_scale(&deta.to_vec(), &rug::Rational::from(k));
-        return match solve_rational_rde(&f, &c_num, &c_den) {
-            Some((v_num, v_den)) => {
+        return match solve_rational_rde_checked(&f, &c_num, &c_den) {
+            RdeOutcome::Solved {
+                num: v_num,
+                den: v_den,
+            } => {
                 let v_expr = build_rational(&v_num, &v_den, var, pool);
                 let core = build_v_times_exp(v_expr, exp_k_eta, pool);
                 let result = apply_const(k_const, core, pool);
@@ -727,7 +762,11 @@ fn integrate_single_exp_term(
                 ));
                 Ok(result)
             }
-            None => Err(non_elementary()),
+            RdeOutcome::NoRationalSolution => Err(non_elementary()),
+            RdeOutcome::Declined(reason) => Err(rde_declined(
+                &reason,
+                &format!("∫ {} · exp(η)^{k} dx", pool.display(c_expr)),
+            )),
         };
     }
 
@@ -913,7 +952,7 @@ fn try_poly_in_log_rde(
     pool: &ExprPool,
     log: &mut DerivationLog,
 ) -> Option<Result<ExprId, IntegrationError>> {
-    use super::rational_rde::{expr_to_qrational, solve_rational_rde};
+    use super::rational_rde::{expr_to_qrational, solve_rational_rde_checked};
     use super::tower::{decompose_as_log_poly, find_generators};
 
     // Check that c_rest has exactly one log generator.
@@ -971,8 +1010,9 @@ fn try_poly_in_log_rde(
             }
         };
 
-        match solve_rational_rde(&f, &cj_num, &cj_den) {
-            Some(sol) => {
+        match solve_rational_rde_checked(&f, &cj_num, &cj_den) {
+            RdeOutcome::Solved { num, den } => {
+                let sol = (num, den);
                 a[j] = Some(sol);
                 // Compute the correction for the next lower degree:
                 // rhs[j−1] -= j·(h'/h)·aⱼ
@@ -996,13 +1036,22 @@ fn try_poly_in_log_rde(
                     }
                 }
             }
-            None => {
-                // No rational solution at this level → NonElementary.
+            RdeOutcome::NoRationalSolution => {
+                // *Proved* no rational solution at this level → NonElementary.
                 return Some(Err(IntegrationError::NonElementary(format!(
                     "poly-in-log RDE: no rational solution at degree {j} for \
                      ∫ {} · exp(η)^{k} dx",
                     pool.display(c_expr)
                 ))));
+            }
+            RdeOutcome::Declined(reason) => {
+                return Some(Err(rde_declined(
+                    &reason,
+                    &format!(
+                        "the θ^{j} component of ∫ {} · exp(η)^{k} dx",
+                        pool.display(c_expr)
+                    ),
+                )))
             }
         }
     }
@@ -2404,10 +2453,13 @@ fn try_sqrt_poly_rde(
         ))
     };
 
+    let ctx = || format!("∫ {} · exp(η)^{k} dx", pool.display(c_expr));
+
     // Equation 1: a' + f·a = c₀.
-    let a_sol = match solve_rational_rde(&f, &c0.0, &c0.1) {
-        Some(s) => s,
-        None => return Some(Err(ne())),
+    let a_sol = match solve_rational_rde_checked(&f, &c0.0, &c0.1) {
+        RdeOutcome::Solved { num, den } => (num, den),
+        RdeOutcome::NoRationalSolution => return Some(Err(ne())),
+        RdeOutcome::Declined(reason) => return Some(Err(rde_declined(&reason, &ctx()))),
     };
 
     // Equation 2: b' + (f + p'/(2p))·b = c₁.
@@ -2418,9 +2470,10 @@ fn try_sqrt_poly_rde(
         &p_prime,
     );
     let f_eff_den = poly_scale(&p_poly, &rug::Rational::from(2));
-    let b_sol = match solve_rational_rde_generalized(&f_eff_num, &f_eff_den, &c1.0, &c1.1) {
-        Some(s) => s,
-        None => return Some(Err(ne())),
+    let b_sol = match solve_rational_rde_generalized_checked(&f_eff_num, &f_eff_den, &c1.0, &c1.1) {
+        RdeOutcome::Solved { num, den } => (num, den),
+        RdeOutcome::NoRationalSolution => return Some(Err(ne())),
+        RdeOutcome::Declined(reason) => return Some(Err(rde_declined(&reason, &ctx()))),
     };
 
     // Reconstruct v = a + b·alpha.
@@ -2513,11 +2566,18 @@ fn try_radical_poly_rde(
         if trim(c_num.clone()).is_empty() {
             continue;
         }
+        let ctx = || {
+            format!(
+                "the y^{i} component of ∫ {} · exp(η)^{k} dx",
+                pool.display(c_expr)
+            )
+        };
         let (vn, vd) = if i == 0 {
             // v₀' + f·v₀ = c₀.
-            match solve_rational_rde(&f, &c_num, &c_den) {
-                Some(s) => s,
-                None => return Some(Err(ne())),
+            match solve_rational_rde_checked(&f, &c_num, &c_den) {
+                RdeOutcome::Solved { num, den } => (num, den),
+                RdeOutcome::NoRationalSolution => return Some(Err(ne())),
+                RdeOutcome::Declined(reason) => return Some(Err(rde_declined(&reason, &ctx()))),
             }
         } else {
             // f_eff = f + (i/n)·a'/a = (n·a·f + i·a') / (n·a).
@@ -2526,9 +2586,10 @@ fn try_radical_poly_rde(
                 &poly_scale(&a_prime, &rug::Rational::from(i as i64)),
             );
             let f_eff_den = poly_scale(&a, &rug::Rational::from(n as i64));
-            match solve_rational_rde_generalized(&f_eff_num, &f_eff_den, &c_num, &c_den) {
-                Some(s) => s,
-                None => return Some(Err(ne())),
+            match solve_rational_rde_generalized_checked(&f_eff_num, &f_eff_den, &c_num, &c_den) {
+                RdeOutcome::Solved { num, den } => (num, den),
+                RdeOutcome::NoRationalSolution => return Some(Err(ne())),
+                RdeOutcome::Declined(reason) => return Some(Err(rde_declined(&reason, &ctx()))),
             }
         };
         if trim(vn.clone()).is_empty() {
@@ -3340,6 +3401,137 @@ mod tests {
 
     fn pool() -> ExprPool {
         ExprPool::new()
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap F resonance: η with a logarithmic part gives `f = k·η'` a simple pole
+    // with a *positive integer* residue, so the solution `v` has a pole the
+    // right-hand side `c` does not predict.  Before the resonance analysis in
+    // `rational_rde::resonant_denominator` these all returned a **false**
+    // `NonElementary` (`E-INT-004`) from the public `integrate` entry point.
+    // -----------------------------------------------------------------------
+
+    /// `exp(x + log x)` etc., through the full public engine, checked by
+    /// **differentiating the answer** — never by comparing display strings.
+    ///
+    /// The gate is `verify_antiderivative_status`: `Exact` when the residual
+    /// `d/dx F − f` simplifies to zero, otherwise a multi-point numeric
+    /// identity.  These integrands need the second: the residual is genuinely
+    /// zero but closing it symbolically needs `exp(log u) = u` inside the
+    /// exp-tower generator, which the simplifier does not apply here.
+    fn assert_integrates_and_verifies(build: &dyn Fn(ExprId, &ExprPool) -> ExprId) {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let integrand = build(x, &pool);
+        let f = crate::integrate::integrate(integrand, x, &pool)
+            .unwrap_or_else(|e| panic!("∫ {} dx must be elementary: {e}", pool.display(integrand)));
+        assert!(
+            crate::integrate::verify_antiderivative_status(f.value, integrand, x, &pool).is_some(),
+            "d/dx {} ≠ {}",
+            pool.display(f.value),
+            pool.display(integrand)
+        );
+    }
+
+    fn log_x(x: ExprId, pool: &ExprPool) -> ExprId {
+        pool.func("log", vec![x])
+    }
+
+    /// `∫ exp(x + log x) dx = (x−1)·eˣ` (the integrand *is* `x·eˣ`).
+    /// RDE: `v' + (1/x + 1)·v = 1`, residue `1` at `0`.
+    #[test]
+    fn resonant_eta_log_x_end_to_end() {
+        assert_integrates_and_verifies(&|x, pool| {
+            let eta = pool.add(vec![x, log_x(x, pool)]);
+            pool.func("exp", vec![eta])
+        });
+    }
+
+    /// `∫ exp(x + 2·log x) dx = (x²−2x+2)·eˣ`.  Residue `2` at `0` ⇒ a *double*
+    /// pole in `v`.
+    #[test]
+    fn resonant_eta_two_log_x_end_to_end() {
+        assert_integrates_and_verifies(&|x, pool| {
+            let two_log = pool.mul(vec![pool.integer(2_i32), log_x(x, pool)]);
+            let eta = pool.add(vec![x, two_log]);
+            pool.func("exp", vec![eta])
+        });
+    }
+
+    /// `∫ exp(x + log(x²+1)) dx`: the resonant poles are `±i`, not rational.
+    #[test]
+    fn resonant_eta_log_quadratic_end_to_end() {
+        assert_integrates_and_verifies(&|x, pool| {
+            let x2p1 = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(1_i32)]);
+            let eta = pool.add(vec![x, pool.func("log", vec![x2p1])]);
+            pool.func("exp", vec![eta])
+        });
+    }
+
+    /// `∫ x·exp(x + log x) dx = (x²−2x+2)·eˣ` — the resonance combined with a
+    /// non-constant right-hand side.
+    #[test]
+    fn resonant_eta_with_polynomial_coefficient_end_to_end() {
+        assert_integrates_and_verifies(&|x, pool| {
+            let eta = pool.add(vec![x, log_x(x, pool)]);
+            pool.mul(vec![x, pool.func("exp", vec![eta])])
+        });
+    }
+
+    /// `∫ exp(x + log x)/x dx = eˣ` — a *rational* right-hand side with the
+    /// resonant coefficient.
+    #[test]
+    fn resonant_eta_with_rational_coefficient_end_to_end() {
+        assert_integrates_and_verifies(&|x, pool| {
+            let eta = pool.add(vec![x, log_x(x, pool)]);
+            let e = pool.func("exp", vec![eta]);
+            pool.mul(vec![e, pool.pow(x, pool.integer(-1_i32))])
+        });
+    }
+
+    /// The wider denominator bound must not weaken the honest negatives.
+    /// `exp(x − log x) = eˣ/x`, whose integral is `Ei(x)`: the residue is `−1`,
+    /// not a positive integer, so there is no resonance and `E-INT-004` stands.
+    #[test]
+    fn negative_residue_eta_stays_certified_nonelementary() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let neg_log = pool.mul(vec![pool.integer(-1_i32), log_x(x, &pool)]);
+        let eta = pool.add(vec![x, neg_log]);
+        let integrand = pool.func("exp", vec![eta]);
+        let err = crate::integrate::integrate(integrand, x, &pool)
+            .expect_err("∫ eˣ/x dx is not elementary");
+        assert!(
+            matches!(err, IntegrationError::NonElementary(_)),
+            "∫ exp(x − log x) dx must stay a *proved* NonElementary; got {err:?}"
+        );
+    }
+
+    /// **Contract pin**: a decline must never surface as `E-INT-004`.
+    ///
+    /// `exp(x + 4000·log x)` is `x⁴⁰⁰⁰·eˣ`, which *is* elementary — but the
+    /// residue `4000` is past the solver's internal resonance-search cap, so
+    /// the denominator bound is not provably complete.  The only honest answer
+    /// is a decline (`E-INT-001`).  Reporting `NonElementary` here would be a
+    /// wrong theorem about a perfectly elementary integrand.
+    #[test]
+    fn declined_resonance_search_is_not_a_nonelementary_certificate() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let big_log = pool.mul(vec![pool.integer(4000_i32), log_x(x, &pool)]);
+        let eta = pool.add(vec![x, big_log]);
+        let integrand = pool.func("exp", vec![eta]);
+        match crate::integrate::integrate(integrand, x, &pool) {
+            Ok(f) => assert!(
+                crate::integrate::verify_antiderivative_exact(f.value, integrand, x, &pool),
+                "if it answers at all the answer must verify"
+            ),
+            Err(IntegrationError::NotImplemented(_)) => {}
+            Err(other) => panic!(
+                "∫ x⁴⁰⁰⁰·eˣ dx is elementary — a decline is acceptable, \
+                 a NonElementary certificate is not; got {other:?}"
+            ),
+        }
     }
 
     // -- degree-d radical decomposition (decompose_over_alpha generalization) --

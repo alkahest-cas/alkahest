@@ -182,6 +182,50 @@
   disabling the cumulative one takes `large_attempted` from 1 to 6 (and the
   test from under a second to 131 s) and fails it; disabling the per-probe
   one fails it too.
+- **`integrate` could emit a false `E-INT-004` ("no elementary antiderivative
+  exists") for an integrand that has one.** `∫ exp(x + log x) dx` — which is
+  just `∫ x·eˣ dx = (x−1)·eˣ` — was certified non-elementary. So were
+  `exp(x + 2·log x)`, `exp(x + log(x²+1))`, and `exp(x + log x)/x`, whose
+  antiderivative is plain `eˣ`.
+
+  The rational Risch DE solver bounds the denominator of a solution `v` of
+  `v' + f·v = c` by `E = gcd(D, D')`, `D` the denominator of `c` (Bronstein
+  §6.1). That bound is exact **only when `f` is a polynomial**. When `f` has a
+  *simple pole with a positive integer residue* `ρ`, the leading terms of `v'`
+  and `f·v` cancel and `v` acquires a pole of order `ρ` at a point `c` is
+  regular at — a pole the ansatz `v = N/E` cannot represent. `v' + (2/x+1)·v = 1`
+  has `c = 1`, hence `E = 1`, yet its solution is `(x²−2x+2)/x²`. The solver
+  returned "no rational solution", and the exp-tower caller turned that into a
+  certificate. An exponent with a logarithmic part (`η = x + log x` ⇒
+  `f = η' = 1 + 1/x`) is exactly how a user reaches it.
+
+  Two independent fixes:
+
+  1. **The denominator bound now accounts for `f`'s poles.**
+     `rational_rde::resonant_denominator` computes `∏_k gcd(d₁, A − k·d₁'·W)^k`
+     over the positive integers `k` — Bronstein §6.1's `WeakNormalizer`, with
+     the Rothstein–Trager resultant replaced by an eigenvalue bound on the
+     residue element of `ℚ[x]/(d₁)` plus a direct GCD test, so resonant poles at
+     *irrational* points (e.g. residue 1 at `±i` for `f = 2x/(x²+1)`) are found
+     too. The degree bound is likewise now derived from the valuation argument
+     at infinity rather than a generous estimate.
+
+  2. **The solvers' return type no longer conflates a decline with a proof.**
+     `RdeOutcome` is three-valued — `Solved`, `NoRationalSolution` (*proved*, and
+     the only outcome that may license `NonElementary`) and `Declined` (nothing
+     may be concluded, mapped to `E-INT-001`). The two-valued
+     `solve_rational_rde` / `solve_rational_rde_generalized` remain as shims for
+     source compatibility and are documented as unsafe to conclude from; new
+     code should use `solve_rational_rde_checked` /
+     `solve_rational_rde_generalized_checked`. Every call site in
+     `risch::exp_case` and `risch::simple_radical` was rewired so only a
+     *proved* non-existence can produce `E-INT-004`.
+
+  A residue past the internal resonance-search cap now **declines** rather than
+  certifying: `∫ x⁴⁰⁰⁰·eˣ dx` written as `∫ exp(x + 4000·log x) dx` reports
+  `E-INT-001`, which is the honest weaker verdict. No verdict on the 40-case
+  integration probe moved between `E-INT-004` and `E-INT-001` (27 solved / 7 /
+  6, unchanged).
 
 - **`integrate` no longer lets the *spelling* of an integrand decide the
   answer.** Three separate defects combined into one user-visible failure mode:

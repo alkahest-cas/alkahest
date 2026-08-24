@@ -236,9 +236,16 @@ impl DifferentialField for RationalDiffField {
     /// Solve `D(y) + f·y = g` over `ℚ(x)` by wrapping
     /// [`solve_rational_rde_generalized`].
     ///
-    /// The underlying routine is a decision procedure for a *rational* solution:
-    /// `None` means no `y ∈ ℚ(x)` satisfies the equation (e.g. `f = 0, g = 1/x`
-    /// ⇒ `∫1/x = log x ∉ ℚ(x)`).
+    /// # `None` is not a proof
+    ///
+    /// `None` merges *"no `y ∈ ℚ(x)` satisfies the equation"* (e.g. `f = 0`,
+    /// `g = 1/x` ⇒ `∫1/x = log x ∉ ℚ(x)`) with *"the solver declined"*.  Every
+    /// caller of this trait method treats `None` as **not applicable** and falls
+    /// through to another strategy, never as a non-elementarity certificate; a
+    /// caller that wants the distinction must use
+    /// [`solve_rational_rde_generalized_checked`](super::rational_rde::solve_rational_rde_generalized_checked)
+    /// and match on
+    /// [`RdeOutcome`](super::rational_rde::RdeOutcome).
     fn rational_rde(&self, f: &RatFn, g: &RatFn) -> Option<RatFn> {
         let (num, den) =
             solve_rational_rde_generalized(f.numer(), f.denom(), g.numer(), g.denom())?;
