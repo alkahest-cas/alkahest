@@ -162,9 +162,11 @@ def test_max_bytes_trips_telescope_md_with_a_coded_error(pool):
     from alkahest.experimental import telescope_md
 
     term, n, xs = multinomial(pool, 3)
-    with ak.context(budget=ak.Budget(max_bytes=1 << 20)):
-        with pytest.raises(ak.BudgetExceededError) as exc:
-            telescope_md(term, n, xs)
+    with (
+        ak.context(budget=ak.Budget(max_bytes=1 << 20)),
+        pytest.raises(ak.BudgetExceededError) as exc,
+    ):
+        telescope_md(term, n, xs)
     assert exc.value.code == "E-BUDGET-004"
     assert "max_bytes" in (exc.value.remediation or "")
 
@@ -226,9 +228,8 @@ def test_q_zeilberger_honours_a_wall_budget(pool):
 
     q, n, k = pool.symbol("q"), pool.symbol("n"), pool.symbol("k")
     term = qbinomial(pool, pool.integer(2) * n, k)
-    with ak.context(budget=ak.Budget(wall_ms=300)):
-        with pytest.raises(ak.BudgetExceededError) as exc:
-            q_zeilberger(term, q, n, k, max_order=3, max_degree=6)
+    with ak.context(budget=ak.Budget(wall_ms=300)), pytest.raises(ak.BudgetExceededError) as exc:
+        q_zeilberger(term, q, n, k, max_order=3, max_degree=6)
     assert exc.value.code == "E-BUDGET-001"
 
 
@@ -253,9 +254,18 @@ def test_prove_nonneg_honours_a_wall_budget(pool):
         - pool.integer(3) * sq(x) * sq(y) * sq(z)
         + sq(z) * sq(z) * sq(z)
     )
-    with ak.context(budget=ak.Budget(wall_ms=1000)):
-        with pytest.raises(ak.BudgetExceededError) as exc:
-            ak.prove_nonneg(motzkin, [x, y, z])
+    # 100 ms, not 1000. This test was written against a build where this call
+    # ran 418 s, so a 1 s budget was unmissable -- but the half-Newton-polytope
+    # reduction landing in the same round made it *succeed* in ~0.95 s, which
+    # turned "1000 ms is exceeded" into a coin flip. The point here is that a
+    # budget stop surfaces as BudgetExceededError / E-BUDGET-001 rather than
+    # E-SOS-002, so any budget well under the real cost proves it; measured
+    # 4/4 at each of 1, 10, 50 and 100 ms.
+    with (
+        ak.context(budget=ak.Budget(wall_ms=100)),
+        pytest.raises(ak.BudgetExceededError) as exc,
+    ):
+        ak.prove_nonneg(motzkin, [x, y, z])
     assert exc.value.code == "E-BUDGET-001"
 
 

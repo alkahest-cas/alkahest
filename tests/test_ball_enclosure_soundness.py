@@ -231,12 +231,9 @@ def test_wide_ball_enclosures_contain_externally_verified_values(pool, x):
             continue  # a refusal is sound; it claims nothing
         if not _encloses(ball, Decimal(truth)):
             failures.append(
-                f"{name} over [{lo}, {hi}]: [{ball.lo}, {ball.hi}] "
-                f"excludes f({witness}) = {truth}"
+                f"{name} over [{lo}, {hi}]: [{ball.lo}, {ball.hi}] excludes f({witness}) = {truth}"
             )
-    assert not failures, "wide ball excluded a value inside its box:\n" + "\n".join(
-        failures
-    )
+    assert not failures, "wide ball excluded a value inside its box:\n" + "\n".join(failures)
 
 
 def test_pow_over_a_base_that_changes_sign(pool, x):
@@ -350,6 +347,4 @@ def test_a_wide_ball_encloses_every_point_ball_inside_it(pool, x):
                     f"but at x={at} the value is in [{point.lo}, {point.hi}]"
                 )
                 break
-    assert not failures, "box enclosure does not contain a point inside it:\n" + "\n".join(
-        failures
-    )
+    assert not failures, "box enclosure does not contain a point inside it:\n" + "\n".join(failures)

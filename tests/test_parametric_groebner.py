@@ -472,7 +472,7 @@ def test_a_denominator_in_a_ring_variable_is_still_refused(pool):
 
     gb = ak.GroebnerBasis.compute([a * x - one], [x], params=[a])
     with pytest.raises(ValueError, match="negative exponent"):
-        gb.contains(x ** -1)
+        gb.contains(x**-1)
 
 
 def test_parametric_input_may_be_rational_in_the_parameters(pool):
@@ -480,7 +480,7 @@ def test_parametric_input_may_be_rational_in_the_parameters(pool):
     one = pool.integer(1)
 
     # x - 1/a is the same ideal as a*x - 1, written with a denominator.
-    gb = ak.GroebnerBasis.compute([x - a ** -1], [x], params=[a])
+    gb = ak.GroebnerBasis.compute([x - a**-1], [x], params=[a])
     assert gb.contains(a * x - one) is True
 
 
@@ -566,7 +566,7 @@ def test_verify_still_refuses_a_genuinely_singular_point(cramer):
 
 
 def test_verify_agrees_with_the_direct_basis_where_it_accepts(pool, cramer):
-    a, b, c, d = (pool.symbol(s) for s in "abcd")
+    _a, _b, _c, _d = (pool.symbol(s) for s in "abcd")
     x, y = pool.symbol("x"), pool.symbol("y")
     one = pool.integer(1)
 
@@ -631,7 +631,7 @@ def _decay_dae(pool):
 
 def test_rosenfeld_groebner_accepts_params(pool):
     """Issue #16: this raised TypeError -- M9 did not compose with V2-13."""
-    dae, x, _y, a = _decay_dae(pool)
+    dae, _x, _y, a = _decay_dae(pool)
 
     r = ak.rosenfeld_groebner(dae, params=[a], max_prolong_rounds=1, order="lex")
 
@@ -646,13 +646,9 @@ def test_rosenfeld_groebner_accepts_params(pool):
 def test_rosenfeld_groebner_parametric_gives_the_io_relation(pool):
     dae, x, y, a = _decay_dae(pool)
 
-    r = ak.rosenfeld_groebner(
-        dae, params=[a], eliminate=[x], minimal=True, order="lex"
-    )
+    r = ak.rosenfeld_groebner(dae, params=[a], eliminate=[x], minimal=True, order="lex")
     basis = r.final_basis()
-    state_jets = [
-        v for v in r.variables() if str(v).lstrip("d").split("/")[0] == "x"
-    ]
+    state_jets = [v for v in r.variables() if str(v).lstrip("d").split("/")[0] == "x"]
     io = basis.eliminate(state_jets)
 
     assert len(io) == 1
@@ -665,7 +661,11 @@ def test_rosenfeld_groebner_minimal_stops_at_the_first_informative_round(pool):
     dae, x, _y, a = _decay_dae(pool)
 
     minimal = ak.rosenfeld_groebner(
-        dae, params=[a], eliminate=[x], minimal=True, max_prolong_rounds=3,
+        dae,
+        params=[a],
+        eliminate=[x],
+        minimal=True,
+        max_prolong_rounds=3,
         order="lex",
     )
     assert minimal.minimal_prolongation_rounds == 1
@@ -681,13 +681,10 @@ def test_rosenfeld_groebner_minimal_stops_at_the_first_informative_round(pool):
 
     # Over-supplying is *correct*, just more expensive -- that is exactly why
     # nothing else signals it.
-    state_jets = [
-        v for v in over.variables() if str(v).lstrip("d").split("/")[0] == "x"
-    ]
+    state_jets = [v for v in over.variables() if str(v).lstrip("d").split("/")[0] == "x"]
     assert len(over.final_basis().eliminate(state_jets)) > len(
         minimal.final_basis().eliminate(
-            [v for v in minimal.variables()
-             if str(v).lstrip("d").split("/")[0] == "x"]
+            [v for v in minimal.variables() if str(v).lstrip("d").split("/")[0] == "x"]
         )
     )
 
@@ -701,29 +698,33 @@ def test_rosenfeld_groebner_sir_minimal_matches_the_hand_relation(pool):
     too many, and one too many is four orders of magnitude here.
     """
     t = pool.symbol("t")
-    S, I, R, y0 = (pool.symbol(s) for s in ("S", "I", "R", "y0"))
-    dS, dI, dR, dy0 = (
-        pool.symbol(s) for s in ("dS/dt", "dI/dt", "dR/dt", "dy0/dt")
-    )
+    S, infected, R, y0 = (pool.symbol(s) for s in ("S", "I", "R", "y0"))
+    dS, dI, dR, dy0 = (pool.symbol(s) for s in ("dS/dt", "dI/dt", "dR/dt", "dy0/dt"))
     b, g = pool.symbol("b"), pool.symbol("g")
     dae = ak.DAE.new(
-        [dS + b * S * I, dI - b * S * I + g * I, dR - g * I, y0 - I],
-        [S, I, R, y0],
+        [
+            dS + b * S * infected,
+            dI - b * S * infected + g * infected,
+            dR - g * infected,
+            y0 - infected,
+        ],
+        [S, infected, R, y0],
         [dS, dI, dR, dy0],
         t,
     )
 
     r = ak.rosenfeld_groebner(
-        dae, params=[b, g], eliminate=[S, I, R], minimal=True,
-        max_prolong_rounds=4, order="lex",
+        dae,
+        params=[b, g],
+        eliminate=[S, infected, R],
+        minimal=True,
+        max_prolong_rounds=4,
+        order="lex",
     )
     # Two derivatives of the output, not three.
     assert r.minimal_prolongation_rounds == 2
 
-    state_jets = [
-        v for v in r.variables()
-        if str(v).lstrip("d").split("/")[0] in ("S", "I", "R")
-    ]
+    state_jets = [v for v in r.variables() if str(v).lstrip("d").split("/")[0] in ("S", "I", "R")]
     io = r.final_basis().eliminate(state_jets)
     assert len(io) == 1
 
