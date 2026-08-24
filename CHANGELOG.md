@@ -426,6 +426,53 @@
   `alkahest.experimental.TelescopingMdCertificate`. Experimental, same
   refusal codes as `telescope2d` (`E-HOLO-040`/`041`/`042`).
 
+- **The elliptic route's soundness gate becomes a reusable, graded facility:
+  `integrate::gate`.** The *propose an ansatz → fit the coefficients
+  numerically → snap to rationals → verify symbolically → emit only if the
+  gate passes* pattern lived in one module
+  (`integrate/algebraic/elliptic_output.rs`) as a private boolean check. It is
+  now `alkahest-core/src/integrate/gate.rs`, with a **graded** verdict in
+  place of a boolean: `Proven` (the simplified residual `d/dx F − f` is a
+  syntactic zero), `EnclosureVerified { boxes, residual_bound }` (a *rigorous*
+  bound on `|d/dx F − f|` over stated closed boxes, via Taylor models in
+  outward-rounded ball arithmetic — a statement about a whole interval, not
+  about finitely many points), `SampledOnly { points, tolerance }` (the
+  historical `f64` screen, now named rather than implied), `Failed` (refuted
+  at a specific point) and `Declined` (the gate could not run, and says
+  nothing). `GateOptions::min_strength` is the caller's floor, so a route can
+  demand a rigorous enclosure and decline anything weaker.
+
+  The module documents what each verdict does *and does not* prove. No verdict
+  is a proof of the integral; the rigorous tier can never cover branch points,
+  poles or the unbounded tails, and it refuses anything it cannot
+  Taylor-model rather than passing it silently. Domain-awareness is
+  caller-supplied (samples + predicate + boxes) instead of hardcoded to
+  "radicand positive", and the private numeric evaluator is replaced by one
+  that dispatches through the shared `PrimitiveRegistry`.
+
+  `elliptic_output.rs` is refactored onto it with **no behavioural change** —
+  same acceptance rule, same tolerance, same sample grid, all pre-existing
+  tests unchanged. Cost, measured on a release build: the default gate is
+  ~0.38 ms per candidate, while the rigorous tier costs 1.3 s – 9.9 s, so it
+  is tiered (cheap symbolic check → `f64` screen → enclosure only on
+  survivors) and off by default on that hot path; `try_elliptic_output_with`
+  takes an explicit `GateOptions` for callers who want it. A test certifies
+  all four first-kind reductions to a residual bound of 3e-9 – 8e-9 over boxes
+  strictly inside the radicand-positive region.
+
+- **`∫√(tan x) dx` and the rationalizing-substitution family.** Radicals with
+  a *non-polynomial* radicand previously declined with "radicand P is not a
+  polynomial in the variable". For radicands whose derivative is a rational
+  function of themselves — `tan`, `cot`, `tanh`, `exp` of a linear argument —
+  `uⁿ = g(x)` now rationalizes the integrand, and the `u`-integral is closed
+  either by the existing engine or, where Rothstein–Trager would return an
+  unevaluable `RootSum`, by a fitted **real partial-fraction ansatz**
+  (`log(u − r)`, `log(u² − 2αu + α²+β²)`, `atan((u − α)/β)`, polynomial
+  ladder). The back-substituted result is gate-verified against the original
+  integrand in `x`; `∫√(tan x) dx` comes out in the classical closed form and
+  reaches `EnclosureVerified` with a residual bound of 9.8e-9. A bare `x`
+  outside the radical, a polynomial radicand, and `√(sin x)` all decline.
+
 ## 3.9.0 — 2026-08-14
 
 Everything in this section landed **after `v3.8.0` was tagged and published**,
