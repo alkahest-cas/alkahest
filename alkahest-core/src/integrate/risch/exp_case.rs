@@ -25,6 +25,31 @@
 //! - `∫ x·exp(x²) dx = ½·exp(x²)`  (RDE `v' + 2x·v = x`, solution v = ½)
 //! - `∫ x²·exp(x) dx = (x²−2x+2)·exp(x)`  (constant η' = 1, undetermined coefficients)
 //! - `∫ p(x)·exp(a·x) dx`: always elementary for polynomial p and constant a ≠ 0.
+//!
+//! # Known gap: rational functions *of* the generator
+//!
+//! [`decompose_wrt_exp`](super::tower::decompose_wrt_exp) writes the integrand
+//! as a Laurent polynomial `Σ cₖ(x)·tᵏ` in `t = exp(η)`, with every coefficient
+//! `cₖ` required to lie in the base field `K = ℚ(x)`.  An integrand that is a
+//! *rational function in `t`* — `eˣ/(eˣ+1)`, i.e. `t/(1+t)` — has no such
+//! decomposition and is declined ("coefficient … is not a polynomial or rational
+//! function").
+//!
+//! Bronstein §5.2–5.3 closes this with Hermite reduction in `K[t]` followed by a
+//! Rothstein–Trager residue reduction over `K[t]`, then the RDE on the remaining
+//! Laurent-polynomial part.  That is **not implemented**; the `K(t)` arithmetic
+//! and derivation it would build on already exist in
+//! [`super::tower_field::TExpr`], but the squarefree factorisation, `K[t]` gcd
+//! chain and `K[t][z]` resultant/factorisation it needs do not.
+//!
+//! In the meantime the *sub-case where the reduced integrand is free of `x`* —
+//! `∫ R(t) dt/(η'·t)` for `R` rational — is reached from the elementary
+//! pipeline instead: the derivative-divides u-substitution offers each `exp(η)`
+//! as a substitution candidate and its result is gated on `d/dx F = f`.  That
+//! covers `∫ eˣ/(eˣ+1) dx` and `∫ dx/(1+e⁻ˣ)` but not integrands where `x` and
+//! `t` genuinely interact, nor `∫ e²ˣ/(eˣ+1) dx` and `∫ dx/(eˣ+e⁻ˣ)`, which
+//! additionally need the tower normalised onto a single generator
+//! (`exp(2x) = t²`, `exp(-x) = t⁻¹`).
 
 use crate::deriv::log::{DerivationLog, RewriteStep};
 use crate::integrate::engine::IntegrationError;

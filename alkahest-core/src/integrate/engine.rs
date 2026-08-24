@@ -3407,6 +3407,28 @@ fn collect_usub_candidates(expr: ExprId, var: ExprId, pool: &ExprPool) -> Vec<Ex
 
     collect_usub_inner(expr, var, pool, &mut out, &mut seen);
 
+    // Hyperexponential generators `exp(η)` as substitution candidates.
+    //
+    // `collect_usub_inner` offers `Func` *arguments* and `Pow` *bases*, so an
+    // `exp(η)` that is not itself a top-level `Mul` factor is never tried.  That
+    // is the whole reason `∫ exp(x)/(exp(x)+1) dx` (where `exp(x)` *is* a
+    // top-level factor) and `∫ 1/(1+exp(-x)) dx` (where it is not) behaved
+    // differently for what is, up to `t ↦ 1/t`, the same integral.
+    //
+    // Substituting `t = exp(η)` is the change of variable Bronstein §5.2 makes
+    // to turn `∫ R(x, t) dx` into `∫ R(x, t)/(η'·t) dt`; offering the generator
+    // here closes the sub-case where that reduced integrand is free of `x`, i.e.
+    // a rational function of the generator alone.  It is *not* the full
+    // Hermite-reduction path — see the module note in `risch::exp_case`.
+    //
+    // Appended after the structural candidates so the existing search order (and
+    // therefore every answer the search already found) is unchanged.
+    for level in super::risch::tower::find_generators(expr, var, pool) {
+        if level.is_exp() && seen.insert(level.generator) {
+            factor_candidates.push(level.generator);
+        }
+    }
+
     // Larger candidates (more nodes) first so we prefer the most composite inner
     // function (e.g. x²+1 over x²).
     out.sort_by_key(|&c| std::cmp::Reverse(node_count(c, pool)));
@@ -5985,6 +6007,56 @@ mod tests {
             assert!(
                 pool.display(f).to_string().contains("log(log"),
                 "∫ {src} dx should be log(log x); got {}",
+                pool.display(f)
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Rational functions of a hyperexponential generator, via the `t = exp(η)`
+    // substitution
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rational_functions_of_exp_are_integrable_in_every_spelling() {
+        // ∫ dx/(1+eˣ) and ∫ dx/(1+e⁻ˣ) are `∫ R(t) dt/(η'·t)` with `t = exp(η)`.
+        // `exp(η)` only became reachable as a substitution candidate once it was
+        // offered explicitly — before that, `∫ exp(x)/(exp(x)+1) dx` worked
+        // (there `exp(x)` is a top-level `Mul` factor) while the equal
+        // `∫ 1/(1+exp(-x)) dx` did not.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for src in [
+            "1/(1+exp(-x))",
+            "(1+exp(-x))^(-1)",
+            "1/(exp(x)+1)",
+            "(exp(x)+1)^(-1)",
+            "1/(1+exp(x))",
+            "1/(exp(x)-1)",
+        ] {
+            integrate_and_verify(src, x, &pool);
+        }
+    }
+
+    #[test]
+    fn exp_over_exp_plus_one_in_every_spelling() {
+        // ∫ eˣ/(eˣ+1) dx = log(eˣ+1).  The `/` spelling used to die inside the
+        // exp tower ("coefficient (exp(x) + 1)^-1 … is not a polynomial or
+        // rational function") while `exp(x)·(1+exp(x))^(-1)` succeeded — only
+        // because its unevaluated `(1 · -1)` exponent made `contains_risch_form`
+        // decline, letting it reach the u-substitution.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for src in [
+            "exp(x)/(exp(x)+1)",
+            "exp(x)*(1+exp(x))^(-1)",
+            "((exp(x))^(-1)*(exp(x)+1))^(-1)",
+            "exp(x)/(1+exp(x))",
+        ] {
+            let f = integrate_and_verify(src, x, &pool);
+            assert!(
+                pool.display(f).to_string().contains("log("),
+                "∫ {src} dx should be log(exp(x)+1); got {}",
                 pool.display(f)
             );
         }
