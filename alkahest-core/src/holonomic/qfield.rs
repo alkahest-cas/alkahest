@@ -925,9 +925,9 @@ const MAX_GCD_BITS: u64 = 1 << 20;
 pub enum GcdStop {
     /// An active [`crate::budget`] stopped it.
     Budget(crate::budget::BudgetTrip),
-    /// An operand passed [`MAX_GCD_BITS`]; the payload is the size it reached.
+    /// An operand passed `MAX_GCD_BITS`; the payload is the size it reached.
     Size(u64),
-    /// The active [`GcdWorkScope`] passed [`MAX_GCD_WORK`] units of work.
+    /// The active [`GcdWorkScope`] passed `MAX_GCD_WORK` units of work.
     Work(u64),
 }
 
@@ -947,7 +947,7 @@ thread_local! {
 /// `BINOMIAL_WORK_BUDGET`.
 const MAX_GCD_WORK: u64 = 2_000_000;
 
-/// An opt-in scope for the [`MAX_GCD_WORK`] and [`MAX_GCD_BITS`] ceilings.
+/// An opt-in scope for the `MAX_GCD_WORK` and `MAX_GCD_BITS` ceilings.
 ///
 /// Outside every scope both are **inert**, so an engine that has not asked for
 /// them is bit-for-bit unaffected: `RatK` is shared by the classical

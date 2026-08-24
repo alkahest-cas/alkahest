@@ -25,7 +25,7 @@
 //! * A sub-interval on which the Taylor model runs out of *domain* rather
 //!   than out of function — `asin` at `x = 1`, `sqrt` at `x = 0`, where the
 //!   integrand is finite but some derivative is not — is closed with a
-//!   derivative-free `width × range` bound (see [`super::interval`]).
+//!   derivative-free `width × range` bound (see the private `validated::interval` module).
 //!   Unbounded integrands have no bounded range and are still refused.
 //! * A sub-box that cannot be bounded rigorously (branch cut, pole, or
 //!   domain violation persisting after the box has been bisected far below
@@ -1032,7 +1032,7 @@ fn describe_refusal(
 /// has none at the end of its domain, so no model exists on the last panel
 /// however far it is bisected. Those panels are closed with a `width × range`
 /// bound instead, the range computed by directed-rounding interval arithmetic
-/// ([`super::interval`]) — the one enclosure that needs no derivative. The
+/// (the private `validated::interval` module) — the one enclosure that needs no derivative. The
 /// panel is tiny by then, so the crude bound costs essentially nothing in
 /// width. An integrand that is genuinely unbounded on the panel has no bounded
 /// range, so this never converts a refusal into an unsound answer.
@@ -1122,7 +1122,7 @@ pub fn verified_integral(
                     Some(piece) => Ok(piece),
                     // Failing that, close the panel the crude way: `width ×
                     // range`, with the range computed by directed-rounding
-                    // interval arithmetic (see [`super::interval`]). That needs
+                    // interval arithmetic (see `validated::interval`). That needs
                     // no derivative, so it survives exactly the domain
                     // *boundaries* where the Taylor rules stop — `asin` at
                     // `x = 1`, `sqrt` at `x = 0` — while an integrand that is
