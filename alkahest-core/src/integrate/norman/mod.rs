@@ -49,8 +49,9 @@
 //! 1. **Algebraic independence up front.**  Equating coefficients of monomials
 //!    in the generators is only valid when those generators are algebraically
 //!    independent over `ℚ(x)` (Bronstein, *Structure theorems for parallel
-//!    integration*, JSC 42(7):757–769, 2007).  [`ring`] reduces exponential
-//!    arguments to a `ℤ`-lattice basis and checks logarithm arguments for
+//!    integration*, JSC 42(7):757–769, 2007).  The `ring` submodule reduces
+//!    exponential arguments to a `ℤ`-lattice basis and checks logarithm
+//!    arguments for
 //!    multiplicative independence modulo constants, and declines when it
 //!    cannot certify the condition.  See that module for the details.
 //! 2. **`d/dx F = f` before return**, in two stages.  First the *rebuilt*
@@ -107,8 +108,8 @@
 //!   *are* independent but which the checks cannot certify is declined rather
 //!   than attempted.  `∫f(log 2x, log x)` is the canonical example.
 //! * **Size caps.**  The ansatz box, the common denominator and the linear
-//!   system are capped ([`ring::MAX_GENERATORS`] and the constants in
-//!   [`ansatz`]); exceeding any of them declines with
+//!   system are capped (`ring::MAX_GENERATORS` and the constants in
+//!   `ansatz`); exceeding any of them declines with
 //!   [`DeclineReason::TooLarge`] rather than running to exhaustion.
 //! * **It is not wired into [`crate::integrate::integrate`].**  This is a
 //!   separate entry point on purpose, so its coverage can be measured against

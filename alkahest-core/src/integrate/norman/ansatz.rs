@@ -266,13 +266,21 @@ fn is_exp_monomial(ring: &NormanRing, p: &MultiPoly) -> bool {
     saw
 }
 
+/// `true` for the constant polynomial `1`.
+fn is_unit(p: &MultiPoly) -> bool {
+    p.terms.len() == 1 && p.terms.get(&Vec::new()).is_some_and(|c| *c == 1)
+}
+
 /// `lcm(a, b) = a·(b / gcd(a, b))`.
+///
+/// Only the literal unit is short-circuited.  A *constant* denominator is not
+/// a unit here: `RationalFunction` keeps `3/5` as `3/5`, and clearing against
+/// `lcm(5, x) = x` would leave an inexact division and a spurious decline.
 fn lcm(a: &MultiPoly, b: &MultiPoly) -> Option<MultiPoly> {
-    if a.total_degree() == 0 && a.terms.len() == 1 {
-        // `a` is a non-zero constant: the lcm is `b` up to content.
+    if is_unit(a) {
         return Some(b.clone());
     }
-    if b.total_degree() == 0 && b.terms.len() == 1 {
+    if is_unit(b) {
         return Some(a.clone());
     }
     match a.gcd(b) {
@@ -354,10 +362,7 @@ fn build_expression(
             Err(_) => (MultiPoly::zero(ring.vars.clone()), ring.constant_poly(1)),
         };
         let n_expr = n.to_expr(pool);
-        let is_one = d.total_degree() == 0
-            && d.terms.len() == 1
-            && d.terms.get(&Vec::new()).is_some_and(|c| *c == 1);
-        let body = if is_one {
+        let body = if is_unit(&d) {
             n_expr
         } else {
             let inv = pool.pow(d.to_expr(pool), pool.integer(-1_i32));
