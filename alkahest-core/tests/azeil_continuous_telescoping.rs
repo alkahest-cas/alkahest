@@ -217,3 +217,82 @@ fn out_of_class_refusal_end_to_end() {
         "the n-side refusal has its own stable code"
     );
 }
+
+/// A deterministic round-trip over a small grid of hyperexponential integrands:
+/// for every one the engine accepts, re-derive `θ` and the shift ratios *from
+/// the returned expressions* and re-check
+/// `Σ a_i·r_i = R′ + θ·R` in exact `Q(n)(x)` arithmetic.
+///
+/// The engine already verifies its certificate internally, so what this adds is
+/// the leg the internal check cannot cover: the trip out through `ExprId` and
+/// back. A bug in the `Q(n)(x)` → expression conversion would be invisible to
+/// the internal check and fatal to a caller, and this catches it.
+#[test]
+fn certificate_round_trips_through_the_expression_layer() {
+    use alkahest_cas::holonomic::hyperterm::as_ratk;
+    use alkahest_cas::holonomic::qfield::{ratk_deriv_k, RatK};
+
+    let pool = ExprPool::new();
+    let n = pool.symbol("n", Domain::Real);
+    let x = pool.symbol("x", Domain::Real);
+    let one_minus = pool.add(vec![
+        pool.integer(1_i32),
+        pool.mul(vec![pool.integer(-1_i32), x]),
+    ]);
+
+    let mut accepted = 0usize;
+    for alpha in [1_i32, 2] {
+        for beta in [0_i32, 1] {
+            // (1-x) exponent: 0, 1/2, 3, or n
+            for gamma in 0..4 {
+                for delta in [0_i32, -1] {
+                    let x_exp = pool.add(vec![
+                        pool.mul(vec![pool.integer(alpha), n]),
+                        pool.integer(beta),
+                    ]);
+                    let mut factors = vec![pool.pow(x, x_exp)];
+                    match gamma {
+                        0 => {}
+                        1 => factors.push(pool.pow(one_minus, pool.rational(1, 2))),
+                        2 => factors.push(pool.pow(one_minus, pool.integer(3_i32))),
+                        _ => factors.push(pool.pow(one_minus, n)),
+                    }
+                    if delta != 0 {
+                        factors
+                            .push(pool.func("exp", vec![pool.mul(vec![pool.integer(delta), x])]));
+                    }
+                    let f = pool.mul(factors);
+
+                    let Ok(out) = almkvist_zeilberger(f, n, x, &pool, &AzOpts::default()) else {
+                        continue;
+                    };
+                    accepted += 1;
+                    let r = &out.value;
+
+                    let term = alkahest_cas::experimental::HyperExpTerm::parse(f, n, x, &pool)
+                        .expect("an accepted integrand parses");
+                    let theta = term.theta().expect("theta exists");
+                    let cert = as_ratk(r.certificate, n, x, &pool, 0)
+                        .expect("the certificate is rational in (n, x)");
+
+                    let mut lhs = RatK::zero();
+                    for (i, c) in r.coeffs.iter().enumerate() {
+                        let ai = as_ratk(*c, n, x, &pool, 0).expect("a_i is rational in n");
+                        let ri = term.ratio_n(i as i64).expect("shift ratio");
+                        lhs = lhs.add(&ai.mul(&ri));
+                    }
+                    let rhs = ratk_deriv_k(&cert).add(&theta.mul(&cert));
+                    assert!(
+                        lhs.sub(&rhs).is_zero(),
+                        "round-trip failed for alpha={alpha} beta={beta} gamma={gamma} \
+                         delta={delta}: sum a_i r_i != R' + theta R"
+                    );
+                }
+            }
+        }
+    }
+    assert!(
+        accepted >= 24,
+        "the grid should be well inside the supported class; only {accepted} accepted"
+    );
+}
