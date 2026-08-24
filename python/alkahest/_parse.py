@@ -34,6 +34,39 @@ _INFIX_BP: dict[str, int] = {
     "**": _BP_POW,
 }
 
+
+# ---------------------------------------------------------------------------
+# Unary minus on a literal
+# ---------------------------------------------------------------------------
+
+
+def _negate_literal(pool, operand):
+    """The negation of `operand` if it is an exact numeric literal, else None.
+
+    Prefix ``-`` is otherwise ``Expr.__neg__``, i.e. ``(-1) * operand``, which
+    for a literal operand leaves an unevaluated product in the pool: ``x^(-1)``
+    used to build ``x^(1 * -1)`` while ``1/x`` built ``x^(-1)``.  The two are
+    the same function, but every structural detector that reads an exponent by
+    matching on an integer node saw only the second, so the *spelling* of an
+    integrand decided its route through the integrator.
+
+    Scope is deliberately just integers and rationals, and no arithmetic is
+    evaluated — ``-(2+3)`` keeps its tree.  Mirrors ``negate_literal`` in
+    ``alkahest-core/src/parse.rs``; keep the two in step.
+
+    ``(-1) * literal`` stays reachable through the builder API (``-expr``,
+    ``pool.mul([pool.integer(-1), pool.integer(1)])``), so the detectors keep
+    their own normalising view of an integer exponent.  This is the first of
+    two layers, not a replacement for the second.
+    """
+    node = operand.node()
+    if node[0] == "integer":
+        return pool.integer(-int(node[1]))
+    if node[0] == "rational":
+        return pool.rational(-int(node[1]), int(node[2]))
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Known math functions (one or two arguments)
 # ---------------------------------------------------------------------------
@@ -231,7 +264,8 @@ class _Parser:
 
         if kind == "-":
             operand = self._expr(_BP_UNARY)
-            return -operand
+            folded = _negate_literal(pool, operand)
+            return -operand if folded is None else folded
 
         if kind == "+":
             return self._expr(_BP_UNARY)
@@ -272,10 +306,14 @@ class _Parser:
         if kind in ("^", "**"):
             # Right-associative: use BP_POW - 1 as the right-binding-power.
             right = self._expr(_BP_POW - 1)
-            # Rust __pow__ only accepts Python int; use pow_expr for Expr exponents.
-            rn = right.node()
-            if rn[0] == "integer":
-                return left ** int(rn[1])
+            # `pow_expr` takes the exponent node as-is.  Going through `**`
+            # instead would round-trip it via `PyExpr.__pow__`, which falls back
+            # to an f64 exponent when the integer does not fit in an i64 — a
+            # silent precision loss.  For an exponent that *does* fit the two
+            # build the identical node, so there is nothing to gain from the
+            # detour.  (Only reachable for negative exponents since the parser
+            # started folding `-<literal>`; it was always live for huge positive
+            # ones.)
             return left.pow_expr(right)
 
         raise ParseError(

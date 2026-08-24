@@ -182,6 +182,36 @@
   disabling the cumulative one takes `large_attempted` from 1 to 6 (and the
   test from under a second to 131 s) and fails it; disabling the per-probe
   one fails it too.
+- **The parsers fold `-<numeric literal>`, so `x^(-1)` and `1/x` no longer
+  disagree about what a `-1` exponent is.** Prefix `-` built `(-1) · operand`
+  unconditionally, which for a literal operand left an unevaluated product in
+  the pool: `x^(-1)` interned as `x^(1 · -1)` where `1/x` interned as `x^(-1)`.
+  The two are the same function, but every structural detector that reads an
+  exponent by matching an integer node saw only the second, which is the root
+  cause behind the spelling-sensitivity fixed below. Unary minus applied to an
+  `Integer` or `Rational` literal now emits the negated literal directly, in
+  both `alkahest-core/src/parse.rs` and its Python mirror
+  `alkahest/_parse.py` (`alkahest.parse`). **Nothing else folds**: `-x` is still
+  `(-1) · x`, `-(2+3)` keeps its tree, `-2^2` is still `-(2^2) = -4`, and float
+  literals are deliberately left alone. Mathematical values are unchanged
+  throughout — this is a representation fix.
+
+  The `(-1) · literal` shape stays reachable through the public builder API
+  (`Expr.__neg__`, `pool.mul([pool.integer(-1), …])`), so the detectors keep
+  their own normalising view of an integer exponent
+  (`risch::tower::literal_integer`) as a second layer. Both layers are pinned
+  by tests.
+
+  Measured over a 56-integrand probe restricted to inputs that contain a unary
+  minus on a literal — the only ones the fold can reach: **5 newly solved, 0
+  regressions, 0 changed answers**, and one verdict *upgrade*. Newly solved (all
+  verified by differentiating the answer back): `∫ dx/cos²x`, `∫ dx/sin x`,
+  `∫ dx/(1+sin x)`, `∫ dx/(2+cos x)` and `∫ dx/(1+e⁻ˣ)`, each written with a
+  `^(-n)` exponent rather than `/`. The upgrade is `∫ log(x)^(-1) dx`, which now
+  certifies `E-INT-004` (li is non-elementary) instead of the weaker
+  `E-INT-001` — the same verdict the identical `1/log(x)` spelling already had.
+  The `∫ eˣe^(eˣ)/(e^(eˣ)+1) dx` family, including its `-3·`/`-4·` and `^(-n)`
+  variants, is solved identically before and after.
 
 - **`integrate` no longer lets the *spelling* of an integrand decide the
   answer.** Three separate defects combined into one user-visible failure mode:
@@ -215,11 +245,12 @@
      `d/dx F = f`, `try_log_derivative` fires only on an exact `h'/h` match, and
      Rothstein–Trager is exact.
 
-  2. **The detectors read tree shape, and the parser does not give `/` and
-     `^(-1)` the same tree.** `x^(-1)` parses to the unevaluated exponent
-     `1 · -1` while `1/x` gives the literal `-1`, and `(a·b)^n` was never read as
-     `a^n·b^n`. Two helpers in `risch::tower` — `literal_integer` (folds a
-     var-free integer exponent without invoking the simplifier) and
+  2. **The detectors read tree shape, and `/` and `^(-1)` did not give the same
+     tree.** Prefix negation is `(-1) · operand`, so `x^(-1)` produced the
+     unevaluated exponent `1 · -1` while `1/x` gave the literal `-1`, and
+     `(a·b)^n` was never read as `a^n·b^n`. Two helpers in `risch::tower` —
+     `literal_integer` (folds a var-free integer exponent without invoking the
+     simplifier) and
      `distribute_integer_pow_over_mul` (`(a·b)^n = a^n·b^n`, an identity for
      *integer* `n`, which is why `(a·b)^(1/2)` stays out) — now give every
      detector and matcher a spelling-independent reading: `needs_log_risch`,

@@ -2,10 +2,13 @@
 `integrate` must not let the *spelling* of an integrand decide the answer.
 
 `a/b`, `a*b**(-1)` and `(a**(-1)*b)**(-1)` denote the same function but build
-three different expression trees, and the parser does not even produce the same
-exponent for all of them (`^(-1)` leaves an unevaluated `1 * -1`, `/` gives a
-literal `-1`).  Every structural detector in the router keyed on tree shape, so
-the same mathematical object used to get different verdicts:
+three different expression trees, and an exponent of `-1` did not always arrive
+as the literal `-1`: prefix negation is `(-1) * operand`, so `^(-1)` left an
+unevaluated `1 * -1` where `/` gave a literal `-1`.  (The parser now folds that
+case, but `Expr.__neg__` and `pool.mul` are public, so a caller building an
+expression by hand still can produce it.)  Every structural detector in the
+router keyed on tree shape, so the same mathematical object used to get
+different verdicts:
 
     x^(-1)*log(x)^(-1)      ->  log(log(x))
     1/(x*log(x))            ->  E-INT-001        # the same function
