@@ -112,7 +112,7 @@ fn gosper_degree_candidates(a: &RatUniPoly, b_shifted: &RatUniPoly, c: &RatUniPo
     out.into_iter().filter(|&d| d >= 0).collect()
 }
 
-fn rational_gaussian_solve(
+pub(crate) fn rational_gaussian_solve(
     mut mat: Vec<Vec<Rational>>,
     mut rhs: Vec<Rational>,
 ) -> Option<Vec<Rational>> {
