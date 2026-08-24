@@ -64,6 +64,7 @@
 //! step is an exact nullspace the kernel already provides.
 
 pub mod asymptotics;
+pub mod azeil;
 pub mod boundary;
 pub mod hyperterm;
 pub mod modular;
@@ -71,6 +72,8 @@ pub mod qfield;
 pub mod qzeil;
 pub mod telescoping2d;
 pub mod zeilberger;
+
+pub use azeil::{hyperexp_log_derivative, DiffTelescopingError, HyperExpTerm, PowerFactor};
 
 pub use asymptotics::{
     asymptotics_from_recurrence, CharacteristicAnalysis, CharacteristicRoot, ConnectionConstant,

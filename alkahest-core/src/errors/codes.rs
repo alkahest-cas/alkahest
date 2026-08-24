@@ -269,6 +269,16 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-HOLO-040", class: "HolonomicError", cause: Cause::UserInput,   remediation: Some("rewrite the term as R(n,j,k)*z1**j*z2**k*w**n*prod(gamma(a*n+b*j+c*k+d)**e) with integer a, b, c; supported function heads are gamma, factorial, binomial, pochhammer") },
     ErrorSpec { code: "E-HOLO-041", class: "HolonomicError", cause: Cause::Resource,    remediation: Some("raise max_order, max_a_degree and/or max_cert_degree in Telescoping2dOpts; if the term genuinely has no such double-sum certificate within reach — or needs a certificate denominator this module's fixed-denominator ansatz cannot represent — this method does not apply") },
     ErrorSpec { code: "E-HOLO-042", class: "HolonomicError", cause: Cause::UserInput,   remediation: Some("n, j and k must be three distinct symbols") },
+    // E-HOLO-06x — DiffTelescopingError (continuous creative telescoping /
+    // Almkvist-Zeilberger, the differential twin of the classical engine). Its
+    // own sub-block for the same reason the q- and multi-sum engines have one:
+    // a caller can tell which engine refused, and the refusals differ in kind
+    // (061 in particular closes the branch rather than suggesting new bounds).
+    ErrorSpec { code: "E-HOLO-060", class: "HolonomicError", cause: Cause::UserInput,   remediation: Some("write the integrand as R(n,x)*w**n*exp(eta(x))*prod(B(x)**(a*n + b)) with integer a and rational b; supported function heads are exp and sqrt, and a sum of two hyperexponential terms is not itself hyperexponential") },
+    ErrorSpec { code: "E-HOLO-061", class: "HolonomicError", cause: Cause::Unsupported, remediation: Some("the x-side is fine but F(n+1,x)/F(n,x) is not rational in x - e.g. exp(n*x), whose ratio is exp(x). No algorithm in this family applies; close the branch") },
+    ErrorSpec { code: "E-HOLO-062", class: "HolonomicError", cause: Cause::Resource,    remediation: Some("raise max_order, max_degree and/or max_den_power in AzOpts; if the integrand genuinely has no such certificate within reach - or needs a certificate denominator this module's D**kappa * B ansatz cannot represent - this method does not apply") },
+    ErrorSpec { code: "E-HOLO-063", class: "HolonomicError", cause: Cause::Internal,    remediation: Some("internal: report the integrand as a minimal failing example") },
+    ErrorSpec { code: "E-HOLO-064", class: "HolonomicError", cause: Cause::UserInput,   remediation: Some("n and x must be distinct symbols; the max_order, max_degree and max_den_power bounds must be within the documented ranges") },
     // E-SMT — SmtError (P2 item 3: SMT/SAT bridge).
     //
     // Only the code Rust actually raises is registered here.  The rest of the
