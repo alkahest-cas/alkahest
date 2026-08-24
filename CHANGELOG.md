@@ -2,6 +2,81 @@
 
 ## Unreleased
 
+- **`integrate` no longer lets the *spelling* of an integrand decide the
+  answer.** Three separate defects combined into one user-visible failure mode:
+  the same mathematical object, written differently, got different verdicts.
+
+  ```text
+  x^(-1)*log(x)^(-1)      ->  log(log(x))
+  1/(x*log(x))            ->  E-INT-001        # the same function
+  exp(x)*(1+exp(x))^(-1)  ->  log(exp(x)+1)
+  exp(x)/(exp(x)+1)       ->  E-INT-001        # the same function
+  x^(-2)                  ->  E-INT-001        # while 1/x^2 integrated fine
+  ```
+
+  1. **The router's sub-engine dispatch was unconditional.** A structural
+     pre-check (`contains_algebraic_subterm` / `contains_risch_form`) sent the
+     integrand to the algebraic or Risch engine and `return`ed whatever came
+     back — so an `IntegrationError::NotImplemented`, which is a *decline* and
+     not a verdict, was handed to the caller and made everything below the
+     dispatch unreachable for any integrand carrying an exp/log/radical
+     generator: `try_log_derivative`, the rule engine, Rothstein–Trager and the
+     derivative-divides u-substitution. `try_log_derivative`'s own doc comment
+     advertised `∫ 1/(x·log x) dx`, a case that by construction always carries a
+     log generator and so could never reach it from a top-level call. A
+     sub-engine decline now falls through, carrying its diagnostic with it (so a
+     specific Risch message is never degraded into a generic one if nothing
+     downstream succeeds). **A budget trip and a `NonElementary` verdict still
+     short-circuit** — the first because it travels *as* a `NotImplemented` and
+     reading it as a decline would turn "stop spending" into "keep spending",
+     the second because it is a proof and no fallback can overturn it. Nothing
+     downstream can produce a wrong antiderivative: `try_u_substitution` verifies
+     `d/dx F = f`, `try_log_derivative` fires only on an exact `h'/h` match, and
+     Rothstein–Trager is exact.
+
+  2. **The detectors read tree shape, and the parser does not give `/` and
+     `^(-1)` the same tree.** `x^(-1)` parses to the unevaluated exponent
+     `1 · -1` while `1/x` gives the literal `-1`, and `(a·b)^n` was never read as
+     `a^n·b^n`. Two helpers in `risch::tower` — `literal_integer` (folds a
+     var-free integer exponent without invoking the simplifier) and
+     `distribute_integer_pow_over_mul` (`(a·b)^n = a^n·b^n`, an identity for
+     *integer* `n`, which is why `(a·b)^(1/2)` stays out) — now give every
+     detector and matcher a spelling-independent reading: `needs_log_risch`,
+     `needs_exp_risch`, `is_var_dependent_denominator`, `extract_exp_factor`,
+     `expr_to_qpoly`, `expr_to_qrational`, `extract_log_power`. The user's
+     expression itself is untouched, so error messages and derivation logs still
+     echo what was written.
+
+  3. **`exp(η)` was never offered to the u-substitution search.**
+     `collect_usub_candidates` offers `Func` *arguments* and `Pow` *bases*, so
+     `∫ exp(x)/(exp(x)+1) dx` (where `exp(x)` happens to be a top-level factor,
+     hence offered) and the equal `∫ dx/(1+e⁻ˣ)` (where it is not) behaved
+     differently. Each hyperexponential generator is now a candidate, appended
+     after the structural ones so the existing search order — and every answer it
+     already found — is unchanged. Substituting `t = exp(η)` is the change of
+     variable of Bronstein §5.2; this closes the sub-case where the reduced
+     integrand `R(x,t)/(η'·t)` is free of `x`.
+
+  Measured over a 164-integrand textbook probe: **16 newly solved, 0
+  regressions, 0 changed answers**, plus one verdict *upgrade* (`exp(x)*x^(-1)`
+  now certifies `E-INT-004`/Ei like the identical `exp(x)/x`, instead of the
+  weaker `E-INT-001`). New: `∫ dx/(x·log x)` and `∫ dx/(x·log(x)^n)` in every
+  spelling, `∫ eˣ/(eˣ±1) dx`, `∫ eˣ/(eˣ+1)² dx`, `∫ dx/(1+eˣ)`, `∫ dx/(1+e⁻ˣ)`,
+  `∫ dx/(eˣ−1)`, `∫ 2x/((x²+1)·log(x²+1)) dx`, and — embarrassingly —
+  `∫ x^(-2) dx` and `∫ (x²+1)^(-1) dx`, which had failed outright while `1/x^2`
+  and `1/(x^2+1)` worked.
+
+  **Not done, and now written up in the `risch::exp_case` module docs:** Hermite
+  reduction in `K[t]` (Bronstein §5.2–5.3) for genuinely rational functions of a
+  hyperexponential generator. `decompose_wrt_exp` requires a Laurent polynomial
+  `Σ cₖ(x)·tᵏ` with `cₖ ∈ ℚ(x)`, so a denominator in `t` has no representation
+  at all. The `K(t)` arithmetic and tower derivation it would build on already
+  exist (`tower_field::TExpr`); the squarefree factorisation and gcd chain over
+  `K[t]`, and the resultant/factorisation over `K[t][z]` that Rothstein–Trager
+  needs there, do not. `∫ e²ˣ/(eˣ+1) dx` and `∫ dx/(eˣ+e⁻ˣ)` additionally need
+  the tower normalised onto a single generator (`exp(2x) = t²`, `exp(-x) = t⁻¹`)
+  and are still declined.
+
 - **`telescope2d` generalizes from two bound indices to an arbitrary `m ≥ 1`:
   `experimental.telescope_md`** (M4 extension). `telescope2d(term, n, j, k)`
   only ever reached exactly two bound indices; the underlying ansatz search
