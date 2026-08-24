@@ -182,6 +182,56 @@
   disabling the cumulative one takes `large_attempted` from 1 to 6 (and the
   test from under a second to 131 s) and fails it; disabling the per-probe
   one fails it too.
+- **`integrate` was emitting false non-elementarity certificates.**
+  `∫x dx/√(1−x⁴)` is `½asin(x²)`; Alkahest answered `E-INT-004`, *"no elementary
+  antiderivative exists"*. So did a whole family — `∫x√(1−x⁴) dx`,
+  `∫x² dx/√(1−x⁶)`, `∫x dx/√(9−x⁴)`, … — 23 of the 30 `E-INT-004` verdicts in an
+  algebraic-integrand probe. A certificate is a theorem, so a wrong one is
+  strictly worse than declining.
+
+  Both premises of the inference in `algebraic::genus_zero` were unsound.
+
+  1. **"The residue divisor is empty."** It came from `residue_divisor_placed`,
+     sanity-checked with `residue_sum_complete != 0`. Neither is a completeness
+     argument. On `y² = 1−x⁴` the two places over `x = ∞` carry residues `±i`;
+     the places-at-infinity routine reads them off a *rational* Puiseux
+     expansion, and since those branches have leading coefficient `±i ∉ ℚ` it
+     finds no branches at all and reports nothing. The residue theorem then
+     holds vacuously — an empty list sums to zero, and so does an omitted
+     conjugate pair — so the check could not catch it, and the code read "found
+     nothing" as "there is nothing". `residues::residues_at_infinity_exact` now
+     computes those residues in closed form over `ℚ(√lc)` instead of searching
+     for them over `ℚ`, and `residues::certified_residue_divisor` supplies the
+     predicate that was missing: every place enumerated, every nonzero residue
+     representable, or else a refusal. It also closes a second hole in the same
+     routine — for odd `deg a` with a non-square leading coefficient the residue
+     at `∞` is rational, but the Puiseux search still misses it.
+
+  2. **"There is no algebraic primitive."** This came from
+     `solve_rational_rde_generalized` returning `None`, which conflates "no
+     rational solution exists" with "my denominator bound was too weak" — it
+     returns `None` for solvable equations. A *decline* was being used as a
+     proof step. `algebraic::sqrt_rde::decide` now answers the same question
+     three-valued (`Solved` / `NoRationalSolution` / `Undecided`), deriving the
+     denominator bound from that equation's own pole structure rather than
+     generically, so `NoRationalSolution` is a proof. Only that verdict licenses
+     a certificate; its `Solved` also recovers antiderivatives the generic
+     solver's bound missed.
+
+  Where a premise is unavailable the answer is now `E-INT-001`, an honest
+  decline. **Genuine certificates are unaffected** — `∫dx/√(x⁵+1)`,
+  `∫x dx/√(1−x⁶)` and the rest keep `E-INT-004`, now with both premises
+  established.
+
+- **New: the power pullback `u = x^k`** (`algebraic::pullback`). An integrand of
+  the shape `x^{k−1}·g(x^k)` satisfies `∫f dx = (1/k)·∫g(u) du`, which drops the
+  curve's genus by a factor of `k` — `∫x dx/√(1−x⁴)` becomes `½∫du/√(1−u²)` on a
+  genus-0 curve and closes as `½asin(x²)`. Recognition is exact structural
+  matching, not a numeric fit, and every emission is gated on a numeric
+  `d/dx F = f` check against the original integrand. It runs **last** and only
+  against an `E-INT-001`, so no integral that already solves changes shape and no
+  `E-INT-004` verdict can be talked down by it. Beyond the family above this also
+  closes the `asinh` half (`∫x dx/√(1+x⁴)`), previously an honest decline.
 
 - **`integrate` no longer lets the *spelling* of an integrand decide the
   answer.** Three separate defects combined into one user-visible failure mode:

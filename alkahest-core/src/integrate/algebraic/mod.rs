@@ -33,6 +33,9 @@ pub mod integral_basis;
 mod jacobian_torsion;
 pub(super) mod parametrize;
 pub(super) mod poly_utils;
+// Power pullback `u = x^k` — the last-resort genus reduction for
+// `x^{k−1}·g(x^k)` integrands.
+mod pullback;
 pub mod residues;
 // Three-valued decision procedure for `v′ + (a′/2a)v = B` — the "is there an
 // algebraic primitive?" premise of the `∫B√P` non-elementarity certificate.
@@ -228,7 +231,7 @@ pub fn integrate_algebraic(
     // substitution, which rationalizes the whole `∫ R(x,√(quadratic)) dx`.  The
     // decompose path is tried first so polynomial-coefficient cases keep their
     // nicer closed forms.
-    match integrate_via_decompose(expr, var, pool) {
+    let result = match integrate_via_decompose(expr, var, pool) {
         Err(IntegrationError::NotImplemented(_)) => {
             if let Some(res) = parametrize::try_euler_quadratic(expr, var, pool) {
                 return res;
@@ -251,7 +254,19 @@ pub fn integrate_algebraic(
             integrate_via_decompose(expr, var, pool)
         }
         other => other,
+    };
+
+    // Power pullback `u = x^k` for `f = x^{k−1}·g(x^k)`, which drops the curve's
+    // genus by `k` — `∫x dx/√(1−x⁴)` becomes `½∫du/√(1−u²) = ½asin(x²)`.  Tried
+    // **last**, and only against a `NotImplemented`: nothing that already solves
+    // changes shape, and a `NonElementary` verdict is a theorem this route is not
+    // allowed to overturn (see `pullback`).
+    if matches!(result, Err(IntegrationError::NotImplemented(_))) {
+        if let Some(res) = pullback::try_power_pullback(expr, var, pool) {
+            return Ok(res);
+        }
     }
+    result
 }
 
 /// The standard algebraic path: find the single `√P` generator, decompose the
