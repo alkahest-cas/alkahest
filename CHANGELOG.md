@@ -43,9 +43,10 @@
      *integer* `n`, which is why `(a·b)^(1/2)` stays out) — now give every
      detector and matcher a spelling-independent reading: `needs_log_risch`,
      `needs_exp_risch`, `is_var_dependent_denominator`, `extract_exp_factor`,
-     `expr_to_qpoly`, `expr_to_qrational`, `extract_log_power`. The user's
-     expression itself is untouched, so error messages and derivation logs still
-     echo what was written.
+     `expr_to_qpoly`, `expr_to_qrational`, `extract_log_power`, and the
+     algebraic engine's own `poly_utils::as_integer`. The user's expression
+     itself is untouched, so error messages and derivation logs still echo what
+     was written.
 
   3. **`exp(η)` was never offered to the u-substitution search.**
      `collect_usub_candidates` offers `Func` *arguments* and `Pow` *bases*, so
