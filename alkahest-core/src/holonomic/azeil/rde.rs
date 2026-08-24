@@ -95,7 +95,8 @@
 //! ([`mod@super::super::zeilberger`]'s `field_gaussian_solve`).
 
 use crate::holonomic::qfield::{
-    polyk_deriv_k, ratk_deriv_k, rn_int, rn_is_zero, rn_neg, rn_one, rn_zero, PolyK, RatK, Rn,
+    polyk_deriv_k, ratk_deriv_k, rn_int, rn_is_zero, rn_mul, rn_neg, rn_one, rn_zero, PolyK, RatK,
+    Rn,
 };
 use crate::holonomic::zeilberger::field_gaussian_solve;
 
@@ -279,4 +280,21 @@ pub(super) fn verify(setup: &RdeSetup, a: &[Rn], r: &RatK) -> bool {
     }
     let rhs = ratk_deriv_k(r).add(&setup.theta.mul(r));
     lhs.sub(&rhs).is_zero()
+}
+
+/// Scale a solved `(a, R)` pair by a common `x`-free factor `s(n)`.
+///
+/// Both sides of `Σ_i a_i·r_i = R′ + θ·R` are `Q(n)`-linear and `s` does not
+/// depend on `x`, so this preserves the identity exactly. It is how the
+/// rational `a_i(n)` become the integer-content-primitive polynomials a caller
+/// wants to read as a recurrence — and the scaled pair, not the pre-scaled one,
+/// is what [`verify`] is then run on.
+pub(super) fn rescale(a: &[Rn], r: &RatK, s: &Rn) -> (Vec<Rn>, RatK) {
+    let a_s = a.iter().map(|ai| rn_mul(ai, s)).collect();
+    let r_s = RatK {
+        num: r.num.scale(s),
+        den: r.den.clone(),
+    }
+    .normalize();
+    (a_s, r_s)
 }

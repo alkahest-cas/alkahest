@@ -73,7 +73,10 @@ pub mod qzeil;
 pub mod telescoping2d;
 pub mod zeilberger;
 
-pub use azeil::{hyperexp_log_derivative, DiffTelescopingError, HyperExpTerm, PowerFactor};
+pub use azeil::{
+    almkvist_zeilberger, dgosper, hyperexp_log_derivative, AzOpts, AzResult, DiffTelescopingError,
+    HyperExpTerm, PowerFactor,
+};
 
 pub use asymptotics::{
     asymptotics_from_recurrence, CharacteristicAnalysis, CharacteristicRoot, ConnectionConstant,

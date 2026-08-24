@@ -14,7 +14,7 @@
 //!
 //! with polynomial coefficients `a_i(n)` (not all zero, `a_J ≢ 0`) and an exact
 //! rational certificate `R ∈ Q(n)(x)`. That identity — and only that identity —
-//! is what `almkvist_zeilberger` verifies exactly before returning.
+//! is what [`almkvist_zeilberger`] verifies exactly before returning.
 //!
 //! | discrete ([`mod@super::zeilberger`]) | continuous (here) |
 //! |---|---|
@@ -36,7 +36,7 @@
 //!   right-hand side is fixed (`J = 0`, `a_0 = 1`) or carries unknowns.
 //! - `dgosper` — the indefinite case: decide whether `∫F dx = R·F` for a
 //!   rational `R`, and return it. This is `J = 0` with `a_0` normalised to `1`.
-//! - `search` — `almkvist_zeilberger` itself, ascending in `J` from `0`.
+//! - [`mod@search`] — [`almkvist_zeilberger`] itself, ascending in `J` from `0`.
 //! - `boundary` — the continuous analogue of [`super::boundary`]: deciding
 //!   whether `[R·F]_a^b` vanishes, so that the certificate becomes a recurrence
 //!   for `f(n) = ∫_a^b F(n,x) dx` rather than a statement about the integrand
@@ -89,7 +89,7 @@
 //!   whether that resonance occurs is not decidable at all, and this module
 //!   does not pretend otherwise: it searches `κ` and refuses with
 //!   [`DiffTelescopingError::SearchExhausted`] when the bound runs out.
-//! - **Minimal order, not minimal degree**: `search` ascends in `J` from `0`
+//! - **Minimal order, not minimal degree**: [`mod@search`] ascends in `J` from `0`
 //!   and tries every `(κ, d)` in bounds before moving on, so a returned order
 //!   *is* the least one reachable within `max_den_power`/`max_degree`. It is
 //!   not the cost-ordered iterative deepening [`mod@super::zeilberger`] uses, so
@@ -108,9 +108,11 @@
 pub mod dgosper;
 pub mod hyperexp;
 pub mod rde;
+pub mod search;
 
 pub use dgosper::{dgosper, dgosper_term};
 pub use hyperexp::{hyperexp_log_derivative, HyperExpTerm, PowerFactor};
+pub use search::{almkvist_zeilberger, integrand_antiderivative, AzResult};
 
 /// Search bounds for the continuous engine.
 ///
