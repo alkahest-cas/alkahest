@@ -745,6 +745,44 @@ mod tests {
         }
     }
 
+    /// `tanh` is the other member of the table that the engine's dispatch
+    /// actually routes here (`exp` is claimed by the Risch engine first), so
+    /// it is the test that shows the family is a family and not a special
+    /// case for `tan`.
+    #[test]
+    fn sqrt_tanh_integrates() {
+        let (pool, x) = setup();
+        let e = pool.func("sqrt", vec![pool.func("tanh", vec![x])]);
+        let got = crate::integrate::integrate(e, x, &pool).expect("∫√(tanh x) dx should close");
+        let s = pool.display(got.value).to_string();
+        assert!(s.contains("log") && s.contains("atan"), "{s}");
+        let ds = simplify(crate::diff::diff(got.value, x, &pool).unwrap().value, &pool).value;
+        let mut checked = 0;
+        for k in 1..30 {
+            let xv = k as f64 * 0.13;
+            let lhs = gate::eval_at(ds, x, xv, &pool).expect("derivative evaluates");
+            let rhs = xv.tanh().sqrt();
+            assert!(
+                (lhs - rhs).abs() < 1e-8 * (1.0 + rhs.abs()),
+                "x={xv}: {lhs} vs {rhs}"
+            );
+            checked += 1;
+        }
+        assert!(checked >= 25);
+    }
+
+    /// `cot` is in the table mathematically but has no entry in the primitive
+    /// registry at all — no derivative rule, no numeric kernel — so nothing
+    /// downstream can differentiate or evaluate the candidate and the route
+    /// declines.  Pinned so that registering `cot` later is a visible change
+    /// rather than a silent one.
+    #[test]
+    fn sqrt_cot_declines_for_want_of_a_registered_primitive() {
+        let (pool, x) = setup();
+        let e = pool.func("sqrt", vec![pool.func("cot", vec![x])]);
+        assert!(crate::integrate::integrate(e, x, &pool).is_err());
+    }
+
     /// A bare `x` outside the radical makes the substituted integrand
     /// non-rational, so the route must refuse rather than guess.
     #[test]
