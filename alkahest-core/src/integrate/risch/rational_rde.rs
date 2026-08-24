@@ -431,8 +431,11 @@ const MAX_RESONANCE_SEARCH: i64 = 1024;
 /// Cap on the number of unknowns in the linear system (`deg N + 1`).
 ///
 /// Gaussian elimination over `rug::Rational` is `O(rows·cols²)` with bignum
-/// coefficients; a runaway denominator bound must decline rather than wedge the
-/// process.  Every worked example in the integrator stays far below this.
+/// coefficients, so this is the knob that bounds worst-case latency.  Measured
+/// on `∫ exp(x + n·log x) dx` (i.e. `∫ xⁿ·eˣ dx`, whose resonant denominator has
+/// degree `n`): `n = 120` → 0.3 s, `n = 250` → 2 s, `n = 500` → 22 s, and
+/// `n = 900` declines here in 0.5 s instead of running for minutes.  Every
+/// worked example in the integrator is under 100 unknowns.
 const MAX_RDE_UNKNOWNS: usize = 512;
 
 /// Solve `v' + f·v = c_num/c_den` for `v ∈ ℚ(x)`, `f` a **polynomial**.
