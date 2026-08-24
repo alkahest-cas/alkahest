@@ -231,29 +231,43 @@ fn try_log_derivative(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<Expr
 /// `(coeff, n)`.  `coeff` collects every factor other than integer powers of
 /// `theta`.  Returns `None` if `theta` does not appear (or appears only with a
 /// non-integer exponent).
+///
+/// The decomposition is **spelling-independent**: an integer power of a product
+/// is distributed (`(x·log x)^(-1)` reads as `x^(-1)·log(x)^(-1)`) and an
+/// exponent the parser left unevaluated (`^(-1)` → `^(1 · -1)`) is folded, so
+/// `1/(x·log x)`, `(x·log x)^(-1)` and `x^(-1)·log(x)^(-1)` all decompose to the
+/// same `(coeff, n)`.  Both rewrites are exact identities for integer exponents.
 fn extract_log_power(expr: ExprId, theta: ExprId, pool: &ExprPool) -> Option<(ExprId, i64)> {
+    use super::risch::tower::{literal_integer, pow_integer};
+
     if expr == theta {
         return Some((pool.integer(1_i32), 1));
     }
     match pool.get(expr) {
-        ExprData::Pow { base, exp } if base == theta => match pool.get(exp) {
-            ExprData::Integer(m) => Some((pool.integer(1_i32), m.0.to_i64()?)),
-            _ => None,
-        },
+        ExprData::Pow { base, exp } => {
+            let n = literal_integer(exp, pool)?;
+            if base == theta {
+                return Some((pool.integer(1_i32), n));
+            }
+            // `(c · θ^m)^n = c^n · θ^{m·n}`, and likewise `(θ^m)^n`.
+            match pool.get(base) {
+                ExprData::Mul(_) | ExprData::Pow { .. } => {
+                    let (inner_coeff, m) = extract_log_power(base, theta, pool)?;
+                    Some((pow_integer(inner_coeff, n, pool), m.checked_mul(n)?))
+                }
+                _ => None,
+            }
+        }
         ExprData::Mul(args) => {
             let mut n: i64 = 0;
             let mut rest: Vec<ExprId> = Vec::new();
             for &a in &args {
                 if a == theta {
-                    n += 1;
-                } else if let ExprData::Pow { base, exp } = pool.get(a) {
-                    if base == theta {
-                        match pool.get(exp) {
-                            ExprData::Integer(m) => n += m.0.to_i64()?,
-                            _ => rest.push(a),
-                        }
-                    } else {
-                        rest.push(a);
+                    n = n.checked_add(1)?;
+                } else if let Some((c, m)) = extract_log_power(a, theta, pool) {
+                    n = n.checked_add(m)?;
+                    if as_integer(c, pool) != Some(1) {
+                        rest.push(c);
                     }
                 } else {
                     rest.push(a);
@@ -5815,6 +5829,164 @@ mod tests {
                      of an E-BUDGET-* trip: {err}"
                 );
             }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Input-form robustness: `a/b`, `a·b^(-1)` and `(a^(-1)·b)^(-1)` are the
+    // same function and must give the same answer
+    // -----------------------------------------------------------------------
+
+    /// The three spellings of `a/b` this integrator has historically routed
+    /// differently: the `/` operator (literal `-1` exponent), an explicit
+    /// `^(-1)` (which the parser leaves as the unevaluated `1 · -1`), and a
+    /// reciprocal of a *product* (which no detector used to distribute).
+    fn three_spellings(a: &str, b: &str) -> [String; 3] {
+        [
+            format!("{a}/({b})"),
+            format!("({a})*({b})^(-1)"),
+            format!("(({a})^(-1)*({b}))^(-1)"),
+        ]
+    }
+
+    /// Integrate `src` and assert `d/dx F = f` (exactly, or numerically at real
+    /// sample points).  Returns `F`.
+    fn integrate_and_verify(src: &str, x: ExprId, pool: &ExprPool) -> ExprId {
+        let mut syms = HashMap::from([("x".to_owned(), x)]);
+        let f = crate::parse::parse(src, pool, &mut syms).expect("parse");
+        let r = integrate(f, x, pool)
+            .unwrap_or_else(|e| panic!("∫ {src} dx should be elementary, got: {e}"));
+        assert!(
+            verify_antiderivative_status(r.value, f, x, pool).is_some(),
+            "∫ {src} dx = {} does not differentiate back to the integrand",
+            pool.display(r.value)
+        );
+        r.value
+    }
+
+    /// Two antiderivatives of the same integrand agree up to an additive
+    /// constant.  Checked structurally first, then numerically (the display
+    /// forms are equal in practice, but pinning the *string* would be brittle).
+    fn assert_same_antiderivative(a: ExprId, b: ExprId, x: ExprId, pool: &ExprPool, what: &str) {
+        let delta = simplify(
+            pool.add(vec![a, pool.mul(vec![pool.integer(-1_i32), b])]),
+            pool,
+        )
+        .value;
+        if is_free_of(delta, x, pool) {
+            return;
+        }
+        // `simplify` does not know `log(exp x) = x`, so fall back to sampling
+        // the difference: it must be the *same* constant at every point.
+        let samples = [1.3_f64, 2.1, 3.4, 4.7];
+        let mut values: Vec<f64> = Vec::new();
+        for &xv in &samples {
+            let mut env = HashMap::new();
+            env.insert(x, xv);
+            if let Some(v) = crate::jit::eval_interp(delta, &env, pool) {
+                if v.is_finite() {
+                    values.push(v);
+                }
+            }
+        }
+        assert!(
+            values.len() >= 2,
+            "{what}: could not evaluate the difference of the two antiderivatives"
+        );
+        let first = values[0];
+        for v in &values {
+            assert!(
+                (v - first).abs() < 1e-7,
+                "{what}: the two spellings gave antiderivatives differing by a \
+                 non-constant ({} vs {})",
+                pool.display(a),
+                pool.display(b)
+            );
+        }
+    }
+
+    #[test]
+    fn integration_is_insensitive_to_how_the_quotient_is_spelled() {
+        // Every row is one integral written three ways.  Before the router
+        // learned to fall through and the detectors learned to distribute an
+        // integer power over a product, the *spelling* decided the answer:
+        // `x^(-1)·log(x)^(-1)` returned `log(log x)` while the identical
+        // `1/(x·log x)` raised `E-INT-001`.
+        let cases: &[(&str, &str)] = &[
+            // ∫ 1/(x·log x) dx = log(log x)  — the log-derivative family.
+            ("1", "x*log(x)"),
+            ("1", "x*log(x)^2"),
+            ("1", "x*log(x)^3"),
+            ("2*x", "(x^2+1)*log(x^2+1)"),
+            ("log(x)", "x"),
+            // ∫ exp(x)/(exp(x)+1) dx = log(exp(x)+1) — rational in the exp
+            // generator.
+            ("exp(x)", "exp(x)+1"),
+            ("exp(x)", "(exp(x)+1)^2"),
+            // Plain rational integrands, as a control: these already agreed.
+            ("x", "x^2+1"),
+            ("1", "x*(x+1)"),
+        ];
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for (a, b) in cases {
+            let spellings = three_spellings(a, b);
+            let first = integrate_and_verify(&spellings[0], x, &pool);
+            for other in &spellings[1..] {
+                let f = integrate_and_verify(other, x, &pool);
+                assert_same_antiderivative(
+                    first,
+                    f,
+                    x,
+                    &pool,
+                    &format!("{} vs {other}", spellings[0]),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_ei_verdict_does_not_depend_on_the_spelling() {
+        // `∫ eˣ/x dx` is the exponential integral Ei and is certified
+        // non-elementary by the Risch DE.  `exp(x)*x^(-1)` is the same
+        // integrand; before the exponent was folded, it never reached the exp
+        // tower at all and came back with the weaker `E-INT-001`.
+        use crate::errors::AlkahestError;
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for src in ["exp(x)/x", "exp(x)*x^(-1)", "exp(x)*(x)^(-1)"] {
+            let e = integrate_src(src, x, &pool)
+                .err()
+                .unwrap_or_else(|| panic!("∫ {src} dx must stay non-elementary"));
+            assert_eq!(
+                e.code(),
+                "E-INT-004",
+                "∫ {src} dx should certify NonElementary, got: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn one_over_x_log_x_in_every_spelling() {
+        // ∫ 1/(x·log x) dx = log(log x).  `try_log_derivative`'s doc comment has
+        // always advertised this case, but before the fall-through landed it was
+        // unreachable from `integrate()` for any spelling that `contains_risch_form`
+        // happened to claim.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for src in [
+            "1/(x*log(x))",
+            "x^(-1)*log(x)^(-1)",
+            "(x*log(x))^(-1)",
+            "1/x*1/log(x)",
+            "1/x/log(x)",
+        ] {
+            let f = integrate_and_verify(src, x, &pool);
+            assert!(
+                pool.display(f).to_string().contains("log(log"),
+                "∫ {src} dx should be log(log x); got {}",
+                pool.display(f)
+            );
         }
     }
 }

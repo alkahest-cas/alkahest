@@ -3161,10 +3161,11 @@ pub fn needs_exp_risch(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
 fn is_var_dependent_denominator(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
     use crate::kernel::ExprData;
     if let ExprData::Pow { base, exp } = pool.get(expr) {
-        if let ExprData::Integer(n) = pool.get(exp) {
-            if n.0.to_i64().is_some_and(|v| v < 0) {
-                return !is_free_of_var(base, var, pool);
-            }
+        // `^(-1)` parses to the unevaluated `^(1 · -1)`, so reading the exponent
+        // as a bare `Integer` node made `a·b^(-1)` and `a/b` take different
+        // routes for the *same* function.  Fold it instead.
+        if super::tower::literal_integer(exp, pool).is_some_and(|v| v < 0) {
+            return !is_free_of_var(base, var, pool);
         }
     }
     false
@@ -3283,6 +3284,12 @@ fn needs_exp_risch_inner(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
         }
         ExprData::Add(args) => args.iter().any(|&a| needs_exp_risch_inner(a, var, pool)),
         ExprData::Pow { base, exp } => {
+            // `(a·b)^n` (integer n) is the same function as `a^n·b^n`; route the
+            // two spellings identically (see the matching note in `log_case`).
+            if let Some(factors) = super::tower::distribute_integer_pow_over_mul(expr, pool) {
+                let distributed = pool.mul(factors);
+                return needs_exp_risch_inner(distributed, var, pool);
+            }
             needs_exp_risch_inner(base, var, pool) || needs_exp_risch_inner(exp, var, pool)
         }
         _ => false,
