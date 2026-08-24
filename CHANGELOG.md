@@ -2,6 +2,71 @@
 
 ## Unreleased
 
+- **Continuous creative telescoping — Almkvist–Zeilberger, the differential
+  twin of Zeilberger's algorithm** (`alkahest_cas::experimental::almkvist_zeilberger`,
+  `dgosper`, `integral_boundary_status`; Rust-only, no PyO3 binding yet). The
+  holonomic subsystem had a complete discrete stack — proper hypergeometric
+  recognition, Zeilberger, the q-analogue, multi-sum Apagodu–Zeilberger, a
+  three-valued boundary verdict — and nothing on the `∫ F(n,x) dx` side.
+  `holonomic::azeil` is that side: given `F(n,x)` hyperexponential in `x` and
+  hypergeometric in `n`, it finds an order `J`, polynomial coefficients
+  `a_0(n) … a_J(n)` and an exact rational certificate `R ∈ Q(n)(x)` with
+
+  ```
+  Σ_i a_i(n)·F(n+i,x) = D_x( R(n,x)·F(n,x) ),
+  ```
+
+  which is a recurrence for `f(n) = ∫_a^b F(n,x) dx` **once the boundary term
+  `[R·F]_a^b` is discharged** — a separate question the certificate says
+  nothing about, decided three-valued by `integral_boundary_status`. This is
+  the principled replacement for a Meijer-G engine on definite integrals of
+  special functions: more general, and it produces a certificate.
+
+  Worked end to end, with the certificate checked against the classical
+  recurrence rather than against the machinery that produced it:
+  `∫_0^∞ xⁿe^{−x} dx = n!` (order 1, `R = x`), `∫_0^1 xⁿ(1−x)^{1/2} dx` and
+  `∫_0^1 xⁿ(1−x)ⁿ dx` (order 1), `∫_{−∞}^{∞} x^{2n}e^{−x²} dx` (order 1,
+  `R = x`), `∫_0^∞ xⁿe^{−x²} dx` (order **2**, middle coefficient zero),
+  Bessel `J_n(2)` via the Schläfli contour (order 2, `R = 1`, recovering
+  `J_n + J_{n+2} = (n+1)J_{n+1}`) and Legendre `P_n(3)` likewise (order 2,
+  recovering `(n+1)P_n − 3(2n+3)P_{n+1} + (n+2)P_{n+2} = 0`).
+
+  **One solver, not two.** Dividing the identity through by `F` turns it into
+  the parametric Risch differential equation `R′ + θ·R = Σ_i a_i·r_i` with
+  `θ = ∂_xF/F`; indefinite integration (`dgosper`, the differential mirror of
+  Gosper's algorithm) is the same equation at `J = 0`, `a_0 = 1`.
+  `integrate::risch::rational_rde::solve_rational_rde_generalized` is
+  deliberately **not** reused for that, and the reason is correctness rather
+  than style: its denominator bound `E = gcd(D, D′)` is taken from the
+  right-hand side alone, which is Bronstein-exact only when `f` is a
+  polynomial. Probed directly, it returns `None` for `R′ + (1/x+1)R = 1` and
+  `R′ + (2/x+1)R = 1` — the equations behind `∫x·eˣ dx` and `∫x²·eˣ dx`, both
+  of which do have rational solutions. Both are regression tests here. (That
+  gap is in the generalized entry point, not in the exponential tower that is
+  its main caller, where `f = k·η′` is a polynomial; it is worth its own
+  investigation for the callers in `simple_radical`, `genus_zero` and the
+  fractional-exponent `exp_case` paths, which do pass rational `f`.) The `Q(n)`
+  Gaussian elimination *is* shared with `zeilberger`.
+
+  **Honest limitations.** The certificate ansatz is `R = P(x)/(D(x)^κ·B(x))`
+  with `D` the denominator of `θ` and `B` a common denominator of the shift
+  ratios. That denominator's *support* is derived, not guessed — a pole of `R`
+  must lie over a pole of `θ` or of the right-hand side — but its
+  *multiplicity* `κ` is a bounded search, because at a simple pole of `θ` with
+  residue `ρ` the certificate may have a pole of order `ρ` whenever `ρ` is a
+  positive integer, and with `ρ ∈ Q(n)` symbolic (the usual case, `θ = n/x + …`)
+  that is not decidable at all. The search is order-major ascending, so a
+  returned order is the least one reachable within the degree bounds — the
+  claim `zeilberger`'s cost-ordered plan trades away. `B(x)^β` for non-integer
+  `β` is treated formally, so reading a certificate as an identity of
+  *functions* needs a consistent branch on the interval. Only `n`-independent
+  integration limits are analysed; an `n`-dependent one is not representable
+  rather than mishandled. Out-of-class inputs get typed refusals under a new
+  `E-HOLO-06x` sub-block — with `NotHypergeometricInN` (`E-HOLO-061`)
+  deliberately distinct from a shape failure, because `exp(n·x)` closes the
+  branch for every algorithm in this family and raising search bounds cannot
+  help.
+
 - **`telescope2d` generalizes from two bound indices to an arbitrary `m ≥ 1`:
   `experimental.telescope_md`** (M4 extension). `telescope2d(term, n, j, k)`
   only ever reached exactly two bound indices; the underlying ansatz search
