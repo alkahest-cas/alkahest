@@ -34,6 +34,12 @@ mod jacobian_torsion;
 pub(super) mod parametrize;
 pub(super) mod poly_utils;
 pub mod residues;
+// Three-valued decision procedure for `v′ + (a′/2a)v = B` — the "is there an
+// algebraic primitive?" premise of the `∫B√P` non-elementarity certificate.
+// Separated from the generic RDE solver because a certificate may only rest on
+// a *proved* absence of a solution, never on a decline.
+mod sqrt_rde;
+// Rationalizing substitutions `uⁿ = g(x)` for transcendental `g`, gate-verified.
 pub(super) mod subst;
 // Trager ℚ-basis logarithmic-part criterion: decomposition + per-component
 // torsion over rational *and* algebraic places.  `trager_log_criterion_alg` is
