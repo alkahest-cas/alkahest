@@ -46,6 +46,26 @@ fn assert_solves(pool: &ExprPool, f: ExprId, x: ExprId) -> ExprId {
     }
 }
 
+/// Assert the heuristic solves `f` **and** that the identity was established
+/// exactly (the ring-level gate), not just by numeric sampling.
+fn assert_solves_exactly(pool: &ExprPool, f: ExprId, x: ExprId) -> ExprId {
+    match integrate_parallel_risch(f, x, pool) {
+        ParallelRischOutcome::Solved {
+            antiderivative,
+            verification,
+        } => {
+            assert_eq!(
+                verification,
+                AntiderivativeVerification::Exact,
+                "expected an exact identity, got {verification:?} for {}",
+                crate::kernel::display::render_unicode(antiderivative, pool)
+            );
+            antiderivative
+        }
+        ParallelRischOutcome::Declined(r) => panic!("expected a solution, got decline: {r}"),
+    }
+}
+
 fn assert_declines(pool: &ExprPool, f: ExprId, x: ExprId) -> DeclineReason {
     match integrate_parallel_risch(f, x, pool) {
         ParallelRischOutcome::Solved { antiderivative, .. } => panic!(
@@ -335,7 +355,45 @@ fn arctan_case_declines_because_the_constant_field_is_q() {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Unit tests for the lattice machinery
+// 5. The exact (ring-level) gate
+// ---------------------------------------------------------------------------
+
+#[test]
+fn answers_are_gated_by_an_exact_ring_identity() {
+    // These all normalise cleanly back into `ℚ(x, θ)`, so the ring-level gate
+    // — not the numeric fallback — is what accepts them.  Pinning this keeps
+    // the module from quietly regressing onto sampled agreement.
+    let (pool, x) = setup();
+    let cases: Vec<ExprId> = vec![
+        // ∫ x²
+        pool.pow(x, pool.integer(2_i32)),
+        // ∫ 1/(x+1)²
+        {
+            let xp1 = pool.add(vec![x, pool.integer(1_i32)]);
+            pool.pow(xp1, pool.integer(-2_i32))
+        },
+        // ∫ x³·exp(−x²)
+        {
+            let negx2 = pool.mul(vec![pool.integer(-1_i32), pool.pow(x, pool.integer(2_i32))]);
+            pool.mul(vec![pool.pow(x, pool.integer(3_i32)), exp_of(&pool, negx2)])
+        },
+        // ∫ exp(2x)/(exp(x)+1)
+        {
+            let e = exp_of(&pool, x);
+            let e2 = exp_of(&pool, pool.mul(vec![pool.integer(2_i32), x]));
+            let den = pool.add(vec![e, pool.integer(1_i32)]);
+            pool.mul(vec![e2, inv(&pool, den)])
+        },
+        // ∫ 1/(x·log x)
+        inv(&pool, pool.mul(vec![x, log_of(&pool, x)])),
+    ];
+    for f in cases {
+        assert_solves_exactly(&pool, f, x);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 6. Unit tests for the lattice machinery
 // ---------------------------------------------------------------------------
 
 #[test]

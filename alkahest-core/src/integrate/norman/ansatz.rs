@@ -23,6 +23,8 @@
 //! * Equating coefficients presumes the generators are algebraically
 //!   independent.  [`super::ring`] establishes that before we get here.
 
+use std::collections::BTreeSet;
+
 use rug::Rational;
 
 use crate::kernel::{ExprId, ExprPool};
@@ -135,42 +137,35 @@ pub(super) fn solve(
     let rhs_poly = f.numer.clone() * rhs_scale;
 
     // ---- one equation per monomial of the cleared identity.
-    let mut keys: Vec<Vec<u32>> = Vec::new();
+    let mut keys: BTreeSet<&Vec<u32>> = BTreeSet::new();
     for c in &columns {
-        for k in c.terms.keys() {
-            if !keys.contains(k) {
-                keys.push(k.clone());
-            }
-        }
+        keys.extend(c.terms.keys());
     }
-    for k in rhs_poly.terms.keys() {
-        if !keys.contains(k) {
-            keys.push(k.clone());
-        }
-    }
+    keys.extend(rhs_poly.terms.keys());
     if keys.len() > MAX_EQUATIONS {
         return Err(DeclineReason::TooLarge("linear system"));
     }
 
     let mut mat: Vec<Vec<Rational>> = Vec::with_capacity(keys.len());
     let mut rhs: Vec<Rational> = Vec::with_capacity(keys.len());
+    let zero = || Rational::from(0);
     for k in &keys {
         let row = columns
             .iter()
             .map(|c| {
                 c.terms
-                    .get(k)
+                    .get(*k)
                     .map(|v| Rational::from(v.clone()))
-                    .unwrap_or_else(|| Rational::from(0))
+                    .unwrap_or_else(zero)
             })
             .collect();
         mat.push(row);
         rhs.push(
             rhs_poly
                 .terms
-                .get(k)
+                .get(*k)
                 .map(|v| Rational::from(v.clone()))
-                .unwrap_or_else(|| Rational::from(0)),
+                .unwrap_or_else(zero),
         );
     }
 

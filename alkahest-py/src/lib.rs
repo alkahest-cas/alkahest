@@ -3754,6 +3754,138 @@ fn py_integrate_definite(
     Ok(result)
 }
 
+/// The result of a Risch–Norman (parallel Risch) attempt, returned by
+/// :func:`alkahest.experimental.integrate_parallel_risch`.
+///
+/// **A declined result is not a non-elementarity verdict.**  This object has
+/// exactly two states — solved, carrying a verification-gated antiderivative,
+/// or declined, carrying a human-readable reason.  There is deliberately no
+/// state meaning "no elementary antiderivative exists": the heuristic cannot
+/// establish that, and the caller must not infer it.  ``exp(x**2)`` (genuinely
+/// non-elementary) and ``1/(x**2+1)`` (which is ``atan(x)``, but needs a
+/// constant field larger than ℚ) both come back declined, and nothing here
+/// distinguishes them.
+///
+/// See the Rust module docs (``alkahest_cas::integrate::norman``) for the
+/// covered class and the full limitations list.
+#[pyclass(name = "ParallelRischResult")]
+struct PyParallelRischResult {
+    antiderivative: Option<alkahest_core::ExprId>,
+    verification: Option<&'static str>,
+    reason: Option<String>,
+    pool: Py<PyExprPool>,
+}
+
+#[pymethods]
+impl PyParallelRischResult {
+    /// ``True`` when a verified antiderivative was found.
+    #[getter]
+    fn solved(&self) -> bool {
+        self.antiderivative.is_some()
+    }
+
+    /// How ``d/dx F == f`` was established: ``"exact"`` (the symbolic residual
+    /// simplified to zero) or ``"numeric"`` (sampled agreement only).  ``None``
+    /// when the attempt was declined.
+    #[getter]
+    fn verification(&self) -> Option<&'static str> {
+        self.verification
+    }
+
+    /// Why the heuristic declined, or ``None`` when it solved.  Informational
+    /// only — never a statement about the integrand's integrability.
+    #[getter]
+    fn reason(&self) -> Option<String> {
+        self.reason.clone()
+    }
+
+    /// The antiderivative, or ``None`` when the attempt was declined.
+    fn antiderivative(&self, py: Python<'_>) -> Option<PyExpr> {
+        self.antiderivative.map(|id| PyExpr {
+            id,
+            pool: self.pool.clone_ref(py),
+        })
+    }
+
+    fn __repr__(&self, py: Python<'_>) -> String {
+        match self.antiderivative {
+            Some(id) => {
+                let pool = self.pool.borrow(py);
+                format!(
+                    "ParallelRischResult(solved=True, verification={:?}, antiderivative={})",
+                    self.verification.unwrap_or("exact"),
+                    alkahest_core::kernel::display::render_unicode(id, &pool.inner)
+                )
+            }
+            None => format!(
+                "ParallelRischResult(solved=False, reason={:?})",
+                self.reason.as_deref().unwrap_or("")
+            ),
+        }
+    }
+}
+
+/// `alkahest.experimental.integrate_parallel_risch(expr, var) -> ParallelRischResult`
+///
+/// The Risch–Norman ("parallel Risch") heuristic: posit
+/// ``F = P/Q + Σ dⱼ·log(pⱼ)`` over the monomial basis of
+/// ``ℚ(x, exp …, log …)``, differentiate, and solve one linear system over ℚ
+/// instead of building a differential-field tower.  Norman & Moore (1977);
+/// Davenport (1982); Bronstein, *Structure theorems for parallel integration*
+/// (2007) for the algebraic-independence precondition.
+///
+/// This does **not** raise on failure and does **not** go through
+/// :func:`alkahest.integrate`'s routing — it is a separate, measurable entry
+/// point.  It returns a :class:`ParallelRischResult`; read that class's
+/// documentation before acting on a declined result.
+#[pyfunction]
+#[pyo3(name = "integrate_parallel_risch")]
+fn py_integrate_parallel_risch(
+    py: Python<'_>,
+    expr: PyRef<PyExpr>,
+    var: PyRef<PyExpr>,
+) -> PyResult<PyParallelRischResult> {
+    use alkahest_core::integrate::norman::{integrate_parallel_risch, ParallelRischOutcome};
+    use alkahest_core::integrate::AntiderivativeVerification;
+
+    let outcome = {
+        let pool_ref = expr.pool.borrow(py);
+        guard_depth(&pool_ref.inner, expr.id)?;
+        let (id, var_id, pool) = (expr.id, var.id, &pool_ref.inner);
+        py.allow_threads(|| integrate_parallel_risch(id, var_id, pool))
+    };
+    let pool_py = expr.pool.clone_ref(py);
+    Ok(match outcome {
+        ParallelRischOutcome::Solved {
+            antiderivative,
+            verification,
+        } => PyParallelRischResult {
+            antiderivative: Some(antiderivative),
+            verification: Some(match verification {
+                AntiderivativeVerification::Exact => "exact",
+                AntiderivativeVerification::Numeric => "numeric",
+            }),
+            reason: None,
+            pool: pool_py,
+        },
+        ParallelRischOutcome::Declined(reason) => PyParallelRischResult {
+            antiderivative: None,
+            verification: None,
+            reason: Some(reason.to_string()),
+            pool: pool_py,
+        },
+        // `ParallelRischOutcome` is `#[non_exhaustive]`.  Any future variant is
+        // treated as a decline here, which is the safe direction: this binding
+        // can never invent a stronger claim than the variant it understands.
+        other => PyParallelRischResult {
+            antiderivative: None,
+            verification: None,
+            reason: Some(format!("unrecognised outcome: {other:?}")),
+            pool: pool_py,
+        },
+    })
+}
+
 #[pyfunction]
 #[pyo3(name = "apart")]
 fn py_apart(py: Python<'_>, expr: PyRef<PyExpr>, var: PyRef<PyExpr>) -> PyResult<PyExpr> {
@@ -15230,6 +15362,8 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(py_diff_forward, m)?)?;
     m.add_function(wrap_pyfunction!(py_integrate, m)?)?;
     m.add_function(wrap_pyfunction!(py_integrate_definite, m)?)?;
+    m.add_class::<PyParallelRischResult>()?;
+    m.add_function(wrap_pyfunction!(py_integrate_parallel_risch, m)?)?;
     m.add_function(wrap_pyfunction!(py_apart, m)?)?;
     m.add_function(wrap_pyfunction!(py_residue, m)?)?;
     m.add_function(wrap_pyfunction!(py_series, m)?)?;

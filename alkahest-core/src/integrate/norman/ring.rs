@@ -407,19 +407,19 @@ pub(super) fn lattice_basis(
             }
             let p = *nz
                 .iter()
-                .min_by_key(|&&i| Integer::from(rows[i][col].clone().abs()))
+                .min_by_key(|&&i| rows[i][col].clone().abs())
                 .expect("nz is non-empty");
+            let pivot_row = rows[p].clone();
             for &i in &nz {
                 if i == p {
                     continue;
                 }
-                let q = Integer::from(&rows[i][col] / &rows[p][col]);
+                let q = Integer::from(&rows[i][col] / &pivot_row[col]);
                 if q == 0 {
                     continue;
                 }
-                for c in col..ncols {
-                    let t = rows[p][c].clone() * q.clone();
-                    rows[i][c] -= t;
+                for (cell, pv) in rows[i].iter_mut().zip(pivot_row.iter()).skip(col) {
+                    *cell -= pv.clone() * q.clone();
                 }
             }
         }
@@ -428,9 +428,8 @@ pub(super) fn lattice_basis(
         };
         rows.swap(top, p);
         if rows[top][col] < 0 {
-            for c in 0..ncols {
-                let v = rows[top][c].clone();
-                rows[top][c] = -v;
+            for v in rows[top].iter_mut() {
+                *v = -std::mem::take(v);
             }
         }
         basis.push(rows[top].clone());
@@ -837,14 +836,14 @@ fn rank_q(mat: &mut [Vec<Rational>], ncols: usize) -> usize {
         };
         mat.swap(row, p);
         let piv = mat[row][col].clone();
-        for r in 0..nrows {
-            if r == row || mat[r][col] == 0 {
+        let pivot_row = mat[row].clone();
+        for (r, mrow) in mat.iter_mut().enumerate() {
+            if r == row || mrow[col] == 0 {
                 continue;
             }
-            let f = mat[r][col].clone() / piv.clone();
-            for c in col..ncols {
-                let t = mat[row][c].clone() * f.clone();
-                mat[r][c] -= t;
+            let f = mrow[col].clone() / piv.clone();
+            for (cell, pv) in mrow.iter_mut().zip(pivot_row.iter()).skip(col) {
+                *cell -= pv.clone() * f.clone();
             }
         }
         row += 1;

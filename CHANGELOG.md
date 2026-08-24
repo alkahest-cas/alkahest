@@ -182,6 +182,42 @@
   disabling the cumulative one takes `large_attempted` from 1 to 6 (and the
   test from under a second to 131 s) and fails it; disabling the per-probe
   one fails it too.
+- **Risch–Norman ("parallel Risch") heuristic integration**, new in
+  `alkahest_cas::integrate::norman` and, on the experimental Python surface, as
+  `alkahest.experimental.integrate_parallel_risch`. Instead of building a
+  differential-field tower and recursing on it, the heuristic posits
+  `F = P/Q + Σ dⱼ·log(pⱼ)` over the monomial basis of `ℚ(x, exp …, log …)`,
+  differentiates that ansatz, and solves **one linear system over ℚ**. It is
+  the mechanism that is the default integrator in Maple, FriCAS and Reduce.
+
+  **This does not change `integrate`'s routing.** It is a separate entry point
+  so its coverage can be measured before any dispatch change is proposed.
+  Measured on a 103-case suite (the 40-case coverage probe plus 63 textbook
+  integrands): 50 solved by both, **8 solved only by Risch–Norman** — the
+  `exp(k·x)/(exp(x)+1)` family, `1/(x·log x·log log x)`, `log(x²)`,
+  `(exp(x)+x)/(x·exp(x))` — 23 solved only by the existing engine (trigonometric,
+  algebraic, `RootSum` and `arctan` answers, none of which this ring can
+  express), 22 by neither.
+
+  **A decline is not a verdict.** The result type is
+  `Solved { antiderivative, verification }` / `Declined(reason)`; there is no
+  variant a caller can read as a proof of non-elementarity, and
+  `DeclineReason::into_integration_error` maps *every* decline to
+  `NotImplemented`. `exp(x²)` (no elementary antiderivative) and `1/(x²+1)`
+  (which is `atan x`, but needs a constant field bigger than `ℚ`) both come back
+  declined, and the API deliberately cannot tell them apart.
+
+  Soundness rests on two independent guards. Before the system is built, the
+  algebraic-independence precondition of Bronstein's structure theorems
+  (*Structure theorems for parallel integration*, JSC 42(7), 2007) is checked —
+  exponential arguments are reduced to a `ℤ`-lattice basis, logarithm arguments
+  are tested for multiplicative independence modulo constants — and a tower that
+  cannot be certified independent is declined rather than attempted. After the
+  system is solved, the rebuilt candidate is differentiated with the
+  general-purpose `diff` (not the ring's own derivation table), read back into
+  `ℚ(x, θ)` and required to equal the integrand exactly; anything that cannot be
+  re-read falls through to `verify_antiderivative_status`, and a candidate that
+  passes neither gate is discarded.
 
 - **`integrate` no longer lets the *spelling* of an integrand decide the
   answer.** Three separate defects combined into one user-visible failure mode:

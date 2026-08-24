@@ -53,11 +53,17 @@
 //!    arguments to a `ℤ`-lattice basis and checks logarithm arguments for
 //!    multiplicative independence modulo constants, and declines when it
 //!    cannot certify the condition.  See that module for the details.
-//! 2. **`d/dx F = f` before return.**  Every candidate is passed through
-//!    [`crate::integrate::verify_antiderivative_status`] against the *original*
-//!    integrand.  A candidate that does not verify is discarded and the call
-//!    declines.  The construction is sound by design; the gate is there
-//!    because construction arguments have bugs.
+//! 2. **`d/dx F = f` before return**, in two stages.  First the *rebuilt*
+//!    candidate is differentiated with the general-purpose `diff` — not with
+//!    the ring's own derivation table, so a bug in that table cannot hide —
+//!    read back into `ℚ(x, θ)`, and required to equal `f` exactly as a
+//!    rational function.  A candidate that cannot be re-read into the ring
+//!    falls through to [`crate::integrate::verify_antiderivative_status`],
+//!    the engine's own gate, which also accepts agreement at several numeric
+//!    sample points; [`ParallelRischOutcome::Solved`] records which of the two
+//!    established the identity.  A candidate that passes neither is discarded
+//!    and the call declines.  The construction is sound by design; the gates
+//!    are there because construction arguments have bugs.
 //!
 //! A singular or inconsistent linear system declines
 //! ([`DeclineReason::NoSolution`]); it never produces a partial answer.
@@ -242,25 +248,76 @@ pub fn integrate_parallel_risch(
     var: ExprId,
     pool: &ExprPool,
 ) -> ParallelRischOutcome {
-    match attempt(expr, var, pool) {
-        Ok(candidate) => match verify_antiderivative_status(candidate, expr, var, pool) {
-            Some(verification) => ParallelRischOutcome::Solved {
-                antiderivative: candidate,
-                verification,
-            },
-            None => ParallelRischOutcome::Declined(DeclineReason::VerificationFailed),
+    let (candidate, ring, f) = match attempt(expr, var, pool) {
+        Ok(v) => v,
+        Err(reason) => return ParallelRischOutcome::Declined(reason),
+    };
+
+    // Gate 1 — an exact identity in the ring.  Differentiate the *rebuilt*
+    // expression with the general-purpose `diff` (not the ring's derivation
+    // table, so a bug in that table cannot hide here), read the result back
+    // into `ℚ(x, θ)`, and require it to equal `f` exactly.
+    if ring_identity_holds(&ring, candidate, f.clone(), var, pool) {
+        return ParallelRischOutcome::Solved {
+            antiderivative: candidate,
+            verification: AntiderivativeVerification::Exact,
+        };
+    }
+    // Gate 2 — the engine's own gate, which also accepts a numeric agreement.
+    match verify_antiderivative_status(candidate, expr, var, pool) {
+        Some(verification) => ParallelRischOutcome::Solved {
+            antiderivative: candidate,
+            verification,
         },
-        Err(reason) => ParallelRischOutcome::Declined(reason),
+        None => ParallelRischOutcome::Declined(DeclineReason::VerificationFailed),
+    }
+}
+
+/// `d/dx candidate == f` as an exact identity in the ring.
+///
+/// Returns `false` — never an error — when the derivative falls outside the
+/// ring, so a candidate that cannot be re-read simply falls through to the
+/// engine's gate rather than being accepted on trust.
+fn ring_identity_holds(
+    ring: &ring::NormanRing,
+    candidate: ExprId,
+    f: crate::poly::rational::RationalFunction,
+    var: ExprId,
+    pool: &ExprPool,
+) -> bool {
+    let Ok(d) = crate::diff::diff(candidate, var, pool) else {
+        return false;
+    };
+    let d = crate::simplify::engine::simplify(d.value, pool).value;
+    let Ok(dr) = ring.to_rf(d, pool) else {
+        return false;
+    };
+    match dr - f {
+        Ok(residual) => residual.is_zero(),
+        Err(_) => false,
     }
 }
 
 /// The unverified half of [`integrate_parallel_risch`].
-fn attempt(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<ExprId, DeclineReason> {
+#[allow(clippy::type_complexity)]
+fn attempt(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Result<
+    (
+        ExprId,
+        ring::NormanRing,
+        crate::poly::rational::RationalFunction,
+    ),
+    DeclineReason,
+> {
     let normalized = crate::simplify::engine::simplify(expr, pool).value;
     let ring = ring::build(normalized, var, pool)?;
     let f = ring.to_rf(normalized, pool)?;
     if f.numer.is_zero() {
-        return Ok(pool.integer(0_i32));
+        return Ok((pool.integer(0_i32), ring, f));
     }
-    ansatz::solve(&ring, &f, pool)
+    let candidate = ansatz::solve(&ring, &f, pool)?;
+    Ok((candidate, ring, f))
 }

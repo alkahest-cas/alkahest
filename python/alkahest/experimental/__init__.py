@@ -57,6 +57,17 @@ Calculus / ODE / transform surface:
   arithmetic works over, exposed so a caller can redo the divisibility check
   by hand
 
+Risch–Norman (parallel Risch) heuristic integration:
+- :func:`integrate_parallel_risch` / :class:`ParallelRischResult` — posits
+  ``F = P/Q + Σ dⱼ·log(pⱼ)`` over the monomial basis of
+  ``ℚ(x, exp …, log …)``, differentiates it, and solves one linear system
+  over ℚ instead of building a differential-field tower.  Every returned
+  antiderivative passes a ``d/dx F == f`` gate, and the algebraic-independence
+  precondition (Bronstein 2007) is checked before the system is built.
+  **A declined result is not a non-elementarity verdict** — the function
+  returns a result object and never raises; see the class documentation.
+  Separate from :func:`alkahest.integrate`, whose routing is unchanged.
+
 Double-sum (Apagodu–Zeilberger) creative telescoping (M4):
 - :func:`telescope2d` / :class:`Telescoping2dCertificate` — creative
   telescoping for a proper hypergeometric term ``F(n,j,k)`` with **two** bound
@@ -159,6 +170,7 @@ from alkahest.alkahest import (
     AsymptoticReport,
     Fps,
     OdeTrajectory,
+    ParallelRischResult,
     QRootOfUnitySpecialization,
     QZeilbergerCertificate,
     Telescoping2dCertificate,
@@ -174,6 +186,7 @@ from alkahest.alkahest import (
     heaviside,
     inverse_fourier_transform,
     inverse_laplace_transform,
+    integrate_parallel_risch,
     inverse_z_transform,
     laplace_transform,
     multilimit,
@@ -234,6 +247,8 @@ __all__ = [
     "OeisCache",
     "OeisEntry",
     "OeisWeb",
+    # Risch-Norman heuristic integration result
+    "ParallelRischResult",
     # M9 — coefficient fields for elimination
     "ParametricGbPoly",
     "ParametricGroebnerBasis",
@@ -273,6 +288,9 @@ __all__ = [
     "inverse_fourier_transform",
     "inverse_laplace_transform",
     "inverse_z_transform",
+    # Risch-Norman (parallel Risch) heuristic integrator.  Returns a result
+    # object, never raises: a declined result is not a non-elementarity verdict.
+    "integrate_parallel_risch",
     "lambert_w",
     "laplace_transform",
     "multilimit",
