@@ -21,7 +21,7 @@
 //! | `Σ_k F(n,k)` | `∫_a^b F(n,x) dx` |
 //! | shift `k → k+1`, `Δ_k` | derivation `D_x` |
 //! | proper hypergeometric term | hyperexponential term ([`mod@hyperexp`]) |
-//! | Gosper's algorithm | differential Gosper (`dgosper`) |
+//! | Gosper's algorithm | differential Gosper ([`mod@dgosper`]) |
 //! | [`mod@super::boundary`] | [`mod@boundary`] |
 //!
 //! # Module layout
@@ -30,17 +30,17 @@
 //!   `F(n,x) = R(n,x)·wⁿ·exp(η(x))·∏ B_j(x)^(α_j n + β_j)` and its two exact
 //!   certificates: the logarithmic derivative `θ = ∂_x F / F ∈ Q(n)(x)` and the
 //!   shift ratios `F(n+i,x)/F(n,x) ∈ Q(n)(x)`.
-//! - `rde` — the shared inner solver. Both stages below are the *same*
+//! - [`mod@rde`] — the shared inner solver. Both stages below are the *same*
 //!   parametric Risch differential equation `R' + θ·R = Σ_i a_i·r_i` solved by
 //!   undetermined coefficients over `Q(n)`; the only difference is whether the
 //!   right-hand side is fixed (`J = 0`, `a_0 = 1`) or carries unknowns.
-//! - `dgosper` — the indefinite case: decide whether `∫F dx = R·F` for a
+//! - [`mod@dgosper`] — the indefinite case: decide whether `∫F dx = R·F` for a
 //!   rational `R`, and return it. This is `J = 0` with `a_0` normalised to `1`.
 //! - [`mod@search`] — [`almkvist_zeilberger`] itself, ascending in `J` from `0`.
-//! - [`mod@boundary`] — the continuous analogue of [`mod@super::boundary`]: deciding
-//!   whether `[R·F]_a^b` vanishes, so that the certificate becomes a recurrence
-//!   for `f(n) = ∫_a^b F(n,x) dx` rather than a statement about the integrand
-//!   alone.
+//! - [`mod@boundary`] — the continuous analogue of [`mod@super::boundary`]:
+//!   deciding whether `[R·F]_a^b` vanishes, so that the certificate becomes a
+//!   recurrence for `f(n) = ∫_a^b F(n,x) dx` rather than a statement about the
+//!   integrand alone.
 //!
 //! # The integral recurrence carries a hypothesis
 //!
