@@ -36,7 +36,7 @@ def _differentiates_back(x, cand, integrand):
         try:
             a = float(ak.eval_expr(d, {x: xv}))
             b = float(ak.eval_expr(integrand, {x: xv}))
-        except Exception:  # noqa: BLE001 — singular sample point
+        except Exception:
             continue
         if a != a or b != b:
             continue
@@ -107,7 +107,8 @@ def test_declines_without_a_verdict(env, src):
     assert not res.solved
     assert res.antiderivative() is None
     assert res.verification is None
-    assert isinstance(res.reason, str) and res.reason
+    assert isinstance(res.reason, str)
+    assert res.reason
 
 
 def test_a_decline_is_not_a_non_elementarity_claim(env):
@@ -116,7 +117,8 @@ def test_a_decline_is_not_a_non_elementarity_claim(env):
     pool, x = env
     non_elementary = integrate_parallel_risch(_parse(pool, "exp(x^2)"), x)
     elementary = integrate_parallel_risch(_parse(pool, "1/(x^2+1)"), x)
-    assert not non_elementary.solved and not elementary.solved
+    assert not non_elementary.solved
+    assert not elementary.solved
     # `1/(x^2+1)` is `atan(x)`; the default engine finds it.
     assert ak.integrate(_parse(pool, "1/(x^2+1)"), x) is not None
     # Nothing on the declined result distinguishes the two cases, and no
