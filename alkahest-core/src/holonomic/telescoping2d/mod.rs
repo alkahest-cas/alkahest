@@ -704,35 +704,31 @@ mod tests {
     /// This must now come back **bounded** — capped to roughly one expensive
     /// elimination attempt, not six or more — with an honest
     /// `SearchExhausted` naming the ceilings as the reason, not hang and not
-    /// silently under-search. The wall-clock bound here is deliberately loose
-    /// (this project's own standing practice for CI-flakiness — see
-    /// AGENTS.md, and this specific assertion needs extra slack since the
-    /// cumulative budget still permits one genuinely slow ≈30–50 second
-    /// elimination): its only job is to distinguish "bounded to about one
-    /// expensive attempt" from "unboundedly retries the same expensive
-    /// probe," not to pin an exact latency.
+    /// silently under-search.
+    ///
+    /// "Bounded" is asserted on [`search::SearchStats`] — how many probes the
+    /// search *attempted*, how many of those were large enough to count
+    /// against the cumulative ceiling, and how much of that ceiling's budget
+    /// they spent. That is the property the ceilings actually promise, and it
+    /// is fixed by the input: the same numbers on every platform, under any
+    /// load, and under any sanitizer. This test previously asserted `elapsed
+    /// < 900s` as a proxy for the same thing, which is none of those — 76 s
+    /// on Linux against 480 s on Windows for the identical elimination, ~30x
+    /// again under AddressSanitizer, and 448 s idle against 1147 s under
+    /// concurrent load on one machine — and it had to be relaxed or carved
+    /// out three times in a row before the assertion was replaced.
+    ///
+    /// The test still *takes* several minutes (≈450 s on an idle Linux box,
+    /// ≈780 s on a loaded one), because the cumulative ceiling
+    /// deliberately permits one genuinely slow (≈245-unknown) exact-rational
+    /// elimination and that arithmetic is real. That is no longer anything
+    /// the assertions depend on. Shrinking the input to make
+    /// it fast would stop it exercising the ceiling at all, which is why the
+    /// `large_attempted >= 1` assertion below is there: it fails if a future
+    /// change makes this input cheap, rather than letting the test quietly
+    /// stop testing anything.
     #[test]
     fn chained_product_at_original_bounds_refuses_fast_via_resource_ceiling() {
-        // `#[cfg(sanitize = "address")]` would need an unstable feature gate
-        // on the whole crate (breaking every stable build), so this checks
-        // the RUSTFLAGS the *test binary itself* was compiled with instead —
-        // `option_env!` bakes in the compile-time value, no runtime probing.
-        // AddressSanitizer instrumentation makes the exact-rational
-        // elimination this test exercises 30x+ slower (~2500s observed in
-        // CI, against ~70-500s across plain Linux/macOS/Windows builds),
-        // which both defeats any reasonable wall-clock bound and risks the
-        // ASan job's own 60-minute CI timeout. The property under test
-        // (bounded probe count, not raw speed) is not sanitizer-sensitive,
-        // so it stays fully covered by every other CI build; only the
-        // wall-clock assertion, which is meaningless under this much
-        // overhead, is skipped here.
-        if option_env!("RUSTFLAGS").is_some_and(|f| f.contains("sanitizer=address")) {
-            eprintln!(
-                "skipping wall-clock assertion under AddressSanitizer (see comment on this test)"
-            );
-            return;
-        }
-
         let pool = ExprPool::new();
         let n = pool.symbol("n", Domain::Real);
         let x = pool.symbol("x", Domain::Real);
@@ -748,21 +744,47 @@ mod tests {
             max_a_degree: 2,
             max_cert_degree: 3,
         };
-        let start = std::time::Instant::now();
-        let err = search::telescope_md_search(f, n, &[x, y, z], &pool, &opts)
+        let (result, stats) =
+            search::telescope_md_search_instrumented(f, n, &[x, y, z], &pool, &opts);
+        let err = result
             .expect_err("this combination must be refused via the resource ceiling, not solved");
-        let elapsed = start.elapsed();
-        // 900s, not 180s: this bound exists to catch a genuine hang (the
-        // pre-fix behavior was still running after several minutes and
-        // growing), not to pin CI wall-clock precisely. Windows CI runners
-        // measured ~480s here against ~76s on Linux for the same exact-
-        // rational elimination — a real, expected platform gap for GMP-
-        // backed arithmetic under MSYS2/mingw, not evidence the ceiling
-        // isn't working.
+
+        // The input must still reach a probe expensive enough for the
+        // cumulative ceiling to have anything to cap; without this the
+        // assertions below could pass vacuously on an input that never gets
+        // near either ceiling.
         assert!(
-            elapsed.as_secs() < 900,
-            "expected a bounded refusal (roughly one expensive elimination, not several), took \
-             {elapsed:?}"
+            stats.large_attempted >= 1,
+            "this input must still reach at least one large probe, or the ceiling under test is \
+             never exercised; got {stats:?}"
+        );
+        // The property the cumulative ceiling exists to provide, stated
+        // directly: at most about *one* expensive elimination per search
+        // call. Pre-fix, all six (order, a_degree) combinations retried the
+        // same ≈245-unknown probe.
+        assert!(
+            stats.large_attempted <= 2,
+            "expected a bounded refusal (roughly one expensive elimination, not several); got \
+             {stats:?}"
+        );
+        assert!(
+            stats.large_unknowns_spent <= search::MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS,
+            "large-probe work spent must stay inside MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS ({}); \
+             got {stats:?}",
+            search::MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS
+        );
+        // Both ceilings must have actually fired: the per-probe one on the
+        // cert_degree = 3 probes (768 unknowns, over MAX_ANSATZ_UNKNOWNS),
+        // and the cumulative one on every repeat of the ≈245-unknown probe
+        // after the first.
+        assert!(
+            stats.skipped_per_probe_ceiling > 0,
+            "expected MAX_ANSATZ_UNKNOWNS to have refused at least one probe; got {stats:?}"
+        );
+        assert!(
+            stats.skipped_cumulative_ceiling > 0,
+            "expected MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS to have refused at least one repeat of \
+             the expensive probe; got {stats:?}"
         );
         assert!(matches!(err, Telescoping2dError::SearchExhausted(_)));
         let Telescoping2dError::SearchExhausted(msg) = &err else {
