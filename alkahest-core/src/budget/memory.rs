@@ -122,7 +122,7 @@ unsafe extern "C" fn wrap_free(ptr: *mut c_void, size: usize) {
 /// the functions that were installed at the time, so a block allocated
 /// before installation is still freed by the allocator that produced it, and
 /// the only consequence of installing late is that the live total starts from
-/// a baseline it never saw allocated (handled by [`sub_live`]'s saturation).
+/// a baseline it never saw allocated (handled by `sub_live`'s saturation).
 ///
 /// GMP's own documentation warns that changing the allocation functions while
 /// other threads are inside GMP is unsafe; the [`Once`] makes the swap happen

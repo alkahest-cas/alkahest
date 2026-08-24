@@ -1194,7 +1194,7 @@ fn symmetry_reduced_search(
 /// The trace exists because `None` out of this module covers three
 /// materially different situations — the search ran and was exhausted, the
 /// search ran and hit an iteration/rounding budget, and *the search never
-/// ran at all* because the family was over [`MAX_FREE_PARAMETERS`] — and a
+/// ran at all* because the family was over `MAX_FREE_PARAMETERS` — and a
 /// bare `None` (or the `E-SOS-002` it turns into) cannot distinguish them.
 /// [`super::sos_decompose`] folds this trace into the error message so that
 /// distinction reaches the caller.
@@ -1302,7 +1302,7 @@ fn restricted_basis(target: &RatPoly, basis_deg: u32) -> (Vec<Exponents>, usize)
 /// Size of the monomial basis [`psd_search_logged`] will actually search for
 /// `target` at `basis_deg`.
 ///
-/// Exposed so [`super::multiplier_search`] can budget against the size it is
+/// Exposed so `multiplier_search` can budget against the size it is
 /// really going to search rather than the raw `monomial_basis` count: those
 /// two differ by nearly 4× on realistic targets (a degree-4 ternary basis is
 /// 35 monomials raw, 15 after the homogeneity restriction, 9 after the

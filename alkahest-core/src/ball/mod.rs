@@ -371,7 +371,7 @@ impl ArbBall {
     ///   unbounded on the box (`0.001⁻² = 10⁶`).
     ///
     /// (`x ** 2` written with an `Integer` exponent node never reached here —
-    /// [`IntervalEval::eval_node`] routes it to [`ArbBall::powi`] — but the
+    /// `IntervalEval::eval_node` routes it to [`ArbBall::powi`] — but the
     /// same exponent arriving as a `Float`, a `Rational`, or a bound symbol
     /// did.)
     ///
