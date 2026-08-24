@@ -34,6 +34,7 @@ mod jacobian_torsion;
 pub(super) mod parametrize;
 pub(super) mod poly_utils;
 pub mod residues;
+pub(super) mod subst;
 // Trager ℚ-basis logarithmic-part criterion: decomposition + per-component
 // torsion over rational *and* algebraic places.  `trager_log_criterion_alg` is
 // the engine consumer (via `genus_zero::integrate_b_sqrt_high_degree`); the
@@ -231,6 +232,14 @@ pub fn integrate_algebraic(
             // …), which `try_euler_quadratic` above cannot rationalize.  Tried
             // last so the nicer closed forms of the earlier paths are preserved.
             if let Some(res) = parametrize::try_euler_quadratic_general(expr, var, pool) {
+                return res;
+            }
+            // Rationalizing substitution `uⁿ = g(x)` for a *non-polynomial*
+            // radicand — `∫√(tan x) dx` and friends.  Tried last, after every
+            // polynomial-radicand route has declined, so nothing that already
+            // worked can change; every emission is gate-verified against the
+            // original integrand in `x`.
+            if let Some(res) = subst::try_rationalizing_substitution(expr, var, pool) {
                 return res;
             }
             integrate_via_decompose(expr, var, pool)
