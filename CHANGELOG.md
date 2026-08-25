@@ -226,6 +226,71 @@
   `E-INT-001`, which is the honest weaker verdict. No verdict on the 40-case
   integration probe moved between `E-INT-004` and `E-INT-001` (27 solved / 7 /
   6, unchanged).
+- **`integrate` no longer certifies elementary nested-exponential integrands as
+  non-elementary.** `∫ eˣ·e^(eˣ)/(e^(eˣ)+1) dx` — whose antiderivative is
+  `log(e^(eˣ)+1)` — came back as a *certified* `E-INT-004`, "no elementary
+  antiderivative exists". The trigger was `simplify`: the raw parse fell through
+  to u-substitution and solved, while the simplified spelling entered the exp
+  tower and got a false proof, so any pipeline that normalised before
+  integrating hit it.
+
+  Three premises in `integrate/risch/` were being used as proofs without being
+  established.
+
+  1. **The Laurent decomposition was never validated.** `extract_exp_factor`
+     peels integer powers of the generator `t` off a product and puts every
+     other factor into the coefficient, without checking that what is left is
+     free of `t` — so `t/(t+1)` arrived as the monomial `(t+1)⁻¹·t¹`, a
+     "coefficient" that is not in the base field at all. Every certificate in
+     the exp case rests on the Laurent theorem ("for `k ≠ 0`, `∫cₖtᵏ` is
+     elementary iff the Risch DE `v' + kη'v = cₖ` has a solution in `K`",
+     Bronstein §5.3), which does not apply to a genuine rational function of
+     `t`: that needs Hermite reduction plus a Rothstein–Trager residue reduction
+     over `K[t]` (§5.6), and *those* can contribute **new logarithms** the RDE
+     never sees. `integrate_exp_tower` now validates the decomposition and
+     declines with `E-INT-001` instead of certifying.
+
+  2. **"the coefficient is rational in the inner generator" was not a proof.**
+     The old predicate certified on *any* denominator in the inner generator,
+     and tested for one with `contains_subexpr` — which answers `true` for a
+     coefficient mentioning the **outer** generator, since `exp(exp(x))`
+     syntactically contains `exp(x)`. It is replaced by a test that parses the
+     coefficient into `ℚ(x)(θ)` and certifies only when the denominator is
+     squarefree, i.e. every pole is simple: there a solution would have to be
+     regular at the pole while `c` is not (Bronstein §6.1). Higher-order poles
+     are now undecided rather than certified.
+
+  3. **The lower-tower cascade only covered non-negative degrees.** It is now a
+     Laurent cascade over `j ∈ ℤ` and therefore a *complete decision* for
+     Laurent coefficients: the recursion `vⱼ₋₁ = (cⱼ − vⱼ′ − j·vⱼ)/k` is forced
+     from the top degree down to `min(L, 0)`, and the integral is elementary iff
+     the last value produced vanishes. Residuals are certified non-zero only by
+     an exact test — a rational-function numerator, or a **ball enclosure that
+     excludes zero** — never by "the simplifier did not reach `0`".
+
+  A fourth false certificate, found while auditing, is fixed in the same pass:
+  `known_nonelementary` returned the logarithmic-integral (`li`) diagnostic for
+  *any* product containing a `log(linear)^(-n)` factor, so
+  `∫ −dx/(x·log²x) = 1/log x` was certified non-elementary. That family is
+  elementary exactly when the polynomial denominator is a constant multiple of
+  the log's argument, and the certificate now declines there;
+  `try_log_derivative` also accepts a constant multiple of `h'/h` rather than
+  demanding equality, so those integrals are answered instead of declined.
+
+  Measured over a 138-verdict corpus: **9 false `E-INT-004`s became answers**
+  (the four reported reproducers plus `log(e^(eˣ)+2)`, `1/(e^(eˣ)+1)ⁿ`,
+  `atan(e^(eˣ))`, `½log(e^(2eˣ)+1)`), **4 `E-INT-001`s became answers** (the
+  `c·h'/h·log(h)^(-n)` family), and **3 integrands moved `E-INT-004` →
+  `E-INT-001`** — `∫ e^(eˣ)/(e^(eˣ)+1) dx`, `∫ eˣ/(eˣ+1)²·e^(eˣ) dx` and
+  `∫ x·eˣ·e^(eˣ)/(e^(eˣ)+1) dx`. Those three are probably non-elementary, but
+  the implementation cannot prove it, and a weaker honest verdict beats a
+  stronger false one. The 40-case integration probe is unchanged at 27 solved /
+  7 `E-INT-004` / 6 `E-INT-001`.
+
+  **Still not done:** Hermite reduction plus Rothstein–Trager over `K[t]` for a
+  rational function of the *outer* generator, and `RdeNormalDenominator` for a
+  higher-order pole in the inner generator. Both are now declined rather than
+  guessed, and the `risch` module docs say so.
 
 - **`integrate` no longer lets the *spelling* of an integrand decide the
   answer.** Three separate defects combined into one user-visible failure mode:
