@@ -61,7 +61,7 @@
 //! - **Nested exp towers — Laurent coefficients only.**  For an integrand
 //!   `Σ cₖ(x, exp(x))·exp(exp(x))ᵏ` whose coefficients are *Laurent polynomials*
 //!   in the inner generator, the forced coefficient cascade
-//!   ([`exp_case::lower_tower_laurent_cascade`]) is a **complete decision**: it
+//!   (`exp_case::lower_tower_laurent_cascade`) is a **complete decision**: it
 //!   either returns the antiderivative or proves the Risch DE has no solution in
 //!   `ℚ(x)(exp(x))`, which for `k ≠ 0` is exactly non-elementarity (Bronstein
 //!   §5.3).  For a coefficient that is a genuine *rational function* of the
