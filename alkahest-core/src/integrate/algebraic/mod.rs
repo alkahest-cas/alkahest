@@ -165,6 +165,54 @@ fn get_radicand(expr: ExprId, pool: &ExprPool) -> Option<ExprId> {
     }
 }
 
+/// Turn a `NonElementary` from the simple-radical route into a `NotImplemented`.
+///
+/// **This is containment, not a fix**, and it belongs at the call site because
+/// the defect is in `risch::simple_radical`, which is not this module's to
+/// change.
+///
+/// That route decomposes `∫ Σ bⱼ yʲ dx` (`y = p^{1/n}`) and, for each `j ≥ 1`,
+/// solves the component Risch DE `vⱼ′ + (j·p′/(n·p))·vⱼ = bⱼ`.  When the solver
+/// returns `None` it reports `NonElementary` — `simple_radical.rs:112` and
+/// `:231`. Two independent things are wrong with that:
+///
+/// * By Liouville, `∫bⱼ yʲ dx = vⱼ yʲ + Σ cₖ log uₖ`. The route computes the
+///   **integral part only** and never looks at the logarithmic part, so an
+///   integral whose answer is a logarithm is reported as having none.
+/// * `solve_rational_rde_generalized`'s `None` is a *decline*, not a disproof
+///   (the same conflation fixed for `∫B√P` in `genus_zero` — see
+///   [`super::sqrt_rde`]).
+///
+/// The consequence is not hypothetical. `∫∛x/(x²+1) dx` is elementary — every
+/// `∫R(x, x^{1/n}) dx` with `R` rational is, since `x = uⁿ` makes the integrand
+/// rational — and equals
+///
+/// ```text
+///   −½log(u²+1) + ¼log(u⁴−u²+1) + (√3/2)·atan((2√3u²−√3)/3),   u = x^{1/3},
+/// ```
+///
+/// which differentiates back to the integrand exactly. It was certified
+/// non-elementary. So were `∫∛x/(x³−1) dx` and `∫x^{2/5}/(x−1) dx`, on the same
+/// (empty) grounds. Nothing that route reports can be trusted as a proof until
+/// it accounts for the logarithmic part, so none of it is passed on as one.
+///
+/// Antiderivatives and every other error are handed back untouched. Remove this
+/// once `simple_radical` grows a residue/log-part analysis — and pin the
+/// integrals above as *solved* when it does.
+fn downgrade_unproved_certificate(
+    res: Result<DerivedExpr<ExprId>, IntegrationError>,
+) -> Result<DerivedExpr<ExprId>, IntegrationError> {
+    match res {
+        Err(IntegrationError::NonElementary(msg)) => {
+            Err(IntegrationError::NotImplemented(format!(
+                "simple-radical route: {msg} — reported without a logarithmic-part \
+             analysis, so it is a decline, not a proof of non-elementarity"
+            )))
+        }
+        other => other,
+    }
+}
+
 /// Find a unique algebraic generator in `expr`.
 /// Returns `Some((sqrt_id, radicand_id))` when there is exactly one generator.
 fn find_generator(expr: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
@@ -209,7 +257,7 @@ pub fn integrate_algebraic(
     if let Some(res) =
         crate::integrate::risch::simple_radical::try_integrate_simple_radical(expr, var, pool)
     {
-        return res;
+        return downgrade_unproved_certificate(res);
     }
 
     // Negative-leading-coefficient quadratic radicand `√(a x²+b x+c)`, `a < 0`

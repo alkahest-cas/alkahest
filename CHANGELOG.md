@@ -223,6 +223,34 @@
   `∫x dx/√(1−x⁶)` and the rest keep `E-INT-004`, now with both premises
   established.
 
+- **Two more false-certificate mechanisms in the same area, found while
+  sweeping for the one above.**
+
+  * **A pole at `x = 0` was invisible.** `residues::finite_residues_algebraic`
+    factors the pole denominator with `poly::puiseux::factor_over_q`, which
+    deliberately divides out the largest power of `x` first — for its Puiseux
+    callers the root `c = 0` is not a branch and must not appear. Here it is an
+    ordinary place, and dropping it meant `∫√(x⁴−1)/x dx` had *no* enumerated
+    residues: the pole at `0` sits on an irrational sheet (`a(0) = −1`), so the
+    rational-Puiseux routine could not see it either. The integral is
+    elementary; it was certified non-elementary. `factor_over_q` is unchanged
+    (its other callers want the current behaviour); the residue routines now go
+    through a wrapper that keeps the factor.
+
+  * **The simple-radical route certifies without a logarithmic part at all.**
+    `risch::simple_radical` solves the component Risch DE `vⱼ′ + (j·p′/(n·p))vⱼ
+    = bⱼ` of the Liouville decomposition `∫bⱼyʲ dx = vⱼyʲ + Σcₖlog uₖ`, and
+    reports `NonElementary` when the solver returns `None` — ignoring the log
+    part entirely, and treating a *decline* as a disproof. But every
+    `∫R(x, x^{1/n}) dx` with `R` rational is elementary, since `x = uⁿ` makes
+    the integrand rational. `∫∛x/(x²+1) dx` equals
+    `−½log(u²+1) + ¼log(u⁴−u²+1) + (√3/2)·atan((2√3u²−√3)/3)` at `u = x^{1/3}`,
+    and was certified non-elementary; so were `∫∛x/(x³−1) dx` and
+    `∫x^{2/5}/(x−1) dx`. Pending a log-part analysis in that route, the
+    algebraic engine's call site downgrades its `NonElementary` to
+    `NotImplemented` — containment, documented as such, and reversible in one
+    place.
+
 - **New: the power pullback `u = x^k`** (`algebraic::pullback`). An integrand of
   the shape `x^{k−1}·g(x^k)` satisfies `∫f dx = (1/k)·∫g(u) du`, which drops the
   curve's genus by a factor of `k` — `∫x dx/√(1−x⁴)` becomes `½∫du/√(1−u²)` on a

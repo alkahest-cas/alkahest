@@ -263,7 +263,12 @@ fn verify(f: ExprId, integrand: ExprId, var: ExprId, pool: &ExprPool) -> bool {
     };
     let d = simplify(df.value, pool).value;
     let mut checked = 0;
-    for &xv in &[0.13_f64, 0.29, 0.41, 0.57, 0.68, 0.83, 1.7, 2.3] {
+    // Spread across both `|x| < 1` and `|x| > 1`: `√(1−x⁴)` is real only on the
+    // first, `√(x⁴−1)` only on the second, and three usable samples are needed
+    // either way.
+    for &xv in &[
+        0.13_f64, 0.29, 0.41, 0.57, 0.68, 0.83, 1.15, 1.4, 1.7, 2.3, 3.1, 4.2,
+    ] {
         let mut env = HashMap::new();
         env.insert(var, xv);
         let (Some(lhs), Some(rhs)) = (

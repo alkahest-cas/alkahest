@@ -84,6 +84,12 @@ _WAS_FALSELY_CERTIFIED = [
     ("x^2*sqrt(1-x^6)", _INSIDE_UNIT),
     ("x^3*sqrt(1-x^8)", _INSIDE_UNIT),
     ("x^5/sqrt(1-x^4)", _INSIDE_UNIT),
+    # A pole at x = 0 on an *irrational* sheet (a(0) = −1).  The rational-Puiseux
+    # routine cannot see it and the algebraic one never got the chance, because
+    # the factoriser strips the factor `x` before returning — so between them the
+    # residue divisor looked empty.
+    ("sqrt(x^4-1)/x", (1.3, 1.7, 2.4, 3.1)),
+    ("1/(x*sqrt(x^4-1))", (1.3, 1.7, 2.4, 3.1)),
 ]
 
 
@@ -152,6 +158,35 @@ def test_a_declined_risch_de_never_certifies():
     # …and the shapes the pullback cannot close still decline honestly rather
     # than certifying: `∫du/√(1−4u²)` is a gap in the genus-0 quadratic route.
     assert _code("x/sqrt(1-4*x^4)") == "E-INT-001"
+
+
+def test_simple_radical_route_never_certifies():
+    """`∫R(x, x^{1/n}) dx` is *always* elementary — `x = uⁿ` makes it rational.
+
+    The simple-radical route decides only the integral part `vⱼ·yʲ` of the
+    Liouville decomposition and reports `NonElementary` when its component Risch
+    DE has no rational solution, without ever looking at the logarithmic part.
+    `∫∛x/(x²+1) dx` is the witness: it equals
+
+        −½log(u²+1) + ¼log(u⁴−u²+1) + (√3/2)·atan((2√3u²−√3)/3),   u = x^{1/3}
+
+    and was certified non-elementary.  Whether or not the engine can produce
+    that answer, it may not claim there is none.
+    """
+    for src in ("x^(1/3)/(x^2+1)", "x^(1/3)/(x^3-1)", "x^(2/5)/(x-1)"):
+        pool = ExprPool()
+        x = pool.symbol("x")
+        # `^(1/3)` parses to an unevaluated exponent; normalise so the route is
+        # actually reached rather than skipped on a spelling technicality.
+        f = ak.simplify(ak.parse(src, pool)).value
+        code = "ok"
+        try:
+            integrate(f, x)
+        except Exception as exc:
+            code = getattr(exc, "code", type(exc).__name__)
+        assert code != "E-INT-004", (
+            f"{src} is elementary (x = u^n rationalises it) — no certificate allowed"
+        )
 
 
 def test_no_certificate_for_anything_with_a_pullback_to_a_solved_integral():

@@ -379,7 +379,7 @@ pub fn finite_residues_algebraic(n: usize, a: &QPoly, h: &AlgElem) -> Vec<AlgRes
     let d_prime = poly_deriv(&d);
 
     let mut out = Vec::new();
-    for (q, deg_q) in factor_over_q(&d) {
+    for (q, deg_q) in factor_including_zero_root(&d) {
         if degree(&poly_gcd(&q, &a)) > 0 {
             continue; // shares a factor with `a`: a branch place, not handled here
         }
@@ -720,12 +720,14 @@ pub(crate) fn residue_enumeration_is_complete(n: usize, a: &QPoly, h: &AlgElem) 
         return true; // no finite non-branch poles at all
     }
     // Which factors does the rational-Puiseux routine already own?
-    let all_rational_places = factor_over_q(&dc).into_iter().all(|(q, deg_q)| {
-        deg_q == 1 && {
-            let alpha = -q.first().cloned().unwrap_or_else(|| Rational::from(0));
-            is_rational_square(&eval_q(&a, &alpha))
-        }
-    });
+    let all_rational_places = factor_including_zero_root(&dc)
+        .into_iter()
+        .all(|(q, deg_q)| {
+            deg_q == 1 && {
+                let alpha = -q.first().cloned().unwrap_or_else(|| Rational::from(0));
+                is_rational_square(&eval_q(&a, &alpha))
+            }
+        });
     if all_rational_places {
         return true; // `finite_residues` handles these at any pole order
     }
@@ -792,6 +794,25 @@ pub(crate) fn certified_residue_divisor(
         rational,
         algebraic,
     })
+}
+
+/// Monic irreducible factors of `p` over `ℚ`, **including `x` itself** when `0`
+/// is a root.
+///
+/// [`factor_over_q`] deliberately divides out the largest power of `x` first —
+/// for its Puiseux callers the constant root `c = 0` is not a branch and must
+/// not appear.  Here it is an ordinary place like any other, and dropping it is
+/// how `∫√(x⁴−1)/x dx` came to be certified non-elementary: the pole at `x = 0`
+/// has an irrational sheet (`a(0) = −1`), so the rational-Puiseux routine cannot
+/// see it either, and between the two omissions the residue divisor looked
+/// empty.  Multiplicity is not returned (matching `factor_over_q`), so `x`
+/// appears once.
+fn factor_including_zero_root(p: &QPoly) -> Vec<(QPoly, usize)> {
+    let mut out = factor_over_q(p);
+    if trim(p.clone()).first().map(|c0| *c0 == 0) == Some(true) {
+        out.push((vec![Rational::from(0), Rational::from(1)], 1));
+    }
+    out
 }
 
 /// Least common multiple `a·b/gcd(a,b)` over `ℚ[x]`.
@@ -1147,6 +1168,29 @@ mod tests {
         // A(1/z) = z, so [z¹] = 1 and res = −2.
         assert_eq!(inf.r0, r(-2));
         assert_eq!(inf.r1, r(0));
+    }
+
+    /// `√(x⁴−1)/x dx` — the pole at `x = 0` sits on an *irrational* sheet
+    /// (`a(0) = −1`), so the rational-Puiseux routine cannot see it, and
+    /// `factor_over_q` used to drop the factor `x` before the algebraic routine
+    /// got a chance.  Between the two the divisor looked empty and the integral
+    /// — which is elementary — was certified non-elementary.
+    #[test]
+    fn pole_at_the_origin_is_not_dropped() {
+        let a = qp(&[-1, 0, 0, 0, 1]);
+        let h = vec![RatFn::int(0), rf(&[1], &[0, 1])]; // B = 1/x
+        let alg = super::finite_residues_algebraic(2, &a, &h);
+        assert_eq!(alg.len(), 1, "the place over x = 0 must be enumerated");
+        assert_eq!(alg[0].minpoly, qp(&[0, 1]));
+        assert!(alg[0].r0.iter().all(|c| *c == 0)); // rational part zero…
+        assert_eq!(alg[0].r1, vec![r(1)]); // …residues are ±√(a(0)) = ±i
+        assert!(super::finite_residues(2, &a, &h).is_empty());
+
+        let cert = super::certified_residue_divisor(2, &a, &h).expect("certifiable");
+        assert!(
+            !cert.algebraic.is_empty(),
+            "the certified divisor must not be empty here"
+        );
     }
 
     /// The certificate refuses a non-squarefree radicand and `n ≠ 2`.
