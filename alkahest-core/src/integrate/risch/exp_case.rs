@@ -579,24 +579,40 @@ enum Residual {
 ///
 /// The cascade below turns "the residual is non-zero" into a `NonElementary`
 /// certificate, so a simplifier that merely *fails* to collapse an expression to
-/// `0` must never be read as a proof that it is non-zero.  We therefore only
-/// answer `NonZero` when `e` parses as a rational function of `var` with a
-/// non-empty numerator — an exact test.
+/// `0` must never be read as a proof that it is non-zero.  Two exact tests only:
+///
+/// 1. `e` parses as a rational function of `var` — then an empty numerator
+///    decides zero and a non-empty one decides non-zero.
+/// 2. Otherwise, **rigorous ball arithmetic** at a few sample points: a ball
+///    that excludes `0` proves the function is non-zero there, hence non-zero.
+///    A ball that contains `0` proves nothing, so that stays `Undecided`.
 fn classify_residual(e: ExprId, var: ExprId, pool: &ExprPool) -> Residual {
     let s = simplify(e, pool).value;
     if is_zero(s, pool) {
         return Residual::Zero;
     }
-    match expr_to_qrational(s, var, pool) {
-        Some((num, _)) => {
-            if trim(num).is_empty() {
-                Residual::Zero
-            } else {
-                Residual::NonZero
+    if let Some((num, _)) = expr_to_qrational(s, var, pool) {
+        return if trim(num).is_empty() {
+            Residual::Zero
+        } else {
+            Residual::NonZero
+        };
+    }
+    // Coefficients may legitimately live in a base field larger than ℚ(x)
+    // (e.g. ℚ(x)(log x)); `expr_to_qrational` cannot read those.  A ball that
+    // stays clear of zero is still a proof.
+    const PREC: u32 = 128;
+    for &pt in &[1.3_f64, 2.1, 0.7, 3.7] {
+        let mut ev = crate::ball::IntervalEval::new(PREC);
+        ev.bind(var, crate::ball::ArbBall::from_f64(pt, PREC));
+        if let Some(ball) = ev.eval(s, pool) {
+            let (mid, rad) = (ball.mid_f64(), ball.rad_f64());
+            if mid.is_finite() && rad.is_finite() && mid.abs() > rad {
+                return Residual::NonZero;
             }
         }
-        None => Residual::Undecided,
     }
+    Residual::Undecided
 }
 
 /// Solve `D(v) + k·θ·v = c` for `v ∈ ℚ(x)[θ, θ⁻¹]` (`θ = θ_inner = exp(g)` with
