@@ -205,26 +205,51 @@ fn try_log_derivative(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<Expr
     // coeff must be a rational function of `var` (no θ inside).
     let (cn, cd) = expr_to_qrational(coeff, var, pool)?;
 
-    // Require coeff == h'/h as rational functions.
+    // Require coeff == λ·(h'/h) for a rational constant λ.  Demanding λ = 1
+    // exactly made the rule spelling-sensitive: `∫ dx/(x·log²x)` matched but
+    // `∫ −dx/(x·log²x)` did not, and the latter then fell through to the `li`
+    // pre-check and came back *certified* non-elementary — a false E-INT-004 for
+    // an integrand whose antiderivative is `1/log x`.
     let hp = crate::diff::diff(h, var, pool).ok()?.value;
     let (hpn, hpd) = expr_to_qrational(hp, var, pool)?;
     let (hn, hd) = expr_to_qrational(h, var, pool)?;
-    // h'/h = (hpn·hd) / (hpd·hn);  coeff == h'/h  ⇔  cn·(hpd·hn) == (hpn·hd)·cd.
+    // h'/h = (hpn·hd) / (hpd·hn);  coeff == λ·h'/h  ⇔  cn·(hpd·hn) == λ·(hpn·hd)·cd.
     let rn = poly_mul(&hpn, &hd);
     let rd = poly_mul(&hpd, &hn);
-    if trim(poly_mul(&cn, &rd)) != trim(poly_mul(&rn, &cd)) {
-        return None;
-    }
+    let lhs = trim(poly_mul(&cn, &rd));
+    let rhs = trim(poly_mul(&rn, &cd));
+    let lambda = poly_ratio_constant(&lhs, &rhs)?;
 
-    // Antiderivative.
-    if n == -1 {
-        Some(pool.func("log", vec![theta])) // log(log(h))
+    // Antiderivative: λ·log(log h) for n = −1, else λ/(n+1)·log(h)^{n+1}.
+    let (factor, body) = if n == -1 {
+        (lambda, pool.func("log", vec![theta]))
     } else {
         let np1 = n + 1;
-        let pow = pool.pow(theta, pool.integer(np1));
-        let coeff_expr = rational_to_expr(&rug::Rational::from((1_i64, np1)), pool);
-        Some(pool.mul(vec![coeff_expr, pow]))
+        (
+            lambda / rug::Rational::from(np1),
+            pool.pow(theta, pool.integer(np1)),
+        )
+    };
+    if factor == 1 {
+        Some(body)
+    } else {
+        Some(pool.mul(vec![rational_to_expr(&factor, pool), body]))
     }
+}
+
+/// `λ` such that `a = λ·b` for both polynomials, or `None` when no such rational
+/// constant exists (including when exactly one of them is zero).
+fn poly_ratio_constant(a: &[rug::Rational], b: &[rug::Rational]) -> Option<rug::Rational> {
+    if a.is_empty() || b.is_empty() || a.len() != b.len() {
+        return None;
+    }
+    let lambda = a[a.len() - 1].clone() / b[b.len() - 1].clone();
+    for (ai, bi) in a.iter().zip(b.iter()) {
+        if *ai != bi.clone() * lambda.clone() {
+            return None;
+        }
+    }
+    Some(lambda)
 }
 
 /// Decompose `expr` as `coeff · theta^n` for an integer `n`, returning

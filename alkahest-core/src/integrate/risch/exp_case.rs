@@ -743,7 +743,7 @@ fn lower_tower_laurent_cascade(
         )
         .value;
         let v_next = scale(num);
-        if j - 1 >= bottom {
+        if j > bottom {
             v_coeffs.insert(j - 1, v_next);
         } else {
             residual = v_next; // v_{bottom−1} must vanish

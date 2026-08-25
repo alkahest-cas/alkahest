@@ -1355,11 +1355,59 @@ mod tests {
         );
     }
 
+    /// A **rational function of the outer generator** must never be certified.
+    ///
+    /// `∫ eˣ·e^(eˣ)/(e^(eˣ)+1) dx = log(e^(eˣ)+1)` — an elementary integrand
+    /// whose antiderivative is a *new logarithm over the tower*.  The exp case
+    /// used to read `(t+1)⁻¹·t¹` as a Laurent monomial with coefficient
+    /// `eˣ/(e^(eˣ)+1)` and certify `NonElementary` from the unsolvable Risch DE.
+    /// The Laurent theorem does not apply to such an integrand at all.
+    #[test]
+    fn rational_in_outer_generator_is_never_certified() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let exp_exp_x = pool.func("exp", vec![exp_x]);
+        let denom = pool.add(vec![exp_exp_x, pool.integer(1_i32)]);
+
+        for power in [-1_i32, -2, -3] {
+            let f = pool.mul(vec![exp_x, exp_exp_x, pool.pow(denom, pool.integer(power))]);
+            let result = integrate_risch(f, x, &pool);
+            assert!(
+                !matches!(result, Err(IntegrationError::NonElementary(_))),
+                "∫ eˣ·e^(eˣ)/(e^(eˣ)+1)^{} dx is elementary and must not be \
+                 certified non-elementary; got {result:?}",
+                -power
+            );
+        }
+    }
+
+    /// The whole-engine view of the same integrand: it must *solve*, and the
+    /// answer must differentiate back to the integrand.
+    #[test]
+    fn nested_exp_log_part_integrates_via_the_engine() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let exp_exp_x = pool.func("exp", vec![exp_x]);
+        let denom = pool.add(vec![exp_exp_x, pool.integer(1_i32)]);
+        let f = pool.mul(vec![
+            exp_x,
+            exp_exp_x,
+            pool.pow(denom, pool.integer(-1_i32)),
+        ]);
+        let result = crate::integrate::engine::integrate(f, x, &pool);
+        assert!(result.is_ok(), "must integrate; got {result:?}");
+        verify_nested_exp(f, result.unwrap().value, x, &pool);
+    }
+
     #[test]
     fn gapb_nested_exp_rational_denom_nonelementary() {
-        // ∫ exp(x)/(exp(x)+1)·exp(exp(x)) dx:
-        // c = θ/(θ+1) is rational in θ = exp(x).
-        // Hermite reduction: D maps 1/(θ-α) to a double pole; no rational v exists.
+        // ∫ exp(x)/(exp(x)+1)·exp(exp(x)) dx: c = θ/(θ+1) is rational in
+        // θ = exp(x) with a *simple* pole at θ = −1.  Any solution v ∈ ℚ(x)(θ)
+        // of the Risch DE would have to be regular there, but then the whole
+        // left-hand side is regular while c is not — so no solution exists, and
+        // with k ≠ 0 that is non-elementarity (Bronstein §5.3, §6.1).
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let exp_x = pool.func("exp", vec![x]);
