@@ -263,8 +263,7 @@ fn smith_decomp_rec(
         }
     }
 
-    let result: Vec<RatUniPoly>;
-    if !m[0][0].is_zero() {
+    let result: Vec<RatUniPoly> = if !m[0][0].is_zero() {
         let mut res = vec![m[0][0].clone()];
         res.extend(invs);
 
@@ -295,7 +294,7 @@ fn smith_decomp_rec(
             }
             i += 1;
         }
-        result = res;
+        res
     } else {
         if full {
             if let Some(ss) = s_opt.as_mut() {
@@ -315,8 +314,8 @@ fn smith_decomp_rec(
         }
         let mut res = invs;
         res.push(m[0][0].clone());
-        result = res;
-    }
+        res
+    };
 
     (result, s_opt, t_opt)
 }
