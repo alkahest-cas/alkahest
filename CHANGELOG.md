@@ -182,6 +182,57 @@
   disabling the cumulative one takes `large_attempted` from 1 to 6 (and the
   test from under a second to 131 s) and fails it; disabling the per-probe
   one fails it too.
+- **The last three sites that turned a solver's silence into a theorem now have
+  to prove it.** `∫ (√x + 1/√(4x))·eˣ dx` is `√x·eˣ` — elementary, checked by
+  differentiation — and was certified `E-INT-004`, "no elementary antiderivative
+  exists". The integrand mentions `√x` and `√(4x)`, so the compositum route built
+  a degree-4 extension `ℚ(x)[y]/(α⁴ − 10x·α² + 9x²)` for what is really the
+  quadratic `ℚ(x)(√x)`. That quartic is *reducible*, so the coefficient ring is a
+  product of two fields; the true antiderivative lives in one factor and does not
+  lift to the product. The ansatz found nothing and the site published that as a
+  proof.
+
+  The three algebraic-RDE call sites — `exp_case.rs`'s nested-radical and
+  compositum paths and `exp_algebraic.rs` — now consume a three-valued
+  `AlgRdeOutcome` (`Solved` / `NoRationalSolution` / `Declined(reason)`) matching
+  the `RdeOutcome` contract the rational solvers already use. Only a **proved**
+  non-existence may certify; a decline reports `E-INT-001` naming the premise it
+  could not discharge. `alg_rde`'s own module documentation had said the return
+  was incomplete ("a denominator/degree bound too small to contain the true
+  solution yields `None`") while its callers read it as a proof.
+
+  Proving non-existence for a *coupled* system needed three new complete bounds,
+  all of them in `alg_rde.rs`:
+
+  - **The extension must be a field.** A shape-specific irreducibility witness
+    for each of the three reachable minimal polynomials (pure radical `yⁿ − p`,
+    compositum `√p + √q`, nesting `√(a + √b)`). Without one the solver declines —
+    which is what removes the false certificate above.
+  - **A complete denominator bound at the finite poles**, the matrix form of the
+    scalar resonance already in `rational_rde`: a pole of `b` must be a pole of
+    `M` or of `c`, and its order is bounded by the largest positive-integer
+    eigenvalue of the residue matrix. The eigenvalue search terminates against a
+    spectral-radius bound on the rational matrix representing that residue on
+    `ℚ[x]/(Dm)`, so no algebraic pole is ever named.
+  - **A complete degree bound at infinity**, by two independent arguments: an
+    integer *shearing* (gauge) search that restaggers the power-basis weights
+    until the leading matrix is invertible, and — for a radical totally ramified
+    at infinity, where no integer shearing can work because `α` has fractional
+    degree — a valuation bound on the single place above `∞`.
+
+  Together these keep every verdict that was correct. Across a 42-case sweep of
+  the three families, 39 verdicts are unchanged (including `∫ exp(√x)/x dx`,
+  `∫ (√x+√(x+1))·eˣ dx`, `∫ √(x+√x)·eˣ dx` and `∫ exp(√(x²+1)) dx`, which the
+  ramified-place and shearing bounds respectively rescue), nothing that solved
+  stopped solving, and the three that moved `E-INT-004 → E-INT-001` are exactly
+  the degenerate-compositum family whose premise was never established. The
+  40-case integration probe is unchanged at 27 solved / 7 `E-INT-004` /
+  6 `E-INT-001`.
+
+  Still open, and reported rather than fixed here: `detect_two_sqrt_compositum`
+  treats `√x` and `√(4x)` as independent radicals. Normalising a radicand by its
+  rational square content would let that integral *solve* instead of decline.
+
 - **`integrate` could emit a false `E-INT-004` ("no elementary antiderivative
   exists") for an integrand that has one.** `∫ exp(x + log x) dx` — which is
   just `∫ x·eˣ dx = (x−1)·eˣ` — was certified non-elementary. So were

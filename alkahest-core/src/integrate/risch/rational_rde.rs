@@ -350,6 +350,17 @@ pub enum RdeDecline {
     /// surfaced as a decline so an internal inconsistency can never be
     /// laundered into a certificate.
     VerificationFailed,
+    /// **Algebraic level only.**  No *provably complete* denominator or degree
+    /// bound is available for this coupled system over `ℚ(x)(α)` — the ansatz
+    /// searched is a heuristic ceiling, so its failure says nothing.  See
+    /// [`super::alg_rde`].
+    AlgebraicBoundNotProved,
+    /// **Algebraic level only.**  The minimal polynomial of `α` was not proved
+    /// irreducible over `ℚ(x)`, so `ℚ(x)[y]/(q)` may be a product of fields
+    /// rather than the field the integrand lives in.  Absence of a solution in
+    /// the *ring* would then not imply absence in the field, so nothing may be
+    /// concluded.
+    AlgebraicFieldNotProved,
 }
 
 impl core::fmt::Display for RdeDecline {
@@ -367,6 +378,16 @@ impl core::fmt::Display for RdeDecline {
             RdeDecline::VerificationFailed => write!(
                 f,
                 "the candidate solution failed the exact substitution check"
+            ),
+            RdeDecline::AlgebraicBoundNotProved => write!(
+                f,
+                "no provably complete denominator/degree bound is available for \
+                 this coupled equation over an algebraic extension"
+            ),
+            RdeDecline::AlgebraicFieldNotProved => write!(
+                f,
+                "the minimal polynomial of the algebraic generator was not proved \
+                 irreducible over ℚ(x)"
             ),
         }
     }

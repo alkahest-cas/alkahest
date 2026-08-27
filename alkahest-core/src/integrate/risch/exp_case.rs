@@ -57,7 +57,9 @@ use crate::kernel::{ExprId, ExprPool};
 use crate::simplify::engine::simplify;
 
 use super::alg_field::{AlgElem, AlgExtension, RatFn};
-use super::alg_rde::solve_alg_rde;
+use super::alg_rde::{
+    compositum_minpoly_status, nested_radical_minpoly_status, solve_alg_rde_checked, AlgRdeOutcome,
+};
 use super::number_field::{KElem, KPoly, NumberField};
 use super::poly_rde::{
     apply_const, contains_subexpr, degree, expr_to_qpoly, is_free_of_var, poly_add, poly_deriv,
@@ -2770,8 +2772,8 @@ fn try_radical_poly_rde(
 ///
 /// This is a genuinely-new reachable family for **M4 PR4**: the coupled
 /// twisted-derivation RDE `D(v) + kη'·v = c_rest` is solved by the same general
-/// solver [`solve_alg_rde`] (consumed by `AlgExtension`'s `DifferentialField`
-/// impl), with detection + minimal-poly construction + α-basis decomposition
+/// solver [`solve_alg_rde_checked`] (whose `Option` shim `solve_alg_rde` is
+/// consumed by `AlgExtension`'s `DifferentialField` impl), with detection + minimal-poly construction + α-basis decomposition
 /// wired here.  The decomposition is simpler than the two-sqrt compositum: in
 /// the `{1, α, α², α³}` basis,
 ///
@@ -2781,7 +2783,9 @@ fn try_radical_poly_rde(
 /// ```
 ///
 /// Returns `None` if `c_rest` is not of this shape; `Some(Err(NonElementary))`
-/// if no rational `v` exists (after exact in-field verification by the solver).
+/// only when [`solve_alg_rde_checked`] **proves** no rational `v` exists, and
+/// `Some(Err(NotImplemented))` when it declines (the ansatz was not shown to
+/// contain every candidate).
 #[allow(clippy::too_many_arguments)]
 fn try_nested_radical_poly_rde(
     c_rest: ExprId,
@@ -2834,9 +2838,18 @@ fn try_nested_radical_poly_rde(
             pool.display(c_expr),
         ))
     };
-    let y = match solve_alg_rde(&e, &f, &g) {
-        Some(y) => y,
-        None => return Some(Err(ne())),
+    // Three-valued: only a *proved* non-existence may certify.  A decline means
+    // the ansatz was not proved complete and yields `NotImplemented`.
+    let ctx = || {
+        format!(
+            "the coupled Risch DE over ℚ(x)(√(a+√b)) for ∫ {} · exp(η)^{k} dx",
+            pool.display(c_expr)
+        )
+    };
+    let y = match solve_alg_rde_checked(&e, &f, &g, nested_radical_minpoly_status(&a, &b)) {
+        AlgRdeOutcome::Solved(y) => y,
+        AlgRdeOutcome::NoRationalSolution => return Some(Err(ne())),
+        AlgRdeOutcome::Declined(reason) => return Some(Err(rde_declined(&reason, &ctx()))),
     };
 
     // Reconstruct v = Σⱼ yⱼ(x)·αʲ with α = √(a + √b).
@@ -3148,8 +3161,9 @@ fn decompose_over_nested_radical(
 /// `α⁴ − 2(p+q)α² + (p−q)²`.  This is the general (coupled) **M1-step-2** case:
 /// the twisted-derivation system does *not* decouple per power as it does for a
 /// single radical, so we solve `D(v) + kη'·v = c_rest` with the general coupled
-/// solver [`solve_alg_rde`].  `None` if `c_rest` is not of this shape;
-/// `Some(Err(NonElementary))` if no rational `v` exists.
+/// solver [`solve_alg_rde_checked`].  `None` if `c_rest` is not of this shape;
+/// `Some(Err(NonElementary))` only on a **proved** non-existence, and
+/// `Some(Err(NotImplemented))` on a decline.
 #[allow(clippy::too_many_arguments)]
 fn try_compositum_poly_rde(
     c_rest: ExprId,
@@ -3200,9 +3214,18 @@ fn try_compositum_poly_rde(
             pool.display(c_expr),
         ))
     };
-    let y = match solve_alg_rde(&e, &f, &g) {
-        Some(y) => y,
-        None => return Some(Err(ne())),
+    // Three-valued: only a *proved* non-existence may certify.  A decline means
+    // the ansatz was not proved complete and yields `NotImplemented`.
+    let ctx = || {
+        format!(
+            "the coupled Risch DE over ℚ(x)(√p+√q) for ∫ {} · exp(η)^{k} dx",
+            pool.display(c_expr)
+        )
+    };
+    let y = match solve_alg_rde_checked(&e, &f, &g, compositum_minpoly_status(&p, &q)) {
+        AlgRdeOutcome::Solved(y) => y,
+        AlgRdeOutcome::NoRationalSolution => return Some(Err(ne())),
+        AlgRdeOutcome::Declined(reason) => return Some(Err(rde_declined(&reason, &ctx()))),
     };
 
     // Reconstruct v = Σⱼ yⱼ(x)·αʲ with α = √p + √q.
