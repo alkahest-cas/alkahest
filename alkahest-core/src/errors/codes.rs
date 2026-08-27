@@ -137,8 +137,8 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-HOMOTOPY-004", class: "HomotopyError", cause: Cause::Resource,    remediation: Some("adjust predictor step or increase max_tracker_steps") },
     // E-JIT — JitError
     ErrorSpec { code: "E-JIT-001", class: "JitError", cause: Cause::Unsupported, remediation: Some("use eval_expr or simplify the expression before JIT") },
-    ErrorSpec { code: "E-JIT-002", class: "JitError", cause: Cause::Resource,    remediation: Some("check LLVM 15 installation; run with RUST_LOG=debug for details") },
-    ErrorSpec { code: "E-JIT-003", class: "JitError", cause: Cause::Resource,    remediation: Some("ensure LLVM_SYS_150_PREFIX is set correctly") },
+    ErrorSpec { code: "E-JIT-002", class: "JitError", cause: Cause::Resource,    remediation: Some("check LLVM 21 installation; run with RUST_LOG=debug for details") },
+    ErrorSpec { code: "E-JIT-003", class: "JitError", cause: Cause::Resource,    remediation: Some("ensure LLVM_SYS_211_PREFIX is set correctly") },
     ErrorSpec { code: "E-JIT-004", class: "JitError", cause: Cause::UserInput, remediation: None },
     // E-CAD — CadError (V2-9 QE / cylindrical decomposition)
     ErrorSpec {

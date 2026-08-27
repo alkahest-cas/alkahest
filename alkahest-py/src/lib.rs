@@ -8970,7 +8970,7 @@ fn py_compile_expr(
                 "JIT compilation (LLVM) is not available in this build; \
                  compile_expr() is falling back to the tree-walking interpreter. \
                  For native performance install a release wheel tagged +jit (see README), \
-                 or rebuild with LLVM 15 via \
+                 or rebuild with LLVM 21 via \
                  maturin develop --manifest-path alkahest-py/Cargo.toml --features jit.",
                 py.get_type_bound::<pyo3::exceptions::PyRuntimeWarning>(),
                 // stack level 2 so the warning points at the caller's site

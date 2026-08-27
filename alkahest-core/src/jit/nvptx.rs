@@ -277,7 +277,11 @@ mod codegen {
         builder::Builder,
         context::{AsContextRef, Context},
         module::{Linkage, Module},
-        targets::{CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetTriple},
+        passes::PassBuilderOptions,
+        targets::{
+            CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetMachine,
+            TargetTriple,
+        },
         values::{
             AsValueRef, BasicMetadataValueEnum, FloatValue, FunctionValue, IntValue, PointerValue,
         },
@@ -326,11 +330,11 @@ mod codegen {
         link_libdevice(&ctx, &module)?;
 
         // Internalize everything except our kernel entry, then DCE + inline.
-        // Without this, libdevice brings in __nv_tanh (and friends) which LLVM 15
+        // Without this, libdevice brings in __nv_tanh (and friends) which LLVM 21
         // lowers to llvm.nvvm.tanh.approx.f32 — an intrinsic the NVPTX backend
         // cannot emit as PTX, and that surfaces as ptxas parse failures.
         internalize_non_kernel(&module, "alkahest_eval");
-        run_libdevice_cleanup_passes(&module);
+        run_libdevice_cleanup_passes(&module, &machine)?;
 
         module.verify().map_err(|e| {
             CudaError::PtxGenerationFailed(format!("module verify: {}", e.to_string()))
@@ -659,7 +663,7 @@ mod codegen {
     /// a kernel, and inkwell exposes no safe wrapper for it. The `*InContext`
     /// builders are deprecated upstream in favour of `*InContext2`, but those
     /// take an explicit length and are not surfaced by inkwell's re-export at
-    /// the LLVM 15 version this crate pins. Migrating is a change to codegen,
+    /// the LLVM 21 version this crate pins. Migrating is a change to codegen,
     /// not a lint fix, so the deprecation is acknowledged rather than papered
     /// over by widening the lint level for the whole module.
     #[allow(deprecated)]
@@ -758,24 +762,50 @@ mod codegen {
     /// Run a minimal whole-module cleanup: inline libdevice helpers into the
     /// kernel, then DCE everything the kernel doesn't reach.
     ///
-    /// Uses the legacy pass manager, which inkwell deprecates in favour of
-    /// `PassBuilderOptions` + `Module::run_passes`. Switching pass pipelines
-    /// changes what the NVPTX backend actually emits, so it belongs in its own
-    /// change with the GPU suite run against it — not in a lint sweep. The
-    /// allow is scoped to this function so a *new* deprecated use elsewhere
-    /// still fails the build.
-    #[allow(deprecated)]
-    fn run_libdevice_cleanup_passes<'ctx>(module: &Module<'ctx>) {
-        use inkwell::passes::PassManager;
-        let pm: PassManager<Module<'_>> = PassManager::create(());
-        pm.add_always_inliner_pass();
-        pm.add_function_inlining_pass();
-        pm.add_global_dce_pass();
-        pm.add_strip_dead_prototypes_pass();
-        // Run twice so that DCE after inlining catches helpers that only
-        // became dead once the calls were folded into the kernel body.
-        pm.run_on(module);
-        pm.run_on(module);
+    /// Uses the new pass manager (`PassBuilderOptions` + `Module::run_passes`).
+    /// The legacy `PassManager` this used to call was removed from LLVM in 17,
+    /// so it does not merely warn on LLVM 21 — it does not compile.
+    ///
+    /// The pipeline is the same four passes in the same order as the legacy
+    /// version, spelled in the new pass manager's textual syntax. Two of the
+    /// names differ because the new PM does not accept the old ones:
+    /// `function-inlining` is `inline`, and `strip-dead-prototypes` keeps its
+    /// name but is a module pass, so the whole string is a module pipeline.
+    ///
+    /// **The emitted PTX is not guaranteed to be identical to the legacy
+    /// pipeline's.** The new PM schedules differently, and this function exists
+    /// because libdevice otherwise drags in `__nv_tanh` and friends, which LLVM
+    /// lowers to `llvm.nvvm.tanh.approx.f32` — an intrinsic the NVPTX backend
+    /// cannot emit, surfacing as a ptxas parse failure. That failure mode is
+    /// what `scripts/verify_cuda_on_gpu.sh` is for; this change has not been run
+    /// against a GPU.
+    fn run_libdevice_cleanup_passes<'ctx>(
+        module: &Module<'ctx>,
+        machine: &TargetMachine,
+    ) -> Result<(), CudaError> {
+        // Run twice, belt-and-braces. The legacy pipeline did too, on the
+        // theory that DCE after inlining catches helpers that only became dead
+        // once the calls were folded in — but that is *not* observable: a GPU-box
+        // run of a 14-kernel battery (poly, the six transcendentals, three `pow`
+        // forms, all_funcs, deep_nest, wide) emitted byte-identical PTX at one
+        // iteration and two, under both LLVM 15 and LLVM 21. Kept because a second
+        // fixed-point pass is cheap next to the ptxas failure it guards against,
+        // not because any case is known to need it.
+        for _ in 0..2 {
+            module
+                .run_passes(
+                    "always-inline,inline,globaldce,strip-dead-prototypes",
+                    machine,
+                    PassBuilderOptions::create(),
+                )
+                .map_err(|e| {
+                    CudaError::PtxGenerationFailed(format!(
+                        "libdevice cleanup passes: {}",
+                        e.to_string()
+                    ))
+                })?;
+        }
+        Ok(())
     }
 
     // Silence unused-type warnings in paths not yet exercised.

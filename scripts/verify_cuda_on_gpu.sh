@@ -15,7 +15,7 @@
 # Exit status is the verdict: 0 iff every gate passed.
 #
 # Requirements: an NVIDIA GPU with driver, CUDA toolkit (`compute-sanitizer`),
-# and LLVM 15 with the NVPTX target (`llc-15 --version | grep nvptx`). The
+# and LLVM 21 with the NVPTX target (`llc-21 --version | grep nvptx`). The
 # `cuda` feature implies the LLVM JIT, so this cannot run on a box without it.
 set -uo pipefail
 
@@ -36,7 +36,7 @@ export CC="${CC:-/usr/bin/gcc}"
 export CXX="${CXX:-/usr/bin/g++}"
 
 # `cuda` needs NVPTX, which the distro's default `llc` may not be built with.
-export LLVM_SYS_150_PREFIX="${LLVM_SYS_150_PREFIX:-/usr/lib/llvm-15}"
+export LLVM_SYS_211_PREFIX="${LLVM_SYS_211_PREFIX:-/usr/lib/llvm-21}"
 
 # Makes the device probes assert instead of skipping. Without it a box with no
 # GPU reports every gate below as passing, having exercised nothing.
@@ -76,7 +76,7 @@ if ! command -v nvidia-smi >/dev/null || ! nvidia-smi >/dev/null 2>&1; then
 fi
 nvidia-smi --query-gpu=index,name,driver_version --format=csv,noheader | sed 's/^/   GPU /'
 echo "   nvcc:      $(nvcc --version 2>/dev/null | tail -1 || echo 'not found')"
-echo "   llc-15:    $(llc-15 --version 2>/dev/null | grep -c nvptx || echo 0) nvptx targets"
+echo "   llc-21:    $(llc-21 --version 2>/dev/null | grep -c nvptx || echo 0) nvptx targets"
 echo "   rustc:     $(rustc --version)"
 echo "   sanitizer: $(compute-sanitizer --version 2>/dev/null | grep -i version | head -1)"
 echo "   commit:    $(git rev-parse HEAD)"
