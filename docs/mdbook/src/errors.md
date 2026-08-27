@@ -91,6 +91,25 @@ Raised when a mathematical side condition is violated.
 | `E-SOLVE-002` | High-degree univariate factor (> 2) | Symbolic solution not supported; use numerical solve |
 | `E-SOLVE-003` | Gröbner basis did not terminate | Increase node/iteration limits |
 
+### PslqError (E-PSLQ-*)
+
+Raised by `alkahest.guess_relation`, the augmented-lattice integer-relation heuristic, and
+reported without an exception by `alkahest.relation_confidence`.
+
+| Code | Cause | Remediation |
+|---|---|---|
+| `E-PSLQ-001` | Fewer than two constants supplied | Pass at least two constants that might admit a linear dependence |
+| `E-PSLQ-002` | Every constant truncated to zero at the working precision | Use higher precision, or supply the constants as decimal strings |
+| `E-PSLQ-003` | Working precision below the engine's 64-bit floor | Allocate at least 64 MPFR bits; ≈664 bits ≈ 200 decimal digits |
+| `E-PSLQ-004` | The relation found is **larger than the inputs' precision can justify** — it was purchasable from the available digits and is evidence of nothing | Supply the constants at the precision they were computed to, declare their real accuracy with `digits=`, or pass `check_precision=False` to accept the relation unjudged |
+| `E-PSLQ-005` | The constants are exact rationals and the relation is **false for them**: `Σ aᵢ·cᵢ` evaluated in exact arithmetic is not zero | The constants are probably truncations of a numerical computation rather than the values you mean — declare their accuracy with `digits=`, or supply more of them |
+
+`E-PSLQ-004` and `E-PSLQ-005` are raised from Python (`alkahest.guess_relation`), so they
+are not in the Rust `REGISTRY`; both are subclasses of `PslqError` and are caught by
+`except alkahest.PslqError`. The two are deliberately distinct: `004` is a statement about
+how much precision the inputs carry, `005` is a statement about the relation itself and
+does not depend on precision at all.
+
 ### PrimaryDecompositionError (E-IDEAL-*)
 
 | Code | Cause | Remediation |
@@ -111,13 +130,15 @@ loop must record as **undecided**, never as a negative result.
 | `E-LINALG-010` | `LinearAlgebraError` | An entry's vanishing could be proven neither zero nor non-zero, so `rank` / `rref` / `nullspace` / `eigenvects` / `jordan_form` declined to pick a branch |
 | `E-MAT-004` | `MatrixError` | Same, for a determinant: `inverse()` will not divide by something it cannot show is non-zero |
 | `E-CAD-001` | `CadError` | `decide` is outside its fragment, or the only candidate solutions lie at an irrational boundary point it cannot test exactly |
-| `E-SOS-002` | `SosError` | No positivity certificate of this shape at this degree — a statement about the search, not a proof that none exists. **Record it as `unknown`, never as "not SOS" or "the inequality is false":** `p` may be SOS outside the LP subcone searched, SOS at a higher `basis_degree`, or non-negative without being SOS (Motzkin). `E-SOS-003`, which carries a witness point, is the only SOS *refutation*. See [Positivity certificates](./positivity.md#three-outcomes-deliberately-kept-apart) |
+| `E-SOS-002` | `SosError` | No positivity certificate of this shape at this degree — a statement about the search, not a proof that none exists. **Record it as `unknown`, never as "not SOS" or "the inequality is false":** `p` may be SOS outside the LP subcone searched, SOS at a higher `basis_degree`, or non-negative without being SOS (Motzkin). `E-SOS-003`, which carries a witness point, is the only SOS *refutation*. The message carries a `what the search actually did:` trace; lines marked `NOT SEARCHED` are budgets that fired, not searches that came up empty, and mean the corresponding basis or multiplier power was never looked at. See [Positivity certificates](./positivity.md#three-outcomes-deliberately-kept-apart) |
 | `E-IDEAL-005` | `IdealRefusal` | `radical` cannot certify `√I` for this ideal. Only monomial, principal and zero-dimensional ideals — and anything whose primary decomposition is certified — are answered; the alternative is asserting `√I = I` with nothing behind it |
 | `E-IDEAL-006` | `IdealRefusal` | `primary_decomposition` reached a component it cannot show is primary, so it will not report the ideal itself with an unjustified `associated_prime` |
 | `E-SOLVE-004` | `TriangularizeRefusal` | `triangularize` extracted a chain that does not generate an ideal containing the input, i.e. one that cuts out a larger variety than the system. Splitting on the initials (Lazard–Kalkbrener) is not implemented |
 | `E-SERIES-003` | `SeriesError` | `series` ran past its work ceiling (or an active `Budget`) before reaching the requested order. Coefficients are formed by repeated differentiation without re-simplifying, so a nested radical's derivatives grow by a constant factor each time; a *shorter* series would carry an `O(h^order)` label nothing bounded |
+| `E-PSLQ-004` | `PslqError` | `guess_relation` found an integer relation the inputs' precision cannot justify — pinning down `n` coefficients bounded by `H` costs about `n·log10(2H+1)` digits of agreement, and the inputs do not carry that many. **Record it as `undecided`, not as "no relation exists":** the same constants at higher precision may well admit one. `relation_confidence` reports the same judgement as data, including a three-valued `credible` whose `None` means *the inputs' precision is not knowable*, never a pass |
+| `E-PSLQ-005` | `PslqError` | The constants are exact rationals and `Σ aᵢ·cᵢ` is not zero in exact arithmetic. **This one is a verdict, not a refusal** — the relation is refuted for the numbers supplied |
 | `E-INT-004` | `IntegrationError` | Proven non-elementary. **This one is a verdict, not a refusal** — keep it apart from the rest |
-| `E-BUDGET-001..003` | `BudgetExceededError` | Ran out of the time/steps it was given, or was cancelled |
+| `E-BUDGET-001..005` | `BudgetExceededError` | Ran out of the time, steps or memory it was given, was cancelled, or is about to exhaust the process address-space limit |
 
 `E-SERIES-003` travels out of band for the same reason (`SeriesError` is exhaustive) but *is*
 wired into the bindings: `series` returns `SeriesError::InvalidOrder` with
@@ -203,6 +224,8 @@ Every error is classified on two independent axes: **subsystem** (determines the
 | `E-ODE-*` | `OdeError` | ODE construction, lowering, event handling |
 | `E-DAE-*` | `DaeError` | DAE structural analysis (Pantelides, index reduction) |
 | `E-SOLVE-*` | `SolverError` | Polynomial system solving, Gröbner basis |
+| `E-LAT-*` | `LatticeError` | Exact LLL lattice reduction over ℤ |
+| `E-PSLQ-*` | `PslqError` | Integer-relation search (`guess_relation`); `E-PSLQ-004` is the input-precision refusal and `E-PSLQ-005` the exact refutation |
 | `E-JIT-*` | `JitError` | LLVM/Cranelift codegen and linking |
 | `E-CUDA-*` | `CudaError` | NVPTX compile, kernel launch, driver/runtime failures |
 | `E-POOL-*` | `PoolError` | `ExprPool` misuse (closed, cross-pool, persisted-handle mismatch) |

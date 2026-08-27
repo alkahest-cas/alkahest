@@ -90,6 +90,28 @@ result = interval_eval(expr, {
 
 `interval_eval` guarantees that the output ball contains the true value for any input in the given input balls, accounting for all rounding in the intermediate computation.
 
+### Boxes containing a singularity
+
+The guarantee is about the whole input box, not only its endpoints, so a box a
+function is unbounded on cannot get a finite answer. Such a box widens to
+`[-inf, inf]` — an honest, if useless, enclosure — rather than reporting the
+hull of the values at the two ends:
+
+```python
+import math
+# [0.1, 0.1 + pi] contains pi/2, where tan has a pole
+b = ArbBall((0.1 + 0.1 + math.pi) / 2, math.pi / 2)
+interval_eval(tan(x), {x: b})                    # ArbBall(0.000000 ± inf)
+
+# x**-2 over a box containing 0
+interval_eval(x**-2.0, {x: ArbBall(1.0, 2.0)})   # ArbBall(0.000000 ± inf)
+```
+
+A box on which the function is bounded but not monotone still gets a finite
+enclosure — `x**2.0` over `[-1, 3]` covers `x = 0`, and `bessel_j0` over
+`[-1, 1]` covers the peak at `x = 0` — it is only the unbounded case that
+degenerates.
+
 ## AcbBall
 
 Complex ball arithmetic for expressions over ℂ:

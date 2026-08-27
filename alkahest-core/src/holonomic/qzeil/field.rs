@@ -39,6 +39,86 @@ pub type PolyX = PolyK;
 /// `Q(q)(x)` — where the recurrence coefficients `a_i` live.
 pub type RatX = RatK;
 
+// ---------------------------------------------------------------------------
+// Cooperative refusal for the field arithmetic
+// ---------------------------------------------------------------------------
+
+/// Largest a single `Q(q)(x)` element may grow to inside this tower's
+/// arithmetic, counted by [`ratx_terms`].
+///
+/// The Euclidean gcd used by [`RatY::normalize`] has no content removal, which
+/// is the classical way for coefficients to explode while the *degrees* stay
+/// small — and small degrees are exactly what the shape ceilings in
+/// [`super::search`] can see. Sized well above anything the working cases in
+/// this module's tests reach (the largest observed is under 100).
+pub const MAX_FIELD_ELEMENT_TERMS: usize = 6_000;
+
+/// Why the field arithmetic gave up part-way through, if it did.
+#[derive(Clone, Copy, Debug)]
+pub enum FieldRefusal {
+    /// A coefficient grew past [`MAX_FIELD_ELEMENT_TERMS`]; the payload is the
+    /// size it reached.
+    SizeCeiling(usize),
+    /// An active [`crate::budget`] stopped it.
+    Budget(crate::budget::BudgetTrip),
+}
+
+thread_local! {
+    static REFUSAL: std::cell::Cell<Option<FieldRefusal>> = const { std::cell::Cell::new(None) };
+}
+
+/// Record a refusal for the caller to pick up.
+///
+/// The arithmetic here is infallible by signature (`PolyY::gcd` returns a
+/// `PolyY`, not a `Result`) and threading `Result` through every operator
+/// would be a far larger change than the problem warrants, so a refusal
+/// travels out of band and the operation returns a *correct but unhelpful*
+/// answer — `div_rem` returns `None`, which `gcd` already handles by returning
+/// `1`, which `normalize` already handles by not cancelling. Nothing becomes
+/// wrong; the caller is expected to check [`take_field_refusal`] and stop.
+fn note_refusal(r: FieldRefusal) {
+    REFUSAL.with(|c| c.set(Some(r)));
+}
+
+/// Clear any recorded refusal. Call before each probe.
+pub fn clear_field_refusal() {
+    REFUSAL.with(|c| c.set(None));
+}
+
+/// Take (and clear) the refusal recorded on this thread, if any.
+pub fn take_field_refusal() -> Option<FieldRefusal> {
+    REFUSAL.with(|c| c.take())
+}
+
+/// The largest coefficient of `p`, by [`ratx_terms`].
+fn widest_coeff(p: &PolyY) -> usize {
+    p.coeffs.iter().map(ratx_terms).max().unwrap_or(0)
+}
+
+/// How many rational numbers it takes to write `r` down — a cheap, exact
+/// proxy for how big an element of `Q(q)(x)` has become.
+///
+/// The `q`-tower is three levels deep (`Q(q) ⊂ Q(q)(x) ⊂ Q(q)(x)(y)`), so a
+/// single "coefficient" in the linear system is a quotient of polynomials in
+/// `x` whose own coefficients are quotients of polynomials in `q`. Elimination
+/// grows that nesting, and the growth is fragile in the *input* rather than in
+/// `max_order`/`max_degree`: `Σ_k [n;k]_q` decides in half a second where
+/// `Σ_k [2n;k]_q` does not return at the cheapest bounds the engine accepts.
+/// A ceiling on the shape of the system cannot see that; this can.
+///
+/// Counts coefficient slots rather than bit-lengths: it is `O(size)` with no
+/// allocation and no GMP calls, which is what makes it affordable in the
+/// inner elimination loop.
+pub fn ratx_terms(r: &RatX) -> usize {
+    fn polyx_terms(p: &PolyX) -> usize {
+        p.coeffs
+            .iter()
+            .map(|c| c.num.coeffs.len() + c.den.coeffs.len())
+            .sum()
+    }
+    polyx_terms(&r.num) + polyx_terms(&r.den)
+}
+
 /// `q^i ∈ Q(q)`, for any sign of `i`.
 pub fn qq_pow(i: i64) -> Qq {
     if i == 0 {
@@ -223,6 +303,26 @@ impl PolyY {
         let mut rem = a.clone().trim();
         let mut quot: Vec<RatX> = Vec::new();
         while !rem.is_zero() && rem.degree() >= db {
+            // The hot loop of `gcd`, and the one place in this tower where a
+            // small system can run for minutes: the remainder's *degree* falls
+            // every step while its coefficients grow without bound.
+            if let Err(t) = crate::budget::check_all() {
+                note_refusal(FieldRefusal::Budget(t));
+                return None;
+            }
+            // The `Z[q][x]` gcd one level down has given up, so every `RatX`
+            // operation from here on runs on unreduced (and therefore growing)
+            // representations. Stop now rather than finish this division more
+            // slowly than it would have run with cancellation.
+            if super::super::qfield::gcd_stop_pending() {
+                note_refusal(FieldRefusal::SizeCeiling(widest_coeff(&rem)));
+                return None;
+            }
+            let widest = widest_coeff(&rem);
+            if widest > MAX_FIELD_ELEMENT_TERMS {
+                note_refusal(FieldRefusal::SizeCeiling(widest));
+                return None;
+            }
             let shift = (rem.degree() - db) as usize;
             let t = rem.leading_coeff().mul(&lb_inv);
             if shift >= quot.len() {

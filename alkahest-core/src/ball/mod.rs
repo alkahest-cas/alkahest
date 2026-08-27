@@ -65,7 +65,7 @@
 use crate::kernel::expr::PredicateKind;
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::primitive::PrimitiveRegistry;
-use rug::{ops::Pow, Float};
+use rug::{float::Round, ops::Pow, Float};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::OnceLock;
@@ -162,14 +162,20 @@ impl ArbBall {
         v >= lo && v <= hi
     }
 
-    /// Lower bound of the interval.
+    /// Lower bound of the interval, rounded **down**.
+    ///
+    /// `mid - rad` does not generally fit in `prec` bits, and rounding it to
+    /// nearest would hand back a bound *above* the interval's true lower end —
+    /// which every kernel that starts from `lo()` then evaluates at, giving a
+    /// hull that is an ulp too narrow at the bottom.  The same, mirrored, for
+    /// [`ArbBall::hi`].
     pub fn lo(&self) -> Float {
-        Float::with_val(self.prec, &self.mid - &self.rad)
+        Float::with_val_round(self.prec, &self.mid - &self.rad, Round::Down).0
     }
 
-    /// Upper bound of the interval.
+    /// Upper bound of the interval, rounded **up**.  See [`ArbBall::lo`].
     pub fn hi(&self) -> Float {
-        Float::with_val(self.prec, &self.mid + &self.rad)
+        Float::with_val_round(self.prec, &self.mid + &self.rad, Round::Up).0
     }
 
     /// Midpoint as f64 (lossy).
@@ -184,14 +190,27 @@ impl ArbBall {
 
     // ── arithmetic ───────────────────────────────────────────────────────
 
-    /// Grow radius by a rounding-error term: `eps * |mid| * 2^{-prec}`.
+    /// Grow the radius to absorb the rounding of *both* fields: by
+    /// `(|mid| + rad) · 2^{-(prec-3)}`.
+    ///
+    /// This used to bump by `|mid| · 2^{-prec}`, which covers the rounding of
+    /// `mid` and nothing else.  A kernel that also rounds its `rad` — every
+    /// endpoint hull, `cosh`, `erf`, `Mul` — can then report a ball an ulp
+    /// narrower than the truth, and on a ball whose radius dwarfs its midpoint
+    /// (`cosh([5.2, 9.2])`, `log([1/2, 2])`) the shortfall is the whole error.
+    /// The eight-ulp headroom covers the handful of roundings the widest of
+    /// those kernels performs (`Mul` rounds five times) and is still 10³⁴
+    /// below `f64` resolution at the default 128 bits.
     fn add_rounding_error(&mut self) {
         if self.mid.is_infinite() || self.mid.is_nan() {
             self.rad = Float::with_val(self.prec, f64::INFINITY);
             return;
         }
-        let scale = Float::with_val(self.prec, &self.mid).abs()
-            * Float::with_val(self.prec, 2.0_f64.powi(-(self.prec as i32)));
+        let mut scale = Float::with_val(
+            self.prec,
+            Float::with_val(self.prec, self.mid.abs_ref()) + &self.rad,
+        );
+        scale >>= self.prec.saturating_sub(3);
         self.rad += &scale;
     }
 }
@@ -216,12 +235,10 @@ impl std::ops::Add for ArbBall {
     fn add(self, rhs: Self) -> Self {
         let prec = self.prec.max(rhs.prec);
         let mid = Float::with_val(prec, &self.mid + &rhs.mid);
-        let mut rad = Float::with_val(prec, &self.rad + &rhs.rad);
-        // Rounding error: 1 ulp
-        let eps = Float::with_val(prec, mid.abs_ref())
-            * Float::with_val(prec, 2.0_f64.powi(-(prec as i32)));
-        rad += eps;
-        ArbBall { mid, rad, prec }
+        let rad = Float::with_val(prec, &self.rad + &rhs.rad);
+        let mut b = ArbBall { mid, rad, prec };
+        b.add_rounding_error();
+        b
     }
 }
 
@@ -230,11 +247,10 @@ impl std::ops::Sub for ArbBall {
     fn sub(self, rhs: Self) -> Self {
         let prec = self.prec.max(rhs.prec);
         let mid = Float::with_val(prec, &self.mid - &rhs.mid);
-        let mut rad = Float::with_val(prec, &self.rad + &rhs.rad);
-        let eps = Float::with_val(prec, mid.abs_ref())
-            * Float::with_val(prec, 2.0_f64.powi(-(prec as i32)));
-        rad += eps;
-        ArbBall { mid, rad, prec }
+        let rad = Float::with_val(prec, &self.rad + &rhs.rad);
+        let mut b = ArbBall { mid, rad, prec };
+        b.add_rounding_error();
+        b
     }
 }
 
@@ -247,13 +263,12 @@ impl std::ops::Mul for ArbBall {
         let mid = Float::with_val(prec, &self.mid * &rhs.mid);
         let ma = Float::with_val(prec, self.mid.abs_ref());
         let mb = Float::with_val(prec, rhs.mid.abs_ref());
-        let mut rad = Float::with_val(prec, &ma * &rhs.rad)
+        let rad = Float::with_val(prec, &ma * &rhs.rad)
             + Float::with_val(prec, &mb * &self.rad)
             + Float::with_val(prec, &self.rad * &rhs.rad);
-        let eps = Float::with_val(prec, mid.abs_ref())
-            * Float::with_val(prec, 2.0_f64.powi(-(prec as i32)));
-        rad += eps;
-        ArbBall { mid, rad, prec }
+        let mut b = ArbBall { mid, rad, prec };
+        b.add_rounding_error();
+        b
     }
 }
 
@@ -278,12 +293,17 @@ impl std::ops::Div for ArbBall {
         // Monotone on positive/negative intervals
         let lo_rhs = rhs.lo();
         let hi_rhs = rhs.hi();
-        // Compute all 4 corners
+        // Compute all 4 corners, at working precision so the reduction to
+        // `prec` happens once, outward, in `from_endpoints` below.
+        // (`saturating_add`, not `+`: `clippy::suspicious_arithmetic_impl`
+        // flags a bare `+` anywhere inside a `Div` impl.)
+        let work = prec.saturating_add(32);
+        let quot = |a: &Float, b: &Float| Float::with_val(work, a) / Float::with_val(work, b);
         let corners = [
-            Float::with_val(prec, self.lo() / lo_rhs.clone()),
-            Float::with_val(prec, self.lo() / hi_rhs.clone()),
-            Float::with_val(prec, self.hi() / lo_rhs.clone()),
-            Float::with_val(prec, self.hi() / hi_rhs.clone()),
+            quot(&self.lo(), &lo_rhs),
+            quot(&self.lo(), &hi_rhs),
+            quot(&self.hi(), &lo_rhs),
+            quot(&self.hi(), &hi_rhs),
         ];
         // `∞/∞` is NaN, so an unbounded operand makes the corner ordering
         // partial and `partial_cmp(...).unwrap()` panics. `None` is the
@@ -302,15 +322,9 @@ impl std::ops::Div for ArbBall {
             .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .unwrap()
             .clone();
-        let sum = Float::with_val(prec, &min + &max);
-        let diff = Float::with_val(prec, &max - &min);
-        let new_mid = sum / 2_f64;
-        let rad = diff / 2_f64;
-        Some(ArbBall {
-            mid: new_mid,
-            rad,
-            prec,
-        })
+        // Outward rounding: the corners were computed at `work` bits and are
+        // being reported at `prec`.
+        Some(ArbBall::from_endpoints(&min, &max, prec))
     }
 }
 
@@ -340,52 +354,91 @@ impl ArbBall {
         result
     }
 
+    /// `self ^ exp` for a real exponent *ball*.
+    ///
+    /// # When the four-corner hull is legitimate, and when it is not
+    ///
+    /// This used to hull `base^exp` over the four corners of
+    /// `[lo_b, hi_b] × [lo_e, hi_e]` for every input a single guard let
+    /// through, `lo < 0 && !(exp.is_exact() && exp.lo().is_integer())`.  A
+    /// corner hull encloses the range only where `x ↦ x^y` is monotone in `x`,
+    /// and that guard admits the two cases where it is not:
+    ///
+    /// * an **even** integer exponent on a base straddling `0` — `x²` over
+    ///   `[-1, 3]` was reported as `[1, 9]`, missing `x = 0 ↦ 0`;
+    /// * a **negative** integer exponent on such a base — `x⁻²` over `[-1, 3]`
+    ///   was reported as the *finite* `[0.111…, 1]` for a function that is
+    ///   unbounded on the box (`0.001⁻² = 10⁶`).
+    ///
+    /// (`x ** 2` written with an `Integer` exponent node never reached here —
+    /// `IntervalEval::eval_node` routes it to [`ArbBall::powi`] — but the
+    /// same exponent arriving as a `Float`, a `Rational`, or a bound symbol
+    /// did.)
+    ///
+    /// So the corner hull is kept only on a base that stays `≥ 0`, where
+    /// `x^y = exp(y·ln x)` is monotone in `x` for fixed `y` *and* monotone in
+    /// `y` for fixed `x`; a function monotone in each variable separately
+    /// attains its extrema over a box at a corner.  Everything else with a
+    /// real value — a base that reaches `0` or below, which forces an
+    /// integer-valued exponent — goes to [`ArbBall::powi`], which is repeated
+    /// ball multiplication and assumes no monotonicity at all (and whose
+    /// reciprocal step returns `∞` exactly when the denominator straddles 0).
+    /// What is left is complex-valued, and widens to `∞`.
     pub fn pow_f(&self, exp: &ArbBall) -> Self {
-        // [a,b]^[c,d] using interval exponentiation
         let prec = self.prec;
         let lo = self.lo();
         let hi = self.hi();
-        // A negative base only has a real power for an *integer* exponent.
-        // `is_exact` alone is not that test: `x^(3/2)` arrives here as an exact
-        // point ball at 1.5, `(-3.3)^1.5` is NaN, and the corner comparison
-        // below then unwrapped a `None` from `partial_cmp` and panicked — a
-        // Rust panic crossing the FFI boundary, which is a `BaseException` an
-        // `except Exception` handler does not catch.
-        if lo < 0 && !(exp.is_exact() && exp.lo().is_integer()) {
-            return ArbBall::infinity(prec); // complex result possible
-        }
-        // Conservative bound via corner evaluation
-        let corners = [
-            Float::with_val(prec, lo.clone().pow(exp.lo())),
-            Float::with_val(prec, lo.clone().pow(exp.hi())),
-            Float::with_val(prec, hi.clone().pow(exp.lo())),
-            Float::with_val(prec, hi.clone().pow(exp.hi())),
-        ];
-        // Defence in depth: any remaining NaN corner (an overflow, or a base
-        // interval straddling zero with a negative exponent) makes the ordering
-        // partial, and `partial_cmp(...).unwrap()` would panic on it.
-        if corners.iter().any(|c| c.is_nan()) {
+        let e_lo = exp.lo();
+        let e_hi = exp.hi();
+        if !(lo.is_finite() && hi.is_finite() && e_lo.is_finite() && e_hi.is_finite()) {
             return ArbBall::infinity(prec);
         }
-        let min = corners
-            .iter()
-            .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap()
-            .clone();
-        let max = corners
-            .iter()
-            .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap()
-            .clone();
-        let sum = Float::with_val(prec, &min + &max);
-        let diff = Float::with_val(prec, &max - &min);
-        let new_mid = sum / 2_f64;
-        let rad = diff / 2_f64;
-        ArbBall {
-            mid: new_mid,
-            rad,
-            prec,
+        // `lo == 0` joins the monotonicity argument as long as the exponent
+        // stays ≥ 0: `0^y` is 0 for `y > 0` and 1 for `y = 0`, still monotone
+        // in `y`.  With a negative exponent in reach it is a pole instead.
+        if lo > 0 || (lo == 0 && e_lo >= 0) {
+            let work = prec + 32;
+            let corner =
+                |b: &Float, e: &Float| Float::with_val(work, b).pow(Float::with_val(work, e));
+            let corners = [
+                corner(&lo, &e_lo),
+                corner(&lo, &e_hi),
+                corner(&hi, &e_lo),
+                corner(&hi, &e_hi),
+            ];
+            // Defence in depth: a NaN corner makes the ordering partial and
+            // `partial_cmp(...).unwrap()` would panic on it — a Rust panic
+            // crossing the FFI boundary is a `BaseException` that an
+            // `except Exception` handler does not catch.  An infinite corner
+            // (overflow) is a true statement about an unbounded box, and `∞`
+            // is its enclosure.
+            if corners.iter().any(|c| !c.is_finite()) {
+                return ArbBall::infinity(prec);
+            }
+            let min = corners
+                .iter()
+                .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                .unwrap()
+                .clone();
+            let max = corners
+                .iter()
+                .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+                .unwrap()
+                .clone();
+            // Outward rounding: the corners were computed at `work` bits and
+            // are being reported at `prec`.
+            return ArbBall::from_endpoints(&min, &max, prec);
         }
+        // The base reaches 0 or below.  A real value then requires an exponent
+        // that is an exact integer; `x^(3/2)` arrives here as an exact point
+        // ball at 1.5 and `(-3.3)^1.5` is not real, so `is_exact` alone is not
+        // the test.
+        if exp.is_exact() && e_lo.is_integer() {
+            if let Some(n) = e_lo.to_integer().and_then(|n| n.to_i64()) {
+                return self.powi(n);
+            }
+        }
+        ArbBall::infinity(prec) // complex result possible, or unbounded
     }
 
     pub fn sin(&self) -> Self {
@@ -411,20 +464,15 @@ impl ArbBall {
     pub fn exp(&self) -> Self {
         // e^[m-r, m+r] = [e^(m-r), e^(m+r)]
         let prec = self.prec;
-        let lo = Float::with_val(prec, self.lo().exp());
-        let hi = Float::with_val(prec, self.hi().exp());
-        let sum = Float::with_val(prec, &lo + &hi);
-        let diff = Float::with_val(prec, &hi - &lo);
-        let mut b = ArbBall {
-            mid: sum / 2_f64,
-            rad: diff / 2_f64,
-            prec,
-        };
-        // `lo`/`hi` are themselves rounded to `prec`; without this the ball is
+        let work = prec + 32;
+        let lo = Float::with_val(work, self.lo()).exp();
+        let hi = Float::with_val(work, self.hi()).exp();
+        // `from_endpoints` rounds outward.  Without that the ball is
         // exact-looking (`rad == 0`) for an exact input, which is a false
-        // rigorous claim about a transcendental value.
-        b.add_rounding_error();
-        b
+        // rigorous claim about a transcendental value; and on a ball whose
+        // radius dwarfs its midpoint the endpoints' own rounding is not
+        // covered by the `|mid|·2^-prec` bump `add_rounding_error` applies.
+        ArbBall::from_endpoints(&lo, &hi, prec)
     }
 
     pub fn log(&self) -> Option<Self> {
@@ -432,20 +480,11 @@ impl ArbBall {
             return None; // log undefined for non-positive values
         }
         let prec = self.prec;
-        let lo = Float::with_val(prec, self.lo().ln());
-        let hi = Float::with_val(prec, self.hi().ln());
-        let sum = Float::with_val(prec, &lo + &hi);
-        let diff = Float::with_val(prec, &hi - &lo);
-        let mut b = ArbBall {
-            mid: sum / 2_f64,
-            rad: diff / 2_f64,
-            prec,
-        };
-        // Endpoints are rounded to `prec`; without this a ball built from an
-        // exact input reports `rad == 0`, falsely claiming an irrational result
-        // is exactly representable.
-        b.add_rounding_error();
-        Some(b)
+        let work = prec + 32;
+        let lo = Float::with_val(work, self.lo()).ln();
+        let hi = Float::with_val(work, self.hi()).ln();
+        // Rounded outward; see `exp`.
+        Some(ArbBall::from_endpoints(&lo, &hi, prec))
     }
 
     pub fn sqrt(&self) -> Option<Self> {
@@ -453,84 +492,78 @@ impl ArbBall {
             return None;
         }
         let prec = self.prec;
-        let lo = Float::with_val(prec, self.lo().sqrt());
-        let hi = Float::with_val(prec, self.hi().sqrt());
-        let sum = Float::with_val(prec, &lo + &hi);
-        let diff = Float::with_val(prec, &hi - &lo);
-        let mut b = ArbBall {
-            mid: sum / 2_f64,
-            rad: diff / 2_f64,
-            prec,
-        };
-        // Endpoints are rounded to `prec`; without this a ball built from an
-        // exact input reports `rad == 0`, falsely claiming an irrational result
-        // is exactly representable.
-        b.add_rounding_error();
-        Some(b)
+        let work = prec + 32;
+        let lo = Float::with_val(work, self.lo()).sqrt();
+        let hi = Float::with_val(work, self.hi()).sqrt();
+        // Rounded outward; see `exp`.
+        Some(ArbBall::from_endpoints(&lo, &hi, prec))
     }
 
-    /// tan([m-r, m+r]) — Lipschitz constant: sec²(m+r) (may blow up near π/2).
-    /// Returns None if the interval contains a pole.
+    /// tan([m-r, m+r]).  `None` only for a non-finite argument; a box that may
+    /// contain a pole widens to `[-∞, ∞]`, which is what `tan` does there.
+    ///
+    /// # Why the pole test is an enclosure of `cos`, not a test on the endpoints
+    ///
+    /// This used to guard the pole with `near_pole(lo) || near_pole(hi)` — an
+    /// `f64` test of `v % π` at the two endpoints — plus "`tan(lo) > tan(hi)`
+    /// means we crossed a pole".  Neither sees a box that crosses a pole and
+    /// comes back out the other side in increasing order: on
+    /// `[0.1, 3.3415926535897933]` the endpoint hull is `[0.1003…, 0.2027…]`
+    /// while `tan(1.5) = 14.101…` and `1.5` is in the box.  (`v % π` is not a
+    /// pole test at all once `|v|` is large enough that `v % π` loses the low
+    /// bits that decide the question.)
+    ///
+    /// `tan′ = sec² > 0`, so an endpoint hull *is* the exact range — but only
+    /// on an interval where `cos` does not vanish, because those intervals are
+    /// exactly the ones on which `tan` is continuous and increasing.  That is
+    /// the rule the Taylor path already applies one module over
+    /// (`validated::taylor::TaylorModel::tan` refuses when the `cos` enclosure
+    /// contains zero, `E-VALIDATED-003`), and this is the same rule in ball
+    /// form: [`ArbBall::cos`] encloses the range of `cos` over the box, so
+    /// `0 ∉ cos([lo, hi])` *proves* the box lies inside a single branch.
     pub fn tan(&self) -> Option<Self> {
         let prec = self.prec;
-        let _pi_half = Float::with_val(prec, rug::float::Constant::Pi) / 2_f64;
-        // Check that neither bound is within ε of π/2 + k*π
         let lo = self.lo();
         let hi = self.hi();
-        // simple pole check: |lo mod π - π/2| > 0 and |hi mod π - π/2| > 0
-        let lo_f = lo.to_f64();
-        let hi_f = hi.to_f64();
-        let pi_f: f64 = std::f64::consts::PI;
-        let near_pole = |v: f64| ((v % pi_f).abs() - pi_f / 2.0).abs() < 1e-9;
-        if near_pole(lo_f) || near_pole(hi_f) {
+        if !(lo.is_finite() && hi.is_finite()) {
             return None;
         }
-        let lo_tan = Float::with_val(prec, lo.tan());
-        let hi_tan = Float::with_val(prec, hi.tan());
-        // If lo_tan > hi_tan the interval crossed a pole — discard
-        if lo_tan > hi_tan {
-            return None;
+        // Pole test.  A zero in the `cos` enclosure is the only way `tan` can
+        // fail to be continuous and increasing on `[lo, hi]`; it is also the
+        // only way it can be unbounded there, so `[-∞, ∞]` is the enclosure.
+        if self.cos().contains(0.0) {
+            return Some(ArbBall::infinity(prec));
         }
-        let sum = Float::with_val(prec, &lo_tan + &hi_tan);
-        let diff = Float::with_val(prec, &hi_tan - &lo_tan);
-        let mut b = ArbBall {
-            mid: sum / 2_f64,
-            rad: diff / 2_f64,
-            prec,
-        };
-        // Endpoints are rounded to `prec`; without this a ball built from an
-        // exact input reports `rad == 0`, falsely claiming an irrational result
-        // is exactly representable.
-        b.add_rounding_error();
-        Some(b)
+        let work = prec + 32;
+        let lo_tan = Float::with_val(work, &lo).tan();
+        let hi_tan = Float::with_val(work, &hi).tan();
+        // `from_endpoints` rounds outward, which both absorbs the reduction
+        // from `work` to `prec` and keeps an exact input from reporting
+        // `rad == 0` — a false claim that a transcendental value is exactly
+        // representable.
+        Some(ArbBall::from_endpoints(&lo_tan, &hi_tan, prec))
     }
 
     pub fn sinh(&self) -> Self {
         let prec = self.prec;
-        let lo = Float::with_val(prec, self.lo().sinh());
-        let hi = Float::with_val(prec, self.hi().sinh());
-        let sum = Float::with_val(prec, &lo + &hi);
-        let diff = Float::with_val(prec, &hi - &lo);
-        let mut b = ArbBall {
-            mid: sum / 2_f64,
-            rad: diff / 2_f64,
-            prec,
-        };
-        // Endpoints are rounded to `prec`; see `exp`.
-        b.add_rounding_error();
-        b
+        let work = prec + 32;
+        let lo = Float::with_val(work, self.lo()).sinh();
+        let hi = Float::with_val(work, self.hi()).sinh();
+        // Rounded outward; see `exp`.
+        ArbBall::from_endpoints(&lo, &hi, prec)
     }
 
     pub fn cosh(&self) -> Self {
         let prec = self.prec;
         // cosh is even and has a minimum at 0; handle by evaluating at lo, hi, and 0 if in range
-        let lo = Float::with_val(prec, self.lo().cosh());
-        let hi = Float::with_val(prec, self.hi().cosh());
+        let work = prec + 32;
+        let lo = Float::with_val(work, self.lo()).cosh();
+        let hi = Float::with_val(work, self.hi()).cosh();
         let (min_val, max_val) = if self.lo() <= 0 && self.hi() >= 0 {
             // minimum is cosh(0) = 1
             let cosh_lo = lo.clone();
             let cosh_hi = hi.clone();
-            let min = Float::with_val(prec, 1_f64);
+            let min = Float::with_val(work, 1_f64);
             let max = if cosh_lo > cosh_hi { cosh_lo } else { cosh_hi };
             (min, max)
         } else if lo < hi {
@@ -538,33 +571,18 @@ impl ArbBall {
         } else {
             (hi, lo)
         };
-        let sum = Float::with_val(prec, &min_val + &max_val);
-        let diff = Float::with_val(prec, &max_val - &min_val);
-        let mut b = ArbBall {
-            mid: sum / 2_f64,
-            rad: diff / 2_f64,
-            prec,
-        };
-        // Endpoints are rounded to `prec`; see `exp`.
-        b.add_rounding_error();
-        b
+        // Rounded outward; see `exp`.
+        ArbBall::from_endpoints(&min_val, &max_val, prec)
     }
 
     pub fn tanh(&self) -> Self {
         // tanh is monotone, maps ℝ → (-1, 1)
         let prec = self.prec;
-        let lo = Float::with_val(prec, self.lo().tanh());
-        let hi = Float::with_val(prec, self.hi().tanh());
-        let sum = Float::with_val(prec, &lo + &hi);
-        let diff = Float::with_val(prec, &hi - &lo);
-        let mut b = ArbBall {
-            mid: sum / 2_f64,
-            rad: diff / 2_f64,
-            prec,
-        };
-        // Endpoints are rounded to `prec`; see `exp`.
-        b.add_rounding_error();
-        b
+        let work = prec + 32;
+        let lo = Float::with_val(work, self.lo()).tanh();
+        let hi = Float::with_val(work, self.hi()).tanh();
+        // Rounded outward; see `exp`.
+        ArbBall::from_endpoints(&lo, &hi, prec)
     }
 
     pub fn asin(&self) -> Option<Self> {
@@ -572,20 +590,11 @@ impl ArbBall {
             return None;
         }
         let prec = self.prec;
-        let lo = Float::with_val(prec, self.lo().asin());
-        let hi = Float::with_val(prec, self.hi().asin());
-        let sum = Float::with_val(prec, &lo + &hi);
-        let diff = Float::with_val(prec, &hi - &lo);
-        let mut b = ArbBall {
-            mid: sum / 2_f64,
-            rad: diff / 2_f64,
-            prec,
-        };
-        // Endpoints are rounded to `prec`; without this a ball built from an
-        // exact input reports `rad == 0`, falsely claiming an irrational result
-        // is exactly representable.
-        b.add_rounding_error();
-        Some(b)
+        let work = prec + 32;
+        let lo = Float::with_val(work, self.lo()).asin();
+        let hi = Float::with_val(work, self.hi()).asin();
+        // Rounded outward; see `exp`.
+        Some(ArbBall::from_endpoints(&lo, &hi, prec))
     }
 
     pub fn acos(&self) -> Option<Self> {
@@ -593,54 +602,31 @@ impl ArbBall {
             return None;
         }
         let prec = self.prec;
-        let lo = Float::with_val(prec, self.lo().acos());
-        let hi = Float::with_val(prec, self.hi().acos());
-        // acos is decreasing, so lo/hi swap
-        let sum = Float::with_val(prec, &lo + &hi);
-        let diff = Float::with_val(prec, &lo - &hi);
-        let mut b = ArbBall {
-            mid: sum / 2_f64,
-            rad: diff / 2_f64,
-            prec,
-        };
-        // Endpoints are rounded to `prec`; without this a ball built from an
-        // exact input reports `rad == 0`, falsely claiming an irrational result
-        // is exactly representable.
-        b.add_rounding_error();
-        Some(b)
+        let work = prec + 32;
+        let lo = Float::with_val(work, self.lo()).acos();
+        let hi = Float::with_val(work, self.hi()).acos();
+        // acos is decreasing, so lo/hi swap; `from_endpoints` takes either
+        // order.  Rounded outward; see `exp`.
+        Some(ArbBall::from_endpoints(&hi, &lo, prec))
     }
 
     pub fn atan(&self) -> Self {
         let prec = self.prec;
-        let lo = Float::with_val(prec, self.lo().atan());
-        let hi = Float::with_val(prec, self.hi().atan());
-        let sum = Float::with_val(prec, &lo + &hi);
-        let diff = Float::with_val(prec, &hi - &lo);
-        let mut b = ArbBall {
-            mid: sum / 2_f64,
-            rad: diff / 2_f64,
-            prec,
-        };
-        // Endpoints are rounded to `prec`; see `exp`.
-        b.add_rounding_error();
-        b
+        let work = prec + 32;
+        let lo = Float::with_val(work, self.lo()).atan();
+        let hi = Float::with_val(work, self.hi()).atan();
+        // Rounded outward; see `exp`.
+        ArbBall::from_endpoints(&lo, &hi, prec)
     }
 
     /// asinh([m-r, m+r]) — monotone increasing on all of ℝ.
     pub fn asinh(&self) -> Self {
         let prec = self.prec;
-        let lo = Float::with_val(prec, self.lo().asinh());
-        let hi = Float::with_val(prec, self.hi().asinh());
-        let sum = Float::with_val(prec, &lo + &hi);
-        let diff = Float::with_val(prec, &hi - &lo);
-        let mut b = ArbBall {
-            mid: sum / 2_f64,
-            rad: diff / 2_f64,
-            prec,
-        };
-        // Endpoints are rounded to `prec`; see `exp`.
-        b.add_rounding_error();
-        b
+        let work = prec + 32;
+        let lo = Float::with_val(work, self.lo()).asinh();
+        let hi = Float::with_val(work, self.hi()).asinh();
+        // Rounded outward; see `exp`.
+        ArbBall::from_endpoints(&lo, &hi, prec)
     }
 
     /// acosh([m-r, m+r]) — monotone increasing on `[1, ∞)`. Returns `None` if
@@ -650,20 +636,11 @@ impl ArbBall {
             return None;
         }
         let prec = self.prec;
-        let lo = Float::with_val(prec, self.lo().acosh());
-        let hi = Float::with_val(prec, self.hi().acosh());
-        let sum = Float::with_val(prec, &lo + &hi);
-        let diff = Float::with_val(prec, &hi - &lo);
-        let mut b = ArbBall {
-            mid: sum / 2_f64,
-            rad: diff / 2_f64,
-            prec,
-        };
-        // Endpoints are rounded to `prec`; without this a ball built from an
-        // exact input reports `rad == 0`, falsely claiming an irrational result
-        // is exactly representable.
-        b.add_rounding_error();
-        Some(b)
+        let work = prec + 32;
+        let lo = Float::with_val(work, self.lo()).acosh();
+        let hi = Float::with_val(work, self.hi()).acosh();
+        // Rounded outward; see `exp`.
+        Some(ArbBall::from_endpoints(&lo, &hi, prec))
     }
 
     /// atanh([m-r, m+r]) — monotone increasing on `(-1, 1)`. Returns `None` if
@@ -673,28 +650,18 @@ impl ArbBall {
             return None;
         }
         let prec = self.prec;
-        let lo = Float::with_val(prec, self.lo().atanh());
-        let hi = Float::with_val(prec, self.hi().atanh());
-        let sum = Float::with_val(prec, &lo + &hi);
-        let diff = Float::with_val(prec, &hi - &lo);
-        let mut b = ArbBall {
-            mid: sum / 2_f64,
-            rad: diff / 2_f64,
-            prec,
-        };
-        // Endpoints are rounded to `prec`; without this a ball built from an
-        // exact input reports `rad == 0`, falsely claiming an irrational result
-        // is exactly representable.
-        b.add_rounding_error();
-        Some(b)
+        let work = prec + 32;
+        let lo = Float::with_val(work, self.lo()).atanh();
+        let hi = Float::with_val(work, self.hi()).atanh();
+        // Rounded outward; see `exp`.
+        Some(ArbBall::from_endpoints(&lo, &hi, prec))
     }
 
     pub fn erf(&self) -> Self {
         let prec = self.prec;
         // Use midpoint + Lipschitz: |erf'(x)| = 2/sqrt(π) * exp(-x²) ≤ 2/sqrt(π) ≈ 1.13
         let mid = Float::with_val(prec, self.mid.clone().erf());
-        let lipschitz = Float::with_val(prec, 2.0_f64 / std::f64::consts::PI.sqrt());
-        let rad = Float::with_val(prec, &self.rad * &lipschitz);
+        let rad = Float::with_val(prec, &self.rad * &erf_lipschitz(prec));
         let mut b = ArbBall { mid, rad, prec };
         b.add_rounding_error();
         b
@@ -703,8 +670,7 @@ impl ArbBall {
     pub fn erfc(&self) -> Self {
         let prec = self.prec;
         let mid = Float::with_val(prec, self.mid.clone().erfc());
-        let lipschitz = Float::with_val(prec, 2.0_f64 / std::f64::consts::PI.sqrt());
-        let rad = Float::with_val(prec, &self.rad * &lipschitz);
+        let rad = Float::with_val(prec, &self.rad * &erf_lipschitz(prec));
         let mut b = ArbBall { mid, rad, prec };
         b.add_rounding_error();
         b
@@ -848,32 +814,30 @@ impl ArbBall {
     /// Digamma ψ(x).  Returns `None` when the ball contains a non-positive
     /// integer pole.
     pub fn digamma(&self) -> Option<Self> {
-        let lo = self.lo().to_f64();
-        let hi = self.hi().to_f64();
-        let k_start = lo.ceil() as i64;
-        let k_end = hi.floor() as i64;
-        for k in k_start..=k_end {
-            if k <= 0 {
-                return None;
-            }
-        }
         let prec = self.prec;
-        let mut flo = Float::with_val(prec, lo);
+        let lo = self.lo();
+        let hi = self.hi();
+        if !(lo.is_finite() && hi.is_finite()) {
+            return None;
+        }
+        // ψ is increasing between consecutive poles (ψ′ = trigamma > 0), so the
+        // endpoint hull is the range as long as no pole is enclosed.  The poles
+        // sit at the non-positive integers, so it is enough to look at the
+        // smallest integer in `[lo, hi]` — iterating over every integer in the
+        // box, as this used to, walks 10¹⁸ steps on a box like `[1, 1e18]`.
+        let k_min = Float::with_val(prec, lo.ceil_ref());
+        if k_min <= hi && k_min <= 0 {
+            return None;
+        }
+        let work = prec + 32;
+        let mut flo = Float::with_val(work, &lo);
         flo.digamma_mut();
-        let mut fhi = Float::with_val(prec, hi);
+        let mut fhi = Float::with_val(work, &hi);
         fhi.digamma_mut();
-        let sum = Float::with_val(prec, &flo + &fhi);
-        let diff = Float::with_val(prec, &fhi - &flo);
-        let mut b = ArbBall {
-            mid: sum / 2_f64,
-            rad: diff / 2_f64,
-            prec,
-        };
-        // Endpoints are rounded to `prec`; without this a ball built from an
-        // exact input reports `rad == 0`, falsely claiming an irrational result
-        // is exactly representable.
-        b.add_rounding_error();
-        Some(b)
+        // Rounded outward; see `exp`.  (The endpoints also used to be reduced
+        // to `f64` before evaluation, which moves them *inside* the box and can
+        // shrink the hull below the true range.)
+        Some(ArbBall::from_endpoints(&flo, &fhi, prec))
     }
 
     /// Bessel function of the first kind Jₙ(x) for integer order `n`.
@@ -960,6 +924,23 @@ impl ArbBall {
         b.add_rounding_error();
         b
     }
+}
+
+/// `2/√π ≈ 1.1283791…`, the Lipschitz constant of `erf` and `erfc`, rounded
+/// **up**.  `Float::with_val(prec, 2.0/π.sqrt())` rounds to nearest, and a
+/// Lipschitz constant rounded down is not a Lipschitz constant.
+fn erf_lipschitz(prec: u32) -> Float {
+    let work = prec + 32;
+    let two_over_sqrt_pi = Float::with_val(
+        work,
+        2u32 / Float::with_val(work, rug::float::Constant::Pi).sqrt(),
+    );
+    let mut v = Float::with_val(prec, &two_over_sqrt_pi);
+    // Round up: nudge by an ulp unless the reduction was exact.
+    if v < two_over_sqrt_pi {
+        v.next_up();
+    }
+    v
 }
 
 /// A certified bracket `(low, high)` with `low ≤ W₀(x) ≤ high`, or `None` when
@@ -1591,6 +1572,16 @@ mod rounding_soundness_tests {
 
     const PREC: u32 = 128;
 
+    /// Containment tested at ball precision.
+    ///
+    /// `ArbBall::contains` takes an `f64`, and rounding the true value to
+    /// `f64` moves it by ~2^-53 — enough to push a sample that sits exactly on
+    /// an endpoint outside an enclosure whose outward rounding is 2^-126 wide.
+    /// That is a defect of the *measurement*, not of the enclosure.
+    fn encloses(b: &ArbBall, v: &Float) -> bool {
+        *v >= b.lo() && *v <= b.hi()
+    }
+
     /// Every transcendental op must carry a rounding term.
     ///
     /// `exp`/`log`/`sqrt`/`tan`/`asin`/`acos`/`atan`/`asinh`/`atanh` built their
@@ -1680,6 +1671,232 @@ mod rounding_soundness_tests {
                 }
             }
         }
+    }
+
+    /// `tan` used to hull its two endpoints whenever they came out in
+    /// increasing order, which a box crossing a pole by nearly a whole period
+    /// does: `[0.1, 0.1 + π]` was reported as `[0.1003…, 0.2027…]`, and
+    /// `tan(1.5) = 14.101…` sits inside that box.
+    #[test]
+    fn tan_encloses_a_box_that_crosses_a_pole() {
+        let pi = std::f64::consts::PI;
+        for (lo, hi) in [
+            (0.1, 0.2 + pi),
+            (0.1, 0.5 + pi),
+            (-1.0, 1.0 + pi),
+            (-1.4292036732051034, 4.570796326794897),
+            (1.5, 1.7),    // straddles π/2 by less than a period
+            (-10.0, 10.0), // several periods
+        ] {
+            let b = ArbBall::from_midpoint_radius((lo + hi) / 2.0, (hi - lo) / 2.0, PREC);
+            let out = b.tan().expect("finite box");
+            // Sample the true function across the box; every value must be in.
+            for k in 0..=200 {
+                let x = lo + (hi - lo) * (k as f64 / 200.0);
+                let v = Float::with_val(PREC + 32, x).tan();
+                assert!(
+                    encloses(&out, &v),
+                    "tan({x}) = {v} escapes {out} for [{lo}, {hi}]"
+                );
+            }
+        }
+    }
+
+    /// …and the fix must not answer `∞` to everything: a pole-free box still
+    /// gets the exact endpoint hull, which is what `tan′ = sec² > 0` buys.
+    #[test]
+    fn tan_stays_tight_on_a_pole_free_box() {
+        let b = ArbBall::from_midpoint_radius(0.55, 0.45, PREC); // [0.1, 1.0]
+        let out = b.tan().expect("finite box");
+        assert!(out.lo() > 0.10033, "lower bound {} is not tight", out.lo());
+        assert!(out.hi() < 1.5575, "upper bound {} is not tight", out.hi());
+        assert!(out.contains(0.5463024898437905)); // tan(0.5)
+    }
+
+    /// `pow_f` hulled the four corners of `[lo_b, hi_b] × [lo_e, hi_e]`, which
+    /// encloses the range only where `x ↦ x^y` is monotone in `x`. A base
+    /// straddling zero with an even exponent is the counterexample: `x²` over
+    /// `[-1, 3]` came out as `[1, 9]`, missing `x = 0 ↦ 0`. With a *negative*
+    /// exponent the claim was worse than narrow — `[0.111…, 1]` for a function
+    /// unbounded on the box.
+    #[test]
+    fn pow_f_encloses_a_base_straddling_zero() {
+        let base = ArbBall::from_midpoint_radius(1.0, 2.0, PREC); // [-1, 3]
+        for e in [2.0_f64, 4.0, 2.0, 6.0] {
+            let out = base.pow_f(&ArbBall::from_f64(e, PREC));
+            for k in 0..=100 {
+                let x = -1.0 + 4.0 * (k as f64 / 100.0);
+                let v = Float::with_val(PREC + 32, x).pow(e);
+                assert!(encloses(&out, &v), "{x}^{e} = {v} escapes {out}");
+            }
+        }
+        // A negative exponent puts a pole at 0 inside the box.
+        let out = base.pow_f(&ArbBall::from_f64(-2.0, PREC));
+        assert!(
+            out.contains(1e6),
+            "x^-2 over [-1, 3] claims the finite {out}"
+        );
+        assert!(
+            out.contains(1e300),
+            "x^-2 over [-1, 3] claims the finite {out}"
+        );
+        // A non-integer exponent on a negative base is not real at all.
+        let out = base.pow_f(&ArbBall::from_f64(1.5, PREC));
+        assert!(out.rad.is_infinite(), "(-1)^1.5 is not real, got {out}");
+    }
+
+    /// The corner hull is kept where it is valid — a base that stays positive —
+    /// so this must not have widened into uselessness.
+    #[test]
+    fn pow_f_stays_tight_on_a_positive_base() {
+        let base = ArbBall::from_midpoint_radius(2.5, 0.5, PREC); // [2, 3]
+        let out = base.pow_f(&ArbBall::from_f64(0.5, PREC));
+        let (sqrt2, sqrt3) = (std::f64::consts::SQRT_2, 1.7320508075688772_f64);
+        assert!(
+            out.lo() > sqrt2 - 1e-9,
+            "lower bound {} is not tight",
+            out.lo()
+        );
+        assert!(
+            out.hi() < sqrt3 + 1e-9,
+            "upper bound {} is not tight",
+            out.hi()
+        );
+        // Exponent intervals are allowed too: x^y over [2,3] × [-1, 2].
+        let out = base.pow_f(&ArbBall::from_midpoint_radius(0.5, 1.5, PREC));
+        for k in 0..=20 {
+            let x = 2.0 + (k as f64) / 20.0;
+            for j in 0..=20 {
+                let y = -1.0 + 3.0 * (j as f64) / 20.0;
+                let v = Float::with_val(PREC + 32, x).pow(y);
+                assert!(encloses(&out, &v), "{x}^{y} = {v} escapes {out}");
+            }
+        }
+        assert!(out.hi() < 9.000001, "upper bound {} is not tight", out.hi());
+    }
+
+    /// Randomised enclosure check over *wide* balls for every kernel that
+    /// builds its answer from the two endpoints.  This is the sweep that would
+    /// have caught `tan` and `pow_f`; a point ball reaches neither.
+    ///
+    /// Samples are taken from the ball's *own* endpoints in `Float` arithmetic:
+    /// recomputing `mid ± rad` in `f64` moves the sample by ~2^-53, which is
+    /// 10¹⁸ times the outward rounding an enclosure carries, and would put the
+    /// end samples outside the box being tested rather than on its boundary.
+    #[test]
+    fn endpoint_hull_kernels_enclose_random_wide_intervals() {
+        let work = PREC + 32;
+        let mut seed = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..200 {
+            let centre = (next() - 0.5) * 20.0;
+            let radius = next() * 5.0;
+            let ball = ArbBall::from_midpoint_radius(centre, radius, PREC);
+            let lo = ball.lo();
+            let width = Float::with_val(work, ball.hi() - &lo);
+            let kernels: Vec<(&str, Option<ArbBall>)> = vec![
+                ("exp", Some(ball.exp())),
+                ("sin", Some(ball.sin())),
+                ("cos", Some(ball.cos())),
+                ("tan", ball.tan()),
+                ("log", ball.log()),
+                ("sqrt", ball.sqrt()),
+                ("sinh", Some(ball.sinh())),
+                ("cosh", Some(ball.cosh())),
+                ("tanh", Some(ball.tanh())),
+                ("asin", ball.asin()),
+                ("acos", ball.acos()),
+                ("atan", Some(ball.atan())),
+                ("asinh", Some(ball.asinh())),
+                ("acosh", ball.acosh()),
+                ("atanh", ball.atanh()),
+                ("erf", Some(ball.erf())),
+                ("erfc", Some(ball.erfc())),
+                ("gamma", ball.gamma()),
+                ("digamma", ball.digamma()),
+                ("bessel_j0", Some(ball.bessel_jn(0))),
+                ("square", Some(ball.pow_f(&ArbBall::from_f64(2.0, PREC)))),
+                ("cube", Some(ball.pow_f(&ArbBall::from_f64(3.0, PREC)))),
+                ("recip_sq", Some(ball.pow_f(&ArbBall::from_f64(-2.0, PREC)))),
+                ("sqrt_pow", Some(ball.pow_f(&ArbBall::from_f64(0.5, PREC)))),
+            ];
+            for (name, out) in kernels {
+                let Some(out) = out else { continue };
+                for k in 0..=50 {
+                    let t = Float::with_val(work, k as f64 / 50.0);
+                    let x = Float::with_val(work, &lo + Float::with_val(work, &width * &t));
+                    let v = match name {
+                        "exp" => x.clone().exp(),
+                        "sin" => x.clone().sin(),
+                        "cos" => x.clone().cos(),
+                        "tan" => x.clone().tan(),
+                        "log" => x.clone().ln(),
+                        "sqrt" => x.clone().sqrt(),
+                        "sinh" => x.clone().sinh(),
+                        "cosh" => x.clone().cosh(),
+                        "tanh" => x.clone().tanh(),
+                        "asin" => x.clone().asin(),
+                        "acos" => x.clone().acos(),
+                        "atan" => x.clone().atan(),
+                        "asinh" => x.clone().asinh(),
+                        "acosh" => x.clone().acosh(),
+                        "atanh" => x.clone().atanh(),
+                        "erf" => x.clone().erf(),
+                        "erfc" => x.clone().erfc(),
+                        "gamma" => x.clone().gamma(),
+                        "digamma" => {
+                            let mut t = x.clone();
+                            t.digamma_mut();
+                            t
+                        }
+                        "bessel_j0" => {
+                            let mut t = x.clone();
+                            t.jn_mut(0);
+                            t
+                        }
+                        "square" => Float::with_val(work, &x * &x),
+                        "cube" => Float::with_val(work, Float::with_val(work, &x * &x) * &x),
+                        "recip_sq" => Float::with_val(work, 1u32 / Float::with_val(work, &x * &x)),
+                        "sqrt_pow" => x.clone().sqrt(),
+                        _ => unreachable!(),
+                    };
+                    if !v.is_finite() {
+                        continue;
+                    }
+                    assert!(
+                        encloses(&out, &v),
+                        "{name}({x}) = {v} escapes {out} on [{lo}, {}]",
+                        ball.hi()
+                    );
+                }
+            }
+        }
+    }
+
+    /// `digamma` used to reject its pole by walking *every* integer in the box,
+    /// which is 10¹⁸ iterations on a box this wide.
+    #[test]
+    fn digamma_does_not_walk_every_integer_in_the_box() {
+        // [1e16, 9.9e17] — an f64-exact box with 10^18 integers in it.
+        let b = ArbBall::from_midpoint_radius(5e17, 4.9e17, PREC);
+        let out = b.digamma().expect("no pole in [1e16, 9.9e17]");
+        for x in [1e16_f64, 5e17, 9.9e17] {
+            let mut v = Float::with_val(PREC + 32, x);
+            v.digamma_mut();
+            assert!(encloses(&out, &v), "ψ({x}) = {v} escapes {out}");
+        }
+        // The pole test still fires when a non-positive integer is in reach.
+        assert!(ArbBall::from_midpoint_radius(0.0, 1.0, PREC)
+            .digamma()
+            .is_none());
+        assert!(ArbBall::from_midpoint_radius(-2.5, 1.0, PREC)
+            .digamma()
+            .is_none());
     }
 
     /// The radius must stay at the working-precision scale, not balloon.

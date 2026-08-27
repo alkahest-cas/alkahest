@@ -55,10 +55,13 @@ import functools
 import hashlib
 import inspect
 import json
+import math
 import threading
 from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -105,6 +108,10 @@ STATUS_BADGES: dict[str, str] = {
     "externally_asserted": (
         "an external solver asserted this; no proof was checked and none was produced"
     ),
+    "asserted": (
+        "the caller wrote this statement; the result it was recorded from was checked, "
+        "but nothing checked that the statement is what was checked"
+    ),
     "unverified": "recorded without verification evidence",
     "refuted": "re-verification contradicted this claim",
 }
@@ -115,6 +122,7 @@ _STATUS_MARK: dict[str, str] = {
     "certificate_available": "[CERT ONLY, UNCHECKED]",
     "numerically_checked": "[NUMERIC ONLY]",
     "externally_asserted": "[EXTERNAL, UNCHECKED]",
+    "asserted": "[ASSERTED, UNCHECKED]",
     "unverified": "[UNVERIFIED]",
     "refuted": "[REFUTED]",
 }
@@ -183,6 +191,12 @@ _NUMERIC_CONSTANTS = {
     "pi": 3.141592653589793,
     "e": 2.718281828459045,
 }
+
+#: Gap between the values consecutive free symbols are bound to in the numeric
+#: residual fallback.  Anything nonzero takes the evaluation off the diagonal;
+#: this is small enough to stay inside the usual domains and not a round binary
+#: fraction, so it is unlikely to sit on a zero of the residual by accident.
+_SYMBOL_SPACING = 0.11
 
 
 # ---------------------------------------------------------------------------
@@ -388,7 +402,16 @@ def _infer_assertion(
             latex = rf"{_tex(exprs[0])} = {_tex(value)}"
         else:
             return None
-    return {"kind": "relation", "statement": _canonical_text(text), "latex": latex}
+    # ``inferred`` marks this as the *engine's* rendering of what the operation
+    # asserts, not caller prose.  :meth:`ResearchSession.record` reads it to
+    # decide whether a machine-checked status may be carried over; it is dropped
+    # by :func:`_normalize_statement` and never reaches the stored claim.
+    return {
+        "kind": "relation",
+        "statement": _canonical_text(text),
+        "latex": latex,
+        "inferred": True,
+    }
 
 
 def claim_id(statement: str, hypotheses: Sequence[str] = (), method: str = "") -> str:
@@ -886,6 +909,14 @@ class ClaimGraph:
         (a claim that cites an identically-addressed claim, which happens when
         an operation is a no-op) are dropped.
 
+        A **re-verification recipe on the later claim is adopted** when the
+        stored claim carries none.  Attaching a ``check`` is the one supported
+        way to link a statement to evidence, so recording a statement bare and
+        then recording it again with a recipe has to work; dropping the recipe
+        made :meth:`verify` report ``skipped`` for a claim that was in fact
+        checkable.  An existing recipe is never overwritten — the first
+        recorded evidence wins, as the status does.
+
         Raises
         ------
         MissingClaimError
@@ -912,10 +943,12 @@ class ClaimGraph:
 
         merged_deps = tuple(dict.fromkeys((*existing.depends_on, *deps)))
         merged_tags = tuple(dict.fromkeys((*existing.tags, *claim.tags)))
+        merged_check = existing.check if existing.check else claim.check
         stored = replace(
             existing,
             depends_on=merged_deps,
             tags=merged_tags,
+            check=dict(merged_check) if merged_check else None,
             audit=(*existing.audit, *claim.audit),
         )
         self._claims[claim.id] = stored
@@ -1170,10 +1203,19 @@ class ClaimGraph:
         pool : ExprPool, optional
             Pool to parse into.  A fresh pool is created when omitted.
         tolerance : float
-            Absolute tolerance for the numeric residual fallback.
+            Absolute tolerance for the numeric residual fallback.  It does not
+            apply to a ``numeric_relation`` recipe whose constants are supplied
+            at a precision a float cannot hold: those are evaluated exactly and
+            judged against the precision the caller actually gave (see below).
         samples : sequence of float
-            Sample points used for the numeric fallback, one value bound to
-            every free symbol at a time.
+            Sample points used for the numeric fallback.  Each sample gives a
+            *point*, not a single value: free symbols are bound to the sample
+            offset by their rank in sorted name order, so they take distinct
+            values and the evaluation is off the diagonal ``x = y = z``.  A
+            ``numeric_ok`` outcome is still finitely many points — evidence,
+            never a proof — and a symbol whose offset leaves an operation's
+            domain makes that point unevaluable, which the detail string
+            reports and which can leave the outcome ``inconclusive``.
         mark_refuted : bool
             When true (default), failed claims have their status set to
             ``"refuted"`` in place.
@@ -1306,14 +1348,33 @@ def _residual_is_zero(residual: Any) -> bool:
 
 def _numeric_residual(
     expr: Any, symbols: Mapping[str, Any], samples: Sequence[float]
-) -> float | None:
-    """Largest absolute value of *expr* over the sample points, or ``None``."""
+) -> tuple[float | None, int]:
+    """Largest ``|expr|`` over the sample points, and how many were evaluable.
+
+    Every free symbol used to be bound to the *same* value, which put the
+    evaluation on the diagonal ``x = y = z``.  A residual that vanishes only
+    there — ``sin(x)cos(y) - sin(y)cos(x)``, ``x - y``, any symmetry error
+    between two variables, the commonest bug class this fallback exists to
+    catch — came back indistinguishable from an identity.  Each symbol is
+    therefore offset by :data:`_SYMBOL_SPACING` times its rank in the sorted
+    symbol names, so the point is off the diagonal in every coordinate while
+    the single-symbol case (rank 0) evaluates exactly where it always did.
+
+    An offset can push a sample out of an operation's domain; ``eval_expr``
+    then raises and the point is skipped.  The count of points that *did*
+    evaluate is returned alongside the worst value so the caller can say
+    ``inconclusive`` rather than read a verdict off a residual it could not
+    sample.
+    """
     ak = _ak()
     worst: float | None = None
+    evaluated = 0
+    ranks = {name: rank for rank, name in enumerate(sorted(symbols))}
     for sample in samples:
         bindings = {}
         for name, sym in symbols.items():
-            bindings[sym] = _NUMERIC_CONSTANTS.get(name, float(sample))
+            offset = ranks[name] * _SYMBOL_SPACING
+            bindings[sym] = _NUMERIC_CONSTANTS.get(name, float(sample) + offset)
         try:
             value = ak.eval_expr(expr, bindings)
         except Exception:
@@ -1322,20 +1383,102 @@ def _numeric_residual(
             magnitude = abs(float(value))
         except (TypeError, ValueError):  # pragma: no cover - complex results
             continue
+        evaluated += 1
         worst = magnitude if worst is None else max(worst, magnitude)
-    return worst
+    return worst, evaluated
 
 
 def _decide(residual: Any, symbols: dict[str, Any], tolerance: float, samples) -> tuple[str, str]:
     """Classify a residual that ought to be identically zero."""
     if _residual_is_zero(residual):
         return "ok", "symbolic residual simplified to 0"
-    worst = _numeric_residual(residual, symbols, samples)
+    worst, evaluated = _numeric_residual(residual, symbols, samples)
     if worst is None:
         return "inconclusive", f"residual did not simplify to 0 (got {residual}); no numeric sample"
+    where = f"{evaluated} of {len(samples)} sample point(s)"
     if worst <= tolerance:
-        return "numeric_ok", f"|residual| <= {worst:.3g} over {len(samples)} sample point(s)"
-    return "failed", f"|residual| = {worst:.6g} exceeds tolerance {tolerance:g}"
+        return "numeric_ok", (
+            f"|residual| <= {worst:.3g} at {where}, free symbols at distinct "
+            f"values (numeric evidence, not a proof)"
+        )
+    return "failed", f"|residual| = {worst:.6g} at {where} exceeds tolerance {tolerance:g}"
+
+
+def _exact_and_uncertainty(value: Any) -> tuple[Fraction, Fraction]:
+    """*value* as an exact rational, with the half-ulp its notation implies.
+
+    A ``numeric_relation`` recipe carries its constants as text — the form
+    :func:`alkahest.guess_relation`'s own docstring tells callers to use — and
+    that text carries its precision with it.  ``"1"`` is the integer one and is
+    exact; ``"1.15572734962273134279187535795567192711"`` names a value known
+    to half a unit in its last decimal place, which is *far* more than a
+    ``float`` holds.  Narrowing either to 53 bits throws that away, so an exact
+    relation with coefficients around ``5e9`` picks up a ``9.5e-7`` rounding
+    residual and gets refuted.
+
+    :raises ValueError: when *value* is not a recognisable exact numeral.
+    """
+    if isinstance(value, bool):  # bool is an int; refuse it explicitly
+        raise ValueError(f"not a numeric constant: {value!r}")
+    if isinstance(value, Fraction):
+        return value, Fraction(0)
+    if isinstance(value, int):
+        return Fraction(value), Fraction(0)
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"not a finite constant: {value!r}")
+        # A float names itself exactly, but only to its own resolution.
+        return Fraction(value), Fraction(math.ulp(value)) / 2
+    if isinstance(value, Decimal):
+        decimal_value = value
+    elif isinstance(value, str):
+        try:
+            decimal_value = Decimal(value.strip())
+        except InvalidOperation:
+            raise ValueError(f"not a decimal numeral: {value!r}") from None
+    elif hasattr(value, "__float__"):
+        # An in-process numeric of some other type (``mpmath.mpf``, ``numpy``).
+        # Narrowing is what the old code did to everything; here it is the last
+        # resort, and the ulp it reports says the digits were lost.
+        try:
+            narrowed = float(value)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError(f"not a numeric constant: {value!r}") from None
+        if not math.isfinite(narrowed):
+            raise ValueError(f"not a finite constant: {value!r}")
+        return Fraction(narrowed), Fraction(math.ulp(narrowed)) / 2
+    else:
+        raise ValueError(f"unsupported constant type {type(value).__name__}")
+    if not decimal_value.is_finite():
+        raise ValueError(f"not a finite constant: {value!r}")
+    exponent = decimal_value.as_tuple().exponent
+    text = str(value).strip() if isinstance(value, str) else str(decimal_value)
+    if "." not in text and "e" not in text.lower():
+        # An integer written as an integer is exact, not "±0.5".
+        return Fraction(decimal_value), Fraction(0)
+    ulp = Fraction(10) ** int(exponent)
+    return Fraction(decimal_value), ulp / 2
+
+
+def _relation_residual(
+    constants: Sequence[Any], coefficients: Sequence[Any]
+) -> tuple[Fraction, Fraction]:
+    """``(|sum a_i c_i|, uncertainty)`` computed exactly from the given numerals.
+
+    The uncertainty is the first-order propagation of each input's own half-ulp,
+    so it is zero when every constant and coefficient is exact.  The true
+    residual lies in ``[|R| - U, |R| + U]``, which is what lets
+    :func:`_recheck` distinguish "this relation is false" from "you did not give
+    me the digits to tell".
+    """
+    residual = Fraction(0)
+    uncertainty = Fraction(0)
+    for raw_constant, raw_coefficient in zip(constants, coefficients):
+        constant, constant_ulp = _exact_and_uncertainty(raw_constant)
+        coefficient, coefficient_ulp = _exact_and_uncertainty(raw_coefficient)
+        residual += coefficient * constant
+        uncertainty += abs(coefficient) * constant_ulp + abs(constant) * coefficient_ulp
+    return abs(residual), uncertainty
 
 
 def _recheck(claim: Claim, pool: Any, tolerance: float, samples: Sequence[float]) -> RecheckOutcome:
@@ -1387,23 +1530,40 @@ def _recheck(claim: Claim, pool: Any, tolerance: float, samples: Sequence[float]
             outcome, detail = _decide(residual, symbols, tolerance, samples)
             return RecheckOutcome(claim.id, outcome, kind, detail)
         if kind == "numeric_relation":
-            constants = [float(c) for c in check["constants"]]
-            coefficients = [float(c) for c in check["coefficients"]]
+            constants = list(check["constants"])
+            coefficients = list(check["coefficients"])
             if len(constants) != len(coefficients):
                 return RecheckOutcome(
                     claim.id, "inconclusive", kind, "constant/coefficient length mismatch"
                 )
-            residual = sum(a * c for a, c in zip(coefficients, constants))
+            try:
+                residual, uncertainty = _relation_residual(constants, coefficients)
+            except ValueError as exc:
+                return RecheckOutcome(claim.id, "inconclusive", kind, str(exc))
             bound = float(check.get("tolerance", tolerance))
-            if abs(residual) <= bound:
+            # The residual is exact; the *inputs* are only as precise as their
+            # own notation, so the true value lies in [residual +- uncertainty].
+            upper = float(residual + uncertainty)
+            lower = float(max(Fraction(0), residual - uncertainty))
+            at = f"at the supplied precision (+-{float(uncertainty):.3g})"
+            if upper <= bound:
                 return RecheckOutcome(
                     claim.id,
                     "numeric_ok",
                     kind,
-                    f"|sum a_i c_i| = {abs(residual):.3g} <= {bound:g} (numeric evidence only)",
+                    f"|sum a_i c_i| <= {upper:.3g} <= {bound:g} {at} (numeric evidence only)",
+                )
+            if lower > bound:
+                return RecheckOutcome(
+                    claim.id, "failed", kind, f"|sum a_i c_i| >= {lower:.6g} > {bound:g} {at}"
                 )
             return RecheckOutcome(
-                claim.id, "failed", kind, f"|sum a_i c_i| = {abs(residual):.6g} > {bound:g}"
+                claim.id,
+                "inconclusive",
+                kind,
+                f"|sum a_i c_i| = {float(residual):.6g} {at}, which straddles the "
+                f"tolerance {bound:g}: the constants were not supplied to enough "
+                f"digits to decide this relation",
             )
     except Exception as exc:
         return RecheckOutcome(claim.id, "inconclusive", kind, f"{type(exc).__name__}: {exc}")
@@ -1637,6 +1797,15 @@ class ResearchSession:
             mapping of the form ``{"kind": ..., "statement": ..., "latex": ...}``
             is used verbatim, which is how relations such as
             ``∫ f dx = F`` are supplied.
+
+            It is **free text, and nothing checks that it describes**
+            ``result``.  So a machine-checked status is not carried over onto
+            it: when *statement* is supplied without a *check* recipe and the
+            result's status is in :data:`MACHINE_CHECKED_STATUSES`, the claim
+            is stored as ``"asserted"`` instead, with the result's own status
+            preserved under ``verification["result_status"]``.  Supply *check*
+            — the recipe :meth:`ClaimGraph.verify` re-runs — to keep the
+            machine-checked status, or record the result without *statement*.
         method : str, optional
             Operation name.  Defaults to ``"record"``.
         label : str, optional
@@ -1688,6 +1857,23 @@ class ResearchSession:
 
         status = str(verification.get("status", "unverified"))
         evidence = str(verification.get("evidence", "none"))
+        # A caller-supplied *statement* is free text: nothing relates it to the
+        # result whose status is being copied, so `record(integrate(...),
+        # statement="0 = 1")` must not inherit `exactly_verified`.  A `check`
+        # recipe re-establishes the link — it is the recipe `verify()` runs
+        # against the statement — so it, and an assertion the engine rendered
+        # itself (`_infer_assertion`), keep the status.  Everything else is
+        # badged `"asserted"` until a recipe is attached.
+        if (
+            statement is not None
+            and not (isinstance(statement, dict) and statement.get("inferred"))
+            and not check
+            and status in MACHINE_CHECKED_STATUSES
+        ):
+            verification = dict(verification)
+            verification["result_status"] = status
+            verification["statement_source"] = "caller"
+            status = "asserted"
         certificate_format = verification.get("artifact_format")
         if certificate is not None and certificate_format is None:
             certificate_format = "lean4"

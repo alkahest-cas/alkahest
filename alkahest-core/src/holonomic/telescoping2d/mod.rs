@@ -249,6 +249,7 @@ pub fn telescope_md(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::errors::AlkahestError as _;
     use crate::kernel::{Domain, ExprId, ExprPool};
     use rug::ops::Pow as _;
     use rug::Integer;
@@ -687,6 +688,45 @@ mod tests {
         assert_eq!(result.certs.len(), 1);
     }
 
+    /// The exact-rational elimination used to `abort()` the whole process when
+    /// it ran out of memory — `GNU MP: Cannot allocate memory (size=8)`, no
+    /// exception, no `BudgetExceededError`, nothing an `except` clause could
+    /// catch (2026-08-19 issue #5). `Budget`'s `max_bytes` ceiling turns that
+    /// into an ordinary coded error, checked *before* the allocation GMP has
+    /// no failure path for.
+    #[test]
+    fn a_memory_ceiling_refuses_instead_of_aborting_the_process() {
+        let pool = ExprPool::new();
+        let n = pool.symbol("n", Domain::Real);
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let f = pool.mul(vec![
+            pool.func("binomial", vec![n, x]),
+            pool.func("binomial", vec![x, y]),
+        ]);
+        let _guard = crate::budget::enter_with_memory(crate::budget::Budget::new(), Some(1024));
+        let err = search::telescope_md_search(f, n, &[x, y], &pool, &TelescopingMdOpts::default())
+            .expect_err("1 KiB of exact-rational memory cannot cover this search");
+        assert!(
+            matches!(err, Telescoping2dError::SearchExhausted(_)),
+            "{err:?}"
+        );
+        let trip = crate::budget::take_trip().expect("the memory trip must be recorded");
+        assert_eq!(trip.code(), "E-BUDGET-004");
+    }
+
+    /// A generous ceiling must not change the answer — the point is a ceiling,
+    /// not a refusal.
+    #[test]
+    fn a_generous_memory_ceiling_still_returns_the_certificate() {
+        let pool = ExprPool::new();
+        let (n, k, _) = njk(&pool);
+        let f = pool.func("binomial", vec![n, k]);
+        let _guard = crate::budget::enter_with_memory(crate::budget::Budget::new(), Some(1 << 40));
+        let res = telescope_md(f, n, &[k], &pool).expect("a 1 TiB ceiling cannot refuse this");
+        assert!(res.order >= 1);
+    }
+
     /// Regression test for the two resource ceilings in `search`
     /// (`MAX_ANSATZ_UNKNOWNS`, the per-probe ceiling, and
     /// `MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS`, the whole-search budget that
@@ -748,21 +788,29 @@ mod tests {
             max_a_degree: 2,
             max_cert_degree: 3,
         };
-        let start = std::time::Instant::now();
         let err = search::telescope_md_search(f, n, &[x, y, z], &pool, &opts)
             .expect_err("this combination must be refused via the resource ceiling, not solved");
-        let elapsed = start.elapsed();
-        // 900s, not 180s: this bound exists to catch a genuine hang (the
-        // pre-fix behavior was still running after several minutes and
-        // growing), not to pin CI wall-clock precisely. Windows CI runners
-        // measured ~480s here against ~76s on Linux for the same exact-
-        // rational elimination — a real, expected platform gap for GMP-
-        // backed arithmetic under MSYS2/mingw, not evidence the ceiling
-        // isn't working.
+        // Deterministic, where the wall-clock bound this assertion replaces was
+        // not: the property under test is "bounded to roughly one expensive
+        // elimination, not one per (order, a_degree) combination", and that is
+        // a *count of probes the ceilings let through*, not a latency. The old
+        // 900 s bound measured the machine — four separate measurements put the
+        // same elimination at ~76 s idle, 312-508 s isolated-but-busy and
+        // 1100-1300 s under load, so it failed on a loaded runner while the
+        // ceiling was working perfectly.
+        let spent = search::large_probe_unknowns();
         assert!(
-            elapsed.as_secs() < 900,
-            "expected a bounded refusal (roughly one expensive elimination, not several), took \
-             {elapsed:?}"
+            spent <= search::MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS,
+            "the whole-search budget is {} unknowns across every probe at or above {}; the \
+             search spent {spent}",
+            search::MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS,
+            search::LARGE_PROBE_THRESHOLD
+        );
+        assert!(
+            spent > 0,
+            "the ceiling must bound an expensive search, not skip it entirely — no probe at or \
+             above {} unknowns was attempted at all",
+            search::LARGE_PROBE_THRESHOLD
         );
         assert!(matches!(err, Telescoping2dError::SearchExhausted(_)));
         let Telescoping2dError::SearchExhausted(msg) = &err else {

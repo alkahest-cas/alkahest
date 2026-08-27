@@ -2,6 +2,429 @@
 
 ## Unreleased
 
+- **The parametric Gröbner surface (M9) accepts its own output, checks a
+  refusal before making it, and composes with differential elimination.**
+  Five defects from the 2026-08-19 autoresearch run, plus two prolongation
+  bugs found while wiring the fourth:
+
+  - **`ParametricGroebnerBasis.contains` / `.reduce` accept input that is
+    rational in the parameters.** The basis lives in `Q(params)[vars]`, so its
+    generators carry `den**-1` factors by construction — and the membership
+    entry points routed them through the denominator-free `Expr → GbPoly`
+    conversion and refused with *"negative exponent -1 in polynomial"*. The
+    trivially-true `gb.contains(gb.to_exprs()[i])` could not be run, and
+    neither could the question a loop actually needs. A denominator in a *ring
+    variable* is still refused. New `equals_ideal` / `contains_ideal` answer
+    "do these two parametric bases generate the same ideal?" — exactly, over
+    the fraction field, with neither basis's `conditions()` entering the
+    answer.
+  - **`specialize(values, verify=True)`** re-solves the specialised system
+    over ℚ and compares, instead of refusing on the recorded conditions alone.
+    `conditions()` is sufficient but not necessary — most of it is leading
+    coefficients that were inverted inside the Buchberger loop and then
+    cancelled — so **a quarter to a half of refusals on small-integer grids
+    are unnecessary**, dominated by parameters equal to exactly 0 (`{-2..2}`
+    52 %, `{-2,-1,1,2}` 25 %, `{-3..3}` 58 %). Over eight systems on
+    `{-2..2}`: 646 refusals, 334 now returned, 239 genuine poles and 73
+    necessary still refused. The refusals were separately verified *sound*
+    (1,930 regular points, zero disagreements), so this closes a completeness
+    gap, not a correctness one; the default stays `False` because verifying
+    costs a second Gröbner basis over ℚ.
+  - **`rosenfeld_groebner(dae, params=[...])`** runs the prolongation loop
+    over `Q(params)` and returns a `ParametricRosenfeldGroebnerResult` whose
+    `final_basis()` is a `ParametricGroebnerBasis`. It previously raised
+    `TypeError`: the differential-elimination surface did not compose with M9
+    at all, so every model had to be prolonged by hand.
+  - **`eliminate=[...]` and `minimal=True`**, and a `UserWarning` when neither
+    was used but an earlier round would have done. One prolongation too many
+    is expensive out of all proportion — on SIR, stopping at the first
+    informative round is 0.03 s and one 4-term relation, one round further
+    does not finish in ten minutes — and the over-supplied answer is
+    *correct*, so nothing else signalled it. `minimal_prolongation_rounds`
+    reports the first informative round; its scope is documented, and it is
+    **known to be wrong for multi-output models**, so it is a cost signal, not
+    a certificate.
+  - **Prolongation no longer emits relations the system does not imply.** Two
+    causes, both reachable from `rosenfeld_groebner` on any system where one
+    equation mentions another's derivative: a promoted derivative had its
+    contribution counted twice (once from its own state pair, once from the
+    pair the previous round added), and a jet that was never promoted had its
+    contribution dropped entirely, because the next differentiation treated it
+    as a constant. On `R' = I, I' = -I` the two together forced `I = 0`. The
+    jet ranking is also append-only across rounds now: it was recomputed each
+    round, so a jet reachable only through the previous round's equations
+    could drop out and shift every later exponent slot under polynomials that
+    had already been padded.
+  - **The docs say which structural identifiability this decides.** An
+    IO-elimination route answers **multi-experiment** identifiability, by
+    Ovchinnikov–Pillay–Pogudin–Scanlon, *Computing all identifiable functions
+    of parameters for ODE models* (arXiv:2004.07774), Theorem 19 — which is
+    why it can call a model globally identifiable where a single-experiment
+    tool such as SIAN reports "locally, not globally". Stated with the
+    hypothesis it needs: Theorem 19 requires the IO equations to be the
+    characteristic presentation of `I_Σ ∩ C(θ){y,u}`, and an algebraic lex
+    elimination at a hand-picked finite jet order is not guaranteed to be one.
+
+- **The M11 novelty filter reads more of what OEIS actually writes, pages its
+  searches, can represent a `q`-recurrence, and cross-checks the terms it is
+  given** (`alkahest.experimental.novelty`). Four false-red / coverage
+  defects, all found by pointing the filter at the Fibonacci recurrence and
+  watching it come back `not_found` against A000045:
+
+  - **The recurrence in an entry's *name* is now read.** A000045's whole name
+    is *"Fibonacci numbers: F(n) = F(n-1) + F(n-2) with F(0) = 0 and
+    F(1) = 1"*, which the parser was never pointed at; the entry produced 25
+    candidate lines, **0 usable**, and a `not_found` verdict for its own
+    recurrence. `OeisEntry.candidate_lines()` now puts the name first, any
+    single letter may name the sequence (`F`, `L`, `T`, `b`), an identifier
+    passed as `RecurrenceClaim.from_text(..., names=…)` may too — the entry's
+    own A-number is passed automatically — and juxtaposition is read as
+    multiplication (`2a(n-2)`). One line may still name only **one** sequence,
+    so `a(n) = a(n-1) + A002026(n-1)` is refused as before, and a parsed line
+    is still only indexed once it reproduces the entry's own terms. Measured
+    over a 377-entry live sample: **156 → 252** lines parsed, **121 → 195**
+    usable statements, **114 → 174** entries with at least one.
+  - **A `terms=` search is paged; a full first page is no longer reported as
+    exhaustive.** `fmt=json` returns at most ten results and no total count,
+    so `OeisWeb` claimed `exhaustive=True` after one page and every negative
+    became a `not_found` — collapsing the `unavailable` half of the tri-state
+    the module exists to provide. It now continues at `&start=` until a short
+    page arrives (exhaustive, and recorded in the cache as a complete answer)
+    or `max_results` is reached (`exhaustive=False`, **not** recorded, and
+    `check_novelty` reports `unavailable`). `max_results` defaults to 50, five
+    pages. An `id:A…` lookup is *not* paged and stays exhaustive after one
+    request, which was always correct.
+  - **`QRecurrenceClaim`** — normal form, `claim_hash` and equality for
+    `Σ_i c_i(q, q^n)·u(n+i) = 0`, with coefficients in `ℚ(q, q^n)` cleared to
+    Laurent polynomials. `RecurrenceClaim` refused these outright
+    (*"coefficient mentions the symbol 'q'"*), so no `q_zeilberger` result had
+    any route to the promotion gate. Scale, index shift — which acts on the
+    coefficients, since `n → n+1` sends `q^n` to `q·q^n` — a common monomial
+    or polynomial factor, and zero padding are quotiented out. The normal form
+    is tagged `q-recurrence/1` against `recurrence/1`, so the hash spaces do
+    not collide. No source here can *state* a `q`-recurrence, so
+    `check_novelty` reports OEIS sources as `unavailable` for one rather than
+    manufacturing a negative; sources may declare what they can state with a
+    `CLAIM_KINDS` tuple.
+  - **`terms=` is checked against the claim**, not only used to drive the
+    search. `NoveltyVerdict.terms_check` reads `"holds"`, `"fails"` or
+    `"not_checked"`, on the same lenient trailing-window rule a source's own
+    formula line has to pass, and appears in `report()`. A `"fails"` means the
+    lookup was about a different sequence from the claim. `check_novelty` takes
+    `start=`, meaning exactly what `RecurrenceClaim.holds_for`'s `start` means;
+    it is never sent to a source.
+- **The PSLQ trust gate read the input's *type*, and four value-preserving
+  conversions changed the type without changing the value** (2026-08-19
+  autoresearch run, issue #4). 3.9.0 made `relation_confidence` tri-state and
+  wired `E-PSLQ-004` into `guess_relation`, but `_supplied_bits` classified by
+  type, so `guess_relation([float(pi), float(e), float(log 2)])` refused while
+  `guess_relation([mpf(x) for x in the same floats])` returned the very relation
+  the release was written to refuse — `[-60771139, 67263243, 11653676]`, true
+  residual `3.8e8` — with `credible=True` and 277 "spare" digits. Three fixes:
+
+  - **`mpmath.mpf` is now *unknown* precision, not its context's `prec`.** It
+    reported `value.context.prec`, which is the *ambient* `mp.dps` at the moment
+    of asking rather than a property of the value: the same objects judged before
+    and after an unrelated `mp.dps = 300` got opposite verdicts. Nor is accuracy
+    recoverable from the object — every `mpf` is exactly a dyadic rational — so
+    the mantissa-bitcount fix is wrong (it reports 0.30 digits for `mpf(1),
+    mpf(2), mpf(3)` and refutes the true relation `[1, 1, -1]`). An `mpf` is now
+    treated exactly as a decimal string is: unjudged unless the caller declares
+    `digits=`.
+  - **Exact inputs are now *evaluated* rather than assumed.** `available_digits`
+    is `inf` on the `exact` branch, so no affordability test could ever fire and
+    `credible=True` was unfalsifiable there — `Fraction(str(x))`,
+    `Fraction(Decimal(repr(x)))` and a 20-digit `nstr` truncation all reached it
+    with a relation that is *false for the very numbers supplied*. For `int` and
+    `Fraction` constants `Σ aᵢ·cᵢ` is now computed in exact `Fraction`
+    arithmetic; a nonzero residual refutes the relation (new `exact_residual` key
+    on `relation_confidence`'s dict) and `guess_relation` raises the new
+    **`E-PSLQ-005`**, which is a refutation rather than a precision complaint.
+  - **`guess_relation` gained the `digits=` escape hatch it was missing.**
+    `digits=` rescued `relation_confidence`, but on `guess_relation`
+    `precision_bits` means the width of the *search*, so the entry point that
+    raises `E-PSLQ-004` had no way for a caller who genuinely knows their input
+    precision to be judged at all. `guess_relation(constants, digits=…)` is
+    keyword-only and additive.
+
+  Also fixed (item 26n): the cost formula `n·log10(H)` collapses to 0 at `H = 1`,
+  so a relation with unit coefficients was free however many constants it spanned.
+  A relation with coefficients bounded by `H` selects one of `(2H+1)ⁿ` integer
+  vectors, so the cost is `n·log10(2H+1)`; a 40-term ±1 relation now costs ~19
+  digits instead of 0. `E-PSLQ-*` codes are documented in
+  `docs/mdbook/src/errors.md` for the first time (item 26o).
+- **`guess_holonomic` reports the leading coefficient's roots inside the data,
+  and its verdict is three-valued.** A single wrong term in an otherwise
+  order-2/degree-1 sequence was fitted, at the *default* `max_degree = 4`, by
+  multiplying the true operator by the cubic that vanishes at exactly the three
+  indices whose equations the typo breaks — and came back `confirmed=True` with
+  `dimension` 1, 55 surplus equations and no untested candidates. The returned
+  relation is not unsound: it satisfies every equation the terms supplied, and
+  it holds on the *clean* sequence too, being a left multiple of the true
+  operator, so no re-check can catch it. What it is not is the sequence's
+  recurrence, and the tell is that its leading coefficient has roots inside the
+  data, where every coefficient vanishes at once, the equation reads `0 = 0`
+  and the fit was therefore unconstrained.
+
+  `GuessedRecurrence.singular_indices` is now a first-class field carrying
+  exactly those indices — the same name and meaning as
+  `ModularEvaluation.singular_indices`, with the difference that a modular
+  evaluation must refuse (`E-HOLO-007`) where a fit can be returned and
+  flagged. `GuessedRecurrence.status` names the verdict from the closed
+  vocabulary `GUESS_STATUSES` (`"confirmed"`, `"singular"`,
+  `"underdetermined"`, `"unconfirmed"`), glossed by `GUESS_STATUS_MEANINGS` and
+  by `.means`, in the shape `experimental.NoveltyVerdict.status` uses.
+  `confirmed` is correspondingly `True` / `False` / `None` rather than a bare
+  boolean, the discipline `relation_confidence`'s `credible` already had:
+  `False` is *the data says nothing about this fit*, `None` is *the relation
+  holds and is still not the sequence's recurrence*, and only `True` is a
+  result. Two typos at `max_degree=8` produce six roots, so the field is a
+  diagnostic rather than a flag. The guard is unchanged in the direction it was
+  built for: ten non-P-recursive sequences (primes, partitions, Bell, `σ`, `τ`,
+  `π` digits, pseudorandom, two Beatty sequences, digit sums) still answer
+  `None` after a full sweep, and too few terms still raises `E-HOLO-005`.
+
+- **`guess_holonomic` returns the solution space instead of refusing when
+  `dimension > 1`.** A probe wider than the sequence's annihilator makes the
+  terms admit several independent relations, which used to raise and make the
+  whole `(order, degree)` cell unusable — it closed OEIS A277060 entirely,
+  though `zeilberger` decides it immediately. `GuessedRecurrence.basis` now
+  carries every independent relation (`basis[0]` is `coeffs`), the result comes
+  back with `status == "underdetermined"` and `confirmed is None`, and only a
+  fit that consumed its own evidence is still refused.
+
+- **`supercongruence_sweep` records `E-HOLO-006` in `skipped()` instead of
+  raising it out of the sweep.** `p**(k + extra_precision)` past the
+  machine-word ceiling of `2**62` is a fact about one prime — the same "out of
+  reach of this backend" that `E-HOLO-008` was already recorded for — and
+  letting it propagate destroyed every residue already computed, leaving the
+  caller to pre-filter the prime list by `int((2**62) ** (1 / (k + 1)))` by
+  hand. The *other* `E-HOLO-006`, a composite in `primes`, is a fact about the
+  call and still raises; it is now decided up front, before any evaluation, so
+  that the two halves can be told apart.
+
+- **`experimental.asymptotics_from_recurrence` derives its index symbol.** `n`
+  is now optional: it is taken from `ZeilbergerCertificate.n` (a new getter)
+  when *rec* is a certificate, and from a pool created on the spot when the
+  coefficients are plain integers, as they are for a `GuessedRecurrence`.
+  Passing a symbol from a foreign pool used to surface as an uncoded
+  `PoolError` from several frames inside the coefficient walk; it is now
+  `E-POOL-001` naming the argument and the fix.
+
+- **`zeilberger(minimal=True)` is documented as minimal at certificate degree
+  `<= max_degree`**, which is what it establishes, rather than "genuinely
+  minimal". A lower-order relation whose certificate needs a higher degree than
+  the bound is never probed, and order–degree trade-offs are real in creative
+  telescoping. Documentation only — a sweep of seven families found no
+  counterexample and the behaviour is unchanged.
+- **A Zeilberger `boundary` verdict now carries the `n` it is a theorem on**
+  (`ZeilbergerCertificate.boundary_valid_from`, `.certificate_poles`). The
+  verdict was a bare tag with an implied "for every `n`" attached to it, and
+  that quantifier was false in two ways.
+
+  **Empty ranges.** `F = C(n,k)²` over `limits=(5, 3)` — an empty range, so
+  every `S(n)` is `0` — returned `boundary="nonzero"`,
+  `implies_sum_recurrence=True` and a degree-9 `b(n)` whose residual
+  `Σ_i a_i(n)·S(n+i) − b(n)` ran `4, 107, 800, 2725, 2450, −23716, −162288` at
+  `n = 3..9`: a valid certificate implying a false recurrence for the sum, the
+  same class of defect the verdict was built to close. The cause is that
+  `κ₁ < κ₀ − 1` makes the declared range run *backwards*, where a sum is `0`
+  under the "empty sum" reading and a signed sum under the reversed-sum one,
+  and every piece of the boundary analysis silently used the second. The
+  realistic form is `n`-dependent and worse: `limits=(3, n−3)` is empty at
+  `n = 3, 4` and a range afterwards, so the returned `b(n)` was wrong at
+  exactly the `n` a loop reaches first. Such a verdict is now returned *with*
+  its domain — `boundary_valid_from == 5` — and a range that is backwards at
+  every `n` (or at every large `n`) is `"unknown"`. `κ₁ = κ₀ − 1` (`k = 0..−1`,
+  `k = n+1..n`), the one empty range both readings agree is `0`, keeps its
+  `"vanishes"`, which is what the two treatments disagreeing was.
+
+  **Interior poles.** `C(n,k)/(n−2k+1)` over `k = 0..n` returned
+  `"vanishes"` although `S(n)` is undefined for every odd `n` *and* the
+  certificate itself has a pole at `k = (n+3)/2`, an integer strictly inside
+  the range — so the telescoping `Σ_k (G(n,k+1) − G(n,k))` breaks in the middle
+  of the sum, where neither boundary value can see it. Those points are now
+  searched for, reported in `certificate_poles` as expressions in `n`, and the
+  verdict is `"unknown"` when there are any. The same closes
+  `C(n,k)/(k−3)` over `k = 0..n`, whose sum does not exist for `n ≥ 3`.
+
+  The Rust `holonomic::boundary_status` keeps its signature and fails safe: a
+  verdict that is false at some `n ≥ 0` comes back as `Unknown` naming the
+  restriction, and the new `holonomic::boundary_verdict` returns the same
+  verdict with `BoundaryVerdict::valid_from` and
+  `BoundaryVerdict::certificate_poles`. Verdicts that were already right are
+  unchanged, including the `0·∞` endpoint continuation `C(n,k)/(n−k+1)` over
+  `k = 0..n` (a certificate pole exactly at `k = k_hi+1`, cancelled by a zero of
+  the summand) and negative-slope lower limits.
+- **Every printer emitted `(-1)^n` as `-1^n`, which re-reads as `-(1^n)`.** A
+  negative power base was rendered without parentheses by all three exported
+  forms — `str`/`repr`, `latex` and `unicode_str` — so `str((-1)**n)` was
+  `'-1^n'`, which sympy, Python's own `eval`, LaTeX **and `alkahest.parse`**
+  all correctly read as `-(1^n) = -1`, not `(-1)^n`. Nothing internal was
+  wrong: `(-1)^4` evaluated to `1` all along; only the exported text lied, and
+  it lied in exactly the place it does the most damage — an `M1` boundary
+  result handed out for external checking. `b(n) = -16·(-2)^n` printed as
+  `-16 * -2^n`, worth `-64` at `n = 2` inside alkahest and `+16` once
+  re-parsed, which is enough to make an audit harness report a correct engine
+  as unsound. The printers now parenthesise any base that does not bind
+  tighter than `^`: a negative literal (unary minus binds looser than `^`,
+  matching `BP_UNARY` in the parser) and, in the LaTeX and Unicode renderers,
+  a fraction — `\left(\frac{1}{2}\right)^n`, `(3/7)^(n)`. Bases that were
+  already unambiguous are untouched (`2^n`, `x^n`, `½^(n)`), as are negative
+  *exponents* (`x^-1`), where a leading `-` cannot be misread because `^` is
+  right-associative. `alkahest.parse` itself was **not** changed: it was
+  applying standard precedence correctly to the bad string it was given.
+- **`sos_decompose` now certifies the homogeneous ternary Motzkin form and
+  Choi–Lam at multiplier power `N = 1`, via a half-Newton-polytope reduction
+  — and retracts the claim that it could not.** The previous round recorded,
+  as its closing M10 finding, that `(x²+y²+z²)·Motzkin_hom` is not SOS and
+  that the classical fact needs `N = 2`, and pinned that with a *passing*
+  test named `psd_search_does_not_yet_reach_…` whose comment said the `N = 1`
+  refusal was "expected to stay `None` permanently". **The premise was
+  false.** `(x²+y²+z²)(x⁴y²+x²y⁴−3x²y²z²+z⁶) = (½x³y+xy³−3⁄2xyz²)² +
+  ¾(x³y−xyz²)² + (xy²z−xz³)² + (x²yz−yz³)² + (x²y²−z⁴)²` — this identity is
+  the reason Motzkin is the standard example of a PSD non-SOS form that
+  becomes SOS after one multiplication by `Σxᵢ²`. The claim had propagated
+  into `docs/mdbook/src/positivity.md`, `alkahest-skill/alkahest.md` and this
+  file; all are corrected, and the test is now stated in the positive
+  direction (`psd_search_certifies_homogeneous_motzkin_times_sum_of_squares_at_n1`)
+  so a regression is a failure rather than a confirmation.
+
+  **What was actually missing was a dimension reduction, not iterations.**
+  `psd_search` now restricts the Gram basis to the lattice points of
+  `½·Newton(p)` (`psd::half_newton_reduce`) before searching. Reznick's
+  theorem says the support of every square in every SOS decomposition of `p`
+  already lies there, so the restriction is *complete*, not heuristic — and
+  it cuts `σ·Motzkin_hom`'s degree-4 ternary basis from 15 monomials to 9,
+  its affine family from 75 free parameters to 18. That is the difference
+  between a numeric solution landing ≈ 0.96 away from the true certificate in
+  parameter space (so no rounding recovers it) and landing on it exactly.
+  Note what it is not: on both bases the certificate is the unique PSD point
+  of the family, rank 5, minimum eigenvalue exactly 0, so `λ_min` is a
+  misleading progress metric here and more Douglas–Rachford does not help
+  (4× the budget on the unreduced family still fails to round). Robinson's
+  form, whose Newton polytope is already full (15 → 15), is unaffected —
+  asserted as a guard case in
+  `psd::tests::half_newton_reduction_is_a_no_op_when_the_polytope_is_already_full`.
+  Measured on one host, same load, `psd_search` alone: `σ·Motzkin_hom` at
+  `N = 1` went from a 123.0 s refusal to a 3.7 s certificate, `σ·Choi–Lam`
+  from a 549.6 s refusal to a 21.1 s certificate; `σ·Robinson` is unchanged
+  at 54.0 s → 50.2 s, still a certificate.
+
+- **`E-SOS-002` now reports what the search actually did, so a budget that
+  fired is distinguishable from a search that came up empty.** Three separate
+  ceilings could previously convert "we did not look" into a verdict that
+  reads like "we looked and found nothing", all producing the same instant
+  `E-SOS-002` with nothing logged:
+
+  - `psd::MAX_FREE_PARAMETERS` (200) dropped whole affine families silently.
+    For the Horn/C₅ copositivity form this meant *no multiplier power was
+    ever searched at all* (its `N = 1` family has 420 free parameters), so
+    its refusal was not a search result. The ceiling now logs a line marked
+    `NOT SEARCHED` naming the family size and the ceiling, and the refusal
+    message carries the whole trace. It is also applied *before*
+    `solve_affine` rather than after, using `pack_len(n) − rows` as a lower
+    bound on the family's dimension — C₇'s `N = 1` was paying for a
+    924 × 3570 exact rational Gauss–Jordan whose result was thrown away.
+    End to end, C₇'s refusal went from 1294.0 s to 783.6 s and from a bare
+    message to a trace naming every power that ran and every one that did
+    not; the Horn form's went from 37.7 s to 43.9 s, likewise with a trace.
+  - `MAX_MULTIPLIER_BASIS_LEN` (90) was compared against the *unreduced*
+    `monomial_basis` count, which is not the basis that gets searched. C₇'s
+    `N = 1` was rejected at 120 > 90 though its real basis is 84. The
+    comparison now uses `psd::searched_basis_len`, and the log reports both
+    numbers.
+  - The refusal text said "no Reznick multiplier … up to `N = 4` made `σ·p`
+    SOS within the search budget", which reads as if four powers had been
+    tried. It now says "that was actually searched", and the appended trace
+    names each power and whether it ran.
+
+- **`SosOpts::basis_degree` now reaches the multiplier search.**
+  `multiplier_search` derived its basis degree from `deg(σ·p)` alone and
+  never read the option, so the multiplier path was bit-identical at every
+  setting — while `E-SOS-002`'s remediation told callers to raise it. The
+  option is now a floor on that path (a basis below `⌈deg(σ·p)/2⌉` cannot
+  reproduce `σ·p`'s top-degree terms, so it can only be raised, not lowered).
+
+- **Fixed a doc comment on `psd::symmetry_reduced_search`** that claimed
+  Douglas–Rachford "reliably closes the gap" on the homogeneous Motzkin
+  family and cited `psd::tests::psd_search_certifies_homogeneous_motzkin_at_multiplier_power_2`,
+  a test that has never existed.
+- **`verified_integral` refused bounded, continuous integrands and called them
+  "singular".** `asin` and `acos` on `[0, 1]`, `sqrt(1 - x²)` on `[0, 1]`,
+  `sqrt(x)`, `xˣ`, `(1 - cos x)/x²` and `(x - 1)/log x` on `[0, 1]` all came
+  back `E-VALIDATED-003` — "the integrand is singular at the right endpoint" —
+  which for `asin`, whose value there is `π/2`, was not a conservative
+  approximation but a false statement. The refusal was a hard cliff, identical
+  across `order ∈ {2,…,24}` × `prec ∈ {64,…,512}` × `tol ∈ {1e-9,…,1}` ×
+  `max_subdivisions ∈ {64,…,1e5}`, and one ulp wide: backing the endpoint off
+  by `1e-8` succeeded in every case.
+
+  The cause is that every Taylor-model rule needs a derivative bound, and
+  `asin`, `sqrt`, `log` and the reciprocal have none at the end of their
+  domain, so no model exists on the last panel however far it is bisected. A
+  panel where the model fails but the integrand is *bounded* is now closed with
+  a derivative-free `width × range` bound instead. The range comes from
+  directed-rounding interval arithmetic over the extended reals
+  (`validated::interval`): endpoints stay exact, so `1 - x²` on `[1-h, 1]`
+  evaluates to `[0, …]` on the nose rather than dipping below `sqrt`'s domain,
+  and `log([0, h]) = [-∞, log h]` composes with the factor that tames it so
+  that `xˣ = exp(x·log x) ∈ [0, 1]` comes out bounded. Independently, the
+  removable-singularity argument now **iterates** Cauchy's mean value theorem,
+  which is what `(1 - cos x)/x²` needs (`D' = 2x` vanishes where `D = x²` does;
+  only `D'' = 2` is bounded away from zero).
+
+  Genuinely unbounded integrands have no bounded range and still refuse:
+  `-log x`, `(log x)²`, `1/√x`, `1/√(1-x²)`, `log x · log(1-x)` on `[0, 1]`,
+  and `1/x` and `sin(x)/x²` across zero. The refusal message no longer calls a
+  finite integrand singular — it names the Taylor rule that stopped, says the
+  range fallback found nothing bounded either, and keeps the existing
+  distinction between "no enclosure of the integrand exists" and "the integral
+  does not exist". A 1209-enclosure containment fuzz against mpmath found no
+  soundness failure, and the classical-integral audit goes from 28 enclosed /
+  12 refused to 33 enclosed / 7 refused with no enclosure missing its closed
+  form.
+
+- **`verified_sign` was not monotone in the box: a strictly smaller box could
+  lose a verdict the larger one had.** The collar the endpoint-series argument
+  plants is only strong when the box endpoint *is* the point the inequality is
+  tight at. Backing off by `δ` makes the leading coefficient `g(δ)`, which for
+  Cusa–Huygens (`g ~ x⁵/60`) cannot beat its own evaluation noise or the linear
+  term of the tail bound. The measured effect was a dead band of left endpoints
+  from about `1e-300` to `1e-9` answering `"undecided"`, sandwiched between
+  `"true"` at `0` and `"true"` from `1e-6` up — so shrinking a box could lose a
+  proof. An `"undecided"` one-dimensional box that stops short of `x = 0` is
+  now retried with the collar planted at `0`; `"true"` on the larger box
+  implies `"true"` on the box asked about, and only `"true"` is taken from the
+  retry. Cusa–Huygens, Mitrinović–Adamović, Wilker and Huygens are now `"true"`
+  across the whole band. Tightness at a point other than `0` still shows the
+  effect, and `verified_sign`'s documentation now says so and says what to do
+  about it.
+
+- **`verified_sign`, `verified_no_roots`, `verified_integral` and
+  `bound_on_box` were uninterruptible from Python.** A `verified_sign` on
+  `tan` with large integer coefficients ran 109.9 s, and a `signal.setitimer`
+  around it did not fire until the call had already returned (a 60 s timer
+  fired at 182.8 s). Releasing the GIL is not enough on its own: CPython runs a
+  Python-level signal handler only in the main thread and only between
+  bytecodes. The four entry points now run the native call on a scoped worker
+  thread while the calling thread polls `PyErr_CheckSignals` every 25 ms; a
+  pending signal sets the cooperative cancellation flag, and the searches check
+  it at every subdivision and wind down exactly as an exhausted
+  `max_subdivisions` does — wider answer, sooner, never a wrong one. A 3 s
+  timer now fires at 3 s. `alkahest_core::budget::request_cancel` and an
+  active `Budget` reach the same checkpoint for direct Rust callers.
+
+- **The validated-bounds docs still listed five functions as uncovered that
+  3.9.0 had covered.** `bounds_supported`'s docstring example claimed
+  `bessel_j0` answers `(False, ['bessel_j0'])`; the real answer is
+  `(True, [])`, and `docs/mdbook/src/validated-bounds.md` likewise listed
+  `bessel_j0`, `bessel_j1`, `digamma`, `lambert_w` and `gamma` as outside
+  Taylor-model coverage. All five were verified against the build and both
+  places corrected, with the example moved to `floor`, which really has no
+  Taylor-model rule. A test now asserts the live answer for all seven covered
+  functions so the prose cannot drift again unnoticed.
+
 - **`telescope2d` generalizes from two bound indices to an arbitrary `m ≥ 1`:
   `experimental.telescope_md`** (M4 extension). `telescope2d(term, n, j, k)`
   only ever reached exactly two bound indices; the underlying ansatz search
@@ -1467,6 +1890,26 @@ Both are detailed under *Behaviour changes to plan for*.
   `psd::tests::psd_search_certifies_robinsons_form_with_a_reznick_multiplier`
   check the identities by hand, independent of the search that proposed them.
 
+  > **RETRACTED 2026-08-20 — the premise of the block below is false.** It
+  > claims the homogeneous ternary Motzkin form needs multiplier power
+  > `N = 2` and that `N = 1` "is not classically expected to work … at all".
+  > `(x²+y²+z²)·(x⁴y²+x²y⁴−3x²y²z²+z⁶)` **is** a sum of squares:
+  >
+  > ```text
+  > = (½x³y+xy³−3⁄2xyz²)² + ¾(x³y−xyz²)² + (xy²z−xz³)² + (x²yz−yz³)² + (x²y²−z⁴)²
+  > ```
+  >
+  > which is exactly why Motzkin is the standard example of a PSD non-SOS
+  > form that becomes SOS after one factor of `Σxᵢ²`. The measurements below
+  > are real; the diagnosis attached to them was not, and the round of
+  > engineering they motivated was aimed at a problem that does not exist.
+  > The real defect was a missing half-Newton-polytope reduction — see the
+  > Unreleased entry. The test cited below asserted the wrong mathematics and
+  > passed; it has been replaced by its contrapositive,
+  > `psd::tests::psd_search_certifies_homogeneous_motzkin_times_sum_of_squares_at_n1`.
+  > Kept here, struck through in spirit, because a retraction that deletes
+  > the claim leaves nothing to warn the next reader off re-deriving it.
+
   **What's still open, now attempted to closure and precisely quantified
   (2026-08-17, round 3):** the homogeneous 3-variable form of Motzkin,
   `(x²+y²+z²)²·(x⁴y²+x²y⁴−3x²y²z²+z⁶)` — multiplier power `N = 2`, not `N = 1`
@@ -1508,6 +1951,11 @@ Both are detailed under *Behaviour changes to plan for*.
   All three lines of evidence agree: this is now a genuine, quantified
   numerical-hardness finding (an unusually slowly-converging tangential
   intersection), not an under-tuned budget or an unexplored structural avenue.
+  *(2026-08-20: the measurements hold; the conclusion does not. The three
+  approaches were all applied to `N = 2`, which was never the right power,
+  and the tangential-intersection diagnosis does not explain the `N = 1`
+  refusal either — the cyclic AM-GM sextic has the identical geometry and
+  certifies on the unreduced family. See the retraction above.)*
   `symmetry_reduced_search` ships anyway as a real, general capability — it is
   wired into `psd_search` as a further fallback (only once the direct search
   and facial reduction have both already failed, so it adds no cost to any

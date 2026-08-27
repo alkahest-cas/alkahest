@@ -76,7 +76,9 @@ pub use asymptotics::{
     asymptotics_from_recurrence, CharacteristicAnalysis, CharacteristicRoot, ConnectionConstant,
     PerronVerdict, RecurrenceAsymptotics,
 };
-pub use boundary::{boundary_status, natural_limits, BoundaryStatus};
+pub use boundary::{
+    boundary_status, boundary_verdict, natural_limits, BoundaryStatus, BoundaryVerdict,
+};
 pub use hyperterm::{GammaFactor, ProperTerm};
 pub use modular::{binomial_mod, ModularError, ModularEvaluation, ModularRecurrence};
 pub use qfield::{PolyK, RatK, Rn};

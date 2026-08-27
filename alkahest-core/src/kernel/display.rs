@@ -8,6 +8,11 @@ use crate::kernel::{ExprId, ExprPool};
 
 const PREC_ADD: i32 = 10;
 const PREC_MUL: i32 = 20;
+/// Unary minus: binds tighter than `*` but looser than `^`, matching `BP_UNARY`
+/// in `parse.rs` (and Python, and sympy).  A literal that renders with a leading
+/// `-` therefore has to be parenthesised as a power base — `(-1)^n`, never
+/// `-1^n`, which would re-read as `-(1^n)`.
+const PREC_NEG: i32 = 25;
 const PREC_POW: i32 = 30;
 const PREC_ATOM: i32 = 100;
 
@@ -156,6 +161,16 @@ fn to_superscript(s: &str) -> Option<String> {
         out.push(sup);
     }
     Some(out)
+}
+
+/// Precedence of a rendered numeric literal: [`PREC_NEG`] when it carries a
+/// leading `-`, [`PREC_ATOM`] otherwise.
+fn literal_prec(rendered: &str) -> i32 {
+    if rendered.starts_with('-') {
+        PREC_NEG
+    } else {
+        PREC_ATOM
+    }
 }
 
 fn unicode_frac(num: i64, den: i64) -> String {
@@ -521,18 +536,24 @@ fn latex_piecewise(branches: &[(ExprId, ExprId)], default: ExprId, pool: &ExprPo
 fn latex_r(id: ExprId, pool: &ExprPool) -> (String, i32) {
     pool.with(id, |data| match data {
         ExprData::Symbol { name, .. } => (latex_symbol(name), PREC_ATOM),
-        ExprData::Integer(n) => (n.0.to_string(), PREC_ATOM),
+        ExprData::Integer(n) => (n.0.to_string(), literal_prec(&n.0.to_string())),
         ExprData::Rational(r) => {
             let num = r.0.numer();
             let den = r.0.denom();
             let s = latex_frac(num.to_string().trim_start_matches('-'), &den.to_string());
+            // A fraction is a quotient, not an atom: it needs parentheses under
+            // `^` just like any other product/quotient does.
             if *num < 0 {
-                (format!("-{s}"), PREC_ATOM)
+                (format!("-{s}"), PREC_MUL)
             } else {
-                (s, PREC_ATOM)
+                (s, PREC_MUL)
             }
         }
-        ExprData::Float(f) => (f.inner.to_string(), PREC_ATOM),
+        ExprData::Float(f) => {
+            let s = f.inner.to_string();
+            let prec = literal_prec(&s);
+            (s, prec)
+        }
         ExprData::Add(args) => (latex_add(args, pool), PREC_ADD),
         ExprData::Mul(args) => {
             let (sign, tex) = latex_signed_mul(args, pool);
@@ -843,18 +864,26 @@ fn unicode_piecewise(branches: &[(ExprId, ExprId)], default: ExprId, pool: &Expr
 fn unicode_r(id: ExprId, pool: &ExprPool) -> (String, i32) {
     pool.with(id, |data| match data {
         ExprData::Symbol { name, .. } => (unicode_symbol(name), PREC_ATOM),
-        ExprData::Integer(n) => (n.0.to_string(), PREC_ATOM),
+        ExprData::Integer(n) => (n.0.to_string(), literal_prec(&n.0.to_string())),
         ExprData::Rational(r) => {
             let num = r.0.numer().to_i64().unwrap_or(0);
             let den = r.0.denom().to_i64().unwrap_or(1);
             let s = unicode_frac(num.abs(), den);
+            // `unicode_frac` returns a single vulgar-fraction glyph (`½`) for a
+            // handful of values and a `num/den` quotient otherwise; only the
+            // former is atomic under `^`.
+            let prec = if s.contains('/') { PREC_MUL } else { PREC_ATOM };
             if num < 0 {
-                (format!("-{s}"), PREC_ATOM)
+                (format!("-{s}"), prec.min(PREC_NEG))
             } else {
-                (s, PREC_ATOM)
+                (s, prec)
             }
         }
-        ExprData::Float(f) => (f.inner.to_string(), PREC_ATOM),
+        ExprData::Float(f) => {
+            let s = f.inner.to_string();
+            let prec = literal_prec(&s);
+            (s, prec)
+        }
         ExprData::Add(args) => (unicode_add(args, pool), PREC_ADD),
         ExprData::Mul(args) => {
             let (sign, tex) = unicode_signed_mul(args, pool);
@@ -888,4 +917,85 @@ fn unicode_r(id: ExprId, pool: &ExprPool) -> (String, i32) {
             (format!("∑_{{{v}:{p}=0}} {b}"), PREC_ATOM)
         }
     })
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kernel::Domain;
+
+    /// A negative power base must be parenthesised in every exported form:
+    /// `-1^n` means `-(1^n)` in LaTeX and in every parser that reads these
+    /// strings back, so `(-1)^n` is the only round-trippable rendering.
+    #[test]
+    fn negative_pow_base_is_parenthesised() {
+        let p = ExprPool::new();
+        let n = p.symbol("n", Domain::Real);
+        let pow_m1 = p.pow(p.integer(-1_i32), n);
+        assert_eq!(render_latex(pow_m1, &p), r"\left(-1\right)^n");
+        assert_eq!(render_unicode(pow_m1, &p), "(-1)^(n)");
+
+        let pow_m2 = p.pow(p.integer(-2_i32), n);
+        assert_eq!(render_latex(pow_m2, &p), r"\left(-2\right)^n");
+        assert_eq!(render_unicode(pow_m2, &p), "(-2)^(n)");
+
+        let pow_mhalf = p.pow(p.rational(-1, 2), n);
+        assert_eq!(render_latex(pow_mhalf, &p), r"\left(-\frac{1}{2}\right)^n");
+        assert_eq!(render_unicode(pow_mhalf, &p), "(-½)^(n)");
+    }
+
+    /// A fractional base is a quotient, not an atom, so it needs parentheses
+    /// too — except where the Unicode renderer has a single glyph for it.
+    #[test]
+    fn fractional_pow_base_is_parenthesised() {
+        let p = ExprPool::new();
+        let n = p.symbol("n", Domain::Real);
+        let pow_half = p.pow(p.rational(1, 2), n);
+        assert_eq!(render_latex(pow_half, &p), r"\left(\frac{1}{2}\right)^n");
+        assert_eq!(render_unicode(pow_half, &p), "½^(n)");
+
+        let pow_3_7 = p.pow(p.rational(3, 7), n);
+        assert_eq!(render_latex(pow_3_7, &p), r"\left(\frac{3}{7}\right)^n");
+        assert_eq!(render_unicode(pow_3_7, &p), "(3/7)^(n)");
+    }
+
+    /// The negative base survives being embedded in a product — this is the
+    /// `b(n) = -16 * (-2)^n` inhomogeneity shape that surfaced the bug.
+    #[test]
+    fn negative_pow_base_inside_product() {
+        let p = ExprPool::new();
+        let n = p.symbol("n", Domain::Real);
+        let prod = p.mul(vec![p.integer(-16_i32), p.pow(p.integer(-2_i32), n)]);
+        assert_eq!(render_latex(prod, &p), r"-16 \left(-2\right)^n");
+        assert_eq!(render_unicode(prod, &p), "-16·(-2)^(n)");
+    }
+
+    /// Non-negative atoms stay bare — the fix must not add noise everywhere.
+    #[test]
+    fn positive_pow_base_is_bare() {
+        let p = ExprPool::new();
+        let n = p.symbol("n", Domain::Real);
+        let x = p.symbol("x", Domain::Real);
+        let pow_2 = p.pow(p.integer(2_i32), n);
+        assert_eq!(render_latex(pow_2, &p), "2^n");
+        assert_eq!(render_unicode(pow_2, &p), "2^(n)");
+        let pow_x = p.pow(x, p.integer(2_i32));
+        assert_eq!(render_latex(pow_x, &p), "x^2");
+        assert_eq!(render_unicode(pow_x, &p), "x²");
+    }
+
+    /// A negative coefficient in a product is still printed bare (`-2 x`):
+    /// unary minus binds tighter than `*`, so parentheses are unnecessary.
+    #[test]
+    fn negative_coefficient_in_product_stays_bare() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let prod = p.mul(vec![p.integer(-2_i32), x]);
+        assert_eq!(render_latex(prod, &p), "-2 x");
+        assert_eq!(render_unicode(prod, &p), "-2·x");
+    }
 }

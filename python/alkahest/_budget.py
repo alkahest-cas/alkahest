@@ -8,7 +8,11 @@ candidate that's no longer worth the wall time — without waiting for an
 OS-level kill. This module is the Python front door for that:
 
 :class:`Budget`
-    An immutable ``(wall_ms, max_steps, seed)`` triple.
+    An immutable ``(wall_ms, max_steps, seed, max_bytes)`` tuple. ``max_bytes``
+    is the memory analogue of ``wall_ms``: without it, an exact-rational
+    computation that outgrows the machine is not catchable at all — GMP prints
+    ``GNU MP: Cannot allocate memory`` and calls ``abort()``, taking the
+    interpreter with it. See ``docs/mdbook/src/budgets.md``.
 
 ``alkahest.context(budget=...)``
     Pushes the budget into the Rust-side cooperative checkpoint
@@ -109,6 +113,20 @@ class Budget:
         Determinism seed available to RNG-consuming samplers via
         :func:`budget_seed` — two runs entering the same ``Budget(seed=7)``
         observe the same seed at every call site that consults it.
+    max_bytes : int, optional
+        Ceiling, in bytes, on the exact-arithmetic (GMP) memory the guarded
+        block may hold live. The memory analogue of ``wall_ms``: the existing
+        engine ceilings bound the *shape* of a linear system (how many
+        unknowns) but not the *size* of its numbers, and it is coefficient
+        growth that exhausts memory. Exceeding it raises
+        :class:`~alkahest.BudgetExceededError` with code ``E-BUDGET-004``.
+
+        Without it, an exact solve that outgrows the machine is **not**
+        catchable at all: GMP's reaction to a failed allocation is
+        ``GNU MP: Cannot allocate memory`` followed by ``abort()``, which takes
+        the interpreter down with it. Independently of this setting, Alkahest
+        also refuses (``E-BUDGET-005``) when the process is about to exhaust a
+        finite ``RLIMIT_AS`` (``ulimit -v``, or a container memory limit).
 
     Examples
     --------
@@ -123,6 +141,9 @@ class Budget:
     wall_ms: float | None = None
     max_steps: int | None = None
     seed: int | None = None
+    # Appended, not inserted: a defaulted trailing field keeps every existing
+    # positional `Budget(wall_ms, max_steps, seed)` call valid.
+    max_bytes: int | None = None
 
     def __post_init__(self) -> None:
         if self.wall_ms is not None and (not math.isfinite(self.wall_ms) or self.wall_ms < 0):
@@ -131,6 +152,8 @@ class Budget:
             raise ValueError("Budget.max_steps must be a non-negative integer")
         if self.seed is not None and self.seed < 0:
             raise ValueError("Budget.seed must be a non-negative integer")
+        if self.max_bytes is not None and self.max_bytes < 0:
+            raise ValueError("Budget.max_bytes must be a non-negative integer")
 
 
 def _native():
@@ -199,11 +222,16 @@ class BudgetHandoff:
     seed : int or None
         Carried through so :func:`budget_seed` reads the same value on a
         worker as it does on the calling thread.
+    max_bytes : int or None
+        Carried through as-is, and — like ``max_steps`` — per worker rather
+        than batch-wide: the live-byte baseline is captured when each worker
+        pushes its frame, so each item gets its own ceiling.
     """
 
     deadline: float | None
     max_steps: int | None
     seed: int | None
+    max_bytes: int | None = None
 
     def remaining_ms(self) -> float | None:
         """Milliseconds left until :attr:`deadline`, clamped at ``0.0``.
@@ -223,7 +251,12 @@ class BudgetHandoff:
         from is thread-local).
         """
         native = _native()
-        native.push_budget(wall_ms=self.remaining_ms(), max_steps=self.max_steps, seed=self.seed)
+        native.push_budget(
+            wall_ms=self.remaining_ms(),
+            max_steps=self.max_steps,
+            seed=self.seed,
+            max_bytes=self.max_bytes,
+        )
         try:
             yield
         finally:
@@ -263,7 +296,12 @@ def capture_budget(budget: Budget | None = None) -> BudgetHandoff | None:
     if budget is None:
         return None
     deadline = None if budget.wall_ms is None else time.perf_counter() + budget.wall_ms / 1000.0
-    return BudgetHandoff(deadline=deadline, max_steps=budget.max_steps, seed=budget.seed)
+    return BudgetHandoff(
+        deadline=deadline,
+        max_steps=budget.max_steps,
+        seed=budget.seed,
+        max_bytes=budget.max_bytes,
+    )
 
 
 def run_with_wall_fallback(

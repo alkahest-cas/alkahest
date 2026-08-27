@@ -416,3 +416,345 @@ def test_empty_params_list_is_the_ordinary_engine(pool):
     gb_plain = ak.GroebnerBasis.compute([x * x - one], [x])
     assert isinstance(gb_param, ak.GroebnerBasis)
     assert [str(g) for g in gb_param.to_exprs()] == [str(g) for g in gb_plain.to_exprs()]
+
+
+# ---------------------------------------------------------------------------
+# 8. Feeding a parametric basis its own output back in (2026-08-19 issue #8)
+# ---------------------------------------------------------------------------
+#
+# The basis lives in Q(params)[vars], so its generators carry `den**-1` factors
+# in the parameters by construction.  `contains` / `reduce` used to route those
+# through the denominator-free Expr -> GbPoly conversion and refuse with
+# "negative exponent -1 in polynomial", which made the trivially-true
+# `gb.contains(gb.to_exprs()[i])` unrunnable -- and with it the question a loop
+# actually needs: do these two parametric bases generate the same ideal?
+
+
+def test_contains_accepts_the_basis_own_generators(pool):
+    a, x = pool.symbol("a"), pool.symbol("x")
+    one = pool.integer(1)
+
+    gb = ak.GroebnerBasis.compute([a * x - one], [x], params=[a])
+
+    # The generator really does carry a parameter denominator.
+    assert "a^-1" in str(gb.to_exprs()[0])
+
+    for i, e in enumerate(gb.to_exprs()):
+        assert gb.contains(e) is True, f"generator {i} not recognised: {e}"
+        assert gb.reduce(e).is_zero is True
+    # Denominator-free input keeps working.
+    assert gb.contains(a * x - one) is True
+    # ...as does the ParametricGbPoly read path.
+    assert all(gb.contains(p.to_expr()) for p in gb.polynomials())
+
+
+def test_contains_accepts_own_generators_multivariate(pool):
+    a, x, y = pool.symbol("a"), pool.symbol("x"), pool.symbol("y")
+    one = pool.integer(1)
+
+    gb = ak.GroebnerBasis.compute([a * x - y, x + y - one], [x, y], params=[a])
+    for i, e in enumerate(gb.to_exprs()):
+        assert gb.contains(e) is True, f"generator {i} not recognised: {e}"
+
+
+def test_nonparametric_control_still_accepts_its_own_generators(pool):
+    x = pool.symbol("x")
+    one = pool.integer(1)
+
+    gb = ak.GroebnerBasis.compute([2 * x - one], [x])
+    for e in gb.to_exprs():
+        assert gb.contains(e) is True
+
+
+def test_a_denominator_in_a_ring_variable_is_still_refused(pool):
+    a, x = pool.symbol("a"), pool.symbol("x")
+    one = pool.integer(1)
+
+    gb = ak.GroebnerBasis.compute([a * x - one], [x], params=[a])
+    with pytest.raises(ValueError, match="negative exponent"):
+        gb.contains(x**-1)
+
+
+def test_parametric_input_may_be_rational_in_the_parameters(pool):
+    a, x = pool.symbol("a"), pool.symbol("x")
+    one = pool.integer(1)
+
+    # x - 1/a is the same ideal as a*x - 1, written with a denominator.
+    gb = ak.GroebnerBasis.compute([x - a**-1], [x], params=[a])
+    assert gb.contains(a * x - one) is True
+
+
+def test_equals_ideal_answers_the_two_bases_question(pool):
+    a, x = pool.symbol("a"), pool.symbol("x")
+    one = pool.integer(1)
+
+    g1 = ak.GroebnerBasis.compute([a * x - one], [x], params=[a])
+    g2 = ak.GroebnerBasis.compute([a * a * x - a], [x], params=[a])
+    g3 = ak.GroebnerBasis.compute([x - one], [x], params=[a])
+
+    assert g1.equals_ideal(g2) is True
+    assert g2.equals_ideal(g1) is True
+    assert g1.equals_ideal(g3) is False
+    assert g1.contains_ideal(g1) is True
+
+    # One-directional containment is reported as such: <x> is not <a*x - 1>,
+    # but <a*x - 1, x> == <1> contains both.
+    big = ak.GroebnerBasis.compute([a * x - one, x], [x], params=[a])
+    assert big.contains_ideal(g1) is True
+    assert g1.contains_ideal(big) is False
+
+
+def test_equals_ideal_refuses_to_compare_across_rings(pool):
+    a, b, x = pool.symbol("a"), pool.symbol("b"), pool.symbol("x")
+    one = pool.integer(1)
+
+    g1 = ak.GroebnerBasis.compute([a * x - one], [x], params=[a])
+    g2 = ak.GroebnerBasis.compute([b * x - one], [x], params=[a, b])
+    assert g1.equals_ideal(g2) is False
+
+
+# ---------------------------------------------------------------------------
+# 9. specialize(values, verify=True) (2026-08-19 issue #14)
+# ---------------------------------------------------------------------------
+#
+# `conditions()` is sufficient but not necessary, and on small-integer grids a
+# quarter to a half of the refusals are unnecessary -- dominated by parameters
+# equal to exactly 0, which are intermediate leading-coefficient inversions
+# that cancelled.  `verify=True` recomputes and compares instead of refusing on
+# the recorded conditions alone.  The refusals were separately verified *sound*,
+# so this is a completeness fix; the sound path must not weaken.
+
+
+@pytest.fixture
+def cramer(pool):
+    """a*x + b*y = 1, c*x + d*y = 1 over Q(a, b, c, d)."""
+    a, b, c, d = (pool.symbol(s) for s in "abcd")
+    x, y = pool.symbol("x"), pool.symbol("y")
+    one = pool.integer(1)
+    gb = ak.GroebnerBasis.compute(
+        [a * x + b * y - one, c * x + d * y - one], [x, y], params=[a, b, c, d]
+    )
+    return gb
+
+
+def test_verify_accepts_a_point_the_recorded_conditions_refuse(cramer):
+    # a = 0 is listed in conditions() although the only denominator in the
+    # returned basis is a*d - b*c, which is -1 here.
+    assert cramer.is_regular_at([0, 1, 1, 1]) is False
+    assert "a" in [str(c) for c in cramer.conditions()]
+
+    with pytest.raises(ak.ParamGroebnerError) as exc:
+        cramer.specialize([0, 1, 1, 1])
+    assert exc.value.code == "E-PARAMGB-004"
+
+    verified = cramer.specialize([0, 1, 1, 1], verify=True)
+    assert isinstance(verified, ak.GroebnerBasis)
+    # b*y = 1 and x + y = 1  =>  y = 1, x = 0.
+    assert sorted(str(e).replace(" ", "") for e in verified.to_exprs()) == [
+        "(y+-1)",
+        "x",
+    ]
+
+
+def test_verify_still_refuses_a_genuinely_singular_point(cramer):
+    # a*d - b*c = 0: the basis really does have a pole, and the specialised
+    # system is a different (dependent) system.
+    for pt in ([1, 1, 1, 1], [1, 1, 2, 2]):
+        with pytest.raises(ak.ParamGroebnerError) as exc:
+            cramer.specialize(pt, verify=True)
+        assert exc.value.code == "E-PARAMGB-004"
+
+
+def test_verify_agrees_with_the_direct_basis_where_it_accepts(pool, cramer):
+    _a, _b, _c, _d = (pool.symbol(s) for s in "abcd")
+    x, y = pool.symbol("x"), pool.symbol("y")
+    one = pool.integer(1)
+
+    pt = [0, 1, 1, 1]
+    verified = cramer.specialize(pt, verify=True)
+    direct = ak.GroebnerBasis.compute(
+        [pool.integer(0) * x + one * y - one, one * x + one * y - one], [x, y]
+    )
+    assert sorted(str(e).replace(" ", "") for e in verified.to_exprs()) == sorted(
+        str(e).replace(" ", "") for e in direct.to_exprs()
+    )
+
+
+def test_verify_defaults_off_and_leaves_the_sound_path_alone(pool, cramer):
+    # Regular points are unaffected either way.
+    for verify in (False, True):
+        gb = cramer.specialize([1, 2, 3, 4], verify=verify)
+        assert isinstance(gb, ak.GroebnerBasis)
+    with pytest.raises(ak.ParamGroebnerError):
+        cramer.specialize([1, 1, 1, 1])
+
+
+def test_verify_recovers_a_measurable_share_of_a_small_integer_grid(cramer):
+    """A quarter to a half of refusals on small-integer grids are unnecessary.
+
+    Kept to the 4-parameter `cramer` system on {-1, 0, 1} so it stays a
+    CI-tier test; the full 8-system {-2..2} sweep gives 646 refused / 334
+    recovered / 239 genuine poles.
+    """
+    import itertools
+
+    refused = recovered = 0
+    for pt in itertools.product([-1, 0, 1], repeat=4):
+        pt = list(pt)
+        if cramer.is_regular_at(pt):
+            continue
+        refused += 1
+        try:
+            cramer.specialize(pt, verify=True)
+            recovered += 1
+        except ak.ParamGroebnerError:
+            pass
+    assert refused > 0
+    # Every recovered point is a real recovery; the interesting claim is that
+    # the share is substantial rather than a rounding error.
+    assert 0.25 <= recovered / refused <= 0.5, (refused, recovered)
+
+
+# ---------------------------------------------------------------------------
+# 10. rosenfeld_groebner(dae, params=[...]) (2026-08-19 issues #16 and #13)
+# ---------------------------------------------------------------------------
+
+
+def _decay_dae(pool):
+    """x' = -a*x with output y = x, as a DAE.  IO relation: y' + a*y = 0."""
+    t, x, y = pool.symbol("t"), pool.symbol("x"), pool.symbol("y")
+    dx, dy = pool.symbol("dx/dt"), pool.symbol("dy/dt")
+    a = pool.symbol("a")
+    dae = ak.DAE.new([dx + a * x, y - x], [x, y], [dx, dy], t)
+    return dae, x, y, a
+
+
+def test_rosenfeld_groebner_accepts_params(pool):
+    """Issue #16: this raised TypeError -- M9 did not compose with V2-13."""
+    dae, _x, _y, a = _decay_dae(pool)
+
+    r = ak.rosenfeld_groebner(dae, params=[a], max_prolong_rounds=1, order="lex")
+
+    assert isinstance(r.final_basis(), ake.ParametricGroebnerBasis)
+    assert r.consistent is True
+    # `a` is a coefficient, not a ring variable.
+    assert "a" not in [str(v) for v in r.variables()]
+    assert [str(p) for p in r.parameters()] == ["a"]
+    assert r.final_basis().n_params == 1
+
+
+def test_rosenfeld_groebner_parametric_gives_the_io_relation(pool):
+    dae, x, y, a = _decay_dae(pool)
+
+    r = ak.rosenfeld_groebner(dae, params=[a], eliminate=[x], minimal=True, order="lex")
+    basis = r.final_basis()
+    state_jets = [v for v in r.variables() if str(v).lstrip("d").split("/")[0] == "x"]
+    io = basis.eliminate(state_jets)
+
+    assert len(io) == 1
+    # y + y'/a = 0, i.e. y' = -a*y.
+    dy = pool.symbol("dy/dt")
+    assert io.contains(a * y + dy) is True
+
+
+def test_rosenfeld_groebner_minimal_stops_at_the_first_informative_round(pool):
+    dae, x, _y, a = _decay_dae(pool)
+
+    minimal = ak.rosenfeld_groebner(
+        dae,
+        params=[a],
+        eliminate=[x],
+        minimal=True,
+        max_prolong_rounds=3,
+        order="lex",
+    )
+    assert minimal.minimal_prolongation_rounds == 1
+    assert minimal.prolongation_rounds == 1
+    assert minimal.truncated is True
+
+    with pytest.warns(UserWarning, match="already non-empty after 1"):
+        over = ak.rosenfeld_groebner(
+            dae, params=[a], eliminate=[x], max_prolong_rounds=3, order="lex"
+        )
+    assert over.prolongation_rounds == 3
+    assert over.minimal_prolongation_rounds == 1
+
+    # Over-supplying is *correct*, just more expensive -- that is exactly why
+    # nothing else signals it.
+    state_jets = [v for v in over.variables() if str(v).lstrip("d").split("/")[0] == "x"]
+    assert len(over.final_basis().eliminate(state_jets)) > len(
+        minimal.final_basis().eliminate(
+            [v for v in minimal.variables() if str(v).lstrip("d").split("/")[0] == "x"]
+        )
+    )
+
+
+def test_rosenfeld_groebner_sir_minimal_matches_the_hand_relation(pool):
+    """SIR at the minimal informative jet order (2026-08-19 issue #13).
+
+    S' = -b*S*I, I' = b*S*I - g*I, R' = g*I, y0 = I.  By hand,
+    I*I'' - I'^2 + b*I^2*I' + b*g*I^3 = 0.  The state decouples -- R never
+    enters the relation -- so "as many derivatives as there are states" is one
+    too many, and one too many is four orders of magnitude here.
+    """
+    t = pool.symbol("t")
+    S, infected, R, y0 = (pool.symbol(s) for s in ("S", "I", "R", "y0"))
+    dS, dI, dR, dy0 = (pool.symbol(s) for s in ("dS/dt", "dI/dt", "dR/dt", "dy0/dt"))
+    b, g = pool.symbol("b"), pool.symbol("g")
+    dae = ak.DAE.new(
+        [
+            dS + b * S * infected,
+            dI - b * S * infected + g * infected,
+            dR - g * infected,
+            y0 - infected,
+        ],
+        [S, infected, R, y0],
+        [dS, dI, dR, dy0],
+        t,
+    )
+
+    r = ak.rosenfeld_groebner(
+        dae,
+        params=[b, g],
+        eliminate=[S, infected, R],
+        minimal=True,
+        max_prolong_rounds=4,
+        order="lex",
+    )
+    # Two derivatives of the output, not three.
+    assert r.minimal_prolongation_rounds == 2
+
+    state_jets = [v for v in r.variables() if str(v).lstrip("d").split("/")[0] in ("S", "I", "R")]
+    io = r.final_basis().eliminate(state_jets)
+    assert len(io) == 1
+
+    y1, y2 = pool.symbol("dy0/dt"), pool.symbol("ddy0/dt/dt")
+    hand = y0 * y2 - y1 * y1 + b * y0 * y0 * y1 + b * g * y0 * y0 * y0
+    assert io.contains(hand) is True
+    # ...and the relation is the *whole* content: 4 terms, not 233.
+    assert io.polynomials()[0].n_terms == 4
+
+
+def test_eliminate_and_minimal_require_params(pool):
+    dae, x, _y, _a = _decay_dae(pool)
+
+    with pytest.raises(ValueError, match="params"):
+        ak.rosenfeld_groebner(dae, eliminate=[x])
+    with pytest.raises(ValueError, match="params"):
+        ak.rosenfeld_groebner(dae, minimal=True)
+
+
+def test_minimal_requires_eliminate(pool):
+    dae, _x, _y, a = _decay_dae(pool)
+
+    with pytest.raises(ValueError, match="eliminate"):
+        ak.rosenfeld_groebner(dae, params=[a], minimal=True)
+
+
+def test_rosenfeld_groebner_without_params_is_unchanged(pool):
+    t, x, dx = pool.symbol("t"), pool.symbol("x"), pool.symbol("dx/dt")
+    dae = ak.DAE.new([dx - x], [x], [dx], t)
+
+    r = ak.rosenfeld_groebner(dae, max_prolong_rounds=1)
+    assert isinstance(r.final_basis(), ak.GroebnerBasis)
+    assert r.consistent is True

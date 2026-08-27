@@ -46,14 +46,58 @@ guess = ak.guess_holonomic(terms, max_order=3, max_degree=4)
 claim = RecurrenceClaim.from_recurrence(guess)
 ```
 
-`RecurrenceClaim.from_text` reads OEIS's own `a(n) = …` formula lines by
-recursive descent over `+ - * / ^ ( )`, `n` and `a(n±k)`. It refuses — returns
-`None`, never a guess — anything outside that shape: a reference to another
-sequence (`a(n) = a(n-1) + A002026(n-1)`), a sum, a generating function, an
-inhomogeneous relation, a nonlinear one. A parser that guesses at prose
+`RecurrenceClaim.from_text` reads OEIS's own formula lines by recursive
+descent over `+ - * / ^ ( )`, `n` and a shifted sequence term. It refuses —
+returns `None`, never a guess — anything outside that shape: a sum, a
+generating function, an inhomogeneous relation, a nonlinear one, or a relation
+between *two* sequences (`a(n) = a(n-1) + A002026(n-1)` is a statement about
+two of them and a recurrence for neither). A parser that guesses at prose
 invents claims nobody made, so a line the parser does not fully cover is
 counted as unusable rather than truncated into a shorter claim that happens to
 parse.
+
+The sequence need not be spelled `a(n)`. OEIS names a sequence after what it
+counts, and an entry's **name** is where the recurrence lives for the entries
+that are defined by one — A000045's whole name is *"Fibonacci numbers: F(n) =
+F(n-1) + F(n-2) with F(0) = 0 and F(1) = 1"*, and a filter reading only the
+formula lines could not find the Fibonacci recurrence in the Fibonacci entry.
+So `OeisEntry.candidate_lines()` puts the name first, any single letter may be
+the sequence, an identifier passed as `names=` (the entry's own A-number) may
+be too, and juxtaposition is read as multiplication (`2a(n-2)`). One line may
+still only name **one** sequence, and — as always — a parsed line is only
+indexed once it reproduces the entry's own terms, which is what stops a
+comment's auxiliary `b(n)` from becoming a claim the entry never made.
+
+Over a 377-entry live sample (970 → 1276 candidate lines, since the name and
+the other notations are now candidates) that widening takes the parser from
+156 lines read to 252, from 121 usable statements to 195, and from 114 entries
+with at least one usable statement to 174.
+
+### `q`-recurrences
+
+`QRecurrenceClaim` is the same three things — normal form, hash, equality —
+for `Σ_i c_i(q, q^n)·u(n+i) = 0`, what
+[`q_zeilberger`](./telescoping.md) produces. Its coefficients are Laurent
+polynomials in `q` and `q^n` over `ℚ` (rational functions are accepted and
+cleared), so they are not polynomials in `n` at all and `RecurrenceClaim`
+refuses them outright. The same four things are quotiented out, read over
+`ℚ[q^±1, (q^n)^±1]`; note that the index shift now *acts* on the
+coefficients, because `n → n+1` sends `q^n` to `q·q^n`. The normal form is
+tagged `q-recurrence/1` where the ordinary one is tagged `recurrence/1`, so
+the two hash spaces cannot collide.
+
+```python
+from alkahest.experimental.novelty import QRecurrenceClaim
+
+claim = QRecurrenceClaim.from_recurrence(certificate, var=n, q=q)
+claim.normal_form   # 'q-recurrence/1 (q^n - 1)*u(n+0) + (1)*u(n+1)'
+```
+
+**No source in this module can state a `q`-recurrence** — OEIS indexes integer
+sequences — so `check_novelty` reports every OEIS source as `unavailable` for
+a claim of this kind rather than manufacturing a `not_found` out of a search
+that could not have matched. What it is good for today is the other half of
+the job: a stable content address a loop can dedupe its own `q`-output with.
 
 ### `holds_for` / `confirmations`, and what `start` means
 
@@ -97,6 +141,16 @@ behalf. Two source types:
   serves from its own `OeisCache` before touching the network, sleeps between
   requests, sends an identifying User-Agent, and **returns `unavailable`
   rather than raising** when the network is not there.
+
+A `terms=` search is **paged**; an `ids=` lookup is not. `fmt=json` answers a
+search with a bare list of at most ten results and no total count, so a single
+full page is not evidence that there is nothing else: `OeisWeb` keeps asking
+at `&start=` until a short page comes back (the search is over — the answer is
+exhaustive, and is recorded in the cache as a complete answer) or until
+`max_results` is reached (there may well be more — `exhaustive=False`, the
+query is *not* recorded, and `check_novelty` reports `unavailable` rather than
+`not_found`). An `id:A…` query asks for named entries and gets exactly them,
+so it is exhaustive after one request.
 
 ```python
 web = OeisWeb(cache=OeisCache())
@@ -146,6 +200,16 @@ verdict.hedged    # True — OEIS has this, but never proved it
 visible next to it: a `"not_found"` against zero entries examined means
 something quite different from one against fifty.
 
+`verdict.terms_check` is the other half of that honesty. `terms=` is used
+twice: to identify the sequence to a source, and — since the two are supposed
+to be about the same sequence — to re-check the claim itself, on the same
+lenient trailing-window rule a source's own formula line has to pass. It reads
+`"holds"`, `"fails"` or `"not_checked"`, and a `"fails"` means the lookup was
+about a different sequence from the claim, so nothing it returned bears on the
+claim: either the claim is wrong, the terms are, or `start` is (pass
+`check_novelty(..., start=…)`, which means exactly what `holds_for`'s `start`
+means and is never sent to a source).
+
 ## Testing without the network
 
 `tests/test_novelty.py` never constructs `OeisWeb`; every OEIS-backed test
@@ -154,7 +218,13 @@ from oeis.org (© The OEIS Foundation Inc., licensed CC BY-NC-SA 4.0 — the
 license travels with every cache this module saves) and committed. The
 fixture carries the sequences this project already certifies recurrences for
 — Apéry (A005259), Motzkin (A001006), Catalan (A000108), central binomial
-coefficients (A000984) — plus A359643, a result this project's own search
-found and which OEIS records only as an unproved `Conjecture`: the recorded
-statement is `verdict.hedged is True`, and a claim one order lower that OEIS
-does not have at all comes back `"not_found"`.
+coefficients (A000984) — plus A000045, where the recurrence is in the name,
+and A359643, a result this project's own search found and which OEIS records
+only as an unproved `Conjecture`: the recorded statement is
+`verdict.hedged is True`, and a claim one order lower that OEIS does not have
+at all comes back `"not_found"`.
+
+The paging tests need raw HTTP pages rather than a cache, so
+`tests/data/oeis_paging_fixture.json` holds recorded
+`search?…&fmt=json` responses keyed `"query|start"` and the tests serve them
+through a fake transport. `OeisWeb` is still never pointed at the network.
