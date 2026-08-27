@@ -140,6 +140,17 @@ pub(crate) fn apply_rules(
 /// The memo is valid for one complete bottom-up pass.  `simplify_with` creates
 /// a fresh `HashMap` per iteration so that the fixed-point loop sees the updated
 /// expression on each pass.
+///
+/// # Depth
+///
+/// This recurses once per level of the expression, and nothing about a
+/// well-formed expression bounds how many levels it has.  A stack overflow is
+/// an abort, not an error a caller can catch, so the traversal runs under
+/// [`crate::simplify::stack::with_stack_segment`]: it continues on a freshly
+/// spawned, larger stack before the current one is spent.  Depth is bounded by
+/// how many threads the OS will hand out rather than by any one stack, and
+/// nothing is truncated — which is why `simplify` still needs no `Result`.
+/// See that module for why a depth *limit* was not the answer.
 fn simplify_node(
     expr: ExprId,
     pool: &ExprPool,
@@ -147,25 +158,51 @@ fn simplify_node(
     memo: &mut HashMap<ExprId, ExprId>,
 ) -> DerivedExpr<ExprId> {
     // Shared-subexpression cache: if we already simplified this node during
-    // the current pass, return the cached result immediately.
+    // the current pass, return the cached result immediately.  Checked before
+    // entering a stack segment: a hit does no work and must not be charged a
+    // recursion level.
     if let Some(&cached) = memo.get(&expr) {
         return DerivedExpr::new(cached);
     }
 
-    // 1. Rebuild with simplified children.  `with` borrows the node; cloning
-    //    it here allocated a fresh `Vec` (and a `String` for `Func`) per visit.
-    let (rebuilt, child_log) = pool.with(expr, |data| {
-        simplify_children(expr, data, pool, rules, memo)
+    let result = super::stack::with_stack_segment(|fresh_segment| {
+        // 1. Rebuild with simplified children.  `with` borrows the node; cloning
+        //    it here allocated a fresh `Vec` (and a `String` for `Func`) per visit.
+        let (rebuilt, child_log) = pool.with(expr, |data| {
+            simplify_children(expr, data, pool, rules, memo)
+        });
+
+        // 2. Apply rules to rebuilt node until no rule fires
+        let (current, rule_log) = apply_rules(rebuilt, pool, rules);
+
+        let log = child_log.merge(rule_log);
+        DerivedExpr::with_log(current, drain_segment_limits(log, fresh_segment))
     });
-
-    // 2. Apply rules to rebuilt node until no rule fires
-    let (current, rule_log) = apply_rules(rebuilt, pool, rules);
-
-    let result = DerivedExpr::with_log(current, child_log.merge(rule_log));
     memo.insert(expr, result.value);
     result
 }
 
+/// Fold this segment's bounded-expansion declines into `log` when the segment
+/// is about to end.
+///
+/// The record is thread-local ([`crate::simplify::rules`]), and `simplify_with`
+/// drains it once per pass on the thread it was called on.  A traversal deep
+/// enough to spill onto a segment thread records its declines *there*, where
+/// that drain will never see them — the caller would be handed an unexpanded
+/// power with nothing in the log saying why, the silent no-op the decline
+/// record exists to prevent.  `fresh_segment` is true only for the root call
+/// of a spawned segment, which returns after every node visited on that
+/// thread, so draining there collects exactly that segment's declines and
+/// carries them home in the returned log.
+fn drain_segment_limits(log: DerivationLog, fresh_segment: bool) -> DerivationLog {
+    if fresh_segment {
+        log.merge(expand_limit_log())
+    } else {
+        log
+    }
+}
+
+/// Discrimination-net twin of [`simplify_node`]; same depth governor.
 fn simplify_node_indexed(
     expr: ExprId,
     pool: &ExprPool,
@@ -177,28 +214,31 @@ fn simplify_node_indexed(
         return DerivedExpr::new(cached);
     }
 
-    let (rebuilt, child_log) = pool.with(expr, |data| {
-        simplify_children(expr, data, pool, child_rules, memo)
-    });
+    let result = super::stack::with_stack_segment(|fresh_segment| {
+        let (rebuilt, child_log) = pool.with(expr, |data| {
+            simplify_children(expr, data, pool, child_rules, memo)
+        });
 
-    let mut current = rebuilt;
-    let mut rule_log = DerivationLog::new();
-    loop {
-        let mut fired = false;
-        for idx in rule_set.index().candidates(current, pool) {
-            if let Some((new_expr, step_log)) = rule_set.rules()[idx].apply(current, pool) {
-                rule_log = rule_log.merge(step_log);
-                current = new_expr;
-                fired = true;
+        let mut current = rebuilt;
+        let mut rule_log = DerivationLog::new();
+        loop {
+            let mut fired = false;
+            for idx in rule_set.index().candidates(current, pool) {
+                if let Some((new_expr, step_log)) = rule_set.rules()[idx].apply(current, pool) {
+                    rule_log = rule_log.merge(step_log);
+                    current = new_expr;
+                    fired = true;
+                    break;
+                }
+            }
+            if !fired {
                 break;
             }
         }
-        if !fired {
-            break;
-        }
-    }
 
-    let result = DerivedExpr::with_log(current, child_log.merge(rule_log));
+        let log = child_log.merge(rule_log);
+        DerivedExpr::with_log(current, drain_segment_limits(log, fresh_segment))
+    });
     memo.insert(expr, result.value);
     result
 }
@@ -882,6 +922,117 @@ mod tests {
         // Compiled path (interpreter fallback, no LLVM needed)
         let f = compile(expr, &[x], &pool).unwrap();
         assert!((f.call(&[3.0]) - 16.0).abs() < 1e-10);
+    }
+
+    /// Build `((x * 1) + 0)^1` nested `depth` times — all of it removable, so
+    /// the whole thing must collapse back to `x`.
+    fn deep_chain(pool: &ExprPool, depth: usize) -> ExprId {
+        let x = pool.symbol("x", Domain::Real);
+        let one = pool.integer(1_i32);
+        let zero = pool.integer(0_i32);
+        let mut e = x;
+        for _ in 0..depth {
+            e = pool.mul(vec![e, one]);
+            e = pool.add(vec![e, zero]);
+            e = pool.pow(e, one);
+        }
+        e
+    }
+
+    /// `simplify_node` recurses once per level with nothing bounding the
+    /// depth. Measured at ~10.8 KiB of stack per level in the fattest build
+    /// this crate is compiled in, an 8 MiB stack ran out around 750 levels —
+    /// and a stack overflow *aborts the process*: no unwind, no catchable
+    /// error, no partial answer. This chain is four times past that cliff and
+    /// must simply return.
+    ///
+    /// Run on a deliberately small (1 MiB) thread so the assertion does not
+    /// depend on the test harness's stack size: without the segmented-stack
+    /// governor in `crate::simplify::stack` this dies at a fraction of the
+    /// depth used here, whatever `RUST_MIN_STACK` says.
+    #[test]
+    fn deep_chain_returns_instead_of_overflowing_the_stack() {
+        let handle = std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(|| {
+                let pool = p();
+                let x = pool.symbol("x", Domain::Real);
+                let deep = deep_chain(&pool, 3000);
+                assert_eq!(simplify(deep, &pool).value, x);
+            })
+            .unwrap();
+        handle.join().expect("deep simplify must return, not abort");
+    }
+
+    /// The pattern-rule traversal is a second copy of the same recursion and
+    /// needs the same governor.
+    #[test]
+    fn deep_chain_survives_the_pattern_rule_traversal() {
+        let handle = std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(|| {
+                let pool = p();
+                let deep = deep_chain(&pool, 3000);
+                // `a + a → 2·a`, which nothing in the chain matches: what is
+                // under test is that the traversal reaches the bottom and
+                // comes back at all, not which rule fires.
+                let a = pool.symbol("a", Domain::Real);
+                let rule = crate::simplify::rulesets::PatternRule::new(
+                    crate::pattern::Pattern::from_expr(pool.add(vec![a, a])),
+                    pool.mul(vec![pool.integer(2_i32), a]),
+                );
+                let rule_set = PatternRuleSet::new(vec![rule], &pool);
+                let out =
+                    simplify_with_pattern_rules(deep, &pool, &rule_set, SimplifyConfig::default());
+                assert_eq!(out.value, deep);
+            })
+            .unwrap();
+        handle
+            .join()
+            .expect("deep pattern-rule simplify must return, not abort");
+    }
+
+    /// A deep expression whose *expansion* is declined must still report the
+    /// decline. The record is thread-local and the traversal moves onto
+    /// spawned segment threads part-way down, so the drain `simplify_with`
+    /// does on the calling thread cannot see it; the segment root carries it
+    /// home instead.
+    #[test]
+    fn deep_expansion_declines_are_recorded_from_segment_threads() {
+        let handle = std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(|| {
+                let pool = p();
+                let vars: Vec<_> = (0..4)
+                    .map(|i| pool.symbol(format!("v{i}"), Domain::Complex))
+                    .collect();
+                let sum = pool.add(vars);
+                // Over the bounded-expansion product budget, so `ExpandPow`
+                // declines and records instead of firing.
+                let big = pool.pow(sum, pool.integer(12));
+                // Bury it under enough levels to force at least one segment.
+                let one = pool.integer(1_i32);
+                let zero = pool.integer(0_i32);
+                let mut e = big;
+                for _ in 0..1000 {
+                    e = pool.mul(vec![e, one]);
+                    e = pool.add(vec![e, zero]);
+                }
+                let out = simplify_expanded(e, &pool);
+                assert_eq!(
+                    out.value, big,
+                    "the power is over budget, so it must not expand"
+                );
+                assert!(
+                    out.log
+                        .steps()
+                        .iter()
+                        .any(|s| s.rule_name == crate::simplify::rules::EXPAND_POW_LIMIT_RULE),
+                    "the decline must be recorded, not silent"
+                );
+            })
+            .unwrap();
+        handle.join().unwrap();
     }
 
     /// Local perf probe for the rule-dispatch hot path: builds a corpus of

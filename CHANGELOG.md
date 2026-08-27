@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+- **`simplify` could abort the process on a deep enough expression.** The
+  sequential bottom-up traversal (`simplify::engine`'s `simplify_node`, and its
+  discrimination-net twin `simplify_node_indexed`) recursed once per level of
+  the expression with nothing bounding the descent. At a measured 10 832 bytes
+  of stack per level in the fattest configuration this crate is built in, an
+  8 MiB stack ran out around 750 levels; in release, a few hundred bytes a
+  frame put the cliff at order 10⁴–10⁵. A stack overflow is not an error: it
+  aborts the process without unwinding, so no `Result`, no `catch_unwind` and
+  no `Budget` could have intervened. `simplify::parallel` had carried a
+  segmented-stack governor since the previous entry below; the sequential
+  path, which every `simplify` call goes through, had nothing — and that
+  path's own test comment conceded it.
+
+  That governor is now `simplify::stack`, shared by both traversals and no
+  longer behind `--features parallel`. When the current thread's segment has
+  spent either of its budgets — a count of recursion levels entered, or a
+  measurement of stack bytes consumed — the next level continues on a freshly
+  spawned 16 MiB thread. Depth is therefore bounded by how many threads the OS
+  will hand out rather than by any one stack.
+
+  **A depth *limit* was considered and rejected.** `simplify` has no `Result`
+  return type, so a limit would have had to either change a widely used public
+  signature or follow the existing budget-trip precedent and return the
+  best-effort value simplified so far. The second is honest for a budget trip
+  (the caller asked to stop) and misleading for a depth abort (the caller
+  asked for a simplified expression and would silently receive a partly
+  unsimplified one, indistinguishable from a fixed point). The trampoline
+  truncates nothing, so the question does not arise and no new `E-*` code was
+  needed.
+
+  Two details the sequential path needed that the parallel one did not.
+  `ExpandPow`'s declined-expansion record is thread-local and drained once per
+  pass by the caller, so a traversal deep enough to spill onto a segment
+  thread recorded declines where that drain would never see them — the segment
+  root now drains its own and carries them home in the returned log.  And
+  `simplify::assumptions::collect_static_domain_facts`, which `simplify_with`
+  runs on the *result* of every simplification (so it sees whatever the rules
+  could not shrink), was a second unbounded recursion one function further
+  along the same path and put the abort straight back. It is now an explicit
+  worklist: a walk that only collects has nothing to compose on the way back
+  up, so depth costs heap instead of stack and no thread is spawned at all.
+
+  Regression tests drive a 3 000-level chain (four times past the old cliff)
+  through both traversals on a deliberately small 1 MiB thread, so they do not
+  depend on the harness's stack size. Measured cost on the hot path: none
+  detectable — interleaved runs of `perf_simplify_hot_path` give a median
+  81.4 ms before and 81.8 ms after, and the 608 `integrate::` unit tests run in
+  the same time to within run-to-run noise.
+
 - **The nightly `asan` shard's stack overflow: `simplify_par`'s stack governor
   read `0` under AddressSanitizer, however deep it went.** Every scheduled CI
   run since 2026-08-19 died ~16 minutes in with `AddressSanitizer:
