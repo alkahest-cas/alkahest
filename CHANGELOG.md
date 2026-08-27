@@ -2,6 +2,156 @@
 
 ## Unreleased
 
+- **The nightly `asan` shard's stack overflow: `simplify_par`'s stack governor
+  read `0` under AddressSanitizer, however deep it went.** Every scheduled CI
+  run since 2026-08-19 died ~16 minutes in with `AddressSanitizer:
+  stack-overflow`, in `simplify::parallel`'s
+  `par_survives_deep_chain_on_worker_thread`.
+
+  `simplify_par` recurses (`simplify_node_par` → `simplify_children_par` →
+  `seq_children` → `simplify_node_par`), and rayon workers get a 2 MiB stack,
+  so the traversal carries a governor that continues on a freshly spawned
+  16 MiB thread before running out. The governor's trigger was
+  `stack_used()`, which takes the address of a local and subtracts it from a
+  per-thread baseline. Under ASan that local does not live on the stack:
+  stack-use-after-return detection moves locals whose address escapes into a
+  per-thread *fake stack* ring, whose addresses **ascend** with recursion
+  depth and then wrap. Ascending addresses take `stack_used`'s re-baseline
+  branch on every call, so it returned `0` at every depth; after a wrap it
+  returned a bounded value that never approached the 12 MiB budget. The
+  governor never fired, and the real stack — which had been filling up all
+  along at a measured 10 832 bytes per level — ran out.
+
+  The previous mitigation, `RUST_MIN_STACK=33554432` on the shard, could not
+  have worked: a probe that reports `0` reports `0` at any stack size.
+
+  `with_stack_segment` now refills on **either** of two conditions: an exact
+  count of recursion levels entered since the current segment began
+  (`SEGMENT_DEPTH` against a budget derived from the byte budgets by
+  `WORST_CASE_LEVEL_BYTES = 16 KiB`, ~50% headroom over the fattest measured
+  configuration), or the old byte measurement. The count is what bounds the
+  recursion, because it cannot under-read; the byte probe is kept as a
+  backstop for frames fatter than the count was calibrated for, and is now
+  documented as advisory — it can only make the governor refill *earlier*,
+  never later. A tight foreign-thread level budget costs at most one extra
+  thread spawn per top-level call, since every deeper refill uses the much
+  larger owned-segment budget.
+
+  Two regression tests, neither of which can abort the test process the way
+  the bug did: `stack_segments_are_bounded_by_level_count_alone` drives 2 000
+  levels of a deliberately thin recursion (frames far too small for the byte
+  budget ever to fire) through `with_stack_segment` and asserts no thread ran
+  more consecutive levels than its budget, and
+  `stack_probe_rebaselines_after_unwinding` now asserts the re-baselining
+  decision on synthetic addresses via the extracted `probe_against_base`,
+  because real addresses are not a usable oracle under instrumentation that
+  relocates locals — the old version of that test asserted the ASan
+  under-read was impossible, and would have started failing as soon as the
+  overflow stopped masking it.
+
+  Release builds run the same recursion but not the same failure:
+  uninstrumented, the byte probe reads honestly, so the governor was already
+  firing and deep expressions were already safe. The nightly `tsan` and
+  `lsan` shards failed for an unrelated reason — the wall-clock assertion in
+  `holonomic::telescoping2d`, replaced with counter-based instrumentation in
+  this same release.
+
+- **The PR AddressSanitizer job no longer spends an hour inside one Gaussian
+  elimination.** Removing the ASan carve-out from
+  `chained_product_at_original_bounds_refuses_fast_via_resource_ceiling` (now
+  that it asserts on `SearchStats` counters rather than elapsed seconds) made
+  that one test genuinely run under ASan, where it measured 3550 s — ~59 min
+  against a 90-minute job ceiling that the rest of the suite already fills to
+  ~60 min.
+
+  The cost was never what the test asserts. The ceilings are calibrated in
+  *unknowns*, and `rational_nullspace` is `O(rows · cols²)` over
+  unbounded-precision rationals, so letting the cumulative budget through to
+  the 245-unknown rung of this input's probe ladder buys an hour of
+  arithmetic to arrive at counters the skip logic had already decided before
+  any polynomial was built. `search::Ceilings` makes the three numbers data
+  rather than constants read directly by the search loop; the search always
+  runs on `Ceilings::PRODUCTION`, and nothing outside the module's own tests
+  can supply anything else. The regression test now runs the identical input,
+  identical degree bounds and identical code path with the ceilings scaled by
+  ~1/5, so the affordable large probe is the 50-unknown rung instead — same
+  four verdicts on the same four rungs, same assertions, **143 s under ASan
+  and 20 s uninstrumented** against 3550 s and ≈450 s. (A 25x cut rather than
+  to nothing, because every probe assembles a system of the same ~10 000 rows
+  whatever its column count; it is the `cols²` in `rows · cols²` that scales
+  away.) `production_ceilings_classify_the_chained_product_probe_ladder`
+  pins the shipped `(400, 150, 300)` against the real 5/50/245/770 ladder by
+  arithmetic, so the calibration claims in `search`'s docs cannot drift
+  unnoticed. Both ceilings were verified still to be caught by the test:
+  disabling the cumulative one takes `large_attempted` from 1 to 6 (and the
+  test from under a second to 131 s) and fails it; disabling the per-probe
+  one fails it too.
+
+- **Continuous creative telescoping — Almkvist–Zeilberger, the differential
+  twin of Zeilberger's algorithm** (`alkahest_cas::experimental::almkvist_zeilberger`,
+  `dgosper`, `integral_boundary_status`; Rust-only, no PyO3 binding yet). The
+  holonomic subsystem had a complete discrete stack — proper hypergeometric
+  recognition, Zeilberger, the q-analogue, multi-sum Apagodu–Zeilberger, a
+  three-valued boundary verdict — and nothing on the `∫ F(n,x) dx` side.
+  `holonomic::azeil` is that side: given `F(n,x)` hyperexponential in `x` and
+  hypergeometric in `n`, it finds an order `J`, polynomial coefficients
+  `a_0(n) … a_J(n)` and an exact rational certificate `R ∈ Q(n)(x)` with
+
+  ```
+  Σ_i a_i(n)·F(n+i,x) = D_x( R(n,x)·F(n,x) ),
+  ```
+
+  which is a recurrence for `f(n) = ∫_a^b F(n,x) dx` **once the boundary term
+  `[R·F]_a^b` is discharged** — a separate question the certificate says
+  nothing about, decided three-valued by `integral_boundary_status`. This is
+  the principled replacement for a Meijer-G engine on definite integrals of
+  special functions: more general, and it produces a certificate.
+
+  Worked end to end, with the certificate checked against the classical
+  recurrence rather than against the machinery that produced it:
+  `∫_0^∞ xⁿe^{−x} dx = n!` (order 1, `R = x`), `∫_0^1 xⁿ(1−x)^{1/2} dx` and
+  `∫_0^1 xⁿ(1−x)ⁿ dx` (order 1), `∫_{−∞}^{∞} x^{2n}e^{−x²} dx` (order 1,
+  `R = x`), `∫_0^∞ xⁿe^{−x²} dx` (order **2**, middle coefficient zero),
+  Bessel `J_n(2)` via the Schläfli contour (order 2, `R = 1`, recovering
+  `J_n + J_{n+2} = (n+1)J_{n+1}`) and Legendre `P_n(3)` likewise (order 2,
+  recovering `(n+1)P_n − 3(2n+3)P_{n+1} + (n+2)P_{n+2} = 0`).
+
+  **One solver, not two.** Dividing the identity through by `F` turns it into
+  the parametric Risch differential equation `R′ + θ·R = Σ_i a_i·r_i` with
+  `θ = ∂_xF/F`; indefinite integration (`dgosper`, the differential mirror of
+  Gosper's algorithm) is the same equation at `J = 0`, `a_0 = 1`.
+  `integrate::risch::rational_rde::solve_rational_rde_generalized` is
+  deliberately **not** reused for that, and the reason is correctness rather
+  than style: its denominator bound `E = gcd(D, D′)` is taken from the
+  right-hand side alone, which is Bronstein-exact only when `f` is a
+  polynomial. Probed directly, it returns `None` for `R′ + (1/x+1)R = 1` and
+  `R′ + (2/x+1)R = 1` — the equations behind `∫x·eˣ dx` and `∫x²·eˣ dx`, both
+  of which do have rational solutions. Both are regression tests here. (That
+  gap is in the generalized entry point, not in the exponential tower that is
+  its main caller, where `f = k·η′` is a polynomial; it is worth its own
+  investigation for the callers in `simple_radical`, `genus_zero` and the
+  fractional-exponent `exp_case` paths, which do pass rational `f`.) The `Q(n)`
+  Gaussian elimination *is* shared with `zeilberger`.
+
+  **Honest limitations.** The certificate ansatz is `R = P(x)/(D(x)^κ·B(x))`
+  with `D` the denominator of `θ` and `B` a common denominator of the shift
+  ratios. That denominator's *support* is derived, not guessed — a pole of `R`
+  must lie over a pole of `θ` or of the right-hand side — but its
+  *multiplicity* `κ` is a bounded search, because at a simple pole of `θ` with
+  residue `ρ` the certificate may have a pole of order `ρ` whenever `ρ` is a
+  positive integer, and with `ρ ∈ Q(n)` symbolic (the usual case, `θ = n/x + …`)
+  that is not decidable at all. The search is order-major ascending, so a
+  returned order is the least one reachable within the degree bounds — the
+  claim `zeilberger`'s cost-ordered plan trades away. `B(x)^β` for non-integer
+  `β` is treated formally, so reading a certificate as an identity of
+  *functions* needs a consistent branch on the interval. Only `n`-independent
+  integration limits are analysed; an `n`-dependent one is not representable
+  rather than mishandled. Out-of-class inputs get typed refusals under a new
+  `E-HOLO-06x` sub-block — with `NotHypergeometricInN` (`E-HOLO-061`)
+  deliberately distinct from a shape failure, because `exp(n·x)` closes the
+  branch for every algorithm in this family and raising search bounds cannot
+  help.
+
 - **`telescope2d` generalizes from two bound indices to an arbitrary `m ≥ 1`:
   `experimental.telescope_md`** (M4 extension). `telescope2d(term, n, j, k)`
   only ever reached exactly two bound indices; the underlying ansatz search

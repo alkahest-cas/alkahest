@@ -551,16 +551,24 @@ jobs:
         # already off the PR critical path, so the extra build cost is free
         # where it would not be in Tier 1a.
         #
-        # RUST_MIN_STACK for the same reason the `tsan` shard sets it, and it is
-        # load-bearing here too: the 2026-08-14 nightly — the first ASan run to
-        # see the parallel code — died with
-        # `AddressSanitizer: stack-overflow ... T1601`, on a rayon worker rather
-        # than the main thread. It is not corruption. `simplify::dispatch`'s
-        # stack governor refills at 512 KiB, ASan's instrumented frames are far
-        # fatter than the uninstrumented ones that margin was tuned for, and
-        # rayon workers start from a 2 MiB default rather than the main thread's
-        # 8 MiB. Raising the worker stack fixes it deterministically and it does
-        # not reproduce uninstrumented.
+        # RUST_MIN_STACK for the same reason the `tsan` shard sets it: rayon
+        # workers start from a 2 MiB default rather than the main thread's
+        # 8 MiB, and ASan's instrumented frames are several times fatter than
+        # the uninstrumented ones every recursive traversal in the crate was
+        # tuned against.
+        #
+        # It is *not* what keeps `simplify_par` alive, and the comment that
+        # used to say so was wrong in a way worth recording. The 2026-08-14
+        # nightly died here with `AddressSanitizer: stack-overflow ... T1601`
+        # and this variable was the fix; every scheduled run from 2026-08-19
+        # on died the same way regardless, because `simplify::parallel`'s
+        # stack governor probes its depth by taking the address of a local,
+        # and under ASan locals whose address escapes live in a fake-stack
+        # ring whose addresses ascend with depth. The probe read 0 at every
+        # depth, so the governor never refilled — and a probe that reads 0
+        # reads 0 at any stack size, which is why raising this bought two
+        # nights and nothing more. The governor now counts recursion levels
+        # as well, which cannot under-read; see `with_stack_segment`.
         env:
           LSAN_OPTIONS: detect_leaks=0
           RUST_MIN_STACK: "33554432"
