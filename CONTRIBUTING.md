@@ -62,6 +62,31 @@ CI enforces all of the above on every PR. Ruff and `ty` are scoped to `python/`
 and `tests/` — `examples/`, `benchmarks/` and `scripts/` are not linted or run
 by CI, so changes to a public API have to be swept through them by hand.
 
+## The parser exists twice
+
+`alkahest.parse` is **not** a binding to the Rust parser. It is a separate, hand-maintained
+Pratt parser in `python/alkahest/_parse.py`; `alkahest-core/src/parse.rs` has no PyO3 binding.
+They are expected to agree, and nothing enforces it.
+
+Three consequences, all of which have bitten:
+
+- **A parser fix must be made twice.** A Rust-only change is invisible from Python — which is
+  where the test suite and the users are. A fix landed in `parse.rs` alone can leave
+  `pytest` green while testing the unfixed path.
+- **`cargo test` cannot detect a divergence.** Nothing cross-checks the two implementations, so
+  they drift silently.
+- **They already differ.** `cbrt(x)` parses in Rust and raises `unknown function 'cbrt'` in
+  Python.
+
+If you change tokenisation, precedence, associativity, or how a node is built, change both and
+say so in the commit message. If you add a function name to one, add it to the other.
+
+Note also that neither parser produces flat n-ary `Mul`/`Add`: `parse("x*y*z")` builds
+`(z * (x * y))`, while `pool.mul([x, y, z])` builds a flat three-child node, and the two are
+**not equal**. Matchers that scan top-level `Mul`/`Add` arguments will not see parsed input the
+way they see builder-constructed input. `simplify` flattens, so the difference disappears after
+a simplification pass but is present everywhere before one.
+
 ## Adding a new mathematical primitive
 
 Every primitive must register a full bundle. Add an entry in `alkahest-core/src/primitive/`:
