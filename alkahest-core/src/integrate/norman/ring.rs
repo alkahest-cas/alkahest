@@ -41,7 +41,7 @@ use super::DeclineReason;
 /// Maximum number of tower generators (excluding `x`).
 ///
 /// **Observed:** 2 (so 3 variables including `x`) on both the 103-case corpus
-/// and the stress set — `exp(x)·exp(exp(x))` and `1/(x·log x·log log x)`.
+/// and the stress set — `x·exp(exp(x))`, which needs `exp(x)` and `exp(exp(x))`.
 ///
 /// Six is not a round number, it is where `ansatz::MAX_UNKNOWNS` takes over.
 /// The monomial box carries a per-variable bound of at least 1, so it holds at
