@@ -125,6 +125,50 @@ const LARGE_PROBE_THRESHOLD: usize = 150;
 /// refusing further ones of that size.
 pub(crate) const MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS: usize = 300;
 
+/// The three numbers above, as data rather than as constants read directly
+/// by the search loop.
+///
+/// The search always runs on [`Ceilings::PRODUCTION`]; nothing outside this
+/// module's own tests can supply anything else, and the *logic* that consults
+/// them — which probe is "large", when the per-probe ceiling refuses, when
+/// the cumulative budget refuses — is the same code either way.
+///
+/// It exists because the ceilings are calibrated in units of *unknowns*, and
+/// the cost of the one probe they deliberately let through is quadratic in
+/// that number: the regression test in `mod.rs` used to spend ~450 s
+/// uninstrumented and 3550 s (~59 min) under AddressSanitizer inside a single
+/// 245-unknown exact-rational Gaussian elimination, purely to arrive at
+/// counters that the skip logic had already decided. Scaling the ceilings
+/// down by the same factor as the probe sizes lets that test assert exactly
+/// the same `SearchStats` shape — one large probe attempted, per-probe
+/// ceiling fired, cumulative ceiling fired — on the identical input and the
+/// identical code path, for a 25th of the cost: 143 s under ASan and 20 s
+/// uninstrumented, measured, against 3550 s and ≈450 s. (Not free, because
+/// every probe assembles a system of the same ~10 000 rows whatever its
+/// column count; what scales away is the `cols²` in `rows · cols²`.) What
+/// the scaled run does not re-measure is how long 245 unknowns takes, which
+/// was never something the assertions depended on;
+/// `production_ceilings_classify_the_chained_product_probe_ladder` pins the
+/// shipped numbers against that ladder separately, by arithmetic.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Ceilings {
+    /// See [`MAX_ANSATZ_UNKNOWNS`].
+    pub max_ansatz_unknowns: usize,
+    /// See [`LARGE_PROBE_THRESHOLD`].
+    pub large_probe_threshold: usize,
+    /// See [`MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS`].
+    pub max_cumulative_large_probe_unknowns: usize,
+}
+
+impl Ceilings {
+    /// The shipped calibration. Every non-test entry point uses this.
+    pub(crate) const PRODUCTION: Ceilings = Ceilings {
+        max_ansatz_unknowns: MAX_ANSATZ_UNKNOWNS,
+        large_probe_threshold: LARGE_PROBE_THRESHOLD,
+        max_cumulative_large_probe_unknowns: MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS,
+    };
+}
+
 /// What one [`telescope_md_search`] call actually *attempted*, and which of
 /// the two resource ceilings above stopped it attempting more.
 ///
@@ -334,7 +378,15 @@ pub fn telescope_md_search(
     pool: &ExprPool,
     opts: &TelescopingMdOpts,
 ) -> Result<TelescopingMdResult, Telescoping2dError> {
-    telescope_md_search_impl(term, n, indices, pool, opts, &mut SearchStats::default())
+    telescope_md_search_impl(
+        term,
+        n,
+        indices,
+        pool,
+        opts,
+        &Ceilings::PRODUCTION,
+        &mut SearchStats::default(),
+    )
 }
 
 /// [`telescope_md_search`], additionally reporting the [`SearchStats`] for
@@ -351,9 +403,10 @@ pub(crate) fn telescope_md_search_instrumented(
     indices: &[ExprId],
     pool: &ExprPool,
     opts: &TelescopingMdOpts,
+    ceilings: &Ceilings,
 ) -> (Result<TelescopingMdResult, Telescoping2dError>, SearchStats) {
     let mut stats = SearchStats::default();
-    let result = telescope_md_search_impl(term, n, indices, pool, opts, &mut stats);
+    let result = telescope_md_search_impl(term, n, indices, pool, opts, ceilings, &mut stats);
     (result, stats)
 }
 
@@ -363,6 +416,7 @@ fn telescope_md_search_impl(
     indices: &[ExprId],
     pool: &ExprPool,
     opts: &TelescopingMdOpts,
+    ceilings: &Ceilings,
     stats: &mut SearchStats,
 ) -> Result<TelescopingMdResult, Telescoping2dError> {
     let m = indices.len();
@@ -421,7 +475,7 @@ fn telescope_md_search_impl(
                 };
                 let a_count = (order + 1) * (a_degree + 1);
                 let total = a_count.saturating_add(m.saturating_mul(cert_box_count));
-                if total > MAX_ANSATZ_UNKNOWNS {
+                if total > ceilings.max_ansatz_unknowns {
                     stats.skipped_per_probe_ceiling += 1;
                     continue;
                 }
@@ -430,9 +484,9 @@ fn telescope_md_search_impl(
                 // running total-search budget, so a caller cannot pay that
                 // same cost over and over across every (order, a_degree)
                 // combination when no certificate exists at all.
-                if total >= LARGE_PROBE_THRESHOLD {
+                if total >= ceilings.large_probe_threshold {
                     if stats.large_unknowns_spent.saturating_add(total)
-                        > MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS
+                        > ceilings.max_cumulative_large_probe_unknowns
                     {
                         stats.skipped_cumulative_ceiling += 1;
                         continue;
@@ -461,11 +515,14 @@ fn telescope_md_search_impl(
         format!(
             " (at least one (order, a_degree, cert_degree) combination within these bounds was \
              skipped without being attempted, refused by this module's resource ceilings \
-             (MAX_ANSATZ_UNKNOWNS = {MAX_ANSATZ_UNKNOWNS} unknowns for any single probe; \
-             MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS = {MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS} total \
-             across every probe at or above {LARGE_PROBE_THRESHOLD} unknowns in one search call) \
+             (MAX_ANSATZ_UNKNOWNS = {} unknowns for any single probe; \
+             MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS = {} total \
+             across every probe at or above {} unknowns in one search call) \
              rather than attempted and left to run arbitrarily long — raising max_cert_degree or \
-             the bound-index count further will only make this worse, not better)"
+             the bound-index count further will only make this worse, not better)",
+            ceilings.max_ansatz_unknowns,
+            ceilings.max_cumulative_large_probe_unknowns,
+            ceilings.large_probe_threshold,
         )
     } else {
         String::new()

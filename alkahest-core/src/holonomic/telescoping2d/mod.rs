@@ -695,38 +695,52 @@ mod tests {
     /// (`C(n,x)*C(x,y)*C(y,z)`) at the original, larger degree bounds this
     /// test is named for was the case that, before these ceilings existed,
     /// drove the search loop through several *repeated* multi-minute-or-worse
-    /// exact-rational Gaussian eliminations (`m = 3`, `cert_degree = 3` alone
-    /// needs 770 unknowns and a ≈15 000-row linear system; even the
-    /// `cert_degree = 2` step below that took ≈47 seconds *per probe*, and
-    /// the search loop would otherwise retry it for every one of six
-    /// `(order, a_degree)` combinations — see `MAX_ANSATZ_UNKNOWNS`'s and
-    /// `MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS`'s docs for the measurements).
-    /// This must now come back **bounded** — capped to roughly one expensive
-    /// elimination attempt, not six or more — with an honest
-    /// `SearchExhausted` naming the ceilings as the reason, not hang and not
-    /// silently under-search.
+    /// exact-rational Gaussian eliminations. This must come back **bounded**
+    /// — capped to roughly one expensive elimination attempt, not six or more
+    /// — with an honest `SearchExhausted` naming the ceilings as the reason,
+    /// not hang and not silently under-search.
     ///
-    /// "Bounded" is asserted on [`search::SearchStats`] — how many probes the
+    /// "Bounded" is asserted on [`search::SearchStats`]: how many probes the
     /// search *attempted*, how many of those were large enough to count
     /// against the cumulative ceiling, and how much of that ceiling's budget
     /// they spent. That is the property the ceilings actually promise, and it
-    /// is fixed by the input: the same numbers on every platform, under any
-    /// load, and under any sanitizer. This test previously asserted `elapsed
-    /// < 900s` as a proxy for the same thing, which is none of those — 76 s
-    /// on Linux against 480 s on Windows for the identical elimination, ~30x
-    /// again under AddressSanitizer, and 448 s idle against 1147 s under
-    /// concurrent load on one machine — and it had to be relaxed or carved
-    /// out three times in a row before the assertion was replaced.
+    /// is fixed by the input and the ceilings alone: the same numbers on
+    /// every platform, under any load, and under any sanitizer. This test
+    /// previously asserted `elapsed < 900 s` as a proxy for the same thing,
+    /// which is none of those — 76 s on Linux against 480 s on Windows for
+    /// the identical elimination, ~30x again under AddressSanitizer, and
+    /// 448 s idle against 1147 s under concurrent load on one machine — and
+    /// it had to be relaxed or carved out three times in a row before the
+    /// assertion was replaced.
     ///
-    /// The test still *takes* several minutes (≈450 s on an idle Linux box,
-    /// ≈780 s on a loaded one), because the cumulative ceiling
-    /// deliberately permits one genuinely slow (≈245-unknown) exact-rational
-    /// elimination and that arithmetic is real. That is no longer anything
-    /// the assertions depend on. Shrinking the input to make
-    /// it fast would stop it exercising the ceiling at all, which is why the
-    /// `large_attempted >= 1` assertion below is there: it fails if a future
-    /// change makes this input cheap, rather than letting the test quietly
-    /// stop testing anything.
+    /// # Why the ceilings are scaled down here
+    ///
+    /// The input, its degree bounds and the code path are exactly the
+    /// production ones. Only the three ceiling *numbers* are scaled, via
+    /// [`search::Ceilings`], so that the one probe the cumulative budget
+    /// deliberately lets through is the 50-unknown `cert_degree = 1` rung of
+    /// this input's probe ladder rather than the 245-unknown
+    /// `cert_degree = 2` rung.
+    ///
+    /// Both rungs exercise the identical branch; the difference is only that
+    /// `rational_nullspace` is `O(rows · cols²)` over unbounded-precision
+    /// rationals, so the 245-unknown rung spent ≈450 s uninstrumented and a
+    /// measured 3550 s (~59 min) under AddressSanitizer — on its own more
+    /// than half the PR ASan job's 90-minute ceiling — arriving at counters
+    /// the skip logic had already decided before any polynomial was built.
+    /// At the 50-unknown rung the same run measures **143 s under ASan and
+    /// 20 s uninstrumented**. Not free: every probe assembles a system of the
+    /// same ~10 000 rows whatever its column count, so what scales away is
+    /// the `cols²` factor and not the assembly. Every assertion below is
+    /// unchanged in shape.
+    ///
+    /// The `large_attempted >= 1` assertion is what stops the scaling from
+    /// quietly turning this into a test of nothing: it fails if a change ever
+    /// makes this input cheap enough not to reach a large probe at all. What
+    /// the scaled run does not re-measure is how long 245 unknowns takes,
+    /// which no assertion here ever depended on;
+    /// `production_ceilings_classify_the_chained_product_probe_ladder` pins
+    /// the shipped numbers against that same ladder by arithmetic instead.
     #[test]
     fn chained_product_at_original_bounds_refuses_fast_via_resource_ceiling() {
         let pool = ExprPool::new();
@@ -744,8 +758,18 @@ mod tests {
             max_a_degree: 2,
             max_cert_degree: 3,
         };
+        // Production is (400, 150, 300) against a probe ladder of
+        // 5 / 50 / 245 / 770 unknowns. Scaled by ~1/5, (80, 40, 100) puts the
+        // same three verdicts on the same four rungs: rung 0 cheap, rung 1
+        // large-and-affordable exactly once, rungs 2 and 3 over the per-probe
+        // ceiling.
+        let ceilings = search::Ceilings {
+            max_ansatz_unknowns: 80,
+            large_probe_threshold: 40,
+            max_cumulative_large_probe_unknowns: 100,
+        };
         let (result, stats) =
-            search::telescope_md_search_instrumented(f, n, &[x, y, z], &pool, &opts);
+            search::telescope_md_search_instrumented(f, n, &[x, y, z], &pool, &opts, &ceilings);
         let err = result
             .expect_err("this combination must be refused via the resource ceiling, not solved");
 
@@ -761,30 +785,29 @@ mod tests {
         // The property the cumulative ceiling exists to provide, stated
         // directly: at most about *one* expensive elimination per search
         // call. Pre-fix, all six (order, a_degree) combinations retried the
-        // same ≈245-unknown probe.
+        // same probe.
         assert!(
             stats.large_attempted <= 2,
             "expected a bounded refusal (roughly one expensive elimination, not several); got \
              {stats:?}"
         );
         assert!(
-            stats.large_unknowns_spent <= search::MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS,
-            "large-probe work spent must stay inside MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS ({}); \
+            stats.large_unknowns_spent <= ceilings.max_cumulative_large_probe_unknowns,
+            "large-probe work spent must stay inside max_cumulative_large_probe_unknowns ({}); \
              got {stats:?}",
-            search::MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS
+            ceilings.max_cumulative_large_probe_unknowns
         );
         // Both ceilings must have actually fired: the per-probe one on the
-        // cert_degree = 3 probes (768 unknowns, over MAX_ANSATZ_UNKNOWNS),
-        // and the cumulative one on every repeat of the ≈245-unknown probe
-        // after the first.
+        // probes above `max_ansatz_unknowns`, and the cumulative one on every
+        // repeat of the affordable large probe after the first.
         assert!(
             stats.skipped_per_probe_ceiling > 0,
-            "expected MAX_ANSATZ_UNKNOWNS to have refused at least one probe; got {stats:?}"
+            "expected the per-probe ceiling to have refused at least one probe; got {stats:?}"
         );
         assert!(
             stats.skipped_cumulative_ceiling > 0,
-            "expected MAX_CUMULATIVE_LARGE_PROBE_UNKNOWNS to have refused at least one repeat of \
-             the expensive probe; got {stats:?}"
+            "expected the cumulative ceiling to have refused at least one repeat of the \
+             expensive probe; got {stats:?}"
         );
         assert!(matches!(err, Telescoping2dError::SearchExhausted(_)));
         let Telescoping2dError::SearchExhausted(msg) = &err else {
@@ -794,6 +817,59 @@ mod tests {
             msg.contains("MAX_ANSATZ_UNKNOWNS"),
             "expected the SearchExhausted message to name the resource ceiling as the reason, \
              got: {msg}"
+        );
+    }
+
+    /// The half of the ceiling story the scaled run above deliberately does
+    /// not pay for: that the *shipped* numbers put the same verdicts on the
+    /// triple-binomial chain's real probe ladder.
+    ///
+    /// `search`'s docs claim `400` "comfortably admits every worked example
+    /// this module ships (the largest needs 245) while excluding the next
+    /// box-degree step up at `m = 3` (770)", and that `300` "admits exactly
+    /// one probe the size of the multinomial example (245) before refusing
+    /// further ones of that size". Those are arithmetic claims about
+    /// `a_count + m · (cert_degree + 1)^(m+1)`, so they are checked as
+    /// arithmetic — no Gaussian elimination, no runtime, and no way for the
+    /// constants to drift out of calibration without this failing.
+    #[test]
+    fn production_ceilings_classify_the_chained_product_probe_ladder() {
+        let c = search::Ceilings::PRODUCTION;
+        // The test above's input: m = 3 bound indices, so m + 1 = 4 axes, at
+        // its first (order, a_degree) = (1, 0) combination.
+        let m = 3_usize;
+        let (order, a_degree) = (1_usize, 0_usize);
+        let a_count = (order + 1) * (a_degree + 1);
+        let total = |cert_degree: usize| a_count + m * (cert_degree + 1).pow(m as u32 + 1);
+
+        assert_eq!([total(0), total(1), total(2), total(3)], [5, 50, 245, 770]);
+
+        // cert_degree 0 and 1: attempted, and cheap enough not to be charged
+        // against the cumulative budget at all.
+        for d in [0, 1] {
+            assert!(
+                total(d) < c.large_probe_threshold,
+                "cert_degree {d} ({} unknowns) should be below LARGE_PROBE_THRESHOLD {}",
+                total(d),
+                c.large_probe_threshold
+            );
+        }
+        // cert_degree 2: the one genuinely expensive probe the ceilings are
+        // calibrated to allow through exactly once.
+        assert!(total(2) >= c.large_probe_threshold);
+        assert!(total(2) <= c.max_ansatz_unknowns);
+        assert!(
+            total(2) <= c.max_cumulative_large_probe_unknowns,
+            "the cumulative budget must admit one 245-unknown probe"
+        );
+        assert!(
+            2 * total(2) > c.max_cumulative_large_probe_unknowns,
+            "the cumulative budget must refuse a *second* 245-unknown probe"
+        );
+        // cert_degree 3: refused outright by the per-probe ceiling.
+        assert!(
+            total(3) > c.max_ansatz_unknowns,
+            "the 770-unknown probe must be refused outright"
         );
     }
 }
