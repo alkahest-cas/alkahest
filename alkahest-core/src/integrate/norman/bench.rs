@@ -307,6 +307,9 @@ fn run_corpus(corpus: &[(&'static str, &'static str)], reps: usize) {
         ("equations", 6000, max(|r| r.shape.equations)),
         ("denom terms", 2000, max(|r| r.shape.denom_terms)),
         ("generators", 7, max(|r| r.shape.generators)),
+        ("atoms", 16, max(|r| r.shape.atoms)),
+        ("exponent", 64, max(|r| r.shape.max_pow as usize)),
+        ("nesting depth", 256, max(|r| r.shape.depth as usize)),
         ("solver cells", 50_000, max(|r| r.shape.peak_cells)),
     ] {
         let headroom = if got.0 == 0 {

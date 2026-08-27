@@ -54,10 +54,11 @@ pub(super) const MAX_GENERATORS: usize = 6;
 
 /// Maximum number of distinct additive atoms across all exponential arguments.
 ///
-/// **Observed:** 3 on both corpora (`exp(−x²)`-style arguments contribute one
-/// atom each).  The atoms are the columns of the lattice reduction, whose cost
-/// is `O(atoms² · rows)` of bignum work; 16 keeps that under a millisecond even
-/// in the worst case while being five times anything measured.
+/// **Observed:** 2 on both corpora — `x·exp(exp(x))` needs `x` and `exp(x)`.
+///
+/// The atoms are the columns of the lattice reduction, whose cost is
+/// `O(atoms² · rows)` of bignum work.  16 keeps that well under a millisecond
+/// in the worst case while being eight times anything measured.
 pub(super) const MAX_ATOMS: usize = 16;
 /// Maximum expression nesting this module will accept.
 ///
@@ -68,11 +69,11 @@ pub(super) const MAX_ATOMS: usize = 16;
 /// Measured on this machine, a 5 000-deep chain of `Add` nodes overflows the
 /// default 8 MiB stack inside `simplify`.
 ///
-/// 256 is two orders of magnitude below that and more than an order of
-/// magnitude above anything real: the deepest integrand in the 103-case corpus
-/// nests 6 levels, and `parse` flattens n-ary sums and products rather than
-/// nesting them.  [`depth_exceeds`] enforces it iteratively at the entry point,
-/// because a recursive depth check would itself overflow.
+/// 256 is an order of magnitude below that and 37× anything real: the deepest
+/// integrand in the 103-case corpus nests **7** levels, and `parse` flattens
+/// n-ary sums and products rather than nesting them.  [`depth_exceeds`]
+/// enforces it iteratively at the entry point, because a recursive depth check
+/// would itself overflow.
 pub(super) const MAX_DEPTH: u32 = 256;
 
 /// `true` when `expr` nests deeper than `limit`.
@@ -103,6 +104,7 @@ pub(super) fn depth_exceeds(expr: ExprId, pool: &ExprPool, limit: u32) -> bool {
                 .copied()
                 .max()
                 .unwrap_or(0);
+            super::profile::record(|s| s.depth = s.depth.max(d));
             if d > limit {
                 return true;
             }
@@ -124,9 +126,15 @@ pub(super) fn depth_exceeds(expr: ExprId, pool: &ExprPool, limit: u32) -> bool {
 
 /// Maximum magnitude of an integer exponent handled during ring conversion.
 ///
+/// **Observed:** 5 (`1/(x⁵−x−1)`) on the 103-case corpus.
+///
 /// Repeated squaring is not used, so `r^k` costs `k` rational-function
-/// multiplications; 64 is the point past which an integrand is better refused
-/// than expanded.  The largest exponent in the 103-case corpus is 6.
+/// multiplications and the *result* grows with `k` as well; 64 is the point
+/// past which an integrand is better refused than expanded.  Unlike the other
+/// caps this one does bind in practice — on the stress set it is what declines
+/// `x¹⁰⁰ + x³⁷ + 1` and `1/(x⁸⁰+1)`, in ~20 µs, before any algebra runs.  That
+/// is the intended behaviour, but it is the cap most worth revisiting if the
+/// module is ever pointed at high-degree rational input.
 const MAX_POW: u64 = 64;
 
 /// Which kind of monomial a tower generator is.
@@ -349,6 +357,7 @@ impl NormanRing {
         // release build wraps back to `i64::MIN` and slips past the cap, and
         // the loop below then runs `2^63` times.  `x^(-9223372036854775808)`
         // is reachable from user input.
+        super::profile::record(|s| s.max_pow = s.max_pow.max(k.unsigned_abs()));
         if k.unsigned_abs() > MAX_POW {
             return Err(DeclineReason::TooLarge("exponent magnitude"));
         }
@@ -703,6 +712,7 @@ pub(super) fn build(
     if has_const {
         atoms.push(one);
     }
+    super::profile::record(|s| s.atoms = atoms.len());
     if atoms.len() > MAX_ATOMS {
         return Err(DeclineReason::TooLarge("exponential atom count"));
     }

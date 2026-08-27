@@ -118,6 +118,12 @@ pub(crate) struct Shape {
     pub denom_terms: usize,
     /// Tower generators, including the integration variable.
     pub generators: usize,
+    /// Distinct additive atoms across the exponential arguments.
+    pub atoms: usize,
+    /// Largest integer exponent seen while reading the integrand.
+    pub max_pow: u64,
+    /// Deepest expression nesting seen.
+    pub depth: u32,
     /// Non-zero cells the sparse elimination held at its peak.
     pub peak_cells: usize,
 }
@@ -128,6 +134,9 @@ thread_local! {
         unknowns: 0,
         denom_terms: 0,
         generators: 0,
+        atoms: 0,
+        max_pow: 0,
+        depth: 0,
         peak_cells: 0,
     }) };
 }
