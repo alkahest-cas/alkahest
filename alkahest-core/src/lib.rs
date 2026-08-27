@@ -196,8 +196,9 @@ pub use poly::groebner::{ParamGbPoly, ParamGroebnerBasis, ParamGroebnerError, Pa
 
 // P1 search plumbing item 4 — budgets, cancellation, determinism
 pub use budget::{
-    check as budget_check, clear_cancel, enter as budget_enter, is_active as budget_is_active,
-    is_cancelled, request_cancel, seed as budget_seed, Budget, BudgetError, BudgetGuard,
+    check as budget_check, check_growth as budget_check_growth, clear_cancel,
+    enter as budget_enter, is_active as budget_is_active, is_cancelled, request_cancel,
+    seed as budget_seed, Budget, BudgetError, BudgetGuard, DEFAULT_MAX_GROWTH_UNITS,
 };
 pub use errors::AlkahestError;
 pub use lean::{

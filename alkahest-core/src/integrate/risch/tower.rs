@@ -257,10 +257,60 @@ pub fn decompose_wrt_exp(
 // Expression decomposition for the log tower
 // ---------------------------------------------------------------------------
 
+thread_local! {
+    /// A [`crate::budget`] refusal raised inside [`decompose_log_inner`],
+    /// whose `Option` return cannot carry one.
+    ///
+    /// Cleared at the top of every [`decompose_as_log_poly`] and taken by
+    /// [`take_decompose_budget_trip`], so it can only ever describe the call
+    /// that just returned. Without it a budget refusal and "this is not a
+    /// polynomial in log(h)" reach the caller as the same bare `None`, and the
+    /// resource refusal would be reported as a mathematical decline
+    /// (`E-INT-*` instead of `E-BUDGET-*`) — the same out-of-band carrier
+    /// `calculus::series::take_series_refusal` uses for the same reason.
+    static DECOMPOSE_TRIP: std::cell::Cell<Option<crate::budget::BudgetError>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// The budget refusal, if any, that ended the [`decompose_as_log_poly`] call
+/// that just returned `None`. Consumes it.
+pub fn take_decompose_budget_trip() -> Option<crate::budget::BudgetError> {
+    DECOMPOSE_TRIP.with(|c| c.take())
+}
+
+/// Grow `coeffs` so that index `deg` exists, refusing rather than allocating
+/// without a bound.
+///
+/// `deg` is derived from an exponent read out of the expression, so nothing
+/// upstream constrains it: a negative exponent on the generator (`log(h)^-1`,
+/// which reaches here from any integrand with the generator in a denominator)
+/// becomes a `usize` near `2^64` at the cast in the caller, and the loop below
+/// then pushes until the allocator gives up — a process abort, with no
+/// checkpoint in between for a budget to intervene at. Asking
+/// [`crate::budget::check_growth`] for the whole span *before* pushing any of
+/// it is that checkpoint.
+fn grow_coeffs_to(coeffs: &mut Vec<ExprId>, deg: usize, pool: &ExprPool) -> Option<()> {
+    if coeffs.len() > deg {
+        return Some(());
+    }
+    let wanted = (deg - coeffs.len() + 1) as u64;
+    if let Err(e) = crate::budget::check_growth(wanted) {
+        DECOMPOSE_TRIP.with(|c| c.set(Some(e)));
+        return None;
+    }
+    while coeffs.len() <= deg {
+        coeffs.push(pool.integer(0_i32));
+    }
+    Some(())
+}
+
 /// Try to decompose `expr` as a polynomial in `log_gen = log(h)`.
 ///
 /// Returns `Some(coeffs)` where `coeffs[k]` is the coefficient of `log_gen^k`,
-/// or `None` if the expression cannot be written as a polynomial in `log_gen`.
+/// or `None` if the expression cannot be written as a polynomial in `log_gen`
+/// — or if building the coefficient list would have cost more than the ambient
+/// [`crate::budget`] allows, in which case
+/// [`take_decompose_budget_trip`] returns the refusal.
 pub fn decompose_as_log_poly(
     expr: ExprId,
     log_gen: ExprId,
@@ -268,6 +318,8 @@ pub fn decompose_as_log_poly(
 ) -> Option<Vec<ExprId>> {
     // Maximum degree to try (practical bound).
     const MAX_LOG_DEGREE: usize = 20;
+
+    DECOMPOSE_TRIP.with(|c| c.set(None));
 
     let mut coeffs = vec![pool.integer(0_i32); 1]; // coeffs[0] = constant term
 
@@ -304,9 +356,7 @@ fn decompose_log_inner(
 
     // expr IS the log generator: contributes factor to degree 1.
     if expr == log_gen {
-        while coeffs.len() < 2 {
-            coeffs.push(pool.integer(0_i32));
-        }
+        grow_coeffs_to(coeffs, 1, pool)?;
         let old = coeffs[1];
         coeffs[1] = pool.add(vec![old, factor]);
         return Some(());
@@ -382,9 +432,7 @@ fn decompose_log_inner(
             };
 
             let deg = log_power as usize;
-            while coeffs.len() <= deg {
-                coeffs.push(pool.integer(0_i32));
-            }
+            grow_coeffs_to(coeffs, deg, pool)?;
             let old = coeffs[deg];
             coeffs[deg] = pool.add(vec![old, new_factor]);
             Some(())
@@ -395,9 +443,7 @@ fn decompose_log_inner(
                 // log_gen^n: pure power.
                 if let ExprData::Integer(n) = pool.get(exp) {
                     if let Some(deg) = n.0.to_u32() {
-                        while coeffs.len() <= deg as usize {
-                            coeffs.push(pool.integer(0_i32));
-                        }
+                        grow_coeffs_to(coeffs, deg as usize, pool)?;
                         let old = coeffs[deg as usize];
                         coeffs[deg as usize] = pool.add(vec![old, factor]);
                         return Some(());

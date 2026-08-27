@@ -901,8 +901,16 @@ fn try_poly_in_log_rde(
     let theta = log_level.generator; // ExprId of log(h)
     let h = log_level.argument(); // h
 
-    // Decompose c_rest = Σ cⱼ·θʲ.
-    let c_coeffs = decompose_as_log_poly(c_rest, theta, pool)?;
+    // Decompose c_rest = Σ cⱼ·θʲ.  A `None` here is normally "not the
+    // poly-in-log form", but it is also how a budget refusal inside the
+    // decomposition travels — separate the two so a resource limit is not
+    // reported as a mathematical decline.
+    let c_coeffs = match decompose_as_log_poly(c_rest, theta, pool) {
+        Some(c) => c,
+        None => {
+            return super::tower::take_decompose_budget_trip().map(|b| Err(b.into()));
+        }
+    };
     let n = c_coeffs.len().saturating_sub(1);
 
     // Compute h'/h as a rational function for the correction term.

@@ -114,13 +114,24 @@ pub fn integrate_log_tower(
     };
 
     // Decompose expr as a polynomial in log_gen.
-    let coeffs = decompose_as_log_poly(expr, log_gen, pool).ok_or_else(|| {
-        IntegrationError::NotImplemented(format!(
-            "could not decompose {} as a polynomial in log({})",
-            pool.display(expr),
-            pool.display(h)
-        ))
-    })?;
+    let coeffs = match decompose_as_log_poly(expr, log_gen, pool) {
+        Some(c) => c,
+        None => {
+            // `decompose_as_log_poly` returns a bare `None` both for "this is
+            // not a polynomial in log(h)" and for a budget refusal raised
+            // while building the coefficient list. Asking for the refusal is
+            // what keeps the second an `E-BUDGET-*` instead of reporting a
+            // resource limit as a mathematical verdict.
+            if let Some(b) = super::tower::take_decompose_budget_trip() {
+                return Err(b.into());
+            }
+            return Err(IntegrationError::NotImplemented(format!(
+                "could not decompose {} as a polynomial in log({})",
+                pool.display(expr),
+                pool.display(h)
+            )));
+        }
+    };
 
     // Trim trailing zero coefficients from the log polynomial.
     let coeffs = trim_zero_coeffs(coeffs, pool);

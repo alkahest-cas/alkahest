@@ -28,6 +28,24 @@
 //! atomic load plus (if a budget is active) an `Instant::now()` — so it is
 //! safe to call unconditionally at those boundaries.
 //!
+//! # Time is not the only way to run away
+//!
+//! [`check`] bounds an algorithm that keeps *returning* to a checkpoint. It
+//! cannot bound one that leaves for a single step which allocates without
+//! bound: no deadline helps if the deadline is never consulted again, and the
+//! process dies of `handle_alloc_error` — an abort, not an error any caller
+//! can catch.
+//!
+//! [`check_growth`] is the size half of the same mechanism. A step that is
+//! about to grow a structure by `units` says so *before* growing, and is
+//! refused if `units` is more work than the budget allows. Because the
+//! failure it prevents is an abort rather than a slow answer, it applies
+//! [`DEFAULT_MAX_GROWTH_UNITS`] even when no [`Budget`] is active: a caller
+//! cannot opt into a limit for an allocation it did not know a call would
+//! make. `Budget { max_steps: Some(n), .. }` replaces that default, so the
+//! `E-BUDGET-002` remediation ("raise `Budget(max_steps=...)`") is the true
+//! remedy for both halves.
+//!
 //! Cancellation ([`request_cancel`] / [`is_cancelled`] / [`clear_cancel`]) is
 //! a single process-wide flag, deliberately *not* scoped to a thread or a
 //! [`Budget`] frame: it models "the orchestrator wants the current heavy
@@ -49,7 +67,7 @@
 //! | Code           | Variant                | Cause             |
 //! |----------------|-------------------------|-------------------|
 //! | `E-BUDGET-001` | [`BudgetError::WallClock`] | wall-clock deadline elapsed |
-//! | `E-BUDGET-002` | [`BudgetError::Steps`]     | step counter exceeded `max_steps` |
+//! | `E-BUDGET-002` | [`BudgetError::Steps`]     | step counter exceeded `max_steps`, or one step asked to grow past it |
 //! | `E-BUDGET-003` | [`BudgetError::Cancelled`] | [`request_cancel`] was called |
 
 use crate::errors::AlkahestError;
@@ -74,7 +92,12 @@ use std::time::{Duration, Instant};
 pub struct Budget {
     /// Wall-clock limit for the guarded block, measured from [`enter`].
     pub wall: Option<Duration>,
-    /// Maximum number of [`check`] calls the guarded block may make.
+    /// Maximum number of work units the guarded block may spend.
+    ///
+    /// Counted by [`check`], which charges one unit per call, and by
+    /// [`check_growth`], which charges a step for the size of the structure it
+    /// is about to grow. When `None`, [`check`] is uncounted and
+    /// [`check_growth`] falls back to [`DEFAULT_MAX_GROWTH_UNITS`].
     pub max_steps: Option<u64>,
     /// Determinism seed available to callers via [`seed`].
     pub seed: Option<u64>,
@@ -253,6 +276,63 @@ pub fn check() -> Result<(), BudgetError> {
     })
 }
 
+/// Work units a single growth step may ask for when the active [`Budget`]
+/// sets no `max_steps`, and when no budget is active at all.
+///
+/// 2²⁶ units. Sized to be unreachable by any well-formed problem and cheap to
+/// reach by a runaway one: the loop this was introduced for asks for 2⁶⁴
+/// coefficients of a log-polynomial whose own documented degree bound is 20,
+/// and every legitimate accumulator this crate builds is smaller than a
+/// megabyte. A `Vec<ExprId>` of this many entries is already 256 MiB, so a
+/// caller who genuinely wants more is asking for something worth having to
+/// say out loud via `Budget::with_max_steps`.
+///
+/// It is deliberately a *default* rather than a hard cap. Growth is refused,
+/// never truncated: a bound that silently returned a short answer would be the
+/// wrong answer, where a refusal is an honest one.
+pub const DEFAULT_MAX_GROWTH_UNITS: u64 = 1 << 26;
+
+/// Cooperative checkpoint for a step that is about to do `units` of work *at
+/// once* — typically grow a collection by that many elements.
+///
+/// [`check`] answers "may I keep going?", which bounds an algorithm that keeps
+/// coming back to ask. This answers "may I spend this much before I come
+/// back?", which is the only question a single unbounded allocation ever gets
+/// to ask. Call it **before** the allocation, with the number of units it
+/// would add; a refusal costs nothing, where discovering the same thing
+/// afterwards costs the process.
+///
+/// Checks, in order:
+/// 1. Everything [`check`] checks — cancellation, wall clock, step counter —
+///    so a growth checkpoint is also an ordinary one and needs no companion
+///    `check` call.
+/// 2. `units` against the innermost active [`Budget`]'s `max_steps`, or
+///    against [`DEFAULT_MAX_GROWTH_UNITS`] if it set none *or if no budget is
+///    active at all*.
+///
+/// Point 2 is the one place in this module that does something without an
+/// active budget, and it is deliberate: the failure mode is
+/// `handle_alloc_error`, which aborts the process without unwinding, so there
+/// is no later point at which any caller could have intervened. A caller who
+/// wants more must ask for it (`Budget::with_max_steps`), which is exactly
+/// what [`BudgetError::Steps`]'s remediation already tells them to do.
+///
+/// The comparison is per request and holds no state, so it is safe to call
+/// from a loop condition and cannot latch a refusal onto unrelated later work.
+pub fn check_growth(units: u64) -> Result<(), BudgetError> {
+    check()?;
+    let limit = STACK
+        .with(|s| s.borrow().last().and_then(|f| f.max_steps))
+        .unwrap_or(DEFAULT_MAX_GROWTH_UNITS);
+    if units > limit {
+        return Err(BudgetError::Steps {
+            limit,
+            taken: units,
+        });
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
@@ -266,7 +346,11 @@ pub fn check() -> Result<(), BudgetError> {
 pub enum BudgetError {
     /// The active budget's wall-clock limit elapsed.
     WallClock { limit: Duration, elapsed: Duration },
-    /// The active budget's step counter exceeded `max_steps`.
+    /// A work limit was exceeded: either the active budget's step counter
+    /// passed `max_steps`, or a single step asked [`check_growth`] to spend
+    /// more units at once than the budget (or
+    /// [`DEFAULT_MAX_GROWTH_UNITS`]) allows. Both are the same currency, so
+    /// they carry the same code and the same remedy.
     Steps { limit: u64, taken: u64 },
     /// [`request_cancel`] was called and not yet cleared.
     Cancelled,
@@ -452,6 +536,77 @@ mod tests {
         let _guard = enter(Budget::new().with_max_steps(1_000_000));
         request_cancel();
         assert_eq!(check().unwrap_err(), BudgetError::Cancelled);
+    }
+
+    /// The whole point of the size half: a step that asks for more work than
+    /// any budget allows is refused *before* it allocates, with no budget
+    /// entered at all. There is no later checkpoint to refuse at — the
+    /// allocation it prevents aborts the process.
+    #[test]
+    fn growth_is_refused_without_an_active_budget() {
+        let _serial = serial();
+        assert!(!is_active());
+        // A modest request is fine and does not count as a step.
+        assert!(check_growth(1_000).is_ok());
+        let err = check_growth(DEFAULT_MAX_GROWTH_UNITS + 1).unwrap_err();
+        assert_eq!(err.code(), "E-BUDGET-002");
+        assert_eq!(
+            err,
+            BudgetError::Steps {
+                limit: DEFAULT_MAX_GROWTH_UNITS,
+                taken: DEFAULT_MAX_GROWTH_UNITS + 1,
+            }
+        );
+    }
+
+    /// `max_steps` is the tunable for both halves, which is what makes
+    /// `E-BUDGET-002`'s "raise Budget(max_steps=...)" remediation true of a
+    /// growth refusal and not just of a step-count one.
+    #[test]
+    fn max_steps_replaces_the_default_growth_ceiling() {
+        let _serial = serial();
+        {
+            let _guard = enter(Budget::new().with_max_steps(10));
+            assert!(check_growth(10).is_ok());
+            assert_eq!(
+                check_growth(11).unwrap_err(),
+                BudgetError::Steps {
+                    limit: 10,
+                    taken: 11
+                }
+            );
+        }
+        {
+            // Raised well past the default: the same request now passes.
+            let _guard = enter(Budget::new().with_max_steps(DEFAULT_MAX_GROWTH_UNITS * 4));
+            assert!(check_growth(DEFAULT_MAX_GROWTH_UNITS + 1).is_ok());
+        }
+    }
+
+    /// A growth checkpoint is also an ordinary one, so a call site needs only
+    /// one of them: wall clock and cancellation still trip through it.
+    #[test]
+    fn growth_checkpoint_still_reports_wall_and_cancel() {
+        let _serial = serial();
+        {
+            let _guard = enter(Budget::new().with_wall(Duration::from_millis(10)));
+            assert!(check_growth(1).is_ok());
+            std::thread::sleep(Duration::from_millis(25));
+            assert_eq!(check_growth(1).unwrap_err().code(), "E-BUDGET-001");
+        }
+        let _cancel_guard = CancelGuard;
+        request_cancel();
+        assert_eq!(check_growth(1).unwrap_err(), BudgetError::Cancelled);
+    }
+
+    /// The comparison is per request and holds no state, so a refusal cannot
+    /// latch onto unrelated later work on the same thread.
+    #[test]
+    fn a_growth_refusal_does_not_poison_later_calls() {
+        let _serial = serial();
+        assert!(check_growth(DEFAULT_MAX_GROWTH_UNITS + 1).is_err());
+        assert!(check_growth(1).is_ok());
+        assert!(check().is_ok());
     }
 
     #[test]

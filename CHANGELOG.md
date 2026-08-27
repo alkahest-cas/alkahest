@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+- **A budget could be outrun by a single allocation, and was.**
+  `alkahest.integrate` on `1/(x·log x·(1 + log²(log x)))` — the derivative of
+  `atan(log(log x))`, an ordinary two-level log tower — ignored a
+  `Budget(wall_ms=3000)` completely and died on a 4 GiB allocation, after
+  reaching 26 GB of resident memory in ten minutes on the machine this was
+  found on. `handle_alloc_error` aborts without unwinding, so the wall clock,
+  `request_cancel` and `catch_unwind` were all equally powerless.
+
+  The growth was not diffuse. Under an instrumented allocator every large
+  request came from one place: `integrate::risch::tower::decompose_log_inner`,
+  growing a single `Vec<ExprId>` of log-polynomial coefficients. It reads the
+  exponent off each factor of a product and adds it to a running degree, and
+  when the tower generator appears in a *denominator* (`log(x)^-1`, which is
+  most of this integrand) that degree is **negative**; `deg = log_power as
+  usize` then wraps it to ≈ 2⁶⁴ and `while coeffs.len() <= deg { push }` runs
+  until the allocator gives up. One step, no loop back to any checkpoint —
+  which is exactly the shape `budget::check` cannot bound, however short the
+  deadline.
+
+  `budget::check_growth(units)` is the size half of the mechanism. A step that
+  is about to grow a structure says so *before* growing, and is refused if
+  `units` is more work than the budget allows; it also performs every check
+  `check` does, so one call covers both halves. It applies
+  `budget::DEFAULT_MAX_GROWTH_UNITS` (2²⁶) **even when no `Budget` is active**,
+  because the failure it prevents is an abort rather than a slow answer and a
+  caller cannot opt into a limit for an allocation they did not know a call
+  would make. `Budget { max_steps: Some(n), .. }` replaces that default, which
+  is what makes `E-BUDGET-002`'s existing remediation ("raise
+  `Budget(max_steps=...)`") true of a growth refusal and not merely plausible
+  — and why this needed no new error code and no new variant on the exhaustive
+  public `BudgetError` (compare the `[[budget]]` carrier `IntegrationError`
+  already uses to avoid the same break).
+
+  The checkpoint sits at the three places `decompose_log_inner` grows its
+  coefficient list. Because that function reports failure as a bare `None`,
+  which also means "this is not a polynomial in log(h)", the refusal travels
+  out of band (`tower::take_decompose_budget_trip`, the same pattern
+  `calculus::series::take_series_refusal` uses) so both of its callers can
+  re-raise it as `E-BUDGET-*` instead of reporting a resource limit as a
+  mathematical verdict.
+
+  The reproducer now returns in **47 µs** with `E-BUDGET-002`, having interned
+  19 pool nodes. Making that integral *work* is a separate question — the
+  negative-degree wrap above is a real defect in the decomposition and is left
+  for the Risch owner — but it now stops when asked. Ordinary declines are
+  unaffected: `∫ exp(x)/x dx` still returns `E-INT-*`, asserted alongside.
+
 - **`simplify` could abort the process on a deep enough expression.** The
   sequential bottom-up traversal (`simplify::engine`'s `simplify_node`, and its
   discrimination-net twin `simplify_node_indexed`) recursed once per level of
