@@ -480,7 +480,16 @@ fn decompose_log_inner(
                 pool.mul(f)
             };
 
-            let deg = log_power as usize;
+            // `log_power` is an `i64` accumulated from exponents, so it is
+            // negative whenever the generator sits in a *denominator*
+            // (`log(x)^-1`).  `as usize` wraps that to ~2^64 and the loop below
+            // then pushes zeros until the allocator aborts the process — a 4 GiB
+            // request, reached from `∫ dx/(x·log x·(1 + log²(log x)))`, which no
+            // wall-clock budget can interrupt because the loop never returns to a
+            // checkpoint.  A negative power is not representable as a polynomial
+            // in `log(h)` — which is exactly what this decomposition builds — so
+            // decline and let the caller try another route.
+            let deg = usize::try_from(log_power).ok()?;
             while coeffs.len() <= deg {
                 coeffs.push(pool.integer(0_i32));
             }
@@ -568,5 +577,54 @@ pub fn poly_degree(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<u32> {
         },
         ExprData::Pow { base, .. } if is_free_of_var(base, var, pool) => Some(0),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod log_power_underflow_tests {
+    use super::*;
+    use crate::kernel::{Domain, ExprPool};
+
+    /// A log generator in a *denominator* gives `log_power < 0`.
+    ///
+    /// `log_power as usize` used to wrap that to ~2^64, and the zero-fill loop
+    /// then pushed until the allocator aborted the process (a 4 GiB request was
+    /// reachable from `∫ dx/(x·log x·(1 + log²(log x)))`). No wall-clock budget
+    /// can interrupt it, because the loop never returns to a checkpoint.
+    ///
+    /// The decomposition builds a *polynomial* in `log(h)`, so a negative power
+    /// is simply not representable: it must decline, promptly and without
+    /// allocating.
+    #[test]
+    fn negative_log_power_declines_instead_of_allocating() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let logx = pool.func("log", vec![x]);
+
+        for power in [-1_i32, -2, -7] {
+            // x^-1 · log(x)^power — the shape that produced the abort.
+            let f = pool.mul(vec![
+                pool.pow(x, pool.integer(-1_i32)),
+                pool.pow(logx, pool.integer(power)),
+            ]);
+            let got = decompose_as_log_poly(f, logx, &pool);
+            assert!(
+                got.is_none(),
+                "log(x)^{power} is not a polynomial in log(x); expected a decline, got {got:?}"
+            );
+        }
+    }
+
+    /// The non-negative path is untouched: `log(x)^2` still decomposes.
+    #[test]
+    fn non_negative_log_power_still_decomposes() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let logx = pool.func("log", vec![x]);
+        let f = pool.mul(vec![x, pool.pow(logx, pool.integer(2_i32))]);
+        assert!(
+            decompose_as_log_poly(f, logx, &pool).is_some(),
+            "x·log(x)^2 is a polynomial in log(x) and must still decompose"
+        );
     }
 }
