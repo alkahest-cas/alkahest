@@ -276,6 +276,7 @@ fn no_outcome_variant_can_express_non_elementarity() {
         DeclineReason::UnsupportedIntegrand("t".to_string()),
         DeclineReason::DependentGenerators("t"),
         DeclineReason::NoSolution,
+        DeclineReason::LinearSolver,
         DeclineReason::TooLarge("t"),
         DeclineReason::RingArithmetic,
         DeclineReason::VerificationFailed,
@@ -436,4 +437,156 @@ fn atom_decomposition_splits_rational_coefficients() {
         .clone();
     assert_eq!(cx, rug::Rational::from((-3, 2)));
     assert_eq!(c1, rug::Rational::from(1));
+}
+
+// ---------------------------------------------------------------------------
+// 7. Edge cases and regressions
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_zero_integrand_integrates_to_zero() {
+    let (pool, x) = setup();
+    let got = assert_solves(&pool, pool.integer(0_i32), x);
+    assert_eq!(got, pool.integer(0_i32));
+}
+
+#[test]
+fn a_constant_integrand_integrates_to_a_multiple_of_x() {
+    let (pool, x) = setup();
+    // ∫5 dx = 5x.  Trivial, but it exercises the degenerate `Q = 1` ansatz,
+    // where the monomial box is `{1, x}` and the log candidate set is `{x}`.
+    let five = pool.integer(5_i32);
+    let got = assert_solves_exactly(&pool, five, x);
+    let d = crate::diff::diff(got, x, &pool)
+        .expect("differentiable")
+        .value;
+    assert_eq!(crate::simplify::engine::simplify(d, &pool).value, five);
+}
+
+#[test]
+fn a_rational_constant_integrand_stays_exact() {
+    let (pool, x) = setup();
+    let c = pool.rational(-3_i32, 7_i32);
+    let got = assert_solves_exactly(&pool, c, x);
+    let d = crate::diff::diff(got, x, &pool)
+        .expect("differentiable")
+        .value;
+    assert_eq!(crate::simplify::engine::simplify(d, &pool).value, c);
+}
+
+#[test]
+fn an_integrand_that_is_already_an_ansatz_atom_solves() {
+    let (pool, x) = setup();
+    // `∫exp(x) dx` — the integrand *is* the answer, so the rational part of
+    // the ansatz has to carry it with a unit coefficient.
+    let f = exp_of(&pool, x);
+    let got = assert_solves_exactly(&pool, f, x);
+    assert!(verify_antiderivative_exact(got, f, x, &pool));
+}
+
+#[test]
+fn a_free_symbol_is_out_of_ring_rather_than_a_verdict() {
+    let (pool, x) = setup();
+    let y = pool.symbol("y", Domain::Real);
+    let f = pool.mul(vec![y, x]);
+    assert!(matches!(
+        assert_declines(&pool, f, x),
+        DeclineReason::UnsupportedIntegrand(_)
+    ));
+}
+
+/// `exp(x)` and `exp(2x)` are the *same* generator, not two.
+///
+/// This is the exponential analogue of the `√x` / `√(4x)` defect found
+/// elsewhere in this crate, where two spellings of one object were treated as
+/// independent.  Here the lattice reduction collapses them, so
+/// `∫exp(2x)/(exp(x)+1)` — which mentions both — is a one-generator problem.
+#[test]
+fn proportional_exponentials_are_one_generator_not_two() {
+    let (pool, x) = setup();
+    let e2 = exp_of(&pool, pool.mul(vec![pool.integer(2_i32), x]));
+    let e1 = exp_of(&pool, x);
+    let den = pool.add(vec![e1, pool.integer(1_i32)]);
+    let f = pool.mul(vec![e2, inv(&pool, den)]);
+    assert_solves(&pool, f, x);
+}
+
+/// `log(x)` and `log(x²)` are multiplicatively dependent modulo constants, so
+/// they are not two independent coordinates.
+///
+/// The module may collapse them or decline; what it must never do is treat
+/// them as independent and hand back an answer that has not been gated.
+#[test]
+fn a_logarithm_and_its_power_never_escape_the_gate() {
+    let (pool, x) = setup();
+    let l1 = log_of(&pool, x);
+    let l2 = log_of(&pool, pool.pow(x, pool.integer(2_i32)));
+    let f = pool.mul(vec![l1, l2]);
+    match integrate_parallel_risch(f, x, &pool) {
+        ParallelRischOutcome::Solved { antiderivative, .. } => assert!(
+            verify_antiderivative_status(antiderivative, f, x, &pool).is_some(),
+            "a dependent-generator answer escaped the gate"
+        ),
+        ParallelRischOutcome::Declined(_) => {}
+    }
+}
+
+/// `x^(i64::MIN)` must decline, not spin.
+///
+/// `rf_pow` guarded its exponent with `k.abs() > MAX_POW`.  `i64::MIN.abs()`
+/// overflows: in a release build it wraps back to `i64::MIN`, which compares
+/// *below* the cap, so the guard passed — and the multiply loop underneath then
+/// ran `k.unsigned_abs() = 2⁶³` times.  Reachable from user input.
+#[test]
+fn an_extreme_negative_exponent_declines_instead_of_hanging() {
+    let (pool, x) = setup();
+    let f = pool.pow(x, pool.integer(i64::MIN));
+    assert!(matches!(
+        assert_declines(&pool, f, x),
+        DeclineReason::TooLarge(_) | DeclineReason::UnsupportedIntegrand(_)
+    ));
+}
+
+/// A deeply nested integrand must decline, not exhaust the stack.
+///
+/// `collect`, `to_rf` and — before either of them — `simplify` all recurse over
+/// the expression tree.  A stack overflow aborts the process: not catchable, and
+/// strictly worse than a panic.  Before the guard, this input killed the test
+/// binary with `SIGABRT`.
+#[test]
+fn deep_nesting_declines_instead_of_overflowing_the_stack() {
+    let (pool, x) = setup();
+    let mut e = x;
+    for _ in 0..5000 {
+        e = pool.add(vec![e, pool.integer(1_i32)]);
+    }
+    assert!(matches!(
+        assert_declines(&pool, e, x),
+        DeclineReason::TooLarge(_)
+    ));
+}
+
+/// The depth guard must not mistake a wide, shallow, heavily shared expression
+/// for a deep one — the pool is a DAG, and counting paths instead of depth
+/// would reject `((x+1)·(x+1))·((x+1)·(x+1))·…` out of hand.
+#[test]
+fn the_depth_guard_measures_depth_not_paths() {
+    let (pool, x) = setup();
+    let mut e = pool.add(vec![x, pool.integer(1_i32)]);
+    for _ in 0..40 {
+        e = pool.mul(vec![e, e]);
+    }
+    // 2^40 paths, 41 levels deep.  The guard must terminate and must not fire.
+    assert!(!ring::depth_exceeds(e, &pool, ring::MAX_DEPTH));
+}
+
+/// "The solver gave up" has to stay distinct from "the system has no
+/// solution", and neither may become a verdict about the integrand.
+#[test]
+fn the_linear_solver_decline_is_distinct_and_still_not_a_verdict() {
+    assert_ne!(DeclineReason::LinearSolver, DeclineReason::NoSolution);
+    assert!(matches!(
+        DeclineReason::LinearSolver.into_integration_error(),
+        IntegrationError::NotImplemented(_)
+    ));
 }

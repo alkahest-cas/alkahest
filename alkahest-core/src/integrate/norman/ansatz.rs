@@ -23,30 +23,84 @@
 //! * Equating coefficients presumes the generators are algebraically
 //!   independent.  [`super::ring`] establishes that before we get here.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
-use rug::Rational;
+use rug::{Integer, Rational};
 
 use crate::kernel::{ExprId, ExprPool};
 use crate::poly::multipoly::MultiPoly;
 use crate::poly::rational::{mpoly_exact_div, RationalFunction};
 
-use super::ring::{GenKind, NormanRing};
+use super::profile::{self, Phase};
+use super::ring::{self, is_unit, lcm, GenKind, NormanRing};
+use super::solve;
 use super::DeclineReason;
 
+// ---------------------------------------------------------------------------
+// Caps
+//
+// Every number below is stated against a measurement.  The two corpora are the
+// 103 integrands of `bench::CORPUS` (the 40-case probe plus 63 textbook cases —
+// what this module is actually for) and the 18 deliberately oversized ones of
+// `bench::STRESS`.  `cargo test -p alkahest-cas --release norman::bench --
+// --ignored --nocapture` prints the observed maxima that these clear.
+// ---------------------------------------------------------------------------
+
 /// Largest number of unknowns (monomials plus logarithm candidates).
+///
+/// **Observed:** 30 (`1/(x·log x·log log x)`) on the corpus, 127 (`x⁴⁰·eˣ`) on
+/// the stress set.  This is 8× the first and 1.9× the second.
+///
+/// It is the cap that binds first and the one that matters: the monomial box
+/// is a *product* over generators, so it is the only quantity here that grows
+/// combinatorially.  At 240 unknowns a `∫xⁿeˣ`-shaped integrand measures about
+/// 4 ms end to end — an order of magnitude above the existing engine's median,
+/// i.e. the point past which a cheap heuristic has stopped being cheap.
 const MAX_UNKNOWNS: usize = 240;
+
 /// Largest number of equations (distinct monomials in the cleared identity).
+///
+/// **Observed:** 41 on the corpus, 126 on the stress set — 146× and 48× of
+/// headroom.
+///
+/// This cap is deliberately loose and is no longer the operative one.  Rows are
+/// nearly free now that the elimination is sparse (an equation costs a bucket
+/// entry, not a matrix row), so the ceiling that actually bounds solver work is
+/// [`super::solve`]'s fill-in cap.  This one survives to stop the *matrix
+/// build* from allocating without limit on an input that produces a huge
+/// cleared identity.
 const MAX_EQUATIONS: usize = 6000;
+
 /// Largest number of terms tolerated in the cleared common denominator.
+///
+/// **Observed:** 7 on the corpus, 13 on the stress set.
+///
+/// The headroom looks absurd against those numbers and is not: the common
+/// denominator is `L·Q²`, so it grows *quadratically* in the size of the
+/// integrand's denominator, and 2 000 terms is reached by a `Q` of only about
+/// 45 terms.  Every cleared column is then multiplied against it, so this is
+/// the cap that stops a dense high-degree multivariate denominator from
+/// turning one integrand into seconds of polynomial arithmetic.
 const MAX_DENOM_TERMS: usize = 2000;
 
 /// One term of the ansatz, together with its derivative.
 struct Atom {
     /// The term itself, as an expression builder input.
     kind: AtomKind,
-    /// `D(term)`, cleared against the common denominator later.
-    deriv: RationalFunction,
+    /// Numerator of `D(term)` over [`Atom::den`].  Deliberately *not* reduced:
+    /// the common-denominator step below would undo the reduction anyway, and
+    /// each reduction costs a FLINT multivariate GCD.
+    num: MultiPoly,
+    /// Denominator of `D(term)`.
+    den: Den,
+}
+
+/// Which denominator an atom's derivative sits over.
+enum Den {
+    /// The shared `L·Q²` of every rational atom, stored once by the caller.
+    Rational,
+    /// `L·p` for a `log(p)` atom.
+    Log(MultiPoly),
 }
 
 enum AtomKind {
@@ -67,117 +121,216 @@ pub(super) fn solve(
     let n = f.numer.clone();
 
     // ---- monomial box for the numerator of the rational part.
-    let nv = ring.nvars();
-    let mut bounds = Vec::with_capacity(nv);
-    let mut count: usize = 1;
-    for i in 0..nv {
-        let b = (n.degree_in(i) + q.degree_in(i) + 1) as usize;
-        count = count.saturating_mul(b + 1);
-        if count > MAX_UNKNOWNS {
-            return Err(DeclineReason::TooLarge("ansatz monomial box"));
+    let (monomials, logs) = profile::timed(Phase::AnsatzSetup, || {
+        let nv = ring.nvars();
+        let mut bounds = Vec::with_capacity(nv);
+        let mut count: usize = 1;
+        for i in 0..nv {
+            let b = (n.degree_in(i) + q.degree_in(i) + 1) as usize;
+            count = count.saturating_mul(b + 1);
+            if count > MAX_UNKNOWNS {
+                return Err(DeclineReason::TooLarge("ansatz monomial box"));
+            }
+            bounds.push(b);
         }
-        bounds.push(b);
-    }
-    let monomials = monomial_box(&bounds);
+        let monomials = monomial_box(&bounds);
 
-    // ---- logarithm candidates.
-    let logs = log_candidates(ring, &q)?;
+        // ---- logarithm candidates.
+        let logs = log_candidates(ring, &q)?;
 
-    if monomials.len() + logs.len() > MAX_UNKNOWNS {
-        return Err(DeclineReason::TooLarge("ansatz size"));
-    }
-    if monomials.is_empty() && logs.is_empty() {
-        return Err(DeclineReason::NoSolution);
-    }
-
-    // ---- derivatives of every ansatz atom.
-    let q_rf = ring.rf(q.clone())?;
-    let mut atoms: Vec<Atom> = Vec::with_capacity(monomials.len() + logs.len());
-    for m in &monomials {
-        let mono = ring.monomial(m);
-        let term = (ring.rf(mono)? / q_rf.clone()).map_err(|_| DeclineReason::RingArithmetic)?;
-        let deriv = ring.deriv_rf(&term)?;
-        atoms.push(Atom {
-            kind: AtomKind::Rational(m.clone()),
-            deriv,
-        });
-    }
-    for p in &logs {
-        // D(log p) = D(p)/p
-        let dp = ring.deriv_poly(p)?;
-        let p_rf = ring.rf(p.clone())?;
-        let deriv = (dp / p_rf).map_err(|_| DeclineReason::RingArithmetic)?;
-        atoms.push(Atom {
-            kind: AtomKind::Log(p.clone()),
-            deriv,
-        });
-    }
-
-    // ---- common denominator.
-    let mut common = ring.constant_poly(1);
-    for a in &atoms {
-        common = lcm(&common, &a.deriv.denom).ok_or(DeclineReason::RingArithmetic)?;
-        if common.terms.len() > MAX_DENOM_TERMS {
-            return Err(DeclineReason::TooLarge("common denominator"));
+        if monomials.len() + logs.len() > MAX_UNKNOWNS {
+            return Err(DeclineReason::TooLarge("ansatz size"));
         }
-    }
-    common = lcm(&common, &f.denom).ok_or(DeclineReason::RingArithmetic)?;
-    if common.terms.len() > MAX_DENOM_TERMS {
-        return Err(DeclineReason::TooLarge("common denominator"));
-    }
+        if monomials.is_empty() && logs.is_empty() {
+            return Err(DeclineReason::NoSolution);
+        }
+        Ok((monomials, logs))
+    })?;
 
-    // ---- clear denominators.
-    let mut columns: Vec<MultiPoly> = Vec::with_capacity(atoms.len());
-    for a in &atoms {
-        let scale =
-            mpoly_exact_div(&common, &a.deriv.denom).ok_or(DeclineReason::RingArithmetic)?;
-        columns.push(a.deriv.numer.clone() * scale);
-    }
-    let rhs_scale = mpoly_exact_div(&common, &f.denom).ok_or(DeclineReason::RingArithmetic)?;
-    let rhs_poly = f.numer.clone() * rhs_scale;
+    // ---- derivatives of every ansatz atom, over a *shared* denominator.
+    //
+    // With `D(vᵢ) = dnum[i]/L` (one `L` for the whole derivation table),
+    //
+    //     D(m/Q) = (D(m)·Q − m·D(Q)) / Q²
+    //            = (Σᵢ eᵢ·(m/vᵢ)·dnum[i]·Q  −  m·D(Q)·L) / (L·Q²)
+    //
+    // so *every* rational atom lands over the same denominator `L·Q²`, and the
+    // numerator is a sum of monomial shifts of the two precomputed polynomials
+    // `dnum[i]·Q` and `deriv_scaled(Q)`.  No GCD, no rational-function
+    // normalisation, no per-atom polynomial multiplication.  Logarithm atoms
+    // are `D(log p) = deriv_scaled(p)/(L·p)`.
+    let (atoms, rat_den) = profile::timed(Phase::AtomDerivs, || {
+        let q2 = q.clone() * q.clone();
+        let rat_den = ring.dden.clone() * q2;
+        let nq = ring.deriv_scaled(&q);
+        let nv = ring.nvars();
+        let dnq: Vec<MultiPoly> = (0..nv).map(|i| ring.dnum[i].clone() * q.clone()).collect();
+
+        let mut atoms: Vec<Atom> = Vec::with_capacity(monomials.len() + logs.len());
+        for m in &monomials {
+            let mut num = MultiPoly::zero(ring.vars.clone());
+            for (i, dq) in dnq.iter().enumerate() {
+                let e = m.get(i).copied().unwrap_or(0);
+                if e == 0 {
+                    continue;
+                }
+                let mut shift = m.clone();
+                shift[i] = e - 1;
+                num = num + ring::shift_scale(dq, &shift, &Integer::from(e));
+            }
+            num = num - ring::shift_scale(&nq, m, &Integer::from(1));
+            atoms.push(Atom {
+                kind: AtomKind::Rational(m.clone()),
+                num,
+                den: Den::Rational,
+            });
+        }
+        for p in &logs {
+            atoms.push(Atom {
+                kind: AtomKind::Log(p.clone()),
+                num: ring.deriv_scaled(p),
+                den: Den::Log(ring.dden.clone() * p.clone()),
+            });
+        }
+        (atoms, rat_den)
+    });
+
+    // ---- common denominator, then clear it.
+    let (columns, rhs_poly) = profile::timed(Phase::ClearDenoms, || {
+        // All the rational atoms share `L·Q²`, so the common denominator is
+        // built from *distinct* denominators — one step per logarithm
+        // candidate, not one per atom.
+        //
+        // Almost every candidate `p` is an irreducible factor of `Q`, so `L·p`
+        // already divides `L·Q²` and the running lcm does not move.  The loop
+        // therefore asks for the *quotient* directly and only falls back to a
+        // GCD (and a restart, because a grown `common` invalidates the
+        // quotients computed so far) for a candidate drawn from outside `Q`'s
+        // factorisation — `x`, or one of the tower's own logarithm generators.
+        // Each FLINT call carries a context init and two polynomial
+        // round-trips, so halving their number is what this saves.
+        let mut dens: Vec<&MultiPoly> = vec![&rat_den];
+        for a in &atoms {
+            if let Den::Log(d) = &a.den {
+                dens.push(d);
+            }
+        }
+        dens.push(&f.denom);
+
+        let mut common = rat_den.clone();
+        let mut scales: Option<Vec<MultiPoly>> = None;
+        // Each restart absorbs one more denominator into `common` and never
+        // un-absorbs one, so `dens.len() + 1` passes is a proof-carrying bound
+        // rather than a guess.  It is written as a bounded loop anyway so that
+        // a FLINT `divides`/`gcd` anomaly cannot hang the integrator.
+        for _ in 0..=dens.len() {
+            let mut built: Vec<MultiPoly> = Vec::with_capacity(dens.len());
+            let mut grew = false;
+            for d in &dens {
+                match mpoly_exact_div(&common, d) {
+                    Some(s) => built.push(s),
+                    None => {
+                        common = lcm(&common, d).ok_or(DeclineReason::RingArithmetic)?;
+                        if common.terms.len() > MAX_DENOM_TERMS {
+                            return Err(DeclineReason::TooLarge("common denominator"));
+                        }
+                        grew = true;
+                        break;
+                    }
+                }
+            }
+            if !grew {
+                scales = Some(built);
+                break;
+            }
+        }
+        let scales = scales.ok_or(DeclineReason::RingArithmetic)?;
+
+        profile::record(|s| s.denom_terms = common.terms.len());
+        let rhs_scale = scales.last().expect("f.denom was pushed");
+        let mut columns: Vec<MultiPoly> = Vec::with_capacity(atoms.len());
+        let mut next_log = 1usize;
+        for a in &atoms {
+            let scale = match &a.den {
+                Den::Rational => &scales[0],
+                Den::Log(_) => {
+                    let s = &scales[next_log];
+                    next_log += 1;
+                    s
+                }
+            };
+            columns.push(if is_unit(scale) {
+                a.num.clone()
+            } else {
+                a.num.clone() * scale.clone()
+            });
+        }
+        let rhs_poly = if is_unit(rhs_scale) {
+            f.numer.clone()
+        } else {
+            f.numer.clone() * rhs_scale.clone()
+        };
+        Ok((columns, rhs_poly))
+    })?;
 
     // ---- one equation per monomial of the cleared identity.
-    let mut keys: BTreeSet<&Vec<u32>> = BTreeSet::new();
-    for c in &columns {
-        keys.extend(c.terms.keys());
-    }
-    keys.extend(rhs_poly.terms.keys());
-    if keys.len() > MAX_EQUATIONS {
-        return Err(DeclineReason::TooLarge("linear system"));
-    }
+    //
+    // Built column-sparse: the overwhelming majority of `(equation, atom)`
+    // pairs are structurally zero, and materialising them as `Rational::from(0)`
+    // costs both the allocation and, later, a full row of bignum work in the
+    // elimination.  Inverting the loop — walk each column's terms once and
+    // scatter them into the rows — is `O(non-zeros)` instead of `O(eqs·atoms)`.
+    let system = profile::timed(Phase::MatrixBuild, || {
+        let mut keys: BTreeSet<&Vec<u32>> = BTreeSet::new();
+        for c in &columns {
+            keys.extend(c.terms.keys());
+        }
+        keys.extend(rhs_poly.terms.keys());
+        profile::record(|s| {
+            s.equations = keys.len();
+            s.unknowns = columns.len();
+        });
+        if keys.len() > MAX_EQUATIONS {
+            return Err(DeclineReason::TooLarge("linear system"));
+        }
 
-    let mut mat: Vec<Vec<Rational>> = Vec::with_capacity(keys.len());
-    let mut rhs: Vec<Rational> = Vec::with_capacity(keys.len());
-    let zero = || Rational::from(0);
-    for k in &keys {
-        let row = columns
-            .iter()
-            .map(|c| {
-                c.terms
-                    .get(*k)
-                    .map(|v| Rational::from(v.clone()))
-                    .unwrap_or_else(zero)
-            })
-            .collect();
-        mat.push(row);
-        rhs.push(
-            rhs_poly
+        let index: BTreeMap<&Vec<u32>, usize> =
+            keys.iter().enumerate().map(|(i, k)| (*k, i)).collect();
+        let mut cells: Vec<Vec<(usize, Integer)>> = vec![Vec::new(); keys.len()];
+        for (j, c) in columns.iter().enumerate() {
+            for (k, v) in &c.terms {
+                let row = *index.get(k).expect("every column key is in `keys`");
+                cells[row].push((j, v.clone()));
+            }
+        }
+        let mut sys = solve::SparseSystem::new(columns.len());
+        for (i, k) in keys.iter().enumerate() {
+            let rhs = rhs_poly
                 .terms
                 .get(*k)
-                .map(|v| Rational::from(v.clone()))
-                .unwrap_or_else(zero),
-        );
-    }
+                .cloned()
+                .unwrap_or_else(|| Integer::from(0));
+            // Columns are visited in increasing `j`, so each row's cells are
+            // already sorted; `SparseSystem::push_row` asserts it in debug.
+            sys.push_row(std::mem::take(&mut cells[i]), rhs);
+        }
+        Ok(sys)
+    })?;
 
     // A degenerate (empty) system with a non-zero right-hand side cannot be
     // solved; an empty system with a zero right-hand side means `f = 0`.
-    let sol =
-        crate::sum::gosper::rational_gaussian_solve(mat, rhs).ok_or(DeclineReason::NoSolution)?;
+    let sol = match profile::timed(Phase::Solve, || system.solve()) {
+        solve::SolveOutcome::Solved(sol) => sol,
+        solve::SolveOutcome::Inconsistent => return Err(DeclineReason::NoSolution),
+        solve::SolveOutcome::GaveUp => return Err(DeclineReason::LinearSolver),
+    };
     if sol.len() != atoms.len() {
         return Err(DeclineReason::NoSolution);
     }
 
-    Ok(build_expression(ring, &atoms, &sol, &q, pool))
+    profile::timed(Phase::Rebuild, || {
+        Ok(build_expression(ring, &atoms, &sol, &q, pool))
+    })
 }
 
 /// Every exponent vector in the box `0 ≤ eᵢ ≤ bounds[i]`.
@@ -264,32 +417,6 @@ fn is_exp_monomial(ring: &NormanRing, p: &MultiPoly) -> bool {
         saw = true;
     }
     saw
-}
-
-/// `true` for the constant polynomial `1`.
-fn is_unit(p: &MultiPoly) -> bool {
-    p.terms.len() == 1 && p.terms.get(&Vec::new()).is_some_and(|c| *c == 1)
-}
-
-/// `lcm(a, b) = a·(b / gcd(a, b))`.
-///
-/// Only the literal unit is short-circuited.  A *constant* denominator is not
-/// a unit here: `RationalFunction` keeps `3/5` as `3/5`, and clearing against
-/// `lcm(5, x) = x` would leave an inexact division and a spurious decline.
-fn lcm(a: &MultiPoly, b: &MultiPoly) -> Option<MultiPoly> {
-    if is_unit(a) {
-        return Some(b.clone());
-    }
-    if is_unit(b) {
-        return Some(a.clone());
-    }
-    match a.gcd(b) {
-        Some(g) => {
-            let q = mpoly_exact_div(b, &g)?;
-            Some(a.clone() * q)
-        }
-        None => Some(a.clone() * b.clone()),
-    }
 }
 
 /// A scalar multiple `c·e`, with `c = 1` elided and integral `c` emitted as an

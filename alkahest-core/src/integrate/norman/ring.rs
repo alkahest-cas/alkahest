@@ -34,16 +34,100 @@ use rug::{Integer, Rational};
 
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::poly::multipoly::MultiPoly;
-use crate::poly::rational::RationalFunction;
+use crate::poly::rational::{mpoly_exact_div, RationalFunction};
 
 use super::DeclineReason;
 
 /// Maximum number of tower generators (excluding `x`).
+///
+/// **Observed:** 2 (so 3 variables including `x`) on both the 103-case corpus
+/// and the stress set — `exp(x)·exp(exp(x))` and `1/(x·log x·log log x)`.
+///
+/// Six is not a round number, it is where `ansatz::MAX_UNKNOWNS` takes over.
+/// The monomial box carries a per-variable bound of at least 1, so it holds at
+/// least `2^nvars` monomials: `2^7 = 128 ≤ 240` but `2^8 = 256 > 240`.  Seven
+/// variables — `x` plus six generators — is therefore the widest tower that can
+/// produce a solvable ansatz at all; an eighth generator could only ever
+/// decline with `TooLarge`, and declining on generator count is a clearer
+/// message than declining on box size.
 pub(super) const MAX_GENERATORS: usize = 6;
+
 /// Maximum number of distinct additive atoms across all exponential arguments.
+///
+/// **Observed:** 3 on both corpora (`exp(−x²)`-style arguments contribute one
+/// atom each).  The atoms are the columns of the lattice reduction, whose cost
+/// is `O(atoms² · rows)` of bignum work; 16 keeps that under a millisecond even
+/// in the worst case while being five times anything measured.
 pub(super) const MAX_ATOMS: usize = 16;
+/// Maximum expression nesting this module will accept.
+///
+/// `collect` and `to_rf` walk the expression tree recursively, and so — before
+/// either of them runs — does `simplify`.  A deeply nested integrand exhausts
+/// the stack, which *aborts the process*: strictly worse than a panic, not
+/// catchable by the caller, and reachable from user input through `parse`.
+/// Measured on this machine, a 5 000-deep chain of `Add` nodes overflows the
+/// default 8 MiB stack inside `simplify`.
+///
+/// 256 is two orders of magnitude below that and more than an order of
+/// magnitude above anything real: the deepest integrand in the 103-case corpus
+/// nests 6 levels, and `parse` flattens n-ary sums and products rather than
+/// nesting them.  [`depth_exceeds`] enforces it iteratively at the entry point,
+/// because a recursive depth check would itself overflow.
+pub(super) const MAX_DEPTH: u32 = 256;
+
+/// `true` when `expr` nests deeper than `limit`.
+///
+/// Iterative on purpose — this is the guard that stops a stack overflow, so it
+/// must not be able to cause one.  The pool is a DAG, so depths are memoised
+/// per node and the walk is linear in the number of distinct subexpressions
+/// rather than in the number of paths.
+pub(super) fn depth_exceeds(expr: ExprId, pool: &ExprPool, limit: u32) -> bool {
+    fn children(e: ExprId, pool: &ExprPool) -> Vec<ExprId> {
+        pool.with(e, |d| match d {
+            ExprData::Add(a) | ExprData::Mul(a) => a.clone(),
+            ExprData::Pow { base, exp } => vec![*base, *exp],
+            ExprData::Func { args, .. } => args.clone(),
+            _ => Vec::new(),
+        })
+    }
+
+    let mut depth: BTreeMap<ExprId, u32> = BTreeMap::new();
+    let mut queued: std::collections::BTreeSet<ExprId> = std::collections::BTreeSet::new();
+    let mut stack: Vec<(ExprId, bool)> = vec![(expr, false)];
+    queued.insert(expr);
+    while let Some((e, expanded)) = stack.pop() {
+        if expanded {
+            let d = 1 + children(e, pool)
+                .iter()
+                .filter_map(|k| depth.get(k))
+                .copied()
+                .max()
+                .unwrap_or(0);
+            if d > limit {
+                return true;
+            }
+            depth.insert(e, d);
+            continue;
+        }
+        if depth.contains_key(&e) {
+            continue;
+        }
+        stack.push((e, true));
+        for k in children(e, pool) {
+            if !depth.contains_key(&k) && queued.insert(k) {
+                stack.push((k, false));
+            }
+        }
+    }
+    false
+}
+
 /// Maximum magnitude of an integer exponent handled during ring conversion.
-const MAX_POW: i64 = 64;
+///
+/// Repeated squaring is not used, so `r^k` costs `k` rational-function
+/// multiplications; 64 is the point past which an integrand is better refused
+/// than expanded.  The largest exponent in the 103-case corpus is 6.
+const MAX_POW: u64 = 64;
 
 /// Which kind of monomial a tower generator is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,8 +145,15 @@ pub(super) struct NormanRing {
     pub vars: Vec<ExprId>,
     /// Kind of `vars[i + 1]`, stored at `kinds[i]`.
     pub kinds: Vec<GenKind>,
-    /// `dvars[i] = D(vars[i])`, as a rational function of the same ring.
-    pub dvars: Vec<RationalFunction>,
+    /// One common denominator `L` for **every** `D(vars[i])`.
+    ///
+    /// Together with [`NormanRing::dnum`] this gives `D(vars[i]) = dnum[i]/L`
+    /// with a denominator that does not depend on `i`.  That is what lets the
+    /// ansatz differentiate a monomial with polynomial arithmetic alone: see
+    /// [`NormanRing::deriv_scaled`].
+    pub dden: MultiPoly,
+    /// `dnum[i] = D(vars[i])·L`, a polynomial.
+    pub dnum: Vec<MultiPoly>,
     /// Additive atoms used to normalise exponential arguments.
     atoms: Vec<ExprId>,
     /// Common denominator applied to atom coordinates before lattice reduction.
@@ -116,32 +207,27 @@ impl NormanRing {
         self.rf(self.constant_poly(1))
     }
 
-    /// `D(p)` for a polynomial `p`: the chain rule `Σᵢ (∂p/∂vᵢ)·D(vᵢ)`.
-    pub fn deriv_poly(&self, p: &MultiPoly) -> Result<RationalFunction, DeclineReason> {
-        let mut acc = self.rf_zero();
+    /// `D(p)·L` for a polynomial `p` — the chain rule `Σᵢ (∂p/∂vᵢ)·dnum[i]`,
+    /// with `L = ` [`NormanRing::dden`] the shared derivation denominator.
+    ///
+    /// Returning the *scaled* numerator rather than a [`RationalFunction`] is
+    /// the whole point: `RationalFunction`'s operators normalise, and each
+    /// normalisation is a FLINT multivariate GCD plus two exact divisions.
+    /// Differentiating an ansatz of `n` atoms through `RationalFunction` cost
+    /// `O(n)` GCDs and dominated the module's runtime (measured: 67 % of it).
+    /// Every atom's derivative shares the denominator `L·Q²` (rational atoms)
+    /// or `L·p` (logarithm atoms), so the reduction is not merely wasted, it is
+    /// undone again by the common-denominator step that follows.
+    pub fn deriv_scaled(&self, p: &MultiPoly) -> MultiPoly {
+        let mut acc = MultiPoly::zero(self.vars.clone());
         for i in 0..self.nvars() {
             let dp = p.partial_derivative(i);
             if dp.is_zero() {
                 continue;
             }
-            let term = (self.rf(dp)? * self.dvars[i].clone())
-                .map_err(|_| DeclineReason::RingArithmetic)?;
-            acc = (acc + term).map_err(|_| DeclineReason::RingArithmetic)?;
+            acc = acc + dp * self.dnum[i].clone();
         }
-        Ok(acc)
-    }
-
-    /// `D(n/d) = (D(n)·d − n·D(d)) / d²`.
-    pub fn deriv_rf(&self, r: &RationalFunction) -> Result<RationalFunction, DeclineReason> {
-        let n = self.rf(r.numer.clone())?;
-        let d = self.rf(r.denom.clone())?;
-        let dn = self.deriv_poly(&r.numer)?;
-        let dd = self.deriv_poly(&r.denom)?;
-        let a = (dn * d.clone()).map_err(|_| DeclineReason::RingArithmetic)?;
-        let b = (n * dd).map_err(|_| DeclineReason::RingArithmetic)?;
-        let num = (a - b).map_err(|_| DeclineReason::RingArithmetic)?;
-        let den = (d.clone() * d).map_err(|_| DeclineReason::RingArithmetic)?;
-        (num / den).map_err(|_| DeclineReason::RingArithmetic)
+        acc
     }
 
     /// Convert `expr` into an element of `ℚ(x, θ₁, …, θₙ)`.
@@ -150,6 +236,18 @@ impl NormanRing {
     /// symbol, a function that is not a tower generator, a non-integer
     /// exponent, or a floating-point literal.
     pub fn to_rf(&self, expr: ExprId, pool: &ExprPool) -> Result<RationalFunction, DeclineReason> {
+        self.to_rf_at(expr, pool, 0)
+    }
+
+    fn to_rf_at(
+        &self,
+        expr: ExprId,
+        pool: &ExprPool,
+        depth: u32,
+    ) -> Result<RationalFunction, DeclineReason> {
+        if depth > MAX_DEPTH {
+            return Err(DeclineReason::TooLarge("expression nesting depth"));
+        }
         if let Some(i) = self.vars.iter().position(|&v| v == expr) {
             let mut e = vec![0u32; i + 1];
             e[i] = 1;
@@ -218,7 +316,7 @@ impl NormanRing {
             Node::Add(args) => {
                 let mut acc = self.rf_zero();
                 for a in args {
-                    let r = self.to_rf(a, pool)?;
+                    let r = self.to_rf_at(a, pool, depth + 1)?;
                     acc = (acc + r).map_err(|_| DeclineReason::RingArithmetic)?;
                 }
                 Ok(acc)
@@ -226,13 +324,13 @@ impl NormanRing {
             Node::Mul(args) => {
                 let mut acc = self.rf_one()?;
                 for a in args {
-                    let r = self.to_rf(a, pool)?;
+                    let r = self.to_rf_at(a, pool, depth + 1)?;
                     acc = (acc * r).map_err(|_| DeclineReason::RingArithmetic)?;
                 }
                 Ok(acc)
             }
             Node::Pow(base, Some(k)) => {
-                let r = self.to_rf(base, pool)?;
+                let r = self.to_rf_at(base, pool, depth + 1)?;
                 self.rf_pow(&r, k)
             }
             Node::Pow(_, None) => Err(DeclineReason::UnsupportedIntegrand(
@@ -247,7 +345,11 @@ impl NormanRing {
 
     /// `r^k` for an integer `k`; a negative `k` inverts.
     fn rf_pow(&self, r: &RationalFunction, k: i64) -> Result<RationalFunction, DeclineReason> {
-        if k.abs() > MAX_POW {
+        // `unsigned_abs`, not `abs`: `i64::MIN.abs()` overflows, which in a
+        // release build wraps back to `i64::MIN` and slips past the cap, and
+        // the loop below then runs `2^63` times.  `x^(-9223372036854775808)`
+        // is reachable from user input.
+        if k.unsigned_abs() > MAX_POW {
             return Err(DeclineReason::TooLarge("exponent magnitude"));
         }
         let base = if k < 0 {
@@ -484,7 +586,11 @@ fn collect(
     var: ExprId,
     pool: &ExprPool,
     acc: &mut Collected,
+    depth: u32,
 ) -> Result<(), DeclineReason> {
+    if depth > MAX_DEPTH {
+        return Err(DeclineReason::TooLarge("expression nesting depth"));
+    }
     enum Node {
         Leaf,
         Kids(Vec<ExprId>),
@@ -521,7 +627,7 @@ fn collect(
         ))),
         Node::Kids(kids) => {
             for k in kids {
-                collect(k, var, pool, acc)?;
+                collect(k, var, pool, acc, depth + 1)?;
             }
             Ok(())
         }
@@ -531,18 +637,18 @@ fn collect(
                     "non-integer exponent (radical or symbolic power)".to_string(),
                 ));
             }
-            collect(base, var, pool, acc)?;
-            collect(exp, var, pool, acc)
+            collect(base, var, pool, acc, depth + 1)?;
+            collect(exp, var, pool, acc, depth + 1)
         }
         Node::Exp(arg) => {
-            collect(arg, var, pool, acc)?;
+            collect(arg, var, pool, acc, depth + 1)?;
             if !acc.exp_args.contains(&arg) {
                 acc.exp_args.push(arg);
             }
             Ok(())
         }
         Node::Log(arg) => {
-            collect(arg, var, pool, acc)?;
+            collect(arg, var, pool, acc, depth + 1)?;
             if !acc.log_nodes.contains(&expr) {
                 acc.log_nodes.push(expr);
                 acc.log_args.push(arg);
@@ -563,7 +669,7 @@ pub(super) fn build(
         log_nodes: Vec::new(),
         log_args: Vec::new(),
     };
-    collect(expr, var, pool, &mut acc)?;
+    collect(expr, var, pool, &mut acc, 0)?;
 
     // --- Atoms, ordered: ordinary atoms, then logarithm generators, then `1`.
     let one = pool.integer(1_i32);
@@ -668,10 +774,12 @@ pub(super) fn build(
         }
     }
 
+    let n_vars = vars.len();
     let mut ring = NormanRing {
-        vars,
+        vars: vars.clone(),
         kinds,
-        dvars: Vec::new(),
+        dden: MultiPoly::constant(vars, 1),
+        dnum: Vec::new(),
         atoms,
         atom_denom,
         basis,
@@ -696,13 +804,94 @@ pub(super) fn build(
         }
         dvars.push((dh / hr).map_err(|_| DeclineReason::RingArithmetic)?);
     }
-    debug_assert_eq!(dvars.len(), ring.vars.len());
-    ring.dvars = dvars;
+    debug_assert_eq!(dvars.len(), n_vars);
+
+    // --- One denominator for the whole derivation table.
+    //
+    // `D(vᵢ) = dnum[i]/L` with a single `L` turns differentiating an ansatz
+    // monomial into polynomial arithmetic (see `deriv_scaled`).  The `lcm`
+    // here is at most `nvars ≤ 7` GCDs, paid once per integrand.
+    let mut dden = MultiPoly::constant(ring.vars.clone(), 1);
+    for dv in &dvars {
+        dden = lcm(&dden, &dv.denom).ok_or(DeclineReason::RingArithmetic)?;
+    }
+    let mut dnum = Vec::with_capacity(dvars.len());
+    for dv in &dvars {
+        let scale = mpoly_exact_div(&dden, &dv.denom).ok_or(DeclineReason::RingArithmetic)?;
+        dnum.push(dv.numer.clone() * scale);
+    }
+    ring.dden = dden;
+    ring.dnum = dnum;
 
     // --- Structure theorem, logarithmic half.
     check_log_independence(&ring, &acc.log_args, n_exp, pool)?;
 
     Ok(ring)
+}
+
+/// `true` for the constant polynomial `1`.
+pub(super) fn is_unit(p: &MultiPoly) -> bool {
+    p.terms.len() == 1 && p.terms.get(&Vec::new()).is_some_and(|c| *c == 1)
+}
+
+/// `lcm(a, b) = a·(b / gcd(a, b))`.
+///
+/// Only the literal unit is short-circuited.  A *constant* denominator is not
+/// a unit here: `RationalFunction` keeps `3/5` as `3/5`, and clearing against
+/// `lcm(5, x) = x` would leave an inexact division and a spurious decline.
+pub(super) fn lcm(a: &MultiPoly, b: &MultiPoly) -> Option<MultiPoly> {
+    if is_unit(a) {
+        return Some(b.clone());
+    }
+    if is_unit(b) {
+        return Some(a.clone());
+    }
+    if a == b {
+        return Some(a.clone());
+    }
+    match a.gcd(b) {
+        Some(g) => {
+            let q = mpoly_exact_div(b, &g)?;
+            Some(a.clone() * q)
+        }
+        None => Some(a.clone() * b.clone()),
+    }
+}
+
+/// `c·x^shift·p`, i.e. `p` multiplied by a single monomial term.
+///
+/// Multiplying by a monomial is a relabelling of the exponent keys, so it costs
+/// `O(|p|)` key copies and coefficient multiplications rather than the
+/// `O(|p|·|m|)` of a general product.  The ansatz's inner loop is nothing but
+/// this operation, which is why it is worth spelling out.
+pub(super) fn shift_scale(p: &MultiPoly, shift: &[u32], c: &Integer) -> MultiPoly {
+    let mut terms = BTreeMap::new();
+    if *c == 0 {
+        return MultiPoly {
+            vars: p.vars.clone(),
+            terms,
+        };
+    }
+    for (exp, coeff) in &p.terms {
+        let n = exp.len().max(shift.len());
+        let mut key = Vec::with_capacity(n);
+        for i in 0..n {
+            key.push(exp.get(i).copied().unwrap_or(0) + shift.get(i).copied().unwrap_or(0));
+        }
+        while key.last() == Some(&0) {
+            key.pop();
+        }
+        // Distinct source keys stay distinct under a shift, so no accumulation
+        // is needed — but `insert` is used rather than a bare push so that a
+        // future caller passing a non-canonical `p` cannot silently lose terms.
+        let entry = terms.entry(key).or_insert_with(|| Integer::from(0));
+        *entry += coeff.clone() * c.clone();
+    }
+    terms.retain(|_, v| *v != 0);
+    MultiPoly {
+        vars: p.vars.clone(),
+        terms,
+    }
 }
 
 /// `d/dx e`, converted into the ring.

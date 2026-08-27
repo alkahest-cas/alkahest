@@ -67,7 +67,11 @@
 //!    are there because construction arguments have bugs.
 //!
 //! A singular or inconsistent linear system declines
-//! ([`DeclineReason::NoSolution`]); it never produces a partial answer.
+//! ([`DeclineReason::NoSolution`]); it never produces a partial answer.  The
+//! solver keeps "this system has no solution" and "I gave up"
+//! ([`DeclineReason::LinearSolver`]) apart, and separately substitutes its
+//! answer back into the untouched system before returning it — so a solver bug
+//! costs a decline rather than a wrong antiderivative.
 //!
 //! # Coverage
 //!
@@ -107,10 +111,14 @@
 //! * **The independence checks are conservative.**  A tower whose generators
 //!   *are* independent but which the checks cannot certify is declined rather
 //!   than attempted.  `∫f(log 2x, log x)` is the canonical example.
-//! * **Size caps.**  The ansatz box, the common denominator and the linear
-//!   system are capped (`ring::MAX_GENERATORS` and the constants in
-//!   `ansatz`); exceeding any of them declines with
-//!   [`DeclineReason::TooLarge`] rather than running to exhaustion.
+//! * **Size caps.**  The expression's nesting depth, the tower's generator and
+//!   atom count, the ansatz box, the common denominator, the linear system and
+//!   the solver's fill-in are all capped (`ring::MAX_DEPTH`,
+//!   `ring::MAX_GENERATORS`, `ring::MAX_ATOMS`, the constants in `ansatz`, and
+//!   `solve::MAX_CELLS`).  Every one of them carries the measurement it was set
+//!   against; exceeding any declines with [`DeclineReason::TooLarge`] rather
+//!   than running to exhaustion.  What is *not* capped is wall-clock time:
+//!   there is no budget hook here, so the ceilings are all structural proxies.
 //! * **It is not wired into [`crate::integrate::integrate`].**  This is a
 //!   separate entry point on purpose, so its coverage can be measured against
 //!   the existing engine before any routing change is made.
@@ -123,8 +131,12 @@ use crate::integrate::{
 use crate::kernel::{ExprId, ExprPool};
 
 pub(crate) mod ansatz;
+pub(crate) mod profile;
 pub(crate) mod ring;
+pub(crate) mod solve;
 
+#[cfg(test)]
+mod bench;
 #[cfg(test)]
 mod tests;
 
@@ -142,8 +154,17 @@ pub enum DeclineReason {
     /// equating coefficients of monomials would not be meaningful.
     DependentGenerators(&'static str),
     /// The linear system was inconsistent, or the ansatz simply did not
-    /// contain the answer.  **Not** a proof that no answer exists.
+    /// contain the answer.  **Not** a proof that no answer exists — an
+    /// inconsistent system only says the antiderivative is not in *this*
+    /// ansatz.
     NoSolution,
+    /// The linear solver itself gave up — a fill-in cap during elimination, or
+    /// a solution that failed its own substitution check.
+    ///
+    /// Kept apart from [`DeclineReason::NoSolution`] because the two license
+    /// different follow-ups: a larger ansatz might fix `NoSolution`, whereas
+    /// this says nothing at all about the integrand.
+    LinearSolver,
     /// A size cap was hit before the linear algebra could run.
     TooLarge(&'static str),
     /// Exact arithmetic in the ring failed (a zero denominator, a FLINT
@@ -167,6 +188,11 @@ impl fmt::Display for DeclineReason {
                 f,
                 "the Risch–Norman ansatz did not close (this is not a \
                  non-elementarity result)"
+            ),
+            DeclineReason::LinearSolver => write!(
+                f,
+                "the linear solver gave up (this is not a statement about the \
+                 integrand)"
             ),
             DeclineReason::TooLarge(what) => write!(f, "{what} exceeded the size cap"),
             DeclineReason::RingArithmetic => write!(f, "exact ring arithmetic failed"),
@@ -254,24 +280,26 @@ pub fn integrate_parallel_risch(
         Err(reason) => return ParallelRischOutcome::Declined(reason),
     };
 
-    // Gate 1 — an exact identity in the ring.  Differentiate the *rebuilt*
-    // expression with the general-purpose `diff` (not the ring's derivation
-    // table, so a bug in that table cannot hide here), read the result back
-    // into `ℚ(x, θ)`, and require it to equal `f` exactly.
-    if ring_identity_holds(&ring, candidate, f.clone(), var, pool) {
-        return ParallelRischOutcome::Solved {
-            antiderivative: candidate,
-            verification: AntiderivativeVerification::Exact,
-        };
-    }
-    // Gate 2 — the engine's own gate, which also accepts a numeric agreement.
-    match verify_antiderivative_status(candidate, expr, var, pool) {
-        Some(verification) => ParallelRischOutcome::Solved {
-            antiderivative: candidate,
-            verification,
-        },
-        None => ParallelRischOutcome::Declined(DeclineReason::VerificationFailed),
-    }
+    profile::timed(profile::Phase::Verify, || {
+        // Gate 1 — an exact identity in the ring.  Differentiate the *rebuilt*
+        // expression with the general-purpose `diff` (not the ring's derivation
+        // table, so a bug in that table cannot hide here), read the result back
+        // into `ℚ(x, θ)`, and require it to equal `f` exactly.
+        if ring_identity_holds(&ring, candidate, f.clone(), var, pool) {
+            return ParallelRischOutcome::Solved {
+                antiderivative: candidate,
+                verification: AntiderivativeVerification::Exact,
+            };
+        }
+        // Gate 2 — the engine's own gate, which also accepts a numeric agreement.
+        match verify_antiderivative_status(candidate, expr, var, pool) {
+            Some(verification) => ParallelRischOutcome::Solved {
+                antiderivative: candidate,
+                verification,
+            },
+            None => ParallelRischOutcome::Declined(DeclineReason::VerificationFailed),
+        }
+    })
 }
 
 /// `d/dx candidate == f` as an exact identity in the ring.
@@ -313,9 +341,21 @@ fn attempt(
     ),
     DeclineReason,
 > {
-    let normalized = crate::simplify::engine::simplify(expr, pool).value;
-    let ring = ring::build(normalized, var, pool)?;
-    let f = ring.to_rf(normalized, pool)?;
+    // Before anything else, including `simplify`.  A deeply nested integrand
+    // overflows the stack inside the recursive walks this pipeline is built
+    // from, and a stack overflow aborts the process instead of raising.  The
+    // check is iterative so that the guard cannot trip the thing it guards.
+    if ring::depth_exceeds(expr, pool, ring::MAX_DEPTH) {
+        return Err(DeclineReason::TooLarge("expression nesting depth"));
+    }
+    let normalized = profile::timed(profile::Phase::Normalize, || {
+        crate::simplify::engine::simplify(expr, pool).value
+    });
+    let ring = profile::timed(profile::Phase::RingBuild, || {
+        ring::build(normalized, var, pool)
+    })?;
+    profile::record(|s| s.generators = ring.nvars());
+    let f = profile::timed(profile::Phase::ToRf, || ring.to_rf(normalized, pool))?;
     if f.numer.is_zero() {
         return Ok((pool.integer(0_i32), ring, f));
     }
