@@ -13,8 +13,8 @@ boundary was correct at runtime and invisible beforehand.
 3.9.0 moved ten names across it. First `asinh`, `acosh`, `atanh`, `erf`,
 `erfc`; then `bessel_j0`, `bessel_j1`, `digamma`, `lambert_w` and `gamma`,
 which finished the M7 list (`gamma` gained a ball kernel at the same time —
-it had neither before).  3.10.0 moved three more: `trigamma` and the Fresnel pair
-`fresnels`/`fresnelc`.  Each time the sets below were the only
+it had neither before).  3.10.0 moved four more: `trigamma`, the Fresnel pair
+`fresnels`/`fresnelc` and `dilog`.  Each time the sets below were the only
 thing that had to change, because the flag itself is derived from the
 evaluator.
 
@@ -114,9 +114,10 @@ def test_supported_set_is_the_elementary_plus_special_fragment():
     (`alkahest-core/src/primitive/expint.rs`) and `trigamma`, which is what
     makes `digamma` differentiable.
     Twenty-six names: the elementary fragment, plus the special functions
+    Twenty-seven names: the elementary fragment, plus the special functions
     M7 called for — the Bessel pair, `digamma`, `gamma` and `lambert_w` — plus
-    the 3.10.0 additions `trigamma` and the Fresnel pair
-    `fresnels`/`fresnelc`.
+    the 3.10.0 additions `trigamma`, the Fresnel pair `fresnels`/`fresnelc`
+    and `dilog`.
 
     Widening this set is a feature (add the rule, then add the name here);
     narrowing it silently would be a regression an agent's plan depends on.
@@ -142,6 +143,7 @@ def test_supported_set_is_the_elementary_plus_special_fragment():
         "cos",
         "cosh",
         "digamma",
+        "dilog",
         "erf",
         "erfc",
         "exp",

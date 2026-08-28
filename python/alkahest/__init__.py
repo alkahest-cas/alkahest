@@ -196,6 +196,8 @@ from .alkahest import (  # noqa: F401
     diff,
     diff_forward,
     digamma,
+    # 3.10.0 — dilogarithm (principal branch, cut on [1, inf))
+    dilog,
     # Elliptic special functions (parameter convention m = k²)
     elliptic_e,
     elliptic_f,
@@ -2309,6 +2311,7 @@ __all__ = [
     # P1 search plumbing item 5 — batch/streaming fan-out
     "diff_many",
     "digamma",
+    "dilog",
     "diophantine",
     # Elliptic special functions (parameter convention m = k²)
     "elliptic_e",

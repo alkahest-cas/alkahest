@@ -348,11 +348,13 @@ mod tests {
             // antiderivative carrying it is unverifiable at the enclosure
             // tier even though `diff` handles it.
             // 3.10.0: the Fresnel pair and trigamma. The
+            // 3.10.0: the Fresnel pair, the dilogarithm and trigamma. The
             // rigorous tier has to reach them, or an antiderivative carrying
             // one is unverifiable at the enclosure tier even though `diff`
             // handles it.
             "fresnels",
             "fresnelc",
+            "dilog",
             "trigamma",
         ] {
             assert!(taylor_model_supports(name), "`{name}` lost its rule");

@@ -2295,6 +2295,286 @@ impl TaylorModel {
         self.fresnel(false)
     }
 
+    // ── Dilogarithm (3.10.0) ─────────────────────────────────────────────
+
+    /// Upper bound on `|w(z)| = |−log(1−z)/z|` — the derivative of `Li₂` —
+    /// over every `z` within `r` of the real interval `[lo, hi]`.
+    ///
+    /// `None` unless `1 − hi − r > 0`, i.e. unless the whole disc stays clear
+    /// of the branch cut `[1, ∞)`.
+    ///
+    /// Split at `|z| = 1/2`, which is what makes this uniform where the naive
+    /// quotient bound is not — `w` is analytic at the origin, so a bound that
+    /// divides by `|z|` falls apart on any disc containing `0` even though
+    /// nothing is wrong there:
+    ///
+    /// * `|z| ≤ 1/2`: `|w(z)| ≤ Σ|z|ᵏ/(k+1) = −log(1−|z|)/|z| ≤ 2·log 2`,
+    ///   the majorant being increasing in `|z|`;
+    /// * `|z| > 1/2`: `|w(z)| ≤ |log(1−z)|/|z| ≤ 2·(|log|1−z|| + π)`, using
+    ///   `|log ζ| ≤ |log|ζ|| + |arg ζ|` on the principal branch.
+    ///
+    /// and `|1 − z| ∈ [1 − hi − r, 1 − lo + r]` for `z` in the region.
+    fn dilog_w_bound(lo: &Float, hi: &Float, r: &Float, prec: u32) -> Option<ArbBall> {
+        let rb = from_float(r, prec);
+        let one = ArbBall::from_f64(1.0, prec);
+        let near = lb(&(one.clone() - from_float(hi, prec) - rb.clone()));
+        if !strictly_positive(&near) {
+            return None;
+        }
+        let far = ub(&(one - from_float(lo, prec) + rb));
+        let l_near = from_float(&near, prec).log()?;
+        let l_far = from_float(&far, prec).log()?;
+        let biggest = if mag(&l_near) > mag(&l_far) {
+            mag(&l_near)
+        } else {
+            mag(&l_far)
+        };
+        let pi = Self::pi_ball(prec);
+        let quotient = (from_float(&biggest, prec) + pi) * ArbBall::from_f64(2.0, prec);
+        // 2·log 2 ≈ 1.3863, the `|z| ≤ 1/2` branch.
+        let series =
+            ArbBall::from_f64(1.386_294_361_119_891, prec) + ArbBall::from_f64(1e-15, prec);
+        let out = if mag(&quotient) > mag(&series) {
+            quotient
+        } else {
+            series
+        };
+        is_finite(&out).then_some(out)
+    }
+
+    /// Below this expansion point the coefficient recurrence is run
+    /// **backwards**; at or above it, forwards.  See
+    /// [`Self::dilog_deriv_coeffs`].
+    const DILOG_FORWARD_FROM: f64 = 0.4;
+
+    /// Taylor coefficients `uⱼ = w⁽ʲ⁾(m₀)/j!` of `w = Li₂′` for `j = 0..count`.
+    ///
+    /// From `x·w(x) = −log(1−x)`, expanding both sides about `m₀` with
+    /// `v₀ = −log(1−m₀)` and `vⱼ = 1/(j·(1−m₀)ʲ)` gives
+    ///
+    /// ```text
+    /// m₀·u₀ = v₀,        m₀·uⱼ + u_{j−1} = vⱼ   (j ≥ 1).
+    /// ```
+    ///
+    /// **Two directions, because one recurrence is stable in exactly the range
+    /// where the other is not.**  The coefficients have the natural size
+    /// `|uⱼ| ~ ρ⁻ʲ` with `ρ = 1 − m₀` the distance to the branch point, so:
+    ///
+    /// * run **forwards** (`uⱼ = (vⱼ − u_{j−1})/m₀`) and a relative error is
+    ///   multiplied by `ρ/|m₀|` per step — contracting iff `|m₀| > 1 − m₀`;
+    /// * run **backwards** (`u_{j−1} = vⱼ − m₀·uⱼ`, Miller's algorithm) and it
+    ///   is multiplied by `|m₀|/ρ` — contracting iff `|m₀| < 1 − m₀`.
+    ///
+    /// The crossover is `m₀ = 1/2`; the switch is set slightly below it, at
+    /// [`Self::DILOG_FORWARD_FROM`] `= 0.4`, so that *both* branches run with a
+    /// contraction factor of at most `2/3` rather than one of them sitting at
+    /// exactly `1`.  Backwards needs no accurate starting value — only a
+    /// rigorous *bound* on `u_J`, from Cauchy's estimate — and the interval
+    /// then contracts on the way down, so what comes out is sound whatever `J`
+    /// is; `J` only decides how tight.
+    ///
+    /// `J` is chosen so the contraction has eaten `prec` bits, capped at
+    /// `count + 2048`.  Beyond that cap — which needs `m₀ ≲ −180` at 96 bits —
+    /// the coefficients stay *rigorous* but widen, and `bound_on_box` returns a
+    /// looser (never a wrong) enclosure.
+    ///
+    /// **The Cauchy radius has to be pressed right up against `ρ`.**  Absolute
+    /// error grows by `|m₀|` per backward step, so a start built at radius `r`
+    /// arrives at `j = 0` multiplied by `(|m₀|/r)^J`; taking a comfortable
+    /// `r = 0.9ρ` instead of `r ≈ ρ` therefore costs a factor `(1/0.9)^J`,
+    /// which at `J ≈ 1100` is `e¹¹⁸` and destroys the answer.  `r = ρ(1 −
+    /// 1/2J)` costs only `(1 − 1/2J)^{−J} → √e ≈ 1.65`, and `M(r)` — the
+    /// numerator — grows merely like `log(2J)` as `r → ρ`, because `w` blows
+    /// up only logarithmically at the branch point.
+    fn dilog_deriv_coeffs(m0: &ArbBall, count: usize, prec: u32) -> Result<Vec<ArbBall>> {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        let one = ArbBall::from_f64(1.0, prec);
+        let one_minus = one.clone() - m0.clone();
+        if !strictly_positive(&lb(&one_minus)) {
+            return Err(ValidatedError::DomainViolation {
+                what: "dilog expansion point at or past the branch point 1".into(),
+            });
+        }
+        let q = Self::div_ball(&one, &one_minus)?;
+        let v0 = -one_minus
+            .clone()
+            .log()
+            .ok_or_else(|| ValidatedError::DomainViolation {
+                what: "log of a non-positive interval in the dilog expansion".into(),
+            })?;
+        let m0f = m0.mid.to_f64();
+
+        if m0f >= Self::DILOG_FORWARD_FROM {
+            let mut out = Vec::with_capacity(count);
+            let mut u = Self::div_ball(&v0, m0)?;
+            out.push(u.clone());
+            let mut pw = q.clone(); // qʲ
+            for j in 1..count {
+                let vj = Self::div_ball(&pw, &ArbBall::from_f64(j as f64, prec))?;
+                u = Self::div_ball(&(vj - u), m0)?;
+                out.push(u.clone());
+                pw = pw * q.clone();
+            }
+            return Ok(out);
+        }
+        let mut out = vec![ArbBall::from_f64(0.0, prec); count];
+
+        let ratio = (1.0 - m0f) / m0f.abs();
+        let steps = if ratio.is_finite() && ratio > 1.0 {
+            let s = f64::from(prec) * std::f64::consts::LN_2 / ratio.ln();
+            if s.is_finite() {
+                (s.ceil() as usize).clamp(32, 2048)
+            } else {
+                32
+            }
+        } else {
+            32
+        };
+        let jmax = count + steps;
+
+        // r = ρ·(1 − 1/2J): as close to the disc of analyticity as the
+        // logarithmic growth of `M(r)` allows.
+        let shrink = ArbBall::from_f64(1.0 - 0.5 / (jmax as f64), prec);
+        let rho = lb(&(one_minus.clone() * shrink));
+        if !strictly_positive(&rho) {
+            return Err(ValidatedError::DomainViolation {
+                what: "dilog expansion point too close to the branch cut".into(),
+            });
+        }
+        let m0_mid = Float::with_val(prec, &m0.mid);
+        let bound = Self::dilog_w_bound(&m0_mid, &m0_mid, &rho, prec).ok_or_else(|| {
+            ValidatedError::DomainViolation {
+                what: "dilog expansion point too close to the branch cut".into(),
+            }
+        })?;
+        let start = Self::div_ball(&bound, &from_float(&rho, prec).powi(jmax as i64))?;
+        let mut u = symmetric(&mag(&start), prec);
+        // pw = q^j, walked down by multiplying by (1 − m₀) rather than
+        // dividing by q, so the exponent never has to be recomputed.
+        let mut pw = q.powi(jmax as i64);
+        for j in (1..=jmax).rev() {
+            let vj = Self::div_ball(&pw, &ArbBall::from_f64(j as f64, prec))?;
+            u = vj - m0.clone() * u;
+            if j - 1 < count {
+                out[j - 1] = u.clone();
+            }
+            pw = pw * one_minus.clone();
+        }
+        Ok(out)
+    }
+
+    /// `Li₂(self)`, principal branch.  Refuses unless the argument enclosure
+    /// stays strictly left of the branch point `1`.
+    ///
+    /// **Domain.**  The cut is `[1, ∞)` (DLMF §25.12(i)); `Li₂` is real and
+    /// analytic on `(−∞, 1)`.  The point `x = 1` itself is in the *function's*
+    /// domain (`Li₂(1) = π²/6`) but not in this rule's: `Li₂′ = −log(1−x)/x`
+    /// is unbounded there, so no Taylor model of any order exists on a box
+    /// touching it.
+    ///
+    /// **Coefficients.**  `a₀ = Li₂(m₀)` from MPFR's correctly-rounded
+    /// `mpfr_li2`; `a_{j+1} = uⱼ/(j+1)` where `uⱼ` are the coefficients of
+    /// `Li₂′` from [`Self::dilog_deriv_coeffs`], since integrating the
+    /// derivative's series term by term divides the `j`-th coefficient by
+    /// `j+1`.
+    ///
+    /// **Remainder.**  `Li₂` is analytic on `ℂ ∖ [1, ∞)`, so Cauchy's estimate
+    /// holds for every `r` with `1 − U − r > 0` (`U` the enclosure's upper
+    /// end):
+    ///
+    /// ```text
+    /// |Li₂⁽ᵖ⁺¹⁾(ξ)|/(p+1)!  =  |w⁽ᵖ⁾(ξ)|/(p+1)!  ≤  sup|w| / ((p+1)·r^p),
+    /// ```
+    ///
+    /// with `sup|w|` from [`Self::dilog_w_bound`].  Every `r` is valid, so the
+    /// ladder tried below is a tightness choice only.  The same estimate at
+    /// the expansion point feeds [`Self::geometric_tail`] with `ρ = r`, and
+    /// the smaller of the two is kept.
+    pub fn dilog(&self) -> Result<Self> {
+        self.check_finite("dilog argument")?;
+        let prec = self.prec;
+        let (m0, delta) = self.center_split();
+        let d = delta.range();
+        let arg = from_float(&m0, prec) + d.clone();
+        if !is_finite(&arg) {
+            return Err(ValidatedError::NotFinite {
+                what: "dilog argument".into(),
+            });
+        }
+        let arg_lo = lb(&arg);
+        let arg_hi = ub(&arg);
+        if !strictly_positive(&Float::with_val(prec, 1.0 - arg_hi.clone())) {
+            return Err(ValidatedError::DomainViolation {
+                what: "dilog of an argument whose enclosure reaches the branch point at 1 (the cut runs along [1, ∞))".into(),
+            });
+        }
+        let c = from_float(&m0, prec);
+        let p1 = self.order + 1;
+
+        let mut a = Vec::with_capacity(p1);
+        a.push(
+            crate::primitive::polylog::dilog_ball_point(&m0, prec).ok_or_else(|| {
+                ValidatedError::DomainViolation {
+                    what: "dilog expansion point past the branch point 1".into(),
+                }
+            })?,
+        );
+        if self.order >= 1 {
+            let u = Self::dilog_deriv_coeffs(&c, self.order, prec)?;
+            for (j, uj) in u.iter().enumerate() {
+                a.push(Self::div_ball(
+                    uj,
+                    &ArbBall::from_f64((j + 1) as f64, prec),
+                )?);
+            }
+        }
+
+        let gap_box = Float::with_val(prec, 1.0 - arg_hi.clone());
+        let gap_pt = ub(&(ArbBall::from_f64(1.0, prec) - c.clone()));
+        let dpow = ArbBall {
+            mid: delta.delta_pow(&d),
+            rad: Float::new(prec),
+            prec,
+        };
+        let mut lagrange: Option<Float> = None;
+        let mut tail: Option<Float> = None;
+        for frac in [0.5_f64, 0.75, 0.9, 0.99] {
+            let r_box = Float::with_val(prec, &gap_box * frac);
+            if strictly_positive(&r_box) {
+                if let Some(sup) = Self::dilog_w_bound(&arg_lo, &arg_hi, &r_box, prec) {
+                    let denom = from_float(&r_box, prec).powi(self.order as i64)
+                        * ArbBall::from_f64(p1 as f64, prec);
+                    if let Ok(q) = Self::div_ball(&sup, &denom) {
+                        let cand = ub(&(q * dpow.clone()));
+                        keep_smaller(&mut lagrange, cand);
+                    }
+                }
+            }
+            let r_pt = Float::with_val(prec, &gap_pt * frac);
+            if !strictly_positive(&r_pt) {
+                continue;
+            }
+            let m0f = Float::with_val(prec, &m0);
+            if let Some(sup) = Self::dilog_w_bound(&m0f, &m0f, &r_pt, prec) {
+                let cc = sup * from_float(&r_pt, prec);
+                if let Some(t) = Self::geometric_tail(&cc, &mag(&d), &r_pt, p1, prec) {
+                    keep_smaller(&mut tail, t);
+                }
+            }
+        }
+        let radius = Self::tighter(
+            lagrange.ok_or_else(|| ValidatedError::NotFinite {
+                what: "dilog remainder bound".into(),
+            })?,
+            tail,
+        );
+        let out = delta.compose(&a, &radius);
+        out.check_finite("dilog result")?;
+        Ok(out)
+    }
+
     // ── Trigamma (3.10.0) ────────────────────────────────────────────────
 
     /// `ψ₁(self) = ψ′(self)`.  Refuses unless the argument enclosure lies
@@ -2618,6 +2898,7 @@ impl<'a> TaylorContext<'a> {
                     "Chi" => crate::primitive::expint::taylor_chi(&x),
                     "fresnels" => x.fresnel_s(),
                     "fresnelc" => x.fresnel_c(),
+                    "dilog" => x.dilog(),
                     "abs" => x.abs(),
                     other => Err(ValidatedError::Unsupported {
                         what: format!("function `{other}`"),
@@ -3991,6 +4272,97 @@ mod tests {
                     "{name} on [{lo}, {hi}]"
                 );
             }
+        }
+    }
+
+    /// `Li₂(−1) = −π²/12` (DLMF 25.12.2) and `Li₂(½) = π²/12 − log²2/2`
+    /// (Lewin eq. 1.16).
+    #[test]
+    fn the_dilog_rule_encloses_its_published_values() {
+        let pi2 = std::f64::consts::PI * std::f64::consts::PI;
+        let ln2 = std::f64::consts::LN_2;
+        encloses(&[
+            ("dilog", -1.0, -pi2 / 12.0),
+            ("dilog", 0.5, pi2 / 12.0 - 0.5 * ln2 * ln2),
+            ("dilog", 0.0, 0.0),
+        ]);
+    }
+
+    /// Far into the inversion branch the coefficient recurrence runs backwards
+    /// for over a thousand steps.  There is no published closed form here, so
+    /// the reference is MPFR's correctly-rounded `mpfr_li2`; the enclosure has
+    /// to stay tight, not merely finite — an over-wide answer here is exactly
+    /// what a mis-chosen Cauchy radius produces.
+    #[test]
+    fn the_dilog_rule_stays_tight_on_the_far_inversion_branch() {
+        use crate::validated::bounds::{bound_on_box, BoundOptions};
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let opts = BoundOptions {
+            order: 5,
+            prec: 128,
+            tol: 1e-12,
+            max_subdivisions: 64,
+        };
+        for at in [-30.0_f64, -200.0] {
+            let e = pool.func("dilog", vec![x]);
+            let r = bound_on_box(e, &pool, &[(x, at, at)], &opts)
+                .unwrap_or_else(|err| panic!("dilog({at}): {err}"));
+            let lo = lb(r.enclosure()).to_f64();
+            let hi = ub(r.enclosure()).to_f64();
+            let want = Float::with_val(200, at).li2().to_f64();
+            assert!(hi - lo < 1e-10, "dilog({at}): [{lo}, {hi}] is loose");
+            assert!(
+                lo - 1e-12 <= want && want <= hi + 1e-12,
+                "dilog({at}): {want} outside [{lo}, {hi}]"
+            );
+        }
+    }
+
+    /// The dilog rule has two coefficient recurrences meeting at `m₀ = 0.4`.
+    /// They compute the same numbers, so either side of the seam must agree
+    /// with the closed forms — a mismatch here is the bug a single-branch test
+    /// would never see.
+    #[test]
+    fn the_dilog_coefficient_recurrences_agree_across_their_seam() {
+        let prec = 128;
+        for m in [0.399_999_9_f64, 0.4, 0.400_000_1] {
+            let c = ArbBall::from_f64(m, prec);
+            let u = TaylorModel::dilog_deriv_coeffs(&c, 8, prec).unwrap();
+            // u₀ = Li₂′(m) = −log(1−m)/m, independently.
+            let want = -(1.0 - m).ln() / m;
+            assert!(
+                (u[0].mid.to_f64() - want).abs() < 1e-12,
+                "m = {m}: u₀ = {} vs {want}",
+                u[0].mid.to_f64()
+            );
+            // u₁ = Li₂″(m) = 1/((1−m)m) + log(1−m)/m².
+            let want1 = 1.0 / ((1.0 - m) * m) + (1.0 - m).ln() / (m * m);
+            assert!(
+                (u[1].mid.to_f64() - want1).abs() < 1e-10,
+                "m = {m}: u₁ = {} vs {want1}",
+                u[1].mid.to_f64()
+            );
+            assert!(u.iter().all(is_finite), "m = {m}: non-finite");
+        }
+    }
+
+    /// The cut is `[1, ∞)`.  `x = 1` is in the *function's* domain
+    /// (`Li₂(1) = π²/6`) but not in this rule's: `Li₂′ = −log(1−x)/x` is
+    /// unbounded there, so no Taylor model of any order exists on a box
+    /// touching it.
+    #[test]
+    fn the_dilog_rule_refuses_past_its_branch_cut() {
+        use crate::validated::bounds::{bound_on_box, BoundOptions};
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let opts = BoundOptions::default();
+        for (lo, hi) in [(0.5_f64, 1.0_f64), (1.0, 2.0), (2.0, 3.0)] {
+            let e = pool.func("dilog", vec![x]);
+            assert!(
+                bound_on_box(e, &pool, &[(x, lo, hi)], &opts).is_err(),
+                "dilog on [{lo}, {hi}] must refuse"
+            );
         }
     }
 }

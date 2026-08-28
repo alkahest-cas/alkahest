@@ -493,6 +493,7 @@ fn latex_func_name(name: &str) -> String {
         "fresnels" => r"S".into(),
         "fresnelc" => r"C".into(),
         "trigamma" => r"\psi_1".into(),
+        "dilog" => r"\operatorname{Li}_2".into(),
         other => format!(r"\operatorname{{{other}}}"),
     }
 }
@@ -823,6 +824,7 @@ fn unicode_func(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
                 // integrals, and the principal-branch dilogarithm.
                 "fresnels" => "S",
                 "fresnelc" => "C",
+                "dilog" => "Li₂",
                 "asin" => "arcsin",
                 "acos" => "arccos",
                 "atan" => "arctan",

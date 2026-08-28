@@ -468,6 +468,29 @@
 
   New: `alkahest.fresnels`, `alkahest.fresnelc`.
 
+- **Dilogarithm `dilog`** — `Li₂` on the **principal branch, cut along
+  `[1, ∞)`** (DLMF §25.12(i), Lewin §1.1, Mathematica `PolyLog[2, z]`): real
+  on `(−∞, 1]` with `Li₂(1) = π²/6`, and declining for `x > 1` where the
+  principal value is complex, rather than silently returning its real part.
+  `Li₂′ = −log(1−x)/x`. Bernoulli series on `[−1, ½]`, reached by the
+  inversion (`x < −1`) and reflection (`x > ½`) identities; worst relative
+  error `5.0·10⁻¹⁶` over a 34 000-point sweep of `[−10⁶, 1]` against MPFR's
+  correctly-rounded `mpfr_li2`, an independent implementation. Full bundle
+  including a Taylor-model rule whose coefficient recurrence runs forwards
+  above `m₀ = 0.4` and backwards (Miller) below it, because each direction is
+  stable exactly where the other is not.
+
+  Shipped as `dilog` rather than a general `polylog(s, x)`: `∂Li_s/∂s` has no
+  closed form, so a binary `polylog` would ship with a *permanently* declined
+  partial, and every `Func` rule in the validated Taylor tier is unary, so it
+  would also be invisible to `bound_on_box`. `Li₁` needs no primitive — it is
+  `-log(1 - x)`.
+
+  New: `alkahest.dilog`. None of the four new names is wired into either
+  parser — like `digamma` and `bessel_j0`, they are constructor-only for now.
+  Nothing in `integrate/` was touched: emitting Fresnel or `Li₂` forms from
+  `∫sin(x²)dx`, `∫log(x)/(1+x)dx` and friends is a separate change.
+
 ## 3.9.0 — 2026-08-14
 
 Everything in this section landed **after `v3.8.0` was tagged and published**,

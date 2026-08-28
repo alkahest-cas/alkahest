@@ -2942,6 +2942,26 @@ fn fresnelc(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "fresnelc", expr)
 }
 
+/// Dilogarithm ``Li₂(x) = Σ_{k≥1} xᵏ/k²``, principal branch.
+///
+/// The branch cut runs along ``[1, ∞)`` (DLMF §25.12(i), Lewin §1.1,
+/// Mathematica ``PolyLog[2, z]``).  ``Li₂`` is real on ``(−∞, 1]`` — the
+/// endpoint included, ``Li₂(1) = π²/6`` — and numeric evaluation declines for
+/// ``x > 1``, where the principal value is complex.
+///
+/// ``d/dx Li₂(x) = −log(1 − x)/x``.
+///
+/// Alkahest ships ``dilog`` rather than a general ``polylog(s, x)``: see the
+/// module documentation of ``alkahest-core/src/primitive/polylog.rs`` for the
+/// reasoning (``∂Li_s/∂s`` has no closed form, and the rigorous Taylor tier is
+/// unary).  ``Li₁(x)`` needs no primitive — it is ``-log(1 - x)``.
+///
+/// Stable top-level export.
+#[pyfunction]
+fn dilog(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "dilog", expr)
+}
+
 /// Heaviside step `θ(x)` (registered primitive; `θ(0) = 1/2`).
 ///
 /// Surfaced under `alkahest.experimental` to avoid mutating the frozen
@@ -15398,6 +15418,7 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(trigamma, m)?)?;
     m.add_function(wrap_pyfunction!(fresnels, m)?)?;
     m.add_function(wrap_pyfunction!(fresnelc, m)?)?;
+    m.add_function(wrap_pyfunction!(dilog, m)?)?;
     m.add_function(wrap_pyfunction!(heaviside, m)?)?;
     m.add_function(wrap_pyfunction!(dirac_delta, m)?)?;
     // Experimental calculus / ODE / transform surface (PRs #152–#161).

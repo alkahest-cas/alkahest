@@ -961,7 +961,7 @@ impl ArbBall {
         b
     }
 
-    // ── Fresnel integrals, trigamma (3.10.0) ─────────────────────────────
+    // ── Fresnel integrals, dilogarithm, trigamma (3.10.0) ────────────────
 
     /// Fresnel sine integral `S(x) = ∫₀ˣ sin(πt²/2) dt`, normalised (π/2)
     /// convention — see [`crate::primitive::fresnel`].
@@ -991,6 +991,32 @@ impl ArbBall {
             // sup|S′| = sup|C′| = 1, so the Lipschitz radius is the input
             // radius, plus whatever the point kernel could not resolve.
             rad: Float::with_val(prec, &self.rad + &point.rad),
+            prec,
+        };
+        b.add_rounding_error();
+        Some(b)
+    }
+
+    /// Dilogarithm `Li₂(x)`, principal branch (cut on `[1, ∞)`).  `None` when
+    /// the enclosure reaches past `1`.
+    ///
+    /// An **endpoint hull**, which is valid here — unlike for `bessel_jn` —
+    /// because `Li₂′(x) = −log(1−x)/x > 0` on all of `(−∞, 1)`: for `0 < x < 1`
+    /// both factors are positive, for `x < 0` both are negative, and the
+    /// removable point `x = 0` has `Li₂′(0) = 1`.  So `Li₂` is strictly
+    /// increasing on its real domain and its range over `[a, b]` is exactly
+    /// `[Li₂(a), Li₂(b)]`.
+    pub fn dilog(&self) -> Option<Self> {
+        let prec = self.prec;
+        let lo = crate::primitive::polylog::dilog_ball_point(&self.lo(), prec)?;
+        let hi = crate::primitive::polylog::dilog_ball_point(&self.hi(), prec)?;
+        let low = lo.lo();
+        let high = hi.hi();
+        let sum = Float::with_val(prec, &low + &high);
+        let diff = Float::with_val(prec, &high - &low);
+        let mut b = ArbBall {
+            mid: sum / 2_f64,
+            rad: Float::with_val(prec, diff / 2_f64).abs(),
             prec,
         };
         b.add_rounding_error();

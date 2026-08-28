@@ -52,6 +52,7 @@ use std::fmt;
 
 pub mod expint;
 pub mod fresnel;
+pub mod polylog;
 pub mod taylor_support;
 
 pub use taylor_support::{
@@ -433,6 +434,7 @@ impl PrimitiveRegistry {
         // what makes `digamma` differentiable.
         reg.register_unprobed(Box::new(fresnel::FresnelSPrimitive));
         reg.register_unprobed(Box::new(fresnel::FresnelCPrimitive));
+        reg.register_unprobed(Box::new(polylog::DilogPrimitive));
         reg.register_unprobed(Box::new(builtins::TrigammaPrimitive));
         if probe {
             reg.probe_all();
@@ -3545,14 +3547,14 @@ mod tests {
     #[test]
     fn the_new_special_functions_are_registered() {
         let reg = PrimitiveRegistry::default_registry();
-        for name in ["fresnels", "fresnelc", "trigamma"] {
+        for name in ["fresnels", "fresnelc", "dilog", "trigamma"] {
             assert!(reg.is_registered(name), "`{name}` is not registered");
             let caps = reg.capabilities(name);
             assert!(caps.contains(Capabilities::NUMERIC_F64), "{name}: f64");
             assert!(caps.contains(Capabilities::NUMERIC_BALL), "{name}: ball");
             assert!(caps.contains(Capabilities::TAYLOR_MODEL), "{name}: taylor");
         }
-        for name in ["fresnels", "fresnelc", "gamma", "digamma"] {
+        for name in ["fresnels", "fresnelc", "dilog", "gamma", "digamma"] {
             let caps = reg.capabilities(name);
             assert!(caps.contains(Capabilities::DIFF_FORWARD), "{name}: fwd");
             assert!(caps.contains(Capabilities::DIFF_REVERSE), "{name}: rev");
@@ -3580,6 +3582,22 @@ mod tests {
                 let want = if is_sin { t.sin() } else { t.cos() };
                 assert!((got - want).abs() < 1e-13, "{name}′({x0}): {got} vs {want}");
             }
+        }
+    }
+
+    /// `d/dx Li₂(x) = −log(1−x)/x`, evaluated rather than pattern-matched.
+    #[test]
+    fn dilog_derivative_round_trips_through_evaluation() {
+        use crate::kernel::Domain;
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let d = crate::diff::diff(pool.func("dilog", vec![x]), x, &pool)
+            .unwrap()
+            .value;
+        for x0 in [-3.0_f64, -0.4, 0.25, 0.8, 0.99] {
+            let got = eval_expr_f64(d, x, x0, &pool);
+            let want = -(1.0 - x0).ln() / x0;
+            assert!((got - want).abs() < 1e-12, "Li₂′({x0}): {got} vs {want}");
         }
     }
 }
