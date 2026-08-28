@@ -362,6 +362,14 @@ pub mod experimental {
         eval_complex_f64, eval_exact_rational, eval_f64, eval_interval, evaluate, ComplexF64,
         EvalError, EvalMode, EvalValue, UnsupportedReason,
     };
+    /// Continuous (differential) creative telescoping — Almkvist–Zeilberger,
+    /// the twin of `q_zeilberger`/`telescope2d` on the `D_x` side. Rust-only
+    /// for now: there is no PyO3 binding yet.
+    pub use crate::holonomic::azeil::{
+        almkvist_zeilberger, dgosper, dgosper_term, hyperexp_log_derivative,
+        integral_boundary_status, AzOpts, AzResult, DiffTelescopingError, HyperExpTerm,
+        IntegralBoundaryStatus, IntegrationLimit, PowerFactor,
+    };
     pub use crate::holonomic::{
         boundary_status_2d, telescope2d, telescope2d_search, BoundaryStatus2d, Telescoping2dError,
         Telescoping2dOpts, Telescoping2dResult,

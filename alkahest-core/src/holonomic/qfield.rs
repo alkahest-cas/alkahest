@@ -266,6 +266,37 @@ pub fn rn_deriv(a: &Rn) -> Rn {
     RatFunc { num, den }.normalize()
 }
 
+/// `d/dk` of a `Q(n)[k]` polynomial.
+///
+/// The coefficient field `Q(n)` is *constant* with respect to `k`, so this is
+/// the plain power rule with no chain-rule term — which is exactly what makes
+/// `Q(n)(k)` a differential field over `Q(n)` and lets the continuous
+/// creative-telescoping engine ([`super::azeil`]) reuse this tower unchanged.
+pub fn polyk_deriv_k(p: &PolyK) -> PolyK {
+    if p.coeffs.len() <= 1 {
+        return PolyK::zero();
+    }
+    let coeffs: Vec<Rn> = p
+        .coeffs
+        .iter()
+        .enumerate()
+        .skip(1)
+        .map(|(i, c)| rn_mul(c, &rn_int(i as i64)))
+        .collect();
+    PolyK::from_coeffs(coeffs)
+}
+
+/// `d/dk` of a `Q(n)(k)` rational function, by the quotient rule.
+pub fn ratk_deriv_k(r: &RatK) -> RatK {
+    let nu = polyk_deriv_k(&r.num);
+    let dv = polyk_deriv_k(&r.den);
+    RatK {
+        num: nu.mul(&r.den).sub(&r.num.mul(&dv)),
+        den: r.den.mul(&r.den),
+    }
+    .normalize()
+}
+
 fn poly_eval(p: &RatUniPoly, x: &Rational) -> Rational {
     let mut acc = Rational::from(0);
     for c in p.coeffs.iter().rev() {
