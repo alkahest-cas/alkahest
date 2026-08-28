@@ -213,6 +213,9 @@ from .alkahest import (  # noqa: F401
     exp_integral_ei,
     factor_univariate_mod_p,
     floor,
+    # 3.10.0 — Fresnel integrals, normalised (pi/2) convention
+    fresnelc,
+    fresnels,
     gamma,
     # V2-3: Sparse interpolation and sparse modular GCD
     gcd_sparse,
@@ -2327,6 +2330,9 @@ __all__ = [
     "factor_univariate_mod_p",
     "flatten_exprs",
     "floor",
+    # 3.10.0 — Fresnel integrals, normalised (pi/2) convention
+    "fresnelc",
+    "fresnels",
     # V2-3
     "gcd_sparse",
     "get_context_value",

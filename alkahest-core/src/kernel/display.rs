@@ -487,6 +487,11 @@ fn latex_func_name(name: &str) -> String {
         "Shi" => r"\operatorname{Shi}".into(),
         "Chi" => r"\operatorname{Chi}".into(),
         // 3.10.0.
+        // 3.10.0.  `S`/`C` are the DLMF §7.2(iii) names for the *normalised*
+        // (π/2) Fresnel integrals, `ψ₁` is trigamma, and `Li₂` is the
+        // principal-branch dilogarithm.
+        "fresnels" => r"S".into(),
+        "fresnelc" => r"C".into(),
         "trigamma" => r"\psi_1".into(),
         other => format!(r"\operatorname{{{other}}}"),
     }
@@ -814,6 +819,10 @@ fn unicode_func(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
                 "Ci" => "Ci",
                 "Shi" => "Shi",
                 "Chi" => "Chi",
+                // DLMF §7.2(iii) names for the normalised (π/2) Fresnel
+                // integrals, and the principal-branch dilogarithm.
+                "fresnels" => "S",
+                "fresnelc" => "C",
                 "asin" => "arcsin",
                 "acos" => "arccos",
                 "atan" => "arctan",

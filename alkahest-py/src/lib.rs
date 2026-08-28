@@ -2915,6 +2915,33 @@ fn trigamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "trigamma", expr)
 }
 
+/// Fresnel sine integral ``S(x) = ∫₀ˣ sin(π t²/2) dt``.
+///
+/// **Normalised (π/2) convention** — DLMF §7.2(iii), Abramowitz & Stegun §7.3,
+/// SymPy ``fresnels``, SciPy ``scipy.special.fresnel``, Mathematica
+/// ``FresnelS``.  ``S(∞) = 1/2``.  The unnormalised ``∫₀ˣ sin(t²) dt`` is a
+/// *different* function (it tends to ``√(π/8) ≈ 0.6267``), and mixing the two
+/// is a silent factor-of-``√(π/2)`` error.
+///
+/// ``d/dx S(x) = sin(π x²/2)``.
+///
+/// Stable top-level export.
+#[pyfunction]
+fn fresnels(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "fresnels", expr)
+}
+
+/// Fresnel cosine integral ``C(x) = ∫₀ˣ cos(π t²/2) dt``.
+///
+/// Same normalised (π/2) convention as :func:`fresnels`; ``C(∞) = 1/2`` and
+/// ``d/dx C(x) = cos(π x²/2)``.
+///
+/// Stable top-level export.
+#[pyfunction]
+fn fresnelc(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "fresnelc", expr)
+}
+
 /// Heaviside step `θ(x)` (registered primitive; `θ(0) = 1/2`).
 ///
 /// Surfaced under `alkahest.experimental` to avoid mutating the frozen
@@ -15369,6 +15396,8 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bessel_j1, m)?)?;
     // 3.10.0 special functions.
     m.add_function(wrap_pyfunction!(trigamma, m)?)?;
+    m.add_function(wrap_pyfunction!(fresnels, m)?)?;
+    m.add_function(wrap_pyfunction!(fresnelc, m)?)?;
     m.add_function(wrap_pyfunction!(heaviside, m)?)?;
     m.add_function(wrap_pyfunction!(dirac_delta, m)?)?;
     // Experimental calculus / ODE / transform surface (PRs #152–#161).

@@ -88,6 +88,21 @@ fn strictly_positive(v: &Float) -> bool {
     matches!(v.partial_cmp(&0), Some(std::cmp::Ordering::Greater))
 }
 
+/// Keep the smaller of `slot` and `cand`, ignoring non-finite candidates.
+///
+/// Used where several rigorous upper bounds on the same remainder are tried
+/// (one per Cauchy radius): a minimum of valid upper bounds is a valid upper
+/// bound, so the choice among them is a tightness question only.
+fn keep_smaller(slot: &mut Option<Float>, cand: Float) {
+    if !cand.is_finite() {
+        return;
+    }
+    match slot {
+        Some(best) if *best <= cand => {}
+        _ => *slot = Some(cand),
+    }
+}
+
 /// A Taylor model: polynomial part with ball coefficients plus a rigorously
 /// enclosing remainder interval.
 #[derive(Clone, Debug)]
@@ -2112,6 +2127,174 @@ impl TaylorModel {
         Ok(out)
     }
 
+    // ── Fresnel integrals (3.10.0) ───────────────────────────────────────
+
+    /// `π` as an outward-rounded ball at `prec`.
+    fn pi_ball(prec: u32) -> ArbBall {
+        from_float(&Float::with_val(prec + 32, rug::float::Constant::Pi), prec)
+    }
+
+    /// `(sⁿ, cⁿ)` for `n = 0..count`, where `s(x) = sin(πx²/2)` and
+    /// `c(x) = cos(πx²/2)` are the two Fresnel integrands, evaluated at `m₀`.
+    ///
+    /// `s′ = πx·c` and `c′ = −πx·s`; `x` is linear, so the Leibniz rule has
+    /// exactly two terms and iterating gives
+    ///
+    /// ```text
+    /// s⁽ⁿ⁺¹⁾ = π·(m₀·c⁽ⁿ⁾ + n·c⁽ⁿ⁻¹⁾),      c⁽ⁿ⁺¹⁾ = −π·(m₀·s⁽ⁿ⁾ + n·s⁽ⁿ⁻¹⁾).
+    /// ```
+    ///
+    /// This is an identity between derivatives at the single point `m₀`, so
+    /// running it in ball arithmetic cannot widen by dependency: there is no
+    /// interval to widen.
+    fn fresnel_phase_derivs(m0: &ArbBall, count: usize, prec: u32) -> (Vec<ArbBall>, Vec<ArbBall>) {
+        let pi = Self::pi_ball(prec);
+        let half = ArbBall::from_f64(0.5, prec);
+        let arg = m0.clone() * m0.clone() * pi.clone() * half;
+        let mut s = vec![arg.sin()];
+        let mut c = vec![arg.cos()];
+        for n in 0..count.saturating_sub(1) {
+            let mut sn = m0.clone() * c[n].clone();
+            let mut cn = m0.clone() * s[n].clone();
+            if n >= 1 {
+                let nb = ArbBall::from_f64(n as f64, prec);
+                sn = sn + nb.clone() * c[n - 1].clone();
+                cn = cn + nb * s[n - 1].clone();
+            }
+            s.push(pi.clone() * sn);
+            c.push(-(pi.clone() * cn));
+        }
+        (s, c)
+    }
+
+    /// `sup |sin(πz²/2)|` and `sup |cos(πz²/2)|` over `|z − ξ| ≤ r` for every
+    /// real `ξ` with `|ξ| ≤ m`, as an outward-rounded ball.
+    ///
+    /// `|sin w| ≤ cosh(Im w)` and `|cos w| ≤ cosh(Im w)` (from
+    /// `|sin(u+iv)|² = sin²u + sinh²v`), and with `w = πz²/2`,
+    /// `Im w = π·Re z·Im z`, so `|Im w| ≤ π·(m + r)·r`.
+    fn fresnel_phase_bound(m: &Float, r: &Float, prec: u32) -> ArbBall {
+        let pi = Self::pi_ball(prec);
+        let rb = from_float(r, prec);
+        let arg = pi * (from_float(m, prec) + rb.clone()) * rb;
+        arg.cosh()
+    }
+
+    /// `S(self)` (`sine = true`) or `C(self)`, in the normalised π/2
+    /// convention of [`crate::primitive::fresnel`].  Both are entire, so there
+    /// is no domain guard.
+    ///
+    /// **`a₀`** is a rigorous point enclosure from
+    /// [`crate::primitive::fresnel::fresnel_pair_ball`] (power series below
+    /// `|x| = 6`, DLMF's asymptotic expansion above it, with both truncations
+    /// charged to the radius).  **`aₖ` for `k ≥ 1`** is `s⁽ᵏ⁻¹⁾(m₀)/k!` — the
+    /// integrand's own derivatives, from [`Self::fresnel_phase_derivs`], since
+    /// `S⁽ᵏ⁾ = s⁽ᵏ⁻¹⁾`.
+    ///
+    /// **Remainder.**  `S` is entire, so Cauchy's estimate holds at *every*
+    /// radius `r > 0`:
+    ///
+    /// ```text
+    /// |S⁽ᵖ⁺¹⁾(ξ)|/(p+1)!  =  |s⁽ᵖ⁾(ξ)|/(p+1)!
+    ///                    ≤  p!·sup|s|/(r^p·(p+1)!)
+    ///                    =  cosh(π(M+r)r) / ((p+1)·r^p),
+    /// ```
+    ///
+    /// with `M = sup|ξ|` over the argument enclosure.  Every candidate `r`
+    /// below is therefore a *valid* bound and the choice among them is purely
+    /// a tightness question — the smallest is kept, and a minimum of valid
+    /// upper bounds is a valid upper bound.  The same estimate at the
+    /// expansion point alone, `|aₖ| ≤ cosh(π(|m₀|+r)r)·r/rᵏ`, feeds
+    /// [`Self::geometric_tail`], which is usually far tighter because it never
+    /// takes a supremum over the whole box.
+    ///
+    /// The bound degrades as `x` grows — `S′` oscillates with instantaneous
+    /// frequency `πx`, so a box wider than `1/x` genuinely cannot be modelled
+    /// at low order and `bound_on_box` must subdivide.  That is a property of
+    /// the function, not a weakness of the estimate.
+    fn fresnel(&self, sine: bool) -> Result<Self> {
+        self.check_finite("Fresnel argument")?;
+        let prec = self.prec;
+        let (m0, delta) = self.center_split();
+        let d = delta.range();
+        let arg = from_float(&m0, prec) + d.clone();
+        if !is_finite(&arg) {
+            return Err(ValidatedError::NotFinite {
+                what: "Fresnel argument".into(),
+            });
+        }
+        let c0 = from_float(&m0, prec);
+        let p1 = self.order + 1;
+
+        let (s_at, c_at) = crate::primitive::fresnel::fresnel_pair_ball(&m0, prec).ok_or(
+            ValidatedError::NotFinite {
+                what: "Fresnel expansion point".into(),
+            },
+        )?;
+        let mut a = Vec::with_capacity(p1);
+        a.push(if sine { s_at } else { c_at });
+        if self.order >= 1 {
+            let (sd, cd) = Self::fresnel_phase_derivs(&c0, self.order, prec);
+            let src = if sine { &sd } else { &cd };
+            for k in 1..=self.order {
+                a.push(Self::div_ball(&src[k - 1], &Self::factorial(k, prec))?);
+            }
+        }
+
+        // Candidate Cauchy radii: `p/(π·M)` is where the bound is minimised
+        // for large `M`, and a fixed ladder covers small `M`, where the
+        // optimum runs off to infinity.
+        let m_sup = mag(&arg);
+        let m_f64 = m_sup.to_f64().max(0.0);
+        let mut radii: Vec<f64> = vec![0.125, 0.25, 0.5, 1.0, 2.0, 4.0];
+        if m_f64 > 0.0 && self.order >= 1 {
+            radii.push((self.order as f64) / (std::f64::consts::PI * m_f64));
+        }
+        let dpow = ArbBall {
+            mid: delta.delta_pow(&d),
+            rad: Float::new(prec),
+            prec,
+        };
+        let mut lagrange: Option<Float> = None;
+        let mut tail: Option<Float> = None;
+        for r in radii {
+            if !(r.is_finite() && r > 0.0) {
+                continue;
+            }
+            let rf = Float::with_val(prec, r);
+            let rb = from_float(&rf, prec);
+            let denom = rb.powi(self.order as i64) * ArbBall::from_f64(p1 as f64, prec);
+            let sup = Self::fresnel_phase_bound(&m_sup, &rf, prec);
+            if let Ok(q) = Self::div_ball(&sup, &denom) {
+                let cand = ub(&(q * dpow.clone()));
+                keep_smaller(&mut lagrange, cand);
+            }
+            let sup_c = Self::fresnel_phase_bound(&Float::with_val(prec, m0.abs_ref()), &rf, prec);
+            if let Some(t) = Self::geometric_tail(&(sup_c * rb), &mag(&d), &rf, p1, prec) {
+                keep_smaller(&mut tail, t);
+            }
+        }
+        let radius = Self::tighter(
+            lagrange.ok_or_else(|| ValidatedError::NotFinite {
+                what: "Fresnel remainder bound".into(),
+            })?,
+            tail,
+        );
+        let out = delta.compose(&a, &radius);
+        out.check_finite("Fresnel result")?;
+        Ok(out)
+    }
+
+    /// `S(self) = ∫₀^self sin(πt²/2) dt`.
+    pub fn fresnel_s(&self) -> Result<Self> {
+        self.fresnel(true)
+    }
+
+    /// `C(self) = ∫₀^self cos(πt²/2) dt`.
+    pub fn fresnel_c(&self) -> Result<Self> {
+        self.fresnel(false)
+    }
+
     // ── Trigamma (3.10.0) ────────────────────────────────────────────────
 
     /// `ψ₁(self) = ψ′(self)`.  Refuses unless the argument enclosure lies
@@ -2433,6 +2616,8 @@ impl<'a> TaylorContext<'a> {
                     "Ci" => crate::primitive::expint::taylor_ci(&x),
                     "Shi" => crate::primitive::expint::taylor_shi(&x),
                     "Chi" => crate::primitive::expint::taylor_chi(&x),
+                    "fresnels" => x.fresnel_s(),
+                    "fresnelc" => x.fresnel_c(),
                     "abs" => x.abs(),
                     other => Err(ValidatedError::Unsupported {
                         what: format!("function `{other}`"),
@@ -3774,6 +3959,38 @@ mod tests {
                 bound_on_box(e, &pool, &[(x, lo, hi)], &opts).is_err(),
                 "trigamma on [{lo}, {hi}] must refuse"
             );
+        }
+    }
+
+    /// A&S Table 7.7 / `scipy.special.fresnel`, in the normalised π/2
+    /// convention.  `x = 8` is past the series/asymptotic seam at `|x| = 6`,
+    /// so both regimes of the point kernel are exercised.
+    #[test]
+    fn the_fresnel_rules_enclose_their_published_values() {
+        encloses(&[
+            ("fresnels", 1.0, 0.438_259_147_390_354_7),
+            ("fresnelc", 1.0, 0.779_893_400_376_823),
+            ("fresnels", 3.0, 0.496_312_998_967_375),
+            ("fresnelc", 8.0, 0.499_802_180_377_197_15),
+        ]);
+    }
+
+    /// `S` and `C` are entire, so — unlike every other special-function rule
+    /// here — there is no box they may refuse for a domain reason.
+    #[test]
+    fn the_fresnel_rules_refuse_nothing() {
+        use crate::validated::bounds::{bound_on_box, BoundOptions};
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let opts = BoundOptions::default();
+        for name in ["fresnels", "fresnelc"] {
+            let e = pool.func(name, vec![x]);
+            for (lo, hi) in [(-50.0_f64, -49.0_f64), (-0.5, 0.5), (9.0, 9.5)] {
+                assert!(
+                    bound_on_box(e, &pool, &[(x, lo, hi)], &opts).is_ok(),
+                    "{name} on [{lo}, {hi}]"
+                );
+            }
         }
     }
 }

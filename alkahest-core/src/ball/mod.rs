@@ -961,7 +961,41 @@ impl ArbBall {
         b
     }
 
-    // ── Trigamma (3.10.0) ────────────────────────────────────────────────
+    // ── Fresnel integrals, trigamma (3.10.0) ─────────────────────────────
+
+    /// Fresnel sine integral `S(x) = ∫₀ˣ sin(πt²/2) dt`, normalised (π/2)
+    /// convention — see [`crate::primitive::fresnel`].
+    ///
+    /// Midpoint plus a Lipschitz radius, **not** an endpoint hull: `S′(x) =
+    /// sin(πx²/2)` oscillates ever faster, so `hull(S(lo), S(hi))` is not an
+    /// enclosure of the range (the same trap [`ArbBall::bessel_jn`] documents).
+    /// The mean value theorem gives `|S(x) − S(m)| ≤ L·|x − m|` with
+    /// `L = sup|S′| = 1` exactly, since `S′` is a sine — so the radius is
+    /// carried across unchanged, which is both sound and sharp in the limit.
+    pub fn fresnel_s(&self) -> Option<Self> {
+        self.fresnel(true)
+    }
+
+    /// Fresnel cosine integral `C(x) = ∫₀ˣ cos(πt²/2) dt`.  Same enclosure
+    /// argument as [`ArbBall::fresnel_s`], with `sup|C′| = 1`.
+    pub fn fresnel_c(&self) -> Option<Self> {
+        self.fresnel(false)
+    }
+
+    fn fresnel(&self, sine: bool) -> Option<Self> {
+        let prec = self.prec;
+        let (s, c) = crate::primitive::fresnel::fresnel_pair_ball(&self.mid, prec)?;
+        let point = if sine { s } else { c };
+        let mut b = ArbBall {
+            mid: point.mid,
+            // sup|S′| = sup|C′| = 1, so the Lipschitz radius is the input
+            // radius, plus whatever the point kernel could not resolve.
+            rad: Float::with_val(prec, &self.rad + &point.rad),
+            prec,
+        };
+        b.add_rounding_error();
+        Some(b)
+    }
 
     /// Trigamma `ψ₁(x) = Σ_{k≥0} (x+k)⁻²`.  `None` when the ball contains a
     /// non-positive integer, where `ψ₁` has a double pole.

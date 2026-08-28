@@ -51,6 +51,7 @@ use std::collections::HashMap;
 use std::fmt;
 
 pub mod expint;
+pub mod fresnel;
 pub mod taylor_support;
 
 pub use taylor_support::{
@@ -427,6 +428,11 @@ impl PrimitiveRegistry {
         reg.register_unprobed(Box::new(expint::ShiPrimitive));
         reg.register_unprobed(Box::new(expint::ChiPrimitive));
         // 3.10.0: trigamma, which is what makes `digamma` differentiable.
+        // 3.10.0: Fresnel integrals (normalised π/2 convention), the
+        // dilogarithm (principal branch, cut on [1, ∞)) and trigamma, which is
+        // what makes `digamma` differentiable.
+        reg.register_unprobed(Box::new(fresnel::FresnelSPrimitive));
+        reg.register_unprobed(Box::new(fresnel::FresnelCPrimitive));
         reg.register_unprobed(Box::new(builtins::TrigammaPrimitive));
         if probe {
             reg.probe_all();
@@ -3539,12 +3545,14 @@ mod tests {
     #[test]
     fn the_new_special_functions_are_registered() {
         let reg = PrimitiveRegistry::default_registry();
-        assert!(reg.is_registered("trigamma"));
-        let caps = reg.capabilities("trigamma");
-        assert!(caps.contains(Capabilities::NUMERIC_F64));
-        assert!(caps.contains(Capabilities::NUMERIC_BALL));
-        assert!(caps.contains(Capabilities::TAYLOR_MODEL));
-        for name in ["gamma", "digamma"] {
+        for name in ["fresnels", "fresnelc", "trigamma"] {
+            assert!(reg.is_registered(name), "`{name}` is not registered");
+            let caps = reg.capabilities(name);
+            assert!(caps.contains(Capabilities::NUMERIC_F64), "{name}: f64");
+            assert!(caps.contains(Capabilities::NUMERIC_BALL), "{name}: ball");
+            assert!(caps.contains(Capabilities::TAYLOR_MODEL), "{name}: taylor");
+        }
+        for name in ["fresnels", "fresnelc", "gamma", "digamma"] {
             let caps = reg.capabilities(name);
             assert!(caps.contains(Capabilities::DIFF_FORWARD), "{name}: fwd");
             assert!(caps.contains(Capabilities::DIFF_REVERSE), "{name}: rev");
@@ -3552,5 +3560,26 @@ mod tests {
         assert!(!reg
             .capabilities("trigamma")
             .contains(Capabilities::DIFF_FORWARD));
+    }
+
+    /// The Fresnel derivative round trip the verification gate depends on:
+    /// `d/dx S(x)` must *numerically* be `sin(πx²/2)`, and `d/dx C(x)` must be
+    /// `cos(πx²/2)`.
+    #[test]
+    fn fresnel_derivatives_round_trip_through_evaluation() {
+        use crate::kernel::Domain;
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        for (name, is_sin) in [("fresnels", true), ("fresnelc", false)] {
+            let d = crate::diff::diff(pool.func(name, vec![x]), x, &pool)
+                .unwrap()
+                .value;
+            for x0 in [0.0_f64, 0.3, 1.0, 2.6, 7.5, -1.4] {
+                let got = eval_expr_f64(d, x, x0, &pool);
+                let t = std::f64::consts::FRAC_PI_2 * x0 * x0;
+                let want = if is_sin { t.sin() } else { t.cos() };
+                assert!((got - want).abs() < 1e-13, "{name}′({x0}): {got} vs {want}");
+            }
+        }
     }
 }

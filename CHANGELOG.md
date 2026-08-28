@@ -452,6 +452,22 @@
 
   New: `alkahest.trigamma` (additive to `__all__`).
 
+- **Fresnel integrals `fresnels`/`fresnelc`**, in the **normalised (π/2)
+  convention** — DLMF §7.2(iii), A&S §7.3, SymPy, SciPy, Mathematica — with
+  `S(∞) = C(∞) = 1/2`, `S′ = sin(πx²/2)` and `C′ = cos(πx²/2)`. The
+  unnormalised `∫₀ˣ sin(t²)dt` is a *different* function (limit `√(π/8)`);
+  mixing the two is a silent `√(π/2)` error, so the convention is pinned by a
+  test rather than left implicit. Maclaurin series below `|x| = 6`, summed in
+  MPFR at a working precision raised by the series' own `≈ 2.27x²` bits of
+  cancellation (in plain `f64` it loses ~10 digits at `x = 4`); DLMF
+  7.12.1–7.12.3 asymptotics above it, where DLMF §7.12(ii)'s
+  first-neglected-term remainder bound makes the truncation rigorous rather
+  than merely plausible. Worst relative error `3.3·10⁻¹⁵` against
+  `scipy.special.fresnel` over `[0, 40]` plus spot checks to `10⁸`. Full
+  bundle including a Taylor-model rule, so `bound_on_box` reaches them.
+
+  New: `alkahest.fresnels`, `alkahest.fresnelc`.
+
 ## 3.9.0 — 2026-08-14
 
 Everything in this section landed **after `v3.8.0` was tagged and published**,
