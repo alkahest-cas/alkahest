@@ -342,7 +342,11 @@ def test_random_bwd_pair_is_a_real_pair():
 #: false NonElementary — the silent-error class, not a mere decline. It
 #: reproduces on stock ``main`` (a1f26bf) as well as on the routed build, and
 #: hits about 2.3% of verified tier-4 nested-exp pairs (7/300).
-FALSE_NONELEMENTARY = [
+# Integrands that the nested-exp path once falsely certified as E-INT-004.
+# The pole-order argument ruled out a *rational* solution and concluded
+# non-elementary without examining the logarithmic part, so Liouville's
+# `v + Σcᵢlog(uᵢ)` was only half-tested. Fixed; kept as a regression guard.
+FORMERLY_FALSE_NONELEMENTARY = [
     ("exp(x)*exp(exp(x))/(exp(exp(x))+1)", "log(exp(exp(x))+1)"),
     ("exp(x)*exp(exp(x))/(exp(exp(x))+1)^2", "-1/(exp(exp(x))+1)"),
     ("-3*exp(x)*exp(exp(x))/(1+exp(exp(x)))^2", "3/(1+exp(exp(x)))"),
@@ -350,7 +354,7 @@ FALSE_NONELEMENTARY = [
 ]
 
 
-@pytest.mark.parametrize(("f_str", "big_f_str"), FALSE_NONELEMENTARY)
+@pytest.mark.parametrize(("f_str", "big_f_str"), FORMERLY_FALSE_NONELEMENTARY)
 def test_false_nonelementary_witnesses_are_really_elementary(f_str, big_f_str):
     """The witness pairs are correct, whatever ``integrate`` says about them."""
     pool = ExprPool()
@@ -362,15 +366,7 @@ def test_false_nonelementary_witnesses_are_really_elementary(f_str, big_f_str):
         assert abs(ak.eval_expr(residual, {x: point})) < 1e-9
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "false NonElementary: the nested-exp path certifies E-INT-004 on integrands "
-        "with an elementary antiderivative (a Bronstein 6.2 pole-order argument "
-        "applied where the algorithm should decline). Drop the xfail when fixed."
-    ),
-)
-@pytest.mark.parametrize(("f_str", "big_f_str"), FALSE_NONELEMENTARY)
+@pytest.mark.parametrize(("f_str", "big_f_str"), FORMERLY_FALSE_NONELEMENTARY)
 def test_integrate_does_not_falsely_certify_nonelementary(f_str, big_f_str):
     del big_f_str
     pool = ExprPool()
