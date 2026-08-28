@@ -80,11 +80,14 @@ pub fn poly_degree_in(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<u32>
 }
 
 /// Try to interpret `expr` as an integer and return its value.
+///
+/// Every caller uses this on an exponent or an integer coefficient, so it folds
+/// the arithmetic the parser leaves behind — `x^(-1)` parses to `x^(1 · -1)`,
+/// not to a bare `Integer(-1)` node.  Reading only `Integer` made the algebraic
+/// engine decompose `1/(√x·(1+√x))` but decline the identical
+/// `(√x·(1+√x))^(-1)`.
 pub fn as_integer(expr: ExprId, pool: &ExprPool) -> Option<i64> {
-    match pool.get(expr) {
-        ExprData::Integer(n) => n.0.to_i64(),
-        _ => None,
-    }
+    crate::integrate::risch::tower::literal_integer(expr, pool)
 }
 
 /// Extract (a, b) from a linear polynomial `a*var + b`.

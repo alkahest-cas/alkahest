@@ -57,6 +57,103 @@ impl TowerLevel {
 }
 
 // ---------------------------------------------------------------------------
+// Input-form normalisation helpers
+// ---------------------------------------------------------------------------
+//
+// `a/b`, `a·b⁻¹` and `(a·b)⁻¹` denote the same function, but they are three
+// different trees and the parser does not produce the same exponent for all of
+// them (`^(-1)` yields the unevaluated `(1 · -1)`, `/` yields the literal `-1`).
+// Every structural detector and matcher below keys on tree shape, so without a
+// normalising view the *spelling* of an integrand decides its route through the
+// integrator.  These two helpers give the detectors a spelling-independent
+// reading of "integer exponent" and "power of a product".
+
+/// The value of a **var-free integer-valued exponent**, folding the small
+/// arithmetic the parser leaves behind (`x^(-1)` parses as `x^(1 · -1)`).
+///
+/// Only `Integer`, `Add`, `Mul` and non-negative integer `Pow` nodes are
+/// folded — no simplifier is invoked, so this is cheap enough to call from a
+/// detector on every node.  Returns `None` for anything that is not a literal
+/// integer under that folding (including symbols, rationals, and `1/2`-style
+/// exponents, which must *not* be distributed over a product).
+pub fn literal_integer(expr: ExprId, pool: &ExprPool) -> Option<i64> {
+    fn go(expr: ExprId, pool: &ExprPool, depth: u32) -> Option<i64> {
+        if depth == 0 {
+            return None;
+        }
+        match pool.get(expr) {
+            ExprData::Integer(n) => n.0.to_i64(),
+            ExprData::Add(args) => args
+                .iter()
+                .try_fold(0_i64, |acc, &a| acc.checked_add(go(a, pool, depth - 1)?)),
+            ExprData::Mul(args) => args
+                .iter()
+                .try_fold(1_i64, |acc, &a| acc.checked_mul(go(a, pool, depth - 1)?)),
+            ExprData::Pow { base, exp } => {
+                let b = go(base, pool, depth - 1)?;
+                let e = go(exp, pool, depth - 1)?;
+                let e = u32::try_from(e).ok()?;
+                if e > 32 {
+                    return None;
+                }
+                b.checked_pow(e)
+            }
+            _ => None,
+        }
+    }
+    go(expr, pool, 8)
+}
+
+/// Build `base^n`, folding a nested integer power (`(a^m)^n → a^{m·n}`) so the
+/// result is in the same shape a directly-written `a^{mn}` would have.
+pub fn pow_integer(base: ExprId, n: i64, pool: &ExprPool) -> ExprId {
+    if n == 1 {
+        return base;
+    }
+    if let ExprData::Pow {
+        base: inner,
+        exp: inner_exp,
+    } = pool.get(base)
+    {
+        if let Some(m) = literal_integer(inner_exp, pool) {
+            if let Some(mn) = m.checked_mul(n) {
+                if mn == 1 {
+                    return inner;
+                }
+                return pool.pow(inner, pool.integer(mn));
+            }
+        }
+    }
+    if n == 0 {
+        return pool.integer(1_i32);
+    }
+    pool.pow(base, pool.integer(n))
+}
+
+/// If `expr` is `(f₁ · f₂ · …)^n` with a **literal integer** `n`, return the
+/// distributed factors `[f₁^n, f₂^n, …]`.
+///
+/// `(a·b)^n = a^n·b^n` holds for every integer `n` over a field, so this is a
+/// pure re-spelling and not a domain-widening rewrite — which is exactly why
+/// the exponent must be an integer (`(a·b)^(1/2) ≠ a^(1/2)·b^(1/2)` on the
+/// negative reals).  Returns `None` when `expr` is not of that shape.
+pub fn distribute_integer_pow_over_mul(expr: ExprId, pool: &ExprPool) -> Option<Vec<ExprId>> {
+    let ExprData::Pow { base, exp } = pool.get(expr) else {
+        return None;
+    };
+    let n = literal_integer(exp, pool)?;
+    let ExprData::Mul(factors) = pool.get(base) else {
+        return None;
+    };
+    Some(
+        factors
+            .iter()
+            .map(|&f| pow_integer(f, n, pool))
+            .collect::<Vec<_>>(),
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Generator discovery
 // ---------------------------------------------------------------------------
 
@@ -144,18 +241,14 @@ pub fn extract_exp_factor(expr: ExprId, exp_gen: ExprId, pool: &ExprPool) -> Opt
                 if a == exp_gen {
                     exp_power += 1;
                 } else if let ExprData::Pow { base, exp } = pool.get(a) {
-                    if base == exp_gen {
-                        // exp_gen^n
-                        match pool.get(exp) {
-                            ExprData::Integer(n) => {
-                                exp_power += n.0.to_i64().unwrap_or(0);
-                            }
-                            _ => {
-                                rest.push(a); // non-integer exponent: treat as unknown
-                            }
-                        }
-                    } else {
-                        rest.push(a);
+                    // The exponent is folded (`^(-1)` parses as `^(1 · -1)`), so
+                    // the `/` and `^(-n)` spellings decompose identically.
+                    match (base == exp_gen)
+                        .then(|| literal_integer(exp, pool))
+                        .flatten()
+                    {
+                        Some(n) => exp_power += n,
+                        None => rest.push(a),
                     }
                 } else {
                     rest.push(a);
@@ -177,10 +270,16 @@ pub fn extract_exp_factor(expr: ExprId, exp_gen: ExprId, pool: &ExprPool) -> Opt
         ExprData::Pow { base, exp } => {
             if base == exp_gen {
                 // exp_gen^n: coefficient = 1, power = n
-                if let ExprData::Integer(n) = pool.get(exp) {
-                    if let Some(n_i) = n.0.to_i64() {
-                        return Some((pool.integer(1_i32), n_i));
-                    }
+                if let Some(n_i) = literal_integer(exp, pool) {
+                    return Some((pool.integer(1_i32), n_i));
+                }
+            }
+            // `(c · exp(η)^m)^n = c^n · exp(η)^{m·n}` — an integer power of a
+            // product is the same monomial, just spelled differently.
+            if let Some(n) = literal_integer(exp, pool) {
+                if matches!(pool.get(base), ExprData::Mul(_) | ExprData::Pow { .. }) {
+                    let (inner_coeff, m) = extract_exp_factor(base, exp_gen, pool)?;
+                    return Some((pow_integer(inner_coeff, n, pool), m.checked_mul(n)?));
                 }
             }
             None
@@ -431,7 +530,20 @@ fn decompose_log_inner(
                 pool.mul(f)
             };
 
-            let deg = log_power as usize;
+            // `log_power` is an `i64` accumulated from exponents, so it is
+            // negative whenever the generator sits in a *denominator*
+            // (`log(x)^-1`).  `as usize` wraps that to ~2^64 and the growth
+            // below then pushes zeros until the allocator aborts the process — a
+            // 4 GiB request, reached from `∫ dx/(x·log x·(1 + log²(log x)))`.
+            // A negative power is not representable as a polynomial in `log(h)`
+            // — which is exactly what this decomposition builds — so decline.
+            //
+            // `grow_coeffs_to` is the independent second line of defence: it
+            // meters the allocation against the budget, so a *positive* degree
+            // large enough to run away is refused as `E-BUDGET-*` rather than
+            // aborting. The two fixes are complementary — this one removes the
+            // wrap, that one bounds what an honest large degree may allocate.
+            let deg = usize::try_from(log_power).ok()?;
             grow_coeffs_to(coeffs, deg, pool)?;
             let old = coeffs[deg];
             coeffs[deg] = pool.add(vec![old, new_factor]);
@@ -515,5 +627,53 @@ pub fn poly_degree(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<u32> {
         },
         ExprData::Pow { base, .. } if is_free_of_var(base, var, pool) => Some(0),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod log_power_underflow_tests {
+    use super::*;
+    use crate::kernel::{Domain, ExprPool};
+
+    /// A log generator in a *denominator* gives `log_power < 0`.
+    ///
+    /// `log_power as usize` used to wrap that to ~2^64, and the zero-fill loop
+    /// then pushed until the allocator aborted the process. A 4 GiB request was
+    /// reachable from `∫ dx/(x·log x·(1 + log²(log x)))` — an elementary
+    /// integral — and no `Budget(wall_ms=…)` could interrupt it, because the
+    /// loop never returns to a cooperative checkpoint.
+    ///
+    /// This decomposition builds a *polynomial* in `log(h)`, so a negative
+    /// power is simply not representable: it must decline, promptly.
+    #[test]
+    fn negative_log_power_declines_instead_of_allocating() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let logx = pool.func("log", vec![x]);
+
+        for power in [-1_i32, -2, -7] {
+            let f = pool.mul(vec![
+                pool.pow(x, pool.integer(-1_i32)),
+                pool.pow(logx, pool.integer(power)),
+            ]);
+            let got = decompose_as_log_poly(f, logx, &pool);
+            assert!(
+                got.is_none(),
+                "log(x)^{power} is not a polynomial in log(x); expected a decline, got {got:?}"
+            );
+        }
+    }
+
+    /// The non-negative path is untouched: `x·log(x)^2` still decomposes.
+    #[test]
+    fn non_negative_log_power_still_decomposes() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let logx = pool.func("log", vec![x]);
+        let f = pool.mul(vec![x, pool.pow(logx, pool.integer(2_i32))]);
+        assert!(
+            decompose_as_log_poly(f, logx, &pool).is_some(),
+            "x·log(x)^2 is a polynomial in log(x) and must still decompose"
+        );
     }
 }

@@ -468,14 +468,20 @@ fn collect_qpoly(
             false
         }
         ExprData::Pow { base, exp } => {
-            // base^n where base == var and n is a positive integer.
+            // base^n where base == var and n is a positive integer.  The
+            // exponent is *folded* (`x^(1 · 2)` reads as `x^2`) so that the two
+            // spellings the parser can produce are not treated differently.
             if base == var {
-                if let ExprData::Integer(n) = pool.get(exp) {
-                    if let Some(n_u) = n.0.to_u32() {
-                        ensure_len(coeffs, n_u as usize + 1);
-                        coeffs[n_u as usize] += Rational::from(factor);
-                        return true;
+                if let Some(n_u) = super::tower::literal_integer(exp, pool).and_then(|n| {
+                    if n >= 0 {
+                        u32::try_from(n).ok()
+                    } else {
+                        None
                     }
+                }) {
+                    ensure_len(coeffs, n_u as usize + 1);
+                    coeffs[n_u as usize] += Rational::from(factor);
+                    return true;
                 }
             }
             // base is free of var and exp is an integer — treat as constant.

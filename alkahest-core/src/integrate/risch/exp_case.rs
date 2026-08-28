@@ -25,6 +25,31 @@
 //! - `∫ x·exp(x²) dx = ½·exp(x²)`  (RDE `v' + 2x·v = x`, solution v = ½)
 //! - `∫ x²·exp(x) dx = (x²−2x+2)·exp(x)`  (constant η' = 1, undetermined coefficients)
 //! - `∫ p(x)·exp(a·x) dx`: always elementary for polynomial p and constant a ≠ 0.
+//!
+//! # Known gap: rational functions *of* the generator
+//!
+//! [`decompose_wrt_exp`] writes the integrand
+//! as a Laurent polynomial `Σ cₖ(x)·tᵏ` in `t = exp(η)`, with every coefficient
+//! `cₖ` required to lie in the base field `K = ℚ(x)`.  An integrand that is a
+//! *rational function in `t`* — `eˣ/(eˣ+1)`, i.e. `t/(1+t)` — has no such
+//! decomposition and is declined ("coefficient … is not a polynomial or rational
+//! function").
+//!
+//! Bronstein §5.2–5.3 closes this with Hermite reduction in `K[t]` followed by a
+//! Rothstein–Trager residue reduction over `K[t]`, then the RDE on the remaining
+//! Laurent-polynomial part.  That is **not implemented**; the `K(t)` arithmetic
+//! and derivation it would build on already exist in
+//! [`super::tower_field::TExpr`], but the squarefree factorisation, `K[t]` gcd
+//! chain and `K[t][z]` resultant/factorisation it needs do not.
+//!
+//! In the meantime the *sub-case where the reduced integrand is free of `x`* —
+//! `∫ R(t) dt/(η'·t)` for `R` rational — is reached from the elementary
+//! pipeline instead: the derivative-divides u-substitution offers each `exp(η)`
+//! as a substitution candidate and its result is gated on `d/dx F = f`.  That
+//! covers `∫ eˣ/(eˣ+1) dx` and `∫ dx/(1+e⁻ˣ)` but not integrands where `x` and
+//! `t` genuinely interact, nor `∫ e²ˣ/(eˣ+1) dx` and `∫ dx/(eˣ+e⁻ˣ)`, which
+//! additionally need the tower normalised onto a single generator
+//! (`exp(2x) = t²`, `exp(-x) = t⁻¹`).
 
 use crate::deriv::log::{DerivationLog, RewriteStep};
 use crate::integrate::engine::IntegrationError;
@@ -3169,10 +3194,11 @@ pub fn needs_exp_risch(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
 fn is_var_dependent_denominator(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
     use crate::kernel::ExprData;
     if let ExprData::Pow { base, exp } = pool.get(expr) {
-        if let ExprData::Integer(n) = pool.get(exp) {
-            if n.0.to_i64().is_some_and(|v| v < 0) {
-                return !is_free_of_var(base, var, pool);
-            }
+        // `^(-1)` parses to the unevaluated `^(1 · -1)`, so reading the exponent
+        // as a bare `Integer` node made `a·b^(-1)` and `a/b` take different
+        // routes for the *same* function.  Fold it instead.
+        if super::tower::literal_integer(exp, pool).is_some_and(|v| v < 0) {
+            return !is_free_of_var(base, var, pool);
         }
     }
     false
@@ -3291,6 +3317,12 @@ fn needs_exp_risch_inner(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
         }
         ExprData::Add(args) => args.iter().any(|&a| needs_exp_risch_inner(a, var, pool)),
         ExprData::Pow { base, exp } => {
+            // `(a·b)^n` (integer n) is the same function as `a^n·b^n`; route the
+            // two spellings identically (see the matching note in `log_case`).
+            if let Some(factors) = super::tower::distribute_integer_pow_over_mul(expr, pool) {
+                let distributed = pool.mul(factors);
+                return needs_exp_risch_inner(distributed, var, pool);
+            }
             needs_exp_risch_inner(base, var, pool) || needs_exp_risch_inner(exp, var, pool)
         }
         _ => false,
