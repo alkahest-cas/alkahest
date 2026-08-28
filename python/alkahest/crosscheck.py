@@ -193,6 +193,18 @@ FUNCTION_MAP: dict[str, str] = {
     "sqrt": "sqrt",
     "tan": "tan",
     "tanh": "tanh",
+    # Exponential-integral family. Alkahest and SymPy both follow DLMF §6.2 —
+    # same principal values, same branch cut on the negative reals, same
+    # `li(z) = Ei(log z)` — so these are name-for-name. NB SymPy's `Li` (capital
+    # L) is the *offset* logarithmic integral `li(x) - li(2)`; mapping `li` onto
+    # it would manufacture a constant divergence, which is exactly the failure
+    # this table exists to prevent.
+    "Ei": "Ei",
+    "li": "li",
+    "Si": "Si",
+    "Ci": "Ci",
+    "Shi": "Shi",
+    "Chi": "Chi",
 }
 
 #: Bessel functions of fixed integer order, which SymPy spells with the order as
@@ -946,6 +958,14 @@ _SYMPY_TO_ALKAHEST: dict[str, str] = {
     "gamma": "gamma",
     "Abs": "abs",
     "sign": "sign",
+    # Exponential-integral family (see FUNCTION_MAP above for why the
+    # conventions coincide).
+    "Ei": "exp_integral_ei",
+    "li": "log_integral",
+    "Si": "sin_integral",
+    "Ci": "cos_integral",
+    "Shi": "sinh_integral",
+    "Chi": "cosh_integral",
 }
 
 

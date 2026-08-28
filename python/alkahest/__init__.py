@@ -187,7 +187,10 @@ from .alkahest import (  # noqa: F401
     conjugate,
     # Math functions
     cos,
+    # Exponential-integral family (DLMF §6.2)
+    cos_integral,
     cosh,
+    cosh_integral,
     decide,
     # Core operations
     diff,
@@ -206,6 +209,8 @@ from .alkahest import (  # noqa: F401
     eval_expr,
     evaluate,
     exp,
+    # Exponential-integral family (DLMF §6.2)
+    exp_integral_ei,
     factor_univariate_mod_p,
     floor,
     gamma,
@@ -223,6 +228,8 @@ from .alkahest import (  # noqa: F401
     lambert_w,
     limit,
     log,
+    # Exponential-integral family (DLMF §6.2)
+    log_integral,
     lower_to_first_order,
     make_rule,
     match_pattern,
@@ -267,7 +274,10 @@ from .alkahest import (  # noqa: F401
     simplify_trig_normal_form,
     simplify_with,
     sin,
+    # Exponential-integral family (DLMF §6.2)
+    sin_integral,
     sinh,
+    sinh_integral,
     solve_linear_recurrence_homogeneous,
     sos_decompose,
     sparse_interp,
@@ -2280,7 +2290,10 @@ __all__ = [
     # RW-7
     "context",
     "cos",
+    # Exponential-integral family (DLMF §6.2)
+    "cos_integral",
     "cosh",
+    "cosh_integral",
     "crosscheck",
     "dae_index_reduce",
     # V3-3 — FOFormula / V2-9 CAD
@@ -2305,6 +2318,8 @@ __all__ = [
     "eval_expr",
     "evaluate",
     "exp",
+    # Exponential-integral family (DLMF §6.2)
+    "exp_integral_ei",
     # V1-16 — Expr ↔ GbPoly round trip
     "expr_to_gbpoly",
     "factor_univariate_mod_p",
@@ -2337,6 +2352,8 @@ __all__ = [
     "lattice",
     "limit",
     "log",
+    # Exponential-integral family (DLMF §6.2)
+    "log_integral",
     "lower_to_first_order",
     "make_rule",
     "map_exprs",
@@ -2414,7 +2431,10 @@ __all__ = [
     "simplify_with",
     # Math functions (core 5)
     "sin",
+    # Exponential-integral family (DLMF §6.2)
+    "sin_integral",
     "sinh",
+    "sinh_integral",
     "smt",
     # V1-4 / V1-16: Polynomial system solver + Gröbner basis (default since 2.3.1)
     "solve",

@@ -2792,6 +2792,52 @@ fn erfc(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "erfc", expr)
 }
 
+// ── Exponential-integral family ─────────────────────────────────────────────
+//
+// Conventions follow DLMF §6.2 and are documented on
+// `alkahest_core::primitive::expint`.  `Ci`, `Chi` and `li` are complex on the
+// negative reals; the numeric kernels refuse there rather than returning a
+// real part, so numeric evaluation reports "no value" instead of a wrong one.
+
+/// ``Ei(x)``, the exponential integral (DLMF 6.2.5). ``d/dx Ei(x) = exp(x)/x``.
+#[pyfunction]
+fn exp_integral_ei(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "Ei", expr)
+}
+
+/// ``li(x)``, the logarithmic integral (DLMF 6.2.8), a Cauchy principal value
+/// for ``x > 1``. ``d/dx li(x) = 1/log(x)``.
+#[pyfunction]
+fn log_integral(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "li", expr)
+}
+
+/// ``Si(x)``, the sine integral (DLMF 6.2.9). ``d/dx Si(x) = sin(x)/x``.
+#[pyfunction]
+fn sin_integral(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "Si", expr)
+}
+
+/// ``Ci(x)``, the cosine integral (DLMF 6.2.11). ``d/dx Ci(x) = cos(x)/x``.
+#[pyfunction]
+fn cos_integral(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "Ci", expr)
+}
+
+/// ``Shi(x)``, the hyperbolic sine integral (DLMF 6.2.15).
+/// ``d/dx Shi(x) = sinh(x)/x``.
+#[pyfunction]
+fn sinh_integral(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "Shi", expr)
+}
+
+/// ``Chi(x)``, the hyperbolic cosine integral (DLMF 6.2.16).
+/// ``d/dx Chi(x) = cosh(x)/x``.
+#[pyfunction]
+fn cosh_integral(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "Chi", expr)
+}
+
 #[pyfunction]
 #[pyo3(name = "abs")]
 fn abs_expr(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
@@ -15291,6 +15337,13 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(atanh, m)?)?;
     m.add_function(wrap_pyfunction!(erf, m)?)?;
     m.add_function(wrap_pyfunction!(erfc, m)?)?;
+    // Exponential-integral family
+    m.add_function(wrap_pyfunction!(exp_integral_ei, m)?)?;
+    m.add_function(wrap_pyfunction!(log_integral, m)?)?;
+    m.add_function(wrap_pyfunction!(sin_integral, m)?)?;
+    m.add_function(wrap_pyfunction!(cos_integral, m)?)?;
+    m.add_function(wrap_pyfunction!(sinh_integral, m)?)?;
+    m.add_function(wrap_pyfunction!(cosh_integral, m)?)?;
     m.add_function(wrap_pyfunction!(abs_expr, m)?)?;
     m.add_function(wrap_pyfunction!(sign, m)?)?;
     m.add_function(wrap_pyfunction!(floor, m)?)?;
