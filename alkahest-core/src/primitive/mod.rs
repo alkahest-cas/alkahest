@@ -50,6 +50,7 @@ use crate::kernel::{ExprId, ExprPool};
 use std::collections::HashMap;
 use std::fmt;
 
+pub mod expint;
 pub mod taylor_support;
 
 pub use taylor_support::{
@@ -415,6 +416,16 @@ impl PrimitiveRegistry {
         reg.register_unprobed(Box::new(builtins::RePrimitive));
         reg.register_unprobed(Box::new(builtins::ImPrimitive));
         reg.register_unprobed(Box::new(builtins::ArgPrimitive));
+        // Exponential-integral family (`alkahest-core/src/primitive/expint.rs`).
+        // Conventions follow DLMF §6.2; `Ci`, `Chi` and `li` refuse on the
+        // negative reals rather than returning the real part of a complex
+        // value.
+        reg.register_unprobed(Box::new(expint::EiPrimitive));
+        reg.register_unprobed(Box::new(expint::LiPrimitive));
+        reg.register_unprobed(Box::new(expint::SiPrimitive));
+        reg.register_unprobed(Box::new(expint::CiPrimitive));
+        reg.register_unprobed(Box::new(expint::ShiPrimitive));
+        reg.register_unprobed(Box::new(expint::ChiPrimitive));
         if probe {
             reg.probe_all();
         }
