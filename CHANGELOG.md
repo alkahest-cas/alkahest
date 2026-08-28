@@ -9,6 +9,55 @@
   reaching 26 GB of resident memory in ten minutes on the machine this was
   found on. `handle_alloc_error` aborts without unwinding, so the wall clock,
   `request_cancel` and `catch_unwind` were all equally powerless.
+- **General integration by parts (`alkahest_cas::integrate::by_parts`), behind
+  its own entry point.** `∫u·dv = u·v − ∫v·du` with a LIATE choice heuristic, a
+  cycle detector that *solves the linear equation* rather than recursing, and a
+  growth check that backs out of a wrong split. Before this there was no
+  `by_parts` rule anywhere in `integrate/`: the three existing by-parts helpers
+  in `engine.rs` are each pinned to one shape (inverse-trig with the argument
+  *exactly* the variable, polynomial × trig with a linear argument, the
+  `exp·sin` closed form), and everything else hit `Node::Mul`'s
+  `irreducible product of var-dependent factors` decline.
+
+  The module is **not yet wired into `integrate`** — it is reached through
+  `integrate_by_parts(expr, var, pool)` / `try_by_parts(…)`, the same way a new
+  route is characterised before it joins the default order.
+
+  - **The outcome type has two variants, `Solved` and `Declined`, and there is
+    no path from this module to `NonElementary`.** A by-parts failure means "my
+    split did not work", never "no antiderivative exists". `Declined` converts
+    to `E-INT-001` and to nothing else, pinned by a test.
+  - **Every returned antiderivative has passed `d/dx F = f`**
+    (`verify_antiderivative_status`) before it is returned, so a wrong LIATE
+    guess costs CPU and nothing else.
+  - **Cycles are closed, not just detected.** `I = acc + mult·c·I` is solved for
+    `I`. `∫sin(log x) dx = (x·sin(log x) − x·cos(log x))/2` is closed this way
+    and by nothing else in the codebase.
+  - Measured on Charlwood's Fifty: closes **#21** `x³·asin(x)/√(1−x⁴)`,
+    **#22** `x³·asec(x)/√(x⁴−1)` and **#35** `x·asec(x)/√(x²−1)`, all verified
+    by differentiation. The other 14 of the 17 C1/C3 problems produce *correct*
+    by-parts residuals that the downstream engine then declines; the binding
+    constraint on that cluster is the algebraic engine, not the by-parts layer.
+  - Cost on integrands it fails on — the price paid on every decline —
+    **5.1 ms mean, 13.9 ms worst** in a release build over the 40-case probe's
+    six `E-INT-001` cases plus eight controls. The 40-case probe is unchanged
+    at 27 solved / 7 `E-INT-004` / 6 `E-INT-001`.
+  - Three normalisers the module needs and `simplify` does not provide are
+    local to it, each a *proposal* re-checked by the gate: merging radicals
+    (`√(1−x⁴)/√(1−x²) → √(1+x²)`), rationalising radical denominators
+    (which collapses the algebraic engine's Euler-substitution answers), and
+    combining like terms over *rational* coefficients — `simplify` leaves
+    `sin(x)·3/4 + sin(x)·(−3/4)` standing and `poly::cancel::cancel` refuses it
+    with `NonIntegerCoefficient`.
+
+- **`Add` and `Mul` are flat at construction, so associativity holds
+  structurally.** `ExprPool::mul` / `ExprPool::add` now splice nested
+  same-operator children before interning, so `(a·b)·c`, `a·(b·c)` and `a·b·c`
+  are one expression rather than three. This is the last of the three
+  dimensions of the form-robustness bug fixed in this release (after route
+  fall-through and exponent spelling); previously `parse("x*y*z")` produced the
+  left-associative `(z * (x * y))` while `pool.mul([x, y, z])` produced a flat
+  three-child node, and the two compared unequal.
 
   The growth was not diffuse. Under an instrumented allocator every large
   request came from one place: `integrate::risch::tower::decompose_log_inner`,
