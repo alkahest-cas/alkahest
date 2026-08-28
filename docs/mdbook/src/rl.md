@@ -63,13 +63,32 @@ expressions at scoring time.
 
 ### Risch tiers
 
-| Tier | Grammar | Status |
-|------|---------|--------|
-| 0 | Rational polynomials | Implemented |
-| 1 | exp / log towers | Implemented |
-| 2 | ℚ(√d) coefficients | Implemented |
-| 3 | Rational exponents | Planned |
-| 4 | Nested towers | Planned |
+A tier is a claim about *which differential-field structure* the integrand
+exercises, not about how big it is.
+
+| Tier | Differential field | Generator |
+|------|--------------------|-----------|
+| 0 | `ℚ(x)` — rational polynomials | BWD grammar |
+| 1 | `ℚ(x)(θ)`, `θ = exp(u)` or `log(u)` | BWD grammar |
+| 2 | `ℚ(√d)` coefficients | BWD grammar |
+| 3 | `ℚ(x)(θ)`, **rational** in `θ` — non-square-free denominator plus a Liouvillian log part | LIOUVILLE |
+| 4 | `ℚ(x)(θ₁)(θ₂)` — nested exp/log, an independent second monomial, or a `sqrt` layer over a transcendental | LIOUVILLE |
+
+Tiers 3 and 4 use the **LIOUVILLE** construction of Barket, England & Gerhard
+([arXiv:2406.11631](https://arxiv.org/abs/2406.11631)): sample `F = v₀ + Σ cᵢ·log(vᵢ)`
+— the shape Liouville's theorem guarantees — and differentiate, so the integrand
+is elementary-integrable by construction and integrand/integral lengths can be
+balanced deliberately instead of inheriting BWD's `deg(f′) = Ω(n²)` bias.
+
+Every tier 3/4 dataset row is **verified before it is emitted**: `d/dx F == f`
+symbolically, and — independently of `diff` — by finite difference at in-domain
+sample points. Unverified draws are resampled, never shipped. The same machinery
+is available standalone for building benchmark corpora:
+
+```bash
+python -m alkahest.rl.envs.integration.corpus --tiers 3,4 -n 500 --solvability \
+    --out corpus.json
+```
 
 Hard negatives (`hard_negative_fraction`) inject integrands certified
 **NonElementary** (e.g. `exp(x²)`, `sin(x)/x`) so models learn to refuse honestly.

@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+- **RL integration environment: tiers 3 and 4 implemented via the LIOUVILLE
+  generator, and every generated pair is now verified before it is emitted.**
+  `alkahest.rl.envs.integration.grammar.random_elementary` raised
+  `NotImplementedError` for tiers 3 and 4. Both now use the LIOUVILLE
+  construction of Barket, England & Gerhard ([arXiv:2406.11631]), which samples
+  `F = v0 + sum ci*log(vi)` — the shape Liouville's theorem guarantees — over a
+  deliberately non-square-free denominator and differentiates it, so the
+  integrand is elementary-integrable by construction. Tier 3 is `Q(x)(theta)`
+  rational in one exp/log monomial (Hermite reduction + Rothstein-Trager
+  residue/log part); tier 4 is a two-generator tower `Q(x)(theta1)(theta2)`
+  covering nested exp/log, an algebraically independent second monomial, a
+  `sqrt` layer over a transcendental, and `Q(sqrt d)` coefficients. A new
+  `alkahest.rl.envs.integration.corpus` module gates every pair — symbolically
+  (`simplify(diff(F) - f) == 0`) *and*, independently of `diff`, by a
+  Richardson-extrapolated finite difference at points where every `log`
+  argument is positive, every `sqrt` radicand is positive and every denominator
+  is bounded away from zero — and exposes a CLI
+  (`python -m alkahest.rl.envs.integration.corpus`) that writes a verified
+  `(integrand, integral)` corpus to JSON with length-balance, uniqueness and
+  `integrate`-solvability statistics. `env._make_row` routes tiers 3-4 through
+  that gate and resamples on failure, so no unverified pair can reach a training
+  set; elementary rows also gained an `F_str` field carrying the reference
+  antiderivative. Measured over 5,000 draws: the BWD integrand/integral length
+  bias is gone (BWD's ratio *grows* with size, 1.67 -> 2.37 -> 3.13 by
+  integral-size bin; LIOUVILLE's is flat or falling, tier 3 ending at 1.16),
+  uniqueness after replacing integer coefficients with `CONST` is 97.9% (tier 4)
+  / 90.2% (tier 3) against 74.9% for a BWD baseline, and 3.6-4.3% of draws are
+  discarded — every one of them domain-restricted rather than wrong, with zero
+  numeric mismatches. **Fixes** a pre-existing bug in tier 2, which built
+  `sqrt(d)` as `d ** (1/2)` — a `pow` with a non-integer exponent, which
+  `diff` rejects with `E-DIFF-002`, so every tier-2 row raised.
+
+  [arXiv:2406.11631]: https://arxiv.org/abs/2406.11631
 - **Continuous creative telescoping — Almkvist–Zeilberger, the differential
   twin of Zeilberger's algorithm** (`alkahest_cas::experimental::almkvist_zeilberger`,
   `dgosper`, `integral_boundary_status`; Rust-only, no PyO3 binding yet). The
