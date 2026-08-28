@@ -2421,6 +2421,64 @@ pub fn integrate_definite(
     let lower = simplify(lower, pool).value;
     let upper = simplify(upper, pool).value;
 
+    // `∫_{-∞}^{∞}` of a rational function is not an FTC problem: the
+    // antiderivative is a `RootSum` or a sum of logs and arctangents whose
+    // limits at `±∞` the limit engine cannot establish. Take the residue
+    // theorem instead — it decides convergence exactly and cross-checks every
+    // value it emits against a rigorous enclosure. See
+    // [`crate::integrate::residue_theorem`].
+    if is_negative_infinity(lower, pool) && upper == pool.pos_infinity() {
+        use crate::integrate::residue_theorem::{integrate_rational_over_real_line, LineIntegral};
+        match integrate_rational_over_real_line(expr, var, pool) {
+            LineIntegral::Value { value, enclosure } => {
+                // The route only ever returns a value it has already bracketed
+                // by a rigorous enclosure of the same integral; the assertion
+                // records that contract rather than re-checking it.
+                debug_assert!(
+                    enclosure.0 <= enclosure.1,
+                    "residue route returned an inverted enclosure {enclosure:?}"
+                );
+                let mut log = DerivationLog::new();
+                log.push(RewriteStep::simple("residue_theorem", expr, value));
+                return Ok(DerivedExpr::with_log(value, log));
+            }
+            LineIntegral::Divergent(reason) => {
+                return Err(IntegrationError::NotImplemented(format!(
+                    "divergent integral: {reason}"
+                )));
+            }
+            // Not a rational function, or a shape the residue route does not
+            // cover: fall through to the ordinary fundamental-theorem path,
+            // which has its own (now strict) guards. Keep the reason: when the
+            // FTC path *also* declines, "the residue route did not apply
+            // because …" is the more useful half of the answer, and dropping it
+            // is how a caller ends up unable to tell an unsupported shape from
+            // an unsupported antiderivative.
+            LineIntegral::OutOfScope(reason) => {
+                return definite_via_ftc(expr, var, lower, upper, pool).map_err(|e| match e {
+                    IntegrationError::NotImplemented(msg) => IntegrationError::NotImplemented(
+                        format!("{msg} (the residue-theorem route did not apply: {reason})"),
+                    ),
+                    other => other,
+                });
+            }
+        }
+    }
+
+    definite_via_ftc(expr, var, lower, upper, pool)
+}
+
+/// The fundamental-theorem path of [`integrate_definite`]: antiderivative,
+/// endpoint values, difference — with the pole, jump and finiteness guards.
+///
+/// Bounds arrive already simplified.
+fn definite_via_ftc(
+    expr: ExprId,
+    var: ExprId,
+    lower: ExprId,
+    upper: ExprId,
+    pool: &ExprPool,
+) -> Result<DerivedExpr<ExprId>, IntegrationError> {
     if let Some(reason) = interior_singularity(expr, var, lower, upper, pool) {
         return Err(IntegrationError::NotImplemented(reason));
     }
@@ -3345,6 +3403,11 @@ fn mentions_var(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
         | ExprData::Float(_)
         | ExprData::Symbol { .. } => false,
     }
+}
+
+/// True when `bound` is exactly `-∞` — `(-1)·(+∞)`, the documented convention.
+fn is_negative_infinity(bound: ExprId, pool: &ExprPool) -> bool {
+    bound != pool.pos_infinity() && is_infinite_bound(bound, pool)
 }
 
 /// True when `bound` is `+∞` (canonical [`ExprPool::pos_infinity`] symbol) or
@@ -5110,11 +5173,15 @@ mod tests {
         let n = 4_i32;
         let f = recip_x_pow_plus_one(n, x, &pool);
         if let Ok(r) = over_the_line(f, x, &pool) {
-            let v = crate::eval::eval_f64(r.value, &pool, &HashMap::new())
+            // The answer is `π/√2`; bind `π` so the value is a number.
+            let mut bindings = HashMap::new();
+            bindings.insert(pool.symbol("pi", Domain::Real), std::f64::consts::PI);
+            let v = crate::eval::eval_f64(r.value, &pool, &bindings)
                 .unwrap_or_else(|e| panic!("returned a non-evaluable value: {e}"));
+            let want = std::f64::consts::PI / 2.0_f64.sqrt();
             assert!(
-                v > 1.0,
-                "∫_{{-∞}}^{{∞}} dx/(x^{n}+1) is > 1; got {v} from {}",
+                (v - want).abs() < 1e-9,
+                "∫_{{-∞}}^{{∞}} dx/(x^{n}+1) = π/√2 = {want}; got {v} from {}",
                 pool.display(r.value)
             );
         }

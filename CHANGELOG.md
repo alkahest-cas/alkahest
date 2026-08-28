@@ -267,6 +267,48 @@
   `ℚ(x, θ)` and required to equal the integrand exactly; anything that cannot be
   re-read falls through to `verify_antiderivative_status`, and a candidate that
   passes neither gate is discarded.
+- **`∫_{-∞}^{∞} P(x)/Q(x) dx` now takes the residue theorem**, in a new
+  `integrate::residue_theorem` module reached from `integrate_definite` before
+  the fundamental-theorem path. `∫_{-∞}^{∞} dx/(x⁴+1)` is `π/√2`,
+  `∫_{-∞}^{∞} dx/(x⁶+1)` is `2π/3` (it used to *hang*), `∫_{-∞}^{∞} dx/(x²+1)²`
+  is `π/2`.
+
+  **Convergence is checked, not assumed.** `deg Q ≥ deg P + 2` on the reduced
+  fraction, and `Q` with no real root — the latter by complete VAS real-root
+  isolation over ℤ. A failure of either is reported as *divergent*, never given
+  a value: `∫ x dx/(x²+1)` has Cauchy principal value `0`, and returning `0`
+  would be wrong.
+
+  **How the upper half-plane is selected.** Choosing the poles with `Im α > 0`
+  is semi-algebraic, so no rational symmetric-function identity gives the sum,
+  and this crate has no certified complex root isolation to build one from. The
+  half-plane split is instead pushed into a *spectral (Hurwitz) factorisation*,
+  where it becomes an ordinary polynomial factorisation: normalise to an even
+  denominator (`D = Q(x)Q(-x)` when `Q` is not already even), rotate
+  `Ď(s) = D(s/i)` so "upper half `x`-plane" becomes "left half `s`-plane", and
+  split `Ď = A(s)·A(-s)` with `A` Hurwitz. `A` is found by factoring `Ď` over ℚ
+  and sorting the irreducible factors with an exact Routh array; a small
+  rational linear system then gives the answer as `2π·(leading coeff of G)`.
+  For `deg D ≤ 4` — where `A` is typically irrational, as `x⁴+1` needs
+  `s²+√2s+1` — a closed form in radicals derived from the substitution `u = x²`
+  covers the gap and reaches `ℚ(√·)·π`.
+
+  **Covered:** every denominator whose Hurwitz spectral factor is rational
+  (`x²+1`, `x²+4`, `x²+2x+2`, `(x²+1)ⁿ`, `x⁶+1`, …) and, in radicals, every
+  denominator of degree ≤ 4 after even-normalisation (`x⁴+1`, `x⁴+x²+1`,
+  `x²/(x⁴+1)`). **Declined, explicitly:** anything else — `x⁸+1` is the smallest
+  example, being ℚ-irreducible with roots in both half-planes and too large for
+  the radical case.
+
+  **Nothing is returned unverified.** Every value is bracketed by a *rigorous
+  enclosure of the same integral* before it leaves the module. The whole real
+  line is covered with no truncation error: `[-1, 1]` directly, and each tail
+  through the exact change of variable `x = ±1/t`, which maps it to `[0, 1]` and
+  keeps the integrand rational and regular. All three pieces go through
+  `validated::bounds::verified_integral` (adaptive Taylor models in
+  outward-rounded ball arithmetic). A candidate outside the enclosure is treated
+  as a bug and declined, not returned.
+
 - **`integrate_definite` no longer turns an unevaluated endpoint value into a
   number.** `∫_{-∞}^{∞} dx/(x⁴+1)` returned `0` (true value `π/√2 ≈ 2.2214`),
   and so did `∫_{-∞}^{∞} x²dx/(x⁴+1)`. Both are worse than a decline: a wrong

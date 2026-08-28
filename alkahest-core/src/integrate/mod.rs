@@ -2,6 +2,7 @@ pub mod algebraic;
 pub mod by_parts;
 pub mod engine;
 pub mod norman;
+pub(crate) mod residue_theorem;
 pub mod risch;
 
 pub use engine::{

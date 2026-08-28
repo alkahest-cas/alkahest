@@ -153,6 +153,35 @@ except IntegrationError as e:
 
 For integrands outside the supported classes (e.g. `sqrt(P(x))`, mixed algebraic+transcendental), `integrate` raises `IntegrationError` with code `E-INT-001` (NotImplemented).
 
+### Improper integrals over the whole real line
+
+`integrate(f, x, -oo, oo)` for a **rational** `f` does not go through the
+fundamental theorem — the antiderivative is a `RootSum` or a sum of logs and
+arctangents whose limits at `±∞` the limit engine cannot establish. It takes
+the residue theorem instead:
+
+```python
+neg_inf = pool.integer(-1) * pool.pos_infinity()
+integrate(1 / (x**4 + pool.integer(1)), x, neg_inf, pool.pos_infinity()).value
+# → π·2^(-1/2)
+integrate(1 / (x**6 + pool.integer(1)), x, neg_inf, pool.pos_infinity()).value
+# → 2π/3
+```
+
+Both convergence conditions are checked exactly — `deg Q ≥ deg P + 2` on the
+reduced fraction, and `Q` with no real root — and a failure of either is
+reported as **divergent** (`E-INT-001`), never given a finite value. That
+includes cases with a Cauchy principal value: `∫ x dx/(x²+1)` has PV `0`, and
+returning `0` would be wrong.
+
+Every value is cross-checked against a rigorous enclosure of the same integral
+(`validated::bounds::verified_integral` on `[-1, 1]` plus each tail mapped to
+`[0, 1]` by `x = ±1/t`) before it is returned; a disagreement is treated as a
+bug and declined. The route covers denominators whose Hurwitz spectral factor
+is rational and, in radicals, every denominator of degree ≤ 4 after
+even-normalisation. Outside that it declines explicitly — `1/(x⁸+1)` is the
+smallest such case.
+
 ### Verification
 
 A common pattern is to verify an antiderivative by differentiating it back:

@@ -54,6 +54,7 @@ Current stable feature surface.
 - Reverse-mode partials on `Expr` (`symbolic_grad`) — distinct from JAX-style `grad` on `TracedFn`
 - Symbolic integration: power rule, log, exp tower, linear substitution, trig, and full rational-function integration (Hermite reduction, Rothstein–Trager, arctan for irreducible quadratics, √-coefficient logs, `RootSum` for degree-≥3 factors via Lazard–Rioboo–Trager)
 - Rational Risch DE for `f(x)·exp(η)` integrands with `f ∈ ℚ(x)` (Bronstein §6.1)
+- Improper integrals of rational functions over the whole real line by the residue theorem (`∫_{-∞}^{∞} dx/(x⁴+1) = π/√2`): both convergence conditions (`deg Q ≥ deg P + 2`, `Q` with no real root) checked exactly, divergence reported as divergence rather than as a principal value, and every returned value cross-checked against a rigorous enclosure of the same integral before it is returned. The upper-half-plane pole selection is done by Hurwitz spectral factorisation (rational factor via ℚ-factorisation + an exact Routh array; radicals for denominators of degree ≤ 4), and anything outside that declines explicitly
 - Non-elementary certification via Liouville's theorem (`E-INT-004`): `sin(x)/x`, `exp(x)/x`, `log(x)^(−n)`, etc. raise `NonElementary` instead of `NotImplemented`
 - `RootSum` kernel node: first-class symbolic sum over algebraic roots, with differentiation, display (Debug / LaTeX / unicode), persistence (pool format V5), and PyO3 bridge
 - Truncated Taylor and Laurent series (`series`, `Series`)
