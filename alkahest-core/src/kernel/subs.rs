@@ -5,6 +5,24 @@
 /// The traversal is top-down: if a node matches, its children are not further
 /// traversed (the replacement is returned as-is).
 ///
+/// # Keys are matched as whole nodes, never as part of a sum or product
+///
+/// A key only ever replaces a node that is *structurally identical* to it.  It
+/// is not matched against a sub-*multiset* of a wider `Add` or `Mul`: with
+/// `x + y → z`, `subs` rewrites `(x + y)` and `sin(x + y)`, but leaves
+/// `x + y + 1` alone, because that is one flat three-term `Add` and `x + y` is
+/// not a node inside it.
+///
+/// This used to depend on how the sum happened to be spelled — `Add` and `Mul`
+/// were built as left-associative binary chains, so `x + y + 1` contained an
+/// `x + y` node and was rewritten, while `1 + x + y` contained a `1 + x` node
+/// and was not.  Both now build the same flat node and neither is rewritten,
+/// which is the consistent behaviour rather than a coin flip on spelling.
+///
+/// For associative-commutative matching against part of a sum or product, use
+/// the pattern API ([`crate::pattern`]), which is AC-aware; `subs` is
+/// deliberately the cheap exact-node primitive.
+///
 /// # Example
 ///
 /// ```
@@ -219,10 +237,38 @@ mod tests {
         let xpy = p.add(vec![x, y]); // x+y as key
         let mut m = HashMap::new();
         m.insert(xpy, z); // replace x+y → z
-        let expr = p.add(vec![xpy, p.integer(1_i32)]);
-        let result = subs(expr, &m, &p);
-        // (x+y) + 1 → z + 1
-        assert_eq!(result, p.add(vec![z, p.integer(1_i32)]));
+
+        // A whole-node match still fires, and does not descend into `x`/`y`.
+        assert_eq!(subs(xpy, &m, &p), z);
+        let wrapped = p.func("sin", vec![xpy]);
+        assert_eq!(subs(wrapped, &m, &p), p.func("sin", vec![z]));
+    }
+
+    /// A key is matched as a whole node, never as a sub-multiset of a wider
+    /// sum.  `x + y + 1` is one flat three-term `Add`, so the `x + y` key does
+    /// not appear in it and nothing is rewritten.
+    ///
+    /// This is a deliberate consequence of `Add`/`Mul` being flat at
+    /// construction.  It used to depend on spelling — `x + y + 1` parsed to
+    /// `Add([Add([x, y]), 1])` and *was* rewritten, while `1 + x + y` parsed to
+    /// `Add([Add([1, x]), y])` and was *not*.  Both are now the same node and
+    /// neither is rewritten.  AC matching against part of a sum is the pattern
+    /// API's job, not `subs`'.
+    #[test]
+    fn subs_does_not_match_a_sub_multiset_of_a_flat_sum() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        let y = p.symbol("y", Domain::Real);
+        let z = p.symbol("z", Domain::Real);
+        let one = p.integer(1_i32);
+        let mut m = HashMap::new();
+        m.insert(p.add(vec![x, y]), z);
+
+        let flat = p.add(vec![x, y, one]);
+        assert_eq!(subs(flat, &m, &p), flat, "no whole-node match, no rewrite");
+        // Both spellings of the sum are the same node, so both agree.
+        assert_eq!(p.add(vec![p.add(vec![x, y]), one]), flat);
+        assert_eq!(p.add(vec![p.add(vec![one, x]), y]), flat);
     }
 
     #[test]

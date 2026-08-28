@@ -1176,4 +1176,86 @@ mod tests {
         let mut syms = HashMap::new();
         parse("atan2(1, 2)", &pool, &mut syms).unwrap();
     }
+
+    // -----------------------------------------------------------------------
+    // Associativity.  The grammar is left-associative, so `a*b*c` is parsed as
+    // `(a*b)*c`; `ExprPool::mul`/`add` splice that back into one flat node, so
+    // the parsed form and the n-ary builder form are the same expression.
+    // -----------------------------------------------------------------------
+
+    fn pool_xyz() -> (ExprPool, [ExprId; 3], HashMap<String, ExprId>) {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let z = pool.symbol("z", Domain::Real);
+        let syms = HashMap::from([
+            ("x".to_owned(), x),
+            ("y".to_owned(), y),
+            ("z".to_owned(), z),
+        ]);
+        (pool, [x, y, z], syms)
+    }
+
+    #[test]
+    fn parsed_product_chain_is_the_flat_mul() {
+        let (pool, [x, y, z], mut syms) = pool_xyz();
+        let flat = pool.mul(vec![x, y, z]);
+        for src in ["x*y*z", "(x*y)*z", "x*(y*z)"] {
+            assert_eq!(
+                parse(src, &pool, &mut syms).unwrap(),
+                flat,
+                "{src} must parse to the flat 3-factor Mul"
+            );
+        }
+    }
+
+    #[test]
+    fn parsed_sum_chain_is_the_flat_add() {
+        let (pool, [x, y, z], mut syms) = pool_xyz();
+        let flat = pool.add(vec![x, y, z]);
+        for src in ["x+y+z", "(x+y)+z", "x+(y+z)"] {
+            assert_eq!(
+                parse(src, &pool, &mut syms).unwrap(),
+                flat,
+                "{src} must parse to the flat 3-term Add"
+            );
+        }
+    }
+
+    /// A longer chain, and one mixing both operators, to show the splice is not
+    /// a one-level special case and does not cross operator boundaries.
+    #[test]
+    fn deeper_parsed_chains_flatten() {
+        let (pool, [x, y, z], mut syms) = pool_xyz();
+        let e = parse("x*y*z*x*y", &pool, &mut syms).unwrap();
+        assert_eq!(e, pool.mul(vec![x, y, z, x, y]));
+        assert_eq!(pool.depth(e), 2);
+
+        let mixed = parse("x*y + z + x*y*z", &pool, &mut syms).unwrap();
+        assert_eq!(
+            mixed,
+            pool.add(vec![pool.mul(vec![x, y]), z, pool.mul(vec![x, y, z])])
+        );
+    }
+
+    /// `parse → display → parse` is a fixpoint on the flattened form.
+    #[test]
+    fn display_round_trips_through_the_parser() {
+        for src in [
+            "x*y*z",
+            "x+y+z",
+            "x*y + z",
+            "(x + y)*z",
+            "x*y*z + x*y + z",
+            "2*x*y*z",
+            "x^2*y*z",
+        ] {
+            let (pool, _xyz, mut syms) = pool_xyz();
+            let once = parse(src, &pool, &mut syms).unwrap();
+            let rendered = pool.display(once).to_string();
+            let twice = parse(&rendered, &pool, &mut syms).unwrap();
+            assert_eq!(once, twice, "round trip changed {src} via {rendered}");
+            assert_eq!(pool.display(twice).to_string(), rendered);
+        }
+    }
 }

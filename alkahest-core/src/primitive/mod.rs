@@ -3079,7 +3079,7 @@ mod tests {
 
     #[test]
     fn special_functions_numeric_and_folds() {
-        use crate::kernel::{Domain, ExprData};
+        use crate::kernel::Domain;
         use crate::special::EULER_GAMMA;
 
         let reg = PrimitiveRegistry::default_registry();
@@ -3118,13 +3118,16 @@ mod tests {
             .unwrap()
             .simplify(&[pool.integer(3_i32)], &pool)
             .unwrap();
-        pool.with(psi3, |data| {
-            if let ExprData::Add(args) = data {
-                assert_eq!(args.len(), 2);
-            } else {
-                panic!("expected harmonic − γ fold");
-            }
-        });
+        // ψ(3) = 1 + 1/2 − γ.  `Add` is flat at construction, so the harmonic
+        // sum's terms and the −γ float are siblings of one three-term node
+        // rather than a nested `Add([Add([1, 1/2]), −γ])`; the value is the
+        // same either way, so assert on it rather than on the arity.
+        let expected = pool.add(vec![
+            pool.rational(1, 1),
+            pool.rational(1, 2),
+            pool.float(-EULER_GAMMA, 53),
+        ]);
+        assert_eq!(psi3, expected, "expected the harmonic − γ fold");
 
         let x = pool.symbol("x", Domain::Real);
         let j0 = pool.func("bessel_j0", vec![x]);
