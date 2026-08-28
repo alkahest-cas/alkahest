@@ -108,11 +108,12 @@ def test_the_flag_is_not_a_restatement_of_numeric_ball():
 def test_supported_set_is_the_elementary_plus_special_fragment():
     """A pin on the boundary as it stands, so a change to it is deliberate.
 
-    Thirty names: the elementary fragment, plus the special functions M7
-    called for — the Bessel pair, `digamma`, `gamma` and `lambert_w` — plus the
-    exponential-integral family `Ei`, `li`, `Si`, `Ci`, `Shi`, `Chi`
-    (`alkahest-core/src/primitive/expint.rs`) and `trigamma`, which is what
-    makes `digamma` differentiable.
+    Thirty-three names: the elementary fragment, plus the special functions
+    M7 called for — the Bessel pair, `digamma`, `gamma` and `lambert_w` — plus
+    the exponential-integral family `Ei`, `li`, `Si`, `Ci`, `Shi`, `Chi`
+    (`primitive::expint`), the Fresnel pair and `dilog` (`primitive::fresnel`,
+    `primitive::polylog`), and `trigamma`, which is what makes `digamma`
+    differentiable.
     Twenty-six names: the elementary fragment, plus the special functions
     Twenty-seven names: the elementary fragment, plus the special functions
     M7 called for — the Bessel pair, `digamma`, `gamma` and `lambert_w` — plus
