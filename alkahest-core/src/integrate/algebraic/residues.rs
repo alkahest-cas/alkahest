@@ -39,8 +39,8 @@
 //! places over `∞` off a **rational** Puiseux expansion, so when the leading
 //! coefficient of `a` is not a rational square it returns nothing at all rather
 //! than the conjugate pair that is actually there.  Two additions close the
-//! gap: [`residues_at_infinity_exact`] computes those residues in closed form
-//! over `ℚ(√lc)`, and [`residue_enumeration_is_complete`] is the predicate a
+//! gap: `residues_at_infinity_exact` computes those residues in closed form
+//! over `ℚ(√lc)`, and `residue_enumeration_is_complete` is the predicate a
 //! caller must consult before reading an empty divisor as "no residues
 //! anywhere".
 

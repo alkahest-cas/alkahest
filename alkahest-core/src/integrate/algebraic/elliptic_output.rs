@@ -39,7 +39,7 @@
 //!
 //! * first, symbolically — `simplify(d/dx F − f) == 0` gives
 //!   [`gate::Verdict::Proven`];
-//! * then by `f64` sampling at the region-aware [`gate_samples`] grid, at a
+//! * then by `f64` sampling at the region-aware `gate_samples` grid, at a
 //!   `1e-7` relative tolerance over at least three points
 //!   ([`gate::Verdict::SampledOnly`]) — this tier is the **acceptance
 //!   decision**, exactly as before;
