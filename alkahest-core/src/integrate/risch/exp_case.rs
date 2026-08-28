@@ -28,7 +28,7 @@
 //!
 //! # Known gap: rational functions *of* the generator
 //!
-//! [`decompose_wrt_exp`](super::tower::decompose_wrt_exp) writes the integrand
+//! [`decompose_wrt_exp`] writes the integrand
 //! as a Laurent polynomial `Σ cₖ(x)·tᵏ` in `t = exp(η)`, with every coefficient
 //! `cₖ` required to lie in the base field `K = ℚ(x)`.  An integrand that is a
 //! *rational function in `t`* — `eˣ/(eˣ+1)`, i.e. `t/(1+t)` — has no such
