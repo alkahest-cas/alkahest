@@ -476,6 +476,16 @@ fn latex_func_name(name: &str) -> String {
         "lambert_w" => r"W".into(),
         "bessel_j0" => r"J_0".into(),
         "bessel_j1" => r"J_1".into(),
+        // Exponential-integral family. `\operatorname` (not `\mathrm`)
+        // because these are function names, and upright either way; the
+        // fallback arm below would produce the same text, but pinning them
+        // here keeps them from drifting if the fallback changes.
+        "Ei" => r"\operatorname{Ei}".into(),
+        "li" => r"\operatorname{li}".into(),
+        "Si" => r"\operatorname{Si}".into(),
+        "Ci" => r"\operatorname{Ci}".into(),
+        "Shi" => r"\operatorname{Shi}".into(),
+        "Chi" => r"\operatorname{Chi}".into(),
         other => format!(r"\operatorname{{{other}}}"),
     }
 }
@@ -790,6 +800,17 @@ fn unicode_func(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
                 "bessel_j0" => "J₀",
                 "bessel_j1" => "J₁",
                 "lambert_w" => "W",
+                // Exponential-integral family: the ASCII spelling *is* the
+                // conventional Unicode one (DLMF renders `Ei`, `li`, `Si`,
+                // `Ci`, `Shi`, `Chi` upright), so these are pinned identities
+                // rather than translations. `Chi` in particular must not
+                // become `\u{3a7}` — it is a function, not the Greek letter.
+                "Ei" => "Ei",
+                "li" => "li",
+                "Si" => "Si",
+                "Ci" => "Ci",
+                "Shi" => "Shi",
+                "Chi" => "Chi",
                 "asin" => "arcsin",
                 "acos" => "arccos",
                 "atan" => "arctan",
