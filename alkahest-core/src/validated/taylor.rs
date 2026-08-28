@@ -2476,7 +2476,7 @@ impl TaylorModel {
     ///
     /// **Coefficients.**  `a₀ = Li₂(m₀)` from MPFR's correctly-rounded
     /// `mpfr_li2`; `a_{j+1} = uⱼ/(j+1)` where `uⱼ` are the coefficients of
-    /// `Li₂′` from [`Self::dilog_deriv_coeffs`], since integrating the
+    /// `Li₂′` from `dilog_deriv_coeffs`, since integrating the
     /// derivative's series term by term divides the `j`-th coefficient by
     /// `j+1`.
     ///
@@ -2488,9 +2488,9 @@ impl TaylorModel {
     /// |Li₂⁽ᵖ⁺¹⁾(ξ)|/(p+1)!  =  |w⁽ᵖ⁾(ξ)|/(p+1)!  ≤  sup|w| / ((p+1)·r^p),
     /// ```
     ///
-    /// with `sup|w|` from [`Self::dilog_w_bound`].  Every `r` is valid, so the
+    /// with `sup|w|` from `dilog_w_bound`.  Every `r` is valid, so the
     /// ladder tried below is a tightness choice only.  The same estimate at
-    /// the expansion point feeds [`Self::geometric_tail`] with `ρ = r`, and
+    /// the expansion point feeds `geometric_tail` with `ρ = r`, and
     /// the smaller of the two is kept.
     pub fn dilog(&self) -> Result<Self> {
         self.check_finite("dilog argument")?;
