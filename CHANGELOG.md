@@ -267,6 +267,39 @@
   `ℚ(x, θ)` and required to equal the integrand exactly; anything that cannot be
   re-read falls through to `verify_antiderivative_status`, and a candidate that
   passes neither gate is discarded.
+- **`integrate_definite` no longer turns an unevaluated endpoint value into a
+  number.** `∫_{-∞}^{∞} dx/(x⁴+1)` returned `0` (true value `π/√2 ≈ 2.2214`),
+  and so did `∫_{-∞}^{∞} x²dx/(x⁴+1)`. Both are worse than a decline: a wrong
+  number arrived with no warning.
+
+  The mechanism was cancellation of two *unevaluated* expressions. Those
+  integrands get a `RootSum` antiderivative from Lazard–Rioboo–Trager, and
+  neither of the two ways of evaluating one at a bound actually evaluates it:
+
+  * `calculus::limit` has no `RootSum` rule and, rather than erroring, returns
+    the input **unchanged** — so `lim_{x→+∞} F` and `lim_{x→−∞} F` were the same
+    expression, still containing `x`, and `F(+∞) − F(−∞)` cancelled to `0`.
+  * `kernel::subs` does not descend into a `RootSum` node either, so
+    substituting a *finite* bound is a silent no-op and the same cancellation
+    happens on a bounded interval: `∫_0^1 dx/(x⁴+1)` "=" `0`, true value
+    `≈ 0.8669`.
+
+  `eval_bound` now requires the endpoint value to be free of the integration
+  variable, whichever route produced it, and declines (`E-INT-001`) otherwise.
+  Both underlying gaps — `limit` returning its input for a shape it has no rule
+  for, and `subs` not traversing `RootSum` — are still there; this is the guard
+  that stops them reaching an answer.
+
+  Two further wrong answers on the same path are fixed:
+
+  * **`∫_0^∞ dx/(x−3)² = −1/3`** — divergent (double pole at `x = 3`, strictly
+    inside). The exact pole check read an infinite bound as "no numeric bound"
+    and switched itself off for *every* improper integral; it now compares
+    isolating intervals against `±∞` directly.
+  * **`∫_0^∞ x^{−2} dx` returned the expression `0^{−1}`** — a successful result
+    the evaluator itself rejects. The "must denote a finite real" gate only ran
+    when both bounds were finite; a value containing `∞` or an unresolved
+    `0^{negative}` is now refused whatever the bounds look like.
 
 - **`integrate` no longer lets the *spelling* of an integrand decide the
   answer.** Three separate defects combined into one user-visible failure mode:
