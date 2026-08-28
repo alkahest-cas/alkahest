@@ -486,6 +486,8 @@ fn latex_func_name(name: &str) -> String {
         "Ci" => r"\operatorname{Ci}".into(),
         "Shi" => r"\operatorname{Shi}".into(),
         "Chi" => r"\operatorname{Chi}".into(),
+        // 3.10.0.
+        "trigamma" => r"\psi_1".into(),
         other => format!(r"\operatorname{{{other}}}"),
     }
 }
@@ -797,6 +799,7 @@ fn unicode_func(name: &str, args: &[ExprId], pool: &ExprPool) -> String {
             let fn_name = match name {
                 "gamma" => "Γ",
                 "digamma" => "ψ",
+                "trigamma" => "ψ₁",
                 "bessel_j0" => "J₀",
                 "bessel_j1" => "J₁",
                 "lambert_w" => "W",

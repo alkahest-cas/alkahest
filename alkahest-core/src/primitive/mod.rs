@@ -426,6 +426,8 @@ impl PrimitiveRegistry {
         reg.register_unprobed(Box::new(expint::CiPrimitive));
         reg.register_unprobed(Box::new(expint::ShiPrimitive));
         reg.register_unprobed(Box::new(expint::ChiPrimitive));
+        // 3.10.0: trigamma, which is what makes `digamma` differentiable.
+        reg.register_unprobed(Box::new(builtins::TrigammaPrimitive));
         if probe {
             reg.probe_all();
         }
@@ -1942,6 +1944,78 @@ pub mod builtins {
 
     // ── EllipticPi (incomplete, third kind) ────────────────────────────────────
 
+    /// The three partials `(∂Π/∂φ, ∂Π/∂n, ∂Π/∂m)` of `Π(n, φ, m)`, built as
+    /// expressions.  See [`EllipticPiPrimitive::diff_forward`] for the
+    /// formulas and their sources.
+    fn elliptic_pi_partials(
+        n: ExprId,
+        phi: ExprId,
+        m: ExprId,
+        pool: &ExprPool,
+    ) -> (ExprId, ExprId, ExprId) {
+        let one = pool.integer(1_i32);
+        let neg_one = pool.integer(-1_i32);
+        let two = pool.integer(2_i32);
+
+        let sin_phi = pool.func("sin", vec![phi]);
+        let sin2 = pool.pow(sin_phi, two);
+        let one_minus_n_sin2 = pool.add(vec![one, pool.mul(vec![neg_one, n, sin2])]);
+        let delta = elliptic_delta(phi, m, pool);
+        let sin_2phi = pool.func("sin", vec![pool.mul(vec![two, phi])]);
+
+        let e = pool.func("EllipticE", vec![phi, m]);
+        let f = pool.func("EllipticF", vec![phi, m]);
+        let pi3 = pool.func("EllipticPi", vec![n, phi, m]);
+
+        let one_minus_m = pool.add(vec![one, pool.mul(vec![neg_one, m])]);
+        let m_minus_n = pool.add(vec![m, pool.mul(vec![neg_one, n])]);
+        let n_minus_1 = pool.add(vec![n, neg_one]);
+        let inv_n = pool.pow(n, neg_one);
+
+        // ∂/∂φ = 1/((1 − n sin²φ)·Δ)
+        let d_phi = pool.pow(pool.mul(vec![one_minus_n_sin2, delta]), neg_one);
+
+        // ∂/∂n = [E + ((m−n)/n)F + ((n²−m)/n)Π − n·Δ·sin2φ/(2(1−n sin²φ))]
+        //        / (2(n−1)(m−n))
+        let n2_minus_m = pool.add(vec![pool.pow(n, two), pool.mul(vec![neg_one, m])]);
+        let algebraic_n = pool.mul(vec![
+            neg_one,
+            n,
+            delta,
+            sin_2phi,
+            pool.pow(pool.mul(vec![two, one_minus_n_sin2]), neg_one),
+        ]);
+        let num_n = pool.add(vec![
+            e,
+            pool.mul(vec![m_minus_n, inv_n, f]),
+            pool.mul(vec![n2_minus_m, inv_n, pi3]),
+            algebraic_n,
+        ]);
+        let d_n = pool.mul(vec![
+            num_n,
+            pool.pow(pool.mul(vec![two, n_minus_1, m_minus_n]), neg_one),
+        ]);
+
+        // ∂/∂m = [E − (1−m)Π − m·sin2φ/(2Δ)] / (2(1−m)(m−n))
+        let algebraic_m = pool.mul(vec![
+            neg_one,
+            m,
+            sin_2phi,
+            pool.pow(pool.mul(vec![two, delta]), neg_one),
+        ]);
+        let num_m = pool.add(vec![
+            e,
+            pool.mul(vec![neg_one, one_minus_m, pi3]),
+            algebraic_m,
+        ]);
+        let d_m = pool.mul(vec![
+            num_m,
+            pool.pow(pool.mul(vec![two, one_minus_m, m_minus_n]), neg_one),
+        ]);
+
+        (d_phi, d_n, d_m)
+    }
+
     pub struct EllipticPiPrimitive;
 
     impl Primitive for EllipticPiPrimitive {
@@ -1958,6 +2032,42 @@ pub mod builtins {
             )
         }
 
+        /// All three partials, matching what `EllipticF`/`EllipticE` already
+        /// do (they differentiate w.r.t. *both* of their arguments and sum the
+        /// chain-rule contributions; nothing is declined).
+        ///
+        /// Before 3.10.0 only `∂/∂φ` was implemented and the whole rule bailed
+        /// out with `None` the moment `n` or `m` depended on the
+        /// differentiation variable — so `diff(EllipticPi(n(x), φ, m), x)`
+        /// failed with `E-DIFF-001`, which is what made antiderivatives
+        /// carrying `Π` unverifiable.
+        ///
+        /// With `Δ = √(1 − m·sin²φ)`, in the *parameter* convention `m = k²`
+        /// this crate uses throughout:
+        ///
+        /// ```text
+        /// ∂Π/∂φ = 1/((1 − n·sin²φ)·Δ)
+        ///
+        /// ∂Π/∂n = [ E(φ,m) + ((m−n)/n)·F(φ,m) + ((n²−m)/n)·Π(n,φ,m)
+        ///           − n·Δ·sin(2φ)/(2(1 − n·sin²φ)) ] / (2(n−1)(m−n))
+        ///
+        /// ∂Π/∂m = [ E(φ,m) − (1−m)·Π(n,φ,m) − m·sin(2φ)/(2Δ) ]
+        ///         / (2(1−m)(m−n))
+        /// ```
+        ///
+        /// The `∂/∂m` line is DLMF 19.4.7 (`∂Π/∂k`) rewritten with
+        /// `∂/∂m = (1/2k)·∂/∂k`; the `∂/∂n` line is the classical reduction
+        /// (Byrd & Friedman 710; Gradshteyn–Ryzhik 8.123).  Both were checked
+        /// against central differences of the quadrature evaluator at six
+        /// `(n, φ, m)` points before being written down — see
+        /// `elliptic_pi_partials_match_finite_differences`.
+        ///
+        /// The denominators vanish at `n = 0`, `n = 1`, `n = m` and `m = 1`,
+        /// which are genuine coincidences of the reduction, not of `Π`.  They
+        /// are left in the expression rather than special-cased: `EllipticF`'s
+        /// `∂/∂m` already carries a `1/(2m)` for the same reason, and folding
+        /// them here would be a simplification decision, not a differentiation
+        /// one.
         fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
             if args.len() != 3 {
                 return None;
@@ -1965,28 +2075,15 @@ pub mod builtins {
             let n = args[0];
             let phi = args[1];
             let m = args[2];
-            // Only the ∂/∂φ partial has a clean closed form; decline if n or m
-            // depend on `wrt` (the ∂/∂n, ∂/∂m closed forms are messy — see
-            // the module-level doc comment).
             let dn = crate::diff::diff(n, wrt, pool).ok()?.value;
-            let dm = crate::diff::diff(m, wrt, pool).ok()?.value;
-            let zero = pool.integer(0_i32);
-            if dn != zero || dm != zero {
-                return None;
-            }
             let dphi = crate::diff::diff(phi, wrt, pool).ok()?.value;
-            // ∂/∂φ Π(n,φ,m) = 1/((1 − n·sin²φ)·√(1 − m·sin²φ))
-            let sin_phi = pool.func("sin", vec![phi]);
-            let sin2 = pool.pow(sin_phi, pool.integer(2_i32));
-            let n_sin2 = pool.mul(vec![n, sin2]);
-            let one_minus_n_sin2 = pool.add(vec![
-                pool.integer(1_i32),
-                pool.mul(vec![pool.integer(-1_i32), n_sin2]),
-            ]);
-            let delta = elliptic_delta(phi, m, pool);
-            let denom = pool.mul(vec![one_minus_n_sin2, delta]);
-            let dpidphi = pool.pow(denom, pool.integer(-1_i32));
-            Some(pool.mul(vec![dpidphi, dphi]))
+            let dm = crate::diff::diff(m, wrt, pool).ok()?.value;
+            let (p_phi, p_n, p_m) = elliptic_pi_partials(n, phi, m, pool);
+            Some(pool.add(vec![
+                pool.mul(vec![p_phi, dphi]),
+                pool.mul(vec![p_n, dn]),
+                pool.mul(vec![p_m, dm]),
+            ]))
         }
 
         fn diff_reverse(
@@ -1995,11 +2092,15 @@ pub mod builtins {
             cotan: ExprId,
             pool: &ExprPool,
         ) -> Option<Vec<ExprId>> {
-            // Only the φ-partial is implemented; ∂/∂n and ∂/∂m are declined.
-            // Returning None keeps reverse-AD safe rather than reporting a
-            // partial cotangent vector that omits arguments.
-            let _ = (args, cotan, pool);
-            None
+            if args.len() != 3 {
+                return None;
+            }
+            let (p_phi, p_n, p_m) = elliptic_pi_partials(args[0], args[1], args[2], pool);
+            Some(vec![
+                pool.mul(vec![cotan, p_n]),
+                pool.mul(vec![cotan, p_phi]),
+                pool.mul(vec![cotan, p_m]),
+            ])
         }
 
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
@@ -2336,6 +2437,34 @@ pub mod builtins {
             Some(harmonic_minus_gamma(n, pool))
         }
 
+        /// `d/dx ψ(x) = ψ₁(x)`, the trigamma function.
+        ///
+        /// Before 3.10.0 this was `None`, which made every antiderivative
+        /// containing `ψ` unverifiable: the gate checks `d/dx F = f`, and it
+        /// cannot check what it cannot differentiate.
+        fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
+            if args.len() != 1 {
+                return None;
+            }
+            let x = args[0];
+            let dx = crate::diff::diff(x, wrt, pool).ok()?.value;
+            let psi1 = pool.func("trigamma", vec![x]);
+            Some(pool.mul(vec![psi1, dx]))
+        }
+
+        fn diff_reverse(
+            &self,
+            args: &[ExprId],
+            cotan: ExprId,
+            pool: &ExprPool,
+        ) -> Option<Vec<ExprId>> {
+            if args.len() != 1 {
+                return None;
+            }
+            let psi1 = pool.func("trigamma", vec![args[0]]);
+            Some(vec![pool.mul(vec![cotan, psi1])])
+        }
+
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
             if args.len() == 1 {
                 crate::special::digamma(args[0])
@@ -2346,6 +2475,60 @@ pub mod builtins {
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
             unary(args)?.digamma()
+        }
+    }
+
+    // ── trigamma ─────────────────────────────────────────────────────────────
+
+    /// `ψ₁(x) = ψ′(x) = Σ_{k≥0} (x+k)⁻²`.
+    ///
+    /// # Why this exists, and why it is where the ladder stops
+    ///
+    /// `digamma` needed a derivative (see [`DigammaPrimitive::diff_forward`]),
+    /// and `ψ′` *is* `ψ₁` — there is no way to express it in the existing
+    /// primitives.  But `ψ₁′ = ψ₂`, `ψ₂′ = ψ₃`, …: the polygamma ladder has no
+    /// closed-form terminator, so **any** finite set of unary primitives leaves
+    /// exactly one of them non-differentiable.  This one declines
+    /// `diff_forward`, honestly (callers get `E-DIFF-001`, never a wrong
+    /// answer).
+    ///
+    /// Moving the boundary from `ψ₀` to `ψ₁` rather than closing it is a
+    /// deliberate trade:
+    ///
+    /// * It is where the demand actually is.  `Γ′ = Γ·ψ` and
+    ///   `Γ″ = Γ·(ψ² + ψ₁)` now both land on functions the gate can *evaluate*
+    ///   and bound, which is what verifying an antiderivative requires.
+    /// * The only construct that would close the ladder is a **binary**
+    ///   `polygamma(n, x)` with `∂/∂x polygamma(n, x) = polygamma(n+1, x)`.
+    ///   That is a real option and is the recommended follow-up — but its
+    ///   `∂/∂n` has no closed form *at all*, so it would ship with a
+    ///   permanently declined partial rather than a movable one, and every
+    ///   `Func` rule in [`crate::validated::taylor`] is unary today, so it
+    ///   would also be invisible to `bound_on_box`.
+    pub struct TrigammaPrimitive;
+
+    impl Primitive for TrigammaPrimitive {
+        fn name(&self) -> &'static str {
+            "trigamma"
+        }
+
+        fn pretty(&self, args: &[ExprId], pool: &ExprPool) -> String {
+            format!("ψ₁({})", pool.display(args[0]))
+        }
+
+        // No `simplify`: `ψ₁(n) = π²/6 − Σ_{k<n} 1/k²` at a positive integer
+        // `n`, and the pool has no symbolic `π²`, so folding it would replace
+        // an exact value with a float literal behind the caller's back.
+
+        fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
+            match args {
+                [x] => crate::special::trigamma_f64(*x),
+                _ => None,
+            }
+        }
+
+        fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
+            unary(args)?.trigamma()
         }
     }
 
@@ -2496,6 +2679,41 @@ pub mod builtins {
             Some(pool.integer(acc))
         }
 
+        /// `d/dx Γ(x) = Γ(x)·ψ(x)`.
+        ///
+        /// The defining identity of the digamma function
+        /// (`ψ = Γ′/Γ`, DLMF 5.2.2), so this is exact wherever `Γ` is finite,
+        /// which is everywhere off the non-positive integers — the same set
+        /// where `ψ` itself is finite, so the product never hides a pole the
+        /// factors do not already have.
+        ///
+        /// Before 3.10.0 `Γ` had no derivative at all and the verification
+        /// gate could not check any antiderivative containing it.
+        fn diff_forward(&self, args: &[ExprId], wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
+            if args.len() != 1 {
+                return None;
+            }
+            let x = args[0];
+            let dx = crate::diff::diff(x, wrt, pool).ok()?.value;
+            let g = pool.func("gamma", vec![x]);
+            let psi = pool.func("digamma", vec![x]);
+            Some(pool.mul(vec![g, psi, dx]))
+        }
+
+        fn diff_reverse(
+            &self,
+            args: &[ExprId],
+            cotan: ExprId,
+            pool: &ExprPool,
+        ) -> Option<Vec<ExprId>> {
+            if args.len() != 1 {
+                return None;
+            }
+            let g = pool.func("gamma", vec![args[0]]);
+            let psi = pool.func("digamma", vec![args[0]]);
+            Some(vec![pool.mul(vec![cotan, g, psi])])
+        }
+
         fn numeric_f64(&self, args: &[f64]) -> Option<f64> {
             Some(libm_gamma(args[0]))
         }
@@ -2507,9 +2725,12 @@ pub mod builtins {
             unary(args)?.gamma()
         }
 
-        // NOTE: no `lean_theorem` override — `gamma` isn't even wired into
-        // `diff::diff` yet (see E-DIFF-001), let alone certified by
-        // `lean::diff_rule_to_tactic`, so no certificate is ever emitted.
+        // NOTE: no `lean_theorem` override.  As of 3.10.0 `gamma` *is* wired
+        // into `diff::diff` (`Γ′ = Γ·ψ`, above), but the derivative step is
+        // recorded under the generic `diff_primitive_registry` rule name that
+        // `lean::diff_rule_to_tactic` never maps to a tactic, so no
+        // certificate is emitted and claiming one here would be a false
+        // promise in `capabilities()["primitives"]`.
     }
 
     // ── min ──────────────────────────────────────────────────────────────────
@@ -3181,5 +3402,155 @@ mod tests {
         env.insert(x, x0);
         let analytic = eval_interp(d, &env, &pool).unwrap();
         assert!((analytic - fd).abs() < 1e-4, "analytic {analytic} fd {fd}");
+    }
+
+    // ── 3.10.0: the three derivatives that were missing ──────────────────
+
+    /// `Γ′ = Γ·ψ`, checked against a central difference of the numeric kernel
+    /// rather than against itself.
+    #[test]
+    fn gamma_derivative_is_gamma_times_digamma() {
+        use crate::kernel::Domain;
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let d = crate::diff::diff(pool.func("gamma", vec![x]), x, &pool)
+            .expect("gamma must differentiate")
+            .value;
+        let reg = PrimitiveRegistry::default_registry();
+        for x0 in [0.4_f64, 1.0, 1.5, 2.7, 5.0] {
+            let analytic = eval_expr_f64(d, x, x0, &pool);
+            let h = 1e-6;
+            let fd = (reg.numeric_f64("gamma", &[x0 + h]).unwrap()
+                - reg.numeric_f64("gamma", &[x0 - h]).unwrap())
+                / (2.0 * h);
+            assert!(
+                (analytic - fd).abs() < 1e-5 * analytic.abs().max(1.0),
+                "Γ′({x0}): analytic {analytic} fd {fd}"
+            );
+        }
+    }
+
+    /// `ψ′ = ψ₁`.
+    #[test]
+    fn digamma_derivative_is_trigamma() {
+        use crate::kernel::Domain;
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let d = crate::diff::diff(pool.func("digamma", vec![x]), x, &pool)
+            .expect("digamma must differentiate")
+            .value;
+        let reg = PrimitiveRegistry::default_registry();
+        for x0 in [0.4_f64, 1.0, 2.5, 9.0] {
+            let analytic = eval_expr_f64(d, x, x0, &pool);
+            let h = 1e-6;
+            let fd = (reg.numeric_f64("digamma", &[x0 + h]).unwrap()
+                - reg.numeric_f64("digamma", &[x0 - h]).unwrap())
+                / (2.0 * h);
+            assert!(
+                (analytic - fd).abs() < 1e-4 * analytic.abs().max(1.0),
+                "ψ′({x0}): analytic {analytic} fd {fd}"
+            );
+        }
+    }
+
+    /// `ψ₁` is where the polygamma ladder stops.  It must *decline*, loudly:
+    /// a placeholder or a silently wrong rule is the failure this whole change
+    /// exists to remove, and a future `polygamma(n, x)` should flip this test,
+    /// not delete it.
+    #[test]
+    fn trigamma_declines_to_differentiate_rather_than_guessing() {
+        use crate::kernel::Domain;
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        use crate::errors::AlkahestError;
+        let err = crate::diff::diff(pool.func("trigamma", vec![x]), x, &pool)
+            .expect_err("trigamma has no derivative rule");
+        assert_eq!(err.code(), "E-DIFF-001");
+        // …but it evaluates, which is what `Γ″ = Γ(ψ² + ψ₁)` needs of it.
+        let reg = PrimitiveRegistry::default_registry();
+        let psi1_of_1 = reg.numeric_f64("trigamma", &[1.0]).unwrap();
+        let pi2_6 = std::f64::consts::PI * std::f64::consts::PI / 6.0;
+        assert!((psi1_of_1 - pi2_6).abs() < 1e-14, "ψ₁(1) = π²/6");
+        // ψ₁(2) = π²/6 − 1 (Abramowitz & Stegun 6.4.2 with n = 1).
+        let psi1_of_2 = reg.numeric_f64("trigamma", &[2.0]).unwrap();
+        assert!((psi1_of_2 - (pi2_6 - 1.0)).abs() < 1e-14);
+        // Double poles at the non-positive integers.
+        for pole in [0.0_f64, -1.0, -2.0] {
+            assert!(reg.numeric_f64("trigamma", &[pole]).is_none(), "{pole}");
+        }
+        // …and the reflection formula covers the gaps between them:
+        // ψ₁(−1/2) = π²/2 − ψ₁(3/2) and ψ₁(3/2) = π²/2 − 4.
+        let got = reg.numeric_f64("trigamma", &[-0.5]).unwrap();
+        let want = std::f64::consts::PI.powi(2) / 2.0 + 4.0;
+        assert!((got - want).abs() < 1e-12, "ψ₁(−1/2): {got} vs {want}");
+    }
+
+    /// All three partials of `Π(n; φ | m)`, each against a central difference
+    /// of the quadrature evaluator.  Before 3.10.0 only `∂/∂φ` existed and the
+    /// rule declined outright whenever `n` or `m` depended on the
+    /// differentiation variable.
+    #[test]
+    fn elliptic_pi_partials_match_finite_differences() {
+        use crate::jit::eval_interp;
+        use crate::kernel::Domain;
+        use std::collections::HashMap;
+
+        let pool = ExprPool::new();
+        let n = pool.symbol("n", Domain::Real);
+        let phi = pool.symbol("phi", Domain::Real);
+        let m = pool.symbol("m", Domain::Real);
+        let p = pool.func("EllipticPi", vec![n, phi, m]);
+        let reg = PrimitiveRegistry::default_registry();
+
+        for (n0, phi0, m0) in [
+            (0.3_f64, 0.7_f64, 0.5_f64),
+            (0.2, 1.0, 0.4),
+            (-0.5, 0.9, 0.3),
+            (0.6, 0.4, 0.8),
+        ] {
+            for (slot, var) in [(0usize, n), (1, phi), (2, m)] {
+                let d = crate::diff::diff(p, var, &pool)
+                    .unwrap_or_else(|e| panic!("∂Π/∂{slot} must exist: {e}"))
+                    .value;
+                let mut env = HashMap::new();
+                env.insert(n, n0);
+                env.insert(phi, phi0);
+                env.insert(m, m0);
+                let analytic = eval_interp(d, &env, &pool).expect("partial evaluates");
+
+                let h = 1e-6;
+                let mut args_p = [n0, phi0, m0];
+                let mut args_m = [n0, phi0, m0];
+                args_p[slot] += h;
+                args_m[slot] -= h;
+                let fd = (reg.numeric_f64("EllipticPi", &args_p).unwrap()
+                    - reg.numeric_f64("EllipticPi", &args_m).unwrap())
+                    / (2.0 * h);
+                assert!(
+                    (analytic - fd).abs() < 1e-4 * analytic.abs().max(1.0),
+                    "∂Π/∂arg{slot} at ({n0}, {phi0}, {m0}): analytic {analytic} fd {fd}"
+                );
+            }
+        }
+    }
+
+    /// The new primitives are registered, differentiate (except `trigamma`,
+    /// deliberately) and evaluate.
+    #[test]
+    fn the_new_special_functions_are_registered() {
+        let reg = PrimitiveRegistry::default_registry();
+        assert!(reg.is_registered("trigamma"));
+        let caps = reg.capabilities("trigamma");
+        assert!(caps.contains(Capabilities::NUMERIC_F64));
+        assert!(caps.contains(Capabilities::NUMERIC_BALL));
+        assert!(caps.contains(Capabilities::TAYLOR_MODEL));
+        for name in ["gamma", "digamma"] {
+            let caps = reg.capabilities(name);
+            assert!(caps.contains(Capabilities::DIFF_FORWARD), "{name}: fwd");
+            assert!(caps.contains(Capabilities::DIFF_REVERSE), "{name}: rev");
+        }
+        assert!(!reg
+            .capabilities("trigamma")
+            .contains(Capabilities::DIFF_FORWARD));
     }
 }

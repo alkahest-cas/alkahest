@@ -960,6 +960,38 @@ impl ArbBall {
         b.add_rounding_error();
         b
     }
+
+    // ── Trigamma (3.10.0) ────────────────────────────────────────────────
+
+    /// Trigamma `ψ₁(x) = Σ_{k≥0} (x+k)⁻²`.  `None` when the ball contains a
+    /// non-positive integer, where `ψ₁` has a double pole.
+    ///
+    /// An endpoint hull, for the same reason [`ArbBall::digamma`] uses one:
+    /// `ψ₁` is *strictly decreasing* on `(0, ∞)` — every term of
+    /// `Σ (x+k)⁻²` is — so the range over `[a, b]` is `[ψ₁(b), ψ₁(a)]`.
+    /// Between the negative poles `ψ₁` is not monotone, so, exactly as for
+    /// `digamma`, only the positive axis is covered.
+    pub fn trigamma(&self) -> Option<Self> {
+        let lo = self.lo().to_f64();
+        let hi = self.hi().to_f64();
+        if !(lo.is_finite() && hi.is_finite()) || lo <= 0.0 {
+            return None;
+        }
+        let prec = self.prec;
+        let work = prec + 32;
+        let flo = crate::special::trigamma(&Float::with_val(work, self.lo()))?;
+        let fhi = crate::special::trigamma(&Float::with_val(work, self.hi()))?;
+        // Decreasing: the value at the *lower* endpoint is the upper bound.
+        let sum = Float::with_val(prec, &flo + &fhi);
+        let diff = Float::with_val(prec, &flo - &fhi);
+        let mut b = ArbBall {
+            mid: sum / 2_f64,
+            rad: Float::with_val(prec, diff / 2_f64).abs(),
+            prec,
+        };
+        b.add_rounding_error();
+        Some(b)
+    }
 }
 
 /// A certified bracket `(low, high)` with `low ≤ W₀(x) ≤ high`, or `None` when

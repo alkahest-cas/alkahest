@@ -13,8 +13,9 @@ boundary was correct at runtime and invisible beforehand.
 3.9.0 moved ten names across it. First `asinh`, `acosh`, `atanh`, `erf`,
 `erfc`; then `bessel_j0`, `bessel_j1`, `digamma`, `lambert_w` and `gamma`,
 which finished the M7 list (`gamma` gained a ball kernel at the same time —
-it had neither before). Each time the sets below were the only thing that had
-to change, because the flag itself is derived from the evaluator.
+it had neither before).  3.10.0 moved one more: `trigamma`.  Each time the sets below were the only
+thing that had to change, because the flag itself is derived from the
+evaluator.
 
 The whole point of these tests is that the *new* flag cannot repeat that
 mistake. `taylor_model` is derived by running the real evaluator (see
@@ -106,10 +107,11 @@ def test_the_flag_is_not_a_restatement_of_numeric_ball():
 def test_supported_set_is_the_elementary_plus_special_fragment():
     """A pin on the boundary as it stands, so a change to it is deliberate.
 
-    Twenty-nine names: the elementary fragment, plus the special functions
-    M7 called for — the Bessel pair, `digamma`, `gamma` and `lambert_w` —
-    plus the exponential-integral family `Ei`, `li`, `Si`, `Ci`, `Shi`, `Chi`
-    (`alkahest-core/src/primitive/expint.rs`).
+    Thirty names: the elementary fragment, plus the special functions M7
+    called for — the Bessel pair, `digamma`, `gamma` and `lambert_w` — plus the
+    exponential-integral family `Ei`, `li`, `Si`, `Ci`, `Shi`, `Chi`
+    (`alkahest-core/src/primitive/expint.rs`) and `trigamma`, which is what
+    makes `digamma` differentiable.
 
     Widening this set is a feature (add the rule, then add the name here);
     narrowing it silently would be a regression an agent's plan depends on.
@@ -146,6 +148,7 @@ def test_supported_set_is_the_elementary_plus_special_fragment():
         "sqrt",
         "tan",
         "tanh",
+        "trigamma",
     }
 
 

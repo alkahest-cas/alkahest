@@ -426,6 +426,32 @@
   `alkahest.experimental.TelescopingMdCertificate`. Experimental, same
   refusal codes as `telescope2d` (`E-HOLO-040`/`041`/`042`).
 
+- **`gamma`, `digamma` and `EllipticPi` can be differentiated — and
+  `trigamma` is new.** All three parsed and evaluated but could not be
+  differentiated in every argument, and an antiderivative carrying one of them
+  is *unverifiable*: the integrator's gate checks `d/dx F = f` and cannot
+  check what it cannot differentiate. Now `d/dx Γ(x) = Γ(x)·ψ(x)` (DLMF
+  5.2.2), `d/dx ψ(x) = ψ₁(x)`, and `Π(n; φ | m)` differentiates in **all
+  three** of its arguments. Previously only `∂Π/∂φ` existed, and even that
+  rule bailed out entirely as soon as `n` or `m` depended on the
+  differentiation variable — so `diff(Π(n(x), φ, m), x)` failed with
+  `E-DIFF-001`. The `∂/∂n` and `∂/∂m` reductions (DLMF 19.4.7 rewritten for
+  the parameter convention `m = k²`; Byrd & Friedman 710 for `∂/∂n`) were
+  checked against central differences of the quadrature evaluator before being
+  written down.
+
+  `trigamma(x)` = `ψ₁ = ψ′` is a new primitive with the full bundle
+  (`numeric_f64`, `numeric_ball`, a rigorous Taylor-model rule so
+  `bound_on_box` reaches it, unicode `ψ₁` + LaTeX `\psi_1`, PyO3 binding).
+  It is the one deliberate exception to "every primitive differentiates":
+  `ψ₁′ = ψ₂` and the polygamma ladder has no closed-form terminator short of a
+  binary `polygamma(n, x)`, so `diff(trigamma(x), x)` **declines** with
+  `E-DIFF-001` rather than returning a placeholder. Moving the boundary from
+  `ψ₀` to `ψ₁` is what makes `Γ′ = Γψ` and `Γ″ = Γ(ψ² + ψ₁)` both land on
+  functions the gate can evaluate and bound.
+
+  New: `alkahest.trigamma` (additive to `__all__`).
+
 ## 3.9.0 — 2026-08-14
 
 Everything in this section landed **after `v3.8.0` was tagged and published**,

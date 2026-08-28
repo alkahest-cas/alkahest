@@ -295,6 +295,8 @@ from .alkahest import (  # noqa: F401
     # V5-2: StableHLO/XLA bridge
     to_stablehlo,
     together,
+    # 3.10.0 — trigamma; this is what `digamma` differentiates to
+    trigamma,
     verified_integral,
     verified_no_roots,
     verified_sign,
@@ -2468,6 +2470,7 @@ __all__ = [
     "trace_fn",
     # V2-11 — Regular chains / triangular decomposition
     "triangularize",
+    "trigamma",
     "unflatten_exprs",
     "unicode_str",
     "verified_integral",

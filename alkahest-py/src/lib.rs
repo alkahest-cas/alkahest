@@ -2902,6 +2902,19 @@ fn bessel_j1(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "bessel_j1", expr)
 }
 
+/// Trigamma ψ₁(x) = ψ′(x) = Σ_{k≥0} (x+k)⁻².
+///
+/// This is what ``digamma`` differentiates to.  ``trigamma`` itself does not
+/// differentiate: the polygamma ladder ψ₀ → ψ₁ → ψ₂ → … has no closed-form
+/// terminator without a binary ``polygamma(n, x)``, so ``diff(trigamma(x), x)``
+/// raises ``E-DIFF-001`` rather than returning something wrong.
+///
+/// Stable top-level export.
+#[pyfunction]
+fn trigamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "trigamma", expr)
+}
+
 /// Heaviside step `θ(x)` (registered primitive; `θ(0) = 1/2`).
 ///
 /// Surfaced under `alkahest.experimental` to avoid mutating the frozen
@@ -15354,6 +15367,8 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(digamma, m)?)?;
     m.add_function(wrap_pyfunction!(bessel_j0, m)?)?;
     m.add_function(wrap_pyfunction!(bessel_j1, m)?)?;
+    // 3.10.0 special functions.
+    m.add_function(wrap_pyfunction!(trigamma, m)?)?;
     m.add_function(wrap_pyfunction!(heaviside, m)?)?;
     m.add_function(wrap_pyfunction!(dirac_delta, m)?)?;
     // Experimental calculus / ODE / transform surface (PRs #152–#161).

@@ -344,6 +344,10 @@ mod tests {
             "Ci",
             "Shi",
             "Chi",
+            // 3.10.0: the rigorous tier has to reach trigamma, or an
+            // antiderivative carrying it is unverifiable at the enclosure
+            // tier even though `diff` handles it.
+            "trigamma",
         ] {
             assert!(taylor_model_supports(name), "`{name}` lost its rule");
         }

@@ -2112,6 +2112,74 @@ impl TaylorModel {
         Ok(out)
     }
 
+    // ── Trigamma (3.10.0) ────────────────────────────────────────────────
+
+    /// `ψ₁(self) = ψ′(self)`.  Refuses unless the argument enclosure lies
+    /// strictly inside `(0, ∞)`, for the same reason
+    /// [`TaylorModel::digamma`] does: the Hurwitz zeta below needs a strictly
+    /// positive second argument, and between the negative poles nobody has
+    /// written the reflection.
+    ///
+    /// **Coefficients.**  `ψ₁ = ζ(2, x)` and `∂ₓ^k ζ(s, x) = (−1)ᵏ(s)ₖ ζ(s+k, x)`,
+    /// so `ψ₁⁽ᵏ⁾(x) = (−1)ᵏ(k+1)!·ζ(k+2, x)` and
+    ///
+    /// ```text
+    /// aₖ = ψ₁⁽ᵏ⁾(m₀)/k! = (−1)ᵏ·(k+1)·ζ(k+2, m₀),
+    /// ```
+    ///
+    /// exactly, with no recurrence and no cancellation — the same Hurwitz
+    /// zetas [`TaylorModel::digamma`] already computes, read one index along.
+    ///
+    /// **Remainder.**  `|ψ₁⁽ᵖ⁺¹⁾(ξ)|/(p+1)! = (p+2)·ζ(p+3, ξ)`, decreasing in
+    /// `ξ` term by term, so its supremum sits at the lower endpoint `L`, where
+    /// the integral comparison `ζ(s, L) ≤ L^{−s} + L^{1−s}/(s−1)` applies.
+    pub fn trigamma(&self) -> Result<Self> {
+        self.check_finite("trigamma argument")?;
+        let prec = self.prec;
+        let (m0, delta) = self.center_split();
+        let d = delta.range();
+        let arg = from_float(&m0, prec) + d.clone();
+        let arg_lo = lb(&arg);
+        if !strictly_positive(&arg_lo) {
+            return Err(ValidatedError::DomainViolation {
+                what: "trigamma of an argument whose enclosure reaches 0 or below (double poles sit at every non-positive integer)".into(),
+            });
+        }
+        let c = from_float(&m0, prec);
+        let p1 = self.order + 1;
+        let zetas = Self::hurwitz_zeta_ints(&c, self.order + 2, prec)?;
+        let a: Vec<ArbBall> = zetas
+            .iter()
+            .take(p1)
+            .enumerate()
+            .map(|(k, zk)| {
+                let z = zk.clone() * ArbBall::from_f64((k + 1) as f64, prec);
+                if k % 2 == 0 {
+                    z
+                } else {
+                    -z
+                }
+            })
+            .collect();
+
+        // ζ(p+3, L) ≤ L^{-(p+3)} + L^{-(p+2)}/(p+2), times (p+2).
+        let lo_ball = from_float(&arg_lo, prec);
+        let one = ArbBall::from_f64(1.0, prec);
+        let p2 = ArbBall::from_f64((p1 + 1) as f64, prec);
+        let sup = (Self::div_ball(&one, &lo_ball.powi((p1 + 2) as i64))?
+            + Self::div_ball(&one, &(lo_ball.powi((p1 + 1) as i64) * p2.clone()))?)
+            * p2;
+        let radius = ub(&(sup
+            * ArbBall {
+                mid: delta.delta_pow(&d),
+                rad: Float::new(prec),
+                prec,
+            }));
+        let out = delta.compose(&a, &radius);
+        out.check_finite("trigamma result")?;
+        Ok(out)
+    }
+
     /// `self^e` for a real constant exponent, via `exp(e · log(self))`.
     /// Requires a strictly positive base.
     pub fn pow_const(&self, e: &ArbBall) -> Result<Self> {
@@ -2353,6 +2421,7 @@ impl<'a> TaylorContext<'a> {
                     "bessel_j0" => x.bessel_j(0),
                     "bessel_j1" => x.bessel_j(1),
                     "digamma" => x.digamma(),
+                    "trigamma" => x.trigamma(),
                     "gamma" => x.gamma(),
                     "lambert_w" => x.lambert_w(),
                     // Exponential-integral family. The rules live beside
@@ -3648,5 +3717,63 @@ mod tests {
         let boxes = vec![(x, f(2.0), f(1.0))];
         let err = taylor_range(x, &pool, &boxes, 6, P).unwrap_err();
         assert_eq!(crate::errors::AlkahestError::code(&err), "E-VALIDATED-005");
+    }
+
+    // ── 3.10.0 rules ─────────────────────────────────────────────────────
+
+    /// A rule that produces a *finite* enclosure is worth nothing; the point
+    /// of this tier is that the enclosure **contains** the value.  Each of the
+    /// three checks below asks a degenerate box for a published constant.
+    fn encloses(cases: &[(&str, f64, f64)]) {
+        use crate::validated::bounds::{bound_on_box, BoundOptions};
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let opts = BoundOptions {
+            order: 5,
+            prec: 128,
+            tol: 1e-12,
+            max_subdivisions: 64,
+        };
+        for &(name, at, want) in cases {
+            let e = pool.func(name, vec![x]);
+            let r = bound_on_box(e, &pool, &[(x, at, at)], &opts)
+                .unwrap_or_else(|err| panic!("{name}({at}): {err}"));
+            let lo = lb(r.enclosure()).to_f64();
+            let hi = ub(r.enclosure()).to_f64();
+            assert!(
+                lo - 1e-12 <= want && want <= hi + 1e-12,
+                "{name}({at}): {want} outside [{lo}, {hi}]"
+            );
+        }
+    }
+
+    /// `ψ₁(1) = π²/6`, `ψ₁(2) = π²/6 − 1` and `ψ₁(½) = π²/2` — A&S 6.4.2 and
+    /// 6.4.4.
+    #[test]
+    fn the_trigamma_rule_encloses_its_published_values() {
+        let pi2 = std::f64::consts::PI * std::f64::consts::PI;
+        encloses(&[
+            ("trigamma", 1.0, pi2 / 6.0),
+            ("trigamma", 2.0, pi2 / 6.0 - 1.0),
+            ("trigamma", 0.5, pi2 / 2.0),
+        ]);
+    }
+
+    /// `ψ₁` has a double pole at every non-positive integer.  The strips
+    /// *between* the negative poles are analytic but are not covered, exactly
+    /// as for [`TaylorModel::digamma`].
+    #[test]
+    fn the_trigamma_rule_refuses_at_and_below_its_poles() {
+        use crate::validated::bounds::{bound_on_box, BoundOptions};
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let opts = BoundOptions::default();
+        for (lo, hi) in [(-0.5_f64, 0.5_f64), (0.0, 1.0), (-3.0, -2.0)] {
+            let e = pool.func("trigamma", vec![x]);
+            assert!(
+                bound_on_box(e, &pool, &[(x, lo, hi)], &opts).is_err(),
+                "trigamma on [{lo}, {hi}] must refuse"
+            );
+        }
     }
 }
