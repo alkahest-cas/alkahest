@@ -151,50 +151,66 @@ fn push_unique(facts: &mut Vec<SideCondition>, fact: SideCondition) {
 ///
 /// Only [`Domain::Positive`] (→ Positive + NonZero) and [`Domain::NonZero`] are
 /// collected. Other domains do not authorize conditional rewrites.
+///
+/// # Why this is a worklist and not a recursion
+///
+/// [`super::engine::simplify_with`] calls this on the *result* of every
+/// simplification, so it sees whatever the rules left behind — including an
+/// expression the rules could not shrink, at whatever depth the caller built
+/// it. As a recursion it descended one stack frame per level with nothing
+/// bounding the descent, and running out of stack aborts the process rather
+/// than raising anything a caller could catch. That put an abort back on the
+/// path `crate::simplify::stack` exists to keep off it, one function later.
+///
+/// A walk that only *collects* has nothing to compose on the way back up, so
+/// it needs no stack at all: the pending nodes live on the heap and depth
+/// costs memory instead of stack. `pending` stays empty for an atom and never
+/// allocates for one.
+///
+/// Children are pushed in reverse so popping yields them left to right: the
+/// order facts land in `facts` is exactly what the recursion produced, and
+/// this is a behaviour-preserving change rather than merely an equivalent one.
 pub(crate) fn collect_static_domain_facts(
     expr: ExprId,
     pool: &ExprPool,
     facts: &mut Vec<SideCondition>,
 ) {
-    match pool.get(expr) {
-        ExprData::Symbol { domain, .. } => match domain {
-            Domain::Positive => {
-                push_unique(facts, SideCondition::Positive(expr));
-                push_unique(facts, SideCondition::NonZero(expr));
+    let mut pending: Vec<ExprId> = Vec::new();
+    let mut current = expr;
+    loop {
+        pool.with(current, |data| match data {
+            ExprData::Symbol { domain, .. } => match domain {
+                Domain::Positive => {
+                    push_unique(facts, SideCondition::Positive(current));
+                    push_unique(facts, SideCondition::NonZero(current));
+                }
+                Domain::NonZero => push_unique(facts, SideCondition::NonZero(current)),
+                _ => {}
+            },
+            ExprData::Add(args)
+            | ExprData::Mul(args)
+            | ExprData::Func { args, .. }
+            | ExprData::Predicate { args, .. } => pending.extend(args.iter().rev()),
+            ExprData::Pow { base, exp } => pending.extend([*exp, *base]),
+            ExprData::Piecewise { branches, default } => {
+                pending.push(*default);
+                for (condition, value) in branches.iter().rev() {
+                    pending.extend([*value, *condition]);
+                }
             }
-            Domain::NonZero => push_unique(facts, SideCondition::NonZero(expr)),
-            _ => {}
-        },
-        ExprData::Add(args)
-        | ExprData::Mul(args)
-        | ExprData::Func { args, .. }
-        | ExprData::Predicate { args, .. } => {
-            for arg in args {
-                collect_static_domain_facts(arg, pool, facts);
+            ExprData::Forall { var, body } | ExprData::Exists { var, body } => {
+                pending.extend([*body, *var]);
             }
-        }
-        ExprData::Pow { base, exp } => {
-            collect_static_domain_facts(base, pool, facts);
-            collect_static_domain_facts(exp, pool, facts);
-        }
-        ExprData::Piecewise { branches, default } => {
-            for (condition, value) in branches {
-                collect_static_domain_facts(condition, pool, facts);
-                collect_static_domain_facts(value, pool, facts);
+            ExprData::BigO(arg) => pending.push(*arg),
+            ExprData::RootSum { poly, var, body } => {
+                pending.extend([*body, *var, *poly]);
             }
-            collect_static_domain_facts(default, pool, facts);
+            ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => {}
+        });
+        match pending.pop() {
+            Some(next) => current = next,
+            None => return,
         }
-        ExprData::Forall { var, body } | ExprData::Exists { var, body } => {
-            collect_static_domain_facts(var, pool, facts);
-            collect_static_domain_facts(body, pool, facts);
-        }
-        ExprData::BigO(arg) => collect_static_domain_facts(arg, pool, facts),
-        ExprData::RootSum { poly, var, body } => {
-            collect_static_domain_facts(poly, pool, facts);
-            collect_static_domain_facts(var, pool, facts);
-            collect_static_domain_facts(body, pool, facts);
-        }
-        ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => {}
     }
 }
 

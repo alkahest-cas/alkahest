@@ -2,6 +2,187 @@
 
 ## Unreleased
 
+- **A budget could be outrun by a single allocation, and was.**
+  `alkahest.integrate` on `1/(x·log x·(1 + log²(log x)))` — the derivative of
+  `atan(log(log x))`, an ordinary two-level log tower — ignored a
+  `Budget(wall_ms=3000)` completely and died on a 4 GiB allocation, after
+  reaching 26 GB of resident memory in ten minutes on the machine this was
+  found on. `handle_alloc_error` aborts without unwinding, so the wall clock,
+  `request_cancel` and `catch_unwind` were all equally powerless.
+
+  The growth was not diffuse. Under an instrumented allocator every large
+  request came from one place: `integrate::risch::tower::decompose_log_inner`,
+  growing a single `Vec<ExprId>` of log-polynomial coefficients. It reads the
+  exponent off each factor of a product and adds it to a running degree, and
+  when the tower generator appears in a *denominator* (`log(x)^-1`, which is
+  most of this integrand) that degree is **negative**; `deg = log_power as
+  usize` then wraps it to ≈ 2⁶⁴ and `while coeffs.len() <= deg { push }` runs
+  until the allocator gives up. One step, no loop back to any checkpoint —
+  which is exactly the shape `budget::check` cannot bound, however short the
+  deadline.
+
+  `budget::check_growth(units)` is the size half of the mechanism. A step that
+  is about to grow a structure says so *before* growing, and is refused if
+  `units` is more work than the budget allows; it also performs every check
+  `check` does, so one call covers both halves. It applies
+  `budget::DEFAULT_MAX_GROWTH_UNITS` (2²⁶) **even when no `Budget` is active**,
+  because the failure it prevents is an abort rather than a slow answer and a
+  caller cannot opt into a limit for an allocation they did not know a call
+  would make. `Budget { max_steps: Some(n), .. }` replaces that default, which
+  is what makes `E-BUDGET-002`'s existing remediation ("raise
+  `Budget(max_steps=...)`") true of a growth refusal and not merely plausible
+  — and why this needed no new error code and no new variant on the exhaustive
+  public `BudgetError` (compare the `[[budget]]` carrier `IntegrationError`
+  already uses to avoid the same break).
+
+  The checkpoint sits at the three places `decompose_log_inner` grows its
+  coefficient list. Because that function reports failure as a bare `None`,
+  which also means "this is not a polynomial in log(h)", the refusal travels
+  out of band (`tower::take_decompose_budget_trip`, the same pattern
+  `calculus::series::take_series_refusal` uses) so both of its callers can
+  re-raise it as `E-BUDGET-*` instead of reporting a resource limit as a
+  mathematical verdict.
+
+  The reproducer now returns in **47 µs** with `E-BUDGET-002`, having interned
+  19 pool nodes. Making that integral *work* is a separate question — the
+  negative-degree wrap above is a real defect in the decomposition and is left
+  for the Risch owner — but it now stops when asked. Ordinary declines are
+  unaffected: `∫ exp(x)/x dx` still returns `E-INT-*`, asserted alongside.
+
+- **`simplify` could abort the process on a deep enough expression.** The
+  sequential bottom-up traversal (`simplify::engine`'s `simplify_node`, and its
+  discrimination-net twin `simplify_node_indexed`) recursed once per level of
+  the expression with nothing bounding the descent. At a measured 10 832 bytes
+  of stack per level in the fattest configuration this crate is built in, an
+  8 MiB stack ran out around 750 levels; in release, a few hundred bytes a
+  frame put the cliff at order 10⁴–10⁵. A stack overflow is not an error: it
+  aborts the process without unwinding, so no `Result`, no `catch_unwind` and
+  no `Budget` could have intervened. `simplify::parallel` had carried a
+  segmented-stack governor since the previous entry below; the sequential
+  path, which every `simplify` call goes through, had nothing — and that
+  path's own test comment conceded it.
+
+  That governor is now `simplify::stack`, shared by both traversals and no
+  longer behind `--features parallel`. When the current thread's segment has
+  spent either of its budgets — a count of recursion levels entered, or a
+  measurement of stack bytes consumed — the next level continues on a freshly
+  spawned 16 MiB thread. Depth is therefore bounded by how many threads the OS
+  will hand out rather than by any one stack.
+
+  **A depth *limit* was considered and rejected.** `simplify` has no `Result`
+  return type, so a limit would have had to either change a widely used public
+  signature or follow the existing budget-trip precedent and return the
+  best-effort value simplified so far. The second is honest for a budget trip
+  (the caller asked to stop) and misleading for a depth abort (the caller
+  asked for a simplified expression and would silently receive a partly
+  unsimplified one, indistinguishable from a fixed point). The trampoline
+  truncates nothing, so the question does not arise and no new `E-*` code was
+  needed.
+
+  Two details the sequential path needed that the parallel one did not.
+  `ExpandPow`'s declined-expansion record is thread-local and drained once per
+  pass by the caller, so a traversal deep enough to spill onto a segment
+  thread recorded declines where that drain would never see them — the segment
+  root now drains its own and carries them home in the returned log.  And
+  `simplify::assumptions::collect_static_domain_facts`, which `simplify_with`
+  runs on the *result* of every simplification (so it sees whatever the rules
+  could not shrink), was a second unbounded recursion one function further
+  along the same path and put the abort straight back. It is now an explicit
+  worklist: a walk that only collects has nothing to compose on the way back
+  up, so depth costs heap instead of stack and no thread is spawned at all.
+
+  Regression tests drive a 3 000-level chain (four times past the old cliff)
+  through both traversals on a deliberately small 1 MiB thread, so they do not
+  depend on the harness's stack size. Measured cost on the hot path: none
+  detectable — interleaved runs of `perf_simplify_hot_path` give a median
+  81.4 ms before and 81.8 ms after, and the 608 `integrate::` unit tests run in
+  the same time to within run-to-run noise.
+
+- **The nightly `asan` shard's stack overflow: `simplify_par`'s stack governor
+  read `0` under AddressSanitizer, however deep it went.** Every scheduled CI
+  run since 2026-08-19 died ~16 minutes in with `AddressSanitizer:
+  stack-overflow`, in `simplify::parallel`'s
+  `par_survives_deep_chain_on_worker_thread`.
+
+  `simplify_par` recurses (`simplify_node_par` → `simplify_children_par` →
+  `seq_children` → `simplify_node_par`), and rayon workers get a 2 MiB stack,
+  so the traversal carries a governor that continues on a freshly spawned
+  16 MiB thread before running out. The governor's trigger was
+  `stack_used()`, which takes the address of a local and subtracts it from a
+  per-thread baseline. Under ASan that local does not live on the stack:
+  stack-use-after-return detection moves locals whose address escapes into a
+  per-thread *fake stack* ring, whose addresses **ascend** with recursion
+  depth and then wrap. Ascending addresses take `stack_used`'s re-baseline
+  branch on every call, so it returned `0` at every depth; after a wrap it
+  returned a bounded value that never approached the 12 MiB budget. The
+  governor never fired, and the real stack — which had been filling up all
+  along at a measured 10 832 bytes per level — ran out.
+
+  The previous mitigation, `RUST_MIN_STACK=33554432` on the shard, could not
+  have worked: a probe that reports `0` reports `0` at any stack size.
+
+  `with_stack_segment` now refills on **either** of two conditions: an exact
+  count of recursion levels entered since the current segment began
+  (`SEGMENT_DEPTH` against a budget derived from the byte budgets by
+  `WORST_CASE_LEVEL_BYTES = 16 KiB`, ~50% headroom over the fattest measured
+  configuration), or the old byte measurement. The count is what bounds the
+  recursion, because it cannot under-read; the byte probe is kept as a
+  backstop for frames fatter than the count was calibrated for, and is now
+  documented as advisory — it can only make the governor refill *earlier*,
+  never later. A tight foreign-thread level budget costs at most one extra
+  thread spawn per top-level call, since every deeper refill uses the much
+  larger owned-segment budget.
+
+  Two regression tests, neither of which can abort the test process the way
+  the bug did: `stack_segments_are_bounded_by_level_count_alone` drives 2 000
+  levels of a deliberately thin recursion (frames far too small for the byte
+  budget ever to fire) through `with_stack_segment` and asserts no thread ran
+  more consecutive levels than its budget, and
+  `stack_probe_rebaselines_after_unwinding` now asserts the re-baselining
+  decision on synthetic addresses via the extracted `probe_against_base`,
+  because real addresses are not a usable oracle under instrumentation that
+  relocates locals — the old version of that test asserted the ASan
+  under-read was impossible, and would have started failing as soon as the
+  overflow stopped masking it.
+
+  Release builds run the same recursion but not the same failure:
+  uninstrumented, the byte probe reads honestly, so the governor was already
+  firing and deep expressions were already safe. The nightly `tsan` and
+  `lsan` shards failed for an unrelated reason — the wall-clock assertion in
+  `holonomic::telescoping2d`, replaced with counter-based instrumentation in
+  this same release.
+
+- **The PR AddressSanitizer job no longer spends an hour inside one Gaussian
+  elimination.** Removing the ASan carve-out from
+  `chained_product_at_original_bounds_refuses_fast_via_resource_ceiling` (now
+  that it asserts on `SearchStats` counters rather than elapsed seconds) made
+  that one test genuinely run under ASan, where it measured 3550 s — ~59 min
+  against a 90-minute job ceiling that the rest of the suite already fills to
+  ~60 min.
+
+  The cost was never what the test asserts. The ceilings are calibrated in
+  *unknowns*, and `rational_nullspace` is `O(rows · cols²)` over
+  unbounded-precision rationals, so letting the cumulative budget through to
+  the 245-unknown rung of this input's probe ladder buys an hour of
+  arithmetic to arrive at counters the skip logic had already decided before
+  any polynomial was built. `search::Ceilings` makes the three numbers data
+  rather than constants read directly by the search loop; the search always
+  runs on `Ceilings::PRODUCTION`, and nothing outside the module's own tests
+  can supply anything else. The regression test now runs the identical input,
+  identical degree bounds and identical code path with the ceilings scaled by
+  ~1/5, so the affordable large probe is the 50-unknown rung instead — same
+  four verdicts on the same four rungs, same assertions, **143 s under ASan
+  and 20 s uninstrumented** against 3550 s and ≈450 s. (A 25x cut rather than
+  to nothing, because every probe assembles a system of the same ~10 000 rows
+  whatever its column count; it is the `cols²` in `rows · cols²` that scales
+  away.) `production_ceilings_classify_the_chained_product_probe_ladder`
+  pins the shipped `(400, 150, 300)` against the real 5/50/245/770 ladder by
+  arithmetic, so the calibration claims in `search`'s docs cannot drift
+  unnoticed. Both ceilings were verified still to be caught by the test:
+  disabling the cumulative one takes `large_attempted` from 1 to 6 (and the
+  test from under a second to 131 s) and fails it; disabling the per-probe
+  one fails it too.
+
 - **`integrate` no longer lets the *spelling* of an integrand decide the
   answer.** Three separate defects combined into one user-visible failure mode:
   the same mathematical object, written differently, got different verdicts.

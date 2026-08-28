@@ -232,6 +232,10 @@ pub const REGISTRY: &[ErrorSpec] = &[
     ErrorSpec { code: "E-RESIDUE-004", class: "ResidueError", cause: Cause::Domain,      remediation: Some("division by zero during Laurent coefficient extraction") },
     // E-BUDGET — BudgetError (P1 search plumbing item 4: budgets/cancellation/determinism)
     ErrorSpec { code: "E-BUDGET-001", class: "BudgetError", cause: Cause::Resource, remediation: Some("raise Budget(wall_ms=...), or accept a heuristic/numeric result for this candidate instead of an exact one") },
+    // Also the code for a *growth* refusal: one step asking `budget::check_growth`
+    // to spend more units at once than `max_steps` (or, with no budget active,
+    // `budget::DEFAULT_MAX_GROWTH_UNITS`) allows. Same currency, same remedy — and
+    // the reason it needs no code of its own.
     ErrorSpec { code: "E-BUDGET-002", class: "BudgetError", cause: Cause::Resource, remediation: Some("raise Budget(max_steps=...), or accept a partial/heuristic result for this candidate instead of an exact one") },
     ErrorSpec { code: "E-BUDGET-003", class: "BudgetError", cause: Cause::Resource, remediation: Some("call alkahest.clear_cancel() (Python) or budget::clear_cancel() (Rust) before starting the next candidate") },
     // E-DEPTH — DepthLimitError (expression nesting ceiling; see kernel::depth).

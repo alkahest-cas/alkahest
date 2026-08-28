@@ -34,9 +34,11 @@
 //!
 //! The traversal is recursive, and rayon workers get the default 2 MiB stack
 //! rather than the main thread's 8 MiB, so a deep chain used to abort the whole
-//! process with a stack overflow.  The recursion now measures how much stack it
-//! has consumed and continues on a freshly spawned thread with a larger stack
-//! before running out (see the private `with_stack_segment` helper).
+//! process with a stack overflow.  Depth is governed by
+//! [`crate::simplify::stack::with_stack_segment`], which continues the
+//! recursion on a freshly spawned thread with a larger stack before the
+//! current one runs out.  The sequential traversal in
+//! [`crate::simplify::engine`] goes through the same helper.
 //!
 //! # Safety
 //!
@@ -51,33 +53,13 @@ use crate::deriv::log::{DerivationLog, DerivedExpr};
 use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::simplify::engine::SimplifyConfig;
 use crate::simplify::rules::RewriteRule;
+use crate::simplify::stack::with_stack_segment;
 use dashmap::DashMap;
 use rayon::prelude::*;
 use std::sync::Arc;
 
 /// Arity threshold above which children are simplified in parallel.
 const PAR_THRESHOLD: usize = 4;
-
-/// Stack size handed to each refill thread by `with_stack_segment`.
-const SEGMENT_STACK_BYTES: usize = 16 * 1024 * 1024;
-
-/// Stack the traversal may consume on a thread it did not create.  Rayon
-/// workers get 2 MiB by default, so this leaves a wide margin for the frames
-/// already below us and for whatever the rule engine needs.
-const FOREIGN_STACK_BUDGET: usize = 512 * 1024;
-
-/// Stack the traversal may consume on a segment thread it created itself.
-/// Kept well under [`SEGMENT_STACK_BYTES`] so a single node visit can never
-/// straddle the end of the segment.
-const OWNED_STACK_BUDGET: usize = SEGMENT_STACK_BYTES - 4 * 1024 * 1024;
-
-thread_local! {
-    /// Stack address at which this thread's segment began; 0 until first probe.
-    static SEGMENT_BASE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// How much stack this thread's segment is allowed to consume.
-    static SEGMENT_BUDGET: std::cell::Cell<usize> =
-        const { std::cell::Cell::new(FOREIGN_STACK_BUDGET) };
-}
 
 /// Per-pass memo: input `ExprId` → simplified `ExprId`.
 type Memo = DashMap<ExprId, ExprId>;
@@ -152,7 +134,7 @@ fn simplify_node_par(
         return DerivedExpr::new(*cached);
     }
 
-    let result = with_stack_segment(|| {
+    let result = with_stack_segment(|_| {
         // `with` borrows the node instead of cloning it: the owning `ExprData`
         // clone was one heap allocation (and, for `Func`, one `String` clone)
         // per node visit on every worker.
@@ -173,70 +155,6 @@ fn simplify_node_par(
 
     memo.insert(expr, result.value);
     result
-}
-
-/// Run `f`, moving it to a thread with a fresh [`SEGMENT_STACK_BYTES`] stack
-/// once the current segment has consumed its budget.
-///
-/// Rayon workers have the default 2 MiB stack, which a deep expression chain
-/// exhausts — and a stack overflow aborts the process rather than unwinding, so
-/// the caller cannot catch it.  Depth alone is a poor proxy for stack use (debug
-/// frames are several times larger than release ones), so this measures the
-/// stack actually consumed since the segment began.  Segments are spawned
-/// scoped, so the borrowed pool, rules and memo stay valid.
-///
-/// Inside a segment the ambient rayon pool is no longer installed, so nested
-/// `par_iter` calls fall back to the global pool.  That only affects subtrees
-/// deep enough to exhaust a whole segment, where returning an answer at all
-/// matters more than which pool schedules the work.
-fn with_stack_segment<R: Send>(f: impl FnOnce() -> R + Send) -> R {
-    if stack_used() < SEGMENT_BUDGET.with(|b| b.get()) {
-        return f();
-    }
-    std::thread::scope(|scope| {
-        std::thread::Builder::new()
-            .stack_size(SEGMENT_STACK_BYTES)
-            .spawn_scoped(scope, || {
-                // Fresh thread: its own thread-locals, and a stack we sized.
-                SEGMENT_BUDGET.with(|b| b.set(OWNED_STACK_BUDGET));
-                f()
-            })
-            .expect("failed to spawn stack segment for deep recursion")
-            .join()
-            .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
-    })
-}
-
-/// Stack bytes consumed on this thread since the current segment began.
-///
-/// Uses the address of a local as a stack-depth probe.  Stacks grow downwards
-/// on every platform this crate targets, so a *smaller* address means deeper.
-///
-/// The baseline is re-established whenever the probe lands at or above it.
-/// That matters because Rayon reuses its workers: the baseline used to be
-/// latched on a thread's first probe and never revisited, so a worker that
-/// happened to take its first `simplify_par` task from deep inside a call
-/// chain kept that deep address as its baseline forever.  Every later task on
-/// that worker started *above* the stale baseline, `saturating_sub` floored
-/// the difference at 0, and the traversal read its own stack usage as zero no
-/// matter how deep it went — so it never refilled, and ran off the end of the
-/// worker's 2 MiB stack.  A stack overflow aborts the process, which is
-/// precisely what this machinery exists to prevent.
-///
-/// Re-baselining upwards is always safe: an address above the current
-/// baseline means the frames that baseline was measured against have already
-/// returned, so it describes a stack that no longer exists.
-fn stack_used() -> usize {
-    let probe = 0u8;
-    let here = &probe as *const u8 as usize;
-    SEGMENT_BASE.with(|base| {
-        if base.get() == 0 || here >= base.get() {
-            base.set(here);
-            0
-        } else {
-            base.get() - here
-        }
-    })
 }
 
 fn simplify_children_par(
@@ -594,8 +512,9 @@ mod tests {
     /// and abort the whole process instead of returning.  3000 recursion levels
     /// is roughly five times what an unguarded debug traversal survives there.
     ///
-    /// Only the parallel path is exercised: the sequential traversal recurses
-    /// just as deep and still overflows a small stack well before this size.
+    /// The sequential traversal is covered by `engine`'s
+    /// `deep_chain_returns_instead_of_overflowing_the_stack`; both now share
+    /// the same governor (`crate::simplify::stack`).
     #[test]
     fn par_survives_deep_chain_on_worker_thread() {
         let pool = p();
@@ -607,50 +526,6 @@ mod tests {
             .unwrap();
         let par = tp.install(|| simplify_par(deep, &pool));
         assert_eq!(par.value, x);
-    }
-
-    /// Burn `frames` stack frames, then report `stack_used()` from the bottom.
-    #[inline(never)]
-    fn probe_at_depth(frames: u32) -> usize {
-        // A real local keeps the frame from being optimised to nothing.
-        let mut pad = [0u8; 256];
-        pad[0] = frames as u8;
-        std::hint::black_box(&pad);
-        if frames == 0 {
-            stack_used()
-        } else {
-            probe_at_depth(frames - 1)
-        }
-    }
-
-    /// `SEGMENT_BASE` used to be latched on a thread's first probe and never
-    /// revisited.  Rayon reuses its workers, so a worker whose first task
-    /// probed from deep in a call chain kept that deep address forever; every
-    /// later task started above it, `saturating_sub` floored the result at 0,
-    /// and the traversal believed it was using no stack however deep it went.
-    /// It therefore never refilled and eventually overflowed the worker's
-    /// 2 MiB stack — an abort, not an error.
-    ///
-    /// Asserted here rather than by actually overflowing a stack: a
-    /// regression must fail this test, not kill the test process.
-    #[test]
-    fn stack_probe_rebaselines_after_unwinding() {
-        // Task 1: latch a baseline from deep in a call chain, then unwind.
-        let deep = probe_at_depth(400);
-        assert_eq!(deep, 0, "the first probe on a thread establishes the base");
-
-        // Task 2 on the same (reused) thread, starting near the top of the
-        // stack.  This must re-baseline...
-        assert_eq!(stack_used(), 0, "a probe above the old base must re-base");
-
-        // ...so that going deeper than *this* point is now measurable.  With
-        // the stale baseline still in place this read 0, which is exactly the
-        // under-read that let the traversal run off the end of the stack.
-        let used = probe_at_depth(64);
-        assert!(
-            used > 0,
-            "stack usage under-read as {used} after re-baselining"
-        );
     }
 
     /// At a depth both paths can handle, the results must still agree.

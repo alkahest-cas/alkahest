@@ -11,6 +11,7 @@ pub mod parallel;
 pub mod redex;
 pub mod rules;
 pub mod rulesets;
+pub(crate) mod stack;
 
 #[cfg(test)]
 mod proptests;
