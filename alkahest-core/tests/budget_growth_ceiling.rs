@@ -13,43 +13,35 @@
 //! coefficients until the allocator gave up — 26 GB of resident memory in ten
 //! minutes on the machine this was written on, under a three-second budget.
 //!
-//! Making that integral *work* is a separate question; these tests are about
-//! it stopping when asked, and about the refusal being legible as a resource
-//! limit rather than as a mathematical verdict.
+//! **That integrand no longer reaches the runaway path, and these tests no
+//! longer use it.** Two independent fixes landed since this file was written
+//! and compose: `decompose_as_log_poly` now declines a negative degree via
+//! `usize::try_from` instead of wrapping it (so the growth never starts), and
+//! the router falls through on a sub-engine decline (so the integrand reaches
+//! the derivative-divides substitution, which *solves* it — the integral now
+//! returns `atan(log(log x))`).
+//!
+//! That is a better outcome than a clean refusal, but it means driving this
+//! guard through `integrate` would leave the test hostage to routing changes
+//! it is not about. So the ceiling is exercised **directly** below. The
+//! integrator-level test that remains is the one that still has a stable
+//! premise: that an ordinary mathematical decline is not reported as a budget
+//! trip.
 
 use alkahest_cas::budget::{self, Budget};
 use alkahest_cas::errors::AlkahestError;
-use alkahest_cas::kernel::{Domain, ExprId, ExprPool};
+use alkahest_cas::kernel::{Domain, ExprPool};
 use std::time::Duration;
 
-/// `d/dx atan(log(log x))` = `1/(x·log x·(1 + log²(log x)))`.
-fn atan_log_log_derivative(pool: &ExprPool, x: ExprId) -> ExprId {
-    let mut env = std::collections::HashMap::new();
-    env.insert("x".to_string(), x);
-    let e = alkahest_cas::parse::parse("atan(log(log(x)))", pool, &mut env).unwrap();
-    let d = alkahest_cas::diff::diff(e, x, pool).unwrap();
-    alkahest_cas::simplify::simplify(d.value, pool).value
-}
-
-/// Asserted on the error *kind*, not on elapsed seconds: a wall-clock
-/// assertion here would be load-sensitive, and the guard under test is not a
-/// deadline anyway — it refuses before the first allocation, so the call
-/// returns in microseconds whatever the machine is doing.
+/// The ceiling refuses a request past the limit, and does so *before* the
+/// allocation — so the call returns in microseconds whatever the machine is
+/// doing. Asserted on the error kind, never on elapsed seconds: a wall-clock
+/// assertion here would be load-sensitive, and this guard is not a deadline.
 #[test]
-fn runaway_growth_stops_with_a_budget_error() {
-    let pool = ExprPool::new();
-    let x = pool.symbol("x", Domain::Real);
-    let f = atan_log_log_derivative(&pool, x);
-
+fn growth_past_the_ceiling_is_refused_as_a_budget_error() {
     let _guard = budget::enter(Budget::new().with_wall(Duration::from_millis(3000)));
-    let err = alkahest_cas::integrate::integrate(f, x, &pool)
-        .expect_err("this integrand has no elementary form this engine can reach");
-
-    assert!(
-        err.is_budget(),
-        "a resource refusal must not arrive as a mathematical verdict: {err}"
-    );
-    assert_eq!(err.budget_code(), Some("E-BUDGET-002"));
+    let err = budget::check_growth(u64::MAX).expect_err("a 2^64-unit request must be refused");
+    assert_eq!(err.code(), "E-BUDGET-002");
 }
 
 /// The refusal is not an artefact of having entered a budget. The abort it
@@ -57,14 +49,21 @@ fn runaway_growth_stops_with_a_budget_error() {
 /// could not have opted into a limit for an allocation they did not know a
 /// call would make.
 #[test]
-fn runaway_growth_stops_with_no_budget_entered() {
+fn growth_is_bounded_with_no_budget_entered() {
     assert!(!budget::is_active());
-    let pool = ExprPool::new();
-    let x = pool.symbol("x", Domain::Real);
-    let f = atan_log_log_derivative(&pool, x);
+    let err =
+        budget::check_growth(u64::MAX).expect_err("the default ceiling applies unconditionally");
+    assert_eq!(err.code(), "E-BUDGET-002");
+}
 
-    let err = alkahest_cas::integrate::integrate(f, x, &pool).expect_err("must refuse");
-    assert_eq!(err.budget_code(), Some("E-BUDGET-002"));
+/// An ordinary-sized request is not refused — the ceiling must not fire on
+/// legitimate work, or it would turn every large-but-honest computation into
+/// a spurious resource error.
+#[test]
+fn an_ordinary_growth_request_is_allowed() {
+    assert!(budget::check_growth(1024).is_ok());
+    let _guard = budget::enter(Budget::new().with_wall(Duration::from_millis(3000)));
+    assert!(budget::check_growth(1024).is_ok());
 }
 
 /// A *mathematical* decline must stay a mathematical decline — several tests
