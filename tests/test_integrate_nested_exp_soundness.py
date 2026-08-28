@@ -50,8 +50,7 @@ def _check_antiderivative(x, f, cap, label):
         if lhs != lhs or rhs != rhs:  # NaN at a singularity — skip
             continue
         assert abs(lhs - rhs) < 1e-8, (
-            f"{label}: d/dx F({pt}) = {lhs}, f({pt}) = {rhs} — mismatch\n"
-            f"  F = {cap}\n  f = {f}"
+            f"{label}: d/dx F({pt}) = {lhs}, f({pt}) = {rhs} — mismatch\n  F = {cap}\n  f = {f}"
         )
         checked += 1
     assert checked >= 2, f"{label}: too few usable sample points"
@@ -102,9 +101,7 @@ def test_simplify_does_not_change_the_verdict(src, _witness):
             verdicts.append("ok")
         except ak.IntegrationError as exc:
             verdicts.append(getattr(exc, "code", "?"))
-    assert verdicts[0] == verdicts[1], (
-        f"{src}: raw and simplified spellings disagree: {verdicts}"
-    )
+    assert verdicts[0] == verdicts[1], f"{src}: raw and simplified spellings disagree: {verdicts}"
     assert "E-INT-004" not in verdicts, f"{src}: false NonElementary certificate"
 
 
@@ -134,12 +131,19 @@ def test_rational_in_generator_is_never_certified(src):
     pool = ExprPool()
     x = pool.symbol("x")
     for label, f in _spellings(src, pool):
+        # Either outcome is acceptable — a solve or an honest decline. Only the
+        # `E-INT-004` certificate is forbidden, which `pytest.raises` cannot
+        # express, so the code is captured and asserted outside the handler
+        # (ruff PT017 rejects asserting on the exception in place).
+        code = detail = None
         try:
             result = integrate(f, x)
         except ak.IntegrationError as exc:
-            assert getattr(exc, "code", "") != "E-INT-004", (
+            code, detail = getattr(exc, "code", ""), str(exc)
+        if code is not None:
+            assert code != "E-INT-004", (
                 f"{src} [{label}]: certified non-elementary without ruling out the "
-                f"logarithmic part over the tower — {exc}"
+                f"logarithmic part over the tower — {detail}"
             )
             continue
         # If it *did* solve, the answer must be correct.
@@ -206,11 +210,14 @@ def test_log_derivative_family_is_not_certified_li(src):
     pool = ExprPool()
     x = pool.symbol("x")
     for label, f in _spellings(src, pool):
+        code = detail = None
         try:
             result = integrate(f, x)
         except ak.IntegrationError as exc:
-            assert getattr(exc, "code", "") != "E-INT-004", (
-                f"{src} [{label}]: elementary integrand certified as li — {exc}"
+            code, detail = getattr(exc, "code", ""), str(exc)
+        if code is not None:
+            assert code != "E-INT-004", (
+                f"{src} [{label}]: elementary integrand certified as li — {detail}"
             )
             continue
         _check_antiderivative(x, f, result.value, f"{src} [{label}]")
