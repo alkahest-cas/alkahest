@@ -1231,6 +1231,8 @@ unverified answer from elsewhere.
 `asinh`, `acosh`, `atanh`,
 `exp`, `log`, `sqrt`, `erf`, `erfc`, `gamma`, `digamma`,
 `lambert_w`, `bessel_j0`, `bessel_j1`, `elliptic_e`, `elliptic_f`, `elliptic_k`, `elliptic_pi`,
+`exp_integral_ei` (Ei), `log_integral` (li), `sin_integral` (Si), `cos_integral` (Ci),
+`sinh_integral` (Shi), `cosh_integral` (Chi),
 `re`, `im`, `arg`, `conjugate`,
 `abs`, `sign`, `floor`, `ceil`, `round`,
 `min`, `max`, `piecewise`
@@ -1240,6 +1242,14 @@ All return `Expr`. They shadow Python builtins inside `alkahest` — use `alkahe
 `atan2`, `gamma`, `min`, and `max` are reachable as attributes (`alkahest.gamma(...)`)
 but are **not** in `__all__`, so `from alkahest import *` will not bring them into
 scope — import them by name.
+
+The exponential-integral family follows DLMF §6.2. `cos_integral`, `cosh_integral` and
+`log_integral` are **complex** on the negative reals (`Ci(-x) = Ci(x) ± iπ`), and
+`log_integral` is a Cauchy principal value for `x > 1` with a singularity at `x = 1`;
+numeric evaluation refuses there rather than returning a real part. Each has a
+derivative rule (`exp(x)/x`, `1/log x`, `sin(x)/x`, `cos(x)/x`, `sinh(x)/x`,
+`cosh(x)/x`) and a validated-bounds Taylor rule. They are not yet accepted by
+`parse()` — build them with the callables above.
 
 For `piecewise`, branch conditions must be symbolic predicates from the pool (not Python `>`):
 

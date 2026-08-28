@@ -61,7 +61,7 @@ Current stable feature surface.
 - Coefficient asymptotics of rational generating functions (`experimental.coefficient_asymptotics`): singularity analysis with the leading constant by Richardson extrapolation; declines when the dominant singularity is not unique (equal-modulus poles make the coefficients oscillate)
 - Asymptotics of sums (`experimental.euler_maclaurin`): Euler–Maclaurin expansion of `Σ_{k=a}^{n} f(k)` with Bernoulli corrections, numerically gated, returning an `AsymptoticReport` that marks each hypothesis checked or assumed (the additive constant — γ for the harmonic numbers — is fitted, not proved, and labelled as such)
 
-- Validated numerics (`bound_on_box`, `verified_integral`, `verified_no_roots`, `verified_sign`): Taylor models over a box with Moore–Skelboe branch-and-bound; rigorous range enclosures, definite-integral enclosures and three-valued (`true`/`false`/`undecided`) predicates. Sound before tight — a wide bound is returned rather than a wrong one, and unbounded cases refuse (`E-VALIDATED-*`). Coverage is the elementary fragment plus `erf`/`erfc`, the Bessel pair `bessel_j0`/`bessel_j1`, `gamma`, `digamma` and `lambert_w`, and is queryable before you commit to a route: `bounds_supported(expr)`, and `taylor_model` per primitive in `capabilities()["primitives"]` (not `numeric_ball`, which is pointwise ball arithmetic — the two now differ only on `floor`/`ceil`, which are not differentiable and will not get a rule)
+- Validated numerics (`bound_on_box`, `verified_integral`, `verified_no_roots`, `verified_sign`): Taylor models over a box with Moore–Skelboe branch-and-bound; rigorous range enclosures, definite-integral enclosures and three-valued (`true`/`false`/`undecided`) predicates. Sound before tight — a wide bound is returned rather than a wrong one, and unbounded cases refuse (`E-VALIDATED-*`). Coverage is the elementary fragment plus `erf`/`erfc`, the Bessel pair `bessel_j0`/`bessel_j1`, `gamma`, `digamma`, `lambert_w` and the exponential-integral family `Ei`/`li`/`Si`/`Ci`/`Shi`/`Chi`, and is queryable before you commit to a route: `bounds_supported(expr)`, and `taylor_model` per primitive in `capabilities()["primitives"]` (not `numeric_ball`, which is pointwise ball arithmetic — the two now differ only on `floor`/`ceil`, which are not differentiable and will not get a rule)
 
 ## Discrete mathematics
 
@@ -175,6 +175,7 @@ Current stable feature surface.
 ## Primitive registry
 
 - 23 registered primitives with full bundles: sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, exp, log, sqrt, abs, sign, erf, erfc, gamma, floor, ceil, round, min, max
+- Exponential-integral family as first-class primitives: `Ei`, `li`, `Si`, `Ci`, `Shi`, `Chi` (conventions per DLMF §6.2 — `Ci`, `Chi` and `li` refuse on the negative reals, where they are complex, rather than returning a real part). Each carries a derivative rule (`exp(x)/x`, `1/log x`, `sin(x)/x`, `cos(x)/x`, `sinh(x)/x`, `cosh(x)/x`), an `f64` and a ball evaluator, and a rigorous Taylor-model rule. Exposed to Python as `exp_integral_ei`, `log_integral`, `sin_integral`, `cos_integral`, `sinh_integral`, `cosh_integral`
 - Each primitive: numerical evaluator, ball evaluator, forward/reverse diff, MLIR lowering, Lean theorem tag
 
 ## Error handling
