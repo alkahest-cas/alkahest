@@ -231,29 +231,43 @@ fn try_log_derivative(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<Expr
 /// `(coeff, n)`.  `coeff` collects every factor other than integer powers of
 /// `theta`.  Returns `None` if `theta` does not appear (or appears only with a
 /// non-integer exponent).
+///
+/// The decomposition is **spelling-independent**: an integer power of a product
+/// is distributed (`(x·log x)^(-1)` reads as `x^(-1)·log(x)^(-1)`) and an
+/// exponent the parser left unevaluated (`^(-1)` → `^(1 · -1)`) is folded, so
+/// `1/(x·log x)`, `(x·log x)^(-1)` and `x^(-1)·log(x)^(-1)` all decompose to the
+/// same `(coeff, n)`.  Both rewrites are exact identities for integer exponents.
 fn extract_log_power(expr: ExprId, theta: ExprId, pool: &ExprPool) -> Option<(ExprId, i64)> {
+    use super::risch::tower::{literal_integer, pow_integer};
+
     if expr == theta {
         return Some((pool.integer(1_i32), 1));
     }
     match pool.get(expr) {
-        ExprData::Pow { base, exp } if base == theta => match pool.get(exp) {
-            ExprData::Integer(m) => Some((pool.integer(1_i32), m.0.to_i64()?)),
-            _ => None,
-        },
+        ExprData::Pow { base, exp } => {
+            let n = literal_integer(exp, pool)?;
+            if base == theta {
+                return Some((pool.integer(1_i32), n));
+            }
+            // `(c · θ^m)^n = c^n · θ^{m·n}`, and likewise `(θ^m)^n`.
+            match pool.get(base) {
+                ExprData::Mul(_) | ExprData::Pow { .. } => {
+                    let (inner_coeff, m) = extract_log_power(base, theta, pool)?;
+                    Some((pow_integer(inner_coeff, n, pool), m.checked_mul(n)?))
+                }
+                _ => None,
+            }
+        }
         ExprData::Mul(args) => {
             let mut n: i64 = 0;
             let mut rest: Vec<ExprId> = Vec::new();
             for &a in &args {
                 if a == theta {
-                    n += 1;
-                } else if let ExprData::Pow { base, exp } = pool.get(a) {
-                    if base == theta {
-                        match pool.get(exp) {
-                            ExprData::Integer(m) => n += m.0.to_i64()?,
-                            _ => rest.push(a),
-                        }
-                    } else {
-                        rest.push(a);
+                    n = n.checked_add(1)?;
+                } else if let Some((c, m)) = extract_log_power(a, theta, pool) {
+                    n = n.checked_add(m)?;
+                    if as_integer(c, pool) != Some(1) {
+                        rest.push(c);
                     }
                 } else {
                     rest.push(a);
@@ -2124,6 +2138,14 @@ pub(crate) fn integrate_raw(
 ///    `log^n` for `n ≥ 2`, or `poly·log`) → `risch` engine.
 /// 3. **Rule-based** fallback for simpler cases already in the table.
 ///
+/// Steps 1 and 2 are *soft*: an [`IntegrationError::NotImplemented`] from a
+/// sub-engine is a decline and falls through to the next stage, so an integrand
+/// carrying an exp/log/radical generator still reaches `try_log_derivative`, the
+/// rule engine, Rothstein–Trager and the derivative-divides u-substitution.  A
+/// budget trip and an [`IntegrationError::NonElementary`] verdict both
+/// short-circuit; if nothing downstream succeeds, the sub-engine's original
+/// diagnostic is the error the caller sees.
+///
 /// # Supported operations (rule-based)
 ///
 /// | Input              | Result                      | Rule                    |
@@ -2192,14 +2214,50 @@ pub fn integrate(
     // algebraic route in that case so the integrand falls through to the rule
     // engine and the derivative-divides u-substitution (which resolves the
     // `f(x)·f'(x)` sub-integrals produced by the inverse-trig IBP reduction).
+    //
+    // A `NotImplemented` from a sub-engine is a *decline*, not a verdict: the
+    // structural pre-checks above only say "this integrand has an algebraic /
+    // transcendental generator", not "only that engine could ever solve it".
+    // Returning the decline straight to the caller used to make the whole
+    // downstream pipeline (`try_log_derivative`, the rule engine, Rothstein–
+    // Trager, derivative-divides u-substitution) unreachable for *every*
+    // integrand carrying an exp/log/radical generator — so `∫ 1/(x·log x) dx`
+    // failed while the algebraically identical `∫ x⁻¹·log(x)⁻¹ dx` succeeded.
+    // Instead we remember the sub-engine's diagnostic and fall through; if
+    // nothing downstream succeeds, that original message is what the caller
+    // sees (see `declined` at the tail of this function), so a specific Risch
+    // diagnostic is never degraded into a generic one.
+    //
+    // This cannot produce a wrong answer: every downstream path is soundness
+    // gated (`try_u_substitution` verifies `d/dx F = f`, `try_log_derivative`
+    // fires only on an exact `h'/h` match, Rothstein–Trager is exact).
+    let mut declined: Option<IntegrationError> = None;
+
     if has_algebraic && !has_transcendental && !contains_inverse_trig(expr, pool) {
-        return super::algebraic::integrate_algebraic(expr, var, pool);
+        match super::algebraic::integrate_algebraic(expr, var, pool) {
+            Ok(result) => return Ok(result),
+            // A budget trip travels *as* a `NotImplemented` (see the carrier
+            // note on `IntegrationError`), so it must be split off ahead of the
+            // decline arm — otherwise "the caller asked to stop spending" turns
+            // into "keep spending" on the whole downstream pipeline.
+            Err(e) if e.is_budget() => return Err(e),
+            // `NonElementary` is a mathematical verdict, not a decline: no
+            // fallback can overturn it, and re-deriving it downstream would
+            // risk the weaker `NotImplemented` replacing a proof.
+            Err(e @ IntegrationError::NotImplemented(_)) => declined = Some(e),
+            Err(other) => return Err(other),
+        }
     }
 
     // V2+: Route transcendental Risch cases (exp polynomial, log powers, etc.)
     // Also covers mixed algebraic+transcendental (has_algebraic && has_transcendental).
     if has_transcendental {
-        return super::risch::integrate_risch(expr, var, pool);
+        match super::risch::integrate_risch(expr, var, pool) {
+            Ok(result) => return Ok(result),
+            Err(e) if e.is_budget() => return Err(e),
+            Err(e @ IntegrationError::NotImplemented(_)) => declined = Some(e),
+            Err(other) => return Err(other),
+        }
     }
 
     // Logarithmic-derivative rule: ∫ (h'/h)·log(h)^n dx (single-generator log
@@ -2229,7 +2287,17 @@ pub fn integrate(
         return Err(IntegrationError::NonElementary(reason));
     }
 
-    integrate_inner(expr, var, pool, 0)
+    match integrate_inner(expr, var, pool, 0) {
+        Ok(result) => Ok(result),
+        // Preserve the sub-engine's own diagnostic when it declined earlier and
+        // nothing downstream could close the integral either — the Risch /
+        // algebraic message ("coefficient … is not a polynomial …") says far
+        // more than the rule engine's generic decline.  Budget trips and
+        // `NonElementary` keep their own error untouched.
+        Err(e) if e.is_budget() => Err(e),
+        Err(e @ IntegrationError::NotImplemented(_)) => Err(declined.unwrap_or(e)),
+        Err(other) => Err(other),
+    }
 }
 
 /// Internal entry point that runs the full elementary pipeline — rule engine,
@@ -3338,6 +3406,28 @@ fn collect_usub_candidates(expr: ExprId, var: ExprId, pool: &ExprPool) -> Vec<Ex
     }
 
     collect_usub_inner(expr, var, pool, &mut out, &mut seen);
+
+    // Hyperexponential generators `exp(η)` as substitution candidates.
+    //
+    // `collect_usub_inner` offers `Func` *arguments* and `Pow` *bases*, so an
+    // `exp(η)` that is not itself a top-level `Mul` factor is never tried.  That
+    // is the whole reason `∫ exp(x)/(exp(x)+1) dx` (where `exp(x)` *is* a
+    // top-level factor) and `∫ 1/(1+exp(-x)) dx` (where it is not) behaved
+    // differently for what is, up to `t ↦ 1/t`, the same integral.
+    //
+    // Substituting `t = exp(η)` is the change of variable Bronstein §5.2 makes
+    // to turn `∫ R(x, t) dx` into `∫ R(x, t)/(η'·t) dt`; offering the generator
+    // here closes the sub-case where that reduced integrand is free of `x`, i.e.
+    // a rational function of the generator alone.  It is *not* the full
+    // Hermite-reduction path — see the module note in `risch::exp_case`.
+    //
+    // Appended after the structural candidates so the existing search order (and
+    // therefore every answer the search already found) is unchanged.
+    for level in super::risch::tower::find_generators(expr, var, pool) {
+        if level.is_exp() && seen.insert(level.generator) {
+            factor_candidates.push(level.generator);
+        }
+    }
 
     // Larger candidates (more nodes) first so we prefer the most composite inner
     // function (e.g. x²+1 over x²).
@@ -5682,5 +5772,293 @@ mod tests {
             pool.pow(x, pool.integer(-1_i32)),
         ]);
         assert!(integrate(f, x, &pool).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // Router fall-through: a sub-engine `NotImplemented` is a decline, not a
+    // verdict — but a `NonElementary` proof and a budget trip still short-circuit
+    // -----------------------------------------------------------------------
+
+    /// Parse `src` (with `x` bound) and integrate it.
+    fn integrate_src(src: &str, x: ExprId, pool: &ExprPool) -> Result<ExprId, IntegrationError> {
+        let mut syms = HashMap::from([("x".to_owned(), x)]);
+        let f = crate::parse::parse(src, pool, &mut syms).expect("parse");
+        integrate(f, x, pool).map(|r| r.value)
+    }
+
+    #[test]
+    fn nonelementary_is_never_downgraded_by_the_fall_through() {
+        // The router falls through to the elementary pipeline when the Risch /
+        // algebraic engine returns `NotImplemented`.  A `NonElementary` *proof*
+        // must not take that path: the fallbacks would run out of options and
+        // report the weaker `E-INT-001`, turning a theorem into a shrug.
+        use crate::errors::AlkahestError;
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for src in [
+            "exp(x^2)",  // Risch DE has no rational solution
+            "exp(-x^2)", //
+            "exp(x)/x",  // Ei
+            "sin(x)/x",  // Si
+            "cos(x)/x",  // Ci
+            "1/log(x)",  // li
+        ] {
+            match integrate_src(src, x, &pool) {
+                Ok(v) => panic!(
+                    "∫ {src} dx must stay non-elementary, got {}",
+                    pool.display(v)
+                ),
+                Err(e) => assert_eq!(
+                    e.code(),
+                    "E-INT-004",
+                    "∫ {src} dx should certify NonElementary, got: {e}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn budget_trip_is_not_read_as_a_sub_engine_decline() {
+        // A budget trip travels *as* a `NotImplemented` (see the carrier note on
+        // `IntegrationError`).  Both places the router now inspects a
+        // sub-engine's error have to split it off first: otherwise "the caller
+        // asked to stop spending" is read as "the Risch engine declined" and the
+        // whole fallback pipeline runs anyway — and, worse, the trip surfaces as
+        // a *mathematical* verdict.
+        //
+        // `∫ eˣ/(eˣ+1) dx` is the shape that exercises it end to end: the Risch
+        // exp tower declines, the decline is remembered, and the answer is then
+        // found by the budget-checking u-substitution search.  Under a budget the
+        // only two acceptable outcomes are "finished" and "E-BUDGET-*".
+        use crate::budget::{enter, Budget};
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let e = pool.func("exp", vec![x]);
+        let f = pool.mul(vec![
+            e,
+            pool.pow(pool.add(vec![e, pool.integer(1_i32)]), pool.integer(-1_i32)),
+        ]);
+        assert!(
+            integrate(f, x, &pool).is_ok(),
+            "unbudgeted control must succeed"
+        );
+        for steps in 1_u64..=24 {
+            let _guard = enter(Budget::new().with_max_steps(steps));
+            if let Err(err) = integrate(f, x, &pool) {
+                assert!(
+                    err.is_budget(),
+                    "a {steps}-step budget produced a mathematical verdict instead \
+                     of an E-BUDGET-* trip: {err}"
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Input-form robustness: `a/b`, `a·b^(-1)` and `(a^(-1)·b)^(-1)` are the
+    // same function and must give the same answer
+    // -----------------------------------------------------------------------
+
+    /// The three spellings of `a/b` this integrator has historically routed
+    /// differently: the `/` operator (literal `-1` exponent), an explicit
+    /// `^(-1)` (which the parser leaves as the unevaluated `1 · -1`), and a
+    /// reciprocal of a *product* (which no detector used to distribute).
+    fn three_spellings(a: &str, b: &str) -> [String; 3] {
+        [
+            format!("{a}/({b})"),
+            format!("({a})*({b})^(-1)"),
+            format!("(({a})^(-1)*({b}))^(-1)"),
+        ]
+    }
+
+    /// Integrate `src` and assert `d/dx F = f` (exactly, or numerically at real
+    /// sample points).  Returns `F`.
+    fn integrate_and_verify(src: &str, x: ExprId, pool: &ExprPool) -> ExprId {
+        let mut syms = HashMap::from([("x".to_owned(), x)]);
+        let f = crate::parse::parse(src, pool, &mut syms).expect("parse");
+        let r = integrate(f, x, pool)
+            .unwrap_or_else(|e| panic!("∫ {src} dx should be elementary, got: {e}"));
+        assert!(
+            verify_antiderivative_status(r.value, f, x, pool).is_some(),
+            "∫ {src} dx = {} does not differentiate back to the integrand",
+            pool.display(r.value)
+        );
+        r.value
+    }
+
+    /// Two antiderivatives of the same integrand agree up to an additive
+    /// constant.  Checked structurally first, then numerically (the display
+    /// forms are equal in practice, but pinning the *string* would be brittle).
+    fn assert_same_antiderivative(a: ExprId, b: ExprId, x: ExprId, pool: &ExprPool, what: &str) {
+        let delta = simplify(
+            pool.add(vec![a, pool.mul(vec![pool.integer(-1_i32), b])]),
+            pool,
+        )
+        .value;
+        if is_free_of(delta, x, pool) {
+            return;
+        }
+        // `simplify` does not know `log(exp x) = x`, so fall back to sampling
+        // the difference: it must be the *same* constant at every point.
+        let samples = [1.3_f64, 2.1, 3.4, 4.7];
+        let mut values: Vec<f64> = Vec::new();
+        for &xv in &samples {
+            let mut env = HashMap::new();
+            env.insert(x, xv);
+            if let Some(v) = crate::jit::eval_interp(delta, &env, pool) {
+                if v.is_finite() {
+                    values.push(v);
+                }
+            }
+        }
+        assert!(
+            values.len() >= 2,
+            "{what}: could not evaluate the difference of the two antiderivatives"
+        );
+        let first = values[0];
+        for v in &values {
+            assert!(
+                (v - first).abs() < 1e-7,
+                "{what}: the two spellings gave antiderivatives differing by a \
+                 non-constant ({} vs {})",
+                pool.display(a),
+                pool.display(b)
+            );
+        }
+    }
+
+    #[test]
+    fn integration_is_insensitive_to_how_the_quotient_is_spelled() {
+        // Every row is one integral written three ways.  Before the router
+        // learned to fall through and the detectors learned to distribute an
+        // integer power over a product, the *spelling* decided the answer:
+        // `x^(-1)·log(x)^(-1)` returned `log(log x)` while the identical
+        // `1/(x·log x)` raised `E-INT-001`.
+        let cases: &[(&str, &str)] = &[
+            // ∫ 1/(x·log x) dx = log(log x)  — the log-derivative family.
+            ("1", "x*log(x)"),
+            ("1", "x*log(x)^2"),
+            ("1", "x*log(x)^3"),
+            ("2*x", "(x^2+1)*log(x^2+1)"),
+            ("log(x)", "x"),
+            // ∫ exp(x)/(exp(x)+1) dx = log(exp(x)+1) — rational in the exp
+            // generator.
+            ("exp(x)", "exp(x)+1"),
+            ("exp(x)", "(exp(x)+1)^2"),
+            // Plain rational integrands, as a control: these already agreed.
+            ("x", "x^2+1"),
+            ("1", "x*(x+1)"),
+        ];
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for (a, b) in cases {
+            let spellings = three_spellings(a, b);
+            let first = integrate_and_verify(&spellings[0], x, &pool);
+            for other in &spellings[1..] {
+                let f = integrate_and_verify(other, x, &pool);
+                assert_same_antiderivative(
+                    first,
+                    f,
+                    x,
+                    &pool,
+                    &format!("{} vs {other}", spellings[0]),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_ei_verdict_does_not_depend_on_the_spelling() {
+        // `∫ eˣ/x dx` is the exponential integral Ei and is certified
+        // non-elementary by the Risch DE.  `exp(x)*x^(-1)` is the same
+        // integrand; before the exponent was folded, it never reached the exp
+        // tower at all and came back with the weaker `E-INT-001`.
+        use crate::errors::AlkahestError;
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for src in ["exp(x)/x", "exp(x)*x^(-1)", "exp(x)*(x)^(-1)"] {
+            let e = integrate_src(src, x, &pool)
+                .err()
+                .unwrap_or_else(|| panic!("∫ {src} dx must stay non-elementary"));
+            assert_eq!(
+                e.code(),
+                "E-INT-004",
+                "∫ {src} dx should certify NonElementary, got: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn one_over_x_log_x_in_every_spelling() {
+        // ∫ 1/(x·log x) dx = log(log x).  `try_log_derivative`'s doc comment has
+        // always advertised this case, but before the fall-through landed it was
+        // unreachable from `integrate()` for any spelling that `contains_risch_form`
+        // happened to claim.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for src in [
+            "1/(x*log(x))",
+            "x^(-1)*log(x)^(-1)",
+            "(x*log(x))^(-1)",
+            "1/x*1/log(x)",
+            "1/x/log(x)",
+        ] {
+            let f = integrate_and_verify(src, x, &pool);
+            assert!(
+                pool.display(f).to_string().contains("log(log"),
+                "∫ {src} dx should be log(log x); got {}",
+                pool.display(f)
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Rational functions of a hyperexponential generator, via the `t = exp(η)`
+    // substitution
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn rational_functions_of_exp_are_integrable_in_every_spelling() {
+        // ∫ dx/(1+eˣ) and ∫ dx/(1+e⁻ˣ) are `∫ R(t) dt/(η'·t)` with `t = exp(η)`.
+        // `exp(η)` only became reachable as a substitution candidate once it was
+        // offered explicitly — before that, `∫ exp(x)/(exp(x)+1) dx` worked
+        // (there `exp(x)` is a top-level `Mul` factor) while the equal
+        // `∫ 1/(1+exp(-x)) dx` did not.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for src in [
+            "1/(1+exp(-x))",
+            "(1+exp(-x))^(-1)",
+            "1/(exp(x)+1)",
+            "(exp(x)+1)^(-1)",
+            "1/(1+exp(x))",
+            "1/(exp(x)-1)",
+        ] {
+            integrate_and_verify(src, x, &pool);
+        }
+    }
+
+    #[test]
+    fn exp_over_exp_plus_one_in_every_spelling() {
+        // ∫ eˣ/(eˣ+1) dx = log(eˣ+1).  The `/` spelling used to die inside the
+        // exp tower ("coefficient (exp(x) + 1)^-1 … is not a polynomial or
+        // rational function") while `exp(x)·(1+exp(x))^(-1)` succeeded — only
+        // because its unevaluated `(1 · -1)` exponent made `contains_risch_form`
+        // decline, letting it reach the u-substitution.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for src in [
+            "exp(x)/(exp(x)+1)",
+            "exp(x)*(1+exp(x))^(-1)",
+            "((exp(x))^(-1)*(exp(x)+1))^(-1)",
+            "exp(x)/(1+exp(x))",
+        ] {
+            let f = integrate_and_verify(src, x, &pool);
+            assert!(
+                pool.display(f).to_string().contains("log("),
+                "∫ {src} dx should be log(exp(x)+1); got {}",
+                pool.display(f)
+            );
+        }
     }
 }

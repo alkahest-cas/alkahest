@@ -901,13 +901,22 @@ fn needs_log_risch_inner(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
         ExprData::Pow { base, exp } => {
             // log(h)^n for n ≥ 2: needs Risch.
             if let ExprData::Func { ref name, ref args } = pool.get(base) {
-                if name == "log" && args.len() == 1 {
-                    if let ExprData::Integer(n) = pool.get(exp) {
-                        if n.0 >= 2 {
-                            return true;
-                        }
-                    }
+                if name == "log"
+                    && args.len() == 1
+                    && super::tower::literal_integer(exp, pool).is_some_and(|n| n >= 2)
+                {
+                    return true;
                 }
+            }
+            // `(a·b)^n` (integer n) is the same function as `a^n·b^n`, and the
+            // rule engine / log-derivative matcher key on the distributed
+            // spelling.  Ask the question about the distributed factors so that
+            // `1/(x·log x)` and `x⁻¹·log(x)⁻¹` are routed the same way — the
+            // unconditional recursion into `base` used to read `(x·log x)⁻¹` as
+            // the "c(x)·log(h)" shape the log tower can integrate, when it is
+            // really a rational *function of* log, which it cannot.
+            if let Some(factors) = super::tower::distribute_integer_pow_over_mul(expr, pool) {
+                return factors.iter().any(|&f| needs_log_risch_inner(f, var, pool));
             }
             needs_log_risch_inner(base, var, pool) || needs_log_risch_inner(exp, var, pool)
         }
