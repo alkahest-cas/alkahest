@@ -333,6 +333,17 @@ mod tests {
             "digamma",
             "gamma",
             "lambert_w",
+            // Exponential-integral family (see `primitive::expint`). Every
+            // one of these is `γ + log|x|` (or nothing) plus a truncated
+            // `Σ σ(m)·xᵐ/(m·m!)` evaluated in the model algebra, with a
+            // geometric tail bound — so losing the rule would be a silent
+            // coverage regression exactly like the 3.9.0 set above.
+            "Ei",
+            "li",
+            "Si",
+            "Ci",
+            "Shi",
+            "Chi",
         ] {
             assert!(taylor_model_supports(name), "`{name}` lost its rule");
         }

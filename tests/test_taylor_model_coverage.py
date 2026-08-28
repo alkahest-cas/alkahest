@@ -106,14 +106,23 @@ def test_the_flag_is_not_a_restatement_of_numeric_ball():
 def test_supported_set_is_the_elementary_plus_special_fragment():
     """A pin on the boundary as it stands, so a change to it is deliberate.
 
-    Twenty-three names: the elementary fragment, plus the special functions
-    M7 called for — the Bessel pair, `digamma`, `gamma` and `lambert_w`.
+    Twenty-nine names: the elementary fragment, plus the special functions
+    M7 called for — the Bessel pair, `digamma`, `gamma` and `lambert_w` —
+    plus the exponential-integral family `Ei`, `li`, `Si`, `Ci`, `Shi`, `Chi`
+    (`alkahest-core/src/primitive/expint.rs`).
 
     Widening this set is a feature (add the rule, then add the name here);
     narrowing it silently would be a regression an agent's plan depends on.
     """
     supported = {row["name"] for row in _primitive_rows() if row["taylor_model"]}
     assert supported == {
+        # Exponential-integral family (alkahest-core/src/primitive/expint.rs)
+        "Chi",
+        "Ci",
+        "Ei",
+        "Shi",
+        "Si",
+        "li",
         "abs",
         "acos",
         "acosh",

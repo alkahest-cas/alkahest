@@ -2355,6 +2355,15 @@ impl<'a> TaylorContext<'a> {
                     "digamma" => x.digamma(),
                     "gamma" => x.gamma(),
                     "lambert_w" => x.lambert_w(),
+                    // Exponential-integral family. The rules live beside
+                    // the primitives in `primitive::expint`; only the
+                    // dispatch is here.
+                    "Ei" => crate::primitive::expint::taylor_ei(&x),
+                    "li" => crate::primitive::expint::taylor_li(&x),
+                    "Si" => crate::primitive::expint::taylor_si(&x),
+                    "Ci" => crate::primitive::expint::taylor_ci(&x),
+                    "Shi" => crate::primitive::expint::taylor_shi(&x),
+                    "Chi" => crate::primitive::expint::taylor_chi(&x),
                     "abs" => x.abs(),
                     other => Err(ValidatedError::Unsupported {
                         what: format!("function `{other}`"),
