@@ -556,9 +556,13 @@ fn an_extreme_negative_exponent_declines_instead_of_hanging() {
 #[test]
 fn deep_nesting_declines_instead_of_overflowing_the_stack() {
     let (pool, x) = setup();
+    // Depth must come from a *nesting* node. `Add`/`Mul` are flat n-ary since
+    // the associativity fix, so `pool.add([e, 1])` splices `e`'s children in
+    // and 5000 iterations build one 5001-child node of depth 2 — wide, not
+    // deep, and correctly not a depth decline. A chain of `sin` nests for real.
     let mut e = x;
     for _ in 0..5000 {
-        e = pool.add(vec![e, pool.integer(1_i32)]);
+        e = pool.func("sin", vec![e]);
     }
     assert!(matches!(
         assert_declines(&pool, e, x),
