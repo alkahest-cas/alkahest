@@ -1716,15 +1716,20 @@ impl RewriteRule for SqrtEvenPower {
         if n <= 0 || !n.is_even() {
             return None;
         }
+        // The hypothesis the rewrite rests on, recorded as the side condition
+        // it is. `√(u^(2k)) = |u|^k` always; dropping the absolute value needs
+        // either `u ≥ 0`, or `k` even *and* `u` real. Both are established
+        // structurally here rather than assumed, but a reader of the
+        // derivation log is owed the statement either way — and if the
+        // structural test is ever widened, the log still says what was used.
         let k = rug::Integer::from(&n / 2);
-        let sound = if k.is_even() {
-            is_provably_real(u, pool, SIGN_PROBE_DEPTH)
+        let condition = if k.is_even() && is_provably_real(u, pool, SIGN_PROBE_DEPTH) {
+            SideCondition::InDomain(u, Domain::Real)
+        } else if is_provably_nonneg(u, pool, SIGN_PROBE_DEPTH) {
+            SideCondition::InDomain(u, Domain::NonNegative)
         } else {
-            is_provably_nonneg(u, pool, SIGN_PROBE_DEPTH)
-        };
-        if !sound {
             return None;
-        }
+        };
         let after = if k == 1 {
             u
         } else {
@@ -1733,7 +1738,10 @@ impl RewriteRule for SqrtEvenPower {
         if after == expr {
             return None;
         }
-        Some((after, one_step(self.name(), expr, after)))
+        Some((
+            after,
+            one_step_with(self.name(), expr, after, vec![condition]),
+        ))
     }
 }
 
@@ -3094,6 +3102,35 @@ mod tests {
             crate::simplify::simplify(e, &pool).value,
             crate::simplify::simplify(u, &pool).value
         );
+    }
+
+    /// The hypothesis the rewrite used is recorded, not merely relied on.
+    /// A caller auditing the derivation of `√(t²) → t` is owed `t ≥ 0`.
+    #[test]
+    fn sqrt_of_even_power_records_the_domain_it_assumed() {
+        let pool = p();
+        let t = pool.symbol("t", Domain::Positive);
+        let x = pool.symbol("x", Domain::Real);
+        let cases = [
+            (
+                pool.func("sqrt", vec![pool.pow(t, pool.integer(2_i32))]),
+                SideCondition::InDomain(t, Domain::NonNegative),
+            ),
+            (
+                pool.func("sqrt", vec![pool.pow(x, pool.integer(4_i32))]),
+                SideCondition::InDomain(x, Domain::Real),
+            ),
+        ];
+        for (expr, want) in cases {
+            let (_, log) = SqrtEvenPower.apply(expr, &pool).expect("rule should fire");
+            assert!(
+                log.steps()
+                    .iter()
+                    .any(|s| s.side_conditions.contains(&want)),
+                "expected {want} in the log for {}",
+                pool.display(expr)
+            );
+        }
     }
 
     /// Odd powers are not touched: `√(t³)` has no square root to take out.
