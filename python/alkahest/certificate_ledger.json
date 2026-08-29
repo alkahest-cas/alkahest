@@ -1240,7 +1240,7 @@
         "sum_rule"
       ],
       "examples": [
-        "((((-1/2 * sqrt(((-1 * x^2) + 4)) * x) + (2 * asin((1/2 * x)))) * -1) + (4 * asin((1/2 * x))))"
+        "((1/2 * sqrt(((-1 * x^2) + 4)) * x) + (2 * asin((1/2 * x))))"
       ]
     },
     {
@@ -1290,7 +1290,7 @@
       },
       "blocking_rules": [],
       "examples": [
-        "((((-2 * cos(x) * x) + (2 * sin(x))) * -1) + (sin(x) * x^2))"
+        "((-2 * sin(x)) + (2 * cos(x) * x) + (sin(x) * x^2))"
       ]
     },
     {
@@ -2171,10 +2171,10 @@
         "pow_base": "var",
         "definite": "no"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 1,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
