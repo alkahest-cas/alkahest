@@ -35,7 +35,18 @@
 //! nested, `R` not expressible in the field) → `None`, so the caller falls
 //! through to the ordinary dispatch.  A computed antiderivative is emitted only
 //! after the numeric soundness gate `d/dx F = integrand` passes; a failed gate
-//! or an unsolved RDE yields `None`/`NonElementary`, never a wrong answer.
+//! yields `None`, never a wrong answer.
+//!
+//! ## `NonElementary` needs a proof, not a failure
+//!
+//! The in-field Risch DE is solved by
+//! `super::alg_rde::solve_alg_rde_general_checked`, which is **three-valued**.
+//! Only its `NoRationalSolution` — non-existence *proved* against a denominator
+//! and degree bound both established complete — is reported as `E-INT-004`.  A
+//! `Declined` (the ansatz was not proved to contain every candidate `v`) becomes
+//! `E-INT-001`.  Before that distinction existed this site read the solver's
+//! `None` as a certificate, which is a wrong theorem whenever the ansatz was
+//! merely too small.
 //!
 //! ## Worked example
 //!
@@ -49,7 +60,7 @@ use crate::kernel::{ExprData, ExprId, ExprPool};
 use crate::simplify::engine::simplify;
 
 use super::alg_field::AlgExtension;
-use super::alg_rde::solve_alg_rde_general;
+use super::alg_rde::{radical_minpoly_status, solve_alg_rde_general_checked, AlgRdeOutcome};
 use super::exp_case::{build_rational, decompose_over_alg_generator, detect_radical_generator};
 use super::poly_rde::{contains_subexpr, is_free_of_var, qpoly_to_expr};
 use super::tower::find_generators;
@@ -59,8 +70,9 @@ use super::tower::find_generators;
 ///
 /// Returns `None` when the integrand is not of this shape (the caller falls
 /// through to the ordinary dispatch).  When it is, returns `Some(Ok(F))` with a
-/// numerically-verified antiderivative, or `Some(Err(NonElementary))` when the
-/// in-field Risch DE has no solution within the ansatz bounds.
+/// numerically-verified antiderivative, `Some(Err(NonElementary))` when the
+/// in-field Risch DE was **proved** to have no solution, or
+/// `Some(Err(NotImplemented))` when the solver declined.
 pub fn try_integrate_exp_of_algebraic(
     expr: ExprId,
     var: ExprId,
@@ -111,15 +123,28 @@ pub fn try_integrate_exp_of_algebraic(
     let r_elem = decompose_over_alg_generator(r_expr, n, &p, &e, var, pool)?;
 
     // 5. Solve D(v) + f·v = R over ℚ(x)(α) (non-diagonal coupled solver, PR1).
-    //    None ⇒ no antiderivative of the form v·exp(β): certify NonElementary
-    //    (the field/ansatz is complete for this radical shape — mirroring how the
-    //    other radical-RDE paths report their failures).
-    let v = match solve_alg_rde_general(&e, &f, &r_elem) {
-        Some(v) => v,
-        None => {
+    //
+    //    The solver is three-valued on purpose.  Only `NoRationalSolution` — a
+    //    *proved* non-existence, i.e. an inconsistent linear system at a
+    //    denominator bound and a degree bound both established complete — may
+    //    become a `NonElementary` certificate.  A `Declined` says only that the
+    //    ansatz was not proved to contain every candidate `v`; that is
+    //    `NotImplemented`, never a theorem.  (For `αⁿ = p` the completeness
+    //    argument at infinity is the ramified-place valuation bound in
+    //    [`super::alg_rde`] §3.)
+    let v = match solve_alg_rde_general_checked(&e, &f, &r_elem, radical_minpoly_status(n, &p)) {
+        AlgRdeOutcome::Solved(v) => v,
+        AlgRdeOutcome::NoRationalSolution => {
             return Some(Err(IntegrationError::NonElementary(format!(
                 "∫ {} dx: the Risch differential equation D(v)+D(β)·v=R over ℚ(x)(α) \
                  has no rational solution, so no antiderivative of the form v·exp(β) exists",
+                pool.display(expr),
+            ))));
+        }
+        AlgRdeOutcome::Declined(reason) => {
+            return Some(Err(IntegrationError::NotImplemented(format!(
+                "∫ {} dx: the Risch differential equation D(v)+D(β)·v=R over ℚ(x)(α) \
+                 could not be decided: {reason}",
                 pool.display(expr),
             ))));
         }

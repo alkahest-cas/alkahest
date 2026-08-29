@@ -205,26 +205,51 @@ fn try_log_derivative(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<Expr
     // coeff must be a rational function of `var` (no θ inside).
     let (cn, cd) = expr_to_qrational(coeff, var, pool)?;
 
-    // Require coeff == h'/h as rational functions.
+    // Require coeff == λ·(h'/h) for a rational constant λ.  Demanding λ = 1
+    // exactly made the rule spelling-sensitive: `∫ dx/(x·log²x)` matched but
+    // `∫ −dx/(x·log²x)` did not, and the latter then fell through to the `li`
+    // pre-check and came back *certified* non-elementary — a false E-INT-004 for
+    // an integrand whose antiderivative is `1/log x`.
     let hp = crate::diff::diff(h, var, pool).ok()?.value;
     let (hpn, hpd) = expr_to_qrational(hp, var, pool)?;
     let (hn, hd) = expr_to_qrational(h, var, pool)?;
-    // h'/h = (hpn·hd) / (hpd·hn);  coeff == h'/h  ⇔  cn·(hpd·hn) == (hpn·hd)·cd.
+    // h'/h = (hpn·hd) / (hpd·hn);  coeff == λ·h'/h  ⇔  cn·(hpd·hn) == λ·(hpn·hd)·cd.
     let rn = poly_mul(&hpn, &hd);
     let rd = poly_mul(&hpd, &hn);
-    if trim(poly_mul(&cn, &rd)) != trim(poly_mul(&rn, &cd)) {
-        return None;
-    }
+    let lhs = trim(poly_mul(&cn, &rd));
+    let rhs = trim(poly_mul(&rn, &cd));
+    let lambda = poly_ratio_constant(&lhs, &rhs)?;
 
-    // Antiderivative.
-    if n == -1 {
-        Some(pool.func("log", vec![theta])) // log(log(h))
+    // Antiderivative: λ·log(log h) for n = −1, else λ/(n+1)·log(h)^{n+1}.
+    let (factor, body) = if n == -1 {
+        (lambda, pool.func("log", vec![theta]))
     } else {
         let np1 = n + 1;
-        let pow = pool.pow(theta, pool.integer(np1));
-        let coeff_expr = rational_to_expr(&rug::Rational::from((1_i64, np1)), pool);
-        Some(pool.mul(vec![coeff_expr, pow]))
+        (
+            lambda / rug::Rational::from(np1),
+            pool.pow(theta, pool.integer(np1)),
+        )
+    };
+    if factor == 1 {
+        Some(body)
+    } else {
+        Some(pool.mul(vec![rational_to_expr(&factor, pool), body]))
     }
+}
+
+/// `λ` such that `a = λ·b` for both polynomials, or `None` when no such rational
+/// constant exists (including when exactly one of them is zero).
+fn poly_ratio_constant(a: &[rug::Rational], b: &[rug::Rational]) -> Option<rug::Rational> {
+    if a.is_empty() || b.is_empty() || a.len() != b.len() {
+        return None;
+    }
+    let lambda = a[a.len() - 1].clone() / b[b.len() - 1].clone();
+    for (ai, bi) in a.iter().zip(b.iter()) {
+        if *ai != bi.clone() * lambda.clone() {
+            return None;
+        }
+    }
+    Some(lambda)
 }
 
 /// Decompose `expr` as `coeff · theta^n` for an integer `n`, returning
@@ -1732,7 +1757,7 @@ fn is_simple_denominator_base(base: ExprId, var: ExprId, pool: &ExprPool) -> boo
 /// fires on cancelling cases such as `x²·sin(x)/x = x·sin(x)` (elementary).
 fn known_nonelementary(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<String> {
     // A single `log(g)^(-n)` factor (not wrapped in a Mul) is the bare `li` case.
-    if let Some(msg) = match_log_denominator(expr, var, pool) {
+    if let Some((msg, _)) = match_log_denominator(expr, var, pool) {
         return Some(msg);
     }
 
@@ -1743,7 +1768,8 @@ fn known_nonelementary(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<Str
 
     let mut special: Option<String> = None; // f(g) with f a special transcendental
     let mut has_poly_denom = false; // a D^(-n) factor
-    let mut log_denom: Option<String> = None; // a log(g)^(-n) factor (li)
+    let mut poly_denoms: Vec<ExprId> = Vec::new(); // the D^n of each D^(-n) factor
+    let mut log_denom: Option<(String, ExprId)> = None; // a log(h)^(-n) factor (li), with h
 
     for &a in &args {
         // Constant factor — always allowed.
@@ -1777,6 +1803,9 @@ fn known_nonelementary(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<Str
                 }
                 if is_simple_denominator_base(base, var, pool) {
                     has_poly_denom = true;
+                    if let Some(n) = as_integer(exp, pool) {
+                        poly_denoms.push(pool.pow(base, pool.integer(-n as i32)));
+                    }
                     continue;
                 }
             }
@@ -1793,7 +1822,25 @@ fn known_nonelementary(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<Str
         ));
     }
 
-    if let Some(msg) = log_denom {
+    if let Some((msg, h)) = log_denom {
+        // Soundness guard.  `c · Q(x)^(-1) · log(h)^(-n)` is **elementary**
+        // exactly when `Q` is a constant multiple of `h`: then the integrand is
+        // `c'·(h'/h)·log(h)^(-n)` (h linear ⇒ h' constant), whose antiderivative
+        // is `c'·log(log h)` for n = 1 and `c'·log(h)^(1-n)/(1-n)` for n ≥ 2.
+        // `try_log_derivative` normally catches those first, but it only sees
+        // the shapes it can normalise — `∫ -1/(x·log(x)²) dx = 1/log x` used to
+        // slip past it and get certified `li` here.  Never certify that family.
+        if !poly_denoms.is_empty() {
+            let q = if poly_denoms.len() == 1 {
+                poly_denoms[0]
+            } else {
+                pool.mul(poly_denoms.clone())
+            };
+            let ratio = simplify(pool.mul(vec![q, pool.pow(h, pool.integer(-1_i32))]), pool).value;
+            if is_free_of(ratio, var, pool) {
+                return None; // Q = λ·h ⇒ elementary, not li
+            }
+        }
         return Some(msg);
     }
 
@@ -1801,7 +1848,10 @@ fn known_nonelementary(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<Str
 }
 
 /// Match a `log(linear)^(-n)` factor (`1/log` family → logarithmic integral `li`).
-fn match_log_denominator(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<String> {
+///
+/// Returns the diagnostic together with the log's argument `h`, which the caller
+/// needs in order to rule out the *elementary* `h'/h · log(h)^(-n)` family.
+fn match_log_denominator(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<(String, ExprId)> {
     let ExprData::Pow { base, exp } = pool.get(expr) else {
         return None;
     };
@@ -1812,10 +1862,13 @@ fn match_log_denominator(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<S
         return None;
     };
     if name == "log" && args.len() == 1 && is_linear_in(args[0], var, pool).is_some() {
-        Some(format!(
-            "1/{} is the logarithmic integral li, which is not elementary \
-             (Liouville's theorem)",
-            pool.display(base)
+        Some((
+            format!(
+                "1/{} is the logarithmic integral li, which is not elementary \
+                 (Liouville's theorem)",
+                pool.display(base)
+            ),
+            args[0],
         ))
     } else {
         None

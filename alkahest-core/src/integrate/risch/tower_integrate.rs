@@ -591,7 +591,7 @@ fn texpr_pow<F: CoeffField<Elem = TExpr>>(field: &F, b: &TExpr, m: i64) -> Optio
 /// exponential generator `t = exp(η)` into a [`TExpr`].  Returns `None` if the
 /// expression is not of that form (e.g. it contains the radical, a different
 /// transcendental, or an irrational constant).
-fn expr_to_texpr<F: CoeffField<Elem = TExpr>>(
+pub(super) fn expr_to_texpr<F: CoeffField<Elem = TExpr>>(
     field: &F,
     expr: ExprId,
     var: ExprId,

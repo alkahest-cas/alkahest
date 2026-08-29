@@ -22,7 +22,8 @@
 //! | `log(h)/√p(x)` via log tower | `log(x)/√x` | ✓ (lower-tower delegation, Gap C) |
 //! | `√p(x)·log(h)`, p ∈ ℚ\[x\] | `√x·log(x)` | ✓ (algebraic base-field, Gap C) |
 //! | `c(x,exp(x))·exp(exp(x))`, c poly in exp(x) | `exp(x)²·exp(exp(x))` | ✓ (lower-tower cascade, Gap B) |
-//! | `c(x)·exp(exp(x))`, c ∈ ℚ(x) | `x·exp(exp(x))` | ✗ NonElementary (degree bound) |
+//! | `c(x)·exp(exp(x))`, c ∈ ℚ(x) | `x·exp(exp(x))` | ✗ NonElementary (Laurent cascade) |
+//! | `A(exp(exp(x)))/B(exp(exp(x)))`, deg B ≥ 1 | `eˣe^(eˣ)/(e^(eˣ)+1)` | ✓ via derivative-divides / else `NotImplemented` |
 //! | `1/(x+α)^n·log(x+α)`, α ∈ ℚ(√d) | `1/(x+√2)²·log(x+√2)` | ✓ (K-rational base, Gap E) |
 //! | `sin(x)/x`, `exp(x)/x` | Ei, Si functions | ✗ (NonElementary) |
 //! | `exp(1/x)` alone | essential singularity | ✗ (NonElementary) |
@@ -57,11 +58,26 @@
 //! - **Algebraic × exp: degree ≥ 3 only.** `try_sqrt_poly_rde` (in `exp_case`)
 //!   handles quadratic algebraic coefficients (`√p(x)·exp(η)`).  Higher-degree
 //!   algebraic extensions (e.g. `∛(p(x))·exp(η)`) are not yet supported.
-//! - **Nested exp towers — complete for ℚ(x)(exp(x)).**  The lower-tower cascade
-//!   handles polynomial c(x, exp(x)).  Rational c (denominator in exp(x)) is
-//!   certified NonElementary by the Hermite/pole-order argument: `D` maps any
-//!   simple pole `1/(θ-α)` (α ∈ ℚ(x)) to a double pole `(α-Dα)/(θ-α)²`;
-//!   since `Dα ≠ α` for α ∈ ℚ(x), no rational solution to the Risch DE exists.
+//! - **Nested exp towers — Laurent coefficients only.**  For an integrand
+//!   `Σ cₖ(x, exp(x))·exp(exp(x))ᵏ` whose coefficients are *Laurent polynomials*
+//!   in the inner generator, the forced coefficient cascade
+//!   (`exp_case::lower_tower_laurent_cascade`) is a **complete decision**: it
+//!   either returns the antiderivative or proves the Risch DE has no solution in
+//!   `ℚ(x)(exp(x))`, which for `k ≠ 0` is exactly non-elementarity (Bronstein
+//!   §5.3).  For a coefficient that is a genuine *rational function* of the
+//!   inner generator, only the **simple-pole** case is certified (a solution
+//!   would have to be regular at that pole, but then the left-hand side is
+//!   regular and `c` is not — Bronstein §6.1 `RdeNormalDenominator`); a
+//!   higher-order pole is left `NotImplemented`.
+//! - **Rational functions *of the outer generator* are not decided.**  When the
+//!   integrand is `A(t)/B(t)` with `deg B ≥ 1` in the outer generator `t` — e.g.
+//!   `eˣ·e^(eˣ)/(e^(eˣ)+1)` — the Laurent theory above does not apply at all,
+//!   because the antiderivative may contain **new logarithms over the tower**
+//!   (here `log(e^(eˣ)+1)`) that no Risch DE can see.  Deciding these needs
+//!   Hermite reduction plus a Rothstein–Trager residue reduction over `K[t]`
+//!   (Bronstein §5.6), which is not implemented; such integrands are declined
+//!   with `NotImplemented`, never certified.  Simple `D(u)/uⁿ` shapes are still
+//!   closed by the elementary pipeline's derivative-divides substitution.
 //! - **Log tower: K-rational base field, Hermite-reducible cases only.**
 //!   `integrate_base` now tries K-rational antidifferentiation (Gap E) via
 //!   `solve_rational_rde_k` with f=0.  This handles coefficients in ℚ(√d)(x) whose
@@ -1339,11 +1355,59 @@ mod tests {
         );
     }
 
+    /// A **rational function of the outer generator** must never be certified.
+    ///
+    /// `∫ eˣ·e^(eˣ)/(e^(eˣ)+1) dx = log(e^(eˣ)+1)` — an elementary integrand
+    /// whose antiderivative is a *new logarithm over the tower*.  The exp case
+    /// used to read `(t+1)⁻¹·t¹` as a Laurent monomial with coefficient
+    /// `eˣ/(e^(eˣ)+1)` and certify `NonElementary` from the unsolvable Risch DE.
+    /// The Laurent theorem does not apply to such an integrand at all.
+    #[test]
+    fn rational_in_outer_generator_is_never_certified() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let exp_exp_x = pool.func("exp", vec![exp_x]);
+        let denom = pool.add(vec![exp_exp_x, pool.integer(1_i32)]);
+
+        for power in [-1_i32, -2, -3] {
+            let f = pool.mul(vec![exp_x, exp_exp_x, pool.pow(denom, pool.integer(power))]);
+            let result = integrate_risch(f, x, &pool);
+            assert!(
+                !matches!(result, Err(IntegrationError::NonElementary(_))),
+                "∫ eˣ·e^(eˣ)/(e^(eˣ)+1)^{} dx is elementary and must not be \
+                 certified non-elementary; got {result:?}",
+                -power
+            );
+        }
+    }
+
+    /// The whole-engine view of the same integrand: it must *solve*, and the
+    /// answer must differentiate back to the integrand.
+    #[test]
+    fn nested_exp_log_part_integrates_via_the_engine() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let exp_x = pool.func("exp", vec![x]);
+        let exp_exp_x = pool.func("exp", vec![exp_x]);
+        let denom = pool.add(vec![exp_exp_x, pool.integer(1_i32)]);
+        let f = pool.mul(vec![
+            exp_x,
+            exp_exp_x,
+            pool.pow(denom, pool.integer(-1_i32)),
+        ]);
+        let result = crate::integrate::engine::integrate(f, x, &pool);
+        assert!(result.is_ok(), "must integrate; got {result:?}");
+        verify_nested_exp(f, result.unwrap().value, x, &pool);
+    }
+
     #[test]
     fn gapb_nested_exp_rational_denom_nonelementary() {
-        // ∫ exp(x)/(exp(x)+1)·exp(exp(x)) dx:
-        // c = θ/(θ+1) is rational in θ = exp(x).
-        // Hermite reduction: D maps 1/(θ-α) to a double pole; no rational v exists.
+        // ∫ exp(x)/(exp(x)+1)·exp(exp(x)) dx: c = θ/(θ+1) is rational in
+        // θ = exp(x) with a *simple* pole at θ = −1.  Any solution v ∈ ℚ(x)(θ)
+        // of the Risch DE would have to be regular there, but then the whole
+        // left-hand side is regular while c is not — so no solution exists, and
+        // with k ≠ 0 that is non-elementarity (Bronstein §5.3, §6.1).
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let exp_x = pool.func("exp", vec![x]);
