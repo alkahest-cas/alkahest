@@ -1558,11 +1558,20 @@ mod tests {
         let log_x = pool.func("log", vec![x]);
         let integrand = pool.mul(vec![pool.pow(x_plus_sqrt2, pool.integer(-1_i32)), log_x]);
 
-        let result = crate::integrate::engine::integrate(integrand, x, &pool);
-        assert!(
-            matches!(result, Err(IntegrationError::NonElementary(_))),
-            "∫ 1/(x+√2)·log(x) dx must be certified NonElementary; got {result:?}"
+        // The obstruction is real and unchanged: there is no *elementary*
+        // antiderivative.  What there is, is a dilogarithm — and since 3.10.0
+        // the integrator emits it rather than refusing, gate-verified by
+        // differentiation.  The assertion is therefore that the answer is not
+        // elementary, which is the same claim the certificate used to make.
+        let result = crate::integrate::engine::integrate(integrand, x, &pool)
+            .expect("∫ 1/(x+√2)·log(x) dx is a dilogarithm");
+        assert_eq!(
+            crate::integrate::special::basis_functions_used(result.value, &pool),
+            ["dilog"],
+            "∫ 1/(x+√2)·log(x) dx = {}",
+            pool.display(result.value)
         );
+        verify_numeric_e(integrand, result.value, x, &pool);
     }
 
     /// Generalisation: 1/(x+√3)·log(x) — same obstruction over K = ℚ(√3).
@@ -1575,11 +1584,20 @@ mod tests {
         let log_x = pool.func("log", vec![x]);
         let integrand = pool.mul(vec![pool.pow(x_plus_sqrt3, pool.integer(-1_i32)), log_x]);
 
-        let result = crate::integrate::engine::integrate(integrand, x, &pool);
-        assert!(
-            matches!(result, Err(IntegrationError::NonElementary(_))),
-            "∫ 1/(x+√3)·log(x) dx must be certified NonElementary; got {result:?}"
+        // The obstruction is real and unchanged: there is no *elementary*
+        // antiderivative.  What there is, is a dilogarithm — and since 3.10.0
+        // the integrator emits it rather than refusing, gate-verified by
+        // differentiation.  The assertion is therefore that the answer is not
+        // elementary, which is the same claim the certificate used to make.
+        let result = crate::integrate::engine::integrate(integrand, x, &pool)
+            .expect("∫ 1/(x+√3)·log(x) dx is a dilogarithm");
+        assert_eq!(
+            crate::integrate::special::basis_functions_used(result.value, &pool),
+            ["dilog"],
+            "∫ 1/(x+√3)·log(x) dx = {}",
+            pool.display(result.value)
         );
+        verify_numeric_e(integrand, result.value, x, &pool);
     }
 
     /// Const-factored variant √2/(x+√2)·log(x): the algebraic constant factor is
@@ -1598,11 +1616,20 @@ mod tests {
             log_x,
         ]);
 
-        let result = crate::integrate::engine::integrate(integrand, x, &pool);
-        assert!(
-            matches!(result, Err(IntegrationError::NonElementary(_))),
-            "∫ √2/(x+√2)·log(x) dx must be certified NonElementary; got {result:?}"
+        // The obstruction is real and unchanged: there is no *elementary*
+        // antiderivative.  What there is, is a dilogarithm — and since 3.10.0
+        // the integrator emits it rather than refusing, gate-verified by
+        // differentiation.  The assertion is therefore that the answer is not
+        // elementary, which is the same claim the certificate used to make.
+        let result = crate::integrate::engine::integrate(integrand, x, &pool)
+            .expect("∫ √2/(x+√2)·log(x) dx is a dilogarithm");
+        assert_eq!(
+            crate::integrate::special::basis_functions_used(result.value, &pool),
+            ["dilog"],
+            "∫ √2/(x+√2)·log(x) dx = {}",
+            pool.display(result.value)
         );
+        verify_numeric_e(integrand, result.value, x, &pool);
     }
 
     // ----- Adversarial elementary cases: the certificate must NOT fire -----

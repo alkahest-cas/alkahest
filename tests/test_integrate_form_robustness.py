@@ -143,13 +143,10 @@ def test_logistic_is_elementary():
 # ---------------------------------------------------------------------------
 
 _NONELEMENTARY = [
-    "exp(x^2)",
-    "exp(-x^2)",
-    "sin(x)/x",
-    "cos(x)/x",
-    "exp(x)/x",
-    "exp(x)*x^(-1)",  # the same integrand, spelled with `^(-1)`
-    "1/log(x)",
+    "exp(x^2)",  # would need `erfi`, which is not a registered primitive
+    "exp(x)/x^2",  # Ei family, but no reduction the engine performs
+    "sin(x)/x^2",  # `−sin(x)/x + Ci(x)`, which no matcher finds
+    "cos(x)/(2*x+1)",  # denominator not proportional to the argument
 ]
 
 
@@ -163,6 +160,57 @@ def test_nonelementary_stays_nonelementary(src):
     assert excinfo.value.code == "E-INT-004", (
         f"∫ {src} dx should certify NonElementary, got {excinfo.value.code}: {excinfo.value}"
     )
+
+
+# The named non-elementary closed forms.  These used to be `E-INT-004` — a true
+# statement ("not elementary") delivered as a refusal, by matchers that already
+# knew the name of the answer.  They are now *answered*, over a registered
+# special-function basis, and every answer is verified by differentiating it
+# back against the integrand.  The mathematical content is not lost: the answer
+# names a function outside the elementary ones, which is what makes it visible.
+_NONELEMENTARY_CLOSED_FORM = [
+    ("exp(x)/x", "Ei"),
+    ("exp(x)*x^(-1)", "Ei"),  # the same integrand, spelled with `^(-1)`
+    ("sin(x)/x", "Si"),
+    ("cos(x)/x", "Ci"),
+    ("1/log(x)", "li"),
+    ("exp(-x^2)", "erf"),
+    ("sin(x^2)", "fresnels"),
+    ("cos(x^2)", "fresnelc"),
+    ("log(x)/(1+x)", "dilog"),
+]
+
+_SPECIAL_BASIS = (
+    "Ei",
+    "li",
+    "Si",
+    "Ci",
+    "Shi",
+    "Chi",
+    "erf",
+    "erfc",
+    "fresnels",
+    "fresnelc",
+    "dilog",
+)
+
+
+@pytest.mark.parametrize(("src", "name"), _NONELEMENTARY_CLOSED_FORM)
+def test_nonelementary_closed_forms_are_emitted_and_verified(src, name):
+    pool = ExprPool()
+    x = pool.symbol("x")
+    f = _parse(src, pool)
+    cap = integrate(f, x).value
+    shown = str(cap)
+    # The answer must be *outside* the elementary functions — otherwise the
+    # emission would have quietly claimed an elementary antiderivative exists.
+    assert any(b in shown for b in _SPECIAL_BASIS), (
+        f"∫ {src} dx = {shown} — expected a non-elementary closed form"
+    )
+    assert name in shown, f"∫ {src} dx = {shown} — expected {name}"
+    # And it must be right.  `sin(x²)` in particular is `√(π/2)·S(x√(2/π))`,
+    # not `S(x)`; only differentiation catches the missing scale factor.
+    _check_antiderivative(pool, x, f, cap, src)
 
 
 # ---------------------------------------------------------------------------

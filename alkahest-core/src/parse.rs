@@ -117,7 +117,7 @@ impl AlkahestError for ParseError {
             1 => Some("only ASCII arithmetic expressions are supported"),
             2 => Some("check parentheses and operator placement"),
             4 => Some("flatten the expression — deeply nested parentheses, prefix signs or function calls exceed the parser's recursion budget"),
-            _ => Some("use a known function: sin, cos, tan, sec, csc, cot, sinh, cosh, tanh, sech, csch, coth, asin, acos, atan, asinh, acosh, atanh, atan2, exp, log, sqrt, abs, sign, floor, ceil, round, erf, erfc, gamma, lambert_w"),
+            _ => Some("use a known function: sin, cos, tan, sec, csc, cot, sinh, cosh, tanh, sech, csch, coth, asin, acos, atan, asinh, acosh, atanh, atan2, exp, log, sqrt, cbrt, abs, sign, floor, ceil, round, erf, erfc, gamma, lambert_w, digamma, trigamma, Ei, li, Si, Ci, Shi, Chi, fresnels, fresnelc, dilog"),
         }
     }
 
@@ -343,6 +343,22 @@ const KNOWN_FUNCS: &[&str] = &[
     "EllipticE",
     "EllipticF",
     "EllipticPi",
+    // The non-elementary output basis (3.10.0).  Without these the integrator
+    // can emit an antiderivative that neither parser can read back, so
+    // `parse(str(integrate(f)))` is not a round trip — which is how a printed
+    // result stops being usable input.  Every one is a registered primitive
+    // with a derivative rule and an `f64` kernel; see
+    // `alkahest_cas::primitive::{expint, fresnel, polylog}`.
+    "Ei",
+    "li",
+    "Si",
+    "Ci",
+    "Shi",
+    "Chi",
+    "fresnels",
+    "fresnelc",
+    "dilog",
+    "trigamma",
     // Reciprocal trig / hyperbolic functions.  These are *desugared* in
     // `parse_funcall` to their elementary reciprocal definitions (e.g.
     // `sec(x) → cos(x)^(-1)`); no `sec`/`csc`/… node ever enters the pool.
@@ -352,6 +368,16 @@ const KNOWN_FUNCS: &[&str] = &[
     "sech",
     "csch",
     "coth",
+    // Also desugared: `cbrt(u) → u^(1/3)`.  It is not a registered primitive
+    // and is not being made one — the power node already differentiates,
+    // evaluates, simplifies and integrates, so a primitive would only add a
+    // second spelling of the same object.  The one thing the desugar does not
+    // reproduce is `libm::cbrt`'s real branch on negatives: `cbrt(-8)` is
+    // `(-8)^(1/3)`, which the numeric interpreter reports as no-value rather
+    // than as `-2`.  That is a refusal, not a wrong answer, and it is the
+    // principal-branch convention the rest of the pool already uses for
+    // fractional powers.
+    "cbrt",
 ];
 
 fn is_known_func(name: &str) -> bool {
@@ -620,6 +646,18 @@ impl<'a> Parser<'a> {
             return Ok(self.pool.pow(inner, neg1));
         }
 
+        // Desugar `cbrt(u)` to `u^(1/3)`.  See the note in `KNOWN_FUNCS`.
+        if name == "cbrt" {
+            if args.len() != 1 {
+                return Err(ParseError::syntax(
+                    format!("cbrt takes exactly 1 argument, got {}", args.len()),
+                    (offset, offset + name.len()),
+                ));
+            }
+            let third = self.pool.rational(1_i64, 3_i64);
+            return Ok(self.pool.pow(args[0], third));
+        }
+
         Ok(self.pool.func(name, args))
     }
 }
@@ -636,13 +674,17 @@ impl<'a> Parser<'a> {
 /// and a fixed set of mathematical functions:
 /// `sin`, `cos`, `tan`, `sinh`, `cosh`, `tanh`, `asin`, `acos`, `atan`,
 /// `asinh`, `acosh`, `atanh`, `atan2`, `exp`, `log`, `sqrt`, `abs`, `sign`,
-/// `floor`, `ceil`, `round`, `erf`, `erfc`, `gamma`.
+/// `floor`, `ceil`, `round`, `erf`, `erfc`, `gamma`, and the non-elementary
+/// output basis `Ei`, `li`, `Si`, `Ci`, `Shi`, `Chi`, `fresnels`, `fresnelc`,
+/// `dilog`, `trigamma` — the last group so that an antiderivative the
+/// integrator prints can be read back in.
 ///
 /// The reciprocal trig/hyperbolic functions `sec`, `csc`, `cot`, `sech`,
 /// `csch`, and `coth` are also accepted; they are desugared at parse time to
 /// their elementary reciprocal definitions (`sec(x) → cos(x)^(-1)`,
 /// `csc(x) → sin(x)^(-1)`, `cot(x) → tan(x)^(-1)`, and the hyperbolic
-/// analogues), so no dedicated node for them exists in the pool.
+/// analogues), so no dedicated node for them exists in the pool.  `cbrt(u)` is
+/// desugared the same way, to `u^(1/3)`.
 ///
 /// `symbols` maps identifier names to pre-existing [`ExprId`]s.  Identifiers
 /// not in the map are interned as new `Domain::Real` symbols and added to the
@@ -1256,6 +1298,42 @@ mod tests {
             let twice = parse(&rendered, &pool, &mut syms).unwrap();
             assert_eq!(once, twice, "round trip changed {src} via {rendered}");
             assert_eq!(pool.display(twice).to_string(), rendered);
+        }
+    }
+
+    /// Every name the integrator can emit must parse back to the same node.
+    ///
+    /// The two parsers are separate hand-maintained implementations
+    /// (`CONTRIBUTING.md` § "The parser exists twice"), so nothing enforces
+    /// this beyond a test on each side.  Without it, `parse(str(integrate(f)))`
+    /// stops being a round trip the moment the integrator learns a new name —
+    /// which is exactly what a printed result being usable input depends on.
+    #[test]
+    fn the_special_function_output_basis_round_trips() {
+        for name in crate::integrate::SPECIAL_BASIS {
+            // `EllipticF`/`EllipticE` take two arguments in the incomplete form
+            // and one in the complete one; the unary spelling parses for both.
+            let src = format!("{name}(x)");
+            let (pool, _xyz, mut syms) = pool_xyz();
+            let parsed =
+                parse(&src, &pool, &mut syms).unwrap_or_else(|e| panic!("{src} must parse: {e}"));
+            match pool.get(parsed) {
+                crate::kernel::ExprData::Func {
+                    name: ref got,
+                    ref args,
+                } => {
+                    assert_eq!(got, name, "{src} parsed to the wrong node");
+                    assert_eq!(args.len(), 1, "{src} parsed with the wrong arity");
+                }
+                other => panic!("{src} parsed to {other:?}, not a Func node"),
+            }
+            let rendered = pool.display(parsed).to_string();
+            assert_eq!(rendered, src, "{name} does not print as it parses");
+            assert_eq!(
+                parse(&rendered, &pool, &mut syms).unwrap(),
+                parsed,
+                "{name} does not round trip"
+            );
         }
     }
 }

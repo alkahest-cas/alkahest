@@ -237,3 +237,368 @@ fn decompose_elem(
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Normal form `A(x) + B(x)·√P` — rationalizing radical denominators
+// ---------------------------------------------------------------------------
+//
+// # Why an Euler answer needs this
+//
+// The Euler substitution `t = x + √P` is a bijection onto a *rational*
+// parameter, so what the `t`-integral returns is a rational function **of `t`** —
+// and back-substituting leaves powers of `x + √P`, of both signs, rather than
+// the radical.  `∫x/√(x²−1) dx` comes back as
+//
+// ```text
+//   ½(x+√(x²−1)) − ½(x+√(x²−1))⁻¹      instead of      √(x²−1)
+// ```
+//
+// As a final answer that is merely ugly.  As the `v` of an integration-by-parts
+// step it is fatal — the next round must differentiate and re-integrate whatever
+// shape it is handed, and rationalising the radical denominator is exactly what
+// makes the difference (it is what unlocked Charlwood #35).
+//
+// # Why `FieldElem` + `simplify` is not enough
+//
+// `FieldElem::inv` *is* conjugate rationalization, but it builds the norm
+// `a²−b²P` as an expression tree and leaves the cancelling to `simplify` — which
+// does not expand it.  Normalizing `(x+√(x²−1))⁻¹` that way yields
+// `x/(x²−(x²−1)) − √(x²−1)/(x²−(x²−1))`: rationalized in form, with the
+// denominator `x²−(x²−1) = 1` still sitting there unevaluated.  Measured, that
+// made every answer *longer*.
+//
+// So the arithmetic below runs on `QPoly` coefficient vectors, where
+// `x²−(x²−1)` is the constant `1` by construction, with a `poly_gcd` reduction
+// after every operation to keep the fraction in lowest terms.  Expressions are
+// rebuilt only at the end.
+
+use super::poly_utils::is_free_of;
+use crate::integrate::risch::poly_rde::{
+    degree, expr_to_qpoly, poly_add, poly_mul, poly_scale, qpoly_to_expr, trim,
+};
+use crate::integrate::risch::rational_rde::{expr_to_qrational, poly_div_exact, poly_gcd};
+
+type QPoly = Vec<rug::Rational>;
+
+/// `(a + b·y)/d` with `y² = P`, all of `a`, `b`, `d` in `ℚ[x]`.
+#[derive(Clone)]
+struct AlgFrac {
+    a: QPoly,
+    b: QPoly,
+    d: QPoly,
+}
+
+/// Guard against a pathological exponent turning normalization into a blow-up.
+const MAX_ALG_POW: i64 = 32;
+/// Degree ceiling for an intermediate; beyond it we give up and keep the input.
+const MAX_ALG_DEG: i64 = 64;
+
+fn one_poly() -> QPoly {
+    vec![rug::Rational::from(1)]
+}
+
+impl AlgFrac {
+    fn rational(num: QPoly, den: QPoly) -> Self {
+        AlgFrac {
+            a: num,
+            b: Vec::new(),
+            d: den,
+        }
+        .reduced()
+    }
+
+    fn one() -> Self {
+        AlgFrac {
+            a: one_poly(),
+            b: Vec::new(),
+            d: one_poly(),
+        }
+    }
+
+    fn zero() -> Self {
+        AlgFrac {
+            a: Vec::new(),
+            b: Vec::new(),
+            d: one_poly(),
+        }
+    }
+
+    fn generator() -> Self {
+        AlgFrac {
+            a: Vec::new(),
+            b: one_poly(),
+            d: one_poly(),
+        }
+    }
+
+    fn too_big(&self) -> bool {
+        degree(&self.a).max(degree(&self.b)).max(degree(&self.d)) > MAX_ALG_DEG
+    }
+
+    /// Cancel `gcd(a, b, d)` and make `d` monic, so equal values get equal
+    /// representations and `x²−(x²−1)` really is `1`.
+    fn reduced(self) -> Self {
+        let (a, b, d) = (trim(self.a), trim(self.b), trim(self.d));
+        if d.is_empty() {
+            return AlgFrac { a, b, d };
+        }
+        let g = poly_gcd(&poly_gcd(&a, &b), &d);
+        let (a, b, d) = if degree(&g) >= 1 {
+            (
+                poly_div_exact(&a, &g),
+                poly_div_exact(&b, &g),
+                poly_div_exact(&d, &g),
+            )
+        } else {
+            (a, b, d)
+        };
+        match d.last() {
+            Some(lead) if *lead != 1 => {
+                let inv = rug::Rational::from(1) / lead.clone();
+                AlgFrac {
+                    a: poly_scale(&a, &inv),
+                    b: poly_scale(&b, &inv),
+                    d: poly_scale(&d, &inv),
+                }
+            }
+            _ => AlgFrac { a, b, d },
+        }
+    }
+
+    fn add(self, o: AlgFrac) -> Self {
+        AlgFrac {
+            a: poly_add(&poly_mul(&self.a, &o.d), &poly_mul(&o.a, &self.d)),
+            b: poly_add(&poly_mul(&self.b, &o.d), &poly_mul(&o.b, &self.d)),
+            d: poly_mul(&self.d, &o.d),
+        }
+        .reduced()
+    }
+
+    /// `(a₁+b₁y)(a₂+b₂y) = (a₁a₂ + b₁b₂P) + (a₁b₂ + b₁a₂)y`.
+    fn mul(self, o: AlgFrac, p: &QPoly) -> Self {
+        AlgFrac {
+            a: poly_add(
+                &poly_mul(&self.a, &o.a),
+                &poly_mul(&poly_mul(&self.b, &o.b), p),
+            ),
+            b: poly_add(&poly_mul(&self.a, &o.b), &poly_mul(&self.b, &o.a)),
+            d: poly_mul(&self.d, &o.d),
+        }
+        .reduced()
+    }
+
+    /// `d/(a+by) = d·(a−by)/(a²−b²P)` — conjugate rationalization on
+    /// coefficients, so the norm arrives already cancelled.
+    fn inv(self, p: &QPoly) -> Option<Self> {
+        let minus_one = rug::Rational::from(-1);
+        let norm = poly_add(
+            &poly_mul(&self.a, &self.a),
+            &poly_scale(&poly_mul(&poly_mul(&self.b, &self.b), p), &minus_one),
+        );
+        if trim(norm.clone()).is_empty() {
+            return None; // zero divisor in the field
+        }
+        Some(
+            AlgFrac {
+                a: poly_mul(&self.d, &self.a),
+                b: poly_scale(&poly_mul(&self.d, &self.b), &minus_one),
+                d: norm,
+            }
+            .reduced(),
+        )
+    }
+
+    fn powi(self, n: i64, p: &QPoly) -> Option<Self> {
+        if n.abs() > MAX_ALG_POW {
+            return None;
+        }
+        if n < 0 {
+            return self.inv(p)?.powi(-n, p);
+        }
+        let mut acc = AlgFrac::one();
+        for _ in 0..n {
+            acc = acc.mul(self.clone(), p);
+            if acc.too_big() {
+                return None;
+            }
+        }
+        Some(acc)
+    }
+
+    fn to_expr(&self, var: ExprId, sqrt_id: ExprId, pool: &ExprPool) -> ExprId {
+        let den = qpoly_to_expr(&self.d, var, pool);
+        let inv_d = pool.pow(den, pool.integer(-1_i32));
+        let a = pool.mul(vec![qpoly_to_expr(&self.a, var, pool), inv_d]);
+        if trim(self.b.clone()).is_empty() {
+            return a;
+        }
+        let b = pool.mul(vec![qpoly_to_expr(&self.b, var, pool), inv_d, sqrt_id]);
+        pool.add(vec![a, b])
+    }
+}
+
+/// Rewrite every algebraic subexpression of `expr` into the field normal form
+/// `A(x) + B(x)·√P`, rationalizing radical denominators.
+///
+/// Applied to *maximal* subexpressions that are rational in `(x, √P)`.  A
+/// transcendental head (`log`, `atan`, … — the logarithmic part of an answer) is
+/// recursed *through*, so its argument is normalized and the head is untouched.
+/// Anything the arithmetic cannot read, or that would blow past the degree and
+/// exponent ceilings, is returned unchanged: this is total, never fails, and is
+/// only ever a change of shape.  The caller still gates the result.
+pub fn normalize_over_sqrt(expr: ExprId, radicand: ExprId, var: ExprId, pool: &ExprPool) -> ExprId {
+    let Some(p) = expr_to_qpoly(radicand, var, pool).map(trim) else {
+        return expr;
+    };
+    if degree(&p) < 1 {
+        return expr;
+    }
+    let sqrt_id = pool.func("sqrt", vec![qpoly_to_expr(&p, var, pool)]);
+    let canon = canonicalize_radicals(expr, &p, var, sqrt_id, pool);
+    normalize_rec(canon, sqrt_id, &p, var, pool)
+}
+
+/// Point every spelling of the generator at one `ExprId`.
+///
+/// Two things make this necessary, and skipping it does not fail loudly — it
+/// makes the normalization silently do nothing:
+///
+/// * `sqrt(u)` and `u^(1/2)` are used interchangeably (`simplify` produces
+///   both), while the decomposition keys on a single node;
+/// * the radicand handed in comes from the *integrand* and the one inside the
+///   candidate has been through `simplify`, and those are different nodes for
+///   the same polynomial — `parse("x^2-1")` builds `x² + (−1)·1`, which is not
+///   the `ExprId` of `x² + (−1)`.  That mismatch is why `∫x/√(x²−1)` collapsed
+///   to `√(x²−1)` from a builder-constructed tree and stayed in Euler form from
+///   parser output: the same form-sensitivity class the Charlwood analysis
+///   flags for `Mul` associativity, here on the generator identity.
+///
+/// So the test is *semantic*: any `sqrt(u)` or `u^(1/2)` whose `u` is the same
+/// polynomial as `P` becomes `sqrt_id`.
+fn canonicalize_radicals(
+    expr: ExprId,
+    p: &QPoly,
+    var: ExprId,
+    sqrt_id: ExprId,
+    pool: &ExprPool,
+) -> ExprId {
+    if expr == sqrt_id {
+        return expr;
+    }
+    let same_radicand = |u: ExprId| expr_to_qpoly(u, var, pool).is_some_and(|q| trim(q) == *p);
+    match pool.get(expr) {
+        ExprData::Func { ref name, ref args } if name == "sqrt" && args.len() == 1 => {
+            if same_radicand(args[0]) {
+                sqrt_id
+            } else {
+                expr
+            }
+        }
+        ExprData::Pow { base, exp } => {
+            if let ExprData::Rational(r) = pool.get(exp) {
+                if *r.0.numer() == 1 && *r.0.denom() == 2 && same_radicand(base) {
+                    return sqrt_id;
+                }
+            }
+            pool.pow(canonicalize_radicals(base, p, var, sqrt_id, pool), exp)
+        }
+        ExprData::Add(args) => pool.add(
+            args.iter()
+                .map(|&a| canonicalize_radicals(a, p, var, sqrt_id, pool))
+                .collect::<Vec<_>>(),
+        ),
+        ExprData::Mul(args) => pool.mul(
+            args.iter()
+                .map(|&a| canonicalize_radicals(a, p, var, sqrt_id, pool))
+                .collect::<Vec<_>>(),
+        ),
+        ExprData::Func { ref name, ref args } => pool.func(
+            name,
+            args.iter()
+                .map(|&a| canonicalize_radicals(a, p, var, sqrt_id, pool))
+                .collect::<Vec<_>>(),
+        ),
+        _ => expr,
+    }
+}
+
+fn normalize_rec(expr: ExprId, sqrt_id: ExprId, p: &QPoly, var: ExprId, pool: &ExprPool) -> ExprId {
+    if is_free_of_subexpr(expr, sqrt_id, pool) {
+        return expr;
+    }
+    if let Some(f) = to_alg(expr, sqrt_id, p, var, pool) {
+        return f.to_expr(var, sqrt_id, pool);
+    }
+    match pool.get(expr) {
+        ExprData::Add(args) => pool.add(
+            args.iter()
+                .map(|&a| normalize_rec(a, sqrt_id, p, var, pool))
+                .collect::<Vec<_>>(),
+        ),
+        ExprData::Mul(args) => pool.mul(
+            args.iter()
+                .map(|&a| normalize_rec(a, sqrt_id, p, var, pool))
+                .collect::<Vec<_>>(),
+        ),
+        ExprData::Pow { base, exp } => pool.pow(normalize_rec(base, sqrt_id, p, var, pool), exp),
+        ExprData::Func { ref name, ref args } => pool.func(
+            name,
+            args.iter()
+                .map(|&a| normalize_rec(a, sqrt_id, p, var, pool))
+                .collect::<Vec<_>>(),
+        ),
+        _ => expr,
+    }
+}
+
+/// Read `expr` as an element of `ℚ(x)[y]/(y²−P)`, or `None` when it is not one
+/// (a transcendental head, an irrational constant such as `√2`, a non-integer
+/// exponent, an intermediate past the ceilings).
+fn to_alg(
+    expr: ExprId,
+    sqrt_id: ExprId,
+    p: &QPoly,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<AlgFrac> {
+    if expr == sqrt_id {
+        return Some(AlgFrac::generator());
+    }
+    if is_free_of_subexpr(expr, sqrt_id, pool) {
+        let numeric = matches!(pool.get(expr), ExprData::Integer(_) | ExprData::Rational(_));
+        if numeric || !is_free_of(expr, var, pool) {
+            let (n, d) = expr_to_qrational(expr, var, pool)?;
+            return Some(AlgFrac::rational(n, d));
+        }
+        // A `var`-free non-numeric factor (`√2`, `π`, …) has no `QPoly` form.
+        return None;
+    }
+    let out = match pool.get(expr) {
+        ExprData::Add(args) => {
+            let mut acc = AlgFrac::zero();
+            for a in &args {
+                acc = acc.add(to_alg(*a, sqrt_id, p, var, pool)?);
+                if acc.too_big() {
+                    return None;
+                }
+            }
+            acc
+        }
+        ExprData::Mul(args) => {
+            let mut acc = AlgFrac::one();
+            for a in &args {
+                acc = acc.mul(to_alg(*a, sqrt_id, p, var, pool)?, p);
+                if acc.too_big() {
+                    return None;
+                }
+            }
+            acc
+        }
+        ExprData::Pow { base, exp } => {
+            let n = as_integer(exp, pool)?;
+            to_alg(base, sqrt_id, p, var, pool)?.powi(n, p)?
+        }
+        _ => return None,
+    };
+    Some(out)
+}

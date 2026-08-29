@@ -102,6 +102,56 @@ def antiderivative_slope(integrand: ak.Expr, at: float) -> Callable[[], Measured
     return op
 
 
+#: The registered non-elementary output basis.  An antiderivative naming one of
+#: these is, by construction, not an elementary function — which is how the
+#: "no elementary antiderivative" claim survives being *answered* instead of
+#: refused.  Mirrors ``SPECIAL_BASIS`` in ``integrate/special.rs``.
+_NONELEMENTARY_BASIS = (
+    "Ei",
+    "li",
+    "Si",
+    "Ci",
+    "Shi",
+    "Chi",
+    "erf",
+    "erfc",
+    "fresnels",
+    "fresnelc",
+    "dilog",
+    "EllipticF",
+    "EllipticE",
+    "EllipticK",
+)
+
+
+def nonelementary_closed_form_slope(integrand: ak.Expr, at: float) -> Callable[[], Measured]:
+    """Answer = d/dx of alkahest's antiderivative at *at*, for an integrand
+    that has **no elementary** antiderivative but does have a closed form over
+    the registered special-function basis.
+
+    Two traps in one, and the second is the reason this helper exists rather
+    than :func:`antiderivative_slope`:
+
+    * the derivative must be the integrand — a wrong closed form is a wrong
+      theorem, exactly as a wrong elementary one would be; and
+    * the antiderivative must still **name** a non-elementary function.
+      Returning something elementary here would be the assertion *"this
+      integral is elementary"*, which is false — the same silent error the
+      ``Raises("E-INT-004")`` contract used to catch, in the shape it takes
+      once refusal is replaced by emission.
+    """
+
+    def op() -> Measured:
+        r = ak.integrate(integrand, X)
+        shown = str(r.value)
+        if not any(name in shown for name in _NONELEMENTARY_BASIS):
+            raise AssertionError(f"antiderivative {shown} is elementary — the integral is not")
+        slope = ak.diff(r.value, X).value
+        return Measured(float(ak.eval_expr(slope, {X: at})), r.verification)
+
+    return op
+
+
 def limit_value(expr: ak.Expr, point: ak.Expr, direction: str | None = None) -> Callable[[], float]:
     """Answer = the numeric value of lim expr, optionally one-sided."""
 
@@ -1440,37 +1490,45 @@ CASES: list[Case] = [
         "elementary. Standard textbook example.",
         benchmark_tasks=("nonelementary_expx2",),
     ),
+    # The four below are *answered* rather than refused since 3.10.0: each has a
+    # closed form over the registered special-function basis.  The trap is
+    # unchanged in content — the claim "no elementary antiderivative exists" is
+    # still pinned, now by requiring the answer to name a non-elementary
+    # function rather than by requiring a refusal.  See
+    # `nonelementary_closed_form_slope`.
     Case(
         id="nonelementary_gaussian",
         subsystem="integration_nonelementary",
-        statement="∫ e^{-x²} dx has no elementary antiderivative",
-        op=lambda: _num(ak.integrate(ak.exp(-(X**2)), X).value),
-        contract=Raises("E-INT-004"),
-        verified_by="(√π/2)·erf(x); erf is not elementary (Liouville).",
+        statement="∫ e^{-x²} dx has no elementary antiderivative; it is (√π/2)·erf(x)",
+        op=nonelementary_closed_form_slope(ak.exp(-(X**2)), 0.5),
+        contract=Returns(0.7788007830714049),
+        verified_by="(√π/2)·erf(x); erf is not elementary (Liouville). "
+        "d/dx at 0.5 is e^{-0.25} = 0.7788007830714049.",
     ),
     Case(
         id="nonelementary_sinc",
         subsystem="integration_nonelementary",
-        statement="∫ sin(x)/x dx has no elementary antiderivative",
-        op=lambda: _num(ak.integrate(ak.sin(X) / X, X).value),
-        contract=Raises("E-INT-004"),
-        verified_by="Si(x), the sine integral — a special function, not elementary.",
+        statement="∫ sin(x)/x dx has no elementary antiderivative; it is Si(x)",
+        op=nonelementary_closed_form_slope(ak.sin(X) / X, 1.0),
+        contract=Returns(0.8414709848078965),
+        verified_by="Si(x), the sine integral — a special function, not elementary. "
+        "d/dx at 1 is sin(1)/1 = 0.8414709848078965.",
     ),
     Case(
         id="nonelementary_logarithmic_integral",
         subsystem="integration_nonelementary",
-        statement="∫ dx/log x has no elementary antiderivative",
-        op=lambda: _num(ak.integrate(1 / ak.log(X), X).value),
-        contract=Raises("E-INT-004"),
-        verified_by="li(x), the logarithmic integral.",
+        statement="∫ dx/log x has no elementary antiderivative; it is li(x)",
+        op=nonelementary_closed_form_slope(1 / ak.log(X), 2.0),
+        contract=Returns(1.4426950408889634),
+        verified_by="li(x), the logarithmic integral. d/dx at 2 is 1/log 2 = 1.4426950408889634.",
     ),
     Case(
         id="nonelementary_exponential_integral",
         subsystem="integration_nonelementary",
-        statement="∫ e^x/x dx has no elementary antiderivative",
-        op=lambda: _num(ak.integrate(ak.exp(X) / X, X).value),
-        contract=Raises("E-INT-004"),
-        verified_by="Ei(x), the exponential integral.",
+        statement="∫ e^x/x dx has no elementary antiderivative; it is Ei(x)",
+        op=nonelementary_closed_form_slope(ak.exp(X) / X, 2.0),
+        contract=Returns(3.6945280494653252),
+        verified_by="Ei(x), the exponential integral. d/dx at 2 is e²/2 = 3.6945280494653252.",
     ),
     Case(
         id="nonelementary_double_exponential",

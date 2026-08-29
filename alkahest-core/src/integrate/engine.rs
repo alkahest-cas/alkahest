@@ -328,7 +328,7 @@ fn as_integer(expr: ExprId, pool: &ExprPool) -> Option<i64> {
 ///
 /// Internally memoises into `cache` (keyed by `ExprId`, valid for a fixed `var`).
 /// Use [`is_free_of`] from call sites; [`is_free_of_inner`] is the recursive worker.
-fn is_free_of(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+pub(crate) fn is_free_of(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
     let mut cache: HashMap<ExprId, bool> = HashMap::new();
     is_free_of_inner(expr, var, pool, &mut cache)
 }
@@ -360,7 +360,7 @@ fn is_free_of_inner(
 
 /// If `expr = a*var + b` where `a`, `b` are free of `var`, return `Some((a, b))`.
 /// Returns `Some((1, 0))` when `expr == var`.
-fn is_linear_in(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
+pub(crate) fn is_linear_in(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
     if expr == var {
         return Some((pool.integer(1_i32), pool.integer(0_i32)));
     }
@@ -1701,7 +1701,7 @@ fn trig_reciprocal_square_antiderivative(
 ///   - `cos` → cosine integral `Ci`
 ///   - `sinh` → hyperbolic sine integral `Shi`
 ///   - `cosh` → hyperbolic cosine integral `Chi`
-fn special_integral_name(func: &str) -> Option<&'static str> {
+pub(crate) fn special_integral_name(func: &str) -> Option<&'static str> {
     match func {
         "exp" => Some("Ei"),
         "sin" => Some("Si"),
@@ -2254,11 +2254,36 @@ pub fn integrate(
     // caller entered a `budget::Budget` — see `crate::budget`.
     crate::budget::check()?;
 
+    // ── Dispatch order ──────────────────────────────────────────────────────
+    //
+    // Ordered by **verification strength**, not by cost, and the two do not
+    // agree here.  Alkahest's gate is graded (`Proven` / `EnclosureVerified` /
+    // `SampledOnly`), so unlike most systems it can see how strongly each route
+    // establishes its answer — and a tier that can only sample must not be able
+    // to pre-empt a tier that can prove.  That is `planning/risch.md`'s "a
+    // deeper tier can produce a *better* answer" hazard, and it is live here:
+    //
+    //   route                                   evidence        measured
+    //   rules / Rothstein–Trager / tower        `Proven`        0.18 ms median
+    //   Risch–Norman                            exact, 58/58    3.7× the tower
+    //   special-function emission               gate-verified   table match
+    //   by-parts                                `SampledOnly`   ~5 ms on decline
+    //
+    // so: tower → Risch–Norman → special functions → by-parts, all four behind
+    // the elementary pipeline.  Note this **inverts** the classic
+    // "heuristics first" ordering; the reason is soundness for by-parts and
+    // measured cost for Risch–Norman, which in front would add milliseconds to
+    // every integral for zero coverage gain on the cases both routes solve.
+    //
+    // Everything after `integrate_inner` runs only on the decline path, so the
+    // added latency is paid exclusively by integrands that were going to fail.
+
     // V1-2: Route algebraic integrands to the Trager/Risch algebraic engine.
     // For *mixed* algebraic+transcendental (e.g. exp(x)/sqrt(x²+1)) the Risch
     // engine handles the transcendental level and delegates base-field integrals
-    // back to the algebraic engine, so only route to algebraic when there are NO
-    // transcendental (exp/log) generators.
+    // back to the algebraic engine, so the algebraic engine runs *first* only
+    // when there are no transcendental (exp/log) generators — and, since #319's
+    // sibling fix below, *again* when the Risch tower declines.
     let has_algebraic = super::algebraic::contains_algebraic_subterm(expr, pool)
         || super::algebraic::contains_algebraic_func_of_var(expr, var, pool);
     let has_transcendental = super::risch::contains_risch_form(expr, var, pool);
@@ -2285,8 +2310,9 @@ pub fn integrate(
     // gated (`try_u_substitution` verifies `d/dx F = f`, `try_log_derivative`
     // fires only on an exact `h'/h` match, Rothstein–Trager is exact).
     let mut declined: Option<IntegrationError> = None;
+    let algebraic_applies = has_algebraic && !contains_inverse_trig(expr, pool);
 
-    if has_algebraic && !has_transcendental && !contains_inverse_trig(expr, pool) {
+    if algebraic_applies && !has_transcendental {
         match super::algebraic::integrate_algebraic(expr, var, pool) {
             Ok(result) => return Ok(result),
             // A budget trip travels *as* a `NotImplemented` (see the carrier
@@ -2298,7 +2324,7 @@ pub fn integrate(
             // fallback can overturn it, and re-deriving it downstream would
             // risk the weaker `NotImplemented` replacing a proof.
             Err(e @ IntegrationError::NotImplemented(_)) => declined = Some(e),
-            Err(other) => return Err(other),
+            Err(other) => return emit_or_keep(other, expr, var, pool),
         }
     }
 
@@ -2309,7 +2335,33 @@ pub fn integrate(
             Ok(result) => return Ok(result),
             Err(e) if e.is_budget() => return Err(e),
             Err(e @ IntegrationError::NotImplemented(_)) => declined = Some(e),
-            Err(other) => return Err(other),
+            Err(other) => return emit_or_keep(other, expr, var, pool),
+        }
+
+        // The algebraic engine was skipped above because `contains_risch_form`
+        // is true — and that predicate is true for *any* integrand mentioning
+        // `exp` or `log`.  So the whole algebraic engine, including the
+        // generator-substitution route that reduces `∫eˣ·√(1+e⁴ˣ) dx` in one
+        // step (`exp′ = exp`), was unreachable for every such integrand: that
+        // integral and `∫eˣ/√(1+e⁴ˣ) dx` — the exact `exp` analogues of
+        // Charlwood #6 and #43 — died inside the tower with "coefficient
+        // √(1+exp(4x)) of exp(η)^1 is not a polynomial or rational function
+        // over a supported algebraic extension".  The pre-check was ordered as
+        // an *exclusion* where it should have been a *preference*, so the fix
+        // is to try the algebraic engine on the tower's decline rather than
+        // instead of it.
+        //
+        // Only `Ok` is accepted here.  The algebraic engine's `NonElementary`
+        // reasoning presumes a purely algebraic integrand, which is exactly
+        // what this branch does not have, so its certificates are deliberately
+        // discarded on this path: a routing change must not be able to create a
+        // new certificate.  Budget trips still short-circuit.
+        if algebraic_applies && declined.is_some() {
+            match super::algebraic::integrate_algebraic(expr, var, pool) {
+                Ok(result) => return Ok(result),
+                Err(e) if e.is_budget() => return Err(e),
+                Err(_) => {}
+            }
         }
     }
 
@@ -2333,24 +2385,183 @@ pub fn integrate(
         return Ok(DerivedExpr::with_log(simplified.value, final_log));
     }
 
-    // Risch Gap 6: certify classic non-elementary special-function integrands
-    // (Ei/Si/Ci/Shi/Chi/li) before the rule-based engine, which would otherwise
-    // return the weaker `NotImplemented` verdict.
+    // Risch Gap 6: the classic special-function integrands (Ei/Si/Ci/Shi/Chi/li).
+    // `known_nonelementary` recognises these shapes in order to *refuse* them,
+    // which was always the wrong end of the recognition: `Ei`, `Si`, `Ci`,
+    // `Shi`, `Chi` and `li` have been complete primitives — derivative rule,
+    // `f64` kernel, ball kernel, Taylor rule — for as long as the refusal has
+    // been here, so a shape this recogniser can name is a shape the integrator
+    // can answer.  Offer the emitter the integrand first, and fall back to the
+    // certificate only when it declines.
+    //
+    // The certificate itself is untouched: same premise (Liouville), same
+    // wording, same strength.  See `super::special`'s module docs for why it
+    // was deliberately *not* re-read as the stronger "and not expressible over
+    // the registered basis either" claim — nothing here decides that, and
+    // `∫sin(x)/x² dx` (non-elementary, but `−sin(x)/x + Ci(x)`) is the standing
+    // counterexample that would make the stronger reading a false certificate.
     if let Some(reason) = known_nonelementary(expr, var, pool) {
-        return Err(IntegrationError::NonElementary(reason));
+        return emit_or_keep(IntegrationError::NonElementary(reason), expr, var, pool);
     }
 
     match integrate_inner(expr, var, pool, 0) {
         Ok(result) => Ok(result),
-        // Preserve the sub-engine's own diagnostic when it declined earlier and
-        // nothing downstream could close the integral either — the Risch /
-        // algebraic message ("coefficient … is not a polynomial …") says far
-        // more than the rule engine's generic decline.  Budget trips and
-        // `NonElementary` keep their own error untouched.
+        // Budget trips keep their own error untouched and short-circuit ahead
+        // of every tier below: "the caller asked to stop spending" must not
+        // turn into three more engines' worth of spending.  `NonElementary`
+        // likewise falls straight through — it is a verdict, and no heuristic
+        // below is allowed to be consulted about it.
         Err(e) if e.is_budget() => Err(e),
-        Err(e @ IntegrationError::NotImplemented(_)) => Err(declined.unwrap_or(e)),
-        Err(other) => Err(other),
+        Err(e @ IntegrationError::NotImplemented(_)) => {
+            // ── Tier 1: Risch–Norman (parallel Risch) ───────────────────────
+            //
+            // Behind the tower, on the decline path only.  Measured: 3.7× the
+            // tower's median on the 50 cases both solve (so a front position
+            // buys nothing), and 0.01 ms to reject an out-of-ring integrand
+            // structurally — cheaper than any dispatch guard could be, so none
+            // is built.  It verifies its answers *exactly* (58/58 through the
+            // exact gate), which is why it runs ahead of by-parts.
+            // `Solved`/`Declined` only: there is no path from it to
+            // `NonElementary`, pinned by its own tests.
+            crate::budget::check()?;
+            if let super::norman::ParallelRischOutcome::Solved { antiderivative, .. } =
+                super::norman::integrate_parallel_risch(expr, var, pool)
+            {
+                let s = simplify(antiderivative, pool);
+                let mut nlog = DerivationLog::new();
+                nlog.push(RewriteStep::simple("risch_norman", expr, s.value));
+                let final_log = nlog.merge(s.log);
+                return Ok(DerivedExpr::with_log(s.value, final_log));
+            }
+
+            // ── Tier 2: named special functions ─────────────────────────────
+            //
+            // `∫exp(−x²)`, `∫sin(x²)`, `∫log x/(1+x)` — shapes with no
+            // elementary antiderivative at all, so this cannot pre-empt an
+            // elementary answer, and every emission is gate-verified by
+            // differentiation exactly as the elliptic route already is.
+            crate::budget::check()?;
+            if let Some(result) = super::special::try_special_derived(expr, var, pool) {
+                return Ok(result);
+            }
+
+            // ── Tier 3: general integration by parts ────────────────────────
+            //
+            // Last, and the reason is soundness rather than cost: its gate
+            // accepts a numeric agreement as well as an exact identity, and all
+            // three Charlwood problems it closes verify only numerically.
+            // Ahead of the engines above, a `SampledOnly` answer could displace
+            // a `Proven` one.
+            //
+            // Hooked here and not in `integrate_inner`: `try_u_substitution`
+            // re-enters that function once per substitution candidate, so a
+            // hook there would run by-parts several times per top-level call,
+            // and `integrate_inner` cannot see the `declined` diagnostic.
+            crate::budget::check()?;
+            let mut bp = DerivationLog::new();
+            if let Some(f) = super::by_parts::try_by_parts(expr, var, pool, &mut bp) {
+                let s = simplify(f, pool);
+                let final_log = bp.merge(s.log);
+                return Ok(DerivedExpr::with_log(s.value, final_log));
+            }
+
+            // A trip inside any of the three tiers above surfaces as a
+            // *decline*: they all end their budget checks with `.ok()?`, which
+            // is the only thing an `Option`-returning proposer can do.  Without
+            // this re-check that trip would leave `integrate` as `E-INT-001` —
+            // "no method here found an antiderivative" — which is a
+            // mathematical statement the budget did not license anyone to make.
+            // Measured: a 20 ms budget on `∫asin(x)·log(x)²·eˣ dx` returned
+            // `E-INT-001` after 518 ms before this line.
+            crate::budget::check()?;
+
+            // Preserve the sub-engine's own diagnostic when it declined earlier
+            // and nothing downstream could close the integral either — the
+            // Risch / algebraic message ("coefficient … is not a polynomial …")
+            // says far more than the rule engine's generic decline.
+            Err(declined.unwrap_or(e))
+        }
+        Err(other) => emit_or_keep(other, expr, var, pool),
     }
+}
+
+/// Offer a `NonElementary` verdict to the special-function emitter before it
+/// reaches the caller.
+///
+/// **This function is the reason the emission is reachable at all.** Every
+/// exponential-family target — `∫eˣ/x`, `∫exp(−x²)` — is decided by the Risch
+/// tower, which returns `NonElementary` and *short-circuits*: `NonElementary`
+/// is a verdict, so the router (correctly) refuses to let any downstream
+/// heuristic overturn it, and the emitter downstream never ran. The verdict is
+/// true and stays true; what was missing is that "no elementary antiderivative
+/// exists" and "no antiderivative can be named" are different statements, and
+/// only the first is what the tower proved.
+///
+/// So this does not *overturn* anything. It answers a strictly weaker question
+/// than the verdict settled, and it may only do so by exhibiting an `F` with
+/// `d/dx F = f` — gate-verified in [`super::special`] before it gets here. A
+/// decline leaves the verdict exactly as it was, in wording and in strength.
+///
+/// Non-`NonElementary` errors pass through untouched, and a budget trip
+/// short-circuits ahead of the emitter rather than through it: the emitter
+/// declines when the budget is spent, and a decline here would be
+/// indistinguishable from "no closed form".
+fn emit_or_keep(
+    err: IntegrationError,
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Result<DerivedExpr<ExprId>, IntegrationError> {
+    if !matches!(err, IntegrationError::NonElementary(_)) {
+        return Err(err);
+    }
+    crate::budget::check()?;
+    match super::special::try_special_derived(expr, var, pool) {
+        Some(result) => Ok(result),
+        // The emitter also ends its budget check with `.ok()?`, so re-check
+        // before handing back the verdict: a trip must not be delivered as a
+        // mathematical answer of any kind, certificate included.
+        None => {
+            crate::budget::check()?;
+            Err(err)
+        }
+    }
+}
+
+/// [`integrate`], with the answer split into the two shapes of success.
+///
+/// `planning/risch.md` §4.3 asks for a three-valued answer so that "Alkahest
+/// returned `erf`" and "Alkahest returned `x²/2`" stop being the same event.
+/// This is that split, as an **additive** entry point: [`IntegrationError`] is
+/// an exhaustive public enum and growing a variant on it would be a major
+/// semver break, so the classification lives on the `Ok` side — where it
+/// belongs, since both variants are answers and both are gate-verified.
+///
+/// The third value, [`IntegrationError::NonElementary`], is unchanged in
+/// wording and in strength.  See [`crate::integrate::special`]'s module docs
+/// for why it was **not** re-read as the stronger "and not expressible over the
+/// registered basis either" claim: nothing in this codebase decides that, so
+/// asserting it would manufacture a new false certificate rather than a
+/// stronger true one.
+///
+/// ```
+/// use alkahest_cas::kernel::{Domain, ExprPool};
+/// use alkahest_cas::integrate::{integrate_classified, IntegrationAnswer};
+///
+/// let pool = ExprPool::new();
+/// let x = pool.symbol("x", Domain::Real);
+/// // ∫ x dx = x²/2 — elementary.
+/// assert!(matches!(
+///     integrate_classified(x, x, &pool),
+///     Ok(IntegrationAnswer::Elementary(_))
+/// ));
+/// ```
+pub fn integrate_classified(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Result<super::special::IntegrationAnswer, IntegrationError> {
+    integrate(expr, var, pool).map(|d| super::special::classify(d, pool))
 }
 
 /// Internal entry point that runs the full elementary pipeline — rule engine,
@@ -3812,11 +4023,30 @@ pub fn verify_antiderivative_status(
     }
 
     // Numeric check at several sample points (irrational, to dodge poles).
+    //
+    // **The grid is two-sided on purpose.**  It used to be positive-only, which
+    // made the gate blind to a candidate that is right on one branch and wrong
+    // on the other — and that is not hypothetical: by-parts closed Charlwood
+    // #22, `∫x³·acos(1/x)/√(x⁴−1) dx`, with an answer whose derivative is the
+    // integrand for `x > 1` and off by ≈1.1 for `x < −1`.  Six positive samples
+    // agreed six times and the wrong answer was admitted.  A sign lost in a
+    // `√` or a `log` is exactly the error a one-sided grid cannot see, so the
+    // negative mirror of each point is now checked too.
+    //
+    // This does not reject answers that are merely *undefined* on the negative
+    // side: `eval_interp` returns no value, or a non-finite one, at a point
+    // outside the domain, and both are skipped rather than counted as
+    // disagreement.  Nor does it reject a different branch constant — the
+    // comparison is between derivatives, where an additive constant has already
+    // differentiated away.
     let Ok(d_raw) = crate::diff::diff(candidate, var, pool) else {
         return None;
     };
     let d = simplify(d_raw.value, pool).value;
-    let samples = [0.3719_f64, 0.9137, 1.4231, 2.1719, 2.8123, 3.6411];
+    let samples = [
+        0.3719_f64, 0.9137, 1.4231, 2.1719, 2.8123, 3.6411, -0.3719, -0.9137, -1.4231, -2.1719,
+        -2.8123, -3.6411,
+    ];
     let mut checked = 0_usize;
     for &xv in &samples {
         let mut env = HashMap::new();
@@ -3976,11 +4206,31 @@ mod tests {
     fn antiderivative_verification_distinguishes_numeric_evidence() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
-        let candidate = pool.func("sqrt", vec![pool.pow(x, pool.integer(2_i32))]);
-        let one = pool.integer(1_i32);
 
+        // `∫dx = √(x²)` is the branch trap, and this assertion used to run the
+        // other way.  `d/dx √(x²)` is `x/|x|`, which is `1` for `x > 0` and
+        // `−1` for `x < 0`; against the six positive samples the gate used to
+        // take, it agreed six times out of six.  A one-sided grid cannot see a
+        // lost sign, so the grid is two-sided and this must now be refused.
+        let branch_trap = pool.func("sqrt", vec![pool.pow(x, pool.integer(2_i32))]);
+        let one = pool.integer(1_i32);
         assert_eq!(
-            verify_antiderivative_status(candidate, one, x, &pool),
+            verify_antiderivative_status(branch_trap, one, x, &pool),
+            None,
+            "√(x²) is an antiderivative of 1 only on x > 0"
+        );
+
+        // And the control: a genuinely two-sided answer that the *symbolic*
+        // half of the gate cannot close still earns `Numeric`.
+        // `log(√(1+x²)+x)` is `asinh x`, real and correct on the whole line.
+        let root = pool.func(
+            "sqrt",
+            vec![pool.add(vec![pool.integer(1_i32), pool.pow(x, pool.integer(2_i32))])],
+        );
+        let asinh = pool.func("log", vec![pool.add(vec![root, x])]);
+        let integrand = pool.pow(root, pool.integer(-1_i32));
+        assert_eq!(
+            verify_antiderivative_status(asinh, integrand, x, &pool),
             Some(AntiderivativeVerification::Numeric)
         );
     }
@@ -4106,10 +4356,18 @@ mod tests {
     fn integrate_not_implemented() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
-        // ∫ sin(x²) dx has no elementary antiderivative and is outside the supported subset
+        // `∫sin(x²)·log(x) dx` is outside every supported subset: no
+        // elementary antiderivative, no closed form over the registered basis,
+        // and no premise for a certificate — so the honest answer is a decline.
+        // (`∫sin(x²) dx` alone is now the Fresnel `S`; see
+        // `gaussian_emits_erf_and_fresnel_is_scaled`.)
         let x2 = pool.pow(x, pool.integer(2_i32));
-        let err = integrate(pool.func("sin", vec![x2]), x, &pool);
-        assert!(matches!(err, Err(IntegrationError::NotImplemented(_))));
+        let f = pool.mul(vec![pool.func("sin", vec![x2]), pool.func("log", vec![x])]);
+        let err = integrate(f, x, &pool);
+        assert!(
+            matches!(err, Err(IntegrationError::NotImplemented(_))),
+            "{err:?}"
+        );
     }
 
     // --- New rules (v0.5 Risch extension) ---
@@ -4564,29 +4822,107 @@ mod tests {
         pool.mul(vec![num, inv])
     }
 
-    #[test]
-    fn sin_over_x_is_nonelementary_not_crash() {
-        // ∫ sin(x)/x dx = Si(x): previously stack-overflowed; must now certify NE.
-        let pool = p();
-        let x = pool.symbol("x", Domain::Real);
-        let f = over(&pool, pool.func("sin", vec![x]), x);
-        let r = integrate(f, x, &pool);
-        assert!(
-            matches!(r, Err(IntegrationError::NonElementary(_))),
-            "∫ sin(x)/x dx should be NonElementary; got {r:?}"
+    /// Assert `∫src dx` comes back as a gate-verified answer naming exactly
+    /// `basis`.  Verification is by differentiation against the *original*
+    /// integrand, never by comparing printed forms.
+    fn assert_emits(f: ExprId, x: ExprId, pool: &ExprPool, basis: &[&str]) -> ExprId {
+        let r = integrate(f, x, pool)
+            .unwrap_or_else(|e| panic!("∫ {} dx should emit {basis:?}; got {e}", pool.display(f)));
+        assert_eq!(
+            super::super::special::basis_functions_used(r.value, pool),
+            basis,
+            "∫ {} dx = {}",
+            pool.display(f),
+            pool.display(r.value)
         );
+        assert!(
+            verify_antiderivative_status(r.value, f, x, pool).is_some(),
+            "emitted {} for ∫ {} dx but d/dx F ≠ f",
+            pool.display(r.value),
+            pool.display(f)
+        );
+        r.value
     }
 
     #[test]
-    fn exp_over_x_is_nonelementary() {
+    fn sin_over_x_emits_si() {
+        // ∫ sin(x)/x dx = Si(x).  This used to be refused with `E-INT-004`
+        // *by a matcher that already knew the name of the answer*.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = over(&pool, pool.func("sin", vec![x]), x);
+        assert_emits(f, x, &pool, &["Si"]);
+    }
+
+    #[test]
+    fn cos_over_x_emits_ci() {
+        // ∫ cos(x)/x dx = Ci(x).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = over(&pool, pool.func("cos", vec![x]), x);
+        assert_emits(f, x, &pool, &["Ci"]);
+    }
+
+    #[test]
+    fn exp_over_x_emits_ei() {
         // ∫ exp(x)/x dx = Ei(x).
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let f = over(&pool, pool.func("exp", vec![x]), x);
-        let r = integrate(f, x, &pool);
+        assert_emits(f, x, &pool, &["Ei"]);
+    }
+
+    #[test]
+    fn gaussian_emits_erf_and_fresnel_is_scaled() {
+        // Reached from the *cascade* arm, not the `known_nonelementary`
+        // pre-check: neither shape is in that matcher's table.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+
+        let gauss = pool.func("exp", vec![pool.mul(vec![pool.integer(-1_i32), x2])]);
+        assert_emits(gauss, x, &pool, &["erf"]);
+
+        // The Fresnel scaling is the content of the reduction, and the gate is
+        // what enforces it: `∫sin(x²)dx = √(π/2)·S(x√(2/π))`, not `S(x)`.
+        let s = pool.func("sin", vec![x2]);
+        let f = assert_emits(s, x, &pool, &["fresnels"]);
+        let unscaled = pool.func("fresnels", vec![x]);
+        assert_ne!(f, unscaled);
         assert!(
-            matches!(r, Err(IntegrationError::NonElementary(_))),
-            "∫ exp(x)/x dx should be NonElementary; got {r:?}"
+            verify_antiderivative_status(unscaled, s, x, &pool).is_none(),
+            "unscaled S(x) must not verify against sin(x²)"
+        );
+
+        let c = pool.func("cos", vec![x2]);
+        assert_emits(c, x, &pool, &["fresnelc"]);
+    }
+
+    #[test]
+    fn log_over_one_plus_x_emits_dilog() {
+        // ∫ log(x)/(1+x) dx = log(x)log(1+x) + Li₂(−x).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let den = pool.add(vec![pool.integer(1_i32), x]);
+        let f = over(&pool, pool.func("log", vec![x]), den);
+        assert_emits(f, x, &pool, &["dilog"]);
+    }
+
+    /// The emitter must not be able to manufacture a certificate, and an
+    /// elementary integrand must not be captured by it.
+    #[test]
+    fn emission_never_displaces_an_elementary_answer() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        // ∫2x·exp(−x²) dx = −exp(−x²): elementary, and the Gaussian matcher
+        // must not turn it into an `erf`.
+        let arg = pool.mul(vec![pool.integer(-1_i32), pool.pow(x, pool.integer(2_i32))]);
+        let f = pool.mul(vec![pool.integer(2_i32), x, pool.func("exp", vec![arg])]);
+        let r = integrate(f, x, &pool).expect("elementary");
+        assert!(
+            super::super::special::basis_functions_used(r.value, &pool).is_empty(),
+            "∫2x·exp(−x²) dx must stay elementary; got {}",
+            pool.display(r.value)
         );
     }
 
@@ -4608,16 +4944,12 @@ mod tests {
     }
 
     #[test]
-    fn one_over_log_is_nonelementary() {
+    fn one_over_log_emits_li() {
         // ∫ 1/log(x) dx = li(x).
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let f = pool.pow(pool.func("log", vec![x]), pool.integer(-1_i32));
-        let r = integrate(f, x, &pool);
-        assert!(
-            matches!(r, Err(IntegrationError::NonElementary(_))),
-            "∫ 1/log(x) dx should be NonElementary; got {r:?}"
-        );
+        assert_emits(f, x, &pool, &["li"]);
     }
 
     #[test]
@@ -4839,14 +5171,17 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let logx = pool.func("log", vec![x]);
 
-        // ∫ 1/log(x) dx = li(x): coefficient 1 ≠ 1/x → must stay NonElementary.
+        // ∫ 1/log(x) dx: coefficient 1 ≠ 1/x, so the log-derivative rule must
+        // not fire.  The answer comes from the `li` emitter instead, and the
+        // point of the assertion is that it is *not* elementary.
         let f = pool.pow(logx, pool.integer(-1));
-        assert!(
-            matches!(
-                integrate(f, x, &pool),
-                Err(IntegrationError::NonElementary(_))
-            ),
-            "∫ 1/log(x) dx must remain NonElementary"
+        assert!(try_log_derivative(f, x, &pool).is_none(), "1 ≠ 1/x");
+        let r = integrate(f, x, &pool).expect("∫dx/log x = li(x)");
+        assert_eq!(
+            super::super::special::basis_functions_used(r.value, &pool),
+            ["li"],
+            "∫ 1/log(x) dx must stay non-elementary; got {}",
+            pool.display(r.value)
         );
 
         // ∫ x/log(x) dx: coefficient x ≠ 1/x → the rule must not produce a result.
@@ -5094,15 +5429,39 @@ mod tests {
 
     #[test]
     fn definite_unsupported_propagates() {
-        // ∫ sin(x)/x dx is non-elementary; the definite form must error too.
+        // ∫ x·exp(x²)/log(x) dx has no antiderivative this engine can build —
+        // elementary or otherwise — and the definite form must propagate that
+        // rather than invent a number.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let mut syms = HashMap::from([("x".to_owned(), x)]);
+        let f = crate::parse::parse("x*exp(x^2)/log(x)", &pool, &mut syms).expect("parse");
+        let r = integrate_definite(f, x, pool.integer(2_i32), pool.integer(3_i32), &pool);
+        assert!(
+            r.is_err(),
+            "an unsupported integrand must error in definite form"
+        );
+    }
+
+    #[test]
+    fn definite_nonelementary_closed_form_evaluates() {
+        // The counterpart: `∫₁² sin(x)/x dx` has no *elementary* antiderivative,
+        // but `Si` is a registered primitive with an `f64` kernel, so the
+        // definite form is now a number.  Checked against the value.
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let f = pool.mul(vec![
             pool.func("sin", vec![x]),
             pool.pow(x, pool.integer(-1_i32)),
         ]);
-        let r = integrate_definite(f, x, pool.integer(1_i32), pool.integer(2_i32), &pool);
-        assert!(r.is_err(), "∫ sin(x)/x dx must error in definite form");
+        let r = integrate_definite(f, x, pool.integer(1_i32), pool.integer(2_i32), &pool)
+            .expect("Si(2) − Si(1)");
+        let env = HashMap::new();
+        let got = crate::jit::eval_interp(r.value, &env, &pool).expect("numeric");
+        assert!(
+            (got - 0.659_329_906_435_511_8).abs() < 1e-9,
+            "∫₁² sin(x)/x dx = {got}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -5881,7 +6240,10 @@ mod tests {
             pool.func("sin", vec![x]),
             pool.pow(x, pool.integer(-1_i32)),
         ]);
-        assert!(integrate(f, x, &pool).is_err(), "∫ sin(x)/x should decline");
+        // `∫sin(x)/x dx` is answered by the special-function emitter now, so
+        // the trig routes' decline is asserted where it happens rather than at
+        // the top level; what must hold here is that they do not fabricate.
+        assert!(try_trig_power_product(f, x, &pool, &mut DerivationLog::new()).is_none());
         // ∫ 1/cos¹⁰(x): the reciprocal-trig reduction is capped at n ≤ 8, so a
         // power above the cap must decline cleanly rather than blow up.
         let sec10 = cosp(x, -10, &pool);
@@ -6143,15 +6505,22 @@ mod tests {
 
     #[test]
     fn weierstrass_declines_non_rational_trig() {
-        // ∫ sin(x)/x dx is non-elementary: the Weierstrass rewrite hits a bare
-        // `x` and must decline cleanly (no panic, returns an error).
+        // ∫ sin(x)/x dx is not a rational function of the trig generators: the
+        // Weierstrass rewrite hits a bare `x` and must decline cleanly (no
+        // panic, no answer).  Asserted against the route itself rather than
+        // against `integrate`, which now answers this integral with `Si(x)`
+        // from the special-function emitter.
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let f = pool.mul(vec![
             pool.func("sin", vec![x]),
             pool.pow(x, pool.integer(-1_i32)),
         ]);
-        assert!(integrate(f, x, &pool).is_err());
+        let mut log = DerivationLog::new();
+        assert!(matches!(
+            try_weierstrass_rational_trig(f, x, &pool, &mut log),
+            Ok(None)
+        ));
     }
 
     // -----------------------------------------------------------------------
@@ -6176,12 +6545,10 @@ mod tests {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         for src in [
-            "exp(x^2)",  // Risch DE has no rational solution
-            "exp(-x^2)", //
-            "exp(x)/x",  // Ei
-            "sin(x)/x",  // Si
-            "cos(x)/x",  // Ci
-            "1/log(x)",  // li
+            "exp(x^2)",       // Risch DE has no rational solution; needs `erfi`
+            "exp(x)/x^2",     // Ei family, but no reduction this engine performs
+            "sin(x)/x^2",     // ditto — `−sin(x)/x + Ci(x)`, which nothing here finds
+            "cos(x)/(2*x+1)", // denominator not proportional to the argument
         ] {
             match integrate_src(src, x, &pool) {
                 Ok(v) => panic!(
@@ -6193,6 +6560,159 @@ mod tests {
                     "E-INT-004",
                     "∫ {src} dx should certify NonElementary, got: {e}"
                 ),
+            }
+        }
+    }
+
+    #[test]
+    fn emitted_answers_are_still_non_elementary() {
+        // The counterpart of the test above.  These six *were* `E-INT-004` and
+        // are now answered — but the answer names a special function, so the
+        // mathematical content ("not elementary") is preserved rather than
+        // discarded.  `integrate_classified` is where a caller reads it.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for (src, basis) in [
+            ("exp(x)/x", "Ei"),
+            ("sin(x)/x", "Si"),
+            ("cos(x)/x", "Ci"),
+            ("1/log(x)", "li"),
+            ("exp(-x^2)", "erf"),
+            ("sin(x^2)", "fresnels"),
+        ] {
+            let mut syms = HashMap::from([("x".to_owned(), x)]);
+            let f = crate::parse::parse(src, &pool, &mut syms).expect("parse");
+            let answer = integrate_classified(f, x, &pool)
+                .unwrap_or_else(|e| panic!("∫ {src} dx should now be answered: {e}"));
+            assert!(
+                answer.is_non_elementary_closed_form(),
+                "∫ {src} dx must be reported as a non-elementary closed form"
+            );
+            assert_eq!(answer.basis(), [basis], "∫ {src} dx");
+            assert!(
+                verify_antiderivative_status(answer.antiderivative(), f, x, &pool).is_some(),
+                "∫ {src} dx emitted an answer that does not differentiate back"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The three hooks on the decline path are actually reachable from the
+    // public entry point.  Each of these fails if its tier is unwired.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn risch_norman_is_reachable_from_integrate() {
+        // `∫exp(2x)/(exp(x)+1) dx` is one of the eight integrals only
+        // Risch–Norman closes: the tower declines ("normalised onto one
+        // generator" is not done), the rule engine declines, and the parallel
+        // ansatz solves it.  Verified by differentiation, not by shape.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for src in ["exp(2*x)/(exp(x)+1)", "exp(3*x)/(exp(x)+1)"] {
+            let mut syms = HashMap::from([("x".to_owned(), x)]);
+            let f = crate::parse::parse(src, &pool, &mut syms).expect("parse");
+            let r = integrate(f, x, &pool)
+                .unwrap_or_else(|e| panic!("∫ {src} dx should reach Risch–Norman: {e}"));
+            assert!(
+                verify_antiderivative_status(r.value, f, x, &pool).is_some(),
+                "∫ {src} dx = {} does not differentiate back",
+                pool.display(r.value)
+            );
+        }
+    }
+
+    #[test]
+    fn by_parts_is_reachable_from_integrate() {
+        // Charlwood #2, `∫asin(x)·log(x) dx`-adjacent: a by-parts-only shape
+        // that no other tier closes.  `∫x·atan(x)² dx` needs the chained
+        // reduction, so it exercises the hook rather than a table rule.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let mut syms = HashMap::from([("x".to_owned(), x)]);
+        let f = crate::parse::parse("x*atan(x)^2", &pool, &mut syms).expect("parse");
+        let r = integrate(f, x, &pool).expect("∫x·atan(x)² dx should reach by-parts");
+        assert!(
+            verify_antiderivative_status(r.value, f, x, &pool).is_some(),
+            "∫x·atan(x)² dx = {} does not differentiate back",
+            pool.display(r.value)
+        );
+    }
+
+    #[test]
+    fn algebraic_engine_is_reachable_behind_a_transcendental_generator() {
+        // `contains_risch_form` is true for *any* integrand mentioning `exp`,
+        // and the algebraic engine was gated on `!has_transcendental` — so the
+        // whole algebraic engine was unreachable for these two, which are the
+        // `exp` analogues of Charlwood #6 and #43 and reduce in one step under
+        // `u = exp(x)`.  Both must now solve, and both must verify.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for src in ["exp(x)*sqrt(1+exp(4*x))", "exp(x)/sqrt(1+exp(4*x))"] {
+            let mut syms = HashMap::from([("x".to_owned(), x)]);
+            let f = crate::parse::parse(src, &pool, &mut syms).expect("parse");
+            let r = integrate(f, x, &pool)
+                .unwrap_or_else(|e| panic!("∫ {src} dx should reach the algebraic engine: {e}"));
+            assert!(
+                verify_antiderivative_status(r.value, f, x, &pool).is_some(),
+                "∫ {src} dx = {} does not differentiate back",
+                pool.display(r.value)
+            );
+        }
+    }
+
+    #[test]
+    fn a_budget_trip_inside_the_cascade_is_reported_as_a_budget_trip() {
+        // Every tier on the decline path is an `Option`-returning proposer, so
+        // the only thing it can do with a budget trip is decline.  If the
+        // engine then reports that decline, "the caller asked to stop spending"
+        // has been laundered into "no method found an antiderivative" — a
+        // mathematical statement the budget did not license.
+        //
+        // `∫asin(x)·log(x)²·eˣ dx` is the witness: three variable-dependent
+        // factors, so by-parts has splits to chew through, and no tier closes
+        // it.  Under a budget the only acceptable outcomes are "finished" and
+        // `E-BUDGET-*`.
+        use crate::budget::{enter, Budget};
+        use crate::errors::AlkahestError;
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let mut syms = HashMap::from([("x".to_owned(), x)]);
+        let f = crate::parse::parse("asin(x)*log(x)^2*exp(x)", &pool, &mut syms).expect("parse");
+        for steps in [1_u64, 4, 16, 64, 256] {
+            let _guard = enter(Budget::new().with_max_steps(steps));
+            match integrate(f, x, &pool) {
+                Ok(_) => {}
+                Err(err) => assert!(
+                    err.is_budget(),
+                    "a {steps}-step budget produced {} instead of an E-BUDGET-* trip: {err}",
+                    err.code()
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn the_fall_through_cannot_manufacture_a_certificate() {
+        // Every tier on the decline path returns `Solved`/`Declined` only.  A
+        // decline from any of them must reach the caller as `E-INT-001`, never
+        // as a proof — this is the property eight false-certificate families
+        // were traced to violating.
+        use crate::errors::AlkahestError;
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for src in [
+            "exp(x)*sqrt(1+log(x))",
+            "sqrt(exp(x)+x)",
+            "log(log(log(x)))",
+            "exp(x)*atan(exp(x))/x",
+        ] {
+            if let Err(e) = integrate_src(src, x, &pool) {
+                assert_ne!(
+                    e.code(),
+                    "E-INT-004",
+                    "∫ {src} dx: a decline became a certificate"
+                );
             }
         }
     }
@@ -6351,21 +6871,22 @@ mod tests {
 
     #[test]
     fn the_ei_verdict_does_not_depend_on_the_spelling() {
-        // `∫ eˣ/x dx` is the exponential integral Ei and is certified
-        // non-elementary by the Risch DE.  `exp(x)*x^(-1)` is the same
-        // integrand; before the exponent was folded, it never reached the exp
-        // tower at all and came back with the weaker `E-INT-001`.
-        use crate::errors::AlkahestError;
+        // `∫ eˣ/x dx` is the exponential integral `Ei`.  `exp(x)*x^(-1)` is the
+        // same integrand; before the exponent was folded, it never reached the
+        // exp tower at all and came back with the weaker `E-INT-001`.  The
+        // verdict is now an answer, and the property under test is unchanged:
+        // three spellings of one function must agree, and none may come back
+        // elementary.
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         for src in ["exp(x)/x", "exp(x)*x^(-1)", "exp(x)*(x)^(-1)"] {
-            let e = integrate_src(src, x, &pool)
-                .err()
-                .unwrap_or_else(|| panic!("∫ {src} dx must stay non-elementary"));
+            let v = integrate_src(src, x, &pool)
+                .unwrap_or_else(|e| panic!("∫ {src} dx = Ei(x); got {e}"));
             assert_eq!(
-                e.code(),
-                "E-INT-004",
-                "∫ {src} dx should certify NonElementary, got: {e}"
+                super::super::special::basis_functions_used(v, &pool),
+                ["Ei"],
+                "∫ {src} dx = {}",
+                pool.display(v)
             );
         }
     }
@@ -6403,17 +6924,19 @@ mod tests {
     /// same loop). It is a convergence, not a new claim.
     #[test]
     fn the_li_verdict_does_not_depend_on_the_spelling() {
-        use crate::errors::AlkahestError;
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
+        // The verdict is now an *answer* — `li(x)` — but the property under
+        // test is unchanged: three spellings of one function must not get three
+        // different verdicts, and none of them may come back elementary.
         for src in ["1/log(x)", "log(x)^(-1)", "(log(x))^(-1)"] {
-            let e = integrate_src(src, x, &pool)
-                .err()
-                .unwrap_or_else(|| panic!("∫ {src} dx must stay non-elementary"));
+            let v = integrate_src(src, x, &pool)
+                .unwrap_or_else(|e| panic!("∫ {src} dx = li(x); got {e}"));
             assert_eq!(
-                e.code(),
-                "E-INT-004",
-                "∫ {src} dx should certify NonElementary, got: {e}"
+                super::super::special::basis_functions_used(v, &pool),
+                ["li"],
+                "∫ {src} dx = {}",
+                pool.display(v)
             );
         }
     }
@@ -6544,14 +7067,21 @@ mod tests {
             pool.display(gf)
         );
 
-        // And a `NonElementary` verdict must survive the builder path too: the
-        // weaker `E-INT-001` is what this shape used to produce.
-        use crate::errors::AlkahestError;
+        // And the non-elementary route must be reached from the builder path
+        // too: the weaker `E-INT-001` is what this shape used to produce, and
+        // `Ei` is what it produces now.  A hand-built unevaluated exponent must
+        // not route to a different answer than the folded one.
         let ei = pool.mul(vec![
             pool.func("exp", vec![x]),
             pool.pow(x, unevaluated_neg_one),
         ]);
-        let err = integrate(ei, x, &pool).expect_err("∫ eˣ/x dx must stay non-elementary");
-        assert_eq!(err.code(), "E-INT-004", "got: {err}");
+        let f = integrate(ei, x, &pool).expect("∫ eˣ/x dx = Ei(x)").value;
+        assert_eq!(
+            super::super::special::basis_functions_used(f, &pool),
+            ["Ei"],
+            "∫ eˣ/x dx = {}",
+            pool.display(f)
+        );
+        assert!(verify_antiderivative_status(f, ei, x, &pool).is_some());
     }
 }

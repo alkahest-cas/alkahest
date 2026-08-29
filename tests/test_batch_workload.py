@@ -61,8 +61,11 @@ def test_public_names_exported_from_package_root():
 
 def test_batch_map_never_raises_for_a_bad_element(pool):
     x = pool.symbol("x")
-    # log(log(x)) has no elementary antiderivative the kernel implements today.
-    outs = ak.batch_map(lambda e: ak.integrate(e, x), [x**2, ak.log(ak.log(x)), ak.sin(x)])
+    # `x/(e^x+1)` has no antiderivative the kernel implements today — it is a
+    # polylogarithm, and nothing here can name one.  (`log(log(x))` used to be
+    # the witness; it is `x·log(log x) − li(x)` now, which by-parts plus the
+    # `li` emitter reach, so it no longer declines.)
+    outs = ak.batch_map(lambda e: ak.integrate(e, x), [x**2, x / (ak.exp(x) + 1), ak.sin(x)])
 
     assert len(outs) == 3
     assert [o.ok for o in outs] == [True, False, True]
@@ -123,7 +126,7 @@ def test_batch_map_forwards_kwargs_to_fn(pool):
 
 def test_error_code_preserved_from_native_alkahest_exception(pool):
     x = pool.symbol("x")
-    outs = ak.batch_map(lambda e: ak.integrate(e, x), [ak.log(ak.log(x))])
+    outs = ak.batch_map(lambda e: ak.integrate(e, x), [x / (ak.exp(x) + 1)])
     error = outs[0].error
     assert error["code"] == "E-INT-001"
     assert error["remediation"]
@@ -203,7 +206,7 @@ def test_batch_map_iter_sequential_is_input_order(pool):
 
 def test_batch_map_iter_sequential_matches_batch_map(pool):
     x = pool.symbol("x")
-    exprs = [x**2, ak.log(ak.log(x)), ak.sin(x)]
+    exprs = [x**2, x / (ak.exp(x) + 1), ak.sin(x)]
     mapped = ak.batch_map(lambda e: ak.integrate(e, x), exprs)
     streamed = list(ak.batch_map_iter(lambda e: ak.integrate(e, x), exprs))
     assert [o.ok for o in mapped] == [o.ok for o in streamed]
@@ -253,7 +256,7 @@ def test_batch_map_iter_empty_input_yields_nothing():
 
 def test_integrate_many_mixed_success_and_failure(pool):
     x = pool.symbol("x")
-    outs = ak.integrate_many([x**2, ak.log(ak.log(x)), ak.sin(x)], x)
+    outs = ak.integrate_many([x**2, x / (ak.exp(x) + 1), ak.sin(x)], x)
     assert [o.ok for o in outs] == [True, False, True]
     assert outs[1].error["code"] == "E-INT-001"
     assert str(outs[0].value.value) == str(ak.integrate(x**2, x).value)
@@ -367,7 +370,7 @@ def test_parallel_batch_still_reports_a_genuine_decline_as_a_decline(pool):
     candidate it can do must still come back with a value."""
     x = pool.symbol("x", "real")
     with ak.context(pool=pool, budget=ak.Budget(wall_ms=60_000, max_steps=10_000_000)):
-        outs = ak.integrate_many([ak.log(ak.log(x)), x**2, ak.sin(x)], x, parallel=True)
+        outs = ak.integrate_many([x / (ak.exp(x) + 1), x**2, ak.sin(x)], x, parallel=True)
 
     assert [o.ok for o in outs] == [False, True, True]
     assert outs[0].error["code"] == "E-INT-001"

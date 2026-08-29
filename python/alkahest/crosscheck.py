@@ -205,10 +205,17 @@ FUNCTION_MAP: dict[str, str] = {
     "Ci": "Ci",
     "Shi": "Shi",
     "Chi": "Chi",
-    # Fresnel integrals. Both systems use the normalised (pi/2) convention
-    # (DLMF 7.2(iii)), so S(inf) = C(inf) = 1/2 in each and the names coincide.
+    # Fresnel integrals. Both systems use the DLMF §7.2 normalisation
+    # `S(z) = ∫₀^z sin(πt²/2) dt` — checked, not assumed: SymPy 1.14's
+    # `diff(fresnels(x), x)` is `sin(pi*x**2/2)`. The other common convention
+    # (`∫₀^z sin(t²) dt`) differs by a `√(π/2)` scale on both the argument and
+    # the value, so mapping across it would manufacture divergences.
     "fresnels": "fresnels",
     "fresnelc": "fresnelc",
+    # `sympy.trigamma` exists and `sympify("trigamma(x)")` evaluates to
+    # `polygamma(1, x)` — same function, same branch — so the rename is
+    # faithful even though SymPy's canonical spelling carries the order.
+    "trigamma": "trigamma",
 }
 
 #: Bessel functions of fixed integer order, which SymPy spells with the order as
@@ -230,19 +237,18 @@ REFUSED_FUNCTIONS: dict[str, str] = {
     "EllipticE": "elliptic integrals differ in modulus-vs-parameter convention between systems",
     "EllipticF": "elliptic integrals differ in modulus-vs-parameter convention between systems",
     "EllipticPi": "elliptic integrals differ in modulus-vs-parameter convention between systems",
-    # Not a convention mismatch — the values agree. SymPy simply spells these
-    # with the order as an argument (`polylog(2, z)`, `polygamma(1, z)`) rather
-    # than as their own names, so there is no name-for-name rename to put in
-    # FUNCTION_MAP. The `_FIXED_ORDER_BESSEL` mechanism above is the shape that
-    # would cover them; extending it is a better fix than either of these two
-    # tables and is left as a follow-up.
+    # SymPy has no `dilog`, and the failure mode is worse than a missing name:
+    # `sympify("dilog(x)")` succeeds, silently producing an *undefined* function
+    # whose derivative stays an unevaluated `Derivative(dilog(x), x)`. A rename
+    # would therefore not error — it would compare Alkahest's dilogarithm
+    # against an uninterpreted symbol. The faithful target is `polylog(2, z)`,
+    # an arity difference a name-for-name table cannot express; extending the
+    # `_FIXED_ORDER_BESSEL` mechanism is the right fix and is left as a
+    # follow-up.
     "dilog": (
-        "SymPy has no `dilog`; it is `polylog(2, z)`, an arity difference rather "
-        "than a value difference, so a name-for-name rename cannot express it"
-    ),
-    "trigamma": (
-        "SymPy has no `trigamma`; it is `polygamma(1, z)`, an arity difference "
-        "rather than a value difference, so a name-for-name rename cannot express it"
+        "SymPy has no `dilog`: it spells the dilogarithm `polylog(2, z)`, and a bare "
+        "`dilog` parses as an undefined function rather than failing, so a name-for-name "
+        "rename would silently compare against an uninterpreted symbol"
     ),
 }
 

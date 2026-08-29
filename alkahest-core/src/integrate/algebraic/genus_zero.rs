@@ -365,6 +365,29 @@ fn p_integer_power(p: ExprId, k: i64, pool: &ExprPool) -> ExprId {
 
 // ---------------------------------------------------------------------------
 // Case: P = a·x² + b·x + c  (quadratic radicand, genus 0)
+//
+// # Scope — this is a *table*, not the decision procedure
+//
+// What follows covers the weights with a short, pretty closed form:
+//
+//   * `B` a polynomial of degree ≤ 1  ([`try_poly_b_quadratic`]);
+//   * `B = k·Pⁿ` for `n ∈ {−1, 0, 1}`  ([`try_rational_b_quadratic`]).
+//
+// That is **all**.  A general rational `B` — `√(1−x²)/(x(1+x²))`,
+// `x/((1−x²)√(1−2x²))`, `dx/((x²+2)√(x²+1))` — falls through to the
+// `NotImplemented` below, and is meant to: `∫R(x,√(quadratic))dx` for arbitrary
+// rational `R` is decided in full by the **Euler substitutions** in
+// [`super::parametrize`], which `super::integrate_algebraic` calls precisely
+// when this route declines.  A conic is genus 0, so a rational point turns the
+// whole integrand into a rational function of one parameter, and the ordinary
+// Rothstein–Trager machinery finishes it.
+//
+// So this table exists for *output shape*, not for coverage: it is tried first
+// so `∫(dx+e)√P` keeps its two-term textbook form instead of arriving as a
+// rationalized Euler answer.  Extending it with more weight patterns adds
+// nothing but prettier printing on the cases it covers — the general case is
+// already handled, one layer up.  Read the decline below as "no table entry",
+// never as "not integrable".
 // ---------------------------------------------------------------------------
 
 fn integrate_b_sqrt_quadratic(

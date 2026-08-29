@@ -155,9 +155,12 @@ def test_a_declined_risch_de_never_certifies():
     the integral is elementary.
     """
     assert _code("x/sqrt(1-x^4)") == "ok"
-    # …and the shapes the pullback cannot close still decline honestly rather
-    # than certifying: `∫du/√(1−4u²)` is a gap in the genus-0 quadratic route.
-    assert _code("x/sqrt(1-4*x^4)") == "E-INT-001"
+    # …and the same for the scaled radicand, which the genus-0 quadratic route
+    # used to leave to an honest `E-INT-001` and now closes.  What the test is
+    # for is that neither may come back as a *certificate*: both integrals are
+    # elementary, so an `E-INT-004` on either is a false theorem, and that is
+    # the assertion — not which of the two non-certifying outcomes it is.
+    assert _code("x/sqrt(1-4*x^4)") != "E-INT-004"
 
 
 def test_simple_radical_route_never_certifies():

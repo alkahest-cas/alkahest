@@ -62,18 +62,30 @@ def test_exp_x2_nonelementary():
     )
 
 
-def test_exp_neg_x2_nonelementary():
-    """∫ exp(-x²) dx — the Gaussian integral (negative exponent), non-elementary."""
+def test_exp_neg_x2_is_erf():
+    """∫ exp(-x²) dx — the Gaussian integral: non-elementary, and equal to
+    (√π/2)·erf(x).
+
+    This used to assert a refusal.  The claim being pinned is unchanged — the
+    antiderivative is not an elementary function — but it is now carried by the
+    ``erf`` in the answer rather than by the absence of an answer.
+    """
     pool = ExprPool()
     x = pool.symbol("x")
     neg_x2 = pool.integer(-1) * x**2
     f = pool.func("exp", [neg_x2])
+    cap = str(integrate(f, x).value)
+    assert "erf" in cap, f"expected erf, got {cap}"
+
+
+def test_exp_pos_x2_stays_nonelementary():
+    """∫ exp(+x²) dx is ``erfi``, which is not a registered primitive."""
+    pool = ExprPool()
+    x = pool.symbol("x")
+    f = pool.func("exp", [x**2])
     with pytest.raises(Exception) as exc_info:
         integrate(f, x)
-    msg = str(exc_info.value).lower()
-    assert "elementary" in msg or "e-int-004" in str(exc_info.value), (
-        f"Expected NonElementary error; got: {exc_info.value}"
-    )
+    assert "e-int-004" in str(exc_info.value).lower(), str(exc_info.value)
 
 
 def test_exp_x3_nonelementary():

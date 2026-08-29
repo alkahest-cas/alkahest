@@ -73,13 +73,17 @@ fn an_ordinary_growth_request_is_allowed() {
 fn an_ordinary_decline_is_still_not_a_budget_trip() {
     let pool = ExprPool::new();
     let x = pool.symbol("x", Domain::Real);
-    // ∫ exp(x)/x dx — the exponential integral Ei, genuinely non-elementary.
+    // ∫ exp(x²) dx — genuinely non-elementary, and with no closed form over the
+    // registered basis either: it is `erfi`, which is not a primitive here.
+    // (`exp(x)/x` used to be the witness; it is answered as `Ei(x)` now, so it
+    // no longer exercises the decline path at all.)
     let mut env = std::collections::HashMap::new();
     env.insert("x".to_string(), x);
-    let f = alkahest_cas::parse::parse("exp(x)/x", &pool, &mut env).unwrap();
+    let f = alkahest_cas::parse::parse("exp(x^2)", &pool, &mut env).unwrap();
 
     let _guard = budget::enter(Budget::new().with_wall(Duration::from_secs(60)));
-    let err = alkahest_cas::integrate::integrate(f, x, &pool).expect_err("Ei is not elementary");
+    let err =
+        alkahest_cas::integrate::integrate(f, x, &pool).expect_err("exp(x²) is not elementary");
     assert!(
         !err.is_budget(),
         "a mathematical verdict must not arrive as a budget trip: {err}"

@@ -74,16 +74,25 @@ def test_solves_and_verifies(env, src):
 
 
 def test_new_coverage_beyond_the_default_engine(env):
-    """`exp(2x)/(exp(x)+1)` is `E-INT-001` from `integrate`, solved here."""
+    """`exp(2x)/(exp(x)+1)` is the coverage this module adds — and, since the
+    cascade was wired, the coverage `integrate` inherits from it.
+
+    The assertion used to be that `integrate` returns `E-INT-001` here.  That
+    was true only while the module was unreachable from the router; it is now
+    the third tier on the decline path, so the two must agree.  What is still
+    worth pinning is that the *tower* cannot do this on its own, which is why
+    the entry point exists.
+    """
     pool, x = env
     f = _parse(pool, "exp(2*x)/(exp(x)+1)")
-    with pytest.raises(Exception) as excinfo:
-        ak.integrate(f, x)
-    assert "E-INT-001" in str(excinfo.value)
 
     res = integrate_parallel_risch(f, x)
     assert res.solved
     assert _differentiates_back(x, res.antiderivative(), f) > 0
+
+    # And the router reaches it: same integrand, same verified answer.
+    via_engine = ak.integrate(f, x).value
+    assert _differentiates_back(x, via_engine, f) > 0
 
 
 # --- declines ---------------------------------------------------------------
