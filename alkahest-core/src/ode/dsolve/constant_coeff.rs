@@ -857,8 +857,12 @@ fn try_euler_cauchy(
         if contains(ck, x, pool) {
             return Ok(None);
         }
-        let v = try_expr_f64(ck, pool)
-            .ok_or_else(|| DsolveError::Unsupported("non-numeric Euler coefficient".to_string()))?;
+        // A symbolic (but x-free) coefficient means this is not the numeric
+        // Euler–Cauchy this route handles.  Decline the *class*, not the
+        // equation: reduction of order gets its turn next.
+        let Some(v) = try_expr_f64(ck, pool) else {
+            return Ok(None);
+        };
         c.push(v);
     }
     // Second order: a m(m−1) + b m + c0 = 0 → a m² + (b−a) m + c0 = 0.
