@@ -124,6 +124,8 @@ fn is_integration_rule(rule_name: &str) -> bool {
         || matches!(
             rule_name,
             "fundamental_theorem_of_calculus"
+                // `∫_{-∞}^{∞} P/Q = 2πi·Σ Res` — a value, not a rewrite.
+                | "residue_theorem"
                 | "log_rule"
                 | "gosper_indefinite"
                 | "gosper_definite_telescope"

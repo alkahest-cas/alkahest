@@ -9,6 +9,55 @@
   reaching 26 GB of resident memory in ten minutes on the machine this was
   found on. `handle_alloc_error` aborts without unwinding, so the wall clock,
   `request_cancel` and `catch_unwind` were all equally powerless.
+- **General integration by parts (`alkahest_cas::integrate::by_parts`), behind
+  its own entry point.** `∫u·dv = u·v − ∫v·du` with a LIATE choice heuristic, a
+  cycle detector that *solves the linear equation* rather than recursing, and a
+  growth check that backs out of a wrong split. Before this there was no
+  `by_parts` rule anywhere in `integrate/`: the three existing by-parts helpers
+  in `engine.rs` are each pinned to one shape (inverse-trig with the argument
+  *exactly* the variable, polynomial × trig with a linear argument, the
+  `exp·sin` closed form), and everything else hit `Node::Mul`'s
+  `irreducible product of var-dependent factors` decline.
+
+  The module is **not yet wired into `integrate`** — it is reached through
+  `integrate_by_parts(expr, var, pool)` / `try_by_parts(…)`, the same way a new
+  route is characterised before it joins the default order.
+
+  - **The outcome type has two variants, `Solved` and `Declined`, and there is
+    no path from this module to `NonElementary`.** A by-parts failure means "my
+    split did not work", never "no antiderivative exists". `Declined` converts
+    to `E-INT-001` and to nothing else, pinned by a test.
+  - **Every returned antiderivative has passed `d/dx F = f`**
+    (`verify_antiderivative_status`) before it is returned, so a wrong LIATE
+    guess costs CPU and nothing else.
+  - **Cycles are closed, not just detected.** `I = acc + mult·c·I` is solved for
+    `I`. `∫sin(log x) dx = (x·sin(log x) − x·cos(log x))/2` is closed this way
+    and by nothing else in the codebase.
+  - Measured on Charlwood's Fifty: closes **#21** `x³·asin(x)/√(1−x⁴)`,
+    **#22** `x³·asec(x)/√(x⁴−1)` and **#35** `x·asec(x)/√(x²−1)`, all verified
+    by differentiation. The other 14 of the 17 C1/C3 problems produce *correct*
+    by-parts residuals that the downstream engine then declines; the binding
+    constraint on that cluster is the algebraic engine, not the by-parts layer.
+  - Cost on integrands it fails on — the price paid on every decline —
+    **5.1 ms mean, 13.9 ms worst** in a release build over the 40-case probe's
+    six `E-INT-001` cases plus eight controls. The 40-case probe is unchanged
+    at 27 solved / 7 `E-INT-004` / 6 `E-INT-001`.
+  - Three normalisers the module needs and `simplify` does not provide are
+    local to it, each a *proposal* re-checked by the gate: merging radicals
+    (`√(1−x⁴)/√(1−x²) → √(1+x²)`), rationalising radical denominators
+    (which collapses the algebraic engine's Euler-substitution answers), and
+    combining like terms over *rational* coefficients — `simplify` leaves
+    `sin(x)·3/4 + sin(x)·(−3/4)` standing and `poly::cancel::cancel` refuses it
+    with `NonIntegerCoefficient`.
+
+- **`Add` and `Mul` are flat at construction, so associativity holds
+  structurally.** `ExprPool::mul` / `ExprPool::add` now splice nested
+  same-operator children before interning, so `(a·b)·c`, `a·(b·c)` and `a·b·c`
+  are one expression rather than three. This is the last of the three
+  dimensions of the form-robustness bug fixed in this release (after route
+  fall-through and exponent spelling); previously `parse("x*y*z")` produced the
+  left-associative `(z * (x * y))` while `pool.mul([x, y, z])` produced a flat
+  three-child node, and the two compared unequal.
 
   The growth was not diffuse. Under an instrumented allocator every large
   request came from one place: `integrate::risch::tower::decompose_log_inner`,
@@ -182,6 +231,117 @@
   disabling the cumulative one takes `large_attempted` from 1 to 6 (and the
   test from under a second to 131 s) and fails it; disabling the per-probe
   one fails it too.
+- **Risch–Norman ("parallel Risch") heuristic integration**, new in
+  `alkahest_cas::integrate::norman` and, on the experimental Python surface, as
+  `alkahest.experimental.integrate_parallel_risch`. Instead of building a
+  differential-field tower and recursing on it, the heuristic posits
+  `F = P/Q + Σ dⱼ·log(pⱼ)` over the monomial basis of `ℚ(x, exp …, log …)`,
+  differentiates that ansatz, and solves **one linear system over ℚ**. It is
+  the mechanism that is the default integrator in Maple, FriCAS and Reduce.
+
+  **This does not change `integrate`'s routing.** It is a separate entry point
+  so its coverage can be measured before any dispatch change is proposed.
+  Measured on a 103-case suite (the 40-case coverage probe plus 63 textbook
+  integrands): 50 solved by both, **8 solved only by Risch–Norman** — the
+  `exp(k·x)/(exp(x)+1)` family, `1/(x·log x·log log x)`, `log(x²)`,
+  `(exp(x)+x)/(x·exp(x))` — 23 solved only by the existing engine (trigonometric,
+  algebraic, `RootSum` and `arctan` answers, none of which this ring can
+  express), 22 by neither.
+
+  **A decline is not a verdict.** The result type is
+  `Solved { antiderivative, verification }` / `Declined(reason)`; there is no
+  variant a caller can read as a proof of non-elementarity, and
+  `DeclineReason::into_integration_error` maps *every* decline to
+  `NotImplemented`. `exp(x²)` (no elementary antiderivative) and `1/(x²+1)`
+  (which is `atan x`, but needs a constant field bigger than `ℚ`) both come back
+  declined, and the API deliberately cannot tell them apart.
+
+  Soundness rests on two independent guards. Before the system is built, the
+  algebraic-independence precondition of Bronstein's structure theorems
+  (*Structure theorems for parallel integration*, JSC 42(7), 2007) is checked —
+  exponential arguments are reduced to a `ℤ`-lattice basis, logarithm arguments
+  are tested for multiplicative independence modulo constants — and a tower that
+  cannot be certified independent is declined rather than attempted. After the
+  system is solved, the rebuilt candidate is differentiated with the
+  general-purpose `diff` (not the ring's own derivation table), read back into
+  `ℚ(x, θ)` and required to equal the integrand exactly; anything that cannot be
+  re-read falls through to `verify_antiderivative_status`, and a candidate that
+  passes neither gate is discarded.
+- **`∫_{-∞}^{∞} P(x)/Q(x) dx` now takes the residue theorem**, in a new
+  `integrate::residue_theorem` module reached from `integrate_definite` before
+  the fundamental-theorem path. `∫_{-∞}^{∞} dx/(x⁴+1)` is `π/√2`,
+  `∫_{-∞}^{∞} dx/(x⁶+1)` is `2π/3` (it used to *hang*), `∫_{-∞}^{∞} dx/(x²+1)²`
+  is `π/2`.
+
+  **Convergence is checked, not assumed.** `deg Q ≥ deg P + 2` on the reduced
+  fraction, and `Q` with no real root — the latter by complete VAS real-root
+  isolation over ℤ. A failure of either is reported as *divergent*, never given
+  a value: `∫ x dx/(x²+1)` has Cauchy principal value `0`, and returning `0`
+  would be wrong.
+
+  **How the upper half-plane is selected.** Choosing the poles with `Im α > 0`
+  is semi-algebraic, so no rational symmetric-function identity gives the sum,
+  and this crate has no certified complex root isolation to build one from. The
+  half-plane split is instead pushed into a *spectral (Hurwitz) factorisation*,
+  where it becomes an ordinary polynomial factorisation: normalise to an even
+  denominator (`D = Q(x)Q(-x)` when `Q` is not already even), rotate
+  `Ď(s) = D(s/i)` so "upper half `x`-plane" becomes "left half `s`-plane", and
+  split `Ď = A(s)·A(-s)` with `A` Hurwitz. `A` is found by factoring `Ď` over ℚ
+  and sorting the irreducible factors with an exact Routh array; a small
+  rational linear system then gives the answer as `2π·(leading coeff of G)`.
+  For `deg D ≤ 4` — where `A` is typically irrational, as `x⁴+1` needs
+  `s²+√2s+1` — a closed form in radicals derived from the substitution `u = x²`
+  covers the gap and reaches `ℚ(√·)·π`.
+
+  **Covered:** every denominator whose Hurwitz spectral factor is rational
+  (`x²+1`, `x²+4`, `x²+2x+2`, `(x²+1)ⁿ`, `x⁶+1`, …) and, in radicals, every
+  denominator of degree ≤ 4 after even-normalisation (`x⁴+1`, `x⁴+x²+1`,
+  `x²/(x⁴+1)`). **Declined, explicitly:** anything else — `x⁸+1` is the smallest
+  example, being ℚ-irreducible with roots in both half-planes and too large for
+  the radical case.
+
+  **Nothing is returned unverified.** Every value is bracketed by a *rigorous
+  enclosure of the same integral* before it leaves the module. The whole real
+  line is covered with no truncation error: `[-1, 1]` directly, and each tail
+  through the exact change of variable `x = ±1/t`, which maps it to `[0, 1]` and
+  keeps the integrand rational and regular. All three pieces go through
+  `validated::bounds::verified_integral` (adaptive Taylor models in
+  outward-rounded ball arithmetic). A candidate outside the enclosure is treated
+  as a bug and declined, not returned.
+
+- **`integrate_definite` no longer turns an unevaluated endpoint value into a
+  number.** `∫_{-∞}^{∞} dx/(x⁴+1)` returned `0` (true value `π/√2 ≈ 2.2214`),
+  and so did `∫_{-∞}^{∞} x²dx/(x⁴+1)`. Both are worse than a decline: a wrong
+  number arrived with no warning.
+
+  The mechanism was cancellation of two *unevaluated* expressions. Those
+  integrands get a `RootSum` antiderivative from Lazard–Rioboo–Trager, and
+  neither of the two ways of evaluating one at a bound actually evaluates it:
+
+  * `calculus::limit` has no `RootSum` rule and, rather than erroring, returns
+    the input **unchanged** — so `lim_{x→+∞} F` and `lim_{x→−∞} F` were the same
+    expression, still containing `x`, and `F(+∞) − F(−∞)` cancelled to `0`.
+  * `kernel::subs` does not descend into a `RootSum` node either, so
+    substituting a *finite* bound is a silent no-op and the same cancellation
+    happens on a bounded interval: `∫_0^1 dx/(x⁴+1)` "=" `0`, true value
+    `≈ 0.8669`.
+
+  `eval_bound` now requires the endpoint value to be free of the integration
+  variable, whichever route produced it, and declines (`E-INT-001`) otherwise.
+  Both underlying gaps — `limit` returning its input for a shape it has no rule
+  for, and `subs` not traversing `RootSum` — are still there; this is the guard
+  that stops them reaching an answer.
+
+  Two further wrong answers on the same path are fixed:
+
+  * **`∫_0^∞ dx/(x−3)² = −1/3`** — divergent (double pole at `x = 3`, strictly
+    inside). The exact pole check read an infinite bound as "no numeric bound"
+    and switched itself off for *every* improper integral; it now compares
+    isolating intervals against `±∞` directly.
+  * **`∫_0^∞ x^{−2} dx` returned the expression `0^{−1}`** — a successful result
+    the evaluator itself rejects. The "must denote a finite real" gate only ran
+    when both bounds were finite; a value containing `∞` or an unresolved
+    `0^{negative}` is now refused whatever the bounds look like.
 - **The last three sites that turned a solver's silence into a theorem now have
   to prove it.** `∫ (√x + 1/√(4x))·eˣ dx` is `√x·eˣ` — elementary, checked by
   differentiation — and was certified `E-INT-004`, "no elementary antiderivative

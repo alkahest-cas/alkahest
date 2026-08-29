@@ -197,7 +197,7 @@ fn to_flintpoly(p: &MultiPoly) -> Option<FlintPoly> {
 
 /// Exact division of multivariate polynomials: `a / b` assuming `b | a`.
 /// Returns `None` if the division is not exact or if FLINT fails.
-fn mpoly_exact_div(a: &MultiPoly, b: &MultiPoly) -> Option<MultiPoly> {
+pub(crate) fn mpoly_exact_div(a: &MultiPoly, b: &MultiPoly) -> Option<MultiPoly> {
     use crate::flint::mpoly::FlintMPolyCtx;
     use std::sync::Arc;
     let nvars = a.vars.len().max(1);

@@ -334,6 +334,75 @@ impl MultiPoly {
         }
     }
 
+    /// Degree of `self` in `vars[idx]` (0 for the zero polynomial).
+    pub fn degree_in(&self, idx: usize) -> u32 {
+        self.terms
+            .keys()
+            .map(|exp| exp.get(idx).copied().unwrap_or(0))
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Partial derivative with respect to `vars[idx]`.
+    pub fn partial_derivative(&self, idx: usize) -> Self {
+        let mut terms = TermMap::new();
+        for (exp, coeff) in &self.terms {
+            let e = exp.get(idx).copied().unwrap_or(0);
+            if e == 0 {
+                continue;
+            }
+            let mut new_exp = exp.clone();
+            new_exp[idx] = e - 1;
+            while new_exp.last() == Some(&0) {
+                new_exp.pop();
+            }
+            let c = coeff.clone() * rug::Integer::from(e);
+            let entry = terms
+                .entry(new_exp.clone())
+                .or_insert_with(|| rug::Integer::from(0));
+            *entry += c;
+            if *entry == 0 {
+                terms.remove(&new_exp);
+            }
+        }
+        MultiPoly {
+            vars: self.vars.clone(),
+            terms,
+        }
+    }
+
+    /// Factor into irreducible factors over ℤ (FLINT's Bernardin–Monagan EEZ).
+    ///
+    /// Returns `(unit, [(factor, multiplicity), …])` such that `self` equals
+    /// `unit` times the product of each `factor` raised to its `multiplicity`.
+    /// Returns `None` for the zero polynomial or if FLINT's factoriser fails.
+    pub fn factor_irreducible(&self) -> Option<(rug::Integer, Vec<(MultiPoly, u32)>)> {
+        if self.is_zero() {
+            return None;
+        }
+        let nvars = self.vars.len().max(1);
+        let ctx = FlintMPolyCtx::new(nvars);
+        let fp = multi_to_flint(self, Arc::clone(&ctx));
+        let mut fac = crate::flint::mpoly::FlintMPolyFactor::new(Arc::clone(&ctx));
+        if !fac.factor(&fp) || !fac.constant_den_is_one() {
+            return None;
+        }
+        let unit = fac.unit().to_rug();
+        let mut out = Vec::new();
+        for i in 0..fac.len() {
+            let base = fac.base_at(i);
+            let mult = fac.exp_at(i);
+            out.push((
+                MultiPoly {
+                    vars: self.vars.clone(),
+                    terms: base.terms(),
+                },
+                mult,
+            ));
+        }
+        Some((unit, out))
+    }
+
     /// Divide all coefficients by `d` (exact division — caller ensures divisibility).
     pub fn div_integer(&self, d: &rug::Integer) -> Self {
         debug_assert!(

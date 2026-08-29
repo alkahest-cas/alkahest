@@ -895,10 +895,25 @@ def integrate(expr, var, a=None, b=None):
 
     Notes
     -----
-    The definite form is the elementary FTC wrapper: it requires an elementary
-    antiderivative that is finite at both bounds.  Improper integrals, poles
-    between the bounds, and the residue-theorem route are not handled; in those
-    cases the underlying integration error is propagated rather than guessed.
+    ``∫_{-∞}^{∞}`` of a **rational** function takes the residue theorem
+    rather than the fundamental theorem: ``2πi·Σ_{Im α > 0} Res(P/Q, α)``,
+    with both convergence conditions checked exactly (``deg Q ≥ deg P + 2``, and
+    ``Q`` with no real root) and the value cross-checked against a rigorous
+    enclosure of the same integral before it is returned — so
+    ``integrate(1/(x**4+1), x, -oo, oo).value`` is ``π/√2``.  A divergent
+    integral is reported as divergent and never given a finite value, including
+    when a Cauchy principal value exists (``x/(x**2+1)``).  The route covers
+    denominators whose Hurwitz spectral factor is rational, and in radicals
+    every denominator of degree ≤ 4 after even-normalisation; outside that it
+    declines explicitly.
+
+    Everything else is the elementary FTC wrapper: it needs an elementary
+    antiderivative whose value at each bound can be *established* — by
+    substitution for a finite bound, by ``limit`` for an infinite one.  An
+    endpoint value that still mentions the integration variable (what an
+    unevaluated ``RootSum`` limit or substitution produces) is refused rather
+    than pushed into ``F(b) − F(a)``, where the two ends would cancel to a
+    finite-looking but meaningless number.
 
     A singularity of the integrand inside the interval is *detected* and
     refused (``E-INT-001``) rather than pushed through ``F(b) − F(a)``, which

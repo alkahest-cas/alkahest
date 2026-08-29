@@ -2474,6 +2474,64 @@ pub fn integrate_definite(
     let lower = simplify(lower, pool).value;
     let upper = simplify(upper, pool).value;
 
+    // `∫_{-∞}^{∞}` of a rational function is not an FTC problem: the
+    // antiderivative is a `RootSum` or a sum of logs and arctangents whose
+    // limits at `±∞` the limit engine cannot establish. Take the residue
+    // theorem instead — it decides convergence exactly and cross-checks every
+    // value it emits against a rigorous enclosure. See
+    // [`crate::integrate::residue_theorem`].
+    if is_negative_infinity(lower, pool) && upper == pool.pos_infinity() {
+        use crate::integrate::residue_theorem::{integrate_rational_over_real_line, LineIntegral};
+        match integrate_rational_over_real_line(expr, var, pool) {
+            LineIntegral::Value { value, enclosure } => {
+                // The route only ever returns a value it has already bracketed
+                // by a rigorous enclosure of the same integral; the assertion
+                // records that contract rather than re-checking it.
+                debug_assert!(
+                    enclosure.0 <= enclosure.1,
+                    "residue route returned an inverted enclosure {enclosure:?}"
+                );
+                let mut log = DerivationLog::new();
+                log.push(RewriteStep::simple("residue_theorem", expr, value));
+                return Ok(DerivedExpr::with_log(value, log));
+            }
+            LineIntegral::Divergent(reason) => {
+                return Err(IntegrationError::NotImplemented(format!(
+                    "divergent integral: {reason}"
+                )));
+            }
+            // Not a rational function, or a shape the residue route does not
+            // cover: fall through to the ordinary fundamental-theorem path,
+            // which has its own (now strict) guards. Keep the reason: when the
+            // FTC path *also* declines, "the residue route did not apply
+            // because …" is the more useful half of the answer, and dropping it
+            // is how a caller ends up unable to tell an unsupported shape from
+            // an unsupported antiderivative.
+            LineIntegral::OutOfScope(reason) => {
+                return definite_via_ftc(expr, var, lower, upper, pool).map_err(|e| match e {
+                    IntegrationError::NotImplemented(msg) => IntegrationError::NotImplemented(
+                        format!("{msg} (the residue-theorem route did not apply: {reason})"),
+                    ),
+                    other => other,
+                });
+            }
+        }
+    }
+
+    definite_via_ftc(expr, var, lower, upper, pool)
+}
+
+/// The fundamental-theorem path of [`integrate_definite`]: antiderivative,
+/// endpoint values, difference — with the pole, jump and finiteness guards.
+///
+/// Bounds arrive already simplified.
+fn definite_via_ftc(
+    expr: ExprId,
+    var: ExprId,
+    lower: ExprId,
+    upper: ExprId,
+    pool: &ExprPool,
+) -> Result<DerivedExpr<ExprId>, IntegrationError> {
     if let Some(reason) = interior_singularity(expr, var, lower, upper, pool) {
         return Err(IntegrationError::NotImplemented(reason));
     }
@@ -2530,7 +2588,38 @@ pub fn integrate_definite(
     // like values but denote nothing real, and both come from applying the FTC
     // where its hypotheses fail.  Refuse rather than hand back an expression
     // the evaluator itself rejects.
-    if numeric_bound(lower, pool).is_some() && numeric_bound(upper, pool).is_some() {
+    // Two unconditional safety nets, applied whatever the bounds look like.
+    //
+    // 1. A definite integral's value cannot mention the integration variable.
+    //    If it does, some substitution or limit silently failed and what is
+    //    about to be returned is not a number at all.
+    // 2. It cannot be `±∞` or an unresolved `0^{negative}` pole artifact.
+    //    `∫_0^∞ x^{-2} dx` diverges, and used to be *returned* as the
+    //    expression `0^{-1}` — a successful result the evaluator itself
+    //    rejects. The `non_real_closed_form` gate below could not catch it
+    //    because it only ran for two finite bounds.
+    if mentions_var(simplified.value, var, pool) {
+        return Err(IntegrationError::NotImplemented(format!(
+            "the fundamental-theorem difference F(b) - F(a) = {} still depends on {}, so the \
+             endpoint values were not established; declining rather than returning it",
+            pool.display(simplified.value),
+            pool.display(var),
+        )));
+    }
+    if expr_is_non_finite(simplified.value, pool) {
+        return Err(IntegrationError::NotImplemented(format!(
+            "the fundamental-theorem difference F(b) - F(a) = {} is not finite (it contains ∞ \
+             or an unresolved pole), so the integral diverges or converges only as a principal \
+             value over [{}, {}]",
+            pool.display(simplified.value),
+            pool.display(lower),
+            pool.display(upper),
+        )));
+    }
+
+    if extended_numeric_bound(lower, pool).is_some()
+        && extended_numeric_bound(upper, pool).is_some()
+    {
         if let Some(reason) = non_real_closed_form(simplified.value, pool) {
             return Err(IntegrationError::NotImplemented(format!(
                 "improper integral: the fundamental-theorem difference F(b) - F(a) = {} {reason}, \
@@ -3088,6 +3177,23 @@ fn numeric_bound(bound: ExprId, pool: &ExprPool) -> Option<f64> {
     value.is_finite().then_some(value)
 }
 
+/// [`numeric_bound`] extended to the two infinite bounds: `+∞` maps to
+/// [`f64::INFINITY`] and `-∞` (`(-1)·(+∞)`) to [`f64::NEG_INFINITY`].
+///
+/// Only for checks that *compare* the bound against a finite location (pole
+/// detection). Anything that samples or substitutes must keep using
+/// [`numeric_bound`], which still refuses an infinite bound.
+fn extended_numeric_bound(bound: ExprId, pool: &ExprPool) -> Option<f64> {
+    let bound = simplify(bound, pool).value;
+    if bound == pool.pos_infinity() {
+        return Some(f64::INFINITY);
+    }
+    if is_infinite_bound(bound, pool) {
+        return Some(f64::NEG_INFINITY);
+    }
+    numeric_bound(bound, pool)
+}
+
 /// Detect a singularity of `integrand` on the closed interval `[lower, upper]`.
 ///
 /// Returns a human-readable description when a pole is found, or `None` when
@@ -3107,8 +3213,15 @@ fn interior_singularity(
     upper: ExprId,
     pool: &ExprPool,
 ) -> Option<String> {
-    // Symbolic bounds cannot be compared against root locations.
-    let (a, b) = (numeric_bound(lower, pool)?, numeric_bound(upper, pool)?);
+    // Symbolic bounds cannot be compared against root locations. An *infinite*
+    // bound can be: `±∞` compares against a finite isolating interval perfectly
+    // well. Reading it as "no numeric bound" switched this check off for every
+    // improper integral, and `∫_0^∞ dx/(x-3)²` — divergent, pole at `x = 3`
+    // strictly inside — came back as a clean, plausible, wrong `-1/3`.
+    let (a, b) = (
+        extended_numeric_bound(lower, pool)?,
+        extended_numeric_bound(upper, pool)?,
+    );
     let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
 
     let simplified = simplify(integrand, pool).value;
@@ -3171,6 +3284,22 @@ fn interior_singularity(
 /// is itself non-finite, i.e. the integral diverges) is reported as
 /// [`IntegrationError::NotImplemented`] — never silently substituted as if `∞`
 /// were an ordinary symbol.
+///
+/// # Why the "still mentions `var`" check exists
+///
+/// [`crate::calculus::limit`] is not total: for shapes no rule matches it can
+/// return `Ok(expr)` with the input **unchanged** rather than erroring. For a
+/// [`ExprData::RootSum`] antiderivative — what Lazard–Rioboo–Trager produces
+/// for an irreducible denominator of degree ≥ 3, e.g. `∫ dx/(x⁴+1)` — that is
+/// exactly what happened: `lim_{x→+∞} RootSum(…, x)` and
+/// `lim_{x→−∞} RootSum(…, x)` both came back as the *same* expression, still
+/// containing `x`, so the FTC difference `F(+∞) − F(−∞)` cancelled
+/// syntactically to a confident, silent, wrong `0`
+/// (`∫_{-∞}^{∞} dx/(x⁴+1)` "=" `0`, true value `π/√2`).
+///
+/// A limit whose value still depends on the variable being sent to infinity is
+/// not a limit; it is an unevaluated request. It must never be substituted
+/// into the FTC difference.
 fn eval_bound(
     f: ExprId,
     var: ExprId,
@@ -3193,6 +3322,22 @@ fn eval_bound(
                 pool.display(f),
             ))
         })?;
+        // The limit was not *established*: `limit` handed the expression back
+        // with `var` still in it. Substituting that into `F(b) - F(a)` makes
+        // the two ends cancel to `0` — a wrong answer with no warning. Decline.
+        if mentions_var(lim, var, pool) {
+            return Err(IntegrationError::NotImplemented(format!(
+                "improper integral with an infinite bound: lim_{{{}→{}}} {} could not be \
+                 established — it reduced to {}, which still depends on {}. An unevaluated \
+                 limit must not be substituted into the fundamental-theorem difference \
+                 (both ends would cancel to a finite-looking but meaningless value)",
+                pool.display(var),
+                pool.display(bound),
+                pool.display(f),
+                pool.display(lim),
+                pool.display(var),
+            )));
+        }
         // The antiderivative diverges at this bound (the limit is itself `±∞`,
         // or — for forms `limit` cannot fully reduce — contains a residual
         // `0^{negative}` pole artifact). Either way the *definite* integral is
@@ -3210,7 +3355,26 @@ fn eval_bound(
         }
         return Ok(lim);
     }
-    Ok(subs_var(f, var, bound, pool))
+    let substituted = subs_var(f, var, bound, pool);
+    // `kernel::subs` does not descend into a `RootSum` node: its `poly`/`body`
+    // children are not visited, so substituting into a `RootSum` antiderivative
+    // is a **silent no-op**. `F(b)` and `F(a)` then come back as the *same*
+    // expression and their difference is `0` for any bounds at all —
+    // `∫_0^1 dx/(x⁴+1)` "=" 0, true value ≈ 0.8669. Catch it here: after
+    // substituting for `var`, the value cannot still mention `var`.
+    if !mentions_var(bound, var, pool) && mentions_var(substituted, var, pool) {
+        return Err(IntegrationError::NotImplemented(format!(
+            "the antiderivative {} could not be evaluated at {} = {}: the substituted value {} \
+             still depends on {}, so F(b) - F(a) would cancel to a finite-looking but \
+             meaningless number",
+            pool.display(f),
+            pool.display(var),
+            pool.display(bound),
+            pool.display(substituted),
+            pool.display(var),
+        )));
+    }
+    Ok(substituted)
 }
 
 /// True when `expr` is (or contains) `±∞` (the canonical [`ExprPool::pos_infinity`]
@@ -3235,8 +3399,68 @@ fn expr_is_non_finite(expr: ExprId, pool: &ExprPool) -> bool {
         }
         ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().any(|x| expr_is_non_finite(*x, pool)),
         ExprData::Func { args, .. } => args.iter().any(|a| expr_is_non_finite(*a, pool)),
+        // `RootSum` and `Piecewise` bind or branch over sub-expressions that
+        // the arms above never reach. Not descending here let an `∞` hide
+        // inside a `RootSum` body and reach the FTC subtraction.
+        ExprData::RootSum { poly, body, .. } => {
+            expr_is_non_finite(poly, pool) || expr_is_non_finite(body, pool)
+        }
+        ExprData::Piecewise { branches, default } => {
+            branches
+                .iter()
+                .any(|(c, v)| expr_is_non_finite(*c, pool) || expr_is_non_finite(*v, pool))
+                || expr_is_non_finite(default, pool)
+        }
         _ => false,
     }
+}
+
+/// True when `expr` mentions `var` anywhere, **including** inside binding and
+/// branching nodes that the general-purpose [`is_free_of`] does not descend
+/// into (`RootSum`, `Piecewise`, `Predicate`, `Forall`/`Exists`, `BigO`).
+///
+/// Used on the improper-integral path, where "does the value still depend on
+/// the variable?" decides between a real answer and a silent wrong one, so it
+/// must never under-report a dependence. Bound variables shadow: a `RootSum`
+/// whose own root variable happens to be `var` does not count as a dependence
+/// in its body (only in its defining polynomial).
+fn mentions_var(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    if expr == var {
+        return true;
+    }
+    match pool.get(expr) {
+        ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().any(|x| mentions_var(*x, var, pool)),
+        ExprData::Pow { base, exp } => {
+            mentions_var(base, var, pool) || mentions_var(exp, var, pool)
+        }
+        ExprData::Func { args, .. } | ExprData::Predicate { args, .. } => {
+            args.iter().any(|a| mentions_var(*a, var, pool))
+        }
+        ExprData::RootSum {
+            poly,
+            var: bound,
+            body,
+        } => mentions_var(poly, var, pool) || (bound != var && mentions_var(body, var, pool)),
+        ExprData::Piecewise { branches, default } => {
+            branches
+                .iter()
+                .any(|(c, v)| mentions_var(*c, var, pool) || mentions_var(*v, var, pool))
+                || mentions_var(default, var, pool)
+        }
+        ExprData::Forall { var: bound, body } | ExprData::Exists { var: bound, body } => {
+            bound != var && mentions_var(body, var, pool)
+        }
+        ExprData::BigO(a) => mentions_var(a, var, pool),
+        ExprData::Integer(_)
+        | ExprData::Rational(_)
+        | ExprData::Float(_)
+        | ExprData::Symbol { .. } => false,
+    }
+}
+
+/// True when `bound` is exactly `-∞` — `(-1)·(+∞)`, the documented convention.
+fn is_negative_infinity(bound: ExprId, pool: &ExprPool) -> bool {
+    bound != pool.pos_infinity() && is_infinite_bound(bound, pool)
 }
 
 /// True when `bound` is `+∞` (canonical [`ExprPool::pos_infinity`] symbol) or
@@ -4963,6 +5187,109 @@ mod tests {
             pool.integer(1_i32),
             "∫_{{-∞}}^0 exp(x) dx = 1, got {}",
             pool.display(r.value)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Improper-integral safety: an *unestablished* limit at an infinite bound
+    // must never become a number.
+    // -----------------------------------------------------------------------
+
+    /// `∫_{-∞}^{∞} f dx` for `f` parsed-free (built from the pool).
+    fn over_the_line(
+        f: ExprId,
+        x: ExprId,
+        pool: &ExprPool,
+    ) -> Result<DerivedExpr<ExprId>, IntegrationError> {
+        let pos = pool.pos_infinity();
+        let neg = pool.mul(vec![pool.integer(-1_i32), pos]);
+        integrate_definite(f, x, neg, pos, pool)
+    }
+
+    /// `1/(x^n + 1)`.
+    fn recip_x_pow_plus_one(n: i32, x: ExprId, pool: &ExprPool) -> ExprId {
+        let den = pool.add(vec![pool.pow(x, pool.integer(n)), pool.integer(1_i32)]);
+        pool.pow(den, pool.integer(-1_i32))
+    }
+
+    #[test]
+    fn unevaluated_root_sum_limit_is_never_a_number() {
+        // The regression that motivated the guard. `∫ dx/(x⁴+1)` gets a
+        // `RootSum` antiderivative; `limit` has no rule for it and hands the
+        // expression back *unchanged*, still containing `x`. Substituting that
+        // at both ends made `F(+∞) − F(−∞)` cancel syntactically to `0`, and
+        // `∫_{-∞}^{∞} dx/(x⁴+1)` was returned as `0` (true value `π/√2`).
+        //
+        // Whatever else happens, the answer must not be `0`.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let n = 4_i32;
+        let f = recip_x_pow_plus_one(n, x, &pool);
+        if let Ok(r) = over_the_line(f, x, &pool) {
+            // The answer is `π/√2`; bind `π` so the value is a number.
+            let mut bindings = HashMap::new();
+            bindings.insert(pool.symbol("pi", Domain::Real), std::f64::consts::PI);
+            let v = crate::eval::eval_f64(r.value, &pool, &bindings)
+                .unwrap_or_else(|e| panic!("returned a non-evaluable value: {e}"));
+            let want = std::f64::consts::PI / 2.0_f64.sqrt();
+            assert!(
+                (v - want).abs() < 1e-9,
+                "∫_{{-∞}}^{{∞}} dx/(x^{n}+1) = π/√2 = {want}; got {v} from {}",
+                pool.display(r.value)
+            );
+        }
+    }
+
+    #[test]
+    fn eval_bound_rejects_a_limit_that_still_mentions_the_variable() {
+        // Direct unit test of the guard, independent of which antiderivative
+        // the engine happens to produce today: a `RootSum` in `x` is exactly
+        // the shape `limit` returns unchanged.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let a = pool.symbol("a", Domain::Real);
+        let poly = pool.add(vec![pool.pow(a, pool.integer(2_i32)), pool.integer(1_i32)]);
+        let body = pool.mul(vec![a, pool.func("log", vec![pool.add(vec![a, x])])]);
+        let rs = pool.root_sum(poly, a, body);
+        let err = eval_bound(rs, x, pool.pos_infinity(), &pool)
+            .expect_err("an unevaluated limit must not be accepted as an endpoint value");
+        assert!(
+            format!("{err}").contains("still depends on"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn divergent_integral_with_an_interior_pole_and_an_infinite_bound_errors() {
+        // ∫_0^∞ dx/(x-3)² diverges (double pole at x = 3, strictly inside).
+        // The pole check used to switch itself off whenever a bound was
+        // infinite, and the FTC difference returned a clean, wrong `-1/3`.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let shifted = pool.add(vec![x, pool.integer(-3_i32)]);
+        let f = pool.pow(shifted, pool.integer(-2_i32));
+        let r = integrate_definite(f, x, pool.integer(0_i32), pool.pos_infinity(), &pool);
+        assert!(
+            r.is_err(),
+            "∫_0^∞ dx/(x-3)² diverges; got {}",
+            r.map(|v| pool.display(v.value).to_string())
+                .unwrap_or_default()
+        );
+    }
+
+    #[test]
+    fn divergent_power_integral_is_not_returned_as_a_pole_artifact() {
+        // ∫_0^∞ x^{-2} dx diverges. It used to be *returned* as the expression
+        // `0^{-1}`: a successful result that the evaluator itself rejects.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let f = pool.pow(x, pool.integer(-2_i32));
+        let r = integrate_definite(f, x, pool.integer(0_i32), pool.pos_infinity(), &pool);
+        assert!(
+            r.is_err(),
+            "∫_0^∞ x^{{-2}} dx diverges; got {}",
+            r.map(|v| pool.display(v.value).to_string())
+                .unwrap_or_default()
         );
     }
 

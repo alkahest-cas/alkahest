@@ -6,7 +6,7 @@
 //! difference equations (V2-18), and optional WZ pair verification.
 
 mod expr_ratio;
-mod gosper;
+pub(crate) mod gosper;
 mod poly_aux;
 mod product;
 mod ratfunc;
