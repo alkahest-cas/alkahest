@@ -205,6 +205,10 @@ FUNCTION_MAP: dict[str, str] = {
     "Ci": "Ci",
     "Shi": "Shi",
     "Chi": "Chi",
+    # Fresnel integrals. Both systems use the normalised (pi/2) convention
+    # (DLMF 7.2(iii)), so S(inf) = C(inf) = 1/2 in each and the names coincide.
+    "fresnels": "fresnels",
+    "fresnelc": "fresnelc",
 }
 
 #: Bessel functions of fixed integer order, which SymPy spells with the order as
@@ -226,6 +230,20 @@ REFUSED_FUNCTIONS: dict[str, str] = {
     "EllipticE": "elliptic integrals differ in modulus-vs-parameter convention between systems",
     "EllipticF": "elliptic integrals differ in modulus-vs-parameter convention between systems",
     "EllipticPi": "elliptic integrals differ in modulus-vs-parameter convention between systems",
+    # Not a convention mismatch — the values agree. SymPy simply spells these
+    # with the order as an argument (`polylog(2, z)`, `polygamma(1, z)`) rather
+    # than as their own names, so there is no name-for-name rename to put in
+    # FUNCTION_MAP. The `_FIXED_ORDER_BESSEL` mechanism above is the shape that
+    # would cover them; extending it is a better fix than either of these two
+    # tables and is left as a follow-up.
+    "dilog": (
+        "SymPy has no `dilog`; it is `polylog(2, z)`, an arity difference rather "
+        "than a value difference, so a name-for-name rename cannot express it"
+    ),
+    "trigamma": (
+        "SymPy has no `trigamma`; it is `polygamma(1, z)`, an arity difference "
+        "rather than a value difference, so a name-for-name rename cannot express it"
+    ),
 }
 
 #: Pool symbols with a reserved meaning. ``ExprPool.pos_infinity()`` and
@@ -966,6 +984,8 @@ _SYMPY_TO_ALKAHEST: dict[str, str] = {
     "Ci": "cos_integral",
     "Shi": "sinh_integral",
     "Chi": "cosh_integral",
+    "fresnels": "fresnels",
+    "fresnelc": "fresnelc",
 }
 
 
