@@ -11,7 +11,7 @@ use alkahest_cas::integrate::gate::{
     verify, Domain as GDomain, EnclosurePolicy, GateOptions, Target, Verdict,
 };
 use alkahest_cas::kernel::{Domain, ExprPool};
-use alkahest_cas::{integrate, parse};
+use alkahest_cas::{integrate, parse, verify_antiderivative_exact};
 
 /// Integrands spanning the families the engine advertises.
 const CORPUS: &[&str] = &[
@@ -115,6 +115,12 @@ fn gate_verdict_census() {
     let mut counts = std::collections::BTreeMap::<&'static str, usize>::new();
     let mut no_integral = 0usize;
     let mut rows: Vec<String> = Vec::new();
+    // Cases where the gate's `Proven` depends on its *own* term-wise negation
+    // helper rather than on `simplify`.  `verify_antiderivative_exact` builds
+    // the residual the naive way, as `pool.mul([-1, f])`, so an entry here
+    // means `simplify` still cannot push a negation through a sum and the
+    // helper in `integrate/gate.rs` is still load-bearing.
+    let mut needs_local_negate: Vec<&str> = Vec::new();
 
     for src in CORPUS {
         let f = match parse(src, &pool, &mut syms) {
@@ -141,6 +147,9 @@ fn gate_verdict_census() {
             !matches!(v, Verdict::Failed { .. }),
             "gate refuted the engine's own answer for {src}"
         );
+        if v == Verdict::Proven && !verify_antiderivative_exact(cand, f, x, &pool) {
+            needs_local_negate.push(src);
+        }
     }
 
     println!("--- gate verdict census ({} integrands) ---", CORPUS.len());
@@ -152,4 +161,10 @@ fn gate_verdict_census() {
         println!("{k}\t{n}");
     }
     println!("NoIntegral\t{no_integral}");
+    println!("needs_local_negate\t{needs_local_negate:?}");
+    assert!(
+        needs_local_negate.is_empty(),
+        "`simplify` failed to close a residual the gate's own `negate` helper \
+         closes, for: {needs_local_negate:?} — the helper is still load-bearing"
+    );
 }
