@@ -182,6 +182,166 @@
   disabling the cumulative one takes `large_attempted` from 1 to 6 (and the
   test from under a second to 131 s) and fails it; disabling the per-probe
   one fails it too.
+- **The last three sites that turned a solver's silence into a theorem now have
+  to prove it.** `∫ (√x + 1/√(4x))·eˣ dx` is `√x·eˣ` — elementary, checked by
+  differentiation — and was certified `E-INT-004`, "no elementary antiderivative
+  exists". The integrand mentions `√x` and `√(4x)`, so the compositum route built
+  a degree-4 extension `ℚ(x)[y]/(α⁴ − 10x·α² + 9x²)` for what is really the
+  quadratic `ℚ(x)(√x)`. That quartic is *reducible*, so the coefficient ring is a
+  product of two fields; the true antiderivative lives in one factor and does not
+  lift to the product. The ansatz found nothing and the site published that as a
+  proof.
+
+  The three algebraic-RDE call sites — `exp_case.rs`'s nested-radical and
+  compositum paths and `exp_algebraic.rs` — now consume a three-valued
+  `AlgRdeOutcome` (`Solved` / `NoRationalSolution` / `Declined(reason)`) matching
+  the `RdeOutcome` contract the rational solvers already use. Only a **proved**
+  non-existence may certify; a decline reports `E-INT-001` naming the premise it
+  could not discharge. `alg_rde`'s own module documentation had said the return
+  was incomplete ("a denominator/degree bound too small to contain the true
+  solution yields `None`") while its callers read it as a proof.
+
+  Proving non-existence for a *coupled* system needed three new complete bounds,
+  all of them in `alg_rde.rs`:
+
+  - **The extension must be a field.** A shape-specific irreducibility witness
+    for each of the three reachable minimal polynomials (pure radical `yⁿ − p`,
+    compositum `√p + √q`, nesting `√(a + √b)`). Without one the solver declines —
+    which is what removes the false certificate above.
+  - **A complete denominator bound at the finite poles**, the matrix form of the
+    scalar resonance already in `rational_rde`: a pole of `b` must be a pole of
+    `M` or of `c`, and its order is bounded by the largest positive-integer
+    eigenvalue of the residue matrix. The eigenvalue search terminates against a
+    spectral-radius bound on the rational matrix representing that residue on
+    `ℚ[x]/(Dm)`, so no algebraic pole is ever named.
+  - **A complete degree bound at infinity**, by two independent arguments: an
+    integer *shearing* (gauge) search that restaggers the power-basis weights
+    until the leading matrix is invertible, and — for a radical totally ramified
+    at infinity, where no integer shearing can work because `α` has fractional
+    degree — a valuation bound on the single place above `∞`.
+
+  Together these keep every verdict that was correct. Across a 42-case sweep of
+  the three families, 39 verdicts are unchanged (including `∫ exp(√x)/x dx`,
+  `∫ (√x+√(x+1))·eˣ dx`, `∫ √(x+√x)·eˣ dx` and `∫ exp(√(x²+1)) dx`, which the
+  ramified-place and shearing bounds respectively rescue), nothing that solved
+  stopped solving, and the three that moved `E-INT-004 → E-INT-001` are exactly
+  the degenerate-compositum family whose premise was never established. The
+  40-case integration probe is unchanged at 27 solved / 7 `E-INT-004` /
+  6 `E-INT-001`.
+
+  Still open, and reported rather than fixed here: `detect_two_sqrt_compositum`
+  treats `√x` and `√(4x)` as independent radicals. Normalising a radicand by its
+  rational square content would let that integral *solve* instead of decline.
+
+- **`integrate` could emit a false `E-INT-004` ("no elementary antiderivative
+  exists") for an integrand that has one.** `∫ exp(x + log x) dx` — which is
+  just `∫ x·eˣ dx = (x−1)·eˣ` — was certified non-elementary. So were
+  `exp(x + 2·log x)`, `exp(x + log(x²+1))`, and `exp(x + log x)/x`, whose
+  antiderivative is plain `eˣ`.
+
+  The rational Risch DE solver bounds the denominator of a solution `v` of
+  `v' + f·v = c` by `E = gcd(D, D')`, `D` the denominator of `c` (Bronstein
+  §6.1). That bound is exact **only when `f` is a polynomial**. When `f` has a
+  *simple pole with a positive integer residue* `ρ`, the leading terms of `v'`
+  and `f·v` cancel and `v` acquires a pole of order `ρ` at a point `c` is
+  regular at — a pole the ansatz `v = N/E` cannot represent. `v' + (2/x+1)·v = 1`
+  has `c = 1`, hence `E = 1`, yet its solution is `(x²−2x+2)/x²`. The solver
+  returned "no rational solution", and the exp-tower caller turned that into a
+  certificate. An exponent with a logarithmic part (`η = x + log x` ⇒
+  `f = η' = 1 + 1/x`) is exactly how a user reaches it.
+
+  Two independent fixes:
+
+  1. **The denominator bound now accounts for `f`'s poles.**
+     `rational_rde::resonant_denominator` computes `∏_k gcd(d₁, A − k·d₁'·W)^k`
+     over the positive integers `k` — Bronstein §6.1's `WeakNormalizer`, with
+     the Rothstein–Trager resultant replaced by an eigenvalue bound on the
+     residue element of `ℚ[x]/(d₁)` plus a direct GCD test, so resonant poles at
+     *irrational* points (e.g. residue 1 at `±i` for `f = 2x/(x²+1)`) are found
+     too. The degree bound is likewise now derived from the valuation argument
+     at infinity rather than a generous estimate.
+
+  2. **The solvers' return type no longer conflates a decline with a proof.**
+     `RdeOutcome` is three-valued — `Solved`, `NoRationalSolution` (*proved*, and
+     the only outcome that may license `NonElementary`) and `Declined` (nothing
+     may be concluded, mapped to `E-INT-001`). The two-valued
+     `solve_rational_rde` / `solve_rational_rde_generalized` remain as shims for
+     source compatibility and are documented as unsafe to conclude from; new
+     code should use `solve_rational_rde_checked` /
+     `solve_rational_rde_generalized_checked`. Every call site in
+     `risch::exp_case` and `risch::simple_radical` was rewired so only a
+     *proved* non-existence can produce `E-INT-004`.
+
+  A residue past the internal resonance-search cap now **declines** rather than
+  certifying: `∫ x⁴⁰⁰⁰·eˣ dx` written as `∫ exp(x + 4000·log x) dx` reports
+  `E-INT-001`, which is the honest weaker verdict. No verdict on the 40-case
+  integration probe moved between `E-INT-004` and `E-INT-001` (27 solved / 7 /
+  6, unchanged).
+- **`integrate` no longer certifies elementary nested-exponential integrands as
+  non-elementary.** `∫ eˣ·e^(eˣ)/(e^(eˣ)+1) dx` — whose antiderivative is
+  `log(e^(eˣ)+1)` — came back as a *certified* `E-INT-004`, "no elementary
+  antiderivative exists". The trigger was `simplify`: the raw parse fell through
+  to u-substitution and solved, while the simplified spelling entered the exp
+  tower and got a false proof, so any pipeline that normalised before
+  integrating hit it.
+
+  Three premises in `integrate/risch/` were being used as proofs without being
+  established.
+
+  1. **The Laurent decomposition was never validated.** `extract_exp_factor`
+     peels integer powers of the generator `t` off a product and puts every
+     other factor into the coefficient, without checking that what is left is
+     free of `t` — so `t/(t+1)` arrived as the monomial `(t+1)⁻¹·t¹`, a
+     "coefficient" that is not in the base field at all. Every certificate in
+     the exp case rests on the Laurent theorem ("for `k ≠ 0`, `∫cₖtᵏ` is
+     elementary iff the Risch DE `v' + kη'v = cₖ` has a solution in `K`",
+     Bronstein §5.3), which does not apply to a genuine rational function of
+     `t`: that needs Hermite reduction plus a Rothstein–Trager residue reduction
+     over `K[t]` (§5.6), and *those* can contribute **new logarithms** the RDE
+     never sees. `integrate_exp_tower` now validates the decomposition and
+     declines with `E-INT-001` instead of certifying.
+
+  2. **"the coefficient is rational in the inner generator" was not a proof.**
+     The old predicate certified on *any* denominator in the inner generator,
+     and tested for one with `contains_subexpr` — which answers `true` for a
+     coefficient mentioning the **outer** generator, since `exp(exp(x))`
+     syntactically contains `exp(x)`. It is replaced by a test that parses the
+     coefficient into `ℚ(x)(θ)` and certifies only when the denominator is
+     squarefree, i.e. every pole is simple: there a solution would have to be
+     regular at the pole while `c` is not (Bronstein §6.1). Higher-order poles
+     are now undecided rather than certified.
+
+  3. **The lower-tower cascade only covered non-negative degrees.** It is now a
+     Laurent cascade over `j ∈ ℤ` and therefore a *complete decision* for
+     Laurent coefficients: the recursion `vⱼ₋₁ = (cⱼ − vⱼ′ − j·vⱼ)/k` is forced
+     from the top degree down to `min(L, 0)`, and the integral is elementary iff
+     the last value produced vanishes. Residuals are certified non-zero only by
+     an exact test — a rational-function numerator, or a **ball enclosure that
+     excludes zero** — never by "the simplifier did not reach `0`".
+
+  A fourth false certificate, found while auditing, is fixed in the same pass:
+  `known_nonelementary` returned the logarithmic-integral (`li`) diagnostic for
+  *any* product containing a `log(linear)^(-n)` factor, so
+  `∫ −dx/(x·log²x) = 1/log x` was certified non-elementary. That family is
+  elementary exactly when the polynomial denominator is a constant multiple of
+  the log's argument, and the certificate now declines there;
+  `try_log_derivative` also accepts a constant multiple of `h'/h` rather than
+  demanding equality, so those integrals are answered instead of declined.
+
+  Measured over a 138-verdict corpus: **9 false `E-INT-004`s became answers**
+  (the four reported reproducers plus `log(e^(eˣ)+2)`, `1/(e^(eˣ)+1)ⁿ`,
+  `atan(e^(eˣ))`, `½log(e^(2eˣ)+1)`), **4 `E-INT-001`s became answers** (the
+  `c·h'/h·log(h)^(-n)` family), and **3 integrands moved `E-INT-004` →
+  `E-INT-001`** — `∫ e^(eˣ)/(e^(eˣ)+1) dx`, `∫ eˣ/(eˣ+1)²·e^(eˣ) dx` and
+  `∫ x·eˣ·e^(eˣ)/(e^(eˣ)+1) dx`. Those three are probably non-elementary, but
+  the implementation cannot prove it, and a weaker honest verdict beats a
+  stronger false one. The 40-case integration probe is unchanged at 27 solved /
+  7 `E-INT-004` / 6 `E-INT-001`.
+
+  **Still not done:** Hermite reduction plus Rothstein–Trager over `K[t]` for a
+  rational function of the *outer* generator, and `RdeNormalDenominator` for a
+  higher-order pole in the inner generator. Both are now declined rather than
+  guessed, and the `risch` module docs say so.
 - **`integrate` was emitting false non-elementarity certificates.**
   `∫x dx/√(1−x⁴)` is `½asin(x²)`; Alkahest answered `E-INT-004`, *"no elementary
   antiderivative exists"*. So did a whole family — `∫x√(1−x⁴) dx`,

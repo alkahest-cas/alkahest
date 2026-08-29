@@ -17,8 +17,26 @@
 //! - `k = 0` (eq 23): `v₀' = A₀` — an ordinary `∫ A₀ dx` over `ℚ(x)`, handed to
 //!   the rational integrator (this is where any new logarithms appear).
 //! - `k ≥ 1` (eq 24): `vₖ' + ωₖ vₖ = Aₖ` — a Risch differential equation over
-//!   `ℚ(x)`, solved by [`solve_rational_rde_generalized`].  No rational
-//!   solution ⇒ the integral is **non-elementary**.
+//!   `ℚ(x)`, solved by [`solve_rational_rde_generalized_checked`].  A *proved*
+//!   absence of a rational solution ⇒ the integral is **non-elementary**; a
+//!   [`RdeOutcome::Declined`] proves nothing and becomes an `E-INT-001` decline.
+//!
+//! ## Why `ωₖ` never triggers the solver's resonance case
+//!
+//! A rational solution of `v' + f·v = c` can acquire a pole the right-hand side
+//! does not predict, but only at a *simple* pole of `f` whose residue is a
+//! **positive integer** (see `rational_rde::resonant_denominator`).  Neither `ωₖ` here can
+//! be one:
+//!
+//! * squarefree radicand: `ωₖ = (k/n)·p'/p` with `0 < k < n` and `p`
+//!   squarefree, so every pole is simple with residue `k/n ∈ (0, 1)`;
+//! * general basis: `ωₖ = (k/n)·H'/H − dₖ'/dₖ`, both logarithmic derivatives, so
+//!   every pole is simple; at a root of the multiplicity-`j` squarefree factor
+//!   `Hⱼ` the residue is `kj/n − ⌊kj/n⌋ = {kj/n} ∈ [0, 1)`.
+//!
+//! So this module was never exposed to the bug the resonance analysis fixes —
+//! the exposed caller was the exp tower's rational-`η` path, where
+//! `f = k·η'` and `η = x + log x` gives residue `1`.
 //!
 //! Two cases of the basis:
 //! - **Squarefree radicand `p`**: the basis collapses to the power basis
@@ -49,7 +67,9 @@ use super::poly_rde::{
     degree, poly_deriv, poly_mul, poly_one, poly_scale, qpoly_to_expr, trim, QPoly,
 };
 use super::rational_integrate::yun;
-use super::rational_rde::{poly_gcd, poly_pow, poly_sub, solve_rational_rde_generalized};
+use super::rational_rde::{
+    poly_gcd, poly_pow, poly_sub, solve_rational_rde_generalized_checked, RdeDecline, RdeOutcome,
+};
 
 /// Attempt MA's integral part for a degree-`≥ 3` simple radical `y = p^{1/n}`
 /// over `ℚ(x)` (pure-algebraic).
@@ -107,9 +127,13 @@ pub fn try_integrate_simple_radical(
             // eq 24: vⱼ' + (j·p'/(n·p))·vⱼ = bⱼ.
             let f_num = poly_scale(&p_prime, &rug::Rational::from(j as i64));
             let f_den = poly_scale(&p, &rug::Rational::from(n as i64));
-            let (vn, vd) = match solve_rational_rde_generalized(&f_num, &f_den, &num, &den) {
-                Some(sol) => sol,
-                None => return Some(Err(non_elementary(expr, pool))),
+            let (vn, vd) = match solve_rational_rde_generalized_checked(&f_num, &f_den, &num, &den)
+            {
+                RdeOutcome::Solved { num, den } => (num, den),
+                RdeOutcome::NoRationalSolution => return Some(Err(non_elementary(expr, pool))),
+                RdeOutcome::Declined(reason) => {
+                    return Some(Err(rde_declined(&reason, expr, pool)))
+                }
             };
             if trim(vn.clone()).is_empty() {
                 continue;
@@ -226,9 +250,12 @@ fn integrate_general_radical(
                 ),
             );
             let f_den = poly_scale(&poly_mul(&big_h, &d_k), &rug::Rational::from(n as i64));
-            match solve_rational_rde_generalized(&f_num, &f_den, &a_num, &a_den) {
-                Some(sol) => sol,
-                None => return Some(Err(non_elementary(expr, pool))),
+            match solve_rational_rde_generalized_checked(&f_num, &f_den, &a_num, &a_den) {
+                RdeOutcome::Solved { num, den } => (num, den),
+                RdeOutcome::NoRationalSolution => return Some(Err(non_elementary(expr, pool))),
+                RdeOutcome::Declined(reason) => {
+                    return Some(Err(rde_declined(&reason, expr, pool)))
+                }
             }
         };
 
@@ -258,6 +285,19 @@ fn integrate_general_radical(
     Some(Ok(DerivedExpr::with_log(simplified.value, log)))
 }
 
+/// A component Risch DE **declined** — the solver's bounds were not provably
+/// sufficient, so nothing may be concluded about the integrand.  `E-INT-001`,
+/// never `E-INT-004`.
+fn rde_declined(reason: &RdeDecline, expr: ExprId, pool: &ExprPool) -> IntegrationError {
+    IntegrationError::NotImplemented(format!(
+        "∫ {} dx: the Risch differential equation for a simple-radical component \
+         could not be decided: {reason}",
+        pool.display(expr),
+    ))
+}
+
+/// A component Risch DE **proved** it has no rational solution — by eq (24)
+/// that is a certificate of non-elementarity.
 fn non_elementary(expr: ExprId, pool: &ExprPool) -> IntegrationError {
     IntegrationError::NonElementary(format!(
         "∫ {} dx: the Risch differential equation over ℚ(x) for a simple-radical \
