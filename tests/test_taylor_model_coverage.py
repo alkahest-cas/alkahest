@@ -13,8 +13,10 @@ boundary was correct at runtime and invisible beforehand.
 3.9.0 moved ten names across it. First `asinh`, `acosh`, `atanh`, `erf`,
 `erfc`; then `bessel_j0`, `bessel_j1`, `digamma`, `lambert_w` and `gamma`,
 which finished the M7 list (`gamma` gained a ball kernel at the same time —
-it had neither before). Each time the sets below were the only thing that had
-to change, because the flag itself is derived from the evaluator.
+it had neither before).  3.10.0 moved four more: `trigamma`, the Fresnel pair
+`fresnels`/`fresnelc` and `dilog`.  Each time the sets below were the only
+thing that had to change, because the flag itself is derived from the
+evaluator.
 
 The whole point of these tests is that the *new* flag cannot repeat that
 mistake. `taylor_model` is derived by running the real evaluator (see
@@ -106,14 +108,30 @@ def test_the_flag_is_not_a_restatement_of_numeric_ball():
 def test_supported_set_is_the_elementary_plus_special_fragment():
     """A pin on the boundary as it stands, so a change to it is deliberate.
 
-    Twenty-three names: the elementary fragment, plus the special functions
-    M7 called for — the Bessel pair, `digamma`, `gamma` and `lambert_w`.
+    Thirty-three names: the elementary fragment, plus the special functions
+    M7 called for — the Bessel pair, `digamma`, `gamma` and `lambert_w` — plus
+    the exponential-integral family `Ei`, `li`, `Si`, `Ci`, `Shi`, `Chi`
+    (`primitive::expint`), the Fresnel pair and `dilog` (`primitive::fresnel`,
+    `primitive::polylog`), and `trigamma`, which is what makes `digamma`
+    differentiable.
+    Twenty-six names: the elementary fragment, plus the special functions
+    Twenty-seven names: the elementary fragment, plus the special functions
+    M7 called for — the Bessel pair, `digamma`, `gamma` and `lambert_w` — plus
+    the 3.10.0 additions `trigamma`, the Fresnel pair `fresnels`/`fresnelc`
+    and `dilog`.
 
     Widening this set is a feature (add the rule, then add the name here);
     narrowing it silently would be a regression an agent's plan depends on.
     """
     supported = {row["name"] for row in _primitive_rows() if row["taylor_model"]}
     assert supported == {
+        # Exponential-integral family (alkahest-core/src/primitive/expint.rs)
+        "Chi",
+        "Ci",
+        "Ei",
+        "Shi",
+        "Si",
+        "li",
         "abs",
         "acos",
         "acosh",
@@ -126,9 +144,12 @@ def test_supported_set_is_the_elementary_plus_special_fragment():
         "cos",
         "cosh",
         "digamma",
+        "dilog",
         "erf",
         "erfc",
         "exp",
+        "fresnelc",
+        "fresnels",
         "gamma",
         "lambert_w",
         "log",
@@ -137,6 +158,7 @@ def test_supported_set_is_the_elementary_plus_special_fragment():
         "sqrt",
         "tan",
         "tanh",
+        "trigamma",
     }
 
 

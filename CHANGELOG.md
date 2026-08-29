@@ -549,6 +549,71 @@
   `alkahest.experimental.TelescopingMdCertificate`. Experimental, same
   refusal codes as `telescope2d` (`E-HOLO-040`/`041`/`042`).
 
+- **`gamma`, `digamma` and `EllipticPi` can be differentiated — and
+  `trigamma` is new.** All three parsed and evaluated but could not be
+  differentiated in every argument, and an antiderivative carrying one of them
+  is *unverifiable*: the integrator's gate checks `d/dx F = f` and cannot
+  check what it cannot differentiate. Now `d/dx Γ(x) = Γ(x)·ψ(x)` (DLMF
+  5.2.2), `d/dx ψ(x) = ψ₁(x)`, and `Π(n; φ | m)` differentiates in **all
+  three** of its arguments. Previously only `∂Π/∂φ` existed, and even that
+  rule bailed out entirely as soon as `n` or `m` depended on the
+  differentiation variable — so `diff(Π(n(x), φ, m), x)` failed with
+  `E-DIFF-001`. The `∂/∂n` and `∂/∂m` reductions (DLMF 19.4.7 rewritten for
+  the parameter convention `m = k²`; Byrd & Friedman 710 for `∂/∂n`) were
+  checked against central differences of the quadrature evaluator before being
+  written down.
+
+  `trigamma(x)` = `ψ₁ = ψ′` is a new primitive with the full bundle
+  (`numeric_f64`, `numeric_ball`, a rigorous Taylor-model rule so
+  `bound_on_box` reaches it, unicode `ψ₁` + LaTeX `\psi_1`, PyO3 binding).
+  It is the one deliberate exception to "every primitive differentiates":
+  `ψ₁′ = ψ₂` and the polygamma ladder has no closed-form terminator short of a
+  binary `polygamma(n, x)`, so `diff(trigamma(x), x)` **declines** with
+  `E-DIFF-001` rather than returning a placeholder. Moving the boundary from
+  `ψ₀` to `ψ₁` is what makes `Γ′ = Γψ` and `Γ″ = Γ(ψ² + ψ₁)` both land on
+  functions the gate can evaluate and bound.
+
+  New: `alkahest.trigamma` (additive to `__all__`).
+
+- **Fresnel integrals `fresnels`/`fresnelc`**, in the **normalised (π/2)
+  convention** — DLMF §7.2(iii), A&S §7.3, SymPy, SciPy, Mathematica — with
+  `S(∞) = C(∞) = 1/2`, `S′ = sin(πx²/2)` and `C′ = cos(πx²/2)`. The
+  unnormalised `∫₀ˣ sin(t²)dt` is a *different* function (limit `√(π/8)`);
+  mixing the two is a silent `√(π/2)` error, so the convention is pinned by a
+  test rather than left implicit. Maclaurin series below `|x| = 6`, summed in
+  MPFR at a working precision raised by the series' own `≈ 2.27x²` bits of
+  cancellation (in plain `f64` it loses ~10 digits at `x = 4`); DLMF
+  7.12.1–7.12.3 asymptotics above it, where DLMF §7.12(ii)'s
+  first-neglected-term remainder bound makes the truncation rigorous rather
+  than merely plausible. Worst relative error `3.3·10⁻¹⁵` against
+  `scipy.special.fresnel` over `[0, 40]` plus spot checks to `10⁸`. Full
+  bundle including a Taylor-model rule, so `bound_on_box` reaches them.
+
+  New: `alkahest.fresnels`, `alkahest.fresnelc`.
+
+- **Dilogarithm `dilog`** — `Li₂` on the **principal branch, cut along
+  `[1, ∞)`** (DLMF §25.12(i), Lewin §1.1, Mathematica `PolyLog[2, z]`): real
+  on `(−∞, 1]` with `Li₂(1) = π²/6`, and declining for `x > 1` where the
+  principal value is complex, rather than silently returning its real part.
+  `Li₂′ = −log(1−x)/x`. Bernoulli series on `[−1, ½]`, reached by the
+  inversion (`x < −1`) and reflection (`x > ½`) identities; worst relative
+  error `5.0·10⁻¹⁶` over a 34 000-point sweep of `[−10⁶, 1]` against MPFR's
+  correctly-rounded `mpfr_li2`, an independent implementation. Full bundle
+  including a Taylor-model rule whose coefficient recurrence runs forwards
+  above `m₀ = 0.4` and backwards (Miller) below it, because each direction is
+  stable exactly where the other is not.
+
+  Shipped as `dilog` rather than a general `polylog(s, x)`: `∂Li_s/∂s` has no
+  closed form, so a binary `polylog` would ship with a *permanently* declined
+  partial, and every `Func` rule in the validated Taylor tier is unary, so it
+  would also be invisible to `bound_on_box`. `Li₁` needs no primitive — it is
+  `-log(1 - x)`.
+
+  New: `alkahest.dilog`. None of the four new names is wired into either
+  parser — like `digamma` and `bessel_j0`, they are constructor-only for now.
+  Nothing in `integrate/` was touched: emitting Fresnel or `Li₂` forms from
+  `∫sin(x²)dx`, `∫log(x)/(1+x)dx` and friends is a separate change.
+
 ## 3.9.0 — 2026-08-14
 
 Everything in this section landed **after `v3.8.0` was tagged and published**,
