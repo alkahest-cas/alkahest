@@ -369,7 +369,57 @@ impl ExprPool {
     // Compound constructors
     // -----------------------------------------------------------------------
 
-    pub fn add(&self, mut args: Vec<ExprId>) -> ExprId {
+    /// Splice same-operator children into `args`, in argument order.
+    ///
+    /// `mul` passes `want_mul = true` and splices nested `Mul`s; `add` passes
+    /// `false` and splices nested `Add`s.  This is **associativity and nothing
+    /// else** — no reordering beyond the canonical sort the caller applies
+    /// afterwards, no constant folding, no identity elimination.  Splicing an
+    /// empty `Mul`/`Add` child away is likewise value-preserving, since the
+    /// empty product is 1 and the empty sum is 0.
+    ///
+    /// Every node reachable through [`ExprPool::add`] / [`ExprPool::mul`] is
+    /// already flat, so in practice one level is all there is; the loop is
+    /// nevertheless a full fixpoint because `intern` is public and
+    /// [`crate::kernel::pool_persist`] restores whatever shape a file on disk
+    /// holds, including nested nodes written by an older build.  The worklist
+    /// is an explicit `Vec`, not recursion, so no nesting depth can overflow
+    /// the native stack here.
+    fn flatten_assoc(&self, args: Vec<ExprId>, want_mul: bool) -> Vec<ExprId> {
+        /// The children to splice in for `data`, or `None` to keep it whole.
+        fn splices(data: &ExprData, want_mul: bool) -> Option<&Vec<ExprId>> {
+            match data {
+                ExprData::Mul(children) if want_mul => Some(children),
+                ExprData::Add(children) if !want_mul => Some(children),
+                _ => None,
+            }
+        }
+
+        // Hot path: nothing nested, so hand the caller its own vector back
+        // without allocating a second one.
+        if !args
+            .iter()
+            .any(|&a| splices(&self.node(a).data, want_mul).is_some())
+        {
+            return args;
+        }
+
+        let mut out = Vec::with_capacity(args.len() + 4);
+        let mut stack = args;
+        stack.reverse();
+        while let Some(id) = stack.pop() {
+            match splices(&self.node(id).data, want_mul) {
+                Some(children) => stack.extend(children.iter().rev().copied()),
+                None => out.push(id),
+            }
+        }
+        out
+    }
+
+    pub fn add(&self, args: Vec<ExprId>) -> ExprId {
+        // Associativity holds structurally: `(a + b) + c` and `a + (b + c)`
+        // both intern as the flat `Add([a, b, c])`.
+        let mut args = self.flatten_assoc(args, false);
         // Sort children at construction time so that commutativity holds
         // structurally: `a + b` and `b + a` intern to the same ExprId.
         // The sort key is the raw ExprId (opaque u32), which gives a stable,
@@ -378,7 +428,11 @@ impl ExprPool {
         self.intern(ExprData::Add(args))
     }
 
-    pub fn mul(&self, mut args: Vec<ExprId>) -> ExprId {
+    pub fn mul(&self, args: Vec<ExprId>) -> ExprId {
+        // Associativity holds structurally, exactly as for `add`.  Splicing
+        // preserves argument order, so it is sound for the non-commutative
+        // generators of V3-2 as well as the commutative case.
+        let mut args = self.flatten_assoc(args, true);
         // Canonical sort only when every subtree is multiplicatively commutative (V3-2).
         let sort_ok = args
             .iter()
@@ -776,6 +830,133 @@ mod tests {
         let c1 = p.func("cos", vec![x]);
         assert_eq!(s1, s2);
         assert_ne!(s1, c1);
+    }
+
+    // --- associativity: Add/Mul are flat at construction ---
+
+    /// Read a node's `Mul`/`Add` children, or panic if it is neither.
+    fn nary_args(p: &ExprPool, id: ExprId) -> Vec<ExprId> {
+        p.with(id, |d| match d {
+            ExprData::Add(a) | ExprData::Mul(a) => a.clone(),
+            other => panic!("expected an Add or Mul, got {other:?}"),
+        })
+    }
+
+    #[test]
+    fn mul_splices_nested_children() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        let y = p.symbol("y", Domain::Real);
+        let z = p.symbol("z", Domain::Real);
+
+        let flat = p.mul(vec![x, y, z]);
+        let left = p.mul(vec![p.mul(vec![x, y]), z]); // (x·y)·z
+        let right = p.mul(vec![x, p.mul(vec![y, z])]); // x·(y·z)
+
+        assert_eq!(left, flat, "(x*y)*z must intern as the flat x*y*z");
+        assert_eq!(right, flat, "x*(y*z) must intern as the flat x*y*z");
+        assert_eq!(nary_args(&p, flat).len(), 3);
+    }
+
+    #[test]
+    fn add_splices_nested_children() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        let y = p.symbol("y", Domain::Real);
+        let z = p.symbol("z", Domain::Real);
+
+        let flat = p.add(vec![x, y, z]);
+        assert_eq!(p.add(vec![p.add(vec![x, y]), z]), flat);
+        assert_eq!(p.add(vec![x, p.add(vec![y, z])]), flat);
+        assert_eq!(nary_args(&p, flat).len(), 3);
+    }
+
+    /// Splicing is per-operator: an `Add` inside a `Mul` (and vice versa) is a
+    /// different operator and must be left alone, or the value would change.
+    #[test]
+    fn splicing_does_not_cross_operators() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        let y = p.symbol("y", Domain::Real);
+        let z = p.symbol("z", Domain::Real);
+
+        let sum = p.add(vec![x, y]);
+        let prod = p.mul(vec![sum, z]); // (x + y)·z  — must stay a 2-factor Mul
+        assert_eq!(nary_args(&p, prod).len(), 2);
+        assert_ne!(prod, p.mul(vec![x, y, z]));
+
+        let prod2 = p.mul(vec![x, y]);
+        let sum2 = p.add(vec![prod2, z]); // x·y + z
+        assert_eq!(nary_args(&p, sum2).len(), 2);
+        assert_ne!(sum2, p.add(vec![x, y, z]));
+    }
+
+    /// Splicing preserves argument order, so it is sound for the V3-2
+    /// non-commutative generators, which are never sorted.
+    #[test]
+    fn splicing_preserves_order_for_noncommutative_generators() {
+        let p = pool();
+        let a = p.symbol_commutative("A", Domain::Real, false);
+        let b = p.symbol_commutative("B", Domain::Real, false);
+        let c = p.symbol_commutative("C", Domain::Real, false);
+
+        let flat = p.mul(vec![a, b, c]);
+        assert_eq!(p.mul(vec![p.mul(vec![a, b]), c]), flat);
+        assert_eq!(p.mul(vec![a, p.mul(vec![b, c])]), flat);
+        assert_eq!(p.display(flat).to_string(), "(A * B * C)");
+
+        // Associativity only: A·B·C and B·A·C are still distinct expressions.
+        assert_ne!(flat, p.mul(vec![b, a, c]));
+    }
+
+    /// Flattening is a fixpoint, and it runs on an explicit worklist rather
+    /// than the native stack.  `intern` is public and `pool_persist` restores
+    /// whatever a file holds, so a genuinely nested chain can still reach the
+    /// constructors; a 50 000-deep one must splice without overflowing.
+    #[test]
+    fn splicing_a_deeply_nested_chain_does_not_recurse() {
+        const N: i64 = 50_000;
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        let mut acc = x;
+        for i in 0..N {
+            let k = p.integer(i);
+            // Deliberately bypass `add` so the chain really is nested.
+            acc = p.intern(ExprData::Add(vec![acc, k]));
+        }
+        assert_eq!(p.depth(acc), N as u32 + 1);
+
+        let flat = p.add(vec![acc]);
+        assert_eq!(p.depth(flat), 2);
+        assert_eq!(nary_args(&p, flat).len(), N as usize + 1);
+    }
+
+    /// The empty product is 1 and the empty sum is 0, so splicing an empty
+    /// child away is value-preserving too.
+    #[test]
+    fn splicing_drops_empty_same_operator_children() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        let empty_mul = p.mul(vec![]);
+        assert_eq!(p.mul(vec![x, empty_mul]), p.mul(vec![x]));
+        let empty_add = p.add(vec![]);
+        assert_eq!(p.add(vec![x, empty_add]), p.add(vec![x]));
+    }
+
+    /// Flattening only ever *increases* sharing: the three spellings of a
+    /// three-factor product are now one node, not three.
+    #[test]
+    fn flattening_improves_hash_consing() {
+        let p = pool();
+        let x = p.symbol("x", Domain::Real);
+        let y = p.symbol("y", Domain::Real);
+        let z = p.symbol("z", Domain::Real);
+        let before = p.len();
+        p.mul(vec![p.mul(vec![x, y]), z]);
+        p.mul(vec![x, p.mul(vec![y, z])]);
+        p.mul(vec![x, y, z]);
+        // Two intermediate pairs (x*y, y*z) plus the single shared flat node.
+        assert_eq!(p.len() - before, 3);
     }
 
     // --- display ---

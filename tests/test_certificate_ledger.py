@@ -87,9 +87,18 @@ def test_certifiable_reports_the_blocking_rewrite_rule(pool):
 
 
 def test_certifiable_reports_a_failing_operation_rather_than_raising(pool):
-    """Asking "is this certifiable?" must never blow up in the caller's face."""
+    """Asking "is this certifiable?" must never blow up in the caller's face.
+
+    The probe used to be ``diff(gamma(x))``, which had no derivative rule at
+    all; 3.10.0 gave it one (``Γ′ = Γ·ψ``), so the example moved to
+    ``trigamma`` — the rung where the polygamma ladder deliberately stops
+    (``ψ₁′ = ψ₂``, with no closed-form terminator short of a binary
+    ``polygamma(n, x)``).  If that ever gains a derivative, move this probe
+    again rather than deleting the test: the property under test is that a
+    *failing* operation is reported, not raised.
+    """
     x = pool.symbol("x")
-    answer = ak.certifiable("diff", ak.gamma(x), x)
+    answer = ak.certifiable("diff", ak.trigamma(x), x)
 
     assert bool(answer) is False
     assert answer.reason == "operation_failed"

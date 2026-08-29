@@ -2792,6 +2792,52 @@ fn erfc(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "erfc", expr)
 }
 
+// ── Exponential-integral family ─────────────────────────────────────────────
+//
+// Conventions follow DLMF §6.2 and are documented on
+// `alkahest_core::primitive::expint`.  `Ci`, `Chi` and `li` are complex on the
+// negative reals; the numeric kernels refuse there rather than returning a
+// real part, so numeric evaluation reports "no value" instead of a wrong one.
+
+/// ``Ei(x)``, the exponential integral (DLMF 6.2.5). ``d/dx Ei(x) = exp(x)/x``.
+#[pyfunction]
+fn exp_integral_ei(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "Ei", expr)
+}
+
+/// ``li(x)``, the logarithmic integral (DLMF 6.2.8), a Cauchy principal value
+/// for ``x > 1``. ``d/dx li(x) = 1/log(x)``.
+#[pyfunction]
+fn log_integral(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "li", expr)
+}
+
+/// ``Si(x)``, the sine integral (DLMF 6.2.9). ``d/dx Si(x) = sin(x)/x``.
+#[pyfunction]
+fn sin_integral(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "Si", expr)
+}
+
+/// ``Ci(x)``, the cosine integral (DLMF 6.2.11). ``d/dx Ci(x) = cos(x)/x``.
+#[pyfunction]
+fn cos_integral(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "Ci", expr)
+}
+
+/// ``Shi(x)``, the hyperbolic sine integral (DLMF 6.2.15).
+/// ``d/dx Shi(x) = sinh(x)/x``.
+#[pyfunction]
+fn sinh_integral(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "Shi", expr)
+}
+
+/// ``Chi(x)``, the hyperbolic cosine integral (DLMF 6.2.16).
+/// ``d/dx Chi(x) = cosh(x)/x``.
+#[pyfunction]
+fn cosh_integral(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "Chi", expr)
+}
+
 #[pyfunction]
 #[pyo3(name = "abs")]
 fn abs_expr(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
@@ -2854,6 +2900,66 @@ fn bessel_j0(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
 #[pyfunction]
 fn bessel_j1(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
     make_func(py, "bessel_j1", expr)
+}
+
+/// Trigamma ψ₁(x) = ψ′(x) = Σ_{k≥0} (x+k)⁻².
+///
+/// This is what ``digamma`` differentiates to.  ``trigamma`` itself does not
+/// differentiate: the polygamma ladder ψ₀ → ψ₁ → ψ₂ → … has no closed-form
+/// terminator without a binary ``polygamma(n, x)``, so ``diff(trigamma(x), x)``
+/// raises ``E-DIFF-001`` rather than returning something wrong.
+///
+/// Stable top-level export.
+#[pyfunction]
+fn trigamma(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "trigamma", expr)
+}
+
+/// Fresnel sine integral ``S(x) = ∫₀ˣ sin(π t²/2) dt``.
+///
+/// **Normalised (π/2) convention** — DLMF §7.2(iii), Abramowitz & Stegun §7.3,
+/// SymPy ``fresnels``, SciPy ``scipy.special.fresnel``, Mathematica
+/// ``FresnelS``.  ``S(∞) = 1/2``.  The unnormalised ``∫₀ˣ sin(t²) dt`` is a
+/// *different* function (it tends to ``√(π/8) ≈ 0.6267``), and mixing the two
+/// is a silent factor-of-``√(π/2)`` error.
+///
+/// ``d/dx S(x) = sin(π x²/2)``.
+///
+/// Stable top-level export.
+#[pyfunction]
+fn fresnels(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "fresnels", expr)
+}
+
+/// Fresnel cosine integral ``C(x) = ∫₀ˣ cos(π t²/2) dt``.
+///
+/// Same normalised (π/2) convention as :func:`fresnels`; ``C(∞) = 1/2`` and
+/// ``d/dx C(x) = cos(π x²/2)``.
+///
+/// Stable top-level export.
+#[pyfunction]
+fn fresnelc(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "fresnelc", expr)
+}
+
+/// Dilogarithm ``Li₂(x) = Σ_{k≥1} xᵏ/k²``, principal branch.
+///
+/// The branch cut runs along ``[1, ∞)`` (DLMF §25.12(i), Lewin §1.1,
+/// Mathematica ``PolyLog[2, z]``).  ``Li₂`` is real on ``(−∞, 1]`` — the
+/// endpoint included, ``Li₂(1) = π²/6`` — and numeric evaluation declines for
+/// ``x > 1``, where the principal value is complex.
+///
+/// ``d/dx Li₂(x) = −log(1 − x)/x``.
+///
+/// Alkahest ships ``dilog`` rather than a general ``polylog(s, x)``: see the
+/// module documentation of ``alkahest-core/src/primitive/polylog.rs`` for the
+/// reasoning (``∂Li_s/∂s`` has no closed form, and the rigorous Taylor tier is
+/// unary).  ``Li₁(x)`` needs no primitive — it is ``-log(1 - x)``.
+///
+/// Stable top-level export.
+#[pyfunction]
+fn dilog(py: Python<'_>, expr: PyRef<PyExpr>) -> PyExpr {
+    make_func(py, "dilog", expr)
 }
 
 /// Heaviside step `θ(x)` (registered primitive; `θ(0) = 1/2`).
@@ -15291,6 +15397,13 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(atanh, m)?)?;
     m.add_function(wrap_pyfunction!(erf, m)?)?;
     m.add_function(wrap_pyfunction!(erfc, m)?)?;
+    // Exponential-integral family
+    m.add_function(wrap_pyfunction!(exp_integral_ei, m)?)?;
+    m.add_function(wrap_pyfunction!(log_integral, m)?)?;
+    m.add_function(wrap_pyfunction!(sin_integral, m)?)?;
+    m.add_function(wrap_pyfunction!(cos_integral, m)?)?;
+    m.add_function(wrap_pyfunction!(sinh_integral, m)?)?;
+    m.add_function(wrap_pyfunction!(cosh_integral, m)?)?;
     m.add_function(wrap_pyfunction!(abs_expr, m)?)?;
     m.add_function(wrap_pyfunction!(sign, m)?)?;
     m.add_function(wrap_pyfunction!(floor, m)?)?;
@@ -15301,6 +15414,11 @@ fn alkahest(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(digamma, m)?)?;
     m.add_function(wrap_pyfunction!(bessel_j0, m)?)?;
     m.add_function(wrap_pyfunction!(bessel_j1, m)?)?;
+    // 3.10.0 special functions.
+    m.add_function(wrap_pyfunction!(trigamma, m)?)?;
+    m.add_function(wrap_pyfunction!(fresnels, m)?)?;
+    m.add_function(wrap_pyfunction!(fresnelc, m)?)?;
+    m.add_function(wrap_pyfunction!(dilog, m)?)?;
     m.add_function(wrap_pyfunction!(heaviside, m)?)?;
     m.add_function(wrap_pyfunction!(dirac_delta, m)?)?;
     // Experimental calculus / ODE / transform surface (PRs #152–#161).

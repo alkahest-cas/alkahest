@@ -919,7 +919,6 @@
         "no_derivation": 0
       },
       "blocking_rules": [
-        "collect_mul_factors",
         "diff_exp",
         "power_rule",
         "product_rule"
@@ -1167,7 +1166,7 @@
       },
       "blocking_rules": [],
       "examples": [
-        "(((((2 * x^2) * -1) + (3 * x^3)) + (5 * x)) + (-1 * 7))"
+        "((-1 * 2 * x^2) + (-1 * 7) + (3 * x^3) + (5 * x))"
       ]
     },
     {
@@ -1920,8 +1919,8 @@
       },
       "blocking_rules": [],
       "examples": [
-        "((((((-1 * 1) + x) * ((-1 * 2) + x)) * ((-1 * 3) + x)) * ((-1 * 4) + x))^-1 * 1)",
-        "(((((-1 * 1) + x) * ((-1 * 2) + x)) * ((-1 * 3) + x))^-1 * 1)",
+        "((((-1 * 1) + x) * ((-1 * 2) + x) * ((-1 * 3) + x) * ((-1 * 4) + x))^-1 * 1)",
+        "((((-1 * 1) + x) * ((-1 * 2) + x) * ((-1 * 3) + x))^-1 * 1)",
         "((((-1 * 1) + x) * ((-1 * 2) + x))^-1 * 1)"
       ]
     },
@@ -2457,7 +2456,7 @@
       },
       "blocking_rules": [],
       "examples": [
-        "((3 * cos(x)) + (sin(x) + x^2))"
+        "((3 * cos(x)) + sin(x) + x^2)"
       ]
     },
     {
@@ -3059,7 +3058,7 @@
       },
       "blocking_rules": [],
       "examples": [
-        "((2 * sin(x)) * cos(x))"
+        "(2 * cos(x) * sin(x))"
       ]
     },
     {
@@ -3135,15 +3134,15 @@
         "mul": "general",
         "pow": "none"
       },
-      "verdict": "certified",
+      "verdict": "withheld",
       "observations": {
-        "certified": 1,
+        "certified": 0,
         "withheld": 0,
-        "no_derivation": 0
+        "no_derivation": 1
       },
       "blocking_rules": [],
       "examples": [
-        "((2 * sinh(x)) * cosh(x))"
+        "(2 * cosh(x) * sinh(x))"
       ]
     },
     {
@@ -3177,15 +3176,15 @@
         "mul": "general",
         "pow": "neg"
       },
-      "verdict": "certified",
+      "verdict": "withheld",
       "observations": {
-        "certified": 1,
+        "certified": 0,
         "withheld": 0,
-        "no_derivation": 0
+        "no_derivation": 1
       },
       "blocking_rules": [],
       "examples": [
-        "(((sin(x))^-1 * 1) * sin(x))"
+        "((sin(x))^-1 * 1 * sin(x))"
       ]
     },
     {
@@ -3206,7 +3205,7 @@
       },
       "blocking_rules": [],
       "examples": [
-        "((((cos(x))^-1 * sin(x)) * -1) + tan(x))",
+        "(((cos(x))^-1 * -1 * sin(x)) + tan(x))",
         "(((cos(x))^-1 * sin(x)) + (-1 * tan(x)))"
       ]
     },
@@ -3262,15 +3261,15 @@
         "mul": "scalar",
         "pow": "nat"
       },
-      "verdict": "certified",
+      "verdict": "withheld",
       "observations": {
-        "certified": 1,
+        "certified": 0,
         "withheld": 0,
-        "no_derivation": 0
+        "no_derivation": 1
       },
       "blocking_rules": [],
       "examples": [
-        "((((((sin(x))^2 * 2) * -1) + 1) * -1) + cos((2 * x)))"
+        "(((((sin(x))^2 * -1 * 2) + 1) * -1) + cos((2 * x)))"
       ]
     },
     {
@@ -3346,15 +3345,15 @@
         "mul": "scalar",
         "pow": "nat"
       },
-      "verdict": "certified",
+      "verdict": "withheld",
       "observations": {
-        "certified": 1,
+        "certified": 0,
         "withheld": 0,
-        "no_derivation": 0
+        "no_derivation": 1
       },
       "blocking_rules": [],
       "examples": [
-        "((((sin(x))^2 * 2) * -1) + 1)"
+        "(((sin(x))^2 * -1 * 2) + 1)"
       ]
     },
     {

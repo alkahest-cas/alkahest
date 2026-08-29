@@ -960,6 +960,98 @@ impl ArbBall {
         b.add_rounding_error();
         b
     }
+
+    // ── Fresnel integrals, dilogarithm, trigamma (3.10.0) ────────────────
+
+    /// Fresnel sine integral `S(x) = ∫₀ˣ sin(πt²/2) dt`, normalised (π/2)
+    /// convention — see [`crate::primitive::fresnel`].
+    ///
+    /// Midpoint plus a Lipschitz radius, **not** an endpoint hull: `S′(x) =
+    /// sin(πx²/2)` oscillates ever faster, so `hull(S(lo), S(hi))` is not an
+    /// enclosure of the range (the same trap [`ArbBall::bessel_jn`] documents).
+    /// The mean value theorem gives `|S(x) − S(m)| ≤ L·|x − m|` with
+    /// `L = sup|S′| = 1` exactly, since `S′` is a sine — so the radius is
+    /// carried across unchanged, which is both sound and sharp in the limit.
+    pub fn fresnel_s(&self) -> Option<Self> {
+        self.fresnel(true)
+    }
+
+    /// Fresnel cosine integral `C(x) = ∫₀ˣ cos(πt²/2) dt`.  Same enclosure
+    /// argument as [`ArbBall::fresnel_s`], with `sup|C′| = 1`.
+    pub fn fresnel_c(&self) -> Option<Self> {
+        self.fresnel(false)
+    }
+
+    fn fresnel(&self, sine: bool) -> Option<Self> {
+        let prec = self.prec;
+        let (s, c) = crate::primitive::fresnel::fresnel_pair_ball(&self.mid, prec)?;
+        let point = if sine { s } else { c };
+        let mut b = ArbBall {
+            mid: point.mid,
+            // sup|S′| = sup|C′| = 1, so the Lipschitz radius is the input
+            // radius, plus whatever the point kernel could not resolve.
+            rad: Float::with_val(prec, &self.rad + &point.rad),
+            prec,
+        };
+        b.add_rounding_error();
+        Some(b)
+    }
+
+    /// Dilogarithm `Li₂(x)`, principal branch (cut on `[1, ∞)`).  `None` when
+    /// the enclosure reaches past `1`.
+    ///
+    /// An **endpoint hull**, which is valid here — unlike for `bessel_jn` —
+    /// because `Li₂′(x) = −log(1−x)/x > 0` on all of `(−∞, 1)`: for `0 < x < 1`
+    /// both factors are positive, for `x < 0` both are negative, and the
+    /// removable point `x = 0` has `Li₂′(0) = 1`.  So `Li₂` is strictly
+    /// increasing on its real domain and its range over `[a, b]` is exactly
+    /// `[Li₂(a), Li₂(b)]`.
+    pub fn dilog(&self) -> Option<Self> {
+        let prec = self.prec;
+        let lo = crate::primitive::polylog::dilog_ball_point(&self.lo(), prec)?;
+        let hi = crate::primitive::polylog::dilog_ball_point(&self.hi(), prec)?;
+        let low = lo.lo();
+        let high = hi.hi();
+        let sum = Float::with_val(prec, &low + &high);
+        let diff = Float::with_val(prec, &high - &low);
+        let mut b = ArbBall {
+            mid: sum / 2_f64,
+            rad: Float::with_val(prec, diff / 2_f64).abs(),
+            prec,
+        };
+        b.add_rounding_error();
+        Some(b)
+    }
+
+    /// Trigamma `ψ₁(x) = Σ_{k≥0} (x+k)⁻²`.  `None` when the ball contains a
+    /// non-positive integer, where `ψ₁` has a double pole.
+    ///
+    /// An endpoint hull, for the same reason [`ArbBall::digamma`] uses one:
+    /// `ψ₁` is *strictly decreasing* on `(0, ∞)` — every term of
+    /// `Σ (x+k)⁻²` is — so the range over `[a, b]` is `[ψ₁(b), ψ₁(a)]`.
+    /// Between the negative poles `ψ₁` is not monotone, so, exactly as for
+    /// `digamma`, only the positive axis is covered.
+    pub fn trigamma(&self) -> Option<Self> {
+        let lo = self.lo().to_f64();
+        let hi = self.hi().to_f64();
+        if !(lo.is_finite() && hi.is_finite()) || lo <= 0.0 {
+            return None;
+        }
+        let prec = self.prec;
+        let work = prec + 32;
+        let flo = crate::special::trigamma(&Float::with_val(work, self.lo()))?;
+        let fhi = crate::special::trigamma(&Float::with_val(work, self.hi()))?;
+        // Decreasing: the value at the *lower* endpoint is the upper bound.
+        let sum = Float::with_val(prec, &flo + &fhi);
+        let diff = Float::with_val(prec, &flo - &fhi);
+        let mut b = ArbBall {
+            mid: sum / 2_f64,
+            rad: Float::with_val(prec, diff / 2_f64).abs(),
+            prec,
+        };
+        b.add_rounding_error();
+        Some(b)
+    }
 }
 
 /// A certified bracket `(low, high)` with `low ≤ W₀(x) ≤ high`, or `None` when

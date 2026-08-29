@@ -61,15 +61,18 @@ impl TowerLevel {
 // ---------------------------------------------------------------------------
 //
 // `a/b`, `a·b⁻¹` and `(a·b)⁻¹` denote the same function, but they are three
-// different trees and the parser does not produce the same exponent for all of
-// them (`^(-1)` yields the unevaluated `(1 · -1)`, `/` yields the literal `-1`).
-// Every structural detector and matcher below keys on tree shape, so without a
-// normalising view the *spelling* of an integrand decides its route through the
-// integrator.  These two helpers give the detectors a spelling-independent
-// reading of "integer exponent" and "power of a product".
+// different trees, and an exponent of `-1` does not always arrive as the
+// literal `-1`: prefix negation is `(-1) · operand`, so `(-1)` built through
+// the pool API or Python's `Expr.__neg__` is the unevaluated product `(1 · -1)`.
+// (The parsers now fold that case — see `negate_literal` in `crate::parse` —
+// but the builder API is public and every non-parser caller can still hand us
+// the product.)  Every structural detector and matcher below keys on tree
+// shape, so without a normalising view the *spelling* of an integrand decides
+// its route through the integrator.  These two helpers give the detectors a
+// spelling-independent reading of "integer exponent" and "power of a product".
 
 /// The value of a **var-free integer-valued exponent**, folding the small
-/// arithmetic the parser leaves behind (`x^(-1)` parses as `x^(1 · -1)`).
+/// arithmetic a caller can leave behind (`pool.mul([1, -1])` for `-1`).
 ///
 /// Only `Integer`, `Add`, `Mul` and non-negative integer `Pow` nodes are
 /// folded — no simplifier is invoked, so this is cheap enough to call from a
@@ -241,8 +244,8 @@ pub fn extract_exp_factor(expr: ExprId, exp_gen: ExprId, pool: &ExprPool) -> Opt
                 if a == exp_gen {
                     exp_power += 1;
                 } else if let ExprData::Pow { base, exp } = pool.get(a) {
-                    // The exponent is folded (`^(-1)` parses as `^(1 · -1)`), so
-                    // the `/` and `^(-n)` spellings decompose identically.
+                    // The exponent is folded (a hand-built `-1` can arrive as
+                    // `1 · -1`), so `/` and `^(-n)` decompose identically.
                     match (base == exp_gen)
                         .then(|| literal_integer(exp, pool))
                         .flatten()

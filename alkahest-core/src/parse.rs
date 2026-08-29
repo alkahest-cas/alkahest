@@ -37,7 +37,7 @@
 use std::collections::HashMap;
 
 use crate::errors::AlkahestError;
-use crate::kernel::{Domain, ExprId, ExprPool};
+use crate::kernel::{Domain, ExprData, ExprId, ExprPool};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -268,6 +268,45 @@ fn infix_bp(tok: &Tok) -> u8 {
 }
 
 // ---------------------------------------------------------------------------
+// Unary minus on a literal
+// ---------------------------------------------------------------------------
+
+/// If `id` is an exact numeric literal, return the interned literal for its
+/// negation; otherwise `None`.
+///
+/// Prefix `-` is otherwise built as `(-1) · operand`, which for a literal
+/// operand leaves an unevaluated product in the pool: `x^(-1)` used to intern
+/// as `x^(1 · -1)` while `1/x` interned as `x^(-1)`.  The two are the same
+/// function, but every structural detector that reads an exponent by matching
+/// `ExprData::Integer` saw only the second one, so the *spelling* of an
+/// integrand decided its route through the integrator.  Folding here means the
+/// divergence never enters the pool.
+///
+/// Scope is deliberately just `Integer` and `Rational`:
+///
+/// * `Float` is left alone — negating it is exact, but `-0.0` and `(-1)·0.0`
+///   are then two different literals rather than two spellings of one, and no
+///   detector keys on a float exponent.
+/// * No arithmetic is evaluated. `-(2+3)` and `x^(2-3)` keep their trees;
+///   constant folding is the simplifier's job, not the parser's.
+///
+/// The `(-1) · literal` shape is still reachable through the pool builder API
+/// (`pool.mul(vec![pool.integer(-1), pool.integer(1)])`, `Expr.__neg__`), so
+/// the detectors keep their own normalising view of an integer exponent — see
+/// [`crate::integrate::risch::tower::literal_integer`].  This is the first of
+/// two layers, not a replacement for the second.
+fn negate_literal(id: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    match pool.get(id) {
+        ExprData::Integer(n) => Some(pool.integer(-n.0)),
+        ExprData::Rational(r) => {
+            let (num, den) = r.0.into_numer_denom();
+            Some(pool.rational(-num, den))
+        }
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Known function names
 // ---------------------------------------------------------------------------
 
@@ -480,7 +519,10 @@ impl<'a> Parser<'a> {
 
             Tok::Minus => {
                 let operand = self.parse_expr(BP_UNARY)?;
-                // -x  →  (-1) * x
+                // -3  →  the literal -3;  -x  →  (-1) * x
+                if let Some(folded) = negate_literal(operand, self.pool) {
+                    return Ok(folded);
+                }
                 let neg1 = self.pool.integer(-1i64);
                 Ok(self.pool.mul(vec![neg1, operand]))
             }
@@ -698,6 +740,216 @@ mod tests {
         let neg1 = pool.integer(-1i64);
         let expected = pool.mul(vec![neg1, x]);
         assert_eq!(e, expected);
+    }
+
+    // -----------------------------------------------------------------------
+    // Unary minus on a literal folds; unary minus on anything else does not
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn unary_minus_on_a_literal_folds() {
+        let (pool, _x, mut syms) = pool_and_x();
+        assert_eq!(
+            parse("-3", &pool, &mut syms).unwrap(),
+            pool.integer(-3i64),
+            "-3 must intern as the literal -3, not as 1 · -3"
+        );
+        assert_eq!(
+            parse("-(-3)", &pool, &mut syms).unwrap(),
+            pool.integer(3i64),
+            "the fold has to compose with itself"
+        );
+        assert_eq!(
+            parse("-0", &pool, &mut syms).unwrap(),
+            pool.integer(0i64),
+            "there is only one integer zero"
+        );
+    }
+
+    /// The bug this fold exists to kill: `^(-n)` used to intern its exponent as
+    /// the unevaluated `Mul[1, -n]`, which every detector that reads an exponent
+    /// by matching `ExprData::Integer` saw as a non-literal and bailed on — while
+    /// the `/` spelling of the very same function handed it a bare `Integer(-n)`.
+    #[test]
+    fn a_negative_exponent_is_a_literal_however_it_is_spelled() {
+        let (pool, _x, mut syms) = pool_and_x();
+
+        // The exponent node itself: this is what the detectors read.
+        for (src, want) in [
+            ("x^(-1)", -1_i64),
+            ("x^-1", -1),
+            ("x^(-2)", -2),
+            ("(x^2+1)^(-1)", -1),
+            ("(x*log(x))^(-1)", -1),
+        ] {
+            let e = parse(src, &pool, &mut syms).unwrap();
+            let ExprData::Pow { exp, .. } = pool.get(e) else {
+                panic!("`{src}` should parse to a Pow, got {}", pool.display(e));
+            };
+            assert_eq!(
+                exp,
+                pool.integer(want),
+                "`{src}` has exponent {}, not the literal {want}",
+                pool.display(exp)
+            );
+        }
+
+        // …and so `a · b^(-1)` and `a/b` are now literally one node.
+        for (a, b) in [
+            ("2*x^(-1)", "2/x"),
+            ("log(x)*(x^2+1)^(-1)", "log(x)/(x^2+1)"),
+            ("sin(x)*(x*log(x))^(-1)", "sin(x)/(x*log(x))"),
+        ] {
+            let ea = parse(a, &pool, &mut syms).unwrap();
+            let eb = parse(b, &pool, &mut syms).unwrap();
+            assert_eq!(
+                ea,
+                eb,
+                "`{a}` and `{b}` must hash-cons to one node, got {} vs {}",
+                pool.display(ea),
+                pool.display(eb)
+            );
+        }
+
+        // What this does *not* claim.  `/` keeps its left operand, so a bare
+        // `1/x` is `1 · x^(-1)` and carries a redundant unit factor that
+        // `x^(-1)` does not; and `1/x^2` is `(x^2)^(-1)`, not `x^(-2)`.  Both
+        // are pre-existing spelling differences above the exponent, and folding
+        // them away is the simplifier's job, not the parser's.  Pinned so this
+        // test is not read as claiming more than it does.
+        assert_ne!(
+            parse("1/x", &pool, &mut syms).unwrap(),
+            parse("x^(-1)", &pool, &mut syms).unwrap()
+        );
+        assert_ne!(
+            parse("1/x^2", &pool, &mut syms).unwrap(),
+            parse("x^(-2)", &pool, &mut syms).unwrap()
+        );
+    }
+
+    /// Nothing but a bare `Integer`/`Rational` operand folds.  Over-folding
+    /// would be a silent precedence change (`-2^2` is `-(2^2) = -4`, never
+    /// `(-2)^2 = 4`) and would strip the `(-1) ·` prefix that `simplify` and
+    /// the display layer key on for symbolic negation.
+    #[test]
+    fn unary_minus_on_a_non_literal_is_left_alone() {
+        let (pool, x, mut syms) = pool_and_x();
+        let neg1 = pool.integer(-1i64);
+
+        // Symbol.
+        assert_eq!(
+            parse("-x", &pool, &mut syms).unwrap(),
+            pool.mul(vec![neg1, x])
+        );
+        // Sum — no constant folding: `-(2+3)` keeps its tree.
+        let two_plus_three = pool.add(vec![pool.integer(2i64), pool.integer(3i64)]);
+        assert_eq!(
+            parse("-(2+3)", &pool, &mut syms).unwrap(),
+            pool.mul(vec![neg1, two_plus_three])
+        );
+        // Function application.
+        assert_eq!(
+            parse("-sin(x)", &pool, &mut syms).unwrap(),
+            pool.mul(vec![neg1, pool.func("sin", vec![x])])
+        );
+        // Double negation of a symbol stays two products, not `x`.
+        let neg_x = pool.mul(vec![neg1, x]);
+        assert_eq!(
+            parse("-(-x)", &pool, &mut syms).unwrap(),
+            pool.mul(vec![neg1, neg_x])
+        );
+        // `^` binds tighter than prefix `-`, so the operand is a `Pow`, never a
+        // literal.  These two are the precedence regression guards.
+        assert_eq!(
+            parse("-x^2", &pool, &mut syms).unwrap(),
+            pool.mul(vec![neg1, pool.pow(x, pool.integer(2i64))])
+        );
+        assert_eq!(
+            parse("-2^2", &pool, &mut syms).unwrap(),
+            pool.mul(vec![neg1, pool.pow(pool.integer(2i64), pool.integer(2i64))]),
+            "-2^2 is -(2^2) = -4; folding it to (-2)^2 = 4 would change the value"
+        );
+        // A float literal is deliberately out of scope — see `negate_literal`.
+        assert_eq!(
+            parse("-3.5", &pool, &mut syms).unwrap(),
+            pool.mul(vec![neg1, pool.float(3.5, 53)])
+        );
+    }
+
+    /// `-1/2` is `(-1)/2`, not `-(1/2)`: prefix `-` binds tighter than `/`, so
+    /// the fold sees the literal `1` and the division is applied afterwards.
+    /// The exponent is still var-free and negative, which is all the detectors
+    /// downstream ask of it.
+    #[test]
+    fn a_negative_rational_exponent_keeps_its_value() {
+        let (pool, x, mut syms) = pool_and_x();
+        let e = parse("x^(-1/2)", &pool, &mut syms).unwrap();
+        let expected_exp = pool.mul(vec![
+            pool.integer(-1i64),
+            pool.pow(pool.integer(2i64), pool.integer(-1i64)),
+        ]);
+        assert_eq!(e, pool.pow(x, expected_exp));
+        // `1/sqrt(x)` is *not* the same tree: `sqrt` is a `Func`, not a `Pow`.
+        // Pinned so nobody reads the test above as claiming more than it does.
+        assert_ne!(e, parse("1/sqrt(x)", &pool, &mut syms).unwrap());
+    }
+
+    /// The `Rational` arm of [`negate_literal`] is unreachable from the lexer
+    /// today (it only emits `Integer` and `Float`), so exercise it directly
+    /// rather than leaving it as untested defensive code.
+    #[test]
+    fn negate_literal_handles_both_exact_kinds() {
+        let pool = ExprPool::new();
+        assert_eq!(
+            negate_literal(pool.integer(7i64), &pool),
+            Some(pool.integer(-7i64))
+        );
+        assert_eq!(
+            negate_literal(pool.rational(2i64, 3i64), &pool),
+            Some(pool.rational(-2i64, 3i64))
+        );
+        assert_eq!(
+            negate_literal(pool.rational(-2i64, 3i64), &pool),
+            Some(pool.rational(2i64, 3i64))
+        );
+        assert_eq!(negate_literal(pool.float(1.5, 53), &pool), None);
+        assert_eq!(negate_literal(pool.symbol("y", Domain::Real), &pool), None);
+    }
+
+    /// Every shape the fold touches has to survive `display` → `parse` → the
+    /// same node.  A representation change that the printer cannot spell back
+    /// is a round-trip bug, not a simplification.
+    #[test]
+    fn negatives_round_trip_through_display() {
+        let (pool, _x, mut syms) = pool_and_x();
+        for src in [
+            "-x",
+            "-3",
+            "x - 3",
+            "2 - -3",
+            "-(-x)",
+            "-(-3)",
+            "x^-1",
+            "x^(-1)",
+            "-x^2",
+            "1/-x",
+            "-2/3",
+            "-3.5",
+            "1/x",
+            "(x^2+1)^(-1)",
+        ] {
+            let e = parse(src, &pool, &mut syms).unwrap();
+            let shown = pool.display(e).to_string();
+            let reparsed = parse(&shown, &pool, &mut syms).unwrap_or_else(|err| {
+                panic!("`{src}` displayed as `{shown}`, which fails to reparse: {err}")
+            });
+            assert_eq!(
+                e,
+                reparsed,
+                "`{src}` displayed as `{shown}`, which reparsed to `{}`",
+                pool.display(reparsed)
+            );
+        }
     }
 
     #[test]
@@ -923,5 +1175,87 @@ mod tests {
         let pool = ExprPool::new();
         let mut syms = HashMap::new();
         parse("atan2(1, 2)", &pool, &mut syms).unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // Associativity.  The grammar is left-associative, so `a*b*c` is parsed as
+    // `(a*b)*c`; `ExprPool::mul`/`add` splice that back into one flat node, so
+    // the parsed form and the n-ary builder form are the same expression.
+    // -----------------------------------------------------------------------
+
+    fn pool_xyz() -> (ExprPool, [ExprId; 3], HashMap<String, ExprId>) {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let z = pool.symbol("z", Domain::Real);
+        let syms = HashMap::from([
+            ("x".to_owned(), x),
+            ("y".to_owned(), y),
+            ("z".to_owned(), z),
+        ]);
+        (pool, [x, y, z], syms)
+    }
+
+    #[test]
+    fn parsed_product_chain_is_the_flat_mul() {
+        let (pool, [x, y, z], mut syms) = pool_xyz();
+        let flat = pool.mul(vec![x, y, z]);
+        for src in ["x*y*z", "(x*y)*z", "x*(y*z)"] {
+            assert_eq!(
+                parse(src, &pool, &mut syms).unwrap(),
+                flat,
+                "{src} must parse to the flat 3-factor Mul"
+            );
+        }
+    }
+
+    #[test]
+    fn parsed_sum_chain_is_the_flat_add() {
+        let (pool, [x, y, z], mut syms) = pool_xyz();
+        let flat = pool.add(vec![x, y, z]);
+        for src in ["x+y+z", "(x+y)+z", "x+(y+z)"] {
+            assert_eq!(
+                parse(src, &pool, &mut syms).unwrap(),
+                flat,
+                "{src} must parse to the flat 3-term Add"
+            );
+        }
+    }
+
+    /// A longer chain, and one mixing both operators, to show the splice is not
+    /// a one-level special case and does not cross operator boundaries.
+    #[test]
+    fn deeper_parsed_chains_flatten() {
+        let (pool, [x, y, z], mut syms) = pool_xyz();
+        let e = parse("x*y*z*x*y", &pool, &mut syms).unwrap();
+        assert_eq!(e, pool.mul(vec![x, y, z, x, y]));
+        assert_eq!(pool.depth(e), 2);
+
+        let mixed = parse("x*y + z + x*y*z", &pool, &mut syms).unwrap();
+        assert_eq!(
+            mixed,
+            pool.add(vec![pool.mul(vec![x, y]), z, pool.mul(vec![x, y, z])])
+        );
+    }
+
+    /// `parse → display → parse` is a fixpoint on the flattened form.
+    #[test]
+    fn display_round_trips_through_the_parser() {
+        for src in [
+            "x*y*z",
+            "x+y+z",
+            "x*y + z",
+            "(x + y)*z",
+            "x*y*z + x*y + z",
+            "2*x*y*z",
+            "x^2*y*z",
+        ] {
+            let (pool, _xyz, mut syms) = pool_xyz();
+            let once = parse(src, &pool, &mut syms).unwrap();
+            let rendered = pool.display(once).to_string();
+            let twice = parse(&rendered, &pool, &mut syms).unwrap();
+            assert_eq!(once, twice, "round trip changed {src} via {rendered}");
+            assert_eq!(pool.display(twice).to_string(), rendered);
+        }
     }
 }

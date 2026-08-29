@@ -260,6 +260,128 @@
   against an `E-INT-001`, so no integral that already solves changes shape and no
   `E-INT-004` verdict can be talked down by it. Beyond the family above this also
   closes the `asinh` half (`∫x dx/√(1+x⁴)`), previously an honest decline.
+- **`Add` and `Mul` are flat at construction, so associativity holds
+  structurally.** `ExprPool::mul` / `ExprPool::add` now splice nested
+  same-operator children before interning, so `(a·b)·c`, `a·(b·c)` and `a·b·c`
+  are one expression rather than three. This is the last of the three
+  dimensions of the form-robustness bug fixed in this release (after route
+  fall-through and exponent spelling); previously `parse("x*y*z")` produced the
+  left-associative `(z * (x * y))` while `pool.mul([x, y, z])` produced a flat
+  three-child node, and the two compared unequal.
+
+  ```text
+  parse("x*y*z") == pool.mul([x, y, z])        # was False, now True
+  pool.mul([pool.mul([x, y]), z]) == pool.mul([x, y, z])   # was False, now True
+  ```
+
+  It is **associativity and nothing else** — no reordering beyond the canonical
+  sort the pool already applied, no constant folding, no identity elimination —
+  so no value changes anywhere. `simplify` already performed exactly this
+  transformation (`flatten_mul` / `flatten_add`); doing it at construction just
+  means everything that inspects structure *before* `simplify` runs now sees the
+  shape the user wrote. Every matcher that scans the top-level arguments of a
+  product or a sum used to see two children where the user wrote three.
+
+  The fix is in the two kernel constructors rather than in the parsers, which
+  is what makes it reach every construction path at once: both parsers (the
+  Rust one *and* the separate pure-Python Pratt parser in `alkahest/_parse.py`,
+  which has no binding to the Rust one and would otherwise have needed the same
+  fix twice), the builder API, the Python operator overloads, and every internal
+  `pool.mul(vec![…])` call site. Splicing preserves argument order, so it is
+  sound for the V3-2 non-commutative generators as well. `pool_persist` restores
+  nodes through `intern`, not through `mul`/`add`, so a `.pool` file written by
+  an older build still round-trips byte-for-byte with its `ExprId`s intact; the
+  splice is a fixpoint on an explicit worklist precisely so that such a restored
+  nested node still flattens the next time it reaches a constructor.
+
+  **Behaviour changes to plan for.**
+
+  - **Depth.** Flattening *reduces* depth, so a left-associated chain of `+` or
+    `*` no longer approaches the `E-DEPTH-001` ceiling: 100 000 terms
+    accumulated one at a time are now the same depth-2 node as adding them all
+    at once. Expressions previously refused as too deep are now accepted.
+    `Pow` towers and `Func` chains are unaffected.
+  - **Sharing.** Distinct spellings of one product now intern to one node, which
+    *improves* sharing. The reverse case is `e = e + e` in a loop: that used to
+    build a depth-*n* DAG of *n* nodes and now builds a flat node of 2ⁿ children
+    (measured: 20 iterations → 2 097 152 children, 203 MB). Combining an
+    expression with itself under the same operator many times is now
+    proportionally expensive.
+  - **`subs` with a compound key.** A key is matched as a whole node, never as a
+    sub-multiset of a wider sum or product, so `x + y → z` no longer rewrites
+    `x + y + 1`. This used to depend on spelling — `x + y + 1` parsed to
+    `Add([Add([x, y]), 1])` and *was* rewritten, `1 + x + y` parsed to
+    `Add([Add([1, x]), y])` and was *not*. Both are now the same node and
+    neither is. AC matching against part of a sum is the pattern API's job.
+  - **Certificate ledger.** Four `simplify_trig` shape classes move from
+    `certified` to `withheld` (66 → 62 of 156). No mathematics changed: their
+    only recorded rewrite step was `flatten_mul`/`flatten_add`, which can no
+    longer fire because the expression is never in the unflattened form. The
+    simplified *values* are identical.
+  - **Provenance.** `alkahest.research`'s dependency inference walks
+    subexpressions to decide which earlier claim a value came from; a result
+    buried in a wider product is no longer a subexpression of it. The walker now
+    also enumerates the proper sub-sums and sub-products of flat `Add`/`Mul`
+    nodes (bounded to arity ≤ 6), which restores the edges and finds ones the
+    old binary chains missed.
+
+  **Measured.** The 40-case integration probe holds at 27 solved / 7
+  `E-INT-004` / 6 `E-INT-001`, with all 40 verdicts identical and no regression;
+  five results print with one fewer nesting level (the same terms, re-associated).
+  Charlwood's Fifty goes from **12/50 to 14/50** solved-and-verified, with zero
+  regressions and zero false certificates. The two new solves — both `E-INT-001
+  irreducible product of var-dependent factors` before, both verified by
+  differentiating the answer back at every usable sample point with no
+  disagreement — are
+
+  ```text
+  ∫ x·asin(x)/√(1−x²) dx  =  x − asin(x)·√(1−x²)          (18 points, 0 mismatches)
+  ∫ x·atan(x)/√(1+x²) dx                                  (42 points, 0 mismatches)
+  ```
+
+  Both are exactly the failure this fixes: the integrand parsed as a two-child
+  `Mul` with the inverse-trig factor buried in a nested `Mul`, so the top-level
+  factor scan never saw it. Seven further Charlwood answers changed term order
+  only, and stayed verified.
+
+  **Cost.** `intern/build_add3` — the microbenchmark that builds a three-argument
+  `Add`, i.e. the most directly affected hot path — moves 72.2 ns → 73.6 ns
+  (+2.0%), which is the "does any child need splicing?" scan. Every other
+  `intern`/`simplify` microbenchmark moves within ±10% with no consistent sign,
+  and the 618-test `integrate::` suite runs 12.44 s → 13.02 s. The Rust suite as
+  a whole is 91.6 s → 103.7 s, most of which is the new 50 000-node splice
+  regression test.
+
+- **The parsers fold `-<numeric literal>`, so `x^(-1)` and `1/x` no longer
+  disagree about what a `-1` exponent is.** Prefix `-` built `(-1) · operand`
+  unconditionally, which for a literal operand left an unevaluated product in
+  the pool: `x^(-1)` interned as `x^(1 · -1)` where `1/x` interned as `x^(-1)`.
+  The two are the same function, but every structural detector that reads an
+  exponent by matching an integer node saw only the second, which is the root
+  cause behind the spelling-sensitivity fixed below. Unary minus applied to an
+  `Integer` or `Rational` literal now emits the negated literal directly, in
+  both `alkahest-core/src/parse.rs` and its Python mirror
+  `alkahest/_parse.py` (`alkahest.parse`). **Nothing else folds**: `-x` is still
+  `(-1) · x`, `-(2+3)` keeps its tree, `-2^2` is still `-(2^2) = -4`, and float
+  literals are deliberately left alone. Mathematical values are unchanged
+  throughout — this is a representation fix.
+
+  The `(-1) · literal` shape stays reachable through the public builder API
+  (`Expr.__neg__`, `pool.mul([pool.integer(-1), …])`), so the detectors keep
+  their own normalising view of an integer exponent
+  (`risch::tower::literal_integer`) as a second layer. Both layers are pinned
+  by tests.
+
+  Measured over a 56-integrand probe restricted to inputs that contain a unary
+  minus on a literal — the only ones the fold can reach: **5 newly solved, 0
+  regressions, 0 changed answers**, and one verdict *upgrade*. Newly solved (all
+  verified by differentiating the answer back): `∫ dx/cos²x`, `∫ dx/sin x`,
+  `∫ dx/(1+sin x)`, `∫ dx/(2+cos x)` and `∫ dx/(1+e⁻ˣ)`, each written with a
+  `^(-n)` exponent rather than `/`. The upgrade is `∫ log(x)^(-1) dx`, which now
+  certifies `E-INT-004` (li is non-elementary) instead of the weaker
+  `E-INT-001` — the same verdict the identical `1/log(x)` spelling already had.
+  The `∫ eˣe^(eˣ)/(e^(eˣ)+1) dx` family, including its `-3·`/`-4·` and `^(-n)`
+  variants, is solved identically before and after.
 
 - **`integrate` no longer lets the *spelling* of an integrand decide the
   answer.** Three separate defects combined into one user-visible failure mode:
@@ -293,11 +415,12 @@
      `d/dx F = f`, `try_log_derivative` fires only on an exact `h'/h` match, and
      Rothstein–Trager is exact.
 
-  2. **The detectors read tree shape, and the parser does not give `/` and
-     `^(-1)` the same tree.** `x^(-1)` parses to the unevaluated exponent
-     `1 · -1` while `1/x` gives the literal `-1`, and `(a·b)^n` was never read as
-     `a^n·b^n`. Two helpers in `risch::tower` — `literal_integer` (folds a
-     var-free integer exponent without invoking the simplifier) and
+  2. **The detectors read tree shape, and `/` and `^(-1)` did not give the same
+     tree.** Prefix negation is `(-1) · operand`, so `x^(-1)` produced the
+     unevaluated exponent `1 · -1` while `1/x` gave the literal `-1`, and
+     `(a·b)^n` was never read as `a^n·b^n`. Two helpers in `risch::tower` —
+     `literal_integer` (folds a var-free integer exponent without invoking the
+     simplifier) and
      `distribute_integer_pow_over_mul` (`(a·b)^n = a^n·b^n`, an identity for
      *integer* `n`, which is why `(a·b)^(1/2)` stays out) — now give every
      detector and matcher a spelling-independent reading: `needs_log_risch`,
@@ -550,6 +673,70 @@
   integrand in `x`; `∫√(tan x) dx` comes out in the classical closed form and
   reaches `EnclosureVerified` with a residual bound of 9.8e-9. A bare `x`
   outside the radical, a polynomial radicand, and `√(sin x)` all decline.
+- **`gamma`, `digamma` and `EllipticPi` can be differentiated — and
+  `trigamma` is new.** All three parsed and evaluated but could not be
+  differentiated in every argument, and an antiderivative carrying one of them
+  is *unverifiable*: the integrator's gate checks `d/dx F = f` and cannot
+  check what it cannot differentiate. Now `d/dx Γ(x) = Γ(x)·ψ(x)` (DLMF
+  5.2.2), `d/dx ψ(x) = ψ₁(x)`, and `Π(n; φ | m)` differentiates in **all
+  three** of its arguments. Previously only `∂Π/∂φ` existed, and even that
+  rule bailed out entirely as soon as `n` or `m` depended on the
+  differentiation variable — so `diff(Π(n(x), φ, m), x)` failed with
+  `E-DIFF-001`. The `∂/∂n` and `∂/∂m` reductions (DLMF 19.4.7 rewritten for
+  the parameter convention `m = k²`; Byrd & Friedman 710 for `∂/∂n`) were
+  checked against central differences of the quadrature evaluator before being
+  written down.
+
+  `trigamma(x)` = `ψ₁ = ψ′` is a new primitive with the full bundle
+  (`numeric_f64`, `numeric_ball`, a rigorous Taylor-model rule so
+  `bound_on_box` reaches it, unicode `ψ₁` + LaTeX `\psi_1`, PyO3 binding).
+  It is the one deliberate exception to "every primitive differentiates":
+  `ψ₁′ = ψ₂` and the polygamma ladder has no closed-form terminator short of a
+  binary `polygamma(n, x)`, so `diff(trigamma(x), x)` **declines** with
+  `E-DIFF-001` rather than returning a placeholder. Moving the boundary from
+  `ψ₀` to `ψ₁` is what makes `Γ′ = Γψ` and `Γ″ = Γ(ψ² + ψ₁)` both land on
+  functions the gate can evaluate and bound.
+
+  New: `alkahest.trigamma` (additive to `__all__`).
+
+- **Fresnel integrals `fresnels`/`fresnelc`**, in the **normalised (π/2)
+  convention** — DLMF §7.2(iii), A&S §7.3, SymPy, SciPy, Mathematica — with
+  `S(∞) = C(∞) = 1/2`, `S′ = sin(πx²/2)` and `C′ = cos(πx²/2)`. The
+  unnormalised `∫₀ˣ sin(t²)dt` is a *different* function (limit `√(π/8)`);
+  mixing the two is a silent `√(π/2)` error, so the convention is pinned by a
+  test rather than left implicit. Maclaurin series below `|x| = 6`, summed in
+  MPFR at a working precision raised by the series' own `≈ 2.27x²` bits of
+  cancellation (in plain `f64` it loses ~10 digits at `x = 4`); DLMF
+  7.12.1–7.12.3 asymptotics above it, where DLMF §7.12(ii)'s
+  first-neglected-term remainder bound makes the truncation rigorous rather
+  than merely plausible. Worst relative error `3.3·10⁻¹⁵` against
+  `scipy.special.fresnel` over `[0, 40]` plus spot checks to `10⁸`. Full
+  bundle including a Taylor-model rule, so `bound_on_box` reaches them.
+
+  New: `alkahest.fresnels`, `alkahest.fresnelc`.
+
+- **Dilogarithm `dilog`** — `Li₂` on the **principal branch, cut along
+  `[1, ∞)`** (DLMF §25.12(i), Lewin §1.1, Mathematica `PolyLog[2, z]`): real
+  on `(−∞, 1]` with `Li₂(1) = π²/6`, and declining for `x > 1` where the
+  principal value is complex, rather than silently returning its real part.
+  `Li₂′ = −log(1−x)/x`. Bernoulli series on `[−1, ½]`, reached by the
+  inversion (`x < −1`) and reflection (`x > ½`) identities; worst relative
+  error `5.0·10⁻¹⁶` over a 34 000-point sweep of `[−10⁶, 1]` against MPFR's
+  correctly-rounded `mpfr_li2`, an independent implementation. Full bundle
+  including a Taylor-model rule whose coefficient recurrence runs forwards
+  above `m₀ = 0.4` and backwards (Miller) below it, because each direction is
+  stable exactly where the other is not.
+
+  Shipped as `dilog` rather than a general `polylog(s, x)`: `∂Li_s/∂s` has no
+  closed form, so a binary `polylog` would ship with a *permanently* declined
+  partial, and every `Func` rule in the validated Taylor tier is unary, so it
+  would also be invisible to `bound_on_box`. `Li₁` needs no primitive — it is
+  `-log(1 - x)`.
+
+  New: `alkahest.dilog`. None of the four new names is wired into either
+  parser — like `digamma` and `bessel_j0`, they are constructor-only for now.
+  Nothing in `integrate/` was touched: emitting Fresnel or `Li₂` forms from
+  `∫sin(x²)dx`, `∫log(x)/(1+x)dx` and friends is a separate change.
 
 ## 3.9.0 — 2026-08-14
 
