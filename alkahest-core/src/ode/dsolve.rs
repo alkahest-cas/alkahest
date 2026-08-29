@@ -17,13 +17,21 @@
 //!
 //! **Second order** (`F(x, y, y', y'') = 0`):
 //! - constant coefficients `a·y'' + b·y' + c·y = r(x)` (real distinct / repeated
-//!   / complex roots), including non-homogeneous RHS via undetermined
-//!   coefficients (polynomial × exp × sin/cos) and variation of parameters
-//! - Euler–Cauchy `a·x²·y'' + b·x·y' + c·y = 0`
+//!   / complex roots)
+//! - Euler–Cauchy `a·x²·y'' + b·x·y' + c·y = r(x)`
+//! - general variable coefficients `a₂(x)y'' + a₁(x)y' + a₀(x)y = r(x)`, when a
+//!   first homogeneous solution is found by ansatz — the second then follows by
+//!   reduction of order (see [`mod@variation`])
 //!
-//! **Higher order**: constant-coefficient `Σ aₖ y^(k) = 0`, solved through the
-//! characteristic polynomial (rational + quadratic factorization; irreducible
-//! factors of degree ≥ 3 are declined).
+//! **Higher order**: constant-coefficient `Σ aₖ y^(k) = r(x)`, solved through
+//! the characteristic polynomial (rational + quadratic factorization;
+//! irreducible factors of degree ≥ 3 are declined).
+//!
+//! For every linear class the forcing term `r(x)` is closed either by
+//! undetermined coefficients (cheap, exact, but only for
+//! polynomial × exp × sin/cos) or, failing that, by variation of parameters at
+//! the equation's own order — which is what admits forcings no ansatz can
+//! express: `sec x`, `tan x`, `1/(1 + eˣ)`, `log x`, arbitrary rational.
 //!
 //! # Verification gate
 //!
@@ -39,6 +47,15 @@
 //! Closed forms that require an integral defer to the existing
 //! [`mod@crate::integrate`] engine.  If a required integral does not close in
 //! elementary form, the class is declined (no unevaluated-integral output).
+//!
+//! `dsolve` manufactures its own integrands — `exp(∫p dx)·q`, `Wₖ·g/W` — and a
+//! manufactured integrand is not in normal form: `e^{−log x}` rather than
+//! `1/x`, `e^{x}·e^{−x}` rather than `1`, `cos²x + sin²x` rather than `1`.  The
+//! integration engine is form-sensitive enough that this decides whether an
+//! elementary integral closes, so [`integrate_or_decline`] tries each integrand
+//! in several equal-valued spellings and takes the first that closes.  Set
+//! `ALKAHEST_DSOLVE_TRACE` in a test build to print every integral that no
+//! spelling closed.
 
 use crate::diff::diff;
 use crate::integrate::engine::integrate;
@@ -52,6 +69,7 @@ mod constant_coeff;
 #[cfg(test)]
 mod corpus;
 mod first_order;
+mod variation;
 mod verify;
 
 pub(crate) use verify::residual_is_zero;
@@ -354,13 +372,34 @@ pub(crate) fn integrate_or_decline(
     var: ExprId,
     pool: &ExprPool,
 ) -> Result<ExprId, DsolveError> {
+    integrate_first_of(&[expr], var, pool)
+}
+
+/// [`integrate_or_decline`] over several *constructions* of the same integrand.
+///
+/// A caller that can build the integrand more than one way (variation of
+/// parameters can divide by the raw Wronskian or by the normalised one) passes
+/// all of them; each is expanded into its [`integrand_spellings`] and the
+/// first that closes wins.  All candidates must be equal as functions.
+pub(crate) fn integrate_first_of(
+    exprs: &[ExprId],
+    var: ExprId,
+    pool: &ExprPool,
+) -> Result<ExprId, DsolveError> {
     let mut last: Option<String> = None;
-    for cand in integrand_spellings(expr, pool) {
-        match integrate(cand, var, pool) {
-            Ok(d) => return Ok(simp(d.value, pool)),
-            Err(e) => {
-                if last.is_none() {
-                    last = Some(e.to_string());
+    let mut tried: Vec<ExprId> = Vec::new();
+    for &expr in exprs {
+        for cand in integrand_spellings(expr, pool) {
+            if tried.contains(&cand) {
+                continue;
+            }
+            tried.push(cand);
+            match integrate(cand, var, pool) {
+                Ok(d) => return Ok(simp(d.value, pool)),
+                Err(e) => {
+                    if last.is_none() {
+                        last = Some(e.to_string());
+                    }
                 }
             }
         }
@@ -369,7 +408,7 @@ pub(crate) fn integrate_or_decline(
     if std::env::var_os("ALKAHEST_DSOLVE_TRACE").is_some() {
         // Every line here is an integral `dsolve` needs and `integrate` does not
         // close — the actionable feedback list for the integration engine.
-        for cand in integrand_spellings(expr, pool) {
+        for cand in tried {
             eprintln!(
                 "INT_DECLINE\td/d{}\t{}",
                 pool.display(var),
@@ -383,35 +422,93 @@ pub(crate) fn integrate_or_decline(
     )))
 }
 
+/// The most-normalised spelling of `expr` (the last [`integrand_spellings`]
+/// candidate).  Used for expressions that are *not* about to be integrated —
+/// the coefficients `P` and `Q` of a normalised second-order equation, say —
+/// where there is no engine to fall through on the caller's behalf.
+pub(crate) fn normalized(expr: ExprId, pool: &ExprPool) -> ExprId {
+    let cands = integrand_spellings(expr, pool);
+    *cands.last().unwrap_or(&expr)
+}
+
 /// Equal-valued rewritings of an integrand, cheapest first.
 ///
 /// 1. the expression as given;
-/// 2. after the log/exp rule set (`e^{a}·e^{b} → e^{a+b}`, `log(e^u) → u`),
-///    which is what collapses the integrating-factor artefacts;
-/// 3. additionally after the trig normal form (`cos²u + sin²u → 1`), which is
-///    what collapses a Wronskian of `{cos, sin}` — only attempted when the
+/// 2. with reciprocals distributed over products ([`distribute_recip`]);
+/// 3. after the log/exp rule set (`e^{a}·e^{b} → e^{a+b}`, `log(e^u) → u`),
+///    which collapses the integrating-factor artefacts;
+/// 4. additionally after the trig normal form (`cos²u + sin²u → 1`), which
+///    collapses a Wronskian of `{cos, sin}` — only attempted when the
 ///    expression actually mentions sin/cos, since that pass expands products.
 ///
-/// Duplicates are dropped, so a fully-normalising expression costs one call.
+/// **The list is ordered, not ranked, and the original comes first on
+/// purpose.** Normalising is not monotone for the integration engine:
+/// `∫ sin x·tan x/(cos²x + sin²x) dx` closes and `∫ sin x·tan x dx` — the same
+/// integrand with the redundant `1` cancelled — does not. Until that is fixed
+/// upstream, dropping the un-normalised form would lose ODEs that currently
+/// solve, so every spelling is tried.
+///
+/// Duplicates are dropped, so a fully-normalised expression costs one call.
 fn integrand_spellings(expr: ExprId, pool: &ExprPool) -> Vec<ExprId> {
     let mut out = vec![expr];
-    let le = simp(
-        crate::simplify::engine::simplify_log_exp(expr, pool, &[]).value,
-        pool,
-    );
-    if !out.contains(&le) {
-        out.push(le);
-    }
-    if mentions_sin_cos(le, pool) {
-        let tn = simp(
-            crate::simplify::engine::simplify_trig_normal_form(le, pool).value,
+    let push = |e: ExprId, out: &mut Vec<ExprId>| {
+        if !out.contains(&e) {
+            out.push(e);
+        }
+    };
+    let dr = simp(distribute_recip(expr, pool), pool);
+    push(dr, &mut out);
+    for base in [expr, dr] {
+        let le = simp(
+            crate::simplify::engine::simplify_log_exp(base, pool, &[]).value,
             pool,
         );
-        if !out.contains(&tn) {
-            out.push(tn);
+        push(le, &mut out);
+        if mentions_sin_cos(le, pool) {
+            let tn = simp(
+                crate::simplify::engine::simplify_trig_normal_form(le, pool).value,
+                pool,
+            );
+            push(tn, &mut out);
         }
     }
     out
+}
+
+/// Rewrite `(a·b·…)^k → a^k·b^k·…` for **integer** `k`, recursively.
+///
+/// `simplify` does not cancel `x²·(−1·x²)⁻¹`: the `Pow` wraps a whole `Mul`,
+/// so power collection never sees the `x²` inside it and the quotient survives
+/// as an "irreducible product of var-dependent factors" the integration engine
+/// declines. Distributing first turns it into `x²·(−1)⁻¹·x⁻²`, which collects
+/// to `−1`. Restricted to integer exponents, where `(ab)^k = a^k b^k` holds
+/// unconditionally over ℝ∖{0}.
+fn distribute_recip(expr: ExprId, pool: &ExprPool) -> ExprId {
+    match pool.get(expr) {
+        ExprData::Add(args) => {
+            let ds: Vec<ExprId> = args.iter().map(|&a| distribute_recip(a, pool)).collect();
+            pool.add(ds)
+        }
+        ExprData::Mul(args) => {
+            let ds: Vec<ExprId> = args.iter().map(|&a| distribute_recip(a, pool)).collect();
+            pool.mul(ds)
+        }
+        ExprData::Pow { base, exp } => {
+            let b = distribute_recip(base, pool);
+            let is_int = matches!(pool.get(exp), ExprData::Integer(_));
+            match pool.get(b) {
+                ExprData::Mul(fs) if is_int => {
+                    pool.mul(fs.iter().map(|&f| pool.pow(f, exp)).collect())
+                }
+                _ => pool.pow(b, exp),
+            }
+        }
+        ExprData::Func { name, args } => {
+            let ds: Vec<ExprId> = args.iter().map(|&a| distribute_recip(a, pool)).collect();
+            pool.func(&name, ds)
+        }
+        _ => expr,
+    }
 }
 
 fn mentions_sin_cos(expr: ExprId, pool: &ExprPool) -> bool {

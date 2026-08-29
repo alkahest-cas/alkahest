@@ -137,6 +137,9 @@ pub(crate) const CORPUS: &[Entry] = &[
     ("higher", "y'''-3y''+3y'-y=0",        3, "yppp - 3*ypp + 3*yp - y"),
     ("higher", "y'''-y'=exp(x)",           3, "yppp - yp - exp(x)"),
     ("higher", "y'''-y'=1/x",              3, "yppp - yp - 1/x"),
+    ("higher", "y'''+y'=sec(x)",            3, "yppp + yp - 1/cos(x)"),
+    ("higher", "y'''+y'=tan(x)",            3, "yppp + yp - tan(x)"),
+    ("higher", "y'''-y'=x^2",               3, "yppp - yp - x^2"),
 ];
 
 /// Build the `OdeInput` for a corpus entry.  Derivative symbols are named
@@ -144,6 +147,13 @@ pub(crate) const CORPUS: &[Entry] = &[
 /// aliases `yp`, `ypp`, ….
 fn build(entry: &Entry, pool: &ExprPool) -> Option<OdeInput> {
     let (_, _, order, src) = *entry;
+    build_ode(order, src, pool)
+}
+
+/// Parse `src` (an expression in `x`, `y`, `yp`, `ypp`, …, read as `= 0`) into
+/// an [`OdeInput`] of the given order.  Shared with the unit tests, which would
+/// otherwise spell every equation out in `pool.add`/`pool.mul` calls.
+pub(crate) fn build_ode(order: usize, src: &str, pool: &ExprPool) -> Option<OdeInput> {
     let x = pool.symbol("x", Domain::Real);
     let y = pool.symbol("y", Domain::Real);
     let (input, derivs) = OdeInput::higher_order(x, y, order, pool);
@@ -194,4 +204,40 @@ fn corpus_report() {
         println!("{status}\t{}\t{}\t{method}", e.0, e.1);
     }
     println!("TOTAL\t{solved}/{}", CORPUS.len());
+}
+
+/// The integrals `dsolve` needs and `integrate` declines, with the pairs that
+/// differ only by spelling stated side by side.  Reported, not asserted — this
+/// is a probe for the integration engine, and it must not fail the suite when
+/// that engine improves.
+#[test]
+#[ignore = "integrator feedback probe; run explicitly with --nocapture"]
+fn integrator_gap_probe() {
+    let pool = ExprPool::new();
+    let x = pool.symbol("x", Domain::Real);
+    let mut syms: HashMap<String, ExprId> = HashMap::new();
+    syms.insert("x".to_owned(), x);
+    for src in [
+        // Needs Ei — five corpus ODEs turn on this one integrand shape.
+        "exp(x)/x",
+        "exp(-1*x)/x",
+        "exp(2*x)/x",
+        // Needs Si/Ci.
+        "sin(x)*log(x)",
+        "sin(x)/x^2",
+        // Elementary (u = e^x), currently declined.
+        "exp(-2*x)/(1 + exp(-1*x))",
+        "exp(2*x)/(1 + exp(x))",
+        // Form sensitivity: these pairs are the same function.
+        "sin(x)*tan(x)",
+        "sin(x)*tan(x)/(cos(x)^2 + sin(x)^2)",
+        "exp(x)^2/(1 + exp(x))",
+    ] {
+        let e = parse(src, &pool, &mut syms).expect("probe source parses");
+        let verdict = match crate::integrate::engine::integrate(e, x, &pool) {
+            Ok(d) => format!("CLOSES  {}", pool.display(d.value)),
+            Err(err) => format!("DECLINES  {err}"),
+        };
+        println!("∫ {src} dx\t{verdict}");
+    }
 }

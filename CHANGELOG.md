@@ -128,6 +128,71 @@
   `sos_decompose` / `prove_nonneg` results and typechecked against the pinned
   Lean 4.9 / Mathlib v4.9.0 toolchain, with the same withhold-rather-than-sorry
   discipline as the derivation corpus.
+- **`dsolve` closes variation of parameters at every order, Euler–Cauchy with
+  forcing, and second-order equations with variable coefficients — and the
+  thing that was actually blocking it was not the integrator.**
+
+  Measured first, on a 101-ODE corpus (`ode/dsolve/corpus.rs`, test-only) run
+  at three revisions. The recent integration work — router fall-through,
+  general by-parts, Risch–Norman, the residue-theorem route, ten new special
+  functions — moved `dsolve` from **59 to 60**. One ODE.
+
+  The reason: `dsolve` builds its own integrands and was handing them over in a
+  spelling no integrator should have to recognise. `μ = exp(∫p dx)` was emitted
+  as a literal `exp` node, so the linear class asked for `∫q·e^{−log x} dx`
+  when it meant `∫q/x dx`; `μ·q` arrived as `x·e^{−x}·e^{x}` when it meant `x`;
+  a Wronskian of `{cos, sin}` arrived as `cos²x + sin²x` instead of `1`. 14 of
+  the 41 declines were elementary integrals, misspelled. Fixing that alone —
+  folding `exp(c·log u + rest) → u^c·exp(rest)` when building an integrating
+  factor, and trying each integrand in several equal-valued spellings — took
+  the corpus to **68**.
+
+  On top of that:
+
+  - **Variation of parameters at arbitrary order**, by Cramer's rule on the
+    Wronskian (`ode/dsolve/variation.rs`), replacing the second-order-only
+    formula. `y''' + y' = sec x` and `y''' + y' = tan x` now solve; no
+    undetermined-coefficients ansatz can express either forcing.
+  - **Euler–Cauchy with a right-hand side.** It previously declined for every
+    non-zero `r(x)`; it now builds the basis of powers of `x` (or the
+    repeated/complex forms) and closes the forcing by variation of parameters.
+  - **General variable-coefficient second order**, previously unreachable: one
+    homogeneous solution from a short ansatz list, the second by reduction of
+    order, the forcing by variation of parameters. This is what admits
+    Legendre and other equations with a polynomial coefficient on the second
+    derivative.
+
+  **82 of 101**, from 59 before the integration work and 60 after it. Every
+  solution is still gated on substitution back into the original equation, and
+  the particular solution allocates no constants of its own — the general
+  solution has exactly `order`-many, pinned by a test.
+
+  Removed `integrate_pexp_trig`, the hand-rolled undetermined-coefficients
+  fallback for polynomial × exponential × sinusoid antiderivatives. General
+  by-parts covers that family: instrumented, it fired **0 times** across the
+  whole corpus, and the ODE suite is green without it.
+
+  **What `dsolve` still needs from `integrate`** (probe:
+  `cargo test -p alkahest-cas ode::dsolve::corpus::integrator_gap_probe --
+  --ignored --nocapture`):
+
+  - `∫e^{ax}/x dx` — five corpus ODEs turn on this one shape, and it is
+    currently answered with a `NonElementary` *certificate*. The certificate is
+    correct classically, but `Ei` is now a registered primitive.
+  - `∫sin(x)·log(x) dx`, `∫sin(x)/x² dx` — declined with a message that
+    already names `Ei/Si/Ci/Shi/Chi`. The engine knows what the answer is and
+    does not emit it.
+  - `∫e^{2x}/(1 + e^x) dx` **declines** ("mixed/nested generators"), while the
+    same function spelled with `exp(x)^2` instead of `exp(2x)` **closes**,
+    giving `e^x − log(1 + e^x)`.
+  - `∫sin x·tan x dx` declines, while the same function multiplied by a
+    redundant `1` spelled `cos²x + sin²x` closes. `dsolve` currently keeps the
+    un-normalised spelling of every integrand alive precisely because of this.
+
+  Two `simplify` gaps also had to be worked around from inside `ode/`: a
+  one-element `Mul` is not collapsed (so a singleton `Mul` holding `−1` is not
+  the same node as `−1`, and `x·x⁻¹` survives), and `x²·(−1·x²)⁻¹` does not
+  cancel because the `Pow` wraps a whole `Mul`.
 
 - **A budget could be outrun by a single allocation, and was.**
   `alkahest.integrate` on `1/(x·log x·(1 + log²(log x)))` — the derivative of
