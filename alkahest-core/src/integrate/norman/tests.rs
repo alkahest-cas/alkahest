@@ -576,9 +576,15 @@ fn deep_nesting_declines_instead_of_overflowing_the_stack() {
 #[test]
 fn the_depth_guard_measures_depth_not_paths() {
     let (pool, x) = setup();
+    // Squaring via `Pow`, not `Mul`. Since the associativity fix, `pool.mul`
+    // is flat n-ary, so `pool.mul([e, e])` splices rather than sharing and the
+    // child count *doubles* per iteration — 40 rounds is 2^40 children, which
+    // hangs the run rather than testing anything. `Pow` does not flatten, so
+    // this still builds 2^40 distinct paths over a DAG of depth 40, which is
+    // the property under test: many paths, shallow depth, no decline.
     let mut e = pool.add(vec![x, pool.integer(1_i32)]);
     for _ in 0..40 {
-        e = pool.mul(vec![e, e]);
+        e = pool.pow(e, pool.integer(2_i32));
     }
     // 2^40 paths, 41 levels deep.  The guard must terminate and must not fire.
     assert!(!ring::depth_exceeds(e, &pool, ring::MAX_DEPTH));
