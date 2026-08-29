@@ -71,14 +71,19 @@ pub fn rules_for_config(config: &SimplifyConfig) -> Vec<Box<dyn RewriteRule>> {
         Box::new(ConstFold),
         Box::new(PrimitiveFold),
         Box::new(SqrtInteger),
-        Box::new(SqrtEvenPower),
-        // Must precede `SubSelf`: a negated sum has to reach the same `Add`
-        // level as the terms it is meant to cancel against before like-term
-        // collection can see it.
-        Box::new(NegateAdd),
         Box::new(SubSelf),
         Box::new(DivSelf),
         Box::new(CanonicalOrder),
+        // Last on purpose. `apply_rules` restarts from the first rule after
+        // every firing, so a rule's position is how often it is *tried*, not
+        // whether it eventually fires. Neither of these competes with anything
+        // above for a node — `NegateAdd` rewrites `Mul`, `SubSelf` rewrites
+        // `Add`, and they meet only across a parent/child boundary, which the
+        // bottom-up traversal orders for them — so putting them behind the
+        // cheap folds costs nothing and spares every intermediate rewrite two
+        // extra per-node probes.
+        Box::new(NegateAdd),
+        Box::new(SqrtEvenPower),
     ];
     if config.expand {
         rules.push(Box::new(ExpandPow));

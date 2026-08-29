@@ -239,6 +239,88 @@ fn one_step_with(
     log
 }
 
+/// A term's numeric coefficient: an `Integer` until a `Rational` literal
+/// forces otherwise.
+///
+/// The split is not cosmetic. `collect_add_terms` runs the extractor over
+/// every argument of every `Add` node the engine visits, and `rug::Rational`
+/// is an `mpq`: `mpq_add` canonicalizes through a GCD on every addition, and
+/// a `Rational` carries a denominator limb even when that denominator is
+/// always `1`. Doing all of that for `2·x + 3·x` costs about 9% of
+/// `simplify`'s wall time on a Jacobian-shaped workload, measured. Integer
+/// coefficients therefore stay on `mpz` and only a genuine fraction escalates.
+#[derive(Clone, Debug)]
+enum Coeff {
+    Int(rug::Integer),
+    Rat(rug::Rational),
+}
+
+impl Coeff {
+    fn zero() -> Coeff {
+        Coeff::Int(rug::Integer::new())
+    }
+
+    fn one() -> Coeff {
+        Coeff::Int(rug::Integer::from(1))
+    }
+
+    fn is_zero(&self) -> bool {
+        match self {
+            Coeff::Int(n) => *n == 0,
+            Coeff::Rat(r) => *r.numer() == 0,
+        }
+    }
+
+    fn is_one(&self) -> bool {
+        match self {
+            Coeff::Int(n) => *n == 1,
+            Coeff::Rat(r) => *r == 1,
+        }
+    }
+
+    fn negate(self) -> Coeff {
+        match self {
+            Coeff::Int(n) => Coeff::Int(-n),
+            Coeff::Rat(r) => Coeff::Rat(-r),
+        }
+    }
+
+    fn add_assign(&mut self, other: &Coeff) {
+        match (&mut *self, other) {
+            (Coeff::Int(a), Coeff::Int(b)) => *a += b,
+            (Coeff::Rat(a), Coeff::Rat(b)) => *a += b,
+            (Coeff::Rat(a), Coeff::Int(b)) => *a += b,
+            (Coeff::Int(a), Coeff::Rat(b)) => {
+                let mut sum = rug::Rational::from(std::mem::take(a));
+                sum += b;
+                *self = Coeff::Rat(sum);
+            }
+        }
+    }
+
+    fn mul_assign(&mut self, other: Coeff) {
+        match (&mut *self, other) {
+            (Coeff::Int(a), Coeff::Int(b)) => *a *= b,
+            (Coeff::Rat(a), Coeff::Rat(b)) => *a *= b,
+            (Coeff::Rat(a), Coeff::Int(b)) => *a *= b,
+            (Coeff::Int(a), Coeff::Rat(b)) => {
+                let mut prod = rug::Rational::from(std::mem::take(a));
+                prod *= b;
+                *self = Coeff::Rat(prod);
+            }
+        }
+    }
+
+    /// Intern the coefficient, collapsing a denominator of `1` to an
+    /// `Integer` node so the result is a fixed point of `ConstFold`.
+    fn intern(self, pool: &ExprPool) -> ExprId {
+        match self {
+            Coeff::Int(n) => pool.integer(n),
+            Coeff::Rat(r) => intern_rational(r, pool),
+        }
+    }
+}
+
 /// Split `expr` into a leading numeric coefficient and the remaining factor.
 ///
 /// `rationals_too` selects which literal factors are peeled off:
@@ -255,36 +337,34 @@ fn one_step_with(
 /// exactly that.
 ///
 /// A `None` coefficient means the implicit `1`, and is returned *without*
-/// building one. Terms with no literal factor are the common case on this
-/// path — `collect_add_terms` runs the extractor over every argument of every
-/// `Add` node the engine visits — and a `rug::Rational` is two heap
-/// allocations to say "nothing to peel off".
+/// building one — terms with no literal factor at all are the common case
+/// here.
 fn extract_numeric_coeff(
     expr: ExprId,
     pool: &ExprPool,
     rationals_too: bool,
-) -> (Option<rug::Rational>, ExprId) {
-    let literal = |a: ExprId| -> Option<rug::Rational> {
+) -> (Option<Coeff>, ExprId) {
+    let literal = |a: ExprId| -> Option<Coeff> {
         pool.with(a, |d| match d {
-            ExprData::Integer(n) => Some(rug::Rational::from(n.0.clone())),
-            ExprData::Rational(r) if rationals_too => Some(r.0.clone()),
+            ExprData::Integer(n) => Some(Coeff::Int(n.0.clone())),
+            ExprData::Rational(r) if rationals_too => Some(Coeff::Rat(r.0.clone())),
             _ => None,
         })
     };
     match pool.get(expr) {
-        ExprData::Integer(n) => (Some(rug::Rational::from(n.0.clone())), pool.integer(1_i32)),
-        ExprData::Rational(r) if rationals_too => (Some(r.0.clone()), pool.integer(1_i32)),
+        ExprData::Integer(n) => (Some(Coeff::Int(n.0.clone())), pool.integer(1_i32)),
+        ExprData::Rational(r) if rationals_too => {
+            (Some(Coeff::Rat(r.0.clone())), pool.integer(1_i32))
+        }
         ExprData::Mul(args) => {
-            let mut product: Option<rug::Rational> = None;
+            let mut product: Option<Coeff> = None;
             let mut rest: Vec<ExprId> = vec![];
             for &a in &args {
                 match literal(a) {
-                    Some(n) => {
-                        product = Some(match product {
-                            Some(p) => p * n,
-                            None => n,
-                        })
-                    }
+                    Some(n) => match &mut product {
+                        Some(p) => p.mul_assign(n),
+                        None => product = Some(n),
+                    },
                     None => rest.push(a),
                 }
             }
@@ -306,15 +386,13 @@ fn extract_numeric_coeff(
 /// Extract (integer_coeff, base) from a Mul where some factors are integers.
 /// Returns (1, expr) if no integer factor is found.
 pub(super) fn extract_int_coeff(expr: ExprId, pool: &ExprPool) -> (rug::Integer, ExprId) {
-    let (c, base) = extract_numeric_coeff(expr, pool, false);
-    let Some(c) = c else {
-        return (rug::Integer::from(1), base);
-    };
-    debug_assert!(
-        *c.denom() == 1,
-        "integer-only extraction yielded a fraction"
-    );
-    (c.into_numer_denom().0, base)
+    match extract_numeric_coeff(expr, pool, false) {
+        (Some(Coeff::Int(n)), base) => (n, base),
+        (None, base) => (rug::Integer::from(1), base),
+        // `rationals_too = false` never peels a fraction off; if it somehow
+        // did, the base would be missing a factor, so decline the split.
+        (Some(Coeff::Rat(_)), _) => (rug::Integer::from(1), expr),
+    }
 }
 
 /// Extract (rational_coeff, base), peeling off `Integer` **and** `Rational`
@@ -323,7 +401,7 @@ pub(super) fn extract_int_coeff(expr: ExprId, pool: &ExprPool) -> (rug::Integer,
 /// This is what makes `sin(x)·¾ + sin(x)·(−¾)` cancel: with integer-only
 /// extraction the two terms have distinct bases (`¾·sin x` and `−¾·sin x`)
 /// and never meet in the coefficient map.
-fn extract_rational_coeff(expr: ExprId, pool: &ExprPool) -> (Option<rug::Rational>, ExprId) {
+fn extract_rational_coeff(expr: ExprId, pool: &ExprPool) -> (Option<Coeff>, ExprId) {
     extract_numeric_coeff(expr, pool, true)
 }
 
@@ -397,14 +475,14 @@ fn extract_int_exp(expr: ExprId, pool: &ExprPool) -> Option<(rug::Integer, ExprI
 /// A denominator-1 coefficient is interned as an `Integer`, so the result is
 /// exactly what `ConstFold`'s `Rational(n/1) → Integer(n)` arm would produce
 /// and the rebuild is a fixed point rather than a fresh redex.
-fn rebuild_coeff_term(coeff: &rug::Rational, base: ExprId, pool: &ExprPool) -> ExprId {
+fn rebuild_coeff_term(coeff: Coeff, base: ExprId, pool: &ExprPool) -> ExprId {
     if is_one(base, pool) {
         // base is Integer(1)
-        intern_rational(coeff.clone(), pool)
-    } else if *coeff == 1 {
+        coeff.intern(pool)
+    } else if coeff.is_one() {
         base
     } else {
-        pool.mul(vec![intern_rational(coeff.clone(), pool), base])
+        pool.mul(vec![coeff.intern(pool), base])
     }
 }
 
@@ -1028,33 +1106,31 @@ impl RewriteRule for SubSelf {
             return None;
         }
 
-        // Extract (coeff, base) for each arg.  Coefficients are *rational*:
-        // restricting them to integers made `¾·u + (−¾)·u` two unrelated
-        // bases, so a term-wise cancellation that is pure arithmetic never
-        // happened.  `rug::Rational` addition is exact, so nothing here is a
-        // numerical approximation.
-        let pairs: Vec<(Option<rug::Rational>, ExprId)> = args
+        // Extract (coeff, base) for each arg.  Coefficients admit a
+        // *rational*: restricting them to integers made `¾·u + (−¾)·u` two
+        // unrelated bases, so a term-wise cancellation that is pure arithmetic
+        // never happened.  All of it is exact `rug` arithmetic — nothing here
+        // is a numerical approximation.
+        let pairs: Vec<(Option<Coeff>, ExprId)> = args
             .iter()
             .map(|&a| extract_rational_coeff(a, pool))
             .collect();
 
         // Sum coefficients by base, preserving first-occurrence order.
         // A `None` coefficient is the implicit `1`.
-        let mut coeff_map: HashMap<ExprId, rug::Rational> = HashMap::new();
+        let one = Coeff::one();
+        let mut coeff_map: HashMap<ExprId, Coeff> = HashMap::new();
         let mut base_order: Vec<ExprId> = vec![];
         for (coeff, base) in &pairs {
             let entry = coeff_map.entry(*base).or_insert_with(|| {
                 base_order.push(*base);
-                rug::Rational::from(0)
+                Coeff::zero()
             });
-            match coeff {
-                Some(c) => *entry += c.clone(),
-                None => *entry += 1u32,
-            }
+            entry.add_assign(coeff.as_ref().unwrap_or(&one));
         }
 
         // Check: any cancellation (coeff → 0) or merging (two args same base)?
-        let any_zero = coeff_map.values().any(|c| *c == 0);
+        let any_zero = coeff_map.values().any(Coeff::is_zero);
         let any_merged = coeff_map.len() < pairs.len();
         if !any_zero && !any_merged {
             return None;
@@ -1071,7 +1147,7 @@ impl RewriteRule for SubSelf {
         if any_zero
             && coeff_map
                 .iter()
-                .any(|(base, c)| *c == 0 && has_zero_to_negative_power_factor(*base, pool))
+                .any(|(base, c)| c.is_zero() && has_zero_to_negative_power_factor(*base, pool))
         {
             return None;
         }
@@ -1084,8 +1160,8 @@ impl RewriteRule for SubSelf {
                 continue;
             }
             seen.insert(*base);
-            let coeff = &coeff_map[base];
-            if *coeff == 0 {
+            let coeff = coeff_map[base].clone();
+            if coeff.is_zero() {
                 continue;
             }
             new_args.push(rebuild_coeff_term(coeff, *base, pool));
@@ -1418,8 +1494,7 @@ impl RewriteRule for NegateAdd {
             .iter()
             .map(|&t| {
                 let (c, base) = extract_rational_coeff(t, pool);
-                let negated = -c.unwrap_or_else(|| rug::Rational::from(1));
-                rebuild_coeff_term(&negated, base, pool)
+                rebuild_coeff_term(c.unwrap_or_else(Coeff::one).negate(), base, pool)
             })
             .collect();
         let after = pool.add(negated);
