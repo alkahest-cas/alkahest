@@ -337,7 +337,7 @@ fn try_linear(
     };
     // Integrating factor μ = e^{∫p dx}
     let int_p = integrate_or_decline(p, x, pool)?;
-    let mu = simp(pool.func("exp", vec![int_p]), pool);
+    let mu = super::exp_of(int_p, pool);
     // y = (∫ μ q dx + C) / μ
     let muq = simp(pool.mul(vec![mu, q]), pool);
     let int_muq = integrate_or_decline(muq, x, pool)?;
@@ -411,7 +411,7 @@ fn try_bernoulli(
     let qv = simp(pool.mul(vec![one_minus_n, q]), pool);
     // integrating factor μ = e^{∫ pv}
     let int_pv = integrate_or_decline(pv, x, pool)?;
-    let mu = simp(pool.func("exp", vec![int_pv]), pool);
+    let mu = super::exp_of(int_pv, pool);
     let muq = simp(pool.mul(vec![mu, qv]), pool);
     let int_muq = integrate_or_decline(muq, x, pool)?;
     let c = gen.fresh(pool);
@@ -647,7 +647,7 @@ fn try_riccati(
     let qrhs = simp(pool.mul(vec![pool.integer(-1_i32), q2]), pool);
     // linear in v: v' + p v = qrhs (here standard form v' + P v = Q with P=p, Q=qrhs)
     let int_p = integrate_or_decline(p, x, pool)?;
-    let mu = simp(pool.func("exp", vec![int_p]), pool);
+    let mu = super::exp_of(int_p, pool);
     let muq = simp(pool.mul(vec![mu, qrhs]), pool);
     let int_muq = integrate_or_decline(muq, x, pool)?;
     let c = gen.fresh(pool);
