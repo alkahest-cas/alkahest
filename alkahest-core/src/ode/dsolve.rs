@@ -388,6 +388,20 @@ pub(crate) fn integrate_first_of(
 ) -> Result<ExprId, DsolveError> {
     let mut last: Option<String> = None;
     let mut tried: Vec<ExprId> = Vec::new();
+    // Stage 1: every candidate exactly as the caller built it.  Rewriting is
+    // only worth its cost once the engine has actually refused, and the common
+    // case is that it does not.
+    for &expr in exprs {
+        if tried.contains(&expr) {
+            continue;
+        }
+        tried.push(expr);
+        match integrate(expr, var, pool) {
+            Ok(d) => return Ok(simp(d.value, pool)),
+            Err(e) => last = last.or(Some(e.to_string())),
+        }
+    }
+    // Stage 2: the rewritings.
     for &expr in exprs {
         for cand in integrand_spellings(expr, pool) {
             if tried.contains(&cand) {
@@ -396,11 +410,7 @@ pub(crate) fn integrate_first_of(
             tried.push(cand);
             match integrate(cand, var, pool) {
                 Ok(d) => return Ok(simp(d.value, pool)),
-                Err(e) => {
-                    if last.is_none() {
-                        last = Some(e.to_string());
-                    }
-                }
+                Err(e) => last = last.or(Some(e.to_string())),
             }
         }
     }
