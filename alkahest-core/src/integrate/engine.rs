@@ -234,7 +234,7 @@ fn try_log_derivative(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<Expr
 ///
 /// The decomposition is **spelling-independent**: an integer power of a product
 /// is distributed (`(x·log x)^(-1)` reads as `x^(-1)·log(x)^(-1)`) and an
-/// exponent the parser left unevaluated (`^(-1)` → `^(1 · -1)`) is folded, so
+/// exponent left unevaluated by a caller (`-1` as `1 · -1`) is folded, so
 /// `1/(x·log x)`, `(x·log x)^(-1)` and `x^(-1)·log(x)^(-1)` all decompose to the
 /// same `(coeff, n)`.  Both rewrites are exact identities for integer exponents.
 fn extract_log_power(expr: ExprId, theta: ExprId, pool: &ExprPool) -> Option<(ExprId, i64)> {
@@ -6188,7 +6188,9 @@ mod tests {
 
     /// The three spellings of `a/b` this integrator has historically routed
     /// differently: the `/` operator (literal `-1` exponent), an explicit
-    /// `^(-1)` (which the parser leaves as the unevaluated `1 · -1`), and a
+    /// `^(-1)` (which the parser used to leave as the unevaluated `1 · -1`, and
+    /// which any *builder* caller can still produce — see
+    /// `a_hand_built_unevaluated_exponent_routes_like_a_folded_one`), and a
     /// reciprocal of a *product* (which no detector used to distribute).
     fn three_spellings(a: &str, b: &str) -> [String; 3] {
         [
@@ -6315,6 +6317,54 @@ mod tests {
         }
     }
 
+    /// Newly reachable once `^(-n)` carries a literal exponent: a reciprocal
+    /// written as a power now meets the same detectors the `/` spelling did.
+    ///
+    /// Each is verified by differentiating the answer back, never by matching a
+    /// display string — a newly *solved* case is only progress if it is right.
+    #[test]
+    fn a_reciprocal_written_as_a_power_reaches_the_same_engines() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for src in [
+            "cos(x)^(-2)",        // = tan x
+            "sin(x)^(-1)",        // = log(csc x − cot x)
+            "(1+sin(x))^(-1)",    // Weierstrass
+            "(2+cos(x))^(-1)",    // Weierstrass
+            "(1+exp(-1*x))^(-1)", // logistic, via t = exp(η)
+        ] {
+            integrate_and_verify(src, x, &pool);
+        }
+    }
+
+    /// `∫ dx/log x` is the logarithmic integral li(x) and is non-elementary.
+    ///
+    /// This is the one *verdict* the `-<literal>` parser fold moves. Before it,
+    /// `log(x)^(-1)` carried the unevaluated `1 · -1` exponent, never reached
+    /// the certifier, and came back with the weaker `E-INT-001` while the
+    /// identical `1/log(x)` certified `E-INT-004`. A verdict moving **into**
+    /// `E-INT-004` deserves suspicion — a false non-elementary proof is the
+    /// worst thing this engine can emit — so note what makes this one sound:
+    /// li is non-elementary by Liouville, and the spelling it moved onto is the
+    /// verdict the `/` spelling already had (and still has, checked here in the
+    /// same loop). It is a convergence, not a new claim.
+    #[test]
+    fn the_li_verdict_does_not_depend_on_the_spelling() {
+        use crate::errors::AlkahestError;
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for src in ["1/log(x)", "log(x)^(-1)", "(log(x))^(-1)"] {
+            let e = integrate_src(src, x, &pool)
+                .err()
+                .unwrap_or_else(|| panic!("∫ {src} dx must stay non-elementary"));
+            assert_eq!(
+                e.code(),
+                "E-INT-004",
+                "∫ {src} dx should certify NonElementary, got: {e}"
+            );
+        }
+    }
+
     #[test]
     fn one_over_x_log_x_in_every_spelling() {
         // ∫ 1/(x·log x) dx = log(log x).  `try_log_derivative`'s doc comment has
@@ -6387,5 +6437,68 @@ mod tests {
                 pool.display(f)
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Defence in depth: the parser is not the only way in
+    // -----------------------------------------------------------------------
+
+    /// `crate::parse` now folds `-<literal>` into the literal, so the parser
+    /// can no longer produce an exponent spelled `1 · -1`.  The **pool builder
+    /// API is public**, though, and `Expr.__neg__`, the RL generators and any
+    /// library caller can hand the integrator that shape directly.  If the
+    /// detectors' `literal_integer` view were dropped as "no longer needed",
+    /// every parser test would still pass while every non-parser caller
+    /// regressed — so pin the builder path on its own.
+    #[test]
+    fn a_hand_built_unevaluated_exponent_routes_like_a_folded_one() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        // The exact shape the parser used to emit for `^(-1)`.
+        let unevaluated_neg_one = pool.mul(vec![pool.integer(1_i32), pool.integer(-1_i32)]);
+        assert_ne!(
+            unevaluated_neg_one,
+            pool.integer(-1_i32),
+            "this test is only meaningful while `1 · -1` is a distinct node"
+        );
+
+        // ∫ x^(1·-1) dx = log x — the case that used to fail outright.
+        let one_over_x = pool.pow(x, unevaluated_neg_one);
+        let f = integrate(one_over_x, x, &pool)
+            .expect("a hand-built 1/x must integrate")
+            .value;
+        assert!(
+            verify_antiderivative_status(f, one_over_x, x, &pool).is_some(),
+            "∫ x^(1·-1) dx = {} does not differentiate back",
+            pool.display(f)
+        );
+
+        // ∫ (x·log x)^(1·-1) dx = log(log x) — needs the *distribution* half of
+        // the normalising view as well as the folding half.
+        let x_log_x = pool.mul(vec![x, pool.func("log", vec![x])]);
+        let g = pool.pow(x_log_x, unevaluated_neg_one);
+        let gf = integrate(g, x, &pool)
+            .expect("a hand-built 1/(x·log x) must integrate")
+            .value;
+        assert!(
+            verify_antiderivative_status(gf, g, x, &pool).is_some(),
+            "∫ (x·log x)^(1·-1) dx = {} does not differentiate back",
+            pool.display(gf)
+        );
+        assert!(
+            pool.display(gf).to_string().contains("log(log"),
+            "∫ (x·log x)^(1·-1) dx should be log(log x); got {}",
+            pool.display(gf)
+        );
+
+        // And a `NonElementary` verdict must survive the builder path too: the
+        // weaker `E-INT-001` is what this shape used to produce.
+        use crate::errors::AlkahestError;
+        let ei = pool.mul(vec![
+            pool.func("exp", vec![x]),
+            pool.pow(x, unevaluated_neg_one),
+        ]);
+        let err = integrate(ei, x, &pool).expect_err("∫ eˣ/x dx must stay non-elementary");
+        assert_eq!(err.code(), "E-INT-004", "got: {err}");
     }
 }

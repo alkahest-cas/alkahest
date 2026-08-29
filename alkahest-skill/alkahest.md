@@ -485,18 +485,19 @@ certificate, `alkahest.smt` (z3's `nlsat` is complete over the reals), or
 validated-bounds entry points (`bound_on_box`, `verified_integral`,
 `verified_no_roots`, `verified_sign`) reach the elementary fragment only — `sin`, `cos`,
 `tan`, `exp`, `log`, `sqrt`, `abs`, the inverse-trig and hyperbolic functions
-(including `asinh`/`acosh`/`atanh`), plus `erf` and `erfc` — and refuse everything else
-with `E-VALIDATED-001`: `bessel_j0/j1`, `digamma`, `lambert_w`, `gamma`, the elliptic
-integrals, `floor`/`ceil`, and the two-argument `atan2`.
+(including `asinh`/`acosh`/`atanh`), plus `erf`/`erfc`, `bessel_j0`/`bessel_j1`,
+`gamma`, `digamma`, `trigamma`, `lambert_w`, `fresnels`/`fresnelc` and `dilog` — and
+refuse everything else with `E-VALIDATED-001`: the elliptic integrals,
+`floor`/`ceil`, and the two-argument `atan2`.
 **`capabilities()["primitives"][i]` carries this as `taylor_model`; do not read
 `numeric_ball` as the coverage flag** — it is pointwise ball arithmetic, it is `True`
-for `bessel_j0` and `digamma`, and it says nothing about whether a bound can be
+for `floor` and `ceil`, and it says nothing about whether a bound can be
 certified. `bounds_supported` answers for a whole
 expression without running anything, and names the blocking functions:
 
 ```python
-answer = ak.bounds_supported(ak.bessel_j0(x) * x)
-bool(answer), answer.functions   # (False, ['bessel_j0'])
+answer = ak.bounds_supported(ak.floor(x) * x)
+bool(answer), answer.functions   # (False, ['floor'])
 ```
 
 A `True` means "not `E-VALIDATED-001`"; a bad box can still refuse with
@@ -1229,8 +1230,12 @@ unverified answer from elsewhere.
 
 `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`,
 `asinh`, `acosh`, `atanh`,
-`exp`, `log`, `sqrt`, `erf`, `erfc`, `gamma`, `digamma`,
+`exp`, `log`, `sqrt`, `erf`, `erfc`, `gamma`, `digamma`, `trigamma`,
 `lambert_w`, `bessel_j0`, `bessel_j1`, `elliptic_e`, `elliptic_f`, `elliptic_k`, `elliptic_pi`,
+`exp_integral_ei` (Ei), `log_integral` (li), `sin_integral` (Si), `cos_integral` (Ci),
+`sinh_integral` (Shi), `cosh_integral` (Chi),
+`fresnels`, `fresnelc` (normalised π/2 convention, `S(∞) = C(∞) = 1/2`),
+`dilog` (`Li₂`, principal branch, cut on `[1, ∞)`; declines for `x > 1`),
 `re`, `im`, `arg`, `conjugate`,
 `abs`, `sign`, `floor`, `ceil`, `round`,
 `min`, `max`, `piecewise`
@@ -1240,6 +1245,14 @@ All return `Expr`. They shadow Python builtins inside `alkahest` — use `alkahe
 `atan2`, `gamma`, `min`, and `max` are reachable as attributes (`alkahest.gamma(...)`)
 but are **not** in `__all__`, so `from alkahest import *` will not bring them into
 scope — import them by name.
+
+The exponential-integral family follows DLMF §6.2. `cos_integral`, `cosh_integral` and
+`log_integral` are **complex** on the negative reals (`Ci(-x) = Ci(x) ± iπ`), and
+`log_integral` is a Cauchy principal value for `x > 1` with a singularity at `x = 1`;
+numeric evaluation refuses there rather than returning a real part. Each has a
+derivative rule (`exp(x)/x`, `1/log x`, `sin(x)/x`, `cos(x)/x`, `sinh(x)/x`,
+`cosh(x)/x`) and a validated-bounds Taylor rule. They are not yet accepted by
+`parse()` — build them with the callables above.
 
 For `piecewise`, branch conditions must be symbolic predicates from the pool (not Python `>`):
 

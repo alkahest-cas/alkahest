@@ -187,12 +187,17 @@ from .alkahest import (  # noqa: F401
     conjugate,
     # Math functions
     cos,
+    # Exponential-integral family (DLMF §6.2)
+    cos_integral,
     cosh,
+    cosh_integral,
     decide,
     # Core operations
     diff,
     diff_forward,
     digamma,
+    # 3.10.0 — dilogarithm (principal branch, cut on [1, inf))
+    dilog,
     # Elliptic special functions (parameter convention m = k²)
     elliptic_e,
     elliptic_f,
@@ -206,8 +211,13 @@ from .alkahest import (  # noqa: F401
     eval_expr,
     evaluate,
     exp,
+    # Exponential-integral family (DLMF §6.2)
+    exp_integral_ei,
     factor_univariate_mod_p,
     floor,
+    # 3.10.0 — Fresnel integrals, normalised (pi/2) convention
+    fresnelc,
+    fresnels,
     gamma,
     # V2-3: Sparse interpolation and sparse modular GCD
     gcd_sparse,
@@ -223,6 +233,8 @@ from .alkahest import (  # noqa: F401
     lambert_w,
     limit,
     log,
+    # Exponential-integral family (DLMF §6.2)
+    log_integral,
     lower_to_first_order,
     make_rule,
     match_pattern,
@@ -267,7 +279,10 @@ from .alkahest import (  # noqa: F401
     simplify_trig_normal_form,
     simplify_with,
     sin,
+    # Exponential-integral family (DLMF §6.2)
+    sin_integral,
     sinh,
+    sinh_integral,
     solve_linear_recurrence_homogeneous,
     sos_decompose,
     sparse_interp,
@@ -285,6 +300,8 @@ from .alkahest import (  # noqa: F401
     # V5-2: StableHLO/XLA bridge
     to_stablehlo,
     together,
+    # 3.10.0 — trigamma; this is what `digamma` differentiates to
+    trigamma,
     verified_integral,
     verified_no_roots,
     verified_sign,
@@ -2295,7 +2312,10 @@ __all__ = [
     # RW-7
     "context",
     "cos",
+    # Exponential-integral family (DLMF §6.2)
+    "cos_integral",
     "cosh",
+    "cosh_integral",
     "crosscheck",
     "dae_index_reduce",
     # V3-3 — FOFormula / V2-9 CAD
@@ -2306,6 +2326,7 @@ __all__ = [
     # P1 search plumbing item 5 — batch/streaming fan-out
     "diff_many",
     "digamma",
+    "dilog",
     "diophantine",
     # Elliptic special functions (parameter convention m = k²)
     "elliptic_e",
@@ -2320,11 +2341,16 @@ __all__ = [
     "eval_expr",
     "evaluate",
     "exp",
+    # Exponential-integral family (DLMF §6.2)
+    "exp_integral_ei",
     # V1-16 — Expr ↔ GbPoly round trip
     "expr_to_gbpoly",
     "factor_univariate_mod_p",
     "flatten_exprs",
     "floor",
+    # 3.10.0 — Fresnel integrals, normalised (pi/2) convention
+    "fresnelc",
+    "fresnels",
     # V2-3
     "gcd_sparse",
     "get_context_value",
@@ -2352,6 +2378,8 @@ __all__ = [
     "lattice",
     "limit",
     "log",
+    # Exponential-integral family (DLMF §6.2)
+    "log_integral",
     "lower_to_first_order",
     "make_rule",
     "map_exprs",
@@ -2429,7 +2457,10 @@ __all__ = [
     "simplify_with",
     # Math functions (core 5)
     "sin",
+    # Exponential-integral family (DLMF §6.2)
+    "sin_integral",
     "sinh",
+    "sinh_integral",
     "smt",
     # V1-4 / V1-16: Polynomial system solver + Gröbner basis (default since 2.3.1)
     "solve",
@@ -2463,6 +2494,7 @@ __all__ = [
     "trace_fn",
     # V2-11 — Regular chains / triangular decomposition
     "triangularize",
+    "trigamma",
     "unflatten_exprs",
     "unicode_str",
     "verified_integral",

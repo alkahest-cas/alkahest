@@ -75,8 +75,9 @@ Three consequences, all of which have bitten:
   `pytest` green while testing the unfixed path.
 - **`cargo test` cannot detect a divergence.** Nothing cross-checks the two implementations, so
   they drift silently.
-- **They already differ.** `cbrt(x)` parses in Rust and raises `unknown function 'cbrt'` in
-  Python.
+- **Nothing pins them together.** There is no conformance test feeding a shared corpus through
+  both and comparing the trees, so a divergence is found by whoever trips over it. Adding one
+  would be worth more than this warning.
 
 If you change tokenisation, precedence, associativity, or how a node is built, change both and
 say so in the commit message. If you add a function name to one, add it to the other.

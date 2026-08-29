@@ -45,9 +45,17 @@
 //! # What a caller should do about a refusal
 //!
 //! [`DepthLimitError`] is a normal, catchable, coded error (`E-DEPTH-001`).
-//! Rebuild the expression with less nesting — a balanced `Add` of 100 000 terms
-//! has depth 2, while the same terms accumulated one at a time with `+` have
-//! depth 100 000 — or split the work into subexpressions.
+//! Rebuild the expression with less nesting, or split the work into
+//! subexpressions.
+//!
+//! `Add` and `Mul` no longer contribute to this problem at all.  Both splice
+//! nested same-operator children at construction (see [`ExprPool::add`] /
+//! [`ExprPool::mul`]), so a balanced `Add` of 100 000 terms and the same terms
+//! accumulated one at a time with `+` are now *the same* depth-2 node — the
+//! left-associated chain that a parser or a `fold` produces can no longer trip
+//! this ceiling.  What still nests, and so still has to be refused, is
+//! everything else: `Pow` towers, `Func` chains such as `sin(sin(sin(…)))`, and
+//! `Piecewise`/`RootSum` nesting.
 
 use crate::errors::AlkahestError;
 use crate::kernel::{ExprId, ExprPool};
@@ -175,16 +183,40 @@ mod tests {
         assert!(check_expr_depth(&pool, wide).is_ok());
     }
 
-    /// The same terms accumulated pairwise are deep, and that is exactly the
-    /// shape that used to segfault every printer.
+    /// The same terms accumulated pairwise used to be deep — that was the shape
+    /// that segfaulted every printer.  It is not deep any more: `add` splices
+    /// nested `Add`s at construction, so a left-associated chain of `+` builds
+    /// the very same flat, depth-2 node as adding all the terms at once.
     #[test]
-    fn a_chain_of_binary_adds_is_refused_past_the_limit() {
+    fn a_chain_of_binary_adds_is_flat_and_accepted() {
         let pool = ExprPool::new();
         let x = pool.symbol("x", Domain::Real);
         let mut acc = x;
         for i in 0..MAX_EXPR_DEPTH {
             let k = pool.integer(i);
             acc = pool.add(vec![acc, k]);
+        }
+        assert_eq!(pool.depth(acc), 2, "a chain of binary adds must flatten");
+        assert!(check_expr_depth(&pool, acc).is_ok());
+
+        // …and it is literally the same node as the wide construction.
+        let mut terms = vec![x];
+        terms.extend((0..MAX_EXPR_DEPTH).map(|i| pool.integer(i)));
+        assert_eq!(acc, pool.add(terms));
+    }
+
+    /// Depth still bites on the node kinds that genuinely nest.  `Pow` is the
+    /// surviving stand-in for the binary-`add` chain above: nothing splices it,
+    /// so one level of tower is one level of depth, and one past the ceiling is
+    /// refused.
+    #[test]
+    fn a_chain_of_nesting_nodes_is_refused_past_the_limit() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let two = pool.integer(2_i32);
+        let mut acc = x;
+        for _ in 0..MAX_EXPR_DEPTH {
+            acc = pool.pow(acc, two);
         }
         assert_eq!(pool.depth(acc), MAX_EXPR_DEPTH + 1);
         let err = check_expr_depth(&pool, acc).expect_err("one past the limit must be refused");

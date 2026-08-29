@@ -333,6 +333,29 @@ mod tests {
             "digamma",
             "gamma",
             "lambert_w",
+            // Exponential-integral family (see `primitive::expint`). Every
+            // one of these is `γ + log|x|` (or nothing) plus a truncated
+            // `Σ σ(m)·xᵐ/(m·m!)` evaluated in the model algebra, with a
+            // geometric tail bound — so losing the rule would be a silent
+            // coverage regression exactly like the 3.9.0 set above.
+            "Ei",
+            "li",
+            "Si",
+            "Ci",
+            "Shi",
+            "Chi",
+            // 3.10.0: the rigorous tier has to reach trigamma, or an
+            // antiderivative carrying it is unverifiable at the enclosure
+            // tier even though `diff` handles it.
+            // 3.10.0: the Fresnel pair and trigamma. The
+            // 3.10.0: the Fresnel pair, the dilogarithm and trigamma. The
+            // rigorous tier has to reach them, or an antiderivative carrying
+            // one is unverifiable at the enclosure tier even though `diff`
+            // handles it.
+            "fresnels",
+            "fresnelc",
+            "dilog",
+            "trigamma",
         ] {
             assert!(taylor_model_supports(name), "`{name}` lost its rule");
         }
