@@ -182,6 +182,84 @@
   disabling the cumulative one takes `large_attempted` from 1 to 6 (and the
   test from under a second to 131 s) and fails it; disabling the per-probe
   one fails it too.
+- **`integrate` was emitting false non-elementarity certificates.**
+  `∫x dx/√(1−x⁴)` is `½asin(x²)`; Alkahest answered `E-INT-004`, *"no elementary
+  antiderivative exists"*. So did a whole family — `∫x√(1−x⁴) dx`,
+  `∫x² dx/√(1−x⁶)`, `∫x dx/√(9−x⁴)`, … — 23 of the 30 `E-INT-004` verdicts in an
+  algebraic-integrand probe. A certificate is a theorem, so a wrong one is
+  strictly worse than declining.
+
+  Both premises of the inference in `algebraic::genus_zero` were unsound.
+
+  1. **"The residue divisor is empty."** It came from `residue_divisor_placed`,
+     sanity-checked with `residue_sum_complete != 0`. Neither is a completeness
+     argument. On `y² = 1−x⁴` the two places over `x = ∞` carry residues `±i`;
+     the places-at-infinity routine reads them off a *rational* Puiseux
+     expansion, and since those branches have leading coefficient `±i ∉ ℚ` it
+     finds no branches at all and reports nothing. The residue theorem then
+     holds vacuously — an empty list sums to zero, and so does an omitted
+     conjugate pair — so the check could not catch it, and the code read "found
+     nothing" as "there is nothing". `residues::residues_at_infinity_exact` now
+     computes those residues in closed form over `ℚ(√lc)` instead of searching
+     for them over `ℚ`, and `residues::certified_residue_divisor` supplies the
+     predicate that was missing: every place enumerated, every nonzero residue
+     representable, or else a refusal. It also closes a second hole in the same
+     routine — for odd `deg a` with a non-square leading coefficient the residue
+     at `∞` is rational, but the Puiseux search still misses it.
+
+  2. **"There is no algebraic primitive."** This came from
+     `solve_rational_rde_generalized` returning `None`, which conflates "no
+     rational solution exists" with "my denominator bound was too weak" — it
+     returns `None` for solvable equations. A *decline* was being used as a
+     proof step. `algebraic::sqrt_rde::decide` now answers the same question
+     three-valued (`Solved` / `NoRationalSolution` / `Undecided`), deriving the
+     denominator bound from that equation's own pole structure rather than
+     generically, so `NoRationalSolution` is a proof. Only that verdict licenses
+     a certificate; its `Solved` also recovers antiderivatives the generic
+     solver's bound missed.
+
+  Where a premise is unavailable the answer is now `E-INT-001`, an honest
+  decline. **Genuine certificates are unaffected** — `∫dx/√(x⁵+1)`,
+  `∫x dx/√(1−x⁶)` and the rest keep `E-INT-004`, now with both premises
+  established.
+
+- **Two more false-certificate mechanisms in the same area, found while
+  sweeping for the one above.**
+
+  * **A pole at `x = 0` was invisible.** `residues::finite_residues_algebraic`
+    factors the pole denominator with `poly::puiseux::factor_over_q`, which
+    deliberately divides out the largest power of `x` first — for its Puiseux
+    callers the root `c = 0` is not a branch and must not appear. Here it is an
+    ordinary place, and dropping it meant `∫√(x⁴−1)/x dx` had *no* enumerated
+    residues: the pole at `0` sits on an irrational sheet (`a(0) = −1`), so the
+    rational-Puiseux routine could not see it either. The integral is
+    elementary; it was certified non-elementary. `factor_over_q` is unchanged
+    (its other callers want the current behaviour); the residue routines now go
+    through a wrapper that keeps the factor.
+
+  * **The simple-radical route certifies without a logarithmic part at all.**
+    `risch::simple_radical` solves the component Risch DE `vⱼ′ + (j·p′/(n·p))vⱼ
+    = bⱼ` of the Liouville decomposition `∫bⱼyʲ dx = vⱼyʲ + Σcₖlog uₖ`, and
+    reports `NonElementary` when the solver returns `None` — ignoring the log
+    part entirely, and treating a *decline* as a disproof. But every
+    `∫R(x, x^{1/n}) dx` with `R` rational is elementary, since `x = uⁿ` makes
+    the integrand rational. `∫∛x/(x²+1) dx` equals
+    `−½log(u²+1) + ¼log(u⁴−u²+1) + (√3/2)·atan((2√3u²−√3)/3)` at `u = x^{1/3}`,
+    and was certified non-elementary; so were `∫∛x/(x³−1) dx` and
+    `∫x^{2/5}/(x−1) dx`. Pending a log-part analysis in that route, the
+    algebraic engine's call site downgrades its `NonElementary` to
+    `NotImplemented` — containment, documented as such, and reversible in one
+    place.
+
+- **New: the power pullback `u = x^k`** (`algebraic::pullback`). An integrand of
+  the shape `x^{k−1}·g(x^k)` satisfies `∫f dx = (1/k)·∫g(u) du`, which drops the
+  curve's genus by a factor of `k` — `∫x dx/√(1−x⁴)` becomes `½∫du/√(1−u²)` on a
+  genus-0 curve and closes as `½asin(x²)`. Recognition is exact structural
+  matching, not a numeric fit, and every emission is gated on a numeric
+  `d/dx F = f` check against the original integrand. It runs **last** and only
+  against an `E-INT-001`, so no integral that already solves changes shape and no
+  `E-INT-004` verdict can be talked down by it. Beyond the family above this also
+  closes the `asinh` half (`∫x dx/√(1+x⁴)`), previously an honest decline.
 - **`Add` and `Mul` are flat at construction, so associativity holds
   structurally.** `ExprPool::mul` / `ExprPool::add` now splice nested
   same-operator children before interning, so `(a·b)·c`, `a·(b·c)` and `a·b·c`
@@ -549,6 +627,52 @@
   `alkahest.experimental.TelescopingMdCertificate`. Experimental, same
   refusal codes as `telescope2d` (`E-HOLO-040`/`041`/`042`).
 
+- **The elliptic route's soundness gate becomes a reusable, graded facility:
+  `integrate::gate`.** The *propose an ansatz → fit the coefficients
+  numerically → snap to rationals → verify symbolically → emit only if the
+  gate passes* pattern lived in one module
+  (`integrate/algebraic/elliptic_output.rs`) as a private boolean check. It is
+  now `alkahest-core/src/integrate/gate.rs`, with a **graded** verdict in
+  place of a boolean: `Proven` (the simplified residual `d/dx F − f` is a
+  syntactic zero), `EnclosureVerified { boxes, residual_bound }` (a *rigorous*
+  bound on `|d/dx F − f|` over stated closed boxes, via Taylor models in
+  outward-rounded ball arithmetic — a statement about a whole interval, not
+  about finitely many points), `SampledOnly { points, tolerance }` (the
+  historical `f64` screen, now named rather than implied), `Failed` (refuted
+  at a specific point) and `Declined` (the gate could not run, and says
+  nothing). `GateOptions::min_strength` is the caller's floor, so a route can
+  demand a rigorous enclosure and decline anything weaker.
+
+  The module documents what each verdict does *and does not* prove. No verdict
+  is a proof of the integral; the rigorous tier can never cover branch points,
+  poles or the unbounded tails, and it refuses anything it cannot
+  Taylor-model rather than passing it silently. Domain-awareness is
+  caller-supplied (samples + predicate + boxes) instead of hardcoded to
+  "radicand positive", and the private numeric evaluator is replaced by one
+  that dispatches through the shared `PrimitiveRegistry`.
+
+  `elliptic_output.rs` is refactored onto it with **no behavioural change** —
+  same acceptance rule, same tolerance, same sample grid, all pre-existing
+  tests unchanged. Cost, measured on a release build: the default gate is
+  ~0.38 ms per candidate, while the rigorous tier costs 1.3 s – 9.9 s, so it
+  is tiered (cheap symbolic check → `f64` screen → enclosure only on
+  survivors) and off by default on that hot path; `try_elliptic_output_with`
+  takes an explicit `GateOptions` for callers who want it. A test certifies
+  all four first-kind reductions to a residual bound of 3e-9 – 8e-9 over boxes
+  strictly inside the radicand-positive region.
+
+- **`∫√(tan x) dx` and the rationalizing-substitution family.** Radicals with
+  a *non-polynomial* radicand previously declined with "radicand P is not a
+  polynomial in the variable". For radicands whose derivative is a rational
+  function of themselves — `tan`, `cot`, `tanh`, `exp` of a linear argument —
+  `uⁿ = g(x)` now rationalizes the integrand, and the `u`-integral is closed
+  either by the existing engine or, where Rothstein–Trager would return an
+  unevaluable `RootSum`, by a fitted **real partial-fraction ansatz**
+  (`log(u − r)`, `log(u² − 2αu + α²+β²)`, `atan((u − α)/β)`, polynomial
+  ladder). The back-substituted result is gate-verified against the original
+  integrand in `x`; `∫√(tan x) dx` comes out in the classical closed form and
+  reaches `EnclosureVerified` with a residual bound of 9.8e-9. A bare `x`
+  outside the radical, a polynomial radicand, and `√(sin x)` all decline.
 - **`gamma`, `digamma` and `EllipticPi` can be differentiated — and
   `trigamma` is new.** All three parsed and evaluated but could not be
   differentiated in every argument, and an antiderivative carrying one of them

@@ -30,6 +30,19 @@
 //! complete divisor.  Remaining gap: algebraic **branch** places (a pole at an
 //! irrational root of `a`) and `n > 2`.  Together with FIND-ORDER (genus-graded
 //! principality) these complete MC.
+//!
+//! # Completeness is a separate question from the residue theorem
+//!
+//! `Σ res = 0` is necessary, not sufficient: a *missing* conjugate pair sums to
+//! zero on its own, and an enumeration that finds no places at all sums to zero
+//! vacuously.  [`residues_at_infinity`] is where that bites — it reads the
+//! places over `∞` off a **rational** Puiseux expansion, so when the leading
+//! coefficient of `a` is not a rational square it returns nothing at all rather
+//! than the conjugate pair that is actually there.  Two additions close the
+//! gap: `residues_at_infinity_exact` computes those residues in closed form
+//! over `ℚ(√lc)`, and `residue_enumeration_is_complete` is the predicate a
+//! caller must consult before reading an empty divisor as "no residues
+//! anywhere".
 
 use rug::{Integer, Rational};
 use std::collections::{BTreeSet, HashMap};
@@ -366,7 +379,7 @@ pub fn finite_residues_algebraic(n: usize, a: &QPoly, h: &AlgElem) -> Vec<AlgRes
     let d_prime = poly_deriv(&d);
 
     let mut out = Vec::new();
-    for (q, deg_q) in factor_over_q(&d) {
+    for (q, deg_q) in factor_including_zero_root(&d) {
         if degree(&poly_gcd(&q, &a)) > 0 {
             continue; // shares a factor with `a`: a branch place, not handled here
         }
@@ -414,6 +427,394 @@ pub fn residue_sum_complete(n: usize, a: &QPoly, h: &AlgElem) -> Rational {
     total
 }
 
+// ===========================================================================
+// Places over `x = ∞` — exact, closed form (hyperelliptic `y² = a`)
+// ===========================================================================
+//
+// `residues_at_infinity` reads the places over `∞` off the *rational* Puiseux
+// expansion of `ã(z)w² − zᵐ = 0`, and `puiseux_at_zero` only follows branches
+// whose leading coefficient is a **rational** root of `F(0, ·)`.  When the
+// leading coefficient of `a` is not a rational square the branches at infinity
+// are conjugate over `ℚ(√lc)` and that routine silently returns *nothing* — not
+// "no residues", but "no branches found".  Every consumer that reads an empty
+// result as "no residues anywhere" is then reasoning from an incomplete
+// divisor.  `∫x dx/√(1−x⁴)` is exactly that case: `lc = −1`, the two places
+// over `∞` carry residues `±i`, and the rational routine reports none.
+//
+// The closed form below removes the guesswork.  With `m = deg a`,
+// `lc = a_m ≠ 0`, `ã(z) = zᵐ·a(1/z)` (so `ã(0) = lc`) and
+// `T(z) = √(ã(z)/lc) ∈ ℚ[[z]]`, `T(0) = 1`:
+//
+// * **`m = 2s` even.**  Two places, `x = 1/z`, `y = ±z^{−s}·√lc·T(z)`,
+//   `dx = −z^{−2} dz`, so with `ca = A(1/z)`, `cb = B(1/z)` as Laurent series
+//   in `z`,
+//
+//   ```text
+//     res_± = R₀ ± √lc·R₁,   R₀ = −[z¹] ca,   R₁ = −[z^{s+1}](cb·T).
+//   ```
+//
+// * **`m` odd.**  One place, ramified (`z = t²`).  The `B·y` half lands
+//   entirely on even powers of `t` and contributes nothing, leaving the
+//   **always rational** `res = −2·[z¹] ca`.
+//
+// Both agree with the residue theorem's other half: the total over `∞` is
+// `−2·[z¹]ca` either way.
+
+/// Residues of `h dx = (A + B·y) dx` at the places over `x = ∞` of `y² = a`,
+/// in closed form.  `value(±) = r0 ± r1·√lc`; `two_places` is `false` for odd
+/// `deg a` (a single ramified place, `r1 = 0`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct InfinityResidues {
+    /// Rational part of the residue, shared by both places.
+    pub(crate) r0: Rational,
+    /// Coefficient of `√lc`; opposite sign on the two places.
+    pub(crate) r1: Rational,
+    /// Leading coefficient of `a` — the square generating the residue field.
+    pub(crate) lc: Rational,
+    /// `true` for even `deg a` (two places over `∞`), `false` for odd.
+    pub(crate) two_places: bool,
+}
+
+impl InfinityResidues {
+    /// Every place over `∞` has residue `0`.
+    pub(crate) fn all_zero(&self) -> bool {
+        self.r0 == 0 && self.r1 == 0
+    }
+
+    /// Do the residues lie outside `ℚ`?  (Only then is the divisor beyond the
+    /// rational FIND-ORDER scope.)
+    pub(crate) fn is_irrational(&self) -> bool {
+        self.r1 != 0 && !is_rational_square(&self.lc)
+    }
+
+    /// The places over `∞` as [`PlacedResidue`]s — **only** when every residue
+    /// is rational (`r1 = 0`, or `lc` a rational square).  Zero residues are
+    /// omitted, matching [`residues_at_infinity`].
+    pub(crate) fn placed(&self) -> Option<Vec<PlacedResidue>> {
+        if self.all_zero() {
+            return Some(Vec::new());
+        }
+        let s = if self.r1 == 0 {
+            Rational::from(0)
+        } else {
+            rational_sqrt(&self.lc)?
+        };
+        let mut out = Vec::new();
+        for (sheet, sign) in [Rational::from(1), Rational::from(-1)]
+            .into_iter()
+            .enumerate()
+        {
+            let value = if self.two_places {
+                self.r0.clone() + sign * s.clone() * self.r1.clone()
+            } else {
+                self.r0.clone()
+            };
+            if value != 0 {
+                out.push(PlacedResidue {
+                    residue: Residue {
+                        point: Rational::from(0),
+                        at_infinity: true,
+                        sheet,
+                        ramification: if self.two_places { 1 } else { 2 },
+                        value,
+                    },
+                    y_coord: Rational::from(0),
+                });
+            }
+            if !self.two_places {
+                break;
+            }
+        }
+        Some(out)
+    }
+}
+
+/// Closed-form residues at the places over `x = ∞` of `y² = a(x)` for
+/// `h = A + B·y`.  Returns `None` outside the hyperelliptic scope (`n ≠ 2`,
+/// `deg a < 1`, or a `y`-degree above 1 in `h`).
+///
+/// Unlike [`residues_at_infinity`] this never silently drops a place: the two
+/// (or one) places over `∞` are enumerated by degree parity, and their residues
+/// are computed in `ℚ(√lc)` rather than searched for over `ℚ`.
+pub(crate) fn residues_at_infinity_exact(
+    n: usize,
+    a: &QPoly,
+    h: &AlgElem,
+) -> Option<InfinityResidues> {
+    if n != 2 {
+        return None;
+    }
+    let a = trim(a.clone());
+    let m = degree(&a);
+    if m < 1 {
+        return None;
+    }
+    if h.len() > 2 && h[2..].iter().any(|c| !trim(c.numer().clone()).is_empty()) {
+        return None; // `h` is not `A + B·y` on this curve
+    }
+    let m = m as usize;
+    let lc = a[m].clone();
+    let a_c = h.first().cloned().unwrap_or_else(|| RatFn::int(0));
+    let b_c = h.get(1).cloned().unwrap_or_else(|| RatFn::int(0));
+
+    // Truncation bound.  `ratfn_at_infinity` inverts the denominator series,
+    // whose lowest exponent is `+deg den`, so reaching exponent `k` of the
+    // quotient needs headroom for the numerator's `−deg num` shift as well.
+    let dmax = h
+        .iter()
+        .map(|c| degree(c.numer()).max(degree(c.denom())).max(0))
+        .max()
+        .unwrap_or(0);
+    let s = (m / 2) as i64;
+    let u = s + 2 * dmax + 4;
+
+    // R₀ = −[z¹] A(1/z) — the same for both places; doubled at a ramified one.
+    let ca = ratfn_at_infinity(&a_c, 1, u);
+    let c1 = ca.get(&1).cloned().unwrap_or_else(|| Rational::from(0));
+
+    if m % 2 == 1 {
+        return Some(InfinityResidues {
+            r0: -Rational::from(2) * c1,
+            r1: Rational::from(0),
+            lc,
+            two_places: false,
+        });
+    }
+
+    // T(z) = √(ã(z)/lc) ∈ ℚ[[z]], T(0) = 1.  `cb` starts at exponent
+    // `−deg(num B)`, so reaching `[z^{s+1}]` of the product needs `T` that much
+    // further out than `s+1` — truncating at `s+2` silently drops the term that
+    // makes `res(x√(1+x⁴) dx) = ∓½` nonzero.
+    let a_tilde_over_lc: Vec<Rational> = (0..=m)
+        .map(|k| a[m - k].clone() / lc.clone()) // ã_k = a_{m−k}
+        .collect();
+    let t = series_sqrt_unit(&a_tilde_over_lc, u as usize)?;
+    let mut t_ts = TS::new();
+    for (k, c) in t.iter().enumerate() {
+        if *c != 0 {
+            t_ts.insert(k as i64, c.clone());
+        }
+    }
+    let cb = ratfn_at_infinity(&b_c, 1, u);
+    let prod = ts_mul(&cb, &t_ts, s + 2);
+    let r1 = -prod
+        .get(&(s + 1))
+        .cloned()
+        .unwrap_or_else(|| Rational::from(0));
+
+    Some(InfinityResidues {
+        r0: -c1,
+        r1,
+        lc,
+        two_places: true,
+    })
+}
+
+/// Power series `T` with `T² = s` and `T(0) = 1`, to `prec` coefficients.
+/// `s[0]` must be `1`.
+fn series_sqrt_unit(s: &[Rational], prec: usize) -> Option<Vec<Rational>> {
+    if s.first().map(|c| *c != 1).unwrap_or(true) {
+        return None;
+    }
+    let mut t = vec![Rational::from(0); prec.max(1)];
+    t[0] = Rational::from(1);
+    for k in 1..prec {
+        let mut acc = s.get(k).cloned().unwrap_or_else(|| Rational::from(0));
+        for i in 1..k {
+            acc -= t[i].clone() * &t[k - i];
+        }
+        t[k] = acc / Rational::from(2);
+    }
+    Some(t)
+}
+
+/// The rational square root of `r`, when it has one.
+fn rational_sqrt(r: &Rational) -> Option<Rational> {
+    if *r < 0 {
+        return None;
+    }
+    let (n, d) = (r.numer().clone(), r.denom().clone());
+    let (ns, ds) = (n.clone().sqrt(), d.clone().sqrt());
+    if Integer::from(&ns * &ns) == n && Integer::from(&ds * &ds) == d {
+        Some(Rational::from((ns, ds)))
+    } else {
+        None
+    }
+}
+
+// ===========================================================================
+// Completeness certificate
+// ===========================================================================
+
+/// Does the residue enumeration for `h dx` on `y² = a` provably cover **every**
+/// place of the curve?
+///
+/// The residue theorem (`Σ res = 0`) is *not* a completeness check: a missing
+/// conjugate pair sums to zero on its own, and an enumeration that finds no
+/// places at all sums to zero vacuously.  Reading either as "no residues
+/// anywhere" is how `∫x dx/√(1−x⁴)` came to be certified non-elementary.  This
+/// predicate is the actual check, and it is deliberately conservative: `false`
+/// means "cannot certify", never "incomplete".
+///
+/// It rests on three facts about `y² = a` with `a` **squarefree**:
+///
+/// 1. **Branch places carry `res = 2·Res_α(A)`.**  At a root `α` of `a` the
+///    place is simply ramified (`x − α = t²`, `y = t·V(t²)`), so `B·y·dx`
+///    expands in *even* powers of `t` alone and contributes nothing to
+///    `[t^{−1}]`, whatever the order of `B`'s pole there.  Only `A` can leave a
+///    residue at a branch place — which is why `∫B√P dx` (where `A ≡ 0`) is
+///    unaffected by poles of `B` on the branch locus.
+/// 2. **Finite non-branch places** are the roots of the `a`-coprime part `Dc`
+///    of `D = lcm(den A, den B)`.  [`finite_residues`] covers those with a
+///    rational base point *and* a rational sheet at any pole order;
+///    [`finite_residues_algebraic`] covers the rest, but only for simple poles
+///    and only when the whole of `D` is squarefree.
+/// 3. **Places over `∞`** are enumerated exactly by
+///    [`residues_at_infinity_exact`].
+pub(crate) fn residue_enumeration_is_complete(n: usize, a: &QPoly, h: &AlgElem) -> bool {
+    if n != 2 {
+        return false;
+    }
+    let a = trim(a.clone());
+    if degree(&a) < 1 {
+        return false;
+    }
+    // Squarefree `a`: every branch place is simply ramified (fact 1).
+    if degree(&poly_gcd(&a, &poly_deriv(&a))) > 0 {
+        return false;
+    }
+    if residues_at_infinity_exact(2, &a, h).is_none() {
+        return false; // fact 3 unavailable
+    }
+
+    let a_c = h.first().cloned().unwrap_or_else(|| RatFn::int(0));
+    let b_c = h.get(1).cloned().unwrap_or_else(|| RatFn::int(0));
+    let den_of = |c: &RatFn| -> QPoly {
+        if trim(c.numer().clone()).is_empty() {
+            vec![Rational::from(1)]
+        } else {
+            c.denom().clone()
+        }
+    };
+    let a_den = den_of(&a_c);
+    let b_den = den_of(&b_c);
+
+    // Fact 1: a residue at a branch place needs a pole of `A` there, and only
+    // *rational* branch points are enumerated.  Requiring `A` to be regular on
+    // the branch locus is the conservative reading (and is free when `A ≡ 0`).
+    if degree(&poly_gcd(&a_den, &a)) > 0 {
+        return false;
+    }
+
+    // Fact 2: the `a`-coprime part of the common pole denominator.
+    let d = poly_lcm(&a_den, &b_den);
+    let mut dc = d.clone();
+    loop {
+        let g = poly_gcd(&dc, &a);
+        if degree(&g) < 1 {
+            break;
+        }
+        dc = poly_div_exact(&dc, &g);
+    }
+    if degree(&dc) < 1 {
+        return true; // no finite non-branch poles at all
+    }
+    // Which factors does the rational-Puiseux routine already own?
+    let all_rational_places = factor_including_zero_root(&dc)
+        .into_iter()
+        .all(|(q, deg_q)| {
+            deg_q == 1 && {
+                let alpha = -q.first().cloned().unwrap_or_else(|| Rational::from(0));
+                is_rational_square(&eval_q(&a, &alpha))
+            }
+        });
+    if all_rational_places {
+        return true; // `finite_residues` handles these at any pole order
+    }
+    // Algebraic places are present, so `finite_residues_algebraic` must be live:
+    // it needs simple poles throughout `D`.
+    degree(&poly_gcd(&d, &poly_deriv(&d))) == 0
+}
+
+/// A residue divisor that is **certified complete**: every place of the curve
+/// has been enumerated, and every nonzero residue appears in exactly one of the
+/// two lists.  An empty [`CertifiedDivisor`] therefore genuinely means "no
+/// residues anywhere" — which is the only thing a non-elementarity certificate
+/// may rest on.
+#[derive(Clone, Debug)]
+pub(crate) struct CertifiedDivisor {
+    /// Places with a **rational** residue: the finite rational places plus the
+    /// places over `∞`.  In the FIND-ORDER representation.
+    pub(crate) rational: Vec<PlacedResidue>,
+    /// Finite places whose residues live in a number field (Trager's route).
+    pub(crate) algebraic: Vec<AlgResidue>,
+}
+
+/// The certified-complete residue divisor of `h dx` on `yⁿ = a`, or `None` when
+/// completeness cannot be established.
+///
+/// `None` covers three refusals, all of which must make the caller decline
+/// rather than pronounce:
+///
+/// * the enumeration is not certifiable ([`residue_enumeration_is_complete`]);
+/// * a residue over `∞` lies outside `ℚ` — `±i` on `y² = 1−x⁴`, say — so it
+///   cannot be represented in the rational [`PlacedResidue`] form FIND-ORDER
+///   consumes, and the rational part alone is *not* the whole divisor;
+/// * the residue theorem fails on the assembled divisor, which would mean a bug
+///   here rather than an out-of-scope input.
+pub(crate) fn certified_residue_divisor(
+    n: usize,
+    a: &QPoly,
+    h: &AlgElem,
+) -> Option<CertifiedDivisor> {
+    if !residue_enumeration_is_complete(n, a, h) {
+        return None;
+    }
+    let inf = residues_at_infinity_exact(n, a, h)?;
+    if inf.is_irrational() {
+        return None;
+    }
+    let mut rational = finite_residues_placed(n, a, h);
+    rational.extend(inf.placed()?);
+    let algebraic = finite_residues_algebraic(n, a, h);
+
+    // Residue theorem on the now-complete divisor — a self-check, not the
+    // completeness argument (see the module header).
+    let mut total = rational
+        .iter()
+        .fold(Rational::from(0), |s, r| s + &r.residue.value);
+    for r in &algebraic {
+        let nf = NumberField::new(r.minpoly.clone());
+        total += Rational::from(2) * nf.trace(&r.r0);
+    }
+    if total != 0 {
+        return None;
+    }
+    Some(CertifiedDivisor {
+        rational,
+        algebraic,
+    })
+}
+
+/// Monic irreducible factors of `p` over `ℚ`, **including `x` itself** when `0`
+/// is a root.
+///
+/// [`factor_over_q`] deliberately divides out the largest power of `x` first —
+/// for its Puiseux callers the constant root `c = 0` is not a branch and must
+/// not appear.  Here it is an ordinary place like any other, and dropping it is
+/// how `∫√(x⁴−1)/x dx` came to be certified non-elementary: the pole at `x = 0`
+/// has an irrational sheet (`a(0) = −1`), so the rational-Puiseux routine cannot
+/// see it either, and between the two omissions the residue divisor looked
+/// empty.  Multiplicity is not returned (matching `factor_over_q`), so `x`
+/// appears once.
+fn factor_including_zero_root(p: &QPoly) -> Vec<(QPoly, usize)> {
+    let mut out = factor_over_q(p);
+    if trim(p.clone()).first().map(|c0| *c0 == 0) == Some(true) {
+        out.push((vec![Rational::from(0), Rational::from(1)], 1));
+    }
+    out
+}
+
 /// Least common multiple `a·b/gcd(a,b)` over `ℚ[x]`.
 fn poly_lcm(a: &QPoly, b: &QPoly) -> QPoly {
     if degree(a) < 0 || degree(b) < 0 {
@@ -429,14 +830,7 @@ fn eval_q(p: &QPoly, x: &Rational) -> Rational {
 
 /// Is the rational `r` a perfect square in `ℚ` (`r = (s)²`, `s ∈ ℚ`)?
 fn is_rational_square(r: &Rational) -> bool {
-    if *r < 0 {
-        return false;
-    }
-    let n = r.numer().clone();
-    let d = r.denom().clone();
-    let ns = n.clone().sqrt();
-    let ds = d.clone().sqrt();
-    Integer::from(&ns * &ns) == n && Integer::from(&ds * &ds) == d
+    rational_sqrt(r).is_some()
 }
 
 /// Monomials `(i, j, coeff)` of `F = yⁿ − a(x)`.
@@ -644,5 +1038,171 @@ mod tests {
         // there; the residues live at an algebraic place (out of scope) — so the
         // rational-place result is empty, soundly (not a wrong value).
         assert!(res.iter().all(|r| r.value != 0));
+    }
+
+    // -----------------------------------------------------------------------
+    // Places over ∞: the closed form vs. the rational-Puiseux routine
+    // -----------------------------------------------------------------------
+
+    /// `x dx/√(1−x⁴)`: the two places over `∞` carry residues `±i`, which the
+    /// rational-Puiseux routine cannot see (it finds **no branches at all**,
+    /// because `w² = z⁴/(z⁴−1)` has leading coefficient `±i ∉ ℚ`).  This is the
+    /// exact hole that certified `∫x dx/√(1−x⁴)` non-elementary.
+    #[test]
+    fn infinity_residues_are_algebraic_for_one_minus_x4() {
+        let a = qp(&[1, 0, 0, 0, -1]);
+        let h = vec![RatFn::int(0), rf(&[0, 1], &[1, 0, 0, 0, -1])];
+
+        assert!(
+            super::residues_at_infinity(2, &a, &h).is_empty(),
+            "rational Puiseux sees nothing over ∞ here"
+        );
+        assert!(
+            super::puiseux_at_infinity(2, &a, 8).is_empty(),
+            "…because it finds no branches at all"
+        );
+
+        let inf = super::residues_at_infinity_exact(2, &a, &h).expect("hyperelliptic");
+        // res = 0 ± 1·√(−1) = ±i.
+        assert_eq!(inf.r0, r(0));
+        assert_eq!(inf.r1, r(1));
+        assert_eq!(inf.lc, r(-1));
+        assert!(inf.two_places);
+        assert!(!inf.all_zero(), "there *are* residues over ∞");
+        assert!(inf.is_irrational());
+        assert!(inf.placed().is_none(), "±i is not representable in ℚ");
+
+        // The *places* are all enumerated — it is their residues that cannot be
+        // written down over ℚ, so no certified divisor is available and the
+        // empty rational one must not be read as "no residues anywhere".
+        assert!(super::residue_divisor(2, &a, &h).is_empty());
+        assert_eq!(super::residue_sum_complete(2, &a, &h), r(0)); // vacuously!
+        assert!(super::residue_enumeration_is_complete(2, &a, &h));
+        assert!(super::certified_residue_divisor(2, &a, &h).is_none());
+    }
+
+    /// `x dx/√(1−x⁶)` (genus 2): `x dx/y` is *holomorphic* at `∞` too, so the
+    /// empty divisor here is real — and certifiable.
+    #[test]
+    fn infinity_residues_vanish_for_one_minus_x6() {
+        let a = qp(&[1, 0, 0, 0, 0, 0, -1]);
+        let h = vec![RatFn::int(0), rf(&[0, 1], &[1, 0, 0, 0, 0, 0, -1])];
+        let inf = super::residues_at_infinity_exact(2, &a, &h).expect("hyperelliptic");
+        assert!(inf.all_zero());
+        assert_eq!(inf.placed().map(|p| p.len()), Some(0));
+        assert!(super::residue_enumeration_is_complete(2, &a, &h));
+        let cert = super::certified_residue_divisor(2, &a, &h).expect("certifiable");
+        assert!(cert.rational.is_empty() && cert.algebraic.is_empty());
+    }
+
+    /// `x dx/√(1+x⁴)`: `lc = 1` is a square, the places over `∞` are rational
+    /// (`±1`), and the closed form reproduces what the Puiseux routine finds.
+    #[test]
+    fn infinity_residues_agree_when_rational() {
+        let a = qp(&[1, 0, 0, 0, 1]);
+        let h = vec![RatFn::int(0), rf(&[0, 1], &[1, 0, 0, 0, 1])];
+        let inf = super::residues_at_infinity_exact(2, &a, &h).expect("hyperelliptic");
+        assert!(!inf.is_irrational());
+        let mut exact: Vec<Rational> = inf
+            .placed()
+            .unwrap()
+            .iter()
+            .map(|p| p.residue.value.clone())
+            .collect();
+        let mut puiseux: Vec<Rational> = super::residues_at_infinity(2, &a, &h)
+            .iter()
+            .map(|p| p.value.clone())
+            .collect();
+        exact.sort();
+        puiseux.sort();
+        assert_eq!(exact, puiseux);
+        assert_eq!(exact, vec![r(-1), r(1)]);
+    }
+
+    /// `x√(1+x⁴) dx` — a *polynomial* weight, so the only poles are over `∞`
+    /// and the residues there are `∓½`.  The series square root has to be
+    /// carried past `z^{s+1}` to see them, because `B(1/z)` starts at `z^{−1}`.
+    #[test]
+    fn infinity_residues_of_a_polynomial_weight() {
+        let a = qp(&[1, 0, 0, 0, 1]);
+        let h = vec![RatFn::int(0), rf(&[0, 1], &[1])]; // B = x
+        let inf = super::residues_at_infinity_exact(2, &a, &h).expect("hyperelliptic");
+        assert_eq!(inf.r0, r(0));
+        assert_eq!(inf.r1, Rational::from((-1, 2)));
+        let vals: Vec<Rational> = inf
+            .placed()
+            .unwrap()
+            .iter()
+            .map(|p| p.residue.value.clone())
+            .collect();
+        assert_eq!(vals.len(), 2, "two nonzero places over ∞");
+        assert_eq!(vals[0].clone() + vals[1].clone(), r(0));
+    }
+
+    /// `∫dx/√(x⁵+1)` — odd degree, a single ramified place over `∞` with
+    /// residue `−2·[z¹]A(1/z) = 0` (here `A ≡ 0`).  The whole divisor is
+    /// certifiably empty, which is what licenses that famous certificate.
+    #[test]
+    fn odd_degree_infinity_place_is_rational_and_certified() {
+        let a = qp(&[1, 0, 0, 0, 0, 1]);
+        let h = vec![RatFn::int(0), rf(&[1], &[1, 0, 0, 0, 0, 1])];
+        let inf = super::residues_at_infinity_exact(2, &a, &h).expect("hyperelliptic");
+        assert!(!inf.two_places);
+        assert_eq!(inf.r1, r(0));
+        assert!(inf.all_zero());
+        // The pole denominator is `a` itself: every finite pole sits on the
+        // branch locus, where `A ≡ 0` leaves no residue.
+        assert!(super::residue_enumeration_is_complete(2, &a, &h));
+        let cert = super::certified_residue_divisor(2, &a, &h).expect("certifiable");
+        assert!(cert.rational.is_empty() && cert.algebraic.is_empty());
+    }
+
+    /// A residue at `∞` that is rational but that the Puiseux routine misses
+    /// (odd degree, non-square leading coefficient): `A = 1/x`, `a = 2x³+1`.
+    /// The closed form gets it; `residues_at_infinity` returns nothing.
+    #[test]
+    fn odd_degree_nonsquare_lc_infinity_residue() {
+        let a = qp(&[1, 0, 0, 2]);
+        let h = vec![rf(&[1], &[0, 1]), RatFn::int(0)];
+        let inf = super::residues_at_infinity_exact(2, &a, &h).expect("hyperelliptic");
+        // A(1/z) = z, so [z¹] = 1 and res = −2.
+        assert_eq!(inf.r0, r(-2));
+        assert_eq!(inf.r1, r(0));
+    }
+
+    /// `√(x⁴−1)/x dx` — the pole at `x = 0` sits on an *irrational* sheet
+    /// (`a(0) = −1`), so the rational-Puiseux routine cannot see it, and
+    /// `factor_over_q` used to drop the factor `x` before the algebraic routine
+    /// got a chance.  Between the two the divisor looked empty and the integral
+    /// — which is elementary — was certified non-elementary.
+    #[test]
+    fn pole_at_the_origin_is_not_dropped() {
+        let a = qp(&[-1, 0, 0, 0, 1]);
+        let h = vec![RatFn::int(0), rf(&[1], &[0, 1])]; // B = 1/x
+        let alg = super::finite_residues_algebraic(2, &a, &h);
+        assert_eq!(alg.len(), 1, "the place over x = 0 must be enumerated");
+        assert_eq!(alg[0].minpoly, qp(&[0, 1]));
+        assert!(alg[0].r0.iter().all(|c| *c == 0)); // rational part zero…
+        assert_eq!(alg[0].r1, vec![r(1)]); // …residues are ±√(a(0)) = ±i
+        assert!(super::finite_residues(2, &a, &h).is_empty());
+
+        let cert = super::certified_residue_divisor(2, &a, &h).expect("certifiable");
+        assert!(
+            !cert.algebraic.is_empty(),
+            "the certified divisor must not be empty here"
+        );
+    }
+
+    /// The certificate refuses a non-squarefree radicand and `n ≠ 2`.
+    #[test]
+    fn completeness_certificate_refuses_out_of_scope() {
+        let sq = qp(&[0, 0, 1]); // x² — not squarefree
+        let h = vec![RatFn::int(0), rf(&[1], &[1])];
+        assert!(!super::residue_enumeration_is_complete(2, &sq, &h));
+        assert!(!super::residue_enumeration_is_complete(
+            3,
+            &qp(&[1, 0, 0, 1]),
+            &h
+        ));
     }
 }

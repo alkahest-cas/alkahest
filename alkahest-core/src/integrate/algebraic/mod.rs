@@ -33,7 +33,17 @@ pub mod integral_basis;
 mod jacobian_torsion;
 pub(super) mod parametrize;
 pub(super) mod poly_utils;
+// Power pullback `u = x^k` — the last-resort genus reduction for
+// `x^{k−1}·g(x^k)` integrands.
+mod pullback;
 pub mod residues;
+// Three-valued decision procedure for `v′ + (a′/2a)v = B` — the "is there an
+// algebraic primitive?" premise of the `∫B√P` non-elementarity certificate.
+// Separated from the generic RDE solver because a certificate may only rest on
+// a *proved* absence of a solution, never on a decline.
+mod sqrt_rde;
+// Rationalizing substitutions `uⁿ = g(x)` for transcendental `g`, gate-verified.
+pub(super) mod subst;
 // Trager ℚ-basis logarithmic-part criterion: decomposition + per-component
 // torsion over rational *and* algebraic places.  `trager_log_criterion_alg` is
 // the engine consumer (via `genus_zero::integrate_b_sqrt_high_degree`); the
@@ -155,6 +165,54 @@ fn get_radicand(expr: ExprId, pool: &ExprPool) -> Option<ExprId> {
     }
 }
 
+/// Turn a `NonElementary` from the simple-radical route into a `NotImplemented`.
+///
+/// **This is containment, not a fix**, and it belongs at the call site because
+/// the defect is in `risch::simple_radical`, which is not this module's to
+/// change.
+///
+/// That route decomposes `∫ Σ bⱼ yʲ dx` (`y = p^{1/n}`) and, for each `j ≥ 1`,
+/// solves the component Risch DE `vⱼ′ + (j·p′/(n·p))·vⱼ = bⱼ`.  When the solver
+/// returns `None` it reports `NonElementary` — `simple_radical.rs:112` and
+/// `:231`. Two independent things are wrong with that:
+///
+/// * By Liouville, `∫bⱼ yʲ dx = vⱼ yʲ + Σ cₖ log uₖ`. The route computes the
+///   **integral part only** and never looks at the logarithmic part, so an
+///   integral whose answer is a logarithm is reported as having none.
+/// * `solve_rational_rde_generalized`'s `None` is a *decline*, not a disproof
+///   (the same conflation fixed for `∫B√P` in `genus_zero` — see
+///   [`super::sqrt_rde`]).
+///
+/// The consequence is not hypothetical. `∫∛x/(x²+1) dx` is elementary — every
+/// `∫R(x, x^{1/n}) dx` with `R` rational is, since `x = uⁿ` makes the integrand
+/// rational — and equals
+///
+/// ```text
+///   −½log(u²+1) + ¼log(u⁴−u²+1) + (√3/2)·atan((2√3u²−√3)/3),   u = x^{1/3},
+/// ```
+///
+/// which differentiates back to the integrand exactly. It was certified
+/// non-elementary. So were `∫∛x/(x³−1) dx` and `∫x^{2/5}/(x−1) dx`, on the same
+/// (empty) grounds. Nothing that route reports can be trusted as a proof until
+/// it accounts for the logarithmic part, so none of it is passed on as one.
+///
+/// Antiderivatives and every other error are handed back untouched. Remove this
+/// once `simple_radical` grows a residue/log-part analysis — and pin the
+/// integrals above as *solved* when it does.
+fn downgrade_unproved_certificate(
+    res: Result<DerivedExpr<ExprId>, IntegrationError>,
+) -> Result<DerivedExpr<ExprId>, IntegrationError> {
+    match res {
+        Err(IntegrationError::NonElementary(msg)) => {
+            Err(IntegrationError::NotImplemented(format!(
+                "simple-radical route: {msg} — reported without a logarithmic-part \
+             analysis, so it is a decline, not a proof of non-elementarity"
+            )))
+        }
+        other => other,
+    }
+}
+
 /// Find a unique algebraic generator in `expr`.
 /// Returns `Some((sqrt_id, radicand_id))` when there is exactly one generator.
 fn find_generator(expr: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
@@ -199,7 +257,7 @@ pub fn integrate_algebraic(
     if let Some(res) =
         crate::integrate::risch::simple_radical::try_integrate_simple_radical(expr, var, pool)
     {
-        return res;
+        return downgrade_unproved_certificate(res);
     }
 
     // Negative-leading-coefficient quadratic radicand `√(a x²+b x+c)`, `a < 0`
@@ -221,7 +279,7 @@ pub fn integrate_algebraic(
     // substitution, which rationalizes the whole `∫ R(x,√(quadratic)) dx`.  The
     // decompose path is tried first so polynomial-coefficient cases keep their
     // nicer closed forms.
-    match integrate_via_decompose(expr, var, pool) {
+    let result = match integrate_via_decompose(expr, var, pool) {
         Err(IntegrationError::NotImplemented(_)) => {
             if let Some(res) = parametrize::try_euler_quadratic(expr, var, pool) {
                 return res;
@@ -233,10 +291,30 @@ pub fn integrate_algebraic(
             if let Some(res) = parametrize::try_euler_quadratic_general(expr, var, pool) {
                 return res;
             }
+            // Rationalizing substitution `uⁿ = g(x)` for a *non-polynomial*
+            // radicand — `∫√(tan x) dx` and friends.  Tried last, after every
+            // polynomial-radicand route has declined, so nothing that already
+            // worked can change; every emission is gate-verified against the
+            // original integrand in `x`.
+            if let Some(res) = subst::try_rationalizing_substitution(expr, var, pool) {
+                return res;
+            }
             integrate_via_decompose(expr, var, pool)
         }
         other => other,
+    };
+
+    // Power pullback `u = x^k` for `f = x^{k−1}·g(x^k)`, which drops the curve's
+    // genus by `k` — `∫x dx/√(1−x⁴)` becomes `½∫du/√(1−u²) = ½asin(x²)`.  Tried
+    // **last**, and only against a `NotImplemented`: nothing that already solves
+    // changes shape, and a `NonElementary` verdict is a theorem this route is not
+    // allowed to overturn (see `pullback`).
+    if matches!(result, Err(IntegrationError::NotImplemented(_))) {
+        if let Some(res) = pullback::try_power_pullback(expr, var, pool) {
+            return Ok(res);
+        }
     }
+    result
 }
 
 /// The standard algebraic path: find the single `√P` generator, decompose the

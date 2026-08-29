@@ -29,10 +29,8 @@ use rug::{Integer, Rational};
 use super::coates::{coates_hyperelliptic, CoatesPlace};
 use super::find_order::{find_order_placed, FindOrder};
 use super::jacobian_torsion::AlgPlace;
-use super::residues::{
-    finite_residues_algebraic, residue_divisor_placed, residue_sum_complete, AlgResidue,
-    PlacedResidue,
-};
+use super::residues::{certified_residue_divisor, AlgResidue, PlacedResidue};
+use super::sqrt_rde::{self, SqrtRde};
 use super::trager_log::trager_log_criterion_alg;
 
 // ---------------------------------------------------------------------------
@@ -685,20 +683,36 @@ fn binomial_coeff(n: u64, k: u64) -> rug::Integer {
 //    exact (verified by construction) and covers e.g. `∫(P'/2√P) = √P` and
 //    polynomial weights `∫5x⁴√(x⁵+1) = ⅔(x⁵+1)^{3/2}`.
 //
-//  * **Logarithmic part**: when the RDE has no rational solution there are
-//    residues.  Liouville ⟹ no residues ⇒ `∫B√P` is elementary iff it is an
-//    exact algebraic derivative — but the RDE just said it is not — so a
-//    **complete** empty residue divisor (with P squarefree) certifies
-//    `NonElementary`.  With residues, FIND-ORDER decides: a **non-torsion**
+//  * **Logarithmic part**: with residues, FIND-ORDER decides: a **non-torsion**
 //    divisor ⇒ `NonElementary`; otherwise (torsion log part) emitting it on a
 //    genus ≥ 2 curve needs Coates' construction (genus 0/1 are handled upstream
-//    by the parametrization / genus-1 capstone), so we decline.
+//    by the parametrization / genus-1 capstone), so we decline.  With *no*
+//    residues anywhere, Liouville leaves only an exact algebraic derivative, so
+//    an empty divisor plus "no algebraic primitive" certifies `NonElementary`.
 //
-// Soundness of the residue path requires the residue divisor to be **complete**:
-// the residues live at the poles of `B` that are *not* branch points (a pole of
-// `B` at a root of `P` is regularized by `√P`'s zero, contributing none).  So we
-// require the part of `denom(B)` coprime to `P` to split over ℚ; otherwise we
-// decline rather than risk a verdict on an incomplete divisor.
+// # Both premises of the empty-divisor certificate are load-bearing
+//
+// That last inference used to be drawn from two things that did not support it,
+// and certified `∫x dx/√(1−x⁴) = ½asin(x²)` non-elementary as a result.
+//
+//  1. **"No residues anywhere."**  The divisor came from `residue_divisor_placed`
+//     and was sanity-checked with `residue_sum_complete != 0`.  Neither is a
+//     completeness argument: the places over `∞` on `y² = 1−x⁴` carry residues
+//     `±i`, which the rational-Puiseux routine cannot see at all, and the two
+//     omissions cancel so the residue-theorem check passes *vacuously* on an
+//     empty list.  The premise now comes from
+//     [`certified_residue_divisor`], which promises enumeration of every place
+//     and refuses (rather than truncates) when a residue leaves `ℚ`.
+//  2. **"No algebraic primitive."**  `solve_rational_rde_generalized` returning
+//     `None` conflates "no rational solution" with "my bound was too weak" — a
+//     decline, not a disproof.  The premise now comes from
+//     [`sqrt_rde::decide`], whose `NoRationalSolution` is a proof (its
+//     denominator bound is derived for this equation, not generic).
+//
+// Where either premise is unavailable the answer is `NotImplemented`, not a
+// weaker certificate.  Note the other two `NonElementary` exits below rest on
+// premise 1 only: a non-torsion residue divisor rules out an elementary integral
+// on its own, whatever the integral part does.
 // ---------------------------------------------------------------------------
 
 fn integrate_b_sqrt_high_degree(
@@ -735,6 +749,21 @@ fn integrate_b_sqrt_high_degree(
         return Ok(result);
     }
 
+    // 1b. The same RDE, decided rather than attempted.  `Solved` here recovers
+    //     an algebraic primitive the generic solver's denominator bound missed;
+    //     `NoRationalSolution` is a *proof*, and is the only thing allowed to
+    //     support the empty-divisor certificate in step 3.
+    let rde = sqrt_rde::decide(&p_poly, &b_num, &b_den);
+    if let SqrtRde::Solved(n, d) = &rde {
+        let q_expr = qrational_to_expr(n, d, var, pool);
+        let result = pool.mul(vec![q_expr, sqrt_id]);
+        let h_check: AlgElem = vec![RatFn::int(0), RatFn::new(b_num.clone(), b_den.clone())];
+        if verify_bsqrt_derivative(result, &h_check, &p_poly, var, pool) {
+            log.push(RewriteStep::simple("alg_integral_part_sqrt", b, result));
+            return Ok(result);
+        }
+    }
+
     // 2. No algebraic primitive — analyze the logarithmic part via residues.
     //    Need P squarefree for the Liouville argument below.
     if degree(&poly_gcd(&p_poly, &p_prime)) > 0 {
@@ -743,25 +772,38 @@ fn integrate_b_sqrt_high_degree(
 
     let h: AlgElem = vec![RatFn::int(0), RatFn::new(b_num.clone(), b_den.clone())];
 
-    // Soundness gate: the residue divisor must be **complete** (residue theorem
-    // Σ res = 0, counting rational, algebraic and infinite places).  Otherwise a
-    // place is missing and no verdict is safe.
-    if residue_sum_complete(2, &p_poly, &h) != 0 {
+    // Soundness gate: the residue divisor must be **certified complete** — every
+    // place enumerated, every nonzero residue representable over ℚ.  `Σ res = 0`
+    // is *not* that check (see `residues`): it passes vacuously on an empty list
+    // and on any omitted conjugate pair, which is how the places over `∞` on
+    // `y² = 1−x⁴` went missing.
+    let Some(divisor) = certified_residue_divisor(2, &p_poly, &h) else {
         return Err(notimpl(
-            "residue divisor incomplete (missing places not yet supported)",
+            "residue divisor completeness could not be certified (a place over ∞ or \
+             an algebraic branch place is outside the enumerated scope) — no verdict \
+             is safe on a partial divisor",
         ));
-    }
-
-    let alg_res = finite_residues_algebraic(2, &p_poly, &h);
+    };
+    let alg_res = divisor.algebraic;
     if alg_res.is_empty() {
         // All residues are rational — the complete divisor is the rational one.
-        let divisor = residue_divisor_placed(2, &p_poly, &h);
+        let divisor = divisor.rational;
         if divisor.is_empty() {
-            // No residues anywhere ⇒ no log part; RDE ruled out an algebraic
-            // primitive ⇒ a nonzero first/second-kind differential ⇒ non-elem.
+            // No residues anywhere ⇒ no log part.  Liouville then leaves only an
+            // exact algebraic derivative, which the *decided* RDE has to rule
+            // out — a decline there is not a disproof and certifies nothing.
+            if rde != SqrtRde::NoRationalSolution {
+                return Err(notimpl(
+                    "no logarithmic part, but the Risch DE b' + (P'/2P)b = B was not \
+                     decided — an unsolved DE is not a proof that no algebraic \
+                     primitive exists",
+                ));
+            }
             return Err(nonelem(
-                "∫ B·√P over a genus ≥ 1 curve with no logarithmic part and no \
-                 algebraic primitive: non-elementary",
+                "∫ B·√P over a genus ≥ 1 curve with no logarithmic part (certified-\
+                 complete empty residue divisor) and no algebraic primitive (the \
+                 Risch DE b' + (P'/2P)b = B provably has no rational solution): \
+                 non-elementary",
             ));
         }
         return match find_order_placed(2, &p_poly, &divisor) {
@@ -793,9 +835,9 @@ fn integrate_b_sqrt_high_degree(
     // quadratic *sheet* fields) via `try_genus2_alg_log`; a quadratic *base*
     // point (degree-4 tower ℚ(√m,√c)) via `try_alg_base_log`.
     let verdict = if alg_res.iter().all(|r| r.conjugates == 1) {
-        try_genus2_alg_log(&p_poly, &h, &alg_res)
+        try_genus2_alg_log(&p_poly, &divisor.rational, &alg_res)
     } else {
-        try_alg_base_log(&p_poly, &h, &alg_res)
+        try_alg_base_log(&p_poly, &divisor.rational, &alg_res)
     };
     match verdict {
         Some(FindOrder::NonElementary) => Err(nonelem(
@@ -986,7 +1028,11 @@ fn qmod_l(a: &QPoly, m: &QPoly) -> QPoly {
     trim(poly_divrem(a, m).1)
 }
 
-fn try_alg_base_log(p: &QPoly, h: &AlgElem, alg_res: &[AlgResidue]) -> Option<FindOrder> {
+fn try_alg_base_log(
+    p: &QPoly,
+    rat_div: &[PlacedResidue],
+    alg_res: &[AlgResidue],
+) -> Option<FindOrder> {
     // Exactly one algebraic orbit, a quadratic base (conjugates == 2).
     if alg_res.len() != 1 || alg_res[0].conjugates != 2 || degree(&alg_res[0].minpoly) != 2 {
         return None;
@@ -1124,8 +1170,9 @@ fn try_alg_base_log(p: &QPoly, h: &AlgElem, alg_res: &[AlgResidue]) -> Option<Fi
             (places, residues, dim)
         };
 
-    // Rational + infinite places carry rational residues (basis index 0).
-    let rat_div = residue_divisor_placed(2, p, h);
+    // Rational + infinite places carry rational residues (basis index 0).  The
+    // divisor comes from the caller's *certified-complete* enumeration, not from
+    // a fresh (and possibly partial) recomputation.
     let rat_residues: Vec<KElem> = rat_div
         .iter()
         .map(|r| {
@@ -1138,7 +1185,7 @@ fn try_alg_base_log(p: &QPoly, h: &AlgElem, alg_res: &[AlgResidue]) -> Option<Fi
     Some(trager_log_criterion_alg(
         2,
         p,
-        &rat_div,
+        rat_div,
         &rat_residues,
         &alg_places,
         &alg_residues,
@@ -1157,7 +1204,11 @@ fn try_alg_base_log(p: &QPoly, h: &AlgElem, alg_res: &[AlgResidue]) -> Option<Fi
 /// per field.  Residues are represented in that basis and fed to
 /// [`trager_log_criterion_alg`].  `None` for an algebraic *base* point
 /// (`conjugates ≠ 1`, a genuine tower) — still out of scope.
-fn try_genus2_alg_log(p: &QPoly, h: &AlgElem, alg_res: &[AlgResidue]) -> Option<FindOrder> {
+fn try_genus2_alg_log(
+    p: &QPoly,
+    rat_div: &[PlacedResidue],
+    alg_res: &[AlgResidue],
+) -> Option<FindOrder> {
     // Collect the distinct squarefree sheet discriminants `d_i`; index them so
     // the residue basis is {1 (index 0), √d_0 (1), √d_1 (2), …}.
     let mut d_list: Vec<Integer> = Vec::new();
@@ -1179,7 +1230,7 @@ fn try_genus2_alg_log(p: &QPoly, h: &AlgElem, alg_res: &[AlgResidue]) -> Option<
     let d_index = |d: &Integer| d_list.iter().position(|x| x == d).unwrap();
 
     // Rational + infinite places: residues are rational ⇒ value at basis index 0.
-    let rat_div = residue_divisor_placed(2, p, h);
+    // Supplied by the caller's certified-complete enumeration.
     let rat_residues: Vec<KElem> = rat_div
         .iter()
         .map(|r| {
@@ -1221,7 +1272,7 @@ fn try_genus2_alg_log(p: &QPoly, h: &AlgElem, alg_res: &[AlgResidue]) -> Option<
     Some(trager_log_criterion_alg(
         2,
         p,
-        &rat_div,
+        rat_div,
         &rat_residues,
         &alg_places,
         &alg_residues,
