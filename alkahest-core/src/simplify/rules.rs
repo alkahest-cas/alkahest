@@ -203,6 +203,16 @@ fn has_zero_to_negative_power_factor(expr: ExprId, pool: &ExprPool) -> bool {
     .any(|a| is_zero_to_negative_power(a, pool))
 }
 
+/// Whether `expr` is the literal `−1`.  Allocation-free, unlike
+/// [`as_rational`] — this runs on every two-factor `Mul` the engine visits.
+fn is_neg_one_literal(expr: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| match d {
+        ExprData::Integer(n) => n.0 == -1,
+        ExprData::Rational(r) => r.0 == -1,
+        _ => false,
+    })
+}
+
 /// Whether `expr` is a negative `Integer` or `Rational` literal.
 fn is_negative_literal(expr: ExprId, pool: &ExprPool) -> bool {
     pool.with(expr, |data| match data {
@@ -243,12 +253,17 @@ fn one_step_with(
 /// Pulling a literal to the front is sound even inside a non-commutative
 /// product: numbers are central. `ConstFold`'s `Mul` arm already relies on
 /// exactly that.
+///
+/// A `None` coefficient means the implicit `1`, and is returned *without*
+/// building one. Terms with no literal factor are the common case on this
+/// path — `collect_add_terms` runs the extractor over every argument of every
+/// `Add` node the engine visits — and a `rug::Rational` is two heap
+/// allocations to say "nothing to peel off".
 fn extract_numeric_coeff(
     expr: ExprId,
     pool: &ExprPool,
     rationals_too: bool,
-) -> (rug::Rational, ExprId) {
-    let one = || rug::Rational::from(1);
+) -> (Option<rug::Rational>, ExprId) {
     let literal = |a: ExprId| -> Option<rug::Rational> {
         pool.with(a, |d| match d {
             ExprData::Integer(n) => Some(rug::Rational::from(n.0.clone())),
@@ -257,20 +272,25 @@ fn extract_numeric_coeff(
         })
     };
     match pool.get(expr) {
-        ExprData::Integer(n) => (rug::Rational::from(n.0.clone()), pool.integer(1_i32)),
-        ExprData::Rational(r) if rationals_too => (r.0.clone(), pool.integer(1_i32)),
+        ExprData::Integer(n) => (Some(rug::Rational::from(n.0.clone())), pool.integer(1_i32)),
+        ExprData::Rational(r) if rationals_too => (Some(r.0.clone()), pool.integer(1_i32)),
         ExprData::Mul(args) => {
-            let mut product = one();
+            let mut product: Option<rug::Rational> = None;
             let mut rest: Vec<ExprId> = vec![];
             for &a in &args {
                 match literal(a) {
-                    Some(n) => product *= n,
+                    Some(n) => {
+                        product = Some(match product {
+                            Some(p) => p * n,
+                            None => n,
+                        })
+                    }
                     None => rest.push(a),
                 }
             }
-            if rest.len() == args.len() {
+            if product.is_none() {
                 // No literal factors found — leave the term intact.
-                return (one(), expr);
+                return (None, expr);
             }
             let base = match rest.len() {
                 0 => pool.integer(1_i32),
@@ -279,7 +299,7 @@ fn extract_numeric_coeff(
             };
             (product, base)
         }
-        _ => (one(), expr),
+        _ => (None, expr),
     }
 }
 
@@ -287,6 +307,9 @@ fn extract_numeric_coeff(
 /// Returns (1, expr) if no integer factor is found.
 pub(super) fn extract_int_coeff(expr: ExprId, pool: &ExprPool) -> (rug::Integer, ExprId) {
     let (c, base) = extract_numeric_coeff(expr, pool, false);
+    let Some(c) = c else {
+        return (rug::Integer::from(1), base);
+    };
     debug_assert!(
         *c.denom() == 1,
         "integer-only extraction yielded a fraction"
@@ -295,12 +318,12 @@ pub(super) fn extract_int_coeff(expr: ExprId, pool: &ExprPool) -> (rug::Integer,
 }
 
 /// Extract (rational_coeff, base), peeling off `Integer` **and** `Rational`
-/// literal factors.  Returns `(1, expr)` when there is no literal factor.
+/// literal factors.  `None` is the implicit coefficient `1`.
 ///
 /// This is what makes `sin(x)·¾ + sin(x)·(−¾)` cancel: with integer-only
 /// extraction the two terms have distinct bases (`¾·sin x` and `−¾·sin x`)
 /// and never meet in the coefficient map.
-fn extract_rational_coeff(expr: ExprId, pool: &ExprPool) -> (rug::Rational, ExprId) {
+fn extract_rational_coeff(expr: ExprId, pool: &ExprPool) -> (Option<rug::Rational>, ExprId) {
     extract_numeric_coeff(expr, pool, true)
 }
 
@@ -1010,20 +1033,24 @@ impl RewriteRule for SubSelf {
         // bases, so a term-wise cancellation that is pure arithmetic never
         // happened.  `rug::Rational` addition is exact, so nothing here is a
         // numerical approximation.
-        let pairs: Vec<(rug::Rational, ExprId)> = args
+        let pairs: Vec<(Option<rug::Rational>, ExprId)> = args
             .iter()
             .map(|&a| extract_rational_coeff(a, pool))
             .collect();
 
-        // Sum coefficients by base, preserving first-occurrence order
+        // Sum coefficients by base, preserving first-occurrence order.
+        // A `None` coefficient is the implicit `1`.
         let mut coeff_map: HashMap<ExprId, rug::Rational> = HashMap::new();
         let mut base_order: Vec<ExprId> = vec![];
         for (coeff, base) in &pairs {
-            if !coeff_map.contains_key(base) {
+            let entry = coeff_map.entry(*base).or_insert_with(|| {
                 base_order.push(*base);
-                coeff_map.insert(*base, rug::Rational::from(0));
+                rug::Rational::from(0)
+            });
+            match coeff {
+                Some(c) => *entry += c.clone(),
+                None => *entry += 1u32,
             }
-            *coeff_map.get_mut(base).unwrap() += coeff.clone();
         }
 
         // Check: any cancellation (coeff → 0) or merging (two args same base)?
@@ -1362,28 +1389,27 @@ impl RewriteRule for NegateAdd {
     }
 
     fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
-        let args = match pool.get(expr) {
-            ExprData::Mul(v) => v,
-            _ => return None,
-        };
-        if args.len() != 2 {
-            return None;
-        }
+        // Every probe on the reject path is allocation-free: this rule is
+        // offered every `Mul` node the engine visits, and `as_rational` /
+        // `pool.get` would each heap-allocate to say "no".
+        let args = pool.with(expr, |d| match d {
+            ExprData::Mul(v) if v.len() == 2 => Some([v[0], v[1]]),
+            _ => None,
+        })?;
         // Which factor is the literal −1, and which is the sum?  `pool.mul`
         // sorts commutative arguments by `ExprId`, so neither position is
         // guaranteed.
-        let is_neg_one = |a: ExprId| as_rational(a, pool).is_some_and(|r| r == -1);
-        let sum_args = |a: ExprId| match pool.get(a) {
-            ExprData::Add(v) if v.len() >= 2 => Some(v),
-            _ => None,
-        };
-        let terms = if is_neg_one(args[0]) {
-            sum_args(args[1])?
-        } else if is_neg_one(args[1]) {
-            sum_args(args[0])?
+        let sum = if is_neg_one_literal(args[0], pool) {
+            args[1]
+        } else if is_neg_one_literal(args[1], pool) {
+            args[0]
         } else {
             return None;
         };
+        let terms = pool.with(sum, |d| match d {
+            ExprData::Add(v) if v.len() >= 2 => Some(v.clone()),
+            _ => None,
+        })?;
 
         // Negate term-wise *through the existing coefficient* so the result is
         // already in the shape `collect_add_terms` reads back, rather than a
@@ -1392,7 +1418,8 @@ impl RewriteRule for NegateAdd {
             .iter()
             .map(|&t| {
                 let (c, base) = extract_rational_coeff(t, pool);
-                rebuild_coeff_term(&(-c), base, pool)
+                let negated = -c.unwrap_or_else(|| rug::Rational::from(1));
+                rebuild_coeff_term(&negated, base, pool)
             })
             .collect();
         let after = pool.add(negated);
@@ -1499,10 +1526,10 @@ fn is_provably_nonneg(expr: ExprId, pool: &ExprPool, depth: u32) -> bool {
                 Kind::No
             }
         }
-        ExprData::Symbol { domain, .. } => match domain {
-            Domain::Positive | Domain::NonNegative => Kind::Yes,
-            _ => Kind::No,
-        },
+        ExprData::Symbol {
+            domain: Domain::Positive | Domain::NonNegative,
+            ..
+        } => Kind::Yes,
         ExprData::Add(args) | ExprData::Mul(args) => Kind::All(args.clone()),
         ExprData::Pow { base, exp } => Kind::Pow(*base, *exp),
         ExprData::Func { name, args } if args.len() == 1 => Kind::Func(name.clone(), args[0]),

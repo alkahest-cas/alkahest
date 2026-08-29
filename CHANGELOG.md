@@ -2,6 +2,56 @@
 
 ## Unreleased
 
+- **`simplify` could not cancel `¾·sin x − ¾·sin x`, and that cost the
+  verification gate its strongest verdict.** `collect_add_terms` split each
+  summand into a coefficient and a base using an *integer*-only extractor, so
+  the two terms above had different bases (`¾·sin x` and `−¾·sin x`) and never
+  met in the coefficient map. Integer coefficients cancelled; every
+  non-integer ratio did not. Coefficients are now `rug::Rational` throughout —
+  exact arithmetic, no approximation — which also closes like terms over an
+  irrational constant (`√3·(−1/32) + √3·(1/32) → 0`), the same root cause seen
+  from a different angle. Merging works as well as cancelling: `x/2 + x/3`
+  is now `(5/6)·x`. The guard that refuses to drop a zero-coefficient term
+  containing `0^(−n)` is unchanged and still applies.
+
+  Separately, `simplify` did not distribute a leading `−1` over an `Add`. The
+  gate builds its residual as `d/dx F + (−1)·f`; when `f` is a sum, the
+  negation stayed wrapped and the terms it was meant to cancel against sat at
+  a different `Add` level where like-term collection could never see them. A
+  new `distribute_neg_over_add` rule pushes the negation through. It is *not*
+  `ExpandMul` in miniature and is not gated behind `SimplifyConfig::expand`:
+  distributing a general factor grows the expression and fights factoring,
+  whereas `−1` is absorbed into each term's existing numeric coefficient, so
+  the term count is unchanged and the rewrite is a strict normal-form
+  direction. Only the two-factor product `(−1)·S` fires; `(−1)·y·(a + b)` is
+  real expansion and is still left to `ExpandMul`.
+
+  Measured on a 65-integrand corpus spanning the families the integrator
+  advertises (`alkahest-core/tests/gate_verdict_census.rs`), the gate's verdict
+  distribution moves from **22 `Proven` / 33 `SampledOnly`** to **30 `Proven` /
+  25 `SampledOnly`**, with no `Failed` and no new declines: eight
+  antiderivatives that were only ever checked at sample points are now backed
+  by a symbolic identity. `poly::cancel` no longer refuses a genuine fraction
+  with `NonIntegerCoefficient` either — `MultiPoly` is a polynomial over ℤ, but
+  a `RationalFunction` represents `p/q` exactly, and the literal now routes
+  there.
+
+- **`√(u^(2k))` is `|u|^k`, and is now reduced only where the absolute value is
+  provably redundant.** The general identity is not `u^k`: a blanket rewrite
+  makes `√((−3)²)` return `−3`. The new `sqrt_of_even_power` rule fires in
+  exactly two cases — `u` structurally non-negative (a `Domain::Positive` /
+  `Domain::NonNegative` symbol, a non-negative literal, `|·|`, `exp`, `cosh`,
+  an even power of a real, or a sum/product of those), or `k` even and `u`
+  structurally real, where `|u|^k = u^k` because an even power of a real is
+  already non-negative. So `√(x⁴) → x²` for real `x` with no sign hypothesis,
+  while `√(x²)` is left alone. Every complex-domain base declines: for complex
+  `z`, `√(z²)` is `±z` depending on branch and `|z|` is not even the right kind
+  of answer. Both spellings are handled (`sqrt(r)` and `r^(1/2)`).
+
+  This is deliberately weaker than what an explicit assumption buys you: with
+  an `AssumptionContext` carrying `x > 0`, the colored e-graph's
+  `sqrt_of_square_positive` already fired on symbols this rule must refuse, and
+  still does.
 - **The spelling of a by-parts residual decided whether it integrated.**
   `∫x/((1−x²)·√(1−2x²))` — the residual Charlwood #49 reduces to — closes in
   milliseconds when written that way, and declines with `algebraic integrator
