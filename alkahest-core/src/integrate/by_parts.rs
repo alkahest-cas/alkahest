@@ -2821,19 +2821,28 @@ mod tests {
 
     // -- normalisers --------------------------------------------------------
 
+    /// `x/2 − x/2`. This test used to assert that `simplify` **left this
+    /// standing** — that was why `collect_like_terms` existed at all, and the
+    /// assertion was written to fail loudly the moment the gap was closed so
+    /// whoever closed it would find this workaround.
+    ///
+    /// It has been closed: `simplify` now collects like terms over rational
+    /// coefficients, and `poly::cancel::cancel` routes a genuine fraction
+    /// through `RationalFunction` instead of refusing with
+    /// `NonIntegerCoefficient`. Both paths are pinned here, so the local
+    /// helper can be retired once nothing else in this module depends on its
+    /// stronger guarantees.
     #[test]
     fn collect_like_terms_cancels_rational_coefficients() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
-        // `x/2 − x/2` — `simplify` leaves this standing, and so does
-        // `poly::cancel::cancel` (it refuses with `NonIntegerCoefficient`).
         let e = pool.add(vec![
             pool.mul(vec![pool.rational(1_i32, 2_i32), x]),
             pool.mul(vec![pool.rational(-1_i32, 2_i32), x]),
         ]);
         assert!(
-            !is_zero(simplify(e, &pool).value, &pool),
-            "this test is only interesting while simplify still misses this"
+            is_zero(simplify(e, &pool).value, &pool),
+            "simplify now collects like terms over rational coefficients"
         );
         assert!(is_zero(collect_like_terms(e, &pool), &pool));
     }
