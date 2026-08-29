@@ -36,6 +36,25 @@
   a `RationalFunction` represents `p/q` exactly, and the literal now routes
   there.
 
+  Downstream, one certificate shape class moves: `∫ x²·cos(x) dx` was withheld
+  because the by-parts answer came back as `x²sin x + (−1)·(x·cos x·(−2) +
+  2 sin x)`, an undistributed negation the Lean emitter could not close. It now
+  comes back as `x²sin x + 2x cos x − 2 sin x` and certifies. The checked-in
+  ledger is regenerated accordingly.
+
+  **`simplify` is faster, not slower, for this.** The obvious implementation —
+  collect every coefficient as a `rug::Rational` — costs about 9% of
+  `simplify`'s wall time, because `mpq_add` canonicalizes through a GCD on
+  every addition and carries a denominator limb that is almost always `1`. A
+  small internal `Coeff` type keeps integer coefficients on `mpz` and escalates
+  only for a genuine fraction; the reject paths of the two new rules allocate
+  nothing. Measured with an interleaved, rotating-order, min-of-18 A/B (so a
+  loaded machine moves both arms equally): a Jacobian-shaped corpus in which no
+  rule fires is **−5.7%**, re-simplifying an already-normal expression is
+  **−7.9%**. Expressions that the new rules actually rewrite cost more (+23%
+  for rational coefficients, +43% for negated sums) because they now do the
+  work that produces a cancelled answer.
+
 - **`√(u^(2k))` is `|u|^k`, and is now reduced only where the absolute value is
   provably redundant.** The general identity is not `u^k`: a blanket rewrite
   makes `√((−3)²)` return `−3`. The new `sqrt_of_even_power` rule fires in
@@ -51,7 +70,10 @@
   This is deliberately weaker than what an explicit assumption buys you: with
   an `AssumptionContext` carrying `x > 0`, the colored e-graph's
   `sqrt_of_square_positive` already fired on symbols this rule must refuse, and
-  still does.
+  still does. Either way the hypothesis is *recorded*: the step carries
+  `InDomain(u, NonNegative)` or `InDomain(u, Real)` as a `SideCondition`, so a
+  reader of the derivation log is told what the rewrite rested on rather than
+  having to infer it.
 - **The spelling of a by-parts residual decided whether it integrated.**
   `∫x/((1−x²)·√(1−2x²))` — the residual Charlwood #49 reduces to — closes in
   milliseconds when written that way, and declines with `algebraic integrator
