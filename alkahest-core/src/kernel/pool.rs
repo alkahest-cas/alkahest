@@ -136,6 +136,16 @@ const _: () = {
     assert_send_sync::<ExprData>();
 };
 
+/// Largest number of children a flat `Add`/`Mul` may be spliced up to.
+///
+/// Bounds the self-combination blow-up that flat n-ary form introduces — see
+/// the comment in `flatten_assoc`. Set from measurement: the largest honest
+/// arity across this crate's test suite is 50 001, and the runaway shows up as
+/// powers of two from 32 768 upward, so no threshold separates them by size
+/// alone. This sits 2.6x above the honest maximum and still bounds the runaway,
+/// which converges because a declined splice leaves the node nested.
+pub(crate) const MAX_FLAT_ARITY: usize = 131_072;
+
 impl ExprPool {
     pub fn new() -> Self {
         ExprPool {
@@ -404,12 +414,52 @@ impl ExprPool {
             return args;
         }
 
+        // Arity ceiling.  Flat n-ary form removes the sharing that binary
+        // nesting gave for free: `e = pool.mul([e, e])` in a loop used to build
+        // `n` nodes with both children shared, and now *doubles* the child
+        // count, so `n` rounds cost `2^n` children.  Twenty rounds is ~2M
+        // children, twenty-five exhausts memory, and a real test in this repo
+        // hung the suite at forty.
+        //
+        // Declining to splice — rather than refusing — keeps `mul`/`add` total
+        // and infallible, which matters because they are two of the most-called
+        // constructors in the crate and have no `Result` today.  Above the cap
+        // the caller simply gets a nested node back, which is what it would
+        // have got before flattening existed; `simplify` still flattens, so the
+        // canonical form is unchanged for anything that goes through it.  The
+        // doubling loop then converges: once a splice is declined the node stays
+        // nested, so the next round starts from two children again.
+        //
+        // MAX_FLAT_ARITY is set from measurement, not taste.  Instrumenting
+        // `cargo test -p alkahest-cas --lib` put the largest *honest* arity at
+        // 50 001 (a test building one long sum a term at a time); the blow-up
+        // showed up as the powers of two 32 768 … 2 097 152.  The two ranges
+        // overlap, so no threshold separates them by size alone — this one sits
+        // 2.6x above the honest maximum and still bounds the runaway.
+        // The splice is a *fixpoint* — a spliced-in child may itself be an
+        // `Add`/`Mul` and get expanded in turn — so the ceiling has to bound the
+        // final width, not the first level. Checking one level ahead is not
+        // enough and is actively misleading: after a decline the node is a
+        // 2-child nest, so a one-level count reads as 4 while the worklist goes
+        // on to expand the grandchildren to millions.
+        //
+        // Counting as we expand is exact and costs nothing in the common case,
+        // where the loop finishes long before the ceiling is in sight.
         let mut out = Vec::with_capacity(args.len() + 4);
-        let mut stack = args;
-        stack.reverse();
+        let mut stack: Vec<ExprId> = args.iter().rev().copied().collect();
         while let Some(id) = stack.pop() {
             match splices(&self.node(id).data, want_mul) {
-                Some(children) => stack.extend(children.iter().rev().copied()),
+                Some(children) => {
+                    if out.len() + stack.len() + children.len() > MAX_FLAT_ARITY {
+                        // Abandon the splice and hand back the caller's own
+                        // vector untouched. `mul`/`add` stay total: the caller
+                        // gets a nested node, exactly what it would have got
+                        // before flattening existed, and `simplify` still
+                        // flattens later for anything that goes through it.
+                        return args;
+                    }
+                    stack.extend(children.iter().rev().copied());
+                }
                 None => out.push(id),
             }
         }
@@ -1019,5 +1069,72 @@ mod tests {
     #[test]
     fn pool_is_send_sync() {
         assert_send_sync::<ExprPool>();
+    }
+}
+
+#[cfg(test)]
+mod flat_arity_cap_tests {
+    use super::*;
+    use crate::kernel::Domain;
+
+    /// The blow-up this cap exists for: flat n-ary form removes the sharing
+    /// binary nesting gave for free, so `e = e * e` *doubles* the child count.
+    /// Forty rounds is 2^40 children — a real test in this repo hung the whole
+    /// lib suite on exactly this shape. It must terminate, quickly.
+    #[test]
+    fn self_combination_terminates_instead_of_doubling_forever() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        // 22 rounds, not 40: doubling from 2 children crosses the cap at round
+        // 17, so this exercises the decline *and* the reset that follows it.
+        // Rounds beyond that only re-run the same two phases, and each round
+        // near the cap sorts and interns ~131k children — in a debug build that
+        // is minutes of nothing new.
+        let mut e = pool.mul(vec![x, pool.integer(2_i32)]);
+        for _ in 0..22 {
+            e = pool.mul(vec![e, e]);
+        }
+        // Reaching here at all is the assertion. Past the cap the splice is
+        // declined and the node stays nested, so the loop converges rather
+        // than growing: the result is small, not astronomically wide.
+        let width = match &pool.get(e) {
+            ExprData::Mul(children) => children.len(),
+            _ => 1,
+        };
+        assert!(
+            width <= MAX_FLAT_ARITY,
+            "a declined splice must leave a bounded node, got {width} children"
+        );
+    }
+
+    /// The cap must not fire on honest work. The measured maximum across this
+    /// crate's suite is 50 001 children; a sum well past that still flattens.
+    #[test]
+    fn a_large_honest_sum_still_flattens() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let _ = x;
+        let terms: Vec<_> = (0..60_000).map(|i| pool.integer(i)).collect();
+        let sum = pool.add(terms);
+        let ExprData::Add(children) = &pool.get(sum) else {
+            panic!("expected a flat Add");
+        };
+        assert!(
+            children.len() >= 59_000,
+            "a 60k-term sum must stay flat, got {} children",
+            children.len()
+        );
+    }
+
+    /// Ordinary nesting is unaffected — the cap is not a behaviour change for
+    /// anything of a realistic size.
+    #[test]
+    fn ordinary_nesting_still_splices() {
+        let pool = ExprPool::new();
+        let x = pool.symbol("x", Domain::Real);
+        let y = pool.symbol("y", Domain::Real);
+        let z = pool.symbol("z", Domain::Real);
+        let inner = pool.mul(vec![x, y]);
+        assert_eq!(pool.mul(vec![inner, z]), pool.mul(vec![x, y, z]));
     }
 }
