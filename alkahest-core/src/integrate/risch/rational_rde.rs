@@ -929,9 +929,9 @@ pub fn expr_to_qrational(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<(
             Some(acc)
         }
         ExprData::Pow { base, exp } => {
-            // Fold the exponent rather than requiring a bare `Integer` node: the
-            // parser turns `x^(-1)` into `x^(1 · -1)`, and reading only `Integer`
-            // made `a·b^(-1)` fail to parse as a rational function while the
+            // Fold the exponent rather than requiring a bare `Integer` node: a
+            // hand-built `-1` arrives as `1 · -1`, and reading only `Integer`
+            // made `a·b^(-1)` fail to read as a rational function while the
             // identical `a/b` succeeded.
             let n = super::tower::literal_integer(exp, pool)?;
             let (bn, bd) = expr_to_qrational(base, var, pool)?;

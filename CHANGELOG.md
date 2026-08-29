@@ -182,6 +182,128 @@
   disabling the cumulative one takes `large_attempted` from 1 to 6 (and the
   test from under a second to 131 s) and fails it; disabling the per-probe
   one fails it too.
+- **`Add` and `Mul` are flat at construction, so associativity holds
+  structurally.** `ExprPool::mul` / `ExprPool::add` now splice nested
+  same-operator children before interning, so `(a·b)·c`, `a·(b·c)` and `a·b·c`
+  are one expression rather than three. This is the last of the three
+  dimensions of the form-robustness bug fixed in this release (after route
+  fall-through and exponent spelling); previously `parse("x*y*z")` produced the
+  left-associative `(z * (x * y))` while `pool.mul([x, y, z])` produced a flat
+  three-child node, and the two compared unequal.
+
+  ```text
+  parse("x*y*z") == pool.mul([x, y, z])        # was False, now True
+  pool.mul([pool.mul([x, y]), z]) == pool.mul([x, y, z])   # was False, now True
+  ```
+
+  It is **associativity and nothing else** — no reordering beyond the canonical
+  sort the pool already applied, no constant folding, no identity elimination —
+  so no value changes anywhere. `simplify` already performed exactly this
+  transformation (`flatten_mul` / `flatten_add`); doing it at construction just
+  means everything that inspects structure *before* `simplify` runs now sees the
+  shape the user wrote. Every matcher that scans the top-level arguments of a
+  product or a sum used to see two children where the user wrote three.
+
+  The fix is in the two kernel constructors rather than in the parsers, which
+  is what makes it reach every construction path at once: both parsers (the
+  Rust one *and* the separate pure-Python Pratt parser in `alkahest/_parse.py`,
+  which has no binding to the Rust one and would otherwise have needed the same
+  fix twice), the builder API, the Python operator overloads, and every internal
+  `pool.mul(vec![…])` call site. Splicing preserves argument order, so it is
+  sound for the V3-2 non-commutative generators as well. `pool_persist` restores
+  nodes through `intern`, not through `mul`/`add`, so a `.pool` file written by
+  an older build still round-trips byte-for-byte with its `ExprId`s intact; the
+  splice is a fixpoint on an explicit worklist precisely so that such a restored
+  nested node still flattens the next time it reaches a constructor.
+
+  **Behaviour changes to plan for.**
+
+  - **Depth.** Flattening *reduces* depth, so a left-associated chain of `+` or
+    `*` no longer approaches the `E-DEPTH-001` ceiling: 100 000 terms
+    accumulated one at a time are now the same depth-2 node as adding them all
+    at once. Expressions previously refused as too deep are now accepted.
+    `Pow` towers and `Func` chains are unaffected.
+  - **Sharing.** Distinct spellings of one product now intern to one node, which
+    *improves* sharing. The reverse case is `e = e + e` in a loop: that used to
+    build a depth-*n* DAG of *n* nodes and now builds a flat node of 2ⁿ children
+    (measured: 20 iterations → 2 097 152 children, 203 MB). Combining an
+    expression with itself under the same operator many times is now
+    proportionally expensive.
+  - **`subs` with a compound key.** A key is matched as a whole node, never as a
+    sub-multiset of a wider sum or product, so `x + y → z` no longer rewrites
+    `x + y + 1`. This used to depend on spelling — `x + y + 1` parsed to
+    `Add([Add([x, y]), 1])` and *was* rewritten, `1 + x + y` parsed to
+    `Add([Add([1, x]), y])` and was *not*. Both are now the same node and
+    neither is. AC matching against part of a sum is the pattern API's job.
+  - **Certificate ledger.** Four `simplify_trig` shape classes move from
+    `certified` to `withheld` (66 → 62 of 156). No mathematics changed: their
+    only recorded rewrite step was `flatten_mul`/`flatten_add`, which can no
+    longer fire because the expression is never in the unflattened form. The
+    simplified *values* are identical.
+  - **Provenance.** `alkahest.research`'s dependency inference walks
+    subexpressions to decide which earlier claim a value came from; a result
+    buried in a wider product is no longer a subexpression of it. The walker now
+    also enumerates the proper sub-sums and sub-products of flat `Add`/`Mul`
+    nodes (bounded to arity ≤ 6), which restores the edges and finds ones the
+    old binary chains missed.
+
+  **Measured.** The 40-case integration probe holds at 27 solved / 7
+  `E-INT-004` / 6 `E-INT-001`, with all 40 verdicts identical and no regression;
+  five results print with one fewer nesting level (the same terms, re-associated).
+  Charlwood's Fifty goes from **12/50 to 14/50** solved-and-verified, with zero
+  regressions and zero false certificates. The two new solves — both `E-INT-001
+  irreducible product of var-dependent factors` before, both verified by
+  differentiating the answer back at every usable sample point with no
+  disagreement — are
+
+  ```text
+  ∫ x·asin(x)/√(1−x²) dx  =  x − asin(x)·√(1−x²)          (18 points, 0 mismatches)
+  ∫ x·atan(x)/√(1+x²) dx                                  (42 points, 0 mismatches)
+  ```
+
+  Both are exactly the failure this fixes: the integrand parsed as a two-child
+  `Mul` with the inverse-trig factor buried in a nested `Mul`, so the top-level
+  factor scan never saw it. Seven further Charlwood answers changed term order
+  only, and stayed verified.
+
+  **Cost.** `intern/build_add3` — the microbenchmark that builds a three-argument
+  `Add`, i.e. the most directly affected hot path — moves 72.2 ns → 73.6 ns
+  (+2.0%), which is the "does any child need splicing?" scan. Every other
+  `intern`/`simplify` microbenchmark moves within ±10% with no consistent sign,
+  and the 618-test `integrate::` suite runs 12.44 s → 13.02 s. The Rust suite as
+  a whole is 91.6 s → 103.7 s, most of which is the new 50 000-node splice
+  regression test.
+
+- **The parsers fold `-<numeric literal>`, so `x^(-1)` and `1/x` no longer
+  disagree about what a `-1` exponent is.** Prefix `-` built `(-1) · operand`
+  unconditionally, which for a literal operand left an unevaluated product in
+  the pool: `x^(-1)` interned as `x^(1 · -1)` where `1/x` interned as `x^(-1)`.
+  The two are the same function, but every structural detector that reads an
+  exponent by matching an integer node saw only the second, which is the root
+  cause behind the spelling-sensitivity fixed below. Unary minus applied to an
+  `Integer` or `Rational` literal now emits the negated literal directly, in
+  both `alkahest-core/src/parse.rs` and its Python mirror
+  `alkahest/_parse.py` (`alkahest.parse`). **Nothing else folds**: `-x` is still
+  `(-1) · x`, `-(2+3)` keeps its tree, `-2^2` is still `-(2^2) = -4`, and float
+  literals are deliberately left alone. Mathematical values are unchanged
+  throughout — this is a representation fix.
+
+  The `(-1) · literal` shape stays reachable through the public builder API
+  (`Expr.__neg__`, `pool.mul([pool.integer(-1), …])`), so the detectors keep
+  their own normalising view of an integer exponent
+  (`risch::tower::literal_integer`) as a second layer. Both layers are pinned
+  by tests.
+
+  Measured over a 56-integrand probe restricted to inputs that contain a unary
+  minus on a literal — the only ones the fold can reach: **5 newly solved, 0
+  regressions, 0 changed answers**, and one verdict *upgrade*. Newly solved (all
+  verified by differentiating the answer back): `∫ dx/cos²x`, `∫ dx/sin x`,
+  `∫ dx/(1+sin x)`, `∫ dx/(2+cos x)` and `∫ dx/(1+e⁻ˣ)`, each written with a
+  `^(-n)` exponent rather than `/`. The upgrade is `∫ log(x)^(-1) dx`, which now
+  certifies `E-INT-004` (li is non-elementary) instead of the weaker
+  `E-INT-001` — the same verdict the identical `1/log(x)` spelling already had.
+  The `∫ eˣe^(eˣ)/(e^(eˣ)+1) dx` family, including its `-3·`/`-4·` and `^(-n)`
+  variants, is solved identically before and after.
 
 - **`integrate` no longer lets the *spelling* of an integrand decide the
   answer.** Three separate defects combined into one user-visible failure mode:
@@ -215,11 +337,12 @@
      `d/dx F = f`, `try_log_derivative` fires only on an exact `h'/h` match, and
      Rothstein–Trager is exact.
 
-  2. **The detectors read tree shape, and the parser does not give `/` and
-     `^(-1)` the same tree.** `x^(-1)` parses to the unevaluated exponent
-     `1 · -1` while `1/x` gives the literal `-1`, and `(a·b)^n` was never read as
-     `a^n·b^n`. Two helpers in `risch::tower` — `literal_integer` (folds a
-     var-free integer exponent without invoking the simplifier) and
+  2. **The detectors read tree shape, and `/` and `^(-1)` did not give the same
+     tree.** Prefix negation is `(-1) · operand`, so `x^(-1)` produced the
+     unevaluated exponent `1 · -1` while `1/x` gave the literal `-1`, and
+     `(a·b)^n` was never read as `a^n·b^n`. Two helpers in `risch::tower` —
+     `literal_integer` (folds a var-free integer exponent without invoking the
+     simplifier) and
      `distribute_integer_pow_over_mul` (`(a·b)^n = a^n·b^n`, an identity for
      *integer* `n`, which is why `(a·b)^(1/2)` stays out) — now give every
      detector and matcher a spelling-independent reading: `needs_log_risch`,

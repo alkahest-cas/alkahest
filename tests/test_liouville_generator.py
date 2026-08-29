@@ -386,17 +386,22 @@ def test_integrate_does_not_falsely_certify_nonelementary(f_str, big_f_str):
 
 
 def test_read_expr_yields_a_differentiable_expression():
-    """``parse`` alone does not: ``(x+1)^-1`` comes back with an unfolded exponent.
+    """Both ``parse`` and ``read_expr`` now yield something ``diff`` accepts.
 
-    ``parse("(x+1)^-1")`` builds ``pow((x+1), mul(1, -1))``; ``diff`` then raises
-    ``E-DIFF-002``. Every integrand in the corpus prints with ``^-1``, so a reader
-    has to fold it — which is what ``read_expr`` does.
+    This test used to assert the opposite for ``parse``: ``parse("(x+1)^-1")``
+    built ``pow((x+1), mul(1, -1))`` and ``diff`` raised ``E-DIFF-002``, so a
+    corpus reader had to fold the exponent — which is what ``read_expr`` is for.
+    The parser now folds a unary minus applied to a numeric literal, so the raw
+    parse is differentiable too and the two agree.
+
+    ``read_expr`` is kept: it also runs ``simplify``, which callers of the
+    corpus want for reasons beyond this one exponent, and pinning that both
+    paths work is what stops the fold silently regressing.
     """
     pool = ExprPool()
     x = pool.symbol("x")
     raw = ak.parse("(x+1)^-1", pool, {"x": x})
-    with pytest.raises(ak.DiffError):
-        ak.diff(raw, x)
+    assert ak.diff(raw, x).value is not None
     folded = read_expr("(x+1)^-1", pool)
     assert ak.diff(folded, x).value is not None
 
