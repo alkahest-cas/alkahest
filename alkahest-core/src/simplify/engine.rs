@@ -1,6 +1,7 @@
 use super::rules::{
     AddZero, CanonicalOrder, ConstFold, DivSelf, ExpandMul, ExpandPow, FlattenAdd, FlattenMul,
-    MulOne, MulZero, PowOne, PowZero, PrimitiveFold, RewriteRule, SqrtInteger, SubSelf,
+    MulOne, MulZero, NegateAdd, PowOne, PowZero, PrimitiveFold, RewriteRule, SqrtEvenPower,
+    SqrtInteger, SubSelf,
 };
 use super::rulesets::PatternRuleSet;
 use crate::deriv::log::{DerivationLog, DerivedExpr, RewriteStep};
@@ -70,6 +71,11 @@ pub fn rules_for_config(config: &SimplifyConfig) -> Vec<Box<dyn RewriteRule>> {
         Box::new(ConstFold),
         Box::new(PrimitiveFold),
         Box::new(SqrtInteger),
+        Box::new(SqrtEvenPower),
+        // Must precede `SubSelf`: a negated sum has to reach the same `Add`
+        // level as the terms it is meant to cancel against before like-term
+        // collection can see it.
+        Box::new(NegateAdd),
         Box::new(SubSelf),
         Box::new(DivSelf),
         Box::new(CanonicalOrder),

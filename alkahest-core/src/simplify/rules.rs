@@ -229,36 +229,79 @@ fn one_step_with(
     log
 }
 
+/// Split `expr` into a leading numeric coefficient and the remaining factor.
+///
+/// `rationals_too` selects which literal factors are peeled off:
+///
+/// * `false` — only `Integer` factors. This is the historic behaviour
+///   [`extract_int_coeff`] exposes, and `ConstFold`'s
+///   `(c·rest)^n → c^n · rest^n` arm depends on it: it can only rebuild a
+///   coefficient it is able to fold back with the integer `b^e` path.
+/// * `true` — `Integer` *and* `Rational` factors, which is what collecting
+///   like terms in an `Add` needs (see [`extract_rational_coeff`]).
+///
+/// Pulling a literal to the front is sound even inside a non-commutative
+/// product: numbers are central. `ConstFold`'s `Mul` arm already relies on
+/// exactly that.
+fn extract_numeric_coeff(
+    expr: ExprId,
+    pool: &ExprPool,
+    rationals_too: bool,
+) -> (rug::Rational, ExprId) {
+    let one = || rug::Rational::from(1);
+    let literal = |a: ExprId| -> Option<rug::Rational> {
+        pool.with(a, |d| match d {
+            ExprData::Integer(n) => Some(rug::Rational::from(n.0.clone())),
+            ExprData::Rational(r) if rationals_too => Some(r.0.clone()),
+            _ => None,
+        })
+    };
+    match pool.get(expr) {
+        ExprData::Integer(n) => (rug::Rational::from(n.0.clone()), pool.integer(1_i32)),
+        ExprData::Rational(r) if rationals_too => (r.0.clone(), pool.integer(1_i32)),
+        ExprData::Mul(args) => {
+            let mut product = one();
+            let mut rest: Vec<ExprId> = vec![];
+            for &a in &args {
+                match literal(a) {
+                    Some(n) => product *= n,
+                    None => rest.push(a),
+                }
+            }
+            if rest.len() == args.len() {
+                // No literal factors found — leave the term intact.
+                return (one(), expr);
+            }
+            let base = match rest.len() {
+                0 => pool.integer(1_i32),
+                1 => rest[0],
+                _ => pool.mul(rest),
+            };
+            (product, base)
+        }
+        _ => (one(), expr),
+    }
+}
+
 /// Extract (integer_coeff, base) from a Mul where some factors are integers.
 /// Returns (1, expr) if no integer factor is found.
 pub(super) fn extract_int_coeff(expr: ExprId, pool: &ExprPool) -> (rug::Integer, ExprId) {
-    match pool.get(expr) {
-        ExprData::Integer(n) => (n.0.clone(), pool.integer(1_i32)),
-        ExprData::Mul(args) => {
-            let mut int_product = rug::Integer::from(1);
-            let mut non_ints: Vec<ExprId> = vec![];
-            for &a in &args {
-                match pool.with(a, |d| match d {
-                    ExprData::Integer(n) => Some(n.0.clone()),
-                    _ => None,
-                }) {
-                    Some(n) => int_product *= n,
-                    None => non_ints.push(a),
-                }
-            }
-            if non_ints.len() == args.len() {
-                // No integer factors found
-                return (rug::Integer::from(1), expr);
-            }
-            let base = match non_ints.len() {
-                0 => pool.integer(1_i32),
-                1 => non_ints[0],
-                _ => pool.mul(non_ints),
-            };
-            (int_product, base)
-        }
-        _ => (rug::Integer::from(1), expr),
-    }
+    let (c, base) = extract_numeric_coeff(expr, pool, false);
+    debug_assert!(
+        *c.denom() == 1,
+        "integer-only extraction yielded a fraction"
+    );
+    (c.into_numer_denom().0, base)
+}
+
+/// Extract (rational_coeff, base), peeling off `Integer` **and** `Rational`
+/// literal factors.  Returns `(1, expr)` when there is no literal factor.
+///
+/// This is what makes `sin(x)·¾ + sin(x)·(−¾)` cancel: with integer-only
+/// extraction the two terms have distinct bases (`¾·sin x` and `−¾·sin x`)
+/// and never meet in the coefficient map.
+fn extract_rational_coeff(expr: ExprId, pool: &ExprPool) -> (rug::Rational, ExprId) {
+    extract_numeric_coeff(expr, pool, true)
 }
 
 // ---------------------------------------------------------------------------
@@ -326,14 +369,19 @@ fn extract_int_exp(expr: ExprId, pool: &ExprPool) -> Option<(rug::Integer, ExprI
     }
 }
 
-fn rebuild_coeff_term(coeff: &rug::Integer, base: ExprId, pool: &ExprPool) -> ExprId {
+/// Rebuild `coeff · base` in the canonical shape the extractors invert.
+///
+/// A denominator-1 coefficient is interned as an `Integer`, so the result is
+/// exactly what `ConstFold`'s `Rational(n/1) → Integer(n)` arm would produce
+/// and the rebuild is a fixed point rather than a fresh redex.
+fn rebuild_coeff_term(coeff: &rug::Rational, base: ExprId, pool: &ExprPool) -> ExprId {
     if is_one(base, pool) {
         // base is Integer(1)
-        pool.integer(coeff.clone())
+        intern_rational(coeff.clone(), pool)
     } else if *coeff == 1 {
         base
     } else {
-        pool.mul(vec![pool.integer(coeff.clone()), base])
+        pool.mul(vec![intern_rational(coeff.clone(), pool), base])
     }
 }
 
@@ -957,17 +1005,23 @@ impl RewriteRule for SubSelf {
             return None;
         }
 
-        // Extract (coeff, base) for each arg
-        let pairs: Vec<(rug::Integer, ExprId)> =
-            args.iter().map(|&a| extract_int_coeff(a, pool)).collect();
+        // Extract (coeff, base) for each arg.  Coefficients are *rational*:
+        // restricting them to integers made `¾·u + (−¾)·u` two unrelated
+        // bases, so a term-wise cancellation that is pure arithmetic never
+        // happened.  `rug::Rational` addition is exact, so nothing here is a
+        // numerical approximation.
+        let pairs: Vec<(rug::Rational, ExprId)> = args
+            .iter()
+            .map(|&a| extract_rational_coeff(a, pool))
+            .collect();
 
         // Sum coefficients by base, preserving first-occurrence order
-        let mut coeff_map: HashMap<ExprId, rug::Integer> = HashMap::new();
+        let mut coeff_map: HashMap<ExprId, rug::Rational> = HashMap::new();
         let mut base_order: Vec<ExprId> = vec![];
         for (coeff, base) in &pairs {
             if !coeff_map.contains_key(base) {
                 base_order.push(*base);
-                coeff_map.insert(*base, rug::Integer::from(0));
+                coeff_map.insert(*base, rug::Rational::from(0));
             }
             *coeff_map.get_mut(base).unwrap() += coeff.clone();
         }
@@ -1270,6 +1324,314 @@ impl RewriteRule for CanonicalOrder {
             }
             _ => None,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// NegateAdd: (−1)·(a + b) → (−a) + (−b)
+// ---------------------------------------------------------------------------
+
+/// Push a leading literal `−1` through a sum.
+///
+/// This is *not* `ExpandMul` in miniature and is not gated behind
+/// `SimplifyConfig::expand`.  Distributing a general factor over a sum grows
+/// the expression and fights a future `factor` rule, which is why `ExpandMul`
+/// is opt-in.  Negation does neither: `−1` is absorbed into each term's
+/// existing numeric coefficient, so the result has the same number of `Add`
+/// terms and never more `Mul` nodes than it started with, and the rewrite is
+/// a strict normal-form direction (the output is an `Add`, so it cannot
+/// re-fire or ping-pong).
+///
+/// The reason it matters: the verification gate builds its residual as
+/// `d/dx F + (−1)·f`.  When `f` is a sum, leaving the negation undistributed
+/// keeps `d/dx F` and `f`'s terms in different `Add` levels where
+/// `collect_add_terms` can never see them cancel, so an exact identity was
+/// reported as a syntactic non-zero and the gate fell back from `Proven` to a
+/// weaker, merely-numeric verdict.
+///
+/// Only a two-factor product `(−1)·S` fires.  `(−1)·y·(a+b)` is left to
+/// `ExpandMul`: distributing `y` there is real expansion, not negation.
+pub struct NegateAdd;
+
+impl RewriteRule for NegateAdd {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::MUL
+    }
+    fn name(&self) -> &'static str {
+        "distribute_neg_over_add"
+    }
+
+    fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
+        let args = match pool.get(expr) {
+            ExprData::Mul(v) => v,
+            _ => return None,
+        };
+        if args.len() != 2 {
+            return None;
+        }
+        // Which factor is the literal −1, and which is the sum?  `pool.mul`
+        // sorts commutative arguments by `ExprId`, so neither position is
+        // guaranteed.
+        let is_neg_one = |a: ExprId| as_rational(a, pool).is_some_and(|r| r == -1);
+        let sum_args = |a: ExprId| match pool.get(a) {
+            ExprData::Add(v) if v.len() >= 2 => Some(v),
+            _ => None,
+        };
+        let terms = if is_neg_one(args[0]) {
+            sum_args(args[1])?
+        } else if is_neg_one(args[1]) {
+            sum_args(args[0])?
+        } else {
+            return None;
+        };
+
+        // Negate term-wise *through the existing coefficient* so the result is
+        // already in the shape `collect_add_terms` reads back, rather than a
+        // pile of fresh `(−1)·t` redexes for the next pass to clean up.
+        let negated: Vec<ExprId> = terms
+            .iter()
+            .map(|&t| {
+                let (c, base) = extract_rational_coeff(t, pool);
+                rebuild_coeff_term(&(-c), base, pool)
+            })
+            .collect();
+        let after = pool.add(negated);
+        if after == expr {
+            return None;
+        }
+        Some((after, one_step(self.name(), expr, after)))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SqrtEvenPower: √(u^(2k)) → u^k, only where that is not |u|^k
+// ---------------------------------------------------------------------------
+
+/// Whether `expr` is certainly a **real** number.
+///
+/// Deliberately structural, conservative and cheap: a `false` answer only
+/// means "not established here".  Used to decide whether an identity that
+/// holds on ℝ may fire; on ℂ the same identity is false, so an unknown must
+/// be treated as complex.
+fn is_provably_real(expr: ExprId, pool: &ExprPool, depth: u32) -> bool {
+    if depth == 0 {
+        return false;
+    }
+    let node = pool.with(expr, |d| match d {
+        // A `Float` is a real literal; `Integer`/`Rational` likewise.
+        ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => RealKind::Yes,
+        // `Domain::NonZero` deliberately excluded: it says nothing about the
+        // imaginary part.  `Domain::Complex` obviously excluded.
+        ExprData::Symbol { domain, .. } => match domain {
+            Domain::Real | Domain::Integer | Domain::Positive | Domain::NonNegative => {
+                RealKind::Yes
+            }
+            Domain::Complex | Domain::NonZero => RealKind::No,
+        },
+        ExprData::Add(args) | ExprData::Mul(args) => RealKind::All(args.clone()),
+        ExprData::Pow { base, exp } => RealKind::Pow(*base, *exp),
+        ExprData::Func { name, args } if args.len() == 1 => RealKind::Func(name.clone(), args[0]),
+        _ => RealKind::No,
+    });
+    match node {
+        RealKind::Yes => true,
+        RealKind::No => false,
+        RealKind::All(args) => args.iter().all(|&a| is_provably_real(a, pool, depth - 1)),
+        // `b^e` with a real base and a literal **integer** exponent is real
+        // (negative exponents included — a pole is not a complex value).  A
+        // fractional exponent needs `b ≥ 0`, which is the non-negativity test.
+        RealKind::Pow(base, exp) => {
+            if !is_provably_real(base, pool, depth - 1) {
+                return false;
+            }
+            if as_integer(exp, pool).is_some() {
+                return true;
+            }
+            as_rational(exp, pool).is_some() && is_provably_nonneg(base, pool, depth - 1)
+        }
+        // Real-valued on the whole real line (where defined).  `sqrt`/`log`
+        // are absent on purpose: both leave ℝ for a negative argument.
+        RealKind::Func(name, arg) => {
+            matches!(
+                name.as_str(),
+                "abs" | "sin" | "cos" | "tan" | "exp" | "sinh" | "cosh" | "tanh" | "atan" | "erf"
+            ) && is_provably_real(arg, pool, depth - 1)
+        }
+    }
+}
+
+enum RealKind {
+    Yes,
+    No,
+    All(Vec<ExprId>),
+    Pow(ExprId, ExprId),
+    Func(String, ExprId),
+}
+
+/// Whether `expr` is certainly a real number `≥ 0`.
+///
+/// Same contract as [`is_provably_real`]: conservative, `false` means
+/// "unknown".  A product is *not* treated as non-negative merely because it
+/// has an even number of unknown-sign factors — every factor must be known.
+fn is_provably_nonneg(expr: ExprId, pool: &ExprPool, depth: u32) -> bool {
+    if depth == 0 {
+        return false;
+    }
+    enum Kind {
+        Yes,
+        No,
+        All(Vec<ExprId>),
+        Pow(ExprId, ExprId),
+        Func(String, ExprId),
+    }
+    let node = pool.with(expr, |d| match d {
+        ExprData::Integer(n) => {
+            if n.0 >= 0 {
+                Kind::Yes
+            } else {
+                Kind::No
+            }
+        }
+        ExprData::Rational(r) => {
+            if r.0 >= 0 {
+                Kind::Yes
+            } else {
+                Kind::No
+            }
+        }
+        ExprData::Symbol { domain, .. } => match domain {
+            Domain::Positive | Domain::NonNegative => Kind::Yes,
+            _ => Kind::No,
+        },
+        ExprData::Add(args) | ExprData::Mul(args) => Kind::All(args.clone()),
+        ExprData::Pow { base, exp } => Kind::Pow(*base, *exp),
+        ExprData::Func { name, args } if args.len() == 1 => Kind::Func(name.clone(), args[0]),
+        _ => Kind::No,
+    });
+    match node {
+        Kind::Yes => true,
+        Kind::No => false,
+        // Sum and product of non-negatives are non-negative.
+        Kind::All(args) => args.iter().all(|&a| is_provably_nonneg(a, pool, depth - 1)),
+        Kind::Pow(base, exp) => {
+            // A non-negative base stays non-negative under any *real*
+            // exponent — but `t^z` for complex `z` is complex even when
+            // `t > 0`, so the exponent has to be established too.  An
+            // arbitrary real base under an even integer exponent is a square.
+            // (`b^0 = 1` is handled by `pow_zero` before this.)
+            if is_provably_nonneg(base, pool, depth - 1) && is_provably_real(exp, pool, depth - 1) {
+                return true;
+            }
+            match as_integer(exp, pool) {
+                Some(n) => n.is_even() && is_provably_real(base, pool, depth - 1),
+                None => false,
+            }
+        }
+        // `|·|` is non-negative for any argument; `exp`/`cosh` only for a real
+        // one; `sqrt` denotes the principal (non-negative) root of a
+        // non-negative argument.
+        Kind::Func(name, arg) => match name.as_str() {
+            "abs" => true,
+            "exp" | "cosh" => is_provably_real(arg, pool, depth - 1),
+            "sqrt" => is_provably_nonneg(arg, pool, depth - 1),
+            _ => false,
+        },
+    }
+}
+
+/// How deep the structural sign/reality probes walk before giving up.
+///
+/// A bound is needed because these run on the hot `simplify` path and the
+/// answer is only ever used to *permit* a rewrite: cutting off early declines,
+/// which is always safe.  Four levels reach through the `c·u^n` shapes that
+/// actually occur without turning a rule application into a tree walk.
+const SIGN_PROBE_DEPTH: u32 = 4;
+
+/// `√(u^(2k)) → u^k`, and the same for `(u^(2k))^(1/2)`.
+///
+/// **The general identity is `√(u²) = |u|`, not `u`**, so this rule fires only
+/// where the absolute value is provably redundant:
+///
+/// * `u` is provably non-negative — then `|u| = u`; or
+/// * `k` is even and `u` is provably real — then `|u|^k = u^k` because an even
+///   power of a real is already non-negative.
+///
+/// Everything else declines, including every complex-domain `u`: for complex
+/// `z`, `√(z²)` is `±z` depending on the branch and `|z|` is not even the
+/// right *type* of answer.  A blanket `√(u²) → u` would make
+/// `simplify(√((−3)²))` return `−3`.
+///
+/// Note this is strictly weaker than what an `AssumptionContext` gives you:
+/// with an explicit `x > 0` fact the colored e-graph's
+/// `sqrt_of_square_positive` already fires on symbols this rule must decline.
+pub struct SqrtEvenPower;
+
+/// Whether `expr` is the literal `1/2`.  Allocation-free, unlike
+/// [`as_rational`] — this runs on every `Pow` node the engine visits.
+fn is_one_half(expr: ExprId, pool: &ExprPool) -> bool {
+    pool.with(
+        expr,
+        |d| matches!(d, ExprData::Rational(r) if *r.0.numer() == 1 && *r.0.denom() == 2),
+    )
+}
+
+impl SqrtEvenPower {
+    /// The radicand of `expr`, whether spelled `sqrt(r)` or `r^(1/2)`.
+    fn radicand(expr: ExprId, pool: &ExprPool) -> Option<ExprId> {
+        enum Spelling {
+            Sqrt(ExprId),
+            Pow(ExprId, ExprId),
+        }
+        let spelling = pool.with(expr, |d| match d {
+            ExprData::Func { name, args } if name == "sqrt" && args.len() == 1 => {
+                Some(Spelling::Sqrt(args[0]))
+            }
+            ExprData::Pow { base, exp } => Some(Spelling::Pow(*base, *exp)),
+            _ => None,
+        })?;
+        match spelling {
+            Spelling::Sqrt(r) => Some(r),
+            Spelling::Pow(base, exp) => is_one_half(exp, pool).then_some(base),
+        }
+    }
+}
+
+impl RewriteRule for SqrtEvenPower {
+    fn node_kinds(&self) -> NodeKinds {
+        NodeKinds::FUNC.or(NodeKinds::POW)
+    }
+    fn name(&self) -> &'static str {
+        "sqrt_of_even_power"
+    }
+
+    fn apply(&self, expr: ExprId, pool: &ExprPool) -> Option<(ExprId, DerivationLog)> {
+        let radicand = Self::radicand(expr, pool)?;
+        let inner = pool.with(radicand, |d| match d {
+            ExprData::Pow { base, exp } => Some((*base, *exp)),
+            _ => None,
+        })?;
+        let (u, n) = (inner.0, as_integer(inner.1, pool)?);
+        if n <= 0 || !n.is_even() {
+            return None;
+        }
+        let k = rug::Integer::from(&n / 2);
+        let sound = if k.is_even() {
+            is_provably_real(u, pool, SIGN_PROBE_DEPTH)
+        } else {
+            is_provably_nonneg(u, pool, SIGN_PROBE_DEPTH)
+        };
+        if !sound {
+            return None;
+        }
+        let after = if k == 1 {
+            u
+        } else {
+            pool.pow(u, pool.integer(k))
+        };
+        if after == expr {
+            return None;
+        }
+        Some((after, one_step(self.name(), expr, after)))
     }
 }
 
@@ -2420,5 +2782,224 @@ mod tests {
         assert_eq!(crate::simplify::simplify(arg_neg, &pool).value, arg_neg);
         let arg_z = pool.func("arg", vec![z]);
         assert_eq!(crate::simplify::simplify(arg_z, &pool).value, arg_z);
+    }
+
+    // -----------------------------------------------------------------------
+    // Rational-coefficient like-term collection
+    // -----------------------------------------------------------------------
+
+    /// `¾·sin(x) + (−¾)·sin(x) → 0`.  Integer coefficients already cancelled;
+    /// with integer-only coefficient extraction the two terms above had
+    /// *different* bases (`¾·sin x` vs `−¾·sin x`) and never met.
+    #[test]
+    fn collects_like_terms_over_rational_coefficients() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let s = pool.func("sin", vec![x]);
+        let e = pool.add(vec![
+            pool.mul(vec![s, pool.rational(3, 4)]),
+            pool.mul(vec![s, pool.rational(-3, 4)]),
+        ]);
+        assert_eq!(
+            crate::simplify::simplify(e, &pool).value,
+            pool.integer(0_i32)
+        );
+    }
+
+    /// The same over an irrational constant: `√3·(−1/32) + √3·(1/32) → 0`.
+    /// `√3` is opaque to every numeric fold, so this only closes if like-term
+    /// collection reaches it.
+    #[test]
+    fn collects_like_terms_over_an_irrational_constant() {
+        let pool = p();
+        let root3 = pool.func("sqrt", vec![pool.integer(3_i32)]);
+        let e = pool.add(vec![
+            pool.mul(vec![root3, pool.rational(-1, 32)]),
+            pool.mul(vec![root3, pool.rational(1, 32)]),
+        ]);
+        assert_eq!(
+            crate::simplify::simplify(e, &pool).value,
+            pool.integer(0_i32)
+        );
+    }
+
+    /// Merging, not just cancelling: `x/2 + x/3 → (5/6)·x`.
+    #[test]
+    fn merges_rational_coefficients_on_a_shared_base() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let e = pool.add(vec![
+            pool.mul(vec![x, pool.rational(1, 2)]),
+            pool.mul(vec![x, pool.rational(1, 3)]),
+        ]);
+        let want = pool.mul(vec![pool.rational(5, 6), x]);
+        assert_eq!(
+            crate::simplify::simplify(e, &pool).value,
+            crate::simplify::simplify(want, &pool).value
+        );
+    }
+
+    /// A coefficient sum that lands on `1` must drop the coefficient entirely
+    /// rather than leave `Rational(1/1)·x` behind.
+    #[test]
+    fn rational_coefficients_summing_to_one_leave_a_bare_base() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let e = pool.add(vec![
+            pool.mul(vec![x, pool.rational(1, 3)]),
+            pool.mul(vec![x, pool.rational(2, 3)]),
+        ]);
+        assert_eq!(crate::simplify::simplify(e, &pool).value, x);
+    }
+
+    /// The undefined-term guard still holds with rational coefficients: the
+    /// terms of `½·(0·0⁻¹) + (−½)·(0·0⁻¹)` have coefficients summing to zero,
+    /// but `0·u = 0` is false when `u` is undefined.
+    #[test]
+    fn rational_collection_still_refuses_a_zero_to_a_negative_power() {
+        let pool = p();
+        let undef = pool.mul(vec![
+            pool.integer(0_i32),
+            pool.pow(pool.integer(0_i32), pool.integer(-1_i32)),
+        ]);
+        let e = pool.add(vec![
+            pool.mul(vec![pool.rational(1, 2), undef]),
+            pool.mul(vec![pool.rational(-1, 2), undef]),
+        ]);
+        assert_ne!(
+            crate::simplify::simplify(e, &pool).value,
+            pool.integer(0_i32)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // NegateAdd
+    // -----------------------------------------------------------------------
+
+    /// The verification gate's residual shape: `(a + b) + (−1)·(a + b) → 0`.
+    #[test]
+    fn distributes_a_leading_minus_one_over_a_sum() {
+        let pool = p();
+        let a = pool.symbol("a", Domain::Real);
+        let b = pool.symbol("b", Domain::Real);
+        let sum = pool.add(vec![a, b]);
+        let e = pool.add(vec![sum, pool.mul(vec![pool.integer(-1_i32), sum])]);
+        assert_eq!(
+            crate::simplify::simplify(e, &pool).value,
+            pool.integer(0_i32)
+        );
+    }
+
+    /// Standalone, the negation is pushed into each term's coefficient.
+    #[test]
+    fn negation_of_a_sum_is_pushed_termwise() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let e = pool.mul(vec![
+            pool.integer(-1_i32),
+            pool.add(vec![x, pool.integer(1_i32)]),
+        ]);
+        let want = pool.add(vec![
+            pool.mul(vec![pool.integer(-1_i32), x]),
+            pool.integer(-1_i32),
+        ]);
+        assert_eq!(
+            crate::simplify::simplify(e, &pool).value,
+            crate::simplify::simplify(want, &pool).value
+        );
+    }
+
+    /// `(−1)·y·(a + b)` is real expansion, not negation, and stays for
+    /// `ExpandMul` to handle under `SimplifyConfig::expand`.
+    #[test]
+    fn negate_add_leaves_a_three_factor_product_alone() {
+        let pool = p();
+        let y = pool.symbol("y", Domain::Real);
+        let a = pool.symbol("a", Domain::Real);
+        let b = pool.symbol("b", Domain::Real);
+        let e = pool.mul(vec![pool.integer(-1_i32), y, pool.add(vec![a, b])]);
+        let got = crate::simplify::simplify(e, &pool);
+        assert!(
+            matches!(pool.get(got.value), ExprData::Mul(_)),
+            "expected the product to stand, got {}",
+            pool.display(got.value)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // SqrtEvenPower
+    // -----------------------------------------------------------------------
+
+    /// `√(x²)` for a merely-real `x` is `|x|`, not `x` — it must not fire.
+    #[test]
+    fn sqrt_of_a_square_of_a_real_symbol_is_left_alone() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        for e in [
+            pool.func("sqrt", vec![pool.pow(x, pool.integer(2_i32))]),
+            pool.pow(pool.pow(x, pool.integer(2_i32)), pool.rational(1, 2)),
+        ] {
+            let got = crate::simplify::simplify(e, &pool).value;
+            assert_ne!(got, x, "√(x²) → x is false at x = −1");
+        }
+    }
+
+    /// A positive-domain symbol licenses it, in both spellings.
+    #[test]
+    fn sqrt_of_a_square_of_a_positive_symbol_reduces() {
+        let pool = p();
+        let t = pool.symbol("t", Domain::Positive);
+        for e in [
+            pool.func("sqrt", vec![pool.pow(t, pool.integer(2_i32))]),
+            pool.pow(pool.pow(t, pool.integer(2_i32)), pool.rational(1, 2)),
+        ] {
+            assert_eq!(crate::simplify::simplify(e, &pool).value, t);
+        }
+    }
+
+    /// `√(x⁴) = x²` needs no sign hypothesis at all: the half-exponent is
+    /// even, so `|x|² = x²`.  Only *reality* of `x` is required.
+    #[test]
+    fn sqrt_of_a_fourth_power_reduces_for_any_real_base() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let e = pool.func("sqrt", vec![pool.pow(x, pool.integer(4_i32))]);
+        assert_eq!(
+            crate::simplify::simplify(e, &pool).value,
+            pool.pow(x, pool.integer(2_i32))
+        );
+    }
+
+    /// …but not for a complex base: `√(z⁴)` is `±z²`, branch-dependent.
+    #[test]
+    fn sqrt_of_a_fourth_power_declines_for_a_complex_base() {
+        let pool = p();
+        let z = pool.symbol("z", Domain::Complex);
+        let e = pool.func("sqrt", vec![pool.pow(z, pool.integer(4_i32))]);
+        let got = crate::simplify::simplify(e, &pool).value;
+        assert_ne!(got, pool.pow(z, pool.integer(2_i32)));
+    }
+
+    /// A non-negative *compound* radicand base is recognised structurally.
+    #[test]
+    fn sqrt_of_a_square_of_a_non_negative_compound_reduces() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        // u = x² + 1 ≥ 0, so √(u²) = u.
+        let u = pool.add(vec![pool.pow(x, pool.integer(2_i32)), pool.integer(1_i32)]);
+        let e = pool.func("sqrt", vec![pool.pow(u, pool.integer(2_i32))]);
+        assert_eq!(
+            crate::simplify::simplify(e, &pool).value,
+            crate::simplify::simplify(u, &pool).value
+        );
+    }
+
+    /// Odd powers are not touched: `√(t³)` has no square root to take out.
+    #[test]
+    fn sqrt_of_an_odd_power_is_left_alone() {
+        let pool = p();
+        let t = pool.symbol("t", Domain::Positive);
+        let e = pool.func("sqrt", vec![pool.pow(t, pool.integer(3_i32))]);
+        assert_eq!(crate::simplify::simplify(e, &pool).value, e);
     }
 }
