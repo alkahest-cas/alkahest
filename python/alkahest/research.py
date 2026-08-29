@@ -241,8 +241,49 @@ def _as_expr(obj: Any) -> Any:
     return None
 
 
+# Widest ``Add``/``Mul`` for which partial sums/products are enumerated by
+# :func:`_subexpressions`.  The enumeration is 2**k, so this caps it at 64
+# extra candidates per node.
+_MAX_PARTIAL_NARY = 6
+
+
+def _partial_nary(tag: str, children: Sequence[Any]) -> Iterator[Any]:
+    """Yield the proper sub-sums / sub-products of one flat ``Add``/``Mul``.
+
+    ``Add`` and ``Mul`` are flat at construction, so ``2 * a * b`` is a single
+    three-factor node and the ``a * b`` that a previous step produced is *not*
+    a node inside it.  Dependency inference is subexpression containment, so
+    without this it would lose the edge — and it would lose it in a way the
+    old left-associative binary chains did not, because there ``2 * (a * b)``
+    really did contain an ``a * b`` node.
+
+    Rebuilding the subset with ``*``/``+`` goes back through the kernel
+    constructors, so the candidate it produces is exactly the node the earlier
+    step interned.  Only proper subsets of size >= 2 are worth yielding: the
+    whole node and the individual children are already visited.
+    """
+    k = len(children)
+    if not 2 <= k <= _MAX_PARTIAL_NARY:
+        return
+    for mask in range(1, (1 << k) - 1):
+        picked = [children[i] for i in range(k) if mask & (1 << i)]
+        if len(picked) < 2:
+            continue
+        combined = picked[0]
+        try:
+            for item in picked[1:]:
+                combined = combined + item if tag == "add" else combined * item
+        except Exception:
+            continue
+        yield combined
+
+
 def _subexpressions(expr: Any, limit: int = 4096) -> Iterator[Any]:
     """Yield *expr* and every distinct subexpression, breadth first.
+
+    For flat ``Add``/``Mul`` nodes this also yields their proper sub-sums and
+    sub-products (see :func:`_partial_nary`), so a value buried in a wider sum
+    or product is still recognised.
 
     Traversal is bounded by *limit* nodes so dependency inference cannot become
     the dominant cost of a hot loop.
@@ -265,6 +306,9 @@ def _subexpressions(expr: Any, limit: int = 4096) -> Iterator[Any]:
             node = current.node()
         except Exception:
             continue
+        if node and node[0] in ("add", "mul") and isinstance(node[1], (list, tuple)):
+            for partial in _partial_nary(node[0], node[1]):
+                frontier.append(partial)
         stack = [node]
         while stack:
             item = stack.pop()

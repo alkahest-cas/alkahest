@@ -73,7 +73,9 @@ class TestAtoms:
 class TestUnary:
     def test_unary_minus_integer(self, pool):
         e = parse("-1", pool)
-        # -1 is unary minus applied to 1; simplify should give integer(-1)
+        # The parser folds `-<literal>`, so this is already the literal -1
+        # before `simplify` is given a chance to do anything.
+        assert e == pool.integer(-1)
         s = simplify(e)
         assert s.value == pool.integer(-1)
 
@@ -86,6 +88,150 @@ class TestUnary:
     def test_unary_plus_symbol(self, pool, x):
         e = parse("+x", pool, {"x": x})
         assert e == x
+
+
+# ---------------------------------------------------------------------------
+# Unary minus on a literal is folded at parse time
+#
+# Prefix `-` is otherwise `(-1) * operand`, which for a literal operand leaves
+# an unevaluated product: `x^(-1)` built `x^(1 * -1)` while `1/x` built
+# `x^(-1)`.  Same function, two trees — and every structural detector that
+# reads an exponent by matching on an integer node saw only the second, so the
+# *spelling* of an integrand decided its route through the integrator.
+# ---------------------------------------------------------------------------
+
+
+class TestNegativeLiteralFolding:
+    @pytest.mark.parametrize(
+        ("src", "want"),
+        [
+            ("x^(-1)", -1),
+            ("x^-1", -1),
+            ("x^(-2)", -2),
+            ("(x^2+1)^(-1)", -1),
+            ("(x*log(x))^(-1)", -1),
+        ],
+    )
+    def test_a_negative_exponent_is_a_literal(self, pool, x, src, want):
+        # The exponent node itself: this is what the detectors read.
+        node = parse(src, pool, {"x": x}).node()
+        assert node[0] == "pow", src
+        assert node[2] == pool.integer(want), f"{src!r} exponent is {node[2]}"
+
+    @pytest.mark.parametrize(
+        ("a", "b"),
+        [
+            ("2*x^(-1)", "2/x"),
+            ("log(x)*(x^2+1)^(-1)", "log(x)/(x^2+1)"),
+            ("sin(x)*(x*log(x))^(-1)", "sin(x)/(x*log(x))"),
+        ],
+    )
+    def test_a_over_b_and_a_times_b_to_the_minus_one_are_one_node(self, pool, x, a, b):
+        ea = parse(a, pool, {"x": x})
+        eb = parse(b, pool, {"x": x})
+        assert ea == eb, f"{a!r} -> {ea}, {b!r} -> {eb}"
+
+    @pytest.mark.parametrize("sign", ["", "-"])
+    def test_a_huge_integer_exponent_stays_exact(self, pool, x, sign):
+        # `Expr.__pow__` falls back to an f64 exponent when the integer does not
+        # fit in an i64, so the `^` led hands the exponent node straight to
+        # `pow_expr`.  Folding `-<literal>` is what made the negative case reach
+        # that code path at all.
+        n = 10**25
+        e = parse(f"x^({sign}{n})", pool, {"x": x})
+        assert e.node()[2] == pool.integer(int(f"{sign}{n}"))
+
+    def test_what_the_fold_does_not_claim(self, pool, x):
+        # `/` keeps its left operand, so a bare `1/x` is `1 * x^(-1)` and
+        # carries a redundant unit factor that `x^(-1)` does not; and `1/x^2` is
+        # `(x^2)^(-1)`, not `x^(-2)`.  Both are pre-existing spelling
+        # differences *above* the exponent — the simplifier's job, not the
+        # parser's.  Pinned so the tests above are not read as claiming more.
+        assert parse("1/x", pool, {"x": x}) != parse("x^(-1)", pool, {"x": x})
+        assert parse("1/x^2", pool, {"x": x}) != parse("x^(-2)", pool, {"x": x})
+
+    def test_literal_folds(self, pool):
+        assert parse("-3", pool) == pool.integer(-3)
+        assert parse("-(-3)", pool) == pool.integer(3)
+        assert parse("-0", pool) == pool.integer(0)
+
+    @pytest.mark.parametrize("src", ["-x", "-(2+3)", "-sin(x)", "-(-x)", "-x^2", "-2^2"])
+    def test_non_literal_operands_are_left_alone(self, pool, x, src):
+        # Over-folding would be a silent precedence change (`-2^2` is `-(2^2)`,
+        # never `(-2)^2`) and would strip the `(-1) *` prefix that simplify and
+        # the display layer key on for symbolic negation.
+        assert parse(src, pool, {"x": x}).node()[0] == "mul"
+
+    def test_float_literals_are_deliberately_out_of_scope(self, pool):
+        # Negating a float is exact, but folding it would make `-0.0` and
+        # `(-1) * 0.0` two different literals rather than two spellings of one,
+        # and no detector keys on a float exponent.
+        assert parse("-3.5", pool).node()[0] == "mul"
+
+    def test_the_builder_path_is_unchanged(self, pool, x):
+        """The parser fold is layer one; the detectors' tolerance is layer two.
+
+        `Expr.__neg__` and `pool.mul` are public, so `(-1) * literal` is still
+        reachable without going through the parser at all.  If this stops being
+        true the second layer silently stops being exercised.
+        """
+        assert (-pool.integer(3)).node()[0] == "mul"
+        unevaluated = pool.mul([pool.integer(1), pool.integer(-1)])
+        assert unevaluated != pool.integer(-1)
+        assert x.pow_expr(unevaluated) != x.pow_expr(pool.integer(-1))
+
+    @pytest.mark.parametrize(
+        ("src", "text", "latex", "unicode"),
+        [
+            # Every one of these used to render the unevaluated product; the
+            # pre-fold output is in the trailing comment.  `text` is only pinned
+            # where the top node is not a `Mul`/`Add` — their child order is the
+            # interning order, which is not a property of this change.
+            ("-3", "-3", "-3", "-3"),  # (-1 * 3)
+            ("-(-3)", "3", "3", "3"),  # (-1 * (-1 * 3)),  "--3"
+            ("x^(-1)", "x^-1", r"\frac{1}{x}", "x⁻¹"),  # x^(1 * -1),  "x^(-1)"
+            ("x^(-2)", "x^-2", "x^{-2}", "x⁻²"),  # x^(-1 * 2),  "x^(-2)"
+            ("-2/3", None, r"-\frac{2}{3}", "-2/3¹"),  # \frac{-2}{3}
+            ("2 - -3", None, "2 + 3", "2 + 3"),  # "--3 + 2"
+            # Unchanged, because none of these is `-<literal>`.
+            ("-x", None, "-x", "-x"),
+            ("x - 3", None, "x - 3", "x - 3"),
+            ("-x^2", None, "-x^2", "-x²"),
+            ("-3.5", None, "-3.5000000000000000", "-3.5000000000000000"),
+        ],
+    )
+    def test_folded_forms_print_at_least_as_well(self, pool, x, src, text, latex, unicode):
+        e = parse(src, pool, {"x": x})
+        if text is not None:
+            assert str(e) == text
+        assert e.display_latex() == latex
+        assert e.display_unicode() == unicode
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            "-x",
+            "-3",
+            "x - 3",
+            "2 - -3",
+            "-(-x)",
+            "-(-3)",
+            "x^-1",
+            "x^(-1)",
+            "-x^2",
+            "1/-x",
+            "-2/3",
+            "-3.5",
+            "1/x",
+            "(x^2+1)^(-1)",
+        ],
+    )
+    def test_display_round_trips(self, pool, x, src):
+        # A representation change the printer cannot spell back is a round-trip
+        # bug, not a simplification.
+        e = parse(src, pool, {"x": x})
+        shown = str(e)
+        assert parse(shown, pool, {"x": x}) == e, f"{src!r} displayed as {shown!r}"
 
 
 # ---------------------------------------------------------------------------

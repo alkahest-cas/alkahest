@@ -3422,9 +3422,9 @@ pub fn needs_exp_risch(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
 fn is_var_dependent_denominator(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
     use crate::kernel::ExprData;
     if let ExprData::Pow { base, exp } = pool.get(expr) {
-        // `^(-1)` parses to the unevaluated `^(1 · -1)`, so reading the exponent
-        // as a bare `Integer` node made `a·b^(-1)` and `a/b` take different
-        // routes for the *same* function.  Fold it instead.
+        // A hand-built `-1` exponent arrives as the unevaluated `1 · -1`, so
+        // reading the exponent as a bare `Integer` node made `a·b^(-1)` and
+        // `a/b` take different routes for the *same* function.  Fold it instead.
         if super::tower::literal_integer(exp, pool).is_some_and(|v| v < 0) {
             return !is_free_of_var(base, var, pool);
         }
