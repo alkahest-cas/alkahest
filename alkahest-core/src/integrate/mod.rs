@@ -1,5 +1,6 @@
 pub mod algebraic;
 pub mod engine;
+pub mod gate;
 pub mod risch;
 
 pub use engine::{
