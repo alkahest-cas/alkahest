@@ -17,7 +17,7 @@
 //! depth** of an already-interned expression — the longest root-to-leaf path,
 //! `1 + max(child depths)`, as returned by [`ExprPool::depth`].  Not stack
 //! bytes, not node count, not width.  A 50 000-term `Add` is depth 2 and is
-//! accepted; a 2 049-level `Pow` tower is refused however few nodes it has.
+//! accepted; a `Pow` tower of depth 2 049 is refused however few nodes it has.
 //!
 //! Nothing in this module measures the stack.  The one mechanism in this crate
 //! that does is a different one with a different failure mode — see *What this
@@ -76,17 +76,20 @@
 //! * **New bindings.** A `#[pyfunction]` added without a `guard_depth` call
 //!   inherits nothing; the guard is a convention held up by that test file, not
 //!   by a type.
-//! * **The two simplification traversals**, which have something stronger.
-//!   `simplify::engine`'s `simplify_node` and — under the `parallel` feature —
-//!   `simplify::parallel`'s `simplify_node_par` both run under the
+//! * **The bottom-up simplification traversals**, which have something
+//!   stronger.  `simplify::engine`'s `simplify_node` and
+//!   `simplify_node_indexed`, and — under the `parallel` feature —
+//!   `simplify::parallel`'s `simplify_node_par`, all run under the
 //!   segmented-stack trampoline in `simplify::stack`, which continues the
 //!   recursion on a freshly spawned, larger-stacked thread before the current
-//!   one is spent.  For those two that removes the depth bound rather than
-//!   lowering it: they are limited by how many threads the OS will hand out,
-//!   not by any one stack, and they truncate nothing.  The trampoline itself is
-//!   not feature-gated and is not confined to the parallel simplifier.  The
-//!   ceiling here still applies to them at the PyO3 boundary, where it is now a
-//!   courtesy to the caller rather than what keeps the process alive.
+//!   one is spent.  For those the depth bound is removed rather than lowered:
+//!   they are limited by how many threads the OS will hand out, not by any one
+//!   stack, and they truncate nothing.  The trampoline itself is not
+//!   feature-gated and is not confined to the parallel simplifier; the other
+//!   simplification strategies (`redex`, the e-graph passes) do not use it.
+//!   The ceiling here still applies to all of them at the PyO3 boundary, where
+//!   for the trampolined ones it is now a courtesy to the caller rather than
+//!   what keeps the process alive.
 //!
 //! The trampoline is also where this crate's one stack *measurement* lives, and
 //! it is deliberately not what bounds that recursion.  The probe takes the
