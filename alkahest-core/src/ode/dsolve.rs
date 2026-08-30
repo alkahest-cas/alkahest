@@ -21,7 +21,7 @@
 //! - Euler–Cauchy `a·x²·y'' + b·x·y' + c·y = r(x)`
 //! - general variable coefficients `a₂(x)y'' + a₁(x)y' + a₀(x)y = r(x)`, when a
 //!   first homogeneous solution is found by ansatz — the second then follows by
-//!   reduction of order (see [`mod@variation`])
+//!   reduction of order (see the private `variation` submodule)
 //!
 //! **Higher order**: constant-coefficient `Σ aₖ y^(k) = r(x)`, solved through
 //! the characteristic polynomial (rational + quadratic factorization;
@@ -52,10 +52,10 @@
 //! manufactured integrand is not in normal form: `e^{−log x}` rather than
 //! `1/x`, `e^{x}·e^{−x}` rather than `1`, `cos²x + sin²x` rather than `1`.  The
 //! integration engine is form-sensitive enough that this decides whether an
-//! elementary integral closes, so [`integrate_or_decline`] tries each integrand
-//! in several equal-valued spellings and takes the first that closes.  Set
-//! `ALKAHEST_DSOLVE_TRACE` in a test build to print every integral that no
-//! spelling closed.
+//! elementary integral closes, so the private `integrate_or_decline` helper
+//! tries each integrand in several equal-valued spellings and takes the first
+//! that closes.  Set `ALKAHEST_DSOLVE_TRACE` in a test build to print every
+//! integral that no spelling closed.
 
 use crate::diff::diff;
 use crate::integrate::engine::integrate;
@@ -375,7 +375,7 @@ pub(crate) fn integrate_or_decline(
     integrate_first_of(&[expr], var, pool)
 }
 
-/// [`integrate_or_decline`] over several *constructions* of the same integrand.
+/// `integrate_or_decline` over several *constructions* of the same integrand.
 ///
 /// A caller that can build the integrand more than one way (variation of
 /// parameters can divide by the raw Wronskian or by the normalised one) passes
