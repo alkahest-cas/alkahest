@@ -7,8 +7,8 @@
       "tests/lean_tendsto_corpus.py",
       "tests/textbook_gate/"
     ],
-    "observations": 283,
-    "shape_classes": 184
+    "observations": 288,
+    "shape_classes": 187
   },
   "rows": [
     {
@@ -549,17 +549,37 @@
         "pow": "neg",
         "pow_base": "var"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 2,
+        "withheld": 0,
         "no_derivation": 0
       },
-      "blocking_rules": [
-        "power_rule"
-      ],
+      "blocking_rules": [],
       "examples": [
         "x^-2"
+      ]
+    },
+    {
+      "operation": "diff",
+      "shape": "diff/form=power/funcs=-/fn_arg=none/mul=none/pow=neg_one/pow_base=var",
+      "features": {
+        "form": "power",
+        "funcs": "-",
+        "fn_arg": "none",
+        "mul": "none",
+        "pow": "neg_one",
+        "pow_base": "var"
+      },
+      "verdict": "certified",
+      "observations": {
+        "certified": 1,
+        "withheld": 0,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "x^-1"
       ]
     },
     {
@@ -586,13 +606,13 @@
     },
     {
       "operation": "diff",
-      "shape": "diff/form=power/funcs=sin/fn_arg=var/mul=none/pow=neg/pow_base=expr",
+      "shape": "diff/form=power/funcs=sin/fn_arg=var/mul=none/pow=neg_one/pow_base=expr",
       "features": {
         "form": "power",
         "funcs": "sin",
         "fn_arg": "var",
         "mul": "none",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "expr"
       },
       "verdict": "certified",
@@ -608,13 +628,13 @@
     },
     {
       "operation": "diff",
-      "shape": "diff/form=product/funcs=-/fn_arg=none/mul=general/pow=neg/pow_base=expr",
+      "shape": "diff/form=product/funcs=-/fn_arg=none/mul=general/pow=neg_one/pow_base=expr",
       "features": {
         "form": "product",
         "funcs": "-",
         "fn_arg": "none",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "expr"
       },
       "verdict": "withheld",
@@ -703,13 +723,13 @@
     },
     {
       "operation": "diff",
-      "shape": "diff/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg/pow_base=expr",
+      "shape": "diff/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg_one/pow_base=expr",
       "features": {
         "form": "product",
         "funcs": "-",
         "fn_arg": "none",
         "mul": "scalar",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "expr"
       },
       "verdict": "withheld",
@@ -728,25 +748,22 @@
     },
     {
       "operation": "diff",
-      "shape": "diff/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg/pow_base=var",
+      "shape": "diff/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg_one/pow_base=var",
       "features": {
         "form": "product",
         "funcs": "-",
         "fn_arg": "none",
         "mul": "scalar",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "var"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 2,
+        "withheld": 0,
         "no_derivation": 0
       },
-      "blocking_rules": [
-        "power_rule",
-        "product_rule"
-      ],
+      "blocking_rules": [],
       "examples": [
         "(-1 * x^-1)"
       ]
@@ -803,13 +820,13 @@
     },
     {
       "operation": "diff",
-      "shape": "diff/form=product/funcs=cos,sin/fn_arg=var/mul=general/pow=neg/pow_base=expr",
+      "shape": "diff/form=product/funcs=cos,sin/fn_arg=var/mul=general/pow=neg_one/pow_base=expr",
       "features": {
         "form": "product",
         "funcs": "cos,sin",
         "fn_arg": "var",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "expr"
       },
       "verdict": "certified",
@@ -987,13 +1004,13 @@
     },
     {
       "operation": "diff",
-      "shape": "diff/form=product/funcs=exp/fn_arg=other/mul=general/pow=neg/pow_base=expr",
+      "shape": "diff/form=product/funcs=exp/fn_arg=other/mul=general/pow=neg_one/pow_base=expr",
       "features": {
         "form": "product",
         "funcs": "exp",
         "fn_arg": "other",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "expr"
       },
       "verdict": "withheld",
@@ -1061,13 +1078,13 @@
     },
     {
       "operation": "diff",
-      "shape": "diff/form=product/funcs=exp/fn_arg=var/mul=general/pow=neg/pow_base=expr",
+      "shape": "diff/form=product/funcs=exp/fn_arg=var/mul=general/pow=neg_one/pow_base=expr",
       "features": {
         "form": "product",
         "funcs": "exp",
         "fn_arg": "var",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "expr"
       },
       "verdict": "withheld",
@@ -1134,13 +1151,13 @@
     },
     {
       "operation": "diff",
-      "shape": "diff/form=product/funcs=sin/fn_arg=var/mul=general/pow=neg/pow_base=var",
+      "shape": "diff/form=product/funcs=sin/fn_arg=var/mul=general/pow=neg_one/pow_base=var",
       "features": {
         "form": "product",
         "funcs": "sin",
         "fn_arg": "var",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "var"
       },
       "verdict": "withheld",
@@ -1150,7 +1167,6 @@
         "no_derivation": 0
       },
       "blocking_rules": [
-        "power_rule",
         "product_rule"
       ],
       "examples": [
@@ -1451,13 +1467,13 @@
     },
     {
       "operation": "diff",
-      "shape": "diff/form=sum/funcs=log/fn_arg=other/mul=scalar/pow=neg/pow_base=expr",
+      "shape": "diff/form=sum/funcs=log/fn_arg=other/mul=scalar/pow=neg_one/pow_base=expr",
       "features": {
         "form": "sum",
         "funcs": "log",
         "fn_arg": "other",
         "mul": "scalar",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "expr"
       },
       "verdict": "withheld",
@@ -1581,13 +1597,13 @@
     },
     {
       "operation": "diff",
-      "shape": "diff/form=sum/funcs=sqrt/fn_arg=other/mul=general/pow=neg/pow_base=var",
+      "shape": "diff/form=sum/funcs=sqrt/fn_arg=other/mul=general/pow=neg_one/pow_base=var",
       "features": {
         "form": "sum",
         "funcs": "sqrt",
         "fn_arg": "other",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "var"
       },
       "verdict": "withheld",
@@ -1598,7 +1614,6 @@
       },
       "blocking_rules": [
         "diff_sqrt",
-        "power_rule",
         "product_rule",
         "sum_rule"
       ],
@@ -1967,15 +1982,38 @@
         "pow_base": "var",
         "definite": "no"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 2,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
       "examples": [
         "x^-2"
+      ]
+    },
+    {
+      "operation": "integrate",
+      "shape": "integrate/form=power/funcs=-/fn_arg=none/mul=none/pow=neg_one/pow_base=var/definite=no",
+      "features": {
+        "form": "power",
+        "funcs": "-",
+        "fn_arg": "none",
+        "mul": "none",
+        "pow": "neg_one",
+        "pow_base": "var",
+        "definite": "no"
+      },
+      "verdict": "certified",
+      "observations": {
+        "certified": 1,
+        "withheld": 0,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "x^-1"
       ]
     },
     {
@@ -2003,13 +2041,13 @@
     },
     {
       "operation": "integrate",
-      "shape": "integrate/form=product/funcs=-/fn_arg=none/mul=general/pow=neg/pow_base=expr/definite=no",
+      "shape": "integrate/form=product/funcs=-/fn_arg=none/mul=general/pow=neg_one/pow_base=expr/definite=no",
       "features": {
         "form": "product",
         "funcs": "-",
         "fn_arg": "none",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "expr",
         "definite": "no"
       },
@@ -2028,13 +2066,13 @@
     },
     {
       "operation": "integrate",
-      "shape": "integrate/form=product/funcs=-/fn_arg=none/mul=general/pow=neg/pow_base=one_plus_sq/definite=no",
+      "shape": "integrate/form=product/funcs=-/fn_arg=none/mul=general/pow=neg_one/pow_base=one_plus_sq/definite=no",
       "features": {
         "form": "product",
         "funcs": "-",
         "fn_arg": "none",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "one_plus_sq",
         "definite": "no"
       },
@@ -2051,13 +2089,13 @@
     },
     {
       "operation": "integrate",
-      "shape": "integrate/form=product/funcs=-/fn_arg=none/mul=general/pow=neg/pow_base=one_plus_sq/definite=yes",
+      "shape": "integrate/form=product/funcs=-/fn_arg=none/mul=general/pow=neg_one/pow_base=one_plus_sq/definite=yes",
       "features": {
         "form": "product",
         "funcs": "-",
         "fn_arg": "none",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "one_plus_sq",
         "definite": "yes"
       },
@@ -2097,13 +2135,13 @@
     },
     {
       "operation": "integrate",
-      "shape": "integrate/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg/pow_base=expr/definite=no",
+      "shape": "integrate/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg_one/pow_base=expr/definite=no",
       "features": {
         "form": "product",
         "funcs": "-",
         "fn_arg": "none",
         "mul": "scalar",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "expr",
         "definite": "no"
       },
@@ -2121,13 +2159,13 @@
     },
     {
       "operation": "integrate",
-      "shape": "integrate/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg/pow_base=expr/definite=yes",
+      "shape": "integrate/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg_one/pow_base=expr/definite=yes",
       "features": {
         "form": "product",
         "funcs": "-",
         "fn_arg": "none",
         "mul": "scalar",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "expr",
         "definite": "yes"
       },
@@ -2146,13 +2184,13 @@
     },
     {
       "operation": "integrate",
-      "shape": "integrate/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg/pow_base=one_plus_sq/definite=no",
+      "shape": "integrate/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg_one/pow_base=one_plus_sq/definite=no",
       "features": {
         "form": "product",
         "funcs": "-",
         "fn_arg": "none",
         "mul": "scalar",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "one_plus_sq",
         "definite": "no"
       },
@@ -2169,13 +2207,13 @@
     },
     {
       "operation": "integrate",
-      "shape": "integrate/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg/pow_base=one_plus_sq/definite=yes",
+      "shape": "integrate/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg_one/pow_base=one_plus_sq/definite=yes",
       "features": {
         "form": "product",
         "funcs": "-",
         "fn_arg": "none",
         "mul": "scalar",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "one_plus_sq",
         "definite": "yes"
       },
@@ -2192,20 +2230,20 @@
     },
     {
       "operation": "integrate",
-      "shape": "integrate/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg/pow_base=var/definite=no",
+      "shape": "integrate/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg_one/pow_base=var/definite=no",
       "features": {
         "form": "product",
         "funcs": "-",
         "fn_arg": "none",
         "mul": "scalar",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "var",
         "definite": "no"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 1,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
@@ -2215,13 +2253,13 @@
     },
     {
       "operation": "integrate",
-      "shape": "integrate/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg/pow_base=var/definite=yes",
+      "shape": "integrate/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg_one/pow_base=var/definite=yes",
       "features": {
         "form": "product",
         "funcs": "-",
         "fn_arg": "none",
         "mul": "scalar",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "var",
         "definite": "yes"
       },
@@ -2284,13 +2322,13 @@
     },
     {
       "operation": "integrate",
-      "shape": "integrate/form=product/funcs=cos/fn_arg=var/mul=scalar/pow=neg/pow_base=expr/definite=no",
+      "shape": "integrate/form=product/funcs=cos/fn_arg=var/mul=scalar/pow=neg_one/pow_base=expr/definite=no",
       "features": {
         "form": "product",
         "funcs": "cos",
         "fn_arg": "var",
         "mul": "scalar",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "expr",
         "definite": "no"
       },
@@ -2376,13 +2414,13 @@
     },
     {
       "operation": "integrate",
-      "shape": "integrate/form=product/funcs=exp/fn_arg=var/mul=general/pow=neg/pow_base=var/definite=no",
+      "shape": "integrate/form=product/funcs=exp/fn_arg=var/mul=general/pow=neg_one/pow_base=var/definite=no",
       "features": {
         "form": "product",
         "funcs": "exp",
         "fn_arg": "var",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "var",
         "definite": "no"
       },
@@ -2514,13 +2552,13 @@
     },
     {
       "operation": "integrate",
-      "shape": "integrate/form=product/funcs=sin/fn_arg=var/mul=general/pow=neg/pow_base=var/definite=no",
+      "shape": "integrate/form=product/funcs=sin/fn_arg=var/mul=general/pow=neg_one/pow_base=var/definite=no",
       "features": {
         "form": "product",
         "funcs": "sin",
         "fn_arg": "var",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "var",
         "definite": "no"
       },
@@ -2560,13 +2598,13 @@
     },
     {
       "operation": "integrate",
-      "shape": "integrate/form=product/funcs=sqrt/fn_arg=other/mul=general/pow=neg/pow_base=expr/definite=no",
+      "shape": "integrate/form=product/funcs=sqrt/fn_arg=other/mul=general/pow=neg_one/pow_base=expr/definite=no",
       "features": {
         "form": "product",
         "funcs": "sqrt",
         "fn_arg": "other",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "expr",
         "definite": "no"
       },
@@ -2584,13 +2622,13 @@
     },
     {
       "operation": "integrate",
-      "shape": "integrate/form=product/funcs=sqrt/fn_arg=other/mul=scalar/pow=neg/pow_base=expr/definite=no",
+      "shape": "integrate/form=product/funcs=sqrt/fn_arg=other/mul=scalar/pow=neg_one/pow_base=expr/definite=no",
       "features": {
         "form": "product",
         "funcs": "sqrt",
         "fn_arg": "other",
         "mul": "scalar",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "expr",
         "definite": "no"
       },
@@ -2608,13 +2646,13 @@
     },
     {
       "operation": "integrate",
-      "shape": "integrate/form=product/funcs=sqrt/fn_arg=other/mul=scalar/pow=neg/pow_base=expr/definite=yes",
+      "shape": "integrate/form=product/funcs=sqrt/fn_arg=other/mul=scalar/pow=neg_one/pow_base=expr/definite=yes",
       "features": {
         "form": "product",
         "funcs": "sqrt",
         "fn_arg": "other",
         "mul": "scalar",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "expr",
         "definite": "yes"
       },
@@ -2677,13 +2715,13 @@
     },
     {
       "operation": "integrate",
-      "shape": "integrate/form=sum/funcs=exp,log/fn_arg=var/mul=general/pow=neg/pow_base=var/definite=no",
+      "shape": "integrate/form=sum/funcs=exp,log/fn_arg=var/mul=general/pow=neg_one/pow_base=var/definite=no",
       "features": {
         "form": "sum",
         "funcs": "exp,log",
         "fn_arg": "var",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "var",
         "definite": "no"
       },
@@ -2811,13 +2849,13 @@
     },
     {
       "operation": "limit",
-      "shape": "limit/form=product/funcs=-/fn_arg=none/mul=general/pow=neg/pow_base=expr",
+      "shape": "limit/form=product/funcs=-/fn_arg=none/mul=general/pow=neg_one/pow_base=expr",
       "features": {
         "form": "product",
         "funcs": "-",
         "fn_arg": "none",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "expr"
       },
       "verdict": "withheld",
@@ -2835,13 +2873,13 @@
     },
     {
       "operation": "limit",
-      "shape": "limit/form=product/funcs=-/fn_arg=none/mul=general/pow=neg/pow_base=one_plus_sq",
+      "shape": "limit/form=product/funcs=-/fn_arg=none/mul=general/pow=neg_one/pow_base=one_plus_sq",
       "features": {
         "form": "product",
         "funcs": "-",
         "fn_arg": "none",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "one_plus_sq"
       },
       "verdict": "withheld",
@@ -2858,13 +2896,13 @@
     },
     {
       "operation": "limit",
-      "shape": "limit/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg/pow_base=var",
+      "shape": "limit/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg_one/pow_base=var",
       "features": {
         "form": "product",
         "funcs": "-",
         "fn_arg": "none",
         "mul": "scalar",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "var"
       },
       "verdict": "withheld",
@@ -2880,13 +2918,13 @@
     },
     {
       "operation": "limit",
-      "shape": "limit/form=product/funcs=cos/fn_arg=var/mul=general/pow=neg/pow_base=expr",
+      "shape": "limit/form=product/funcs=cos/fn_arg=var/mul=general/pow=neg_one/pow_base=expr",
       "features": {
         "form": "product",
         "funcs": "cos",
         "fn_arg": "var",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "expr"
       },
       "verdict": "withheld",
@@ -2902,13 +2940,13 @@
     },
     {
       "operation": "limit",
-      "shape": "limit/form=product/funcs=exp/fn_arg=other/mul=general/pow=neg/pow_base=var",
+      "shape": "limit/form=product/funcs=exp/fn_arg=other/mul=general/pow=neg_one/pow_base=var",
       "features": {
         "form": "product",
         "funcs": "exp",
         "fn_arg": "other",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "var"
       },
       "verdict": "withheld",
@@ -2924,13 +2962,13 @@
     },
     {
       "operation": "limit",
-      "shape": "limit/form=product/funcs=exp/fn_arg=var/mul=general/pow=neg/pow_base=expr",
+      "shape": "limit/form=product/funcs=exp/fn_arg=var/mul=general/pow=neg_one/pow_base=expr",
       "features": {
         "form": "product",
         "funcs": "exp",
         "fn_arg": "var",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "expr"
       },
       "verdict": "withheld",
@@ -2946,13 +2984,13 @@
     },
     {
       "operation": "limit",
-      "shape": "limit/form=product/funcs=exp/fn_arg=var/mul=general/pow=neg/pow_base=var",
+      "shape": "limit/form=product/funcs=exp/fn_arg=var/mul=general/pow=neg_one/pow_base=var",
       "features": {
         "form": "product",
         "funcs": "exp",
         "fn_arg": "var",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "var"
       },
       "verdict": "withheld",
@@ -2969,13 +3007,13 @@
     },
     {
       "operation": "limit",
-      "shape": "limit/form=product/funcs=log/fn_arg=other/mul=general/pow=neg/pow_base=var",
+      "shape": "limit/form=product/funcs=log/fn_arg=other/mul=general/pow=neg_one/pow_base=var",
       "features": {
         "form": "product",
         "funcs": "log",
         "fn_arg": "other",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "var"
       },
       "verdict": "withheld",
@@ -2991,13 +3029,13 @@
     },
     {
       "operation": "limit",
-      "shape": "limit/form=product/funcs=log/fn_arg=var/mul=general/pow=neg/pow_base=expr",
+      "shape": "limit/form=product/funcs=log/fn_arg=var/mul=general/pow=neg_one/pow_base=expr",
       "features": {
         "form": "product",
         "funcs": "log",
         "fn_arg": "var",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "expr"
       },
       "verdict": "withheld",
@@ -3013,13 +3051,13 @@
     },
     {
       "operation": "limit",
-      "shape": "limit/form=product/funcs=log/fn_arg=var/mul=general/pow=neg/pow_base=var",
+      "shape": "limit/form=product/funcs=log/fn_arg=var/mul=general/pow=neg_one/pow_base=var",
       "features": {
         "form": "product",
         "funcs": "log",
         "fn_arg": "var",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "var"
       },
       "verdict": "withheld",
@@ -3057,13 +3095,13 @@
     },
     {
       "operation": "limit",
-      "shape": "limit/form=product/funcs=sin/fn_arg=var/mul=general/pow=neg/pow_base=var",
+      "shape": "limit/form=product/funcs=sin/fn_arg=var/mul=general/pow=neg_one/pow_base=var",
       "features": {
         "form": "product",
         "funcs": "sin",
         "fn_arg": "var",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "var"
       },
       "verdict": "withheld",
@@ -3079,13 +3117,13 @@
     },
     {
       "operation": "limit",
-      "shape": "limit/form=product/funcs=sqrt/fn_arg=other/mul=general/pow=neg/pow_base=var",
+      "shape": "limit/form=product/funcs=sqrt/fn_arg=other/mul=general/pow=neg_one/pow_base=var",
       "features": {
         "form": "product",
         "funcs": "sqrt",
         "fn_arg": "other",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "var"
       },
       "verdict": "withheld",
@@ -3219,15 +3257,36 @@
       },
       "verdict": "conditional",
       "observations": {
-        "certified": 2,
+        "certified": 1,
         "withheld": 0,
         "no_derivation": 4
       },
       "blocking_rules": [],
       "examples": [
-        "(x^-1)^-1",
         "(x^3)^-2",
-        "k^-2"
+        "k^-2",
+        "k^-3"
+      ]
+    },
+    {
+      "operation": "simplify",
+      "shape": "simplify/form=power/funcs=-/fn_arg=none/mul=none/pow=neg_one",
+      "features": {
+        "form": "power",
+        "funcs": "-",
+        "fn_arg": "none",
+        "mul": "none",
+        "pow": "neg_one"
+      },
+      "verdict": "certified",
+      "observations": {
+        "certified": 1,
+        "withheld": 0,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "(x^-1)^-1"
       ]
     },
     {
@@ -3296,13 +3355,13 @@
     },
     {
       "operation": "simplify",
-      "shape": "simplify/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg",
+      "shape": "simplify/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg_one",
       "features": {
         "form": "product",
         "funcs": "-",
         "fn_arg": "none",
         "mul": "scalar",
-        "pow": "neg"
+        "pow": "neg_one"
       },
       "verdict": "certified",
       "observations": {
@@ -3470,13 +3529,13 @@
     },
     {
       "operation": "simplify_log_exp",
-      "shape": "simplify_log_exp/form=apply/funcs=log/fn_arg=other/mul=general/pow=neg",
+      "shape": "simplify_log_exp/form=apply/funcs=log/fn_arg=other/mul=general/pow=neg_one",
       "features": {
         "form": "apply",
         "funcs": "log",
         "fn_arg": "other",
         "mul": "general",
-        "pow": "neg"
+        "pow": "neg_one"
       },
       "verdict": "certified",
       "observations": {
@@ -3701,13 +3760,13 @@
     },
     {
       "operation": "simplify_trig",
-      "shape": "simplify_trig/form=product/funcs=cos/fn_arg=other/mul=general/pow=neg",
+      "shape": "simplify_trig/form=product/funcs=cos/fn_arg=other/mul=general/pow=neg_one",
       "features": {
         "form": "product",
         "funcs": "cos",
         "fn_arg": "other",
         "mul": "general",
-        "pow": "neg"
+        "pow": "neg_one"
       },
       "verdict": "withheld",
       "observations": {
@@ -3722,13 +3781,13 @@
     },
     {
       "operation": "simplify_trig",
-      "shape": "simplify_trig/form=product/funcs=cosh,sinh/fn_arg=other/mul=general/pow=neg",
+      "shape": "simplify_trig/form=product/funcs=cosh,sinh/fn_arg=other/mul=general/pow=neg_one",
       "features": {
         "form": "product",
         "funcs": "cosh,sinh",
         "fn_arg": "other",
         "mul": "general",
-        "pow": "neg"
+        "pow": "neg_one"
       },
       "verdict": "withheld",
       "observations": {
@@ -3764,13 +3823,13 @@
     },
     {
       "operation": "simplify_trig",
-      "shape": "simplify_trig/form=product/funcs=sin,tan/fn_arg=other/mul=general/pow=neg",
+      "shape": "simplify_trig/form=product/funcs=sin,tan/fn_arg=other/mul=general/pow=neg_one",
       "features": {
         "form": "product",
         "funcs": "sin,tan",
         "fn_arg": "other",
         "mul": "general",
-        "pow": "neg"
+        "pow": "neg_one"
       },
       "verdict": "certified",
       "observations": {
@@ -3785,13 +3844,13 @@
     },
     {
       "operation": "simplify_trig",
-      "shape": "simplify_trig/form=product/funcs=sin/fn_arg=other/mul=general/pow=neg",
+      "shape": "simplify_trig/form=product/funcs=sin/fn_arg=other/mul=general/pow=neg_one",
       "features": {
         "form": "product",
         "funcs": "sin",
         "fn_arg": "other",
         "mul": "general",
-        "pow": "neg"
+        "pow": "neg_one"
       },
       "verdict": "withheld",
       "observations": {
@@ -3806,13 +3865,13 @@
     },
     {
       "operation": "simplify_trig",
-      "shape": "simplify_trig/form=sum/funcs=cos,sin,tan/fn_arg=other/mul=general/pow=neg",
+      "shape": "simplify_trig/form=sum/funcs=cos,sin,tan/fn_arg=other/mul=general/pow=neg_one",
       "features": {
         "form": "sum",
         "funcs": "cos,sin,tan",
         "fn_arg": "other",
         "mul": "general",
-        "pow": "neg"
+        "pow": "neg_one"
       },
       "verdict": "certified",
       "observations": {
@@ -4121,13 +4180,13 @@
     },
     {
       "operation": "sum_definite",
-      "shape": "sum_definite/form=product/funcs=-/fn_arg=none/mul=general/pow=neg/pow_base=expr/definite=yes",
+      "shape": "sum_definite/form=product/funcs=-/fn_arg=none/mul=general/pow=neg_one/pow_base=expr/definite=yes",
       "features": {
         "form": "product",
         "funcs": "-",
         "fn_arg": "none",
         "mul": "general",
-        "pow": "neg",
+        "pow": "neg_one",
         "pow_base": "expr",
         "definite": "yes"
       },
