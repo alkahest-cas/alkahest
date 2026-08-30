@@ -286,6 +286,28 @@ fn rewrite(expr: ExprId, pool: &ExprPool) -> Option<ExprId> {
     }
 }
 
+/// Could [`expand_rootsums`] rewrite `RootSum(m, r, …)` into explicit real
+/// form, judged from the minimal polynomial `m` alone?
+///
+/// This is the **decidable half** of the scope documented at the top of this
+/// module.  [`split_factors`] either finds a linear / monic-quadratic
+/// factorisation of `m` or it does not, and when it does not, [`expand_one`]
+/// returns `None` whatever the body looks like.  The body half is *not* decided
+/// here: [`eval_factor`] can still decline a body [`ceval`] cannot read.  So the
+/// predicate is **necessary but not sufficient** —
+///
+/// * `false` ⇒ expansion is impossible, and building the `RootSum` is waste;
+/// * `true`  ⇒ expansion is not ruled out by `m`, so it is worth building.
+///
+/// It exists for [`crate::integrate::risch::rational_integrate`], which has `m`
+/// in hand at the moment it would start the expensive Lazard–Rioboo–Trager log
+/// argument and can skip that work on a `false`.  It is a *cost* decision only:
+/// no verdict depends on it, and a `true` that expansion later refuses costs
+/// exactly the decline it costs today.
+pub(crate) fn minpoly_expandable(m: &[Rational], pool: &ExprPool) -> bool {
+    split_factors(&trim(m.to_vec()), pool).is_some()
+}
+
 /// Expand a single `RootSum(m(r), r . body)`.
 fn expand_one(poly: ExprId, rvar: ExprId, body: ExprId, pool: &ExprPool) -> Option<ExprId> {
     // A nested `RootSum` inside the body is out of scope.

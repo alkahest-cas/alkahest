@@ -234,8 +234,18 @@ fn integrate_reduced(
     pool: &ExprPool,
 ) -> Result<(ExprId, usize), String> {
     // A `RootSum` is unevaluable by the gate's numeric tier and opaque to
-    // `simplify`, so it could never clear the gate; suppressing it makes the
-    // inner engine decline early rather than build one.
+    // `simplify`, so it could never clear *this* route's gate; suppressing it
+    // makes the inner engine decline early rather than build one.  The
+    // `contains_root_sum` check below is what enforces that, not this guard —
+    // the guard only saves the work.
+    //
+    // The suppression is per-frame, not per-subtree: if the reduced integral is
+    // itself algebraic and reaches `parametrize`, that frame re-declares itself
+    // with `RootSumExpandedByCaller`, because it turns a `RootSum` into explicit
+    // real `log`/`atan` before returning and so hands back something this gate
+    // can read.  Suppressing through it instead is what used to make
+    // `∫√(2+2·tan x+tan²x) dx` decline on a reduced integral that solves in
+    // 0.01 s at top level.
     let f_t = {
         let _guard = crate::integrate::risch::rational_integrate::RootSumSuppressed::enter();
         // Only `Ok` is consumed.  A `NonElementary` verdict on `∫h dt` is

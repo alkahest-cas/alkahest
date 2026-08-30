@@ -58,9 +58,31 @@ use super::rational_rde::{
 // "A RootSum answer would be thrown away" — see `RootSumSuppressed`
 // ---------------------------------------------------------------------------
 
+/// What the *caller* of this integration will do with a `RootSum` in the result.
+///
+/// This is a statement about the caller's frame, not about the integral: it says
+/// only whether the Lazard–Rioboo–Trager work needed to build the `RootSum` can
+/// end up in an answer, or is certain to be thrown away.  No variant of it ever
+/// changes a verdict from `Solved` to `NonElementary` or back — the strict ones
+/// turn a `Some(F)` into a `None`, which is a decline.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RootSumUse {
+    /// Default: whatever comes back is kept as-is, so emit `RootSum`s freely.
+    Keep,
+    /// The caller pipes the result through
+    /// [`crate::integrate::algebraic::rootsum_expand::expand_rootsums`] before
+    /// anything else looks at it, so a `RootSum` *is* usable — but only if that
+    /// pass can rewrite it into explicit real form.  See
+    /// [`RootSumExpandedByCaller`].
+    Expandable,
+    /// The caller cannot use a `RootSum` at all.  See [`RootSumSuppressed`].
+    Discard,
+}
+
 std::thread_local! {
-    /// Whether a `RootSum` in the result is usable by the *caller*.
-    static ROOT_SUM_USABLE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    /// What a `RootSum` in the result is worth to the caller, on this thread.
+    static ROOT_SUM_USE: std::cell::Cell<RootSumUse> =
+        const { std::cell::Cell::new(RootSumUse::Keep) };
 }
 
 /// Scope guard declaring that the caller will gate this integration through
@@ -78,24 +100,70 @@ std::thread_local! {
 /// whole integration (measured: 3.72 s of a 3.74 s `∫ cos·sin¹²/(sin⁹+sin+1)`,
 /// all of it discarded). Declining early returns exactly the same `None` the
 /// caller would have reached after paying for it.
-pub(crate) struct RootSumSuppressed(bool);
+///
+/// # Scope
+///
+/// The guard is a thread-local, so it also covers every *nested* integration
+/// underneath the caller — and that is where it used to overreach.  A frame
+/// that consumes `RootSum`s itself rather than passing them up (today:
+/// [`super::super::algebraic::parametrize`], which calls `expand_rootsums`
+/// before anything else touches its sub-integral) re-declares its own frame
+/// with [`RootSumExpandedByCaller`], and that inner declaration wins for the
+/// duration of the sub-integration.  Nothing about the outer caller's gate
+/// changes: what reaches it still contains no `RootSum`.
+pub(crate) struct RootSumSuppressed(RootSumUse);
 
 impl RootSumSuppressed {
     /// Suppress `RootSum` results until the returned guard is dropped.
     pub(crate) fn enter() -> Self {
-        Self(ROOT_SUM_USABLE.with(|c| c.replace(false)))
+        Self(ROOT_SUM_USE.with(|c| c.replace(RootSumUse::Discard)))
     }
 }
 
 impl Drop for RootSumSuppressed {
     fn drop(&mut self) {
-        ROOT_SUM_USABLE.with(|c| c.set(self.0));
+        ROOT_SUM_USE.with(|c| c.set(self.0));
     }
 }
 
-/// Whether emitting a `RootSum` is worth the work on this thread.
-fn root_sum_usable() -> bool {
-    ROOT_SUM_USABLE.with(|c| c.get())
+/// Scope guard declaring that the caller runs
+/// [`crate::integrate::algebraic::rootsum_expand::expand_rootsums`] on this
+/// integration's result — and declines when it will not expand.
+///
+/// A `RootSum` is therefore *not* waste here even though the caller's own gate
+/// could never accept one: it is consumed and replaced by explicit real
+/// `log`/`atan` before the gate ever sees it.  What remains worth suppressing is
+/// the narrower set that expansion cannot reach, and that is decided from the
+/// minimal polynomial by
+/// [`crate::integrate::algebraic::rootsum_expand::minpoly_expandable`] at the
+/// one point where the expensive work would otherwise start.
+pub(crate) struct RootSumExpandedByCaller(RootSumUse);
+
+impl RootSumExpandedByCaller {
+    /// Treat `RootSum` results as usable-if-expandable until the guard drops.
+    pub(crate) fn enter() -> Self {
+        Self(ROOT_SUM_USE.with(|c| c.replace(RootSumUse::Expandable)))
+    }
+}
+
+impl Drop for RootSumExpandedByCaller {
+    fn drop(&mut self) {
+        ROOT_SUM_USE.with(|c| c.set(self.0));
+    }
+}
+
+/// Whether emitting `RootSum(qf, r, …)` is worth the work on this thread.
+///
+/// `qf` is the minimal polynomial of the residues the binder would range over —
+/// exactly the polynomial `expand_rootsums` would later have to split.
+fn root_sum_wanted(qf: &QPoly, pool: &ExprPool) -> bool {
+    match ROOT_SUM_USE.with(|c| c.get()) {
+        RootSumUse::Keep => true,
+        RootSumUse::Expandable => {
+            crate::integrate::algebraic::rootsum_expand::minpoly_expandable(qf, pool)
+        }
+        RootSumUse::Discard => false,
+    }
 }
 
 /// Attempt to integrate `expr` as a rational function of `var`.
@@ -691,8 +759,11 @@ fn partial_fraction_log_arctan(
                             // RootSum(Q, t, t·log(S(t,x))).  The log argument is
                             // a number-field GCD and by far the most expensive
                             // step here, so skip it outright when the caller has
-                            // told us a `RootSum` cannot be used.
-                            if !root_sum_usable() {
+                            // told us this `RootSum` cannot be used — either
+                            // because no `RootSum` can be, or because this one's
+                            // minimal polynomial is outside `rootsum_expand`'s
+                            // reach and the caller would decline on it anyway.
+                            if !root_sum_wanted(qf, pool) {
                                 return None;
                             }
                             let s_expr = alg_log_argument(&n, &pp, p, qf, var, rvar, pool)?;
