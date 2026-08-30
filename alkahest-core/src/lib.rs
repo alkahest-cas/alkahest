@@ -142,8 +142,8 @@ pub use simplify::rulesets::{
     log_exp_rules, log_exp_rules_safe, trig_normal_form_rules, trig_rules,
 };
 pub use simplify::{
-    assumptions_satisfy, rules_for_config, simplify, simplify_batch, simplify_colored,
-    simplify_egraph, simplify_egraph_with, simplify_expanded, simplify_log_exp,
+    assumptions_satisfy, check_simplify_depth, rules_for_config, simplify, simplify_batch,
+    simplify_colored, simplify_egraph, simplify_egraph_with, simplify_expanded, simplify_log_exp,
     simplify_trig_normal_form, simplify_with, ColorId, ColoredEgraph, DepthCost, EgraphConfig,
     EgraphCost, NoncommutativeCost, OpCost, PatternRule, RewriteRule, SimplifyConfig, SizeCost,
     StabilityCost, CONTEXT_COLOR, ROOT_COLOR,
@@ -325,9 +325,10 @@ pub mod stable {
         cad_lift, cad_project, decide, decide_expr, routh_hurwitz, CadError, QeResult, RouthHurwitz,
     };
     pub use crate::simplify::{
-        simplify, simplify_egraph, simplify_egraph_with, simplify_trig_normal_form, simplify_with,
-        simplify_with_assumptions, AssumptionContext, DepthCost, EgraphConfig, EgraphCost,
-        NoncommutativeCost, OpCost, SimplifyConfig, SizeCost, StabilityCost,
+        check_simplify_depth, simplify, simplify_egraph, simplify_egraph_with,
+        simplify_trig_normal_form, simplify_with, simplify_with_assumptions, AssumptionContext,
+        DepthCost, EgraphConfig, EgraphCost, NoncommutativeCost, OpCost, SimplifyConfig, SizeCost,
+        StabilityCost,
     };
     #[cfg(feature = "groebner")]
     pub use crate::solver::{

@@ -268,6 +268,21 @@ fn guard_expr_depth(py: Python<'_>, expr: &PyExpr) -> PyResult<()> {
     guard_depth(&expr.pool.borrow(py).inner, expr.id)
 }
 
+/// [`guard_depth`] for the simplification entry points, which mostly do not
+/// recurse.
+///
+/// The bottom-up traversals underneath `simplify` are stack-safe at any depth
+/// — trampolined in `simplify::engine` and `simplify::parallel`, iterative in
+/// `simplify::redex` — so charging them a 2 048-level ceiling refuses work
+/// they can do. This refuses only the inputs that still reach a recursion:
+/// see [`alkahest_core::check_simplify_depth`]. The error a caller sees is
+/// identical to [`guard_depth`]'s, `E-DEPTH-001` and all.
+///
+/// O(1) at or under the ceiling; past it, one iterative walk.
+fn guard_simplify_depth(pool: &ExprPool, id: ExprId) -> PyResult<()> {
+    alkahest_core::check_simplify_depth(pool, id).map_err(depth_error_to_py)
+}
+
 /// Largest `n_pts` a plotting call will accept.
 ///
 /// The renderers hand `n_pts` straight to `Vec::with_capacity`, so without a
@@ -2072,6 +2087,11 @@ impl PyAssumptions {
         }
         let derived = {
             let pool = self.pool.borrow(py);
+            // Not `guard_simplify_depth`: explicit facts send *every* input
+            // through the colored e-graph, so the recursion this bounds is
+            // taken unconditionally here rather than only for expressions
+            // carrying a static domain.
+            guard_depth(&pool.inner, expr.id)?;
             self.inner.simplify(expr.id, &pool.inner)
         };
         Ok(make_derived_result(
@@ -2619,6 +2639,82 @@ impl PyDerivedResult {
     }
 }
 
+/// Render `id`, unless printing it would overflow the stack.
+///
+/// `ExprPool::display` is a structural recursion — it is the same printer
+/// behind `str(expr)`, and it segfaults somewhere past 24 000 levels. Every
+/// entry point that hands an expression straight to it guards the *input*, but
+/// a derivation log is not an input: it comes back from an operation, holding
+/// whatever subexpressions the rules happened to fire on. Since `simplify`
+/// stopped refusing deep inputs, a log can legitimately contain a step far
+/// deeper than any printer can walk.
+///
+/// So this reports the depth instead of the text. A caller reading a
+/// derivation gets a step it can see happened and a reason it cannot read it,
+/// rather than a dead interpreter — and the `value` the result is actually for
+/// is unaffected either way.
+fn render_expr_or_depth(pool: &ExprPool, id: ExprId) -> String {
+    match alkahest_core::check_expr_depth(pool, id) {
+        Ok(()) => pool.display(id).to_string(),
+        Err(e) => format!("<expression too deep to render: depth {}>", e.depth),
+    }
+}
+
+/// [`render_expr_or_depth`] for the expression inside a side condition.
+fn render_side_condition_or_depth(pool: &ExprPool, cond: &SideCondition) -> String {
+    match cond {
+        SideCondition::NonZero(id) => format!("{} ≠ 0", render_expr_or_depth(pool, *id)),
+        SideCondition::Positive(id) => format!("{} > 0", render_expr_or_depth(pool, *id)),
+        SideCondition::InDomain(id, d) => {
+            format!("{} ∈ {:?}", render_expr_or_depth(pool, *id), d)
+        }
+    }
+}
+
+/// The `derivation` string, falling back to [`render_expr_or_depth`] only when
+/// some step is too deep for the printer.
+///
+/// The common case still goes through `DerivationLog::display_with`, so the
+/// text a caller has always seen is produced by the same code that always
+/// produced it and cannot drift from it.
+fn render_derivation(pool: &ExprPool, log: &alkahest_core::DerivationLog) -> String {
+    let printable = |id: ExprId| alkahest_core::check_expr_depth(pool, id).is_ok();
+    let all_printable = log.steps().iter().all(|step| {
+        printable(step.before)
+            && printable(step.after)
+            && step.side_conditions.iter().all(|c| match c {
+                SideCondition::NonZero(id)
+                | SideCondition::Positive(id)
+                | SideCondition::InDomain(id, _) => printable(*id),
+            })
+    });
+    if all_printable {
+        return log.display_with(pool).to_string();
+    }
+    // Mirrors `DerivationLog`'s own `LogDisplay`, with the two expression
+    // renderings and the side conditions routed through the depth check.
+    let mut out = String::new();
+    for (i, step) in log.steps().iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&format!(
+            "step {}: {} applied to {} → {}",
+            i + 1,
+            step.rule_name,
+            render_expr_or_depth(pool, step.before),
+            render_expr_or_depth(pool, step.after)
+        ));
+        for cond in &step.side_conditions {
+            out.push_str(&format!(
+                "  [{}]",
+                render_side_condition_or_depth(pool, cond)
+            ));
+        }
+    }
+    out
+}
+
 fn make_derived_result(
     py: Python<'_>,
     derived: alkahest_core::DerivedExpr<alkahest_core::ExprId>,
@@ -2627,7 +2723,7 @@ fn make_derived_result(
 ) -> PyDerivedResult {
     let derivation = {
         let pool = pool_py.borrow(py);
-        derived.log.display_with(&pool.inner).to_string()
+        render_derivation(&pool.inner, &derived.log)
     };
     let steps_raw: Vec<_> = {
         let pool = pool_py.borrow(py);
@@ -2636,12 +2732,12 @@ fn make_derived_result(
             .steps()
             .iter()
             .map(|step| {
-                let before_str = pool.inner.display(step.before).to_string();
-                let after_str = pool.inner.display(step.after).to_string();
+                let before_str = render_expr_or_depth(&pool.inner, step.before);
+                let after_str = render_expr_or_depth(&pool.inner, step.after);
                 let conds: Vec<String> = step
                     .side_conditions
                     .iter()
-                    .map(|c| c.display_with(&pool.inner).to_string())
+                    .map(|c| render_side_condition_or_depth(&pool.inner, c))
                     .collect();
                 (step.rule_name.to_string(), before_str, after_str, conds)
             })
@@ -3093,7 +3189,7 @@ fn elliptic_pi(py: Python<'_>, n: PyRef<PyExpr>, phi: PyRef<PyExpr>, m: PyRef<Py
 fn py_simplify(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedResult> {
     let derived = {
         let pool = expr.pool.borrow(py);
-        guard_depth(&pool.inner, expr.id)?;
+        guard_simplify_depth(&pool.inner, expr.id)?;
         core_simplify(expr.id, &pool.inner)
     };
     let pool_py = expr.pool.clone_ref(py);
@@ -7201,7 +7297,7 @@ fn py_simplify_with(
     py: Python<'_>,
     expr: PyRef<PyExpr>,
     rules: Vec<PyRef<PyRewriteRule>>,
-) -> PyDerivedResult {
+) -> PyResult<PyDerivedResult> {
     // We can't easily collect into `Vec<Box<dyn RewriteRule>>` due to trait
     // object lifetime constraints from PyO3, so we re-implement the engine loop.
     // Build a list of lhs/rhs pairs and apply PatternRule inline.
@@ -7213,6 +7309,11 @@ fn py_simplify_with(
 
     let derived = {
         let pool = pool_py.borrow(py);
+        // This ran unguarded, which was safe only as long as the traversal was
+        // the whole story. It is not: the pass ends in the colored e-graph
+        // when the expression carries static domain facts, and that recursion
+        // segfaults on a deep enough input.
+        guard_simplify_depth(&pool.inner, expr.id)?;
         // Build boxed rules list
         let boxed: Vec<Box<dyn RewriteRule>> = lhs_rhs
             .into_iter()
@@ -7222,7 +7323,7 @@ fn py_simplify_with(
             .collect();
         core_simplify_with(expr.id, &pool.inner, &boxed, SimplifyConfig::default())
     };
-    make_derived_result(py, derived, pool_py, None)
+    Ok(make_derived_result(py, derived, pool_py, None))
 }
 
 /// `alkahest.simplify_expanded(expr)` — simplify with distributive expansion.
@@ -7233,7 +7334,7 @@ fn py_simplify_with(
 fn py_simplify_expanded(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedResult> {
     let derived = {
         let pool = expr.pool.borrow(py);
-        guard_depth(&pool.inner, expr.id)?;
+        guard_simplify_depth(&pool.inner, expr.id)?;
         alkahest_core::simplify_expanded(expr.id, &pool.inner)
     };
     let pool_py = expr.pool.clone_ref(py);
@@ -7246,7 +7347,7 @@ fn py_simplify_expanded(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDeriv
 fn py_simplify_trig(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedResult> {
     let derived = {
         let pool = expr.pool.borrow(py);
-        guard_depth(&pool.inner, expr.id)?;
+        guard_simplify_depth(&pool.inner, expr.id)?;
         let rules = trig_rules();
         core_simplify_with(expr.id, &pool.inner, &rules, SimplifyConfig::default())
     };
@@ -7273,7 +7374,7 @@ fn py_simplify_trig(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedRe
 fn py_simplify_trig_normal_form(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedResult> {
     let derived = {
         let pool = expr.pool.borrow(py);
-        guard_depth(&pool.inner, expr.id)?;
+        guard_simplify_depth(&pool.inner, expr.id)?;
         core_simplify_trig_normal_form(expr.id, &pool.inner)
     };
     let pool_py = expr.pool.clone_ref(py);
@@ -10106,7 +10207,7 @@ fn py_evaluate(
 #[pyo3(name = "simplify_par")]
 fn py_simplify_par(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedResult> {
     let pool_ref = expr.pool.borrow(py);
-    guard_depth(&pool_ref.inner, expr.id)?;
+    guard_simplify_depth(&pool_ref.inner, expr.id)?;
     // Bind out of the `PyRef` first: it carries a `Python` marker and so is
     // not `Sync`, but the pool and id themselves are safe to send.
     #[cfg(feature = "parallel")]
@@ -10142,7 +10243,7 @@ fn py_simplify_par(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedRes
 #[pyo3(name = "simplify_redex")]
 fn py_simplify_redex(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedResult> {
     let pool_ref = expr.pool.borrow(py);
-    guard_depth(&pool_ref.inner, expr.id)?;
+    guard_simplify_depth(&pool_ref.inner, expr.id)?;
     // Bind out of the `PyRef` first: it carries a `Python` marker and so is
     // not `Sync`, but the pool and id themselves are safe to send.
     #[cfg(feature = "parallel")]
@@ -10176,7 +10277,7 @@ fn py_simplify_redex(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedR
 #[pyo3(name = "simplify_auto")]
 fn py_simplify_auto(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedResult> {
     let pool_ref = expr.pool.borrow(py);
-    guard_depth(&pool_ref.inner, expr.id)?;
+    guard_simplify_depth(&pool_ref.inner, expr.id)?;
     // Bind out of the `PyRef` first: it carries a `Python` marker and so is
     // not `Sync`, but the pool and id themselves are safe to send.
     #[cfg(feature = "parallel")]
@@ -10210,7 +10311,7 @@ fn py_simplify_strategy(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<String>
     #[cfg(feature = "parallel")]
     {
         let pool_ref = expr.pool.borrow(py);
-        guard_depth(&pool_ref.inner, expr.id)?;
+        guard_simplify_depth(&pool_ref.inner, expr.id)?;
         let strategy = alkahest_core::choose_strategy(expr.id, &pool_ref.inner);
         Ok(match strategy {
             alkahest_core::Strategy::ForkJoin => "fork_join".to_string(),
@@ -10534,7 +10635,7 @@ fn py_collect_like_terms(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDeri
     let pool_py = expr.pool.clone_ref(py);
     let derived = {
         let pool = pool_py.borrow(py);
-        guard_depth(&pool.inner, expr.id)?;
+        guard_simplify_depth(&pool.inner, expr.id)?;
         let rules = rules_for_config(&SimplifyConfig::default());
         simplify_with(expr.id, &pool.inner, &rules, SimplifyConfig::default())
     };
@@ -10554,7 +10655,7 @@ fn py_simplify_pauli(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedR
     let pool_py = expr.pool.clone_ref(py);
     let derived = {
         let pool = pool_py.borrow(py);
-        guard_depth(&pool.inner, expr.id)?;
+        guard_simplify_depth(&pool.inner, expr.id)?;
         let mut rules = rules_for_config(&SimplifyConfig::default());
         rules.extend(pauli_product_rules());
         simplify_with(expr.id, &pool.inner, &rules, SimplifyConfig::default())
@@ -10574,7 +10675,7 @@ fn py_simplify_clifford_orthogonal(
     let pool_py = expr.pool.clone_ref(py);
     let derived = {
         let pool = pool_py.borrow(py);
-        guard_depth(&pool.inner, expr.id)?;
+        guard_simplify_depth(&pool.inner, expr.id)?;
         let mut rules = rules_for_config(&SimplifyConfig::default());
         rules.extend(clifford_orthogonal_rules());
         simplify_with(expr.id, &pool.inner, &rules, SimplifyConfig::default())
