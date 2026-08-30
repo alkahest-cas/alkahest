@@ -156,16 +156,32 @@ class AssumptionError(AlkahestError):
 class DepthLimitError(AlkahestError):
     """An expression was too deeply nested to walk by recursion.
 
-    Alkahest processes expressions by structural recursion, and a native stack
-    overflow is a ``SIGSEGV`` rather than an exception — it would kill the
+    Alkahest processes most expressions by structural recursion, and a native
+    stack overflow is a ``SIGSEGV`` rather than an exception — it would kill the
     interpreter outright, with no traceback for a caller to log.  Past a
     measured ceiling the operation therefore declines instead, which is
     something ``except Exception`` can actually catch.
 
-    Depth is *nesting*, not size.  ``pool.add([t1, ..., t100000])`` has depth 2
-    and is fine; ``t1 + t2 + ... + t100000`` written with repeated ``+`` builds
-    100 000 nested binary ``Add`` nodes and is not.  Building the wide form, or
-    splitting the work into subexpressions, is the fix.
+    Depth is *nesting*, not size: ``pool.add([t1, ..., t100000])`` has depth 2
+    and is fine.  So does the same sum written with repeated ``+`` — ``Add`` and
+    ``Mul`` splice nested same-operator children when they are built, so a
+    left-associated chain of ``+`` is the very same flat, depth-2 node.  What
+    still nests is everything else: ``Pow`` towers, function chains such as
+    ``sin(sin(sin(...)))``, and ``Piecewise`` nesting.
+
+    **Which operations raise this is per operation.**  The simplification entry
+    points (:func:`~alkahest.simplify` and its variants) do not walk by
+    recursion — their traversals are trampolined or iterative — and accept
+    input of any depth.  They still raise here for an input that would reach
+    the one recursive pass on that path: the assumption-gated e-graph, which
+    runs when the expression contains a ``Domain.Positive`` or
+    ``Domain.NonZero`` symbol, or when an explicit :class:`~alkahest.Assumptions`
+    context is supplied.  Everything else — printing, ``diff``,
+    ``symbolic_grad``, ``subs``, the evaluators, the emitters — recurses, and
+    raises past the ceiling.
+
+    Rebuilding the expression with less nesting, or splitting the work into
+    subexpressions, is the fix.
     """
 
     def __init__(
