@@ -128,6 +128,100 @@
   `sos_decompose` / `prove_nonneg` results and typechecked against the pinned
   Lean 4.9 / Mathlib v4.9.0 toolchain, with the same withhold-rather-than-sorry
   discipline as the derivation corpus.
+- **`dsolve` closes variation of parameters at every order, Euler–Cauchy with
+  forcing, and second-order equations with variable coefficients — and the
+  thing that was actually blocking it was not the integrator.**
+
+  Measured first, on a 101-ODE corpus (`ode/dsolve/corpus.rs`, test-only) run
+  at three revisions. The recent integration work — router fall-through,
+  general by-parts, Risch–Norman, the residue-theorem route, ten new special
+  functions — moved `dsolve` from **59 to 60**. One ODE.
+
+  The reason: `dsolve` builds its own integrands and was handing them over in a
+  spelling no integrator should have to recognise. `μ = exp(∫p dx)` was emitted
+  as a literal `exp` node, so the linear class asked for `∫q·e^{−log x} dx`
+  when it meant `∫q/x dx`; `μ·q` arrived as `x·e^{−x}·e^{x}` when it meant `x`;
+  a Wronskian of `{cos, sin}` arrived as `cos²x + sin²x` instead of `1`. 14 of
+  the 41 declines were elementary integrals, misspelled. Fixing that alone —
+  folding `exp(c·log u + rest) → u^c·exp(rest)` when building an integrating
+  factor, and trying each integrand in several equal-valued spellings — took
+  the corpus to **68**.
+
+  On top of that:
+
+  - **Variation of parameters at arbitrary order**, by Cramer's rule on the
+    Wronskian (`ode/dsolve/variation.rs`), replacing the second-order-only
+    formula. `y''' + y' = sec x` and `y''' + y' = tan x` now solve; no
+    undetermined-coefficients ansatz can express either forcing.
+  - **Euler–Cauchy with a right-hand side.** It previously declined for every
+    non-zero `r(x)`; it now builds the basis of powers of `x` (or the
+    repeated/complex forms) and closes the forcing by variation of parameters.
+  - **General variable-coefficient second order**, previously unreachable: one
+    homogeneous solution from a short ansatz list, the second by reduction of
+    order, the forcing by variation of parameters. This is what admits
+    Legendre and other equations with a polynomial coefficient on the second
+    derivative.
+
+  **82 of 101**, from 59 before the integration work and 60 after it. Every
+  solution is still gated on substitution back into the original equation, and
+  the particular solution allocates no constants of its own — the general
+  solution has exactly `order`-many, pinned by a test.
+
+  **On the merged base that reads 89 of 101**, and the seven split cleanly.
+  Four are `main` moving underneath the branch — the special-function emitters
+  becoming reachable closes `y'' + y = log x`, `y'' − 4y = 1/x`,
+  `y' + y = 1/x` and `y'' − 3y' + 2y = 1/(1 + e^{−x})`. The other three were
+  never declines at all: `y'' − y = 1/x`, `y'' − y = eˣ/x` and
+  `y''' − y' = 1/x` came back `VERIFY_FAIL`. `dsolve` had found the answer and
+  its own gate threw it away, because the residual only cancels once
+  `1/(2x) − 1/(2x)` is collected over ℚ — the `collect_add_terms` fix above.
+  `y'' − y = 1/x` now returns
+
+  ```text
+  C₁·eˣ + C₂·e^{−x} + ½·eˣ·Ei(−x) − ½·e^{−x}·Ei(x)
+  ```
+
+  which is the general solution, checked here by re-substitution and
+  independently by differentiating it at 30 digits.
+
+  So the **special-function-quadrature class is closed**, and the test that
+  asserted it was not has been split rather than weakened.
+  `quadrature_over_the_special_function_basis_closes` pins the solved cases
+  (`Ei` for `y'' − y = 1/x`, `Si`/`Ci` for `y'' + y = 1/x`); the decline path
+  is kept on `y'' + y = x/(1+x²)`, which needs `∫x·sin(x)/(1+x²) dx`, and
+  since `x/(1+x²) = ½[1/(x−i) + 1/(x+i)]` that is `Si`/`Ci` at the complex
+  arguments `x ± i` — out of reach of the deliberately real-only `expint`
+  kernels *and* of an emitter table that wants a linear denominator. The
+  comment there names both conditions, so the next person to close one is
+  told the test's premise has expired rather than finding out by mystery
+  failure.
+
+  Removed `integrate_pexp_trig`, the hand-rolled undetermined-coefficients
+  fallback for polynomial × exponential × sinusoid antiderivatives. General
+  by-parts covers that family: instrumented, it fired **0 times** across the
+  whole corpus, and the ODE suite is green without it.
+
+  **What `dsolve` still needs from `integrate`** (probe:
+  `cargo test -p alkahest-cas ode::dsolve::corpus::integrator_gap_probe --
+  --ignored --nocapture`). Re-run on the merged base, most of the list this
+  entry originally carried has closed: `∫e^{ax}/x dx` is `Ei(ax)`,
+  `∫sin(x)·log(x) dx` is `Ci(x) − log(x)·cos(x)`, and `∫e^{2x}/(1 + e^x) dx`
+  no longer depends on whether it is spelled `exp(2x)` or `exp(x)^2` — both
+  give `eˣ − log(1 + eˣ)`. Two remain:
+
+  - `∫sin(x)/x² dx` is still answered with a `NonElementary` *certificate*.
+    The certificate is correct — no *elementary* antiderivative exists — but
+    `−sin(x)/x + Ci(x)` is over the registered basis and no matcher finds it.
+    `integrate::special`'s module docs name this one as the standing
+    counterexample to re-reading that verdict as the stronger claim.
+  - `∫sin x·tan x dx` declines, while the same function multiplied by a
+    redundant `1` spelled `cos²x + sin²x` closes. `dsolve` currently keeps the
+    un-normalised spelling of every integrand alive precisely because of this.
+
+  Two `simplify` gaps also had to be worked around from inside `ode/`: a
+  one-element `Mul` is not collapsed (so a singleton `Mul` holding `−1` is not
+  the same node as `−1`, and `x·x⁻¹` survives), and `x²·(−1·x²)⁻¹` does not
+  cancel because the `Pow` wraps a whole `Mul`.
 
 - **A budget could be outrun by a single allocation, and was.**
   `alkahest.integrate` on `1/(x·log x·(1 + log²(log x)))` — the derivative of

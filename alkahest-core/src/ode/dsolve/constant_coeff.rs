@@ -1,15 +1,20 @@
-//! Linear constant-coefficient and Euler–Cauchy ODE classes for
-//! [`super::dsolve`], plus higher-order constant-coefficient.
+//! Linear ODE classes for [`super::dsolve`]: constant-coefficient (any order),
+//! Euler–Cauchy, and general variable-coefficient second order.
 //!
 //! Coefficients of `y^(k)` are extracted from the equation.  When all are
 //! constant the characteristic polynomial is built and factored over ℚ
 //! (rational roots + quadratic factors); irreducible factors of degree ≥ 3 are
-//! declined.  Euler–Cauchy `a·x²y'' + b·x·y' + c·y = 0` is detected by the
-//! `xᵏ` coefficient pattern.
+//! declined.  Euler–Cauchy `a·x²y'' + b·x·y' + c·y = r` is detected by the
+//! `xᵏ` coefficient pattern.  Anything else at second order falls through to
+//! reduction of order.
+//!
+//! All three routes end at the same place: a fundamental system, handed to
+//! [`super::variation`] for the forcing term.  Only the way the basis is found
+//! differs.
 
 use super::{
-    contains, ddx, integrate_or_decline, is_zero, residual_is_zero, simp, sub, ConstGen,
-    DsolveError, DsolveResult, DsolveSolution, OdeInput,
+    contains, ddx, is_zero, residual_is_zero, simp, sub, ConstGen, DsolveError, DsolveResult,
+    DsolveSolution, OdeInput,
 };
 use crate::kernel::eval_const::try_expr_f64;
 use crate::kernel::{ExprData, ExprId, ExprPool};
@@ -84,9 +89,51 @@ pub(crate) fn solve_second_order(
     if let Some(euler) = try_euler_cauchy(input, &coeffs, r, gen, pool)? {
         return Ok(euler);
     }
+    // General variable coefficients: one solution by ansatz, the second by
+    // reduction of order, the forcing by variation of parameters.
+    if let Some(res) = try_reduction_of_order(input, &coeffs, r, gen, pool)? {
+        return Ok(res);
+    }
     Err(DsolveError::Unsupported(
-        "second-order equation is neither constant-coefficient nor Euler–Cauchy".to_string(),
+        "second-order equation is neither constant-coefficient nor Euler–Cauchy, \
+         and no first solution was found for reduction of order"
+            .to_string(),
     ))
+}
+
+// ---------------------------------------------------------------------------
+// General variable-coefficient second order, via reduction of order
+// ---------------------------------------------------------------------------
+
+/// `a₂(x) y'' + a₁(x) y' + a₀(x) y = r(x)` with arbitrary coefficient
+/// functions.
+///
+/// Normalise to `y'' + P y' + Q y = g`, find one homogeneous solution `y₁`
+/// from a small ansatz list, get `y₂ = y₁∫e^{−∫P}/y₁²` by reduction of order,
+/// and close the forcing with variation of parameters.  Everything after the
+/// ansatz is quadrature, which is why this class only became reachable once
+/// the integrands stopped arriving mangled.
+fn try_reduction_of_order(
+    input: &OdeInput,
+    coeffs: &[ExprId],
+    r: ExprId,
+    gen: &mut ConstGen,
+    pool: &ExprPool,
+) -> Result<Option<DsolveResult>, DsolveError> {
+    let x = input.x;
+    if coeffs.len() != 3 || is_zero(coeffs[2], pool) {
+        return Ok(None);
+    }
+    let a2 = coeffs[2];
+    let p = super::normalized(super::div(coeffs[1], a2, pool), pool);
+    let q = super::normalized(super::div(coeffs[0], a2, pool), pool);
+    let Some(y1) = super::variation::find_first_solution(p, q, x, pool)? else {
+        return Ok(None);
+    };
+    let Some(y2) = super::variation::reduction_of_order(y1, p, x, pool)? else {
+        return Ok(None);
+    };
+    compose_from_basis(input, &[y1, y2], a2, r, "reduction_of_order", gen, pool)
 }
 
 // ---------------------------------------------------------------------------
@@ -435,9 +482,11 @@ fn particular_solution(
     if let Some(yp) = undetermined_coefficients(input, coeffs, basis, r, pool)? {
         return Ok(yp);
     }
-    // Variation of parameters (uses integrate; second order only).
-    if input.order() == 2 && basis.len() == 2 {
-        if let Some(yp) = variation_of_parameters(input, coeffs, basis, r, pool)? {
+    // Variation of parameters (any order): normalise by the leading
+    // coefficient, then quadrature against the fundamental system.
+    if basis.len() == input.order() {
+        let g = super::div(r, coeffs[input.order()], pool);
+        if let Some(yp) = super::variation::variation_of_parameters(basis, g, input.x, pool)? {
             return Ok(yp);
         }
     }
@@ -781,50 +830,6 @@ fn solve_linear(mat: &mut [Vec<f64>], rhs: &mut [f64]) -> Option<Vec<f64>> {
 }
 
 // ---------------------------------------------------------------------------
-// Variation of parameters (second order): yp = −y1∫(y2 g/W) + y2∫(y1 g/W)
-// where the equation is y'' + P y' + Q y = g, W = y1 y2' − y2 y1'.
-// ---------------------------------------------------------------------------
-
-fn variation_of_parameters(
-    input: &OdeInput,
-    coeffs: &[ExprId],
-    basis: &[ExprId],
-    r: ExprId,
-    pool: &ExprPool,
-) -> Result<Option<ExprId>, DsolveError> {
-    let x = input.x;
-    let (y1, y2) = (basis[0], basis[1]);
-    // Normalise: divide through by leading coefficient a2.
-    let a2 = coeffs[2];
-    let g = super::div(r, a2, pool); // g = r/a2
-    let y1p = ddx(y1, x, pool)?;
-    let y2p = ddx(y2, x, pool)?;
-    // Wronskian W = y1 y2' − y2 y1'
-    let w = sub(
-        simp(pool.mul(vec![y1, y2p]), pool),
-        simp(pool.mul(vec![y2, y1p]), pool),
-        pool,
-    );
-    if is_zero(w, pool) {
-        return Ok(None);
-    }
-    let int1 = integrate_or_decline(
-        super::div(simp(pool.mul(vec![y2, g]), pool), w, pool),
-        x,
-        pool,
-    )?;
-    let int2 = integrate_or_decline(
-        super::div(simp(pool.mul(vec![y1, g]), pool), w, pool),
-        x,
-        pool,
-    )?;
-    let term1 = pool.mul(vec![pool.integer(-1_i32), y1, int1]);
-    let term2 = pool.mul(vec![y2, int2]);
-    let yp = simp(pool.add(vec![term1, term2]), pool);
-    Ok(Some(yp))
-}
-
-// ---------------------------------------------------------------------------
 // Euler–Cauchy: a x² y'' + b x y' + c y = 0.  Substitution y = x^m gives the
 // indicial equation a m(m−1) + b m + c = 0.
 // ---------------------------------------------------------------------------
@@ -852,13 +857,13 @@ fn try_euler_cauchy(
         if contains(ck, x, pool) {
             return Ok(None);
         }
-        let v = try_expr_f64(ck, pool)
-            .ok_or_else(|| DsolveError::Unsupported("non-numeric Euler coefficient".to_string()))?;
+        // A symbolic (but x-free) coefficient means this is not the numeric
+        // Euler–Cauchy this route handles.  Decline the *class*, not the
+        // equation: reduction of order gets its turn next.
+        let Some(v) = try_expr_f64(ck, pool) else {
+            return Ok(None);
+        };
         c.push(v);
-    }
-    // Only handle homogeneous Euler–Cauchy for now.
-    if !is_zero(r, pool) {
-        return Ok(None);
     }
     // Second order: a m(m−1) + b m + c0 = 0 → a m² + (b−a) m + c0 = 0.
     if c.len() != 3 {
@@ -870,44 +875,75 @@ fn try_euler_cauchy(
     }
     // indicial: a m² + (b − a) m + c0
     let disc = (b - a) * (b - a) - 4.0 * a * c0;
-    let c1 = gen.fresh(pool);
-    let c2 = gen.fresh(pool);
-    let y_expr = if disc > 1e-10 {
+    let logx = pool.func("log", vec![x]);
+    let basis: Vec<ExprId> = if disc > 1e-10 {
         let s = disc.sqrt();
         let m1 = (-(b - a) + s) / (2.0 * a);
         let m2 = (-(b - a) - s) / (2.0 * a);
-        let xm1 = pow_real(x, m1, pool);
-        let xm2 = pow_real(x, m2, pool);
-        simp(
-            pool.add(vec![pool.mul(vec![c1, xm1]), pool.mul(vec![c2, xm2])]),
-            pool,
-        )
+        vec![pow_real(x, m1, pool), pow_real(x, m2, pool)]
     } else if disc.abs() <= 1e-10 {
-        // repeated root m: y = (C1 + C2 log x) x^m
+        // repeated root m: {x^m, x^m log x}
         let m = -(b - a) / (2.0 * a);
         let xm = pow_real(x, m, pool);
-        let logx = pool.func("log", vec![x]);
-        let inner = pool.add(vec![c1, pool.mul(vec![c2, logx])]);
-        simp(pool.mul(vec![inner, xm]), pool)
+        vec![xm, simp(pool.mul(vec![xm, logx]), pool)]
     } else {
-        // complex roots m = α ± βi: y = x^α (C1 cos(β log x) + C2 sin(β log x))
+        // complex roots m = α ± βi: {x^α cos(β log x), x^α sin(β log x)}
         let alpha = -(b - a) / (2.0 * a);
         let beta = (-disc).sqrt() / (2.0 * a);
         let xa = pow_real(x, alpha, pool);
-        let logx = pool.func("log", vec![x]);
         let blogx = mul_const(beta, logx, pool);
         let cos = pool.func("cos", vec![blogx]);
         let sin = pool.func("sin", vec![blogx]);
-        let inner = pool.add(vec![pool.mul(vec![c1, cos]), pool.mul(vec![c2, sin])]);
-        simp(pool.mul(vec![xa, inner]), pool)
+        vec![
+            simp(pool.mul(vec![xa, cos]), pool),
+            simp(pool.mul(vec![xa, sin]), pool),
+        ]
     };
-    let constants = vec![c1, c2];
+    compose_from_basis(input, &basis, coeffs[2], r, "euler_cauchy", gen, pool)
+}
+
+/// Assemble `y = Σ Cₖ yₖ (+ y_p)` from a fundamental system, verify it, and
+/// wrap it as a [`DsolveResult`].
+///
+/// `leading` is the coefficient of the highest derivative *as it appears in
+/// the equation* — variation of parameters needs the equation in monic form,
+/// so the forcing term is `g = r / leading`.
+///
+/// Only the homogeneous part allocates constants; the particular solution
+/// contributes none.  (A constant of integration inside `y_p` would be a
+/// multiple of some `yₖ`, i.e. already spanned by the `Cₖ` — but allocating a
+/// *fresh* symbol for it would leave `dsolve` claiming more free constants
+/// than the equation has, which is the classic way this goes wrong.)
+fn compose_from_basis(
+    input: &OdeInput,
+    basis: &[ExprId],
+    leading: ExprId,
+    r: ExprId,
+    method: &'static str,
+    gen: &mut ConstGen,
+    pool: &ExprPool,
+) -> Result<Option<DsolveResult>, DsolveError> {
+    let mut constants = Vec::with_capacity(basis.len());
+    let mut terms = Vec::with_capacity(basis.len());
+    for &b in basis {
+        let c = gen.fresh(pool);
+        constants.push(c);
+        terms.push(pool.mul(vec![c, b]));
+    }
+    let mut y_expr = simp(pool.add(terms), pool);
+    if !is_zero(r, pool) {
+        let g = super::div(r, leading, pool);
+        let Some(yp) = super::variation::variation_of_parameters(basis, g, input.x, pool)? else {
+            return Ok(None);
+        };
+        y_expr = simp(pool.add(vec![y_expr, yp]), pool);
+    }
     match residual_is_zero(input, y_expr, &constants, pool) {
         Ok(()) => Ok(Some(DsolveResult {
             solutions: vec![DsolveSolution {
                 y_of_x: y_expr,
                 constants,
-                method: "euler_cauchy",
+                method,
             }],
         })),
         Err(_) => Ok(None),

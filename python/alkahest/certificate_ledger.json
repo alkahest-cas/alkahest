@@ -641,6 +641,28 @@
     },
     {
       "operation": "diff",
+      "shape": "diff/form=product/funcs=-/fn_arg=none/mul=general/pow=none/pow_base=none",
+      "features": {
+        "form": "product",
+        "funcs": "-",
+        "fn_arg": "none",
+        "mul": "general",
+        "pow": "none",
+        "pow_base": "none"
+      },
+      "verdict": "certified",
+      "observations": {
+        "certified": 1,
+        "withheld": 0,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "(C2 * x)"
+      ]
+    },
+    {
+      "operation": "diff",
       "shape": "diff/form=product/funcs=-/fn_arg=none/mul=scalar/pow=frac/pow_base=expr",
       "features": {
         "form": "product",
@@ -901,32 +923,6 @@
       ],
       "examples": [
         "(8.8622692545275794e-1 * erf(x))"
-      ]
-    },
-    {
-      "operation": "diff",
-      "shape": "diff/form=product/funcs=exp,log/fn_arg=other/mul=general/pow=neg/pow_base=expr",
-      "features": {
-        "form": "product",
-        "funcs": "exp,log",
-        "fn_arg": "other",
-        "mul": "general",
-        "pow": "neg",
-        "pow_base": "expr"
-      },
-      "verdict": "withheld",
-      "observations": {
-        "certified": 0,
-        "withheld": 1,
-        "no_derivation": 0
-      },
-      "blocking_rules": [
-        "diff_exp",
-        "power_rule",
-        "product_rule"
-      ],
-      "examples": [
-        "((exp((-1 * log(x))))^-1 * C2)"
       ]
     },
     {

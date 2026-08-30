@@ -17,13 +17,21 @@
 //!
 //! **Second order** (`F(x, y, y', y'') = 0`):
 //! - constant coefficients `a·y'' + b·y' + c·y = r(x)` (real distinct / repeated
-//!   / complex roots), including non-homogeneous RHS via undetermined
-//!   coefficients (polynomial × exp × sin/cos) and variation of parameters
-//! - Euler–Cauchy `a·x²·y'' + b·x·y' + c·y = 0`
+//!   / complex roots)
+//! - Euler–Cauchy `a·x²·y'' + b·x·y' + c·y = r(x)`
+//! - general variable coefficients `a₂(x)y'' + a₁(x)y' + a₀(x)y = r(x)`, when a
+//!   first homogeneous solution is found by ansatz — the second then follows by
+//!   reduction of order (see the private `variation` submodule)
 //!
-//! **Higher order**: constant-coefficient `Σ aₖ y^(k) = 0`, solved through the
-//! characteristic polynomial (rational + quadratic factorization; irreducible
-//! factors of degree ≥ 3 are declined).
+//! **Higher order**: constant-coefficient `Σ aₖ y^(k) = r(x)`, solved through
+//! the characteristic polynomial (rational + quadratic factorization;
+//! irreducible factors of degree ≥ 3 are declined).
+//!
+//! For every linear class the forcing term `r(x)` is closed either by
+//! undetermined coefficients (cheap, exact, but only for
+//! polynomial × exp × sin/cos) or, failing that, by variation of parameters at
+//! the equation's own order — which is what admits forcings no ansatz can
+//! express: `sec x`, `tan x`, `1/(1 + eˣ)`, `log x`, arbitrary rational.
 //!
 //! # Verification gate
 //!
@@ -39,6 +47,15 @@
 //! Closed forms that require an integral defer to the existing
 //! [`mod@crate::integrate`] engine.  If a required integral does not close in
 //! elementary form, the class is declined (no unevaluated-integral output).
+//!
+//! `dsolve` manufactures its own integrands — `exp(∫p dx)·q`, `Wₖ·g/W` — and a
+//! manufactured integrand is not in normal form: `e^{−log x}` rather than
+//! `1/x`, `e^{x}·e^{−x}` rather than `1`, `cos²x + sin²x` rather than `1`.  The
+//! integration engine is form-sensitive enough that this decides whether an
+//! elementary integral closes, so the private `integrate_or_decline` helper
+//! tries each integrand in several equal-valued spellings and takes the first
+//! that closes.  Set `ALKAHEST_DSOLVE_TRACE` in a test build to print every
+//! integral that no spelling closed.
 
 use crate::diff::diff;
 use crate::integrate::engine::integrate;
@@ -49,7 +66,10 @@ use std::collections::HashMap;
 use std::fmt;
 
 mod constant_coeff;
+#[cfg(test)]
+mod corpus;
 mod first_order;
+mod variation;
 mod verify;
 
 pub(crate) use verify::residual_is_zero;
@@ -339,230 +359,260 @@ pub(crate) fn ddx(expr: ExprId, var: ExprId, pool: &ExprPool) -> Result<ExprId, 
 
 /// Integrate `expr` in `var`; map any decline to `Unsupported` so the caller
 /// declines the whole class (we never emit unevaluated-integral output).
+///
+/// The integrand is tried in several *spellings* (see [`integrand_spellings`]):
+/// `dsolve` manufactures its integrands — `exp(∫p dx)·q`, `y₂·g/W` — and they
+/// arrive carrying artefacts (`e^{x}·e^{−x}`, `cos²x + sin²x`) that the default
+/// rule set does not cancel.  The integration engine sees an integrand it
+/// cannot close where the *same function*, spelled normally, is trivial.  Each
+/// spelling is mathematically equal to the original on the solution domain, so
+/// the first one that closes is the answer.
 pub(crate) fn integrate_or_decline(
     expr: ExprId,
     var: ExprId,
     pool: &ExprPool,
 ) -> Result<ExprId, DsolveError> {
-    match integrate(expr, var, pool) {
-        Ok(d) => Ok(simp(d.value, pool)),
-        Err(e) => {
-            // Fallback: closed-form ∫ p(x)·e^{a x}·{1,cos b x,sin b x} dx via an
-            // undetermined-coefficients ansatz (the engine declines some of these
-            // products, e.g. ∫ x·e^{−3x}).
-            if let Some(f) = integrate_pexp_trig(expr, var, pool) {
-                return Ok(f);
-            }
-            Err(DsolveError::Unsupported(format!(
-                "required integral did not close: {e}"
-            )))
-        }
-    }
+    integrate_first_of(&[expr], var, pool)
 }
 
-/// Antiderivative of `p(x)·e^{a x}·{1 | cos(b x) | sin(b x)}` where `p` is a
-/// polynomial and `a,b` are constants.  Builds an ansatz of the same shape with
-/// undetermined polynomial coefficients and solves by numeric sampling, then
-/// returns the symbolic antiderivative (verified by `d/dx`).  Returns `None`
-/// when the integrand is not of this form or the solve is singular.
-pub(crate) fn integrate_pexp_trig(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId> {
-    // Decompose factors into polynomial part, exp rate a, trig rate b.
-    let factors: Vec<ExprId> = match pool.get(expr) {
-        ExprData::Mul(args) => args,
-        _ => vec![expr],
-    };
-    let mut exp_rate = 0.0_f64;
-    let mut trig: Option<(bool, f64)> = None; // (is_sin, rate)
-    let mut poly_factors: Vec<ExprId> = Vec::new();
-    for f in factors {
-        match pool.get(f) {
-            ExprData::Func { name, args } if name == "exp" && args.len() == 1 => {
-                exp_rate += linear_rate_of(args[0], var, pool)?;
-            }
-            ExprData::Func { name, args }
-                if (name == "cos" || name == "sin") && args.len() == 1 =>
-            {
-                if trig.is_some() {
-                    return None;
-                }
-                trig = Some((name == "sin", linear_rate_of(args[0], var, pool)?));
-            }
-            _ => {
-                if contains(f, var, pool) && poly_degree_in(f, var, pool).is_none() {
-                    return None;
-                }
-                poly_factors.push(f);
-            }
-        }
-    }
-    let poly = if poly_factors.is_empty() {
-        pool.integer(1_i32)
-    } else {
-        simp(pool.mul(poly_factors), pool)
-    };
-    let deg = poly_degree_in(poly, var, pool)?;
-    if exp_rate == 0.0 && trig.is_none() {
-        return None; // pure polynomial — the engine already handles this
-    }
-
-    // Ansatz: F = e^{a x}·Σ_{k≤deg} (A_k x^k cos b x + B_k x^k sin b x)  (cos&sin
-    // only when trig present; otherwise just e^{a x}·Σ A_k x^k).
-    let exp_factor = if exp_rate != 0.0 {
-        Some(simp(
-            pool.func("exp", vec![mul_c(exp_rate, var, pool)]),
-            pool,
-        ))
-    } else {
-        None
-    };
-    let mut mods: Vec<ExprId> = Vec::new();
-    if let Some((_, b)) = trig {
-        let bx = mul_c(b, var, pool);
-        mods.push(pool.func("cos", vec![bx]));
-        mods.push(pool.func("sin", vec![bx]));
-    } else {
-        mods.push(pool.integer(1_i32));
-    }
-    let mut terms: Vec<ExprId> = Vec::new();
-    for k in 0..=deg {
-        let xk = if k == 0 {
-            pool.integer(1_i32)
-        } else {
-            pool.pow(var, pool.integer(k as i32))
-        };
-        for &m in &mods {
-            let mut fac = vec![xk, m];
-            if let Some(e) = exp_factor {
-                fac.push(e);
-            }
-            terms.push(simp(pool.mul(fac), pool));
-        }
-    }
-    let k = terms.len();
-    // Solve Σ A_j (d/dx term_j) = integrand by sampling at k points.
-    let mut dterms: Vec<ExprId> = Vec::with_capacity(k);
-    for &t in &terms {
-        dterms.push(simp(diff(t, var, pool).ok()?.value, pool));
-    }
-    let samples: Vec<f64> = (0..k).map(|i| 0.41 + 0.47 * i as f64).collect();
-    let mut mat = vec![vec![0.0; k]; k];
-    let mut rhs = vec![0.0; k];
-    for (i, &xv) in samples.iter().enumerate() {
-        let mut env = HashMap::new();
-        env.insert(var, xv);
-        for (j, &dt) in dterms.iter().enumerate() {
-            mat[i][j] = verify::eval(dt, &env, pool)?;
-        }
-        rhs[i] = verify::eval(expr, &env, pool)?;
-    }
-    let sol = gaussian_solve(&mut mat, &mut rhs)?;
-    let mut out = Vec::new();
-    for (j, &t) in terms.iter().enumerate() {
-        if sol[j].abs() < 1e-12 {
+/// `integrate_or_decline` over several *constructions* of the same integrand.
+///
+/// A caller that can build the integrand more than one way (variation of
+/// parameters can divide by the raw Wronskian or by the normalised one) passes
+/// all of them; each is expanded into its [`integrand_spellings`] and the
+/// first that closes wins.  All candidates must be equal as functions.
+pub(crate) fn integrate_first_of(
+    exprs: &[ExprId],
+    var: ExprId,
+    pool: &ExprPool,
+) -> Result<ExprId, DsolveError> {
+    let mut last: Option<String> = None;
+    let mut tried: Vec<ExprId> = Vec::new();
+    // Stage 1: every candidate exactly as the caller built it.  Rewriting is
+    // only worth its cost once the engine has actually refused, and the common
+    // case is that it does not.
+    for &expr in exprs {
+        if tried.contains(&expr) {
             continue;
         }
-        out.push(pool.mul(vec![f64_rational(sol[j], pool), t]));
-    }
-    let f = simp(pool.add(out), pool);
-    // Verify d/dx f == expr numerically before trusting it.
-    let df = simp(diff(f, var, pool).ok()?.value, pool);
-    for xv in [0.23_f64, 0.61, 1.07, 1.53] {
-        let mut env = HashMap::new();
-        env.insert(var, xv);
-        let lhs = verify::eval(df, &env, pool)?;
-        let rhsv = verify::eval(expr, &env, pool)?;
-        if (lhs - rhsv).abs() > 1e-6 {
-            return None;
+        tried.push(expr);
+        match integrate(expr, var, pool) {
+            Ok(d) => return Ok(simp(d.value, pool)),
+            Err(e) => last = last.or(Some(e.to_string())),
         }
     }
-    Some(f)
-}
-
-/// `arg = c·var` (through the origin) → `c`.
-fn linear_rate_of(arg: ExprId, var: ExprId, pool: &ExprPool) -> Option<f64> {
-    let d = diff(arg, var, pool).ok()?.value;
-    if contains(d, var, pool) {
-        return None;
-    }
-    let dx = simp(pool.mul(vec![d, var]), pool);
-    if !is_zero(sub(arg, dx, pool), pool) {
-        return None;
-    }
-    try_expr_f64(simp(d, pool), pool)
-}
-
-fn poly_degree_in(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<usize> {
-    if !contains(expr, var, pool) {
-        return Some(0);
-    }
-    match pool.get(expr) {
-        ExprData::Symbol { .. } => Some(1),
-        ExprData::Add(args) => args
-            .iter()
-            .map(|&a| poly_degree_in(a, var, pool))
-            .try_fold(0usize, |acc, d| Some(acc.max(d?))),
-        ExprData::Mul(args) => args
-            .iter()
-            .map(|&a| poly_degree_in(a, var, pool))
-            .try_fold(0usize, |acc, d| Some(acc + d?)),
-        ExprData::Pow { base, exp } if base == var => {
-            if let ExprData::Integer(k) = pool.get(exp) {
-                let k = k.0.to_i64()?;
-                if k >= 0 {
-                    return Some(k as usize);
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-fn mul_c(c: f64, var: ExprId, pool: &ExprPool) -> ExprId {
-    simp(pool.mul(vec![f64_rational(c, pool), var]), pool)
-}
-
-fn f64_rational(v: f64, pool: &ExprPool) -> ExprId {
-    if v == v.round() {
-        return pool.integer(v as i64);
-    }
-    for den in 2..=24_i64 {
-        let num = v * den as f64;
-        if (num - num.round()).abs() < 1e-9 {
-            return pool.rational(num.round() as i64, den);
-        }
-    }
-    pool.float(v, 53)
-}
-
-/// Gaussian elimination with partial pivoting; `None` on singularity.
-#[allow(clippy::needless_range_loop)]
-fn gaussian_solve(mat: &mut [Vec<f64>], rhs: &mut [f64]) -> Option<Vec<f64>> {
-    let n = rhs.len();
-    for col in 0..n {
-        let mut piv = col;
-        for r in (col + 1)..n {
-            if mat[r][col].abs() > mat[piv][col].abs() {
-                piv = r;
-            }
-        }
-        if mat[piv][col].abs() < 1e-12 {
-            return None;
-        }
-        mat.swap(col, piv);
-        rhs.swap(col, piv);
-        for r in 0..n {
-            if r == col {
+    // Stage 2: the rewritings.
+    for &expr in exprs {
+        for cand in integrand_spellings(expr, pool) {
+            if tried.contains(&cand) {
                 continue;
             }
-            let factor = mat[r][col] / mat[col][col];
-            for c in col..n {
-                mat[r][c] -= factor * mat[col][c];
+            tried.push(cand);
+            match integrate(cand, var, pool) {
+                Ok(d) => return Ok(simp(d.value, pool)),
+                Err(e) => last = last.or(Some(e.to_string())),
             }
-            rhs[r] -= factor * rhs[col];
         }
     }
-    Some((0..n).map(|i| rhs[i] / mat[i][i]).collect())
+    #[cfg(test)]
+    if std::env::var_os("ALKAHEST_DSOLVE_TRACE").is_some() {
+        // Every line here is an integral `dsolve` needs and `integrate` does not
+        // close — the actionable feedback list for the integration engine.
+        for cand in tried {
+            eprintln!(
+                "INT_DECLINE\td/d{}\t{}",
+                pool.display(var),
+                pool.display(cand)
+            );
+        }
+    }
+    Err(DsolveError::Unsupported(format!(
+        "required integral did not close: {}",
+        last.unwrap_or_else(|| "no candidate form".to_string())
+    )))
+}
+
+/// The most-normalised spelling of `expr` (the last [`integrand_spellings`]
+/// candidate).  Used for expressions that are *not* about to be integrated —
+/// the coefficients `P` and `Q` of a normalised second-order equation, say —
+/// where there is no engine to fall through on the caller's behalf.
+pub(crate) fn normalized(expr: ExprId, pool: &ExprPool) -> ExprId {
+    let cands = integrand_spellings(expr, pool);
+    *cands.last().unwrap_or(&expr)
+}
+
+/// Equal-valued rewritings of an integrand, cheapest first.
+///
+/// 1. the expression as given;
+/// 2. with reciprocals distributed over products ([`distribute_recip`]);
+/// 3. after the log/exp rule set (`e^{a}·e^{b} → e^{a+b}`, `log(e^u) → u`),
+///    which collapses the integrating-factor artefacts;
+/// 4. additionally after the trig normal form (`cos²u + sin²u → 1`), which
+///    collapses a Wronskian of `{cos, sin}` — only attempted when the
+///    expression actually mentions sin/cos, since that pass expands products.
+///
+/// **The list is ordered, not ranked, and the original comes first on
+/// purpose.** Normalising is not monotone for the integration engine:
+/// `∫ sin x·tan x/(cos²x + sin²x) dx` closes and `∫ sin x·tan x dx` — the same
+/// integrand with the redundant `1` cancelled — does not. Until that is fixed
+/// upstream, dropping the un-normalised form would lose ODEs that currently
+/// solve, so every spelling is tried.
+///
+/// Duplicates are dropped, so a fully-normalised expression costs one call.
+fn integrand_spellings(expr: ExprId, pool: &ExprPool) -> Vec<ExprId> {
+    let mut out = vec![expr];
+    let push = |e: ExprId, out: &mut Vec<ExprId>| {
+        if !out.contains(&e) {
+            out.push(e);
+        }
+    };
+    let dr = simp(distribute_recip(expr, pool), pool);
+    push(dr, &mut out);
+    for base in [expr, dr] {
+        let le = simp(
+            crate::simplify::engine::simplify_log_exp(base, pool, &[]).value,
+            pool,
+        );
+        push(le, &mut out);
+        if mentions_sin_cos(le, pool) {
+            let tn = simp(
+                crate::simplify::engine::simplify_trig_normal_form(le, pool).value,
+                pool,
+            );
+            push(tn, &mut out);
+        }
+    }
+    out
+}
+
+/// Rewrite `(a·b·…)^k → a^k·b^k·…` for **integer** `k`, recursively.
+///
+/// `simplify` does not cancel `x²·(−1·x²)⁻¹`: the `Pow` wraps a whole `Mul`,
+/// so power collection never sees the `x²` inside it and the quotient survives
+/// as an "irreducible product of var-dependent factors" the integration engine
+/// declines. Distributing first turns it into `x²·(−1)⁻¹·x⁻²`, which collects
+/// to `−1`. Restricted to integer exponents, where `(ab)^k = a^k b^k` holds
+/// unconditionally over ℝ∖{0}.
+fn distribute_recip(expr: ExprId, pool: &ExprPool) -> ExprId {
+    match pool.get(expr) {
+        ExprData::Add(args) => {
+            let ds: Vec<ExprId> = args.iter().map(|&a| distribute_recip(a, pool)).collect();
+            pool.add(ds)
+        }
+        ExprData::Mul(args) => {
+            let ds: Vec<ExprId> = args.iter().map(|&a| distribute_recip(a, pool)).collect();
+            pool.mul(ds)
+        }
+        ExprData::Pow { base, exp } => {
+            let b = distribute_recip(base, pool);
+            let is_int = matches!(pool.get(exp), ExprData::Integer(_));
+            match pool.get(b) {
+                ExprData::Mul(fs) if is_int => {
+                    pool.mul(fs.iter().map(|&f| pool.pow(f, exp)).collect())
+                }
+                _ => pool.pow(b, exp),
+            }
+        }
+        ExprData::Func { name, args } => {
+            let ds: Vec<ExprId> = args.iter().map(|&a| distribute_recip(a, pool)).collect();
+            pool.func(&name, ds)
+        }
+        _ => expr,
+    }
+}
+
+fn mentions_sin_cos(expr: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| match d {
+        ExprData::Func { name, args } => {
+            name == "sin" || name == "cos" || args.iter().any(|&a| mentions_sin_cos(a, pool))
+        }
+        ExprData::Add(args) | ExprData::Mul(args) => {
+            args.iter().any(|&a| mentions_sin_cos(a, pool))
+        }
+        ExprData::Pow { base, exp } => {
+            mentions_sin_cos(*base, pool) || mentions_sin_cos(*exp, pool)
+        }
+        _ => false,
+    })
+}
+
+/// Build `exp(arg)`, folding logarithmic summands into powers:
+/// `exp(c·log(u) + rest) → u^c · exp(rest)`.
+///
+/// Every integrating factor `μ = exp(∫p dx)` in this module goes through here.
+/// The default rule set will not apply `exp(log u) → u` (it is a branch-cut
+/// identity, sound only for `u > 0`), so without this fold the linear class
+/// manufactures `μ = e^{−log x}` and then asks the integration engine for
+/// `∫ q·e^{−log x} dx` where it means `∫ q/x dx` — and gets a decline for an
+/// integral that is elementary.
+///
+/// Taking `u > 0` is the same convention that writing `log(u)` in the
+/// antiderivative already commits to, and it is not load-bearing for
+/// correctness: every candidate solution still has to pass
+/// [`residual_is_zero`], which samples the residual at positive `x`.
+pub(crate) fn exp_of(arg: ExprId, pool: &ExprPool) -> ExprId {
+    let terms: Vec<ExprId> = match pool.get(simp(arg, pool)) {
+        ExprData::Add(args) => args,
+        _ => vec![simp(arg, pool)],
+    };
+    let mut factors: Vec<ExprId> = Vec::new();
+    let mut rest: Vec<ExprId> = Vec::new();
+    for t in terms {
+        match log_summand(t, pool) {
+            Some((u, c)) => factors.push(pool.pow(u, c)),
+            None => rest.push(t),
+        }
+    }
+    if factors.is_empty() {
+        return simp(pool.func("exp", vec![arg]), pool);
+    }
+    if !rest.is_empty() {
+        let r = pool.add(rest);
+        factors.push(pool.func("exp", vec![r]));
+    }
+    // A one-element `Mul` is *not* collapsed by `simplify`, and a surviving
+    // `Mul([x])` blocks the power collection that would cancel `x·x⁻¹` later.
+    if factors.len() == 1 {
+        return simp(factors[0], pool);
+    }
+    simp(pool.mul(factors), pool)
+}
+
+/// Recognise `c·log(u)` (or bare `log(u)`, `c = 1`) and return `(u, c)` with
+/// `c` a numeric constant expression.
+fn log_summand(term: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
+    if let ExprData::Func { name, args } = pool.get(term) {
+        if name == "log" && args.len() == 1 {
+            return Some((args[0], pool.integer(1_i32)));
+        }
+    }
+    let ExprData::Mul(args) = pool.get(term) else {
+        return None;
+    };
+    let mut inner = None;
+    let mut coeff: Vec<ExprId> = Vec::new();
+    for a in args {
+        match pool.get(a) {
+            ExprData::Func { name, args: fargs } if name == "log" && fargs.len() == 1 => {
+                if inner.is_some() {
+                    return None; // product of two logs — not of this form
+                }
+                inner = Some(fargs[0]);
+            }
+            ExprData::Integer(_) | ExprData::Rational(_) => coeff.push(a),
+            _ => return None, // a non-constant cofactor: exp(x·log u) is not u^c
+        }
+    }
+    let u = inner?;
+    // `simp` leaves a one-element `Mul` standing, and `Mul([−1])` as an
+    // exponent is a *different* node from `−1`, which silently defeats the
+    // power collection in `x·x⁻¹`.  Collapse it here.
+    let c = match coeff.len() {
+        0 => pool.integer(1_i32),
+        1 => simp(coeff[0], pool),
+        _ => simp(pool.mul(coeff), pool),
+    };
+    Some((u, c))
 }
 
 /// Does `expr` contain `needle` as a sub-expression?

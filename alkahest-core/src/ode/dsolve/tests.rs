@@ -3,6 +3,7 @@
 //! passed it); declines assert `Err`, never a wrong answer.
 
 use super::*;
+use crate::integrate::special::basis_functions_used;
 use crate::kernel::{Domain, ExprPool};
 
 fn setup() -> (ExprPool, ExprId, ExprId) {
@@ -372,5 +373,214 @@ fn fresh_constants_avoid_user_symbols() {
     let res = dsolve(&input, &p).expect("should still solve");
     for c in &res.solutions[0].constants {
         assert_ne!(*c, c1, "fresh constant collided with user symbol C1");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Variation of parameters, Euler–Cauchy forcing, reduction of order
+//
+// Each case is stated in source form and solved through the normal entry
+// point; the solution is then re-substituted into the *original* equation,
+// independently of the gate inside `dsolve`.
+// ---------------------------------------------------------------------------
+
+/// Solve `src = 0` (in `x`, `y`, `yp`, `ypp`, …) and return the pool, input
+/// and the first solution, asserting it verifies by substitution.
+fn solve_src(order: usize, src: &str) -> (ExprPool, OdeInput, DsolveSolution) {
+    let pool = ExprPool::new();
+    let input = super::corpus::build_ode(order, src, &pool).expect("corpus source parses");
+    let res = dsolve(&input, &pool).unwrap_or_else(|e| panic!("`{src}` should solve: {e}"));
+    let sol = res.solutions[0].clone();
+    residual_is_zero(&input, sol.y_of_x, &sol.constants, &pool)
+        .unwrap_or_else(|e| panic!("`{src}` returned an unverified solution: {e}"));
+    (pool, input, sol)
+}
+
+/// Assert `src` declines cleanly — an `Unsupported`, never a wrong answer and
+/// never an unevaluated integral.
+fn assert_declines(order: usize, src: &str) {
+    let pool = ExprPool::new();
+    let input = super::corpus::build_ode(order, src, &pool).expect("corpus source parses");
+    match dsolve(&input, &pool) {
+        Err(DsolveError::Unsupported(_)) => {}
+        Err(e) => panic!("`{src}` should decline as Unsupported, got {e}"),
+        Ok(res) => panic!(
+            "`{src}` should decline, but returned {}",
+            pool.display(res.solutions[0].y_of_x)
+        ),
+    }
+}
+
+#[test]
+fn vop_forcing_no_ansatz_can_express() {
+    // Forcing terms outside every undetermined-coefficients ansatz
+    // (poly × exp × sin/cos).  These reach a closed form only through
+    // variation of parameters.
+    for src in [
+        "ypp + y - 1/cos(x)",        // sec x
+        "ypp + y - tan(x)",          // tan x
+        "ypp + y - 1/sin(x)",        // csc x
+        "ypp + y - tan(x)/cos(x)",   // sec x tan x
+        "ypp + y - 1/(1 + sin(x))",  // rational in sin
+        "ypp - 2*yp + y - exp(x)/x", // e^x/x with a resonant basis
+        "ypp - y - 1/(1 + exp(x))",  // logistic forcing
+        "ypp - y - exp(x)/(1 + exp(x))",
+    ] {
+        let (_, _, sol) = solve_src(2, src);
+        assert_eq!(sol.constants.len(), 2, "`{src}`: wrong constant count");
+    }
+}
+
+#[test]
+fn vop_generalises_above_second_order() {
+    // Third order with a forcing no ansatz covers: the Wronskian is 3×3 and
+    // the particular solution needs Cramer's rule, not the 2×2 formula.
+    for src in ["yppp + yp - 1/cos(x)", "yppp + yp - tan(x)"] {
+        let (_, _, sol) = solve_src(3, src);
+        assert_eq!(sol.constants.len(), 3, "`{src}`: wrong constant count");
+    }
+}
+
+#[test]
+fn euler_cauchy_nonhomogeneous() {
+    // Euler–Cauchy with forcing: basis {x^m₁, x^m₂} then variation of
+    // parameters.  Previously declined for every non-zero right-hand side.
+    for src in [
+        "x^2*ypp + x*yp - y - x^2",
+        "x^2*ypp - 2*x*yp + 2*y - x^3",
+        "x^2*ypp + x*yp - y - log(x)",
+        "x^2*ypp - x*yp + y - x",
+    ] {
+        let (_, _, sol) = solve_src(2, src);
+        assert_eq!(sol.method, "euler_cauchy");
+        assert_eq!(sol.constants.len(), 2, "`{src}`: wrong constant count");
+    }
+}
+
+#[test]
+fn reduction_of_order_variable_coefficients() {
+    // Second order with genuinely variable coefficients — neither
+    // constant-coefficient nor Euler–Cauchy.  One solution by ansatz, the
+    // second by y₂ = y₁∫e^{−∫P}/y₁², the forcing by variation of parameters.
+    for src in [
+        "ypp - (2/x)*yp + (2/x^2)*y",   // y₁ = x
+        "(1 - x^2)*ypp - 2*x*yp + 2*y", // Legendre, y₁ = x
+        "x*ypp - (x + 1)*yp + y",       // y₁ = e^x
+        "ypp - yp/x - x",               // y₁ = 1, forced
+    ] {
+        let (_, _, sol) = solve_src(2, src);
+        assert_eq!(sol.method, "reduction_of_order");
+        assert_eq!(sol.constants.len(), 2, "`{src}`: wrong constant count");
+    }
+}
+
+#[test]
+fn integrating_factor_folds_logarithms() {
+    // μ = e^{∫p dx} used to be emitted as a literal `exp(−log x)`, and the
+    // integration engine was then asked for ∫q·e^{−log x} dx.  These all need
+    // the fold to reach an elementary integrand.
+    for src in [
+        "yp - y/x - x*log(x)",
+        "yp + y*tan(x) - sin(x)",
+        "yp + y/(x*log(x)) - 1",
+        "yp + y/x - cos(x)/x",
+        "yp - 2*x*y - exp(x^2)*sin(x)",
+        "yp + y - x*exp(-x)",
+    ] {
+        let (_, _, sol) = solve_src(1, src);
+        assert_eq!(sol.constants.len(), 1, "`{src}`: wrong constant count");
+    }
+}
+
+#[test]
+fn quadrature_over_the_special_function_basis_closes() {
+    // These declined until the special-function emitters became reachable from
+    // the integrator: variation of parameters needs `∫ e^{∓x}/x dx` for the
+    // first and `∫ sin(x)/x dx`, `∫ cos(x)/x dx` for the second, none of which
+    // is elementary.  They are all in `integrate::special::SPECIAL_BASIS`, so
+    // the answer is `Ei` for the first and `Si`/`Ci` for the second.
+    //
+    // Solving is only half of it: `dsolve` found these answers before and its
+    // gate threw them away, because the residual cancels only over *rational*
+    // coefficients (`1/(2x) − 1/(2x)`), which `collect_add_terms` could not do
+    // until it carried `rug::Rational`.  `solve_src` re-substitutes into the
+    // original equation independently of that gate, and `verify::eval_func`
+    // has no `f64` kernel for `Ei`/`Si`/`Ci` — so its numeric fallback cannot
+    // fire and these pass on an exact symbolic `residual ≡ 0`.
+    for (src, basis) in [
+        ("ypp - y - 1/x", &["Ei"] as &[&str]),
+        // `basis_functions_used` returns the names sorted.
+        ("ypp + y - 1/x", &["Ci", "Si"]),
+    ] {
+        let (pool, _, sol) = solve_src(2, src);
+        assert_eq!(sol.constants.len(), 2, "`{src}`: wrong constant count");
+        assert_eq!(
+            basis_functions_used(sol.y_of_x, &pool),
+            basis,
+            "`{src}`: wrong special-function vocabulary in {}",
+            pool.display(sol.y_of_x)
+        );
+        for c in &sol.constants {
+            assert!(
+                super::contains(sol.y_of_x, *c, &pool),
+                "`{src}`: constant {} does not appear in the solution",
+                pool.display(*c)
+            );
+        }
+    }
+}
+
+#[test]
+fn declines_when_the_quadrature_leaves_the_special_function_basis() {
+    // `y'' + y = x/(1+x²)`.  Variation of parameters asks for
+    // `∫ x·sin(x)/(1+x²) dx` and `∫ x·cos(x)/(1+x²) dx`.  Neither is
+    // elementary, and — unlike `∫ sin(x)/x dx` above — neither is anything
+    // Alkahest can *name*.  Over ℝ the denominator is irreducible; over ℂ,
+    // `x/(1+x²) = ½·[1/(x−i) + 1/(x+i)]`, so the closed form is `Si`/`Ci` at
+    // the complex arguments `x ± i`.  Two things put that out of reach:
+    //
+    //   * every kernel in `primitive::expint` is real-argument only and
+    //     refuses (`None`) off the real axis, on purpose — see its module
+    //     docs; there is no complex-argument `Ei`/`Si`/`Ci` primitive to emit.
+    //   * `integrate::special`'s emitter table covers `c·f(g)/d` only for `g`
+    //     and `d` *linear* with `d ∝ g`, so a quadratic denominator never
+    //     matches, whatever the arguments.
+    //
+    // So the honest answer is a decline — an `Unsupported`, not an
+    // unevaluated integral and not a claim about the ODE.  (`integrate` may
+    // legitimately certify the *integral* non-elementary; what must never
+    // happen is that verdict being re-read as a statement about `dsolve`.)
+    //
+    // **This test's premise expires** the moment either bullet above stops
+    // holding: a complex-argument expint primitive, or a partial-fraction
+    // route in `integrate::special` that handles `f(g)/q` for `deg q > 1`.
+    // If it then fails with a *solved* equation rather than a decline, that is
+    // the premise expiring and not a regression — check the returned solution
+    // by differentiation, move this source up into
+    // `quadrature_over_the_special_function_basis_closes`, and pick a fresh
+    // integrand for this test.  The decline path is what is worth keeping
+    // here; the integrand is only the current way of reaching it.
+    assert_declines(2, "ypp + y - x/(1 + x^2)");
+}
+
+#[test]
+fn general_solution_has_exactly_order_many_constants() {
+    // Variation of parameters must not allocate a constant of its own: the
+    // particular solution contributes none, so the count is the order.
+    for (order, src) in [
+        (2_usize, "ypp + y - 1/cos(x)"),
+        (2, "x^2*ypp + x*yp - y - log(x)"),
+        (2, "ypp - yp/x - x"),
+        (3, "yppp + yp - tan(x)"),
+    ] {
+        let (pool, _, sol) = solve_src(order, src);
+        assert_eq!(sol.constants.len(), order, "`{src}`");
+        for c in &sol.constants {
+            assert!(
+                super::contains(sol.y_of_x, *c, &pool),
+                "`{src}`: constant {} does not appear in the solution",
+                pool.display(*c)
+            );
+        }
     }
 }
