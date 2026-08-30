@@ -131,6 +131,11 @@ fn is_integration_rule(rule_name: &str) -> bool {
                 | "gosper_definite_telescope"
                 // Algorithmic Basel/ζ(2m) closed form — no Mathlib step proof yet.
                 | "basel_zeta_even"
+                // Discrete products: `k = n!` / `k = Γ(n+1)` is false as a rewrite.
+                | "product_definite"
+                | "product_indefinite"
+                | "product_definite_empty"
+                | "product_definite_zero"
         )
 }
 
@@ -2731,6 +2736,526 @@ pub fn emit_definite_integration_cert(
 }
 
 // ---------------------------------------------------------------------------
+// Gosper / Finset.sum certificates
+// ---------------------------------------------------------------------------
+
+/// Lean header for discrete-sum (Gosper telescope) and factorial-product
+/// certificates. `sum_range_sub` lives in `Group.Finset`; `sum_Ico_eq_sum_range`
+/// / `prod_Ico_id_eq_factorial` live in `Intervals`.
+fn emit_gosper_header() -> String {
+    "import Mathlib.Tactic\n\
+     import Mathlib.Algebra.BigOperators.Intervals\n\
+     import Mathlib.Algebra.BigOperators.Group.Finset\n\
+     \n\
+     open Finset\n\n"
+        .to_string()
+}
+
+/// A summation bound that Lean can treat as a `ℕ` index: a non-negative integer
+/// literal, or a free symbol (bound as `(n : ℕ)`).
+enum NatBound {
+    Lit(u64),
+    Sym(String),
+}
+
+fn nat_bound(e: ExprId, index: ExprId, pool: &ExprPool) -> Option<NatBound> {
+    if e == index || e == pool.pos_infinity() {
+        return None;
+    }
+    pool.with(e, |d| match d {
+        ExprData::Integer(n) => {
+            let v = n.0.to_i64()?;
+            (v >= 0).then_some(NatBound::Lit(v as u64))
+        }
+        ExprData::Symbol { name, .. } if name != "∞" && name != "pi" => {
+            Some(NatBound::Sym(name.clone()))
+        }
+        _ => None,
+    })
+}
+
+impl NatBound {
+    fn lean(&self) -> String {
+        match self {
+            NatBound::Lit(n) => n.to_string(),
+            NatBound::Sym(s) => s.clone(),
+        }
+    }
+
+    fn succ_lean(&self) -> String {
+        match self {
+            NatBound::Lit(n) => (n + 1).to_string(),
+            NatBound::Sym(s) => format!("({s} + 1)"),
+        }
+    }
+}
+
+/// Polynomial / rational / geometric term in the summation index: no `gamma`,
+/// no other free symbols, no floats. Inverse powers of the index are allowed
+/// (classic telescopes); so is `r^k` for a numeric base.
+fn gosper_term_ok(expr: ExprId, k: ExprId, pool: &ExprPool) -> bool {
+    if expr == k {
+        return true;
+    }
+    pool.with(expr, |d| match d {
+        ExprData::Integer(_) | ExprData::Rational(_) => true,
+        ExprData::Symbol { .. } => false,
+        ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().all(|&c| gosper_term_ok(c, k, pool)),
+        ExprData::Pow { base, exp } => {
+            gosper_term_ok(*base, k, pool) && gosper_term_ok(*exp, k, pool)
+        }
+        _ => false,
+    })
+}
+
+fn gosper_closed_ok(expr: ExprId, k: ExprId, extra: Option<ExprId>, pool: &ExprPool) -> bool {
+    if expr == k {
+        return false;
+    }
+    pool.with(expr, |d| match d {
+        ExprData::Integer(_) | ExprData::Rational(_) => true,
+        ExprData::Symbol { name, .. } => extra == Some(expr) && name != "∞",
+        ExprData::Add(xs) | ExprData::Mul(xs) => {
+            xs.iter().all(|&c| gosper_closed_ok(c, k, extra, pool))
+        }
+        ExprData::Pow { base, exp } => {
+            gosper_closed_ok(*base, k, extra, pool) && gosper_closed_ok(*exp, k, extra, pool)
+        }
+        _ => false,
+    })
+}
+
+fn gosper_has_inv(expr: ExprId, k: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| match d {
+        ExprData::Pow { base, exp } => {
+            let neg = pool.with(*exp, |e| matches!(e, ExprData::Integer(n) if n.0 < 0));
+            (neg && depends_on(*base, k, pool))
+                || gosper_has_inv(*base, k, pool)
+                || gosper_has_inv(*exp, k, pool)
+        }
+        ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().any(|&c| gosper_has_inv(c, k, pool)),
+        ExprData::Func { args, .. } => args.iter().any(|&a| gosper_has_inv(a, k, pool)),
+        _ => false,
+    })
+}
+
+fn gosper_has_geom(expr: ExprId, k: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| match d {
+        ExprData::Pow { exp, .. } if depends_on(*exp, k, pool) => true,
+        ExprData::Add(xs) | ExprData::Mul(xs) => xs.iter().any(|&c| gosper_has_geom(c, k, pool)),
+        ExprData::Pow { base, .. } => gosper_has_geom(*base, k, pool),
+        ExprData::Func { args, .. } => args.iter().any(|&a| gosper_has_geom(a, k, pool)),
+        _ => false,
+    })
+}
+
+/// Geometric `r^k` that `pow_succ; ring` can close: integer base with `|r| ≥ 2`.
+/// Rational bases like `(1/2)^k` are withheld rather than emitted unsolved.
+fn gosper_geom_base_ok(expr: ExprId, k: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| match d {
+        ExprData::Pow { base, exp } if depends_on(*exp, k, pool) => {
+            let base_ok = pool.with(*base, |b| match b {
+                ExprData::Integer(n) => n.0.to_i64().is_some_and(|v| v.abs() >= 2),
+                _ => false,
+            });
+            base_ok && gosper_geom_base_ok(*exp, k, pool)
+        }
+        ExprData::Pow { base, exp } => {
+            gosper_geom_base_ok(*base, k, pool) && gosper_geom_base_ok(*exp, k, pool)
+        }
+        ExprData::Add(xs) | ExprData::Mul(xs) => {
+            xs.iter().all(|&c| gosper_geom_base_ok(c, k, pool))
+        }
+        _ => true,
+    })
+}
+
+/// Print a ℕ-valued polynomial in the index (non-negative integer coeffs).
+fn expr_to_lean_nat_term(
+    expr: ExprId,
+    index: ExprId,
+    k_nat: &str,
+    pool: &ExprPool,
+) -> Option<String> {
+    if expr == index {
+        return Some(k_nat.to_string());
+    }
+    pool.with(expr, |d| match d {
+        ExprData::Integer(n) => {
+            let v = n.0.to_i64()?;
+            (v >= 0).then_some(v.to_string())
+        }
+        ExprData::Add(xs) => {
+            let parts: Option<Vec<String>> = xs
+                .iter()
+                .map(|&a| expr_to_lean_nat_term(a, index, k_nat, pool))
+                .collect();
+            Some(format!("({})", parts?.join(" + ")))
+        }
+        ExprData::Mul(xs) => {
+            let parts: Option<Vec<String>> = xs
+                .iter()
+                .map(|&a| expr_to_lean_nat_term(a, index, k_nat, pool))
+                .collect();
+            Some(format!("({})", parts?.join(" * ")))
+        }
+        _ => None,
+    })
+}
+
+/// Print `expr` with the summation index `k` rendered as the ℕ-term `k_nat`
+/// coerced to `ℝ` (and as a `ℕ` exponent when it is the exponent of a power).
+fn expr_to_lean_nat_index(
+    expr: ExprId,
+    index: ExprId,
+    k_nat: &str,
+    pool: &ExprPool,
+) -> Option<String> {
+    if expr == index {
+        return Some(format!("({k_nat} : ℝ)"));
+    }
+    pool.with(expr, |data| match data {
+        ExprData::Integer(n) => {
+            let v = n.0.to_i64()?;
+            Some(format!("({v} : ℝ)"))
+        }
+        ExprData::Rational(r) => {
+            let n = r.0.numer().to_i64()?;
+            let d = r.0.denom().to_i64()?;
+            Some(format!("({n} / {d} : ℝ)"))
+        }
+        ExprData::Add(args) => {
+            let parts: Option<Vec<String>> = args
+                .iter()
+                .map(|&a| expr_to_lean_nat_index(a, index, k_nat, pool))
+                .collect();
+            Some(format!("({})", parts?.join(" + ")))
+        }
+        ExprData::Mul(args) => {
+            let parts: Option<Vec<String>> = args
+                .iter()
+                .map(|&a| expr_to_lean_nat_index(a, index, k_nat, pool))
+                .collect();
+            Some(format!("({})", parts?.join(" * ")))
+        }
+        ExprData::Pow { base, exp } if *exp == index => {
+            let b = expr_to_lean_nat_index(*base, index, k_nat, pool)?;
+            Some(format!("({b}) ^ {k_nat}"))
+        }
+        ExprData::Pow { base, exp } if depends_on(*exp, index, pool) => {
+            let b = expr_to_lean_nat_index(*base, index, k_nat, pool)?;
+            let e = expr_to_lean_nat_term(*exp, index, k_nat, pool)?;
+            Some(format!("({b}) ^ {e}"))
+        }
+        ExprData::Pow { base, exp } => {
+            let b = expr_to_lean_nat_index(*base, index, k_nat, pool)?;
+            let neg_int = pool.with(*exp, |d| match d {
+                ExprData::Integer(n) if n.0 < 0 => n.0.to_i64(),
+                _ => None,
+            });
+            if let Some(n) = neg_int {
+                let abs_n = n.unsigned_abs();
+                if abs_n == 1 {
+                    Some(format!("({b})⁻¹"))
+                } else {
+                    Some(format!("({b})⁻¹ ^ ({abs_n} : ℕ)"))
+                }
+            } else {
+                let e = pool.with(*exp, |d| match d {
+                    ExprData::Integer(n) if n.0 >= 0 => Some(format!("({} : ℕ)", n.0)),
+                    _ => expr_to_lean_nat_index(*exp, index, k_nat, pool),
+                })?;
+                Some(format!("({b}) ^ {e}"))
+            }
+        }
+        _ => None,
+    })
+}
+
+fn gosper_delta_tactic(has_inv: bool, has_geom: bool) -> &'static str {
+    if has_inv {
+        "intro k hk\n    have hk0 : k ≠ 0 := by\n      rw [mem_Icc] at hk\n      omega\n    simp [G]\n    field_simp [hk0]\n    ring"
+    } else if has_geom {
+        "intro k\n    simp [G, pow_succ]\n    ring"
+    } else {
+        "intro k\n    simp [G]\n    ring"
+    }
+}
+
+/// Emit a Lean certificate for a Gosper sum: the discrete FTC
+/// `G(k+1) − G(k) = F(k)`, then a `Finset.sum` telescope.
+///
+/// * Indefinite (`bounds = None`): `∑ k ∈ range n, F k = G n − G 0`.
+/// * Definite (`Some((lo, hi))`): `∑ k ∈ Icc lo hi, F k = closed form`,
+///   proved as `G(hi+1) − G(lo)` via `sum_range_sub` / `sum_Ico_eq_sum_range`.
+///
+/// Integer bounds only; improper (`∞`) endpoints, `gamma`, Basel, and reversed
+/// ranges are withheld. Never emits `sorry` / `admit`.
+pub fn emit_gosper_cert(
+    term: ExprId,
+    k: ExprId,
+    bounds: Option<(ExprId, ExprId)>,
+    pool: &ExprPool,
+) -> String {
+    let k_is_symbol = pool.with(k, |d| matches!(d, ExprData::Symbol { .. }));
+    if !k_is_symbol {
+        return String::new();
+    }
+    if !gosper_term_ok(term, k, pool) {
+        return String::new();
+    }
+    let Ok(ind) = crate::sum::sum_indefinite(term, k, pool) else {
+        return String::new();
+    };
+    let g = ind.value;
+    if !gosper_term_ok(g, k, pool) {
+        return String::new();
+    }
+    let has_inv = gosper_has_inv(term, k, pool) || gosper_has_inv(g, k, pool);
+    let has_geom = gosper_has_geom(term, k, pool) || gosper_has_geom(g, k, pool);
+    if has_inv && has_geom {
+        return String::new();
+    }
+    if has_geom && !(gosper_geom_base_ok(term, k, pool) && gosper_geom_base_ok(g, k, pool)) {
+        // `(1/2)^k` and other rational bases need more than `pow_succ; ring`.
+        return String::new();
+    }
+    let Some(g_body) = expr_to_lean_nat_index(g, k, "t", pool) else {
+        return String::new();
+    };
+    let Some(f_body) = expr_to_lean_nat_index(term, k, "k", pool) else {
+        return String::new();
+    };
+    let f_binder = if depends_on(term, k, pool) { "k" } else { "_k" };
+
+    let out = match bounds {
+        None => {
+            // Inverse powers are undefined at 0; `range n` includes 0.
+            if has_inv {
+                return String::new();
+            }
+            emit_gosper_indefinite(&g_body, &f_body, f_binder, has_geom)
+        }
+        Some((lo, hi)) => {
+            if bound_is_infinite(lo, pool) || bound_is_infinite(hi, pool) {
+                return String::new();
+            }
+            let Some(lo_b) = nat_bound(lo, k, pool) else {
+                return String::new();
+            };
+            let Some(hi_b) = nat_bound(hi, k, pool) else {
+                return String::new();
+            };
+            if matches!(lo_b, NatBound::Sym(_)) {
+                return String::new();
+            }
+            if let (NatBound::Lit(a), NatBound::Lit(b)) = (&lo_b, &hi_b) {
+                if a > b {
+                    return String::new();
+                }
+            }
+            // Symbolic upper bound only for lo ∈ {0, 1}; otherwise
+            // `n.succ - a` is not `n` and the convert fails.
+            if matches!(hi_b, NatBound::Sym(_)) && !matches!(lo_b, NatBound::Lit(0 | 1)) {
+                return String::new();
+            }
+            if has_inv {
+                match lo_b {
+                    NatBound::Lit(a) if a >= 1 => {}
+                    _ => return String::new(),
+                }
+            }
+            let Ok(def) = crate::sum::sum_definite(term, k, lo, hi, pool) else {
+                return String::new();
+            };
+            let extra = match hi_b {
+                NatBound::Sym(_) => Some(hi),
+                NatBound::Lit(_) => None,
+            };
+            if !gosper_closed_ok(def.value, k, extra, pool) {
+                return String::new();
+            }
+            let Some(rhs) = (match extra {
+                Some(hi_id) => {
+                    let name = pool.with(hi_id, |d| match d {
+                        ExprData::Symbol { name, .. } => name.clone(),
+                        _ => String::new(),
+                    });
+                    if name.is_empty() {
+                        None
+                    } else {
+                        expr_to_lean_nat_index(def.value, hi_id, &name, pool)
+                    }
+                }
+                None => Some(expr_to_lean(def.value, pool)),
+            }) else {
+                return String::new();
+            };
+            emit_gosper_definite(
+                &g_body, &f_body, f_binder, has_inv, has_geom, &lo_b, &hi_b, &rhs,
+            )
+        }
+    };
+
+    if out.is_empty() || out.contains("sorry") || out.contains("admit") {
+        String::new()
+    } else {
+        out
+    }
+}
+
+fn emit_gosper_indefinite(g_body: &str, f_body: &str, f_binder: &str, has_geom: bool) -> String {
+    let (close_goal, close_have) = if has_geom {
+        (
+            "simp\n  try rw [pow_succ]\n  ring",
+            "intro k\n    simp [G, pow_succ]\n    ring",
+        )
+    } else {
+        ("simp\n  ring", "intro k\n    simp [G]\n    ring")
+    };
+    let mut out = emit_gosper_header();
+    out.push_str("-- Gosper antidifference: G(k+1) − G(k) = F(k)\n");
+    out.push_str(&format!(
+        "example (k : ℕ) :\n    (fun t : ℕ => {g_body}) (k + 1) - (fun t : ℕ => {g_body}) k = {f_body} := by\n  {close_goal}\n"
+    ));
+    out.push('\n');
+    out.push_str("-- The difference telescopes on Finset.range.\n");
+    out.push_str(&format!(
+        "example (n : ℕ) :\n    ∑ {f_binder} ∈ range n, {f_body} = (fun t : ℕ => {g_body}) n - (fun t : ℕ => {g_body}) 0 := by\n  let G : ℕ → ℝ := fun t => {g_body}\n  have hΔ : ∀ k : ℕ, G (k + 1) - G k = {f_body} := by\n    {close_have}\n  calc\n    ∑ {f_binder} ∈ range n, {f_body}\n        = ∑ k ∈ range n, (G (k + 1) - G k) := sum_congr rfl fun k _ => (hΔ k).symm\n    _ = G n - G 0 := sum_range_sub G n\n    _ = (fun t : ℕ => {g_body}) n - (fun t : ℕ => {g_body}) 0 := by simp [G]\n"
+    ));
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_gosper_definite(
+    g_body: &str,
+    f_body: &str,
+    f_binder: &str,
+    has_inv: bool,
+    has_geom: bool,
+    lo: &NatBound,
+    hi: &NatBound,
+    rhs: &str,
+) -> String {
+    let icc = match (lo, hi) {
+        (NatBound::Lit(a), NatBound::Lit(b)) => format!("Icc ({a} : ℕ) {b}"),
+        (NatBound::Lit(a), NatBound::Sym(n)) => format!("Icc ({a} : ℕ) {n}"),
+        (NatBound::Sym(a), NatBound::Lit(b)) => format!("Icc {a} {b}"),
+        (NatBound::Sym(a), NatBound::Sym(n)) => format!("Icc {a} {n}"),
+    };
+    let binders = match hi {
+        NatBound::Sym(n) => format!("example ({n} : ℕ)"),
+        NatBound::Lit(_) => "example".to_string(),
+    };
+    let g_hi = format!("G {}", hi.succ_lean());
+    let g_lo = format!("G {}", lo.lean());
+    let (htel, sum_congr) = gosper_telescope_proof(lo, hi, has_inv);
+    let delta = gosper_delta_tactic(has_inv, has_geom);
+    let hdelta_ty = if has_inv {
+        format!("∀ k ∈ {icc}, G (k + 1) - G k = {f_body}")
+    } else {
+        format!("∀ k : ℕ, G (k + 1) - G k = {f_body}")
+    };
+
+    let mut out = emit_gosper_header();
+    out.push_str(&format!(
+        "-- Σ_{{k={lo}..{hi}}} F(k) = G(hi+1) − G(lo)  (Gosper antidifference; Finset.sum telescope)\n",
+        lo = lo.lean(),
+        hi = hi.lean(),
+    ));
+    out.push_str(&format!(
+        "{binders} :\n    ∑ {f_binder} ∈ {icc}, {f_body} = {rhs} := by\n  let G : ℕ → ℝ := fun t => {g_body}\n  have hΔ : {hdelta_ty} := by\n    {delta}\n  have htel : ∑ k ∈ {icc}, (G (k + 1) - G k) = {g_hi} - {g_lo} := by\n{htel}  calc\n    ∑ {f_binder} ∈ {icc}, {f_body}\n        = ∑ k ∈ {icc}, (G (k + 1) - G k) := {sum_congr}\n    _ = {g_hi} - {g_lo} := htel\n    _ = {rhs} := by\n        simp [G]\n        try simp [pow_zero]\n        try field_simp\n        try ring\n        try norm_num\n"
+    ));
+    out
+}
+
+fn gosper_telescope_proof(lo: &NatBound, hi: &NatBound, has_inv: bool) -> (String, String) {
+    let sum_congr = if has_inv {
+        "sum_congr rfl fun k hk => (hΔ k hk).symm".to_string()
+    } else {
+        "sum_congr rfl fun k _ => (hΔ k).symm".to_string()
+    };
+    let htel = match lo {
+        NatBound::Lit(0) => {
+            let hi_succ = hi.succ_lean();
+            format!(
+                "    rw [← Nat.Ico_succ_right, Nat.Ico_zero_eq_range]\n    exact sum_range_sub G ({hi_succ})\n"
+            )
+        }
+        NatBound::Lit(1) => {
+            let hi_s = hi.lean();
+            format!(
+                "    rw [← Nat.Ico_succ_right, sum_Ico_eq_sum_range]\n    try simp only [Nat.succ_sub_one]\n    convert sum_range_sub (fun i => G (i + 1)) {hi_s} using 1\n    try simp [add_assoc, add_comm, add_left_comm]\n"
+            )
+        }
+        NatBound::Lit(a) => {
+            // Both bounds must be literals (caller gated symbolic hi).
+            let NatBound::Lit(b) = hi else {
+                return (String::new(), sum_congr);
+            };
+            let len = b + 1 - a;
+            format!(
+                "    rw [← Nat.Ico_succ_right, sum_Ico_eq_sum_range]\n    convert sum_range_sub (fun i => G ({a} + i)) {len} using 1\n    try simp [add_assoc, add_comm, add_left_comm]\n"
+            )
+        }
+        NatBound::Sym(_) => String::new(),
+    };
+    (htel, sum_congr)
+}
+
+/// `∏_{k=1}^{n} k = n!`, via Mathlib 4.9.0 `Finset.prod_Ico_id_eq_factorial`
+/// (there is no `prod_Icc_id` in this pin; `Icc 1 n = Ico 1 (n+1)`).
+///
+/// Only the identity product of the index from 1 is certified. Gamma encodings
+/// of `n!` stay withheld. Never emits `sorry` / `admit`.
+pub fn emit_product_cert(
+    term: ExprId,
+    k: ExprId,
+    lo: ExprId,
+    hi: ExprId,
+    pool: &ExprPool,
+) -> String {
+    if term != k {
+        return String::new();
+    }
+    if bound_is_infinite(lo, pool) || bound_is_infinite(hi, pool) {
+        return String::new();
+    }
+    let Some(NatBound::Lit(1)) = nat_bound(lo, k, pool) else {
+        return String::new();
+    };
+    let Some(hi_b) = nat_bound(hi, k, pool) else {
+        return String::new();
+    };
+    if let NatBound::Lit(b) = hi_b {
+        if b < 1 {
+            return String::new();
+        }
+    }
+    let (binders, n_lean, icc) = match &hi_b {
+        NatBound::Sym(n) => (
+            format!("example ({n} : ℕ)"),
+            n.clone(),
+            format!("Icc (1 : ℕ) {n}"),
+        ),
+        NatBound::Lit(b) => (
+            "example".to_string(),
+            b.to_string(),
+            format!("Icc (1 : ℕ) {b}"),
+        ),
+    };
+    let mut out = emit_gosper_header();
+    out.push_str("-- ∏_{k=1}^{n} k = n!  (Mathlib Finset.prod_Ico_id_eq_factorial)\n");
+    out.push_str(&format!(
+        "{binders} : ∏ k ∈ {icc}, k = Nat.factorial {n_lean} := by\n  rw [← Nat.Ico_succ_right]\n  exact prod_Ico_id_eq_factorial {n_lean}\n"
+    ));
+    if out.contains("sorry") || out.contains("admit") {
+        return String::new();
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
 // Expression → Lean syntax
 // ---------------------------------------------------------------------------
 
@@ -2988,6 +3513,193 @@ mod tests {
         assert!(
             lean.is_empty(),
             "Basel sum_definite must withhold Lean cert until Mathlib-backed, got: {lean}"
+        );
+    }
+
+    #[test]
+    fn gosper_rewrite_log_is_not_a_certificate() {
+        // Emitting `k = k(k-1)/2` would be false. The rewrite log stays withheld;
+        // the sound statement is the Finset telescope from `emit_gosper_cert`.
+        use crate::sum::sum_indefinite;
+
+        let pool = p();
+        let k = pool.symbol("k", Domain::Real);
+        let derived = sum_indefinite(k, k, &pool).expect("gosper");
+        let lean = emit_lean_expr(&derived, &pool);
+        assert!(
+            lean.is_empty(),
+            "gosper_indefinite must not emit a false rewrite equality, got: {lean}"
+        );
+    }
+
+    #[test]
+    fn gosper_cert_sum_k_indefinite() {
+        let pool = p();
+        let k = pool.symbol("k", Domain::Real);
+        let lean = emit_gosper_cert(k, k, None, &pool);
+        assert!(
+            !lean.is_empty(),
+            "Σ k indefinite should certify the Gosper difference + range telescope"
+        );
+        assert!(
+            lean.contains("sum_range_sub"),
+            "indefinite telescope uses Finset.sum_range_sub: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
+    }
+
+    #[test]
+    fn gosper_cert_sum_k_definite_symbolic_n() {
+        let pool = p();
+        let k = pool.symbol("k", Domain::Real);
+        let n = pool.symbol("n", Domain::Real);
+        let lean = emit_gosper_cert(k, k, Some((pool.integer(1_i32), n)), &pool);
+        assert!(
+            !lean.is_empty(),
+            "Σ_{{k=1}}^{{n}} k should certify via Finset.Icc: {lean}"
+        );
+        assert!(
+            lean.contains("Icc (1 : ℕ)"),
+            "definite sum is Finset.Icc: {lean}"
+        );
+        assert!(
+            lean.contains("sum_Ico_eq_sum_range") || lean.contains("sum_range_sub"),
+            "telescope lemmas: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
+    }
+
+    #[test]
+    fn gosper_cert_sum_k_definite_concrete() {
+        let pool = p();
+        let k = pool.symbol("k", Domain::Real);
+        let lean = emit_gosper_cert(
+            k,
+            k,
+            Some((pool.integer(1_i32), pool.integer(10_i32))),
+            &pool,
+        );
+        assert!(
+            !lean.is_empty(),
+            "Σ_{{1}}^{{10}} k should certify, got empty"
+        );
+        assert!(lean.contains("Icc (1 : ℕ) 10"), "concrete Icc: {lean}");
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
+    }
+
+    #[test]
+    fn gosper_cert_constant() {
+        let pool = p();
+        let k = pool.symbol("k", Domain::Real);
+        let n = pool.symbol("n", Domain::Real);
+        let five = pool.integer(5_i32);
+        let lean = emit_gosper_cert(five, k, Some((pool.integer(1_i32), n)), &pool);
+        assert!(!lean.is_empty(), "Σ 5 should certify: {lean}");
+        assert!(
+            lean.contains("∑ _k ∈") || lean.contains("∑ _k"),
+            "constant summand must not bind an unused k: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
+    }
+
+    #[test]
+    fn gosper_cert_withholds_gamma() {
+        let pool = p();
+        let k = pool.symbol("k", Domain::Real);
+        let n = pool.symbol("n", Domain::Real);
+        let term = pool.mul(vec![
+            k,
+            pool.func("gamma", vec![pool.add(vec![k, pool.integer(1_i32)])]),
+        ]);
+        let lean = emit_gosper_cert(term, k, Some((pool.integer(0_i32), n)), &pool);
+        assert!(
+            lean.is_empty(),
+            "k·Γ(k+1) is outside the poly/rat/geom fragment: {lean}"
+        );
+    }
+
+    #[test]
+    fn gosper_cert_withholds_basel() {
+        let pool = p();
+        let k = pool.symbol("k", Domain::Real);
+        let term = pool.pow(k, pool.integer(-2_i32));
+        let lean = emit_gosper_cert(
+            term,
+            k,
+            Some((pool.integer(1_i32), pool.pos_infinity())),
+            &pool,
+        );
+        assert!(
+            lean.is_empty(),
+            "infinite Basel sums must stay withheld: {lean}"
+        );
+    }
+
+    #[test]
+    fn gosper_cert_withholds_reversed_bounds() {
+        let pool = p();
+        let k = pool.symbol("k", Domain::Real);
+        let lean = emit_gosper_cert(
+            k,
+            k,
+            Some((pool.integer(5_i32), pool.integer(1_i32))),
+            &pool,
+        );
+        assert!(
+            lean.is_empty(),
+            "reversed bounds are not Finset.Icc: {lean}"
+        );
+    }
+
+    #[test]
+    fn gosper_cert_withholds_half_pow_k() {
+        // `(1/2)^k` is Gosper-summable but the rational base does not close
+        // with `pow_succ; ring`. Withhold rather than emit an unsolved goal.
+        let pool = p();
+        let k = pool.symbol("k", Domain::Real);
+        let n = pool.symbol("n", Domain::Real);
+        let term = pool.pow(pool.rational(1, 2), k);
+        let lean = emit_gosper_cert(term, k, Some((pool.integer(0_i32), n)), &pool);
+        assert!(
+            lean.is_empty(),
+            "(1/2)^k must be withheld until a field lemma is wired: {lean}"
+        );
+    }
+
+    #[test]
+    fn product_cert_factorial() {
+        let pool = p();
+        let k = pool.symbol("k", Domain::Real);
+        let n = pool.symbol("n", Domain::Real);
+        let lean = emit_product_cert(k, k, pool.integer(1_i32), n, &pool);
+        assert!(!lean.is_empty(), "∏_{{k=1}}^{{n}} k = n! should certify");
+        assert!(
+            lean.contains("prod_Ico_id_eq_factorial"),
+            "Mathlib 4.9 lemma name: {lean}"
+        );
+        assert!(
+            lean.contains("Nat.factorial"),
+            "RHS is Nat.factorial, not Gamma: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
+        assert!(
+            !lean.contains("Real.Gamma"),
+            "must not certify n! via gamma: {lean}"
+        );
+    }
+
+    #[test]
+    fn product_rewrite_log_is_not_a_certificate() {
+        use crate::sum::product_definite;
+
+        let pool = p();
+        let k = pool.symbol("k", Domain::Real);
+        let n = pool.symbol("n", Domain::Real);
+        let derived = product_definite(k, k, pool.integer(1_i32), n, &pool).expect("product");
+        let lean = emit_lean_expr(&derived, &pool);
+        assert!(
+            lean.is_empty(),
+            "product_definite must not emit a false k = Γ(n+1) rewrite, got: {lean}"
         );
     }
 

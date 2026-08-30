@@ -202,8 +202,9 @@ pub use budget::{
 };
 pub use errors::AlkahestError;
 pub use lean::{
-    emit_definite_integration_cert, emit_integration_cert, emit_lean_expr as emit_lean,
-    emit_lean_expr_wrt, emit_tendsto_cert, step_is_certifiable,
+    emit_definite_integration_cert, emit_gosper_cert, emit_integration_cert,
+    emit_lean_expr as emit_lean, emit_lean_expr_wrt, emit_product_cert, emit_tendsto_cert,
+    step_is_certifiable,
 };
 // V2-1 — Modular / CRT framework
 #[cfg(feature = "groebner")]

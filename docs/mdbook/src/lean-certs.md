@@ -152,6 +152,12 @@ The strict CI corpus currently covers:
   (`intervalIntegrable_log` requires `0 ∉ uIcc a b`) and proves
   `F b − F a` for `F = x log x − x`. `∫_0^1 log` and negative endpoints stay
   withheld.
+- Gosper finite sums `∑_{k=a}^{b} F(k) = G(b+1) − G(a)` for polynomial,
+  rational-telescope, and geometric terms, certified as a `Finset.sum`
+  identity via `sum_range_sub` / `sum_Ico_eq_sum_range` — never as the false
+  rewrite `F = G`. Infinite Basel sums and `gamma` encodings stay withheld.
+- The discrete product `∏_{k=1}^{n} k = n!`, via Mathlib
+  `Finset.prod_Ico_id_eq_factorial` (v4.9.0 has no `prod_Icc_id`).
 
 Other exports are generated source, not CI-qualified Lean proofs. In
 particular, nested two-deep composites (`sin(cos(x²))`), `log`/`tan`/`sqrt`

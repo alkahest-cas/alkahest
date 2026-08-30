@@ -491,7 +491,8 @@ class Certifiability:
     reason : str
         Stable reason code. ``"emitted"`` / ``"withheld_no_derivation"`` /
         ``"withheld_uncertifiable_step"`` / ``"withheld_integration_shape"`` /
-        ``"withheld_tendsto_shape"``
+        ``"withheld_tendsto_shape"`` / ``"withheld_gosper_shape"`` /
+        ``"withheld_product_shape"``
         come from actually running the operation; ``"class_certified"`` /
         ``"class_withheld"`` / ``"class_conditional"`` / ``"class_partial"`` /
         ``"unknown_shape"`` come from the ledger alone; ``"operation_failed"``
