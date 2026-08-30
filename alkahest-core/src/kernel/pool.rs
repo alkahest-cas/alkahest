@@ -263,8 +263,9 @@ impl ExprPool {
     /// A leaf (symbol or number) has depth 1.  O(1): the value was computed
     /// when `id` was interned.  Saturates at [`u32::MAX`].
     ///
-    /// Every recursive consumer of an expression uses this to decline a tree
-    /// too deep for the stack — see
+    /// This is the quantity the expression-depth ceiling is applied to: the
+    /// PyO3 entry points compare it against `MAX_EXPR_DEPTH` to decline a tree
+    /// too deep to recurse over — see
     /// [`crate::kernel::depth::check_expr_depth`].
     pub fn depth(&self, id: ExprId) -> u32 {
         self.node(id).depth
