@@ -98,6 +98,27 @@ _FUNC_NAMES = frozenset(
         "erfc",
         "gamma",
         "lambert_w",
+        "digamma",
+        "bessel_j0",
+        "bessel_j1",
+        "EllipticK",
+        "EllipticE",
+        "EllipticF",
+        "EllipticPi",
+        # The non-elementary output basis (3.10.0).  Without these the
+        # integrator can emit an antiderivative that neither parser can read
+        # back, so ``parse(str(integrate(f)))`` is not a round trip.  Mirrors
+        # ``KNOWN_FUNCS`` in ``alkahest-core/src/parse.rs``.
+        "Ei",
+        "li",
+        "Si",
+        "Ci",
+        "Shi",
+        "Chi",
+        "fresnels",
+        "fresnelc",
+        "dilog",
+        "trigamma",
         # Reciprocal trig / hyperbolic functions (desugared to base(x) ** -1).
         "sec",
         "csc",
@@ -105,6 +126,8 @@ _FUNC_NAMES = frozenset(
         "sech",
         "csch",
         "coth",
+        # Desugared to ``u ** Fraction(1, 3)``; see ``_apply_func``.
+        "cbrt",
     }
 )
 
@@ -332,10 +355,10 @@ class _Parser:
                 self._advance()  # consume ","
                 args.append(self._expr(0))
         self._expect(")")
-        return _apply_func(name, args, offset)
+        return _apply_func(name, args, offset, self._pool)
 
 
-def _apply_func(name: str, args: list, offset: int):
+def _apply_func(name: str, args: list, offset: int, pool=None):
     # Local import to avoid circular dependency at module load time.
     import alkahest as _ak
 
@@ -373,7 +396,42 @@ def _apply_func(name: str, args: list, offset: int):
         "EllipticE": _ak.elliptic_e,  # 1 arg (complete) or 2 args (incomplete)
         "EllipticF": _ak.elliptic_f,
         "EllipticPi": _ak.elliptic_pi,
+        # The non-elementary output basis (3.10.0).  The integrator emits
+        # these, so the parser has to be able to read them back; mirrors
+        # ``KNOWN_FUNCS`` in ``alkahest-core/src/parse.rs``.  The spelling is
+        # the *node* name, not the Python constructor's name — ``Si(x)`` is
+        # what ``str(expr)`` prints, and a round trip is the whole point.
+        "Ei": _ak.exp_integral_ei,
+        "li": _ak.log_integral,
+        "Si": _ak.sin_integral,
+        "Ci": _ak.cos_integral,
+        "Shi": _ak.sinh_integral,
+        "Chi": _ak.cosh_integral,
+        "fresnels": _ak.fresnels,
+        "fresnelc": _ak.fresnelc,
+        "dilog": _ak.dilog,
+        "trigamma": _ak.trigamma,
     }
+    # Desugar ``cbrt(u)`` to ``u ** (1/3)``.  It is not a registered primitive
+    # and is not being made one: the power node already differentiates,
+    # evaluates, simplifies and integrates.  The one thing this does not
+    # reproduce is ``math.cbrt``'s real branch on negatives — ``cbrt(-8)`` is
+    # ``(-8) ** (1/3)``, which the numeric interpreter reports as no-value
+    # rather than as ``-2``.  That is a refusal, not a wrong answer, and it is
+    # the principal-branch convention the pool already uses for fractional
+    # powers.  Mirrors the desugar in ``alkahest-core/src/parse.rs``.
+    if name == "cbrt":
+        if len(args) != 1:
+            raise ParseError(
+                f"cbrt takes exactly 1 argument, got {len(args)}",
+                span=(offset, offset + len(name)),
+            )
+        if pool is None:
+            raise ParseError(
+                "cbrt requires a pool to build its exponent",
+                span=(offset, offset + len(name)),
+            )
+        return args[0].pow_expr(pool.rational(1, 3))
     # Desugar reciprocal trig/hyperbolic calls to ``base(x) ** -1``.  Only the
     # single-argument form is meaningful; any other arity is a parse error.
     base = _RECIPROCAL_BASE.get(name)

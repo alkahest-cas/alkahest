@@ -216,22 +216,46 @@ def test_int_tan(x):
 # --- correct-refusal checks: genuinely non-elementary integrands ----------
 
 
-def test_int_exp_neg_x_squared_correctly_non_elementary(x):
-    """Gaussian integral — Risch-DE-verified non-elementary. Should raise."""
+#: The output basis an antiderivative may name.  An answer carrying one of
+#: these is, by construction, not an elementary function.
+_NONELEMENTARY_NAMES = ("Ei", "li", "Si", "Ci", "Shi", "Chi", "erf", "fresnels", "fresnelc")
+
+
+def _assert_non_elementary_closed_form(integrand, x, name):
+    """The answer must be right *and* must not be elementary.
+
+    These three used to assert a refusal.  They are now answered over the
+    registered special-function basis, and the textbook claim being gated is
+    unchanged — "this integral has no elementary antiderivative" — only now it
+    is carried by the name in the answer instead of by the absence of one.
+    Returning something elementary here would be the false claim.
+    """
+    result = ak.integrate(integrand, x)
+    shown = str(result.value)
+    assert name in shown, f"expected {name}, got {shown}"
+    assert any(n in shown for n in _NONELEMENTARY_NAMES), shown
+    assert_integral_self_consistent(integrand, x, points=POSITIVE_POINTS)
+
+
+def test_int_exp_neg_x_squared_is_erf(x):
+    """Gaussian integral — non-elementary, and equal to (√π/2)·erf(x)."""
+    _assert_non_elementary_closed_form(ak.exp(-(x**2)), x, "erf")
+
+
+def test_int_sin_x_over_x_is_si(x):
+    """Sine integral Si(x) — non-elementary, and equal to Si(x)."""
+    _assert_non_elementary_closed_form(ak.sin(x) / x, x, "Si")
+
+
+def test_int_exp_x_over_x_is_ei(x):
+    """Exponential integral Ei(x) — non-elementary, and equal to Ei(x)."""
+    _assert_non_elementary_closed_form(ak.exp(x) / x, x, "Ei")
+
+
+def test_int_exp_x_squared_correctly_non_elementary(x):
+    """`exp(x²)` is `erfi`, which is not a registered primitive. Should raise."""
     with pytest.raises(ak.IntegrationError):
-        ak.integrate(ak.exp(-(x**2)), x)
-
-
-def test_int_sin_x_over_x_correctly_non_elementary(x):
-    """Sine integral Si(x) — non-elementary. Should raise."""
-    with pytest.raises(ak.IntegrationError):
-        ak.integrate(ak.sin(x) / x, x)
-
-
-def test_int_exp_x_over_x_correctly_non_elementary(x):
-    """Exponential integral Ei(x) — non-elementary. Should raise."""
-    with pytest.raises(ak.IntegrationError):
-        ak.integrate(ak.exp(x) / x, x)
+        ak.integrate(ak.exp(x**2), x)
 
 
 # --- B2 regression: mixed exp·log elementary ------------------------------

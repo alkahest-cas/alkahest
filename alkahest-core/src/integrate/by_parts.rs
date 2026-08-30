@@ -1626,10 +1626,22 @@ mod tests {
         let x = pool.symbol("x", Domain::Real);
         let f = pool.func("sin", vec![pool.func("log", vec![x])]);
 
-        // Premise: no existing route closes this.
+        // Premise: `integrate` closes this *through the by-parts hook* and
+        // through nothing else.  The premise used to be that `integrate` could
+        // not close it at all; that stopped being true when the hook landed on
+        // the decline path, and the derivation log is the sharper statement.
+        let via = integrate(f, x, &pool).expect("∫sin(log x) dx");
         assert!(
-            integrate(f, x, &pool).is_err(),
-            "premise: the engine alone must not solve ∫sin(log x)"
+            via.log
+                .steps()
+                .iter()
+                .any(|s| s.rule_name == "int_by_parts"),
+            "∫sin(log x) dx must be closed by by-parts, got {:?}",
+            via.log
+                .steps()
+                .iter()
+                .map(|s| &s.rule_name)
+                .collect::<Vec<_>>()
         );
         // Premise: it really is a two-step cycle.
         let neg_f = pool.mul(vec![pool.integer(-1_i32), f]);
@@ -1732,14 +1744,16 @@ mod tests {
     fn a_non_terminating_shape_declines_within_the_bound() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
-        let f = pool.mul(vec![
-            pool.func("exp", vec![x]),
-            pool.pow(x, pool.integer(-1_i32)),
-        ]);
+        // `∫e^{x²} dx` needs `erfi`, which is not a registered primitive, so
+        // nothing downstream can close the sub-integrals either.  (`∫eˣ/x dx`
+        // used to be the witness here; it stopped being one when the `Ei`
+        // emitter landed, and a witness that the engine can now solve proves
+        // nothing about the step bound.)
+        let f = pool.func("exp", vec![pool.pow(x, pool.integer(2_i32))]);
         let t0 = std::time::Instant::now();
         let out = integrate_by_parts(f, x, &pool);
         let dt = t0.elapsed();
-        assert!(out.is_declined(), "∫eˣ/x must decline, got {out:?}");
+        assert!(out.is_declined(), "∫e^{{x²}} must decline, got {out:?}");
         assert!(
             dt < std::time::Duration::from_secs(20),
             "the decline took {dt:?} — the step bound is not holding"
@@ -1786,12 +1800,10 @@ mod tests {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
 
-        // A genuinely non-elementary integrand: the decline must still be
-        // `E-INT-001`, because *this module* has no standing to certify.
-        let f = pool.mul(vec![
-            pool.func("exp", vec![x]),
-            pool.pow(x, pool.integer(-1_i32)),
-        ]);
+        // A genuinely non-elementary integrand with no closed form over the
+        // registered basis either: the decline must still be `E-INT-001`,
+        // because *this module* has no standing to certify.
+        let f = pool.func("exp", vec![pool.pow(x, pool.integer(2_i32))]);
         let out = integrate_by_parts(f, x, &pool);
         assert!(out.is_declined());
 
@@ -2289,24 +2301,47 @@ mod tests {
     }
 
     /// The Charlwood problems this module closes, pinned so a regression is
-    /// visible.  All are verified by differentiation, here and in the gate.
+    /// visible.  Both are verified by differentiation, here and in the gate.
     #[test]
-    fn charlwood_21_22_35_close_and_verify() {
+    fn charlwood_21_35_close_and_verify() {
         use crate::parse::parse;
         use std::collections::HashMap as Map;
 
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         for src in [
-            "x^3*asin(x)/sqrt(1-x^4)",    // #21
-            "x^3*acos(1/x)/sqrt(-1+x^4)", // #22 (asec x, spelled acos(1/x))
-            "x*acos(1/x)/sqrt(-1+x^2)",   // #35
+            "x^3*asin(x)/sqrt(1-x^4)",  // #21
+            "x*acos(1/x)/sqrt(-1+x^2)", // #35
         ] {
             let mut syms: Map<String, ExprId> = Map::from([("x".to_owned(), x)]);
             let f = parse(src, &pool, &mut syms).expect("parses");
             let res = solved(f, x, &pool);
             let _ = res;
         }
+    }
+
+    /// Charlwood #22 is **not** in the list above, and the reason is worth
+    /// pinning: this module produced an answer for it that is the
+    /// antiderivative for `x > 1` and wrong by ≈1.1 for `x < −1`.
+    ///
+    /// The candidate passed the gate because the gate's numeric grid was
+    /// positive-only — six samples, six agreements, one admitted wrong answer.
+    /// With the grid two-sided the candidate is refused, which is the correct
+    /// outcome for a module that has no way to say "valid on `x > 1`".
+    /// Recovering #22 needs a branch-aware answer, not a wider search.
+    #[test]
+    fn charlwood_22_is_refused_because_its_candidate_is_one_sided() {
+        use crate::parse::parse;
+        use std::collections::HashMap as Map;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let mut syms: Map<String, ExprId> = Map::from([("x".to_owned(), x)]);
+        let f = parse("x^3*acos(1/x)/sqrt(-1+x^4)", &pool, &mut syms).expect("parses");
+        assert!(
+            integrate_by_parts(f, x, &pool).is_declined(),
+            "#22's candidate is only right on one branch and must be refused"
+        );
     }
 
     #[test]

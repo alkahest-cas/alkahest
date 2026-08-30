@@ -102,12 +102,39 @@ const U_NAME: &str = "$subst_u$";
 // Entry point
 // ---------------------------------------------------------------------------
 
-/// Try to integrate `expr` by a rationalizing substitution `uⁿ = g(x)`.
+/// Try to integrate `expr` by substituting the transcendental generator away.
 ///
-/// Returns `None` when the shape is not one this route handles (so the caller
-/// falls through unchanged), and `Some(Err(..))` only when the route was
-/// applicable but could not be closed — never a wrong answer.
+/// Two routes, in order:
+///
+/// 1. `uⁿ = g(x)`, which **rationalizes** the integrand — this module, below.
+/// 2. `t = g(x)`, which leaves an **algebraic** function of `t` for the
+///    genus-0/1 engine — [`super::generator_subst`].
+///
+/// Route 2 is only consulted when route 1 does not solve, and its verdict is
+/// only reported when route 1 had none of its own, so this is an extension of
+/// route 1's territory and never a change to it.
+///
+/// Returns `None` when neither shape applies (so the caller falls through
+/// unchanged), and `Some(Err(..))` only when a route was applicable but could
+/// not be closed — never a wrong answer, and never a non-elementarity claim.
 pub(super) fn try_rationalizing_substitution(
+    expr: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<Result<DerivedExpr<ExprId>, IntegrationError>> {
+    let rational = rationalizing_route(expr, var, pool);
+    if matches!(rational, Some(Ok(_))) {
+        return rational;
+    }
+    let generator = super::generator_subst::try_generator_substitution(expr, var, pool);
+    if matches!(generator, Some(Ok(_))) {
+        return generator;
+    }
+    rational.or(generator)
+}
+
+/// Route 1: `uⁿ = g(x)` with `g′ = R(g)` rational, giving a rational `u`-integrand.
+fn rationalizing_route(
     expr: ExprId,
     var: ExprId,
     pool: &ExprPool,
@@ -206,7 +233,7 @@ pub(super) fn try_rationalizing_substitution(
 /// evidence.  The rigorous enclosure tier is `BestEffort` here — the residual
 /// of a `log`/`atan` candidate is a shallow elementary expression that Taylor
 /// models handle in milliseconds, unlike the deeply nested elliptic residuals.
-fn gate_options() -> gate::GateOptions {
+pub(super) fn gate_options() -> gate::GateOptions {
     gate::GateOptions {
         tolerance: 1e-7,
         min_points: 8,
@@ -219,7 +246,7 @@ fn gate_options() -> gate::GateOptions {
 
 /// A dense real grid for the `x`-level gate, deliberately irrational-ish so it
 /// does not land on `tan`'s poles or on `0`.
-fn x_samples() -> Vec<f64> {
+pub(super) fn x_samples() -> Vec<f64> {
     let mut xs = Vec::new();
     let mut x = -6.0_f64;
     while x < 6.0 {
@@ -234,7 +261,7 @@ fn x_samples() -> Vec<f64> {
 /// The gate pre-screens these itself, so an over-generous box costs an
 /// attempt and nothing else; what matters is that a box never straddles a
 /// domain boundary, which the inset guarantees.
-fn domain_boxes(samples: &[f64], in_domain: &dyn Fn(f64) -> bool) -> Vec<(f64, f64)> {
+pub(super) fn domain_boxes(samples: &[f64], in_domain: &dyn Fn(f64) -> bool) -> Vec<(f64, f64)> {
     let mut boxes = Vec::new();
     let mut run: Option<(f64, f64)> = None;
     for &x in samples {

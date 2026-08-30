@@ -122,12 +122,16 @@ def test_nonelementary_propagates():
         integrate(alkahest.exp(x**2), x, 0, 1)
 
 
-def test_unsupported_propagates():
-    # ∫_1^2 sin(x)/x dx is non-elementary in the definite form too.
+def test_nonelementary_closed_form_evaluates():
+    # ∫_1^2 sin(x)/x dx has no *elementary* antiderivative, but it does have a
+    # closed form over the registered basis — `Si(2) − Si(1)` — so the definite
+    # form is now a number rather than a refusal.  Checked against the value,
+    # not against the shape.
     pool = ExprPool()
     x = pool.symbol("x")
-    with pytest.raises(Exception):
-        integrate(alkahest.sin(x) / x, x, 1, 2)
+    value = integrate(alkahest.sin(x) / x, x, 1, 2).value
+    got = float(alkahest.eval_expr(value, {}))
+    assert abs(got - 0.6593299064355118) < 1e-9, got
 
 
 def test_one_bound_raises():

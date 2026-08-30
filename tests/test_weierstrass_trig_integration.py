@@ -27,6 +27,7 @@ from alkahest.alkahest import (
     diff,
     eval_expr,
     integrate,
+    log,
     sin,
     tan,
 )
@@ -132,9 +133,14 @@ def test_nicer_forms_not_regressed():
 
 
 def test_non_rational_trig_declines():
-    """∫ sin(x)/x is non-elementary — the Weierstrass rewrite hits a bare x and
-    declines cleanly (no panic, raises IntegrationError)."""
+    """The Weierstrass rewrite hits a bare ``x`` and declines cleanly.
+
+    ``sin(x)/x`` used to be the witness; it is answered as ``Si(x)`` now, so it
+    no longer demonstrates anything about this route.  ``x·sin(x)/(1+cos(x))``
+    is the replacement: rational in the trig generators *except* for the bare
+    ``x``, which is exactly the shape the rewrite must refuse.
+    """
     pool = ExprPool()
     x = pool.symbol("x")
     with pytest.raises(IntegrationError):
-        integrate(sin(x) / x, x)
+        integrate(x * sin(x) / (1 + cos(x)) * log(x), x)

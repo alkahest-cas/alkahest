@@ -115,15 +115,22 @@ def test_curated_nonelementary_labels_are_genuinely_nonelementary():
 
     pool = ak.ExprPool()
     x = pool.symbol("x")
+    # An antiderivative naming one of these is, by construction, *not* an
+    # elementary function — so it does not contradict the label, it spells the
+    # label out.  `∫sin(x)/x dx = Si(x)` and `∫eˣ/x dx = Ei(x)` are curated
+    # hard-negatives that the integrator now answers; what would break the label
+    # is an *elementary* answer.
+    basis = ("Ei", "li", "Si", "Ci", "Shi", "Chi", "erf", "fresnels", "fresnelc", "dilog")
     integrable = []
     for f in _known_nonelementary_forms(pool, x):
         try:
-            ak.integrate(f, x)
-            integrable.append(str(f))
+            cap = str(ak.integrate(f, x).value)
         except ak.IntegrationError:
-            pass
+            continue
+        if not any(name in cap for name in basis):
+            integrable.append(f"{f} -> {cap}")
     assert not integrable, (
-        f"curated 'non-elementary' forms were integrated to a closed form: {integrable}"
+        f"curated 'non-elementary' forms were integrated to an ELEMENTARY form: {integrable}"
     )
 
 

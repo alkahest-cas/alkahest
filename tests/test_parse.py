@@ -555,3 +555,74 @@ assert "lambert_w" in str(e2)
         for name in ("lambert_w", "digamma", "bessel_j0", "bessel_j1", "evaluate", "residue"):
             assert name in alkahest.__all__, name
             assert hasattr(alkahest, name), name
+
+
+class TestSpecialFunctionOutputBasis:
+    """Every name ``integrate`` can emit must parse back to the same node.
+
+    The parsers are two separate hand-maintained implementations
+    (``CONTRIBUTING.md`` § "The parser exists twice"), and nothing cross-checks
+    them — so this test is the Python half of
+    ``parse.rs::the_special_function_output_basis_round_trips``.  Without it,
+    ``parse(str(integrate(f)))`` stops being a round trip the moment the
+    integrator learns a name the parser does not know, which is how a printed
+    result stops being usable input.
+    """
+
+    #: Node names, not Python constructor names: ``str(expr)`` prints the node
+    #: name, and reading it back is the whole point.
+    OUTPUT_BASIS = (
+        ("Ei", 1),
+        ("li", 1),
+        ("Si", 1),
+        ("Ci", 1),
+        ("Shi", 1),
+        ("Chi", 1),
+        ("erf", 1),
+        ("erfc", 1),
+        ("fresnels", 1),
+        ("fresnelc", 1),
+        ("dilog", 1),
+        ("trigamma", 1),
+        ("EllipticK", 1),
+        # The incomplete elliptic integrals take `(phi, m)`.
+        ("EllipticE", 2),
+        ("EllipticF", 2),
+    )
+
+    @pytest.mark.parametrize(("name", "arity"), OUTPUT_BASIS)
+    def test_round_trips(self, name, arity):
+        pool = ExprPool()
+        src = f"{name}({', '.join(['x', 'y'][:arity])})"
+        once = parse(src, pool)
+        rendered = str(once)
+        assert name in rendered, f"{src} printed as {rendered}"
+        twice = parse(rendered, pool)
+        assert str(twice) == rendered, f"{src} does not round trip via {rendered}"
+
+    def test_an_emitted_antiderivative_reads_back(self):
+        """The end-to-end property: integrate, print, parse, and agree."""
+        pool = ExprPool()
+        x = pool.symbol("x")
+        for src in ("exp(x)/x", "sin(x)/x", "1/log(x)", "exp(-x^2)", "sin(x^2)"):
+            f = parse(src, pool)
+            printed = str(alkahest.integrate(f, x).value)
+            back = parse(printed, pool)
+            assert str(back) == printed, f"∫{src} dx = {printed} does not re-parse"
+
+    def test_cbrt_desugars_to_a_third_power(self):
+        """``cbrt(u)`` is ``u^(1/3)``; no ``cbrt`` node exists in the pool.
+
+        Compared after ``simplify``: the desugar builds the exponent as a
+        folded ``Rational(1, 3)``, while the source spelling ``x^(1/3)`` builds
+        ``1 * 3^-1`` — the Python parser does not fold a literal quotient the
+        way the Rust one does.  That divergence is real and pre-dates this test;
+        what is asserted here is that the two denote the same expression.
+        """
+        pool = ExprPool()
+        rendered = str(parse("cbrt(x)", pool))
+        assert "cbrt" not in rendered, rendered
+        assert rendered == "x^(1/3)", rendered
+        assert str(simplify(parse("cbrt(x)", pool)).value) == str(
+            simplify(parse("x^(1/3)", pool)).value
+        )

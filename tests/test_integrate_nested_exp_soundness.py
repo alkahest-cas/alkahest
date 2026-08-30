@@ -226,9 +226,10 @@ def test_log_derivative_family_is_not_certified_li(src):
 @pytest.mark.parametrize(
     "src",
     [
-        "1/log(x)",
         # Q(x) is *not* a constant multiple of the log's argument, so the
-        # `h'/h` cancellation cannot happen and `li` really is the answer.
+        # `h'/h` cancellation cannot happen and `li` really is the answer —
+        # but the `li` reduction needs the plain reciprocal, so these have no
+        # closed form here and keep their certificate.
         "(x+1)^(-1)*log(x)^(-1)",
         "x^(-2)*log(x)^(-1)",
     ],
@@ -243,3 +244,18 @@ def test_real_li_family_stays_certified(src):
     assert excinfo.value.code == "E-INT-004", (
         f"∫ {src} dx should certify non-elementary, got {excinfo.value.code}"
     )
+
+
+def test_the_plain_reciprocal_log_is_emitted_as_li():
+    """``∫dx/log x = li(x)`` — non-elementary, but a closed form all the same.
+
+    The `li` matcher used to recognise this shape purely in order to refuse it.
+    It now emits, and the emission is verified by differentiating it back; the
+    fact that the answer is *not* elementary is carried by the name `li`.
+    """
+    pool = ExprPool()
+    x = pool.symbol("x")
+    f = ak.simplify(ak.parse("1/log(x)", pool)).value
+    cap = integrate(f, x).value
+    assert "li(" in str(cap), f"∫dx/log x should be li(x); got {cap}"
+    _check_antiderivative(x, f, cap, "1/log(x)")

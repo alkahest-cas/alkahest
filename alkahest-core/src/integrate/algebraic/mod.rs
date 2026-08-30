@@ -26,6 +26,7 @@ pub(super) mod decompose;
 pub mod elliptic;
 pub mod elliptic_output;
 pub mod find_order;
+mod generator_subst;
 pub mod genus1_log;
 pub(super) mod genus_zero;
 pub mod hermite_curve;
@@ -37,6 +38,7 @@ pub(super) mod poly_utils;
 // `x^{k−1}·g(x^k)` integrands.
 mod pullback;
 pub mod residues;
+pub(super) mod rootsum_expand;
 // Three-valued decision procedure for `v′ + (a′/2a)v = B` — the "is there an
 // algebraic primitive?" premise of the `∫B√P` non-elementarity certificate.
 // Separated from the generic RDE solver because a certificate may only rest on
@@ -289,6 +291,11 @@ pub fn integrate_algebraic(
             // …), which `try_euler_quadratic` above cannot rationalize.  Tried
             // last so the nicer closed forms of the earlier paths are preserved.
             if let Some(res) = parametrize::try_euler_quadratic_general(expr, var, pool) {
+                return res;
+            }
+            // Any *other* rational point of the conic (see the fn docs): what the
+            // two routes above leave is `a < 0` with irrational `√c`.
+            if let Some(res) = parametrize::try_euler_conic_point(expr, var, pool) {
                 return res;
             }
             // Rationalizing substitution `uⁿ = g(x)` for a *non-polynomial*
