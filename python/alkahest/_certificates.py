@@ -248,9 +248,10 @@ def shape_features(expr, var=None, definite: bool | None = None) -> dict[str, st
                 elif n == -1:
                     # `x⁻¹` (and `(f(x))⁻¹`) is the FTC / `HasDerivAt.inv`
                     # fragment; `x⁻ᵏ` for `k ≥ 2` is a different seam
-                    # (`HasDerivAt.pow` of the inverse, and `∫ x⁻²` withholds
-                    # on `product_rule`). Splitting them keeps the ledger from
-                    # marking the class `partial`.
+                    # (`HasDerivAt.pow` of the inverse; `∫ x⁻²` certifies via
+                    # a `product_rule` combine step, not `Real.deriv_log`).
+                    # Splitting them keeps the ledger from marking the class
+                    # `partial`.
                     kind = "neg_one"
                 else:
                     kind = "neg"

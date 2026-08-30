@@ -500,7 +500,7 @@ def test_shape_classification_is_stable_and_readable(pool):
 
 def test_neg_one_pow_splits_from_higher_negative_powers(pool):
     """`x⁻¹` and `x⁻²` must not share a shape class: the former's integral
-    certifies via FTC/`log`, the latter withholds on `product_rule`."""
+    certifies via FTC/`log`, the latter via FTC of `-x⁻¹` (`product_rule`)."""
     x = pool.symbol("x")
     _, inv = classify("integrate", (x**-1, x))
     _, neg_two = classify("integrate", (x**-2, x))

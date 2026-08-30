@@ -384,13 +384,18 @@ def test_lean_integrate_inv_x_via_log():
     assert to_lean(r) == cert
 
 
-def test_lean_integrate_x_neg_two_withheld():
-    """∫ x⁻² intern-equals d/dx(-x⁻¹) but product_rule cannot close — withhold."""
+def test_lean_integrate_x_neg_two_via_ftc():
+    """∫ x⁻² dx = -x⁻¹ certifies via FTC reuse of d/dx (-x⁻¹)."""
     p = pool()
     x = p.symbol("x")
     r = integrate(x**-2, x)
-    assert r.certificate is None
-    assert to_lean(r) == ""
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "(hx : x ≠ 0)" in cert
+    assert "deriv_inv" in cert
+    assert to_lean(r) == cert
 
 
 def test_lean_diff_sin_certificate_has_no_sorry():

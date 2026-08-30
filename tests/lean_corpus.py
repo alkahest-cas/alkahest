@@ -403,6 +403,20 @@ STRICT_CASES = [
         "log_rule",
         lambda pool: alkahest.integrate(pool.symbol("x") ** -1, pool.symbol("x")),
     ),
+    # `∫ x⁻² dx = -x⁻¹`, certified via FTC reuse of `d/dx (-x⁻¹)`. The
+    # antiderivative is a product; `product_rule` closes on the negative-power
+    # combine fragment (`x ≠ 0`, `deriv_inv`), not the unconditional simp set.
+    (
+        "int_x_neg_two",
+        "int_power_rule",
+        lambda pool: alkahest.integrate(pool.symbol("x") ** -2, pool.symbol("x")),
+    ),
+    # `d/dx (-x⁻¹)` — the product_rule step the integral above reuses.
+    (
+        "diff_neg_x_inv",
+        "product_rule",
+        lambda pool: alkahest.diff(-(pool.symbol("x") ** -1), pool.symbol("x")),
+    ),
 ]
 FORBIDDEN_TOKENS = ("sorry", "admit", "axiom")
 

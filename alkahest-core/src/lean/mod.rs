@@ -483,9 +483,11 @@ fn chain_diff_tactic(
     ))
 }
 
-/// The single tactic that closes every "combine" differentiation step —
+/// The tactic that closes every "combine" differentiation step —
 /// `diff_univariate_poly`, `sum_rule`, `product_rule` — over the
 /// *everywhere-differentiable* fragment ([`diff_body_unconditional`]).
+/// Negative powers of the variable go through [`neg_pow_combine_certificate`]
+/// instead; they must not be added here.
 ///
 /// `simp only` rewrites strictly at `deriv`/`DifferentiableAt` positions (no
 /// algebraic normalization of the lambda body, which would desync the
@@ -551,6 +553,79 @@ fn diff_body_unconditional(before: ExprId, wrt: ExprId, pool: &ExprPool) -> bool
     walk(before, wrt, pool)
 }
 
+/// True when `before` is built from `{wrt, constants, wrt⁻ⁿ}` under `Add`/`Mul`
+/// and contains at least one negative integer power of the variable.
+///
+/// This is the second combine-step fragment: the derivative needs `x ≠ 0` to
+/// discharge `DifferentiableAt` of the inverse, so it is *not* in
+/// [`diff_body_unconditional`] and must not be dumped into that simp set.
+/// Pointwise `wrt⁻ⁿ` itself is [`neg_pow_of_var_certificate`]; this gate is
+/// for the `product_rule` / `sum_rule` bodies those atoms appear in
+/// (e.g. `-x⁻¹`, `x + x⁻¹`). `log`/`sin`/`cos`/`exp` and non-negative powers
+/// of `wrt` other than the bare variable stay out — those have their own
+/// fragments.
+fn diff_body_neg_pow_combine(before: ExprId, wrt: ExprId, pool: &ExprPool) -> bool {
+    fn walk(f: ExprId, wrt: ExprId, pool: &ExprPool, saw_neg: &mut bool) -> bool {
+        pool.with(f, |d| match d {
+            ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => true,
+            ExprData::Symbol { .. } => true,
+            ExprData::Pow { base, exp } if *base == wrt => pool.with(*exp, |e| match e {
+                ExprData::Integer(n) => n.0.to_i64().is_some_and(|k| {
+                    if k < 0 {
+                        *saw_neg = true;
+                    }
+                    k < 0
+                }),
+                _ => false,
+            }),
+            ExprData::Add(xs) => xs.iter().all(|&c| walk(c, wrt, pool, saw_neg)),
+            ExprData::Mul(xs) => xs.iter().all(|&c| walk(c, wrt, pool, saw_neg)),
+            _ => false,
+        })
+    }
+    let mut saw_neg = false;
+    walk(before, wrt, pool, &mut saw_neg) && saw_neg
+}
+
+/// Combine-step certificate for [`diff_body_neg_pow_combine`]: bind
+/// `(x : ℝ) (hx : x ≠ 0)` and close with the same inverse `HasDerivAt` facts
+/// the pointwise `wrt⁻ⁿ` path already uses (`deriv_inv` / `differentiableAt_inv`),
+/// plus `deriv_pow''` so a factor `(x)⁻¹ ^ (k : ℕ)` (pretty-printed `x⁻ᵏ`)
+/// unfolds. `field_simp [hx]` reconciles `-(x^2)⁻¹` with Alkahest's
+/// `(-1 * 1 * (x)⁻¹ ^ 2)` spelling. Must not be merged into
+/// [`UNCONDITIONAL_DIFF_TACTIC`] — that simp set has no `x ≠ 0`.
+fn neg_pow_combine_certificate(wrt: ExprId, pool: &ExprPool) -> (Option<String>, String) {
+    let var = wrt_name(wrt, pool);
+    let binder = format!("({var} : ℝ) (hx : {var} ≠ 0)");
+    let tactic = "by\n    \
+         simp (config := { maxDischargeDepth := 8 }) only [deriv_add, deriv_mul, deriv_pow, \
+         deriv_pow'', deriv_const, deriv_id'', deriv_inv, \
+         differentiableAt_pow, differentiableAt_id', differentiableAt_const, \
+         DifferentiableAt.add, DifferentiableAt.mul, DifferentiableAt.pow, \
+         differentiableAt_inv.mpr hx]\n    \
+         field_simp [hx]\n    \
+         try ring"
+        .to_string();
+    (Some(binder), tactic)
+}
+
+/// Unconditional combine first; if the body is instead in the negative-power
+/// fragment, the `x ≠ 0` binder + inverse facts. Used by `sum_rule` and
+/// (after the quotient-chain attempt) `product_rule`.
+fn combine_step_certificate(
+    before: ExprId,
+    wrt: ExprId,
+    pool: &ExprPool,
+) -> Option<(Option<String>, String)> {
+    if diff_body_unconditional(before, wrt, pool) {
+        Some((None, UNCONDITIONAL_DIFF_TACTIC.to_string()))
+    } else if diff_body_neg_pow_combine(before, wrt, pool) {
+        Some(neg_pow_combine_certificate(wrt, pool))
+    } else {
+        None
+    }
+}
+
 fn diff_rule_to_tactic(rule_name: &str) -> Option<&'static str> {
     match rule_name {
         "diff_identity" => Some("by simp [deriv_id]"),
@@ -594,8 +669,9 @@ fn diff_rule_to_tactic(rule_name: &str) -> Option<&'static str> {
 /// through to withholding), the `diff_sqrt` positivity certificate, the
 /// `diff_primitive_registry` dispatch (`tan`/`sinh`/`cosh`/`atan`/`asin`),
 /// negative integer powers of the variable ([`neg_pow_of_var_certificate`]),
-/// and the `f(x)^n` / quotient chain shapes ([`power_chain_certificate`],
-/// [`quotient_chain_certificate`]).
+/// the `f(x)^n` / quotient chain shapes ([`power_chain_certificate`],
+/// [`quotient_chain_certificate`]), and the two combine-step fragments
+/// ([`combine_step_certificate`]).
 fn diff_step_certificate(
     step: &RewriteStep,
     wrt: ExprId,
@@ -641,17 +717,17 @@ fn diff_step_certificate(
                 None
             }
         }
-        // Combine steps: only certifiable when the differentiated body lies in
-        // the everywhere-differentiable fragment (otherwise the unconditional
-        // simp set leaves a `deriv`/`DifferentiableAt` goal open — withhold).
-        "diff_univariate_poly" | "sum_rule" => diff_body_unconditional(step.before, wrt, pool)
+        // Polynomial combine stays on the everywhere-differentiable fragment.
+        "diff_univariate_poly" => diff_body_unconditional(step.before, wrt, pool)
             .then(|| (None, UNCONDITIONAL_DIFF_TACTIC.to_string())),
+        // `sum_rule` / `product_rule`: unconditional fragment first, then the
+        // `{wrt, constants, wrt⁻ⁿ}` fragment with an `x ≠ 0` binder. Negative
+        // powers must not be dumped into [`UNCONDITIONAL_DIFF_TACTIC`].
+        "sum_rule" => combine_step_certificate(step.before, wrt, pool),
         // `product_rule` first tries the `f(x)/g(x)` quotient chain (which
-        // carries its own `g x ≠ 0` binder), then the unconditional fragment.
-        "product_rule" => quotient_chain_certificate(step.before, wrt, pool).or_else(|| {
-            diff_body_unconditional(step.before, wrt, pool)
-                .then(|| (None, UNCONDITIONAL_DIFF_TACTIC.to_string()))
-        }),
+        // carries its own `g x ≠ 0` binder), then the two combine fragments.
+        "product_rule" => quotient_chain_certificate(step.before, wrt, pool)
+            .or_else(|| combine_step_certificate(step.before, wrt, pool)),
         name => diff_rule_to_tactic(name).map(|t| (None, t.to_string())),
     }
 }
@@ -1362,10 +1438,11 @@ pub fn emit_lean_expr_wrt(
 /// `∫ (1+x²)⁻¹ dx = atan x` certifies once [`registry_diff_certificate`] can
 /// close `d/dx atan(x)`. `sinh`/`cosh` are not needed here (no matching
 /// integration rule). `asin` stays out: its derivative certificate carries an
-/// `|x| < 1` binder that the reused FTC path does not thread. A *product*
-/// involving a negative power (e.g. the antiderivative `-x⁻¹` of `x⁻²`) still
-/// withholds at this commit: that derivative log's `product_rule` step sits
-/// outside the unconditional simp set and is not encoded here.
+/// `|x| < 1` binder that the reused FTC path does not thread. A *product* of
+/// constants and a negative power of the variable (e.g. the antiderivative
+/// `-x⁻¹` of `x⁻²`) is in the fragment: that derivative log's `product_rule`
+/// step is closed by the second combine fragment ([`diff_body_neg_pow_combine`]),
+/// not the unconditional simp set.
 ///
 /// Rejecting these keeps the integration certificate sound: a withheld integral
 /// is always preferable to a `.lean` file that fails to typecheck. Composites
@@ -2671,10 +2748,11 @@ mod tests {
     }
 
     #[test]
-    fn integration_cert_x_neg_two_withheld() {
-        // ∫ x⁻² dx = -x⁻¹ intern-equals `d/dx (-x⁻¹) = x⁻²`, but the
-        // antiderivative is a product whose `product_rule` step is outside
-        // the unconditional simp set — withhold rather than emit sorry.
+    fn integration_cert_x_neg_two_via_ftc() {
+        // ∫ x⁻² dx = -x⁻¹ intern-equals `d/dx (-x⁻¹) = x⁻²`. The antiderivative
+        // is a product; `product_rule` closes via the negative-power combine
+        // fragment (`x ≠ 0`, `deriv_inv` / `differentiableAt_inv`), not the
+        // unconditional simp set.
         use crate::integrate::integrate;
 
         let pool = p();
@@ -2683,9 +2761,24 @@ mod tests {
         let derived = integrate(x_neg2, x, &pool).expect("integrate");
         let lean = emit_integration_cert(derived.value, x_neg2, x, &pool);
         assert!(
-            lean.is_empty(),
-            "∫ x⁻² intern-equals but product_rule cannot close; must withhold: {lean}"
+            !lean.is_empty(),
+            "∫ x⁻² should certify via FTC reuse of d/dx (-x⁻¹); antiderivative={}, integrand={}",
+            pool.display(derived.value),
+            pool.display(x_neg2)
         );
+        assert!(
+            lean.contains("(hx : x ≠ 0)"),
+            "expected an explicit nonzero-hypothesis binder: {lean}"
+        );
+        assert!(
+            lean.contains("deriv_inv") && lean.contains("differentiableAt_inv.mpr hx"),
+            "expected the neg-pow combine tactic: {lean}"
+        );
+        assert!(
+            lean.contains("hasDerivAt_inv"),
+            "nested power_rule on x⁻¹ still uses hasDerivAt_inv: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
     }
 
     #[test]
@@ -3280,6 +3373,67 @@ mod tests {
         assert!(
             lean_neg2.contains("hasDerivAt_inv") && lean_neg2.contains("hinv.pow 2"),
             "expected hasDerivAt_inv then HasDerivAt.pow 2: {lean_neg2}"
+        );
+    }
+
+    #[test]
+    fn product_rule_neg_inv_combine_certifies_with_nonzero_hyp() {
+        use crate::diff::diff;
+
+        // `d/dx (-x⁻¹)` is a product whose `product_rule` step needs `x ≠ 0`.
+        // The second combine fragment closes it; this is the FTC reuse path
+        // for `∫ x⁻²`.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![
+            pool.integer(-1_i32),
+            pool.pow(x, pool.integer(-1_i32)),
+        ]);
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "d/dx (-x⁻¹) should be Lean-certifiable: {lean}"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "(-x⁻¹) certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("(hx : x ≠ 0)"),
+            "expected an explicit nonzero-hypothesis binder: {lean}"
+        );
+        assert!(
+            lean.contains("deriv_inv") && lean.contains("differentiableAt_inv.mpr hx"),
+            "expected the neg-pow product_rule tactic: {lean}"
+        );
+    }
+
+    #[test]
+    fn sum_rule_var_plus_inv_combine_certifies_with_nonzero_hyp() {
+        use crate::diff::diff;
+
+        // `d/dx (x + x⁻¹)` is a sum in the `{wrt, constants, wrt⁻ⁿ}` fragment.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.add(vec![x, pool.pow(x, pool.integer(-1_i32))]);
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "d/dx (x + x⁻¹) should be Lean-certifiable: {lean}"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "(x + x⁻¹) certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("(hx : x ≠ 0)"),
+            "expected an explicit nonzero-hypothesis binder: {lean}"
+        );
+        assert!(
+            lean.contains("deriv_inv") && lean.contains("differentiableAt_inv.mpr hx"),
+            "expected the neg-pow sum_rule tactic: {lean}"
         );
     }
 
