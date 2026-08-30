@@ -105,10 +105,19 @@ _TOP_FORM = {
 _FN_ARG_RANK = {"none": 0, "var": 1, "pow": 2, "other": 3}
 _POW_RANK = {"none": 0, "nat": 1, "neg_one": 2, "neg": 3, "frac": 4, "sym": 5}
 _MUL_RANK = {"none": 0, "scalar": 1, "general": 2}
-# `one_plus_sq` is the FTC fragment ∫(1+x²)⁻¹; it must outrank `var` so a
-# mixed expression still reports the more specific base, and lose to `expr`
-# so a second, uncertifiable denominator keeps the class withheld.
-_POW_BASE_RANK = {"none": 0, "var": 1, "one_plus_sq": 2, "expr": 3}
+# `one_plus_sq` is the FTC fragment ∫(1+x²)⁻¹. `int` / `recip` split geometric
+# r^k so Σ 2^k (certifies) and Σ (1/2)^k (withheld) do not share a class.
+# Later ranks are "worse": a mixed expression reports the withheld base, and
+# `expr` outranks everything so a second uncertifiable base keeps the class
+# withheld.
+_POW_BASE_RANK = {
+    "none": 0,
+    "var": 1,
+    "one_plus_sq": 2,
+    "int": 3,
+    "recip": 4,
+    "expr": 5,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +173,25 @@ def _is_one_plus_var_sq(expr, var) -> bool:
     return (is_one(a) and is_var_sq(b)) or (is_one(b) and is_var_sq(a))
 
 
+def _pow_base_kind(base, var) -> str:
+    """Classify a power base for the ledger feature vector.
+
+    ``1 + x²`` is the FTC atom for ``∫(1+x²)⁻¹``. ``2^k`` (integer base)
+    certifies; ``(1/2)^k`` (reciprocal base) is withheld. They must not
+    share a shape class.
+    """
+    if _is_var(base, var):
+        return "var"
+    if _is_one_plus_var_sq(base, var):
+        return "one_plus_sq"
+    tag = base.node()[0]
+    if tag == "integer":
+        return "int"
+    if tag == "rational":
+        return "recip"
+    return "expr"
+
+
 def canonical_expression(expr) -> str:
     """Render *expr* with commutative operands in a fixed order.
 
@@ -217,7 +245,9 @@ def shape_features(expr, var=None, definite: bool | None = None) -> dict[str, st
     side conditions the combine tactic does not yet thread through), how the
     pieces are combined, and — for reciprocal polynomials — whether the base
     is the FTC atom ``1 + x²`` (``pow_base=one_plus_sq``) rather than a
-    generic expression.
+    generic expression. Geometric terms further split integer bases
+    (``pow_base=int``, e.g. ``2^k``) from reciprocal rationals
+    (``pow_base=recip``, e.g. ``(1/2)^k``).
     """
     funcs: set[str] = set()
     fn_arg = "none"
@@ -261,12 +291,7 @@ def shape_features(expr, var=None, definite: bool | None = None) -> dict[str, st
                 kind = "sym"
             if _POW_RANK[kind] > _POW_RANK[pow_kind]:
                 pow_kind = kind
-            if _is_var(node[1], var):
-                base = "var"
-            elif _is_one_plus_var_sq(node[1], var):
-                base = "one_plus_sq"
-            else:
-                base = "expr"
+            base = _pow_base_kind(node[1], var)
             if _POW_BASE_RANK[base] > _POW_BASE_RANK[pow_base]:
                 pow_base = base
         elif tag == "mul":

@@ -2173,6 +2173,11 @@ impl PyAssumptions {
 const RESULT_SCHEMA_VERSION: u32 = 1;
 const STEPS_SCHEMA_VERSION: u32 = 1;
 
+/// Inclusive `(lo, hi)` bounds on a definite Gosper sum; `None` is indefinite.
+type GosperBounds = Option<(ExprId, ExprId)>;
+/// `(term, k, bounds)` for a Gosper sum. See [`GosperBounds`].
+type GosperCertInput = (ExprId, ExprId, GosperBounds);
+
 #[pyclass(name = "DerivedResult")]
 struct PyDerivedResult {
     value: PyExpr,
@@ -2191,11 +2196,9 @@ struct PyDerivedResult {
     /// certificates have no rewrite log; the emitter recognises a small
     /// `x → +∞` fragment and withholds everything else (never `sorry`).
     tendsto_input: Option<(ExprId, ExprId, ExprId)>,
-    /// `(term, k, bounds)` for a Gosper sum. `bounds = None` is indefinite
-    /// (`G(k+1)−G(k)=F(k)` plus a `Finset.range` telescope); `Some((lo, hi))`
-    /// is definite (`∑_{k=lo}^{hi} F = G(hi+1)−G(lo)`). Emitting the rewrite
-    /// log as `F = G` would be false.
-    gosper_input: Option<(ExprId, ExprId, Option<(ExprId, ExprId)>)>,
+    /// See [`GosperCertInput`]. Emitting the rewrite log as `F = G` would be
+    /// false.
+    gosper_input: Option<GosperCertInput>,
     /// `(term, k, lo, hi)` for a discrete product. Only `∏_{k=1}^{n} k = n!`
     /// is certified (Mathlib `prod_Ico_id_eq_factorial`); gamma encodings stay
     /// withheld.
