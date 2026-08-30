@@ -401,12 +401,11 @@ fn registry_diff_certificate(
         "asin" => {
             let var = wrt_name(wrt, pool);
             let binder = format!("({var} : ℝ) (hx : -1 < {var} ∧ {var} < 1)");
-            let tactic = format!(
-                "by\n    \
+            let tactic = "by\n    \
                  have hderiv := (Real.hasDerivAt_arcsin hx.1.ne' hx.2.ne).deriv\n    \
                  rw [hderiv, one_div]\n    \
                  ring"
-            );
+                .to_string();
             Some((Some(binder), tactic))
         }
         _ => None,
