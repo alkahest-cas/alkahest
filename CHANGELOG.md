@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **The spelling of a by-parts residual decided whether it integrated.**
+  `∫x/((1−x²)·√(1−2x²))` — the residual Charlwood #49 reduces to — closes in
+  milliseconds when written that way, and declines with `algebraic integrator
+  requires exactly one sqrt(P(x)) generator` when written the way `diff`
+  spells it. Composite arguments such as `asin(x/√(1−x²))` throw off several
+  radical generators, so the residual almost never arrived in the one form the
+  algebraic engine accepts. `by_parts` now normalises a residual's radicals
+  before handing it on — seeing through `(a·b)^k` and `(b^m)^k`, combining
+  radicals, splitting `√(N/D)` into `√N·√D⁻¹` with a numerically-ranked
+  orientation, and pulling repeated polynomial factors out of a radicand via
+  FLINT (`√(x + 2x² + x³) → (1+x)·√x`). These are offered to the existing
+  engine as alternative *spellings*; no new integration rule is introduced and
+  nothing new can be certified non-elementary. Charlwood's Fifty goes from 30
+  to 33 (`asin(x/√(1−x²))`, `atan(√(1+x)−√x)`, `asin(x)/(1+x²)^(3/2)`), and a
+  25-case composite-argument corpus from 12 to 17, every answer checked by
+  differentiation. The pass is gated on a residual having two distinct
+  variable-dependent radicals or one with a non-polynomial radicand, which
+  keeps the cost off the common decline path: median decline latency over a
+  110-case corpus moves 124 ms → 128 ms, worst case 2244 ms → 2203 ms.
 - **A Lean certificate cited a theorem it had not stated.** The kernel folds
   `-e` into `Mul[e, -1]`, and the Lean printer rendered that literally, so the
   `Filter.Tendsto` certificate for `exp(-x) → 0` emitted the goal
