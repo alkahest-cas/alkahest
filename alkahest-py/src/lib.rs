@@ -10308,10 +10308,15 @@ fn py_simplify_auto(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<PyDerivedRe
 #[pyfunction]
 #[pyo3(name = "simplify_strategy")]
 fn py_simplify_strategy(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<String> {
+    // Outside the `cfg`s on purpose. `choose_strategy` is iterative and could
+    // answer for any depth, but this reports what `simplify_auto` *would* do,
+    // and an answer for an expression `simplify_auto` will refuse is not one
+    // worth having. Guarding both branches identically also keeps the two
+    // builds from disagreeing about which inputs are answerable.
+    guard_simplify_depth(&expr.pool.borrow(py).inner, expr.id)?;
     #[cfg(feature = "parallel")]
     {
         let pool_ref = expr.pool.borrow(py);
-        guard_simplify_depth(&pool_ref.inner, expr.id)?;
         let strategy = alkahest_core::choose_strategy(expr.id, &pool_ref.inner);
         Ok(match strategy {
             alkahest_core::Strategy::ForkJoin => "fork_join".to_string(),
@@ -10320,7 +10325,6 @@ fn py_simplify_strategy(py: Python<'_>, expr: PyRef<PyExpr>) -> PyResult<String>
     }
     #[cfg(not(feature = "parallel"))]
     {
-        let _ = (py, expr);
         Ok("sequential".to_string())
     }
 }

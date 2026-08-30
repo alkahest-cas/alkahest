@@ -2,13 +2,21 @@
 //!
 //! [`crate::kernel::MAX_EXPR_DEPTH`] is one number for every walker in the
 //! crate, calibrated against the shallowest one that recurses without a net.
-//! The simplification traversals are not that: `simplify::engine`'s
-//! `simplify_node` and `simplify_node_indexed`, and — under the `parallel`
-//! feature — `simplify::parallel`'s `simplify_node_par`, all run under the
-//! segmented-stack trampoline in `simplify::stack`, and
-//! `simplify::redex` does not recurse at all.  For those the depth bound is
-//! removed rather than lowered, so applying a 2 048-level ceiling to them
-//! costs capability and buys nothing.
+//! The simplification traversals are not that.  `simplify::engine`'s
+//! `simplify_node` and `simplify_node_indexed` run under the segmented-stack
+//! trampoline in `simplify::stack`, which continues the recursion on a freshly
+//! spawned, larger-stacked thread before the current one is spent.  For those
+//! the depth bound is removed rather than lowered, so applying a 2 048-level
+//! ceiling to them costs capability and buys nothing.
+//!
+//! Neither of the two `parallel`-gated strategies changes that, and both had
+//! to be checked rather than assumed: `simplify::parallel`'s
+//! `simplify_node_par` goes through the same trampoline, and
+//! `simplify::redex` buckets the DAG by height and rewrites a level at a time,
+//! so it does not recurse at all.  With the feature off, both entry points
+//! fall back to `simplify::engine`.  Every branch of every `cfg` on this path
+//! is therefore stack-safe, which is what makes it safe to lift the ceiling
+//! from an entry point whose implementation depends on a feature flag.
 //!
 //! One thing on that path is still a plain recursion, though, and this module
 //! is what keeps it from being reached.
@@ -30,8 +38,7 @@
 //! So the ceiling still has to apply, but only to the expressions that reach
 //! that pass.  [`check_simplify_depth`] is that test: past
 //! [`MAX_EXPR_DEPTH`](crate::kernel::MAX_EXPR_DEPTH) it asks whether this
-//! expression would take the colored
-//! route, and refuses only if it would.
+//! expression would take the colored route, and refuses only if it would.
 //!
 //! # Why the predicate is the real collector rather than a cheaper copy
 //!
@@ -77,11 +84,10 @@ use crate::kernel::{ExprId, ExprPool};
 /// The bottom-up simplification traversals are stack-safe at any depth (see
 /// the [module documentation](self)), so this accepts expressions far past
 /// [`MAX_EXPR_DEPTH`](crate::kernel::MAX_EXPR_DEPTH) — a 100 000-level `sin`
-/// chain simplifies in about
-/// 0.1 s.  What it still refuses is a too-deep expression that would be
-/// handed to the assumption-gated colored e-graph pass, which is a plain
-/// recursion: that is an expression past the ceiling containing a
-/// `Domain::Positive` or `Domain::NonZero` symbol.
+/// chain simplifies in about 0.1 s.  What it still refuses is a too-deep
+/// expression that would be handed to the assumption-gated colored e-graph
+/// pass, which is a plain recursion: that is an expression past the ceiling
+/// containing a `Domain::Positive` or `Domain::NonZero` symbol.
 ///
 /// The error, when there is one, is the same [`DepthLimitError`] with the same
 /// `E-DEPTH-001` code and the same `limit` as [`check_expr_depth`]; a caller
