@@ -63,17 +63,18 @@
 //! matters: the guard sits on hot paths such as `__str__`, and anything that
 //! had to walk the tree to find its depth would cost more than it saves.
 //!
-//! The callers are the PyO3 bindings, and only those.  `alkahest-py` calls
-//! [`check_expr_depth`] — through its `guard_depth` / `guard_expr_depth`
-//! wrappers — or [`check_expr_depths`] at upwards of fifty entry points: every
-//! renderer, `diff`, `symbolic_grad`, `subs`, the evaluators and the JIT
-//! entry, the polynomial converters, the integrator, the SMT-LIB and Lean
-//! emitters, the plotters.  The simplification entry points are the exception
-//! and go through `guard_simplify_depth` instead; the two lists are pinned
-//! side by side in `tests/test_expression_depth_limit.py`.  Nothing inside
-//! this crate calls [`check_expr_depth`] or [`check_expr_depths`] directly —
-//! [`check_simplify_depth`](crate::simplify::check_simplify_depth) is the one
-//! in-crate caller, and it is itself only called from `alkahest-py`.
+//! Every call site is an entry point rather than a traversal: no walker checks
+//! its own input.  `alkahest-py` calls [`check_expr_depth`] — through its
+//! `guard_depth` / `guard_expr_depth` wrappers — or [`check_expr_depths`] at
+//! upwards of fifty of them: every renderer, `diff`, `symbolic_grad`, `subs`,
+//! the evaluators and the JIT entry, the polynomial converters, the
+//! integrator, the SMT-LIB and Lean emitters, the plotters.  The
+//! simplification entry points instead call `guard_simplify_depth`, which
+//! wraps this crate's own
+//! [`check_simplify_depth`](crate::simplify::check_simplify_depth) — the only
+//! caller of [`check_expr_depth`] inside `alkahest-cas`, and itself reached
+//! only from `alkahest-py`.  Both lists are pinned side by side in
+//! `tests/test_expression_depth_limit.py`.
 //!
 //! # What this does not cover
 //!
