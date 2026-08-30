@@ -14,6 +14,8 @@ The corpus is not a new list of cases. It reuses, unchanged:
 * ``tests/lean_corpus.py`` — the strict, no-admission corpus whose every entry
   is expected to typecheck under pinned Lean/Mathlib in
   ``.github/workflows/lean.yml``. These populate the *certified* side.
+* ``tests/lean_tendsto_corpus.py`` — recognised ``x → +∞`` ``Filter.Tendsto``
+  certificates from ``limit()``.
 * ``tests/textbook_gate/`` — the first-course calculus/algebra suite, run under
   pytest exactly as ``tests/lean_corpus_sample.py`` runs it. These reach far
   beyond the certifiable fragment and so populate the *withheld* side.
@@ -123,8 +125,9 @@ class _Recorder:
 
 
 def _run_strict_corpus() -> None:
-    """Drive every case in ``tests/lean_corpus.py``'s strict corpus."""
+    """Drive every case in the strict rewrite corpus and the Tendsto corpus."""
     import lean_corpus
+    import lean_tendsto_corpus
 
     pool = alkahest.ExprPool()
     for name, _expected_rule, builder in lean_corpus.STRICT_CASES:
@@ -132,6 +135,11 @@ def _run_strict_corpus() -> None:
             builder(pool)
         except Exception as exc:  # pragma: no cover — a broken strict case
             print(f"WARNING: strict corpus case {name!r} raised: {exc}", file=sys.stderr)
+    for name, _expected_tactic, builder in lean_tendsto_corpus.STRICT_CASES:
+        try:
+            builder(pool)
+        except Exception as exc:  # pragma: no cover — a broken Tendsto case
+            print(f"WARNING: tendsto corpus case {name!r} raised: {exc}", file=sys.stderr)
 
 
 def _run_textbook_gate(gate_dir: str) -> None:

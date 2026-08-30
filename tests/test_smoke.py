@@ -20,6 +20,7 @@ from alkahest import (
     interval_eval,
     jit_is_available,
     latex,
+    limit,
     log,
     parse,
     simplify,
@@ -553,6 +554,43 @@ def test_lean_definite_integral_withholds_symbolic_coefficient():
     x = p.symbol("x")
     y = p.symbol("y")
     r = integrate(y * cos(x), x, p.integer(0), p.integer(1))
+    assert r.certificate is None
+    assert to_lean(r) == ""
+
+
+def test_lean_tendsto_exp_neg_x_certificate():
+    """lim_{x→+∞} exp(-x) = 0 emits Filter.Tendsto via tendsto_exp_neg_atTop_nhds_zero."""
+    p = pool()
+    x = p.symbol("x")
+    r = limit(exp(-x), x, p.pos_infinity())
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "admit" not in cert
+    assert "tendsto_exp_neg_atTop_nhds_zero" in cert
+    assert to_lean(r) == cert
+
+
+def test_lean_tendsto_exp_x_certificate():
+    """lim_{x→+∞} exp(x) = +∞ emits Filter.Tendsto via tendsto_exp_atTop."""
+    p = pool()
+    x = p.symbol("x")
+    r = limit(exp(x), x, p.pos_infinity())
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "admit" not in cert
+    assert "tendsto_exp_atTop" in cert
+    assert to_lean(r) == cert
+
+
+def test_lean_tendsto_withholds_finite_sinc():
+    """Finite limits (sin x / x as x → 0) stay withheld — no invented Tendsto proof."""
+    p = pool()
+    x = p.symbol("x")
+    r = limit(sin(x) / x, x, p.integer(0))
     assert r.certificate is None
     assert to_lean(r) == ""
 

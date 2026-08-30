@@ -2166,6 +2166,11 @@ struct PyDerivedResult {
     /// `(integrand, var, lower, upper)` for a definite integral, used to emit an
     /// interval-FTC Lean certificate (`∫ a..b f = F b − F a`) lazily.
     definite_integration_input: Option<(ExprId, ExprId, ExprId, ExprId)>,
+    /// `(expr, var, lim)` for a limit, used to emit a `Filter.Tendsto`
+    /// certificate lazily. `lim` is the *computed* limit value. Tendsto
+    /// certificates have no rewrite log; the emitter recognises a small
+    /// `x → +∞` fragment and withholds everything else (never `sorry`).
+    tendsto_input: Option<(ExprId, ExprId, ExprId)>,
 }
 
 #[pymethods]
@@ -2208,7 +2213,9 @@ impl PyDerivedResult {
     /// certifiable without ``sorry`` and without false unwrapped equalities.
     ///
     /// Returns ``None`` when the log is empty, records an integration (where
-    /// ``integrand = F`` would be false), or would require an admission (B3).
+    /// ``integrand = F`` would be false), the Tendsto emitter does not
+    /// recognise the limit pattern, or the proof would require an admission
+    /// (B3).
     #[getter]
     fn certificate(&self, py: Python<'_>) -> Option<String> {
         // Integration derivation logs construct antiderivatives; emitting them
@@ -2242,6 +2249,11 @@ impl PyDerivedResult {
             }
             return Some(src);
         }
+        // Limits certify via Filter.Tendsto. There is no rewrite log — check
+        // this *before* the empty-log early return.
+        if self.tendsto_input.is_some() {
+            return self.tendsto_lean_source(py);
+        }
         if self.raw.log.is_empty() {
             return None;
         }
@@ -2262,7 +2274,9 @@ impl PyDerivedResult {
     /// * ``reason`` — stable reason code: ``"emitted"``,
     ///   ``"withheld_no_derivation"`` (nothing was rewritten, so there is
     ///   nothing to prove), ``"withheld_integration_shape"`` (the integral
-    ///   falls outside the FTC fragment the emitter can encode), or
+    ///   falls outside the FTC fragment the emitter can encode),
+    ///   ``"withheld_tendsto_shape"`` (the limit falls outside the
+    ///   ``Filter.Tendsto`` fragment the emitter can encode), or
     ///   ``"withheld_uncertifiable_step"``.
     /// * ``blocking_steps`` — for ``withheld_uncertifiable_step``, the list of
     ///   ``{"index", "rule", "before", "after"}`` records whose rewrite rule has
@@ -2280,6 +2294,8 @@ impl PyDerivedResult {
 
         let reason = if certifiable {
             "emitted"
+        } else if self.tendsto_input.is_some() {
+            "withheld_tendsto_shape"
         } else if self.integration_verification_input.is_some()
             || self.definite_integration_input.is_some()
         {
@@ -2353,6 +2369,9 @@ impl PyDerivedResult {
                 } else {
                     Some(src)
                 }
+            } else if self.tendsto_input.is_some() {
+                // Limits certify via Filter.Tendsto (no rewrite log).
+                self.tendsto_lean_source(py)
             } else if self.raw.log.is_empty() {
                 None
             } else {
@@ -2561,6 +2580,20 @@ fn derived_result_mode_is_compact(mode: &str) -> PyResult<bool> {
 }
 
 impl PyDerivedResult {
+    /// Lean source for a `Filter.Tendsto` certificate, when `tendsto_input`
+    /// is set and the emitter recognises the pattern without `sorry`.
+    fn tendsto_lean_source(&self, py: Python<'_>) -> Option<String> {
+        let (expr, var, lim) = self.tendsto_input?;
+        let pool_py = self.value.pool.clone_ref(py);
+        let pool = pool_py.borrow(py);
+        let src = alkahest_core::emit_tendsto_cert(expr, var, lim, &pool.inner);
+        if src.is_empty() || src.contains("sorry") || src.contains("admit") {
+            None
+        } else {
+            Some(src)
+        }
+    }
+
     /// `steps` list for [`PyDerivedResult::to_dict`]. Full mode mirrors the
     /// `.steps` getter exactly (`rule`/`before`/`after`/`side_conditions`);
     /// compact mode uses short keys and drops `before`/`after`, omitting
@@ -2626,6 +2659,7 @@ fn make_derived_result(
         wrt,
         integration_verification_input: None,
         definite_integration_input: None,
+        tendsto_input: None,
     }
 }
 
@@ -2651,6 +2685,7 @@ fn py_derived_result_context_simplify(
             wrt: dr.wrt,
             integration_verification_input: dr.integration_verification_input,
             definite_integration_input: dr.definite_integration_input,
+            tendsto_input: dr.tendsto_input,
         });
     }
     let mut log = dr.raw.log.clone();
@@ -2666,6 +2701,7 @@ fn py_derived_result_context_simplify(
     let mut result = make_derived_result(py, merged, pool_py, dr.wrt);
     result.integration_verification_input = dr.integration_verification_input;
     result.definite_integration_input = dr.definite_integration_input;
+    result.tendsto_input = dr.tendsto_input;
     Ok(result)
 }
 
@@ -4190,7 +4226,7 @@ fn py_limit(
     var: PyRef<PyExpr>,
     point: PyRef<PyExpr>,
     dir: Option<&str>,
-) -> PyResult<PyExpr> {
+) -> PyResult<PyDerivedResult> {
     let pool_py = expr.pool.clone_ref(py);
     let d = parse_limit_direction(dir);
     let id = {
@@ -4202,7 +4238,12 @@ fn py_limit(
         py.allow_threads(|| core_limit(id, var_id, point_id, d, pool))
             .map_err(limit_error_to_py)?
     };
-    Ok(PyExpr { id, pool: pool_py })
+    // Limits have no rewrite log today; the Tendsto emitter looks at the
+    // original expression, variable, and computed value instead.
+    let derived = DerivedExpr::new(id);
+    let mut result = make_derived_result(py, derived, pool_py, None);
+    result.tendsto_input = Some((expr.id, var.id, id));
+    Ok(result)
 }
 
 // ===========================================================================
@@ -7328,6 +7369,10 @@ fn py_to_lean(py: Python<'_>, arg: &Bound<'_, PyAny>) -> PyResult<String> {
                 return Ok(String::new());
             }
             return Ok(src);
+        }
+        // Limits certify via Filter.Tendsto. Empty / sorry → withhold.
+        if d.tendsto_input.is_some() {
+            return Ok(d.tendsto_lean_source(py).unwrap_or_default());
         }
         let pool_py = d.value.pool.clone_ref(py);
         let pool = pool_py.borrow(py);

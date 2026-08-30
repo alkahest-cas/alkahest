@@ -427,6 +427,8 @@ def sweep_limits(report, verbose=False):
             continue
         try:
             got = ak.limit(fa, x, pt)
+            if isinstance(got, ak.DerivedResult):
+                got = got.value
         except Exception as e:
             report.record(REFUSED, "limit", label, str(e)[:100])
             continue

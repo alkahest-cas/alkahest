@@ -11,9 +11,11 @@ on:
       - 'alkahest-core/src/diff/**'
       - 'alkahest-core/src/simplify/**'
       - 'alkahest-core/src/kernel/**'
+      - 'alkahest-core/src/calculus/**'
       - 'alkahest-py/src/lib.rs'
       - 'tests/lean_corpus.py'
       - 'tests/lean_corpus_sample.py'
+      - 'tests/lean_tendsto_corpus.py'
       - 'tests/_tg_helpers.py'
       - 'tests/textbook_gate/**'
       - 'tests/test_smoke.py'
@@ -30,9 +32,11 @@ on:
       - 'alkahest-core/src/diff/**'
       - 'alkahest-core/src/simplify/**'
       - 'alkahest-core/src/kernel/**'
+      - 'alkahest-core/src/calculus/**'
       - 'alkahest-py/src/lib.rs'
       - 'tests/lean_corpus.py'
       - 'tests/lean_corpus_sample.py'
+      - 'tests/lean_tendsto_corpus.py'
       - 'tests/_tg_helpers.py'
       - 'tests/textbook_gate/**'
       - 'tests/test_smoke.py'
@@ -88,6 +92,10 @@ jobs:
         run: |
           python tests/lean_corpus.py --output /tmp/lean_proofs/
 
+      - name: Generate Lean proofs (Filter.Tendsto corpus)
+        run: |
+          python tests/lean_tendsto_corpus.py --output /tmp/lean_tendsto/
+
       - name: Generate Lean proofs (full deduplicated textbook-gate pool)
         run: |
           # Every distinct certificate the library emits from the textbook gate
@@ -104,7 +112,7 @@ jobs:
       - name: Verify proofs with Lean without admissions
         run: |
           cd lean
-          for dir in /tmp/lean_proofs /tmp/lean_pool; do
+          for dir in /tmp/lean_proofs /tmp/lean_tendsto /tmp/lean_pool; do
             echo "== Verifying certificates in $dir =="
             for f in "$dir"/*.lean; do
               fname=$(basename "$f")
@@ -116,7 +124,7 @@ jobs:
               lake env lean -DwarningAsError=true "$f" || { echo "FAILED: $fname"; exit 1; }
             done
           done
-          echo "All generated Lean proofs (fixed corpus + full textbook-gate pool) verified without admissions."
+          echo "All generated Lean proofs (fixed corpus + Tendsto corpus + full textbook-gate pool) verified without admissions."
 
       - name: Upload generated Lean proofs on failure
         if: failure()
@@ -125,5 +133,6 @@ jobs:
           name: generated-lean-proofs
           path: |
             /tmp/lean_proofs
+            /tmp/lean_tendsto
             /tmp/lean_pool
           if-no-files-found: ignore

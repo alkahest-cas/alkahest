@@ -5,13 +5,15 @@ singularities, rational-function behavior at infinity, one-sided limits,
 and classic indeterminate products (`x·log(x)` as `x → 0+`). See
 `tests/textbook_gate/README.md` for the verification philosophy.
 
-`ak.limit(expr, var, point, dir=None)` returns a bare `Expr` (not a
-`DerivedResult` — no `.value`). Finite results are evaluated numerically
-with `ak.eval_expr` and compared to a hand-computed reference. Infinite
-results print as `"∞"` / `"(-1 * ∞)"` and cannot be passed to `eval_expr`
-(it raises `ValueError`), so those are checked via `str()` instead — this
-is fine per the README's philosophy since "is this the infinity marker"
-is a behavioral question, not a normal-form one.
+`ak.limit(expr, var, point, dir=None)` returns a `DerivedResult`. Finite
+results are evaluated numerically with `ak.eval_expr` (which unwraps
+`.value`) and compared to a hand-computed reference. Infinite results
+print as `"∞"` / `"(-1 * ∞)"` and cannot be passed to `eval_expr`
+(it raises `ValueError`), so those are checked via `str(.value)` instead
+— this is fine per the README's philosophy since "is this the infinity
+marker" is a behavioral question, not a normal-form one. `.certificate`
+is Lean `Filter.Tendsto` source only for a small recognised `x → +∞`
+fragment; everything else is withheld.
 """
 
 from __future__ import annotations
@@ -32,24 +34,39 @@ def x(pool: ak.ExprPool) -> ak.Expr:
     return pool.symbol("x")
 
 
+def _limit_value(result: ak.Expr | ak.DerivedResult) -> ak.Expr:
+    """Unwrap a `DerivedResult` from `ak.limit`; pass a bare `Expr` through."""
+    if isinstance(result, ak.DerivedResult):
+        return result.value
+    return result
+
+
 def assert_limit_equals(
-    result: ak.Expr, expected: float, *, rtol: float = 1e-9, atol: float = 1e-9
+    result: ak.Expr | ak.DerivedResult,
+    expected: float,
+    *,
+    rtol: float = 1e-9,
+    atol: float = 1e-9,
 ) -> None:
     """Assert a finite `ak.limit` result numerically equals `expected`."""
-    got = ak.eval_expr(result, {})
+    got = ak.eval_expr(_limit_value(result), {})
     assert math.isclose(got, expected, rel_tol=rtol, abs_tol=atol), (
         f"alkahest={got!r} expected={expected!r}"
     )
 
 
-def assert_limit_is_pos_infinity(result: ak.Expr) -> None:
-    assert str(result) == "∞", f"expected positive-infinity marker, got {result!r}"
+def assert_limit_is_pos_infinity(result: ak.Expr | ak.DerivedResult) -> None:
+    assert str(_limit_value(result)) == "∞", (
+        f"expected positive-infinity marker, got {result!r}"
+    )
 
 
-def assert_limit_is_neg_infinity(result: ak.Expr) -> None:
+def assert_limit_is_neg_infinity(result: ak.Expr | ak.DerivedResult) -> None:
     # Observed printed form for -infinity is a literal `(-1 * infinity)` product,
     # not a dedicated negative-infinity token.
-    assert str(result) == "(-1 * ∞)", f"expected negative-infinity marker, got {result!r}"
+    assert str(_limit_value(result)) == "(-1 * ∞)", (
+        f"expected negative-infinity marker, got {result!r}"
+    )
 
 
 # --- 0/0 indeterminate forms -------------------------------------------------

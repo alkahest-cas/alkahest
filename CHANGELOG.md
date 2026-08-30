@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **`limit()` now returns `DerivedResult`**, matching `diff` / `integrate`, so
+  `.certificate` can carry a Lean `Filter.Tendsto` proof. Recognised `x → +∞`
+  patterns (`exp(-x) → 0`, `xⁿ exp(-x) → 0`, `exp(x) → +∞`, a crude exp-ratio)
+  emit Mathlib Tendsto source; unrecognised shapes — including finite and
+  one-sided limits — withhold rather than emitting `sorry`. Use `.value` for
+  the limit expression. Nested calls still work via `_coerce_expr`.
+
 - **A budget could be outrun by a single allocation, and was.**
   `alkahest.integrate` on `1/(x·log x·(1 + log²(log x)))` — the derivative of
   `atan(log(log x))`, an ordinary two-level log tower — ignored a
