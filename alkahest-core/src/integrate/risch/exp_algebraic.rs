@@ -253,10 +253,16 @@ fn verify_derivative(f: ExprId, integrand: ExprId, var: ExprId, pool: &ExprPool)
         else {
             continue;
         };
-        if !lhs.is_finite() || !rhs.is_finite() {
+        // Where the integrand is not a finite real there is no claim to check,
+        // so the sample is skipped — but where it *is* and `d/dx f` is not,
+        // `f` is not an antiderivative of it there and the candidate is
+        // refused.  Skipping that second case is how a candidate with a hole
+        // in its domain clears a grid built to catch sign errors; see
+        // [`crate::integrate::verify_antiderivative_status`].
+        if !rhs.is_finite() {
             continue;
         }
-        if (lhs - rhs).abs() > 1e-6 * (1.0 + rhs.abs()) {
+        if !lhs.is_finite() || (lhs - rhs).abs() > 1e-6 * (1.0 + rhs.abs()) {
             return false;
         }
         checked += 1;

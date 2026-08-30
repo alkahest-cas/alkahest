@@ -2,6 +2,57 @@
 
 ## Unreleased
 
+- **An antiderivative that is *undefined* on a whole component where the
+  integrand is finite passed the verification gate.** The gate's numeric grid
+  skipped every sample where either side came back non-finite, so a domain hole
+  cleared a grid built to catch sign errors. Charlwood **#35**
+  `∫x·asec(x)/√(x²−1) dx` was closed with `√(x²−1)·acos(1/x) − log(x + √(x²))`;
+  `√(x²)` is `|x|`, so that logarithm is `log(0)` for every `x < −1`, where the
+  integrand is an ordinary finite real (`−2.418…` at `x = −2`). Six positive
+  samples agreed, the six negative ones were skipped, and the answer was
+  reported `numerically_checked` with no domain caveat — behaviourally the
+  one-sided grid the previous release removed for **#22**, in a different
+  disguise.
+
+  The claim the gate actually makes is `F′ = f` **wherever `f` is defined**, and
+  each sample is now classified against it:
+
+  | `f` | `F′` | verdict |
+  |---|---|---|
+  | finite | finite | compare, as before |
+  | finite | non-finite | **disagreement** — refuse the candidate |
+  | non-finite | either | no information — skip |
+
+  The third row is deliberately not symmetric with the second, and that
+  asymmetry is why the obvious "any non-finite is a disagreement" fix
+  over-tightens. `F′` is `simplify(diff(F))` and is routinely defined on a
+  strictly larger set than `f` is — `∫x·√(x−1)/√(x−1) dx` is `x²/2`, whose
+  derivative is finite everywhere while the integrand is undefined below `1` —
+  so counting samples outside `f`'s domain against a candidate would turn
+  correct answers into declines. An *unevaluable* sample (unregistered head,
+  `RootSum`, unbound symbol) still skips: that is a property of the expression,
+  not evidence about the point.
+
+  The same rule now applies at the two other places that compare a candidate's
+  derivative to an integrand over a grid, `integrate::gate::verify` (the
+  propose–fit–verify block gate) and `risch::exp_algebraic`'s local check.
+  `algebraic::genus_zero` was checked and left alone: it already refuses on any
+  non-finite sample, which is stricter than this rule rather than laxer.
+
+  **Cost: Charlwood's Fifty goes 33 → 32, and #35 is the only problem that
+  moves.** It was also the only one of the fifty whose answer had a domain
+  hole. It declines with `E-INT-001`, never a certificate — the `NonElementary`
+  verdict is a structural Liouville pre-check that runs before any gate, so a
+  stricter gate cannot manufacture one. Off-suite the 40-case probe is
+  unchanged at 35 solved / 4 `E-INT-004` / 1 `E-INT-001` with no per-case
+  movement, and a 110-case Liouville corpus is unchanged at 84 solved. Decline
+  latency does not rise — a refusal now returns at the offending sample instead
+  of evaluating the rest of the grid: median 142 ms → 102–123 ms over three
+  runs on Charlwood, 398 ms → 180–231 ms on the 110-case corpus.
+
+  Recovering #35 needs a branch-correct answer, not a wider search. The
+  two-branch antiderivative is `√(x²−1)·asec(x) − sgn(x)·log|x|`: `d/dx asec(x)`
+  is `1/(|x|√(x²−1))`, so even the textbook `− log|x|` is right only on `x > 1`.
 - **The rational-function route returned answers nothing had checked, and
   nothing *could* check.** `integrate`'s Rothstein–Trager fallback was the one
   route in the integrator that returned its result directly, with no
@@ -532,10 +583,15 @@
     `I`. `∫sin(log x) dx = (x·sin(log x) − x·cos(log x))/2` is closed this way
     and by nothing else in the codebase.
   - Measured on Charlwood's Fifty: closes **#21** `x³·asin(x)/√(1−x⁴)`,
-    **#22** `x³·asec(x)/√(x⁴−1)` and **#35** `x·asec(x)/√(x²−1)`, all verified
-    by differentiation. The other 14 of the 17 C1/C3 problems produce *correct*
-    by-parts residuals that the downstream engine then declines; the binding
-    constraint on that cluster is the algebraic engine, not the by-parts layer.
+    verified by differentiation. It also produced answers for **#22**
+    `x³·asec(x)/√(x⁴−1)` and **#35** `x·asec(x)/√(x²−1)`, and both were
+    withdrawn later in this same release cycle when the gate learned to see
+    what was wrong with them: #22's is off by ≈1.1 for `x < −1` (caught by
+    making the grid two-sided) and #35's is *undefined* there (caught by the
+    non-finite-sample rule above). The other 14 of the 17 C1/C3 problems
+    produce *correct* by-parts residuals that the downstream engine then
+    declines; the binding constraint on that cluster is the algebraic engine,
+    not the by-parts layer.
   - Cost on integrands it fails on — the price paid on every decline —
     **5.1 ms mean, 13.9 ms worst** in a release build over the 40-case probe's
     six `E-INT-001` cases plus eight controls. The 40-case probe is unchanged

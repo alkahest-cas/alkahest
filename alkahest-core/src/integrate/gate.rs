@@ -111,6 +111,25 @@
 //!   `crate::eval` `root_sum` module — numerically, by root-finding — which is
 //!   what makes a Rothstein–Trager answer with an algebraic residue something
 //!   this gate can have an opinion about at all.
+//! * **A candidate undefined where the integrand is finite is *skipped* here,
+//!   not refuted — unlike at the engine-level gate.**  That asymmetry is
+//!   deliberate and it is load-bearing, so it is worth stating plainly.
+//!   [`crate::integrate::verify_antiderivative_status`] treats a sample where
+//!   `f` is an ordinary finite real and `d/dx F` is not as a **disagreement**,
+//!   because there `F` is not an antiderivative of `f` (see
+//!   `engine::classify_sample`, and Charlwood #35, which is exactly that).
+//!   Applying the same rule *here* was tried and reverted: this gate's callers
+//!   deliberately sample beyond the region their reduction claims.
+//!   [`crate::integrate::algebraic::elliptic_output`]'s `gate_samples` puts
+//!   points in **every** `P > 0` interval and says so — "points where the
+//!   substitution is invalid simply evaluate non-finite and are skipped" —
+//!   while a cubic-three-real reduction is valid only beyond the largest root.
+//!   For `∫dx/√(x³−x)` the integrand is finite on `(−1, 0)` and the elliptic
+//!   candidate's derivative is not, so the stricter rule refuses four correct,
+//!   branch-limited elliptic answers (`tests/test_elliptic_integrate.py`).
+//!   Adopting it needs the sample set narrowed to the region each reduction
+//!   actually claims — or a [`Verdict`] that can name that region — not a
+//!   one-line change to the loop.
 //!
 //! # Relationship to `verify_antiderivative_status`
 //!
