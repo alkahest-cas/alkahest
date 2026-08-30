@@ -4,12 +4,61 @@
   "corpus": {
     "sources": [
       "tests/lean_corpus.py",
+      "tests/lean_tendsto_corpus.py",
       "tests/textbook_gate/"
     ],
-    "observations": 240,
-    "shape_classes": 156
+    "observations": 275,
+    "shape_classes": 178
   },
   "rows": [
+    {
+      "operation": "diff",
+      "shape": "diff/form=apply/funcs=Ei/fn_arg=var/mul=none/pow=none/pow_base=none",
+      "features": {
+        "form": "apply",
+        "funcs": "Ei",
+        "fn_arg": "var",
+        "mul": "none",
+        "pow": "none",
+        "pow_base": "none"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [
+        "diff_primitive_registry"
+      ],
+      "examples": [
+        "Ei(x)"
+      ]
+    },
+    {
+      "operation": "diff",
+      "shape": "diff/form=apply/funcs=Si/fn_arg=var/mul=none/pow=none/pow_base=none",
+      "features": {
+        "form": "apply",
+        "funcs": "Si",
+        "fn_arg": "var",
+        "mul": "none",
+        "pow": "none",
+        "pow_base": "none"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [
+        "diff_primitive_registry"
+      ],
+      "examples": [
+        "Si(x)"
+      ]
+    },
     {
       "operation": "diff",
       "shape": "diff/form=apply/funcs=asin/fn_arg=var/mul=none/pow=none/pow_base=none",
@@ -373,7 +422,7 @@
       "verdict": "withheld",
       "observations": {
         "certified": 0,
-        "withheld": 1,
+        "withheld": 2,
         "no_derivation": 0
       },
       "blocking_rules": [
@@ -853,6 +902,31 @@
     },
     {
       "operation": "diff",
+      "shape": "diff/form=product/funcs=erf/fn_arg=var/mul=scalar/pow=none/pow_base=none",
+      "features": {
+        "form": "product",
+        "funcs": "erf",
+        "fn_arg": "var",
+        "mul": "scalar",
+        "pow": "none",
+        "pow_base": "none"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [
+        "diff_primitive_registry",
+        "product_rule"
+      ],
+      "examples": [
+        "(8.8622692545275794e-1 * erf(x))"
+      ]
+    },
+    {
+      "operation": "diff",
       "shape": "diff/form=product/funcs=exp,log/fn_arg=var/mul=general/pow=none/pow_base=none",
       "features": {
         "form": "product",
@@ -1071,33 +1145,6 @@
     },
     {
       "operation": "diff",
-      "shape": "diff/form=product/funcs=sqrt/fn_arg=other/mul=scalar/pow=neg/pow_base=expr",
-      "features": {
-        "form": "product",
-        "funcs": "sqrt",
-        "fn_arg": "other",
-        "mul": "scalar",
-        "pow": "neg",
-        "pow_base": "expr"
-      },
-      "verdict": "withheld",
-      "observations": {
-        "certified": 0,
-        "withheld": 1,
-        "no_derivation": 0
-      },
-      "blocking_rules": [
-        "diff_sqrt",
-        "power_rule",
-        "product_rule",
-        "sum_rule"
-      ],
-      "examples": [
-        "(((sqrt((1 + x^2)) + x)^2 + -1)^-1 * -2)"
-      ]
-    },
-    {
-      "operation": "diff",
       "shape": "diff/form=sum/funcs=-/fn_arg=none/mul=none/pow=nat/pow_base=expr",
       "features": {
         "form": "sum",
@@ -1189,7 +1236,7 @@
         "sum_rule"
       ],
       "examples": [
-        "((((-1/2 * sqrt(((-1 * x^2) + 4)) * x) + (2 * asin((1/2 * x)))) * -1) + (4 * asin((1/2 * x))))"
+        "((1/2 * sqrt(((-1 * x^2) + 4)) * x) + (2 * asin((1/2 * x))))"
       ]
     },
     {
@@ -1239,7 +1286,7 @@
       },
       "blocking_rules": [],
       "examples": [
-        "((((-2 * cos(x) * x) + (2 * sin(x))) * -1) + (sin(x) * x^2))"
+        "((-2 * sin(x)) + (2 * cos(x) * x) + (sin(x) * x^2))"
       ]
     },
     {
@@ -1498,14 +1545,14 @@
     },
     {
       "operation": "diff",
-      "shape": "diff/form=sum/funcs=sqrt/fn_arg=other/mul=scalar/pow=neg/pow_base=expr",
+      "shape": "diff/form=sum/funcs=sqrt/fn_arg=other/mul=general/pow=neg/pow_base=var",
       "features": {
         "form": "sum",
         "funcs": "sqrt",
         "fn_arg": "other",
-        "mul": "scalar",
+        "mul": "general",
         "pow": "neg",
-        "pow_base": "expr"
+        "pow_base": "var"
       },
       "verdict": "withheld",
       "observations": {
@@ -1520,7 +1567,7 @@
         "sum_rule"
       ],
       "examples": [
-        "(((sqrt((1 + x^2)) + x) * 1/2) + ((sqrt((1 + x^2)) + x)^-1 * 1/2))"
+        "((-1 * sqrt((1 + x^2)) * x^-1) + 1)"
       ]
     },
     {
@@ -1590,6 +1637,29 @@
       "blocking_rules": [],
       "examples": [
         "cos(x)"
+      ]
+    },
+    {
+      "operation": "integrate",
+      "shape": "integrate/form=apply/funcs=exp/fn_arg=other/mul=scalar/pow=nat/pow_base=var/definite=no",
+      "features": {
+        "form": "apply",
+        "funcs": "exp",
+        "fn_arg": "other",
+        "mul": "scalar",
+        "pow": "nat",
+        "pow_base": "var",
+        "definite": "no"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 2,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "exp((-1 * x^2))"
       ]
     },
     {
@@ -2097,10 +2167,10 @@
         "pow_base": "var",
         "definite": "no"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 1,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
@@ -2198,6 +2268,29 @@
       "blocking_rules": [],
       "examples": [
         "(exp(x) * x^2)"
+      ]
+    },
+    {
+      "operation": "integrate",
+      "shape": "integrate/form=product/funcs=exp/fn_arg=var/mul=general/pow=neg/pow_base=var/definite=no",
+      "features": {
+        "form": "product",
+        "funcs": "exp",
+        "fn_arg": "var",
+        "mul": "general",
+        "pow": "neg",
+        "pow_base": "var",
+        "definite": "no"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 2,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "(exp(x) * x^-1)"
       ]
     },
     {
@@ -2313,6 +2406,29 @@
       "blocking_rules": [],
       "examples": [
         "(log(x) * x)"
+      ]
+    },
+    {
+      "operation": "integrate",
+      "shape": "integrate/form=product/funcs=sin/fn_arg=var/mul=general/pow=neg/pow_base=var/definite=no",
+      "features": {
+        "form": "product",
+        "funcs": "sin",
+        "fn_arg": "var",
+        "mul": "general",
+        "pow": "neg",
+        "pow_base": "var",
+        "definite": "no"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 2,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "(sin(x) * x^-1)"
       ]
     },
     {
@@ -2476,6 +2592,384 @@
       "blocking_rules": [],
       "examples": [
         "((exp(x) * log(x)) + (exp(x) * x^-1))"
+      ]
+    },
+    {
+      "operation": "limit",
+      "shape": "limit/form=apply/funcs=exp/fn_arg=other/mul=scalar/pow=none/pow_base=none",
+      "features": {
+        "form": "apply",
+        "funcs": "exp",
+        "fn_arg": "other",
+        "mul": "scalar",
+        "pow": "none",
+        "pow_base": "none"
+      },
+      "verdict": "certified",
+      "observations": {
+        "certified": 1,
+        "withheld": 0,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "exp((-1 * x))"
+      ]
+    },
+    {
+      "operation": "limit",
+      "shape": "limit/form=apply/funcs=exp/fn_arg=var/mul=none/pow=none/pow_base=none",
+      "features": {
+        "form": "apply",
+        "funcs": "exp",
+        "fn_arg": "var",
+        "mul": "none",
+        "pow": "none",
+        "pow_base": "none"
+      },
+      "verdict": "certified",
+      "observations": {
+        "certified": 1,
+        "withheld": 0,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "exp(x)"
+      ]
+    },
+    {
+      "operation": "limit",
+      "shape": "limit/form=atom/funcs=-/fn_arg=none/mul=none/pow=none/pow_base=none",
+      "features": {
+        "form": "atom",
+        "funcs": "-",
+        "fn_arg": "none",
+        "mul": "none",
+        "pow": "none",
+        "pow_base": "none"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "5"
+      ]
+    },
+    {
+      "operation": "limit",
+      "shape": "limit/form=power/funcs=-/fn_arg=none/mul=none/pow=sym/pow_base=var",
+      "features": {
+        "form": "power",
+        "funcs": "-",
+        "fn_arg": "none",
+        "mul": "none",
+        "pow": "sym",
+        "pow_base": "var"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "x^x"
+      ]
+    },
+    {
+      "operation": "limit",
+      "shape": "limit/form=power/funcs=-/fn_arg=none/mul=scalar/pow=sym/pow_base=expr",
+      "features": {
+        "form": "power",
+        "funcs": "-",
+        "fn_arg": "none",
+        "mul": "scalar",
+        "pow": "sym",
+        "pow_base": "expr"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 2,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "((1 * x^-1) + 1)^x",
+        "(1 + x)^(1 * x^-1)"
+      ]
+    },
+    {
+      "operation": "limit",
+      "shape": "limit/form=product/funcs=-/fn_arg=none/mul=general/pow=neg/pow_base=expr",
+      "features": {
+        "form": "product",
+        "funcs": "-",
+        "fn_arg": "none",
+        "mul": "general",
+        "pow": "neg",
+        "pow_base": "expr"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 6,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "(((-1 * 1) + x)^-1 * ((-1 * 1) + x^2))",
+        "(((-1 * 2) + x)^-1 * ((-1 * 4) + x^2))",
+        "(((2 * x) + (3 * x^2)) * (1 + x^2)^-1)"
+      ]
+    },
+    {
+      "operation": "limit",
+      "shape": "limit/form=product/funcs=-/fn_arg=none/mul=scalar/pow=neg/pow_base=var",
+      "features": {
+        "form": "product",
+        "funcs": "-",
+        "fn_arg": "none",
+        "mul": "scalar",
+        "pow": "neg",
+        "pow_base": "var"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 3,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "(1 * x^-1)"
+      ]
+    },
+    {
+      "operation": "limit",
+      "shape": "limit/form=product/funcs=cos/fn_arg=var/mul=general/pow=neg/pow_base=expr",
+      "features": {
+        "form": "product",
+        "funcs": "cos",
+        "fn_arg": "var",
+        "mul": "general",
+        "pow": "neg",
+        "pow_base": "expr"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "(((-1 * cos(x)) + 1) * (x^2)^-1)"
+      ]
+    },
+    {
+      "operation": "limit",
+      "shape": "limit/form=product/funcs=exp/fn_arg=other/mul=general/pow=neg/pow_base=var",
+      "features": {
+        "form": "product",
+        "funcs": "exp",
+        "fn_arg": "other",
+        "mul": "general",
+        "pow": "neg",
+        "pow_base": "var"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "(((-1 * 1) + exp((2 * x))) * x^-1)"
+      ]
+    },
+    {
+      "operation": "limit",
+      "shape": "limit/form=product/funcs=exp/fn_arg=var/mul=general/pow=neg/pow_base=expr",
+      "features": {
+        "form": "product",
+        "funcs": "exp",
+        "fn_arg": "var",
+        "mul": "general",
+        "pow": "neg",
+        "pow_base": "expr"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "(((-1 * 1) + (-1 * x) + exp(x)) * (x^2)^-1)"
+      ]
+    },
+    {
+      "operation": "limit",
+      "shape": "limit/form=product/funcs=exp/fn_arg=var/mul=general/pow=neg/pow_base=var",
+      "features": {
+        "form": "product",
+        "funcs": "exp",
+        "fn_arg": "var",
+        "mul": "general",
+        "pow": "neg",
+        "pow_base": "var"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 2,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "(((-1 * 1) + exp(x)) * x^-1)",
+        "(exp(x) * x^-1)"
+      ]
+    },
+    {
+      "operation": "limit",
+      "shape": "limit/form=product/funcs=log/fn_arg=other/mul=general/pow=neg/pow_base=var",
+      "features": {
+        "form": "product",
+        "funcs": "log",
+        "fn_arg": "other",
+        "mul": "general",
+        "pow": "neg",
+        "pow_base": "var"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "(log((1 + x)) * x^-1)"
+      ]
+    },
+    {
+      "operation": "limit",
+      "shape": "limit/form=product/funcs=log/fn_arg=var/mul=general/pow=neg/pow_base=expr",
+      "features": {
+        "form": "product",
+        "funcs": "log",
+        "fn_arg": "var",
+        "mul": "general",
+        "pow": "neg",
+        "pow_base": "expr"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "(((-1 * 1) + x)^-1 * log(x))"
+      ]
+    },
+    {
+      "operation": "limit",
+      "shape": "limit/form=product/funcs=log/fn_arg=var/mul=general/pow=neg/pow_base=var",
+      "features": {
+        "form": "product",
+        "funcs": "log",
+        "fn_arg": "var",
+        "mul": "general",
+        "pow": "neg",
+        "pow_base": "var"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "(log(x) * x^-1)"
+      ]
+    },
+    {
+      "operation": "limit",
+      "shape": "limit/form=product/funcs=log/fn_arg=var/mul=general/pow=none/pow_base=none",
+      "features": {
+        "form": "product",
+        "funcs": "log",
+        "fn_arg": "var",
+        "mul": "general",
+        "pow": "none",
+        "pow_base": "none"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "(log(x) * x)"
+      ]
+    },
+    {
+      "operation": "limit",
+      "shape": "limit/form=product/funcs=sin/fn_arg=var/mul=general/pow=neg/pow_base=var",
+      "features": {
+        "form": "product",
+        "funcs": "sin",
+        "fn_arg": "var",
+        "mul": "general",
+        "pow": "neg",
+        "pow_base": "var"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "(sin(x) * x^-1)"
+      ]
+    },
+    {
+      "operation": "limit",
+      "shape": "limit/form=product/funcs=sqrt/fn_arg=other/mul=general/pow=neg/pow_base=var",
+      "features": {
+        "form": "product",
+        "funcs": "sqrt",
+        "fn_arg": "other",
+        "mul": "general",
+        "pow": "neg",
+        "pow_base": "var"
+      },
+      "verdict": "withheld",
+      "observations": {
+        "certified": 0,
+        "withheld": 1,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "(((-1 * 1) + sqrt((1 + x))) * x^-1)"
       ]
     },
     {
