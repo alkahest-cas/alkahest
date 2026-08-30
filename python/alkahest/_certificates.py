@@ -103,7 +103,7 @@ _TOP_FORM = {
 # Ordered from "most certifiable" to "least", so a feature can be summarised
 # over a whole expression by keeping the worst case.
 _FN_ARG_RANK = {"none": 0, "var": 1, "pow": 2, "other": 3}
-_POW_RANK = {"none": 0, "nat": 1, "neg": 2, "frac": 3, "sym": 4}
+_POW_RANK = {"none": 0, "nat": 1, "neg_one": 2, "neg": 3, "frac": 4, "sym": 5}
 _MUL_RANK = {"none": 0, "scalar": 1, "general": 2}
 # `one_plus_sq` is the FTC fragment ∫(1+x²)⁻¹; it must outrank `var` so a
 # mixed expression still reports the more specific base, and lose to `expr`
@@ -211,11 +211,13 @@ def shape_features(expr, var=None, definite: bool | None = None) -> dict[str, st
     The features are chosen to track the seams the Lean emitter actually has:
     which primitives are involved, whether they are applied pointwise to the
     variable (the fragment ``Real.deriv_*`` covers) or to a composite argument
-    (which needs ``HasDerivAt.comp``), whether any exponent is negative or
-    fractional (which introduces the ``x ≠ 0`` side conditions the combine
-    tactic does not yet thread through), how the pieces are combined, and —
-    for reciprocal polynomials — whether the base is the FTC atom ``1 + x²``
-    (``pow_base=one_plus_sq``) rather than a generic expression.
+    (which needs ``HasDerivAt.comp``), whether any exponent is ``-1``
+    (``pow=neg_one``, the inverse / ``∫ dx/x`` fragment), a more negative
+    integer (``pow=neg``), or fractional (which introduces the ``x ≠ 0``
+    side conditions the combine tactic does not yet thread through), how the
+    pieces are combined, and — for reciprocal polynomials — whether the base
+    is the FTC atom ``1 + x²`` (``pow_base=one_plus_sq``) rather than a
+    generic expression.
     """
     funcs: set[str] = set()
     fn_arg = "none"
@@ -240,7 +242,18 @@ def shape_features(expr, var=None, definite: bool | None = None) -> dict[str, st
         elif tag == "pow":
             exponent = node[2].node()
             if exponent[0] == "integer":
-                kind = "nat" if int(exponent[1]) >= 0 else "neg"
+                n = int(exponent[1])
+                if n >= 0:
+                    kind = "nat"
+                elif n == -1:
+                    # `x⁻¹` (and `(f(x))⁻¹`) is the FTC / `HasDerivAt.inv`
+                    # fragment; `x⁻ᵏ` for `k ≥ 2` is a different seam
+                    # (`HasDerivAt.pow` of the inverse, and `∫ x⁻²` withholds
+                    # on `product_rule`). Splitting them keeps the ledger from
+                    # marking the class `partial`.
+                    kind = "neg_one"
+                else:
+                    kind = "neg"
             elif exponent[0] in ("rational", "float"):
                 kind = "frac"
             else:
