@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **A Lean certificate cited a theorem it had not stated.** The kernel folds
+  `-e` into `Mul[e, -1]`, and the Lean printer rendered that literally, so the
+  `Filter.Tendsto` certificate for `exp(-x) → 0` emitted the goal
+  `Tendsto (fun x => rexp (x * -1)) atTop (𝓝 0)` while citing
+  `tendsto_exp_neg_atTop_nhds_zero`, which proves the `rexp (-x)` form. Lean
+  rejected it, so nothing unsound was ever handed out — but the emitter's
+  contract is that what it emits typechecks, and `Verify Lean 4 proofs` has
+  been red on `main` since the Tendsto certificates landed. The Tendsto
+  emitter now renders a lone `-1` factor as a negation of the remaining
+  product. That rendering is deliberately *not* the default: the `diff` and
+  definite-integral emitters pair their printed goal with witness terms built
+  as strings in the matching `c * f` shape (`.const_mul ((-1 : ℝ))`), and
+  printing `-e` there leaves Lean unifying `-rexp x` against `-1 * rexp x` by
+  defeq until it exhausts the `whnf` heartbeat budget. Their output is
+  byte-identical to before. The existing test asserted only that the emitter
+  *named* the theorem, never that the printed goal was the theorem's
+  statement; it now checks both.
+
+  `Tier 1a` was red on `main` for the same stretch and from the same commit,
+  for an unrelated reason: `ruff format --check` failed on three of the test
+  files added with the Tendsto work. Reformatted; the changes are whitespace
+  only.
+
 - **`limit()` now returns `DerivedResult`**, matching `diff` / `integrate`, so
   `.certificate` can carry a Lean `Filter.Tendsto` proof. Recognised `x → +∞`
   patterns (`exp(-x) → 0`, `xⁿ exp(-x) → 0`, `exp(x) → +∞`, a crude exp-ratio)

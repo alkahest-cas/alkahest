@@ -134,9 +134,7 @@ def test_request_cancel_interrupts_a_limit(pool, x):
 def test_a_solvable_limit_under_a_generous_budget_still_answers(pool, x):
     """The checkpoints must not turn working limits into budget errors."""
     with ak.context(budget=ak.Budget(wall_ms=10_000, max_steps=1_000_000)):
-        assert ak.limit(ak.sqrt(x**2 + x) - x, x, pool.pos_infinity()).value == pool.rational(
-            1, 2
-        )
+        assert ak.limit(ak.sqrt(x**2 + x) - x, x, pool.pos_infinity()).value == pool.rational(1, 2)
         assert str(ak.limit(ak.sin(x) / x, x, pool.integer(0)).value) == "1"
 
 
