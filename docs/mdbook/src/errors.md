@@ -252,8 +252,8 @@ p = ak.ExprPool()
 x = p.symbol("x")
 
 with ak.context(require_certificate=True):
-    ak.diff(ak.sin(x), x)        # fine — certifies
-    ak.integrate(ak.log(x), x)   # raises E-CERT-001
+    ak.diff(ak.sin(x), x)              # fine — certifies
+    ak.diff(ak.log(ak.sin(x)), x)      # raises E-CERT-001
 ```
 
 ### Cause axis

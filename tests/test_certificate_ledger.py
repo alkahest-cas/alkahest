@@ -65,14 +65,13 @@ def test_certifiable_true_and_the_certificate_really_is_produced(pool):
 def test_certifiable_false_and_the_operation_really_yields_nothing(pool):
     """The negative direction: `False` on a shape that genuinely never certifies."""
     x = pool.symbol("x")
-    answer = ak.certifiable("integrate", ak.log(x), x)
+    answer = ak.certifiable("diff", ak.log(ak.sin(x)), x)
 
     assert bool(answer) is False
-    assert answer.verdict == "withheld"
-    assert answer.reason == "class_withheld"
+    assert answer.reason == "withheld_uncertifiable_step"
 
     # The prediction is correct: the operation really does withhold.
-    assert ak.integrate(ak.log(x), x).certificate is None
+    assert ak.diff(ak.log(ak.sin(x)), x).certificate is None
 
 
 def test_certifiable_reports_the_blocking_rewrite_rule(pool):
@@ -118,8 +117,8 @@ def test_ledger_mode_runs_nothing(pool, monkeypatch):
     def explode(*_args, **_kwargs):  # pragma: no cover — must never be reached
         raise AssertionError("ledger mode must not evaluate the operation")
 
-    monkeypatch.setattr(ak, "integrate", explode)
-    answer = ak.certifiable("integrate", ak.log(x), x, mode="ledger")
+    monkeypatch.setattr(ak, "diff", explode)
+    answer = ak.certifiable("diff", ak.log(ak.sin(x)), x, mode="ledger")
     assert bool(answer) is False
     assert answer.checked is False
     assert answer.result is None
@@ -395,7 +394,7 @@ def test_require_certificate_per_call_returns_or_raises(pool):
     assert ak.require_certificate(derived) is derived
 
     with pytest.raises(ak.CertificateUnavailableError) as excinfo:
-        ak.require_certificate(ak.integrate(ak.log(x), x))
+        ak.require_certificate(ak.diff(ak.log(ak.sin(x)), x))
     assert excinfo.value.code == "E-CERT-001"
     assert excinfo.value.remediation
 
@@ -412,16 +411,16 @@ def test_ambient_require_certificate_raises_instead_of_degrading(pool):
     with ak.context(require_certificate=True):
         assert ak.diff(ak.sin(x), x).value is not None
         with pytest.raises(ak.CertificateUnavailableError):
-            ak.integrate(ak.log(x), x)
+            ak.diff(ak.log(ak.sin(x)), x)
 
     # Outside the block, the uncertified result is returned as before.
-    assert ak.integrate(ak.log(x), x).certificate is None
+    assert ak.diff(ak.log(ak.sin(x)), x).certificate is None
 
 
 def test_ambient_require_certificate_can_be_switched_off_in_an_inner_block(pool):
     x = pool.symbol("x")
     with ak.context(require_certificate=True), ak.context(require_certificate=False):
-        assert ak.integrate(ak.log(x), x).certificate is None
+        assert ak.diff(ak.log(ak.sin(x)), x).certificate is None
 
 
 def test_certifiable_probe_does_not_raise_under_ambient_requirement(pool):

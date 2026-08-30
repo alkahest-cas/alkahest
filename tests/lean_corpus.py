@@ -189,6 +189,13 @@ STRICT_CASES = [
         "int_power_rule",
         lambda pool: alkahest.integrate(pool.symbol("x") ** 2, pool.symbol("x")),
     ),
+    # ∫ log x dx = x·log x − x, certified via the FTC derivative of F now that
+    # the log/sqrt combine fragment closes `d/dx (x·log x − x)`.
+    (
+        "int_log",
+        "int_log",
+        lambda pool: alkahest.integrate(alkahest.log(pool.symbol("x")), pool.symbol("x")),
+    ),
     # Definite integrals, certified via the second fundamental theorem of
     # calculus for interval integrals:
     #   ∫ x in a..b, f x = F b - F a
@@ -286,6 +293,36 @@ STRICT_CASES = [
         "diff_log",
         "diff_log",
         lambda pool: alkahest.diff(alkahest.log(pool.symbol("x")), pool.symbol("x")),
+    ),
+    # Combine fragment: log/sqrt inside product/sum, with `(hx : 0 < x)`.
+    (
+        "diff_product_x_log",
+        "product_rule",
+        lambda pool: alkahest.diff(
+            pool.symbol("x") * alkahest.log(pool.symbol("x")), pool.symbol("x")
+        ),
+    ),
+    (
+        "diff_product_exp_log",
+        "product_rule",
+        lambda pool: alkahest.diff(
+            alkahest.exp(pool.symbol("x")) * alkahest.log(pool.symbol("x")),
+            pool.symbol("x"),
+        ),
+    ),
+    (
+        "diff_sum_log_x",
+        "sum_rule",
+        lambda pool: alkahest.diff(
+            alkahest.log(pool.symbol("x")) + pool.symbol("x"), pool.symbol("x")
+        ),
+    ),
+    (
+        "diff_product_x_sqrt",
+        "product_rule",
+        lambda pool: alkahest.diff(
+            pool.symbol("x") * alkahest.sqrt(pool.symbol("x")), pool.symbol("x")
+        ),
     ),
     # `Real.hasDerivAt_sqrt` needs `x ≠ 0`; upgraded to an explicit
     # `(x : ℝ) (hx : 0 < x)` binder, mirroring #236's positivity mechanism.

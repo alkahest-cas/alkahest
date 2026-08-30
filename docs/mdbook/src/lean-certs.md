@@ -99,9 +99,8 @@ x = p.symbol("x")
 
 # 1. Ask before you commit to a route. Truthy iff a certificate is produced;
 #    carries the reason when it is not.
-answer = ak.certifiable("integrate", ak.log(x), x)
+answer = ak.certifiable("diff", ak.log(ak.sin(x)), x)
 bool(answer)        # False
-answer.reason       # 'class_withheld'
 
 # `mode="ledger"` answers from the table alone, running nothing at all —
 # for scoring many candidate routes. The default `mode="verify"` never says
@@ -113,7 +112,7 @@ answer.reason       # 'class_withheld'
 
 # 3. Refuse to degrade silently.
 with ak.context(require_certificate=True):
-    ak.integrate(ak.log(x), x)   # raises CertificateUnavailableError (E-CERT-001)
+    ak.diff(ak.log(ak.sin(x)), x)   # raises CertificateUnavailableError (E-CERT-001)
 ```
 
 `capabilities()["verification"]["coverage"]` summarises the same ledger, and
@@ -127,8 +126,13 @@ The strict CI corpus currently covers:
 - Basic arithmetic rewrites (`add_zero`, `mul_one`, `mul_zero`, constant
   folding, and `pow_one`)
 - The polynomial differentiation fast path for `d/dx x³`
-- Indefinite integrals of `sin`, `cos`, `exp`, and `xⁿ`, certified via the FTC
-  derivative relation `deriv (fun x => F) x = f`
+- Indefinite integrals of `sin`, `cos`, `exp`, `log`, and `xⁿ`, certified via the FTC
+  derivative relation `deriv (fun x => F) x = f`. `∫ log x` reuses the
+  product/sum certificate for `d/dx (x log x − x)`.
+- Products and sums that mix the everywhere-differentiable fragment with
+  pointwise `log(x)` / `sqrt(x)` (`x log x`, `exp x · log x`, `log x + x`,
+  `x sqrt x`), with an explicit `(hx : 0 < x)` binder. Composites
+  (`log(x²)`, `log(sqrt(x²−1)+x)`) stay withheld.
 - Definite integrals `∫ x in a..b, f x = F b - F a` of the same base family
   (`sin`, `cos`, `exp`, `xⁿ`), **plus finite sums and numeric-literal constant
   multiples of those terms** (`∫ (sin x + cos x)`, `∫ 3·cos x`, `∫ -exp x`,

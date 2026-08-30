@@ -620,9 +620,9 @@ def certifiable(op, *args, mode: str = "verify", **kwargs) -> Certifiability:
     >>> p = ak.ExprPool(); x = p.symbol("x")
     >>> bool(ak.certifiable("diff", ak.sin(x), x))
     True
-    >>> answer = ak.certifiable("integrate", ak.log(x), x)
-    >>> bool(answer), answer.reason
-    (False, 'class_withheld')
+    >>> answer = ak.certifiable("diff", ak.log(ak.sin(x)), x)
+    >>> bool(answer)
+    False
 
     Plan a route without computing anything::
 

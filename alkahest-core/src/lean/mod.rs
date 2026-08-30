@@ -509,24 +509,35 @@ const UNCONDITIONAL_DIFF_TACTIC: &str = "by\n    \
      DifferentiableAt.add, DifferentiableAt.mul, DifferentiableAt.pow]\n    \
      try ring";
 
-/// True when the differentiated body `before` is built only from atoms whose
-/// derivative [`UNCONDITIONAL_DIFF_TACTIC`]'s simp set computes *without any
-/// side condition* — i.e. the function is differentiable at every real point:
-/// the differentiation variable, constant symbols (`C1`, `C2`, …) and numeric
-/// literals, sums and products of those, non-negative integer powers of the
-/// variable, and the pointwise primitives `sin`/`cos`/`exp`/`sinh`/`cosh`
-/// applied to exactly the variable.
+/// Combine tactic for bodies in the [`diff_body_unconditional`] fragment plus
+/// pointwise `log(wrt)` / `sqrt(wrt)`. Unlike [`UNCONDITIONAL_DIFF_TACTIC`],
+/// this consumes an explicit `(hx : 0 < x)` binder: `DifferentiableAt log`
+/// needs `x ≠ 0` (`Real.differentiableAt_log` / `Real.hasDerivAt_log`) and
+/// `sqrt` needs the same (`Real.hasDerivAt_sqrt`). `0 < x` implies both.
 ///
-/// Everything else must be withheld by the caller: `log`/`sqrt`/`tan`/`asin`
-/// and any inverse or negative power need an `x ≠ 0` (or positivity / open-
-/// interval) hypothesis the unconditional simp set cannot discharge, and a
-/// chain composite `f(g x)` with `g ≠ x` lacks the composite's
-/// `DifferentiableAt` lemma (those go through [`chain_diff_tactic`] instead,
-/// never this fragment). `atan` is everywhere differentiable but its
-/// derivative is `(1+x²)⁻¹`, which this simp set does not compute — it
-/// certifies pointwise via [`registry_diff_certificate`] instead.
-fn diff_body_unconditional(before: ExprId, wrt: ExprId, pool: &ExprPool) -> bool {
-    fn walk(f: ExprId, wrt: ExprId, pool: &ExprPool) -> bool {
+/// `Real.deriv_log` is deliberately *not* in [`UNCONDITIONAL_DIFF_TACTIC`]:
+/// dumping it there would still leave the `DifferentiableAt log` side goal
+/// of `deriv_mul`/`deriv_add` open. Here the hyp-gated `hasDerivAt` facts
+/// discharge those side goals. `try field_simp` reconciles `x * x⁻¹` /
+/// `1 / (2 * sqrt x)` against Alkahest's reciprocal form; `try ring` then
+/// closes coefficient order the way the unconditional tactic does.
+const LOG_SQRT_DIFF_TACTIC: &str = "by\n    \
+     simp (config := { maxDischargeDepth := 8 }) only [deriv_add, deriv_mul, deriv_pow, \
+     deriv_const, deriv_id'', Real.deriv_sin, Real.deriv_cos, Real.deriv_exp, \
+     Real.deriv_sinh, Real.deriv_cosh, \
+     (Real.hasDerivAt_log hx.ne').deriv, (Real.hasDerivAt_sqrt hx.ne').deriv, \
+     differentiableAt_pow, differentiableAt_id', differentiableAt_const, \
+     Real.differentiableAt_sin, Real.differentiableAt_cos, Real.differentiableAt_exp, \
+     Real.differentiableAt_sinh, Real.differentiableAt_cosh, \
+     Real.differentiableAt_log hx.ne', (Real.hasDerivAt_sqrt hx.ne').differentiableAt, \
+     DifferentiableAt.add, DifferentiableAt.mul, DifferentiableAt.pow]\n    \
+     try field_simp [hx.ne']\n    \
+     try ring";
+
+/// Walk a differentiated body, accepting the unconditional fragment and
+/// (when `allow_log_sqrt`) pointwise `log`/`sqrt` of exactly the variable.
+fn diff_body_combine(before: ExprId, wrt: ExprId, pool: &ExprPool, allow_log_sqrt: bool) -> bool {
+    fn walk(f: ExprId, wrt: ExprId, pool: &ExprPool, allow_log_sqrt: bool) -> bool {
         pool.with(f, |d| match d {
             ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => true,
             // A bare symbol is either the differentiation variable or a free
@@ -541,16 +552,52 @@ fn diff_body_unconditional(before: ExprId, wrt: ExprId, pool: &ExprPool) -> bool
                     })
             }
             ExprData::Func { name, args } => {
-                matches!(name.as_str(), "sin" | "cos" | "exp" | "sinh" | "cosh")
-                    && args.len() == 1
-                    && args[0] == wrt
+                let ok = matches!(name.as_str(), "sin" | "cos" | "exp" | "sinh" | "cosh")
+                    || (allow_log_sqrt && matches!(name.as_str(), "log" | "sqrt"));
+                ok && args.len() == 1 && args[0] == wrt
             }
-            ExprData::Add(xs) => xs.iter().all(|&c| walk(c, wrt, pool)),
-            ExprData::Mul(xs) => xs.iter().all(|&c| walk(c, wrt, pool)),
+            ExprData::Add(xs) => xs.iter().all(|&c| walk(c, wrt, pool, allow_log_sqrt)),
+            ExprData::Mul(xs) => xs.iter().all(|&c| walk(c, wrt, pool, allow_log_sqrt)),
             _ => false,
         })
     }
-    walk(before, wrt, pool)
+    walk(before, wrt, pool, allow_log_sqrt)
+}
+
+/// True when the differentiated body `before` is built only from atoms whose
+/// derivative [`UNCONDITIONAL_DIFF_TACTIC`]'s simp set computes *without any
+/// side condition* — i.e. the function is differentiable at every real point:
+/// the differentiation variable, constant symbols (`C1`, `C2`, …) and numeric
+/// literals, sums and products of those, non-negative integer powers of the
+/// variable, and the pointwise primitives `sin`/`cos`/`exp`/`sinh`/`cosh`
+/// applied to exactly the variable.
+///
+/// Everything else must be withheld by the caller of this predicate:
+/// `log`/`sqrt` go through [`diff_body_log_sqrt`] (with a positivity binder),
+/// `tan`/`asin` and any inverse or negative power need a side condition this
+/// simp set cannot discharge, and a chain composite `f(g x)` with `g ≠ x`
+/// lacks the composite's `DifferentiableAt` lemma (those go through
+/// [`chain_diff_tactic`] instead, never this fragment). `atan` is everywhere
+/// differentiable but its derivative is `(1+x²)⁻¹`, which this simp set does
+/// not compute — it certifies pointwise via [`registry_diff_certificate`].
+fn diff_body_unconditional(before: ExprId, wrt: ExprId, pool: &ExprPool) -> bool {
+    diff_body_combine(before, wrt, pool, false)
+}
+
+/// The [`diff_body_unconditional`] fragment plus pointwise `log(wrt)` and/or
+/// `sqrt(wrt)` (argument exactly the variable, not a composite). Callers emit
+/// [`LOG_SQRT_DIFF_TACTIC`] with `(hx : 0 < x)` rather than the unconditional
+/// tactic. Composites `log(g x)` / `sqrt(g x)` with `g ≠ x` stay withheld.
+fn diff_body_log_sqrt(before: ExprId, wrt: ExprId, pool: &ExprPool) -> bool {
+    diff_body_combine(before, wrt, pool, true)
+}
+
+/// Bind `(x : ℝ) (hx : 0 < x)` and close a combine step via
+/// [`LOG_SQRT_DIFF_TACTIC`]. `0 < x` covers both `log` (`x ≠ 0`) and `sqrt`.
+fn log_sqrt_diff_certificate(wrt: ExprId, pool: &ExprPool) -> (Option<String>, String) {
+    let var = wrt_name(wrt, pool);
+    let binder = format!("({var} : ℝ) (hx : 0 < {var})");
+    (Some(binder), LOG_SQRT_DIFF_TACTIC.to_string())
 }
 
 /// True when `before` is built from `{wrt, constants, wrt⁻ⁿ}` under `Add`/`Mul`
@@ -609,9 +656,9 @@ fn neg_pow_combine_certificate(wrt: ExprId, pool: &ExprPool) -> (Option<String>,
     (Some(binder), tactic)
 }
 
-/// Unconditional combine first; if the body is instead in the negative-power
-/// fragment, the `x ≠ 0` binder + inverse facts. Used by `sum_rule` and
-/// (after the quotient-chain attempt) `product_rule`.
+/// Unconditional combine first; then the negative-power fragment (`x ≠ 0`);
+/// then the log/sqrt fragment (`0 < x`). Used by `sum_rule` /
+/// `diff_univariate_poly` and (after the quotient-chain attempt) `product_rule`.
 fn combine_step_certificate(
     before: ExprId,
     wrt: ExprId,
@@ -621,6 +668,8 @@ fn combine_step_certificate(
         Some((None, UNCONDITIONAL_DIFF_TACTIC.to_string()))
     } else if diff_body_neg_pow_combine(before, wrt, pool) {
         Some(neg_pow_combine_certificate(wrt, pool))
+    } else if diff_body_log_sqrt(before, wrt, pool) {
+        Some(log_sqrt_diff_certificate(wrt, pool))
     } else {
         None
     }
@@ -631,9 +680,10 @@ fn diff_rule_to_tactic(rule_name: &str) -> Option<&'static str> {
         "diff_identity" => Some("by simp [deriv_id]"),
         "diff_const" => Some("by simp [deriv_const]"),
         // Combine steps over the everywhere-differentiable fragment. Callers in
-        // [`diff_step_certificate`] gate these on [`diff_body_unconditional`]
-        // and withhold anything outside it, so the tactic never runs on a body
-        // whose `deriv`/`DifferentiableAt` it cannot discharge.
+        // [`diff_step_certificate`] go through [`combine_step_certificate`],
+        // which uses this tactic only when [`diff_body_unconditional`] holds
+        // and switches to a binder-carrying tactic for the neg-pow / log/sqrt
+        // fragments.
         "diff_univariate_poly" => Some(UNCONDITIONAL_DIFF_TACTIC),
         "sum_rule" => Some(UNCONDITIONAL_DIFF_TACTIC),
         "product_rule" => Some(UNCONDITIONAL_DIFF_TACTIC),
@@ -717,15 +767,12 @@ fn diff_step_certificate(
                 None
             }
         }
-        // Polynomial combine stays on the everywhere-differentiable fragment.
-        "diff_univariate_poly" => diff_body_unconditional(step.before, wrt, pool)
-            .then(|| (None, UNCONDITIONAL_DIFF_TACTIC.to_string())),
-        // `sum_rule` / `product_rule`: unconditional fragment first, then the
-        // `{wrt, constants, wrt⁻ⁿ}` fragment with an `x ≠ 0` binder. Negative
-        // powers must not be dumped into [`UNCONDITIONAL_DIFF_TACTIC`].
-        "sum_rule" => combine_step_certificate(step.before, wrt, pool),
+        "diff_univariate_poly" | "sum_rule" => {
+            combine_step_certificate(step.before, wrt, pool)
+        }
         // `product_rule` first tries the `f(x)/g(x)` quotient chain (which
-        // carries its own `g x ≠ 0` binder), then the two combine fragments.
+        // carries its own `g x ≠ 0` binder), then the combine fragments
+        // (unconditional, then `x ≠ 0` negative powers, then `0 < x` log/sqrt).
         "product_rule" => quotient_chain_certificate(step.before, wrt, pool)
             .or_else(|| combine_step_certificate(step.before, wrt, pool)),
         name => diff_rule_to_tactic(name).map(|t| (None, t.to_string())),
@@ -1424,9 +1471,9 @@ pub fn emit_lean_expr_wrt(
 /// restricted fragment: constants, powers of the differentiation variable,
 /// *pointwise* `sin`/`cos`/`exp`/`log`/`atan` (argument exactly the variable), sums of
 /// those, and *flat* products of those (a product whose factors are atoms /
-/// pointwise primitives, e.g. `x · cos x`). Two shapes that the diff exporter
-/// currently emits but does **not** discharge — leaving `deriv` or a
-/// `DifferentiableAt` side goal open — must be withheld here:
+/// pointwise primitives, e.g. `x · cos x` or `x · log x`). Two shapes that the
+/// diff exporter currently emits but does **not** discharge — leaving `deriv`
+/// or a `DifferentiableAt` side goal open — must be withheld here:
 ///
 /// * a **chain composite** `f(g x)` with `g ≠ x` (e.g. `exp (x²)`), because the
 ///   product-rule simp set lacks the composite's `DifferentiableAt` lemma;
@@ -1460,6 +1507,8 @@ fn antiderivative_in_certifiable_fragment(f: ExprId, var: ExprId, pool: &ExprPoo
             }
             ExprData::Func { name, args } => {
                 // Pointwise primitive only: sin/cos/exp/log/atan applied to exactly `var`.
+                // `log` is included so ∫ log x (antiderivative `x·log x − x`) can
+                // reuse the log/sqrt combine certificate; composites stay out.
                 matches!(name.as_str(), "sin" | "cos" | "exp" | "log" | "atan")
                     && args.len() == 1
                     && args[0] == var
@@ -2705,11 +2754,10 @@ mod tests {
     }
 
     #[test]
-    fn integration_cert_withheld_for_non_certifiable_diff() {
-        // ∫ log x dx = x·log x − x. Pointwise `log` is in the fragment so
-        // `∫ x⁻¹` can reuse `d/dx log(x)`, but this antiderivative is a
-        // product `x · log x` whose `product_rule` step the unconditional
-        // simp set cannot close — withhold rather than emit an admission.
+    fn integration_cert_log_via_ftc_derivative() {
+        // ∫ log x dx = x·log x − x. Differentiating the antiderivative intern-
+        // equals the integrand, and the log/sqrt combine fragment now closes
+        // the product/sum steps, so the FTC certificate emits.
         use crate::integrate::integrate;
 
         let pool = p();
@@ -2718,9 +2766,18 @@ mod tests {
         let derived = integrate(log_x, x, &pool).expect("integrate");
         let lean = emit_integration_cert(derived.value, log_x, x, &pool);
         assert!(
-            lean.is_empty(),
-            "∫ log x's antiderivative is a product with log; must withhold: {lean}"
+            !lean.is_empty(),
+            "∫ log x should certify via FTC once x·log x certifies: {lean}"
         );
+        assert!(
+            lean.contains("deriv (fun"),
+            "FTC cert is the derivative relation: {lean}"
+        );
+        assert!(
+            lean.contains("hasDerivAt_log") || lean.contains("differentiableAt_log"),
+            "expected the hyp-gated log lemma in the reused diff cert: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
     }
 
     #[test]
@@ -3274,6 +3331,10 @@ mod tests {
             !lean.contains("sorry"),
             "product certificate must not use sorry: {lean}"
         );
+        assert!(
+            !lean.contains("(hx : 0 < x)"),
+            "sin·exp is everywhere differentiable; no extra binder: {lean}"
+        );
     }
 
     #[test]
@@ -3306,21 +3367,124 @@ mod tests {
     }
 
     #[test]
-    fn log_in_product_combine_is_withheld() {
+    fn emit_lean_product_rule_x_log() {
         use crate::diff::diff;
 
-        // `d/dx (x · log x)` needs `x ≠ 0` (log is not differentiable at 0), a
-        // side condition the unconditional combine tactic cannot discharge — so
-        // the whole certificate must be withheld rather than emit a
-        // non-compiling `deriv (fun x => x * log x) = …` goal.
+        // `d/dx (x · log x)` needs `x ≠ 0`; the combine path threads
+        // `(hx : 0 < x)` rather than withholding.
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let expr = pool.mul(vec![x, pool.func("log", vec![x])]);
         let derived = diff(expr, x, &pool).expect("diff");
         let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
         assert!(
+            !lean.is_empty(),
+            "d/dx (x·log x) should be Lean-certifiable: {lean}"
+        );
+        assert!(
+            lean.contains("(hx : 0 < x)"),
+            "expected an explicit positivity binder: {lean}"
+        );
+        assert!(
+            lean.contains("Real.hasDerivAt_log hx.ne'")
+                || lean.contains("Real.differentiableAt_log hx.ne'"),
+            "expected the hyp-gated log lemma: {lean}"
+        );
+        assert!(
+            lean.contains("deriv_mul"),
+            "expected product_rule deriv_mul tactic: {lean}"
+        );
+        assert!(!lean.contains("sorry"), "must not admit: {lean}");
+    }
+
+    #[test]
+    fn emit_lean_product_rule_exp_log() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![pool.func("exp", vec![x]), pool.func("log", vec![x])]);
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "d/dx (exp·log) should be Lean-certifiable: {lean}"
+        );
+        assert!(
+            lean.contains("(hx : 0 < x)"),
+            "expected an explicit positivity binder: {lean}"
+        );
+        assert!(!lean.contains("sorry"), "must not admit: {lean}");
+    }
+
+    #[test]
+    fn emit_lean_sum_rule_log_x() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.add(vec![pool.func("log", vec![x]), x]);
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "d/dx (log x + x) should be Lean-certifiable: {lean}"
+        );
+        assert!(
+            lean.contains("(hx : 0 < x)"),
+            "expected an explicit positivity binder: {lean}"
+        );
+        assert!(
+            lean.contains("deriv_add"),
+            "sum_rule needs deriv_add: {lean}"
+        );
+        assert!(!lean.contains("sorry"), "must not admit: {lean}");
+    }
+
+    #[test]
+    fn emit_lean_product_rule_x_sqrt() {
+        use crate::diff::diff;
+
+        // Same `0 < x` binder covers sqrt (via `hasDerivAt_sqrt hx.ne'`).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![x, pool.func("sqrt", vec![x])]);
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "d/dx (x·sqrt x) should be Lean-certifiable: {lean}"
+        );
+        assert!(
+            lean.contains("(hx : 0 < x)"),
+            "expected an explicit positivity binder: {lean}"
+        );
+        assert!(
+            lean.contains("Real.hasDerivAt_sqrt hx.ne'"),
+            "expected the hyp-gated sqrt lemma: {lean}"
+        );
+        assert!(!lean.contains("sorry"), "must not admit: {lean}");
+    }
+
+    #[test]
+    fn withhold_chain_rule_log_of_nested_composite() {
+        use crate::diff::diff;
+
+        // d/dx log(sqrt(x²−1) + x) is a chain composite; another agent owns
+        // general HasDerivAt.comp, so this stays withheld.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let inner = pool.add(vec![
+            pool.func("sqrt", vec![pool.add(vec![x2, pool.integer(-1_i32)])]),
+            x,
+        ]);
+        let expr = pool.func("log", vec![inner]);
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
             lean.is_empty(),
-            "d/dx (x·log x) must be withheld (needs x ≠ 0), got: {lean}"
+            "chain-rule d/dx log(sqrt(x²−1)+x) must be withheld: {lean}"
         );
     }
 
