@@ -672,6 +672,8 @@ mod tests {
         assert!(!lean.contains("sorry"));
         assert!(!lean.contains("admit"));
         assert!(lean.contains("alkahest_multiplier_factor"));
+        assert!(lean.contains("alkahest_rhs_nonneg"));
+        assert!(lean.contains("sq_pos_of_ne_zero"));
         assert!(lean.contains("ring"));
     }
 

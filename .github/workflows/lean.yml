@@ -16,6 +16,8 @@ on:
       - 'tests/lean_corpus.py'
       - 'tests/lean_corpus_sample.py'
       - 'tests/lean_tendsto_corpus.py'
+      - 'tests/lean_sos_corpus.py'
+      - 'alkahest-core/src/real/sos/**'
       - 'tests/_tg_helpers.py'
       - 'tests/textbook_gate/**'
       - 'tests/test_smoke.py'
@@ -37,6 +39,8 @@ on:
       - 'tests/lean_corpus.py'
       - 'tests/lean_corpus_sample.py'
       - 'tests/lean_tendsto_corpus.py'
+      - 'tests/lean_sos_corpus.py'
+      - 'alkahest-core/src/real/sos/**'
       - 'tests/_tg_helpers.py'
       - 'tests/textbook_gate/**'
       - 'tests/test_smoke.py'
@@ -103,6 +107,10 @@ jobs:
           # deduplicated pool surfaces any non-compiling certificate every run.
           python tests/lean_corpus_sample.py --output /tmp/lean_pool/
 
+      - name: Generate Lean proofs (SOS positivity certificates)
+        run: |
+          python tests/lean_sos_corpus.py --output /tmp/lean_sos/
+
       - name: Set up Mathlib (lake update + cache get)
         run: |
           cd lean
@@ -112,7 +120,7 @@ jobs:
       - name: Verify proofs with Lean without admissions
         run: |
           cd lean
-          for dir in /tmp/lean_proofs /tmp/lean_tendsto /tmp/lean_pool; do
+          for dir in /tmp/lean_proofs /tmp/lean_tendsto /tmp/lean_pool /tmp/lean_sos; do
             echo "== Verifying certificates in $dir =="
             for f in "$dir"/*.lean; do
               fname=$(basename "$f")
@@ -124,7 +132,7 @@ jobs:
               lake env lean -DwarningAsError=true "$f" || { echo "FAILED: $fname"; exit 1; }
             done
           done
-          echo "All generated Lean proofs (fixed corpus + Tendsto corpus + full textbook-gate pool) verified without admissions."
+          echo "All generated Lean proofs (fixed corpus + Tendsto corpus + full textbook-gate pool + SOS) verified without admissions."
 
       - name: Upload generated Lean proofs on failure
         if: failure()
@@ -135,4 +143,5 @@ jobs:
             /tmp/lean_proofs
             /tmp/lean_tendsto
             /tmp/lean_pool
+            /tmp/lean_sos
           if-no-files-found: ignore

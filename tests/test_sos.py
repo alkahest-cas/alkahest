@@ -134,6 +134,11 @@ def test_motzkin_certifies_via_a_multiplier():
     lhs, _rhs = cert.identity.split("=", 1)
     assert lhs.strip().startswith("(")
     assert lhs.count(")") >= 2
+    lean = cert.to_lean()
+    assert lean is not None
+    assert lean.strip()
+    for token in ("sorry", "admit", "axiom"):
+        assert token not in lean
 
 
 def test_non_polynomial_is_refused():
@@ -176,3 +181,27 @@ def test_exported_surface():
     for name in ("sos_decompose", "prove_nonneg", "PositivityCertificate", "SosError"):
         assert name in ak.__all__, name
     assert issubclass(ak.SosError, ak.AlkahestError)
+
+
+# ---------------------------------------------------------------------------
+# Lean export — withhold rather than sorry
+# ---------------------------------------------------------------------------
+
+
+def test_unconstrained_to_lean_is_nonempty_and_sorry_free():
+    """Advertised SOS Lean must actually be a certificate, not an empty sketch."""
+    pool = ak.ExprPool()
+    x, y = pool.symbol("x"), pool.symbol("y")
+    cases = [
+        ([x, y], _square(x - y)),
+        ([x, y], _square(x) + _square(y)),
+        ([x], _square(x)),
+    ]
+    forbidden = ("sorry", "admit", "axiom")
+    for vars_, p in cases:
+        cert = ak.sos_decompose(p, vars_)
+        lean = cert.to_lean()
+        assert lean is not None, f"to_lean() withheld for {p}"
+        assert lean.strip(), f"to_lean() empty for {p}"
+        for token in forbidden:
+            assert token not in lean, f"to_lean() contains {token!r}"
