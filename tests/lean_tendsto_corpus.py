@@ -2,10 +2,11 @@
 """
 Lean Tendsto corpus generator.
 
-Generates Filter.Tendsto certificates for the recognised `x → +∞` fragment
-wired through ``alkahest.limit``. Used by the Lean CI job. A separate
-generator from ``tests/lean_corpus.py`` because Tendsto certificates have
-no rewrite log (the strict corpus requires a recorded rule).
+Generates Filter.Tendsto certificates for the recognised ``limit()`` fragment
+wired through ``alkahest.limit`` (``x → +∞`` exponentials and monomials, and
+``sin x / x → 1`` as ``x → 0``). Used by the Lean CI job. A separate generator
+from ``tests/lean_corpus.py`` because Tendsto certificates have no rewrite log
+(the strict corpus requires a recorded rule).
 
 Usage::
 
@@ -35,6 +36,36 @@ def _exp_at_top(pool):
     return alkahest.limit(alkahest.exp(x), x, pool.pos_infinity())
 
 
+def _sin_over_x_at_zero(pool):
+    x = pool.symbol("x")
+    return alkahest.limit(alkahest.sin(x) / x, x, pool.integer(0))
+
+
+def _one_plus_inv_pow(pool):
+    x = pool.symbol("x")
+    return alkahest.limit((1 + 1 / x) ** x, x, pool.pos_infinity())
+
+
+def _x_squared_at_top(pool):
+    x = pool.symbol("x")
+    return alkahest.limit(x**2, x, pool.pos_infinity())
+
+
+def _inv_at_top(pool):
+    x = pool.symbol("x")
+    return alkahest.limit(1 / x, x, pool.pos_infinity())
+
+
+def _id_at_top(pool):
+    x = pool.symbol("x")
+    return alkahest.limit(x, x, pool.pos_infinity())
+
+
+def _one_plus_two_over_x_pow(pool):
+    x = pool.symbol("x")
+    return alkahest.limit((1 + 2 / x) ** x, x, pool.pos_infinity())
+
+
 # (name, expected_tactic_fragment, DerivedResult builder)
 # Builders must emit a non-empty certificate; withheld shapes belong in
 # Python unit tests, not this typecheck corpus.
@@ -48,6 +79,36 @@ STRICT_CASES = [
         "tendsto_exp_atTop",
         "tendsto_exp_atTop",
         _exp_at_top,
+    ),
+    (
+        "tendsto_sin_div_x_nhds_one",
+        "hasDerivAt_iff_tendsto_slope",
+        _sin_over_x_at_zero,
+    ),
+    (
+        "tendsto_one_plus_div_rpow_exp",
+        "tendsto_one_plus_div_rpow_exp",
+        _one_plus_inv_pow,
+    ),
+    (
+        "tendsto_pow_atTop",
+        "tendsto_pow_atTop",
+        _x_squared_at_top,
+    ),
+    (
+        "tendsto_inv_atTop_zero",
+        "tendsto_inv_atTop_zero",
+        _inv_at_top,
+    ),
+    (
+        "tendsto_id_atTop",
+        "tendsto_id",
+        _id_at_top,
+    ),
+    (
+        "tendsto_one_plus_div_rpow_exp_two",
+        "tendsto_one_plus_div_rpow_exp",
+        _one_plus_two_over_x_pow,
     ),
 ]
 
