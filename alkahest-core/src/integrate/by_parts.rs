@@ -1395,12 +1395,58 @@ fn agrees_numerically(cand: ExprId, orig: ExprId, var: ExprId, pool: &ExprPool) 
 }
 
 /// `true` when `expr` mentions `sqrt` anywhere.
-fn has_sqrt(expr: ExprId, pool: &ExprPool) -> bool {
+fn collect_var_sqrts(expr: ExprId, var: ExprId, pool: &ExprPool, out: &mut Vec<ExprId>) {
     match pool.get(expr) {
-        ExprData::Func { name, args } => name == "sqrt" || args.iter().any(|&a| has_sqrt(a, pool)),
-        ExprData::Add(args) | ExprData::Mul(args) => args.iter().any(|&a| has_sqrt(a, pool)),
-        ExprData::Pow { base, exp } => has_sqrt(base, pool) || has_sqrt(exp, pool),
-        _ => false,
+        ExprData::Func { ref name, ref args }
+            if name == "sqrt" && args.len() == 1 && !is_free_of(args[0], var, pool) =>
+        {
+            if !out.contains(&expr) {
+                out.push(expr);
+            }
+            collect_var_sqrts(args[0], var, pool, out);
+        }
+        ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
+            for a in args {
+                collect_var_sqrts(a, var, pool, out);
+            }
+        }
+        ExprData::Pow { base, exp } => {
+            collect_var_sqrts(base, var, pool, out);
+            collect_var_sqrts(exp, var, pool, out);
+        }
+        _ => {}
+    }
+}
+
+/// Is there anything for [`radical_normal_forms`] to do?
+///
+/// The normalisation exists to get a residual down to the **one** `√(P(x))`
+/// with `P` a polynomial in `var` that the algebraic engine accepts.  A
+/// residual already in that shape has nothing to gain from a pass and a
+/// measurable amount to lose: [`combine_radicals_deep`] runs `cancel` at every
+/// node and [`extract_square_factors`] a FLINT factorisation at every radical,
+/// and by-parts residuals of realistic integrands are large.
+///
+/// Measured on the 110-case Liouville unsolved benchmark: without this gate the
+/// worst decline went from 0.53 s to 13.0 s — on a residual whose only radical
+/// was the *constant* `√5`, so no pass could ever have helped it — and the
+/// median decline roughly doubled.  With it, both are back at baseline, and the
+/// C3 residuals still qualify: they carry two var-dependent radicals, or one
+/// whose radicand is a rational function rather than a polynomial.
+fn radical_normalisation_applies(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    let mut sqrts = Vec::new();
+    collect_var_sqrts(expr, var, pool, &mut sqrts);
+    match sqrts.len() {
+        0 => false,
+        1 => {
+            let ExprData::Func { args, .. } = pool.get(sqrts[0]) else {
+                return false;
+            };
+            // One radical: worth a pass only when its radicand is not already a
+            // polynomial in `var` — `√((1−2x²)/(1−x²))`, Charlwood #49's shape.
+            crate::poly::unipoly::UniPoly::from_symbolic(args[0], var, pool).is_err()
+        }
+        _ => true,
     }
 }
 
@@ -1435,8 +1481,8 @@ const RADICAL_NORMAL_PASSES: u32 = 3;
 /// whatever it returns is still gated by `d/dx F = f` in [`try_by_parts`].
 fn radical_normal_forms(expr: ExprId, var: ExprId, pool: &ExprPool) -> Vec<ExprId> {
     let mut out: Vec<ExprId> = Vec::new();
-    if !has_sqrt(expr, pool) {
-        return out; // nothing to normalise — and the common case, so stay cheap
+    if !radical_normalisation_applies(expr, var, pool) {
+        return out;
     }
     let mut cur = expr;
     for _ in 0..RADICAL_NORMAL_PASSES {
