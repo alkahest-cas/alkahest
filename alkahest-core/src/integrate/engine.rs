@@ -4040,10 +4040,13 @@ pub enum AntiderivativeVerification {
 /// Soundness gate: verify `d/dx(candidate) == integrand`.
 ///
 /// Accepts when `d/dx(candidate) − integrand` simplifies structurally to zero,
-/// **or** when a numeric check agrees to ~1e-7 over several real sample points
-/// (skipping points where either side is non-finite, e.g. singularities).  A
-/// `candidate` whose derivative cannot be confirmed equal is rejected, so the
+/// **or** when a numeric check agrees to ~1e-7 over several real sample points.
+/// A `candidate` whose derivative cannot be confirmed equal is rejected, so the
 /// integrator never returns a wrong antiderivative.
+///
+/// The claim being checked is `F′ = f` **wherever `f` is defined**, and each
+/// sample is classified against that claim rather than simply dropped when a
+/// number fails to come out — see [`SampleVerdict`].
 pub fn verify_antiderivative_status(
     candidate: ExprId,
     integrand: ExprId,
@@ -4065,11 +4068,11 @@ pub fn verify_antiderivative_status(
     // `√` or a `log` is exactly the error a one-sided grid cannot see, so the
     // negative mirror of each point is now checked too.
     //
-    // This does not reject answers that are merely *undefined* on the negative
-    // side: `eval_interp` returns no value, or a non-finite one, at a point
-    // outside the domain, and both are skipped rather than counted as
-    // disagreement.  Nor does it reject a different branch constant — the
-    // comparison is between derivatives, where an additive constant has already
+    // Widening the grid was only half the fix, though: a *hole* in the
+    // candidate's domain still walked through it.  See [`classify_sample`].
+    //
+    // This still does not reject a different branch constant — the comparison
+    // is between derivatives, where an additive constant has already
     // differentiated away.
     let Ok(d_raw) = crate::diff::diff(candidate, var, pool) else {
         return None;
@@ -4083,26 +4086,90 @@ pub fn verify_antiderivative_status(
     for &xv in &samples {
         let mut env = HashMap::new();
         env.insert(var, xv);
-        let (Some(dv), Some(fv)) = (
-            crate::jit::eval_interp(d, &env, pool),
-            crate::jit::eval_interp(integrand, &env, pool),
-        ) else {
-            // Unevaluable expression — cannot certify numerically.
-            return None;
-        };
-        if !dv.is_finite() || !fv.is_finite() {
-            continue; // near a singularity; skip this sample
+        match classify_sample(d, integrand, &env, pool) {
+            SampleVerdict::Agrees => checked += 1,
+            SampleVerdict::NoInformation => continue,
+            SampleVerdict::Disagrees => return None,
         }
-        let tol = 1e-7 * (1.0 + dv.abs().max(fv.abs()));
-        if (dv - fv).abs() > tol {
-            return None;
-        }
-        checked += 1;
     }
 
     // Require at least a couple of usable samples so an all-singular set cannot
     // vacuously pass.
     (checked >= 2).then_some(AntiderivativeVerification::Numeric)
+}
+
+/// What one sample point of the antiderivative gate's grid establishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SampleVerdict {
+    /// Both sides produced the same finite real. Counts towards the quorum.
+    Agrees,
+    /// The sample says nothing about `F′ = f`, and is neither counted nor held
+    /// against the candidate.
+    NoInformation,
+    /// The sample is positive evidence that `F` is not an antiderivative of `f`
+    /// there. One is enough to refuse the candidate.
+    Disagrees,
+}
+
+/// Classify one grid point of [`verify_antiderivative_status`]'s numeric check.
+///
+/// The claim under test is `F′ = f` **on the domain of `f`**, so what a sample
+/// establishes depends on which of the two sides produced a finite real:
+///
+/// | `f` | `F′` | verdict | why |
+/// |---|---|---|---|
+/// | finite | finite | compare | the ordinary case |
+/// | finite | non-finite | **`Disagrees`** | `F` is not differentiable — not even defined — at a point where `f` is an ordinary real, so it is not an antiderivative of `f` there |
+/// | non-finite | either | `NoInformation` | outside `f`'s domain there is no claim to check |
+///
+/// The middle row is the one this function exists for, and it used to be
+/// treated as the third.  Charlwood #35, `∫x·asec(x)/√(x²−1) dx`, came back as
+/// `√(x²−1)·acos(1/x) − log(x + √(x²))`.  `√(x²)` is `|x|`, so that logarithm
+/// is `log(0)` for every `x < −1` — a whole component of the integrand's domain
+/// on which the answer is undefined, while the integrand itself is an ordinary
+/// finite real (`−2.418…` at `x = −2`).  Skipping those samples left the
+/// candidate admitted on the six positive points alone, which is behaviourally
+/// the one-sided grid PR #328 removed for #22: a domain hole clearing a grid
+/// built to catch a sign error.
+///
+/// The bottom row is deliberately *not* symmetric with the middle one, and the
+/// asymmetry is the whole reason the obvious "any non-finite is a
+/// disagreement" fix over-tightens.  `F′` is `simplify(diff(F))`, so it is
+/// routinely defined on a strictly larger set than `f` is: `∫ x·√(x−1)/√(x−1)`
+/// has `F = x²/2` with `F′ = x` finite everywhere, while the integrand is
+/// undefined for `x < 1`.  Nothing is wrong with that answer — it satisfies
+/// `F′ = f` at every point where `f` means anything — and counting the samples
+/// below `1` against it would turn a correct antiderivative into a decline.
+/// Symmetrically, `∫dx/x = log|x|` has a genuine pole at `0` in both, which is
+/// the top-left-empty case: both sides non-finite, still no information.
+fn classify_sample(
+    d: ExprId,
+    integrand: ExprId,
+    env: &HashMap<ExprId, f64>,
+    pool: &ExprPool,
+) -> SampleVerdict {
+    // `None` — an unbound symbol or a node the interpreter does not implement —
+    // is a property of the *expression*, not of this point, so it cannot be
+    // evidence against the candidate. It makes the whole numeric channel
+    // useless, and the caller's quorum requirement is what declines then.
+    let (Some(dv), Some(fv)) = (
+        crate::jit::eval_interp(d, env, pool),
+        crate::jit::eval_interp(integrand, env, pool),
+    ) else {
+        return SampleVerdict::NoInformation;
+    };
+    if !fv.is_finite() {
+        return SampleVerdict::NoInformation;
+    }
+    if !dv.is_finite() {
+        return SampleVerdict::Disagrees;
+    }
+    let tol = 1e-7 * (1.0 + dv.abs().max(fv.abs()));
+    if (dv - fv).abs() > tol {
+        SampleVerdict::Disagrees
+    } else {
+        SampleVerdict::Agrees
+    }
 }
 
 fn verify_antiderivative(
@@ -5418,6 +5485,150 @@ mod tests {
         let f = pool.pow(x, pool.integer(-1_i32));
         let r = integrate_definite(f, x, pool.integer(1_i32), pool.integer(2_i32), &pool).unwrap();
         assert_num(r.value, 2.0_f64.ln(), &pool);
+    }
+
+    // ── The antiderivative gate's non-finite-sample rule ─────────────────────
+    //
+    // Three rows, three verdicts — see `classify_sample`.  Each test states the
+    // row it pins, because getting any one of them wrong either admits a wrong
+    // answer or declines a right one.
+
+    /// **Row 2 — `f` finite, `F′` non-finite ⇒ refuse.**  Charlwood #35, pinned
+    /// at the gate rather than at the route that produced it.
+    ///
+    /// `∫x·asec(x)/√(x²−1) dx` was closed with
+    /// `√(x²−1)·acos(1/x) − log(x + √(x²))`.  `√(x²)` is `|x|`, so the
+    /// logarithm is `log(0)` for every `x < −1`; the answer is undefined on an
+    /// entire component of the integrand's domain, and the integrand there is
+    /// an ordinary finite real (`−2.418…` at `x = −2`).  The gate used to
+    /// `continue` past exactly those samples and admit the candidate on the
+    /// positive six alone.
+    #[test]
+    fn gate_refuses_an_antiderivative_with_a_domain_hole() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let one = pool.integer(1_i32);
+        let neg1 = pool.integer(-1_i32);
+
+        // f = x·acos(1/x)/√(x²−1)
+        let radicand = pool.add(vec![x2, neg1]);
+        let root = pool.func("sqrt", vec![radicand]);
+        let acos_inv = pool.func("acos", vec![pool.pow(x, neg1)]);
+        let f = pool.mul(vec![x, acos_inv, pool.pow(root, neg1)]);
+
+        // F = √(x²−1)·acos(1/x) − log(x + √(x²))   — the answer with the hole.
+        let abs_like = pool.func("sqrt", vec![x2]);
+        let log_term = pool.func("log", vec![pool.add(vec![x, abs_like])]);
+        let holed = pool.add(vec![
+            pool.mul(vec![root, acos_inv]),
+            pool.mul(vec![neg1, log_term]),
+        ]);
+
+        // The premise: at x = −2 the integrand is finite and F′ is not.
+        let mut env = HashMap::new();
+        env.insert(x, -2.0_f64);
+        let d = simplify(crate::diff::diff(holed, x, &pool).unwrap().value, &pool).value;
+        assert!(
+            crate::jit::eval_interp(f, &env, &pool).is_some_and(|v| v.is_finite()),
+            "premise: the integrand must be finite at x = −2"
+        );
+        assert!(
+            crate::jit::eval_interp(d, &env, &pool).map_or(true, |v| !v.is_finite()),
+            "premise: the candidate's derivative must be undefined at x = −2"
+        );
+
+        assert!(
+            verify_antiderivative_status(holed, f, x, &pool).is_none(),
+            "an antiderivative undefined where the integrand is finite must not verify"
+        );
+
+        // And the gate is not merely refusing everything for this integrand.
+        // The two-branch answer is `√(x²−1)·acos(1/x) − sgn(x)·log|x|` —
+        // spelled here with `√(x²)` for `|x|` and `x/√(x²)` for `sgn(x)`,
+        // because the kernel has no differentiation rule for `abs`.  (Note the
+        // `sgn`: `d/dx acos(1/x)` is `1/(|x|√(x²−1))`, not `1/(x√(x²−1))`, so
+        // plain `−log|x|` is right only on `x > 1` and is off by `−2/x` below
+        // `−1`.)  It is defined on both components and it verifies.
+        let sgn = pool.mul(vec![x, pool.pow(abs_like, neg1)]);
+        let correct = pool.add(vec![
+            pool.mul(vec![root, acos_inv]),
+            pool.mul(vec![neg1, sgn, pool.func("log", vec![abs_like])]),
+        ]);
+        assert!(
+            verify_antiderivative_status(correct, f, x, &pool).is_some(),
+            "the branch-correct answer must still verify"
+        );
+        let _ = one;
+    }
+
+    /// **Row 3 — both sides non-finite ⇒ no information.**  `∫x/√(1−x²) dx` is
+    /// `−√(1−x²)`; outside `[−1, 1]` the radical is imaginary in the integrand
+    /// *and* in the derivative, and the eight grid points that land there must
+    /// be skipped rather than held against a correct answer.
+    #[test]
+    fn gate_skips_a_singularity_shared_by_both_sides() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let neg1 = pool.integer(-1_i32);
+        let radicand = pool.add(vec![
+            pool.integer(1_i32),
+            pool.mul(vec![neg1, pool.pow(x, pool.integer(2_i32))]),
+        ]);
+        let root = pool.func("sqrt", vec![radicand]);
+        let f = pool.mul(vec![x, pool.pow(root, neg1)]);
+        let cand = pool.mul(vec![neg1, root]);
+
+        // Premise: at x = 2.1719 neither side is a finite real.
+        let mut env = HashMap::new();
+        env.insert(x, 2.1719_f64);
+        let d = simplify(crate::diff::diff(cand, x, &pool).unwrap().value, &pool).value;
+        for (name, e) in [("integrand", f), ("derivative", d)] {
+            assert!(
+                crate::jit::eval_interp(e, &env, &pool).map_or(true, |v| !v.is_finite()),
+                "premise: the {name} must be undefined at x = 2.1719"
+            );
+        }
+
+        assert!(
+            verify_antiderivative_status(cand, f, x, &pool).is_some(),
+            "−√(1−x²) is the antiderivative of x/√(1−x²) and must verify"
+        );
+    }
+
+    /// **Row 3 again — `f` non-finite, `F′` finite ⇒ no information.**
+    ///
+    /// This is the asymmetry that keeps the rule from over-tightening.
+    /// `∫ x·√(x−1)/√(x−1) dx` is `x²/2`, whose derivative `x` is finite on all
+    /// of `ℝ` while the integrand is undefined below `1`.  The answer is
+    /// correct — `F′ = f` wherever `f` means anything — and the six negative
+    /// samples, where only the integrand fails, must not be evidence against
+    /// it.
+    #[test]
+    fn gate_ignores_samples_outside_the_integrands_domain() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let root = pool.func("sqrt", vec![pool.add(vec![x, pool.integer(-1_i32)])]);
+        let f = pool.mul(vec![x, root, pool.pow(root, pool.integer(-1_i32))]);
+        let big = pool.mul(vec![pool.rational(1, 2), pool.pow(x, pool.integer(2_i32))]);
+
+        // Premise: at x = −2.1719 the integrand is undefined and F′ is not.
+        let mut env = HashMap::new();
+        env.insert(x, -2.1719_f64);
+        let d = simplify(crate::diff::diff(big, x, &pool).unwrap().value, &pool).value;
+        assert!(
+            crate::jit::eval_interp(f, &env, &pool).map_or(true, |v| !v.is_finite()),
+            "premise: the integrand must be undefined at x = −2.1719"
+        );
+        assert!(
+            crate::jit::eval_interp(d, &env, &pool).is_some_and(|v| v.is_finite()),
+            "premise: the candidate's derivative must be finite at x = −2.1719"
+        );
+
+        assert!(
+            verify_antiderivative_status(big, f, x, &pool).is_some(),
+            "a correct antiderivative defined beyond the integrand's domain must verify"
+        );
     }
 
     // ── Interior-pole detection ──────────────────────────────────────────────

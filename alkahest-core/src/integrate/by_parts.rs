@@ -3051,23 +3051,48 @@ mod tests {
     }
 
     /// The Charlwood problems this module closes, pinned so a regression is
-    /// visible.  Both are verified by differentiation, here and in the gate.
+    /// visible.  Verified by differentiation, here and in the gate.
     #[test]
-    fn charlwood_21_35_close_and_verify() {
+    fn charlwood_21_closes_and_verifies() {
         use crate::parse::parse;
         use std::collections::HashMap as Map;
 
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
-        for src in [
-            "x^3*asin(x)/sqrt(1-x^4)",  // #21
-            "x*acos(1/x)/sqrt(-1+x^2)", // #35
-        ] {
-            let mut syms: Map<String, ExprId> = Map::from([("x".to_owned(), x)]);
-            let f = parse(src, &pool, &mut syms).expect("parses");
-            let res = solved(f, x, &pool);
-            let _ = res;
-        }
+        let mut syms: Map<String, ExprId> = Map::from([("x".to_owned(), x)]);
+        let f = parse("x^3*asin(x)/sqrt(1-x^4)", &pool, &mut syms).expect("parses");
+        let _ = solved(f, x, &pool);
+    }
+
+    /// Charlwood #35, `∫x·asec(x)/√(x²−1) dx`, is the *domain-hole* sibling of
+    /// #22 below, and must be refused for the same reason with a different
+    /// symptom.
+    ///
+    /// This module closed it with `√(x²−1)·acos(1/x) − log(x + √(x²))`.  On
+    /// `x > 1` that is right.  `√(x²)` is `|x|`, so on `x < −1` the logarithm
+    /// is `log(0)`: the answer is **undefined on a whole component where the
+    /// integrand is an ordinary finite real** (`−2.418…` at `x = −2`).  The
+    /// gate admitted it because it *skipped* every negative sample whose
+    /// derivative came back non-finite, which is the one-sided grid #22's fix
+    /// removed, wearing a different disguise.  A non-finite `F′` at a point
+    /// where `f` is finite is now a disagreement, so the candidate is refused.
+    ///
+    /// Recovering #35 needs `√(x²)` simplified to `|x|` — i.e. a correct
+    /// answer — not a wider search.
+    #[test]
+    fn charlwood_35_is_refused_because_its_candidate_has_a_domain_hole() {
+        use crate::parse::parse;
+        use std::collections::HashMap as Map;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let mut syms: Map<String, ExprId> = Map::from([("x".to_owned(), x)]);
+        let f = parse("x*acos(1/x)/sqrt(-1+x^2)", &pool, &mut syms).expect("parses");
+        assert!(
+            integrate_by_parts(f, x, &pool).is_declined(),
+            "#35's candidate is undefined for x < −1, where the integrand is finite, \
+             and must be refused"
+        );
     }
 
     /// Charlwood #22 is **not** in the list above, and the reason is worth
