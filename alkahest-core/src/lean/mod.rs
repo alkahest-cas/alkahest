@@ -891,7 +891,9 @@ pub fn emit_tendsto_cert(expr: ExprId, var: ExprId, lim: ExprId, pool: &ExprPool
         ExprData::Symbol { name, .. } => name.clone(),
         _ => "x".to_string(),
     });
-    let body = expr_to_lean(expr, pool);
+    // The tactics below cite bare Mathlib lemmas stated about `-x`, so the
+    // goal has to print the negation rather than the kernel's `x * -1`.
+    let body = expr_to_lean_neg(expr, pool);
     let (codom_filter, limit_display) = lean_codom_filter(lim, pool);
     let tactic = tendsto_tactic(expr, var, lim, pool);
 
@@ -1762,6 +1764,26 @@ pub fn emit_definite_integration_cert(
 
 /// Convert a symbolic expression to a Lean 4 term.
 fn expr_to_lean(expr: ExprId, pool: &ExprPool) -> String {
+    expr_to_lean_opts(expr, pool, false)
+}
+
+/// As [`expr_to_lean`], but printing `Mul[e, -1]` as `-e`.
+///
+/// Use this only where the emitted goal is discharged by a bare Mathlib lemma
+/// stated about `-e`: `tendsto_exp_neg_atTop_nhds_zero` proves
+/// `Tendsto (fun x => rexp (-x)) atTop (nhds 0)`, and Lean rejects it against a
+/// goal printed as `fun x => rexp (x * -1)`.
+///
+/// Do *not* use it for the `diff` or definite-integral emitters. Those pair the
+/// goal with witness terms built as strings in the matching `c * f` shape — e.g.
+/// `(Real.hasDerivAt_exp x).const_mul ((-1 : \u{211d}))`. Printing the goal as `-e`
+/// there leaves Lean unifying `-rexp x` against `-1 * rexp x` by defeq, which
+/// exhausts the `whnf` heartbeat budget on `int_def_neg_exp_0_1`.
+fn expr_to_lean_neg(expr: ExprId, pool: &ExprPool) -> String {
+    expr_to_lean_opts(expr, pool, true)
+}
+
+fn expr_to_lean_opts(expr: ExprId, pool: &ExprPool, neg_form: bool) -> String {
     pool.with(expr, |data| match data {
         ExprData::Integer(n) => {
             let v = n.0.to_i64().unwrap_or(0);
@@ -1776,33 +1798,43 @@ fn expr_to_lean(expr: ExprId, pool: &ExprPool) -> String {
         // Bare names leave metavariables in goals like `(x ^ (1 : ℕ) = x)` (`HPow ?m ℕ ?m`).
         ExprData::Symbol { name, .. } => format!("({name} : ℝ)"),
         ExprData::Add(args) => {
-            let parts: Vec<String> = args.iter().map(|&a| expr_to_lean(a, pool)).collect();
+            let parts: Vec<String> = args
+                .iter()
+                .map(|&a| expr_to_lean_opts(a, pool, neg_form))
+                .collect();
             format!("({})", parts.join(" + "))
         }
         ExprData::Mul(args) => {
-            // The kernel folds `-e` into `Mul[e, -1]`, but Mathlib states its
-            // lemmas about `-e`. Printing the literal `e * -1` produces a goal
-            // that no longer matches the theorem the emitter just selected:
-            // `tendsto_exp_neg_atTop_nhds_zero` proves
-            // `Tendsto (fun x => rexp (-x)) atTop (nhds 0)` and Lean rejects it
-            // against `fun x => rexp (x * -1)`. Print the negation instead.
-            let neg_one =
-                |a: ExprId| pool.with(a, |d| matches!(d, ExprData::Integer(n) if n.0 == -1));
-            let rest: Vec<ExprId> = args.iter().copied().filter(|&a| !neg_one(a)).collect();
-            if args.iter().filter(|&&a| neg_one(a)).count() == 1 && !rest.is_empty() {
-                let inner = if rest.len() == 1 {
-                    expr_to_lean(rest[0], pool)
-                } else {
-                    let parts: Vec<String> = rest.iter().map(|&a| expr_to_lean(a, pool)).collect();
-                    format!("({})", parts.join(" * "))
-                };
-                return format!("(-{inner})");
+            // The kernel folds `-e` into `Mul[e, -1]`. Most emitters here pair
+            // the printed goal with hand-built witness terms stated in the same
+            // `c * f` shape (`.const_mul ((-1 : \u{211d}))`), so the two agree and
+            // printing the product is what keeps them matching. Only `neg_form`
+            // callers want the negation; see `expr_to_lean_neg`.
+            if neg_form {
+                let neg_one =
+                    |a: ExprId| pool.with(a, |d| matches!(d, ExprData::Integer(n) if n.0 == -1));
+                let rest: Vec<ExprId> = args.iter().copied().filter(|&a| !neg_one(a)).collect();
+                if args.iter().filter(|&&a| neg_one(a)).count() == 1 && !rest.is_empty() {
+                    let inner = if rest.len() == 1 {
+                        expr_to_lean_opts(rest[0], pool, neg_form)
+                    } else {
+                        let parts: Vec<String> = rest
+                            .iter()
+                            .map(|&a| expr_to_lean_opts(a, pool, neg_form))
+                            .collect();
+                        format!("({})", parts.join(" * "))
+                    };
+                    return format!("(-{inner})");
+                }
             }
-            let parts: Vec<String> = args.iter().map(|&a| expr_to_lean(a, pool)).collect();
+            let parts: Vec<String> = args
+                .iter()
+                .map(|&a| expr_to_lean_opts(a, pool, neg_form))
+                .collect();
             format!("({})", parts.join(" * "))
         }
         ExprData::Pow { base, exp } => {
-            let b = expr_to_lean(*base, pool);
+            let b = expr_to_lean_opts(*base, pool, neg_form);
             let neg_int = pool.with(*exp, |d| match d {
                 ExprData::Integer(n) if n.0 < 0 => n.0.to_i64(),
                 _ => None,
@@ -1819,13 +1851,16 @@ fn expr_to_lean(expr: ExprId, pool: &ExprPool) -> String {
                 // Using `(n : ℝ)` leads to `Real.rpow` and stuck metavariables on goals like `x^1 = x`.
                 let e = pool.with(*exp, |d| match d {
                     ExprData::Integer(n) if n.0 >= 0 => format!("({} : ℕ)", n.0),
-                    _ => expr_to_lean(*exp, pool),
+                    _ => expr_to_lean_opts(*exp, pool, neg_form),
                 });
                 format!("({b}) ^ {e}")
             }
         }
         ExprData::Func { name, args } => {
-            let arg_strs: Vec<String> = args.iter().map(|&a| expr_to_lean(a, pool)).collect();
+            let arg_strs: Vec<String> = args
+                .iter()
+                .map(|&a| expr_to_lean_opts(a, pool, neg_form))
+                .collect();
             // Always parenthesize the argument: `Real.log Real.exp x` parses as
             // `(Real.log Real.exp) x`, and `Real.log x ^ 3` parses as
             // `(Real.log x) ^ 3` — both are type/math errors.
@@ -3370,13 +3405,20 @@ mod tests {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let neg_x = pool.mul(vec![pool.integer(-1_i32), x]);
-        assert_eq!(expr_to_lean(neg_x, &pool), "(-(x : \u{211d}))");
+        assert_eq!(expr_to_lean_neg(neg_x, &pool), "(-(x : \u{211d}))");
+        // The default printer keeps the product form, because the diff and
+        // definite-integral emitters pair it with `.const_mul ((-1 : \u{211d}))`
+        // witness terms stated the same way.
+        assert_eq!(
+            expr_to_lean(neg_x, &pool),
+            "((x : \u{211d}) * (-1 : \u{211d}))"
+        );
 
         // A `-1` among several factors negates the remaining product.
         let y = pool.symbol("y", Domain::Real);
         let neg_xy = pool.mul(vec![pool.integer(-1_i32), x, y]);
         assert_eq!(
-            expr_to_lean(neg_xy, &pool),
+            expr_to_lean_neg(neg_xy, &pool),
             "(-((x : \u{211d}) * (y : \u{211d})))"
         );
 
@@ -3384,7 +3426,7 @@ mod tests {
         // of the rest and must keep printing as a product.
         let neg_two_x = pool.mul(vec![pool.integer(-2_i32), x]);
         assert_eq!(
-            expr_to_lean(neg_two_x, &pool),
+            expr_to_lean_neg(neg_two_x, &pool),
             "((x : \u{211d}) * (-2 : \u{211d}))"
         );
     }

@@ -9,10 +9,16 @@
   `tendsto_exp_neg_atTop_nhds_zero`, which proves the `rexp (-x)` form. Lean
   rejected it, so nothing unsound was ever handed out — but the emitter's
   contract is that what it emits typechecks, and `Verify Lean 4 proofs` has
-  been red on `main` since the Tendsto certificates landed. The printer now
-  renders a lone `-1` factor as a negation of the remaining product. The
-  existing test asserted only that the output *named* the theorem, never that
-  the printed goal was the theorem's statement; it now checks both.
+  been red on `main` since the Tendsto certificates landed. The Tendsto
+  emitter now renders a lone `-1` factor as a negation of the remaining
+  product. That rendering is deliberately *not* the default: the `diff` and
+  definite-integral emitters pair their printed goal with witness terms built
+  as strings in the matching `c * f` shape (`.const_mul ((-1 : ℝ))`), and
+  printing `-e` there leaves Lean unifying `-rexp x` against `-1 * rexp x` by
+  defeq until it exhausts the `whnf` heartbeat budget. Their output is
+  byte-identical to before. The existing test asserted only that the emitter
+  *named* the theorem, never that the printed goal was the theorem's
+  statement; it now checks both.
 
 - **`limit()` now returns `DerivedResult`**, matching `diff` / `integrate`, so
   `.certificate` can carry a Lean `Filter.Tendsto` proof. Recognised `x → +∞`
