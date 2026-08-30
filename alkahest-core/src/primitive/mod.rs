@@ -166,18 +166,18 @@ pub trait Primitive: 'static + Send + Sync {
     /// actually produces a non-`sorry` certificate for it *today*.
     ///
     /// This is deliberately narrower than "a Mathlib lemma with this name
-    /// exists": several primitives (`log`, `sqrt`, the hyperbolic/inverse
-    /// family, `tan`, `atan2`, `gamma`, …) have a real Mathlib derivative
-    /// lemma but the emitter withholds the certificate — either because a
-    /// side condition (e.g. `x > 0`) isn't encoded yet, or because the diff
-    /// step is recorded under the generic `diff_primitive_registry` rule
-    /// name that `diff_rule_to_tactic` never maps to a tactic. Returning
-    /// `Some` here when the emitter can't back it up would make the
-    /// `capabilities()["primitives"]` agent-contract signal a false
-    /// promise. When you make a new primitive's certificate actually
-    /// typecheck (add a `diff_rule_to_tactic` arm, wire up the rule name,
-    /// etc.), flip this back to `Some` — and verify empirically, e.g. via
-    /// `alkahest.to_lean(alkahest.diff(f(x), x))` checked with
+    /// exists": several primitives (`tanh`, `acos`, the inverse-hyperbolic
+    /// family, `atan2`, `gamma`, …) have a real Mathlib derivative lemma but
+    /// the emitter withholds the certificate — either because a side
+    /// condition isn't encoded yet, or because the diff step is recorded
+    /// under the generic `diff_primitive_registry` rule name with no
+    /// closing tactic in v4.9.0. Returning `Some` here when the emitter
+    /// can't back it up would make the `capabilities()["primitives"]`
+    /// agent-contract signal a false promise. When you make a new
+    /// primitive's certificate actually typecheck (add a
+    /// `diff_rule_to_tactic` / `registry_diff_certificate` arm, wire up the
+    /// rule name, etc.), flip this back to `Some` — and verify empirically,
+    /// e.g. via `alkahest.to_lean(alkahest.diff(f(x), x))` checked with
     /// `lake env lean`, not by inspection alone.
     fn lean_theorem(&self) -> Option<&'static str> {
         None
@@ -1000,8 +1000,12 @@ pub mod builtins {
             Some(unary(args)?.sinh())
         }
 
-        // NOTE: no `lean_theorem` override — see the `tan` primitive above
-        // for why (generic `diff_primitive_registry` rule, never certified).
+        fn lean_theorem(&self) -> Option<&'static str> {
+            // `diff_primitive_registry` dispatch: `Real.deriv_sinh` holds
+            // unconditionally on ℝ. Sums/products with `cosh`/`sin`/`exp`
+            // join the everywhere-differentiable fragment.
+            Some("Real.deriv_sinh")
+        }
     }
 
     // ── cosh ─────────────────────────────────────────────────────────────────
@@ -1043,8 +1047,9 @@ pub mod builtins {
             Some(unary(args)?.cosh())
         }
 
-        // NOTE: no `lean_theorem` override — see the `tan` primitive above
-        // for why (generic `diff_primitive_registry` rule, never certified).
+        fn lean_theorem(&self) -> Option<&'static str> {
+            Some("Real.deriv_cosh")
+        }
     }
 
     // ── tanh ─────────────────────────────────────────────────────────────────
@@ -1095,8 +1100,10 @@ pub mod builtins {
             Some(unary(args)?.tanh())
         }
 
-        // NOTE: no `lean_theorem` override — see the `tan` primitive above
-        // for why (generic `diff_primitive_registry` rule, never certified).
+        // NOTE: no `lean_theorem` override. Mathlib v4.9.0 has no
+        // `hasDerivAt_tanh` and no `1 - tanh² = 1/cosh²` identity analogous
+        // to `Real.inv_one_add_tan_sq`. Alkahest records `1 - tanh²`; do not
+        // sorry a reconciliation we cannot close.
     }
 
     // ── asin ─────────────────────────────────────────────────────────────────
@@ -1147,6 +1154,13 @@ pub mod builtins {
 
         fn numeric_ball(&self, args: &[ArbBall]) -> Option<ArbBall> {
             unary(args)?.asin()
+        }
+
+        fn lean_theorem(&self) -> Option<&'static str> {
+            // Pointwise `d/dx asin(x)` with an explicit
+            // `(x : ℝ) (hx : -1 < x ∧ x < 1)` binder, closed by
+            // `Real.hasDerivAt_arcsin`. Composites stay withheld.
+            Some("Real.hasDerivAt_arcsin")
         }
     }
 
@@ -1249,8 +1263,11 @@ pub mod builtins {
             Some(unary(args)?.atan())
         }
 
-        // NOTE: no `lean_theorem` override — see the `tan` primitive above
-        // for why (generic `diff_primitive_registry` rule, never certified).
+        fn lean_theorem(&self) -> Option<&'static str> {
+            // Unconditional on ℝ. Alkahest records `(1+x²)⁻¹`; Mathlib's
+            // `Real.hasDerivAt_arctan'` is already in that form.
+            Some("Real.hasDerivAt_arctan'")
+        }
     }
 
     // ── asinh ────────────────────────────────────────────────────────────────

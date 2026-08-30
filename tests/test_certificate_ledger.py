@@ -298,6 +298,16 @@ def test_ledger_examples_are_rendered_reproducibly(pool):
     assert any(checked_in.values()), "no examples recorded in the ledger"
 
 
+def test_one_plus_sq_pow_base_splits_the_arctan_ftc_atom(pool):
+    """∫(1+x²)⁻¹ certifies; ∫(4+x²)⁻¹ does not. Those must not share a class."""
+    x = pool.symbol("x")
+    _, inv_one = classify("integrate", (1 / (1 + x**2), x))
+    _, inv_four = classify("integrate", (1 / (4 + x**2), x))
+    assert inv_one["pow_base"] == "one_plus_sq"
+    assert inv_four["pow_base"] == "expr"
+    assert inv_one != inv_four
+
+
 def test_generated_markdown_page_exists_and_is_marked_generated():
     path = os.path.join(REPO, "docs", "mdbook", "src", "certificate-coverage.md")
     with open(path, encoding="utf-8") as handle:
