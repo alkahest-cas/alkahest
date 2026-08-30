@@ -156,12 +156,27 @@ fn expr_to_rational(
 
     enum Node {
         Poly,
+        /// A literal `p/q` with `q != 1`.
+        Rational(rug::Integer, rug::Integer),
         Add(Vec<ExprId>),
         Mul(Vec<ExprId>),
-        Pow { base: ExprId, exp_i64: Option<i64> },
+        Pow {
+            base: ExprId,
+            exp_i64: Option<i64>,
+        },
     }
 
     let node = pool.with(expr, |data| match data {
+        // `MultiPoly` is a polynomial over ℤ, so a genuine fraction cannot be
+        // a coefficient in it — `from_symbolic` rejects one with
+        // `NonIntegerCoefficient`.  But a `RationalFunction` represents `p/q`
+        // exactly, as the constant polynomial `p` over the constant
+        // polynomial `q`, and every caller of this function is building one.
+        // Routing the literal here instead of through `poly_rf` is what lets
+        // `cancel` accept `¾·sin(x) − ¾·sin(x)` at all.
+        ExprData::Rational(r) if *r.0.denom() != 1 => {
+            Node::Rational(r.0.numer().clone(), r.0.denom().clone())
+        }
         ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Symbol { .. } => Node::Poly,
         ExprData::Add(args) => Node::Add(args.clone()),
         ExprData::Mul(args) => Node::Mul(args.clone()),
@@ -181,6 +196,10 @@ fn expr_to_rational(
     match node {
         // A polynomial leaf/atom: convert directly to a poly-over-1 rational.
         Node::Poly => poly_rf(expr, gens, pool),
+        Node::Rational(numer, denom) => RationalFunction::new(
+            big_constant_poly(gens, numer),
+            big_constant_poly(gens, denom),
+        ),
         Node::Add(args) => {
             let mut acc = const_rf(0, gens);
             for a in args {
@@ -237,6 +256,21 @@ fn poly_rf(
     let numer = MultiPoly::from_symbolic(expr, gens.to_vec(), pool)?;
     let denom = MultiPoly::constant(gens.to_vec(), 1);
     RationalFunction::new(numer, denom)
+}
+
+/// The constant polynomial `c` over `gens`, for a `c` too big for `i64`.
+///
+/// [`MultiPoly::constant`] takes an `i64`; a rational literal's numerator or
+/// denominator is a `rug::Integer` and need not fit.
+fn big_constant_poly(gens: &[ExprId], c: rug::Integer) -> MultiPoly {
+    let mut terms = std::collections::BTreeMap::new();
+    if c != 0 {
+        terms.insert(Vec::<u32>::new(), c);
+    }
+    MultiPoly {
+        vars: gens.to_vec(),
+        terms,
+    }
 }
 
 /// The constant rational function `c / 1`.
@@ -404,5 +438,44 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A genuine fraction as a literal coefficient used to be refused outright
+    /// with `NonIntegerCoefficient`, because `MultiPoly` is a polynomial over
+    /// ℤ.  A `RationalFunction` can hold `p/q` exactly, so there is nothing to
+    /// refuse.
+    #[test]
+    fn cancels_over_rational_coefficients() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let s = p.func("sin", vec![x]);
+        let expr = p.add(vec![
+            p.mul(vec![s, p.rational(3, 4)]),
+            p.mul(vec![s, p.rational(-3, 4)]),
+        ]);
+        let out = cancel(expr, vec![x], &p).unwrap();
+        assert!(is_int(&p, out, 0), "expected 0, got {}", p.display(out));
+    }
+
+    /// The fraction survives when it does not cancel: `x/2 + x/3 = 5x/6`.
+    #[test]
+    fn rational_coefficients_combine_over_a_common_denominator() {
+        let p = ExprPool::new();
+        let x = p.symbol("x", Domain::Real);
+        let expr = p.add(vec![
+            p.mul(vec![x, p.rational(1, 2)]),
+            p.mul(vec![x, p.rational(1, 3)]),
+        ]);
+        let (numer, denom) = together_parts(expr, vec![x], &p).unwrap();
+        // 5x / 6, up to the shared unit the GCD reduction may factor out.
+        let ratio = p.mul(vec![numer, p.pow(denom, p.integer(-1_i32))]);
+        let want = p.mul(vec![p.rational(5, 6), x]);
+        let diff = p.add(vec![ratio, p.mul(vec![p.integer(-1_i32), want])]);
+        let reduced = cancel(diff, vec![x], &p).unwrap();
+        assert!(
+            is_int(&p, reduced, 0),
+            "expected 5x/6, got {}",
+            p.display(ratio)
+        );
     }
 }
