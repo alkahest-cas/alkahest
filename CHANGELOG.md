@@ -33,11 +33,19 @@
   `RootSum`, unbound symbol) still skips: that is a property of the expression,
   not evidence about the point.
 
-  The same rule now applies at the two other places that compare a candidate's
-  derivative to an integrand over a grid, `integrate::gate::verify` (the
-  propose–fit–verify block gate) and `risch::exp_algebraic`'s local check.
-  `algebraic::genus_zero` was checked and left alone: it already refuses on any
-  non-finite sample, which is stricter than this rule rather than laxer.
+  Three other places compare a candidate's derivative to an integrand over a
+  numeric grid and had the identical skip. `risch::exp_algebraic`'s local check
+  now follows the rule too. `algebraic::genus_zero` was left alone: it already
+  refuses on *any* non-finite sample, stricter than this rule rather than laxer.
+  The third, `integrate::gate::verify`, was changed and the change **reverted**,
+  because its callers rely on the skip on purpose: the elliptic route samples
+  every `P > 0` interval while its reduction is valid on only one of them, so
+  for `∫dx/√(x³−x)` the integrand is finite on `(−1, 0)` where the candidate's
+  derivative is not, and the stricter rule refused four correct,
+  branch-limited elliptic answers. Adopting it there needs each reduction's
+  sample set narrowed to the region it claims, which is a larger change than
+  this one; the reason is recorded in that module's honest-limitations list so
+  the experiment is not repeated.
 
   **Cost: Charlwood's Fifty goes 33 → 32, and #35 is the only problem that
   moves.** It was also the only one of the fifty whose answer had a domain
