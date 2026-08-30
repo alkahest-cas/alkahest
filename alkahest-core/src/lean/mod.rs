@@ -553,6 +553,97 @@ fn add_inner_hasderivat(
     None
 }
 
+/// `HasDerivAt` for a binder-free linear/affine inner: `wrt`, `c·wrt` /
+/// `wrt·c`, `wrt + c` / `c + wrt`, `a + b·wrt`. Powers (`xⁿ`, `c·xⁿ`) and
+/// nested primitives are excluded — those stay out of the FTC
+/// `{const} * f(linear)` fragment so `∫ x·exp(x²)` remains withheld.
+fn linear_affine_hasderivat(inner: ExprId, wrt: ExprId, pool: &ExprPool) -> Option<String> {
+    let var = wrt_name(wrt, pool);
+    linear_hasderivat(inner, wrt, &var, pool).or_else(|| {
+        pool.with(inner, |d| match d {
+            ExprData::Add(xs) if xs.len() == 2 => {
+                add_inner_hasderivat(xs[0], xs[1], wrt, &var, pool)
+            }
+            _ => None,
+        })
+    })
+}
+
+/// The Mathlib `HasDerivAt.<f>` suffix for a unary `sin`/`cos`/`exp`.
+fn trig_exp_hasderivat_suffix(name: &str) -> Option<&'static str> {
+    match name {
+        "sin" => Some("sin"),
+        "cos" => Some("cos"),
+        "exp" => Some("exp"),
+        _ => None,
+    }
+}
+
+/// `(func_name, inner)` when `expr` is `sin`/`cos`/`exp` of a linear/affine
+/// argument already in the binder-free chain fragment.
+fn trig_exp_of_linear_affine(
+    expr: ExprId,
+    wrt: ExprId,
+    pool: &ExprPool,
+) -> Option<(String, ExprId)> {
+    pool.with(expr, |d| match d {
+        ExprData::Func { name, args } if args.len() == 1 => trig_exp_hasderivat_suffix(name)
+            .and_then(|_| {
+                linear_affine_hasderivat(args[0], wrt, pool).map(|_| (name.clone(), args[0]))
+            }),
+        _ => None,
+    })
+}
+
+/// Certificate for a `product_rule` step whose body is a numeric literal times
+/// `f(g x)` for `f ∈ {sin, cos, exp}` and `g` a linear/affine inner already
+/// named by [`linear_affine_hasderivat`]. Uses `HasDerivAt.const_mul` /
+/// `.mul_const` around the same inner witness [`chain_diff_tactic`] names —
+/// not the unconditional `deriv_mul` simp set (which cannot discharge
+/// `DifferentiableAt` of a composite). Pointwise `c · f(x)` is left to
+/// [`UNCONDITIONAL_DIFF_TACTIC`]; `c · f(xⁿ)` stays withheld.
+fn const_times_trig_linear_certificate(
+    before: ExprId,
+    wrt: ExprId,
+    pool: &ExprPool,
+) -> Option<(Option<String>, String)> {
+    let (coeff, func, coeff_on_left) = pool.with(before, |d| match d {
+        ExprData::Mul(xs) if xs.len() == 2 => {
+            let (a, b) = (xs[0], xs[1]);
+            if numeric_literal_lean(a, pool).is_some() {
+                Some((a, b, true))
+            } else if numeric_literal_lean(b, pool).is_some() {
+                Some((b, a, false))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    })?;
+    let (fname, inner) = trig_exp_of_linear_affine(func, wrt, pool)?;
+    // Pointwise `c * sin(x)` already closes via the unconditional simp set;
+    // don't change those certificates.
+    if inner == wrt {
+        return None;
+    }
+    let suffix = trig_exp_hasderivat_suffix(&fname)?;
+    let hg = linear_affine_hasderivat(inner, wrt, pool)?;
+    let c_lean = numeric_literal_lean(coeff, pool)?;
+    let scale = if coeff_on_left {
+        format!("const_mul {c_lean}")
+    } else {
+        format!("mul_const {c_lean}")
+    };
+    let tactic = format!(
+        "by\n    \
+         have hg := {hg}\n    \
+         rw [((hg.{suffix}).{scale}).deriv]\n    \
+         try push_cast\n    \
+         ring"
+    );
+    Some((None, tactic))
+}
+
 /// Lean term of type `HasDerivAt (fun x => g x) (g' x) x` for the inner
 /// shapes [`chain_diff_tactic`] composes with `HasDerivAt.sin` / `.cos` /
 /// `.exp`. Explicit pattern-match only — not a general `HasDerivAt` compiler:
@@ -895,9 +986,13 @@ fn diff_step_certificate(
         }
         "diff_univariate_poly" | "sum_rule" => combine_step_certificate(step.before, wrt, pool),
         // `product_rule` first tries the `f(x)/g(x)` quotient chain (which
-        // carries its own `g x ≠ 0` binder), then the combine fragments
-        // (unconditional, then `x ≠ 0` negative powers, then `0 < x` log/sqrt).
+        // carries its own `g x ≠ 0` binder), then `{const} * f(linear)` via
+        // `HasDerivAt.const_mul` / `.mul_const` (binder-free chain fragment —
+        // does **not** widen [`diff_body_unconditional`] to all products),
+        // then the combine fragments (unconditional, `x ≠ 0` negative powers,
+        // `0 < x` log/sqrt).
         "product_rule" => quotient_chain_certificate(step.before, wrt, pool)
+            .or_else(|| const_times_trig_linear_certificate(step.before, wrt, pool))
             .or_else(|| combine_step_certificate(step.before, wrt, pool)),
         name => diff_rule_to_tactic(name).map(|t| (None, t.to_string())),
     }
@@ -1687,14 +1782,21 @@ pub fn emit_lean_expr_wrt(
 ///
 /// The diff exporter's `deriv (fun x => F) x = …` tactics reliably close for a
 /// restricted fragment: constants, powers of the differentiation variable,
-/// *pointwise* `sin`/`cos`/`exp`/`log`/`atan` (argument exactly the variable), sums of
-/// those, and *flat* products of those (a product whose factors are atoms /
-/// pointwise primitives, e.g. `x · cos x` or `x · log x`). Two shapes that the
-/// diff exporter currently emits but does **not** discharge — leaving `deriv`
-/// or a `DifferentiableAt` side goal open — must be withheld here:
+/// restricted fragment: constants, powers of the differentiation variable,
+/// *pointwise* `sin`/`cos`/`exp`/`log`/`atan` (argument exactly the variable)
+/// or `sin`/`cos`/`exp` of a **linear/affine** argument (`c·x`, `x+c`,
+/// `a+bx` — the binder-free chain fragment), sums of those, and *flat*
+/// products of those (a product whose factors are atoms / pointwise
+/// primitives, e.g. `x · cos x` or `x · log x`, including a numeric scalar
+/// times `sin(2x)`, which is the typical antiderivative of `cos(2x)`). Two
+/// shapes that the diff exporter currently emits but does **not** discharge
+/// — leaving `deriv` or a `DifferentiableAt` side goal open — must be
+/// withheld here:
 ///
-/// * a **chain composite** `f(g x)` with `g ≠ x` (e.g. `exp (x²)`), because the
-///   product-rule simp set lacks the composite's `DifferentiableAt` lemma;
+/// * a **non-linear chain composite** `f(g x)` with `g` a power or nested
+///   primitive (e.g. `exp (x²)`), because [`const_times_trig_linear_certificate`]
+///   covers only linear inners and [`diff_body_unconditional`] is not widened
+///   to all products;
 /// * a **sum nested inside a product** (e.g. `-1 · (a + b)`), because the
 ///   post-`simp` `ring` cannot reduce the still-symbolic nested `deriv`.
 ///
@@ -1731,12 +1833,16 @@ fn antiderivative_in_certifiable_fragment(f: ExprId, var: ExprId, pool: &ExprPoo
                 *base == var && pool.with(*exp, |e| matches!(e, ExprData::Integer(_)))
             }
             ExprData::Func { name, args } => {
-                // Pointwise primitive only: sin/cos/exp/log/atan applied to exactly `var`.
-                // `log` is included so ∫ log x (antiderivative `x·log x − x`) can
-                // reuse the log/sqrt combine certificate; composites stay out.
-                matches!(name.as_str(), "sin" | "cos" | "exp" | "log" | "atan")
-                    && args.len() == 1
-                    && args[0] == var
+                // Pointwise log/atan of `var`, or sin/cos/exp of `var` / a
+                // linear-affine argument (`c·var`, `var+c`, `a+b·var`).
+                args.len() == 1
+                    && match name.as_str() {
+                        "log" | "atan" => args[0] == var,
+                        "sin" | "cos" | "exp" => {
+                            linear_affine_hasderivat(args[0], var, pool).is_some()
+                        }
+                        _ => false,
+                    }
             }
             ExprData::Add(xs) => {
                 // A sum inside a product is the shape `ring` cannot finish.
@@ -1865,6 +1971,12 @@ enum DefiniteIntegrandClass {
     /// `Continuous.inv₀` witness matches the printed lambda definitionally
     /// (addition is not defeq-commutative).
     InvOnePlusSq { one_left: bool },
+    /// `∫ cos(ax+b)`, antiderivative `sin(ax+b)/a` (`a ≠ 0`).
+    CosLinear(ExprId),
+    /// `∫ sin(ax+b)`, antiderivative `-cos(ax+b)/a` (`a ≠ 0`).
+    SinLinear(ExprId),
+    /// `∫ exp(ax+b)`, antiderivative `exp(ax+b)/a` (`a ≠ 0`).
+    ExpLinear(ExprId),
 }
 
 /// True when `expr` is the integer (or 1/1 rational) `k`.
@@ -1922,6 +2034,13 @@ fn inv_one_plus_var_sq_one_left(expr: ExprId, var: ExprId, pool: &ExprPool) -> O
     })
 }
 
+/// Outer primitive of a linear-chain definite integrand.
+enum ChainLinearOuter {
+    Cos,
+    Sin,
+    Exp,
+}
+
 /// Classify `integrand` into the certifiable definite-integral *base* fragment
 /// (a single pointwise `sin`/`cos`/`exp`, an integer power, the bare
 /// variable, or `(1+x²)⁻¹`). [`classify_definite_atom`] extends this with an
@@ -1930,10 +2049,13 @@ fn inv_one_plus_var_sq_one_left(expr: ExprId, var: ExprId, pool: &ExprPool) -> O
 /// building block.
 ///
 /// Returns `None` (⇒ withhold) for anything outside the pointwise
-/// `sin`/`cos`/`exp` of the integration variable, a positive integer power
-/// of the variable, the bare variable itself (treated as `x¹`), or
-/// `(1+x²)⁻¹`. Products, composites, and every other shape stay withheld —
-/// a missing certificate is always preferable to an unsound or
+/// Returns `None` (⇒ withhold) for anything outside the pointwise
+/// `sin`/`cos`/`exp` of the integration variable, those same primitives of a
+/// binder-free linear/affine argument (`cos(2x)`, `sin(x+1)`, `exp(-x)`), a
+/// positive integer power of the variable, the bare variable itself
+/// (treated as `x¹`), or `(1+x²)⁻¹`. Non-linear composites and every other
+/// shape stay withheld — a missing certificate is always preferable to an
+/// unsound or
 /// non-compiling one.
 fn classify_definite_integrand(
     integrand: ExprId,
@@ -1945,12 +2067,18 @@ fn classify_definite_integrand(
     }
     pool.with(integrand, |d| match d {
         ExprData::Symbol { .. } if integrand == var => Some(DefiniteIntegrandClass::Pow(1)),
-        ExprData::Func { name, args } if args.len() == 1 && args[0] == var => match name.as_str() {
-            "sin" => Some(DefiniteIntegrandClass::Sin),
-            "cos" => Some(DefiniteIntegrandClass::Cos),
-            "exp" => Some(DefiniteIntegrandClass::Exp),
-            _ => None,
-        },
+        ExprData::Func { name, args } if args.len() == 1 => {
+            if args[0] == var {
+                match name.as_str() {
+                    "sin" => Some(DefiniteIntegrandClass::Sin),
+                    "cos" => Some(DefiniteIntegrandClass::Cos),
+                    "exp" => Some(DefiniteIntegrandClass::Exp),
+                    _ => None,
+                }
+            } else {
+                classify_chain_linear(name, args[0], var, pool)
+            }
+        }
         ExprData::Pow { base, exp } if *base == var => pool.with(*exp, |e| match e {
             ExprData::Integer(n) => {
                 n.0.to_i64()
@@ -1963,6 +2091,27 @@ fn classify_definite_integrand(
     })
 }
 
+/// `f(ax+b)` with `f ∈ {sin,cos,exp}` and nonzero slope `a`, using the same
+/// inner encoding as [`linear_affine_hasderivat`].
+fn classify_chain_linear(
+    name: &str,
+    inner: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<DefiniteIntegrandClass> {
+    let _ = linear_affine_hasderivat(inner, var, pool)?;
+    let slope = linear_affine_slope(inner, var, pool)?;
+    if numeric_is_zero(slope, pool) {
+        return None;
+    }
+    match name {
+        "sin" => Some(DefiniteIntegrandClass::SinLinear(inner)),
+        "cos" => Some(DefiniteIntegrandClass::CosLinear(inner)),
+        "exp" => Some(DefiniteIntegrandClass::ExpLinear(inner)),
+        _ => None,
+    }
+}
+
 /// True for a numeric literal (`Integer` or `Rational`) — the only shapes
 /// accepted as a constant-multiple coefficient in the definite-integral
 /// linear-combination fragment. Such a literal never mentions the
@@ -1971,6 +2120,59 @@ fn is_definite_coeff_literal(expr: ExprId, pool: &ExprPool) -> bool {
     pool.with(expr, |d| {
         matches!(d, ExprData::Integer(_) | ExprData::Rational(_))
     })
+}
+
+fn numeric_is_zero(expr: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| match d {
+        ExprData::Integer(n) => n.0.to_i64() == Some(0),
+        ExprData::Rational(r) => r.0.numer().to_i64() == Some(0),
+        _ => false,
+    })
+}
+
+fn numeric_is_one(expr: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| match d {
+        ExprData::Integer(n) => n.0.to_i64() == Some(1),
+        ExprData::Rational(r) => r.0.numer().to_i64() == Some(1) && r.0.denom().to_i64() == Some(1),
+        _ => false,
+    })
+}
+
+/// Constant derivative of a linear/affine inner (`a` in `a·x + b`).
+fn linear_affine_slope(inner: ExprId, wrt: ExprId, pool: &ExprPool) -> Option<ExprId> {
+    if inner == wrt {
+        return Some(pool.integer(1_i32));
+    }
+    pool.with(inner, |d| match d {
+        ExprData::Mul(xs) if xs.len() == 2 => {
+            if xs[0] == wrt && is_definite_coeff_literal(xs[1], pool) {
+                Some(xs[1])
+            } else if xs[1] == wrt && is_definite_coeff_literal(xs[0], pool) {
+                Some(xs[0])
+            } else {
+                None
+            }
+        }
+        ExprData::Add(xs) if xs.len() == 2 => {
+            if is_definite_coeff_literal(xs[1], pool) {
+                linear_affine_slope(xs[0], wrt, pool)
+            } else if is_definite_coeff_literal(xs[0], pool) {
+                linear_affine_slope(xs[1], wrt, pool)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    })
+}
+
+/// Print a linear inner with the free variable spelled `t` (endpoint or binder).
+fn inner_lean_at(inner_lean: &str, var_name: &str, t: &str) -> String {
+    if t == var_name {
+        inner_lean.to_string()
+    } else {
+        inner_lean.replace(&format!("({var_name} : ℝ)"), &format!("({t})"))
+    }
 }
 
 /// One additive term of the definite-integral **linear-combination**
@@ -2031,7 +2233,9 @@ fn classify_definite_atom(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<
 #[allow(clippy::type_complexity)]
 fn base_pieces(
     class: &DefiniteIntegrandClass,
+    var: ExprId,
     var_name: &str,
+    pool: &ExprPool,
 ) -> (Box<dyn Fn(&str) -> String>, String, String) {
     match class {
         DefiniteIntegrandClass::Cos => (
@@ -2087,7 +2291,61 @@ fn base_pieces(
                 format!("({add_cont}.inv₀ (fun t => {ne_proof})).intervalIntegrable _ _"),
             )
         }
+        DefiniteIntegrandClass::CosLinear(inner) => {
+            chain_linear_pieces(ChainLinearOuter::Cos, *inner, var, var_name, pool)
+        }
+        DefiniteIntegrandClass::SinLinear(inner) => {
+            chain_linear_pieces(ChainLinearOuter::Sin, *inner, var, var_name, pool)
+        }
+        DefiniteIntegrandClass::ExpLinear(inner) => {
+            chain_linear_pieces(ChainLinearOuter::Exp, *inner, var, var_name, pool)
+        }
     }
+}
+
+/// Antiderivative / `HasDerivAt` / `IntervalIntegrable` for `f(ax+b)`.
+/// Reuses the same inner `HasDerivAt` [`linear_affine_hasderivat`] names for
+/// `diff_cos_two_x`, then scales by `1/a` via `.div_const` so the derivative
+/// value is the integrand (bridged by the top-level `simpa`).
+#[allow(clippy::type_complexity)]
+fn chain_linear_pieces(
+    outer: ChainLinearOuter,
+    inner: ExprId,
+    var: ExprId,
+    var_name: &str,
+    pool: &ExprPool,
+) -> (Box<dyn Fn(&str) -> String>, String, String) {
+    let hg = linear_affine_hasderivat(inner, var, pool).expect("classified linear inner");
+    let slope = linear_affine_slope(inner, var, pool).expect("classified linear slope");
+    let skip_div = numeric_is_one(slope, pool);
+    let slope_lean = expr_to_lean(slope, pool);
+    let inner_lean = expr_to_lean(inner, pool);
+    let var_name_owned = var_name.to_string();
+    let (anti_head, deriv_core) = match outer {
+        ChainLinearOuter::Cos => ("Real.sin", format!("({hg}).sin")),
+        ChainLinearOuter::Sin => ("-Real.cos", format!("(({hg}).cos).neg")),
+        ChainLinearOuter::Exp => ("Real.exp", format!("({hg}).exp")),
+    };
+    let hderiv = if skip_div {
+        deriv_core
+    } else {
+        format!("({deriv_core}).div_const ({slope_lean})")
+    };
+    // Mathlib 4.9 has no `Continuous.mul_const`; `continuity` discharges the
+    // elementary composition `cos ∘ (c·x)` (and affine siblings) without
+    // naming a method that isn't there.
+    let hint = "((by continuity) : Continuous _).intervalIntegrable _ _".to_string();
+    let anti_head_owned = anti_head.to_string();
+    let slope_for_anti = slope_lean;
+    let anti: Box<dyn Fn(&str) -> String> = Box::new(move |t: &str| {
+        let g = inner_lean_at(&inner_lean, &var_name_owned, t);
+        if skip_div {
+            format!("{anti_head_owned} ({g})")
+        } else {
+            format!("({anti_head_owned} ({g})) / ({slope_for_anti})")
+        }
+    });
+    (anti, hderiv, hint)
 }
 
 /// Like [`base_pieces`], but for a full [`DefiniteAtom`] — wraps the base
@@ -2097,13 +2355,14 @@ fn base_pieces(
 #[allow(clippy::type_complexity)]
 fn atom_pieces(
     atom: &DefiniteAtom,
+    var: ExprId,
     var_name: &str,
     pool: &ExprPool,
 ) -> (Box<dyn Fn(&str) -> String>, String, String) {
     match atom {
-        DefiniteAtom::Bare(class) => base_pieces(class, var_name),
+        DefiniteAtom::Bare(class) => base_pieces(class, var, var_name, pool),
         DefiniteAtom::CoeffLeft(coeff, class) => {
-            let (base_anti, base_hderiv, base_int) = base_pieces(class, var_name);
+            let (base_anti, base_hderiv, base_int) = base_pieces(class, var, var_name, pool);
             let c_lean = expr_to_lean(*coeff, pool);
             let anti_c = c_lean.clone();
             let anti: Box<dyn Fn(&str) -> String> =
@@ -2115,7 +2374,7 @@ fn atom_pieces(
             )
         }
         DefiniteAtom::CoeffRight(class, coeff) => {
-            let (base_anti, base_hderiv, base_int) = base_pieces(class, var_name);
+            let (base_anti, base_hderiv, base_int) = base_pieces(class, var, var_name, pool);
             let c_lean = expr_to_lean(*coeff, pool);
             let anti_c = c_lean.clone();
             let anti: Box<dyn Fn(&str) -> String> =
@@ -2190,7 +2449,7 @@ fn build_definite_pieces(
     pool: &ExprPool,
 ) -> Option<(Box<dyn Fn(&str) -> String>, String, String)> {
     if let Some(atom) = classify_definite_atom(expr, var, pool) {
-        return Some(atom_pieces(&atom, var_name, pool));
+        return Some(atom_pieces(&atom, var, var_name, pool));
     }
     let xs = pool.with(expr, |d| match d {
         ExprData::Add(xs) if xs.len() >= 2 => Some(xs.clone()),
@@ -2390,18 +2649,19 @@ fn bound_is_infinite(bound: ExprId, pool: &ExprPool) -> bool {
 ///
 /// Certified integrand shapes (the same base family the indefinite path
 /// certifies, now closed under finite sums and constant multiples): `cos`,
-/// `sin`, `exp` of the integration variable, integer powers `xⁿ` (`n ≥ 1`,
-/// plus the bare variable as `x¹`), `(1+x²)⁻¹` (antiderivative `arctan x`),
-/// any numeric-literal constant multiple of one of those (`3 * cos x`,
-/// `cos x * 3`, `-sin x`, …), and any finite sum of such terms (`x² + sin x`,
-/// `3 * cos x + exp x`, …). Pointwise `log` of the integration variable is a
-/// separate arm: it needs `0 < a` and `0 < b` so `IntervalIntegrable log` is
-/// discharged by `intervalIntegrable_log` + `Set.not_mem_uIcc_of_lt`, and
-/// does **not** join the linear-combination fragment (a sum with one log
-/// addend still withholds). Every other integrand — `∫_0^1 log` (singular
-/// at 0), negative endpoints, and any improper (`±∞`) endpoint — is
-/// **withheld** (returns `""`). Never emits `sorry` / `admit`, and never
-/// asserts an unproven statement.
+/// `sin`, `exp` of the integration variable **or of a binder-free linear/
+/// affine argument** (`cos(2x)`, `sin(x+1)`, `exp(-x)`), integer powers `xⁿ`
+/// (`n ≥ 1`, plus the bare variable as `x¹`), `(1+x²)⁻¹` (antiderivative
+/// `arctan x`), any numeric-literal constant multiple of one of those
+/// (`3 * cos x`, `cos x * 3`, `-sin x`, …), and any finite sum of such terms
+/// (`x² + sin x`, `3 * cos x + exp x`, …). Pointwise `log` of the integration
+/// variable is a separate arm: it needs `0 < a` and `0 < b` so
+/// `IntervalIntegrable log` is discharged by `intervalIntegrable_log` +
+/// `Set.not_mem_uIcc_of_lt`, and does **not** join the linear-combination
+/// fragment (a sum with one log addend still withholds). Every other
+/// integrand — `∫_0^1 log` (singular at 0), negative endpoints, and any
+/// improper (`±∞`) endpoint — is **withheld** (returns `""`). Never emits
+/// `sorry` / `admit`, and never asserts an unproven statement.
 pub fn emit_definite_integration_cert(
     integrand: ExprId,
     var: ExprId,
@@ -2817,12 +3077,10 @@ mod tests {
 
     #[test]
     fn integration_cert_cos_two_x_intern_equality() {
-        // ∫ cos(2x) dx. If the kernel antiderivative differentiates back to the
-        // interned integrand *and* the reused diff certificate closes, emit;
-        // otherwise withhold. The chain-rule encoding of `cos(2x)` itself does
-        // not automatically certify the integral: F is typically a scalar
-        // times `sin(2x)`, whose `product_rule` step is still outside
-        // `diff_body_unconditional`.
+        // ∫ cos(2x) dx = (1/2) sin(2x). Intern-equality holds; the reused
+        // FTC derivative certificate closes via `{const} * f(linear)`
+        // (`HasDerivAt.const_mul` / `.mul_const`) rather than widening
+        // `diff_body_unconditional` to all products.
         use crate::diff::diff;
         use crate::integrate::integrate;
 
@@ -2835,13 +3093,24 @@ mod tests {
             .map(|d| d.value == integrand)
             .unwrap_or(false);
         let lean = emit_integration_cert(derived.value, integrand, x, &pool);
-        // Always withhold: even when d/dx F intern-equals the integrand, F is
-        // a scalar times `sin(2x)` and `product_rule` is outside the
-        // unconditional simp set. Do not widen `diff_body_unconditional`.
         assert!(
-            lean.is_empty(),
-            "∫ cos(2x) FTC fragment still withholds (product_rule on F): intern_eq={intern_eq}, {lean}"
+            intern_eq,
+            "d/dx F must intern-equal cos(2x): F={}",
+            pool.display(derived.value)
         );
+        assert!(
+            !lean.is_empty(),
+            "∫ cos(2x) should certify via FTC: intern_eq={intern_eq}"
+        );
+        assert!(
+            lean.contains("deriv (fun (x : ℝ)"),
+            "must state the derivative relation: {lean}"
+        );
+        assert!(
+            lean.contains("const_mul") || lean.contains("mul_const"),
+            "scalar times sin(2x) must use HasDerivAt.const_mul / .mul_const: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
     }
 
     #[test]
@@ -3046,11 +3315,9 @@ mod tests {
     }
 
     #[test]
-    fn definite_integration_cert_withheld_for_cos_two_x() {
-        // `cos(2x)` now has a chain-rule *diff* certificate, but the definite
-        // FTC fragment is still the pointwise `cos x` family. Withhold rather
-        // than emitting an interval-FTC proof whose antiderivative would need
-        // a `product_rule` step the unconditional simp set cannot close.
+    fn definite_integration_cert_cos_two_x() {
+        // ∫₀¹ cos(2x) = sin(2)/2 − sin(0)/2, via the interval FTC with the
+        // same HasDerivAt composition `diff_cos_two_x` names, scaled by 1/2.
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let two_x = pool.mul(vec![pool.integer(2_i32), x]);
@@ -3063,9 +3330,22 @@ mod tests {
             &pool,
         );
         assert!(
-            lean.is_empty(),
-            "∫ cos(2x) is outside the definite FTC fragment; must withhold: {lean}"
+            !lean.is_empty(),
+            "∫₀¹ cos(2x) must certify via the interval FTC"
         );
+        assert!(
+            lean.contains("intervalIntegral.integral_eq_sub_of_hasDerivAt"),
+            "must invoke the interval FTC lemma: {lean}"
+        );
+        assert!(
+            lean.contains(".sin") && (lean.contains("const_mul") || lean.contains("mul_const")),
+            "must compose inner linear HasDerivAt with .sin: {lean}"
+        );
+        assert!(
+            lean.contains("div_const"),
+            "antiderivative is sin(2x)/2: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
     }
 
     #[test]
@@ -4384,6 +4664,34 @@ mod tests {
             !lean.contains("sorry"),
             "chain-rule certificate must not use sorry: {lean}"
         );
+    }
+
+    #[test]
+    fn emit_lean_const_times_sin_two_x_product_rule() {
+        // The combine step on F = (1/2)·sin(2x) — not the unconditional
+        // product_rule simp set.
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let two_x = pool.mul(vec![pool.integer(2_i32), x]);
+        let half = pool.rational(1_i32, 2_i32);
+        let expr = pool.mul(vec![half, pool.func("sin", vec![two_x])]);
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "d/dx (1/2)·sin(2x) should certify via const_mul of the linear chain: {lean}"
+        );
+        assert!(
+            lean.contains("const_mul") || lean.contains("mul_const"),
+            "expected HasDerivAt.const_mul / .mul_const: {lean}"
+        );
+        assert!(
+            lean.contains("(hg.sin)") || lean.contains("hg.sin"),
+            "expected inner linear HasDerivAt lifted through .sin: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
     }
 
     #[test]

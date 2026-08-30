@@ -336,9 +336,17 @@
   `cos(2x)`, `exp(-x)` (interned `x * -1`, not `hasDerivAt_neg'`),
   `sin(cos x)`, and `exp(-x²)` (`hasDerivAt_pow` scaled by `-1`). Nested
   two-deep composites (`sin(cos(x²))`) and `log`/`tan`/`sqrt` chain still
-  withhold. The FTC fragment for `∫ cos(2x)` stays withheld: the
-  antiderivative is a scalar times `sin(2x)`, whose `product_rule` step is
-  outside the unconditional simp set, and that set is not widened here.
+  withhold.
+
+  The FTC fragment now reuses a combine tactic for `{const} * f(linear)`
+  (`f ∈ {sin,cos,exp}`, binder-free linear/affine inner) via
+  `HasDerivAt.const_mul` / `.mul_const` — the same scaling the definite
+  constant-multiple arm already used — rather than widening
+  `diff_body_unconditional` to all products. That closes `∫ cos(2x) dx`
+  (indefinite, via `deriv F = f` with `F = (1/2) sin(2x)`) and
+  `∫₀¹ cos(2x)` (interval FTC, `HasDerivAt.sin` of the linear inner then
+  `.div_const 2`). `∫ x·exp(x²)` stays withheld: its antiderivative is
+  `{const} * exp(x²)`, a power inner outside this arm.
 
 - **A budget could be outrun by a single allocation, and was.**
   `alkahest.integrate` on `1/(x·log x·(1 + log²(log x)))` — the derivative of
