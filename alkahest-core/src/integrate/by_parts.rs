@@ -1150,12 +1150,15 @@ fn combine_radicals_deep(expr: ExprId, var: ExprId, pool: &ExprPool) -> ExprId {
 ///   same refusal one step later.  Split, it is the `√x⁻¹` that closes
 ///   Charlwood #48.
 ///
-/// This is a **proposal**, not an identity: `√(N/D) = √N/√D` needs `D > 0`
-/// (with `D < 0 ≤ N/D` the left side is real and the right side is not).  The
-/// rewrite therefore only ever *loses* domain — it cannot change the value
-/// where both sides are defined — and every candidate built from it still has
-/// to clear [`verify_antiderivative_status`] in [`try_by_parts`], on the
-/// two-sided grid, before anything is emitted.
+/// This is a **proposal**, not an identity: `√(N/D) = √N/√D` needs `D > 0`, and
+/// with `N, D < 0` it is `√(−N)/√(−D)` that computes the (real) left side
+/// instead.  [`sqrt_split_coverage`] ranks the two orientations by how much of
+/// the sampled real line each covers and rejects either outright if it
+/// contradicts `√r` where both are finite, so the rewrite can *lose* domain but
+/// not change sign.  Everything built from it is still gated by
+/// [`agrees_numerically`] against the residual, and the finished antiderivative
+/// by [`verify_antiderivative_status`] on the two-sided grid in
+/// [`try_by_parts`].
 fn split_sqrt_quotients(expr: ExprId, var: ExprId, pool: &ExprPool) -> ExprId {
     match pool.get(expr) {
         ExprData::Func { name, args } if name == "sqrt" && args.len() == 1 => {

@@ -2126,8 +2126,18 @@ pub(crate) fn integrate_raw(
                         return Ok(result);
                     }
                 }
+                // The *rule engine* has no chain rule, which is all this
+                // message may claim.  It is a decline, and `integrate` carries
+                // on to Risch–Norman, the special-function emitter and general
+                // integration by parts — the last of which takes `u = f(g(x))`,
+                // `dv = dx` and closes Charlwood #12, #47, #48, #49 and #50 from
+                // exactly here.  The wording used to say "chain rule not
+                // implemented" full stop, which read as a verdict on the
+                // integral rather than on this rule table, and sent a reader of
+                // the log to the wrong subsystem.
                 return Err(IntegrationError::NotImplemented(format!(
-                    "∫ {name}(non-trivial arg) — chain rule not implemented"
+                    "∫ {name}(non-trivial arg) — no rule-engine chain rule; \
+                     later tiers declined too"
                 )));
             }
             match name.as_str() {
