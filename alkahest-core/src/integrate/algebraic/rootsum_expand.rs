@@ -832,6 +832,7 @@ fn as_i64(e: ExprId, pool: &ExprPool) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::integrate::risch::poly_rde::qpoly_to_expr;
     use crate::kernel::Domain;
 
     /// `RootSum(r² + 1/2, r·log(t² − 4rt − 1))` is the log part Charlwood #30's
@@ -935,6 +936,58 @@ mod tests {
         let body = pool.mul(vec![r, pool.func("log", vec![pool.add(vec![t, r])])]);
         let rs = pool.root_sum(m, r, body);
         assert!(expand_rootsums(rs, &pool).is_none());
+    }
+
+    /// `minpoly_expandable` is what `rational_integrate` decides on, so it has
+    /// to track the real capability of [`split_factors`] rather than a guess at
+    /// it.  Each polynomial below is checked *both* through the predicate and
+    /// through a full `expand_rootsums` of a `RootSum` built on it.
+    #[test]
+    fn minpoly_expandable_matches_what_expansion_can_do() {
+        let pool = ExprPool::new();
+        let t = pool.symbol("t", Domain::Real);
+        let r = pool.symbol("$root$", Domain::Real);
+        let q = |cs: &[(i32, i32)]| -> QPoly {
+            cs.iter()
+                .map(|&(n, d)| Rational::from((n, d)))
+                .collect::<QPoly>()
+        };
+        // Coefficients are low-order-first.
+        let cases: [(&str, QPoly, bool); 6] = [
+            ("linear r − 2", q(&[(-2, 1), (1, 1)]), true),
+            ("quadratic r² + 1/2", q(&[(1, 2), (0, 1), (1, 1)]), true),
+            (
+                "biquadratic r⁴ − r²/4 + 1/16 (Charlwood #47)",
+                q(&[(1, 16), (0, 1), (-1, 4), (0, 1), (1, 1)]),
+                true,
+            ),
+            (
+                "cubic with a rational root, (r−1)(r²+1)",
+                q(&[(-1, 1), (1, 1), (-1, 1), (1, 1)]),
+                true,
+            ),
+            (
+                "irreducible cubic r³ − r − 1",
+                q(&[(-1, 1), (-1, 1), (0, 1), (1, 1)]),
+                false,
+            ),
+            (
+                "quartic r⁴ + r + 1: no rational root, not biquadratic",
+                q(&[(1, 1), (1, 1), (0, 1), (0, 1), (1, 1)]),
+                false,
+            ),
+        ];
+        for (name, m, want) in cases {
+            assert_eq!(minpoly_expandable(&m, &pool), want, "predicate on {name}");
+            let m_expr = qpoly_to_expr(&m, r, &pool);
+            let body = pool.mul(vec![r, pool.func("log", vec![pool.add(vec![t, r])])]);
+            let rs = pool.root_sum(m_expr, r, body);
+            assert_eq!(
+                expand_rootsums(rs, &pool).is_some(),
+                want,
+                "expansion of {name} disagrees with the predicate"
+            );
+        }
     }
 
     /// An expression with no `RootSum` passes through untouched.

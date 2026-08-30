@@ -1306,6 +1306,40 @@ mod tests {
         assert_eq!(real, checked);
     }
 
+    /// Charlwood #8, `∫√(2+2·tan x+tan²x) dx` — the `RootSum`-expansion side of
+    /// the suppression guard.
+    ///
+    /// `t = tan x` reduces this to `∫√(t²+2t+2)/(1+t²) dt`, which the Euler
+    /// route solves — but only by way of a Rothstein–Trager `RootSum` whose
+    /// residues are the roots of a **biquadratic** (the `√5` and golden-ratio
+    /// radicals visible in the answer). `parametrize` expands that into explicit
+    /// real `log`/`atan` before returning, so nothing containing a `RootSum` ever
+    /// reaches the `contains_root_sum` check below or this route's gate.
+    ///
+    /// While `RootSumSuppressed` reached through the nested `parametrize` frame,
+    /// the sub-integral declined and so did this problem. The companion test is
+    /// `rational_integrate::expandable_caller_still_refuses_a_cubic_root_sum`,
+    /// which pins the shapes the narrowed guard still refuses.
+    #[test]
+    fn charlwood_8_sqrt_of_tan_quadratic() {
+        let (pool, x) = setup();
+        let t = tan(x, &pool);
+        let rad = pool.add(vec![
+            pool.integer(2_i32),
+            pool.mul(vec![pool.integer(2_i32), t]),
+            pool.pow(t, pool.integer(2_i32)),
+        ]);
+        let e = sqrt(rad, &pool);
+        let got = crate::integrate::integrate(e, x, &pool).expect("Charlwood #8 should close");
+        assert!(
+            !contains_root_sum(got.value, &pool),
+            "the answer must not contain a RootSum: {}",
+            pool.display(got.value)
+        );
+        let (checked, _real) = check_everywhere(got.value, e, x, &pool);
+        assert!(checked > 700, "only {checked} points checked");
+    }
+
     /// Charlwood #7, `∫tan x/√(1+sec³x) dx`.
     ///
     /// The generator here is `sec`, not `tan`: dividing by `(sec x)′` cancels

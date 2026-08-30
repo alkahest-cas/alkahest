@@ -1162,6 +1162,101 @@ mod tests {
         assert!(d.is_ok());
     }
 
+    /// `∫2x²/(x⁴+1) dx` — residues are the roots of `t⁴ + 1/16`, a
+    /// **biquadratic**, which `rootsum_expand::split_factors` splits into two
+    /// monic quadratics.  This is the permitted side of the narrowed guard: a
+    /// caller that expands must still get the `RootSum`.
+    #[test]
+    fn expandable_caller_admits_a_biquadratic_root_sum() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let den = pool.add(vec![pool.pow(x, pool.integer(4_i32)), pool.integer(1_i32)]);
+        let num = pool.mul(vec![pool.integer(2_i32), pool.pow(x, pool.integer(2_i32))]);
+        let f = pool.mul(vec![num, pool.pow(den, pool.integer(-1_i32))]);
+
+        let plain = try_integrate_rational(f, x, &pool).expect("unguarded RootSum path");
+        assert!(pool.display(plain).to_string().contains("RootSum"));
+
+        // The guard the four `parametrize` sub-integrations declare.
+        let expandable = {
+            let _g = RootSumExpandedByCaller::enter();
+            try_integrate_rational(f, x, &pool)
+        };
+        assert_eq!(
+            expandable,
+            Some(plain),
+            "an expandable minimal polynomial must not be suppressed"
+        );
+
+        // The three callers that cannot use a `RootSum` at all are unchanged.
+        let suppressed = {
+            let _g = RootSumSuppressed::enter();
+            try_integrate_rational(f, x, &pool)
+        };
+        assert_eq!(suppressed, None, "full suppression must still suppress");
+    }
+
+    /// `∫1/(x³−3x+1) dx` — the residues' minimal polynomial is an irreducible
+    /// cubic with no rational root: not linear, not quadratic, not a
+    /// biquadratic, so `rootsum_expand` cannot split it and the caller would
+    /// decline on whatever came back.
+    ///
+    /// **This is the half of the guard that must not be removed.** Widening it
+    /// to admit this shape would buy nothing — the answer still cannot reach a
+    /// gate — while paying for the Lazard–Rioboo–Trager number-field GCD, which
+    /// is what the guard was introduced to avoid.
+    #[test]
+    fn expandable_caller_still_refuses_a_cubic_root_sum() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let den = pool.add(vec![
+            pool.pow(x, pool.integer(3_i32)),
+            pool.mul(vec![pool.integer(-3_i32), x]),
+            pool.integer(1_i32),
+        ]);
+        let f = pool.pow(den, pool.integer(-1_i32));
+
+        let plain = try_integrate_rational(f, x, &pool).expect("unguarded RootSum path");
+        assert!(pool.display(plain).to_string().contains("RootSum"));
+
+        let expandable = {
+            let _g = RootSumExpandedByCaller::enter();
+            try_integrate_rational(f, x, &pool)
+        };
+        assert_eq!(
+            expandable, None,
+            "a minimal polynomial `rootsum_expand` cannot split must stay suppressed"
+        );
+
+        let suppressed = {
+            let _g = RootSumSuppressed::enter();
+            try_integrate_rational(f, x, &pool)
+        };
+        assert_eq!(suppressed, None);
+    }
+
+    /// A guard restores the enclosing mode rather than resetting to the default,
+    /// so `RootSumSuppressed` nested inside `RootSumExpandedByCaller` (an
+    /// engine u-substitution under a `parametrize` frame) leaves the outer frame
+    /// intact when it drops.
+    #[test]
+    fn root_sum_guards_nest_and_restore() {
+        let pool = pool();
+        let x = pool.symbol("x", Domain::Real);
+        let den = pool.add(vec![pool.pow(x, pool.integer(4_i32)), pool.integer(1_i32)]);
+        let num = pool.mul(vec![pool.integer(2_i32), pool.pow(x, pool.integer(2_i32))]);
+        let f = pool.mul(vec![num, pool.pow(den, pool.integer(-1_i32))]);
+
+        let outer = RootSumExpandedByCaller::enter();
+        {
+            let _inner = RootSumSuppressed::enter();
+            assert_eq!(try_integrate_rational(f, x, &pool), None);
+        }
+        assert!(try_integrate_rational(f, x, &pool).is_some());
+        drop(outer);
+        assert!(try_integrate_rational(f, x, &pool).is_some());
+    }
+
     #[test]
     fn hermite_one_over_x_plus_1_squared() {
         // ∫ 1/(x+1)² dx = −1/(x+1)  (pure rational part, no log).
