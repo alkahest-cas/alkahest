@@ -483,6 +483,36 @@ def test_lean_emits_chain_rule_composite_certificate():
     assert r.verification["status"] == "certificate_available"
 
 
+def test_lean_emits_chain_rule_linear_and_primitive_inners():
+    """Chain rule for f(c*x), f(-x), f(g x) with g a pointwise primitive."""
+    p = pool()
+    x = p.symbol("x")
+
+    cos_2x = diff(cos(2 * x), x)
+    cert = cos_2x.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "(hg.cos).deriv" in cert
+    assert "const_mul" in cert or "mul_const" in cert
+
+    exp_neg = diff(exp(-x), x)
+    cert = exp_neg.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "(hg.exp).deriv" in cert
+    assert "hasDerivAt_neg" not in cert
+
+    sin_cos = diff(sin(cos(x)), x)
+    cert = sin_cos.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "Real.hasDerivAt_cos" in cert
+    assert "(hg.sin).deriv" in cert
+
+
 def test_lean_withholds_chain_rule_log_composite():
     """Composite log(x^n) still routes through diff_log and stays withheld."""
     p = pool()

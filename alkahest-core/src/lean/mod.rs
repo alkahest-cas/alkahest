@@ -150,26 +150,6 @@ fn is_pow_of_var(before: ExprId, wrt: ExprId, pool: &ExprPool) -> bool {
     )
 }
 
-/// If `before` is a unary composite `f(wrt ^ n)` whose inner argument is a pure
-/// power of the differentiation variable with integer exponent `n ≥ 2`, return
-/// `n`. This is the subset of the chain rule that we can emit as a compiling
-/// Lean certificate via `HasDerivAt.comp` + `hasDerivAt_pow`.
-fn composite_pow_inner_exp(before: ExprId, wrt: ExprId, pool: &ExprPool) -> Option<i64> {
-    pool.with(before, |d| {
-        let arg = match d {
-            ExprData::Func { args, .. } if args.len() == 1 => args[0],
-            _ => return None,
-        };
-        pool.with(arg, |inner| match inner {
-            ExprData::Pow { base, exp } if *base == wrt => pool.with(*exp, |e| match e {
-                ExprData::Integer(n) => n.0.to_i64().filter(|&k| k >= 2),
-                _ => None,
-            }),
-            _ => None,
-        })
-    })
-}
-
 /// The Mathlib `HasDerivAt.<f>` composite lemma suffix for the outer unary
 /// primitive of a chain-rule differentiation step, if we know how to compose it.
 ///
@@ -227,8 +207,8 @@ fn unary_func_name(expr: ExprId, wrt: ExprId, pool: &ExprPool) -> Option<String>
 ///
 /// Other exponents (`0`, `1`, `≤ -2`) aren't encoded and return `None` — the
 /// caller withholds. This is the "outer power, inner primitive" mirror of
-/// [`composite_pow_inner_exp`]/[`chain_diff_tactic`], which instead handles
-/// `f(x^n)` (power *inside* the primitive).
+/// [`chain_diff_tactic`], which instead handles `f(g x)` (power, linear
+/// form, or pointwise primitive *inside* the outer `f`).
 fn power_chain_certificate(
     before: ExprId,
     wrt: ExprId,
@@ -456,29 +436,174 @@ fn registry_diff_certificate(
     }
 }
 
+/// Integer or rational literal, printed the way [`expr_to_lean`] prints it so
+/// the `HasDerivAt` witness matches the interned goal (`(2 : ℝ)`, not `2`).
+fn numeric_literal_lean(expr: ExprId, pool: &ExprPool) -> Option<String> {
+    pool.with(expr, |d| match d {
+        ExprData::Integer(_) | ExprData::Rational(_) => Some(expr_to_lean(expr, pool)),
+        _ => None,
+    })
+}
+
+/// `hasDerivAt_pow n var` for inner `wrt^n` with integer `n ≥ 2`.
+fn pow_hasderivat(expr: ExprId, wrt: ExprId, var: &str, pool: &ExprPool) -> Option<String> {
+    pool.with(expr, |d| match d {
+        ExprData::Pow { base, exp } if *base == wrt => pool.with(*exp, |e| match e {
+            ExprData::Integer(n) => {
+                n.0.to_i64()
+                    .filter(|&k| k >= 2)
+                    .map(|k| format!("hasDerivAt_pow {k} {var}"))
+            }
+            _ => None,
+        }),
+        _ => None,
+    })
+}
+
+/// `HasDerivAt` for a 2-factor product of a numeric literal and `wrt`
+/// (`c * x` or `x * c`). Alkahest interns `-x` as `Mul([x, -1])`, which
+/// pretty-prints as `(x : ℝ) * (-1 : ℝ)` — the witness must use `.mul_const`
+/// / `.const_mul`, never `hasDerivAt_neg'`, so it matches that interned form.
+fn coeff_times_wrt(
+    a: ExprId,
+    b: ExprId,
+    wrt: ExprId,
+    var: &str,
+    pool: &ExprPool,
+) -> Option<String> {
+    let (coeff, coeff_on_left) = if a == wrt {
+        (b, false)
+    } else if b == wrt {
+        (a, true)
+    } else {
+        return None;
+    };
+    let c_lean = numeric_literal_lean(coeff, pool)?;
+    Some(if coeff_on_left {
+        format!("(hasDerivAt_id' {var}).const_mul {c_lean}")
+    } else {
+        format!("(hasDerivAt_id' {var}).mul_const {c_lean}")
+    })
+}
+
+/// `HasDerivAt` for a 2-factor product of a numeric literal and `wrt^n`
+/// (`n ≥ 2`): `c * x^n` or `x^n * c`. This is the `exp(-x^2)` inner.
+fn coeff_times_pow(
+    a: ExprId,
+    b: ExprId,
+    wrt: ExprId,
+    var: &str,
+    pool: &ExprPool,
+) -> Option<String> {
+    if let (Some(hg), Some(c_lean)) = (
+        pow_hasderivat(a, wrt, var, pool),
+        numeric_literal_lean(b, pool),
+    ) {
+        return Some(format!("({hg}).mul_const {c_lean}"));
+    }
+    if let (Some(c_lean), Some(hg)) = (
+        numeric_literal_lean(a, pool),
+        pow_hasderivat(b, wrt, var, pool),
+    ) {
+        return Some(format!("({hg}).const_mul {c_lean}"));
+    }
+    None
+}
+
+fn mul_inner_hasderivat(
+    a: ExprId,
+    b: ExprId,
+    wrt: ExprId,
+    var: &str,
+    pool: &ExprPool,
+) -> Option<String> {
+    coeff_times_wrt(a, b, wrt, var, pool).or_else(|| coeff_times_pow(a, b, wrt, var, pool))
+}
+
+/// `HasDerivAt` for the variable itself or a linear `c * wrt`.
+fn linear_hasderivat(expr: ExprId, wrt: ExprId, var: &str, pool: &ExprPool) -> Option<String> {
+    if expr == wrt {
+        return Some(format!("hasDerivAt_id' {var}"));
+    }
+    pool.with(expr, |d| match d {
+        ExprData::Mul(xs) if xs.len() == 2 => coeff_times_wrt(xs[0], xs[1], wrt, var, pool),
+        _ => None,
+    })
+}
+
+/// `HasDerivAt` for a 2-summand `Add` of a numeric literal and either the
+/// variable (`x + c`, `c + x`) or a linear term (`a + b x`, `b x + a`).
+fn add_inner_hasderivat(
+    a: ExprId,
+    b: ExprId,
+    wrt: ExprId,
+    var: &str,
+    pool: &ExprPool,
+) -> Option<String> {
+    if let Some(c_lean) = numeric_literal_lean(b, pool) {
+        if let Some(hg) = linear_hasderivat(a, wrt, var, pool) {
+            return Some(format!("({hg}).add_const {c_lean}"));
+        }
+    }
+    if let Some(c_lean) = numeric_literal_lean(a, pool) {
+        if let Some(hg) = linear_hasderivat(b, wrt, var, pool) {
+            return Some(format!("({hg}).const_add {c_lean}"));
+        }
+    }
+    None
+}
+
+/// Lean term of type `HasDerivAt (fun x => g x) (g' x) x` for the inner
+/// shapes [`chain_diff_tactic`] composes with `HasDerivAt.sin` / `.cos` /
+/// `.exp`. Explicit pattern-match only — not a general `HasDerivAt` compiler:
+///   - `wrt^n` (`n ≥ 2`) via `hasDerivAt_pow`
+///   - `c * wrt` / `wrt * c` (including interned `-x`) via `.const_mul` / `.mul_const`
+///   - `c * wrt^n` / `wrt^n * c` (e.g. `-x^2`) via the same scaling on `hasDerivAt_pow`
+///   - `wrt + c` / `c + wrt` / `a + b·wrt` via `.add_const` / `.const_add`
+///   - `sin`/`cos`/`exp` of the variable via the pointwise `Real.hasDerivAt_*` facts
+fn inner_hasderivat_term(inner: ExprId, wrt: ExprId, pool: &ExprPool) -> Option<String> {
+    let var = wrt_name(wrt, pool);
+    if let Some(t) = pow_hasderivat(inner, wrt, &var, pool) {
+        return Some(t);
+    }
+    pool.with(inner, |d| match d {
+        ExprData::Mul(xs) if xs.len() == 2 => mul_inner_hasderivat(xs[0], xs[1], wrt, &var, pool),
+        ExprData::Add(xs) if xs.len() == 2 => add_inner_hasderivat(xs[0], xs[1], wrt, &var, pool),
+        ExprData::Func { name, args } if args.len() == 1 && args[0] == wrt => {
+            pointwise_hasderivat_lemma(name).map(|lemma| format!("{lemma} {var}"))
+        }
+        _ => None,
+    })
+}
+
 /// Build a self-contained Lean tactic proving a chain-rule derivative goal
-/// `deriv (fun x => f (x^n)) x = <after>` for `f ∈ {sin, cos, exp}` and integer
-/// `n ≥ 2`.
+/// `deriv (fun x => f (g x)) x = <after>` for `f ∈ {sin, cos, exp}` and an
+/// inner `g` whose `HasDerivAt` [`inner_hasderivat_term`] can name.
 ///
-/// The proof takes `hasDerivAt_pow` for the polynomial inner, lifts it through
-/// the outer primitive's `HasDerivAt.<f>` composite lemma, discharges the
-/// derivative via `HasDerivAt.deriv`, and reconciles the (cast-laden) Mathlib
-/// derivative form with Alkahest's recorded `after` using `push_cast; ring`.
-/// Returns `None` when the step is not a supported composite shape.
+/// The proof takes that inner witness, lifts it through the outer primitive's
+/// `HasDerivAt.<f>` composite lemma, discharges the derivative via
+/// `HasDerivAt.deriv`, and reconciles the (cast-laden) Mathlib derivative
+/// form with Alkahest's recorded `after` using `try push_cast; ring`
+/// (`push_cast` is a no-op — and a linter error under `-DwarningAsError` —
+/// on linear inners that have no `ℕ` coercion). Returns `None` when the
+/// step is not a supported composite shape.
 fn chain_diff_tactic(
     rule_name: &str,
     before: ExprId,
     wrt: ExprId,
     pool: &ExprPool,
 ) -> Option<String> {
-    let n = composite_pow_inner_exp(before, wrt, pool)?;
     let suffix = chain_outer_lemma(rule_name)?;
-    let var_name = wrt_name(wrt, pool);
+    let inner = pool.with(before, |d| match d {
+        ExprData::Func { args, .. } if args.len() == 1 => Some(args[0]),
+        _ => None,
+    })?;
+    let hg = inner_hasderivat_term(inner, wrt, pool)?;
     Some(format!(
         "by\n    \
-         have hg := hasDerivAt_pow {n} {var_name}\n    \
+         have hg := {hg}\n    \
          rw [(hg.{suffix}).deriv]\n    \
-         push_cast\n    \
+         try push_cast\n    \
          ring"
     ))
 }
@@ -713,8 +838,9 @@ fn diff_rule_to_tactic(rule_name: &str) -> Option<&'static str> {
 /// `deriv (fun v => before) v = after`. Returns `None` when nothing this
 /// emitter knows about applies — the caller must withhold.
 ///
-/// Tries, in order: the `f(x^n)` chain rule ([`chain_diff_tactic`]), then a
-/// per-rule dispatch that covers the pointwise cases (gated on
+/// Tries, in order: the `f(g x)` chain rule ([`chain_diff_tactic`], for
+/// inner `g` a power / linear form / pointwise primitive), then a per-rule
+/// dispatch that covers the pointwise cases (gated on
 /// [`is_unary_of_var`]/[`is_pow_of_var`] so composites correctly fall
 /// through to withholding), the `diff_sqrt` positivity certificate, the
 /// `diff_primitive_registry` dispatch (`tan`/`sinh`/`cosh`/`atan`/`asin`),
@@ -1156,6 +1282,7 @@ pub fn emit_header() -> String {
 pub fn emit_diff_header() -> String {
     "import Mathlib.Tactic\n\
      import Mathlib.Analysis.Calculus.Deriv.Basic\n\
+     import Mathlib.Analysis.Calculus.Deriv.Add\n\
      import Mathlib.Analysis.Calculus.Deriv.Pow\n\
      import Mathlib.Analysis.Calculus.Deriv.Mul\n\
      import Mathlib.Analysis.Calculus.Deriv.Inv\n\
@@ -2689,6 +2816,35 @@ mod tests {
     }
 
     #[test]
+    fn integration_cert_cos_two_x_intern_equality() {
+        // ∫ cos(2x) dx. If the kernel antiderivative differentiates back to the
+        // interned integrand *and* the reused diff certificate closes, emit;
+        // otherwise withhold. The chain-rule encoding of `cos(2x)` itself does
+        // not automatically certify the integral: F is typically a scalar
+        // times `sin(2x)`, whose `product_rule` step is still outside
+        // `diff_body_unconditional`.
+        use crate::diff::diff;
+        use crate::integrate::integrate;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let two_x = pool.mul(vec![pool.integer(2_i32), x]);
+        let integrand = pool.func("cos", vec![two_x]);
+        let derived = integrate(integrand, x, &pool).expect("integrate");
+        let intern_eq = diff(derived.value, x, &pool)
+            .map(|d| d.value == integrand)
+            .unwrap_or(false);
+        let lean = emit_integration_cert(derived.value, integrand, x, &pool);
+        // Always withhold: even when d/dx F intern-equals the integrand, F is
+        // a scalar times `sin(2x)` and `product_rule` is outside the
+        // unconditional simp set. Do not widen `diff_body_unconditional`.
+        assert!(
+            lean.is_empty(),
+            "∫ cos(2x) FTC fragment still withholds (product_rule on F): intern_eq={intern_eq}, {lean}"
+        );
+    }
+
+    #[test]
     fn definite_integration_cert_cos() {
         // ∫₀¹ cos x = sin 1 - sin 0, via the interval FTC.
         let pool = p();
@@ -2886,6 +3042,29 @@ mod tests {
         assert!(
             lean.is_empty(),
             "∫ over negative endpoints must withhold: {lean}"
+        );
+    }
+
+    #[test]
+    fn definite_integration_cert_withheld_for_cos_two_x() {
+        // `cos(2x)` now has a chain-rule *diff* certificate, but the definite
+        // FTC fragment is still the pointwise `cos x` family. Withhold rather
+        // than emitting an interval-FTC proof whose antiderivative would need
+        // a `product_rule` step the unconditional simp set cannot close.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let two_x = pool.mul(vec![pool.integer(2_i32), x]);
+        let cos_two_x = pool.func("cos", vec![two_x]);
+        let lean = emit_definite_integration_cert(
+            cos_two_x,
+            x,
+            pool.integer(0_i32),
+            pool.integer(1_i32),
+            &pool,
+        );
+        assert!(
+            lean.is_empty(),
+            "∫ cos(2x) is outside the definite FTC fragment; must withhold: {lean}"
         );
     }
 
@@ -4179,6 +4358,206 @@ mod tests {
         assert!(
             !lean.contains("sorry"),
             "chain-rule certificate must not use sorry: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_lean_chain_rule_diff_cos_two_x() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let two_x = pool.mul(vec![pool.integer(2_i32), x]);
+        let cos_two_x = pool.func("cos", vec![two_x]);
+        let derived = diff(cos_two_x, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "chain-rule d/dx cos(2x) should now be Lean-certifiable"
+        );
+        assert!(
+            (lean.contains("const_mul") || lean.contains("mul_const"))
+                && lean.contains("(hg.cos).deriv"),
+            "expected linear-inner chain-rule composition tactic: {lean}"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "chain-rule certificate must not use sorry: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_lean_chain_rule_diff_exp_neg_x() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        // `-x` interned as `Mul([x, -1])`, printed `(x : ℝ) * (-1 : ℝ)`.
+        let neg_x = pool.mul(vec![pool.integer(-1_i32), x]);
+        let exp_neg_x = pool.func("exp", vec![neg_x]);
+        let derived = diff(exp_neg_x, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "chain-rule d/dx exp(-x) should now be Lean-certifiable"
+        );
+        assert!(
+            (lean.contains("const_mul") || lean.contains("mul_const"))
+                && lean.contains("(hg.exp).deriv"),
+            "expected interned-negation chain-rule composition tactic: {lean}"
+        );
+        assert!(
+            !lean.contains("hasDerivAt_neg"),
+            "must prove the interned Mul form, not hasDerivAt_neg': {lean}"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "chain-rule certificate must not use sorry: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_lean_chain_rule_diff_sin_cos_x() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let cos_x = pool.func("cos", vec![x]);
+        let sin_cos_x = pool.func("sin", vec![cos_x]);
+        let derived = diff(sin_cos_x, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "chain-rule d/dx sin(cos x) should now be Lean-certifiable"
+        );
+        assert!(
+            lean.contains("Real.hasDerivAt_cos") && lean.contains("(hg.sin).deriv"),
+            "expected pointwise-inner chain-rule composition tactic: {lean}"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "chain-rule certificate must not use sorry: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_lean_chain_rule_diff_exp_sin_x() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let sin_x = pool.func("sin", vec![x]);
+        let exp_sin_x = pool.func("exp", vec![sin_x]);
+        let derived = diff(exp_sin_x, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "chain-rule d/dx exp(sin x) should now be Lean-certifiable"
+        );
+        assert!(
+            lean.contains("Real.hasDerivAt_sin") && lean.contains("(hg.exp).deriv"),
+            "expected pointwise-inner chain-rule composition tactic: {lean}"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "chain-rule certificate must not use sorry: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_lean_chain_rule_diff_sin_x_plus_const() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x_plus_1 = pool.add(vec![x, pool.integer(1_i32)]);
+        let sin_shift = pool.func("sin", vec![x_plus_1]);
+        let derived = diff(sin_shift, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "chain-rule d/dx sin(x+1) should now be Lean-certifiable"
+        );
+        assert!(
+            (lean.contains("add_const") || lean.contains("const_add"))
+                && lean.contains("(hg.sin).deriv"),
+            "expected affine-inner chain-rule composition tactic: {lean}"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "chain-rule certificate must not use sorry: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_lean_chain_rule_diff_cos_linear() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let two_x = pool.mul(vec![pool.integer(2_i32), x]);
+        let affine = pool.add(vec![pool.integer(1_i32), two_x]);
+        let cos_affine = pool.func("cos", vec![affine]);
+        let derived = diff(cos_affine, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "chain-rule d/dx cos(1+2x) should now be Lean-certifiable"
+        );
+        assert!(
+            (lean.contains("add_const") || lean.contains("const_add"))
+                && lean.contains("(hg.cos).deriv"),
+            "expected a+bx inner chain-rule composition tactic: {lean}"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "chain-rule certificate must not use sorry: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_lean_chain_rule_diff_exp_neg_x_squared() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let neg_x2 = pool.mul(vec![pool.integer(-1_i32), x2]);
+        let exp_neg_x2 = pool.func("exp", vec![neg_x2]);
+        let derived = diff(exp_neg_x2, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "chain-rule d/dx exp(-x²) should now be Lean-certifiable"
+        );
+        assert!(
+            lean.contains("hasDerivAt_pow")
+                && (lean.contains("const_mul") || lean.contains("mul_const"))
+                && lean.contains("(hg.exp).deriv"),
+            "expected scaled-power inner chain-rule composition tactic: {lean}"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "chain-rule certificate must not use sorry: {lean}"
+        );
+    }
+
+    #[test]
+    fn withhold_chain_rule_diff_sin_nested_two_deep() {
+        use crate::diff::diff;
+
+        // d/dx sin(cos(x²)) is two chain layers; the inner of the outer sin is
+        // `cos(x²)`, which is not a pointwise primitive of the variable.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let cos_x2 = pool.func("cos", vec![x2]);
+        let sin_cos_x2 = pool.func("sin", vec![cos_x2]);
+        let derived = diff(sin_cos_x2, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            lean.is_empty(),
+            "chain-rule d/dx sin(cos(x²)) is not encoded; must withhold: {lean}"
         );
     }
 
