@@ -2239,6 +2239,49 @@ mod tests {
         solved(f, x, &pool);
     }
 
+    /// The point of normalising residuals rather than special-casing C3: these
+    /// are *not* Charlwood problems, they are the same shape, and they close for
+    /// the same reason.  Measured on a 25-case composite-argument probe the
+    /// group moved 12 → 17; these are three of the five.
+    #[test]
+    fn the_same_route_closes_shapes_outside_charlwood() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let one_plus = pool.add(vec![pool.integer(1_i32), x2]);
+        let g = pool.mul(vec![
+            x,
+            pool.pow(pool.func("sqrt", vec![one_plus]), pool.integer(-1_i32)),
+        ]);
+        // ∫asin(x/√(1+x²)) and ∫acos(x/√(1+x²)) — the `1+x²` siblings of #49.
+        solved(pool.func("asin", vec![g]), x, &pool);
+        solved(pool.func("acos", vec![g]), x, &pool);
+
+        // `∫dx/(√x·√(1+x)) = 2·asinh(√x)` — not a by-parts problem at all.  It
+        // closes because the residual normalisation merges the two radical
+        // generators into the one `√(x²+x)` the algebraic engine accepts.
+        //
+        // Spelled as `(√x·√(1+x))⁻¹`, which is what `parse` builds and what
+        // `candidate_splits` sees as a *single* var-dependent factor, so the
+        // `dv = dx` split is offered.  The algebraically identical
+        // `√x⁻¹·√(1+x)⁻¹` is a two-factor `Mul`, gets factorwise splits
+        // instead, and still declines — a pre-existing form sensitivity of
+        // `candidate_splits`, not something this group introduced.
+        let f = pool.pow(
+            pool.mul(vec![
+                pool.func("sqrt", vec![x]),
+                pool.func("sqrt", vec![pool.add(vec![pool.integer(1_i32), x])]),
+            ]),
+            pool.integer(-1_i32),
+        );
+        let got = integrate(f, x, &pool).expect("∫dx/(√x√(1+x)) should close");
+        assert!(
+            verify_antiderivative_status(got.value, f, x, &pool).is_some(),
+            "returned {} but d/dx does not match",
+            pool.display(got.value)
+        );
+    }
+
     // -- 3a. the radical normalisations the C3 residuals need ----------------
 
     /// The `dv = dx` residual of Charlwood #49 is `∫x/((1−x²)√(1−2x²))`, which
