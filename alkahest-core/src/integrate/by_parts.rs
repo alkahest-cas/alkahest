@@ -1166,18 +1166,24 @@ fn split_sqrt_quotients(expr: ExprId, var: ExprId, pool: &ExprPool) -> ExprId {
                 if !is_one(d, pool) && !is_zero(d, pool) {
                     let n = simplify(n, pool).value;
                     // `together_parts` normalises the sign of the leading
-                    // coefficient, so `(1−2x²)/(1−x²)` can come back as
-                    // `(−1+2x²)/(−1+x²)`.  That flip is invisible to `/` and
-                    // fatal to `√`: on `|x| < 1/√2` the first pair splits into
-                    // two real roots and the second into two imaginary ones,
-                    // whose ratio is a *sign error*, not a domain loss.  So the
-                    // orientation is screened numerically, and both are offered.
-                    for (n, d) in [(n, d), (negate(n, pool), negate(d, pool))] {
-                        if sqrt_split_agrees(r, n, d, var, pool) {
-                            let sn = pool.func("sqrt", vec![n]);
-                            let sd = pool.func("sqrt", vec![d]);
-                            return pool.mul(vec![sn, pool.pow(sd, pool.integer(-1_i32))]);
-                        }
+                    // coefficient, so `(1−2x²)/(1−x²)` comes back as
+                    // `(−1+2x²)/(x²−1)`.  That flip is invisible to `/` and
+                    // decisive under `√`: on `|x| < 1/√2` the first pair splits
+                    // into two real roots and the second into two imaginary
+                    // ones.  Both orientations are legitimate somewhere, so
+                    // take the one that covers more of the sampled line.
+                    let orientations = [(n, d), (negate(n, pool), negate(d, pool))];
+                    let best = orientations
+                        .iter()
+                        .filter_map(|&(n, d)| {
+                            sqrt_split_coverage(r, n, d, var, pool).map(|c| (c, n, d))
+                        })
+                        .filter(|&(c, _, _)| c > 0)
+                        .max_by_key(|&(c, _, _)| c);
+                    if let Some((_, n, d)) = best {
+                        let sn = pool.func("sqrt", vec![n]);
+                        let sd = pool.func("sqrt", vec![d]);
+                        return pool.mul(vec![sn, pool.pow(sd, pool.integer(-1_i32))]);
                     }
                 }
             }
@@ -1207,24 +1213,122 @@ fn split_sqrt_quotients(expr: ExprId, var: ExprId, pool: &ExprPool) -> ExprId {
     }
 }
 
+/// Pull repeated polynomial factors out of every radicand: `√(f²·g) → f·√g`.
+///
+/// [`extract_square_monomial`] already does this for a square *monomial*
+/// (`√(x⁴+x²) → x·√(x²+1)`), which is the shape [`combine_radicals`] produces.
+/// The `dv = dx` residuals need the general case: `∫atan(√(1+x) − √x)`
+/// (Charlwood #48) reduces to a numerator containing `√(x + 2x² + x³)`, and
+/// that radicand is `x·(1+x)²`.  Until the repeated factor comes out, the
+/// residual carries a *cubic* radical next to a `√x` and no route accepts it;
+/// with `(1+x)√x` in its place the whole numerator collapses to `−(1+x)√x` and
+/// the residual is `−√x/(4(1+x))`, which the engine integrates directly.
+///
+/// A **proposal**: `√(f²·g) = |f|·√g`, so the branch is right only where
+/// `f ≥ 0`.  Same contract as the rest of this module — the candidate is a
+/// spelling offered to the engine and the answer built from it still has to
+/// clear `d/dx F = f` on the two-sided grid.  (`charlwood_22_…_one_sided` in
+/// the tests below is the standing example of that gate rejecting exactly this
+/// kind of branch error.)
+fn extract_square_factors(expr: ExprId, var: ExprId, pool: &ExprPool) -> ExprId {
+    match pool.get(expr) {
+        ExprData::Func { name, args } if name == "sqrt" && args.len() == 1 => {
+            let r = extract_square_factors(args[0], var, pool);
+            match square_factor_split(r, var, pool) {
+                Some((outside, radicand)) => {
+                    pool.mul(vec![outside, pool.func("sqrt", vec![radicand])])
+                }
+                None => pool.func("sqrt", vec![r]),
+            }
+        }
+        ExprData::Add(args) => pool.add(
+            args.iter()
+                .map(|&a| extract_square_factors(a, var, pool))
+                .collect(),
+        ),
+        ExprData::Mul(args) => pool.mul(
+            args.iter()
+                .map(|&a| extract_square_factors(a, var, pool))
+                .collect(),
+        ),
+        ExprData::Pow { base, exp } => pool.pow(
+            extract_square_factors(base, var, pool),
+            extract_square_factors(exp, var, pool),
+        ),
+        ExprData::Func { name, args } => pool.func(
+            name,
+            args.iter()
+                .map(|&a| extract_square_factors(a, var, pool))
+                .collect(),
+        ),
+        _ => expr,
+    }
+}
+
+/// Factor `r` over ℤ and split it as `(∏fᵢ^{eᵢ/2})² · ∏fᵢ^{eᵢ mod 2}`.
+///
+/// Returns `None` when `r` is not an integer polynomial in `var`, when FLINT
+/// declines, or when every multiplicity is already 1 (nothing to pull out).
+fn square_factor_split(r: ExprId, var: ExprId, pool: &ExprPool) -> Option<(ExprId, ExprId)> {
+    let up = crate::poly::unipoly::UniPoly::from_symbolic(r, var, pool).ok()?;
+    if up.degree() < 2 {
+        return None;
+    }
+    let fac = up.factor_z().ok()?;
+    if fac.factors.iter().all(|&(_, e)| e < 2) {
+        return None;
+    }
+    let mut outside: Vec<ExprId> = Vec::new();
+    let mut inside: Vec<ExprId> = vec![pool.integer(fac.unit.clone())];
+    for (f, e) in &fac.factors {
+        let fe = f.to_symbolic_expr(pool);
+        if e / 2 > 0 {
+            outside.push(pool.pow(fe, pool.integer(i64::from(e / 2))));
+        }
+        if e % 2 == 1 {
+            inside.push(fe);
+        }
+    }
+    if outside.is_empty() {
+        return None;
+    }
+    Some((
+        simplify(mul_of(&outside, pool), pool).value,
+        simplify(mul_of(&inside, pool), pool).value,
+    ))
+}
+
 /// `−expr`, as a product with `−1`.
 fn negate(expr: ExprId, pool: &ExprPool) -> ExprId {
     simplify(pool.mul(vec![pool.integer(-1_i32), expr]), pool).value
 }
 
-/// Does `√N·√D⁻¹` actually agree with `√r` on the reals?
+/// How much of the sampled real line `√N·√D⁻¹` covers, if it agrees with `√r`
+/// everywhere both are defined.
 ///
-/// A *screen*, not a proof: it asks for at least one sample where both sides
-/// are finite and equal, and rejects the orientation outright if any sample has
-/// both sides finite and different.  Samples where the split is undefined
-/// (`D < 0`) are skipped — losing domain is allowed, changing sign is not.
-fn sqrt_split_agrees(r: ExprId, n: ExprId, d: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+/// `None` means the orientation is *wrong*: there is a sample where both sides
+/// are finite and different.  `Some(k)` means they agreed at `k` samples and
+/// disagreed nowhere; `Some(0)` means the split is defined nowhere on the grid,
+/// which is useless rather than wrong.
+///
+/// Both orientations can be right — `√(N/D)` with `N` and `D` both negative is
+/// real, and then `√(−N)/√(−D)` is the branch that computes it — so this is a
+/// *ranking*, not a test, and [`split_sqrt_quotients`] takes the orientation
+/// that covers more of the line.  Losing domain is allowed; changing sign is
+/// not.
+fn sqrt_split_coverage(
+    r: ExprId,
+    n: ExprId,
+    d: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<usize> {
     let lhs = pool.func("sqrt", vec![r]);
     let rhs = pool.mul(vec![
         pool.func("sqrt", vec![n]),
         pool.pow(pool.func("sqrt", vec![d]), pool.integer(-1_i32)),
     ]);
-    let mut agreed = false;
+    let mut agreed = 0_usize;
     for &xv in &SQRT_SPLIT_SAMPLES {
         let mut env = HashMap::new();
         env.insert(var, xv);
@@ -1238,20 +1342,54 @@ fn sqrt_split_agrees(r: ExprId, n: ExprId, d: ExprId, var: ExprId, pool: &ExprPo
             continue;
         }
         if (a - b).abs() > 1e-9 * (1.0 + a.abs().max(b.abs())) {
-            return false;
+            return None;
         }
-        agreed = true;
+        agreed += 1;
     }
-    agreed
+    Some(agreed)
 }
 
-/// Sample points for [`sqrt_split_agrees`].  Two-sided and irrational, and
+/// Sample points for [`sqrt_split_coverage`].  Two-sided and irrational, and
 /// clustered near zero as well as spread out, because the radicands these
 /// residuals carry are frequently real only on a small interval — `√(1−2x²)`
 /// (Charlwood #49) is real only on `|x| < 0.707`.
 const SQRT_SPLIT_SAMPLES: [f64; 10] = [
     0.1237, -0.1237, 0.3719, -0.3719, 0.6113, -0.6113, 1.4231, -1.4231, 2.8123, -2.8123,
 ];
+
+/// Does `cand` compute the same function as `orig` where both are defined?
+///
+/// The whole-expression counterpart to [`sqrt_split_coverage`], and the last
+/// line before a normalised spelling is offered to the engine.  Every rewrite
+/// in this group — the quotient split, the square-factor pull,
+/// [`combine_radicals`]'s merge — is a branch proposal, and a *wrong branch* is
+/// worth catching here rather than paying an `integrate` call for an answer the
+/// final gate will reject anyway.  (`combine_radicals` merging `√(1−x²)⁻¹` with
+/// `√(x²−1)` produces a literal `√(−1)`; that is the shape this drops.)
+///
+/// Not a substitute for [`verify_antiderivative_status`] — that gate still runs
+/// on whatever comes back.
+fn agrees_numerically(cand: ExprId, orig: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    let mut agreed = false;
+    for &xv in &SQRT_SPLIT_SAMPLES {
+        let mut env = HashMap::new();
+        env.insert(var, xv);
+        let (Some(a), Some(b)) = (
+            crate::jit::eval_interp(cand, &env, pool),
+            crate::jit::eval_interp(orig, &env, pool),
+        ) else {
+            continue;
+        };
+        if !a.is_finite() || !b.is_finite() {
+            continue;
+        }
+        if (a - b).abs() > 1e-9 * (1.0 + a.abs().max(b.abs())) {
+            return false;
+        }
+        agreed = true;
+    }
+    agreed
+}
 
 /// `true` when `expr` mentions `sqrt` anywhere.
 fn has_sqrt(expr: ExprId, pool: &ExprPool) -> bool {
@@ -1304,8 +1442,9 @@ fn radical_normal_forms(expr: ExprId, var: ExprId, pool: &ExprPool) -> Vec<ExprI
         }
         let expanded = reduce_sqrt_squares(simplify_expanded(cur, pool).value, pool);
         let merged = combine_radicals_deep(expanded, var, pool);
+        let pulled = extract_square_factors(merged, var, pool);
         let split = simplify(
-            reduce_sqrt_squares(split_sqrt_quotients(merged, var, pool), pool),
+            reduce_sqrt_squares(split_sqrt_quotients(pulled, var, pool), pool),
             pool,
         )
         .value;
@@ -1323,16 +1462,25 @@ fn radical_normal_forms(expr: ExprId, var: ExprId, pool: &ExprPool) -> Vec<ExprI
         }
 
         let mut advanced = false;
+        let mut kept: Option<ExprId> = None;
         for f in produced {
+            // Every rewrite above is a branch proposal, so drop anything that
+            // is not the same function as the residual where both are defined.
+            // Cheaper than the `integrate` call it saves, and it is what keeps
+            // a `√(−1)` from `combine_radicals` out of the candidate list.
+            if !agrees_numerically(f, expr, var, pool) {
+                continue;
+            }
             if f != expr && !out.contains(&f) {
                 out.push(f);
             }
             if f != cur {
                 advanced = true;
             }
+            kept = Some(f);
         }
-        // The last (most-reduced) candidate seeds the next pass.
-        let next = *out.last().unwrap_or(&cur);
+        // The last (most-reduced) surviving candidate seeds the next pass.
+        let Some(next) = kept else { break };
         if !advanced || next == cur {
             break;
         }
@@ -1991,13 +2139,10 @@ mod tests {
             pool.pow(pool.func("sqrt", vec![one_minus]), pool.integer(-1_i32)),
         ]);
         let f = pool.func("asin", vec![g]);
-        // Whether the *sub*-integral closes is the engine's business; what this
-        // test pins is that the composite argument is no longer a hard refusal
-        // — the split is attempted and, if it closes, it is verified.
-        if let ByPartsOutcome::Solved(res) = integrate_by_parts(f, x, &pool) {
-            assert!(verify_antiderivative_status(res, f, x, &pool).is_some());
-        }
-        // Either way: the `dv = dx` split must be among the candidates.
+        // Since the residual's radicals are normalised, this closes outright —
+        // `solved` re-checks `d/dx F = f` independently of the internal gate.
+        solved(f, x, &pool);
+        // And the `dv = dx` split must be among the candidates.
         let splits = candidate_splits(f, x, &pool);
         assert!(
             splits.iter().any(|s| s.trivial_dv && s.u == f),
@@ -2029,9 +2174,33 @@ mod tests {
         }
     }
 
+    /// `∫atan(√(1+x) − √x)` (Charlwood #48) — two *different* radicals in the
+    /// inner function, so the residual needs the merge, the square-factor pull
+    /// and the quotient split, in that order.  It closes to
+    /// `x·atan(√(1+x)−√x) + √x/2 − atan(√x)/2`.
     #[test]
-    #[ignore]
-    fn zz_debug_forms() {
+    fn c3_atan_of_a_difference_of_roots_closes() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let g = pool.add(vec![
+            pool.func("sqrt", vec![pool.add(vec![pool.integer(1_i32), x])]),
+            pool.mul(vec![pool.integer(-1_i32), pool.func("sqrt", vec![x])]),
+        ]);
+        let f = pool.func("atan", vec![g]);
+        solved(f, x, &pool);
+    }
+
+    // -- 3a. the radical normalisations the C3 residuals need ----------------
+
+    /// The `dv = dx` residual of Charlwood #49 is `∫x/((1−x²)√(1−2x²))`, which
+    /// the engine solves — but `diff` spells it with `√(1 − (x·√(1−x²)⁻¹)²)`,
+    /// two radical generators, which the algebraic engine refuses.  Pin that
+    /// `radical_normal_forms` produces a spelling the engine accepts, and that
+    /// the spelling is *numerically the same function* — a sign flip here is
+    /// the failure mode that matters, and it is not hypothetical (see
+    /// `together_parts`'s leading-coefficient normalisation).
+    #[test]
+    fn radical_normal_forms_preserve_the_value_and_reach_the_engine() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let x2 = pool.pow(x, pool.integer(2_i32));
@@ -2045,15 +2214,174 @@ mod tests {
         ]);
         let f = pool.func("asin", vec![g]);
         let du = simplify(crate::diff::diff(f, x, &pool).unwrap().value, &pool).value;
-        let w = pool.mul(vec![x, du]);
-        println!("w = {}", pool.display(simplify(w, &pool).value));
-        for (i, form) in radical_normal_forms(simplify(w, &pool).value, x, &pool)
-            .iter()
-            .enumerate()
-        {
-            println!("  [{i}] {}", pool.display(*form));
-            println!("      -> {:?}", integrate(*form, x, &pool).is_ok());
+        let w = simplify(pool.mul(vec![x, du]), &pool).value;
+
+        let forms = radical_normal_forms(w, x, &pool);
+        assert!(!forms.is_empty(), "no normalised spelling was produced");
+
+        // Every form must agree with the residual where both are defined.
+        // `√(1−2x²)` is real only on |x| < 0.707, so the grid is small and
+        // two-sided.
+        for &form in &forms {
+            let mut agreed = 0;
+            for &xv in &[0.11_f64, -0.11, 0.31, -0.31, 0.49, -0.49] {
+                let mut env = HashMap::new();
+                env.insert(x, xv);
+                let (Some(a), Some(b)) = (
+                    crate::jit::eval_interp(form, &env, &pool),
+                    crate::jit::eval_interp(w, &env, &pool),
+                ) else {
+                    continue;
+                };
+                if !a.is_finite() || !b.is_finite() {
+                    continue;
+                }
+                assert!(
+                    (a - b).abs() < 1e-9 * (1.0 + a.abs().max(b.abs())),
+                    "normalised form {} disagrees with the residual {} at x = {xv} \
+                     ({a} vs {b})",
+                    pool.display(form),
+                    pool.display(w)
+                );
+                agreed += 1;
+            }
+            assert!(
+                agreed > 0,
+                "normalised form {} is defined nowhere on the grid",
+                pool.display(form)
+            );
         }
+        assert!(
+            forms.iter().any(|&f| integrate(f, x, &pool).is_ok()),
+            "no normalised spelling of the #49 residual reached a route that closes"
+        );
+    }
+
+    /// `√(x + 2x² + x³) = (1+x)·√x` — the repeated-factor pull Charlwood #48
+    /// needs.  `extract_square_monomial` only handles a square *monomial*, so
+    /// this is the general case.
+    #[test]
+    fn square_factors_come_out_of_the_radicand() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        // x·(1+x)² = x + 2x² + x³
+        let r = pool.add(vec![
+            x,
+            pool.mul(vec![pool.integer(2_i32), pool.pow(x, pool.integer(2_i32))]),
+            pool.pow(x, pool.integer(3_i32)),
+        ]);
+        let (outside, radicand) =
+            square_factor_split(r, x, &pool).expect("x(1+x)² has a repeated factor");
+        assert_eq!(simplify(radicand, &pool).value, x);
+        // outside must be 1+x, up to spelling: check numerically.
+        let mut env = HashMap::new();
+        env.insert(x, 2.0_f64);
+        let v = crate::jit::eval_interp(outside, &env, &pool).expect("evaluable");
+        assert!((v - 3.0).abs() < 1e-12, "expected 1+x, got {v} at x = 2");
+    }
+
+    /// A squarefree radicand must be left alone — this pass is not allowed to
+    /// churn the common case.
+    #[test]
+    fn a_squarefree_radicand_is_left_alone() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let r = pool.add(vec![pool.integer(1_i32), pool.pow(x, pool.integer(2_i32))]);
+        assert_eq!(square_factor_split(r, x, &pool), None);
+        let s = pool.func("sqrt", vec![r]);
+        assert_eq!(extract_square_factors(s, x, &pool), s);
+    }
+
+    /// `√(N/D)` splits only in the orientation that is numerically right.
+    /// `together_parts` normalises the leading coefficient's sign, so the
+    /// screen has to reject `(−N, −D)` for a quotient that was positive.
+    /// `√(N/D)` splits in whichever orientation covers more of the real line,
+    /// and never in one that contradicts `√r` where both are defined.
+    /// `together_parts` normalises the leading coefficient's sign, so on
+    /// `(1−2x²)/(1−x²)` it hands back `(−1+2x², x²−1)` — right on `|x| > 1`,
+    /// undefined on the `|x| < 1/√2` where Charlwood #49's residual lives.
+    #[test]
+    fn the_sqrt_split_picks_the_orientation_that_covers_more_of_the_line() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        // r = (1 − 2x²)/(1 − x²).
+        let n = pool.add(vec![
+            pool.integer(1_i32),
+            pool.mul(vec![pool.integer(-2_i32), x2]),
+        ]);
+        let d = pool.add(vec![
+            pool.integer(1_i32),
+            pool.mul(vec![pool.integer(-1_i32), x2]),
+        ]);
+        let r = simplify(pool.mul(vec![n, pool.pow(d, pool.integer(-1_i32))]), &pool).value;
+
+        // Neither orientation is *wrong*: both are `Some`.  The positive one
+        // covers the six near-zero samples, the flipped one only the four
+        // outside |x| = 1.
+        let pos = sqrt_split_coverage(r, n, d, x, &pool).expect("positive orientation is sound");
+        let neg = sqrt_split_coverage(r, negate(n, &pool), negate(d, &pool), x, &pool)
+            .expect("flipped orientation is sound on |x| > 1");
+        assert!(
+            pos > neg,
+            "the near-zero orientation must win: {pos} vs {neg}"
+        );
+
+        // And the rewrite itself must agree with `√r` near zero, which is the
+        // thing the flipped orientation gets wrong (it is NaN there).
+        let s = pool.func("sqrt", vec![r]);
+        let split = split_sqrt_quotients(s, x, &pool);
+        assert!(agrees_numerically(split, s, x, &pool));
+        let mut env = HashMap::new();
+        env.insert(x, 0.31_f64);
+        let v = crate::jit::eval_interp(split, &env, &pool).expect("evaluable");
+        assert!(
+            v.is_finite(),
+            "the split must be defined at x = 0.31, got {v}"
+        );
+    }
+
+    /// A split that is a *different function* is rejected outright, not merely
+    /// ranked lower.
+    #[test]
+    fn a_value_contradicting_split_is_rejected() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let r = pool.add(vec![pool.integer(4_i32), x2]);
+        let one = pool.integer(1_i32);
+        assert_eq!(sqrt_split_coverage(r, r, one, x, &pool), Some(10));
+        // Quartering the numerator is a real, finite, *different* function.
+        let quarter = simplify(pool.mul(vec![pool.rational(1, 4), r]), &pool).value;
+        assert_eq!(sqrt_split_coverage(r, quarter, one, x, &pool), None);
+    }
+
+    /// `reduce_sqrt_squares` has to see through a power of a *product* — which
+    /// is exactly where `d/dx asin(x/√(1−x²))` puts the square of the radical.
+    #[test]
+    fn reduce_sqrt_squares_sees_through_a_product_power() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let d = pool.add(vec![
+            pool.integer(1_i32),
+            pool.mul(vec![pool.integer(-1_i32), x2]),
+        ]);
+        let s = pool.func("sqrt", vec![d]);
+        // (x·√(1−x²)⁻¹)²  must fold to  x²·(1−x²)⁻¹.
+        let e = pool.pow(
+            pool.mul(vec![x, pool.pow(s, pool.integer(-1_i32))]),
+            pool.integer(2_i32),
+        );
+        let got = simplify(reduce_sqrt_squares(e, &pool), &pool).value;
+        let want = simplify(pool.mul(vec![x2, pool.pow(d, pool.integer(-1_i32))]), &pool).value;
+        assert_eq!(
+            got,
+            want,
+            "got {} want {}",
+            pool.display(got),
+            pool.display(want)
+        );
     }
 
     // -- 4. termination -----------------------------------------------------
