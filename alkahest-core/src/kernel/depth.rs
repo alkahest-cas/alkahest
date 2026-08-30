@@ -3,16 +3,29 @@
 //! # Why this exists
 //!
 //! Almost every operation on an expression is a structural recursion over the
-//! DAG: printing, simplification, differentiation, substitution, translation to
-//! Lean or SMT-LIB, evaluation.  Each level of the expression costs one or more
-//! native stack frames, and a native stack overflow is **not** an exception —
-//! the kernel delivers `SIGSEGV` and the process dies with no traceback, no
-//! error code, and nothing for a caller's `except Exception` to catch.  For an
+//! DAG: printing, differentiation, substitution, translation to Lean or
+//! SMT-LIB, evaluation.  Each level of the expression costs one or more native
+//! stack frames, and a native stack overflow is **not** an exception — the
+//! kernel delivers `SIGSEGV` and the process dies with no traceback, no error
+//! code, and nothing for a caller's `except Exception` to catch.  For an
 //! unattended run that is strictly worse than a wrong answer: a wrong answer
 //! can be logged.
 //!
-//! Measured by bisection on the shipped release build with the usual 8 MiB
-//! main-thread stack (`ulimit -s 8192`), on a chain of `sin` applications:
+//! # What is bounded
+//!
+//! One number, [`MAX_EXPR_DEPTH`], against one quantity: the **cached node
+//! depth** of an already-interned expression — the longest root-to-leaf path,
+//! `1 + max(child depths)`, as returned by [`ExprPool::depth`].  Not stack
+//! bytes, not node count, not width.  A 50 000-term `Add` is depth 2 and is
+//! accepted; a `Pow` tower of depth 2 049 is refused however few nodes it has.
+//!
+//! Nothing in this module measures the stack.  The one mechanism in this crate
+//! that does is a different one with a different failure mode — see *What this
+//! does not cover*.
+//!
+//! The number came from bisection on the shipped release build with the usual
+//! 8 MiB main-thread stack (`ulimit -s 8192`), on a chain of `sin`
+//! applications:
 //!
 //! | operation | deepest that returned | first that segfaulted |
 //! |---|---|---|
@@ -22,31 +35,92 @@
 //! | `unicode_str` | 15 360 | 15 872 |
 //! | `str` / `repr` | 23 552 | 24 576 |
 //!
-//! [`MAX_EXPR_DEPTH`] is set below the worst of those with room to spare, so
-//! that every consumer refuses before any of them overflows, and one number
-//! covers all of them instead of each walker carrying its own.
+//! [`MAX_EXPR_DEPTH`] sits below the worst of those with room to spare, so one
+//! number covers all of them instead of each walker carrying its own.  The
+//! `simplify` row is history rather than a current measurement: that traversal
+//! no longer overflows at any depth (below).  `symbolic_grad` is the shallowest
+//! walker that still depends on this ceiling, and is what the number is
+//! calibrated against.
 //!
-//! The ceiling is calibrated for the **shipped release build on an 8 MiB
-//! stack**, which is what a Python caller gets on the main thread.  A debug
-//! build has frames several times larger, and a `cargo test` worker or a Rayon
-//! worker has a 2 MiB stack, so those configurations can still overflow below
-//! this limit; a test that means to reach the cap should run on a thread it
-//! sized itself.  (`simplify_par` already handles the Rayon case by hopping to
-//! a thread with a stack it sized itself — see `simplify::parallel`, which is
-//! only compiled with the `parallel` feature.)
+//! That calibration assumes the **shipped release build on an 8 MiB stack**,
+//! which is what a Python caller gets on the main thread.  A debug build has
+//! frames several times larger — one level of the simplifier was measured at
+//! 10 832 bytes under debug + AddressSanitizer — and a `cargo test` worker or a
+//! Rayon worker has a 2 MiB stack, so those configurations can overflow *below*
+//! this limit.  A test that means to reach the cap should run on a thread it
+//! sized itself.
 //!
-//! # How it is enforced
+//! # How it is enforced, and by whom
 //!
 //! [`ExprPool`] caches each node's depth at intern time, so
 //! [`check_expr_depth`] is a single array read and an integer compare.  That
 //! matters: the guard sits on hot paths such as `__str__`, and anything that
 //! had to walk the tree to find its depth would cost more than it saves.
 //!
+//! The callers are the PyO3 bindings, and only those.  `alkahest-py` calls
+//! [`check_expr_depth`] — through its `guard_depth` / `guard_expr_depth`
+//! wrappers — or [`check_expr_depths`] at upwards of sixty entry points: every
+//! renderer, `diff`, `symbolic_grad`, `subs`, the evaluators and the JIT
+//! entry, the polynomial converters, the integrator, the SMT-LIB and Lean
+//! emitters, the plotters.  `tests/test_expression_depth_limit.py` pins that
+//! list.  Nothing inside this crate calls either function.
+//!
+//! # What this does not cover
+//!
+//! * **Rust callers.** A downstream user of `alkahest_cas` never crosses the
+//!   PyO3 boundary, so nothing checks their input on their behalf.  Calling
+//!   [`check_expr_depth`] at their own entry points is up to them.
+//! * **Expressions this crate builds.** The check happens on the way in.
+//!   `diff`, expansion, `series` and the integrator all deepen an expression
+//!   *after* it was checked, and nothing re-checks the result.
+//! * **New bindings.** A `#[pyfunction]` added without a `guard_depth` call
+//!   inherits nothing; the guard is a convention held up by that test file, not
+//!   by a type.
+//! * **The bottom-up simplification traversals**, which have something
+//!   stronger.  `simplify::engine`'s `simplify_node` and
+//!   `simplify_node_indexed`, and — under the `parallel` feature —
+//!   `simplify::parallel`'s `simplify_node_par`, all run under the
+//!   segmented-stack trampoline in `simplify::stack`, which continues the
+//!   recursion on a freshly spawned, larger-stacked thread before the current
+//!   one is spent.  For those the depth bound is removed rather than lowered:
+//!   they are limited by how many threads the OS will hand out, not by any one
+//!   stack, and they truncate nothing.  The trampoline itself is not
+//!   feature-gated and is not confined to the parallel simplifier; the other
+//!   simplification strategies (`redex`, the e-graph passes) do not use it.
+//!   The ceiling here still applies to all of them at the PyO3 boundary, where
+//!   for the trampolined ones it is now a courtesy to the caller rather than
+//!   what keeps the process alive.
+//!
+//! The trampoline is also where this crate's one stack *measurement* lives, and
+//! it is deliberately not what bounds that recursion.  The probe takes the
+//! address of a local; under AddressSanitizer's stack-use-after-return
+//! detection such locals are relocated into a per-thread fake-stack ring whose
+//! addresses *ascend* with depth, so the probe reads 0 however deep the
+//! traversal goes.  A governor that under-reads never refills, which is how the
+//! nightly `asan` shard died; raising `RUST_MIN_STACK` could not have fixed it,
+//! because a probe that reports 0 reports 0 at any stack size.  That trampoline
+//! is therefore bounded by an exact count of recursion levels, with the byte
+//! probe kept only as an advisory backstop.  None of it applies to
+//! [`check_expr_depth`], which reads a cached integer and measures no stack at
+//! all — under a sanitizer it behaves exactly as it does anywhere else.
+//!
+//! # Configuration
+//!
+//! There is none.  [`MAX_EXPR_DEPTH`] is a compile-time constant with no
+//! environment variable, per-pool override or Python setting behind it.  The
+//! recursive-descent parser's own ceiling is *defined* as equal to it — it has
+//! to count separately, because the overflow it prevents happens before any
+//! node is interned and so before there is a cached depth to read.
+//!
 //! # What a caller should do about a refusal
 //!
-//! [`DepthLimitError`] is a normal, catchable, coded error (`E-DEPTH-001`).
-//! Rebuild the expression with less nesting, or split the work into
-//! subexpressions.
+//! [`DepthLimitError`] is a normal, catchable, coded error (`E-DEPTH-001`,
+//! cause `Resource`).  `alkahest-py` maps it to `alkahest.DepthLimitError`,
+//! which derives from `AlkahestError` and so from `ValueError`.  It is a
+//! refusal, not a panic and not a silent decline: the call raises rather than
+//! returning a partial answer, and the batch entry points (`simplify_many`,
+//! `diff_many`) record it on the failing item instead of raising.  Rebuild the
+//! expression with less nesting, or split the work into subexpressions.
 //!
 //! `Add` and `Mul` no longer contribute to this problem at all.  Both splice
 //! nested same-operator children at construction (see [`ExprPool::add`] /
@@ -61,18 +135,23 @@ use crate::errors::AlkahestError;
 use crate::kernel::{ExprId, ExprPool};
 use std::fmt;
 
-/// Deepest expression any recursive consumer will accept.
+/// Deepest expression the PyO3 entry points will accept.
 ///
-/// See the module documentation for the measurements behind this number.  The
-/// shallowest walker to fall over did so at depth 4 687 on an 8 MiB stack, so
-/// this leaves a factor of ~2.3 for stacks that already have frames on them,
-/// for debug builds (whose frames are several times larger than release ones),
-/// and for future walkers that use more stack per level than today's.
+/// Compared against the cached node depth ([`ExprPool::depth`]); see the module
+/// documentation for the measurements behind the number and for the callers
+/// that actually apply it.  The shallowest walker to fall over did so at depth
+/// 4 687 on an 8 MiB stack, so this leaves a factor of ~2.3 for stacks that
+/// already have frames on them, for debug builds (whose frames are several
+/// times larger than release ones), and for future walkers that use more stack
+/// per level than today's.
 ///
 /// It is deliberately *one* number rather than a per-operation table: a caller
 /// that gets `str(expr)` to work should not then be surprised by a segfault
-/// from `symbolic_grad(expr)`, and a walker added later inherits the guard
-/// instead of having to remember to measure itself.
+/// from `symbolic_grad(expr)`.  It is not, however, automatic — a walker added
+/// later is covered only once its entry point calls [`check_expr_depth`].
+///
+/// Compile-time only.  Nothing reads it from the environment or lets a caller
+/// raise it, so a caller that needs deeper trees has to reshape them.
 pub const MAX_EXPR_DEPTH: u32 = 2048;
 
 /// An expression was too deeply nested to be processed by recursion.
@@ -112,9 +191,14 @@ impl AlkahestError for DepthLimitError {
 
 /// Refuse `id` if recursing over it would risk a stack overflow.
 ///
-/// O(1) — the depth was cached when `id` was interned.  Call this at the entry
-/// point of anything that walks an expression recursively; see the [module
-/// documentation](self) for why.
+/// O(1) — compares the node depth cached when `id` was interned against
+/// [`MAX_EXPR_DEPTH`].  It does not walk the expression and does not measure
+/// the stack.
+///
+/// Call this at the entry point of anything that walks an expression
+/// recursively: nothing calls it for you, and today every caller is in
+/// `alkahest-py`.  See the [module documentation](self) for why, and for what
+/// the check does not reach.
 ///
 /// ```
 /// use alkahest_cas::kernel::depth::{check_expr_depth, MAX_EXPR_DEPTH};
