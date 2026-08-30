@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **A Lean certificate cited a theorem it had not stated.** The kernel folds
+  `-e` into `Mul[e, -1]`, and the Lean printer rendered that literally, so the
+  `Filter.Tendsto` certificate for `exp(-x) → 0` emitted the goal
+  `Tendsto (fun x => rexp (x * -1)) atTop (𝓝 0)` while citing
+  `tendsto_exp_neg_atTop_nhds_zero`, which proves the `rexp (-x)` form. Lean
+  rejected it, so nothing unsound was ever handed out — but the emitter's
+  contract is that what it emits typechecks, and `Verify Lean 4 proofs` has
+  been red on `main` since the Tendsto certificates landed. The printer now
+  renders a lone `-1` factor as a negation of the remaining product. The
+  existing test asserted only that the output *named* the theorem, never that
+  the printed goal was the theorem's statement; it now checks both.
+
 - **`limit()` now returns `DerivedResult`**, matching `diff` / `integrate`, so
   `.certificate` can carry a Lean `Filter.Tendsto` proof. Recognised `x → +∞`
   patterns (`exp(-x) → 0`, `xⁿ exp(-x) → 0`, `exp(x) → +∞`, a crude exp-ratio)

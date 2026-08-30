@@ -1780,6 +1780,24 @@ fn expr_to_lean(expr: ExprId, pool: &ExprPool) -> String {
             format!("({})", parts.join(" + "))
         }
         ExprData::Mul(args) => {
+            // The kernel folds `-e` into `Mul[e, -1]`, but Mathlib states its
+            // lemmas about `-e`. Printing the literal `e * -1` produces a goal
+            // that no longer matches the theorem the emitter just selected:
+            // `tendsto_exp_neg_atTop_nhds_zero` proves
+            // `Tendsto (fun x => rexp (-x)) atTop (nhds 0)` and Lean rejects it
+            // against `fun x => rexp (x * -1)`. Print the negation instead.
+            let neg_one =
+                |a: ExprId| pool.with(a, |d| matches!(d, ExprData::Integer(n) if n.0 == -1));
+            let rest: Vec<ExprId> = args.iter().copied().filter(|&a| !neg_one(a)).collect();
+            if args.iter().filter(|&&a| neg_one(a)).count() == 1 && !rest.is_empty() {
+                let inner = if rest.len() == 1 {
+                    expr_to_lean(rest[0], pool)
+                } else {
+                    let parts: Vec<String> = rest.iter().map(|&a| expr_to_lean(a, pool)).collect();
+                    format!("({})", parts.join(" * "))
+                };
+                return format!("(-{inner})");
+            }
             let parts: Vec<String> = args.iter().map(|&a| expr_to_lean(a, pool)).collect();
             format!("({})", parts.join(" * "))
         }
@@ -3332,6 +3350,42 @@ mod tests {
         assert!(
             lean.contains("tendsto_exp_neg_atTop_nhds_zero"),
             "expected known tactic: {lean}"
+        );
+        // Naming the theorem is not enough: the goal we print has to *be* the
+        // theorem's statement. `tendsto_exp_neg_atTop_nhds_zero` is about
+        // `fun x => rexp (-x)`, and Lean rejects it against `rexp (x * -1)`,
+        // which is what the kernel's `Mul[x, -1]` spelling used to render as.
+        assert!(
+            !lean.contains("* (-1 : \u{211d})"),
+            "goal must print the negation, not the folded `* -1`: {lean}"
+        );
+        assert!(
+            lean.contains("Real.exp ((-(x : \u{211d})))"),
+            "goal must state `exp (-x)` to match the cited lemma: {lean}"
+        );
+    }
+
+    #[test]
+    fn negation_prints_as_negation_not_times_minus_one() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let neg_x = pool.mul(vec![pool.integer(-1_i32), x]);
+        assert_eq!(expr_to_lean(neg_x, &pool), "(-(x : \u{211d}))");
+
+        // A `-1` among several factors negates the remaining product.
+        let y = pool.symbol("y", Domain::Real);
+        let neg_xy = pool.mul(vec![pool.integer(-1_i32), x, y]);
+        assert_eq!(
+            expr_to_lean(neg_xy, &pool),
+            "(-((x : \u{211d}) * (y : \u{211d})))"
+        );
+
+        // A coefficient that merely happens to be negative is not a negation
+        // of the rest and must keep printing as a product.
+        let neg_two_x = pool.mul(vec![pool.integer(-2_i32), x]);
+        assert_eq!(
+            expr_to_lean(neg_two_x, &pool),
+            "((x : \u{211d}) * (-2 : \u{211d}))"
         );
     }
 
