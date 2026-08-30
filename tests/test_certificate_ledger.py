@@ -254,7 +254,11 @@ def test_ledger_artifact_is_checked_in_and_current_schema():
     with open(path, encoding="utf-8") as handle:
         data = json.load(handle)
     assert data["schema_version"] == SCHEMA_VERSION
-    assert data["corpus"]["sources"] == ["tests/lean_corpus.py", "tests/textbook_gate/"]
+    assert data["corpus"]["sources"] == [
+        "tests/lean_corpus.py",
+        "tests/lean_tendsto_corpus.py",
+        "tests/textbook_gate/",
+    ]
     assert data["corpus"]["observations"] > 0
 
 
@@ -457,6 +461,7 @@ def test_certificate_status_matches_certificate_presence(pool):
             "emitted",
             "withheld_no_derivation",
             "withheld_integration_shape",
+            "withheld_tendsto_shape",
             "withheld_uncertifiable_step",
         )
         if status["certifiable"]:

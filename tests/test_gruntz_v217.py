@@ -44,7 +44,7 @@ def sp_limit(expr_str: str, *, direction: str | None = None):
 
 
 def alk_limit(expr, var, pt, direction="+-"):
-    return limit(expr, var, pt, direction)
+    return limit(expr, var, pt, direction).value
 
 
 def equiv(a, b) -> bool:

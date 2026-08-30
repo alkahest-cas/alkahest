@@ -71,6 +71,7 @@ SCHEMA_VERSION = 1
 OPERATIONS: dict[str, dict[str, Any]] = {
     "diff": {"var": 1, "bounds": None},
     "integrate": {"var": 1, "bounds": 2},
+    "limit": {"var": 1, "bounds": None},
     "simplify": {"var": None, "bounds": None},
     "simplify_trig": {"var": None, "bounds": None},
     "simplify_trig_normal_form": {"var": None, "bounds": None},
@@ -441,7 +442,8 @@ class Certifiability:
         ``"conditional"``, ``"partial"``, or ``"unknown"`` (never observed).
     reason : str
         Stable reason code. ``"emitted"`` / ``"withheld_no_derivation"`` /
-        ``"withheld_uncertifiable_step"`` / ``"withheld_integration_shape"``
+        ``"withheld_uncertifiable_step"`` / ``"withheld_integration_shape"`` /
+        ``"withheld_tendsto_shape"``
         come from actually running the operation; ``"class_certified"`` /
         ``"class_withheld"`` / ``"class_conditional"`` / ``"class_partial"`` /
         ``"unknown_shape"`` come from the ledger alone; ``"operation_failed"``

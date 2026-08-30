@@ -1241,7 +1241,13 @@ def limit(expr, var, point, dir=None):
 
     Returns
     -------
-    Expr
+    DerivedResult
+        The limit value is ``.value``. ``.certificate`` is Lean
+        ``Filter.Tendsto`` source when the emitter recognises the pattern
+        (currently a small ``x → +∞`` fragment: ``exp(-x) → 0``,
+        ``xⁿ exp(-x) → 0``, ``exp(x) → +∞``, and a crude exp-ratio).
+        Unrecognised shapes — including finite and one-sided limits —
+        withhold rather than emitting ``sorry``.
 
     Notes
     -----
@@ -1250,8 +1256,14 @@ def limit(expr, var, point, dir=None):
     an oscillating one — ``lim_{x→∞} sin x``, ``lim_{x→0} sin(1/x)`` — raises
     ``LimitError`` (``E-LIMIT-005``), and a two-sided limit at an odd-order
     pole raises ``E-LIMIT-003`` asking for a direction.
+
+    Nested calls that expect an :class:`Expr` still work: :func:`_coerce_expr`
+    unwraps a :class:`DerivedResult` automatically. Use ``.value`` when
+    comparing against an :class:`Expr` directly.
     """
-    return _native_limit(_coerce_expr(expr), _coerce_expr(var), _coerce_expr(point), dir)
+    return _maybe_context_simplify(
+        _native_limit(_coerce_expr(expr), _coerce_expr(var), _coerce_expr(point), dir)
+    )
 
 
 _native_sum_indefinite = sum_indefinite
@@ -2092,6 +2104,7 @@ def capabilities() -> dict:
 _DERIVATION_ENTRY_POINTS = (
     "diff",
     "integrate",
+    "limit",
     "simplify",
     "simplify_egraph",
     "simplify_expanded",

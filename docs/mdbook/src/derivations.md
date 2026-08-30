@@ -4,7 +4,7 @@ Most transformations in Alkahest return a `DerivedResult` that records the exact
 
 ## DerivedResult
 
-`DerivedResult` is the return type of `diff`, `simplify`, `integrate`, `sum_*`, and most other transforming operations. Notable exceptions: `limit` returns a bare `Expr`, and `series` returns a `Series`.
+`DerivedResult` is the return type of `diff`, `simplify`, `integrate`, `limit`, `sum_*`, and most other transforming operations. Notable exception: `series` returns a `Series`.
 
 ```python
 from alkahest import diff, sin
@@ -22,7 +22,7 @@ dr = diff(sin(x**2), x)
 | `.value` | `Expr` | The result expression |
 | `.steps` | `list[dict]` | Ordered list of rewrite steps |
 | `.verification` | `dict` | Evidence status, artifact format, external-check status, and side conditions |
-| `.certificate` | `str \| None` | Generated Lean 4 source, when a derivation log exists |
+| `.certificate` | `str \| None` | Generated Lean 4 source, when a derivation log, FTC integral, or recognised `Filter.Tendsto` limit can be certified without `sorry` |
 
 ### Methods
 

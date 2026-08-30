@@ -425,7 +425,7 @@ def test_engines_still_work_after_a_mid_flight_cancellation(pool, x):
     with pytest.raises(ak.BudgetExceededError):
         _cancelled_mid_flight(lambda: ak.limit(_slow_unanswerable_limit(x), x, pool.pos_infinity()))
     assert not ak.is_cancelled()
-    assert ak.limit(ak.sqrt(x**2 + x) - x, x, pool.pos_infinity()) == pool.rational(1, 2)
+    assert ak.limit(ak.sqrt(x**2 + x) - x, x, pool.pos_infinity()).value == pool.rational(1, 2)
     assert ak.integrate(x**2, x).value is not None
 
 
@@ -448,7 +448,7 @@ def test_two_threads_can_run_the_engines_on_one_pool(pool):
         try:
             xk = pool.symbol("x", "real")
             for _ in range(20):
-                got = ak.limit(ak.sqrt(xk**2 + xk) - xk, xk, oo)
+                got = ak.limit(ak.sqrt(xk**2 + xk) - xk, xk, oo).value
                 anti = ak.integrate(xk**2 + k, xk)
                 with lock:
                     answers.append(got == half and anti.value is not None)

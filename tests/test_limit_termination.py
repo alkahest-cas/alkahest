@@ -58,7 +58,7 @@ def _hard_limit(pool: ak.ExprPool, x: ak.Expr) -> ak.Expr:
 def test_sqrt_x_squared_plus_x_minus_x_at_infinity(pool, x):
     """The reported hang. ``sqrt(x**2 + x) - x -> 1/2`` (multiply by the
     conjugate: ``x / (sqrt(x**2 + x) + x)``)."""
-    got = ak.limit(ak.sqrt(x**2 + x) - x, x, pool.pos_infinity())
+    got = ak.limit(ak.sqrt(x**2 + x) - x, x, pool.pos_infinity()).value
     assert got == pool.rational(1, 2), f"got {got}"
 
 
@@ -77,7 +77,7 @@ def test_sqrt_x_squared_plus_x_minus_x_at_infinity(pool, x):
 def test_algebraic_limits_at_infinity(pool, x, build, expected):
     """The ∞−∞ family the conjugate trick covers, plus the neighbours that must
     keep working."""
-    assert str(ak.limit(build(pool, x), x, pool.pos_infinity())) == expected
+    assert str(ak.limit(build(pool, x), x, pool.pos_infinity()).value) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -127,15 +127,17 @@ def test_request_cancel_interrupts_a_limit(pool, x):
     assert excinfo.value.code == "E-BUDGET-003"
     ak.clear_cancel()
     # And the engine is usable again straight afterwards.
-    assert ak.limit(ak.sqrt(x**2 + x) - x, x, pool.pos_infinity()) == pool.rational(1, 2)
+    assert ak.limit(ak.sqrt(x**2 + x) - x, x, pool.pos_infinity()).value == pool.rational(1, 2)
 
 
 @pytest.mark.timeout(TIMEOUT)
 def test_a_solvable_limit_under_a_generous_budget_still_answers(pool, x):
     """The checkpoints must not turn working limits into budget errors."""
     with ak.context(budget=ak.Budget(wall_ms=10_000, max_steps=1_000_000)):
-        assert ak.limit(ak.sqrt(x**2 + x) - x, x, pool.pos_infinity()) == pool.rational(1, 2)
-        assert str(ak.limit(ak.sin(x) / x, x, pool.integer(0))) == "1"
+        assert ak.limit(ak.sqrt(x**2 + x) - x, x, pool.pos_infinity()).value == pool.rational(
+            1, 2
+        )
+        assert str(ak.limit(ak.sin(x) / x, x, pool.integer(0)).value) == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +172,7 @@ def test_limits_that_already_worked_still_work(pool, x, build, point, direction,
     expansion, the indeterminate-power rewrite, Gruntz. The termination guard
     must not have narrowed any of them."""
     pt = pool.pos_infinity() if point == "oo" else pool.integer(point)
-    assert str(ak.limit(build(x), x, pt, direction)) == expected
+    assert str(ak.limit(build(x), x, pt, direction).value) == expected
 
 
 @pytest.mark.timeout(TIMEOUT)

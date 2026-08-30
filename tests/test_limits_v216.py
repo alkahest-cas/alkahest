@@ -51,7 +51,7 @@ def _alk_lim(s: str, *, pt: object = 0, direction: str | None = None):
     else:
         raise AssertionError(pt)
     d = "+-" if direction is None else direction
-    return alkahest.limit(expr, x, pto, d)
+    return alkahest.limit(expr, x, pto, d).value
 
 
 def _sp_lim(s: str, *, pt, direction=None):
@@ -72,15 +72,15 @@ def test_limit_basic_three():
     zero = p.integer(0)
     oo = p.pos_infinity()
     lx = parse("x * log(x)", p, {"x": x})
-    assert alkahest.limit(alkahest.sin(x) / x, x, zero) == p.integer(1)
-    assert alkahest.limit(lx, x, zero, "+") == zero
-    assert alkahest.limit(alkahest.exp(x), x, oo) == oo
+    assert alkahest.limit(alkahest.sin(x) / x, x, zero).value == p.integer(1)
+    assert alkahest.limit(lx, x, zero, "+").value == zero
+    assert alkahest.limit(alkahest.exp(x), x, oo).value == oo
 
 
 def test_limit_neg_infinity_exp():
     p = alkahest.ExprPool()
     x = p.symbol("x")
-    assert alkahest.limit(alkahest.exp(x), x, -p.pos_infinity()) == p.integer(0)
+    assert alkahest.limit(alkahest.exp(x), x, -p.pos_infinity()).value == p.integer(0)
 
 
 @pytest.mark.parametrize(
