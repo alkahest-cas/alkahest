@@ -723,6 +723,14 @@ fn collect_like_terms_deep(expr: ExprId, pool: &ExprPool) -> ExprId {
     collect_like_terms(rebuilt, pool)
 }
 
+/// A constant integer exponent as an `i64`, or `None`.
+fn as_i64(e: ExprId, pool: &ExprPool) -> Option<i64> {
+    pool.with(e, |d| match d {
+        ExprData::Integer(i) => i.0.to_i64(),
+        _ => None,
+    })
+}
+
 /// Rewrite `√(r)^k` as `r^(k/2)·√(r)^(k mod 2)` everywhere in `expr`.
 ///
 /// `simplify` does not do this — it leaves `√(1+x²)²` standing — and the
@@ -730,14 +738,28 @@ fn collect_like_terms_deep(expr: ExprId, pool: &ExprPool) -> ExprId {
 /// full of it: the Euler-substitution antiderivative of `∫dx/(1+x²)^{3/2}` is
 /// `−2/(1 + (x+√(1+x²))²)`, whose denominator only collapses once the square of
 /// the radical is folded into the polynomial part.
+///
+/// Two further integer-power identities are applied on the way down, because
+/// without them the `√(r)^k` shape never becomes visible in the residual of a
+/// `dv = dx` step:
+///
+/// ```text
+///     (a·b)^k   →  a^k·b^k        (k a constant integer)
+///     (b^m)^k   →  b^(m·k)        (m, k constant integers)
+/// ```
+///
+/// `d/dx asin(x/√(1−x²))` (Charlwood #49) contains
+/// `√(1 − (x·√(1−x²)⁻¹)²)`; the inner square is a power *of a product*, so the
+/// `√(1−x²)⁻²` that collapses to `(1−x²)⁻¹` is two levels down and the old
+/// single-shape rewrite could not see it.  Both identities hold for every real
+/// base at integer exponents (they are not the `√(a·b) = √a·√b` branch trap —
+/// no fractional power is introduced), so this is a normalisation, not a
+/// proposal.
 fn reduce_sqrt_squares(expr: ExprId, pool: &ExprPool) -> ExprId {
     match pool.get(expr) {
         ExprData::Pow { base, exp } => {
             let base_r = reduce_sqrt_squares(base, pool);
-            let k = pool.with(exp, |d| match d {
-                ExprData::Integer(i) => i.0.to_i64(),
-                _ => None,
-            });
+            let k = as_i64(exp, pool);
             if let (Some(k), ExprData::Func { name, args }) = (k, pool.get(base_r)) {
                 if name == "sqrt" && args.len() == 1 && k.abs() >= 2 {
                     let r = args[0];
@@ -748,6 +770,30 @@ fn reduce_sqrt_squares(expr: ExprId, pool: &ExprPool) -> ExprId {
                         factors.push(pool.pow(base_r, pool.integer(rem)));
                     }
                     return pool.mul(factors);
+                }
+            }
+            if let Some(k) = k {
+                // `(a·b)^k → a^k·b^k`.  Each factor is structurally smaller than
+                // `base_r`, so the recursion terminates.
+                if let ExprData::Mul(factors) = pool.get(base_r) {
+                    let distributed = pool.mul(
+                        factors
+                            .iter()
+                            .map(|&f| pool.pow(f, pool.integer(k)))
+                            .collect(),
+                    );
+                    return reduce_sqrt_squares(distributed, pool);
+                }
+                // `(b^m)^k → b^(m·k)` — one fewer level of `Pow` nesting, so
+                // the recursion terminates.
+                if let ExprData::Pow {
+                    base: inner,
+                    exp: inner_exp,
+                } = pool.get(base_r)
+                {
+                    if let Some(mk) = as_i64(inner_exp, pool).and_then(|m| m.checked_mul(k)) {
+                        return reduce_sqrt_squares(pool.pow(inner, pool.integer(mk)), pool);
+                    }
                 }
             }
             pool.pow(base_r, reduce_sqrt_squares(exp, pool))
@@ -1056,6 +1102,245 @@ fn combine_radicals(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId
     Some(simplify(mul_of(&rest, pool), pool).value)
 }
 
+/// [`combine_radicals`] applied at **every** node, bottom-up.
+///
+/// `combine_radicals` only looks at the expression it is handed, and
+/// [`close_integral`] only offered it the whole residual and each of its
+/// top-level summands.  The radicals that need merging in a `dv = dx` residual
+/// are usually *inside a denominator*: `∫atan(√(1+x) − √x)` (Charlwood #48)
+/// reduces to a quotient whose denominator expands to
+/// `2 + 2x − 2·√x·√(1+x)`, and until that cross term becomes `−2√(x²+x)` the
+/// denominator carries two distinct radicals, which is one more than either
+/// [`rationalize_reciprocal`] or the algebraic engine accepts.
+fn combine_radicals_deep(expr: ExprId, var: ExprId, pool: &ExprPool) -> ExprId {
+    let rebuilt = match pool.get(expr) {
+        ExprData::Add(args) => pool.add(
+            args.iter()
+                .map(|&a| combine_radicals_deep(a, var, pool))
+                .collect(),
+        ),
+        ExprData::Mul(args) => pool.mul(
+            args.iter()
+                .map(|&a| combine_radicals_deep(a, var, pool))
+                .collect(),
+        ),
+        ExprData::Pow { base, exp } => pool.pow(
+            combine_radicals_deep(base, var, pool),
+            combine_radicals_deep(exp, var, pool),
+        ),
+        ExprData::Func { name, args } => pool.func(
+            name,
+            args.iter()
+                .map(|&a| combine_radicals_deep(a, var, pool))
+                .collect(),
+        ),
+        _ => return expr,
+    };
+    combine_radicals(rebuilt, var, pool).unwrap_or(rebuilt)
+}
+
+/// Split a radical whose radicand is a quotient: `√(N/D) → √N·√D⁻¹`.
+///
+/// Two residual shapes need this and neither is exotic:
+///
+/// * `d/dx asin(x/√(1−x²))` (Charlwood #49) carries
+///   `√(1 − x²/(1−x²))`, i.e. `√((1−2x²)/(1−x²))`.  The algebraic engine wants
+///   `√(P(x))` for a *polynomial* `P` and refuses a rational radicand outright.
+/// * [`combine_radicals`] merges `√(x²+x)⁻¹·√(1+x)` into `√(1/x)`, which is the
+///   same refusal one step later.  Split, it is the `√x⁻¹` that closes
+///   Charlwood #48.
+///
+/// This is a **proposal**, not an identity: `√(N/D) = √N/√D` needs `D > 0`
+/// (with `D < 0 ≤ N/D` the left side is real and the right side is not).  The
+/// rewrite therefore only ever *loses* domain — it cannot change the value
+/// where both sides are defined — and every candidate built from it still has
+/// to clear [`verify_antiderivative_status`] in [`try_by_parts`], on the
+/// two-sided grid, before anything is emitted.
+fn split_sqrt_quotients(expr: ExprId, var: ExprId, pool: &ExprPool) -> ExprId {
+    match pool.get(expr) {
+        ExprData::Func { name, args } if name == "sqrt" && args.len() == 1 => {
+            let r = split_sqrt_quotients(args[0], var, pool);
+            let r = simplify(reduce_sqrt_squares(r, pool), pool).value;
+            if let Ok((n, d)) = crate::poly::cancel::together_parts(r, vec![var], pool) {
+                let d = simplify(d, pool).value;
+                if !is_one(d, pool) && !is_zero(d, pool) {
+                    let n = simplify(n, pool).value;
+                    // `together_parts` normalises the sign of the leading
+                    // coefficient, so `(1−2x²)/(1−x²)` can come back as
+                    // `(−1+2x²)/(−1+x²)`.  That flip is invisible to `/` and
+                    // fatal to `√`: on `|x| < 1/√2` the first pair splits into
+                    // two real roots and the second into two imaginary ones,
+                    // whose ratio is a *sign error*, not a domain loss.  So the
+                    // orientation is screened numerically, and both are offered.
+                    for (n, d) in [(n, d), (negate(n, pool), negate(d, pool))] {
+                        if sqrt_split_agrees(r, n, d, var, pool) {
+                            let sn = pool.func("sqrt", vec![n]);
+                            let sd = pool.func("sqrt", vec![d]);
+                            return pool.mul(vec![sn, pool.pow(sd, pool.integer(-1_i32))]);
+                        }
+                    }
+                }
+            }
+            pool.func("sqrt", vec![r])
+        }
+        ExprData::Add(args) => pool.add(
+            args.iter()
+                .map(|&a| split_sqrt_quotients(a, var, pool))
+                .collect(),
+        ),
+        ExprData::Mul(args) => pool.mul(
+            args.iter()
+                .map(|&a| split_sqrt_quotients(a, var, pool))
+                .collect(),
+        ),
+        ExprData::Pow { base, exp } => pool.pow(
+            split_sqrt_quotients(base, var, pool),
+            split_sqrt_quotients(exp, var, pool),
+        ),
+        ExprData::Func { name, args } => pool.func(
+            name,
+            args.iter()
+                .map(|&a| split_sqrt_quotients(a, var, pool))
+                .collect(),
+        ),
+        _ => expr,
+    }
+}
+
+/// `−expr`, as a product with `−1`.
+fn negate(expr: ExprId, pool: &ExprPool) -> ExprId {
+    simplify(pool.mul(vec![pool.integer(-1_i32), expr]), pool).value
+}
+
+/// Does `√N·√D⁻¹` actually agree with `√r` on the reals?
+///
+/// A *screen*, not a proof: it asks for at least one sample where both sides
+/// are finite and equal, and rejects the orientation outright if any sample has
+/// both sides finite and different.  Samples where the split is undefined
+/// (`D < 0`) are skipped — losing domain is allowed, changing sign is not.
+fn sqrt_split_agrees(r: ExprId, n: ExprId, d: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    let lhs = pool.func("sqrt", vec![r]);
+    let rhs = pool.mul(vec![
+        pool.func("sqrt", vec![n]),
+        pool.pow(pool.func("sqrt", vec![d]), pool.integer(-1_i32)),
+    ]);
+    let mut agreed = false;
+    for &xv in &SQRT_SPLIT_SAMPLES {
+        let mut env = HashMap::new();
+        env.insert(var, xv);
+        let (Some(a), Some(b)) = (
+            crate::jit::eval_interp(lhs, &env, pool),
+            crate::jit::eval_interp(rhs, &env, pool),
+        ) else {
+            continue;
+        };
+        if !a.is_finite() || !b.is_finite() {
+            continue;
+        }
+        if (a - b).abs() > 1e-9 * (1.0 + a.abs().max(b.abs())) {
+            return false;
+        }
+        agreed = true;
+    }
+    agreed
+}
+
+/// Sample points for [`sqrt_split_agrees`].  Two-sided and irrational, and
+/// clustered near zero as well as spread out, because the radicands these
+/// residuals carry are frequently real only on a small interval — `√(1−2x²)`
+/// (Charlwood #49) is real only on `|x| < 0.707`.
+const SQRT_SPLIT_SAMPLES: [f64; 10] = [
+    0.1237, -0.1237, 0.3719, -0.3719, 0.6113, -0.6113, 1.4231, -1.4231, 2.8123, -2.8123,
+];
+
+/// `true` when `expr` mentions `sqrt` anywhere.
+fn has_sqrt(expr: ExprId, pool: &ExprPool) -> bool {
+    match pool.get(expr) {
+        ExprData::Func { name, args } => name == "sqrt" || args.iter().any(|&a| has_sqrt(a, pool)),
+        ExprData::Add(args) | ExprData::Mul(args) => args.iter().any(|&a| has_sqrt(a, pool)),
+        ExprData::Pow { base, exp } => has_sqrt(base, pool) || has_sqrt(exp, pool),
+        _ => false,
+    }
+}
+
+/// How many normalisation passes [`radical_normal_forms`] runs.
+///
+/// Each pass can expose work for the next: the cross term only appears after
+/// the square is expanded, the radicals only merge after that, and the
+/// denominator only becomes rationalisable once a single radical is left.
+/// Three is the depth Charlwood #48 needs and no measured shape needs four.
+const RADICAL_NORMAL_PASSES: u32 = 3;
+
+/// Extra spellings of a by-parts residual, obtained by normalising its
+/// radicals.
+///
+/// **Why this exists.** The `dv = dx` step turns `∫f(g(x))dx` into
+/// `∫x·(f∘g)′dx`, and differentiating a composite whose inner function carries
+/// a radical produces a residual with *several* radical generators — from the
+/// chain rule's `1/√(1−g²)` or `1/(1+g²)` factor, and again from `g′`.  The
+/// algebraic engine takes exactly one `√(P(x))` with `P` a polynomial, so these
+/// residuals are refused for a spelling reason while the same integral written
+/// with one radical is solved in milliseconds.  Measured on Charlwood #49:
+/// `∫x/((1−x²)√(1−2x²))` closes, and the *identical* integral as `diff` spells
+/// it does not.
+///
+/// The pipeline per pass is expand → [`reduce_sqrt_squares`] →
+/// [`combine_radicals_deep`] → [`split_sqrt_quotients`] →
+/// [`rationalize_radicals`] → `cancel`, and every intermediate that is new is
+/// kept as its own candidate, because which one the engine recognises varies by
+/// shape.
+///
+/// Nothing here is trusted: these are *spellings offered to the engine*, and
+/// whatever it returns is still gated by `d/dx F = f` in [`try_by_parts`].
+fn radical_normal_forms(expr: ExprId, var: ExprId, pool: &ExprPool) -> Vec<ExprId> {
+    let mut out: Vec<ExprId> = Vec::new();
+    if !has_sqrt(expr, pool) {
+        return out; // nothing to normalise — and the common case, so stay cheap
+    }
+    let mut cur = expr;
+    for _ in 0..RADICAL_NORMAL_PASSES {
+        if crate::budget::check().is_err() {
+            return out;
+        }
+        let expanded = reduce_sqrt_squares(simplify_expanded(cur, pool).value, pool);
+        let merged = combine_radicals_deep(expanded, var, pool);
+        let split = simplify(
+            reduce_sqrt_squares(split_sqrt_quotients(merged, var, pool), pool),
+            pool,
+        )
+        .value;
+        let rationalised = simplify(
+            reduce_sqrt_squares(rationalize_radicals(split, pool), pool),
+            pool,
+        )
+        .value;
+
+        let mut produced = vec![split, rationalised];
+        for form in [split, rationalised] {
+            if let Ok(k) = crate::poly::cancel::cancel(form, vec![var], pool) {
+                produced.push(simplify(reduce_sqrt_squares(k, pool), pool).value);
+            }
+        }
+
+        let mut advanced = false;
+        for f in produced {
+            if f != expr && !out.contains(&f) {
+                out.push(f);
+            }
+            if f != cur {
+                advanced = true;
+            }
+        }
+        // The last (most-reduced) candidate seeds the next pass.
+        let next = *out.last().unwrap_or(&cur);
+        if !advanced || next == cur {
+            break;
+        }
+        cur = next;
+    }
+    out
+}
+
 /// Exponent of `var` in a single monomial term, or `None` if `var` occurs in
 /// any other shape.
 fn monomial_degree(term: ExprId, var: ExprId, pool: &ExprPool) -> Option<i64> {
@@ -1188,6 +1473,15 @@ fn close_integral(w_raw: ExprId, var: ExprId, pool: &ExprPool) -> Option<ExprId>
     for m in merged {
         if !forms.contains(&m) {
             forms.push(m);
+        }
+    }
+    // Radical-normalised forms — the `dv = dx` residuals of C3.  Seeded from the
+    // combined form only: `radical_normal_forms` expands internally, and running
+    // it on every form above triples the cost for spellings it would converge to
+    // anyway.  It is a no-op (one structural walk) when there is no `sqrt`.
+    for f in radical_normal_forms(combined, var, pool) {
+        if !forms.contains(&f) {
+            forms.push(f);
         }
     }
 
@@ -1732,6 +2026,33 @@ mod tests {
                 assert!(verify_antiderivative_status(r, f, x, &pool).is_some())
             }
             ByPartsOutcome::Declined(_) => {}
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn zz_debug_forms() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let one_minus = pool.add(vec![
+            pool.integer(1_i32),
+            pool.mul(vec![pool.integer(-1_i32), x2]),
+        ]);
+        let g = pool.mul(vec![
+            x,
+            pool.pow(pool.func("sqrt", vec![one_minus]), pool.integer(-1_i32)),
+        ]);
+        let f = pool.func("asin", vec![g]);
+        let du = simplify(crate::diff::diff(f, x, &pool).unwrap().value, &pool).value;
+        let w = pool.mul(vec![x, du]);
+        println!("w = {}", pool.display(simplify(w, &pool).value));
+        for (i, form) in radical_normal_forms(simplify(w, &pool).value, x, &pool)
+            .iter()
+            .enumerate()
+        {
+            println!("  [{i}] {}", pool.display(*form));
+            println!("      -> {:?}", integrate(*form, x, &pool).is_ok());
         }
     }
 
