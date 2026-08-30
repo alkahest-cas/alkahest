@@ -128,7 +128,8 @@ The strict CI corpus currently covers:
 - The polynomial differentiation fast path for `d/dx x³`
 - Indefinite integrals of `sin`, `cos`, `exp`, `log`, and `xⁿ`, certified via the FTC
   derivative relation `deriv (fun x => F) x = f`. `∫ log x` reuses the
-  product/sum certificate for `d/dx (x log x − x)`.
+  product/sum certificate for `d/dx (x log x − x)`. Definite `∫_a^b log x`
+  certifies when both endpoints are strictly positive.
 - Products and sums that mix the everywhere-differentiable fragment with
   pointwise `log(x)` / `sqrt(x)` (`x log x`, `exp x · log x`, `log x + x`,
   `x sqrt x`), with an explicit `(hx : 0 < x)` binder. Composites
@@ -143,6 +144,10 @@ The strict CI corpus currently covers:
   `HasDerivAt.add`/`.const_mul`/`.mul_const` and the matching
   `IntervalIntegrable` combinators. A symbolic (non-literal) coefficient, or
   any addend outside the base family, withholds the whole certificate.
+  Pointwise `∫_a^b log x` is a separate arm: it needs `0 < a` and `0 < b`
+  (`intervalIntegrable_log` requires `0 ∉ uIcc a b`) and proves
+  `F b − F a` for `F = x log x − x`. `∫_0^1 log` and negative endpoints stay
+  withheld.
 
 Other exports are generated source, not CI-qualified Lean proofs. In
 particular, non-polynomial differentiation, conditional logarithm/power

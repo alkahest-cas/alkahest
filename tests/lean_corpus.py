@@ -203,7 +203,8 @@ STRICT_CASES = [
     # `HasDerivAt` witness on `Set.uIcc a b` and an `IntervalIntegrable` side
     # condition. The recorded step is `fundamental_theorem_of_calculus`; the
     # emitter builds the antiderivative + FTC proof for the certifiable fragment
-    # (pointwise sin/cos/exp of the variable, integer powers xⁿ).
+    # (pointwise sin/cos/exp of the variable, integer powers xⁿ, and pointwise
+    # log when both endpoints are strictly positive).
     (
         "int_def_cos_0_1",
         "fundamental_theorem_of_calculus",
@@ -286,6 +287,19 @@ STRICT_CASES = [
             pool.symbol("x"),
             pool.integer(0),
             pool.integer(1),
+        ),
+    ),
+    # Definite ∫_1^2 log x. IntervalIntegrable log needs 0 ∉ uIcc a b, so the
+    # endpoints must be strictly positive (1 and 2, discharged by norm_num).
+    # ∫_0^1 log stays withheld (singular at 0).
+    (
+        "int_def_log_1_2",
+        "fundamental_theorem_of_calculus",
+        lambda pool: alkahest.integrate(
+            alkahest.log(pool.symbol("x")),
+            pool.symbol("x"),
+            pool.integer(1),
+            pool.integer(2),
         ),
     ),
     # `Real.deriv_log` holds unconditionally (no positivity hypothesis needed).

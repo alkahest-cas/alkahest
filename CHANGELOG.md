@@ -317,8 +317,12 @@
 
   Because `d/dx (x log x − x)` intern-equals `log x`, the existing FTC path
   now certifies the indefinite integral `∫ log x dx = x log x − x`.
-  Definite `∫_a^b log x` stays withheld: `IntervalIntegrable` on an interval
-  that might contain `0` is not a free extra binder. `∫ x log x` and
+  Definite `∫_a^b log x` certifies when both endpoints are strictly positive
+  (`0 < a`, `0 < b` — numeric literals via `norm_num`, or explicit binders),
+  via `intervalIntegral.integral_eq_sub_of_hasDerivAt` with
+  `hasDerivAt_mul_log` and `intervalIntegrable_log` /
+  `Set.not_mem_uIcc_of_lt`. `∫_0^1 log` (singular at 0) and negative
+  endpoints stay withheld. `∫ x log x` and
   `d/dx` of its antiderivative stay withheld: differentiating
   `½ x² log x − x²/4` produces an n-ary inverse cancellation
   (`x² · x⁻¹ · ½ = x · ½`) that `ring` cannot close, and the two-factor

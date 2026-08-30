@@ -2080,6 +2080,152 @@ fn build_definite_pieces(
     Some(acc)
 }
 
+/// Strictly positive numeric literal (`Integer` or `Rational`). Used to
+/// discharge `0 < a` / `0 < b` with `norm_num` on a definite `∫ log` cert,
+/// rather than asking for binders. Floats, zeros, and negatives are not
+/// accepted — `∫_0^1 log` is singular and negative endpoints stay withheld.
+fn bound_is_strictly_positive_literal(expr: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| match d {
+        ExprData::Integer(n) => n.0 > 0,
+        ExprData::Rational(r) => r.0.numer().cmp0() == std::cmp::Ordering::Greater,
+        _ => false,
+    })
+}
+
+/// How a definite-`∫ log` certificate will pin `0 < a` and `0 < b`.
+enum LogEndpointPositivity {
+    /// Both endpoints are strictly positive literals; `norm_num` closes them.
+    Literals,
+    /// Bind `(a : ℝ) (b : ℝ) (ha : 0 < a) (hb : 0 < b)`. When the two names
+    /// coincide (`∫_a^a`), a single binder is emitted and reused for both.
+    Symbols { a: String, b: String },
+}
+
+/// Classify the endpoints of `∫_a^b log x` into a positivity encoding Lean
+/// can discharge. Returns `None` (⇒ withhold) unless both bounds are strictly
+/// positive literals, or both are symbols distinct from the integration
+/// variable (so the extra binders cannot shadow `x`). Negative, zero, mixed,
+/// compound, or infinite endpoints stay withheld — Mathlib's
+/// `integral_log_of_neg` is deliberately unused.
+fn classify_log_endpoints(
+    lower: ExprId,
+    upper: ExprId,
+    var: ExprId,
+    pool: &ExprPool,
+) -> Option<LogEndpointPositivity> {
+    if bound_is_strictly_positive_literal(lower, pool)
+        && bound_is_strictly_positive_literal(upper, pool)
+    {
+        return Some(LogEndpointPositivity::Literals);
+    }
+    let a = symbol_name(lower, pool)?;
+    let b = symbol_name(upper, pool)?;
+    let var_name = wrt_name(var, pool);
+    if a == var_name || b == var_name {
+        return None;
+    }
+    Some(LogEndpointPositivity::Symbols { a, b })
+}
+
+/// True when `expr` is pointwise `log(var)` — the only integrand the definite
+/// log arm certifies. Composites (`log(x²)`) and linear combinations stay
+/// out; a missing certificate is preferable to stretching `IntervalIntegrable`
+/// lemmas past their hypotheses.
+fn is_pointwise_log(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| match d {
+        ExprData::Func { name, args } if name == "log" && args.len() == 1 && args[0] == var => true,
+        _ => false,
+    })
+}
+
+/// Lean import header for the definite-`∫ log` arm. Adds Mathlib's
+/// `intervalIntegrable_log` ([`Mathlib.Analysis.SpecialFunctions.Integrals`])
+/// and `hasDerivAt_mul_log` ([`Mathlib.Analysis.SpecialFunctions.Log.NegMulLog`])
+/// on top of the interval-FTC imports the shared definite header already has.
+fn emit_definite_log_header() -> String {
+    "import Mathlib.Tactic\n\
+     import Mathlib.Analysis.SpecialFunctions.Trigonometric.Deriv\n\
+     import Mathlib.Analysis.SpecialFunctions.ExpDeriv\n\
+     import Mathlib.Analysis.Calculus.Deriv.Pow\n\
+     import Mathlib.MeasureTheory.Integral.IntervalIntegral\n\
+     import Mathlib.MeasureTheory.Integral.FundThmCalculus\n\
+     import Mathlib.Analysis.SpecialFunctions.Integrals\n\
+     import Mathlib.Analysis.SpecialFunctions.Log.NegMulLog\n\
+     \n\
+     open Real\n\n"
+        .to_string()
+}
+
+/// Emit `∫ x in a..b, log x = (b log b − b) − (a log a − a)` via
+/// `intervalIntegral.integral_eq_sub_of_hasDerivAt`, with `HasDerivAt` of
+/// `F = x log x − x` from `hasDerivAt_mul_log.sub hasDerivAt_id` and
+/// `IntervalIntegrable` from `intervalIntegrable_log` + `Set.not_mem_uIcc_of_lt`.
+///
+/// Requires [`classify_log_endpoints`] to succeed. Returns `""` otherwise.
+fn emit_definite_log_cert(
+    integrand: ExprId,
+    var: ExprId,
+    lower: ExprId,
+    upper: ExprId,
+    pool: &ExprPool,
+) -> String {
+    let Some(positivity) = classify_log_endpoints(lower, upper, var, pool) else {
+        return String::new();
+    };
+    let var_name = wrt_name(var, pool);
+    let a_lean = expr_to_lean(lower, pool);
+    let b_lean = expr_to_lean(upper, pool);
+    let f_lean = expr_to_lean(integrand, pool);
+    let f_body = format!("({var_name}) * Real.log ({var_name}) - ({var_name})");
+    let rhs = format!(
+        "(({b_lean}) * Real.log ({b_lean}) - ({b_lean})) - (({a_lean}) * Real.log ({a_lean}) - ({a_lean}))"
+    );
+
+    let (example_binders, pos_hyps, hb_ident) = match &positivity {
+        LogEndpointPositivity::Literals => (
+            String::new(),
+            format!(
+                "\x20 have ha : (0 : ℝ) < {a_lean} := by norm_num\n\
+                 \x20 have hb : (0 : ℝ) < {b_lean} := by norm_num\n"
+            ),
+            "hb",
+        ),
+        LogEndpointPositivity::Symbols { a, b } if a == b => {
+            (format!("({a} : ℝ) (ha : 0 < {a}) "), String::new(), "ha")
+        }
+        LogEndpointPositivity::Symbols { a, b } => (
+            format!("({a} : ℝ) ({b} : ℝ) (ha : 0 < {a}) (hb : 0 < {b}) "),
+            String::new(),
+            "hb",
+        ),
+    };
+
+    let mut out = emit_definite_log_header();
+    out.push_str(&format!(
+        "-- ∫ {var_name} in {a_lean}..{b_lean}, {f_lean} = F {b_lean} - F {a_lean}   (F = fun {var_name} => {f_body})\n\
+         -- certified via the second FTC for interval integrals, under 0 < a and 0 < b:\n\
+         --   intervalIntegral.integral_eq_sub_of_hasDerivAt (deriv F = f on uIcc) (IntervalIntegrable f)\n\
+         -- IntervalIntegrable log needs 0 ∉ uIcc a b (intervalIntegrable_log + Set.not_mem_uIcc_of_lt).\n"
+    ));
+    out.push_str(&format!(
+        "example {example_binders}: ∫ {var_name} in ({a_lean})..({b_lean}), {f_lean} = {rhs} := by\n\
+         {pos_hyps}\
+         \x20 have hderiv : ∀ {var_name} ∈ Set.uIcc ({a_lean}) ({b_lean}),\n\
+         \x20     HasDerivAt (fun ({var_name} : ℝ) => {f_body}) ({f_lean}) {var_name} := by\n\
+         \x20   intro {var_name} hx\n\
+         \x20   have hxpos : (0 : ℝ) < {var_name} := lt_of_lt_of_le (lt_min ha {hb_ident}) hx.1\n\
+         \x20   simpa using (hasDerivAt_mul_log hxpos.ne').sub (hasDerivAt_id {var_name})\n\
+         \x20 have hint : IntervalIntegrable (fun ({var_name} : ℝ) => {f_lean}) MeasureTheory.volume ({a_lean}) ({b_lean}) :=\n\
+         \x20   intervalIntegral.intervalIntegrable_log (Set.not_mem_uIcc_of_lt ha {hb_ident})\n\
+         \x20 exact intervalIntegral.integral_eq_sub_of_hasDerivAt hderiv hint\n"
+    ));
+
+    if out.contains("sorry") || out.contains("admit") {
+        return String::new();
+    }
+    out
+}
+
 /// True when `bound` is (or contains) the canonical `±∞` symbol — an improper
 /// endpoint the finite interval-FTC lemma cannot certify.
 fn bound_is_infinite(bound: ExprId, pool: &ExprPool) -> bool {
@@ -2120,12 +2266,18 @@ fn bound_is_infinite(bound: ExprId, pool: &ExprPool) -> bool {
 /// Certified integrand shapes (the same base family the indefinite path
 /// certifies, now closed under finite sums and constant multiples): `cos`,
 /// `sin`, `exp` of the integration variable, integer powers `xⁿ` (`n ≥ 1`,
+/// `sin`, `exp` of the integration variable, integer powers `xⁿ` (`n ≥ 1`,
 /// plus the bare variable as `x¹`), `(1+x²)⁻¹` (antiderivative `arctan x`),
 /// any numeric-literal constant multiple of one of those (`3 * cos x`,
 /// `cos x * 3`, `-sin x`, …), and any finite sum of such terms (`x² + sin x`,
-/// `3 * cos x + exp x`, …). Every other integrand — and any improper (`±∞`)
-/// endpoint — is **withheld** (returns `""`). Never emits `sorry` / `admit`,
-/// and never asserts an unproven statement.
+/// `3 * cos x + exp x`, …). Pointwise `log` of the integration variable is a
+/// separate arm ([`emit_definite_log_cert`]): it needs `0 < a` and `0 < b` so
+/// `IntervalIntegrable log` is discharged by `intervalIntegrable_log` +
+/// `Set.not_mem_uIcc_of_lt`, and does **not** join the linear-combination
+/// fragment (a sum with one log addend still withholds). Every other
+/// integrand — `∫_0^1 log` (singular at 0), negative endpoints, and any
+/// improper (`±∞`) endpoint — is **withheld** (returns `""`). Never emits
+/// `sorry` / `admit`, and never asserts an unproven statement.
 pub fn emit_definite_integration_cert(
     integrand: ExprId,
     var: ExprId,
@@ -2136,6 +2288,11 @@ pub fn emit_definite_integration_cert(
     // Improper endpoints escape the finite interval-FTC lemma: withhold.
     if bound_is_infinite(lower, pool) || bound_is_infinite(upper, pool) {
         return String::new();
+    }
+    // Pointwise log needs positivity of the interval; handled separately so
+    // the unconditional sin/cos/exp/pow fragment never has to thread binders.
+    if is_pointwise_log(integrand, var, pool) {
+        return emit_definite_log_cert(integrand, var, lower, upper, pool);
     }
     let var_name = pool.with(var, |d| match d {
         ExprData::Symbol { name, .. } => name.clone(),
@@ -2639,8 +2796,9 @@ mod tests {
     }
 
     #[test]
-    fn definite_integration_cert_withheld_for_unsupported_integrand() {
-        // log x is outside the certifiable definite fragment: withhold.
+    fn definite_integration_cert_log_positive_bounds() {
+        // ∫₁² log x = (2 log 2 − 2) − (1 log 1 − 1), via the interval FTC
+        // under 0 < 1 and 0 < 2 (discharged by norm_num).
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
         let log_x = pool.func("log", vec![x]);
@@ -2652,8 +2810,85 @@ mod tests {
             &pool,
         );
         assert!(
+            !lean.is_empty(),
+            "∫₁² log must certify via the interval FTC: {lean}"
+        );
+        assert!(
+            lean.contains("intervalIntegral.integral_eq_sub_of_hasDerivAt"),
+            "must invoke the interval FTC lemma: {lean}"
+        );
+        assert!(
+            lean.contains("hasDerivAt_mul_log"),
+            "antiderivative x log x − x via hasDerivAt_mul_log: {lean}"
+        );
+        assert!(
+            lean.contains("intervalIntegrable_log"),
+            "IntervalIntegrable log via intervalIntegrable_log: {lean}"
+        );
+        assert!(
+            lean.contains("Set.not_mem_uIcc_of_lt"),
+            "0 ∉ uIcc via not_mem_uIcc_of_lt: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
+    }
+
+    #[test]
+    fn definite_integration_cert_log_symbolic_binders() {
+        // Symbolic endpoints emit (ha : 0 < a) (hb : 0 < b) rather than
+        // claiming IntervalIntegrable on an interval that might contain 0.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let a = pool.symbol("a", Domain::Real);
+        let b = pool.symbol("b", Domain::Real);
+        let log_x = pool.func("log", vec![x]);
+        let lean = emit_definite_integration_cert(log_x, x, a, b, &pool);
+        assert!(
+            !lean.is_empty(),
+            "∫_a^b log with symbol endpoints must certify under positivity binders: {lean}"
+        );
+        assert!(
+            lean.contains("(ha : 0 < a)") && lean.contains("(hb : 0 < b)"),
+            "expected positivity binders: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
+    }
+
+    #[test]
+    fn definite_integration_cert_log_withheld_at_zero() {
+        // ∫₀¹ log is singular at 0: IntervalIntegrable log needs 0 ∉ uIcc.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let log_x = pool.func("log", vec![x]);
+        let lean = emit_definite_integration_cert(
+            log_x,
+            x,
+            pool.integer(0_i32),
+            pool.integer(1_i32),
+            &pool,
+        );
+        assert!(
             lean.is_empty(),
-            "∫ log x is outside the certifiable fragment; must withhold: {lean}"
+            "∫₀¹ log is singular at 0; must withhold: {lean}"
+        );
+    }
+
+    #[test]
+    fn definite_integration_cert_log_withheld_for_negative_endpoint() {
+        // Negative endpoints stay withheld even though Mathlib has
+        // integral_log_of_neg — Alkahest's log is not Real.log on (−∞, 0).
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let log_x = pool.func("log", vec![x]);
+        let lean = emit_definite_integration_cert(
+            log_x,
+            x,
+            pool.integer(-2_i32),
+            pool.integer(-1_i32),
+            &pool,
+        );
+        assert!(
+            lean.is_empty(),
+            "∫ over negative endpoints must withhold: {lean}"
         );
     }
 

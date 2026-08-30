@@ -375,6 +375,31 @@ def test_lean_integrate_log_certifies_via_ftc():
     assert "(hx : 0 < x)" in cert
 
 
+def test_lean_definite_log_positive_bounds_certificate():
+    """∫_1^2 log x certifies via the interval FTC under 0 < 1, 0 < 2."""
+    p = pool()
+    x = p.symbol("x")
+    r = integrate(log(x), x, p.integer(1), p.integer(2))
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "admit" not in cert
+    assert "intervalIntegral.integral_eq_sub_of_hasDerivAt" in cert
+    assert "hasDerivAt_mul_log" in cert
+    assert "intervalIntegrable_log" in cert
+    assert to_lean(r) == cert
+
+
+def test_lean_definite_log_withholds_zero_endpoint():
+    """∫_0^1 log x is singular at 0 — withhold rather than claim FTC."""
+    p = pool()
+    x = p.symbol("x")
+    r = integrate(log(x), x, p.integer(0), p.integer(1))
+    assert r.certificate is None
+    assert to_lean(r) == ""
+
+
 def test_lean_withholds_int_x_log_x_and_diff_of_its_F():
     """∫ x log x and d/dx of its antiderivative stay withheld.
 
