@@ -3,6 +3,7 @@
 //! passed it); declines assert `Err`, never a wrong answer.
 
 use super::*;
+use crate::integrate::special::basis_functions_used;
 use crate::kernel::{Domain, ExprPool};
 
 fn setup() -> (ExprPool, ExprId, ExprId) {
@@ -492,10 +493,73 @@ fn integrating_factor_folds_logarithms() {
 }
 
 #[test]
-fn declines_when_the_quadrature_is_not_elementary() {
-    // `∫ e^{−x}/x dx` is `Ei`, not elementary: the honest answer is a decline,
-    // not an unevaluated integral and not a claim about the ODE.
-    assert_declines(2, "ypp - y - 1/x");
+fn quadrature_over_the_special_function_basis_closes() {
+    // These declined until the special-function emitters became reachable from
+    // the integrator: variation of parameters needs `∫ e^{∓x}/x dx` for the
+    // first and `∫ sin(x)/x dx`, `∫ cos(x)/x dx` for the second, none of which
+    // is elementary.  They are all in `integrate::special::SPECIAL_BASIS`, so
+    // the answer is `Ei` for the first and `Si`/`Ci` for the second.
+    //
+    // Solving is only half of it: `dsolve` found these answers before and its
+    // gate threw them away, because the residual cancels only over *rational*
+    // coefficients (`1/(2x) − 1/(2x)`), which `collect_add_terms` could not do
+    // until it carried `rug::Rational`.  `solve_src` re-substitutes into the
+    // original equation independently of that gate, and `verify::eval_func`
+    // has no `f64` kernel for `Ei`/`Si`/`Ci` — so its numeric fallback cannot
+    // fire and these pass on an exact symbolic `residual ≡ 0`.
+    for (src, basis) in [
+        ("ypp - y - 1/x", &["Ei"] as &[&str]),
+        // `basis_functions_used` returns the names sorted.
+        ("ypp + y - 1/x", &["Ci", "Si"]),
+    ] {
+        let (pool, _, sol) = solve_src(2, src);
+        assert_eq!(sol.constants.len(), 2, "`{src}`: wrong constant count");
+        assert_eq!(
+            basis_functions_used(sol.y_of_x, &pool),
+            basis,
+            "`{src}`: wrong special-function vocabulary in {}",
+            pool.display(sol.y_of_x)
+        );
+        for c in &sol.constants {
+            assert!(
+                super::contains(sol.y_of_x, *c, &pool),
+                "`{src}`: constant {} does not appear in the solution",
+                pool.display(*c)
+            );
+        }
+    }
+}
+
+#[test]
+fn declines_when_the_quadrature_leaves_the_special_function_basis() {
+    // `y'' + y = x/(1+x²)`.  Variation of parameters asks for
+    // `∫ x·sin(x)/(1+x²) dx` and `∫ x·cos(x)/(1+x²) dx`.  Neither is
+    // elementary, and — unlike `∫ sin(x)/x dx` above — neither is anything
+    // Alkahest can *name*.  Over ℝ the denominator is irreducible; over ℂ,
+    // `x/(1+x²) = ½·[1/(x−i) + 1/(x+i)]`, so the closed form is `Si`/`Ci` at
+    // the complex arguments `x ± i`.  Two things put that out of reach:
+    //
+    //   * every kernel in `primitive::expint` is real-argument only and
+    //     refuses (`None`) off the real axis, on purpose — see its module
+    //     docs; there is no complex-argument `Ei`/`Si`/`Ci` primitive to emit.
+    //   * `integrate::special`'s emitter table covers `c·f(g)/d` only for `g`
+    //     and `d` *linear* with `d ∝ g`, so a quadratic denominator never
+    //     matches, whatever the arguments.
+    //
+    // So the honest answer is a decline — an `Unsupported`, not an
+    // unevaluated integral and not a claim about the ODE.  (`integrate` may
+    // legitimately certify the *integral* non-elementary; what must never
+    // happen is that verdict being re-read as a statement about `dsolve`.)
+    //
+    // **This test's premise expires** the moment either bullet above stops
+    // holding: a complex-argument expint primitive, or a partial-fraction
+    // route in `integrate::special` that handles `f(g)/q` for `deg q > 1`.
+    // If it then fails with a *solved* equation rather than a decline, that is
+    // the premise expiring and not a regression — check the returned solution
+    // by differentiation, move this source up into
+    // `quadrature_over_the_special_function_basis_closes`, and pick a fresh
+    // integrand for this test.  The decline path is what is worth keeping
+    // here; the integrand is only the current way of reaching it.
     assert_declines(2, "ypp + y - x/(1 + x^2)");
 }
 
