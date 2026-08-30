@@ -132,7 +132,9 @@ The strict CI corpus currently covers:
 - Products and sums that mix the everywhere-differentiable fragment with
   pointwise `log(x)` / `sqrt(x)` (`x log x`, `exp x · log x`, `log x + x`,
   `x sqrt x`), with an explicit `(hx : 0 < x)` binder. Composites
-  (`log(x²)`, `log(sqrt(x²−1)+x)`) stay withheld.
+  (`log(x²)`, `log(sqrt(x²−1)+x)`) stay withheld. `∫ x log x` stays
+  withheld: `d/dx` of its antiderivative has an n-ary inverse cancellation
+  (`x² · x⁻¹ · ½`) that the two-factor `field_simp` encoding does not close.
 - Definite integrals `∫ x in a..b, f x = F b - F a` of the same base family
   (`sin`, `cos`, `exp`, `xⁿ`), **plus finite sums and numeric-literal constant
   multiples of those terms** (`∫ (sin x + cos x)`, `∫ 3·cos x`, `∫ -exp x`,

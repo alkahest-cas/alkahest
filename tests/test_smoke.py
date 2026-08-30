@@ -375,6 +375,24 @@ def test_lean_integrate_log_certifies_via_ftc():
     assert "(hx : 0 < x)" in cert
 
 
+def test_lean_withholds_int_x_log_x_and_diff_of_its_F():
+    """∫ x log x and d/dx of its antiderivative stay withheld.
+
+    Differentiating F = ½ x² log x − x²/4 produces an n-ary inverse
+    cancellation (`x² · x⁻¹ · ½`) that `ring` cannot close. Emitting that
+    cleanup made the textbook-gate Lean pool red; withhold beats a
+    non-typechecking certificate.
+    """
+    p = pool()
+    x = p.symbol("x")
+    r = integrate(x * log(x), x)
+    assert r.certificate is None
+    assert to_lean(r) == ""
+    dF = diff(r.value, x)
+    assert dF.certificate is None
+    assert to_lean(dF) == ""
+
+
 def test_lean_withholds_non_elementary_integrate_certificate():
     """An antiderivative whose derivative escapes the certifiable diff fragment
     (here `∫ x·exp(x²) dx`, a chain composite) stays withheld rather than

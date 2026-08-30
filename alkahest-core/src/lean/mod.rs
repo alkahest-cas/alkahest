@@ -843,6 +843,30 @@ fn positivity_certificate(step: &RewriteStep, pool: &ExprPool) -> Option<(String
     Some((binders.join(" "), tactic))
 }
 
+/// A bare factor `a` is `a^1`; `Pow{base, Integer(n)}` is `(base, n)`.
+fn factor_base_exp(id: ExprId, pool: &ExprPool) -> (ExprId, i64) {
+    pool.with(id, |d| match d {
+        ExprData::Pow { base, exp } => pool
+            .with(*exp, |e| match e {
+                ExprData::Integer(n) => n.0.to_i64().map(|k| (*base, k)),
+                _ => None,
+            })
+            .unwrap_or((id, 1)),
+        _ => (id, 1),
+    })
+}
+
+/// Numeric literal factors are spectators in inverse-cancellation detection
+/// (`½` in `x² · x⁻¹ · ½`); they never participate in the exponent rewrite.
+fn is_numeric_literal(id: ExprId, pool: &ExprPool) -> bool {
+    pool.with(id, |d| {
+        matches!(
+            d,
+            ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_)
+        )
+    })
+}
+
 /// If `before = a^m * a^n` for integer `m, n` with at least one negative
 /// (i.e. the product genuinely routes through an inverse — same-sign
 /// integer powers combine soundly via plain `ring` and are left alone), and
@@ -859,6 +883,13 @@ fn positivity_certificate(step: &RewriteStep, pool: &ExprPool) -> Option<(String
 /// be trusted whenever this shape is detected; see
 /// [`inv_cancel_certificate`] for the actual closing tactic.
 ///
+/// Only a **two-factor** product of like powers is encoded. An n-ary product
+/// with a spectator coefficient — `x² · x⁻¹ · (1/2) = x · (1/2)` — is the
+/// same cancellation mathematically, but [`inv_cancel_certificate`] does not
+/// cover it; [`nary_inverse_cancelled`] makes the caller withhold rather
+/// than emit a `by ring` that Lean cannot close (`Try this: ring_nf` under
+/// `warningAsError`).
+///
 /// Returns `(base, net_exponent)`. `net_exponent` tells the caller whether
 /// `field_simp` alone fully closes the goal: empirically, when the net
 /// exponent is `0` (the `after = 1` case), `field_simp`'s own simp set
@@ -873,21 +904,8 @@ fn inv_cancel_base(before: ExprId, after: ExprId, pool: &ExprPool) -> Option<(Ex
         ExprData::Mul(xs) if xs.len() == 2 => Some((xs[0], xs[1])),
         _ => None,
     })?;
-    // A bare factor `a` is `a^1`; `Pow{base,exp}` is itself otherwise.
-    let base_exp = |id: ExprId| -> (ExprId, i64) {
-        pool.with(id, |d| match d {
-            ExprData::Pow { base, exp } => pool
-                .with(*exp, |e| match e {
-                    ExprData::Integer(n) => n.0.to_i64(),
-                    _ => None,
-                })
-                .map(|n| (*base, n))
-                .unwrap_or((id, 1)),
-            _ => (id, 1),
-        })
-    };
-    let (base_a, exp_a) = base_exp(a);
-    let (base_b, exp_b) = base_exp(b);
+    let (base_a, exp_a) = factor_base_exp(a, pool);
+    let (base_b, exp_b) = factor_base_exp(b, pool);
     if base_a != base_b || (exp_a >= 0 && exp_b >= 0) {
         return None;
     }
@@ -937,6 +955,72 @@ fn inv_cancel_certificate(
     Some((binder, tactic))
 }
 
+/// Flat factors of a `Mul`, or the expression itself if it isn't a product.
+fn mul_factors(expr: ExprId, pool: &ExprPool) -> Vec<ExprId> {
+    pool.with(expr, |d| match d {
+        ExprData::Mul(xs) => xs.clone(),
+        _ => vec![expr],
+    })
+}
+
+/// Sorted exponent list per non-literal base among the flat factors of `expr`.
+fn exponent_multiset(
+    expr: ExprId,
+    pool: &ExprPool,
+) -> std::collections::BTreeMap<ExprId, Vec<i64>> {
+    let mut m: std::collections::BTreeMap<ExprId, Vec<i64>> = std::collections::BTreeMap::new();
+    for fac in mul_factors(expr, pool) {
+        let (base, exp) = factor_base_exp(fac, pool);
+        if is_numeric_literal(base, pool) {
+            continue;
+        }
+        m.entry(base).or_default().push(exp);
+    }
+    for v in m.values_mut() {
+        v.sort_unstable();
+    }
+    m
+}
+
+/// True when an **n-ary** product (`≥ 3` factors) rewrites inverse powers of
+/// some base so that the minimum exponent of that base *increases* (the
+/// inverse was cancelled, not merely reordered or regrouped).
+///
+/// This is the shape `collect_mul_factors` produces for `d/dx (½ x² log x)`:
+/// `x² · x⁻¹ · (1/2) = x · (1/2)`. `ring` cannot close it (`Try this:
+/// ring_nf` under `warningAsError`), and [`inv_cancel_certificate`] only
+/// encodes the two-factor collapse. Callers must withhold.
+///
+/// A two-factor product is left to [`inv_cancel_certificate`]. A regrouping
+/// that *moves* the inverse onto a new compound base (e.g. `√x⁻¹ · ½ =
+/// (2 √x)⁻¹`) is not cancellation and is left alone. A mere reorder
+/// (`x⁻¹ · 2 = 2 · x⁻¹`) keeps the same min exponent.
+fn nary_inverse_cancelled(before: ExprId, after: ExprId, pool: &ExprPool) -> bool {
+    if mul_factors(before, pool).len() < 3 {
+        return false;
+    }
+    let before_exps = exponent_multiset(before, pool);
+    let after_exps = exponent_multiset(after, pool);
+    before_exps.iter().any(|(&base, bexps)| {
+        let Some(&bmin) = bexps.iter().min() else {
+            return false;
+        };
+        if bmin >= 0 {
+            return false;
+        }
+        match after_exps.get(&base).and_then(|v| v.iter().min().copied()) {
+            Some(amin) => amin > bmin,
+            None => {
+                // Base vanished: cancellation, unless the inverse moved onto
+                // a new compound base (a regrouping, not a collapse).
+                !after_exps.iter().any(|(ab, aexps)| {
+                    !before_exps.contains_key(ab) && aexps.iter().any(|&e| e < 0)
+                })
+            }
+        }
+    })
+}
+
 /// `before = (a⁻¹)⁻¹`, `after = a` or `a^1` — Mathlib's `inv_inv : a⁻¹⁻¹ = a`
 /// holds *unconditionally* (at `a = 0`: `0⁻¹ = 0`, so `(0⁻¹)⁻¹ = 0⁻¹ = 0 =
 /// a`), unlike [`inv_cancel_base`]'s shapes. `ring` still can't close it —
@@ -965,14 +1049,6 @@ fn is_double_inv_cancel(before: ExprId, after: ExprId, pool: &ExprPool) -> bool 
     }
 }
 
-/// Resolve `(explicit_binders, tactic)` for a non-differentiation ("plain
-/// equality `before = after`") rewrite step. Tries, in order: the
-/// [`inv_cancel_certificate`] soundness override and the
-/// [`is_double_inv_cancel`] unconditional override (whenever either shape
-/// matches, the static table tactic is never trusted, even if it doesn't
-/// literally contain `"sorry"`), the [`positivity_certificate`] upgrade, and
-/// finally the static per-rule-name tactic ([`rule_to_tactic`]) when it
-/// doesn't require `sorry`. Returns `None` when the step must be withheld.
 /// Certificate for a `sin_double_angle` fold `2 · sin u · cos u = sin(2u)`
 /// (Alkahest stores the LHS as `sin u · 2 · cos u` and the RHS as `sin(u·2)`).
 /// `Real.sin_two_mul u : sin (2·u) = 2 · sin u · cos u` is *unconditional*, so
@@ -997,6 +1073,16 @@ fn sin_double_angle_certificate(before: ExprId, pool: &ExprPool) -> Option<Strin
     ))
 }
 
+/// Resolve `(explicit_binders, tactic)` for a non-differentiation ("plain
+/// equality `before = after`") rewrite step. Tries, in order: the
+/// [`inv_cancel_certificate`] soundness override and the
+/// [`is_double_inv_cancel`] unconditional override (whenever either shape
+/// matches, the static table tactic is never trusted, even if it doesn't
+/// literally contain `"sorry"`), a withhold for n-ary inverse cancellation
+/// beyond that two-factor encoding ([`nary_inverse_cancelled`]), the
+/// [`positivity_certificate`] upgrade, and finally the static per-rule-name
+/// tactic ([`rule_to_tactic`]) when it doesn't require `sorry`. Returns
+/// `None` when the step must be withheld.
 fn plain_step_certificate(step: &RewriteStep, pool: &ExprPool) -> Option<(Option<String>, String)> {
     // `sin_double_angle` is unconditional but needs a shape-specific rewrite
     // (`Real.sin_two_mul`); the static table's `ring_nf; simp` fallback cannot
@@ -1010,6 +1096,13 @@ fn plain_step_certificate(step: &RewriteStep, pool: &ExprPool) -> Option<(Option
     }
     if is_double_inv_cancel(step.before, step.after, pool) {
         return Some((None, "by simp [inv_inv]".to_string()));
+    }
+    if nary_inverse_cancelled(step.before, step.after, pool) {
+        // n-ary inverse cancellation (`x² · x⁻¹ · ½ = x · ½`) is beyond the
+        // two-factor [`inv_cancel_certificate`]; `ring` cannot close it and
+        // Lean suggests `ring_nf` as a warning. Withhold the whole certificate
+        // rather than emit a non-typechecking file under `warningAsError`.
+        return None;
     }
     if let Some((binders, tactic)) = positivity_certificate(step, pool) {
         return Some((Some(binders), tactic));
@@ -1494,6 +1587,13 @@ pub fn emit_lean_expr_wrt(
 /// Rejecting these keeps the integration certificate sound: a withheld integral
 /// is always preferable to a `.lean` file that fails to typecheck. Composites
 /// and by-parts results outside this fragment simply stay withheld.
+///
+/// Passing this gate is **not** sufficient. The reused exporter still has to
+/// certify every algebraic cleanup step of `d/dx F`. An n-ary inverse
+/// cancellation such as `x² · x⁻¹ · (1/2) = x · (1/2)` (the residual of
+/// `∫ x log x`) is beyond the two-factor [`inv_cancel_certificate`] and is
+/// withheld there — intern-equality of `d/dx F` with the integrand must not
+/// punch a hole in that discipline.
 fn antiderivative_in_certifiable_fragment(f: ExprId, var: ExprId, pool: &ExprPool) -> bool {
     // `in_product`: we are inside a Mul, where a nested Add would defeat `ring`.
     fn walk(f: ExprId, var: ExprId, pool: &ExprPool, in_product: bool) -> bool {
@@ -2836,6 +2936,56 @@ mod tests {
             "nested power_rule on x⁻¹ still uses hasDerivAt_inv: {lean}"
         );
         assert!(!lean.contains("sorry") && !lean.contains("admit"));
+    }
+
+    #[test]
+    fn withhold_diff_of_x_log_x_antiderivative() {
+        // Textbook-gate `test_int_x_log_x` diffs F = ∫ x log x
+        // (`½ x² log x − x²/4`). The product/sum combine steps close with
+        // `field_simp`, but a later `collect_mul_factors` rewrites
+        // `x² · (1/2) · x⁻¹ = x · (1/2)` — an n-ary inverse cancellation
+        // `ring` cannot close. Emitting that step made Lean CI red
+        // (`Try this: ring_nf` under `warningAsError`). Withhold the whole
+        // certificate; a missing cert beats a non-typechecking one.
+        use crate::diff::diff;
+        use crate::integrate::integrate;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let integrand = pool.mul(vec![x, pool.func("log", vec![x])]);
+        let derived = integrate(integrand, x, &pool).expect("integrate");
+        let ftc = emit_integration_cert(derived.value, integrand, x, &pool);
+        assert!(
+            ftc.is_empty(),
+            "∫ x log x must withhold the FTC cert until cleanup closes: {ftc}"
+        );
+        let d_f = diff(derived.value, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&d_f, &pool, Some(x));
+        assert!(
+            lean.is_empty(),
+            "d/dx of ∫ x log x's F must withhold (n-ary inv-cancel): {lean}"
+        );
+    }
+
+    #[test]
+    fn withhold_nary_inv_cancel_with_spectator_coeff() {
+        // The exact cleanup shape that broke Lean CI: three-factor
+        // `collect_mul_factors` is beyond the two-factor field_simp encoding.
+        use crate::simplify::simplify;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![
+            pool.pow(x, pool.integer(2_i32)),
+            pool.pow(x, pool.integer(-1_i32)),
+            pool.rational(1_i32, 2_i32),
+        ]);
+        let derived = simplify(expr, &pool);
+        let lean = emit_lean_expr(&derived, &pool);
+        assert!(
+            lean.is_empty(),
+            "x² · x⁻¹ · ½ must withhold until n-ary inv-cancel is encoded: {lean}"
+        );
     }
 
     #[test]

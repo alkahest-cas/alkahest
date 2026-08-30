@@ -318,7 +318,12 @@
   Because `d/dx (x log x − x)` intern-equals `log x`, the existing FTC path
   now certifies the indefinite integral `∫ log x dx = x log x − x`.
   Definite `∫_a^b log x` stays withheld: `IntervalIntegrable` on an interval
-  that might contain `0` is not a free extra binder.
+  that might contain `0` is not a free extra binder. `∫ x log x` and
+  `d/dx` of its antiderivative stay withheld: differentiating
+  `½ x² log x − x²/4` produces an n-ary inverse cancellation
+  (`x² · x⁻¹ · ½ = x · ½`) that `ring` cannot close, and the two-factor
+  `field_simp` encoding does not cover a spectator coefficient. A withheld
+  certificate beats a `.lean` file that fails under `warningAsError`.
 
 - **A budget could be outrun by a single allocation, and was.**
   `alkahest.integrate` on `1/(x·log x·(1 + log²(log x)))` — the derivative of
