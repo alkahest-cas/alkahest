@@ -767,9 +767,7 @@ fn diff_step_certificate(
                 None
             }
         }
-        "diff_univariate_poly" | "sum_rule" => {
-            combine_step_certificate(step.before, wrt, pool)
-        }
+        "diff_univariate_poly" | "sum_rule" => combine_step_certificate(step.before, wrt, pool),
         // `product_rule` first tries the `f(x)/g(x)` quotient chain (which
         // carries its own `g x ≠ 0` binder), then the combine fragments
         // (unconditional, then `x ≠ 0` negative powers, then `0 < x` log/sqrt).
