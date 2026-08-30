@@ -302,6 +302,64 @@ STRICT_CASES = [
         "diff_primitive_registry",
         lambda pool: alkahest.diff(alkahest.tan(pool.symbol("x")), pool.symbol("x")),
     ),
+    # Hyperbolic: unconditional on ℝ, same registry dispatch. Sums/products
+    # join the everywhere-differentiable fragment (`Real.deriv_sinh` /
+    # `Real.deriv_cosh` in the combine tactic).
+    (
+        "diff_sinh",
+        "diff_primitive_registry",
+        lambda pool: alkahest.diff(alkahest.sinh(pool.symbol("x")), pool.symbol("x")),
+    ),
+    (
+        "diff_cosh",
+        "diff_primitive_registry",
+        lambda pool: alkahest.diff(alkahest.cosh(pool.symbol("x")), pool.symbol("x")),
+    ),
+    (
+        "diff_sum_sinh_cosh",
+        "sum_rule",
+        lambda pool: alkahest.diff(
+            alkahest.sinh(pool.symbol("x")) + alkahest.cosh(pool.symbol("x")),
+            pool.symbol("x"),
+        ),
+    ),
+    (
+        "diff_product_exp_sinh",
+        "product_rule",
+        lambda pool: alkahest.diff(
+            alkahest.exp(pool.symbol("x")) * alkahest.sinh(pool.symbol("x")),
+            pool.symbol("x"),
+        ),
+    ),
+    # Inverse trig: atan is unconditional; asin needs |x| < 1.
+    (
+        "diff_atan",
+        "diff_primitive_registry",
+        lambda pool: alkahest.diff(alkahest.atan(pool.symbol("x")), pool.symbol("x")),
+    ),
+    (
+        "diff_asin",
+        "diff_primitive_registry",
+        lambda pool: alkahest.diff(alkahest.asin(pool.symbol("x")), pool.symbol("x")),
+    ),
+    # ∫ (1+x²)⁻¹ dx = atan x, certified via the FTC derivative relation
+    # once d/dx atan(x) intern-equals the integrand.
+    (
+        "int_inv_one_plus_x_squared",
+        "rothstein_trager",
+        lambda pool: alkahest.integrate(1 / (1 + pool.symbol("x") ** 2), pool.symbol("x")),
+    ),
+    # Definite interval-FTC: ∫₀¹ (1+x²)⁻¹ = arctan 1 − arctan 0 (not π/4).
+    (
+        "int_def_inv_one_plus_x_squared_0_1",
+        "fundamental_theorem_of_calculus",
+        lambda pool: alkahest.integrate(
+            1 / (1 + pool.symbol("x") ** 2),
+            pool.symbol("x"),
+            pool.integer(0),
+            pool.integer(1),
+        ),
+    ),
     # Generalized power rule with chain: `d/dx sin(x)² = 2 sin x cos x`, via
     # `HasDerivAt.pow` — unconditional.
     (

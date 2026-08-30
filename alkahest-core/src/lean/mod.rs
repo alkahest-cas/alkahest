@@ -339,12 +339,26 @@ fn diff_sqrt_certificate(wrt: ExprId, pool: &ExprPool) -> (Option<String>, Strin
 /// [`PrimitiveRegistry::diff_forward`](crate::primitive::PrimitiveRegistry::diff_forward)
 /// dispatched when building the derivative in the first place).
 ///
-/// Only `tan` is encoded today: Alkahest's `TanPrimitive::diff_forward`
-/// records `d/dx tan(x) = (1 + tan(x)²) · 1` (the `1 + tan²` identity, not
-/// `1/cos²`), so closing the goal needs both `Real.hasDerivAt_tan` (needs
-/// `cos x ≠ 0`) *and* `Real.inv_one_add_tan_sq` to reconcile the two forms —
-/// a bare `rw [Real.deriv_tan]; ring` is not enough since that equivalence
-/// itself depends on `cos x ≠ 0`.
+/// Encoded primitives:
+/// * `tan` — Alkahest records `d/dx tan(x) = (1 + tan(x)²) · 1` (the `1 + tan²`
+///   identity, not `1/cos²`), so closing the goal needs both
+///   `Real.hasDerivAt_tan` (needs `cos x ≠ 0`) *and* `Real.inv_one_add_tan_sq`
+///   to reconcile the two forms — a bare `rw [Real.deriv_tan]; ring` is not
+///   enough since that equivalence itself depends on `cos x ≠ 0`.
+/// * `sinh` / `cosh` — unconditional on `ℝ` (`Real.deriv_sinh` /
+///   `Real.deriv_cosh`). Sums and products of these also certify via the
+///   everywhere-differentiable fragment ([`diff_body_unconditional`]).
+/// * `atan` — unconditional on `ℝ`. Alkahest records `(1+x²)⁻¹`; Mathlib's
+///   `Real.hasDerivAt_arctan'` is already in that form (`hasDerivAt_arctan`
+///   is the `1/(1+x²)` spelling).
+/// * `asin` — needs `|x| < 1`. Mathlib's `Real.hasDerivAt_arcsin` asks for
+///   `x ≠ -1` and `x ≠ 1`; the stricter open-interval binder implies those
+///   and matches the domain where `1/√(1-x²)` is the genuine (non-junk)
+///   derivative.
+///
+/// `tanh` is withheld: Mathlib v4.9.0 has no `hasDerivAt_tanh` and no
+/// `1 - tanh² = 1/cosh²` identity analogous to `Real.inv_one_add_tan_sq`.
+/// Do not sorry.
 fn registry_diff_certificate(
     before: ExprId,
     wrt: ExprId,
@@ -365,6 +379,33 @@ fn registry_diff_certificate(
                  rw [hderiv, one_div, hsq]\n    \
                  ring"
             );
+            Some((Some(binder), tactic))
+        }
+        "sinh" => Some((
+            None,
+            "by simp [Real.deriv_sinh, one_mul, mul_one]".to_string(),
+        )),
+        "cosh" => Some((
+            None,
+            "by simp [Real.deriv_cosh, one_mul, mul_one]".to_string(),
+        )),
+        "atan" => {
+            let var = wrt_name(wrt, pool);
+            let tactic = format!(
+                "by\n    \
+                 rw [(Real.hasDerivAt_arctan' {var}).deriv]\n    \
+                 ring"
+            );
+            Some((None, tactic))
+        }
+        "asin" => {
+            let var = wrt_name(wrt, pool);
+            let binder = format!("({var} : ℝ) (hx : -1 < {var} ∧ {var} < 1)");
+            let tactic = "by\n    \
+                 have hderiv := (Real.hasDerivAt_arcsin hx.1.ne' hx.2.ne).deriv\n    \
+                 rw [hderiv, one_div]\n    \
+                 ring"
+                .to_string();
             Some((Some(binder), tactic))
         }
         _ => None,
@@ -415,8 +456,10 @@ fn chain_diff_tactic(
 const UNCONDITIONAL_DIFF_TACTIC: &str = "by\n    \
      simp (config := { maxDischargeDepth := 8 }) only [deriv_add, deriv_mul, deriv_pow, \
      deriv_const, deriv_id'', Real.deriv_sin, Real.deriv_cos, Real.deriv_exp, \
+     Real.deriv_sinh, Real.deriv_cosh, \
      differentiableAt_pow, differentiableAt_id', differentiableAt_const, \
      Real.differentiableAt_sin, Real.differentiableAt_cos, Real.differentiableAt_exp, \
+     Real.differentiableAt_sinh, Real.differentiableAt_cosh, \
      DifferentiableAt.add, DifferentiableAt.mul, DifferentiableAt.pow]\n    \
      try ring";
 
@@ -425,14 +468,17 @@ const UNCONDITIONAL_DIFF_TACTIC: &str = "by\n    \
 /// side condition* — i.e. the function is differentiable at every real point:
 /// the differentiation variable, constant symbols (`C1`, `C2`, …) and numeric
 /// literals, sums and products of those, non-negative integer powers of the
-/// variable, and the pointwise primitives `sin`/`cos`/`exp` applied to exactly
-/// the variable.
+/// variable, and the pointwise primitives `sin`/`cos`/`exp`/`sinh`/`cosh`
+/// applied to exactly the variable.
 ///
-/// Everything else must be withheld by the caller: `log`/`sqrt`/`tan` and any
-/// inverse or negative power need an `x ≠ 0` (or positivity) hypothesis the
-/// unconditional simp set cannot discharge, and a chain composite `f(g x)`
-/// with `g ≠ x` lacks the composite's `DifferentiableAt` lemma (those go
-/// through [`chain_diff_tactic`] instead, never this fragment).
+/// Everything else must be withheld by the caller: `log`/`sqrt`/`tan`/`asin`
+/// and any inverse or negative power need an `x ≠ 0` (or positivity / open-
+/// interval) hypothesis the unconditional simp set cannot discharge, and a
+/// chain composite `f(g x)` with `g ≠ x` lacks the composite's
+/// `DifferentiableAt` lemma (those go through [`chain_diff_tactic`] instead,
+/// never this fragment). `atan` is everywhere differentiable but its
+/// derivative is `(1+x²)⁻¹`, which this simp set does not compute — it
+/// certifies pointwise via [`registry_diff_certificate`] instead.
 fn diff_body_unconditional(before: ExprId, wrt: ExprId, pool: &ExprPool) -> bool {
     fn walk(f: ExprId, wrt: ExprId, pool: &ExprPool) -> bool {
         pool.with(f, |d| match d {
@@ -449,7 +495,9 @@ fn diff_body_unconditional(before: ExprId, wrt: ExprId, pool: &ExprPool) -> bool
                     })
             }
             ExprData::Func { name, args } => {
-                matches!(name.as_str(), "sin" | "cos" | "exp") && args.len() == 1 && args[0] == wrt
+                matches!(name.as_str(), "sin" | "cos" | "exp" | "sinh" | "cosh")
+                    && args.len() == 1
+                    && args[0] == wrt
             }
             ExprData::Add(xs) => xs.iter().all(|&c| walk(c, wrt, pool)),
             ExprData::Mul(xs) => xs.iter().all(|&c| walk(c, wrt, pool)),
@@ -500,8 +548,9 @@ fn diff_rule_to_tactic(rule_name: &str) -> Option<&'static str> {
 /// per-rule dispatch that covers the pointwise cases (gated on
 /// [`is_unary_of_var`]/[`is_pow_of_var`] so composites correctly fall
 /// through to withholding), the `diff_sqrt` positivity certificate, the
-/// `diff_primitive_registry` dispatch (`tan`), and the `f(x)^n` / quotient
-/// chain shapes ([`power_chain_certificate`], [`quotient_chain_certificate`]).
+/// `diff_primitive_registry` dispatch (`tan`/`sinh`/`cosh`/`atan`/`asin`),
+/// and the `f(x)^n` / quotient chain shapes ([`power_chain_certificate`],
+/// [`quotient_chain_certificate`]).
 fn diff_step_certificate(
     step: &RewriteStep,
     wrt: ExprId,
@@ -850,6 +899,7 @@ pub fn emit_diff_header() -> String {
      import Mathlib.Analysis.Calculus.Deriv.Inv\n\
      import Mathlib.Analysis.SpecialFunctions.Trigonometric.Deriv\n\
      import Mathlib.Analysis.SpecialFunctions.Trigonometric.ArctanDeriv\n\
+     import Mathlib.Analysis.SpecialFunctions.Trigonometric.InverseDeriv\n\
      import Mathlib.Analysis.SpecialFunctions.ExpDeriv\n\
      import Mathlib.Analysis.SpecialFunctions.Log.Deriv\n\
      import Mathlib.Analysis.SpecialFunctions.Sqrt\n\
@@ -1248,7 +1298,7 @@ pub fn emit_lean_expr_wrt(
 ///
 /// The diff exporter's `deriv (fun x => F) x = …` tactics reliably close for a
 /// restricted fragment: constants, powers of the differentiation variable,
-/// *pointwise* `sin`/`cos`/`exp` (argument exactly the variable), sums of
+/// *pointwise* `sin`/`cos`/`exp`/`atan` (argument exactly the variable), sums of
 /// those, and *flat* products of those (a product whose factors are atoms /
 /// pointwise primitives, e.g. `x · cos x`). Two shapes that the diff exporter
 /// currently emits but does **not** discharge — leaving `deriv` or a
@@ -1258,6 +1308,12 @@ pub fn emit_lean_expr_wrt(
 ///   product-rule simp set lacks the composite's `DifferentiableAt` lemma;
 /// * a **sum nested inside a product** (e.g. `-1 · (a + b)`), because the
 ///   post-`simp` `ring` cannot reduce the still-symbolic nested `deriv`.
+///
+/// `atan` is included so that `∫ (1+x²)⁻¹ dx = atan x` certifies once
+/// [`registry_diff_certificate`] can close `d/dx atan(x)`. `sinh`/`cosh` are
+/// not needed here (no matching integration rule in this PR). `asin` stays
+/// out: its derivative certificate carries an `|x| < 1` binder that the
+/// reused FTC path does not thread.
 ///
 /// Rejecting these keeps the integration certificate sound: a withheld integral
 /// is always preferable to a `.lean` file that fails to typecheck. Composites
@@ -1274,8 +1330,10 @@ fn antiderivative_in_certifiable_fragment(f: ExprId, var: ExprId, pool: &ExprPoo
                 *base == var && pool.with(*exp, |e| matches!(e, ExprData::Integer(_)))
             }
             ExprData::Func { name, args } => {
-                // Pointwise primitive only: sin/cos/exp applied to exactly `var`.
-                matches!(name.as_str(), "sin" | "cos" | "exp") && args.len() == 1 && args[0] == var
+                // Pointwise primitive only: sin/cos/exp/atan applied to exactly `var`.
+                matches!(name.as_str(), "sin" | "cos" | "exp" | "atan")
+                    && args.len() == 1
+                    && args[0] == var
             }
             ExprData::Add(xs) => {
                 // A sum inside a product is the shape `ring` cannot finish.
@@ -1331,8 +1389,13 @@ pub fn emit_integration_cert(
         return String::new();
     };
     // The certificate proves `deriv F = d/dx F`; only present it as certifying
-    // `∫ f = F` when `d/dx F` is exactly the integrand.
-    if derived_diff.value != integrand {
+    // `∫ f = F` when `d/dx F` is the integrand. `diff` already runs `simplify`
+    // on its result (stripping a `1 *` from `d/dx atan(x) = 1 · (1+x²)⁻¹`),
+    // so compare against the simplified integrand — otherwise Python's
+    // `1/(1+x**2)` (interned as `1 * (1+x²)⁻¹`) would fail intern-equality
+    // against a mathematically identical derivative.
+    let integrand_canon = crate::simplify::engine::simplify(integrand, pool).value;
+    if derived_diff.value != integrand_canon {
         return String::new();
     }
     let cert = emit_lean_expr_wrt(&derived_diff, pool, Some(var));
@@ -1366,6 +1429,7 @@ pub fn emit_integration_cert(
 fn emit_definite_integral_header() -> String {
     "import Mathlib.Tactic\n\
      import Mathlib.Analysis.SpecialFunctions.Trigonometric.Deriv\n\
+     import Mathlib.Analysis.SpecialFunctions.Trigonometric.ArctanDeriv\n\
      import Mathlib.Analysis.SpecialFunctions.ExpDeriv\n\
      import Mathlib.Analysis.Calculus.Deriv.Pow\n\
      import Mathlib.MeasureTheory.Integral.IntervalIntegral\n\
@@ -1391,25 +1455,89 @@ enum DefiniteIntegrandClass {
     Exp,
     /// `∫ xⁿ` (`n ≥ 1`), antiderivative `x^(n+1) / (n+1)`.
     Pow(i64),
+    /// `∫ (1+x²)⁻¹`, antiderivative `arctan x`.
+    /// `one_left` records intern order: `1 + x²` vs `x² + 1`, so the
+    /// `Continuous.inv₀` witness matches the printed lambda definitionally
+    /// (addition is not defeq-commutative).
+    InvOnePlusSq { one_left: bool },
+}
+
+/// True when `expr` is the integer (or 1/1 rational) `k`.
+fn is_int_literal(expr: ExprId, k: i64, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| match d {
+        ExprData::Integer(n) => n.0.to_i64() == Some(k),
+        ExprData::Rational(r) => r.0.numer().to_i64() == Some(k) && r.0.denom().to_i64() == Some(1),
+        _ => false,
+    })
+}
+
+/// True when `expr` is structurally `var ^ 2`.
+fn is_var_squared(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| match d {
+        ExprData::Pow { base, exp } => {
+            *base == var
+                && pool.with(*exp, |e| match e {
+                    ExprData::Integer(n) => n.0.to_i64() == Some(2),
+                    _ => false,
+                })
+        }
+        _ => false,
+    })
+}
+
+/// If `expr` is `(1 + var²)⁻¹` or `(var² + 1)⁻¹`, return whether the `1` is
+/// the left addend. Alkahest stores the reciprocal as `Pow(..., -1)`, never
+/// as a `div` node. A surrounding `1 *` scalar is handled by
+/// [`classify_definite_atom`]'s constant-multiple wrapper, not here.
+fn inv_one_plus_var_sq_one_left(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<bool> {
+    pool.with(expr, |d| match d {
+        ExprData::Pow { base, exp } => {
+            let is_inv = pool.with(*exp, |e| match e {
+                ExprData::Integer(n) => n.0.to_i64() == Some(-1),
+                _ => false,
+            });
+            if !is_inv {
+                return None;
+            }
+            pool.with(*base, |b| match b {
+                ExprData::Add(xs) if xs.len() == 2 => {
+                    let (a, b) = (xs[0], xs[1]);
+                    if is_int_literal(a, 1, pool) && is_var_squared(b, var, pool) {
+                        Some(true)
+                    } else if is_int_literal(b, 1, pool) && is_var_squared(a, var, pool) {
+                        Some(false)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+        }
+        _ => None,
+    })
 }
 
 /// Classify `integrand` into the certifiable definite-integral *base* fragment
-/// (a single pointwise `sin`/`cos`/`exp`, an integer power, or the bare
-/// variable). [`classify_definite_atom`] extends this with an optional
-/// constant-multiple wrapper, and [`build_definite_pieces`] extends it
-/// further to finite sums — this function only recognises the un-scaled
+/// (a single pointwise `sin`/`cos`/`exp`, an integer power, the bare
+/// variable, or `(1+x²)⁻¹`). [`classify_definite_atom`] extends this with an
+/// optional constant-multiple wrapper, and [`build_definite_pieces`] extends
+/// it further to finite sums — this function only recognises the un-scaled
 /// building block.
 ///
 /// Returns `None` (⇒ withhold) for anything outside the pointwise
 /// `sin`/`cos`/`exp` of the integration variable, a positive integer power
-/// of the variable, or the bare variable itself (treated as `x¹`). Products,
-/// composites, and every other shape stay withheld — a missing certificate is
-/// always preferable to an unsound or non-compiling one.
+/// of the variable, the bare variable itself (treated as `x¹`), or
+/// `(1+x²)⁻¹`. Products, composites, and every other shape stay withheld —
+/// a missing certificate is always preferable to an unsound or
+/// non-compiling one.
 fn classify_definite_integrand(
     integrand: ExprId,
     var: ExprId,
     pool: &ExprPool,
 ) -> Option<DefiniteIntegrandClass> {
+    if let Some(one_left) = inv_one_plus_var_sq_one_left(integrand, var, pool) {
+        return Some(DefiniteIntegrandClass::InvOnePlusSq { one_left });
+    }
     pool.with(integrand, |d| match d {
         ExprData::Symbol { .. } if integrand == var => Some(DefiniteIntegrandClass::Pow(1)),
         ExprData::Func { name, args } if args.len() == 1 && args[0] == var => match name.as_str() {
@@ -1530,6 +1658,28 @@ fn base_pieces(
                 } else {
                     format!("(continuous_pow {n}).intervalIntegrable _ _")
                 },
+            )
+        }
+        DefiniteIntegrandClass::InvOnePlusSq { one_left } => {
+            // Match intern order so the Continuous term is definitionally the
+            // printed integrand (addition is not defeq-commutative). The
+            // positivity witness has to follow the same order: `0 < 1 + x²`
+            // uses `pos + nonneg`, `0 < x² + 1` uses `nonneg + pos`.
+            let (add_cont, ne_proof) = if *one_left {
+                (
+                    "(continuous_const.add (continuous_pow 2))",
+                    "(add_pos_of_pos_of_nonneg zero_lt_one (sq_nonneg t)).ne'",
+                )
+            } else {
+                (
+                    "((continuous_pow 2).add continuous_const)",
+                    "(add_pos_of_nonneg_of_pos (sq_nonneg t) zero_lt_one).ne'",
+                )
+            };
+            (
+                Box::new(|t: &str| format!("Real.arctan ({t})")),
+                format!("Real.hasDerivAt_arctan' {var_name}"),
+                format!("({add_cont}.inv₀ (fun t => {ne_proof})).intervalIntegrable _ _"),
             )
         }
     }
@@ -1690,11 +1840,12 @@ fn bound_is_infinite(bound: ExprId, pool: &ExprPool) -> bool {
 /// Certified integrand shapes (the same base family the indefinite path
 /// certifies, now closed under finite sums and constant multiples): `cos`,
 /// `sin`, `exp` of the integration variable, integer powers `xⁿ` (`n ≥ 1`,
-/// plus the bare variable as `x¹`), any numeric-literal constant multiple of
-/// one of those (`3 * cos x`, `cos x * 3`, `-sin x`, …), and any finite sum of
-/// such terms (`x² + sin x`, `3 * cos x + exp x`, …). Every other integrand —
-/// and any improper (`±∞`) endpoint — is **withheld** (returns `""`). Never
-/// emits `sorry` / `admit`, and never asserts an unproven statement.
+/// plus the bare variable as `x¹`), `(1+x²)⁻¹` (antiderivative `arctan x`),
+/// any numeric-literal constant multiple of one of those (`3 * cos x`,
+/// `cos x * 3`, `-sin x`, …), and any finite sum of such terms (`x² + sin x`,
+/// `3 * cos x + exp x`, …). Every other integrand — and any improper (`±∞`)
+/// endpoint — is **withheld** (returns `""`). Never emits `sorry` / `admit`,
+/// and never asserts an unproven statement.
 pub fn emit_definite_integration_cert(
     integrand: ExprId,
     var: ExprId,
@@ -1871,6 +2022,12 @@ fn expr_to_lean_opts(expr: ExprId, pool: &ExprPool, neg_form: bool) -> String {
                 "exp" => format!("Real.exp ({})", arg_strs[0]),
                 "log" => format!("Real.log ({})", arg_strs[0]),
                 "sqrt" => format!("Real.sqrt ({})", arg_strs[0]),
+                "sinh" => format!("Real.sinh ({})", arg_strs[0]),
+                "cosh" => format!("Real.cosh ({})", arg_strs[0]),
+                "tanh" => format!("Real.tanh ({})", arg_strs[0]),
+                // Mathlib spells these `arctan` / `arcsin`, not `atan` / `asin`.
+                "atan" => format!("Real.arctan ({})", arg_strs[0]),
+                "asin" => format!("Real.arcsin ({})", arg_strs[0]),
                 // `Real.Gamma : ℝ → ℝ` (imported in the non-diff header). Alkahest
                 // spells it lowercase `gamma`; map it to the Mathlib name so the
                 // emitted term type-checks.
@@ -3329,6 +3486,239 @@ mod tests {
         assert!(
             lean.is_empty(),
             "chain-rule d/dx tan(x²) is not encoded; must withhold: {lean}"
+        );
+    }
+
+    #[test]
+    fn diff_sinh_certifies_unconditionally() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let sinh_x = pool.func("sinh", vec![x]);
+        let derived = diff(sinh_x, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(!lean.is_empty(), "d/dx sinh(x) should be Lean-certifiable");
+        assert!(
+            !lean.contains("sorry"),
+            "sinh certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("Real.deriv_sinh"),
+            "expected Real.deriv_sinh tactic: {lean}"
+        );
+        assert!(
+            lean.contains("example : deriv (fun (x : ℝ) => Real.sinh"),
+            "diff_sinh needs no explicit hypothesis binder: {lean}"
+        );
+    }
+
+    #[test]
+    fn diff_cosh_certifies_unconditionally() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let cosh_x = pool.func("cosh", vec![x]);
+        let derived = diff(cosh_x, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(!lean.is_empty(), "d/dx cosh(x) should be Lean-certifiable");
+        assert!(
+            !lean.contains("sorry"),
+            "cosh certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("Real.deriv_cosh"),
+            "expected Real.deriv_cosh tactic: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_lean_sum_rule_sinh_cosh() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.add(vec![pool.func("sinh", vec![x]), pool.func("cosh", vec![x])]);
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "d/dx (sinh+cosh) should be Lean-certifiable"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "sum certificate must not use sorry: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_lean_product_rule_exp_sinh() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![pool.func("exp", vec![x]), pool.func("sinh", vec![x])]);
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "d/dx (exp·sinh) should be Lean-certifiable"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "product certificate must not use sorry: {lean}"
+        );
+    }
+
+    #[test]
+    fn diff_atan_certifies_unconditionally() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let atan_x = pool.func("atan", vec![x]);
+        let derived = diff(atan_x, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(!lean.is_empty(), "d/dx atan(x) should be Lean-certifiable");
+        assert!(
+            !lean.contains("sorry"),
+            "atan certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("Real.hasDerivAt_arctan'"),
+            "expected hasDerivAt_arctan' (the ⁻¹ form): {lean}"
+        );
+        assert!(
+            lean.contains("Real.arctan"),
+            "Mathlib name is arctan, not atan: {lean}"
+        );
+        assert!(
+            !lean.contains("example (x : ℝ) (h"),
+            "diff_atan needs no explicit hypothesis binder: {lean}"
+        );
+    }
+
+    #[test]
+    fn diff_asin_certifies_with_open_interval_hyp() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let asin_x = pool.func("asin", vec![x]);
+        let derived = diff(asin_x, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(!lean.is_empty(), "d/dx asin(x) should be Lean-certifiable");
+        assert!(
+            !lean.contains("sorry"),
+            "asin certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("(hx : -1 < x ∧ x < 1)"),
+            "expected an explicit |x| < 1 binder: {lean}"
+        );
+        assert!(
+            lean.contains("Real.hasDerivAt_arcsin"),
+            "expected Real.hasDerivAt_arcsin: {lean}"
+        );
+        assert!(
+            lean.contains("Real.arcsin"),
+            "Mathlib name is arcsin, not asin: {lean}"
+        );
+    }
+
+    #[test]
+    fn withhold_chain_rule_diff_asin_composite() {
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let asin_x2 = pool.func("asin", vec![x2]);
+        let derived = diff(asin_x2, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            lean.is_empty(),
+            "chain-rule d/dx asin(x²) is not encoded; must withhold: {lean}"
+        );
+    }
+
+    #[test]
+    fn withhold_diff_tanh() {
+        // Mathlib v4.9.0 has no hasDerivAt_tanh / 1-tanh² identity.
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let tanh_x = pool.func("tanh", vec![x]);
+        let derived = diff(tanh_x, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            lean.is_empty(),
+            "d/dx tanh(x) is withheld (no 4.9 identity lemma): {lean}"
+        );
+    }
+
+    #[test]
+    fn integration_cert_inv_one_plus_x_squared_via_atan() {
+        use crate::integrate::integrate;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let den = pool.add(vec![pool.integer(1_i32), pool.pow(x, pool.integer(2_i32))]);
+        let inv = pool.pow(den, pool.integer(-1_i32));
+        // Python `1/(1+x**2)` interns as `1 * (1+x²)⁻¹`; d/dx atan(x) is the
+        // same intern, so the FTC intern-equality gate can fire.
+        let integrand = pool.mul(vec![pool.integer(1_i32), inv]);
+        let derived = integrate(integrand, x, &pool).expect("integrate");
+        let lean = emit_integration_cert(derived.value, integrand, x, &pool);
+        assert!(
+            !lean.is_empty(),
+            "∫ (1+x²)⁻¹ should certify via d/dx atan(x); antiderivative={}, integrand={}",
+            pool.display(derived.value),
+            pool.display(integrand)
+        );
+        assert!(
+            lean.contains("Real.arctan") || lean.contains("hasDerivAt_arctan"),
+            "expected atan FTC via arctan derivative: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
+    }
+
+    #[test]
+    fn definite_integration_cert_inv_one_plus_x_squared() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let den = pool.add(vec![pool.integer(1_i32), pool.pow(x, pool.integer(2_i32))]);
+        let integrand = pool.pow(den, pool.integer(-1_i32));
+        let lean = emit_definite_integration_cert(
+            integrand,
+            x,
+            pool.integer(0_i32),
+            pool.integer(1_i32),
+            &pool,
+        );
+        assert!(
+            !lean.is_empty(),
+            "∫₀¹ (1+x²)⁻¹ must certify via the interval FTC"
+        );
+        assert!(
+            lean.contains("intervalIntegral.integral_eq_sub_of_hasDerivAt"),
+            "must invoke the interval FTC lemma: {lean}"
+        );
+        assert!(
+            lean.contains("Real.hasDerivAt_arctan'"),
+            "arctan derivative witness: {lean}"
+        );
+        assert!(
+            lean.contains("Real.arctan"),
+            "antiderivative is arctan: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
+        // Do not claim = π/4; the certificate is F(b)-F(a) = arctan 1 - arctan 0.
+        assert!(
+            !lean.contains("π / 4") && !lean.contains("Real.pi / 4"),
+            "must not claim the numeric π/4 evaluation: {lean}"
         );
     }
 

@@ -105,6 +105,10 @@ _TOP_FORM = {
 _FN_ARG_RANK = {"none": 0, "var": 1, "pow": 2, "other": 3}
 _POW_RANK = {"none": 0, "nat": 1, "neg": 2, "frac": 3, "sym": 4}
 _MUL_RANK = {"none": 0, "scalar": 1, "general": 2}
+# `one_plus_sq` is the FTC fragment ∫(1+x²)⁻¹; it must outrank `var` so a
+# mixed expression still reports the more specific base, and lose to `expr`
+# so a second, uncertifiable denominator keeps the class withheld.
+_POW_BASE_RANK = {"none": 0, "var": 1, "one_plus_sq": 2, "expr": 3}
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +139,29 @@ def _is_var(expr, var) -> bool:
 def _is_int_pow_of_var(expr, var) -> bool:
     node = expr.node()
     return node[0] == "pow" and _is_var(node[1], var) and node[2].node()[0] == "integer"
+
+
+def _is_one_plus_var_sq(expr, var) -> bool:
+    """True iff *expr* is intern-equal to ``1 + var²`` (either addend order)."""
+    node = expr.node()
+    if node[0] != "add" or len(node[1]) != 2:
+        return False
+
+    def is_one(term) -> bool:
+        tag, *rest = term.node()
+        return tag == "integer" and int(rest[0]) == 1
+
+    def is_var_sq(term) -> bool:
+        n = term.node()
+        return (
+            n[0] == "pow"
+            and _is_var(n[1], var)
+            and n[2].node()[0] == "integer"
+            and int(n[2].node()[1]) == 2
+        )
+
+    a, b = node[1]
+    return (is_one(a) and is_var_sq(b)) or (is_one(b) and is_var_sq(a))
 
 
 def canonical_expression(expr) -> str:
@@ -186,7 +213,9 @@ def shape_features(expr, var=None, definite: bool | None = None) -> dict[str, st
     variable (the fragment ``Real.deriv_*`` covers) or to a composite argument
     (which needs ``HasDerivAt.comp``), whether any exponent is negative or
     fractional (which introduces the ``x ≠ 0`` side conditions the combine
-    tactic does not yet thread through), and how the pieces are combined.
+    tactic does not yet thread through), how the pieces are combined, and —
+    for reciprocal polynomials — whether the base is the FTC atom ``1 + x²``
+    (``pow_base=one_plus_sq``) rather than a generic expression.
     """
     funcs: set[str] = set()
     fn_arg = "none"
@@ -218,8 +247,13 @@ def shape_features(expr, var=None, definite: bool | None = None) -> dict[str, st
                 kind = "sym"
             if _POW_RANK[kind] > _POW_RANK[pow_kind]:
                 pow_kind = kind
-            base = "var" if _is_var(node[1], var) else "expr"
-            if pow_base == "none" or base == "expr":
+            if _is_var(node[1], var):
+                base = "var"
+            elif _is_one_plus_var_sq(node[1], var):
+                base = "one_plus_sq"
+            else:
+                base = "expr"
+            if _POW_BASE_RANK[base] > _POW_BASE_RANK[pow_base]:
                 pow_base = base
         elif tag == "mul":
             non_numeric = [a for a in node[1] if a.node()[0] not in _NUMERIC_TAGS]

@@ -222,6 +222,21 @@
   one-element `Mul` is not collapsed (so a singleton `Mul` holding `−1` is not
   the same node as `−1`, and `x·x⁻¹` survives), and `x²·(−1·x²)⁻¹` does not
   cancel because the `Pow` wraps a whole `Mul`.
+- **Pointwise derivative certificates for `sinh`, `cosh`, `atan`, and `asin`.**
+  Hyperbolic sine/cosine are unconditional on ℝ (`Real.deriv_sinh` /
+  `Real.deriv_cosh`) and join the everywhere-differentiable sum/product
+  fragment, so `sinh x + cosh x` and `exp x · sinh x` certify too. `atan`
+  is unconditional (`Real.hasDerivAt_arctan'`, reconciling Alkahest's
+  `(1+x²)⁻¹` with Mathlib's `1/(1+x²)`). `asin` carries an explicit
+  `(x : ℝ) (hx : -1 < x ∧ x < 1)` binder, closed by
+  `Real.hasDerivAt_arcsin`. Composites (`asin(x²)`, …) stay withheld.
+  **`tanh` is withheld**: Mathlib v4.9.0 has no `hasDerivAt_tanh` and no
+  `1 − tanh² = 1/cosh²` identity analogous to `Real.inv_one_add_tan_sq`.
+- **FTC for `∫ dx/(1+x²) = atan x`**, indefinite (via the reused
+  differentiation certificate) and definite (`HasDerivAt` witness
+  `hasDerivAt_arctan'`, `IntervalIntegrable` of the continuous integrand
+  `(1+x²)⁻¹`). The definite certificate proves `arctan b − arctan a`, not
+  `π/4`.
 
 - **A budget could be outrun by a single allocation, and was.**
   `alkahest.integrate` on `1/(x·log x·(1 + log²(log x)))` — the derivative of

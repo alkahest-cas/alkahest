@@ -595,6 +595,71 @@ def test_lean_tendsto_withholds_finite_sinc():
     assert to_lean(r) == ""
 
 
+def test_lean_diff_sinh_cosh_atan_asin_certificates():
+    """Pointwise hyperbolic / inverse-trig diffs emit, with asin carrying
+    the |x| < 1 binder. Composites and tanh stay withheld."""
+    from alkahest import asin, atan, cosh, sinh, tanh
+
+    p = pool()
+    x = p.symbol("x")
+
+    sinh_r = diff(sinh(x), x)
+    assert sinh_r.certificate
+    assert "sorry" not in sinh_r.certificate
+    assert "Real.deriv_sinh" in sinh_r.certificate
+
+    cosh_r = diff(cosh(x), x)
+    assert cosh_r.certificate
+    assert "Real.deriv_cosh" in cosh_r.certificate
+
+    sum_r = diff(sinh(x) + cosh(x), x)
+    assert sum_r.certificate
+    assert "sorry" not in sum_r.certificate
+
+    prod_r = diff(exp(x) * sinh(x), x)
+    assert prod_r.certificate
+    assert "sorry" not in prod_r.certificate
+
+    atan_r = diff(atan(x), x)
+    assert atan_r.certificate
+    assert "sorry" not in atan_r.certificate
+    assert "hasDerivAt_arctan'" in atan_r.certificate
+    assert "Real.arctan" in atan_r.certificate
+
+    asin_r = diff(asin(x), x)
+    assert asin_r.certificate
+    assert "sorry" not in asin_r.certificate
+    assert "(hx : -1 < x ∧ x < 1)" in asin_r.certificate
+    assert "hasDerivAt_arcsin" in asin_r.certificate
+
+    assert diff(asin(x**2), x).certificate is None
+    assert diff(tanh(x), x).certificate is None
+
+
+def test_lean_integrate_inv_one_plus_x_squared():
+    """∫ (1+x²)⁻¹ dx certifies via d/dx atan(x). The definite form proves
+    F(b)−F(a) = arctan 1 − arctan 0, not π/4."""
+    p = pool()
+    x = p.symbol("x")
+    integrand = 1 / (1 + x**2)
+
+    r = integrate(integrand, x)
+    assert r.certificate
+    assert "sorry" not in r.certificate
+    assert "deriv (fun" in r.certificate
+    assert "Real.arctan" in r.certificate or "hasDerivAt_arctan" in r.certificate
+    # Residual check still labels the antiderivative as exact.
+    assert "atan" in str(r.value)
+
+    definite = integrate(integrand, x, p.integer(0), p.integer(1))
+    assert definite.certificate
+    assert "sorry" not in definite.certificate
+    assert "intervalIntegral.integral_eq_sub_of_hasDerivAt" in definite.certificate
+    assert "Real.arctan" in definite.certificate
+    assert "π / 4" not in definite.certificate
+    assert "Real.pi" not in definite.certificate
+
+
 # ---------------------------------------------------------------------------
 # StableHLO / XLA bridge
 # ---------------------------------------------------------------------------
