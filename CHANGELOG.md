@@ -294,6 +294,16 @@
   `hasDerivAt_arctan'`, `IntervalIntegrable` of the continuous integrand
   `(1+x²)⁻¹`). The definite certificate proves `arctan b − arctan a`, not
   `π/4`.
+- **Pointwise Lean certificates for negative integer powers of the
+  differentiation variable.** `d/dx x⁻ⁿ` needs `x ≠ 0`, which `deriv_pow`
+  cannot discharge, so the emitter now binds `(x : ℝ) (hx : x ≠ 0)` and
+  closes the pretty-printed `(x)⁻¹` / `(x)⁻¹ ^ (k : ℕ)` spelling via
+  `hasDerivAt_inv` (and `HasDerivAt.pow` for `n ≤ -2`). No `sorry`.
+  `∫ x⁻¹ dx = log x` certifies via the existing FTC reuse (`Real.deriv_log`).
+  Combine steps (`product_rule` / `sum_rule`) on bodies built from
+  `{wrt, constants, wrt⁻ⁿ}` now bind `(x : ℝ) (hx : x ≠ 0)` and close with
+  `deriv_inv` / `differentiableAt_inv` (not the unconditional simp set), so
+  `∫ x⁻² dx = -x⁻¹` certifies via FTC reuse of `d/dx (-x⁻¹)`.
 
 - **A budget could be outrun by a single allocation, and was.**
   `alkahest.integrate` on `1/(x·log x·(1 + log²(log x)))` — the derivative of

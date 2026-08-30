@@ -362,13 +362,40 @@ def test_lean_integrate_certifies_via_ftc_derivative():
 
 def test_lean_withholds_non_elementary_integrate_certificate():
     """An antiderivative whose derivative escapes the certifiable diff fragment
-    (here `∫ log x dx`, differentiating via `diff_log`) stays withheld rather
-    than emitting an admission."""
+    (here `∫ log x dx = x log x − x`, whose product_rule step cannot close)
+    stays withheld rather than emitting an admission."""
     p = pool()
     x = p.symbol("x")
     r = integrate(log(x), x)
     assert r.certificate is None
     assert to_lean(r) == ""
+
+
+def test_lean_integrate_inv_x_via_log():
+    """∫ x⁻¹ dx = log x certifies via FTC reuse of Real.deriv_log."""
+    p = pool()
+    x = p.symbol("x")
+    r = integrate(x**-1, x)
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "Real.deriv_log" in cert
+    assert to_lean(r) == cert
+
+
+def test_lean_integrate_x_neg_two_via_ftc():
+    """∫ x⁻² dx = -x⁻¹ certifies via FTC reuse of d/dx (-x⁻¹)."""
+    p = pool()
+    x = p.symbol("x")
+    r = integrate(x**-2, x)
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "(hx : x ≠ 0)" in cert
+    assert "deriv_inv" in cert
+    assert to_lean(r) == cert
 
 
 def test_lean_diff_sin_certificate_has_no_sorry():
@@ -417,6 +444,35 @@ def test_lean_diff_x_squared_certificate():
     assert cert
     assert "sorry" not in cert
     assert "deriv (fun" in cert
+
+
+def test_lean_diff_x_inv_certificate():
+    """d/dx x⁻¹ emits hasDerivAt_inv with an explicit x ≠ 0 binder."""
+    p = pool()
+    x = p.symbol("x")
+    r = diff(x**-1, x)
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "(hx : x ≠ 0)" in cert
+    assert "hasDerivAt_inv" in cert
+    assert r.verification["status"] == "certificate_available"
+
+
+def test_lean_diff_x_neg_two_certificate():
+    """d/dx x⁻² emits hasDerivAt_inv + HasDerivAt.pow with x ≠ 0."""
+    p = pool()
+    x = p.symbol("x")
+    r = diff(x**-2, x)
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "(hx : x ≠ 0)" in cert
+    assert "hasDerivAt_inv" in cert
+    assert "hinv.pow 2" in cert
+    assert r.verification["status"] == "certificate_available"
 
 
 def test_lean_sum_and_product_rule_certificates():

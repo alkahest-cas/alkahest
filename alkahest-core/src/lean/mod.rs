@@ -333,6 +333,50 @@ fn diff_sqrt_certificate(wrt: ExprId, pool: &ExprPool) -> (Option<String>, Strin
     (Some(binder), tactic)
 }
 
+/// Pointwise `d/dx (wrt ^ n)` for a **negative** integer `n`, with an explicit
+/// `x ≠ 0` binder. Pretty-print spells `x⁻¹` as `(x)⁻¹` and `x⁻ᵏ` (`k ≥ 2`) as
+/// `(x)⁻¹ ^ (k : ℕ)` — never `x ^ (-k : ℤ)` — so the tactic must close that
+/// spelling: `hasDerivAt_inv` for the inverse, then `HasDerivAt.pow` for a
+/// further natural power of it.
+///
+/// Must not go through [`diff_body_unconditional`]/`deriv_pow`: that simp set
+/// has no `x ≠ 0` and only discharges non-negative integer powers. Inverse of
+/// a primitive (`(sin x)⁻¹`) is [`power_chain_certificate`]; this is only
+/// `wrt ^ (-k)`.
+fn neg_pow_of_var_certificate(
+    before: ExprId,
+    wrt: ExprId,
+    pool: &ExprPool,
+) -> Option<(Option<String>, String)> {
+    let exp_n = pool.with(before, |d| match d {
+        ExprData::Pow { base, exp } if *base == wrt => pool.with(*exp, |e| match e {
+            ExprData::Integer(n) => n.0.to_i64().filter(|&k| k < 0),
+            _ => None,
+        }),
+        _ => None,
+    })?;
+    let var = wrt_name(wrt, pool);
+    let binder = format!("({var} : ℝ) (hx : {var} ≠ 0)");
+    let k = exp_n.unsigned_abs();
+    let tactic = if k == 1 {
+        "by\n    \
+         have h := (hasDerivAt_inv hx).deriv\n    \
+         rw [h]\n    \
+         field_simp [hx]\n    \
+         try ring"
+            .to_string()
+    } else {
+        format!(
+            "by\n    \
+             have hinv := hasDerivAt_inv hx\n    \
+             rw [(hinv.pow {k}).deriv]\n    \
+             field_simp [hx]\n    \
+             try ring"
+        )
+    };
+    Some((Some(binder), tactic))
+}
+
 /// Certificates for `diff_primitive_registry` steps: the generic rule name
 /// `lean::diff_rule_to_tactic` never maps, so dispatch on the actual
 /// primitive by re-inspecting `before` (mirroring how
@@ -439,9 +483,11 @@ fn chain_diff_tactic(
     ))
 }
 
-/// The single tactic that closes every "combine" differentiation step —
+/// The tactic that closes every "combine" differentiation step —
 /// `diff_univariate_poly`, `sum_rule`, `product_rule` — over the
 /// *everywhere-differentiable* fragment ([`diff_body_unconditional`]).
+/// Negative powers of the variable go through [`neg_pow_combine_certificate`]
+/// instead; they must not be added here.
 ///
 /// `simp only` rewrites strictly at `deriv`/`DifferentiableAt` positions (no
 /// algebraic normalization of the lambda body, which would desync the
@@ -507,6 +553,79 @@ fn diff_body_unconditional(before: ExprId, wrt: ExprId, pool: &ExprPool) -> bool
     walk(before, wrt, pool)
 }
 
+/// True when `before` is built from `{wrt, constants, wrt⁻ⁿ}` under `Add`/`Mul`
+/// and contains at least one negative integer power of the variable.
+///
+/// This is the second combine-step fragment: the derivative needs `x ≠ 0` to
+/// discharge `DifferentiableAt` of the inverse, so it is *not* in
+/// [`diff_body_unconditional`] and must not be dumped into that simp set.
+/// Pointwise `wrt⁻ⁿ` itself is [`neg_pow_of_var_certificate`]; this gate is
+/// for the `product_rule` / `sum_rule` bodies those atoms appear in
+/// (e.g. `-x⁻¹`, `x + x⁻¹`). `log`/`sin`/`cos`/`exp` and non-negative powers
+/// of `wrt` other than the bare variable stay out — those have their own
+/// fragments.
+fn diff_body_neg_pow_combine(before: ExprId, wrt: ExprId, pool: &ExprPool) -> bool {
+    fn walk(f: ExprId, wrt: ExprId, pool: &ExprPool, saw_neg: &mut bool) -> bool {
+        pool.with(f, |d| match d {
+            ExprData::Integer(_) | ExprData::Rational(_) | ExprData::Float(_) => true,
+            ExprData::Symbol { .. } => true,
+            ExprData::Pow { base, exp } if *base == wrt => pool.with(*exp, |e| match e {
+                ExprData::Integer(n) => n.0.to_i64().is_some_and(|k| {
+                    if k < 0 {
+                        *saw_neg = true;
+                    }
+                    k < 0
+                }),
+                _ => false,
+            }),
+            ExprData::Add(xs) => xs.iter().all(|&c| walk(c, wrt, pool, saw_neg)),
+            ExprData::Mul(xs) => xs.iter().all(|&c| walk(c, wrt, pool, saw_neg)),
+            _ => false,
+        })
+    }
+    let mut saw_neg = false;
+    walk(before, wrt, pool, &mut saw_neg) && saw_neg
+}
+
+/// Combine-step certificate for [`diff_body_neg_pow_combine`]: bind
+/// `(x : ℝ) (hx : x ≠ 0)` and close with the same inverse `HasDerivAt` facts
+/// the pointwise `wrt⁻ⁿ` path already uses (`deriv_inv` / `differentiableAt_inv`),
+/// plus `deriv_pow''` so a factor `(x)⁻¹ ^ (k : ℕ)` (pretty-printed `x⁻ᵏ`)
+/// unfolds. `field_simp [hx]` reconciles `-(x^2)⁻¹` with Alkahest's
+/// `(-1 * 1 * (x)⁻¹ ^ 2)` spelling. Must not be merged into
+/// [`UNCONDITIONAL_DIFF_TACTIC`] — that simp set has no `x ≠ 0`.
+fn neg_pow_combine_certificate(wrt: ExprId, pool: &ExprPool) -> (Option<String>, String) {
+    let var = wrt_name(wrt, pool);
+    let binder = format!("({var} : ℝ) (hx : {var} ≠ 0)");
+    let tactic = "by\n    \
+         simp (config := { maxDischargeDepth := 8 }) only [deriv_add, deriv_mul, deriv_pow, \
+         deriv_pow'', deriv_const, deriv_id'', deriv_inv, \
+         differentiableAt_pow, differentiableAt_id', differentiableAt_const, \
+         DifferentiableAt.add, DifferentiableAt.mul, DifferentiableAt.pow, \
+         differentiableAt_inv.mpr hx]\n    \
+         field_simp [hx]\n    \
+         try ring"
+        .to_string();
+    (Some(binder), tactic)
+}
+
+/// Unconditional combine first; if the body is instead in the negative-power
+/// fragment, the `x ≠ 0` binder + inverse facts. Used by `sum_rule` and
+/// (after the quotient-chain attempt) `product_rule`.
+fn combine_step_certificate(
+    before: ExprId,
+    wrt: ExprId,
+    pool: &ExprPool,
+) -> Option<(Option<String>, String)> {
+    if diff_body_unconditional(before, wrt, pool) {
+        Some((None, UNCONDITIONAL_DIFF_TACTIC.to_string()))
+    } else if diff_body_neg_pow_combine(before, wrt, pool) {
+        Some(neg_pow_combine_certificate(wrt, pool))
+    } else {
+        None
+    }
+}
+
 fn diff_rule_to_tactic(rule_name: &str) -> Option<&'static str> {
     match rule_name {
         "diff_identity" => Some("by simp [deriv_id]"),
@@ -549,8 +668,10 @@ fn diff_rule_to_tactic(rule_name: &str) -> Option<&'static str> {
 /// [`is_unary_of_var`]/[`is_pow_of_var`] so composites correctly fall
 /// through to withholding), the `diff_sqrt` positivity certificate, the
 /// `diff_primitive_registry` dispatch (`tan`/`sinh`/`cosh`/`atan`/`asin`),
-/// and the `f(x)^n` / quotient chain shapes ([`power_chain_certificate`],
-/// [`quotient_chain_certificate`]).
+/// negative integer powers of the variable ([`neg_pow_of_var_certificate`]),
+/// the `f(x)^n` / quotient chain shapes ([`power_chain_certificate`],
+/// [`quotient_chain_certificate`]), and the two combine-step fragments
+/// ([`combine_step_certificate`]).
 fn diff_step_certificate(
     step: &RewriteStep,
     wrt: ExprId,
@@ -580,30 +701,33 @@ fn diff_step_certificate(
         "diff_primitive_registry" => registry_diff_certificate(step.before, wrt, pool),
         "power_rule" | "power_rule_n1" | "power_rule_n0" => {
             // `deriv (fun x => xⁿ)` closes via `deriv_pow` only for a
-            // non-negative integer `n`; a negative/inverse power (stored as
-            // `x^(-k)`) needs `x ≠ 0` and must be withheld. `is_pow_of_var`
-            // alone accepts `x^(-2)`, so also require the unconditional gate.
+            // non-negative integer `n`. Negative powers of the variable
+            // (`x^(-k)`) need `x ≠ 0` and go through
+            // [`neg_pow_of_var_certificate`] rather than the unconditional
+            // simp set. `is_pow_of_var` alone accepts `x^(-2)`, so the
+            // non-negative path still requires the unconditional gate.
             if is_pow_of_var(step.before, wrt, pool)
                 && diff_body_unconditional(step.before, wrt, pool)
             {
                 diff_rule_to_tactic(step.rule_name).map(|t| (None, t.to_string()))
             } else if step.rule_name == "power_rule" {
-                power_chain_certificate(step.before, wrt, pool)
+                neg_pow_of_var_certificate(step.before, wrt, pool)
+                    .or_else(|| power_chain_certificate(step.before, wrt, pool))
             } else {
                 None
             }
         }
-        // Combine steps: only certifiable when the differentiated body lies in
-        // the everywhere-differentiable fragment (otherwise the unconditional
-        // simp set leaves a `deriv`/`DifferentiableAt` goal open — withhold).
-        "diff_univariate_poly" | "sum_rule" => diff_body_unconditional(step.before, wrt, pool)
+        // Polynomial combine stays on the everywhere-differentiable fragment.
+        "diff_univariate_poly" => diff_body_unconditional(step.before, wrt, pool)
             .then(|| (None, UNCONDITIONAL_DIFF_TACTIC.to_string())),
+        // `sum_rule` / `product_rule`: unconditional fragment first, then the
+        // `{wrt, constants, wrt⁻ⁿ}` fragment with an `x ≠ 0` binder. Negative
+        // powers must not be dumped into [`UNCONDITIONAL_DIFF_TACTIC`].
+        "sum_rule" => combine_step_certificate(step.before, wrt, pool),
         // `product_rule` first tries the `f(x)/g(x)` quotient chain (which
-        // carries its own `g x ≠ 0` binder), then the unconditional fragment.
-        "product_rule" => quotient_chain_certificate(step.before, wrt, pool).or_else(|| {
-            diff_body_unconditional(step.before, wrt, pool)
-                .then(|| (None, UNCONDITIONAL_DIFF_TACTIC.to_string()))
-        }),
+        // carries its own `g x ≠ 0` binder), then the two combine fragments.
+        "product_rule" => quotient_chain_certificate(step.before, wrt, pool)
+            .or_else(|| combine_step_certificate(step.before, wrt, pool)),
         name => diff_rule_to_tactic(name).map(|t| (None, t.to_string())),
     }
 }
@@ -1298,7 +1422,7 @@ pub fn emit_lean_expr_wrt(
 ///
 /// The diff exporter's `deriv (fun x => F) x = …` tactics reliably close for a
 /// restricted fragment: constants, powers of the differentiation variable,
-/// *pointwise* `sin`/`cos`/`exp`/`atan` (argument exactly the variable), sums of
+/// *pointwise* `sin`/`cos`/`exp`/`log`/`atan` (argument exactly the variable), sums of
 /// those, and *flat* products of those (a product whose factors are atoms /
 /// pointwise primitives, e.g. `x · cos x`). Two shapes that the diff exporter
 /// currently emits but does **not** discharge — leaving `deriv` or a
@@ -1309,11 +1433,16 @@ pub fn emit_lean_expr_wrt(
 /// * a **sum nested inside a product** (e.g. `-1 · (a + b)`), because the
 ///   post-`simp` `ring` cannot reduce the still-symbolic nested `deriv`.
 ///
-/// `atan` is included so that `∫ (1+x²)⁻¹ dx = atan x` certifies once
-/// [`registry_diff_certificate`] can close `d/dx atan(x)`. `sinh`/`cosh` are
-/// not needed here (no matching integration rule in this PR). `asin` stays
-/// out: its derivative certificate carries an `|x| < 1` binder that the
-/// reused FTC path does not thread.
+/// `log` is included so that `∫ x⁻¹ dx = log x` certifies once `d/dx log(x)`
+/// is known to close (`Real.deriv_log`). `atan` is included so that
+/// `∫ (1+x²)⁻¹ dx = atan x` certifies once [`registry_diff_certificate`] can
+/// close `d/dx atan(x)`. `sinh`/`cosh` are not needed here (no matching
+/// integration rule). `asin` stays out: its derivative certificate carries an
+/// `|x| < 1` binder that the reused FTC path does not thread. A *product* of
+/// constants and a negative power of the variable (e.g. the antiderivative
+/// `-x⁻¹` of `x⁻²`) is in the fragment: that derivative log's `product_rule`
+/// step is closed by the second combine fragment ([`diff_body_neg_pow_combine`]),
+/// not the unconditional simp set.
 ///
 /// Rejecting these keeps the integration certificate sound: a withheld integral
 /// is always preferable to a `.lean` file that fails to typecheck. Composites
@@ -1330,8 +1459,8 @@ fn antiderivative_in_certifiable_fragment(f: ExprId, var: ExprId, pool: &ExprPoo
                 *base == var && pool.with(*exp, |e| matches!(e, ExprData::Integer(_)))
             }
             ExprData::Func { name, args } => {
-                // Pointwise primitive only: sin/cos/exp/atan applied to exactly `var`.
-                matches!(name.as_str(), "sin" | "cos" | "exp" | "atan")
+                // Pointwise primitive only: sin/cos/exp/log/atan applied to exactly `var`.
+                matches!(name.as_str(), "sin" | "cos" | "exp" | "log" | "atan")
                     && args.len() == 1
                     && args[0] == var
             }
@@ -1366,9 +1495,11 @@ fn antiderivative_in_certifiable_fragment(f: ExprId, var: ExprId, pool: &ExprPoo
 /// antiderivative is syntactically the integrand, so that the certificate's
 /// final right-hand side is exactly `f` (i.e. the cert really proves
 /// `deriv F = f`, not `deriv F = <something else>`). We require the kernel's
-/// simplified `d/dx F` to intern to the same [`ExprId`] as `integrand`;
-/// otherwise we WITHHOLD. This is precisely the exact-residual antiderivative
-/// check, so numeric-only antiderivatives stay withheld.
+/// simplified `d/dx F` to intern to the same [`ExprId`] as the simplified
+/// `integrand` (so a `1 *` decoration on either side does not withhold a
+/// mathematically identical residual); otherwise we WITHHOLD. This is
+/// precisely the exact-residual antiderivative check, so numeric-only
+/// antiderivatives stay withheld.
 ///
 /// Returns `""` (no certificate) when `F` cannot be differentiated, when its
 /// derivative is not structurally the integrand, or when the diff certificate
@@ -1390,10 +1521,10 @@ pub fn emit_integration_cert(
     };
     // The certificate proves `deriv F = d/dx F`; only present it as certifying
     // `∫ f = F` when `d/dx F` is the integrand. `diff` already runs `simplify`
-    // on its result (stripping a `1 *` from `d/dx atan(x) = 1 · (1+x²)⁻¹`),
-    // so compare against the simplified integrand — otherwise Python's
-    // `1/(1+x**2)` (interned as `1 * (1+x²)⁻¹`) would fail intern-equality
-    // against a mathematically identical derivative.
+    // on its result (stripping a `1 *` from `d/dx atan(x) = 1 · (1+x²)⁻¹`
+    // and from `d/dx log(x) = 1 · x⁻¹`), so compare against the simplified
+    // integrand — otherwise Python's `1/(1+x**2)` / `1/x` would fail
+    // intern-equality against a mathematically identical derivative.
     let integrand_canon = crate::simplify::engine::simplify(integrand, pool).value;
     if derived_diff.value != integrand_canon {
         return String::new();
@@ -2575,9 +2706,10 @@ mod tests {
 
     #[test]
     fn integration_cert_withheld_for_non_certifiable_diff() {
-        // ∫ log x dx = x·log x − x. Its derivative routes through `diff_log`,
-        // which is outside the certifiable diff fragment, so the integral cert
-        // must be withheld rather than emit an admission.
+        // ∫ log x dx = x·log x − x. Pointwise `log` is in the fragment so
+        // `∫ x⁻¹` can reuse `d/dx log(x)`, but this antiderivative is a
+        // product `x · log x` whose `product_rule` step the unconditional
+        // simp set cannot close — withhold rather than emit an admission.
         use crate::integrate::integrate;
 
         let pool = p();
@@ -2587,8 +2719,66 @@ mod tests {
         let lean = emit_integration_cert(derived.value, log_x, x, &pool);
         assert!(
             lean.is_empty(),
-            "∫ log x's antiderivative differentiates via diff_log; must withhold: {lean}"
+            "∫ log x's antiderivative is a product with log; must withhold: {lean}"
         );
+    }
+
+    #[test]
+    fn integration_cert_inv_x_via_log() {
+        // ∫ x⁻¹ dx = log x, certified as `deriv (fun x => log x) x = x⁻¹`.
+        // Intern-equality holds; pointwise log is in the FTC fragment.
+        use crate::integrate::integrate;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let inv_x = pool.pow(x, pool.integer(-1_i32));
+        let derived = integrate(inv_x, x, &pool).expect("integrate");
+        let lean = emit_integration_cert(derived.value, inv_x, x, &pool);
+        assert!(
+            !lean.is_empty(),
+            "∫ x⁻¹ should certify via d/dx log(x); antiderivative={}, integrand={}",
+            pool.display(derived.value),
+            pool.display(inv_x)
+        );
+        assert!(
+            lean.contains("Real.deriv_log"),
+            "expected Real.deriv_log FTC: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
+    }
+
+    #[test]
+    fn integration_cert_x_neg_two_via_ftc() {
+        // ∫ x⁻² dx = -x⁻¹ intern-equals `d/dx (-x⁻¹) = x⁻²`. The antiderivative
+        // is a product; `product_rule` closes via the negative-power combine
+        // fragment (`x ≠ 0`, `deriv_inv` / `differentiableAt_inv`), not the
+        // unconditional simp set.
+        use crate::integrate::integrate;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let x_neg2 = pool.pow(x, pool.integer(-2_i32));
+        let derived = integrate(x_neg2, x, &pool).expect("integrate");
+        let lean = emit_integration_cert(derived.value, x_neg2, x, &pool);
+        assert!(
+            !lean.is_empty(),
+            "∫ x⁻² should certify via FTC reuse of d/dx (-x⁻¹); antiderivative={}, integrand={}",
+            pool.display(derived.value),
+            pool.display(x_neg2)
+        );
+        assert!(
+            lean.contains("(hx : x ≠ 0)"),
+            "expected an explicit nonzero-hypothesis binder: {lean}"
+        );
+        assert!(
+            lean.contains("deriv_inv") && lean.contains("differentiableAt_inv.mpr hx"),
+            "expected the neg-pow combine tactic: {lean}"
+        );
+        assert!(
+            lean.contains("hasDerivAt_inv"),
+            "nested power_rule on x⁻¹ still uses hasDerivAt_inv: {lean}"
+        );
+        assert!(!lean.contains("sorry") && !lean.contains("admit"));
     }
 
     #[test]
@@ -3135,20 +3325,115 @@ mod tests {
     }
 
     #[test]
-    fn negative_power_of_var_diff_is_withheld() {
+    fn negative_power_of_var_diff_certifies_with_nonzero_hyp() {
         use crate::diff::diff;
 
         // `d/dx (x⁻²)` (stored as a negative power of the variable) needs
-        // `x ≠ 0`; `deriv_pow` only closes non-negative integer powers, so this
-        // must be withheld, not emitted with the unconditional power tactic.
+        // `x ≠ 0`; `deriv_pow` cannot discharge that, so the emitter upgrades
+        // to an explicit binder + `hasDerivAt_inv` (then `HasDerivAt.pow`
+        // for the remaining natural power of the inverse).
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
-        let expr = pool.pow(x, pool.integer(-2_i32));
+
+        let expr_inv = pool.pow(x, pool.integer(-1_i32));
+        let derived_inv = diff(expr_inv, x, &pool).expect("diff");
+        let lean_inv = emit_lean_expr_wrt(&derived_inv, &pool, Some(x));
+        assert!(
+            !lean_inv.is_empty(),
+            "d/dx (x⁻¹) should be Lean-certifiable: {lean_inv}"
+        );
+        assert!(
+            !lean_inv.contains("sorry"),
+            "x⁻¹ certificate must not use sorry: {lean_inv}"
+        );
+        assert!(
+            lean_inv.contains("(hx : x ≠ 0)"),
+            "expected an explicit nonzero-hypothesis binder: {lean_inv}"
+        );
+        assert!(
+            lean_inv.contains("hasDerivAt_inv"),
+            "expected hasDerivAt_inv: {lean_inv}"
+        );
+
+        let expr_neg2 = pool.pow(x, pool.integer(-2_i32));
+        let derived_neg2 = diff(expr_neg2, x, &pool).expect("diff");
+        let lean_neg2 = emit_lean_expr_wrt(&derived_neg2, &pool, Some(x));
+        assert!(
+            !lean_neg2.is_empty(),
+            "d/dx (x⁻²) should be Lean-certifiable: {lean_neg2}"
+        );
+        assert!(
+            !lean_neg2.contains("sorry"),
+            "x⁻² certificate must not use sorry: {lean_neg2}"
+        );
+        assert!(
+            lean_neg2.contains("(hx : x ≠ 0)"),
+            "expected an explicit nonzero-hypothesis binder: {lean_neg2}"
+        );
+        assert!(
+            lean_neg2.contains("hasDerivAt_inv") && lean_neg2.contains("hinv.pow 2"),
+            "expected hasDerivAt_inv then HasDerivAt.pow 2: {lean_neg2}"
+        );
+    }
+
+    #[test]
+    fn product_rule_neg_inv_combine_certifies_with_nonzero_hyp() {
+        use crate::diff::diff;
+
+        // `d/dx (-x⁻¹)` is a product whose `product_rule` step needs `x ≠ 0`.
+        // The second combine fragment closes it; this is the FTC reuse path
+        // for `∫ x⁻²`.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![
+            pool.integer(-1_i32),
+            pool.pow(x, pool.integer(-1_i32)),
+        ]);
         let derived = diff(expr, x, &pool).expect("diff");
         let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
         assert!(
-            lean.is_empty(),
-            "d/dx (x⁻²) must be withheld (needs x ≠ 0), got: {lean}"
+            !lean.is_empty(),
+            "d/dx (-x⁻¹) should be Lean-certifiable: {lean}"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "(-x⁻¹) certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("(hx : x ≠ 0)"),
+            "expected an explicit nonzero-hypothesis binder: {lean}"
+        );
+        assert!(
+            lean.contains("deriv_inv") && lean.contains("differentiableAt_inv.mpr hx"),
+            "expected the neg-pow product_rule tactic: {lean}"
+        );
+    }
+
+    #[test]
+    fn sum_rule_var_plus_inv_combine_certifies_with_nonzero_hyp() {
+        use crate::diff::diff;
+
+        // `d/dx (x + x⁻¹)` is a sum in the `{wrt, constants, wrt⁻ⁿ}` fragment.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.add(vec![x, pool.pow(x, pool.integer(-1_i32))]);
+        let derived = diff(expr, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(
+            !lean.is_empty(),
+            "d/dx (x + x⁻¹) should be Lean-certifiable: {lean}"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "(x + x⁻¹) certificate must not use sorry: {lean}"
+        );
+        assert!(
+            lean.contains("(hx : x ≠ 0)"),
+            "expected an explicit nonzero-hypothesis binder: {lean}"
+        );
+        assert!(
+            lean.contains("deriv_inv") && lean.contains("differentiableAt_inv.mpr hx"),
+            "expected the neg-pow sum_rule tactic: {lean}"
         );
     }
 

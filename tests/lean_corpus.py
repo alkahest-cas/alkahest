@@ -384,6 +384,39 @@ STRICT_CASES = [
             alkahest.sin(pool.symbol("x")) / alkahest.cos(pool.symbol("x")), pool.symbol("x")
         ),
     ),
+    # `d/dx x⁻¹` via `hasDerivAt_inv`; needs `x ≠ 0`. Pretty-printed `(x)⁻¹`.
+    (
+        "diff_x_inv",
+        "power_rule",
+        lambda pool: alkahest.diff(pool.symbol("x") ** -1, pool.symbol("x")),
+    ),
+    # `d/dx x⁻²` via `hasDerivAt_inv` then `HasDerivAt.pow 2`; needs `x ≠ 0`.
+    # Pretty-printed `(x)⁻¹ ^ (2 : ℕ)`.
+    (
+        "diff_x_neg_two",
+        "power_rule",
+        lambda pool: alkahest.diff(pool.symbol("x") ** -2, pool.symbol("x")),
+    ),
+    # `∫ x⁻¹ dx = log x`, certified via FTC reuse of `Real.deriv_log`.
+    (
+        "int_x_inv",
+        "log_rule",
+        lambda pool: alkahest.integrate(pool.symbol("x") ** -1, pool.symbol("x")),
+    ),
+    # `∫ x⁻² dx = -x⁻¹`, certified via FTC reuse of `d/dx (-x⁻¹)`. The
+    # antiderivative is a product; `product_rule` closes on the negative-power
+    # combine fragment (`x ≠ 0`, `deriv_inv`), not the unconditional simp set.
+    (
+        "int_x_neg_two",
+        "int_power_rule",
+        lambda pool: alkahest.integrate(pool.symbol("x") ** -2, pool.symbol("x")),
+    ),
+    # `d/dx (-x⁻¹)` — the product_rule step the integral above reuses.
+    (
+        "diff_neg_x_inv",
+        "product_rule",
+        lambda pool: alkahest.diff(-(pool.symbol("x") ** -1), pool.symbol("x")),
+    ),
 ]
 FORBIDDEN_TOKENS = ("sorry", "admit", "axiom")
 
