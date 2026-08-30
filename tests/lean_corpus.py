@@ -424,6 +424,14 @@ STRICT_CASES = [
         "diff_primitive_registry",
         lambda pool: alkahest.diff(alkahest.asin(pool.symbol("x")), pool.symbol("x")),
     ),
+    # `tanh` has no Mathlib v4.9.0 `hasDerivAt_tanh`; constructed from
+    # `hasDerivAt_sinh` / `hasDerivAt_cosh` via `HasDerivAt.div`, with
+    # `cosh_sq_sub_sinh_sq` reconciling `1 - tanh²` and `1/cosh²`.
+    (
+        "diff_tanh",
+        "diff_primitive_registry",
+        lambda pool: alkahest.diff(alkahest.tanh(pool.symbol("x")), pool.symbol("x")),
+    ),
     # ∫ (1+x²)⁻¹ dx = atan x, certified via the FTC derivative relation
     # once d/dx atan(x) intern-equals the integrand.
     (

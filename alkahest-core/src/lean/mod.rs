@@ -384,10 +384,14 @@ fn neg_pow_of_var_certificate(
 ///   `x ≠ -1` and `x ≠ 1`; the stricter open-interval binder implies those
 ///   and matches the domain where `1/√(1-x²)` is the genuine (non-junk)
 ///   derivative.
-///
-/// `tanh` is withheld: Mathlib v4.9.0 has no `hasDerivAt_tanh` and no
-/// `1 - tanh² = 1/cosh²` identity analogous to `Real.inv_one_add_tan_sq`.
-/// Do not sorry.
+/// * `tanh` — Mathlib v4.9.0 has no `hasDerivAt_tanh` and no
+///   `1 - tanh² = 1/cosh²` analogue of `inv_one_add_tan_sq`. Construct the
+///   derivative from `Real.hasDerivAt_sinh` / `Real.hasDerivAt_cosh` via
+///   `HasDerivAt.div`, using `Real.cosh_pos` (so `cosh x ≠ 0` is free on `ℝ`,
+///   not a binder) and `Real.cosh_sq_sub_sinh_sq` to reconcile Alkahest's
+///   `1 - tanh²` form with the quotient-rule `1/cosh²`. Composites stay
+///   withheld; this is pointwise only and does **not** join the
+///   everywhere-differentiable simp set.
 fn registry_diff_certificate(
     before: ExprId,
     wrt: ExprId,
@@ -436,6 +440,21 @@ fn registry_diff_certificate(
                  ring"
                 .to_string();
             Some((Some(binder), tactic))
+        }
+        "tanh" => {
+            let var = wrt_name(wrt, pool);
+            // No extra binder: `Real.cosh_pos` proves `cosh x ≠ 0` on all of ℝ.
+            let tactic = format!(
+                "by\n    \
+                 have hne : Real.cosh {var} ≠ 0 := (Real.cosh_pos {var}).ne'\n    \
+                 simp only [Real.tanh_eq_sinh_div_cosh]\n    \
+                 have hderiv := ((Real.hasDerivAt_sinh {var}).div \
+                 (Real.hasDerivAt_cosh {var}) hne).deriv\n    \
+                 rw [hderiv]\n    \
+                 field_simp [hne]\n    \
+                 simp [pow_two, sub_eq_add_neg, Real.cosh_sq_sub_sinh_sq]"
+            );
+            Some((None, tactic))
         }
         _ => None,
     }
@@ -939,7 +958,7 @@ fn diff_rule_to_tactic(rule_name: &str) -> Option<&'static str> {
 /// dispatch that covers the pointwise cases (gated on
 /// [`is_unary_of_var`]/[`is_pow_of_var`] so composites correctly fall
 /// through to withholding), the `diff_sqrt` positivity certificate, the
-/// `diff_primitive_registry` dispatch (`tan`/`sinh`/`cosh`/`atan`/`asin`),
+/// `diff_primitive_registry` dispatch (`tan`/`sinh`/`cosh`/`atan`/`asin`/`tanh`),
 /// negative integer powers of the variable ([`neg_pow_of_var_certificate`]),
 /// the `f(x)^n` / quotient chain shapes ([`power_chain_certificate`],
 /// [`quotient_chain_certificate`]), and the two combine-step fragments
@@ -5701,6 +5720,38 @@ mod tests {
     }
 
     #[test]
+    fn diff_tanh_certifies_via_sinh_cosh_quotient() {
+        // Mathlib v4.9.0 has no `hasDerivAt_tanh`; construct d/dx tanh from
+        // `hasDerivAt_sinh` / `hasDerivAt_cosh` and reconcile `1 - tanh²`
+        // with `1/cosh²` via `cosh_sq_sub_sinh_sq`. `cosh ≠ 0` is free
+        // (`Real.cosh_pos`), so there is no extra binder.
+        use crate::diff::diff;
+
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let tanh_x = pool.func("tanh", vec![x]);
+        let derived = diff(tanh_x, x, &pool).expect("diff");
+        let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
+        assert!(!lean.is_empty(), "d/dx tanh(x) should be Lean-certifiable");
+        assert!(
+            !lean.contains("sorry"),
+            "tanh certificate must not use sorry: {lean}"
+        );
+        assert!(
+            !lean.contains("(hne : Real.cosh"),
+            "cosh ≠ 0 is free on ℝ; must not be an example binder: {lean}"
+        );
+        assert!(
+            lean.contains("Real.hasDerivAt_sinh")
+                && lean.contains("Real.hasDerivAt_cosh")
+                && lean.contains("Real.tanh_eq_sinh_div_cosh")
+                && lean.contains("Real.cosh_sq_sub_sinh_sq")
+                && lean.contains("Real.cosh_pos"),
+            "expected sinh/cosh quotient construction + identity: {lean}"
+        );
+    }
+
+    #[test]
     fn withhold_chain_rule_diff_tan_composite() {
         // d/dx tan(x²) routes through diff_primitive_registry on a composite
         // argument; must withhold (no chain-rule encoding for the registry
@@ -5719,6 +5770,7 @@ mod tests {
         );
     }
 
+    #[test]
     #[test]
     fn diff_sinh_certifies_unconditionally() {
         use crate::diff::diff;
@@ -5874,18 +5926,20 @@ mod tests {
     }
 
     #[test]
-    fn withhold_diff_tanh() {
-        // Mathlib v4.9.0 has no hasDerivAt_tanh / 1-tanh² identity.
+    fn withhold_chain_rule_diff_tanh_composite() {
+        // d/dx tanh(x²) routes through diff_primitive_registry on a composite
+        // argument; must withhold (pointwise tanh only).
         use crate::diff::diff;
 
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
-        let tanh_x = pool.func("tanh", vec![x]);
-        let derived = diff(tanh_x, x, &pool).expect("diff");
+        let x2 = pool.pow(x, pool.integer(2_i32));
+        let tanh_x2 = pool.func("tanh", vec![x2]);
+        let derived = diff(tanh_x2, x, &pool).expect("diff");
         let lean = emit_lean_expr_wrt(&derived, &pool, Some(x));
         assert!(
             lean.is_empty(),
-            "d/dx tanh(x) is withheld (no 4.9 identity lemma): {lean}"
+            "chain-rule d/dx tanh(x²) is not encoded; must withhold: {lean}"
         );
     }
 

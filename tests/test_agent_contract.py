@@ -83,10 +83,10 @@ def test_lean_theorem_bit_reflects_actual_certificate_availability():
     `alkahest-core/src/primitive/mod.rs`. `log` (`Real.deriv_log`, holds
     unconditionally), `sqrt`/`tan` (explicit `x ≠ 0` / `cos x ≠ 0`
     hypothesis binders), `sinh`/`cosh` (unconditional, like `sin`/`exp`),
-    `atan` (unconditional), and `asin` (`|x| < 1` binder) are now
-    certifiable at the pointwise `f(x)` shape. `tanh` is withheld (no
-    Mathlib 4.9 `hasDerivAt_tanh` / `1-tanh²` identity), as are `atan2`
-    and `gamma`.
+    `atan` (unconditional), `asin` (`|x| < 1` binder), and `tanh`
+    (constructed from `hasDerivAt_sinh`/`hasDerivAt_cosh`; no extra binder
+    because `cosh x ≠ 0` is free on ℝ) are now certifiable at the pointwise
+    `f(x)` shape. `atan2` and `gamma` still have no encoding.
 
     The value `capabilities()` reports now comes from the generated certificate
     ledger rather than the native bit, so it cannot be hand-edited into an
@@ -110,6 +110,7 @@ def test_lean_theorem_bit_reflects_actual_certificate_availability():
         "cosh",
         "atan",
         "asin",
+        "tanh",
     }
 
     primitives = alkahest.capabilities()["primitives"]

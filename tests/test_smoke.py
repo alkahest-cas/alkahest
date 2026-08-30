@@ -487,6 +487,27 @@ def test_lean_integrate_x_neg_two_via_ftc():
     assert to_lean(r) == cert
 
 
+def test_lean_diff_tanh_certificate():
+    """Pointwise d/dx tanh(x) certifies via sinh/cosh; tanh(x²) stays withheld."""
+    from alkahest import tanh
+
+    p = pool()
+    x = p.symbol("x")
+    r = diff(tanh(x), x)
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "hasDerivAt_sinh" in cert
+    assert "hasDerivAt_cosh" in cert
+    assert "tanh_eq_sinh_div_cosh" in cert
+    assert "cosh_sq_sub_sinh_sq" in cert
+    assert "(hne : Real.cosh" not in cert
+    assert r.verification["status"] == "certificate_available"
+
+    assert diff(tanh(x**2), x).certificate is None
+
+
 def test_lean_diff_sin_certificate_has_no_sorry():
     """B3: simple d/dx sin(x) emits Real.deriv_sin, not sorry."""
     p = pool()
@@ -813,8 +834,8 @@ def test_lean_tendsto_withholds_finite_sinc():
 
 def test_lean_diff_sinh_cosh_atan_asin_certificates():
     """Pointwise hyperbolic / inverse-trig diffs emit, with asin carrying
-    the |x| < 1 binder. Composites and tanh stay withheld."""
-    from alkahest import asin, atan, cosh, sinh, tanh
+    the |x| < 1 binder. Composites stay withheld."""
+    from alkahest import asin, atan, cosh, sinh
 
     p = pool()
     x = p.symbol("x")
@@ -849,7 +870,6 @@ def test_lean_diff_sinh_cosh_atan_asin_certificates():
     assert "hasDerivAt_arcsin" in asin_r.certificate
 
     assert diff(asin(x**2), x).certificate is None
-    assert diff(tanh(x), x).certificate is None
 
 
 def test_lean_integrate_inv_one_plus_x_squared():
