@@ -20,6 +20,11 @@
   *named* the theorem, never that the printed goal was the theorem's
   statement; it now checks both.
 
+  `Tier 1a` was red on `main` for the same stretch and from the same commit,
+  for an unrelated reason: `ruff format --check` failed on three of the test
+  files added with the Tendsto work. Reformatted; the changes are whitespace
+  only.
+
 - **`limit()` now returns `DerivedResult`**, matching `diff` / `integrate`, so
   `.certificate` can carry a Lean `Filter.Tendsto` proof. Recognised `x → +∞`
   patterns (`exp(-x) → 0`, `xⁿ exp(-x) → 0`, `exp(x) → +∞`, a crude exp-ratio)

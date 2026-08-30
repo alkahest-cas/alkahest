@@ -56,9 +56,7 @@ def assert_limit_equals(
 
 
 def assert_limit_is_pos_infinity(result: ak.Expr | ak.DerivedResult) -> None:
-    assert str(_limit_value(result)) == "∞", (
-        f"expected positive-infinity marker, got {result!r}"
-    )
+    assert str(_limit_value(result)) == "∞", f"expected positive-infinity marker, got {result!r}"
 
 
 def assert_limit_is_neg_infinity(result: ak.Expr | ak.DerivedResult) -> None:

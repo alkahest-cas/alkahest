@@ -24,6 +24,7 @@ import alkahest
 
 FORBIDDEN_TOKENS = ("sorry", "admit", "axiom")
 
+
 def _exp_neg_at_top(pool):
     x = pool.symbol("x")
     return alkahest.limit(alkahest.exp(-x), x, pool.pos_infinity())
