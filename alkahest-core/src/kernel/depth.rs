@@ -42,6 +42,12 @@
 //! walker that still depends on this ceiling, and is what the number is
 //! calibrated against.
 //!
+//! Since the simplification traversals stopped needing it, the simplification
+//! entry points no longer apply this ceiling unconditionally — they call
+//! [`check_simplify_depth`](crate::simplify::check_simplify_depth), which
+//! applies it only to the inputs that still reach a recursion.  See *What this
+//! does not cover*.
+//!
 //! That calibration assumes the **shipped release build on an 8 MiB stack**,
 //! which is what a Python caller gets on the main thread.  A debug build has
 //! frames several times larger — one level of the simplifier was measured at
@@ -57,13 +63,18 @@
 //! matters: the guard sits on hot paths such as `__str__`, and anything that
 //! had to walk the tree to find its depth would cost more than it saves.
 //!
-//! The callers are the PyO3 bindings, and only those.  `alkahest-py` calls
-//! [`check_expr_depth`] — through its `guard_depth` / `guard_expr_depth`
-//! wrappers — or [`check_expr_depths`] at upwards of sixty entry points: every
-//! renderer, `diff`, `symbolic_grad`, `subs`, the evaluators and the JIT
-//! entry, the polynomial converters, the integrator, the SMT-LIB and Lean
-//! emitters, the plotters.  `tests/test_expression_depth_limit.py` pins that
-//! list.  Nothing inside this crate calls either function.
+//! Every call site is an entry point rather than a traversal: no walker checks
+//! its own input.  `alkahest-py` calls [`check_expr_depth`] — through its
+//! `guard_depth` / `guard_expr_depth` wrappers — or [`check_expr_depths`] at
+//! upwards of fifty of them: every renderer, `diff`, `symbolic_grad`, `subs`,
+//! the evaluators and the JIT entry, the polynomial converters, the
+//! integrator, the SMT-LIB and Lean emitters, the plotters.  The
+//! simplification entry points instead call `guard_simplify_depth`, which
+//! wraps this crate's own
+//! [`check_simplify_depth`](crate::simplify::check_simplify_depth) — the only
+//! caller of [`check_expr_depth`] inside `alkahest-cas`, and itself reached
+//! only from `alkahest-py`.  Both lists are pinned side by side in
+//! `tests/test_expression_depth_limit.py`.
 //!
 //! # What this does not cover
 //!
@@ -76,6 +87,14 @@
 //! * **New bindings.** A `#[pyfunction]` added without a `guard_depth` call
 //!   inherits nothing; the guard is a convention held up by that test file, not
 //!   by a type.
+//! * **Rendering a derivation log.** A [`DerivationLog`](crate::DerivationLog)
+//!   holds `ExprId`s, and `alkahest-py` renders them into the `derivation` and
+//!   `steps` a `DerivedResult` carries using the same recursive printer
+//!   `str()` uses — which overflows around 24 500 levels.  A simplification
+//!   that is itself stack-safe at any depth can therefore still hand back a
+//!   log too deep to print, so `alkahest-py`'s `make_derived_result` checks
+//!   each step against this ceiling and records an over-deep expression's
+//!   depth in place of its text.
 //! * **The bottom-up simplification traversals**, which have something
 //!   stronger.  `simplify::engine`'s `simplify_node` and
 //!   `simplify_node_indexed`, and — under the `parallel` feature —
@@ -85,11 +104,22 @@
 //!   one is spent.  For those the depth bound is removed rather than lowered:
 //!   they are limited by how many threads the OS will hand out, not by any one
 //!   stack, and they truncate nothing.  The trampoline itself is not
-//!   feature-gated and is not confined to the parallel simplifier; the other
-//!   simplification strategies (`redex`, the e-graph passes) do not use it.
-//!   The ceiling here still applies to all of them at the PyO3 boundary, where
-//!   for the trampolined ones it is now a courtesy to the caller rather than
-//!   what keeps the process alive.
+//!   feature-gated and is not confined to the parallel simplifier;
+//!   `simplify::redex` reaches the same place differently, by scheduling the
+//!   DAG level by level and never recursing, while the e-graph passes do
+//!   neither.
+//!
+//!   Because that is real capability, the simplification entry points no
+//!   longer spend it: they call
+//!   [`check_simplify_depth`](crate::simplify::check_simplify_depth), which
+//!   applies this ceiling only to an input that would reach the one recursion
+//!   still on that path — the assumption-gated colored e-graph pass every
+//!   default simplification ends with when the expression contains a
+//!   `Domain::Positive` or `Domain::NonZero` symbol.  A 100 000-level `sin`
+//!   chain now simplifies (measured: 0.10 s, 162 MiB) where it used to be
+//!   refused at 2 049.  The e-graph entry points (`simplify_egraph`,
+//!   `simplify_log_exp`, `AssumptionContext.simplify`) are separate engines
+//!   that do recurse, and keep [`check_expr_depth`].
 //!
 //! The trampoline is also where this crate's one stack *measurement* lives, and
 //! it is deliberately not what bounds that recursion.  The probe takes the
@@ -135,7 +165,7 @@ use crate::errors::AlkahestError;
 use crate::kernel::{ExprId, ExprPool};
 use std::fmt;
 
-/// Deepest expression the PyO3 entry points will accept.
+/// Deepest expression a PyO3 entry point that recurses will accept.
 ///
 /// Compared against the cached node depth ([`ExprPool::depth`]); see the module
 /// documentation for the measurements behind the number and for the callers
@@ -145,10 +175,21 @@ use std::fmt;
 /// times larger than release ones), and for future walkers that use more stack
 /// per level than today's.
 ///
-/// It is deliberately *one* number rather than a per-operation table: a caller
+/// It is deliberately *one* number rather than a per-walker table: a caller
 /// that gets `str(expr)` to work should not then be surprised by a segfault
-/// from `symbolic_grad(expr)`.  It is not, however, automatic — a walker added
-/// later is covered only once its entry point calls [`check_expr_depth`].
+/// from `symbolic_grad(expr)`.  What it is not is one number for every
+/// *operation*.  An operation that does not recurse does not need a recursion
+/// limit, and charging it one is pure lost capability, so the simplification
+/// entry points ask
+/// [`check_simplify_depth`](crate::simplify::check_simplify_depth) instead —
+/// which applies this same constant, but only to the inputs that would reach
+/// the one recursive pass left on that path.  So the contract is per
+/// operation, while the number is still one number: an expression either
+/// reaches a recursion, and 2 048 is the ceiling, or it does not, and there is
+/// none.
+///
+/// It is not automatic either way — a walker added later is covered only once
+/// its entry point calls [`check_expr_depth`].
 ///
 /// Compile-time only.  Nothing reads it from the environment or lets a caller
 /// raise it, so a caller that needs deeper trees has to reshape them.
@@ -196,9 +237,11 @@ impl AlkahestError for DepthLimitError {
 /// the stack.
 ///
 /// Call this at the entry point of anything that walks an expression
-/// recursively: nothing calls it for you, and today every caller is in
-/// `alkahest-py`.  See the [module documentation](self) for why, and for what
-/// the check does not reach.
+/// recursively: nothing calls it for you.  Every caller is in `alkahest-py`
+/// except [`check_simplify_depth`](crate::simplify::check_simplify_depth),
+/// which wraps it for the entry points that recurse only on some inputs.  See
+/// the [module documentation](self) for why, and for what the check does not
+/// reach.
 ///
 /// ```
 /// use alkahest_cas::kernel::depth::{check_expr_depth, MAX_EXPR_DEPTH};

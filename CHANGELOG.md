@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+- **`ak.simplify` refused expressions it could handle, and crashed on one it
+  could not.** The `E-DEPTH-001` ceiling (`MAX_EXPR_DEPTH`, 2 048) is
+  calibrated against the shallowest walker that recurses without a net —
+  `symbolic_grad`, which segfaults at 4 687 — and was then applied uniformly at
+  the PyO3 boundary. That has been costing capability since the simplification
+  traversals stopped needing it: `simplify::engine` and `simplify::parallel`
+  run under the segmented-stack trampoline, and `simplify::redex` schedules the
+  DAG level by level and never recurses at all. Twelve entry points —
+  `simplify`, `simplify_par`, `simplify_redex`, `simplify_auto`,
+  `simplify_expanded`, `simplify_trig`, `simplify_trig_normal_form`,
+  `simplify_with`, `simplify_strategy`, `collect_like_terms`, `simplify_pauli`,
+  `simplify_clifford_orthogonal` — now accept input of any depth. Measured on
+  the release build with the usual 8 MiB main-thread stack, a 100 000-level
+  `sin` chain: `simplify` 0.09 s and 163 MiB, `simplify_par` 0.10 s,
+  `simplify_redex` 0.09 s, `simplify_auto` 0.07 s. Previously all four raised
+  at 2 049.
+
+  The ceiling was not pure ceremony there, though, and this is not a removed
+  check. Two plain recursions are still reachable from those entry points, both
+  confirmed to kill the process rather than raise:
+
+  - Every default simplification pass ends in the assumption-gated **colored
+    e-graph**, which runs whenever the expression carries a `Domain.Positive`
+    or `Domain.NonZero` symbol. `ColoredEgraph::from_expr` and `rebuild`
+    descend one native frame per level: `SIGSEGV` between 60 000 and 100 000
+    levels. It is also quadratic in node count (5 000 levels: 4.8 s; 20 000
+    levels: 100 s), so putting it on the trampoline would have traded a crash
+    for a hang.
+  - `alkahest-py` renders a returned derivation log with the same recursive
+    printer `str()` uses. A deep chain wrapped in a single redex — trampolined
+    traversal, one very deep step in the log — segfaulted at 30 000.
+
+  So the guard is now per *route* rather than per operation. A new
+  `alkahest_cas::simplify::check_simplify_depth` applies `MAX_EXPR_DEPTH` only
+  to inputs that would reach the colored pass, deciding by running the
+  simplifier's own `collect_static_domain_facts` so that the guard and the
+  thing it guards cannot drift apart. It is `O(1)` at or under the ceiling, so
+  the hot path costs exactly what it did before; only an expression already
+  past 2 048 levels pays the one extra iterative walk. `make_derived_result`
+  records an over-deep step's *depth* in place of its text, which is visible in
+  the `derivation` string rather than silent, and cannot affect any result
+  shallow enough to print. `E-DEPTH-001` keeps its meaning wherever it still
+  fires: same code, same `limit`, same reason.
+
+  Two entry points that could already reach the colored recursion had **no
+  depth guard at all** and would segfault on a deep input: `simplify_with`, and
+  `AssumptionContext.simplify` (which is what `ak.simplify(expr,
+  assumptions=…)` and `with ak.context(assumptions=…)` route through). Both are
+  guarded now — the latter unconditionally, because explicit facts send every
+  input through the e-graph whatever its symbols' domains are.
+
+  **Behaviour to plan for.** `ak.simplify(deep)` no longer raises
+  `DepthLimitError` for a deep expression over ordinary symbols, and
+  `simplify_many` no longer reports one on the item; code branching on that
+  refusal will now take the success path. Conversely, `ak.simplify(deep,
+  assumptions=ctx)` now raises where it previously took the process out.
+
 - **`simplify` could not cancel `¾·sin x − ¾·sin x`, and that cost the
   verification gate its strongest verdict.** `collect_add_terms` split each
   summand into a coefficient and a base using an *integer*-only extractor, so
