@@ -7,8 +7,8 @@
       "tests/lean_tendsto_corpus.py",
       "tests/textbook_gate/"
     ],
-    "observations": 288,
-    "shape_classes": 187
+    "observations": 294,
+    "shape_classes": 191
   },
   "rows": [
     {
@@ -945,15 +945,13 @@
         "pow": "none",
         "pow_base": "none"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 2,
+        "withheld": 0,
         "no_derivation": 0
       },
-      "blocking_rules": [
-        "product_rule"
-      ],
+      "blocking_rules": [],
       "examples": [
         "(exp(x) * log(x))"
       ]
@@ -1020,6 +1018,7 @@
         "no_derivation": 0
       },
       "blocking_rules": [
+        "collect_mul_factors",
         "diff_exp",
         "power_rule",
         "product_rule"
@@ -1094,6 +1093,7 @@
         "no_derivation": 0
       },
       "blocking_rules": [
+        "collect_mul_factors",
         "product_rule"
       ],
       "examples": [
@@ -1151,6 +1151,28 @@
     },
     {
       "operation": "diff",
+      "shape": "diff/form=product/funcs=log/fn_arg=var/mul=general/pow=none/pow_base=none",
+      "features": {
+        "form": "product",
+        "funcs": "log",
+        "fn_arg": "var",
+        "mul": "general",
+        "pow": "none",
+        "pow_base": "none"
+      },
+      "verdict": "certified",
+      "observations": {
+        "certified": 1,
+        "withheld": 0,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "(log(x) * x)"
+      ]
+    },
+    {
+      "operation": "diff",
       "shape": "diff/form=product/funcs=sin/fn_arg=var/mul=general/pow=neg_one/pow_base=var",
       "features": {
         "form": "product",
@@ -1171,6 +1193,28 @@
       ],
       "examples": [
         "(sin(x) * x^-1)"
+      ]
+    },
+    {
+      "operation": "diff",
+      "shape": "diff/form=product/funcs=sqrt/fn_arg=var/mul=general/pow=none/pow_base=none",
+      "features": {
+        "form": "product",
+        "funcs": "sqrt",
+        "fn_arg": "var",
+        "mul": "general",
+        "pow": "none",
+        "pow_base": "none"
+      },
+      "verdict": "certified",
+      "observations": {
+        "certified": 1,
+        "withheld": 0,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "(sqrt(x) * x)"
       ]
     },
     {
@@ -1537,6 +1581,7 @@
         "no_derivation": 0
       },
       "blocking_rules": [
+        "collect_mul_factors",
         "power_rule",
         "product_rule",
         "sum_rule"
@@ -1563,8 +1608,7 @@
         "no_derivation": 0
       },
       "blocking_rules": [
-        "product_rule",
-        "sum_rule"
+        "collect_mul_factors"
       ],
       "examples": [
         "((-1/4 * x^2) + (1/2 * log(x) * x^2))"
@@ -1581,18 +1625,37 @@
         "pow": "none",
         "pow_base": "none"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 1,
+        "withheld": 0,
         "no_derivation": 0
       },
-      "blocking_rules": [
-        "product_rule",
-        "sum_rule"
-      ],
+      "blocking_rules": [],
       "examples": [
         "((-1 * x) + (log(x) * x))"
+      ]
+    },
+    {
+      "operation": "diff",
+      "shape": "diff/form=sum/funcs=log/fn_arg=var/mul=none/pow=none/pow_base=none",
+      "features": {
+        "form": "sum",
+        "funcs": "log",
+        "fn_arg": "var",
+        "mul": "none",
+        "pow": "none",
+        "pow_base": "none"
+      },
+      "verdict": "certified",
+      "observations": {
+        "certified": 1,
+        "withheld": 0,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "(log(x) + x)"
       ]
     },
     {
@@ -1613,7 +1676,9 @@
         "no_derivation": 0
       },
       "blocking_rules": [
+        "collect_mul_factors",
         "diff_sqrt",
+        "mul_zero",
         "product_rule",
         "sum_rule"
       ],
@@ -1771,10 +1836,33 @@
         "pow_base": "none",
         "definite": "no"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 2,
+        "withheld": 0,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "log(x)"
+      ]
+    },
+    {
+      "operation": "integrate",
+      "shape": "integrate/form=apply/funcs=log/fn_arg=var/mul=none/pow=none/pow_base=none/definite=yes",
+      "features": {
+        "form": "apply",
+        "funcs": "log",
+        "fn_arg": "var",
+        "mul": "none",
+        "pow": "none",
+        "pow_base": "none",
+        "definite": "yes"
+      },
+      "verdict": "certified",
+      "observations": {
+        "certified": 1,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
@@ -2725,10 +2813,10 @@
         "pow_base": "var",
         "definite": "no"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 1,
+        "withheld": 0,
         "no_derivation": 0
       },
       "blocking_rules": [],
