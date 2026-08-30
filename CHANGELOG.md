@@ -31,6 +31,12 @@
   emit Mathlib Tendsto source; unrecognised shapes — including finite and
   one-sided limits — withhold rather than emitting `sorry`. Use `.value` for
   the limit expression. Nested calls still work via `_coerce_expr`.
+- **SOS positivity certificates are now in the Lean CI corpus.**
+  `PositivityCertificate.to_lean()` already emitted sorry-free Lean (`ring` +
+  `positivity` / `nlinarith`); those sketches are now generated from real
+  `sos_decompose` / `prove_nonneg` results and typechecked against the pinned
+  Lean 4.9 / Mathlib v4.9.0 toolchain, with the same withhold-rather-than-sorry
+  discipline as the derivation corpus.
 
 - **A budget could be outrun by a single allocation, and was.**
   `alkahest.integrate` on `1/(x·log x·(1 + log²(log x)))` — the derivative of

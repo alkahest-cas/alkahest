@@ -413,8 +413,9 @@ impl PositivityCertificate {
             .map(|nm| format!("{nm} ^ 2"))
             .collect::<Vec<_>>()
             .join(" + ");
+        let sigma_base = format!("({sum_sq})");
         let sigma_factored = if power == 1 {
-            format!("({sum_sq})")
+            sigma_base.clone()
         } else {
             format!("({sum_sq}) ^ {power}")
         };
@@ -422,19 +423,28 @@ impl PositivityCertificate {
 
         let mut out = String::new();
         out.push_str(&format!(
-            "theorem alkahest_multiplier_factor {binders}:\n\
-             \x20   {sigma_factored} * ({target}) = {rhs} := by\n  ring\n\n"
+            "theorem alkahest_multiplier_factor {binders}:\n    {sigma_factored} * ({target}) = {rhs} := by\n  ring\n\n"
         ));
+        // `positivity` closes `0 ≤ rhs` because `rhs` is a sum of squares with
+        // positive rational weights; `nlinarith` cannot see that on its own.
+        out.push_str(&format!(
+            "theorem alkahest_rhs_nonneg {binders}:\n    (0 : ℝ) ≤ {rhs} := by\n  positivity\n\n"
+        ));
+        out.push_str(&format!(
+            "theorem alkahest_nonneg {binders}:\n    (0 : ℝ) ≤ {target} := by\n"
+        ));
+        out.push_str(&format!(
+            "  have hid := alkahest_multiplier_factor {args}\n"
+        ));
+        out.push_str(&format!("  have hrhs := alkahest_rhs_nonneg {args}\n"));
 
-        let body = if n == 1 {
+        if n == 1 {
             let x = &names[0];
-            format!(
-                "by_cases hz : {x} = 0\n\
-                 \x20 · subst hz\n\
-                 \x20   norm_num\n\
-                 \x20 · have hs : (0 : ℝ) < {sigma_factored} := by positivity\n\
-                 \x20   nlinarith [alkahest_multiplier_factor {args}, hs]\n"
-            )
+            out.push_str(&format!("  by_cases hz : {x} = 0\n"));
+            out.push_str("  · subst hz\n    norm_num\n");
+            out.push_str(&format!(
+                "  · have hs0 : (0 : ℝ) < {sigma_base} := by\n      nlinarith [sq_pos_of_ne_zero hz]\n"
+            ));
         } else {
             let conj: String = names
                 .iter()
@@ -446,24 +456,26 @@ impl PositivityCertificate {
                 .collect::<Vec<_>>()
                 .join(", ");
             let substs: String = (1..=n)
-                .map(|i| format!("subst h{i}"))
+                .map(|i| format!("    subst h{i}"))
                 .collect::<Vec<_>>()
-                .join("\n    ");
-            format!(
-                "by_cases hz : {conj}\n\
-                 \x20 · obtain ⟨{obtain}⟩ := hz\n\
-                 \x20   {substs}\n\
-                 \x20   norm_num\n\
-                 \x20 · have hs : (0 : ℝ) < {sigma_factored} := by\n\
-                 \x20     {}\n\
-                 \x20   nlinarith [alkahest_multiplier_factor {args}, hs]\n",
-                lean_case_split(n, "hz")
-            )
-        };
+                .join("\n");
+            out.push_str(&format!("  by_cases hz : {conj}\n"));
+            out.push_str(&format!(
+                "  · obtain ⟨{obtain}⟩ := hz\n{substs}\n    norm_num\n"
+            ));
+            out.push_str(&format!(
+                "  · have hs0 : (0 : ℝ) < {sigma_base} := by\n{}",
+                lean_sigma_pos_proof(names, 0, "hz", 6)
+            ));
+        }
 
-        out.push_str(&format!(
-            "theorem alkahest_nonneg {binders}:\n    (0 : ℝ) ≤ {target} := by\n  {body}"
-        ));
+        if power == 1 {
+            out.push_str("    nlinarith [hid, hrhs, hs0]\n");
+        } else {
+            out.push_str(&format!(
+                "    have hs : (0 : ℝ) < {sigma_factored} := pow_pos hs0 {power}\n    nlinarith [hid, hrhs, hs]\n"
+            ));
+        }
         out
     }
 
@@ -515,20 +527,50 @@ impl PositivityCertificate {
     }
 }
 
-/// Nested `rcases … with … | …` on `¬(x_1 = 0 ∧ … ∧ x_remaining = 0)`,
-/// closing every branch with `positivity` once a single `x_i ≠ 0` is in
-/// context — the strict-positivity goal each branch discharges is always a
-/// sum of squares containing that term.
-fn lean_case_split(remaining: usize, hz: &str) -> String {
-    if remaining <= 1 {
-        "positivity".to_string()
+/// Nested `rcases … with … | …` on `¬(x_1 = 0 ∧ … ∧ x_n = 0)`, closing
+/// every branch with `nlinarith [sq_pos_of_ne_zero h, sq_nonneg …]`.
+/// `positivity` does not close `0 < x² + y²` from a single `x ≠ 0`.
+fn lean_sigma_pos_proof(names: &[String], start: usize, hz: &str, indent: usize) -> String {
+    let pad = " ".repeat(indent);
+    let n = names.len();
+    let others = |nonzero: usize| -> String {
+        names
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != nonzero)
+            .map(|(_, nm)| format!("sq_nonneg {nm}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let nlin = |hyp: &str, nonzero: usize| -> String {
+        let extra = others(nonzero);
+        if extra.is_empty() {
+            format!("nlinarith [sq_pos_of_ne_zero {hyp}]")
+        } else {
+            format!("nlinarith [sq_pos_of_ne_zero {hyp}, {extra}]")
+        }
+    };
+
+    if start + 1 >= n {
+        format!("{}{}\n", pad, nlin(hz, start))
     } else {
-        format!(
-            "rcases not_and_or.mp {hz} with h0 | hz'\n\
-             \x20       · positivity\n\
-             \x20       · {}",
-            lean_case_split(remaining - 1, "hz'")
-        )
+        let first = nlin("h0", start);
+        let rest = start + 1;
+        if rest + 1 >= n {
+            format!(
+                "{pad}rcases not_and_or.mp {hz} with h0 | hz'\n\
+                 {pad}· {first}\n\
+                 {pad}· {}\n",
+                nlin("hz'", rest)
+            )
+        } else {
+            format!(
+                "{pad}rcases not_and_or.mp {hz} with h0 | hz'\n\
+                 {pad}· {first}\n\
+                 {pad}·\n{}",
+                lean_sigma_pos_proof(names, rest, "hz'", indent + 2)
+            )
+        }
     }
 }
 
