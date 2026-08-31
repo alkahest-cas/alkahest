@@ -2130,10 +2130,10 @@ fn classify_log_endpoints(
 /// out; a missing certificate is preferable to stretching `IntervalIntegrable`
 /// lemmas past their hypotheses.
 fn is_pointwise_log(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
-    pool.with(expr, |d| match d {
-        ExprData::Func { name, args } if name == "log" && args.len() == 1 && args[0] == var => true,
-        _ => false,
-    })
+    pool.with(
+        expr,
+        |d| matches!(d, ExprData::Func { name, args } if name == "log" && args.len() == 1 && args[0] == var),
+    )
 }
 
 /// Lean import header for the definite-`∫ log` arm. Adds Mathlib's
@@ -2264,18 +2264,17 @@ fn bound_is_infinite(bound: ExprId, pool: &ExprPool) -> bool {
 /// Certified integrand shapes (the same base family the indefinite path
 /// certifies, now closed under finite sums and constant multiples): `cos`,
 /// `sin`, `exp` of the integration variable, integer powers `xⁿ` (`n ≥ 1`,
-/// `sin`, `exp` of the integration variable, integer powers `xⁿ` (`n ≥ 1`,
 /// plus the bare variable as `x¹`), `(1+x²)⁻¹` (antiderivative `arctan x`),
 /// any numeric-literal constant multiple of one of those (`3 * cos x`,
 /// `cos x * 3`, `-sin x`, …), and any finite sum of such terms (`x² + sin x`,
 /// `3 * cos x + exp x`, …). Pointwise `log` of the integration variable is a
-/// separate arm ([`emit_definite_log_cert`]): it needs `0 < a` and `0 < b` so
-/// `IntervalIntegrable log` is discharged by `intervalIntegrable_log` +
-/// `Set.not_mem_uIcc_of_lt`, and does **not** join the linear-combination
-/// fragment (a sum with one log addend still withholds). Every other
-/// integrand — `∫_0^1 log` (singular at 0), negative endpoints, and any
-/// improper (`±∞`) endpoint — is **withheld** (returns `""`). Never emits
-/// `sorry` / `admit`, and never asserts an unproven statement.
+/// separate arm: it needs `0 < a` and `0 < b` so `IntervalIntegrable log` is
+/// discharged by `intervalIntegrable_log` + `Set.not_mem_uIcc_of_lt`, and
+/// does **not** join the linear-combination fragment (a sum with one log
+/// addend still withholds). Every other integrand — `∫_0^1 log` (singular
+/// at 0), negative endpoints, and any improper (`±∞`) endpoint — is
+/// **withheld** (returns `""`). Never emits `sorry` / `admit`, and never
+/// asserts an unproven statement.
 pub fn emit_definite_integration_cert(
     integrand: ExprId,
     var: ExprId,
