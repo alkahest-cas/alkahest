@@ -504,16 +504,30 @@ fn quadrature_over_the_special_function_basis_closes() {
     // gate threw them away, because the residual cancels only over *rational*
     // coefficients (`1/(2x) − 1/(2x)`), which `collect_add_terms` could not do
     // until it carried `rug::Rational`.  `solve_src` re-substitutes into the
-    // original equation independently of that gate, and `verify::eval_func`
-    // has no `f64` kernel for `Ei`/`Si`/`Ci` — so its numeric fallback cannot
-    // fire and these pass on an exact symbolic `residual ≡ 0`.
+    // original equation independently of that gate.
+    //
+    // Which half of the gate certifies them is asserted, not assumed.  It is
+    // tempting to reason that `verify::eval_func` has no `f64` kernel for
+    // `Ei`/`Si`/`Ci`, so the numeric fallback cannot fire and these must pass
+    // on an exact symbolic `residual ≡ 0`.  That is wrong, and measurably so:
+    // the special functions cancel *out of the residual* when the candidate is
+    // substituted, leaving an elementary expression the sampler evaluates
+    // perfectly well — `x⁻¹·eˣ·e⁻ˣ − x⁻¹` for the first — which is not the
+    // symbolic zero, because nothing in the default rule set collapses
+    // `eˣ·e⁻ˣ`.  **Both** of these are certified by the numeric fallback, which
+    // is load-bearing rather than unreachable; the same is true of
+    // `y'' − 4y = 1/x` and `y''' − y' = 1/x` in the corpus.
     for (src, basis) in [
         ("ypp - y - 1/x", &["Ei"] as &[&str]),
         // `basis_functions_used` returns the names sorted.
         ("ypp + y - 1/x", &["Ci", "Si"]),
     ] {
-        let (pool, _, sol) = solve_src(2, src);
+        let (pool, input, sol) = solve_src(2, src);
         assert_eq!(sol.constants.len(), 2, "`{src}`: wrong constant count");
+        assert!(
+            !super::verify::certifies_symbolically(&input, sol.y_of_x, &pool),
+            "`{src}`: now certified symbolically — the comment above is stale",
+        );
         assert_eq!(
             basis_functions_used(sol.y_of_x, &pool),
             basis,

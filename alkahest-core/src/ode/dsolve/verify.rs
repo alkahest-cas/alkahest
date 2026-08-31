@@ -84,6 +84,22 @@ pub(crate) fn take_gate_tally() -> (usize, usize) {
     GATE_TALLY.with(|t| t.replace((0, 0)))
 }
 
+/// Would this candidate be certified by the *symbolic* branch alone?
+///
+/// Exposed so tests can pin which half of the gate a case depends on; the two
+/// halves have very different reach and a comment claiming one of them is stale
+/// as soon as `simplify` changes.
+#[cfg(test)]
+pub(crate) fn certifies_symbolically(input: &OdeInput, y_of_x: ExprId, pool: &ExprPool) -> bool {
+    match build_residual(input, y_of_x, pool) {
+        Ok((residual, _)) => {
+            is_symbolic_zero(residual, pool)
+                || is_symbolic_zero(super::simp_plain(residual, pool), pool)
+        }
+        Err(_) => false,
+    }
+}
+
 /// Verify a candidate `y(x)` against `input.equation = 0`.
 ///
 /// Returns `Ok(())` if the residual is symbolically or numerically zero.
@@ -312,6 +328,8 @@ fn classify_nonfinite(
     //    values — a real verdict where the old code had none.
     let mut eq_env: HashMap<ExprId, f64> = HashMap::with_capacity(vals.len() + 1);
     eq_env.insert(input.x, xv);
+    // `build_residual` always pushes `y(x)` first and the loop above either
+    // filled `vals` completely or returned, so index 0 exists.
     eq_env.insert(input.y, vals[0]);
     for (k, &dsym) in input.derivs.iter().enumerate() {
         eq_env.insert(dsym, vals[k + 1]);
