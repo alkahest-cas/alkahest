@@ -105,9 +105,12 @@
 //! * **The numeric evaluator is registry-backed, not universal.**  Function
 //!   nodes are dispatched through [`crate::primitive::PrimitiveRegistry`], so
 //!   the gate sees exactly the function set the registry advertises — but
-//!   `RootSum`, `Piecewise` with an indeterminate predicate, and unregistered
-//!   heads are not evaluable and their sample points are skipped.  If that
-//!   leaves too few points the gate declines.
+//!   `Piecewise` with an indeterminate predicate and unregistered heads are
+//!   not evaluable and their sample points are skipped.  If that leaves too
+//!   few points the gate declines.  A `RootSum` *is* evaluable as of the
+//!   `crate::eval` `root_sum` module — numerically, by root-finding — which is
+//!   what makes a Rothstein–Trager answer with an algebraic residue something
+//!   this gate can have an opinion about at all.
 //!
 //! # Relationship to `verify_antiderivative_status`
 //!
@@ -794,8 +797,13 @@ fn registry() -> &'static PrimitiveRegistry {
 /// [`crate::primitive::PrimitiveRegistry`], so the set of heads this accepts
 /// is exactly the set the registry advertises — it is not a private list that
 /// can silently drift away from what `diff` can produce.  Nodes with no
-/// numeric rule (`RootSum`, unregistered heads, unbound symbols) return
-/// `None`, which makes the gate *skip* that sample point rather than pass it.
+/// numeric rule (unregistered heads, unbound symbols) return `None`, which
+/// makes the gate *skip* that sample point rather than pass it.
+///
+/// A `RootSum` **is** evaluated, by finding the roots of its minimal polynomial
+/// numerically and summing the body over them in complex arithmetic — see
+/// [`crate::eval`]'s `root_sum` module for the conditions under which that
+/// declines.  It is an `f64` screen like the rest of this function, not a proof.
 pub fn eval_at(expr: ExprId, var: ExprId, x: f64, pool: &ExprPool) -> Option<f64> {
     if expr == var {
         return Some(x);
@@ -820,6 +828,14 @@ pub fn eval_at(expr: ExprId, var: ExprId, x: f64, pool: &ExprPool) -> Option<f64
                 vals.push(eval_at(a, var, x, pool)?);
             }
             registry().numeric_f64(name, &vals)
+        }
+        ExprData::RootSum {
+            poly,
+            var: rvar,
+            body,
+        } => {
+            let env: std::collections::HashMap<ExprId, f64> = std::iter::once((var, x)).collect();
+            crate::eval::eval_root_sum_f64(poly, rvar, body, &env, pool)
         }
         _ => None,
     }

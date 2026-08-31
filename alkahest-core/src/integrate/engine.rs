@@ -2610,18 +2610,40 @@ fn integrate_inner(
         Err(IntegrationError::NotImplemented(msg)) => {
             // Risch Gap 3: rational-function integration via Rothstein–Trager.
             // Tried as a fallback so simple cases keep their existing rules.
+            //
+            // **Gated, like every other route here.**  Rothstein–Trager is a
+            // decision procedure and its answers are believed correct, but
+            // "the algorithm is correct so its output must be" is the shape of
+            // every false certificate this codebase has had to remove: it reads
+            // a *method's* soundness as a claim about a *result* that was never
+            // checked.  This was the one route in `integrate` whose answer
+            // reached the caller with no check at all.
+            //
+            // The gate can only say something about an answer it can evaluate,
+            // and the answers this route produces for algebraic residues are
+            // `RootSum`s — which is why `crate::eval`'s `root_sum` module had to
+            // land with this gate rather than after it.  Without it, adding the
+            // gate would have deleted the entire degree-≥3 residue capability
+            // instead of checking it.
             if let Some(result) =
                 super::risch::rational_integrate::try_integrate_rational(expr, var, pool)
             {
                 let simplified = simplify(result, pool);
-                let mut rlog = DerivationLog::new();
-                rlog.push(RewriteStep::simple(
-                    "rothstein_trager",
-                    expr,
-                    simplified.value,
-                ));
-                let final_log = rlog.merge(simplified.log);
-                return Ok(DerivedExpr::with_log(simplified.value, final_log));
+                if verify_antiderivative(simplified.value, expr, var, pool) {
+                    let mut rlog = DerivationLog::new();
+                    rlog.push(RewriteStep::simple(
+                        "rothstein_trager",
+                        expr,
+                        simplified.value,
+                    ));
+                    let final_log = rlog.merge(simplified.log);
+                    return Ok(DerivedExpr::with_log(simplified.value, final_log));
+                }
+                // Falling through, not erroring: an unverifiable candidate is a
+                // failure of *this* route, so the remaining fallbacks still get
+                // their turn and the final verdict stays the honest
+                // `NotImplemented` the rule engine already produced.  It is
+                // never upgraded to `NonElementary` — nothing here decides that.
             }
             // `try_integrate_rational` returns a bare `None` both for "not a
             // rational function" and for "the budget tripped part-way" — it is
@@ -4242,6 +4264,130 @@ mod tests {
         assert_eq!(
             verify_antiderivative_status(asinh, integrand, x, &pool),
             Some(AntiderivativeVerification::Numeric)
+        );
+    }
+
+    /// `true` if `expr` contains a `RootSum` anywhere.
+    fn contains_root_sum(expr: ExprId, pool: &ExprPool) -> bool {
+        pool.with(expr, |data| match data {
+            ExprData::RootSum { .. } => true,
+            ExprData::Add(args) | ExprData::Mul(args) | ExprData::Func { args, .. } => {
+                args.iter().any(|&a| contains_root_sum(a, pool))
+            }
+            ExprData::Pow { base, exp } => {
+                contains_root_sum(*base, pool) || contains_root_sum(*exp, pool)
+            }
+            _ => false,
+        })
+    }
+
+    /// `1/x` as a rational function of a denominator with degree-≥3 algebraic
+    /// residues: the Rothstein–Trager answer is a `RootSum`.
+    fn reciprocal_of(pool: &ExprPool, den: ExprId) -> ExprId {
+        pool.pow(den, pool.integer(-1_i32))
+    }
+
+    /// The Rothstein–Trager route is gated like every other route in this
+    /// module, and its `RootSum` answers pass that gate.
+    ///
+    /// This is one assertion doing two jobs, and both matter.
+    ///
+    /// * **The answers still ship.**  `∫dx/(x⁵−x−1)` and `∫x¹²/(x⁹+x+1) dx`
+    ///   have residues that are algebraic numbers of degree 5 and 9, so the
+    ///   answer is a `RootSum` over the residue minimal polynomial.  Gating the
+    ///   route without teaching a verification tier to read a `RootSum` would
+    ///   have deleted that whole capability.
+    /// * **They ship because they were checked.**  Until the gate went in, this
+    ///   route returned its result directly — the only route in `integrate`
+    ///   whose answer reached the caller with no check at all — and no tier
+    ///   could evaluate what it returned.  `Numeric` (not `Exact`) is the
+    ///   honest strength: `simplify` still treats a `RootSum` as an opaque atom,
+    ///   so the symbolic arm cannot close the residual.
+    #[test]
+    fn rothstein_trager_root_sum_answers_are_gate_verified() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+
+        // 1/(x⁵ − x − 1)
+        let quintic = pool.add(vec![
+            pool.pow(x, pool.integer(5_i32)),
+            pool.mul(vec![pool.integer(-1_i32), x]),
+            pool.integer(-1_i32),
+        ]);
+        // x¹²/(x⁹ + x + 1)
+        let nonic = pool.add(vec![
+            pool.pow(x, pool.integer(9_i32)),
+            x,
+            pool.integer(1_i32),
+        ]);
+        let cases = [
+            reciprocal_of(&pool, quintic),
+            pool.mul(vec![
+                pool.pow(x, pool.integer(12_i32)),
+                reciprocal_of(&pool, nonic),
+            ]),
+        ];
+
+        for f in cases {
+            let got = integrate(f, x, &pool)
+                .unwrap_or_else(|e| panic!("{} must still be solved; got {e:?}", pool.display(f)));
+            assert!(
+                contains_root_sum(got.value, &pool),
+                "{} should reach the RootSum arm; got {}",
+                pool.display(f),
+                pool.display(got.value)
+            );
+            assert_eq!(
+                verify_antiderivative_status(got.value, f, x, &pool),
+                Some(AntiderivativeVerification::Numeric),
+                "the answer to {} must be numerically checkable, not taken on trust",
+                pool.display(f)
+            );
+        }
+    }
+
+    /// The class this change does **not** cover, stated as a test rather than
+    /// left to be discovered.
+    ///
+    /// `crate::eval`'s `root_sum` module refuses a minimal polynomial above
+    /// degree 24, so a residue of degree 25 is a candidate the gate has no
+    /// opinion about — and "no opinion" has to read as *reject*, because the
+    /// alternative is the thing this whole change removes.  The candidate below
+    /// is `∫dx/(x²⁵−1)` written as a `RootSum` over a degree-25 minimal
+    /// polynomial: mathematically correct, and refused anyway.
+    ///
+    /// Built directly rather than reached through `integrate`, because a
+    /// degree-25 denominator costs the Lazard–Rioboo–Trager number-field GCD
+    /// minutes before the gate is ever consulted, and the claim under test is
+    /// about the gate.
+    #[test]
+    fn a_root_sum_above_the_evaluable_degree_is_refused_by_the_gate() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let r = pool.symbol("$root$", Domain::Real);
+
+        // ∫dx/(x²⁵−1) = Σ_{a²⁵=1} (a/25)·log(x−a), i.e. with c = a/25:
+        //   RootSum(c²⁵ − 1/25²⁵, c . c·log(x − 25c)).
+        let scale = <rug::Integer as rug::ops::Pow<u32>>::pow(rug::Integer::from(25), 25);
+        let minimal = pool.add(vec![
+            pool.pow(r, pool.integer(25_i32)),
+            pool.rational(rug::Integer::from(-1), scale),
+        ]);
+        let arg = pool.add(vec![x, pool.mul(vec![pool.integer(-25_i32), r])]);
+        let body = pool.mul(vec![r, pool.func("log", vec![arg])]);
+        let candidate = pool.root_sum(minimal, r, body);
+
+        let integrand = pool.pow(
+            pool.add(vec![
+                pool.pow(x, pool.integer(25_i32)),
+                pool.integer(-1_i32),
+            ]),
+            pool.integer(-1_i32),
+        );
+        assert_eq!(
+            verify_antiderivative_status(candidate, integrand, x, &pool),
+            None,
+            "above the degree ceiling the gate must decline, not wave it through"
         );
     }
 
