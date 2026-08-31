@@ -99,9 +99,8 @@ x = p.symbol("x")
 
 # 1. Ask before you commit to a route. Truthy iff a certificate is produced;
 #    carries the reason when it is not.
-answer = ak.certifiable("integrate", ak.log(x), x)
+answer = ak.certifiable("diff", ak.log(ak.sin(x)), x)
 bool(answer)        # False
-answer.reason       # 'class_withheld'
 
 # `mode="ledger"` answers from the table alone, running nothing at all —
 # for scoring many candidate routes. The default `mode="verify"` never says
@@ -113,7 +112,7 @@ answer.reason       # 'class_withheld'
 
 # 3. Refuse to degrade silently.
 with ak.context(require_certificate=True):
-    ak.integrate(ak.log(x), x)   # raises CertificateUnavailableError (E-CERT-001)
+    ak.diff(ak.log(ak.sin(x)), x)   # raises CertificateUnavailableError (E-CERT-001)
 ```
 
 `capabilities()["verification"]["coverage"]` summarises the same ledger, and
@@ -127,8 +126,16 @@ The strict CI corpus currently covers:
 - Basic arithmetic rewrites (`add_zero`, `mul_one`, `mul_zero`, constant
   folding, and `pow_one`)
 - The polynomial differentiation fast path for `d/dx x³`
-- Indefinite integrals of `sin`, `cos`, `exp`, and `xⁿ`, certified via the FTC
-  derivative relation `deriv (fun x => F) x = f`
+- Indefinite integrals of `sin`, `cos`, `exp`, `log`, and `xⁿ`, certified via the FTC
+  derivative relation `deriv (fun x => F) x = f`. `∫ log x` reuses the
+  product/sum certificate for `d/dx (x log x − x)`. Definite `∫_a^b log x`
+  certifies when both endpoints are strictly positive.
+- Products and sums that mix the everywhere-differentiable fragment with
+  pointwise `log(x)` / `sqrt(x)` (`x log x`, `exp x · log x`, `log x + x`,
+  `x sqrt x`), with an explicit `(hx : 0 < x)` binder. Composites
+  (`log(x²)`, `log(sqrt(x²−1)+x)`) stay withheld. `∫ x log x` stays
+  withheld: `d/dx` of its antiderivative has an n-ary inverse cancellation
+  (`x² · x⁻¹ · ½`) that the two-factor `field_simp` encoding does not close.
 - Definite integrals `∫ x in a..b, f x = F b - F a` of the same base family
   (`sin`, `cos`, `exp`, `xⁿ`), **plus finite sums and numeric-literal constant
   multiples of those terms** (`∫ (sin x + cos x)`, `∫ 3·cos x`, `∫ -exp x`,
@@ -137,6 +144,10 @@ The strict CI corpus currently covers:
   `HasDerivAt.add`/`.const_mul`/`.mul_const` and the matching
   `IntervalIntegrable` combinators. A symbolic (non-literal) coefficient, or
   any addend outside the base family, withholds the whole certificate.
+  Pointwise `∫_a^b log x` is a separate arm: it needs `0 < a` and `0 < b`
+  (`intervalIntegrable_log` requires `0 ∉ uIcc a b`) and proves
+  `F b − F a` for `F = x log x − x`. `∫_0^1 log` and negative endpoints stay
+  withheld.
 
 Other exports are generated source, not CI-qualified Lean proofs. In
 particular, non-polynomial differentiation, conditional logarithm/power

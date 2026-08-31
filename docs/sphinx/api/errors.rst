@@ -251,12 +251,12 @@ Exception subclasses
       pool = ak.ExprPool()
       x = pool.symbol("x")
 
-      answer = ak.certifiable("integrate", ak.log(x), x)
-      print(bool(answer), answer.reason)   # False class_withheld
+      answer = ak.certifiable("diff", ak.log(ak.sin(x)), x)
+      print(bool(answer), answer.reason)   # False withheld_uncertifiable_step
 
       with ak.context(require_certificate=True):
           ak.diff(ak.sin(x), x)            # fine — certifies
-          ak.integrate(ak.log(x), x)       # raises E-CERT-001
+          ak.diff(ak.log(ak.sin(x)), x)  # raises E-CERT-001
 
 .. exception:: BudgetExceededError
 

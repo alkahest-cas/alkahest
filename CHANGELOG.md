@@ -150,6 +150,7 @@
   variable-dependent radicals or one with a non-polynomial radicand, which
   keeps the cost off the common decline path: median decline latency over a
   110-case corpus moves 124 ms → 128 ms, worst case 2244 ms → 2203 ms.
+
 - **A Lean certificate cited a theorem it had not stated.** The kernel folds
   `-e` into `Mul[e, -1]`, and the Lean printer rendered that literally, so the
   `Filter.Tendsto` certificate for `exp(-x) → 0` emitted the goal
@@ -304,6 +305,29 @@
   `{wrt, constants, wrt⁻ⁿ}` now bind `(x : ℝ) (hx : x ≠ 0)` and close with
   `deriv_inv` / `differentiableAt_inv` (not the unconditional simp set), so
   `∫ x⁻² dx = -x⁻¹` certifies via FTC reuse of `d/dx (-x⁻¹)`.
+- **`log` and `sqrt` now certify inside `product_rule` / `sum_rule`.** The
+  combine tactic was unconditional-only (`deriv_sin`/`cos`/`exp` with no
+  hyps), so `d/dx (x log x)` was withheld even though pointwise `d/dx log x`
+  already certified. A second fragment threads `(hx : 0 < x)` and closes
+  via `Real.hasDerivAt_log` / `Real.hasDerivAt_sqrt`; `sin·exp` stays on the
+  old path with no extra binder. Composites (`log(x²)`, `log(sqrt(x²−1)+x)`)
+  stay withheld — general `HasDerivAt.comp` is a different encoding. Do not
+  dump `Real.deriv_log` into the unconditional simp set: `deriv_mul` still
+  needs `DifferentiableAt log`, which requires `x ≠ 0`.
+
+  Because `d/dx (x log x − x)` intern-equals `log x`, the existing FTC path
+  now certifies the indefinite integral `∫ log x dx = x log x − x`.
+  Definite `∫_a^b log x` certifies when both endpoints are strictly positive
+  (`0 < a`, `0 < b` — numeric literals via `norm_num`, or explicit binders),
+  via `intervalIntegral.integral_eq_sub_of_hasDerivAt` with
+  `hasDerivAt_mul_log` and `intervalIntegrable_log` /
+  `Set.not_mem_uIcc_of_lt`. `∫_0^1 log` (singular at 0) and negative
+  endpoints stay withheld. `∫ x log x` and
+  `d/dx` of its antiderivative stay withheld: differentiating
+  `½ x² log x − x²/4` produces an n-ary inverse cancellation
+  (`x² · x⁻¹ · ½ = x · ½`) that `ring` cannot close, and the two-factor
+  `field_simp` encoding does not cover a spectator coefficient. A withheld
+  certificate beats a `.lean` file that fails under `warningAsError`.
 
 - **A budget could be outrun by a single allocation, and was.**
   `alkahest.integrate` on `1/(x·log x·(1 + log²(log x)))` — the derivative of

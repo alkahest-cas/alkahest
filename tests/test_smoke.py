@@ -360,13 +360,71 @@ def test_lean_integrate_certifies_via_ftc_derivative():
     assert r.verification["status"] == "exactly_verified"
 
 
-def test_lean_withholds_non_elementary_integrate_certificate():
-    """An antiderivative whose derivative escapes the certifiable diff fragment
-    (here `∫ log x dx = x log x − x`, whose product_rule step cannot close)
-    stays withheld rather than emitting an admission."""
+def test_lean_integrate_log_certifies_via_ftc():
+    """∫ log x dx = x log x − x certifies via the FTC derivative of F."""
     p = pool()
     x = p.symbol("x")
     r = integrate(log(x), x)
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert to_lean(r) == cert
+    assert "deriv (fun" in cert
+    assert "sorry" not in cert
+    assert "admit" not in cert
+    assert "(hx : 0 < x)" in cert
+
+
+def test_lean_definite_log_positive_bounds_certificate():
+    """∫_1^2 log x certifies via the interval FTC under 0 < 1, 0 < 2."""
+    p = pool()
+    x = p.symbol("x")
+    r = integrate(log(x), x, p.integer(1), p.integer(2))
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "admit" not in cert
+    assert "intervalIntegral.integral_eq_sub_of_hasDerivAt" in cert
+    assert "hasDerivAt_mul_log" in cert
+    assert "intervalIntegrable_log" in cert
+    assert to_lean(r) == cert
+
+
+def test_lean_definite_log_withholds_zero_endpoint():
+    """∫_0^1 log x is singular at 0 — withhold rather than claim FTC."""
+    p = pool()
+    x = p.symbol("x")
+    r = integrate(log(x), x, p.integer(0), p.integer(1))
+    assert r.certificate is None
+    assert to_lean(r) == ""
+
+
+def test_lean_withholds_int_x_log_x_and_diff_of_its_F():
+    """∫ x log x and d/dx of its antiderivative stay withheld.
+
+    Differentiating F = ½ x² log x − x²/4 produces an n-ary inverse
+    cancellation (`x² · x⁻¹ · ½`) that `ring` cannot close. Emitting that
+    cleanup made the textbook-gate Lean pool red; withhold beats a
+    non-typechecking certificate.
+    """
+    p = pool()
+    x = p.symbol("x")
+    r = integrate(x * log(x), x)
+    assert r.certificate is None
+    assert to_lean(r) == ""
+    dF = diff(r.value, x)
+    assert dF.certificate is None
+    assert to_lean(dF) == ""
+
+
+def test_lean_withholds_non_elementary_integrate_certificate():
+    """An antiderivative whose derivative escapes the certifiable diff fragment
+    (here `∫ x·exp(x²) dx`, a chain composite) stays withheld rather than
+    emitting an admission."""
+    p = pool()
+    x = p.symbol("x")
+    r = integrate(x * exp(x**2), x)
     assert r.certificate is None
     assert to_lean(r) == ""
 
@@ -488,6 +546,47 @@ def test_lean_sum_and_product_rule_certificates():
     assert prod_r.certificate
     assert "sorry" not in prod_r.certificate
     assert any(s["rule"] == "product_rule" for s in prod_r.steps)
+    assert "(hx : 0 < x)" not in prod_r.certificate
+
+
+def test_lean_log_sqrt_combine_certificates():
+    """log/sqrt inside product/sum certify with a positivity binder."""
+    from alkahest import sqrt
+
+    p = pool()
+    x = p.symbol("x")
+
+    x_log = diff(x * log(x), x)
+    assert x_log.certificate
+    assert "sorry" not in x_log.certificate
+    assert "(hx : 0 < x)" in x_log.certificate
+    assert any(s["rule"] == "product_rule" for s in x_log.steps)
+
+    exp_log = diff(exp(x) * log(x), x)
+    assert exp_log.certificate
+    assert "sorry" not in exp_log.certificate
+    assert "(hx : 0 < x)" in exp_log.certificate
+
+    log_plus_x = diff(log(x) + x, x)
+    assert log_plus_x.certificate
+    assert "sorry" not in log_plus_x.certificate
+    assert any(s["rule"] == "sum_rule" for s in log_plus_x.steps)
+
+    x_sqrt = diff(x * sqrt(x), x)
+    assert x_sqrt.certificate
+    assert "sorry" not in x_sqrt.certificate
+    assert "hasDerivAt_sqrt" in x_sqrt.certificate
+
+
+def test_lean_withholds_log_nested_composite():
+    """log(sqrt(x²−1)+x) is a chain composite and stays withheld."""
+    from alkahest import sqrt
+
+    p = pool()
+    x = p.symbol("x")
+    r = diff(log(sqrt(x**2 - 1) + x), x)
+    assert r.certificate is None
+    assert to_lean(r) == ""
 
 
 def test_lean_log_exp_parens_and_exp_log_certifies_with_positivity_hyp():
