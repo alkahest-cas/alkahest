@@ -5771,7 +5771,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn diff_sinh_certifies_unconditionally() {
         use crate::diff::diff;
 
