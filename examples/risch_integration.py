@@ -146,7 +146,12 @@ def main():
     # Genus 1 (deg P = 3) is no longer a decline: it comes back in terms of
     # the elliptic-integral primitives, e.g.
     #   ∫ sqrt(x³+1) dx → (2/5)·x·sqrt(x³+1) + (3/5)·3^(-1/4)·EllipticF(…)
-    # The guard now fires for genus ≥ 2, where no such reduction exists.
+    # The guard below fires here because deg P = 5 is genus 2, where no such
+    # reduction exists.  It is not a *genus* guard, though: the route it lands
+    # in is guarded by deg P >= 3, so a genus-1 curve whose elliptic reduction
+    # declines upstream reaches it too (Charlwood #38/#39 on y^2 = x^4+1).  Its
+    # messages report the genus they computed, so a decline can be read for
+    # which it is.
     pool = ExprPool(); x = pool.symbol("x")
     p_ell = x ** 5 + x + pool.integer(1)
     s_ell = sqrt(p_ell)

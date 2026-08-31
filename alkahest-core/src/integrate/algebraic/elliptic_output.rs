@@ -34,29 +34,34 @@
 //! differentiates the elliptic functions through the primitive registry —
 //! `∂φ F = 1/√(1 − m·sin²φ)`, `∂φ E = √(1 − m·sin²φ)`,
 //! `∂φ Π = 1/((1 − n sin²φ)√(1 − m sin²φ))`, all elementary since `m`, `n` are
-//! constant here) is checked against the integrand on the region where
-//! `P > 0`:
+//! constant here) is checked against the integrand on `R ∩ {P > 0}`, where `R`
+//! is the [`Region`] the reduction claims — **not** on all of `{P > 0}`, which
+//! is a strictly larger set for most root configurations:
 //!
 //! * first, symbolically — `simplify(d/dx F − f) == 0` gives
 //!   [`gate::Verdict::Proven`];
-//! * then by `f64` sampling at the region-aware `gate_samples` grid, at a
-//!   `1e-7` relative tolerance over at least three points
+//! * then by `f64` sampling at the `gate_samples` grid, which is drawn from
+//!   `R`, at a `1e-7` relative tolerance over at least three points
 //!   ([`gate::Verdict::SampledOnly`]) — this tier is the **acceptance
-//!   decision**, exactly as before;
+//!   decision**;
 //! * then, on the candidate that already survived that screen, by a rigorous
 //!   Taylor-model enclosure of `d/dx F − f` over a closed box strictly inside
-//!   the `P > 0` region ([`gate::Verdict::EnclosureVerified`]).  This tier is
-//!   *additive*: it can only strengthen the recorded evidence, never widen
-//!   what is accepted.
+//!   `R` ([`gate::Verdict::EnclosureVerified`]).  This tier is *additive*: it
+//!   can only strengthen the recorded evidence, never widen what is accepted.
 //!
 //! A form is emitted **only** if the gate passes; otherwise the caller falls
 //! through to `NonElementary`.  An imperfect fit can therefore never produce a
 //! wrong answer — it merely declines.
 //!
+//! The region is load-bearing rather than an optimisation, because the gate
+//! treats "the candidate is undefined where the integrand is an ordinary finite
+//! real" as a **disagreement**.  Under that rule a sample set wider than the
+//! claim is not extra caution; it refutes correct answers.  See [`Region`].
+//!
 //! What the enclosure tier does *not* cover is stated where it belongs, in the
 //! gate's own [honest-limitations list](crate::integrate::gate): neighbourhoods
-//! of the roots of `P` (where `1/√P` is unbounded and no finite bound exists)
-//! and the unbounded tails are never inside a box.
+//! of the roots of `P` (where `1/√P` is unbounded and no finite bound exists),
+//! the points `R` cuts out, and the unbounded tails are never inside a box.
 
 use crate::integrate::gate::{self, eval_at as eval};
 use crate::integrate::risch::poly_rde::{expr_to_qpoly, is_free_of_var};
@@ -1321,13 +1326,15 @@ fn gate_samples(p_coeffs: &[f64], region: &Region) -> Vec<f64> {
 /// enclosure over a wider set would certify something the reduction never
 /// claimed.
 fn gate_boxes(p_coeffs: &[f64], region: &Region) -> Vec<(f64, f64)> {
-    let mut reals = poly_roots(p_coeffs)
+    // A finite window to clip an unbounded component to.  It only has to be
+    // wide enough to hold the interesting part of the curve; the region's own
+    // endpoints, not this, are what the boxes are inset from.
+    let window = poly_roots(p_coeffs)
         .map(|roots| classify_roots(&roots).0)
-        .unwrap_or_default();
-    reals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    reals.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
-    let span = reals.iter().fold(1.0_f64, |m, r| m.max(r.abs()));
-    let window = span + 3.0;
+        .unwrap_or_default()
+        .iter()
+        .fold(1.0_f64, |m, r| m.max(r.abs()))
+        + 3.0;
 
     let mut boxes: Vec<(f64, f64)> = Vec::new();
     for (mut lo, mut hi) in region.components(window, 0.3) {
