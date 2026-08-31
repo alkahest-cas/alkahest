@@ -139,6 +139,17 @@ r = integrate(pool.integer(1) / (x**3 - pool.integer(3)*x + pool.integer(1)), x)
 # r.value contains a RootSum node (sum over algebraic residues)
 ```
 
+A `RootSum` answer is **verified before it is returned**, like every other
+answer `integrate` gives: it is differentiated and compared numerically to the
+integrand, with the `RootSum` evaluated by finding its minimal polynomial's
+roots and summing the body over them in complex arithmetic. That check is an
+`f64` one and the sum is ill-conditioned in the roots, so for a denominator of
+degree above roughly 14 — where a *perfect* double-precision root set would
+still miss the comparison tolerance — `integrate` declines with `E-INT-001`
+rather than return an answer it cannot check. Such an answer is not claimed to
+be non-elementary: every rational function is elementary, and `E-INT-004` is
+never raised here.
+
 **Non-elementary certification**: when the integrand is provably non-elementary (Liouville's theorem — e.g. `sin(x)/x`, `exp(x)/x`, `exp(x²)`), `integrate` raises `IntegrationError` with code `E-INT-004` (NonElementary) rather than a generic "not implemented":
 
 ```python
