@@ -86,9 +86,19 @@ pub(super) fn try_parametrize_genus0(
 
     // Integrate the rational-in-`s` integrand (always elementary), then
     // back-substitute s = r(x)^{1/n}.
-    let f_s = match crate::integrate::engine::integrate(integrand_s, s, pool) {
-        Ok(d) => d.value,
-        Err(_) => return None,
+    let f_s = {
+        // This frame consumes a `RootSum` rather than passing one up: see
+        // `expand_rootsums` on the next line.  Say so, or an enclosing
+        // `RootSumSuppressed` (from `generator_subst`, `subst` or the engine's
+        // Weierstrass / u-substitution routes) reaches down through this
+        // sub-integration and suppresses the very `RootSum` this route exists
+        // to expand.
+        let _expanded =
+            crate::integrate::risch::rational_integrate::RootSumExpandedByCaller::enter();
+        match crate::integrate::engine::integrate(integrand_s, s, pool) {
+            Ok(d) => d.value,
+            Err(_) => return None,
+        }
     };
     // Resolve an algebraic-residue `RootSum` into real `log`/`atan` before
     // back-substitution (`subs` cannot enter the binder), or decline.
@@ -202,9 +212,16 @@ pub(super) fn try_euler_quadratic(
     let core = to_t(expr, var, &quad, sqrt_t, x_of_t, pool)?;
     let dx_dt = simplify(crate::diff::diff(x_of_t, t, pool).ok()?.value, pool).value;
     let integrand_t = simplify(pool.mul(vec![core, dx_dt]), pool).value;
-    let f_t = match crate::integrate::engine::integrate(integrand_t, t, pool) {
-        Ok(d) => d.value,
-        Err(_) => return None,
+    let f_t = {
+        // As in `try_genus0_rational_radicand`: this frame expands `RootSum`s
+        // instead of passing them up, so an enclosing suppression must not
+        // reach into it.
+        let _expanded =
+            crate::integrate::risch::rational_integrate::RootSumExpandedByCaller::enter();
+        match crate::integrate::engine::integrate(integrand_t, t, pool) {
+            Ok(d) => d.value,
+            Err(_) => return None,
+        }
     };
     // An algebraic-residue logarithmic part comes back as a `RootSum` binder,
     // which `subs` cannot enter and no verification tier can evaluate.  Expand
@@ -345,7 +362,11 @@ pub(super) fn try_euler_quadratic_general(
     // out as a constant, collapse the remaining `t`-part into a single rational
     // function `N(t)/D(t)`, integrate that pure ℚ(t) integrand with the engine,
     // and multiply the constant back (linearity).
-    let f_t = integrate_scaled_rational(integrand_t, t, pool)?;
+    let f_t = {
+        let _expanded =
+            crate::integrate::risch::rational_integrate::RootSumExpandedByCaller::enter();
+        integrate_scaled_rational(integrand_t, t, pool)?
+    };
     // As in `try_euler_quadratic`: resolve an algebraic-residue `RootSum` into
     // real `log`/`atan` before back-substitution, or decline.
     let f_t = super::rootsum_expand::expand_rootsums(f_t, pool)?;
@@ -488,9 +509,13 @@ pub(super) fn try_euler_conic_point(
     let core = to_t(expr, var, &quad, sqrt_m, x_of_m, pool)?;
     let dx_dm = simplify(crate::diff::diff(x_of_m, m, pool).ok()?.value, pool).value;
     let integrand_m = simplify(pool.mul(vec![core, dx_dm]), pool).value;
-    let f_m = match crate::integrate::engine::integrate(integrand_m, m, pool) {
-        Ok(d) => d.value,
-        Err(_) => return None,
+    let f_m = {
+        let _expanded =
+            crate::integrate::risch::rational_integrate::RootSumExpandedByCaller::enter();
+        match crate::integrate::engine::integrate(integrand_m, m, pool) {
+            Ok(d) => d.value,
+            Err(_) => return None,
+        }
     };
     let f_m = super::rootsum_expand::expand_rootsums(f_m, pool)?;
     let mut back = HashMap::new();

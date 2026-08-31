@@ -286,6 +286,28 @@ fn rewrite(expr: ExprId, pool: &ExprPool) -> Option<ExprId> {
     }
 }
 
+/// Could [`expand_rootsums`] rewrite `RootSum(m, r, …)` into explicit real
+/// form, judged from the minimal polynomial `m` alone?
+///
+/// This is the **decidable half** of the scope documented at the top of this
+/// module.  [`split_factors`] either finds a linear / monic-quadratic
+/// factorisation of `m` or it does not, and when it does not, [`expand_one`]
+/// returns `None` whatever the body looks like.  The body half is *not* decided
+/// here: [`eval_factor`] can still decline a body [`ceval`] cannot read.  So the
+/// predicate is **necessary but not sufficient** —
+///
+/// * `false` ⇒ expansion is impossible, and building the `RootSum` is waste;
+/// * `true`  ⇒ expansion is not ruled out by `m`, so it is worth building.
+///
+/// It exists for [`crate::integrate::risch::rational_integrate`], which has `m`
+/// in hand at the moment it would start the expensive Lazard–Rioboo–Trager log
+/// argument and can skip that work on a `false`.  It is a *cost* decision only:
+/// no verdict depends on it, and a `true` that expansion later refuses costs
+/// exactly the decline it costs today.
+pub(crate) fn minpoly_expandable(m: &[Rational], pool: &ExprPool) -> bool {
+    split_factors(&trim(m.to_vec()), pool).is_some()
+}
+
 /// Expand a single `RootSum(m(r), r . body)`.
 fn expand_one(poly: ExprId, rvar: ExprId, body: ExprId, pool: &ExprPool) -> Option<ExprId> {
     // A nested `RootSum` inside the body is out of scope.
@@ -810,6 +832,7 @@ fn as_i64(e: ExprId, pool: &ExprPool) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::integrate::risch::poly_rde::qpoly_to_expr;
     use crate::kernel::Domain;
 
     /// `RootSum(r² + 1/2, r·log(t² − 4rt − 1))` is the log part Charlwood #30's
@@ -913,6 +936,58 @@ mod tests {
         let body = pool.mul(vec![r, pool.func("log", vec![pool.add(vec![t, r])])]);
         let rs = pool.root_sum(m, r, body);
         assert!(expand_rootsums(rs, &pool).is_none());
+    }
+
+    /// `minpoly_expandable` is what `rational_integrate` decides on, so it has
+    /// to track the real capability of [`split_factors`] rather than a guess at
+    /// it.  Each polynomial below is checked *both* through the predicate and
+    /// through a full `expand_rootsums` of a `RootSum` built on it.
+    #[test]
+    fn minpoly_expandable_matches_what_expansion_can_do() {
+        let pool = ExprPool::new();
+        let t = pool.symbol("t", Domain::Real);
+        let r = pool.symbol("$root$", Domain::Real);
+        let q = |cs: &[(i32, i32)]| -> QPoly {
+            cs.iter()
+                .map(|&(n, d)| Rational::from((n, d)))
+                .collect::<QPoly>()
+        };
+        // Coefficients are low-order-first.
+        let cases: [(&str, QPoly, bool); 6] = [
+            ("linear r − 2", q(&[(-2, 1), (1, 1)]), true),
+            ("quadratic r² + 1/2", q(&[(1, 2), (0, 1), (1, 1)]), true),
+            (
+                "biquadratic r⁴ − r²/4 + 1/16 (Charlwood #47)",
+                q(&[(1, 16), (0, 1), (-1, 4), (0, 1), (1, 1)]),
+                true,
+            ),
+            (
+                "cubic with a rational root, (r−1)(r²+1)",
+                q(&[(-1, 1), (1, 1), (-1, 1), (1, 1)]),
+                true,
+            ),
+            (
+                "irreducible cubic r³ − r − 1",
+                q(&[(-1, 1), (-1, 1), (0, 1), (1, 1)]),
+                false,
+            ),
+            (
+                "quartic r⁴ + r + 1: no rational root, not biquadratic",
+                q(&[(1, 1), (1, 1), (0, 1), (0, 1), (1, 1)]),
+                false,
+            ),
+        ];
+        for (name, m, want) in cases {
+            assert_eq!(minpoly_expandable(&m, &pool), want, "predicate on {name}");
+            let m_expr = qpoly_to_expr(&m, r, &pool);
+            let body = pool.mul(vec![r, pool.func("log", vec![pool.add(vec![t, r])])]);
+            let rs = pool.root_sum(m_expr, r, body);
+            assert_eq!(
+                expand_rootsums(rs, &pool).is_some(),
+                want,
+                "expansion of {name} disagrees with the predicate"
+            );
+        }
     }
 
     /// An expression with no `RootSum` passes through untouched.
