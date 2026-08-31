@@ -48,7 +48,8 @@
   87 refusals, 22 → 3 answers that do not reduce to a real number, and **no
   wrong number before or after**. All 19 that moved are the hole class above;
   no case that produced a correct value stopped producing it. Every refusal is
-  `E-INT-001`; no new `E-INT-004`.
+  `E-INT-001`; no new `E-INT-004`. The extra pass costs nothing measurable —
+  a ten-integral sweep is 187–195 ms either side, inside the run-to-run spread.
 
   The three that remain are elliptic: `PrimitiveRegistry::numeric_f64` answers
   `None`, not `NaN`, for an out-of-domain `EllipticF`, so a branch-limited
