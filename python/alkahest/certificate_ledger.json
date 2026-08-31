@@ -8,7 +8,7 @@
       "tests/lean_gosper_corpus.py",
       "tests/textbook_gate/"
     ],
-    "observations": 309,
+    "observations": 310,
     "shape_classes": 196
   },
   "rows": [
@@ -520,15 +520,13 @@
         "pow": "none",
         "pow_base": "none"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 2,
+        "withheld": 0,
         "no_derivation": 0
       },
-      "blocking_rules": [
-        "diff_primitive_registry"
-      ],
+      "blocking_rules": [],
       "examples": [
         "tanh(x)"
       ]
