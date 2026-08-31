@@ -823,13 +823,61 @@ def test_lean_tendsto_exp_x_certificate():
     assert to_lean(r) == cert
 
 
-def test_lean_tendsto_withholds_finite_sinc():
-    """Finite limits (sin x / x as x → 0) stay withheld — no invented Tendsto proof."""
+def test_lean_tendsto_sin_over_x_certificate():
+    """lim_{x→0} sin(x)/x = 1 emits Filter.Tendsto via hasDerivAt_sin / slope."""
     p = pool()
     x = p.symbol("x")
     r = limit(sin(x) / x, x, p.integer(0))
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "admit" not in cert
+    assert "hasDerivAt_iff_tendsto_slope" in cert
+    assert "nhdsWithin" in cert
+    assert to_lean(r) == cert
+
+
+def test_lean_tendsto_one_plus_inv_pow_certificate():
+    """lim_{x→+∞} (1+1/x)^x = e emits Filter.Tendsto via tendsto_one_plus_div_rpow_exp."""
+    p = pool()
+    x = p.symbol("x")
+    r = limit((1 + 1 / x) ** x, x, p.pos_infinity())
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "tendsto_one_plus_div_rpow_exp" in cert
+    assert to_lean(r) == cert
+
+
+def test_lean_tendsto_inv_at_infinity_certificate():
+    """lim_{x→+∞} 1/x = 0 emits Filter.Tendsto via tendsto_inv_atTop_zero."""
+    p = pool()
+    x = p.symbol("x")
+    r = limit(1 / x, x, p.pos_infinity())
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "tendsto_inv_atTop_zero" in cert
+    assert to_lean(r) == cert
+
+
+def test_lean_tendsto_withholds_unrecognised_finite():
+    """Finite limits without a Mathlib one-liner stay withheld — no invented Tendsto proof."""
+    p = pool()
+    x = p.symbol("x")
+    r = limit((1 - alkahest.cos(x)) / x**2, x, p.integer(0))
     assert r.certificate is None
     assert to_lean(r) == ""
+    # (1+x)^{1/x} → e as x → 0 has no v4.9.0 one-liner (the Mathlib lemma is at +∞).
+    r2 = limit((1 + x) ** (1 / x), x, p.integer(0))
+    assert r2.certificate is None
+    assert to_lean(r2) == ""
+    # 1/x at 0 is a different Tendsto statement than 1/x at +∞.
+    r3 = limit(1 / x, x, p.integer(0), dir="+")
+    assert r3.certificate is None
 
 
 def test_lean_diff_sinh_cosh_atan_asin_certificates():

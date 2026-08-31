@@ -300,6 +300,18 @@
   This is pointwise only and does **not** join the everywhere-differentiable
   simp set.
 
+- **More `Filter.Tendsto` certificates from `limit()`.** The emitter now
+  matches sorry-free Mathlib v4.9.0 lemmas beyond the `x → +∞` exponential
+  fragment: `sin x / x → 1` as `x → 0` (`hasDerivAt_iff_tendsto_slope` of
+  `Real.hasDerivAt_sin`), `(1 + 1/x)^x → e` (`tendsto_one_plus_div_rpow_exp`),
+  `x^n → +∞` (`tendsto_pow_atTop`), `1/x → 0` (`tendsto_inv_atTop_zero`), and
+  `x → +∞` (`tendsto_id`). Leading-term polynomial *ratios* stay withheld —
+  they share a ledger shape with extra-term rationals the emitter does not
+  prove. The ledger's limit classifier now records the approach point
+  (`atTop` / `zero` / `finite`) so those Tendsto domain filters do not mix
+  certified and withheld observations. The Tendsto printer continues to use
+  `expr_to_lean_neg` only; the default `expr_to_lean` is unchanged.
+
 - **FTC for `∫ dx/(1+x²) = atan x`**, indefinite (via the reused
   differentiation certificate) and definite (`HasDerivAt` witness
   `hasDerivAt_arctan'`, `IntervalIntegrable` of the continuous integrand

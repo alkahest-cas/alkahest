@@ -520,3 +520,14 @@ def test_geometric_pow_base_splits_integer_from_reciprocal(pool):
     assert two_feat["pow_base"] == "int"
     assert half_feat["pow_base"] == "recip"
     assert two_shape != half_shape
+
+
+def test_limit_classifier_splits_approach_point(pool):
+    """Limit classes distinguish the Tendsto domain filter (atTop vs zero)."""
+    x = pool.symbol("x")
+    at_inf, feat_inf = classify("limit", (ak.exp(-x), x, pool.pos_infinity()))
+    at_zero, feat_zero = classify("limit", (ak.sin(x) / x, x, pool.integer(0)))
+    assert feat_inf["point"] == "atTop"
+    assert feat_zero["point"] == "zero"
+    assert "point=atTop" in at_inf
+    assert "point=zero" in at_zero

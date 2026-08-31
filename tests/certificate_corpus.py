@@ -14,7 +14,7 @@ The corpus is not a new list of cases. It reuses, unchanged:
 * ``tests/lean_corpus.py`` — the strict, no-admission corpus whose every entry
   is expected to typecheck under pinned Lean/Mathlib in
   ``.github/workflows/lean.yml``. These populate the *certified* side.
-* ``tests/lean_tendsto_corpus.py`` — recognised ``x → +∞`` ``Filter.Tendsto``
+* ``tests/lean_tendsto_corpus.py`` — recognised ``Filter.Tendsto``
   certificates from ``limit()``.
 * ``tests/lean_gosper_corpus.py`` — Gosper ``Finset.sum`` telescopes and the
   ``∏ k = n!`` product identity.

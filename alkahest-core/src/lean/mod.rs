@@ -1421,20 +1421,28 @@ pub fn emit_limit_header() -> String {
     "import Mathlib.Tactic\n\
      import Mathlib.Analysis.SpecialFunctions.ExpDeriv\n\
      import Mathlib.Analysis.SpecialFunctions.Pow.Real\n\
+     import Mathlib.Analysis.SpecialFunctions.Pow.Deriv\n\
+     import Mathlib.Analysis.SpecialFunctions.Trigonometric.Deriv\n\
+     import Mathlib.Analysis.Calculus.Deriv.Slope\n\
      import Mathlib.Topology.Algebra.Order.LiminfLimsup\n\
      \n\
      open Real Filter Topology\n\n"
         .to_string()
 }
 
+/// Recognised Tendsto certificate: domain filter, comment arrow, tactic.
+struct TendstoPlan {
+    domain: &'static str,
+    comment_arrow: &'static str,
+    tactic: String,
+}
+
 /// Generate a Lean 4 `Filter.Tendsto` certificate for a computed limit.
 ///
-/// The certificate asserts:
-/// ```text
-/// Filter.Tendsto (fun x => <expr>) Filter.atTop (nhds <limit>)
-/// ```
-/// and attempts to prove it using known Mathlib theorems.  For cases that
-/// cannot be dispatched automatically, the body falls back to `by sorry`.
+/// The certificate asserts `Filter.Tendsto (fun x => <expr>) L (nhds <limit>)`
+/// (or `Filter.atTop` in the codomain for `+∞`), with domain filter `L`
+/// `Filter.atTop` for `x → +∞` and `nhdsWithin 0 {0}ᶜ` for the finite-at-zero
+/// fragment. Recognised patterns are discharged by named Mathlib lemmas.
 ///
 /// # Arguments
 /// * `expr`  — the expression whose limit was computed (function body)
@@ -1453,21 +1461,25 @@ pub fn emit_tendsto_cert(expr: ExprId, var: ExprId, lim: ExprId, pool: &ExprPool
     // goal has to print the negation rather than the kernel's `x * -1`.
     let body = expr_to_lean_neg(expr, pool);
     let (codom_filter, limit_display) = lean_codom_filter(lim, pool);
-    let tactic = tendsto_tactic(expr, var, lim, pool);
-
-    // Gate: do not emit certificates that would require sorry or admit.
-    if tactic.contains("sorry") || tactic.contains("admit") {
+    let Some(plan) = tendsto_plan(expr, var, lim, pool) else {
+        return String::new();
+    };
+    if plan.tactic.contains("sorry") || plan.tactic.contains("admit") {
         return String::new();
     }
 
     let mut out = emit_limit_header();
     out.push_str(&format!(
-        "-- Filter.Tendsto certificate: lim_{{x→+∞}} f(x) = {limit_display}\n"
+        "-- Filter.Tendsto certificate: lim_{{{}}} f(x) = {limit_display}\n",
+        plan.comment_arrow
     ));
     out.push_str(&format!(
-        "example : Filter.Tendsto (fun ({var_name} : ℝ) => {body}) Filter.atTop {codom_filter} :=\n"
+        "example : Filter.Tendsto (fun ({var_name} : ℝ) => {body}) {} {codom_filter} :=\n",
+        plan.domain
     ));
-    out.push_str(&format!("  {tactic}\n"));
+    out.push_str("  ");
+    out.push_str(&plan.tactic);
+    out.push('\n');
     out
 }
 
@@ -1488,45 +1500,98 @@ fn lean_codom_filter(lim: ExprId, pool: &ExprPool) -> (String, String) {
         ExprData::Integer(n) if n.0 == 1 => "(1 : ℝ)".to_string(),
         _ => expr_to_lean(lim, pool),
     });
-    (format!("(nhds {val_str})"), val_str)
+    let nhds = if val_str.starts_with('(') {
+        format!("(nhds {val_str})")
+    } else {
+        format!("(nhds ({val_str}))")
+    };
+    (nhds, val_str)
 }
 
-/// Select the best Lean tactic to prove `Filter.Tendsto f atTop (nhds lim)`.
-///
-/// Recognises a small set of patterns with known Mathlib theorems; falls back
-/// to `by sorry` for everything else.
-fn tendsto_tactic(expr: ExprId, var: ExprId, lim: ExprId, pool: &ExprPool) -> String {
-    let is_zero = pool.with(lim, |d| match d {
-        ExprData::Integer(n) => n.0 == 0,
-        _ => false,
-    });
-    let is_pos_inf = pool.with(lim, |d| match d {
-        ExprData::Symbol { name, .. } => name == "∞",
-        _ => false,
-    });
+fn at_top_plan(tactic: String) -> TendstoPlan {
+    TendstoPlan {
+        domain: "Filter.atTop",
+        comment_arrow: "x→+∞",
+        tactic,
+    }
+}
+
+/// Select a Mathlib-backed Tendsto plan, or `None` to withhold.
+fn tendsto_plan(expr: ExprId, var: ExprId, lim: ExprId, pool: &ExprPool) -> Option<TendstoPlan> {
+    let is_zero = integer_i64(lim, pool) == Some(0);
+    let is_one = integer_i64(lim, pool) == Some(1);
+    let is_pos_inf = pool.with(
+        lim,
+        |d| matches!(d, ExprData::Symbol { name, .. } if name == "∞"),
+    );
+
+    // sin(var)/var → 1 as var → 0 (HasDerivAt sin at 0).
+    if is_one && matches_sin_div_var(expr, var, pool) {
+        return Some(TendstoPlan {
+            domain: "(nhdsWithin (0 : ℝ) ({0} : Set ℝ)ᶜ)",
+            comment_arrow: "x→0",
+            tactic: "by\n    have h := hasDerivAt_iff_tendsto_slope.mp (Real.hasDerivAt_sin (0 : ℝ))\n    simp only [cos_zero] at h\n    convert h using 1\n    ext x\n    simp [slope, sin_zero, sub_zero, smul_eq_mul, mul_comm]".to_string(),
+        });
+    }
+
+    // (1 + t/var)^var → exp(t) as var → +∞.
+    if let Some(t) = matches_one_plus_t_over_var_pow_var(expr, var, pool) {
+        if matches_exp_int(lim, pool) == Some(t) {
+            return Some(at_top_plan(format!(
+                "by\n    simpa [div_eq_mul_inv, one_div, mul_comm] using tendsto_one_plus_div_rpow_exp ({t} : ℝ)"
+            )));
+        }
+    }
 
     // Pattern: exp(-var) → 0
     if is_zero && matches_exp_neg_var(expr, var, pool) {
-        return "tendsto_exp_neg_atTop_nhds_zero".to_string();
+        return Some(at_top_plan("tendsto_exp_neg_atTop_nhds_zero".to_string()));
     }
 
     // Pattern: var^n * exp(-var) → 0 (for any n ≥ 1)
     if is_zero && matches_pow_mul_exp_neg(expr, var, pool) {
-        return "by\n    have := tendsto_pow_mul_exp_neg_atTop_nhds_zero\n    exact this"
-            .to_string();
+        return Some(at_top_plan(
+            "by\n    have := tendsto_pow_mul_exp_neg_atTop_nhds_zero\n    exact this".to_string(),
+        ));
     }
 
     // Pattern: exp(var) → +∞
     if is_pos_inf && matches_exp_var(expr, var, pool) {
-        return "tendsto_exp_atTop".to_string();
+        return Some(at_top_plan("tendsto_exp_atTop".to_string()));
     }
 
     // Pattern: exp(n*var) / exp(m*var) where n < m → 0
     if is_zero && matches_exp_ratio_to_zero(expr, var, pool) {
-        return "by\n    simp only [div_eq_mul_inv, ← Real.exp_neg]\n    exact tendsto_exp_neg_atTop_nhds_zero.comp tendsto_id".to_string();
+        return Some(at_top_plan(
+            "by\n    simp only [div_eq_mul_inv, ← Real.exp_neg]\n    exact tendsto_exp_neg_atTop_nhds_zero.comp tendsto_id".to_string(),
+        ));
     }
 
-    "by sorry".to_string()
+    // var → +∞
+    if is_pos_inf && expr == var {
+        return Some(at_top_plan("tendsto_id".to_string()));
+    }
+
+    // var^n → +∞ (n ≥ 1 interned as a power, not the bare symbol)
+    if is_pos_inf {
+        if let Some(n) = var_nat_pow(expr, var, pool) {
+            if n >= 1 && expr != var {
+                return Some(at_top_plan(format!(
+                    "tendsto_pow_atTop (Nat.succ_ne_zero {})",
+                    n - 1
+                )));
+            }
+        }
+    }
+
+    // 1/var or var⁻¹ → 0 as var → +∞
+    if is_zero && matches_inv_var_at_top(expr, var, pool) {
+        return Some(at_top_plan(
+            "by\n    simpa [mul_one] using tendsto_inv_atTop_zero".to_string(),
+        ));
+    }
+
+    None
 }
 
 /// True iff `expr` is structurally `exp(-var)`.
@@ -1598,6 +1663,142 @@ fn matches_exp_ratio_to_zero(expr: ExprId, _var: ExprId, pool: &ExprPool) -> boo
         } else {
             false
         }
+    })
+}
+
+fn integer_i64(expr: ExprId, pool: &ExprPool) -> Option<i64> {
+    pool.with(expr, |d| match d {
+        ExprData::Integer(n) => n.0.to_i64(),
+        _ => None,
+    })
+}
+
+fn is_inv_of(expr: ExprId, inner: ExprId, pool: &ExprPool) -> bool {
+    pool.with(
+        expr,
+        |d| matches!(d, ExprData::Pow { base, exp } if *base == inner && integer_i64(*exp, pool) == Some(-1)),
+    )
+}
+
+/// `sin(var) * var⁻¹` (Alkahest intern of `sin(var)/var`), either factor order.
+fn matches_sin_div_var(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    pool.with(expr, |d| {
+        let ExprData::Mul(xs) = d else {
+            return false;
+        };
+        if xs.len() != 2 {
+            return false;
+        }
+        let is_sin_var = |id: ExprId| {
+            pool.with(
+                id,
+                |d| matches!(d, ExprData::Func { name, args } if name == "sin" && args.len() == 1 && args[0] == var),
+            )
+        };
+        (is_sin_var(xs[0]) && is_inv_of(xs[1], var, pool))
+            || (is_sin_var(xs[1]) && is_inv_of(xs[0], var, pool))
+    })
+}
+
+/// `exp(n)` for an integer `n`.
+fn matches_exp_int(expr: ExprId, pool: &ExprPool) -> Option<i64> {
+    pool.with(expr, |d| {
+        if let ExprData::Func { name, args } = d {
+            if name == "exp" && args.len() == 1 {
+                return integer_i64(args[0], pool);
+            }
+        }
+        None
+    })
+}
+
+/// Coefficient `t` in a `t * var⁻¹` (or bare `var⁻¹` = `t = 1`) intern.
+fn t_over_var(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<i64> {
+    if is_inv_of(expr, var, pool) {
+        return Some(1);
+    }
+    pool.with(expr, |d| {
+        let ExprData::Mul(xs) = d else {
+            return None;
+        };
+        let mut inv_count = 0u32;
+        let mut coeff = 1i64;
+        for &x in xs {
+            if is_inv_of(x, var, pool) {
+                inv_count += 1;
+            } else if let Some(n) = integer_i64(x, pool) {
+                coeff = coeff.checked_mul(n)?;
+            } else {
+                return None;
+            }
+        }
+        if inv_count == 1 {
+            Some(coeff)
+        } else {
+            None
+        }
+    })
+}
+
+/// `(1 + t/var)^var` for an integer `t` (Python intern of `1 + t/x` includes `t * x⁻¹`).
+fn matches_one_plus_t_over_var_pow_var(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<i64> {
+    pool.with(expr, |d| {
+        let ExprData::Pow { base, exp } = d else {
+            return None;
+        };
+        if *exp != var {
+            return None;
+        }
+        pool.with(*base, |b| {
+            let ExprData::Add(xs) = b else {
+                return None;
+            };
+            if xs.len() != 2 {
+                return None;
+            }
+            let (a, c) = (xs[0], xs[1]);
+            if integer_i64(a, pool) == Some(1) {
+                return t_over_var(c, var, pool);
+            }
+            if integer_i64(c, pool) == Some(1) {
+                return t_over_var(a, var, pool);
+            }
+            None
+        })
+    })
+}
+
+/// Natural power of `var`: the bare symbol is `1`, `var^n` is `n` for `1 ≤ n ≤ 64`.
+fn var_nat_pow(expr: ExprId, var: ExprId, pool: &ExprPool) -> Option<u32> {
+    if expr == var {
+        return Some(1);
+    }
+    pool.with(expr, |d| {
+        let ExprData::Pow { base, exp } = d else {
+            return None;
+        };
+        if *base != var {
+            return None;
+        }
+        match integer_i64(*exp, pool) {
+            Some(n) if (1..=64).contains(&n) => u32::try_from(n).ok(),
+            _ => None,
+        }
+    })
+}
+
+/// `var⁻¹`, or the Python intern `1 * var⁻¹`.
+fn matches_inv_var_at_top(expr: ExprId, var: ExprId, pool: &ExprPool) -> bool {
+    if is_inv_of(expr, var, pool) {
+        return true;
+    }
+    pool.with(expr, |d| {
+        let ExprData::Mul(xs) = d else {
+            return false;
+        };
+        xs.len() == 2
+            && xs.iter().any(|&x| integer_i64(x, pool) == Some(1))
+            && xs.iter().any(|&x| is_inv_of(x, var, pool))
     })
 }
 
@@ -6118,6 +6319,107 @@ mod tests {
     }
 
     #[test]
+    fn emit_tendsto_sin_over_x_at_zero() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![
+            pool.func("sin", vec![x]),
+            pool.pow(x, pool.integer(-1_i32)),
+        ]);
+        let one = pool.integer(1_i32);
+        let lean = emit_tendsto_cert(expr, x, one, &pool);
+        assert!(
+            lean.contains("hasDerivAt_iff_tendsto_slope"),
+            "expected slope-of-sin tactic: {lean}"
+        );
+        assert!(
+            lean.contains("nhdsWithin (0 : ℝ)"),
+            "finite sinc limit is at 0, not atTop: {lean}"
+        );
+        assert!(
+            !lean.contains("sorry"),
+            "sinc certificate must be sorry-free"
+        );
+        assert!(
+            !lean.contains("Filter.atTop"),
+            "sinc must not claim x → +∞: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_tendsto_one_plus_inv_pow() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let one = pool.integer(1_i32);
+        let inv = pool.pow(x, pool.integer(-1_i32));
+        // Python intern of `1 + 1/x` is `1 + (1 * x⁻¹)`.
+        let base = pool.add(vec![one, pool.mul(vec![one, inv])]);
+        let expr = pool.pow(base, x);
+        let e = pool.func("exp", vec![one]);
+        let lean = emit_tendsto_cert(expr, x, e, &pool);
+        assert!(
+            lean.contains("tendsto_one_plus_div_rpow_exp"),
+            "expected rpow compound-interest lemma: {lean}"
+        );
+        assert!(
+            lean.contains("Filter.atTop"),
+            "compound-interest form is x → +∞: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_tendsto_pow_at_top() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.pow(x, pool.integer(2_i32));
+        let inf = pool.symbol("∞", Domain::Real);
+        let lean = emit_tendsto_cert(expr, x, inf, &pool);
+        assert!(
+            lean.contains("tendsto_pow_atTop"),
+            "expected tendsto_pow_atTop: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_tendsto_inv_at_top() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let expr = pool.mul(vec![pool.integer(1_i32), pool.pow(x, pool.integer(-1_i32))]);
+        let zero = pool.integer(0_i32);
+        let lean = emit_tendsto_cert(expr, x, zero, &pool);
+        assert!(
+            lean.contains("tendsto_inv_atTop_zero"),
+            "expected tendsto_inv_atTop_zero: {lean}"
+        );
+    }
+
+    #[test]
+    fn emit_tendsto_id_at_top() {
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let inf = pool.symbol("∞", Domain::Real);
+        let lean = emit_tendsto_cert(x, x, inf, &pool);
+        assert!(lean.contains("tendsto_id"), "expected tendsto_id: {lean}");
+    }
+
+    #[test]
+    fn emit_tendsto_pow_div_pow_withheld() {
+        // Pure `x²/x³ → 0` typechecks, but shares a ledger shape with
+        // extra-term rationals like `(3x²+2x)/(x²+1)` which we do not prove.
+        let pool = p();
+        let x = pool.symbol("x", Domain::Real);
+        let num = pool.pow(x, pool.integer(2_i32));
+        let den = pool.pow(pool.pow(x, pool.integer(3_i32)), pool.integer(-1_i32));
+        let expr = pool.mul(vec![num, den]);
+        let zero = pool.integer(0_i32);
+        let lean = emit_tendsto_cert(expr, x, zero, &pool);
+        assert!(
+            lean.is_empty(),
+            "leading-term ratios stay withheld (same shape as extra-term rationals): {lean}"
+        );
+    }
+
+    #[test]
     fn emit_tendsto_unrecognized_pattern_withheld() {
         let pool = p();
         let x = pool.symbol("x", Domain::Real);
@@ -6128,6 +6430,17 @@ mod tests {
         assert!(
             lean.is_empty(),
             "unrecognized patterns must not emit sorry certificates: got {lean}"
+        );
+        // (1 − cos x)/x² is a finite limit at 0 with no Mathlib one-liner.
+        let one = pool.integer(1_i32);
+        let cos = pool.func("cos", vec![x]);
+        let one_minus_cos = pool.add(vec![one, pool.mul(vec![pool.integer(-1_i32), cos])]);
+        let sinc2 = pool.mul(vec![one_minus_cos, pool.pow(x, pool.integer(-2_i32))]);
+        let half = pool.pow(pool.integer(2_i32), pool.integer(-1_i32));
+        let withheld = emit_tendsto_cert(sinc2, x, half, &pool);
+        assert!(
+            withheld.is_empty(),
+            "(1-cos x)/x² must stay withheld: got {withheld}"
         );
     }
 

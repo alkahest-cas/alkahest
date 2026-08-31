@@ -12,8 +12,9 @@ print as `"∞"` / `"(-1 * ∞)"` and cannot be passed to `eval_expr`
 (it raises `ValueError`), so those are checked via `str(.value)` instead
 — this is fine per the README's philosophy since "is this the infinity
 marker" is a behavioral question, not a normal-form one. `.certificate`
-is Lean `Filter.Tendsto` source only for a small recognised `x → +∞`
-fragment; everything else is withheld.
+is Lean `Filter.Tendsto` source only for a small recognised fragment
+(`x → +∞` exponentials and monomials, and `sin x / x → 1` as `x → 0`);
+everything else is withheld.
 """
 
 from __future__ import annotations

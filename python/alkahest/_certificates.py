@@ -56,8 +56,9 @@ _LEDGER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "certifi
 
 #: Bumped when the shape-class feature vector or the ledger file layout changes.
 #: The generator stamps it into the artifact and :func:`_ledger` refuses a file
-#: written by an incompatible generator.
-SCHEMA_VERSION = 1
+#: written by an incompatible generator. v2 adds ``point`` on ``limit`` rows
+#: (``atTop`` / ``atBot`` / ``zero`` / ``finite``).
+SCHEMA_VERSION = 2
 
 # ---------------------------------------------------------------------------
 # Operation signatures
@@ -85,7 +86,7 @@ OPERATIONS: dict[str, dict[str, Any]] = {
 }
 
 #: Feature names in the fixed order used to build a shape-class key.
-FEATURES = ("form", "funcs", "fn_arg", "mul", "pow", "pow_base", "definite")
+FEATURES = ("form", "funcs", "fn_arg", "mul", "pow", "pow_base", "definite", "point")
 
 _NUMERIC_TAGS = ("integer", "rational", "float")
 
@@ -233,6 +234,37 @@ def _atom_or_parens(expr) -> str:
     return f"({rendered})"
 
 
+def _limit_point_kind(point) -> str:
+    """Domain-filter seam for ``limit``: ``atTop``, ``atBot``, ``zero``, or ``finite``.
+
+    Tendsto certificates use ``Filter.atTop`` vs ``nhdsWithin 0 {0}ᶜ``, and
+    those two are different Mathlib statements. Without this feature the
+    expression ``1/x`` (or ``(1+1/x)^x`` vs ``(1+x)^{1/x}``) would mix
+    certified and withheld observations in one ledger class.
+    """
+    node = point.node()
+    tag = node[0]
+    if tag == "symbol" and node[1] == "∞":
+        return "atTop"
+    if tag == "integer" and int(node[1]) == 0:
+        return "zero"
+    if tag == "mul":
+        has_inf = False
+        has_neg_one = False
+        extra = False
+        for part in node[1]:
+            pn = part.node()
+            if pn[0] == "symbol" and pn[1] == "∞":
+                has_inf = True
+            elif pn[0] == "integer" and int(pn[1]) == -1:
+                has_neg_one = True
+            else:
+                extra = True
+        if has_inf and has_neg_one and not extra:
+            return "atBot"
+    return "finite"
+
+
 def shape_features(expr, var=None, definite: bool | None = None) -> dict[str, str]:
     """Structural feature vector for one call, used as the ledger key.
 
@@ -367,6 +399,12 @@ def classify(op: str, args, kwargs=None) -> tuple[str, dict[str, str]]:
         definite = lower is not None
 
     features = shape_features(expr, var, definite)
+    if op == "limit":
+        point = args[2] if len(args) > 2 else kwargs.get("point")
+        if isinstance(point, DerivedResult):
+            point = point.value
+        if isinstance(point, Expr):
+            features["point"] = _limit_point_kind(point)
     return shape_class(op, features), features
 
 
