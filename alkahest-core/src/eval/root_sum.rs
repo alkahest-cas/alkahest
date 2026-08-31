@@ -55,6 +55,15 @@
 //! sample point of the gate's grid to be admitted, which is the same standing
 //! assumption the rest of the numeric tier already makes.
 //!
+//! The backward-error check is deliberately per-root and not a check on the
+//! *multiset*: two Durand–Kerner iterates converging to the same root, with a
+//! third missed, would pass it. That is a real possibility and it is left
+//! unguarded on purpose — the consequence is a sum that is simply wrong, which
+//! the gate then rejects, so the cost is a decline rather than a false accept.
+//! A multiset check (reconstructing the coefficients from the roots) would
+//! convert those declines into a different kind of decline while adding a way
+//! to refuse a root set that was fine.
+//!
 //! What this module is **not** is a proof. It is an `f64` screen, and the
 //! module docs of [`crate::integrate::gate`] describe exactly what such a screen
 //! can and cannot see (catastrophic cancellation, chiefly). An exact
