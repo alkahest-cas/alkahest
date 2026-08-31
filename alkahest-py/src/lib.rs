@@ -2173,6 +2173,11 @@ impl PyAssumptions {
 const RESULT_SCHEMA_VERSION: u32 = 1;
 const STEPS_SCHEMA_VERSION: u32 = 1;
 
+/// Inclusive `(lo, hi)` bounds on a definite Gosper sum; `None` is indefinite.
+type GosperBounds = Option<(ExprId, ExprId)>;
+/// `(term, k, bounds)` for a Gosper sum. See [`GosperBounds`].
+type GosperCertInput = (ExprId, ExprId, GosperBounds);
+
 #[pyclass(name = "DerivedResult")]
 struct PyDerivedResult {
     value: PyExpr,
@@ -2191,6 +2196,13 @@ struct PyDerivedResult {
     /// certificates have no rewrite log; the emitter recognises a small
     /// `x → +∞` fragment and withholds everything else (never `sorry`).
     tendsto_input: Option<(ExprId, ExprId, ExprId)>,
+    /// See [`GosperCertInput`]. Emitting the rewrite log as `F = G` would be
+    /// false.
+    gosper_input: Option<GosperCertInput>,
+    /// `(term, k, lo, hi)` for a discrete product. Only `∏_{k=1}^{n} k = n!`
+    /// is certified (Mathlib `prod_Ico_id_eq_factorial`); gamma encodings stay
+    /// withheld.
+    product_input: Option<(ExprId, ExprId, ExprId, ExprId)>,
 }
 
 #[pymethods]
@@ -2274,6 +2286,15 @@ impl PyDerivedResult {
         if self.tendsto_input.is_some() {
             return self.tendsto_lean_source(py);
         }
+        // Gosper sums certify a Finset telescope, never the false rewrite
+        // `F = G` (e.g. `k = k(k−1)/2`). Check before treating the
+        // integration-rule log as uncertifiable.
+        if self.gosper_input.is_some() {
+            return self.gosper_lean_source(py);
+        }
+        if self.product_input.is_some() {
+            return self.product_lean_source(py);
+        }
         if self.raw.log.is_empty() {
             return None;
         }
@@ -2296,7 +2317,10 @@ impl PyDerivedResult {
     ///   nothing to prove), ``"withheld_integration_shape"`` (the integral
     ///   falls outside the FTC fragment the emitter can encode),
     ///   ``"withheld_tendsto_shape"`` (the limit falls outside the
-    ///   ``Filter.Tendsto`` fragment the emitter can encode), or
+    ///   ``Filter.Tendsto`` fragment the emitter can encode),
+    ///   ``"withheld_gosper_shape"`` (the sum falls outside the Finset
+    ///   telescope fragment), ``"withheld_product_shape"`` (the product is
+    ///   not the `∏ k = n!` identity), or
     ///   ``"withheld_uncertifiable_step"``.
     /// * ``blocking_steps`` — for ``withheld_uncertifiable_step``, the list of
     ///   ``{"index", "rule", "before", "after"}`` records whose rewrite rule has
@@ -2316,6 +2340,10 @@ impl PyDerivedResult {
             "emitted"
         } else if self.tendsto_input.is_some() {
             "withheld_tendsto_shape"
+        } else if self.gosper_input.is_some() {
+            "withheld_gosper_shape"
+        } else if self.product_input.is_some() {
+            "withheld_product_shape"
         } else if self.integration_verification_input.is_some()
             || self.definite_integration_input.is_some()
         {
@@ -2392,6 +2420,10 @@ impl PyDerivedResult {
             } else if self.tendsto_input.is_some() {
                 // Limits certify via Filter.Tendsto (no rewrite log).
                 self.tendsto_lean_source(py)
+            } else if self.gosper_input.is_some() {
+                self.gosper_lean_source(py)
+            } else if self.product_input.is_some() {
+                self.product_lean_source(py)
             } else if self.raw.log.is_empty() {
                 None
             } else {
@@ -2614,6 +2646,32 @@ impl PyDerivedResult {
         }
     }
 
+    /// Lean source for a Gosper `Finset.sum` certificate.
+    fn gosper_lean_source(&self, py: Python<'_>) -> Option<String> {
+        let (term, k, bounds) = self.gosper_input?;
+        let pool_py = self.value.pool.clone_ref(py);
+        let pool = pool_py.borrow(py);
+        let src = alkahest_core::emit_gosper_cert(term, k, bounds, &pool.inner);
+        if src.is_empty() || src.contains("sorry") || src.contains("admit") {
+            None
+        } else {
+            Some(src)
+        }
+    }
+
+    /// Lean source for a `Finset.prod` factorial certificate.
+    fn product_lean_source(&self, py: Python<'_>) -> Option<String> {
+        let (term, k, lo, hi) = self.product_input?;
+        let pool_py = self.value.pool.clone_ref(py);
+        let pool = pool_py.borrow(py);
+        let src = alkahest_core::emit_product_cert(term, k, lo, hi, &pool.inner);
+        if src.is_empty() || src.contains("sorry") || src.contains("admit") {
+            None
+        } else {
+            Some(src)
+        }
+    }
+
     /// `steps` list for [`PyDerivedResult::to_dict`]. Full mode mirrors the
     /// `.steps` getter exactly (`rule`/`before`/`after`/`side_conditions`);
     /// compact mode uses short keys and drops `before`/`after`, omitting
@@ -2756,6 +2814,8 @@ fn make_derived_result(
         integration_verification_input: None,
         definite_integration_input: None,
         tendsto_input: None,
+        gosper_input: None,
+        product_input: None,
     }
 }
 
@@ -2782,6 +2842,8 @@ fn py_derived_result_context_simplify(
             integration_verification_input: dr.integration_verification_input,
             definite_integration_input: dr.definite_integration_input,
             tendsto_input: dr.tendsto_input,
+            gosper_input: dr.gosper_input,
+            product_input: dr.product_input,
         });
     }
     let mut log = dr.raw.log.clone();
@@ -2798,6 +2860,8 @@ fn py_derived_result_context_simplify(
     result.integration_verification_input = dr.integration_verification_input;
     result.definite_integration_input = dr.definite_integration_input;
     result.tendsto_input = dr.tendsto_input;
+    result.gosper_input = dr.gosper_input;
+    result.product_input = dr.product_input;
     Ok(result)
 }
 
@@ -4937,12 +5001,9 @@ fn py_sum_indefinite(
         guard_depth(&pool.inner, expr.id)?;
         core_sum_indefinite(expr.id, k.id, &pool.inner).map_err(sum_error_to_py)?
     };
-    Ok(make_derived_result(
-        py,
-        derived,
-        expr.pool.clone_ref(py),
-        None,
-    ))
+    let mut result = make_derived_result(py, derived, expr.pool.clone_ref(py), None);
+    result.gosper_input = Some((expr.id, k.id, None));
+    Ok(result)
 }
 
 #[pyfunction]
@@ -4959,12 +5020,16 @@ fn py_sum_definite(
         guard_depth(&pool.inner, expr.id)?;
         core_sum_definite(expr.id, k.id, lo.id, hi.id, &pool.inner).map_err(sum_error_to_py)?
     };
-    Ok(make_derived_result(
-        py,
-        derived,
-        expr.pool.clone_ref(py),
-        None,
-    ))
+    let mut result = make_derived_result(py, derived, expr.pool.clone_ref(py), None);
+    // Infinite bounds are Basel-family table lookups, not Gosper telescopes.
+    let hi_infinite = {
+        let pool = expr.pool.borrow(py);
+        hi.id == pool.inner.pos_infinity()
+    };
+    if !hi_infinite {
+        result.gosper_input = Some((expr.id, k.id, Some((lo.id, hi.id))));
+    }
+    Ok(result)
 }
 
 #[pyfunction]
@@ -5002,12 +5067,9 @@ fn py_product_definite(
         core_product_definite(expr.id, k.id, lo.id, hi.id, &pool.inner)
             .map_err(product_error_to_py)?
     };
-    Ok(make_derived_result(
-        py,
-        derived,
-        expr.pool.clone_ref(py),
-        None,
-    ))
+    let mut result = make_derived_result(py, derived, expr.pool.clone_ref(py), None);
+    result.product_input = Some((expr.id, k.id, lo.id, hi.id));
+    Ok(result)
 }
 
 #[pyfunction]
@@ -7474,6 +7536,12 @@ fn py_to_lean(py: Python<'_>, arg: &Bound<'_, PyAny>) -> PyResult<String> {
         // Limits certify via Filter.Tendsto. Empty / sorry → withhold.
         if d.tendsto_input.is_some() {
             return Ok(d.tendsto_lean_source(py).unwrap_or_default());
+        }
+        if d.gosper_input.is_some() {
+            return Ok(d.gosper_lean_source(py).unwrap_or_default());
+        }
+        if d.product_input.is_some() {
+            return Ok(d.product_lean_source(py).unwrap_or_default());
         }
         let pool_py = d.value.pool.clone_ref(py);
         let pool = pool_py.borrow(py);

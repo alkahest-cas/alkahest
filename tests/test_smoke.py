@@ -876,6 +876,60 @@ def test_lean_integrate_inv_one_plus_x_squared():
     assert "Real.pi" not in definite.certificate
 
 
+def test_lean_gosper_sum_k_certificate():
+    """Σ_{k=1}^{n} k emits a Finset.Icc telescope, not the false rewrite k = G."""
+    p = pool()
+    k = p.symbol("k")
+    n = p.symbol("n")
+    r = alkahest.sum_definite(k, k, p.integer(1), n)
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "admit" not in cert
+    assert "Finset" in cert or "Icc" in cert
+    assert "sum_range_sub" in cert or "sum_Ico_eq_sum_range" in cert
+    assert to_lean(r) == cert
+
+
+def test_lean_gosper_indefinite_certificate():
+    """Indefinite Gosper states G(k+1)−G(k)=F(k), then a range telescope."""
+    p = pool()
+    k = p.symbol("k")
+    r = alkahest.sum_indefinite(k, k)
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "sum_range_sub" in cert
+    assert to_lean(r) == cert
+
+
+def test_lean_gosper_withholds_basel():
+    """Σ 1/k² = π²/6 stays withheld — no table-lookup Lean."""
+    p = pool()
+    k = p.symbol("k")
+    r = alkahest.sum_definite(k ** p.integer(-2), k, p.integer(1), p.pos_infinity())
+    assert r.certificate is None
+    assert to_lean(r) == ""
+
+
+def test_lean_product_factorial_certificate():
+    """∏_{k=1}^{n} k = n! via Mathlib prod_Ico_id_eq_factorial, not Gamma."""
+    p = pool()
+    k = p.symbol("k")
+    n = p.symbol("n")
+    r = alkahest.product_definite(k, k, p.integer(1), n)
+    cert = r.certificate
+    assert isinstance(cert, str)
+    assert cert
+    assert "sorry" not in cert
+    assert "prod_Ico_id_eq_factorial" in cert
+    assert "Nat.factorial" in cert
+    assert "Gamma" not in cert
+    assert to_lean(r) == cert
+
+
 # ---------------------------------------------------------------------------
 # StableHLO / XLA bridge
 # ---------------------------------------------------------------------------

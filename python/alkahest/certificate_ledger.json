@@ -5,10 +5,11 @@
     "sources": [
       "tests/lean_corpus.py",
       "tests/lean_tendsto_corpus.py",
+      "tests/lean_gosper_corpus.py",
       "tests/textbook_gate/"
     ],
-    "observations": 299,
-    "shape_classes": 194
+    "observations": 309,
+    "shape_classes": 196
   },
   "rows": [
     {
@@ -3282,6 +3283,29 @@
       ]
     },
     {
+      "operation": "product_definite",
+      "shape": "product_definite/form=atom/funcs=-/fn_arg=none/mul=none/pow=none/pow_base=none/definite=yes",
+      "features": {
+        "form": "atom",
+        "funcs": "-",
+        "fn_arg": "none",
+        "mul": "none",
+        "pow": "none",
+        "pow_base": "none",
+        "definite": "yes"
+      },
+      "verdict": "certified",
+      "observations": {
+        "certified": 1,
+        "withheld": 0,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "k"
+      ]
+    },
+    {
       "operation": "simplify",
       "shape": "simplify/form=apply/funcs=exp,log/fn_arg=other/mul=none/pow=none",
       "features": {
@@ -4230,15 +4254,13 @@
         "pow_base": "none",
         "definite": "yes"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 2,
+        "certified": 5,
+        "withheld": 0,
         "no_derivation": 0
       },
-      "blocking_rules": [
-        "gosper_definite_telescope"
-      ],
+      "blocking_rules": [],
       "examples": [
         "5",
         "k"
@@ -4256,15 +4278,13 @@
         "pow_base": "var",
         "definite": "yes"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 2,
+        "certified": 4,
+        "withheld": 0,
         "no_derivation": 0
       },
-      "blocking_rules": [
-        "gosper_definite_telescope"
-      ],
+      "blocking_rules": [],
       "examples": [
         "k^2",
         "k^3"
@@ -4298,28 +4318,48 @@
     },
     {
       "operation": "sum_definite",
-      "shape": "sum_definite/form=power/funcs=-/fn_arg=none/mul=none/pow=sym/pow_base=expr/definite=yes",
+      "shape": "sum_definite/form=power/funcs=-/fn_arg=none/mul=none/pow=sym/pow_base=int/definite=yes",
       "features": {
         "form": "power",
         "funcs": "-",
         "fn_arg": "none",
         "mul": "none",
         "pow": "sym",
-        "pow_base": "expr",
+        "pow_base": "int",
+        "definite": "yes"
+      },
+      "verdict": "certified",
+      "observations": {
+        "certified": 2,
+        "withheld": 0,
+        "no_derivation": 0
+      },
+      "blocking_rules": [],
+      "examples": [
+        "2^k"
+      ]
+    },
+    {
+      "operation": "sum_definite",
+      "shape": "sum_definite/form=power/funcs=-/fn_arg=none/mul=none/pow=sym/pow_base=recip/definite=yes",
+      "features": {
+        "form": "power",
+        "funcs": "-",
+        "fn_arg": "none",
+        "mul": "none",
+        "pow": "sym",
+        "pow_base": "recip",
         "definite": "yes"
       },
       "verdict": "withheld",
       "observations": {
         "certified": 0,
-        "withheld": 2,
+        "withheld": 1,
         "no_derivation": 0
       },
-      "blocking_rules": [
-        "gosper_definite_telescope"
-      ],
+      "blocking_rules": [],
       "examples": [
-        "(1/2)^k",
-        "2^k"
+        "(1/2)^k"
       ]
     },
     {
@@ -4334,15 +4374,13 @@
         "pow_base": "expr",
         "definite": "yes"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 2,
+        "withheld": 0,
         "no_derivation": 0
       },
-      "blocking_rules": [
-        "gosper_definite_telescope"
-      ],
+      "blocking_rules": [],
       "examples": [
         "(((1 + k) * k)^-1 * 1)"
       ]
@@ -4390,9 +4428,7 @@
         "withheld": 1,
         "no_derivation": 0
       },
-      "blocking_rules": [
-        "gosper_definite_telescope"
-      ],
+      "blocking_rules": [],
       "examples": [
         "(gamma((1 + k)) * k)"
       ]
@@ -4409,15 +4445,13 @@
         "pow_base": "none",
         "definite": "yes"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 2,
+        "withheld": 0,
         "no_derivation": 0
       },
-      "blocking_rules": [
-        "gosper_definite_telescope"
-      ],
+      "blocking_rules": [],
       "examples": [
         "((2 * k) + 1)"
       ]
@@ -4433,15 +4467,13 @@
         "pow": "none",
         "pow_base": "none"
       },
-      "verdict": "withheld",
+      "verdict": "certified",
       "observations": {
-        "certified": 0,
-        "withheld": 1,
+        "certified": 2,
+        "withheld": 0,
         "no_derivation": 0
       },
-      "blocking_rules": [
-        "gosper_indefinite"
-      ],
+      "blocking_rules": [],
       "examples": [
         "k"
       ]

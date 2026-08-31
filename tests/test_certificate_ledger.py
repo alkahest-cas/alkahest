@@ -256,6 +256,7 @@ def test_ledger_artifact_is_checked_in_and_current_schema():
     assert data["corpus"]["sources"] == [
         "tests/lean_corpus.py",
         "tests/lean_tendsto_corpus.py",
+        "tests/lean_gosper_corpus.py",
         "tests/textbook_gate/",
     ]
     assert data["corpus"]["observations"] > 0
@@ -506,3 +507,16 @@ def test_neg_one_pow_splits_from_higher_negative_powers(pool):
     assert inv["pow"] == "neg_one"
     assert neg_two["pow"] == "neg"
     assert inv["pow"] != neg_two["pow"]
+
+
+def test_geometric_pow_base_splits_integer_from_reciprocal(pool):
+    """Σ 2^k certifies, Σ (1/2)^k is withheld — they must not share a class."""
+    k = pool.symbol("k")
+    n = pool.symbol("n")
+    two_shape, two_feat = classify("sum_definite", (pool.integer(2) ** k, k, pool.integer(0), n))
+    half_shape, half_feat = classify(
+        "sum_definite", (pool.rational(1, 2) ** k, k, pool.integer(0), n)
+    )
+    assert two_feat["pow_base"] == "int"
+    assert half_feat["pow_base"] == "recip"
+    assert two_shape != half_shape

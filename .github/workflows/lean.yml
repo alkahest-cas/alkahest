@@ -12,11 +12,13 @@ on:
       - 'alkahest-core/src/simplify/**'
       - 'alkahest-core/src/kernel/**'
       - 'alkahest-core/src/calculus/**'
+      - 'alkahest-core/src/sum/**'
       - 'alkahest-py/src/lib.rs'
       - 'tests/lean_corpus.py'
       - 'tests/lean_corpus_sample.py'
       - 'tests/lean_tendsto_corpus.py'
       - 'tests/lean_sos_corpus.py'
+      - 'tests/lean_gosper_corpus.py'
       - 'alkahest-core/src/real/sos/**'
       - 'tests/_tg_helpers.py'
       - 'tests/textbook_gate/**'
@@ -35,11 +37,13 @@ on:
       - 'alkahest-core/src/simplify/**'
       - 'alkahest-core/src/kernel/**'
       - 'alkahest-core/src/calculus/**'
+      - 'alkahest-core/src/sum/**'
       - 'alkahest-py/src/lib.rs'
       - 'tests/lean_corpus.py'
       - 'tests/lean_corpus_sample.py'
       - 'tests/lean_tendsto_corpus.py'
       - 'tests/lean_sos_corpus.py'
+      - 'tests/lean_gosper_corpus.py'
       - 'alkahest-core/src/real/sos/**'
       - 'tests/_tg_helpers.py'
       - 'tests/textbook_gate/**'
@@ -100,6 +104,10 @@ jobs:
         run: |
           python tests/lean_tendsto_corpus.py --output /tmp/lean_tendsto/
 
+      - name: Generate Lean proofs (Gosper Finset.sum corpus)
+        run: |
+          python tests/lean_gosper_corpus.py --output /tmp/lean_gosper/
+
       - name: Generate Lean proofs (full deduplicated textbook-gate pool)
         run: |
           # Every distinct certificate the library emits from the textbook gate
@@ -120,7 +128,7 @@ jobs:
       - name: Verify proofs with Lean without admissions
         run: |
           cd lean
-          for dir in /tmp/lean_proofs /tmp/lean_tendsto /tmp/lean_pool /tmp/lean_sos; do
+          for dir in /tmp/lean_proofs /tmp/lean_tendsto /tmp/lean_gosper /tmp/lean_pool /tmp/lean_sos; do
             echo "== Verifying certificates in $dir =="
             for f in "$dir"/*.lean; do
               fname=$(basename "$f")
@@ -132,7 +140,7 @@ jobs:
               lake env lean -DwarningAsError=true "$f" || { echo "FAILED: $fname"; exit 1; }
             done
           done
-          echo "All generated Lean proofs (fixed corpus + Tendsto corpus + full textbook-gate pool + SOS) verified without admissions."
+          echo "All generated Lean proofs (fixed corpus + Tendsto corpus + Gosper corpus + full textbook-gate pool + SOS) verified without admissions."
 
       - name: Upload generated Lean proofs on failure
         if: failure()
@@ -142,6 +150,7 @@ jobs:
           path: |
             /tmp/lean_proofs
             /tmp/lean_tendsto
+            /tmp/lean_gosper
             /tmp/lean_pool
             /tmp/lean_sos
           if-no-files-found: ignore

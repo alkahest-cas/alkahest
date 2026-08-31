@@ -16,11 +16,13 @@ The corpus is not a new list of cases. It reuses, unchanged:
   ``.github/workflows/lean.yml``. These populate the *certified* side.
 * ``tests/lean_tendsto_corpus.py`` — recognised ``x → +∞`` ``Filter.Tendsto``
   certificates from ``limit()``.
+* ``tests/lean_gosper_corpus.py`` — Gosper ``Finset.sum`` telescopes and the
+  ``∏ k = n!`` product identity.
 * ``tests/textbook_gate/`` — the first-course calculus/algebra suite, run under
   pytest exactly as ``tests/lean_corpus_sample.py`` runs it. These reach far
   beyond the certifiable fragment and so populate the *withheld* side.
 
-Both are driven with :func:`alkahest.diff` and friends instrumented, so each
+These are driven with :func:`alkahest.diff` and friends instrumented, so each
 call yields ``(operation, arguments, outcome)`` without either suite needing a
 parallel case list that could drift out of sync.
 
@@ -127,6 +129,7 @@ class _Recorder:
 def _run_strict_corpus() -> None:
     """Drive every case in the strict rewrite corpus and the Tendsto corpus."""
     import lean_corpus
+    import lean_gosper_corpus
     import lean_tendsto_corpus
 
     pool = alkahest.ExprPool()
@@ -140,6 +143,11 @@ def _run_strict_corpus() -> None:
             builder(pool)
         except Exception as exc:  # pragma: no cover — a broken Tendsto case
             print(f"WARNING: tendsto corpus case {name!r} raised: {exc}", file=sys.stderr)
+    for name, _expected_tactic, builder in lean_gosper_corpus.STRICT_CASES:
+        try:
+            builder(pool)
+        except Exception as exc:  # pragma: no cover — a broken Gosper case
+            print(f"WARNING: gosper corpus case {name!r} raised: {exc}", file=sys.stderr)
 
 
 def _run_textbook_gate(gate_dir: str) -> None:

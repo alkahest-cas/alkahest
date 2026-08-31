@@ -113,6 +113,7 @@ def build() -> dict:
             "sources": [
                 "tests/lean_corpus.py",
                 "tests/lean_tendsto_corpus.py",
+                "tests/lean_gosper_corpus.py",
                 "tests/textbook_gate/",
             ],
             "observations": len(observations),
@@ -153,7 +154,8 @@ def render_markdown(ledger: dict) -> str:
         "hand-maintained — from `tests/lean_corpus.py` (the strict, CI-typechecked corpus) "
         "and `tests/textbook_gate/` (first-course calculus and algebra). "
         "`tests/lean_tendsto_corpus.py` contributes the recognised `x → +∞` "
-        "`Filter.Tendsto` fragment."
+        "`Filter.Tendsto` fragment. `tests/lean_gosper_corpus.py` contributes "
+        "Gosper `Finset.sum` telescopes and the `∏ k = n!` product identity."
     )
     out.append("")
     out.append(

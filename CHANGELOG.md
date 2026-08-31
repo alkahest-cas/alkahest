@@ -131,6 +131,7 @@
   `InDomain(u, NonNegative)` or `InDomain(u, Real)` as a `SideCondition`, so a
   reader of the derivation log is told what the rewrite rested on rather than
   having to infer it.
+
 - **The spelling of a by-parts residual decided whether it integrated.**
   `∫x/((1−x²)·√(1−2x²))` — the residual Charlwood #49 reduces to — closes in
   milliseconds when written that way, and declines with `algebraic integrator
@@ -347,6 +348,18 @@
   `∫₀¹ cos(2x)` (interval FTC, `HasDerivAt.sin` of the linear inner then
   `.div_const 2`). `∫ x·exp(x²)` stays withheld: its antiderivative is
   `{const} * exp(x²)`, a power inner outside this arm.
+
+- **Gosper sums now emit sorry-free Lean `Finset.sum` certificates.** The
+  kernel already checks `G = R·F` in `ℚ(k)`; emitting the rewrite log as
+  `F = G` would be false (e.g. `k = k(k−1)/2`). The new `emit_gosper_cert`
+  states the discrete FTC `G(k+1) − G(k) = F(k)` and the telescope
+  `∑_{k=a}^{b} F(k) = G(b+1) − G(a)` on `Finset.Icc`, discharged by Mathlib
+  4.9 `sum_range_sub` / `sum_Ico_eq_sum_range` / `Nat.Ico_succ_right`.
+  Polynomials (`Σ 5`, `Σ k`, `Σ k²`, `Σ (2k+1)`), the classic
+  `Σ 1/(k(k+1))` telescope, and `Σ 2^k` certify; Basel / `gamma` / `n!`
+  via gamma stay withheld. The identity product `∏_{k=1}^{n} k = n!` is
+  certified separately via `Finset.prod_Ico_id_eq_factorial` (v4.9.0 has
+  no `prod_Icc_id`).
 
 - **A budget could be outrun by a single allocation, and was.**
   `alkahest.integrate` on `1/(x·log x·(1 + log²(log x)))` — the derivative of
